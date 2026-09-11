@@ -1,0 +1,28 @@
+services:
+  - type: worker
+    name: veritas-axednewz
+    runtime: python
+    region: frankfurt
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ADMIN_USER_ID
+        sync: false
+      - key: TELEGRAM_CHANNEL_ID
+        value: "@axednewz"
+      - key: OPENAI_MODEL
+        value: "gpt-5.6-sol"
+      - key: SCAN_MODEL
+        value: "gpt-5.6-terra"
+      - key: SCAN_INTERVAL_MINUTES
+        value: "10"
+      - key: MAX_DRAFTS_PER_HOUR
+        value: "6"
+      - key: PUBLISH_MODE
+        value: "approval"
