@@ -55,11 +55,33 @@ signal.signal(signal.SIGINT, stop_handler)
 
 
 def tg_call(method, data=None):
-    r = http.post(f"{TG_BASE}/{method}", data=data or {})
-    r.raise_for_status()
-    payload = r.json()
+    """Telegram API call that never exposes the bot token in exceptions/logs."""
+    try:
+        r = http.post(f"{TG_BASE}/{method}", data=data or {})
+    except httpx.RequestError as exc:
+        raise RuntimeError(
+            f"Telegram network error: {type(exc).__name__}"
+        ) from None
+
+    try:
+        payload = r.json()
+    except Exception:
+        payload = {}
+
+    if r.status_code >= 400:
+        description = payload.get("description") or "HTTP error"
+        error_code = payload.get("error_code") or r.status_code
+        raise RuntimeError(
+            f"Telegram API error {error_code}: {description}"
+        ) from None
+
     if not payload.get("ok"):
-        raise RuntimeError(f"Telegram API error: {payload}")
+        description = payload.get("description") or "unknown Telegram API error"
+        error_code = payload.get("error_code") or "unknown"
+        raise RuntimeError(
+            f"Telegram API error {error_code}: {description}"
+        ) from None
+
     return payload.get("result")
 
 
@@ -430,8 +452,15 @@ def main():
         except httpx.TimeoutException:
             pass
         except Exception as e:
-            log(f"Ошибка основного цикла: {type(e).__name__}: {e}")
-            time.sleep(3)
+            message = str(e)
+            if "Telegram API error 409" in message:
+                # During a Render rolling deploy the old and new workers can
+                # briefly poll Telegram at the same time.
+                log("Telegram polling conflict 409; повтор через 5 секунд.")
+                time.sleep(5)
+            else:
+                log(f"Ошибка основного цикла: {type(e).__name__}: {message}")
+                time.sleep(3)
 
     log("VERITAS MAX остановлен корректно.")
 
