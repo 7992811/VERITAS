@@ -1,7 +1,8 @@
-import csv, glob, hashlib, io, json, math, os, sqlite3, threading, time, traceback, uuid
+import csv, glob, hashlib, io, json, math, os, sqlite3, threading, time, traceback, uuid, xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 import httpx
 try:
     import psycopg
@@ -10,7 +11,7 @@ except Exception:
     psycopg = None
     dict_row = None
 
-VERSION = 'veritas-max-product-v3.0-adaptive-intelligence'
+VERSION = 'veritas-max-product-v6.0-robust-validation'
 DB_PATH = os.getenv('VERITAS_LEDGER_PATH', '/tmp/veritas_decisions.sqlite3')
 DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
 KNOWLEDGE_FILE = os.getenv('VERITAS_KNOWLEDGE_FILE', 'veritas_knowledge_seed.json')
@@ -95,7 +96,7 @@ AGENT_ADAPT_MIN_N = max(20, int(os.getenv('VERITAS_AGENT_ADAPT_MIN_N','30')))
 CALIBRATION_MIN_N = max(30, int(os.getenv('VERITAS_CALIBRATION_MIN_N','60')))
 BACKTEST_COST_BPS = max(0.0, float(os.getenv('VERITAS_BACKTEST_COST_BPS','20')))
 BACKTEST_OOS_SHARE = min(0.45, max(0.20, float(os.getenv('VERITAS_BACKTEST_OOS_SHARE','0.30'))))
-BACKTEST_METHOD_VERSION = 'v30_nonoverlap_regime_decay_pairs'
+BACKTEST_METHOD_VERSION = 'v60_vault_timeblocks_costgrid_isotonic'
 AGENT_DECAY_HALF_LIFE_DAYS = max(14.0, float(os.getenv('VERITAS_AGENT_DECAY_HALF_LIFE_DAYS','60')))
 RULE_DECAY_HALF_LIFE_DAYS = max(14.0, float(os.getenv('VERITAS_RULE_DECAY_HALF_LIFE_DAYS','90')))
 PAIR_MIN_N = max(20, int(os.getenv('VERITAS_PAIR_MIN_N','40')))
@@ -109,6 +110,19 @@ TELEGRAM_ALERTS_ENABLED = os.getenv('VERITAS_TELEGRAM_ALERTS_ENABLED','0').lower
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN','').strip()
 VERITAS_ALERT_CHAT_ID = os.getenv('VERITAS_ALERT_CHAT_ID','').strip()
 APP_AUTH_TOKEN = os.getenv('VERITAS_APP_AUTH_TOKEN','').strip()
+OPTIONS_CONTEXT_ENABLED = os.getenv('VERITAS_OPTIONS_CONTEXT_ENABLED','1').lower() in ('1','true','yes','on')
+OPTIONS_REFRESH_SECONDS = max(300, int(os.getenv('VERITAS_OPTIONS_REFRESH_SECONDS','600')))
+NDX_BREADTH_ENABLED = os.getenv('VERITAS_NDX_BREADTH_ENABLED','1').lower() in ('1','true','yes','on')
+ORTHOGONAL_EVIDENCE_ENABLED = os.getenv('VERITAS_ORTHOGONAL_EVIDENCE_ENABLED','1').lower() in ('1','true','yes','on')
+CALIBRATION_QUALITY_MIN_N = max(20, int(os.getenv('VERITAS_CALIBRATION_QUALITY_MIN_N','40')))
+BACKTEST_VAULT_SHARE = min(0.20, max(0.10, float(os.getenv('VERITAS_BACKTEST_VAULT_SHARE','0.15'))))
+BACKTEST_TIME_BLOCKS = max(4, min(10, int(os.getenv('VERITAS_BACKTEST_TIME_BLOCKS','6'))))
+CALIBRATION_ISOTONIC_MIN_N = max(60, int(os.getenv('VERITAS_CALIBRATION_ISOTONIC_MIN_N','120')))
+EXPECTED_EDGE_MIN_N = max(20, int(os.getenv('VERITAS_EXPECTED_EDGE_MIN_N','30')))
+try:
+    BACKTEST_COST_GRID_BPS = sorted({float(x.strip()) for x in os.getenv('VERITAS_BACKTEST_COST_GRID_BPS','10,20,40').split(',') if x.strip()})
+except Exception:
+    BACKTEST_COST_GRID_BPS = [10.0,20.0,40.0]
 
 NDX_MAX_PRIMARY_AGE_SECONDS = max(60, int(os.getenv('VERITAS_NDX_MAX_PRIMARY_AGE_SECONDS','180')))
 NDX_MAX_SOURCE_DIVERGENCE = float(os.getenv('VERITAS_NDX_MAX_SOURCE_DIVERGENCE','0.003'))
@@ -137,6 +151,8 @@ market_cache = {}
 market_cache_lock = threading.Lock()
 fred_cache = {}
 fred_cache_lock = threading.Lock()
+options_cache = {}
+options_cache_lock = threading.Lock()
 
 
 # Canonical knowledge seed. All rules are SHADOW until VERITAS validates them on its own data.
@@ -337,9 +353,9 @@ NDX_KNOWLEDGE_RULES = [
   'mechanism':'Objective pattern plus activity confirmation.','formalization_note':'QQQ volume is a proxy; shadow only.'},
 ]
 
-MANAGER_PUBLIC_SOURCES = json.loads(r'''[{"source_id":"DALIO_BIG_DEBT_CRISIS_PUBLIC","title":"Principles for Navigating Big Debt Crises","authors":"Ray Dalio","year":2018,"source_type":"manager_public_material","url":"https://www.principles.com/big-debt-crises/","evidence_grade":"C","claim":"Dalio presents a recurring debt-cycle framework in which credit expansions and contractions shape macroeconomic and market cycles."},{"source_id":"DALIO_ECONOMIC_MACHINE_PUBLIC","title":"How the Economic Machine Works / Debt Cycles","authors":"Ray Dalio","year":2017,"source_type":"manager_public_material","url":"https://ep.stg40.principles.com/downloads/ray_dalio__how_the_economic_machine_works__leveragings_and_deleveragings.pdf","evidence_grade":"C","claim":"Dalio frames credit growth, income, spending and deleveraging as interacting drivers of cyclical macro conditions."},{"source_id":"MARKS_TAKING_TEMPERATURE_2023","title":"Taking the Temperature","authors":"Howard Marks","year":2023,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/insights/memo/taking-the-temperature","evidence_grade":"C","claim":"Marks emphasizes changing risk posture mainly when markets reach unusually euphoric or depressed extremes rather than relying on frequent macro calls."},{"source_id":"MARKS_BUBBLE_WATCH_2025","title":"On Bubble Watch","authors":"Howard Marks","year":2025,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/insights/memo/on-bubble-watch","evidence_grade":"C","claim":"Marks describes bubbles as requiring more than elevated valuations; extreme investor psychology and behavior are central to his assessment."},{"source_id":"MARKS_BEST_OF_2025","title":"The Best of ...","authors":"Howard Marks","year":2025,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/insights/memo/the-best-of","evidence_grade":"C","claim":"Marks highlights second-level thinking, risk control, cycles and the limits of macro forecasting as enduring parts of his investment framework."},{"source_id":"BUFFETT_OWNERS_MANUAL_1996","title":"Berkshire Hathaway Owner's Manual","authors":"Warren E. Buffett; Charles T. Munger","year":1996,"source_type":"manager_public_material","url":"https://www.berkshirehathaway.com/1996ar/manual.html","evidence_grade":"C","claim":"Buffett and Munger set out Berkshire's operating and capital-allocation principles, including long-term ownership orientation and economic-value thinking."},{"source_id":"BUFFETT_LETTERS_ARCHIVE","title":"Berkshire Hathaway Shareholder Letters Archive","authors":"Warren E. Buffett","year":2025,"source_type":"manager_letters_archive","url":"https://www.berkshirehathaway.com/letters/letters.html","evidence_grade":"C","claim":"The Berkshire letters provide a long-running primary-source record of Buffett's views on valuation, business quality, capital allocation, risk and market behavior."},{"source_id":"MUNGER_WESCO_LETTERS_ARCHIVE","title":"Wesco Financial Letters to Shareholders","authors":"Charles T. Munger","year":2009,"source_type":"manager_letters_archive","url":"https://www.berkshirehathaway.com/wesco/WescoHome.html","evidence_grade":"C","claim":"Munger's Wesco letters provide primary-source material on rational capital allocation, incentives, business quality and risk."},{"source_id":"SOROS_REFLEXIVITY_TRANSCRIPT","title":"General Theory of Reflexivity - Transcript","authors":"George Soros","year":2010,"source_type":"manager_public_lecture","url":"https://www.opensocietyfoundations.org/uploads/9ae17912-2262-4646-8ffc-d01afc934c36/george-soros-general-theory-of-reflexivity-transcript.pdf","evidence_grade":"C","claim":"Soros argues that market participants' biased perceptions can interact with fundamentals, creating self-reinforcing and self-defeating feedback processes."},{"source_id":"SOROS_FINANCIAL_MARKETS_TRANSCRIPT","title":"Financial Markets - Transcript","authors":"George Soros","year":2012,"source_type":"manager_public_lecture","url":"https://www.opensocietyfoundations.org/uploads/2b96bb8c-e2e1-4d88-9eea-badf16d0a2b8/george-soros-financial-markets-transcript.pdf","evidence_grade":"C","claim":"Soros applies reflexivity to financial markets and discusses how mispricing can influence fundamentals rather than remaining a passive reflection of them."},{"source_id":"SEYKOTA_SIMPLE_SYSTEM_PUBLIC","title":"A Simple Trading System - Support and Resistance","authors":"Ed Seykota","year":2000,"source_type":"trader_public_material","url":"https://www.tradingtribe.com/tribe/TSP/SR/index.htm","evidence_grade":"C","claim":"Seykota presents a simple systematic trading example and stresses that simple systems can be competitive with more complex systems."},{"source_id":"SEYKOTA_TREND_BACKTEST_2017","title":"Ed Seykota FAQ - Trend Definitions and Backtesting","authors":"Ed Seykota","year":2017,"source_type":"trader_public_material","url":"https://www.tradingtribe.com/TT/2017/Apr/01-30/default.html","evidence_grade":"C","claim":"Seykota stresses that trend definitions depend on timeframe and should be tested in the context of a complete trading system."},{"source_id":"SEYKOTA_TECHNICAL_TOOLS","title":"Ed Seykota Of Technical Tools","authors":"Ed Seykota","year":1992,"source_type":"trader_interview_reprint","url":"https://www.tradingtribe.com/TT/2015/Oct/01-10/ed-seykota-of-technical-tools.pdf","evidence_grade":"C","claim":"Seykota describes trend-oriented trading, pre-defined stop points and money-management discipline."},{"source_id":"SIMONS_FOUNDATION_INTERVIEW_2012","title":"Jim Simons on His Career in Mathematics","authors":"Jim Simons","year":2012,"source_type":"manager_public_interview","url":"https://www.simonsfoundation.org/2012/09/28/simons-foundation-chair-jim-simons-on-his-career-in-mathematics/","evidence_grade":"C","claim":"Simons describes moving from discretionary finance toward mathematical modeling, data collection, computers and recruiting strong quantitative researchers."},{"source_id":"MAN_AHL_SPEED_TREND","title":"The Need for Speed in Trend-Following Strategies","authors":"Man AHL","year":2023,"source_type":"institutional_manager_research","url":"https://www.man.com/insights/need-for-speed-trend-following","evidence_grade":"B","claim":"Man AHL describes multi-speed trend systems, volatility scaling and diversification across markets and horizons as core systematic design choices."},{"source_id":"MAN_AHL_DRAWDOWNS_2025","title":"Trend Following and Drawdowns: Is This Time Different?","authors":"Russell Korgaonkar; Man AHL","year":2025,"source_type":"institutional_manager_research","url":"https://www.man.com/insights/is-this-time-different","evidence_grade":"B","claim":"Man AHL argues that trend-following drawdowns should be evaluated against long-run distributions, crowding and opportunity sets rather than treated as immediate evidence of strategy failure."},{"source_id":"AQR_VALUE_MOMENTUM","title":"Value and Momentum Everywhere","authors":"Cliff Asness; Tobias Moskowitz; Lasse Pedersen","year":2013,"source_type":"institutional_manager_research","url":"https://www.aqr.com/Insights/Research/Journal-Article/Value-and-Momentum-Everywhere","evidence_grade":"A","claim":"AQR documents value and momentum premia across multiple asset classes and finds common factor structure across markets."},{"source_id":"DRUCKENMILLER_BLOOMBERG_2018","title":"Stanley Druckenmiller on Economy, Stocks, Bonds, Fed - Full Interview","authors":"Stanley Druckenmiller; Bloomberg Television","year":2018,"source_type":"verified_media_interview","url":"https://www.youtube.com/watch?v=9kH01CNISeQ","evidence_grade":"C","claim":"Druckenmiller discusses cross-asset positioning and the importance of liquidity, monetary policy and changing financial conditions in macro investing."},{"source_id":"PTJ_BLOOMBERG_2025","title":"Bloomberg Talks: Paul Tudor Jones","authors":"Paul Tudor Jones; Bloomberg","year":2025,"source_type":"verified_media_interview","url":"https://www.bloomberg.com/news/audio/2025-06-11/bloomberg-talks-paul-tudor-jones-podcast","evidence_grade":"C","claim":"Jones discusses macro policy, markets and portfolio risks in a verified Bloomberg interview."},{"source_id":"DENNIS_TURTLE_PUBLIC_SUMMARY","title":"The Original Turtle Trading Rules - public summary","authors":"Richard Dennis; William Eckhardt; TurtleTrader","year":1983,"source_type":"public_method_summary","url":"https://www.turtletrader.com/rules/","evidence_grade":"D","claim":"The public Turtle methodology is a complete systematic trend-following framework covering market selection, volatility-based position sizing, breakouts, stops and exits."},{"source_id":"LIVERMORE_REMINISCENCES_1923","title":"Reminiscences of a Stock Operator","authors":"Edwin Lefevre; based on Jesse Livermore","year":1923,"source_type":"public_domain_classic","url":"https://openlibrary.org/books/OL3321811M/Reminiscences_of_a_stock_operator","evidence_grade":"D","claim":"The classic fictionalized account based on Livermore's career documents enduring themes of speculation, trend participation, patience, leverage and trading psychology."},{"source_id":"THORP_KELLY_OFFICIAL","title":"The Kelly Capital Growth Investment Criterion","authors":"Edward O. Thorp","year":2010,"source_type":"manager_official_material","url":"https://www.edwardothorp.com/books/kelly-capital-growth-investment-criterion/","evidence_grade":"B","claim":"Thorp describes Kelly-style capital allocation as maximizing long-run growth while recognizing substantial short-run drawdown risk, with fractional Kelly as a way to trade some growth for lower risk."},{"source_id":"THORP_FAQ_KELLY","title":"Edward O. Thorp FAQ - Fortune's Formula / Kelly Criterion","authors":"Edward O. Thorp","year":2026,"source_type":"manager_official_material","url":"https://www.edwardothorp.com/faq/","evidence_grade":"B","claim":"Thorp explains the Kelly criterion as linking bet size to edge and odds rather than using fixed stakes."},{"source_id":"THORP_ARTICLES_ARCHIVE","title":"Edward O. Thorp - Mathematical Finance Articles","authors":"Edward O. Thorp","year":2026,"source_type":"manager_official_archive","url":"https://www.edwardothorp.com/articles/","evidence_grade":"B","claim":"Thorp's official archive includes work on Kelly sizing, quantitative finance, volatility and market-beating models."},{"source_id":"MARKS_CANT_PREDICT_PREPARE_2001","title":"You Can't Predict. You Can Prepare.","authors":"Howard Marks","year":2001,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/docs/default-source/memos/2001-11-20-you-cant-predict-you-can-prepare.pdf","evidence_grade":"C","claim":"Marks argues that investors should focus on understanding where they are in a cycle and preparing for a range of outcomes rather than relying on precise economic forecasts."},{"source_id":"MARKS_RETURNS_RISK_2006","title":"Returns, Absolute Returns and Risk","authors":"Howard Marks","year":2006,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/insights/memo/returns-absolute-returns-and-risk","evidence_grade":"C","claim":"Marks emphasizes that investment results cannot be evaluated without considering the risk taken to achieve them."},{"source_id":"TURTLE_RULES_TRADINGBLOX","title":"The Original Turtle Rules","authors":"Original Turtles; Trading Blox","year":2004,"source_type":"public_method_document","url":"https://tradingblox.com/originalturtles/originalturtlerules.htm","evidence_grade":"C","claim":"The public Turtle rules document breakout entries, volatility-based position sizing, predefined exits, pyramiding and portfolio-level correlation limits."},{"source_id":"KOVNER_TURTLETRADER_PROFILE","title":"Bruce Kovner - Risk Management and Trading Framework","authors":"Bruce Kovner; TurtleTrader summary","year":2026,"source_type":"secondary_public_profile","url":"https://www.turtletrader.com/trader-kovner/","evidence_grade":"D","claim":"A public profile attributes to Kovner strong emphasis on under-trading, understanding downside scenarios and treating correlated positions as one aggregate risk."}]''')
-MANAGER_PUBLIC_RULES = json.loads(r'''[{"rule_id":"MGR_DALIO_DEBT_CYCLE_GOV","source_id":"DALIO_BIG_DEBT_CRISIS_PUBLIC","agent":"MACRO","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Macro regime classification should explicitly incorporate credit, liquidity and deleveraging conditions before promoting directional crypto signals.","mechanism":"Credit-cycle transmission can alter discount rates, liquidity and risk appetite.","formalization_note":"Governance rule. Current VERITAS feature set lacks direct credit and liquidity variables; no directional influence until those data are added."},{"rule_id":"MGR_DALIO_MACHINE_GOV","source_id":"DALIO_ECONOMIC_MACHINE_PUBLIC","agent":"MACRO","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"VERITAS should model changes in monetary conditions, income/spending dynamics and leverage as regime variables rather than treating price action in isolation.","mechanism":"Macro cycles emerge from interactions among credit, spending, income and policy.","formalization_note":"Governance only; requires additional macro features."},{"rule_id":"MGR_MARKS_EXTREMES_GOV","source_id":"MARKS_TAKING_TEMPERATURE_2023","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Large changes in portfolio aggressiveness should require evidence of unusually extreme market conditions rather than ordinary forecasting noise.","mechanism":"Risk/reward asymmetry can become most pronounced at sentiment and valuation extremes.","formalization_note":"Governance only; sentiment/valuation variables are not yet in the live feature set."},{"rule_id":"MGR_MARKS_BUBBLE_GOV","source_id":"MARKS_BUBBLE_WATCH_2025","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"High price levels alone should not trigger a bubble label; investor behavior and psychology require separate evidence.","mechanism":"Bubbles combine price/valuation conditions with extreme psychology and behavior.","formalization_note":"Governance only; prevents simplistic overvaluation-to-short mappings."},{"rule_id":"MGR_MARKS_SECOND_LEVEL_GOV","source_id":"MARKS_BEST_OF_2025","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"VERITAS should distinguish first-order observations from second-order implications and explicitly penalize crowded consensus signals.","mechanism":"Investment outcomes depend on expectations relative to reality, not reality alone.","formalization_note":"Governance only until positioning/crowding features are robust."},{"rule_id":"MGR_BUFFETT_VALUE_GOV","source_id":"BUFFETT_OWNERS_MANUAL_1996","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"A long-term investment decision should distinguish economic value from price and should not be justified solely by recent price appreciation.","mechanism":"Price and economic value can diverge materially.","formalization_note":"Governance only; crypto fundamental valuation framework is not yet implemented."},{"rule_id":"MGR_MUNGER_MULTIMODEL_GOV","source_id":"MUNGER_WESCO_LETTERS_ARCHIVE","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"VERITAS should require multiple independent explanatory lenses before raising conviction when one-factor explanations are fragile.","mechanism":"Robust decisions benefit from cross-checking incentives, economics, behavior and risk.","formalization_note":"Governance abstraction from Munger's public investment framework; no direct directional rule."},{"rule_id":"MGR_SOROS_REFLEXIVE_LONG","source_id":"SOROS_REFLEXIVITY_TRANSCRIPT","agent":"TECH_FLOW","asset_scope":["BTC","ETH"],"horizons":["1d","3d"],"action":"LONG","status":"shadow","conditions":[{"field":"trend","op":">","value":0.025},{"field":"momentum","op":">","value":0.0},{"field":"volume_ratio","op":">","value":1.15}],"prior_weight":0.025,"hypothesis":"A positive price trend reinforced by positive momentum and expanding activity may represent a self-reinforcing reflexive phase.","mechanism":"Price changes can influence beliefs and behavior, which can feed back into further price changes.","formalization_note":"VERITAS provisional proxy for reflexivity; thresholds are adaptations and not a verbatim Soros trading rule."},{"rule_id":"MGR_SOROS_REFLEXIVE_SHORT","source_id":"SOROS_REFLEXIVITY_TRANSCRIPT","agent":"TECH_FLOW","asset_scope":["BTC","ETH"],"horizons":["1d","3d"],"action":"SHORT","status":"shadow","conditions":[{"field":"trend","op":"<","value":-0.025},{"field":"momentum","op":"<","value":0.0},{"field":"volume_ratio","op":">","value":1.15}],"prior_weight":0.025,"hypothesis":"A negative price trend reinforced by negative momentum and expanding activity may represent a self-reinforcing reflexive phase.","mechanism":"Price changes can influence beliefs and behavior, which can feed back into further price changes.","formalization_note":"VERITAS provisional symmetric proxy for reflexivity; thresholds are adaptations and not a verbatim Soros trading rule."},{"rule_id":"MGR_SOROS_REFLEXIVITY_GOV","source_id":"SOROS_FINANCIAL_MARKETS_TRANSCRIPT","agent":"MACRO","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Causal analysis should allow price moves to influence subsequent fundamentals, positioning and policy responses instead of assuming a one-way fundamentals-to-price channel.","mechanism":"Reflexive feedback between perceptions and fundamentals.","formalization_note":"Governance rule for causal-chain construction."},{"rule_id":"MGR_SEYKOTA_TREND_LONG","source_id":"SEYKOTA_TREND_BACKTEST_2017","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"LONG","status":"shadow","conditions":[{"field":"trend","op":">","value":0.02},{"field":"momentum","op":">","value":0.0}],"prior_weight":0.05,"hypothesis":"A clearly positive trend definition confirmed by momentum may support continuation when tested as part of a complete system.","mechanism":"Trend persistence and disciplined systematic execution.","formalization_note":"Thresholds are VERITAS provisional adaptations; Seykota stresses system-level testing rather than this exact formula."},{"rule_id":"MGR_SEYKOTA_TREND_SHORT","source_id":"SEYKOTA_TREND_BACKTEST_2017","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"SHORT","status":"shadow","conditions":[{"field":"trend","op":"<","value":-0.02},{"field":"momentum","op":"<","value":0.0}],"prior_weight":0.05,"hypothesis":"A clearly negative trend definition confirmed by momentum may support downside continuation when tested as part of a complete system.","mechanism":"Trend persistence and disciplined systematic execution.","formalization_note":"Thresholds are VERITAS provisional symmetric adaptations; not a verbatim Seykota rule."},{"rule_id":"MGR_SEYKOTA_SIMPLE_SYSTEM_GOV","source_id":"SEYKOTA_SIMPLE_SYSTEM_PUBLIC","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Complexity should not be rewarded unless it materially improves out-of-sample performance over a simpler benchmark.","mechanism":"Simple systems can avoid overfitting and hidden fragility.","formalization_note":"Governance rule for model selection and anti-overfitting."},{"rule_id":"MGR_SEYKOTA_STOP_GOV","source_id":"SEYKOTA_TECHNICAL_TOOLS","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Every directional decision should define invalidation before entry and position sizing should be compatible with that invalidation.","mechanism":"Pre-defined loss control prevents a single thesis from becoming an uncontrolled portfolio loss.","formalization_note":"Governance only; explicit stop-distance engine is not yet in v1.7."},{"rule_id":"MGR_SIMONS_DATA_GOV","source_id":"SIMONS_FOUNDATION_INTERVIEW_2012","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"New predictors should originate from data, be encoded quantitatively and survive independent validation before they influence capital allocation.","mechanism":"Systematic discovery plus statistical validation can reduce reliance on narrative discretion.","formalization_note":"Governance abstraction from Simons' public description of model-driven research; no claim about proprietary Renaissance signals."},{"rule_id":"MGR_MAN_MULTI_SPEED_LONG","source_id":"MAN_AHL_SPEED_TREND","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"LONG","status":"shadow","conditions":[{"field":"ret_24h","op":">","value":0.0},{"field":"ret_168h","op":">","value":0.0},{"field":"trend","op":">","value":0.0}],"prior_weight":0.04,"hypothesis":"Agreement between short- and medium-horizon returns with the prevailing trend may improve robustness versus a single-speed trend signal.","mechanism":"Diversification across trend speeds can reduce dependence on one lookback horizon.","formalization_note":"VERITAS provisional multi-speed adaptation; thresholds are intentionally minimal and require out-of-sample validation."},{"rule_id":"MGR_MAN_MULTI_SPEED_SHORT","source_id":"MAN_AHL_SPEED_TREND","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"SHORT","status":"shadow","conditions":[{"field":"ret_24h","op":"<","value":0.0},{"field":"ret_168h","op":"<","value":0.0},{"field":"trend","op":"<","value":0.0}],"prior_weight":0.04,"hypothesis":"Agreement between short- and medium-horizon downside returns with the prevailing trend may improve robustness versus a single-speed trend signal.","mechanism":"Diversification across trend speeds can reduce dependence on one lookback horizon.","formalization_note":"VERITAS provisional symmetric multi-speed adaptation; requires out-of-sample validation."},{"rule_id":"MGR_MAN_DRAWDOWN_GOV","source_id":"MAN_AHL_DRAWDOWNS_2025","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"A recent strategy drawdown should not by itself trigger abandonment; evaluate it against expected distribution, crowding and structural-decay evidence.","mechanism":"Valid strategies can experience clustered losses and regime-dependent drawdowns.","formalization_note":"Governance only for strategy-retirement decisions."},{"rule_id":"MGR_AQR_MOMENTUM_LONG","source_id":"AQR_VALUE_MOMENTUM","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["7d"],"action":"LONG","status":"shadow","conditions":[{"field":"ret_168h","op":">","value":0.03},{"field":"trend","op":">","value":0.0}],"prior_weight":0.025,"hypothesis":"Cross-asset evidence for momentum modestly raises the prior for continuation when crypto has positive medium-horizon return and trend.","mechanism":"Common momentum structure across asset classes.","formalization_note":"Cross-asset adaptation to crypto; 3% threshold and 7d mapping are provisional VERITAS choices."},{"rule_id":"MGR_DRUCKENMILLER_LIQUIDITY_GOV","source_id":"DRUCKENMILLER_BLOOMBERG_2018","agent":"MACRO","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Macro allocation should explicitly track changes in monetary liquidity and financial conditions rather than relying only on static valuation or economic narratives.","mechanism":"Liquidity conditions can transmit across bonds, currencies, equities and other risk assets.","formalization_note":"Governance only; direct liquidity variables need to be added before directional use."},{"rule_id":"MGR_PTJ_CONCENTRATION_GOV","source_id":"PTJ_BLOOMBERG_2025","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Portfolio risk should explicitly account for concentration and correlated exposures rather than assessing each position independently.","mechanism":"Concentrated ownership and common macro drivers can amplify drawdowns.","formalization_note":"Governance abstraction from verified public interview; no direct directional rule."},{"rule_id":"MGR_TURTLE_COMPLETE_SYSTEM_GOV","source_id":"DENNIS_TURTLE_PUBLIC_SUMMARY","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"A tradable strategy must define universe, position sizing, entry, stop, exit and execution as one coherent system before it is evaluated.","mechanism":"Complete rule systems reduce discretionary inconsistency and make risk measurable.","formalization_note":"Governance rule from a public historical summary; the original breakout rules are not mapped to live decisions until breakout and ATR-normalized sizing features are added."},{"rule_id":"MGR_LIVERMORE_CLASSIC_GOV","source_id":"LIVERMORE_REMINISCENCES_1923","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"VERITAS should separately measure thesis quality, execution discipline and leverage because a sound directional idea can still fail through poor sizing or timing.","mechanism":"Trading outcomes are jointly determined by signal, sizing, patience and execution.","formalization_note":"Governance abstraction from a public-domain classic based on Livermore's career; not a verbatim rule."},{"rule_id":"MGR_THORP_FRACTIONAL_KELLY_GOV","source_id":"THORP_KELLY_OFFICIAL","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Position sizing should be a function of estimated edge and uncertainty, and live sizing should remain below full Kelly while probability estimates are imperfect.","mechanism":"Growth-optimal sizing links exposure to edge but full Kelly can generate severe drawdowns.","formalization_note":"Governance only until VERITAS probabilities are demonstrably calibrated; no live Kelly sizing."},{"rule_id":"MGR_THORP_EDGE_ODDS_GOV","source_id":"THORP_FAQ_KELLY","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"A fixed position size should not be used when estimated edge differs materially across setups; sizing must depend on both edge and payoff asymmetry.","mechanism":"Optimal capital allocation depends on the magnitude of edge and odds.","formalization_note":"Governance rule; requires calibrated payoff distribution and transaction-cost model."},{"rule_id":"MGR_MARKS_CYCLE_LOCATION_GOV","source_id":"MARKS_CANT_PREDICT_PREPARE_2001","agent":"MACRO","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"VERITAS should distinguish cycle-state estimation from point forecasting and should express uncertainty when timing is weak.","mechanism":"Knowing the current regime can be decision-useful even when exact future path is not forecastable.","formalization_note":"Governance only; future regime engine should implement this distinction explicitly."},{"rule_id":"MGR_MARKS_RISK_ADJUSTED_GOV","source_id":"MARKS_RETURNS_RISK_2006","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Rules should not be promoted on raw hit rate or return alone; promotion must include drawdown, MAE, MFE and risk-adjusted performance.","mechanism":"Return without the associated risk exposure is an incomplete measure of investment quality.","formalization_note":"Governance rule for Knowledge Factory promotion/demotion."},{"rule_id":"MGR_TURTLE_BREAKOUT_LONG","source_id":"TURTLE_RULES_TRADINGBLOX","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["3d","7d"],"action":"LONG","status":"shadow","conditions":[{"field":"trend","op":">","value":0.03},{"field":"ret_168h","op":">","value":0.0},{"field":"rv","op":"<","value":0.09}],"prior_weight":0.045,"hypothesis":"A sufficiently strong positive trend with positive medium-horizon return and non-extreme volatility may proxy a breakout/trend-following state.","mechanism":"Breakout systems seek persistent directional moves while normalizing risk by volatility.","formalization_note":"VERITAS proxy only; current features do not yet encode exact 20/55-day Turtle breakout levels. Thresholds are provisional."},{"rule_id":"MGR_TURTLE_BREAKOUT_SHORT","source_id":"TURTLE_RULES_TRADINGBLOX","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["3d","7d"],"action":"SHORT","status":"shadow","conditions":[{"field":"trend","op":"<","value":-0.03},{"field":"ret_168h","op":"<","value":0.0},{"field":"rv","op":"<","value":0.09}],"prior_weight":0.045,"hypothesis":"A sufficiently strong negative trend with negative medium-horizon return and non-extreme volatility may proxy a downside breakout/trend-following state.","mechanism":"Breakout systems seek persistent directional moves while normalizing risk by volatility.","formalization_note":"VERITAS symmetric proxy only; exact Turtle breakout and N-sizing data are not yet encoded. Thresholds are provisional."},{"rule_id":"MGR_KOVNER_CORRELATION_GOV","source_id":"KOVNER_TURTLETRADER_PROFILE","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Highly correlated positions must be aggregated into a common risk bucket rather than treated as independent bets.","mechanism":"Correlation can turn multiple nominal positions into one concentrated economic exposure.","formalization_note":"Secondary-source governance rule; requires direct portfolio correlation engine before enforcement."},{"rule_id":"MGR_KOVNER_UNDERTRADE_GOV","source_id":"KOVNER_TURTLETRADER_PROFILE","agent":"RISK","asset_scope":["BTC","ETH"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"When model uncertainty is high, exposure should be reduced rather than kept at a mechanically fixed target.","mechanism":"Under-trading reduces the probability that model error or misunderstood risk causes outsized loss.","formalization_note":"Secondary-source governance abstraction; no directional influence."}]''')
-MANAGER_CORPUS_VERSION = 'public-managers-v2-2026-09-21'
+MANAGER_PUBLIC_SOURCES = json.loads(r'''[{"source_id":"DALIO_BIG_DEBT_CRISIS_PUBLIC","title":"Principles for Navigating Big Debt Crises","authors":"Ray Dalio","year":2018,"source_type":"manager_public_material","url":"https://www.principles.com/big-debt-crises/","evidence_grade":"C","claim":"Dalio presents a recurring debt-cycle framework in which credit expansions and contractions shape macroeconomic and market cycles."},{"source_id":"DALIO_ECONOMIC_MACHINE_PUBLIC","title":"How the Economic Machine Works / Debt Cycles","authors":"Ray Dalio","year":2017,"source_type":"manager_public_material","url":"https://ep.stg40.principles.com/downloads/ray_dalio__how_the_economic_machine_works__leveragings_and_deleveragings.pdf","evidence_grade":"C","claim":"Dalio frames credit growth, income, spending and deleveraging as interacting drivers of cyclical macro conditions."},{"source_id":"MARKS_TAKING_TEMPERATURE_2023","title":"Taking the Temperature","authors":"Howard Marks","year":2023,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/insights/memo/taking-the-temperature","evidence_grade":"C","claim":"Marks emphasizes changing risk posture mainly when markets reach unusually euphoric or depressed extremes rather than relying on frequent macro calls."},{"source_id":"MARKS_BUBBLE_WATCH_2025","title":"On Bubble Watch","authors":"Howard Marks","year":2025,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/insights/memo/on-bubble-watch","evidence_grade":"C","claim":"Marks describes bubbles as requiring more than elevated valuations; extreme investor psychology and behavior are central to his assessment."},{"source_id":"MARKS_BEST_OF_2025","title":"The Best of ...","authors":"Howard Marks","year":2025,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/insights/memo/the-best-of","evidence_grade":"C","claim":"Marks highlights second-level thinking, risk control, cycles and the limits of macro forecasting as enduring parts of his investment framework."},{"source_id":"BUFFETT_OWNERS_MANUAL_1996","title":"Berkshire Hathaway Owner's Manual","authors":"Warren E. Buffett; Charles T. Munger","year":1996,"source_type":"manager_public_material","url":"https://www.berkshirehathaway.com/1996ar/manual.html","evidence_grade":"C","claim":"Buffett and Munger set out Berkshire's operating and capital-allocation principles, including long-term ownership orientation and economic-value thinking."},{"source_id":"BUFFETT_LETTERS_ARCHIVE","title":"Berkshire Hathaway Shareholder Letters Archive","authors":"Warren E. Buffett","year":2025,"source_type":"manager_letters_archive","url":"https://www.berkshirehathaway.com/letters/letters.html","evidence_grade":"C","claim":"The Berkshire letters provide a long-running primary-source record of Buffett's views on valuation, business quality, capital allocation, risk and market behavior."},{"source_id":"MUNGER_WESCO_LETTERS_ARCHIVE","title":"Wesco Financial Letters to Shareholders","authors":"Charles T. Munger","year":2009,"source_type":"manager_letters_archive","url":"https://www.berkshirehathaway.com/wesco/WescoHome.html","evidence_grade":"C","claim":"Munger's Wesco letters provide primary-source material on rational capital allocation, incentives, business quality and risk."},{"source_id":"SOROS_REFLEXIVITY_TRANSCRIPT","title":"General Theory of Reflexivity - Transcript","authors":"George Soros","year":2010,"source_type":"manager_public_lecture","url":"https://www.opensocietyfoundations.org/uploads/9ae17912-2262-4646-8ffc-d01afc934c36/george-soros-general-theory-of-reflexivity-transcript.pdf","evidence_grade":"C","claim":"Soros argues that market participants' biased perceptions can interact with fundamentals, creating self-reinforcing and self-defeating feedback processes."},{"source_id":"SOROS_FINANCIAL_MARKETS_TRANSCRIPT","title":"Financial Markets - Transcript","authors":"George Soros","year":2012,"source_type":"manager_public_lecture","url":"https://www.opensocietyfoundations.org/uploads/2b96bb8c-e2e1-4d88-9eea-badf16d0a2b8/george-soros-financial-markets-transcript.pdf","evidence_grade":"C","claim":"Soros applies reflexivity to financial markets and discusses how mispricing can influence fundamentals rather than remaining a passive reflection of them."},{"source_id":"SEYKOTA_SIMPLE_SYSTEM_PUBLIC","title":"A Simple Trading System - Support and Resistance","authors":"Ed Seykota","year":2000,"source_type":"trader_public_material","url":"https://www.tradingtribe.com/tribe/TSP/SR/index.htm","evidence_grade":"C","claim":"Seykota presents a simple systematic trading example and stresses that simple systems can be competitive with more complex systems."},{"source_id":"SEYKOTA_TREND_BACKTEST_2017","title":"Ed Seykota FAQ - Trend Definitions and Backtesting","authors":"Ed Seykota","year":2017,"source_type":"trader_public_material","url":"https://www.tradingtribe.com/TT/2017/Apr/01-30/default.html","evidence_grade":"C","claim":"Seykota stresses that trend definitions depend on timeframe and should be tested in the context of a complete trading system."},{"source_id":"SEYKOTA_TECHNICAL_TOOLS","title":"Ed Seykota Of Technical Tools","authors":"Ed Seykota","year":1992,"source_type":"trader_interview_reprint","url":"https://www.tradingtribe.com/TT/2015/Oct/01-10/ed-seykota-of-technical-tools.pdf","evidence_grade":"C","claim":"Seykota describes trend-oriented trading, pre-defined stop points and money-management discipline."},{"source_id":"SIMONS_FOUNDATION_INTERVIEW_2012","title":"Jim Simons on His Career in Mathematics","authors":"Jim Simons","year":2012,"source_type":"manager_public_interview","url":"https://www.simonsfoundation.org/2012/09/28/simons-foundation-chair-jim-simons-on-his-career-in-mathematics/","evidence_grade":"C","claim":"Simons describes moving from discretionary finance toward mathematical modeling, data collection, computers and recruiting strong quantitative researchers."},{"source_id":"MAN_AHL_SPEED_TREND","title":"The Need for Speed in Trend-Following Strategies","authors":"Man AHL","year":2023,"source_type":"institutional_manager_research","url":"https://www.man.com/insights/need-for-speed-trend-following","evidence_grade":"B","claim":"Man AHL describes multi-speed trend systems, volatility scaling and diversification across markets and horizons as core systematic design choices."},{"source_id":"MAN_AHL_DRAWDOWNS_2025","title":"Trend Following and Drawdowns: Is This Time Different?","authors":"Russell Korgaonkar; Man AHL","year":2025,"source_type":"institutional_manager_research","url":"https://www.man.com/insights/is-this-time-different","evidence_grade":"B","claim":"Man AHL argues that trend-following drawdowns should be evaluated against long-run distributions, crowding and opportunity sets rather than treated as immediate evidence of strategy failure."},{"source_id":"AQR_VALUE_MOMENTUM","title":"Value and Momentum Everywhere","authors":"Cliff Asness; Tobias Moskowitz; Lasse Pedersen","year":2013,"source_type":"institutional_manager_research","url":"https://www.aqr.com/Insights/Research/Journal-Article/Value-and-Momentum-Everywhere","evidence_grade":"A","claim":"AQR documents value and momentum premia across multiple asset classes and finds common factor structure across markets."},{"source_id":"DRUCKENMILLER_BLOOMBERG_2018","title":"Stanley Druckenmiller on Economy, Stocks, Bonds, Fed - Full Interview","authors":"Stanley Druckenmiller; Bloomberg Television","year":2018,"source_type":"verified_media_interview","url":"https://www.youtube.com/watch?v=9kH01CNISeQ","evidence_grade":"C","claim":"Druckenmiller discusses cross-asset positioning and the importance of liquidity, monetary policy and changing financial conditions in macro investing."},{"source_id":"PTJ_BLOOMBERG_2025","title":"Bloomberg Talks: Paul Tudor Jones","authors":"Paul Tudor Jones; Bloomberg","year":2025,"source_type":"verified_media_interview","url":"https://www.bloomberg.com/news/audio/2025-06-11/bloomberg-talks-paul-tudor-jones-podcast","evidence_grade":"C","claim":"Jones discusses macro policy, markets and portfolio risks in a verified Bloomberg interview."},{"source_id":"DENNIS_TURTLE_PUBLIC_SUMMARY","title":"The Original Turtle Trading Rules - public summary","authors":"Richard Dennis; William Eckhardt; TurtleTrader","year":1983,"source_type":"public_method_summary","url":"https://www.turtletrader.com/rules/","evidence_grade":"D","claim":"The public Turtle methodology is a complete systematic trend-following framework covering market selection, volatility-based position sizing, breakouts, stops and exits."},{"source_id":"LIVERMORE_REMINISCENCES_1923","title":"Reminiscences of a Stock Operator","authors":"Edwin Lefevre; based on Jesse Livermore","year":1923,"source_type":"public_domain_classic","url":"https://openlibrary.org/books/OL3321811M/Reminiscences_of_a_stock_operator","evidence_grade":"D","claim":"The classic fictionalized account based on Livermore's career documents enduring themes of speculation, trend participation, patience, leverage and trading psychology."},{"source_id":"THORP_KELLY_OFFICIAL","title":"The Kelly Capital Growth Investment Criterion","authors":"Edward O. Thorp","year":2010,"source_type":"manager_official_material","url":"https://www.edwardothorp.com/books/kelly-capital-growth-investment-criterion/","evidence_grade":"B","claim":"Thorp describes Kelly-style capital allocation as maximizing long-run growth while recognizing substantial short-run drawdown risk, with fractional Kelly as a way to trade some growth for lower risk."},{"source_id":"THORP_FAQ_KELLY","title":"Edward O. Thorp FAQ - Fortune's Formula / Kelly Criterion","authors":"Edward O. Thorp","year":2026,"source_type":"manager_official_material","url":"https://www.edwardothorp.com/faq/","evidence_grade":"B","claim":"Thorp explains the Kelly criterion as linking bet size to edge and odds rather than using fixed stakes."},{"source_id":"THORP_ARTICLES_ARCHIVE","title":"Edward O. Thorp - Mathematical Finance Articles","authors":"Edward O. Thorp","year":2026,"source_type":"manager_official_archive","url":"https://www.edwardothorp.com/articles/","evidence_grade":"B","claim":"Thorp's official archive includes work on Kelly sizing, quantitative finance, volatility and market-beating models."},{"source_id":"MARKS_CANT_PREDICT_PREPARE_2001","title":"You Can't Predict. You Can Prepare.","authors":"Howard Marks","year":2001,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/docs/default-source/memos/2001-11-20-you-cant-predict-you-can-prepare.pdf","evidence_grade":"C","claim":"Marks argues that investors should focus on understanding where they are in a cycle and preparing for a range of outcomes rather than relying on precise economic forecasts."},{"source_id":"MARKS_RETURNS_RISK_2006","title":"Returns, Absolute Returns and Risk","authors":"Howard Marks","year":2006,"source_type":"manager_memo","url":"https://www.oaktreecapital.com/insights/memo/returns-absolute-returns-and-risk","evidence_grade":"C","claim":"Marks emphasizes that investment results cannot be evaluated without considering the risk taken to achieve them."},{"source_id":"TURTLE_RULES_TRADINGBLOX","title":"The Original Turtle Rules","authors":"Original Turtles; Trading Blox","year":2004,"source_type":"public_method_document","url":"https://tradingblox.com/originalturtles/originalturtlerules.htm","evidence_grade":"C","claim":"The public Turtle rules document breakout entries, volatility-based position sizing, predefined exits, pyramiding and portfolio-level correlation limits."},{"source_id":"KOVNER_TURTLETRADER_PROFILE","title":"Bruce Kovner - Risk Management and Trading Framework","authors":"Bruce Kovner; TurtleTrader summary","year":2026,"source_type":"secondary_public_profile","url":"https://www.turtletrader.com/trader-kovner/","evidence_grade":"D","claim":"A public profile attributes to Kovner strong emphasis on under-trading, understanding downside scenarios and treating correlated positions as one aggregate risk."},{"source_id":"BW_ALL_WEATHER_2012","title":"The All Weather Story","authors":"Bridgewater Associates; Ray Dalio; Bob Prince","year":2012,"source_type":"manager_official_research","url":"https://www.bridgewater.com/research-and-insights/the-all-weather-story","evidence_grade":"B","claim":"Bridgewater describes balancing portfolio risk across growth and inflation environments rather than allowing equity beta to dominate total portfolio risk."},{"source_id":"BW_NEW_WORLD_2025","title":"Investing in a New World: Capturing Opportunity and Weathering Uncertainty","authors":"Bridgewater Associates","year":2025,"source_type":"manager_official_research","url":"https://www.bridgewater.com/research-and-insights/investing-in-a-new-world-capturing-opportunity-and-weathering-uncertainty","evidence_grade":"B","claim":"Bridgewater argues for portfolio resilience across a wide range of economic outcomes instead of relying on a single forecast."},{"source_id":"BW_FOUNDER_PROCESS","title":"Our Founder - Investment Process","authors":"Ray Dalio; Bridgewater Associates","year":2026,"source_type":"manager_official_process","url":"https://www.bridgewater.com/our-founder","evidence_grade":"B","claim":"Bridgewater describes studying many historical cases, expressing principles algorithmically, backtesting them across markets and combining human and computerized decision processes."},{"source_id":"GMO_GRANTHAM_MELTUP_2018","title":"Bracing Yourself for a Possible Near-Term Melt-Up","authors":"Jeremy Grantham","year":2018,"source_type":"manager_official_viewpoint","url":"https://www.gmo.com/asia/research-library/bracing-yourself-for-a-possible-near-term-melt-up_viewpoints/","evidence_grade":"C","claim":"Grantham distinguishes high valuation from the timing of a bubble break and emphasizes euphoria and late-stage acceleration."},{"source_id":"GMO_GRANTHAM_LAST_DANCE_2021","title":"Waiting for the Last Dance","authors":"Jeremy Grantham","year":2021,"source_type":"manager_official_viewpoint","url":"https://www.gmo.com/globalassets/articles/viewpoints/2021/waiting-for-the-last-dance_1-2021.pdf","evidence_grade":"C","claim":"Grantham describes broad speculation and accelerating gains as recurring late-stage bubble characteristics."},{"source_id":"GMO_GRANTHAM_SUPERBUBBLE_2022","title":"Entering the Superbubble's Final Act","authors":"Jeremy Grantham","year":2022,"source_type":"manager_official_viewpoint","url":"https://www.gmo.com/globalassets/articles/viewpoints/2022/gmo_entering-the-superbubbles-final-act_8-22.pdf","evidence_grade":"C","claim":"Grantham treats extreme bubbles as distinct regimes and warns that strong bear-market rallies can occur before fundamentals fully deteriorate."},{"source_id":"GMO_GRANTHAM_AI_2026","title":"Valuing AI: Extreme Bubble, New Golden Era, or Both","authors":"Jeremy Grantham","year":2026,"source_type":"manager_official_viewpoint","url":"https://www.gmo.com/asia/research-library/valuing-ai-extreme-bubble-new-golden-era-or-both_viewpoints/","evidence_grade":"C","claim":"Grantham argues that transformative technology and an investment bubble can coexist."},{"source_id":"AQR_ILMANEN_EXPECTED_RET_2012","title":"Understanding Expected Returns","authors":"Antti Ilmanen","year":2012,"source_type":"manager_research","url":"https://www.aqr.com/Insights/Research/Journal-Article/Understanding-Expected-Returns","evidence_grade":"B","claim":"Ilmanen emphasizes time-varying expected returns and diversification across value, carry, momentum, volatility and liquidity styles."},{"source_id":"AQR_ILMANEN_HIST_EXP_RET_2017","title":"A Historical Perspective on Time-Varying Expected Returns","authors":"Antti Ilmanen","year":2017,"source_type":"manager_research","url":"https://www.aqr.com/Insights/Research/Journal-Article/A-Historical-Perspective-on-Time-Varying-Expected-Returns","evidence_grade":"B","claim":"Ilmanen argues that expected returns vary through time but market timing from real-time indicators remains difficult."},{"source_id":"AQR_ILMANEN_FORM_EXPECT_2025","title":"How Do Investors Form Long-Run Return Expectations?","authors":"Antti Ilmanen","year":2025,"source_type":"manager_research","url":"https://www.aqr.com/Insights/Research/White-Papers/How-Do-Investors-Form-Long-Run-Return-Expectations","evidence_grade":"B","claim":"Ilmanen contrasts objective yield-based expectations with subjective expectations that can extrapolate past returns too aggressively."},{"source_id":"AQR_ILMANEN_OBJECTIVE_2025","title":"Equity Market Focus: Objective Expected Returns","authors":"Antti Ilmanen; Thomas Maloney","year":2025,"source_type":"manager_research","url":"https://www.aqr.com/insights/research/white-papers/equity-market-focus-objective-expected-returns","evidence_grade":"B","claim":"AQR treats valuation- or yield-based expected-return estimates as a useful starting point while warning their predictive record can be overstated."},{"source_id":"AQR_ILMANEN_SUBJECTIVE_2025","title":"Equity Market Focus: Subjective Expected Returns","authors":"Antti Ilmanen","year":2025,"source_type":"manager_research","url":"https://www.aqr.com/insights/research/white-papers/equity-market-focus-subjective-expected-returns","evidence_grade":"B","claim":"Survey-based return expectations can exhibit over-extrapolation and optimism."},{"source_id":"AQR_INVESTING_STYLE_2015","title":"Investing with Style","authors":"Cliff Asness; Antti Ilmanen; Ronen Israel; Tobias Moskowitz","year":2015,"source_type":"manager_research","url":"https://www.aqr.com/Insights/Research/Journal-Article/Investing-With-Style","evidence_grade":"B","claim":"AQR presents value, momentum, carry and defensive styles as diversified return sources across markets."},{"source_id":"AQR_FACTOR_TIMING_2018","title":"Contrarian Factor Timing Is Deceptively Difficult","authors":"Cliff Asness; Swati Chandra; Antti Ilmanen; Ronen Israel","year":2018,"source_type":"manager_research","url":"https://www.aqr.com/Insights/Research/Journal-Article/Contrarian-Factor-Timing-is-Deceptively-Difficult-Supplement","evidence_grade":"B","claim":"AQR reports weak evidence that valuation-based timing of established factors reliably improves returns."},{"source_id":"FABER_TAA_2013","title":"A Quantitative Approach to Tactical Asset Allocation - Updated","authors":"Meb Faber","year":2013,"source_type":"manager_public_research","url":"https://mebfaber.com/2013/04/16/quant-approach-to-taa-paper-updated/","evidence_grade":"B","claim":"Faber reports an out-of-sample update of a simple trend-based tactical allocation framework across an expanded asset set."},{"source_id":"FABER_WHITEPAPERS","title":"Meb Faber White Papers","authors":"Meb Faber","year":2026,"source_type":"manager_research_archive","url":"https://mebfaber.com/white-papers/","evidence_grade":"B","claim":"Faber's public research archive includes tactical allocation and relative-strength methods across sectors and global asset classes."},{"source_id":"OSAM_PROCESS","title":"Philosophy & Process","authors":"O'Shaughnessy Asset Management","year":2026,"source_type":"manager_official_process","url":"https://www.osam.com/philosophy.aspx","evidence_grade":"B","claim":"OSAM describes cleaning company data, forming composite factors, ranking securities and managing implementation costs and risk exposures."},{"source_id":"OSAM_Q4_2019","title":"O'Shaughnessy Quarterly Letter Q4 2019","authors":"Jim O'Shaughnessy; O'Shaughnessy Asset Management","year":2019,"source_type":"manager_letter","url":"https://canvas.osam.com/Commentary/BlogPost?Permalink=oshaughnessy-quarterly-letter-q4-2019","evidence_grade":"C","claim":"OSAM discusses interactions among valuation, momentum, fundamental growth and shareholder yield."},{"source_id":"AA_GLOBAL_VMT_2017","title":"The Global Value Momentum Trend Philosophy","authors":"Wesley Gray; Alpha Architect","year":2017,"source_type":"manager_public_research","url":"https://alphaarchitect.com/the-value-momentum-trend-philosophy/","evidence_grade":"B","claim":"Alpha Architect combines value, momentum and trend as differentiated sleeves, using trend as a tail-risk layer."},{"source_id":"AA_VALUE_MOM_2014","title":"Mixing Momentum and Value: A Winning Combination?","authors":"Wesley Gray; Alpha Architect","year":2014,"source_type":"manager_public_research","url":"https://alphaarchitect.com/mixing-momentum-and-value-a-winning-combination/","evidence_grade":"B","claim":"Alpha Architect reviews evidence that integrating value and momentum can improve implementation and reduce transaction costs."},{"source_id":"FUNDSMITH_DOCUMENTS","title":"Fundsmith Owner's Manual and Shareholder Letters","authors":"Terry Smith; Fundsmith","year":2026,"source_type":"manager_official_archive","url":"https://www.fundsmith.co.uk/fsf/documents/","evidence_grade":"C","claim":"Fundsmith publishes an owner's manual and letters describing its focus on high-quality businesses, valuation discipline and long holding periods."},{"source_id":"FUNDSMITH_2025_LETTER","title":"Fundsmith 2025 Annual Letter","authors":"Terry Smith","year":2025,"source_type":"manager_letter","url":"https://www.fundsmith.co.uk/media/5ygndq2f/2025-annual-letter.pdf","evidence_grade":"C","claim":"Smith reiterates preference for conservatively financed businesses with strong returns on capital and durable economics."},{"source_id":"THIRDPOINT_Q1_2025","title":"Third Point Q1 2025 Investor Letter","authors":"Daniel S. Loeb; Third Point","year":2025,"source_type":"manager_letter","url":"https://assets.thirdpointlimited.com/f/166217/x/bd64805fc1/third-point-q1-2025-investor-letter_tpil.pdf","evidence_grade":"C","claim":"Loeb describes shifting between equities and credit and using cross-capital-structure research depending on the environment."},{"source_id":"OAKMARK_NYGREN_2Q2026","title":"The discipline to stay boring","authors":"William C. Nygren; Oakmark","year":2026,"source_type":"manager_commentary","url":"https://oakmark.com/news-insights/the-discipline-to-stay-boring-u-s-equity-market-commentary-2q-2026/","evidence_grade":"C","claim":"Nygren emphasizes discipline, patience, valuation and a long-term perspective despite narrow market leadership."},{"source_id":"OAKMARK_1Q2025","title":"The S&P 500 has corrected, now what?","authors":"William C. Nygren; Oakmark","year":2025,"source_type":"manager_commentary","url":"https://oakmark.com/news-insights/the-sp-500-has-corrected-now-what-u-s-equity-market-commentary-1q-2025/","evidence_grade":"C","claim":"Oakmark describes using short-term market dislocations to buy businesses at discounts to normalized or intrinsic value."}]''')
+MANAGER_PUBLIC_RULES = json.loads(r'''[{"rule_id":"MGR_DALIO_DEBT_CYCLE_GOV","source_id":"DALIO_BIG_DEBT_CRISIS_PUBLIC","agent":"MACRO","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Macro regime classification should explicitly incorporate credit, liquidity and deleveraging conditions before promoting directional crypto signals.","mechanism":"Credit-cycle transmission can alter discount rates, liquidity and risk appetite.","formalization_note":"Governance rule. Current VERITAS feature set lacks direct credit and liquidity variables; no directional influence until those data are added."},{"rule_id":"MGR_DALIO_MACHINE_GOV","source_id":"DALIO_ECONOMIC_MACHINE_PUBLIC","agent":"MACRO","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"VERITAS should model changes in monetary conditions, income/spending dynamics and leverage as regime variables rather than treating price action in isolation.","mechanism":"Macro cycles emerge from interactions among credit, spending, income and policy.","formalization_note":"Governance only; requires additional macro features."},{"rule_id":"MGR_MARKS_EXTREMES_GOV","source_id":"MARKS_TAKING_TEMPERATURE_2023","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Large changes in portfolio aggressiveness should require evidence of unusually extreme market conditions rather than ordinary forecasting noise.","mechanism":"Risk/reward asymmetry can become most pronounced at sentiment and valuation extremes.","formalization_note":"Governance only; sentiment/valuation variables are not yet in the live feature set."},{"rule_id":"MGR_MARKS_BUBBLE_GOV","source_id":"MARKS_BUBBLE_WATCH_2025","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"High price levels alone should not trigger a bubble label; investor behavior and psychology require separate evidence.","mechanism":"Bubbles combine price/valuation conditions with extreme psychology and behavior.","formalization_note":"Governance only; prevents simplistic overvaluation-to-short mappings."},{"rule_id":"MGR_MARKS_SECOND_LEVEL_GOV","source_id":"MARKS_BEST_OF_2025","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"VERITAS should distinguish first-order observations from second-order implications and explicitly penalize crowded consensus signals.","mechanism":"Investment outcomes depend on expectations relative to reality, not reality alone.","formalization_note":"Governance only until positioning/crowding features are robust."},{"rule_id":"MGR_BUFFETT_VALUE_GOV","source_id":"BUFFETT_OWNERS_MANUAL_1996","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"A long-term investment decision should distinguish economic value from price and should not be justified solely by recent price appreciation.","mechanism":"Price and economic value can diverge materially.","formalization_note":"Governance only; crypto fundamental valuation framework is not yet implemented."},{"rule_id":"MGR_MUNGER_MULTIMODEL_GOV","source_id":"MUNGER_WESCO_LETTERS_ARCHIVE","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"VERITAS should require multiple independent explanatory lenses before raising conviction when one-factor explanations are fragile.","mechanism":"Robust decisions benefit from cross-checking incentives, economics, behavior and risk.","formalization_note":"Governance abstraction from Munger's public investment framework; no direct directional rule."},{"rule_id":"MGR_SOROS_REFLEXIVE_LONG","source_id":"SOROS_REFLEXIVITY_TRANSCRIPT","agent":"TECH_FLOW","asset_scope":["BTC","ETH"],"horizons":["1d","3d"],"action":"LONG","status":"shadow","conditions":[{"field":"trend","op":">","value":0.025},{"field":"momentum","op":">","value":0.0},{"field":"volume_ratio","op":">","value":1.15}],"prior_weight":0.025,"hypothesis":"A positive price trend reinforced by positive momentum and expanding activity may represent a self-reinforcing reflexive phase.","mechanism":"Price changes can influence beliefs and behavior, which can feed back into further price changes.","formalization_note":"VERITAS provisional proxy for reflexivity; thresholds are adaptations and not a verbatim Soros trading rule."},{"rule_id":"MGR_SOROS_REFLEXIVE_SHORT","source_id":"SOROS_REFLEXIVITY_TRANSCRIPT","agent":"TECH_FLOW","asset_scope":["BTC","ETH"],"horizons":["1d","3d"],"action":"SHORT","status":"shadow","conditions":[{"field":"trend","op":"<","value":-0.025},{"field":"momentum","op":"<","value":0.0},{"field":"volume_ratio","op":">","value":1.15}],"prior_weight":0.025,"hypothesis":"A negative price trend reinforced by negative momentum and expanding activity may represent a self-reinforcing reflexive phase.","mechanism":"Price changes can influence beliefs and behavior, which can feed back into further price changes.","formalization_note":"VERITAS provisional symmetric proxy for reflexivity; thresholds are adaptations and not a verbatim Soros trading rule."},{"rule_id":"MGR_SOROS_REFLEXIVITY_GOV","source_id":"SOROS_FINANCIAL_MARKETS_TRANSCRIPT","agent":"MACRO","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Causal analysis should allow price moves to influence subsequent fundamentals, positioning and policy responses instead of assuming a one-way fundamentals-to-price channel.","mechanism":"Reflexive feedback between perceptions and fundamentals.","formalization_note":"Governance rule for causal-chain construction."},{"rule_id":"MGR_SEYKOTA_TREND_LONG","source_id":"SEYKOTA_TREND_BACKTEST_2017","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"LONG","status":"shadow","conditions":[{"field":"trend","op":">","value":0.02},{"field":"momentum","op":">","value":0.0}],"prior_weight":0.05,"hypothesis":"A clearly positive trend definition confirmed by momentum may support continuation when tested as part of a complete system.","mechanism":"Trend persistence and disciplined systematic execution.","formalization_note":"Thresholds are VERITAS provisional adaptations; Seykota stresses system-level testing rather than this exact formula."},{"rule_id":"MGR_SEYKOTA_TREND_SHORT","source_id":"SEYKOTA_TREND_BACKTEST_2017","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"SHORT","status":"shadow","conditions":[{"field":"trend","op":"<","value":-0.02},{"field":"momentum","op":"<","value":0.0}],"prior_weight":0.05,"hypothesis":"A clearly negative trend definition confirmed by momentum may support downside continuation when tested as part of a complete system.","mechanism":"Trend persistence and disciplined systematic execution.","formalization_note":"Thresholds are VERITAS provisional symmetric adaptations; not a verbatim Seykota rule."},{"rule_id":"MGR_SEYKOTA_SIMPLE_SYSTEM_GOV","source_id":"SEYKOTA_SIMPLE_SYSTEM_PUBLIC","agent":"QUANT","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Complexity should not be rewarded unless it materially improves out-of-sample performance over a simpler benchmark.","mechanism":"Simple systems can avoid overfitting and hidden fragility.","formalization_note":"Governance rule for model selection and anti-overfitting."},{"rule_id":"MGR_SEYKOTA_STOP_GOV","source_id":"SEYKOTA_TECHNICAL_TOOLS","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Every directional decision should define invalidation before entry and position sizing should be compatible with that invalidation.","mechanism":"Pre-defined loss control prevents a single thesis from becoming an uncontrolled portfolio loss.","formalization_note":"Governance only; explicit stop-distance engine is not yet in v1.7."},{"rule_id":"MGR_SIMONS_DATA_GOV","source_id":"SIMONS_FOUNDATION_INTERVIEW_2012","agent":"QUANT","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"New predictors should originate from data, be encoded quantitatively and survive independent validation before they influence capital allocation.","mechanism":"Systematic discovery plus statistical validation can reduce reliance on narrative discretion.","formalization_note":"Governance abstraction from Simons' public description of model-driven research; no claim about proprietary Renaissance signals."},{"rule_id":"MGR_MAN_MULTI_SPEED_LONG","source_id":"MAN_AHL_SPEED_TREND","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"LONG","status":"shadow","conditions":[{"field":"ret_24h","op":">","value":0.0},{"field":"ret_168h","op":">","value":0.0},{"field":"trend","op":">","value":0.0}],"prior_weight":0.04,"hypothesis":"Agreement between short- and medium-horizon returns with the prevailing trend may improve robustness versus a single-speed trend signal.","mechanism":"Diversification across trend speeds can reduce dependence on one lookback horizon.","formalization_note":"VERITAS provisional multi-speed adaptation; thresholds are intentionally minimal and require out-of-sample validation."},{"rule_id":"MGR_MAN_MULTI_SPEED_SHORT","source_id":"MAN_AHL_SPEED_TREND","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["1d","3d","7d"],"action":"SHORT","status":"shadow","conditions":[{"field":"ret_24h","op":"<","value":0.0},{"field":"ret_168h","op":"<","value":0.0},{"field":"trend","op":"<","value":0.0}],"prior_weight":0.04,"hypothesis":"Agreement between short- and medium-horizon downside returns with the prevailing trend may improve robustness versus a single-speed trend signal.","mechanism":"Diversification across trend speeds can reduce dependence on one lookback horizon.","formalization_note":"VERITAS provisional symmetric multi-speed adaptation; requires out-of-sample validation."},{"rule_id":"MGR_MAN_DRAWDOWN_GOV","source_id":"MAN_AHL_DRAWDOWNS_2025","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"A recent strategy drawdown should not by itself trigger abandonment; evaluate it against expected distribution, crowding and structural-decay evidence.","mechanism":"Valid strategies can experience clustered losses and regime-dependent drawdowns.","formalization_note":"Governance only for strategy-retirement decisions."},{"rule_id":"MGR_AQR_MOMENTUM_LONG","source_id":"AQR_VALUE_MOMENTUM","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["7d"],"action":"LONG","status":"shadow","conditions":[{"field":"ret_168h","op":">","value":0.03},{"field":"trend","op":">","value":0.0}],"prior_weight":0.025,"hypothesis":"Cross-asset evidence for momentum modestly raises the prior for continuation when crypto has positive medium-horizon return and trend.","mechanism":"Common momentum structure across asset classes.","formalization_note":"Cross-asset adaptation to crypto; 3% threshold and 7d mapping are provisional VERITAS choices."},{"rule_id":"MGR_DRUCKENMILLER_LIQUIDITY_GOV","source_id":"DRUCKENMILLER_BLOOMBERG_2018","agent":"MACRO","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Macro allocation should explicitly track changes in monetary liquidity and financial conditions rather than relying only on static valuation or economic narratives.","mechanism":"Liquidity conditions can transmit across bonds, currencies, equities and other risk assets.","formalization_note":"Governance only; direct liquidity variables need to be added before directional use."},{"rule_id":"MGR_PTJ_CONCENTRATION_GOV","source_id":"PTJ_BLOOMBERG_2025","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"Portfolio risk should explicitly account for concentration and correlated exposures rather than assessing each position independently.","mechanism":"Concentrated ownership and common macro drivers can amplify drawdowns.","formalization_note":"Governance abstraction from verified public interview; no direct directional rule."},{"rule_id":"MGR_TURTLE_COMPLETE_SYSTEM_GOV","source_id":"DENNIS_TURTLE_PUBLIC_SUMMARY","agent":"QUANT","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"A tradable strategy must define universe, position sizing, entry, stop, exit and execution as one coherent system before it is evaluated.","mechanism":"Complete rule systems reduce discretionary inconsistency and make risk measurable.","formalization_note":"Governance rule from a public historical summary; the original breakout rules are not mapped to live decisions until breakout and ATR-normalized sizing features are added."},{"rule_id":"MGR_LIVERMORE_CLASSIC_GOV","source_id":"LIVERMORE_REMINISCENCES_1923","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0,"hypothesis":"VERITAS should separately measure thesis quality, execution discipline and leverage because a sound directional idea can still fail through poor sizing or timing.","mechanism":"Trading outcomes are jointly determined by signal, sizing, patience and execution.","formalization_note":"Governance abstraction from a public-domain classic based on Livermore's career; not a verbatim rule."},{"rule_id":"MGR_THORP_FRACTIONAL_KELLY_GOV","source_id":"THORP_KELLY_OFFICIAL","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Position sizing should be a function of estimated edge and uncertainty, and live sizing should remain below full Kelly while probability estimates are imperfect.","mechanism":"Growth-optimal sizing links exposure to edge but full Kelly can generate severe drawdowns.","formalization_note":"Governance only until VERITAS probabilities are demonstrably calibrated; no live Kelly sizing."},{"rule_id":"MGR_THORP_EDGE_ODDS_GOV","source_id":"THORP_FAQ_KELLY","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"A fixed position size should not be used when estimated edge differs materially across setups; sizing must depend on both edge and payoff asymmetry.","mechanism":"Optimal capital allocation depends on the magnitude of edge and odds.","formalization_note":"Governance rule; requires calibrated payoff distribution and transaction-cost model."},{"rule_id":"MGR_MARKS_CYCLE_LOCATION_GOV","source_id":"MARKS_CANT_PREDICT_PREPARE_2001","agent":"MACRO","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"VERITAS should distinguish cycle-state estimation from point forecasting and should express uncertainty when timing is weak.","mechanism":"Knowing the current regime can be decision-useful even when exact future path is not forecastable.","formalization_note":"Governance only; future regime engine should implement this distinction explicitly."},{"rule_id":"MGR_MARKS_RISK_ADJUSTED_GOV","source_id":"MARKS_RETURNS_RISK_2006","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Rules should not be promoted on raw hit rate or return alone; promotion must include drawdown, MAE, MFE and risk-adjusted performance.","mechanism":"Return without the associated risk exposure is an incomplete measure of investment quality.","formalization_note":"Governance rule for Knowledge Factory promotion/demotion."},{"rule_id":"MGR_TURTLE_BREAKOUT_LONG","source_id":"TURTLE_RULES_TRADINGBLOX","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["3d","7d"],"action":"LONG","status":"shadow","conditions":[{"field":"trend","op":">","value":0.03},{"field":"ret_168h","op":">","value":0.0},{"field":"rv","op":"<","value":0.09}],"prior_weight":0.045,"hypothesis":"A sufficiently strong positive trend with positive medium-horizon return and non-extreme volatility may proxy a breakout/trend-following state.","mechanism":"Breakout systems seek persistent directional moves while normalizing risk by volatility.","formalization_note":"VERITAS proxy only; current features do not yet encode exact 20/55-day Turtle breakout levels. Thresholds are provisional."},{"rule_id":"MGR_TURTLE_BREAKOUT_SHORT","source_id":"TURTLE_RULES_TRADINGBLOX","agent":"QUANT","asset_scope":["BTC","ETH"],"horizons":["3d","7d"],"action":"SHORT","status":"shadow","conditions":[{"field":"trend","op":"<","value":-0.03},{"field":"ret_168h","op":"<","value":0.0},{"field":"rv","op":"<","value":0.09}],"prior_weight":0.045,"hypothesis":"A sufficiently strong negative trend with negative medium-horizon return and non-extreme volatility may proxy a downside breakout/trend-following state.","mechanism":"Breakout systems seek persistent directional moves while normalizing risk by volatility.","formalization_note":"VERITAS symmetric proxy only; exact Turtle breakout and N-sizing data are not yet encoded. Thresholds are provisional."},{"rule_id":"MGR_KOVNER_CORRELATION_GOV","source_id":"KOVNER_TURTLETRADER_PROFILE","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Highly correlated positions must be aggregated into a common risk bucket rather than treated as independent bets.","mechanism":"Correlation can turn multiple nominal positions into one concentrated economic exposure.","formalization_note":"Secondary-source governance rule; requires direct portfolio correlation engine before enforcement."},{"rule_id":"MGR_KOVNER_UNDERTRADE_GOV","source_id":"KOVNER_TURTLETRADER_PROFILE","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"When model uncertainty is high, exposure should be reduced rather than kept at a mechanically fixed target.","mechanism":"Under-trading reduces the probability that model error or misunderstood risk causes outsized loss.","formalization_note":"Secondary-source governance abstraction; no directional influence."},{"rule_id":"MGR_BW_RISK_BALANCE_GOV","source_id":"BW_ALL_WEATHER_2012","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Portfolio risk should be balanced across fundamentally different macro sensitivities rather than letting the highest-volatility asset dominate total risk.","mechanism":"Equal capital weights do not imply equal risk.","formalization_note":"Governance only."},{"rule_id":"MGR_BW_GROWTH_INFLATION_GOV","source_id":"BW_ALL_WEATHER_2012","agent":"MACRO","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Macro regime classification should explicitly distinguish growth surprises from inflation surprises.","mechanism":"Assets respond differently to growth and inflation environments.","formalization_note":"Governance until surprise feeds are implemented."},{"rule_id":"MGR_BW_SYSTEMATIZE_GOV","source_id":"BW_FOUNDER_PROCESS","agent":"QUANT","asset_scope":["BTC","ETH","NDX"],"horizons":["4h","1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Repeatable investment principles should be encoded and backtested across many cases before they influence capital.","mechanism":"Systematization improves consistency and auditability.","formalization_note":"Governance rule."},{"rule_id":"MGR_BW_SURPRISE_GOV","source_id":"BW_NEW_WORLD_2025","agent":"MACRO","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"The CIO should distinguish absolute macro conditions from outcomes relative to what markets already discount.","mechanism":"Prices react to surprises versus expectations.","formalization_note":"Governance until expectation data are implemented."},{"rule_id":"MGR_GMO_BUBBLE_MULTI_GOV","source_id":"GMO_GRANTHAM_MELTUP_2018","agent":"RISK","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"High valuation alone should not trigger a short; bubble timing requires independent evidence of euphoria and acceleration.","mechanism":"Late-stage bubbles can continue rising despite extreme valuation.","formalization_note":"Governance only."},{"rule_id":"MGR_GMO_ACCELERATION_GOV","source_id":"GMO_GRANTHAM_LAST_DANCE_2021","agent":"TECH_FLOW","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Broad speculative acceleration should be treated as a distinct late-cycle state rather than ordinary momentum.","mechanism":"Extreme speculative phases can become nonlinear.","formalization_note":"Governance until breadth/speculation features are added."},{"rule_id":"MGR_GMO_BEAR_RALLY_GOV","source_id":"GMO_GRANTHAM_SUPERBUBBLE_2022","agent":"RISK","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"A large rebound after an extreme decline should not automatically be treated as a new bull regime.","mechanism":"Extreme bubbles can produce powerful counter-trend rallies.","formalization_note":"Governance only."},{"rule_id":"MGR_GMO_TECH_BUBBLE_GOV","source_id":"GMO_GRANTHAM_AI_2026","agent":"RISK","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Technological importance and investment attractiveness must be assessed separately.","mechanism":"Real innovation can coexist with overvaluation.","formalization_note":"Governance for AI-heavy index concentration."},{"rule_id":"MGR_ILMANEN_TIMEVARYING_GOV","source_id":"AQR_ILMANEN_EXPECTED_RET_2012","agent":"MACRO","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Expected returns should be allowed to vary by regime rather than assumed constant through time.","mechanism":"Risk premia vary with valuation, carry, trend, volatility and liquidity.","formalization_note":"Governance."},{"rule_id":"MGR_ILMANEN_TIMING_SKEPTIC_GOV","source_id":"AQR_ILMANEN_HIST_EXP_RET_2017","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Time-varying expected returns do not justify aggressive timing unless timing rules survive independent OOS tests.","mechanism":"Predictability can be weak and unstable.","formalization_note":"Governance."},{"rule_id":"MGR_ILMANEN_OBJ_SUBJ_GOV","source_id":"AQR_ILMANEN_FORM_EXPECT_2025","agent":"MACRO","asset_scope":["NDX"],"horizons":["7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Long-run return estimates should separate objective price/yield inputs from subjective survey expectations.","mechanism":"Subjective expectations can extrapolate recent returns.","formalization_note":"Governance."},{"rule_id":"MGR_ILMANEN_VALUATION_GOV","source_id":"AQR_ILMANEN_OBJECTIVE_2025","agent":"MACRO","asset_scope":["NDX"],"horizons":["7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Starting valuation should inform long-run priors but should not be used as a near-term timing signal by itself.","mechanism":"Valuation is more relevant to long-horizon return expectations than precise timing.","formalization_note":"Governance."},{"rule_id":"MGR_ILMANEN_EXTRAP_GOV","source_id":"AQR_ILMANEN_SUBJECTIVE_2025","agent":"RISK","asset_scope":["NDX"],"horizons":["3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Consensus expectations should be discounted when they appear to extrapolate recent performance unusually strongly.","mechanism":"Survey expectations can be rear-view-mirror extrapolations.","formalization_note":"Governance."},{"rule_id":"MGR_AQR_STYLE_DIVERSIFY_GOV","source_id":"AQR_INVESTING_STYLE_2015","agent":"RISK","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"The CIO should diversify across independent styles and avoid double-counting multiple variants of the same style.","mechanism":"Diversified styles can reduce common-factor concentration.","formalization_note":"Governance."},{"rule_id":"MGR_AQR_FACTOR_TIMING_GOV","source_id":"AQR_FACTOR_TIMING_2018","agent":"QUANT","asset_scope":["BTC","ETH","NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Factor valuation should not receive a timing weight without robust incremental OOS evidence.","mechanism":"Contrarian factor timing is difficult.","formalization_note":"Governance."},{"rule_id":"MGR_FABER_NDX_LONG","source_id":"FABER_TAA_2013","agent":"QUANT","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"LONG","status":"shadow","conditions":[{"field":"trend","op":">","value":0.006},{"field":"ret_168h","op":">","value":0.01}],"prior_weight":0.035,"hypothesis":"A positive NDX trend confirmed by medium-horizon return may identify a tactical trend state.","mechanism":"Trend filters can participate in sustained uptrends.","formalization_note":"NDX adaptation; thresholds provisional."},{"rule_id":"MGR_FABER_NDX_SHORT","source_id":"FABER_TAA_2013","agent":"QUANT","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"SHORT","status":"shadow","conditions":[{"field":"trend","op":"<","value":-0.006},{"field":"ret_168h","op":"<","value":-0.01}],"prior_weight":0.035,"hypothesis":"A negative NDX trend confirmed by medium-horizon return may identify a tactical downside state.","mechanism":"Trend filters can identify persistent declines.","formalization_note":"Symmetric NDX adaptation; thresholds provisional."},{"rule_id":"MGR_FABER_SIMPLE_GOV","source_id":"FABER_WHITEPAPERS","agent":"QUANT","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Simple tactical rules should be preferred unless added complexity produces stable OOS gains after costs.","mechanism":"Simplicity can reduce overfit.","formalization_note":"Governance."},{"rule_id":"MGR_OSAM_DATA_GOV","source_id":"OSAM_PROCESS","agent":"QUANT","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Constituent factor research must use point-in-time cleaned and normalized data.","mechanism":"Bad data can create false factor signals.","formalization_note":"Governance."},{"rule_id":"MGR_OSAM_COMPOSITE_GOV","source_id":"OSAM_PROCESS","agent":"QUANT","asset_scope":["NDX"],"horizons":["7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Factor themes such as value or quality should combine multiple complementary measures.","mechanism":"Composite factors reduce dependence on one noisy metric.","formalization_note":"Governance."},{"rule_id":"MGR_OSAM_ROTATION_GOV","source_id":"OSAM_Q4_2019","agent":"RISK","asset_scope":["NDX"],"horizons":["3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Recent factor underperformance should not by itself imply structural death; interactions and regimes must be examined.","mechanism":"Factor leadership rotates over time.","formalization_note":"Governance."},{"rule_id":"MGR_AA_VMT_GOV","source_id":"AA_GLOBAL_VMT_2017","agent":"RISK","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Value, momentum and trend should be treated as separate evidence families rather than counted as independent variants of one signal.","mechanism":"Differentiated styles can diversify.","formalization_note":"Governance."},{"rule_id":"MGR_AA_NDX_LONG","source_id":"AA_GLOBAL_VMT_2017","agent":"QUANT","asset_scope":["NDX"],"horizons":["3d","7d"],"action":"LONG","status":"shadow","conditions":[{"field":"trend","op":">","value":0.008},{"field":"momentum","op":">","value":0.0},{"field":"rv","op":"<","value":0.04}],"prior_weight":0.03,"hypothesis":"Positive NDX trend and momentum in non-extreme volatility may identify a risk-on trend sleeve.","mechanism":"Trend following can adapt exposure to sustained moves.","formalization_note":"NDX proxy; thresholds provisional."},{"rule_id":"MGR_AA_NDX_SHORT","source_id":"AA_GLOBAL_VMT_2017","agent":"QUANT","asset_scope":["NDX"],"horizons":["3d","7d"],"action":"SHORT","status":"shadow","conditions":[{"field":"trend","op":"<","value":-0.008},{"field":"momentum","op":"<","value":0.0},{"field":"rv","op":"<","value":0.04}],"prior_weight":0.03,"hypothesis":"Negative NDX trend and momentum in non-extreme volatility may identify a downside trend sleeve.","mechanism":"Trend following can adapt exposure to sustained declines.","formalization_note":"Symmetric NDX proxy; thresholds provisional."},{"rule_id":"MGR_AA_VALUE_MOM_GOV","source_id":"AA_VALUE_MOM_2014","agent":"QUANT","asset_scope":["NDX"],"horizons":["7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Value and momentum should be tested jointly because separate sleeves can increase turnover and waste conflicting information.","mechanism":"Integrated construction can improve implementation.","formalization_note":"Governance."},{"rule_id":"MGR_FUNDSMITH_QUALITY_GOV","source_id":"FUNDSMITH_DOCUMENTS","agent":"QUANT","asset_scope":["NDX"],"horizons":["7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Long-horizon equity quality should emphasize durable returns on capital, balance-sheet resilience and recurring economics.","mechanism":"Quality businesses can compound value over time.","formalization_note":"Governance until constituent fundamentals are available."},{"rule_id":"MGR_FUNDSMITH_PATIENCE_GOV","source_id":"FUNDSMITH_2025_LETTER","agent":"RISK","asset_scope":["NDX"],"horizons":["7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"A quality thesis should not be invalidated solely by short-term price volatility when fundamentals remain intact.","mechanism":"Business compounding and short-term price volatility differ.","formalization_note":"Governance; never overrides hard risk limits."},{"rule_id":"MGR_THIRDPOINT_CAPSTRUCT_GOV","source_id":"THIRDPOINT_Q1_2025","agent":"MACRO","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Equity analysis should incorporate information from issuer credit and capital structure when stress is material.","mechanism":"Credit can reveal balance-sheet risk not visible in equity price alone.","formalization_note":"Governance until credit feeds exist."},{"rule_id":"MGR_OAKMARK_VALUE_GOV","source_id":"OAKMARK_1Q2025","agent":"QUANT","asset_scope":["NDX"],"horizons":["7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Equity selection should compare market price with normalized intrinsic value rather than extrapolate recent price performance.","mechanism":"Temporary dislocations can create gaps between price and business value.","formalization_note":"Governance until valuation model exists."},{"rule_id":"MGR_OAKMARK_PATIENCE_GOV","source_id":"OAKMARK_NYGREN_2Q2026","agent":"RISK","asset_scope":["NDX"],"horizons":["3d","7d"],"action":"VALIDATION_ONLY","status":"governance","conditions":[],"prior_weight":0.0,"hypothesis":"Long-horizon valuation discipline should not be abandoned because narrow market leadership temporarily favors expensive segments.","mechanism":"Relative valuation can take time to mean-revert.","formalization_note":"Governance."},{"rule_id":"MGR_SEYKOTA_NDX_LONG","source_id":"SEYKOTA_TREND_BACKTEST_2017","agent":"QUANT","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"LONG","status":"shadow","conditions":[{"field":"trend","op":">","value":0.006},{"field":"momentum","op":">","value":0.0},{"field":"rv","op":"<","value":0.04}],"prior_weight":0.03,"hypothesis":"A positive NDX trend confirmed by momentum may support continuation in a complete systematic process.","mechanism":"Trend persistence and disciplined execution.","formalization_note":"NDX-specific adaptation; thresholds provisional."},{"rule_id":"MGR_SEYKOTA_NDX_SHORT","source_id":"SEYKOTA_TREND_BACKTEST_2017","agent":"QUANT","asset_scope":["NDX"],"horizons":["1d","3d","7d"],"action":"SHORT","status":"shadow","conditions":[{"field":"trend","op":"<","value":-0.006},{"field":"momentum","op":"<","value":0.0},{"field":"rv","op":"<","value":0.04}],"prior_weight":0.03,"hypothesis":"A negative NDX trend confirmed by momentum may support downside continuation in a complete systematic process.","mechanism":"Trend persistence and disciplined execution.","formalization_note":"NDX-specific adaptation; thresholds provisional."}]''')
+MANAGER_CORPUS_VERSION = 'public-managers-v4-2026-09-21'
 
 
 def now():
@@ -540,6 +556,31 @@ def pg_init():
           payload JSONB NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_event_signals_asset_expiry ON event_signals(asset,expires_at DESC);
+        CREATE TABLE IF NOT EXISTS knowledge_timeblock_stats(
+          rule_id TEXT NOT NULL, asset TEXT NOT NULL, horizon TEXT NOT NULL, action TEXT NOT NULL,
+          block_id INTEGER NOT NULL, n INTEGER NOT NULL, hits INTEGER NOT NULL,
+          hit_rate DOUBLE PRECISION, avg_signed_return DOUBLE PRECISION,
+          profit_factor DOUBLE PRECISION, period_start TIMESTAMPTZ, period_end TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY(rule_id,asset,horizon,block_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_timeblock_stats_rank
+          ON knowledge_timeblock_stats(asset,horizon,rule_id,block_id);
+        CREATE TABLE IF NOT EXISTS knowledge_cost_sensitivity(
+          rule_id TEXT NOT NULL, asset TEXT NOT NULL, horizon TEXT NOT NULL, action TEXT NOT NULL,
+          sample TEXT NOT NULL, cost_bps DOUBLE PRECISION NOT NULL,
+          n INTEGER NOT NULL, hits INTEGER NOT NULL, hit_rate DOUBLE PRECISION,
+          avg_signed_return DOUBLE PRECISION, profit_factor DOUBLE PRECISION,
+          updated_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY(rule_id,asset,horizon,sample,cost_bps)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cost_sensitivity_rank
+          ON knowledge_cost_sensitivity(sample,cost_bps,n DESC);
+        CREATE TABLE IF NOT EXISTS validation_snapshots(
+          snapshot_id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL,
+          payload JSONB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_validation_snapshots_ts ON validation_snapshots(created_at DESC);
         """)
     return {'enabled': True, 'ok': True}
 
@@ -604,7 +645,9 @@ def all_knowledge():
 def manager_corpus_summary():
     source_ids = {x['source_id'] for x in MANAGER_PUBLIC_SOURCES}
     rule_ids = {x['rule_id'] for x in MANAGER_PUBLIC_RULES}
-    out = {'corpus_version': MANAGER_CORPUS_VERSION, 'embedded_sources': len(source_ids), 'embedded_rules': len(rule_ids)}
+    embedded_authors=sorted({x.get('authors','').strip() for x in MANAGER_PUBLIC_SOURCES if x.get('authors','').strip()})
+    out = {'corpus_version': MANAGER_CORPUS_VERSION, 'embedded_sources': len(source_ids),
+           'embedded_rules': len(rule_ids), 'embedded_author_labels': len(embedded_authors)}
     if pg_enabled():
         try:
             with pg_connect() as c:
@@ -614,6 +657,19 @@ def manager_corpus_summary():
         except Exception as ex:
             out['db_error'] = f'{type(ex).__name__}: {ex}'
     return out
+
+
+def manager_corpus_detail():
+    summary=manager_corpus_summary(); by_author={}
+    for x in MANAGER_PUBLIC_SOURCES:
+        for name in [a.strip() for a in str(x.get('authors','')).split(';') if a.strip()]:
+            by_author[name]=by_author.get(name,0)+1
+    return {'summary':summary,'distinct_names':len(by_author),
+            'authors':[{'name':k,'sources':v} for k,v in sorted(by_author.items(),key=lambda kv:(-kv[1],kv[0]))],
+            'sources':[{'source_id':x.get('source_id'),'title':x.get('title'),'authors':x.get('authors'),
+                        'year':x.get('year'),'source_type':x.get('source_type'),'evidence_grade':x.get('evidence_grade'),
+                        'url':x.get('url')} for x in MANAGER_PUBLIC_SOURCES],
+            'policy':'Public/lawfully accessible material becomes hypotheses; fame never grants automatic CIO weight.'}
 
 
 def pg_seed_knowledge():
@@ -1059,6 +1115,28 @@ def discover_openalex(query):
     return out
 
 
+def discover_arxiv(query):
+    params={'search_query':f'all:"{query}"','start':0,'max_results':min(8,KNOWLEDGE_DISCOVERY_LIMIT),
+            'sortBy':'relevance','sortOrder':'descending'}
+    with httpx.Client(timeout=25,headers={'User-Agent':'VERITAS/4.0 research'}) as h:
+        r=h.get('https://export.arxiv.org/api/query',params=params); r.raise_for_status()
+    root=ET.fromstring(r.text); ns={'a':'http://www.w3.org/2005/Atom'}; out=[]
+    for e in root.findall('a:entry',ns):
+        title=' '.join((e.findtext('a:title',default='',namespaces=ns) or '').split())
+        abstract=' '.join((e.findtext('a:summary',default='',namespaces=ns) or '').split())[:16000]
+        if not title or not abstract: continue
+        aid=(e.findtext('a:id',default='',namespaces=ns) or '').strip()
+        authors='; '.join([(a.findtext('a:name',default='',namespaces=ns) or '').strip()
+                           for a in e.findall('a:author',ns) if (a.findtext('a:name',default='',namespaces=ns) or '').strip()][:12])
+        published=(e.findtext('a:published',default='',namespaces=ns) or '')
+        try: year=int(published[:4])
+        except Exception: year=None
+        out.append({'candidate_id':_candidate_id('',aid,title),'query':query,'title':title,'authors':authors,
+                    'year':year,'doi':'','source_url':aid,'venue':'arXiv','cited_by_count':0,
+                    'abstract':abstract,'metadata':{'arxiv_id':aid,'fallback_provider':'arXiv'}})
+    return out
+
+
 def store_candidate(x):
     with pg_connect() as c:
         existed = c.execute('SELECT 1 FROM knowledge_candidates WHERE candidate_id=%s', (x['candidate_id'],)).fetchone()
@@ -1236,15 +1314,22 @@ def run_knowledge_discovery(reason='scheduled'):
         with pg_connect() as c:
             c.execute('INSERT INTO knowledge_ingestion_runs(run_id,started_at,status,details) VALUES(%s,%s,%s,%s::jsonb)',
                       (run_id, started, 'running', json.dumps({'reason': reason})))
-        for q in DISCOVERY_QUERIES:
+        for qi,q in enumerate(DISCOVERY_QUERIES):
+            items=[]; oa_error=None
             try:
-                items = discover_openalex(q)
-                seen += len(items)
-                for x in items:
-                    if store_candidate(x):
-                        new += 1
+                items=discover_openalex(q)
             except Exception as ex:
-                errors.append(f'{q}: {type(ex).__name__}: {ex}')
+                oa_error=f'OpenAlex {type(ex).__name__}: {ex}'
+            if not items and qi<10:
+                try:
+                    items=discover_arxiv(q)
+                except Exception as ax:
+                    errors.append(f'{q}: {oa_error or "OpenAlex empty"}; arXiv {type(ax).__name__}: {ax}')
+            elif oa_error:
+                errors.append(f'{q}: {oa_error}')
+            seen += len(items)
+            for x in items:
+                if store_candidate(x): new += 1
         screening = screen_pending_candidates()
         audit_stats = {'audited': 0, 'rejected': 0, 'compiled': 0}
         if KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY:
@@ -1539,6 +1624,76 @@ def market(symbol, coinbase_product):
     }
 
 
+
+def _parse_deribit_option_name(name):
+    try:
+        parts=str(name).split('-')
+        if len(parts)<4: return None
+        cur,exp,strike,kind=parts[0],parts[1],float(parts[2]),parts[3]
+        dt=datetime.strptime(exp,'%d%b%y').replace(tzinfo=timezone.utc)
+        return {'currency':cur,'expiry':dt,'strike':strike,'kind':kind}
+    except Exception:
+        return None
+
+
+def deribit_options_context(currency):
+    """Public options context. Shadow only: ATM IV, term slope, OI/skew proxies."""
+    if not OPTIONS_CONTEXT_ENABLED or currency not in ('BTC','ETH'):
+        return {'ok':False,'status':'disabled','decision_influence':False}
+    with options_cache_lock:
+        z=options_cache.get(currency)
+        if z and time.time()-z['cached_at']<OPTIONS_REFRESH_SECONDS:
+            return dict(z['value'])
+    try:
+        with httpx.Client(timeout=25,headers={'User-Agent':'VERITAS/5.0 research'}) as h:
+            r=h.get('https://www.deribit.com/api/v2/public/get_book_summary_by_currency',
+                    params={'currency':currency,'kind':'option'})
+            r.raise_for_status(); rows=(r.json() or {}).get('result') or []
+        now_dt=datetime.now(timezone.utc); parsed=[]; underlying=[]
+        for x in rows:
+            p=_parse_deribit_option_name(x.get('instrument_name'))
+            if not p: continue
+            days=(p['expiry']-now_dt).total_seconds()/86400.0
+            if days<2 or days>120: continue
+            iv=x.get('mark_iv'); oi=x.get('open_interest'); up=x.get('underlying_price')
+            if up not in (None,0): underlying.append(float(up))
+            if iv is None: continue
+            parsed.append({**p,'days':days,'iv':float(iv),'oi':float(oi or 0.0),
+                           'underlying':float(up) if up not in (None,0) else None})
+        if not parsed: raise RuntimeError('NO_OPTION_SUMMARIES')
+        spot=sum(underlying)/len(underlying) if underlying else None
+        expiries=sorted({x['expiry'] for x in parsed}); term=[]
+        for exp in expiries[:4]:
+            rr=[x for x in parsed if x['expiry']==exp and x.get('underlying')]
+            if not rr: continue
+            u=sum(x['underlying'] for x in rr)/len(rr)
+            atm=sorted(rr,key=lambda x:abs(x['strike']/u-1.0))[:6]
+            atm_iv=sum(x['iv'] for x in atm)/len(atm) if atm else None
+            puts=[x for x in rr if x['kind']=='P' and 0.86<=x['strike']/u<=0.94]
+            calls=[x for x in rr if x['kind']=='C' and 1.06<=x['strike']/u<=1.14]
+            put_iv=sum(x['iv']*max(x['oi'],1) for x in puts)/sum(max(x['oi'],1) for x in puts) if puts else None
+            call_iv=sum(x['iv']*max(x['oi'],1) for x in calls)/sum(max(x['oi'],1) for x in calls) if calls else None
+            skew=(put_iv-call_iv) if put_iv is not None and call_iv is not None else None
+            term.append({'expiry':exp.isoformat(),'days':round((exp-now_dt).total_seconds()/86400,1),'atm_iv':atm_iv,'skew_10pct_proxy':skew})
+        put_oi=sum(x['oi'] for x in parsed if x['kind']=='P'); call_oi=sum(x['oi'] for x in parsed if x['kind']=='C')
+        pc=(put_oi/call_oi) if call_oi>0 else None
+        near=term[0] if term else {}; far=term[1] if len(term)>1 else {}
+        slope=(far.get('atm_iv')-near.get('atm_iv')) if far.get('atm_iv') is not None and near.get('atm_iv') is not None else None
+        out={'ok':True,'currency':currency,'observed_at':now(),'underlying':spot,
+             'near_atm_iv':near.get('atm_iv'),'near_skew_10pct_proxy':near.get('skew_10pct_proxy'),
+             'put_call_oi_ratio':pc,'iv_term_slope':slope,'term':term[:4],
+             'source':'Deribit public options summary','decision_influence':False,
+             'limitations':'10% moneyness skew proxy, not 25-delta skew; dealer gamma is not inferred.'}
+        with options_cache_lock: options_cache[currency]={'cached_at':time.time(),'value':out}
+        _set_source_quality([_source_row('Deribit options','crypto options','options_context_only',out['observed_at'],0,'OK',
+                                        'public IV/OI context; not dealer gamma','Deribit')])
+        return out
+    except Exception as ex:
+        out={'ok':False,'currency':currency,'error':f'{type(ex).__name__}: {ex}','decision_influence':False}
+        with options_cache_lock: options_cache[currency]={'cached_at':time.time(),'value':out}
+        return out
+
+
 def derivatives(symbol):
     try:
         base = 'https://fapi.binance.com'
@@ -1557,10 +1712,13 @@ def derivatives(symbol):
         obs=now()
         _set_source_quality([_source_row('Binance derivatives','crypto derivatives','live context',obs,0,'OK',
                             'funding/mark/OI/taker/account ratios','Binance')])
+        cur='BTC' if symbol.startswith('BTC') else 'ETH' if symbol.startswith('ETH') else None
+        opt=deribit_options_context(cur) if cur else {'ok':False,'status':'not_applicable','decision_influence':False}
         return {
             'ok': True,'funding': float(premium['lastFundingRate']),'mark': mark,'index': index,
             'basis': mark / index - 1 if index else 0,'open_interest': oi_now,'oi_change_24h': oi_change,
             'taker_buy_sell_ratio': taker_ratio,'global_long_short_ratio': long_short,'observed_at':obs,
+            'options_shadow':opt,
         }
     except Exception as e:
         return {'ok': False, 'error': f'{type(e).__name__}: {e}'}
@@ -1758,13 +1916,48 @@ def pg_calibration_map():
         half=(z*math.sqrt((phat*(1-phat)+z*z/(4*n))/n)/den) if n else 0.5
         lo=max(0.0,center-half); hi=min(1.0,center+half)
         avg_raw=sum(x['rawp'])/n if n else None
-        out.append({'asset':asset,'horizon':h,'bucket':bucket,'n':n,
+        out.append({'asset':asset,'horizon':h,'bucket':bucket,'n':n,'hits':hits,
                     'hit_rate':phat if n else None,'posterior_hit_rate':post,
                     'wilson_low':lo,'wilson_high':hi,
                     'avg_raw_probability':avg_raw,
                     'calibration_gap':(avg_raw-phat) if avg_raw is not None else None,
                     'brier_raw':sum(x['brier'])/n if n else None})
     return out
+
+
+
+def isotonic_calibration_blocks(cal_rows, asset, horizon):
+    rows=[x for x in cal_rows if x.get('asset')==asset and x.get('horizon')==horizon and int(x.get('n') or 0)>0]
+    rows=sorted(rows,key=lambda x:int(x.get('bucket') or 0))
+    if sum(int(x.get('n') or 0) for x in rows)<CALIBRATION_ISOTONIC_MIN_N:
+        return []
+    blocks=[]
+    for x in rows:
+        n=int(x.get('n') or 0); hits=int(x.get('hits') or round(float(x.get('hit_rate') or 0)*n))
+        b={'bucket_min':int(x['bucket']),'bucket_max':int(x['bucket']),'n':n,'hits':hits}
+        b['p']=(hits+5)/(n+10)
+        blocks.append(b)
+        while len(blocks)>=2 and blocks[-2]['p']>blocks[-1]['p']:
+            b2=blocks.pop(); b1=blocks.pop()
+            m={'bucket_min':b1['bucket_min'],'bucket_max':b2['bucket_max'],
+               'n':b1['n']+b2['n'],'hits':b1['hits']+b2['hits']}
+            m['p']=(m['hits']+5)/(m['n']+10)
+            blocks.append(m)
+    z=1.96
+    for b in blocks:
+        n=b['n']; phat=b['hits']/n if n else 0.5
+        den=1+z*z/n if n else 1
+        center=(phat+z*z/(2*n))/den if n else 0.5
+        half=(z*math.sqrt((phat*(1-phat)+z*z/(4*n))/n)/den) if n else 0.5
+        b['wilson_low']=max(0.0,center-half); b['wilson_high']=min(1.0,center+half)
+    return blocks
+
+
+def isotonic_probability_for_bucket(cal_rows, asset, horizon, bucket):
+    for b in isotonic_calibration_blocks(cal_rows,asset,horizon):
+        if b['bucket_min']<=bucket<=b['bucket_max']:
+            return b
+    return None
 
 
 def calibrated_direction_probability(asset,horizon,confidence,cal_rows):
@@ -1774,14 +1967,17 @@ def calibrated_direction_probability(asset,horizon,confidence,cal_rows):
     if not row:
         return {'status':'insufficient','n':0,'probability_correct':None,
                 'conservative_probability':None,'raw_confidence':float(confidence)}
-    post=float(row['posterior_hit_rate'])
-    low=float(row.get('wilson_low') or 0.0)
-    # Conservative probability is used for sizing; mean posterior remains visible for research.
+    iso=isotonic_probability_for_bucket(cal_rows,asset,horizon,bucket)
+    if iso:
+        post=float(iso['p']); low=float(iso.get('wilson_low') or 0.0); high=float(iso.get('wilson_high') or 1.0)
+        method='beta_isotonic'; n=int(iso['n'])
+    else:
+        post=float(row['posterior_hit_rate']); low=float(row.get('wilson_low') or 0.0); high=float(row.get('wilson_high') or 1.0)
+        method='beta_bucket'; n=int(row['n'])
     conservative=max(0.50,min(post,low+0.03))
-    return {'status':'empirical','n':row['n'],
-            'probability_correct':round(post,4),
+    return {'status':'empirical','method':method,'n':n,'probability_correct':round(post,4),
             'conservative_probability':round(conservative,4),
-            'confidence_interval_95':[round(low,4),round(float(row.get('wilson_high') or 1.0),4)],
+            'confidence_interval_95':[round(low,4),round(high,4)],
             'raw_confidence':float(confidence),'bucket':bucket,
             'calibration_gap':row.get('calibration_gap'),'brier_raw':row.get('brier_raw')}
 
@@ -1834,6 +2030,39 @@ def research_activation_gate():
 
 
 
+
+def rule_family(rule):
+    rid=str((rule or {}).get('rule_id') or '').upper(); hyp=str((rule or {}).get('hypothesis') or '').lower(); src=str((rule or {}).get('source_id') or '').upper()
+    blob=' '.join((rid,src,hyp))
+    families=[
+      ('MOMENTUM_TREND',('MOMENTUM','MOM_','TREND','DONCHIAN','TURTLE','SEYKOTA','FABER')),
+      ('VOLATILITY_RISK',('VOL','GARCH','ARCH','FATTAIL','MANDELBROT','TAIL')),
+      ('FLOW_MICROSTRUCTURE',('FLOW','KYLE','HASBROUCK','ORDER','MICROSTRUCTURE','TAKER')),
+      ('LIQUIDITY_LEVERAGE',('LIQUID','FUNDING','MARGIN','LEVERAGE','ARBITRAGE')),
+      ('BEHAVIORAL',('OVERREACTION','UNDERREACTION','SENTIMENT','PROSPECT','DHS','REFLEX')),
+      ('FACTOR_VALUE_QUALITY',('VALUE','QUALITY','QMJ','FAMA','FRENCH','BAB')),
+      ('MACRO_CYCLE',('DALIO','MACRO','CYCLE','UST','RATES')),
+      ('POSITION_SIZING',('KELLY','SIZING','RISK_GOV'))]
+    for fam,keys in families:
+        if any(k in blob for k in keys): return fam
+    return 'OTHER'
+
+
+def orthogonal_knowledge_summary(kmatches):
+    groups={}
+    for x in kmatches or []:
+        fam=rule_family(x); z=groups.setdefault(fam,{'family':fam,'rules':[],'long':0,'short':0,'no_trade':0})
+        z['rules'].append(x.get('rule_id')); a=x.get('action')
+        if a=='LONG': z['long']+=1
+        elif a=='SHORT': z['short']+=1
+        elif a=='NO_TRADE': z['no_trade']+=1
+    independent=sum(1 for z in groups.values() if z['long'] or z['short'])
+    conflicts=[z['family'] for z in groups.values() if z['long'] and z['short']]
+    return {'families':list(groups.values()),'independent_directional_families':independent,
+            'conflicting_families':conflicts,'raw_matches':len(kmatches or []),
+            'effective_evidence_count':max(0,independent-len(conflicts))}
+
+
 def validated_knowledge_adjustment(kmatches, asset, horizon, regime='*'):
     """Strict capped CIO contribution; disabled by default and requires live+OOS+regime+decay evidence."""
     if (not runtime_bool('knowledge_cio_enabled',KNOWLEDGE_CIO_ENABLED) or not pg_enabled() or not kmatches
@@ -1882,7 +2111,15 @@ def validated_knowledge_adjustment(kmatches, asset, horizon, regime='*'):
                              'oos_n':oos['n'],'oos_hit':oos['hit_rate'],
                              'oos_pf':oos['profit_factor'],'oos_p_bonferroni':oos['p_bonferroni'],
                              'regime_checked':bool(reg),'decay_checked':bool(decay)})
-    return {'enabled':True,'score':clip(total,-0.04,0.04),'rules':approved}
+    if ORTHOGONAL_EVIDENCE_ENABLED and approved:
+        grouped={}
+        for x in approved:
+            fam=rule_family(x); x['family']=fam; cur=grouped.get(fam)
+            if cur is None or abs(float(x['contribution']))>abs(float(cur['contribution'])): grouped[fam]=x
+        selected=list(grouped.values()); total=sum(float(x['contribution']) for x in selected)
+    else: selected=approved
+    return {'enabled':True,'score':clip(total,-0.04,0.04),'rules':selected,
+            'raw_approved_rules':len(approved),'orthogonal_families':len({rule_family(x) for x in approved})}
 
 
 def agent_views(f, horizon, deriv, asset=None):
@@ -1921,7 +2158,8 @@ def agent_views(f, horizon, deriv, asset=None):
         out.append(('DERIV', sig(ds, 0.0035), min(0.75, 0.32 + abs(ds)*12), {
             'score': ds, 'funding': deriv['funding'], 'basis': deriv['basis'],
             'oi_change_24h': deriv['oi_change_24h'], 'taker_buy_sell_ratio': deriv['taker_buy_sell_ratio'],
-            'global_long_short_ratio': deriv['global_long_short_ratio']}))
+            'global_long_short_ratio': deriv['global_long_short_ratio'],
+            'options_shadow':deriv.get('options_shadow'),'options_decision_influence':False}))
     else:
         out.append(('DERIV', 'NO_TRADE', 0.10, {'reason': 'derivatives unavailable', 'error': deriv.get('error')}))
     div_limit=NDX_MAX_SOURCE_DIVERGENCE if (asset or f.get('asset'))=='NDX' else MAX_SOURCE_DIVERGENCE
@@ -2151,6 +2389,18 @@ def stats():
     return out
 
 
+def classify_signal_tier(asset,decision,confidence,challenger,effective_evidence,source_gate,time_gate,calibration=None):
+    if decision not in ('LONG','SHORT') or not source_gate or not time_gate:
+        return 'NO_TRADE'
+    calibration=calibration or {}; cp=calibration.get('probability_correct')
+    cdec=(challenger or {}).get('decision'); cconf=float((challenger or {}).get('confidence') or 0)
+    threshold=runtime_float('min_directional_score',MIN_DIRECTIONAL_SCORE)+0.08
+    min_knowledge=2 if asset=='NDX' else 3
+    super_cal=(cp is not None and float(cp)>=0.62 and cdec==decision)
+    super_cons=(float(confidence)>=threshold and cdec==decision and cconf>=0.60 and int(effective_evidence or 0)>=min_knowledge)
+    return ('SUPER_'+decision) if (super_cal or super_cons) else decision
+
+
 def cycle():
     init_db()
     seed_knowledge()
@@ -2180,6 +2430,7 @@ def cycle():
                 created_at = now()
                 f = features(raw, horizon)
                 kmatches = match_knowledge(asset, horizon, f, deriv)
+                orth_evidence = orthogonal_knowledge_summary(kmatches)
                 knowledge_adjustment = validated_knowledge_adjustment(kmatches,asset,horizon,f['regime'])
                 agents = agent_views(f, horizon, deriv, asset)
                 event_shadow=event_shadow_score(asset)
@@ -2194,6 +2445,7 @@ def cycle():
                     dec='NO_TRADE'; size=0.0
                     challenger['decision']='NO_TRADE'; challenger['confidence']=0.0
                 shadow_risk = shadow_position_sizing(dec,calibration,f)
+                signal_tier=classify_signal_tier(asset,dec,conf,challenger,orth_evidence.get('effective_evidence_count',0),source_gate,time_gate,calibration)
                 entity_key = f'{cycle_id}:{asset}:{horizon}'
                 with db() as c:
                     cur = c.execute('INSERT INTO market_states(ts,asset,horizon,features,source_times) VALUES(?,?,?,?,?)',
@@ -2208,9 +2460,9 @@ def cycle():
                                   (sid, a, d, cf, json.dumps(r)))
                     dcur = c.execute('INSERT INTO decisions(state_id,decision,confidence,sizing,synthesis,model_version,created_at) VALUES(?,?,?,?,?,?,?)',
                               (sid, dec, conf, size, json.dumps({'committee_score': score, 'weights': used_weights,
-                               'regime': f['regime'], 'knowledge_shadow_matches': kmatches,
+                               'regime': f['regime'], 'knowledge_shadow_matches': kmatches,'orthogonal_evidence':orth_evidence,
                                'knowledge_cio_adjustment': knowledge_adjustment,'challenger':challenger,'event_shadow':event_shadow,
-                               'gates': {'scope': True, 'metric': True, 'source': source_gate, 'time': time_gate}}), VERSION, created_at))
+                               'signal_tier':signal_tier,'gates': {'scope': True, 'metric': True, 'source': source_gate, 'time': time_gate}}), VERSION, created_at))
                     sqlite_decision_id = dcur.lastrowid
                 if pg_enabled():
                     try:
@@ -2220,10 +2472,10 @@ def cycle():
                             'decision': dec, 'confidence': conf, 'sizing': size,
                             'committee_score': score, 'weights': used_weights, 'regime': f['regime'],
                             'calibration': calibration, 'shadow_risk': shadow_risk,
-                            'knowledge_cio_adjustment': knowledge_adjustment,'challenger':challenger,
+                            'knowledge_cio_adjustment': knowledge_adjustment,'challenger':challenger,'signal_tier':signal_tier,
                             'features': f, 'derivatives': deriv,'event_shadow':event_shadow,
                             'agents': [{'agent':a,'direction':d,'confidence':cf,'rationale':r} for a,d,cf,r in agents],
-                            'knowledge_shadow_matches': kmatches,
+                            'knowledge_shadow_matches': kmatches,'orthogonal_evidence':orth_evidence,
                             'source_times': {'Binance': f['observed_at'], 'Coinbase': f['observed_at'], 'clock': clock_info},
                             'gates': {'scope': True, 'metric': True, 'source': source_gate, 'time': time_gate}
                         }, asset, horizon, created_at)
@@ -2234,11 +2486,12 @@ def cycle():
                 made += 1
                 z = {'asset': asset, 'horizon': horizon, 'decision': dec, 'confidence': round(conf, 4),
                      'score': round(score, 4), 'regime': f['regime'], 'knowledge_matches': len(kmatches),
+                     'effective_evidence':orth_evidence.get('effective_evidence_count',0),
                      'source_gate_pass':f.get('source_gate_pass',True),'market_open':f.get('market_open',True),
                      'calibrated_probability': calibration.get('probability_correct'),
                      'shadow_position': shadow_risk.get('fraction_of_capital',0.0),
                      'challenger_decision':challenger.get('decision'),'challenger_confidence':round(float(challenger.get('confidence') or 0),4),
-                     'event_shadow_score':event_shadow.get('score',0.0)}
+                     'signal_tier':signal_tier,'event_shadow_score':event_shadow.get('score',0.0)}
                 summary.append(z)
                 try:
                     maybe_create_alert(entity_key, asset, horizon, dec, conf, score, f['regime'], kmatches)
@@ -2355,6 +2608,8 @@ def run_bootstrap_backtest(reason='manual'):
     run_id='BT_'+uuid.uuid4().hex; started=now(); tested=observations=0
     details={'reason':reason,'assets':{},'method':'mixed_asset_1h','method_version':BACKTEST_METHOD_VERSION,
              'cost_bps_roundtrip':BACKTEST_COST_BPS,'oos_share':BACKTEST_OOS_SHARE,
+             'vault_share':BACKTEST_VAULT_SHARE,'time_blocks':BACKTEST_TIME_BLOCKS,
+             'cost_grid_bps':BACKTEST_COST_GRID_BPS,
              'rule_decay_half_life_days':RULE_DECAY_HALF_LIFE_DAYS,
              'pair_min_n':PAIR_MIN_N,
              'warning':'Research backtest. BTC/ETH use Binance spot 1h; NDX uses Yahoo 1h index history. Costs assumed; slippage not independently observed.'}
@@ -2366,7 +2621,7 @@ def run_bootstrap_backtest(reason='manual'):
               VALUES(%s,%s,%s,%s,%s,0,0,%s::jsonb)""",
               (run_id,started,'running',BACKTEST_DAYS,BACKTEST_SAMPLE_STEP_HOURS,json.dumps(details,ensure_ascii=False)))
         rules=_historical_rules(); tested=len(rules)
-        buckets={}; split_buckets={}; regime_buckets={}; pair_buckets={}; decay_obs={}
+        buckets={}; split_buckets={}; regime_buckets={}; pair_buckets={}; decay_obs={}; timeblock_buckets={}; gross_obs={}
         cost=BACKTEST_COST_BPS/10000.0
 
         def upd(store,key,sr,mfe,mae,obs_at):
@@ -2383,10 +2638,13 @@ def run_bootstrap_backtest(reason='manual'):
             if len(rows)<500:
                 continue
             stop_idx=len(rows)-(max(NDX_HORIZON_BARS.values()) if asset=='NDX' else max(HORIZONS.values()))-2
-            split_idx=int(stop_idx*(1.0-BACKTEST_OOS_SHARE))
-            details['assets'][asset]['split_idx']=split_idx
-            for idx in range(240,stop_idx,BACKTEST_SAMPLE_STEP_HOURS):
-                sample='IS' if idx<split_idx else 'OOS'
+            start_idx=240; usable=max(1,stop_idx-start_idx)
+            oos_idx=start_idx+int(usable*(1.0-BACKTEST_OOS_SHARE-BACKTEST_VAULT_SHARE))
+            vault_idx=start_idx+int(usable*(1.0-BACKTEST_VAULT_SHARE))
+            details['assets'][asset]['oos_idx']=oos_idx; details['assets'][asset]['vault_idx']=vault_idx
+            for idx in range(start_idx,stop_idx,BACKTEST_SAMPLE_STEP_HOURS):
+                sample='IS' if idx<oos_idx else ('OOS' if idx<vault_idx else 'VAULT')
+                block_id=min(BACKTEST_TIME_BLOCKS-1,max(0,int(((idx-start_idx)/usable)*BACKTEST_TIME_BLOCKS)))
                 raw=_raw_from_history(rows,idx); raw['asset']=asset; raw['source_gate_pass']=True; raw['market_open']=True
                 entry=float(raw['price'])
                 for horizon,hh in HORIZONS.items():
@@ -2418,6 +2676,8 @@ def run_bootstrap_backtest(reason='manual'):
                         upd(buckets,base,sr,mfe,mae,obs_at)
                         upd(split_buckets,base+(sample,),sr,mfe,mae,obs_at)
                         upd(regime_buckets,base+(regime,sample),sr,mfe,mae,obs_at)
+                        upd(timeblock_buckets,base+(block_id,),sr,mfe,mae,obs_at)
+                        gross_obs.setdefault(base+(sample,),[]).append(gross)
                         decay_obs.setdefault(base+(sample,),[]).append((obs_at,sr,1 if sr>0 else 0))
                         per_action.setdefault(rr['action'],[]).append(rr['rule_id'])
                         observations+=1
@@ -2447,7 +2707,7 @@ def run_bootstrap_backtest(reason='manual'):
                    sum(vals)/len(vals) if vals else None,sum(mfes)/len(mfes) if mfes else None,
                    sum(maes)/len(maes) if maes else None,b['start'],b['end'],BACKTEST_SAMPLE_STEP_HOURS,now()))
 
-            total_oos_tests=max(1,sum(1 for k in split_buckets if k[-1]=='OOS'))
+            total_tests_by_sample={sm:max(1,sum(1 for k in split_buckets if k[-1]==sm)) for sm in ('OOS','VAULT')}
             for (rid,asset,horizon,action,sample),b in split_buckets.items():
                 n=b['n']; vals=b['signed']; mfes=b['mfe']; maes=b['mae']
                 mean=(sum(vals)/len(vals)) if vals else None
@@ -2459,7 +2719,7 @@ def run_bootstrap_backtest(reason='manual'):
                     std=tstat=pval=None
                 pos=sum(x for x in vals if x>0); neg=-sum(x for x in vals if x<0)
                 pf=(pos/neg) if neg>0 else (999.0 if pos>0 else None)
-                pbon=min(1.0,pval*total_oos_tests) if pval is not None and sample=='OOS' else pval
+                pbon=min(1.0,pval*total_tests_by_sample.get(sample,1)) if pval is not None and sample in ('OOS','VAULT') else pval
                 c.execute("""INSERT INTO knowledge_backtest_oos_stats(rule_id,asset,horizon,action,sample,n,hits,hit_rate,
                     avg_signed_return,avg_mfe,avg_mae,period_start,period_end,updated_at,
                     std_signed_return,t_stat,profit_factor,p_value,p_bonferroni)
@@ -2473,6 +2733,34 @@ def run_bootstrap_backtest(reason='manual'):
                     (rid,asset,horizon,action,sample,n,b['hits'],b['hits']/n if n else None,
                      mean,sum(mfes)/len(mfes) if mfes else None,sum(maes)/len(maes) if maes else None,
                      b['start'],b['end'],now(),std,tstat,pf,pval,pbon))
+
+            for (rid,asset,horizon,action,block_id),b in timeblock_buckets.items():
+                n=b['n']; vals=b['signed']; pos=sum(x for x in vals if x>0); neg=-sum(x for x in vals if x<0)
+                pf=(pos/neg) if neg>0 else (999.0 if pos>0 else None)
+                c.execute("""INSERT INTO knowledge_timeblock_stats
+                    (rule_id,asset,horizon,action,block_id,n,hits,hit_rate,avg_signed_return,profit_factor,period_start,period_end,updated_at)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT(rule_id,asset,horizon,block_id) DO UPDATE SET action=EXCLUDED.action,n=EXCLUDED.n,
+                    hits=EXCLUDED.hits,hit_rate=EXCLUDED.hit_rate,avg_signed_return=EXCLUDED.avg_signed_return,
+                    profit_factor=EXCLUDED.profit_factor,period_start=EXCLUDED.period_start,period_end=EXCLUDED.period_end,
+                    updated_at=EXCLUDED.updated_at""",
+                    (rid,asset,horizon,action,block_id,n,b['hits'],b['hits']/n if n else None,
+                     sum(vals)/n if n else None,pf,b['start'],b['end'],now()))
+
+            for (rid,asset,horizon,action,sample),gross_vals in gross_obs.items():
+                n=len(gross_vals)
+                if not n: continue
+                for cbps in BACKTEST_COST_GRID_BPS:
+                    vals=[x-float(cbps)/10000.0 for x in gross_vals]
+                    hits=sum(1 for x in vals if x>0); pos=sum(x for x in vals if x>0); neg=-sum(x for x in vals if x<0)
+                    pf=(pos/neg) if neg>0 else (999.0 if pos>0 else None)
+                    c.execute("""INSERT INTO knowledge_cost_sensitivity
+                        (rule_id,asset,horizon,action,sample,cost_bps,n,hits,hit_rate,avg_signed_return,profit_factor,updated_at)
+                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(rule_id,asset,horizon,sample,cost_bps) DO UPDATE SET action=EXCLUDED.action,
+                        n=EXCLUDED.n,hits=EXCLUDED.hits,hit_rate=EXCLUDED.hit_rate,
+                        avg_signed_return=EXCLUDED.avg_signed_return,profit_factor=EXCLUDED.profit_factor,updated_at=EXCLUDED.updated_at""",
+                        (rid,asset,horizon,action,sample,float(cbps),n,hits,hits/n,sum(vals)/n,pf,now()))
 
             for (rid,asset,horizon,action,regime,sample),b in regime_buckets.items():
                 n=b['n']; vals=b['signed']; pos=sum(x for x in vals if x>0); neg=-sum(x for x in vals if x<0)
@@ -2552,7 +2840,9 @@ def run_bootstrap_backtest(reason='manual'):
         state={'status':'ok','run_id':run_id,'rules_tested':tested,'observations':observations,
                'bucket_count':len(buckets),'regime_bucket_count':len(regime_buckets),
                'pair_bucket_count':sum(1 for b in pair_buckets.values() if b['n']>=PAIR_MIN_N),
-               'days':BACKTEST_DAYS,'cost_bps':BACKTEST_COST_BPS,'oos_share':BACKTEST_OOS_SHARE}
+               'timeblock_bucket_count':len(timeblock_buckets),
+               'days':BACKTEST_DAYS,'cost_bps':BACKTEST_COST_BPS,
+               'oos_share':BACKTEST_OOS_SHARE,'vault_share':BACKTEST_VAULT_SHARE}
         with lock:
             backtest_state.clear(); backtest_state.update(state)
         emit('backtest_complete',**state)
@@ -2662,7 +2952,9 @@ def fetch_macro_context():
       'vix_live':('%5EVIX','yahoo_cboe_index','Yahoo Cboe VIX','volatility index'),
       'dxy':('DX-Y.NYB','yahoo_ice_futures','Yahoo ICE DXY','FX / dollar'),
       'gold':('GC%3DF','yahoo_comex','Yahoo COMEX Gold','commodity futures'),
-      'nq_futures':('NQ%3DF','yahoo_cme_futures','Yahoo CME NQ futures','US index futures')}
+      'nq_futures':('NQ%3DF','yahoo_cme_futures','Yahoo CME NQ futures','US index futures'),
+      'qqq':('QQQ','yahoo_nasdaq_stock','Yahoo QQQ','NDX ETF proxy'),
+      'qqew':('QQEW','yahoo_nasdaq_stock','Yahoo QQEW equal-weight','NDX equal-weight proxy')}
     mq=[]
     for key,(symbol,policy_key,label,ac) in yahoo_specs.items():
         try:
@@ -2681,6 +2973,14 @@ def fetch_macro_context():
     if 'ust2y' in data and 'ust10y' in data:
         data['ust_2s10s_bp'] = {'value':(data['ust10y']['value']-data['ust2y']['value'])*100,
                                 'source':'derived from FRED'}
+    if NDX_BREADTH_ENABLED and 'qqq' in data and 'qqew' in data:
+        qqq_r=data['qqq'].get('ret_1d'); eq_r=data['qqew'].get('ret_1d')
+        if qqq_r is not None and eq_r is not None:
+            spread=float(qqq_r)-float(eq_r)
+            participation='BROAD' if float(eq_r)>0 and abs(spread)<0.004 else ('MEGACAP_LED' if spread>0.004 else 'BROADENING' if spread<-0.004 else 'MIXED')
+            data['ndx_breadth_proxy']={'qqq_ret_1d':float(qqq_r),'qqew_ret_1d':float(eq_r),
+                'cap_vs_equal_spread':spread,'participation':participation,
+                'source':'QQQ vs QQEW proxy','decision_influence':False}
     state = {'status':'ok' if not errors else ('degraded' if data else 'error'),
              'updated_at':now(),'data':data,'errors':errors,'decision_influence':False}
     if pg_enabled():
@@ -2996,10 +3296,11 @@ def explain_latest_decision(asset=None,horizon=None):
     con=[a for a in agents if a.get('direction') in ('LONG','SHORT') and a.get('direction')!=dec]
     risks=[a for a in agents if a.get('agent')=='RISK']
     return {'status':'ok','entity_key':r['entity_key'],'event_ts':r['event_ts'],'asset':r['asset'],'horizon':r['horizon'],
-            'decision':dec,'confidence':p.get('confidence'),'calibration':p.get('calibration'),
+            'decision':dec,'signal_tier':p.get('signal_tier') or dec,'confidence':p.get('confidence'),'calibration':p.get('calibration'),
             'shadow_risk':p.get('shadow_risk'),'regime':p.get('regime'),'weights':p.get('weights'),
             'pro':pro[:4],'con':con[:4],'risk':risks[:2],
             'knowledge_matches':(p.get('knowledge_shadow_matches') or [])[:12],
+            'orthogonal_evidence':p.get('orthogonal_evidence') or orthogonal_knowledge_summary(p.get('knowledge_shadow_matches') or []),
             'cross_asset_shadow':cross_asset_shadow(),
             'gates':p.get('gates')}
 
@@ -3144,30 +3445,72 @@ def save_product_snapshot():
 
 
 def oos_validation_board(limit=100):
-    if not pg_enabled():
-        return {'items':[],'method':'unavailable'}
+    if not pg_enabled(): return {'items':[],'method':'unavailable'}
     with pg_connect() as c:
-        rows=c.execute("""SELECT rule_id,asset,horizon,action,n,hit_rate,avg_signed_return,
-                                 std_signed_return,t_stat,profit_factor,p_value,p_bonferroni,
-                                 period_start,period_end
-                          FROM knowledge_backtest_oos_stats
-                          WHERE sample='OOS' AND n>=20
-                          ORDER BY p_bonferroni ASC NULLS LAST,n DESC LIMIT %s""",(int(limit),)).fetchall()
+        rows=c.execute("""SELECT o.rule_id,o.asset,o.horizon,o.action,o.n,o.hit_rate,o.avg_signed_return,
+              o.std_signed_return,o.t_stat,o.profit_factor,o.p_value,o.p_bonferroni,o.period_start,o.period_end,
+              v.n AS vault_n,v.hit_rate AS vault_hit_rate,v.avg_signed_return AS vault_avg_signed_return,
+              v.std_signed_return AS vault_std_signed_return,v.t_stat AS vault_t_stat,
+              v.profit_factor AS vault_profit_factor,v.p_value AS vault_p_value,v.p_bonferroni AS vault_p_bonferroni,
+              v.period_start AS vault_period_start,v.period_end AS vault_period_end
+            FROM knowledge_backtest_oos_stats o LEFT JOIN knowledge_backtest_oos_stats v
+              ON v.rule_id=o.rule_id AND v.asset=o.asset AND v.horizon=o.horizon AND v.sample='VAULT'
+            WHERE o.sample='OOS' AND o.n>=20 ORDER BY o.p_bonferroni ASC NULLS LAST,o.n DESC LIMIT %s""",(int(limit),)).fetchall()
     items=[]
     for rr in rows:
-        x=dict(rr); n=int(x.get('n') or 0); avg=float(x.get('avg_signed_return') or 0)
-        pf=x.get('profit_factor'); p=x.get('p_bonferroni')
-        if n>=100 and avg>0 and pf is not None and float(pf)>=1.10 and p is not None and float(p)<0.05:
+        x=dict(rr); n=int(x.get('n') or 0); vn=int(x.get('vault_n') or 0)
+        avg=float(x.get('avg_signed_return') or 0); vavg=float(x.get('vault_avg_signed_return') or 0)
+        pf=float(x.get('profit_factor') or 0); vpf=float(x.get('vault_profit_factor') or 0)
+        p=x.get('p_bonferroni'); vp=x.get('vault_p_bonferroni')
+        if n>=60 and vn>=30 and avg>0 and vavg>0 and pf>=1.10 and vpf>=1.05 and p is not None and float(p)<0.10 and vp is not None and float(vp)<0.20:
             label='ROBUST_CANDIDATE'
-        elif n>=60 and avg>0 and pf is not None and float(pf)>=1.05 and p is not None and float(p)<0.20:
-            label='PROMISING'
-        elif n>=60 and avg<0 and pf is not None and float(pf)<0.95:
-            label='WEAK'
-        else:
-            label='MIXED_OR_INSUFFICIENT'
-        x['validation_label']=label; items.append(x)
-    return {'method':'chronological OOS + non-overlapping windows + 20bps costs + Bonferroni multiple-testing control',
-            'caveat':'Research evidence only; screening statistics are not proof of future alpha.','items':items}
+        elif n>=40 and vn>=20 and avg>0 and vavg>0 and pf>=1.02 and vpf>=1.00: label='PROMISING'
+        elif (n>=40 and avg<0 and pf<0.95) or (vn>=20 and vavg<0 and vpf<0.95): label='WEAK'
+        else: label='MIXED_OR_INSUFFICIENT'
+        x['validation_label']=label; x['vault_pass']=bool(vn>=20 and vavg>0 and vpf>=1.0); items.append(x)
+    return {'method':'chronological IS + OOS + untouched VAULT; non-overlapping windows; costs; multiple-testing adjustment',
+            'caveat':'VAULT is not used to fit or select rule thresholds inside this run. Research evidence only.','items':items}
+
+
+def timeblock_stability_board(limit=100):
+    if not pg_enabled(): return {'items':[]}
+    with pg_connect() as c:
+        rows=c.execute("""SELECT rule_id,asset,horizon,action,block_id,n,hit_rate,avg_signed_return,profit_factor
+                          FROM knowledge_timeblock_stats WHERE n>=10 ORDER BY rule_id,asset,horizon,block_id""").fetchall()
+    g={}
+    for r in rows: g.setdefault((r['rule_id'],r['asset'],r['horizon'],r['action']),[]).append(dict(r))
+    items=[]
+    for (rid,asset,h,action),blocks in g.items():
+        av=[float(x.get('avg_signed_return') or 0) for x in blocks]
+        positive=sum(1 for x in blocks if float(x.get('avg_signed_return') or 0)>0 and float(x.get('profit_factor') or 0)>=1.0)
+        share=positive/len(blocks) if blocks else None; med=sorted(av)[len(av)//2] if av else None
+        label='STABLE' if len(blocks)>=4 and share>=0.67 and med is not None and med>0 else ('UNSTABLE' if len(blocks)>=4 and share<0.50 else 'MIXED')
+        items.append({'rule_id':rid,'asset':asset,'horizon':h,'action':action,'blocks':len(blocks),
+                      'positive_block_share':share,'median_block_return':med,
+                      'block_return_range':(max(av)-min(av)) if av else None,'stability_label':label})
+    items.sort(key=lambda x:(x['stability_label']=='STABLE',x.get('positive_block_share') or 0,x.get('median_block_return') or -999),reverse=True)
+    return {'method':f'{BACKTEST_TIME_BLOCKS} chronological blocks; fixed rule definitions','items':items[:limit]}
+
+
+def cost_sensitivity_board(limit=100):
+    if not pg_enabled(): return {'items':[]}
+    with pg_connect() as c:
+        rows=c.execute("""SELECT rule_id,asset,horizon,action,sample,cost_bps,n,hit_rate,avg_signed_return,profit_factor
+                          FROM knowledge_cost_sensitivity WHERE sample IN ('OOS','VAULT') AND n>=20
+                          ORDER BY rule_id,asset,horizon,sample,cost_bps""").fetchall()
+    g={}
+    for r in rows: g.setdefault((r['rule_id'],r['asset'],r['horizon'],r['action']),[]).append(dict(r))
+    items=[]
+    for (rid,asset,h,action),arr in g.items():
+        oo=[x for x in arr if x['sample']=='OOS']; vv=[x for x in arr if x['sample']=='VAULT']
+        oh=max(oo,key=lambda x:float(x['cost_bps'])) if oo else None; vh=max(vv,key=lambda x:float(x['cost_bps'])) if vv else None
+        survives=bool(oh and vh and float(oh.get('avg_signed_return') or 0)>0 and float(vh.get('avg_signed_return') or 0)>0)
+        items.append({'rule_id':rid,'asset':asset,'horizon':h,'action':action,'survives_high_cost':survives,
+                      'oos_high_cost_bps':oh.get('cost_bps') if oh else None,
+                      'oos_high_cost_return':oh.get('avg_signed_return') if oh else None,
+                      'vault_high_cost_return':vh.get('avg_signed_return') if vh else None,'grid':arr})
+    items.sort(key=lambda x:(x['survives_high_cost'],x.get('oos_high_cost_return') or -999),reverse=True)
+    return {'method':'transaction-cost stress grid on OOS and VAULT','cost_grid_bps':BACKTEST_COST_GRID_BPS,'items':items[:limit]}
 
 
 def qc_snapshot():
@@ -3350,25 +3693,54 @@ def adaptive_intelligence_summary():
             'live_capital_execution':False}
 
 
-def champion_challenger_board(limit=50):
-    val=oos_validation_board(300)
-    drift=model_drift_status()
+
+def robustness_board(limit=200):
+    if not pg_enabled(): return {'items':[],'status':'unavailable'}
+    val=oos_validation_board(500); drift=model_drift_status(); stability=timeblock_stability_board(500); costs=cost_sensitivity_board(500)
     drift_map={(x.get('rule_id'),x.get('asset'),x.get('horizon')):x.get('drift_state') for x in drift.get('rules',[])}
+    st_map={(x.get('rule_id'),x.get('asset'),x.get('horizon')):x for x in stability.get('items',[])}
+    cost_map={(x.get('rule_id'),x.get('asset'),x.get('horizon')):x for x in costs.get('items',[])}
+    with pg_connect() as c:
+        reg=c.execute("""SELECT rule_id,asset,horizon,regime,n,avg_signed_return,profit_factor
+                          FROM knowledge_rule_regime_stats WHERE sample='OOS' AND n>=20""").fetchall()
+    rg={}
+    for r in reg: rg.setdefault((r['rule_id'],r['asset'],r['horizon']),[]).append(dict(r))
     items=[]
     for x in val.get('items',[]):
-        y=dict(x); y['drift_state']=drift_map.get((x.get('rule_id'),x.get('asset'),x.get('horizon')),'UNKNOWN')
-        label=x.get('validation_label')
-        if label=='ROBUST_CANDIDATE' and y['drift_state'] not in ('DECAYING','WEAKENING'):
-            y['role']='CHALLENGER'
-        elif label in ('WEAK','MIXED_OR_INSUFFICIENT'):
-            y['role']='RESEARCH_ONLY'
-        else:
-            y['role']='WATCHLIST'
+        key=(x.get('rule_id'),x.get('asset'),x.get('horizon')); rr=rg.get(key,[])
+        eligible=[r for r in rr if int(r.get('n') or 0)>=20]
+        positive=[r for r in eligible if float(r.get('avg_signed_return') or 0)>0 and float(r.get('profit_factor') or 0)>=1.0]
+        share=len(positive)/len(eligible) if eligible else None; drift_state=drift_map.get(key,'UNKNOWN'); stab=st_map.get(key,{}); cst=cost_map.get(key,{})
+        base=x.get('validation_label'); score=4 if base=='ROBUST_CANDIDATE' else 2 if base=='PROMISING' else -3 if base=='WEAK' else 0
+        if x.get('vault_pass'): score+=2
+        if share is not None: score+=2 if share>=0.67 else 1 if share>=0.50 else -1
+        if stab.get('stability_label')=='STABLE': score+=2
+        elif stab.get('stability_label')=='UNSTABLE': score-=2
+        score+=2 if cst.get('survives_high_cost') else -1
+        if drift_state=='STABLE': score+=2
+        elif drift_state in ('DECAYING','WEAKENING'): score-=3
+        label='ROBUST' if score>=9 else 'PROMISING' if score>=6 else 'MIXED' if score>=2 else 'WEAK'
+        y=dict(x); y.update({'regime_positive_share':share,'regimes_tested':len(eligible),'drift_state':drift_state,
+                             'time_stability':stab.get('stability_label'),'positive_block_share':stab.get('positive_block_share'),
+                             'survives_high_cost':bool(cst.get('survives_high_cost')),'robustness_score':score,'robustness_label':label})
         items.append(y)
-    # No automatic champion until sufficient live evidence exists.
+    items.sort(key=lambda x:(x.get('robustness_score',-99),x.get('vault_n',0),x.get('n',0)),reverse=True)
+    return {'status':'ok','method':'OOS + untouched VAULT + regime breadth + time blocks + cost stress + drift','items':items[:limit]}
+
+
+def champion_challenger_board(limit=50):
+    robust=robustness_board(500); items=[]; family_taken=set()
+    for x in robust.get('items',[]):
+        y=dict(x); fam=rule_family(y); y['family']=fam
+        qualifies=(y.get('robustness_label')=='ROBUST' and y.get('vault_pass') and y.get('time_stability')=='STABLE'
+                   and y.get('survives_high_cost') and y.get('drift_state') not in ('DECAYING','WEAKENING'))
+        if qualifies and fam not in family_taken: y['role']='CHALLENGER'; family_taken.add(fam)
+        elif y.get('robustness_label')=='WEAK': y['role']='RESEARCH_ONLY'
+        else: y['role']='WATCHLIST'
+        items.append(y)
     return {'champion':None,'challengers':[x for x in items if x['role']=='CHALLENGER'][:limit],
             'watchlist':[x for x in items if x['role']=='WATCHLIST'][:limit],
-            'policy':'No automatic champion or capital allocation without live evidence and explicit production gate.'}
+            'policy':'Challenger requires VAULT pass, time stability, cost survival and no material decay; one per evidence family.'}
 
 
 
@@ -3603,6 +3975,129 @@ def event_shadow_score(asset):
 
 
 
+
+def calibration_quality():
+    if not pg_enabled(): return {'status':'unavailable','items':[]}
+    with pg_connect() as c:
+        rows=c.execute("""SELECT d.asset,d.horizon,d.payload decision_payload,o.payload outcome_payload
+                          FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                          WHERE d.event_type='decision'""").fetchall()
+    buckets={}
+    for r in rows:
+        dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload']); op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
+        dec=dp.get('decision'); fr=op.get('forward_return'); conf=dp.get('confidence')
+        if dec not in ('LONG','SHORT') or fr is None or conf is None: continue
+        hit=1.0 if (float(fr)>0 if dec=='LONG' else float(fr)<0) else 0.0; p=min(0.99,max(0.01,0.50+float(conf)))
+        key=(r['asset'],r['horizon']); x=buckets.setdefault(key,{'n':0,'brier':0.0,'logloss':0.0,'bins':{}})
+        x['n']+=1; x['brier']+=(p-hit)**2; x['logloss']+=-(hit*math.log(p)+(1-hit)*math.log(1-p))
+        b=min(9,max(0,int(p*10))); z=x['bins'].setdefault(b,{'n':0,'p':0.0,'hit':0.0}); z['n']+=1; z['p']+=p; z['hit']+=hit
+    items=[]
+    for (asset,h),x in sorted(buckets.items()):
+        n=x['n']; ece=sum((z['n']/n)*abs(z['p']/z['n']-z['hit']/z['n']) for z in x['bins'].values() if z['n']) if n else None
+        items.append({'asset':asset,'horizon':h,'n':n,'brier_score':x['brier']/n if n else None,
+                      'log_loss':x['logloss']/n if n else None,'ece':ece,
+                      'status':'MEASURABLE' if n>=CALIBRATION_QUALITY_MIN_N else 'INSUFFICIENT'})
+    enough=[x for x in items if x['n']>=CALIBRATION_QUALITY_MIN_N]
+    return {'status':'OK' if enough else 'BUILDING_SAMPLE','min_n':CALIBRATION_QUALITY_MIN_N,'items':items,
+            'note':'Lower Brier/log-loss/ECE is better. Research diagnostics only.'}
+
+
+def options_context():
+    return {'BTC':deribit_options_context('BTC'),'ETH':deribit_options_context('ETH'),'decision_influence':False}
+
+
+def ndx_breadth_context():
+    d=(get_macro_context() or {}).get('data') or {}
+    return {'proxy':d.get('ndx_breadth_proxy'),'qqq':d.get('qqq'),'qqew':d.get('qqew'),'decision_influence':False,
+            'note':'QQQ versus QQEW is a breadth/concentration proxy, not full constituent breadth.'}
+
+
+def signal_quality_report():
+    with lock: cyc=dict(last_cycle)
+    rows=[]
+    for x in cyc.get('summary',[]):
+        rows.append({'asset':x.get('asset'),'horizon':x.get('horizon'),'decision':x.get('decision'),
+                     'signal_tier':x.get('signal_tier'),'signal_strength':x.get('confidence'),
+                     'raw_knowledge_matches':x.get('knowledge_matches'),'effective_evidence_families':x.get('effective_evidence'),
+                     'calibrated_probability':x.get('calibrated_probability'),'source_gate_pass':x.get('source_gate_pass'),'market_open':x.get('market_open')})
+    return {'version':VERSION,'generated_at':now(),'signals':rows,'calibration_quality':calibration_quality(),
+            'options':options_context(),'ndx_breadth':ndx_breadth_context(),
+            'principle':'Independent evidence families count more than repeated variants of one factor.'}
+
+
+
+def expected_edge_map():
+    if not pg_enabled(): return []
+    with pg_connect() as c:
+        rows=c.execute("""SELECT d.asset,d.horizon,d.payload decision_payload,o.payload outcome_payload
+                          FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                          WHERE d.event_type='decision'""").fetchall()
+    b={}; cost=BACKTEST_COST_BPS/10000.0
+    for r in rows:
+        dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload'])
+        op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
+        dec=dp.get('decision'); fr=op.get('forward_return'); conf=dp.get('confidence')
+        if dec not in ('LONG','SHORT') or fr is None or conf is None: continue
+        bucket=min(9,max(0,int(float(conf)*10))); gross=float(fr) if dec=='LONG' else -float(fr)
+        b.setdefault((r['asset'],r['horizon'],bucket),[]).append(gross-cost)
+    out=[]
+    for (asset,h,bucket),vals in sorted(b.items()):
+        vals=sorted(vals); n=len(vals); mean=sum(vals)/n if n else None
+        out.append({'asset':asset,'horizon':h,'bucket':bucket,'n':n,'expected_signed_return_net':mean,
+                    'median_signed_return_net':vals[n//2] if n else None,
+                    'q10_signed_return_net':vals[max(0,int(0.10*(n-1)))] if n else None,
+                    'status':'MEASURABLE' if n>=EXPECTED_EDGE_MIN_N else 'INSUFFICIENT'})
+    return out
+
+
+def expected_edge_for_signal(asset,horizon,confidence):
+    bucket=min(9,max(0,int(float(confidence)*10)))
+    return next((x for x in expected_edge_map() if x['asset']==asset and x['horizon']==horizon and x['bucket']==bucket),
+                {'asset':asset,'horizon':horizon,'bucket':bucket,'n':0,'status':'INSUFFICIENT'})
+
+
+def signal_readiness_report():
+    with lock: cyc=dict(last_cycle)
+    rows=[]
+    for x in cyc.get('summary',[]):
+        score=0
+        if x.get('source_gate_pass'): score+=25
+        if x.get('market_open') or x.get('asset') in CRYPTO_ASSETS: score+=10
+        ev=int(x.get('effective_evidence') or 0); score+=min(20,ev*7)
+        if x.get('challenger_decision')==x.get('decision') and x.get('decision') in ('LONG','SHORT'): score+=15
+        calp=x.get('calibrated_probability')
+        if calp is not None: score+=min(20,max(0,(float(calp)-0.50)*100))
+        edge=expected_edge_for_signal(x.get('asset'),x.get('horizon'),x.get('confidence') or 0)
+        if edge.get('status')=='MEASURABLE' and float(edge.get('expected_signed_return_net') or 0)>0: score+=10
+        rows.append({'asset':x.get('asset'),'horizon':x.get('horizon'),'decision':x.get('decision'),
+                     'readiness_score':round(score,1),'readiness':'HIGH' if score>=75 else 'MEDIUM' if score>=50 else 'LOW',
+                     'effective_evidence':ev,'expected_edge':edge,
+                     'note':'Readiness measures evidence/process quality, not probability of profit.'})
+    return {'version':VERSION,'generated_at':now(),'signals':rows}
+
+
+def portfolio_stress():
+    pf=shadow_portfolio(); scenarios={'RISK_OFF':{'BTC':-0.12,'ETH':-0.15,'NDX':-0.06},
+      'CRYPTO_CRASH':{'BTC':-0.20,'ETH':-0.25,'NDX':-0.03},'EQUITY_SHOCK':{'BTC':-0.05,'ETH':-0.06,'NDX':-0.10},
+      'RISK_ON':{'BTC':0.10,'ETH':0.12,'NDX':0.05}}
+    results=[]
+    for name,rets in scenarios.items():
+        pnl=0.0; legs=[]
+        for p in pf.get('positions',[]):
+            asset=p.get('asset'); frac=float(p.get('final_fraction') or 0); dec=p.get('decision')
+            direction=1 if dec=='LONG' else -1 if dec=='SHORT' else 0; rr=float(rets.get(asset,0)); c=frac*direction*rr
+            pnl+=c; legs.append({'asset':asset,'decision':dec,'weight':frac,'scenario_return':rr,'pnl_fraction':c})
+        results.append({'scenario':name,'portfolio_pnl_fraction':pnl,'legs':legs})
+    return {'status':'shadow','live_execution':False,'scenarios':results,
+            'note':'Deterministic stress scenarios, not forecasts or probabilities.'}
+
+
+def validation_stack():
+    return {'validation':oos_validation_board(200),'time_stability':timeblock_stability_board(200),
+            'cost_sensitivity':cost_sensitivity_board(200),'calibration_quality':calibration_quality(),
+            'expected_edge':expected_edge_map(),'signal_readiness':signal_readiness_report(),'portfolio_stress':portfolio_stress()}
+
+
 def product_overview():
     cached=getattr(product_overview,'_cache',None)
     if cached and time.time()-cached[0]<10:
@@ -3619,6 +4114,11 @@ def product_overview():
             'champion_challenger':champion_challenger_board(20),
             'regime_edges':regime_edge_board(30),'rule_pairs':rule_pair_board(30),
             'runtime_settings':runtime_settings(),'agent_consensus':agent_consensus_board(30),
+            'calibration_quality':calibration_quality(),'options_context':options_context(),
+            'ndx_breadth':ndx_breadth_context(),'signal_quality':signal_quality_report(),
+            'robustness':robustness_board(50),'time_stability':timeblock_stability_board(50),
+            'cost_sensitivity':cost_sensitivity_board(50),'signal_readiness':signal_readiness_report(),
+            'expected_edge':expected_edge_map()[:80],'portfolio_stress':portfolio_stress(),
             'challenger_performance':challenger_performance(),
             'shadow_portfolio':shadow_portfolio(),'events':current_event_context(None,20),
             'persistence_risk':persistence_risk(),
@@ -3634,11 +4134,34 @@ def product_overview():
 
 
 DASHBOARD_HTML = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VERITAS Markets</title><style>
-:root{--bg:#0b0d10;--card:#14181d;--muted:#89929d;--text:#f3f5f7;--line:#262c33;--up:#58d68d;--down:#ff6b6b;--flat:#f6c85f}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.wrap{max-width:1400px;margin:auto;padding:18px}.top{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:16px}h1{font-size:28px;margin:0}.sub,.stamp,.note{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}.span3{grid-column:span 3}.span6{grid-column:span 6}.span12{grid-column:span 12}.k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.7px}.v{font-size:24px;margin-top:5px;font-weight:700}table{width:100%;border-collapse:collapse;margin-top:8px}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-size:12px}.LONG{color:var(--up);font-weight:800}.SHORT{color:var(--down);font-weight:800}.NO_TRADE{color:var(--flat);font-weight:800}.badge{display:inline-block;padding:3px 8px;border-radius:999px;background:#20262d;color:#cbd2d9;font-size:12px}.note{line-height:1.55;overflow-wrap:anywhere;word-break:break-word;min-width:0}.err{color:var(--down)}.card{min-width:0;overflow:hidden}.chips{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 10px}.chip{display:inline-flex;max-width:100%;padding:5px 9px;border-radius:999px;background:#20262d;color:#cbd2d9;font-size:12px;overflow-wrap:anywhere;white-space:normal}.dqrow{display:grid;grid-template-columns:minmax(160px,1.3fr) minmax(110px,.7fr) minmax(80px,.45fr);gap:8px;padding:7px 0;border-bottom:1px solid var(--line)}.ok{color:var(--up)}.warn{color:var(--flat)}.bad{color:var(--down)}@media(max-width:900px){.span3,.span6{grid-column:span 12}.top{align-items:start;flex-direction:column}.wrap{padding:10px}.card{overflow:hidden}.dqrow{grid-template-columns:1fr}}
-</style></head><body><div class="wrap"><div class="top"><div><h1>VERITAS Markets</h1><div class="sub">Цифровой инвестиционный комитет · BTC / ETH / NASDAQ-100 · решения, история, проверка и база знаний</div></div><div id="stamp" class="stamp">загрузка…</div></div><div class="grid"><div class="card span3"><div class="k">Система</div><div id="sys" class="v">—</div></div><div class="card span3"><div class="k">Источники знаний</div><div id="src" class="v">—</div></div><div class="card span3"><div class="k">Правила</div><div id="rules" class="v">—</div></div><div class="card span3"><div class="k">Менеджерский корпус</div><div id="mgr" class="v">—</div></div><div class="card span12"><div class="k">Текущие решения</div><table><thead><tr><th>Актив</th><th>Горизонт</th><th>Решение</th><th>Уверенность</th><th>Режим</th><th>Знания</th></tr></thead><tbody id="signals"></tbody></table></div><div class="card span6"><div class="k">Knowledge Factory</div><div id="factory" class="note">—</div></div><div class="card span6"><div class="k">Историческая проверка</div><div id="bt" class="note">—</div></div><div class="card span6"><div class="k">Макро / кросс-активы</div><div id="macro" class="note">—</div><div id="cross" class="note" style="margin-top:8px">—</div></div><div class="card span6"><div class="k">Алерты</div><div id="alerts" class="note">—</div></div><div class="card span6"><div class="k">Closed-loop QC</div><div id="qc" class="note">—</div></div><div class="card span6"><div class="k">OOS валидация</div><div id="val" class="note">—</div></div><div class="card span6"><div class="k">Adaptive Intelligence</div><div id="adaptive" class="note">—</div></div><div class="card span6"><div class="k">Drift / Champion-Challenger</div><div id="drift" class="note">—</div></div><div class="card span12"><div class="k">Качество и задержка данных</div><div id="dq" class="note">—</div></div><div class="card span12"><div class="k">История последних решений</div><table><thead><tr><th>Время</th><th>Актив</th><th>Горизонт</th><th>Решение</th><th>Уверенность</th><th>Факт</th></tr></thead><tbody id="history"></tbody></table></div><div class="card span6"><div class="k">Shadow portfolio</div><div id="portfolio" class="note">—</div></div><div class="card span6"><div class="k">Agent consensus</div><div id="consensus" class="note">—</div></div><div class="card span12"><div class="k">Статус</div><div class="note">Исследовательский режим: новые знания и исторические тесты не получают автоматического права управлять капиталом. Каждое решение и его последующий результат хранятся в PostgreSQL.</div></div></div></div><script>function pct(x){return x==null?'—':(x*100).toFixed(1)+'%'}
-const statusRU={compiled_no_rule:'обработано без правила',llm_rejected:'отклонено аудитом ИИ',metadata_only:'только метаданные',screened_in:'отобрано',screened_out:'отсеяно',ready_for_compilation:'готово к формализации',compiled_shadow:'правило в shadow',shadow:'shadow',governance:'управление/контроль',validated_candidate:'кандидат после проверки',graveyard:'архив слабых',quarantined:'карантин после ошибок',inactive_future_scope:'будущий охват'};
-function chips(o){return Object.entries(o||{}).map(([k,v])=>`<span class="chip">${statusRU[k]||k}: ${v}</span>`).join('')||'<span class="chip">нет</span>'}
-function dqClass(s){return s==='OK'?'ok':(['FAIL','STALE','UNKNOWN'].includes(s)?'bad':'warn')}async function load(){try{const r=await fetch('/api/v1/overview',{cache:'no-store'});const d=await r.json();document.getElementById('stamp').textContent='обновлено '+new Date().toLocaleString();document.getElementById('sys').innerHTML=d.cycle?.status==='ok'?'<span style="color:var(--up)">ONLINE</span>':'<span class="err">'+(d.cycle?.status||'—')+'</span>';document.getElementById('src').textContent=d.storage?.knowledge_sources??'—';document.getElementById('rules').textContent=d.storage?.knowledge_rules??'—';document.getElementById('mgr').textContent=(d.managers?.postgres_sources??'—')+' / '+(d.managers?.postgres_rules??'—');const a=d.cycle?.summary||[];document.getElementById('signals').innerHTML=a.map(x=>`<tr><td>${x.asset}</td><td>${x.horizon}</td><td class="${x.decision}">${x.decision}</td><td>${pct(x.confidence)}</td><td>${x.regime}</td><td>${x.knowledge_matches}</td></tr>`).join('');const f=d.factory||{};document.getElementById('factory').innerHTML=`Режим: <span class="badge">shadow</span><br>Кандидаты:<div class="chips">${chips(f.candidates)}</div>Статусы правил:<div class="chips">${chips(f.rules)}</div>`;const b=d.backtest||{},lr=b.latest_run||{};document.getElementById('bt').innerHTML=`Статус: ${lr.status||b.status||'ещё не запускался'}<br>Период: ${lr.days||b.days||'—'} дней · шаг ${lr.sample_step_hours||b.sample_step_hours||'—'} ч<br>Правил: ${lr.rules_tested??'—'} · наблюдений: ${lr.observations??'—'}<br><span class="badge">без автоматического promotion</span>`;const m=d.macro||{},md=m.data||{},ca=d.cross_asset_shadow||{};document.getElementById('cross').innerHTML=`Cross-asset shadow: <b>${ca.regime||'—'}</b> · score ${ca.score??'—'}<br><span class="badge">контекст, без влияния на CIO</span>`;document.getElementById('macro').innerHTML=`Статус: ${m.status||'—'}<br>UST 2Y: ${md.ust2y?.value??'—'} · 10Y: ${md.ust10y?.value??'—'} · 30Y: ${md.ust30y?.value??'—'}<br>VIX: ${(md.vix_live||md.vix_daily)?.value??'—'} · Nasdaq-100: ${md.nasdaq100?.value??'—'} · S&P: ${md.sp500?.value??'—'}<br>DXY: ${md.dxy?.value??'—'} · Gold: ${md.gold?.value??'—'}<br><span class="badge">shadow — без влияния на CIO</span>`;const al=d.alerts||[];document.getElementById('alerts').innerHTML=al.slice(0,6).map(x=>`${new Date(x.created_at).toLocaleString()} · ${x.severity} · ${x.asset||''} ${x.horizon||''}`).join('<br>')||'нет новых алертов';const qc=d.qc||{};document.getElementById('qc').innerHTML=`DATA ${qc.DATA||'—'} · MARKET ${qc.MARKET||'—'} · FORECAST ${qc.FORECAST||'—'}<br>AUDIT ${qc.AUDIT||'—'} · DECISION ${qc.DECISION||'—'}`;const vb=d.validation||{},vi=vb.items||[];const vc={};vi.forEach(x=>vc[x.validation_label]=(vc[x.validation_label]||0)+1);document.getElementById('val').innerHTML=`ROBUST ${vc.ROBUST_CANDIDATE||0} · PROMISING ${vc.PROMISING||0} · WEAK ${vc.WEAK||0}<br><span class="stamp">${vb.method||'ожидание нового теста'}</span>`;const ad=d.adaptive||{},rs=ad.runtime_settings||{};document.getElementById('adaptive').innerHTML=`Regime edge: ${(ad.regime_counts||{}).REGIME_EDGE||0} · Pair promising: ${(ad.pair_counts||{}).PAIR_PROMISING||0}<br>Rule drift: ${ad.rule_drift_count??'—'} · min score ${rs.min_directional_score??'—'}<br><span class="badge">адаптивные веса + time decay</span>`;const dr=d.drift||{},cc=d.champion_challenger||{};document.getElementById('drift').innerHTML=`Drift: ${dr.status||'—'} · weakening/decaying ${dr.rule_drift_count??0}<br>Challengers: ${(cc.challengers||[]).length} · Champion: ${cc.champion?'есть':'пока нет'}<br><span class="badge">без автоматического капитала</span>`;const pf=d.shadow_portfolio||{},pp=pf.positions||[];document.getElementById('portfolio').innerHTML=pp.map(x=>`${x.asset}: <b>${x.decision}</b> · ${(100*(x.final_fraction||0)).toFixed(2)}%`).join('<br>')+`<br>Gross: ${(100*(pf.gross_fraction||0)).toFixed(2)}% <span class="badge">shadow</span>`;const ac=(d.agent_consensus||{}).items||[];document.getElementById('consensus').innerHTML=ac.slice(0,5).map(x=>`${x.asset} ${x.horizon} ${x.direction}: ${x.agents} · n=${x.n}`).join('<br>')||'недостаточно реализованных наблюдений';const dq=d.data_quality||{},dqr=dq.rows||[];document.getElementById('dq').innerHTML=dqr.map(x=>`<div class="dqrow"><div>${x.source}<br><span class="stamp">${x.asset_class||''} · ${x.role||''}</span></div><div class="${dqClass(x.status)}">${x.status||'—'}<br><span class="stamp">${x.age_seconds==null?'возраст н/д':('возраст '+Math.round(x.age_seconds)+'с')}</span></div><div>${x.documented_delay_seconds==null?'—':(x.documented_delay_seconds>=3600?Math.round(x.documented_delay_seconds/3600)+'ч':x.documented_delay_seconds>=60?Math.round(x.documented_delay_seconds/60)+'м':x.documented_delay_seconds+'с')}</div></div>`).join('');const h=d.recent_history||[];document.getElementById('history').innerHTML=h.slice(0,24).map(x=>`<tr><td>${new Date(x.ts).toLocaleString()}</td><td>${x.asset}</td><td>${x.horizon}</td><td class="${x.decision}">${x.decision}</td><td>${pct(x.confidence)}</td><td>${x.outcome?((x.outcome.forward_return*100).toFixed(2)+'%'):'—'}</td></tr>`).join('')}catch(e){document.getElementById('sys').innerHTML='<span class="err">ERROR</span>';document.getElementById('stamp').textContent=String(e)}}load();setInterval(load,30000);</script></body></html>"""
+:root{--bg:#090b0e;--card:#13171c;--card2:#171c22;--muted:#89929d;--text:#f3f5f7;--line:#272e36;--up:#55d98a;--down:#ff6868;--flat:#f6c85f}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.wrap{max-width:1440px;margin:auto;padding:18px}.top{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:12px}h1{font-size:28px;margin:0}.sub,.stamp,.note{color:var(--muted)}.nav{display:flex;gap:7px;overflow:auto;padding:4px 0 14px}.nav button{border:1px solid var(--line);background:var(--card);color:var(--muted);padding:8px 13px;border-radius:999px;font-weight:650;white-space:nowrap}.nav button.active{background:#222932;color:var(--text);border-color:#39434e}.view{display:none}.view.active{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:14px;min-width:0;overflow:hidden}.span3{grid-column:span 3}.span4{grid-column:span 4}.span6{grid-column:span 6}.span8{grid-column:span 8}.span12{grid-column:span 12}.k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.7px}.v{font-size:24px;margin-top:5px;font-weight:750}.badge{display:inline-block;padding:3px 8px;border-radius:999px;background:#20262d;color:#cbd2d9;font-size:12px}.note{line-height:1.55;overflow-wrap:anywhere}.ok{color:var(--up)}.warn{color:var(--flat)}.bad,.err{color:var(--down)}
+.matrix-wrap{overflow-x:auto;margin-top:8px}.signal-table{width:100%;min-width:650px;border-collapse:separate;border-spacing:0}.signal-table th,.signal-table td{padding:12px 9px;border-bottom:1px solid var(--line);text-align:center}.signal-table th{color:var(--muted);font-size:12px}.signal-table th:first-child,.signal-table td:first-child{text-align:left}.asset-name{font-size:18px;font-weight:800}.signal-cell{border:0;background:transparent;color:var(--text);padding:4px 9px;min-width:84px;cursor:pointer}.dot{display:inline-flex;width:19px;height:19px;border-radius:50%;align-items:center;justify-content:center;vertical-align:middle}.dot.long{background:var(--up)}.dot.short{background:var(--down)}.dot.flat{background:var(--flat)}.dot.super{box-shadow:0 0 0 3px var(--card),0 0 0 5px currentColor}.dot.long.super{color:var(--up)}.dot.short.super{color:var(--down)}.strength{font-size:12px;color:#d8dde3;margin-top:5px}.cal{font-size:10px;color:var(--muted);margin-top:2px}.legend{display:flex;flex-wrap:wrap;gap:13px;align-items:center;color:var(--muted);font-size:12px;margin-top:8px}.legend span{display:inline-flex;align-items:center;gap:6px}.legend .dot{width:11px;height:11px}.superstrip{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:8px;margin-top:13px}.superbox{background:var(--card2);border:1px solid var(--line);border-radius:11px;padding:9px}.superbox .tf{color:var(--muted);font-size:11px;text-transform:uppercase}.superline{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}.superasset{display:inline-flex;align-items:center;gap:5px;font-size:12px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0}.chip{display:inline-flex;padding:5px 9px;border-radius:999px;background:#20262d;color:#cbd2d9;font-size:12px}.dqrow{display:grid;grid-template-columns:minmax(180px,1.4fr) minmax(100px,.5fr) minmax(95px,.45fr);gap:8px;padding:7px 0;border-bottom:1px solid var(--line)}details.clean{background:var(--card);border:1px solid var(--line);border-radius:15px;grid-column:span 12}details.clean summary{cursor:pointer;padding:14px;list-style:none;display:flex;justify-content:space-between;align-items:center}.details-body{padding:0 14px 14px;border-top:1px solid var(--line)}table.hist{width:100%;border-collapse:collapse;margin-top:8px}.hist th,.hist td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);white-space:nowrap}.hist th{color:var(--muted);font-size:12px}.detail-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px}.detail-col{background:var(--card2);border-radius:10px;padding:10px}.detail-title{font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px}.authorgrid{display:flex;flex-wrap:wrap;gap:6px}.managerhead{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0 12px}.managerstat b{font-size:18px}
+@media(max-width:900px){.span3,.span4,.span6,.span8{grid-column:span 12}.top{align-items:flex-start;flex-direction:column}.wrap{padding:10px}.superstrip{grid-template-columns:repeat(2,1fr)}.detail-grid{grid-template-columns:1fr}.dqrow{grid-template-columns:1fr}.v{font-size:21px}}
+</style></head><body><div class="wrap">
+<div class="top"><div><h1>VERITAS Markets</h1><div class="sub">Цифровой инвестиционный комитет · BTC / ETH / NASDAQ-100</div></div><div id="stamp" class="stamp">загрузка…</div></div>
+<div class="nav"><button class="active" data-view="market">Рынок</button><button data-view="research">Исследование</button><button data-view="system">Система</button></div>
+
+<section id="market" class="view active">
+<div class="card span3"><div class="k">Система</div><div id="sys" class="v">—</div></div><div class="card span3"><div class="k">Знания</div><div id="src" class="v">—</div></div><div class="card span3"><div class="k">Правила</div><div id="rules" class="v">—</div></div><div class="card span3"><div class="k">Менеджерский корпус</div><div id="mgr" class="v">—</div><div id="mgrsmall" class="stamp"></div></div>
+<div class="card span12"><div class="k">Сигналы по инструментам</div><div class="matrix-wrap"><table class="signal-table"><thead><tr><th>Инструмент</th><th>4ч</th><th>1д</th><th>3д</th><th>7д</th></tr></thead><tbody id="matrix"></tbody></table></div><div class="legend"><span><i class="dot long"></i>лонг</span><span><i class="dot short"></i>шорт</span><span><i class="dot flat"></i>нет сделки</span><span><i class="dot long super"></i>усиленный сигнал</span><span>процент = сила сигнала, не вероятность</span></div><div class="superstrip" id="superstrip"></div></div>
+<div class="card span8"><div class="k">Разбор выбранного сигнала</div><div id="detail" class="note">Нажмите на круг сигнала: покажу аргументы за/против, риск, режим и калибровку.</div></div><div class="card span4"><div class="k">Макро / кросс-активы</div><div id="macro" class="note">—</div><div id="cross" class="note" style="margin-top:8px">—</div></div>
+<div class="card span6"><div class="k">Алерты</div><div id="alerts" class="note">—</div></div><div class="card span6"><div class="k">Последние изменения</div><div id="changes" class="note">—</div></div>
+<div class="card span12"><div class="k">История последних решений</div><div style="overflow:auto"><table class="hist"><thead><tr><th>Время</th><th>Актив</th><th>Горизонт</th><th>Сигнал</th><th>Сила</th><th>Факт</th></tr></thead><tbody id="history"></tbody></table></div></div>
+</section>
+
+<section id="research" class="view"><div class="card span6"><div class="k">Knowledge Factory</div><div id="factory" class="note">—</div></div><div class="card span6"><div class="k">Историческая проверка</div><div id="bt" class="note">—</div></div><div class="card span6"><div class="k">OOS валидация</div><div id="val" class="note">—</div></div><div class="card span6"><div class="k">Adaptive Intelligence</div><div id="adaptive" class="note">—</div></div><div class="card span6"><div class="k">Drift / Champion-Challenger</div><div id="drift" class="note">—</div></div><div class="card span6"><div class="k">Agent consensus</div><div id="consensus" class="note">—</div></div><div class="card span4"><div class="k">Калибровка</div><div id="calq" class="note">—</div></div>
+<div class="card span4"><div class="k">Опционы BTC / ETH</div><div id="optctx" class="note">—</div></div>
+<div class="card span4"><div class="k">Ширина NDX</div><div id="breadth" class="note">—</div></div>
+<div class="card span4"><div class="k">VAULT / устойчивость</div><div id="vaultq" class="note">—</div></div><div class="card span4"><div class="k">Издержки</div><div id="costq" class="note">—</div></div><div class="card span4"><div class="k">Готовность сигналов</div><div id="readyq" class="note">—</div></div><div class="card span12"><div class="k">Менеджерский корпус</div><div id="managerdetail" class="note">—</div></div></section>
+
+<section id="system" class="view"><div class="card span6"><div class="k">Closed-loop QC</div><div id="qc" class="note">—</div></div><div class="card span6"><div class="k">Shadow portfolio</div><div id="portfolio" class="note">—</div></div><details class="clean"><summary><span><span class="k">Качество и задержка данных</span><br><span id="dqsum" class="note">свернуто</span></span><span>⌄</span></summary><div class="details-body"><div id="dq" class="note">—</div></div></details><div class="card span12"><div class="k">Статус продукта</div><div class="note">Исследовательский режим. «Усиленный сигнал» — уровень согласованности моделей, а не обещание результата. Калиброванная вероятность показывается отдельно только после достаточной статистики.</div></div></section>
+</div><script>
+function pct(x){return x==null?'—':(x*100).toFixed(1)+'%'}const statusRU={compiled_no_rule:'без правила',llm_rejected:'отклонено ИИ',metadata_only:'метаданные',screened_in:'отобрано',screened_out:'отсеяно',ready_for_compilation:'готово',compiled_shadow:'shadow-правило',shadow:'shadow',governance:'контроль',validated_candidate:'кандидат',graveyard:'архив',quarantined:'карантин',inactive_future_scope:'будущий охват'};function chips(o){return Object.entries(o||{}).map(([k,v])=>`<span class="chip">${statusRU[k]||k}: ${v}</span>`).join('')||'<span class="chip">нет</span>'}function dotClass(x){const t=x.signal_tier||x.decision;if(t==='SUPER_LONG')return'long super';if(t==='SUPER_SHORT')return'short super';if(x.decision==='LONG')return'long';if(x.decision==='SHORT')return'short';return'flat'}function tierText(x){const t=x.signal_tier||x.decision;return t==='SUPER_LONG'?'усиленный лонг':t==='SUPER_SHORT'?'усиленный шорт':x.decision==='LONG'?'лонг':x.decision==='SHORT'?'шорт':'нет сделки'}function dqClass(s){return s==='OK'?'ok':(['FAIL','STALE','STALE_OR_CLOSED','UNKNOWN'].includes(s)?'bad':'warn')}const tfOrder=['4h','1d','3d','7d'],assets=['BTC','ETH','NDX'];
+document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.view).classList.add('active')});
+async function showDetail(asset,horizon){const el=document.getElementById('detail');el.textContent='загрузка…';try{const r=await fetch(`/api/v1/explain?asset=${asset}&horizon=${horizon}`,{cache:'no-store'});const d=(await r.json()).explanation||{};if(d.status!=='ok'){el.textContent='нет данных';return}const cp=(d.calibration||{}).probability_correct;const fmt=a=>(a||[]).map(x=>`<div>${x.agent}: ${x.direction||''}</div>`).join('')||'—';el.innerHTML=`<b>${d.asset} · ${d.horizon}</b> · ${tierText({decision:d.decision,signal_tier:d.signal_tier})}<br>Сила: ${pct(d.confidence)} · калиброванная вероятность: ${cp==null?'ещё недостаточно данных':pct(cp)} · режим: ${d.regime||'—'}<div class="detail-grid"><div class="detail-col"><div class="detail-title">За</div>${fmt(d.pro)}</div><div class="detail-col"><div class="detail-title">Против</div>${fmt(d.con)}</div><div class="detail-col"><div class="detail-title">Риск</div>${fmt(d.risk)}</div></div><div style="margin-top:8px">Совпало правил знаний: ${(d.knowledge_matches||[]).length}</div>`}catch(e){el.textContent=String(e)}}
+function renderMatrix(a){const map={};a.forEach(x=>map[x.asset+'|'+x.horizon]=x);document.getElementById('matrix').innerHTML=assets.map(asset=>`<tr><td><span class="asset-name">${asset}</span></td>${tfOrder.map(tf=>{const x=map[asset+'|'+tf];if(!x)return'<td>—</td>';return`<td><button class="signal-cell" onclick="showDetail('${asset}','${tf}')" title="${tierText(x)}"><i class="dot ${dotClass(x)}"></i><div class="strength">${pct(x.confidence)}</div><div class="cal">${x.calibrated_probability==null?'':'P '+pct(x.calibrated_probability)}</div></button></td>`}).join('')}</tr>`).join('');document.getElementById('superstrip').innerHTML=tfOrder.map(tf=>{const xs=a.filter(x=>x.horizon===tf&&(x.signal_tier==='SUPER_LONG'||x.signal_tier==='SUPER_SHORT'));return`<div class="superbox"><div class="tf">${tf}</div><div class="superline">${xs.length?xs.map(x=>`<span class="superasset"><i class="dot ${dotClass(x)}"></i>${x.asset}</span>`).join(''):'<span class="stamp">нет усиленного сигнала</span>'}</div></div>`}).join('')}
+function renderChanges(h){const first={},lines=[];for(const x of h){const k=x.asset+'|'+x.horizon;if(!first[k]){first[k]=x;continue}if(first[k].decision!==x.decision){lines.push(`${first[k].asset} ${first[k].horizon}: ${x.decision} → ${first[k].decision}`);delete first[k]}if(lines.length>=6)break}document.getElementById('changes').innerHTML=lines.join('<br>')||'существенных смен сигнала нет'}
+async function load(){try{const r=await fetch('/api/v1/overview',{cache:'no-store'}),d=await r.json();document.getElementById('stamp').textContent='обновлено '+new Date().toLocaleString();document.getElementById('sys').innerHTML=d.cycle?.status==='ok'?'<span class="ok">ONLINE</span>':'<span class="err">'+(d.cycle?.status||'—')+'</span>';document.getElementById('src').textContent=d.storage?.knowledge_sources??'—';document.getElementById('rules').textContent=d.storage?.knowledge_rules??'—';document.getElementById('mgr').textContent=(d.managers?.postgres_sources??'—')+' / '+(d.managers?.postgres_rules??'—');document.getElementById('mgrsmall').textContent=(d.managers?.embedded_author_labels??'—')+' авторских меток';const a=d.cycle?.summary||[];renderMatrix(a);const f=d.factory||{};document.getElementById('factory').innerHTML=`Кандидаты:<div class="chips">${chips(f.candidates)}</div>Правила:<div class="chips">${chips(f.rules)}</div>`;const b=d.backtest||{},lr=b.latest_run||{};document.getElementById('bt').innerHTML=`${lr.status||b.status||'—'} · ${lr.days||b.days||'—'} дней · правил ${lr.rules_tested??'—'} · наблюдений ${lr.observations??'—'}<br><span class="badge">20 б.п. + OOS + неперекрывающиеся окна</span>`;const m=d.macro||{},md=m.data||{},ca=d.cross_asset_shadow||{};document.getElementById('macro').innerHTML=`UST 2Y ${md.ust2y?.value??'—'} · 10Y ${md.ust10y?.value??'—'}<br>VIX ${(md.vix_live||md.vix_daily)?.value??'—'} · S&P ${md.sp500?.value??'—'}<br>DXY ${md.dxy?.value??'—'} · Gold ${md.gold?.value??'—'}`;document.getElementById('cross').innerHTML=`Cross-asset: <b>${ca.regime||'—'}</b> · ${ca.score??'—'} <span class="badge">shadow</span>`;const al=d.alerts||[];document.getElementById('alerts').innerHTML=al.slice(0,6).map(x=>`${new Date(x.created_at).toLocaleString()} · ${x.asset||''} ${x.horizon||''} · ${x.severity}`).join('<br>')||'нет новых алертов';const qc=d.qc||{};document.getElementById('qc').innerHTML=`DATA ${qc.DATA||'—'} · MARKET ${qc.MARKET||'—'} · FORECAST ${qc.FORECAST||'—'}<br>AUDIT ${qc.AUDIT||'—'} · DECISION ${qc.DECISION||'—'}`;const vi=(d.validation||{}).items||[],vc={};vi.forEach(x=>vc[x.validation_label]=(vc[x.validation_label]||0)+1);document.getElementById('val').innerHTML=`ROBUST ${vc.ROBUST_CANDIDATE||0} · PROMISING ${vc.PROMISING||0} · WEAK ${vc.WEAK||0}`;const ad=d.adaptive||{},rs=ad.runtime_settings||{};document.getElementById('adaptive').innerHTML=`Regime edge: ${(ad.regime_counts||{}).REGIME_EDGE||0} · Pair promising: ${(ad.pair_counts||{}).PAIR_PROMISING||0}<br>Rule drift: ${ad.rule_drift_count??'—'} · min score ${rs.min_directional_score??'—'}`;const dr=d.drift||{},cc=d.champion_challenger||{};document.getElementById('drift').innerHTML=`Drift ${dr.status||'—'} · weakening/decaying ${dr.rule_drift_count??0}<br>Challengers ${(cc.challengers||[]).length} · Champion ${cc.champion?'есть':'нет'}`;const pf=d.shadow_portfolio||{},pp=pf.positions||[];document.getElementById('portfolio').innerHTML=pp.map(x=>`${x.asset}: <b>${x.decision}</b> · ${(100*(x.final_fraction||0)).toFixed(2)}%`).join('<br>')+`<br>Gross ${(100*(pf.gross_fraction||0)).toFixed(2)}%`;const ac=(d.agent_consensus||{}).items||[];document.getElementById('consensus').innerHTML=ac.slice(0,6).map(x=>`${x.asset} ${x.horizon} ${x.direction}: ${x.agents} · n=${x.n}`).join('<br>')||'недостаточно данных';const dq=d.data_quality||{},dqr=dq.rows||[],counts=dq.status_counts||{};document.getElementById('dqsum').textContent=(dq.research_gate_pass?'основные источники в норме':'есть проблема основных источников')+' · '+Object.entries(counts).map(([k,v])=>k+' '+v).join(' · ');document.getElementById('dq').innerHTML=dqr.map(x=>`<div class="dqrow"><div>${x.source}<br><span class="stamp">${x.asset_class||''} · ${x.role||''}</span></div><div class="${dqClass(x.status)}">${x.status||'—'}<br><span class="stamp">${x.age_seconds==null?'возраст н/д':'возраст '+Math.round(x.age_seconds)+'с'}</span></div><div>${x.effective_lag_seconds==null?'—':Math.round(x.effective_lag_seconds)+'с'}</div></div>`).join('');const h=d.recent_history||[];renderChanges(h);document.getElementById('history').innerHTML=h.slice(0,24).map(x=>`<tr><td>${new Date(x.ts).toLocaleString()}</td><td>${x.asset}</td><td>${x.horizon}</td><td>${x.decision==='LONG'?'🟢':x.decision==='SHORT'?'🔴':'🟡'}</td><td>${pct(x.confidence)}</td><td>${x.outcome?((x.outcome.forward_return*100).toFixed(2)+'%'):'—'}</td></tr>`).join('');const cq=d.calibration_quality||{},cqi=cq.items||[];document.getElementById('calq').innerHTML=`Статус: <b>${cq.status||'—'}</b><br>${cqi.slice(0,6).map(x=>`${x.asset} ${x.horizon}: n=${x.n}, Brier ${x.brier_score==null?'—':x.brier_score.toFixed(3)}, ECE ${x.ece==null?'—':x.ece.toFixed(3)}`).join('<br>')||'выборка накапливается'}`;const oc=d.options_context||{},ob=oc.BTC||{},oe=oc.ETH||{};document.getElementById('optctx').innerHTML=`BTC ATM IV ${ob.near_atm_iv==null?'—':ob.near_atm_iv.toFixed(1)} · skew ${ob.near_skew_10pct_proxy==null?'—':ob.near_skew_10pct_proxy.toFixed(1)}<br>ETH ATM IV ${oe.near_atm_iv==null?'—':oe.near_atm_iv.toFixed(1)} · skew ${oe.near_skew_10pct_proxy==null?'—':oe.near_skew_10pct_proxy.toFixed(1)}<br><span class="badge">shadow</span>`;const nb=d.ndx_breadth||{},np=nb.proxy||{};document.getElementById('breadth').innerHTML=`${np.participation||'—'}<br>QQQ ${(100*(np.qqq_ret_1d||0)).toFixed(2)}% · QQEW ${(100*(np.qqew_ret_1d||0)).toFixed(2)}%<br>spread ${(100*(np.cap_vs_equal_spread||0)).toFixed(2)} п.п.<br><span class="badge">proxy</span>`;const vv=(d.validation||{}).items||[],vaultPass=vv.filter(x=>x.vault_pass).length;const ts=(d.time_stability||{}).items||[],stable=ts.filter(x=>x.stability_label==='STABLE').length;document.getElementById('vaultq').innerHTML=`VAULT pass <b>${vaultPass}</b> · стабильных по блокам <b>${stable}</b><br><span class="badge">holdout не участвует в подборе</span>`;const cs=(d.cost_sensitivity||{}).items||[],surv=cs.filter(x=>x.survives_high_cost).length;document.getElementById('costq').innerHTML=`Выживают при максимальных издержках: <b>${surv}</b><br>сетка ${(d.backtest?.latest_run?.details?.cost_grid_bps||[10,20,40]).join(' / ')} б.п.`;const rr=(d.signal_readiness||{}).signals||[];document.getElementById('readyq').innerHTML=rr.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.readiness}</b> ${x.readiness_score}`).join('<br>')||'накапливается';const mr=d.managers||{};document.getElementById('managerdetail').innerHTML=`<div class="managerhead"><span class="managerstat"><b>${mr.postgres_sources??mr.embedded_sources??'—'}</b><br>источников</span><span class="managerstat"><b>${mr.postgres_rules??mr.embedded_rules??'—'}</b><br>правил</span><span class="managerstat"><b>${mr.embedded_author_labels??'—'}</b><br>авторских меток</span></div><div class="authorgrid">${(mr.by_author||[]).slice(0,28).map(x=>`<span class="chip">${x.authors}: ${x.n}</span>`).join('')}</div>`}catch(e){document.getElementById('sys').innerHTML='<span class="err">ERROR</span>';document.getElementById('stamp').textContent=String(e)}}load();setInterval(load,30000);</script></body></html>"""
 
 
 def model_status():
@@ -3672,7 +4195,11 @@ def model_status():
         'runtime_settings_without_code_upload':True,
         'agent_consensus_learning':True,
         'shadow_portfolio_risk_budget':True,
-        'external_event_feed_shadow_hook':True
+        'external_event_feed_shadow_hook':True,
+        'manager_corpus_expanded':True,
+        'signal_matrix_ui':True,
+        'super_signal_research_tier':True,
+        'arxiv_discovery_fallback':True
       },
       'gates':{
         'macro_cio_enabled':runtime_bool('macro_cio_enabled',MACRO_CIO_ENABLED),
@@ -3748,11 +4275,36 @@ class H(BaseHTTPRequestHandler):
             elif self.path.startswith('/api/v1/calibration'):
                 self.reply({'version':VERSION,'calibration':pg_calibration_map()})
             elif self.path.startswith('/api/v1/explain'):
-                self.reply({'version':VERSION,'explanation':explain_latest_decision()})
+                u=urlparse(self.path); q=parse_qs(u.query)
+                self.reply({'version':VERSION,'explanation':explain_latest_decision((q.get('asset') or [None])[0],(q.get('horizon') or [None])[0])})
+            elif self.path.startswith('/api/v1/managers'):
+                self.reply({'version':VERSION,'managers':manager_corpus_detail()})
             elif self.path.startswith('/api/v1/model'):
                 self.reply(model_status())
             elif self.path.startswith('/api/v1/data-quality'):
                 self.reply({'version':VERSION,'data_quality':data_quality_snapshot()})
+            elif self.path.startswith('/api/v1/options'):
+                self.reply({'version':VERSION,'options':options_context()})
+            elif self.path.startswith('/api/v1/ndx-breadth'):
+                self.reply({'version':VERSION,'ndx_breadth':ndx_breadth_context()})
+            elif self.path.startswith('/api/v1/calibration-quality'):
+                self.reply({'version':VERSION,**calibration_quality()})
+            elif self.path.startswith('/api/v1/signal-quality'):
+                self.reply(signal_quality_report())
+            elif self.path.startswith('/api/v1/robustness'):
+                self.reply({'version':VERSION,**robustness_board()})
+            elif self.path.startswith('/api/v1/time-stability'):
+                self.reply({'version':VERSION,**timeblock_stability_board()})
+            elif self.path.startswith('/api/v1/cost-sensitivity'):
+                self.reply({'version':VERSION,**cost_sensitivity_board()})
+            elif self.path.startswith('/api/v1/expected-edge'):
+                self.reply({'version':VERSION,'expected_edge':expected_edge_map()})
+            elif self.path.startswith('/api/v1/readiness'):
+                self.reply(signal_readiness_report())
+            elif self.path.startswith('/api/v1/stress'):
+                self.reply({'version':VERSION,**portfolio_stress()})
+            elif self.path.startswith('/api/v1/validation-stack'):
+                self.reply({'version':VERSION,**validation_stack()})
             elif self.path.startswith('/api/v1/validation'):
                 self.reply({'version':VERSION,**oos_validation_board()})
             elif self.path.startswith('/api/v1/qc'):
@@ -3902,6 +4454,12 @@ def main():
          agent_performance_api='/api/v1/agent-performance', calibration_api='/api/v1/calibration',
          explanation_api='/api/v1/explain', model_api='/api/v1/model',
          validation_api='/api/v1/validation', qc_api='/api/v1/qc', data_quality_api='/api/v1/data-quality',
+         options_api='/api/v1/options', ndx_breadth_api='/api/v1/ndx-breadth',
+         calibration_quality_api='/api/v1/calibration-quality', signal_quality_api='/api/v1/signal-quality',
+         robustness_api='/api/v1/robustness', time_stability_api='/api/v1/time-stability',
+         cost_sensitivity_api='/api/v1/cost-sensitivity', expected_edge_api='/api/v1/expected-edge',
+         readiness_api='/api/v1/readiness', stress_api='/api/v1/stress',
+         validation_stack_api='/api/v1/validation-stack',
          adaptive_api='/api/v1/adaptive', drift_api='/api/v1/drift', regime_edges_api='/api/v1/regime-edges',
          rule_pairs_api='/api/v1/rule-pairs', champion_api='/api/v1/champion-challenger',
          settings_api='/api/v1/settings', settings_admin_api='/admin/settings',
