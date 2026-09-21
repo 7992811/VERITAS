@@ -1,0 +1,219 @@
+{
+  "sources": [
+    {
+      "source_id": "DANIEL_MOSKOWITZ_2016_JFE",
+      "title": "Momentum Crashes",
+      "authors": "Kent Daniel; Tobias J. Moskowitz",
+      "year": 2016,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/j.jfineco.2015.12.002",
+      "evidence_grade": "A",
+      "claim": "Momentum crashes are partly forecastable and are concentrated in panic states following market declines, when volatility is high and markets rebound."
+    },
+    {
+      "source_id": "BARROSO_SANTACLARA_2015_JFE",
+      "title": "Momentum Has Its Moments",
+      "authors": "Pedro Barroso; Pedro Santa-Clara",
+      "year": 2015,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/j.jfineco.2014.11.010",
+      "evidence_grade": "A",
+      "claim": "Momentum risk varies over time; volatility-based risk management materially reduces crash exposure in the studied equity momentum strategy."
+    },
+    {
+      "source_id": "HURST_OOI_PEDERSEN_2017_JPM",
+      "title": "A Century of Evidence on Trend-Following Investing",
+      "authors": "Brian Hurst; Yao Hua Ooi; Lasse Heje Pedersen",
+      "year": 2017,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.3905/jpm.2017.44.1.015",
+      "evidence_grade": "A",
+      "claim": "Time-series momentum was positive on average across a very long multi-asset history and across varied macro environments."
+    },
+    {
+      "source_id": "HARVEY_LIU_ZHU_2016_RFS",
+      "title": "... and the Cross-Section of Expected Returns",
+      "authors": "Campbell R. Harvey; Yan Liu; Heqing Zhu",
+      "year": 2016,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1093/rfs/hhv059",
+      "evidence_grade": "A",
+      "claim": "Multiple testing materially raises the hurdle required to accept newly discovered return factors."
+    },
+    {
+      "source_id": "BAILEY_LOPEZDEPRADO_2014_JPM",
+      "title": "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and Non-Normality",
+      "authors": "David H. Bailey; Marcos Lopez de Prado",
+      "year": 2014,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.3905/jpm.2014.40.5.094",
+      "evidence_grade": "A",
+      "claim": "Reported Sharpe ratios should be adjusted for multiple trials, selection bias, and non-normal returns before treating a backtest as reliable."
+    },
+    {
+      "source_id": "MAKAROV_SCHOAR_2020_JFE",
+      "title": "Trading and Arbitrage in Cryptocurrency Markets",
+      "authors": "Igor Makarov; Antoinette Schoar",
+      "year": 2020,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/j.jfineco.2019.07.001",
+      "evidence_grade": "A",
+      "claim": "Crypto markets exhibit recurrent cross-exchange price deviations; common signed-volume components explain a large share of Bitcoin returns in the study."
+    },
+    {
+      "source_id": "KOIJEN_MOSKOWITZ_PEDERSEN_VRUGT_2018_JFE",
+      "title": "Carry",
+      "authors": "Ralph S.J. Koijen; Tobias J. Moskowitz; Lasse Heje Pedersen; Evert B. Vrugt",
+      "year": 2018,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/j.jfineco.2017.11.002",
+      "evidence_grade": "A",
+      "claim": "Carry predicts returns across multiple asset classes but is exposed to recession, liquidity, and volatility risks."
+    }
+  ],
+  "rules": [
+    {
+      "rule_id": "DM2016_PANIC_MOMENTUM_CRASH_GUARD",
+      "source_id": "DANIEL_MOSKOWITZ_2016_JFE",
+      "agent": "RISK",
+      "asset_scope": ["BTC", "ETH"],
+      "horizons": ["1d", "3d", "7d"],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {"field": "ret_72h", "op": "<", "value": -0.05},
+        {"field": "rv", "op": ">", "value": 0.05},
+        {"field": "momentum", "op": "<", "value": 0.0}
+      ],
+      "prior_weight": 0.35,
+      "hypothesis": "After a sharp decline in a high-volatility state, adding fresh short momentum exposure may have poor asymmetry because rebound risk rises.",
+      "mechanism": "Momentum crash / convex rebound risk after panic states.",
+      "formalization_note": "VERITAS adaptation to crypto; thresholds are not taken from the paper and require out-of-sample validation."
+    },
+    {
+      "rule_id": "BSC2015_HIGH_VOL_MOMENTUM_DELEVER",
+      "source_id": "BARROSO_SANTACLARA_2015_JFE",
+      "agent": "RISK",
+      "asset_scope": ["BTC", "ETH"],
+      "horizons": ["4h", "1d", "3d", "7d"],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {"field": "rv", "op": ">", "value": 0.08}
+      ],
+      "prior_weight": 0.40,
+      "hypothesis": "Momentum-derived exposure should be reduced when realized volatility is unusually high.",
+      "mechanism": "Time-varying momentum risk and crash exposure.",
+      "formalization_note": "Crypto threshold is a VERITAS hypothesis; validate by asset, horizon, and volatility regime."
+    },
+    {
+      "rule_id": "HOP2017_TREND_UP_7D",
+      "source_id": "HURST_OOI_PEDERSEN_2017_JPM",
+      "agent": "QUANT",
+      "asset_scope": ["BTC", "ETH"],
+      "horizons": ["7d"],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {"field": "ret_168h", "op": ">", "value": 0.02},
+        {"field": "trend", "op": ">", "value": 0.0}
+      ],
+      "prior_weight": 0.45,
+      "hypothesis": "Positive medium-horizon own-price trend may carry continuation information.",
+      "mechanism": "Time-series trend persistence.",
+      "formalization_note": "Directional crypto adaptation of multi-asset trend-following evidence."
+    },
+    {
+      "rule_id": "HOP2017_TREND_DOWN_7D",
+      "source_id": "HURST_OOI_PEDERSEN_2017_JPM",
+      "agent": "QUANT",
+      "asset_scope": ["BTC", "ETH"],
+      "horizons": ["7d"],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {"field": "ret_168h", "op": "<", "value": -0.02},
+        {"field": "trend", "op": "<", "value": 0.0}
+      ],
+      "prior_weight": 0.45,
+      "hypothesis": "Negative medium-horizon own-price trend may carry continuation information.",
+      "mechanism": "Time-series trend persistence.",
+      "formalization_note": "Directional crypto adaptation of multi-asset trend-following evidence."
+    },
+    {
+      "rule_id": "MS2020_FRAGMENTATION_GATE",
+      "source_id": "MAKAROV_SCHOAR_2020_JFE",
+      "agent": "RISK",
+      "asset_scope": ["BTC", "ETH"],
+      "horizons": ["4h", "1d", "3d", "7d"],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {"field": "source_divergence", "op": ">", "value": 0.0025}
+      ],
+      "prior_weight": 0.40,
+      "hypothesis": "Material cross-venue price divergence should reduce confidence in a directional signal until fragmentation normalizes.",
+      "mechanism": "Market fragmentation and arbitrage-capital constraints.",
+      "formalization_note": "This is a VERITAS execution/data-quality adaptation, not a verbatim trading rule from the paper."
+    },
+    {
+      "rule_id": "MS2020_SIGNED_FLOW_UP",
+      "source_id": "MAKAROV_SCHOAR_2020_JFE",
+      "agent": "TECH_FLOW",
+      "asset_scope": ["BTC", "ETH"],
+      "horizons": ["4h", "1d"],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {"field": "taker_buy_share", "op": ">", "value": 0.56},
+        {"field": "volume_ratio", "op": ">", "value": 1.15}
+      ],
+      "prior_weight": 0.20,
+      "hypothesis": "Strong aggressive-buy flow during elevated activity may contain short-horizon continuation information.",
+      "mechanism": "Signed-volume information flow.",
+      "formalization_note": "Single-exchange taker flow is only a proxy for the paper's common signed-volume component; low prior until validated."
+    },
+    {
+      "rule_id": "HLZ2016_MULTIPLE_TESTING_GOVERNANCE",
+      "source_id": "HARVEY_LIU_ZHU_2016_RFS",
+      "agent": "RISK",
+      "asset_scope": ["BTC", "ETH"],
+      "horizons": ["4h", "1d", "3d", "7d"],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "New factors must clear a stricter evidence hurdle when many variants have been tested.",
+      "mechanism": "Multiple-testing correction.",
+      "formalization_note": "Governance rule; never enters live directional committee directly."
+    },
+    {
+      "rule_id": "BLP2014_DEFLATED_SHARPE_GOVERNANCE",
+      "source_id": "BAILEY_LOPEZDEPRADO_2014_JPM",
+      "agent": "RISK",
+      "asset_scope": ["BTC", "ETH"],
+      "horizons": ["4h", "1d", "3d", "7d"],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Backtest Sharpe must be deflated for selection bias, multiple trials, and non-normality before promotion.",
+      "mechanism": "Backtest-overfitting control.",
+      "formalization_note": "Governance rule; to be applied by the model-promotion pipeline."
+    },
+    {
+      "rule_id": "KMPV2018_CARRY_GOVERNANCE",
+      "source_id": "KOIJEN_MOSKOWITZ_PEDERSEN_VRUGT_2018_JFE",
+      "agent": "DERIV",
+      "asset_scope": ["BTC", "ETH"],
+      "horizons": ["1d", "3d", "7d"],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Crypto basis/funding may be studied as a carry-like characteristic, but directional mapping must be validated separately.",
+      "mechanism": "Carry / varying risk premia.",
+      "formalization_note": "Research agenda only; no live directional inference is made from general cross-asset carry evidence."
+    }
+  ]
+}
