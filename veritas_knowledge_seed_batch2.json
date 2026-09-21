@@ -1,0 +1,432 @@
+{
+  "sources": [
+    {
+      "source_id": "BRUNNERMEIER_PEDERSEN_2009_RFS",
+      "title": "Market Liquidity and Funding Liquidity",
+      "authors": "Markus K. Brunnermeier; Lasse Heje Pedersen",
+      "year": 2009,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1093/rfs/hhn098",
+      "evidence_grade": "A",
+      "claim": "Market liquidity and funding liquidity can reinforce each other, producing destabilizing liquidity spirals and sharp increases in volatility."
+    },
+    {
+      "source_id": "ANDERSEN_BOLLERSLEV_DIEBOLD_LABYS_2003_ECTA",
+      "title": "Modeling and Forecasting Realized Volatility",
+      "authors": "Torben G. Andersen; Tim Bollerslev; Francis X. Diebold; Paul Labys",
+      "year": 2003,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1111/1468-0262.00418",
+      "evidence_grade": "A",
+      "claim": "High-frequency realized volatility contains persistent information useful for forecasting future volatility and return distributions."
+    },
+    {
+      "source_id": "AMIHUD_2002_JFM",
+      "title": "Illiquidity and stock returns: cross-section and time-series effects",
+      "authors": "Yakov Amihud",
+      "year": 2002,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/S1386-4181(01)00024-6",
+      "evidence_grade": "A",
+      "claim": "Unexpected increases in market illiquidity are associated with contemporaneously lower returns, while expected illiquidity commands a return premium."
+    },
+    {
+      "source_id": "EVANS_LYONS_2002_JPE",
+      "title": "Order Flow and Exchange Rate Dynamics",
+      "authors": "Martin D. D. Evans; Richard K. Lyons",
+      "year": 2002,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1086/324391",
+      "evidence_grade": "A",
+      "claim": "Signed order flow contains substantial information about price changes because trades aggregate dispersed information."
+    },
+    {
+      "source_id": "HASBROUCK_1991_JF",
+      "title": "Measuring the Information Content of Stock Trades",
+      "authors": "Joel Hasbrouck",
+      "year": 1991,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1111/j.1540-6261.1991.tb03749.x",
+      "evidence_grade": "A",
+      "claim": "Trade innovations have persistent price impact; larger trades and wider-spread conditions are associated with larger information effects."
+    },
+    {
+      "source_id": "GLOSTEN_MILGROM_1985_JFE",
+      "title": "Bid, ask and transaction prices in a specialist market with heterogeneously informed traders",
+      "authors": "Lawrence R. Glosten; Paul R. Milgrom",
+      "year": 1985,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/0304-405X(85)90044-3",
+      "evidence_grade": "A",
+      "claim": "Adverse selection creates bid-ask spreads and makes observed transaction prices differ from realizable prices."
+    },
+    {
+      "source_id": "KELLY_1956_BSTJ",
+      "title": "A New Interpretation of Information Rate",
+      "authors": "J. L. Kelly Jr.",
+      "year": 1956,
+      "source_type": "foundational_theory",
+      "url": "https://doi.org/10.1002/j.1538-7305.1956.tb03809.x",
+      "evidence_grade": "B",
+      "claim": "Under known probabilities and odds, capital growth is maximized by sizing exposure according to edge rather than using fixed stakes."
+    },
+    {
+      "source_id": "LO_MAMAYSKY_WANG_2000_JF",
+      "title": "Foundations of Technical Analysis: Computational Algorithms, Statistical Inference, and Empirical Implementation",
+      "authors": "Andrew W. Lo; Harry Mamaysky; Jiang Wang",
+      "year": 2000,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1111/0022-1082.00265",
+      "evidence_grade": "A",
+      "claim": "Some technical price patterns can be formalized computationally and may contain incremental information, but statistical validation is essential."
+    },
+    {
+      "source_id": "MENKHOFF_SARNO_SCHMELING_SCHRIMPF_2012_JFE",
+      "title": "Currency momentum strategies",
+      "authors": "Lukas Menkhoff; Lucio Sarno; Maik Schmeling; Andreas Schrimpf",
+      "year": 2012,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/j.jfineco.2012.06.009",
+      "evidence_grade": "A",
+      "claim": "Cross-sectional currency momentum is significant but partly eroded by transaction costs and constrained by limits to arbitrage."
+    }
+  ],
+  "rules": [
+    {
+      "rule_id": "BP2009_LIQUIDITY_SPIRAL_GUARD",
+      "source_id": "BRUNNERMEIER_PEDERSEN_2009_RFS",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d"
+      ],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "rv",
+          "op": ">",
+          "value": 0.07
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.5
+        }
+      ],
+      "prior_weight": 0.35,
+      "hypothesis": "Very high realized volatility combined with a volume shock may mark a liquidity-stress state in which directional signals deserve less trust.",
+      "mechanism": "Funding-liquidity and market-liquidity feedback can amplify price moves.",
+      "formalization_note": "Crypto proxy using realized volatility and relative volume; not a direct rule from the paper."
+    },
+    {
+      "rule_id": "ABDL2003_VOL_PERSISTENCE_GUARD",
+      "source_id": "ANDERSEN_BOLLERSLEV_DIEBOLD_LABYS_2003_ECTA",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "rv",
+          "op": ">",
+          "value": 0.085
+        }
+      ],
+      "prior_weight": 0.3,
+      "hypothesis": "An extreme realized-volatility state is likely to persist enough to warrant lower conviction and exposure.",
+      "mechanism": "Persistence in realized volatility.",
+      "formalization_note": "Threshold is VERITAS-specific and requires out-of-sample validation."
+    },
+    {
+      "rule_id": "EVANS_LYONS_FLOW_UP",
+      "source_id": "EVANS_LYONS_2002_JPE",
+      "agent": "TECH_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "taker_buy_share",
+          "op": ">",
+          "value": 0.57
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.15
+        }
+      ],
+      "prior_weight": 0.25,
+      "hypothesis": "Strong signed aggressive-buy flow during elevated activity may contain short-horizon positive price information.",
+      "mechanism": "Order flow aggregates dispersed information.",
+      "formalization_note": "Crypto taker-buy share is a proxy; low prior until validated."
+    },
+    {
+      "rule_id": "EVANS_LYONS_FLOW_DOWN",
+      "source_id": "EVANS_LYONS_2002_JPE",
+      "agent": "TECH_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "taker_buy_share",
+          "op": "<",
+          "value": 0.43
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.15
+        }
+      ],
+      "prior_weight": 0.25,
+      "hypothesis": "Strong signed aggressive-sell flow during elevated activity may contain short-horizon negative price information.",
+      "mechanism": "Order flow aggregates dispersed information.",
+      "formalization_note": "Crypto taker-buy share is a proxy; low prior until validated."
+    },
+    {
+      "rule_id": "HASBROUCK_HIGH_IMPACT_BUY",
+      "source_id": "HASBROUCK_1991_JF",
+      "agent": "TECH_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "taker_buy_share",
+          "op": ">",
+          "value": 0.6
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.5
+        }
+      ],
+      "prior_weight": 0.2,
+      "hypothesis": "Large aggressive-buy imbalance under high activity may have persistent short-horizon price impact.",
+      "mechanism": "Information-bearing trades can have persistent price impact.",
+      "formalization_note": "VERITAS proxy adaptation; trade size and spread are not yet directly observed."
+    },
+    {
+      "rule_id": "HASBROUCK_HIGH_IMPACT_SELL",
+      "source_id": "HASBROUCK_1991_JF",
+      "agent": "TECH_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "taker_buy_share",
+          "op": "<",
+          "value": 0.4
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.5
+        }
+      ],
+      "prior_weight": 0.2,
+      "hypothesis": "Large aggressive-sell imbalance under high activity may have persistent short-horizon price impact.",
+      "mechanism": "Information-bearing trades can have persistent price impact.",
+      "formalization_note": "VERITAS proxy adaptation; trade size and spread are not yet directly observed."
+    },
+    {
+      "rule_id": "GM1985_FRAGMENTATION_EXECUTION_GUARD",
+      "source_id": "GLOSTEN_MILGROM_1985_JFE",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "source_divergence",
+          "op": ">",
+          "value": 0.0015
+        }
+      ],
+      "prior_weight": 0.3,
+      "hypothesis": "When cross-venue prices diverge materially, executable price uncertainty and adverse-selection risk justify lower confidence.",
+      "mechanism": "Adverse selection and transaction-price dispersion.",
+      "formalization_note": "Cross-exchange divergence is a VERITAS proxy for execution-quality uncertainty."
+    },
+    {
+      "rule_id": "KELLY_POSITION_SIZING_GOVERNANCE",
+      "source_id": "KELLY_1956_BSTJ",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Position size must be tied to estimated edge and uncertainty, with fractional sizing preferred when probabilities are estimated rather than known.",
+      "mechanism": "Log-growth optimal sizing under probabilistic edge.",
+      "formalization_note": "Governance only; no live Kelly sizing until calibration quality is independently established."
+    },
+    {
+      "rule_id": "LMW2000_PATTERN_VALIDATION_GOVERNANCE",
+      "source_id": "LO_MAMAYSKY_WANG_2000_JF",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Technical patterns must be encoded objectively and validated statistically before promotion.",
+      "mechanism": "Formal pattern recognition plus statistical inference.",
+      "formalization_note": "Governance rule for future pattern-library expansion."
+    },
+    {
+      "rule_id": "AMIHUD_LIQUIDITY_RESEARCH_GOVERNANCE",
+      "source_id": "AMIHUD_2002_JFM",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Add direct liquidity and price-impact measures before treating volume alone as a complete liquidity proxy.",
+      "mechanism": "Illiquidity premium and unexpected-liquidity shocks.",
+      "formalization_note": "Research agenda until spread/depth/impact data are wired."
+    },
+    {
+      "rule_id": "MSSS2012_MOMENTUM_UP_7D",
+      "source_id": "MENKHOFF_SARNO_SCHMELING_SCHRIMPF_2012_JFE",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_168h",
+          "op": ">",
+          "value": 0.03
+        },
+        {
+          "field": "trend",
+          "op": ">",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.18,
+      "hypothesis": "Momentum evidence from another highly liquid 24-hour asset class modestly raises the prior for medium-horizon continuation.",
+      "mechanism": "Underreaction / delayed overreaction with limits to arbitrage.",
+      "formalization_note": "Cross-asset analogy only; deliberately low prior for crypto."
+    },
+    {
+      "rule_id": "MSSS2012_MOMENTUM_DOWN_7D",
+      "source_id": "MENKHOFF_SARNO_SCHMELING_SCHRIMPF_2012_JFE",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_168h",
+          "op": "<",
+          "value": -0.03
+        },
+        {
+          "field": "trend",
+          "op": "<",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.18,
+      "hypothesis": "Momentum evidence from another highly liquid 24-hour asset class modestly raises the prior for medium-horizon downside continuation.",
+      "mechanism": "Underreaction / delayed overreaction with limits to arbitrage.",
+      "formalization_note": "Cross-asset analogy only; deliberately low prior for crypto."
+    }
+  ]
+}
