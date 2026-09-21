@@ -1,0 +1,1536 @@
+{
+  "pack_id": "VERITAS_KNOWLEDGE_PACK_3_2026-09-21",
+  "sources": [
+    {
+      "source_id": "KP3_TALEB_FAT_TAILS_2020",
+      "title": "Statistical Consequences of Fat Tails",
+      "authors": "Nassim Nicholas Taleb",
+      "year": 2020,
+      "source_type": "open_monograph",
+      "url": "https://arxiv.org/abs/2001.10488",
+      "evidence_grade": "B",
+      "claim": "Under fat-tailed distributions, conventional estimators, Gaussian asymptotics, variance-based risk measures and finite-sample intuition can become unreliable; model uncertainty compounds the problem."
+    },
+    {
+      "source_id": "KP3_TALEB_BINARY_PAYOFFS_2019",
+      "title": "On the Statistical Differences between Binary Forecasts and Real World Payoffs",
+      "authors": "Nassim Nicholas Taleb",
+      "year": 2019,
+      "source_type": "working_paper",
+      "url": "https://arxiv.org/abs/1907.11162",
+      "evidence_grade": "B",
+      "claim": "Binary forecast accuracy and real-world payoff performance are not equivalent, especially under nonlinear payoffs and fat-tailed distributions."
+    },
+    {
+      "source_id": "KP3_GEMAN_GEMAN_TALEB_2014",
+      "title": "Tail Risk Constraints and Maximum Entropy",
+      "authors": "Donald Geman; Helyette Geman; Nassim Nicholas Taleb",
+      "year": 2014,
+      "source_type": "working_paper",
+      "url": "https://arxiv.org/abs/1412.7647",
+      "evidence_grade": "B",
+      "claim": "Portfolio design under uncertainty can be dominated by explicit left-tail constraints, with barbell-like allocations emerging when distributions are only partially known."
+    },
+    {
+      "source_id": "KP3_MANDELBROT_1963",
+      "title": "The Variation of Certain Speculative Prices",
+      "authors": "Benoit B. Mandelbrot",
+      "year": 1963,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1086/294632",
+      "evidence_grade": "A",
+      "claim": "Speculative price changes can exhibit heavy tails that are poorly represented by Gaussian assumptions."
+    },
+    {
+      "source_id": "KP3_KAHNEMAN_TVERSKY_1979",
+      "title": "Prospect Theory: An Analysis of Decision under Risk",
+      "authors": "Daniel Kahneman; Amos Tversky",
+      "year": 1979,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.2307/1914185",
+      "evidence_grade": "A",
+      "claim": "People evaluate risky choices relative to reference points and display asymmetric responses to gains and losses, including loss aversion."
+    },
+    {
+      "source_id": "KP3_DEBONDT_THALER_1985",
+      "title": "Does the Stock Market Overreact?",
+      "authors": "Werner F. M. De Bondt; Richard Thaler",
+      "year": 1985,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1111/j.1540-6261.1985.tb05004.x",
+      "evidence_grade": "A",
+      "claim": "Long-horizon stock return evidence is consistent with investor overreaction, with prior losers subsequently outperforming prior winners in the studied sample."
+    },
+    {
+      "source_id": "KP3_BAKER_WURGLER_2006",
+      "title": "Investor Sentiment and the Cross-Section of Stock Returns",
+      "authors": "Malcolm Baker; Jeffrey Wurgler",
+      "year": 2006,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1111/j.1540-6261.2006.00885.x",
+      "evidence_grade": "A",
+      "claim": "Investor sentiment has stronger subsequent return effects among securities that are difficult to value and difficult to arbitrage."
+    },
+    {
+      "source_id": "KP3_BARBERIS_SHLEIFER_VISHNY_1998",
+      "title": "A Model of Investor Sentiment",
+      "authors": "Nicholas Barberis; Andrei Shleifer; Robert W. Vishny",
+      "year": 1998,
+      "source_type": "peer_reviewed",
+      "url": "https://www.nber.org/papers/w5926",
+      "evidence_grade": "A",
+      "claim": "A parsimonious belief-updating model can generate both underreaction to news and overreaction to a sequence of similar news."
+    },
+    {
+      "source_id": "KP3_HONG_STEIN_1999",
+      "title": "A Unified Theory of Underreaction, Momentum Trading, and Overreaction in Asset Markets",
+      "authors": "Harrison Hong; Jeremy C. Stein",
+      "year": 1999,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1111/0022-1082.00184",
+      "evidence_grade": "A",
+      "claim": "Gradual information diffusion can produce short-run underreaction and momentum, while trend chasing can contribute to longer-run overreaction."
+    },
+    {
+      "source_id": "KP3_SHLEIFER_VISHNY_1997",
+      "title": "The Limits of Arbitrage",
+      "authors": "Andrei Shleifer; Robert W. Vishny",
+      "year": 1997,
+      "source_type": "peer_reviewed",
+      "url": "https://www.nber.org/papers/w5167",
+      "evidence_grade": "A",
+      "claim": "Capital constraints and delegated professional arbitrage can allow mispricing to persist or widen, especially in extreme conditions."
+    },
+    {
+      "source_id": "KP3_PASTOR_STAMBAUGH_2003",
+      "title": "Liquidity Risk and Expected Stock Returns",
+      "authors": "Lubos Pastor; Robert F. Stambaugh",
+      "year": 2003,
+      "source_type": "peer_reviewed",
+      "url": "https://www.nber.org/papers/w8462",
+      "evidence_grade": "A",
+      "claim": "Exposure to aggregate liquidity fluctuations is priced in the cross-section of expected stock returns."
+    },
+    {
+      "source_id": "KP3_KYLE_1985",
+      "title": "Continuous Auctions and Insider Trading",
+      "authors": "Albert S. Kyle",
+      "year": 1985,
+      "source_type": "peer_reviewed",
+      "url": "https://www.jstor.org/stable/1913210",
+      "evidence_grade": "A",
+      "claim": "Market depth and price impact emerge endogenously as informed trading is absorbed by competitive market makers in the presence of noise trading."
+    },
+    {
+      "source_id": "KP3_ENGLE_1982",
+      "title": "Autoregressive Conditional Heteroscedasticity with Estimates of the Variance of United Kingdom Inflation",
+      "authors": "Robert F. Engle",
+      "year": 1982,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.2307/1912773",
+      "evidence_grade": "A",
+      "claim": "Conditional variance can change predictably over time, motivating explicit modelling of volatility clustering."
+    },
+    {
+      "source_id": "KP3_BOLLERSLEV_1986",
+      "title": "Generalized Autoregressive Conditional Heteroskedasticity",
+      "authors": "Tim Bollerslev",
+      "year": 1986,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/0304-4076(86)90063-1",
+      "evidence_grade": "A",
+      "claim": "GARCH models capture persistent conditional volatility with a parsimonious autoregressive structure."
+    },
+    {
+      "source_id": "KP3_FAMA_FRENCH_1993",
+      "title": "Common risk factors in the returns on stocks and bonds",
+      "authors": "Eugene F. Fama; Kenneth R. French",
+      "year": 1993,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/0304-405X(93)90023-5",
+      "evidence_grade": "A",
+      "claim": "Multiple common factors beyond the market factor help explain average stock and bond returns."
+    },
+    {
+      "source_id": "KP3_FAMA_FRENCH_2015",
+      "title": "A five-factor asset pricing model",
+      "authors": "Eugene F. Fama; Kenneth R. French",
+      "year": 2015,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/j.jfineco.2014.10.010",
+      "evidence_grade": "A",
+      "claim": "Profitability and investment factors add explanatory power to the traditional market, size and value factors."
+    },
+    {
+      "source_id": "KP3_FRENCH_DATA_LIBRARY",
+      "title": "Kenneth R. French Data Library",
+      "authors": "Kenneth R. French",
+      "year": 2026,
+      "source_type": "official_dataset",
+      "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html",
+      "evidence_grade": "A",
+      "claim": "The library provides maintained research factor returns and portfolio data used widely for empirical asset-pricing validation."
+    },
+    {
+      "source_id": "KP3_FRAZZINI_PEDERSEN_2014",
+      "title": "Betting Against Beta",
+      "authors": "Andrea Frazzini; Lasse H. Pedersen",
+      "year": 2014,
+      "source_type": "peer_reviewed",
+      "url": "https://www.aqr.com/insights/research/journal-article/betting-against-beta",
+      "evidence_grade": "A",
+      "claim": "Leverage constraints can lead investors to overweight high-beta assets, creating a low-beta versus high-beta return spread across markets."
+    },
+    {
+      "source_id": "KP3_ASNESS_FRAZZINI_PEDERSEN_QMJ",
+      "title": "Quality Minus Junk",
+      "authors": "Cliff Asness; Andrea Frazzini; Lasse H. Pedersen",
+      "year": 2019,
+      "source_type": "peer_reviewed",
+      "url": "https://www.aqr.com/Insights/Research/Working-Paper/Quality-Minus-Junk",
+      "evidence_grade": "A",
+      "claim": "A broad quality characteristic built from profitability, growth and safety has historically been associated with strong risk-adjusted returns across markets."
+    },
+    {
+      "source_id": "KP3_AQR_STYLE_PREMIA_2014",
+      "title": "Understanding Style Premia",
+      "authors": "Ronen Israel; Thomas Maloney",
+      "year": 2014,
+      "source_type": "institutional_research",
+      "url": "https://www.aqr.com/Insights/Research/Journal-Article/Understanding-Style-Premia",
+      "evidence_grade": "B",
+      "claim": "Value, momentum, carry and defensive styles have long-run evidence across asset classes and can diversify each other when implemented systematically."
+    },
+    {
+      "source_id": "KP3_AQR_MOMENTUM_2014",
+      "title": "Fact, Fiction and Momentum Investing",
+      "authors": "Cliff Asness; Andrea Frazzini; Ronen Israel; Tobias J. Moskowitz",
+      "year": 2014,
+      "source_type": "institutional_research",
+      "url": "https://www.aqr.com/Insights/Research/Journal-Article/Fact-Fiction-and-Momentum-Investing",
+      "evidence_grade": "B",
+      "claim": "Momentum evidence is broad across long histories, countries and asset classes, though implementation and diversification matter."
+    },
+    {
+      "source_id": "KP3_AQR_MANAGED_FUTURES_2013",
+      "title": "Demystifying Managed Futures",
+      "authors": "Brian K. Hurst; Yao Hua Ooi; Lasse H. Pedersen",
+      "year": 2013,
+      "source_type": "institutional_research",
+      "url": "https://www.aqr.com/Insights/Research/Journal-Article/Demystifying-Managed-Futures",
+      "evidence_grade": "B",
+      "claim": "Simple time-series momentum strategies explain a substantial portion of managed-futures behaviour across commodities, rates, equities and currencies."
+    },
+    {
+      "source_id": "KP3_MAN_CRISIS_ALPHA",
+      "title": "Trend Following: Equity and Bond Crisis Alpha",
+      "authors": "Man AHL",
+      "year": 2017,
+      "source_type": "institutional_research",
+      "url": "https://www.man.com/insights/trend-following-equity-and-bond-crisis-alpha",
+      "evidence_grade": "B",
+      "claim": "Long-run trend-following evidence shows positive skew and crisis-alpha characteristics across equity and bond stress environments."
+    },
+    {
+      "source_id": "KP3_FABER_TAA",
+      "title": "A Quantitative Approach to Tactical Asset Allocation",
+      "authors": "Meb Faber",
+      "year": 2007,
+      "source_type": "practitioner_research",
+      "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=962461",
+      "evidence_grade": "B",
+      "claim": "A simple trend-based tactical allocation framework can materially alter drawdowns and risk-adjusted outcomes across asset classes in historical tests."
+    },
+    {
+      "source_id": "KP3_MARMI_FABER_CRITIQUE",
+      "title": "A Quantitative Approach to Faber's Tactical Asset Allocation",
+      "authors": "Stefano Marmi; Claudio Pacati; Wiston Adrian Risso; Roberto Reno",
+      "year": 2012,
+      "source_type": "research_critique",
+      "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1476225",
+      "evidence_grade": "B",
+      "claim": "Trading-rule evidence requires bootstrap and robustness analysis before being interpreted as a violation of market efficiency or a persistent edge."
+    },
+    {
+      "source_id": "KP3_ARNOTT_HSU_MOORE_2005",
+      "title": "Fundamental Indexation",
+      "authors": "Robert D. Arnott; Jason C. Hsu; Philip Moore",
+      "year": 2005,
+      "source_type": "peer_reviewed",
+      "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=604842",
+      "evidence_grade": "A",
+      "claim": "Non-capitalization-weighted fundamental index constructions can exhibit different risk-return characteristics from cap-weighted benchmarks."
+    },
+    {
+      "source_id": "KP3_DANIEL_HIRSHLEIFER_2016",
+      "title": "Overconfident Investors, Predictable Returns, and Excessive Trading",
+      "authors": "Kent Daniel; David Hirshleifer",
+      "year": 2016,
+      "source_type": "review_paper",
+      "url": "https://www.nber.org/papers/w21945",
+      "evidence_grade": "A",
+      "claim": "Investor overconfidence can contribute to excessive trading, high volume and predictable return patterns."
+    },
+    {
+      "source_id": "KP3_DHS_1998",
+      "title": "Investor Psychology and Security Market Under- and Overreactions",
+      "authors": "Kent Daniel; David Hirshleifer; Avanidhar Subrahmanyam",
+      "year": 1998,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1111/0022-1082.00077",
+      "evidence_grade": "A",
+      "claim": "Overconfidence and biased self-attribution can generate short-run momentum and longer-run reversals."
+    },
+    {
+      "source_id": "KP3_CHORDIA_ROLL_SUBRAHMANYAM_2000",
+      "title": "Commonality in liquidity",
+      "authors": "Tarun Chordia; Richard Roll; Avanidhar Subrahmanyam",
+      "year": 2000,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/S0304-405X(99)00057-4",
+      "evidence_grade": "A",
+      "claim": "Liquidity has an important market-wide common component, so execution conditions can deteriorate jointly across securities."
+    },
+    {
+      "source_id": "KP3_GARLEANU_PEDERSEN_2011",
+      "title": "Margin-Based Asset Pricing and Deviations from the Law of One Price",
+      "authors": "Nicolae Garleanu; Lasse H. Pedersen",
+      "year": 2011,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1093/rfs/hhq149",
+      "evidence_grade": "A",
+      "claim": "Margin requirements and funding constraints can create persistent relative-value deviations and amplify losses during funding stress."
+    },
+    {
+      "source_id": "KP3_ADRIAN_SHIN_2010",
+      "title": "Liquidity and leverage",
+      "authors": "Tobias Adrian; Hyun Song Shin",
+      "year": 2010,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/j.jfi.2008.12.002",
+      "evidence_grade": "A",
+      "claim": "Financial intermediaries' balance-sheet leverage is procyclical and can amplify liquidity conditions and asset-price movements."
+    },
+    {
+      "source_id": "KP3_BLACK_NOISE_1986",
+      "title": "Noise",
+      "authors": "Fischer Black",
+      "year": 1986,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1111/j.1540-6261.1986.tb04513.x",
+      "evidence_grade": "A",
+      "claim": "Noise trading and imperfect information are integral to market functioning, making observed price changes a mixture of information and noise."
+    },
+    {
+      "source_id": "KP3_GROSSMAN_STIGLITZ_1980",
+      "title": "On the Impossibility of Informationally Efficient Markets",
+      "authors": "Sanford J. Grossman; Joseph E. Stiglitz",
+      "year": 1980,
+      "source_type": "peer_reviewed",
+      "url": "https://www.jstor.org/stable/1805228",
+      "evidence_grade": "A",
+      "claim": "Perfect informational efficiency is incompatible with costly information acquisition because prices must leave some reward for informed analysis."
+    },
+    {
+      "source_id": "KP3_DONCHIAN_RULES",
+      "title": "Richard Donchian Trend Following Rules",
+      "authors": "Richard Donchian; public rule compilation",
+      "year": 1974,
+      "source_type": "secondary_public_method",
+      "url": "https://www.trendfollowing.com/donchian_rules/",
+      "evidence_grade": "D",
+      "claim": "The public Donchian rule compilation emphasizes following clearly defined moves, limiting losses, riding profits and reducing commitments when the market state is uncertain."
+    }
+  ],
+  "rules": [
+    {
+      "rule_id": "KP3_TALEB_FATTAIL_RISK_GUARD",
+      "source_id": "KP3_TALEB_FAT_TAILS_2020",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "rv",
+          "op": ">",
+          "value": 0.09
+        }
+      ],
+      "prior_weight": 0.08,
+      "hypothesis": "Extremely high realized volatility indicates a state where Gaussian-style confidence and ordinary sizing are unreliable.",
+      "mechanism": "Fat tails and finite-sample instability make variance-based confidence fragile in extremes.",
+      "formalization_note": "VERITAS proxy. The 9% threshold is provisional and must be validated."
+    },
+    {
+      "rule_id": "KP3_TALEB_PAYOFF_GOV",
+      "source_id": "KP3_TALEB_BINARY_PAYOFFS_2019",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Rule promotion must not optimize hit rate alone; payoff magnitude, asymmetry, MFE, MAE and tail losses must be evaluated separately.",
+      "mechanism": "Binary forecast skill and continuous payoff performance are different objects.",
+      "formalization_note": "Governance only."
+    },
+    {
+      "rule_id": "KP3_TALEB_BAR_BELL_GOV",
+      "source_id": "KP3_GEMAN_GEMAN_TALEB_2014",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "When distributional uncertainty is large, portfolio construction should explicitly constrain left-tail exposure rather than rely on point-estimated mean-variance optimization.",
+      "mechanism": "Tail constraints dominate under partial distributional knowledge.",
+      "formalization_note": "Governance only until portfolio engine is implemented."
+    },
+    {
+      "rule_id": "KP3_MANDELBROT_EXTREME_GUARD",
+      "source_id": "KP3_MANDELBROT_1963",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "rv",
+          "op": ">",
+          "value": 0.1
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.4
+        }
+      ],
+      "prior_weight": 0.06,
+      "hypothesis": "Extreme volatility with abnormal activity may indicate a heavy-tail regime in which extrapolating ordinary return distributions is unsafe.",
+      "mechanism": "Speculative-price distributions can have much heavier tails than Gaussian models imply.",
+      "formalization_note": "Crypto proxy; threshold is VERITAS-specific."
+    },
+    {
+      "rule_id": "KP3_PROSPECT_THEORY_GOV",
+      "source_id": "KP3_KAHNEMAN_TVERSKY_1979",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Decision review must detect reference-point anchoring, loss aversion and asymmetric treatment of gains versus losses.",
+      "mechanism": "Human choices under risk depend on reference points and asymmetric value functions.",
+      "formalization_note": "Governance for human/LLM review; not a market timing rule."
+    },
+    {
+      "rule_id": "KP3_OVERREACTION_REVERSAL_LONG",
+      "source_id": "KP3_DEBONDT_THALER_1985",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_168h",
+          "op": "<",
+          "value": -0.12
+        },
+        {
+          "field": "momentum",
+          "op": ">",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.03,
+      "hypothesis": "After an extreme medium-horizon decline, a short-term momentum turn may mark the beginning of a reversal.",
+      "mechanism": "Investor overreaction can create later mean reversion.",
+      "formalization_note": "Very provisional crypto adaptation; original evidence is long-horizon equity data."
+    },
+    {
+      "rule_id": "KP3_OVERREACTION_REVERSAL_SHORT",
+      "source_id": "KP3_DEBONDT_THALER_1985",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_168h",
+          "op": ">",
+          "value": 0.12
+        },
+        {
+          "field": "momentum",
+          "op": "<",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.03,
+      "hypothesis": "After an extreme medium-horizon rise, a short-term momentum break may mark the beginning of a reversal.",
+      "mechanism": "Investor overreaction can create later mean reversion.",
+      "formalization_note": "Very provisional symmetric crypto adaptation."
+    },
+    {
+      "rule_id": "KP3_SENTIMENT_GOV",
+      "source_id": "KP3_BAKER_WURGLER_2006",
+      "agent": "MACRO",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Sentiment should be modelled explicitly and expected to matter most where valuation is subjective and arbitrage is constrained.",
+      "mechanism": "Sentiment interacts with limits to arbitrage.",
+      "formalization_note": "Requires a dedicated sentiment/positioning feed."
+    },
+    {
+      "rule_id": "KP3_BSV_UNDERREACTION_LONG",
+      "source_id": "KP3_BARBERIS_SHLEIFER_VISHNY_1998",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_24h",
+          "op": ">",
+          "value": 0.015
+        },
+        {
+          "field": "ret_72h",
+          "op": ">",
+          "value": 0.025
+        },
+        {
+          "field": "trend",
+          "op": ">",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.04,
+      "hypothesis": "Consistent positive returns across short and medium horizons may reflect gradual belief updating and underreaction.",
+      "mechanism": "Belief biases can generate persistence after information arrives.",
+      "formalization_note": "Crypto proxy; thresholds provisional."
+    },
+    {
+      "rule_id": "KP3_BSV_UNDERREACTION_SHORT",
+      "source_id": "KP3_BARBERIS_SHLEIFER_VISHNY_1998",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_24h",
+          "op": "<",
+          "value": -0.015
+        },
+        {
+          "field": "ret_72h",
+          "op": "<",
+          "value": -0.025
+        },
+        {
+          "field": "trend",
+          "op": "<",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.04,
+      "hypothesis": "Consistent negative returns across short and medium horizons may reflect gradual belief updating and underreaction.",
+      "mechanism": "Belief biases can generate persistence after information arrives.",
+      "formalization_note": "Symmetric crypto proxy; thresholds provisional."
+    },
+    {
+      "rule_id": "KP3_HONG_STEIN_MOMENTUM_LONG",
+      "source_id": "KP3_HONG_STEIN_1999",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_24h",
+          "op": ">",
+          "value": 0.01
+        },
+        {
+          "field": "ret_72h",
+          "op": ">",
+          "value": 0.02
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.0
+        }
+      ],
+      "prior_weight": 0.05,
+      "hypothesis": "Gradual information diffusion can support continuation when price and activity confirm the same direction.",
+      "mechanism": "Short-run underreaction plus momentum trading.",
+      "formalization_note": "VERITAS proxy; does not directly measure information diffusion."
+    },
+    {
+      "rule_id": "KP3_HONG_STEIN_MOMENTUM_SHORT",
+      "source_id": "KP3_HONG_STEIN_1999",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_24h",
+          "op": "<",
+          "value": -0.01
+        },
+        {
+          "field": "ret_72h",
+          "op": "<",
+          "value": -0.02
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.0
+        }
+      ],
+      "prior_weight": 0.05,
+      "hypothesis": "Gradual information diffusion can support downside continuation when price and activity confirm the same direction.",
+      "mechanism": "Short-run underreaction plus momentum trading.",
+      "formalization_note": "Symmetric VERITAS proxy."
+    },
+    {
+      "rule_id": "KP3_LIMITS_ARBITRAGE_GUARD",
+      "source_id": "KP3_SHLEIFER_VISHNY_1997",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d"
+      ],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "rv",
+          "op": ">",
+          "value": 0.075
+        },
+        {
+          "field": "source_divergence",
+          "op": ">",
+          "value": 0.001
+        }
+      ],
+      "prior_weight": 0.06,
+      "hypothesis": "When volatility and cross-venue dispersion rise together, arbitrage capacity may be impaired and apparent mispricing can widen rather than close.",
+      "mechanism": "Capital-constrained arbitrage can fail in extremes.",
+      "formalization_note": "Cross-venue divergence is a crypto proxy for stressed arbitrage conditions."
+    },
+    {
+      "rule_id": "KP3_LIQUIDITY_STATE_GOV",
+      "source_id": "KP3_PASTOR_STAMBAUGH_2003",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Aggregate liquidity should be treated as a state variable and separate risk factor in asset allocation and signal validation.",
+      "mechanism": "Liquidity exposure is priced and varies through time.",
+      "formalization_note": "Requires broader cross-asset liquidity data."
+    },
+    {
+      "rule_id": "KP3_KYLE_FLOW_LONG",
+      "source_id": "KP3_KYLE_1985",
+      "agent": "TECH_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "taker_buy_share",
+          "op": ">",
+          "value": 0.59
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.3
+        }
+      ],
+      "prior_weight": 0.05,
+      "hypothesis": "A strong aggressive-buy imbalance under elevated volume may contain information with persistent short-horizon price impact.",
+      "mechanism": "Informed trading moves prices through market depth.",
+      "formalization_note": "Taker-buy share and volume are proxies for signed order flow and market depth."
+    },
+    {
+      "rule_id": "KP3_KYLE_FLOW_SHORT",
+      "source_id": "KP3_KYLE_1985",
+      "agent": "TECH_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "taker_buy_share",
+          "op": "<",
+          "value": 0.41
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.3
+        }
+      ],
+      "prior_weight": 0.05,
+      "hypothesis": "A strong aggressive-sell imbalance under elevated volume may contain information with persistent short-horizon price impact.",
+      "mechanism": "Informed trading moves prices through market depth.",
+      "formalization_note": "Symmetric crypto proxy."
+    },
+    {
+      "rule_id": "KP3_ARCH_VOL_GOV",
+      "source_id": "KP3_ENGLE_1982",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Volatility forecasts should condition on recent volatility rather than assume constant variance.",
+      "mechanism": "Conditional heteroskedasticity and volatility clustering.",
+      "formalization_note": "Governance for volatility engine."
+    },
+    {
+      "rule_id": "KP3_GARCH_PERSISTENCE_GUARD",
+      "source_id": "KP3_BOLLERSLEV_1986",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d"
+      ],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "rv",
+          "op": ">",
+          "value": 0.085
+        }
+      ],
+      "prior_weight": 0.05,
+      "hypothesis": "An extreme current volatility state deserves reduced directional confidence because conditional volatility tends to persist.",
+      "mechanism": "Persistent conditional heteroskedasticity.",
+      "formalization_note": "Simple proxy pending a fitted GARCH/realized-volatility model."
+    },
+    {
+      "rule_id": "KP3_FACTOR_MODEL_GOV",
+      "source_id": "KP3_FAMA_FRENCH_1993",
+      "agent": "MACRO",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "When VERITAS expands to equities, returns should be decomposed into systematic factor exposures before residual alpha is credited to a rule.",
+      "mechanism": "Multiple common factors explain expected returns.",
+      "formalization_note": "Governance for cross-asset expansion."
+    },
+    {
+      "rule_id": "KP3_FF5_GOV",
+      "source_id": "KP3_FAMA_FRENCH_2015",
+      "agent": "MACRO",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Equity-related signals should control for profitability and investment exposures as well as market, size and value factors.",
+      "mechanism": "Five-factor asset pricing structure.",
+      "formalization_note": "Governance for future equities module."
+    },
+    {
+      "rule_id": "KP3_DATA_LIBRARY_GOV",
+      "source_id": "KP3_FRENCH_DATA_LIBRARY",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Benchmark factor datasets should be sourced from maintained canonical libraries and versioned to prevent silent methodology changes.",
+      "mechanism": "Reproducible empirical asset-pricing validation.",
+      "formalization_note": "Data governance."
+    },
+    {
+      "rule_id": "KP3_BAB_GOV",
+      "source_id": "KP3_FRAZZINI_PEDERSEN_2014",
+      "agent": "MACRO",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Leverage constraints can distort risk pricing, so beta should not be assumed to map linearly into expected risk-adjusted return.",
+      "mechanism": "Constrained investors can overpay for high-beta exposure.",
+      "formalization_note": "Governance until beta/cross-asset module exists."
+    },
+    {
+      "rule_id": "KP3_QMJ_GOV",
+      "source_id": "KP3_ASNESS_FRAZZINI_PEDERSEN_QMJ",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "When equities are added, quality characteristics should be tested jointly rather than treated as isolated heuristics.",
+      "mechanism": "Composite quality captures profitability, growth and safety dimensions.",
+      "formalization_note": "Governance for future equities/fundamentals module."
+    },
+    {
+      "rule_id": "KP3_STYLE_DIVERSIFICATION_GOV",
+      "source_id": "KP3_AQR_STYLE_PREMIA_2014",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Independent styles should be evaluated jointly for diversification rather than promoting the strongest recent style in isolation.",
+      "mechanism": "Low correlation among style premia can improve portfolio robustness.",
+      "formalization_note": "Governance for future multi-style CIO."
+    },
+    {
+      "rule_id": "KP3_AQR_MOM_LONG",
+      "source_id": "KP3_AQR_MOMENTUM_2014",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "3d",
+        "7d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_168h",
+          "op": ">",
+          "value": 0.03
+        },
+        {
+          "field": "trend",
+          "op": ">",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.045,
+      "hypothesis": "Medium-horizon positive return with a positive trend is a simple crypto proxy for the broad momentum effect.",
+      "mechanism": "Momentum persistence across markets.",
+      "formalization_note": "Cross-asset adaptation, not a direct AQR trading rule."
+    },
+    {
+      "rule_id": "KP3_AQR_MOM_SHORT",
+      "source_id": "KP3_AQR_MOMENTUM_2014",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "3d",
+        "7d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_168h",
+          "op": "<",
+          "value": -0.03
+        },
+        {
+          "field": "trend",
+          "op": "<",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.045,
+      "hypothesis": "Medium-horizon negative return with a negative trend is a simple crypto proxy for the broad momentum effect.",
+      "mechanism": "Momentum persistence across markets.",
+      "formalization_note": "Symmetric cross-asset adaptation."
+    },
+    {
+      "rule_id": "KP3_MANAGED_FUTURES_LONG",
+      "source_id": "KP3_AQR_MANAGED_FUTURES_2013",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "trend",
+          "op": ">",
+          "value": 0.02
+        },
+        {
+          "field": "ret_72h",
+          "op": ">",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.05,
+      "hypothesis": "A positive trend confirmed over multiple horizons may proxy a time-series momentum state.",
+      "mechanism": "Managed-futures returns are substantially related to trend following.",
+      "formalization_note": "VERITAS trend proxy; requires transaction-cost-aware validation."
+    },
+    {
+      "rule_id": "KP3_MANAGED_FUTURES_SHORT",
+      "source_id": "KP3_AQR_MANAGED_FUTURES_2013",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "trend",
+          "op": "<",
+          "value": -0.02
+        },
+        {
+          "field": "ret_72h",
+          "op": "<",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.05,
+      "hypothesis": "A negative trend confirmed over multiple horizons may proxy a downside time-series momentum state.",
+      "mechanism": "Managed-futures returns are substantially related to trend following.",
+      "formalization_note": "Symmetric VERITAS trend proxy."
+    },
+    {
+      "rule_id": "KP3_CRISIS_ALPHA_GOV",
+      "source_id": "KP3_MAN_CRISIS_ALPHA",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Trend systems should be evaluated for skew and crisis behaviour, not only average returns, because their diversification value can be state dependent.",
+      "mechanism": "Trend following can exhibit positive skew and crisis-alpha properties.",
+      "formalization_note": "Governance for portfolio-level evaluation."
+    },
+    {
+      "rule_id": "KP3_FABER_TREND_LONG",
+      "source_id": "KP3_FABER_TAA",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_168h",
+          "op": ">",
+          "value": 0.0
+        },
+        {
+          "field": "trend",
+          "op": ">",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.025,
+      "hypothesis": "A simple positive trend filter may reduce exposure during persistent downtrends.",
+      "mechanism": "Trend-based tactical allocation.",
+      "formalization_note": "Crypto proxy; original framework uses longer moving-average horizons."
+    },
+    {
+      "rule_id": "KP3_FABER_TREND_SHORT",
+      "source_id": "KP3_FABER_TAA",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_168h",
+          "op": "<",
+          "value": 0.0
+        },
+        {
+          "field": "trend",
+          "op": "<",
+          "value": 0.0
+        }
+      ],
+      "prior_weight": 0.025,
+      "hypothesis": "A simple negative trend filter may identify persistent downside states.",
+      "mechanism": "Trend-based tactical allocation.",
+      "formalization_note": "Symmetric crypto adaptation; original framework is long/cash rather than short."
+    },
+    {
+      "rule_id": "KP3_FABER_BOOTSTRAP_GOV",
+      "source_id": "KP3_MARMI_FABER_CRITIQUE",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Popular simple rules require bootstrap, parameter-stability and out-of-sample checks before being treated as persistent alpha.",
+      "mechanism": "Backtest success can be sample-dependent and overstated.",
+      "formalization_note": "Governance for anti-overfitting."
+    },
+    {
+      "rule_id": "KP3_FUNDAMENTAL_INDEX_GOV",
+      "source_id": "KP3_ARNOTT_HSU_MOORE_2005",
+      "agent": "MACRO",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Benchmark construction methodology can itself create systematic exposures and must be treated as an active modelling choice.",
+      "mechanism": "Cap weighting and fundamental weighting embed different economic tilts.",
+      "formalization_note": "Governance for future index/equity modules."
+    },
+    {
+      "rule_id": "KP3_OVERCONFIDENCE_VOLUME_GOV",
+      "source_id": "KP3_DANIEL_HIRSHLEIFER_2016",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "High turnover or activity should not automatically be interpreted as information; overconfidence can itself create excessive trading.",
+      "mechanism": "Overconfidence can raise trading volume without proportionate information content.",
+      "formalization_note": "Governance until turnover/sentiment decomposition exists."
+    },
+    {
+      "rule_id": "KP3_DHS_MOMENTUM_LONG",
+      "source_id": "KP3_DHS_1998",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_24h",
+          "op": ">",
+          "value": 0.015
+        },
+        {
+          "field": "trend",
+          "op": ">",
+          "value": 0.0
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.0
+        }
+      ],
+      "prior_weight": 0.04,
+      "hypothesis": "Positive price movement reinforced by activity can be consistent with short-run momentum generated by overconfidence and self-attribution.",
+      "mechanism": "Biased self-attribution can reinforce trends before longer-run correction.",
+      "formalization_note": "Crypto proxy only."
+    },
+    {
+      "rule_id": "KP3_DHS_MOMENTUM_SHORT",
+      "source_id": "KP3_DHS_1998",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "ret_24h",
+          "op": "<",
+          "value": -0.015
+        },
+        {
+          "field": "trend",
+          "op": "<",
+          "value": 0.0
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.0
+        }
+      ],
+      "prior_weight": 0.04,
+      "hypothesis": "Negative price movement reinforced by activity can be consistent with short-run momentum generated by overconfidence and self-attribution.",
+      "mechanism": "Biased self-attribution can reinforce trends before longer-run correction.",
+      "formalization_note": "Symmetric crypto proxy."
+    },
+    {
+      "rule_id": "KP3_COMMON_LIQUIDITY_GOV",
+      "source_id": "KP3_CHORDIA_ROLL_SUBRAHMANYAM_2000",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Liquidity stress should be modelled at the market level because execution deterioration can be correlated across instruments.",
+      "mechanism": "Liquidity has a common market-wide component.",
+      "formalization_note": "Governance until multi-venue liquidity data are added."
+    },
+    {
+      "rule_id": "KP3_MARGIN_STRESS_GUARD",
+      "source_id": "KP3_GARLEANU_PEDERSEN_2011",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d"
+      ],
+      "action": "NO_TRADE",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "funding",
+          "op": ">",
+          "value": 0.001
+        },
+        {
+          "field": "oi_change_24h",
+          "op": ">",
+          "value": 0.1
+        },
+        {
+          "field": "rv",
+          "op": ">",
+          "value": 0.065
+        }
+      ],
+      "prior_weight": 0.04,
+      "hypothesis": "Elevated funding, rapidly rising open interest and high volatility can proxy a leveraged state vulnerable to margin-driven dislocations.",
+      "mechanism": "Funding and margin constraints can amplify relative-value and liquidation stress.",
+      "formalization_note": "Crypto derivatives proxy; thresholds provisional."
+    },
+    {
+      "rule_id": "KP3_LEVERAGE_CYCLE_GOV",
+      "source_id": "KP3_ADRIAN_SHIN_2010",
+      "agent": "MACRO",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Leverage and balance-sheet expansion should be treated as procyclical state variables capable of amplifying risk-asset moves.",
+      "mechanism": "Intermediary leverage and liquidity are mutually reinforcing.",
+      "formalization_note": "Governance until broader leverage proxies are added."
+    },
+    {
+      "rule_id": "KP3_NOISE_SKEPTIC_GOV",
+      "source_id": "KP3_BLACK_NOISE_1986",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "A price move must not be treated as informative solely because it is large; the causal layer must distinguish information from noise and liquidity effects.",
+      "mechanism": "Noise is intrinsic to market prices and trading.",
+      "formalization_note": "Governance for causal attribution."
+    },
+    {
+      "rule_id": "KP3_INFO_EFFICIENCY_GOV",
+      "source_id": "KP3_GROSSMAN_STIGLITZ_1980",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "VERITAS should assume neither perfect efficiency nor free alpha; information advantages must be shown net of acquisition, execution and model costs.",
+      "mechanism": "Informational efficiency is limited when information is costly.",
+      "formalization_note": "Governance for alpha attribution."
+    },
+    {
+      "rule_id": "KP3_DONCHIAN_LONG",
+      "source_id": "KP3_DONCHIAN_RULES",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "3d",
+        "7d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "trend",
+          "op": ">",
+          "value": 0.03
+        },
+        {
+          "field": "momentum",
+          "op": ">",
+          "value": 0.0
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.0
+        }
+      ],
+      "prior_weight": 0.025,
+      "hypothesis": "A clearly defined positive move supported by activity may deserve trend-following participation.",
+      "mechanism": "Follow defined trends while cutting losses.",
+      "formalization_note": "Secondary-source proxy; exact Donchian channel breakout is not yet encoded."
+    },
+    {
+      "rule_id": "KP3_DONCHIAN_SHORT",
+      "source_id": "KP3_DONCHIAN_RULES",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "3d",
+        "7d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "trend",
+          "op": "<",
+          "value": -0.03
+        },
+        {
+          "field": "momentum",
+          "op": "<",
+          "value": 0.0
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.0
+        }
+      ],
+      "prior_weight": 0.025,
+      "hypothesis": "A clearly defined negative move supported by activity may deserve trend-following participation.",
+      "mechanism": "Follow defined trends while cutting losses.",
+      "formalization_note": "Secondary-source symmetric proxy; exact Donchian channels are not yet encoded."
+    },
+    {
+      "rule_id": "KP3_DONCHIAN_RISK_GOV",
+      "source_id": "KP3_DONCHIAN_RULES",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "When market direction is not clearly defined, exposure should be light; losses should be limited and winners allowed room to persist.",
+      "mechanism": "Trend-following risk discipline.",
+      "formalization_note": "Secondary-source governance rule."
+    }
+  ]
+}
