@@ -9,7 +9,7 @@ except Exception:
     psycopg = None
     dict_row = None
 
-VERSION = 'veritas-intelligence-v1.6.0'
+VERSION = 'veritas-intelligence-v1.7.0'
 DB_PATH = os.getenv('VERITAS_LEDGER_PATH', '/tmp/veritas_decisions.sqlite3')
 DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
 KNOWLEDGE_FILE = os.getenv('VERITAS_KNOWLEDGE_FILE', 'veritas_knowledge_seed.json')
@@ -21,6 +21,12 @@ AUTOMATION_TOKEN = os.getenv('VERITAS_AUTOMATION_TOKEN', '').strip()
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '').strip()
 OPENAI_MODEL = os.getenv('VERITAS_KNOWLEDGE_MODEL', os.getenv('OPENAI_MODEL', 'gpt-5.6-sol')).strip()
 KNOWLEDGE_LLM_ENABLED = os.getenv('VERITAS_KNOWLEDGE_LLM_ENABLED', '0').lower() in ('1','true','yes','on')
+KNOWLEDGE_COMPILE_LIMIT = max(6, min(40, int(os.getenv('VERITAS_KNOWLEDGE_COMPILE_LIMIT', '24'))))
+KNOWLEDGE_MIN_RELEVANCE = float(os.getenv('VERITAS_KNOWLEDGE_MIN_RELEVANCE', '2.5'))
+KNOWLEDGE_PROMOTION_N = max(20, int(os.getenv('VERITAS_KNOWLEDGE_PROMOTION_N', '40')))
+KNOWLEDGE_GRAVEYARD_N = max(20, int(os.getenv('VERITAS_KNOWLEDGE_GRAVEYARD_N', '40')))
+KNOWLEDGE_PROMOTION_HIT = float(os.getenv('VERITAS_KNOWLEDGE_PROMOTION_HIT', '0.55'))
+KNOWLEDGE_GRAVEYARD_HIT = float(os.getenv('VERITAS_KNOWLEDGE_GRAVEYARD_HIT', '0.45'))
 SUPPORTED_RULE_FIELDS = {'ret_4h','ret_24h','ret_72h','ret_168h','trend','momentum','rv','volume_ratio','taker_buy_share','source_divergence','funding','basis','oi_change_24h','taker_buy_sell_ratio','global_long_short_ratio'}
 SUPPORTED_RULE_OPS = {'>','>=','<','<=','=='}
 DISCOVERY_QUERIES = [
@@ -270,6 +276,19 @@ def pg_init():
           run_id TEXT PRIMARY KEY, started_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ, status TEXT NOT NULL,
           candidates_seen INTEGER NOT NULL DEFAULT 0, candidates_new INTEGER NOT NULL DEFAULT 0, rules_imported INTEGER NOT NULL DEFAULT 0, details JSONB NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS knowledge_rule_stats(
+          rule_id TEXT NOT NULL, asset TEXT NOT NULL, horizon TEXT NOT NULL,
+          n INTEGER NOT NULL, hits INTEGER NOT NULL, hit_rate DOUBLE PRECISION,
+          avg_signed_return DOUBLE PRECISION, avg_mfe DOUBLE PRECISION, avg_mae DOUBLE PRECISION,
+          updated_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY(rule_id,asset,horizon)
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_rule_stats_n ON knowledge_rule_stats(n DESC,hit_rate DESC);
+        CREATE TABLE IF NOT EXISTS knowledge_rule_status_history(
+          id BIGSERIAL PRIMARY KEY, rule_id TEXT NOT NULL, changed_at TIMESTAMPTZ NOT NULL,
+          old_status TEXT, new_status TEXT NOT NULL, reason TEXT NOT NULL, metrics JSONB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_rule_status_history ON knowledge_rule_status_history(rule_id,changed_at DESC);
         """)
     return {'enabled': True, 'ok': True}
 
@@ -471,7 +490,7 @@ def match_knowledge(asset, horizon, f, deriv):
     out=[]
     _, rules = all_knowledge()
     for r in rules:
-        if r['status'] != 'shadow':
+        if r['status'] not in ('shadow','validated_candidate'):
             continue
         if asset not in r['asset_scope'] or horizon not in r['horizons']:
             continue
@@ -542,6 +561,176 @@ def _abstract_from_inverted(index):
 def _candidate_id(doi, openalex_id, title):
     raw = (doi or openalex_id or title or '').strip().lower()
     return 'OA_' + hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+RELEVANCE_WEIGHTS = {
+    'bitcoin': 4.0, 'cryptocurrency': 3.5, 'crypto': 2.5, 'ethereum': 4.0,
+    'momentum': 2.0, 'trend': 1.5, 'return predictability': 2.5,
+    'order flow': 3.0, 'market microstructure': 3.0, 'liquidity': 2.0,
+    'volatility': 2.0, 'futures': 1.5, 'funding': 2.5, 'basis': 2.0,
+    'open interest': 2.5, 'derivatives': 2.0, 'liquidation': 2.5,
+    'price impact': 2.0, 'taker': 2.0, 'leverage': 1.5,
+}
+
+
+def candidate_relevance(x):
+    text = ' '.join([
+        str(x.get('title') or ''), str(x.get('query') or ''), str(x.get('abstract') or ''),
+        ' '.join((x.get('metadata') or {}).get('topics') or [])
+    ]).lower()
+    score = 0.0
+    for term, weight in RELEVANCE_WEIGHTS.items():
+        if term in text:
+            score += weight
+    abstract_len = len(x.get('abstract') or '')
+    if abstract_len >= 1200: score += 1.0
+    elif abstract_len >= 500: score += 0.5
+    cites = max(0, int(x.get('cited_by_count') or 0))
+    score += min(2.0, math.log10(1 + cites) / 2.0)
+    direct = any(t in text for t in ('bitcoin','cryptocurrency','crypto','ethereum'))
+    if direct: score += 1.5
+    return round(score, 4)
+
+
+def screen_pending_candidates(limit=500):
+    if not pg_enabled():
+        return {'screened_in': 0, 'screened_out': 0}
+    with pg_connect() as c:
+        rows = c.execute("""SELECT candidate_id,query,title,abstract,cited_by_count,metadata
+                            FROM knowledge_candidates
+                            WHERE status='ready_for_compilation'
+                            ORDER BY cited_by_count DESC,discovered_at ASC LIMIT %s""", (limit,)).fetchall()
+    keep = reject = 0
+    for row in rows:
+        x = dict(row)
+        score = candidate_relevance(x)
+        meta = x.get('metadata') if isinstance(x.get('metadata'), dict) else {}
+        meta = dict(meta or {})
+        meta['relevance_score'] = score
+        meta['screen_version'] = VERSION
+        enough_text = len(x.get('abstract') or '') >= 250
+        status = 'screened_in' if enough_text and score >= KNOWLEDGE_MIN_RELEVANCE else 'screened_out'
+        keep += int(status == 'screened_in')
+        reject += int(status == 'screened_out')
+        with pg_connect() as c:
+            c.execute("UPDATE knowledge_candidates SET status=%s,metadata=%s::jsonb,processed_at=CASE WHEN %s=%s THEN %s ELSE processed_at END WHERE candidate_id=%s",
+                      (status, json.dumps(meta), status, 'screened_out', now(), x['candidate_id']))
+    return {'screened_in': keep, 'screened_out': reject}
+
+
+def refresh_rule_stats():
+    if not pg_enabled():
+        return {'rows': 0, 'status_changes': 0}
+    sql = """
+    WITH paired AS (
+      SELECT d.asset,d.horizon,d.payload AS dp,o.payload AS op
+      FROM ledger_events d
+      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+      WHERE d.event_type='decision'
+    ), m AS (
+      SELECT p.asset,p.horizon,
+             k->>'rule_id' AS rule_id,k->>'action' AS action,
+             (p.op->>'forward_return')::double precision AS fr,
+             NULLIF(p.op->>'mfe','')::double precision AS mfe,
+             NULLIF(p.op->>'mae','')::double precision AS mae
+      FROM paired p
+      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.dp->'knowledge_shadow_matches','[]'::jsonb)) k
+      WHERE k->>'action' IN ('LONG','SHORT')
+    )
+    SELECT rule_id,asset,horizon,COUNT(*)::int AS n,
+           SUM(CASE WHEN (CASE WHEN action='LONG' THEN fr ELSE -fr END)>0 THEN 1 ELSE 0 END)::int AS hits,
+           AVG(CASE WHEN action='LONG' THEN fr ELSE -fr END) AS avg_signed_return,
+           AVG(CASE WHEN action='LONG' THEN mfe ELSE -mae END) AS avg_mfe,
+           AVG(CASE WHEN action='LONG' THEN mae ELSE -mfe END) AS avg_mae
+    FROM m GROUP BY rule_id,asset,horizon
+    """
+    with pg_connect() as c:
+        rows = c.execute(sql).fetchall()
+        for r in rows:
+            n = int(r['n']); hits = int(r['hits']); hr = hits/n if n else None
+            c.execute("""INSERT INTO knowledge_rule_stats(rule_id,asset,horizon,n,hits,hit_rate,avg_signed_return,avg_mfe,avg_mae,updated_at)
+                         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         ON CONFLICT(rule_id,asset,horizon) DO UPDATE SET
+                         n=EXCLUDED.n,hits=EXCLUDED.hits,hit_rate=EXCLUDED.hit_rate,
+                         avg_signed_return=EXCLUDED.avg_signed_return,avg_mfe=EXCLUDED.avg_mfe,
+                         avg_mae=EXCLUDED.avg_mae,updated_at=EXCLUDED.updated_at""",
+                      (r['rule_id'],r['asset'],r['horizon'],n,hits,hr,r['avg_signed_return'],r['avg_mfe'],r['avg_mae'],now()))
+    changes = apply_rule_lifecycle()
+    return {'rows': len(rows), 'status_changes': changes}
+
+
+def apply_rule_lifecycle():
+    if not pg_enabled():
+        return 0
+    with pg_connect() as c:
+        agg = c.execute("""SELECT s.rule_id,SUM(s.n)::int n,SUM(s.hits)::int hits,
+                                  SUM(s.avg_signed_return*s.n)/NULLIF(SUM(s.n),0) avg_signed_return
+                           FROM knowledge_rule_stats s GROUP BY s.rule_id""").fetchall()
+        changed = 0
+        for m in agg:
+            n=int(m['n']); hits=int(m['hits']); hr=hits/n if n else None; avg=float(m['avg_signed_return'] or 0.0)
+            row=c.execute("SELECT status,action FROM knowledge_rules WHERE rule_id=%s",(m['rule_id'],)).fetchone()
+            if not row or row['status'] in ('governance','graveyard') or row['action'] not in ('LONG','SHORT'):
+                continue
+            old=row['status']; new=old; reason=''
+            if n >= KNOWLEDGE_PROMOTION_N and hr is not None and hr >= KNOWLEDGE_PROMOTION_HIT and avg > 0:
+                new='validated_candidate'; reason='oos_shadow_threshold_passed'
+            elif n >= KNOWLEDGE_GRAVEYARD_N and hr is not None and hr <= KNOWLEDGE_GRAVEYARD_HIT and avg < 0:
+                new='graveyard'; reason='persistent_negative_shadow_performance'
+            elif old == 'validated_candidate' and not (hr is not None and hr >= KNOWLEDGE_PROMOTION_HIT and avg > 0):
+                new='shadow'; reason='validation_edge_weakened'
+            if new != old:
+                metrics={'n':n,'hit_rate':hr,'avg_signed_return':avg}
+                c.execute('UPDATE knowledge_rules SET status=%s WHERE rule_id=%s',(new,m['rule_id']))
+                c.execute("""INSERT INTO knowledge_rule_status_history(rule_id,changed_at,old_status,new_status,reason,metrics)
+                             VALUES(%s,%s,%s,%s,%s,%s::jsonb)""",
+                          (m['rule_id'],now(),old,new,reason,json.dumps(metrics)))
+                changed += 1
+                emit('knowledge_rule_status_change',rule_id=m['rule_id'],old_status=old,new_status=new,reason=reason,metrics=metrics)
+    return changed
+
+
+def knowledge_factory_status():
+    out = {'version': VERSION, 'compile_limit': KNOWLEDGE_COMPILE_LIMIT,
+           'min_relevance': KNOWLEDGE_MIN_RELEVANCE,
+           'promotion_n': KNOWLEDGE_PROMOTION_N, 'graveyard_n': KNOWLEDGE_GRAVEYARD_N,
+           'promotion_hit': KNOWLEDGE_PROMOTION_HIT, 'graveyard_hit': KNOWLEDGE_GRAVEYARD_HIT,
+           'live_rule_influence': False}
+    if not pg_enabled():
+        return out
+    with pg_connect() as c:
+        out['candidates']={r['status']:r['n'] for r in c.execute('SELECT status,COUNT(*) n FROM knowledge_candidates GROUP BY status').fetchall()}
+        out['rules']={r['status']:r['n'] for r in c.execute('SELECT status,COUNT(*) n FROM knowledge_rules GROUP BY status').fetchall()}
+        out['top_rule_stats']=[dict(r) for r in c.execute("""SELECT rule_id,asset,horizon,n,hit_rate,avg_signed_return,avg_mfe,avg_mae
+                                FROM knowledge_rule_stats ORDER BY n DESC,hit_rate DESC NULLS LAST LIMIT 25""").fetchall()]
+        out['recent_status_changes']=[dict(r) for r in c.execute("""SELECT rule_id,changed_at,old_status,new_status,reason,metrics
+                                       FROM knowledge_rule_status_history ORDER BY changed_at DESC LIMIT 20""").fetchall()]
+    return out
+
+
+def llm_audit_candidate(x):
+    prompt = f"""VERITAS Source Auditor. Use ONLY the supplied title, metadata and abstract. Do not invent findings.
+Decide whether this source contains an investment-relevant empirical or methodological claim that can be represented using VERITAS current fields.
+Return ONE JSON object, no markdown, with keys decision, claim, evidence_strength, asset_directness, supported_fields, rationale.
+decision must be USE or REJECT. evidence_strength: HIGH, MEDIUM or LOW. asset_directness: DIRECT_CRYPTO, CROSS_ASSET or METHODOLOGY.
+Allowed supported_fields: {sorted(SUPPORTED_RULE_FIELDS)}.
+Reject if the abstract is unrelated, too vague, purely descriptive without a testable mechanism, or would require inventing data not represented by allowed fields.
+TITLE: {x['title']}
+AUTHORS: {x['authors']}
+YEAR: {x['year']}
+VENUE: {x['venue']}
+DOI: {x['doi']}
+ABSTRACT: {x['abstract'][:12000]}"""
+    with httpx.Client(timeout=75) as h:
+        r=h.post('https://api.openai.com/v1/responses',headers={'Authorization':f'Bearer {OPENAI_API_KEY}','Content-Type':'application/json'},json={'model':OPENAI_MODEL,'input':prompt})
+        r.raise_for_status()
+        z=_parse_json_object(_response_text(r.json()))
+    if z.get('decision') not in ('USE','REJECT'):
+        raise ValueError('BAD_AUDIT_DECISION')
+    if not isinstance(z.get('supported_fields',[]),list):
+        z['supported_fields']=[]
+    z['supported_fields']=[a for a in z['supported_fields'] if a in SUPPORTED_RULE_FIELDS]
+    return z
 
 
 def discover_openalex(query):
@@ -645,10 +834,11 @@ def _validate_compiled_rule(r):
     return bool(r.get('hypothesis'))
 
 
-def llm_compile_candidate(x):
+def llm_compile_candidate(x, audit):
     if not (KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY and x.get('abstract')):
         return None
     prompt = f'''VERITAS Knowledge Compiler. Use ONLY the supplied metadata and abstract. Do not invent findings.
+The source has already passed a separate relevance/evidence audit. Use that audit as a constraint, not as new evidence.
 Return ONE JSON object, no markdown, with keys claim, evidence_note, rules.
 Allowed agents: MACRO, QUANT, TECH_FLOW, DERIV, RISK.
 Allowed actions: LONG, SHORT, NO_TRADE, VALIDATION_ONLY.
@@ -663,6 +853,7 @@ AUTHORS: {x['authors']}
 YEAR: {x['year']}
 VENUE: {x['venue']}
 DOI: {x['doi']}
+AUDIT: {json.dumps(audit, ensure_ascii=False)}
 ABSTRACT: {x['abstract'][:12000]}'''
     with httpx.Client(timeout=75) as h:
         r = h.post('https://api.openai.com/v1/responses',
@@ -702,26 +893,45 @@ def import_compiled_candidate(x, compiled):
     return imported
 
 
-def compile_pending_candidates(limit=6):
+def compile_pending_candidates(limit=None):
     if not (KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY and pg_enabled()):
-        return 0, []
+        return 0, [], {'audited': 0, 'rejected': 0, 'compiled': 0}
+    limit = int(limit or KNOWLEDGE_COMPILE_LIMIT)
     imported = 0
     errors = []
+    audit_stats = {'audited': 0, 'rejected': 0, 'compiled': 0}
     with pg_connect() as c:
-        rows = c.execute('''SELECT candidate_id,query,title,authors,year,doi,source_url,venue,cited_by_count,abstract,metadata
-                            FROM knowledge_candidates WHERE status='ready_for_compilation'
-                            ORDER BY cited_by_count DESC,discovered_at ASC LIMIT %s''', (limit,)).fetchall()
+        rows = c.execute("""SELECT candidate_id,query,title,authors,year,doi,source_url,venue,cited_by_count,abstract,metadata
+                            FROM knowledge_candidates WHERE status='screened_in'
+                            ORDER BY COALESCE((metadata->>'relevance_score')::double precision,0) DESC,
+                                     cited_by_count DESC,discovered_at ASC LIMIT %s""", (limit,)).fetchall()
     for row in rows:
         x = dict(row)
         try:
-            compiled = llm_compile_candidate(x)
-            imported += import_compiled_candidate(x, compiled)
+            audit = llm_audit_candidate(x)
+            audit_stats['audited'] += 1
+            meta = x.get('metadata') if isinstance(x.get('metadata'), dict) else {}
+            meta = dict(meta or {})
+            meta['llm_audit'] = audit
+            if audit.get('decision') != 'USE':
+                audit_stats['rejected'] += 1
+                with pg_connect() as c:
+                    c.execute("UPDATE knowledge_candidates SET status='llm_rejected',processed_at=%s,error=NULL,metadata=%s::jsonb WHERE candidate_id=%s",
+                              (now(),json.dumps(meta),x['candidate_id']))
+                continue
+            compiled = llm_compile_candidate(x, audit)
+            n = import_compiled_candidate(x, compiled)
+            imported += n
+            audit_stats['compiled'] += 1
+            with pg_connect() as c:
+                c.execute('UPDATE knowledge_candidates SET metadata=%s::jsonb WHERE candidate_id=%s',(json.dumps(meta),x['candidate_id']))
         except Exception as ex:
             err = f"{x['candidate_id']}: {type(ex).__name__}: {ex}"
             errors.append(err)
             with pg_connect() as c:
                 c.execute('UPDATE knowledge_candidates SET error=%s WHERE candidate_id=%s', (err[:2000], x['candidate_id']))
-    return imported, errors
+    return imported, errors, audit_stats
+
 def run_knowledge_discovery(reason='scheduled'):
     if not KNOWLEDGE_AUTOMATION or not pg_enabled():
         return {'status': 'disabled'}
@@ -746,8 +956,10 @@ def run_knowledge_discovery(reason='scheduled'):
                         new += 1
             except Exception as ex:
                 errors.append(f'{q}: {type(ex).__name__}: {ex}')
+        screening = screen_pending_candidates()
+        audit_stats = {'audited': 0, 'rejected': 0, 'compiled': 0}
         if KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY:
-            compiled_n, compile_errors = compile_pending_candidates(limit=6)
+            compiled_n, compile_errors, audit_stats = compile_pending_candidates(limit=KNOWLEDGE_COMPILE_LIMIT)
             imported += compiled_n
             errors.extend(compile_errors)
         # Every run also picks up any newly uploaded veritas_knowledge_seed*.json package.
@@ -757,13 +969,16 @@ def run_knowledge_discovery(reason='scheduled'):
         with pg_connect() as c:
             c.execute('''UPDATE knowledge_ingestion_runs SET finished_at=%s,status=%s,candidates_seen=%s,candidates_new=%s,rules_imported=%s,details=%s::jsonb
                          WHERE run_id=%s''',
-                      (now(), status, seen, new, imported, json.dumps({'reason': reason, 'errors': errors[-20:]}), run_id))
+                      (now(), status, seen, new, imported, json.dumps({'reason': reason, 'screening': screening, 'audit': audit_stats, 'errors': errors[-20:]}), run_id))
         with lock:
             knowledge_automation_state.update({'status': status, 'last_run': started,
                                                'candidates_seen': seen, 'candidates_new': new, 'rules_imported': imported,
                                                'errors': errors[-20:]})
         emit('knowledge_discovery_complete', run_id=run_id, status=status,
-             candidates_seen=seen, candidates_new=new, rules_imported=imported, llm_enabled=bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY))
+             candidates_seen=seen, candidates_new=new, rules_imported=imported,
+             screened_in=screening.get('screened_in',0), screened_out=screening.get('screened_out',0),
+             audited=audit_stats.get('audited',0), audit_rejected=audit_stats.get('rejected',0),
+             llm_enabled=bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY))
         return dict(knowledge_automation_state)
     except Exception as ex:
         err = f'{type(ex).__name__}: {ex}'
@@ -789,6 +1004,8 @@ def knowledge_automation_status():
     out = dict(knowledge_automation_state)
     out.update({'automation_enabled': KNOWLEDGE_AUTOMATION,
                 'interval_seconds': KNOWLEDGE_DISCOVERY_INTERVAL,
+                'compile_limit': KNOWLEDGE_COMPILE_LIMIT,
+                'min_relevance': KNOWLEDGE_MIN_RELEVANCE,
                 'seed_glob': KNOWLEDGE_GLOB,
                 'compiler': 'automatic_shadow' if KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY else 'awaiting_openai_key_or_enable_flag',
                 'llm_configured': bool(OPENAI_API_KEY), 'llm_enabled': bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY), 'model': OPENAI_MODEL if OPENAI_API_KEY else None})
@@ -1134,6 +1351,7 @@ def cycle():
     seed_knowledge()
     pg_state = pg_storage_status()
     outcomes = evaluate_outcomes()
+    rule_learning = refresh_rule_stats() if pg_enabled() else {'rows': 0, 'status_changes': 0}
     perf = performance_rows()
     clock_info = source_clock_gate()
     made = 0
@@ -1207,6 +1425,7 @@ def cycle():
     state = {'status': status, 'at': now(), 'version': VERSION, 'decisions_written': made,
              'outcomes_written': outcomes, 'summary': summary, 'errors': errors,
              'storage': storage, 'agent_learning': 'shadow_until_n>=30',
+             'knowledge_learning': rule_learning,
              'knowledge': knowledge_summary()}
     with lock:
         last_cycle.clear(); last_cycle.update(state)
@@ -1249,6 +1468,8 @@ class H(BaseHTTPRequestHandler):
                 self.reply({'version': VERSION, 'summary': knowledge_summary(), 'rules': knowledge_catalog()})
             elif self.path.startswith('/knowledge/stats'):
                 self.reply({'version': VERSION, 'summary': knowledge_summary(), 'performance': knowledge_performance()})
+            elif self.path.startswith('/knowledge/factory'):
+                self.reply({'version': VERSION, 'factory': knowledge_factory_status()})
             elif self.path.startswith('/storage'):
                 self.reply({'version': VERSION, 'storage': pg_storage_status()})
             elif self.path.startswith('/knowledge/automation'):
@@ -1282,7 +1503,9 @@ def main():
     pg_knowledge = pg_seed_knowledge() if pg_boot.get('ok') else {'durable': False}
     emit('service_start', db_path=DB_PATH, interval=INTERVAL, postgres=pg_boot, knowledge_pg=pg_knowledge,
          knowledge_automation={'enabled':KNOWLEDGE_AUTOMATION,'seed_glob':KNOWLEDGE_GLOB,
-                               'interval_seconds':KNOWLEDGE_DISCOVERY_INTERVAL,'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY)})
+                               'interval_seconds':KNOWLEDGE_DISCOVERY_INTERVAL,'compile_limit':KNOWLEDGE_COMPILE_LIMIT,
+                               'min_relevance':KNOWLEDGE_MIN_RELEVANCE,
+                               'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY)})
     threading.Thread(target=loop, daemon=True).start()
     if KNOWLEDGE_AUTOMATION:
         threading.Thread(target=knowledge_discovery_loop, daemon=True).start()
