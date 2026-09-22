@@ -1,0 +1,303 @@
+{
+  "pack_id": "VERITAS_KNOWLEDGE_PACK_5_V703_2026-09-22",
+  "sources": [
+    {
+      "source_id": "KP5_ADAMS_MACKAY_BOCPD_2007",
+      "title": "Bayesian Online Changepoint Detection",
+      "authors": "Ryan Prescott Adams; David J. C. MacKay",
+      "year": 2007,
+      "source_type": "working_paper",
+      "url": "https://arxiv.org/abs/0710.3742",
+      "evidence_grade": "B",
+      "claim": "Online Bayesian changepoint inference tracks the posterior distribution of run length, enabling sequential detection of abrupt changes in time-series generating dynamics."
+    },
+    {
+      "source_id": "KP5_HANSEN_LUNDE_NASON_MCS_2011",
+      "title": "The Model Confidence Set",
+      "authors": "Peter R. Hansen; Asger Lunde; James M. Nason",
+      "year": 2011,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.3982/ECTA5771",
+      "evidence_grade": "A",
+      "claim": "Model selection uncertainty should be represented by a confidence set of superior models; uninformative data may justify retaining many models rather than forcing a single winner."
+    },
+    {
+      "source_id": "KP5_GIACOMINI_WHITE_2006",
+      "title": "Tests of Conditional Predictive Ability",
+      "authors": "Raffaella Giacomini; Halbert White",
+      "year": 2006,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1111/j.1468-0262.2006.00718.x",
+      "evidence_grade": "A",
+      "claim": "Out-of-sample forecast comparison should allow predictive performance to vary conditionally with the information set and should remain meaningful under model misspecification."
+    },
+    {
+      "source_id": "KP5_BAILEY_ETAL_PBO_2015",
+      "title": "The Probability of Backtest Overfitting",
+      "authors": "David H. Bailey; Jonathan Borwein; Marcos López de Prado; Qiji Jim Zhu",
+      "year": 2015,
+      "source_type": "peer_reviewed",
+      "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253",
+      "evidence_grade": "A",
+      "claim": "Investment strategy selection from many backtests is vulnerable to overfitting; combinatorially symmetric cross-validation provides a framework to estimate the probability of backtest overfitting."
+    },
+    {
+      "source_id": "KP5_BAILEY_LDP_DSR_2014",
+      "title": "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and Non-Normality",
+      "authors": "David H. Bailey; Marcos López de Prado",
+      "year": 2014,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.3905/jpm.2014.40.5.094",
+      "evidence_grade": "A",
+      "claim": "Reported Sharpe ratios should be adjusted for multiple testing, selection bias and non-normal returns before research results are treated as evidence of skill."
+    },
+    {
+      "source_id": "KP5_HARVEY_LIU_ZHU_2016",
+      "title": "… and the Cross-Section of Expected Returns",
+      "authors": "Campbell R. Harvey; Yan Liu; Heqing Zhu",
+      "year": 2016,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1093/rfs/hhv059",
+      "evidence_grade": "A",
+      "claim": "Multiple testing in factor discovery requires materially higher statistical hurdles than conventional single-test thresholds."
+    },
+    {
+      "source_id": "KP5_GU_KELLY_XIU_2020",
+      "title": "Empirical Asset Pricing via Machine Learning",
+      "authors": "Shihao Gu; Bryan Kelly; Dacheng Xiu",
+      "year": 2020,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1093/rfs/hhaa009",
+      "evidence_grade": "A",
+      "claim": "Nonlinear interactions can improve risk-premium prediction, with momentum, liquidity and volatility among the dominant predictor families in the studied equity cross-section."
+    },
+    {
+      "source_id": "KP5_KELLY_PRUITT_SU_2019",
+      "title": "Characteristics are covariances: A unified model of risk and return",
+      "authors": "Bryan T. Kelly; Seth Pruitt; Yinan Su",
+      "year": 2019,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.1016/j.jfineco.2019.05.001",
+      "evidence_grade": "A",
+      "claim": "Instrumented PCA separates characteristic-driven time-varying factor exposures from residual anomaly intercepts, helping distinguish systematic risk from purported alpha."
+    }
+  ],
+  "rules": [
+    {
+      "rule_id": "KP5_BOCPD_GOV",
+      "source_id": "KP5_ADAMS_MACKAY_BOCPD_2007",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Sequential regime-change alerts should remain shadow until run-length/changepoint probabilities are calibrated on an explicit historical regime series.",
+      "mechanism": "Regime transitions can be treated as changes in the time-series generating process.",
+      "formalization_note": "Governance/research discipline only. No direct trading weight."
+    },
+    {
+      "rule_id": "KP5_MODEL_CONFIDENCE_SET_GOV",
+      "source_id": "KP5_HANSEN_LUNDE_NASON_MCS_2011",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Do not force a single champion when evidence cannot distinguish models; maintain a surviving model set and shrink it only when comparative evidence is informative.",
+      "mechanism": "Model selection uncertainty is itself information.",
+      "formalization_note": "Governance/research discipline only. No direct trading weight."
+    },
+    {
+      "rule_id": "KP5_CONDITIONAL_PREDICTIVE_GOV",
+      "source_id": "KP5_GIACOMINI_WHITE_2006",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Compare models conditionally by asset, horizon and regime rather than relying only on unconditional average forecast performance.",
+      "mechanism": "Forecasting skill can vary with the information set and model misspecification.",
+      "formalization_note": "Governance/research discipline only. No direct trading weight."
+    },
+    {
+      "rule_id": "KP5_PBO_GOV",
+      "source_id": "KP5_BAILEY_ETAL_PBO_2015",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Estimate backtest-overfitting risk before promoting strategies selected from many alternatives; ordinary holdout evidence alone is not sufficient when the search space is large.",
+      "mechanism": "Strategy selection after extensive search creates selection bias.",
+      "formalization_note": "Governance/research discipline only. No direct trading weight."
+    },
+    {
+      "rule_id": "KP5_DEFLATED_SHARPE_GOV",
+      "source_id": "KP5_BAILEY_LDP_DSR_2014",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Rule promotion must adjust performance claims for the number of trials, non-normality and selection bias; raw Sharpe is not enough.",
+      "mechanism": "Backtest performance can be inflated by multiplicity and non-Gaussian returns.",
+      "formalization_note": "Governance/research discipline only. No direct trading weight."
+    },
+    {
+      "rule_id": "KP5_MULTIPLE_TESTING_GOV",
+      "source_id": "KP5_HARVEY_LIU_ZHU_2016",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Raise evidence thresholds as the number of tested hypotheses grows and log the research search count for every promoted finding.",
+      "mechanism": "Multiple testing raises the false-discovery rate in return-predictor research.",
+      "formalization_note": "Governance/research discipline only. No direct trading weight."
+    },
+    {
+      "rule_id": "KP5_NONLINEAR_INTERACTIONS_GOV",
+      "source_id": "KP5_GU_KELLY_XIU_2020",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Test nonlinear interactions as challengers while keeping them shadow until they beat simpler models OOS net of costs.",
+      "mechanism": "Nonlinear interactions may contain predictive information missed by linear specifications.",
+      "formalization_note": "Governance/research discipline only. No direct trading weight."
+    },
+    {
+      "rule_id": "KP5_LATENT_FACTOR_ATTRIBUTION_GOV",
+      "source_id": "KP5_KELLY_PRUITT_SU_2019",
+      "agent": "MACRO",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Before crediting a signal with alpha, test whether its return is explained by changing latent systematic exposures.",
+      "mechanism": "Observed characteristics may proxy for time-varying factor loadings.",
+      "formalization_note": "Governance/research discipline only. No direct trading weight."
+    }
+  ]
+}
