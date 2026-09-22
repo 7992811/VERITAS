@@ -17,7 +17,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-VERSION = "veritas-max-product-v70.1-intelligence-learning"
+VERSION = "veritas-max-product-v70.2-horizon-aware-learning"
 SCHEMA_VERSION = 2
 
 
@@ -144,6 +144,9 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     source_gate = bool(payload.get("source_gate", True))
     time_gate = bool(payload.get("time_gate", True))
     market_open = bool(payload.get("market_open", True))
+    horizon = str(payload.get("horizon") or "")
+    structure = payload.get("intraday_structure") or {}
+    structure_resolution = str((structure.get("resolution") if isinstance(structure, dict) else "") or "")
     eff = int(payload.get("effective_evidence") or 0)
     conf = _num(payload.get("confidence"), 0.0) or 0.0
     cp = _num(payload.get("calibrated_probability"), None)
@@ -178,7 +181,22 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     soft: List[str] = []
     if not source_gate: data_hard.append("source_gate_failed")
     if not time_gate or not market_open: data_hard.append("time_gate_failed")
-    if entry_q == "INVALIDATED": entry_hard.append("technical_invalidation")
+    # Entry evidence must be aligned with the decision horizon. Current host
+    # structure is intraday/1h: hard for tactical 1h/4h, sizing/timing only for
+    # strategic 1d/3d/7d unless independent thesis evidence also fails.
+    entry_invalidated = entry_q == "INVALIDATED"
+    tactical_horizon = horizon in ("", "1h", "4h")  # empty keeps backwards compatibility for standalone callers
+    strategic_horizon = horizon in ("1d", "3d", "7d")
+    lower_tf_structure = strategic_horizon and (structure_resolution in ("", "1h_generic", "5m", "5m_ndx", "intraday") or "1h" in structure_resolution.lower() or "5m" in structure_resolution.lower())
+    timing_multiplier = 1.0
+    entry_scope = "TACTICAL_HARD" if tactical_horizon else "STRATEGIC_SOFT" if strategic_horizon else "UNKNOWN"
+    if entry_invalidated and tactical_horizon:
+        entry_hard.append("technical_invalidation_horizon_aligned")
+    elif entry_invalidated and strategic_horizon:
+        timing_multiplier = 0.50 if horizon == "1d" else 0.75
+        soft.append("lower_timeframe_entry_invalidation")
+        if not lower_tf_structure:
+            soft.append("entry_resolution_not_explicitly_lower_timeframe")
     if trend_sign and trend_sign != sign: soft.append("trend_direction_conflict")
     if opposition is not None and opposition >= 0.58: soft.append("agent_opposition_high")
     if cp is not None and cp < 0.48: soft.append("calibration_below_coinflip")
@@ -210,6 +228,8 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         size_mult = 0.75
     else:
         size_mult = 1.0
+    if allow and timing_multiplier < 1.0:
+        size_mult = min(size_mult, timing_multiplier)
 
     if data_hard:
         gate_class="DATA_VETO"
@@ -217,12 +237,15 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         gate_class="ENTRY_VETO"
     elif thesis_hard:
         gate_class="THESIS_VETO"
+    elif timing_multiplier < 1.0:
+        gate_class="TIMING_CAUTION"
     elif size_mult < 1.0:
         gate_class="SIZE_REDUCE"
     else:
         gate_class="PASS"
-    thesis_status = "UNKNOWN_DATA" if data_hard else "BROKEN" if thesis_hard else "CHALLENGED" if falsification>=0.60 or len(soft)>=2 else "VALID"
-    entry_status = "INVALIDATED" if entry_hard else "LATE_OR_WAIT" if entry_q in ("LATE_EXTENDED","EXTENDED_WAIT_PULLBACK") or uncertainty>=0.70 else "READY"
+    independent_soft=[x for x in soft if x not in ("lower_timeframe_entry_invalidation","entry_resolution_not_explicitly_lower_timeframe")]
+    thesis_status = "UNKNOWN_DATA" if data_hard else "BROKEN" if thesis_hard else "CHALLENGED" if falsification>=0.60 or len(independent_soft)>=2 else "VALID"
+    entry_status = "INVALIDATED" if entry_hard else "LOWER_TF_INVALIDATED" if timing_multiplier < 1.0 else "LATE_OR_WAIT" if entry_q in ("LATE_EXTENDED","EXTENDED_WAIT_PULLBACK") or uncertainty>=0.70 else "READY"
     action = "WAIT" if not allow else "REDUCE" if size_mult<1.0 else "ENTER_CANDIDATE"
     return {
         "status":"PASS" if allow else "VETO","gate_class":gate_class,"allow":allow,
@@ -230,6 +253,8 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         "uncertainty":round(uncertainty,4),
         "uncertainty_band":"HIGH" if uncertainty>=0.70 else "MEDIUM" if uncertainty>=0.45 else "LOW",
         "falsification_score":round(falsification,4),"size_multiplier":size_mult,
+        "timing_multiplier":timing_multiplier,"entry_scope":entry_scope,"structure_resolution":structure_resolution,
+        "horizon":horizon,"lower_timeframe_structure":bool(lower_tf_structure),
         "agent_opposition":None if opposition is None else round(opposition,4),"calibrated_probability":cp,
         "hard_reasons":hard,"soft_reasons":soft,
         "supporting_agents":sorted(set(supporting_agents)),"opposing_agents":sorted(set(opposing_agents)),
