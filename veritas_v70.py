@@ -17,8 +17,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-VERSION = "veritas-max-product-v70.0-market-os"
-SCHEMA_VERSION = 1
+VERSION = "veritas-max-product-v70.1-intelligence-learning"
+SCHEMA_VERSION = 2
 
 
 def _now() -> str:
@@ -124,17 +124,22 @@ def layer_manifest() -> Dict[str, Any]:
 
 
 def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
-    """Fail-closed governance view for one signal.
+    """Shadow pre-trade governance that separates thesis quality from entry timing.
 
-    Default recommendation is shadow validation. A host may enforce only after
-    validation. The function does not fetch data and never invents missing inputs.
+    A technical invalidation is an ENTRY veto, not proof that the market thesis is
+    wrong. Data/time failures are DATA vetoes. Only sufficiently independent
+    counter-evidence can become a THESIS veto. This separation is important for
+    learning because the outcome of a good thesis with a bad entry is different
+    from a wrong directional thesis.
     """
     dec = str(payload.get("research_decision") or payload.get("decision") or "NO_TRADE").upper()
     sign = _direction_sign(dec)
     if not sign:
-        return {"status":"NO_DIRECTION", "allow":False, "decision":"NO_TRADE",
-                "uncertainty":1.0, "falsification_score":0.0, "size_multiplier":0.0,
-                "hard_reasons":["no_directional_signal"], "soft_reasons":[]}
+        return {"status":"NO_DIRECTION","gate_class":"NO_DIRECTION","allow":False,"decision":"NO_TRADE",
+                "thesis_status":"NO_THESIS","entry_status":"WAIT","action":"WAIT",
+                "uncertainty":1.0,"falsification_score":0.0,"size_multiplier":0.0,
+                "hard_reasons":["no_directional_signal"],"soft_reasons":[],
+                "supporting_agents":[],"opposing_agents":[],"model_set_size":0,"mode":"shadow_by_default"}
 
     source_gate = bool(payload.get("source_gate", True))
     time_gate = bool(payload.get("time_gate", True))
@@ -149,36 +154,45 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     entry_q = str((trend.get("entry_quality") if isinstance(trend, dict) else "") or "").upper()
 
     long_w = short_w = 0.0
+    supporting_agents: List[str] = []
+    opposing_agents: List[str] = []
     for a in agents if isinstance(agents, list) else []:
+        name = "MODEL"
         if isinstance(a, (tuple, list)) and len(a) >= 3:
-            d, w = a[1], _num(a[2], 0.0) or 0.0
+            name, d, w = str(a[0]), a[1], _num(a[2], 0.0) or 0.0
         elif isinstance(a, dict):
-            d, w = a.get("direction"), _num(a.get("confidence"), 0.0) or 0.0
+            name, d, w = str(a.get("agent") or a.get("name") or "MODEL"), a.get("direction"), _num(a.get("confidence"), 0.0) or 0.0
         else:
             continue
-        if _direction_sign(d) > 0: long_w += w
-        elif _direction_sign(d) < 0: short_w += w
+        ds=_direction_sign(d)
+        if ds > 0: long_w += w
+        elif ds < 0: short_w += w
+        if ds == sign and w>0: supporting_agents.append(name)
+        elif ds == -sign and w>0: opposing_agents.append(name)
     directional = long_w + short_w
     opposition = ((short_w if sign > 0 else long_w) / directional) if directional > 1e-12 else None
 
-    hard: List[str] = []
+    data_hard: List[str] = []
+    entry_hard: List[str] = []
+    thesis_hard: List[str] = []
     soft: List[str] = []
-    if not source_gate: hard.append("source_gate_failed")
-    if not time_gate or not market_open: hard.append("time_gate_failed")
-    if entry_q == "INVALIDATED": hard.append("technical_invalidation")
+    if not source_gate: data_hard.append("source_gate_failed")
+    if not time_gate or not market_open: data_hard.append("time_gate_failed")
+    if entry_q == "INVALIDATED": entry_hard.append("technical_invalidation")
     if trend_sign and trend_sign != sign: soft.append("trend_direction_conflict")
     if opposition is not None and opposition >= 0.58: soft.append("agent_opposition_high")
     if cp is not None and cp < 0.48: soft.append("calibration_below_coinflip")
     if eff < 2: soft.append("thin_orthogonal_evidence")
     if event_score * sign < -0.45: soft.append("event_flow_opposes_signal")
 
-    # Independent contradictions are what matter; one weak feature cannot veto.
     falsification = 0.0
     if trend_sign and trend_sign != sign: falsification += 0.24
     if opposition is not None: falsification += 0.36 * _clip((opposition - 0.25) / 0.50)
     if cp is not None: falsification += 0.24 * _clip((0.55 - cp) / 0.20)
     if event_score * sign < 0: falsification += 0.16 * _clip(abs(event_score) / 0.75)
     falsification = _clip(falsification)
+    if not data_hard and not entry_hard and falsification >= 0.82 and len(soft) >= 2:
+        thesis_hard.append("multi_source_falsification")
 
     cal_unc = 0.35 if cp is None else _clip(1.0 - abs(cp - 0.5) * 2.0)
     opposition_unc = 0.35 if opposition is None else _clip(opposition / 0.60)
@@ -186,10 +200,7 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     confidence_unc = _clip((0.62 - conf) / 0.25)
     uncertainty = _clip(0.30*cal_unc + 0.25*opposition_unc + 0.20*evidence_unc + 0.15*confidence_unc + 0.10*falsification)
 
-    # Fail only on hard data/time invalidity, explicit technical invalidation, or
-    # a combination of strong independent contradictions.
-    if len(hard) == 0 and falsification >= 0.82 and len(soft) >= 2:
-        hard.append("multi_source_falsification")
+    hard=data_hard+entry_hard+thesis_hard
     allow = not hard
     if not allow:
         size_mult = 0.0
@@ -199,21 +210,31 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         size_mult = 0.75
     else:
         size_mult = 1.0
+
+    if data_hard:
+        gate_class="DATA_VETO"
+    elif entry_hard:
+        gate_class="ENTRY_VETO"
+    elif thesis_hard:
+        gate_class="THESIS_VETO"
+    elif size_mult < 1.0:
+        gate_class="SIZE_REDUCE"
+    else:
+        gate_class="PASS"
+    thesis_status = "UNKNOWN_DATA" if data_hard else "BROKEN" if thesis_hard else "CHALLENGED" if falsification>=0.60 or len(soft)>=2 else "VALID"
+    entry_status = "INVALIDATED" if entry_hard else "LATE_OR_WAIT" if entry_q in ("LATE_EXTENDED","EXTENDED_WAIT_PULLBACK") or uncertainty>=0.70 else "READY"
+    action = "WAIT" if not allow else "REDUCE" if size_mult<1.0 else "ENTER_CANDIDATE"
     return {
-        "status":"PASS" if allow else "VETO",
-        "allow":allow,
-        "decision":dec if allow else "NO_TRADE",
+        "status":"PASS" if allow else "VETO","gate_class":gate_class,"allow":allow,
+        "decision":dec if allow else "NO_TRADE","thesis_status":thesis_status,"entry_status":entry_status,"action":action,
         "uncertainty":round(uncertainty,4),
         "uncertainty_band":"HIGH" if uncertainty>=0.70 else "MEDIUM" if uncertainty>=0.45 else "LOW",
-        "falsification_score":round(falsification,4),
-        "size_multiplier":size_mult,
-        "agent_opposition":None if opposition is None else round(opposition,4),
-        "calibrated_probability":cp,
-        "hard_reasons":hard,
-        "soft_reasons":soft,
-        "mode":"shadow_by_default",
+        "falsification_score":round(falsification,4),"size_multiplier":size_mult,
+        "agent_opposition":None if opposition is None else round(opposition,4),"calibrated_probability":cp,
+        "hard_reasons":hard,"soft_reasons":soft,
+        "supporting_agents":sorted(set(supporting_agents)),"opposing_agents":sorted(set(opposing_agents)),
+        "model_set_size":len(set(supporting_agents+opposing_agents)),"mode":"shadow_by_default",
     }
-
 
 def cross_horizon_intelligence(signals: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     by_asset: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
@@ -486,6 +507,124 @@ def personalized_cio(context: Mapping[str, Any], profile: Optional[Mapping[str, 
             "goal_aware":goal_aware(context,profile),"decision":"USE_HOST_PORTFOLIO_CIO_WITH_PROFILE_CONSTRAINTS"}
 
 
+
+def _collect_leaf_paths(x: Any, prefix: str="", out: Optional[set]=None) -> set:
+    out = out if out is not None else set()
+    if isinstance(x, dict):
+        for k,v in x.items():
+            _collect_leaf_paths(v, f"{prefix}.{k}" if prefix else str(k), out)
+    elif isinstance(x, list):
+        for i,v in enumerate(x[:12]):
+            _collect_leaf_paths(v, f"{prefix}[]", out)
+    elif x is not None:
+        out.add(prefix)
+    return out
+
+
+def parameter_audit(signals: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    rows=[r for r in signals if isinstance(r,Mapping)]
+    paths=set()
+    for r in rows: _collect_leaf_paths(r,out=paths)
+    families=set()
+    keys=set().union(*(set(r.keys()) for r in rows)) if rows else set()
+    if {'source_gate_pass','market_open'} & keys: families.add('качество данных')
+    if {'confidence','score','challenger_decision'} & keys: families.add('комитет моделей')
+    if {'effective_evidence','knowledge_matches'} & keys: families.add('знания')
+    if 'calibrated_probability' in keys: families.add('калибровка')
+    if {'trend_phase','trend_direction','intraday_structure','trade_plan'} & keys: families.add('структура рынка')
+    if 'regime' in keys: families.add('режим')
+    if 'event_shadow_score' in keys: families.add('события')
+    if {'causal_score','causal_label'} & keys: families.add('причинные связи')
+    if {'tradeability','positive_trade_probability'} & keys: families.add('исторические аналоги')
+    if {'v70_uncertainty','v70_falsification','v70_gate_status'} & keys: families.add('риск-губернатор')
+    return {'status':'ok','state_parameters_used':len(paths),'independent_factor_families':sorted(families),
+            'factor_family_count':len(families),'definition':'Параметры = уникальные непустые поля состояния, реально присутствующие в текущих сигналах; семейства факторов считаются отдельно, чтобы не выдавать коррелированные поля за независимые доказательства.'}
+
+
+def _group_arrow(rows: Sequence[Mapping[str,Any]], horizons: Sequence[str]) -> str:
+    dirs=[]
+    for r in rows:
+        if r.get('horizon') not in horizons: continue
+        d=_direction_sign(r.get('research_decision') or r.get('decision'))
+        if d: dirs.append(d)
+    if not dirs: return '→'
+    x=sum(dirs)
+    if x==0: return '↔'
+    return '↑' if x>0 else '↓'
+
+
+def investor_asset_view(signals: Sequence[Mapping[str, Any]], model_agents: Optional[int]=None) -> Dict[str, Any]:
+    by_asset: Dict[str,List[Mapping[str,Any]]]=defaultdict(list)
+    for r in signals:
+        if isinstance(r,Mapping) and r.get('asset'): by_asset[str(r.get('asset'))].append(r)
+    hw={'1h':0.55,'4h':0.8,'1d':1.0,'3d':1.15,'7d':1.0}
+    items=[]
+    for asset,rows in sorted(by_asset.items()):
+        num=den=0.0; directional=[]; hmap={}
+        for r in rows:
+            h=str(r.get('horizon') or ''); d=_direction_sign(r.get('research_decision') or r.get('decision'))
+            hmap[h]='↑' if d>0 else '↓' if d<0 else '→'
+            w=hw.get(h,1.0); conf=_num(r.get('confidence'),0.0) or 0.0
+            num+=d*w*conf; den+=w
+            if d: directional.append(d)
+        score=num/den if den else 0.0
+        align=abs(sum(directional))/len(directional) if directional else 0.0
+        sign=1 if score>0.035 else -1 if score<-0.035 else 0
+        strength=3 if sign and len(directional)>=4 and align>=0.80 else 2 if sign and len(directional)>=2 and align>=0.60 else 1 if sign else 0
+        arrow=('↑'*strength) if sign>0 else ('↓'*strength) if sign<0 else '→'
+        trend='восходящий' if sign>0 else 'нисходящий' if sign<0 else 'смешанный / нейтральный'
+        strongest=max(rows,key=lambda r:abs(_num(r.get('confidence'),0.0) or 0.0),default={})
+        pa=parameter_audit(rows)
+        thesis=strongest.get('v70_thesis_status') or ('VALID' if sign else 'NO_THESIS')
+        entry=strongest.get('v70_entry_status') or strongest.get('entry_quality') or 'UNKNOWN'
+        action=strongest.get('v70_action') or ('WAIT' if not sign else 'REVIEW')
+        items.append({'asset':asset,'arrow':arrow,'trend':trend,'weighted_direction_score':round(score,4),
+                      'horizons':{h:hmap.get(h,'→') for h in ('1h','4h','1d','3d','7d')},
+                      'directional_horizons':len(directional),'total_horizons':len(rows),'alignment':round(align,4),
+                      'fast':_group_arrow(rows,('1h','4h')),'medium':_group_arrow(rows,('1d','3d')),'slow':_group_arrow(rows,('7d',)),
+                      'state_parameters_used':pa['state_parameters_used'],'factor_family_count':pa['factor_family_count'],
+                      'factor_families':pa['independent_factor_families'],'model_agents':model_agents,
+                      'effective_evidence_across_horizons':sum(int(r.get('effective_evidence') or 0) for r in rows),
+                      'strongest_horizon':strongest.get('horizon'),'thesis_status':thesis,'entry_status':entry,'action':action})
+    return {'status':'ok','items':items,'parameter_definition':'Уникальные непустые поля состояния в пяти горизонтах; это не число независимых факторов.',
+            'speed_definition':'FAST=1ч/4ч, MEDIUM=1д/3д, SLOW=7д — прозрачный прокси до отдельного внутригоризонтного multi-speed набора.'}
+
+
+def adaptive_uncertainty(signals: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    by=defaultdict(list)
+    for r in signals:
+        if not isinstance(r,Mapping): continue
+        u=_num(r.get('v70_uncertainty'),None)
+        if u is not None: by[str(r.get('asset') or '?')].append(u)
+    items=[]
+    for asset,vals in sorted(by.items()):
+        avg=sum(vals)/len(vals); items.append({'asset':asset,'mean_uncertainty':round(avg,4),'band':'HIGH' if avg>=.70 else 'MEDIUM' if avg>=.45 else 'LOW','n':len(vals)})
+    return {'status':'ok' if items else 'DATA_REQUIRED','items':items,
+            'conformal_status':'DATA_REQUIRED','conformal_requirement':'Нужен отдельный ряд точечных прогнозов и реализованных ошибок; до этого VERITAS не называет текущую эвристику conformal-интервалом.'}
+
+
+def research_specialists(context: Mapping[str,Any]) -> Dict[str,Any]:
+    signals=_safe_rows(context.get('signals'))
+    specs=[]
+    specs.append({'specialist':'TREND','status':'ACTIVE' if signals else 'DATA_REQUIRED','output':'multi-speed + cross-horizon','board':investor_asset_view(signals, (context.get('signal_capacity') or {}).get('agents'))})
+    macro=context.get('macro') or {}; specs.append({'specialist':'MACRO','status':'ACTIVE' if macro else 'DATA_REQUIRED','output':'macro regime + cross-asset'})
+    events=context.get('events') or {}; specs.append({'specialist':'EVENT','status':'ACTIVE' if _safe_rows(events) else 'DATA_REQUIRED','output':'event reaction / expectation gap'})
+    specs.append({'specialist':'RISK','status':'ACTIVE','output':'uncertainty + falsification + hidden risk'})
+    ruleboard=context.get('ruleboard') or {}; specs.append({'specialist':'KNOWLEDGE','status':'ACTIVE' if _safe_rows(ruleboard) else 'BUILDING','output':'rule evidence / decay / replication'})
+    specs.append({'specialist':'EXECUTION','status':'ACTIVE' if any(isinstance(r.get('trade_plan'),dict) for r in signals) else 'DATA_REQUIRED','output':'entry quality / stop / tradeability'})
+    return {'status':'ok','specialists':specs,'principle':'Специализация повышает глубину: каждый исследовательский контур имеет узкую задачу и собственные проверки; CIO агрегирует результаты, а не один универсальный агент пытается делать всё.'}
+
+
+def regime_change_warning(context: Mapping[str,Any]) -> Dict[str,Any]:
+    rt=_safe_rows(context.get('regime_transitions')); out=[]
+    for r in rt:
+        risk=str(r.get('transition_risk') or r.get('risk') or '').upper()
+        out.append({'asset':r.get('asset'),'horizon':r.get('horizon'),'transition_risk':risk or 'UNKNOWN',
+                    'persistence_probability':r.get('persistence_probability'),'status':'EARLY_WARNING' if risk in ('HIGH','ELEVATED') else 'STABLE_OR_BUILDING'})
+    return {'status':'ok' if out else 'DATA_REQUIRED','items':out,
+            'next_research_step':'BOCPD/score-driven change-point model remains SHADOW until an explicit sequential regime series is validated.'}
+
+
 def operating_system(context: Mapping[str, Any], profile: Optional[Mapping[str, Any]]=None) -> Dict[str, Any]:
     signals=_safe_rows(context.get("signals"))
     return {
@@ -494,6 +633,10 @@ def operating_system(context: Mapping[str, Any], profile: Optional[Mapping[str, 
         "TRUTH":evidence_graph(context),
         "INTELLIGENCE":{
             "cross_horizon":cross_horizon_intelligence(signals),
+            "investor_asset_view":investor_asset_view(signals,(context.get("signal_capacity") or {}).get("agents")),
+            "adaptive_uncertainty":adaptive_uncertainty(signals),
+            "regime_change_warning":regime_change_warning(context),
+            "research_specialists":research_specialists(context),
             "expectation_gap":expectation_gap(context),
             "surprise":surprise_detection(context),
             "reflexivity":reflexivity_engine(context),
@@ -526,7 +669,7 @@ def quality_board(context: Mapping[str, Any], profile: Optional[Mapping[str, Any
     os_view=operating_system(context,profile)
     manifest=layer_manifest()
     return {
-        "version":VERSION,"generated_at":_now(),"status":"RELEASE_CANDIDATE",
+        "version":VERSION,"generated_at":_now(),"status":"RELEASE_CANDIDATE_V70_1",
         "manifest":manifest,
         "operating_system":os_view,
         "promotion_gate":{

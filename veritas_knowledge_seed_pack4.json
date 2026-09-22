@@ -1,0 +1,377 @@
+{
+  "pack_id": "VERITAS_KNOWLEDGE_PACK_4_V701_2026-09-22",
+  "sources": [
+    {
+      "source_id": "KP4_MAN_ALPHATREND_2026",
+      "title": "A Trend Following Deep Dive: AlphaTrend and Agentic Research Workflows",
+      "authors": "Martin Luk; Tarek Abou Zeid; Otto van Hemert; Man Group",
+      "year": 2026,
+      "source_type": "institutional_research",
+      "url": "https://www.man.com/insights/alphatrend-agentic-research-workflows",
+      "evidence_grade": "B",
+      "claim": "Specialised, predefined agentic research pipelines can trade breadth for depth, rapidly eliminate weak research paths and accelerate robust signal evaluation, while still requiring multiple-testing discipline and human governance."
+    },
+    {
+      "source_id": "KP4_MAN_OPTIMAL_MIX_2026",
+      "title": "A Trend Following Deep Dive: The Optimal Market Mix for a Trend Follower",
+      "authors": "Harry Moore; Rupert Goodall; Man AHL",
+      "year": 2026,
+      "source_type": "institutional_research",
+      "url": "https://www.man.com/insights/trend-following-optimal-market-mix",
+      "evidence_grade": "B",
+      "claim": "The optimal opportunity set depends on the investor objective; market breadth, liquidity, crisis behaviour and capital efficiency should be optimised jointly rather than maximising standalone Sharpe only."
+    },
+    {
+      "source_id": "KP4_MAN_CASH_EQUITIES_2026",
+      "title": "A Trend Following Deep Dive: Cash (Equities) Is King",
+      "authors": "Giuliana Bordigoni; Max Buchanan; Man Group",
+      "year": 2026,
+      "source_type": "institutional_research",
+      "url": "https://www.man.com/insights/trend-following-cash-is-king",
+      "evidence_grade": "B",
+      "claim": "Cross-sectional and cash-equity trend opportunities can broaden the independent opportunity set beyond index futures and may add diversification when liquidity and implementation permit."
+    },
+    {
+      "source_id": "KP4_MAN_MULTI_SPEED",
+      "title": "The Need for Speed in Trend-Following Strategies",
+      "authors": "Adi Mackic; Man AHL",
+      "year": 2023,
+      "source_type": "institutional_research",
+      "url": "https://www.man.com/insights/need-for-speed-trend-following",
+      "evidence_grade": "B",
+      "claim": "Fast and slow trend systems capture different trend lengths and can be lowly correlated; faster systems can improve crisis responsiveness but are more sensitive to transaction costs and execution quality."
+    },
+    {
+      "source_id": "KP4_AQR_EXPECTATIONS_2025",
+      "title": "How Do Investors Form Long-Run Return Expectations?",
+      "authors": "Antti Ilmanen; AQR",
+      "year": 2025,
+      "source_type": "institutional_research",
+      "url": "https://www.aqr.com/Insights/Research/White-Papers/How-Do-Investors-Form-Long-Run-Return-Expectations",
+      "evidence_grade": "B",
+      "claim": "Objective yield/valuation-based expected returns and subjective rear-view-mirror expectations can diverge materially; extrapolative expectations may be most dangerous near major market peaks and troughs."
+    },
+    {
+      "source_id": "KP4_AQR_IMPLEMENTABLE_FRONTIER_2022",
+      "title": "Machine Learning and the Implementable Efficient Frontier",
+      "authors": "Theis Ingerslev Jensen; Bryan T. Kelly; Semyon Malamud; Lasse H. Pedersen",
+      "year": 2022,
+      "source_type": "working_paper",
+      "url": "https://www.aqr.com/insights/research/working-paper/machine-learning-and-the-implementable-efficient-frontier",
+      "evidence_grade": "B",
+      "claim": "Machine-learning portfolio construction should optimise an economic objective net of trading costs; learning portfolio weights directly can improve implementable outcomes and permits economic feature-importance attribution."
+    },
+    {
+      "source_id": "KP4_CONFORMAL_MULTI_STEP_2024",
+      "title": "Adaptive Conformal Inference for Multi-Step Ahead Time-Series Forecasting Online",
+      "authors": "Johan Hallberg Szabadváry",
+      "year": 2024,
+      "source_type": "working_paper",
+      "url": "https://arxiv.org/abs/2409.14792",
+      "evidence_grade": "B",
+      "claim": "Adaptive conformal inference can update uncertainty coverage online for multi-step time-series forecasts under non-exchangeability; target error and learning rates can differ by forecast horizon."
+    },
+    {
+      "source_id": "KP4_CONFORMAL_MODEL_SET_2025",
+      "title": "Online Conformal Model Selection for Nonstationary Time Series",
+      "authors": "Shibo Li; Yao Zheng",
+      "year": 2025,
+      "source_type": "working_paper",
+      "url": "https://arxiv.org/abs/2506.05544",
+      "evidence_grade": "B",
+      "claim": "For nonstationary time series, an online confidence set of candidate models can adapt to changing dynamics and retain the best model with a controlled long-run coverage target rather than forcing a single fixed champion."
+    },
+    {
+      "source_id": "KP4_BOCPD_AR_2024",
+      "title": "Bayesian Autoregressive Online Change-Point Detection with Time-Varying Parameters",
+      "authors": "Ioanna-Yvonni Tsaknaki; Fabrizio Lillo; Piero Mazzarisi",
+      "year": 2024,
+      "source_type": "working_paper",
+      "url": "https://arxiv.org/abs/2407.16376",
+      "evidence_grade": "B",
+      "claim": "Online Bayesian change-point detection can model autocorrelation plus time-varying variance/correlation within regimes and provide probabilistic warnings of structural changes in nonstationary time series."
+    },
+    {
+      "source_id": "KP4_ORDERFLOW_CHANGEPOINT_2023",
+      "title": "Online Learning of Order Flow and Market Impact with Bayesian Change-Point Detection Methods",
+      "authors": "Ioanna-Yvonni Tsaknaki; Fabrizio Lillo; Piero Mazzarisi",
+      "year": 2023,
+      "source_type": "working_paper",
+      "url": "https://arxiv.org/abs/2307.02375",
+      "evidence_grade": "B",
+      "claim": "Regime-aware Bayesian change-point models can improve online predictions of persistent order flow and market impact relative to models that ignore regime shifts in the studied NASDAQ data."
+    }
+  ],
+  "rules": [
+    {
+      "rule_id": "KP4_RULE_MAN_ALPHATREND_2026",
+      "source_id": "KP4_MAN_ALPHATREND_2026",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Use specialised research pipelines with fixed nodes and separate validation instead of one universal research agent.",
+      "mechanism": "Specialisation trades flexibility for depth and reduces attention dilution.",
+      "formalization_note": "Governance only; new specialists stay shadow until measured."
+    },
+    {
+      "rule_id": "KP4_RULE_MAN_OPTIMAL_MIX_2026",
+      "source_id": "KP4_MAN_OPTIMAL_MIX_2026",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Optimise the opportunity set against the actual portfolio objective, including liquidity, crisis behaviour and capital efficiency.",
+      "mechanism": "Diversification quality depends on the objective and the independent opportunity set.",
+      "formalization_note": "Portfolio governance; not a directional signal."
+    },
+    {
+      "rule_id": "KP4_RULE_MAN_CASH_EQUITIES_2026",
+      "source_id": "KP4_MAN_CASH_EQUITIES_2026",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Test cross-sectional relative-value trend signals separately from directional index trend.",
+      "mechanism": "Cross-sectional trends can provide a distinct source of diversification.",
+      "formalization_note": "Requires security/sector breadth data before decision influence."
+    },
+    {
+      "rule_id": "KP4_RULE_MAN_MULTI_SPEED",
+      "source_id": "KP4_MAN_MULTI_SPEED",
+      "agent": "TECH_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Maintain fast, medium and slow trend components and evaluate their incremental value net of turnover costs.",
+      "mechanism": "Different trend speeds capture different persistence lengths and crisis responsiveness.",
+      "formalization_note": "v70.1 initially uses transparent horizon-group proxy; separate within-horizon speeds require validation."
+    },
+    {
+      "rule_id": "KP4_RULE_AQR_EXPECTATIONS_2025",
+      "source_id": "KP4_AQR_EXPECTATIONS_2025",
+      "agent": "MACRO",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Separate objective valuation/yield expectations from extrapolative narrative expectations.",
+      "mechanism": "Subjective expectations may extrapolate past returns while objective starting yields can imply the opposite.",
+      "formalization_note": "Requires external consensus/survey feed for true expectation-gap decisions."
+    },
+    {
+      "rule_id": "KP4_RULE_AQR_IMPLEMENTABLE_FRONTIER_2022",
+      "source_id": "KP4_AQR_IMPLEMENTABLE_FRONTIER_2022",
+      "agent": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Judge model improvements by net economic utility after costs, not forecast accuracy alone.",
+      "mechanism": "Decision-focused learning aligns model training and feature importance with implementable portfolio outcomes.",
+      "formalization_note": "Governance for Learning Index 3.0 and layer attribution."
+    },
+    {
+      "rule_id": "KP4_RULE_CONFORMAL_MULTI_STEP_2024",
+      "source_id": "KP4_CONFORMAL_MULTI_STEP_2024",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Add adaptive forecast-coverage diagnostics separately for each horizon once explicit point forecasts and errors are stored.",
+      "mechanism": "Adaptive conformal methods update uncertainty coverage online under distribution shift.",
+      "formalization_note": "DATA_REQUIRED until explicit forecast-error series exists; do not label heuristics as conformal."
+    },
+    {
+      "rule_id": "KP4_RULE_CONFORMAL_MODEL_SET_2025",
+      "source_id": "KP4_CONFORMAL_MODEL_SET_2025",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Prefer an adaptive confidence set of models under nonstationarity over a permanently fixed single champion.",
+      "mechanism": "The identity of the best model changes when time-series dynamics change.",
+      "formalization_note": "Shadow research until online model-set coverage is validated."
+    },
+    {
+      "rule_id": "KP4_RULE_BOCPD_AR_2024",
+      "source_id": "KP4_BOCPD_AR_2024",
+      "agent": "QUANT",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "Research probabilistic online regime-change warnings that account for autocorrelation and time-varying volatility.",
+      "mechanism": "Change points can mark structural shifts in mean/dynamics before static regime labels fully adjust.",
+      "formalization_note": "Shadow only until sequential change-point calibration is complete."
+    },
+    {
+      "rule_id": "KP4_RULE_ORDERFLOW_CHANGEPOINT_2023",
+      "source_id": "KP4_ORDERFLOW_CHANGEPOINT_2023",
+      "agent": "TECH_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NDX",
+        "BRENT",
+        "GOLD",
+        "MOEX"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0.0,
+      "hypothesis": "When licensed microstructure data become available, model order-flow regimes and market impact jointly rather than assuming stationary flow.",
+      "mechanism": "Persistent order flow can change regimes and alter short-run price impact.",
+      "formalization_note": "DATA_REQUIRED for order-book/trade-flow feed."
+    }
+  ]
+}
