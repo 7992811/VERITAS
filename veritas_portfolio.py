@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from xml.etree import ElementTree as ET
 import httpx
 
-VERSION='veritas-portfolio-v2-v70.8.2'
+VERSION='veritas-portfolio-v2-v70.8.4'
 INITIAL_NAV_RUB=1_000_000.0
 MAX_GROSS=2.0
 COMMISSION=0.0005
@@ -122,6 +122,10 @@ def _signal_probability(row):
     if tr.get('active') and tr.get('probability') is not None:
         try: return _clip(float(tr.get('probability')),0.50,0.90),'REVERSAL_MODEL_PRIOR_UNCALIBRATED'
         except Exception: pass
+    rs=row.get('range_retest_breakout') or {}
+    if rs.get('active') and rs.get('probability') is not None:
+        try: return _clip(float(rs.get('probability')),0.50,0.90),'RANGE_SETUP_MODEL_PRIOR_UNCALIBRATED'
+        except Exception: pass
     inst=row.get('institutional_signal') or {}; bq=inst.get('breakout_quality') or {}; ev=inst.get('evidence_independence') or {}
     hs=row.get('horizon_structure') or {}; plan=row.get('trade_plan') or {}
     conf=_clip(row.get('confidence') or 0,0,1); q=_clip(bq.get('quality_score') or 0,0,1)
@@ -142,8 +146,11 @@ def _best_by_asset(summary):
             d=tr.get('direction')
             r=dict(r); r['research_decision']=d
         if d not in ('LONG','SHORT'): continue
+        rs=r.get('range_retest_breakout') or {}
+        paper_research_ok=bool((rs.get('active') or tr.get('active')) and r.get('source_gate_pass') and int(r.get('direct_sources') or 0)>=1)
+        if not bool(r.get('execution_eligible')) and not paper_research_ok: continue
         inst=r.get('institutional_signal') or {}; action=str(inst.get('action') or '')
-        if action=='WAIT' and not tr.get('active'): continue
+        if action=='WAIT' and not tr.get('active') and not rs.get('active'): continue
         p,source=_signal_probability(r)
         ev=inst.get('evidence_independence') or {}; indep=int(ev.get('independent_count') or 0)
         bq=inst.get('breakout_quality') or {}; q=float(bq.get('quality_score') or 0)
@@ -168,14 +175,21 @@ def _desired_fraction(row,policy,drawdown):
     p=float(row['_pwin']); inst=row.get('institutional_signal') or {}; sig=str(inst.get('investor_signal') or '')
     indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
     tr=row.get('tactical_reversal') or {}
-    min_indep=2 if tr.get('active') else int(policy['min_independent'])
-    effective_indep=max(indep,int(tr.get('confirmations') or 0)) if tr.get('active') else indep
+    rs=row.get('range_retest_breakout') or {}
+    tactical=bool(tr.get('active') or rs.get('active'))
+    min_indep=2 if tactical else int(policy['min_independent'])
+    effective_indep=max(indep,int(tr.get('confirmations') or 0),int(rs.get('confirmations') or 0)) if tactical else indep
     if p<float(policy['threshold']) or effective_indep<min_indep: return 0.0
     plan=row.get('trade_plan') or {}
     rr=float(plan.get('expected_to_stop_ratio') or tr.get('reward_risk') or 0.0)
     # Mandatory admission economics: positive EV after commission/funding proxy and adequate reward/risk.
     if tr.get('active'):
         if rr < 1.30: return 0.0
+    elif rs.get('active') and rs.get('state') in ('RETEST_ENTRY','BREAKOUT_ADD'):
+        if rr < (1.20 if rs.get('state')=='RETEST_ENTRY' else 0.80): return 0.0
+    elif rs.get('active') and rs.get('state') in ('APPROACH_RESISTANCE','APPROACH_SUPPORT'):
+        # manage an existing participation position near the range edge; keep only a small runner
+        pass
     elif not plan.get('eligible') or rr < 1.0:
         return 0.0
     if p<0.70: f=0.05+((p-policy['threshold'])/max(1e-6,0.70-policy['threshold']))*0.20
@@ -189,6 +203,11 @@ def _desired_fraction(row,policy,drawdown):
     if stop_pct is not None and float(stop_pct)>0: f=min(f,MAX_STOP_RISK_NAV/float(stop_pct))
     if tr.get('active') and not tr.get('structural_confirmed'):
         f=min(f,0.15)
+    if rs.get('active'):
+        state=str(rs.get('state') or '')
+        if state=='RETEST_ENTRY': f=min(f,float(rs.get('initial_position_fraction') or 0.10))
+        elif state in ('APPROACH_RESISTANCE','APPROACH_SUPPORT'): f=min(f,0.10)
+        elif state=='BREAKOUT_ADD': f=min(max(f,0.20),0.30)
     rg=_risk_governor(drawdown); f*=rg['multiplier']; return _clip(_round_step(f),0,2.0)
 
 
@@ -323,6 +342,9 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate):
             target=float(targets.get(asset,0.0));
             if target<=0: continue
             px=float(prices[asset]); z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
+            rs=row.get('range_retest_breakout') or {}
+            if not z and rs.get('active') and str(rs.get('state') or '') in ('APPROACH_RESISTANCE','APPROACH_SUPPORT'):
+                continue
             cur=abs(float(z['units'])*px)/max(nav,1.0) if z else 0.0
             if target>cur+0.025: _open_or_add(c,p,name,asset,row['research_decision'],px,target,nav,ts,row,'ADMISSION_OR_ADD')
     p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices); hwm=max(float(p['high_water_nav_rub']),nav); dd=max(0.0,1-nav/max(hwm,1.0))
