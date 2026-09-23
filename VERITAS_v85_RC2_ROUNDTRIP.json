@@ -1,0 +1,17 @@
+{
+  "scope": "REEXTRACTED_EXACT_DELIVERED_ARCHIVE",
+  "archive": "VERITAS_v85_INTEGRATION_RC2_FOR_CI.zip",
+  "archive_sha256": "91549748f7065f4d4083827351774983b96c6032d706f459e004d36a67829c8f",
+  "tests_run": 221,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "http_process_passed": true,
+  "runtime_version": "veritas-max-product-v85.0-rc2-static",
+  "computed_cells": 35,
+  "sigterm_exit_code": 0,
+  "release_manifest_sha256": "18975829172b11435d145e3cd00589d2f19e3a626a637dbe31f634d8169d45d5",
+  "analytical_basis": "OFFLINE_BASE_TEST_ONLY",
+  "real_postgresql_tested": false,
+  "production_deployed": false
+}

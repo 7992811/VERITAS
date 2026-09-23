@@ -1,0 +1,57 @@
+{
+  "release": "VERITAS v85 RC2",
+  "status": "LOCAL_INTEGRATION_PASSED__STRICT_CI_PENDING__NOT_FOR_MAIN_OR_PRODUCTION",
+  "created_at_utc": "2026-09-23T12:38:58.488853+00:00",
+  "source_archive_sha256": "af145c54c69b1e89dd90be09e61a15f8b8e0c5fff5b941352572957d6ca3eebf",
+  "source_commit_from_archive_comment": "cc2e7567242c244560835299da4e27656c5027ae",
+  "release_manifest_sha256": "18975829172b11435d145e3cd00589d2f19e3a626a637dbe31f634d8169d45d5",
+  "analytical_basis": "OFFLINE_BASE_TEST_ONLY",
+  "completed": {
+    "actual_test_suite": {
+      "tests_run": 221,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 6.6255888929999855,
+      "database": "SQLite isolated fixtures"
+    },
+    "risk_randomized_cases": {
+      "count": 2000,
+      "counted_as": "inside one test, not 2000 additional test methods"
+    },
+    "actual_http_process": {
+      "success": true,
+      "version": "veritas-max-product-v85.0-rc2-static",
+      "computed_cells": 35,
+      "visible_cells": 35,
+      "sigterm_exit_code": 0,
+      "source_unchanged": true,
+      "snapshot_requests": 50,
+      "timing_scope": "LOOPBACK_PRECOMPUTED_FIXTURE_NOT_RENDER"
+    },
+    "strict_packaging_gate_blocks_this_local_basis": true,
+    "source_archive_inventory_classified": 32,
+    "news_bot_prompt_dependencies_and_blueprint_preserved": true
+  },
+  "not_completed": {
+    "full_pinned_v80_hydration": "NOT_RUN_LOCALLY; dependency bytes unavailable locally; strict CI builds verified Git blob",
+    "real_postgresql_transactions": "NOT_RUN_LOCALLY; no PostgreSQL engine/driver in local environment; isolated CI suite provided",
+    "CI_workflow_execution": "NOT_RUN_REMOTE; supplied as code",
+    "real_position_cutover_rehearsal": "NOT_RUN",
+    "live_source_coverage_all_held_assets": "NOT_VERIFIED; BTC ETH NDX guard adapters only; unsupported held assets block cutover",
+    "render_latency_or_database_load_after_upgrade": "NOT_MEASURED",
+    "historical_backtest_of_integrated_policy": "NOT_PERFORMED",
+    "win_rate_improvement": "NOT_DEMONSTRATED",
+    "broker_execution": "NOT_IMPLEMENTED; synthetic paper only",
+    "automatic_add_partial_takeprofit_trailing_direction_learning": "NOT_ENABLED",
+    "legacy_closed_history_relabelling_into_v85": "NOT_COMPLETED; original data preserved"
+  },
+  "remote_changes": {
+    "github": false,
+    "render_deploy": false,
+    "production_database": false,
+    "billing": false,
+    "file_deletions": false
+  },
+  "required_next_action": "Stage candidate in isolated v85-acceptance branch; run acceptance workflow; do not overwrite main"
+}

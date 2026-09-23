@@ -1,0 +1,198 @@
+{
+  "remote_files_deleted": false,
+  "source_zip_sha256": "af145c54c69b1e89dd90be09e61a15f8b8e0c5fff5b941352572957d6ca3eebf",
+  "files": [
+    {
+      "path": "VERITAS_v84_2_QC_REPORT.json",
+      "source_sha256": "4b699e5f97b1e104e422adb0d3b3452bef510e1f9314f5df287442ad99bdd490",
+      "action": "ARCHIVED_NON_RUNTIME",
+      "root_unchanged": false
+    },
+    {
+      "path": "test_veritas_v706.py",
+      "source_sha256": "3693c2e8dfb315661d25b088dd7cbf44477051069fbab499ef2351773453cc2a",
+      "action": "PRESERVED_IN_ARCHIVE_TESTS; NOT_COUNTED_AS_PASSED_CURRENT_TESTS",
+      "root_unchanged": false
+    },
+    {
+      "path": "test_veritas_v702.py",
+      "source_sha256": "31e6cb70762dc0b6478581a94cdb297bd5ee161abeca0e08b80a9f838b009b0d",
+      "action": "PRESERVED_IN_ARCHIVE_TESTS; NOT_COUNTED_AS_PASSED_CURRENT_TESTS",
+      "root_unchanged": false
+    },
+    {
+      "path": "requirements-intelligence.txt",
+      "source_sha256": "b9c60c9b43f60b34fb742cec2dace224e8d4c9148d4c0979d7a6c74c3bc32e5b",
+      "action": "UPDATED_PINNED_DEPENDENCIES; ORIGINAL_ARCHIVED",
+      "root_unchanged": false
+    },
+    {
+      "path": "test_veritas_v707.py",
+      "source_sha256": "e81ac8a16bd2668b8191c36b4fc4815ded2b666fe718ed05203a92b9d99f4b0d",
+      "action": "PRESERVED_IN_ARCHIVE_TESTS; NOT_COUNTED_AS_PASSED_CURRENT_TESTS",
+      "root_unchanged": false
+    },
+    {
+      "path": "render.yaml",
+      "source_sha256": "516d6750286fe71f614d9d5fb1415b97cb2db0776c12405ed173adbd8f7a2c8d",
+      "action": "PRESERVED_BYTE_FOR_BYTE",
+      "root_unchanged": true
+    },
+    {
+      "path": "apply_v70_patch.py",
+      "source_sha256": "934a280cff4a8e7c04e8d46b86eb605a96bb44585a88f901260aae3abc9510b5",
+      "action": "SAFE_REPLACEMENT_WRAPPER_OR_TOMBSTONE; ORIGINAL_ARCHIVED",
+      "root_unchanged": false
+    },
+    {
+      "path": "sitecustomize.py",
+      "source_sha256": "8bcd4d5150fb2ea7bee6ab0f35df7619d5cd99588a8ca4c6d3d9523283061829",
+      "action": "SAFE_REPLACEMENT_WRAPPER_OR_TOMBSTONE; ORIGINAL_ARCHIVED",
+      "root_unchanged": false
+    },
+    {
+      "path": "veritas_v70.py",
+      "source_sha256": "92e4c1c1b9910d24469643ad76ad0fc4035a986e594344ea821f863addd0881a",
+      "action": "MATH_PRESERVED; HOST_VERSION_SIDE_EFFECT_REMOVED; EXACT_INPUT_IN_VENDOR",
+      "root_unchanged": false
+    },
+    {
+      "path": "README_IPHONE.md",
+      "source_sha256": "55b962b205c0e716ebdcf179a494aedabe53eae486a5cb48d455d28e7258aec3",
+      "action": "ARCHIVED_NON_RUNTIME",
+      "root_unchanged": false
+    },
+    {
+      "path": "test_veritas_v701.py",
+      "source_sha256": "8b26f965f6a2faab104d1c1c475670b2f5504e38dedf1b2370698a8fcf8cee3e",
+      "action": "PRESERVED_IN_ARCHIVE_TESTS; NOT_COUNTED_AS_PASSED_CURRENT_TESTS",
+      "root_unchanged": false
+    },
+    {
+      "path": "test_veritas_v7084_range.py",
+      "source_sha256": "c04d0d4f8805a826abc6b288d327cfaaff4ae03a37d441649c97aa0e243ecbe2",
+      "action": "PRESERVED_IN_ARCHIVE_TESTS; NOT_COUNTED_AS_PASSED_CURRENT_TESTS",
+      "root_unchanged": false
+    },
+    {
+      "path": "veritas_knowledge_seed_batch2.json",
+      "source_sha256": "ede29e88d8e088070a93f373e17fa1b42ace81c32e904ecea085c95109fa2b58",
+      "action": "PRESERVED_BYTE_FOR_BYTE",
+      "root_unchanged": true
+    },
+    {
+      "path": "veritas_start.py",
+      "source_sha256": "f5cf0af359c5a25ca4cffc991d372aebf3e3ff9e8b9c6d8e1bf73f06f9802ac1",
+      "action": "SAFE_REPLACEMENT_WRAPPER_OR_TOMBSTONE; ORIGINAL_ARCHIVED",
+      "root_unchanged": false
+    },
+    {
+      "path": "test_veritas_v72.py",
+      "source_sha256": "cd32b66183f798eeac6f19cc156678f18763386f3d7e5cb9fd032d6fd3bc3d33",
+      "action": "PRESERVED_IN_ARCHIVE_TESTS; NOT_COUNTED_AS_PASSED_CURRENT_TESTS",
+      "root_unchanged": false
+    },
+    {
+      "path": "README_V7084.md",
+      "source_sha256": "9689460424609d9115fcfcfa2e956242db1c107018f568b2d878303cc51f62ab",
+      "action": "ARCHIVED_NON_RUNTIME",
+      "root_unchanged": false
+    },
+    {
+      "path": "veritas_knowledge_seed.json",
+      "source_sha256": "0b0ff64cd5814ec1aa0a4bb9167d0526ed611db5fed83e5856c252ff5ec108e7",
+      "action": "PRESERVED_BYTE_FOR_BYTE",
+      "root_unchanged": true
+    },
+    {
+      "path": "README_V72.md",
+      "source_sha256": "883ce9cafadc15a3d956415ff64c7ee549f2b3f65ea6e2800fb28a37cc96f00c",
+      "action": "ARCHIVED_NON_RUNTIME",
+      "root_unchanged": false
+    },
+    {
+      "path": "README_V70.md",
+      "source_sha256": "58755dfe39c69accc2e74bd120ed45bd2556ffcb6ddfc930782e5f74783a2833",
+      "action": "ARCHIVED_NON_RUNTIME",
+      "root_unchanged": false
+    },
+    {
+      "path": "README_V707.md",
+      "source_sha256": "9b3c2c5b99bcdbc4a858c85851c7a9a4e18205bc9a03d7f716ad781b238108a4",
+      "action": "ARCHIVED_NON_RUNTIME",
+      "root_unchanged": false
+    },
+    {
+      "path": "veritas_backtest_worker.py",
+      "source_sha256": "e672e98d348fcecc40b71d1abfd9de5dc18007d8e6e3918ce62f3b3c984b46c8",
+      "action": "EXPLICIT_OPT_IN_ONLY; ORIGINAL_ARCHIVED",
+      "root_unchanged": false
+    },
+    {
+      "path": "veritas_knowledge_seed_pack3.json",
+      "source_sha256": "aabfc43c1f28de47e72e3608b876a9406d9b253f290447090f24e896c1589b46",
+      "action": "PRESERVED_BYTE_FOR_BYTE",
+      "root_unchanged": true
+    },
+    {
+      "path": "requirements.txt",
+      "source_sha256": "fcbd7b6dad1a26884b211951335d7c9bc23db5fda2ccd7d53de002266cefbc70",
+      "action": "PRESERVED_BYTE_FOR_BYTE",
+      "root_unchanged": true
+    },
+    {
+      "path": "test_veritas_v7082_breakdown.py",
+      "source_sha256": "a1437db8754dba9c94a54c47ccf492275aac9b3433d9227c8dd3411ce4dbd076",
+      "action": "PRESERVED_IN_ARCHIVE_TESTS; NOT_COUNTED_AS_PASSED_CURRENT_TESTS",
+      "root_unchanged": false
+    },
+    {
+      "path": "bot.py",
+      "source_sha256": "af959bfc03e32ee5948fc4204ff13bbd10c76b261bcee96958d71cede8beaddb",
+      "action": "PRESERVED_BYTE_FOR_BYTE",
+      "root_unchanged": true
+    },
+    {
+      "path": "veritas_intelligence.py",
+      "source_sha256": "a19260c7d460ba4c4eb8dcd330bae9ce13ca4141ce033732ae603802fd052b31",
+      "action": "STATIC_V85_INTEGRATION; EXACT_INPUT_IN_VENDOR",
+      "root_unchanged": false
+    },
+    {
+      "path": "prompts.py",
+      "source_sha256": "c5cf632b3ed16b213a30cace07cdebbb3ff8b06d616be6c6d507b3caa1591dea",
+      "action": "PRESERVED_BYTE_FOR_BYTE",
+      "root_unchanged": true
+    },
+    {
+      "path": "veritas_portfolio.py",
+      "source_sha256": "9dfa1b3b1b322505c2fdbb016a7fd8b8000a19f6826d6ca52a2ade26f4d2aead",
+      "action": "READ_ONLY_FACADE; LEGACY_INPUT_ARCHIVED",
+      "root_unchanged": false
+    },
+    {
+      "path": "veritas_knowledge_seed_pack4.json",
+      "source_sha256": "6ae206c8942e5ff5c7d646ffd885152da47c7fae72c21277be18e63e14733451",
+      "action": "PRESERVED_BYTE_FOR_BYTE",
+      "root_unchanged": true
+    },
+    {
+      "path": "VERITAS_INTELLIGENCE_README.md",
+      "source_sha256": "81d5d3bf69f6c9a84fc94d4589ed12bcef6a5dfcf63fd1f6bd6956ae4c87f7f4",
+      "action": "ARCHIVED_NON_RUNTIME",
+      "root_unchanged": false
+    },
+    {
+      "path": "test_veritas_v703.py",
+      "source_sha256": "934ddbbd3f7003a184954cfe425a2f5756b3085f1a3be5f8e504a8f7b03a6e2c",
+      "action": "PRESERVED_IN_ARCHIVE_TESTS; NOT_COUNTED_AS_PASSED_CURRENT_TESTS",
+      "root_unchanged": false
+    },
+    {
+      "path": "veritas_knowledge_seed_pack5.json",
+      "source_sha256": "ff511a6825dfcdcd9c0554b36e2c00df1d4fdd67b698b770fea72dcc07e01912",
+      "action": "PRESERVED_BYTE_FOR_BYTE",
+      "root_unchanged": true
+    }
+  ]
+}

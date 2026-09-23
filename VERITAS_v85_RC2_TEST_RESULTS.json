@@ -1,0 +1,1150 @@
+{
+  "scope": "V85_CORE_AND_FULL_SUPPLIED_BASE_INTEGRATION_LOCAL_SQLITE",
+  "production_integrated": false,
+  "production_postgres_tested": false,
+  "market_backtest_performed": false,
+  "win_rate_improvement_demonstrated": false,
+  "release_manifest_sha256": "18975829172b11435d145e3cd00589d2f19e3a626a637dbe31f634d8169d45d5",
+  "analytical_basis": "OFFLINE_BASE_TEST_ONLY",
+  "python": "3.13.5",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "tests_run": 221,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "duration_seconds": 6.6255888929999855,
+  "seeded_risk_trials_within_one_test": 2000,
+  "cases": [
+    {
+      "name": "test_archive_inspector.ArchiveInspectorTests.test_absolute_rejected",
+      "outcome": "PASS",
+      "seconds": 0.0006565359999513021
+    },
+    {
+      "name": "test_archive_inspector.ArchiveInspectorTests.test_case_collision_rejected",
+      "outcome": "PASS",
+      "seconds": 0.0005603849999715749
+    },
+    {
+      "name": "test_archive_inspector.ArchiveInspectorTests.test_exact_hash",
+      "outcome": "PASS",
+      "seconds": 0.00034937399959744653
+    },
+    {
+      "name": "test_archive_inspector.ArchiveInspectorTests.test_missing_required_member",
+      "outcome": "PASS",
+      "seconds": 0.00026029300033769687
+    },
+    {
+      "name": "test_archive_inspector.ArchiveInspectorTests.test_modified_code_not_accepted",
+      "outcome": "PASS",
+      "seconds": 0.0002368890000070678
+    },
+    {
+      "name": "test_archive_inspector.ArchiveInspectorTests.test_size_limit",
+      "outcome": "PASS",
+      "seconds": 0.0005588520002675068
+    },
+    {
+      "name": "test_archive_inspector.ArchiveInspectorTests.test_traversal_rejected",
+      "outcome": "PASS",
+      "seconds": 0.00024239699996542186
+    },
+    {
+      "name": "test_book.AdditionalFailureTests.test_optional_learning_failure_does_not_block_stop",
+      "outcome": "PASS",
+      "seconds": 0.00650363099975948
+    },
+    {
+      "name": "test_book.AdditionalFailureTests.test_out_of_order_market_event_rejected",
+      "outcome": "PASS",
+      "seconds": 0.006108279999807564
+    },
+    {
+      "name": "test_book.AdditionalFailureTests.test_required_exit_does_not_use_unknown_secondary",
+      "outcome": "PASS",
+      "seconds": 0.0039062379996721575
+    },
+    {
+      "name": "test_book.BookTests.test_account_not_reset",
+      "outcome": "PASS",
+      "seconds": 0.003953617999741255
+    },
+    {
+      "name": "test_book.BookTests.test_concurrent_replay_one_order",
+      "outcome": "PASS",
+      "seconds": 0.018082476000017778
+    },
+    {
+      "name": "test_book.BookTests.test_confirmed_flip_atomic_and_idempotent",
+      "outcome": "PASS",
+      "seconds": 0.006788781000068411
+    },
+    {
+      "name": "test_book.BookTests.test_failed_flip_rolls_back_close",
+      "outcome": "PASS",
+      "seconds": 0.004676773000028334
+    },
+    {
+      "name": "test_book.BookTests.test_failed_open_rolls_back_all",
+      "outcome": "PASS",
+      "seconds": 0.004906952000055753
+    },
+    {
+      "name": "test_book.BookTests.test_failure_before_receipt_rolls_back",
+      "outcome": "PASS",
+      "seconds": 0.0033582670002942905
+    },
+    {
+      "name": "test_book.BookTests.test_flip_rechecks_caps_after_close",
+      "outcome": "PASS",
+      "seconds": 0.0060420720001275185
+    },
+    {
+      "name": "test_book.BookTests.test_missing_signal_no_micro_close",
+      "outcome": "PASS",
+      "seconds": 0.011592509999900358
+    },
+    {
+      "name": "test_book.BookTests.test_no_horizon_stop_migration_on_hold",
+      "outcome": "PASS",
+      "seconds": 0.005688320999979624
+    },
+    {
+      "name": "test_book.BookTests.test_no_new_risk_on_unverified_existing_nav",
+      "outcome": "PASS",
+      "seconds": 0.004719325000223762
+    },
+    {
+      "name": "test_book.BookTests.test_open_and_replay",
+      "outcome": "PASS",
+      "seconds": 0.004996252999717399
+    },
+    {
+      "name": "test_book.BookTests.test_pending_exit_survives_restart",
+      "outcome": "PASS",
+      "seconds": 0.006648504000168032
+    },
+    {
+      "name": "test_book.BookTests.test_reentry_requires_new_information",
+      "outcome": "PASS",
+      "seconds": 0.007102792999830854
+    },
+    {
+      "name": "test_book.BookTests.test_restart_replay",
+      "outcome": "PASS",
+      "seconds": 0.005712846999813337
+    },
+    {
+      "name": "test_book.BookTests.test_same_event_changed_price_rejected",
+      "outcome": "PASS",
+      "seconds": 0.004256414000337827
+    },
+    {
+      "name": "test_book.BookTests.test_small_residual_stop",
+      "outcome": "PASS",
+      "seconds": 0.006314833000033104
+    },
+    {
+      "name": "test_book.BookTests.test_stop_closes_at_observed_gap_price",
+      "outcome": "PASS",
+      "seconds": 0.005410652000136906
+    },
+    {
+      "name": "test_book.BookTests.test_stop_does_not_license_opposite_entry",
+      "outcome": "PASS",
+      "seconds": 0.0057558409998819116
+    },
+    {
+      "name": "test_book.BookTests.test_stop_does_not_repeat_same_idea",
+      "outcome": "PASS",
+      "seconds": 0.0057964799998444505
+    },
+    {
+      "name": "test_book.BookTests.test_unconfirmed_flip_hold",
+      "outcome": "PASS",
+      "seconds": 0.0051793020002151025
+    },
+    {
+      "name": "test_execution.ManagementTests.test_confirmations_before_entry_not_new",
+      "outcome": "PASS",
+      "seconds": 6.938200021977536e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_confirmed_flip",
+      "outcome": "PASS",
+      "seconds": 7.605200016769231e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_duplicate_confirmation",
+      "outcome": "PASS",
+      "seconds": 4.049900007885299e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_dust_stop",
+      "outcome": "PASS",
+      "seconds": 3.567199973986135e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_future_break_ignored",
+      "outcome": "PASS",
+      "seconds": 3.658400009953766e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_future_confirmation",
+      "outcome": "PASS",
+      "seconds": 3.448999996180646e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_identical_intent_identity",
+      "outcome": "PASS",
+      "seconds": 0.00010765900015030638
+    },
+    {
+      "name": "test_execution.ManagementTests.test_kill_bad_quote_pending",
+      "outcome": "PASS",
+      "seconds": 2.2662999981548637e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_minus_point_one_percent_not_exit",
+      "outcome": "PASS",
+      "seconds": 2.687899996089982e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_missing_quote_no_fabrication",
+      "outcome": "PASS",
+      "seconds": 1.8788000033964636e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_missing_signal_holds_forever_until_evidence",
+      "outcome": "PASS",
+      "seconds": 0.0003086540000367677
+    },
+    {
+      "name": "test_execution.ManagementTests.test_open_bar_not_confirmation",
+      "outcome": "PASS",
+      "seconds": 0.00029007600005570566
+    },
+    {
+      "name": "test_execution.ManagementTests.test_own_thesis_break",
+      "outcome": "PASS",
+      "seconds": 4.421499988893629e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_pending_exit_cannot_be_cancelled_by_signal",
+      "outcome": "PASS",
+      "seconds": 3.839600003630039e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_point_one_percent_not_exit",
+      "outcome": "PASS",
+      "seconds": 2.623899990794598e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_short_horizon_does_not_own_multiday",
+      "outcome": "PASS",
+      "seconds": 3.878799998346949e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_short_stop",
+      "outcome": "PASS",
+      "seconds": 0.00035006600000997423
+    },
+    {
+      "name": "test_execution.ManagementTests.test_stop",
+      "outcome": "PASS",
+      "seconds": 3.384000001460663e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_stop_before_flip",
+      "outcome": "PASS",
+      "seconds": 5.275800003801123e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_unconfirmed_flip",
+      "outcome": "PASS",
+      "seconds": 4.069999977218686e-05
+    },
+    {
+      "name": "test_execution.ManagementTests.test_wrong_direction_confirmation",
+      "outcome": "PASS",
+      "seconds": 0.00016781700014689704
+    },
+    {
+      "name": "test_execution.ManagementTests.test_wrong_episode_thesis_break_ignored",
+      "outcome": "PASS",
+      "seconds": 3.8236999898799695e-05
+    },
+    {
+      "name": "test_experience_release_http.DurableLearningTests.test_close_writes_one_lesson",
+      "outcome": "PASS",
+      "seconds": 0.0052025370000592375
+    },
+    {
+      "name": "test_experience_release_http.DurableLearningTests.test_durable_revisions",
+      "outcome": "PASS",
+      "seconds": 0.006521266999698128
+    },
+    {
+      "name": "test_experience_release_http.DurableLearningTests.test_learner_failure_preserves_last_good",
+      "outcome": "PASS",
+      "seconds": 0.0021857270003238227
+    },
+    {
+      "name": "test_experience_release_http.DurableLearningTests.test_lessons_not_known_before_close",
+      "outcome": "PASS",
+      "seconds": 0.004838139999719715
+    },
+    {
+      "name": "test_experience_release_http.DurableLearningTests.test_lessons_survive_restart",
+      "outcome": "PASS",
+      "seconds": 0.008226206000017555
+    },
+    {
+      "name": "test_experience_release_http.DurableLearningTests.test_replay_not_more_lessons",
+      "outcome": "PASS",
+      "seconds": 0.006364636999933282
+    },
+    {
+      "name": "test_experience_release_http.DurableLearningTests.test_rollback_includes_lesson",
+      "outcome": "PASS",
+      "seconds": 0.004894303000128275
+    },
+    {
+      "name": "test_experience_release_http.DurableLearningTests.test_snapshot_build_no_promotion",
+      "outcome": "PASS",
+      "seconds": 0.006015311999817641
+    },
+    {
+      "name": "test_experience_release_http.HTTPTests.test_cold_snapshot_503",
+      "outcome": "PASS",
+      "seconds": 0.5108727950000684
+    },
+    {
+      "name": "test_experience_release_http.HTTPTests.test_health",
+      "outcome": "PASS",
+      "seconds": 0.5026744030001282
+    },
+    {
+      "name": "test_experience_release_http.HTTPTests.test_hot_snapshot",
+      "outcome": "PASS",
+      "seconds": 0.5024658860002091
+    },
+    {
+      "name": "test_experience_release_http.HTTPTests.test_readiness",
+      "outcome": "PASS",
+      "seconds": 0.5021588180002254
+    },
+    {
+      "name": "test_experience_release_http.LearningToDecisionTests.test_expired_snapshot_cannot_change_actual_order",
+      "outcome": "PASS",
+      "seconds": 0.010576516000128322
+    },
+    {
+      "name": "test_experience_release_http.LearningToDecisionTests.test_fast_path_does_not_call_learner_database",
+      "outcome": "PASS",
+      "seconds": 0.009330152000075032
+    },
+    {
+      "name": "test_experience_release_http.LearningToDecisionTests.test_losses_do_not_erase_valid_probe",
+      "outcome": "PASS",
+      "seconds": 0.00936172899992016
+    },
+    {
+      "name": "test_experience_release_http.LearningToDecisionTests.test_past_losses_reduce_actual_next_order",
+      "outcome": "PASS",
+      "seconds": 0.009424310000213154
+    },
+    {
+      "name": "test_experience_release_http.LearningToDecisionTests.test_profit_alone_no_unvalidated_upsize",
+      "outcome": "PASS",
+      "seconds": 0.009983743999782746
+    },
+    {
+      "name": "test_experience_release_http.ReleaseTests.test_bad_manifest_flag_not_ready",
+      "outcome": "PASS",
+      "seconds": 3.49709998772596e-05
+    },
+    {
+      "name": "test_experience_release_http.ReleaseTests.test_no_heartbeat_not_ready",
+      "outcome": "PASS",
+      "seconds": 1.291899980060407e-05
+    },
+    {
+      "name": "test_experience_release_http.ReleaseTests.test_partial_files_not_ready",
+      "outcome": "PASS",
+      "seconds": 0.00035484300042298855
+    },
+    {
+      "name": "test_experience_release_http.ReleaseTests.test_readiness_separate_from_market_open",
+      "outcome": "PASS",
+      "seconds": 2.01589996322582e-05
+    },
+    {
+      "name": "test_experience_release_http.ReleaseTests.test_stale_heartbeat_not_ready",
+      "outcome": "PASS",
+      "seconds": 1.4570999610441504e-05
+    },
+    {
+      "name": "test_experience_release_http.ReleaseTests.test_tamper",
+      "outcome": "PASS",
+      "seconds": 0.0002743939999163558
+    },
+    {
+      "name": "test_experience_release_http.ReleaseTests.test_valid_manifest",
+      "outcome": "PASS",
+      "seconds": 0.006074089999856369
+    },
+    {
+      "name": "test_experience_release_http.ReleaseTests.test_wrong_version",
+      "outcome": "PASS",
+      "seconds": 4.0499999613530235e-05
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_audit_does_not_create_orders",
+      "outcome": "PASS",
+      "seconds": 0.45147585199993046
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_bad_critical_settings_not_silently_fresh",
+      "outcome": "PASS",
+      "seconds": 0.023292752000088512
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_confirmations_same_bar_known_time_not_refreshed",
+      "outcome": "PASS",
+      "seconds": 0.4096592509999937
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_drawdown_hard_exit_even_with_missing_new_signal",
+      "outcome": "PASS",
+      "seconds": 0.03504279199978555
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_duplicate_whole_cycle_no_duplicate_order",
+      "outcome": "PASS",
+      "seconds": 0.03650242399999115
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_failed_research_transaction_opens_no_order",
+      "outcome": "PASS",
+      "seconds": 0.1975943819998065
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_full_35_cell_cycle_no_legacy_writer",
+      "outcome": "PASS",
+      "seconds": 0.2213681620000898
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_guard_closes_without_new_signal",
+      "outcome": "PASS",
+      "seconds": 0.03629465899985007
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_missing_source_metadata_blocks_order",
+      "outcome": "PASS",
+      "seconds": 0.21042109000018172
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_negative_experience_only_challenger_sizes",
+      "outcome": "PASS",
+      "seconds": 0.04100035500005106
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_plus_point_one_percent_does_not_close",
+      "outcome": "PASS",
+      "seconds": 0.04839505800009647
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_risk_high_water_survives_restart",
+      "outcome": "PASS",
+      "seconds": 0.032568344000083016
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_snapshot_http_read_has_no_database_access",
+      "outcome": "PASS",
+      "seconds": 0.7127584419999948
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_snapshot_survives_restart_preserving_time",
+      "outcome": "PASS",
+      "seconds": 0.2352468589997443
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_source_failure_visible_not_fabricated",
+      "outcome": "PASS",
+      "seconds": 0.18746658500003832
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_stale_quote_state_reevaluated",
+      "outcome": "PASS",
+      "seconds": 0.03586379499984105
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_string_kill_switch_is_effective",
+      "outcome": "PASS",
+      "seconds": 0.02265448300022399
+    },
+    {
+      "name": "test_integrated_application.ApplicationIntegrationTests.test_unrealized_loss_in_report",
+      "outcome": "PASS",
+      "seconds": 0.0307618150000053
+    },
+    {
+      "name": "test_integrated_application.FundingIntegrationTests.test_carry_in_nav_and_close_once",
+      "outcome": "PASS",
+      "seconds": 0.006369655999606039
+    },
+    {
+      "name": "test_integrated_application.FundingIntegrationTests.test_short_spread_explicit",
+      "outcome": "PASS",
+      "seconds": 0.0034264329997313325
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_carry_is_not_credited_twice",
+      "outcome": "PASS",
+      "seconds": 0.004077031000178977
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_changed_source_refuses_reset",
+      "outcome": "PASS",
+      "seconds": 0.003306857000097807
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_dry_run_zero_accounts",
+      "outcome": "PASS",
+      "seconds": 0.003102215000126307
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_duplicate_position_blocks",
+      "outcome": "PASS",
+      "seconds": 0.0020484649999161775
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_failed_import_is_atomic",
+      "outcome": "PASS",
+      "seconds": 0.0023079469997355773
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_initial_high_water_preserved",
+      "outcome": "PASS",
+      "seconds": 0.00293603099999018
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_migration_hash_does_not_change_with_check_time",
+      "outcome": "PASS",
+      "seconds": 0.002269039000111661
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_migration_idempotent_next_time",
+      "outcome": "PASS",
+      "seconds": 0.0032136090003405116
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_migration_preserves_without_orders",
+      "outcome": "PASS",
+      "seconds": 0.0033719130001372832
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_migration_requires_quiescence",
+      "outcome": "PASS",
+      "seconds": 0.0019156600001224433
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_missing_entry_nav_blocks",
+      "outcome": "PASS",
+      "seconds": 0.0016951849997894897
+    },
+    {
+      "name": "test_integrated_application.MigrationIntegrationTests.test_missing_rate_does_not_assume_zero",
+      "outcome": "PASS",
+      "seconds": 0.001593995999883191
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_bool_source_not_accepted",
+      "outcome": "PASS",
+      "seconds": 3.4640999729163013e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_conflicting_cell_is_excluded",
+      "outcome": "PASS",
+      "seconds": 4.0298999920196366e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_current_price_is_not_idea_identity",
+      "outcome": "PASS",
+      "seconds": 0.0001169420002042898
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_fixture_mode_guard",
+      "outcome": "PASS",
+      "seconds": 2.5026999992405763e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_hard_veto_blocks",
+      "outcome": "PASS",
+      "seconds": 1.667500009716605e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_missing_nasdaq_timestamp_blocks_even_receipt_is_fresh",
+      "outcome": "PASS",
+      "seconds": 9.109399979934096e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_missing_signal_is_not_generated",
+      "outcome": "PASS",
+      "seconds": 1.1486999937915243e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_nan_interval_rejected",
+      "outcome": "PASS",
+      "seconds": 1.422099967385293e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_nan_price_blocks",
+      "outcome": "PASS",
+      "seconds": 1.5253000128723215e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_opposite_confirmation_cannot_flip",
+      "outcome": "PASS",
+      "seconds": 6.690800000797026e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_qmark_bad_literal_rejected",
+      "outcome": "PASS",
+      "seconds": 1.9579000309022376e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_qmark_comment_preserved",
+      "outcome": "PASS",
+      "seconds": 1.5542999790341128e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_qmark_literal_preserved",
+      "outcome": "PASS",
+      "seconds": 1.7235000086657237e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_same_cell_duplicates_do_not_vote",
+      "outcome": "PASS",
+      "seconds": 0.00018312000020159758
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_shared_information_not_multiple_confirmations",
+      "outcome": "PASS",
+      "seconds": 8.880999985194649e-05
+    },
+    {
+      "name": "test_integrated_application.RoutingIntegrationTests.test_single_source_quote_is_not_verified",
+      "outcome": "PASS",
+      "seconds": 3.8096000025689136e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_approved_bounded_adjustment",
+      "outcome": "PASS",
+      "seconds": 0.00036966399966331664
+    },
+    {
+      "name": "test_learning.LearningTests.test_conflicting_revision",
+      "outcome": "PASS",
+      "seconds": 3.486100013105897e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_future_known_excluded",
+      "outcome": "PASS",
+      "seconds": 2.281399974890519e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_hierarchy_transfer_not_exact",
+      "outcome": "PASS",
+      "seconds": 0.0002885950002564641
+    },
+    {
+      "name": "test_learning.LearningTests.test_invalid_weight",
+      "outcome": "PASS",
+      "seconds": 9.349799984192941e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_mirror_clusters_one_observation",
+      "outcome": "PASS",
+      "seconds": 3.3710000025166664e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_negative_economics_high_win_rate_never_reinforce",
+      "outcome": "PASS",
+      "seconds": 0.00032066200037661474
+    },
+    {
+      "name": "test_learning.LearningTests.test_no_fake_calibration",
+      "outcome": "PASS",
+      "seconds": 2.323400030945777e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_old_experience_decays",
+      "outcome": "PASS",
+      "seconds": 2.380500018261955e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_other_policy_excluded",
+      "outcome": "PASS",
+      "seconds": 1.851700017141411e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_pending_excluded",
+      "outcome": "PASS",
+      "seconds": 1.7174999811686575e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_positive_no_validation_no_upsize",
+      "outcome": "PASS",
+      "seconds": 0.00038724999967598706
+    },
+    {
+      "name": "test_learning.LearningTests.test_retraction_not_fallback",
+      "outcome": "PASS",
+      "seconds": 3.3429999803047394e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_revision_changes_outcome_once",
+      "outcome": "PASS",
+      "seconds": 4.34240000686259e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_six_not_twentyfour",
+      "outcome": "PASS",
+      "seconds": 5.6614000186527846e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_stale_memory_no_influence",
+      "outcome": "PASS",
+      "seconds": 0.000563840000268101
+    },
+    {
+      "name": "test_learning.LearningTests.test_validation_future_not_approved",
+      "outcome": "PASS",
+      "seconds": 0.0002843789998223656
+    },
+    {
+      "name": "test_learning.LearningTests.test_validation_requires_open_losses",
+      "outcome": "PASS",
+      "seconds": 0.0003686219997689477
+    },
+    {
+      "name": "test_learning.LearningTests.test_validation_windows_no_overlap",
+      "outcome": "PASS",
+      "seconds": 3.400000014153193e-05
+    },
+    {
+      "name": "test_learning.LearningTests.test_validation_without_manual_approval_no_upsize",
+      "outcome": "PASS",
+      "seconds": 0.00027851000004375237
+    },
+    {
+      "name": "test_release_integration.ActualRuntimeVersionTests.test_companion_cannot_change_host_version",
+      "outcome": "PASS",
+      "seconds": 0.011556739000297966
+    },
+    {
+      "name": "test_release_integration.ActualRuntimeVersionTests.test_fresh_import_matches_manifest",
+      "outcome": "PASS",
+      "seconds": 0.6636860209996485
+    },
+    {
+      "name": "test_release_integration.ActualRuntimeVersionTests.test_wrong_imported_runtime_blocks_launch",
+      "outcome": "PASS",
+      "seconds": 0.00023189100011222763
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_executable_table_rejected",
+      "outcome": "PASS",
+      "seconds": 0.00012846900017393637
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_knowledge_files_unchanged",
+      "outcome": "PASS",
+      "seconds": 0.0006981669998822326
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_literal_patch_table",
+      "outcome": "PASS",
+      "seconds": 5.5872000302770175e-05
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_missing_patch_rejected",
+      "outcome": "PASS",
+      "seconds": 4.694900007962133e-05
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_news_bot_and_prompts_unchanged",
+      "outcome": "PASS",
+      "seconds": 0.00014381199980562087
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_offline_basis_cannot_start_production",
+      "outcome": "PASS",
+      "seconds": 0.00010764899980131304
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_startup_module_has_no_executable_calls",
+      "outcome": "PASS",
+      "seconds": 7.980700002008234e-05
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_valid_current_manifest",
+      "outcome": "PASS",
+      "seconds": 0.19289300199989157
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_wrong_clock_blocks_new_signal",
+      "outcome": "PASS",
+      "seconds": 5.615300005956669e-05
+    },
+    {
+      "name": "test_release_integration.BuildBoundaryTests.test_wrong_historical_hash_does_not_touch_built_source",
+      "outcome": "PASS",
+      "seconds": 0.003072763000091072
+    },
+    {
+      "name": "test_release_integration.CutoverSourceCoverageTests.test_supported_coverage_does_not_assert_live_freshness",
+      "outcome": "PASS",
+      "seconds": 0.0002884950004045095
+    },
+    {
+      "name": "test_release_integration.CutoverSourceCoverageTests.test_unsupported_legacy_asset_blocks_before_import",
+      "outcome": "PASS",
+      "seconds": 9.240600002158317e-05
+    },
+    {
+      "name": "test_release_integration.IncrementalPathTests.test_future_cached_rows_not_visible",
+      "outcome": "PASS",
+      "seconds": 0.0038539320003110333
+    },
+    {
+      "name": "test_release_integration.IncrementalPathTests.test_late_known_revision_not_lost_behind_timestamp_cursor",
+      "outcome": "PASS",
+      "seconds": 0.0034106899997823348
+    },
+    {
+      "name": "test_release_integration.IncrementalPathTests.test_observed_path_metrics_persist",
+      "outcome": "PASS",
+      "seconds": 0.005672057999618119
+    },
+    {
+      "name": "test_release_integration.IncrementalPathTests.test_retraction_on_next_page_changes_summary",
+      "outcome": "PASS",
+      "seconds": 0.004039855999963038
+    },
+    {
+      "name": "test_release_integration.IncrementalPathTests.test_retry_does_not_add_path_point",
+      "outcome": "PASS",
+      "seconds": 0.004098021999652701
+    },
+    {
+      "name": "test_release_integration.RetainedAnalyticalMathTests.test_legacy_mathematical_source_remains_static",
+      "outcome": "PASS",
+      "seconds": 0.39453045400023257
+    },
+    {
+      "name": "test_release_integration.RetainedAnalyticalMathTests.test_v70_data_failure_remains_absolute",
+      "outcome": "PASS",
+      "seconds": 6.0790000134147704e-05
+    },
+    {
+      "name": "test_release_integration.RetainedAnalyticalMathTests.test_v70_entry_is_not_long_horizon_thesis",
+      "outcome": "PASS",
+      "seconds": 4.1710999994393205e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_asset_cap",
+      "outcome": "PASS",
+      "seconds": 9.746400019139401e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_cap_precedes_probe",
+      "outcome": "PASS",
+      "seconds": 4.4675000026472844e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_closed",
+      "outcome": "PASS",
+      "seconds": 3.540199986673542e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_future_secondary",
+      "outcome": "PASS",
+      "seconds": 2.8281000140850665e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_fx_missing",
+      "outcome": "PASS",
+      "seconds": 7.652299973415211e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_fx_stale",
+      "outcome": "PASS",
+      "seconds": 3.534200004651211e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_fx_valid",
+      "outcome": "PASS",
+      "seconds": 3.9758000184519915e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_kill",
+      "outcome": "PASS",
+      "seconds": 2.8992999887123005e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_lot",
+      "outcome": "PASS",
+      "seconds": 3.3059000088542234e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_missing_secondary",
+      "outcome": "PASS",
+      "seconds": 2.3384000087389722e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_nan",
+      "outcome": "PASS",
+      "seconds": 6.906099997650017e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_no_real_execution",
+      "outcome": "PASS",
+      "seconds": 1.656499989621807e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_no_source",
+      "outcome": "PASS",
+      "seconds": 2.5817999812716153e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_primary_stale",
+      "outcome": "PASS",
+      "seconds": 2.5007000203913776e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_probe",
+      "outcome": "PASS",
+      "seconds": 3.258800006733509e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_randomized_caps",
+      "outcome": "PASS",
+      "seconds": 0.04643719700015936
+    },
+    {
+      "name": "test_risk.RiskTests.test_round_down",
+      "outcome": "PASS",
+      "seconds": 6.445500002882909e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_same_source",
+      "outcome": "PASS",
+      "seconds": 4.7308999910455896e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_secondary_stale",
+      "outcome": "PASS",
+      "seconds": 3.1617000331607414e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_short_stop_invalid",
+      "outcome": "PASS",
+      "seconds": 2.7019999834010378e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_soft_zero_desired_keeps_probe",
+      "outcome": "PASS",
+      "seconds": 2.93130001409736e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_stale_signal",
+      "outcome": "PASS",
+      "seconds": 2.4996999854920432e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_stop_invalid",
+      "outcome": "PASS",
+      "seconds": 2.4995999865495833e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_stop_risk_cap",
+      "outcome": "PASS",
+      "seconds": 2.442599998175865e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_veto",
+      "outcome": "PASS",
+      "seconds": 2.162200007660431e-05
+    },
+    {
+      "name": "test_risk.RiskTests.test_zero_price",
+      "outcome": "PASS",
+      "seconds": 2.9534000077546807e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.AccountingTests.test_funding_explicit_not_ruonia_implied",
+      "outcome": "PASS",
+      "seconds": 4.3665000248438446e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.AccountingTests.test_fx_applied_explicitly",
+      "outcome": "PASS",
+      "seconds": 2.9523000193876214e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.AccountingTests.test_invalid_negative_cost",
+      "outcome": "PASS",
+      "seconds": 1.862699991761474e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.AccountingTests.test_micro_move_eaten_by_costs",
+      "outcome": "PASS",
+      "seconds": 1.9349000012880424e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.AccountingTests.test_nav_vs_nominal",
+      "outcome": "PASS",
+      "seconds": 1.5442999938386492e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.AccountingTests.test_short_symmetric_price_pnl",
+      "outcome": "PASS",
+      "seconds": 1.780599995981902e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.PathTests.test_duplicates_not_extra_path",
+      "outcome": "PASS",
+      "seconds": 4.677900005845004e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.PathTests.test_future_points_not_visible",
+      "outcome": "PASS",
+      "seconds": 2.0911000319756567e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.PathTests.test_mfe_mae_linear_short",
+      "outcome": "PASS",
+      "seconds": 3.7445000089064706e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.PathTests.test_replay_does_not_claim_causal_error",
+      "outcome": "PASS",
+      "seconds": 3.9867999930720543e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.PathTests.test_unknown_horizon_not_assumed",
+      "outcome": "PASS",
+      "seconds": 1.2958999832335394e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SchedulerTests.test_bad_interval",
+      "outcome": "PASS",
+      "seconds": 2.1181000192882493e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SchedulerTests.test_duration_not_plus_interval",
+      "outcome": "PASS",
+      "seconds": 2.7941000098508084e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SchedulerTests.test_finish_requires_start",
+      "outcome": "PASS",
+      "seconds": 1.4180999642121606e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SchedulerTests.test_no_overlap",
+      "outcome": "PASS",
+      "seconds": 1.0395000117568998e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SchedulerTests.test_not_due",
+      "outcome": "PASS",
+      "seconds": 1.037600031850161e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SchedulerTests.test_skips_backlog",
+      "outcome": "PASS",
+      "seconds": 1.1456999800429912e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_cold_no_database",
+      "outcome": "PASS",
+      "seconds": 2.5398000161658274e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_failed_refresh_cannot_refresh_time",
+      "outcome": "PASS",
+      "seconds": 3.9848999676905805e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_failed_refresh_retains_last_good",
+      "outcome": "PASS",
+      "seconds": 2.2893999812367838e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_invalid_snapshot_preserves_old",
+      "outcome": "PASS",
+      "seconds": 2.2772999727749266e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_parallel_readers_no_partial_snapshot",
+      "outcome": "PASS",
+      "seconds": 0.0030554909999409574
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_read_is_immutable",
+      "outcome": "PASS",
+      "seconds": 7.244600010380964e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_regression_time_rejected",
+      "outcome": "PASS",
+      "seconds": 3.646400000434369e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_restart_restore_age",
+      "outcome": "PASS",
+      "seconds": 5.780499986940413e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_size_bound",
+      "outcome": "PASS",
+      "seconds": 2.1302000277501065e-05
+    },
+    {
+      "name": "test_snapshots_scheduler_accounting.SnapshotTests.test_stale_no_influence",
+      "outcome": "PASS",
+      "seconds": 1.8447999991622055e-05
+    }
+  ],
+  "source_sha256": {
+    "veritas_v85/__init__.py": "4609c7e632089c55ed3371230c30e7327631f4bb0cfad2d5c22100d9e95f1562",
+    "veritas_v85/accounting.py": "1473d0de702e5a72d589ce820df60f68ba7d6f93e2ee511b28b0ae20b2785712",
+    "veritas_v85/application.py": "6149bade9c9cfe2ee4e4e7d6b46434be495092c64b9017c4d890f36bcf000082",
+    "veritas_v85/book.py": "9510f637603af10791b775914f9d56779b57e41557e9a126a154b7325202adb0",
+    "veritas_v85/config.py": "fc5fd25570612386e94d7a42a39f2a850f3a9ce3f023a035ba879c5c8d0fc46c",
+    "veritas_v85/counterfactual.py": "4257161fc511671c6e96cec997e27418392621646e28032a5b1144440efe96fc",
+    "veritas_v85/domain.py": "7e2635cbc04595da9cd5a6eb2c425cac371048933e6d26189d60e7e6195c92f8",
+    "veritas_v85/execution.py": "5009e7328b53cb042b29b862aeb3fc7d9656c21a7966fa158e278db3ecde4b2a",
+    "veritas_v85/experience_store.py": "4f5e7c7f8235df62f1c05ccac5837ca68b12e4d62f08df51a1a2a2795aad242e",
+    "veritas_v85/funding.py": "337b7df4f0b057de01b4a5ce8ee073e11ba52d116c89593d337c8937d32a940f",
+    "veritas_v85/http_snapshot.py": "2416f6bc9dd34dcf86e8d8764a72af8576dece3f594510ce916be88009b41495",
+    "veritas_v85/integration.py": "66141fb743721004bd4bfe6092188edf223824db4d6cdc364cf78dff0a0f0d83",
+    "veritas_v85/learning.py": "6cc41139fe089006c9eb41a73e5e0f17374d2e944fceb0b80d006f3dbaea82d4",
+    "veritas_v85/migration.py": "4c8b771e4e192c07e552b2adeb7c3e3ee9501e33b2ae6a0b58e6f5920756152e",
+    "veritas_v85/postgres.py": "a805d893c2aa109718b71d5322ce0c63d5ed1f09994817dcddf20bbe45d2ac16",
+    "veritas_v85/providers.py": "d0a69c69d922a64162e44e128788601c90fa50aba3e0a5f8f9d0e17a214bbe60",
+    "veritas_v85/quote_guard.py": "589b1caa40a356b3ab80442cfe7ab020b2f8a060e16dbb7b95e99445d16f3818",
+    "veritas_v85/release.py": "e376ffba514a11ac539af3572d700a962ddf160010153f018e45b1cb0260da8f",
+    "veritas_v85/risk.py": "745734b70ff6e10d859dd0e97f58e27f21dec414a0eff816d08117b3029027fc",
+    "veritas_v85/routing.py": "639b2167caef3eb887fcfb86873526890ccce45540c22937e78f39c416360acd",
+    "veritas_v85/scheduler.py": "cf8b2135811f05464ac5326fd5da1a109106f7cb6bc5fd7a81dbfd3a64f69fd1",
+    "veritas_v85/snapshots.py": "6eaa6afb5493b1f0a697891ed7f5a97706d8689ffa3b553ba7890268ecba1a3e",
+    "veritas_v85/storage.py": "83da4aac0c459809f7835c8a9de4f79b6d304171b9e4b8408544d279945ea65e",
+    "veritas_v85/validation.py": "a6680aff0d944308bc762e549a0b5eb931a00cb9df87dac03bc8a25c77e5110b"
+  }
+}
