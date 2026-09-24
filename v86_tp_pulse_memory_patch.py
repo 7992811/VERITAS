@@ -277,20 +277,15 @@ def collect_one_source_market(app,asset):
     if anchor not in s: raise SystemExit('FAST_PULSE_GUARD_ANCHOR_NOT_FOUND')
     s=s.replace(anchor,insert+'\n'+anchor,1)
 
-old="""            if a in ('BTC','ETH'):updates[a]=collect_crypto(a)
-            # NDX historical/context collection is not used here: only direct quotes.
-            elif a=='NQ':updates[a]=collect_ndx(app.model)
+pat=r"""            if a in \('BTC','ETH'\):updates\[a\]=collect_crypto\(a\)
+            .*?
+            elif a=='(?:NQ|NDX)':updates\[a\]=collect_ndx\(app\.model\)
 """
 new="""            if a in ('BTC','ETH'):updates[a]=collect_crypto(a)
             else:updates[a]=collect_one_source_market(app,a)
 """
-if old not in s:
-    old="""            if a in ('BTC','ETH'):updates[a]=collect_crypto(a)
-            # NDX historical/context collection is not used here: only direct quotes.
-            elif a=='NDX':updates[a]=collect_ndx(app.model)
-"""
-if old not in s: raise SystemExit('FAST_PULSE_REFRESH_ANCHOR_NOT_FOUND')
-s=s.replace(old,new,1)
+s,n=_re.subn(pat,new,s,count=1,flags=_re.S)
+if n!=1: raise SystemExit('FAST_PULSE_REFRESH_ANCHOR_NOT_FOUND:'+str(n))
 p.write_text(s,encoding='utf-8')
 
 # 6) Durable Movement State Memory with hysteresis.
