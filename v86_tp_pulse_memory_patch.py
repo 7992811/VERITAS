@@ -283,8 +283,18 @@ pat=r"""            if a in \('BTC','ETH'\):updates\[a\]=collect_crypto\(a\)
             .*?
             elif a=='(?:NQ|NDX)':updates\[a\]=collect_ndx\(app\.model\)
 """
-new="""            if a in ('BTC','ETH'):updates[a]=collect_crypto(a)
-            else:updates[a]=collect_one_source_market(app,a)
+new="""    def _fast_fetch(a):
+        if a in ('BTC','ETH'): return a,collect_crypto(a)
+        return a,collect_one_source_market(app,a)
+    workers=max(1,min(7,len(assets)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures={pool.submit(_fast_fetch,a):a for a in sorted(assets)}
+        for fut in as_completed(futures):
+            a=futures[fut]
+            try:
+                key,q=fut.result();updates[key]=q
+            except Exception as exc:
+                app.last_error='quote_guard '+a+': '+type(exc).__name__
 """
 s,n=_re.subn(pat,new,s,count=1,flags=_re.S)
 if n!=1: raise SystemExit('FAST_PULSE_REFRESH_ANCHOR_NOT_FOUND:'+str(n))
