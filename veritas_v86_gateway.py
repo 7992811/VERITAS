@@ -2,6 +2,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse, parse_qs, quote
 import json, os, time, threading, traceback, re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 PROD = os.getenv('VERITAS_BASE_URL', 'https://veritas-intelligence-v1.onrender.com').rstrip('/')
 V86 = os.getenv('VERITAS_V86_URL', 'https://veritas-v86-engine.onrender.com').rstrip('/')
@@ -12,6 +13,12 @@ PRESENCE_LOCK = threading.Lock()
 TRADE_CACHE_LOCK = threading.Lock()
 TRADE_CACHE = {'at':0.0,'data':None}
 TRADE_CACHE_TTL = 12.0
+ANALYSIS_CACHE_LOCK = threading.Lock()
+ANALYSIS_CACHE = {'at':0.0,'rows':None}
+ANALYSIS_CACHE_TTL = 8.0
+OVERVIEW_CACHE_LOCK = threading.Lock()
+OVERVIEW_CACHE = {'at':0.0,'data':None}
+OVERVIEW_CACHE_TTL = 5.0
 
 def jget(base, path, timeout=20):
     req = Request(base + path, headers={'User-Agent':'VERITAS-v86-gateway/2.1','Accept':'application/json'})
@@ -73,6 +80,54 @@ def _episode_finalization(e):
 def v86_snapshot():
     return jget(V86, '/api/v85/snapshot')
 
+def v86_analysis_rows():
+    with ANALYSIS_CACHE_LOCK:
+        cached=ANALYSIS_CACHE.get('rows'); at=float(ANALYSIS_CACHE.get('at') or 0.0)
+        if cached is not None and time.time()-at<ANALYSIS_CACHE_TTL:
+            return list(cached)
+    by_asset={}
+    def load(asset):
+        data=jget(V86,'/api/v85/analysis?asset='+quote(asset),12)
+        rows=data.get('signals') if isinstance(data,dict) else []
+        return asset,[r for r in (rows or []) if isinstance(r,dict)]
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs={ex.submit(load,a):a for a in ASSETS}
+        for fut in as_completed(futs):
+            a=futs[fut]
+            try:
+                _,rows=fut.result(); by_asset[a]=rows
+            except Exception as exc:
+                print('V86_ANALYSIS_FALLBACK',a,type(exc).__name__,flush=True)
+                by_asset[a]=[]
+    missing=[a for a in ASSETS if not by_asset.get(a)]
+    if missing:
+        try:
+            snap=v86_snapshot()
+            for c in snap.get('cells') or []:
+                if isinstance(c,dict) and c.get('asset') in missing:
+                    by_asset.setdefault(c.get('asset'),[]).append(c)
+        except Exception as exc:
+            print('V86_SNAPSHOT_FALLBACK_ERROR',type(exc).__name__,flush=True)
+    rows=[]
+    for a in ASSETS:
+        rows.extend(signal(r) for r in by_asset.get(a,[]) if isinstance(r,dict))
+    with ANALYSIS_CACHE_LOCK:
+        ANALYSIS_CACHE['at']=time.time(); ANALYSIS_CACHE['rows']=list(rows)
+    return rows
+
+def row_probability(row):
+    for key,src in (('positive_trade_probability','EMPIRICAL_TRADEABILITY'),
+                    ('calibrated_probability','EMPIRICAL_CALIBRATION')):
+        v=num(row.get(key))
+        if v is not None: return v,src
+    tr=row.get('tactical_reversal') if isinstance(row.get('tactical_reversal'),dict) else {}
+    if tr.get('active') and num(tr.get('probability')) is not None:
+        return num(tr.get('probability')),'TACTICAL_REVERSAL_MODEL'
+    rr=row.get('range_retest_breakout') if isinstance(row.get('range_retest_breakout'),dict) else {}
+    if rr.get('active') and num(rr.get('probability')) is not None:
+        return num(rr.get('probability')),'RANGE_RETEST_MODEL'
+    return None,None
+
 def v86_portfolios():
     data = jget(V86, '/api/v1/paper-portfolios')
     if isinstance(data, dict):
@@ -105,20 +160,32 @@ def display_fx_context():
     return {'usdrub':None,'source':'unavailable'}
 
 def signal(cell):
-    direction = cell.get('direction') or 'NO_TRADE'
-    reason = str(cell.get('reason') or '')
-    eligible = bool(cell.get('source_gate')) and 'research_only' not in reason.lower()
-    return {
-        'asset': cell.get('asset'), 'horizon': cell.get('horizon'),
-        'decision': direction, 'research_decision': direction,
-        'confidence': num(cell.get('strength'), 0.0), 'price': num(cell.get('price')),
-        'regime': cell.get('regime'), 'source_gate_pass': bool(cell.get('source_gate')),
-        'execution_eligible': eligible, 'execution_reason': reason,
-        'signal_tier': direction, 'calibrated_probability': None, 'trend_phase': 'NONE',
-        'trade_plan': {'stop_price':num(cell.get('stop')), 'reason':reason},
-        'decision_stage': 'READY' if eligible and direction in ('LONG','SHORT') else 'WAIT',
-        'positive_trade_probability': None, 'analog_effective_n': 0,
-    }
+    cell=dict(cell or {})
+    direction = cell.get('research_decision') or cell.get('direction') or cell.get('decision') or 'NO_TRADE'
+    reason = str(cell.get('execution_reason') or cell.get('reason') or '')
+    source_pass = cell.get('source_gate_pass')
+    if source_pass is None: source_pass = bool(cell.get('source_gate'))
+    eligible = cell.get('execution_eligible')
+    if eligible is None: eligible = bool(source_pass) and 'research_only' not in reason.lower()
+    confidence=num(cell.get('confidence'))
+    if confidence is None: confidence=num(cell.get('strength'),0.0)
+    plan=cell.get('trade_plan') if isinstance(cell.get('trade_plan'),dict) else {}
+    if not plan:
+        plan={'stop_price':num(cell.get('stop')),'reason':reason}
+    out=dict(cell)
+    out.update({
+        'asset':cell.get('asset'),'horizon':cell.get('horizon'),
+        'decision':cell.get('decision') or direction,'research_decision':direction,
+        'confidence':confidence,'price':num(cell.get('price')),'regime':cell.get('regime'),
+        'source_gate_pass':bool(source_pass),'execution_eligible':bool(eligible),'execution_reason':reason,
+        'signal_tier':cell.get('signal_tier') or direction,
+        'calibrated_probability':num(cell.get('calibrated_probability')),
+        'trend_phase':cell.get('trend_phase') or 'NONE','trade_plan':plan,
+        'decision_stage':cell.get('decision_stage') or ('READY' if eligible and direction in ('LONG','SHORT') else 'WAIT'),
+        'positive_trade_probability':num(cell.get('positive_trade_probability')),
+        'analog_effective_n':num(cell.get('analog_effective_n'),0)
+    })
+    return out
 
 def transform_portfolios():
     raw = v86_portfolios()
@@ -134,6 +201,7 @@ def transform_portfolios():
         z.get('asset') for p in plist if isinstance(p,dict)
         for z in (p.get('positions') or []) if isinstance(z,dict) and z.get('asset')
     })
+    fx=display_fx_context(); usdrub=num(fx.get('usdrub'))
     try:
         episode_rows=(jget(V86,'/api/v1/portfolio-trades',12).get('items') or [])
     except Exception:
@@ -152,11 +220,9 @@ def transform_portfolios():
         if eid and isinstance(pay,dict):
             episode_payload[str(eid)]=pay
     analysis = {}
+    rich_rows=v86_analysis_rows()
     for asset in active_assets:
-        try:
-            analysis[asset] = jget(V86, '/api/v85/analysis?asset=' + quote(asset), 12)
-        except Exception:
-            analysis[asset] = {}
+        analysis[asset]={'signals':[r for r in rich_rows if r.get('asset')==asset]}
 
     def live_plan(asset, horizon, direction):
         rows = (analysis.get(asset) or {}).get('signals') or []
@@ -206,7 +272,6 @@ def transform_portfolios():
         nav = num(p.get('nav'), initial)
         gross = num(p.get('gross'), 0.0)
         dd = num(p.get('drawdown'), 0.0)
-        fx=display_fx_context(); usdrub=num(fx.get('usdrub'))
         positions = []
         for z in p.get('positions') or []:
             if not isinstance(z, dict):
@@ -311,13 +376,17 @@ def transform_portfolios():
     }
 
 def overview():
+    with OVERVIEW_CACHE_LOCK:
+        cached=OVERVIEW_CACHE.get('data'); at=float(OVERVIEW_CACHE.get('at') or 0.0)
+        if cached is not None and time.time()-at<OVERVIEW_CACHE_TTL:
+            return cached
     try:
         base = jget(PROD, '/api/v1/overview', 12)
     except Exception as exc:
         print('PROD_OVERVIEW_FALLBACK', type(exc).__name__, flush=True)
         base = {}
     snap = v86_snapshot()
-    rows = [signal(c) for c in (snap.get('cells') or []) if isinstance(c,dict)]
+    rows = v86_analysis_rows()
     cycle = base.get('cycle') if isinstance(base.get('cycle'),dict) else {}
     cycle.update({'status':'ok','at':snap.get('at'),'summary':rows,'version':snap.get('version')})
     base['cycle'] = cycle
@@ -339,11 +408,15 @@ def overview():
     dirs.sort(key=lambda x:x.get('confidence') or 0, reverse=True)
     base['opportunity_board'] = {'opportunities':[
         {'asset':x['asset'],'meta_decision':x['research_decision'],'horizon':x['horizon'],
-         'grade':'V86','meta_score':round(100*(x.get('confidence') or 0)),
-         'decision_stage':x['decision_stage'],'positive_trade_probability':None,
-         'expected_to_stop_ratio':None,'entry_price':x['price'],
-         'stop_price':(x.get('trade_plan') or {}).get('stop_price'),
-         'expected_move_pct':None,'trade_plan_eligible':x['execution_eligible']}
+         'grade':('READY' if (x.get('trade_plan') or {}).get('eligible') else 'WATCH'),
+         'meta_score':round(100*(x.get('confidence') or 0)),
+         'decision_stage':x.get('decision_stage'),'positive_trade_probability':row_probability(x)[0],
+         'expected_to_stop_ratio':num((x.get('trade_plan') or {}).get('expected_to_stop_ratio')),
+         'entry_price':x.get('price'),'stop_price':(x.get('trade_plan') or {}).get('stop_price'),
+         'expected_move_pct':num((x.get('trade_plan') or {}).get('expected_move_pct')),
+         'trade_plan_eligible':bool((x.get('trade_plan') or {}).get('eligible')),
+         'independent_confirmations':int(((x.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count') or 0),
+         'setup':x.get('team_experience_setup_hint') or (x.get('trade_plan') or {}).get('setup')}
         for x in dirs[:8]
     ]}
     items = []
@@ -359,15 +432,32 @@ def overview():
             'horizons':horizons, 'trend':direction, 'directional_horizons':max(longs,shorts),
             'total_horizons':5, 'alignment':max(longs,shorts)/5,
             'fast':horizons.get('1h','→'),'medium':horizons.get('1d','→'),'slow':horizons.get('7d','→'),
-            'state_parameters_used':None,'factor_family_count':None,'independent_evidence_families':None,'model_agents':None,
+            'state_parameters_used':sum(1 for x in ar if x.get('structural_levels') or x.get('horizon_structure')),
+            'factor_family_count':max([len((((x.get('institutional_signal') or {}).get('evidence_independence') or {}).get('families') or {})) for x in ar] or [0]),
+            'independent_evidence_families':max([int(((x.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count') or 0) for x in ar] or [0]),
+            'model_agents':max([int(x.get('v70_model_set_size') or 0) for x in ar] or [0]),
             'thesis_status':'VALID' if direction!='WAIT' else 'NONE',
-            'entry_status':'READY' if any(x['execution_eligible'] for x in ar) else 'LATE_OR_WAIT',
-            'action':'ENTER_CANDIDATE' if any(x['execution_eligible'] and x['research_decision'] in ('LONG','SHORT') for x in ar) else 'WAIT'
+            'entry_status':'READY' if any(bool((x.get('trade_plan') or {}).get('eligible')) for x in ar) else 'LATE_OR_WAIT',
+            'action':'ENTER_CANDIDATE' if any(bool((x.get('trade_plan') or {}).get('eligible')) and x['research_decision'] in ('LONG','SHORT') for x in ar) else 'WAIT'
         })
     base['investor_asset_view'] = {'items':items}
     learning = base.get('learning_progress') if isinstance(base.get('learning_progress'),dict) else {}
-    learning.update({'confidence':'BUILDING','matched_observations_each_side':0})
+    try: cl=jget(V86,'/api/v1/learning-status',8)
+    except Exception as exc: cl={'status':'UNAVAILABLE','error':type(exc).__name__}
+    try: team=jget(V86,'/api/v1/team-experience-status',8)
+    except Exception as exc: team={'status':'UNAVAILABLE','error':type(exc).__name__}
+    learning.update({
+      'confidence':'BUILDING' if cl.get('validated_rules',0)==0 else 'MEASURABLE',
+      'matched_observations_each_side':cl.get('unique_market_ideas') or cl.get('unique_market_episodes') or 0,
+      'closed_loop_lessons':cl.get('lessons_written',0),'closed_loop_applications':cl.get('applications',0),
+      'actionable_contexts':cl.get('actionable_contexts',0),'validated_rules':cl.get('validated_rules',0),
+      'team_experience_cards':team.get('cards_total',0),'team_experience_applications':team.get('applications',0),
+      'team_experience_routed':team.get('routed_applications',0),'team_experience_status':team.get('status')
+    })
     base['learning_progress'] = learning
+    base['team_experience']=team
+    with OVERVIEW_CACHE_LOCK:
+        OVERVIEW_CACHE['at']=time.time(); OVERVIEW_CACHE['data']=base
     return base
 
 def explain(asset, horizon):
@@ -399,16 +489,23 @@ def product_experience():
         print('PROD_EXPERIENCE_FALLBACK', type(exc).__name__, flush=True)
         data = {}
     try:
-        snap = v86_snapshot()
-        rows = [signal(c) for c in snap.get('cells') or [] if isinstance(c,dict)]
+        rows = v86_analysis_rows()
         dirs = [x for x in rows if x['research_decision'] in ('LONG','SHORT')]
         dirs.sort(key=lambda x:x.get('confidence') or 0, reverse=True)
         data['decision_cards'] = {'cards':[
             {'asset':x['asset'],'direction':x['research_decision'],'horizon':x['horizon'],
-             'quality':{'label':'V86'},'probability':None,'probability_source':'BUILDING','reliability':'BUILDING',
-             'sample_n':0,'reward_risk':None,'eligible':x['execution_eligible'],'entry':x['price'],
-             'stop':(x.get('trade_plan') or {}).get('stop_price'),'target':None,'independent_confirmations':0,
-             'reason':x.get('execution_reason') or 'v86 adaptive signal'}
+             'quality':{'label':('READY' if (x.get('trade_plan') or {}).get('eligible') else 'WATCH')},
+             'probability':row_probability(x)[0],'probability_source':row_probability(x)[1] or 'BUILDING',
+             'reliability':('MEDIUM' if (x.get('analog_effective_n') or 0)>=30 else 'LOW'),
+             'sample_n':int(x.get('analog_effective_n') or 0),
+             'reward_risk':num((x.get('trade_plan') or {}).get('expected_to_stop_ratio')),
+             'eligible':bool((x.get('trade_plan') or {}).get('eligible')),'entry':x.get('price'),
+             'stop':(x.get('trade_plan') or {}).get('stop_price'),
+             'target':(x.get('tactical_reversal') or {}).get('target_price') or (x.get('range_retest_breakout') or {}).get('target_price'),
+             'independent_confirmations':int(((x.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count') or 0),
+             'reason':(x.get('trade_plan') or {}).get('reason') or x.get('execution_reason') or 'v86 adaptive signal',
+             'setup':x.get('team_experience_setup_hint') or (x.get('trade_plan') or {}).get('setup'),
+             'team_experience_matches':len((x.get('team_experience') or {}).get('matches') or [])}
             for x in dirs[:10]
         ]}
         pp = transform_portfolios()
@@ -417,17 +514,40 @@ def product_experience():
              'cash_fraction':max(0,1-p['latest']['gross_leverage']),'open_positions':len(p['positions']),'factor_exposure':{}}
             for p in pp['portfolios']
         ]}
+        try: cl=jget(V86,'/api/v1/learning-status',8)
+        except Exception as exc: cl={'status':'UNAVAILABLE','error':type(exc).__name__}
+        try: team=jget(V86,'/api/v1/team-experience-status',8)
+        except Exception as exc: team={'status':'UNAVAILABLE','error':type(exc).__name__}
         data['learning_center'] = {
-            'verified_index':None,'provisional_index':100.0,'confidence':'BUILDING','matched_n_each_side':0,
+            'verified_index':None,'provisional_index':None,
+            'confidence':'BUILDING' if cl.get('validated_rules',0)==0 else 'MEASURABLE',
+            'matched_n_each_side':cl.get('unique_market_ideas') or cl.get('unique_market_episodes') or 0,
             'publication_threshold':20,
             'velocity':{'matured_24h':0,'paper_trades_24h':sum(p['closed_trades'] for p in pp['portfolios']),
-                        'rules_touched_24h':0,'case_lessons_24h':0},
-            'note':'v86 Self-Learning Core активен; OOS/VAULT выборка накапливается'
+                        'rules_touched_24h':cl.get('contexts_total',0),'case_lessons_24h':cl.get('lessons_written',0)},
+            'closed_loop':cl,'team_experience':team,
+            'note':'CLOSED_FINAL и опыт команды ведутся раздельно; опыт команды не повышает риск без OOS/VAULT.'
         }
+        rejection={}
+        indep3=p70=evpos=eligible=0
+        for x in rows:
+            d=x.get('research_decision')
+            inst=x.get('institutional_signal') if isinstance(x.get('institutional_signal'),dict) else {}
+            indep=int((inst.get('evidence_independence') or {}).get('independent_count') or 0)
+            if indep>=3: indep3+=1
+            prob=row_probability(x)[0]
+            if prob is not None and prob>=.70: p70+=1
+            plan=x.get('trade_plan') if isinstance(x.get('trade_plan'),dict) else {}
+            rr=num(plan.get('expected_to_stop_ratio'))
+            if prob is not None and rr is not None and prob*rr-(1-prob)>0: evpos+=1
+            if plan.get('eligible'): eligible+=1
+            elif d in ('LONG','SHORT'):
+                reason=str(plan.get('reason') or x.get('execution_reason') or 'OTHER')
+                rejection[reason]=rejection.get(reason,0)+1
         data['opportunity_funnel'] = {
-            'total_cells':35,'directional':len(dirs),'independent_3plus':0,'probability_70plus':0,
-            'positive_ev_proxy':sum(bool(x['execution_eligible']) for x in dirs),
-            'eligible':sum(bool(x['execution_eligible']) for x in dirs),'rejection_reasons':{}
+            'total_cells':len(rows),'directional':len(dirs),'independent_3plus':indep3,'probability_70plus':p70,
+            'positive_ev_proxy':evpos,'eligible':eligible,
+            'rejection_reasons':dict(sorted(rejection.items(),key=lambda kv:kv[1],reverse=True)[:8])
         }
     except Exception as exc:
         print('V86_EXPERIENCE_OVERLAY_ERROR', type(exc).__name__, str(exc)[:200], flush=True)
