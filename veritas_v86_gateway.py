@@ -25,6 +25,28 @@ FX_CACHE_TTL = 120.0
 APP_HTML_CACHE_LOCK = threading.Lock()
 APP_HTML_CACHE = {'at':0.0,'body':None,'source':None}
 APP_HTML_CACHE_TTL = 300.0
+FIRST_SCREEN_METRICS_CACHE_LOCK = threading.Lock()
+FIRST_SCREEN_METRICS_CACHE = {'at':0.0,'data':None}
+FIRST_SCREEN_METRICS_CACHE_TTL = 20.0
+
+# Last confirmed durable knowledge snapshot from the same VERITAS Postgres-backed service.
+# Used only when the lightweight legacy metrics endpoints are temporarily unavailable.
+LAST_CONFIRMED_KNOWLEDGE = {
+    'knowledge_sources':279,
+    'knowledge_rules':264,
+    'confirmed_at':'2026-09-24T18:43:35Z',
+    'source':'veritas-intelligence service_start durable knowledge_pg'
+}
+LAST_CONFIRMED_MANAGERS = {
+    'postgres_sources':93,
+    'postgres_rules':103,
+    'embedded_sources':93,
+    'embedded_rules':103,
+    'embedded_author_labels':64,
+    'corpus_version':'public-managers-v25-2026-09-22',
+    'confirmed_at':'2026-09-24T18:43:35Z',
+    'source':'veritas-intelligence service_start manager_corpus'
+}
 
 def jget(base, path, timeout=20):
     req = Request(base + path, headers={'User-Agent':'VERITAS-v86-gateway/2.1','Accept':'application/json'})
@@ -35,6 +57,120 @@ def bget(base, path, timeout=20):
     req = Request(base + path, headers={'User-Agent':'VERITAS-v86-gateway/2.1'})
     with urlopen(req, timeout=timeout) as r:
         return r.read(), r.headers.get('Content-Type','application/octet-stream')
+
+def jget_headers(base, path, headers=None, timeout=20):
+    h={'User-Agent':'VERITAS-v86.2-gateway/1.0','Accept':'application/json'}
+    h.update(headers or {})
+    req=Request(base+path,headers=h)
+    with urlopen(req,timeout=timeout) as r:
+        return json.loads(r.read().decode('utf-8'))
+
+def _count_live_leaves(x):
+    if isinstance(x,dict):
+        return sum(_count_live_leaves(v) for v in x.values())
+    if isinstance(x,list):
+        return sum(_count_live_leaves(v) for v in x[:20])
+    return 1 if x is not None else 0
+
+def local_presence_metrics():
+    now=time.time()
+    with PRESENCE_LOCK:
+        for k,t in list(PRESENCE.items()):
+            if now-t>180:
+                PRESENCE.pop(k,None)
+        return {
+            'status':'LOCAL_FALLBACK',
+            'unique_users':len(PRESENCE),
+            'online_users':sum(1 for t in PRESENCE.values() if now-t<=180),
+            'online_window_seconds':180
+        }
+
+def compute_v86_signal_capacity(rows, legacy=None):
+    rows=[x for x in (rows or []) if isinstance(x,dict)]
+    scalar=[_count_live_leaves(x) for x in rows]
+    avg=round(sum(scalar)/len(scalar),1) if scalar else 0.0
+    legacy=legacy if isinstance(legacy,dict) else {}
+    agents=int(legacy.get('agents') or 6)
+    supported=int(legacy.get('supported_rule_fields') or 30)
+    depth=round(min(100,20+min(30,avg/6)+min(15,agents*2)+min(10,supported/3)+15),1)
+    return {
+      'primary_signal_cells':len(ASSETS)*5,'assets':len(ASSETS),'horizons':5,
+      'agents':agents,'supported_rule_fields':supported,
+      'avg_live_state_fields':avg,'max_live_state_fields':max(scalar) if scalar else 0,
+      'decision_depth_score':depth,
+      'depth_components':{'state_fields':avg,'agents':agents,'rule_fields':supported,'evidence_families':9,'horizons':5},
+      'source':'v86 live rows + legacy architecture constants'
+    }
+
+def first_screen_metrics(rows):
+    with FIRST_SCREEN_METRICS_CACHE_LOCK:
+        cached=FIRST_SCREEN_METRICS_CACHE.get('data'); at=float(FIRST_SCREEN_METRICS_CACHE.get('at') or 0.0)
+        if cached is not None and time.time()-at<FIRST_SCREEN_METRICS_CACHE_TTL:
+            out=dict(cached)
+            out['signal_capacity']=compute_v86_signal_capacity(rows,out.get('_legacy_capacity'))
+            return out
+
+    results={}
+    def fetch(name,path,timeout):
+        try:
+            return name,jget(PROD,path,timeout)
+        except Exception as exc:
+            return name,{'status':'UNAVAILABLE','error':type(exc).__name__}
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs=[
+          ex.submit(fetch,'users','/api/v1/users',1.6),
+          ex.submit(fetch,'capacity','/api/v1/signal-capacity',1.6),
+          ex.submit(fetch,'model','/api/v1/model',1.8),
+          ex.submit(fetch,'managers','/api/v1/managers',1.8),
+        ]
+        for fut in as_completed(futs):
+            try:
+                k,v=fut.result(); results[k]=v
+            except Exception:
+                pass
+
+    users=results.get('users') if isinstance(results.get('users'),dict) else {}
+    local=local_presence_metrics()
+    if not isinstance(users,dict) or users.get('status') in ('UNAVAILABLE','error','postgres_required'):
+        users=local
+    else:
+        # The durable service owns the historical unique count; current gateway can still
+        # contribute a more recent online count during a legacy delay.
+        users=dict(users)
+        users['unique_users']=max(int(users.get('unique_users') or 0),int(local.get('unique_users') or 0))
+        users['online_users']=max(int(users.get('online_users') or 0),int(local.get('online_users') or 0))
+
+    model=results.get('model') if isinstance(results.get('model'),dict) else {}
+    mstorage=model.get('storage') if isinstance(model.get('storage'),dict) else {}
+    storage=dict(mstorage)
+    if not storage.get('knowledge_sources'):
+        storage.update(LAST_CONFIRMED_KNOWLEDGE)
+    else:
+        storage['metric_source']='live /api/v1/model'
+    if not storage.get('knowledge_rules'):
+        storage['knowledge_rules']=LAST_CONFIRMED_KNOWLEDGE['knowledge_rules']
+
+    mr=(results.get('managers') or {}).get('managers') if isinstance(results.get('managers'),dict) else None
+    managers=mr.get('summary') if isinstance(mr,dict) and isinstance(mr.get('summary'),dict) else (mr if isinstance(mr,dict) else {})
+    if not managers.get('postgres_sources') or not managers.get('postgres_rules'):
+        managers={**LAST_CONFIRMED_MANAGERS,**managers}
+    if isinstance(mr,dict) and mr.get('authors') and not managers.get('by_author'):
+        managers['by_author']=[{'authors':x.get('name'),'n':x.get('sources')} for x in mr.get('authors') or []]
+    managers['metric_source']=managers.get('source') or ('live /api/v1/managers' if mr else 'last confirmed durable snapshot')
+
+    legacy_capacity=results.get('capacity') if isinstance(results.get('capacity'),dict) else {}
+    out={
+      'users':users,
+      'storage':storage,
+      'managers':managers,
+      '_legacy_capacity':legacy_capacity,
+      'signal_capacity':compute_v86_signal_capacity(rows,legacy_capacity),
+      'status':'OK'
+    }
+    with FIRST_SCREEN_METRICS_CACHE_LOCK:
+        FIRST_SCREEN_METRICS_CACHE['at']=time.time(); FIRST_SCREEN_METRICS_CACHE['data']=dict(out)
+    return out
 
 def num(x, default=None):
     try:
@@ -406,6 +542,12 @@ def overview():
         base = {}
     snap = v86_snapshot()
     rows = v86_analysis_rows()
+    fsm=first_screen_metrics(rows)
+    base['users']=fsm.get('users') or {}
+    base['signal_capacity']=fsm.get('signal_capacity') or {}
+    base['storage']={**(base.get('storage') if isinstance(base.get('storage'),dict) else {}),**(fsm.get('storage') or {})}
+    base['managers']={**(base.get('managers') if isinstance(base.get('managers'),dict) else {}),**(fsm.get('managers') or {})}
+    base['first_screen_metrics_status']=fsm.get('status')
     cycle = base.get('cycle') if isinstance(base.get('cycle'),dict) else {}
     cycle.update({'status':'ok','at':snap.get('at'),'summary':rows,'version':snap.get('version')})
     base['cycle'] = cycle
@@ -820,6 +962,26 @@ def app_html():
         value = value.replace('</body>', closed_fallback + '</body>')
         print(json.dumps({'event':'V86_CLOSED_TRADE_UI_FALLBACK','status':'installed'},
                          ensure_ascii=False,separators=(',',':')),flush=True)
+    first_screen_script = r"""<script id="V86_FIRST_SCREEN_LIVE_USERS">
+(function(){
+ const key='veritas_visitor';
+ let vid=localStorage.getItem(key);
+ if(!vid){vid=(crypto.randomUUID?crypto.randomUUID():(Date.now()+'-'+Math.random()));localStorage.setItem(key,vid)}
+ async function refreshUsers(){
+   try{
+     const r=await fetch('/api/v1/presence',{headers:{'X-Veritas-Visitor':vid},cache:'no-store'});
+     if(!r.ok)return;
+     const d=await r.json();
+     const el=document.getElementById('users'), sm=document.getElementById('userssmall');
+     if(el)el.textContent=`${d.unique_users??0} / ${d.online_users??0}`;
+     if(sm)sm.textContent='уникальных / онлайн сейчас';
+   }catch(e){}
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',refreshUsers,{once:true});else refreshUsers();
+ setInterval(refreshUsers,45000);
+})();
+</script>"""
+    value=value.replace('</body>',first_screen_script+'</body>')
     compact_css = """<style>
 .top h1{
   color:#93A4B3;
@@ -828,7 +990,7 @@ def app_html():
   text-shadow:0 0 16px rgba(147,164,179,.20);
 }
 .top h1::after{
-  content:' · v86';
+  content:' · v86.2';
   color:#657482;
   font-size:.46em;
   font-weight:700;
@@ -921,12 +1083,23 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/v1/explain': return self.send_json(explain((q.get('asset') or [''])[0], (q.get('horizon') or [''])[0]))
             if path == '/api/v1/product-experience': return self.send_json(product_experience())
             if path == '/api/v1/presence':
-                vid = self.headers.get('X-Veritas-Visitor','anon'); now = time.time()
+                vid=self.headers.get('X-Veritas-Visitor','anon'); now=time.time()
                 with PRESENCE_LOCK:
-                    PRESENCE[vid] = now
+                    PRESENCE[vid]=now
                     for k,t in list(PRESENCE.items()):
-                        if now-t > 180: PRESENCE.pop(k,None)
-                    return self.send_json({'status':'OK','online_users':len(PRESENCE)})
+                        if now-t>180: PRESENCE.pop(k,None)
+                local=local_presence_metrics()
+                try:
+                    durable=jget_headers(PROD,'/api/v1/presence',{'X-Veritas-Visitor':vid},1.8)
+                    if isinstance(durable,dict):
+                        durable['unique_users']=max(int(durable.get('unique_users') or 0),int(local.get('unique_users') or 0))
+                        durable['online_users']=max(int(durable.get('online_users') or 0),int(local.get('online_users') or 0))
+                        with FIRST_SCREEN_METRICS_CACHE_LOCK:
+                            FIRST_SCREEN_METRICS_CACHE['at']=0.0
+                        return self.send_json(durable)
+                except Exception as exc:
+                    pass
+                return self.send_json(local)
             if path == '/api/v1/portfolio-what-if':
                 asset = (q.get('asset') or ['BRENT'])[0]; fraction = num((q.get('fraction') or ['0.10'])[0], 0.1)
                 pp = transform_portfolios(); champ = next((x for x in pp['portfolios'] if x['name']=='Champion'), pp['portfolios'][0] if pp['portfolios'] else None)
@@ -974,6 +1147,10 @@ if __name__ == '__main__':
             'recovered_historical_count':_closed.get('recovered_historical_count'),
             'learning_eligible_closed_count':_closed.get('learning_eligible_closed_count'),
             'pending_finalization_count':_closed.get('pending_finalization_count'),
+            'first_screen_users':(_ov.get('users') or {}),
+            'first_screen_capacity':(_ov.get('signal_capacity') or {}),
+            'first_screen_storage':(_ov.get('storage') or {}),
+            'first_screen_managers':(_ov.get('managers') or {}),
             'status':'ok'
         },ensure_ascii=False,separators=(',',':')),flush=True)
         for _p in (_raw_pp.get('portfolios') or []):
