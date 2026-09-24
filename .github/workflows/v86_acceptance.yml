@@ -110,6 +110,10 @@ jobs:
           python v86_winrate_repair_selftest.py candidate_runtime
           python v86_single_source_capture_selftest.py candidate_runtime
           python v86_movement_genesis_selftest.py candidate_runtime
+          python v86_tp_pulse_memory_selftest.py candidate_runtime
+          grep -q "take_profit_price" candidate_runtime/veritas_v85/domain.py
+          grep -q "TAKE_PROFIT" candidate_runtime/veritas_v85/book.py
+          grep -q "apply_movement_state_memory" candidate_runtime/veritas_v86/application.py
           grep -q "def movement_genesis_engine" candidate_runtime/veritas_intelligence.py
           grep -q "def _scale_in" candidate_runtime/veritas_v85/book.py
           grep -q "movement_state" candidate_runtime/veritas_v85/domain.py
