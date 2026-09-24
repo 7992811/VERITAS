@@ -235,6 +235,8 @@ new="""    def commit_cycle(self,summary,bundles,cycle_id,clock_ok=True):
                                     'risk':a.get('risk') or a.get('risk_state'),
                                     'signal_present':a.get('signal_present')})
             print(json.dumps({'event':'V86_EXECUTION_TRACE','routing':out.get('routing') or [],
+                              'quote_errors':out.get('quote_errors') or [],
+                              'quote_keys':sorted(self.quotes.keys()),
                               'actions':actions},ensure_ascii=False,separators=(',',':')),flush=True)
         except Exception as exc:
             print(json.dumps({'event':'V86_EXECUTION_TRACE_ERROR','error':type(exc).__name__},
