@@ -6,7 +6,7 @@ import json, os, time, threading, traceback, re
 PROD = os.getenv('VERITAS_BASE_URL', 'https://veritas-intelligence-v1.onrender.com').rstrip('/')
 V86 = os.getenv('VERITAS_V86_URL', 'https://veritas-v86-engine.onrender.com').rstrip('/')
 ARCHIVE_V86 = os.getenv('VERITAS_V86_ARCHIVE_URL', 'https://veritas-v86-product.onrender.com').rstrip('/')
-ASSETS = ['BTC','ETH','NDX','BRENT','GOLD','MOEX','CNYRUBF']
+ASSETS = ['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF']
 PRESENCE = {}
 PRESENCE_LOCK = threading.Lock()
 
@@ -186,7 +186,7 @@ def transform_portfolios():
         })
     return {
         'status':'OK', 'initial_nav_rub':initial, 'commission_rate':0.0005,
-        'max_gross':2.0, 'max_stop_risk_nav':0.02, 'position_step':0.05,
+        'max_gross':2.5, 'max_stop_risk_nav':0.02, 'position_step':0.05,
         'test_epoch':os.getenv('VERITAS_V86_TEST_EPOCH','2026-09-24T07:55:00Z'),
         'portfolios':out
     }
@@ -418,8 +418,9 @@ def app_html():
                           'Восемь независимых модельных paper-портфелей по 1 000 000 ₽. Реальные деньги не используются.')
     value = value.replace('Открытых позиций нет — оба портфеля в cash.','Открытых позиций нет — портфели в cash.')
     value = value.replace('30 ячеек · ~','35 ячеек · ~').replace('6 активов × 5 ТФ','7 активов × 5 ТФ').replace('6/6 активов','7/7 активов')
+    value = value.replace('NDX','NQ')
     value = value.replace("${p.name==='Champion'?'70%+':'77%+'}","${p.badge||''}")
-    value = value.replace('Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
+    value = value.replace('Шаг позиции 5% · gross ≤ 2,5× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')
 
     replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview position-card"><div class="assetview-head position-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="position-columns"><div class="position-col position-left"><div><span>Вход</span><b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Текущая</span><b>${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div class="position-gap"><span>Объём</span><b>${rub(z.notional_rub)}</b></div><div><span>Кол-во</span><b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b></div></div><div class="position-col position-right"><div><span>P/L</span><b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b></div><div><span>SL</span><b>${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>TP</span><b>${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Вероятность</span><b>${z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'}</b></div><div><span>Time</span><b>${z.opened_at?new Date(z.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div></div></div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
@@ -514,12 +515,12 @@ class Handler(BaseHTTPRequestHandler):
                 snap = v86_snapshot(); sr = [signal(c) for c in snap.get('cells') or [] if isinstance(c,dict) and c.get('asset')==asset]
                 sr.sort(key=lambda x:x.get('confidence') or 0, reverse=True); direction = sr[0]['research_decision'] if sr else 'NO_TRADE'
                 return self.send_json({'asset':asset,'direction':direction,'fraction':fraction,'notional_rub':1_000_000*fraction,
-                                       'before':{'gross':gross},'after':{'gross':gross+fraction},'gross_limit':2.0,
-                                       'within_gross_limit':gross+fraction<=2.0,'note':'v86 paper what-if'})
+                                       'before':{'gross':gross},'after':{'gross':gross+fraction},'gross_limit':2.5,
+                                       'within_gross_limit':gross+fraction<=2.5,'note':'v86 paper what-if'})
             if path == '/api/v1/ask-veritas':
                 question = (q.get('q') or [''])[0]
                 asset = next((x for x in ASSETS if x.lower() in question.lower()), None)
-                if not asset: return self.send_json({'answer':'Укажите актив: BTC, ETH, NDX, BRENT, GOLD, MOEX или CNYRUBF.'})
+                if not asset: return self.send_json({'answer':'Укажите актив: BTC, ETH, NQ, BRENT, GOLD, MOEX или CNYRUBF.'})
                 data = jget(V86, '/api/v85/analysis?asset=' + quote(asset)); rows = data.get('signals') or []
                 rows.sort(key=lambda x:x.get('confidence') or 0, reverse=True); x = rows[0] if rows else {}
                 return self.send_json({'answer':f"{asset}: {x.get('research_decision','NO_TRADE')} на {x.get('horizon','—')}, сила {100*num(x.get('confidence'),0):.1f}%. Исполнение: {x.get('execution_reason') or 'см. торговый план'}."})
