@@ -105,6 +105,8 @@ jobs:
           cp -a candidate candidate_runtime
           python v86_runtime_patch.py candidate_runtime
           python v86_state_restore_selftest.py candidate_runtime
+          python v86_runtime_learning_selftest.py candidate_runtime
+          grep -q "V86_NONCRYPTO_EXECUTION_SOURCES_ACTIVE" <(python v86_staged_execution_sources_patch.py candidate_runtime 2>&1 || true)
           grep -q "settings.mode=='paper'" candidate_runtime/veritas_v86/application.py
           grep -q "V86_RESEARCH_SCHEMA_READY" candidate_runtime/veritas_v86/application.py
           python -m py_compile candidate_runtime/veritas_v85/domain.py candidate_runtime/veritas_v85/routing.py candidate_runtime/veritas_v85/book.py candidate_runtime/veritas_v85/application.py candidate_runtime/veritas_v86/*.py candidate_runtime/veritas_v86_start.py

@@ -134,7 +134,8 @@ old="""        outcome={'net_pnl':str(episode_net),'gross_close_leg':str(gross),
 """
 new="""        outcome={'net_pnl':str(episode_net),'gross_close_leg':str(gross),'funding_close_leg':str(fund),
                  'entry_fee':str(entry_fee),'exit_fee':str(fee),'exit_price':str(quote.price),
-                 'outcome_finalized':True,'finalization_contract':'CLOSED_FINAL_V1','learning_eligible':True,
+                 'outcome_finalized':True,'finalization_contract':'CLOSED_FINAL_V1',
+                 'learning_eligible':bool(len(points)>=2),
                  'observed_mfe_fraction':str(mfe),'observed_mae_fraction':str(mae),
 """
 if old not in s: raise SystemExit('BOOK_OUTCOME_ANCHOR_NOT_FOUND')
@@ -146,7 +147,13 @@ guard="""        _required_final=('net_pnl','gross_close_leg','funding_close_leg
         _missing_final=[k for k in _required_final if outcome.get(k) is None]
         if _missing_final:
             raise RuntimeError('CLOSED_FINAL_INCOMPLETE:'+','.join(_missing_final))
-        insert_lesson(c,lesson)
+        if int(outcome.get('path_points') or 0)>=2:
+            insert_lesson(c,lesson)
+        else:
+            outcome['learning_eligible']=False
+            outcome['learning_skip_reason']='INSUFFICIENT_OBSERVED_PATH'
+            original['outcome']=outcome
+            c.execute('UPDATE v85_episodes SET payload=? WHERE episode_id=?',(canonical_json(original),p.episode_id))
 """
 if guard_anchor not in s: raise SystemExit('BOOK_LEARNING_GUARD_ANCHOR_NOT_FOUND')
 s=s.replace(guard_anchor,guard,1)
@@ -669,3 +676,15 @@ _new2="""        model.pg_init()
 if _old2 not in _s: raise SystemExit('V86_RESEARCH_SCHEMA_GUARD_ANCHOR_NOT_FOUND')
 p.write_text(_s.replace(_old2,_new2,1),encoding='utf-8')
 print('V86_FORCE_POSTGRES_PATCH_OK')
+
+# 14) Durable state is active: enable independently verified non-crypto paper execution sources.
+import runpy as _runpy, sys as _sys
+_noncrypto_patch=root.parent/'v86_staged_execution_sources_patch.py'
+if not _noncrypto_patch.is_file(): raise SystemExit('V86_NONCRYPTO_PATCH_MISSING')
+_saved_argv=list(_sys.argv)
+try:
+    _sys.argv=[str(_noncrypto_patch),str(root)]
+    _runpy.run_path(str(_noncrypto_patch),run_name='__main__')
+finally:
+    _sys.argv=_saved_argv
+print('V86_NONCRYPTO_RUNTIME_ACTIVE')

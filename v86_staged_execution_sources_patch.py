@@ -2,17 +2,15 @@ from pathlib import Path
 import sys, json
 root=Path(sys.argv[1] if len(sys.argv)>1 else '.').resolve()
 
-# 12) Stage independent execution quote sources for non-crypto assets.
-# This code is committed now but must not be deployed until cumulative state is on durable storage.
+# Production independent execution quote sources for non-crypto assets.
+# Fail closed on stale/ambiguous timestamps or excessive cross-source divergence.
 p=root/'veritas_intelligence.py'
 _src=p.read_text(encoding='utf-8')
 import re as _re
 
 _helper=r'''
 def _stooq_latest(symbol):
-    """Independent delayed futures quote for paper verification.
-    Stooq current-quote CSV is used only as a second-source check, never as the analytical history owner.
-    """
+    """Independent futures quote with provider timestamp; never invent freshness."""
     import csv,io
     url='https://stooq.com/q/l/'
     with httpx.Client(timeout=15,headers={'User-Agent':'Mozilla/5.0 VERITAS paper-verification'}) as h:
@@ -29,16 +27,23 @@ def _stooq_latest(symbol):
             except Exception: pass
     if price is None or price<=0:
         raise RuntimeError(f'STOOQ_BAD_QUOTE {symbol}')
-    return {'price':price,'observed_at':now(),'row':row,'source':'Stooq'}
+    observed=None
+    ds=row.get('Date') or row.get('DATE') or row.get('date')
+    ts=row.get('Time') or row.get('TIME') or row.get('time')
+    if ds not in (None,'','N/D') and ts not in (None,'','N/D'):
+        for fmt in ('%Y-%m-%d %H:%M:%S','%Y-%m-%d %H:%M'):
+            try:
+                dt=datetime.strptime(str(ds)+' '+str(ts),fmt).replace(tzinfo=ZoneInfo('Europe/Warsaw'))
+                observed=dt.astimezone(timezone.utc).isoformat(); break
+            except Exception:
+                pass
+    return {'price':price,'observed_at':observed,'retrieved_at':now(),'row':row,'source':'Stooq'}
 
 def _finam_imoex_quote():
-    """Best-effort independent delayed IMOEX verification.
-    Fail-closed: any parser drift simply keeps MOEX execution disabled.
-    """
+    """Independent price-only MOEX check. No timestamp => never grants execution freshness."""
     url='https://www.finam.ru/quote/moex/imoex/'
     with httpx.Client(timeout=15,headers={'User-Agent':'Mozilla/5.0 VERITAS paper-verification'}) as h:
         r=h.get(url); r.raise_for_status(); text=r.text
-    # Finam server-rendered page contains the delayed last-trade price near IMOEX metadata.
     patterns=[
       r'(?is)Последн[^<]{0,40}(?:сделк|цена).*?([0-9][0-9\s]{2,}(?:[.,][0-9]+)?)\s*₽',
       r'(?is)"lastPrice"\s*:\s*"?([0-9]+(?:[.,][0-9]+)?)',
@@ -52,9 +57,10 @@ def _finam_imoex_quote():
             except Exception: pass
     if price is None or price<=100:
         raise RuntimeError('FINAM_IMOEX_PARSE_FAIL')
-    return {'price':price,'observed_at':now(),'source':'Finam IMOEX delayed'}
+    return {'price':price,'observed_at':None,'retrieved_at':now(),'source':'Finam IMOEX delayed'}
 
 '''
+
 anchor="def _research_only_derivatives(asset):"
 if '_stooq_latest(symbol)' not in _src:
     if anchor not in _src: raise SystemExit('NONCRYPTO_HELPER_ANCHOR_NOT_FOUND')
@@ -90,7 +96,8 @@ _new=r'''def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,poli
         except Exception:
             pass
 
-    direct_ok=bool(secondary is not None and div<=0.015)
+    sec_age=_age_seconds(sec_obs) if sec_obs else None
+    direct_ok=bool(secondary is not None and sec_age is not None and 0<=sec_age<=DELAYED_FUTURES_MAX_AGE_SECONDS and div<=0.015)
     gate=bool(market_open and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
     quality=[
       _source_row(source_name,f'{asset} futures','primary research delayed',observed,delay,
@@ -176,6 +183,88 @@ def _moex_market'''
 _src,n=_re.subn(_pat,_new,_src,count=1,flags=_re.S)
 if n!=1: raise SystemExit(f'CNYRUBF_PATCH_FAILED {n}')
 
+# MOEX primary: board endpoint can intermittently return no marketdata.
+# Try the generic official ISS endpoint, then a recent official 10-minute candle.
+_old=r'''def _moex_current_quote():
+    url='https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities/IMOEX.json'
+    with httpx.Client(timeout=20,headers={'User-Agent':'VERITAS/15 research'}) as h:
+        r=h.get(url,params={'iss.meta':'off'}); r.raise_for_status(); j=r.json()
+    rows=_moex_block(j,'marketdata')
+    if not rows:
+        raise RuntimeError('MOEX_ISS_NO_MARKETDATA')
+    row=rows[0]
+    price=None
+    for k in ('CURRENTVALUE','LASTVALUE','LAST','MARKETPRICE'):
+        if row.get(k) not in (None,''):
+            try: price=float(row[k]); break
+            except Exception: pass
+    if price is None:
+        raise RuntimeError('MOEX_ISS_NO_CURRENT_VALUE')
+    dt=None
+    for k in ('SYSTIME','TRADEDATE','UPDATETIME','TIME'):
+        if row.get(k):
+            dt=_moex_parse_dt(row[k])
+            if dt: break
+    return {'price':price,'observed_at':(dt or datetime.now(timezone.utc)).isoformat(),'row':row}
+'''
+_new=r'''def _moex_current_quote():
+    urls=[
+      'https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities/IMOEX.json',
+      'https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX.json'
+    ]
+    errors=[]
+    with httpx.Client(timeout=20,headers={'User-Agent':'VERITAS/86 MOEX primary'}) as h:
+        for url in urls:
+            try:
+                r=h.get(url,params={'iss.meta':'off'}); r.raise_for_status(); j=r.json()
+                rows=_moex_block(j,'marketdata')
+                for row in rows:
+                    price=None
+                    for k in ('CURRENTVALUE','LASTVALUE','LAST','MARKETPRICE'):
+                        if row.get(k) not in (None,''):
+                            try: price=float(row[k]); break
+                            except Exception: pass
+                    if price is None or price<=0: continue
+                    dt=None
+                    for k in ('SYSTIME','UPDATETIME','TIME'):
+                        if row.get(k):
+                            dt=_moex_parse_dt(row[k])
+                            if dt: break
+                    if dt is None and row.get('TRADEDATE'):
+                        # TRADEDATE alone is not a fresh timestamp; keep searching.
+                        continue
+                    if dt is not None:
+                        return {'price':price,'observed_at':dt.isoformat(),'row':row,'quote_mode':'marketdata'}
+                errors.append('NO_USABLE_MARKETDATA')
+            except Exception as ex:
+                errors.append(type(ex).__name__)
+
+        # Official-candle fallback. This is still MOEX primary data, not a second source.
+        try:
+            m=datetime.now(timezone.utc).astimezone(ZoneInfo('Europe/Moscow'))
+            frm=(m.date()-timedelta(days=1)).isoformat(); till=(m.date()+timedelta(days=1)).isoformat()
+            url='https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX/candles.json'
+            r=h.get(url,params={'from':frm,'till':till,'interval':10,'start':0,'iss.meta':'off'})
+            r.raise_for_status(); rows=_moex_block(r.json(),'candles')
+            usable=[]
+            for row in rows:
+                cl=row.get('close') if row.get('close') not in (None,'') else row.get('CLOSE')
+                if cl in (None,''): continue
+                dt=_moex_parse_dt(row.get('end') or row.get('END') or row.get('begin') or row.get('BEGIN'))
+                if dt is None: continue
+                try: usable.append((dt,float(cl),row))
+                except Exception: pass
+            if usable:
+                dt,price,row=max(usable,key=lambda z:z[0])
+                return {'price':price,'observed_at':dt.isoformat(),'row':row,'quote_mode':'official_10m_candle'}
+            errors.append('NO_10M_CANDLE')
+        except Exception as ex:
+            errors.append('CANDLE_'+type(ex).__name__)
+    raise RuntimeError('MOEX_ISS_NO_MARKETDATA:'+','.join(errors[-4:]))
+'''
+if _old not in _src: raise SystemExit('MOEX_CURRENT_QUOTE_ANCHOR_NOT_FOUND')
+_src=_src.replace(_old,_new,1)
+
 # MOEX: keep official ISS primary, use Yahoo when fresh, otherwise best-effort Finam delayed quote.
 _old="""    quality=[
       _source_row('MOEX ISS IMOEX','MOEX index','primary research delayed',observed,MOEX_FREE_ISS_DELAY_SECONDS,
@@ -253,5 +342,5 @@ if _old not in _src: raise SystemExit('CNY_EXEC_GATE_ANCHOR_NOT_FOUND')
 _src=_src.replace(_old,_new,1)
 
 p.write_text(_src,encoding='utf-8')
-print('V86_NONCRYPTO_EXECUTION_SOURCES_STAGED')
+print('V86_NONCRYPTO_EXECUTION_SOURCES_ACTIVE')
 print('V86_RUNTIME_PATCH_OK')
