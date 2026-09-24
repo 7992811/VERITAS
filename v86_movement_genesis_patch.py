@@ -286,6 +286,13 @@ new="""            pp=dict(rr.get('trade_plan') or {})
                            'net_expected_to_stop_ratio':mg.get('net_rr'),
                            'noise_floor_stop_distance_pct':mg.get('noise_floor_pct'),
                            'initial_position_fraction':0.05})
+            # WAIT_ENTRY activation may replace a structurally too-tight stop with
+            # a noise-safe stop at the actual pullback entry. It never widens risk
+            # without rechecking net R/R in winrate_repair_gate.
+            if gate.get('entry_zone_activated') and gate.get('adjusted_stop_price'):
+                pp['stop_price']=gate.get('adjusted_stop_price')
+                pp['eligible']=True
+                pp['reason']='wait_entry_zone_activated'
             pp['winrate_repair_gate']=gate
             executable.append((rr,ww,pp,gate))
 """
@@ -297,7 +304,8 @@ old="""        # Repair mode is deliberately conservative: 5% research probe onl
         traces.append({'asset':a,'direction':d,'horizon':h,'status':'ROUTED_REPAIR_PROBE',
 """
 new="""        desired=min(D('.25'),gate.get('max_fraction') or D('.05'))
-        route_status=('ROUTED_MOVEMENT_'+str(gate.get('movement_state')) if gate.get('movement') else 'ROUTED_REPAIR_PROBE')
+        route_status=('ROUTED_WAIT_ENTRY_TRIGGER' if gate.get('entry_zone_activated') else
+                      'ROUTED_MOVEMENT_'+str(gate.get('movement_state')) if gate.get('movement') else 'ROUTED_REPAIR_PROBE')
         traces.append({'asset':a,'direction':d,'horizon':h,'status':route_status,
 """
 if old not in s: raise SystemExit('MOVEMENT_DESIRED_ANCHOR_NOT_FOUND')
