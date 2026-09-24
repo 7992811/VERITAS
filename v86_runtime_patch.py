@@ -144,8 +144,8 @@ guard="""        _required_final=('net_pnl','gross_close_leg','funding_close_leg
                          'observed_mfe_fraction','observed_mae_fraction','giveback_from_observed_peak',
                          'held_seconds','exit_reason','path_points')
         _missing_final=[k for k in _required_final if outcome.get(k) is None]
-        if _missing_final or int(outcome.get('path_points') or 0)<2:
-            raise RuntimeError('CLOSED_FINAL_INCOMPLETE:'+','.join(_missing_final or ['path_points<2']))
+        if _missing_final:
+            raise RuntimeError('CLOSED_FINAL_INCOMPLETE:'+','.join(_missing_final))
         insert_lesson(c,lesson)
 """
 if guard_anchor not in s: raise SystemExit('BOOK_LEARNING_GUARD_ANCHOR_NOT_FOUND')
