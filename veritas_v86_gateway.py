@@ -865,8 +865,29 @@ def app_html():
     value = value.replace('Открытых позиций нет — оба портфеля в cash.','Открытых позиций нет — портфели в cash.')
     value = value.replace('30 ячеек · ~','35 ячеек · ~').replace('6 активов × 5 ТФ','7 активов × 5 ТФ').replace('6/6 активов','7/7 активов')
     value = value.replace('NDX','NQ')
+    # V86.2 BRAND_AND_HEADER_REFINEMENT
+    value = re.sub(
+        r'<h1>VERITAS Markets</h1>',
+        '<h1 class="veritas-brand"><span class="veritas-logo" aria-hidden="true"><svg viewBox="0 0 40 40" focusable="false"><path class="vl-frame" d="M20 2.8 34.8 11.3v17.4L20 37.2 5.2 28.7V11.3Z"/><path class="vl-v" d="M11.5 12.8 20 29.2l8.5-16.4"/><path class="vl-core" d="M20 8.5v20.7"/></svg></span><span class="veritas-word">VERITAS</span><span class="markets-word">Markets</span></h1>',
+        value,count=1,flags=re.I
+    )
+    value = re.sub(
+        r'<div class="sub">\s*Цифровой инвестиционный комитет[^<]*</div>',
+        '<div class="sub">Цифровой инвестиционный комитет</div>',
+        value,count=1,flags=re.I
+    )
+    value = value.replace(
+        "document.getElementById('users').textContent=\`\${um.unique_users??0} / \${um.online_users??0}\`;document.getElementById('userssmall').textContent='уникальных / онлайн сейчас';",
+        "document.getElementById('users').textContent=\`\${um.online_users??0} / \${um.unique_users??0}\`;document.getElementById('userssmall').textContent='онлайн сейчас / уникальных';"
+    )
     value = re.sub(r'<div class="k">(?:RUONIA|Руониа)</div><div[^>]*>[^<]*</div>','',value,flags=re.I)
-    value = re.sub(r'RUONIA[^<]{0,40}','',value,flags=re.I)
+    # Remove the complete legacy RUONIA/USD-RUB portfolio footer.
+    # Do not truncate the JS expression: truncation caused the visible "oFixed(2)+'%'}" artifact.
+    value = re.sub(
+        r"<br>RUONIA \\$\\{x\\.ruonia==null\\?'—':Number\\(x\\.ruonia\\)\\.toFixed\\(2\\)\\+'%'\\} · USD/RUB \\$\\{x\\.usdrub==null\\?'—':Number\\(x\\.usdrub\\)\\.toFixed\\(4\\)\\}",
+        '',
+        value,count=1,flags=re.I
+    )
     value = value.replace('Последние сделки','Закрытые сделки · CLOSED_FINAL').replace('ПОСЛЕДНИЕ СДЕЛКИ','ЗАКРЫТЫЕ СДЕЛКИ · CLOSED_FINAL')
     value = value.replace("${p.name==='Champion'?'70%+':'77%+'}","${p.badge||''}")
     value = value.replace('Шаг позиции 5% · gross ≤ 2,5× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
@@ -974,9 +995,10 @@ def app_html():
    const srcCard=src.closest('.card'), rulesCard=rules.closest('.card'), mgrCard=mgr.closest('.card');
    if(!sysCard||!userCard||!srcCard||!rulesCard||!mgrCard)return;
 
-   // Rename the first card to the user-facing meaning requested for the compact row.
+   // Show only the health value; the "Статус" label is intentionally removed.
    const sysLabel=sysCard.querySelector('.k');
-   if(sysLabel)sysLabel.textContent='Статус';
+   if(sysLabel){sysLabel.textContent='';sysLabel.style.display='none';}
+   sysCard.classList.add('v86-health-card');
 
    let statusRow=document.getElementById('v86-status-users-row');
    if(!statusRow){
@@ -1015,8 +1037,8 @@ def app_html():
      if(!r.ok)return;
      const d=await r.json();
      const el=document.getElementById('users'), sm=document.getElementById('userssmall');
-     if(el)el.textContent=`${d.unique_users??0} / ${d.online_users??0}`;
-     if(sm)sm.textContent='уникальных / онлайн сейчас';
+     if(el)el.textContent=`${d.online_users??0} / ${d.unique_users??0}`;
+     if(sm)sm.textContent='онлайн сейчас / уникальных';
    }catch(e){}
  }
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',refreshUsers,{once:true});else refreshUsers();
@@ -1089,6 +1111,26 @@ def app_html():
  #portfoliotrades .closed-extra{font-size:7px}
  #portfoliotrades .closed-more-btn{font-size:7.5px;padding:3px 5px}
 }
+.top h1.veritas-brand{
+ display:flex;align-items:center;gap:10px;margin:0;
+ font-family:"Avenir Next","Segoe UI Variable Display","Helvetica Neue",Arial,sans-serif;
+ font-weight:760;letter-spacing:.11em;line-height:1;
+ color:#c4cfd6;text-shadow:0 1px 0 rgba(255,255,255,.04),0 10px 30px rgba(0,0,0,.34)
+}
+.top h1.veritas-brand::after{content:' · v86.2';color:#60717d;font-size:.35em;font-weight:650;letter-spacing:.08em;margin-left:1px}
+.veritas-logo{width:31px;height:31px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 31px}
+.veritas-logo svg{width:31px;height:31px;overflow:visible}
+.veritas-logo .vl-frame{fill:rgba(112,135,150,.055);stroke:#758b99;stroke-width:1.55}
+.veritas-logo .vl-v{fill:none;stroke:#d4dce1;stroke-width:2.55;stroke-linecap:round;stroke-linejoin:round}
+.veritas-logo .vl-core{fill:none;stroke:#617b8a;stroke-width:1.15;stroke-linecap:round}
+.veritas-word{
+ background:linear-gradient(180deg,#e4e9ec 0%,#b5c1c8 56%,#879aa7 100%);
+ -webkit-background-clip:text;background-clip:text;color:transparent;
+ font-size:1em
+}
+.markets-word{color:#778994;font-size:.62em;font-weight:540;letter-spacing:.045em;margin-left:-4px}
+.v86-health-card{display:flex!important;align-items:center!important;justify-content:center!important;padding:12px 16px!important}
+.v86-health-card .v{grid-column:auto!important;grid-row:auto!important;text-align:center!important;font-size:22px!important}
 .v86-top-row{grid-column:span 12;display:grid;gap:10px;min-width:0}
 .v86-status-users-row{grid-template-columns:repeat(2,minmax(0,1fr))}
 .v86-knowledge-row{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -1102,6 +1144,10 @@ def app_html():
 .v86-knowledge-row>.card .v{grid-column:2;grid-row:1;font-size:21px;line-height:1;text-align:right;white-space:nowrap}
 .v86-knowledge-row>.card .stamp{grid-column:1 / span 2;grid-row:2;margin-top:4px;font-size:8px;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:900px){
+ .top h1.veritas-brand{gap:7px;letter-spacing:.085em}
+ .veritas-logo{width:25px;height:25px;flex-basis:25px}
+ .veritas-logo svg{width:25px;height:25px}
+ .markets-word{font-size:.58em}
  .v86-top-row{gap:6px}
  .v86-status-users-row{grid-template-columns:repeat(2,minmax(0,1fr))}
  .v86-knowledge-row{grid-template-columns:repeat(3,minmax(0,1fr))}
