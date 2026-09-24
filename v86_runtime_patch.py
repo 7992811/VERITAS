@@ -241,4 +241,110 @@ new="""    def commit_cycle(self,summary,bundles,cycle_id,clock_ok=True):
 if old not in s: raise SystemExit('V86_EXECUTION_TRACE_ANCHOR_NOT_FOUND')
 p.write_text(s.replace(old,new),encoding='utf-8')
 
+# 8) Replace cash NDX with nearly-24h CME E-mini Nasdaq-100 futures (NQ).
+# Rename the asset across runtime code/knowledge while keeping old NDX episodes only in archive services.
+for ext in ('*.py','*.json'):
+    for fp in root.rglob(ext):
+        try:
+            txt=fp.read_text(encoding='utf-8')
+        except Exception:
+            continue
+        if 'NDX' not in txt and '%5ENQ' not in txt and '^NQ' not in txt:
+            continue
+        txt=txt.replace('NDX','NQ')
+        txt=txt.replace('%5ENQ','NQ%3DF').replace('^NQ','NQ%3DF')
+        fp.write_text(txt,encoding='utf-8')
+
+# Main model: use NQ/MNQ futures bars and a futures-session freshness gate instead of US cash RTH.
+p=root/'veritas_intelligence.py'
+s=p.read_text(encoding='utf-8')
+import re
+s=s.replace("'NQ':   {'1h':1,'4h':4,'1d':7,'3d':20,'7d':46}",
+            "'NQ':   {'1h':1,'4h':4,'1d':23,'3d':69,'7d':161}")
+s=s.replace("if asset=='NQ':\n        raw=_ndx_market(); deriv=_ndx_derivatives_context()",
+            "if asset=='NQ':\n        raw=_ndx_market(); deriv=_research_only_derivatives(asset)")
+old_exec="""    if asset=='NQ':
+        # _ndx_market's source gate already requires current Nasdaq-100 quote + public cross-check.
+        return {'eligible':bool(research_ok and time_ok),'reason':'two_direct_index_checks' if research_ok else 'ndx_verification_failed',
+                'direct_sources':2 if research_ok else 1,'research_ok':research_ok,'time_ok':time_ok}
+"""
+new_exec="""    if asset=='NQ':
+        # Paper execution uses the E-mini NQ quote and Micro E-mini MNQ paired-contract check.
+        # Same underlying/exchange; this is NOT claimed as two independent data vendors.
+        paired=(raw.get('verification_mode')=='paired_contract_same_underlying')
+        ok=bool(research_ok and time_ok and paired and float(raw.get('source_divergence') or 0)<=0.0025)
+        return {'eligible':ok,
+                'reason':'nq_paired_contract_paper_gate' if ok else 'nq_futures_verification_failed',
+                'direct_sources':1,'direct_contracts':2 if paired else 1,
+                'independent_vendors':1,'paper_only':True,
+                'research_ok':research_ok,'time_ok':time_ok}
+"""
+if old_exec not in s:
+    raise SystemExit('NQ_EXECUTION_GATE_ANCHOR_NOT_FOUND')
+s=s.replace(old_exec,new_exec)
+
+pattern=r"def _ndx_market\(\):\n.*?\n\ndef _research_only_derivatives"
+new_market="""def _ndx_market():
+    # NQ replaces cash NDX: E-mini Nasdaq-100 futures trade nearly around the clock.
+    nq5,_=_yahoo_series('NQ%3DF','5d','5m',True)
+    nq1h,_=_yahoo_series('NQ%3DF','3mo','1h',True)
+    mnq5,_=_yahoo_series('MNQ%3DF','5d','5m',True)
+    try:
+        nqdaily,_=_yahoo_series('NQ%3DF','1y','1d',True)
+    except Exception:
+        nqdaily=[]
+    if len(nq1h)<200:
+        raise RuntimeError(f'INSUFFICIENT_NQ_HOURLY_BARS {len(nq1h)}')
+    if not nq5:
+        raise RuntimeError('NQ_5M_UNAVAILABLE')
+    pbar=nq5[-1]; price=float(pbar['close'])
+    pts=datetime.fromtimestamp(pbar['ts'],tz=timezone.utc).isoformat()
+    sec=None; sec_ts=None
+    if mnq5:
+        sbar=mnq5[-1]; sec=float(sbar['close'])
+        sec_ts=datetime.fromtimestamp(sbar['ts'],tz=timezone.utc).isoformat()
+    mid=((price+sec)/2) if sec is not None else None
+    div=(abs(price-sec)/mid) if mid else 999.0
+    w=nq1h[-360:]
+    closes=[float(x['close']) for x in w]
+    highs=[float(x['high']) for x in w]
+    lows=[float(x['low']) for x in w]
+    vols=[float(x.get('volume') or 0) for x in w]
+    taker=[v*0.5 for v in vols]
+    rets=[closes[i]/closes[i-1]-1 for i in range(1,len(closes))]
+    age=_age_seconds(pts); sec_age=_age_seconds(sec_ts) if sec_ts else None
+    market_open=_futures_market_open_from_age(pts)
+    gate=bool(market_open and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS
+              and sec is not None and sec_age is not None and sec_age<=DELAYED_FUTURES_MAX_AGE_SECONDS
+              and div<=0.0025)
+    quality=[
+      _source_row('Yahoo CME NQ=F','E-mini Nasdaq-100 futures','primary delayed futures',pts,600,
+                  'DELAYED_CONTEXT' if gate else 'STALE_OR_CLOSED',
+                  'Yahoo CME delayed feed; paper testing only','Yahoo/CME'),
+      _source_row('Yahoo CME MNQ=F','Micro E-mini Nasdaq-100 futures','paired-contract verification',sec_ts,600,
+                  'PAIRED_OK' if gate else 'PAIRED_FAIL',
+                  f'same underlying/exchange; divergence={div:.4%}; not an independent vendor','Yahoo/CME')
+    ]
+    _set_source_quality(quality)
+    return {'asset':'NQ','price':price,'secondary_price':sec,'coinbase_price':sec,
+            'secondary_observed_at':sec_ts,'source_divergence':div,
+            'closes':closes,'highs':highs,'lows':lows,'vols':vols,'taker_buy':taker,'returns':rets,
+            'binance_close_time_ms':int(pbar['ts']*1000),'observed_at':pts,
+            'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
+            'intraday_bars':nq5,'daily_bars':nqdaily,'volume_intraday_bars':nq5,
+            'data_latency_class':'DELAYED_RESEARCH',
+            'verification_mode':'paired_contract_same_underlying',
+            'source_names':{'primary':'Yahoo CME NQ=F','secondary':'Yahoo CME MNQ=F'},
+            'contract':{'symbol':'NQ','underlying':'Nasdaq-100','exchange':'CME',
+                        'multiplier_usd_per_point':20.0,'tick_points':0.25,'tick_value_usd':5.0,
+                        'currency':'USD','execution':'synthetic_paper'}}
+
+
+def _research_only_derivatives"""
+s2,n=re.subn(pattern,new_market,s,count=1,flags=re.S)
+if n!=1:
+    raise SystemExit(f'NQ_MARKET_REPLACE_FAILED {n}')
+p.write_text(s2,encoding='utf-8')
+
+print('V86_NDX_TO_NQ_PATCH_OK')
 print('V86_RUNTIME_PATCH_OK')
