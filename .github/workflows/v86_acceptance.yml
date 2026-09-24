@@ -108,6 +108,9 @@ jobs:
           python v86_runtime_learning_selftest.py candidate_runtime
           python v86_closed_ledger_selftest.py candidate_runtime
           python v86_winrate_repair_selftest.py candidate_runtime
+          python v86_single_source_capture_selftest.py candidate_runtime
+          grep -q "single_primary_source_verified" candidate_runtime/veritas_intelligence.py
+          grep -q "PROFIT_PROTECT_GIVEBACK" candidate_runtime/veritas_v85/book.py
           grep -q "def winrate_repair_gate" candidate_runtime/veritas_v85/routing.py
           grep -q "/api/v1/closed-trade-ledger" candidate_runtime/veritas_v85/application.py
           grep -q "v86_closed_trade_ledger" candidate_runtime/veritas_v85/book.py
