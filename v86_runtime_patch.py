@@ -688,3 +688,277 @@ try:
 finally:
     _sys.argv=_saved_argv
 print('V86_NONCRYPTO_RUNTIME_ACTIVE')
+
+
+# 15) Immutable durable closed-trade ledger + one-time recovery of the verified pre-durable NQ close.
+# The ledger is append-only at application level: close and ledger write share the same financial transaction.
+p=root/'veritas_v85/book.py'
+_s=p.read_text(encoding='utf-8')
+if 'import json,hashlib' not in _s:
+    if 'import json\n' not in _s: raise SystemExit('CLOSED_LEDGER_JSON_IMPORT_ANCHOR_NOT_FOUND')
+    _s=_s.replace('import json\n','import json,hashlib\n',1)
+_helper_anchor='from .funding import accrued\n'
+_helper=r'''
+CLOSED_TRADE_LEDGER_CONTRACT="V86_CLOSED_TRADE_LEDGER_V1"
+_CLOSED_TRADE_LEDGER_SCHEMA="""CREATE TABLE IF NOT EXISTS v86_closed_trade_ledger(
+ ledger_id TEXT PRIMARY KEY,
+ episode_id TEXT NOT NULL UNIQUE,
+ account_id TEXT NOT NULL,
+ asset TEXT NOT NULL,
+ idea_id TEXT,
+ policy_version TEXT,
+ opened_at TEXT,
+ closed_at TEXT NOT NULL,
+ direction TEXT,
+ horizon TEXT,
+ setup_family TEXT,
+ entry_nav TEXT,
+ entry_price TEXT,
+ exit_price TEXT,
+ quantity TEXT,
+ entry_fee TEXT,
+ exit_fee TEXT,
+ funding TEXT,
+ gross_pnl TEXT,
+ net_pnl TEXT NOT NULL,
+ mfe_fraction TEXT,
+ mae_fraction TEXT,
+ giveback_fraction TEXT,
+ held_seconds TEXT,
+ exit_reason TEXT,
+ path_points INTEGER,
+ finalization_contract TEXT,
+ learning_eligible INTEGER NOT NULL,
+ record_kind TEXT NOT NULL,
+ source_evidence TEXT,
+ record_hash TEXT NOT NULL,
+ payload TEXT NOT NULL,
+ created_at TEXT NOT NULL
+)"""
+
+def ensure_closed_trade_ledger(c):
+    c.execute(_CLOSED_TRADE_LEDGER_SCHEMA)
+
+def _closed_trade_record(*,episode_id,account_id,asset,idea_id,policy_version,opened_at,closed_at,payload,net_pnl,
+                         record_kind='CLOSED_FINAL',source_evidence=None):
+    pay=payload if isinstance(payload,dict) else json.loads(payload or '{}')
+    pos=pay.get('position') if isinstance(pay.get('position'),dict) else {}
+    sig=pay.get('signal') if isinstance(pay.get('signal'),dict) else {}
+    out=pay.get('outcome') if isinstance(pay.get('outcome'),dict) else {}
+    return {
+      'episode_id':str(episode_id),'account_id':str(account_id),'asset':str(asset),
+      'idea_id':idea_id,'policy_version':policy_version,'opened_at':opened_at,'closed_at':str(closed_at),
+      'direction':pos.get('direction') or sig.get('direction'),'horizon':pos.get('horizon') or sig.get('horizon'),
+      'setup_family':sig.get('setup_family') or sig.get('setup'),
+      'entry_nav':pay.get('entry_nav'),'entry_price':pos.get('entry_price'),'exit_price':out.get('exit_price'),
+      'quantity':pos.get('quantity'),'entry_fee':out.get('entry_fee',pay.get('entry_fee')),
+      'exit_fee':out.get('exit_fee'),'funding':out.get('funding_close_leg'),
+      'gross_pnl':out.get('gross_close_leg'),'net_pnl':str(net_pnl),
+      'mfe_fraction':out.get('observed_mfe_fraction'),'mae_fraction':out.get('observed_mae_fraction'),
+      'giveback_fraction':out.get('giveback_from_observed_peak'),'held_seconds':out.get('held_seconds'),
+      'exit_reason':out.get('exit_reason'),'path_points':out.get('path_points'),
+      'finalization_contract':out.get('finalization_contract'),
+      'learning_eligible':bool(out.get('learning_eligible')),
+      'record_kind':record_kind,'source_evidence':source_evidence,
+      'payload':pay,'created_at':str(closed_at)
+    }
+
+def append_closed_trade_record(c, record):
+    ensure_closed_trade_ledger(c)
+    rec=dict(record)
+    episode_id=str(rec.get('episode_id') or '')
+    if not episode_id: raise ValueError('CLOSED_LEDGER_EPISODE_REQUIRED')
+    if rec.get('net_pnl') is None: raise ValueError('CLOSED_LEDGER_NET_REQUIRED')
+    if not rec.get('closed_at'): raise ValueError('CLOSED_LEDGER_CLOSED_AT_REQUIRED')
+    rec['ledger_id']=stable_id('CL86_',episode_id)
+    rec['created_at']=str(rec.get('created_at') or rec['closed_at'])
+    core={k:rec.get(k) for k in (
+      'ledger_id','episode_id','account_id','asset','idea_id','policy_version','opened_at','closed_at',
+      'direction','horizon','setup_family','entry_nav','entry_price','exit_price','quantity','entry_fee',
+      'exit_fee','funding','gross_pnl','net_pnl','mfe_fraction','mae_fraction','giveback_fraction',
+      'held_seconds','exit_reason','path_points','finalization_contract','learning_eligible','record_kind',
+      'source_evidence','payload','created_at')}
+    encoded=canonical_json(core)
+    record_hash=hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+    prior=c.execute('SELECT record_hash FROM v86_closed_trade_ledger WHERE episode_id=?',(episode_id,)).fetchone()
+    if prior:
+        if str(prior['record_hash'])!=record_hash:
+            raise RuntimeError('CLOSED_LEDGER_IMMUTABILITY_CONFLICT:'+episode_id)
+        return False
+    c.execute("""INSERT INTO v86_closed_trade_ledger(
+      ledger_id,episode_id,account_id,asset,idea_id,policy_version,opened_at,closed_at,direction,horizon,setup_family,
+      entry_nav,entry_price,exit_price,quantity,entry_fee,exit_fee,funding,gross_pnl,net_pnl,mfe_fraction,mae_fraction,
+      giveback_fraction,held_seconds,exit_reason,path_points,finalization_contract,learning_eligible,record_kind,
+      source_evidence,record_hash,payload,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+      (core['ledger_id'],core['episode_id'],core['account_id'],core['asset'],core['idea_id'],core['policy_version'],
+       core['opened_at'],core['closed_at'],core['direction'],core['horizon'],core['setup_family'],core['entry_nav'],
+       core['entry_price'],core['exit_price'],core['quantity'],core['entry_fee'],core['exit_fee'],core['funding'],
+       core['gross_pnl'],core['net_pnl'],core['mfe_fraction'],core['mae_fraction'],core['giveback_fraction'],
+       core['held_seconds'],core['exit_reason'],core['path_points'],core['finalization_contract'],
+       1 if core['learning_eligible'] else 0,core['record_kind'],
+       canonical_json(core['source_evidence']) if core['source_evidence'] is not None else None,
+       record_hash,canonical_json(core['payload']),core['created_at']))
+    return True
+
+def append_closed_trade_from_live(c,p,original,outcome,at,episode_net):
+    pay=dict(original); pay['outcome']=dict(outcome)
+    rec=_closed_trade_record(
+      episode_id=p.episode_id,account_id=p.account_id,asset=p.asset,idea_id=p.idea_id,
+      policy_version=p.policy_version,opened_at=p.opened_at.isoformat(),closed_at=at.isoformat(),
+      payload=pay,net_pnl=episode_net,record_kind='CLOSED_FINAL',
+      source_evidence={'source':'atomic_live_close','contract':CLOSED_TRADE_LEDGER_CONTRACT})
+    return append_closed_trade_record(c,rec)
+
+def backfill_closed_trade_ledger(ledger):
+    inserted=0; existing=0
+    with ledger.transaction() as c:
+        ensure_closed_trade_ledger(c)
+        rows=c.execute("SELECT * FROM v85_episodes WHERE status='CLOSED' ORDER BY closed_at,episode_id").fetchall()
+        for row in rows:
+            d=dict(row); pay=json.loads(d.get('payload') or '{}')
+            rec=_closed_trade_record(
+              episode_id=d['episode_id'],account_id=d['account_id'],asset=d['asset'],idea_id=d.get('idea_id'),
+              policy_version=d.get('policy_version'),opened_at=d.get('opened_at'),closed_at=d.get('closed_at'),
+              payload=pay,net_pnl=d.get('net_pnl'),record_kind='CLOSED_FINAL_BACKFILL',
+              source_evidence={'source':'durable_v85_episodes_backfill','contract':CLOSED_TRADE_LEDGER_CONTRACT})
+            if append_closed_trade_record(c,rec): inserted+=1
+            else: existing+=1
+    return {'status':'OK','inserted':inserted,'existing':existing,'contract':CLOSED_TRADE_LEDGER_CONTRACT}
+'''
+if 'CLOSED_TRADE_LEDGER_CONTRACT=' not in _s:
+    if _helper_anchor not in _s: raise SystemExit('CLOSED_LEDGER_HELPER_ANCHOR_NOT_FOUND')
+    _s=_s.replace(_helper_anchor,_helper_anchor+'\n'+_helper+'\n',1)
+_close_anchor='        self.fault_hook("after_lesson_write")\n'
+_close_inject="""        original['outcome']=outcome
+        append_closed_trade_from_live(c,p,original,outcome,at,episode_net)
+        self.fault_hook("after_lesson_write")
+"""
+if 'append_closed_trade_from_live(c,p,original,outcome,at,episode_net)' not in _s:
+    if _close_anchor not in _s: raise SystemExit('CLOSED_LEDGER_CLOSE_ANCHOR_NOT_FOUND')
+    _s=_s.replace(_close_anchor,_close_inject,1)
+p.write_text(_s,encoding='utf-8')
+
+# Read-only HTTP endpoint backed by the immutable ledger, independent of current positions/snapshots.
+p=root/'veritas_v85/application.py'
+_s=p.read_text(encoding='utf-8')
+_report=r'''
+def closed_trade_ledger_report(ledger,limit=500):
+    limit=max(1,min(5000,int(limit)))
+    with ledger.read() as c:
+        rows=c.execute("""SELECT ledger_id,episode_id,account_id,asset,idea_id,policy_version,opened_at,closed_at,
+          direction,horizon,setup_family,entry_nav,entry_price,exit_price,quantity,entry_fee,exit_fee,funding,
+          gross_pnl,net_pnl,mfe_fraction,mae_fraction,giveback_fraction,held_seconds,exit_reason,path_points,
+          finalization_contract,learning_eligible,record_kind,source_evidence,record_hash,payload,created_at
+          FROM v86_closed_trade_ledger ORDER BY closed_at DESC,created_at DESC,episode_id DESC LIMIT ?""",(limit,)).fetchall()
+    items=[]
+    for row in rows:
+        d=dict(row)
+        for key in ('payload','source_evidence'):
+            if isinstance(d.get(key),str):
+                try:d[key]=json.loads(d[key])
+                except Exception:pass
+        d['learning_eligible']=bool(d.get('learning_eligible'))
+        items.append(d)
+    return {'status':'OK','contract':'V86_CLOSED_TRADE_LEDGER_V1','append_only':True,'count':len(items),'items':items}
+
+'''
+if 'def closed_trade_ledger_report(' not in _s:
+    if 'def handler(app):' not in _s: raise SystemExit('CLOSED_LEDGER_HANDLER_FUNCTION_ANCHOR_NOT_FOUND')
+    _s=_s.replace('def handler(app):',_report+'def handler(app):',1)
+_route="""            if path=='/api/v1/portfolio-trades':
+                try:return self.reply(app.trade_report(100),200)
+                except Exception:return self.reply({'status':'UNAVAILABLE','error':'REPORT_READ_FAILED'},503)
+"""
+_route_new="""            if path=='/api/v1/closed-trade-ledger':
+                try:return self.reply(closed_trade_ledger_report(app.ledger,1000),200)
+                except Exception:return self.reply({'status':'UNAVAILABLE','error':'CLOSED_LEDGER_READ_FAILED'},503)
+            if path=='/api/v1/portfolio-trades':
+                try:return self.reply(app.trade_report(100),200)
+                except Exception:return self.reply({'status':'UNAVAILABLE','error':'REPORT_READ_FAILED'},503)
+"""
+if "/api/v1/closed-trade-ledger" not in _s:
+    if _route not in _s: raise SystemExit('CLOSED_LEDGER_ROUTE_ANCHOR_NOT_FOUND')
+    _s=_s.replace(_route,_route_new,1)
+    _s=_s.replace("'available':['/app','/readyz','/api/v85/snapshot','/api/v1/portfolio-trades']",
+                  "'available':['/app','/readyz','/api/v85/snapshot','/api/v1/portfolio-trades','/api/v1/closed-trade-ledger']",1)
+p.write_text(_s,encoding='utf-8')
+
+# One-time, evidence-backed recovery. It affects accounting but is excluded from learning.
+_recovery_src=root.parent/'recovery_evidence/VERITAS_v86_RECOVERED_CLOSE_EP_857bd4c759b192032369062acdfacf1a.json'
+if not _recovery_src.is_file(): raise SystemExit('CLOSED_LEDGER_RECOVERY_EVIDENCE_MISSING')
+(root/'veritas_v86/recovered_close_nq.json').write_text(_recovery_src.read_text(encoding='utf-8'),encoding='utf-8')
+_recovery_module=r'''from __future__ import annotations
+from pathlib import Path
+from decimal import Decimal
+from datetime import datetime,timezone
+import json
+from veritas_v85.book import append_closed_trade_record,ensure_closed_trade_ledger
+
+HERE=Path(__file__).resolve().parent
+EVIDENCE=HERE/'recovered_close_nq.json'
+
+def recover_verified_historical_closes(ledger):
+    e=json.loads(EVIDENCE.read_text(encoding='utf-8'))
+    rid=str(e['recovery_id']); applied_at=datetime.now(timezone.utc).isoformat()
+    with ledger.transaction() as c:
+        ensure_closed_trade_ledger(c)
+        c.execute("""CREATE TABLE IF NOT EXISTS v86_historical_recovery_audit(
+          recovery_id TEXT PRIMARY KEY,applied_at TEXT NOT NULL,account_id TEXT NOT NULL,
+          delta_realized_equity TEXT NOT NULL,payload TEXT NOT NULL)""")
+        old=c.execute('SELECT payload FROM v86_historical_recovery_audit WHERE recovery_id=?',(rid,)).fetchone()
+        if old:
+            return {'status':'ALREADY_APPLIED','recovery_id':rid,**json.loads(old['payload'])}
+        account=str(e['account_id'])
+        acc=c.execute('SELECT realized_equity FROM v85_accounts WHERE account_id=?',(account,)).fetchone()
+        if not acc: raise RuntimeError('RECOVERY_ACCOUNT_NOT_FOUND:'+account)
+        delta=Decimal(str(e['account_delta_realized_equity']))
+        record={
+          'episode_id':e['episode_id'],'account_id':account,'asset':e['asset'],'idea_id':e.get('idea_id'),
+          'policy_version':e.get('policy_version'),'opened_at':e.get('opened_at'),'closed_at':e['closed_at'],
+          'direction':e.get('direction'),'horizon':e.get('horizon'),'setup_family':e.get('setup_family'),
+          'entry_nav':e.get('entry_nav'),'entry_price':e.get('entry_price'),'exit_price':e.get('exit_price'),
+          'quantity':e.get('quantity'),'entry_fee':e.get('entry_fee'),'exit_fee':e.get('exit_fee'),
+          'funding':e.get('funding'),'gross_pnl':e.get('gross_pnl'),'net_pnl':e['net_pnl'],
+          'mfe_fraction':None,'mae_fraction':None,'giveback_fraction':None,'held_seconds':None,
+          'exit_reason':e.get('exit_reason'),'path_points':None,
+          'finalization_contract':'RECOVERED_HISTORICAL_V1','learning_eligible':False,
+          'record_kind':'RECOVERED_HISTORICAL_CLOSE','source_evidence':e,
+          'payload':{'recovery':e,'learning_skip_reason':'PRE_DURABLE_PATH_NOT_RECOVERABLE'},
+          'created_at':applied_at
+        }
+        inserted=append_closed_trade_record(c,record)
+        if not inserted: raise RuntimeError('RECOVERY_LEDGER_ALREADY_EXISTS_WITHOUT_AUDIT:'+str(e['episode_id']))
+        revised=Decimal(str(acc['realized_equity']))+delta
+        c.execute('UPDATE v85_accounts SET realized_equity=? WHERE account_id=?',(str(revised),account))
+        result={'episode_id':e['episode_id'],'account_id':account,'asset':e['asset'],
+                'delta_realized_equity':str(delta),'realized_equity_after':str(revised),
+                'learning_created':False,'record_kind':'RECOVERED_HISTORICAL_CLOSE'}
+        c.execute('INSERT INTO v86_historical_recovery_audit VALUES(?,?,?,?,?)',
+                  (rid,applied_at,account,str(delta),json.dumps(result,ensure_ascii=False,separators=(',',':'))))
+    return {'status':'APPLIED','recovery_id':rid,**result}
+'''
+(root/'veritas_v86/closed_history_recovery.py').write_text(_recovery_module,encoding='utf-8')
+
+# Run backfill/recovery before bootstrap. Both are idempotent and durable.
+p=root/'veritas_v86/application.py'
+_s=p.read_text(encoding='utf-8')
+_boot_anchor="""        restore_result=restore_pre_durable_state(ledger)
+        print(canonical_json({'event':'V86_STATE_RESTORE',**restore_result}),flush=True)
+    app.bootstrap()
+"""
+_boot_new="""        restore_result=restore_pre_durable_state(ledger)
+        print(canonical_json({'event':'V86_STATE_RESTORE',**restore_result}),flush=True)
+        from veritas_v85.book import backfill_closed_trade_ledger
+        closed_ledger_result=backfill_closed_trade_ledger(ledger)
+        print(canonical_json({'event':'V86_CLOSED_LEDGER_BACKFILL',**closed_ledger_result}),flush=True)
+        from .closed_history_recovery import recover_verified_historical_closes
+        recovery_result=recover_verified_historical_closes(ledger)
+        print(canonical_json({'event':'V86_HISTORICAL_CLOSE_RECOVERY',**recovery_result}),flush=True)
+    app.bootstrap()
+"""
+if 'V86_HISTORICAL_CLOSE_RECOVERY' not in _s:
+    if _boot_anchor not in _s: raise SystemExit('CLOSED_LEDGER_BOOT_ANCHOR_NOT_FOUND')
+    _s=_s.replace(_boot_anchor,_boot_new,1)
+p.write_text(_s,encoding='utf-8')
+print('V86_CLOSED_TRADE_LEDGER_ACTIVE')

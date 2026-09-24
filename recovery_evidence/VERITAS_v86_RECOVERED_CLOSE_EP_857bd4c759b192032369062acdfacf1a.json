@@ -1,0 +1,57 @@
+{
+  "recovery_id": "RECOVER_CLOSE_EP_857bd4c759b192032369062acdfacf1a_V1",
+  "evidence_class": "RENDER_EXECUTION_TRACE_VERIFIED_PARTIAL",
+  "record_kind": "RECOVERED_HISTORICAL_CLOSE",
+  "learning_eligible": false,
+  "account_id": "Impulse",
+  "asset": "NQ",
+  "episode_id": "EP_857bd4c759b192032369062acdfacf1a",
+  "idea_id": "IDEA85_5f3e69a3c35370e14ec986befd6ccd3e",
+  "policy_version": null,
+  "direction": "SHORT",
+  "horizon": "4h",
+  "setup_family": null,
+  "opened_at": "2026-09-24T09:54:11.888266109Z",
+  "opened_at_basis": "Render V86_EXECUTION_TRACE emission timestamp containing the OPEN event; exact internal order timestamp was lost with ephemeral storage",
+  "closed_at": "2026-09-24T10:06:11.619289427Z",
+  "closed_at_basis": "Render V86_EXECUTION_TRACE emission timestamp containing the CLOSE event",
+  "quantity": "16.43101569",
+  "fraction_at_open": "0.4999999997296672132622488217",
+  "commission_rate": "0.0005",
+  "entry_fee": "249.58096670021625",
+  "entry_price": "30379.25",
+  "entry_price_basis": "exact derivation: (entry_fee / commission_rate) / quantity",
+  "entry_nav": "998323.8673406243462499999999134993027604",
+  "entry_nav_basis": "exact derivation: (entry_fee / commission_rate) / fraction_at_open",
+  "exit_price": "30429.5",
+  "gross_pnl": "-825.6585384225",
+  "exit_fee": "249.9937959694275",
+  "funding": "0",
+  "net_pnl": "-1325.2333010921437500",
+  "net_pnl_check": "gross_pnl - entry_fee - exit_fee - funding = net_pnl",
+  "exit_reason": "STRUCTURAL_STOP",
+  "open_intent_id": "INT_351fa33f2904f7f3215ecdb1afa272d5",
+  "close_intent_id": "INT_b0f35b1bf13d0c0cad6c78109203f661",
+  "account_delta_realized_equity": "-1325.2333010921437500",
+  "unknown_fields": [
+    "observed_mfe_fraction",
+    "observed_mae_fraction",
+    "giveback_from_observed_peak",
+    "path_points",
+    "exact_internal_opened_at",
+    "exact_internal_closed_at"
+  ],
+  "learning_skip_reason": "PRE_DURABLE_PATH_NOT_RECOVERABLE",
+  "source_logs": [
+    {
+      "service": "veritas-v86-engine",
+      "timestamp": "2026-09-24T09:54:11.888266109Z",
+      "fact": "OPEN Impulse NQ SHORT, episode, quantity, fraction, fee, intent, routed NQ SHORT 4h"
+    },
+    {
+      "service": "veritas-v86-engine",
+      "timestamp": "2026-09-24T10:06:11.619289427Z",
+      "fact": "CLOSE Impulse NQ STRUCTURAL_STOP, exit price, gross, exit fee, funding, net, intent"
+    }
+  ]
+}
