@@ -1236,13 +1236,8 @@ def app_html():
     value = value.replace('NDX','NQ')
     # V86.2 BRAND_AND_HEADER_REFINEMENT
     value = re.sub(
-        r'<h1>VERITAS Markets</h1>',
-        '<h1 class="veritas-brand"><span class="veritas-logo" aria-hidden="true"><svg viewBox="0 0 40 40" focusable="false"><path class="vl-frame" d="M20 2.8 34.8 11.3v17.4L20 37.2 5.2 28.7V11.3Z"/><path class="vl-v" d="M11.5 12.8 20 29.2l8.5-16.4"/><path class="vl-core" d="M20 8.5v20.7"/></svg></span><span class="veritas-word">VERITAS</span><span class="markets-word">Markets</span></h1>',
-        value,count=1,flags=re.I
-    )
-    value = re.sub(
-        r'<div class="sub">\s*Цифровой инвестиционный комитет[^<]*</div>',
-        '<div class="sub">Цифровой инвестиционный комитет</div>',
+        r'<h1>VERITAS Markets</h1>\s*<div class="sub">[^<]*</div>',
+        '<div class="veritas-brandlock"><img class="veritas-logo-img" src="data:image/png;base64,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...TRUNCATED..." alt="VERITAS logo"><div class="veritas-copy"><div class="veritas-title"><span class="veritas-word">VERITAS</span><span class="markets-word">Markets</span></div><div class="veritas-subtitle">Цифровой Инвестиционный Комитет</div></div></div>',
         value,count=1,flags=re.I
     )
     value = value.replace(
@@ -1504,24 +1499,14 @@ def app_html():
  #portfoliotrades .closed-extra{font-size:7px}
  #portfoliotrades .closed-more-btn{font-size:7.5px;padding:3px 5px}
 }
-.top h1.veritas-brand{
- display:flex;align-items:center;gap:10px;margin:0;
- font-family:"Avenir Next","Segoe UI Variable Display","Helvetica Neue",Arial,sans-serif;
- font-weight:760;letter-spacing:.11em;line-height:1;
- color:#c4cfd6;text-shadow:0 1px 0 rgba(255,255,255,.04),0 10px 30px rgba(0,0,0,.34)
-}
-.top h1.veritas-brand::after{content:' · v86.2';color:#60717d;font-size:.35em;font-weight:650;letter-spacing:.08em;margin-left:1px}
-.veritas-logo{width:31px;height:31px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 31px}
-.veritas-logo svg{width:31px;height:31px;overflow:visible}
-.veritas-logo .vl-frame{fill:rgba(112,135,150,.055);stroke:#758b99;stroke-width:1.55}
-.veritas-logo .vl-v{fill:none;stroke:#d4dce1;stroke-width:2.55;stroke-linecap:round;stroke-linejoin:round}
-.veritas-logo .vl-core{fill:none;stroke:#617b8a;stroke-width:1.15;stroke-linecap:round}
-.veritas-word{
- background:linear-gradient(180deg,#e4e9ec 0%,#b5c1c8 56%,#879aa7 100%);
- -webkit-background-clip:text;background-clip:text;color:transparent;
- font-size:1em
-}
-.markets-word{color:#778994;font-size:.62em;font-weight:540;letter-spacing:.045em;margin-left:-4px}
+.veritas-brandlock{display:flex;align-items:center;gap:12px;min-width:0}
+.veritas-logo-img{width:44px;height:44px;object-fit:contain;flex:0 0 44px;filter:drop-shadow(0 8px 22px rgba(0,0,0,.32))}
+.veritas-copy{display:inline-flex;flex-direction:column;align-items:stretch;min-width:0}
+.veritas-title{display:flex;align-items:baseline;gap:7px;line-height:1;white-space:nowrap;font-family:"Avenir Next","Segoe UI Variable Display","Helvetica Neue",Arial,sans-serif}
+.veritas-word{font-size:29px;font-weight:760;letter-spacing:.105em;background:linear-gradient(180deg,#e4e9ec 0%,#b5c1c8 56%,#879aa7 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.markets-word{font-size:18px;font-weight:560;letter-spacing:.08em;color:#788a96}
+.veritas-subtitle{margin-top:6px;width:100%;text-align:justify;text-align-last:justify;font-size:10.5px;line-height:1;letter-spacing:.02em;color:#8997a1;white-space:nowrap}
+.veritas-subtitle::after{content:'';display:inline-block;width:100%}
 .v86-health-card{display:flex!important;align-items:center!important;justify-content:center!important;padding:12px 16px!important}
 .v86-health-card .v{grid-column:auto!important;grid-row:auto!important;text-align:center!important;font-size:22px!important}
 .v86-top-row{grid-column:span 12;display:grid;gap:10px;min-width:0}
@@ -1537,10 +1522,11 @@ def app_html():
 .v86-knowledge-row>.card .v{grid-column:2;grid-row:1;font-size:21px;line-height:1;text-align:right;white-space:nowrap}
 .v86-knowledge-row>.card .stamp{grid-column:1 / span 2;grid-row:2;margin-top:4px;font-size:8px;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:900px){
- .top h1.veritas-brand{gap:7px;letter-spacing:.085em}
- .veritas-logo{width:25px;height:25px;flex-basis:25px}
- .veritas-logo svg{width:25px;height:25px}
- .markets-word{font-size:.58em}
+ .veritas-brandlock{gap:9px}
+ .veritas-logo-img{width:38px;height:38px;flex-basis:38px}
+ .veritas-word{font-size:23px;letter-spacing:.08em}
+ .markets-word{font-size:14px}
+ .veritas-subtitle{font-size:8.5px;margin-top:5px}
  .v86-top-row{gap:6px}
  .v86-status-users-row{grid-template-columns:repeat(2,minmax(0,1fr))}
  .v86-knowledge-row{grid-template-columns:repeat(3,minmax(0,1fr))}
