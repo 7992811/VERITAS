@@ -298,20 +298,87 @@ def trades():
         raw = jget(V86, '/api/v1/portfolio-trades')
     except Exception:
         return {'trades':[]}
+
+    def dct(value):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                x=json.loads(value)
+                return x if isinstance(x,dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    def learning_from_outcome(outcome, net_pnl):
+        mfe=num(outcome.get('observed_mfe_fraction'),0.0) or 0.0
+        mae=num(outcome.get('observed_mae_fraction'),0.0) or 0.0
+        give=num(outcome.get('giveback_from_observed_peak'),0.0) or 0.0
+        net=num(net_pnl,0.0) or 0.0
+        capture=(1.0-give/mfe) if mfe>0 else None
+        if net>0 and capture is not None and capture>=0.60:
+            return ('RIGHT_DIRECTION_HIGH_CAPTURE',
+                    'Правильное направление, высокий захват движения. Сохранять правило; риск не повышать без OOS/VAULT.')
+        if net>0 and capture is not None and capture<0.35:
+            return ('RIGHT_DIRECTION_LOW_CAPTURE',
+                    'Направление было верным, но захвачена малая часть движения. Тестировать частичную фиксацию и trailing.')
+        if net<=0 and mfe>=0.004:
+            return ('FAVORABLE_PATH_NOT_MONETIZED',
+                    'После входа был благоприятный ход, но он не монетизирован. Проверить выход, стоп и повторный вход.')
+        if net<=0 and mfe<0.004:
+            return ('DIRECTION_OR_ENTRY_FAILED_ON_OBSERVED_PATH',
+                    'Наблюдавшийся путь не подтвердил качество входа/направления. Снизить вес этого контекста до новой выборки.')
+        return ('MIXED_EXECUTION',
+                'Смешанный результат исполнения. Нужна дополнительная выборка; не менять риск автоматически.')
+
     out = []
     for e in raw.get('items') or []:
-        payload = e.get('payload')
-        if isinstance(payload,str):
-            try: payload = json.loads(payload)
-            except Exception: payload = {}
-        payload = payload if isinstance(payload,dict) else {}
-        pos = payload.get('position') or {}; sig = payload.get('signal') or {}; oc = payload.get('outcome') or {}
+        if not isinstance(e,dict):
+            continue
+        payload=dct(e.get('payload'))
+        position=dct(payload.get('position'))
+        signal=dct(payload.get('signal'))
+        outcome=dct(payload.get('outcome'))
+        direction=position.get('direction') or signal.get('direction')
+        entry=num(position.get('entry_price'))
+        stop=num(position.get('initial_stop') or position.get('stop_price') or signal.get('stop_price'))
+        quantity=num(position.get('quantity'))
+        entry_nav=num(payload.get('entry_nav'))
+        entry_fee=num(payload.get('entry_fee'),0.0) or 0.0
+        net=num(e.get('net_pnl'))
+        gross=num(outcome.get('gross_close_leg'))
+        funding=num(outcome.get('funding_close_leg'),0.0) or 0.0
+        total_fees=None
+        if gross is not None and net is not None:
+            total_fees=max(0.0,gross-funding-net)
+        elif entry_fee:
+            total_fees=entry_fee
+        ret_pct=(100.0*net/entry_nav) if net is not None and entry_nav else None
+        mfe=num(outcome.get('observed_mfe_fraction'))
+        mae=num(outcome.get('observed_mae_fraction'))
+        giveback=num(outcome.get('giveback_from_observed_peak'))
+        held=num(outcome.get('held_seconds'))
+        label,lesson=learning_from_outcome(outcome,net)
+        pwin=num(payload.get('pwin'))
+        pwin_source=payload.get('pwin_source')
         out.append({
-            'portfolio_name':e.get('account_id'),'asset':e.get('asset'),'direction':pos.get('direction') or sig.get('direction'),
-            'status':e.get('status'),'avg_entry_price':num(pos.get('entry_price')),'avg_exit_price':num(oc.get('exit_price')),
-            'gross_pnl_rub':num(oc.get('gross_pnl')),'fees_rub':num(payload.get('entry_fee'),0),
-            'funding_rub':num(oc.get('funding_close_leg'),0),'net_pnl_rub':num(e.get('net_pnl')),
-            'horizon':pos.get('horizon') or sig.get('horizon'),'setup':sig.get('setup_family')
+            'trade_id':e.get('episode_id') or e.get('trade_id'),
+            'portfolio_name':e.get('account_id') or e.get('portfolio_name'),
+            'asset':e.get('asset'),'direction':direction,'status':e.get('status'),
+            'opened_at':e.get('opened_at'),'closed_at':e.get('closed_at'),
+            'avg_entry_price':entry,'avg_exit_price':num(outcome.get('exit_price')),
+            'quantity':quantity,'stop_price':stop,
+            'gross_pnl_rub':gross,'fees_rub':total_fees,'entry_fee_rub':entry_fee,
+            'funding_rub':funding,'net_pnl_rub':net,'return_pct':ret_pct,
+            'horizon':position.get('horizon') or signal.get('horizon'),
+            'setup':signal.get('setup_family') or signal.get('setup') or 'UNCLASSIFIED',
+            'regime':signal.get('regime'),'entry_probability':pwin,'probability_source':pwin_source,
+            'mfe_pct':100*mfe if mfe is not None else None,
+            'mae_pct':100*mae if mae is not None else None,
+            'giveback_pct':100*giveback if giveback is not None else None,
+            'held_seconds':held,'exit_reason':outcome.get('exit_reason') or e.get('closing_event'),
+            'path_points':outcome.get('path_points'),'learning_label':label,'learning_conclusion':lesson,
+            'causal_note':outcome.get('causal_error') or 'NOT_INFERRED_FROM_PNL_ALONE'
         })
     return {'trades':out}
 
@@ -336,26 +403,44 @@ def app_html():
     else:
         print(json.dumps({'event':'V86_UI_PATCH','status':'ok','position_renderer_replacements':count},
                          ensure_ascii=False,separators=(',',':')), flush=True)
+
+    trade_replacement = """trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview closed-trade-card"><div class="assetview-head"><b>${t.portfolio_name} · ${t.asset} · ${t.direction||'—'}</b><b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-grid"><div><span>Вход</span><b>${t.avg_entry_price==null?'—':Number(t.avg_entry_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Выход</span><b>${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Кол-во</span><b>${t.quantity==null?'—':(['BTC','ETH'].includes(t.asset)?Number(t.quantity).toFixed(4):Math.round(Number(t.quantity)).toLocaleString('ru-RU'))}</b></div><div><span>Gross</span><b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></div><div><span>Издержки</span><b>${t.fees_rub==null?'—':rub(t.fees_rub)}</b></div><div><span>Funding</span><b>${t.funding_rub==null?'—':rub(t.funding_rub)}</b></div><div><span>MFE</span><b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></div><div><span>MAE</span><b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></div><div><span>Giveback</span><b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></div><div><span>Причина</span><b>${t.exit_reason||'—'}</b></div><div><span>Горизонт</span><b>${t.horizon||'—'}</b></div><div><span>Время</span><b>${t.held_seconds==null?'—':Math.round(Number(t.held_seconds)/60)+' мин'}</b></div></div><div class="trade-learning"><b>Вывод для обучения:</b> ${t.learning_conclusion||'—'}<br><span>${t.learning_label||''} · описательная атрибуция, не причинное доказательство</span></div></div>`).join(''):'Закрытых сделок пока нет.'"""
+    trade_pattern = r"""trel\.innerHTML=trades\.length\?trades\.slice\(0,30\)\.map\(t=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Сделок в журнале пока нет\.'"""
+    value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
+    print(json.dumps({'event':'V86_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
+                      'status':'ok' if trade_count==1 else 'error'},ensure_ascii=False,separators=(',',':')),flush=True)
     compact_css = """<style>
 #portfoliopositions .position-card{padding:8px 11px;margin:0 0 6px;border-radius:12px}
 #portfoliopositions .position-head{margin-bottom:6px;align-items:center}
 #portfoliopositions .position-head b{font-size:15px;line-height:1.1}
 #portfoliopositions .position-columns{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,.95fr);gap:18px;width:100%}
 #portfoliopositions .position-col{display:flex;flex-direction:column;gap:3px;min-width:0}
-#portfoliopositions .position-col>div{display:flex;align-items:baseline;justify-content:space-between;gap:8px;white-space:nowrap;min-width:0}
+#portfoliopositions .position-col>div{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:baseline;column-gap:7px;white-space:nowrap;min-width:0}
 #portfoliopositions .position-col span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.2px}
-#portfoliopositions .position-col b{font-size:12px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;text-align:right}
+#portfoliopositions .position-col b{font-size:12px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;text-align:left}
 #portfoliopositions .position-left .position-gap{margin-top:7px}
+#portfoliotrades .closed-trade-card{padding:9px 11px;margin:0 0 7px}
+#portfoliotrades .closed-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 12px;margin-top:6px}
+#portfoliotrades .closed-grid>div{display:grid;grid-template-columns:62px minmax(0,1fr);column-gap:6px;min-width:0}
+#portfoliotrades .closed-grid span{font-size:9px;color:var(--muted);text-transform:uppercase}
+#portfoliotrades .closed-grid b{font-size:11px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#portfoliotrades .trade-learning{margin-top:7px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;line-height:1.25}
+#portfoliotrades .trade-learning span{font-size:9px;color:var(--muted)}
 @media(max-width:700px){
  #portfoliopositions .position-card{padding:7px 9px;margin-bottom:5px}
  #portfoliopositions .position-head{margin-bottom:5px}
  #portfoliopositions .position-head b{font-size:13px}
  #portfoliopositions .position-columns{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:12px}
  #portfoliopositions .position-col{gap:2px}
- #portfoliopositions .position-col>div{gap:5px}
+ #portfoliopositions .position-col>div{grid-template-columns:53px minmax(0,1fr);column-gap:5px}
  #portfoliopositions .position-col span{font-size:8px}
  #portfoliopositions .position-col b{font-size:10.5px}
  #portfoliopositions .position-left .position-gap{margin-top:6px}
+ #portfoliotrades .closed-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 8px}
+ #portfoliotrades .closed-grid>div{grid-template-columns:52px minmax(0,1fr);column-gap:4px}
+ #portfoliotrades .closed-grid span{font-size:8px}
+ #portfoliotrades .closed-grid b{font-size:10px}
+ #portfoliotrades .trade-learning{font-size:10px}
 }
 </style>"""
     value = value.replace('</head>', compact_css + '</head>')
