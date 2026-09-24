@@ -505,4 +505,21 @@ try:
     print('V86_BOOK_EXACT_228_260 :: '+' | '.join(_bk2[227:260]),flush=True)
 except Exception as _ex:
     print('V86_BOOK_EXACT_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
+# TEMP exact diagnostics for quote construction / instrument registry.
+try:
+    _app=(root/'veritas_v85/application.py').read_text(encoding='utf-8').splitlines()
+    for _a,_b in ((1,80),(80,170),(170,280)):
+        _chunk=_app[_a-1:_b]
+        if any(('Quote(' in x or 'quotes' in x or 'commit_cycle' in x or 'bundles' in x or 'self.quotes' in x) for x in _chunk):
+            print('V86_V85APP_EXACT '+str(_a)+'-'+str(_b)+' :: '+' | '.join(_chunk),flush=True)
+    _dom=(root/'veritas_v85/domain.py').read_text(encoding='utf-8').splitlines()
+    for _i,_line in enumerate(_dom):
+        if 'class Quote' in _line or '@dataclass' in _line and _i+1<len(_dom) and 'Quote' in _dom[_i+1]:
+            print('V86_QUOTE_DEF :: '+' | '.join(_dom[max(0,_i-2):min(len(_dom),_i+28)]),flush=True)
+    _cfg=(root/'veritas_v85/config.py').read_text(encoding='utf-8').splitlines()
+    for _i,_line in enumerate(_cfg):
+        if 'def instruments' in _line or 'InstrumentSpec' in _line or 'NQ' in _line:
+            print('V86_CONFIG_SRC '+str(_i+1)+' :: '+' | '.join(_cfg[max(0,_i-2):min(len(_cfg),_i+10)]),flush=True)
+except Exception as _ex:
+    print('V86_QUOTE_DIAG_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
 print('V86_RUNTIME_PATCH_OK')
