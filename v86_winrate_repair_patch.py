@@ -97,12 +97,59 @@ insert="""def winrate_repair_gate(row,direction):
         return {'eligible':False,'reason':'INVALID_STOP_GEOMETRY','max_fraction':D('0')}
     stop_dist=abs(price-stop)/price
     noise_floor=fnum(pp.get('noise_floor_stop_distance_pct'),0.0)
-    if noise_floor>0 and stop_dist+1e-12<noise_floor:
-        return {'eligible':False,'reason':'STOP_INSIDE_EXPECTED_NOISE','stop_distance_pct':stop_dist,
-                'noise_floor':noise_floor,'max_fraction':D('0')}
+    all_in=fnum(pp.get('all_in_cost_fraction'),0.0012) or 0.0012
+    min_net_rr=1.25
+    # If the current entry is uneconomic, preserve the directional thesis as WAIT_ENTRY
+    # instead of deleting it. Compute the price where a noise-safe stop + costs produce
+    # acceptable net reward/risk to the nearest structural/setup target.
+    target=fnum(pp.get('tactical_target_price') or pp.get('target_price'),0.0)
+    if target<=0:
+        mg=row.get('movement_genesis') or {}
+        rs=row.get('range_retest_breakout') or {}
+        tr=row.get('tactical_reversal') or {}
+        target=fnum(mg.get('target_price') or rs.get('target_price') or tr.get('target_price'),0.0)
+    if target<=0:
+        exp=fnum(pp.get('expected_move_pct'),0.0)
+        if exp>0:
+            target=price*(1.0+exp if direction=='LONG' else 1.0-exp)
+    wait_entry=None
+    if noise_floor>0 and target>0:
+        required_reward=all_in+min_net_rr*(noise_floor+all_in)
+        if direction=='LONG' and target>price:
+            max_entry=target/(1.0+required_reward)
+            adjusted_stop=max_entry*(1.0-noise_floor)
+            wait_entry={'direction':'LONG','trigger_price':max_entry,'zone_low':max_entry*(1.0-0.0015),
+                        'zone_high':max_entry,'target_price':target,'adjusted_stop_price':adjusted_stop,
+                        'noise_floor':noise_floor,'min_net_rr':min_net_rr,'all_in_cost':all_in}
+        elif direction=='SHORT' and target<price and required_reward<0.95:
+            min_entry=target/(1.0-required_reward)
+            adjusted_stop=min_entry*(1.0+noise_floor)
+            wait_entry={'direction':'SHORT','trigger_price':min_entry,'zone_low':min_entry,
+                        'zone_high':min_entry*(1.0+0.0015),'target_price':target,
+                        'adjusted_stop_price':adjusted_stop,'noise_floor':noise_floor,
+                        'min_net_rr':min_net_rr,'all_in_cost':all_in}
+    in_zone=bool(wait_entry and (
+        (direction=='LONG' and price<=wait_entry['zone_high'] and price>=wait_entry['zone_low']) or
+        (direction=='SHORT' and price>=wait_entry['zone_low'] and price<=wait_entry['zone_high'])
+    ))
+    if noise_floor>0 and stop_dist+1e-12<noise_floor and not in_zone:
+        return {'eligible':False,'reason':'WAIT_ENTRY_NOISE_SAFE_ZONE','stop_distance_pct':stop_dist,
+                'noise_floor':noise_floor,'max_fraction':D('0'),'wait_entry':wait_entry}
     net_rr=fnum(pp.get('net_expected_to_stop_ratio'),0.0)
-    if net_rr<1.25:
-        return {'eligible':False,'reason':'NET_EDGE_AFTER_COST_FAIL','net_rr':net_rr,'max_fraction':D('0')}
+    if in_zone:
+        # Recompute economics at the actual price using a noise-safe stop and fixed target.
+        adj_stop=(price*(1.0-noise_floor) if direction=='LONG' else price*(1.0+noise_floor))
+        gross_reward=((target/price-1.0) if direction=='LONG' else (1.0-target/price))
+        net_reward=max(0.0,gross_reward-all_in)
+        net_rr=net_reward/max(noise_floor+all_in,1e-12)
+        if net_rr>=min_net_rr:
+            stop=adj_stop; stop_dist=noise_floor
+        else:
+            return {'eligible':False,'reason':'WAIT_ENTRY_NET_EDGE_ZONE','net_rr':net_rr,
+                    'max_fraction':D('0'),'wait_entry':wait_entry}
+    elif net_rr<min_net_rr:
+        return {'eligible':False,'reason':'WAIT_ENTRY_NET_EDGE_ZONE','net_rr':net_rr,
+                'max_fraction':D('0'),'wait_entry':wait_entry}
     prob,src=entry_probability(row)
     inst=row.get('institutional_signal') or {}
     indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
@@ -113,7 +160,9 @@ insert="""def winrate_repair_gate(row,direction):
             'reason':('SIGNAL_FIRST_SOFT_PROBE:'+soft_reason if soft_reason else 'WINRATE_REPAIR_PROBE'),
             'score':prob,'source':src,'independent':indep,'soft_plan_block':soft_plan_block,
             'soft_entry_wait':soft_entry_wait,'net_rr':net_rr,'max_fraction':D('.05'),
-            'historical_edge_gate':'FAIL','signal_first':True}
+            'historical_edge_gate':'FAIL','signal_first':True,
+            'adjusted_stop_price':stop if in_zone else None,
+            'wait_entry':wait_entry,'entry_zone_activated':in_zone}
 
 """
 anchor="def entry_probability(row):"
@@ -133,7 +182,8 @@ replacement="""        executable=[]; rejected=[]
         for rr,ww in ranked:
             gate=winrate_repair_gate(rr,d)
             if not gate.get('eligible'):
-                rejected.append({'horizon':rr.get('horizon'),'reason':gate.get('reason')})
+                rejected.append({'horizon':rr.get('horizon'),'reason':gate.get('reason'),
+                                 'wait_entry':gate.get('wait_entry'),'net_rr':gate.get('net_rr')})
                 continue
             pp=dict(rr.get('trade_plan') or {})
             pp['winrate_repair_gate']=gate
