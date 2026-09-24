@@ -959,3 +959,15 @@ if 'V86_HISTORICAL_CLOSE_RECOVERY' not in _s:
     _s=_s.replace(_boot_anchor,_boot_new,1)
 p.write_text(_s,encoding='utf-8')
 print('V86_CLOSED_TRADE_LEDGER_ACTIVE')
+
+# 16) Win-rate repair: stop routing low-quality/unvalidated entries while historical edge is FAIL.
+import runpy as _wr_runpy, sys as _wr_sys
+_wr_patch=root.parent/'v86_winrate_repair_patch.py'
+if not _wr_patch.is_file(): raise SystemExit('V86_WINRATE_REPAIR_PATCH_MISSING')
+_wr_argv=list(_wr_sys.argv)
+try:
+    _wr_sys.argv=[str(_wr_patch),str(root)]
+    _wr_runpy.run_path(str(_wr_patch),run_name='__main__')
+finally:
+    _wr_sys.argv=_wr_argv
+print('V86_WINRATE_REPAIR_RUNTIME_ACTIVE')

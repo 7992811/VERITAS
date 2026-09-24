@@ -1,0 +1,45 @@
+{
+  "version": "WINRATE_REPAIR_V1",
+  "created_at_utc": "2026-09-24T13:38:00Z",
+  "reason": "All observed durable closed trades are losses; historical OOS/VAULT edge gate was already FAIL.",
+  "historical_validation": {
+    "oos": {
+      "gate": "FAIL",
+      "champion_win_rate": 0.3461016949152542,
+      "champion_expectancy": -0.0014535434272993646,
+      "champion_profit_factor": 0.7154965428746979
+    },
+    "vault": {
+      "gate": "FAIL",
+      "champion_win_rate": 0.34049409237379163,
+      "champion_expectancy": -0.0020637520820693703,
+      "champion_profit_factor": 0.5998889693172793
+    }
+  },
+  "live_repair_rules": {
+    "max_new_fraction": 0.05,
+    "uncalibrated_probability_display": "BUILDING",
+    "tactical_reversal_horizons": [
+      "1h",
+      "4h"
+    ],
+    "tactical_reversal_min_confirmations": 5,
+    "tactical_reversal_min_score": 0.76,
+    "tactical_reversal_min_rr": 1.5,
+    "round_trip_fee_fraction": 0.001,
+    "slippage_reserve_fraction": 0.0002,
+    "min_net_rr_after_cost": 1.25,
+    "min_independent_evidence_uncalibrated": 2,
+    "min_uncalibrated_score": 0.72,
+    "stop_noise_gate": "dynamic sigma floor plus horizon floor",
+    "impulse_allows_tactical_reversal": false
+  },
+  "unlock_requirements": {
+    "oos_win_rate_min": 0.6,
+    "vault_win_rate_min": 0.6,
+    "oos_expectancy_min": 0,
+    "vault_expectancy_min": 0,
+    "profit_factor_min": 1.1,
+    "no_auto_unlock": true
+  }
+}
