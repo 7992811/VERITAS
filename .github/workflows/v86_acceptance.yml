@@ -109,6 +109,10 @@ jobs:
           python v86_closed_ledger_selftest.py candidate_runtime
           python v86_winrate_repair_selftest.py candidate_runtime
           python v86_single_source_capture_selftest.py candidate_runtime
+          python v86_movement_genesis_selftest.py candidate_runtime
+          grep -q "def movement_genesis_engine" candidate_runtime/veritas_intelligence.py
+          grep -q "def _scale_in" candidate_runtime/veritas_v85/book.py
+          grep -q "movement_state" candidate_runtime/veritas_v85/domain.py
           grep -q "single_primary_source_verified" candidate_runtime/veritas_intelligence.py
           grep -q "PROFIT_PROTECT_GIVEBACK" candidate_runtime/veritas_v85/book.py
           grep -q "def winrate_repair_gate" candidate_runtime/veritas_v85/routing.py
