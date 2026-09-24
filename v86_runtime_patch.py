@@ -126,4 +126,17 @@ new="""except Exception as e:
 if old in s:s=s.replace(old,new)
 p.write_text(s,encoding='utf-8')
 
+# 4) Closed episodes persist complete realized exit facts for audit/UI/learning.
+p=root/'veritas_v85/book.py'
+s=p.read_text(encoding='utf-8')
+old="""        outcome={'net_pnl':str(episode_net),'gross_close_leg':str(gross),'funding_close_leg':str(fund),
+                 'observed_mfe_fraction':str(mfe),'observed_mae_fraction':str(mae),
+"""
+new="""        outcome={'net_pnl':str(episode_net),'gross_close_leg':str(gross),'funding_close_leg':str(fund),
+                 'entry_fee':str(entry_fee),'exit_fee':str(fee),'exit_price':str(quote.price),
+                 'observed_mfe_fraction':str(mfe),'observed_mae_fraction':str(mae),
+"""
+if old not in s: raise SystemExit('BOOK_OUTCOME_ANCHOR_NOT_FOUND')
+p.write_text(s.replace(old,new),encoding='utf-8')
+
 print('V86_RUNTIME_PATCH_OK')
