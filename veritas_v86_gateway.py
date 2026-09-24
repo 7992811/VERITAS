@@ -60,6 +60,25 @@ def transform_portfolios():
         'Champion':'70%+', 'Challenger':'75%+', 'Impulse':'IMPULSE', 'Trend':'TREND',
         'Range':'RANGE', 'Reversal':'REVERSAL', 'Event':'EVENT', 'RelativeValue':'REL-VALUE'
     }
+    active_assets = sorted({
+        z.get('asset') for p in plist if isinstance(p,dict)
+        for z in (p.get('positions') or []) if isinstance(z,dict) and z.get('asset')
+    })
+    analysis = {}
+    for asset in active_assets:
+        try:
+            analysis[asset] = jget(V86, '/api/v85/analysis?asset=' + quote(asset), 12)
+        except Exception:
+            analysis[asset] = {}
+
+    def live_plan(asset, horizon, direction):
+        rows = (analysis.get(asset) or {}).get('signals') or []
+        exact = next((x for x in rows if x.get('horizon')==horizon and
+                      (x.get('research_decision') or x.get('decision'))==direction), None)
+        if exact is None:
+            exact = next((x for x in rows if x.get('horizon')==horizon), None)
+        return exact or {}
+
     out = []
     for p in plist:
         if not isinstance(p, dict):
@@ -71,17 +90,47 @@ def transform_portfolios():
         for z in p.get('positions') or []:
             if not isinstance(z, dict):
                 continue
+            asset = z.get('asset')
+            direction = z.get('direction')
+            horizon = z.get('horizon')
             q = num(z.get('quantity'), 0.0)
             mark = num(z.get('mark'), 0.0)
             entry = num(z.get('entry_price'), 0.0)
+            stop = num(z.get('stop_price'))
             notional = abs(q * mark)
+            entry_notional = abs(q * entry)
             unreal = num(z.get('unrealized_pnl'), 0.0)
+            row = live_plan(asset, horizon, direction)
+            plan = row.get('trade_plan') if isinstance(row.get('trade_plan'),dict) else {}
+            take = num(z.get('take_price'))
+            if take is None:
+                take = num(plan.get('target_price'))
+            if take is None:
+                rr = row.get('range_retest_breakout') if isinstance(row.get('range_retest_breakout'),dict) else {}
+                if rr.get('candidate_direction')==direction or rr.get('direction')==direction:
+                    take = num(rr.get('target_price'))
+            if take is None and entry:
+                move = num(plan.get('expected_move_pct'))
+                if move is None:
+                    move = num(row.get('expected_move_pct'))
+                if move is not None and move > 0:
+                    take = entry * (1 + move if direction=='LONG' else 1 - move)
+            probability = num(z.get('entry_probability'))
+            probability_source = z.get('probability_source')
+            if probability is None:
+                probability = num(row.get('positive_trade_probability'))
+                probability_source = 'POSITIVE_TRADE_PROBABILITY' if probability is not None else probability_source
+            if probability is None:
+                probability = num(row.get('calibrated_probability'))
+                probability_source = 'CALIBRATED_PROBABILITY' if probability is not None else probability_source
             positions.append({
-                'asset':z.get('asset'), 'direction':z.get('direction'),
+                'asset':asset, 'direction':direction, 'horizon':horizon,
                 'target_fraction':notional/max(nav,1), 'notional_rub':notional,
                 'units':q, 'avg_entry_price':entry, 'last_price':mark,
-                'stop_price':num(z.get('stop_price')), 'unrealized_pnl_rub':unreal,
-                'unrealized_return_pct':(100*unreal/notional) if notional else None,
+                'stop_price':stop, 'take_price':take,
+                'entry_probability':probability, 'probability_source':probability_source,
+                'unrealized_pnl_rub':unreal,
+                'unrealized_return_pct':(100*unreal/entry_notional) if entry_notional else None,
                 'opened_at':z.get('opened_at'), 'payload':{}
             })
         name = p.get('name')
@@ -96,6 +145,7 @@ def transform_portfolios():
     return {
         'status':'OK', 'initial_nav_rub':initial, 'commission_rate':0.0005,
         'max_gross':2.0, 'max_stop_risk_nav':0.02, 'position_step':0.05,
+        'test_epoch':os.getenv('VERITAS_V86_TEST_EPOCH','2026-09-24T07:55:00Z'),
         'portfolios':out
     }
 
@@ -254,6 +304,9 @@ def app_html():
     value = value.replace("${p.name==='Champion'?'70%+':'77%+'}","${p.badge||''}")
     value = value.replace('Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')
+    old = """Объём ${rub(z.notional_rub)} · единиц ${Number(z.units||0).toLocaleString('ru-RU',{maximumFractionDigits:6})}<br>Вход ${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · текущая ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · стоп ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}<br>Переоценка <b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b><br>Открыта ${z.opened_at?new Date(z.opened_at).toLocaleString():'—'} · вероятность ${z.payload?.pwin==null?'—':(100*Number(z.payload.pwin)).toFixed(1)+'%'} (${z.payload?.pwin_source||'—'})"""
+    new = """Вход <b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b> · Контрактов/ед. <b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b><br>Текущая ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})} · Переоценка <b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b><br>Стоп ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})} · Тейк ${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}<br>Вероятность ${z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'} · Сделка ${z.opened_at?new Date(z.opened_at).toLocaleString():'—'}"""
+    value = value.replace(old,new)
     return value.encode('utf-8')
 
 class Handler(BaseHTTPRequestHandler):
