@@ -971,3 +971,15 @@ try:
 finally:
     _wr_sys.argv=_wr_argv
 print('V86_WINRATE_REPAIR_RUNTIME_ACTIVE')
+
+# 17) One-source paper execution + first profit-capture layer.
+import runpy as _ss_runpy, sys as _ss_sys
+_ss_patch=root.parent/'v86_single_source_capture_patch.py'
+if not _ss_patch.is_file(): raise SystemExit('V86_SINGLE_SOURCE_CAPTURE_PATCH_MISSING')
+_ss_argv=list(_ss_sys.argv)
+try:
+    _ss_sys.argv=[str(_ss_patch),str(root)]
+    _ss_runpy.run_path(str(_ss_patch),run_name='__main__')
+finally:
+    _ss_sys.argv=_ss_argv
+print('V86_SINGLE_SOURCE_CAPTURE_RUNTIME_ACTIVE')
