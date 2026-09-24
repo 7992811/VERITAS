@@ -351,12 +351,13 @@ def _choose_profile(contexts,row,direction):
     for key in candidates:
         x=contexts.get(key)
         if x and x['unique_ideas']>=mins.get(x['scope'],99):
-            return x
+            return {**x,'match_candidates':candidates}
     return {'context_key':candidates[0],'scope':'EXACT','unique_ideas':0,'wins':0,'losses':0,
             'posterior_mean':0.5,'posterior_low':0.0,'posterior_high':1.0,
             'direction_failure_rate':0.0,'execution_failure_rate':0.0,
             'scale_cap':0.25,'no_scale':False,'entry_policy':'SIGNAL_FIRST_PROBE',
-            'management_policy':'BASELINE','authority':'OBSERVE_ONLY','validated_rule':False}
+            'management_policy':'BASELINE','authority':'OBSERVE_ONLY','validated_rule':False,
+            'match_candidates':candidates}
 
 def apply_learning_to_summary(ledger,summary,at=None):
     refresh=refresh_learning_state(ledger,at)
@@ -365,7 +366,12 @@ def apply_learning_to_summary(ledger,summary,at=None):
                          direction_failure_rate,execution_failure_rate,scale_cap,no_scale,entry_policy,
                          management_policy,authority,validated_rule FROM v86_learning_contexts""").fetchall()
     contexts={str(r['context_key']):_profile_from_row(dict(r)) for r in rows}
-    applied=0;directional=0;asset_direction_applied=0
+    applied=0;directional=0;asset_direction_applied=0;directional_debug=[]
+    actionable_debug=[
+      {'context_key':k,'scope':v.get('scope'),'authority':v.get('authority'),'unique_ideas':v.get('unique_ideas'),
+       'wins':v.get('wins'),'losses':v.get('losses')}
+      for k,v in contexts.items() if v.get('authority')!='OBSERVE_ONLY'
+    ][:12]
     for row in summary:
         d=str(row.get('research_decision') or row.get('decision') or 'NO_TRADE')
         if d not in ('LONG','SHORT'):
@@ -376,12 +382,21 @@ def apply_learning_to_summary(ledger,summary,at=None):
         row['closed_loop_learning']={**p,'contract':CONTRACT,
           'decision_influence':p['authority']!='OBSERVE_ONLY',
           'principle':'direction remains owned by signal model; learning controls horizon preference, scale and profit protection'}
+        directional_debug.append({
+          'asset':str(row.get('asset') or ''),'horizon':str(row.get('horizon') or ''),'direction':d,
+          'setup':str((row.get('trade_plan') or {}).get('setup') or ''),
+          'regime':str(row.get('regime') or ''),
+          'authority':p.get('authority'),'chosen_context':p.get('context_key'),
+          'candidate_contexts':p.get('match_candidates') or []
+        })
         if p['authority']!='OBSERVE_ONLY':
             applied+=1
             if p.get('scope')=='ASSET_DIRECTION':asset_direction_applied+=1
     return summary,{**refresh,'directional_rows':directional,'directional_rows_with_learning':applied,
                     'asset_direction_fallback_rows':asset_direction_applied,
-                    'learning_match_rate':(applied/directional if directional else 0.0)}
+                    'learning_match_rate':(applied/directional if directional else 0.0),
+                    'actionable_context_detail':actionable_debug,
+                    'directional_learning_debug':directional_debug[:12]}
 
 def record_learning_applications(ledger,summary,routing,at=None):
     at=at or _now();stamp=_iso(at); routed=set()
