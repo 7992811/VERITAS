@@ -816,14 +816,18 @@ def backfill_closed_trade_ledger(ledger):
         ensure_closed_trade_ledger(c)
         rows=c.execute("SELECT * FROM v85_episodes WHERE status='CLOSED' ORDER BY closed_at,episode_id").fetchall()
         for row in rows:
-            d=dict(row); pay=json.loads(d.get('payload') or '{}')
+            d=dict(row)
+            prior=c.execute('SELECT 1 FROM v86_closed_trade_ledger WHERE episode_id=?',(d['episode_id'],)).fetchone()
+            if prior:
+                existing+=1
+                continue
+            pay=json.loads(d.get('payload') or '{}')
             rec=_closed_trade_record(
               episode_id=d['episode_id'],account_id=d['account_id'],asset=d['asset'],idea_id=d.get('idea_id'),
               policy_version=d.get('policy_version'),opened_at=d.get('opened_at'),closed_at=d.get('closed_at'),
               payload=pay,net_pnl=d.get('net_pnl'),record_kind='CLOSED_FINAL_BACKFILL',
               source_evidence={'source':'durable_v85_episodes_backfill','contract':CLOSED_TRADE_LEDGER_CONTRACT})
             if append_closed_trade_record(c,rec): inserted+=1
-            else: existing+=1
     return {'status':'OK','inserted':inserted,'existing':existing,'contract':CLOSED_TRADE_LEDGER_CONTRACT}
 '''
 if 'CLOSED_TRADE_LEDGER_CONTRACT=' not in _s:
