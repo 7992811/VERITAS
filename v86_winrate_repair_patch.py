@@ -132,24 +132,71 @@ insert="""def winrate_repair_gate(row,direction):
         (direction=='LONG' and price<=wait_entry['zone_high'] and price>=wait_entry['zone_low']) or
         (direction=='SHORT' and price>=wait_entry['zone_low'] and price<=wait_entry['zone_high'])
     ))
-    if noise_floor>0 and stop_dist+1e-12<noise_floor and not in_zone:
-        return {'eligible':False,'reason':'WAIT_ENTRY_NOISE_SAFE_ZONE','stop_distance_pct':stop_dist,
-                'noise_floor':noise_floor,'max_fraction':D('0'),'wait_entry':wait_entry}
-    net_rr=fnum(pp.get('net_expected_to_stop_ratio'),0.0)
-    if in_zone:
-        # Recompute economics at the actual price using a noise-safe stop and fixed target.
-        adj_stop=(price*(1.0-noise_floor) if direction=='LONG' else price*(1.0+noise_floor))
-        gross_reward=((target/price-1.0) if direction=='LONG' else (1.0-target/price))
-        net_reward=max(0.0,gross_reward-all_in)
-        net_rr=net_reward/max(noise_floor+all_in,1e-12)
-        if net_rr>=min_net_rr:
-            stop=adj_stop; stop_dist=noise_floor
-        else:
-            return {'eligible':False,'reason':'WAIT_ENTRY_NET_EDGE_ZONE','net_rr':net_rr,
-                    'max_fraction':D('0'),'wait_entry':wait_entry}
-    elif net_rr<min_net_rr:
-        return {'eligible':False,'reason':'WAIT_ENTRY_NET_EDGE_ZONE','net_rr':net_rr,
-                'max_fraction':D('0'),'wait_entry':wait_entry}
+
+    # Three-mode execution search: NOW / PULLBACK / BREAKOUT.
+    alternatives=[]
+    now_rr=fnum(pp.get('net_expected_to_stop_ratio'),0.0)
+    now_ok=bool((noise_floor<=0 or stop_dist+1e-12>=noise_floor) and now_rr>=min_net_rr)
+    alternatives.append({'mode':'NOW','triggered':True,'eligible':now_ok,'entry_price':price,
+                         'stop_price':stop,'target_price':target,'net_rr':now_rr,
+                         'reason':'OK' if now_ok else 'CURRENT_ENTRY_UNECONOMIC'})
+
+    pull_rr=None
+    if wait_entry:
+        pull_entry=float(wait_entry['trigger_price'])
+        pull_reward=((target/pull_entry-1.0) if direction=='LONG' else (1.0-target/pull_entry))
+        pull_rr=max(0.0,pull_reward-all_in)/max(noise_floor+all_in,1e-12)
+        alternatives.append({'mode':'PULLBACK','triggered':in_zone,'eligible':bool(in_zone and pull_rr>=min_net_rr),
+                             'entry_price':pull_entry,'zone_low':wait_entry['zone_low'],'zone_high':wait_entry['zone_high'],
+                             'stop_price':wait_entry['adjusted_stop_price'],'target_price':target,
+                             'net_rr':pull_rr,'reason':'ZONE_ACTIVE' if in_zone else 'WAIT_ZONE'})
+    else:
+        alternatives.append({'mode':'PULLBACK','triggered':False,'eligible':False,'reason':'NO_VALID_PULLBACK_ZONE'})
+
+    rs=row.get('range_retest_breakout') or {}
+    lev=row.get('structural_levels') or {}
+    st=row.get('intraday_structure') or {}
+    breakout_level=fnum(rs.get('resistance') if direction=='LONG' else rs.get('support'),0.0)
+    if breakout_level<=0:
+        breakout_level=fnum(lev.get('resistance') if direction=='LONG' else lev.get('support'),0.0)
+    breakout_trigger=(breakout_level*(1.0010 if direction=='LONG' else 0.9990)) if breakout_level>0 else 0.0
+    measured=fnum(st.get('breakout_measured_move_pct'),0.0)
+    breakout_target=target
+    if breakout_trigger>0 and measured>0:
+        projected=(breakout_trigger*(1.0+measured) if direction=='LONG' else breakout_trigger*(1.0-measured))
+        if (direction=='LONG' and projected>breakout_target) or (direction=='SHORT' and (breakout_target<=0 or projected<breakout_target)):
+            breakout_target=projected
+    breakout_triggered=bool(breakout_trigger>0 and (
+        (direction=='LONG' and price>=breakout_trigger) or
+        (direction=='SHORT' and price<=breakout_trigger)
+    ))
+    breakout_stop=(breakout_trigger*(1.0-noise_floor) if direction=='LONG' else breakout_trigger*(1.0+noise_floor)) if breakout_trigger>0 and noise_floor>0 else 0.0
+    breakout_rr=None; breakout_ok=False
+    if breakout_trigger>0 and breakout_target>0 and noise_floor>0:
+        gross=((breakout_target/breakout_trigger-1.0) if direction=='LONG' else (1.0-breakout_target/breakout_trigger))
+        breakout_rr=max(0.0,gross-all_in)/max(noise_floor+all_in,1e-12)
+        breakout_ok=bool(breakout_triggered and breakout_rr>=min_net_rr)
+    alternatives.append({'mode':'BREAKOUT','triggered':breakout_triggered,'eligible':breakout_ok,
+                         'entry_price':breakout_trigger or None,'stop_price':breakout_stop or None,
+                         'target_price':breakout_target or None,'net_rr':breakout_rr,
+                         'reason':'BREAKOUT_ACTIVE' if breakout_triggered else 'WAIT_BREAKOUT'})
+
+    eligible_modes=[x for x in alternatives if x.get('eligible')]
+    selected=max(eligible_modes,key=lambda x:(float(x.get('net_rr') or 0.0),
+                                              1 if x.get('mode')=='PULLBACK' else 0)) if eligible_modes else None
+    if selected:
+        entry_mode=selected['mode']; net_rr=float(selected.get('net_rr') or 0.0)
+        if entry_mode in ('PULLBACK','BREAKOUT') and selected.get('stop_price'):
+            stop=float(selected['stop_price']); stop_dist=abs(price-stop)/price
+        in_zone=(entry_mode=='PULLBACK')
+    else:
+        # Keep the thesis alive with explicit alternatives rather than a generic BLOCKED state.
+        best_pending=max([x for x in alternatives if x.get('net_rr') is not None],
+                         key=lambda x:float(x.get('net_rr') or -1.0),default=None)
+        return {'eligible':False,'reason':'WAIT_ENTRY_BEST_EXECUTION',
+                'net_rr':now_rr,'max_fraction':D('0'),'wait_entry':wait_entry,
+                'entry_alternatives':alternatives,'preferred_pending_mode':(best_pending or {}).get('mode')}
+
     prob,src=entry_probability(row)
     inst=row.get('institutional_signal') or {}
     indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
@@ -161,8 +208,10 @@ insert="""def winrate_repair_gate(row,direction):
             'score':prob,'source':src,'independent':indep,'soft_plan_block':soft_plan_block,
             'soft_entry_wait':soft_entry_wait,'net_rr':net_rr,'max_fraction':D('.05'),
             'historical_edge_gate':'FAIL','signal_first':True,
-            'adjusted_stop_price':stop if in_zone else None,
-            'wait_entry':wait_entry,'entry_zone_activated':in_zone}
+            'adjusted_stop_price':stop if entry_mode in ('PULLBACK','BREAKOUT') else None,
+            'wait_entry':wait_entry,'entry_zone_activated':in_zone,
+            'entry_mode':entry_mode,'entry_alternatives':alternatives,
+            'breakout_activated':entry_mode=='BREAKOUT'}
 
 """
 anchor="def entry_probability(row):"
