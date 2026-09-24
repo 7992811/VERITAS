@@ -139,4 +139,106 @@ new="""        outcome={'net_pnl':str(episode_net),'gross_close_leg':str(gross),
 if old not in s: raise SystemExit('BOOK_OUTCOME_ANCHOR_NOT_FOUND')
 p.write_text(s.replace(old,new),encoding='utf-8')
 
+# 5) Routing v86.3: choose the best EXECUTABLE horizon and size in 5% steps up to 250% NAV.
+p=root/'veritas_v85/routing.py'
+s=p.read_text(encoding='utf-8')
+old="""        r,w=ranked[0]; p=r['trade_plan']; h=r['horizon']; fam=family(r)
+        if p.get('eligible') is False:
+            traces.append({'asset':a,'direction':d,'horizon':h,'status':'BLOCKED','reason':'TRADE_PLAN_NOT_ELIGIBLE'})
+            continue
+        if (p.get('trade_integrity') or {}).get('entry_permission')=='WAIT_ENTRY':
+            traces.append({'asset':a,'direction':d,'horizon':h,'status':'BLOCKED','reason':'ENTRY_PERMISSION_WAIT'})
+            continue
+        desired=max(D('.05'),min(D('1'),decimal(p.get('initial_position_fraction') or '.10',nonnegative=True)))
+        # Heuristic confidence is not calibration. Larger initial risk requires explicit evidence.
+        if r.get('calibrated_probability') is None: desired=min(desired,D('.20'))
+"""
+new="""        executable=[]
+        for rr,ww in ranked:
+            pp=rr.get('trade_plan') or {}
+            if pp.get('eligible') is False: continue
+            if (pp.get('trade_integrity') or {}).get('entry_permission')=='WAIT_ENTRY': continue
+            executable.append((rr,ww))
+        if not executable:
+            traces.append({'asset':a,'direction':d,'status':'BLOCKED','reason':'NO_EXECUTABLE_HORIZON',
+                           'candidate_horizons':[x['horizon'] for x,_ in ranked]})
+            continue
+        r,w=executable[0]; p=r['trade_plan']; h=r['horizon']; fam=family(r)
+        prob,prob_source=entry_probability(r)
+        inst=r.get('institutional_signal') or {}
+        indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+        rr_ratio=fnum(p.get('expected_to_stop_ratio'),0.0)
+        # 5% is the increment, NOT a maximum position size.
+        if prob < .60: desired=D('.05')
+        elif prob < .65: desired=D('.10')
+        elif prob < .70: desired=D('.25')
+        elif prob < .75: desired=D('.50')
+        elif prob < .80: desired=D('.75')
+        elif prob < .85: desired=D('1.00')
+        elif prob < .90: desired=D('1.50')
+        else: desired=D('2.00')
+        # Full 250% authority requires empirically calibrated maximum confidence
+        # plus independent evidence and acceptable reward/risk.
+        if prob>=.90 and indep>=3 and rr_ratio>=1.50 and prob_source=='EMPIRICAL_CALIBRATION':
+            desired=D('2.50')
+        desired=max(desired,decimal(p.get('initial_position_fraction') or '.05',nonnegative=True))
+        desired=min(D('2.50'),desired)
+"""
+if old not in s: raise SystemExit('ROUTING_EXECUTABLE_HORIZON_ANCHOR_NOT_FOUND')
+s=s.replace(old,new)
+old="""        prob,prob_source=entry_probability(r)
+        signals[a]=Signal(a,d,idea,did,h,decimal(p['stop_price'],positive=True),desired,at,
+"""
+new="""        signals[a]=Signal(a,d,idea,did,h,decimal(p['stop_price'],positive=True),desired,at,
+"""
+if old not in s: raise SystemExit('ROUTING_DUP_PROB_ANCHOR_NOT_FOUND')
+s=s.replace(old,new)
+p.write_text(s,encoding='utf-8')
+
+# 6) Portfolio risk envelopes: max gross / single-asset capacity 250% in NORMAL state.
+p=root/'veritas_v86/portfolios.py'
+s=p.read_text(encoding='utf-8')
+s=s.replace('max_gross: Decimal = D("2.0")','max_gross: Decimal = D("2.5")')
+s=s.replace('asset_cap: Decimal = D("1.0")','asset_cap: Decimal = D("2.5")')
+repls={
+'max_gross=D("2.0"),stop_risk_nav=D("0.015"),hard_drawdown=D("0.10")':
+'max_gross=D("2.5"),asset_cap=D("2.5"),stop_risk_nav=D("0.015"),hard_drawdown=D("0.10")',
+'max_gross=D("2.0"),asset_cap=D("0.75"),stop_risk_nav=D("0.020"),hard_drawdown=D("0.12")':
+'max_gross=D("2.5"),asset_cap=D("2.5"),stop_risk_nav=D("0.020"),hard_drawdown=D("0.12")',
+'max_gross=D("1.5"),asset_cap=D("0.60"),stop_risk_nav=D("0.0125"),hard_drawdown=D("0.10")':
+'max_gross=D("2.5"),asset_cap=D("2.5"),stop_risk_nav=D("0.0125"),hard_drawdown=D("0.10")',
+'max_gross=D("1.5"),asset_cap=D("0.60"),stop_risk_nav=D("0.015"),hard_drawdown=D("0.10")':
+'max_gross=D("2.5"),asset_cap=D("2.5"),stop_risk_nav=D("0.015"),hard_drawdown=D("0.10")',
+'max_gross=D("1.5"),asset_cap=D("0.50"),stop_risk_nav=D("0.020"),hard_drawdown=D("0.12")':
+'max_gross=D("2.5"),asset_cap=D("2.5"),stop_risk_nav=D("0.020"),hard_drawdown=D("0.12")'
+}
+for a,b in repls.items(): s=s.replace(a,b)
+p.write_text(s,encoding='utf-8')
+
+# 7) Observable signal -> execution contract.
+p=root/'veritas_v86/application.py'
+s=p.read_text(encoding='utf-8')
+old="""    def commit_cycle(self,summary,bundles,cycle_id,clock_ok=True):
+        out=super().commit_cycle(summary,bundles,cycle_id,clock_ok=clock_ok)
+        if self.mode!='audit' and self.last_routes is not None:
+"""
+new="""    def commit_cycle(self,summary,bundles,cycle_id,clock_ok=True):
+        out=super().commit_cycle(summary,bundles,cycle_id,clock_ok=clock_ok)
+        try:
+            actions=[]
+            for pf in out.get('portfolios') or []:
+                for a in pf.get('actions') or []:
+                    if a.get('events') or a.get('management_reason') not in ('NO_SIGNAL','THESIS_INTACT'):
+                        actions.append({'portfolio':pf.get('name'),'asset':a.get('asset'),
+                                        'reason':a.get('management_reason'),'events':a.get('events')})
+            print(json.dumps({'event':'V86_EXECUTION_TRACE','routing':out.get('routing') or [],
+                              'actions':actions},ensure_ascii=False,separators=(',',':')),flush=True)
+        except Exception as exc:
+            print(json.dumps({'event':'V86_EXECUTION_TRACE_ERROR','error':type(exc).__name__},
+                             separators=(',',':')),flush=True)
+        if self.mode!='audit' and self.last_routes is not None:
+"""
+if old not in s: raise SystemExit('V86_EXECUTION_TRACE_ANCHOR_NOT_FOUND')
+p.write_text(s.replace(old,new),encoding='utf-8')
+
 print('V86_RUNTIME_PATCH_OK')
