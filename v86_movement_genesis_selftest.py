@@ -92,7 +92,9 @@ with TemporaryDirectory() as td:
     assert r3['events'] and r3['events'][0]['action']=='ADD',r3
 
     pos=book.positions('A')
-    assert len(pos)==1 and pos[0].revision==2,pos
+    # Profit Harvest 2.0 may also ratchet the stop and increment revision;
+    # two validated ADDs are the invariant we need here.
+    assert len(pos)==1 and pos[0].revision>=2,pos
     with ledger.read() as c:
         orders=c.execute("SELECT reason FROM v85_orders WHERE account_id='A' ORDER BY at,intent_id").fetchall()
         reasons=[x['reason'] for x in orders]
