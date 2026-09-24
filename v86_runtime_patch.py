@@ -1045,3 +1045,16 @@ try:
 finally:
     _te_sys.argv=_te_argv
 print('V86_TEAM_EXPERIENCE_RUNTIME_ACTIVE')
+
+
+# 23) Align backend risk mandate with UI/agreed portfolio constraints.
+import runpy as _rl_runpy, sys as _rl_sys
+_rl_patch=root.parent/'v86_risk_limit_alignment_patch.py'
+if not _rl_patch.is_file(): raise SystemExit('V86_RISK_LIMIT_ALIGNMENT_PATCH_MISSING')
+_rl_argv=list(_rl_sys.argv)
+try:
+    _rl_sys.argv=[str(_rl_patch),str(root)]
+    _rl_runpy.run_path(str(_rl_patch),run_name='__main__')
+finally:
+    _rl_sys.argv=_rl_argv
+print('V86_RISK_LIMIT_ALIGNMENT_RUNTIME_ACTIVE')
