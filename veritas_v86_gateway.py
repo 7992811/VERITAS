@@ -326,7 +326,9 @@ def trades():
                 return {}
         return {}
 
-    def learning_from_outcome(outcome, net_pnl):
+    def learning_from_outcome(outcome, net_pnl, closed=False):
+        if not closed:
+            return (None,None)
         mfe=num(outcome.get('observed_mfe_fraction'),0.0) or 0.0
         mae=num(outcome.get('observed_mae_fraction'),0.0) or 0.0
         give=num(outcome.get('giveback_from_observed_peak'),0.0) or 0.0
@@ -376,7 +378,8 @@ def trades():
         )
         ret_pct=(100.0*net/entry_nav) if net is not None and entry_nav else None
         mfe=num(outcome.get('observed_mfe_fraction')); mae=num(outcome.get('observed_mae_fraction')); giveback=num(outcome.get('giveback_from_observed_peak'))
-        label,lesson=learning_from_outcome(outcome,net)
+        is_closed=bool(str(e.get('status') or '').upper()=='CLOSED' or e.get('closed_at') or net is not None)
+        label,lesson=learning_from_outcome(outcome,net,closed=is_closed)
         pwin=num(signal.get('entry_probability')); pwin_source=signal.get('probability_source')
         if pwin is None:
             pwin=num(payload.get('pwin')); pwin_source=payload.get('pwin_source') or pwin_source
@@ -405,11 +408,17 @@ def trades():
             'causal_note':outcome.get('causal_error') or 'NOT_INFERRED_FROM_PNL_ALONE'
         }
 
-    current=[convert(e,False) for e in fetch_items(V86) if isinstance(e,dict)]
-    archive=[convert(e,True) for e in fetch_items(ARCHIVE_V86) if isinstance(e,dict)]
+    current_all=[e for e in fetch_items(V86) if isinstance(e,dict)]
+    archive_all=[e for e in fetch_items(ARCHIVE_V86) if isinstance(e,dict)]
+    current=[convert(e,False) for e in current_all
+             if str(e.get('status') or '').upper()=='CLOSED' or e.get('closed_at') or e.get('net_pnl') is not None]
+    archive=[convert(e,True) for e in archive_all
+             if str(e.get('status') or '').upper()=='CLOSED' or e.get('closed_at') or e.get('net_pnl') is not None]
     merged=current+archive
-    merged.sort(key=lambda x:str(x.get('closed_at') or x.get('opened_at') or ''), reverse=True)
-    return {'trades':merged,'current_count':len(current),'archive_count':len(archive)}
+    merged.sort(key=lambda x:str(x.get('closed_at') or ''), reverse=True)
+    open_current=sum(1 for e in current_all if str(e.get('status') or '').upper()=='OPEN' and not e.get('closed_at'))
+    return {'trades':merged,'current_closed_count':len(current),'archive_closed_count':len(archive),
+            'current_open_count':open_current}
 
 def app_html():
     body, _ = bget(PROD, '/app')
@@ -419,6 +428,7 @@ def app_html():
     value = value.replace('Открытых позиций нет — оба портфеля в cash.','Открытых позиций нет — портфели в cash.')
     value = value.replace('30 ячеек · ~','35 ячеек · ~').replace('6 активов × 5 ТФ','7 активов × 5 ТФ').replace('6/6 активов','7/7 активов')
     value = value.replace('NDX','NQ')
+    value = value.replace('ПОСЛЕДНИЕ СДЕЛКИ','ЗАКРЫТЫЕ СДЕЛКИ')
     value = value.replace("${p.name==='Champion'?'70%+':'77%+'}","${p.badge||''}")
     value = value.replace('Шаг позиции 5% · gross ≤ 2,5× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')
@@ -434,7 +444,7 @@ def app_html():
         print(json.dumps({'event':'V86_UI_PATCH','status':'ok','position_renderer_replacements':count},
                          ensure_ascii=False,separators=(',',':')), flush=True)
 
-    trade_replacement = """trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview closed-trade-card"><div class="assetview-head"><b>${t.portfolio_name} · ${t.asset} · ${t.direction||'—'}${t.archived?' · АРХИВ':''}</b><b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-grid"><div><span>Вход</span><b>${t.avg_entry_price==null?'—':Number(t.avg_entry_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Выход</span><b>${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Кол-во</span><b>${t.quantity==null?'—':(['BTC','ETH'].includes(t.asset)?Number(t.quantity).toFixed(4):Math.round(Number(t.quantity)).toLocaleString('ru-RU'))}</b></div><div><span>Gross</span><b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></div><div><span>Издержки</span><b>${t.fees_rub==null?'—':rub(t.fees_rub)}</b></div><div><span>Funding</span><b>${t.funding_rub==null?'—':rub(t.funding_rub)}</b></div><div><span>MFE</span><b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></div><div><span>MAE</span><b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></div><div><span>Giveback</span><b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></div><div><span>Причина</span><b>${t.exit_reason||'—'}</b></div><div><span>Горизонт</span><b>${t.horizon||'—'}</b></div><div><span>Время</span><b>${t.held_seconds==null?'—':Math.round(Number(t.held_seconds)/60)+' мин'}</b></div></div><div class="trade-learning"><b>Вывод для обучения:</b> ${t.learning_conclusion||'—'}<br><span>${t.learning_label||''} · описательная атрибуция, не причинное доказательство</span></div></div>`).join(''):'Закрытых сделок пока нет.'"""
+    trade_replacement = """trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview closed-trade-card"><div class="assetview-head"><b>${t.portfolio_name} · ${t.asset} · ${t.direction||'—'}${t.archived?' · АРХИВ':''}</b><b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-grid"><div><span>Вход</span><b>${t.avg_entry_price==null?'—':Number(t.avg_entry_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Выход</span><b>${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Кол-во</span><b>${t.quantity==null?'—':(['BTC','ETH'].includes(t.asset)?Number(t.quantity).toFixed(4):Math.round(Number(t.quantity)).toLocaleString('ru-RU'))}</b></div><div><span>Gross</span><b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></div><div><span>Издержки</span><b>${t.fees_rub==null?'—':rub(t.fees_rub)}</b></div><div><span>Funding</span><b>${t.funding_rub==null?'—':rub(t.funding_rub)}</b></div><div><span>MFE</span><b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></div><div><span>MAE</span><b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></div><div><span>Giveback</span><b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></div><div><span>Причина</span><b>${t.exit_reason||'—'}</b></div><div><span>Горизонт</span><b>${t.horizon||'—'}</b></div><div><span>Время</span><b>${t.held_seconds==null?'—':Math.round(Number(t.held_seconds)/60)+' мин'}</b></div></div><div class="trade-learning"><b>Вывод для обучения:</b> ${t.learning_conclusion||'—'}<br><span>${t.learning_label||'—'} · формируется только после закрытия эпизода; описательная атрибуция, не причинное доказательство</span></div></div>`).join(''):'Закрытых сделок пока нет.'"""
     trade_pattern = r"""trel\.innerHTML=trades\.length\?trades\.slice\(0,30\)\.map\(t=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Сделок в журнале пока нет\.'"""
     value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
     print(json.dumps({'event':'V86_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
