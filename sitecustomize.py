@@ -30,7 +30,7 @@ PINNED_V80_URL=(
 V80_INTEL="veritas-max-product-v80.0-unified-execution-core"
 V80_PORT="veritas-portfolio-v6-v80-unified-execution"
 V84_INTEL="veritas-max-product-v84.2-audited-learning-execution"
-V84_PORT="veritas-portfolio-v8.2-v84-audited-execution"
+V84_PORT="veritas-portfolio-v8.3-v84-profit-harvest"
 
 START_MARKER="    # ----- v78.1 Rule & Experience Arbitration -----"
 END_MARKER="    # ----- v79.0 Portfolio Trade Integrity -----"
@@ -525,7 +525,7 @@ def _patch_portfolio():
             raise RuntimeError("v84 portfolio version anchor missing")
         dst=dst.replace(
             "VERSION='veritas-portfolio-v6-v80-unified-execution'",
-            "VERSION='veritas-portfolio-v8.2-v84-audited-execution'",1)
+            "VERSION='veritas-portfolio-v8.3-v84-profit-harvest'",1)
         applied.append("version")
 
     dst,ch=_insert_before_once(
@@ -583,7 +583,7 @@ def _patch_portfolio():
     if ch: applied.append("hold_without_signal")
 
     old="""        row=candidates.get(z['asset']); target=float(targets.get(z['asset'],0.0)); px=float(prices.get(z['asset'],z['last_price']))\n        wrong_dir=bool(row and row.get('research_decision') in ('LONG','SHORT') and row.get('research_decision')!=z['direction'])\n        # Structural stop remains an immediate hard invalidation.\n        stop=z['stop_price']; stop_hit=bool(stop is not None and ((z['direction']=='LONG' and px<=float(stop)) or (z['direction']=='SHORT' and px>=float(stop))))\n        current_frac=abs(float(z['units'])*px)/max(nav,1.0)\n        raw_target=float(_desired_fraction(row,policy,dd)) if row else 0.0\n        fs=_soft_failure_state(c,name,z,row,raw_target,current_frac)\n        if stop_hit:\n            _close_or_reduce(c,p,name,z,px,0.0,nav,ts,'STRUCTURAL_STOP')\n        elif fs['hard']:\n            _close_or_reduce(c,p,name,z,px,0.0,nav,ts,fs['reason'])\n        elif fs['confirmed_soft']:\n            # Soft deterioration has persisted across two portfolio cycles.\n            _close_or_reduce(c,p,name,z,px,raw_target,nav,ts,'SOFT_INVALIDATION_CONFIRMED')\n        else:\n            # First soft failure: preserve the position. Do not churn.\n            targets[z['asset']]=current_frac"""
-    new="""        row=candidates.get(z['asset']); target=float(targets.get(z['asset'],0.0)); px=float(prices.get(z['asset'],z['last_price']))\n        original_target=target\n        current_frac=abs(float(z['units'])*px)/max(nav,1.0)\n        mgmt=_v842_management_row(summary,z)\n        hard_exit=_v842_hard_thesis_exit(mgmt)\n        opposite=bool(row and row.get('research_decision') in ('LONG','SHORT') and row.get('research_decision')!=z['direction'])\n        confirmed_flip=bool(opposite and row.get('_flip_confirmed',False))\n        stop=z['stop_price']; stop_hit=bool(stop is not None and ((z['direction']=='LONG' and px<=float(stop)) or (z['direction']=='SHORT' and px>=float(stop))))\n        if opposite and not confirmed_flip and not hard_exit and not stop_hit:\n            target=current_frac; targets[z['asset']]=current_frac\n        if row and not opposite and target<=0 and not hard_exit and rg.get('new_risk',True):\n            target=current_frac; targets[z['asset']]=current_frac\n        if confirmed_flip or hard_exit or stop_hit or rg.get('new_risk') is False:\n            target=0.0\n            if rg.get('new_risk') is False:\n                targets[z['asset']]=0.0\n            elif row and opposite:\n                # Close old thesis, then preserve the validated opposite target so signal-first can open the new direction in the same cycle.\n                targets[z['asset']]=original_target\n            else:\n                targets[z['asset']]=0.0\n        if target<current_frac-0.025:\n            reason='STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'\n            _close_or_reduce(c,p,name,z,px,target,nav,ts,reason)"""
+    new="""        row=candidates.get(z['asset']); target=float(targets.get(z['asset'],0.0)); px=float(prices.get(z['asset'],z['last_price']))\n        original_target=target\n        current_frac=abs(float(z['units'])*px)/max(nav,1.0)\n        mgmt=_v842_management_row(summary,z)\n        hard_exit=_v842_hard_thesis_exit(mgmt)\n        opposite=bool(row and row.get('research_decision') in ('LONG','SHORT') and row.get('research_decision')!=z['direction'])\n        confirmed_flip=bool(opposite and row.get('_flip_confirmed',False))\n        stop=z['stop_price']; stop_hit=bool(stop is not None and ((z['direction']=='LONG' and px<=float(stop)) or (z['direction']=='SHORT' and px>=float(stop))))\n        # v84.3 Profit Harvest: TP is an execution rule, not a dashboard decoration.\n        src=row or mgmt or {}\n        plan=(src.get('trade_plan') or {}) if isinstance(src,dict) else {}\n        rev=(src.get('tactical_reversal') or {}) if isinstance(src,dict) else {}\n        rng=(src.get('range_retest_breakout') or {}) if isinstance(src,dict) else {}\n        tp=rev.get('target_price') or rng.get('target_price')\n        entry=float(z.get('avg_entry_price') or 0.0)\n        if tp is None and entry>0:\n            try:\n                exp=abs(float(plan.get('expected_move_pct') or 0.0))\n            except Exception:\n                exp=0.0\n            if exp>0:\n                tp=entry*(1.0+exp if z['direction']=='LONG' else 1.0-exp)\n        if tp is None and entry>0 and stop is not None:\n            risk=abs(entry-float(stop))\n            if risk>0:\n                tp=entry+1.5*risk if z['direction']=='LONG' else entry-1.5*risk\n        tp_hit=bool(tp is not None and ((z['direction']=='LONG' and px>=float(tp)) or (z['direction']=='SHORT' and px<=float(tp))))\n        if opposite and not confirmed_flip and not hard_exit and not stop_hit and not tp_hit:\n            target=current_frac; targets[z['asset']]=current_frac\n        if row and not opposite and target<=0 and not hard_exit and not tp_hit and rg.get('new_risk',True):\n            target=current_frac; targets[z['asset']]=current_frac\n        if confirmed_flip or hard_exit or stop_hit or tp_hit or rg.get('new_risk') is False:\n            target=0.0\n            if rg.get('new_risk') is False:\n                targets[z['asset']]=0.0\n            elif row and opposite:\n                # Close old thesis, then preserve the validated opposite target so signal-first can open the new direction in the same cycle.\n                targets[z['asset']]=original_target\n            else:\n                targets[z['asset']]=0.0\n        if target<current_frac-0.025:\n            reason='TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'\n            _close_or_reduce(c,p,name,z,px,target,nav,ts,reason)"""
     dst,ch=_replace_once(dst,old,new,"v84.2 active position exit semantics")
     if ch: applied.append("active_exit_semantics")
 
@@ -611,7 +611,7 @@ def _patch_portfolio():
     if ch: applied.append("admission_trace")
 
     old="""                           unified_execution=True)"""
-    new="""                           unified_execution=True,experience_weighted=True,adaptive_regime=True,v84_execution=True,v842_audited=True)"""
+    new="""                           unified_execution=True,experience_weighted=True,adaptive_regime=True,v84_execution=True,v842_audited=True,profit_harvest_v843=True)"""
     dst,ch=_replace_once(dst,old,new,"v84 portfolio telemetry")
     if ch: applied.append("telemetry")
 
@@ -654,6 +654,7 @@ def _verify():
         'single_sizing_authority':"DECISION_LAYER_TARGET_THEN_PORTFOLIO_RISK" in intel and "SIGNAL_FIRST_V842" in port,
         'hold_without_signal':"Missing a fresh candidate is soft deterioration, not an exit." in port,
         'active_exit_semantics':"V842_CONFIRMED_DIRECTION_FLIP" in port and "HARD_THESIS_INVALIDATION" in port and "preserve the validated opposite target" in port,
+        'profit_harvest_v843':"'TAKE_PROFIT' if tp_hit" in port and "Profit Harvest" in port,
         'experience_direction_prior':"experience_prior=experience_direction_prior(asset,horizon,f)" in intel,
         'ndx_fail_closed':"ndx_verification_fail_closed" in intel,
         'pg_event_reuse':"_v842_pg_event_conn" in intel,
@@ -680,7 +681,7 @@ def _run():
         if _already_v84():
             _ensure_hashlib()
             _verify()
-            print("[VERITAS BOOTSTRAP] v84.2 READY: idempotent=true; adaptive_experience_execution=true",flush=True)
+            print("[VERITAS BOOTSTRAP] v84.3 READY: idempotent=true; adaptive_experience_execution=true; profit_harvest=true",flush=True)
             return
 
         if not _already_v80():
@@ -696,13 +697,13 @@ def _run():
         _verify()
 
         print(
-            "[VERITAS BOOTSTRAP] v84.2 VERIFIED: "
+            "[VERITAS BOOTSTRAP] v84.3 VERIFIED: "
             f"intelligence={','.join(ia)}; portfolio={','.join(pa)}; v70_sync={str(v70).lower()}",
             flush=True
         )
     except Exception as exc:
         print(
-            f"[VERITAS BOOTSTRAP] v84.2 FAILED: {type(exc).__name__}: {exc}",
+            f"[VERITAS BOOTSTRAP] v84.3 FAILED: {type(exc).__name__}: {exc}",
             file=sys.stderr,flush=True
         )
 
