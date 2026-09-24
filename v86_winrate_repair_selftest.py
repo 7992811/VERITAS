@@ -4,11 +4,17 @@ root=Path(sys.argv[1]).resolve()
 sys.path.insert(0,str(root))
 from veritas_v85.routing import winrate_repair_gate
 
-def row(h='4h',setup='TREND',eligible=True,reason='ok',price=100.0,stop=99.5,net_rr=1.8,noise=.003,score=.80,indep=3,src_cal=None):
+def row(h='4h',setup='TREND',eligible=True,reason='ok',price=100.0,stop=99.5,net_rr=1.8,noise=.003,score=.80,indep=3,src_cal=None,rich=True):
+    inst={'evidence_independence':{'independent_count':indep}}
+    hs={}
+    if rich:
+        inst['breakout_quality']={'quality_score':.90}
+        hs={'score':.90}
     r={'horizon':h,'price':price,'confidence':score,'calibrated_probability':src_cal,
-       'research_decision':'LONG','trade_plan':{'eligible':eligible,'reason':reason,'setup':setup,'stop_price':stop,
-       'net_expected_to_stop_ratio':net_rr,'noise_floor_stop_distance_pct':noise,'trade_integrity':{}},
-       'institutional_signal':{'evidence_independence':{'independent_count':indep}},
+       'research_decision':'LONG','horizon_structure':hs,
+       'trade_plan':{'eligible':eligible,'reason':reason,'setup':setup,'stop_price':stop,
+       'expected_to_stop_ratio':2.0,'net_expected_to_stop_ratio':net_rr,'noise_floor_stop_distance_pct':noise,'trade_integrity':{}},
+       'institutional_signal':inst,
        'tactical_reversal':{'active':setup=='TACTICAL_REVERSAL','direction':'LONG','setup':setup,'probability':score}}
     return r
 
@@ -24,7 +30,7 @@ assert not g['eligible'] and g['reason']=='STOP_INSIDE_EXPECTED_NOISE',g
 g=winrate_repair_gate(row(net_rr=1.1),'LONG')
 assert not g['eligible'] and g['reason']=='NET_EDGE_AFTER_COST_FAIL',g
 
-g=winrate_repair_gate(row(score=.68,indep=4),'LONG')
+g=winrate_repair_gate(row(score=.68,indep=4,rich=False),'LONG')
 assert not g['eligible'] and g['reason']=='UNCALIBRATED_SCORE_TOO_WEAK',g
 
 g=winrate_repair_gate(row(score=.80,indep=1),'LONG')
