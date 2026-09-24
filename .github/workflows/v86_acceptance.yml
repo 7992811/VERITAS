@@ -104,6 +104,7 @@ jobs:
           rm -rf candidate_runtime
           cp -a candidate candidate_runtime
           python v86_runtime_patch.py candidate_runtime
+          python v86_state_restore_selftest.py candidate_runtime
           python -m py_compile candidate_runtime/veritas_v85/domain.py candidate_runtime/veritas_v85/routing.py candidate_runtime/veritas_v85/book.py candidate_runtime/veritas_v85/application.py candidate_runtime/veritas_v86/*.py candidate_runtime/veritas_v86_start.py
           cd candidate_runtime
           PYTHONPATH=.:tests python -m unittest -v \
