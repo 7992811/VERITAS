@@ -1019,3 +1019,16 @@ try:
 finally:
     _re_sys.argv=_re_argv
 print('V86_POST_EXIT_REENTRY_RUNTIME_ACTIVE')
+
+
+# 21) Closed-loop learning from eligible CLOSED_FINAL trades.
+import runpy as _cl_runpy, sys as _cl_sys
+_cl_patch=root.parent/'v86_closed_loop_learning_patch.py'
+if not _cl_patch.is_file(): raise SystemExit('V86_CLOSED_LOOP_LEARNING_PATCH_MISSING')
+_cl_argv=list(_cl_sys.argv)
+try:
+    _cl_sys.argv=[str(_cl_patch),str(root)]
+    _cl_runpy.run_path(str(_cl_patch),run_name='__main__')
+finally:
+    _cl_sys.argv=_cl_argv
+print('V86_CLOSED_LOOP_LEARNING_RUNTIME_ACTIVE')
