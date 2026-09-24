@@ -185,28 +185,7 @@ if n!=1: raise SystemExit(f'CNYRUBF_PATCH_FAILED {n}')
 
 # MOEX primary: board endpoint can intermittently return no marketdata.
 # Try the generic official ISS endpoint, then a recent official 10-minute candle.
-_old=r'''def _moex_current_quote():
-    url='https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities/IMOEX.json'
-    with httpx.Client(timeout=20,headers={'User-Agent':'VERITAS/15 research'}) as h:
-        r=h.get(url,params={'iss.meta':'off'}); r.raise_for_status(); j=r.json()
-    rows=_moex_block(j,'marketdata')
-    if not rows:
-        raise RuntimeError('MOEX_ISS_NO_MARKETDATA')
-    row=rows[0]
-    price=None
-    for k in ('CURRENTVALUE','LASTVALUE','LAST','MARKETPRICE'):
-        if row.get(k) not in (None,''):
-            try: price=float(row[k]); break
-            except Exception: pass
-    if price is None:
-        raise RuntimeError('MOEX_ISS_NO_CURRENT_VALUE')
-    dt=None
-    for k in ('SYSTIME','TRADEDATE','UPDATETIME','TIME'):
-        if row.get(k):
-            dt=_moex_parse_dt(row[k])
-            if dt: break
-    return {'price':price,'observed_at':(dt or datetime.now(timezone.utc)).isoformat(),'row':row}
-'''
+_pat=r"def _moex_current_quote\(\):\n.*?\n\ndef _moex_yahoo_klines"
 _new=r'''def _moex_current_quote():
     urls=[
       'https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities/IMOEX.json',
@@ -230,16 +209,11 @@ _new=r'''def _moex_current_quote():
                         if row.get(k):
                             dt=_moex_parse_dt(row[k])
                             if dt: break
-                    if dt is None and row.get('TRADEDATE'):
-                        # TRADEDATE alone is not a fresh timestamp; keep searching.
-                        continue
                     if dt is not None:
                         return {'price':price,'observed_at':dt.isoformat(),'row':row,'quote_mode':'marketdata'}
                 errors.append('NO_USABLE_MARKETDATA')
             except Exception as ex:
                 errors.append(type(ex).__name__)
-
-        # Official-candle fallback. This is still MOEX primary data, not a second source.
         try:
             m=datetime.now(timezone.utc).astimezone(ZoneInfo('Europe/Moscow'))
             frm=(m.date()-timedelta(days=1)).isoformat(); till=(m.date()+timedelta(days=1)).isoformat()
@@ -261,9 +235,10 @@ _new=r'''def _moex_current_quote():
         except Exception as ex:
             errors.append('CANDLE_'+type(ex).__name__)
     raise RuntimeError('MOEX_ISS_NO_MARKETDATA:'+','.join(errors[-4:]))
-'''
-if _old not in _src: raise SystemExit('MOEX_CURRENT_QUOTE_ANCHOR_NOT_FOUND')
-_src=_src.replace(_old,_new,1)
+
+def _moex_yahoo_klines'''
+_src,n=_re.subn(_pat,_new,_src,count=1,flags=_re.S)
+if n!=1: raise SystemExit(f'MOEX_CURRENT_QUOTE_PATCH_FAILED {n}')
 
 # MOEX: keep official ISS primary, use Yahoo when fresh, otherwise best-effort Finam delayed quote.
 _old="""    quality=[
