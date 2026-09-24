@@ -430,7 +430,9 @@ if old not in s: raise SystemExit('MOVEMENT_SCALE_CALL_ANCHOR_NOT_FOUND')
 s=s.replace(old,new,1)
 
 # Correct episode funding after scale-ins: carry already realized at each add must remain in final episode P&L.
-old="        carry=decimal(original.get("legacy_realized_gross","0"))\n        episode_net=gross-fee-entry_fee-fund+carry\n"
+old="""        carry=decimal(original.get("legacy_realized_gross","0"))
+        episode_net=gross-fee-entry_fee-fund+carry
+"""
 new="""        carry=decimal(original.get("legacy_realized_gross","0"))
         prior_funding=decimal(original.get("legacy_realized_funding","0"),nonnegative=True)
         episode_net=gross-fee-entry_fee-fund-prior_funding+carry
