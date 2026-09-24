@@ -1,0 +1,48 @@
+{
+  "release": "VERITAS v86.1 — Team Learning + UI/Data Integrity Freeze",
+  "release_id": "veritas-v86.1-team-learning-ui-freeze",
+  "frozen": true,
+  "date": "2026-09-24",
+  "purpose": "Isolated snapshot of the team-experience learning layer, first-page data-flow repair, UI resilience and aligned portfolio risk limits. Future development must branch elsewhere.",
+  "baselines": {
+    "engine_before_this_block": "93e133b",
+    "gateway_before_this_block": "e7d1c3f"
+  },
+  "final_components": {
+    "engine_source_branch": "v85-acceptance",
+    "engine_commit": "676434df85676836b7dd72e57ae4e50792deb321",
+    "gateway_source_branch": "v86-integration",
+    "gateway_commit": "b8a3068afbc3b65eed24f4b9cc961e65eacba97d",
+    "gateway_blob": "3cc67e2f88893ab2dfd27d214e6a5711d15858d9"
+  },
+  "included_changes": [
+    "Structured TEAM_EXPERIENCE layer kept separate from books and CLOSED_FINAL learning",
+    "10 seeded team experience cards with validation and application journals",
+    "Bounded management influence: team experience cannot reverse direction or bypass hard gates",
+    "Rich v86 analysis propagated to first-page overview and product-experience",
+    "Parallel analysis loading, overview/analysis/HTML/FX caches and legacy timeout containment",
+    "Fallback renderer for compact CLOSED_FINAL cards",
+    "Backup display-only USD/RUB context",
+    "Backend/UI risk alignment: standard portfolios max_gross=2.0 and asset_cap=1.0; RelativeValue remains 1.0/0.5"
+  ],
+  "runtime_validation": {
+    "engine_live_commit": "676434df85676836b7dd72e57ae4e50792deb321",
+    "gateway_live_commit": "b8a3068afbc3b65eed24f4b9cc961e65eacba97d",
+    "signal_cells": "35/35",
+    "portfolios": "8/8",
+    "closed_trade_records": 42,
+    "learning_eligible_closed": 41,
+    "recovered_historical": 1,
+    "pending_finalization": 0,
+    "team_experience_cards": 10,
+    "team_experience_matching": "3 current directional rows matched in validated cycle",
+    "gateway_500_after_final_start": 0,
+    "html_ready": true,
+    "risk_limits_verified": true
+  },
+  "development_policy": {
+    "branch_status": "FROZEN",
+    "deploy_from_this_branch": false,
+    "future_work": "Create a new development branch/version. Do not move this branch ref."
+  }
+}
