@@ -473,4 +473,17 @@ try:
         print('V86_PORTFOLIOS_SRC '+str(a+1)+'-'+str(b)+' :: '+' | '.join(_pp[a:b]),flush=True)
 except Exception as _ex:
     print('V86_PORTFOLIOS_SRC_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
+# TEMP diagnostic for v86 application signal handoff.
+try:
+    _ap=(root/'veritas_v86/application.py').read_text(encoding='utf-8').splitlines()
+    _keys=('last_routes','signal_allowed','signals','quotes','portfolio','book','asset','commit_cycle','step(')
+    _hits=[i for i,line in enumerate(_ap) if any(k in line for k in _keys)]
+    _seen=set()
+    for i in _hits:
+        a=max(0,i-3); b=min(len(_ap),i+5); key=(a,b)
+        if key in _seen: continue
+        _seen.add(key)
+        print('V86_APP_SRC '+str(a+1)+'-'+str(b)+' :: '+' | '.join(_ap[a:b]),flush=True)
+except Exception as _ex:
+    print('V86_APP_SRC_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
 print('V86_RUNTIME_PATCH_OK')
