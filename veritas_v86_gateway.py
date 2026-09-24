@@ -160,17 +160,20 @@ def display_fx_context():
         if cached is not None and time.time()-at<FX_CACHE_TTL:
             return dict(cached)
     result={'usdrub':None,'source':'unavailable'}
-    try:
-        data=jget(PROD,'/api/v1/paper-portfolios',2.0)
-        plist=data.get('portfolios') if isinstance(data,dict) else []
-        for p in (plist or []):
-            latest=p.get('latest') if isinstance(p,dict) else {}
-            rate=num((latest or {}).get('usdrub'))
-            if rate and rate>0:
-                result={'usdrub':rate,'source':'production_portfolio_context'}
-                break
-    except Exception as exc:
-        print('DISPLAY_FX_FALLBACK',type(exc).__name__,flush=True)
+    for base,label,timeout in ((PROD,'production_portfolio_context',1.5),
+                               (ARCHIVE_V86,'archive_v86_portfolio_context',2.0)):
+        try:
+            data=jget(base,'/api/v1/paper-portfolios',timeout)
+            plist=data.get('portfolios') if isinstance(data,dict) else []
+            for p in (plist or []):
+                latest=p.get('latest') if isinstance(p,dict) else {}
+                rate=num((latest or {}).get('usdrub'))
+                if rate and rate>0:
+                    result={'usdrub':rate,'source':label}
+                    break
+            if result.get('usdrub'): break
+        except Exception as exc:
+            print('DISPLAY_FX_SOURCE_FALLBACK',label,type(exc).__name__,flush=True)
     with FX_CACHE_LOCK:
         FX_CACHE['at']=time.time(); FX_CACHE['data']=dict(result)
     return result
