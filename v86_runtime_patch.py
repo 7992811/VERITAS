@@ -842,36 +842,29 @@ p.write_text(_s,encoding='utf-8')
 # Read-only HTTP endpoint backed by the immutable ledger, independent of current positions/snapshots.
 p=root/'veritas_v85/application.py'
 _s=p.read_text(encoding='utf-8')
-_report=r'''
-def closed_trade_ledger_report(ledger,limit=500):
-    limit=max(1,min(5000,int(limit)))
-    with ledger.read() as c:
-        rows=c.execute("""SELECT ledger_id,episode_id,account_id,asset,idea_id,policy_version,opened_at,closed_at,
-          direction,horizon,setup_family,entry_nav,entry_price,exit_price,quantity,entry_fee,exit_fee,funding,
-          gross_pnl,net_pnl,mfe_fraction,mae_fraction,giveback_fraction,held_seconds,exit_reason,path_points,
-          finalization_contract,learning_eligible,record_kind,source_evidence,record_hash,payload,created_at
-          FROM v86_closed_trade_ledger ORDER BY closed_at DESC,created_at DESC,episode_id DESC LIMIT ?""",(limit,)).fetchall()
-    items=[]
-    for row in rows:
-        d=dict(row)
-        for key in ('payload','source_evidence'):
-            if isinstance(d.get(key),str):
-                try:d[key]=json.loads(d[key])
-                except Exception:pass
-        d['learning_eligible']=bool(d.get('learning_eligible'))
-        items.append(d)
-    return {'status':'OK','contract':'V86_CLOSED_TRADE_LEDGER_V1','append_only':True,'count':len(items),'items':items}
-
-'''
-if 'def closed_trade_ledger_report(' not in _s:
-    if 'def handler(app):' not in _s: raise SystemExit('CLOSED_LEDGER_HANDLER_FUNCTION_ANCHOR_NOT_FOUND')
-    _s=_s.replace('def handler(app):',_report+'def handler(app):',1)
 _route="""            if path=='/api/v1/portfolio-trades':
                 try:return self.reply(app.trade_report(100),200)
                 except Exception:return self.reply({'status':'UNAVAILABLE','error':'REPORT_READ_FAILED'},503)
 """
 _route_new="""            if path=='/api/v1/closed-trade-ledger':
-                try:return self.reply(closed_trade_ledger_report(app.ledger,1000),200)
+                try:
+                    with app.ledger.read() as c:
+                        rows=c.execute(\"\"\"SELECT ledger_id,episode_id,account_id,asset,idea_id,policy_version,opened_at,closed_at,
+                          direction,horizon,setup_family,entry_nav,entry_price,exit_price,quantity,entry_fee,exit_fee,funding,
+                          gross_pnl,net_pnl,mfe_fraction,mae_fraction,giveback_fraction,held_seconds,exit_reason,path_points,
+                          finalization_contract,learning_eligible,record_kind,source_evidence,record_hash,payload,created_at
+                          FROM v86_closed_trade_ledger ORDER BY closed_at DESC,created_at DESC,episode_id DESC LIMIT ?\"\"\",(1000,)).fetchall()
+                    items=[]
+                    for row in rows:
+                        d=dict(row)
+                        for key in ('payload','source_evidence'):
+                            if isinstance(d.get(key),str):
+                                try:d[key]=json.loads(d[key])
+                                except Exception:pass
+                        d['learning_eligible']=bool(d.get('learning_eligible'))
+                        items.append(d)
+                    return self.reply({'status':'OK','contract':'V86_CLOSED_TRADE_LEDGER_V1',
+                                       'append_only':True,'count':len(items),'items':items},200)
                 except Exception:return self.reply({'status':'UNAVAILABLE','error':'CLOSED_LEDGER_READ_FAILED'},503)
             if path=='/api/v1/portfolio-trades':
                 try:return self.reply(app.trade_report(100),200)
