@@ -1,0 +1,8 @@
+VERITAS v86.1 RELEASE LOCK
+
+Branch: release/veritas-v86.1-team-learning-ui-freeze
+Status: FROZEN
+Date: 2026-09-24
+
+Do not use this branch for subsequent development.
+Its purpose is rollback, audit, comparison and reproducible packaging of the Team Learning + UI/Data Integrity release.
