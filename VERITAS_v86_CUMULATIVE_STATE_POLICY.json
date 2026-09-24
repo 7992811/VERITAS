@@ -1,0 +1,63 @@
+{
+  "policy_version": "VERITAS_v86_CUMULATIVE_STATE_v1",
+  "effective_from": "2026-09-24T09:35:20Z",
+  "reset_policy": "FORBIDDEN_BY_DEFAULT",
+  "initial_nav_rub_per_portfolio": 1000000,
+  "cumulative_statistics": true,
+  "cumulative_learning": true,
+  "deployment_rules": {
+    "preserve_existing_accounts": true,
+    "preserve_open_positions": true,
+    "preserve_closed_trades": true,
+    "preserve_orders": true,
+    "preserve_nav_history": true,
+    "preserve_decisions_and_outcomes": true,
+    "preserve_learning_events": true,
+    "preserve_calibration": true,
+    "preserve_adaptive_evidence": true,
+    "preserve_performance_gates": true,
+    "preserve_opportunities": true,
+    "schema_changes": "additive_and_idempotent_only",
+    "forbidden": [
+      "DROP TABLE",
+      "TRUNCATE",
+      "new empty ledger for normal version upgrade",
+      "/tmp SQLite as primary cumulative ledger"
+    ]
+  },
+  "versioning": {
+    "model_version_changes_do_not_reset_portfolios": true,
+    "strategy_changes_record_effective_from_timestamp": true,
+    "cohort_labels_allowed": true,
+    "portfolio_history_continues_across_versions": true
+  },
+  "evaluation": {
+    "primary": "stable_profitable_trade_share_after_costs",
+    "secondary": [
+      "net_expectancy",
+      "profit_factor",
+      "net_return",
+      "opportunity_capture",
+      "max_drawdown"
+    ],
+    "analysis_dimensions": [
+      "portfolio",
+      "asset",
+      "setup_family",
+      "horizon",
+      "regime",
+      "entry_probability_bucket",
+      "position_stage"
+    ],
+    "learning_use": [
+      "direction_quality",
+      "entry_timing",
+      "position_sizing",
+      "stop_quality",
+      "exit_quality",
+      "MFE_MAE_capture",
+      "missed_opportunity"
+    ]
+  },
+  "last_safety_snapshot": "state_snapshots/VERITAS_v86_STATE_20260924_093520Z.json"
+}
