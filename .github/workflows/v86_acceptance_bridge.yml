@@ -1,0 +1,144 @@
+name: VERITAS v86 adaptive acceptance
+
+on:
+  push:
+    branches: [v85-acceptance, v86-adaptive]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: veritas_v85_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veritas_v85_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Assemble v86 over accepted v85 staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf candidate
+          mkdir candidate
+          unzip -q VERITAS_v85_STAGING.zip -d candidate
+          unzip -q VERITAS_v86_OVERLAY.zip -d candidate
+          test -f candidate/release_manifest.json
+          test -f candidate/veritas_v86/application.py
+          test -f candidate/VERITAS_v86_OVERLAY_MANIFEST.json
+
+      - name: Install test dependencies
+        run: python -m pip install -r candidate/requirements-test.txt
+
+      - name: Full v85 regression plus v86 unit acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate
+          PYTHONPATH=. python tools/run_v86_checks.py
+
+      - name: v85 PostgreSQL transactional acceptance
+        env:
+          VERITAS_V85_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/veritas_v85_ci
+          VERITAS_V85_EPHEMERAL_DB: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate
+          PYTHONPATH=.:tests python ci_tests/test_postgres.py
+
+      - name: v86 PostgreSQL additive schema acceptance
+        env:
+          VERITAS_V85_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/veritas_v85_ci
+          VERITAS_V85_EPHEMERAL_DB: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate
+          PYTHONPATH=. python ci_tests/test_v86_postgres.py
+
+      - name: Static compile and manifest checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate
+          python -m py_compile veritas_v86/*.py veritas_v86_start.py
+          python - <<'PY'
+          import json, pathlib
+          p=pathlib.Path('VERITAS_v86_OVERLAY_MANIFEST.json')
+          m=json.loads(p.read_text(encoding='utf-8'))
+          assert m['portfolio_count']==8
+          assert m['positive_auto_promotion'] is False
+          assert m['performance_improvement_demonstrated'] is False
+          print('v86 manifest gate: PASS')
+          PY
+
+      - name: Write acceptance evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate
+          python - <<'PY'
+          import json, datetime, pathlib, subprocess
+          local=json.loads(pathlib.Path('reports/V86_LOCAL_TEST_RESULTS.json').read_text())
+          evidence={
+            'release':'VERITAS v86 Adaptive Learning DEV1',
+            'status':'CI_ACCEPTED_FOR_ISOLATED_PERFORMANCE_VALIDATION',
+            'created_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'base_v85_suite_passed':bool(local.get('base_v85_suite_passed')),
+            'v86_suite_passed':bool(local.get('v86_suite_passed')),
+            'postgres_v85_acceptance':True,
+            'postgres_v86_schema_acceptance':True,
+            'portfolio_count':8,
+            'production_integrated':False,
+            'positive_auto_promotion':False,
+            'performance_improvement_demonstrated':False,
+            'next_gate':'WALK_FORWARD_OOS_V85_VS_V86',
+          }
+          pathlib.Path('reports/V86_CI_ACCEPTANCE.json').write_text(json.dumps(evidence,indent=2),encoding='utf-8')
+          print(json.dumps(evidence,indent=2))
+          PY
+
+      - name: Package accepted candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          find . -type f \( -name '*.pyc' -o -name '*.sqlite' -o -name '*.sqlite3' \) -delete
+          zip -qr ../VERITAS_v86_ADAPTIVE_CANDIDATE.zip .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VERITAS-v86-ADAPTIVE-CANDIDATE
+          path: VERITAS_v86_ADAPTIVE_CANDIDATE.zip
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VERITAS-v86-acceptance-evidence
+          path: |
+            candidate/reports/V86_LOCAL_TEST_RESULTS.json
+            candidate/reports/V86_CI_ACCEPTANCE.json
+            candidate/VERITAS_v86_OVERLAY_MANIFEST.json
+          retention-days: 30
