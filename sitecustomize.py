@@ -291,6 +291,224 @@ def _patch_intelligence():
     dst,ch=_replace_once(dst,old,new,"overview v84 learning")
     if ch: applied.append("overview")
 
+    # v84.3 operational repair: bound learning analytics to indexed slices.
+    # Full-history window CTEs saturated the 0.1 CPU PostgreSQL and caused DB restarts.
+    bounded_learning = r"""
+# =========================
+# VERITAS v84.3 BOUNDED LEARNING SQL
+# Keeps learning durable while preventing analytical full-table scans from blocking
+# the web/portfolio fast path on small PostgreSQL instances.
+# =========================
+
+def _bounded_completed_episode_rows(order='DESC', raw_limit=9000, episode_limit=600):
+    if not pg_enabled():
+        return []
+    order='ASC' if str(order).upper()=='ASC' else 'DESC'
+    raw_limit=max(1000,min(20000,int(raw_limit)))
+    episode_limit=max(50,min(4000,int(episode_limit)))
+    sql=f"""
+      WITH picked AS (
+        SELECT entity_key,event_ts,asset,horizon,payload,model_version
+        FROM ledger_events
+        WHERE event_type='decision'
+        ORDER BY event_ts {order}
+        LIMIT %s
+      )
+      SELECT d.entity_key,d.event_ts,d.asset,d.horizon,d.payload AS dp,d.model_version,
+             o.payload AS op
+      FROM picked d
+      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+      WHERE o.payload ? 'forward_return'
+      ORDER BY d.event_ts {order}
+    """
+    try:
+        with pg_connect() as c:
+            c.execute("SET statement_timeout TO '12s'")
+            rows=[dict(r) for r in c.execute(sql,(raw_limit,)).fetchall()]
+    except Exception as ex:
+        emit('bounded_learning_query_error',order=order,raw_limit=raw_limit,
+             error=f'{type(ex).__name__}: {ex}')
+        return []
+
+    # Episode detection must run chronologically. For a recent DESC slice, reverse first,
+    # then retain the newest independent episodes.
+    if order=='DESC':
+        rows=list(reversed(rows))
+    gaps={'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
+    last={}
+    episodes=[]
+    for r in rows:
+        dp=r.get('dp') if isinstance(r.get('dp'),dict) else _v84_json(r.get('dp'))
+        op=r.get('op') if isinstance(r.get('op'),dict) else _v84_json(r.get('op'))
+        fr=op.get('forward_return')
+        if fr is None:
+            continue
+        dec=str(dp.get('research_decision') or dp.get('decision') or 'NO_TRADE')
+        regime=str(dp.get('regime') or 'UNKNOWN')
+        ts=r.get('event_ts')
+        if isinstance(ts,str):
+            try: ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
+            except Exception: ts=None
+        if ts is not None and getattr(ts,'tzinfo',None) is None:
+            ts=ts.replace(tzinfo=timezone.utc)
+        key=(str(r.get('asset')),str(r.get('horizon')))
+        prev=last.get(key)
+        is_new=(prev is None or dec!=prev['decision'] or regime!=prev['regime'])
+        if not is_new and ts is not None and prev.get('ts') is not None:
+            is_new=(ts-prev['ts']).total_seconds()>gaps.get(key[1],86400)
+        last[key]={'decision':dec,'regime':regime,'ts':ts}
+        if not is_new:
+            continue
+        episodes.append({
+            'entity_key':r.get('entity_key'),'event_ts':r.get('event_ts'),
+            'asset':r.get('asset'),'horizon':r.get('horizon'),'regime':regime,
+            'decision':dec,'research_decision':dec,'forward_return':float(fr),
+            'model_version':r.get('model_version'),'dp':dp,'op':op
+        })
+    return episodes[-episode_limit:] if order=='DESC' else episodes[:episode_limit]
+
+
+def _matched_strata_learning():
+    if not pg_enabled():
+        return {'status':'postgres_required'}
+    fetch=max(200,min(600,LEARNING_PROGRESS_WINDOW*5))
+    raw=max(5000,min(12000,fetch*16))
+    early=_bounded_completed_episode_rows('ASC',raw,fetch)
+    recent=_bounded_completed_episode_rows('DESC',raw,fetch)
+    eg={}; rg={}
+    for r in early:
+        eg.setdefault((r['asset'],r['horizon'],str(r.get('regime') or 'UNKNOWN')),[]).append(r)
+    for r in recent:
+        rg.setdefault((r['asset'],r['horizon'],str(r.get('regime') or 'UNKNOWN')),[]).append(r)
+    pairs=[]
+    for k in sorted(set(eg)&set(rg)):
+        n=min(len(eg[k]),len(rg[k]),LEARNING_INDEX_MAX_PER_STRATUM)
+        if n<LEARNING_INDEX_STRATA_MIN_N:
+            continue
+        e=_learning_metrics_extended(eg[k][:n])
+        r=_learning_metrics_extended(rg[k][-n:])
+        pairs.append((k,n,e,r))
+    def avg(field,which):
+        vals=[]
+        for _,_,e,r in pairs:
+            v=(e if which=='e' else r).get(field)
+            if v is not None:
+                vals.append(float(v))
+        return sum(vals)/len(vals) if vals else None
+    em={x:avg(x,'e') for x in ('hit_rate','avg_signed_return','no_trade_miss_rate','capture_rate','wrong_side_rate')}
+    rm={x:avg(x,'r') for x in ('hit_rate','avg_signed_return','no_trade_miss_rate','capture_rate','wrong_side_rate')}
+    em['n']=sum(n for _,n,_,_ in pairs); rm['n']=em['n']
+    return {
+        'status':'ok' if pairs else 'BUILDING','baseline':em,'current':rm,
+        'matched_strata':len(pairs),'matched_observations_each_side':em['n'],
+        'strata':[{'asset':k[0],'horizon':k[1],'regime':k[2],'n_each':n} for k,n,_,_ in pairs[:80]],
+        'sampling':'bounded_indexed_episode_slices','raw_limit_each_side':raw,'episode_limit_each_side':fetch
+    }
+
+
+def learning_progress_v1():
+    if not pg_enabled():
+        return {'status':'postgres_required'}
+    lim=max(30,min(300,LEARNING_PROGRESS_WINDOW))
+    raw=max(3000,min(8000,lim*24))
+    early=_bounded_completed_episode_rows('ASC',raw,lim)
+    recent=_bounded_completed_episode_rows('DESC',raw,lim)
+    em=_window_learning_metrics(early)
+    rm=_window_learning_metrics(recent)
+    if em['n']<20 or rm['n']<20 or em.get('hit_rate') is None or rm.get('hit_rate') is None:
+        idx=None; status='BUILDING'
+    else:
+        hit_component=clip(rm['hit_rate']/max(em['hit_rate'],0.20),0.5,1.5)
+        bmiss=em.get('no_trade_miss_rate'); rmiss=rm.get('no_trade_miss_rate')
+        miss_component=1.0 if bmiss is None or rmiss is None else clip((1-rmiss)/max(0.2,1-bmiss),0.5,1.5)
+        be=em.get('avg_signed_return') or 0.0; re=rm.get('avg_signed_return') or 0.0
+        edge_component=clip(1.0+(re-be)/0.01,0.5,1.5)
+        idx=round(100*(0.55*hit_component+0.25*miss_component+0.20*edge_component),1)
+        status='MEASURABLE'
+    try:
+        with pg_connect() as c:
+            c.execute("SET statement_timeout TO '5s'")
+            kg=c.execute("SELECT COUNT(*) sources FROM knowledge_sources").fetchone()
+            kr=c.execute("SELECT COUNT(*) rules FROM knowledge_rules").fetchone()
+    except Exception:
+        kg=kr={}
+    versions=[]
+    for r in early+recent:
+        if r.get('model_version') and r['model_version'] not in versions:
+            versions.append(r['model_version'])
+    confidence='HIGH' if min(em['n'],rm['n'])>=100 else 'MEDIUM' if min(em['n'],rm['n'])>=40 else 'LOW'
+    return {
+        'status':status,'index_vs_start':idx,'baseline_index':100,'confidence':confidence,'window':lim,
+        'baseline':em,'current':rm,
+        'hit_rate_delta_pp':None if em.get('hit_rate') is None or rm.get('hit_rate') is None else round(100*(rm['hit_rate']-em['hit_rate']),2),
+        'avg_signed_return_delta':None if em.get('avg_signed_return') is None or rm.get('avg_signed_return') is None else rm['avg_signed_return']-em['avg_signed_return'],
+        'no_trade_miss_delta_pp':None if em.get('no_trade_miss_rate') is None or rm.get('no_trade_miss_rate') is None else round(100*(rm['no_trade_miss_rate']-em['no_trade_miss_rate']),2),
+        'knowledge_growth':{'current_sources':(kg or {}).get('sources'),'current_rules':(kr or {}).get('rules')},
+        'versions_seen':versions[-8:],
+        'sampling':'bounded_indexed_episode_slices',
+        'definition':'100 = earliest bounded independent completed-decision window; higher is better only when sample is measurable.'
+    }
+
+
+def refresh_rule_stats():
+    # Recent independent evidence is sufficient for live lifecycle governance; OOS statistics
+    # remain the promotion authority. Avoid recomputing window functions over the full ledger.
+    if not pg_enabled():
+        return {'rows':0,'status_changes':0,'status':'postgres_required'}
+    episodes=_bounded_completed_episode_rows('DESC',12000,3500)
+    if not episodes:
+        return {'rows':0,'status_changes':0,'status':'bounded_query_empty'}
+    buckets={}
+    for r in episodes:
+        dp=r.get('dp') or {}; op=r.get('op') or {}
+        try: fr=float(op.get('forward_return'))
+        except Exception: continue
+        mfe=op.get('mfe'); mae=op.get('mae')
+        try: mfe=None if mfe is None else float(mfe)
+        except Exception: mfe=None
+        try: mae=None if mae is None else float(mae)
+        except Exception: mae=None
+        for k in (dp.get('knowledge_shadow_matches') or []):
+            if not isinstance(k,dict):
+                continue
+            action=str(k.get('action') or '')
+            rid=k.get('rule_id')
+            if not rid or action not in ('LONG','SHORT'):
+                continue
+            key=(str(rid),str(r.get('asset')),str(r.get('horizon')))
+            z=buckets.setdefault(key,{'n':0,'hits':0,'ret':0.0,'mfe':0.0,'mfe_n':0,'mae':0.0,'mae_n':0})
+            sr=fr if action=='LONG' else -fr
+            z['n']+=1; z['hits']+=1 if sr>0 else 0; z['ret']+=sr
+            smfe=mfe if action=='LONG' else (None if mae is None else -mae)
+            smae=mae if action=='LONG' else (None if mfe is None else -mfe)
+            if smfe is not None: z['mfe']+=smfe; z['mfe_n']+=1
+            if smae is not None: z['mae']+=smae; z['mae_n']+=1
+    try:
+        with pg_connect() as c:
+            c.execute("SET statement_timeout TO '12s'")
+            for (rid,asset,horizon),z in buckets.items():
+                n=z['n']; hits=z['hits']; hr=hits/n if n else None
+                c.execute("""INSERT INTO knowledge_rule_stats(rule_id,asset,horizon,n,hits,hit_rate,avg_signed_return,avg_mfe,avg_mae,updated_at)
+                             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                             ON CONFLICT(rule_id,asset,horizon) DO UPDATE SET
+                             n=EXCLUDED.n,hits=EXCLUDED.hits,hit_rate=EXCLUDED.hit_rate,
+                             avg_signed_return=EXCLUDED.avg_signed_return,avg_mfe=EXCLUDED.avg_mfe,
+                             avg_mae=EXCLUDED.avg_mae,updated_at=EXCLUDED.updated_at""",
+                          (rid,asset,horizon,n,hits,hr,z['ret']/n if n else None,
+                           z['mfe']/z['mfe_n'] if z['mfe_n'] else None,
+                           z['mae']/z['mae_n'] if z['mae_n'] else None,now()))
+        changes=apply_rule_lifecycle()
+        return {'rows':len(buckets),'status_changes':changes,'status':'bounded_recent_episode_window',
+                'episodes_used':len(episodes)}
+    except Exception as ex:
+        emit('bounded_rule_stats_error',error=f'{type(ex).__name__}: {ex}')
+        return {'rows':0,'status_changes':0,'status':'error','error':f'{type(ex).__name__}: {ex}'}
+"""
+    dst,ch=_insert_before_once(
+        dst,"def _learning_progress_v2_compute():",bounded_learning,
+        "def _bounded_completed_episode_rows(","v84.3 bounded learning SQL")
+    if ch: applied.append("bounded_learning_sql")
+
     if dst!=src:
         _write(TARGET,dst)
     return applied
@@ -424,6 +642,7 @@ def _verify():
         'counterfactual':"'counterfactual_horizon_utility'" in intel,
         'flip_guard':'v84_direction_flip_confirmed(x,current_direction)' in intel,
         'background_learning':'xp=refresh_experience_lessons()' in intel,
+        'bounded_learning_sql':'def _bounded_completed_episode_rows(' in intel and 'bounded_recent_episode_window' in intel,
         'learning_index':'def learning_index_v2()' in intel,
         'portfolio_candidate_book':'def _candidate_book_v84(summary):' in port,
         'portfolio_v84_routing':'candidates=_candidate_book_v84(summary)' in port,
