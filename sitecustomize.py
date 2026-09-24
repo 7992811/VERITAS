@@ -199,15 +199,13 @@ def _patch_intelligence():
     dst,ch=_replace_once(dst,old,new,"persist v84 canonical policy")
     if ch: applied.append("canonical_policy")
 
-    old="""                plan=x.get('trade_plan') or {}
-                stage=str(x.get('decision_stage') or tr.get('stage') or 'HOLD')
-                desired=clip(float(plan.get('v84_target_fraction') or plan.get('initial_position_fraction') or cur),0.05,1.0)
-
-                # Scale only; soft deterioration no longer forces an independent shadow reduction.
-                if desired>cur+1e-6 and stage in ('CONFIRMED_SCALE','CONFIRMED_FULL','ENTER_AND_SCALE','ENTER_FULL_CANDIDATE'):"""
+    old="""                stage=str(x.get('decision_stage') or tr.get('stage') or 'HOLD'); plan=x.get('trade_plan') or {}; ta=x.get('tradeability') or {}
+                desired=clip(float(plan.get('initial_position_fraction') or cur),0.0,1.0)
+                # Confirmation can add; deteriorating evidence can reduce, but only in shadow until separately validated.
+                if stage in ('CONFIRMED_SCALE','CONFIRMED_FULL') and desired>cur+1e-6:"""
     new="""                plan=x.get('trade_plan') or {}
                 execp=plan.get('execution_policy') or setup_payload.get('execution_policy') or {}
-                stage=str(x.get('decision_stage') or tr.get('stage') or 'HOLD')
+                stage=str(x.get('decision_stage') or tr.get('stage') or 'HOLD'); ta=x.get('tradeability') or {}
                 desired=clip(float(plan.get('initial_position_fraction') or cur),0.05,1.0)
                 if execp and not bool(execp.get('add_allowed',True)):
                     desired=min(desired,cur)
