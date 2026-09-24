@@ -1,0 +1,265 @@
+{
+  "contract": "V86_TEAM_EXPERIENCE_SEED_V1",
+  "principles": {
+    "separate_from_books": true,
+    "separate_from_closed_trade_learning": true,
+    "human_experience_is_prior_not_proof": true,
+    "cannot_reverse_signal": true,
+    "cannot_bypass_hard_gates": true,
+    "market_hypotheses_require_validation": true,
+    "management_constraints_may_apply_immediately": true
+  },
+  "cards": [
+    {
+      "card_id": "TEAM_POLICY_SIGNAL_FIRST_PROBE_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "PM/TRADER",
+      "category": "MANAGEMENT_CONSTRAINT",
+      "asset": "*",
+      "horizon": "*",
+      "regime": "*",
+      "direction": "*",
+      "setup_family": "*",
+      "source_text": "Если хотя бы один горизонт допускает вход после жёстких safety/source/risk gates, не терять сигнал: начинать с малого объёма и увеличивать позицию только после подтверждения.",
+      "conditions": {
+        "hard_gates_pass": true,
+        "directional_signal_required": true
+      },
+      "rule": {
+        "action": "PROBE_WHEN_SAFE",
+        "probe_fraction": 0.05,
+        "scale_on_confirmation": true,
+        "can_bypass_hard_gate": false
+      },
+      "exceptions": [
+        "нет структурного стопа",
+        "нет положительной экономики сделки",
+        "source/time gate fail"
+      ],
+      "error_criterion": "Сигнал был валиден и экономически допустим, но система осталась полностью в cash без отдельной причины.",
+      "direct_authority": true
+    },
+    {
+      "card_id": "TEAM_POLICY_LATE_SIGNAL_NO_SCALE_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "PM/RISK",
+      "category": "MANAGEMENT_CONSTRAINT",
+      "asset": "*",
+      "horizon": "*",
+      "regime": "*",
+      "direction": "*",
+      "setup_family": "*",
+      "source_text": "Поздний сигнал надо показывать, но не усиливать; поздний вход не должен получать большой размер.",
+      "conditions": {
+        "late_entry": true
+      },
+      "rule": {
+        "action": "CAP_SIZE",
+        "max_fraction": 0.05,
+        "no_scale": true
+      },
+      "exceptions": [],
+      "error_criterion": "Поздний/растянутый вход получил увеличение позиции без нового подтверждения.",
+      "direct_authority": true
+    },
+    {
+      "card_id": "TEAM_POLICY_TWO_STOP_RANGE_PAUSE_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "TRADER/RISK",
+      "category": "MANAGEMENT_CONSTRAINT",
+      "asset": "*",
+      "horizon": "*",
+      "regime": "RANGE*",
+      "direction": "*",
+      "setup_family": "*",
+      "source_text": "Если в шумном боковике дважды выбило по стопу, не продолжать churn: ждать снижения волатильности или новой структуры.",
+      "conditions": {
+        "recent_stopouts_same_asset_min": 2,
+        "range_regime": true
+      },
+      "rule": {
+        "action": "PAUSE_NEW_RISK_UNTIL_NEW_STRUCTURE",
+        "no_scale": true
+      },
+      "exceptions": [
+        "новый подтверждённый импульсный пробой с объёмом"
+      ],
+      "error_criterion": "Третья однотипная попытка открыта без изменения режима/структуры после двух выбиваний.",
+      "direct_authority": true
+    },
+    {
+      "card_id": "TEAM_CASE_NQ_TREND_DAY_MISSED_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "PM/TRADER",
+      "category": "MARKET_HYPOTHESIS",
+      "asset": "NQ",
+      "horizon": "*",
+      "regime": "UPTREND*",
+      "direction": "LONG",
+      "setup_family": "TREND",
+      "source_text": "При сильном тренд-дне Nasdaq/NQ рост на старших и младших ТФ не должен превращаться в NO_TRADE только из-за одного слабого 1H-фильтра; ранний частичный LONG и добор после подтверждения.",
+      "conditions": {
+        "trend_day": true,
+        "multi_tf_alignment": true
+      },
+      "rule": {
+        "action": "PREFER_EARLY_LONG_PROBE_THEN_SCALE",
+        "probe_fraction": 0.05
+      },
+      "exceptions": [
+        "hard invalidation",
+        "source/time gate fail",
+        "экономика сделки отрицательна"
+      ],
+      "error_criterion": "Сильный тренд-день прошёл без позиции при наличии подтверждённой структуры.",
+      "direct_authority": false
+    },
+    {
+      "card_id": "TEAM_CASE_MOEX_2285_2300_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "PM/TRADER",
+      "category": "MARKET_HYPOTHESIS",
+      "asset": "MOEX",
+      "horizon": "*",
+      "regime": "*",
+      "direction": "LONG",
+      "setup_family": "BREAKOUT",
+      "source_text": "MOEX: зона 2285 рассматривалась как поддержка, 2300 как сопротивление; отскок от поддержки — ранний LONG, закрепление выше сопротивления — усиление. Пропуск такого breakout считать ошибкой.",
+      "conditions": {
+        "support_reference": 2285,
+        "resistance_reference": 2300
+      },
+      "rule": {
+        "action": "LONG_ON_SUPPORT_OR_CONFIRMED_BREAKOUT"
+      },
+      "exceptions": [
+        "уровни устарели и структура рынка изменилась"
+      ],
+      "error_criterion": "Подтверждённый breakout/отскок был распознан, но торговая цепочка не открыла позицию.",
+      "direct_authority": false
+    },
+    {
+      "card_id": "TEAM_CASE_BRENT_10120_BREAKDOWN_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "TRADER/PM",
+      "category": "MARKET_HYPOTHESIS",
+      "asset": "BRENT",
+      "horizon": "*",
+      "regime": "*",
+      "direction": "SHORT",
+      "setup_family": "BREAKOUT",
+      "source_text": "Brent: пробой 101.20 вниз на объёме — SHORT с защитой выше 101.80; позднее присоединение после уже прошедшего импульса считать ошибкой.",
+      "conditions": {
+        "historical_trigger": 101.2,
+        "volume_confirmation": true
+      },
+      "rule": {
+        "action": "SHORT_CONFIRMED_DOWNSIDE_BREAKOUT",
+        "historical_stop_reference": 101.8
+      },
+      "exceptions": [
+        "исторические абсолютные уровни не переносятся на новый ценовой режим"
+      ],
+      "error_criterion": "Импульсный пробой вниз был, но система вошла существенно позже либо не вошла без жёсткого veto.",
+      "direct_authority": false
+    },
+    {
+      "card_id": "TEAM_CASE_BRENT_REVERSAL_996_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "TRADER/PM",
+      "category": "MARKET_HYPOTHESIS",
+      "asset": "BRENT",
+      "horizon": "*",
+      "regime": "*",
+      "direction": "LONG",
+      "setup_family": "TACTICAL_REVERSAL",
+      "source_text": "Brent: после снижения разворотный LONG около 99.6 был предпочтительнее позднего входа около 100.27; стоп должен опираться на структуру, исторически около 99.30.",
+      "conditions": {
+        "historical_reversal_zone": 99.6
+      },
+      "rule": {
+        "action": "PREFER_EARLY_REVERSAL_ENTRY_OVER_LATE_CHASE"
+      },
+      "exceptions": [
+        "абсолютные уровни исторические и не используются как текущие триггеры"
+      ],
+      "error_criterion": "Система пропустила ранний разворот и присоединилась после значительной части движения.",
+      "direct_authority": false
+    },
+    {
+      "card_id": "TEAM_CASE_BTC_1H_TREND_NO_TRADE_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "TRADER/PM",
+      "category": "MARKET_HYPOTHESIS",
+      "asset": "BTC",
+      "horizon": "1h",
+      "regime": "*",
+      "direction": "*",
+      "setup_family": "TREND",
+      "source_text": "BTC на 1H не должен автоматически оставаться NO_TRADE, когда тренд и структура уже подтверждены; младший горизонт должен участвовать в раннем входе.",
+      "conditions": {
+        "trend_structure_confirmed": true
+      },
+      "rule": {
+        "action": "ALLOW_SAFE_EARLY_PROBE"
+      },
+      "exceptions": [
+        "hard invalidation",
+        "negative net R/R",
+        "source/time gate fail"
+      ],
+      "error_criterion": "Подтверждённая 1H структура систематически не приводит даже к малому probe.",
+      "direct_authority": false
+    },
+    {
+      "card_id": "TEAM_CASE_CNYRUBF_SIGNAL_EXECUTION_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "PM/TRADER",
+      "category": "MARKET_HYPOTHESIS",
+      "asset": "CNYRUBF",
+      "horizon": "*",
+      "regime": "*",
+      "direction": "*",
+      "setup_family": "*",
+      "source_text": "Если CNYRUBF даёт направленный сигнал и проходят жёсткие фильтры безопасности/источника/экономики, сигнал должен приводить хотя бы к малому входу, а не теряться между аналитикой и портфелем.",
+      "conditions": {
+        "directional_signal_required": true
+      },
+      "rule": {
+        "action": "TRACE_SIGNAL_TO_PORTFOLIO_OR_EXPLICIT_VETO"
+      },
+      "exceptions": [
+        "hard veto",
+        "negative net economics"
+      ],
+      "error_criterion": "Есть directional signal, но нет ни сделки, ни прозрачного veto в execution trace.",
+      "direct_authority": false
+    },
+    {
+      "card_id": "TEAM_POLICY_VOLUME_BREAKOUT_SCALE_V1",
+      "source_kind": "PROJECT_TEAM_FEEDBACK",
+      "author_role": "PM/TRADER",
+      "category": "MARKET_HYPOTHESIS",
+      "asset": "*",
+      "horizon": "*",
+      "regime": "*",
+      "direction": "*",
+      "setup_family": "BREAKOUT",
+      "source_text": "Импульсный пробой с подтверждённым объёмом допускает более агрессивный набор позиции; без объёма пробой нельзя усиливать.",
+      "conditions": {
+        "breakout": true,
+        "volume_confirmation": true
+      },
+      "rule": {
+        "action": "ALLOW_FASTER_SCALE_AFTER_CONFIRMATION"
+      },
+      "exceptions": [
+        "late entry",
+        "weak net R/R",
+        "hard risk veto"
+      ],
+      "error_criterion": "Сильный подтверждённый breakout не масштабируется либо слабый breakout без объёма масштабируется слишком агрессивно.",
+      "direct_authority": false
+    }
+  ]
+}
