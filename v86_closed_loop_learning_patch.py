@@ -357,7 +357,6 @@ def _choose_profile(contexts,row,direction):
 def apply_learning_to_summary(ledger,summary,at=None):
     refresh=refresh_learning_state(ledger,at)
     with ledger.read() as c:
-        ensure_schema(c)
         rows=c.execute("""SELECT context_key,scope,unique_ideas,wins,losses,posterior_mean,posterior_low,posterior_high,
                          direction_failure_rate,execution_failure_rate,scale_cap,no_scale,entry_policy,
                          management_policy,authority,validated_rule FROM v86_learning_contexts""").fetchall()
