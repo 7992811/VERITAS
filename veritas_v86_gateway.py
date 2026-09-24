@@ -877,8 +877,8 @@ def app_html():
         value,count=1,flags=re.I
     )
     value = value.replace(
-        "document.getElementById('users').textContent=\`\${um.unique_users??0} / \${um.online_users??0}\`;document.getElementById('userssmall').textContent='уникальных / онлайн сейчас';",
-        "document.getElementById('users').textContent=\`\${um.online_users??0} / \${um.unique_users??0}\`;document.getElementById('userssmall').textContent='онлайн сейчас / уникальных';"
+        "document.getElementById('users').textContent=`${um.unique_users??0} / ${um.online_users??0}`;document.getElementById('userssmall').textContent='уникальных / онлайн сейчас';",
+        "document.getElementById('users').textContent=`${um.online_users??0} / ${um.unique_users??0}`;document.getElementById('userssmall').textContent='онлайн сейчас / уникальных';"
     )
     value = re.sub(r'<div class="k">(?:RUONIA|Руониа)</div><div[^>]*>[^<]*</div>','',value,flags=re.I)
     # Remove the complete legacy RUONIA/USD-RUB portfolio footer.
