@@ -4,6 +4,33 @@ import sys
 root=Path(sys.argv[1] if len(sys.argv)>1 else '.').resolve()
 
 # A) One fresh primary source is sufficient for paper execution.
+p=root/'veritas_v85/domain.py'
+_d=p.read_text(encoding='utf-8')
+_old="""        if self.source_verified is not True:
+            return "SOURCE_NOT_VERIFIED"
+        if not self.secondary_source or self.secondary_source == self.primary_source or self.secondary_time is None:
+            return "INDEPENDENT_VERIFICATION_MISSING"
+        for name, ts in (("PRIMARY", self.primary_time), ("SECONDARY", self.secondary_time)):
+            age = (at - ts).total_seconds()
+            if age < 0:
+                return name + "_FROM_FUTURE"
+            if age > self.max_age_seconds:
+                return name + "_STALE"
+"""
+_new="""        if self.source_verified is not True:
+            return "SOURCE_NOT_VERIFIED"
+        # One-source paper policy: only the primary timestamp is a hard execution requirement.
+        # Secondary data is a quality diagnostic and may be absent or stale without blocking.
+        age = (at - self.primary_time).total_seconds()
+        if age < 0:
+            return "PRIMARY_FROM_FUTURE"
+        if age > self.max_age_seconds:
+            return "PRIMARY_STALE"
+"""
+if _old not in _d: raise SystemExit('SINGLE_SOURCE_QUOTE_PROBLEM_ANCHOR_NOT_FOUND')
+p.write_text(_d.replace(_old,_new,1),encoding='utf-8')
+print('SINGLE_SOURCE_QUOTE_PROBLEM_PATCH_OK')
+
 p=root/'veritas_v85/routing.py'
 s=p.read_text(encoding='utf-8')
 old="    if row.get('source_gate_pass') is not True: return 'SOURCE_GATE'\n"
