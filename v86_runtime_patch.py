@@ -134,10 +134,23 @@ old="""        outcome={'net_pnl':str(episode_net),'gross_close_leg':str(gross),
 """
 new="""        outcome={'net_pnl':str(episode_net),'gross_close_leg':str(gross),'funding_close_leg':str(fund),
                  'entry_fee':str(entry_fee),'exit_fee':str(fee),'exit_price':str(quote.price),
+                 'outcome_finalized':True,'finalization_contract':'CLOSED_FINAL_V1','learning_eligible':True,
                  'observed_mfe_fraction':str(mfe),'observed_mae_fraction':str(mae),
 """
 if old not in s: raise SystemExit('BOOK_OUTCOME_ANCHOR_NOT_FOUND')
-p.write_text(s.replace(old,new),encoding='utf-8')
+s=s.replace(old,new)
+guard_anchor="        insert_lesson(c,lesson)\n"
+guard="""        _required_final=('net_pnl','gross_close_leg','funding_close_leg','entry_fee','exit_fee','exit_price',
+                         'observed_mfe_fraction','observed_mae_fraction','giveback_from_observed_peak',
+                         'held_seconds','exit_reason','path_points')
+        _missing_final=[k for k in _required_final if outcome.get(k) is None]
+        if _missing_final or int(outcome.get('path_points') or 0)<2:
+            raise RuntimeError('CLOSED_FINAL_INCOMPLETE:'+','.join(_missing_final or ['path_points<2']))
+        insert_lesson(c,lesson)
+"""
+if guard_anchor not in s: raise SystemExit('BOOK_LEARNING_GUARD_ANCHOR_NOT_FOUND')
+s=s.replace(guard_anchor,guard,1)
+p.write_text(s,encoding='utf-8')
 
 # 5) Routing v86.3: choose the best EXECUTABLE horizon and size in 5% steps up to 250% NAV.
 p=root/'veritas_v85/routing.py'
