@@ -166,6 +166,9 @@ def _context_specs(x):
       ('EXACT',a,h,s,r,d),
       ('SETUP_REGIME','*',h,s,r,d),
       ('ASSET_HORIZON',a,h,'*','*',d),
+      # Conservative transfer layer: same asset + same direction across horizons/setups.
+      # It may control scale/management only; signal direction remains immutable upstream.
+      ('ASSET_DIRECTION',a,'*','*','*',d),
       ('SETUP_FAMILY','*','*',s,'*',d),
     ]
 
@@ -341,9 +344,10 @@ def _choose_profile(contexts,row,direction):
       _context_key('EXACT',a,h,s,r,direction),
       _context_key('SETUP_REGIME','*',h,s,r,direction),
       _context_key('ASSET_HORIZON',a,h,'*','*',direction),
+      _context_key('ASSET_DIRECTION',a,'*','*','*',direction),
       _context_key('SETUP_FAMILY','*','*',s,'*',direction),
     ]
-    mins={'EXACT':3,'SETUP_REGIME':4,'ASSET_HORIZON':4,'SETUP_FAMILY':5}
+    mins={'EXACT':3,'SETUP_REGIME':4,'ASSET_HORIZON':4,'ASSET_DIRECTION':3,'SETUP_FAMILY':5}
     for key in candidates:
         x=contexts.get(key)
         if x and x['unique_ideas']>=mins.get(x['scope'],99):
@@ -361,18 +365,23 @@ def apply_learning_to_summary(ledger,summary,at=None):
                          direction_failure_rate,execution_failure_rate,scale_cap,no_scale,entry_policy,
                          management_policy,authority,validated_rule FROM v86_learning_contexts""").fetchall()
     contexts={str(r['context_key']):_profile_from_row(dict(r)) for r in rows}
-    applied=0
+    applied=0;directional=0;asset_direction_applied=0
     for row in summary:
         d=str(row.get('research_decision') or row.get('decision') or 'NO_TRADE')
         if d not in ('LONG','SHORT'):
             row['closed_loop_learning']={'authority':'OBSERVE_ONLY','reason':'NO_DIRECTION'}
             continue
+        directional+=1
         p=_choose_profile(contexts,row,d)
         row['closed_loop_learning']={**p,'contract':CONTRACT,
           'decision_influence':p['authority']!='OBSERVE_ONLY',
           'principle':'direction remains owned by signal model; learning controls horizon preference, scale and profit protection'}
-        if p['authority']!='OBSERVE_ONLY':applied+=1
-    return summary,{**refresh,'directional_rows_with_learning':applied}
+        if p['authority']!='OBSERVE_ONLY':
+            applied+=1
+            if p.get('scope')=='ASSET_DIRECTION':asset_direction_applied+=1
+    return summary,{**refresh,'directional_rows':directional,'directional_rows_with_learning':applied,
+                    'asset_direction_fallback_rows':asset_direction_applied,
+                    'learning_match_rate':(applied/directional if directional else 0.0)}
 
 def record_learning_applications(ledger,summary,routing,at=None):
     at=at or _now();stamp=_iso(at); routed=set()
