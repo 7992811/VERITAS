@@ -834,7 +834,7 @@ _close_inject="""        original['outcome']=outcome
         append_closed_trade_from_live(c,p,original,outcome,at,episode_net)
         self.fault_hook("after_lesson_write")
 """
-if 'append_closed_trade_from_live(c,p,original,outcome,at,episode_net)' not in _s:
+if '        append_closed_trade_from_live(c,p,original,outcome,at,episode_net)\n' not in _s:
     if _close_anchor not in _s: raise SystemExit('CLOSED_LEDGER_CLOSE_ANCHOR_NOT_FOUND')
     _s=_s.replace(_close_anchor,_close_inject,1)
 p.write_text(_s,encoding='utf-8')
