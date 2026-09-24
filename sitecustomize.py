@@ -293,7 +293,7 @@ def _patch_intelligence():
 
     # v84.3 operational repair: bound learning analytics to indexed slices.
     # Full-history window CTEs saturated the 0.1 CPU PostgreSQL and caused DB restarts.
-    bounded_learning = r"""
+    bounded_learning = r'''
 # =========================
 # VERITAS v84.3 BOUNDED LEARNING SQL
 # Keeps learning durable while preventing analytical full-table scans from blocking
@@ -503,7 +503,7 @@ def refresh_rule_stats():
     except Exception as ex:
         emit('bounded_rule_stats_error',error=f'{type(ex).__name__}: {ex}')
         return {'rows':0,'status_changes':0,'status':'error','error':f'{type(ex).__name__}: {ex}'}
-"""
+'''
     dst,ch=_insert_before_once(
         dst,"def _learning_progress_v2_compute():",bounded_learning,
         "def _bounded_completed_episode_rows(","v84.3 bounded learning SQL")
