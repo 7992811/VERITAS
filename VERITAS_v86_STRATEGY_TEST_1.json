@@ -1,0 +1,38 @@
+{
+  "release": "VERITAS v86 Strategy Test 1",
+  "started_at_utc": "2026-09-24T07:55:00Z",
+  "initial_nav_rub_per_portfolio": 1000000,
+  "portfolios": [
+    "Champion",
+    "Challenger",
+    "Impulse",
+    "Trend",
+    "Range",
+    "Reversal",
+    "Event",
+    "RelativeValue"
+  ],
+  "execution_mode": "synthetic_paper",
+  "commission_rate": 0.0005,
+  "max_gross": 2,
+  "evaluation_priority": [
+    "stable_profitable_trade_share_after_costs",
+    "net_expectancy",
+    "profit_factor",
+    "net_return",
+    "opportunity_capture",
+    "max_drawdown"
+  ],
+  "learning": {
+    "enabled": true,
+    "positive_auto_promotion": false,
+    "matched_cohort_required": true,
+    "vault_veto": true,
+    "duplicate_idea_counts_once": true
+  },
+  "notes": [
+    "All eight portfolios start from the same RUB 1,000,000 baseline.",
+    "RelativeValue remains shadow/execution-disabled until a validated two-leg engine exists.",
+    "Reported probability must be calibrated/empirical when available; heuristic signal strength is not relabeled as probability."
+  ]
+}
