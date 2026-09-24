@@ -983,3 +983,15 @@ try:
 finally:
     _ss_sys.argv=_ss_argv
 print('V86_SINGLE_SOURCE_CAPTURE_RUNTIME_ACTIVE')
+
+# 18) Movement Genesis V1 + staged scale-in + movement-aware profit harvest.
+import runpy as _mg_runpy, sys as _mg_sys
+_mg_patch=root.parent/'v86_movement_genesis_patch.py'
+if not _mg_patch.is_file(): raise SystemExit('V86_MOVEMENT_GENESIS_PATCH_MISSING')
+_mg_argv=list(_mg_sys.argv)
+try:
+    _mg_sys.argv=[str(_mg_patch),str(root)]
+    _mg_runpy.run_path(str(_mg_patch),run_name='__main__')
+finally:
+    _mg_sys.argv=_mg_argv
+print('V86_MOVEMENT_GENESIS_RUNTIME_ACTIVE')
