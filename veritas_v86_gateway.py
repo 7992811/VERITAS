@@ -962,6 +962,48 @@ def app_html():
         value = value.replace('</body>', closed_fallback + '</body>')
         print(json.dumps({'event':'V86_CLOSED_TRADE_UI_FALLBACK','status':'installed'},
                          ensure_ascii=False,separators=(',',':')),flush=True)
+    top_metric_layout = r"""<script id="V86_TOP_METRIC_LAYOUT">
+(function(){
+ function install(){
+   const market=document.getElementById('market');
+   const sys=document.getElementById('sys'), users=document.getElementById('users');
+   const src=document.getElementById('src'), rules=document.getElementById('rules'), mgr=document.getElementById('mgr');
+   if(!market||!sys||!users||!src||!rules||!mgr)return;
+
+   const sysCard=sys.closest('.card'), userCard=users.closest('.card');
+   const srcCard=src.closest('.card'), rulesCard=rules.closest('.card'), mgrCard=mgr.closest('.card');
+   if(!sysCard||!userCard||!srcCard||!rulesCard||!mgrCard)return;
+
+   // Rename the first card to the user-facing meaning requested for the compact row.
+   const sysLabel=sysCard.querySelector('.k');
+   if(sysLabel)sysLabel.textContent='Статус';
+
+   let statusRow=document.getElementById('v86-status-users-row');
+   if(!statusRow){
+     statusRow=document.createElement('div');
+     statusRow.id='v86-status-users-row';
+     statusRow.className='v86-top-row v86-status-users-row';
+     market.insertBefore(statusRow,sysCard);
+   }
+   if(sysCard.parentElement!==statusRow)statusRow.appendChild(sysCard);
+   if(userCard.parentElement!==statusRow)statusRow.appendChild(userCard);
+
+   let knowledgeRow=document.getElementById('v86-knowledge-row');
+   if(!knowledgeRow){
+     knowledgeRow=document.createElement('div');
+     knowledgeRow.id='v86-knowledge-row';
+     knowledgeRow.className='v86-top-row v86-knowledge-row';
+     const depth=document.getElementById('capacity');
+     const depthCard=depth&&depth.closest('.card');
+     if(depthCard&&depthCard.nextSibling)market.insertBefore(knowledgeRow,depthCard.nextSibling);
+     else market.insertBefore(knowledgeRow,market.firstChild);
+   }
+   [srcCard,rulesCard,mgrCard].forEach(c=>{if(c.parentElement!==knowledgeRow)knowledgeRow.appendChild(c)});
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',install,{once:true});else install();
+})();
+</script>"""
+    value=value.replace('</body>',top_metric_layout+'</body>')
     first_screen_script = r"""<script id="V86_FIRST_SCREEN_LIVE_USERS">
 (function(){
  const key='veritas_visitor';
@@ -1046,6 +1088,31 @@ def app_html():
  #portfoliotrades .closed-lesson b{font-size:7.2px}
  #portfoliotrades .closed-extra{font-size:7px}
  #portfoliotrades .closed-more-btn{font-size:7.5px;padding:3px 5px}
+}
+.v86-top-row{grid-column:span 12;display:grid;gap:10px;min-width:0}
+.v86-status-users-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+.v86-knowledge-row{grid-template-columns:repeat(3,minmax(0,1fr))}
+.v86-top-row>.card{grid-column:auto!important;margin:0;min-width:0}
+.v86-status-users-row>.card{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;column-gap:14px;align-items:center;padding:12px 16px}
+.v86-status-users-row>.card .k{grid-column:1;grid-row:1 / span 2;margin:0;font-size:11px;white-space:nowrap}
+.v86-status-users-row>.card .v{grid-column:2;grid-row:1;font-size:24px;line-height:1;text-align:right;white-space:nowrap}
+.v86-status-users-row>.card .stamp{grid-column:2;grid-row:2;text-align:right;font-size:9px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v86-knowledge-row>.card{padding:11px 12px;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;column-gap:8px;align-items:center}
+.v86-knowledge-row>.card .k{grid-column:1;grid-row:1;font-size:10px;line-height:1.1;white-space:normal}
+.v86-knowledge-row>.card .v{grid-column:2;grid-row:1;font-size:21px;line-height:1;text-align:right;white-space:nowrap}
+.v86-knowledge-row>.card .stamp{grid-column:1 / span 2;grid-row:2;margin-top:4px;font-size:8px;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:900px){
+ .v86-top-row{gap:6px}
+ .v86-status-users-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .v86-knowledge-row{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .v86-status-users-row>.card{padding:9px 10px;column-gap:7px}
+ .v86-status-users-row>.card .k{font-size:8px}
+ .v86-status-users-row>.card .v{font-size:18px}
+ .v86-status-users-row>.card .stamp{font-size:7px}
+ .v86-knowledge-row>.card{padding:9px 8px;display:block;text-align:left}
+ .v86-knowledge-row>.card .k{font-size:7.5px;min-height:18px;display:flex;align-items:flex-start}
+ .v86-knowledge-row>.card .v{font-size:17px;margin-top:4px;text-align:left}
+ .v86-knowledge-row>.card .stamp{font-size:6.8px;margin-top:3px;white-space:normal;line-height:1.15}
 }
 </style>"""
     value = value.replace('</head>', compact_css + '</head>')
