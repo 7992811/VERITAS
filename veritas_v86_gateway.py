@@ -366,5 +366,21 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 if __name__ == '__main__':
+    try:
+        _pp = transform_portfolios()
+        _ov = overview()
+        _pe = product_experience()
+        print(json.dumps({
+            'event':'V86_GATEWAY_SELFTEST',
+            'portfolio_count':len(_pp.get('portfolios') or []),
+            'initial_nav_rub':_pp.get('initial_nav_rub'),
+            'portfolio_navs':{p.get('name'):p.get('latest',{}).get('nav_rub') for p in (_pp.get('portfolios') or [])},
+            'signal_cells':len((_ov.get('cycle') or {}).get('summary') or []),
+            'decision_cards':len(((_pe.get('decision_cards') or {}).get('cards') or [])),
+            'status':'ok'
+        },ensure_ascii=False,separators=(',',':')),flush=True)
+    except Exception as exc:
+        print(json.dumps({'event':'V86_GATEWAY_SELFTEST','status':'error','error':type(exc).__name__+': '+str(exc)[:250]},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
     port = int(os.getenv('PORT','10000'))
     ThreadingHTTPServer(('0.0.0.0',port), Handler).serve_forever()
