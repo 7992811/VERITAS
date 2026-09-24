@@ -535,6 +535,20 @@ def app_html():
     print(json.dumps({'event':'V86_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
                       'status':'ok' if trade_count==1 else 'error'},ensure_ascii=False,separators=(',',':')),flush=True)
     compact_css = """<style>
+.top h1{
+  color:#D4AF37;
+  letter-spacing:.7px;
+  font-weight:800;
+  text-shadow:0 0 18px rgba(212,175,55,.18);
+}
+.top h1::after{
+  content:' · v86';
+  color:#9C7A2F;
+  font-size:.46em;
+  font-weight:700;
+  letter-spacing:.35px;
+  vertical-align:middle;
+}
 #portfoliopositions .position-card{padding:8px 11px;margin:0 0 6px;border-radius:12px}
 #portfoliopositions .position-head{margin-bottom:6px;align-items:center}
 #portfoliopositions .position-head b{font-size:15px;line-height:1.1}
