@@ -19,6 +19,12 @@ ANALYSIS_CACHE_TTL = 8.0
 OVERVIEW_CACHE_LOCK = threading.Lock()
 OVERVIEW_CACHE = {'at':0.0,'data':None}
 OVERVIEW_CACHE_TTL = 5.0
+FX_CACHE_LOCK = threading.Lock()
+FX_CACHE = {'at':0.0,'data':None}
+FX_CACHE_TTL = 120.0
+APP_HTML_CACHE_LOCK = threading.Lock()
+APP_HTML_CACHE = {'at':0.0,'body':None,'source':None}
+APP_HTML_CACHE_TTL = 300.0
 
 def jget(base, path, timeout=20):
     req = Request(base + path, headers={'User-Agent':'VERITAS-v86-gateway/2.1','Accept':'application/json'})
@@ -146,18 +152,28 @@ def closed_trade_ledger():
     return {'status':'UNAVAILABLE','items':[],'source':'episode_fallback'}
 
 def display_fx_context():
-    """Display-only FX context. Never used by execution/risk decisions."""
+    """Display-only FX context. Never used by execution/risk decisions.
+    It must never delay the first page: stale cached display FX is better than a blocking legacy call.
+    """
+    with FX_CACHE_LOCK:
+        cached=FX_CACHE.get('data'); at=float(FX_CACHE.get('at') or 0.0)
+        if cached is not None and time.time()-at<FX_CACHE_TTL:
+            return dict(cached)
+    result={'usdrub':None,'source':'unavailable'}
     try:
-        data=jget(PROD,'/api/v1/paper-portfolios',10)
+        data=jget(PROD,'/api/v1/paper-portfolios',2.0)
         plist=data.get('portfolios') if isinstance(data,dict) else []
         for p in (plist or []):
             latest=p.get('latest') if isinstance(p,dict) else {}
             rate=num((latest or {}).get('usdrub'))
             if rate and rate>0:
-                return {'usdrub':rate,'source':'production_portfolio_context'}
-    except Exception:
-        pass
-    return {'usdrub':None,'source':'unavailable'}
+                result={'usdrub':rate,'source':'production_portfolio_context'}
+                break
+    except Exception as exc:
+        print('DISPLAY_FX_FALLBACK',type(exc).__name__,flush=True)
+    with FX_CACHE_LOCK:
+        FX_CACHE['at']=time.time(); FX_CACHE['data']=dict(result)
+    return result
 
 def signal(cell):
     cell=dict(cell or {})
@@ -381,7 +397,7 @@ def overview():
         if cached is not None and time.time()-at<OVERVIEW_CACHE_TTL:
             return cached
     try:
-        base = jget(PROD, '/api/v1/overview', 12)
+        base = jget(PROD, '/api/v1/overview', 2.5)
     except Exception as exc:
         print('PROD_OVERVIEW_FALLBACK', type(exc).__name__, flush=True)
         base = {}
@@ -484,7 +500,7 @@ def explain(asset, horizon):
 
 def product_experience():
     try:
-        data = jget(PROD, '/api/v1/product-experience', 12)
+        data = jget(PROD, '/api/v1/product-experience', 2.5)
     except Exception as exc:
         print('PROD_EXPERIENCE_FALLBACK', type(exc).__name__, flush=True)
         data = {}
@@ -675,7 +691,29 @@ def trades():
 
 
 def app_html():
-    body, _ = bget(PROD, '/app')
+    with APP_HTML_CACHE_LOCK:
+        cached=APP_HTML_CACHE.get('body'); at=float(APP_HTML_CACHE.get('at') or 0.0)
+        if cached is not None and time.time()-at<APP_HTML_CACHE_TTL:
+            return cached
+    body=None; source=None
+    for base,label,timeout in ((PROD,'production_ui',3.0),(ARCHIVE_V86,'archive_v86_ui',5.0)):
+        try:
+            raw,_=bget(base,'/app',timeout)
+            if raw and b'<html' in raw.lower():
+                body=raw; source=label; break
+        except Exception as exc:
+            print('APP_HTML_SOURCE_FALLBACK',label,type(exc).__name__,flush=True)
+    if body is None:
+        with APP_HTML_CACHE_LOCK:
+            stale=APP_HTML_CACHE.get('body')
+        if stale is not None:
+            print('APP_HTML_STALE_CACHE_USED',flush=True)
+            return stale
+        # Fail visibly but keep the service useful: API endpoints remain available.
+        body=b"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VERITAS</title>
+<style>body{background:#111820;color:#e9eef3;font-family:Arial,sans-serif;padding:30px}a{color:#9fb6c8}.box{max-width:760px;margin:auto;padding:24px;border:1px solid #44515c;border-radius:16px;background:#18212a}</style></head>
+<body><div class="box"><h1>VERITAS Markets</h1><p>Интерфейс временно переключается на резервный источник. Данные API v86 продолжают работать.</p><p><a href="/api/v1/overview">overview</a> · <a href="/api/v1/product-experience">product experience</a></p></div></body></html>"""
+        source='minimal_fallback'
     value = body.decode('utf-8','replace')
     value = value.replace('Два независимых paper-портфеля по 1 000 000 ₽. Champion — порог входа 70%; Challenger — порог входа 77%. Реальные деньги не используются.',
                           'Восемь независимых модельных paper-портфелей по 1 000 000 ₽. Реальные деньги не используются.')
@@ -846,7 +884,11 @@ def app_html():
 }
 </style>"""
     value = value.replace('</head>', compact_css + '</head>')
-    return value.encode('utf-8')
+    final=value.encode('utf-8')
+    with APP_HTML_CACHE_LOCK:
+        APP_HTML_CACHE['at']=time.time(); APP_HTML_CACHE['body']=final; APP_HTML_CACHE['source']=source
+    print('APP_HTML_READY',source,len(final),flush=True)
+    return final
 
 class Handler(BaseHTTPRequestHandler):
     def send_json(self, data, status=200):
@@ -871,7 +913,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/v1/overview': return self.send_json(overview())
             if path == '/api/v1/paper-portfolios': return self.send_json(transform_portfolios())
             if path == '/api/v1/portfolio-trades': return self.send_json(trades())
-            if path == '/api/v1/learning-status': return self.send_json(jget(V86,'/api/v1/learning-status',10))
+            if path == '/api/v1/learning-status': return self.send_json(jget(V86,'/api/v1/learning-status',6))
+            if path == '/api/v1/team-experience-status': return self.send_json(jget(V86,'/api/v1/team-experience-status',6))
             if path == '/api/v1/explain': return self.send_json(explain((q.get('asset') or [''])[0], (q.get('horizon') or [''])[0]))
             if path == '/api/v1/product-experience': return self.send_json(product_experience())
             if path == '/api/v1/presence':
