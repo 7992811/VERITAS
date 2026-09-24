@@ -205,19 +205,9 @@ def transform_portfolios():
             unreal = num(z.get('unrealized_pnl'), 0.0)
             row = live_plan(asset, horizon, direction)
             plan = row.get('trade_plan') if isinstance(row.get('trade_plan'),dict) else {}
+            # Truthful TP: only a target persisted by the execution engine has authority.
+            # Do not display a live-analysis projection as if it were an executable order.
             take = num(z.get('take_price'))
-            if take is None:
-                take = num(plan.get('target_price'))
-            if take is None:
-                rr = row.get('range_retest_breakout') if isinstance(row.get('range_retest_breakout'),dict) else {}
-                if rr.get('candidate_direction')==direction or rr.get('direction')==direction:
-                    take = num(rr.get('target_price'))
-            if take is None and entry:
-                move = num(plan.get('expected_move_pct'))
-                if move is None:
-                    move = num(row.get('expected_move_pct'))
-                if move is not None and move > 0:
-                    take = entry * (1 + move if direction=='LONG' else 1 - move)
             payload = z.get('payload') or {}
             if isinstance(payload, str):
                 try:
@@ -256,6 +246,7 @@ def transform_portfolios():
                 'target_fraction':notional/max(nav,1), 'notional_rub':notional,
                 'units':q, 'avg_entry_price':entry, 'last_price':mark,
                 'stop_price':stop, 'take_price':take,
+                'take_profit_executable':take is not None,
                 'entry_probability':probability, 'probability_source':probability_source,
                 'payload':payload,
                 'unrealized_pnl_rub':unreal,
@@ -527,7 +518,7 @@ def app_html():
     value = value.replace('Шаг позиции 5% · gross ≤ 2,5× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')
 
-    replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview position-card"><div class="assetview-head position-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="position-columns"><div class="position-col position-left"><div><span>Вход</span><b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Текущая</span><b>${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div class="position-gap"><span>Объём</span><b>${rub(z.notional_rub)}</b></div><div><span>Кол-во</span><b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b></div></div><div class="position-col position-right"><div><span>P/L</span><b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b></div><div><span>SL</span><b>${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>TP</span><b>${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Prob-ty</span><b>${z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'}</b></div><div><span>Time</span><b>${z.opened_at?new Date(z.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div></div></div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
+    replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview position-card"><div class="assetview-head position-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="position-columns"><div class="position-col position-left"><div><span>Вход</span><b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Текущая</span><b>${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div class="position-gap"><span>Объём</span><b>${rub(z.notional_rub)}</b></div><div><span>Кол-во</span><b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b></div></div><div class="position-col position-right"><div><span>P/L</span><b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b></div><div><span>SL</span><b>${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>TP</span><b>${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Prob-ty</span><b>${['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY'].includes(z.probability_source)?(100*Number(z.entry_probability||0)).toFixed(1)+'%':'BUILDING'}</b></div><div><span>Time</span><b>${z.opened_at?new Date(z.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div></div></div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
 
     pattern = r"""posel\.innerHTML=positions\.length\?positions\.map\(z=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Открытых позиций[^']*';const trades="""
     value, count = re.subn(pattern, replacement, value, count=1, flags=re.S)
@@ -538,7 +529,7 @@ def app_html():
         print(json.dumps({'event':'V86_UI_PATCH','status':'ok','position_renderer_replacements':count},
                          ensure_ascii=False,separators=(',',':')), flush=True)
 
-    trade_replacement = """trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview closed-trade-card"><div class="assetview-head"><b>${t.portfolio_name} · ${t.asset} · ${t.direction||'—'}${t.recovered?' · RECOVERED':(t.archived?' · АРХИВ':'')}</b><b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-grid"><div><span>Вход</span><b>${t.avg_entry_price==null?'—':Number(t.avg_entry_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Выход</span><b>${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Кол-во</span><b>${t.quantity==null?'—':(['BTC','ETH'].includes(t.asset)?Number(t.quantity).toFixed(4):Math.round(Number(t.quantity)).toLocaleString('ru-RU'))}</b></div><div><span>Gross</span><b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></div><div><span>Издержки</span><b>${t.fees_rub==null?'—':rub(t.fees_rub)}</b></div><div><span>Funding</span><b>${t.funding_rub==null?'—':rub(t.funding_rub)}</b></div><div><span>MFE</span><b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></div><div><span>MAE</span><b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></div><div><span>Giveback</span><b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></div><div><span>Причина</span><b>${t.exit_reason||'—'}</b></div><div><span>Горизонт</span><b>${t.horizon||'—'}</b></div><div><span>Время</span><b>${t.held_seconds==null?'—':Math.round(Number(t.held_seconds)/60)+' мин'}</b></div></div><div class="trade-learning"><b>Вывод для обучения:</b> ${t.learning_conclusion||'—'}<br><span>${t.learning_label||'—'} · формируется только после закрытия эпизода; описательная атрибуция, не причинное доказательство</span></div></div>`).join(''):'Закрытых сделок пока нет.'"""
+    trade_replacement = """trel.innerHTML=trades.length?trades.slice(0,60).map(t=>`<div class="assetview closed-trade-card"><div class="assetview-head closed-head"><b>${t.portfolio_name} · ${t.asset} · ${t.direction||'—'}${t.recovered?' · RECOVERED':''}</b><b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-grid dense-closed"><div><span>ЦЕНА</span><b>${t.avg_entry_price==null?'—':Number(t.avg_entry_price).toLocaleString('ru-RU',{maximumFractionDigits:3})} → ${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:3})}</b></div><div><span>GROSS</span><b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></div><div><span>COST</span><b>${rub(Number(t.fees_rub||0)+Number(t.funding_rub||0))}</b></div><div><span>PATH</span><b>M ${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'} / A ${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'} / G ${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></div><div><span>EXIT</span><b>${t.exit_reason||'—'} · ${t.horizon||'—'}</b></div><div><span>TIME</span><b>${t.held_seconds==null?'—':Math.round(Number(t.held_seconds)/60)+' мин'}</b></div></div><div class="trade-learning compact-learning" title="${String(t.learning_conclusion||'—').replace(/"/g,'&quot;')}"><b>${t.learning_label||'—'}</b> · ${t.learning_conclusion||'—'}</div></div>`).join(''):'Закрытых сделок пока нет.'"""
     trade_pattern = r"""trel\.innerHTML=trades\.length\?trades\.slice\(0,30\)\.map\(t=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Сделок в журнале пока нет\.'"""
     value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
     print(json.dumps({'event':'V86_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
@@ -553,13 +544,15 @@ def app_html():
 #portfoliopositions .position-col span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.2px}
 #portfoliopositions .position-col b{font-size:12px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;text-align:left}
 #portfoliopositions .position-left .position-gap{margin-top:7px}
-#portfoliotrades .closed-trade-card{padding:9px 11px;margin:0 0 7px}
-#portfoliotrades .closed-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 12px;margin-top:6px}
-#portfoliotrades .closed-grid>div{display:grid;grid-template-columns:62px minmax(0,1fr);column-gap:6px;min-width:0}
-#portfoliotrades .closed-grid span{font-size:9px;color:var(--muted);text-transform:uppercase}
-#portfoliotrades .closed-grid b{font-size:11px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#portfoliotrades .trade-learning{margin-top:7px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;line-height:1.25}
-#portfoliotrades .trade-learning span{font-size:9px;color:var(--muted)}
+#portfoliotrades .closed-trade-card{padding:6px 8px;margin:0 0 4px;border-radius:10px}
+#portfoliotrades .closed-head{margin-bottom:2px}
+#portfoliotrades .closed-head b{font-size:11px;line-height:1.05}
+#portfoliotrades .closed-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 8px;margin-top:3px}
+#portfoliotrades .closed-grid>div{display:flex;gap:4px;align-items:baseline;min-width:0;white-space:nowrap}
+#portfoliotrades .closed-grid span{font-size:7.5px;color:var(--muted);text-transform:uppercase;flex:0 0 auto}
+#portfoliotrades .closed-grid b{font-size:9px;line-height:1.05;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#portfoliotrades .trade-learning{margin-top:3px;padding-top:3px;border-top:1px solid var(--border);font-size:8.5px;line-height:1.05;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#portfoliotrades .trade-learning b{font-size:8.5px;color:inherit}
 @media(max-width:700px){
  #portfoliopositions .position-card{padding:7px 9px;margin-bottom:5px}
  #portfoliopositions .position-head{margin-bottom:5px}
@@ -570,11 +563,11 @@ def app_html():
  #portfoliopositions .position-col span{font-size:8px}
  #portfoliopositions .position-col b{font-size:10.5px}
  #portfoliopositions .position-left .position-gap{margin-top:6px}
- #portfoliotrades .closed-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 8px}
- #portfoliotrades .closed-grid>div{grid-template-columns:52px minmax(0,1fr);column-gap:4px}
- #portfoliotrades .closed-grid span{font-size:8px}
- #portfoliotrades .closed-grid b{font-size:10px}
- #portfoliotrades .trade-learning{font-size:10px}
+ #portfoliotrades .closed-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 5px}
+ #portfoliotrades .closed-grid span{font-size:7px}
+ #portfoliotrades .closed-grid b{font-size:8.2px}
+ #portfoliotrades .closed-head b{font-size:10px}
+ #portfoliotrades .trade-learning{font-size:7.8px}
 }
 </style>"""
     value = value.replace('</head>', compact_css + '</head>')
