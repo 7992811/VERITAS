@@ -18,8 +18,10 @@ raw={'price':100.0,'market_open':True,'source_gate_pass':False,
      'v85_quote':{'event_id':'one-src','primary_time':T.isoformat(),'secondary_time':None,
                   'primary_source':'primary-only','secondary_source':None,
                   'source_verified':False,'max_age_seconds':60}}
-q=quote_from_raw(raw,Instrument('BTC','RUB','RUB'))
+spec=Instrument('BTC','RUB','RUB')
+q=quote_from_raw(raw,spec)
 assert q.source_verified is True
+assert q.problem(T,spec) is None,q.problem(T,spec)
 assert hard_reason({'source_gate_pass':False,'execution_eligible':True,'market_open':True,
                     'trade_plan':{},'clock_gate_pass':True}) is None
 
