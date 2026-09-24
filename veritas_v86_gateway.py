@@ -115,23 +115,44 @@ def transform_portfolios():
                     move = num(row.get('expected_move_pct'))
                 if move is not None and move > 0:
                     take = entry * (1 + move if direction=='LONG' else 1 - move)
-            probability = num(z.get('entry_probability'))
-            probability_source = z.get('probability_source')
+            payload = z.get('payload') or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            payload = payload if isinstance(payload, dict) else {}
+            probability = num(payload.get('pwin'))
+            probability_source = payload.get('pwin_source')
+            if probability is None:
+                probability = num(z.get('entry_probability'))
+                probability_source = z.get('probability_source') or probability_source
             if probability is None:
                 probability = num(row.get('positive_trade_probability'))
                 probability_source = 'POSITIVE_TRADE_PROBABILITY' if probability is not None else probability_source
             if probability is None:
                 probability = num(row.get('calibrated_probability'))
                 probability_source = 'CALIBRATED_PROBABILITY' if probability is not None else probability_source
+            if probability is None:
+                rs = row.get('range_retest_breakout') if isinstance(row.get('range_retest_breakout'),dict) else {}
+                if rs.get('active') and rs.get('probability') is not None:
+                    probability = num(rs.get('probability'))
+                    probability_source = 'RANGE_SETUP_MODEL_PRIOR_UNCALIBRATED'
+            if probability is None:
+                tr = row.get('tactical_reversal') if isinstance(row.get('tactical_reversal'),dict) else {}
+                if tr.get('active') and tr.get('probability') is not None:
+                    probability = num(tr.get('probability'))
+                    probability_source = 'REVERSAL_MODEL_PRIOR_UNCALIBRATED'
             positions.append({
                 'asset':asset, 'direction':direction, 'horizon':horizon,
                 'target_fraction':notional/max(nav,1), 'notional_rub':notional,
                 'units':q, 'avg_entry_price':entry, 'last_price':mark,
                 'stop_price':stop, 'take_price':take,
                 'entry_probability':probability, 'probability_source':probability_source,
+                'payload':payload,
                 'unrealized_pnl_rub':unreal,
                 'unrealized_return_pct':(100*unreal/entry_notional) if entry_notional else None,
-                'opened_at':z.get('opened_at'), 'payload':{}
+                'opened_at':z.get('opened_at')
             })
         name = p.get('name')
         out.append({
