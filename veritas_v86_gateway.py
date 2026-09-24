@@ -305,7 +305,7 @@ def app_html():
     value = value.replace('Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')
 
-    replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview"><div class="assetview-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="assetmeta">Вход <b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b><br>Количество <b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b> · Объём ${rub(z.notional_rub)}<br>Текущая ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})} · Переоценка <b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b><br>Вероятность ${z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'}<br>Стоп ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})} · Тейк ${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}<br>Время сделки ${z.opened_at?new Date(z.opened_at).toLocaleString():'—'}</div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
+    replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview position-card"><div class="assetview-head position-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="position-grid"><div><span>Вход</span><b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Кол-во</span><b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b></div><div><span>Объём</span><b>${rub(z.notional_rub)}</b></div><div><span>Текущая</span><b>${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>P&amp;L</span><b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b></div><div><span>Вероятность</span><b>${z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'}</b></div><div><span>Стоп</span><b>${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Тейк</span><b>${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Время</span><b>${z.opened_at?new Date(z.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div></div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
 
     pattern = r"""posel\.innerHTML=positions\.length\?positions\.map\(z=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Открытых позиций[^']*';const trades="""
     value, count = re.subn(pattern, replacement, value, count=1, flags=re.S)
@@ -315,6 +315,23 @@ def app_html():
     else:
         print(json.dumps({'event':'V86_UI_PATCH','status':'ok','position_renderer_replacements':count},
                          ensure_ascii=False,separators=(',',':')), flush=True)
+    compact_css = """<style>
+#portfoliopositions .position-card{padding:8px 10px;margin:0 0 6px;border-radius:12px}
+#portfoliopositions .position-head{margin-bottom:5px;align-items:center}
+#portfoliopositions .position-head b{font-size:15px;line-height:1.1}
+#portfoliopositions .position-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 10px;width:100%}
+#portfoliopositions .position-grid>div{min-width:0;display:flex;align-items:baseline;gap:4px;white-space:nowrap}
+#portfoliopositions .position-grid span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.2px}
+#portfoliopositions .position-grid b{font-size:12px;line-height:1.15;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:700px){
+ #portfoliopositions .position-card{padding:7px 9px;margin-bottom:5px}
+ #portfoliopositions .position-head b{font-size:13px}
+ #portfoliopositions .position-grid{gap:3px 7px}
+ #portfoliopositions .position-grid span{font-size:8px}
+ #portfoliopositions .position-grid b{font-size:10.5px}
+}
+</style>"""
+    value = value.replace('</head>', compact_css + '</head>')
     return value.encode('utf-8')
 
 class Handler(BaseHTTPRequestHandler):
