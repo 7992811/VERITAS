@@ -93,21 +93,24 @@ jobs:
           print('v86 manifest gate: PASS')
           PY
 
-      - name: Validate CLOSED_FINAL runtime patch separately
+      - name: Validate deploy runtime patch separately
         env:
           VERITAS_V85_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/veritas_v85_ci
           VERITAS_V85_EPHEMERAL_DB: '1'
+          VERITAS_V86_ALLOW_EPHEMERAL_STATE: '1'
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf candidate_closed_final
-          cp -a candidate candidate_closed_final
-          python v86_closed_final_patch.py candidate_closed_final
-          python -m py_compile candidate_closed_final/veritas_v85/book.py
-          cd candidate_closed_final
+          rm -rf candidate_runtime
+          cp -a candidate candidate_runtime
+          python v86_runtime_patch.py candidate_runtime
+          python -m py_compile candidate_runtime/veritas_v85/domain.py candidate_runtime/veritas_v85/routing.py candidate_runtime/veritas_v85/book.py candidate_runtime/veritas_v85/application.py candidate_runtime/veritas_v86/*.py candidate_runtime/veritas_v86_start.py
+          cd candidate_runtime
           PYTHONPATH=.:tests python -m unittest -v \
             test_experience_release_http.DurableLearningTests \
-            test_experience_release_http.LearningToDecisionTests
+            test_experience_release_http.LearningToDecisionTests \
+            test_v86_application.V86ApplicationTests \
+            test_v86_adaptive.PortfolioDesignTests
           PYTHONPATH=.:tests python ci_tests/test_postgres.py
 
       - name: Write acceptance evidence
