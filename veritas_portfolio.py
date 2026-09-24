@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from xml.etree import ElementTree as ET
 import httpx
 
-VERSION='veritas-portfolio-v2-v70.8.4'
+VERSION='veritas-portfolio-v3-execution-tp-learning'
 INITIAL_NAV_RUB=1_000_000.0
 MAX_GROSS=2.0
 COMMISSION=0.0005
@@ -78,6 +78,7 @@ def ensure_schema(pg_connect):
           ruonia DOUBLE PRECISION, usdrub DOUBLE PRECISION, payload JSONB NOT NULL,
           PRIMARY KEY(portfolio_name,observed_at)
         );
+        ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;
         ''')
         for name,pol in POLICIES.items():
             c.execute('''INSERT INTO paper_portfolios(name,created_at,updated_at,initial_nav_rub,benchmark_nav_rub,high_water_nav_rub,policy,model_version)
@@ -147,10 +148,14 @@ def _best_by_asset(summary):
             r=dict(r); r['research_decision']=d
         if d not in ('LONG','SHORT'): continue
         rs=r.get('range_retest_breakout') or {}
-        paper_research_ok=bool((rs.get('active') or tr.get('active')) and r.get('source_gate_pass') and int(r.get('direct_sources') or 0)>=1)
-        if not bool(r.get('execution_eligible')) and not paper_research_ok: continue
+        plan=r.get('trade_plan') or {}
+        # Execution repair: the portfolio must not re-veto a directional signal that the
+        # research layer has already made tradeable. Hard data safety still applies.
+        paper_research_ok=bool(r.get('source_gate_pass') and int(r.get('direct_sources') or 0)>=1 and
+                               (bool(r.get('execution_eligible')) or bool(plan.get('eligible')) or tr.get('active') or rs.get('active')))
+        if not paper_research_ok: continue
         inst=r.get('institutional_signal') or {}; action=str(inst.get('action') or '')
-        if action=='WAIT' and not tr.get('active') and not rs.get('active'): continue
+        if action=='WAIT' and not (plan.get('eligible') or tr.get('active') or rs.get('active')): continue
         p,source=_signal_probability(r)
         ev=inst.get('evidence_independence') or {}; indep=int(ev.get('independent_count') or 0)
         bq=inst.get('breakout_quality') or {}; q=float(bq.get('quality_score') or 0)
@@ -179,9 +184,14 @@ def _desired_fraction(row,policy,drawdown):
     tactical=bool(tr.get('active') or rs.get('active'))
     min_indep=2 if tactical else int(policy['min_independent'])
     effective_indep=max(indep,int(tr.get('confirmations') or 0),int(rs.get('confirmations') or 0)) if tactical else indep
-    if p<float(policy['threshold']) or effective_indep<min_indep: return 0.0
     plan=row.get('trade_plan') or {}
     rr=float(plan.get('expected_to_stop_ratio') or tr.get('reward_risk') or 0.0)
+    # A valid directional setup gets a 5% probe even before the portfolio-level
+    # probability/confirmation thresholds are met. Confirmation controls scaling,
+    # not whether a trade exists at all.
+    probe_ok=bool((plan.get('eligible') and rr>=1.0) or tr.get('active') or rs.get('active'))
+    if p<float(policy['threshold']) or effective_indep<min_indep:
+        return 0.05 if probe_ok else 0.0
     # Mandatory admission economics: positive EV after commission/funding proxy and adequate reward/risk.
     if tr.get('active'):
         if rr < 1.30: return 0.0
@@ -209,6 +219,47 @@ def _desired_fraction(row,policy,drawdown):
         elif state in ('APPROACH_RESISTANCE','APPROACH_SUPPORT'): f=min(f,0.10)
         elif state=='BREAKOUT_ADD': f=min(max(f,0.20),0.30)
     rg=_risk_governor(drawdown); f*=rg['multiplier']; return _clip(_round_step(f),0,2.0)
+
+
+def _execution_learning_multiplier(c,asset,horizon):
+    """Closed paper trades influence sizing only after a minimum sample.
+    This never invents a direction and never suppresses a valid 5% probe.
+    """
+    try:
+        r=c.execute("""SELECT count(*) n,
+                            count(*) FILTER(WHERE profitable) wins,
+                            COALESCE(avg(net_pnl_rub),0) avg_pnl
+                     FROM (SELECT profitable,net_pnl_rub FROM paper_trades
+                           WHERE asset=%s AND horizon=%s AND status='CLOSED'
+                           ORDER BY closed_at DESC LIMIT 20) q""",(asset,horizon)).fetchone()
+        n=int(r['n'] or 0)
+        if n<5: return {'n':n,'multiplier':1.0,'state':'BUILDING'}
+        wr=float(r['wins'] or 0)/n; avg=float(r['avg_pnl'] or 0)
+        if wr>=0.65 and avg>0: mult=1.15; state='SUPPORTED'
+        elif wr<0.40 or avg<0: mult=0.70; state='DEGRADED'
+        else: mult=1.0; state='NEUTRAL'
+        return {'n':n,'win_rate':wr,'avg_pnl_rub':avg,'multiplier':mult,'state':state}
+    except Exception:
+        return {'n':0,'multiplier':1.0,'state':'UNAVAILABLE'}
+
+
+def _target_price(row,direction,entry_price):
+    tr=row.get('tactical_reversal') or {}
+    rs=row.get('range_retest_breakout') or {}
+    for src in (tr,rs):
+        tp=src.get('target_price')
+        if tp is not None:
+            try:
+                tp=float(tp)
+                if (direction=='LONG' and tp>entry_price) or (direction=='SHORT' and tp<entry_price):
+                    return tp
+            except Exception:
+                pass
+    plan=row.get('trade_plan') or {}
+    try: exp=float(plan.get('expected_move_pct') or 0.0)
+    except Exception: exp=0.0
+    if exp<=0: return None
+    return entry_price*(1.0+exp if direction=='LONG' else 1.0-exp)
 
 
 def _portfolio_rows(c,name):
@@ -270,7 +321,8 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     c.execute('UPDATE paper_portfolios SET fees_rub=fees_rub+%s,updated_at=%s WHERE name=%s',(fee,ts,name))
     if z:
         old_units=float(z['units']); avg=(old_units*float(z['avg_entry_price'])+units*price)/(old_units+units)
-        c.execute('UPDATE paper_positions SET units=%s,avg_entry_price=%s,last_price=%s,target_fraction=%s,stop_price=%s,updated_at=%s,payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s',(old_units+units,avg,price,target_fraction,(row.get('trade_plan') or {}).get('stop_price'),ts,json.dumps({'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],'horizon':row.get('horizon'),'signal':(row.get('institutional_signal') or {}).get('investor_signal')}),name,asset))
+        tp=_target_price(row,direction,avg)
+        c.execute('UPDATE paper_positions SET units=%s,avg_entry_price=%s,last_price=%s,target_fraction=%s,stop_price=%s,target_price=%s,updated_at=%s,payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s',(old_units+units,avg,price,target_fraction,(row.get('trade_plan') or {}).get('stop_price'),tp,ts,json.dumps({'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],'horizon':row.get('horizon'),'signal':(row.get('institutional_signal') or {}).get('investor_signal'),'target_price':tp}),name,asset))
         c.execute('UPDATE paper_trades SET fees_rub=fees_rub+%s,max_fraction=GREATEST(max_fraction,%s),payload=payload || %s::jsonb WHERE trade_id=%s',(fee,target_fraction,json.dumps({'last_add_pwin':row['_pwin']}),z['active_trade_id']))
         trade_id=z['active_trade_id']
     else:
@@ -278,7 +330,9 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         setup=((row.get('institutional_signal') or {}).get('breakout_quality') or {}).get('state') or (row.get('institutional_signal') or {}).get('investor_signal')
         payload={'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],'independent':((row.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count'),'model_version':VERSION}
         c.execute('INSERT INTO paper_trades(trade_id,portfolio_name,asset,direction,opened_at,avg_entry_price,max_fraction,fees_rub,status,setup,horizon,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(trade_id,name,asset,direction,ts,price,target_fraction,fee,'OPEN',setup,row.get('horizon'),json.dumps(payload)))
-        c.execute('INSERT INTO paper_positions(portfolio_name,asset,direction,units,avg_entry_price,opened_at,updated_at,active_trade_id,stop_price,target_fraction,last_price,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,asset,direction,units,price,ts,ts,trade_id,(row.get('trade_plan') or {}).get('stop_price'),target_fraction,price,json.dumps(payload)))
+        tp=_target_price(row,direction,price)
+        payload['target_price']=tp
+        c.execute('INSERT INTO paper_positions(portfolio_name,asset,direction,units,avg_entry_price,opened_at,updated_at,active_trade_id,stop_price,target_price,target_fraction,last_price,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,asset,direction,units,price,ts,ts,trade_id,(row.get('trade_plan') or {}).get('stop_price'),tp,target_fraction,price,json.dumps(payload)))
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,trade_id,ts,asset,'BUY' if direction=='LONG' else 'SELL_SHORT',price,add,fee,add/max(nav,1),reason,json.dumps({'pwin':row['_pwin'],'pwin_source':row['_pwin_source']})))
 
 
@@ -314,8 +368,14 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate):
     p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices)
     hwm=max(float(p['high_water_nav_rub']),nav); dd=max(0.0,1-nav/max(hwm,1.0)); rg=_risk_governor(dd)
     # Determine targets, first by per-asset merit.
-    targets={}
-    for asset,row in candidates.items(): targets[asset]=_desired_fraction(row,policy,dd)
+    targets={}; learning={}
+    for asset,row in candidates.items():
+        base=_desired_fraction(row,policy,dd)
+        lm=_execution_learning_multiplier(c,asset,row.get('horizon'))
+        learning[asset]=lm
+        if base>0:
+            base=max(0.05,_round_step(base*float(lm.get('multiplier') or 1.0)))
+        targets[asset]=base
     # Assets without qualifying signal target zero -> dynamic exit.
     for z in pos:
         if z['asset'] not in targets: targets[z['asset']]=0.0
@@ -330,11 +390,15 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate):
     for z in list(pos):
         row=candidates.get(z['asset']); target=float(targets.get(z['asset'],0.0)); px=float(prices.get(z['asset'],z['last_price']))
         wrong_dir=bool(row and row.get('research_decision') in ('LONG','SHORT') and row.get('research_decision')!=z['direction'])
-        # stop has priority
+        # Hard stop and explicit take-profit both have priority over signal resizing.
         stop=z['stop_price']; stop_hit=bool(stop is not None and ((z['direction']=='LONG' and px<=float(stop)) or (z['direction']=='SHORT' and px>=float(stop))))
-        if wrong_dir or stop_hit: target=0.0
+        tp=z.get('target_price') if hasattr(z,'get') else z['target_price']
+        tp_hit=bool(tp is not None and ((z['direction']=='LONG' and px>=float(tp)) or (z['direction']=='SHORT' and px<=float(tp))))
+        if wrong_dir or stop_hit or tp_hit: target=0.0
         current_frac=abs(float(z['units'])*px)/max(nav,1.0)
-        if target<current_frac-0.025: _close_or_reduce(c,p,name,z,px,target,nav,ts,'STOP' if stop_hit else 'SIGNAL_REDUCTION')
+        if target<current_frac-0.025:
+            reason='TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'DIRECTION_FLIP' if wrong_dir else 'SIGNAL_REDUCTION'
+            _close_or_reduce(c,p,name,z,px,target,nav,ts,reason)
     p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices)
     # Add/increase only when risk governor allows new risk.
     if rg['new_risk']:
@@ -357,7 +421,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate):
         except Exception: pass
     c.execute('UPDATE paper_portfolios SET updated_at=%s,benchmark_nav_rub=%s,high_water_nav_rub=%s,last_ruonia=COALESCE(%s,last_ruonia),last_usdrub=COALESCE(%s,last_usdrub),last_mark_at=%s,model_version=%s WHERE name=%s',(ts,bench,hwm,ruonia,usdrub,ts,VERSION,name))
     nav_usd=nav/float(usdrub) if usdrub else None
-    c.execute('INSERT INTO paper_nav_history(portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT(portfolio_name,observed_at) DO NOTHING',(name,ts,nav,nav_usd,bench,gross,net,dd,ruonia,usdrub,json.dumps({'risk_governor':rg,'unrealized_pnl_rub':unreal,'targets':targets})))
+    c.execute('INSERT INTO paper_nav_history(portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT(portfolio_name,observed_at) DO NOTHING',(name,ts,nav,nav_usd,bench,gross,net,dd,ruonia,usdrub,json.dumps({'risk_governor':rg,'unrealized_pnl_rub':unreal,'targets':targets,'execution_learning':learning})))
     st=_stats(c,name)
     return {'name':name,'nav_rub':round(nav,2),'nav_usd':round(nav_usd,2) if nav_usd else None,'total_return_pct':round(100*(nav/INITIAL_NAV_RUB-1),4),'benchmark_nav_rub':round(bench,2),'excess_vs_ruonia_pct':round(100*(nav/bench-1),4),'drawdown_pct':round(100*dd,4),'gross_leverage':round(gross,4),'net_exposure':round(net,4),'cash_equivalent_fraction':round(max(0,1-gross),4),'risk_governor':rg,'ruonia':ruonia,'usdrub':usdrub,**st}
 
@@ -385,7 +449,7 @@ def report(pg_connect):
     with pg_connect() as c:
         for name in POLICIES:
             p=c.execute('SELECT * FROM paper_portfolios WHERE name=%s',(name,)).fetchone(); h=c.execute('SELECT * FROM paper_nav_history WHERE portfolio_name=%s ORDER BY observed_at DESC LIMIT 1',(name,)).fetchone(); st=_stats(c,name)
-            pos=c.execute('SELECT asset,direction,units,avg_entry_price,last_price,stop_price,target_fraction,opened_at,payload FROM paper_positions WHERE portfolio_name=%s ORDER BY asset',(name,)).fetchall()
+            pos=c.execute('SELECT asset,direction,units,avg_entry_price,last_price,stop_price,target_price,target_fraction,opened_at,payload FROM paper_positions WHERE portfolio_name=%s ORDER BY asset',(name,)).fetchall()
             enriched=[]
             for z0 in pos:
                 z=dict(z0); sign=1 if z['direction']=='LONG' else -1; px=float(z.get('last_price') or 0); ep=float(z.get('avg_entry_price') or 0); units=float(z.get('units') or 0)
