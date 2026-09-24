@@ -1007,3 +1007,15 @@ try:
 finally:
     _tpm_sys.argv=_tpm_argv
 print('V86_TP_PULSE_MEMORY_RUNTIME_ACTIVE')
+
+# 20) Prevent winner -> immediate same-direction churn without new information.
+import runpy as _re_runpy, sys as _re_sys
+_re_patch=root.parent/'v86_post_exit_reentry_patch.py'
+if not _re_patch.is_file(): raise SystemExit('V86_POST_EXIT_REENTRY_PATCH_MISSING')
+_re_argv=list(_re_sys.argv)
+try:
+    _re_sys.argv=[str(_re_patch),str(root)]
+    _re_runpy.run_path(str(_re_patch),run_name='__main__')
+finally:
+    _re_sys.argv=_re_argv
+print('V86_POST_EXIT_REENTRY_RUNTIME_ACTIVE')
