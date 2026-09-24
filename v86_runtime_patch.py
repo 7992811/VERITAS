@@ -556,4 +556,38 @@ try:
             print('V86_ROUTING_EXACT '+str(_i+1)+' :: '+' | '.join(_rt[_i:min(len(_rt),_i+85)]),flush=True)
 except Exception as _ex:
     print('V86_ROUTING_EXACT_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
+# 11) Persistence guard: live paper testing must never silently fall back to ephemeral /tmp SQLite.
+p=root/'veritas_v86_start.py'
+_start=p.read_text(encoding='utf-8')
+_guard="""import os as _veritas_os
+_v86_mode=_veritas_os.getenv('VERITAS_V85_MODE','audit').lower()
+_v86_persist_required=_veritas_os.getenv('VERITAS_V86_PERSISTENCE_REQUIRED','1')=='1'
+_v86_db_url=_veritas_os.getenv('VERITAS_V85_TEST_DATABASE_URL') or _veritas_os.getenv('DATABASE_URL')
+_v86_sqlite=_veritas_os.getenv('VERITAS_V85_TEST_SQLITE','')
+_v86_ephemeral=_veritas_os.getenv('VERITAS_V85_EPHEMERAL_DB','0')=='1'
+if _v86_mode=='paper' and _v86_persist_required:
+    if not _v86_db_url and (_v86_sqlite.startswith('/tmp/') or not _v86_sqlite):
+        raise RuntimeError('PERSISTENCE_REQUIRED: paper engine refuses ephemeral /tmp state')
+    if _v86_ephemeral and _veritas_os.getenv('VERITAS_V86_ALLOW_EPHEMERAL_STATE','0')!='1':
+        raise RuntimeError('PERSISTENCE_REQUIRED: VERITAS_V85_EPHEMERAL_DB is forbidden for cumulative paper testing')
+"""
+if 'PERSISTENCE_REQUIRED: paper engine refuses ephemeral /tmp state' not in _start:
+    p.write_text(_guard+'\n'+_start,encoding='utf-8')
+
+# Test/cohort timestamps are labels only; they may not imply a new ledger or reset.
+p=root/'veritas_v86/state_policy.json'
+p.write_text(json.dumps({
+  'policy_version':'v86-cumulative-1',
+  'reset_allowed':False,
+  'initial_nav_rub_per_portfolio':1000000,
+  'position_step':0.05,
+  'max_position_fraction':2.50,
+  'storage':'durable_postgres_required',
+  'preserve':['accounts','positions','episodes','orders','closed_trades','nav_history',
+              'decisions','outcomes','learning_events','calibration','adaptive_evidence',
+              'performance_gates','opportunities'],
+  'deployment_rule':'schema migrations must be additive/idempotent; no DROP/TRUNCATE/reset in normal deploy',
+  'learning_rule':'closed episodes and missed-opportunity episodes accumulate across versions/cohorts'
+},ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+
 print('V86_RUNTIME_PATCH_OK')
