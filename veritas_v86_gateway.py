@@ -1,7 +1,7 @@
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse, parse_qs, quote
-import json, os, time, threading, traceback
+import json, os, time, threading, traceback, re
 
 PROD = os.getenv('VERITAS_BASE_URL', 'https://veritas-intelligence-v1.onrender.com').rstrip('/')
 V86 = os.getenv('VERITAS_V86_URL', 'https://veritas-v86-product.onrender.com').rstrip('/')
@@ -304,9 +304,17 @@ def app_html():
     value = value.replace("${p.name==='Champion'?'70%+':'77%+'}","${p.badge||''}")
     value = value.replace('Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')
-    old = """Объём ${rub(z.notional_rub)} · единиц ${Number(z.units||0).toLocaleString('ru-RU',{maximumFractionDigits:6})}<br>Вход ${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · текущая ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · стоп ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}<br>Переоценка <b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b><br>Открыта ${z.opened_at?new Date(z.opened_at).toLocaleString():'—'} · вероятность ${z.payload?.pwin==null?'—':(100*Number(z.payload.pwin)).toFixed(1)+'%'} (${z.payload?.pwin_source||'—'})"""
-    new = """Вход <b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b> · Контрактов/ед. <b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b><br>Текущая ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})} · Переоценка <b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b><br>Стоп ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})} · Тейк ${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}<br>Вероятность ${z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'} · Сделка ${z.opened_at?new Date(z.opened_at).toLocaleString():'—'}"""
-    value = value.replace(old,new)
+
+    replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview"><div class="assetview-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="assetmeta">Вход <b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b><br>Количество <b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b> · Объём ${rub(z.notional_rub)}<br>Текущая ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})} · Переоценка <b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b><br>Вероятность ${z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'}<br>Стоп ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})} · Тейк ${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}<br>Время сделки ${z.opened_at?new Date(z.opened_at).toLocaleString():'—'}</div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
+
+    pattern = r"""posel\.innerHTML=positions\.length\?positions\.map\(z=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Открытых позиций[^']*';const trades="""
+    value, count = re.subn(pattern, replacement, value, count=1, flags=re.S)
+    if count != 1:
+        print(json.dumps({'event':'V86_UI_PATCH','status':'error','position_renderer_replacements':count},
+                         ensure_ascii=False,separators=(',',':')), flush=True)
+    else:
+        print(json.dumps({'event':'V86_UI_PATCH','status':'ok','position_renderer_replacements':count},
+                         ensure_ascii=False,separators=(',',':')), flush=True)
     return value.encode('utf-8')
 
 class Handler(BaseHTTPRequestHandler):
