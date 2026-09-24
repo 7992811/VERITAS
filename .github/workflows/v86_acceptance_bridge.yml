@@ -106,6 +106,15 @@ jobs:
           python v86_runtime_patch.py candidate_runtime
           python v86_state_restore_selftest.py candidate_runtime
           python v86_runtime_learning_selftest.py candidate_runtime
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('candidate_runtime/ci_tests/test_postgres.py')
+          s=p.read_text()
+          needle="        self.assertEqual(m.last_cycle['decisions_written'],35);self.assertFalse(m.last_cycle['errors'])"
+          repl="        print('V86_DEBUG_LAST_CYCLE',m.last_cycle,flush=True);self.assertEqual(m.last_cycle['decisions_written'],35);self.assertFalse(m.last_cycle['errors'])"
+          if needle not in s: raise SystemExit('DEBUG_LAST_CYCLE_ANCHOR_NOT_FOUND')
+          p.write_text(s.replace(needle,repl,1))
+          PY
           grep -q "verification_mode':'direct_independent" candidate_runtime/veritas_intelligence.py
           grep -q "paired_underlying_independent_vendor" candidate_runtime/veritas_intelligence.py
           grep -q "official_10m_candle" candidate_runtime/veritas_intelligence.py
