@@ -106,6 +106,8 @@ jobs:
           python v86_runtime_patch.py candidate_runtime
           python v86_state_restore_selftest.py candidate_runtime
           python v86_runtime_learning_selftest.py candidate_runtime
+          echo "V86_HANDLER_DIAG"
+          grep -n -B 25 -A 80 "portfolio-trades" candidate_runtime/veritas_v85/application.py || true
           python - <<'PY'
           from pathlib import Path
           p=Path('candidate_runtime/ci_tests/test_postgres.py')
