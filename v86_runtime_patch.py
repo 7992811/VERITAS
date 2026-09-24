@@ -1032,3 +1032,16 @@ try:
 finally:
     _cl_sys.argv=_cl_argv
 print('V86_CLOSED_LOOP_LEARNING_RUNTIME_ACTIVE')
+
+
+# 22) Structured human team experience: separate prior, validation and bounded management constraints.
+import runpy as _te_runpy, sys as _te_sys
+_te_patch=root.parent/'v86_team_experience_patch.py'
+if not _te_patch.is_file(): raise SystemExit('V86_TEAM_EXPERIENCE_PATCH_MISSING')
+_te_argv=list(_te_sys.argv)
+try:
+    _te_sys.argv=[str(_te_patch),str(root)]
+    _te_runpy.run_path(str(_te_patch),run_name='__main__')
+finally:
+    _te_sys.argv=_te_argv
+print('V86_TEAM_EXPERIENCE_RUNTIME_ACTIVE')
