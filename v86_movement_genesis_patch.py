@@ -324,6 +324,10 @@ p.write_text(s,encoding='utf-8')
 p=root/'veritas_v85/book.py'
 s=p.read_text(encoding='utf-8')
 
+if 'from decimal import Decimal, ROUND_CEILING' not in s:
+    if 'from decimal import Decimal\n' not in s: raise SystemExit('MOVEMENT_DECIMAL_IMPORT_ANCHOR_NOT_FOUND')
+    s=s.replace('from decimal import Decimal\n','from decimal import Decimal, ROUND_CEILING\n',1)
+
 anchor="    def _open(self,c,account_id: str,signal: Signal,quote: Quote,nav: Decimal,admission,account,at: datetime) -> dict:\n"
 if anchor not in s: raise SystemExit('MOVEMENT_BOOK_OPEN_ANCHOR_NOT_FOUND')
 method=r'''    def _scale_in(self,c,p: Position,signal: Signal,quote: Quote,quotes: Mapping[str,Quote],
@@ -339,9 +343,11 @@ method=r'''    def _scale_in(self,c,p: Position,signal: Signal,quote: Quote,quot
         current_notional=p.quantity*spec.multiplier*quote.price*quote.fx_to_nav
         current_fraction=current_notional/nav
         target=min(signal.desired_fraction,limits.asset_cap)
-        desired_add=max(ZERO,target-current_fraction)
-        if desired_add < limits.desired_step:
+        gap=max(ZERO,target-current_fraction)
+        if gap < limits.desired_step*D('.50'):
             return None,'SCALE_TARGET_REACHED'
+        steps=(gap/limits.desired_step).to_integral_value(rounding=ROUND_CEILING)
+        desired_add=max(limits.desired_step,steps*limits.desired_step)
 
         ratchet_stop=(max(p.stop_price,signal.stop_price) if p.direction==Direction.LONG
                       else min(p.stop_price,signal.stop_price))
