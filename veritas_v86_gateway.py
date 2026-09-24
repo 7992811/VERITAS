@@ -754,11 +754,15 @@ def explain(asset, horizon):
     }}
 
 def product_experience():
-    try:
-        data = jget(PROD, '/api/v1/product-experience', 2.5)
-    except Exception as exc:
-        print('PROD_EXPERIENCE_FALLBACK', type(exc).__name__, flush=True)
-        data = {}
+    data={}
+    for _base,_label,_timeout in ((PROD,'production',2.5),(ARCHIVE_V86,'archive_v86',3.0)):
+        try:
+            _d=jget(_base,'/api/v1/product-experience',_timeout)
+            if isinstance(_d,dict) and _d:
+                data=_d
+                break
+        except Exception as exc:
+            print('PRODUCT_EXPERIENCE_SOURCE_FALLBACK',_label,type(exc).__name__,flush=True)
     try:
         rows = v86_analysis_rows()
         dirs = [x for x in rows if x['research_decision'] in ('LONG','SHORT')]
@@ -819,6 +823,124 @@ def product_experience():
             'total_cells':len(rows),'directional':len(dirs),'independent_3plus':indep3,'probability_70plus':p70,
             'positive_ev_proxy':evpos,'eligible':eligible,
             'rejection_reasons':dict(sorted(rejection.items(),key=lambda kv:kv[1],reverse=True)[:8])
+        }
+        # V86.2 DECISION_TAB_COMPLETENESS
+        # Fill every visible Decisions card even when the legacy product-experience endpoint is slow.
+        if not ((data.get('market_drivers') or {}).get('items')):
+            _seen=set(); _drivers=[]
+            for x in dirs:
+                a=str(x.get('asset') or '')
+                if not a or a in _seen: continue
+                _seen.add(a)
+                hs=x.get('horizon_structure') if isinstance(x.get('horizon_structure'),dict) else {}
+                _drivers.append({
+                  'asset':a,'direction':x.get('research_decision'),
+                  'causal_label':x.get('causal_label') or 'MARKET_STRUCTURE',
+                  'transition':x.get('regime_transition_state') or hs.get('state') or x.get('trend_phase'),
+                  'regime':x.get('regime'),'driver_score':round(float(x.get('confidence') or 0),3)
+                })
+                if len(_drivers)>=6: break
+            data['market_drivers']={'status':'OK','items':_drivers}
+
+        if not isinstance(data.get('abstention'),dict) or not data.get('abstention'):
+            _counts={}; _items=[]
+            for x in rows:
+                d=str(x.get('research_decision') or x.get('decision') or 'NO_TRADE')
+                plan=x.get('trade_plan') if isinstance(x.get('trade_plan'),dict) else {}
+                if d not in ('LONG','SHORT') or plan.get('eligible'): continue
+                reason=str(plan.get('reason') or x.get('execution_reason') or 'OTHER')
+                _counts[reason]=_counts.get(reason,0)+1
+                _items.append({'asset':x.get('asset'),'horizon':x.get('horizon'),'direction':d,'reason':reason})
+            data['abstention']={'status':'OK','counts':_counts,'items':_items[:12]}
+
+        if not isinstance(data.get('missed_opportunities'),dict):
+            data['missed_opportunities']={'status':'BUILDING','items':[]}
+
+        if not ((data.get('personal_cio') or {}).get('profiles')):
+            _profiles=[]
+            for _name,_minp,_cap in (('Консервативный',.70,.15),('Базовый',.62,.25),('Активный',.55,.35)):
+                _ideas=[]
+                for x in dirs:
+                    p=row_probability(x)[0]
+                    if p is None or p<_minp: continue
+                    _ideas.append({'asset':x.get('asset'),'direction':x.get('research_decision'),
+                                   'fraction':min(_cap,max(.05,round((p-.50)*1.5,2)))})
+                    if len(_ideas)>=5: break
+                _profiles.append({'profile':_name,'min_probability':_minp,'max_single_asset':_cap,'ideas':_ideas})
+            data['personal_cio']={'status':'OK','profiles':_profiles}
+
+        if not ((data.get('smart_alerts') or {}).get('items')):
+            _alerts=[]
+            for x in dirs[:10]:
+                plan=x.get('trade_plan') if isinstance(x.get('trade_plan'),dict) else {}
+                _alerts.append({'asset':x.get('asset'),'horizon':x.get('horizon'),
+                                'type':'ENTRY_READY' if plan.get('eligible') else 'WATCH',
+                                'status':'ACTIVE' if plan.get('eligible') else str(plan.get('reason') or 'WAIT')})
+            data['smart_alerts']={'status':'OK','items':_alerts}
+
+        if not ((data.get('market_triggers') or {}).get('items')):
+            _tr=[]
+            for x in dirs:
+                sl=x.get('structural_levels') if isinstance(x.get('structural_levels'),dict) else {}
+                a=x.get('asset')
+                if sl.get('support') is not None:
+                    _tr.append({'asset':a,'trigger':'support','level':sl.get('support'),'meaning':'удержание/пробой меняет качество LONG'})
+                if sl.get('resistance') is not None:
+                    _tr.append({'asset':a,'trigger':'resistance','level':sl.get('resistance'),'meaning':'закрепление/отбой меняет качество SHORT/LONG'})
+                if len(_tr)>=10: break
+            data['market_triggers']={'status':'OK','items':_tr[:10]}
+
+        if not ((data.get('scenario_map') or {}).get('items')):
+            _sc=[]; _seen=set()
+            for x in dirs:
+                a=str(x.get('asset') or '')
+                if a in _seen: continue
+                _seen.add(a)
+                sl=x.get('structural_levels') if isinstance(x.get('structural_levels'),dict) else {}
+                _sc.append({'asset':a,'direction':x.get('research_decision'),'probability':row_probability(x)[0],
+                            'support':sl.get('support'),'resistance':sl.get('resistance'),
+                            'sma18':sl.get('sma18'),'sma50':sl.get('sma50')})
+            data['scenario_map']={'status':'OK','items':_sc}
+
+        if not isinstance(data.get('briefs'),dict) or not data.get('briefs'):
+            _focus=[f"{x.get('asset')} {x.get('research_decision')} {x.get('horizon')} · {str((x.get('trade_plan') or {}).get('reason') or x.get('regime') or '')[:100]}" for x in dirs[:6]]
+            data['briefs']={
+              'morning':{'focus':_focus[:3]},
+              'intraday':{'focus':_focus[:5]},
+              'evening':{'focus':_focus[:4]}
+            }
+
+        if not ((data.get('decision_replay') or {}).get('items')):
+            try:
+                _closed=(trades().get('trades') or [])[:10]
+            except Exception:
+                _closed=[]
+            data['decision_replay']={'status':'OK','items':[
+              {'asset':t.get('asset'),'horizon':t.get('horizon'),'decision':t.get('direction'),
+               'benefit':t.get('learning_conclusion') or t.get('exit_reason') or 'CLOSED_FINAL',
+               'forward_return':((t.get('return_pct') or 0)/100.0 if t.get('return_pct') is not None else None)}
+              for t in _closed
+            ]}
+
+        if not isinstance(data.get('quality_badges'),list) or not data.get('quality_badges'):
+            _qb=[]
+            for x in dirs[:12]:
+                conf=max(0.0,min(1.0,float(x.get('confidence') or 0)))
+                plan=x.get('trade_plan') if isinstance(x.get('trade_plan'),dict) else {}
+                signal_score=round(100*conf)
+                data_score=100 if x.get('source_gate_pass') else 35
+                exec_score=85 if plan.get('eligible') else 35
+                total=round(.45*signal_score+.30*data_score+.25*exec_score)
+                _qb.append({'asset':x.get('asset'),'horizon':x.get('horizon'),
+                            'badge':{'label':'READY' if plan.get('eligible') and total>=70 else 'WATCH',
+                                     'total':total,'signal':signal_score,'data':data_score,'execution':exec_score}})
+            data['quality_badges']=_qb
+
+        data['decision_tab_status']={
+          'status':'OK','rows':len(rows),'directional':len(dirs),
+          'fields_present':sum(1 for k in ('decision_cards','market_drivers','portfolio_command','abstention',
+             'opportunity_funnel','missed_opportunities','learning_center','personal_cio','smart_alerts',
+             'market_triggers','scenario_map','briefs','decision_replay','quality_badges') if data.get(k))
         }
     except Exception as exc:
         print('V86_EXPERIENCE_OVERLAY_ERROR', type(exc).__name__, str(exc)[:200], flush=True)
@@ -1378,6 +1500,8 @@ if __name__ == '__main__':
             'deep_tab_status':(_ov.get('deep_metrics_status') or {}),
             'research_fields_present':sum(1 for k in ('factory','backtest','validation','adaptive','drift','agent_consensus','calibration_quality','options_context','ndx_breadth','time_stability','cost_sensitivity','signal_readiness','learning_report','independent_experience','multilingual_library','causal_drivers','policy_lab','regime_transitions','research_discovery_health','meta_performance','contradictions','event_learning','managers') if _ov.get(k)),
             'system_fields_present':sum(1 for k in ('architecture_efficiency','production_readiness','autonomy','horizon_integrity','portfolio_allocator','dynamic_risk_budget','governance','qc','portfolio_risk','data_quality','event_scan') if _ov.get(k)),
+            'decision_fields_present':sum(1 for k in ('decision_cards','market_drivers','portfolio_command','abstention','opportunity_funnel','missed_opportunities','learning_center','personal_cio','smart_alerts','market_triggers','scenario_map','briefs','decision_replay','quality_badges') if _pe.get(k)),
+            'decision_tab_status':(_pe.get('decision_tab_status') or {}),
             'status':'ok'
         },ensure_ascii=False,separators=(',',':')),flush=True)
         for _p in (_raw_pp.get('portfolios') or []):
