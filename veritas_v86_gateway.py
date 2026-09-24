@@ -26,6 +26,46 @@ def num(x, default=None):
     except Exception:
         return default
 
+FINALIZATION_CONTRACT = 'CLOSED_FINAL_V1'
+_FINAL_OUTCOME_FIELDS = (
+    'gross_close_leg','funding_close_leg','exit_fee','exit_price',
+    'observed_mfe_fraction','observed_mae_fraction',
+    'giveback_from_observed_peak','held_seconds','path_points'
+)
+
+def _as_dict(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            x=json.loads(value)
+            return x if isinstance(x,dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+def _episode_finalization(e):
+    """Fail closed: only a fully persisted close may affect stats or learning."""
+    e=e if isinstance(e,dict) else {}
+    payload=_as_dict(e.get('payload'))
+    outcome=_as_dict(payload.get('outcome'))
+    status=str(e.get('status') or '').upper()
+    missing=[]
+    if status!='CLOSED': missing.append('status=CLOSED')
+    if not e.get('closed_at'): missing.append('closed_at')
+    if e.get('net_pnl') is None: missing.append('net_pnl')
+    if outcome.get('entry_fee') is None and payload.get('entry_fee') is None: missing.append('entry_fee')
+    for field in _FINAL_OUTCOME_FIELDS:
+        if outcome.get(field) is None: missing.append('outcome.'+field)
+    if not (outcome.get('exit_reason') or e.get('closing_event')): missing.append('exit_reason')
+    points=num(outcome.get('path_points'))
+    if points is not None and points < 2: missing.append('outcome.path_points>=2')
+    finalized=(len(missing)==0)
+    if finalized: state='CLOSED_FINAL'
+    elif status=='OPEN' and not e.get('closed_at') and e.get('net_pnl') is None: state='OPEN'
+    else: state='PENDING_FINALIZATION'
+    return {'state':state,'finalized':finalized,'missing':missing,'contract':FINALIZATION_CONTRACT}
+
 def v86_snapshot():
     return jget(V86, '/api/v85/snapshot')
 
@@ -94,6 +134,23 @@ def transform_portfolios():
         if exact is None:
             exact = next((x for x in rows if x.get('horizon')==horizon), None)
         return exact or {}
+
+    final_stats={}
+    pending_by_account={}
+    for ep in episode_rows:
+        if not isinstance(ep,dict): continue
+        account=str(ep.get('account_id') or ep.get('portfolio_name') or '')
+        fin=_episode_finalization(ep)
+        if fin['finalized']:
+            st=final_stats.setdefault(account,{'closed':0,'wins':0,'meaningful_wins':0,'closed_net_pnl_rub':0.0})
+            st['closed']+=1
+            net=num(ep.get('net_pnl'),0.0) or 0.0
+            st['closed_net_pnl_rub']+=net
+            if net>0: st['wins']+=1
+            pay=_as_dict(ep.get('payload')); entry_nav=num(pay.get('entry_nav'))
+            if entry_nav and net/entry_nav>0.001: st['meaningful_wins']+=1
+        elif fin['state']=='PENDING_FINALIZATION':
+            pending_by_account[account]=pending_by_account.get(account,0)+1
 
     out = []
     for p in plist:
@@ -176,13 +233,20 @@ def transform_portfolios():
                 'opened_at':z.get('opened_at')
             })
         name = p.get('name')
+        st=final_stats.get(str(name),{'closed':0,'wins':0,'meaningful_wins':0,'closed_net_pnl_rub':0.0})
+        closed=int(st['closed']); wins=int(st['wins']); engine_closed=int(p.get('closed') or 0)
         out.append({
             'name':name, 'badge':badges.get(name,''), 'mandate':p.get('mandate') or {},
             'latest':{'nav_rub':nav,'nav_usd':None,'benchmark_nav_rub':None,
                       'gross_leverage':gross,'drawdown':dd,'ruonia':None,'usdrub':None},
-            'positions':positions, 'closed_trades':int(p.get('closed') or 0),
-            'wins':int(p.get('wins') or 0), 'meaningful_wins':int(p.get('wins') or 0),
-            'win_rate':p.get('win_rate')
+            'positions':positions, 'closed_trades':closed,
+            'wins':wins, 'meaningful_wins':int(st['meaningful_wins']),
+            'win_rate':(wins/closed if closed else None),
+            'closed_net_pnl_rub':round(float(st['closed_net_pnl_rub']),8),
+            'finalization_pending':int(pending_by_account.get(str(name),0)),
+            'engine_closed_reported':engine_closed,
+            'accounting_consistency':'OK' if engine_closed==closed else 'PENDING_FINALIZATION',
+            'finalization_contract':FINALIZATION_CONTRACT
         })
     return {
         'status':'OK', 'initial_nav_rub':initial, 'commission_rate':0.0005,
@@ -315,24 +379,15 @@ def product_experience():
     return data
 
 def trades():
-    def dct(value):
-        if isinstance(value, dict):
-            return value
-        if isinstance(value, str):
-            try:
-                x=json.loads(value)
-                return x if isinstance(x,dict) else {}
-            except Exception:
-                return {}
-        return {}
-
-    def learning_from_outcome(outcome, net_pnl, closed=False):
-        if not closed:
+    def learning_from_outcome(outcome, net_pnl, finalized=False):
+        if not finalized:
             return (None,None)
-        mfe=num(outcome.get('observed_mfe_fraction'),0.0) or 0.0
-        mae=num(outcome.get('observed_mae_fraction'),0.0) or 0.0
-        give=num(outcome.get('giveback_from_observed_peak'),0.0) or 0.0
-        net=num(net_pnl,0.0) or 0.0
+        mfe=num(outcome.get('observed_mfe_fraction'))
+        mae=num(outcome.get('observed_mae_fraction'))
+        give=num(outcome.get('giveback_from_observed_peak'))
+        net=num(net_pnl)
+        if None in (mfe,mae,give,net):
+            return (None,None)
         capture=(1.0-give/mfe) if mfe>0 else None
         if net>0 and capture is not None and capture>=0.60:
             return ('RIGHT_DIRECTION_HIGH_CAPTURE',
@@ -358,10 +413,10 @@ def trades():
             return []
 
     def convert(e, archived=False):
-        payload=dct(e.get('payload'))
-        position=dct(payload.get('position'))
-        signal=dct(payload.get('signal'))
-        outcome=dct(payload.get('outcome'))
+        payload=_as_dict(e.get('payload'))
+        position=_as_dict(payload.get('position'))
+        signal=_as_dict(payload.get('signal'))
+        outcome=_as_dict(payload.get('outcome'))
         direction=position.get('direction') or signal.get('direction')
         entry=num(position.get('entry_price'))
         stop=num(position.get('initial_stop') or position.get('stop_price') or signal.get('stop_price'))
@@ -378,8 +433,8 @@ def trades():
         )
         ret_pct=(100.0*net/entry_nav) if net is not None and entry_nav else None
         mfe=num(outcome.get('observed_mfe_fraction')); mae=num(outcome.get('observed_mae_fraction')); giveback=num(outcome.get('giveback_from_observed_peak'))
-        is_closed=bool(str(e.get('status') or '').upper()=='CLOSED' or e.get('closed_at') or net is not None)
-        label,lesson=learning_from_outcome(outcome,net,closed=is_closed)
+        fin=_episode_finalization(e)
+        label,lesson=learning_from_outcome(outcome,net,finalized=fin['finalized'])
         pwin=num(signal.get('entry_probability')); pwin_source=signal.get('probability_source')
         if pwin is None:
             pwin=num(payload.get('pwin')); pwin_source=payload.get('pwin_source') or pwin_source
@@ -405,20 +460,27 @@ def trades():
             'path_points':outcome.get('path_points'),'learning_label':label,
             'learning_conclusion':lesson,'archived':archived,
             'archive_label':'АРХИВ ДО RESET' if archived else None,
-            'causal_note':outcome.get('causal_error') or 'NOT_INFERRED_FROM_PNL_ALONE'
+            'causal_note':outcome.get('causal_error') or 'NOT_INFERRED_FROM_PNL_ALONE',
+            'finalization_state':fin['state'],'finalization_contract':fin['contract'],
+            'learning_eligible':bool(fin['finalized']),
+            'market_episode_key':signal.get('idea_id') or e.get('idea_id'),
+            'execution_episode_key':e.get('episode_id') or e.get('trade_id')
         }
 
     current_all=[e for e in fetch_items(V86) if isinstance(e,dict)]
     archive_all=[e for e in fetch_items(ARCHIVE_V86) if isinstance(e,dict)]
-    current=[convert(e,False) for e in current_all
-             if str(e.get('status') or '').upper()=='CLOSED' or e.get('closed_at') or e.get('net_pnl') is not None]
-    archive=[convert(e,True) for e in archive_all
-             if str(e.get('status') or '').upper()=='CLOSED' or e.get('closed_at') or e.get('net_pnl') is not None]
+    current=[convert(e,False) for e in current_all if _episode_finalization(e)['finalized']]
+    archive=[convert(e,True) for e in archive_all if _episode_finalization(e)['finalized']]
+    pending=[{'trade_id':e.get('episode_id') or e.get('trade_id'),
+              'portfolio_name':e.get('account_id') or e.get('portfolio_name'),
+              'asset':e.get('asset'),'missing':_episode_finalization(e)['missing']}
+             for e in current_all if _episode_finalization(e)['state']=='PENDING_FINALIZATION']
     merged=current+archive
     merged.sort(key=lambda x:str(x.get('closed_at') or ''), reverse=True)
-    open_current=sum(1 for e in current_all if str(e.get('status') or '').upper()=='OPEN' and not e.get('closed_at'))
+    open_current=sum(1 for e in current_all if _episode_finalization(e)['state']=='OPEN')
     return {'trades':merged,'current_closed_count':len(current),'archive_closed_count':len(archive),
-            'current_open_count':open_current}
+            'current_open_count':open_current,'pending_finalization_count':len(pending),
+            'pending_finalization':pending[:20],'finalization_contract':FINALIZATION_CONTRACT}
 
 def app_html():
     body, _ = bget(PROD, '/app')
@@ -428,7 +490,7 @@ def app_html():
     value = value.replace('Открытых позиций нет — оба портфеля в cash.','Открытых позиций нет — портфели в cash.')
     value = value.replace('30 ячеек · ~','35 ячеек · ~').replace('6 активов × 5 ТФ','7 активов × 5 ТФ').replace('6/6 активов','7/7 активов')
     value = value.replace('NDX','NQ')
-    value = value.replace('ПОСЛЕДНИЕ СДЕЛКИ','ЗАКРЫТЫЕ СДЕЛКИ')
+    value = value.replace('Последние сделки','Закрытые сделки · CLOSED_FINAL').replace('ПОСЛЕДНИЕ СДЕЛКИ','ЗАКРЫТЫЕ СДЕЛКИ · CLOSED_FINAL')
     value = value.replace("${p.name==='Champion'?'70%+':'77%+'}","${p.badge||''}")
     value = value.replace('Шаг позиции 5% · gross ≤ 2,5× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')

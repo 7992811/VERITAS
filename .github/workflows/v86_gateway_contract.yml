@@ -1,0 +1,20 @@
+name: VERITAS v86 gateway contract
+on:
+  push:
+    branches: [v86-integration]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  closed-final:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile gateway
+        run: python -m py_compile veritas_v86_gateway.py
+      - name: CLOSED_FINAL contract tests
+        run: python -m unittest -v test_v86_gateway_finalization.py
