@@ -564,7 +564,7 @@ def app_html():
         print(json.dumps({'event':'V86_UI_PATCH','status':'ok','position_renderer_replacements':count},
                          ensure_ascii=False,separators=(',',':')), flush=True)
 
-    trade_replacement = """trel.innerHTML=trades.length?trades.slice(0,60).map(t=>`<div class="assetview closed-trade-card"><div class="assetview-head closed-head"><b>${t.portfolio_name} · ${t.asset} · ${t.direction||'—'}${t.recovered?' · RECOVERED':''}</b><b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-grid dense-closed"><div><span>ЦЕНА</span><b>${t.avg_entry_price==null?'—':Number(t.avg_entry_price).toLocaleString('ru-RU',{maximumFractionDigits:3})} → ${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:3})}</b></div><div><span>GROSS</span><b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></div><div><span>COST</span><b>${rub(Number(t.fees_rub||0)+Number(t.funding_rub||0))}</b></div><div><span>PATH</span><b>M ${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'} / A ${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'} / G ${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></div><div><span>EXIT</span><b>${t.exit_reason||'—'} · ${t.horizon||'—'}</b></div><div><span>ОТКРЫТА</span><b>${t.opened_at?new Date(t.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div><div><span>ЗАКРЫТА</span><b>${t.closed_at?new Date(t.closed_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div><div><span>HOLD</span><b>${t.held_seconds==null?'—':(Number(t.held_seconds)>=3600?(Number(t.held_seconds)/3600).toFixed(1)+' ч':Math.round(Number(t.held_seconds)/60)+' мин')}</b></div><div><span>QTY</span><b>${t.quantity==null?'—':Number(t.quantity).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>SL / TP</span><b>${t.stop_price==null?'—':Number(t.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:3})} / ${t.take_price==null?'—':Number(t.take_price).toLocaleString('ru-RU',{maximumFractionDigits:3})}</b></div><div><span>Prob-ty</span><b>${t.entry_probability==null?'—':(100*Number(t.entry_probability)).toFixed(1)+'%'+(['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY'].includes(t.probability_source)?' calibr.':' model')}</b></div><div><span>SETUP</span><b>${t.setup||'—'}${t.regime?' · '+t.regime:''}</b></div></div><div class="trade-learning compact-learning" title="${String(t.learning_conclusion||'—').replace(/"/g,'&quot;')}"><b>${t.learning_label||'—'}</b> · ${t.learning_conclusion||'—'}</div></div>`).join(''):'Закрытых сделок пока нет.'"""
+    trade_replacement = """trel.innerHTML=trades.length?(()=>{const order=['Champion','Challenger','Impulse','Trend','Range','Reversal','Event','RelativeValue'];const groups={};trades.slice(0,80).forEach(t=>{const k=t.portfolio_name||'—';(groups[k]||(groups[k]=[])).push(t)});const keys=Object.keys(groups).sort((a,b)=>{const ia=order.indexOf(a),ib=order.indexOf(b);return (ia<0?999:ia)-(ib<0?999:ib)||a.localeCompare(b)});const fmtTime=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';const fmtHold=x=>x==null?'—':(Number(x)>=3600?(Number(x)/3600).toFixed(1)+' ч':Math.max(1,Math.round(Number(x)/60))+' мин');const fmtPx=x=>x==null?'—':Number(x).toLocaleString('ru-RU',{maximumFractionDigits:3});return keys.map(name=>{const rows=groups[name];const wins=rows.filter(t=>Number(t.net_pnl_rub||0)>0).length;const net=rows.reduce((a,t)=>a+Number(t.net_pnl_rub||0),0);const wr=rows.length?100*wins/rows.length:0;return `<div class="closed-portfolio"><div class="closed-portfolio-summary"><b>${name}</b><span>· ${rows.length} закрыто</span><span>· ${wins} прибыльных</span><span>· win rate ${wr.toFixed(1)}%</span><span>· Net P&L <b class="${net>=0?'ok':'bad'}">${rub(net)}</b></span></div><div class="closed-list">${rows.map(t=>{const pnl=Number(t.net_pnl_rub||0);const prob=t.entry_probability==null?'—':(100*Number(t.entry_probability)).toFixed(1)+'% ('+(['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY'].includes(t.probability_source)?'calibr.':'model')+')';return `<div class="assetview closed-trade-card"><div class="closed-trade-head"><b>${t.asset||'—'} · ${t.direction||'—'}${t.recovered?' · RECOVERED':''}</b><b class="${pnl>=0?'ok':'bad'}">P&L ${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)}${t.return_pct==null?'':' · '+Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-row"><span>Вход <b>${fmtPx(t.avg_entry_price)}</b></span><span>· Выход <b>${fmtPx(t.avg_exit_price)}</b></span><span>· Gross <b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></span></div><div class="closed-row closed-costs"><span>Комиссия <b>${rub(t.fees_rub||0)}</b></span><span>· Фандинг <b>${rub(t.funding_rub||0)}</b></span><span>· MFE <b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></span><span>· MAE <b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></span><span>· Giveback <b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></span><span>· Причина <b>${t.exit_reason||'—'}</b></span></div><div class="closed-row closed-time"><span>Открыта <b>${fmtTime(t.opened_at)}</b></span><span>· Закрыта <b>${fmtTime(t.closed_at)}</b></span><span>· Hold <b>${fmtHold(t.held_seconds)}</b></span><span>· QTY <b>${t.quantity==null?'—':Number(t.quantity).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></span><span>· SL/TP <b>${fmtPx(t.stop_price)} / ${fmtPx(t.take_price)}</b></span><span>· ${t.horizon||'—'}${t.setup?' · '+t.setup:''}${t.regime?' · '+t.regime:''}</span></div><div class="closed-learning"><span class="learn-dot">●</span><span>Вывод для обучения:</span><b>${t.learning_label||'—'}</b><span>${t.learning_conclusion||'—'}</span></div><div class="closed-prob"><span class="prob-dot">●</span><span>Entry Prob-ty:</span><b title="${t.probability_source||'—'}">${prob}</b></div></div>`}).join('')}</div></div>`}).join('')})():'Закрытых сделок пока нет.'"""
     trade_pattern = r"""trel\.innerHTML=trades\.length\?trades\.slice\(0,30\)\.map\(t=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Сделок в журнале пока нет\.'"""
     value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
     print(json.dumps({'event':'V86_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
@@ -593,15 +593,24 @@ def app_html():
 #portfoliopositions .position-col span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.2px}
 #portfoliopositions .position-col b{font-size:12px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;text-align:left}
 #portfoliopositions .position-left .position-gap{margin-top:7px}
-#portfoliotrades .closed-trade-card{padding:6px 8px;margin:0 0 4px;border-radius:10px}
-#portfoliotrades .closed-head{margin-bottom:2px}
-#portfoliotrades .closed-head b{font-size:11px;line-height:1.05}
-#portfoliotrades .closed-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 8px;margin-top:3px}
-#portfoliotrades .closed-grid>div{display:flex;gap:4px;align-items:baseline;min-width:0;white-space:nowrap}
-#portfoliotrades .closed-grid span{font-size:7.5px;color:var(--muted);text-transform:uppercase;flex:0 0 auto}
-#portfoliotrades .closed-grid b{font-size:9px;line-height:1.05;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#portfoliotrades .trade-learning{margin-top:3px;padding-top:3px;border-top:1px solid var(--border);font-size:8.5px;line-height:1.05;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#portfoliotrades .trade-learning b{font-size:8.5px;color:inherit}
+#portfoliotrades .closed-portfolio{margin:0 0 10px}
+#portfoliotrades .closed-portfolio-summary{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;padding:2px 2px 5px;font-size:11px;line-height:1.15;color:var(--muted)}
+#portfoliotrades .closed-portfolio-summary>b{font-size:12px;color:var(--text)}
+#portfoliotrades .closed-list{display:flex;flex-direction:column;gap:4px}
+#portfoliotrades .closed-trade-card{padding:6px 9px;margin:0;border-radius:10px}
+#portfoliotrades .closed-trade-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:2px}
+#portfoliotrades .closed-trade-head b{font-size:11px;line-height:1.1}
+#portfoliotrades .closed-row{display:flex;flex-wrap:wrap;gap:2px 5px;align-items:baseline;font-size:9px;line-height:1.15;color:var(--muted);margin-top:2px}
+#portfoliotrades .closed-row span{white-space:nowrap}
+#portfoliotrades .closed-row b{font-size:9px;color:var(--text);font-weight:700}
+#portfoliotrades .closed-costs{font-size:8.7px}
+#portfoliotrades .closed-time{font-size:8.1px;color:#7f8b96}
+#portfoliotrades .closed-time b{font-size:8.2px}
+#portfoliotrades .closed-learning,#portfoliotrades .closed-prob{display:flex;gap:4px;align-items:baseline;min-width:0;margin-top:3px;padding-top:3px;border-top:1px solid var(--border);font-size:8.6px;line-height:1.12;color:var(--muted)}
+#portfoliotrades .closed-learning b,#portfoliotrades .closed-prob b{font-size:8.6px;color:var(--text)}
+#portfoliotrades .closed-learning span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#portfoliotrades .learn-dot{color:#ef6767;font-size:9px;flex:0 0 auto}
+#portfoliotrades .prob-dot{color:#d9ad46;font-size:9px;flex:0 0 auto}
 @media(max-width:700px){
  #portfoliopositions .position-card{padding:7px 9px;margin-bottom:5px}
  #portfoliopositions .position-head{margin-bottom:5px}
@@ -612,11 +621,16 @@ def app_html():
  #portfoliopositions .position-col span{font-size:8px}
  #portfoliopositions .position-col b{font-size:10.5px}
  #portfoliopositions .position-left .position-gap{margin-top:6px}
- #portfoliotrades .closed-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 5px}
- #portfoliotrades .closed-grid span{font-size:7px}
- #portfoliotrades .closed-grid b{font-size:8.2px}
- #portfoliotrades .closed-head b{font-size:10px}
- #portfoliotrades .trade-learning{font-size:7.8px}
+ #portfoliotrades .closed-portfolio-summary{font-size:9.2px;gap:3px;padding-bottom:4px}
+ #portfoliotrades .closed-portfolio-summary>b{font-size:10.5px}
+ #portfoliotrades .closed-trade-card{padding:6px 8px}
+ #portfoliotrades .closed-trade-head b{font-size:10px}
+ #portfoliotrades .closed-row{font-size:7.9px;gap:2px 4px}
+ #portfoliotrades .closed-row b{font-size:8px}
+ #portfoliotrades .closed-time{font-size:7.3px}
+ #portfoliotrades .closed-time b{font-size:7.4px}
+ #portfoliotrades .closed-learning,#portfoliotrades .closed-prob{font-size:7.6px}
+ #portfoliotrades .closed-learning b,#portfoliotrades .closed-prob b{font-size:7.6px}
 }
 </style>"""
     value = value.replace('</head>', compact_css + '</head>')
