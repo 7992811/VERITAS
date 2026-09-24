@@ -273,8 +273,7 @@ def collect_one_source_market(app,asset):
     return Quote(asset,price,stable_id('QFAST_',asset,str(price),pt),pt,None,
                  source,None,True,bool(market_open),max_age,quote_currency='RUB')
 '''
-    anchor="def refresh_and_guard(app):
-"
+    anchor="def refresh_and_guard(app):\n"
     if anchor not in s: raise SystemExit('FAST_PULSE_GUARD_ANCHOR_NOT_FOUND')
     s=s.replace(anchor,insert+'\n'+anchor,1)
 
