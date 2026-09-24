@@ -76,6 +76,17 @@ def v86_portfolios():
         return data
     return {'status':'OK','portfolios':data if isinstance(data,list) else []}
 
+def closed_trade_ledger():
+    try:
+        data=jget(V86,'/api/v1/closed-trade-ledger',15)
+        items=data.get('items') if isinstance(data,dict) else []
+        if isinstance(items,list):
+            return {'status':'OK','items':items,'source':'durable_closed_trade_ledger',
+                    'contract':data.get('contract'),'append_only':bool(data.get('append_only'))}
+    except Exception:
+        pass
+    return {'status':'UNAVAILABLE','items':[],'source':'episode_fallback'}
+
 def signal(cell):
     direction = cell.get('direction') or 'NO_TRADE'
     reason = str(cell.get('reason') or '')
@@ -110,6 +121,8 @@ def transform_portfolios():
         episode_rows=(jget(V86,'/api/v1/portfolio-trades',12).get('items') or [])
     except Exception:
         episode_rows=[]
+    ledger_info=closed_trade_ledger()
+    closed_rows=ledger_info.get('items') or []
     episode_payload={}
     for ep in episode_rows:
         if not isinstance(ep,dict):
@@ -138,19 +151,35 @@ def transform_portfolios():
 
     final_stats={}
     pending_by_account={}
+    if closed_rows:
+        for row in closed_rows:
+            if not isinstance(row,dict): continue
+            account=str(row.get('account_id') or row.get('portfolio_name') or '')
+            st=final_stats.setdefault(account,{'closed':0,'wins':0,'meaningful_wins':0,'closed_net_pnl_rub':0.0})
+            st['closed']+=1
+            net=num(row.get('net_pnl'),0.0) or 0.0
+            st['closed_net_pnl_rub']+=net
+            if net>0: st['wins']+=1
+            entry_nav=num(row.get('entry_nav'))
+            if entry_nav and net/entry_nav>0.001: st['meaningful_wins']+=1
+    else:
+        for ep in episode_rows:
+            if not isinstance(ep,dict): continue
+            account=str(ep.get('account_id') or ep.get('portfolio_name') or '')
+            fin=_episode_finalization(ep)
+            if fin['finalized']:
+                st=final_stats.setdefault(account,{'closed':0,'wins':0,'meaningful_wins':0,'closed_net_pnl_rub':0.0})
+                st['closed']+=1
+                net=num(ep.get('net_pnl'),0.0) or 0.0
+                st['closed_net_pnl_rub']+=net
+                if net>0: st['wins']+=1
+                pay=_as_dict(ep.get('payload')); entry_nav=num(pay.get('entry_nav'))
+                if entry_nav and net/entry_nav>0.001: st['meaningful_wins']+=1
     for ep in episode_rows:
         if not isinstance(ep,dict): continue
         account=str(ep.get('account_id') or ep.get('portfolio_name') or '')
         fin=_episode_finalization(ep)
-        if fin['finalized']:
-            st=final_stats.setdefault(account,{'closed':0,'wins':0,'meaningful_wins':0,'closed_net_pnl_rub':0.0})
-            st['closed']+=1
-            net=num(ep.get('net_pnl'),0.0) or 0.0
-            st['closed_net_pnl_rub']+=net
-            if net>0: st['wins']+=1
-            pay=_as_dict(ep.get('payload')); entry_nav=num(pay.get('entry_nav'))
-            if entry_nav and net/entry_nav>0.001: st['meaningful_wins']+=1
-        elif fin['state']=='PENDING_FINALIZATION':
+        if fin['state']=='PENDING_FINALIZATION':
             pending_by_account[account]=pending_by_account.get(account,0)+1
 
     out = []
@@ -246,8 +275,10 @@ def transform_portfolios():
             'closed_net_pnl_rub':round(float(st['closed_net_pnl_rub']),8),
             'finalization_pending':int(pending_by_account.get(str(name),0)),
             'engine_closed_reported':engine_closed,
-            'accounting_consistency':'OK' if engine_closed==closed else 'PENDING_FINALIZATION',
-            'finalization_contract':FINALIZATION_CONTRACT
+            'accounting_consistency':'OK' if (not closed_rows or engine_closed==closed) else 'LEDGER_AUTHORITATIVE',
+            'finalization_contract':FINALIZATION_CONTRACT,
+            'closed_history_source':ledger_info.get('source'),
+            'closed_history_append_only':bool(ledger_info.get('append_only'))
         })
     return {
         'status':'OK', 'initial_nav_rub':initial, 'commission_rate':0.0005,
@@ -380,118 +411,108 @@ def product_experience():
     return data
 
 def trades():
-    def learning_from_outcome(outcome, net_pnl, finalized=False):
-        if not finalized:
+    def learning_from_fields(row):
+        if not bool(row.get('learning_eligible')):
+            if str(row.get('record_kind') or '').startswith('RECOVERED_'):
+                return ('RECOVERED_HISTORICAL_NO_LEARNING',
+                        'Исторически восстановленная сделка учтена в P&L, но исключена из обучения: траектория MFE/MAE не сохранилась.')
             return (None,None)
-        mfe=num(outcome.get('observed_mfe_fraction'))
-        mae=num(outcome.get('observed_mae_fraction'))
-        give=num(outcome.get('giveback_from_observed_peak'))
-        net=num(net_pnl)
-        if None in (mfe,mae,give,net):
-            return (None,None)
+        mfe=num(row.get('mfe_fraction')); mae=num(row.get('mae_fraction')); give=num(row.get('giveback_fraction')); net=num(row.get('net_pnl'))
+        if None in (mfe,mae,give,net): return (None,None)
         capture=(1.0-give/mfe) if mfe>0 else None
         if net>0 and capture is not None and capture>=0.60:
-            return ('RIGHT_DIRECTION_HIGH_CAPTURE',
-                    'Правильное направление, высокий захват движения. Сохранять правило; риск не повышать без OOS/VAULT.')
+            return ('RIGHT_DIRECTION_HIGH_CAPTURE','Правильное направление, высокий захват движения. Сохранять правило; риск не повышать без OOS/VAULT.')
         if net>0 and capture is not None and capture<0.35:
-            return ('RIGHT_DIRECTION_LOW_CAPTURE',
-                    'Направление было верным, но захвачена малая часть движения. Тестировать частичную фиксацию и trailing.')
+            return ('RIGHT_DIRECTION_LOW_CAPTURE','Направление было верным, но захвачена малая часть движения. Тестировать частичную фиксацию и trailing.')
         if net<=0 and mfe>=0.004:
-            return ('FAVORABLE_PATH_NOT_MONETIZED',
-                    'После входа был благоприятный ход, но он не монетизирован. Проверить выход, стоп и повторный вход.')
+            return ('FAVORABLE_PATH_NOT_MONETIZED','После входа был благоприятный ход, но он не монетизирован. Проверить выход, стоп и повторный вход.')
         if net<=0 and mfe<0.004:
-            return ('DIRECTION_OR_ENTRY_FAILED_ON_OBSERVED_PATH',
-                    'Наблюдавшийся путь не подтвердил качество входа/направления. Снизить вес этого контекста до новой выборки.')
-        return ('MIXED_EXECUTION',
-                'Смешанный результат исполнения. Нужна дополнительная выборка; не менять риск автоматически.')
+            return ('DIRECTION_OR_ENTRY_FAILED_ON_OBSERVED_PATH','Наблюдавшийся путь не подтвердил качество входа/направления. Снизить вес этого контекста до новой выборки.')
+        return ('MIXED_EXECUTION','Смешанный результат исполнения. Нужна дополнительная выборка; не менять риск автоматически.')
 
-    def fetch_items(base):
+    def fetch_episodes():
         try:
-            raw=jget(base,'/api/v1/portfolio-trades',15)
+            raw=jget(V86,'/api/v1/portfolio-trades',15)
             return raw.get('items') or []
         except Exception as exc:
-            print('TRADE_SOURCE_ERROR',base,type(exc).__name__,flush=True)
+            print('TRADE_SOURCE_ERROR',V86,type(exc).__name__,flush=True)
             return []
 
-    def convert(e, archived=False):
-        payload=_as_dict(e.get('payload'))
-        position=_as_dict(payload.get('position'))
-        signal=_as_dict(payload.get('signal'))
-        outcome=_as_dict(payload.get('outcome'))
-        direction=position.get('direction') or signal.get('direction')
-        entry=num(position.get('entry_price'))
-        stop=num(position.get('initial_stop') or position.get('stop_price') or signal.get('stop_price'))
-        quantity=num(position.get('quantity'))
-        entry_nav=num(payload.get('entry_nav'))
-        entry_fee=num(outcome.get('entry_fee'))
-        if entry_fee is None: entry_fee=num(payload.get('entry_fee'),0.0) or 0.0
-        net=num(e.get('net_pnl'))
-        gross=num(outcome.get('gross_close_leg'))
-        funding=num(outcome.get('funding_close_leg'),0.0) or 0.0
-        exit_fee=num(outcome.get('exit_fee'))
-        total_fees=(entry_fee+exit_fee) if exit_fee is not None else (
-            max(0.0,gross-funding-net) if gross is not None and net is not None else entry_fee
-        )
-        ret_pct=(100.0*net/entry_nav) if net is not None and entry_nav else None
-        mfe=num(outcome.get('observed_mfe_fraction')); mae=num(outcome.get('observed_mae_fraction')); giveback=num(outcome.get('giveback_from_observed_peak'))
-        fin=_episode_finalization(e)
-        label,lesson=learning_from_outcome(outcome,net,finalized=fin['learning_eligible'])
-        pwin=num(signal.get('entry_probability')); pwin_source=signal.get('probability_source')
-        if pwin is None:
-            pwin=num(payload.get('pwin')); pwin_source=payload.get('pwin_source') or pwin_source
-        if archived:
-            lesson='Архив старого тестового контура; исключён из новой статистики. '+lesson
+    def convert_ledger(row):
+        net=num(row.get('net_pnl')); entry_nav=num(row.get('entry_nav'))
+        entry_fee=num(row.get('entry_fee'),0.0) or 0.0; exit_fee=num(row.get('exit_fee'),0.0) or 0.0
+        label,lesson=learning_from_fields(row)
+        recovered=str(row.get('record_kind') or '').startswith('RECOVERED_')
         return {
-            'trade_id':e.get('episode_id') or e.get('trade_id'),
-            'portfolio_name':e.get('account_id') or e.get('portfolio_name'),
-            'asset':e.get('asset'),'direction':direction,'status':e.get('status'),
-            'opened_at':e.get('opened_at'),'closed_at':e.get('closed_at'),
-            'avg_entry_price':entry,'avg_exit_price':num(outcome.get('exit_price')),
-            'quantity':quantity,'stop_price':stop,
-            'gross_pnl_rub':gross,'fees_rub':total_fees,'funding_rub':funding,
-            'net_pnl_rub':net,'return_pct':ret_pct,
-            'horizon':position.get('horizon') or signal.get('horizon'),
-            'setup':signal.get('setup_family') or signal.get('setup') or 'UNCLASSIFIED',
-            'regime':signal.get('regime'),'entry_probability':pwin,'probability_source':pwin_source,
-            'mfe_pct':100*mfe if mfe is not None else None,
-            'mae_pct':100*mae if mae is not None else None,
-            'giveback_pct':100*giveback if giveback is not None else None,
-            'held_seconds':num(outcome.get('held_seconds')),
-            'exit_reason':outcome.get('exit_reason') or e.get('closing_event'),
-            'path_points':outcome.get('path_points'),'learning_label':label,
-            'learning_conclusion':lesson,'archived':archived,
-            'archive_label':'АРХИВ ДО RESET' if archived else None,
-            'causal_note':outcome.get('causal_error') or 'NOT_INFERRED_FROM_PNL_ALONE',
-            'finalization_state':fin['state'],'finalization_contract':fin['contract'],
-            'learning_eligible':bool(fin['learning_eligible']),
-            'market_episode_key':signal.get('idea_id') or e.get('idea_id'),
-            'execution_episode_key':e.get('episode_id') or e.get('trade_id')
+            'trade_id':row.get('episode_id'),'portfolio_name':row.get('account_id'),'asset':row.get('asset'),
+            'direction':row.get('direction'),'status':'CLOSED','opened_at':row.get('opened_at'),'closed_at':row.get('closed_at'),
+            'avg_entry_price':num(row.get('entry_price')),'avg_exit_price':num(row.get('exit_price')),
+            'quantity':num(row.get('quantity')),'stop_price':None,
+            'gross_pnl_rub':num(row.get('gross_pnl')),'fees_rub':entry_fee+exit_fee,
+            'funding_rub':num(row.get('funding'),0.0) or 0.0,'net_pnl_rub':net,
+            'return_pct':(100.0*net/entry_nav) if net is not None and entry_nav else None,
+            'horizon':row.get('horizon'),'setup':row.get('setup_family') or 'UNCLASSIFIED',
+            'regime':None,'entry_probability':None,'probability_source':None,
+            'mfe_pct':100*num(row.get('mfe_fraction')) if num(row.get('mfe_fraction')) is not None else None,
+            'mae_pct':100*num(row.get('mae_fraction')) if num(row.get('mae_fraction')) is not None else None,
+            'giveback_pct':100*num(row.get('giveback_fraction')) if num(row.get('giveback_fraction')) is not None else None,
+            'held_seconds':num(row.get('held_seconds')),'exit_reason':row.get('exit_reason'),
+            'path_points':row.get('path_points'),'learning_label':label,'learning_conclusion':lesson,
+            'archived':False,'recovered':recovered,
+            'archive_label':'RECOVERED HISTORICAL' if recovered else None,
+            'causal_note':'RECOVERED_FROM_VERIFIED_EXECUTION_LOGS' if recovered else 'NOT_INFERRED_FROM_PNL_ALONE',
+            'finalization_state':'RECOVERED_HISTORICAL' if recovered else 'CLOSED_FINAL',
+            'finalization_contract':row.get('finalization_contract'),
+            'learning_eligible':bool(row.get('learning_eligible')),
+            'market_episode_key':row.get('idea_id'),'execution_episode_key':row.get('episode_id'),
+            'record_hash':row.get('record_hash'),'record_kind':row.get('record_kind')
         }
 
-    current_all=[e for e in fetch_items(V86) if isinstance(e,dict)]
-    archive_all=[e for e in fetch_items(ARCHIVE_V86) if isinstance(e,dict)]
-    current=[convert(e,False) for e in current_all if _episode_finalization(e)['finalized']]
-    archive=[convert(e,True) for e in archive_all if _episode_finalization(e)['finalized']]
-    pending=[{'trade_id':e.get('episode_id') or e.get('trade_id'),
-              'portfolio_name':e.get('account_id') or e.get('portfolio_name'),
-              'asset':e.get('asset'),'missing':_episode_finalization(e)['missing']}
-             for e in current_all if _episode_finalization(e)['state']=='PENDING_FINALIZATION']
-    merged=current+archive
-    merged.sort(key=lambda x:str(x.get('closed_at') or ''), reverse=True)
-    open_current=sum(1 for e in current_all if _episode_finalization(e)['state']=='OPEN')
-    learning_eligible=sum(1 for e in current_all if _episode_finalization(e)['learning_eligible'])
-    market_episodes=len({str((_as_dict(_as_dict(e.get('payload')).get('signal')).get('idea_id') or e.get('idea_id')))
-                         for e in current_all if _episode_finalization(e)['finalized']
-                         and (_as_dict(_as_dict(e.get('payload')).get('signal')).get('idea_id') or e.get('idea_id'))})
-    restored_open=sum(1 for e in current_all
-                      if _episode_finalization(e)['state']=='OPEN'
+    episodes=[e for e in fetch_episodes() if isinstance(e,dict)]
+    ledger_info=closed_trade_ledger(); ledger=[x for x in (ledger_info.get('items') or []) if isinstance(x,dict)]
+    if ledger:
+        current=[convert_ledger(x) for x in ledger]
+    else:
+        # Fail-safe compatibility until the durable ledger endpoint is live.
+        current=[]
+        for e in episodes:
+            fin=_episode_finalization(e)
+            if not fin['finalized']: continue
+            payload=_as_dict(e.get('payload')); pos=_as_dict(payload.get('position')); out=_as_dict(payload.get('outcome'))
+            row={'episode_id':e.get('episode_id'),'account_id':e.get('account_id'),'asset':e.get('asset'),
+                 'idea_id':e.get('idea_id'),'opened_at':e.get('opened_at'),'closed_at':e.get('closed_at'),
+                 'direction':pos.get('direction'),'horizon':pos.get('horizon'),'setup_family':_as_dict(payload.get('signal')).get('setup_family'),
+                 'entry_nav':payload.get('entry_nav'),'entry_price':pos.get('entry_price'),'exit_price':out.get('exit_price'),
+                 'quantity':pos.get('quantity'),'entry_fee':out.get('entry_fee',payload.get('entry_fee')),'exit_fee':out.get('exit_fee'),
+                 'funding':out.get('funding_close_leg'),'gross_pnl':out.get('gross_close_leg'),'net_pnl':e.get('net_pnl'),
+                 'mfe_fraction':out.get('observed_mfe_fraction'),'mae_fraction':out.get('observed_mae_fraction'),
+                 'giveback_fraction':out.get('giveback_from_observed_peak'),'held_seconds':out.get('held_seconds'),
+                 'exit_reason':out.get('exit_reason') or e.get('closing_event'),'path_points':out.get('path_points'),
+                 'finalization_contract':out.get('finalization_contract'),'learning_eligible':fin['learning_eligible'],
+                 'record_kind':'EPISODE_FALLBACK'}
+            current.append(convert_ledger(row))
+    current.sort(key=lambda x:str(x.get('closed_at') or ''),reverse=True)
+    ledger_ids={str(x.get('episode_id')) for x in ledger if x.get('episode_id')}
+    pending=[]
+    for e in episodes:
+        fin=_episode_finalization(e)
+        if str(e.get('status') or '').upper()=='CLOSED' and str(e.get('episode_id')) not in ledger_ids and not fin['finalized']:
+            pending.append({'trade_id':e.get('episode_id'),'portfolio_name':e.get('account_id'),'asset':e.get('asset'),'missing':fin['missing']})
+    open_current=sum(1 for e in episodes if _episode_finalization(e)['state']=='OPEN')
+    learning_eligible=sum(1 for x in ledger if bool(x.get('learning_eligible'))) if ledger else sum(1 for x in current if x.get('learning_eligible'))
+    market_episodes=len({str(x.get('idea_id')) for x in ledger if x.get('idea_id')}) if ledger else len({str(x.get('market_episode_key')) for x in current if x.get('market_episode_key')})
+    restored_open=sum(1 for e in episodes if _episode_finalization(e)['state']=='OPEN'
                       and _as_dict(_as_dict(e.get('payload')).get('state_restore')).get('status')=='RESTORED_ACTIVE_CONTINUATION')
-    return {'trades':merged,'current_closed_count':len(current),'archive_closed_count':len(archive),
+    recovered=sum(1 for x in current if x.get('recovered'))
+    return {'trades':current,'current_closed_count':len(current),'archive_closed_count':0,
             'current_open_count':open_current,'pending_finalization_count':len(pending),
             'learning_eligible_closed_count':learning_eligible,
             'learning_skipped_closed_count':max(0,len(current)-learning_eligible),
             'unique_market_episodes_closed':market_episodes,'restored_open_count':restored_open,
+            'recovered_historical_count':recovered,
+            'closed_history_source':ledger_info.get('source'),'closed_history_append_only':bool(ledger_info.get('append_only')),
             'pending_finalization':pending[:20],'finalization_contract':FINALIZATION_CONTRACT}
+
 
 def app_html():
     body, _ = bget(PROD, '/app')
@@ -517,7 +538,7 @@ def app_html():
         print(json.dumps({'event':'V86_UI_PATCH','status':'ok','position_renderer_replacements':count},
                          ensure_ascii=False,separators=(',',':')), flush=True)
 
-    trade_replacement = """trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview closed-trade-card"><div class="assetview-head"><b>${t.portfolio_name} · ${t.asset} · ${t.direction||'—'}${t.archived?' · АРХИВ':''}</b><b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-grid"><div><span>Вход</span><b>${t.avg_entry_price==null?'—':Number(t.avg_entry_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Выход</span><b>${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Кол-во</span><b>${t.quantity==null?'—':(['BTC','ETH'].includes(t.asset)?Number(t.quantity).toFixed(4):Math.round(Number(t.quantity)).toLocaleString('ru-RU'))}</b></div><div><span>Gross</span><b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></div><div><span>Издержки</span><b>${t.fees_rub==null?'—':rub(t.fees_rub)}</b></div><div><span>Funding</span><b>${t.funding_rub==null?'—':rub(t.funding_rub)}</b></div><div><span>MFE</span><b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></div><div><span>MAE</span><b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></div><div><span>Giveback</span><b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></div><div><span>Причина</span><b>${t.exit_reason||'—'}</b></div><div><span>Горизонт</span><b>${t.horizon||'—'}</b></div><div><span>Время</span><b>${t.held_seconds==null?'—':Math.round(Number(t.held_seconds)/60)+' мин'}</b></div></div><div class="trade-learning"><b>Вывод для обучения:</b> ${t.learning_conclusion||'—'}<br><span>${t.learning_label||'—'} · формируется только после закрытия эпизода; описательная атрибуция, не причинное доказательство</span></div></div>`).join(''):'Закрытых сделок пока нет.'"""
+    trade_replacement = """trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview closed-trade-card"><div class="assetview-head"><b>${t.portfolio_name} · ${t.asset} · ${t.direction||'—'}${t.recovered?' · RECOVERED':(t.archived?' · АРХИВ':'')}</b><b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-grid"><div><span>Вход</span><b>${t.avg_entry_price==null?'—':Number(t.avg_entry_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Выход</span><b>${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Кол-во</span><b>${t.quantity==null?'—':(['BTC','ETH'].includes(t.asset)?Number(t.quantity).toFixed(4):Math.round(Number(t.quantity)).toLocaleString('ru-RU'))}</b></div><div><span>Gross</span><b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></div><div><span>Издержки</span><b>${t.fees_rub==null?'—':rub(t.fees_rub)}</b></div><div><span>Funding</span><b>${t.funding_rub==null?'—':rub(t.funding_rub)}</b></div><div><span>MFE</span><b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></div><div><span>MAE</span><b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></div><div><span>Giveback</span><b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></div><div><span>Причина</span><b>${t.exit_reason||'—'}</b></div><div><span>Горизонт</span><b>${t.horizon||'—'}</b></div><div><span>Время</span><b>${t.held_seconds==null?'—':Math.round(Number(t.held_seconds)/60)+' мин'}</b></div></div><div class="trade-learning"><b>Вывод для обучения:</b> ${t.learning_conclusion||'—'}<br><span>${t.learning_label||'—'} · формируется только после закрытия эпизода; описательная атрибуция, не причинное доказательство</span></div></div>`).join(''):'Закрытых сделок пока нет.'"""
     trade_pattern = r"""trel\.innerHTML=trades\.length\?trades\.slice\(0,30\)\.map\(t=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Сделок в журнале пока нет\.'"""
     value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
     print(json.dumps({'event':'V86_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
