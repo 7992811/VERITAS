@@ -228,9 +228,12 @@ new="""    def commit_cycle(self,summary,bundles,cycle_id,clock_ok=True):
             actions=[]
             for pf in out.get('portfolios') or []:
                 for a in pf.get('actions') or []:
-                    if a.get('events') or a.get('management_reason') not in ('NO_SIGNAL','THESIS_INTACT'):
-                        actions.append({'portfolio':pf.get('name'),'asset':a.get('asset'),
-                                        'reason':a.get('management_reason'),'events':a.get('events')})
+                    actions.append({'portfolio':pf.get('name'),'asset':a.get('asset'),
+                                    'reason':a.get('management_reason'),'events':a.get('events'),
+                                    'target_fraction':a.get('target_fraction'),
+                                    'current_fraction':a.get('current_fraction'),
+                                    'risk':a.get('risk') or a.get('risk_state'),
+                                    'signal_present':a.get('signal_present')})
             print(json.dumps({'event':'V86_EXECUTION_TRACE','routing':out.get('routing') or [],
                               'actions':actions},ensure_ascii=False,separators=(',',':')),flush=True)
         except Exception as exc:
