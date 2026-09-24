@@ -643,6 +643,7 @@ if __name__ == '__main__':
         _pp = transform_portfolios()
         _ov = overview()
         _pe = product_experience()
+        _closed = trades()
         _snapshot_id = 'STATE_' + str(int(time.time()))
         print(json.dumps({
             'event':'V86_GATEWAY_SELFTEST',
@@ -652,6 +653,12 @@ if __name__ == '__main__':
             'portfolio_navs':{p.get('name'):p.get('latest',{}).get('nav_rub') for p in (_pp.get('portfolios') or [])},
             'signal_cells':len((_ov.get('cycle') or {}).get('summary') or []),
             'decision_cards':len(((_pe.get('decision_cards') or {}).get('cards') or [])),
+            'closed_trade_count':_closed.get('current_closed_count'),
+            'closed_history_source':_closed.get('closed_history_source'),
+            'closed_history_append_only':_closed.get('closed_history_append_only'),
+            'recovered_historical_count':_closed.get('recovered_historical_count'),
+            'learning_eligible_closed_count':_closed.get('learning_eligible_closed_count'),
+            'pending_finalization_count':_closed.get('pending_finalization_count'),
             'status':'ok'
         },ensure_ascii=False,separators=(',',':')),flush=True)
         for _p in (_raw_pp.get('portfolios') or []):
