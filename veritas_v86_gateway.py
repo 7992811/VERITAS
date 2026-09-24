@@ -546,9 +546,8 @@ def app_html():
     value = value.replace('Открытых позиций нет — оба портфеля в cash.','Открытых позиций нет — портфели в cash.')
     value = value.replace('30 ячеек · ~','35 ячеек · ~').replace('6 активов × 5 ТФ','7 активов × 5 ТФ').replace('6/6 активов','7/7 активов')
     value = value.replace('NDX','NQ')
-    value = value.replace(/<div class="k">RUONIA<\/div><div[^>]*>[^<]*<\/div>/g,'')
-                 .replace(/<div class="k">Руониа<\/div><div[^>]*>[^<]*<\/div>/gi,'')
-                 .replace(/RUONIA[^<]{0,40}/g,'')
+    value = re.sub(r'<div class="k">(?:RUONIA|Руониа)</div><div[^>]*>[^<]*</div>','',value,flags=re.I)
+    value = re.sub(r'RUONIA[^<]{0,40}','',value,flags=re.I)
     value = value.replace('Последние сделки','Закрытые сделки · CLOSED_FINAL').replace('ПОСЛЕДНИЕ СДЕЛКИ','ЗАКРЫТЫЕ СДЕЛКИ · CLOSED_FINAL')
     value = value.replace("${p.name==='Champion'?'70%+':'77%+'}","${p.badge||''}")
     value = value.replace('Шаг позиции 5% · gross ≤ 2,5× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
