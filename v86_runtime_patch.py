@@ -457,4 +457,17 @@ s=s.replace(old,new)
 p.write_text(s,encoding='utf-8')
 
 print('V86_SIGNAL_TO_TRADE_BRIDGE_OK')
+# TEMP diagnostic: expose v86 mandate filters during build so hidden signal drops are auditable.
+try:
+    _pp=(root/'veritas_v86/portfolios.py').read_text(encoding='utf-8').splitlines()
+    _keys=('MANDATE','mandate','accept','eligible','signal','setup','asset','Champion','Challenger','Impulse','Trend','Range','Reversal','Event','RelativeValue')
+    _hits=[i for i,line in enumerate(_pp) if any(k in line for k in _keys)]
+    _seen=set()
+    for i in _hits:
+        a=max(0,i-2); b=min(len(_pp),i+4); key=(a,b)
+        if key in _seen: continue
+        _seen.add(key)
+        print('V86_PORTFOLIOS_SRC '+str(a+1)+'-'+str(b)+' :: '+' | '.join(_pp[a:b]),flush=True)
+except Exception as _ex:
+    print('V86_PORTFOLIOS_SRC_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
 print('V86_RUNTIME_PATCH_OK')
