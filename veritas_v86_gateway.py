@@ -59,12 +59,13 @@ def _episode_finalization(e):
         if outcome.get(field) is None: missing.append('outcome.'+field)
     if not (outcome.get('exit_reason') or e.get('closing_event')): missing.append('exit_reason')
     points=num(outcome.get('path_points'))
-    if points is not None and points < 2: missing.append('outcome.path_points>=2')
     finalized=(len(missing)==0)
+    learning_eligible=bool(finalized and points is not None and points>=2)
     if finalized: state='CLOSED_FINAL'
     elif status=='OPEN' and not e.get('closed_at') and e.get('net_pnl') is None: state='OPEN'
     else: state='PENDING_FINALIZATION'
-    return {'state':state,'finalized':finalized,'missing':missing,'contract':FINALIZATION_CONTRACT}
+    return {'state':state,'finalized':finalized,'learning_eligible':learning_eligible,
+            'missing':missing,'contract':FINALIZATION_CONTRACT}
 
 def v86_snapshot():
     return jget(V86, '/api/v85/snapshot')
@@ -434,7 +435,7 @@ def trades():
         ret_pct=(100.0*net/entry_nav) if net is not None and entry_nav else None
         mfe=num(outcome.get('observed_mfe_fraction')); mae=num(outcome.get('observed_mae_fraction')); giveback=num(outcome.get('giveback_from_observed_peak'))
         fin=_episode_finalization(e)
-        label,lesson=learning_from_outcome(outcome,net,finalized=fin['finalized'])
+        label,lesson=learning_from_outcome(outcome,net,finalized=fin['learning_eligible'])
         pwin=num(signal.get('entry_probability')); pwin_source=signal.get('probability_source')
         if pwin is None:
             pwin=num(payload.get('pwin')); pwin_source=payload.get('pwin_source') or pwin_source
@@ -462,7 +463,7 @@ def trades():
             'archive_label':'АРХИВ ДО RESET' if archived else None,
             'causal_note':outcome.get('causal_error') or 'NOT_INFERRED_FROM_PNL_ALONE',
             'finalization_state':fin['state'],'finalization_contract':fin['contract'],
-            'learning_eligible':bool(fin['finalized']),
+            'learning_eligible':bool(fin['learning_eligible']),
             'market_episode_key':signal.get('idea_id') or e.get('idea_id'),
             'execution_episode_key':e.get('episode_id') or e.get('trade_id')
         }
