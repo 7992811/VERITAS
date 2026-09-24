@@ -34,9 +34,10 @@ class ClosedFinalContractTest(unittest.TestCase):
         e=full_episode(); e['payload']['outcome']['funding_close_leg']='0'; e['payload']['outcome']['giveback_from_observed_peak']='0'
         self.assertTrue(g._episode_finalization(e)['finalized'])
 
-    def test_path_must_have_observations(self):
+    def test_path_quality_gates_learning_not_accounting(self):
         e=full_episode(); e['payload']['outcome']['path_points']=1
         f=g._episode_finalization(e)
-        self.assertFalse(f['finalized']); self.assertIn('outcome.path_points>=2',f['missing'])
+        self.assertTrue(f['finalized']); self.assertEqual(f['state'],'CLOSED_FINAL')
+        self.assertFalse(f['learning_eligible'])
 
 if __name__=='__main__': unittest.main()
