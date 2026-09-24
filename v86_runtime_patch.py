@@ -486,4 +486,17 @@ try:
         print('V86_APP_SRC '+str(a+1)+'-'+str(b)+' :: '+' | '.join(_ap[a:b]),flush=True)
 except Exception as _ex:
     print('V86_APP_SRC_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
+# TEMP diagnostic for PaperBook signal admission.
+try:
+    _bk=(root/'veritas_v85/book.py').read_text(encoding='utf-8').splitlines()
+    _keys=('def process','NO_SIGNAL','SIGNAL_FIRST_RISK_VALIDATED','signal is None','desired_fraction','quantity','lot','min_qty','RiskLimits','new_risk_allowed','asset_cap','gross_cap','stop_risk')
+    _hits=[i for i,line in enumerate(_bk) if any(k in line for k in _keys)]
+    _seen=set()
+    for i in _hits:
+        a=max(0,i-4); b=min(len(_bk),i+7); key=(a,b)
+        if key in _seen: continue
+        _seen.add(key)
+        print('V86_BOOK_SRC '+str(a+1)+'-'+str(b)+' :: '+' | '.join(_bk[a:b]),flush=True)
+except Exception as _ex:
+    print('V86_BOOK_SRC_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
 print('V86_RUNTIME_PATCH_OK')
