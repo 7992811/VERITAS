@@ -347,4 +347,114 @@ if n!=1:
 p.write_text(s2,encoding='utf-8')
 
 print('V86_NDX_TO_NQ_PATCH_OK')
+# 9) Signal-to-trade bridge: a directional signal on ANY horizon opens a small probe
+# when data/source gates pass and there is no HARD veto. Soft timing conflicts no longer
+# erase the trade; they reduce initial size. Confirmation later raises target in 5% steps.
+p=root/'veritas_v85/routing.py'
+s=p.read_text(encoding='utf-8')
+old="""        executable=[]
+        for rr,ww in ranked:
+            pp=rr.get('trade_plan') or {}
+            if pp.get('eligible') is False: continue
+            if (pp.get('trade_integrity') or {}).get('entry_permission')=='WAIT_ENTRY': continue
+            executable.append((rr,ww))
+        if not executable:
+            traces.append({'asset':a,'direction':d,'status':'BLOCKED','reason':'NO_EXECUTABLE_HORIZON',
+                           'candidate_horizons':[x['horizon'] for x,_ in ranked]})
+            continue
+        r,w=executable[0]; p=r['trade_plan']; h=r['horizon']; fam=family(r)
+        prob,prob_source=entry_probability(r)
+        inst=r.get('institutional_signal') or {}
+        indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+        rr_ratio=fnum(p.get('expected_to_stop_ratio'),0.0)
+        # 5% is the increment, NOT a maximum position size.
+        if prob < .60: desired=D('.05')
+        elif prob < .65: desired=D('.10')
+        elif prob < .70: desired=D('.25')
+        elif prob < .75: desired=D('.50')
+        elif prob < .80: desired=D('.75')
+        elif prob < .85: desired=D('1.00')
+        elif prob < .90: desired=D('1.50')
+        else: desired=D('2.00')
+        # Full 250% authority requires empirically calibrated maximum confidence
+        # plus independent evidence and acceptable reward/risk.
+        if prob>=.90 and indep>=3 and rr_ratio>=1.50 and prob_source=='EMPIRICAL_CALIBRATION':
+            desired=D('2.50')
+        desired=max(desired,decimal(p.get('initial_position_fraction') or '.05',nonnegative=True))
+        desired=min(D('2.50'),desired)
+"""
+new="""        executable=[]; probeable=[]
+        for rr,ww in ranked:
+            pp=rr.get('trade_plan') or {}
+            ti=pp.get('trade_integrity') or rr.get('trade_integrity') or {}
+            arb=pp.get('rule_arbitration') or rr.get('rule_arbitration') or {}
+            hard=bool(ti.get('hard_invalidation') or arb.get('hard_veto'))
+            if hard:
+                continue
+            stop=fnum(pp.get('stop_price'),0.0)
+            price=fnum(rr.get('price'),0.0)
+            if stop<=0 or price<=0:
+                rs=rr.get('range_retest_breakout') or {}
+                tr=rr.get('tactical_reversal') or {}
+                cand=rs if rs.get('candidate_direction')==d else tr if tr.get('candidate_direction')==d else {}
+                stop=fnum(cand.get('stop_price'),0.0)
+                if stop>0: pp=dict(pp,stop_price=stop)
+            stop_ok=bool(stop>0 and price>0 and ((d=='LONG' and stop<price) or (d=='SHORT' and stop>price)))
+            if not stop_ok:
+                continue
+            if pp.get('eligible') is not False and ti.get('entry_permission')!='WAIT_ENTRY':
+                executable.append((rr,ww,pp))
+                continue
+            exec_tier=str(rr.get('execution_signal_tier') or rr.get('signal_tier') or '')
+            directional=rr.get('research_decision')==d and exec_tier in (d,'SUPER_'+d)
+            if directional and rr.get('execution_eligible',True):
+                probeable.append((rr,ww,pp))
+        probe_mode=False
+        if executable:
+            r,w,p=executable[0]
+        elif probeable:
+            r,w,p=probeable[0]; probe_mode=True
+        else:
+            traces.append({'asset':a,'direction':d,'status':'BLOCKED','reason':'NO_SAFE_ENTRY_HORIZON',
+                           'candidate_horizons':[x['horizon'] for x,_ in ranked]})
+            continue
+        h=r['horizon']; fam=family(r)
+        prob,prob_source=entry_probability(r)
+        inst=r.get('institutional_signal') or {}
+        indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+        rr_ratio=fnum(p.get('expected_to_stop_ratio'),0.0)
+
+        if probe_mode:
+            # A valid directional signal must reach the book. Soft timing/invalidation
+            # reduces exposure; it no longer silently converts the signal to cash.
+            if prob < .65: desired=D('.05')
+            elif prob < .70: desired=D('.10')
+            elif prob < .75: desired=D('.15')
+            else: desired=D('.25')
+            traces.append({'asset':a,'direction':d,'horizon':h,'status':'ROUTED_PROBE',
+                           'reason':'SOFT_CONFLICT_EARLY_ENTRY','target_fraction':str(desired),
+                           'probability':round(prob,4),'probability_source':prob_source})
+        else:
+            # Confirmed sizing. All targets are multiples of the 5% position step.
+            if prob < .60: desired=D('.05')
+            elif prob < .65: desired=D('.10')
+            elif prob < .70: desired=D('.25')
+            elif prob < .75: desired=D('.50')
+            elif prob < .80: desired=D('.75')
+            elif prob < .85: desired=D('1.00')
+            elif prob < .90: desired=D('1.50')
+            else: desired=D('2.00')
+            if prob>=.90 and indep>=3 and rr_ratio>=1.50 and prob_source=='EMPIRICAL_CALIBRATION':
+                desired=D('2.50')
+            desired=max(desired,decimal(p.get('initial_position_fraction') or '.05',nonnegative=True))
+            desired=min(D('2.50'),desired)
+            traces.append({'asset':a,'direction':d,'horizon':h,'status':'ROUTED_CONFIRMED',
+                           'target_fraction':str(desired),'probability':round(prob,4),
+                           'probability_source':prob_source})
+"""
+if old not in s: raise SystemExit('SIGNAL_TO_TRADE_BRIDGE_ANCHOR_NOT_FOUND')
+s=s.replace(old,new)
+p.write_text(s,encoding='utf-8')
+
+print('V86_SIGNAL_TO_TRADE_BRIDGE_OK')
 print('V86_RUNTIME_PATCH_OK')
