@@ -218,6 +218,28 @@ new="""        base_d=str(r.get('research_decision') or 'NO_TRADE')
 if old not in s: raise SystemExit('MOVEMENT_ROUTE_DIRECTION_ANCHOR_NOT_FOUND')
 s=s.replace(old,new,1)
 
+old="""        if d not in ('LONG','SHORT'): continue
+        p=r.get('trade_plan') or {}; price=fnum(r.get('price')); stop=fnum(p.get('stop_price'))
+        if price<=0 or stop<=0 or not (stop<price if d=='LONG' else stop>price):
+"""
+new="""        if d not in ('LONG','SHORT'): continue
+        p=dict(r.get('trade_plan') or {})
+        if r.get('_movement_route'):
+            mg=r.get('movement_genesis') or {}
+            p.update({'eligible':True,'reason':'movement_genesis','setup':'MOVEMENT_GENESIS',
+                      'stop_price':mg.get('stop_price'),'tactical_target_price':mg.get('target_price'),
+                      'expected_move_pct':mg.get('gross_reward_pct'),
+                      'net_expected_move_pct':mg.get('net_reward_pct'),
+                      'net_expected_to_stop_ratio':mg.get('net_rr'),
+                      'noise_floor_stop_distance_pct':mg.get('noise_floor_pct'),
+                      'initial_position_fraction':0.05})
+            r['trade_plan']=p
+        price=fnum(r.get('price')); stop=fnum(p.get('stop_price'))
+        if price<=0 or stop<=0 or not (stop<price if d=='LONG' else stop>price):
+"""
+if old not in s: raise SystemExit('MOVEMENT_ROUTE_STOP_ANCHOR_NOT_FOUND')
+s=s.replace(old,new,1)
+
 old="        rank=conf+0.10*score+0.03*independent\n"
 new="""        mg_score=max(0,min(1,fnum((r.get('movement_genesis') or {}).get('score'))))
         rank=conf+0.10*score+0.03*independent+0.20*mg_score
@@ -434,7 +456,7 @@ p.write_text(s,encoding='utf-8')
 p=root/'veritas_v86/portfolios.py'
 s=p.read_text(encoding='utf-8')
 s,n=_re.subn(r'(PortfolioProfile\("Impulse".*?\()(.*?)(\),\n\s+max_gross=)',lambda m:m.group(1)+
-             '"IMPULSE_GENESIS","IMPULSE_PIVOT_BREAK","RANGE_RETEST_BREAKOUT"'+m.group(3),s,count=1,flags=_re.S)
+             '"MOVEMENT_GENESIS","IMPULSE_GENESIS","IMPULSE_PIVOT_BREAK","RANGE_RETEST_BREAKOUT"'+m.group(3),s,count=1,flags=_re.S)
 if n!=1: raise SystemExit('MOVEMENT_IMPULSE_PROFILE_PATCH_FAILED')
 p.write_text(s,encoding='utf-8')
 
