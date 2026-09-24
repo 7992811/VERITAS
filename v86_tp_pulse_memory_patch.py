@@ -351,8 +351,7 @@ def apply_movement_state_memory(ledger,summary,at):
             row['movement_genesis']=mg;out.append(row)
     return out
 '''
-    anchor="class Application(V85Application):
-"
+    anchor="class Application(V85Application):\n"
     if anchor not in s: raise SystemExit('MOVEMENT_MEMORY_CLASS_ANCHOR_NOT_FOUND')
     s=s.replace(anchor,helper+'\n\n'+anchor,1)
 
