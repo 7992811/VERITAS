@@ -84,10 +84,12 @@ insert="""def winrate_repair_gate(row,direction):
         setup=str(tr.get('setup') or 'TACTICAL_REVERSAL')
     if ti.get('hard_invalidation') or arb.get('hard_veto'):
         return {'eligible':False,'reason':'HARD_INVALIDATION','max_fraction':D('0')}
-    if pp.get('eligible') is False:
-        return {'eligible':False,'reason':'TRADE_PLAN_NOT_ELIGIBLE:'+str(pp.get('reason') or 'unknown'),'max_fraction':D('0')}
-    if ti.get('entry_permission')=='WAIT_ENTRY':
-        return {'eligible':False,'reason':'ENTRY_PERMISSION_WAIT','max_fraction':D('0')}
+    # v86 signal-first invariant: soft plan/timing conflicts control SIZE, not existence.
+    # A directional signal may still receive a 5% probe when source/risk/economics are safe.
+    soft_plan_block=bool(pp.get('eligible') is False)
+    soft_entry_wait=bool(ti.get('entry_permission')=='WAIT_ENTRY')
+    soft_reason=(('TRADE_PLAN_SOFT:'+str(pp.get('reason') or 'unknown')) if soft_plan_block else
+                 'ENTRY_PERMISSION_SOFT_WAIT' if soft_entry_wait else None)
     if setup=='TACTICAL_REVERSAL' and h not in ('1h','4h'):
         return {'eligible':False,'reason':'TACTICAL_REVERSAL_WRONG_HORIZON','max_fraction':D('0')}
     price=fnum(row.get('price'),0.0); stop=fnum(pp.get('stop_price'),0.0)
@@ -104,15 +106,14 @@ insert="""def winrate_repair_gate(row,direction):
     prob,src=entry_probability(row)
     inst=row.get('institutional_signal') or {}
     indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
-    if src!='EMPIRICAL_CALIBRATION':
-        if prob<.72:
-            return {'eligible':False,'reason':'UNCALIBRATED_SCORE_TOO_WEAK','score':prob,'source':src,'max_fraction':D('0')}
-        if indep<2:
-            return {'eligible':False,'reason':'INSUFFICIENT_INDEPENDENT_EVIDENCE','independent':indep,'source':src,'max_fraction':D('0')}
-    # Historical OOS/VAULT gate is currently FAIL. Keep new risk to one 5% research probe
-    # until a new independent validation explicitly changes this policy.
-    return {'eligible':True,'reason':'WINRATE_REPAIR_PROBE','score':prob,'source':src,'independent':indep,
-            'net_rr':net_rr,'max_fraction':D('.05'),'historical_edge_gate':'FAIL'}
+    # Prob-ty and confirmation count are sizing/learning evidence. They must not silently
+    # delete a directional trade after hard safety + positive net economics have passed.
+    # Historical OOS/VAULT gate is FAIL, therefore all such signals remain capped at 5%.
+    return {'eligible':True,
+            'reason':('SIGNAL_FIRST_SOFT_PROBE:'+soft_reason if soft_reason else 'WINRATE_REPAIR_PROBE'),
+            'score':prob,'source':src,'independent':indep,'soft_plan_block':soft_plan_block,
+            'soft_entry_wait':soft_entry_wait,'net_rr':net_rr,'max_fraction':D('.05'),
+            'historical_edge_gate':'FAIL','signal_first':True}
 
 """
 anchor="def entry_probability(row):"
