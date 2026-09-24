@@ -331,6 +331,7 @@ new_market="""def _ndx_market():
                   f'same underlying/exchange; divergence={div:.4%}; not an independent vendor','Yahoo/CME')
     ]
     _set_source_quality(quality)
+    quote_event='NQ:'+str(int(pbar['ts']))+':'+format(price,'.8f')+':'+(format(sec,'.8f') if sec is not None else 'NA')
     return {'asset':'NQ','price':price,'secondary_price':sec,'coinbase_price':sec,
             'secondary_observed_at':sec_ts,'source_divergence':div,
             'closes':closes,'highs':highs,'lows':lows,'vols':vols,'taker_buy':taker,'returns':rets,
@@ -340,6 +341,15 @@ new_market="""def _ndx_market():
             'data_latency_class':'DELAYED_RESEARCH',
             'verification_mode':'paired_contract_same_underlying',
             'source_names':{'primary':'Yahoo CME NQ=F','secondary':'Yahoo CME MNQ=F'},
+            'v85_quote':{
+                'event_id':quote_event,
+                'primary_time':pts,
+                'secondary_time':sec_ts,
+                'primary_source':'Yahoo CME NQ=F',
+                'secondary_source':'Yahoo CME MNQ=F',
+                'source_verified':bool(gate),
+                'max_age_seconds':float(DELAYED_FUTURES_MAX_AGE_SECONDS)
+            },
             'contract':{'symbol':'NQ','underlying':'Nasdaq-100','exchange':'CME',
                         'multiplier_usd_per_point':20.0,'tick_points':0.25,'tick_value_usd':5.0,
                         'currency':'USD','execution':'synthetic_paper'}}
@@ -462,6 +472,20 @@ s=s.replace(old,new)
 p.write_text(s,encoding='utf-8')
 
 print('V86_SIGNAL_TO_TRADE_BRIDGE_OK')
+# 10) Execution eligibility is a hard source/data gate before any trade candidate is created.
+p=root/'veritas_v85/routing.py'
+_s=p.read_text(encoding='utf-8')
+_old="""        reason='CONFLICTING_DUPLICATE_CELL' if (a,h) in conflicts else hard_reason(r)
+        if reason:
+"""
+_new="""        reason='CONFLICTING_DUPLICATE_CELL' if (a,h) in conflicts else hard_reason(r)
+        if not reason and r.get('execution_eligible') is False:
+            reason='EXECUTION_SOURCE_GATE:'+str(r.get('execution_reason') or 'not_eligible')
+        if reason:
+"""
+if _old not in _s: raise SystemExit('EXECUTION_SOURCE_GATE_ANCHOR_NOT_FOUND')
+p.write_text(_s.replace(_old,_new),encoding='utf-8')
+
 # TEMP diagnostic: expose v86 mandate filters during build so hidden signal drops are auditable.
 try:
     _pp=(root/'veritas_v86/portfolios.py').read_text(encoding='utf-8').splitlines()
