@@ -443,8 +443,9 @@ new="""    def commit_cycle(self,summary,bundles,cycle_id,clock_ok=True):
         learning_pre={'status':'UNAVAILABLE'}
         try:
             summary,learning_pre=apply_learning_to_summary(self.ledger,summary,now())
-            if learning_pre.get('new_lessons'):
+            if learning_pre.get('new_lessons') or (learning_pre.get('lessons_written') and not getattr(self,'_closed_loop_reported',False)):
                 print(canonical_json({'event':'V86_CLOSED_LOOP_LEARNING','phase':'pre','status':'OK',**learning_pre}),flush=True)
+                self._closed_loop_reported=True
         except Exception as exc:
             learning_pre={'status':'ERROR','error':type(exc).__name__+': '+str(exc)[:180]}
             print(canonical_json({'event':'V86_CLOSED_LOOP_LEARNING','phase':'pre',**learning_pre}),flush=True)
