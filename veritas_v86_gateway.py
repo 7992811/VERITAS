@@ -87,6 +87,20 @@ def closed_trade_ledger():
         pass
     return {'status':'UNAVAILABLE','items':[],'source':'episode_fallback'}
 
+def display_fx_context():
+    """Display-only FX context. Never used by execution/risk decisions."""
+    try:
+        data=jget(PROD,'/api/v1/paper-portfolios',10)
+        plist=data.get('portfolios') if isinstance(data,dict) else []
+        for p in (plist or []):
+            latest=p.get('latest') if isinstance(p,dict) else {}
+            rate=num((latest or {}).get('usdrub'))
+            if rate and rate>0:
+                return {'usdrub':rate,'source':'production_portfolio_context'}
+    except Exception:
+        pass
+    return {'usdrub':None,'source':'unavailable'}
+
 def signal(cell):
     direction = cell.get('direction') or 'NO_TRADE'
     reason = str(cell.get('reason') or '')
@@ -189,6 +203,7 @@ def transform_portfolios():
         nav = num(p.get('nav'), initial)
         gross = num(p.get('gross'), 0.0)
         dd = num(p.get('drawdown'), 0.0)
+        fx=display_fx_context(); usdrub=num(fx.get('usdrub'))
         positions = []
         for z in p.get('positions') or []:
             if not isinstance(z, dict):
@@ -241,9 +256,23 @@ def transform_portfolios():
                 if tr.get('active') and tr.get('probability') is not None:
                     probability = num(tr.get('probability'))
                     probability_source = 'REVERSAL_MODEL_PRIOR_UNCALIBRATED'
+            if probability is None:
+                # v86 routing computes a bounded model prior even before empirical calibration.
+                inst=row.get('institutional_signal') if isinstance(row.get('institutional_signal'),dict) else {}
+                bq=inst.get('breakout_quality') if isinstance(inst.get('breakout_quality'),dict) else {}
+                ev=inst.get('evidence_independence') if isinstance(inst.get('evidence_independence'),dict) else {}
+                hs=row.get('horizon_structure') if isinstance(row.get('horizon_structure'),dict) else {}
+                conf=max(0.0,min(1.0,num(row.get('confidence'),0.0) or 0.0))
+                qv=max(0.0,min(1.0,num(bq.get('quality_score'),0.0) or 0.0))
+                indep=max(0.0,min(1.0,(num(ev.get('independent_count'),0.0) or 0.0)/6.0))
+                native=max(0.0,min(1.0,num(hs.get('score'),0.0) or 0.0))
+                rr=max(0.0,min(1.0,(num(plan.get('expected_to_stop_ratio'),0.0) or 0.0)/3.0))
+                probability=max(.50,min(.90,.50+.12*conf+.14*qv+.08*indep+.08*native+.05*rr))
+                probability_source='MODEL_PRIOR_UNCALIBRATED'
             positions.append({
                 'asset':asset, 'direction':direction, 'horizon':horizon,
                 'target_fraction':notional/max(nav,1), 'notional_rub':notional,
+                'notional_usd':(notional/usdrub if usdrub else None),
                 'units':q, 'avg_entry_price':entry, 'last_price':mark,
                 'stop_price':stop, 'take_price':take,
                 'take_profit_executable':take is not None,
@@ -258,8 +287,8 @@ def transform_portfolios():
         closed=int(st['closed']); wins=int(st['wins']); engine_closed=int(p.get('closed') or 0)
         out.append({
             'name':name, 'badge':badges.get(name,''), 'mandate':p.get('mandate') or {},
-            'latest':{'nav_rub':nav,'nav_usd':None,'benchmark_nav_rub':None,
-                      'gross_leverage':gross,'drawdown':dd,'ruonia':None,'usdrub':None},
+            'latest':{'nav_rub':nav,'nav_usd':(nav/usdrub if usdrub else None),'benchmark_nav_rub':None,
+                      'gross_leverage':gross,'drawdown':dd,'usdrub':usdrub,'fx_source':fx.get('source')},
             'positions':positions, 'closed_trades':closed,
             'wins':wins, 'meaningful_wins':int(st['meaningful_wins']),
             'win_rate':(wins/closed if closed else None),
@@ -292,7 +321,7 @@ def overview():
     base['overview_mode'] = 'v86-compatible'
     pp = transform_portfolios()
     base['paper_portfolios'] = {'portfolios':[
-        {'name':p['name'],'nav_rub':p['latest']['nav_rub'],'nav_usd':None,
+        {'name':p['name'],'nav_rub':p['latest']['nav_rub'],'nav_usd':p['latest'].get('nav_usd'),
          'total_return_pct':100*(p['latest']['nav_rub']/pp['initial_nav_rub']-1),
          'drawdown_pct':100*p['latest']['drawdown'],
          'gross_leverage':p['latest']['gross_leverage'],'win_rate':p['win_rate'],
@@ -434,16 +463,20 @@ def trades():
         entry_fee=num(row.get('entry_fee'),0.0) or 0.0; exit_fee=num(row.get('exit_fee'),0.0) or 0.0
         label,lesson=learning_from_fields(row)
         recovered=str(row.get('record_kind') or '').startswith('RECOVERED_')
+        pay=_as_dict(row.get('payload')); pos=_as_dict(pay.get('position')); sig=_as_dict(pay.get('signal')); out=_as_dict(pay.get('outcome'))
+        entry_prob=num(sig.get('entry_probability'))
+        prob_source=sig.get('probability_source')
         return {
             'trade_id':row.get('episode_id'),'portfolio_name':row.get('account_id'),'asset':row.get('asset'),
             'direction':row.get('direction'),'status':'CLOSED','opened_at':row.get('opened_at'),'closed_at':row.get('closed_at'),
             'avg_entry_price':num(row.get('entry_price')),'avg_exit_price':num(row.get('exit_price')),
-            'quantity':num(row.get('quantity')),'stop_price':None,
+            'quantity':num(row.get('quantity')),'stop_price':num(pos.get('stop_price')),
+            'take_price':num(pay.get('take_profit_price') or sig.get('take_profit_price')),
             'gross_pnl_rub':num(row.get('gross_pnl')),'fees_rub':entry_fee+exit_fee,
             'funding_rub':num(row.get('funding'),0.0) or 0.0,'net_pnl_rub':net,
             'return_pct':(100.0*net/entry_nav) if net is not None and entry_nav else None,
-            'horizon':row.get('horizon'),'setup':row.get('setup_family') or 'UNCLASSIFIED',
-            'regime':None,'entry_probability':None,'probability_source':None,
+            'horizon':row.get('horizon') or pos.get('horizon'),'setup':row.get('setup_family') or sig.get('setup_family') or sig.get('setup') or 'UNCLASSIFIED',
+            'regime':sig.get('regime') or pay.get('regime'),'entry_probability':entry_prob,'probability_source':prob_source,
             'mfe_pct':100*num(row.get('mfe_fraction')) if num(row.get('mfe_fraction')) is not None else None,
             'mae_pct':100*num(row.get('mae_fraction')) if num(row.get('mae_fraction')) is not None else None,
             'giveback_pct':100*num(row.get('giveback_fraction')) if num(row.get('giveback_fraction')) is not None else None,
@@ -513,12 +546,180 @@ def app_html():
     value = value.replace('Открытых позиций нет — оба портфеля в cash.','Открытых позиций нет — портфели в cash.')
     value = value.replace('30 ячеек · ~','35 ячеек · ~').replace('6 активов × 5 ТФ','7 активов × 5 ТФ').replace('6/6 активов','7/7 активов')
     value = value.replace('NDX','NQ')
+    value = value.replace(/<div class="k">RUONIA<\/div><div[^>]*>[^<]*<\/div>/g,'')
+                 .replace(/<div class="k">Руониа<\/div><div[^>]*>[^<]*<\/div>/gi,'')
+                 .replace(/RUONIA[^<]{0,40}/g,'')
     value = value.replace('Последние сделки','Закрытые сделки · CLOSED_FINAL').replace('ПОСЛЕДНИЕ СДЕЛКИ','ЗАКРЫТЫЕ СДЕЛКИ · CLOSED_FINAL')
     value = value.replace("${p.name==='Champion'?'70%+':'77%+'}","${p.badge||''}")
     value = value.replace('Шаг позиции 5% · gross ≤ 2,5× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')
 
-    replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview position-card"><div class="assetview-head position-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="position-columns"><div class="position-col position-left"><div><span>Вход</span><b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Текущая</span><b>${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div class="position-gap"><span>Объём</span><b>${rub(z.notional_rub)}</b></div><div><span>Кол-во</span><b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b></div></div><div class="position-col position-right"><div><span>P/L</span><b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b></div><div><span>SL</span><b>${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>TP</span><b>${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Prob-ty</span><b>${['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY'].includes(z.probability_source)?(100*Number(z.entry_probability||0)).toFixed(1)+'%':'BUILDING'}</b></div><div><span>Time</span><b>${z.opened_at?new Date(z.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div></div></div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
+    replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview position-card"><div class="assetview-head position-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="position-columns"><div class="position-col position-left"><div><span>Вход</span><b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Текущая</span><b>${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div class="position-gap"><span>Объём ₽</span><b>${rub(z.notional_rub)}</b></div><div><span>Объём $</span><b>${z.notional_usd==null?'—':'<div><span>Time</span><b>${z.opened_at?new Date(z.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div></div></div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
+
+    pattern = r"""posel\.innerHTML=positions\.length\?positions\.map\(z=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Открытых позиций[^']*';const trades="""
+    value, count = re.subn(pattern, replacement, value, count=1, flags=re.S)
+    if count != 1:
+        print(json.dumps({'event':'V86_UI_PATCH','status':'error','position_renderer_replacements':count},
+                         ensure_ascii=False,separators=(',',':')), flush=True)
+    else:
+        print(json.dumps({'event':'V86_UI_PATCH','status':'ok','position_renderer_replacements':count},
+                         ensure_ascii=False,separators=(',',':')), flush=True)
+
+    trade_replacement = """trel.innerHTML=trades.length?trades.slice(0,60).map(t=>`<div class="assetview closed-trade-card"><div class="assetview-head closed-head"><b>${t.portfolio_name} · ${t.asset} · ${t.direction||'—'}${t.recovered?' · RECOVERED':''}</b><b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-grid dense-closed"><div><span>ЦЕНА</span><b>${t.avg_entry_price==null?'—':Number(t.avg_entry_price).toLocaleString('ru-RU',{maximumFractionDigits:3})} → ${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:3})}</b></div><div><span>GROSS</span><b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></div><div><span>COST</span><b>${rub(Number(t.fees_rub||0)+Number(t.funding_rub||0))}</b></div><div><span>PATH</span><b>M ${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'} / A ${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'} / G ${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></div><div><span>EXIT</span><b>${t.exit_reason||'—'} · ${t.horizon||'—'}</b></div><div><span>ОТКРЫТА</span><b>${t.opened_at?new Date(t.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div><div><span>ЗАКРЫТА</span><b>${t.closed_at?new Date(t.closed_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div><div><span>HOLD</span><b>${t.held_seconds==null?'—':(Number(t.held_seconds)>=3600?(Number(t.held_seconds)/3600).toFixed(1)+' ч':Math.round(Number(t.held_seconds)/60)+' мин')}</b></div><div><span>QTY</span><b>${t.quantity==null?'—':Number(t.quantity).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>SL / TP</span><b>${t.stop_price==null?'—':Number(t.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:3})} / ${t.take_price==null?'—':Number(t.take_price).toLocaleString('ru-RU',{maximumFractionDigits:3})}</b></div><div><span>Prob-ty</span><b>${t.entry_probability==null?'—':(100*Number(t.entry_probability)).toFixed(1)+'%'+(['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY'].includes(t.probability_source)?' calibr.':' model')}</b></div><div><span>SETUP</span><b>${t.setup||'—'}${t.regime?' · '+t.regime:''}</b></div></div><div class="trade-learning compact-learning" title="${String(t.learning_conclusion||'—').replace(/"/g,'&quot;')}"><b>${t.learning_label||'—'}</b> · ${t.learning_conclusion||'—'}</div></div>`).join(''):'Закрытых сделок пока нет.'"""
+    trade_pattern = r"""trel\.innerHTML=trades\.length\?trades\.slice\(0,30\)\.map\(t=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Сделок в журнале пока нет\.'"""
+    value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
+    print(json.dumps({'event':'V86_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
+                      'status':'ok' if trade_count==1 else 'error'},ensure_ascii=False,separators=(',',':')),flush=True)
+    compact_css = """<style>
+.top h1{
+  color:#93A4B3;
+  letter-spacing:.7px;
+  font-weight:800;
+  text-shadow:0 0 16px rgba(147,164,179,.20);
+}
+.top h1::after{
+  content:' · v86';
+  color:#657482;
+  font-size:.46em;
+  font-weight:700;
+  letter-spacing:.35px;
+  vertical-align:middle;
+}
+#portfoliopositions .position-card{padding:8px 11px;margin:0 0 6px;border-radius:12px}
+#portfoliopositions .position-head{margin-bottom:6px;align-items:center}
+#portfoliopositions .position-head b{font-size:15px;line-height:1.1}
+#portfoliopositions .position-columns{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,.95fr);gap:18px;width:100%}
+#portfoliopositions .position-col{display:flex;flex-direction:column;gap:3px;min-width:0}
+#portfoliopositions .position-col>div{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:baseline;column-gap:7px;white-space:nowrap;min-width:0}
+#portfoliopositions .position-col span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.2px}
+#portfoliopositions .position-col b{font-size:12px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;text-align:left}
+#portfoliopositions .position-left .position-gap{margin-top:7px}
+#portfoliotrades .closed-trade-card{padding:6px 8px;margin:0 0 4px;border-radius:10px}
+#portfoliotrades .closed-head{margin-bottom:2px}
+#portfoliotrades .closed-head b{font-size:11px;line-height:1.05}
+#portfoliotrades .closed-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 8px;margin-top:3px}
+#portfoliotrades .closed-grid>div{display:flex;gap:4px;align-items:baseline;min-width:0;white-space:nowrap}
+#portfoliotrades .closed-grid span{font-size:7.5px;color:var(--muted);text-transform:uppercase;flex:0 0 auto}
+#portfoliotrades .closed-grid b{font-size:9px;line-height:1.05;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#portfoliotrades .trade-learning{margin-top:3px;padding-top:3px;border-top:1px solid var(--border);font-size:8.5px;line-height:1.05;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#portfoliotrades .trade-learning b{font-size:8.5px;color:inherit}
+@media(max-width:700px){
+ #portfoliopositions .position-card{padding:7px 9px;margin-bottom:5px}
+ #portfoliopositions .position-head{margin-bottom:5px}
+ #portfoliopositions .position-head b{font-size:13px}
+ #portfoliopositions .position-columns{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:12px}
+ #portfoliopositions .position-col{gap:2px}
+ #portfoliopositions .position-col>div{grid-template-columns:53px minmax(0,1fr);column-gap:5px}
+ #portfoliopositions .position-col span{font-size:8px}
+ #portfoliopositions .position-col b{font-size:10.5px}
+ #portfoliopositions .position-left .position-gap{margin-top:6px}
+ #portfoliotrades .closed-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 5px}
+ #portfoliotrades .closed-grid span{font-size:7px}
+ #portfoliotrades .closed-grid b{font-size:8.2px}
+ #portfoliotrades .closed-head b{font-size:10px}
+ #portfoliotrades .trade-learning{font-size:7.8px}
+}
+</style>"""
+    value = value.replace('</head>', compact_css + '</head>')
+    return value.encode('utf-8')
+
+class Handler(BaseHTTPRequestHandler):
+    def send_json(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False, separators=(',',':')).encode('utf-8')
+        self.send_response(status); self.send_header('Content-Type','application/json; charset=utf-8')
+        self.send_header('Cache-Control','no-store'); self.send_header('Content-Length',str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+    def send_bytes(self, body, kind='text/html; charset=utf-8'):
+        self.send_response(200); self.send_header('Content-Type',kind); self.send_header('Cache-Control','no-store')
+        self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
+    def proxy_prod(self, path):
+        try:
+            body, kind = bget(PROD, path)
+            self.send_bytes(body, kind)
+        except Exception as exc:
+            self.send_json({'error':type(exc).__name__}, 502)
+    def do_GET(self):
+        parsed = urlparse(self.path); path = parsed.path; q = parse_qs(parsed.query)
+        try:
+            if path in ('/','/app'): return self.send_bytes(app_html())
+            if path == '/readyz': return self.send_json({'status':'OK','ui':'production-main','engine':'v86','portfolios':8})
+            if path == '/api/v1/overview': return self.send_json(overview())
+            if path == '/api/v1/paper-portfolios': return self.send_json(transform_portfolios())
+            if path == '/api/v1/portfolio-trades': return self.send_json(trades())
+            if path == '/api/v1/explain': return self.send_json(explain((q.get('asset') or [''])[0], (q.get('horizon') or [''])[0]))
+            if path == '/api/v1/product-experience': return self.send_json(product_experience())
+            if path == '/api/v1/presence':
+                vid = self.headers.get('X-Veritas-Visitor','anon'); now = time.time()
+                with PRESENCE_LOCK:
+                    PRESENCE[vid] = now
+                    for k,t in list(PRESENCE.items()):
+                        if now-t > 180: PRESENCE.pop(k,None)
+                    return self.send_json({'status':'OK','online_users':len(PRESENCE)})
+            if path == '/api/v1/portfolio-what-if':
+                asset = (q.get('asset') or ['BRENT'])[0]; fraction = num((q.get('fraction') or ['0.10'])[0], 0.1)
+                pp = transform_portfolios(); champ = next((x for x in pp['portfolios'] if x['name']=='Champion'), pp['portfolios'][0] if pp['portfolios'] else None)
+                gross = (champ or {}).get('latest',{}).get('gross_leverage') or 0
+                snap = v86_snapshot(); sr = [signal(c) for c in snap.get('cells') or [] if isinstance(c,dict) and c.get('asset')==asset]
+                sr.sort(key=lambda x:x.get('confidence') or 0, reverse=True); direction = sr[0]['research_decision'] if sr else 'NO_TRADE'
+                return self.send_json({'asset':asset,'direction':direction,'fraction':fraction,'notional_rub':1_000_000*fraction,
+                                       'before':{'gross':gross},'after':{'gross':gross+fraction},'gross_limit':2.5,
+                                       'within_gross_limit':gross+fraction<=2.5,'note':'v86 paper what-if'})
+            if path == '/api/v1/ask-veritas':
+                question = (q.get('q') or [''])[0]
+                asset = next((x for x in ASSETS if x.lower() in question.lower()), None)
+                if not asset: return self.send_json({'answer':'Укажите актив: BTC, ETH, NQ, BRENT, GOLD, MOEX или CNYRUBF.'})
+                data = jget(V86, '/api/v85/analysis?asset=' + quote(asset)); rows = data.get('signals') or []
+                rows.sort(key=lambda x:x.get('confidence') or 0, reverse=True); x = rows[0] if rows else {}
+                return self.send_json({'answer':f"{asset}: {x.get('research_decision','NO_TRADE')} на {x.get('horizon','—')}, сила {100*num(x.get('confidence'),0):.1f}%. Исполнение: {x.get('execution_reason') or 'см. торговый план'}."})
+            return self.proxy_prod(self.path)
+        except Exception as exc:
+            print('GATEWAY_500', path, type(exc).__name__, str(exc)[:300], flush=True)
+            traceback.print_exc()
+            return self.send_json({'error':type(exc).__name__,'detail':str(exc)[:200]}, 500)
+    def log_message(self, *args):
+        pass
+
+if __name__ == '__main__':
+    try:
+        _raw_pp = v86_portfolios()
+        _raw_trades = jget(V86, '/api/v1/portfolio-trades', 20)
+        _pp = transform_portfolios()
+        _ov = overview()
+        _pe = product_experience()
+        _closed = trades()
+        _snapshot_id = 'STATE_' + str(int(time.time()))
+        print(json.dumps({
+            'event':'V86_GATEWAY_SELFTEST',
+            'snapshot_id':_snapshot_id,
+            'portfolio_count':len(_pp.get('portfolios') or []),
+            'initial_nav_rub':_pp.get('initial_nav_rub'),
+            'portfolio_navs':{p.get('name'):p.get('latest',{}).get('nav_rub') for p in (_pp.get('portfolios') or [])},
+            'signal_cells':len((_ov.get('cycle') or {}).get('summary') or []),
+            'decision_cards':len(((_pe.get('decision_cards') or {}).get('cards') or [])),
+            'closed_trade_count':_closed.get('current_closed_count'),
+            'closed_history_source':_closed.get('closed_history_source'),
+            'closed_history_append_only':_closed.get('closed_history_append_only'),
+            'recovered_historical_count':_closed.get('recovered_historical_count'),
+            'learning_eligible_closed_count':_closed.get('learning_eligible_closed_count'),
+            'pending_finalization_count':_closed.get('pending_finalization_count'),
+            'status':'ok'
+        },ensure_ascii=False,separators=(',',':')),flush=True)
+        for _p in (_raw_pp.get('portfolios') or []):
+            print(json.dumps({'event':'V86_STATE_PORTFOLIO','snapshot_id':_snapshot_id,'portfolio':_p},
+                             ensure_ascii=False,separators=(',',':')),flush=True)
+        for _t in (_raw_trades.get('items') or []):
+            print(json.dumps({'event':'V86_STATE_TRADE','snapshot_id':_snapshot_id,'trade':_t},
+                             ensure_ascii=False,separators=(',',':')),flush=True)
+        print(json.dumps({'event':'V86_STATE_SNAPSHOT_COMPLETE','snapshot_id':_snapshot_id,
+                          'portfolio_count':len(_raw_pp.get('portfolios') or []),
+                          'trade_count':len(_raw_trades.get('items') or [])},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+    except Exception as exc:
+        print(json.dumps({'event':'V86_GATEWAY_SELFTEST','status':'error','error':type(exc).__name__+': '+str(exc)[:250]},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+    port = int(os.getenv('PORT','10000'))
+    ThreadingHTTPServer(('0.0.0.0',port), Handler).serve_forever()
++Number(z.notional_usd).toLocaleString('en-US',{maximumFractionDigits:0})}</b></div><div><span>Кол-во</span><b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b></div></div><div class="position-col position-right"><div><span>P/L</span><b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b></div><div><span>SL</span><b>${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>TP</span><b>${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Prob-ty</span><b title="${z.probability_source||'—'}">${z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'+(['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY'].includes(z.probability_source)?' · calibr.':' · model')}</b></div><div><span>Time</span><b>${z.opened_at?new Date(z.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div></div></div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
 
     pattern = r"""posel\.innerHTML=positions\.length\?positions\.map\(z=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Открытых позиций[^']*';const trades="""
     value, count = re.subn(pattern, replacement, value, count=1, flags=re.S)
