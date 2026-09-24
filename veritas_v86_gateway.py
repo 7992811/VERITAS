@@ -9,6 +9,9 @@ ARCHIVE_V86 = os.getenv('VERITAS_V86_ARCHIVE_URL', 'https://veritas-v86-product.
 ASSETS = ['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF']
 PRESENCE = {}
 PRESENCE_LOCK = threading.Lock()
+TRADE_CACHE_LOCK = threading.Lock()
+TRADE_CACHE = {'at':0.0,'data':None}
+TRADE_CACHE_TTL = 12.0
 
 def jget(base, path, timeout=20):
     req = Request(base + path, headers={'User-Agent':'VERITAS-v86-gateway/2.1','Accept':'application/json'})
@@ -431,6 +434,11 @@ def product_experience():
     return data
 
 def trades():
+    with TRADE_CACHE_LOCK:
+        cached = TRADE_CACHE.get('data')
+        cached_at = float(TRADE_CACHE.get('at') or 0.0)
+        if cached is not None and time.time()-cached_at < TRADE_CACHE_TTL:
+            return cached
     def learning_from_fields(row):
         if not bool(row.get('learning_eligible')):
             if str(row.get('record_kind') or '').startswith('RECOVERED_'):
@@ -528,14 +536,22 @@ def trades():
     restored_open=sum(1 for e in episodes if _episode_finalization(e)['state']=='OPEN'
                       and _as_dict(_as_dict(e.get('payload')).get('state_restore')).get('status')=='RESTORED_ACTIVE_CONTINUATION')
     recovered=sum(1 for x in current if x.get('recovered'))
-    return {'trades':current,'current_closed_count':len(current),'archive_closed_count':0,
+    try:
+        learning_status=jget(V86,'/api/v1/learning-status',8)
+    except Exception as exc:
+        learning_status={'status':'UNAVAILABLE','error':type(exc).__name__}
+    result={'trades':current,'current_closed_count':len(current),'archive_closed_count':0,
             'current_open_count':open_current,'pending_finalization_count':len(pending),
             'learning_eligible_closed_count':learning_eligible,
             'learning_skipped_closed_count':max(0,len(current)-learning_eligible),
             'unique_market_episodes_closed':market_episodes,'restored_open_count':restored_open,
             'recovered_historical_count':recovered,
             'closed_history_source':ledger_info.get('source'),'closed_history_append_only':bool(ledger_info.get('append_only')),
-            'pending_finalization':pending[:20],'finalization_contract':FINALIZATION_CONTRACT}
+            'pending_finalization':pending[:20],'finalization_contract':FINALIZATION_CONTRACT,
+            'learning_status':learning_status}
+    with TRADE_CACHE_LOCK:
+        TRADE_CACHE['at']=time.time();TRADE_CACHE['data']=result
+    return result
 
 
 def app_html():
@@ -573,52 +589,71 @@ def app_html():
         closed_fallback = r"""<script>
 (function(){
  const ORDER=['Champion','Challenger','Impulse','Trend','Range','Reversal','Event','RelativeValue'];
+ const SHORT={
+  'DIRECTION_OR_ENTRY_FAILED_ON_OBSERVED_PATH':'DIR/ENTRY FAIL',
+  'FAVORABLE_PATH_NOT_MONETIZED':'MOVE NOT CAPTURED',
+  'RIGHT_DIRECTION_HIGH_CAPTURE':'HIGH CAPTURE',
+  'RIGHT_DIRECTION_LOW_CAPTURE':'LOW CAPTURE',
+  'MIXED_EXECUTION':'MIXED EXEC',
+  'RECOVERED_HISTORICAL_NO_LEARNING':'RECOVERED'
+ };
  const rubv=v=>Number(v||0).toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽';
  const fmtPx=x=>x==null?'—':Number(x).toLocaleString('ru-RU',{maximumFractionDigits:3});
  const fmtTime=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
- const fmtHold=x=>x==null?'—':(Number(x)>=3600?(Number(x)/3600).toFixed(1)+' ч':Math.max(1,Math.round(Number(x)/60))+' мин');
+ const fmtHold=x=>x==null?'—':(Number(x)>=3600?(Number(x)/3600).toFixed(1)+'ч':Math.max(1,Math.round(Number(x)/60))+'м');
+ const pct=x=>x==null?'—':Number(x).toFixed(2)+'%';
  function card(t){
-   const pnl=Number(t.net_pnl_rub||0);
-   const prob=t.entry_probability==null?'—':(100*Number(t.entry_probability)).toFixed(1)+'% ('+(['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY'].includes(t.probability_source)?'calibr.':'model')+')';
-   return `<div class="assetview closed-trade-card">
-     <div class="closed-trade-head"><b>${t.asset||'—'} · ${t.direction||'—'}${t.recovered?' · RECOVERED':''}</b><b class="${pnl>=0?'ok':'bad'}">P&L ${t.net_pnl_rub==null?'—':rubv(t.net_pnl_rub)}${t.return_pct==null?'':' · '+Number(t.return_pct).toFixed(2)+'%'}</b></div>
-     <div class="closed-row"><span>Вход <b>${fmtPx(t.avg_entry_price)}</b></span><span>· Выход <b>${fmtPx(t.avg_exit_price)}</b></span><span>· Gross <b>${t.gross_pnl_rub==null?'—':rubv(t.gross_pnl_rub)}</b></span></div>
-     <div class="closed-row closed-costs"><span>Комиссия <b>${rubv(t.fees_rub||0)}</b></span><span>· Фандинг <b>${rubv(t.funding_rub||0)}</b></span><span>· MFE <b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></span><span>· MAE <b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></span><span>· Giveback <b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></span><span>· Причина <b>${t.exit_reason||'—'}</b></span></div>
-     <div class="closed-row closed-time"><span>Открыта <b>${fmtTime(t.opened_at)}</b></span><span>· Закрыта <b>${fmtTime(t.closed_at)}</b></span><span>· Hold <b>${fmtHold(t.held_seconds)}</b></span><span>· QTY <b>${t.quantity==null?'—':Number(t.quantity).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></span><span>· SL/TP <b>${fmtPx(t.stop_price)} / ${fmtPx(t.take_price)}</b></span><span>· ${t.horizon||'—'}${t.setup?' · '+t.setup:''}${t.regime?' · '+t.regime:''}</span></div>
-     <div class="closed-learning"><span class="learn-dot">●</span><span>Вывод для обучения:</span><b>${t.learning_label||'—'}</b><span>${t.learning_conclusion||'—'}</span></div>
-     <div class="closed-prob"><span class="prob-dot">●</span><span>Entry Prob-ty:</span><b title="${t.probability_source||'—'}">${prob}</b></div>
+   const pnl=Number(t.net_pnl_rub||0), cost=Number(t.fees_rub||0)+Number(t.funding_rub||0);
+   const prob=t.entry_probability==null?'—':(100*Number(t.entry_probability)).toFixed(1)+'%';
+   const label=SHORT[t.learning_label]||t.learning_label||'—';
+   const lesson=String(t.learning_conclusion||'—');
+   return `<div class="assetview closed-trade-card" onclick="this.classList.toggle('expanded')">
+    <div class="closed-trade-head"><b>${t.asset||'—'} · ${t.direction||'—'}</b><b class="${pnl>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rubv(t.net_pnl_rub)} · ${t.return_pct==null?'—':Number(t.return_pct).toFixed(2)+'%'}</b></div>
+    <div class="closed-mainline"><span>${fmtPx(t.avg_entry_price)} → ${fmtPx(t.avg_exit_price)}</span><span>G <b>${t.gross_pnl_rub==null?'—':rubv(t.gross_pnl_rub)}</b></span><span>C <b>${rubv(cost)}</b></span><span>${t.horizon||'—'} · ${fmtHold(t.held_seconds)}</span></div>
+    <div class="closed-mainline"><span>MFE <b>${pct(t.mfe_pct)}</b></span><span>MAE <b>${pct(t.mae_pct)}</b></span><span>Exit <b>${t.exit_reason||'—'}</b></span><span>Prob <b>${prob}</b></span></div>
+    <div class="closed-lesson"><span class="learn-dot">●</span><b>${label}</b><span>${lesson}</span></div>
+    <div class="closed-extra"><span>Открыта <b>${fmtTime(t.opened_at)}</b></span><span>Закрыта <b>${fmtTime(t.closed_at)}</b></span><span>QTY <b>${t.quantity==null?'—':Number(t.quantity).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></span><span>SL/TP <b>${fmtPx(t.stop_price)} / ${fmtPx(t.take_price)}</b></span><span>${t.setup||'—'} · ${t.regime||'—'}</span><span>Funding <b>${rubv(t.funding_rub||0)}</b></span></div>
    </div>`;
  }
- function render(trades){
-   if(!trades.length) return 'Закрытых сделок пока нет.';
-   const groups={}; trades.slice(0,80).forEach(t=>{const k=t.portfolio_name||'—';(groups[k]||(groups[k]=[])).push(t)});
-   const keys=Object.keys(groups).sort((a,b)=>{const ia=ORDER.indexOf(a),ib=ORDER.indexOf(b);return (ia<0?999:ia)-(ib<0?999:ib)||a.localeCompare(b)});
-   return keys.map(name=>{
-     const rows=groups[name], wins=rows.filter(t=>Number(t.net_pnl_rub||0)>0).length, net=rows.reduce((a,t)=>a+Number(t.net_pnl_rub||0),0), wr=rows.length?100*wins/rows.length:0;
-     return `<div class="closed-portfolio"><div class="closed-portfolio-summary"><b>${name}</b><span>· ${rows.length} закрыто</span><span>· ${wins} прибыльных</span><span>· win rate ${wr.toFixed(1)}%</span><span>· Net P&L <b class="${net>=0?'ok':'bad'}">${rubv(net)}</b></span></div><div class="closed-list">${rows.map(card).join('')}</div></div>`;
-   }).join('');
+ function group(name,rows){
+   const wins=rows.filter(t=>Number(t.net_pnl_rub||0)>0).length,net=rows.reduce((a,t)=>a+Number(t.net_pnl_rub||0),0),wr=rows.length?100*wins/rows.length:0;
+   const id='cg_'+name.replace(/[^a-z0-9]/gi,'_');
+   const initial=rows.slice(0,5), hidden=Math.max(0,rows.length-initial.length);
+   return `<div class="closed-portfolio" id="${id}"><div class="closed-portfolio-summary"><b>${name}</b><span>· ${rows.length}</span><span>· ${wins} win</span><span>· ${wr.toFixed(1)}%</span><b class="${net>=0?'ok':'bad'}">${rubv(net)}</b></div><div class="closed-list">${initial.map(card).join('')}</div>${hidden?`<button class="closed-more-btn" data-group="${name.replace(/"/g,'&quot;')}">Ещё ${hidden}</button>`:''}</div>`;
  }
- let observer=null, timer=null;
+ function learningLine(ls,d){
+   if(!ls||ls.status!=='OK')return '';
+   return `<div class="closed-learning-status">Learning · ${ls.lessons_written||0}/${d.learning_eligible_closed_count||0} lessons · ${ls.unique_market_ideas||0} market episodes · applied ${ls.applications||0} · actionable ${ls.actionable_contexts||0} · validated ${ls.validated_rules||0}</div>`;
+ }
+ function render(d){
+   const trades=Array.isArray(d.trades)?d.trades:[];
+   if(!trades.length)return 'Закрытых сделок пока нет.';
+   const groups={};trades.forEach(t=>{const k=t.portfolio_name||'—';(groups[k]||(groups[k]=[])).push(t)});
+   const keys=Object.keys(groups).sort((a,b)=>{const ia=ORDER.indexOf(a),ib=ORDER.indexOf(b);return (ia<0?999:ia)-(ib<0?999:ib)||a.localeCompare(b)});
+   return learningLine(d.learning_status,d)+keys.map(k=>group(k,groups[k])).join('');
+ }
+ let observer=null,timer=null,lastData=null;
+ function bindMore(el){
+   el.querySelectorAll('.closed-more-btn').forEach(btn=>btn.onclick=function(ev){
+     ev.stopPropagation();const name=this.dataset.group, rows=(lastData.trades||[]).filter(t=>(t.portfolio_name||'—')===name);
+     const host=this.closest('.closed-portfolio');host.querySelector('.closed-list').innerHTML=rows.map(card).join('');this.remove();
+   });
+ }
  async function refreshClosed(){
-   const el=document.getElementById('portfoliotrades'); if(!el) return;
+   const el=document.getElementById('portfoliotrades');if(!el)return;
    try{
-     const r=await fetch('/api/v1/portfolio-trades',{cache:'no-store'});
-     const d=await r.json();
-     if(observer) observer.disconnect();
-     el.innerHTML=render(Array.isArray(d.trades)?d.trades:[]);
+     const r=await fetch('/api/v1/portfolio-trades',{cache:'no-store'}),d=await r.json();lastData=d;
+     if(observer)observer.disconnect();el.innerHTML=render(d);bindMore(el);
    }catch(e){}
-   finally{
-     if(observer) observer.observe(el,{childList:true,subtree:true,characterData:true});
-   }
+   finally{if(observer)observer.observe(el,{childList:true,subtree:true,characterData:true})}
  }
  function start(){
-   const el=document.getElementById('portfoliotrades'); if(!el) return;
-   observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(refreshClosed,120)});
+   const el=document.getElementById('portfoliotrades');if(!el)return;
+   observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(refreshClosed,180)});
    observer.observe(el,{childList:true,subtree:true,characterData:true});
-   refreshClosed();
-   setInterval(refreshClosed,30000);
+   refreshClosed();setInterval(refreshClosed,30000);
  }
- if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',start,{once:true}); else start();
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
 </script>"""
         value = value.replace('</body>', closed_fallback + '</body>')
@@ -648,24 +683,25 @@ def app_html():
 #portfoliopositions .position-col span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.2px}
 #portfoliopositions .position-col b{font-size:12px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;text-align:left}
 #portfoliopositions .position-left .position-gap{margin-top:7px}
-#portfoliotrades .closed-portfolio{margin:0 0 10px}
-#portfoliotrades .closed-portfolio-summary{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;padding:2px 2px 5px;font-size:11px;line-height:1.15;color:var(--muted)}
-#portfoliotrades .closed-portfolio-summary>b{font-size:12px;color:var(--text)}
-#portfoliotrades .closed-list{display:flex;flex-direction:column;gap:4px}
-#portfoliotrades .closed-trade-card{padding:6px 9px;margin:0;border-radius:10px}
-#portfoliotrades .closed-trade-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:2px}
-#portfoliotrades .closed-trade-head b{font-size:11px;line-height:1.1}
-#portfoliotrades .closed-row{display:flex;flex-wrap:wrap;gap:2px 5px;align-items:baseline;font-size:9px;line-height:1.15;color:var(--muted);margin-top:2px}
-#portfoliotrades .closed-row span{white-space:nowrap}
-#portfoliotrades .closed-row b{font-size:9px;color:var(--text);font-weight:700}
-#portfoliotrades .closed-costs{font-size:8.7px}
-#portfoliotrades .closed-time{font-size:8.1px;color:#7f8b96}
-#portfoliotrades .closed-time b{font-size:8.2px}
-#portfoliotrades .closed-learning,#portfoliotrades .closed-prob{display:flex;gap:4px;align-items:baseline;min-width:0;margin-top:3px;padding-top:3px;border-top:1px solid var(--border);font-size:8.6px;line-height:1.12;color:var(--muted)}
-#portfoliotrades .closed-learning b,#portfoliotrades .closed-prob b{font-size:8.6px;color:var(--text)}
-#portfoliotrades .closed-learning span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#portfoliotrades .learn-dot{color:#ef6767;font-size:9px;flex:0 0 auto}
-#portfoliotrades .prob-dot{color:#d9ad46;font-size:9px;flex:0 0 auto}
+#portfoliotrades .closed-learning-status{font-size:9px;line-height:1.1;color:var(--muted);padding:0 2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#portfoliotrades .closed-portfolio{margin:0 0 8px}
+#portfoliotrades .closed-portfolio-summary{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;padding:1px 2px 4px;font-size:10px;line-height:1.1;color:var(--muted)}
+#portfoliotrades .closed-portfolio-summary>b:first-child{font-size:11px;color:var(--text)}
+#portfoliotrades .closed-list{display:flex;flex-direction:column;gap:3px}
+#portfoliotrades .closed-trade-card{padding:5px 8px;margin:0;border-radius:9px;cursor:pointer}
+#portfoliotrades .closed-trade-head{display:flex;justify-content:space-between;gap:7px;align-items:baseline;margin-bottom:1px}
+#portfoliotrades .closed-trade-head b{font-size:10px;line-height:1.05}
+#portfoliotrades .closed-mainline{display:flex;gap:3px 6px;align-items:baseline;min-width:0;font-size:8.3px;line-height:1.08;color:var(--muted);white-space:nowrap;overflow:hidden}
+#portfoliotrades .closed-mainline span{overflow:hidden;text-overflow:ellipsis}
+#portfoliotrades .closed-mainline b{font-size:8.4px;color:var(--text)}
+#portfoliotrades .closed-lesson{display:flex;gap:4px;align-items:baseline;margin-top:2px;padding-top:2px;border-top:1px solid var(--border);font-size:8px;line-height:1.08;color:var(--muted);min-width:0}
+#portfoliotrades .closed-lesson b{font-size:8px;color:var(--text);white-space:nowrap}
+#portfoliotrades .closed-lesson span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#portfoliotrades .learn-dot{color:#ef6767;font-size:8px;flex:0 0 auto}
+#portfoliotrades .closed-extra{display:none;gap:4px 8px;flex-wrap:wrap;margin-top:3px;padding-top:3px;border-top:1px dashed var(--border);font-size:7.8px;color:var(--muted)}
+#portfoliotrades .closed-extra b{font-size:7.9px;color:var(--text)}
+#portfoliotrades .closed-trade-card.expanded .closed-extra{display:flex}
+#portfoliotrades .closed-more-btn{width:100%;margin-top:3px;padding:4px 6px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--muted);font-size:8.5px}
 @media(max-width:700px){
  #portfoliopositions .position-card{padding:7px 9px;margin-bottom:5px}
  #portfoliopositions .position-head{margin-bottom:5px}
@@ -676,16 +712,17 @@ def app_html():
  #portfoliopositions .position-col span{font-size:8px}
  #portfoliopositions .position-col b{font-size:10.5px}
  #portfoliopositions .position-left .position-gap{margin-top:6px}
- #portfoliotrades .closed-portfolio-summary{font-size:9.2px;gap:3px;padding-bottom:4px}
- #portfoliotrades .closed-portfolio-summary>b{font-size:10.5px}
- #portfoliotrades .closed-trade-card{padding:6px 8px}
- #portfoliotrades .closed-trade-head b{font-size:10px}
- #portfoliotrades .closed-row{font-size:7.9px;gap:2px 4px}
- #portfoliotrades .closed-row b{font-size:8px}
- #portfoliotrades .closed-time{font-size:7.3px}
- #portfoliotrades .closed-time b{font-size:7.4px}
- #portfoliotrades .closed-learning,#portfoliotrades .closed-prob{font-size:7.6px}
- #portfoliotrades .closed-learning b,#portfoliotrades .closed-prob b{font-size:7.6px}
+ #portfoliotrades .closed-learning-status{font-size:7.6px;padding-bottom:4px}
+ #portfoliotrades .closed-portfolio-summary{font-size:8.4px;gap:3px;padding-bottom:3px}
+ #portfoliotrades .closed-portfolio-summary>b:first-child{font-size:9.5px}
+ #portfoliotrades .closed-trade-card{padding:5px 7px}
+ #portfoliotrades .closed-trade-head b{font-size:9.2px}
+ #portfoliotrades .closed-mainline{font-size:7.4px;gap:2px 4px}
+ #portfoliotrades .closed-mainline b{font-size:7.5px}
+ #portfoliotrades .closed-lesson{font-size:7.2px}
+ #portfoliotrades .closed-lesson b{font-size:7.2px}
+ #portfoliotrades .closed-extra{font-size:7px}
+ #portfoliotrades .closed-more-btn{font-size:7.5px;padding:3px 5px}
 }
 </style>"""
     value = value.replace('</head>', compact_css + '</head>')
@@ -714,6 +751,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/v1/overview': return self.send_json(overview())
             if path == '/api/v1/paper-portfolios': return self.send_json(transform_portfolios())
             if path == '/api/v1/portfolio-trades': return self.send_json(trades())
+            if path == '/api/v1/learning-status': return self.send_json(jget(V86,'/api/v1/learning-status',10))
             if path == '/api/v1/explain': return self.send_json(explain((q.get('asset') or [''])[0], (q.get('horizon') or [''])[0]))
             if path == '/api/v1/product-experience': return self.send_json(product_experience())
             if path == '/api/v1/presence':
