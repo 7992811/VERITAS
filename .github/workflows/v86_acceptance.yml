@@ -107,7 +107,7 @@ jobs:
           python v86_state_restore_selftest.py candidate_runtime
           python v86_runtime_learning_selftest.py candidate_runtime
           python v86_closed_ledger_selftest.py candidate_runtime
-          grep -q "def closed_trade_ledger_report" candidate_runtime/veritas_v85/application.py
+          grep -q "/api/v1/closed-trade-ledger" candidate_runtime/veritas_v85/application.py
           grep -q "v86_closed_trade_ledger" candidate_runtime/veritas_v85/book.py
           grep -q "verification_mode':'direct_independent" candidate_runtime/veritas_intelligence.py
           grep -q "paired_underlying_independent_vendor" candidate_runtime/veritas_intelligence.py
