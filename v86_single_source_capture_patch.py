@@ -91,7 +91,17 @@ replacement="""                intent = manage(existing,signal,quote,self.instru
                     mfe_trigger=max(D('.0040'),all_in_floor*D('2.5'))
                     giveback=max(ZERO,mfe-current_ret)
                     giveback_trigger=max(D('.0015'),mfe*D('.40'))
-                    if mfe>=mfe_trigger and current_ret>=all_in_floor*D('1.10') and giveback>=giveback_trigger:
+                    posrow=c.execute('SELECT entry_fee FROM v85_positions WHERE account_id=? AND asset=?',
+                                     (existing.account_id,existing.asset)).fetchone()
+                    eprow=c.execute('SELECT payload FROM v85_episodes WHERE episode_id=?',(existing.episode_id,)).fetchone()
+                    spec=self.instruments[asset]
+                    gross_if_exit=existing.direction.sign*existing.quantity*spec.multiplier*(quote.price-existing.entry_price)*quote.fx_to_nav
+                    exit_fee_if_exit=existing.quantity*spec.multiplier*quote.price*quote.fx_to_nav*spec.commission_rate
+                    entry_fee_if_exit=D(posrow['entry_fee']) if posrow else ZERO
+                    fund_if_exit=accrued(existing,json.loads(eprow['payload']),at) if eprow else ZERO
+                    legacy_carry=decimal((json.loads(eprow['payload']) if eprow else {}).get('legacy_realized_gross','0'))
+                    net_if_exit=gross_if_exit-entry_fee_if_exit-exit_fee_if_exit-fund_if_exit+legacy_carry
+                    if mfe>=mfe_trigger and current_ret>=all_in_floor*D('1.10') and giveback>=giveback_trigger and net_if_exit>ZERO:
                         reason='PROFIT_PROTECT_GIVEBACK'
                         iid=stable_id('INT_',existing.episode_id,existing.revision,Action.EXIT.value,
                                       reason,quote.event_id,existing.policy_version)
