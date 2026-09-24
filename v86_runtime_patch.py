@@ -499,4 +499,10 @@ try:
         print('V86_BOOK_SRC '+str(a+1)+'-'+str(b)+' :: '+' | '.join(_bk[a:b]),flush=True)
 except Exception as _ex:
     print('V86_BOOK_SRC_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
+# TEMP exact PaperBook admission slice.
+try:
+    _bk2=(root/'veritas_v85/book.py').read_text(encoding='utf-8').splitlines()
+    print('V86_BOOK_EXACT_228_260 :: '+' | '.join(_bk2[227:260]),flush=True)
+except Exception as _ex:
+    print('V86_BOOK_EXACT_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
 print('V86_RUNTIME_PATCH_OK')
