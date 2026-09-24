@@ -524,4 +524,12 @@ try:
             print('V86_CONFIG_SRC '+str(_i+1)+' :: '+' | '.join(_cfg[max(0,_i-2):min(len(_cfg),_i+10)]),flush=True)
 except Exception as _ex:
     print('V86_QUOTE_DIAG_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
+# TEMP exact routing quote/source-gate diagnostics.
+try:
+    _rt=(root/'veritas_v85/routing.py').read_text(encoding='utf-8').splitlines()
+    for _i,_line in enumerate(_rt):
+        if _line.startswith('def quote_from_raw') or _line.startswith('def route'):
+            print('V86_ROUTING_EXACT '+str(_i+1)+' :: '+' | '.join(_rt[_i:min(len(_rt),_i+85)]),flush=True)
+except Exception as _ex:
+    print('V86_ROUTING_EXACT_ERROR '+type(_ex).__name__+': '+str(_ex)[:200],flush=True)
 print('V86_RUNTIME_PATCH_OK')
