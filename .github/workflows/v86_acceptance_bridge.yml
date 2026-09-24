@@ -111,6 +111,8 @@ jobs:
           python v86_single_source_capture_selftest.py candidate_runtime
           python v86_movement_genesis_selftest.py candidate_runtime
           python v86_tp_pulse_memory_selftest.py candidate_runtime
+          python v86_post_exit_reentry_selftest.py candidate_runtime
+          grep -q "REENTRY_COOLDOWN_NO_NEW_INFORMATION" candidate_runtime/veritas_v85/book.py
           grep -q "take_profit_price" candidate_runtime/veritas_v85/domain.py
           grep -q "TAKE_PROFIT" candidate_runtime/veritas_v85/book.py
           grep -q "apply_movement_state_memory" candidate_runtime/veritas_v86/application.py
