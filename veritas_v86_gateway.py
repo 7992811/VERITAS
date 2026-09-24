@@ -389,7 +389,7 @@ def transform_portfolios():
         })
     return {
         'status':'OK', 'initial_nav_rub':initial, 'commission_rate':0.0005,
-        'max_gross':2.5, 'max_stop_risk_nav':0.02, 'position_step':0.05,
+        'max_gross':2.0, 'max_stop_risk_nav':0.02, 'position_step':0.05,
         'test_epoch':os.getenv('VERITAS_V86_TEST_EPOCH','2026-09-24T07:55:00Z'),
         'portfolios':out
     }
@@ -934,8 +934,8 @@ class Handler(BaseHTTPRequestHandler):
                 snap = v86_snapshot(); sr = [signal(c) for c in snap.get('cells') or [] if isinstance(c,dict) and c.get('asset')==asset]
                 sr.sort(key=lambda x:x.get('confidence') or 0, reverse=True); direction = sr[0]['research_decision'] if sr else 'NO_TRADE'
                 return self.send_json({'asset':asset,'direction':direction,'fraction':fraction,'notional_rub':1_000_000*fraction,
-                                       'before':{'gross':gross},'after':{'gross':gross+fraction},'gross_limit':2.5,
-                                       'within_gross_limit':gross+fraction<=2.5,'note':'v86 paper what-if'})
+                                       'before':{'gross':gross},'after':{'gross':gross+fraction},'gross_limit':2.0,
+                                       'within_gross_limit':gross+fraction<=2.0,'note':'v86 paper what-if'})
             if path == '/api/v1/ask-veritas':
                 question = (q.get('q') or [''])[0]
                 asset = next((x for x in ASSETS if x.lower() in question.lower()), None)
