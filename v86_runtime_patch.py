@@ -995,3 +995,15 @@ try:
 finally:
     _mg_sys.argv=_mg_argv
 print('V86_MOVEMENT_GENESIS_RUNTIME_ACTIVE')
+
+# 19) Executable TP + fast guard pulse + durable movement memory + Brent micro-impulse repair.
+import runpy as _tpm_runpy, sys as _tpm_sys
+_tpm_patch=root.parent/'v86_tp_pulse_memory_patch.py'
+if not _tpm_patch.is_file(): raise SystemExit('V86_TP_PULSE_MEMORY_PATCH_MISSING')
+_tpm_argv=list(_tpm_sys.argv)
+try:
+    _tpm_sys.argv=[str(_tpm_patch),str(root)]
+    _tpm_runpy.run_path(str(_tpm_patch),run_name='__main__')
+finally:
+    _tpm_sys.argv=_tpm_argv
+print('V86_TP_PULSE_MEMORY_RUNTIME_ACTIVE')
