@@ -146,7 +146,9 @@ new="""                # Bind one executable TP to the episode. UI targets never
                 tp=None
                 try: tp=decimal(tp_raw,positive=True) if tp_raw not in (None,'') else None
                 except Exception: tp=None
-                if tp is None and signal is not None and signal.direction==existing.direction and signal.horizon==existing.horizon and signal.take_profit_price is not None:
+                if (tp is None and signal is not None and signal.direction==existing.direction
+                        and signal.horizon==existing.horizon and signal.idea_id==existing.idea_id
+                        and signal.take_profit_price is not None):
                     tp=signal.take_profit_price
                     ep_tp['take_profit_price']=str(tp)
                     c.execute('UPDATE v85_episodes SET payload=? WHERE episode_id=?',
