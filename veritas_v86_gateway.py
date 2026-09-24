@@ -64,6 +64,21 @@ def transform_portfolios():
         z.get('asset') for p in plist if isinstance(p,dict)
         for z in (p.get('positions') or []) if isinstance(z,dict) and z.get('asset')
     })
+    try:
+        episode_rows=(jget(V86,'/api/v1/portfolio-trades',12).get('items') or [])
+    except Exception:
+        episode_rows=[]
+    episode_payload={}
+    for ep in episode_rows:
+        if not isinstance(ep,dict):
+            continue
+        eid=ep.get('episode_id') or ep.get('trade_id')
+        pay=ep.get('payload')
+        if isinstance(pay,str):
+            try: pay=json.loads(pay)
+            except Exception: pay={}
+        if eid and isinstance(pay,dict):
+            episode_payload[str(eid)]=pay
     analysis = {}
     for asset in active_assets:
         try:
@@ -122,8 +137,13 @@ def transform_portfolios():
                 except Exception:
                     payload = {}
             payload = payload if isinstance(payload, dict) else {}
-            probability = num(payload.get('pwin'))
-            probability_source = payload.get('pwin_source')
+            ep_payload=episode_payload.get(str(z.get('episode_id') or ''),{})
+            entry_signal=ep_payload.get('signal') if isinstance(ep_payload.get('signal'),dict) else {}
+            probability = num(entry_signal.get('entry_probability'))
+            probability_source = entry_signal.get('probability_source')
+            if probability is None:
+                probability = num(payload.get('pwin'))
+                probability_source = payload.get('pwin_source') or probability_source
             if probability is None:
                 probability = num(z.get('entry_probability'))
                 probability_source = z.get('probability_source') or probability_source
@@ -348,8 +368,14 @@ def trades():
         net=num(e.get('net_pnl'))
         gross=num(outcome.get('gross_close_leg'))
         funding=num(outcome.get('funding_close_leg'),0.0) or 0.0
+        exit_fee=num(outcome.get('exit_fee'))
+        saved_entry_fee=num(outcome.get('entry_fee'))
+        if saved_entry_fee is not None:
+            entry_fee=saved_entry_fee
         total_fees=None
-        if gross is not None and net is not None:
+        if exit_fee is not None:
+            total_fees=entry_fee+exit_fee
+        elif gross is not None and net is not None:
             total_fees=max(0.0,gross-funding-net)
         elif entry_fee:
             total_fees=entry_fee
@@ -359,8 +385,11 @@ def trades():
         giveback=num(outcome.get('giveback_from_observed_peak'))
         held=num(outcome.get('held_seconds'))
         label,lesson=learning_from_outcome(outcome,net)
-        pwin=num(payload.get('pwin'))
-        pwin_source=payload.get('pwin_source')
+        pwin=num(signal.get('entry_probability'))
+        pwin_source=signal.get('probability_source')
+        if pwin is None:
+            pwin=num(payload.get('pwin'))
+            pwin_source=payload.get('pwin_source') or pwin_source
         out.append({
             'trade_id':e.get('episode_id') or e.get('trade_id'),
             'portfolio_name':e.get('account_id') or e.get('portfolio_name'),
