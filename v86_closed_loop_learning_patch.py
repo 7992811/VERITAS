@@ -333,12 +333,23 @@ def _profile_from_row(row):
 def _choose_profile(contexts,row,direction):
     a=str(row.get('asset') or '');h=str(row.get('horizon') or '')
     pp=row.get('trade_plan') or {}
-    s=str(pp.get('setup') or '')
+    s=str(pp.get('setup') or row.get('setup_family') or '')
     if not s:
         mg=row.get('movement_genesis') or {}; tr=row.get('tactical_reversal') or {}; rr=row.get('range_retest_breakout') or {}
         if mg.get('eligible') and mg.get('direction')==direction:s='MOVEMENT_GENESIS'
         elif tr.get('active') and tr.get('direction')==direction:s=str(tr.get('setup') or 'TACTICAL_REVERSAL')
         elif rr.get('active') and rr.get('direction')==direction:s=str(rr.get('setup') or 'RANGE_RETEST_BREAKOUT')
+    if not s:
+        # Normalize live directional structure into the same setup taxonomy used by CLOSED_FINAL lessons.
+        hs=row.get('horizon_structure') or {}
+        hs_state=str(hs.get('state') or '').upper()
+        hs_dir=str(hs.get('direction') or '')
+        trend_dir=str(row.get('trend_direction') or '')
+        trend_phase=str(row.get('trend_phase') or '').upper()
+        if hs_dir==direction and ('TREND' in hs_state or hs_state in ('BREAKOUT','CONTINUATION')):
+            s='TREND'
+        elif trend_dir==direction and trend_phase not in ('','NONE','IDLE'):
+            s='TREND'
     s=s or 'UNCLASSIFIED';r=str(row.get('regime') or 'UNKNOWN')
     candidates=[
       _context_key('EXACT',a,h,s,r,direction),
@@ -347,10 +358,11 @@ def _choose_profile(contexts,row,direction):
       _context_key('ASSET_DIRECTION',a,'*','*','*',direction),
       _context_key('SETUP_FAMILY','*','*',s,'*',direction),
     ]
-    mins={'EXACT':3,'SETUP_REGIME':4,'ASSET_HORIZON':4,'ASSET_DIRECTION':3,'SETUP_FAMILY':5}
+    # _policy is the single statistical authority for whether a context is actionable.
+    # Do not silently veto SOFT_LEARNING contexts here with a second, inconsistent sample-size threshold.
     for key in candidates:
         x=contexts.get(key)
-        if x and x['unique_ideas']>=mins.get(x['scope'],99):
+        if x and x.get('authority')!='OBSERVE_ONLY':
             return {**x,'match_candidates':candidates}
     return {'context_key':candidates[0],'scope':'EXACT','unique_ideas':0,'wins':0,'losses':0,
             'posterior_mean':0.5,'posterior_low':0.0,'posterior_high':1.0,
