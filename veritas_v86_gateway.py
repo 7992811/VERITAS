@@ -534,11 +534,15 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     try:
+        _raw_pp = v86_portfolios()
+        _raw_trades = jget(V86, '/api/v1/portfolio-trades', 20)
         _pp = transform_portfolios()
         _ov = overview()
         _pe = product_experience()
+        _snapshot_id = 'STATE_' + str(int(time.time()))
         print(json.dumps({
             'event':'V86_GATEWAY_SELFTEST',
+            'snapshot_id':_snapshot_id,
             'portfolio_count':len(_pp.get('portfolios') or []),
             'initial_nav_rub':_pp.get('initial_nav_rub'),
             'portfolio_navs':{p.get('name'):p.get('latest',{}).get('nav_rub') for p in (_pp.get('portfolios') or [])},
@@ -546,6 +550,16 @@ if __name__ == '__main__':
             'decision_cards':len(((_pe.get('decision_cards') or {}).get('cards') or [])),
             'status':'ok'
         },ensure_ascii=False,separators=(',',':')),flush=True)
+        for _p in (_raw_pp.get('portfolios') or []):
+            print(json.dumps({'event':'V86_STATE_PORTFOLIO','snapshot_id':_snapshot_id,'portfolio':_p},
+                             ensure_ascii=False,separators=(',',':')),flush=True)
+        for _t in (_raw_trades.get('items') or []):
+            print(json.dumps({'event':'V86_STATE_TRADE','snapshot_id':_snapshot_id,'trade':_t},
+                             ensure_ascii=False,separators=(',',':')),flush=True)
+        print(json.dumps({'event':'V86_STATE_SNAPSHOT_COMPLETE','snapshot_id':_snapshot_id,
+                          'portfolio_count':len(_raw_pp.get('portfolios') or []),
+                          'trade_count':len(_raw_trades.get('items') or [])},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
     except Exception as exc:
         print(json.dumps({'event':'V86_GATEWAY_SELFTEST','status':'error','error':type(exc).__name__+': '+str(exc)[:250]},
                          ensure_ascii=False,separators=(',',':')),flush=True)
