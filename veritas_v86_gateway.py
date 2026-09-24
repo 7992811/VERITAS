@@ -479,8 +479,18 @@ def trades():
     merged=current+archive
     merged.sort(key=lambda x:str(x.get('closed_at') or ''), reverse=True)
     open_current=sum(1 for e in current_all if _episode_finalization(e)['state']=='OPEN')
+    learning_eligible=sum(1 for e in current_all if _episode_finalization(e)['learning_eligible'])
+    market_episodes=len({str((_as_dict(_as_dict(e.get('payload')).get('signal')).get('idea_id') or e.get('idea_id')))
+                         for e in current_all if _episode_finalization(e)['finalized']
+                         and (_as_dict(_as_dict(e.get('payload')).get('signal')).get('idea_id') or e.get('idea_id'))})
+    restored_open=sum(1 for e in current_all
+                      if _episode_finalization(e)['state']=='OPEN'
+                      and _as_dict(_as_dict(e.get('payload')).get('state_restore')).get('status')=='RESTORED_ACTIVE_CONTINUATION')
     return {'trades':merged,'current_closed_count':len(current),'archive_closed_count':len(archive),
             'current_open_count':open_current,'pending_finalization_count':len(pending),
+            'learning_eligible_closed_count':learning_eligible,
+            'learning_skipped_closed_count':max(0,len(current)-learning_eligible),
+            'unique_market_episodes_closed':market_episodes,'restored_open_count':restored_open,
             'pending_finalization':pending[:20],'finalization_contract':FINALIZATION_CONTRACT}
 
 def app_html():
