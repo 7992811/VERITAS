@@ -279,9 +279,8 @@ def collect_one_source_market(app,asset):
     if anchor not in s: raise SystemExit('FAST_PULSE_GUARD_ANCHOR_NOT_FOUND')
     s=s.replace(anchor,insert+'\n'+anchor,1)
 
-pat=r"""            if a in \('BTC','ETH'\):updates\[a\]=collect_crypto\(a\)
-            .*?
-            elif a=='(?:NQ|NDX)':updates\[a\]=collect_ndx\(app\.model\)
+pat=r"""    for a in sorted\(assets\):
+.*?(?=    return app\.guard_once\(updates\))
 """
 new="""    def _fast_fetch(a):
         if a in ('BTC','ETH'): return a,collect_crypto(a)
