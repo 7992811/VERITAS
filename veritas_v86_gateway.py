@@ -710,9 +710,9 @@ def app_html():
             print('APP_HTML_STALE_CACHE_USED',flush=True)
             return stale
         # Fail visibly but keep the service useful: API endpoints remain available.
-        body=b"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VERITAS</title>
+        body="""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VERITAS</title>
 <style>body{background:#111820;color:#e9eef3;font-family:Arial,sans-serif;padding:30px}a{color:#9fb6c8}.box{max-width:760px;margin:auto;padding:24px;border:1px solid #44515c;border-radius:16px;background:#18212a}</style></head>
-<body><div class="box"><h1>VERITAS Markets</h1><p>Интерфейс временно переключается на резервный источник. Данные API v86 продолжают работать.</p><p><a href="/api/v1/overview">overview</a> · <a href="/api/v1/product-experience">product experience</a></p></div></body></html>"""
+<body><div class="box"><h1>VERITAS Markets</h1><p>Интерфейс временно переключается на резервный источник. Данные API v86 продолжают работать.</p><p><a href="/api/v1/overview">overview</a> · <a href="/api/v1/product-experience">product experience</a></p></div></body></html>""".encode('utf-8')
         source='minimal_fallback'
     value = body.decode('utf-8','replace')
     value = value.replace('Два независимых paper-портфеля по 1 000 000 ₽. Champion — порог входа 70%; Challenger — порог входа 77%. Реальные деньги не используются.',
