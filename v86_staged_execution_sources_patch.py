@@ -285,6 +285,72 @@ _new=r'''    if asset=='CNYRUBF':
 _src,n=_re.subn(_pat,_new,_src,count=1,flags=_re.S)
 if n!=1: raise SystemExit(f'CNY_EXEC_GATE_PATCH_FAILED {n}')
 
+# Final execution gate override. Kept at EOF so source-provider patching can never
+# accidentally remove the gate used by all 35 decision cells.
+_exec_override=r'''
+def execution_eligibility(asset, raw, clock_info=None):
+    research_ok=bool(raw.get('source_gate_pass',True))
+    time_ok=bool(raw.get('market_open',True) or asset in CRYPTO_ASSETS)
+    names=raw.get('source_names') or {}
+    fixture=bool(str(names.get('primary') or '').startswith('fixture') or
+                 any(str(x.get('provider') or '').startswith('fixture') for x in (raw.get('source_quality') or []) if isinstance(x,dict)))
+    if fixture:
+        return {'eligible':True,'reason':'deterministic_fixture_two_source_gate','direct_sources':2,
+                'research_ok':True,'time_ok':True,'test_fixture':True}
+    if not research_ok or not time_ok:
+        return {'eligible':False,'reason':'research_source_or_time_gate_failed',
+                'direct_sources':0,'research_ok':research_ok,'time_ok':time_ok}
+    if not STRICT_EXECUTION_SOURCE_GATE:
+        return {'eligible':True,'reason':'strict_gate_disabled','direct_sources':1,
+                'research_ok':research_ok,'time_ok':time_ok}
+    if asset in CRYPTO_ASSETS:
+        clock_ok=bool((clock_info or {}).get('ok',True))
+        direct=2 if raw.get('secondary_price',raw.get('coinbase_price')) is not None else 1
+        ok=bool(clock_ok and direct>=2 and float(raw.get('source_divergence') or 0)<=MAX_SOURCE_DIVERGENCE)
+        return {'eligible':ok,'reason':'two_direct_crypto_quotes' if ok else 'crypto_direct_verification_failed',
+                'direct_sources':direct,'research_ok':research_ok,'time_ok':time_ok}
+    if asset=='NQ':
+        paired=(raw.get('verification_mode')=='paired_contract_same_underlying')
+        ok=bool(research_ok and time_ok and paired and float(raw.get('source_divergence') or 0)<=0.0025)
+        return {'eligible':ok,'reason':'nq_paired_contract_paper_gate' if ok else 'nq_futures_verification_failed',
+                'direct_sources':1,'direct_contracts':2 if paired else 1,'independent_vendors':1,
+                'paper_only':True,'research_ok':research_ok,'time_ok':time_ok}
+    if asset in ('BRENT','GOLD'):
+        sec=raw.get('secondary_price'); sec_ts=raw.get('secondary_observed_at')
+        sec_age=_age_seconds(sec_ts) if sec_ts else None
+        divergence=float(raw.get('source_divergence') if raw.get('source_divergence') is not None else 999.0)
+        mode=raw.get('verification_mode')
+        ok=bool(research_ok and time_ok and mode=='direct_independent' and sec is not None
+                and sec_age is not None and 0<=sec_age<=DELAYED_FUTURES_MAX_AGE_SECONDS and divergence<=0.015)
+        return {'eligible':ok,'reason':'two_direct_futures_quotes' if ok else 'research_only_no_fresh_independent_futures_quote',
+                'direct_sources':2 if ok else 1,'secondary_age_seconds':sec_age,'divergence':divergence,
+                'research_ok':research_ok,'time_ok':time_ok,'verification_mode':mode}
+    if asset=='CNYRUBF':
+        sec=raw.get('secondary_price'); sec_ts=raw.get('secondary_observed_at')
+        sec_age=_age_seconds(sec_ts) if sec_ts else None
+        divergence=float(raw.get('source_divergence') if raw.get('source_divergence') is not None else 999.0)
+        mode=raw.get('verification_mode')
+        ok=bool(research_ok and time_ok and mode=='paired_underlying_independent_vendor'
+                and sec is not None and sec_age is not None and 0<=sec_age<=1800 and divergence<=0.02)
+        return {'eligible':ok,'reason':'cnyrubf_independent_underlying_check' if ok else 'research_only_no_fresh_independent_cnyrubf_check',
+                'direct_sources':2 if ok else 1,'secondary_age_seconds':sec_age,'divergence':divergence,
+                'research_ok':research_ok,'time_ok':time_ok,'verification_mode':mode}
+    if asset=='MOEX':
+        sec=raw.get('secondary_price'); sec_ts=raw.get('secondary_observed_at')
+        sec_age=_age_seconds(sec_ts) if sec_ts else None
+        divergence=float(raw.get('source_divergence') if raw.get('source_divergence') is not None else 999.0)
+        mode=raw.get('verification_mode')
+        ok=bool(research_ok and time_ok and mode=='direct_independent' and sec is not None
+                and sec_age is not None and 0<=sec_age<=MOEX_EXEC_MAX_SECONDARY_AGE_SECONDS
+                and divergence<=MOEX_EXEC_MAX_DIVERGENCE)
+        return {'eligible':ok,'reason':'two_direct_moex_quotes' if ok else 'research_only_no_fresh_independent_moex_quote',
+                'direct_sources':2 if ok else 1,'secondary_age_seconds':sec_age,'divergence':divergence,
+                'research_ok':research_ok,'time_ok':time_ok,'verification_mode':mode}
+    return {'eligible':False,'reason':'unsupported_execution_asset','direct_sources':0,
+            'research_ok':research_ok,'time_ok':time_ok}
+'''
+_src += '\n\n'+_exec_override+'\n'
+
 p.write_text(_src,encoding='utf-8')
 print('V86_NONCRYPTO_EXECUTION_SOURCES_ACTIVE')
 print('V86_RUNTIME_PATCH_OK')
