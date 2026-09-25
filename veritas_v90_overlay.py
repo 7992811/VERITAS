@@ -1132,7 +1132,7 @@ def _v90_schedule_outcome_refresh(reason='cycle_complete'):
 
     # 4) Use last_cycle memory for signal-change alerts; PostgreSQL is fallback
     # only after process restart when no in-memory previous cycle exists.
-    if "_v90_base_recent_decision_for = _recent_decision_for" not in dst:
+    if "# VERITAS V90 IN-MEMORY PREVIOUS SIGNAL CACHE" not in dst:
         _a_anchor="\ndef maybe_create_alert(entity_key, asset, horizon, decision, confidence, score, regime, kmatches):"
         _a_helper=r'''
 # VERITAS V90 IN-MEMORY PREVIOUS SIGNAL CACHE
