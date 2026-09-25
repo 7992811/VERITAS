@@ -1072,13 +1072,15 @@ finally:
     _storage_sys.argv=_storage_argv
 print('V86_STORAGE_ARCHITECTURE_RUNTIME_ACTIVE')
 
-# V90_POSTGRES_SOURCE_DIAGNOSTIC
+# V90 PostgresLedger pool must not override the production schema selected by the DSN.
 _v90_pg_path=root/'veritas_v85/postgres.py'
 _v90_pg_src=_v90_pg_path.read_text(encoding='utf-8')
-for _v90_marker in ('class PostgresLedger','def raw_connection','def transaction','psycopg.connect'):
-    _v90_i=_v90_pg_src.find(_v90_marker)
-    if _v90_i>=0:
-        print('V90_PG_SRC '+_v90_marker+' :: '+_v90_pg_src[_v90_i:_v90_i+900].replace('\n',' | '),flush=True)
+_v90_pool_old="'options':'-c statement_timeout=5000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=15000'"
+_v90_pool_new="'options':'-c search_path=veritas_v90_prod -c statement_timeout=5000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=15000'"
+if _v90_pool_old not in _v90_pg_src:
+    raise SystemExit('V90_POSTGRES_POOL_OPTIONS_ANCHOR_NOT_FOUND')
+_v90_pg_path.write_text(_v90_pg_src.replace(_v90_pool_old,_v90_pool_new,1),encoding='utf-8')
+print('V90_POSTGRES_POOL_SCHEMA_BOUND schema=veritas_v90_prod',flush=True)
 
 # 25) Base 9.0 cutover: shared durable PostgreSQL + four active portfolios only.
 import re as _v90_re
