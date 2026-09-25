@@ -903,9 +903,9 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     plan['level_policy']='LOCAL_ENTRY_STRUCTURE + SIGNAL_TF + ALL_HIGHER_TF'
     return plan
 '''
-        anchor = "\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        anchor = "\ndef main():"
         if anchor not in dst:
-            raise RuntimeError("v90 multi-TF quality anchor missing")
+            raise RuntimeError("v90 multi-TF quality main anchor missing")
         dst = dst.replace(anchor, "\n" + helper + anchor, 1)
         applied.append("multi_tf_quality_model")
 
