@@ -1103,11 +1103,11 @@ if _v90_os.getenv('VERITAS_STORAGE_GENERATION','').strip()=='9.0':
     import psycopg as _v90_psycopg
     from psycopg.conninfo import make_conninfo as _v90_make_conninfo
     with _v90_psycopg.connect(_v90_dsn,autocommit=True) as _v90_conn:
-        _v90_conn.execute('CREATE SCHEMA IF NOT EXISTS veritas_v90')
-    _v90_dsn=_v90_make_conninfo(_v90_dsn,options='-c search_path=veritas_v90,public')
+        _v90_conn.execute('CREATE SCHEMA IF NOT EXISTS veritas_v90_live')
+    _v90_dsn=_v90_make_conninfo(_v90_dsn,options='-c search_path=veritas_v90_live,public')
     _v90_os.environ['DATABASE_URL']=_v90_dsn
     _v90_os.environ.pop('VERITAS_V85_TEST_DATABASE_URL',None)
-    print('VERITAS_V90_DB_LEASE_ACTIVE storage_generation=9.0 schema=veritas_v90',flush=True)
+    print('VERITAS_V90_DB_LEASE_ACTIVE storage_generation=9.0 schema=veritas_v90_live',flush=True)
 '''
     if _v90_anchor not in _v90_start:
         raise SystemExit('V90_START_STORAGE_ANCHOR_NOT_FOUND')
@@ -1181,7 +1181,8 @@ _v90_sr=_v90_sr.replace(_v90_trades_anchor,_v90_trades_repl,1)
 _v90_existing_anchor="""        cold_start=(len(existing_accounts)==0)
         replaced=[]; skipped=[]; fee_adjustment={}
 """
-_v90_existing_repl="""        cold_start=(len(existing_accounts)==0)
+_v90_existing_repl="""        activity=c.execute('SELECT COUNT(*) AS n FROM v85_episodes').fetchone()
+        cold_start=(int(activity['n'] or 0)==0)
         if not cold_start:
             for a in accounts.values():
                 present=c.execute('SELECT 1 FROM v85_accounts WHERE account_id=?',(a['account_id'],)).fetchone()
@@ -1195,6 +1196,16 @@ _v90_existing_repl="""        cold_start=(len(existing_accounts)==0)
 if _v90_existing_anchor not in _v90_sr:
     raise SystemExit('V90_STATE_EXISTING_ANCHOR_NOT_FOUND')
 _v90_sr=_v90_sr.replace(_v90_existing_anchor,_v90_existing_repl,1)
+# pg_init creates empty account/risk rows before restore; make verified snapshot restore idempotent.
+_v90_sr=_v90_sr.replace(
+    "'INSERT INTO v85_accounts VALUES(?,?,?,?)'",
+    "'INSERT INTO v85_accounts(account_id,initial_equity,realized_equity,policy_version) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET initial_equity=excluded.initial_equity, realized_equity=excluded.realized_equity, policy_version=excluded.policy_version'")
+_v90_sr=_v90_sr.replace(
+    "'INSERT INTO v85_risk VALUES(?,?,?,?)'",
+    "'INSERT INTO v85_risk(account_id,high_water,state,updated_at) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET high_water=excluded.high_water, state=excluded.state, updated_at=excluded.updated_at'")
+_v90_sr=_v90_sr.replace(
+    "'position_count':int(target.get('trade_count') or 0)",
+    "'position_count':sum(1 for x in (target.get('trades') or []) if str(x.get('account_id') or '') in ACTIVE_ACCOUNTS and str(x.get('status') or '').upper()=='OPEN')")
 p.write_text(_v90_sr,encoding='utf-8')
 
 print('VERITAS_V90_CUTOVER_PATCH_ACTIVE portfolios=Champion,Challenger,Impulse,Aggressive storage=9.0')
