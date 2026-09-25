@@ -1117,6 +1117,324 @@ def refresh_experience_lessons(limit=400):
         dst=dst.replace(anchor,"\n"+helper+anchor,1)
         applied.append("paper_execution_learning_v2")
 
+    # VERITAS 9.0 P0 memory stabilization for the 512 MB web instance.
+    if "# VERITAS V90 MEMORY P0 R1" not in dst:
+        helper = r'''
+# VERITAS V90 MEMORY P0 R1
+# Keep full durable decision payloads in PostgreSQL/SQLite, but retain only the
+# execution/UI subset in process memory and in Render application logs.
+
+FAST_LOOP_MARKET_WORKERS=min(2,int(FAST_LOOP_MARKET_WORKERS))
+MEMORY_SOFT_LIMIT_MB=min(320,int(MEMORY_SOFT_LIMIT_MB))
+HEAVY_LEARNING_INTERVAL_SECONDS=max(3600,int(HEAVY_LEARNING_INTERVAL_SECONDS))
+HEAVY_LEARNING_START_DELAY_SECONDS=max(300,int(HEAVY_LEARNING_START_DELAY_SECONDS))
+OUTCOME_BATCH_LIMIT=min(12,int(OUTCOME_BATCH_LIMIT))
+V701_LEARNING_MAX_EPISODES=min(600,int(V701_LEARNING_MAX_EPISODES))
+V90_MEMORY_CAUTION_MB=280.0
+V90_MEMORY_PROTECT_MB=340.0
+V90_HEAVY_LEARNING_MAX_START_MB=260.0
+
+
+def _v90_small_dict(src,keys):
+    if not isinstance(src,dict):
+        return {}
+    return {k:src.get(k) for k in keys if src.get(k) is not None}
+
+
+def _v90_compact_live_row(z):
+    if not isinstance(z,dict):
+        return {}
+    hs=_v90_small_dict(z.get('horizon_structure'),(
+        'status','horizon','native_horizon','resolution','direction','raw_direction',
+        'score','state','return','z','bars','breakout','volume_ratio'))
+    st=_v90_small_dict(z.get('intraday_structure'),(
+        'enabled','status','resolution','direction','score','lifecycle','entry_quality',
+        'relative_volume','volume_confirmed','near_ath','price_discovery',
+        'breakout_found','breakout_level','breakout_hold','fresh_breakout',
+        'false_breakout','recent_swing_anchor','invalidation_price','late_entry'))
+    inst=z.get('institutional_signal') or {}
+    bq=_v90_small_dict(inst.get('breakout_quality'),(
+        'status','is_breakout','fresh_breakout','direction','quality_score',
+        'state','breakout_level','breakout_distance_pct','volume_ratio',
+        'native_score','consensus_count','consensus_score','late_entry'))
+    evid=_v90_small_dict(inst.get('evidence_independence'),(
+        'independent_count','independence_score','active_families'))
+    rt=_v90_small_dict(inst.get('regime_transition'),(
+        'state','transition_score','from_regime','candidate_regime'))
+    inst2=_v90_small_dict(inst,(
+        'version','signal_tier','investor_signal','action','recommended_initial_fraction',
+        'conflict_override','wait_reason','risk_pct','expected_to_stop_ratio',
+        'position_scaling','research_only','execution_gate_bypass'))
+    inst2['breakout_quality']=bq
+    inst2['evidence_independence']=evid
+    inst2['regime_transition']=rt
+    plan=z.get('trade_plan') or {}
+    plan2=_v90_small_dict(plan,(
+        'eligible','reason','direction','entry_price','entry_quality','late_entry',
+        'stop_price','stop_method','stop_distance_pct','invalidation_price',
+        'expected_move_pct','expected_move_method','expected_to_stop_ratio',
+        'min_expected_to_stop_ratio','initial_position_fraction','scaling_policy',
+        'signal_tier','structure_lifecycle','fresh_breakout','breakout_level',
+        'recent_swing_anchor','robot_eligible','execution_mode','target_price',
+        'tactical_target_price','target_method','setup','reversal_probability',
+        'decision_stage','positive_trade_probability','statistical_noise_buffer_p80'))
+    tp1=plan.get('take_profit_1')
+    if isinstance(tp1,dict):
+        plan2['take_profit_1']=_v90_small_dict(tp1,('timeframe','price','distance_pct'))
+    elif tp1 is not None:
+        plan2['take_profit_1']=tp1
+    ta=z.get('tradeability') or {}
+    ta2=_v90_small_dict(ta,(
+        'status','positive_trade_probability','raw_n','effective_n','decision_influence',
+        'weighted_avg_signed_return','p80_adverse_excursion'))
+    sl=z.get('structural_levels') or {}
+    sl2=_v90_small_dict(sl,(
+        'status','price','sma18','sma50','sma18_slope','sma50_slope',
+        'price_vs_sma18','price_vs_sma50','support','support_strength',
+        'resistance','resistance_strength'))
+    tr=_v90_small_dict(z.get('tactical_reversal'),(
+        'active','direction','candidate_direction','setup','state','probability',
+        'stop_price','target_price','reward_risk','min_reward_risk','reason',
+        'cycle_return','confirmations'))
+    rs=_v90_small_dict(z.get('range_retest_breakout'),(
+        'active','direction','candidate_direction','setup','state','probability',
+        'support','resistance','stop_price','target_price','reward_risk',
+        'min_reward_risk','initial_position_fraction','confirmations',
+        'entry_active','add_active','manage_active','reason'))
+    pb=_v90_small_dict(z.get('impulse_pivot_break'),(
+        'active','direction','candidate_direction','setup','state','probability',
+        'stop_price','target_price','reward_risk','reason','local_support',
+        'local_resistance','local_volume_ratio','local_efficiency'))
+    io=_v90_small_dict(z.get('impulse_overlay'),(
+        'active','phase','direction','confidence','base_score',
+        'active_directional_score','blend','entry_quality'))
+    keys=(
+        'asset','horizon','decision','research_decision','confidence','price','score',
+        'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
+        'source_gate_pass','market_open','execution_eligible','execution_reason',
+        'direct_sources','calibrated_probability','shadow_position',
+        'challenger_decision','challenger_confidence','v70_uncertainty',
+        'v70_falsification','v70_gate_status','v70_gate_class','v70_thesis_status',
+        'v70_entry_status','v70_action','v70_size_multiplier','v70_timing_multiplier',
+        'v70_entry_scope','v70_model_set_size','investor_signal','signal_quality',
+        'independent_evidence_families','regime_transition_state',
+        'horizon_structure_direction','horizon_structure_score','horizon_structure_state',
+        'trend_phase','trend_direction','trend_onset_score','impulse_score',
+        'entry_quality','positive_trade_probability','analog_effective_n',
+        'expected_move_pct','signal_tier','execution_signal_tier',
+        'event_shadow_score','causal_score','causal_label','decision_stage',
+        'sma18','sma50','support_level','resistance_level')
+    out=_v90_small_dict(z,keys)
+    out['horizon_structure']=hs
+    out['intraday_structure']=st
+    out['institutional_signal']=inst2
+    out['trade_plan']=plan2
+    out['tradeability']=ta2
+    out['structural_levels']=sl2
+    out['tactical_reversal']=tr
+    out['range_retest_breakout']=rs
+    out['impulse_pivot_break']=pb
+    out['impulse_overlay']=io
+    return out
+
+
+def _v90_compact_decision_log(z):
+    r=_v90_compact_live_row(z)
+    p=r.get('trade_plan') or {}
+    hs=r.get('horizon_structure') or {}
+    inst=r.get('institutional_signal') or {}
+    return {
+        'asset':r.get('asset'),'horizon':r.get('horizon'),
+        'decision':r.get('decision'),'research_decision':r.get('research_decision'),
+        'confidence':r.get('confidence'),'price':r.get('price'),'regime':r.get('regime'),
+        'signal_tier':r.get('signal_tier'),'execution_eligible':r.get('execution_eligible'),
+        'execution_reason':r.get('execution_reason'),
+        'calibrated_probability':r.get('calibrated_probability'),
+        'decision_stage':r.get('decision_stage'),
+        'horizon_structure_direction':hs.get('direction'),
+        'horizon_structure_score':hs.get('score'),'horizon_structure_state':hs.get('state'),
+        'entry_quality':r.get('entry_quality'),
+        'investor_signal':inst.get('investor_signal'),
+        'independent_evidence_families':r.get('independent_evidence_families'),
+        'stop_price':p.get('stop_price'),'target_price':p.get('target_price') or p.get('tactical_target_price'),
+        'expected_move_pct':p.get('expected_move_pct'),
+        'expected_to_stop_ratio':p.get('expected_to_stop_ratio'),
+        'plan_eligible':p.get('eligible'),'plan_reason':p.get('reason'),
+    }
+
+
+def _v90_prune_low_priority_caches(level_mb=None):
+    m=float(level_mb if level_mb is not None else (rss_mb() or 0.0))
+    if m < V90_MEMORY_CAUTION_MB:
+        return 0
+    cleared=0
+    try:
+        with analytics_cache_lock:
+            cleared+=len(analytics_cache); analytics_cache.clear()
+    except Exception:
+        pass
+    for box in (experience_cache,trend_case_cache,structure_analog_cache):
+        try:
+            if box.get('value') is not None:
+                box['value']=None; box['at']=0.0; cleared+=1
+        except Exception:
+            pass
+    if not FULL_OVERVIEW_ENABLED:
+        try:
+            with overview_cache_lock:
+                if overview_cache.get('value') is not None:
+                    overview_cache['value']=None; overview_cache['at']=0.0; cleared+=1
+        except Exception:
+            pass
+    for fn_name in ('_decision_memory_rows','_decision_memory_vectors',
+                    'v701_learning_bundle','v70_quality_board','learning_progress'):
+        try:
+            fn=globals().get(fn_name)
+            if fn is not None and getattr(fn,'_cache',None) is not None:
+                fn._cache=None; cleared+=1
+        except Exception:
+            pass
+    if m >= V90_MEMORY_PROTECT_MB:
+        try:
+            with market_cache_lock:
+                cleared+=len(market_cache); market_cache.clear()
+        except Exception:
+            pass
+        try:
+            boxes=getattr(_v27_cache,'_boxes',None)
+            if isinstance(boxes,dict):
+                cleared+=len(boxes); boxes.clear()
+        except Exception:
+            pass
+    return cleared
+
+
+def _v90_trim_memory(phase='unknown',force=False):
+    before=rss_mb()
+    if not force and before is not None and float(before)<V90_MEMORY_CAUTION_MB:
+        return {'phase':phase,'before_mb':before,'after_mb':before,'trimmed':False}
+    cleared=_v90_prune_low_priority_caches(before)
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import ctypes
+        libc=ctypes.CDLL('libc.so.6')
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+    after=rss_mb()
+    if force or (before is not None and after is not None and float(before)-float(after)>=8.0):
+        emit('memory_trim',phase=phase,before_mb=before,after_mb=after,
+             released_mb=None if before is None or after is None else round(float(before)-float(after),1),
+             caches_cleared=cleared)
+    return {'phase':phase,'before_mb':before,'after_mb':after,'trimmed':True,'caches_cleared':cleared}
+
+
+_v90_base_run_heavy_learning_maintenance=run_heavy_learning_maintenance
+
+
+def run_heavy_learning_maintenance(reason='scheduled'):
+    m=rss_mb()
+    if m is not None and float(m)>V90_HEAVY_LEARNING_MAX_START_MB:
+        with heavy_learning_state_lock:
+            heavy_learning_state.update({'status':'DEFERRED_MEMORY','reason':reason,
+                                         'rss_mb':round(float(m),1),
+                                         'memory_start_limit_mb':V90_HEAVY_LEARNING_MAX_START_MB})
+        emit('heavy_learning_deferred_memory',reason=reason,rss_mb=m,
+             max_start_mb=V90_HEAVY_LEARNING_MAX_START_MB)
+        return {'status':'DEFERRED_MEMORY','rss_mb':m}
+    try:
+        return _v90_base_run_heavy_learning_maintenance(reason)
+    finally:
+        try:
+            with heavy_learning_state_lock:
+                for k in ('event_learning','rule_learning','experience_learning'):
+                    x=heavy_learning_state.get(k)
+                    if isinstance(x,dict):
+                        heavy_learning_state[k]={q:x.get(q) for q in
+                            ('status','written','rows','status_changes','trade_lessons',
+                             'rejected_lessons','abstention_lessons') if x.get(q) is not None}
+        except Exception:
+            pass
+        _v90_trim_memory('heavy_learning_end',force=True)
+
+
+def maybe_schedule_heavy_learning(reason='scheduled',force=False):
+    if not force and not heavy_learning_due():
+        return False
+    m=rss_mb()
+    if m is not None and float(m)>V90_HEAVY_LEARNING_MAX_START_MB:
+        with heavy_learning_state_lock:
+            heavy_learning_state.update({'status':'DEFERRED_MEMORY','reason':reason,
+                                         'rss_mb':round(float(m),1),
+                                         'memory_start_limit_mb':V90_HEAVY_LEARNING_MAX_START_MB})
+        return False
+    threading.Thread(target=run_heavy_learning_maintenance,args=(reason,),daemon=True).start()
+    return True
+'''
+        anchor="\ndef main():"
+        if anchor not in dst:
+            raise RuntimeError("v90 memory P0 main anchor missing")
+        dst=dst.replace(anchor,"\n"+helper+anchor,1)
+
+        dst,ch=_replace_once(dst,
+            "                summary.append(z)\\n",
+            "                summary.append(_v90_compact_live_row(z))\\n",
+            "v90 compact in-memory decision summary")
+        if not ch:
+            raise RuntimeError("v90 memory P0 summary append anchor missing")
+
+        dst,ch=_replace_once(dst,
+            "                emit('decision', **z, durable=pg_enabled())\\n",
+            "                emit('decision', **_v90_compact_decision_log(z), durable=pg_enabled())\\n",
+            "v90 compact decision logging")
+        if not ch:
+            raise RuntimeError("v90 memory P0 decision log anchor missing")
+
+        old="""        except Exception as e:
+            asset_timings[asset]['total']=(asset_timings[asset]['market_fetch']+asset_timings[asset]['context']+
+                                            asset_timings[asset]['common_features']+asset_timings[asset]['horizons'])
+            err = {'asset': asset, 'error': f'{type(e).__name__}: {e}'}
+            errors.append(err)
+            emit('asset_error', **err)
+    storage = pg_storage_status()"""
+        new="""        except Exception as e:
+            asset_timings[asset]['total']=(asset_timings[asset]['market_fetch']+asset_timings[asset]['context']+
+                                            asset_timings[asset]['common_features']+asset_timings[asset]['horizons'])
+            err = {'asset': asset, 'error': f'{type(e).__name__}: {e}'}
+            errors.append(err)
+            emit('asset_error', **err)
+        finally:
+            try:
+                market_bundles.pop(asset,None)
+            except Exception:
+                pass
+            _v90_trim_memory('asset_'+str(asset),force=False)
+    storage = pg_storage_status()"""
+        dst,ch=_replace_once(dst,old,new,"v90 release market bundle per asset")
+        if not ch:
+            raise RuntimeError("v90 memory P0 asset release anchor missing")
+
+        old="""    with lock:
+        last_cycle.clear(); last_cycle.update(state)
+    emit('cycle_complete', decisions_written=made, outcomes_written=outcomes, status=status,"""
+        new="""    with lock:
+        last_cycle.clear(); last_cycle.update(state)
+    try:
+        summary.clear()
+        market_bundles.clear()
+    except Exception:
+        pass
+    _v90_trim_memory('cycle_end',force=True)
+    emit('cycle_complete', decisions_written=made, outcomes_written=outcomes, status=status,"""
+        dst,ch=_replace_once(dst,old,new,"v90 trim after cycle state")
+        if not ch:
+            raise RuntimeError("v90 memory P0 cycle end anchor missing")
+
+        applied.append("memory_p0_r1")
+
     # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION = '" + V90_INTEL + "'\n"
     main_anchor = "\nif __name__ == '__main__':"
@@ -3156,6 +3474,7 @@ def verify():
         'open_position_report_v2': '# VERITAS V90 OPEN POSITION REPORT V2' in port and 'entry_metric_label' in port and 'notional_usd' in port,
         'open_position_mark_to_market': 'def _v90j_mark_open_positions(' in port and 'LATEST_DECISION_PRICE' in port,
         'paper_execution_learning_v2': '# VERITAS V90 PAPER EXECUTION LEARNING V2' in intel and 'PAPER_PORTFOLIO_UNIQUE_EXECUTION' in intel,
+        'memory_p0_r1': '# VERITAS V90 MEMORY P0 R1' in intel and '_v90_compact_live_row' in intel and 'heavy_learning_deferred_memory' in intel,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
         'multi_tf_levels': '# VERITAS V90 MULTI-TF QUALITY MODEL R2' in intel and 'def _v90_multi_tf_levels(' in intel and 'multi_tf_level_context' in intel,
         'cny_5m_entry_timing': 'def _v90_cny_5m_bars(' in intel and "entry_timing_resolution'" in intel,
