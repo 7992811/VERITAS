@@ -498,9 +498,9 @@ except Exception as _vp_ex:
         applied.append("portfolio_ui")
 
     # VERITAS 9.0 multi-timeframe / CNY quality corrections.
-    if "# VERITAS V90 MULTI-TF QUALITY MODEL" not in dst:
+    if "# VERITAS V90 MULTI-TF QUALITY MODEL R2" not in dst:
         helper = r'''
-# VERITAS V90 MULTI-TF QUALITY MODEL
+# VERITAS V90 MULTI-TF QUALITY MODEL R2
 # Keep trend onset, impulse and price structure as separate evidence families.
 # Build point-in-time support/resistance across 1h/4h/1d/3d/7d and make
 # SUPER classification depend on the structure of the signal's own horizon.
@@ -2197,7 +2197,7 @@ def verify():
         'legacy_ndx_retired': 'INSTRUMENT_REPLACED_BY_NQ' in port,
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
-        'multi_tf_levels': 'def _v90_multi_tf_levels(' in intel and 'multi_tf_level_context' in intel,
+        'multi_tf_levels': '# VERITAS V90 MULTI-TF QUALITY MODEL R2' in intel and 'def _v90_multi_tf_levels(' in intel and 'multi_tf_level_context' in intel,
         'cny_5m_entry_timing': 'def _v90_cny_5m_bars(' in intel and "entry_timing_resolution'" in intel,
         'cny_special_regime': "asset!='CNYRUBF'" in intel and "CNYRUBF_SPECIALIZED" in intel,
         'timeframe_specific_super': 'current_horizon_structure' in intel and "horizon in ('3d','7d')" in intel,
