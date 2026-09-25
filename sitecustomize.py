@@ -737,6 +737,27 @@ def _run():
         )
         if isinstance(exc,SyntaxError):
             try:
+                import hashlib as _diag_hashlib
+                _src=_read(TARGET)
+                _s=_src.find("def run_bootstrap_backtest(")
+                _e=_src.find("\ndef backtest_status():",_s)
+                _fn=_src[_s:_e] if _s>=0 and _e>_s else ""
+                _clean=CLEAN_BOOTSTRAP_BACKTEST_SOURCE.rstrip()
+                print(f"[VERITAS PARSE DIAG] function_sha={_diag_hashlib.sha256(_fn.rstrip().encode()).hexdigest()} clean_sha={_diag_hashlib.sha256(_clean.encode()).hexdigest()} same={_fn.rstrip()==_clean}",file=sys.stderr,flush=True)
+                try:
+                    compile(_fn,"<run_bootstrap_backtest>","exec")
+                    print("[VERITAS PARSE DIAG] function_alone=OK",file=sys.stderr,flush=True)
+                except SyntaxError as _fe:
+                    print(f"[VERITAS PARSE DIAG] function_alone=FAIL line={_fe.lineno} offset={_fe.offset} msg={_fe.msg} text={_fe.text!r}",file=sys.stderr,flush=True)
+                try:
+                    compile(_src[:_s],"<prefix>","exec")
+                    print("[VERITAS PARSE DIAG] prefix=OK",file=sys.stderr,flush=True)
+                except SyntaxError as _pe:
+                    print(f"[VERITAS PARSE DIAG] prefix=FAIL line={_pe.lineno} offset={_pe.offset} msg={_pe.msg} text={_pe.text!r}",file=sys.stderr,flush=True)
+            except Exception as _de:
+                print(f"[VERITAS PARSE DIAG] unavailable={type(_de).__name__}:{_de}",file=sys.stderr,flush=True)
+        if isinstance(exc,SyntaxError):
+            try:
                 import io, tokenize
                 _src=_read(TARGET)
                 _ln=int(getattr(exc,'lineno',0) or 0)
