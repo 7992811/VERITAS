@@ -50,7 +50,7 @@ def apply_v90_ui(html):
     value = value.replace('Шаг позиции 5% · gross ≤ 2,5× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')
     
-    replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview position-card"><div class="assetview-head position-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="position-columns"><div class="position-col position-left"><div><span>Вход</span><b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Текущая</span><b>${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div class="position-gap"><span>Объём ₽</span><b>${rub(z.notional_rub)}</b></div><div><span>Объём $</span><b>${z.notional_usd==null?'—':Number(z.notional_usd).toLocaleString('en-US',{maximumFractionDigits:0})+' USD'}</b></div><div><span>Кол-во</span><b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b></div></div><div class="position-col position-right"><div><span>P/L</span><b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b></div><div><span>SL</span><b>${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>TP</span><b>${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Prob-ty</span><b title="${z.probability_source||'—'}">${z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'+(['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY'].includes(z.probability_source)?' · calibr.':' · model')}</b></div><div><span>Time</span><b>${z.opened_at?new Date(z.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div></div></div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
+    replacement = """posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview position-card"><div class="assetview-head position-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="position-columns"><div class="position-col position-left"><div><span>Вход</span><b>${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Текущая</span><b>${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div class="position-gap"><span>Объём ₽</span><b>${rub(z.notional_rub)}</b></div><div><span>Объём $</span><b>${z.notional_usd==null?'—':Number(z.notional_usd).toLocaleString('en-US',{maximumFractionDigits:0})+' USD'}</b></div><div><span>Кол-во</span><b>${['BTC','ETH'].includes(z.asset)?Number(z.units||0).toFixed(4):Math.round(Number(z.units||0)).toLocaleString('ru-RU')}</b></div></div><div class="position-col position-right"><div><span>P/L</span><b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b></div><div><span>SL</span><b>${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>TP</span><b>${z.take_price==null?'—':Number(z.take_price).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></div><div><span>Prob-ty</span><b title="${z.probability_source||'—'}">${z.entry_probability==null?'—':v90MetricLabel(z.entry_probability,z.probability_source)}</b></div><div><span>Time</span><b>${z.opened_at?new Date(z.opened_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—'}</b></div></div></div></div>`).join(''):'Открытых позиций нет — портфели в cash.';const trades="""
     
     pattern = r"""posel\.innerHTML=positions\.length\?positions\.map\(z=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Открытых позиций[^']*';const trades="""
     value, count = re.subn(pattern, replacement, value, count=1, flags=re.S)
@@ -61,7 +61,7 @@ def apply_v90_ui(html):
         print(json.dumps({'event':'V90_UI_PATCH','status':'ok','position_renderer_replacements':count},
                          ensure_ascii=False,separators=(',',':')), flush=True)
     
-    trade_replacement = """trel.innerHTML=trades.length?(()=>{const order=['Champion','Challenger','Impulse','Aggressive'];const groups={};trades.slice(0,80).forEach(t=>{const k=t.portfolio_name||'—';(groups[k]||(groups[k]=[])).push(t)});const keys=Object.keys(groups).sort((a,b)=>{const ia=order.indexOf(a),ib=order.indexOf(b);return (ia<0?999:ia)-(ib<0?999:ib)||a.localeCompare(b)});const fmtTime=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';const fmtHold=x=>x==null?'—':(Number(x)>=3600?(Number(x)/3600).toFixed(1)+' ч':Math.max(1,Math.round(Number(x)/60))+' мин');const fmtPx=x=>x==null?'—':Number(x).toLocaleString('ru-RU',{maximumFractionDigits:3});return keys.map(name=>{const rows=groups[name];const wins=rows.filter(t=>Number(t.net_pnl_rub||0)>0).length;const net=rows.reduce((a,t)=>a+Number(t.net_pnl_rub||0),0);const wr=rows.length?100*wins/rows.length:0;return `<div class="closed-portfolio"><div class="closed-portfolio-summary"><b>${name}</b><span>· ${rows.length} закрыто</span><span>· ${wins} прибыльных</span><span>· win rate ${wr.toFixed(1)}%</span><span>· Net P&L <b class="${net>=0?'ok':'bad'}">${rub(net)}</b></span></div><div class="closed-list">${rows.map(t=>{const pnl=Number(t.net_pnl_rub||0);const prob=t.entry_probability==null?'—':(100*Number(t.entry_probability)).toFixed(1)+'% ('+(['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY'].includes(t.probability_source)?'calibr.':'model')+')';return `<div class="assetview closed-trade-card"><div class="closed-trade-head"><b>${t.asset||'—'} · ${t.direction||'—'}${t.recovered?' · RECOVERED':''}</b><b class="${pnl>=0?'ok':'bad'}">P&L ${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)}${t.return_pct==null?'':' · '+Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-row"><span>Вход <b>${fmtPx(t.avg_entry_price)}</b></span><span>· Выход <b>${fmtPx(t.avg_exit_price)}</b></span><span>· Gross <b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></span></div><div class="closed-row closed-costs"><span>Комиссия <b>${rub(t.fees_rub||0)}</b></span><span>· Фандинг <b>${rub(t.funding_rub||0)}</b></span><span>· MFE <b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></span><span>· MAE <b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></span><span>· Giveback <b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></span><span>· Причина <b>${t.exit_reason||'—'}</b></span></div><div class="closed-row closed-time"><span>Открыта <b>${fmtTime(t.opened_at)}</b></span><span>· Закрыта <b>${fmtTime(t.closed_at)}</b></span><span>· Hold <b>${fmtHold(t.held_seconds)}</b></span><span>· QTY <b>${t.quantity==null?'—':Number(t.quantity).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></span><span>· SL/TP <b>${fmtPx(t.stop_price)} / ${fmtPx(t.take_price)}</b></span><span>· ${t.horizon||'—'}${t.setup?' · '+t.setup:''}${t.regime?' · '+t.regime:''}</span></div><div class="closed-learning"><span class="learn-dot">●</span><span>Вывод для обучения:</span><b>${t.learning_label||'—'}</b><span>${t.learning_conclusion||'—'}</span></div><div class="closed-prob"><span class="prob-dot">●</span><span>Entry Prob-ty:</span><b title="${t.probability_source||'—'}">${prob}</b></div></div>`}).join('')}</div></div>`}).join('')})():'Закрытых сделок пока нет.'"""
+    trade_replacement = """trel.innerHTML=trades.length?(()=>{const order=['Champion','Challenger','Impulse','Aggressive'];const groups={};trades.slice(0,80).forEach(t=>{const k=t.portfolio_name||'—';(groups[k]||(groups[k]=[])).push(t)});const keys=Object.keys(groups).sort((a,b)=>{const ia=order.indexOf(a),ib=order.indexOf(b);return (ia<0?999:ia)-(ib<0?999:ib)||a.localeCompare(b)});const fmtTime=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';const fmtHold=x=>x==null?'—':(Number(x)>=3600?(Number(x)/3600).toFixed(1)+' ч':Math.max(1,Math.round(Number(x)/60))+' мин');const fmtPx=x=>x==null?'—':Number(x).toLocaleString('ru-RU',{maximumFractionDigits:3});return keys.map(name=>{const rows=groups[name];const wins=rows.filter(t=>Number(t.net_pnl_rub||0)>0).length;const net=rows.reduce((a,t)=>a+Number(t.net_pnl_rub||0),0);const wr=rows.length?100*wins/rows.length:0;return `<div class="closed-portfolio"><div class="closed-portfolio-summary"><b>${name}</b><span>· ${rows.length} закрыто</span><span>· ${wins} прибыльных</span><span>· win rate ${wr.toFixed(1)}%</span><span>· Net P&L <b class="${net>=0?'ok':'bad'}">${rub(net)}</b></span></div><div class="closed-list">${rows.map(t=>{const pnl=Number(t.net_pnl_rub||0);const prob=t.entry_probability==null?'—':v90MetricLabel(t.entry_probability,t.probability_source);return `<div class="assetview closed-trade-card"><div class="closed-trade-head"><b>${t.asset||'—'} · ${t.direction||'—'}${t.recovered?' · RECOVERED':''}</b><b class="${pnl>=0?'ok':'bad'}">P&L ${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)}${t.return_pct==null?'':' · '+Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-row"><span>Вход <b>${fmtPx(t.avg_entry_price)}</b></span><span>· Выход <b>${fmtPx(t.avg_exit_price)}</b></span><span>· Gross <b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></span></div><div class="closed-row closed-costs"><span>Комиссия <b>${rub(t.fees_rub||0)}</b></span><span>· Фандинг <b>${rub(t.funding_rub||0)}</b></span><span>· MFE <b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></span><span>· MAE <b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></span><span>· Giveback <b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></span><span>· Причина <b>${t.exit_reason||'—'}</b></span></div><div class="closed-row closed-time"><span>Открыта <b>${fmtTime(t.opened_at)}</b></span><span>· Закрыта <b>${fmtTime(t.closed_at)}</b></span><span>· Hold <b>${fmtHold(t.held_seconds)}</b></span><span>· QTY <b>${t.quantity==null?'—':Number(t.quantity).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></span><span>· SL/TP <b>${fmtPx(t.stop_price)} / ${fmtPx(t.take_price)}</b></span><span>· ${t.horizon||'—'}${t.setup?' · '+t.setup:''}${t.regime?' · '+t.regime:''}</span></div><div class="closed-learning"><span class="learn-dot">●</span><span>Вывод для обучения:</span><b>${t.learning_label||'—'}</b><span>${t.learning_conclusion||'—'}</span></div><div class="closed-prob"><span class="prob-dot">●</span><span>Entry Prob-ty:</span><b title="${t.probability_source||'—'}">${prob}</b></div></div>`}).join('')}</div></div>`}).join('')})():'Закрытых сделок пока нет.'"""
     trade_pattern = r"""trel\.innerHTML=trades\.length\?trades\.slice\(0,30\)\.map\(t=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Сделок в журнале пока нет\.'"""
     value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
     print(json.dumps({'event':'V90_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
@@ -516,6 +516,9 @@ def apply_v90_ui(html):
           const d=await r.json();
           const rows=Array.isArray(d.signals)?d.signals:[];
           if(typeof renderMatrix==='function')renderMatrix(rows);
+          if(window.V90_SELECTED_SIGNAL && typeof window.showDetail==='function'){
+            window.showDetail(window.V90_SELECTED_SIGNAL.asset,window.V90_SELECTED_SIGNAL.horizon,true);
+          }
           const stamp=document.getElementById('stamp');
           if(stamp){
             const at=d.at?new Date(d.at):new Date();
@@ -536,4 +539,72 @@ def apply_v90_ui(html):
     })();
     </script>"""
     value = value.replace('</body>', fast_signal_js + '</body>')
+    signal_detail_sync_js = r"""<script id="V90_SIGNAL_DETAIL_SYNC">
+    (function(){
+      window.v90MetricLabel=function(value,source){
+        if(value==null)return '—';
+        const x=(100*Number(value)).toFixed(1)+'%';
+        if(source==='EMPIRICAL_CALIBRATION'||source==='CALIBRATED_PROBABILITY')return x+' · calibr.';
+        if(String(source||'').includes('MODEL_QUALITY_SCORE'))return x+' · model score';
+        return x+' · model';
+      };
+
+      window.showDetail=async function(asset,horizon,autoRefresh){
+        window.V90_SELECTED_SIGNAL={asset:asset,horizon:horizon};
+        const el=document.getElementById('detail');
+        if(!autoRefresh)el.textContent='загрузка…';
+        try{
+          const r=await fetch('/api/v1/explain?asset='+encodeURIComponent(asset)+'&horizon='+encodeURIComponent(horizon),{cache:'no-store'});
+          const d=(await r.json()).explanation||{};
+          if(d.status!=='ok'){el.textContent='нет данных';return}
+          const cp=(d.calibration||{}).probability_correct;
+          const fmt=a=>(a||[]).map(x=>'<div>'+x.agent+': '+(x.direction||'')+'</div>').join('')||'—';
+          const ex=d.execution_eligibility||{},ti=d.trend_impulse||{},st=d.intraday_structure||{},tp=d.trade_plan||{};
+          const mtf=tp.multi_tf_levels||{},ctx=tp.multi_tf_level_context||{};
+          const tfrows=(mtf.timeframes||{});
+          const levelLine=['1h','4h','1d','3d','7d'].map(tf=>{
+            const z=tfrows[tf]||{};
+            if(z.status!=='OK')return tf+' —';
+            const s=z.support==null?'—':Number(z.support).toFixed(3);
+            const rr=z.resistance==null?'—':Number(z.resistance).toFixed(3);
+            return tf+' S '+s+' / R '+rr;
+          }).join(' · ');
+          let gate='';
+          if(ex.production_eligible===false && ex.paper_eligible){
+            gate='<b class="warn">PAPER</b> · 1 прямой источник · production НЕТ';
+          }else{
+            gate='<b>'+(ex.eligible?'ДА':'НЕТ')+'</b>'+(ex.reason?' · '+ex.reason:'');
+          }
+          const rawOn=ti.raw_onset_score==null?ti.onset_score:ti.raw_onset_score;
+          const rawImp=ti.raw_impulse_score==null?ti.impulse_score:ti.raw_impulse_score;
+          const sc=ti.structural_confirmation_score==null?st.score:ti.structural_confirmation_score;
+          const stamp=d.event_ts?new Date(d.event_ts).toLocaleString('ru-RU'):'—';
+          el.innerHTML=
+            '<b>'+d.asset+' · '+d.horizon+'</b> · '+tierText({decision:d.decision,research_decision:d.research_decision,signal_tier:d.signal_tier})+
+            '<br><span class="stamp">снимок '+stamp+'</span>'+
+            '<br>Сила: '+pct(d.confidence)+' · калиброванная вероятность: '+(cp==null?'ещё недостаточно данных':pct(cp))+' · режим: '+(d.regime||'—')+
+            '<br>Тренд: <b>'+(ti.phase||'NONE')+'</b> · onset '+pct(rawOn)+' · impulse '+pct(rawImp)+' · структура '+pct(sc)+' · вход '+(ti.entry_quality||'—')+
+            '<br>Структура: '+(st.lifecycle||'—')+' · score '+pct(st.score)+' · удержание пробоя '+(st.breakout_hold?'ДА':'НЕТ')+' · rVol '+(st.relative_volume==null?'—':Number(st.relative_volume).toFixed(2))+
+            '<br>План: тех. потенциал '+(tp.expected_move_pct==null?'—':pct(tp.expected_move_pct))+
+              ' · цель '+(tp.target_price==null?'—':Number(tp.target_price).toFixed(3))+
+              ' · стоп '+(tp.stop_price==null?'—':Number(tp.stop_price).toFixed(3))+
+              ' · R/R '+(tp.expected_to_stop_ratio==null?'—':Number(tp.expected_to_stop_ratio).toFixed(2))+
+            '<br><b>Уровни по ТФ:</b> '+(levelLine||'—')+
+            '<br><span class="stamp">для '+d.horizon+' учитываются: '+((ctx.considered_timeframes||[]).join(' → ')||'—')+
+              '; старшие уровни ограничивают цель/инвалидацию, младший ТФ используется для тайминга входа</span>'+
+            '<br>Decision Edge: <b>'+(d.decision_stage||tp.decision_stage||'—')+'</b> · P+ '+
+              (d.positive_trade_probability==null?(tp.positive_trade_probability==null?'накапливается':pct(tp.positive_trade_probability)):pct(d.positive_trade_probability))+
+              ' · аналоги n≈'+(d.analog_effective_n??(tp.tradeability||{}).effective_n??'—')+
+            '<br>Торговый допуск: '+gate+
+            '<div class="detail-grid"><div class="detail-col"><div class="detail-title">За</div>'+fmt(d.pro)+'</div>'+
+            '<div class="detail-col"><div class="detail-title">Против</div>'+fmt(d.con)+'</div>'+
+            '<div class="detail-col"><div class="detail-title">Риск</div>'+fmt(d.risk)+'</div></div>'+
+            '<div style="margin-top:8px">Совпало правил знаний: '+((d.knowledge_matches||[]).length)+'</div>';
+        }catch(e){
+          if(!autoRefresh)el.textContent=String(e);
+        }
+      };
+    })();
+    </script>"""
+    value = value.replace('</body>', signal_detail_sync_js + '</body>')
     return value
