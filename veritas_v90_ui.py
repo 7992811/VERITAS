@@ -6,7 +6,7 @@ This module changes presentation only; trading logic and persistence remain in v
 import json
 import re
 
-UI_VERSION = 'veritas-ui-v9.0-from-v86.3-approved'
+UI_VERSION = 'veritas-ui-v9.0.3-vector-brand'
 
 def apply_v90_ui(html):
     value = str(html)
@@ -17,17 +17,36 @@ def apply_v90_ui(html):
     value = value.replace('NDX','NQ')
     # V86.2 BRAND_AND_HEADER_REFINEMENT
     _brand_markup = '''<div class="veritas-brandlock">
-      <div class="veritas-primary">
-        <div class="veritas-core">
-          <img class="veritas-logo-img" src="/assets/veritas-logo-source.webp?v=90.2" onerror="this.onerror=null;this.src='data:image/png;base64,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'" alt="VERITAS logo">
-          <div class="veritas-right">
-            <div class="veritas-wordmark">
-              <span class="wm-v">V</span><span class="wm-e" aria-label="E"><i></i><i></i><i></i></span><span>RITAS</span>
-            </div>
-            <div class="markets-word">Markets</div>
+      <div class="veritas-core">
+        <svg class="veritas-logo-svg" viewBox="0 0 112 112" role="img" aria-label="VERITAS">
+          <defs>
+            <linearGradient id="v90Steel" x1="18" y1="10" x2="92" y2="104" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#d7e0e6"/>
+              <stop offset=".22" stop-color="#8798a5"/>
+              <stop offset=".52" stop-color="#33434f"/>
+              <stop offset=".78" stop-color="#aab7c0"/>
+              <stop offset="1" stop-color="#52636f"/>
+            </linearGradient>
+            <linearGradient id="v90SteelDark" x1="24" y1="20" x2="82" y2="92" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#7f919e"/>
+              <stop offset=".5" stop-color="#263741"/>
+              <stop offset="1" stop-color="#6f808c"/>
+            </linearGradient>
+          </defs>
+          <path d="M56 7 96 24 91 63c-3 20-16 35-35 43C37 98 24 83 21 63l-5-39L56 7Z"
+                fill="#0d1217" stroke="url(#v90Steel)" stroke-width="4.2" stroke-linejoin="round"/>
+          <path d="M25 30 43.5 76 56 55.5 68.5 76 87 30 72 84 56 97 40 84 25 30Z"
+                fill="url(#v90Steel)" stroke="#c7d1d8" stroke-opacity=".22" stroke-width="1.1" stroke-linejoin="round"/>
+          <path d="M56 16v39.5" stroke="url(#v90SteelDark)" stroke-width="4" stroke-linecap="round" opacity=".92"/>
+          <path d="M25 30 56 16 87 30" fill="none" stroke="#d4dde3" stroke-opacity=".22" stroke-width="1.3"/>
+        </svg>
+        <div class="veritas-right">
+          <div class="veritas-wordmark" aria-label="VERITAS">
+            <span class="wm-v">V</span><span class="wm-e" aria-hidden="true"><i></i><i></i><i></i></span><span class="wm-rest">RITAS</span>
           </div>
+          <div class="markets-word">Markets</div>
+          <div class="veritas-subtitle">Цифровой инвестиционный комитет</div>
         </div>
-        <div class="veritas-subtitle">Цифровой Инвестиционный Комитет</div>
       </div>
     </div>'''
     value = re.sub(
@@ -365,49 +384,116 @@ def apply_v90_ui(html):
     </style>"""
     value = value.replace('</head>', compact_css + '</head>')
     brand_fix_css = """<style id="V90_BRAND_VISUAL_FIX">
-    .veritas-brandlock{display:flex!important;flex-direction:column!important;align-items:flex-start!important;width:max-content!important;max-width:100%!important}
-    .veritas-primary{display:flex!important;flex-direction:column!important;align-items:stretch!important;min-width:0!important}
-    .veritas-core{display:flex!important;align-items:flex-start!important;gap:16px!important;min-width:0!important}
-    .veritas-right{display:flex!important;flex-direction:column!important;align-items:flex-start!important;min-width:0!important}
-    .veritas-logo-img{width:88px!important;height:100px!important;flex:0 0 88px!important;display:block!important;object-fit:contain!important;object-position:center!important}
-    .veritas-wordmark{height:66px!important;font-size:54px!important;font-weight:460!important;letter-spacing:.155em!important;color:#edf1f4!important;text-shadow:0 0 12px rgba(255,255,255,.07)!important}
-    .veritas-wordmark .wm-e{height:.94em!important;width:.72em!important;margin-right:.10em!important}
-    .veritas-wordmark .wm-e i{height:.145em!important;background:#91bda3!important}
-    .markets-word{margin-top:4px!important;font-size:22px!important;font-weight:470!important;letter-spacing:.13em!important;color:#b5c0c9!important;opacity:1!important;text-shadow:0 0 10px rgba(181,192,201,.08)!important}
-    .veritas-subtitle{margin-top:11px!important;color:#aeb8c1!important;font-size:12px!important;font-weight:540!important;letter-spacing:.06em!important;line-height:1.15!important;white-space:nowrap!important;text-align:left!important;text-align-last:auto!important;display:flex!important;justify-content:space-between!important;gap:18px!important}
+    .veritas-brandlock{
+      display:inline-flex!important;
+      flex-direction:column!important;
+      align-items:flex-start!important;
+      width:auto!important;
+      max-width:100%!important;
+    }
+    .veritas-core{
+      display:flex!important;
+      align-items:center!important;
+      gap:18px!important;
+      min-width:0!important;
+    }
+    .veritas-logo-svg{
+      width:84px!important;
+      height:84px!important;
+      flex:0 0 84px!important;
+      display:block!important;
+      overflow:visible!important;
+      filter:drop-shadow(0 10px 22px rgba(0,0,0,.32));
+    }
+    .veritas-right{
+      display:flex!important;
+      flex-direction:column!important;
+      align-items:flex-start!important;
+      min-width:0!important;
+    }
+    .veritas-wordmark{
+      display:flex!important;
+      align-items:center!important;
+      height:58px!important;
+      margin:0!important;
+      white-space:nowrap!important;
+      font-family:"Avenir Next","Helvetica Neue",-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;
+      font-size:50px!important;
+      font-weight:500!important;
+      letter-spacing:.145em!important;
+      line-height:1!important;
+      color:#edf1f4!important;
+      text-rendering:geometricPrecision!important;
+      -webkit-font-smoothing:antialiased!important;
+      text-shadow:0 0 14px rgba(211,222,230,.035)!important;
+    }
+    .veritas-wordmark .wm-v{margin-right:.015em!important}
+    .veritas-wordmark .wm-rest{font-weight:470!important}
+    .veritas-wordmark .wm-e{
+      display:inline-flex!important;
+      width:.70em!important;
+      height:.83em!important;
+      flex-direction:column!important;
+      justify-content:space-between!important;
+      align-self:center!important;
+      margin:0 .105em 0 .01em!important;
+      transform:translateY(.01em)!important;
+    }
+    .veritas-wordmark .wm-e i{
+      display:block!important;
+      width:100%!important;
+      height:.135em!important;
+      background:linear-gradient(90deg,#7fa58f,#a8cbb6)!important;
+      border-radius:1.5px!important;
+      box-shadow:0 0 10px rgba(145,189,163,.08)!important;
+    }
+    .markets-word{
+      margin-top:5px!important;
+      font-family:"Avenir Next","Helvetica Neue",-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;
+      font-size:20px!important;
+      font-weight:450!important;
+      letter-spacing:.16em!important;
+      line-height:1!important;
+      color:#aeb8c1!important;
+      opacity:1!important;
+      -webkit-font-smoothing:antialiased!important;
+    }
+    .veritas-subtitle{
+      width:auto!important;
+      margin-top:15px!important;
+      padding:0!important;
+      color:#8f9aa4!important;
+      font-family:"Avenir Next","Helvetica Neue",-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;
+      font-size:11px!important;
+      font-weight:500!important;
+      letter-spacing:.115em!important;
+      line-height:1.15!important;
+      text-transform:uppercase!important;
+      white-space:nowrap!important;
+      text-align:left!important;
+      text-align-last:auto!important;
+      display:block!important;
+      -webkit-font-smoothing:antialiased!important;
+    }
     .veritas-subtitle::after{display:none!important;content:none!important}
     @media(max-width:900px){
-      .veritas-core{gap:11px!important}
-      .veritas-logo-img{width:64px!important;height:74px!important;flex-basis:64px!important}
-      .veritas-wordmark{height:50px!important;font-size:38px!important;font-weight:470!important;letter-spacing:.12em!important}
-      .markets-word{font-size:16px!important;font-weight:480!important;color:#bcc6ce!important}
-      .veritas-subtitle{margin-top:7px!important;font-size:8.8px!important;font-weight:560!important;gap:10px!important}
+      .veritas-core{gap:12px!important}
+      .veritas-logo-svg{width:64px!important;height:64px!important;flex-basis:64px!important}
+      .veritas-wordmark{height:46px!important;font-size:37px!important;font-weight:500!important;letter-spacing:.12em!important}
+      .markets-word{margin-top:3px!important;font-size:15px!important;font-weight:450!important;letter-spacing:.145em!important}
+      .veritas-subtitle{margin-top:10px!important;font-size:8.4px!important;font-weight:520!important;letter-spacing:.085em!important}
+    }
+    @media(max-width:560px){
+      .veritas-core{gap:10px!important}
+      .veritas-logo-svg{width:56px!important;height:56px!important;flex-basis:56px!important}
+      .veritas-wordmark{height:40px!important;font-size:32px!important;letter-spacing:.105em!important}
+      .markets-word{font-size:13px!important}
+      .veritas-subtitle{font-size:7.5px!important;letter-spacing:.065em!important}
     }
     </style>"""
     value = value.replace('</head>', brand_fix_css + '</head>')
-    brand_fix_js = r"""<script id="V90_BRAND_WIDTH_FIX">
-    (function(){
-      function fitBrand(){
-        const core=document.querySelector('.veritas-core');
-        const sub=document.querySelector('.veritas-subtitle');
-        if(!core||!sub)return;
-        if(!sub.dataset.v90Split){
-          sub.innerHTML='<span>Цифровой</span><span>Инвестиционный</span><span>Комитет</span>';
-          sub.dataset.v90Split='1';
-        }
-        const w=Math.ceil(core.getBoundingClientRect().width);
-        if(w>0)sub.style.width=w+'px';
-      }
-      if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>requestAnimationFrame(fitBrand),{once:true});
-      else requestAnimationFrame(fitBrand);
-      window.addEventListener('resize',fitBrand,{passive:true});
-      setTimeout(fitBrand,500);
-    })();
-    </script>"""
-    value = value.replace('</body>', brand_fix_js + '</body>')
-
     
-    value = value.replace('Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.',
+value = value.replace('Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.',
                           'Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. Реальные деньги не используются.')
     value = value.replace('V86','V90').replace('v86','v90')
     return value
