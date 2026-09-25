@@ -735,6 +735,34 @@ def _run():
             f"[VERITAS BOOTSTRAP] v84.3 FAILED: {type(exc).__name__}: {exc}",
             file=sys.stderr,flush=True
         )
+        if isinstance(exc,SyntaxError):
+            try:
+                import io, tokenize
+                _src=_read(TARGET)
+                _ln=int(getattr(exc,'lineno',0) or 0)
+                _stack=[]
+                _pairs={')':'(',']':'[','}':'{'}
+                try:
+                    _tokens=tokenize.generate_tokens(io.StringIO(_src).readline)
+                    for _tok in _tokens:
+                        if _tok.start[0] > _ln:
+                            break
+                        if _tok.type==tokenize.OP:
+                            if _tok.string in ('(', '[', '{'):
+                                _stack.append((_tok.string,_tok.start[0],_tok.start[1],_tok.line.rstrip()))
+                            elif _tok.string in _pairs:
+                                if _stack and _stack[-1][0]==_pairs[_tok.string]:
+                                    _stack.pop()
+                                else:
+                                    print(f"[VERITAS SYNTAX MISMATCH] token={_tok.string} at={_tok.start} stack_tail={_stack[-8:]}",file=sys.stderr,flush=True)
+                except Exception as _tok_ex:
+                    print(f"[VERITAS TOKENIZE] {type(_tok_ex).__name__}: {_tok_ex}",file=sys.stderr,flush=True)
+                print(f"[VERITAS SYNTAX OPEN STACK] lineno={_ln} tail={_stack[-16:]}",file=sys.stderr,flush=True)
+                _lines=_src.splitlines()
+                for _i in range(max(1,_ln-8),min(len(_lines),_ln+3)+1):
+                    print(f"[VERITAS SYNTAX CONTEXT] {_i}: {_lines[_i-1]}",file=sys.stderr,flush=True)
+            except Exception as _diag_ex:
+                print(f"[VERITAS SYNTAX DIAG] unavailable: {_diag_ex}",file=sys.stderr,flush=True)
 
 
 _run()
