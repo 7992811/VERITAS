@@ -303,15 +303,6 @@ def _v90_brent_market():
             refs.append(('daily',float(d[-1]['close'])))
     except Exception:
         pass
-    try:
-        d,meta=_yahoo_series('BZ%3DF','1mo','1d',True)
-        q=(meta or {}).get('regularMarketPrice')
-        if q is not None:
-            refs.append(float(q))
-        if d:
-            refs.append(float(d[-1]['close']))
-    except Exception:
-        pass
     refs=[(src,x) for src,x in refs if x>0]
     if refs:
         quote_ref=next((x for src,x in refs if src=='quote'),None)
