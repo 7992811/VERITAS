@@ -18,28 +18,7 @@ def apply_v90_ui(html):
     # V86.2 BRAND_AND_HEADER_REFINEMENT
     _brand_markup = '''<div class="veritas-brandlock">
       <div class="veritas-core">
-        <svg class="veritas-logo-svg" viewBox="0 0 112 112" role="img" aria-label="VERITAS">
-          <defs>
-            <linearGradient id="v90Steel" x1="18" y1="10" x2="92" y2="104" gradientUnits="userSpaceOnUse">
-              <stop offset="0" stop-color="#d7e0e6"/>
-              <stop offset=".22" stop-color="#8798a5"/>
-              <stop offset=".52" stop-color="#33434f"/>
-              <stop offset=".78" stop-color="#aab7c0"/>
-              <stop offset="1" stop-color="#52636f"/>
-            </linearGradient>
-            <linearGradient id="v90SteelDark" x1="24" y1="20" x2="82" y2="92" gradientUnits="userSpaceOnUse">
-              <stop offset="0" stop-color="#7f919e"/>
-              <stop offset=".5" stop-color="#263741"/>
-              <stop offset="1" stop-color="#6f808c"/>
-            </linearGradient>
-          </defs>
-          <path d="M56 7 96 24 91 63c-3 20-16 35-35 43C37 98 24 83 21 63l-5-39L56 7Z"
-                fill="#0d1217" stroke="url(#v90Steel)" stroke-width="4.2" stroke-linejoin="round"/>
-          <path d="M25 30 43.5 76 56 55.5 68.5 76 87 30 72 84 56 97 40 84 25 30Z"
-                fill="url(#v90Steel)" stroke="#c7d1d8" stroke-opacity=".22" stroke-width="1.1" stroke-linejoin="round"/>
-          <path d="M56 16v39.5" stroke="url(#v90SteelDark)" stroke-width="4" stroke-linecap="round" opacity=".92"/>
-          <path d="M25 30 56 16 87 30" fill="none" stroke="#d4dde3" stroke-opacity=".22" stroke-width="1.3"/>
-        </svg>
+        <img class="veritas-logo-img" src="/assets/veritas-logo-source.webp" alt="VERITAS">
         <div class="veritas-right">
           <div class="veritas-wordmark" aria-label="VERITAS">
             <span class="wm-v">V</span><span class="wm-e" aria-hidden="true"><i></i><i></i><i></i></span><span class="wm-rest">RITAS</span>
@@ -397,7 +376,7 @@ def apply_v90_ui(html):
       gap:18px!important;
       min-width:0!important;
     }
-    .veritas-logo-svg{
+    .veritas-logo-img{
       width:84px!important;
       height:84px!important;
       flex:0 0 84px!important;
@@ -478,14 +457,14 @@ def apply_v90_ui(html):
     .veritas-subtitle::after{display:none!important;content:none!important}
     @media(max-width:900px){
       .veritas-core{gap:12px!important}
-      .veritas-logo-svg{width:64px!important;height:64px!important;flex-basis:64px!important}
+      .veritas-logo-img{width:64px!important;height:64px!important;flex-basis:64px!important}
       .veritas-wordmark{height:46px!important;font-size:37px!important;font-weight:500!important;letter-spacing:.12em!important}
       .markets-word{margin-top:3px!important;font-size:15px!important;font-weight:450!important;letter-spacing:.145em!important}
       .veritas-subtitle{margin-top:10px!important;font-size:8.4px!important;font-weight:520!important;letter-spacing:.085em!important}
     }
     @media(max-width:560px){
       .veritas-core{gap:10px!important}
-      .veritas-logo-svg{width:56px!important;height:56px!important;flex-basis:56px!important}
+      .veritas-logo-img{width:56px!important;height:56px!important;flex-basis:56px!important}
       .veritas-wordmark{height:40px!important;font-size:32px!important;letter-spacing:.105em!important}
       .markets-word{font-size:13px!important}
       .veritas-subtitle{font-size:7.5px!important;letter-spacing:.065em!important}
