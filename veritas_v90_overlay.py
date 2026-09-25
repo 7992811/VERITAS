@@ -2490,7 +2490,34 @@ def _v90j_update_excursions(c,name,prices,ts):
         pass
 
 
+def _v90j_mark_open_positions(c,name,prices,ts):
+    # Mark every open position on every portfolio cycle, even if no add/reduce occurs.
+    # Previously last_price moved only on execution events, which froze unrealized P/L.
+    rows=c.execute("""SELECT asset,payload FROM paper_positions WHERE portfolio_name=%s""",(name,)).fetchall()
+    marked=0
+    for r0 in rows:
+        r=dict(r0); asset=str(r.get('asset') or '')
+        if asset not in (prices or {}):
+            continue
+        try:
+            px=float(prices[asset])
+            if not math.isfinite(px) or px<=0:
+                continue
+        except Exception:
+            continue
+        payload=_v90j_json(r.get('payload'))
+        payload['last_mark_price']=px
+        payload['last_mark_at']=_v90j_iso(ts)
+        c.execute("""UPDATE paper_positions
+                     SET last_price=%s,updated_at=%s,payload=%s::jsonb
+                     WHERE portfolio_name=%s AND asset=%s""",
+                  (px,ts,json.dumps(payload,ensure_ascii=False,default=str),name,asset))
+        marked+=1
+    return marked
+
+
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    _v90j_mark_open_positions(c,name,prices,ts)
     _v90j_update_excursions(c,name,prices,ts)
     return _v90j_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
 
@@ -2942,7 +2969,8 @@ def _v90_open_position_report(pg_connect):
         with pg_connect() as c:
             rows=c.execute("""SELECT pp.*,pf.last_usdrub,
                        pt.payload AS trade_payload,pt.horizon AS trade_horizon,pt.setup AS trade_setup,
-                       dd.payload AS decision_payload
+                       dd.payload AS decision_payload,
+                       lm.payload AS latest_market_payload,lm.event_ts AS latest_market_at
                 FROM paper_positions pp
                 JOIN paper_portfolios pf ON pf.name=pp.portfolio_name
                 LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id
@@ -2954,7 +2982,14 @@ def _v90_open_position_report(pg_connect):
                     AND le.horizon=COALESCE(pt.horizon,pp.payload->>'horizon')
                     AND le.event_ts<=pp.opened_at
                   ORDER BY le.event_ts DESC LIMIT 1
-                ) dd ON TRUE""").fetchall()
+                ) dd ON TRUE
+                LEFT JOIN LATERAL (
+                  SELECT le.payload,le.event_ts
+                  FROM ledger_events le
+                  WHERE le.event_type='decision' AND le.asset=pp.asset
+                    AND (le.payload->>'price') IS NOT NULL
+                  ORDER BY le.event_ts DESC LIMIT 1
+                ) lm ON TRUE""").fetchall()
         for r0 in rows:
             r=dict(r0)
             lookup[(str(r.get('portfolio_name')),str(r.get('asset')))]=r
@@ -2971,11 +3006,21 @@ def _v90_open_position_report(pg_connect):
             payload=dict(trade_payload); payload.update(pos_payload)
             decision=_v90p_json(raw.get('decision_payload'))
             plan=decision.get('trade_plan') or {}
-            current=_v90p_float(z.get('last_price'),0.0) or 0.0
+            stored=_v90p_float(z.get('last_price'),0.0) or 0.0
+            market_payload=_v90p_json(raw.get('latest_market_payload'))
+            live_mark=_v90p_float(market_payload.get('price'))
+            current=live_mark if live_mark is not None and live_mark>0 else stored
+            z['stored_last_price']=stored
+            z['last_price']=current
+            z['mark_source']='LATEST_DECISION_PRICE' if live_mark is not None and live_mark>0 else 'POSITION_LAST_PRICE'
+            z['last_mark_at']=raw.get('latest_market_at') if live_mark is not None and live_mark>0 else (payload.get('last_mark_at') or raw.get('updated_at'))
             entry=_v90p_float(z.get('avg_entry_price'),0.0) or 0.0
             units=abs(_v90p_float(z.get('units'),0.0) or 0.0)
             notional=abs(units*current)
             z['notional_rub']=notional
+            sign=1.0 if z.get('direction')=='LONG' else -1.0
+            z['unrealized_pnl_rub']=sign*units*(current-entry) if entry>0 else None
+            z['unrealized_return_pct']=(100.0*sign*(current/entry-1.0)) if entry>0 else None
             fx=_v90p_float(raw.get('last_usdrub'))
             z['fx_usdrub']=fx
             z['notional_usd']=(notional/fx) if fx and fx>0 else None
@@ -3014,7 +3059,6 @@ def _v90_open_position_report(pg_connect):
             z['signal_tier']=(payload.get('entry_signal_tier') or decision.get('signal_tier'))
             z['decision_stage']=(payload.get('decision_stage') or decision.get('decision_stage'))
             z['verification_mode']=decision.get('verification_mode')
-            z['last_mark_at']=(payload.get('last_mark_at') or raw.get('updated_at'))
             opened=_v90p_dt(z.get('opened_at'))
             z['held_seconds']=max(0.0,(datetime.now(timezone.utc)-opened).total_seconds()) if opened else None
             z['target_fraction_pct']=100.0*float(z.get('target_fraction') or 0.0)
@@ -3030,7 +3074,8 @@ def _v90_open_position_report(pg_connect):
         _v90p_audit_signature=sig
     d['position_data_version']='v90-open-position-v2'
     d['open_position_data_quality']={'positions':total,'missing_usd':miss_usd,
-                                     'missing_tp':miss_tp,'missing_entry_metric':miss_metric}
+                                     'missing_tp':miss_tp,'missing_entry_metric':miss_metric,
+                                     'mark_to_market':'EVERY_PORTFOLIO_CYCLE_PLUS_LATEST_DECISION_FAILSAFE'}
     return _jsonable(d)
 
 
@@ -3090,6 +3135,7 @@ def verify():
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
         'closed_journal_v2': '# VERITAS V90 CLOSED JOURNAL V3' in port and 'older_unique_learning' in port and 'today_missing_fields' in port,
         'open_position_report_v2': '# VERITAS V90 OPEN POSITION REPORT V2' in port and 'entry_metric_label' in port and 'notional_usd' in port,
+        'open_position_mark_to_market': 'def _v90j_mark_open_positions(' in port and 'LATEST_DECISION_PRICE' in port,
         'paper_execution_learning_v2': '# VERITAS V90 PAPER EXECUTION LEARNING V2' in intel and 'PAPER_PORTFOLIO_UNIQUE_EXECUTION' in intel,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
         'multi_tf_levels': '# VERITAS V90 MULTI-TF QUALITY MODEL R2' in intel and 'def _v90_multi_tf_levels(' in intel and 'multi_tf_level_context' in intel,
