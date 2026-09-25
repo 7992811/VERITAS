@@ -961,6 +961,96 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
         dst = dst.replace(anchor, "\n" + helper + anchor, 1)
         applied.append("multi_tf_quality_model")
 
+    # VERITAS 9.0: feed de-duplicated paper execution outcomes into execution memory.
+    if "# VERITAS V90 PAPER EXECUTION LEARNING V2" not in dst:
+        helper = r'''
+# VERITAS V90 PAPER EXECUTION LEARNING V2
+_v90_base_refresh_experience_lessons = refresh_experience_lessons
+
+
+def _v90_publish_paper_execution_lessons(limit=2500):
+    if not pg_enabled() or VP is None or not hasattr(VP,'learning_archive'):
+        return {'status':'UNAVAILABLE','published':0,'eligible':0}
+    try:
+        rows=VP.learning_archive(pg_connect,limit)
+    except Exception as ex:
+        return {'status':'ERROR','published':0,'eligible':0,
+                'error':f'{type(ex).__name__}: {ex}'}
+    published=0; eligible=0; errors=[]
+    for x in rows or []:
+        if not x.get('learning_eligible'):
+            continue
+        weight=float(x.get('learning_weight') or 0.0)
+        if weight<=0:
+            continue
+        eligible+=1
+        episode=str(x.get('episode_key') or '')
+        if not episode:
+            continue
+        label=str(x.get('learning_label') or 'NEGATIVE_EXECUTION')
+        payload={
+            'direction':x.get('direction'),
+            'setup_family':x.get('setup_family') or x.get('setup') or 'UNKNOWN',
+            'regime_bucket':x.get('regime_bucket') or x.get('regime') or 'ADAPTIVE',
+            'entry_state':x.get('entry_state') or 'NORMAL',
+            'horizon_state':x.get('horizon_state') or 'UNKNOWN',
+            'label':label,
+            'profitable':bool(float(x.get('avg_return_pct') or 0.0)>0),
+            'actual_pnl_fraction':float(x.get('avg_return_pct') or 0.0)/100.0,
+            'trade_mfe':None if x.get('avg_mfe_pct') is None else float(x['avg_mfe_pct'])/100.0,
+            'trade_mae':None if x.get('avg_mae_pct') is None else float(x['avg_mae_pct'])/100.0,
+            'giveback_fraction':None if x.get('avg_giveback_pct') is None else float(x['avg_giveback_pct'])/100.0,
+            'exit_reason':x.get('exit_reason'),
+            'portfolio_count':int(x.get('portfolio_count') or 0),
+            'paper_trade_count':int(x.get('trade_count') or 0),
+            'learning_weight':weight,
+            'learning_conclusion':x.get('learning_conclusion'),
+            'source':'PAPER_PORTFOLIO_UNIQUE_EXECUTION',
+            'unique_market_episode':True,
+            'portfolio_results_aggregated':True,
+        }
+        entity='paper_exec:'+episode
+        event_key='experience_lesson:'+entity
+        try:
+            with pg_connect() as pc:
+                pc.execute("""INSERT INTO ledger_events
+                    (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+                    VALUES(%s,%s,'experience_lesson',%s,%s,%s,%s::jsonb,%s)
+                    ON CONFLICT(event_key) DO UPDATE SET
+                      event_ts=EXCLUDED.event_ts,asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,
+                      payload=EXCLUDED.payload,model_version=EXCLUDED.model_version""",
+                    (event_key,entity,x.get('last_closed_at') or now(),
+                     x.get('asset'),x.get('horizon'),
+                     json.dumps(payload,ensure_ascii=False,default=str),VERSION))
+            published+=1
+        except Exception as ex:
+            errors.append(f'{episode}:{type(ex).__name__}:{ex}')
+    if published:
+        try:
+            setup_memory_board._cache=None
+        except Exception:
+            pass
+    return {'status':'OK' if not errors else 'DEGRADED','published':published,
+            'eligible':eligible,'unique_market_episodes':len(rows or []),
+            'errors':errors[:10],
+            'principle':'one market episode once; portfolio duplicates are aggregated; low-weight execution evidence only'}
+
+
+def refresh_experience_lessons(limit=400):
+    base=_v90_base_refresh_experience_lessons(limit)
+    paper=_v90_publish_paper_execution_lessons(max(500,min(5000,int(limit)*5)))
+    if not isinstance(base,dict):
+        base={'status':'DEGRADED','base_result':base}
+    base=dict(base)
+    base['paper_execution_learning']=paper
+    return base
+'''
+        anchor = "\ndef main():"
+        if anchor not in dst:
+            raise RuntimeError("v90 paper execution learning anchor missing")
+        dst=dst.replace(anchor,"\n"+helper+anchor,1)
+        applied.append("paper_execution_learning_v2")
+
     # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION = '" + V90_INTEL + "'\n"
     main_anchor = "\nif __name__ == '__main__':"
@@ -2151,6 +2241,484 @@ def _v90_migrate_portfolio_data(c):
             dst=dst.replace(anchor,"\n"+trade_report_helper+anchor,1)
         applied.append("full_closed_trade_journal")
     
+    # VERITAS 9.0 closed-trade journal V2: complete current-day cards,
+    # compact historical results, and de-duplicated execution-learning episodes.
+    if "# VERITAS V90 CLOSED JOURNAL V2" not in dst:
+        helper = r'''
+# VERITAS V90 CLOSED JOURNAL V2
+_v90j_base_open_or_add = _open_or_add
+_v90j_base_close_or_reduce = _close_or_reduce
+_v90j_base_step_one = _step_one
+_v90j_cache={'at':0.0,'value':None}
+
+
+def _v90j_json(x):
+    if isinstance(x,dict):
+        return dict(x)
+    if not x:
+        return {}
+    try:
+        return json.loads(x)
+    except Exception:
+        return {}
+
+
+def _v90j_float(x,default=None):
+    try:
+        if x is None:
+            return default
+        v=float(x)
+        return v if math.isfinite(v) else default
+    except Exception:
+        return default
+
+
+def _v90j_iso(x):
+    if x is None:
+        return None
+    return x.isoformat() if hasattr(x,'isoformat') else str(x)
+
+
+def _v90j_msk_date(x):
+    if x is None:
+        return None
+    try:
+        if isinstance(x,str):
+            x=datetime.fromisoformat(x.replace('Z','+00:00'))
+        if x.tzinfo is None:
+            x=x.replace(tzinfo=timezone.utc)
+        return x.astimezone(timezone(timedelta(hours=3))).date()
+    except Exception:
+        return None
+
+
+def _v90j_episode_key(z,payload):
+    key=(payload.get('canonical_setup_id') or payload.get('setup_id')
+         or payload.get('canonical_trade_id'))
+    if key:
+        return str(key)
+    opened=z.get('opened_at')
+    try:
+        if isinstance(opened,str):
+            opened=datetime.fromisoformat(opened.replace('Z','+00:00'))
+        if opened and opened.tzinfo is None:
+            opened=opened.replace(tzinfo=timezone.utc)
+        bucket=opened.astimezone(timezone.utc).replace(second=0,microsecond=0).isoformat() if opened else 'UNKNOWN'
+    except Exception:
+        bucket=str(opened or 'UNKNOWN')[:16]
+    return '|'.join(str(v or '—') for v in
+                    (z.get('asset'),z.get('direction'),z.get('horizon'),z.get('setup'),bucket))
+
+
+def _v90j_learning_label(net,price_return,mfe,mae,giveback,exit_reason,recovered=False):
+    if recovered:
+        return 'RECOVERED_HISTORICAL_NO_LEARNING'
+    net=float(net or 0.0)
+    pr=float(price_return or 0.0)
+    reason=str(exit_reason or '')
+    if net>0:
+        if mfe is not None and float(mfe)>0:
+            capture=max(0.0,pr)/max(float(mfe),1e-9)
+            if capture>=0.65:
+                return 'RIGHT_DIRECTION_HIGH_CAPTURE'
+            return 'RIGHT_DIRECTION_LOW_CAPTURE'
+        return 'GOOD_EXECUTION'
+    if mfe is not None and float(mfe)>=0.20:
+        if 'STOP' in reason:
+            return 'RIGHT_DIRECTION_STOP_ERROR'
+        return 'FAVORABLE_PATH_NOT_MONETIZED'
+    if reason in ('V842_CONFIRMED_DIRECTION_FLIP','DIRECTION_FLIP','SOFT_SIZE_REDUCTION'):
+        return 'RIGHT_DIRECTION_PREMATURE_EXIT' if pr>0 else 'MIXED_EXECUTION'
+    return 'DIRECTION_OR_ENTRY_FAILED_ON_OBSERVED_PATH'
+
+
+def _v90j_learning_conclusion(label,z):
+    mfe=z.get('mfe_pct'); mae=z.get('mae_pct'); give=z.get('giveback_pct')
+    setup=str(z.get('setup') or 'setup'); regime=str(z.get('regime') or 'regime')
+    if label=='RIGHT_DIRECTION_HIGH_CAPTURE':
+        return f'{setup} / {regime}: прибыльное исполнение с высокой реализацией благоприятного хода; сохранять логику сопровождения.'
+    if label=='RIGHT_DIRECTION_LOW_CAPTURE':
+        return f'{setup} / {regime}: направление монетизировано, но захват MFE низкий; проверять TP/trailing и преждевременное сокращение.'
+    if label=='RIGHT_DIRECTION_STOP_ERROR':
+        return f'{setup} / {regime}: до стопа был благоприятный ход; проверять ширину/структуру стопа, не штрафовать направление автоматически.'
+    if label=='FAVORABLE_PATH_NOT_MONETIZED':
+        return f'{setup} / {regime}: рынок давал благоприятный ход, но Net не стал положительным; изучать выход и giveback отдельно от направления.'
+    if label=='RIGHT_DIRECTION_PREMATURE_EXIT':
+        return f'{setup} / {regime}: выход/сокращение произошло до полной реализации движения; проверять подтверждение разворота и удержание позиции.'
+    if label=='DIRECTION_OR_ENTRY_FAILED_ON_OBSERVED_PATH':
+        return f'{setup} / {regime}: устойчивого благоприятного хода до закрытия не было; проверять направление, момент входа и режим.'
+    if label=='RECOVERED_HISTORICAL_NO_LEARNING':
+        return 'Историческая запись восстановлена частично; результат хранится, но неполная телеметрия не усиливает правила модели.'
+    return f'{setup} / {regime}: смешанный результат; использовать только как слабое execution-evidence до накопления выборки.'
+
+
+def _v90j_entry_patch(row,z,ts):
+    row=row or {}; plan=row.get('trade_plan') or {}; inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    hs=row.get('horizon_structure') or {}
+    canonical=(row.get('canonical_setup_id') or row.get('_canonical_setup_id')
+               or plan.get('canonical_setup_id') or plan.get('setup_id'))
+    setup_family=(plan.get('setup') or bq.get('state') or inst.get('investor_signal')
+                  or row.get('setup_family') or 'UNKNOWN')
+    return {
+        'canonical_setup_id':canonical,
+        'entry_time':_v90j_iso(ts),
+        'entry_price':_v90j_float(row.get('price')),
+        'entry_regime':row.get('regime'),
+        'regime':row.get('regime'),
+        'setup_family':setup_family,
+        'entry_quality':plan.get('entry_quality') or row.get('entry_quality'),
+        'entry_state':plan.get('entry_quality') or row.get('entry_quality') or 'NORMAL',
+        'horizon_state':hs.get('state'),
+        'entry_signal_tier':row.get('signal_tier') or row.get('execution_signal_tier'),
+        'investor_signal':inst.get('investor_signal'),
+        'stop_price':plan.get('stop_price'),
+        'target_price':plan.get('target_price') or plan.get('tactical_target_price'),
+        'take_price':plan.get('target_price') or plan.get('tactical_target_price'),
+        'expected_move_pct':plan.get('expected_move_pct'),
+        'expected_to_stop_ratio':plan.get('expected_to_stop_ratio'),
+        'decision_stage':row.get('decision_stage') or plan.get('decision_stage'),
+        'supporting_horizons':row.get('_supporting_horizons'),
+        'direction_support':row.get('_direction_support'),
+        'model_quality_score':row.get('_pwin') if str(row.get('_pwin_source') or '')!='EMPIRICAL_CALIBRATION' else None,
+        'mfe_pct':0.0,
+        'mae_pct':0.0,
+    }
+
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    result=_v90j_base_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason)
+    try:
+        z=c.execute("""SELECT * FROM paper_positions
+                       WHERE portfolio_name=%s AND asset=%s""",(name,asset)).fetchone()
+        if not z or str(z.get('direction'))!=str(direction):
+            return result
+        tid=z.get('active_trade_id')
+        tr=c.execute("SELECT payload FROM paper_trades WHERE trade_id=%s",(tid,)).fetchone()
+        payload=_v90j_json((tr or {}).get('payload'))
+        patch=_v90j_entry_patch(row,z,ts)
+        for k,v in patch.items():
+            if v is not None and payload.get(k) is None:
+                payload[k]=v
+        payload['last_stop_price']=(row.get('trade_plan') or {}).get('stop_price')
+        payload['last_target_price']=(row.get('trade_plan') or {}).get('target_price')
+        payload['quantity']=abs(float(z.get('units') or 0.0))
+        payload['units']=abs(float(z.get('units') or 0.0))
+        payload['last_update_at']=_v90j_iso(ts)
+        c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id=%s",
+                  (json.dumps(payload,ensure_ascii=False,default=str),tid))
+        c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                  (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
+    except Exception:
+        pass
+    _v90j_cache['at']=0.0
+    return result
+
+
+def _v90j_update_excursions(c,name,prices,ts):
+    try:
+        rows=c.execute("""SELECT * FROM paper_positions WHERE portfolio_name=%s""",(name,)).fetchall()
+        for z0 in rows:
+            z=dict(z0); asset=z.get('asset'); px=_v90j_float((prices or {}).get(asset,z.get('last_price')))
+            entry=_v90j_float(z.get('avg_entry_price'))
+            if px is None or entry is None or entry<=0:
+                continue
+            sign=1.0 if z.get('direction')=='LONG' else -1.0
+            signed=100.0*sign*(px/entry-1.0)
+            payload=_v90j_json(z.get('payload'))
+            old_mfe=_v90j_float(payload.get('mfe_pct'),0.0)
+            old_mae=_v90j_float(payload.get('mae_pct'),0.0)
+            payload['mfe_pct']=max(0.0,old_mfe,signed)
+            payload['mae_pct']=min(0.0,old_mae,signed)
+            payload['last_mark_price']=px
+            payload['last_mark_at']=_v90j_iso(ts)
+            tid=z.get('active_trade_id')
+            c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                      (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
+            c.execute("UPDATE paper_trades SET payload=payload || %s::jsonb WHERE trade_id=%s",
+                      (json.dumps({'mfe_pct':payload['mfe_pct'],'mae_pct':payload['mae_pct'],
+                                   'last_mark_price':px,'last_mark_at':_v90j_iso(ts)},
+                                  ensure_ascii=False,default=str),tid))
+    except Exception:
+        pass
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    _v90j_update_excursions(c,name,prices,ts)
+    return _v90j_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
+
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    tid=(z or {}).get('active_trade_id')
+    qty=abs(float((z or {}).get('units') or 0.0))
+    result=_v90j_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
+    if not tid:
+        return result
+    try:
+        tr=c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",(tid,)).fetchone()
+        if not tr:
+            return result
+        payload=_v90j_json(tr.get('payload'))
+        if str(tr.get('status'))!='CLOSED':
+            payload['last_reduce_reason']=reason
+            payload['last_reduce_at']=_v90j_iso(ts)
+            c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id=%s",
+                      (json.dumps(payload,ensure_ascii=False,default=str),tid))
+            return result
+        entry=_v90j_float(tr.get('avg_entry_price'))
+        exitp=_v90j_float(tr.get('avg_exit_price'),_v90j_float(price))
+        sign=1.0 if tr.get('direction')=='LONG' else -1.0
+        price_return=(100.0*sign*(exitp/entry-1.0)) if entry and exitp else None
+        mfe=_v90j_float(payload.get('mfe_pct'))
+        mae=_v90j_float(payload.get('mae_pct'))
+        give=max(0.0,float(mfe or 0.0)-max(0.0,float(price_return or 0.0))) if mfe is not None else None
+        telemetry=[
+            reason,
+            payload.get('stop_price') or payload.get('last_stop_price'),
+            payload.get('take_price') or payload.get('target_price') or payload.get('last_target_price'),
+            payload.get('regime') or payload.get('entry_regime'),
+            mfe,mae,
+        ]
+        completeness=sum(v is not None and v!='' for v in telemetry)/len(telemetry)
+        recovered=bool(payload.get('recovered')) or completeness<0.34
+        label=_v90j_learning_label(tr.get('net_pnl_rub'),price_return,mfe,mae,give,reason,recovered)
+        temp={'setup':tr.get('setup'),'regime':payload.get('regime') or payload.get('entry_regime'),
+              'mfe_pct':mfe,'mae_pct':mae,'giveback_pct':give}
+        conclusion=_v90j_learning_conclusion(label,temp)
+        payload.update({
+            'closed_at':_v90j_iso(tr.get('closed_at') or ts),
+            'close_time':_v90j_iso(tr.get('closed_at') or ts),
+            'exit_price':exitp,
+            'exit_reason':reason,
+            'close_reason':reason,
+            'closing_units':qty,
+            'price_return_pct':price_return,
+            'mfe_pct':mfe,'mae_pct':mae,'giveback_pct':give,
+            'learning_label':label,'learning_conclusion':conclusion,
+            'telemetry_completeness':round(completeness,3),
+            'learning_eligible':bool(not recovered and completeness>=0.50),
+            'recovered':recovered,
+        })
+        c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id=%s",
+                  (json.dumps(payload,ensure_ascii=False,default=str),tid))
+    except Exception:
+        pass
+    _v90j_cache['at']=0.0
+    return result
+
+
+def _v90j_load_closed(pg_connect,limit=2500):
+    limit=max(50,min(5000,int(limit or 2500)))
+    ensure_schema(pg_connect)
+    with pg_connect() as c:
+        try:
+            rows=c.execute("""SELECT t.*,
+                     oa.last_order_at,oa.last_order_reason,oa.entry_units,oa.exit_units,
+                     oa.entry_notional_rub,oa.exit_notional_rub,
+                     dd.payload AS decision_payload
+              FROM paper_trades t
+              LEFT JOIN LATERAL (
+                SELECT MAX(o.created_at) AS last_order_at,
+                       (ARRAY_AGG(o.reason ORDER BY o.created_at DESC))[1] AS last_order_reason,
+                       SUM(CASE WHEN o.side IN ('BUY','SELL_SHORT')
+                                THEN o.notional_rub/NULLIF(o.price,0) ELSE 0 END) AS entry_units,
+                       SUM(CASE WHEN o.side IN ('SELL','BUY_TO_COVER')
+                                THEN o.notional_rub/NULLIF(o.price,0) ELSE 0 END) AS exit_units,
+                       SUM(CASE WHEN o.side IN ('BUY','SELL_SHORT') THEN o.notional_rub ELSE 0 END) AS entry_notional_rub,
+                       SUM(CASE WHEN o.side IN ('SELL','BUY_TO_COVER') THEN o.notional_rub ELSE 0 END) AS exit_notional_rub
+                FROM paper_orders o WHERE o.trade_id=t.trade_id
+              ) oa ON TRUE
+              LEFT JOIN LATERAL (
+                SELECT le.payload FROM ledger_events le
+                WHERE le.event_type='decision'
+                  AND le.asset=t.asset AND le.horizon=t.horizon
+                  AND le.event_ts<=t.opened_at
+                ORDER BY le.event_ts DESC LIMIT 1
+              ) dd ON TRUE
+              WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')
+              ORDER BY COALESCE(t.closed_at,oa.last_order_at,t.opened_at) DESC
+              LIMIT %s""",(limit,)).fetchall()
+        except Exception:
+            rows=c.execute("""SELECT t.*,
+                       (SELECT MAX(o.created_at) FROM paper_orders o WHERE o.trade_id=t.trade_id) AS last_order_at,
+                       (SELECT o.reason FROM paper_orders o WHERE o.trade_id=t.trade_id ORDER BY o.created_at DESC LIMIT 1) AS last_order_reason
+                FROM paper_trades t
+                WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')
+                ORDER BY COALESCE(t.closed_at,t.opened_at) DESC LIMIT %s""",(limit,)).fetchall()
+    out=[]
+    for r0 in rows:
+        z=dict(r0); payload=_v90j_json(z.get('payload')); dp=_v90j_json(z.get('decision_payload'))
+        plan=dp.get('trade_plan') or {}; features=dp.get('features') or {}
+        cl=z.get('closed_at') or payload.get('closed_at') or payload.get('close_time') or z.get('last_order_at')
+        z['closed_at']=cl; z['close_time']=cl
+        op=z.get('opened_at')
+        try:
+            op2=datetime.fromisoformat(op.replace('Z','+00:00')) if isinstance(op,str) else op
+            cl2=datetime.fromisoformat(cl.replace('Z','+00:00')) if isinstance(cl,str) else cl
+            z['held_seconds']=max(0.0,(cl2-op2).total_seconds()) if op2 and cl2 else None
+        except Exception:
+            z['held_seconds']=None
+        z['holding_duration_seconds']=z.get('held_seconds')
+        z['exit_reason']=(payload.get('exit_reason') or payload.get('close_reason')
+                          or z.get('last_order_reason'))
+        z['entry_probability']=payload.get('pwin') if payload.get('pwin') is not None else payload.get('entry_probability')
+        z['probability_source']=payload.get('pwin_source') or payload.get('probability_source')
+        z['model_quality_score']=payload.get('model_quality_score')
+        z['stop_price']=(payload.get('stop_price') or payload.get('last_stop_price')
+                         or plan.get('stop_price'))
+        z['take_price']=(payload.get('take_price') or payload.get('target_price')
+                         or payload.get('last_target_price') or plan.get('target_price')
+                         or plan.get('tactical_target_price'))
+        z['quantity']=(payload.get('quantity') or payload.get('units')
+                       or z.get('entry_units') or z.get('exit_units'))
+        z['mfe_pct']=payload.get('mfe_pct')
+        z['mae_pct']=payload.get('mae_pct')
+        entry=_v90j_float(z.get('avg_entry_price')); exitp=_v90j_float(z.get('avg_exit_price'))
+        sign=1.0 if z.get('direction')=='LONG' else -1.0
+        price_ret=payload.get('price_return_pct')
+        if price_ret is None and entry and exitp:
+            price_ret=100.0*sign*(exitp/entry-1.0)
+        z['price_return_pct']=price_ret
+        give=payload.get('giveback_pct')
+        if give is None and z.get('mfe_pct') is not None:
+            give=max(0.0,float(z['mfe_pct'])-max(0.0,float(price_ret or 0.0)))
+        z['giveback_pct']=give
+        z['regime']=(payload.get('regime') or payload.get('entry_regime')
+                     or dp.get('regime') or features.get('regime'))
+        z['entry_quality']=(payload.get('entry_quality') or plan.get('entry_quality')
+                            or dp.get('entry_quality'))
+        z['entry_state']=payload.get('entry_state') or z.get('entry_quality') or 'NORMAL'
+        z['horizon_state']=(payload.get('horizon_state')
+                            or (dp.get('horizon_structure') or {}).get('state') or 'UNKNOWN')
+        z['setup_family']=payload.get('setup_family') or z.get('setup') or 'UNKNOWN'
+        z['canonical_setup_id']=payload.get('canonical_setup_id') or payload.get('setup_id')
+        z['return_pct']=(100.0*float(z['return_on_entry_nav'])) if z.get('return_on_entry_nav') is not None else payload.get('return_pct')
+        telemetry=[z.get('exit_reason'),z.get('stop_price'),z.get('take_price'),z.get('regime'),z.get('mfe_pct'),z.get('mae_pct')]
+        comp=sum(v is not None and v!='' for v in telemetry)/len(telemetry)
+        z['telemetry_completeness']=round(float(payload.get('telemetry_completeness') or comp),3)
+        recovered=bool(payload.get('recovered')) or z['telemetry_completeness']<0.34
+        z['recovered']=recovered
+        label=payload.get('learning_label') or _v90j_learning_label(
+            z.get('net_pnl_rub'),price_ret,z.get('mfe_pct'),z.get('mae_pct'),give,z.get('exit_reason'),recovered)
+        z['learning_label']=label
+        z['learning_conclusion']=payload.get('learning_conclusion') or _v90j_learning_conclusion(label,z)
+        z['learning_eligible']=bool(payload.get('learning_eligible')) if payload.get('learning_eligible') is not None else bool(not recovered and z['telemetry_completeness']>=0.50)
+        z['episode_key']=_v90j_episode_key(z,payload)
+        z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
+        out.append(_jsonable(z))
+    return out
+
+
+def _v90j_unique_learning(rows):
+    g={}
+    for t in rows or []:
+        key=str(t.get('episode_key') or t.get('trade_id') or '')
+        if not key:
+            continue
+        z=g.setdefault(key,{'episode_key':key,'asset':t.get('asset'),'direction':t.get('direction'),
+                            'horizon':t.get('horizon'),'setup':t.get('setup'),
+                            'setup_family':t.get('setup_family'),'regime':t.get('regime'),
+                            'regime_bucket':t.get('regime'),'entry_state':t.get('entry_state'),
+                            'horizon_state':t.get('horizon_state'),'portfolios':set(),
+                            'trade_count':0,'wins':0,'net':0.0,'returns':[],
+                            'mfe':[],'mae':[],'give':[],'completeness':[],
+                            'exit_reasons':{},'labels':{},'last_closed_at':None,
+                            'today_msk':False})
+        z['trade_count']+=1
+        if t.get('portfolio_name'): z['portfolios'].add(t.get('portfolio_name'))
+        net=float(t.get('net_pnl_rub') or 0.0); z['net']+=net; z['wins']+=1 if net>0 else 0
+        for src,dstk in (('return_pct','returns'),('mfe_pct','mfe'),('mae_pct','mae'),('giveback_pct','give'),('telemetry_completeness','completeness')):
+            v=_v90j_float(t.get(src))
+            if v is not None: z[dstk].append(v)
+        er=str(t.get('exit_reason') or '—'); z['exit_reasons'][er]=z['exit_reasons'].get(er,0)+1
+        lb=str(t.get('learning_label') or '—'); z['labels'][lb]=z['labels'].get(lb,0)+1
+        cl=t.get('closed_at')
+        if z['last_closed_at'] is None or str(cl)>str(z['last_closed_at']): z['last_closed_at']=cl
+        z['today_msk']=z['today_msk'] or bool(t.get('today_msk'))
+    out=[]
+    for key,z in g.items():
+        n=max(1,int(z['trade_count'])); avg=lambda a:(sum(a)/len(a) if a else None)
+        label=max(z['labels'],key=z['labels'].get) if z['labels'] else 'MIXED_EXECUTION'
+        exit_reason=max(z['exit_reasons'],key=z['exit_reasons'].get) if z['exit_reasons'] else None
+        completeness=avg(z['completeness']) or 0.0
+        learning_eligible=bool(completeness>=0.50 and label!='RECOVERED_HISTORICAL_NO_LEARNING')
+        row={'episode_key':key,'asset':z['asset'],'direction':z['direction'],'horizon':z['horizon'],
+             'setup':z['setup'],'setup_family':z['setup_family'],'regime':z['regime'],
+             'regime_bucket':z['regime_bucket'],'entry_state':z['entry_state'],'horizon_state':z['horizon_state'],
+             'portfolio_count':len(z['portfolios']),'portfolios':sorted(z['portfolios']),
+             'trade_count':n,'wins':z['wins'],'win_rate':z['wins']/n,'total_net_pnl_rub':z['net'],
+             'avg_return_pct':avg(z['returns']),'avg_mfe_pct':avg(z['mfe']),'avg_mae_pct':avg(z['mae']),
+             'avg_giveback_pct':avg(z['give']),'exit_reason':exit_reason,'learning_label':label,
+             'last_closed_at':z['last_closed_at'],'today_msk':z['today_msk'],
+             'telemetry_completeness':round(completeness,3),'learning_eligible':learning_eligible,
+             'learning_weight':round(0.35*completeness,3) if learning_eligible else 0.0}
+        row['learning_conclusion']=_v90j_learning_conclusion(label,row)
+        out.append(_jsonable(row))
+    out.sort(key=lambda x:str(x.get('last_closed_at') or ''),reverse=True)
+    return out
+
+
+def learning_archive(pg_connect,limit=2500):
+    return _v90j_unique_learning(_v90j_load_closed(pg_connect,limit))
+
+
+def trade_report(pg_connect,limit=2500):
+    now_ts=time.time()
+    if _v90j_cache.get('value') is not None and now_ts-float(_v90j_cache.get('at') or 0)<20:
+        return _v90j_cache['value']
+    rows=_v90j_load_closed(pg_connect,limit)
+    today=[x for x in rows if x.get('today_msk')]
+    older=[x for x in rows if not x.get('today_msk')]
+    unique_all=_v90j_unique_learning(rows)
+    unique_old=[x for x in unique_all if not x.get('today_msk')]
+    with pg_connect() as c:
+        hist=c.execute("""SELECT portfolio_name,COUNT(*) AS closed_trades,
+                          COUNT(*) FILTER(WHERE net_pnl_rub>0) AS wins,
+                          COALESCE(SUM(net_pnl_rub),0) AS net_pnl_rub,
+                          COALESCE(SUM(gross_pnl_rub),0) AS gross_pnl_rub,
+                          COALESCE(SUM(fees_rub),0) AS fees_rub,
+                          COALESCE(SUM(funding_rub),0) AS funding_rub
+                   FROM paper_trades
+                   WHERE (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
+                     AND COALESCE(closed_at,opened_at) <
+                         (date_trunc('day',now() AT TIME ZONE 'Europe/Moscow') AT TIME ZONE 'Europe/Moscow')
+                   GROUP BY portfolio_name ORDER BY portfolio_name""").fetchall()
+        total=c.execute("""SELECT COUNT(*) AS n FROM paper_trades
+                           WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')""").fetchone()
+    history=[]
+    for r0 in hist:
+        r=dict(r0); n=int(r.get('closed_trades') or 0); w=int(r.get('wins') or 0)
+        r['win_rate']=w/n if n else None; history.append(_jsonable(r))
+    missing={}
+    for field in ('closed_at','exit_reason','quantity','stop_price','take_price','mfe_pct','mae_pct','regime','learning_label'):
+        missing[field]=sum(1 for x in today if x.get(field) is None or x.get(field)=='')
+    result=_jsonable({
+        'status':'OK','version':VERSION,'timezone':'Europe/Moscow',
+        'trades':today,'today_trades':today,
+        'today_closed_count':len(today),
+        'older_closed_count':max(0,int((total or {}).get('n') or 0)-len(today)),
+        'total_closed_count':int((total or {}).get('n') or 0),
+        'history_summary':history,
+        'older_unique_learning':unique_old[:120],
+        'learning_unique_all':unique_all,
+        'unique_learning_count':len(unique_all),
+        'learning_eligible_count':sum(1 for x in unique_all if x.get('learning_eligible')),
+        'deduplicated_portfolio_records':max(0,len(rows)-len(unique_all)),
+        'today_missing_fields':missing,
+        'archive_window':min(5000,max(50,int(limit or 2500))),
+        'display_policy':'today full detail; older portfolio results + unique learning episodes only',
+        'learning_policy':'one canonical market episode once; portfolio duplicates aggregated before self-learning',
+    })
+    _v90j_cache['at']=now_ts; _v90j_cache['value']=result
+    return result
+'''
+        anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if anchor not in dst:
+            dst += "\n" + helper
+        else:
+            dst=dst.replace(anchor,"\n"+helper+anchor,1)
+        applied.append("closed_journal_v2")
+
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
     if runtime_identity.strip() not in dst:
@@ -2196,6 +2764,8 @@ def verify():
         'final_sizing_order_safe': 0 <= port.find('def _desired_fraction') < port.find('# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING') < port.find('def _portfolio_rows'),
         'legacy_ndx_retired': 'INSTRUMENT_REPLACED_BY_NQ' in port,
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
+        'closed_journal_v2': '# VERITAS V90 CLOSED JOURNAL V2' in port and 'older_unique_learning' in port and 'today_missing_fields' in port,
+        'paper_execution_learning_v2': '# VERITAS V90 PAPER EXECUTION LEARNING V2' in intel and 'PAPER_PORTFOLIO_UNIQUE_EXECUTION' in intel,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
         'multi_tf_levels': '# VERITAS V90 MULTI-TF QUALITY MODEL R2' in intel and 'def _v90_multi_tf_levels(' in intel and 'multi_tf_level_context' in intel,
         'cny_5m_entry_timing': 'def _v90_cny_5m_bars(' in intel and "entry_timing_resolution'" in intel,
