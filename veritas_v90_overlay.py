@@ -283,7 +283,7 @@ def _patch_portfolio():
      'allowed_horizons':('1h','4h','1d'),'max_fraction':0.50,'provisional_cap':0.10,
      'accepted_cap':0.25,'confirmed_cap':0.50
  },
- 'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE','max_fraction':2.0},
+ 'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE','max_fraction':1.0,'max_gross':5.0,'leverage_limit':5.0},
  'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':2.0},
  'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':2.0},
 }"""
@@ -675,13 +675,13 @@ def _signal_first_admission(row,policy,drawdown):
     # Staged scale from cross-timeframe agreement. These are target exposures,
     # not one-shot orders; 5% remains the position increment.
     if capture and alignment>=3 and rr>=1.00:
-        f=max(f,{'IMPULSE_ONLY':0.25,'AGGRESSIVE':0.25,'CORE':0.15,'CHALLENGER':0.10}.get(mode,0.10))
+        f=max(f,{'IMPULSE_ONLY':0.25,'AGGRESSIVE':0.35,'CORE':0.15,'CHALLENGER':0.10}.get(mode,0.10))
     if capture and alignment>=4 and p>=0.70 and rr>=1.15:
-        f=max(f,{'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.30,'CORE':0.20,'CHALLENGER':0.15}.get(mode,0.15))
+        f=max(f,{'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.50,'CORE':0.20,'CHALLENGER':0.15}.get(mode,0.15))
     if capture and alignment>=5 and p>=0.72 and rr>=1.35:
-        f=max(f,{'IMPULSE_ONLY':0.40,'AGGRESSIVE':0.35,'CORE':0.25,'CHALLENGER':0.20}.get(mode,0.20))
+        f=max(f,{'IMPULSE_ONLY':0.40,'AGGRESSIVE':0.75,'CORE':0.25,'CHALLENGER':0.20}.get(mode,0.20))
     if capture and alignment>=5 and p>=0.75 and rr>=1.50:
-        f=max(f,{'IMPULSE_ONLY':0.50,'AGGRESSIVE':0.40,'CORE':0.30,'CHALLENGER':0.25}.get(mode,0.25))
+        f=max(f,{'IMPULSE_ONLY':0.50,'AGGRESSIVE':1.00,'CORE':0.30,'CHALLENGER':0.25}.get(mode,0.25))
 
     if empirical or memory_ready:
         if p>=0.72 and indep>=2 and rr>=1.0: f=max(f,0.25)
@@ -711,9 +711,9 @@ def _signal_first_admission(row,policy,drawdown):
         f=min(f,0.05)
     if shift in ('NEW_REGIME_PROVISIONAL','TRANSITION','OLD_REGIME_WEAKENING'):
         if capture:
-            cap=({'IMPULSE_ONLY':0.50,'AGGRESSIVE':0.40,'CORE':0.30,'CHALLENGER':0.25}.get(mode,0.20)
+            cap=({'IMPULSE_ONLY':0.50,'AGGRESSIVE':1.00,'CORE':0.30,'CHALLENGER':0.25}.get(mode,0.20)
                  if alignment>=5 else
-                 {'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.30,'CORE':0.25,'CHALLENGER':0.20}.get(mode,0.15))
+                 {'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.60,'CORE':0.25,'CHALLENGER':0.20}.get(mode,0.15))
             f=min(f,cap)
         else:
             f=min(f,0.10)
@@ -760,6 +760,22 @@ def _signal_first_admission(row,policy,drawdown):
             raise RuntimeError("v90.2 execution selection anchor missing")
         dst = dst.replace(anchor, "\n" + helper + anchor, 1)
         applied.append("v902_execution_selection")
+
+    # v90.3 Aggressive leverage profile: up to 5x gross exposure.
+    old_cap = "    cap=min(MAX_GROSS,float(rg['max_gross']))"
+    new_cap = """    mode=str(policy.get('mode') or 'CORE')
+    if mode=='AGGRESSIVE':
+        # 5x is a ceiling, not a target. Drawdown governor scales it down.
+        base_cap=float(policy.get('max_gross') or 5.0)
+        if rg.get('new_risk') is False:
+            cap=min(0.25,base_cap)
+        else:
+            cap=min(base_cap,base_cap*float(rg.get('multiplier') or 0.0))
+    else:
+        cap=min(MAX_GROSS,float(rg['max_gross']))"""
+    dst, ch = _replace_once(dst, old_cap, new_cap, "v90.3 aggressive 5x gross leverage")
+    if ch:
+        applied.append("v903_aggressive_5x_gross")
 
     if "def _v90_migrate_portfolio_data(c):" not in dst:
         helper = r'''
@@ -858,6 +874,7 @@ def verify():
         'v84_learning_preserved': 'def refresh_experience_lessons(' in intel,
         'v901_movement_capture': '# VERITAS V90.1 MOVEMENT CAPTURE' in port and 'V901_MULTI_HORIZON_CAPTURE' in port,
         'v902_execution_selector': '# VERITAS V90.2 EXECUTION SELECTION' in port and 'V902_MULTI_TF_EXECUTION' in port,
+        'v903_aggressive_5x': "'max_gross':5.0" in port and "mode=='AGGRESSIVE'" in port and "base_cap=float(policy.get('max_gross') or 5.0)" in port,
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
     }
