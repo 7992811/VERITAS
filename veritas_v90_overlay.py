@@ -663,6 +663,7 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
         legacy['structure_breakout_grid']=grid
     return legacy
 '''
+    compile(market_helper,'<v90_market_helper>','exec')
     anchor="\ndef _fetch_asset_bundle(symbol, asset, cb_product):"
     if anchor not in dst:
         raise RuntimeError("VERITAS 9.0 market helper anchor missing")
