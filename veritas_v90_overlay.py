@@ -492,6 +492,275 @@ def _best_impulse_by_asset(summary):
     if ch:
         applied.append("movement_sizing_telemetry")
 
+    # v90.2: choose execution horizon separately from directional consensus and
+    # scale verified multi-timeframe impulses without bypassing hard gates.
+    if "# VERITAS V90.2 EXECUTION SELECTION" not in dst:
+        helper = r'''
+# VERITAS V90.2 EXECUTION SELECTION
+_v902_previous_candidate_book = _candidate_book_v84
+
+
+def _v902_impulse_evidence(row, direction):
+    row=row or {}
+    inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    piv=row.get('impulse_pivot_break') or {}
+    gen=row.get('impulse_genesis') or {}
+    rev=row.get('tactical_reversal') or {}
+    overlay=row.get('impulse_overlay') or {}
+    phase=str(row.get('trend_phase') or '')
+    bdir=str(bq.get('direction') or 'NO_TRADE')
+    bstate=str(bq.get('state') or '')
+    return bool(
+        (overlay.get('active') and str(overlay.get('direction') or direction)==direction)
+        or (piv.get('active') and str(piv.get('direction') or piv.get('candidate_direction') or direction)==direction)
+        or (gen.get('active') and str(gen.get('direction') or gen.get('candidate_direction') or direction)==direction)
+        or (rev.get('active') and str(rev.get('direction') or direction)==direction)
+        or (bdir==direction and bstate in ('EARLY_BREAKOUT','CONFIRMED_BREAKOUT','HIGH_QUALITY_BREAKOUT'))
+        or (phase in ('EARLY_TREND','TREND','ESTABLISHED_TREND') and bdir==direction)
+    )
+
+
+def _v902_execution_metrics(row, direction):
+    row=row or {}
+    plan=row.get('trade_plan') or {}
+    inst=row.get('institutional_signal') or {}
+    ev=inst.get('evidence_independence') or {}
+    bq=inst.get('breakout_quality') or {}
+    hs=row.get('horizon_structure') or {}
+    p,source=_signal_probability(row)
+    try: rr=float(plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+    try: hs_score=float(hs.get('score') or 0.0)
+    except Exception: hs_score=0.0
+    try: q=float(bq.get('quality_score') or 0.0)
+    except Exception: q=0.0
+    try: indep=int(ev.get('independent_count') or 0)
+    except Exception: indep=0
+    impulse=_v902_impulse_evidence(row,direction)
+    ti=plan.get('trade_integrity') or {}
+    soft_wait=(str(ti.get('entry_permission') or '')=='WAIT_ENTRY'
+               or str(row.get('entry_quality') or '')=='INVALIDATED'
+               or str(row.get('v70_gate_class') or '')=='ENTRY_VETO')
+    score=(float(p)
+           +0.16*min(max(rr,0.0),2.0)/2.0
+           +0.06*min(max(hs_score,0.0),1.0)
+           +0.04*min(max(q,0.0),1.0)
+           +0.018*min(indep,5)
+           +(0.07 if impulse else 0.0)
+           +(0.025 if bool(plan.get('eligible')) else 0.0)
+           -(0.06 if soft_wait and not impulse else 0.0))
+    return score,float(p),source,rr,impulse
+
+
+def _candidate_book_v84(summary):
+    # Direction comes from the whole timeframe grid; execution comes from the
+    # same-direction horizon with the best current tradability / reward-risk.
+    directional=_v902_previous_candidate_book(summary) or {}
+    rows_by_asset={}
+    for r0 in summary or []:
+        r=dict(r0)
+        a=str(r.get('asset') or '')
+        if a:
+            rows_by_asset.setdefault(a,[]).append(r)
+
+    out={}
+    for asset,base0 in directional.items():
+        base=dict(base0)
+        direction=str(base.get('research_decision') or 'NO_TRADE')
+        if direction not in ('LONG','SHORT'):
+            continue
+        supporting=list(base.get('_supporting_horizons') or [])
+        ds=dict(base.get('_direction_support') or {})
+        other='SHORT' if direction=='LONG' else 'LONG'
+        support_ratio=float(ds.get(direction) or 0.0)/max(0.01,float(ds.get(other) or 0.0))
+        alignment=len(set(supporting))
+        choices=[]
+
+        for r0 in rows_by_asset.get(asset,[]):
+            r=dict(r0)
+            d=str(r.get('research_decision') or 'NO_TRADE')
+            tr=r.get('tactical_reversal') or {}
+            if tr.get('active') and str(tr.get('direction') or '') in ('LONG','SHORT'):
+                d=str(tr.get('direction'))
+                r['research_decision']=d
+            if d!=direction:
+                continue
+            if not bool(r.get('source_gate_pass',True)) or not bool(r.get('market_open',True)):
+                continue
+            if not _v901_no_hard_veto(r):
+                continue
+
+            score,p,source,rr,impulse=_v902_execution_metrics(r,direction)
+            x=dict(r)
+            x['_pwin']=p
+            x['_pwin_source']=source
+            x['_rank']=score
+            x['_execution_rank']=score
+            x['_execution_rr']=rr
+            x['_direction_support']=ds
+            x['_supporting_horizons']=supporting
+            x['_alignment_count']=alignment
+            x['_support_ratio']=support_ratio
+            break_ok=bool(
+                _v901_break_pass(x,direction)
+                or (x.get('impulse_pivot_break') or {}).get('active')
+                or (x.get('impulse_genesis') or {}).get('active')
+            )
+            x['_v902_soft_override']=bool(
+                alignment>=3 and support_ratio>=1.50 and p>=0.68 and rr>=1.00
+                and impulse and break_ok
+            )
+            choices.append(x)
+
+        if choices:
+            out[asset]=max(choices,key=lambda x:float(x.get('_execution_rank') or -999.0))
+        else:
+            base['_alignment_count']=alignment
+            base['_support_ratio']=support_ratio
+            base['_v902_soft_override']=False
+            out[asset]=base
+    return out
+
+
+def _signal_first_admission(row,policy,drawdown):
+    if not row:
+        return {'open':False,'fraction':0.0,'reason':'NO_ROW'}
+    d=str(row.get('research_decision') or 'NO_TRADE')
+    if d not in ('LONG','SHORT'):
+        return {'open':False,'fraction':0.0,'reason':'NO_DIRECTION'}
+    if not bool(row.get('source_gate_pass',True)):
+        return {'open':False,'fraction':0.0,'reason':'SOURCE_GATE'}
+    if not bool(row.get('market_open',True)):
+        return {'open':False,'fraction':0.0,'reason':'MARKET_CLOSED'}
+
+    plan=row.get('trade_plan') or {}
+    ti=plan.get('trade_integrity') or {}
+    ec=plan.get('execution_consistency') or {}
+    arb=plan.get('rule_arbitration') or {}
+    hard=bool(
+        ti.get('hard_invalidation')
+        or ec.get('status')=='VETO'
+        or ((arb.get('hard_veto') or {}).get('decision')=='VETO')
+        or (plan.get('reentry_intelligence') or {}).get('allowed') is False
+    )
+    if hard:
+        return {'open':False,'fraction':0.0,'reason':'HARD_VETO'}
+
+    mode=str(policy.get('mode') or 'CORE')
+    base={'IMPULSE_ONLY':0.15,'AGGRESSIVE':0.15,'CORE':0.10,'CHALLENGER':0.05}.get(mode,0.05)
+    p=float(row.get('_pwin') or 0.50)
+    source=str(row.get('_pwin_source') or '')
+    inst=row.get('institutional_signal') or {}
+    indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    try: rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+    tq=float(plan.get('trade_quality_score') or 0.0)
+    action=str(inst.get('action') or '')
+    shift=str(plan.get('regime_shift_state') or '')
+    mem=plan.get('setup_memory') or {}
+    memory_ready=str(mem.get('status') or '') in ('EXECUTION_READY','WEIGHT_READY')
+    empirical=(source=='EMPIRICAL_CALIBRATION')
+    supporting=list(row.get('_supporting_horizons') or [])
+    alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    ds=row.get('_direction_support') or {}
+    other='SHORT' if d=='LONG' else 'LONG'
+    support_ratio=float(row.get('_support_ratio') or (float(ds.get(d) or 0.0)/max(0.01,float(ds.get(other) or 0.0))))
+    capture=bool(row.get('_v902_soft_override'))
+
+    f=base
+    if p>=0.65:
+        f=max(f,0.15)
+
+    # Staged scale from cross-timeframe agreement. These are target exposures,
+    # not one-shot orders; 5% remains the position increment.
+    if capture and alignment>=3 and rr>=1.00:
+        f=max(f,{'IMPULSE_ONLY':0.25,'AGGRESSIVE':0.25,'CORE':0.15,'CHALLENGER':0.10}.get(mode,0.10))
+    if capture and alignment>=4 and p>=0.70 and rr>=1.15:
+        f=max(f,{'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.30,'CORE':0.20,'CHALLENGER':0.15}.get(mode,0.15))
+    if capture and alignment>=5 and p>=0.72 and rr>=1.35:
+        f=max(f,{'IMPULSE_ONLY':0.40,'AGGRESSIVE':0.35,'CORE':0.25,'CHALLENGER':0.20}.get(mode,0.20))
+    if capture and alignment>=5 and p>=0.75 and rr>=1.50:
+        f=max(f,{'IMPULSE_ONLY':0.50,'AGGRESSIVE':0.40,'CORE':0.30,'CHALLENGER':0.25}.get(mode,0.25))
+
+    if empirical or memory_ready:
+        if p>=0.72 and indep>=2 and rr>=1.0: f=max(f,0.25)
+        if p>=0.78 and indep>=3 and rr>=1.0: f=max(f,0.35)
+        if p>=0.82 and indep>=4 and rr>=1.2: f=max(f,0.50)
+    elif p>=0.75 and indep>=3 and rr>=1.0 and tq>=0.50:
+        f=max(f,0.20)
+    if action in ('ENTER_AND_SCALE','ENTER_FULL_CANDIDATE') and p>=0.82 and rr>=1.2:
+        f=max(f,0.50)
+
+    planned=float(plan.get('v84_target_fraction') or 0.0)
+    ep=plan.get('execution_policy') or {}
+    entry_mode=str(ep.get('entry_mode') or '')
+    if planned>0:
+        if capture:
+            # Old execution-layer target is evidence, not a cap, once a fresh
+            # multi-TF impulse is confirmed.
+            f=max(f,min(planned,float(policy.get('max_fraction') or 2.0)))
+        elif entry_mode=='CONFIRMED_SCALE' and (empirical or memory_ready):
+            f=max(f,min(planned,0.50))
+        else:
+            f=min(f,max(0.05,planned))
+
+    # Soft timing / old setup failure may reduce a normal signal, but it cannot
+    # crush a fresh multi-TF impulse to 5%. Hard vetoes were handled above.
+    if ti.get('entry_permission')=='WAIT_ENTRY' and not capture:
+        f=min(f,0.05)
+    if shift in ('NEW_REGIME_PROVISIONAL','TRANSITION','OLD_REGIME_WEAKENING'):
+        if capture:
+            cap=({'IMPULSE_ONLY':0.50,'AGGRESSIVE':0.40,'CORE':0.30,'CHALLENGER':0.25}.get(mode,0.20)
+                 if alignment>=5 else
+                 {'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.30,'CORE':0.25,'CHALLENGER':0.20}.get(mode,0.15))
+            f=min(f,cap)
+        else:
+            f=min(f,0.10)
+    if tq>0 and tq<0.45 and not capture:
+        f=min(f,0.05)
+    if rr>0 and rr<0.60:
+        f=min(f,0.05)
+
+    risk_pct=plan.get('stop_distance_pct')
+    if risk_pct is None:
+        risk_pct=inst.get('risk_pct')
+    if risk_pct is not None:
+        try:
+            rp=float(risk_pct)
+            if rp>0:
+                f=min(f,MAX_STOP_RISK_NAV/rp)
+        except Exception:
+            pass
+
+    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:
+        return {'open':False,'fraction':0.0,'reason':'RISK_GOVERNOR_HARD','risk_governor':rg}
+    f*=float(rg.get('multiplier') or 0.0)
+    maxf=float(policy.get('max_fraction') or 2.0)
+    f=max(0.05,f)
+    f=_clip(_round_step(f),0,maxf)
+    return {
+        'open':f>0,'fraction':f,
+        'reason':'V902_MULTI_TF_EXECUTION' if capture else 'SIGNAL_FIRST_V842',
+        'pwin':p,'pwin_source':source,'empirical':empirical,
+        'memory_ready':memory_ready,'independent':indep,'rr':rr,
+        'trade_quality':tq,'entry_permission':ti.get('entry_permission'),
+        'planned_fraction':planned,'risk_governor':rg,
+        'multi_horizon_capture':capture,'supporting_horizons':supporting,
+        'alignment_count':alignment,'support_ratio':support_ratio,
+        'execution_horizon':row.get('horizon'),
+        'execution_rank':row.get('_execution_rank'),
+        'soft_override':bool(row.get('_v902_soft_override')),
+        'sizing_authority':'V902_DIRECTION_GRID_THEN_EXECUTION_HORIZON_THEN_RISK'
+    }
+'''
+        anchor = "\ndef ensure_schema(pg_connect):"
+        if anchor not in dst:
+            raise RuntimeError("v90.2 execution selection anchor missing")
+        dst = dst.replace(anchor, "\n" + helper + anchor, 1)
+        applied.append("v902_execution_selection")
+
     if "def _v90_migrate_portfolio_data(c):" not in dst:
         helper = r'''
 # VERITAS v90 portfolio migration
@@ -588,6 +857,7 @@ def verify():
         'v84_profit_harvest_preserved': "'TAKE_PROFIT' if tp_hit" in port,
         'v84_learning_preserved': 'def refresh_experience_lessons(' in intel,
         'v901_movement_capture': '# VERITAS V90.1 MOVEMENT CAPTURE' in port and 'V901_MULTI_HORIZON_CAPTURE' in port,
+        'v902_execution_selector': '# VERITAS V90.2 EXECUTION SELECTION' in port and 'V902_MULTI_TF_EXECUTION' in port,
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
     }
