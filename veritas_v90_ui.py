@@ -61,7 +61,7 @@ def apply_v90_ui(html):
         print(json.dumps({'event':'V90_UI_PATCH','status':'ok','position_renderer_replacements':count},
                          ensure_ascii=False,separators=(',',':')), flush=True)
     
-    trade_replacement = """trel.innerHTML=trades.length?(()=>{const order=['Champion','Challenger','Impulse','Aggressive'];const groups={};trades.slice(0,80).forEach(t=>{const k=t.portfolio_name||'—';(groups[k]||(groups[k]=[])).push(t)});const keys=Object.keys(groups).sort((a,b)=>{const ia=order.indexOf(a),ib=order.indexOf(b);return (ia<0?999:ia)-(ib<0?999:ib)||a.localeCompare(b)});const fmtTime=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';const fmtHold=x=>x==null?'—':(Number(x)>=3600?(Number(x)/3600).toFixed(1)+' ч':Math.max(1,Math.round(Number(x)/60))+' мин');const fmtPx=x=>x==null?'—':Number(x).toLocaleString('ru-RU',{maximumFractionDigits:3});return keys.map(name=>{const rows=groups[name];const wins=rows.filter(t=>Number(t.net_pnl_rub||0)>0).length;const net=rows.reduce((a,t)=>a+Number(t.net_pnl_rub||0),0);const wr=rows.length?100*wins/rows.length:0;return `<div class="closed-portfolio"><div class="closed-portfolio-summary"><b>${name}</b><span>· ${rows.length} закрыто</span><span>· ${wins} прибыльных</span><span>· win rate ${wr.toFixed(1)}%</span><span>· Net P&L <b class="${net>=0?'ok':'bad'}">${rub(net)}</b></span></div><div class="closed-list">${rows.map(t=>{const pnl=Number(t.net_pnl_rub||0);const prob=t.entry_probability==null?'—':(typeof v90MetricLabel==='function'?v90MetricLabel(t.entry_probability,t.probability_source):((100*Number(t.entry_probability)).toFixed(1)+'%'));return `<div class="assetview closed-trade-card"><div class="closed-trade-head"><b>${t.asset||'—'} · ${t.direction||'—'}${t.recovered?' · RECOVERED':''}</b><b class="${pnl>=0?'ok':'bad'}">P&L ${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)}${t.return_pct==null?'':' · '+Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="closed-row"><span>Вход <b>${fmtPx(t.avg_entry_price)}</b></span><span>· Выход <b>${fmtPx(t.avg_exit_price)}</b></span><span>· Gross <b>${t.gross_pnl_rub==null?'—':rub(t.gross_pnl_rub)}</b></span></div><div class="closed-row closed-costs"><span>Комиссия <b>${rub(t.fees_rub||0)}</b></span><span>· Фандинг <b>${rub(t.funding_rub||0)}</b></span><span>· MFE <b>${t.mfe_pct==null?'—':Number(t.mfe_pct).toFixed(2)+'%'}</b></span><span>· MAE <b>${t.mae_pct==null?'—':Number(t.mae_pct).toFixed(2)+'%'}</b></span><span>· Giveback <b>${t.giveback_pct==null?'—':Number(t.giveback_pct).toFixed(2)+'%'}</b></span><span>· Причина <b>${t.exit_reason||'—'}</b></span></div><div class="closed-row closed-time"><span>Открыта <b>${fmtTime(t.opened_at)}</b></span><span>· Закрыта <b>${fmtTime(t.closed_at)}</b></span><span>· Hold <b>${fmtHold(t.held_seconds)}</b></span><span>· QTY <b>${t.quantity==null?'—':Number(t.quantity).toLocaleString('ru-RU',{maximumFractionDigits:4})}</b></span><span>· SL/TP <b>${fmtPx(t.stop_price)} / ${fmtPx(t.take_price)}</b></span><span>· ${t.horizon||'—'}${t.setup?' · '+t.setup:''}${t.regime?' · '+t.regime:''}</span></div><div class="closed-learning"><span class="learn-dot">●</span><span>Вывод для обучения:</span><b>${t.learning_label||'—'}</b><span>${t.learning_conclusion||'—'}</span></div><div class="closed-prob"><span class="prob-dot">●</span><span>Entry Prob-ty:</span><b title="${t.probability_source||'—'}">${prob}</b></div></div>`}).join('')}</div></div>`}).join('')})():'Закрытых сделок пока нет.'"""
+    trade_replacement = """if(!trel.dataset.v90Managed){trel.innerHTML='<span class="stamp">Журнал закрытых сделок загружается…</span>'}"""
     trade_pattern = r"""trel\.innerHTML=trades\.length\?trades\.slice\(0,(?:30|40)\)\.map\(t=>`<div class="assetview(?: tradecompact)?">.*?</div></div>`\)\.join\(''\):'Сделок в журнале пока нет\.'"""
     value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
     print(json.dumps({'event':'V90_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
@@ -671,17 +671,32 @@ def apply_v90_ui(html):
         const memHtml='<div class="v90-closed-section-title">Уникальная память для самообучения</div>'+(memory.length?`<div class="v90-memory-list">${memory.slice(0,50).map(memoryRow).join('')}</div>`:'<div class="stamp">Уникальные исторические эпизоды накапливаются.</div>');
         return `<div class="v90-closed-wrap">${top}${warn}${todayHtml}${histHtml}${memHtml}</div>`;
       }
-      let observer=null,timer=null;
+      let refreshBusy=false;
       async function refresh(){
-        const el=document.getElementById('portfoliotrades');if(!el)return;
-        try{const r=await fetch('/api/v1/portfolio-trades',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();if(observer)observer.disconnect();el.innerHTML=render(d)}
-        catch(e){if(!el.innerHTML.trim())el.innerHTML='<span class="warn">Журнал закрытых сделок обновляется…</span>'}
-        finally{if(observer)observer.observe(el,{childList:true,subtree:true,characterData:true})}
+        const el=document.getElementById('portfoliotrades');if(!el||refreshBusy)return;
+        refreshBusy=true;
+        try{
+          const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),12000);
+          const r=await fetch('/api/v1/portfolio-trades',{cache:'no-store',signal:ctl.signal});clearTimeout(tm);
+          if(!r.ok)throw new Error('HTTP '+r.status);
+          const d=await r.json();
+          el.dataset.v90Managed='1';
+          el.innerHTML=render(d);
+          el.dataset.v90JournalState='ok';
+        }catch(e){
+          el.dataset.v90JournalState='error';
+          if(!el.innerHTML.trim()||el.textContent.includes('загружается'))el.innerHTML='<span class="warn">Журнал закрытых сделок временно обновляется…</span>';
+        }finally{refreshBusy=false}
       }
-      function start(){const el=document.getElementById('portfoliotrades');if(!el)return;observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(refresh,120)});observer.observe(el,{childList:true,subtree:true,characterData:true});refresh();setInterval(refresh,30000)}
+      function start(){
+        const el=document.getElementById('portfoliotrades');if(!el)return;
+        el.dataset.v90Managed='1';
+        refresh();
+        setInterval(refresh,30000);
+      }
       if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
     })();
     </script>"""
     value = value.replace('</body>', closed_journal_v2_js + '</body>')
-    print(json.dumps({'event':'V90_CLOSED_JOURNAL_UI_V2','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
+    print(json.dumps({'event':'V90_CLOSED_JOURNAL_UI_V2','status':'single_owner_no_observer'},ensure_ascii=False,separators=(',',':')),flush=True)
     return value
