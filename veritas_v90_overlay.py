@@ -269,6 +269,10 @@ except Exception as _vp_ex:
         dst = dst.replace(old_header, new_header, 1)
         applied.append("portfolio_ui")
 
+    # VERITAS 90: normalize legacy runtime labels inherited from the foundation.
+    intel_runtime_label_normalization_v90=True
+    dst = dst.replace(V84_INTEL,V90_INTEL)
+
     if dst != src:
         compile(dst, str(INTEL), 'exec')
         _write(INTEL, dst)
@@ -846,6 +850,188 @@ def _signal_first_admission(row,policy,drawdown):
     if ch:
         applied.append("v904_flip_confirmation")
 
+    # VERITAS 90: Aggressive may take a small early probe from a coherent
+    # multi-timeframe setup before the core decision layer promotes it to a full signal.
+    # Hard gates remain absolute; a probe is never created from a single weak cell.
+    if "def _v90_aggressive_candidate_book(" not in dst:
+        helper = r'''
+# VERITAS 90 AGGRESSIVE EARLY-SETUP ROUTING
+
+def _v90_aggressive_candidate_book(summary, core_candidates):
+    out={k:dict(v) for k,v in (core_candidates or {}).items()}
+    rows_by_asset={}
+    for r0 in summary or []:
+        r=dict(r0)
+        a=str(r.get('asset') or '')
+        if a:
+            rows_by_asset.setdefault(a,[]).append(r)
+
+    for asset,rows in rows_by_asset.items():
+        # Core directional signal always has priority over an early setup probe.
+        if asset in out:
+            continue
+
+        votes={'LONG':[],'SHORT':[]}
+        for r in rows:
+            if not bool(r.get('source_gate_pass',True)) or not bool(r.get('market_open',True)):
+                continue
+            if not _v901_no_hard_veto(r):
+                continue
+
+            hs=r.get('horizon_structure') or {}
+            inst=r.get('institutional_signal') or {}
+            bq=inst.get('breakout_quality') or {}
+            intra=r.get('intraday_structure') or {}
+            overlay=r.get('impulse_overlay') or {}
+
+            d=str(hs.get('direction') or hs.get('raw_direction') or 'NO_TRADE')
+            if d not in ('LONG','SHORT'):
+                d=str(bq.get('direction') or 'NO_TRADE')
+            if d not in ('LONG','SHORT'):
+                continue
+
+            bdir=str(bq.get('direction') or d)
+            if bdir not in ('NO_TRADE','',d):
+                continue
+
+            try:
+                hs_score=float(hs.get('score') or 0.0)
+                bq_score=float(bq.get('quality_score') or 0.0)
+                indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+            except Exception:
+                continue
+
+            # Setup quality floor. Aggressive can probe soft-invalidated timing,
+            # but not a structurally weak/noisy cell by itself.
+            volume_confirmed=bool(intra.get('volume_confirmed'))
+            impulse_active=bool(overlay.get('active')) and str(overlay.get('direction') or d)==d
+            if hs_score < 0.52:
+                continue
+            if bq_score < 0.34 and not impulse_active:
+                continue
+            if indep < 2 and not volume_confirmed and not impulse_active:
+                continue
+
+            q=0.55*hs_score + 0.30*bq_score + 0.05*min(indep,5) + (0.08 if impulse_active else 0.0)
+            votes[d].append((q,r,hs_score,bq_score,indep,volume_confirmed,impulse_active))
+
+        direction='LONG' if sum(x[0] for x in votes['LONG'])>=sum(x[0] for x in votes['SHORT']) else 'SHORT'
+        chosen=votes[direction]
+        other='SHORT' if direction=='LONG' else 'LONG'
+        if len(chosen)<2:
+            continue
+        chosen_score=sum(x[0] for x in chosen)
+        other_score=sum(x[0] for x in votes[other])
+        if chosen_score < max(1.0,1.25*other_score):
+            continue
+
+        # A known false-breakout may still receive only a 5% scout if at least
+        # two timeframes agree and there is volume/impulse confirmation.
+        confirmed_rows=[x for x in chosen if x[5] or x[6]]
+        if not confirmed_rows:
+            continue
+
+        best=max(chosen,key=lambda x:x[0])
+        _,r0,hs_score,bq_score,indep,volume_confirmed,impulse_active=best
+        x=dict(r0)
+        px=float(x.get('price') or 0.0)
+        if px<=0:
+            continue
+
+        sl=x.get('structural_levels') or {}
+        try:
+            anchor=float(sl.get('support' if direction=='LONG' else 'resistance') or 0.0)
+        except Exception:
+            anchor=0.0
+        if anchor<=0:
+            continue
+        buffer=max(px*0.0008,abs(px-anchor)*0.10)
+        stop=(anchor-buffer) if direction=='LONG' else (anchor+buffer)
+        if (direction=='LONG' and stop>=px) or (direction=='SHORT' and stop<=px):
+            continue
+
+        p,source=_signal_probability(x)
+        p=max(0.60,min(0.74,float(p)))
+        supporting=sorted(set(str(z[1].get('horizon') or '') for z in chosen if z[1].get('horizon')))
+        ratio=chosen_score/max(0.01,other_score)
+
+        plan=dict(x.get('trade_plan') or {})
+        plan['eligible']=True
+        plan['direction']=direction
+        plan['stop_price']=stop
+        plan['stop_distance_pct']=abs(px-stop)/px
+        ti=dict(plan.get('trade_integrity') or {})
+        ti['hard_invalidation']=False
+        ti['entry_permission']='EARLY_PROBE'
+        plan['trade_integrity']=ti
+
+        x['trade_plan']=plan
+        x['research_decision']=direction
+        x['_pwin']=p
+        x['_pwin_source']='V90_AGGRESSIVE_SETUP_'+str(source)
+        x['_rank']=float(best[0])+0.03*len(supporting)
+        x['_aggressive_setup_probe']=True
+        x['_aggressive_probe_fraction']=0.05
+        x['_supporting_horizons']=supporting
+        x['_alignment_count']=len(supporting)
+        x['_direction_support']={direction:chosen_score,other:other_score}
+        x['_support_ratio']=ratio
+        x['_flip_confirmed']=bool(len(supporting)>=2 and ratio>=1.20)
+        out[asset]=x
+
+    return out
+'''
+        anchor="\ndef _v842_position_payload(z):"
+        if anchor not in dst:
+            raise RuntimeError("VERITAS 90 aggressive routing anchor missing")
+        dst=dst.replace(anchor,"\n"+helper+anchor,1)
+        applied.append("aggressive_early_setup_routing")
+
+    # Route only Aggressive through the early-setup candidate book.
+    old_route="            book=impulse_candidates if str(pol.get('mode') or '')=='IMPULSE_ONLY' else candidates"
+    new_route="""            mode=str(pol.get('mode') or '')
+            if mode=='IMPULSE_ONLY':
+                book=impulse_candidates
+            elif mode=='AGGRESSIVE':
+                book=_v90_aggressive_candidate_book(summary,candidates)
+            else:
+                book=candidates"""
+    dst, ch = _replace_once(dst, old_route, new_route, "Aggressive early-setup candidate routing")
+    if ch:
+        applied.append("aggressive_setup_book")
+
+    # Setup-only probes stay at 5% until the ordinary signal layer confirms them.
+    old_probe="    f=base\n    if p>=0.65:\n        f=max(f,0.15)"
+    new_probe="""    if mode=='AGGRESSIVE' and row.get('_aggressive_setup_probe'):
+        f=float(row.get('_aggressive_probe_fraction') or 0.05)
+    else:
+        f=base
+        if p>=0.65:
+            f=max(f,0.15)"""
+    dst, ch = _replace_once(dst, old_probe, new_probe, "Aggressive setup probe sizing")
+    if ch:
+        applied.append("aggressive_probe_sizing")
+
+    # Do not let legacy planned-fraction logic scale a setup-only scout.
+    old_planned="""    if planned>0:
+        if capture:"""
+    new_planned="""    if planned>0 and not row.get('_aggressive_setup_probe'):
+        if capture:"""
+    dst, ch = _replace_once(dst, old_planned, new_planned, "Aggressive setup probe planned-fraction isolation")
+    if ch:
+        applied.append("aggressive_probe_isolation")
+
+    # Keep the probe fixed at 5% after all soft modifiers; hard gates/risk still apply.
+    old_risk="""    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:"""
+    new_risk="""    if mode=='AGGRESSIVE' and row.get('_aggressive_setup_probe'):
+        f=float(row.get('_aggressive_probe_fraction') or 0.05)
+    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:"""
+    dst, ch = _replace_once(dst, old_risk, new_risk, "Aggressive setup probe final sizing")
+    if ch:
+        applied.append("aggressive_probe_final")
+
     if "def _v90_migrate_portfolio_data(c):" not in dst:
         helper = r'''
 # VERITAS v90 portfolio migration
@@ -923,6 +1109,17 @@ def _v90_migrate_portfolio_data(c):
         dst = dst.replace(old_conflict, new_conflict, 1)
         applied.append("policy_metadata_refresh")
 
+    # VERITAS 90 runtime-label normalization: one current version only.
+    runtime_label_normalization_v90=True
+    dst = dst.replace('V901_MULTI_HORIZON_CAPTURE','V90_MULTI_HORIZON_CAPTURE')
+    dst = dst.replace('V902_MULTI_TF_EXECUTION','V90_MULTI_TF_EXECUTION')
+    dst = dst.replace('SIGNAL_FIRST_V842','V90_SIGNAL_FIRST')
+    dst = dst.replace('V842_CONFIRMED_DIRECTION_FLIP','V90_CONFIRMED_DIRECTION_FLIP')
+    dst = dst.replace('v84_execution=True','v90_execution=True')
+    dst = dst.replace('v842_audited=True','v90_audited=True')
+    dst = dst.replace('profit_harvest_v843=True','profit_harvest_v90=True')
+    dst = dst.replace(V84_PORT,V90_PORT)
+
     if dst != src:
         compile(dst, str(PORT), 'exec')
         _write(PORT, dst)
@@ -939,14 +1136,16 @@ def verify():
         'core_migration': "def v90_migrate_core_data():" in intel,
         'four_portfolios': all(x in port for x in ("'Impulse':", "'Aggressive':", "'Champion':", "'Challenger':")),
         'portfolio_migration': "def _v90_migrate_portfolio_data(c):" in port,
-        'v84_profit_harvest_preserved': "'TAKE_PROFIT' if tp_hit" in port,
+        'profit_harvest_preserved': "'TAKE_PROFIT' if tp_hit" in port,
         'v84_learning_preserved': 'def refresh_experience_lessons(' in intel,
-        'v901_movement_capture': '# VERITAS V90.1 MOVEMENT CAPTURE' in port and 'V901_MULTI_HORIZON_CAPTURE' in port,
-        'v902_execution_selector': '# VERITAS V90.2 EXECUTION SELECTION' in port and 'V902_MULTI_TF_EXECUTION' in port,
-        'v903_aggressive_5x': "'max_gross':5.0" in port and "mode=='AGGRESSIVE'" in port and "base_cap=float(policy.get('max_gross') or 5.0)" in port,
-        'v904_tp_integrity': "tp_source='EXPECTED_MOVE'" in port and "bool(rng.get('active'))" in port,
-        'v904_flip_confirmation': "x['_flip_confirmed']=bool(" in port,
-        'v902_order_safe': 0 <= port.find('def _candidate_book_v84') < port.find('# VERITAS V90.2 EXECUTION SELECTION') < port.find('def _v842_position_payload'),
+        'movement_capture': 'V90_MULTI_HORIZON_CAPTURE' in port,
+        'execution_selector': 'V90_MULTI_TF_EXECUTION' in port,
+        'aggressive_5x': "'max_gross':5.0" in port and "mode=='AGGRESSIVE'" in port and "base_cap=float(policy.get('max_gross') or 5.0)" in port,
+        'tp_integrity': "tp_source='EXPECTED_MOVE'" in port and "bool(rng.get('active'))" in port,
+        'flip_confirmation': "x['_flip_confirmed']=bool(" in port,
+        'execution_order_safe': 0 <= port.find('def _candidate_book_v84') < port.find('def _v90_aggressive_candidate_book') < port.find('def _v842_position_payload'),
+        'aggressive_setup_routing': 'def _v90_aggressive_candidate_book(' in port and "book=_v90_aggressive_candidate_book(summary,candidates)" in port,
+        'single_runtime_label': V84_INTEL not in intel and V84_PORT not in port,
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
         'portfolio_import_diagnostics': 'VP_IMPORT_ERROR' in intel,
