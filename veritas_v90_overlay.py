@@ -2429,6 +2429,160 @@ def _signal_first_admission(row,policy,drawdown):
         dst=dst.replace(anchor2,"\n"+helper+anchor2,1)
         applied.append("calibrated_probability_semantics")
 
+    # VERITAS 9.0: a very strong fast structural impulse must be executable by
+    # Aggressive before slower horizons fully align. This is a paper-only staged
+    # leverage path: 1H confirmation starts at 1.5x; additional horizon agreement
+    # scales it further. True hard vetoes, stop-risk and portfolio gross caps remain.
+    if "# VERITAS V90 FAST IMPULSE LEVERAGE" not in dst:
+        helper = r'''
+# VERITAS V90 FAST IMPULSE LEVERAGE
+_v90fi_base_signal_first_admission = _signal_first_admission
+
+
+def _v90_fast_impulse_context(row):
+    row=row or {}
+    if not _v901_no_hard_veto(row):
+        return False
+    if str(row.get('horizon') or '') not in ('1h','4h'):
+        return False
+    direction=str(row.get('research_decision') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        return False
+
+    hs=row.get('horizon_structure') or {}
+    hs_dir=str(hs.get('direction') or hs.get('raw_direction') or 'NO_TRADE')
+    hs_state=str(hs.get('state') or '')
+    try:
+        hs_score=float(hs.get('score') or 0.0)
+    except Exception:
+        hs_score=0.0
+
+    inst=row.get('institutional_signal') or {}
+    try:
+        independent=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception:
+        independent=0
+
+    plan=row.get('trade_plan') or {}
+    try:
+        rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception:
+        rr=0.0
+    try:
+        expected=float(plan.get('expected_move_pct') or row.get('expected_move_pct') or 0.0)
+    except Exception:
+        expected=0.0
+    try:
+        stop_risk=float(plan.get('stop_distance_pct') or inst.get('risk_pct') or 0.0)
+    except Exception:
+        stop_risk=0.0
+
+    # This deliberately overrides only a soft timing / paper-admission rejection.
+    # A 1H confirmed trend with broad independent evidence is an actionable impulse
+    # even if the static first target makes headline R/R look temporarily low.
+    return bool(
+        hs_dir==direction
+        and hs_state=='CONFIRMED_TREND'
+        and hs_score>=0.85
+        and independent>=3
+        and expected>=0.004
+        and rr>=0.35
+        and 0.0<stop_risk<=0.025
+    )
+
+
+def _v90_fast_impulse_fraction(row,policy,drawdown):
+    if not _v90_fast_impulse_context(row):
+        return None
+    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:
+        return 0.0
+
+    supporting=list(row.get('_supporting_horizons') or [])
+    alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    hs=row.get('horizon_structure') or {}
+    try:
+        hs_score=float(hs.get('score') or 0.0)
+    except Exception:
+        hs_score=0.0
+    try:
+        independent=int((((row.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception:
+        independent=0
+
+    # Staged leverage: fast 1H impulse gets leverage immediately, then scales as
+    # independent higher-timeframe confirmation arrives. 5x remains the ceiling.
+    target=1.50
+    if alignment>=2:
+        target=2.00
+    if alignment>=3:
+        target=3.00
+    if alignment>=4:
+        target=4.00
+    if alignment>=5 and hs_score>=0.90 and independent>=4:
+        target=5.00
+
+    plan=row.get('trade_plan') or {}
+    risk_pct=plan.get('stop_distance_pct')
+    if risk_pct is None:
+        risk_pct=(row.get('institutional_signal') or {}).get('risk_pct')
+    try:
+        rp=float(risk_pct or 0.0)
+    except Exception:
+        rp=0.0
+    if rp<=0:
+        return None
+
+    # Preserve the global stop-loss budget and current drawdown governor.
+    risk_cap=MAX_STOP_RISK_NAV/rp
+    maxf=float((policy or {}).get('max_fraction') or 5.0)
+    f=min(target,risk_cap,maxf)
+    f*=float(rg.get('multiplier') or 0.0)
+    return _clip(_round_step(f),0,maxf)
+
+
+def _signal_first_admission(row,policy,drawdown):
+    result=dict(_v90fi_base_signal_first_admission(row,policy,drawdown) or {})
+    if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not row:
+        return result
+
+    fast_f=_v90_fast_impulse_fraction(row,policy,drawdown)
+    if fast_f is None:
+        return result
+    if fast_f<=0:
+        rg=_risk_governor(drawdown)
+        return {'open':False,'fraction':0.0,'reason':'RISK_GOVERNOR_HARD',
+                'risk_governor':rg,'fast_impulse':True}
+
+    hs=row.get('horizon_structure') or {}
+    inst=row.get('institutional_signal') or {}
+    plan=row.get('trade_plan') or {}
+    score,source=_signal_probability(row)
+    result.update({
+        'open':True,
+        'fraction':float(fast_f),
+        'reason':'V90_FAST_IMPULSE_LEVERAGE',
+        'fast_impulse':True,
+        'strong_aggressive':True,
+        'model_quality_score':None if source=='EMPIRICAL_CALIBRATION' else float(score),
+        'probability':float(score) if source=='EMPIRICAL_CALIBRATION' else None,
+        'probability_source':source,
+        'horizon_structure_score':float(hs.get('score') or 0.0),
+        'horizon_structure_state':hs.get('state'),
+        'independent':int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0),
+        'rr':float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0),
+        'stop_risk_pct':float(plan.get('stop_distance_pct') or inst.get('risk_pct') or 0.0),
+        'sizing_authority':'V90_FAST_IMPULSE_THEN_STOP_RISK_AND_GROSS_CAP'
+    })
+    return result
+
+'''
+        anchor2="\ndef _portfolio_rows(c,name):"
+        if anchor2 not in dst:
+            raise RuntimeError("VERITAS 90 fast impulse leverage anchor missing")
+        dst=dst.replace(anchor2,"\n"+helper+anchor2,1)
+        applied.append("fast_impulse_leverage")
+
     # Close any legacy NDX paper position at its last marked price. History is preserved;
     # all new Nasdaq exposure is routed through NQ.
     old_missing = """    for z in pos:
