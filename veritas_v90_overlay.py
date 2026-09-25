@@ -2437,6 +2437,105 @@ def _signal_first_admission(row,policy,drawdown):
         helper = r'''
 # VERITAS V90 FAST IMPULSE LEVERAGE
 _v90fi_base_signal_first_admission = _signal_first_admission
+_v90fi_base_aggressive_candidate_book = _v90_aggressive_candidate_book
+
+
+def _v90_fast_structure_candidate(rows):
+    best=None
+    for r0 in rows or []:
+        r=dict(r0)
+        if str(r.get('horizon') or '')!='1h' or not _v901_no_hard_veto(r):
+            continue
+        hs=r.get('horizon_structure') or {}
+        direction=str(hs.get('direction') or hs.get('raw_direction') or 'NO_TRADE')
+        if direction not in ('LONG','SHORT') or str(hs.get('state') or '')!='CONFIRMED_TREND':
+            continue
+        try:
+            hs_score=float(hs.get('score') or 0.0)
+            hret=float(hs.get('return') or 0.0)
+            hz=float(hs.get('z') or 0.0)
+        except Exception:
+            continue
+        if hs_score<0.72 or abs(hret)<0.004 or abs(hz)<0.80:
+            continue
+        if (direction=='LONG' and hret<=0) or (direction=='SHORT' and hret>=0):
+            continue
+        inst=r.get('institutional_signal') or {}
+        try:
+            independent=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+        except Exception:
+            independent=0
+        if independent<3:
+            continue
+        try:
+            px=float(r.get('price') or 0.0)
+        except Exception:
+            px=0.0
+        if px<=0:
+            continue
+        levels=r.get('structural_levels') or {}
+        try:
+            anchor=float(levels.get('support' if direction=='LONG' else 'resistance') or 0.0)
+        except Exception:
+            anchor=0.0
+        if anchor<=0:
+            continue
+        buffer=max(px*0.0008,abs(px-anchor)*0.10)
+        stop=(anchor-buffer) if direction=='LONG' else (anchor+buffer)
+        if (direction=='LONG' and stop>=px) or (direction=='SHORT' and stop<=px):
+            continue
+        stop_risk=abs(px-stop)/px
+        if stop_risk<=0 or stop_risk>0.025:
+            continue
+        expected=max(0.004,min(0.025,abs(hret)*0.65))
+        rr=expected/max(stop_risk,0.0005)
+        if rr<0.35:
+            continue
+        plan=dict(r.get('trade_plan') or {})
+        plan['eligible']=True
+        plan['direction']=direction
+        plan['stop_price']=stop
+        plan['stop_distance_pct']=stop_risk
+        plan['expected_move_pct']=expected
+        plan['expected_to_stop_ratio']=rr
+        plan['target_price']=px*(1.0+expected if direction=='LONG' else 1.0-expected)
+        ti=dict(plan.get('trade_integrity') or {})
+        ti['hard_invalidation']=False
+        ti['entry_permission']='EARLY_PROBE'
+        plan['trade_integrity']=ti
+        x=dict(r)
+        x['trade_plan']=plan
+        x['research_decision']=direction
+        x['_fast_structure_trigger']=True
+        x['_supporting_horizons']=['1h']
+        x['_alignment_count']=1
+        x['_direction_support']={direction:hs_score,'SHORT' if direction=='LONG' else 'LONG':0.0}
+        x['_support_ratio']=hs_score/0.01
+        x['_flip_confirmed']=False
+        p,source=_signal_probability(x)
+        x['_pwin']=float(p)
+        x['_pwin_source']='V90_FAST_STRUCTURE_'+str(source)
+        x['_execution_rr']=rr
+        x['_rank']=0.90+0.10*hs_score+0.02*min(independent,5)+0.05*min(rr,2.0)
+        if best is None or float(x['_rank'])>float(best.get('_rank') or 0.0):
+            best=x
+    return best
+
+
+def _v90_aggressive_candidate_book(summary, core_candidates):
+    out=dict(_v90fi_base_aggressive_candidate_book(summary,core_candidates) or {})
+    rows_by_asset={}
+    for r0 in summary or []:
+        a=str((r0 or {}).get('asset') or '')
+        if a:
+            rows_by_asset.setdefault(a,[]).append(r0)
+    for asset,rows in rows_by_asset.items():
+        if asset in out:
+            continue
+        candidate=_v90_fast_structure_candidate(rows)
+        if candidate is not None:
+            out[asset]=candidate
+    return out
 
 
 def _v90_fast_impulse_context(row):
@@ -2478,12 +2577,14 @@ def _v90_fast_impulse_context(row):
         stop_risk=0.0
 
     # This deliberately overrides only a soft timing / paper-admission rejection.
-    # A 1H confirmed trend with broad independent evidence is an actionable impulse
-    # even if the static first target makes headline R/R look temporarily low.
+    # A structure-first trigger may fire before the committee emits LONG/SHORT;
+    # once converted into a candidate it uses the same stop/risk controls.
+    fast_structure=bool(row.get('_fast_structure_trigger'))
+    hs_floor=0.72 if fast_structure else 0.85
     return bool(
         hs_dir==direction
         and hs_state=='CONFIRMED_TREND'
-        and hs_score>=0.85
+        and hs_score>=hs_floor
         and independent>=3
         and expected>=0.004
         and rr>=0.35
