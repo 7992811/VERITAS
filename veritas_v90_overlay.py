@@ -1380,15 +1380,15 @@ def maybe_schedule_heavy_learning(reason='scheduled',force=False):
         dst=dst.replace(anchor,"\n"+helper+anchor,1)
 
         dst,ch=_replace_once(dst,
-            "                summary.append(z)\\n",
-            "                summary.append(_v90_compact_live_row(z))\\n",
+            "                summary.append(z)\n",
+            "                summary.append(_v90_compact_live_row(z))\n",
             "v90 compact in-memory decision summary")
         if not ch:
             raise RuntimeError("v90 memory P0 summary append anchor missing")
 
         dst,ch=_replace_once(dst,
-            "                emit('decision', **z, durable=pg_enabled())\\n",
-            "                emit('decision', **_v90_compact_decision_log(z), durable=pg_enabled())\\n",
+            "                emit('decision', **z, durable=pg_enabled())\n",
+            "                emit('decision', **_v90_compact_decision_log(z), durable=pg_enabled())\n",
             "v90 compact decision logging")
         if not ch:
             raise RuntimeError("v90 memory P0 decision log anchor missing")
