@@ -215,6 +215,21 @@ def v90_migrate_core_data():
     if ch:
         applied.append("migration_startup")
 
+    ui_marker = "# VERITAS V90 APPROVED UI BRIDGE"
+    if ui_marker not in dst:
+        ui_block = """# VERITAS V90 APPROVED UI BRIDGE
+try:
+    from veritas_v90_ui import apply_v90_ui
+    DASHBOARD_HTML = apply_v90_ui(DASHBOARD_HTML)
+except Exception as _v90_ui_ex:
+    print("[VERITAS V90 UI] fallback: %s: %s" % (type(_v90_ui_ex).__name__, _v90_ui_ex), flush=True)
+"""
+        ui_anchor = "\nclass H(BaseHTTPRequestHandler):"
+        if ui_anchor not in dst:
+            raise RuntimeError("v90 UI bridge anchor missing")
+        dst = dst.replace(ui_anchor, "\n" + ui_block + ui_anchor, 1)
+        applied.append("v86_3_approved_interface")
+
     old_root_route = """            elif self.path in ('/', '/health'):
                 with lock: x = dict(last_cycle)
                 self.reply(x, 503 if x.get('status') == 'error' else 200)"""
@@ -387,6 +402,7 @@ def verify():
         'v84_profit_harvest_preserved': "'TAKE_PROFIT' if tp_hit" in port,
         'v84_learning_preserved': 'def refresh_experience_lessons(' in intel,
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
+        'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
