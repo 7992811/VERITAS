@@ -493,7 +493,7 @@ def apply_v90_ui(html):
     </style>"""
     value = value.replace('</head>', brand_fix_css + '</head>')
     
-value = value.replace('Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.',
+    value = value.replace('Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.',
                           'Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. Реальные деньги не используются.')
     value = value.replace('V86','V90').replace('v86','v90')
     return value
