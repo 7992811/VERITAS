@@ -2338,26 +2338,50 @@ def maybe_schedule_heavy_learning(reason='scheduled',force=False):
 
     # VERITAS V90 TWO-SPEED 5M LOOP
     # Full 42-cell refresh every five minutes; native 5m refresh roughly every minute.
-    # A fast cycle merges its seven fresh 5m rows with the last confirmed 1h-7d rows
-    # before portfolio/meta processing, so no senior context disappears.
-    dst = dst.replace(
-        "def cycle():\n    cycle_wall_t0=time.time()",
-        "def cycle(selected_horizons=None, cycle_mode='FULL'):\n    cycle_wall_t0=time.time()\n    selected_horizons=tuple(selected_horizons or tuple(HORIZONS.keys()))\n    selected_horizons=tuple(h for h in selected_horizons if h in HORIZONS)\n    if not selected_horizons: selected_horizons=tuple(HORIZONS.keys())\n    cycle_mode=str(cycle_mode or 'FULL').upper()"
-    )
-    dst = dst.replace(
-        "    emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False),\n         pre_decision_seconds=round(pre_decision_seconds,3),outcomes_seconds=round(outcomes_seconds,3),analog_seconds=round(analog_seconds,3))",
-        "    emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False),\n         cycle_mode=cycle_mode,updated_horizons=list(selected_horizons),\n         pre_decision_seconds=round(pre_decision_seconds,3),outcomes_seconds=round(outcomes_seconds,3),analog_seconds=round(analog_seconds,3))"
-    )
-    dst = dst.replace(
-        "            for horizon in HORIZONS:\n                horizon_wall_t0=time.time()",
-        "            for horizon in selected_horizons:\n                horizon_wall_t0=time.time()"
-    )
+    # A fast cycle merges its seven fresh 5m rows with the last confirmed 1h-7d rows.
+    if "cycle_mode='FULL'" not in dst:
+        dst,n=re.subn(
+            r"def cycle\(\):\n(\s*)cycle_wall_t0=time\.time\(\)",
+            "def cycle(selected_horizons=None, cycle_mode='FULL'):\n"
+            "    cycle_wall_t0=time.time()\n"
+            "    selected_horizons=tuple(selected_horizons or tuple(HORIZONS.keys()))\n"
+            "    selected_horizons=tuple(h for h in selected_horizons if h in HORIZONS)\n"
+            "    if not selected_horizons: selected_horizons=tuple(HORIZONS.keys())\n"
+            "    cycle_mode=str(cycle_mode or 'FULL').upper()",
+            dst,count=1)
+        if n!=1:
+            raise RuntimeError("v90 two-speed cycle signature anchor missing")
 
-    # P0 memory patch has already inserted the asset finally block at this stage.
-    _merge_anchor = """    storage = pg_storage_status()
-    expected = len(ASSETS)*len(HORIZONS)"""
-    _merge_new = """    # Fast 5m cycles publish a complete 42-cell state by carrying forward only
-    # senior rows from the latest completed cycle. Fresh 5m rows always win.
+    if "for horizon in selected_horizons:" not in dst:
+        dst,n=re.subn(r"(?m)^            for horizon in HORIZONS:\s*$",
+                      "            for horizon in selected_horizons:",dst,count=1)
+        if n!=1:
+            raise RuntimeError("v90 two-speed horizon loop anchor missing")
+
+    # Add cycle-mode telemetry without making bootstrap depend on exact spacing.
+    if "updated_horizons=list(selected_horizons)" not in dst:
+        _old="emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False),"
+        _new="emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False), cycle_mode=cycle_mode, updated_horizons=list(selected_horizons),"
+        if _old in dst:
+            dst=dst.replace(_old,_new,1)
+
+    # Locate the cycle body structurally and insert the merge immediately before
+    # its storage/status section. This is robust to earlier P0/bootstrap patches.
+    _cs=dst.find("def cycle(selected_horizons=None, cycle_mode='FULL'):")
+    _le=dst.find("\ndef loop():",_cs)
+    if _le<0:
+        _le=dst.find("\nV90_FAST_5M_INTERVAL_SECONDS",_cs)
+    if _cs<0 or _le<0:
+        raise RuntimeError("v90 two-speed cycle boundaries missing")
+    _cycle=dst[_cs:_le]
+
+    if "fresh_summary=list(summary)" not in _cycle:
+        _si=_cycle.find("\n    storage = pg_storage_status()")
+        if _si<0:
+            raise RuntimeError("v90 two-speed storage insertion point missing")
+        _merge=r'''
+    # Fast 5m cycles publish a complete state: fresh 5m plus the last confirmed
+    # senior-timeframe rows. This prevents a 5m refresh from erasing 1h-7d context.
     fresh_summary=list(summary)
     if cycle_mode=='FAST_5M':
         with lock:
@@ -2367,49 +2391,62 @@ def maybe_schedule_heavy_learning(reason='scheduled',force=False):
         for _x in fresh_summary:
             _merged[(str(_x.get('asset') or ''),str(_x.get('horizon') or ''))]=_x
         summary=list(_merged.values())
-    storage = pg_storage_status()
-    expected = len(ASSETS)*len(selected_horizons)"""
-    if _merge_anchor not in dst:
-        raise RuntimeError("v90 two-speed merge anchor missing")
-    dst=dst.replace(_merge_anchor,_merge_new,1)
+'''
+        _cycle=_cycle[:_si]+"\n"+_merge.rstrip("\n")+_cycle[_si:]
 
-    # Preserve the published summary after P0 clears the local working list.
-    _state_anchor = """    state = {'status': status, 'at': now(), 'version': VERSION, 'decisions_written': made,
-             'outcomes_written': outcomes, 'summary': summary, 'trade_alerts_written':len(trade_alerts),"""
-    _state_new = """    state = {'status': status, 'at': now(), 'version': VERSION, 'decisions_written': made,
-             'outcomes_written': outcomes, 'summary': list(summary),
-             'cycle_mode':cycle_mode,'updated_horizons':list(selected_horizons),
-             'signal_cells':len(summary),'trade_alerts_written':len(trade_alerts),"""
-    if _state_anchor not in dst:
-        raise RuntimeError("v90 two-speed state anchor missing")
-    dst=dst.replace(_state_anchor,_state_new,1)
+    # Status is evaluated against rows recalculated in this lane, not the merged
+    # published 42-cell snapshot.
+    _cycle,n=re.subn(r"(?m)^    expected\s*=.*len\(HORIZONS\).*?$",
+                     "    expected = len(ASSETS)*len(selected_horizons)",_cycle,count=1)
+    if n!=1 and "expected = len(ASSETS)*len(selected_horizons)" not in _cycle:
+        raise RuntimeError("v90 two-speed expected-count anchor missing")
 
-    # Only a full cycle launches historical outcome/network maintenance. The
-    # one-minute 5m lane stays dedicated to current-market detection.
-    dst = dst.replace(
-        "    _v90_schedule_outcome_refresh('cycle_complete')\n    # Deep rule/event learning remains off the fast lane.\n    if heavy_learning_due():\n        maybe_schedule_heavy_learning('interval_due')",
-        "    if cycle_mode=='FULL':\n        _v90_schedule_outcome_refresh('full_cycle_complete')\n        # Deep rule/event learning remains off the fast lane.\n        if heavy_learning_due():\n            maybe_schedule_heavy_learning('interval_due')"
+    # Copy the summary into state because the P0 memory layer clears the local list.
+    if "'cycle_mode':cycle_mode" not in _cycle:
+        _cycle,n=re.subn(
+            r"'outcomes_written': outcomes,\s*'summary': summary,",
+            "'outcomes_written': outcomes, 'summary': list(summary),\n"
+            "             'cycle_mode':cycle_mode,'updated_horizons':list(selected_horizons),\n"
+            "             'signal_cells':len(summary),",
+            _cycle,count=1)
+        if n!=1:
+            raise RuntimeError("v90 two-speed state summary anchor missing")
+
+    # Outcome/learning network work runs only after a full refresh.
+    _cycle=_cycle.replace(
+        "    _v90_schedule_outcome_refresh('cycle_complete')\n"
+        "    # Deep rule/event learning remains off the fast lane.\n"
+        "    if heavy_learning_due():\n"
+        "        maybe_schedule_heavy_learning('interval_due')",
+        "    if cycle_mode=='FULL':\n"
+        "        _v90_schedule_outcome_refresh('full_cycle_complete')\n"
+        "        # Deep rule/event learning remains off the fast lane.\n"
+        "        if heavy_learning_due():\n"
+        "            maybe_schedule_heavy_learning('interval_due')"
     )
 
-    # Add mode to cycle telemetry/logs.
-    dst = dst.replace(
-        "               'fast_loop_target_seconds':FAST_LOOP_TARGET_SECONDS,\n               'fast_loop_on_target':bool(elapsed_seconds<=FAST_LOOP_TARGET_SECONDS)}",
-        "               'fast_loop_target_seconds':FAST_LOOP_TARGET_SECONDS,\n               'cycle_mode':cycle_mode,'updated_horizons':list(selected_horizons),\n               'published_signal_cells':len(summary),\n               'fast_loop_on_target':bool(elapsed_seconds<=FAST_LOOP_TARGET_SECONDS)}"
-    )
+    # Make mode visible in cycle_complete telemetry.
+    if "'cycle_mode':cycle_mode,'updated_horizons':list(selected_horizons)" not in _cycle.split("telemetry=",1)[-1]:
+        _cycle=_cycle.replace(
+            "               'fast_loop_target_seconds':FAST_LOOP_TARGET_SECONDS,\n"
+            "               'fast_loop_on_target':bool(elapsed_seconds<=FAST_LOOP_TARGET_SECONDS)}",
+            "               'fast_loop_target_seconds':FAST_LOOP_TARGET_SECONDS,\n"
+            "               'cycle_mode':cycle_mode,'updated_horizons':list(selected_horizons),\n"
+            "               'published_signal_cells':len(summary),\n"
+            "               'fast_loop_on_target':bool(elapsed_seconds<=FAST_LOOP_TARGET_SECONDS)}"
+        )
 
-    # The scheduler uses start-to-start targets. If a cycle runs long, it starts
-    # the next due lane immediately rather than adding another fixed sleep.
-    _loop_old = """def loop():
-    while True:
-        try:
-            cycle()
-        except Exception as e:
-            err = {'status': 'error', 'at': now(), 'version': VERSION, 'error': f'{type(e).__name__}: {e}'}
-            with lock:
-                last_cycle.clear(); last_cycle.update(err)
-            emit('cycle_error', error=err['error'], trace=traceback.format_exc(limit=3))
-        time.sleep(INTERVAL)"""
-    _loop_new = """V90_FAST_5M_INTERVAL_SECONDS=max(45,int(os.getenv('VERITAS_FAST_5M_INTERVAL_SECONDS','60')))
+    dst=dst[:_cs]+_cycle+dst[_le:]
+
+    # Replace the scheduler by function boundaries instead of an exact old body.
+    _ls=dst.find("\ndef loop():")
+    if _ls<0:
+        _ls=dst.find("def loop():")
+    _he=dst.find("\ndef _historical_rules",_ls)
+    if _ls<0 or _he<0:
+        raise RuntimeError("v90 two-speed loop boundaries missing")
+    _prefix="\n" if dst[_ls:_ls+1]=="\n" else ""
+    _loop=r'''V90_FAST_5M_INTERVAL_SECONDS=max(45,int(os.getenv('VERITAS_FAST_5M_INTERVAL_SECONDS','60')))
 V90_FULL_CYCLE_INTERVAL_SECONDS=max(240,int(os.getenv('VERITAS_FULL_CYCLE_INTERVAL_SECONDS',str(INTERVAL))))
 
 def loop():
@@ -2435,10 +2472,8 @@ def loop():
                 time.sleep(max(0.5,min(5.0,min(next_fast,next_full)-now_m)))
                 continue
         except Exception as e:
-            err = {'status': 'error', 'at': now(), 'version': VERSION,
-                   'cycle_mode':mode,'error': f'{type(e).__name__}: {e}'}
-            # Do not destroy the last valid 42-cell snapshot because one fast
-            # refresh failed. Record the error alongside the retained state.
+            err={'status':'error','at':now(),'version':VERSION,'cycle_mode':mode,
+                 'error':f'{type(e).__name__}: {e}'}
             with lock:
                 if last_cycle.get('summary'):
                     last_cycle['last_cycle_error']=err
@@ -2448,10 +2483,9 @@ def loop():
             if mode=='FULL':
                 next_full=time.monotonic()+30
             elif mode=='FAST_5M':
-                next_fast=time.monotonic()+15"""
-    if _loop_old not in dst:
-        raise RuntimeError("v90 two-speed loop anchor missing")
-    dst=dst.replace(_loop_old,_loop_new,1)
+                next_fast=time.monotonic()+15
+'''
+    dst=dst[:_ls]+_prefix+_loop.rstrip()+"\n"+dst[_he+1:]
 
     applied.append("two_speed_5m_loop")
 
