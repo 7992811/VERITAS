@@ -1103,11 +1103,11 @@ if _v90_os.getenv('VERITAS_STORAGE_GENERATION','').strip()=='9.0':
     import psycopg as _v90_psycopg
     from psycopg.conninfo import make_conninfo as _v90_make_conninfo
     with _v90_psycopg.connect(_v90_dsn,autocommit=True) as _v90_conn:
-        _v90_conn.execute('CREATE SCHEMA IF NOT EXISTS veritas_v90_live')
-    _v90_dsn=_v90_make_conninfo(_v90_dsn,options='-c search_path=veritas_v90_live,public')
+        _v90_conn.execute('CREATE SCHEMA IF NOT EXISTS veritas_v90_final')
+    _v90_dsn=_v90_make_conninfo(_v90_dsn,options='-c search_path=veritas_v90_final')
     _v90_os.environ['DATABASE_URL']=_v90_dsn
     _v90_os.environ.pop('VERITAS_V85_TEST_DATABASE_URL',None)
-    print('VERITAS_V90_DB_LEASE_ACTIVE storage_generation=9.0 schema=veritas_v90_live',flush=True)
+    print('VERITAS_V90_DB_LEASE_ACTIVE storage_generation=9.0 schema=veritas_v90_final',flush=True)
 '''
     if _v90_anchor not in _v90_start:
         raise SystemExit('V90_START_STORAGE_ANCHOR_NOT_FOUND')
