@@ -511,6 +511,37 @@ _v90_base_features = features
 _v90_base_classify_signal_tier = classify_signal_tier
 _v90_base_execution_eligibility = execution_eligibility
 _v90_base_technical_trade_plan = technical_trade_plan
+_v90_base_cnyrubf_market = _cnyrubf_market
+_v90_cny5_cache = {'at':0.0,'bars':[]}
+
+
+
+def _v90_cny_5m_bars(force=False):
+    now_ts=time.time()
+    if (not force and _v90_cny5_cache.get('bars')
+            and now_ts-float(_v90_cny5_cache.get('at') or 0)<240):
+        return list(_v90_cny5_cache.get('bars') or [])
+    try:
+        rows=_moex_futures_candles_between('CNYRUBF',now_ts-3*86400,now_ts+3600,5)
+        bars=[{'ts':int(x[0])/1000.0,'open':float(x[1]),'high':float(x[2]),
+               'low':float(x[3]),'close':float(x[4]),'volume':float(x[5])}
+              for x in rows[-500:]]
+        if bars:
+            _v90_cny5_cache['at']=now_ts
+            _v90_cny5_cache['bars']=list(bars)
+        return bars
+    except Exception:
+        return list(_v90_cny5_cache.get('bars') or [])
+
+
+def _cnyrubf_market():
+    raw=dict(_v90_base_cnyrubf_market())
+    bars5=_v90_cny_5m_bars()
+    raw['intraday_bars']=bars5
+    raw['intraday_5m']=bars5
+    raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
+    raw['direction_level_resolutions']=['1h','4h','1d','3d','7d']
+    return raw
 
 
 def _v90_tf_group(asset, timeframe):
@@ -2098,6 +2129,7 @@ def verify():
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
         'multi_tf_levels': 'def _v90_multi_tf_levels(' in intel and 'multi_tf_level_context' in intel,
+        'cny_5m_entry_timing': 'def _v90_cny_5m_bars(' in intel and "entry_timing_resolution'" in intel,
         'cny_special_regime': "asset!='CNYRUBF'" in intel and "CNYRUBF_SPECIALIZED" in intel,
         'timeframe_specific_super': 'current_horizon_structure' in intel and "horizon in ('3d','7d')" in intel,
         'paper_source_gate_metadata': 'paper_single_source_official_moex' in intel and 'production_eligible' in intel,
