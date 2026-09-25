@@ -1925,7 +1925,28 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 print(json.dumps({'event':'V86_BRAND_LOGO_READY','bytes':len(VERITAS_LOGO_PNG),'route':'/assets/veritas-logo.png'},separators=(',',':')),flush=True)
+def _warm_engine_until_ready():
+    last_error=None
+    for attempt in range(20):
+        try:
+            data=jget(V86,'/api/v85/snapshot',4.0)
+            if isinstance(data,dict) and (data.get('cells') or data.get('version') or data.get('at')):
+                with ENGINE_SNAPSHOT_CACHE_LOCK:
+                    ENGINE_SNAPSHOT_CACHE['at']=time.time()
+                    ENGINE_SNAPSHOT_CACHE['data']=data
+                    ENGINE_SNAPSHOT_CACHE['source']='warm_engine'
+                print(json.dumps({'event':'V86_ENGINE_WARM','status':'READY','attempt':attempt+1},separators=(',',':')),flush=True)
+                return True
+        except Exception as exc:
+            last_error=type(exc).__name__
+        if attempt in (0,2,5,10,15):
+            print(json.dumps({'event':'V86_ENGINE_WARM','status':'WAITING','attempt':attempt+1,'error':last_error},separators=(',',':')),flush=True)
+        time.sleep(3.0)
+    print(json.dumps({'event':'V86_ENGINE_WARM','status':'TIMEOUT','error':last_error},separators=(',',':')),flush=True)
+    return False
+
 def _background_selftest():
+    _warm_engine_until_ready()
     try:
         _raw_pp = v86_portfolios()
         _raw_trades = jget(V86, '/api/v1/portfolio-trades', 20)
