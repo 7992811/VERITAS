@@ -403,6 +403,60 @@ def _v90_nq_market():
     nq_history_patch_marker=True
     dst = dst.replace("if symbol=='NDX': return _fetch_ndx_history(days)",
                       "if symbol=='NQ':\n        d=min(int(days),NDX_BACKTEST_DAYS); return _yahoo_between('NQ%3DF',end-d*86400,end,'1h')")
+    # VERITAS 9.0 NQ FUTURES INVARIANT
+    # NDX may remain only in historical research text / archive. It can never be
+    # an active market instrument, new signal, portfolio candidate or UI asset.
+    dst = dst.replace("elif asset=='NDX':", "elif asset=='NQ':")
+    dst = dst.replace("if asset=='NDX':", "if asset=='NQ':")
+    dst = dst.replace("'asset_scope':['NDX']", "'asset_scope':['NQ']")
+    dst = dst.replace("'asset_scope': ['NDX']", "'asset_scope': ['NQ']")
+    dst = dst.replace("'asset':'NDX'", "'asset':'NQ'")
+    dst = dst.replace("'ndx_live_gate':'US RTH + current Yahoo Nasdaq GIDS + Nasdaq public price cross-check',",
+                      "'nq_futures_feed':'CME Nasdaq-100 futures NQ=F · nearly 24h weekday session',")
+    dst = dst.replace("'ndx_derivatives':'context only until licensed derivatives/options feed'", 
+                      "'nq_futures_contract':'NQ=F · futures instrument; cash Nasdaq-100 only contextual'")
+    dst = dst.replace("'NDX':{'status':'research_live_RTH_fail_closed','primary':'Yahoo Nasdaq GIDS',\n                         'secondary':'Nasdaq public index','volume_proxy':'QQQ'},",
+                      "'NQ':{'status':'research_live_futures','primary':'Yahoo CME NQ=F',\n                        'secondary':'cash Nasdaq-100 contextual only','volume_proxy':'NQ futures volume'},")
+    dst = dst.replace("'Yahoo Nasdaq GIDS','US index / NDX','primary shadow/live candidate','yahoo_nasdaq_gids'",
+                      "'Yahoo Nasdaq GIDS','cash Nasdaq-100 context','context only; never active instrument','yahoo_nasdaq_gids'")
+    dst = dst.replace("'Nasdaq public index','US index / NDX','verification','nasdaq_public_index'",
+                      "'Nasdaq public index','cash Nasdaq-100 context','context only; never active instrument','nasdaq_public_index'")
+    dst = dst.replace("'Yahoo CME NQ futures','US index futures','after-hours context only','yahoo_cme_futures'",
+                      "'Yahoo CME NQ=F','Nasdaq-100 futures','active NQ futures instrument','yahoo_cme_futures'")
+
+    # Signal endpoint fail-closed: never leak archived NDX rows into current screen.
+    old_signal_payload = """                self.reply({'version':VERSION,'signals':x.get('summary',[]),
+                            'summary_count':x.get('summary_count',len(x.get('summary',[]))),
+                            'summary_source':x.get('summary_source'),
+                            'at':x.get('at'),'status':x.get('status')})"""
+    new_signal_payload = """                _signals=[dict(z) for z in (x.get('summary') or []) if str(z.get('asset') or '')!='NDX']
+                for _z in _signals:
+                    if _z.get('asset')=='NQ':
+                        _z['instrument']='NQ Futures'
+                        _z['contract']='NQ=F'
+                        _z['instrument_type']='Nasdaq-100 futures'
+                self.reply({'version':VERSION,'signals':_signals,
+                            'summary_count':len(_signals),
+                            'summary_source':x.get('summary_source'),
+                            'at':x.get('at'),'status':x.get('status')})"""
+    dst, ch = _replace_once(dst, old_signal_payload, new_signal_payload, "NQ-only signal endpoint")
+    if ch:
+        applied.append("nq_futures_signal_guard")
+
+    # Fail closed at startup if the active universe ever regresses to NDX.
+    nq_guard = """
+# VERITAS 9.0 NQ FUTURES INVARIANT
+if 'NDX' in DISPLAY_ASSETS or any((v[0]=='NDX') for v in ASSETS.values()):
+    raise RuntimeError('ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES')
+"""
+    main_anchor="\nif __name__ == '__main__':"
+    if nq_guard.strip() not in dst:
+        if main_anchor in dst:
+            dst=dst.replace(main_anchor,"\n"+nq_guard+main_anchor,1)
+        else:
+            dst += "\n"+nq_guard
+        applied.append("nq_futures_hard_invariant")
+
     portfolio_autopilot_traceback=True
     dst = dst.replace(
         "emit('portfolio_autopilot_error',error=portfolio_autopilot['error'])",
@@ -1533,6 +1587,7 @@ def verify():
         'fast_signal_endpoint': "elif self.path.startswith('/api/v1/signals')" in intel and 'fresh_cycle_snapshot()' in intel,
         'brent_price_integrity': 'def _v90_moex_front_brent_contract()' in intel and "verification_mode':'moex_front_contract_primary'" in intel,
         'nasdaq_futures_nq': "'NQ': ('NQ', 'NQ%3DF')" in intel and "asset=='NQ'" in intel,
+        'nq_futures_hard_invariant': 'ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES' in intel and "if _z.get('asset')=='NQ'" in intel,
         'aggressive_5x_strong_signal': "'max_fraction':5.0" in port and 'strong_aggressive=bool(' in port,
         'final_aggressive_execution': '# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING' in port and '_v90_aggressive_strong_context' in port,
         'final_sizing_order_safe': 0 <= port.find('def _desired_fraction') < port.find('# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING') < port.find('def _portfolio_rows'),
