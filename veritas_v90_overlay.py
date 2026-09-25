@@ -337,6 +337,34 @@ def _v90_moex_front_brent_contract():
     return candidates[0][2],candidates[0][3]
 
 
+def _v90_moex_exact_5m_klines(secid,start_ts,end_ts):
+    # MOEX FORTS 5-minute candles are produced from official 1-minute candles.
+    # This avoids relying on an interval=5 endpoint that is not consistently populated.
+    rows=_moex_futures_candles_between(secid,start_ts,end_ts,1)
+    buckets={}
+    for x in rows or []:
+        try:
+            ts=int(x[0])/1000.0
+            key=int(ts//300)*300
+            op=float(x[1]); hi=float(x[2]); lo=float(x[3]); cl=float(x[4]); vol=float(x[5])
+        except Exception:
+            continue
+        z=buckets.get(key)
+        if z is None:
+            buckets[key]={'open':op,'high':hi,'low':lo,'close':cl,'volume':vol}
+        else:
+            z['high']=max(float(z['high']),hi)
+            z['low']=min(float(z['low']),lo)
+            z['close']=cl
+            z['volume']=float(z.get('volume') or 0.0)+vol
+    out=[]
+    for key in sorted(buckets):
+        z=buckets[key]; vol=float(z.get('volume') or 0.0)
+        out.append([int(key*1000),str(z['open']),str(z['high']),str(z['low']),str(z['close']),str(vol),
+                    int((key+300)*1000)-1,'0','0',str(vol*0.5),'0','0'])
+    return out
+
+
 def _v90_brent_market():
     # Primary: exchange-traded MOEX Brent front contract, quoted in USD/bbl and
     # publicly delayed. This avoids Yahoo BZ=F continuous-contract roll gaps.
@@ -355,7 +383,7 @@ def _v90_brent_market():
 
     intraday_5m=[]
     try:
-        m5=_moex_futures_candles_between(secid,end-7*86400,end+86400,5)[-500:]
+        m5=_v90_moex_exact_5m_klines(secid,end-7*86400,end+86400)[-500:]
         intraday_5m=[{'ts':int(x[0])/1000.0,'open':float(x[1]),'high':float(x[2]),
                       'low':float(x[3]),'close':float(x[4]),'volume':float(x[5])} for x in m5]
     except Exception:
@@ -737,9 +765,15 @@ def horizon_structure_features(raw,horizon):
 
 
 def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
+    ss=float(start_ms)/1000.0
+    # Historical NDX decisions remain valid learning records after the active
+    # instrument migrated to NQ; evaluate them against the original cash index.
+    if asset=='NDX':
+        return _yahoo_between('%5ENDX',ss-600,
+                              ss+max(float(hours)*3600.0,3*3600.0),
+                              '5m' if str(horizon)=='5m' else '1h')
     if str(horizon)!='5m':
         return fetch_path_asset(asset,symbol,start_ms,hours)
-    ss=float(start_ms)/1000.0
     end=ss+3*3600
     if asset in ('BTC','ETH'):
         return get_json('https://api.binance.com/api/v3/klines',
@@ -750,11 +784,11 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
         return _yahoo_between('GC%3DF',ss-600,end,'5m')
     if asset=='BRENT':
         secid,_q=_v90_moex_front_brent_contract()
-        return _moex_futures_candles_between(secid,ss-600,end,5)
+        return _v90_moex_exact_5m_klines(secid,ss-600,end)
     if asset=='MOEX':
         return _yahoo_between('IMOEX.ME',ss-600,end,'5m')
     if asset=='CNYRUBF':
-        return _moex_futures_candles_between('CNYRUBF',ss-600,end,5)
+        return _v90_moex_exact_5m_klines('CNYRUBF',ss-600,end)
     return fetch_path_asset(asset,symbol,start_ms,hours)
 '''
     if "# VERITAS V90 UNIVERSAL STRUCTURE LIFECYCLE" not in dst:
@@ -4497,7 +4531,8 @@ def verify():
         'uncalibrated_score_semantics': 'MODEL_QUALITY_SCORE_UNCALIBRATED' in port and 'UNCALIBRATED_SCORE_CAPPED_PAPER_SIZING' in port,
         'uncalibrated_leverage_guard': "source!='EMPIRICAL_CALIBRATION'" in port,
         'full_5m_horizon': "'5m': 1.0/12.0" in intel and "resolution':'5m_native_bars'" in intel
-                           and "_v90_fetch_path_asset_horizon" in intel,
+                           and "_v90_fetch_path_asset_horizon" in intel
+                           and "_v90_moex_exact_5m_klines" in intel,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
