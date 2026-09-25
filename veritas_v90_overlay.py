@@ -1272,6 +1272,114 @@ def _v90_aggressive_candidate_book(summary, core_candidates):
     if ch:
         applied.append("aggressive_probe_final")
 
+    # VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING
+    # Insert after all candidate/admission helpers so both diagnostics and _step_one
+    # resolve to the same 5x-capable sizing authority.
+    if "# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING" not in dst:
+        helper = r'''
+# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING
+_v90_execution_base_desired_fraction=_desired_fraction
+_v90_execution_base_signal_admission=_signal_first_admission
+
+
+def _v90_aggressive_strong_context(row):
+    if not row or not _v901_no_hard_veto(row):
+        return False
+    d=str(row.get('research_decision') or 'NO_TRADE')
+    if d not in ('LONG','SHORT'):
+        return False
+    p=float(row.get('_pwin') or _signal_probability(row)[0] or 0.0)
+    supporting=list(row.get('_supporting_horizons') or [])
+    alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    ds=row.get('_direction_support') or {}
+    other='SHORT' if d=='LONG' else 'LONG'
+    support_ratio=float(row.get('_support_ratio') or
+                        (float(ds.get(d) or 0.0)/max(0.01,float(ds.get(other) or 0.0))))
+    plan=row.get('trade_plan') or {}
+    try: rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+    signal_tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    return bool(alignment>=4 and support_ratio>=1.50 and p>=0.82 and rr>=1.00
+                and (alignment>=5 or signal_tier in ('SUPER_LONG','SUPER_SHORT')))
+
+
+def _desired_fraction(row,policy,drawdown):
+    base=float(_v90_execution_base_desired_fraction(row,policy,drawdown) or 0.0)
+    if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not row:
+        return base
+    if not _v901_no_hard_veto(row):
+        return 0.0
+
+    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:
+        return 0.0
+
+    if row.get('_aggressive_setup_probe'):
+        f=0.05*float(rg.get('multiplier') or 0.0)
+        return _clip(_round_step(f),0,float((policy or {}).get('max_fraction') or 5.0))
+
+    if not _v90_aggressive_strong_context(row):
+        return base
+
+    f=5.0
+    plan=row.get('trade_plan') or {}
+    risk_pct=plan.get('stop_distance_pct')
+    if risk_pct is None:
+        risk_pct=(row.get('institutional_signal') or {}).get('risk_pct')
+    try:
+        rp=float(risk_pct or 0.0)
+        if rp>0:
+            f=min(f,MAX_STOP_RISK_NAV/rp)
+    except Exception:
+        pass
+    f*=float(rg.get('multiplier') or 0.0)
+    return _clip(_round_step(f),0,float((policy or {}).get('max_fraction') or 5.0))
+
+
+def _signal_first_admission(row,policy,drawdown):
+    result=_v90_execution_base_signal_admission(row,policy,drawdown)
+    if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not row:
+        return result
+    f=float(_desired_fraction(row,policy,drawdown) or 0.0)
+    if f<=0:
+        return result
+    result=dict(result)
+    result['open']=True
+    result['fraction']=f
+    result['strong_aggressive']=bool(_v90_aggressive_strong_context(row))
+    if result['strong_aggressive']:
+        result['reason']='V90_AGGRESSIVE_STRONG'
+    elif row.get('_aggressive_setup_probe'):
+        result['reason']='V90_AGGRESSIVE_SETUP_PROBE'
+    return result
+'''
+        anchor2="\ndef ensure_schema(pg_connect):"
+        if anchor2 not in dst:
+            raise RuntimeError("VERITAS 9.0 final sizing anchor missing")
+        dst=dst.replace(anchor2,"\n"+helper+anchor2,1)
+        applied.append("aggressive_final_execution_sizing")
+
+    # Close any legacy NDX paper position at its last marked price. History is preserved;
+    # all new Nasdaq exposure is routed through NQ.
+    old_missing = """    for z in pos:
+        if z['asset'] not in targets:
+            px=float(prices.get(z['asset'],z['last_price']))"""
+    new_missing = """    for z in pos:
+        if z['asset']=='NDX':
+            targets['NDX']=0.0
+            continue
+        if z['asset'] not in targets:
+            px=float(prices.get(z['asset'],z['last_price']))"""
+    dst, ch = _replace_once(dst, old_missing, new_missing, "close legacy NDX exposure")
+    if ch:
+        applied.append("legacy_ndx_close")
+
+    old_reason = """reason='TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
+    new_reason = """reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
+    dst, ch = _replace_once(dst, old_reason, new_reason, "legacy NDX exit reason")
+    if ch:
+        applied.append("legacy_ndx_reason")
+
     if "def _v90_migrate_portfolio_data(c):" not in dst:
         helper = r'''
 # VERITAS v90 portfolio migration
@@ -1468,6 +1576,8 @@ def verify():
         'nasdaq_futures_nq': "'NQ': ('NQ', 'NQ%3DF')" in intel and "asset=='NQ'" in intel,
         'aggressive_5x_strong_signal': "'max_fraction':5.0" in port and 'strong_aggressive=bool(' in port,
         'aggressive_execution_5x': '_v90_base_desired_fraction=_desired_fraction' in port and "result['reason']='V90_AGGRESSIVE_STRONG'" in port,
+        'final_aggressive_execution': '# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING' in port and '_v90_aggressive_strong_context' in port,
+        'legacy_ndx_retired': 'INSTRUMENT_REPLACED_BY_NQ' in port,
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
     }
