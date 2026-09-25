@@ -389,7 +389,8 @@ def _v90_brent_market():
             'binance_close_time_ms':int(datetime.fromisoformat(observed.replace('Z','+00:00')).timestamp()*1000),
             'observed_at':observed,'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
             'data_latency_class':'DELAYED_RESEARCH','verification_mode':'moex_front_contract_primary',
-            'intraday_5m':intraday_5m,
+            'intraday_5m':intraday_5m,'intraday_bars':intraday_5m,
+            'entry_timing_resolution':'5m' if intraday_5m else '1h_fallback',
             'source_names':{'primary':f'MOEX ISS {secid}','secondary':'Yahoo BZ=F'},
             'contract':{'secid':secid,'price_unit':'USD/bbl','roll':'highest_activity_near_month'},
             'front_month_reference':price,'contract_roll_adjusted':False}
@@ -400,12 +401,322 @@ def _v90_nq_market():
     raw['data_latency_class']='CME_FUTURES_DELAYED_RESEARCH'
     raw['verification_mode']='nasdaq100_futures'
     return raw
+
+
+# VERITAS V90 UNIVERSAL STRUCTURE LIFECYCLE
+# One market-structure rule across 5m/1h/4h/1d/3d/7d:
+# local range -> level break -> volatility expansion -> ordered extremes ->
+# hold while structure persists -> exit on volatility contraction + two-bar counter reclaim.
+V90_EXECUTION_TIMEFRAMES=('5m','1h','4h','1d','3d','7d')
+
+_v90_base_crypto_market = market
+_v90_legacy_impulse_breakdown_setup = impulse_breakdown_setup
+
+
+def market(symbol, coinbase_product):
+    raw=dict(_v90_base_crypto_market(symbol,coinbase_product))
+    bars5=[]
+    try:
+        k5=get_json('https://api.binance.com/api/v3/klines',
+                    {'symbol':symbol,'interval':'5m','limit':500})
+        bars5=[{'ts':float(x[0])/1000.0,'open':float(x[1]),'high':float(x[2]),
+                'low':float(x[3]),'close':float(x[4]),'volume':float(x[5])}
+               for x in k5 if len(x)>=6]
+    except Exception:
+        bars5=[]
+    raw['intraday_bars']=bars5
+    raw['intraday_5m']=bars5
+    raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
+    return raw
+
+
+def _v90_bar_tr(bar,prev_close=None):
+    h=float(bar.get('high') or bar.get('close') or 0.0)
+    l=float(bar.get('low') or bar.get('close') or 0.0)
+    if prev_close is None:
+        return max(0.0,h-l)
+    pc=float(prev_close)
+    return max(h-l,abs(h-pc),abs(l-pc))
+
+
+def _v90_hourly_bar_rows(raw):
+    c=[float(x) for x in (raw.get('closes') or [])]
+    h=[float(x) for x in (raw.get('highs') or [])]
+    l=[float(x) for x in (raw.get('lows') or [])]
+    v=[float(x or 0.0) for x in (raw.get('vols') or [])]
+    n=min(len(c),len(h),len(l))
+    if n<=0:
+        return []
+    if len(v)<n:
+        v=[0.0]*(n-len(v))+v
+    out=[]
+    for i in range(n):
+        op=c[i-1] if i>0 else c[i]
+        out.append({'ts':float(i),'open':op,'high':h[i],'low':l[i],
+                    'close':c[i],'volume':v[i] if i<len(v) else 0.0})
+    return out
+
+
+def _v90_aggregate_tf_bars(rows,group):
+    rows=list(rows or [])
+    g=max(1,int(group or 1))
+    if g<=1:
+        return rows
+    out=[]
+    end=len(rows)
+    # Align from the most recent bar so the current timeframe always contains
+    # the newest observable price; the first historical bucket may be partial.
+    start=end
+    chunks=[]
+    while start>0:
+        a=max(0,start-g)
+        chunks.append(rows[a:start])
+        start=a
+    for ch in reversed(chunks):
+        if not ch:
+            continue
+        out.append({'ts':ch[-1].get('ts'),
+                    'open':float(ch[0].get('open') or ch[0].get('close') or 0.0),
+                    'high':max(float(x.get('high') or x.get('close') or 0.0) for x in ch),
+                    'low':min(float(x.get('low') or x.get('close') or 0.0) for x in ch),
+                    'close':float(ch[-1].get('close') or 0.0),
+                    'volume':sum(float(x.get('volume') or 0.0) for x in ch)})
+    return out
+
+
+def _v90_tf_bars(raw,timeframe):
+    asset=str(raw.get('asset') or '')
+    tf=str(timeframe)
+    if tf=='5m':
+        bars=list(raw.get('intraday_bars') or raw.get('intraday_5m') or [])
+        return [dict(x) for x in bars[-500:] if isinstance(x,dict)]
+    hourly=_v90_hourly_bar_rows(raw)
+    if tf=='1h':
+        return hourly[-1000:]
+    try:
+        group=max(1,int(horizon_bars(asset,tf)))
+    except Exception:
+        group={'4h':4,'1d':24,'3d':72,'7d':168}.get(tf,1)
+    return _v90_aggregate_tf_bars(hourly,group)[-160:]
+
+
+def _v90_structure_lifecycle_one(asset,raw,timeframe):
+    bars=_v90_tf_bars(raw,timeframe)
+    if len(bars)<12:
+        return {'status':'DATA_REQUIRED','timeframe':timeframe,'bars':len(bars),
+                'entry_signal':False,'exit_signal':False,'state':'NO_DATA'}
+    bars=bars[-120:]
+    lookback=8
+    trs=[]
+    for i,b in enumerate(bars):
+        pc=float(bars[i-1].get('close') or 0.0) if i>0 else None
+        trs.append(_v90_bar_tr(b,pc))
+    event=None
+    scan_start=max(lookback,len(bars)-28)
+    for i in range(scan_start,len(bars)):
+        base=bars[i-lookback:i]
+        if len(base)<lookback:
+            continue
+        base_high=max(float(x.get('high') or x.get('close') or 0.0) for x in base)
+        base_low=min(float(x.get('low') or x.get('close') or 0.0) for x in base)
+        base_close=[float(x.get('close') or 0.0) for x in base]
+        base_tr_seq=[trs[j] for j in range(max(1,i-lookback),i) if trs[j]>0]
+        base_tr=_median_value(base_tr_seq) if base_tr_seq else max(base_high-base_low,1e-9)/4.0
+        if base_tr<=0:
+            continue
+        cur=bars[i]
+        close=float(cur.get('close') or 0.0)
+        high=float(cur.get('high') or close)
+        low=float(cur.get('low') or close)
+        if close<=0:
+            continue
+        cur_tr=trs[i]
+        expansion=cur_tr/max(base_tr,1e-9)
+        path=sum(abs(base_close[j]/base_close[j-1]-1.0) for j in range(1,len(base_close)) if base_close[j-1])
+        net=abs(base_close[-1]/base_close[0]-1.0) if base_close[0] else 0.0
+        base_eff=net/max(path,1e-12) if path>0 else 0.0
+        compact=((base_high-base_low)/max(base_tr,1e-9)<=5.0) or base_eff<=0.55
+        buf=max(0.08*base_tr,close*0.00015)
+        short_break=bool(close<base_low-buf)
+        long_break=bool(close>base_high+buf)
+        if expansion<1.25 or not compact or not (short_break or long_break):
+            continue
+        direction='SHORT' if short_break else 'LONG'
+        level=base_low if direction=='SHORT' else base_high
+        stop=(base_high+0.12*base_tr) if direction=='SHORT' else (base_low-0.12*base_tr)
+        risk=abs(close-stop)
+        if risk<=0:
+            continue
+        break_strength=abs(close-level)/max(base_tr,1e-9)
+        quality=clip(0.46+0.16*min(expansion/2.0,1.0)+0.14*min(break_strength/1.5,1.0)
+                     +0.12*(1.0-min(base_eff,1.0))+0.12,0.0,1.0)
+        event={'index':i,'direction':direction,'level':level,'range_high':base_high,
+               'range_low':base_low,'entry_price':close,'stop_price':stop,
+               'risk':risk,'base_tr':base_tr,'expansion_ratio':expansion,
+               'break_strength_atr':break_strength,'quality':quality,
+               'base_efficiency':base_eff}
+
+    if event is None:
+        return {'status':'OK','timeframe':timeframe,'bars':len(bars),
+                'entry_signal':False,'exit_signal':False,'state':'WAIT'}
+
+    i=int(event['index'])
+    after=bars[i:]
+    direction=event['direction']
+    age=len(bars)-1-i
+    recent=after[-min(6,len(after)):]
+    pairs=max(0,len(recent)-1)
+    lower_highs=sum(1 for j in range(1,len(recent))
+                    if float(recent[j].get('high') or 0.0)<float(recent[j-1].get('high') or 0.0))
+    lower_lows=sum(1 for j in range(1,len(recent))
+                   if float(recent[j].get('low') or 0.0)<float(recent[j-1].get('low') or 0.0))
+    higher_highs=sum(1 for j in range(1,len(recent))
+                     if float(recent[j].get('high') or 0.0)>float(recent[j-1].get('high') or 0.0))
+    higher_lows=sum(1 for j in range(1,len(recent))
+                    if float(recent[j].get('low') or 0.0)>float(recent[j-1].get('low') or 0.0))
+    if direction=='SHORT':
+        ordered=(lower_highs/max(1,pairs)>=0.50 and lower_lows/max(1,pairs)>=0.50)
+        best_price=min(float(x.get('low') or x.get('close') or 0.0) for x in after)
+        favorable=max(0.0,(event['entry_price']-best_price)/event['entry_price'])
+    else:
+        ordered=(higher_highs/max(1,pairs)>=0.50 and higher_lows/max(1,pairs)>=0.50)
+        best_price=max(float(x.get('high') or x.get('close') or 0.0) for x in after)
+        favorable=max(0.0,(best_price-event['entry_price'])/event['entry_price'])
+
+    post_tr=trs[i:]
+    peak_tr=max(post_tr) if post_tr else event['base_tr']
+    recent_tr=sum(post_tr[-2:])/max(1,min(2,len(post_tr))) if post_tr else event['base_tr']
+    vol_contraction=bool(recent_tr<=0.72*max(peak_tr,1e-9))
+    last2=after[-2:] if len(after)>=2 else []
+    second_counter=False
+    if len(last2)==2:
+        a,b=last2
+        if direction=='SHORT':
+            second_counter=bool(float(a.get('close') or 0)>float(a.get('open') or 0)
+                                and float(b.get('close') or 0)>float(b.get('open') or 0)
+                                and float(b.get('close') or 0)>float(a.get('close') or 0)
+                                and float(b.get('low') or 0)>=float(a.get('low') or 0))
+        else:
+            second_counter=bool(float(a.get('close') or 0)<float(a.get('open') or 0)
+                                and float(b.get('close') or 0)<float(b.get('open') or 0)
+                                and float(b.get('close') or 0)<float(a.get('close') or 0)
+                                and float(b.get('high') or 0)<=float(a.get('high') or 0))
+    min_favorable=max(0.0015,1.25*event['base_tr']/max(event['entry_price'],1e-9))
+    exit_signal=bool(age>=2 and favorable>=min_favorable and vol_contraction and second_counter)
+    entry_signal=bool(age<=1 and not exit_signal)
+    state=('EXIT_REVERSAL' if exit_signal else
+           'BREAKOUT_ENTRY' if entry_signal else
+           'TREND_CONTINUATION' if ordered else
+           'IMPULSE_WEAKENING')
+    return {'status':'OK','timeframe':timeframe,'bars':len(bars),'state':state,
+            'direction':direction,'entry_signal':entry_signal,'exit_signal':exit_signal,
+            'breakout_level':event['level'],'range_high':event['range_high'],
+            'range_low':event['range_low'],'entry_price':event['entry_price'],
+            'stop_price':event['stop_price'],'breakout_age_bars':age,
+            'volatility_expansion_ratio':round(float(event['expansion_ratio']),4),
+            'volatility_contraction':vol_contraction,
+            'structure_ordered':ordered,'lower_highs':lower_highs,'lower_lows':lower_lows,
+            'higher_highs':higher_highs,'higher_lows':higher_lows,
+            'second_counter_candle_confirmed':second_counter,
+            'favorable_excursion_pct':round(float(favorable),6),
+            'quality_score':round(float(event['quality']),6),
+            'management_rule':'hold while ordered extremes persist; exit on contracted volatility plus second counter candle reclaim'}
+
+
+def _v90_structure_breakout_grid(raw):
+    asset=str(raw.get('asset') or '')
+    return {tf:_v90_structure_lifecycle_one(asset,raw,tf) for tf in V90_EXECUTION_TIMEFRAMES}
+
+
+def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
+    grid=f.get('structure_breakout_grid') or _v90_structure_breakout_grid(raw)
+    horizon=str(f.get('horizon') or '1h')
+    preferred=('5m','1h') if horizon=='1h' else (horizon,)
+    candidates=[]
+    for tf in preferred:
+        z=grid.get(tf) or {}
+        if z.get('entry_signal') and z.get('direction') in ('LONG','SHORT'):
+            candidates.append(z)
+    if candidates:
+        z=max(candidates,key=lambda x:float(x.get('quality_score') or 0.0))
+        p=float(z.get('entry_price') or f.get('price') or 0.0)
+        stop=float(z.get('stop_price') or 0.0)
+        risk=abs(p-stop)
+        if p>0 and risk>0:
+            expected=max(2.0*risk,0.004*p)
+            direction=z['direction']
+            target=p-expected if direction=='SHORT' else p+expected
+            prob=clip(0.62+0.20*float(z.get('quality_score') or 0.0),0.68,0.86)
+            return {'active':True,'direction':direction,'candidate_direction':direction,
+                    'setup':'STRUCTURAL_BREAKOUT_LIFECYCLE','execution_timeframe':z.get('timeframe'),
+                    'probability':round(prob,4),'probability_source':'EXPERT_STRUCTURE_RULE_UNCALIBRATED',
+                    'stop_price':stop,'target_price':target,
+                    'reward_risk':round(expected/max(risk,1e-9),3),
+                    'breakout_level':z.get('breakout_level'),'range_high':z.get('range_high'),
+                    'range_low':z.get('range_low'),'quality_score':z.get('quality_score'),
+                    'volatility_expansion_ratio':z.get('volatility_expansion_ratio'),
+                    'structure_ordered':z.get('structure_ordered'),
+                    'dynamic_exit_rule':'VOL_CONTRACTION_PLUS_SECOND_COUNTER_CANDLE',
+                    'reason':'qualified_universal_structure_breakout'}
+    legacy=_v90_legacy_impulse_breakdown_setup(asset,raw,f,causal_score)
+    if isinstance(legacy,dict):
+        legacy['structure_breakout_grid']=grid
+    return legacy
 '''
     anchor="\ndef _fetch_asset_bundle(symbol, asset, cb_product):"
     if anchor not in dst:
         raise RuntimeError("VERITAS 9.0 market helper anchor missing")
     dst=dst.replace(anchor,"\n"+market_helper+anchor,1)
     applied.append("market_data_integrity")
+
+    # Universal structural-breakout policy: same rule on all timeframes.
+    dst = dst.replace(
+        "if tactical_reversal.get('active') and horizon in ('1h','4h'):",
+        "if tactical_reversal.get('active') and horizon in ('1h','4h','1d','3d','7d')"
+    )
+    dst = dst.replace(
+        "'tactical_reversal':tactical_reversal,'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structural_levels':f.get('structural_levels') or {},",
+        "'tactical_reversal':tactical_reversal,'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structure_breakout_grid':f.get('structure_breakout_grid') or {},'structural_levels':f.get('structural_levels') or {},"
+    )
+
+    # Persist this expert lesson across restarts. It is a general execution
+    # principle, not a Brent-only hard-coded price rule.
+    _ep26 = "{'id':'EP26','domain':'learning','statement':'Expert Replay should run frequently and prioritize the most informative cases, not a fixed weekly quota.'}"
+    _ep_more = """{'id':'EP26','domain':'learning','statement':'Expert Replay should run frequently and prioritize the most informative cases, not a fixed weekly quota.'},
+ {'id':'EP27','domain':'breakout','statement':'The same structural breakout lifecycle applies on 5m, 1h, 4h, 1d, 3d and 7d: a local range boundary break confirmed by volatility expansion is an actionable directional event.'},
+ {'id':'EP28','domain':'trend','statement':'After a valid breakout, successive lower highs and lower lows confirm SHORT continuation; successive higher highs and higher lows confirm LONG continuation and justify holding or staged scaling.'},
+ {'id':'EP29','domain':'exit','statement':'For a structural impulse, do not rely on a fixed take-profit by default; exit when volatility contracts and a second counter-direction candle confirms a reclaim beyond the previous candle close without a new trend extreme.'},
+ {'id':'EP30','domain':'multitimeframe','statement':'Market-structure rules are timeframe-invariant; only volatility normalization, structural stop distance and position size change with timeframe.'}"""
+    if _ep26 in dst and "'id':'EP27'" not in dst:
+        dst=dst.replace(_ep26,_ep_more,1)
+        applied.append("universal_structure_expert_policy")
+
+    _case_anchor = """      'direct_signal_weight':0.0, 'validation_policy':'architecture lesson from observed chart; no direct trading weight until independent future cases validate it'
+    }
+]"""
+    _case_new = """      'direct_signal_weight':0.0, 'validation_policy':'architecture lesson from observed chart; no direct trading weight until independent future cases validate it'
+    },
+    {
+      'case_id':'BRENT_2026_09_25_5M_RANGE_BREAK_IMPULSE_EXIT', 'asset':'BRENT', 'horizon':'1h',
+      'observed_at':'2026-09-25T15:00:00Z', 'case_type':'MISSED_STRUCTURAL_BREAKOUT_AND_EXIT',
+      'market_context':{'chart_timeframe':'5m','reported_range_low':105.92,
+                        'reported_range_zone':'106.00-106.50','reported_impulse_low':103.13,
+                        'reported_preferred_exit_zone':'103.70-103.80'},
+      'diagnosis':['local range support break was actionable before the slower committee fully flipped',
+                    'volatility expansion plus ordered lower highs/lower lows confirmed continuation',
+                    'fixed admission and target logic reacted too slowly to the path',
+                    'the second bullish reclaim after volatility contraction provided a cleaner exit than waiting for a slow horizon reversal'],
+      'architectural_lessons':['apply the same range-break/volatility/ordered-extremes lifecycle on every timeframe',
+                               'use 5m as execution timing while preserving senior-timeframe context',
+                               'scale while ordered extremes persist and risk remains bounded',
+                               'exit the impulse on volatility contraction plus a second counter-direction candle reclaim'],
+      'direct_signal_weight':0.0,
+      'validation_policy':'durable expert execution lesson; deterministic structural lifecycle is active with hard risk gates, while statistical sizing calibration remains sample-driven'
+    }
+]"""
+    if _case_anchor in dst and "BRENT_2026_09_25_5M_RANGE_BREAK_IMPULSE_EXIT" not in dst:
+        dst=dst.replace(_case_anchor,_case_new,1)
+        applied.append("brent_20260925_structure_case")
 
     # Runtime asset universe: replace cash NDX with nearly 24h Nasdaq-100 futures.
     replacements=[
@@ -811,6 +1122,15 @@ def regime_from(f):
 
 def features(raw, horizon, common_structure=None):
     f=_v90_base_features(raw,horizon,common_structure)
+    f['horizon']=horizon
+    grid=(common_structure or {}).get('structure_breakout_grid') if isinstance(common_structure,dict) else None
+    if not grid:
+        grid=_v90_structure_breakout_grid(raw)
+        if isinstance(common_structure,dict):
+            common_structure['structure_breakout_grid']=grid
+    f['structure_breakout_grid']=grid
+    f['structure_breakout_current']=grid.get(horizon) or {}
+    f['structure_breakout_5m']=grid.get('5m') or {}
     mtf=_v90_multi_tf_levels(raw)
     f['multi_tf_levels']=mtf
     sl=dict(f.get('structural_levels') or {})
