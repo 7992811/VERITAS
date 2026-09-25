@@ -346,7 +346,7 @@ def _v90_brent_market():
     hist=_moex_futures_candles_between(secid,end-150*86400,end+86400,60)
     if len(hist)<120:
         raise RuntimeError(f'INSUFFICIENT_MOEX_BRENT_HOURLY_BARS {secid}: {len(hist)}')
-    w=hist[-360:]
+    w=hist[-2400:]
     closes=[float(x[4]) for x in w]; highs=[float(x[2]) for x in w]
     lows=[float(x[3]) for x in w]; vols=[float(x[5]) for x in w]
     closes[-1]=price; highs[-1]=max(highs[-1],price); lows[-1]=min(lows[-1],price)
@@ -726,6 +726,26 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
         "'tactical_target_price':tactical_reversal.get('target_price'),'setup':tactical_reversal.get('setup') or 'TACTICAL_REVERSAL',",
         "'tactical_target_price':tactical_reversal.get('target_price'),'setup':tactical_reversal.get('setup') or 'TACTICAL_REVERSAL','execution_timeframe':tactical_reversal.get('execution_timeframe') or horizon,"
     )
+    dst = dst.replace(
+        "'eligible':True,'reason':'tactical_reversal','stop_price':tactical_reversal.get('stop_price'),\n                                       'expected_move_pct':",
+        "'eligible':True,'reason':'tactical_reversal','stop_price':tactical_reversal.get('stop_price'),\n                                       'stop_distance_pct':abs(float(f.get('price') or 0)-float(tactical_reversal.get('stop_price') or f.get('price') or 0))/max(float(f.get('price') or 1),1e-9),\n                                       'expected_move_pct':"
+    )
+
+    # Retain enough hourly bars for the same structural lifecycle on senior TFs.
+    dst = dst.replace(
+        "k = get_json('https://api.binance.com/api/v3/klines', {'symbol': symbol, 'interval': '1h', 'limit': 240})",
+        "k = get_json('https://api.binance.com/api/v3/klines', {'symbol': symbol, 'interval': '1h', 'limit': 1000})"
+    )
+    dst = dst.replace("closes=[float(x['close']) for x in bars1h[-240:]]",
+                      "closes=[float(x['close']) for x in bars1h[-1800:]]")
+    dst = dst.replace("highs=[float(x['high']) for x in bars1h[-240:]]",
+                      "highs=[float(x['high']) for x in bars1h[-1800:]]")
+    dst = dst.replace("lows=[float(x['low']) for x in bars1h[-240:]]",
+                      "lows=[float(x['low']) for x in bars1h[-1800:]]")
+    dst = dst.replace("vols=[float(x.get('volume') or 0) for x in bars1h[-240:]]",
+                      "vols=[float(x.get('volume') or 0) for x in bars1h[-1800:]]")
+    dst = dst.replace("w=hist[-240:]\n    closes=[float(x[4]) for x in w]",
+                      "w=hist[-1200:]\n    closes=[float(x[4]) for x in w]")
 
     # Runtime asset universe: replace cash NDX with nearly 24h Nasdaq-100 futures.
     replacements=[
