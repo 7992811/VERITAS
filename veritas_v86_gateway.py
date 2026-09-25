@@ -924,6 +924,42 @@ def overview():
         OVERVIEW_CACHE['at']=time.time(); OVERVIEW_CACHE['data']=base
     return base
 
+def _minimal_updating_overview(error=None):
+    with OVERVIEW_CACHE_LOCK:
+        cached=OVERVIEW_CACHE.get('data')
+    if isinstance(cached,dict):
+        out=dict(cached)
+        cyc=dict(out.get('cycle') or {})
+        cyc['status']='updating'
+        cyc['data_freshness']='STALE_WHILE_ENGINE_WARMS'
+        out['cycle']=cyc
+        out['gateway_state']='UPDATING'
+        if error: out['gateway_note']=error
+        return out
+    fsm=first_screen_metrics([])
+    return {
+      'overview_mode':'v86-compatible',
+      'gateway_state':'UPDATING',
+      'gateway_note':error or 'engine cold start',
+      'cycle':{'status':'updating','at':None,'summary':[],'version':'v86','data_freshness':'WARMING'},
+      'users':fsm.get('users') or {},
+      'signal_capacity':fsm.get('signal_capacity') or {},
+      'storage':fsm.get('storage') or {},
+      'managers':fsm.get('managers') or {},
+      'paper_portfolios':{'portfolios':[]},
+      'opportunity_board':{'opportunities':[]},
+      'investor_asset_view':{'items':[]},
+      'horizon_integrity':{'missing_live':ASSETS,'expected_signal_cells':35,'live_1h_seen':{a:False for a in ASSETS}},
+      'learning_progress':{'confidence':'BUILDING','matched_observations_each_side':0}
+    }
+
+def safe_overview():
+    try:
+        return overview()
+    except Exception as exc:
+        print('OVERVIEW_FAILSOFT',type(exc).__name__,str(exc)[:220],flush=True)
+        return _minimal_updating_overview(type(exc).__name__+': '+str(exc)[:160])
+
 def explain(asset, horizon):
     data = jget(V86, '/api/v85/analysis?asset=' + quote(asset))
     row = next((x for x in data.get('signals',[]) if x.get('horizon')==horizon), None)
@@ -1592,6 +1628,26 @@ PzbY1LQBLJagTRUNCATE" alt="VERITAS logo">
         value = value.replace('</body>', closed_fallback + '</body>')
         print(json.dumps({'event':'V86_CLOSED_TRADE_UI_FALLBACK','status':'installed'},
                          ensure_ascii=False,separators=(',',':')),flush=True)
+    cold_start_retry = r"""<script id="V86_COLD_START_RETRY">
+(function(){
+ let n=0;
+ async function retry(){
+   if(n>=12)return;
+   const sys=document.getElementById('sys');
+   const txt=(sys&&sys.textContent||'').trim().toUpperCase();
+   const stamp=(document.getElementById('stamp')?.textContent||'').toUpperCase();
+   if(txt==='UPDATING'||txt==='DEGRADED'||stamp.includes('HTTP 500')||stamp.includes('ЗАДЕРЖАНО')){
+     n++;
+     try{if(typeof load==='function')await load();}catch(e){}
+     try{if(typeof loadPortfolios==='function')await loadPortfolios();}catch(e){}
+     setTimeout(retry,3500);
+   }
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(retry,1800),{once:true});
+ else setTimeout(retry,1800);
+})();
+</script>"""
+    value=value.replace('</body>',cold_start_retry+'</body>')
     deep_tab_refresh = r"""<script id="V86_DEEP_TAB_REFRESH">
 (function(){
  function wire(){
@@ -1818,7 +1874,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_bytes(VERITAS_LOGO_PNG,'image/png')
             if path in ('/','/app'): return self.send_bytes(app_html())
             if path == '/readyz': return self.send_json({'status':'OK','ui':'production-main','engine':'v86','portfolios':8})
-            if path == '/api/v1/overview': return self.send_json(overview())
+            if path == '/api/v1/overview': return self.send_json(safe_overview())
             if path == '/api/v1/paper-portfolios': return self.send_json(transform_portfolios())
             if path == '/api/v1/portfolio-trades': return self.send_json(trades())
             if path == '/api/v1/learning-status': return self.send_json(jget(V86,'/api/v1/learning-status',6))
@@ -1869,7 +1925,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 print(json.dumps({'event':'V86_BRAND_LOGO_READY','bytes':len(VERITAS_LOGO_PNG),'route':'/assets/veritas-logo.png'},separators=(',',':')),flush=True)
-if __name__ == '__main__':
+def _background_selftest():
     try:
         _raw_pp = v86_portfolios()
         _raw_trades = jget(V86, '/api/v1/portfolio-trades', 20)
@@ -1916,5 +1972,11 @@ if __name__ == '__main__':
     except Exception as exc:
         print(json.dumps({'event':'V86_GATEWAY_SELFTEST','status':'error','error':type(exc).__name__+': '+str(exc)[:250]},
                          ensure_ascii=False,separators=(',',':')),flush=True)
+    
+
+if __name__ == '__main__':
     port = int(os.getenv('PORT','10000'))
-    ThreadingHTTPServer(('0.0.0.0',port), Handler).serve_forever()
+    server=ThreadingHTTPServer(('0.0.0.0',port), Handler)
+    print(json.dumps({'event':'V86_GATEWAY_PORT_READY','port':port,'startup':'nonblocking'},separators=(',',':')),flush=True)
+    threading.Thread(target=_background_selftest,name='v86-warmup',daemon=True).start()
+    server.serve_forever()
