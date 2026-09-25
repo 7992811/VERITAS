@@ -230,27 +230,10 @@ def v90_migrate_core_data():
         except Exception as _pr_ex:
             emit('v90_open_position_startup_audit',status='ERROR',
                  error=f'{type(_pr_ex).__name__}: {_pr_ex}')
-        try:
-            _jr=VP.trade_report(pg_connect,1000)
-            emit('v90_closed_journal_startup_audit',
-                 status=_jr.get('status'),
-                 today_closed_count=_jr.get('today_closed_count'),
-                 older_closed_count=_jr.get('older_closed_count'),
-                 total_closed_count=_jr.get('total_closed_count'),
-                 unique_learning_count=_jr.get('unique_learning_count'),
-                 learning_eligible_count=_jr.get('learning_eligible_count'),
-                 deduplicated_portfolio_records=_jr.get('deduplicated_portfolio_records'),
-                 today_missing_fields=_jr.get('today_missing_fields'),
-                 today_recovery=_jr.get('today_recovery'))
-        except Exception as _jr_ex:
-            emit('v90_closed_journal_startup_audit',status='ERROR',
-                 error=f'{type(_jr_ex).__name__}: {_jr_ex}')
-        try:
-            _pel=_v90_publish_paper_execution_lessons(2500)
-            emit('v90_paper_execution_learning_bootstrap',**_pel)
-        except Exception as _pel_ex:
-            emit('v90_paper_execution_learning_bootstrap',status='ERROR',
-                 error=f'{type(_pel_ex).__name__}: {_pel_ex}')
+        emit('v90_startup_memory_policy',
+             closed_journal='DEFER_TO_UI_REQUEST',
+             paper_execution_learning='DEFER_TO_MEMORY_GUARDED_HEAVY_LEARNING',
+             principle='startup keeps only live portfolio state; historical analytics stay durable in PostgreSQL')
     case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}"""
     dst, ch = _replace_once(dst, old_main, new_main, "v90 migration startup")
     if ch:
