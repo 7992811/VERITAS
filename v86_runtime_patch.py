@@ -1082,6 +1082,21 @@ if _v90_pool_old not in _v90_pg_src:
 _v90_pg_path.write_text(_v90_pg_src.replace(_v90_pool_old,_v90_pool_new,1),encoding='utf-8')
 print('V90_POSTGRES_POOL_SCHEMA_BOUND schema=veritas_v90_prod',flush=True)
 
+# Base 9.0 has no legacy paper_* tables; the durable v85/v86 ledger is authoritative.
+_v90_v85_app=root/'veritas_v85/application.py'
+_v90_v85_src=_v90_v85_app.read_text(encoding='utf-8')
+_v90_legacy_anchor='    def _legacy_snapshot(self):\n'
+_v90_legacy_repl='''    def _legacy_snapshot(self):
+        import os as _v90_os
+        if _v90_os.getenv("VERITAS_STORAGE_GENERATION","").strip()=="9.0":
+            return {"status":"NOT_APPLICABLE_V90","reason":"DURABLE_V85_LEDGER_AUTHORITATIVE",
+                    "accounts":[],"positions":[],"trades":[]}
+'''
+if _v90_legacy_anchor not in _v90_v85_src:
+    raise SystemExit('V90_LEGACY_SNAPSHOT_ANCHOR_NOT_FOUND')
+_v90_v85_app.write_text(_v90_v85_src.replace(_v90_legacy_anchor,_v90_legacy_repl,1),encoding='utf-8')
+print('V90_LEGACY_PAPER_AUDIT_DISABLED',flush=True)
+
 # 25) Base 9.0 cutover: shared durable PostgreSQL + four active portfolios only.
 import re as _v90_re
 
