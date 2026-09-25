@@ -2709,6 +2709,19 @@ def trade_report(pg_connect,limit=2500):
         'display_policy':'today full detail; older portfolio results + unique learning episodes only',
         'learning_policy':'one canonical market episode once; portfolio duplicates aggregated before self-learning',
     })
+    sig=(result.get('today_closed_count'),result.get('older_closed_count'),
+         result.get('unique_learning_count'),tuple(sorted((result.get('today_missing_fields') or {}).items())))
+    if _v90j_cache.get('logged_signature')!=sig:
+        print(json.dumps({'event':'V90_CLOSED_JOURNAL_REPORT',
+                          'today_closed_count':result.get('today_closed_count'),
+                          'older_closed_count':result.get('older_closed_count'),
+                          'total_closed_count':result.get('total_closed_count'),
+                          'unique_learning_count':result.get('unique_learning_count'),
+                          'learning_eligible_count':result.get('learning_eligible_count'),
+                          'deduplicated_portfolio_records':result.get('deduplicated_portfolio_records'),
+                          'today_missing_fields':result.get('today_missing_fields')},
+                         ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+        _v90j_cache['logged_signature']=sig
     _v90j_cache['at']=now_ts; _v90j_cache['value']=result
     return result
 '''
