@@ -2689,7 +2689,7 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['learning_conclusion']=payload.get('learning_conclusion') or _v90j_learning_conclusion(label,z)
         _stored_eligible=payload.get('learning_eligible')
         _path_complete=(z.get('mfe_pct') is not None and z.get('mae_pct') is not None)
-        z['learning_eligible']=bool(not recovered and _path_complete and z['telemetry_completeness']>=0.80)
+        z['learning_eligible']=bool(not recovered and _path_complete and z['telemetry_completeness']>=0.999)
         z['episode_key']=_v90j_episode_key(z,payload)
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
         out.append(_jsonable(z))
@@ -2728,7 +2728,7 @@ def _v90j_unique_learning(rows):
         label=max(z['labels'],key=z['labels'].get) if z['labels'] else 'MIXED_EXECUTION'
         exit_reason=max(z['exit_reasons'],key=z['exit_reasons'].get) if z['exit_reasons'] else None
         completeness=avg(z['completeness']) or 0.0
-        learning_eligible=bool(completeness>=0.80 and bool(z['mfe']) and bool(z['mae'])
+        learning_eligible=bool(completeness>=0.999 and bool(z['mfe']) and bool(z['mae'])
                                and label!='RECOVERED_HISTORICAL_NO_LEARNING')
         row={'episode_key':key,'asset':z['asset'],'direction':z['direction'],'horizon':z['horizon'],
              'setup':z['setup'],'setup_family':z['setup_family'],'regime':z['regime'],
