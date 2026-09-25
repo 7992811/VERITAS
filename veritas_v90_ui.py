@@ -475,6 +475,35 @@ def apply_v90_ui(html):
     value = value.replace('Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.',
                           'Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. Реальные деньги не используются.')
     value = value.replace('V86','V90').replace('v86','v90')
+    nq_label_js = r"""<script id="V90_NQ_FUTURES_LABEL">
+    (function(){
+      const label=a=>a==='NQ'?'NQ Futures':a;
+      const oldRender=window.renderMatrix;
+      if(typeof oldRender==='function'){
+        window.renderMatrix=function(rows){
+          oldRender(rows);
+          document.querySelectorAll('#matrix .asset-name').forEach(el=>{
+            if(el.textContent.trim()==='NQ')el.textContent='NQ Futures';
+          });
+          document.querySelectorAll('#superstrip .superasset').forEach(el=>{
+            el.childNodes.forEach(n=>{
+              if(n.nodeType===Node.TEXT_NODE && n.textContent.trim()==='NQ')n.textContent='NQ Futures';
+            });
+          });
+        };
+      }
+      const observer=new MutationObserver(()=>{
+        document.querySelectorAll('.asset-name,.assetview-name,.superasset,b').forEach(el=>{
+          const t=el.textContent.trim();
+          if(t==='NQ')el.textContent='NQ Futures';
+          else if(t.startsWith('NQ ·'))el.textContent=t.replace(/^NQ\s*·/,'NQ Futures ·');
+          else if(t.includes('· NQ ·'))el.textContent=t.replace('· NQ ·','· NQ Futures ·');
+        });
+      });
+      observer.observe(document.body,{subtree:true,childList:true});
+    })();
+    </script>"""
+    value = value.replace('</body>', nq_label_js + '</body>')
     fast_signal_js = r"""<script id="V90_FAST_SIGNAL_FEED">
     (function(){
       async function v90LoadSignals(){
