@@ -1239,7 +1239,8 @@ def app_html():
     # V86.2 BRAND_AND_HEADER_REFINEMENT
     _brand_markup = '''<div class="veritas-brandlock">
       <div class="veritas-primary">
-        <div class="veritas-core"><svg class="veritas-logo-svg" viewBox="0 0 80 92" aria-hidden="true" focusable="false">
+        <div class="veritas-core">
+          <svg class="veritas-logo-svg" viewBox="0 0 80 92" aria-hidden="true" focusable="false">
 <defs>
  <linearGradient id="vg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#eef2f5"/><stop offset=".32" stop-color="#8998a3"/><stop offset=".62" stop-color="#243440"/><stop offset="1" stop-color="#0d1720"/></linearGradient>
  <linearGradient id="vg2" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f1f4f6"/><stop offset=".28" stop-color="#96a3ad"/><stop offset=".65" stop-color="#2b3b47"/><stop offset="1" stop-color="#101a22"/></linearGradient>
@@ -1252,12 +1253,16 @@ def app_html():
 <path d="M28 47 35 42 35 59 28 52Z" fill="#263844"/>
 <path d="M38 39 45 34 45 59 38 64Z" fill="#31444f"/>
 <path d="M48 31 55 26 55 48 48 59Z" fill="#263844"/>
-</svg><div class="veritas-wordmark">
-          <span class="wm-v">V</span><span class="wm-e" aria-label="E"><i></i><i></i><i></i></span><span>RITAS</span>
-        </div></div>
+</svg>
+          <div class="veritas-right">
+            <div class="veritas-wordmark">
+              <span class="wm-v">V</span><span class="wm-e" aria-label="E"><i></i><i></i><i></i></span><span>RITAS</span>
+            </div>
+            <div class="markets-word">Markets</div>
+          </div>
+        </div>
         <div class="veritas-subtitle">Цифровой Инвестиционный Комитет</div>
       </div>
-      <div class="markets-word">Markets</div>
     </div>'''
     value = re.sub(
         r'<h1>VERITAS Markets</h1>\s*<div class="sub">[^<]*</div>',
@@ -1523,24 +1528,26 @@ def app_html():
  #portfoliotrades .closed-extra{font-size:7px}
  #portfoliotrades .closed-more-btn{font-size:7.5px;padding:3px 5px}
 }
-.veritas-brandlock{display:flex;align-items:flex-start;gap:18px;min-width:0}
+.veritas-brandlock{display:inline-flex;align-items:flex-start;min-width:0}
 .veritas-primary{display:inline-flex;flex-direction:column;align-items:stretch;min-width:0}
-.veritas-core{display:flex;align-items:center;gap:14px;min-width:0}
+.veritas-core{display:flex;align-items:flex-start;gap:14px;min-width:0}
+.veritas-right{display:inline-flex;flex-direction:column;align-items:flex-start;min-width:0}
 .veritas-logo-svg{width:78px;height:90px;flex:0 0 78px;overflow:visible;filter:drop-shadow(0 10px 24px rgba(0,0,0,.28))}
-.veritas-wordmark{display:flex;align-items:center;height:64px;white-space:nowrap;font-family:"Avenir Next","Century Gothic","Helvetica Neue","Segoe UI",Arial,sans-serif;font-size:53px;font-weight:300;letter-spacing:.18em;line-height:1;color:#d3d9de}
-.veritas-wordmark .wm-v{margin-right:.02em}
-.veritas-wordmark .wm-e{display:inline-flex;width:.72em;height:.72em;flex-direction:column;justify-content:space-between;margin-right:.12em;transform:translateY(.01em)}
-.veritas-wordmark .wm-e i{display:block;width:100%;height:.12em;background:#6f9c84;border-radius:.02em}
-.veritas-subtitle{width:100%;margin-top:4px;color:#8b969f;font-family:"Avenir Next","Helvetica Neue","Segoe UI",Arial,sans-serif;font-size:11px;font-weight:400;letter-spacing:.105em;line-height:1.15;white-space:nowrap;text-align:justify;text-align-last:justify}
+.veritas-wordmark{display:flex;align-items:center;height:64px;white-space:nowrap;font-family:"Avenir Next","Century Gothic","Helvetica Neue","Segoe UI",Arial,sans-serif;font-size:53px;font-weight:360;letter-spacing:.17em;line-height:1;color:#e0e5e9}
+.veritas-wordmark .wm-v{margin-right:.01em}
+.veritas-wordmark .wm-e{display:inline-flex;width:.72em;height:.94em;flex-direction:column;justify-content:space-between;align-self:center;margin-right:.10em;transform:translateY(0)}
+.veritas-wordmark .wm-e i{display:block;width:100%;height:.135em;background:#86b39a;border-radius:.025em;box-shadow:0 0 0 .01em rgba(255,255,255,.035)}
+.markets-word{margin-top:3px;font-family:"Avenir Next","Century Gothic","Helvetica Neue","Segoe UI",Arial,sans-serif;font-size:20px;font-weight:360;letter-spacing:.12em;line-height:1;color:#929da6;white-space:nowrap}
+.veritas-subtitle{width:100%;margin-top:9px;color:#98a2aa;font-family:"Avenir Next","Helvetica Neue","Segoe UI",Arial,sans-serif;font-size:11px;font-weight:420;letter-spacing:.09em;line-height:1.15;white-space:nowrap;text-align:justify;text-align-last:justify}
 .veritas-subtitle::after{content:"";display:inline-block;width:100%}
-.markets-word{padding-top:26px;font-family:"Avenir Next","Century Gothic","Helvetica Neue","Segoe UI",Arial,sans-serif;font-size:27px;font-weight:300;letter-spacing:.10em;line-height:1;color:#7d8894;white-space:nowrap}
 @media(max-width:900px){
- .veritas-brandlock{gap:12px}
  .veritas-core{gap:10px}
  .veritas-logo-svg{width:58px;height:68px;flex-basis:58px}
- .veritas-wordmark{height:48px;font-size:36px;letter-spacing:.13em}
- .veritas-subtitle{margin-top:3px;font-size:8px;letter-spacing:.075em}
- .markets-word{padding-top:19px;font-size:18px;letter-spacing:.075em}
+ .veritas-wordmark{height:48px;font-size:36px;font-weight:380;letter-spacing:.125em}
+ .veritas-wordmark .wm-e{height:.95em;width:.72em;margin-right:.09em}
+ .veritas-wordmark .wm-e i{height:.14em}
+ .markets-word{margin-top:2px;font-size:14px;letter-spacing:.10em}
+ .veritas-subtitle{margin-top:6px;font-size:8px;font-weight:430;letter-spacing:.065em}
 }
 .v86-health-card{display:flex!important;align-items:center!important;justify-content:center!important;padding:12px 16px!important}
 .v86-health-card .v{grid-column:auto!important;grid-row:auto!important;text-align:center!important;font-size:22px!important}
@@ -1557,11 +1564,6 @@ def app_html():
 .v86-knowledge-row>.card .v{grid-column:2;grid-row:1;font-size:21px;line-height:1;text-align:right;white-space:nowrap}
 .v86-knowledge-row>.card .stamp{grid-column:1 / span 2;grid-row:2;margin-top:4px;font-size:8px;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:900px){
- .veritas-brandlock{gap:9px}
- .veritas-logo-img{width:38px;height:38px;flex-basis:38px}
- .veritas-word{font-size:23px;letter-spacing:.08em}
- .markets-word{font-size:14px}
- .veritas-subtitle{font-size:8.5px;margin-top:5px}
  .v86-top-row{gap:6px}
  .v86-status-users-row{grid-template-columns:repeat(2,minmax(0,1fr))}
  .v86-knowledge-row{grid-template-columns:repeat(3,minmax(0,1fr))}
