@@ -40,8 +40,8 @@ def _patch_intelligence():
     dst2, nver = re.subn(
         r"^VERSION\s*=\s*['\"][^'\"]+['\"]",
         "VERSION = '" + V90_INTEL + "'",
-        dst, count=1, flags=re.M)
-    if nver != 1:
+        dst, count=0, flags=re.M)
+    if nver < 1:
         raise RuntimeError("v90 intelligence VERSION assignment missing")
     if dst2 != dst:
         dst = dst2
@@ -237,8 +237,8 @@ def _patch_portfolio():
     dst2, nver = re.subn(
         r"^VERSION\s*=\s*['\"][^'\"]+['\"]",
         "VERSION='" + V90_PORT + "'",
-        dst, count=1, flags=re.M)
-    if nver != 1:
+        dst, count=0, flags=re.M)
+    if nver < 1:
         raise RuntimeError("v90 portfolio VERSION assignment missing")
     if dst2 != dst:
         dst = dst2
