@@ -1100,9 +1100,14 @@ if _v90_os.getenv('VERITAS_STORAGE_GENERATION','').strip()=='9.0':
     _v90_dsn=str(_v90_obj.get('database_url') or '').strip()
     if _v90_obj.get('storage_generation')!='9.0' or not _v90_dsn:
         raise RuntimeError('V90_DB_LEASE_INVALID')
+    import psycopg as _v90_psycopg
+    from psycopg.conninfo import make_conninfo as _v90_make_conninfo
+    with _v90_psycopg.connect(_v90_dsn,autocommit=True) as _v90_conn:
+        _v90_conn.execute('CREATE SCHEMA IF NOT EXISTS veritas_v90')
+    _v90_dsn=_v90_make_conninfo(_v90_dsn,options='-c search_path=veritas_v90,public')
     _v90_os.environ['DATABASE_URL']=_v90_dsn
     _v90_os.environ.pop('VERITAS_V85_TEST_DATABASE_URL',None)
-    print('VERITAS_V90_DB_LEASE_ACTIVE storage_generation=9.0',flush=True)
+    print('VERITAS_V90_DB_LEASE_ACTIVE storage_generation=9.0 schema=veritas_v90',flush=True)
 '''
     if _v90_anchor not in _v90_start:
         raise SystemExit('V90_START_STORAGE_ANCHOR_NOT_FOUND')
@@ -1146,8 +1151,16 @@ print('V90_4_MANDATES_REPORT')
 
 # Restore only verified state belonging to the retained portfolios.
 # Aggressive starts clean at 1,000,000 RUB; no synthetic history is created.
+_v90_latest_snapshot=root.parent/'state_snapshots/VERITAS_v86_STATE_20260924_112949Z.json'
+if not _v90_latest_snapshot.is_file():
+    raise SystemExit('V90_LATEST_STATE_SNAPSHOT_MISSING')
+(root/'veritas_v86/state_restore_112949.json').write_text(
+    _v90_latest_snapshot.read_text(encoding='utf-8'),encoding='utf-8')
 p=root/'veritas_v86/state_restore.py'
 _v90_sr=p.read_text(encoding='utf-8')
+_v90_sr=_v90_sr.replace("RESTORE_ID='PRE_DURABLE_STATE_20260924_111755Z'","RESTORE_ID='PRE_DURABLE_STATE_20260924_112949Z'")
+_v90_sr=_v90_sr.replace("TARGET=HERE/'state_restore_111755.json'","TARGET=HERE/'state_restore_112949.json'")
+_v90_sr=_v90_sr.replace("CUTOVER_ID='legacy-paper-to-v85-v1'","CUTOVER_ID='legacy-paper-to-v90-latest-v1'")
 if 'ACTIVE_ACCOUNTS=' not in _v90_sr:
     _v90_sr=_v90_sr.replace("RESTORE_ID=","ACTIVE_ACCOUNTS={'Champion','Challenger','Impulse','Aggressive'}\nRESTORE_ID=",1)
 _v90_accounts_anchor="target=_load(TARGET); archive=_load(ARCHIVE); accounts=_target_accounts(target)"
