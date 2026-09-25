@@ -754,6 +754,19 @@ def _run():
                     print("[VERITAS PARSE DIAG] prefix=OK",file=sys.stderr,flush=True)
                 except SyntaxError as _pe:
                     print(f"[VERITAS PARSE DIAG] prefix=FAIL line={_pe.lineno} offset={_pe.offset} msg={_pe.msg} text={_pe.text!r}",file=sys.stderr,flush=True)
+                _sline=_src[:_s].count("\n")+1 if _s>=0 else None
+                _eline=_src[:_e].count("\n")+1 if _e>=0 else None
+                print(f"[VERITAS PARSE DIAG] start_line={_sline} end_line={_eline}",file=sys.stderr,flush=True)
+                try:
+                    compile(_src[:_e],"<prefix_plus_function>","exec")
+                    print("[VERITAS PARSE DIAG] prefix_plus_function=OK",file=sys.stderr,flush=True)
+                except SyntaxError as _pfe:
+                    print(f"[VERITAS PARSE DIAG] prefix_plus_function=FAIL line={_pfe.lineno} offset={_pfe.offset} msg={_pfe.msg} text={_pfe.text!r}",file=sys.stderr,flush=True)
+                try:
+                    compile(_src[_e:],"<suffix>","exec")
+                    print("[VERITAS PARSE DIAG] suffix=OK",file=sys.stderr,flush=True)
+                except SyntaxError as _se:
+                    print(f"[VERITAS PARSE DIAG] suffix=FAIL line={_se.lineno} offset={_se.offset} msg={_se.msg} text={_se.text!r}",file=sys.stderr,flush=True)
             except Exception as _de:
                 print(f"[VERITAS PARSE DIAG] unavailable={type(_de).__name__}:{_de}",file=sys.stderr,flush=True)
         if isinstance(exc,SyntaxError):
