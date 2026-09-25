@@ -619,7 +619,7 @@ def _v90_structure_lifecycle_one(asset,raw,timeframe):
             'higher_highs':higher_highs,'higher_lows':higher_lows,
             'second_counter_candle_confirmed':second_counter,
             'favorable_excursion_pct':round(float(favorable),6),
-            'quality_score':round(float(event['quality']),6),
+            'quality_score':round(float(event['quality']),6),'atr_5m':float(event['base_tr']),
             'management_rule':'hold while ordered extremes persist; exit on contracted volatility plus second counter candle reclaim'}
 
 
@@ -662,6 +662,100 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
     if isinstance(legacy,dict):
         legacy['structure_breakout_grid']=grid
     return legacy
+
+
+def _v90_5m_horizon_structure(raw):
+    bars=_v90_tf_bars(raw,'5m')
+    asset=str(raw.get('asset') or '')
+    if len(bars)<12:
+        return {'status':'UNAVAILABLE','horizon':'5m','native_horizon':True,
+                'resolution':'5m_native_bars','direction':'NO_TRADE','score':0.0,
+                'state':'DATA_REQUIRED','bars':len(bars)}
+    c=[float(x.get('close') or 0.0) for x in bars]
+    h=[float(x.get('high') or x.get('close') or 0.0) for x in bars]
+    l=[float(x.get('low') or x.get('close') or 0.0) for x in bars]
+    p=float(raw.get('price') or c[-1])
+    if p>0:
+        c[-1]=p
+    rr=[c[i]/c[i-1]-1.0 for i in range(1,len(c)) if c[i-1]]
+    floor={'BTC':0.00035,'ETH':0.00045,'NQ':0.00018,'BRENT':0.00028,
+           'GOLD':0.00018,'MOEX':0.00022,'CNYRUBF':0.00016}.get(asset,0.00025)
+    sigma=_robust_sigma(rr[-min(120,len(rr)):],floor)
+    ret5=p/c[-2]-1.0 if len(c)>=2 and c[-2] else 0.0
+    n30=min(6,len(c)-1)
+    ret30=p/c[-1-n30]-1.0 if n30>=1 and c[-1-n30] else ret5
+    z5=ret5/max(sigma,1e-9)
+    z30=ret30/max(sigma*math.sqrt(float(max(1,n30))),1e-9)
+    life=_v90_structure_lifecycle_one(asset,raw,'5m')
+    ldir=str(life.get('direction') or 'NO_TRADE')
+    lstate=str(life.get('state') or 'WAIT')
+    quality=float(life.get('quality_score') or 0.0)
+    direction='NO_TRADE'
+    if not life.get('exit_signal') and ldir in ('LONG','SHORT') and lstate in ('BREAKOUT_ENTRY','TREND_CONTINUATION'):
+        direction=ldir
+    elif abs(z30)>=0.65:
+        direction='LONG' if ret30>0 else 'SHORT'
+    raw_direction='LONG' if ret5>0 else 'SHORT' if ret5<0 else 'NO_TRADE'
+    stats=_window_path_stats(c,h,l,min(8,len(c)-1),direction if direction in ('LONG','SHORT') else raw_direction)
+    ordered=bool(life.get('structure_ordered'))
+    expansion=float(life.get('volatility_expansion_ratio') or 1.0)
+    score=clip(0.42*quality
+               +0.22*clip((abs(z30)-0.25)/1.75,0.0,1.0)
+               +0.16*clip((abs(z5)-0.15)/1.60,0.0,1.0)
+               +0.12*(1.0 if ordered else clip(stats.get('persistence') or 0.0,0.0,1.0))
+               +0.08*clip((expansion-0.90)/1.10,0.0,1.0),0.0,1.0)
+    if life.get('exit_signal'):
+        direction='NO_TRADE'; state='EXIT_REVERSAL'
+    elif direction=='NO_TRADE':
+        state='NEUTRAL'
+    elif lstate=='BREAKOUT_ENTRY' and score>=0.52:
+        state='BUILDING_TREND'
+    elif lstate=='TREND_CONTINUATION' and (ordered or score>=0.66):
+        state='CONFIRMED_TREND'
+    elif score>=0.50:
+        state='BUILDING_TREND'
+    else:
+        state='WEAK'
+    return {'status':'OK','horizon':'5m','native_horizon':True,'resolution':'5m_native_bars',
+            'direction':direction,'raw_direction':raw_direction,'score':round(score,6),
+            'state':state,'return':ret5,'return_30m':ret30,'z':round(z5,6),'z30':round(z30,6),
+            'bars':len(bars),'sigma_5m':sigma,'path_efficiency':stats.get('efficiency'),
+            'persistence':stats.get('persistence'),'range_position':stats.get('range_position'),
+            'breakout':bool(life.get('entry_signal') or lstate=='TREND_CONTINUATION'),
+            'breakout_level':life.get('breakout_level'),'volume_ratio':expansion,
+            'structure_ordered':ordered,'lifecycle_state':lstate,
+            'stop_price':life.get('stop_price'),'exit_signal':bool(life.get('exit_signal'))}
+
+
+_v90_base_horizon_structure_features = horizon_structure_features
+
+
+def horizon_structure_features(raw,horizon):
+    if str(horizon)=='5m':
+        return _v90_5m_horizon_structure(raw)
+    return _v90_base_horizon_structure_features(raw,horizon)
+
+
+def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
+    if str(horizon)!='5m':
+        return fetch_path_asset(asset,symbol,start_ms,hours)
+    ss=float(start_ms)/1000.0
+    end=ss+3*3600
+    if asset in ('BTC','ETH'):
+        return get_json('https://api.binance.com/api/v3/klines',
+                        {'symbol':symbol,'interval':'5m','startTime':int(start_ms),'limit':36})
+    if asset=='NQ':
+        return _yahoo_between('NQ%3DF',ss-600,end,'5m')
+    if asset=='GOLD':
+        return _yahoo_between('GC%3DF',ss-600,end,'5m')
+    if asset=='BRENT':
+        secid,_q=_v90_moex_front_brent_contract()
+        return _moex_futures_candles_between(secid,ss-600,end,5)
+    if asset=='MOEX':
+        return _yahoo_between('IMOEX.ME',ss-600,end,'5m')
+    if asset=='CNYRUBF':
+        return _moex_futures_candles_between('CNYRUBF',ss-600,end,5)
+    return fetch_path_asset(asset,symbol,start_ms,hours)
 '''
     if "# VERITAS V90 UNIVERSAL STRUCTURE LIFECYCLE" not in dst:
         compile(market_helper,'<v90_market_helper>','exec')
@@ -749,6 +843,122 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
     dst = dst.replace("w=hist[-240:]\n    closes=[float(x[4]) for x in w]",
                       "w=hist[-1200:]\n    closes=[float(x[4]) for x in w]")
 
+    # VERITAS V90 FULL 5M HORIZON
+    # 5m is a first-class decision horizon. It uses native 5-minute bars for signal,
+    # outcome and learning; 1h+ remains the directional/risk context.
+    dst = dst.replace(
+        "HORIZONS = {'1h': 1, '4h': 4, '1d': 24, '3d': 72, '7d': 168}",
+        "HORIZONS = {'5m': 1.0/12.0, '1h': 1, '4h': 4, '1d': 24, '3d': 72, '7d': 168}"
+    )
+    dst = dst.replace(
+        "def horizon_bars(asset,horizon):\n    return ASSET_HORIZON_BARS.get(asset,HORIZONS).get(horizon,HORIZONS[horizon])",
+        "def horizon_bars(asset,horizon):\n    if str(horizon)=='5m': return 1\n    return ASSET_HORIZON_BARS.get(asset,HORIZONS).get(horizon,HORIZONS[horizon])"
+    )
+
+    # 5m outcomes become eligible after five minutes and never sit behind immature
+    # 1d/3d/7d observations in the bounded outcome queue.
+    _pending_old = """          WHERE d.event_type='decision'
+            AND NOT EXISTS (
+              SELECT 1 FROM ledger_events o
+              WHERE o.event_type='outcome' AND o.entity_key=d.entity_key)
+          ORDER BY d.event_ts
+          LIMIT %s"""
+    _pending_new = """          WHERE d.event_type='decision'
+            AND NOT EXISTS (
+              SELECT 1 FROM ledger_events o
+              WHERE o.event_type='outcome' AND o.entity_key=d.entity_key)
+            AND d.event_ts + CASE d.horizon
+                  WHEN '5m' THEN interval '5 minutes'
+                  WHEN '1h' THEN interval '1 hour'
+                  WHEN '4h' THEN interval '4 hours'
+                  WHEN '1d' THEN interval '1 day'
+                  WHEN '3d' THEN interval '3 days'
+                  WHEN '7d' THEN interval '7 days'
+                  ELSE interval '1 day' END <= now()
+          ORDER BY d.event_ts + CASE d.horizon
+                  WHEN '5m' THEN interval '5 minutes'
+                  WHEN '1h' THEN interval '1 hour'
+                  WHEN '4h' THEN interval '4 hours'
+                  WHEN '1d' THEN interval '1 day'
+                  WHEN '3d' THEN interval '3 days'
+                  WHEN '7d' THEN interval '7 days'
+                  ELSE interval '1 day' END,
+                   d.event_ts
+          LIMIT %s"""
+    if _pending_old in dst:
+        dst=dst.replace(_pending_old,_pending_new,1)
+        applied.append("5m_maturity_aware_outcome_queue")
+
+    dst = dst.replace(
+        "k = fetch_path_asset(r['asset'],symbol,int(created.timestamp()*1000),hours)",
+        "k = _v90_fetch_path_asset_horizon(r['asset'],symbol,int(created.timestamp()*1000),r['horizon'],hours)"
+    )
+
+    # 5m is learned independently; legacy hourly historical backtest does not fake
+    # 5m evidence from one-hour bars.
+    dst = dst.replace(
+        "                for horizon,hh in HORIZONS.items():\n                    bars_h=horizon_bars(asset,horizon)",
+        "                for horizon,hh in HORIZONS.items():\n                    if horizon=='5m':\n                        continue\n                    bars_h=horizon_bars(asset,horizon)"
+    )
+
+    # Agent thresholds/speeds for the native 5m cell.
+    dst = dst.replace(
+        "    scale = {'1h': 1.10, '4h': 1.0, '1d': 0.90, '3d': 0.75, '7d': 0.65}[horizon]",
+        "    scale = {'5m':1.22,'1h': 1.10, '4h': 1.0, '1d': 0.90, '3d': 0.75, '7d': 0.65}[horizon]"
+    )
+    dst = dst.replace(
+        "    if horizon=='1h':\n        qs = (0.50*ret_h + 0.30*mom + 0.20*trend) * scale",
+        "    if horizon in ('5m','1h'):\n        qs = (0.55*ret_h + 0.30*mom + 0.15*trend) * scale"
+    )
+    dst = dst.replace(
+        "    if horizon=='1h':\n        quant_cut*=0.55\n        tech_cut*=0.55",
+        "    if horizon=='5m':\n        quant_cut*=0.32\n        tech_cut*=0.32\n    elif horizon=='1h':\n        quant_cut*=0.55\n        tech_cut*=0.55"
+    )
+    dst = dst.replace(
+        "    if horizon=='1h':\n        ts = (0.45*ret_h + 0.25*mom + 0.15*trend + 0.15*flow) * (1.10 if vr > 1 else 0.90) * scale",
+        "    if horizon in ('5m','1h'):\n        ts = (0.50*ret_h + 0.25*mom + 0.10*trend + 0.15*flow) * (1.12 if vr > 1 else 0.88) * scale"
+    )
+
+    # Fast structural entries are valid on the new 5m horizon too.
+    dst = dst.replace(
+        "if tactical_reversal.get('active') and horizon in ('1h','4h','1d','3d','7d'):",
+        "if tactical_reversal.get('active') and horizon in ('5m','1h','4h','1d','3d','7d'):"
+    )
+    dst = dst.replace(
+        "if range_setup.get('active') and research_dec==range_setup.get('direction') and horizon in ('1h','4h','1d'):",
+        "if range_setup.get('active') and research_dec==range_setup.get('direction') and horizon in ('5m','1h','4h','1d'):"
+    )
+
+    # Five-minute missed-move threshold and episode de-duplication.
+    dst = dst.replace(
+        "    return {\n        '1h': NO_TRADE_MISSED_MOVE_1H,",
+        "    return {\n        '5m': 0.0015,\n        '1h': NO_TRADE_MISSED_MOVE_1H,"
+    )
+    dst = dst.replace(
+        "    gap_s={'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}",
+        "    gap_s={'5m':300,'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}"
+    )
+    dst = dst.replace(
+        "CASE horizon WHEN '1h' THEN 1800 WHEN '4h' THEN 7200 WHEN '1d' THEN 21600",
+        "CASE horizon WHEN '5m' THEN 300 WHEN '1h' THEN 1800 WHEN '4h' THEN 7200 WHEN '1d' THEN 21600"
+    )
+
+    # Five-minute expected move and stop noise use 5m volatility, not hourly sigma.
+    dst = dst.replace(
+        "    sig=float(ti.get('sigma_1h') or 0.0); strength=max(",
+        "    sig=float((ti.get('sigma_5m') if horizon=='5m' else ti.get('sigma_1h')) or 0.0); strength=max("
+    )
+    dst = dst.replace(
+        "    atr=float(st.get('atr_5m') or 0.0); sigma=float(ti.get('sigma_1h') or 0.0); rv=float(f.get('rv') or 0.0)",
+        "    atr=float(st.get('atr_5m') or 0.0); sigma=float((ti.get('sigma_5m') if horizon=='5m' else ti.get('sigma_1h')) or 0.0); rv=float(f.get('rv') or 0.0)"
+    )
+
+    # MOEX already fetches 5m bars; expose them to the generic 5m decision engine.
+    dst = dst.replace(
+        "'data_latency_class':'DELAYED_RESEARCH','intraday_5m':moex5m,",
+        "'data_latency_class':'DELAYED_RESEARCH','intraday_5m':moex5m,'intraday_bars':moex5m,'entry_timing_resolution':'5m' if moex5m else '1h_fallback',"
+    )
+    applied.append("full_5m_horizon")
     # Runtime asset universe: replace cash NDX with nearly 24h Nasdaq-100 futures.
     replacements=[
       ("    'NDX': ('NDX', '^NDX'),","    'NQ': ('NQ', 'NQ%3DF'),"),
