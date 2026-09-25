@@ -584,6 +584,15 @@ def apply_v90_ui(html):
           const cp=(d.calibration||{}).probability_correct;
           const fmt=a=>(a||[]).map(x=>'<div>'+x.agent+': '+(x.direction||'')+'</div>').join('')||'—';
           const ex=d.execution_eligibility||{},ti=d.trend_impulse||{},st=d.intraday_structure||{},tp=d.trade_plan||{};
+          const sg=d.structure_breakout_grid||{};
+          const structureLine=['5m','1h','4h','1d','3d','7d'].map(tf=>{
+            const z=sg[tf]||{};
+            if(z.status!=='OK')return tf+' —';
+            const dir=z.direction||'—',state=z.state||'WAIT';
+            const vx=z.volatility_expansion_ratio==null?'':(' · vol×'+Number(z.volatility_expansion_ratio).toFixed(2));
+            const flag=z.entry_signal?' · ENTRY':z.exit_signal?' · EXIT':'';
+            return tf+' '+dir+' '+state+vx+flag;
+          }).join(' · ');
           const mtf=tp.multi_tf_levels||{},ctx=tp.multi_tf_level_context||{};
           const tfrows=(mtf.timeframes||{});
           const levelLine=['1h','4h','1d','3d','7d'].map(tf=>{
@@ -613,6 +622,7 @@ def apply_v90_ui(html):
               ' · цель '+(tp.target_price==null?'—':Number(tp.target_price).toFixed(3))+
               ' · стоп '+(tp.stop_price==null?'—':Number(tp.stop_price).toFixed(3))+
               ' · R/R '+(tp.expected_to_stop_ratio==null?'—':Number(tp.expected_to_stop_ratio).toFixed(2))+
+            '<br><b>Структурный контур:</b> '+(structureLine||'—')+
             '<br><b>Уровни по ТФ:</b> '+(levelLine||'—')+
             '<br><span class="stamp">для '+d.horizon+' учитываются: '+((ctx.considered_timeframes||[]).join(' → ')||'—')+
               '; старшие уровни ограничивают цель/инвалидацию, младший ТФ используется для тайминга входа</span>'+
