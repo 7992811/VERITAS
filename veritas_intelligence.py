@@ -10854,7 +10854,18 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            if self.path.startswith('/healthz'):
+            if self.path.startswith('/internal/v90/database-lease'):
+                import hmac
+                expected=os.getenv('VERITAS_V90_BRIDGE_TOKEN','').strip()
+                supplied=self.headers.get('X-Veritas-V90-Token','').strip()
+                if not expected or not supplied or not hmac.compare_digest(expected,supplied):
+                    self.reply({'status':'UNAUTHORIZED'},403)
+                elif not DATABASE_URL:
+                    self.reply({'status':'UNAVAILABLE','reason':'DATABASE_URL_NOT_SET'},503)
+                else:
+                    self.reply({'status':'OK','contract':'VERITAS_V90_DB_LEASE_V1',
+                                'storage_generation':'9.0','database_url':DATABASE_URL},200)
+            elif self.path.startswith('/healthz'):
                 self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})
             elif self.path.startswith('/api/v1/presence'):
                 tok=self.headers.get('X-Veritas-Visitor',''); record_presence(tok,self.path); self.reply({'version':VERSION,**user_metrics()})
