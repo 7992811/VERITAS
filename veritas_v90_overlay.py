@@ -3130,7 +3130,10 @@ def _signal_first_admission(row,policy,drawdown):
 
     old_reason = """reason='STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
     new_reason = """reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
-    dst, ch = _replace_once(dst, old_reason, new_reason, "legacy NDX exit reason")
+    if new_reason in dst:
+        ch=False
+    else:
+        dst, ch = _replace_once(dst, old_reason, new_reason, "legacy NDX exit reason")
     if ch:
         applied.append("legacy_ndx_reason")
 
