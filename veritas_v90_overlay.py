@@ -663,12 +663,13 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
         legacy['structure_breakout_grid']=grid
     return legacy
 '''
-    compile(market_helper,'<v90_market_helper>','exec')
-    anchor="\ndef _fetch_asset_bundle(symbol, asset, cb_product):"
-    if anchor not in dst:
-        raise RuntimeError("VERITAS 9.0 market helper anchor missing")
-    dst=dst.replace(anchor,"\n"+market_helper+anchor,1)
-    applied.append("market_data_integrity")
+    if "# VERITAS V90 UNIVERSAL STRUCTURE LIFECYCLE" not in dst:
+        compile(market_helper,'<v90_market_helper>','exec')
+        anchor="\ndef _fetch_asset_bundle(symbol, asset, cb_product):"
+        if anchor not in dst:
+            raise RuntimeError("VERITAS 9.0 market helper anchor missing")
+        dst=dst.replace(anchor,"\n"+market_helper+anchor,1)
+        applied.append("market_data_integrity")
 
     # Universal structural-breakout policy: same rule on all timeframes.
     dst = dst.replace(
@@ -2416,7 +2417,11 @@ def _v90_structure_exit_signal(row,z):
 
     old_reason = """reason='TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
     new_reason = """reason='STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
-    dst, ch = _replace_once(dst, old_reason, new_reason, "structural exit reason")
+    final_reason = """reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
+    if final_reason in dst:
+        ch=False
+    else:
+        dst, ch = _replace_once(dst, old_reason, new_reason, "structural exit reason")
     if ch:
         applied.append("structure_exit_reason")
 
@@ -4144,6 +4149,7 @@ def verify():
         'fast_signal_endpoint': "elif self.path.startswith('/api/v1/signals')" in intel and 'fresh_cycle_snapshot()' in intel,
         'brent_price_integrity': 'def _v90_moex_front_brent_contract()' in intel and "verification_mode':'moex_front_contract_primary'" in intel,
         'nasdaq_futures_nq': "'NQ': ('NQ', 'NQ%3DF')" in intel and "asset=='NQ'" in intel,
+        'universal_structure_singleton': intel.count('# VERITAS V90 UNIVERSAL STRUCTURE LIFECYCLE') == 1,
         'nq_futures_hard_invariant': 'ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES' in intel and "if _z.get('asset')=='NQ'" in intel and "str(z.get('asset') or '')!='NDX'" in intel,
         'aggressive_5x_strong_signal': "'max_fraction':5.0" in port and 'strong_aggressive=bool(' in port,
         'final_aggressive_execution': '# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING' in port and '_v90_aggressive_strong_context' in port,
