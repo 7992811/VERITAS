@@ -1127,7 +1127,7 @@ def _cnyrubf_market():
     raw['intraday_bars']=bars5
     raw['intraday_5m']=bars5
     raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
-    raw['direction_level_resolutions']=['1h','4h','1d','3d','7d']
+    raw['direction_level_resolutions']=['5m','1h','4h','1d','3d','7d']
     return raw
 
 
@@ -1170,7 +1170,8 @@ def _v90_aggregate_hourly(raw, group):
 def _v90_level_row(raw, timeframe):
     asset=str(raw.get('asset') or '')
     p=float(raw.get('price') or 0.0)
-    bars=_v90_aggregate_hourly(raw,_v90_tf_group(asset,timeframe))
+    bars=(_v90_tf_bars(raw,'5m') if str(timeframe)=='5m'
+          else _v90_aggregate_hourly(raw,_v90_tf_group(asset,timeframe)))
     if p<=0 or len(bars)<3:
         return {'timeframe':timeframe,'status':'INSUFFICIENT','bars':len(bars),
                 'support':None,'resistance':None}
@@ -1220,7 +1221,7 @@ def _v90_multi_tf_levels(raw):
     if isinstance(cached,dict) and cached.get('timeframes'):
         return cached
     p=float(raw.get('price') or 0.0)
-    rows={tf:_v90_level_row(raw,tf) for tf in ('1h','4h','1d','3d','7d')}
+    rows={tf:_v90_level_row(raw,tf) for tf in ('5m','1h','4h','1d','3d','7d')}
     def nearest(kind,tfs):
         vals=[]
         for tf in tfs:
@@ -1237,8 +1238,8 @@ def _v90_multi_tf_levels(raw):
     out={
         'status':'OK' if any((z.get('status')=='OK') for z in rows.values()) else 'INSUFFICIENT',
         'asset':str(raw.get('asset') or ''),'price':p,'timeframes':rows,
-        'nearest_support':nearest('support',('1h','4h','1d','3d','7d')),
-        'nearest_resistance':nearest('resistance',('1h','4h','1d','3d','7d')),
+        'nearest_support':nearest('support',('5m','1h','4h','1d','3d','7d')),
+        'nearest_resistance':nearest('resistance',('5m','1h','4h','1d','3d','7d')),
         'senior_support':nearest('support',('1d','3d','7d')),
         'senior_resistance':nearest('resistance',('1d','3d','7d')),
         'method':'point_in_time_hourly_aggregation_no_future_bars',
@@ -1251,13 +1252,14 @@ def _v90_multi_tf_levels(raw):
 def _v90_horizon_level_context(mtf,horizon,direction):
     rows=(mtf or {}).get('timeframes') or {}
     hierarchy={
+        '5m':('5m','1h','4h','1d','3d','7d'),
         '1h':('1h','4h','1d','3d','7d'),
         '4h':('4h','1d','3d','7d'),
         '1d':('1d','3d','7d'),
         '3d':('3d','7d'),
         '7d':('7d',),
     }
-    tfs=hierarchy.get(str(horizon),('1h','4h','1d','3d','7d'))
+    tfs=hierarchy.get(str(horizon),('5m','1h','4h','1d','3d','7d'))
     p=float((mtf or {}).get('price') or 0.0)
     asset=str((mtf or {}).get('asset') or '')
     supports=[]; resistances=[]
@@ -1276,7 +1278,7 @@ def _v90_horizon_level_context(mtf,horizon,direction):
               'distance_pct':supports[0][0]/p} if supports and p>0 else None)
     resistance=({'timeframe':resistances[0][1],'price':resistances[0][2],
                  'distance_pct':resistances[0][0]/p} if resistances and p>0 else None)
-    base_floor={'1h':0.0015,'4h':0.0025,'1d':0.0040,'3d':0.0060,'7d':0.0080}.get(str(horizon),0.0025)
+    base_floor={'5m':0.0007,'1h':0.0015,'4h':0.0025,'1d':0.0040,'3d':0.0060,'7d':0.0080}.get(str(horizon),0.0025)
     if asset in ('BTC','ETH'):
         base_floor*=2.5
     elif asset in ('NQ','BRENT','GOLD','MOEX'):
@@ -1307,7 +1309,7 @@ def _v90_horizon_level_context(mtf,horizon,direction):
             'support':support,'resistance':resistance,'stop_reference':stop_ref,
             'target_reference':target_ref,'target_ladder':target_ladder,
             'target_noise_floor_pct':base_floor,
-            'execution_timeframe':'5m' if asset=='CNYRUBF' else ('1h' if horizon!='1h' else '1h'),
+            'execution_timeframe':'5m' if horizon=='5m' or asset=='CNYRUBF' else '1h',
             'principle':'5m/lower TF is entry timing only; stop is anchored to signal-TF then higher-TF invalidation; targets use a significant multi-TF level ladder'}
 
 
@@ -1361,8 +1363,113 @@ def regime_from(f):
     return f'{trend_state}_{vol_state}'
 
 
+def _v90_5m_features(raw,common_structure=None):
+    # Preserve senior context, then replace the tactical state with native 5m measurements.
+    f=_v90_base_features(raw,'1h',common_structure)
+    bars=_v90_tf_bars(raw,'5m')
+    f['horizon']='5m'
+    if len(bars)<8:
+        f['horizon_structure']=_v90_5m_horizon_structure(raw)
+        f['horizon_structure_score']=0.0
+        f['horizon_structure_direction']='NO_TRADE'
+        f['horizon_structure_state']='DATA_REQUIRED'
+        f['five_minute_data_status']='DATA_REQUIRED'
+        return f
+
+    c=[float(x.get('close') or 0.0) for x in bars]
+    h=[float(x.get('high') or x.get('close') or 0.0) for x in bars]
+    l=[float(x.get('low') or x.get('close') or 0.0) for x in bars]
+    v=[float(x.get('volume') or 0.0) for x in bars]
+    p=float(raw.get('price') or c[-1])
+    if p>0: c[-1]=p
+    rr=[c[i]/c[i-1]-1.0 for i in range(1,len(c)) if c[i-1]]
+    floor={'BTC':0.00035,'ETH':0.00045,'NQ':0.00018,'BRENT':0.00028,
+           'GOLD':0.00018,'MOEX':0.00022,'CNYRUBF':0.00016}.get(str(raw.get('asset') or ''),0.00025)
+    sigma5=_robust_sigma(rr[-min(120,len(rr)):],floor)
+    ret5=p/c[-2]-1.0 if len(c)>=2 and c[-2] else 0.0
+    n30=min(6,len(c)-1); ret30=p/c[-1-n30]-1.0 if n30>=1 and c[-1-n30] else ret5
+    local_n=min(24,len(c)); local_ma=sum(c[-local_n:])/local_n if local_n else p
+    local_trend=p/local_ma-1.0 if local_ma else 0.0
+    fast=min(12,len(rr)); rv5=(sum(x*x for x in rr[-fast:])/max(1,fast))**0.5*(fast**0.5) if rr else 0.0
+    recent_v=v[-3:] if len(v)>=3 else v
+    prior_v=v[-15:-3] if len(v)>=15 else v[:-3]
+    vr=(sum(recent_v)/len(recent_v))/(sum(prior_v)/len(prior_v)) if recent_v and prior_v and sum(prior_v)>0 else 1.0
+
+    hs=_v90_5m_horizon_structure(raw)
+    grid=(common_structure or {}).get('structure_breakout_grid') if isinstance(common_structure,dict) else None
+    if not grid:
+        grid=_v90_structure_breakout_grid(raw)
+        if isinstance(common_structure,dict): common_structure['structure_breakout_grid']=grid
+    life=grid.get('5m') or {}
+    state=str(life.get('state') or 'WAIT')
+    life_map={'BREAKOUT_ENTRY':'FRESH_BREAKOUT','TREND_CONTINUATION':'CONFIRMATION',
+              'IMPULSE_WEAKENING':'ONSET','EXIT_REVERSAL':'FAILURE','WAIT':'NONE'}
+    lifecycle=life_map.get(state,'NONE')
+    direction=str(hs.get('direction') or 'NO_TRADE')
+    entryq=('FRESH_BREAKOUT' if state=='BREAKOUT_ENTRY' else
+            'CONFIRMED_TREND' if state=='TREND_CONTINUATION' else
+            'INVALIDATED' if state=='EXIT_REVERSAL' else
+            'WAIT_CONFIRMATION' if direction in ('LONG','SHORT') else 'NEUTRAL')
+    st=dict(f.get('intraday_structure') or {})
+    st.update({'enabled':True,'status':'OK','resolution':'5m_native',
+               'direction':direction,'score':float(hs.get('score') or life.get('quality_score') or 0.0),
+               'lifecycle':lifecycle,'entry_quality':entryq,
+               'relative_volume':float(life.get('volatility_expansion_ratio') or vr or 1.0),
+               'volume_confirmed':bool(float(life.get('volatility_expansion_ratio') or 1.0)>=1.25),
+               'breakout_found':bool(life.get('breakout_level') is not None),
+               'breakout_level':life.get('breakout_level'),
+               'breakout_hold':bool(state in ('BREAKOUT_ENTRY','TREND_CONTINUATION')),
+               'fresh_breakout':bool(state=='BREAKOUT_ENTRY'),
+               'false_breakout':bool(state=='EXIT_REVERSAL'),
+               'invalidation_price':life.get('stop_price'),
+               'atr_5m':life.get('atr_5m'),
+               'session_efficiency':hs.get('path_efficiency'),
+               'session_persistence':hs.get('persistence'),
+               'session_range_position':hs.get('range_position'),
+               'continuation_room_pct':max(0.0,abs(ret30)*0.65)})
+
+    ti=dict(f.get('trend_impulse') or {})
+    phase=('EARLY_TREND' if state=='BREAKOUT_ENTRY' else
+           'IMPULSE_TREND' if state=='TREND_CONTINUATION' and direction in ('LONG','SHORT') else
+           'NONE')
+    ti.update({'current_horizon':'5m','current_horizon_structure':hs,
+               'current_horizon_structure_score':float(hs.get('score') or 0.0),
+               'current_horizon_structure_direction':direction,
+               'current_horizon_structure_state':hs.get('state') or 'UNKNOWN',
+               'direction':direction,'phase':phase,'entry_quality':entryq,
+               'onset_score':max(float(ti.get('onset_score') or 0.0),float(hs.get('score') or 0.0)) if phase!='NONE' else float(hs.get('score') or 0.0)*0.6,
+               'impulse_score':max(float(ti.get('impulse_score') or 0.0),float(life.get('quality_score') or 0.0)) if state=='TREND_CONTINUATION' else float(life.get('quality_score') or 0.0),
+               'sigma_5m':sigma5,'ret_5m':ret5,'ret_30m':ret30})
+
+    f.update({'price':p,'ret_h':ret5,'momentum':ret30,'trend':local_trend,'rv':rv5,
+              'volume_ratio':vr,'intraday_structure':st,'trend_impulse':ti,
+              'horizon_structure':hs,'horizon_structure_score':float(hs.get('score') or 0.0),
+              'horizon_structure_direction':direction,'horizon_structure_state':hs.get('state') or 'UNKNOWN',
+              'intraday_structure_score':float(st.get('score') or 0.0),
+              'relative_volume':float(st.get('relative_volume') or 0.0),
+              'session_efficiency':float(st.get('session_efficiency') or 0.0),
+              'session_persistence':float(st.get('session_persistence') or 0.0),
+              'trend_phase':phase,'trend_onset_score':float(ti.get('onset_score') or 0.0),
+              'impulse_score':float(ti.get('impulse_score') or 0.0),'entry_quality':entryq,
+              'structure_breakout_grid':grid,'structure_breakout_current':life,
+              'structure_breakout_5m':life,'five_minute_data_status':'OK'})
+    # 5m local levels: the broken range is the first invalidation/target context.
+    sl=dict(f.get('structural_levels') or {})
+    if direction=='SHORT':
+        sl['resistance']=life.get('range_high') or sl.get('resistance')
+        sl['support']=life.get('range_low') if life.get('range_low') is not None and float(life.get('range_low'))<p else sl.get('support')
+    elif direction=='LONG':
+        sl['support']=life.get('range_low') or sl.get('support')
+        sl['resistance']=life.get('range_high') if life.get('range_high') is not None and float(life.get('range_high'))>p else sl.get('resistance')
+    f['structural_levels']=sl
+    vol_state='HIGH_VOL' if float(life.get('volatility_expansion_ratio') or 1.0)>=1.6 else 'MID_VOL' if float(life.get('volatility_expansion_ratio') or 1.0)>=1.15 else 'LOW_VOL'
+    trend_state='UPTREND' if direction=='LONG' else 'DOWNTREND' if direction=='SHORT' else 'RANGE'
+    f['regime']=f'{trend_state}_{vol_state}'
+    return f
+
+
 def features(raw, horizon, common_structure=None):
-    f=_v90_base_features(raw,horizon,common_structure)
+    f=_v90_5m_features(raw,common_structure) if str(horizon)=='5m' else _v90_base_features(raw,horizon,common_structure)
     f['horizon']=horizon
     grid=(common_structure or {}).get('structure_breakout_grid') if isinstance(common_structure,dict) else None
     if not grid:
@@ -1387,7 +1494,7 @@ def features(raw, horizon, common_structure=None):
     ti['current_horizon_structure_direction']=hs.get('direction') or 'NO_TRADE'
     ti['current_horizon_structure_state']=hs.get('state') or 'UNKNOWN'
     direction=str(ti.get('direction') or 'NO_TRADE')
-    senior_order={'1h':('4h','1d','3d','7d'),'4h':('1d','3d','7d'),
+    senior_order={'5m':('1h','4h','1d','3d','7d'),'1h':('4h','1d','3d','7d'),'4h':('1d','3d','7d'),
                   '1d':('3d','7d'),'3d':('7d',),'7d':()}
     hs_all=(common_structure or {}).get('horizon_structures') or {}
     senior=[]
@@ -1419,7 +1526,7 @@ def classify_signal_tier(asset,decision,confidence,challenger,effective_evidence
     hdir=str(hs.get('direction') or 'NO_TRADE')
     hscore=float(hs.get('score') or 0.0)
     hstate=str(hs.get('state') or '')
-    min_score={'1h':0.52,'4h':0.58,'1d':0.60,'3d':0.64,'7d':0.66}.get(horizon,0.58)
+    min_score={'5m':0.48,'1h':0.52,'4h':0.58,'1d':0.60,'3d':0.64,'7d':0.66}.get(horizon,0.58)
     horizon_ok=bool(hdir==decision and hscore>=min_score)
     if horizon in ('3d','7d'):
         horizon_ok=bool(horizon_ok and hstate in ('BUILDING_TREND','CONFIRMED_TREND'))
@@ -3075,7 +3182,7 @@ def _v90_fast_structure_candidate(rows):
     best=None
     for r0 in rows or []:
         r=dict(r0)
-        if str(r.get('horizon') or '')!='1h' or not _v901_no_hard_veto(r):
+        if str(r.get('horizon') or '') not in ('5m','1h') or not _v901_no_hard_veto(r):
             continue
         hs=r.get('horizon_structure') or {}
         direction=str(hs.get('direction') or hs.get('raw_direction') or 'NO_TRADE')
@@ -3087,7 +3194,11 @@ def _v90_fast_structure_candidate(rows):
             hz=float(hs.get('z') or 0.0)
         except Exception:
             continue
-        if hs_score<0.72 or abs(hret)<0.004 or abs(hz)<0.80:
+        _tf=str(r.get('horizon') or '')
+        _score_floor=0.66 if _tf=='5m' else 0.72
+        _ret_floor=0.0015 if _tf=='5m' else 0.004
+        _z_floor=0.65 if _tf=='5m' else 0.80
+        if hs_score<_score_floor or abs(hret)<_ret_floor or abs(hz)<_z_floor:
             continue
         if (direction=='LONG' and hret<=0) or (direction=='SHORT' and hret>=0):
             continue
@@ -3173,7 +3284,7 @@ def _v90_fast_impulse_context(row):
     row=row or {}
     if not _v901_no_hard_veto(row):
         return False
-    if str(row.get('horizon') or '') not in ('1h','4h','1d','3d','7d'):
+    if str(row.get('horizon') or '') not in ('5m','1h','4h','1d','3d','7d'):
         return False
     direction=str(row.get('research_decision') or 'NO_TRADE')
     if direction not in ('LONG','SHORT'):
@@ -4385,6 +4496,8 @@ def verify():
         'paper_source_gate_metadata': 'paper_single_source_official_moex' in intel and 'production_eligible' in intel,
         'uncalibrated_score_semantics': 'MODEL_QUALITY_SCORE_UNCALIBRATED' in port and 'UNCALIBRATED_SCORE_CAPPED_PAPER_SIZING' in port,
         'uncalibrated_leverage_guard': "source!='EMPIRICAL_CALIBRATION'" in port,
+        'full_5m_horizon': "'5m': 1.0/12.0" in intel and "resolution':'5m_native_bars'" in intel
+                           and "_v90_fetch_path_asset_horizon" in intel,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
