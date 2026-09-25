@@ -9,6 +9,12 @@ PROD = os.getenv('VERITAS_BASE_URL', 'https://veritas-intelligence-v1.onrender.c
 V86 = os.getenv('VERITAS_V86_URL', 'https://veritas-v86-engine.onrender.com').rstrip('/')
 ARCHIVE_V86 = os.getenv('VERITAS_V86_ARCHIVE_URL', 'https://veritas-v86-product.onrender.com').rstrip('/')
 ASSETS = ['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF']
+VERITAS_SOURCE_LOGO_PATH = os.path.join(os.path.dirname(__file__),'assets','veritas-logo-source.webp')
+try:
+    with open(VERITAS_SOURCE_LOGO_PATH,'rb') as _lf:
+        VERITAS_SOURCE_LOGO = _lf.read()
+except Exception:
+    VERITAS_SOURCE_LOGO = b''
 VERITAS_LOGO_PNG_B64 = """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"""
 VERITAS_LOGO_PNG = base64.b64decode(VERITAS_LOGO_PNG_B64)
 PRESENCE = {}
@@ -1288,20 +1294,7 @@ def app_html():
     _brand_markup = '''<div class="veritas-brandlock">
       <div class="veritas-primary">
         <div class="veritas-core">
-          <svg class="veritas-logo-svg" viewBox="0 0 80 92" aria-hidden="true" focusable="false">
-<defs>
- <linearGradient id="vg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#eef2f5"/><stop offset=".32" stop-color="#8998a3"/><stop offset=".62" stop-color="#243440"/><stop offset="1" stop-color="#0d1720"/></linearGradient>
- <linearGradient id="vg2" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f1f4f6"/><stop offset=".28" stop-color="#96a3ad"/><stop offset=".65" stop-color="#2b3b47"/><stop offset="1" stop-color="#101a22"/></linearGradient>
- <linearGradient id="vg3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#83939e"/><stop offset=".5" stop-color="#32434f"/><stop offset="1" stop-color="#101b23"/></linearGradient>
-</defs>
-<path d="M40 3 72 20 64 25 40 13 16 25 8 20Z" fill="url(#vg1)"/>
-<path d="M9 26 18 31c1 18 7 36 22 55C24 79 12 68 7 52 4 43 5 34 5 28Z" fill="url(#vg3)"/>
-<path d="M71 26 62 31c-1 18-7 36-22 55 16-7 28-18 33-34 3-9 2-18 2-24Z" fill="url(#vg3)"/>
-<path d="M16 30 25 35 40 66 55 35 64 30 40 81Z" fill="url(#vg1)"/>
-<path d="M28 47 35 42 35 59 28 52Z" fill="#263844"/>
-<path d="M38 39 45 34 45 59 38 64Z" fill="#31444f"/>
-<path d="M48 31 55 26 55 48 48 59Z" fill="#263844"/>
-</svg>
+          <img class="veritas-logo-img" src="/assets/veritas-logo-source.webp?v=1" alt="VERITAS logo">
           <div class="veritas-right">
             <div class="veritas-wordmark">
               <span class="wm-v">V</span><span class="wm-e" aria-label="E"><i></i><i></i><i></i></span><span>RITAS</span>
@@ -1580,7 +1573,7 @@ def app_html():
 .veritas-primary{display:inline-flex;flex-direction:column;align-items:stretch;min-width:0}
 .veritas-core{display:flex;align-items:flex-start;gap:14px;min-width:0}
 .veritas-right{display:inline-flex;flex-direction:column;align-items:flex-start;min-width:0}
-.veritas-logo-svg{width:78px;height:90px;flex:0 0 78px;overflow:visible;filter:drop-shadow(0 10px 24px rgba(0,0,0,.28))}
+.veritas-logo-img{width:78px;height:90px;flex:0 0 78px;object-fit:contain;object-position:center;filter:drop-shadow(0 10px 24px rgba(0,0,0,.28))}
 .veritas-wordmark{display:flex;align-items:center;height:64px;white-space:nowrap;font-family:"Avenir Next","Century Gothic","Helvetica Neue","Segoe UI",Arial,sans-serif;font-size:53px;font-weight:360;letter-spacing:.17em;line-height:1;color:#e0e5e9}
 .veritas-wordmark .wm-v{margin-right:.01em}
 .veritas-wordmark .wm-e{display:inline-flex;width:.72em;height:.94em;flex-direction:column;justify-content:space-between;align-self:center;margin-right:.10em;transform:translateY(0)}
@@ -1590,7 +1583,7 @@ def app_html():
 .veritas-subtitle::after{content:"";display:inline-block;width:100%}
 @media(max-width:900px){
  .veritas-core{gap:10px}
- .veritas-logo-svg{width:58px;height:68px;flex-basis:58px}
+ .veritas-logo-img{width:58px;height:68px;flex-basis:58px}
  .veritas-wordmark{height:48px;font-size:36px;font-weight:380;letter-spacing:.125em}
  .veritas-wordmark .wm-e{height:.95em;width:.72em;margin-right:.09em}
  .veritas-wordmark .wm-e i{height:.14em}
@@ -1650,6 +1643,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path); path = parsed.path; q = parse_qs(parsed.query)
         try:
+            if path == '/assets/veritas-logo-source.webp':
+                if not VERITAS_SOURCE_LOGO:
+                    return self.send_json({'status':'UNAVAILABLE','asset':'veritas-logo-source.webp'},503)
+                return self.send_bytes(VERITAS_SOURCE_LOGO,'image/webp')
             if path == '/assets/veritas-logo.png':
                 print(json.dumps({'event':'V86_BRAND_LOGO_REQUEST','bytes':len(VERITAS_LOGO_PNG)},separators=(',',':')),flush=True)
                 return self.send_bytes(VERITAS_LOGO_PNG,'image/png')
