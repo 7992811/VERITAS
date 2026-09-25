@@ -2336,6 +2336,128 @@ def maybe_schedule_heavy_learning(reason='scheduled',force=False):
 
         applied.append("memory_p0_r1")
 
+    # VERITAS V90 TWO-SPEED 5M LOOP
+    # Full 42-cell refresh every five minutes; native 5m refresh roughly every minute.
+    # A fast cycle merges its seven fresh 5m rows with the last confirmed 1h-7d rows
+    # before portfolio/meta processing, so no senior context disappears.
+    dst = dst.replace(
+        "def cycle():\n    cycle_wall_t0=time.time()",
+        "def cycle(selected_horizons=None, cycle_mode='FULL'):\n    cycle_wall_t0=time.time()\n    selected_horizons=tuple(selected_horizons or tuple(HORIZONS.keys()))\n    selected_horizons=tuple(h for h in selected_horizons if h in HORIZONS)\n    if not selected_horizons: selected_horizons=tuple(HORIZONS.keys())\n    cycle_mode=str(cycle_mode or 'FULL').upper()"
+    )
+    dst = dst.replace(
+        "    emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False),\n         pre_decision_seconds=round(pre_decision_seconds,3),outcomes_seconds=round(outcomes_seconds,3),analog_seconds=round(analog_seconds,3))",
+        "    emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False),\n         cycle_mode=cycle_mode,updated_horizons=list(selected_horizons),\n         pre_decision_seconds=round(pre_decision_seconds,3),outcomes_seconds=round(outcomes_seconds,3),analog_seconds=round(analog_seconds,3))"
+    )
+    dst = dst.replace(
+        "            for horizon in HORIZONS:\n                horizon_wall_t0=time.time()",
+        "            for horizon in selected_horizons:\n                horizon_wall_t0=time.time()"
+    )
+
+    # P0 memory patch has already inserted the asset finally block at this stage.
+    _merge_anchor = """            _v90_trim_memory('asset_'+str(asset),force=False)
+    storage = pg_storage_status()
+    expected = len(ASSETS)*len(HORIZONS)"""
+    _merge_new = """            _v90_trim_memory('asset_'+str(asset),force=False)
+
+    # Fast 5m cycles publish a complete 42-cell state by carrying forward only
+    # senior rows from the latest completed cycle. Fresh 5m rows always win.
+    fresh_summary=list(summary)
+    if cycle_mode=='FAST_5M':
+        with lock:
+            _carry=[dict(x) for x in (last_cycle.get('summary') or [])
+                    if str(x.get('horizon') or '') not in selected_horizons]
+        _merged={(str(x.get('asset') or ''),str(x.get('horizon') or '')):x for x in _carry}
+        for _x in fresh_summary:
+            _merged[(str(_x.get('asset') or ''),str(_x.get('horizon') or ''))]=_x
+        summary=list(_merged.values())
+    storage = pg_storage_status()
+    expected = len(ASSETS)*len(selected_horizons)"""
+    if _merge_anchor not in dst:
+        raise RuntimeError("v90 two-speed merge anchor missing")
+    dst=dst.replace(_merge_anchor,_merge_new,1)
+
+    # Preserve the published summary after P0 clears the local working list.
+    _state_anchor = """    state = {'status': status, 'at': now(), 'version': VERSION, 'decisions_written': made,
+             'outcomes_written': outcomes, 'summary': summary, 'trade_alerts_written':len(trade_alerts),"""
+    _state_new = """    state = {'status': status, 'at': now(), 'version': VERSION, 'decisions_written': made,
+             'outcomes_written': outcomes, 'summary': list(summary),
+             'cycle_mode':cycle_mode,'updated_horizons':list(selected_horizons),
+             'signal_cells':len(summary),'trade_alerts_written':len(trade_alerts),"""
+    if _state_anchor not in dst:
+        raise RuntimeError("v90 two-speed state anchor missing")
+    dst=dst.replace(_state_anchor,_state_new,1)
+
+    # Only a full cycle launches historical outcome/network maintenance. The
+    # one-minute 5m lane stays dedicated to current-market detection.
+    dst = dst.replace(
+        "    _v90_schedule_outcome_refresh('cycle_complete')\n    # Deep rule/event learning remains off the fast lane.\n    if heavy_learning_due():\n        maybe_schedule_heavy_learning('interval_due')",
+        "    if cycle_mode=='FULL':\n        _v90_schedule_outcome_refresh('full_cycle_complete')\n        # Deep rule/event learning remains off the fast lane.\n        if heavy_learning_due():\n            maybe_schedule_heavy_learning('interval_due')"
+    )
+
+    # Add mode to cycle telemetry/logs.
+    dst = dst.replace(
+        "               'fast_loop_target_seconds':FAST_LOOP_TARGET_SECONDS,\n               'fast_loop_on_target':bool(elapsed_seconds<=FAST_LOOP_TARGET_SECONDS)}",
+        "               'fast_loop_target_seconds':FAST_LOOP_TARGET_SECONDS,\n               'cycle_mode':cycle_mode,'updated_horizons':list(selected_horizons),\n               'published_signal_cells':len(summary),\n               'fast_loop_on_target':bool(elapsed_seconds<=FAST_LOOP_TARGET_SECONDS)}"
+    )
+
+    # The scheduler uses start-to-start targets. If a cycle runs long, it starts
+    # the next due lane immediately rather than adding another fixed sleep.
+    _loop_old = """def loop():
+    while True:
+        try:
+            cycle()
+        except Exception as e:
+            err = {'status': 'error', 'at': now(), 'version': VERSION, 'error': f'{type(e).__name__}: {e}'}
+            with lock:
+                last_cycle.clear(); last_cycle.update(err)
+            emit('cycle_error', error=err['error'], trace=traceback.format_exc(limit=3))
+        time.sleep(INTERVAL)"""
+    _loop_new = """V90_FAST_5M_INTERVAL_SECONDS=max(45,int(os.getenv('VERITAS_FAST_5M_INTERVAL_SECONDS','60')))
+V90_FULL_CYCLE_INTERVAL_SECONDS=max(240,int(os.getenv('VERITAS_FULL_CYCLE_INTERVAL_SECONDS',str(INTERVAL))))
+
+def loop():
+    next_full=time.monotonic()
+    next_fast=time.monotonic()
+    while True:
+        now_m=time.monotonic()
+        mode='IDLE'
+        try:
+            if now_m>=next_full:
+                mode='FULL'
+                cycle(None,'FULL')
+                base=now_m
+                next_full=base+V90_FULL_CYCLE_INTERVAL_SECONDS
+                if next_fast<=base:
+                    next_fast=base+V90_FAST_5M_INTERVAL_SECONDS
+            elif now_m>=next_fast:
+                mode='FAST_5M'
+                cycle(('5m',),'FAST_5M')
+                while next_fast<=now_m:
+                    next_fast+=V90_FAST_5M_INTERVAL_SECONDS
+            else:
+                time.sleep(max(0.5,min(5.0,min(next_fast,next_full)-now_m)))
+                continue
+        except Exception as e:
+            err = {'status': 'error', 'at': now(), 'version': VERSION,
+                   'cycle_mode':mode,'error': f'{type(e).__name__}: {e}'}
+            # Do not destroy the last valid 42-cell snapshot because one fast
+            # refresh failed. Record the error alongside the retained state.
+            with lock:
+                if last_cycle.get('summary'):
+                    last_cycle['last_cycle_error']=err
+                else:
+                    last_cycle.clear(); last_cycle.update(err)
+            emit('cycle_error',cycle_mode=mode,error=err['error'],trace=traceback.format_exc(limit=3))
+            if mode=='FULL':
+                next_full=time.monotonic()+30
+            elif mode=='FAST_5M':
+                next_fast=time.monotonic()+15"""
+    if _loop_old not in dst:
+        raise RuntimeError("v90 two-speed loop anchor missing")
+    dst=dst.replace(_loop_old,_loop_new,1)
+
+    applied.append("two_speed_5m_loop")
+
     # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION = '" + V90_INTEL + "'\n"
     main_anchor = "\nif __name__ == '__main__':"
@@ -4751,6 +4873,8 @@ def verify():
                            and "_v90_moex_exact_5m_klines" in intel,
         'fast_loop_io_optimization': "_v90_pg_batch_begin" in intel and "_v90_schedule_outcome_refresh" in intel
                                      and "_v90_knowledge_catalog_cache" in intel and "_v90_prev_signal_cache" in intel,
+        'two_speed_5m_loop': "V90_FAST_5M_INTERVAL_SECONDS" in intel and "cycle(('5m',),'FAST_5M')" in intel
+                             and "fresh_summary=list(summary)" in intel,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
