@@ -35,10 +35,16 @@ def _patch_intelligence():
     dst = src
     applied = []
 
-    if V90_INTEL not in dst:
-        if V84_INTEL not in dst:
-            raise RuntimeError("v90 intelligence requires v84.3 foundation")
-        dst = dst.replace(V84_INTEL, V90_INTEL, 1)
+    if V84_INTEL not in dst and V90_INTEL not in dst:
+        raise RuntimeError("v90 intelligence requires v84.3 foundation")
+    dst2, nver = re.subn(
+        r"^VERSION\\s*=\\s*['\"][^'\"]+['\"]",
+        "VERSION = '" + V90_INTEL + "'",
+        dst, count=1, flags=re.M)
+    if nver != 1:
+        raise RuntimeError("v90 intelligence VERSION assignment missing")
+    if dst2 != dst:
+        dst = dst2
         applied.append("version")
 
     old_pg = """def pg_connect():
@@ -226,10 +232,16 @@ def _patch_portfolio():
     dst = src
     applied = []
 
-    if V90_PORT not in dst:
-        if V84_PORT not in dst:
-            raise RuntimeError("v90 portfolio requires v84.3 foundation")
-        dst = dst.replace(V84_PORT, V90_PORT, 1)
+    if V84_PORT not in dst and V90_PORT not in dst:
+        raise RuntimeError("v90 portfolio requires v84.3 foundation")
+    dst2, nver = re.subn(
+        r"^VERSION\\s*=\\s*['\"][^'\"]+['\"]",
+        "VERSION='" + V90_PORT + "'",
+        dst, count=1, flags=re.M)
+    if nver != 1:
+        raise RuntimeError("v90 portfolio VERSION assignment missing")
+    if dst2 != dst:
+        dst = dst2
         applied.append("version")
 
     policy = """POLICIES={
