@@ -19,6 +19,11 @@ TRADE_CACHE_TTL = 12.0
 ANALYSIS_CACHE_LOCK = threading.Lock()
 ANALYSIS_CACHE = {'at':0.0,'rows':None}
 ANALYSIS_CACHE_TTL = 8.0
+ENGINE_SNAPSHOT_CACHE_LOCK = threading.Lock()
+ENGINE_SNAPSHOT_CACHE = {'at':0.0,'data':None,'source':None}
+ENGINE_PORTFOLIO_CACHE_LOCK = threading.Lock()
+ENGINE_PORTFOLIO_CACHE = {'at':0.0,'data':None,'source':None}
+ENGINE_STALE_MAX_SECONDS = 21600.0
 OVERVIEW_CACHE_LOCK = threading.Lock()
 OVERVIEW_CACHE = {'at':0.0,'data':None}
 OVERVIEW_CACHE_TTL = 5.0
@@ -305,8 +310,47 @@ def deep_tab_metrics():
         DEEP_TAB_CACHE['at']=time.time(); DEEP_TAB_CACHE['data']=dict(merged)
     return merged
 
+def _engine_json_with_fallback(path, timeout=4.0, cache=None, lock=None, label='engine'):
+    errors=[]
+    # First try the live engine twice: initial request may hit Render cold-start.
+    for attempt in range(2):
+        try:
+            data=jget(V86,path,timeout)
+            if isinstance(data,dict):
+                if cache is not None and lock is not None:
+                    with lock:
+                        cache['at']=time.time(); cache['data']=data; cache['source']='live_engine'
+                return data
+        except Exception as exc:
+            errors.append('live:'+type(exc).__name__)
+            if attempt==0: time.sleep(.45)
+    # Then the v86 product/archive service.
+    try:
+        data=jget(ARCHIVE_V86,path,min(timeout,4.0))
+        if isinstance(data,dict):
+            if cache is not None and lock is not None:
+                with lock:
+                    cache['at']=time.time(); cache['data']=data; cache['source']='archive_v86'
+            print('ENGINE_FAILSOFT',label,'archive_v86',','.join(errors),flush=True)
+            return data
+    except Exception as exc:
+        errors.append('archive:'+type(exc).__name__)
+    # Finally preserve the last confirmed in-process snapshot.
+    if cache is not None and lock is not None:
+        with lock:
+            cached=cache.get('data'); at=float(cache.get('at') or 0.0); source=cache.get('source')
+        if isinstance(cached,dict) and time.time()-at<=ENGINE_STALE_MAX_SECONDS:
+            out=dict(cached)
+            out['_gateway_stale']=True
+            out['_gateway_stale_age_seconds']=round(time.time()-at,1)
+            out['_gateway_source']=source or 'cache'
+            print('ENGINE_FAILSOFT',label,'stale_cache',','.join(errors),flush=True)
+            return out
+    print('ENGINE_FAILSOFT',label,'empty_fallback',','.join(errors),flush=True)
+    return {'status':'DEGRADED','_gateway_stale':True,'_gateway_source':'unavailable'}
+
 def v86_snapshot():
-    return jget(V86, '/api/v85/snapshot')
+    return _engine_json_with_fallback('/api/v85/snapshot',4.0,ENGINE_SNAPSHOT_CACHE,ENGINE_SNAPSHOT_CACHE_LOCK,'snapshot')
 
 def v86_analysis_rows():
     with ANALYSIS_CACHE_LOCK:
@@ -357,10 +401,12 @@ def row_probability(row):
     return None,None
 
 def v86_portfolios():
-    data = jget(V86, '/api/v1/paper-portfolios')
-    if isinstance(data, dict):
+    data=_engine_json_with_fallback('/api/v1/paper-portfolios',4.5,ENGINE_PORTFOLIO_CACHE,ENGINE_PORTFOLIO_CACHE_LOCK,'portfolios')
+    if isinstance(data,dict):
+        if not isinstance(data.get('portfolios'),list):
+            data={**data,'portfolios':[]}
         return data
-    return {'status':'OK','portfolios':data if isinstance(data,list) else []}
+    return {'status':'DEGRADED','portfolios':[],'_gateway_stale':True}
 
 def closed_trade_ledger():
     try:
@@ -643,7 +689,9 @@ def overview():
     base['managers']={**(base.get('managers') if isinstance(base.get('managers'),dict) else {}),**(fsm.get('managers') or {})}
     base['first_screen_metrics_status']=fsm.get('status')
     cycle = base.get('cycle') if isinstance(base.get('cycle'),dict) else {}
-    cycle.update({'status':'ok','at':snap.get('at'),'summary':rows,'version':snap.get('version')})
+    _engine_stale=bool(snap.get('_gateway_stale'))
+    cycle.update({'status':'degraded' if _engine_stale else 'ok','at':snap.get('at'),'summary':rows,'version':snap.get('version'),
+                  'data_freshness':'STALE_FALLBACK' if _engine_stale else 'LIVE'})
     base['cycle'] = cycle
     base['overview_mode'] = 'v86-compatible'
     pp = transform_portfolios()
