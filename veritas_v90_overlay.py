@@ -3039,6 +3039,10 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['learning_eligible']=bool(not recovered and _path_complete and z['telemetry_completeness']>=0.999)
         z['episode_key']=_v90j_episode_key(z,payload)
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
+        # The UI/learning layer uses flattened fields above. Do not retain duplicate
+        # full decision/setup/trade JSON blobs for hundreds of rows in RAM.
+        for _blob in ('payload','decision_payload','shadow_payload','setup_payload'):
+            z.pop(_blob,None)
         out.append(_jsonable(z))
     return out
 
@@ -3097,9 +3101,23 @@ def learning_archive(pg_connect,limit=2500):
     return _v90j_unique_learning(_v90j_load_closed(pg_connect,limit))
 
 
+def _v90j_closed_marker(pg_connect):
+    try:
+        with pg_connect() as c:
+            r=c.execute("""SELECT COUNT(*) AS n,
+                           MAX(COALESCE(closed_at,opened_at)) AS last_closed
+                    FROM paper_trades
+                    WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')""").fetchone()
+        return (int((r or {}).get('n') or 0),str((r or {}).get('last_closed') or ''))
+    except Exception:
+        return None
+
+
 def trade_report(pg_connect,limit=2500):
     now_ts=time.time()
-    if _v90j_cache.get('value') is not None and now_ts-float(_v90j_cache.get('at') or 0)<20:
+    marker=_v90j_closed_marker(pg_connect)
+    if (_v90j_cache.get('value') is not None
+            and marker is not None and _v90j_cache.get('marker')==marker):
         return _v90j_cache['value']
     rows=_v90j_load_closed(pg_connect,limit)
     today=[x for x in rows if x.get('today_msk')]
@@ -3138,8 +3156,7 @@ def trade_report(pg_connect,limit=2500):
         'older_closed_count':max(0,int((total or {}).get('n') or 0)-len(today)),
         'total_closed_count':int((total or {}).get('n') or 0),
         'history_summary':history,
-        'older_unique_learning':unique_old[:120],
-        'learning_unique_all':unique_all,
+        'older_unique_learning':unique_old[:50],
         'unique_learning_count':len(unique_all),
         'learning_eligible_count':sum(1 for x in unique_all if x.get('learning_eligible')),
         'deduplicated_portfolio_records':max(0,len(rows)-len(unique_all)),
@@ -3163,7 +3180,7 @@ def trade_report(pg_connect,limit=2500):
                           'today_recovery':result.get('today_recovery')},
                          ensure_ascii=False,default=str,separators=(',',':')),flush=True)
         _v90j_cache['logged_signature']=sig
-    _v90j_cache['at']=now_ts; _v90j_cache['value']=result
+    _v90j_cache['at']=now_ts; _v90j_cache['marker']=marker; _v90j_cache['value']=result
     return result
 '''
         anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
