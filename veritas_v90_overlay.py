@@ -792,6 +792,60 @@ def _signal_first_admission(row,policy,drawdown):
     if ch:
         applied.append("v903_aggressive_5x_gross")
 
+    # v90.4: TP may only come from an active qualified setup. Previously an
+    # inactive range-retest target could flatten a valid trend position near the
+    # current price (observed on CNYRUBF SUPER_SHORT).
+    old_tp = """        rev=(src.get('tactical_reversal') or {}) if isinstance(src,dict) else {}
+        rng=(src.get('range_retest_breakout') or {}) if isinstance(src,dict) else {}
+        tp=rev.get('target_price') or rng.get('target_price')
+        entry=float(z.get('avg_entry_price') or 0.0)"""
+    new_tp = """        rev=(src.get('tactical_reversal') or {}) if isinstance(src,dict) else {}
+        rng=(src.get('range_retest_breakout') or {}) if isinstance(src,dict) else {}
+        tp=None
+        tp_source=None
+        rev_dir=str(rev.get('direction') or rev.get('candidate_direction') or '')
+        rng_dir=str(rng.get('direction') or rng.get('candidate_direction') or '')
+        rng_state=str(rng.get('state') or '')
+        if bool(rev.get('active')) and rev_dir in ('',z['direction']):
+            tp=rev.get('target_price'); tp_source='TACTICAL_REVERSAL'
+        elif bool(rng.get('active')) and rng_dir in ('',z['direction']) and rng_state in ('RETEST_ENTRY','BREAKOUT_ADD','CONFIRMED','MANAGE'):
+            tp=rng.get('target_price'); tp_source='ACTIVE_RANGE_SETUP'
+        entry=float(z.get('avg_entry_price') or 0.0)"""
+    dst, ch = _replace_once(dst, old_tp, new_tp, "v90.4 active setup TP only")
+    if ch:
+        applied.append("v904_tp_active_setup_only")
+
+    old_exp = """            if exp>0:
+                tp=entry*(1.0+exp if z['direction']=='LONG' else 1.0-exp)"""
+    new_exp = """            if exp>0:
+                tp=entry*(1.0+exp if z['direction']=='LONG' else 1.0-exp)
+                tp_source='EXPECTED_MOVE'"""
+    dst, ch = _replace_once(dst, old_exp, new_exp, "v90.4 expected move TP source")
+    if ch:
+        applied.append("v904_tp_expected_move")
+
+    old_risk_tp = """            if risk>0:
+                tp=entry+1.5*risk if z['direction']=='LONG' else entry-1.5*risk"""
+    new_risk_tp = """            if risk>0:
+                tp=entry+1.5*risk if z['direction']=='LONG' else entry-1.5*risk
+                tp_source='R_MULTIPLE'"""
+    dst, ch = _replace_once(dst, old_risk_tp, new_risk_tp, "v90.4 risk multiple TP source")
+    if ch:
+        applied.append("v904_tp_r_multiple")
+
+    # Keep direction-flip confirmation after v90.2 reselects the execution row.
+    old_choice = """            x['_support_ratio']=support_ratio
+            break_ok=bool("""
+    new_choice = """            x['_support_ratio']=support_ratio
+            x['_flip_confirmed']=bool(
+                base.get('_flip_confirmed')
+                or (alignment>=2 and support_ratio>=1.20)
+            )
+            break_ok=bool("""
+    dst, ch = _replace_once(dst, old_choice, new_choice, "v90.4 preserve flip confirmation")
+    if ch:
+        applied.append("v904_flip_confirmation")
+
     if "def _v90_migrate_portfolio_data(c):" not in dst:
         helper = r'''
 # VERITAS v90 portfolio migration
@@ -890,6 +944,8 @@ def verify():
         'v901_movement_capture': '# VERITAS V90.1 MOVEMENT CAPTURE' in port and 'V901_MULTI_HORIZON_CAPTURE' in port,
         'v902_execution_selector': '# VERITAS V90.2 EXECUTION SELECTION' in port and 'V902_MULTI_TF_EXECUTION' in port,
         'v903_aggressive_5x': "'max_gross':5.0" in port and "mode=='AGGRESSIVE'" in port and "base_cap=float(policy.get('max_gross') or 5.0)" in port,
+        'v904_tp_integrity': "tp_source='EXPECTED_MOVE'" in port and "bool(rng.get('active'))" in port,
+        'v904_flip_confirmation': "x['_flip_confirmed']=bool(" in port,
         'v902_order_safe': 0 <= port.find('def _candidate_book_v84') < port.find('# VERITAS V90.2 EXECUTION SELECTION') < port.find('def _v842_position_payload'),
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
