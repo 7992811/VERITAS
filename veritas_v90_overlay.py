@@ -424,25 +424,6 @@ def _v90_nq_market():
     dst = dst.replace("'Yahoo CME NQ futures','US index futures','after-hours context only','yahoo_cme_futures'",
                       "'Yahoo CME NQ=F','Nasdaq-100 futures','active NQ futures instrument','yahoo_cme_futures'")
 
-    # Signal endpoint fail-closed: never leak archived NDX rows into current screen.
-    old_signal_payload = """                self.reply({'version':VERSION,'signals':x.get('summary',[]),
-                            'summary_count':x.get('summary_count',len(x.get('summary',[]))),
-                            'summary_source':x.get('summary_source'),
-                            'at':x.get('at'),'status':x.get('status')})"""
-    new_signal_payload = """                _signals=[dict(z) for z in (x.get('summary') or []) if str(z.get('asset') or '')!='NDX']
-                for _z in _signals:
-                    if _z.get('asset')=='NQ':
-                        _z['instrument']='NQ Futures'
-                        _z['contract']='NQ=F'
-                        _z['instrument_type']='Nasdaq-100 futures'
-                self.reply({'version':VERSION,'signals':_signals,
-                            'summary_count':len(_signals),
-                            'summary_source':x.get('summary_source'),
-                            'at':x.get('at'),'status':x.get('status')})"""
-    dst, ch = _replace_once(dst, old_signal_payload, new_signal_payload, "NQ-only signal endpoint")
-    if ch:
-        applied.append("nq_futures_signal_guard")
-
     # Fail closed at startup if the active universe ever regresses to NDX.
     nq_guard = """
 # VERITAS 9.0 NQ FUTURES INVARIANT
@@ -470,8 +451,14 @@ if 'NDX' in DISPLAY_ASSETS or any((v[0]=='NDX') for v in ASSETS.values()):
                 self.reply({'version':VERSION,'signals':x.get('summary',[]),'at':x.get('at'),'status':x.get('status')})"""
     new_signal_route = """            elif self.path.startswith('/api/v1/signals'):
                 x=fresh_cycle_snapshot()
-                self.reply({'version':VERSION,'signals':x.get('summary',[]),
-                            'summary_count':x.get('summary_count',len(x.get('summary',[]))),
+                _signals=[dict(z) for z in (x.get('summary') or []) if str(z.get('asset') or '')!='NDX']
+                for _z in _signals:
+                    if _z.get('asset')=='NQ':
+                        _z['instrument']='NQ Futures'
+                        _z['contract']='NQ=F'
+                        _z['instrument_type']='Nasdaq-100 futures'
+                self.reply({'version':VERSION,'signals':_signals,
+                            'summary_count':len(_signals),
                             'summary_source':x.get('summary_source'),
                             'at':x.get('at'),'status':x.get('status')})"""
     dst, ch = _replace_once(dst, old_signal_route, new_signal_route, "fast signal endpoint with durable fallback")
@@ -1587,7 +1574,7 @@ def verify():
         'fast_signal_endpoint': "elif self.path.startswith('/api/v1/signals')" in intel and 'fresh_cycle_snapshot()' in intel,
         'brent_price_integrity': 'def _v90_moex_front_brent_contract()' in intel and "verification_mode':'moex_front_contract_primary'" in intel,
         'nasdaq_futures_nq': "'NQ': ('NQ', 'NQ%3DF')" in intel and "asset=='NQ'" in intel,
-        'nq_futures_hard_invariant': 'ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES' in intel and "if _z.get('asset')=='NQ'" in intel,
+        'nq_futures_hard_invariant': 'ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES' in intel and "if _z.get('asset')=='NQ'" in intel and "str(z.get('asset') or '')!='NDX'" in intel,
         'aggressive_5x_strong_signal': "'max_fraction':5.0" in port and 'strong_aggressive=bool(' in port,
         'final_aggressive_execution': '# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING' in port and '_v90_aggressive_strong_context' in port,
         'final_sizing_order_safe': 0 <= port.find('def _desired_fraction') < port.find('# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING') < port.find('def _portfolio_rows'),
