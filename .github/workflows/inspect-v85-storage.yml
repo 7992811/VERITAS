@@ -1,0 +1,35 @@
+name: Inspect v85 storage
+on:
+  push:
+    branches: [v85-acceptance]
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          rm -rf /tmp/v85 && mkdir /tmp/v85
+          unzip -q VERITAS_v85_STAGING.zip -d /tmp/v85
+          python - <<'PY' > schema_report.txt
+          from pathlib import Path
+          import re
+          root=Path('/tmp/v85')
+          for p in sorted(root.rglob('*.py')):
+              s=p.read_text(encoding='utf-8',errors='ignore')
+              tables=sorted(set(re.findall(r'CREATE TABLE(?: IF NOT EXISTS)?\s+([A-Za-z0-9_]+)',s,re.I)))
+              inserts=sorted(set(re.findall(r'INSERT INTO\s+([A-Za-z0-9_]+)',s,re.I)))
+              if tables or inserts:
+                  print('FILE',p.relative_to(root))
+                  print('TABLES',','.join(tables))
+                  print('INSERTS',','.join(inserts))
+                  for n in ('v85_observations','v85_path','v85_receipts','v85_confirmations','v85_episodes','v85_orders','v85_lessons','v85_risk','v85_clocks'):
+                      if n in s:
+                          i=s.find(n)
+                          print('CTX',n,s[max(0,i-600):i+1800].replace('\n',' '))
+                  print()
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v85-storage-schema
+          path: schema_report.txt
+          retention-days: 3
