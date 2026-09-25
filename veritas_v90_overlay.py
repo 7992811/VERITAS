@@ -264,11 +264,45 @@ def _v90_scale_ohlc(rows, scale):
     return out
 
 
+def _v90_yahoo_quote_price(symbol):
+    last_err=None
+    for host in ('query1.finance.yahoo.com','query2.finance.yahoo.com'):
+        try:
+            with httpx.Client(timeout=12,headers={'User-Agent':'Mozilla/5.0 VERITAS'}) as h:
+                r=h.get(f'https://{host}/v7/finance/quote',params={'symbols':symbol})
+                r.raise_for_status()
+                result=(((r.json() or {}).get('quoteResponse') or {}).get('result') or [])
+            if result:
+                z=result[0]
+                for k in ('regularMarketPrice','postMarketPrice','preMarketPrice'):
+                    if z.get(k) not in (None,0):
+                        return float(z[k]),z
+        except Exception as ex:
+            last_err=ex
+    raise RuntimeError(f'YAHOO_QUOTE_FAIL {symbol}: {last_err}')
+
+
 def _v90_brent_market():
     raw=_yahoo_research_futures_market('BRENT','BZ%3DF','BNO','yahoo_brent','Yahoo Brent BZ=F')
-    # Yahoo's BZ=F 5m continuous-contract chart can lag the front-month roll.
-    # Cross-check against chart metadata and the current daily contract level.
+    # Yahoo's BZ=F intraday continuous chart can lag the front-month roll.
+    # Use the quote endpoint as price authority; chart bars remain structure input
+    # and are roll-normalized to that current contract level.
     refs=[]
+    quote_meta=None
+    try:
+        q,quote_meta=_v90_yahoo_quote_price('BZ=F')
+        refs.append(('quote',float(q)))
+    except Exception:
+        pass
+    try:
+        d,meta=_yahoo_series('BZ%3DF','1mo','1d',True)
+        q=(meta or {}).get('regularMarketPrice')
+        if q is not None:
+            refs.append(('chart_meta',float(q)))
+        if d:
+            refs.append(('daily',float(d[-1]['close'])))
+    except Exception:
+        pass
     try:
         d,meta=_yahoo_series('BZ%3DF','1mo','1d',True)
         q=(meta or {}).get('regularMarketPrice')
@@ -278,12 +312,10 @@ def _v90_brent_market():
             refs.append(float(d[-1]['close']))
     except Exception:
         pass
-    refs=[x for x in refs if x>0]
+    refs=[(src,x) for src,x in refs if x>0]
     if refs:
-        ref=refs[0]
-        # Prefer the metadata quote when it agrees with current daily data.
-        if len(refs)>1 and abs(refs[0]/refs[1]-1)>0.025:
-            ref=refs[-1]
+        quote_ref=next((x for src,x in refs if src=='quote'),None)
+        ref=float(quote_ref if quote_ref is not None else refs[0][1])
         old=float(raw.get('price') or 0.0)
         if old>0 and abs(ref/old-1)>=0.025:
             scale=ref/old
@@ -299,7 +331,7 @@ def _v90_brent_market():
             raw['front_month_reference']=ref
             raw['verification_mode']='front_month_roll_normalized'
             q=list(raw.get('source_quality') or [])
-            q.append(_source_row('Yahoo BZ=F daily/meta','Brent futures','front-month roll verification',
+            q.append(_source_row('Yahoo BZ=F quote','Brent futures','front-month price authority',
                                  now(),1800,'OK',
                                  f'continuous intraday roll normalized: {old:.2f} -> {ref:.2f}; scale={scale:.6f}',
                                  'Yahoo'))
