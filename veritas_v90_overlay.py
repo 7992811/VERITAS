@@ -221,7 +221,8 @@ def v90_migrate_core_data():
                  unique_learning_count=_jr.get('unique_learning_count'),
                  learning_eligible_count=_jr.get('learning_eligible_count'),
                  deduplicated_portfolio_records=_jr.get('deduplicated_portfolio_records'),
-                 today_missing_fields=_jr.get('today_missing_fields'))
+                 today_missing_fields=_jr.get('today_missing_fields'),
+                 today_recovery=_jr.get('today_recovery'))
         except Exception as _jr_ex:
             emit('v90_closed_journal_startup_audit',status='ERROR',
                  error=f'{type(_jr_ex).__name__}: {_jr_ex}')
@@ -2258,9 +2259,9 @@ def _v90_migrate_portfolio_data(c):
     
     # VERITAS 9.0 closed-trade journal V2: complete current-day cards,
     # compact historical results, and de-duplicated execution-learning episodes.
-    if "# VERITAS V90 CLOSED JOURNAL V2" not in dst:
+    if "# VERITAS V90 CLOSED JOURNAL V3" not in dst:
         helper = r'''
-# VERITAS V90 CLOSED JOURNAL V2
+# VERITAS V90 CLOSED JOURNAL V3
 _v90j_base_open_or_add = _open_or_add
 _v90j_base_close_or_reduce = _close_or_reduce
 _v90j_base_step_one = _step_one
@@ -2530,7 +2531,11 @@ def _v90j_load_closed(pg_connect,limit=2500):
             rows=c.execute("""SELECT t.*,
                      oa.last_order_at,oa.last_order_reason,oa.entry_units,oa.exit_units,
                      oa.entry_notional_rub,oa.exit_notional_rub,
-                     dd.payload AS decision_payload
+                     dd.payload AS decision_payload,
+                     sh.high_price AS shadow_high_price,sh.low_price AS shadow_low_price,
+                     sh.stop_price AS shadow_stop_price,sh.exit_price AS shadow_exit_price,
+                     sh.stage AS shadow_stage,sh.payload AS shadow_payload,
+                     su.stop_price AS setup_stop_price,su.payload AS setup_payload
               FROM paper_trades t
               LEFT JOIN LATERAL (
                 SELECT MAX(o.created_at) AS last_order_at,
@@ -2550,6 +2555,18 @@ def _v90j_load_closed(pg_connect,limit=2500):
                   AND le.event_ts<=t.opened_at
                 ORDER BY le.event_ts DESC LIMIT 1
               ) dd ON TRUE
+              LEFT JOIN LATERAL (
+                SELECT st.high_price,st.low_price,st.stop_price,st.exit_price,st.stage,st.payload
+                FROM shadow_trades st
+                WHERE st.setup_id=COALESCE(t.payload->>'canonical_setup_id',t.payload->>'setup_id')
+                ORDER BY COALESCE(st.closed_at,st.updated_at,st.created_at) DESC LIMIT 1
+              ) sh ON TRUE
+              LEFT JOIN LATERAL (
+                SELECT s.stop_price,s.payload
+                FROM trade_setups s
+                WHERE s.setup_id=COALESCE(t.payload->>'canonical_setup_id',t.payload->>'setup_id')
+                ORDER BY s.updated_at DESC LIMIT 1
+              ) su ON TRUE
               WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')
               ORDER BY COALESCE(t.closed_at,oa.last_order_at,t.opened_at) DESC
               LIMIT %s""",(limit,)).fetchall()
@@ -2563,6 +2580,7 @@ def _v90j_load_closed(pg_connect,limit=2500):
     out=[]
     for r0 in rows:
         z=dict(r0); payload=_v90j_json(z.get('payload')); dp=_v90j_json(z.get('decision_payload'))
+        sp=_v90j_json(z.get('setup_payload')); shp=_v90j_json(z.get('shadow_payload'))
         plan=dp.get('trade_plan') or {}; features=dp.get('features') or {}
         cl=z.get('closed_at') or payload.get('closed_at') or payload.get('close_time') or z.get('last_order_at')
         z['closed_at']=cl; z['close_time']=cl
@@ -2580,15 +2598,35 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['probability_source']=payload.get('pwin_source') or payload.get('probability_source')
         z['model_quality_score']=payload.get('model_quality_score')
         z['stop_price']=(payload.get('stop_price') or payload.get('last_stop_price')
-                         or plan.get('stop_price'))
+                         or plan.get('stop_price') or z.get('shadow_stop_price')
+                         or z.get('setup_stop_price') or sp.get('stop_price'))
         z['take_price']=(payload.get('take_price') or payload.get('target_price')
                          or payload.get('last_target_price') or plan.get('target_price')
-                         or plan.get('tactical_target_price'))
+                         or plan.get('tactical_target_price') or sp.get('target_price')
+                         or sp.get('take_price') or sp.get('tp_price'))
         z['quantity']=(payload.get('quantity') or payload.get('units')
                        or z.get('entry_units') or z.get('exit_units'))
         z['mfe_pct']=payload.get('mfe_pct')
         z['mae_pct']=payload.get('mae_pct')
         entry=_v90j_float(z.get('avg_entry_price')); exitp=_v90j_float(z.get('avg_exit_price'))
+        # Historical records created before V2 can be repaired only from exact stored telemetry.
+        # Never synthesize MFE/MAE from unrelated horizon outcomes.
+        sh_hi=_v90j_float(z.get('shadow_high_price')); sh_lo=_v90j_float(z.get('shadow_low_price'))
+        if entry and entry>0 and sh_hi is not None and sh_lo is not None:
+            if z.get('mfe_pct') is None:
+                z['mfe_pct']=100.0*((sh_hi/entry)-1.0) if z.get('direction')=='LONG' else 100.0*(1.0-sh_lo/entry)
+            if z.get('mae_pct') is None:
+                z['mae_pct']=100.0*((sh_lo/entry)-1.0) if z.get('direction')=='LONG' else 100.0*(1.0-sh_hi/entry)
+            z['telemetry_recovered_from_shadow']=True
+        else:
+            z['telemetry_recovered_from_shadow']=False
+        # TP may be reconstructed from the exact stored expected-move plan.
+        if z.get('take_price') is None and entry and entry>0:
+            em=_v90j_float(payload.get('expected_move_pct'),
+                 _v90j_float(plan.get('expected_move_pct'),_v90j_float(sp.get('expected_move_pct'))))
+            if em is not None and em>0:
+                z['take_price']=entry*(1.0+em if z.get('direction')=='LONG' else 1.0-em)
+                z['take_price_recovered_from_expected_move']=True
         sign=1.0 if z.get('direction')=='LONG' else -1.0
         price_ret=payload.get('price_return_pct')
         if price_ret is None and entry and exitp:
@@ -2599,7 +2637,8 @@ def _v90j_load_closed(pg_connect,limit=2500):
             give=max(0.0,float(z['mfe_pct'])-max(0.0,float(price_ret or 0.0)))
         z['giveback_pct']=give
         z['regime']=(payload.get('regime') or payload.get('entry_regime')
-                     or dp.get('regime') or features.get('regime'))
+                     or dp.get('regime') or features.get('regime')
+                     or shp.get('regime_open') or sp.get('regime'))
         z['entry_quality']=(payload.get('entry_quality') or plan.get('entry_quality')
                             or dp.get('entry_quality'))
         z['entry_state']=payload.get('entry_state') or z.get('entry_quality') or 'NORMAL'
@@ -2707,6 +2746,10 @@ def trade_report(pg_connect,limit=2500):
     missing={}
     for field in ('closed_at','exit_reason','quantity','stop_price','take_price','mfe_pct','mae_pct','regime','learning_label'):
         missing[field]=sum(1 for x in today if x.get(field) is None or x.get(field)=='')
+    recovery={
+        'shadow_path_recovered':sum(1 for x in today if x.get('telemetry_recovered_from_shadow')),
+        'tp_from_expected_move':sum(1 for x in today if x.get('take_price_recovered_from_expected_move')),
+    }
     result=_jsonable({
         'status':'OK','version':VERSION,'timezone':'Europe/Moscow',
         'trades':today,'today_trades':today,
@@ -2720,6 +2763,7 @@ def trade_report(pg_connect,limit=2500):
         'learning_eligible_count':sum(1 for x in unique_all if x.get('learning_eligible')),
         'deduplicated_portfolio_records':max(0,len(rows)-len(unique_all)),
         'today_missing_fields':missing,
+        'today_recovery':recovery,
         'archive_window':min(5000,max(50,int(limit or 2500))),
         'display_policy':'today full detail; older portfolio results + unique learning episodes only',
         'learning_policy':'one canonical market episode once; portfolio duplicates aggregated before self-learning',
@@ -2734,7 +2778,8 @@ def trade_report(pg_connect,limit=2500):
                           'unique_learning_count':result.get('unique_learning_count'),
                           'learning_eligible_count':result.get('learning_eligible_count'),
                           'deduplicated_portfolio_records':result.get('deduplicated_portfolio_records'),
-                          'today_missing_fields':result.get('today_missing_fields')},
+                          'today_missing_fields':result.get('today_missing_fields'),
+                          'today_recovery':result.get('today_recovery')},
                          ensure_ascii=False,default=str,separators=(',',':')),flush=True)
         _v90j_cache['logged_signature']=sig
     _v90j_cache['at']=now_ts; _v90j_cache['value']=result
@@ -2792,7 +2837,7 @@ def verify():
         'final_sizing_order_safe': 0 <= port.find('def _desired_fraction') < port.find('# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING') < port.find('def _portfolio_rows'),
         'legacy_ndx_retired': 'INSTRUMENT_REPLACED_BY_NQ' in port,
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
-        'closed_journal_v2': '# VERITAS V90 CLOSED JOURNAL V2' in port and 'older_unique_learning' in port and 'today_missing_fields' in port,
+        'closed_journal_v2': '# VERITAS V90 CLOSED JOURNAL V3' in port and 'older_unique_learning' in port and 'today_missing_fields' in port,
         'paper_execution_learning_v2': '# VERITAS V90 PAPER EXECUTION LEARNING V2' in intel and 'PAPER_PORTFOLIO_UNIQUE_EXECUTION' in intel,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
         'multi_tf_levels': '# VERITAS V90 MULTI-TF QUALITY MODEL R2' in intel and 'def _v90_multi_tf_levels(' in intel and 'multi_tf_level_context' in intel,
