@@ -38,7 +38,7 @@ def _patch_intelligence():
     if V84_INTEL not in dst and V90_INTEL not in dst:
         raise RuntimeError("v90 intelligence requires v84.3 foundation")
     dst2, nver = re.subn(
-        r"^VERSION\\s*=\\s*['\"][^'\"]+['\"]",
+        r"^VERSION\s*=\s*['\"][^'\"]+['\"]",
         "VERSION = '" + V90_INTEL + "'",
         dst, count=1, flags=re.M)
     if nver != 1:
@@ -235,7 +235,7 @@ def _patch_portfolio():
     if V84_PORT not in dst and V90_PORT not in dst:
         raise RuntimeError("v90 portfolio requires v84.3 foundation")
     dst2, nver = re.subn(
-        r"^VERSION\\s*=\\s*['\"][^'\"]+['\"]",
+        r"^VERSION\s*=\s*['\"][^'\"]+['\"]",
         "VERSION='" + V90_PORT + "'",
         dst, count=1, flags=re.M)
     if nver != 1:
