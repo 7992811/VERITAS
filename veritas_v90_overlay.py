@@ -215,6 +215,18 @@ def v90_migrate_core_data():
     if ch:
         applied.append("migration_startup")
 
+    old_root_route = """            elif self.path in ('/', '/health'):
+                with lock: x = dict(last_cycle)
+                self.reply(x, 503 if x.get('status') == 'error' else 200)"""
+    new_root_route = """            elif self.path == '/' or self.path.startswith('/?'):
+                self.reply_html(DASHBOARD_HTML)
+            elif self.path == '/health':
+                with lock: x = dict(last_cycle)
+                self.reply(x, 503 if x.get('status') == 'error' else 200)"""
+    dst, ch = _replace_once(dst, old_root_route, new_root_route, "public root dashboard")
+    if ch:
+        applied.append("public_root_dashboard")
+
     old_header = "Два независимых paper-портфеля по 1 000 000 ₽. Champion — порог входа 70%; Challenger — порог входа 77%. Реальные деньги не используются."
     new_header = "Четыре независимых paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. История и обучение перенесены в БД 9.0; реальные деньги не используются."
     if old_header in dst:
@@ -374,6 +386,7 @@ def verify():
         'portfolio_migration': "def _v90_migrate_portfolio_data(c):" in port,
         'v84_profit_harvest_preserved': "'TAKE_PROFIT' if tp_hit" in port,
         'v84_learning_preserved': 'def refresh_experience_lessons(' in intel,
+        'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
