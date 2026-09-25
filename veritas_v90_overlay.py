@@ -2826,6 +2826,223 @@ def trade_report(pg_connect,limit=2500):
             dst=dst.replace(anchor,"\n"+helper+anchor,1)
         applied.append("closed_journal_v2")
 
+    # VERITAS 9.0 open-position data contract: explicit TP, entry metric, USD notional,
+    # holding time and risk/reward fields for the UI.
+    if "# VERITAS V90 OPEN POSITION REPORT V2" not in dst:
+        helper = r'''
+# VERITAS V90 OPEN POSITION REPORT V2
+_v90p_base_report = report
+_v90p_audit_signature = None
+
+
+def _v90p_json(x):
+    if isinstance(x,dict):
+        return dict(x)
+    if not x:
+        return {}
+    try:
+        return json.loads(x)
+    except Exception:
+        return {}
+
+
+def _v90p_float(x,default=None):
+    try:
+        if x is None:
+            return default
+        v=float(x)
+        return v if math.isfinite(v) else default
+    except Exception:
+        return default
+
+
+def _v90p_dt(x):
+    if x is None:
+        return None
+    if isinstance(x,datetime):
+        return x if x.tzinfo else x.replace(tzinfo=timezone.utc)
+    try:
+        z=datetime.fromisoformat(str(x).replace('Z','+00:00'))
+        return z if z.tzinfo else z.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _v90p_take_price(z,payload,trade_payload,decision_payload):
+    plan=(decision_payload.get('trade_plan') or {}) if isinstance(decision_payload,dict) else {}
+    candidates=[
+        ('ACTIVE_TP',payload.get('active_take_profit')),
+        ('POSITION_TP',payload.get('take_price')),
+        ('POSITION_TARGET',payload.get('target_price')),
+        ('LAST_TARGET',payload.get('last_target_price')),
+        ('TRADE_TP',trade_payload.get('take_price')),
+        ('TRADE_TARGET',trade_payload.get('target_price')),
+        ('PLAN_TARGET',plan.get('target_price')),
+        ('TACTICAL_TARGET',plan.get('tactical_target_price')),
+    ]
+    tp1=plan.get('take_profit_1')
+    if isinstance(tp1,dict):
+        candidates.append(('MULTI_TF_TP1',tp1.get('price')))
+    elif tp1 is not None:
+        candidates.append(('PLAN_TP1',tp1))
+    for src,val in candidates:
+        x=_v90p_float(val)
+        if x is not None and x>0:
+            return x,src
+    entry=_v90p_float(z.get('avg_entry_price'))
+    exp=None
+    for q in (payload.get('expected_move_pct'),trade_payload.get('expected_move_pct'),plan.get('expected_move_pct')):
+        exp=_v90p_float(q)
+        if exp is not None and exp>0:
+            break
+    if entry and exp and exp>0:
+        tp=entry*(1.0+exp if z.get('direction')=='LONG' else 1.0-exp)
+        return tp,'EXPECTED_MOVE'
+    return None,None
+
+
+def _v90p_entry_metric(payload,trade_payload,decision_payload):
+    source=(payload.get('pwin_source') or payload.get('probability_source')
+            or trade_payload.get('pwin_source') or trade_payload.get('probability_source'))
+    value=payload.get('pwin')
+    if value is None:
+        value=payload.get('entry_probability')
+    if value is None:
+        value=trade_payload.get('pwin')
+    if value is None:
+        value=trade_payload.get('entry_probability')
+    if value is not None:
+        v=_v90p_float(value)
+        if v is not None:
+            label='PROBABILITY' if str(source or '') in ('EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY') else 'MODEL_SCORE'
+            return v,source or 'MODEL_SCORE_UNCALIBRATED',label
+    cp=decision_payload.get('calibrated_probability') if isinstance(decision_payload,dict) else None
+    if cp is not None:
+        v=_v90p_float(cp)
+        if v is not None:
+            return v,'CALIBRATED_PROBABILITY','PROBABILITY'
+    ms=(payload.get('model_quality_score') or trade_payload.get('model_quality_score'))
+    if ms is not None:
+        v=_v90p_float(ms)
+        if v is not None:
+            return v,'MODEL_QUALITY_SCORE_UNCALIBRATED','MODEL_SCORE'
+    conf=decision_payload.get('confidence') if isinstance(decision_payload,dict) else None
+    if conf is not None:
+        v=_v90p_float(conf)
+        if v is not None:
+            return v,'SIGNAL_STRENGTH','SIGNAL_STRENGTH'
+    return None,None,'BUILDING'
+
+
+def _v90_open_position_report(pg_connect):
+    global _v90p_audit_signature
+    d=_v90p_base_report(pg_connect)
+    lookup={}
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT pp.*,pf.last_usdrub,
+                       pt.payload AS trade_payload,pt.horizon AS trade_horizon,pt.setup AS trade_setup,
+                       dd.payload AS decision_payload
+                FROM paper_positions pp
+                JOIN paper_portfolios pf ON pf.name=pp.portfolio_name
+                LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id
+                LEFT JOIN LATERAL (
+                  SELECT le.payload
+                  FROM ledger_events le
+                  WHERE le.event_type='decision'
+                    AND le.asset=pp.asset
+                    AND le.horizon=COALESCE(pt.horizon,pp.payload->>'horizon')
+                    AND le.event_ts<=pp.opened_at
+                  ORDER BY le.event_ts DESC LIMIT 1
+                ) dd ON TRUE""").fetchall()
+        for r0 in rows:
+            r=dict(r0)
+            lookup[(str(r.get('portfolio_name')),str(r.get('asset')))]=r
+    except Exception:
+        lookup={}
+    total=0; miss_usd=miss_tp=miss_metric=0
+    for p in d.get('portfolios') or []:
+        name=str(p.get('name') or '')
+        for z in p.get('positions') or []:
+            total+=1
+            raw=lookup.get((name,str(z.get('asset') or ''))) or {}
+            pos_payload=_v90p_json(raw.get('payload') if raw else z.get('payload'))
+            trade_payload=_v90p_json(raw.get('trade_payload'))
+            payload=dict(trade_payload); payload.update(pos_payload)
+            decision=_v90p_json(raw.get('decision_payload'))
+            plan=decision.get('trade_plan') or {}
+            current=_v90p_float(z.get('last_price'),0.0) or 0.0
+            entry=_v90p_float(z.get('avg_entry_price'),0.0) or 0.0
+            units=abs(_v90p_float(z.get('units'),0.0) or 0.0)
+            notional=abs(units*current)
+            z['notional_rub']=notional
+            fx=_v90p_float(raw.get('last_usdrub'))
+            z['fx_usdrub']=fx
+            z['notional_usd']=(notional/fx) if fx and fx>0 else None
+            if z['notional_usd'] is None:
+                miss_usd+=1
+            tp,tp_source=_v90p_take_price(z,payload,trade_payload,decision)
+            z['take_price']=tp
+            z['take_price_source']=tp_source
+            if tp is None:
+                miss_tp+=1
+            stop=_v90p_float(z.get('stop_price'))
+            z['stop_distance_pct']=(abs(current-stop)/current*100.0) if current>0 and stop is not None else None
+            z['take_distance_pct']=(abs(tp-current)/current*100.0) if current>0 and tp is not None else None
+            if z.get('stop_distance_pct') not in (None,0) and z.get('take_distance_pct') is not None:
+                z['current_rr']=z['take_distance_pct']/z['stop_distance_pct']
+                den=z['stop_distance_pct']+z['take_distance_pct']
+                z['risk_bar_position_pct']=(100.0*z['stop_distance_pct']/den) if den>0 else 50.0
+            else:
+                z['current_rr']=None
+                z['risk_bar_position_pct']=50.0
+            metric,metric_source,metric_label=_v90p_entry_metric(payload,trade_payload,decision)
+            z['entry_probability']=metric if metric_label=='PROBABILITY' else None
+            z['entry_metric_value']=metric
+            z['entry_metric_source']=metric_source
+            z['entry_metric_label']=metric_label
+            if metric is None:
+                miss_metric+=1
+            z['signal_score']=(_v90p_float(payload.get('model_quality_score'))
+                               or _v90p_float(decision.get('confidence')))
+            z['horizon']=(payload.get('horizon') or raw.get('trade_horizon')
+                          or decision.get('horizon'))
+            z['setup']=(payload.get('setup_family') or raw.get('trade_setup')
+                        or ((decision.get('institutional_signal') or {}).get('breakout_quality') or {}).get('state'))
+            z['regime']=(payload.get('regime') or payload.get('entry_regime')
+                         or decision.get('regime'))
+            z['signal_tier']=(payload.get('entry_signal_tier') or decision.get('signal_tier'))
+            z['decision_stage']=(payload.get('decision_stage') or decision.get('decision_stage'))
+            z['verification_mode']=decision.get('verification_mode')
+            z['last_mark_at']=(payload.get('last_mark_at') or raw.get('updated_at'))
+            opened=_v90p_dt(z.get('opened_at'))
+            z['held_seconds']=max(0.0,(datetime.now(timezone.utc)-opened).total_seconds()) if opened else None
+            z['target_fraction_pct']=100.0*float(z.get('target_fraction') or 0.0)
+            z['data_complete']=bool(z.get('take_price') is not None and z.get('entry_metric_value') is not None
+                                    and z.get('notional_usd') is not None)
+            z['payload']=payload
+    sig=(total,miss_usd,miss_tp,miss_metric)
+    if sig!=_v90p_audit_signature:
+        print(json.dumps({'event':'V90_OPEN_POSITION_REPORT',
+                          'positions':total,'missing_usd':miss_usd,
+                          'missing_tp':miss_tp,'missing_entry_metric':miss_metric},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+        _v90p_audit_signature=sig
+    d['position_data_version']='v90-open-position-v2'
+    d['open_position_data_quality']={'positions':total,'missing_usd':miss_usd,
+                                     'missing_tp':miss_tp,'missing_entry_metric':miss_metric}
+    return _jsonable(d)
+
+
+report=_v90_open_position_report
+'''
+        anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(anchor,"\n"+helper+anchor,1)
+        applied.append("open_position_report_v2")
+
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
     if runtime_identity.strip() not in dst:
@@ -2872,6 +3089,7 @@ def verify():
         'legacy_ndx_retired': 'INSTRUMENT_REPLACED_BY_NQ' in port,
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
         'closed_journal_v2': '# VERITAS V90 CLOSED JOURNAL V3' in port and 'older_unique_learning' in port and 'today_missing_fields' in port,
+        'open_position_report_v2': '# VERITAS V90 OPEN POSITION REPORT V2' in port and 'entry_metric_label' in port and 'notional_usd' in port,
         'paper_execution_learning_v2': '# VERITAS V90 PAPER EXECUTION LEARNING V2' in intel and 'PAPER_PORTFOLIO_UNIQUE_EXECUTION' in intel,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
         'multi_tf_levels': '# VERITAS V90 MULTI-TF QUALITY MODEL R2' in intel and 'def _v90_multi_tf_levels(' in intel and 'multi_tf_level_context' in intel,
