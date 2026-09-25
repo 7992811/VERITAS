@@ -210,6 +210,21 @@ def v90_migrate_core_data():
     new_main = """    pg_boot = pg_init()
     v90_migration = v90_migrate_core_data() if pg_boot.get('ok') else {'status':'POSTGRES_REQUIRED','schema':V90_DB_SCHEMA}
     emit('v90_database_ready', **v90_migration)
+    if pg_boot.get('ok') and VP is not None:
+        try:
+            _jr=VP.trade_report(pg_connect,1000)
+            emit('v90_closed_journal_startup_audit',
+                 status=_jr.get('status'),
+                 today_closed_count=_jr.get('today_closed_count'),
+                 older_closed_count=_jr.get('older_closed_count'),
+                 total_closed_count=_jr.get('total_closed_count'),
+                 unique_learning_count=_jr.get('unique_learning_count'),
+                 learning_eligible_count=_jr.get('learning_eligible_count'),
+                 deduplicated_portfolio_records=_jr.get('deduplicated_portfolio_records'),
+                 today_missing_fields=_jr.get('today_missing_fields'))
+        except Exception as _jr_ex:
+            emit('v90_closed_journal_startup_audit',status='ERROR',
+                 error=f'{type(_jr_ex).__name__}: {_jr_ex}')
     case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}"""
     dst, ch = _replace_once(dst, old_main, new_main, "v90 migration startup")
     if ch:
