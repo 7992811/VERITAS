@@ -1,0 +1,18 @@
+name: Export v85 migration
+on:
+  push:
+    branches: [v85-acceptance]
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          rm -rf /tmp/v85 && mkdir /tmp/v85
+          unzip -q VERITAS_v85_STAGING.zip -d /tmp/v85
+          cp /tmp/v85/migrations/001_v85.sql ./001_v85.sql
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v85-migration
+          path: 001_v85.sql
+          retention-days: 3
