@@ -480,6 +480,15 @@ except Exception as _vp_ex:
     if ch:
         applied.append("portfolio_import_diagnostics")
 
+    # VERITAS 9.0 CNYRUBF multi-timeframe history retention
+    CNYRUBF_MULTI_TF_HISTORY_BARS=True
+    dst, ch = _replace_once(dst,
+        "w=hist[-360:]; closes=[float(x[4]) for x in w]; highs=[float(x[2]) for x in w]; lows=[float(x[3]) for x in w]",
+        "w=hist[-1200:]; closes=[float(x[4]) for x in w]; highs=[float(x[2]) for x in w]; lows=[float(x[3]) for x in w]",
+        "CNYRUBF retain higher-timeframe history")
+    if ch:
+        applied.append("cnyrubf_multi_tf_history")
+
     full_closed_trade_ui=True
     dst = dst.replace("VP.trade_report(pg_connect)", "VP.trade_report(pg_connect,1000)")
     old_header = "Два независимых paper-портфеля по 1 000 000 ₽. Champion — порог входа 70%; Challenger — порог входа 77%. Реальные деньги не используются."
@@ -487,6 +496,370 @@ except Exception as _vp_ex:
     if old_header in dst:
         dst = dst.replace(old_header, new_header, 1)
         applied.append("portfolio_ui")
+
+    # VERITAS 9.0 multi-timeframe / CNY quality corrections.
+    if "# VERITAS V90 MULTI-TF QUALITY MODEL" not in dst:
+        helper = r'''
+# VERITAS V90 MULTI-TF QUALITY MODEL
+# Keep trend onset, impulse and price structure as separate evidence families.
+# Build point-in-time support/resistance across 1h/4h/1d/3d/7d and make
+# SUPER classification depend on the structure of the signal's own horizon.
+
+_v90_base_merge_trend_and_structure = merge_trend_and_structure
+_v90_base_regime_from = regime_from
+_v90_base_features = features
+_v90_base_classify_signal_tier = classify_signal_tier
+_v90_base_execution_eligibility = execution_eligibility
+_v90_base_technical_trade_plan = technical_trade_plan
+
+
+def _v90_tf_group(asset, timeframe):
+    if timeframe == '1h':
+        return 1
+    if timeframe == '4h':
+        return 4
+    try:
+        return max(1, int(horizon_bars(asset, timeframe)))
+    except Exception:
+        return {'1d':24,'3d':72,'7d':168}.get(timeframe,1)
+
+
+def _v90_aggregate_hourly(raw, group):
+    c=[float(x) for x in raw.get('closes') or []]
+    h=[float(x) for x in raw.get('highs') or []]
+    l=[float(x) for x in raw.get('lows') or []]
+    v=[float(x or 0) for x in raw.get('vols') or []]
+    n=min(len(c),len(h),len(l))
+    if n<=0:
+        return []
+    group=max(1,int(group))
+    start=n % group
+    rows=[]
+    for i in range(start,n,group):
+        j=min(n,i+group)
+        if j-i < group:
+            continue
+        rows.append({
+            'open':float(c[i-1] if i>0 else c[i]),
+            'high':max(h[i:j]),
+            'low':min(l[i:j]),
+            'close':float(c[j-1]),
+            'volume':sum(v[i:j]) if v else 0.0,
+        })
+    return rows
+
+
+def _v90_level_row(raw, timeframe):
+    asset=str(raw.get('asset') or '')
+    p=float(raw.get('price') or 0.0)
+    bars=_v90_aggregate_hourly(raw,_v90_tf_group(asset,timeframe))
+    if p<=0 or len(bars)<3:
+        return {'timeframe':timeframe,'status':'INSUFFICIENT','bars':len(bars),
+                'support':None,'resistance':None}
+    look=bars[-min(64,len(bars)):]
+    lows=[float(x['low']) for x in look]
+    highs=[float(x['high']) for x in look]
+    closes=[float(x['close']) for x in look]
+    supports=[]; resistances=[]
+    for i in range(1,len(look)-1):
+        if lows[i] <= lows[i-1] and lows[i] <= lows[i+1]:
+            supports.append(lows[i])
+        if highs[i] >= highs[i-1] and highs[i] >= highs[i+1]:
+            resistances.append(highs[i])
+    eps=max(p*0.00005,1e-9)
+    below=[x for x in supports if x < p-eps]
+    above=[x for x in resistances if x > p+eps]
+    previous=look[-2] if len(look)>=2 else look[-1]
+    if float(previous['low']) < p-eps:
+        below.append(float(previous['low']))
+    if float(previous['high']) > p+eps:
+        above.append(float(previous['high']))
+    rolling_low=min(lows[-min(20,len(lows)):])
+    rolling_high=max(highs[-min(20,len(highs)):])
+    if rolling_low < p-eps:
+        below.append(rolling_low)
+    if rolling_high > p+eps:
+        above.append(rolling_high)
+    support=max(below) if below else None
+    resistance=min(above) if above else None
+    return {
+        'timeframe':timeframe,'status':'OK','bars':len(bars),
+        'last_close':closes[-1],'previous_high':float(previous['high']),
+        'previous_low':float(previous['low']),
+        'rolling_high':rolling_high,'rolling_low':rolling_low,
+        'support':support,'resistance':resistance,
+        'distance_to_support':None if support is None else (p-support)/p,
+        'distance_to_resistance':None if resistance is None else (resistance-p)/p,
+    }
+
+
+def _v90_multi_tf_levels(raw):
+    cached=raw.get('_v90_multi_tf_levels') if isinstance(raw,dict) else None
+    if isinstance(cached,dict) and cached.get('timeframes'):
+        return cached
+    p=float(raw.get('price') or 0.0)
+    rows={tf:_v90_level_row(raw,tf) for tf in ('1h','4h','1d','3d','7d')}
+    def nearest(kind,tfs):
+        vals=[]
+        for tf in tfs:
+            z=rows.get(tf) or {}
+            x=z.get(kind)
+            if x is None:
+                continue
+            x=float(x)
+            if (kind=='support' and x<p) or (kind=='resistance' and x>p):
+                vals.append((abs(p-x),tf,x))
+        vals.sort()
+        return ({'timeframe':vals[0][1],'price':vals[0][2],
+                 'distance_pct':vals[0][0]/p} if vals and p>0 else None)
+    out={
+        'status':'OK' if any((z.get('status')=='OK') for z in rows.values()) else 'INSUFFICIENT',
+        'price':p,'timeframes':rows,
+        'nearest_support':nearest('support',('1h','4h','1d','3d','7d')),
+        'nearest_resistance':nearest('resistance',('1h','4h','1d','3d','7d')),
+        'senior_support':nearest('support',('1d','3d','7d')),
+        'senior_resistance':nearest('resistance',('1d','3d','7d')),
+        'method':'point_in_time_hourly_aggregation_no_future_bars',
+    }
+    if isinstance(raw,dict):
+        raw['_v90_multi_tf_levels']=out
+    return out
+
+
+def _v90_horizon_level_context(mtf,horizon,direction):
+    rows=(mtf or {}).get('timeframes') or {}
+    hierarchy={
+        '1h':('1h','4h','1d','3d','7d'),
+        '4h':('4h','1d','3d','7d'),
+        '1d':('1d','3d','7d'),
+        '3d':('3d','7d'),
+        '7d':('7d',),
+    }
+    tfs=hierarchy.get(str(horizon),('1h','4h','1d','3d','7d'))
+    p=float((mtf or {}).get('price') or 0.0)
+    supports=[]; resistances=[]
+    for tf in tfs:
+        z=rows.get(tf) or {}
+        if z.get('support') is not None and float(z['support'])<p:
+            supports.append((p-float(z['support']),tf,float(z['support'])))
+        if z.get('resistance') is not None and float(z['resistance'])>p:
+            resistances.append((float(z['resistance'])-p,tf,float(z['resistance'])))
+    supports.sort(); resistances.sort()
+    support=({'timeframe':supports[0][1],'price':supports[0][2],
+              'distance_pct':supports[0][0]/p} if supports and p>0 else None)
+    resistance=({'timeframe':resistances[0][1],'price':resistances[0][2],
+                 'distance_pct':resistances[0][0]/p} if resistances and p>0 else None)
+    stop_ref=resistance if direction=='SHORT' else support
+    target_ref=support if direction=='SHORT' else resistance
+    return {'horizon':horizon,'direction':direction,'considered_timeframes':list(tfs),
+            'support':support,'resistance':resistance,'stop_reference':stop_ref,
+            'target_reference':target_ref,
+            'execution_timeframe':'1h' if horizon!='1h' else '1h',
+            'principle':'entry timing may use lower TF; invalidation/targets must also check signal TF and all higher TFs'}
+
+
+def merge_trend_and_structure(trend, structure):
+    trend=dict(trend or {})
+    st=structure or {}
+    z=dict(trend)
+    z['intraday_structure']=st
+    raw_onset=float(trend.get('onset_score') or 0.0)
+    raw_impulse=float(trend.get('impulse_score') or 0.0)
+    z['raw_onset_score']=raw_onset
+    z['raw_impulse_score']=raw_impulse
+    z['structural_confirmation_score']=float(st.get('score') or 0.0)
+    z['onset_score']=raw_onset
+    z['impulse_score']=raw_impulse
+    for k in ('near_ath','price_discovery','breakout_hold','relative_volume',
+              'fresh_breakout','volume_confirmed','breakout_level',
+              'recent_swing_anchor','breakout_measured_move_pct','invalidation_price'):
+        if k in st:
+            z[k]=st.get(k)
+    z['structure_score']=float(st.get('score') or 0.0)
+    sdir=str(st.get('direction') or 'NO_TRADE')
+    life=str(st.get('lifecycle') or '')
+    if sdir in ('LONG','SHORT'):
+        if life in ('FRESH_BREAKOUT','CONFIRMATION','EXTENSION') and not st.get('false_breakout'):
+            if str(z.get('direction') or 'NO_TRADE')=='NO_TRADE':
+                z['direction']=sdir
+                z['structure_promoted_direction']=True
+                if str(z.get('phase') or 'NONE')=='NONE':
+                    z['phase']='EARLY_TREND'
+            elif str(z.get('direction'))==sdir:
+                z['structure_confirmation']=True
+            if str(st.get('entry_quality') or '') not in ('','UNKNOWN','NEUTRAL'):
+                z['entry_quality']=st.get('entry_quality')
+        elif life=='FAILURE':
+            z['entry_quality']='INVALIDATED'
+    return z
+
+
+def regime_from(f):
+    asset=str(f.get('asset') or '')
+    if asset!='CNYRUBF':
+        return _v90_base_regime_from(f)
+    trend=float(f.get('trend') or 0.0)
+    ti=f.get('trend_impulse') or {}
+    sigma=max(0.00045,float(ti.get('sigma_1h') or 0.0))
+    daily_vol=sigma*math.sqrt(float(max(4,horizon_bars('CNYRUBF','1d'))))
+    trend_cut=clip(3.0*sigma,0.0030,0.0090)
+    vol_state='HIGH_VOL' if daily_vol>0.012 else 'LOW_VOL' if daily_vol<0.0055 else 'MID_VOL'
+    trend_state='UPTREND' if trend>trend_cut else 'DOWNTREND' if trend<-trend_cut else 'RANGE'
+    return f'{trend_state}_{vol_state}'
+
+
+def features(raw, horizon, common_structure=None):
+    f=_v90_base_features(raw,horizon,common_structure)
+    mtf=_v90_multi_tf_levels(raw)
+    f['multi_tf_levels']=mtf
+    sl=dict(f.get('structural_levels') or {})
+    sl['multi_tf']=mtf
+    sl['senior_support']=(mtf.get('senior_support') or {}).get('price')
+    sl['senior_resistance']=(mtf.get('senior_resistance') or {}).get('price')
+    f['structural_levels']=sl
+    ti=dict(f.get('trend_impulse') or {})
+    hs=f.get('horizon_structure') or {}
+    ti['current_horizon']=horizon
+    ti['current_horizon_structure']=hs
+    ti['current_horizon_structure_score']=float(hs.get('score') or 0.0)
+    ti['current_horizon_structure_direction']=hs.get('direction') or 'NO_TRADE'
+    ti['current_horizon_structure_state']=hs.get('state') or 'UNKNOWN'
+    direction=str(ti.get('direction') or 'NO_TRADE')
+    senior_order={'1h':('4h','1d','3d','7d'),'4h':('1d','3d','7d'),
+                  '1d':('3d','7d'),'3d':('7d',),'7d':()}
+    hs_all=(common_structure or {}).get('horizon_structures') or {}
+    senior=[]
+    for tf in senior_order.get(horizon,()):
+        z=hs_all.get(tf) or horizon_structure_features(raw,tf)
+        if str(z.get('direction') or 'NO_TRADE')==direction and float(z.get('score') or 0)>=0.52:
+            senior.append({'timeframe':tf,'score':float(z.get('score') or 0),
+                           'state':z.get('state'),'breakout':bool(z.get('breakout'))})
+    ti['senior_horizon_confirmations']=senior
+    f['trend_impulse']=ti
+    f['multi_tf_level_context']=_v90_horizon_level_context(mtf,horizon,
+        str(f.get('horizon_structure_direction') or direction))
+    if asset:=str(f.get('asset') or ''):
+        if asset=='CNYRUBF':
+            sigma=max(0.00045,float(ti.get('sigma_1h') or 0.0))
+            f['regime_parameters']={'source':'CNYRUBF_SPECIALIZED','sigma_1h':sigma,
+                'trend_cut':clip(3.0*sigma,0.0030,0.0090),
+                'daily_vol_proxy':sigma*math.sqrt(float(max(4,horizon_bars('CNYRUBF','1d'))))}
+    return f
+
+
+def classify_signal_tier(asset,decision,confidence,challenger,effective_evidence,source_gate,time_gate,
+                         calibration=None,trend_impulse=None):
+    if decision not in ('LONG','SHORT') or not source_gate or not time_gate:
+        return 'NO_TRADE'
+    ti=trend_impulse or {}
+    hs=ti.get('current_horizon_structure') or {}
+    horizon=str(ti.get('current_horizon') or '')
+    hdir=str(hs.get('direction') or 'NO_TRADE')
+    hscore=float(hs.get('score') or 0.0)
+    hstate=str(hs.get('state') or '')
+    min_score={'1h':0.52,'4h':0.58,'1d':0.60,'3d':0.64,'7d':0.66}.get(horizon,0.58)
+    horizon_ok=bool(hdir==decision and hscore>=min_score)
+    if horizon in ('3d','7d'):
+        horizon_ok=bool(horizon_ok and hstate in ('BUILDING_TREND','CONFIRMED_TREND'))
+    if not horizon_ok:
+        return decision
+    calibration=calibration or {}
+    cp=calibration.get('probability_correct')
+    cdec=str((challenger or {}).get('decision') or '')
+    cconf=float((challenger or {}).get('confidence') or 0.0)
+    threshold=runtime_float('min_directional_score',MIN_DIRECTIONAL_SCORE)+0.08
+    min_knowledge=2 if asset in MARKET_BAR_ASSETS else 3
+    super_cal=bool(cp is not None and float(cp)>=0.62 and cdec==decision)
+    super_cons=bool(float(confidence)>=threshold and cdec==decision and cconf>=0.60
+                    and int(effective_evidence or 0)>=min_knowledge)
+    phase=str(ti.get('phase') or 'NONE')
+    idir=str(ti.get('direction') or 'NO_TRADE')
+    entryq=str(ti.get('entry_quality') or '')
+    market_structure_super=bool(
+        phase in ('TREND_DAY','IMPULSE_TREND') and idir==decision
+        and entryq not in ('LATE_EXTENDED','EXTENDED_WAIT_PULLBACK','INVALIDATED')
+        and float(ti.get('impulse_score') or 0)>=TREND_DAY_MIN_SCORE
+        and float(confidence)>=max(runtime_float('min_directional_score',MIN_DIRECTIONAL_SCORE),threshold-0.04)
+        and cdec==decision and cconf>=0.50)
+    fresh_allowed=(horizon in ('1h','4h','1d') or bool(hs.get('breakout')))
+    fresh_breakout_super=bool(
+        fresh_allowed and entryq=='FRESH_BREAKOUT' and idir==decision
+        and bool(ti.get('volume_confirmed'))
+        and float(ti.get('structure_score') or 0)>=0.60
+        and float(ti.get('onset_score') or 0)>=0.58
+        and cdec==decision and cconf>=0.48)
+    return ('SUPER_'+decision) if (super_cal or super_cons or market_structure_super or fresh_breakout_super) else decision
+
+
+def execution_eligibility(asset, raw, clock_info=None):
+    out=dict(_v90_base_execution_eligibility(asset,raw,clock_info) or {})
+    if asset=='CNYRUBF':
+        research_ok=bool(raw.get('source_gate_pass',True))
+        time_ok=bool(raw.get('market_open',True))
+        if research_ok and time_ok and not STRICT_EXECUTION_SOURCE_GATE:
+            return {'eligible':True,'paper_eligible':True,'production_eligible':False,
+                    'reason':'paper_single_source_official_moex','direct_sources':1,
+                    'research_ok':True,'time_ok':True,
+                    'verification_mode':raw.get('verification_mode'),
+                    'gate_label':'PAPER_ONLY_1_DIRECT_SOURCE'}
+        out['paper_eligible']=bool(research_ok and time_ok)
+        out['production_eligible']=bool(out.get('eligible'))
+        out['gate_label']='PRODUCTION_VERIFIED' if out.get('eligible') else 'RESEARCH_ONLY'
+    else:
+        out.setdefault('paper_eligible',bool(out.get('eligible')))
+        out.setdefault('production_eligible',bool(out.get('eligible')))
+    return out
+
+
+def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
+    plan=dict(_v90_base_technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog) or {})
+    if research_decision not in ('LONG','SHORT'):
+        return plan
+    mtf=f.get('multi_tf_levels') or {}
+    ctx=_v90_horizon_level_context(mtf,horizon,research_decision)
+    plan['multi_tf_levels']=mtf
+    plan['multi_tf_level_context']=ctx
+    plan['higher_tf_stop_reference']=(ctx.get('stop_reference') or {}).get('price')
+    plan['higher_tf_target_reference']=(ctx.get('target_reference') or {}).get('price')
+    plan['level_timeframes_considered']=ctx.get('considered_timeframes') or []
+    p=float(f.get('price') or plan.get('entry_price') or 0.0)
+    tref=ctx.get('target_reference') or {}
+    target_price=tref.get('price')
+    room=None
+    if p>0 and target_price is not None:
+        target_price=float(target_price)
+        if research_decision=='LONG' and target_price>p:
+            room=(target_price-p)/p
+        elif research_decision=='SHORT' and target_price<p:
+            room=(p-target_price)/p
+    exp=float(plan.get('expected_move_pct') or 0.0)
+    if room is not None and room>0:
+        plan['higher_tf_target_room_pct']=room
+        if exp>0:
+            exp=min(exp,room)
+        else:
+            exp=room
+        plan['expected_move_pct']=exp
+        plan['target_price']=p*(1.0+exp if research_decision=='LONG' else 1.0-exp)
+        plan['target_method']='MULTI_TF_LEVEL_CAPPED_'+str(tref.get('timeframe') or 'UNKNOWN')
+    stop=plan.get('stop_price')
+    if p>0 and stop is not None:
+        stop_dist=abs(p-float(stop))/p
+        plan['stop_distance_pct']=stop_dist
+        ratio=exp/stop_dist if stop_dist>1e-12 else 999.0
+        plan['expected_to_stop_ratio']=ratio
+        minr=float(plan.get('min_expected_to_stop_ratio') or TRADE_MIN_EXPECTED_TO_STOP)
+        if plan.get('eligible') and ratio<minr:
+            plan['eligible']=False
+            plan['reason']='multi_tf_target_room_too_small_vs_stop'
+    plan['level_policy']='LOCAL_ENTRY_STRUCTURE + SIGNAL_TF + ALL_HIGHER_TF'
+    return plan
+'''
+        anchor = "\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if anchor not in dst:
+            raise RuntimeError("v90 multi-TF quality anchor missing")
+        dst = dst.replace(anchor, "\n" + helper + anchor, 1)
+        applied.append("multi_tf_quality_model")
 
     # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION = '" + V90_INTEL + "'\n"
@@ -1356,6 +1729,149 @@ def _signal_first_admission(row,policy,drawdown):
         dst=dst.replace(anchor2,"\n"+helper+anchor2,1)
         applied.append("aggressive_final_execution_sizing")
 
+    # VERITAS 9.0: uncalibrated model output is a quality score, never an observed probability.
+    if "# VERITAS V90 CALIBRATED PROBABILITY SEMANTICS" not in dst:
+        helper = r'''
+# VERITAS V90 CALIBRATED PROBABILITY SEMANTICS
+_v90q_previous_signal_first_admission = _signal_first_admission
+
+
+def _signal_probability(row):
+    cp=(row or {}).get('calibrated_probability')
+    if cp is not None:
+        try:
+            return _clip(float(cp),0.50,0.95),'EMPIRICAL_CALIBRATION'
+        except Exception:
+            pass
+    row=row or {}
+    inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    ev=inst.get('evidence_independence') or {}
+    hs=row.get('horizon_structure') or {}
+    plan=row.get('trade_plan') or {}
+    tr=row.get('tactical_reversal') or {}
+    rs=row.get('range_retest_breakout') or {}
+    conf=_clip(row.get('confidence') or 0.0,0,1)
+    q=_clip(bq.get('quality_score') or 0.0,0,1)
+    indep=_clip((ev.get('independent_count') or 0)/6.0,0,1)
+    native=_clip(hs.get('score') or 0.0,0,1)
+    rr=_clip((plan.get('expected_to_stop_ratio') or 0.0)/3.0,0,1)
+    setup_score=0.0
+    if tr.get('active'):
+        setup_score=max(setup_score,_clip(tr.get('probability') or 0.0,0,1))
+    if rs.get('active'):
+        setup_score=max(setup_score,_clip(rs.get('probability') or 0.0,0,1))
+    score=(0.10 + 0.18*conf + 0.22*q + 0.14*indep + 0.16*native
+           + 0.10*rr + 0.06*setup_score)
+    if str(inst.get('investor_signal') or '').startswith('STRONG'):
+        score+=0.03
+    if str(inst.get('investor_signal') or '').startswith('ADD'):
+        score+=0.04
+    return _clip(score,0.0,1.0),'MODEL_QUALITY_SCORE_UNCALIBRATED'
+
+
+def _v90_aggressive_strong_context(row):
+    if not row or not _v901_no_hard_veto(row):
+        return False
+    d=str(row.get('research_decision') or 'NO_TRADE')
+    if d not in ('LONG','SHORT'):
+        return False
+    score,source=_signal_probability(row)
+    # 5x is only available after empirical calibration. A model-quality score
+    # may open/scale a paper probe, but it is not evidence for 5x leverage.
+    if source!='EMPIRICAL_CALIBRATION':
+        return False
+    supporting=list(row.get('_supporting_horizons') or [])
+    alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    ds=row.get('_direction_support') or {}
+    other='SHORT' if d=='LONG' else 'LONG'
+    support_ratio=float(row.get('_support_ratio') or
+                        (float(ds.get(d) or 0.0)/max(0.01,float(ds.get(other) or 0.0))))
+    plan=row.get('trade_plan') or {}
+    try:
+        rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception:
+        rr=0.0
+    hs=row.get('horizon_structure') or {}
+    hscore=float(hs.get('score') or 0.0)
+    signal_tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    return bool(alignment>=4 and support_ratio>=1.50 and float(score)>=0.82 and rr>=1.20
+                and hscore>=0.68
+                and (alignment>=5 or signal_tier in ('SUPER_LONG','SUPER_SHORT')))
+
+
+def _signal_first_admission(row,policy,drawdown):
+    result=dict(_v90q_previous_signal_first_admission(row,policy,drawdown) or {})
+    if not row:
+        return result
+    score,source=_signal_probability(row)
+    if source=='EMPIRICAL_CALIBRATION':
+        result['probability']=float(score)
+        result['probability_source']=source
+        result['model_quality_score']=None
+        return result
+    if not _v901_no_hard_veto(row):
+        return {'open':False,'fraction':0.0,'reason':'HARD_VETO',
+                'model_quality_score':float(score),'probability':None,
+                'probability_source':source}
+    d=str(row.get('research_decision') or 'NO_TRADE')
+    if d not in ('LONG','SHORT'):
+        return {'open':False,'fraction':0.0,'reason':'NO_DIRECTION',
+                'model_quality_score':float(score),'probability':None,
+                'probability_source':source}
+    plan=row.get('trade_plan') or {}
+    try:
+        rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception:
+        rr=0.0
+    mode=str((policy or {}).get('mode') or 'CORE')
+    supporting=list(row.get('_supporting_horizons') or [])
+    alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    hs=row.get('horizon_structure') or {}
+    hscore=float(hs.get('score') or 0.0)
+    hstate=str(hs.get('state') or '')
+    floors={'IMPULSE_ONLY':0.58,'AGGRESSIVE':0.56,'CORE':0.62,'CHALLENGER':0.66}
+    if float(score)<floors.get(mode,0.62) or (rr>0 and rr<0.75):
+        return {'open':False,'fraction':0.0,'reason':'MODEL_SCORE_BELOW_PAPER_ADMISSION',
+                'model_quality_score':float(score),'probability':None,
+                'probability_source':source,'rr':rr,'alignment_count':alignment}
+    base={'IMPULSE_ONLY':0.10,'AGGRESSIVE':0.15,'CORE':0.10,'CHALLENGER':0.05}.get(mode,0.05)
+    f=base
+    if alignment>=3 and hscore>=0.60 and rr>=1.00:
+        f=max(f,{'IMPULSE_ONLY':0.20,'AGGRESSIVE':0.25,'CORE':0.15,'CHALLENGER':0.10}.get(mode,0.10))
+    if alignment>=4 and float(score)>=0.70 and hscore>=0.66 and rr>=1.15:
+        f=max(f,{'IMPULSE_ONLY':0.30,'AGGRESSIVE':0.40,'CORE':0.20,'CHALLENGER':0.15}.get(mode,0.15))
+    if alignment>=5 and float(score)>=0.78 and hstate=='CONFIRMED_TREND' and rr>=1.35:
+        f=max(f,{'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.75,'CORE':0.25,'CHALLENGER':0.20}.get(mode,0.20))
+    # No uncalibrated score may invoke the 5x path.
+    max_uncal={'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.75,'CORE':0.25,'CHALLENGER':0.20}.get(mode,0.20)
+    f=min(f,max_uncal,float((policy or {}).get('max_fraction') or max_uncal))
+    risk_pct=plan.get('stop_distance_pct')
+    try:
+        if risk_pct is not None and float(risk_pct)>0:
+            f=min(f,MAX_STOP_RISK_NAV/float(risk_pct))
+    except Exception:
+        pass
+    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:
+        return {'open':False,'fraction':0.0,'reason':'RISK_GOVERNOR_HARD',
+                'model_quality_score':float(score),'probability':None,
+                'probability_source':source,'risk_governor':rg}
+    f*=float(rg.get('multiplier') or 0.0)
+    f=_clip(_round_step(f),0,float((policy or {}).get('max_fraction') or max_uncal))
+    return {'open':f>0,'fraction':f,'reason':'MODEL_SCORE_PAPER_PROBE',
+            'model_quality_score':round(float(score),6),'probability':None,
+            'probability_source':source,'empirical':False,'rr':rr,
+            'alignment_count':alignment,'horizon_structure_score':hscore,
+            'risk_governor':rg,'strong_aggressive':False,
+            'sizing_authority':'UNCALIBRATED_SCORE_CAPPED_PAPER_SIZING'}
+'''
+        anchor2="\ndef _portfolio_rows(c,name):"
+        if anchor2 not in dst:
+            raise RuntimeError("v90 calibrated probability semantics anchor missing")
+        dst=dst.replace(anchor2,"\n"+helper+anchor2,1)
+        applied.append("calibrated_probability_semantics")
+
     # Close any legacy NDX paper position at its last marked price. History is preserved;
     # all new Nasdaq exposure is routed through NQ.
     old_missing = """    for z in pos:
@@ -1581,6 +2097,12 @@ def verify():
         'legacy_ndx_retired': 'INSTRUMENT_REPLACED_BY_NQ' in port,
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
+        'multi_tf_levels': 'def _v90_multi_tf_levels(' in intel and 'multi_tf_level_context' in intel,
+        'cny_special_regime': "asset!='CNYRUBF'" in intel and "CNYRUBF_SPECIALIZED" in intel,
+        'timeframe_specific_super': 'current_horizon_structure' in intel and "horizon in ('3d','7d')" in intel,
+        'paper_source_gate_metadata': 'paper_single_source_official_moex' in intel and 'production_eligible' in intel,
+        'uncalibrated_score_semantics': 'MODEL_QUALITY_SCORE_UNCALIBRATED' in port and 'UNCALIBRATED_SCORE_CAPPED_PAPER_SIZING' in port,
+        'uncalibrated_leverage_guard': "source!='EMPIRICAL_CALIBRATION'" in port,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
