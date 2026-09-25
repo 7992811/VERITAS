@@ -31,6 +31,8 @@ V80_INTEL="veritas-max-product-v80.0-unified-execution-core"
 V80_PORT="veritas-portfolio-v6-v80-unified-execution"
 V84_INTEL="veritas-max-product-v84.2-audited-learning-execution"
 V84_PORT="veritas-portfolio-v8.3-v84-profit-harvest"
+V90_INTEL="veritas-max-product-v90.0-four-portfolio-core"
+V90_PORT="veritas-portfolio-v9.0-four-portfolio-core"
 
 START_MARKER="    # ----- v78.1 Rule & Experience Arbitration -----"
 END_MARKER="    # ----- v79.0 Portfolio Trade Integrity -----"
@@ -52,11 +54,12 @@ def _already_v80():
     intel=_read(TARGET); port=_read(PORTFOLIO_TARGET)
     # A failed v84 overlay may already have upgraded one module. Treat that as
     # a valid v80 foundation so the next startup can resume idempotently.
-    return (V80_INTEL in intel or V84_INTEL in intel) and (V80_PORT in port or V84_PORT in port)
+    return (V80_INTEL in intel or V84_INTEL in intel or V90_INTEL in intel) and (V80_PORT in port or V84_PORT in port or V90_PORT in port)
 
 
 def _already_v84():
-    return V84_INTEL in _read(TARGET) and V84_PORT in _read(PORTFOLIO_TARGET)
+    intel=_read(TARGET); port=_read(PORTFOLIO_TARGET)
+    return (V84_INTEL in intel or V90_INTEL in intel) and (V84_PORT in port or V90_PORT in port)
 
 
 def _ensure_hashlib():
@@ -634,8 +637,8 @@ def _sync_v70():
 def _verify():
     intel=_read(TARGET); port=_read(PORTFOLIO_TARGET)
     checks={
-        'intel_version':V84_INTEL in intel,
-        'portfolio_version':V84_PORT in port,
+        'intel_version':(V84_INTEL in intel or V90_INTEL in intel),
+        'portfolio_version':(V84_PORT in port or V90_PORT in port),
         'outcome_learning':'def refresh_experience_lessons(' in intel,
         'setup_memory':'def setup_memory_profile(' in intel,
         'regime_policy':'def adaptive_regime_policy(' in intel,
@@ -676,12 +679,18 @@ def _verify():
     return checks
 
 
+
+def _apply_v90():
+    from veritas_v90_overlay import apply
+    return apply()
+
 def _run():
     try:
         if _already_v84():
             _ensure_hashlib()
             _verify()
-            print("[VERITAS BOOTSTRAP] v84.3 READY: idempotent=true; adaptive_experience_execution=true; profit_harvest=true",flush=True)
+            v90=_apply_v90()
+            print("[VERITAS BOOTSTRAP] v90 READY: idempotent=true; adaptive_experience_execution=true; profit_harvest=true; schema=veritas_v90",flush=True)
             return
 
         if not _already_v80():
@@ -695,10 +704,11 @@ def _run():
         _ensure_hashlib()
         v70=_sync_v70()
         _verify()
+        v90=_apply_v90()
 
         print(
-            "[VERITAS BOOTSTRAP] v84.3 VERIFIED: "
-            f"intelligence={','.join(ia)}; portfolio={','.join(pa)}; v70_sync={str(v70).lower()}",
+            "[VERITAS BOOTSTRAP] v90 VERIFIED: "
+            f"intelligence={','.join(ia)}; portfolio={','.join(pa)}; v70_sync={str(v70).lower()}; schema=veritas_v90",
             flush=True
         )
     except Exception as exc:
