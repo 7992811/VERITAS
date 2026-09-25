@@ -718,6 +718,11 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
         dst=dst.replace(_case_anchor,_case_new,1)
         applied.append("brent_20260925_structure_case")
 
+    dst = dst.replace(
+        "'tactical_target_price':tactical_reversal.get('target_price'),'setup':tactical_reversal.get('setup') or 'TACTICAL_REVERSAL',",
+        "'tactical_target_price':tactical_reversal.get('target_price'),'setup':tactical_reversal.get('setup') or 'TACTICAL_REVERSAL','execution_timeframe':tactical_reversal.get('execution_timeframe') or horizon,"
+    )
+
     # Runtime asset universe: replace cash NDX with nearly 24h Nasdaq-100 futures.
     replacements=[
       ("    'NDX': ('NDX', '^NDX'),","    'NQ': ('NQ', 'NQ%3DF'),"),
@@ -2327,6 +2332,69 @@ def _signal_first_admission(row,policy,drawdown):
     if ch:
         applied.append("v904_tp_r_multiple")
 
+    # VERITAS V90 STRUCTURE LIFECYCLE EXIT
+    # Structural impulse positions are managed by their originating timeframe:
+    # hold through ordered extremes; close when volatility contracts and the
+    # second counter-direction candle confirms the reclaim.
+    if "def _v90_structure_exit_signal(" not in dst:
+        helper = r'''
+# VERITAS V90 STRUCTURE LIFECYCLE EXIT
+
+def _v90_structure_exit_signal(row,z):
+    if not row or not z:
+        return False
+    payload=_v842_position_payload(z)
+    tf=str(payload.get('execution_timeframe') or payload.get('entry_timeframe')
+           or payload.get('horizon') or z.get('horizon') or '1h')
+    grid=(row.get('structure_breakout_grid') or {}) if isinstance(row,dict) else {}
+    s=grid.get(tf) or {}
+    return bool(
+        s.get('exit_signal')
+        and str(s.get('direction') or '')==str(z.get('direction') or '')
+        and str(s.get('state') or '')=='EXIT_REVERSAL'
+    )
+'''
+        anchor2="\ndef _portfolio_rows(c,name):"
+        if anchor2 not in dst:
+            raise RuntimeError("v90 structural exit helper anchor missing")
+        dst=dst.replace(anchor2,"\n"+helper+anchor2,1)
+        applied.append("structure_lifecycle_exit_helper")
+
+    old_setup_tp = """        if bool(rev.get('active')) and rev_dir in ('',z['direction']):
+            tp=rev.get('target_price'); tp_source='TACTICAL_REVERSAL'"""
+    new_setup_tp = """        structural_dynamic=bool(
+            str(plan.get('setup') or '')=='STRUCTURAL_BREAKOUT_LIFECYCLE'
+            or str(rev.get('setup') or '')=='STRUCTURAL_BREAKOUT_LIFECYCLE'
+        )
+        if bool(rev.get('active')) and rev_dir in ('',z['direction']) and not structural_dynamic:
+            tp=rev.get('target_price'); tp_source='TACTICAL_REVERSAL'"""
+    dst, ch = _replace_once(dst, old_setup_tp, new_setup_tp, "dynamic structural exit disables fixed TP")
+    if ch:
+        applied.append("structure_dynamic_tp_disable")
+
+    old_tp_hit = """        tp_hit=bool(tp is not None and ((z['direction']=='LONG' and px>=float(tp)) or (z['direction']=='SHORT' and px<=float(tp))))
+        if opposite and not confirmed_flip and not hard_exit and not stop_hit and not tp_hit:"""
+    new_tp_hit = """        tp_hit=bool(tp is not None and ((z['direction']=='LONG' and px>=float(tp)) or (z['direction']=='SHORT' and px<=float(tp))))
+        structure_exit=_v90_structure_exit_signal(mgmt or row,z)
+        if opposite and not confirmed_flip and not hard_exit and not stop_hit and not tp_hit and not structure_exit:"""
+    dst, ch = _replace_once(dst, old_tp_hit, new_tp_hit, "structural exit condition")
+    if ch:
+        applied.append("structure_exit_condition")
+
+    dst, ch = _replace_once(
+        dst,
+        "if confirmed_flip or hard_exit or stop_hit or tp_hit or rg.get('new_risk') is False:",
+        "if confirmed_flip or hard_exit or stop_hit or tp_hit or structure_exit or rg.get('new_risk') is False:",
+        "structural exit close gate")
+    if ch:
+        applied.append("structure_exit_close_gate")
+
+    old_reason = """reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
+    new_reason = """reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
+    dst, ch = _replace_once(dst, old_reason, new_reason, "structural exit reason")
+    if ch:
+        applied.append("structure_exit_reason")
+
     # Keep direction-flip confirmation after v90.2 reselects the execution row.
     old_choice = """            x['_support_ratio']=support_ratio
             break_ok=bool("""
@@ -2862,7 +2930,7 @@ def _v90_fast_impulse_context(row):
     row=row or {}
     if not _v901_no_hard_veto(row):
         return False
-    if str(row.get('horizon') or '') not in ('1h','4h'):
+    if str(row.get('horizon') or '') not in ('1h','4h','1d','3d','7d'):
         return False
     direction=str(row.get('research_decision') or 'NO_TRADE')
     if direction not in ('LONG','SHORT'):
@@ -2897,9 +2965,17 @@ def _v90_fast_impulse_context(row):
         stop_risk=0.0
 
     # This deliberately overrides only a soft timing / paper-admission rejection.
-    # A structure-first trigger may fire before the committee emits LONG/SHORT;
-    # once converted into a candidate it uses the same stop/risk controls.
+    # A qualified structural-breakout event is allowed to lead the slow committee.
     fast_structure=bool(row.get('_fast_structure_trigger'))
+    tr=row.get('impulse_pivot_break') or row.get('tactical_reversal') or {}
+    structural_break=bool(
+        tr.get('active')
+        and str(tr.get('setup') or '')=='STRUCTURAL_BREAKOUT_LIFECYCLE'
+        and str(tr.get('direction') or '')==direction
+        and float(tr.get('quality_score') or 0.0)>=0.70
+    )
+    if structural_break:
+        return bool(expected>=0.004 and rr>=0.35 and 0.0<stop_risk<=0.025)
     hs_floor=0.72 if fast_structure else 0.85
     return bool(
         hs_dir==direction
@@ -3319,6 +3395,10 @@ def _v90j_entry_patch(row,z,ts):
         'take_price':plan.get('target_price') or plan.get('tactical_target_price'),
         'expected_move_pct':plan.get('expected_move_pct'),
         'expected_to_stop_ratio':plan.get('expected_to_stop_ratio'),
+        'execution_timeframe':plan.get('execution_timeframe')
+            or ((row.get('impulse_pivot_break') or {}).get('execution_timeframe'))
+            or ((row.get('tactical_reversal') or {}).get('execution_timeframe'))
+            or row.get('horizon'),
         'decision_stage':row.get('decision_stage') or plan.get('decision_stage'),
         'supporting_horizons':row.get('_supporting_horizons'),
         'direction_support':row.get('_direction_support'),
