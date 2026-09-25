@@ -248,6 +248,21 @@ except Exception as _v90_ui_ex:
     if ch:
         applied.append("public_root_dashboard")
 
+    old_vp_import = """try:
+    import veritas_portfolio as VP
+except Exception:
+    VP = None"""
+    new_vp_import = """try:
+    import veritas_portfolio as VP
+    VP_IMPORT_ERROR = None
+except Exception as _vp_ex:
+    VP = None
+    VP_IMPORT_ERROR = f'{type(_vp_ex).__name__}: {_vp_ex}'
+    print(f'[VERITAS PORTFOLIO IMPORT] FAILED: {VP_IMPORT_ERROR}', flush=True)"""
+    dst, ch = _replace_once(dst, old_vp_import, new_vp_import, "portfolio import diagnostics")
+    if ch:
+        applied.append("portfolio_import_diagnostics")
+
     old_header = "Два независимых paper-портфеля по 1 000 000 ₽. Champion — порог входа 70%; Challenger — порог входа 77%. Реальные деньги не используются."
     new_header = "Четыре независимых paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. История и обучение перенесены в БД 9.0; реальные деньги не используются."
     if old_header in dst:
@@ -755,7 +770,7 @@ def _signal_first_admission(row,policy,drawdown):
         'sizing_authority':'V902_DIRECTION_GRID_THEN_EXECUTION_HORIZON_THEN_RISK'
     }
 '''
-        anchor = "\ndef ensure_schema(pg_connect):"
+        anchor = "\ndef _v842_position_payload(z):"
         if anchor not in dst:
             raise RuntimeError("v90.2 execution selection anchor missing")
         dst = dst.replace(anchor, "\n" + helper + anchor, 1)
@@ -875,8 +890,10 @@ def verify():
         'v901_movement_capture': '# VERITAS V90.1 MOVEMENT CAPTURE' in port and 'V901_MULTI_HORIZON_CAPTURE' in port,
         'v902_execution_selector': '# VERITAS V90.2 EXECUTION SELECTION' in port and 'V902_MULTI_TF_EXECUTION' in port,
         'v903_aggressive_5x': "'max_gross':5.0" in port and "mode=='AGGRESSIVE'" in port and "base_cap=float(policy.get('max_gross') or 5.0)" in port,
+        'v902_order_safe': 0 <= port.find('def _candidate_book_v84') < port.find('# VERITAS V90.2 EXECUTION SELECTION') < port.find('def _v842_position_payload'),
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
+        'portfolio_import_diagnostics': 'VP_IMPORT_ERROR' in intel,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
