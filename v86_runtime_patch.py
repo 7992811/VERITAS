@@ -1071,3 +1071,109 @@ try:
 finally:
     _storage_sys.argv=_storage_argv
 print('V86_STORAGE_ARCHITECTURE_RUNTIME_ACTIVE')
+
+# 25) Base 9.0 cutover: shared durable PostgreSQL + four active portfolios only.
+import re as _v90_re
+
+# Acquire the Base 9.0 DSN before any storage maintenance or model import.
+p=root/'veritas_v86_start.py'
+_v90_start=p.read_text(encoding='utf-8')
+if 'VERITAS_V90_DB_LEASE_ACTIVE' not in _v90_start:
+    _v90_anchor="import os as _storage_os\n"
+    _v90_hook=r'''import os as _v90_os, json as _v90_json
+from urllib.request import Request as _V90Request, urlopen as _v90_urlopen
+if _v90_os.getenv('VERITAS_STORAGE_GENERATION','').strip()=='9.0':
+    _v90_broker=_v90_os.getenv('VERITAS_V90_DB_BROKER_URL','').strip()
+    _v90_token=_v90_os.getenv('VERITAS_V90_BRIDGE_TOKEN','').strip()
+    if not _v90_broker or not _v90_token:
+        raise RuntimeError('V90_DB_LEASE_CONFIG_MISSING')
+    _v90_req=_V90Request(_v90_broker,headers={
+        'X-Veritas-V90-Token':_v90_token,
+        'Accept':'application/json',
+        'User-Agent':'VERITAS-v90-engine/1.0'
+    })
+    try:
+        with _v90_urlopen(_v90_req,timeout=12) as _v90_resp:
+            _v90_obj=_v90_json.loads(_v90_resp.read().decode('utf-8'))
+    except Exception as _v90_exc:
+        raise RuntimeError('V90_DB_LEASE_FAILED:'+type(_v90_exc).__name__) from _v90_exc
+    _v90_dsn=str(_v90_obj.get('database_url') or '').strip()
+    if _v90_obj.get('storage_generation')!='9.0' or not _v90_dsn:
+        raise RuntimeError('V90_DB_LEASE_INVALID')
+    _v90_os.environ['DATABASE_URL']=_v90_dsn
+    _v90_os.environ.pop('VERITAS_V85_TEST_DATABASE_URL',None)
+    print('VERITAS_V90_DB_LEASE_ACTIVE storage_generation=9.0',flush=True)
+'''
+    if _v90_anchor not in _v90_start:
+        raise SystemExit('V90_START_STORAGE_ANCHOR_NOT_FOUND')
+    _v90_start=_v90_start.replace(_v90_anchor,_v90_hook+'\n'+_v90_anchor,1)
+    p.write_text(_v90_start,encoding='utf-8')
+
+# Portfolio universe: only Champion, Challenger, Impulse and Aggressive.
+p=root/'veritas_v86/portfolios.py'
+_v90_pf=p.read_text(encoding='utf-8')
+_v90_profiles='''PROFILES = {
+    "Champion": PortfolioProfile("Champion","Контрольный","fixed_control",adaptive=False,
+                                  max_gross=D("2.0"),asset_cap=D("1.0"),stop_risk_nav=D("0.015"),hard_drawdown=D("0.10")),
+    "Challenger": PortfolioProfile("Challenger","Адаптивный","validated_challenger",adaptive=True,
+                                    max_gross=D("2.0"),asset_cap=D("1.0"),stop_risk_nav=D("0.015"),hard_drawdown=D("0.10")),
+    "Impulse": PortfolioProfile("Impulse","Импульсный","momentum_breakout",
+                                 ("IMPULSE_GENESIS","IMPULSE_PIVOT_BREAK","TACTICAL_REVERSAL","RANGE_RETEST_BREAKOUT"),
+                                 max_gross=D("2.0"),asset_cap=D("1.0"),stop_risk_nav=D("0.020"),hard_drawdown=D("0.10")),
+    "Aggressive": PortfolioProfile("Aggressive","Агрессивный","aggressive_multi_setup",adaptive=True,
+                                    max_gross=D("2.0"),asset_cap=D("1.0"),stop_risk_nav=D("0.020"),hard_drawdown=D("0.10")),
+}
+
+ORDER = tuple(PROFILES)'''
+_v90_pf,_v90_n=_v90_re.subn(r'PROFILES = \{.*?\n\}\n\nORDER = tuple\(PROFILES\)',_v90_profiles,_v90_pf,count=1,flags=_v90_re.S)
+if _v90_n!=1:
+    raise SystemExit('V90_PORTFOLIO_PROFILE_BLOCK_NOT_FOUND')
+_v90_old='if profile.account_id in ("Champion","Challenger"): return True'
+_v90_new='if profile.account_id in ("Champion","Challenger","Aggressive"): return True'
+if _v90_old not in _v90_pf:
+    raise SystemExit('V90_SIGNAL_ALLOWED_ANCHOR_NOT_FOUND')
+_v90_pf=_v90_pf.replace(_v90_old,_v90_new,1)
+p.write_text(_v90_pf,encoding='utf-8')
+
+# Restore only verified state belonging to the retained portfolios.
+# Aggressive starts clean at 1,000,000 RUB; no synthetic history is created.
+p=root/'veritas_v86/state_restore.py'
+_v90_sr=p.read_text(encoding='utf-8')
+if 'ACTIVE_ACCOUNTS=' not in _v90_sr:
+    _v90_sr=_v90_sr.replace("RESTORE_ID=","ACTIVE_ACCOUNTS={'Champion','Challenger','Impulse','Aggressive'}\nRESTORE_ID=",1)
+_v90_accounts_anchor="target=_load(TARGET); archive=_load(ARCHIVE); accounts=_target_accounts(target)"
+_v90_accounts_repl="""target=_load(TARGET); archive=_load(ARCHIVE)
+    accounts={k:v for k,v in _target_accounts(target).items() if k in ACTIVE_ACCOUNTS}
+    for _name in sorted(ACTIVE_ACCOUNTS):
+        accounts.setdefault(_name,{'account_id':_name,'initial_equity':'1000000','realized_equity':'1000000',
+                                   'policy_version':'86.3.0/v90/'+_name,
+                                   'source':{'last_ruonia':'0','state_snapshot_id':target.get('snapshot_id')}})"""
+if _v90_accounts_anchor not in _v90_sr:
+    raise SystemExit('V90_STATE_ACCOUNTS_ANCHOR_NOT_FOUND')
+_v90_sr=_v90_sr.replace(_v90_accounts_anchor,_v90_accounts_repl,1)
+_v90_trades_anchor="target_trades=[x for x in (target.get('trades') or []) if str(x.get('status') or '').upper()=='OPEN']"
+_v90_trades_repl="target_trades=[x for x in (target.get('trades') or []) if str(x.get('status') or '').upper()=='OPEN' and str(x.get('account_id') or '') in ACTIVE_ACCOUNTS]"
+if _v90_trades_anchor not in _v90_sr:
+    raise SystemExit('V90_STATE_TRADES_ANCHOR_NOT_FOUND')
+_v90_sr=_v90_sr.replace(_v90_trades_anchor,_v90_trades_repl,1)
+_v90_existing_anchor="""        cold_start=(len(existing_accounts)==0)
+        replaced=[]; skipped=[]; fee_adjustment={}
+"""
+_v90_existing_repl="""        cold_start=(len(existing_accounts)==0)
+        if not cold_start:
+            for a in accounts.values():
+                present=c.execute('SELECT 1 FROM v85_accounts WHERE account_id=?',(a['account_id'],)).fetchone()
+                if not present:
+                    c.execute('INSERT INTO v85_accounts VALUES(?,?,?,?)',
+                              (a['account_id'],a['initial_equity'],a['realized_equity'],a['policy_version']))
+                    c.execute('INSERT INTO v85_risk VALUES(?,?,?,?)',
+                              (a['account_id'],a['initial_equity'],'V90_NEW_PORTFOLIO',str(target.get('captured_at'))))
+        replaced=[]; skipped=[]; fee_adjustment={}
+"""
+if _v90_existing_anchor not in _v90_sr:
+    raise SystemExit('V90_STATE_EXISTING_ANCHOR_NOT_FOUND')
+_v90_sr=_v90_sr.replace(_v90_existing_anchor,_v90_existing_repl,1)
+p.write_text(_v90_sr,encoding='utf-8')
+
+print('VERITAS_V90_CUTOVER_PATCH_ACTIVE portfolios=Champion,Challenger,Impulse,Aggressive storage=9.0')
+
