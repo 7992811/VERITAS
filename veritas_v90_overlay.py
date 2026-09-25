@@ -1341,6 +1341,20 @@ def _v90_trade_report_full(pg_connect,limit=1000):
 
 
 trade_report=_v90_trade_report_full
+
+
+_v90_base_report=report
+def _v90_report_with_limits(pg_connect):
+    d=_v90_base_report(pg_connect)
+    limits={'Impulse':0.50,'Aggressive':5.0,'Champion':2.0,'Challenger':2.0}
+    d['max_gross']=5.0
+    d['portfolio_max_gross']=limits
+    for p in d.get('portfolios') or []:
+        p['max_gross_limit']=limits.get(p.get('name'),2.0)
+    return d
+
+
+report=_v90_report_with_limits
 '''
     anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
     if anchor not in dst:
@@ -1388,6 +1402,7 @@ def verify():
         'nasdaq_futures_nq': "'NQ': ('NQ', 'NQ%3DF')" in intel and "asset=='NQ'" in intel,
         'aggressive_5x_strong_signal': "'max_fraction':5.0" in port and 'strong_aggressive=bool(' in port,
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
+        'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
