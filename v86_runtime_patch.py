@@ -1058,3 +1058,16 @@ try:
 finally:
     _rl_sys.argv=_rl_argv
 print('V86_RISK_LIMIT_ALIGNMENT_RUNTIME_ACTIVE')
+
+
+# 24) Storage architecture v1: one-time emergency cleanup + bounded retention/decision compaction.
+import runpy as _storage_runpy, sys as _storage_sys
+_storage_patch=root.parent/'v86_storage_architecture_patch.py'
+if not _storage_patch.is_file(): raise SystemExit('V86_STORAGE_ARCHITECTURE_PATCH_MISSING')
+_storage_argv=list(_storage_sys.argv)
+try:
+    _storage_sys.argv=[str(_storage_patch),str(root)]
+    _storage_runpy.run_path(str(_storage_patch),run_name='__main__')
+finally:
+    _storage_sys.argv=_storage_argv
+print('V86_STORAGE_ARCHITECTURE_RUNTIME_ACTIVE')
