@@ -672,7 +672,7 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
     # Universal structural-breakout policy: same rule on all timeframes.
     dst = dst.replace(
         "if tactical_reversal.get('active') and horizon in ('1h','4h'):",
-        "if tactical_reversal.get('active') and horizon in ('1h','4h','1d','3d','7d')"
+        "if tactical_reversal.get('active') and horizon in ('1h','4h','1d','3d','7d'):"
     )
     dst = dst.replace(
         "'tactical_reversal':tactical_reversal,'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structural_levels':f.get('structural_levels') or {},",
