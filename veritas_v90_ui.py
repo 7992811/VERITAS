@@ -19,173 +19,7 @@ def apply_v90_ui(html):
     _brand_markup = '''<div class="veritas-brandlock">
       <div class="veritas-primary">
         <div class="veritas-core">
-          <img class="veritas-logo-img" src="data:image/webp;base64,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
-    Rt0l4PIfnmiSsfljeunkBtqw8u5XfUUdxNI/6Lg7DiEwrzpmc4fuvGcHZhJ9
-    UApw0Zsu3k4G6yMXC5WSdPTrSOGMVS94Z7I2Y74tM3jiX+8EktM3DRh47I37
-    oFZ/AVQUXelHycMRuP9PTnjtaF5xzJ7Y8fojc6U5oo/KlBi+/p1bz8G9z3hZ
-    +rY3YNRQ8P7POqQwfzgJPvdrHTDRf6UMm9/VTZTeT0pJd2UkamlxdNVb37yr
-    mWTzgkTi6Op3b80bCxL9KKRWPM73fuBconT1B4nUO/CrNy41amyv/zn3lLx2
-    3nH3f/vgEBVinrYmYAYbPvT77t6JOs3cPbv7T982zhyX4tCy1mySiG/7S/fa
-    VSeJ5Mf/5F3rwRDzvAUY+8QfdiIZ6XTKqXb/4zcHUFexalQlMKr2bKAGDH/u
-    n3iWvDbyDHZ++xEgCDH/KwJ3Xnr7BqiDaiN3P/aoQRBdVgKyimiBKXRlMrNN
-    n97XBdVCSnSPPvhyYsPEQikLaP9DN61rk1UPial//NLtCia6lA2svOjGb2xW
-    Il7/m9+8qzGMupgxRv7nrx8i83gqc2bWf+gOGkGxYt7XLIApwd03X7cCr4GT
-    sfe+LUM06FYCDvygL/wiafFEfMr9pT/4xv1YUFcoZmw5MY0plpSYHHvdRxaS
-    BGbznRmi0kwQSPDgR9vIFUsyzj24liUDxoyaFqC56RP/0unow0YV/HQ96e7/
-    +YFRaHQFhbHwqY2kwsOosJzpu96xCZLzJDmAhmw2QPj4j38kGUURx4uM7S99
-    yyiB2UMFRlj1ZMfda39nA6ug9Zte55Tc/+INQtYVlI3uxjsmaaAQUoKpO+//
-    Qosk8WRo7Ut+9elHm/Qo/Ldvf+m9Mzm4QkiJcv3HTzlOl82GVY0LvuK/JrxO
-    nvSOKpQNLgUZzn7ueONjDJTeDRDjrpcel7qFVI1KGn78mz96PoSKhVHkR26E
-    /b92Qt2BBGz/xPcmoyb2RZIX0rGvuTcQRbeTde4MX3M74BHA6OtgxnSRzaY/
-    /fa9BV0rYNVNP/C5llR4JZ5lnP+pG4BmEAujyO/ZSCcsOz5F7zKD0UfftGcI
-    d6kPXkijH/5mCIGuDZZdvXIDGRnTc42XM3VnAKPM4M637onBZrMGag8Y3/Ky
-    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
-    PzbY1LQBLJagTRUNCATE" alt="VERITAS logo">
+          <img class="veritas-logo-img" src="/assets/veritas-logo-source.webp?v=90.2" onerror="this.onerror=null;this.src='data:image/png;base64,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'" alt="VERITAS logo">
           <div class="veritas-right">
             <div class="veritas-wordmark">
               <span class="wm-v">V</span><span class="wm-e" aria-label="E"><i></i><i></i><i></i></span><span>RITAS</span>
@@ -530,6 +364,48 @@ def apply_v90_ui(html):
     }
     </style>"""
     value = value.replace('</head>', compact_css + '</head>')
+    brand_fix_css = """<style id="V90_BRAND_VISUAL_FIX">
+    .veritas-brandlock{display:flex!important;flex-direction:column!important;align-items:flex-start!important;width:max-content!important;max-width:100%!important}
+    .veritas-primary{display:flex!important;flex-direction:column!important;align-items:stretch!important;min-width:0!important}
+    .veritas-core{display:flex!important;align-items:flex-start!important;gap:16px!important;min-width:0!important}
+    .veritas-right{display:flex!important;flex-direction:column!important;align-items:flex-start!important;min-width:0!important}
+    .veritas-logo-img{width:88px!important;height:100px!important;flex:0 0 88px!important;display:block!important;object-fit:contain!important;object-position:center!important}
+    .veritas-wordmark{height:66px!important;font-size:54px!important;font-weight:460!important;letter-spacing:.155em!important;color:#edf1f4!important;text-shadow:0 0 12px rgba(255,255,255,.07)!important}
+    .veritas-wordmark .wm-e{height:.94em!important;width:.72em!important;margin-right:.10em!important}
+    .veritas-wordmark .wm-e i{height:.145em!important;background:#91bda3!important}
+    .markets-word{margin-top:4px!important;font-size:22px!important;font-weight:470!important;letter-spacing:.13em!important;color:#b5c0c9!important;opacity:1!important;text-shadow:0 0 10px rgba(181,192,201,.08)!important}
+    .veritas-subtitle{margin-top:11px!important;color:#aeb8c1!important;font-size:12px!important;font-weight:540!important;letter-spacing:.06em!important;line-height:1.15!important;white-space:nowrap!important;text-align:left!important;text-align-last:auto!important;display:flex!important;justify-content:space-between!important;gap:18px!important}
+    .veritas-subtitle::after{display:none!important;content:none!important}
+    @media(max-width:900px){
+      .veritas-core{gap:11px!important}
+      .veritas-logo-img{width:64px!important;height:74px!important;flex-basis:64px!important}
+      .veritas-wordmark{height:50px!important;font-size:38px!important;font-weight:470!important;letter-spacing:.12em!important}
+      .markets-word{font-size:16px!important;font-weight:480!important;color:#bcc6ce!important}
+      .veritas-subtitle{margin-top:7px!important;font-size:8.8px!important;font-weight:560!important;gap:10px!important}
+    }
+    </style>"""
+    value = value.replace('</head>', brand_fix_css + '</head>')
+    brand_fix_js = r"""<script id="V90_BRAND_WIDTH_FIX">
+    (function(){
+      function fitBrand(){
+        const core=document.querySelector('.veritas-core');
+        const sub=document.querySelector('.veritas-subtitle');
+        if(!core||!sub)return;
+        if(!sub.dataset.v90Split){
+          sub.innerHTML='<span>Цифровой</span><span>Инвестиционный</span><span>Комитет</span>';
+          sub.dataset.v90Split='1';
+        }
+        const w=Math.ceil(core.getBoundingClientRect().width);
+        if(w>0)sub.style.width=w+'px';
+      }
+      if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>requestAnimationFrame(fitBrand),{once:true});
+      else requestAnimationFrame(fitBrand);
+      window.addEventListener('resize',fitBrand,{passive:true});
+      setTimeout(fitBrand,500);
+    })();
+    </script>"""
+    value = value.replace('</body>', brand_fix_js + '</body>')
+
     
     value = value.replace('Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.',
                           'Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. Реальные деньги не используются.')
