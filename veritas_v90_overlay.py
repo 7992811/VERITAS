@@ -248,6 +248,97 @@ except Exception as _v90_ui_ex:
     if ch:
         applied.append("public_root_dashboard")
 
+    # VERITAS 9.0 market-data repairs: use NQ futures as the Nasdaq instrument and
+    # normalize Brent intraday continuous-contract bars when Yahoo rolls BZ=F.
+    market_helper = r'''
+# VERITAS 9.0 MARKET DATA INTEGRITY
+
+def _v90_scale_ohlc(rows, scale):
+    out=[]
+    for z0 in rows or []:
+        z=dict(z0)
+        for k in ('open','high','low','close'):
+            if z.get(k) is not None:
+                z[k]=float(z[k])*float(scale)
+        out.append(z)
+    return out
+
+
+def _v90_brent_market():
+    raw=_yahoo_research_futures_market('BRENT','BZ%3DF','BNO','yahoo_brent','Yahoo Brent BZ=F')
+    # Yahoo's BZ=F 5m continuous-contract chart can lag the front-month roll.
+    # Cross-check against chart metadata and the current daily contract level.
+    refs=[]
+    try:
+        d,meta=_yahoo_series('BZ%3DF','1mo','1d',True)
+        q=(meta or {}).get('regularMarketPrice')
+        if q is not None:
+            refs.append(float(q))
+        if d:
+            refs.append(float(d[-1]['close']))
+    except Exception:
+        pass
+    refs=[x for x in refs if x>0]
+    if refs:
+        ref=refs[0]
+        # Prefer the metadata quote when it agrees with current daily data.
+        if len(refs)>1 and abs(refs[0]/refs[1]-1)>0.025:
+            ref=refs[-1]
+        old=float(raw.get('price') or 0.0)
+        if old>0 and abs(ref/old-1)>=0.025:
+            scale=ref/old
+            for key in ('intraday_bars',):
+                raw[key]=_v90_scale_ohlc(raw.get(key) or [],scale)
+            for key in ('closes','highs','lows'):
+                raw[key]=[float(x)*scale for x in (raw.get(key) or [])]
+            raw['price']=ref
+            raw['returns']=[raw['closes'][i]/raw['closes'][i-1]-1 for i in range(1,len(raw.get('closes') or []))]
+            raw['contract_roll_adjusted']=True
+            raw['contract_roll_scale']=scale
+            raw['pre_roll_last_price']=old
+            raw['front_month_reference']=ref
+            raw['verification_mode']='front_month_roll_normalized'
+            q=list(raw.get('source_quality') or [])
+            q.append(_source_row('Yahoo BZ=F daily/meta','Brent futures','front-month roll verification',
+                                 now(),1800,'OK',
+                                 f'continuous intraday roll normalized: {old:.2f} -> {ref:.2f}; scale={scale:.6f}',
+                                 'Yahoo'))
+            raw['source_quality']=q
+    return raw
+
+
+def _v90_nq_market():
+    raw=_yahoo_research_futures_market('NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
+    raw['data_latency_class']='CME_FUTURES_DELAYED_RESEARCH'
+    raw['verification_mode']='nasdaq100_futures'
+    return raw
+'''
+    anchor="\ndef _fetch_asset_bundle(symbol, asset, cb_product):"
+    if anchor not in dst:
+        raise RuntimeError("VERITAS 9.0 market helper anchor missing")
+    dst=dst.replace(anchor,"\n"+market_helper+anchor,1)
+    applied.append("market_data_integrity")
+
+    # Runtime asset universe: replace cash NDX with nearly 24h Nasdaq-100 futures.
+    replacements=[
+      ("    'NDX': ('NDX', '^NDX'),","    'NQ': ('NQ', 'NQ%3DF'),"),
+      ("DISPLAY_ASSETS = ('BTC','ETH','NDX','BRENT','GOLD','MOEX','CNYRUBF')","DISPLAY_ASSETS = ('BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF')"),
+      ("EQUITY_INDEX_ASSETS = {'NDX','MOEX'}","EQUITY_INDEX_ASSETS = {'NQ','MOEX'}"),
+      ("MARKET_BAR_ASSETS = {'NDX','BRENT','GOLD','MOEX','CNYRUBF'}","MARKET_BAR_ASSETS = {'NQ','BRENT','GOLD','MOEX','CNYRUBF'}"),
+      ("    'NDX':   {'1h':1,'4h':4,'1d':7,'3d':20,'7d':46},","    'NQ':    {'1h':1,'4h':4,'1d':23,'3d':69,'7d':161},"),
+      ("NDX_HORIZON_BARS = ASSET_HORIZON_BARS['NDX']  # backward compatibility","NQ_HORIZON_BARS = ASSET_HORIZON_BARS['NQ']\nNDX_HORIZON_BARS = NQ_HORIZON_BARS  # compatibility for legacy helper code"),
+      ("    if asset=='NDX':\n        raw=_ndx_market(); deriv=_ndx_derivatives_context()","    if asset=='NQ':\n        raw=_v90_nq_market(); deriv=_research_only_derivatives(asset)"),
+      ("    elif asset=='BRENT':\n        raw=_yahoo_research_futures_market('BRENT','BZ%3DF','BNO','yahoo_brent','Yahoo Brent BZ=F')","    elif asset=='BRENT':\n        raw=_v90_brent_market()"),
+      ("    if asset=='NDX': return _daily_yahoo_returns('%5ENDX',days)","    if asset=='NQ': return _daily_yahoo_returns('NQ%3DF',days)")
+    ]
+    for old,new in replacements:
+        if old in dst:
+            dst=dst.replace(old,new,1)
+    applied.append("nq_futures_universe")
+
+    nq_history_patch_marker=True
+    dst = dst.replace("if symbol=='NDX': return _fetch_ndx_history(days)",
+                      "if symbol=='NQ':\n        d=min(int(days),NDX_BACKTEST_DAYS); return _yahoo_between('NQ%3DF',end-d*86400,end,'1h')")
     old_vp_import = """try:
     import veritas_portfolio as VP
 except Exception:
@@ -263,6 +354,8 @@ except Exception as _vp_ex:
     if ch:
         applied.append("portfolio_import_diagnostics")
 
+    full_closed_trade_ui=True
+    dst = dst.replace("VP.trade_report(pg_connect)", "VP.trade_report(pg_connect,1000)")
     old_header = "Два независимых paper-портфеля по 1 000 000 ₽. Champion — порог входа 70%; Challenger — порог входа 77%. Реальные деньги не используются."
     new_header = "Четыре независимых paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. История и обучение перенесены в БД 9.0; реальные деньги не используются."
     if old_header in dst:
@@ -308,7 +401,7 @@ def _patch_portfolio():
      'allowed_horizons':('1h','4h','1d'),'max_fraction':0.50,'provisional_cap':0.10,
      'accepted_cap':0.25,'confirmed_cap':0.50
  },
- 'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE','max_fraction':1.0,'max_gross':5.0,'leverage_limit':5.0},
+ 'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE','max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
  'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':2.0},
  'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':2.0},
 }"""
@@ -692,6 +785,13 @@ def _signal_first_admission(row,policy,drawdown):
     other='SHORT' if d=='LONG' else 'LONG'
     support_ratio=float(row.get('_support_ratio') or (float(ds.get(d) or 0.0)/max(0.01,float(ds.get(other) or 0.0))))
     capture=bool(row.get('_v902_soft_override'))
+    signal_tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    strong_aggressive=bool(
+        mode=='AGGRESSIVE'
+        and not row.get('_aggressive_setup_probe')
+        and alignment>=4 and support_ratio>=1.50 and p>=0.82 and rr>=1.00
+        and (signal_tier in ('SUPER_LONG','SUPER_SHORT') or alignment>=5)
+    )
 
     f=base
     if p>=0.65:
@@ -716,6 +816,8 @@ def _signal_first_admission(row,policy,drawdown):
         f=max(f,0.20)
     if action in ('ENTER_AND_SCALE','ENTER_FULL_CANDIDATE') and p>=0.82 and rr>=1.2:
         f=max(f,0.50)
+    if strong_aggressive:
+        f=5.0
 
     planned=float(plan.get('v84_target_fraction') or 0.0)
     ep=plan.get('execution_policy') or {}
@@ -732,17 +834,19 @@ def _signal_first_admission(row,policy,drawdown):
 
     # Soft timing / old setup failure may reduce a normal signal, but it cannot
     # crush a fresh multi-TF impulse to 5%. Hard vetoes were handled above.
-    if ti.get('entry_permission')=='WAIT_ENTRY' and not capture:
+    if ti.get('entry_permission')=='WAIT_ENTRY' and not capture and not strong_aggressive:
         f=min(f,0.05)
     if shift in ('NEW_REGIME_PROVISIONAL','TRANSITION','OLD_REGIME_WEAKENING'):
-        if capture:
+        if strong_aggressive:
+            f=min(f,5.0)
+        elif capture:
             cap=({'IMPULSE_ONLY':0.50,'AGGRESSIVE':1.00,'CORE':0.30,'CHALLENGER':0.25}.get(mode,0.20)
                  if alignment>=5 else
                  {'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.60,'CORE':0.25,'CHALLENGER':0.20}.get(mode,0.15))
             f=min(f,cap)
         else:
             f=min(f,0.10)
-    if tq>0 and tq<0.45 and not capture:
+    if tq>0 and tq<0.45 and not capture and not strong_aggressive:
         f=min(f,0.05)
     if rr>0 and rr<0.60:
         f=min(f,0.05)
@@ -777,6 +881,7 @@ def _signal_first_admission(row,policy,drawdown):
         'execution_horizon':row.get('horizon'),
         'execution_rank':row.get('_execution_rank'),
         'soft_override':bool(row.get('_v902_soft_override')),
+        'strong_aggressive':strong_aggressive,
         'sizing_authority':'V902_DIRECTION_GRID_THEN_EXECUTION_HORIZON_THEN_RISK'
     }
 '''
@@ -1115,6 +1220,65 @@ def _v90_migrate_portfolio_data(c):
         dst = dst.replace(old_conflict, new_conflict, 1)
         applied.append("policy_metadata_refresh")
 
+    # Full closed-trade journal for the v9.0 UI.
+    trade_report_helper = r'''
+def _v90_trade_report_full(pg_connect,limit=1000):
+    ensure_schema(pg_connect)
+    limit=max(1,min(5000,int(limit or 1000)))
+    with pg_connect() as c:
+        rows=c.execute("""SELECT * FROM paper_trades
+                          WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')
+                          ORDER BY COALESCE(closed_at,opened_at) DESC
+                          LIMIT %s""",(limit,)).fetchall()
+        total=c.execute("""SELECT COUNT(*) AS n FROM paper_trades
+                           WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')""").fetchone()
+    out=[]
+    for r0 in rows:
+        z=dict(r0)
+        payload=z.get('payload') or {}
+        if not isinstance(payload,dict):
+            try: payload=json.loads(payload)
+            except Exception: payload={}
+        op=z.get('opened_at'); cl=z.get('closed_at')
+        if op and cl:
+            try:
+                if isinstance(op,str): op=datetime.fromisoformat(op.replace('Z','+00:00'))
+                if isinstance(cl,str): cl=datetime.fromisoformat(cl.replace('Z','+00:00'))
+                z['held_seconds']=max(0.0,(cl-op).total_seconds())
+            except Exception:
+                z['held_seconds']=None
+        else:
+            z['held_seconds']=None
+        z['close_time']=cl
+        z['holding_duration_seconds']=z.get('held_seconds')
+        z['exit_reason']=payload.get('exit_reason') or payload.get('reason') or payload.get('close_reason')
+        z['entry_probability']=payload.get('pwin') if payload.get('pwin') is not None else payload.get('entry_probability')
+        z['probability_source']=payload.get('pwin_source') or payload.get('probability_source')
+        z['stop_price']=payload.get('stop_price') or payload.get('structural_stop')
+        z['take_price']=payload.get('take_price') or payload.get('target_price') or payload.get('tp_price')
+        z['quantity']=payload.get('quantity') or payload.get('units')
+        z['mfe_pct']=payload.get('mfe_pct')
+        z['mae_pct']=payload.get('mae_pct')
+        z['giveback_pct']=payload.get('giveback_pct')
+        z['learning_label']=payload.get('learning_label')
+        z['learning_conclusion']=payload.get('learning_conclusion')
+        z['regime']=payload.get('regime')
+        z['return_pct']=(100*float(z['return_on_entry_nav'])) if z.get('return_on_entry_nav') is not None else payload.get('return_pct')
+        out.append(_jsonable(z))
+    return _jsonable({'status':'OK','version':VERSION,'trades':out,
+                      'returned_count':len(out),'total_closed_count':int((total or {}).get('n') or 0),
+                      'limit':limit})
+
+
+trade_report=_v90_trade_report_full
+'''
+    anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+    if anchor not in dst:
+        dst += "\n" + trade_report_helper
+    else:
+        dst=dst.replace(anchor,"\n"+trade_report_helper+anchor,1)
+    applied.append("full_closed_trade_journal")
+
     # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
     if runtime_identity.strip() not in dst:
@@ -1150,6 +1314,10 @@ def verify():
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
         'portfolio_import_diagnostics': 'VP_IMPORT_ERROR' in intel,
+        'brent_roll_integrity': 'def _v90_brent_market()' in intel and 'contract_roll_adjusted' in intel,
+        'nasdaq_futures_nq': "'NQ': ('NQ', 'NQ%3DF')" in intel and "asset=='NQ'" in intel,
+        'aggressive_5x_strong_signal': "'max_fraction':5.0" in port and 'strong_aggressive=bool(' in port,
+        'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
