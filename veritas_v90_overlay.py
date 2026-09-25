@@ -282,52 +282,92 @@ def _v90_yahoo_quote_price(symbol):
     raise RuntimeError(f'YAHOO_QUOTE_FAIL {symbol}: {last_err}')
 
 
+def _v90_add_months(year,month,delta):
+    x=year*12+(month-1)+int(delta)
+    return x//12,(x%12)+1
+
+
+def _v90_moex_front_brent_contract():
+    msk=datetime.now(timezone.utc).astimezone(ZoneInfo('Europe/Moscow'))
+    candidates=[]
+    for delta in range(0,4):
+        yy,mm=_v90_add_months(msk.year,msk.month,delta)
+        secid=f'BR-{mm}.{str(yy)[-2:]}'
+        try:
+            q=_moex_futures_current_quote(secid)
+            row=q.get('row') or {}
+            age=_age_seconds(q.get('observed_at'))
+            if age is None or age>86400:
+                continue
+            activity=0.0
+            for k,w in (('VALTODAY',1.0),('VOLTODAY',1000.0),('NUMTRADES',10000.0),('OPENPOSITION',100.0)):
+                try: activity+=max(0.0,float(row.get(k) or 0.0))*w
+                except Exception: pass
+            candidates.append((activity,-delta,secid,q))
+        except Exception:
+            continue
+    if not candidates:
+        raise RuntimeError('MOEX_BRENT_FRONT_CONTRACT_NOT_FOUND')
+    candidates.sort(reverse=True,key=lambda x:(x[0],x[1]))
+    return candidates[0][2],candidates[0][3]
+
+
 def _v90_brent_market():
-    raw=_yahoo_research_futures_market('BRENT','BZ%3DF','BNO','yahoo_brent','Yahoo Brent BZ=F')
-    # Yahoo's BZ=F intraday continuous chart can lag the front-month roll.
-    # Use the quote endpoint as price authority; chart bars remain structure input
-    # and are roll-normalized to that current contract level.
-    refs=[]
-    quote_meta=None
+    # Primary: exchange-traded MOEX Brent front contract, quoted in USD/bbl and
+    # publicly delayed. This avoids Yahoo BZ=F continuous-contract roll gaps.
+    secid,q=_v90_moex_front_brent_contract()
+    price=float(q['price']); observed=q['observed_at']
+    end=time.time()
+    hist=_moex_futures_candles_between(secid,end-150*86400,end+86400,60)
+    if len(hist)<120:
+        raise RuntimeError(f'INSUFFICIENT_MOEX_BRENT_HOURLY_BARS {secid}: {len(hist)}')
+    w=hist[-360:]
+    closes=[float(x[4]) for x in w]; highs=[float(x[2]) for x in w]
+    lows=[float(x[3]) for x in w]; vols=[float(x[5]) for x in w]
+    closes[-1]=price; highs[-1]=max(highs[-1],price); lows[-1]=min(lows[-1],price)
+    taker=[v*0.5 for v in vols]
+    rets=[closes[i]/closes[i-1]-1 for i in range(1,len(closes))]
+
+    intraday_5m=[]
     try:
-        q,quote_meta=_v90_yahoo_quote_price('BZ=F')
-        refs.append(('quote',float(q)))
+        m5=_moex_futures_candles_between(secid,end-7*86400,end+86400,5)[-500:]
+        intraday_5m=[{'ts':int(x[0])/1000.0,'open':float(x[1]),'high':float(x[2]),
+                      'low':float(x[3]),'close':float(x[4]),'volume':float(x[5])} for x in m5]
     except Exception:
-        pass
+        intraday_5m=[]
+
+    secondary=None; secondary_status='UNAVAILABLE'; secondary_note='Yahoo BZ=F unavailable'
     try:
-        d,meta=_yahoo_series('BZ%3DF','1mo','1d',True)
-        q=(meta or {}).get('regularMarketPrice')
-        if q is not None:
-            refs.append(('chart_meta',float(q)))
-        if d:
-            refs.append(('daily',float(d[-1]['close'])))
-    except Exception:
-        pass
-    refs=[(src,x) for src,x in refs if x>0]
-    if refs:
-        quote_ref=next((x for src,x in refs if src=='quote'),None)
-        ref=float(quote_ref if quote_ref is not None else refs[0][1])
-        old=float(raw.get('price') or 0.0)
-        if old>0 and abs(ref/old-1)>=0.025:
-            scale=ref/old
-            for key in ('intraday_bars',):
-                raw[key]=_v90_scale_ohlc(raw.get(key) or [],scale)
-            for key in ('closes','highs','lows'):
-                raw[key]=[float(x)*scale for x in (raw.get(key) or [])]
-            raw['price']=ref
-            raw['returns']=[raw['closes'][i]/raw['closes'][i-1]-1 for i in range(1,len(raw.get('closes') or []))]
-            raw['contract_roll_adjusted']=True
-            raw['contract_roll_scale']=scale
-            raw['pre_roll_last_price']=old
-            raw['front_month_reference']=ref
-            raw['verification_mode']='front_month_roll_normalized'
-            q=list(raw.get('source_quality') or [])
-            q.append(_source_row('Yahoo BZ=F quote','Brent futures','front-month price authority',
-                                 now(),1800,'OK',
-                                 f'continuous intraday roll normalized: {old:.2f} -> {ref:.2f}; scale={scale:.6f}',
-                                 'Yahoo'))
-            raw['source_quality']=q
-    return raw
+        y=_yahoo_research_futures_market('BRENT','BZ%3DF','BNO','yahoo_brent','Yahoo Brent BZ=F')
+        secondary=float(y.get('price') or 0.0) or None
+        if secondary:
+            div=abs(price-secondary)/max(1e-9,(price+secondary)/2.0)
+            secondary_status='CONTRACT_MISMATCH' if div>0.025 else 'OK'
+            secondary_note=f'Yahoo continuous={secondary:.2f}; MOEX front={price:.2f}; divergence={div:.2%}'
+    except Exception as ex:
+        secondary_note=f'Yahoo check failed: {type(ex).__name__}'
+
+    age=_age_seconds(observed); market_open=_futures_market_open_from_age(observed)
+    gate=bool(market_open and age is not None and age<=3600)
+    quality=[
+      _source_row(f'MOEX ISS {secid}','Brent front futures','primary official delayed',observed,900,
+                  'DELAYED_CONTEXT' if gate else 'STALE_OR_CLOSED',
+                  'Public exchange quote; used as Brent price authority','Moscow Exchange'),
+      _source_row('Yahoo BZ=F','Brent continuous futures','secondary contract check',now(),900,
+                  secondary_status,secondary_note,'Yahoo')
+    ]
+    _set_source_quality(quality)
+    divergence=(abs(price-secondary)/((price+secondary)/2.0) if secondary and (price+secondary) else 0.0)
+    return {'asset':'BRENT','price':price,'secondary_price':secondary,'coinbase_price':secondary,
+            'source_divergence':divergence,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
+            'taker_buy':taker,'returns':rets,
+            'binance_close_time_ms':int(datetime.fromisoformat(observed.replace('Z','+00:00')).timestamp()*1000),
+            'observed_at':observed,'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
+            'data_latency_class':'DELAYED_RESEARCH','verification_mode':'moex_front_contract_primary',
+            'intraday_5m':intraday_5m,
+            'source_names':{'primary':f'MOEX ISS {secid}','secondary':'Yahoo BZ=F'},
+            'contract':{'secid':secid,'price_unit':'USD/bbl','roll':'highest_activity_near_month'},
+            'front_month_reference':price,'contract_roll_adjusted':False}
 
 
 def _v90_nq_market():
@@ -1149,7 +1189,7 @@ def _v90_aggressive_candidate_book(summary, core_candidates):
     # Do not let legacy planned-fraction logic scale a setup-only scout.
     old_planned="""    if planned>0:
         if capture:"""
-    new_planned="""    if planned>0 and not row.get('_aggressive_setup_probe'):
+    new_planned="""    if planned>0 and not row.get('_aggressive_setup_probe') and not strong_aggressive:
         if capture:"""
     dst, ch = _replace_once(dst, old_planned, new_planned, "Aggressive setup probe planned-fraction isolation")
     if ch:
@@ -1249,9 +1289,13 @@ def _v90_trade_report_full(pg_connect,limit=1000):
     ensure_schema(pg_connect)
     limit=max(1,min(5000,int(limit or 1000)))
     with pg_connect() as c:
-        rows=c.execute("""SELECT * FROM paper_trades
-                          WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')
-                          ORDER BY COALESCE(closed_at,opened_at) DESC
+        rows=c.execute("""SELECT t.*,
+                                 (SELECT MAX(o.created_at) FROM paper_orders o WHERE o.trade_id=t.trade_id) AS last_order_at
+                          FROM paper_trades t
+                          WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')
+                          ORDER BY COALESCE(t.closed_at,
+                              (SELECT MAX(o2.created_at) FROM paper_orders o2 WHERE o2.trade_id=t.trade_id),
+                              t.opened_at) DESC
                           LIMIT %s""",(limit,)).fetchall()
         total=c.execute("""SELECT COUNT(*) AS n FROM paper_trades
                            WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')""").fetchone()
@@ -1262,7 +1306,10 @@ def _v90_trade_report_full(pg_connect,limit=1000):
         if not isinstance(payload,dict):
             try: payload=json.loads(payload)
             except Exception: payload={}
-        op=z.get('opened_at'); cl=z.get('closed_at')
+        op=z.get('opened_at')
+        cl=(z.get('closed_at') or payload.get('closed_at') or payload.get('close_time')
+            or payload.get('closed_time') or z.get('last_order_at'))
+        z['closed_at']=cl
         if op and cl:
             try:
                 if isinstance(op,str): op=datetime.fromisoformat(op.replace('Z','+00:00'))
@@ -1337,7 +1384,7 @@ def verify():
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
         'portfolio_import_diagnostics': 'VP_IMPORT_ERROR' in intel,
-        'brent_roll_integrity': 'def _v90_brent_market()' in intel and 'contract_roll_adjusted' in intel,
+        'brent_price_integrity': 'def _v90_moex_front_brent_contract()' in intel and "verification_mode':'moex_front_contract_primary'" in intel,
         'nasdaq_futures_nq': "'NQ': ('NQ', 'NQ%3DF')" in intel and "asset=='NQ'" in intel,
         'aggressive_5x_strong_signal': "'max_fraction':5.0" in port and 'strong_aggressive=bool(' in port,
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
