@@ -768,7 +768,7 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
     ss=float(start_ms)/1000.0
     # Historical NDX decisions remain valid learning records after the active
     # instrument migrated to NQ; evaluate them against the original cash index.
-    if asset=='NDX':
+    if str(asset)=='NDX':
         return _yahoo_between('%5ENDX',ss-600,
                               ss+max(float(hours)*3600.0,3*3600.0),
                               '5m' if str(horizon)=='5m' else '1h')
