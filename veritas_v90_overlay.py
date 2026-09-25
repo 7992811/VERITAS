@@ -2336,7 +2336,10 @@ def _signal_first_admission(row,policy,drawdown):
         elif bool(rng.get('active')) and rng_dir in ('',z['direction']) and rng_state in ('RETEST_ENTRY','BREAKOUT_ADD','CONFIRMED','MANAGE'):
             tp=rng.get('target_price'); tp_source='ACTIVE_RANGE_SETUP'
         entry=float(z.get('avg_entry_price') or 0.0)"""
-    dst, ch = _replace_once(dst, old_tp, new_tp, "v90.4 active setup TP only")
+    if "structural_dynamic=bool(" in dst and "tp_source='ACTIVE_RANGE_SETUP'" in dst:
+        ch=False
+    else:
+        dst, ch = _replace_once(dst, old_tp, new_tp, "v90.4 active setup TP only")
     if ch:
         applied.append("v904_tp_active_setup_only")
 
@@ -2419,6 +2422,9 @@ def _v90_structure_exit_signal(row,z):
     new_reason = """reason='STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
     final_reason = """reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'"""
     if final_reason in dst:
+        ch=False
+    else:
+        if "STRUCTURE_EXHAUSTION_EXIT" in dst:
         ch=False
     else:
         dst, ch = _replace_once(dst, old_reason, new_reason, "structural exit reason")
