@@ -475,4 +475,36 @@ def apply_v90_ui(html):
     value = value.replace('Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.',
                           'Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. Реальные деньги не используются.')
     value = value.replace('V86','V90').replace('v86','v90')
+    fast_signal_js = r"""<script id="V90_FAST_SIGNAL_FEED">
+    (function(){
+      async function v90LoadSignals(){
+        try{
+          const ctl=new AbortController();
+          const tm=setTimeout(()=>ctl.abort(),6000);
+          const r=await fetch('/api/v1/signals',{cache:'no-store',signal:ctl.signal});
+          clearTimeout(tm);
+          if(!r.ok)throw new Error('signals HTTP '+r.status);
+          const d=await r.json();
+          const rows=Array.isArray(d.signals)?d.signals:[];
+          if(typeof renderMatrix==='function')renderMatrix(rows);
+          const stamp=document.getElementById('stamp');
+          if(stamp){
+            const at=d.at?new Date(d.at):new Date();
+            stamp.textContent='сигналы '+at.toLocaleString()+' · '+rows.length+'/35';
+          }
+        }catch(e){
+          const ms=document.getElementById('matrixstatus');
+          if(ms && !ms.textContent.trim())ms.textContent='обновление сигналов…';
+        }
+      }
+      window.v90LoadSignals=v90LoadSignals;
+      if(document.readyState==='loading'){
+        document.addEventListener('DOMContentLoaded',()=>setTimeout(v90LoadSignals,0),{once:true});
+      }else{
+        setTimeout(v90LoadSignals,0);
+      }
+      setInterval(v90LoadSignals,20000);
+    })();
+    </script>"""
+    value = value.replace('</body>', fast_signal_js + '</body>')
     return value
