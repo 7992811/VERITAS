@@ -403,6 +403,12 @@ def _v90_nq_market():
     nq_history_patch_marker=True
     dst = dst.replace("if symbol=='NDX': return _fetch_ndx_history(days)",
                       "if symbol=='NQ':\n        d=min(int(days),NDX_BACKTEST_DAYS); return _yahoo_between('NQ%3DF',end-d*86400,end,'1h')")
+    portfolio_autopilot_traceback=True
+    dst = dst.replace(
+        "emit('portfolio_autopilot_error',error=portfolio_autopilot['error'])",
+        "emit('portfolio_autopilot_error',error=portfolio_autopilot['error'],trace=traceback.format_exc(limit=12))"
+    )
+
     old_vp_import = """try:
     import veritas_portfolio as VP
 except Exception:
@@ -1216,7 +1222,6 @@ def _v90_aggressive_candidate_book(summary, core_candidates):
     if "# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING" not in dst:
         helper = r'''
 # VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING
-_v90_execution_base_desired_fraction=_desired_fraction
 _v90_execution_base_signal_admission=_signal_first_admission
 
 
@@ -1241,24 +1246,12 @@ def _v90_aggressive_strong_context(row):
                 and (alignment>=5 or signal_tier in ('SUPER_LONG','SUPER_SHORT')))
 
 
-def _desired_fraction(row,policy,drawdown):
-    base=float(_v90_execution_base_desired_fraction(row,policy,drawdown) or 0.0)
-    if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not row:
-        return base
-    if not _v901_no_hard_veto(row):
-        return 0.0
-
+def _v90_aggressive_strong_fraction(row,policy,drawdown):
+    if not _v90_aggressive_strong_context(row):
+        return None
     rg=_risk_governor(drawdown)
     if rg.get('new_risk') is False:
         return 0.0
-
-    if row.get('_aggressive_setup_probe'):
-        f=0.05*float(rg.get('multiplier') or 0.0)
-        return _clip(_round_step(f),0,float((policy or {}).get('max_fraction') or 5.0))
-
-    if not _v90_aggressive_strong_context(row):
-        return base
-
     f=5.0
     plan=row.get('trade_plan') or {}
     risk_pct=plan.get('stop_distance_pct')
@@ -1278,18 +1271,28 @@ def _signal_first_admission(row,policy,drawdown):
     result=_v90_execution_base_signal_admission(row,policy,drawdown)
     if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not row:
         return result
-    f=float(_desired_fraction(row,policy,drawdown) or 0.0)
-    if f<=0:
+    if not _v901_no_hard_veto(row):
+        return {'open':False,'fraction':0.0,'reason':'HARD_VETO'}
+
+    if row.get('_aggressive_setup_probe'):
+        rg=_risk_governor(drawdown)
+        if rg.get('new_risk') is False:
+            return {'open':False,'fraction':0.0,'reason':'RISK_GOVERNOR_HARD','risk_governor':rg}
+        f=_clip(_round_step(0.05*float(rg.get('multiplier') or 0.0)),0,
+                float((policy or {}).get('max_fraction') or 5.0))
+        result=dict(result)
+        result.update({'open':f>0,'fraction':f,'reason':'V90_AGGRESSIVE_SETUP_PROBE',
+                       'strong_aggressive':False,'risk_governor':rg})
         return result
-    result=dict(result)
-    result['open']=True
-    result['fraction']=f
-    result['strong_aggressive']=bool(_v90_aggressive_strong_context(row))
-    if result['strong_aggressive']:
-        result['reason']='V90_AGGRESSIVE_STRONG'
-    elif row.get('_aggressive_setup_probe'):
-        result['reason']='V90_AGGRESSIVE_SETUP_PROBE'
+
+    strong_f=_v90_aggressive_strong_fraction(row,policy,drawdown)
+    if strong_f is not None:
+        result=dict(result)
+        result.update({'open':strong_f>0,'fraction':float(strong_f),
+                       'reason':'V90_AGGRESSIVE_STRONG',
+                       'strong_aggressive':True})
     return result
+
 '''
         anchor2="\ndef _portfolio_rows(c,name):"
         if anchor2 not in dst:
@@ -1395,87 +1398,88 @@ def _v90_migrate_portfolio_data(c):
         dst = dst.replace(old_conflict, new_conflict, 1)
         applied.append("policy_metadata_refresh")
 
-    # Full closed-trade journal for the v9.0 UI.
-    trade_report_helper = r'''
-def _v90_trade_report_full(pg_connect,limit=1000):
-    ensure_schema(pg_connect)
-    limit=max(1,min(5000,int(limit or 1000)))
-    with pg_connect() as c:
-        rows=c.execute("""SELECT t.*,
-                                 (SELECT MAX(o.created_at) FROM paper_orders o WHERE o.trade_id=t.trade_id) AS last_order_at
-                          FROM paper_trades t
-                          WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')
-                          ORDER BY COALESCE(t.closed_at,
-                              (SELECT MAX(o2.created_at) FROM paper_orders o2 WHERE o2.trade_id=t.trade_id),
-                              t.opened_at) DESC
-                          LIMIT %s""",(limit,)).fetchall()
-        total=c.execute("""SELECT COUNT(*) AS n FROM paper_trades
-                           WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')""").fetchone()
-    out=[]
-    for r0 in rows:
-        z=dict(r0)
-        payload=z.get('payload') or {}
-        if not isinstance(payload,dict):
-            try: payload=json.loads(payload)
-            except Exception: payload={}
-        op=z.get('opened_at')
-        cl=(z.get('closed_at') or payload.get('closed_at') or payload.get('close_time')
-            or payload.get('closed_time') or z.get('last_order_at'))
-        z['closed_at']=cl
-        if op and cl:
-            try:
-                if isinstance(op,str): op=datetime.fromisoformat(op.replace('Z','+00:00'))
-                if isinstance(cl,str): cl=datetime.fromisoformat(cl.replace('Z','+00:00'))
-                z['held_seconds']=max(0.0,(cl-op).total_seconds())
-            except Exception:
+    if "def _v90_trade_report_full(" not in dst:
+        # Full closed-trade journal for the v9.0 UI.
+        trade_report_helper = r'''
+    def _v90_trade_report_full(pg_connect,limit=1000):
+        ensure_schema(pg_connect)
+        limit=max(1,min(5000,int(limit or 1000)))
+        with pg_connect() as c:
+            rows=c.execute("""SELECT t.*,
+                                     (SELECT MAX(o.created_at) FROM paper_orders o WHERE o.trade_id=t.trade_id) AS last_order_at
+                              FROM paper_trades t
+                              WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')
+                              ORDER BY COALESCE(t.closed_at,
+                                  (SELECT MAX(o2.created_at) FROM paper_orders o2 WHERE o2.trade_id=t.trade_id),
+                                  t.opened_at) DESC
+                              LIMIT %s""",(limit,)).fetchall()
+            total=c.execute("""SELECT COUNT(*) AS n FROM paper_trades
+                               WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')""").fetchone()
+        out=[]
+        for r0 in rows:
+            z=dict(r0)
+            payload=z.get('payload') or {}
+            if not isinstance(payload,dict):
+                try: payload=json.loads(payload)
+                except Exception: payload={}
+            op=z.get('opened_at')
+            cl=(z.get('closed_at') or payload.get('closed_at') or payload.get('close_time')
+                or payload.get('closed_time') or z.get('last_order_at'))
+            z['closed_at']=cl
+            if op and cl:
+                try:
+                    if isinstance(op,str): op=datetime.fromisoformat(op.replace('Z','+00:00'))
+                    if isinstance(cl,str): cl=datetime.fromisoformat(cl.replace('Z','+00:00'))
+                    z['held_seconds']=max(0.0,(cl-op).total_seconds())
+                except Exception:
+                    z['held_seconds']=None
+            else:
                 z['held_seconds']=None
+            z['close_time']=cl
+            z['holding_duration_seconds']=z.get('held_seconds')
+            z['exit_reason']=payload.get('exit_reason') or payload.get('reason') or payload.get('close_reason')
+            z['entry_probability']=payload.get('pwin') if payload.get('pwin') is not None else payload.get('entry_probability')
+            z['probability_source']=payload.get('pwin_source') or payload.get('probability_source')
+            z['stop_price']=payload.get('stop_price') or payload.get('structural_stop')
+            z['take_price']=payload.get('take_price') or payload.get('target_price') or payload.get('tp_price')
+            z['quantity']=payload.get('quantity') or payload.get('units')
+            z['mfe_pct']=payload.get('mfe_pct')
+            z['mae_pct']=payload.get('mae_pct')
+            z['giveback_pct']=payload.get('giveback_pct')
+            z['learning_label']=payload.get('learning_label')
+            z['learning_conclusion']=payload.get('learning_conclusion')
+            z['regime']=payload.get('regime')
+            z['return_pct']=(100*float(z['return_on_entry_nav'])) if z.get('return_on_entry_nav') is not None else payload.get('return_pct')
+            out.append(_jsonable(z))
+        return _jsonable({'status':'OK','version':VERSION,'trades':out,
+                          'returned_count':len(out),'total_closed_count':int((total or {}).get('n') or 0),
+                          'limit':limit})
+    
+    
+    trade_report=_v90_trade_report_full
+    
+    
+    _v90_base_report=report
+    def _v90_report_with_limits(pg_connect):
+        d=_v90_base_report(pg_connect)
+        limits={'Impulse':0.50,'Aggressive':5.0,'Champion':2.0,'Challenger':2.0}
+        d['max_gross']=5.0
+        d['portfolio_max_gross']=limits
+        for p in d.get('portfolios') or []:
+            p['max_gross_limit']=limits.get(p.get('name'),2.0)
+        return d
+    
+    
+    report=_v90_report_with_limits
+    '''
+        anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if anchor not in dst:
+            dst += "\n" + trade_report_helper
         else:
-            z['held_seconds']=None
-        z['close_time']=cl
-        z['holding_duration_seconds']=z.get('held_seconds')
-        z['exit_reason']=payload.get('exit_reason') or payload.get('reason') or payload.get('close_reason')
-        z['entry_probability']=payload.get('pwin') if payload.get('pwin') is not None else payload.get('entry_probability')
-        z['probability_source']=payload.get('pwin_source') or payload.get('probability_source')
-        z['stop_price']=payload.get('stop_price') or payload.get('structural_stop')
-        z['take_price']=payload.get('take_price') or payload.get('target_price') or payload.get('tp_price')
-        z['quantity']=payload.get('quantity') or payload.get('units')
-        z['mfe_pct']=payload.get('mfe_pct')
-        z['mae_pct']=payload.get('mae_pct')
-        z['giveback_pct']=payload.get('giveback_pct')
-        z['learning_label']=payload.get('learning_label')
-        z['learning_conclusion']=payload.get('learning_conclusion')
-        z['regime']=payload.get('regime')
-        z['return_pct']=(100*float(z['return_on_entry_nav'])) if z.get('return_on_entry_nav') is not None else payload.get('return_pct')
-        out.append(_jsonable(z))
-    return _jsonable({'status':'OK','version':VERSION,'trades':out,
-                      'returned_count':len(out),'total_closed_count':int((total or {}).get('n') or 0),
-                      'limit':limit})
-
-
-trade_report=_v90_trade_report_full
-
-
-_v90_base_report=report
-def _v90_report_with_limits(pg_connect):
-    d=_v90_base_report(pg_connect)
-    limits={'Impulse':0.50,'Aggressive':5.0,'Champion':2.0,'Challenger':2.0}
-    d['max_gross']=5.0
-    d['portfolio_max_gross']=limits
-    for p in d.get('portfolios') or []:
-        p['max_gross_limit']=limits.get(p.get('name'),2.0)
-    return d
-
-
-report=_v90_report_with_limits
-'''
-    anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
-    if anchor not in dst:
-        dst += "\n" + trade_report_helper
-    else:
-        dst=dst.replace(anchor,"\n"+trade_report_helper+anchor,1)
-    applied.append("full_closed_trade_journal")
-
-    # VERITAS 90 FINAL RUNTIME IDENTITY
+            dst=dst.replace(anchor,"\n"+trade_report_helper+anchor,1)
+        applied.append("full_closed_trade_journal")
+    
+        # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
     if runtime_identity.strip() not in dst:
         dst += runtime_identity
