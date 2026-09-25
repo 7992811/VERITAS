@@ -255,32 +255,32 @@ def apply_v90_ui(html):
     }
     #portfoliopositions .position-card{padding:8px 11px;margin:0 0 6px;border-radius:12px}
     #portfoliopositions .position-head{margin-bottom:6px;align-items:center}
-    #portfoliopositions .position-head b{font-size:15px;line-height:1.1}
+    #portfoliopositions .position-head b{font-size:13px;line-height:1.05}
     #portfoliopositions .position-columns{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,.95fr);gap:18px;width:100%}
     #portfoliopositions .position-col{display:flex;flex-direction:column;gap:3px;min-width:0}
     #portfoliopositions .position-col>div{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:baseline;column-gap:7px;white-space:nowrap;min-width:0}
     #portfoliopositions .position-col span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.2px}
     #portfoliopositions .position-col b{font-size:12px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;text-align:left}
     #portfoliopositions .position-left .position-gap{margin-top:7px}
-    #portfoliopositions .position-card-v2{padding:11px 13px;margin-bottom:8px}
-    #portfoliopositions .position-card-v2 .position-head{margin-bottom:8px}
+    #portfoliopositions .position-card-v2{padding:7px 9px;margin-bottom:5px;border-radius:10px}
+    #portfoliopositions .position-card-v2 .position-head{margin-bottom:5px}
     #portfoliopositions .position-card-v2 .position-head>div{min-width:0}
-    #portfoliopositions .position-meta{margin-top:3px;font-size:8.5px;line-height:1.25;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    #portfoliopositions .position-kpis{display:grid;grid-template-columns:1fr 1fr 1.25fr;gap:8px;margin-bottom:8px}
-    #portfoliopositions .position-kpi{padding:7px 8px;border:1px solid var(--border);border-radius:9px;min-width:0}
-    #portfoliopositions .position-kpi span,#portfoliopositions .position-risk-grid span,#portfoliopositions .position-foot span{display:block;font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.18px}
-    #portfoliopositions .position-kpi b{display:block;margin-top:2px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    #portfoliopositions .position-pnl b{font-size:13px}
-    #portfoliopositions .position-risk{padding:8px 9px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px}
-    #portfoliopositions .position-risk-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px}
-    #portfoliopositions .position-risk-grid b{display:block;margin-top:2px;font-size:11px}
-    #portfoliopositions .position-risk-grid small{display:block;margin-top:1px;font-size:7.6px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    #portfoliopositions .position-riskbar{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;margin-top:7px;font-size:7.5px;color:var(--muted)}
-    #portfoliopositions .position-risk-track{position:relative;height:4px;border-radius:999px;background:linear-gradient(90deg,rgba(239,103,103,.65),rgba(143,154,164,.20),rgba(89,214,148,.65))}
-    #portfoliopositions .position-risk-track i{position:absolute;top:50%;width:8px;height:8px;border-radius:50%;transform:translate(-50%,-50%);background:var(--text);box-shadow:0 0 0 2px rgba(143,154,164,.22)}
-    #portfoliopositions .position-foot{display:grid;grid-template-columns:1.3fr .8fr .9fr .8fr .95fr .95fr;gap:7px}
+    #portfoliopositions .position-meta{margin-top:2px;font-size:7.3px;line-height:1.15;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #portfoliopositions .position-kpis{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:5px;margin-bottom:5px}
+    #portfoliopositions .position-kpi{padding:4px 6px;border:1px solid var(--border);border-radius:7px;min-width:0}
+    #portfoliopositions .position-kpi span,#portfoliopositions .position-risk-grid span,#portfoliopositions .position-foot span{display:block;font-size:7px;color:var(--muted);text-transform:uppercase;letter-spacing:.12px}
+    #portfoliopositions .position-kpi b{display:block;margin-top:1px;font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    #portfoliopositions .position-pnl b{font-size:11.5px}
+    #portfoliopositions .position-risk{padding:5px 6px;border:1px solid var(--border);border-radius:8px;margin-bottom:5px}
+    #portfoliopositions .position-risk-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+    #portfoliopositions .position-risk-grid b{display:block;margin-top:1px;font-size:9.5px}
+    #portfoliopositions .position-risk-grid small{display:block;margin-top:0;font-size:6.8px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #portfoliopositions .position-riskbar{display:grid;grid-template-columns:auto 1fr auto;gap:5px;align-items:center;margin-top:4px;font-size:6.8px;color:var(--muted)}
+    #portfoliopositions .position-risk-track{position:relative;height:3px;border-radius:999px;background:linear-gradient(90deg,rgba(239,103,103,.65),rgba(143,154,164,.20),rgba(89,214,148,.65))}
+    #portfoliopositions .position-risk-track i{position:absolute;top:50%;width:6px;height:6px;border-radius:50%;transform:translate(-50%,-50%);background:var(--text);box-shadow:0 0 0 1px rgba(143,154,164,.22)}
+    #portfoliopositions .position-foot{display:grid;grid-template-columns:1.35fr .7fr .85fr .7fr .9fr .9fr;gap:4px}
     #portfoliopositions .position-foot>div{min-width:0}
-    #portfoliopositions .position-foot b{display:block;margin-top:2px;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #portfoliopositions .position-foot b{display:block;margin-top:1px;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #portfoliotrades .closed-learning-status{font-size:9px;line-height:1.1;color:var(--muted);padding:0 2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #portfoliotrades .closed-portfolio{margin:0 0 8px}
     #portfoliotrades .closed-portfolio-summary{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;padding:1px 2px 4px;font-size:10px;line-height:1.1;color:var(--muted)}
@@ -303,18 +303,18 @@ def apply_v90_ui(html):
     @media(max-width:700px){
      #portfoliopositions .position-card{padding:7px 9px;margin-bottom:5px}
      #portfoliopositions .position-head{margin-bottom:5px}
-     #portfoliopositions .position-head b{font-size:13px}
+     #portfoliopositions .position-head b{font-size:11.5px}
      #portfoliopositions .position-columns{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:12px}
      #portfoliopositions .position-col{gap:2px}
      #portfoliopositions .position-col>div{grid-template-columns:53px minmax(0,1fr);column-gap:5px}
      #portfoliopositions .position-col span{font-size:8px}
      #portfoliopositions .position-col b{font-size:10.5px}
      #portfoliopositions .position-left .position-gap{margin-top:6px}
-     #portfoliopositions .position-card-v2{padding:9px 10px}
-     #portfoliopositions .position-kpis{grid-template-columns:1fr 1fr;margin-bottom:7px}
+     #portfoliopositions .position-card-v2{padding:6px 7px;margin-bottom:4px}
+     #portfoliopositions .position-kpis{grid-template-columns:1fr 1fr;margin-bottom:4px;gap:4px}
      #portfoliopositions .position-pnl{grid-column:span 2}
-     #portfoliopositions .position-risk-grid{grid-template-columns:1fr 1fr 1fr;gap:6px}
-     #portfoliopositions .position-foot{grid-template-columns:1fr 1fr 1fr;gap:6px 8px}
+     #portfoliopositions .position-risk-grid{grid-template-columns:1fr 1fr 1fr;gap:4px}
+     #portfoliopositions .position-foot{grid-template-columns:1.2fr .8fr 1fr;gap:4px 6px}
      #portfoliotrades .closed-learning-status{font-size:7.6px;padding-bottom:4px}
      #portfoliotrades .closed-portfolio-summary{font-size:8.4px;gap:3px;padding-bottom:3px}
      #portfoliotrades .closed-portfolio-summary>b:first-child{font-size:9.5px}
