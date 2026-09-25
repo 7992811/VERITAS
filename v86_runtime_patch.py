@@ -1139,6 +1139,8 @@ p.write_text(_v90_pf,encoding='utf-8')
 p=root/'veritas_v86/application.py'
 _v90_app=p.read_text(encoding='utf-8')
 _v90_app=_v90_app.replace("report['portfolio_design']='8_MANDATES'","report['portfolio_design']='4_MANDATES_V90'")
+_v90_app=_v90_app.replace("PROFILES['RelativeValue'].execution_enabled","False")
+_v90_app=_v90_app.replace("'relative_value_execution_enabled':False","'relative_value_execution_enabled':False,'active_portfolios':list(ORDER)")
 p.write_text(_v90_app,encoding='utf-8')
 print('V90_4_MANDATES_REPORT')
 
