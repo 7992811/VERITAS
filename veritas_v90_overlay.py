@@ -522,10 +522,21 @@ def _v90_cny_5m_bars(force=False):
             and now_ts-float(_v90_cny5_cache.get('at') or 0)<240):
         return list(_v90_cny5_cache.get('bars') or [])
     try:
-        rows=_moex_futures_candles_between('CNYRUBF',now_ts-3*86400,now_ts+3600,5)
-        bars=[{'ts':int(x[0])/1000.0,'open':float(x[1]),'high':float(x[2]),
-               'low':float(x[3]),'close':float(x[4]),'volume':float(x[5])}
-              for x in rows[-500:]]
+        # MOEX ISS does not reliably expose a native 5-minute FORTS interval.
+        # Fetch official 1-minute candles and aggregate them locally to exact 5m buckets.
+        rows=_moex_futures_candles_between('CNYRUBF',now_ts-2*86400,now_ts+3600,1)
+        buckets={}
+        for x in rows[-3000:]:
+            ts=int(x[0])/1000.0
+            key=int(ts//300)*300
+            op=float(x[1]); hi=float(x[2]); lo=float(x[3]); cl=float(x[4]); vol=float(x[5])
+            z=buckets.get(key)
+            if z is None:
+                buckets[key]={'ts':float(key),'open':op,'high':hi,'low':lo,'close':cl,'volume':vol}
+            else:
+                z['high']=max(float(z['high']),hi); z['low']=min(float(z['low']),lo)
+                z['close']=cl; z['volume']=float(z.get('volume') or 0.0)+vol
+        bars=[buckets[k] for k in sorted(buckets)][-500:]
         if bars:
             _v90_cny5_cache['at']=now_ts
             _v90_cny5_cache['bars']=list(bars)
@@ -696,14 +707,32 @@ def _v90_horizon_level_context(mtf,horizon,direction):
         base_floor*=1.5
     target_pool=supports if direction=='SHORT' else resistances
     significant=[x for x in target_pool if p>0 and (x[0]/p)>=base_floor]
-    target_ref=({'timeframe':significant[0][1],'price':significant[0][2],
-                 'distance_pct':significant[0][0]/p} if significant and p>0 else None)
-    stop_ref=resistance if direction=='SHORT' else support
+    target_ladder=[{'timeframe':x[1],'price':x[2],'distance_pct':x[0]/p}
+                   for x in significant[:16]] if p>0 else []
+    target_ref=target_ladder[0] if target_ladder else None
+    # For invalidation, prefer the signal timeframe's own level first;
+    # only fall through to a higher timeframe when that timeframe has no valid level.
+    stop_ref=None
+    stop_kind='resistance_candidates' if direction=='SHORT' else 'support_candidates'
+    for tf in tfs:
+        z=rows.get(tf) or {}
+        vals=list(z.get(stop_kind) or [])
+        if direction=='SHORT':
+            vals=sorted(float(x) for x in vals if x is not None and float(x)>p)
+        else:
+            vals=sorted((float(x) for x in vals if x is not None and float(x)<p),reverse=True)
+        if vals:
+            sp=vals[0]
+            stop_ref={'timeframe':tf,'price':sp,'distance_pct':abs(sp-p)/p}
+            break
+    if stop_ref is None:
+        stop_ref=resistance if direction=='SHORT' else support
     return {'horizon':horizon,'direction':direction,'considered_timeframes':list(tfs),
             'support':support,'resistance':resistance,'stop_reference':stop_ref,
-            'target_reference':target_ref,'target_noise_floor_pct':base_floor,
-            'execution_timeframe':'1h' if horizon!='1h' else '1h',
-            'principle':'entry timing may use lower TF; stop uses nearest valid structure; target uses next significant signal/higher-TF level beyond the noise floor'}
+            'target_reference':target_ref,'target_ladder':target_ladder,
+            'target_noise_floor_pct':base_floor,
+            'execution_timeframe':'5m' if asset=='CNYRUBF' else ('1h' if horizon!='1h' else '1h'),
+            'principle':'5m/lower TF is entry timing only; stop is anchored to signal-TF then higher-TF invalidation; targets use a significant multi-TF level ladder'}
 
 
 def merge_trend_and_structure(trend, structure):
@@ -871,36 +900,59 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     plan['higher_tf_target_reference']=(ctx.get('target_reference') or {}).get('price')
     plan['level_timeframes_considered']=ctx.get('considered_timeframes') or []
     p=float(f.get('price') or plan.get('entry_price') or 0.0)
-    tref=ctx.get('target_reference') or {}
-    target_price=tref.get('price')
-    room=None
-    if p>0 and target_price is not None:
-        target_price=float(target_price)
-        if research_decision=='LONG' and target_price>p:
-            room=(target_price-p)/p
-        elif research_decision=='SHORT' and target_price<p:
-            room=(p-target_price)/p
-    exp=float(plan.get('expected_move_pct') or 0.0)
-    if room is not None and room>0:
-        plan['higher_tf_target_room_pct']=room
-        if exp>0:
-            exp=min(exp,room)
-        else:
-            exp=room
-        plan['expected_move_pct']=exp
-        plan['target_price']=p*(1.0+exp if research_decision=='LONG' else 1.0-exp)
-        plan['target_method']='MULTI_TF_LEVEL_CAPPED_'+str(tref.get('timeframe') or 'UNKNOWN')
+    technical_exp=float(plan.get('expected_move_pct') or 0.0)
+    base_reason=str(plan.get('reason') or '')
+    # Enforce a signal-timeframe/higher-timeframe invalidation reference.
+    sref=ctx.get('stop_reference') or {}
     stop=plan.get('stop_price')
-    if p>0 and stop is not None:
-        stop_dist=abs(p-float(stop))/p
-        plan['stop_distance_pct']=stop_dist
-        ratio=exp/stop_dist if stop_dist>1e-12 else 999.0
-        plan['expected_to_stop_ratio']=ratio
-        minr=float(plan.get('min_expected_to_stop_ratio') or TRADE_MIN_EXPECTED_TO_STOP)
-        if plan.get('eligible') and ratio<minr:
-            plan['eligible']=False
-            plan['reason']='multi_tf_target_room_too_small_vs_stop'
-    plan['level_policy']='LOCAL_ENTRY_STRUCTURE + SIGNAL_TF + ALL_HIGHER_TF'
+    sigma=float((f.get('trend_impulse') or {}).get('sigma_1h') or 0.0)
+    level_buffer=max(p*0.0005,p*0.25*sigma) if p>0 else 0.0
+    if p>0 and sref.get('price') is not None:
+        anchor=float(sref['price'])
+        structural_stop=(anchor+level_buffer) if research_decision=='SHORT' else (anchor-level_buffer)
+        if stop is None:
+            stop=structural_stop
+        elif research_decision=='SHORT':
+            stop=max(float(stop),structural_stop)
+        else:
+            stop=min(float(stop),structural_stop)
+        plan['higher_tf_stop_anchor']=anchor
+        plan['higher_tf_stop_buffer']=level_buffer
+        plan['stop_price']=stop
+        plan['stop_method']=str(plan.get('stop_method') or 'STRUCTURE')+'+MULTI_TF_INVALIDATION'
+    stop_dist=abs(p-float(stop))/p if p>0 and stop is not None else 999.0
+    plan['stop_distance_pct']=stop_dist
+    minr=float(plan.get('min_expected_to_stop_ratio') or TRADE_MIN_EXPECTED_TO_STOP)
+    required=minr*stop_dist
+    ladder=list(ctx.get('target_ladder') or [])
+    plan['target_ladder']=ladder
+    plan['take_profit_1']=ladder[0] if ladder else None
+    # Pick the nearest structural target that produces adequate economics but
+    # remains inside the technically estimated move. Intermediate levels become TP1/partials.
+    upper=max(technical_exp*1.25,technical_exp+0.0010) if technical_exp>0 else 0.0
+    chosen=None
+    for z in ladder:
+        d=float(z.get('distance_pct') or 0.0)
+        if d>=required and (upper<=0 or d<=upper):
+            chosen=z
+            break
+    if chosen is not None:
+        exp=float(chosen['distance_pct'])
+        plan['target_price']=float(chosen['price'])
+        plan['target_method']='MULTI_TF_SIGNIFICANT_'+str(chosen.get('timeframe') or 'UNKNOWN')
+        plan['higher_tf_target_reference']=float(chosen['price'])
+    else:
+        exp=technical_exp
+        if p>0 and exp>0:
+            plan['target_price']=p*(1.0+exp if research_decision=='LONG' else 1.0-exp)
+            plan['target_method']='TECHNICAL_PROJECTION_WITH_MULTI_TF_PARTIALS'
+    plan['expected_move_pct']=exp
+    ratio=exp/stop_dist if stop_dist>1e-12 else 999.0
+    plan['expected_to_stop_ratio']=ratio
+    invalid=base_reason=='invalidated' or str(plan.get('entry_quality') or '')=='INVALIDATED'
+    plan['eligible']=bool(not invalid and p>0 and ratio>=minr)
+    plan['reason']='ok' if plan['eligible'] else ('invalidated' if invalid else 'multi_tf_expected_move_too_small_vs_stop')
+    plan['level_policy']='5M_TIMING + SIGNAL_TF_INVALIDATION + HIGHER_TF_LEVEL_LADDER'
     return plan
 '''
         anchor = "\ndef main():"
