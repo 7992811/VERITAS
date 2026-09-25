@@ -129,7 +129,7 @@ def apply_v90_ui(html):
      function group(name,rows){
        const wins=rows.filter(t=>Number(t.net_pnl_rub||0)>0).length,net=rows.reduce((a,t)=>a+Number(t.net_pnl_rub||0),0),wr=rows.length?100*wins/rows.length:0;
        const id='cg_'+name.replace(/[^a-z0-9]/gi,'_');
-       const initial=rows.slice(0,5), hidden=Math.max(0,rows.length-initial.length);
+       const initial=rows, hidden=0;
        return `<div class="closed-portfolio" id="${id}"><div class="closed-portfolio-summary"><b>${name}</b><span>· ${rows.length}</span><span>· ${wins} win</span><span>· ${wr.toFixed(1)}%</span><b class="${net>=0?'ok':'bad'}">${rubv(net)}</b></div><div class="closed-list">${initial.map(card).join('')}</div>${hidden?`<button class="closed-more-btn" data-group="${name.replace(/"/g,'&quot;')}">Ещё ${hidden}</button>`:''}</div>`;
      }
      function learningLine(ls,d){
@@ -493,6 +493,7 @@ def apply_v90_ui(html):
     </style>"""
     value = value.replace('</head>', brand_fix_css + '</head>')
     
+    value = value.replace(' · max gross ${Number(pd.max_gross||0).toFixed(1)}×', ' · max gross: Aggressive 5.0× · остальные 2.0×')
     value = value.replace('Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.',
                           'Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. Реальные деньги не используются.')
     value = value.replace('V86','V90').replace('v86','v90')
