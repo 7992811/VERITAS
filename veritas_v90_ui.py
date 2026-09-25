@@ -65,7 +65,7 @@ def apply_v90_ui(html):
     trade_pattern = r"""trel\.innerHTML=trades\.length\?trades\.slice\(0,30\)\.map\(t=>`<div class="assetview">.*?</div></div>`\)\.join\(''\):'Сделок в журнале пока нет\.'"""
     value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
     print(json.dumps({'event':'V90_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
-                      'status':'ok' if trade_count==1 else 'error'},ensure_ascii=False,separators=(',',':')),flush=True)
+                      'status':'legacy_replaced' if trade_count==1 else 'legacy_unused'},ensure_ascii=False,separators=(',',':')),flush=True)
     if False and trade_count != 1:
         closed_fallback = r"""<script>
     (function(){
@@ -663,9 +663,9 @@ def apply_v90_ui(html):
         const today=Array.isArray(d.today_trades)?d.today_trades:(Array.isArray(d.trades)?d.trades:[]),history=Array.isArray(d.history_summary)?d.history_summary:[],memory=Array.isArray(d.older_unique_learning)?d.older_unique_learning:[];
         const groups={};today.forEach(t=>(groups[t.portfolio_name||'—']||(groups[t.portfolio_name||'—']=[])).push(t));
         const names=Object.keys(groups).sort((a,b)=>{const ia=ORDER.indexOf(a),ib=ORDER.indexOf(b);return (ia<0?999:ia)-(ib<0?999:ib)||a.localeCompare(b)});
-        const missing=Object.entries(d.today_missing_fields||{}).filter(([k,v])=>Number(v)>0);
+        const missing=Object.entries(d.today_missing_fields||{}).filter(([k,v])=>Number(v)>0),recovery=d.today_recovery||{};
         const warn=missing.length?`<div class="v90-missing"><b>Неполные поля в сегодняшних сделках:</b> ${missing.map(([k,v])=>esc(FIELDS[k]||k)+' '+v).join(' · ')}. Неполные исторические эпизоды не усиливают обучение.</div>`:'';
-        const top=`<div class="v90-closed-topline"><span class="metric">Сегодня <b>${d.today_closed_count??today.length}</b></span><span class="metric">Архив <b>${d.older_closed_count??0}</b></span><span class="metric">Уникальных эпизодов <b>${d.unique_learning_count??0}</b></span><span class="metric">Допущено к обучению <b>${d.learning_eligible_count??0}</b></span><span class="metric">Дубликатов портфелей объединено <b>${d.deduplicated_portfolio_records??0}</b></span></div>`;
+        const top=`<div class="v90-closed-topline"><span class="metric">Сегодня <b>${d.today_closed_count??today.length}</b></span><span class="metric">Архив <b>${d.older_closed_count??0}</b></span><span class="metric">Уникальных эпизодов <b>${d.unique_learning_count??0}</b></span><span class="metric">Допущено к обучению <b>${d.learning_eligible_count??0}</b></span><span class="metric">Дубликатов портфелей объединено <b>${d.deduplicated_portfolio_records??0}</b></span><span class="metric">Восстановлено path <b>${recovery.shadow_path_recovered??0}</b></span></div>`;
         const todayHtml='<div class="v90-closed-section-title">Сегодня · подробно по портфелям</div>'+(names.length?names.map(n=>todayGroup(n,groups[n])).join(''):'<div class="stamp">Сегодня закрытых сделок пока нет.</div>');
         const histHtml='<div class="v90-closed-section-title">До сегодня · результат портфелей</div>'+(history.length?`<div class="v90-archive-grid">${history.map(archiveCard).join('')}</div>`:'<div class="stamp">Исторических закрытых сделок пока нет.</div>');
         const memHtml='<div class="v90-closed-section-title">Уникальная память для самообучения</div>'+(memory.length?`<div class="v90-memory-list">${memory.slice(0,50).map(memoryRow).join('')}</div>`:'<div class="stamp">Уникальные исторические эпизоды накапливаются.</div>');
