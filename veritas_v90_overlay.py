@@ -2354,12 +2354,9 @@ def maybe_schedule_heavy_learning(reason='scheduled',force=False):
     )
 
     # P0 memory patch has already inserted the asset finally block at this stage.
-    _merge_anchor = """            _v90_trim_memory('asset_'+str(asset),force=False)
-    storage = pg_storage_status()
+    _merge_anchor = """    storage = pg_storage_status()
     expected = len(ASSETS)*len(HORIZONS)"""
-    _merge_new = """            _v90_trim_memory('asset_'+str(asset),force=False)
-
-    # Fast 5m cycles publish a complete 42-cell state by carrying forward only
+    _merge_new = """    # Fast 5m cycles publish a complete 42-cell state by carrying forward only
     # senior rows from the latest completed cycle. Fresh 5m rows always win.
     fresh_summary=list(summary)
     if cycle_mode=='FAST_5M':
