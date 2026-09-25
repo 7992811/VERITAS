@@ -226,6 +226,12 @@ def v90_migrate_core_data():
         except Exception as _jr_ex:
             emit('v90_closed_journal_startup_audit',status='ERROR',
                  error=f'{type(_jr_ex).__name__}: {_jr_ex}')
+        try:
+            _pel=_v90_publish_paper_execution_lessons(2500)
+            emit('v90_paper_execution_learning_bootstrap',**_pel)
+        except Exception as _pel_ex:
+            emit('v90_paper_execution_learning_bootstrap',status='ERROR',
+                 error=f'{type(_pel_ex).__name__}: {_pel_ex}')
     case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}"""
     dst, ch = _replace_once(dst, old_main, new_main, "v90 migration startup")
     if ch:
@@ -986,13 +992,13 @@ _v90_base_refresh_experience_lessons = refresh_experience_lessons
 
 def _v90_publish_paper_execution_lessons(limit=2500):
     if not pg_enabled() or VP is None or not hasattr(VP,'learning_archive'):
-        return {'status':'UNAVAILABLE','published':0,'eligible':0}
+        return {'status':'UNAVAILABLE','archived':0,'learning_fallback':0,'eligible':0}
     try:
         rows=VP.learning_archive(pg_connect,limit)
     except Exception as ex:
-        return {'status':'ERROR','published':0,'eligible':0,
+        return {'status':'ERROR','archived':0,'learning_fallback':0,'eligible':0,
                 'error':f'{type(ex).__name__}: {ex}'}
-    published=0; eligible=0; errors=[]
+    archived=0; learning_fallback=0; shadow_covered=0; eligible=0; errors=[]
     for x in rows or []:
         if not x.get('learning_eligible'):
             continue
@@ -1005,6 +1011,7 @@ def _v90_publish_paper_execution_lessons(limit=2500):
             continue
         label=str(x.get('learning_label') or 'NEGATIVE_EXECUTION')
         payload={
+            'setup_id':episode,
             'direction':x.get('direction'),
             'setup_family':x.get('setup_family') or x.get('setup') or 'UNKNOWN',
             'regime_bucket':x.get('regime_bucket') or x.get('regime') or 'ADAPTIVE',
@@ -1026,30 +1033,54 @@ def _v90_publish_paper_execution_lessons(limit=2500):
             'portfolio_results_aggregated':True,
         }
         entity='paper_exec:'+episode
-        event_key='experience_lesson:'+entity
         try:
             with pg_connect() as pc:
+                # Always archive the unique execution lesson for audit/reporting.
+                archive_key='paper_execution_lesson:'+entity
+                pc.execute("""INSERT INTO ledger_events
+                    (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+                    VALUES(%s,%s,'paper_execution_lesson',%s,%s,%s,%s::jsonb,%s)
+                    ON CONFLICT(event_key) DO UPDATE SET
+                      event_ts=EXCLUDED.event_ts,asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,
+                      payload=EXCLUDED.payload,model_version=EXCLUDED.model_version""",
+                    (archive_key,entity,x.get('last_closed_at') or now(),
+                     x.get('asset'),x.get('horizon'),
+                     json.dumps(payload,ensure_ascii=False,default=str),VERSION))
+                archived+=1
+                # If the canonical shadow lifecycle already learned this setup, do not
+                # count the paper portfolios as another directional sample.
+                covered=pc.execute("""SELECT 1 FROM ledger_events
+                    WHERE event_type='experience_lesson'
+                      AND payload->>'source'='CANONICAL_SHADOW_TRADE'
+                      AND payload->>'setup_id'=%s LIMIT 1""",(episode,)).fetchone()
+                if covered:
+                    shadow_covered+=1
+                    continue
+                fallback=dict(payload)
+                fallback['source']='PAPER_PORTFOLIO_UNIQUE_EXECUTION_FALLBACK'
+                fallback['learning_weight']=min(0.20,weight)
+                learn_key='experience_lesson:'+entity
                 pc.execute("""INSERT INTO ledger_events
                     (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
                     VALUES(%s,%s,'experience_lesson',%s,%s,%s,%s::jsonb,%s)
                     ON CONFLICT(event_key) DO UPDATE SET
                       event_ts=EXCLUDED.event_ts,asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,
                       payload=EXCLUDED.payload,model_version=EXCLUDED.model_version""",
-                    (event_key,entity,x.get('last_closed_at') or now(),
+                    (learn_key,entity,x.get('last_closed_at') or now(),
                      x.get('asset'),x.get('horizon'),
-                     json.dumps(payload,ensure_ascii=False,default=str),VERSION))
-            published+=1
+                     json.dumps(fallback,ensure_ascii=False,default=str),VERSION))
+                learning_fallback+=1
         except Exception as ex:
             errors.append(f'{episode}:{type(ex).__name__}:{ex}')
-    if published:
+    if learning_fallback:
         try:
             setup_memory_board._cache=None
         except Exception:
             pass
-    return {'status':'OK' if not errors else 'DEGRADED','published':published,
-            'eligible':eligible,'unique_market_episodes':len(rows or []),
-            'errors':errors[:10],
-            'principle':'one market episode once; portfolio duplicates are aggregated; low-weight execution evidence only'}
+    return {'status':'OK' if not errors else 'DEGRADED','archived':archived,
+            'learning_fallback':learning_fallback,'shadow_covered':shadow_covered,
+            'eligible':eligible,'unique_market_episodes':len(rows or []),'errors':errors[:10],
+            'principle':'one market episode once; portfolio duplicates aggregate; canonical shadow lesson has priority'}
 
 
 def refresh_experience_lessons(limit=400):
@@ -2656,7 +2687,9 @@ def _v90j_load_closed(pg_connect,limit=2500):
             z.get('net_pnl_rub'),price_ret,z.get('mfe_pct'),z.get('mae_pct'),give,z.get('exit_reason'),recovered)
         z['learning_label']=label
         z['learning_conclusion']=payload.get('learning_conclusion') or _v90j_learning_conclusion(label,z)
-        z['learning_eligible']=bool(payload.get('learning_eligible')) if payload.get('learning_eligible') is not None else bool(not recovered and z['telemetry_completeness']>=0.50)
+        _stored_eligible=payload.get('learning_eligible')
+        _path_complete=(z.get('mfe_pct') is not None and z.get('mae_pct') is not None)
+        z['learning_eligible']=bool(not recovered and _path_complete and z['telemetry_completeness']>=0.80)
         z['episode_key']=_v90j_episode_key(z,payload)
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
         out.append(_jsonable(z))
@@ -2695,7 +2728,8 @@ def _v90j_unique_learning(rows):
         label=max(z['labels'],key=z['labels'].get) if z['labels'] else 'MIXED_EXECUTION'
         exit_reason=max(z['exit_reasons'],key=z['exit_reasons'].get) if z['exit_reasons'] else None
         completeness=avg(z['completeness']) or 0.0
-        learning_eligible=bool(completeness>=0.50 and label!='RECOVERED_HISTORICAL_NO_LEARNING')
+        learning_eligible=bool(completeness>=0.80 and bool(z['mfe']) and bool(z['mae'])
+                               and label!='RECOVERED_HISTORICAL_NO_LEARNING')
         row={'episode_key':key,'asset':z['asset'],'direction':z['direction'],'horizon':z['horizon'],
              'setup':z['setup'],'setup_family':z['setup_family'],'regime':z['regime'],
              'regime_bucket':z['regime_bucket'],'entry_state':z['entry_state'],'horizon_state':z['horizon_state'],
