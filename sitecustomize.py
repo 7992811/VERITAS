@@ -716,16 +716,6 @@ def _run():
             f"[VERITAS BOOTSTRAP] v84.3 FAILED: {type(exc).__name__}: {exc}",
             file=sys.stderr,flush=True
         )
-        if isinstance(exc,SyntaxError):
-            try:
-                _lines=_read(TARGET).splitlines()
-                _ln=int(getattr(exc,'lineno',0) or 0)
-                print(f"[VERITAS SYNTAX META] lineno={_ln} offset={getattr(exc,'offset',None)} end_lineno={getattr(exc,'end_lineno',None)} end_offset={getattr(exc,'end_offset',None)} text={getattr(exc,'text',None)!r}",file=sys.stderr,flush=True)
-                _a=max(1,_ln-120); _b=min(len(_lines),_ln+8)
-                for _i in range(_a,_b+1):
-                    print(f"[VERITAS SYNTAX CONTEXT] {_i}: {_lines[_i-1]}",file=sys.stderr,flush=True)
-            except Exception as _ctx_ex:
-                print(f"[VERITAS SYNTAX CONTEXT] unavailable: {_ctx_ex}",file=sys.stderr,flush=True)
 
 
 _run()
