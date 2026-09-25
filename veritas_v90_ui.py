@@ -45,7 +45,7 @@ def apply_v90_ui(html):
         '',
         value,count=1,flags=re.I
     )
-    value = value.replace('Последние сделки','Закрытые сделки · CLOSED_FINAL').replace('ПОСЛЕДНИЕ СДЕЛКИ','ЗАКРЫТЫЕ СДЕЛКИ · CLOSED_FINAL')
+    value = value.replace('Последние сделки','Закрытые сделки · сегодня / архив').replace('ПОСЛЕДНИЕ СДЕЛКИ','ЗАКРЫТЫЕ СДЕЛКИ · СЕГОДНЯ / АРХИВ').replace('Закрытые сделки · CLOSED_FINAL','Закрытые сделки · сегодня / архив')
     value = value.replace("${p.name==='Champion'?'70%+':'77%+'}","${p.badge||''}")
     value = value.replace('Шаг позиции 5% · gross ≤ 2,5× · комиссия 0,05% · снижение риска с DD 10% · hard stop новых рисков при DD 22%.',
                           'Шаг позиции 5% · gross ≤ 2,0× · комиссия 0,05% · риск по стопу 1–2% NAV · hard stop DD 8–12% в зависимости от мандата.')
@@ -66,7 +66,7 @@ def apply_v90_ui(html):
     value, trade_count = re.subn(trade_pattern, trade_replacement, value, count=1, flags=re.S)
     print(json.dumps({'event':'V90_CLOSED_TRADE_UI_PATCH','replacements':trade_count,
                       'status':'ok' if trade_count==1 else 'error'},ensure_ascii=False,separators=(',',':')),flush=True)
-    if trade_count != 1:
+    if False and trade_count != 1:
         closed_fallback = r"""<script>
     (function(){
      const ORDER=['Champion','Challenger','Impulse','Aggressive'];
@@ -607,4 +607,81 @@ def apply_v90_ui(html):
     })();
     </script>"""
     value = value.replace('</body>', signal_detail_sync_js + '</body>')
+    closed_journal_v2_css = r"""<style id="V90_CLOSED_JOURNAL_V2_STYLE">
+    .v90-closed-wrap{display:grid;gap:14px}
+    .v90-closed-topline{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:9px 11px;border:1px solid rgba(130,145,160,.18);border-radius:10px}
+    .v90-closed-topline .metric{font-size:12px;opacity:.9}
+    .v90-closed-section-title{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin:4px 0 2px}
+    .v90-today-group{display:grid;gap:7px}
+    .v90-today-head{display:flex;flex-wrap:wrap;gap:7px 12px;align-items:center;font-size:12px;padding:6px 2px}
+    .v90-today-card{padding:10px 11px!important}
+    .v90-today-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px 12px;margin-top:7px}
+    .v90-today-grid>div{font-size:11px;line-height:1.35;min-width:0}
+    .v90-today-grid .wide{grid-column:span 2}
+    .v90-today-learning{margin-top:7px;padding-top:6px;border-top:1px solid rgba(130,145,160,.16);font-size:11px;line-height:1.4}
+    .v90-telemetry-warn{margin-top:6px;font-size:10px;opacity:.8}
+    .v90-archive-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+    .v90-archive-card{padding:9px 10px;border:1px solid rgba(130,145,160,.16);border-radius:9px;font-size:11px;line-height:1.5}
+    .v90-memory-list{display:grid;gap:6px}
+    .v90-memory-row{padding:8px 10px;border:1px solid rgba(130,145,160,.14);border-radius:8px;font-size:11px;line-height:1.4}
+    .v90-memory-head{display:flex;justify-content:space-between;gap:10px;align-items:center}
+    .v90-memory-meta{opacity:.78;margin-top:3px}
+    .v90-missing{padding:7px 9px;border:1px solid rgba(180,150,90,.25);border-radius:8px;font-size:10px}
+    @media(max-width:900px){.v90-today-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.v90-archive-grid{grid-template-columns:1fr}}
+    @media(max-width:560px){.v90-today-grid{grid-template-columns:1fr}.v90-today-grid .wide{grid-column:span 1}}
+    </style>"""
+    value = value.replace('</head>', closed_journal_v2_css + '</head>')
+    closed_journal_v2_js = r"""<script id="V90_CLOSED_JOURNAL_V2">
+    (function(){
+      const ORDER=['Impulse','Aggressive','Champion','Challenger'];
+      const LABELS={RIGHT_DIRECTION_HIGH_CAPTURE:'Высокий захват движения',RIGHT_DIRECTION_LOW_CAPTURE:'Направление верное, захват движения низкий',RIGHT_DIRECTION_STOP_ERROR:'Верное направление, ошибка стопа',FAVORABLE_PATH_NOT_MONETIZED:'Благоприятный ход не монетизирован',RIGHT_DIRECTION_PREMATURE_EXIT:'Преждевременный выход',DIRECTION_OR_ENTRY_FAILED_ON_OBSERVED_PATH:'Ошибка направления или входа',GOOD_EXECUTION:'Хорошее исполнение',MIXED_EXECUTION:'Смешанное исполнение',RECOVERED_HISTORICAL_NO_LEARNING:'История восстановлена частично'};
+      const FIELDS={closed_at:'время закрытия',exit_reason:'причина выхода',quantity:'количество',stop_price:'SL',take_price:'TP',mfe_pct:'MFE',mae_pct:'MAE',regime:'режим',learning_label:'вывод обучения'};
+      const rubv=v=>v==null?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽';
+      const px=v=>v==null?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:4});
+      const pct=v=>v==null?'—':Number(v).toFixed(2)+'%';
+      const tm=v=>v?new Date(v).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
+      const hold=v=>v==null?'—':Number(v)>=86400?(Number(v)/86400).toFixed(1)+' д':Number(v)>=3600?(Number(v)/3600).toFixed(1)+' ч':Math.max(1,Math.round(Number(v)/60))+' мин';
+      const metric=(v,src)=>v==null?'—':(typeof window.v90MetricLabel==='function'?window.v90MetricLabel(v,src):(100*Number(v)).toFixed(1)+'%');
+      const esc=s=>String(s??'—').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+      function todayCard(t){
+        const pnl=Number(t.net_pnl_rub||0), complete=100*Number(t.telemetry_completeness||0), label=LABELS[t.learning_label]||t.learning_label||'—';
+        return `<div class="assetview v90-today-card"><div class="closed-trade-head"><b>${esc(t.asset)} · ${esc(t.direction)} · ${esc(t.horizon)}</b><b class="${pnl>=0?'ok':'bad'}">${rubv(t.net_pnl_rub)}${t.return_pct==null?'':' · '+Number(t.return_pct).toFixed(2)+'%'}</b></div><div class="v90-today-grid"><div>Вход <b>${px(t.avg_entry_price)}</b></div><div>Выход <b>${px(t.avg_exit_price)}</b></div><div>Открыта <b>${tm(t.opened_at)}</b></div><div>Закрыта <b>${tm(t.closed_at)}</b></div><div>Удержание <b>${hold(t.held_seconds)}</b></div><div>Количество <b>${t.quantity==null?'—':Number(t.quantity).toLocaleString('ru-RU',{maximumFractionDigits:5})}</b></div><div>Gross <b>${rubv(t.gross_pnl_rub)}</b></div><div>Net <b class="${pnl>=0?'ok':'bad'}">${rubv(t.net_pnl_rub)}</b></div><div>Комиссия <b>${rubv(t.fees_rub||0)}</b></div><div>Фондирование <b>${rubv(t.funding_rub||0)}</b></div><div>SL <b>${px(t.stop_price)}</b></div><div>TP <b>${px(t.take_price)}</b></div><div>MFE <b>${pct(t.mfe_pct)}</b></div><div>MAE <b>${pct(t.mae_pct)}</b></div><div>Giveback <b>${pct(t.giveback_pct)}</b></div><div>Причина выхода <b>${esc(t.exit_reason)}</b></div><div class="wide">Setup <b>${esc(t.setup||t.setup_family)}</b> · режим <b>${esc(t.regime)}</b></div><div class="wide">Входной score / Prob-ty <b title="${esc(t.probability_source)}">${metric(t.entry_probability,t.probability_source)}</b></div></div><div class="v90-today-learning"><b>Вывод для обучения:</b> ${esc(label)} · ${esc(t.learning_conclusion)}</div><div class="v90-telemetry-warn">Полнота телеметрии ${complete.toFixed(0)}%${t.recovered?'<span class="warn"> · восстановленная запись</span>':''}</div></div>`;
+      }
+      function todayGroup(name,rows){
+        const wins=rows.filter(x=>Number(x.net_pnl_rub||0)>0).length,net=rows.reduce((s,x)=>s+Number(x.net_pnl_rub||0),0),wr=rows.length?100*wins/rows.length:0;
+        return `<div class="v90-today-group"><div class="v90-today-head"><b>${esc(name)}</b><span>${rows.length} закрыто</span><span>${wins} прибыльных</span><span>win ${wr.toFixed(1)}%</span><b class="${net>=0?'ok':'bad'}">${rubv(net)}</b></div>${rows.map(todayCard).join('')}</div>`;
+      }
+      function archiveCard(x){
+        const n=Number(x.closed_trades||0),wins=Number(x.wins||0),wr=x.win_rate==null?0:100*Number(x.win_rate),cost=Number(x.fees_rub||0)+Number(x.funding_rub||0);
+        return `<div class="v90-archive-card"><b>${esc(x.portfolio_name)}</b><br>Закрыто <b>${n}</b> · прибыльных <b>${wins}</b> · win <b>${wr.toFixed(1)}%</b><br>Gross <b>${rubv(x.gross_pnl_rub)}</b> · расходы <b>${rubv(cost)}</b><br>Итог <b class="${Number(x.net_pnl_rub||0)>=0?'ok':'bad'}">${rubv(x.net_pnl_rub)}</b></div>`;
+      }
+      function memoryRow(x){
+        const label=LABELS[x.learning_label]||x.learning_label||'—',ret=x.avg_return_pct==null?'—':Number(x.avg_return_pct).toFixed(2)+'%',weight=x.learning_weight==null?'—':Number(x.learning_weight).toFixed(2);
+        return `<div class="v90-memory-row"><div class="v90-memory-head"><b>${esc(x.asset)} · ${esc(x.direction)} · ${esc(x.horizon)}</b><b class="${Number(x.total_net_pnl_rub||0)>=0?'ok':'bad'}">${rubv(x.total_net_pnl_rub)}</b></div><div class="v90-memory-meta">${esc(x.setup_family||x.setup)} · ${esc(x.regime)} · ${x.portfolio_count||0} портф. / ${x.trade_count||0} исполн. · avg ${ret}</div><div><b>${esc(label)}</b> · ${esc(x.learning_conclusion)}</div><div class="stamp">MFE ${pct(x.avg_mfe_pct)} · MAE ${pct(x.avg_mae_pct)} · giveback ${pct(x.avg_giveback_pct)} · вес обучения ${weight} · ${x.learning_eligible?'учитывается':'только архив'}</div></div>`;
+      }
+      function render(d){
+        const today=Array.isArray(d.today_trades)?d.today_trades:(Array.isArray(d.trades)?d.trades:[]),history=Array.isArray(d.history_summary)?d.history_summary:[],memory=Array.isArray(d.older_unique_learning)?d.older_unique_learning:[];
+        const groups={};today.forEach(t=>(groups[t.portfolio_name||'—']||(groups[t.portfolio_name||'—']=[])).push(t));
+        const names=Object.keys(groups).sort((a,b)=>{const ia=ORDER.indexOf(a),ib=ORDER.indexOf(b);return (ia<0?999:ia)-(ib<0?999:ib)||a.localeCompare(b)});
+        const missing=Object.entries(d.today_missing_fields||{}).filter(([k,v])=>Number(v)>0);
+        const warn=missing.length?`<div class="v90-missing"><b>Неполные поля в сегодняшних сделках:</b> ${missing.map(([k,v])=>esc(FIELDS[k]||k)+' '+v).join(' · ')}. Неполные исторические эпизоды не усиливают обучение.</div>`:'';
+        const top=`<div class="v90-closed-topline"><span class="metric">Сегодня <b>${d.today_closed_count??today.length}</b></span><span class="metric">Архив <b>${d.older_closed_count??0}</b></span><span class="metric">Уникальных эпизодов <b>${d.unique_learning_count??0}</b></span><span class="metric">Допущено к обучению <b>${d.learning_eligible_count??0}</b></span><span class="metric">Дубликатов портфелей объединено <b>${d.deduplicated_portfolio_records??0}</b></span></div>`;
+        const todayHtml='<div class="v90-closed-section-title">Сегодня · подробно по портфелям</div>'+(names.length?names.map(n=>todayGroup(n,groups[n])).join(''):'<div class="stamp">Сегодня закрытых сделок пока нет.</div>');
+        const histHtml='<div class="v90-closed-section-title">До сегодня · результат портфелей</div>'+(history.length?`<div class="v90-archive-grid">${history.map(archiveCard).join('')}</div>`:'<div class="stamp">Исторических закрытых сделок пока нет.</div>');
+        const memHtml='<div class="v90-closed-section-title">Уникальная память для самообучения</div>'+(memory.length?`<div class="v90-memory-list">${memory.slice(0,50).map(memoryRow).join('')}</div>`:'<div class="stamp">Уникальные исторические эпизоды накапливаются.</div>');
+        return `<div class="v90-closed-wrap">${top}${warn}${todayHtml}${histHtml}${memHtml}</div>`;
+      }
+      let observer=null,timer=null;
+      async function refresh(){
+        const el=document.getElementById('portfoliotrades');if(!el)return;
+        try{const r=await fetch('/api/v1/portfolio-trades',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();if(observer)observer.disconnect();el.innerHTML=render(d)}
+        catch(e){if(!el.innerHTML.trim())el.innerHTML='<span class="warn">Журнал закрытых сделок обновляется…</span>'}
+        finally{if(observer)observer.observe(el,{childList:true,subtree:true,characterData:true})}
+      }
+      function start(){const el=document.getElementById('portfoliotrades');if(!el)return;observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(refresh,120)});observer.observe(el,{childList:true,subtree:true,characterData:true});refresh();setInterval(refresh,30000)}
+      if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
+    })();
+    </script>"""
+    value = value.replace('</body>', closed_journal_v2_js + '</body>')
+    print(json.dumps({'event':'V90_CLOSED_JOURNAL_UI_V2','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     return value
