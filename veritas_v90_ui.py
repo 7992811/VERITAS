@@ -13,7 +13,32 @@ def apply_v90_ui(html):
     value = value.replace('Два независимых paper-портфеля по 1 000 000 ₽. Champion — порог входа 70%; Challenger — порог входа 77%. Реальные деньги не используются.',
                           'Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.')
     value = value.replace('Открытых позиций нет — оба портфеля в cash.','Открытых позиций нет — портфели в cash.')
-    value = value.replace('30 ячеек · ~','35 ячеек · ~').replace('6 активов × 5 ТФ','7 активов × 5 ТФ').replace('6/6 активов','7/7 активов')
+    value = value.replace('30 ячеек · ~','42 ячейки · ~').replace('35 ячеек · ~','42 ячейки · ~').replace('6 активов × 5 ТФ','7 активов × 6 ТФ').replace('7 активов × 5 ТФ','7 активов × 6 ТФ').replace('6/6 активов','7/7 активов')
+    # V90_FULL_5M_MATRIX
+    value = value.replace(
+        '<th>Актив</th><th>1ч</th><th>4ч</th><th>1д</th><th>3д</th><th>7д</th>',
+        '<th>Актив</th><th>5м</th><th>1ч</th><th>4ч</th><th>1д</th><th>3д</th><th>7д</th>'
+    )
+    value = value.replace(
+        "const tfOrder=['1h','4h','1d','3d','7d']",
+        "const tfOrder=['5m','1h','4h','1d','3d','7d']"
+    )
+    value = value.replace(
+        ".superstrip{display:grid;grid-template-columns:repeat(5,minmax(105px,1fr));",
+        ".superstrip{display:grid;grid-template-columns:repeat(6,minmax(90px,1fr));"
+    )
+    value = value.replace(
+        ".matrix-wrap{overflow-x:hidden;",
+        ".matrix-wrap{overflow-x:auto;"
+    )
+    value = value.replace(
+        ".signal-table{width:min(100%,460px);",
+        ".signal-table{width:min(100%,540px);"
+    )
+    value = value.replace(
+        "ожидается ${hi.expected_signal_cells??30} ячеек (6 активов × 5 ТФ)",
+        "ожидается ${hi.expected_signal_cells??42} ячейки (7 активов × 6 ТФ)"
+    )
     value = value.replace('NDX','NQ')
     # V86.2 BRAND_AND_HEADER_REFINEMENT
     _brand_markup = '''<div class="veritas-brandlock veritas-brand-artwork">
@@ -546,7 +571,7 @@ def apply_v90_ui(html):
           const stamp=document.getElementById('stamp');
           if(stamp){
             const at=d.at?new Date(d.at):new Date();
-            stamp.textContent='сигналы '+at.toLocaleString()+' · '+rows.length+'/35';
+            stamp.textContent='сигналы '+at.toLocaleString()+' · '+rows.length+'/42';
           }
         }catch(e){
           const ms=document.getElementById('matrixstatus');
@@ -595,7 +620,7 @@ def apply_v90_ui(html):
           }).join(' · ');
           const mtf=tp.multi_tf_levels||{},ctx=tp.multi_tf_level_context||{};
           const tfrows=(mtf.timeframes||{});
-          const levelLine=['1h','4h','1d','3d','7d'].map(tf=>{
+          const levelLine=['5m','1h','4h','1d','3d','7d'].map(tf=>{
             const z=tfrows[tf]||{};
             if(z.status!=='OK')return tf+' —';
             const s=z.support==null?'—':Number(z.support).toFixed(3);
