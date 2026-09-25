@@ -1,0 +1,21 @@
+name: Export v85 core storage files
+on:
+  push:
+    branches: [v85-acceptance]
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          rm -rf /tmp/v85 && mkdir /tmp/v85
+          unzip -q VERITAS_v85_STAGING.zip -d /tmp/v85
+          mkdir exported
+          cp /tmp/v85/veritas_v85/application.py exported/
+          cp /tmp/v85/veritas_v85/book.py exported/
+          cp /tmp/v85/veritas_v85/postgres.py exported/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v85-core-storage-files
+          path: exported
+          retention-days: 3
