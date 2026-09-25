@@ -611,14 +611,18 @@ def _v90_level_row(raw, timeframe):
         below.append(rolling_low)
     if rolling_high > p+eps:
         above.append(rolling_high)
-    support=max(below) if below else None
-    resistance=min(above) if above else None
+    support_candidates=sorted(set(float(x) for x in below),reverse=True)
+    resistance_candidates=sorted(set(float(x) for x in above))
+    support=support_candidates[0] if support_candidates else None
+    resistance=resistance_candidates[0] if resistance_candidates else None
     return {
         'timeframe':timeframe,'status':'OK','bars':len(bars),
         'last_close':closes[-1],'previous_high':float(previous['high']),
         'previous_low':float(previous['low']),
         'rolling_high':rolling_high,'rolling_low':rolling_low,
         'support':support,'resistance':resistance,
+        'support_candidates':support_candidates[:12],
+        'resistance_candidates':resistance_candidates[:12],
         'distance_to_support':None if support is None else (p-support)/p,
         'distance_to_resistance':None if resistance is None else (resistance-p)/p,
     }
@@ -645,7 +649,7 @@ def _v90_multi_tf_levels(raw):
                  'distance_pct':vals[0][0]/p} if vals and p>0 else None)
     out={
         'status':'OK' if any((z.get('status')=='OK') for z in rows.values()) else 'INSUFFICIENT',
-        'price':p,'timeframes':rows,
+        'asset':str(raw.get('asset') or ''),'price':p,'timeframes':rows,
         'nearest_support':nearest('support',('1h','4h','1d','3d','7d')),
         'nearest_resistance':nearest('resistance',('1h','4h','1d','3d','7d')),
         'senior_support':nearest('support',('1d','3d','7d')),
@@ -668,25 +672,38 @@ def _v90_horizon_level_context(mtf,horizon,direction):
     }
     tfs=hierarchy.get(str(horizon),('1h','4h','1d','3d','7d'))
     p=float((mtf or {}).get('price') or 0.0)
+    asset=str((mtf or {}).get('asset') or '')
     supports=[]; resistances=[]
     for tf in tfs:
         z=rows.get(tf) or {}
-        if z.get('support') is not None and float(z['support'])<p:
-            supports.append((p-float(z['support']),tf,float(z['support'])))
-        if z.get('resistance') is not None and float(z['resistance'])>p:
-            resistances.append((float(z['resistance'])-p,tf,float(z['resistance'])))
-    supports.sort(); resistances.sort()
+        svals=z.get('support_candidates') or ([z.get('support')] if z.get('support') is not None else [])
+        rvals=z.get('resistance_candidates') or ([z.get('resistance')] if z.get('resistance') is not None else [])
+        for sx in svals:
+            if sx is not None and float(sx)<p:
+                supports.append((p-float(sx),tf,float(sx)))
+        for rx in rvals:
+            if rx is not None and float(rx)>p:
+                resistances.append((float(rx)-p,tf,float(rx)))
+    supports=sorted(set(supports)); resistances=sorted(set(resistances))
     support=({'timeframe':supports[0][1],'price':supports[0][2],
               'distance_pct':supports[0][0]/p} if supports and p>0 else None)
     resistance=({'timeframe':resistances[0][1],'price':resistances[0][2],
                  'distance_pct':resistances[0][0]/p} if resistances and p>0 else None)
+    base_floor={'1h':0.0015,'4h':0.0025,'1d':0.0040,'3d':0.0060,'7d':0.0080}.get(str(horizon),0.0025)
+    if asset in ('BTC','ETH'):
+        base_floor*=2.5
+    elif asset in ('NQ','BRENT','GOLD','MOEX'):
+        base_floor*=1.5
+    target_pool=supports if direction=='SHORT' else resistances
+    significant=[x for x in target_pool if p>0 and (x[0]/p)>=base_floor]
+    target_ref=({'timeframe':significant[0][1],'price':significant[0][2],
+                 'distance_pct':significant[0][0]/p} if significant and p>0 else None)
     stop_ref=resistance if direction=='SHORT' else support
-    target_ref=support if direction=='SHORT' else resistance
     return {'horizon':horizon,'direction':direction,'considered_timeframes':list(tfs),
             'support':support,'resistance':resistance,'stop_reference':stop_ref,
-            'target_reference':target_ref,
+            'target_reference':target_ref,'target_noise_floor_pct':base_floor,
             'execution_timeframe':'1h' if horizon!='1h' else '1h',
-            'principle':'entry timing may use lower TF; invalidation/targets must also check signal TF and all higher TFs'}
+            'principle':'entry timing may use lower TF; stop uses nearest valid structure; target uses next significant signal/higher-TF level beyond the noise floor'}
 
 
 def merge_trend_and_structure(trend, structure):
