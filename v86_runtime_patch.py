@@ -1207,7 +1207,7 @@ _v90_sr=_v90_sr.replace(
     "'INSERT INTO v85_accounts(account_id,initial_equity,realized_equity,policy_version) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET initial_equity=excluded.initial_equity, realized_equity=excluded.realized_equity, policy_version=excluded.policy_version'")
 _v90_sr=_v90_sr.replace(
     "'INSERT INTO v85_risk VALUES(?,?,?,?)'",
-    "'INSERT INTO v85_risk(account_id,high_water,state,updated_at) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET high_water=excluded.high_water, state=excluded.state, updated_at=excluded.updated_at'")
+    "'INSERT INTO v85_risk VALUES(?,?,?,?) ON CONFLICT(account_id) DO NOTHING'")
 _v90_sr=_v90_sr.replace(
     "'position_count':int(target.get('trade_count') or 0)",
     "'position_count':sum(1 for x in (target.get('trades') or []) if str(x.get('account_id') or '') in ACTIVE_ACCOUNTS and str(x.get('status') or '').upper()=='OPEN')")
