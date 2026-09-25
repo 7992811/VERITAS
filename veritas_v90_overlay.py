@@ -641,69 +641,7 @@ def _best_impulse_by_asset(summary):
     return out
 
 
-_v90_base_desired_fraction=_desired_fraction
-def _desired_fraction(row,policy,drawdown):
-    base=float(_v90_base_desired_fraction(row,policy,drawdown) or 0.0)
-    if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not row:
-        return base
-    if not _v901_no_hard_veto(row):
-        return 0.0
 
-    if row.get('_aggressive_setup_probe'):
-        rg=_risk_governor(drawdown)
-        return 0.0 if rg.get('new_risk') is False else _round_step(0.05*float(rg.get('multiplier') or 0.0))
-
-    d=str(row.get('research_decision') or 'NO_TRADE')
-    if d not in ('LONG','SHORT'):
-        return base
-    p=float(row.get('_pwin') or _signal_probability(row)[0] or 0.0)
-    supporting=list(row.get('_supporting_horizons') or [])
-    alignment=int(row.get('_alignment_count') or len(set(supporting)))
-    ds=row.get('_direction_support') or {}
-    other='SHORT' if d=='LONG' else 'LONG'
-    support_ratio=float(row.get('_support_ratio') or
-                        (float(ds.get(d) or 0.0)/max(0.01,float(ds.get(other) or 0.0))))
-    plan=row.get('trade_plan') or {}
-    try: rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
-    except Exception: rr=0.0
-    signal_tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
-    strong=bool(
-        alignment>=4 and support_ratio>=1.50 and p>=0.82 and rr>=1.00
-        and (alignment>=5 or signal_tier in ('SUPER_LONG','SUPER_SHORT'))
-    )
-    if not strong:
-        return base
-
-    f=5.0
-    risk_pct=plan.get('stop_distance_pct')
-    if risk_pct is None:
-        risk_pct=(row.get('institutional_signal') or {}).get('risk_pct')
-    try:
-        rp=float(risk_pct or 0.0)
-        if rp>0:
-            f=min(f,MAX_STOP_RISK_NAV/rp)
-    except Exception:
-        pass
-    rg=_risk_governor(drawdown)
-    if rg.get('new_risk') is False:
-        return 0.0
-    f*=float(rg.get('multiplier') or 0.0)
-    return _clip(_round_step(f),0,float((policy or {}).get('max_fraction') or 5.0))
-
-
-_v90_base_signal_admission=_signal_first_admission
-def _signal_first_admission(row,policy,drawdown):
-    result=_v90_base_signal_admission(row,policy,drawdown)
-    if str((policy or {}).get('mode') or '')=='AGGRESSIVE' and row and result.get('open',True):
-        f=float(_desired_fraction(row,policy,drawdown) or 0.0)
-        if f>0:
-            result=dict(result)
-            result['open']=True
-            result['fraction']=f
-            result['strong_aggressive']=bool(f>=1.0)
-            result['reason']='V90_AGGRESSIVE_STRONG' if f>=1.0 else (
-                'V90_AGGRESSIVE_SETUP_PROBE' if row.get('_aggressive_setup_probe') else result.get('reason'))
-    return result
 '''
         anchor = "\ndef _v842_position_payload(z):"
         if anchor not in dst:
@@ -1353,7 +1291,7 @@ def _signal_first_admission(row,policy,drawdown):
         result['reason']='V90_AGGRESSIVE_SETUP_PROBE'
     return result
 '''
-        anchor2="\ndef ensure_schema(pg_connect):"
+        anchor2="\ndef _portfolio_rows(c,name):"
         if anchor2 not in dst:
             raise RuntimeError("VERITAS 9.0 final sizing anchor missing")
         dst=dst.replace(anchor2,"\n"+helper+anchor2,1)
@@ -1575,8 +1513,8 @@ def verify():
         'brent_price_integrity': 'def _v90_moex_front_brent_contract()' in intel and "verification_mode':'moex_front_contract_primary'" in intel,
         'nasdaq_futures_nq': "'NQ': ('NQ', 'NQ%3DF')" in intel and "asset=='NQ'" in intel,
         'aggressive_5x_strong_signal': "'max_fraction':5.0" in port and 'strong_aggressive=bool(' in port,
-        'aggressive_execution_5x': '_v90_base_desired_fraction=_desired_fraction' in port and "result['reason']='V90_AGGRESSIVE_STRONG'" in port,
         'final_aggressive_execution': '# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING' in port and '_v90_aggressive_strong_context' in port,
+        'final_sizing_order_safe': 0 <= port.find('def _desired_fraction') < port.find('# VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING') < port.find('def _portfolio_rows'),
         'legacy_ndx_retired': 'INSTRUMENT_REPLACED_BY_NQ' in port,
         'closed_trade_full_journal': 'def _v90_trade_report_full(' in port and 'held_seconds' in port,
         'portfolio_limit_metadata': 'def _v90_report_with_limits(' in port and "'Aggressive':5.0" in port,
