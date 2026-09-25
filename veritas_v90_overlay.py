@@ -678,6 +678,10 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
         "'tactical_reversal':tactical_reversal,'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structural_levels':f.get('structural_levels') or {},",
         "'tactical_reversal':tactical_reversal,'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structure_breakout_grid':f.get('structure_breakout_grid') or {},'structural_levels':f.get('structural_levels') or {},"
     )
+    dst = dst.replace(
+        "'intraday_structure':(p.get('features') or {}).get('intraday_structure') or {},",
+        "'intraday_structure':(p.get('features') or {}).get('intraday_structure') or {},\n            'structure_breakout_grid':(p.get('features') or {}).get('structure_breakout_grid') or {},"
+    )
 
     # Persist this expert lesson across restarts. It is a general execution
     # principle, not a Brent-only hard-coded price rule.
