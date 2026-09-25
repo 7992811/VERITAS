@@ -723,6 +723,7 @@ def _run():
         _ensure_hashlib()
         v70=_sync_v70()
         _verify()
+        print("[VERITAS BOOTSTRAP STAGE] v84_verify_ok",flush=True)
         v90=_apply_v90()
 
         print(
