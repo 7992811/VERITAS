@@ -295,6 +295,175 @@ def _patch_portfolio():
         dst = dst[:m.start()] + replacement + dst[m.end():]
         applied.append("four_portfolios")
 
+    # v90.1 movement-capture layer: a structural breakout can be an impulse even
+    # when 5m volume is unavailable for delayed/single-source instruments.
+    if "# VERITAS V90.1 MOVEMENT CAPTURE" not in dst:
+        helper = r'''
+# VERITAS V90.1 MOVEMENT CAPTURE
+_v901_legacy_impulse_book = _best_impulse_by_asset
+
+
+def _v901_no_hard_veto(row):
+    plan=(row or {}).get('trade_plan') or {}
+    ti=plan.get('trade_integrity') or {}
+    ec=plan.get('execution_consistency') or {}
+    arb=plan.get('rule_arbitration') or {}
+    return bool(
+        (row or {}).get('source_gate_pass',True)
+        and (row or {}).get('market_open',True)
+        and not ti.get('hard_invalidation')
+        and ec.get('status')!='VETO'
+        and ((arb.get('hard_veto') or {}).get('decision')!='VETO')
+        and (plan.get('reentry_intelligence') or {}).get('allowed',True) is not False
+    )
+
+
+def _v901_break_pass(row,direction):
+    inst=(row or {}).get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    try:
+        px=float((row or {}).get('price') or 0.0)
+        level=float(bq.get('breakout_level') or 0.0)
+    except Exception:
+        return False
+    if px<=0 or level<=0:
+        return False
+    return px>=level if direction=='LONG' else px<=level
+
+
+def _v901_structural_prebreak(summary):
+    out={}
+    for r0 in summary or []:
+        r=dict(r0)
+        if str(r.get('horizon') or '') not in ('1h','4h'):
+            continue
+        if not _v901_no_hard_veto(r):
+            continue
+        d=str(r.get('research_decision') or 'NO_TRADE')
+        if d in ('LONG','SHORT'):
+            continue
+        inst=r.get('institutional_signal') or {}
+        bq=inst.get('breakout_quality') or {}
+        direction=str(bq.get('direction') or 'NO_TRADE')
+        if direction not in ('LONG','SHORT'):
+            continue
+        hs=r.get('horizon_structure') or {}
+        hs_dir=str(hs.get('raw_direction') or hs.get('direction') or 'NO_TRADE')
+        try:
+            hs_score=float(hs.get('score') or 0.0)
+            px=float(r.get('price') or 0.0)
+            level=float(bq.get('breakout_level') or 0.0)
+        except Exception:
+            continue
+        if px<=0 or level<=0 or hs_dir!=direction or hs_score<0.65:
+            continue
+        distance=((level-px)/level) if direction=='LONG' else ((px-level)/level)
+        if distance < 0 or distance > 0.0015:
+            continue
+        piv=r.get('impulse_pivot_break') or {}
+        intra=r.get('intraday_structure') or {}
+        try:
+            efficiency=max(float(piv.get('local_efficiency') or 0.0),
+                           float(intra.get('session_efficiency') or 0.0))
+        except Exception:
+            efficiency=0.0
+        if efficiency<0.45:
+            continue
+        plan=dict(r.get('trade_plan') or {})
+        sl=r.get('structural_levels') or {}
+        try:
+            anchor=float(piv.get('local_support' if direction=='LONG' else 'local_resistance')
+                         or sl.get('support' if direction=='LONG' else 'resistance') or 0.0)
+        except Exception:
+            anchor=0.0
+        if anchor<=0:
+            continue
+        buffer=max(px*0.0005,abs(px-level)*0.15)
+        stop=(anchor-buffer) if direction=='LONG' else (anchor+buffer)
+        stop_dist=abs(px-stop)/px
+        try:
+            measured=abs(float(intra.get('breakout_measured_move_pct') or 0.0))
+        except Exception:
+            measured=0.0
+        expected=max(0.004,measured)
+        rr=expected/max(stop_dist,0.0005)
+        p,source=_signal_probability(r)
+        x=dict(r)
+        x['research_decision']=direction
+        x['_pwin']=max(0.66,float(p))
+        x['_pwin_source']='V901_STRUCTURAL_PREBREAK_'+str(source)
+        x['_rank']=x['_pwin']+0.04*min(rr,2.0)
+        x['_signal_first']=True
+        x['_impulse_setup']='STRUCTURAL_PREBREAK_PROBE'
+        x['_impulse_probability']=max(0.66,float(p))
+        x['_v901_prebreak_probe']=True
+        x['_supporting_horizons']=[str(r.get('horizon'))]
+        x['_direction_support']={direction:x['_rank'],'SHORT' if direction=='LONG' else 'LONG':0.0}
+        plan['eligible']=True
+        plan['direction']=direction
+        plan['stop_price']=stop
+        plan['stop_distance_pct']=stop_dist
+        plan['expected_move_pct']=expected
+        plan['expected_to_stop_ratio']=rr
+        plan['initial_position_fraction']=0.10
+        plan['regime_shift_state']='NEW_REGIME_PROVISIONAL'
+        ti=dict(plan.get('trade_integrity') or {})
+        ti['entry_permission']='EARLY_PROBE'
+        ti['hard_invalidation']=False
+        plan['trade_integrity']=ti
+        x['trade_plan']=plan
+        asset=str(x.get('asset') or '')
+        if asset and (asset not in out or x['_rank']>out[asset]['_rank']):
+            out[asset]=x
+    return out
+
+
+def _best_impulse_by_asset(summary):
+    out=dict(_v901_legacy_impulse_book(summary) or {})
+    core=_candidate_book_v84(summary)
+    for asset,row0 in (core or {}).items():
+        row=dict(row0)
+        d=str(row.get('research_decision') or 'NO_TRADE')
+        if d not in ('LONG','SHORT') or not _v901_no_hard_veto(row):
+            continue
+        supporting=list(row.get('_supporting_horizons') or [])
+        ds=row.get('_direction_support') or {}
+        other='SHORT' if d=='LONG' else 'LONG'
+        ratio=float(ds.get(d) or 0.0)/max(0.01,float(ds.get(other) or 0.0))
+        plan=row.get('trade_plan') or {}
+        try:
+            rr=float(plan.get('expected_to_stop_ratio') or 0.0)
+            p=float(row.get('_pwin') or 0.50)
+            hs_score=float((row.get('horizon_structure') or {}).get('score') or 0.0)
+        except Exception:
+            continue
+        phase=str(row.get('trend_phase') or '')
+        confirmed=bool(
+            len(supporting)>=3 and ratio>=1.50 and p>=0.68 and rr>=1.20
+            and hs_score>=0.60 and phase in ('EARLY_TREND','TREND','ESTABLISHED_TREND')
+            and _v901_break_pass(row,d)
+        )
+        if not confirmed:
+            continue
+        row['_impulse_setup']='MULTI_HORIZON_BREAKOUT'
+        row['_impulse_probability']=max(0.72,p)
+        row['_pwin']=max(p,0.72)
+        row['_pwin_source']='V901_MULTI_HORIZON_'+str(row.get('_pwin_source') or 'MODEL')
+        row['_rank']=float(row.get('_rank') or p)+0.08
+        row['_v901_multi_horizon']=True
+        if asset not in out or float(row['_rank'])>float(out[asset].get('_rank') or 0.0):
+            out[asset]=row
+    for asset,row in _v901_structural_prebreak(summary).items():
+        if asset not in out or float(row['_rank'])>float(out[asset].get('_rank') or 0.0):
+            out[asset]=row
+    return out
+'''
+        anchor = "\ndef _v842_position_payload(z):"
+        if anchor not in dst:
+            raise RuntimeError("v90.1 movement capture anchor missing")
+        dst = dst.replace(anchor, "\n" + helper + anchor, 1)
+        applied.append("movement_capture")
+
     old_base = "    base=0.10 if mode=='CORE' else 0.05"
     new_base = """    if mode=='AGGRESSIVE':
         base=0.15
@@ -306,11 +475,22 @@ def _patch_portfolio():
     if ch:
         applied.append("portfolio_modes")
 
+    dst, ch = _replace_once(dst, "    memory_ready=str(mem.get('status') or '') in ('EXECUTION_READY','WEIGHT_READY')\n    empirical=(source=='EMPIRICAL_CALIBRATION')\n\n    # Uncalibrated pwin may justify a probe, not a large position.", "    memory_ready=str(mem.get('status') or '') in ('EXECUTION_READY','WEIGHT_READY')\n    empirical=(source=='EMPIRICAL_CALIBRATION')\n    supporting=list(row.get('_supporting_horizons') or [])\n    ds=row.get('_direction_support') or {}\n    other='SHORT' if d=='LONG' else 'LONG'\n    support_ratio=float(ds.get(d) or 0.0)/max(0.01,float(ds.get(other) or 0.0))\n    hs=row.get('horizon_structure') or {}\n    try: hs_score=float(hs.get('score') or 0.0)\n    except Exception: hs_score=0.0\n    v901_capture=bool(\n        len(supporting)>=3 and support_ratio>=1.50 and p>=0.68 and rr>=1.20\n        and hs_score>=0.60 and str(row.get('trend_phase') or '') in ('EARLY_TREND','TREND','ESTABLISHED_TREND')\n        and _v901_break_pass(row,d) and _v901_no_hard_veto(row)\n    )\n\n    # Uncalibrated pwin may justify a probe; confirmed multi-horizon movement\n    # may scale above the generic 5% WAIT_ENTRY floor without bypassing hard risk gates.", "v90.1 multi-horizon sizing context")
+    if ch:
+        applied.append("multi_horizon_sizing_context")
+
     old_floor = "'admission_probability_floor':{'Champion':0.70,'Challenger':0.77,'Impulse':0.64},"
     new_floor = "'admission_probability_floor':{'Impulse':0.64,'Aggressive':0.62,'Champion':0.70,'Challenger':0.75},"
     if old_floor in dst:
         dst = dst.replace(old_floor, new_floor, 1)
         applied.append("floors")
+
+    dst, ch = _replace_once(dst, "    if ti.get('entry_permission')=='WAIT_ENTRY':\n        f=min(f,0.05)\n    if shift in ('NEW_REGIME_PROVISIONAL','TRANSITION','OLD_REGIME_WEAKENING'):\n        f=min(f,0.10)", "    if ti.get('entry_permission')=='WAIT_ENTRY':\n        if v901_capture:\n            soft_floor={'AGGRESSIVE':0.20,'CORE':0.20,'CHALLENGER':0.15,'IMPULSE_ONLY':0.20}.get(mode,0.15)\n            f=max(f,min(soft_floor,planned if planned>0 else soft_floor))\n        else:\n            f=min(f,0.05)\n    if shift in ('NEW_REGIME_PROVISIONAL','TRANSITION','OLD_REGIME_WEAKENING'):\n        if v901_capture:\n            soft_cap={'AGGRESSIVE':0.25,'CORE':0.20,'CHALLENGER':0.15,'IMPULSE_ONLY':0.20}.get(mode,0.15)\n            f=min(f,soft_cap)\n        else:\n            f=min(f,0.10)", "v90.1 soft wait sizing override")
+    if ch:
+        applied.append("soft_wait_sizing_override")
+    dst, ch = _replace_once(dst, "    return {'open':f>0,'fraction':f,'reason':'SIGNAL_FIRST_V842',\n            'pwin':p,'pwin_source':source,'empirical':empirical,", "    return {'open':f>0,'fraction':f,'reason':'V901_MULTI_HORIZON_CAPTURE' if v901_capture else 'SIGNAL_FIRST_V842',\n            'pwin':p,'pwin_source':source,'empirical':empirical,\n            'multi_horizon_capture':v901_capture,'supporting_horizons':supporting,'support_ratio':support_ratio,", "v90.1 sizing telemetry")
+    if ch:
+        applied.append("movement_sizing_telemetry")
 
     if "def _v90_migrate_portfolio_data(c):" not in dst:
         helper = r'''
@@ -407,6 +587,7 @@ def verify():
         'portfolio_migration': "def _v90_migrate_portfolio_data(c):" in port,
         'v84_profit_harvest_preserved': "'TAKE_PROFIT' if tp_hit" in port,
         'v84_learning_preserved': 'def refresh_experience_lessons(' in intel,
+        'v901_movement_capture': '# VERITAS V90.1 MOVEMENT CAPTURE' in port and 'V901_MULTI_HORIZON_CAPTURE' in port,
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
     }
