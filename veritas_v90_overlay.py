@@ -212,6 +212,25 @@ def v90_migrate_core_data():
     emit('v90_database_ready', **v90_migration)
     if pg_boot.get('ok') and VP is not None:
         try:
+            _pr=VP.report(pg_connect)
+            _sample=[]
+            for _pp in (_pr.get('portfolios') or []):
+                for _pz in (_pp.get('positions') or []):
+                    _sample.append({'portfolio':_pp.get('name'),'asset':_pz.get('asset'),
+                                    'entry':_pz.get('avg_entry_price'),'current':_pz.get('last_price'),
+                                    'pnl_rub':_pz.get('unrealized_pnl_rub'),
+                                    'pnl_pct':_pz.get('unrealized_return_pct'),
+                                    'tp':_pz.get('take_price'),'usd':_pz.get('notional_usd'),
+                                    'metric':_pz.get('entry_metric_value'),
+                                    'metric_label':_pz.get('entry_metric_label'),
+                                    'mark_source':_pz.get('mark_source')})
+            emit('v90_open_position_startup_audit',
+                 data_quality=_pr.get('open_position_data_quality'),
+                 positions=_sample[:20])
+        except Exception as _pr_ex:
+            emit('v90_open_position_startup_audit',status='ERROR',
+                 error=f'{type(_pr_ex).__name__}: {_pr_ex}')
+        try:
             _jr=VP.trade_report(pg_connect,1000)
             emit('v90_closed_journal_startup_audit',
                  status=_jr.get('status'),
