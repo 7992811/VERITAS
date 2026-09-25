@@ -269,9 +269,15 @@ except Exception as _vp_ex:
         dst = dst.replace(old_header, new_header, 1)
         applied.append("portfolio_ui")
 
-    # VERITAS 90: normalize legacy runtime labels inherited from the foundation.
-    intel_runtime_label_normalization_v90=True
-    dst = dst.replace(V84_INTEL,V90_INTEL)
+    # VERITAS 90 FINAL RUNTIME IDENTITY
+    runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION = '" + V90_INTEL + "'\n"
+    main_anchor = "\nif __name__ == '__main__':"
+    if runtime_identity.strip() not in dst:
+        if main_anchor in dst:
+            dst = dst.replace(main_anchor, runtime_identity + main_anchor, 1)
+        else:
+            dst += runtime_identity
+        applied.append("runtime_identity")
 
     if dst != src:
         compile(dst, str(INTEL), 'exec')
@@ -1109,16 +1115,11 @@ def _v90_migrate_portfolio_data(c):
         dst = dst.replace(old_conflict, new_conflict, 1)
         applied.append("policy_metadata_refresh")
 
-    # VERITAS 90 runtime-label normalization: one current version only.
-    runtime_label_normalization_v90=True
-    dst = dst.replace('V901_MULTI_HORIZON_CAPTURE','V90_MULTI_HORIZON_CAPTURE')
-    dst = dst.replace('V902_MULTI_TF_EXECUTION','V90_MULTI_TF_EXECUTION')
-    dst = dst.replace('SIGNAL_FIRST_V842','V90_SIGNAL_FIRST')
-    dst = dst.replace('V842_CONFIRMED_DIRECTION_FLIP','V90_CONFIRMED_DIRECTION_FLIP')
-    dst = dst.replace('v84_execution=True','v90_execution=True')
-    dst = dst.replace('v842_audited=True','v90_audited=True')
-    dst = dst.replace('profit_harvest_v843=True','profit_harvest_v90=True')
-    dst = dst.replace(V84_PORT,V90_PORT)
+    # VERITAS 90 FINAL RUNTIME IDENTITY
+    runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
+    if runtime_identity.strip() not in dst:
+        dst += runtime_identity
+        applied.append("runtime_identity")
 
     if dst != src:
         compile(dst, str(PORT), 'exec')
@@ -1138,14 +1139,14 @@ def verify():
         'portfolio_migration': "def _v90_migrate_portfolio_data(c):" in port,
         'profit_harvest_preserved': "'TAKE_PROFIT' if tp_hit" in port,
         'v84_learning_preserved': 'def refresh_experience_lessons(' in intel,
-        'movement_capture': 'V90_MULTI_HORIZON_CAPTURE' in port,
-        'execution_selector': 'V90_MULTI_TF_EXECUTION' in port,
+        'movement_capture': '# VERITAS V90.1 MOVEMENT CAPTURE' in port and 'V901_MULTI_HORIZON_CAPTURE' in port,
+        'execution_selector': '# VERITAS V90.2 EXECUTION SELECTION' in port and 'V902_MULTI_TF_EXECUTION' in port,
         'aggressive_5x': "'max_gross':5.0" in port and "mode=='AGGRESSIVE'" in port and "base_cap=float(policy.get('max_gross') or 5.0)" in port,
         'tp_integrity': "tp_source='EXPECTED_MOVE'" in port and "bool(rng.get('active'))" in port,
         'flip_confirmation': "x['_flip_confirmed']=bool(" in port,
         'execution_order_safe': 0 <= port.find('def _candidate_book_v84') < port.find('def _v90_aggressive_candidate_book') < port.find('def _v842_position_payload'),
         'aggressive_setup_routing': 'def _v90_aggressive_candidate_book(' in port and "book=_v90_aggressive_candidate_book(summary,candidates)" in port,
-        'single_runtime_label': V84_INTEL not in intel and V84_PORT not in port,
+        'runtime_identity': ("# VERITAS 90 FINAL RUNTIME IDENTITY" in intel and V90_INTEL in intel and "# VERITAS 90 FINAL RUNTIME IDENTITY" in port and V90_PORT in port),
         'public_root_dashboard': "elif self.path == '/' or self.path.startswith('/?')" in intel,
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
         'portfolio_import_diagnostics': 'VP_IMPORT_ERROR' in intel,
