@@ -409,6 +409,21 @@ def _v90_nq_market():
         "emit('portfolio_autopilot_error',error=portfolio_autopilot['error'],trace=traceback.format_exc(limit=12))"
     )
 
+    # VERITAS 9.0: signals must never depend on the heavy overview request.
+    v90_fast_signal_endpoint=True
+    old_signal_route = """            elif self.path.startswith('/api/v1/signals'):
+                with lock: x = dict(last_cycle)
+                self.reply({'version':VERSION,'signals':x.get('summary',[]),'at':x.get('at'),'status':x.get('status')})"""
+    new_signal_route = """            elif self.path.startswith('/api/v1/signals'):
+                x=fresh_cycle_snapshot()
+                self.reply({'version':VERSION,'signals':x.get('summary',[]),
+                            'summary_count':x.get('summary_count',len(x.get('summary',[]))),
+                            'summary_source':x.get('summary_source'),
+                            'at':x.get('at'),'status':x.get('status')})"""
+    dst, ch = _replace_once(dst, old_signal_route, new_signal_route, "fast signal endpoint with durable fallback")
+    if ch:
+        applied.append("fast_signal_endpoint")
+
     old_vp_import = """try:
     import veritas_portfolio as VP
 except Exception:
@@ -1515,6 +1530,7 @@ def verify():
         'approved_v86_3_ui': 'from veritas_v90_ui import apply_v90_ui' in intel,
         'supplied_brand_artwork': 'veritas-markets-header.webp' in intel,
         'portfolio_import_diagnostics': 'VP_IMPORT_ERROR' in intel,
+        'fast_signal_endpoint': "elif self.path.startswith('/api/v1/signals')" in intel and 'fresh_cycle_snapshot()' in intel,
         'brent_price_integrity': 'def _v90_moex_front_brent_contract()' in intel and "verification_mode':'moex_front_contract_primary'" in intel,
         'nasdaq_futures_nq': "'NQ': ('NQ', 'NQ%3DF')" in intel and "asset=='NQ'" in intel,
         'aggressive_5x_strong_signal': "'max_fraction':5.0" in port and 'strong_aggressive=bool(' in port,
