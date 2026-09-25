@@ -6,7 +6,7 @@ This module changes presentation only; trading logic and persistence remain in v
 import json
 import re
 
-UI_VERSION = 'veritas-ui-v9.0.3-vector-brand'
+UI_VERSION = 'veritas-ui-v9.0'
 
 def apply_v90_ui(html):
     value = str(html)
@@ -16,17 +16,8 @@ def apply_v90_ui(html):
     value = value.replace('30 ячеек · ~','35 ячеек · ~').replace('6 активов × 5 ТФ','7 активов × 5 ТФ').replace('6/6 активов','7/7 активов')
     value = value.replace('NDX','NQ')
     # V86.2 BRAND_AND_HEADER_REFINEMENT
-    _brand_markup = '''<div class="veritas-brandlock">
-      <div class="veritas-core">
-        <img class="veritas-logo-img" src="/assets/veritas-logo-source.webp" alt="VERITAS">
-        <div class="veritas-right">
-          <div class="veritas-wordmark" aria-label="VERITAS">
-            <span class="wm-v">V</span><span class="wm-e" aria-hidden="true"><i></i><i></i><i></i></span><span class="wm-rest">RITAS</span>
-          </div>
-          <div class="markets-word">Markets</div>
-          <div class="veritas-subtitle">Цифровой инвестиционный комитет</div>
-        </div>
-      </div>
+    _brand_markup = '''<div class="veritas-brandlock veritas-brand-artwork">
+      <img class="veritas-brand-image" src="/assets/veritas-markets-header.webp?v=90" alt="VERITAS Markets — Цифровой инвестиционный комитет">
     </div>'''
     value = re.sub(
         r'<h1>VERITAS Markets</h1>\s*<div class="sub">[^<]*</div>',
@@ -471,6 +462,14 @@ def apply_v90_ui(html):
     }
     </style>"""
     value = value.replace('</head>', brand_fix_css + '</head>')
+    supplied_brand_css = """<style id="V90_SUPPLIED_BRAND_ARTWORK">
+    .veritas-brand-artwork{display:block!important;width:min(640px,92vw)!important;max-width:100%!important;margin:0!important;padding:0!important}
+    .veritas-brand-image{display:block!important;width:100%!important;height:auto!important;max-width:640px!important;object-fit:contain!important;object-position:left center!important;border:0!important;filter:none!important}
+    @media(max-width:900px){.veritas-brand-artwork{width:min(500px,94vw)!important}.veritas-brand-image{max-width:500px!important}}
+    @media(max-width:560px){.veritas-brand-artwork{width:96vw!important}.veritas-brand-image{width:100%!important;max-width:none!important}}
+    </style>"""
+    value = value.replace('</head>', supplied_brand_css + '</head>')
+
     
     value = value.replace(' · max gross ${Number(pd.max_gross||0).toFixed(1)}×', ' · max gross: Aggressive 5.0× · остальные 2.0×')
     value = value.replace('Четыре независимых модельных paper-портфеля по 1 000 000 ₽: Champion, Challenger, Impulse и Aggressive. Реальные деньги не используются.',
