@@ -1112,7 +1112,7 @@ if _v90_os.getenv('VERITAS_STORAGE_GENERATION','').strip()=='9.0':
 # Portfolio universe: only Champion, Challenger, Impulse and Aggressive.
 p=root/'veritas_v86/portfolios.py'
 _v90_pf=p.read_text(encoding='utf-8')
-_v90_profiles='''PROFILES = {
+_v90_profiles='''PROFILES: dict[str, PortfolioProfile] = {
     "Champion": PortfolioProfile("Champion","Контрольный","fixed_control",adaptive=False,
                                   max_gross=D("2.0"),asset_cap=D("1.0"),stop_risk_nav=D("0.015"),hard_drawdown=D("0.10")),
     "Challenger": PortfolioProfile("Challenger","Адаптивный","validated_challenger",adaptive=True,
@@ -1125,7 +1125,7 @@ _v90_profiles='''PROFILES = {
 }
 
 ORDER = tuple(PROFILES)'''
-_v90_pf,_v90_n=_v90_re.subn(r'PROFILES = \{.*?\n\}\n\nORDER = tuple\(PROFILES\)',_v90_profiles,_v90_pf,count=1,flags=_v90_re.S)
+_v90_pf,_v90_n=_v90_re.subn(r'PROFILES(?:: dict\[str, PortfolioProfile\])? = \{.*?\n\}\n\nORDER = tuple\(PROFILES\)',_v90_profiles,_v90_pf,count=1,flags=_v90_re.S)
 if _v90_n!=1:
     raise SystemExit('V90_PORTFOLIO_PROFILE_BLOCK_NOT_FOUND')
 _v90_old='if profile.account_id in ("Champion","Challenger"): return True'
@@ -1134,6 +1134,13 @@ if _v90_old not in _v90_pf:
     raise SystemExit('V90_SIGNAL_ALLOWED_ANCHOR_NOT_FOUND')
 _v90_pf=_v90_pf.replace(_v90_old,_v90_new,1)
 p.write_text(_v90_pf,encoding='utf-8')
+
+# Keep public metadata aligned with the v9.0 four-portfolio universe.
+p=root/'veritas_v86/application.py'
+_v90_app=p.read_text(encoding='utf-8')
+_v90_app=_v90_app.replace("report['portfolio_design']='8_MANDATES'","report['portfolio_design']='4_MANDATES_V90'")
+p.write_text(_v90_app,encoding='utf-8')
+print('V90_4_MANDATES_REPORT')
 
 # Restore only verified state belonging to the retained portfolios.
 # Aggressive starts clean at 1,000,000 RUB; no synthetic history is created.
