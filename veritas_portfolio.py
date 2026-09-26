@@ -2757,6 +2757,9 @@ def _v90j_load_closed(pg_connect,limit=2500):
                          or sp.get('take_price') or sp.get('tp_price'))
         z['quantity']=(payload.get('quantity') or payload.get('units')
                        or z.get('entry_units') or z.get('exit_units'))
+        z['opening_fraction']=payload.get('opening_fraction')
+        z['opening_fraction_pct']=(100.0*float(payload.get('opening_fraction'))) if payload.get('opening_fraction') is not None else None
+        z['max_fraction_pct']=(100.0*float(z.get('max_fraction'))) if z.get('max_fraction') is not None else None
         z['mfe_pct']=payload.get('mfe_pct')
         z['mae_pct']=payload.get('mae_pct')
         entry=_v90j_float(z.get('avg_entry_price')); exitp=_v90j_float(z.get('avg_exit_price'))
@@ -5326,6 +5329,8 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             patch={'peak_fraction':peak,'runner_floor_fraction':_v90ph_round5(peak*0.40),
                    'pyramiding_rule':'R17_RISK_NEUTRAL_PYRAMIDING',
                    'aggressive_gross_ceiling':5.0 if str(name)=='Aggressive' else None}
+            if payload.get('opening_fraction') is None:
+                patch['opening_fraction']=current_fraction
             if payload.get('initial_stop_price') is None and stop is not None:
                 patch['initial_stop_price']=stop
             if payload.get('initial_risk_budget_rub') is None and stop is not None and entry>0:
