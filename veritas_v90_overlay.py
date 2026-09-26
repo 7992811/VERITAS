@@ -2873,6 +2873,108 @@ def loop():
 
     applied.append("two_speed_5m_loop")
 
+    # VERITAS V90 FAST PORTFOLIO READS R25
+    _helper_anchor="\nclass H(BaseHTTPRequestHandler):"
+    _helper=r'''
+# VERITAS V90 FAST PORTFOLIO READS R25
+_v90r25_pf_cache={'at':0.0,'value':None}
+_v90r25_pf_lock=threading.Lock()
+
+def _v90r25_portfolios_fast():
+    with _v90r25_pf_lock:
+        cached=_v90r25_pf_cache.get('value')
+        at=float(_v90r25_pf_cache.get('at') or 0.0)
+    if cached is not None and time.time()-at<120:
+        out=dict(cached); out['api_source']='memory_cache'; return out
+    # Prefer the portfolio snapshot already produced by the live cycle.
+    with lock:
+        live=dict((last_cycle or {}).get('portfolio_autopilot') or {})
+    if live and len(live.get('portfolios') or [])==4:
+        out=dict(live); out['api_source']='live_memory'
+        with _v90r25_pf_lock:
+            _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+        return out
+    if VP is None or not pg_enabled():
+        return {'status':'UNAVAILABLE','portfolios':[]}
+    # Cold fallback: one compact report call only.
+    out=VP.report(pg_connect)
+    out['api_source']='postgres_fallback'
+    with _v90r25_pf_lock:
+        _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+    return out
+
+def _v90r25_trades_fast(limit=80):
+    limit=max(20,min(200,int(limit or 80)))
+    if not pg_enabled():
+        return {'status':'UNAVAILABLE','trades':[]}
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
+                                     avg_entry_price,avg_exit_price,gross_pnl_rub,fees_rub,
+                                     funding_rub,net_pnl_rub,return_on_entry_nav,profitable,
+                                     meaningful_win,status,setup,horizon,payload
+                              FROM paper_trades
+                              ORDER BY COALESCE(closed_at,opened_at) DESC
+                              LIMIT %s""",(limit,)).fetchall()
+        trades=[]
+        for r0 in rows:
+            z=dict(r0)
+            p=z.get('payload') or {}
+            if not isinstance(p,dict):
+                try:p=json.loads(p)
+                except Exception:p={}
+            z['exit_reason']=p.get('exit_reason') or p.get('close_reason')
+            z['stop_price']=p.get('stop_price') or p.get('last_stop_price')
+            z['take_price']=p.get('take_price') or p.get('target_price')
+            z['learning_label']=p.get('learning_label')
+            trades.append(_jsonable(z))
+        return {'status':'OK','trades':trades,'returned_count':len(trades),'api_source':'fast_sql'}
+    except Exception as ex:
+        # Fall back to the last detailed cache if the compact query is momentarily unavailable.
+        with _v90r23_trade_lock:
+            v=_v90r23_trade_cache.get('value')
+        if v is not None:
+            out=dict(v); out['api_source']='detailed_cache_fallback'; return out
+        return {'status':'ERROR','trades':[],'error':f'{type(ex).__name__}: {ex}'}
+
+'''
+    if _helper_anchor in dst and "_v90r25_portfolios_fast" not in dst:
+        dst=dst.replace(_helper_anchor,"\n"+_helper+_helper_anchor,1)
+        applied.append("r25_fast_portfolio_helpers")
+
+    old_pf="""            elif self.path.startswith('/api/v1/paper-portfolios'):
+                with lock:
+                    _pf=dict((last_cycle or {}).get('portfolio_autopilot') or {})
+                if _pf and (_pf.get('portfolios') or []):
+                    _pf['api_source']='live_memory'
+                    self.reply(_pf)
+                elif VP is None or not pg_enabled():
+                    self.reply({'status':'UNAVAILABLE','reason':'portfolio_module_or_postgres_unavailable'})
+                else:
+                    try:
+                        _pf=VP.report(pg_connect)
+                        _pf['api_source']='postgres_fallback'
+                        self.reply(_pf)
+                    except Exception as ex:
+                        self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/portfolio-trades'):
+                try:
+                    self.reply(_v90r23_trade_report_fast())
+                except Exception as ex:
+                    self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)"""
+    new_pf="""            elif self.path.startswith('/api/v1/paper-portfolios'):
+                try:
+                    self.reply(_v90r25_portfolios_fast())
+                except Exception as ex:
+                    self.reply({'status':'ERROR','portfolios':[],'error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/portfolio-trades'):
+                try:
+                    self.reply(_v90r25_trades_fast(80))
+                except Exception as ex:
+                    self.reply({'status':'ERROR','trades':[],'error':f'{type(ex).__name__}: {ex}'},500)"""
+    if old_pf in dst:
+        dst=dst.replace(old_pf,new_pf,1)
+        applied.append("r25_fast_portfolio_routes")
     # VERITAS V90 CANONICAL PORTFOLIOS R24
     _helper_anchor="\ndef main():"
     _helper=r'''
