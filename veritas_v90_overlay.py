@@ -2194,9 +2194,22 @@ def _v90_emergency_storage_reclaim():
         except Exception: pass
 '''
         _main_anchor="\ndef main():\n    global _BOOTSTRAP_READY\n    init_db()"
-        if _main_anchor not in dst:
+        _main_anchor_v2="\ndef main():\n    global _BOOTSTRAP_READY\n\n    # Bind and serve HTTP first"
+        if _main_anchor in dst:
+            dst=dst.replace(_main_anchor,"\n"+_cleanup_helper+"\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    init_db()",1)
+        elif _main_anchor_v2 in dst:
+            # Two-phase startup already binds HTTP first. Insert helper before main,
+            # and invoke cleanup immediately before local/PG initialization.
+            dst=dst.replace(_main_anchor_v2,"\n"+_cleanup_helper+_main_anchor_v2,1)
+            _init_anchor="    init_db()\n    pg_boot = pg_init()"
+            if _init_anchor in dst:
+                dst=dst.replace(_init_anchor,"    _v90_emergency_storage_reclaim()\n    init_db()\n    pg_boot = pg_init()",1)
+            else:
+                raise RuntimeError("v90 storage reclaim two-phase init anchor missing")
+        elif "# VERITAS V90 EMERGENCY STORAGE RECLAIM" in dst:
+            pass
+        else:
             raise RuntimeError("v90 storage reclaim main anchor missing")
-        dst=dst.replace(_main_anchor,"\n"+_cleanup_helper+"\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    init_db()",1)
 
         applied.append("emergency_storage_reclaim")
 
@@ -2233,9 +2246,20 @@ def _v90_ensure_legacy_compat_views():
     return {'status':'OK','created':made,'errors':errors}
 '''
         _main_anchor="\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    init_db()"
-        if _main_anchor not in dst:
+        _main_anchor_v2="\ndef main():\n    global _BOOTSTRAP_READY\n\n    # Bind and serve HTTP first"
+        if _main_anchor in dst:
+            dst=dst.replace(_main_anchor,"\n"+_compat_helper+"\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    _v90_ensure_legacy_compat_views()\n    init_db()",1)
+        elif _main_anchor_v2 in dst:
+            dst=dst.replace(_main_anchor_v2,"\n"+_compat_helper+_main_anchor_v2,1)
+            _call_anchor="    _v90_emergency_storage_reclaim()\n    init_db()"
+            if _call_anchor in dst:
+                dst=dst.replace(_call_anchor,"    _v90_emergency_storage_reclaim()\n    _v90_ensure_legacy_compat_views()\n    init_db()",1)
+            else:
+                raise RuntimeError("v90 compat view two-phase call anchor missing")
+        elif "# VERITAS V90 LEGACY COMPAT VIEWS" in dst:
+            pass
+        else:
             raise RuntimeError("v90 compat view main anchor missing")
-        dst=dst.replace(_main_anchor,"\n"+_compat_helper+"\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    _v90_ensure_legacy_compat_views()\n    init_db()",1)
         applied.append("legacy_compat_views")
 
     # VERITAS 9.0: feed de-duplicated paper execution outcomes into execution memory.
