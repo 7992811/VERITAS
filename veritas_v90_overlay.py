@@ -922,7 +922,10 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP33','domain':'multitimeframe','statement':'A structural trailing stop only ratchets in the profitable direction. Use the active trade timeframe first, then senior-timeframe levels; never move a stop backward merely because a later level is farther away.'},
  {'id':'EP34','domain':'data','statement':'A sharp price move is not a data discontinuity when the exact futures contract and price series are unchanged; preserve genuine gap and impulse moves.'},
  {'id':'EP35','domain':'data','statement':'For futures positions, persist the exact contract identifier at entry and calculate the lifecycle using the same contract identity. A contract roll or continuous-series switch must never be treated as trade P&L.'},
- {'id':'EP36','domain':'data','statement':'If independent sources quote materially different prices for the same exact contract, freeze execution and marking for that asset until the conflict is resolved; keep the position and do not learn from the disputed mark.'}"""
+ {'id':'EP36','domain':'data','statement':'If independent sources quote materially different prices for the same exact contract, freeze execution and marking for that asset until the conflict is resolved; keep the position and do not learn from the disputed mark.'},
+ {'id':'EP37','domain':'breakout','statement':'In RANGE_LOW_VOL, a breakout label alone is insufficient for entry; require fresh structure, volume and volatility expansion, and aligned horizon structure.'},
+ {'id':'EP38','domain':'regime','statement':'Low-volatility ranges have elevated false-breakout risk. Treat uncalibrated model scores conservatively and demand stronger independent evidence before committing capital.'},
+ {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -6104,6 +6107,69 @@ _step_one=_v90ci_step_one
         else:
             dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
         applied.append("contract_identity_r5")
+
+
+    # VERITAS V90 RANGE LOW VOL BREAKOUT GUARD R6
+    if "# VERITAS V90 RANGE LOW VOL BREAKOUT GUARD R6" not in dst:
+        helper = r'''
+# VERITAS V90 RANGE LOW VOL BREAKOUT GUARD R6
+_v90rlv_base_admission=_signal_first_admission
+
+def _v90rlv_admission(row,policy,drawdown):
+    base=dict(_v90rlv_base_admission(row,policy,drawdown) or {})
+    if not base.get('open'):
+        return base
+    row=row or {}
+    regime=str(row.get('regime') or '')
+    inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    state=str(bq.get('state') or '')
+    hs=row.get('horizon_structure') or {}
+    ti=row.get('trend_impulse') or {}
+    mode=str((policy or {}).get('mode') or 'CORE')
+    try: indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception: indep=0
+    volume_confirmed=bool(ti.get('volume_confirmed') or bq.get('volume_confirmed'))
+    volatility_expansion=bool(
+        float(ti.get('volatility_expansion_ratio') or bq.get('volatility_expansion_ratio') or 1.0) >= 1.15
+    )
+    hstate=str(hs.get('state') or '')
+    hscore=float(hs.get('score') or 0.0)
+    hdir=str(hs.get('direction') or 'NO_TRADE')
+    direction=str(row.get('research_decision') or 'NO_TRADE')
+    fresh=bool(ti.get('fresh_breakout') or bq.get('fresh_breakout') or state in ('FRESH_BREAKOUT','HIGH_QUALITY_BREAKOUT'))
+
+    if regime=='RANGE_LOW_VOL' and 'BREAKOUT' in state:
+        structural=bool(hdir==direction and hstate in ('BUILDING_TREND','CONFIRMED_TREND') and hscore>=0.62)
+        required_indep=4 if mode in ('CORE','CHALLENGER') else 3
+        if not (fresh and volume_confirmed and volatility_expansion and structural and indep>=required_indep):
+            return {
+              'open':False,'fraction':0.0,
+              'reason':'R6_RANGE_LOW_VOL_BREAKOUT_UNCONFIRMED',
+              'breakout_state':state,'fresh':fresh,
+              'volume_confirmed':volume_confirmed,
+              'volatility_expansion':volatility_expansion,
+              'horizon_structure_state':hstate,'horizon_structure_score':hscore,
+              'independent':indep,'minimum_independent':required_indep
+            }
+
+    # Uncalibrated scores in low-vol ranges need an additional margin.
+    p,source=_signal_probability(row)
+    if regime=='RANGE_LOW_VOL' and source!='EMPIRICAL_CALIBRATION':
+        floor=0.82 if mode in ('CORE','CHALLENGER') else 0.78
+        if float(p)<floor:
+            return {'open':False,'fraction':0.0,'reason':'R6_RANGE_LOW_VOL_UNCALIBRATED_SCORE_TOO_LOW',
+                    'model_score':float(p),'floor':floor,'probability_source':source}
+    return base
+
+_signal_first_admission=_v90rlv_admission
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        applied.append("range_low_vol_breakout_guard_r6")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
