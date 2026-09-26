@@ -71,6 +71,34 @@ def pg_connect():
     if ch:
         applied.append("schema_connection")
 
+    # VERITAS V90 R16 FAST LIVE STARTUP
+    old_seed_startup = """    case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}
+    expert_principles = seed_expert_principles_pg() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}
+    seed_knowledge()
+    pg_knowledge = pg_seed_knowledge() if pg_boot.get('ok') else {'durable': False}
+    _BOOTSTRAP_READY = True"""
+    new_seed_startup = """    # R16: live market loop must not wait for durable knowledge reseeding.
+    case_lessons = {'status':'background','seeded':0}
+    expert_principles = {'status':'background','seeded':0}
+    pg_knowledge = {'durable': bool(pg_boot.get('ok')), 'status':'background'}
+    _BOOTSTRAP_READY = True
+
+    def _r16_background_seed():
+        try:
+            seed_case_lessons() if pg_boot.get('ok') else None
+            seed_expert_principles_pg() if pg_boot.get('ok') else None
+            seed_knowledge()
+            pg_seed_knowledge() if pg_boot.get('ok') else None
+            emit('r16_background_seed_complete',status='OK')
+        except Exception as _seed_ex:
+            emit('r16_background_seed_complete',status='ERROR',
+                 error=f'{type(_seed_ex).__name__}: {_seed_ex}')
+
+    threading.Thread(target=_r16_background_seed,daemon=True,name='veritas-r16-seed').start()"""
+    if old_seed_startup in dst:
+        dst = dst.replace(old_seed_startup,new_seed_startup,1)
+        applied.append("r16_fast_live_startup")
+
     # VERITAS V90 POSTGRES FAIL-SOFT
     if "# VERITAS V90 POSTGRES FAIL-SOFT" not in dst:
         _pgfs_anchor="\ndef pg_init():"
