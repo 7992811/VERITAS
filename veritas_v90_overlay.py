@@ -925,7 +925,7 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP36','domain':'data','statement':'If independent sources quote materially different prices for the same exact contract, freeze execution and marking for that asset until the conflict is resolved; keep the position and do not learn from the disputed mark.'},
  {'id':'EP37','domain':'breakout','statement':'In RANGE_LOW_VOL, a breakout label alone is insufficient for entry; require fresh structure, volume and volatility expansion, and aligned horizon structure.'},
  {'id':'EP38','domain':'regime','statement':'Low-volatility ranges have elevated false-breakout risk. Treat uncalibrated model scores conservatively and demand stronger independent evidence before committing capital.'},
- {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'}"""
+ {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},\n {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},\n {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},\n {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -6170,6 +6170,145 @@ _signal_first_admission=_v90rlv_admission
         else:
             dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
         applied.append("range_low_vol_breakout_guard_r6")
+
+
+    # VERITAS V90 DYNAMIC PROFIT HARVEST R7
+    if "# VERITAS V90 DYNAMIC PROFIT HARVEST R7" not in dst:
+        helper = r'''
+# VERITAS V90 DYNAMIC PROFIT HARVEST R7
+_v90ph_base_step_one=_step_one
+
+def _v90ph_round5(x):
+    return max(0.0, round(float(x)/0.05)*0.05)
+
+def _v90ph_next_level(row,horizon,direction,current):
+    plan=(row or {}).get('trade_plan') or {}
+    mtf=plan.get('multi_tf_levels') or {}
+    rows=(mtf or {}).get('timeframes') or {}
+    vals=[]
+    for tf in _v90tr_tf_order(horizon):
+        z=rows.get(tf) or {}
+        raw=(z.get('resistance_candidates') if direction=='LONG' else z.get('support_candidates')) or []
+        if not raw:
+            one=z.get('resistance') if direction=='LONG' else z.get('support')
+            raw=[] if one is None else [one]
+        for x in raw:
+            try: lvl=float(x)
+            except Exception: continue
+            if direction=='LONG' and lvl>current:
+                vals.append((lvl-current,tf,lvl))
+            elif direction=='SHORT' and 0<lvl<current:
+                vals.append((current-lvl,tf,lvl))
+    vals.sort(key=lambda x:x[0])
+    if not vals:
+        return None
+    d,tf,lvl=vals[0]
+    return {'timeframe':tf,'price':lvl,'distance_pct':d/max(current,1e-9)}
+
+def _v90ph_strength(row,direction):
+    row=row or {}
+    hs=row.get('horizon_structure') or {}
+    ti=row.get('trend_impulse') or {}
+    inst=row.get('institutional_signal') or {}
+    senior=list(ti.get('senior_horizon_confirmations') or [])
+    try: hscore=float(hs.get('score') or 0.0)
+    except Exception: hscore=0.0
+    try: indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception: indep=0
+    score=0
+    if str(hs.get('direction') or 'NO_TRADE')==str(direction): score+=1
+    if str(hs.get('state') or '')=='CONFIRMED_TREND': score+=2
+    elif str(hs.get('state') or '')=='BUILDING_TREND': score+=1
+    if hscore>=0.72: score+=2
+    elif hscore>=0.62: score+=1
+    if bool(ti.get('volume_confirmed')): score+=1
+    if indep>=4: score+=1
+    if len(senior)>=2: score+=2
+    elif len(senior)>=1: score+=1
+    if str(ti.get('phase') or '') in ('TREND_DAY','IMPULSE_TREND'): score+=2
+    return score
+
+def _v90ph_take_fraction(strength,profit,level_distance):
+    if strength>=8: take=0.20
+    elif strength>=6: take=0.25
+    elif strength>=4: take=0.35
+    else: take=0.50
+    if profit>=0.03: take=max(take,0.35)
+    elif profit>=0.02: take=max(take,0.30)
+    if level_distance is not None and level_distance<=0.002: take=max(take,0.40)
+    elif level_distance is not None and level_distance<=0.004: take=max(take,0.30)
+    return min(0.50,max(0.20,take))
+
+def _v90ph_apply(c,name,candidates,prices,ts):
+    events=[]
+    try:
+        p,pos=_portfolio_rows(c,name)
+        nav,_,_,_=_mark_nav(p,pos,prices)
+    except Exception:
+        return events
+    for z0 in list(pos or []):
+        z=dict(z0); asset=str(z.get('asset') or '')
+        if asset not in (prices or {}): continue
+        try:
+            px=float(prices[asset]); entry=float(z.get('avg_entry_price') or 0.0)
+        except Exception:
+            continue
+        if entry<=0 or px<=0: continue
+        direction=str(z.get('direction') or '')
+        if direction not in ('LONG','SHORT'): continue
+        signed=(px/entry-1.0) if direction=='LONG' else (entry/px-1.0)
+        if signed<0.008: continue
+        payload=_v90j_json(z.get('payload'))
+        if str(payload.get('data_integrity_status') or 'OK') not in ('','OK'): continue
+        row=(candidates or {}).get(asset) or {}
+        horizon=str(payload.get('execution_timeframe') or payload.get('horizon') or row.get('horizon') or '1h')
+        lvl=_v90ph_next_level(row,horizon,direction,px)
+        if lvl is None: continue
+        prox={'5m':0.0015,'1h':0.0025,'4h':0.0040,'1d':0.0060,'3d':0.0080,'7d':0.0100}.get(horizon,0.0040)
+        if float(lvl.get('distance_pct') or 999.0)>prox: continue
+
+        level_key=f"{lvl.get('timeframe')}:{round(float(lvl.get('price') or 0.0),6)}"
+        done=list(payload.get('partial_harvest_keys') or [])
+        if level_key in done: continue
+
+        strength=_v90ph_strength(row,direction)
+        take=_v90ph_take_fraction(strength,signed,float(lvl.get('distance_pct') or 0.0))
+        current_frac=abs(float(z.get('units') or 0.0)*px)/max(nav,1.0)
+        remain_frac=_v90ph_round5(current_frac*(1.0-take))
+        if remain_frac<0.05 and strength>=4: remain_frac=0.05
+        if remain_frac>=current_frac-0.025: continue
+
+        _close_or_reduce(c,p,name,z,px,remain_frac,nav,ts,'DYNAMIC_PARTIAL_PROFIT')
+        done=(done+[level_key])[-20:]
+        event={'at':_v90j_iso(ts),'asset':asset,'direction':direction,
+               'profit_pct':100.0*signed,'management_horizon':horizon,
+               'level_timeframe':lvl.get('timeframe'),'level_price':lvl.get('price'),
+               'level_distance_pct':100.0*float(lvl.get('distance_pct') or 0.0),
+               'trend_strength_score':strength,'take_fraction_current':take,
+               'target_fraction_after':remain_frac,'rule':'DYNAMIC_PROFIT_HARVEST_R7'}
+        tid=z.get('active_trade_id')
+        ppatch={'partial_harvest_keys':done,'last_partial_harvest':event}
+        c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                  (json.dumps(ppatch,ensure_ascii=False,default=str),name,asset))
+        if tid:
+            c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                      (json.dumps(ppatch,ensure_ascii=False,default=str),tid))
+        events.append({'portfolio':name,**event})
+    if events:
+        print(json.dumps({'event':'V90_DYNAMIC_PARTIAL_PROFIT','events':events},
+                         ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return events
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    _v90ph_apply(c,name,candidates,prices,ts)
+    return _v90ph_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        applied.append("dynamic_profit_harvest_r7")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
