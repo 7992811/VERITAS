@@ -1964,6 +1964,126 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
         dst = dst.replace(anchor, "\n" + helper + anchor, 1)
         applied.append("multi_tf_quality_model")
 
+
+    # VERITAS V90 EMERGENCY STORAGE RECLAIM
+    if "# VERITAS V90 EMERGENCY STORAGE RECLAIM" not in dst:
+        _cleanup_helper = r'''
+# VERITAS V90 EMERGENCY STORAGE RECLAIM
+_V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_26_v2'
+
+def _v90_emergency_storage_reclaim():
+    if not DATABASE_URL or psycopg is None:
+        return {'status':'SKIP','reason':'NO_POSTGRES'}
+    try:
+        c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=3)
+    except Exception as ex:
+        emit('db_cleanup_connection_error',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
+    try:
+        c.execute('SET search_path TO veritas_v90')
+        try:
+            row=c.execute("SELECT value FROM system_settings WHERE key=%s LIMIT 1",(_V90_STORAGE_CLEANUP_MARKER,)).fetchone()
+            if row:
+                emit('db_cleanup_skip',reason='already_completed',marker=_V90_STORAGE_CLEANUP_MARKER)
+                return {'status':'ALREADY_COMPLETED'}
+        except Exception:
+            pass
+        sizes_before=[]
+        try:
+            sizes_before=c.execute("""
+                SELECT schemaname,relname AS table_name,pg_total_relation_size(relid) AS bytes
+                FROM pg_catalog.pg_statio_user_tables
+                WHERE schemaname='veritas_v90'
+                ORDER BY pg_total_relation_size(relid) DESC LIMIT 20
+            """).fetchall()
+            emit('db_cleanup_sizes_before',tables=[{'table':r['table_name'],'bytes':int(r['bytes'])} for r in sizes_before])
+        except Exception as ex:
+            emit('db_cleanup_size_probe_error',error=f'{type(ex).__name__}: {ex}')
+
+        # Rebuildable high-frequency state only. Preserve trades, positions,
+        # orders, decisions/outcomes, lifecycle events and all durable learning tables.
+        truncate_tables=[
+            'market_states','agent_views','product_snapshots','macro_snapshots',
+            'model_calibration_snapshots','model_drift_snapshots',
+            'validation_snapshots','visitor_sessions','paper_nav_history'
+        ]
+        reclaimed=[]
+        for table in truncate_tables:
+            try:
+                exists=c.execute("SELECT to_regclass(%s) AS r",(f'veritas_v90.{table}',)).fetchone()
+                if exists and exists['r']:
+                    c.execute(f'TRUNCATE TABLE veritas_v90."{table}" RESTART IDENTITY')
+                    reclaimed.append(table)
+                    emit('db_cleanup_truncate',table=table)
+            except Exception as ex:
+                emit('db_cleanup_truncate_error',table=table,error=f'{type(ex).__name__}: {ex}')
+
+        # Alerts are transient UI notifications; keep no stale copies during recovery.
+        try:
+            exists=c.execute("SELECT to_regclass('veritas_v90.product_alerts') AS r").fetchone()
+            if exists and exists['r']:
+                c.execute('TRUNCATE TABLE veritas_v90.product_alerts RESTART IDENTITY')
+                reclaimed.append('product_alerts')
+                emit('db_cleanup_truncate',table='product_alerts')
+        except Exception as ex:
+            emit('db_cleanup_truncate_error',table='product_alerts',error=f'{type(ex).__name__}: {ex}')
+
+        # Meta signals are derived every cycle. Delete them in small chunks only
+        # after TRUNCATE has created breathing room. Keep decision/outcome events.
+        deleted_meta=0
+        try:
+            while True:
+                rows=c.execute("""
+                    WITH doomed AS (
+                      SELECT ctid FROM veritas_v90.ledger_events
+                      WHERE event_type='meta_signal' LIMIT 2000
+                    )
+                    DELETE FROM veritas_v90.ledger_events l
+                    USING doomed d WHERE l.ctid=d.ctid RETURNING 1
+                """).fetchall()
+                n=len(rows); deleted_meta+=n
+                if n==0: break
+                if deleted_meta>=100000: break
+            emit('db_cleanup_meta_signal_done',deleted=deleted_meta)
+            try:
+                c.execute('VACUUM (ANALYZE) veritas_v90.ledger_events')
+            except Exception as vex:
+                emit('db_cleanup_vacuum_error',table='ledger_events',error=f'{type(vex).__name__}: {vex}')
+        except Exception as ex:
+            emit('db_cleanup_meta_signal_error',deleted=deleted_meta,error=f'{type(ex).__name__}: {ex}')
+
+        try:
+            c.execute("""
+                INSERT INTO veritas_v90.system_settings(key,value,updated_at,updated_by)
+                VALUES(%s,%s::jsonb,NOW(),'emergency_cleanup')
+                ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,
+                  updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by
+            """,(_V90_STORAGE_CLEANUP_MARKER,json.dumps({'truncated':reclaimed,'meta_signal_deleted':deleted_meta})))
+        except Exception as ex:
+            emit('db_cleanup_marker_error',error=f'{type(ex).__name__}: {ex}')
+
+        try:
+            sizes_after=c.execute("""
+                SELECT schemaname,relname AS table_name,pg_total_relation_size(relid) AS bytes
+                FROM pg_catalog.pg_statio_user_tables
+                WHERE schemaname='veritas_v90'
+                ORDER BY pg_total_relation_size(relid) DESC LIMIT 20
+            """).fetchall()
+            emit('db_cleanup_sizes_after',tables=[{'table':r['table_name'],'bytes':int(r['bytes'])} for r in sizes_after])
+        except Exception as ex:
+            emit('db_cleanup_size_probe_after_error',error=f'{type(ex).__name__}: {ex}')
+        emit('db_cleanup_complete',marker=_V90_STORAGE_CLEANUP_MARKER,truncated=reclaimed,meta_signal_deleted=deleted_meta)
+        return {'status':'OK','truncated':reclaimed,'meta_signal_deleted':deleted_meta}
+    finally:
+        try: c.close()
+        except Exception: pass
+'''
+        _main_anchor="\ndef main():\n    global _BOOTSTRAP_READY\n    init_db()"
+        if _main_anchor not in dst:
+            raise RuntimeError("v90 storage reclaim main anchor missing")
+        dst=dst.replace(_main_anchor,"\n"+_cleanup_helper+"\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    init_db()",1)
+        applied.append("emergency_storage_reclaim")
+
     # VERITAS 9.0: feed de-duplicated paper execution outcomes into execution memory.
     if "# VERITAS V90 PAPER EXECUTION LEARNING V2" not in dst:
         helper = r'''
