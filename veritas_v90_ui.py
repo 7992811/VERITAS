@@ -979,6 +979,137 @@ def apply_v90_ui(html):
     })();
     </script>"""
     value=value.replace('</body>',cockpit_js+'</body>')
+
+    # VERITAS V90 EXECUTIVE PANEL R21
+    exec_css = """<style id="V90_EXECUTIVE_PANEL_R21">
+    #v90-cockpit{gap:7px!important;margin-bottom:8px!important}
+    #v90-r21{display:grid;grid-template-columns:1.45fr 1.1fr .9fr;gap:7px}
+    .r21-box{border:1px solid var(--border);border-radius:11px;background:rgba(18,23,28,.9);padding:9px 10px;min-width:0}
+    .r21-title{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}
+    .r21-action{display:grid;grid-template-columns:62px 52px 42px 1fr 70px 70px;gap:5px;align-items:center;padding:5px 6px;border-top:1px solid rgba(255,255,255,.05)}
+    .r21-action:first-child{border-top:0}.r21-action b{font-size:10px}.r21-action span{font-size:7.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .r21-map{display:grid;gap:3px}
+    .r21-asset{display:grid;grid-template-columns:58px 45px 1fr 54px;gap:5px;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+    .r21-asset:last-child{border-bottom:0}.r21-asset b{font-size:9px}.r21-tfs{font-size:7px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .r21-price{font-size:8px;text-align:right}
+    .r21-kpis{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+    .r21-kpi{border:1px solid var(--border);border-radius:8px;padding:6px 7px;min-width:0}
+    .r21-kpi span{display:block;font-size:7px;color:var(--muted);text-transform:uppercase}.r21-kpi b{display:block;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .r21-pf{display:grid;grid-template-columns:72px 1fr 48px 48px;gap:5px;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:8px}
+    .r21-pf:last-child{border-bottom:0}.r21-pf b{font-size:8.5px}
+    .r21-status{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}.r21-pill{padding:3px 6px;border:1px solid var(--border);border-radius:999px;font-size:7px;color:var(--muted)}
+    #market>.card[data-r21-hidden="1"]{display:none!important}
+    @media(max-width:1000px){#v90-r21{grid-template-columns:1fr}.r21-action{grid-template-columns:56px 48px 40px 1fr}.r21-action .r21-sl,.r21-action .r21-tp{display:none}}
+    </style>"""
+    value=value.replace('</head>',exec_css+'</head>')
+
+    exec_js = r"""<script id="V90_EXECUTIVE_PANEL_R21">
+    (function(){
+      const TF=['5m','1h','4h','1d','3d','7d'];
+      const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'];
+      const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
+      const esc=s=>String(s==null?'—':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+      const dir=x=>String((x&&x.research_decision)||x?.decision||'NO_TRADE');
+      const dc=d=>d==='LONG'?'ok':d==='SHORT'?'bad':'warn';
+      const ar=d=>d==='LONG'?'↑':d==='SHORT'?'↓':'→';
+      const px=v=>{const n=Number(v);return Number.isFinite(n)?n.toLocaleString('en-US',{maximumFractionDigits:n>=1000?2:4}):'—'};
+      let prev={};
+
+      function hideNoise(){
+        const keep=new Set(['Сигналы по инструментам','Разбор выбранного сигнала','Макро / кросс-активы']);
+        document.querySelectorAll('#market>.card').forEach(card=>{
+          const k=card.querySelector('.k');
+          if(!k)return;
+          const t=(k.textContent||'').trim();
+          if(!keep.has(t))card.dataset.r21Hidden='1';
+        });
+      }
+
+      function install(){
+        const cp=document.getElementById('v90-cockpit');if(!cp)return;
+        cp.innerHTML='<div id="v90-r21">'
+          +'<div class="r21-box"><div class="r21-title">Что делать сейчас</div><div id="r21-actions">—</div></div>'
+          +'<div class="r21-box"><div class="r21-title">Рынок · 6 таймфреймов</div><div id="r21-map" class="r21-map">—</div></div>'
+          +'<div class="r21-box"><div class="r21-title">Портфель и риск</div><div id="r21-pf">—</div><div class="r21-kpis" style="margin-top:6px">'
+          +'<div class="r21-kpi"><span>Лучшая доходность</span><b id="r21-bestret">—</b></div>'
+          +'<div class="r21-kpi"><span>Макс. просадка</span><b id="r21-maxdd">—</b></div>'
+          +'<div class="r21-kpi"><span>Открытых позиций</span><b id="r21-open">—</b></div>'
+          +'<div class="r21-kpi"><span>Состояние данных</span><b id="r21-data">—</b></div>'
+          +'</div><div id="r21-status" class="r21-status"></div></div>'
+          +'</div>';
+        hideNoise();
+      }
+
+      function renderSignals(d){
+        const rows=Array.isArray(d?.signals)?d.signals:[];
+        const map={};rows.forEach(x=>{if(x?.asset&&x?.horizon)map[x.asset+'|'+x.horizon]=x});
+        const rank=x=>{
+          const D=dir(x); if(!['LONG','SHORT'].includes(D))return -999;
+          const eligible=x.plan_eligible!==false;
+          return (eligible?2:0)+4*Number(x.horizon_structure_score||0)+2*Number(x.confidence||0)+Math.min(Number(x.expected_to_stop_ratio||0),3)+.25*Number(x.independent_evidence_families||0);
+        };
+        const best=rows.filter(x=>['LONG','SHORT'].includes(dir(x))).sort((a,b)=>rank(b)-rank(a)).slice(0,4);
+        document.getElementById('r21-actions').innerHTML=best.length?best.map(x=>{
+          const D=dir(x), reason=x.plan_reason||x.entry_quality||x.regime||'—';
+          return '<div class="r21-action"><b>'+lab(x.asset)+'</b><b class="'+dc(D)+'">'+ar(D)+' '+D+'</b><span>'+x.horizon+'</span><span>'+esc(reason)+' · R/R '+(x.expected_to_stop_ratio==null?'—':Number(x.expected_to_stop_ratio).toFixed(2))+'</span><span class="r21-sl">SL '+px(x.stop_price)+'</span><span class="r21-tp">TP '+px(x.target_price)+'</span></div>';
+        }).join(''):'<span class="stamp">Сильных входов нет — ждать.</span>';
+
+        document.getElementById('r21-map').innerHTML=AS.map(a=>{
+          const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean);
+          const dirs=xs.map(dir), ln=dirs.filter(d=>d==='LONG').length, sn=dirs.filter(d=>d==='SHORT').length;
+          const D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT';
+          const p=(map[a+'|5m']||xs[0]||{}).price;
+          const tf=TF.map(t=>{const x=map[a+'|'+t];return t+':' +(x?ar(dir(x)):'—')}).join(' ');
+          return '<div class="r21-asset"><b>'+lab(a)+'</b><b class="'+dc(D)+'">'+ar(D)+' '+D+'</b><span class="r21-tfs">'+tf+'</span><span class="r21-price">'+px(p)+'</span></div>';
+        }).join('');
+
+        const changed=[];
+        rows.forEach(x=>{
+          const k=x.asset+'|'+x.horizon, D=dir(x);
+          if(prev[k]&&prev[k]!==D)changed.push(lab(x.asset)+' '+x.horizon+' '+prev[k]+'→'+D);
+          prev[k]=D;
+        });
+        const live=rows.filter(x=>x.source_gate_pass===true).length;
+        document.getElementById('r21-data').textContent=rows.length+'/42 · live '+live;
+        const st=document.getElementById('r21-status');
+        st.innerHTML=(changed.length?'<span class="r21-pill">Изменилось: '+esc(changed.slice(0,3).join(' · '))+'</span>':'<span class="r21-pill">Сигналы без резких изменений</span>')
+          +'<span class="r21-pill">обновление '+(d.at?new Date(d.at).toLocaleTimeString():'—')+'</span>';
+      }
+
+      function renderPf(d){
+        const ps=Array.isArray(d?.portfolios)?d.portfolios:[];
+        document.getElementById('r21-pf').innerHTML=ps.length?ps.map(p=>{
+          const ret=Number(p.total_return_pct??p.latest?.total_return_pct??0);
+          const dd=Number(p.drawdown_pct??p.latest?.drawdown_pct??0);
+          const n=Array.isArray(p.positions)?p.positions.length:0;
+          return '<div class="r21-pf"><b>'+esc(p.name)+'</b><span class="'+(ret>=0?'ok':'bad')+'">'+ret.toFixed(2)+'%</span><span>DD '+dd.toFixed(1)+'%</span><span>'+n+' поз.</span></div>';
+        }).join(''):'<span class="stamp">Портфели временно недоступны</span>';
+        if(ps.length){
+          const rets=ps.map(p=>Number(p.total_return_pct??p.latest?.total_return_pct??0));
+          const dds=ps.map(p=>Number(p.drawdown_pct??p.latest?.drawdown_pct??0));
+          const open=ps.reduce((s,p)=>s+(Array.isArray(p.positions)?p.positions.length:0),0);
+          document.getElementById('r21-bestret').textContent=Math.max(...rets).toFixed(2)+'%';
+          document.getElementById('r21-maxdd').textContent=Math.max(...dds).toFixed(2)+'%';
+          document.getElementById('r21-open').textContent=String(open);
+        }
+      }
+
+      async function get(url,ms){
+        const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),ms);
+        try{const r=await fetch(url,{cache:'no-store',signal:ctl.signal});if(!r.ok)throw 0;return await r.json()}finally{clearTimeout(tm)}
+      }
+      async function refresh(){
+        install();
+        const s=await get('/api/v1/signals',5000).catch(()=>null);
+        if(s)renderSignals(s);
+        get('/api/v1/paper-portfolios',6500).then(renderPf).catch(()=>{});
+      }
+      if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(refresh,300),{once:true});else setTimeout(refresh,300);
+      setInterval(refresh,30000);
+    })();
+    </script>"""
+    value=value.replace('</body>',exec_js+'</body>')
+    print(json.dumps({'event':'V90_EXECUTIVE_PANEL_R21','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     print(json.dumps({'event':'V90_DECISION_COCKPIT_R15','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     print(json.dumps({'event':'V90_CLOSED_JOURNAL_UI_V2','status':'single_owner_no_observer'},ensure_ascii=False,separators=(',',':')),flush=True)
     return value
