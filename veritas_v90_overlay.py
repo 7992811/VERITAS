@@ -300,6 +300,31 @@ def v90_migrate_core_data():
     if ch:
         applied.append("migration_startup")
 
+
+    # VERITAS V90 LOSS AUDIT API
+    if "/api/v1/loss-audit" not in dst:
+        old_route = """            elif self.path.startswith('/api/v1/portfolio-trades'):
+                if VP is None or not pg_enabled(): self.reply({'status':'UNAVAILABLE'})
+                else:
+                    try: self.reply(VP.trade_report(pg_connect))
+                    except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/product-experience'):"""
+        new_route = """            elif self.path.startswith('/api/v1/portfolio-trades'):
+                if VP is None or not pg_enabled(): self.reply({'status':'UNAVAILABLE'})
+                else:
+                    try: self.reply(VP.trade_report(pg_connect))
+                    except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/loss-audit'):
+                if VP is None or not pg_enabled() or not hasattr(VP,'quality_loss_audit'):
+                    self.reply({'status':'UNAVAILABLE'})
+                else:
+                    try: self.reply(VP.quality_loss_audit(pg_connect))
+                    except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/product-experience'):"""
+        if old_route in dst:
+            dst=dst.replace(old_route,new_route,1)
+            applied.append("loss_audit_api")
+
     ui_marker = "# VERITAS V90 APPROVED UI BRIDGE"
     if ui_marker not in dst:
         ui_block = """# VERITAS V90 APPROVED UI BRIDGE
