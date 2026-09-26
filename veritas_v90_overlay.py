@@ -2873,6 +2873,91 @@ def loop():
 
     applied.append("two_speed_5m_loop")
 
+    # VERITAS V90 CANONICAL PORTFOLIOS R24
+    _helper_anchor="\ndef main():"
+    _helper=r'''
+# VERITAS V90 CANONICAL PORTFOLIOS R24
+V90_CANONICAL_PORTFOLIOS=('Impulse','Aggressive','Champion','Challenger')
+
+def _v90r24_ensure_canonical_portfolios():
+    if VP is None or not pg_enabled():
+        return {'status':'UNAVAILABLE','names':[],'count':0}
+    try:
+        if hasattr(VP,'ensure_schema'):
+            VP.ensure_schema(pg_connect)
+        policies={
+          'Impulse': {'threshold':0.64,'strong_threshold':0.76,'min_independent':2,'mode':'IMPULSE_ONLY',
+                      'allowed_horizons':['5m','1h','4h','1d'],'max_fraction':0.50,
+                      'provisional_cap':0.10,'accepted_cap':0.25,'confirmed_cap':0.50},
+          'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE',
+                         'max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
+          'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':2.0},
+          'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':2.0},
+        }
+        with pg_connect() as c:
+            for name in V90_CANONICAL_PORTFOLIOS:
+                c.execute("""INSERT INTO paper_portfolios
+                  (name,created_at,updated_at,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,
+                   benchmark_nav_rub,high_water_nav_rub,policy,model_version)
+                  VALUES(%s,now(),now(),1000000,0,0,0,1000000,1000000,%s::jsonb,%s)
+                  ON CONFLICT(name) DO UPDATE SET
+                    policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()""",
+                  (name,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION','veritas-portfolio-v9.0-four-portfolio-core')))
+            rows=c.execute("""SELECT name FROM paper_portfolios
+                              WHERE name=ANY(%s)
+                              ORDER BY CASE name
+                                WHEN 'Impulse' THEN 1 WHEN 'Aggressive' THEN 2
+                                WHEN 'Champion' THEN 3 WHEN 'Challenger' THEN 4 ELSE 99 END""",
+                           (list(V90_CANONICAL_PORTFOLIOS),)).fetchall()
+        names=[str(x.get('name')) for x in rows]
+        ok=names==list(V90_CANONICAL_PORTFOLIOS)
+        out={'status':'OK' if ok else 'DEGRADED','names':names,'count':len(names),'expected':list(V90_CANONICAL_PORTFOLIOS)}
+        emit('v90_canonical_portfolios_ready',**out)
+        return out
+    except Exception as ex:
+        out={'status':'ERROR','names':[],'count':0,'error':f'{type(ex).__name__}: {ex}'}
+        emit('v90_canonical_portfolios_ready',**out)
+        return out
+
+def _v90r24_prime_portfolio_snapshot():
+    if VP is None or not pg_enabled():
+        return {'status':'UNAVAILABLE','count':0}
+    try:
+        rep=VP.report(pg_connect)
+        ps=list(rep.get('portfolios') or [])
+        by={str(p.get('name')):p for p in ps}
+        ordered=[by[n] for n in V90_CANONICAL_PORTFOLIOS if n in by]
+        rep['portfolios']=ordered
+        rep['canonical_names']=list(V90_CANONICAL_PORTFOLIOS)
+        rep['portfolio_count']=len(ordered)
+        rep['api_source']='postgres_cold_start'
+        with lock:
+            last_cycle['portfolio_autopilot']=rep
+        emit('v90_portfolio_cold_start',status='READY' if len(ordered)==4 else 'DEGRADED',
+             portfolio_count=len(ordered),names=[p.get('name') for p in ordered])
+        return {'status':'READY' if len(ordered)==4 else 'DEGRADED','count':len(ordered)}
+    except Exception as ex:
+        emit('v90_portfolio_cold_start',status='ERROR',portfolio_count=0,
+             error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','count':0}
+'''
+    if _helper_anchor in dst and "_v90r24_ensure_canonical_portfolios" not in dst:
+        dst=dst.replace(_helper_anchor,"\n"+_helper+_helper_anchor,1)
+        applied.append("r24_canonical_portfolio_helpers")
+
+    _startup_anchor="""    if pg_boot.get('ok') and VP is not None:
+        try:
+            if hasattr(VP,'ensure_schema'):
+                VP.ensure_schema(pg_connect)
+            emit('v90_live_state_ready',status='OK',"""
+    _startup_new="""    if pg_boot.get('ok') and VP is not None:
+        try:
+            _v90r24_ensure_canonical_portfolios()
+            _v90r24_prime_portfolio_snapshot()
+            emit('v90_live_state_ready',status='OK',"""
+    if _startup_anchor in dst:
+        dst=dst.replace(_startup_anchor,_startup_new,1)
+        applied.append("r24_startup_portfolio_prime")
     # VERITAS V90 PORTFOLIO API CACHE R23
     # Portfolio UI must never block on full PostgreSQL reports.
     _handler_pf='''            elif self.path.startswith('/api/v1/paper-portfolios'):
