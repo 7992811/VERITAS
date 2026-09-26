@@ -5055,3 +5055,352 @@ def _signal_first_admission(row,policy,drawdown):
 
 # VERITAS 90 FINAL RUNTIME IDENTITY
 VERSION='veritas-portfolio-v9.0-four-portfolio-core'
+
+
+# VERITAS V90 RISK-NEUTRAL PYRAMIDING R17
+# Objective: increase movement capture without increasing the initial money-at-risk.
+# Aggressive keeps a 5x gross ceiling, but leverage must be earned by protected profit
+# and a ratcheting structural stop. Stops are always placed beyond confirmed local swings.
+
+def _v90r17_exact_structural_stop(row,direction,current):
+    row=row or {}
+    direction=str(direction or '')
+    try:
+        current=float(current)
+    except Exception:
+        return None,None,None
+    if current<=0 or direction not in ('LONG','SHORT'):
+        return None,None,None
+    horizon=str(row.get('horizon') or
+                ((row.get('trade_plan') or {}).get('execution_timeframe')) or '1h')
+    levels=_v90tr_extract_levels(row,horizon,direction,current)
+    if not levels:
+        return None,None,None
+    valid=[]
+    for tf,lvl in levels:
+        try:
+            lvl=float(lvl)
+        except Exception:
+            continue
+        if direction=='LONG' and 0<lvl<current:
+            valid.append((current-lvl,tf,lvl))
+        elif direction=='SHORT' and lvl>current:
+            valid.append((lvl-current,tf,lvl))
+    if not valid:
+        return None,None,None
+    # Prefer the nearest confirmed local extreme; R12 already gives the
+    # management-timeframe recent swing priority when it exists.
+    _,tf,lvl=min(valid,key=lambda x:x[0])
+    buf=_v90tr_level_buffer(str(row.get('asset') or ''),tf)
+    stop=lvl*(1.0-buf) if direction=='LONG' else lvl*(1.0+buf)
+    if direction=='LONG' and not (0<stop<current):
+        return None,None,None
+    if direction=='SHORT' and not (stop>current):
+        return None,None,None
+    return float(stop),tf,float(lvl)
+
+
+def _v90tr_apply(c,name,candidates,prices,ts):
+    """R17 structural trailing.
+
+    No synthetic breakeven stop. A stop ratchets only behind a confirmed local
+    swing: below the previous local low for LONG and above the previous local
+    high for SHORT. This protects profit without tightening into market noise.
+    """
+    changes=[]
+    try:
+        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+    except Exception:
+        return changes
+    for z0 in positions or []:
+        z=dict(z0)
+        asset=str(z.get('asset') or '')
+        if asset not in (prices or {}):
+            continue
+        try:
+            current=float(prices[asset])
+            entry=float(z.get('avg_entry_price') or 0.0)
+        except Exception:
+            continue
+        if current<=0 or entry<=0:
+            continue
+        direction=str(z.get('direction') or '')
+        if direction not in ('LONG','SHORT'):
+            continue
+        payload=_v90j_json(z.get('payload'))
+        if str(payload.get('data_integrity_status') or 'OK') not in ('','OK'):
+            continue
+        signed=(current/entry-1.0) if direction=='LONG' else (entry/current-1.0)
+        if signed<=0:
+            continue
+
+        row=(candidates or {}).get(asset) or {}
+        stop,ref_tf,ref_level=_v90r17_exact_structural_stop(row,direction,current)
+        if stop is None:
+            continue
+        try:
+            old_stop=float(z.get('stop_price')) if z.get('stop_price') is not None else None
+        except Exception:
+            old_stop=None
+        improve=(old_stop is None or
+                 (direction=='LONG' and stop>old_stop) or
+                 (direction=='SHORT' and stop<old_stop))
+        if not improve:
+            continue
+
+        # Ratchet only; stop must stay on the protective side of the current market.
+        if direction=='LONG' and stop>=current:
+            continue
+        if direction=='SHORT' and stop<=current:
+            continue
+
+        stage=('PROFIT_LOCK_STRUCTURAL' if
+               ((direction=='LONG' and stop>entry) or (direction=='SHORT' and stop<entry))
+               else 'RISK_REDUCTION_STRUCTURAL')
+        hist=list(payload.get('trailing_history') or [])
+        event={
+          'at':_v90j_iso(ts),'stage':stage,'old_stop':old_stop,'new_stop':stop,
+          'current_price':current,'entry_price':entry,'profit_pct':100.0*signed,
+          'reference_timeframe':ref_tf,'reference_level':ref_level,
+          'rule':'R17_LAST_CONFIRMED_SWING_TRAIL'
+        }
+        hist=(hist+[event])[-32:]
+        patch={
+          'profit_protection_active':stage=='PROFIT_LOCK_STRUCTURAL',
+          'trailing_rule':'R17_LAST_CONFIRMED_SWING_TRAIL',
+          'trailing_stage':stage,'trailing_stop':stop,
+          'trailing_reference_timeframe':ref_tf,
+          'trailing_reference_level':ref_level,
+          'trailing_updated_at':_v90j_iso(ts),
+          'trailing_profit_pct':100.0*signed,
+          'trailing_history':hist,
+        }
+        payload.update(patch)
+        c.execute("""UPDATE paper_positions
+                     SET stop_price=%s,payload=%s::jsonb,updated_at=%s
+                     WHERE portfolio_name=%s AND asset=%s""",
+                  (stop,json.dumps(payload,ensure_ascii=False,default=str),ts,name,asset))
+        tid=z.get('active_trade_id')
+        if tid:
+            c.execute("""UPDATE paper_trades
+                         SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
+                         WHERE trade_id=%s""",
+                      (json.dumps(patch,ensure_ascii=False,default=str),tid))
+        changes.append({'portfolio':name,'asset':asset,'direction':direction,
+                        'stage':stage,'old_stop':old_stop,'new_stop':stop,
+                        'profit_pct':100.0*signed,'reference_timeframe':ref_tf,
+                        'reference_level':ref_level})
+    if changes:
+        print(json.dumps({'event':'V90_R17_STRUCTURAL_TRAILING','changes':changes},
+                         ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return changes
+
+
+_v90r17_base_open_or_add=_open_or_add
+
+def _v90r17_risk_budget(z,nav):
+    payload=_v90j_json((z or {}).get('payload'))
+    try:
+        b=float(payload.get('initial_risk_budget_rub'))
+        if b>0:
+            return b
+    except Exception:
+        pass
+    try:
+        units=abs(float((z or {}).get('units') or 0.0))
+        entry=float((z or {}).get('avg_entry_price') or 0.0)
+        stop=float(payload.get('initial_stop_price') or (z or {}).get('stop_price') or 0.0)
+        d=str((z or {}).get('direction') or '')
+        risk=(units*max(0.0,entry-stop) if d=='LONG'
+              else units*max(0.0,stop-entry) if d=='SHORT' else 0.0)
+        if risk>0:
+            return min(risk,float(nav)*float(MAX_STOP_RISK_NAV))
+    except Exception:
+        pass
+    return float(nav)*float(MAX_STOP_RISK_NAV)
+
+
+def _v90r17_cap_add_to_risk(z,price,target_fraction,nav):
+    """Cap an add so P/L at the current structural stop cannot lose more than
+    the original money-risk budget. Protected open profit may finance the add.
+    """
+    if not z:
+        return float(target_fraction),None
+    try:
+        price=float(price); nav=float(nav); target=float(target_fraction)
+        units=abs(float(z.get('units') or 0.0))
+        entry=float(z.get('avg_entry_price') or 0.0)
+        stop=float(z.get('stop_price'))
+        direction=str(z.get('direction') or '')
+    except Exception:
+        return float(target_fraction),{'reason':'R17_MISSING_STOP_DATA'}
+    if price<=0 or nav<=0 or units<=0 or direction not in ('LONG','SHORT'):
+        return float(target_fraction),{'reason':'R17_INVALID_POSITION_DATA'}
+    if direction=='LONG':
+        if not (stop<price):
+            return abs(units*price)/nav,{'reason':'R17_INVALID_LONG_STOP'}
+        existing_loss_at_stop=units*(entry-stop)
+        marginal_risk_per_unit=price-stop
+    else:
+        if not (stop>price):
+            return abs(units*price)/nav,{'reason':'R17_INVALID_SHORT_STOP'}
+        existing_loss_at_stop=units*(stop-entry)
+        marginal_risk_per_unit=stop-price
+    if marginal_risk_per_unit<=0:
+        return abs(units*price)/nav,{'reason':'R17_NONPOSITIVE_MARGINAL_RISK'}
+
+    budget=_v90r17_risk_budget(z,nav)
+    available=budget-existing_loss_at_stop
+    max_add_units=max(0.0,available/marginal_risk_per_unit)
+    current_notional=units*price
+    max_notional=current_notional+max_add_units*price
+    cap_fraction=max(current_notional/nav,max_notional/nav)
+    capped=min(target,cap_fraction)
+    return capped,{
+      'rule':'R17_RISK_NEUTRAL_PYRAMIDING',
+      'risk_budget_rub':budget,
+      'existing_loss_at_stop_rub':existing_loss_at_stop,
+      'available_add_risk_rub':available,
+      'requested_fraction':target,
+      'risk_neutral_cap_fraction':cap_fraction,
+      'capped_fraction':capped,
+    }
+
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    row2=dict(row or {})
+    plan=dict(row2.get('trade_plan') or {})
+
+    # Every fresh position must carry a structural stop behind the latest
+    # confirmed local extreme. If no fresh swing is available, retain an
+    # already-valid structural plan stop; never invent a tighter arbitrary stop.
+    z=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",(name,asset)).fetchone()
+    if not z:
+        stop,tf,lvl=_v90r17_exact_structural_stop(row2,direction,price)
+        if stop is not None:
+            plan['stop_price']=stop
+            plan['stop_distance_pct']=abs(float(price)-stop)/max(float(price),1e-9)
+            plan['structural_stop_enforced']=True
+            plan['structural_stop_rule']='R17_PREVIOUS_LOCAL_EXTREME'
+            plan['structural_stop_reference_timeframe']=tf
+            plan['structural_stop_reference_level']=lvl
+            row2['trade_plan']=plan
+        else:
+            try:
+                existing=float(plan.get('stop_price'))
+                valid=(direction=='LONG' and 0<existing<float(price)) or (direction=='SHORT' and existing>float(price))
+            except Exception:
+                valid=False
+            if not valid:
+                print(json.dumps({'event':'V90_R17_ENTRY_BLOCKED_NO_STRUCTURAL_STOP',
+                                  'portfolio':name,'asset':asset,'direction':direction,
+                                  'price':price},ensure_ascii=False,separators=(',',':')),flush=True)
+                return 0.0
+    elif str(z.get('direction') or '')==str(direction):
+        capped,meta=_v90r17_cap_add_to_risk(dict(z),price,target_fraction,nav)
+        current_frac=abs(float(z.get('units') or 0.0)*float(price))/max(float(nav),1.0)
+        if meta:
+            tid=z.get('active_trade_id')
+            patch={'last_risk_neutral_pyramid_check':dict(meta,at=_v90j_iso(ts))}
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                      (json.dumps(patch,ensure_ascii=False,default=str),name,asset))
+            if tid:
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                          (json.dumps(patch,ensure_ascii=False,default=str),tid))
+        target_fraction=float(capped)
+        if target_fraction<=current_frac+0.025:
+            return 0.0
+        reason='R17_RISK_NEUTRAL_ADD'
+
+    result=_v90r17_base_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row2,reason)
+
+    try:
+        z2=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",(name,asset)).fetchone()
+        if z2 and str(z2.get('direction') or '')==str(direction):
+            payload=_v90j_json(z2.get('payload'))
+            units=abs(float(z2.get('units') or 0.0))
+            entry=float(z2.get('avg_entry_price') or 0.0)
+            stop=float(z2.get('stop_price')) if z2.get('stop_price') is not None else None
+            current_fraction=units*float(price)/max(float(nav),1.0)
+            peak=max(float(payload.get('peak_fraction') or 0.0),current_fraction)
+            patch={'peak_fraction':peak,'runner_floor_fraction':_v90ph_round5(peak*0.40),
+                   'pyramiding_rule':'R17_RISK_NEUTRAL_PYRAMIDING',
+                   'aggressive_gross_ceiling':5.0 if str(name)=='Aggressive' else None}
+            if payload.get('initial_stop_price') is None and stop is not None:
+                patch['initial_stop_price']=stop
+            if payload.get('initial_risk_budget_rub') is None and stop is not None and entry>0:
+                raw_risk=(units*max(0.0,entry-stop) if direction=='LONG'
+                          else units*max(0.0,stop-entry))
+                patch['initial_risk_budget_rub']=min(float(nav)*float(MAX_STOP_RISK_NAV),raw_risk)
+            tid=z2.get('active_trade_id')
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                      (json.dumps(patch,ensure_ascii=False,default=str),name,asset))
+            if tid:
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                          (json.dumps(patch,ensure_ascii=False,default=str),tid))
+    except Exception:
+        pass
+    return result
+
+
+_v90r17_base_close_or_reduce=_close_or_reduce
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    z=dict(z or {})
+    payload=_v90j_json(z.get('payload'))
+    current_frac=abs(float(z.get('units') or 0.0)*float(price or 0.0))/max(float(nav),1.0)
+    peak=max(float(payload.get('peak_fraction') or 0.0),current_frac)
+    runner_floor=max(0.05,_v90ph_round5(peak*0.40)) if peak>0 else 0.05
+
+    # A fixed TP is a partial harvest, never an automatic full liquidation.
+    # The remaining runner is exited by the structural trailing stop, a true
+    # structure-exhaustion signal, hard invalidation, or confirmed reversal.
+    if str(reason or '')=='TAKE_PROFIT':
+        first_floor=max(runner_floor,_v90ph_round5(peak*0.50))
+        if current_frac<=first_floor+0.025:
+            return 0.0
+        result=_v90r17_base_close_or_reduce(
+            c,p,name,z,price,max(float(target_fraction),first_floor),nav,ts,'TAKE_PROFIT_PARTIAL_R17')
+        patch={'r17_tp1_done':True,'r17_tp1_at':_v90j_iso(ts),
+               'r17_tp1_price':float(price),'runner_floor_fraction':runner_floor,
+               'profit_exit_policy':'PARTIAL_TP_THEN_STRUCTURAL_RUNNER'}
+        try:
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                      (json.dumps(patch,ensure_ascii=False,default=str),name,z.get('asset')))
+            if z.get('active_trade_id'):
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                          (json.dumps(patch,ensure_ascii=False,default=str),z.get('active_trade_id')))
+        except Exception:
+            pass
+        return result
+
+    # Dynamic profit harvest may scale down, but a strong move always keeps a
+    # structural runner of at least 40% of the peak position.
+    if str(reason or '')=='DYNAMIC_PARTIAL_PROFIT':
+        protected=max(float(target_fraction),runner_floor)
+        if protected>=current_frac-0.025:
+            return 0.0
+        return _v90r17_base_close_or_reduce(c,p,name,z,price,protected,nav,ts,'DYNAMIC_PARTIAL_PROFIT_R17')
+
+    return _v90r17_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
+
+
+_v90r17_base_report=report
+
+def report(pg_connect):
+    d=dict(_v90r17_base_report(pg_connect) or {})
+    d['execution_policy_r17']={
+      'structural_stop':'below previous confirmed local low for LONG; above previous confirmed local high for SHORT',
+      'trailing_stop':'ratchet only behind confirmed local swing; never loosen',
+      'profit_harvest':'partial TP with 40-50% structural runner',
+      'pyramiding':'risk-neutral; total loss at active stop may not exceed original money-risk budget',
+      'max_stop_risk_nav':float(MAX_STOP_RISK_NAV),
+      'aggressive_max_gross':5.0,
+      'aggressive_leverage_rule':'5x ceiling, earned by evidence and protected risk; never automatic',
+    }
+    d['max_gross']=5.0
+    d['portfolio_max_gross']={'Impulse':0.50,'Aggressive':5.0,'Champion':2.0,'Challenger':2.0}
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),15)
