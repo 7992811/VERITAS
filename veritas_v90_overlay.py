@@ -302,7 +302,7 @@ def v90_migrate_core_data():
                 emit('v90_loss_audit_error',error=f'{type(_la_ex).__name__}: {_la_ex}')
         if hasattr(VP,'worst_trade_audit'):
             try:
-                VP.worst_trade_audit(pg_connect,30)
+                VP.worst_trade_audit(pg_connect,100)
             except Exception as _wt_ex:
                 emit('v90_worst_trade_audit_error',error=f'{type(_wt_ex).__name__}: {_wt_ex}')
     case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}"""
