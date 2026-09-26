@@ -15109,7 +15109,6 @@ def _v90r25_portfolios_fast():
         at=float(_v90r25_pf_cache.get('at') or 0.0)
     if cached is not None and time.time()-at<120:
         out=dict(cached); out['api_source']='memory_cache'; return out
-    # Prefer the portfolio snapshot already produced by the live cycle.
     with lock:
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {})
     if live and len(live.get('portfolios') or [])==4:
@@ -15117,11 +15116,57 @@ def _v90r25_portfolios_fast():
         with _v90r25_pf_lock:
             _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
-    if VP is None or not pg_enabled():
+    if not pg_enabled():
         return {'status':'UNAVAILABLE','portfolios':[]}
-    # Cold fallback: one compact report call only.
-    out=VP.report(pg_connect)
-    out['api_source']='postgres_fallback'
+    names=list(V90_CANONICAL_PORTFOLIOS)
+    with pg_connect() as c:
+        base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,
+                                 benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at
+                          FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
+        nav=c.execute("""SELECT DISTINCT ON (portfolio_name)
+                                portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,
+                                gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload
+                         FROM paper_nav_history
+                         WHERE portfolio_name=ANY(%s)
+                         ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
+        pos=c.execute("""SELECT portfolio_name,asset,direction,units,avg_entry_price,opened_at,
+                                updated_at,stop_price,target_fraction,last_price,payload
+                         FROM paper_positions
+                         WHERE portfolio_name=ANY(%s)
+                         ORDER BY portfolio_name,asset""",(names,)).fetchall()
+        stats=c.execute("""SELECT portfolio_name,
+                                  COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,
+                                  COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,
+                                  COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl
+                           FROM paper_trades WHERE portfolio_name=ANY(%s)
+                           GROUP BY portfolio_name""",(names,)).fetchall()
+    bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}
+    pm={}
+    for r0 in pos:
+        z=dict(r0); sign=1 if z.get('direction')=='LONG' else -1
+        px=float(z.get('last_price') or 0); ep=float(z.get('avg_entry_price') or 0); units=float(z.get('units') or 0)
+        z['notional_rub']=abs(units*px)
+        z['unrealized_pnl_rub']=sign*units*(px-ep)
+        z['unrealized_return_pct']=(100*sign*(px/ep-1)) if ep else None
+        pm.setdefault(z['portfolio_name'],[]).append(_jsonable(z))
+    outp=[]
+    for name in names:
+        b=bm.get(name,{})
+        latest=nm.get(name,{})
+        st=sm.get(name,{})
+        closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0)
+        nav_rub=latest.get('nav_rub')
+        initial=float(b.get('initial_nav_rub') or 1000000)
+        outp.append({'name':name,'latest':_jsonable(latest),'positions':pm.get(name,[]),
+                     'nav_rub':nav_rub,'nav_usd':latest.get('nav_usd'),
+                     'total_return_pct':(100*(float(nav_rub)/initial-1)) if nav_rub is not None else None,
+                     'drawdown_pct':100*float(latest.get('drawdown') or 0),
+                     'gross_leverage':latest.get('gross_leverage'),'net_exposure':latest.get('net_exposure'),
+                     'cash_equivalent_fraction':max(0,1-float(latest.get('gross_leverage') or 0)),
+                     'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),
+                     'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
+    out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),
+         'initial_nav_rub':1000000.0,'commission_rate':0.0005,'api_source':'fast_sql'}
     with _v90r25_pf_lock:
         _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
     return out
@@ -15333,16 +15378,15 @@ class H(BaseHTTPRequestHandler):
             elif self.path == '/api/v1/v70' or self.path.startswith('/api/v1/v70?'):
                 self.reply(v70_quality_board())
             elif self.path.startswith('/api/v1/paper-portfolios'):
-                if VP is None or not pg_enabled():
-                    self.reply({'status':'UNAVAILABLE','reason':'portfolio_module_or_postgres_unavailable'})
-                else:
-                    try: self.reply(VP.report(pg_connect))
-                    except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+                try:
+                    self.reply(_v90r25_portfolios_fast())
+                except Exception as ex:
+                    self.reply({'status':'ERROR','portfolios':[],'error':f'{type(ex).__name__}: {ex}'},500)
             elif self.path.startswith('/api/v1/portfolio-trades'):
-                if VP is None or not pg_enabled(): self.reply({'status':'UNAVAILABLE'})
-                else:
-                    try: self.reply(VP.trade_report(pg_connect,1000))
-                    except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+                try:
+                    self.reply(_v90r25_trades_fast(80))
+                except Exception as ex:
+                    self.reply({'status':'ERROR','trades':[],'error':f'{type(ex).__name__}: {ex}'},500)
             elif self.path.startswith('/api/v1/loss-audit'):
                 if VP is None or not pg_enabled() or not hasattr(VP,'quality_loss_audit'):
                     self.reply({'status':'UNAVAILABLE'})
@@ -16816,10 +16860,10 @@ def main():
     if pg_boot.get('ok') and VP is not None:
         try:
             _v90r24_ensure_canonical_portfolios()
-            _v90r24_prime_portfolio_snapshot()
             emit('v90_live_state_ready',status='OK',
                  historical_reports='DEFERRED',
                  historical_audits='BACKGROUND',
+                 portfolio_snapshot='FAST_API_ON_DEMAND',
                  principle='market loop first; history on demand')
         except Exception as _pr_ex:
             emit('v90_live_state_ready',status='DEGRADED',
@@ -16833,7 +16877,6 @@ def main():
     case_lessons = {'status':'background','seeded':0}
     expert_principles = {'status':'background','seeded':0}
     pg_knowledge = {'durable': bool(pg_boot.get('ok')), 'status':'background'}
-    threading.Thread(target=_v90r23_trade_refresh,daemon=True,name='veritas-trades-prime').start()
     # R22: publish the last durable 42-cell matrix immediately on startup.
     try:
         _cold=latest_signal_summary_pg() if pg_enabled() else []
