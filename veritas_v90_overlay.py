@@ -925,7 +925,7 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP36','domain':'data','statement':'If independent sources quote materially different prices for the same exact contract, freeze execution and marking for that asset until the conflict is resolved; keep the position and do not learn from the disputed mark.'},
  {'id':'EP37','domain':'breakout','statement':'In RANGE_LOW_VOL, a breakout label alone is insufficient for entry; require fresh structure, volume and volatility expansion, and aligned horizon structure.'},
  {'id':'EP38','domain':'regime','statement':'Low-volatility ranges have elevated false-breakout risk. Treat uncalibrated model scores conservatively and demand stronger independent evidence before committing capital.'},
- {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},\n {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},\n {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},\n {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'}"""
+ {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},\n {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},\n {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},\n {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'},\n {'id':'EP43','domain':'sizing','statement':'After partial profit-taking, position size may be rebuilt only on a new same-direction high-quality setup with fresh breakout evidence, volume confirmation, aligned structure and positive post-cost economics.'},\n {'id':'EP44','domain':'risk','statement':'Reloading a profitable position must never loosen an already protected stop. New size inherits the existing protected risk boundary unless a tighter structural stop is available.'},\n {'id':'EP45','domain':'execution','statement':'A profit reload is a new add-on decision, not an automatic reversal of prior profit-taking; require a minimum 5% position increment and re-check transaction-cost budget.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -6309,6 +6309,117 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         else:
             dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
         applied.append("dynamic_profit_harvest_r7")
+
+
+    # VERITAS V90 PROFIT RELOAD R8
+    if "# VERITAS V90 PROFIT RELOAD R8" not in dst:
+        helper = r'''
+# VERITAS V90 PROFIT RELOAD R8
+_v90pr_base_open_or_add=_open_or_add
+
+def _v90pr_reload_allowed(c,name,z,row,price,nav,target_fraction):
+    if not z:
+        return True,{}
+    payload=_v90j_json(z.get('payload'))
+    harvested=bool(payload.get('partial_harvest_keys') or payload.get('last_partial_harvest'))
+    if not harvested:
+        return True,{}
+
+    direction=str(z.get('direction') or '')
+    if str((row or {}).get('research_decision') or '')!=direction:
+        return False,{'reason':'R8_RELOAD_DIRECTION_MISMATCH'}
+
+    inst=(row or {}).get('institutional_signal') or {}
+    ti=(row or {}).get('trend_impulse') or {}
+    hs=(row or {}).get('horizon_structure') or {}
+    plan=(row or {}).get('trade_plan') or {}
+    bq=inst.get('breakout_quality') or {}
+
+    try: indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception: indep=0
+    try: hscore=float(hs.get('score') or 0.0)
+    except Exception: hscore=0.0
+    try: rr=float((row or {}).get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+    try: exp=abs(float(plan.get('expected_move_pct') or 0.0))
+    except Exception: exp=0.0
+
+    fresh=bool(ti.get('fresh_breakout') or bq.get('fresh_breakout') or str(bq.get('state') or '') in ('FRESH_BREAKOUT','HIGH_QUALITY_BREAKOUT'))
+    structural=bool(str(hs.get('direction') or '')==direction
+                    and str(hs.get('state') or '') in ('BUILDING_TREND','CONFIRMED_TREND')
+                    and hscore>=0.65)
+    volume=bool(ti.get('volume_confirmed') or bq.get('volume_confirmed'))
+    if not (fresh and structural and volume and indep>=4 and rr>=1.35 and exp>=0.004):
+        return False,{'reason':'R8_RELOAD_CONFIRMATION_INSUFFICIENT',
+                      'fresh':fresh,'structural':structural,'volume':volume,
+                      'independent':indep,'rr':rr,'expected_move_pct':exp}
+
+    current_frac=abs(float(z.get('units') or 0.0)*float(price))/max(float(nav),1.0)
+    add_frac=max(0.0,float(target_fraction)-current_frac)
+    if add_frac<0.05:
+        return False,{'reason':'R8_RELOAD_TOO_SMALL','add_fraction':add_frac}
+
+    # Do not allow reload if it would make projected costs too large vs remaining edge.
+    try:
+        tid=z.get('active_trade_id')
+        tr=c.execute("SELECT fees_rub FROM paper_trades WHERE trade_id=%s",(tid,)).fetchone() if tid else None
+        fees=float((tr or {}).get('fees_rub') or 0.0)
+    except Exception:
+        fees=0.0
+    add_notional=add_frac*float(nav)
+    projected=fees + add_notional*float(COMMISSION) + abs(float(target_fraction)*float(nav))*float(COMMISSION)
+    expected=max(abs(float(target_fraction)*float(nav))*exp,1.0)
+    if projected/expected>0.25:
+        return False,{'reason':'R8_RELOAD_COST_TOO_HIGH','cost_to_edge':projected/expected}
+
+    # Existing protected stop must not be weakened by reload.
+    old_stop=z.get('stop_price')
+    protected=bool(payload.get('profit_protection_active') or payload.get('trailing_stop'))
+    return True,{'reload':True,'old_stop':old_stop,'protected':protected,
+                 'current_fraction':current_frac,'target_fraction':float(target_fraction)}
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    z=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",(name,asset)).fetchone()
+    allowed,meta=_v90pr_reload_allowed(c,name,z,row,price,nav,target_fraction)
+    if not allowed:
+        return 0.0
+
+    old_stop=float(z.get('stop_price')) if z and z.get('stop_price') is not None else None
+    result=_v90pr_base_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,
+                                   'PROFIT_RELOAD' if meta.get('reload') else reason)
+
+    if meta.get('reload'):
+        z2=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",(name,asset)).fetchone()
+        if z2:
+            new_stop=z2.get('stop_price')
+            restore=None
+            if old_stop is not None:
+                if direction=='LONG' and (new_stop is None or float(new_stop)<old_stop):
+                    restore=old_stop
+                elif direction=='SHORT' and (new_stop is None or float(new_stop)>old_stop):
+                    restore=old_stop
+            if restore is not None:
+                c.execute("""UPDATE paper_positions SET stop_price=%s
+                             WHERE portfolio_name=%s AND asset=%s""",(restore,name,asset))
+            tid=z2.get('active_trade_id')
+            event={'at':_v90j_iso(ts),'rule':'PROFIT_RELOAD_R8','price':float(price),
+                   'target_fraction':float(target_fraction),'protected_stop':restore if restore is not None else new_stop}
+            if tid:
+                c.execute("""UPDATE paper_trades
+                             SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
+                             WHERE trade_id=%s""",
+                          (json.dumps({'last_profit_reload':event},ensure_ascii=False,default=str),tid))
+            print(json.dumps({'event':'V90_PROFIT_RELOAD','portfolio':name,'asset':asset,
+                              'direction':direction,**event},
+                             ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return result
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        applied.append("profit_reload_r8")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
