@@ -15196,7 +15196,7 @@ def _v90r25_trades_fast(limit=80):
             z['stop_price']=p.get('stop_price') or p.get('last_stop_price')
             z['take_price']=p.get('take_price') or p.get('target_price')
             z['learning_label']=p.get('learning_label')
-            trades.append(_jsonable(z))
+            trades.append(z)
         return {'status':'OK','trades':trades,'returned_count':len(trades),'api_source':'fast_sql'}
     except Exception as ex:
         # Fall back to the last detailed cache if the compact query is momentarily unavailable.
