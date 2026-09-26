@@ -375,6 +375,33 @@ except Exception as _v90_ui_ex:
         dst = dst.replace(ui_anchor, "\n" + ui_block + ui_anchor, 1)
         applied.append("v86_3_approved_interface")
 
+    # V90_RUNTIME_EXPORT_TEMP - remove after canonical source is baked
+    _export_route = """            elif self.path.startswith('/internal/v90-runtime-export-7e2c91/intelligence'):
+                try:
+                    with open(__file__,'rb') as _rf:
+                        _body=_rf.read()
+                    self.send_response(200)
+                    self.send_header('Content-Type','text/plain; charset=utf-8')
+                    self.send_header('Content-Length',str(len(_body)))
+                    self.end_headers(); self.wfile.write(_body)
+                except Exception as _ex:
+                    self.reply({'status':'ERROR','error':type(_ex).__name__},500)
+            elif self.path.startswith('/internal/v90-runtime-export-7e2c91/portfolio'):
+                try:
+                    _p=getattr(VP,'__file__',None)
+                    with open(_p,'rb') as _rf:
+                        _body=_rf.read()
+                    self.send_response(200)
+                    self.send_header('Content-Type','text/plain; charset=utf-8')
+                    self.send_header('Content-Length',str(len(_body)))
+                    self.end_headers(); self.wfile.write(_body)
+                except Exception as _ex:
+                    self.reply({'status':'ERROR','error':type(_ex).__name__},500)
+"""
+    _route_anchor="            elif self.path.startswith('/healthz'):"
+    if _route_anchor in dst and "/internal/v90-runtime-export-7e2c91/intelligence" not in dst:
+        dst=dst.replace(_route_anchor,_export_route+_route_anchor,1)
+        applied.append("V90_RUNTIME_EXPORT_TEMP")
     old_logo_anchor = "            elif self.path.startswith('/healthz'):\n                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})"
     new_logo_anchor = "            elif self.path.startswith('/assets/veritas-markets-header.webp'):\n                try:\n                    _logo_path=os.path.join(os.path.dirname(__file__),'assets','veritas-markets-header.webp')\n                    with open(_logo_path,'rb') as _lf:\n                        _logo_body=_lf.read()\n                    self.send_response(200)\n                    self.send_header('Content-Type','image/webp')\n                    self.send_header('Cache-Control','public, max-age=86400, immutable')\n                    self.send_header('Content-Length',str(len(_logo_body)))\n                    self.end_headers()\n                    self.wfile.write(_logo_body)\n                except Exception as _logo_ex:\n                    self.reply({'status':'UNAVAILABLE','asset':'veritas-markets-header.webp','error':type(_logo_ex).__name__},404)\n            elif self.path.startswith('/assets/veritas-logo-source.webp'):\n                try:\n                    _logo_path=os.path.join(os.path.dirname(__file__),'assets','veritas-logo-source.webp')\n                    with open(_logo_path,'rb') as _lf:\n                        _logo_body=_lf.read()\n                    self.send_response(200)\n                    self.send_header('Content-Type','image/webp')\n                    self.send_header('Cache-Control','public, max-age=86400')\n                    self.send_header('Content-Length',str(len(_logo_body)))\n                    self.end_headers()\n                    self.wfile.write(_logo_body)\n                except Exception as _logo_ex:\n                    self.reply({'status':'UNAVAILABLE','asset':'veritas-logo-source.webp','error':type(_logo_ex).__name__},404)\n            elif self.path.startswith('/healthz'):\n                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})"
     if "/assets/veritas-markets-header.webp" in dst:
