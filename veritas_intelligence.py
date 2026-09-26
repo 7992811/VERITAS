@@ -909,6 +909,10 @@ def pg_init():
     if not pg_enabled():
         return {'enabled': False, 'ok': False, 'reason': 'DATABASE_URL_NOT_SET'}
     with pg_connect() as c:
+        # v9 storage lives in its own schema. Public contains compatibility views,
+        # so all bootstrap DDL must resolve against veritas_v90 first.
+        c.execute("CREATE SCHEMA IF NOT EXISTS veritas_v90")
+        c.execute("SET search_path TO veritas_v90")
         c.execute("""
         CREATE TABLE IF NOT EXISTS ledger_events(
           id BIGSERIAL PRIMARY KEY,
