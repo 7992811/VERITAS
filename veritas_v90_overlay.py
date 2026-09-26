@@ -5335,6 +5335,166 @@ trade_report=_v90q2_trade_report
             dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
         applied.append("r2_performance_loss_audit")
 
+
+    # VERITAS V90 LOSS-DRIVEN GUARDS
+    if "# VERITAS V90 LOSS-DRIVEN GUARDS" not in dst:
+        helper = r'''
+# VERITAS V90 LOSS-DRIVEN GUARDS
+_v90ld_base_admission=_signal_first_admission
+_v90ld_base_open_or_add=_open_or_add
+_v90ld_base_close_or_reduce=_close_or_reduce
+
+def _v90ld_mode(policy):
+    return str((policy or {}).get('mode') or 'CORE')
+
+def _v90ld_strong_reentry(row):
+    row=row or {}
+    hs=row.get('horizon_structure') or {}
+    inst=row.get('institutional_signal') or {}
+    plan=row.get('trade_plan') or {}
+    try: indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception: indep=0
+    try: hscore=float(hs.get('score') or 0.0)
+    except Exception: hscore=0.0
+    try: rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+    try: exp=abs(float(plan.get('expected_move_pct') or 0.0))
+    except Exception: exp=0.0
+    return bool(str(hs.get('state') or '')=='CONFIRMED_TREND'
+                and hscore>=0.72 and indep>=4 and rr>=1.50 and exp>=0.006)
+
+def _v90ld_admission(row,policy,drawdown):
+    base=dict(_v90ld_base_admission(row,policy,drawdown) or {})
+    if not base.get('open'):
+        return base
+    row=row or {}
+    inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    state=str(bq.get('state') or '')
+    mode=_v90ld_mode(policy)
+    plan=row.get('trade_plan') or {}
+    try: indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception: indep=0
+    supporting=list(row.get('_supporting_horizons') or [])
+    alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    try: rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+    try: exp=abs(float(plan.get('expected_move_pct') or 0.0))
+    except Exception: exp=0.0
+    p,source=_signal_probability(row)
+
+    if state=='WEAK_BREAKOUT':
+        return {'open':False,'fraction':0.0,'reason':'LOSS_GUARD_WEAK_BREAKOUT_RESEARCH_ONLY',
+                'probability_source':source,'rr':rr,'expected_move_pct':exp}
+
+    if state=='EARLY_BREAKOUT':
+        if mode in ('CORE','CHALLENGER'):
+            if not (indep>=4 and alignment>=3 and rr>=1.50 and exp>=0.006 and float(p)>=0.82):
+                return {'open':False,'fraction':0.0,'reason':'LOSS_GUARD_EARLY_BREAKOUT_WAIT_CONFIRMATION',
+                        'independent':indep,'alignment_count':alignment,'rr':rr,
+                        'expected_move_pct':exp,'model_score':float(p),'probability_source':source}
+        elif not (indep>=3 and alignment>=2 and rr>=1.35 and exp>=0.0045):
+            return {'open':False,'fraction':0.0,'reason':'LOSS_GUARD_EARLY_BREAKOUT_TOO_WEAK',
+                    'independent':indep,'alignment_count':alignment,'rr':rr,
+                    'expected_move_pct':exp,'probability_source':source}
+
+    if exp>0:
+        rt_cost=2.0*float(COMMISSION)
+        if rt_cost/exp>0.30:
+            return {'open':False,'fraction':0.0,'reason':'LOSS_GUARD_COST_TO_EDGE_TOO_HIGH',
+                    'round_trip_cost_pct':rt_cost,'expected_move_pct':exp,
+                    'cost_to_edge_ratio':rt_cost/exp}
+    return base
+
+_signal_first_admission=_v90ld_admission
+
+def _v90ld_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    if str(asset)=='NDX':
+        return 0.0
+    z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
+
+    if not z:
+        try:
+            last=c.execute("""SELECT closed_at,direction,net_pnl_rub,horizon
+                              FROM paper_trades
+                              WHERE portfolio_name=%s AND asset=%s AND status='CLOSED'
+                              ORDER BY closed_at DESC NULLS LAST LIMIT 1""",(name,asset)).fetchone()
+            if last and last.get('closed_at'):
+                cl=last['closed_at']
+                now_dt=ts if hasattr(ts,'timestamp') else datetime.fromisoformat(str(ts).replace('Z','+00:00'))
+                cl_dt=cl if hasattr(cl,'timestamp') else datetime.fromisoformat(str(cl).replace('Z','+00:00'))
+                age=max(0.0,(now_dt-cl_dt).total_seconds())
+                h=str((row or {}).get('horizon') or last.get('horizon') or '1h')
+                cooldown=1200.0 if h=='5m' else 1800.0 if h=='1h' else 3600.0
+                if age<cooldown and not _v90ld_strong_reentry(row):
+                    return 0.0
+        except Exception:
+            pass
+
+    plan=(row or {}).get('trade_plan') or {}
+    try: exp=abs(float(plan.get('expected_move_pct') or 0.0))
+    except Exception: exp=0.0
+    target_notional=max(0.0,float(target_fraction)*float(nav))
+    current=abs(float(z['units'])*float(price)) if z else 0.0
+    add=max(0.0,target_notional-current)
+    if add>0 and exp>0:
+        existing_fees=0.0
+        if z:
+            try:
+                tr=c.execute('SELECT fees_rub FROM paper_trades WHERE trade_id=%s',(z['active_trade_id'],)).fetchone()
+                existing_fees=float((tr or {}).get('fees_rub') or 0.0)
+            except Exception:
+                existing_fees=0.0
+        projected_fees=existing_fees + add*float(COMMISSION) + target_notional*float(COMMISSION)
+        expected_gross=max(target_notional,1.0)*exp
+        if expected_gross<=0 or projected_fees/expected_gross>0.30:
+            return 0.0
+    return _v90ld_base_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason)
+
+_open_or_add=_v90ld_open_or_add
+
+def _v90ld_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    trade_id=z.get('active_trade_id') if isinstance(z,dict) else z['active_trade_id']
+    soft=str(reason or '') in ('SIGNAL_REDUCTION','SOFT_SIZE_REDUCTION')
+    if soft:
+        try:
+            tr=c.execute('SELECT opened_at,horizon FROM paper_trades WHERE trade_id=%s',(trade_id,)).fetchone()
+            if tr and tr.get('opened_at'):
+                op=tr['opened_at']
+                now_dt=ts if hasattr(ts,'timestamp') else datetime.fromisoformat(str(ts).replace('Z','+00:00'))
+                op_dt=op if hasattr(op,'timestamp') else datetime.fromisoformat(str(op).replace('Z','+00:00'))
+                held=max(0.0,(now_dt-op_dt).total_seconds())
+                h=str(tr.get('horizon') or '1h')
+                min_hold=900.0 if h=='5m' else 1800.0 if h=='1h' else 3600.0
+                current_notional=abs(float(z['units'])*float(price))
+                reduction=max(0.0,current_notional-max(0.0,float(target_fraction)*float(nav)))
+                if held<min_hold or reduction<0.10*float(nav):
+                    return 0.0
+        except Exception:
+            pass
+
+    out=_v90ld_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
+    try:
+        tr=c.execute('SELECT status FROM paper_trades WHERE trade_id=%s',(trade_id,)).fetchone()
+        if tr:
+            key='exit_reason' if str(tr.get('status') or '')=='CLOSED' else 'last_management_reason'
+            c.execute("""UPDATE paper_trades
+                         SET payload=COALESCE(payload,'{}'::jsonb) || %s::jsonb
+                         WHERE trade_id=%s""",
+                      (json.dumps({key:str(reason or 'UNKNOWN')},ensure_ascii=False),trade_id))
+    except Exception:
+        pass
+    return out
+
+_close_or_reduce=_v90ld_close_or_reduce
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        applied.append("loss_driven_guards")
+
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
     if runtime_identity.strip() not in dst:
