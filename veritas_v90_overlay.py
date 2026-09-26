@@ -2857,6 +2857,96 @@ def loop():
 
     applied.append("two_speed_5m_loop")
 
+    # VERITAS V90 DATA CONTINUITY R18
+    # Never erase previously valid cells because one asset/source timed out in the
+    # current lane. Start from the last complete in-memory matrix and overwrite only
+    # cells successfully recalculated now.
+    _cs=dst.find("def cycle(selected_horizons=None, cycle_mode='FULL'):")
+    _le=dst.find("\ndef loop():",_cs)
+    if _le<0:
+        _le=dst.find("\nV90_FAST_5M_INTERVAL_SECONDS",_cs)
+    if _cs>=0 and _le>=0:
+        _cycle=dst[_cs:_le]
+        old_merge=r'''    # Fast 5m cycles publish a complete state: fresh 5m plus the last confirmed
+    # senior-timeframe rows. This prevents a 5m refresh from erasing 1h-7d context.
+    fresh_summary=list(summary)
+    if cycle_mode=='FAST_5M':
+        with lock:
+            _carry=[dict(x) for x in (last_cycle.get('summary') or [])
+                    if str(x.get('horizon') or '') not in selected_horizons]
+        _merged={(str(x.get('asset') or ''),str(x.get('horizon') or '')):x for x in _carry}
+        for _x in fresh_summary:
+            _merged[(str(_x.get('asset') or ''),str(_x.get('horizon') or ''))]=_x
+        summary=list(_merged.values())'''
+        new_merge=r'''    # R18 continuity: every lane begins from the last valid matrix.
+    # Fresh cells overwrite old cells; failed/missing cells retain the latest valid value.
+    fresh_summary=list(summary)
+    with lock:
+        _carry=[dict(x) for x in (last_cycle.get('summary') or [])]
+    _merged={(str(x.get('asset') or ''),str(x.get('horizon') or '')):x for x in _carry
+             if x.get('asset') and x.get('horizon')}
+    for _x in fresh_summary:
+        _x=dict(_x)
+        _x['snapshot_stale']=False
+        _merged[(str(_x.get('asset') or ''),str(_x.get('horizon') or ''))]=_x
+    _fresh_keys={(str(x.get('asset') or ''),str(x.get('horizon') or '')) for x in fresh_summary}
+    for _k,_x in list(_merged.items()):
+        if _k not in _fresh_keys:
+            _x=dict(_x); _x['snapshot_stale']=True; _merged[_k]=_x
+    summary=[_merged[k] for k in sorted(_merged,key=lambda z:(DISPLAY_ASSETS.index(z[0]) if z[0] in DISPLAY_ASSETS else 999,
+                                                            ('5m','1h','4h','1d','3d','7d').index(z[1]) if z[1] in ('5m','1h','4h','1d','3d','7d') else 999))]'''
+        if old_merge in _cycle:
+            _cycle=_cycle.replace(old_merge,new_merge,1)
+            dst=dst[:_cs]+_cycle+dst[_le:]
+            applied.append("r18_last_good_cell_continuity")
+
+    # UI/overview snapshots are memory-first. PostgreSQL is only a cold-start fallback,
+    # not a required dependency on every browser refresh.
+    old_fresh='''def fresh_cycle_snapshot():
+    """Merge live-memory cycle with durable latest decisions; never serve an empty/stale matrix if PG has data."""
+    with lock:
+        cyc=dict(last_cycle)
+        mem_summary=list((last_cycle or {}).get('summary') or [])
+    pg_summary=latest_signal_summary_pg()
+    merged={}
+    for x in pg_summary:
+        merged[(x.get('asset'),x.get('horizon'))]=x
+    for x in mem_summary:
+        merged[(x.get('asset'),x.get('horizon'))]=x
+    ordered=[]
+    for asset in DISPLAY_ASSETS:
+        for h in ('5m','1h','4h','1d','3d','7d'):
+            x=merged.get((asset,h))
+            if x: ordered.append(x)
+    cyc['summary']=ordered
+    cyc['summary_source']='live_memory+postgres_fallback'
+    cyc['summary_count']=len(ordered)
+    return cyc'''
+    new_fresh='''def fresh_cycle_snapshot():
+    """Serve the last valid in-memory matrix first; PostgreSQL is cold-start fallback only."""
+    with lock:
+        cyc=dict(last_cycle)
+        mem_summary=[dict(x) for x in ((last_cycle or {}).get('summary') or [])]
+    merged={(x.get('asset'),x.get('horizon')):x for x in mem_summary if x.get('asset') and x.get('horizon')}
+    expected=len(DISPLAY_ASSETS)*6
+    # Avoid DB contention on normal UI refreshes. Query durable history only when
+    # memory is genuinely insufficient (cold start / first cycle).
+    if len(merged)<max(7,expected//2):
+        for x in latest_signal_summary_pg():
+            merged.setdefault((x.get('asset'),x.get('horizon')),x)
+    ordered=[]
+    for asset in DISPLAY_ASSETS:
+        for h in ('5m','1h','4h','1d','3d','7d'):
+            x=merged.get((asset,h))
+            if x: ordered.append(x)
+    cyc['summary']=ordered
+    cyc['summary_source']='live_memory' if len(mem_summary)>=max(7,expected//2) else 'live_memory+postgres_cold_fallback'
+    cyc['summary_count']=len(ordered)
+    cyc['expected_summary_count']=expected
+    return cyc'''
+    if old_fresh in dst:
+        dst=dst.replace(old_fresh,new_fresh,1)
+        applied.append("r18_memory_first_overview")
     # VERITAS V90 PRODUCT STABILIZATION R16
     # Separate market analysis from execution permission. A closed/delayed market
     # may still have valid historical 5m structure; only actual execution is gated.
