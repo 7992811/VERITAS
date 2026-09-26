@@ -916,7 +916,10 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP27','domain':'breakout','statement':'The same structural breakout lifecycle applies on 5m, 1h, 4h, 1d, 3d and 7d: a local range boundary break confirmed by volatility expansion is an actionable directional event.'},
  {'id':'EP28','domain':'trend','statement':'After a valid breakout, successive lower highs and lower lows confirm SHORT continuation; successive higher highs and higher lows confirm LONG continuation and justify holding or staged scaling.'},
  {'id':'EP29','domain':'exit','statement':'For a structural impulse, do not rely on a fixed take-profit by default; exit when volatility contracts and a second counter-direction candle confirms a reclaim beyond the previous candle close without a new trend extreme.'},
- {'id':'EP30','domain':'multitimeframe','statement':'Market-structure rules are timeframe-invariant; only volatility normalization, structural stop distance and position size change with timeframe.'}"""
+ {'id':'EP30','domain':'multitimeframe','statement':'Market-structure rules are timeframe-invariant; only volatility normalization, structural stop distance and position size change with timeframe.'},
+ {'id':'EP31','domain':'risk','statement':'Once an open trade has enough favorable movement to cover round-trip costs plus a safety buffer, move the protective stop to true breakeven; never widen it again.'},
+ {'id':'EP32','domain':'exit','statement':'As profit grows, trail LONG positions below the nearest confirmed support and SHORT positions above the nearest confirmed resistance on the trade management timeframe and its senior timeframes.'},
+ {'id':'EP33','domain':'multitimeframe','statement':'A structural trailing stop only ratchets in the profitable direction. Use the active trade timeframe first, then senior-timeframe levels; never move a stop backward merely because a later level is farther away.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -5770,6 +5773,194 @@ def trade_report(pg_connect,limit=2500):
         else:
             dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
         applied.append("price_path_integrity_r3")
+
+
+    # VERITAS V90 STRUCTURAL TRAILING R4
+    if "# VERITAS V90 STRUCTURAL TRAILING R4" not in dst:
+        helper = r'''
+# VERITAS V90 STRUCTURAL TRAILING R4
+_v90tr_base_step_one=_step_one
+
+def _v90tr_tf_order(horizon):
+    return {
+      '5m':('5m','1h','4h','1d','3d','7d'),
+      '1h':('1h','4h','1d','3d','7d'),
+      '4h':('4h','1d','3d','7d'),
+      '1d':('1d','3d','7d'),
+      '3d':('3d','7d'),
+      '7d':('7d',),
+    }.get(str(horizon),('1h','4h','1d','3d','7d'))
+
+def _v90tr_level_buffer(asset,tf):
+    base={'5m':0.0006,'1h':0.0010,'4h':0.0015,'1d':0.0025,'3d':0.0035,'7d':0.0050}.get(str(tf),0.0015)
+    if str(asset) in ('BTC','ETH'):
+        base*=1.5
+    elif str(asset) in ('BRENT','GOLD','NQ','MOEX'):
+        base*=1.2
+    return base
+
+def _v90tr_extract_levels(row,horizon,direction,current):
+    row=row or {}
+    plan=row.get('trade_plan') or {}
+    mtf=plan.get('multi_tf_levels') or ((row.get('features') or {}).get('multi_tf_levels') if isinstance(row.get('features'),dict) else {}) or {}
+    rows=(mtf or {}).get('timeframes') or {}
+    out=[]
+    for tf in _v90tr_tf_order(horizon):
+        z=rows.get(tf) or {}
+        vals=(z.get('support_candidates') if direction=='LONG' else z.get('resistance_candidates')) or []
+        if not vals:
+            single=z.get('support') if direction=='LONG' else z.get('resistance')
+            vals=[] if single is None else [single]
+        for x in vals:
+            try: lvl=float(x)
+            except Exception: continue
+            if direction=='LONG' and 0<lvl<current:
+                out.append((tf,lvl))
+            elif direction=='SHORT' and lvl>current:
+                out.append((tf,lvl))
+    return out
+
+def _v90tr_apply(c,name,candidates,prices,ts):
+    changes=[]
+    try:
+        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+    except Exception:
+        return changes
+    for z0 in positions or []:
+        z=dict(z0)
+        asset=str(z.get('asset') or '')
+        if asset not in (prices or {}):
+            continue
+        try:
+            current=float(prices[asset]); entry=float(z.get('avg_entry_price') or 0.0)
+        except Exception:
+            continue
+        if entry<=0 or current<=0:
+            continue
+        direction=str(z.get('direction') or '')
+        if direction not in ('LONG','SHORT'):
+            continue
+        payload=_v90j_json(z.get('payload'))
+        if str(payload.get('data_integrity_status') or 'OK')=='DATA_DISCONTINUITY':
+            continue
+        signed=(current/entry-1.0) if direction=='LONG' else (entry/current-1.0)
+        if signed<=0:
+            continue
+
+        # True breakeven includes entry+exit commission and a 5bp safety cushion.
+        arm=max(2.0*float(COMMISSION)+0.0005,0.0015)
+        if signed<arm:
+            continue
+        be_offset=2.0*float(COMMISSION)+0.0002
+        breakeven=entry*(1.0+be_offset) if direction=='LONG' else entry*(1.0-be_offset)
+
+        old_stop=None
+        try:
+            if z.get('stop_price') is not None: old_stop=float(z.get('stop_price'))
+        except Exception:
+            old_stop=None
+
+        # Stage 1: true breakeven.
+        desired=breakeven
+        stage='BREAKEVEN'
+        ref_tf=None; ref_level=None
+
+        row=(candidates or {}).get(asset) or {}
+        horizon=str(payload.get('execution_timeframe') or payload.get('horizon') or row.get('horizon') or '1h')
+        levels=_v90tr_extract_levels(row,horizon,direction,current)
+
+        # Stage 2: when a current structural level has moved beyond breakeven,
+        # trail just beyond that support/resistance. Prefer the closest valid level,
+        # but only from the management timeframe or senior timeframes.
+        structural=[]
+        for tf,lvl in levels:
+            buf=_v90tr_level_buffer(asset,tf)
+            candidate=lvl*(1.0-buf) if direction=='LONG' else lvl*(1.0+buf)
+            if direction=='LONG' and candidate>breakeven and candidate<current:
+                structural.append((candidate,tf,lvl))
+            elif direction=='SHORT' and candidate<breakeven and candidate>current:
+                structural.append((candidate,tf,lvl))
+        if structural:
+            if direction=='LONG':
+                candidate,ref_tf,ref_level=max(structural,key=lambda x:x[0])
+                if candidate>desired:
+                    desired=candidate; stage='STRUCTURAL_TRAIL'
+            else:
+                candidate,ref_tf,ref_level=min(structural,key=lambda x:x[0])
+                if candidate<desired:
+                    desired=candidate; stage='STRUCTURAL_TRAIL'
+
+        # Ratchet only. Never widen a protective stop.
+        improve=(old_stop is None or
+                 (direction=='LONG' and desired>old_stop) or
+                 (direction=='SHORT' and desired<old_stop))
+        if not improve:
+            continue
+
+        # Never place a stop through the current market.
+        if direction=='LONG' and desired>=current:
+            continue
+        if direction=='SHORT' and desired<=current:
+            continue
+
+        hist=list(payload.get('trailing_history') or [])
+        event={
+          'at':_v90j_iso(ts),'stage':stage,'old_stop':old_stop,'new_stop':desired,
+          'current_price':current,'entry_price':entry,'profit_pct':100.0*signed,
+          'management_horizon':horizon,'reference_timeframe':ref_tf,
+          'reference_level':ref_level,'rule':'STRUCTURAL_TRAILING_R4'
+        }
+        hist=(hist+[event])[-24:]
+        payload.update({
+          'profit_protection_active':True,
+          'trailing_rule':'STRUCTURAL_TRAILING_R4',
+          'trailing_stage':stage,
+          'trailing_stop':desired,
+          'trailing_reference_timeframe':ref_tf,
+          'trailing_reference_level':ref_level,
+          'trailing_updated_at':_v90j_iso(ts),
+          'trailing_profit_pct':100.0*signed,
+          'trailing_history':hist,
+        })
+        tid=z.get('active_trade_id')
+        c.execute("""UPDATE paper_positions
+                     SET stop_price=%s,payload=%s::jsonb,updated_at=%s
+                     WHERE portfolio_name=%s AND asset=%s""",
+                  (desired,json.dumps(payload,ensure_ascii=False,default=str),ts,name,asset))
+        if tid:
+            c.execute("""UPDATE paper_trades
+                         SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
+                         WHERE trade_id=%s""",
+                      (json.dumps({
+                        'profit_protection_active':True,
+                        'trailing_rule':'STRUCTURAL_TRAILING_R4',
+                        'trailing_stage':stage,
+                        'trailing_stop':desired,
+                        'trailing_reference_timeframe':ref_tf,
+                        'trailing_reference_level':ref_level,
+                        'trailing_updated_at':_v90j_iso(ts),
+                        'trailing_profit_pct':100.0*signed,
+                        'trailing_history':hist,
+                      },ensure_ascii=False,default=str),tid))
+        changes.append({'portfolio':name,'asset':asset,'direction':direction,
+                        'stage':stage,'old_stop':old_stop,'new_stop':desired,
+                        'profit_pct':100.0*signed,'reference_timeframe':ref_tf,
+                        'reference_level':ref_level,'horizon':horizon})
+    if changes:
+        print(json.dumps({'event':'V90_STRUCTURAL_TRAILING_UPDATE','changes':changes},
+                         ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return changes
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    _v90tr_apply(c,name,candidates,prices,ts)
+    return _v90tr_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        applied.append("structural_trailing_r4")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
