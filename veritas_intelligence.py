@@ -10866,7 +10866,10 @@ class H(BaseHTTPRequestHandler):
                     self.reply({'status':'OK','contract':'VERITAS_V90_DB_LEASE_V1',
                                 'storage_generation':'9.0','database_url':DATABASE_URL},200)
             elif self.path.startswith('/healthz'):
-                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})
+                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,
+                            'bootstrap_ready':bool(_BOOTSTRAP_READY),
+                            'phase':'READY' if _BOOTSTRAP_READY else 'STARTING',
+                            'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})
             elif self.path.startswith('/api/v1/presence'):
                 tok=self.headers.get('X-Veritas-Visitor',''); record_presence(tok,self.path); self.reply({'version':VERSION,**user_metrics()})
             elif self.path.startswith('/api/v1/users'):
@@ -11224,6 +11227,15 @@ class H(BaseHTTPRequestHandler):
 
 def main():
     global _BOOTSTRAP_READY
+
+    # Bind and serve HTTP first so Render health checks do not wait for
+    # PostgreSQL migration/seeding or any other startup work.
+    server=ThreadingHTTPServer(('0.0.0.0', int(os.getenv('PORT', '10000'))), H)
+    server_thread=threading.Thread(target=server.serve_forever,daemon=True,name='veritas-http')
+    server_thread.start()
+    emit('http_bound_early', port=int(os.getenv('PORT','10000')),
+         bootstrap_ready=False, startup_mode='TWO_PHASE_READINESS')
+
     init_db()
     pg_boot = pg_init()
     case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}
@@ -11288,8 +11300,10 @@ def main():
          asset_thesis_api='/api/v1/asset-thesis', research_health_api='/api/v1/research-health', ping_api='/api/v1/ping',
          model_card_api='/api/v1/model-card', causal_drivers_api='/api/v1/causal-drivers', library_summary_api='/api/v1/library-summary', knowledge_import_api='/admin/knowledge/import',
          backtest_enabled=BACKTEST_ENABLED, backtest_days=BACKTEST_DAYS, macro_enabled=MACRO_ENABLED,
-         event_web_scan_enabled=EVENT_WEB_SCAN_ENABLED and heavy_role, overview_cache_enabled=FULL_OVERVIEW_ENABLED, service_role=SERVICE_ROLE, memory_soft_limit_mb=MEMORY_SOFT_LIMIT_MB, outcome_batch_limit=OUTCOME_BATCH_LIMIT, users_api='/api/v1/users', learning_progress_api='/api/v1/learning-progress', health_api='/healthz')
-    ThreadingHTTPServer(('0.0.0.0', int(os.getenv('PORT', '10000'))), H).serve_forever()
+         event_web_scan_enabled=EVENT_WEB_SCAN_ENABLED and heavy_role, overview_cache_enabled=FULL_OVERVIEW_ENABLED, service_role=SERVICE_ROLE, memory_soft_limit_mb=MEMORY_SOFT_LIMIT_MB, outcome_batch_limit=OUTCOME_BATCH_LIMIT, users_api='/api/v1/users', learning_progress_api='/api/v1/learning-progress', health_api='/healthz',
+         startup_mode='TWO_PHASE_READINESS')
+    # Keep the process alive on the already-serving HTTP thread.
+    server_thread.join()
 
 
 if __name__ == '__main__':
