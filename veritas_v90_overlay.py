@@ -2873,6 +2873,94 @@ def loop():
 
     applied.append("two_speed_5m_loop")
 
+    # VERITAS V90 PORTFOLIO API CACHE R23
+    # Portfolio UI must never block on full PostgreSQL reports.
+    _handler_pf='''            elif self.path.startswith('/api/v1/paper-portfolios'):
+                if VP is None or not pg_enabled():
+                    self.reply({'status':'UNAVAILABLE','reason':'portfolio_module_or_postgres_unavailable'})
+                else:
+                    try: self.reply(VP.report(pg_connect))
+                    except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/portfolio-trades'):
+                if VP is None or not pg_enabled(): self.reply({'status':'UNAVAILABLE'})
+                else:
+                    try: self.reply(VP.trade_report(pg_connect))
+                    except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)'''
+    _handler_pf_new='''            elif self.path.startswith('/api/v1/paper-portfolios'):
+                with lock:
+                    _pf=dict((last_cycle or {}).get('portfolio_autopilot') or {})
+                if _pf and (_pf.get('portfolios') or []):
+                    _pf['api_source']='live_memory'
+                    self.reply(_pf)
+                elif VP is None or not pg_enabled():
+                    self.reply({'status':'UNAVAILABLE','reason':'portfolio_module_or_postgres_unavailable'})
+                else:
+                    try:
+                        _pf=VP.report(pg_connect)
+                        _pf['api_source']='postgres_fallback'
+                        self.reply(_pf)
+                    except Exception as ex:
+                        self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/portfolio-trades'):
+                try:
+                    self.reply(_v90r23_trade_report_fast())
+                except Exception as ex:
+                    self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)'''
+    if _handler_pf in dst:
+        dst=dst.replace(_handler_pf,_handler_pf_new,1)
+        applied.append("r23_portfolio_nonblocking_api")
+
+    _helper_anchor="\nclass H(BaseHTTPRequestHandler):"
+    _helper=r'''
+# VERITAS V90 PORTFOLIO API CACHE R23
+_v90r23_trade_cache={'at':0.0,'value':None,'refreshing':False}
+_v90r23_trade_lock=threading.Lock()
+
+def _v90r23_trade_refresh():
+    with _v90r23_trade_lock:
+        if _v90r23_trade_cache.get('refreshing'):
+            return
+        _v90r23_trade_cache['refreshing']=True
+    try:
+        if VP is not None and pg_enabled():
+            v=VP.trade_report(pg_connect)
+            with _v90r23_trade_lock:
+                _v90r23_trade_cache['value']=v
+                _v90r23_trade_cache['at']=time.time()
+    except Exception as ex:
+        emit('r23_trade_report_refresh_error',error=f'{type(ex).__name__}: {ex}')
+    finally:
+        with _v90r23_trade_lock:
+            _v90r23_trade_cache['refreshing']=False
+
+def _v90r23_trade_report_fast():
+    with _v90r23_trade_lock:
+        v=_v90r23_trade_cache.get('value')
+        at=float(_v90r23_trade_cache.get('at') or 0.0)
+        refreshing=bool(_v90r23_trade_cache.get('refreshing'))
+    age=time.time()-at if at else None
+    if v is not None:
+        out=dict(v)
+        out['api_source']='memory_cache'
+        out['cache_age_seconds']=round(age,1) if age is not None else None
+        if (age is None or age>60) and not refreshing:
+            threading.Thread(target=_v90r23_trade_refresh,daemon=True,name='veritas-trades-refresh').start()
+        return out
+    if not refreshing:
+        threading.Thread(target=_v90r23_trade_refresh,daemon=True,name='veritas-trades-refresh').start()
+    # Return immediately; UI keeps prior content and retries.
+    return {'status':'WARMING','trades':[],'today_closed':[],'older_history':[],
+            'api_source':'warming_cache','retry_after_seconds':2}
+'''
+    if _helper_anchor in dst and "_v90r23_trade_report_fast" not in dst:
+        dst=dst.replace(_helper_anchor,"\n"+_helper+_helper_anchor,1)
+        applied.append("r23_trade_cache")
+
+    # Prime trade cache after durable DB becomes ready without blocking startup.
+    _prime_anchor="    _BOOTSTRAP_READY = True\n"
+    if _prime_anchor in dst and "name='veritas-trades-prime'" not in dst:
+        dst=dst.replace(_prime_anchor,
+            "    threading.Thread(target=_v90r23_trade_refresh,daemon=True,name='veritas-trades-prime').start()\n"+_prime_anchor,1)
     # VERITAS V90 INSTANT COLD START R22
     # Prime the UI from durable latest decisions before the first expensive full cycle.
     _main_sig = "    _BOOTSTRAP_READY = True\n"
