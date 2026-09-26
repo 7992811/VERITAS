@@ -919,7 +919,10 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP30','domain':'multitimeframe','statement':'Market-structure rules are timeframe-invariant; only volatility normalization, structural stop distance and position size change with timeframe.'},
  {'id':'EP31','domain':'risk','statement':'Once an open trade has enough favorable movement to cover round-trip costs plus a safety buffer, move the protective stop to true breakeven; never widen it again.'},
  {'id':'EP32','domain':'exit','statement':'As profit grows, trail LONG positions below the nearest confirmed support and SHORT positions above the nearest confirmed resistance on the trade management timeframe and its senior timeframes.'},
- {'id':'EP33','domain':'multitimeframe','statement':'A structural trailing stop only ratchets in the profitable direction. Use the active trade timeframe first, then senior-timeframe levels; never move a stop backward merely because a later level is farther away.'}"""
+ {'id':'EP33','domain':'multitimeframe','statement':'A structural trailing stop only ratchets in the profitable direction. Use the active trade timeframe first, then senior-timeframe levels; never move a stop backward merely because a later level is farther away.'},
+ {'id':'EP34','domain':'data','statement':'A sharp price move is not a data discontinuity when the exact futures contract and price series are unchanged; preserve genuine gap and impulse moves.'},
+ {'id':'EP35','domain':'data','statement':'For futures positions, persist the exact contract identifier at entry and calculate the lifecycle using the same contract identity. A contract roll or continuous-series switch must never be treated as trade P&L.'},
+ {'id':'EP36','domain':'data','statement':'If independent sources quote materially different prices for the same exact contract, freeze execution and marking for that asset until the conflict is resolved; keep the position and do not learn from the disputed mark.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -5961,6 +5964,146 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         else:
             dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
         applied.append("structural_trailing_r4")
+
+
+    # VERITAS V90 CONTRACT IDENTITY R5
+    if "# VERITAS V90 CONTRACT IDENTITY R5" not in dst:
+        helper = r'''
+# VERITAS V90 CONTRACT IDENTITY R5
+_v90ci_base_step_one=_step_one
+_v90ci_base_entry_patch=_v90j_entry_patch
+
+def _v90ci_entry_patch(row,z,ts):
+    d=dict(_v90ci_base_entry_patch(row,z,ts) or {})
+    row=row or {}
+    contract=row.get('contract') or {}
+    src=row.get('source_names') or {}
+    d['contract_identity']={
+      'asset':row.get('asset'),
+      'contract_id':contract.get('secid') or contract.get('symbol') or row.get('contract_id'),
+      'price_unit':contract.get('price_unit'),
+      'primary_source':src.get('primary'),
+      'verification_mode':row.get('verification_mode'),
+      'continuous_series':bool(contract.get('continuous') or row.get('continuous_series')),
+    }
+    return d
+
+_v90j_entry_patch=_v90ci_entry_patch
+
+def _v90ci_same_contract(payload,row):
+    p=(payload or {}).get('contract_identity') or {}
+    r=(row or {}).get('contract') or {}
+    rid=r.get('secid') or r.get('symbol') or (row or {}).get('contract_id')
+    pid=p.get('contract_id')
+    # If both ids exist, they must match exactly.
+    if pid and rid:
+        return str(pid)==str(rid)
+    # If one side has no id, require same verification mode and primary source.
+    psrc=p.get('primary_source')
+    rsrc=((row or {}).get('source_names') or {}).get('primary')
+    pmode=p.get('verification_mode')
+    rmode=(row or {}).get('verification_mode')
+    return bool((not psrc or not rsrc or str(psrc)==str(rsrc))
+                and (not pmode or not rmode or str(pmode)==str(rmode)))
+
+def _v90ci_cross_source_disagreement(row):
+    row=row or {}
+    try:
+        p=float(row.get('price') or 0.0)
+        s=float(row.get('secondary_price') or row.get('coinbase_price') or 0.0)
+    except Exception:
+        return None
+    if p<=0 or s<=0:
+        return None
+    div=abs(p-s)/max(1e-9,(p+s)/2.0)
+    return {'primary':p,'secondary':s,'divergence':div}
+
+def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    safe_prices=dict(prices or {})
+    safe_candidates=dict(candidates or {})
+    try:
+        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        for z0 in positions or []:
+            z=dict(z0); asset=str(z.get('asset') or '')
+            payload=_v90j_json(z.get('payload'))
+            row=safe_candidates.get(asset) or {}
+            if not row:
+                continue
+
+            same=_v90ci_same_contract(payload,row)
+            disagreement=_v90ci_cross_source_disagreement(row)
+
+            # Rule 1: a sharp move in the SAME contract is valid market data.
+            # Do not classify it as discontinuity just because return is large.
+            if same:
+                if disagreement and disagreement['divergence']>0.025:
+                    # Same named contract/series but two sources disagree materially:
+                    # freeze execution/marking until resolved, but keep the position.
+                    payload.update({
+                      'data_integrity_status':'SAME_CONTRACT_SOURCE_CONFLICT',
+                      'source_conflict_at':_v90j_iso(ts),
+                      'source_conflict_primary':disagreement['primary'],
+                      'source_conflict_secondary':disagreement['secondary'],
+                      'source_conflict_divergence':disagreement['divergence'],
+                    })
+                    tid=z.get('active_trade_id')
+                    c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                              (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
+                    if tid:
+                        c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                                  (json.dumps({
+                                    'data_integrity_status':'SAME_CONTRACT_SOURCE_CONFLICT',
+                                    'source_conflict_at':_v90j_iso(ts),
+                                    'source_conflict_primary':disagreement['primary'],
+                                    'source_conflict_secondary':disagreement['secondary'],
+                                    'source_conflict_divergence':disagreement['divergence'],
+                                  },ensure_ascii=False,default=str),tid))
+                    safe_prices[asset]=float(z.get('last_price') or safe_prices.get(asset) or 0.0)
+                    safe_candidates.pop(asset,None)
+                else:
+                    # Clear old discontinuity/source-conflict flag once the same contract is clean.
+                    if str(payload.get('data_integrity_status') or '') in ('DATA_DISCONTINUITY','SAME_CONTRACT_SOURCE_CONFLICT'):
+                        payload['data_integrity_status']='OK'
+                        payload['data_integrity_restored_at']=_v90j_iso(ts)
+                        c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                                  (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
+                continue
+
+            # Rule 2: contract identity changed. This is not a price move;
+            # it is a contract/series switch and must not affect P&L.
+            payload.update({
+              'data_integrity_status':'CONTRACT_IDENTITY_CHANGED',
+              'contract_change_at':_v90j_iso(ts),
+              'entry_contract_identity':payload.get('contract_identity'),
+              'candidate_contract':(row.get('contract') or {}),
+              'candidate_source_names':(row.get('source_names') or {}),
+              'candidate_verification_mode':row.get('verification_mode'),
+            })
+            tid=z.get('active_trade_id')
+            c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                      (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
+            if tid:
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                          (json.dumps({
+                            'data_integrity_status':'CONTRACT_IDENTITY_CHANGED',
+                            'contract_change_at':_v90j_iso(ts),
+                            'learning_eligible':False,
+                          },ensure_ascii=False,default=str),tid))
+            safe_prices[asset]=float(z.get('last_price') or safe_prices.get(asset) or 0.0)
+            safe_candidates.pop(asset,None)
+    except Exception:
+        pass
+
+    return _v90ci_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,summary)
+
+_step_one=_v90ci_step_one
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        applied.append("contract_identity_r5")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
