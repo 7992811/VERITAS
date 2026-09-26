@@ -354,67 +354,23 @@ except Exception as _v90_ui_ex:
     new_logo_anchor = "            elif self.path.startswith('/assets/veritas-markets-header.webp'):\n                try:\n                    _logo_path=os.path.join(os.path.dirname(__file__),'assets','veritas-markets-header.webp')\n                    with open(_logo_path,'rb') as _lf:\n                        _logo_body=_lf.read()\n                    self.send_response(200)\n                    self.send_header('Content-Type','image/webp')\n                    self.send_header('Cache-Control','public, max-age=86400, immutable')\n                    self.send_header('Content-Length',str(len(_logo_body)))\n                    self.end_headers()\n                    self.wfile.write(_logo_body)\n                except Exception as _logo_ex:\n                    self.reply({'status':'UNAVAILABLE','asset':'veritas-markets-header.webp','error':type(_logo_ex).__name__},404)\n            elif self.path.startswith('/assets/veritas-logo-source.webp'):\n                try:\n                    _logo_path=os.path.join(os.path.dirname(__file__),'assets','veritas-logo-source.webp')\n                    with open(_logo_path,'rb') as _lf:\n                        _logo_body=_lf.read()\n                    self.send_response(200)\n                    self.send_header('Content-Type','image/webp')\n                    self.send_header('Cache-Control','public, max-age=86400')\n                    self.send_header('Content-Length',str(len(_logo_body)))\n                    self.end_headers()\n                    self.wfile.write(_logo_body)\n                except Exception as _logo_ex:\n                    self.reply({'status':'UNAVAILABLE','asset':'veritas-logo-source.webp','error':type(_logo_ex).__name__},404)\n            elif self.path.startswith('/healthz'):\n                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})"
     if "/assets/veritas-markets-header.webp" in dst:
         ch=False
+    elif old_logo_anchor in dst:
+        dst, ch = _replace_once(dst, old_logo_anchor, new_logo_anchor, "v90 logo asset route")
     else:
-        # Health payload evolved in later v9.0 patches; accept either shape.
-        if old_logo_anchor not in dst:
-            modern_health = """            elif self.path.startswith('/healthz'):
+        modern_health = """            elif self.path.startswith('/healthz'):
                 self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,
                             'bootstrap_ready':bool(_BOOTSTRAP_READY),
                             'phase':'READY' if _BOOTSTRAP_READY else 'STARTING',
                             'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})"""
-            modern_logo = new_logo_anchor.replace(
-                "            elif self.path.startswith('/healthz'):\n                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})",
-                modern_health
-            )
-            if modern_health in dst:
-                dst=dst.replace(modern_health,modern_logo,1)
-                ch=True
-            else:
-                raise RuntimeError("v90 logo asset route anchor missing")
+        modern_logo = new_logo_anchor.replace(
+            "            elif self.path.startswith('/healthz'):\n                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})",
+            modern_health
+        )
+        if modern_health in dst:
+            dst=dst.replace(modern_health,modern_logo,1)
+            ch=True
         else:
-            if "/assets/veritas-markets-header.webp" in dst:
-        ch=False
-    else:
-        if old_logo_anchor in dst:
-            dst, ch = _replace_once(dst, old_logo_anchor, new_logo_anchor, "v90 logo asset route")
-        else:
-            modern_health = """            elif self.path.startswith('/healthz'):
-                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,
-                            'bootstrap_ready':bool(_BOOTSTRAP_READY),
-                            'phase':'READY' if _BOOTSTRAP_READY else 'STARTING',
-                            'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})"""
-            modern_logo = """            elif self.path.startswith('/assets/veritas-markets-header.webp'):
-                try:
-                    _logo_path=os.path.join(os.path.dirname(__file__),'assets','veritas-markets-header.webp')
-                    with open(_logo_path,'rb') as _lf:
-                        _logo_body=_lf.read()
-                    self.send_response(200)
-                    self.send_header('Content-Type','image/webp')
-                    self.send_header('Cache-Control','public, max-age=86400, immutable')
-                    self.send_header('Content-Length',str(len(_logo_body)))
-                    self.end_headers()
-                    self.wfile.write(_logo_body)
-                except Exception as _logo_ex:
-                    self.reply({'status':'UNAVAILABLE','asset':'veritas-markets-header.webp','error':type(_logo_ex).__name__},404)
-            elif self.path.startswith('/assets/veritas-logo-source.webp'):
-                try:
-                    _logo_path=os.path.join(os.path.dirname(__file__),'assets','veritas-logo-source.webp')
-                    with open(_logo_path,'rb') as _lf:
-                        _logo_body=_lf.read()
-                    self.send_response(200)
-                    self.send_header('Content-Type','image/webp')
-                    self.send_header('Cache-Control','public, max-age=86400')
-                    self.send_header('Content-Length',str(len(_logo_body)))
-                    self.end_headers()
-                    self.wfile.write(_logo_body)
-                except Exception as _logo_ex:
-                    self.reply({'status':'UNAVAILABLE','asset':'veritas-logo-source.webp','error':type(_logo_ex).__name__},404)
-""" + modern_health
-            if modern_health in dst:
-                dst=dst.replace(modern_health,modern_logo,1)
-                ch=True
-            else:
-                raise RuntimeError("v90 logo asset route anchor missing")
+            raise RuntimeError("v90 logo asset route anchor missing")
     if ch:
         applied.append("v90_logo_asset_route")
 
