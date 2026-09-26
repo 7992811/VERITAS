@@ -2848,6 +2848,101 @@ def loop():
 
     applied.append("two_speed_5m_loop")
 
+    # VERITAS V90 PRODUCT STABILIZATION R16
+    # Separate market analysis from execution permission. A closed/delayed market
+    # may still have valid historical 5m structure; only actual execution is gated.
+    old_research_kill = """                if not source_gate or not time_gate or kill:
+                    research_dec='NO_TRADE'"""
+    new_research_kill = """                # R16: preserve the research direction from available market data.
+                # source/time gates control execution below; only the global kill switch
+                # is allowed to erase the research direction itself.
+                if kill:
+                    research_dec='NO_TRADE'"""
+    if old_research_kill in dst:
+        dst = dst.replace(old_research_kill, new_research_kill, 1)
+        applied.append("r16_analysis_execution_separation")
+
+    if "# VERITAS V90 R16 MOEX 5M DATA" not in dst:
+        helper = r'''
+# VERITAS V90 R16 MOEX 5M DATA
+_v90r16_base_moex_market = _moex_market
+_v90r16_moex5_cache = {'at':0.0,'bars':[]}
+
+def _v90r16_moex_index_5m(force=False):
+    now_ts=time.time()
+    if (not force and _v90r16_moex5_cache.get('bars')
+            and now_ts-float(_v90r16_moex5_cache.get('at') or 0)<240):
+        return list(_v90r16_moex5_cache.get('bars') or [])
+    try:
+        frm=datetime.fromtimestamp(now_ts-5*86400,tz=timezone.utc).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()
+        till=datetime.fromtimestamp(now_ts+3600,tz=timezone.utc).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()
+        url='https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX/candles.json'
+        one=[]
+        start=0
+        with httpx.Client(timeout=20,headers={'User-Agent':'VERITAS/9.0 R16 research'}) as h:
+            for _ in range(40):
+                r=h.get(url,params={'from':frm,'till':till,'interval':1,'start':start,'iss.meta':'off'})
+                r.raise_for_status()
+                rows=_moex_block(r.json(),'candles')
+                if not rows:
+                    break
+                for x in rows:
+                    dt=_moex_parse_dt(x.get('begin') or x.get('BEGIN'))
+                    if not dt:
+                        continue
+                    cl=float(x.get('close') or x.get('CLOSE') or 0.0)
+                    if cl<=0:
+                        continue
+                    one.append({
+                      'ts':dt.timestamp(),
+                      'open':float(x.get('open') or x.get('OPEN') or cl),
+                      'high':float(x.get('high') or x.get('HIGH') or cl),
+                      'low':float(x.get('low') or x.get('LOW') or cl),
+                      'close':cl,
+                      'volume':float(x.get('value') or x.get('VALUE') or x.get('volume') or x.get('VOLUME') or 0.0),
+                    })
+                if len(rows)<100:
+                    break
+                start+=len(rows)
+        buckets={}
+        for x in one[-5000:]:
+            key=int(float(x['ts'])//300)*300
+            z=buckets.get(key)
+            if z is None:
+                buckets[key]={'ts':float(key),'open':x['open'],'high':x['high'],'low':x['low'],
+                              'close':x['close'],'volume':x['volume']}
+            else:
+                z['high']=max(float(z['high']),float(x['high']))
+                z['low']=min(float(z['low']),float(x['low']))
+                z['close']=float(x['close'])
+                z['volume']=float(z.get('volume') or 0.0)+float(x.get('volume') or 0.0)
+        bars=[buckets[k] for k in sorted(buckets)][-500:]
+        if len(bars)>=12:
+            _v90r16_moex5_cache['at']=now_ts
+            _v90r16_moex5_cache['bars']=list(bars)
+            return bars
+    except Exception as ex:
+        emit('r16_moex_5m_error',error=f'{type(ex).__name__}: {ex}')
+    return list(_v90r16_moex5_cache.get('bars') or [])
+
+def _moex_market():
+    raw=dict(_v90r16_base_moex_market())
+    bars=_v90r16_moex_index_5m()
+    if not bars:
+        bars=list(raw.get('intraday_5m') or raw.get('intraday_bars') or [])
+    raw['intraday_5m']=bars
+    raw['intraday_bars']=bars
+    raw['entry_timing_resolution']='5m' if len(bars)>=12 else '1h_fallback'
+    raw['analysis_data_available']=bool(len(bars)>=12)
+    raw['analysis_data_bars_5m']=len(bars)
+    return raw
+'''
+        anchor="\ndef _fetch_asset_bundle(symbol, asset, cb_product):"
+        if anchor not in dst:
+            raise RuntimeError("r16 MOEX 5m anchor missing")
+        dst=dst.replace(anchor,"\n"+helper+anchor,1)
+        applied.append("r16_moex_official_5m")
+
     # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION = '" + V90_INTEL + "'\n"
     main_anchor = "\nif __name__ == '__main__':"
@@ -7278,7 +7373,108 @@ def report(pg_connect):
             dst += "\n"+helper
         applied.append("intelligence_index_r14")
 
-        # VERITAS 90 FINAL RUNTIME IDENTITY
+        # VERITAS V90 PROFITABILITY STABILIZATION R16
+    if "# VERITAS V90 PROFITABILITY STABILIZATION R16" not in dst:
+        helper = r'''
+# VERITAS V90 PROFITABILITY STABILIZATION R16
+# Product objective: positive post-cost expectancy and movement capture.
+# No rule can guarantee profit; weak/noisy trades are removed before leverage is considered.
+
+# Total portfolio drawdown limit is 10%, not the legacy 22%.
+def _risk_governor(drawdown):
+    d=max(0.0,float(drawdown or 0.0))
+    if d>=0.10:
+        return {'state':'HARD_STOP','max_gross':0.25,'new_risk':False,'multiplier':0.0}
+    if d>=0.08:
+        return {'state':'DEFENSE','max_gross':0.50,'new_risk':True,'multiplier':0.35}
+    if d>=0.06:
+        return {'state':'DEFENSE','max_gross':1.00,'new_risk':True,'multiplier':0.55}
+    if d>=0.04:
+        return {'state':'CAUTION','max_gross':1.50,'new_risk':True,'multiplier':0.75}
+    if d>=0.02:
+        return {'state':'CAUTION','max_gross':1.75,'new_risk':True,'multiplier':0.90}
+    return {'state':'NORMAL','max_gross':2.00,'new_risk':True,'multiplier':1.0}
+
+# Risk on one new idea is capped at 2% NAV. Leverage is earned by evidence,
+# not by allowing a single bad stop to consume the whole drawdown budget.
+MAX_STOP_RISK_NAV=0.02
+
+_v90r16_base_admission=_signal_first_admission
+
+def _signal_first_admission(row,policy,drawdown):
+    base=dict(_v90r16_base_admission(row,policy,drawdown) or {})
+    if not base.get('open'):
+        return base
+
+    row=row or {}
+    policy=policy or {}
+    mode=str(policy.get('mode') or 'CORE')
+    plan=row.get('trade_plan') or {}
+    inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    state=str(bq.get('state') or plan.get('setup') or '')
+    grade=str(base.get('setup_grade') or row.get('_setup_grade') or '')
+    p,source=_signal_probability(row)
+
+    # 1) Weak breakouts are not allowed into the core portfolios.
+    if 'WEAK_BREAKOUT' in state:
+        if mode in ('CORE','CHALLENGER'):
+            return {'open':False,'fraction':0.0,'reason':'R16_WEAK_BREAKOUT_BLOCKED',
+                    'setup_grade':grade,'probability_source':source}
+        base['fraction']=min(float(base.get('fraction') or 0.05),0.05)
+        base['reason']='R16_WEAK_BREAKOUT_PROBE_ONLY'
+
+    # 2) Require enough movement to pay both sides of commission and still leave
+    # at least 10bp of expected net edge. This is the anti-churn economics gate.
+    try:
+        exp=abs(float(plan.get('expected_move_pct') or 0.0))
+    except Exception:
+        exp=0.0
+    required_move=max(0.0020,2.0*float(COMMISSION)+0.0010)
+    if exp>0 and exp<required_move:
+        return {'open':False,'fraction':0.0,'reason':'R16_POST_COST_EDGE_TOO_SMALL',
+                'expected_move_pct':exp,'minimum_required_move_pct':required_move,
+                'probability_source':source}
+
+    # 3) Model priors are useful for direction discovery but cannot justify
+    # leveraged size. Until empirical calibration exists, Aggressive stays <=1x.
+    if mode=='AGGRESSIVE' and source!='EMPIRICAL_CALIBRATION':
+        base['fraction']=min(float(base.get('fraction') or 0.0),1.0)
+        base['reason']=str(base.get('reason') or '')+'|R16_UNCALIBRATED_LEVERAGE_CAP_1X'
+
+    # 4) B setups remain exploratory only; C is always no-trade.
+    if grade=='C':
+        return {'open':False,'fraction':0.0,'reason':'R16_GRADE_C_NO_TRADE',
+                'setup_grade':grade,'probability_source':source}
+    if grade=='B':
+        if mode not in ('AGGRESSIVE','IMPULSE_ONLY'):
+            return {'open':False,'fraction':0.0,'reason':'R16_GRADE_B_CORE_BLOCK',
+                    'setup_grade':grade,'probability_source':source}
+        base['fraction']=min(float(base.get('fraction') or 0.0),0.10 if mode=='AGGRESSIVE' else 0.05)
+
+    # 5) Absolute stop-risk check after every sizing upgrade.
+    try:
+        rp=abs(float(plan.get('stop_distance_pct') or 0.0))
+        if rp>0:
+            risk_cap=0.02
+            base['fraction']=min(float(base.get('fraction') or 0.0),risk_cap/rp)
+    except Exception:
+        pass
+
+    base['fraction']=_clip(_round_step(base.get('fraction') or 0.0),0,float(policy.get('max_fraction') or 2.0))
+    base['open']=bool(float(base.get('fraction') or 0.0)>0)
+    base['r16_profitability_gate']=True
+    return base
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor in dst:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        else:
+            dst += "\n"+helper
+        applied.append("profitability_stabilization_r16")
+
+
+    # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
     if runtime_identity.strip() not in dst:
         dst += runtime_identity
@@ -7346,6 +7542,10 @@ def verify():
                              and "fresh_summary=list(summary)" in intel,
         'postgres_fail_soft': "# VERITAS V90 POSTGRES FAIL-SOFT" in intel
                               and "_v90_pg_probe" in intel and "connect_timeout=2" in intel,
+        'r16_product_stabilization': ("# VERITAS V90 R16 MOEX 5M DATA" in intel
+                                      and "R16: preserve the research direction" in intel
+                                      and "# VERITAS V90 PROFITABILITY STABILIZATION R16" in port
+                                      and "R16_UNCALIBRATED_LEVERAGE_CAP_1X" in port),
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
