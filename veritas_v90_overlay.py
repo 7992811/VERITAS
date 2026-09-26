@@ -271,40 +271,25 @@ def v90_migrate_core_data():
     new_main = """    pg_boot = pg_init()
     v90_migration = v90_migrate_core_data() if pg_boot.get('ok') else {'status':'POSTGRES_REQUIRED','schema':V90_DB_SCHEMA}
     emit('v90_database_ready', **v90_migration)
+    # R16 startup discipline: never block the live market loop on full historical
+    # portfolio reports or loss audits. They remain durable in PostgreSQL and are
+    # generated on demand / in background maintenance.
     if pg_boot.get('ok') and VP is not None:
         try:
-            _pr=VP.report(pg_connect)
-            _sample=[]
-            for _pp in (_pr.get('portfolios') or []):
-                for _pz in (_pp.get('positions') or []):
-                    _sample.append({'portfolio':_pp.get('name'),'asset':_pz.get('asset'),
-                                    'entry':_pz.get('avg_entry_price'),'current':_pz.get('last_price'),
-                                    'pnl_rub':_pz.get('unrealized_pnl_rub'),
-                                    'pnl_pct':_pz.get('unrealized_return_pct'),
-                                    'tp':_pz.get('take_price'),'usd':_pz.get('notional_usd'),
-                                    'metric':_pz.get('entry_metric_value'),
-                                    'metric_label':_pz.get('entry_metric_label'),
-                                    'mark_source':_pz.get('mark_source')})
-            emit('v90_open_position_startup_audit',
-                 data_quality=_pr.get('open_position_data_quality'),
-                 positions=_sample[:20])
+            if hasattr(VP,'ensure_schema'):
+                VP.ensure_schema(pg_connect)
+            emit('v90_live_state_ready',status='OK',
+                 historical_reports='DEFERRED',
+                 historical_audits='BACKGROUND',
+                 principle='market loop first; history on demand')
         except Exception as _pr_ex:
-            emit('v90_open_position_startup_audit',status='ERROR',
+            emit('v90_live_state_ready',status='DEGRADED',
                  error=f'{type(_pr_ex).__name__}: {_pr_ex}')
         emit('v90_startup_memory_policy',
              closed_journal='DEFER_TO_UI_REQUEST',
              paper_execution_learning='DEFER_TO_MEMORY_GUARDED_HEAVY_LEARNING',
-             principle='startup keeps only live portfolio state; historical analytics stay durable in PostgreSQL')
-        if hasattr(VP,'quality_loss_audit'):
-            try:
-                VP.quality_loss_audit(pg_connect)
-            except Exception as _la_ex:
-                emit('v90_loss_audit_error',error=f'{type(_la_ex).__name__}: {_la_ex}')
-        if hasattr(VP,'worst_trade_audit'):
-            try:
-                VP.worst_trade_audit(pg_connect,100)
-            except Exception as _wt_ex:
-                emit('v90_worst_trade_audit_error',error=f'{type(_wt_ex).__name__}: {_wt_ex}')
+             loss_audit='DEFER_TO_BACKGROUND',
+             principle='startup keeps only live state; historical analytics never block market cycles')
     case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}"""
     dst, ch = _replace_once(dst, old_main, new_main, "v90 migration startup")
     if ch:
