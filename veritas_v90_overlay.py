@@ -2873,6 +2873,62 @@ def loop():
 
     applied.append("two_speed_5m_loop")
 
+    # VERITAS V90 INSTANT COLD START R22
+    # Prime the UI from durable latest decisions before the first expensive full cycle.
+    _main_sig = "    _BOOTSTRAP_READY = True\n"
+    _prime = r'''    # R22: publish the last durable 42-cell matrix immediately on startup.
+    try:
+        _cold=latest_signal_summary_pg() if pg_enabled() else []
+        if _cold:
+            _cold_map={(x.get('asset'),x.get('horizon')):dict(x) for x in _cold if x.get('asset') and x.get('horizon')}
+            _cold_rows=[]
+            for _a in DISPLAY_ASSETS:
+                for _h in ('5m','1h','4h','1d','3d','7d'):
+                    _x=_cold_map.get((_a,_h))
+                    if _x:
+                        _x['snapshot_stale']=True
+                        _cold_rows.append(_x)
+            with lock:
+                last_cycle.update({'status':'warming','at':now(),'version':VERSION,
+                                   'summary':_cold_rows,'summary_source':'postgres_cold_start',
+                                   'signal_cells':len(_cold_rows),'cycle_mode':'COLD_START'})
+            emit('v90_cold_start_snapshot',signal_cells=len(_cold_rows),status='READY')
+    except Exception as _cold_ex:
+        emit('v90_cold_start_snapshot',signal_cells=0,status='ERROR',
+             error=f'{type(_cold_ex).__name__}: {_cold_ex}')
+    _BOOTSTRAP_READY = True
+'''
+    if _main_sig in dst and "v90_cold_start_snapshot" not in dst:
+        dst=dst.replace(_main_sig,_prime,1)
+        applied.append("r22_instant_cold_start")
+
+    # DB-backed learning/context must never block or fail an asset decision.
+    # Use safe wrappers with last-known/default fallbacks.
+    _anchor="\ndef cycle(selected_horizons=None, cycle_mode='FULL'):"
+    _safe=r'''
+# VERITAS V90 R22 DB-SAFE LIVE CONTEXT
+_v90r22_perf_cache={'at':0.0,'value':[]}
+def _v90r22_agent_perf_safe():
+    now_ts=time.time()
+    if _v90r22_perf_cache.get('value') and now_ts-float(_v90r22_perf_cache.get('at') or 0)<300:
+        return list(_v90r22_perf_cache['value'])
+    try:
+        v=pg_agent_performance() if pg_enabled() else performance_rows()
+        _v90r22_perf_cache.update({'at':now_ts,'value':list(v or [])})
+        return list(v or [])
+    except Exception as ex:
+        emit('r22_agent_perf_fallback',error=f'{type(ex).__name__}: {ex}')
+        return list(_v90r22_perf_cache.get('value') or performance_rows())
+
+'''
+    if _anchor in dst and "_v90r22_agent_perf_safe" not in dst:
+        dst=dst.replace(_anchor,"\n"+_safe+_anchor,1)
+
+    dst=dst.replace(
+        "phase_t0=time.time(); perf = pg_agent_performance() if pg_enabled() else performance_rows(); phase_seconds['agent_learning']=time.time()-phase_t0",
+        "phase_t0=time.time(); perf = _v90r22_agent_perf_safe(); phase_seconds['agent_learning']=time.time()-phase_t0"
+    )
+
     # VERITAS V90 POSTGRES STABILITY R20
     # Free Render Postgres can occasionally exceed a 2s connection handshake.
     # Avoid declaring durable storage dead on a single slow connection.
