@@ -938,7 +938,10 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP70','domain':'learning','statement':'Persist the detected transition family, grade, score and evidence on every trade so missed captures and false transitions can be audited and recalibrated separately.'},
  {'id':'EP71','domain':'sizing','statement':'Aggressive may use substantially larger initial and continuation exposure on validated A/A+ trend transitions, including leverage, because its mandate allows up to 5x gross exposure.'},
  {'id':'EP72','domain':'risk','statement':'Aggressive leverage is earned by evidence: higher exposure requires stronger structure, independent evidence, reward-risk and volatility confirmation; leverage capacity alone never justifies a larger position.'},
- {'id':'EP73','domain':'sizing','statement':'For Aggressive, scale validated A+ campaigns progressively from roughly 1x toward 1.5x, 2.5x, 3.5x and at exceptional confirmation up to 5x, always bounded by stop-risk and portfolio risk governors.'}"""
+ {'id':'EP73','domain':'sizing','statement':'For Aggressive, scale validated A+ campaigns progressively from roughly 1x toward 1.5x, 2.5x, 3.5x and at exceptional confirmation up to 5x, always bounded by stop-risk and portfolio risk governors.'},
+ {'id':'EP74','domain':'learning','statement':'Measure system learning with a stable operational index that separates knowledge breadth from evidence maturity, outcome quality, execution capture quality and telemetry coverage.'},
+ {'id':'EP75','domain':'learning','statement':'Adding rules alone must not be interpreted as becoming smarter; a rule becomes valuable only when clean forward outcomes improve net expectancy, capture quality or decision calibration.'},
+ {'id':'EP76','domain':'audit','statement':'Every intelligence score must publish its sample size and confidence level so small samples cannot masquerade as durable learning progress.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -7070,6 +7073,165 @@ def _v90j_entry_patch(row,z,ts):
         if old_route in dst:
             dst=dst.replace(old_route,new_route,1)
         applied.append("trend_transition_engine_r13")
+
+
+    # VERITAS V90 INTELLIGENCE INDEX R14
+    if "# VERITAS V90 INTELLIGENCE INDEX R14" not in dst:
+        helper = r'''
+# VERITAS V90 INTELLIGENCE INDEX R14
+V90_EXPERT_PRINCIPLES_COUNT=51
+V90_CORE_LEARNING_LAYERS=12
+
+def _v90ii_num(x,default=0.0):
+    try:
+        v=float(x)
+        return v if math.isfinite(v) else float(default)
+    except Exception:
+        return float(default)
+
+def _v90ii_payload(x):
+    return _v90j_json(x)
+
+def _v90ii_capture_from_trade(r):
+    p=_v90ii_payload(r.get('payload'))
+    mfe=max(0.0,_v90ii_num(p.get('mfe_pct'),0.0))
+    entry=_v90ii_num(r.get('avg_entry_price'),0.0)
+    exitp=_v90ii_num(r.get('avg_exit_price'),0.0)
+    if mfe<=0 or entry<=0 or exitp<=0:
+        return None
+    d=str(r.get('direction') or '')
+    realized=100.0*((exitp/entry)-1.0) if d=='LONG' else 100.0*((entry/exitp)-1.0)
+    if realized<=0:
+        return 0.0
+    return max(0.0,min(1.25,realized/mfe))
+
+def _v90_intelligence_index(c):
+    # This is an operational learning-maturity index, not an IQ score.
+    try:
+        rows=c.execute("""SELECT trade_id,portfolio_name,direction,opened_at,closed_at,
+                                 avg_entry_price,avg_exit_price,net_pnl_rub,fees_rub,payload
+                          FROM paper_trades
+                          WHERE status='CLOSED'
+                          ORDER BY closed_at DESC NULLS LAST
+                          LIMIT 1500""").fetchall()
+    except Exception:
+        rows=[]
+
+    q2=[]
+    for r0 in rows or []:
+        r=dict(r0)
+        if str(r.get('opened_at') or '') < str(V90_Q2_STARTED_AT):
+            continue
+        p=_v90ii_payload(r.get('payload'))
+        if str(p.get('data_integrity_status') or 'OK') not in ('','OK'):
+            continue
+        q2.append(r)
+
+    n=len(q2)
+    wins=sum(1 for r in q2 if _v90ii_num(r.get('net_pnl_rub'))>0)
+    net=sum(_v90ii_num(r.get('net_pnl_rub')) for r in q2)
+    fees=sum(_v90ii_num(r.get('fees_rub')) for r in q2)
+    win_rate=(wins/n) if n else None
+    avg_net=(net/n) if n else None
+
+    captures=[]
+    graded=0
+    transitions=0
+    learning_eligible=0
+    for r in q2:
+        p=_v90ii_payload(r.get('payload'))
+        if p.get('setup_grade'): graded+=1
+        if p.get('trend_transition_setup'): transitions+=1
+        if p.get('learning_eligible') is not False: learning_eligible+=1
+        cr=_v90ii_capture_from_trade(r)
+        if cr is not None: captures.append(cr)
+    avg_capture=(sum(captures)/len(captures)) if captures else None
+
+    # 1) Knowledge breadth: max 20. Rules alone cannot dominate the index.
+    knowledge=min(20.0,20.0*V90_EXPERT_PRINCIPLES_COUNT/100.0)
+
+    # 2) Evidence maturity: max 20, saturates at 150 clean post-R2 outcomes.
+    evidence=min(20.0,20.0*n/150.0)
+
+    # 3) Outcome quality: max 25. Blend win rate with net expectancy.
+    outcome=0.0
+    if n:
+        wr=max(0.0,min(1.0,float(win_rate)))
+        wr_component=15.0*max(0.0,min(1.0,(wr-0.35)/0.35))
+        expectancy_component=0.0
+        if avg_net is not None:
+            # Positive average net trade earns credit; losses earn none.
+            expectancy_component=10.0*max(0.0,min(1.0,float(avg_net)/1500.0))
+        outcome=wr_component+expectancy_component
+
+    # 4) Execution quality: max 20 from capture ratio, requires observed MFE.
+    execution=0.0
+    if avg_capture is not None:
+        execution=20.0*max(0.0,min(1.0,float(avg_capture)/0.75))
+
+    # 5) Learning telemetry coverage: max 15.
+    telemetry=0.0
+    if n:
+        grade_cov=graded/n
+        learn_cov=learning_eligible/n
+        # transition coverage is informational rather than mandatory for every trade.
+        transition_cov=min(1.0,transitions/max(1.0,n*0.20))
+        telemetry=15.0*(0.45*grade_cov+0.35*learn_cov+0.20*transition_cov)
+
+    raw=knowledge+evidence+outcome+execution+telemetry
+    score=round(max(0.0,min(100.0,raw)),1)
+
+    confidence=('LOW' if n<20 else 'MEDIUM' if n<75 else 'HIGH')
+    return {
+      'name':'VERITAS Intelligence Index',
+      'score':score,
+      'interpretation':'operational_learning_maturity_not_IQ',
+      'confidence':confidence,
+      'components':{
+        'knowledge_breadth':round(knowledge,1),
+        'evidence_maturity':round(evidence,1),
+        'outcome_quality':round(outcome,1),
+        'execution_capture_quality':round(execution,1),
+        'learning_telemetry_coverage':round(telemetry,1),
+      },
+      'knowledge':{
+        'expert_principles':V90_EXPERT_PRINCIPLES_COUNT,
+        'core_learning_layers':V90_CORE_LEARNING_LAYERS,
+        'latest_layer':'R14_INTELLIGENCE_INDEX',
+      },
+      'evidence':{
+        'clean_post_r2_closed_trades':n,
+        'wins':wins,
+        'win_rate':None if win_rate is None else round(win_rate,4),
+        'net_pnl_rub':round(net,2),
+        'fees_rub':round(fees,2),
+        'avg_net_pnl_per_trade_rub':None if avg_net is None else round(avg_net,2),
+        'capture_ratio_observations':len(captures),
+        'avg_capture_ratio':None if avg_capture is None else round(avg_capture,4),
+        'graded_trade_coverage':None if not n else round(graded/n,4),
+        'trend_transition_trades':transitions,
+      },
+      'rule':'Score can rise from more knowledge only modestly; durable improvement requires new clean outcomes, better net expectancy, better capture, and better telemetry coverage.'
+    }
+
+
+_v90ii_base_report=report
+
+def report(pg_connect):
+    d=dict(_v90ii_base_report(pg_connect) or {})
+    try:
+        with pg_connect() as c:
+            d['intelligence_index']=_v90_intelligence_index(c)
+    except Exception as e:
+        d['intelligence_index']={'status':'UNAVAILABLE','error':str(e)[:180]}
+    return _jsonable(d)
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor in dst:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        else:
+            dst += "\n"+helper
+        applied.append("intelligence_index_r14")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
