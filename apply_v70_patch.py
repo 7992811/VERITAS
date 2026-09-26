@@ -35,7 +35,7 @@ def patch(text: str) -> str:
         "VERSION = 'veritas-max-product-v27.0-autonomous-trade-intelligence'",
         "VERSION = 'veritas-max-product-v70.0-market-os'\n"
         "try:\n"
-        "    import veritas_v70 as V70\n"
+        "    import veritas_signal_core as V70\n"
         "except Exception:\n"
         "    V70 = None",
         "version/import",

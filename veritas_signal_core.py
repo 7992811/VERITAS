@@ -1,6 +1,6 @@
 """VERITAS Markets v72 compatibility + qualitative intelligence layer.
 
-Drop-in replacement for repository file ``veritas_v70.py``.
+Drop-in replacement for repository file ``veritas_signal_core.py``.
 The production host currently imports this module as ``V70`` and calls only:
     - pretrade_gate(payload)
     - investor_asset_view(signals, model_agents=None)
@@ -30,7 +30,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-VERSION = "veritas-max-product-v84.2-audited-learning-execution"
+VERSION = "veritas-signal-core-v9.0"
 SCHEMA_VERSION = 3
 
 # ---------------------------------------------------------------------------

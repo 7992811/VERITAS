@@ -1,5 +1,5 @@
 import unittest
-import veritas_v70 as v
+import veritas_signal_core as v
 import veritas_intelligence as vi
 
 class TestV703(unittest.TestCase):

@@ -14,7 +14,7 @@ except Exception:
 
 VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
 try:
-    import veritas_v70 as V70
+    import veritas_signal_core as V70
 except Exception:
     V70 = None
 try:

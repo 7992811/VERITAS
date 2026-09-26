@@ -1,5 +1,5 @@
 import unittest
-import veritas_v70 as v70
+import veritas_signal_core as v70
 
 class V702Tests(unittest.TestCase):
     def base(self,h):

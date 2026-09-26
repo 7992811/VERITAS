@@ -1,5 +1,5 @@
 import unittest
-import veritas_v70 as v70
+import veritas_signal_core as v70
 
 class V701Tests(unittest.TestCase):
     def test_entry_veto_is_not_thesis_veto(self):
