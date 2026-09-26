@@ -925,7 +925,7 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP36','domain':'data','statement':'If independent sources quote materially different prices for the same exact contract, freeze execution and marking for that asset until the conflict is resolved; keep the position and do not learn from the disputed mark.'},
  {'id':'EP37','domain':'breakout','statement':'In RANGE_LOW_VOL, a breakout label alone is insufficient for entry; require fresh structure, volume and volatility expansion, and aligned horizon structure.'},
  {'id':'EP38','domain':'regime','statement':'Low-volatility ranges have elevated false-breakout risk. Treat uncalibrated model scores conservatively and demand stronger independent evidence before committing capital.'},
- {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},\n {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},\n {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},\n {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'},\n {'id':'EP43','domain':'sizing','statement':'After partial profit-taking, position size may be rebuilt only on a new same-direction high-quality setup with fresh breakout evidence, volume confirmation, aligned structure and positive post-cost economics.'},\n {'id':'EP44','domain':'risk','statement':'Reloading a profitable position must never loosen an already protected stop. New size inherits the existing protected risk boundary unless a tighter structural stop is available.'},\n {'id':'EP45','domain':'execution','statement':'A profit reload is a new add-on decision, not an automatic reversal of prior profit-taking; require a minimum 5% position increment and re-check transaction-cost budget.'},\n {'id':'EP46','domain':'execution','statement':'Do not churn a newly opened fast-timeframe position on a small opposite signal while price remains inside a commission-dominated micro-move; require either time for the setup to mature or a materially adverse move.'},\n {'id':'EP47','domain':'cost','statement':'For 5m and other fast setups, a direction flip must be evaluated against round-trip transaction costs before closing and reopening; near-flat flips are execution noise, not alpha.'},\n {'id':'EP48','domain':'multitimeframe','statement':'For 3d/7d positions, lower-timeframe signals manage tactics but do not own the core thesis. A 5m/1h reversal may stop adding or trim a tactical sleeve, but the core remains until senior-horizon structure breaks.'},\n {'id':'EP49','domain':'risk','statement':'Hard risk exits remain immediate across all horizons, but soft lower-timeframe invalidations must not fully liquidate a structurally intact 3d/7d position.'},\n {'id':'EP50','domain':'sizing','statement':'When a lower timeframe turns against an intact senior-horizon position, reduce at most the tactical sleeve and preserve roughly 75% of current core exposure until the senior structure invalidates.'},\n {'id':'EP51','domain':'governance','statement':'VERITAS quality-first DNA: first eliminate weak/noisy/uneconomic trades, then scale only the strongest validated opportunities. NO_TRADE is preferable to a low-quality trade.'},\n {'id':'EP52','domain':'governance','statement':'Decision priority is: quality filter, structural confirmation, post-cost economics, sizing, then profit management. Later stages may never override a failed earlier stage.'},\n {'id':'EP53','domain':'sizing','statement':'Use risk capacity and leverage to amplify validated A/A+ opportunities rather than to compensate for marginal signal quality. Borderline setups should remain small or be skipped.'}"""
+ {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},\n {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},\n {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},\n {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'},\n {'id':'EP43','domain':'sizing','statement':'After partial profit-taking, position size may be rebuilt only on a new same-direction high-quality setup with fresh breakout evidence, volume confirmation, aligned structure and positive post-cost economics.'},\n {'id':'EP44','domain':'risk','statement':'Reloading a profitable position must never loosen an already protected stop. New size inherits the existing protected risk boundary unless a tighter structural stop is available.'},\n {'id':'EP45','domain':'execution','statement':'A profit reload is a new add-on decision, not an automatic reversal of prior profit-taking; require a minimum 5% position increment and re-check transaction-cost budget.'},\n {'id':'EP46','domain':'execution','statement':'Do not churn a newly opened fast-timeframe position on a small opposite signal while price remains inside a commission-dominated micro-move; require either time for the setup to mature or a materially adverse move.'},\n {'id':'EP47','domain':'cost','statement':'For 5m and other fast setups, a direction flip must be evaluated against round-trip transaction costs before closing and reopening; near-flat flips are execution noise, not alpha.'},\n {'id':'EP48','domain':'multitimeframe','statement':'For 3d/7d positions, lower-timeframe signals manage tactics but do not own the core thesis. A 5m/1h reversal may stop adding or trim a tactical sleeve, but the core remains until senior-horizon structure breaks.'},\n {'id':'EP49','domain':'risk','statement':'Hard risk exits remain immediate across all horizons, but soft lower-timeframe invalidations must not fully liquidate a structurally intact 3d/7d position.'},\n {'id':'EP50','domain':'sizing','statement':'When a lower timeframe turns against an intact senior-horizon position, reduce at most the tactical sleeve and preserve roughly 75% of current core exposure until the senior structure invalidates.'},\n {'id':'EP51','domain':'governance','statement':'VERITAS quality-first DNA: first eliminate weak/noisy/uneconomic trades, then scale only the strongest validated opportunities. NO_TRADE is preferable to a low-quality trade.'},\n {'id':'EP52','domain':'governance','statement':'Decision priority is: quality filter, structural confirmation, post-cost economics, sizing, then profit management. Later stages may never override a failed earlier stage.'},\n {'id':'EP53','domain':'sizing','statement':'Use risk capacity and leverage to amplify validated A/A+ opportunities rather than to compensate for marginal signal quality. Borderline setups should remain small or be skipped.'},\n {'id':'EP54','domain':'classification','statement':'Classify every executable setup as A+, A, B or C from structure, multi-timeframe alignment, independent evidence, volume/volatility confirmation, post-cost economics and calibration quality.'},\n {'id':'EP55','domain':'classification','statement':'A+ and A are institutional-quality execution classes; B is exploratory and may only be traded by Impulse/Aggressive at deliberately small size; C is NO_TRADE.'},\n {'id':'EP56','domain':'classification','statement':'A setup grade is not a substitute for hard gates: invalidation, data-integrity failure or failed economics always override a high raw score.'},\n {'id':'EP57','domain':'learning','statement':'Track realized PnL, win rate, MFE/MAE, costs and error type separately by setup grade so grade thresholds can be recalibrated from observed outcomes.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -6508,6 +6508,183 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         else:
             dst += "\n"+helper
         applied.append("horizon_consistent_exit_r10")
+
+
+    # VERITAS V90 SETUP GRADE R11
+    if "# VERITAS V90 SETUP GRADE R11" not in dst:
+        helper = r'''
+# VERITAS V90 SETUP GRADE R11
+_v90sg_base_admission=_signal_first_admission
+_v90sg_base_entry_patch=_v90j_entry_patch
+
+def _v90sg_grade(row):
+    row=row or {}
+    direction=str(row.get('research_decision') or 'NO_TRADE')
+    plan=row.get('trade_plan') or {}
+    inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    hs=row.get('horizon_structure') or {}
+    ti=row.get('trend_impulse') or {}
+    regime=str(row.get('regime') or '')
+    entryq=str(row.get('entry_quality') or plan.get('entry_quality') or '')
+    state=str(bq.get('state') or '')
+    horizon=str(row.get('horizon') or '')
+    p,source=_signal_probability(row)
+    empirical=(source=='EMPIRICAL_CALIBRATION')
+
+    try: rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+    try: exp=abs(float(plan.get('expected_move_pct') or 0.0))
+    except Exception: exp=0.0
+    try: indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception: indep=0
+    supporting=list(row.get('_supporting_horizons') or [])
+    alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    try: hscore=float(hs.get('score') or 0.0)
+    except Exception: hscore=0.0
+    hdir=str(hs.get('direction') or 'NO_TRADE')
+    hstate=str(hs.get('state') or '')
+    volume=bool(ti.get('volume_confirmed') or bq.get('volume_confirmed'))
+    try:
+        vol_exp=float(ti.get('volatility_expansion_ratio') or bq.get('volatility_expansion_ratio') or 1.0)
+    except Exception:
+        vol_exp=1.0
+    fresh=bool(ti.get('fresh_breakout') or bq.get('fresh_breakout') or state in ('FRESH_BREAKOUT','HIGH_QUALITY_BREAKOUT'))
+    senior=len(list(ti.get('senior_horizon_confirmations') or []))
+    phase=str(ti.get('phase') or '')
+
+    reasons=[]
+    if direction not in ('LONG','SHORT'):
+        return {'grade':'C','score':0,'reasons':['NO_DIRECTION']}
+    if entryq=='INVALIDATED':
+        return {'grade':'C','score':0,'reasons':['ENTRY_INVALIDATED']}
+    if state=='WEAK_BREAKOUT':
+        return {'grade':'C','score':0,'reasons':['WEAK_BREAKOUT']}
+    if bool((plan.get('trade_integrity') or {}).get('hard_invalidation')):
+        return {'grade':'C','score':0,'reasons':['HARD_INVALIDATION']}
+
+    score=0
+    if hdir==direction:
+        score+=1; reasons.append('TF_DIRECTION_ALIGNED')
+    if hstate=='CONFIRMED_TREND':
+        score+=2; reasons.append('CONFIRMED_TREND')
+    elif hstate=='BUILDING_TREND':
+        score+=1; reasons.append('BUILDING_TREND')
+    if hscore>=0.75:
+        score+=2; reasons.append('HIGH_STRUCTURE_SCORE')
+    elif hscore>=0.62:
+        score+=1; reasons.append('GOOD_STRUCTURE_SCORE')
+
+    if indep>=5:
+        score+=2; reasons.append('EVIDENCE_5PLUS')
+    elif indep>=3:
+        score+=1; reasons.append('EVIDENCE_3PLUS')
+    if alignment>=4:
+        score+=2; reasons.append('MTF_ALIGNMENT_4PLUS')
+    elif alignment>=2:
+        score+=1; reasons.append('MTF_ALIGNMENT_2PLUS')
+
+    if volume:
+        score+=1; reasons.append('VOLUME_CONFIRMED')
+    if vol_exp>=1.35:
+        score+=1; reasons.append('VOLATILITY_EXPANSION')
+    if fresh:
+        score+=1; reasons.append('FRESH_STRUCTURE')
+    if senior>=2:
+        score+=2; reasons.append('SENIOR_TF_CONFIRMATION_2PLUS')
+    elif senior>=1:
+        score+=1; reasons.append('SENIOR_TF_CONFIRMATION')
+    if phase in ('TREND_DAY','IMPULSE_TREND'):
+        score+=1; reasons.append('TREND_IMPULSE_PHASE')
+
+    rr_a=1.75 if horizon=='5m' else 1.60
+    rr_ap=2.25 if horizon=='5m' else 2.00
+    if rr>=rr_ap:
+        score+=2; reasons.append('RR_A_PLUS')
+    elif rr>=rr_a:
+        score+=1; reasons.append('RR_A')
+
+    exp_a=0.006 if horizon=='5m' else 0.005 if horizon=='1h' else 0.004
+    exp_ap=0.010 if horizon=='5m' else 0.008 if horizon=='1h' else 0.006
+    if exp>=exp_ap:
+        score+=2; reasons.append('MOVE_A_PLUS')
+    elif exp>=exp_a:
+        score+=1; reasons.append('MOVE_A')
+
+    if empirical and float(p)>=0.78:
+        score+=2; reasons.append('CALIBRATED_78PLUS')
+    elif empirical and float(p)>=0.70:
+        score+=1; reasons.append('CALIBRATED_70PLUS')
+    elif (not empirical) and float(p)>=0.84:
+        score+=1; reasons.append('HIGH_UNCALIBRATED_QUALITY')
+
+    # Regime penalties: quality-first DNA.
+    if regime=='RANGE_LOW_VOL':
+        score-=2; reasons.append('PENALTY_RANGE_LOW_VOL')
+    if state=='EARLY_BREAKOUT' and not (volume and vol_exp>=1.15):
+        score-=2; reasons.append('PENALTY_EARLY_UNCONFIRMED')
+    if rr<1.35 or exp<0.002:
+        score-=3; reasons.append('PENALTY_WEAK_ECONOMICS')
+
+    if score>=12:
+        grade='A+'
+    elif score>=9:
+        grade='A'
+    elif score>=6:
+        grade='B'
+    else:
+        grade='C'
+    return {'grade':grade,'score':score,'reasons':reasons,
+            'rr':rr,'expected_move_pct':exp,'independent':indep,
+            'alignment_count':alignment,'probability_source':source,
+            'signal_probability_or_score':float(p),'regime':regime}
+
+def _signal_first_admission(row,policy,drawdown):
+    base=dict(_v90sg_base_admission(row,policy,drawdown) or {})
+    grade=_v90sg_grade(row)
+    row['_setup_grade']=grade.get('grade')
+    row['_setup_grade_score']=grade.get('score')
+    row['_setup_grade_reasons']=grade.get('reasons')
+    base['setup_grade']=grade.get('grade')
+    base['setup_grade_score']=grade.get('score')
+    base['setup_grade_reasons']=grade.get('reasons')
+    if not base.get('open'):
+        return base
+
+    mode=str((policy or {}).get('mode') or 'CORE')
+    g=str(grade.get('grade') or 'C')
+
+    if g=='C':
+        return {'open':False,'fraction':0.0,'reason':'R11_GRADE_C_NO_TRADE',
+                'setup_grade':g,'setup_grade_score':grade.get('score'),
+                'setup_grade_reasons':grade.get('reasons')}
+
+    if g=='B':
+        if mode not in ('AGGRESSIVE','IMPULSE_ONLY'):
+            return {'open':False,'fraction':0.0,'reason':'R11_GRADE_B_NOT_ALLOWED_FOR_PORTFOLIO',
+                    'setup_grade':g,'setup_grade_score':grade.get('score'),
+                    'setup_grade_reasons':grade.get('reasons')}
+        cap=0.10 if mode=='AGGRESSIVE' else 0.05
+        base['fraction']=min(float(base.get('fraction') or cap),cap)
+        base['grade_size_cap']=cap
+        base['reason']='R11_GRADE_B_LIMITED' if base.get('open') else base.get('reason')
+
+    base['quality_first_dna']=True
+    return base
+
+def _v90j_entry_patch(row,z,ts):
+    d=dict(_v90sg_base_entry_patch(row,z,ts) or {})
+    d['setup_grade']=(row or {}).get('_setup_grade')
+    d['setup_grade_score']=(row or {}).get('_setup_grade_score')
+    d['setup_grade_reasons']=(row or {}).get('_setup_grade_reasons')
+    return d
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor in dst:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        else:
+            dst += "\n"+helper
+        applied.append("setup_grade_r11")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
