@@ -15182,6 +15182,7 @@ def _v90r25_trades_fast(limit=80):
                                      funding_rub,net_pnl_rub,return_on_entry_nav,profitable,
                                      meaningful_win,status,setup,horizon,payload
                               FROM paper_trades
+                              WHERE closed_at IS NOT NULL OR status='CLOSED'
                               ORDER BY COALESCE(closed_at,opened_at) DESC
                               LIMIT %s""",(limit,)).fetchall()
         trades=[]
@@ -15247,6 +15248,48 @@ def _v90r23_trade_report_fast():
     return {'status':'WARMING','trades':[],'today_closed':[],'older_history':[],
             'api_source':'warming_cache','retry_after_seconds':2}
 
+
+def _v90r26_dashboard_bootstrap():
+    """One fast UI payload: signals, four portfolios, open positions and recent closed trades."""
+    cyc=fresh_cycle_snapshot()
+    signals=[dict(z) for z in (cyc.get('summary') or []) if str(z.get('asset') or '')!='NDX']
+    pf=_v90r25_portfolios_fast()
+    tr=_v90r25_trades_fast(100)
+    ps=list(pf.get('portfolios') or [])
+    positions=[]
+    for p in ps:
+        for z0 in (p.get('positions') or []):
+            z=dict(z0)
+            z['portfolio']=p.get('name')
+            positions.append(z)
+    # Clear, decision-useful summaries instead of raw diagnostics.
+    source_ok=sum(1 for x in signals if x.get('source_gate_pass') is True)
+    exec_ok=sum(1 for x in signals if x.get('execution_eligible') is True)
+    stale=sum(1 for x in signals if x.get('snapshot_stale') is True)
+    horizon_counts={h:sum(1 for x in signals if x.get('horizon')==h) for h in ('5m','1h','4h','1d','3d','7d')}
+    closed_total=sum(int(p.get('closed_trades') or 0) for p in ps)
+    wins_total=sum(int(p.get('wins') or 0) for p in ps)
+    return {
+      'status':'OK','version':VERSION,'at':cyc.get('at'),
+      'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled())},
+      'signals':signals,'signal_count':len(signals),
+      'portfolios':ps,'portfolio_count':len(ps),
+      'positions':positions,'open_position_count':len(positions),
+      'trades':list(tr.get('trades') or []),
+      'trade_count':len(tr.get('trades') or []),
+      'learning_summary':{
+        'closed_trades':closed_total,'wins':wins_total,
+        'win_rate':(wins_total/closed_total if closed_total else None),
+        'experience_storage':'ACTIVE' if pg_enabled() else 'UNAVAILABLE'
+      },
+      'data_quality_summary':{
+        'cells':len(signals),'expected_cells':42,'source_verified_cells':source_ok,
+        'execution_eligible_cells':exec_ok,'stale_cells':stale
+      },
+      'horizon_summary':horizon_counts
+    }
+
+
 class H(BaseHTTPRequestHandler):
     def reply(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode()
@@ -15300,6 +15343,11 @@ class H(BaseHTTPRequestHandler):
                 self.reply_html(DASHBOARD_HTML)
             elif self.path.startswith('/api/v1/overview'):
                 self.reply(product_overview())
+            elif self.path.startswith('/api/v1/dashboard-bootstrap'):
+                try:
+                    self.reply(_v90r26_dashboard_bootstrap())
+                except Exception as ex:
+                    self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
             elif self.path.startswith('/api/v1/signals'):
                 x=fresh_cycle_snapshot()
                 _signals=[dict(z) for z in (x.get('summary') or []) if str(z.get('asset') or '')!='NDX']
