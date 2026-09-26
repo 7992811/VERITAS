@@ -2873,6 +2873,92 @@ def loop():
 
     applied.append("two_speed_5m_loop")
 
+    # VERITAS V90 POSTGRES STABILITY R20
+    # Free Render Postgres can occasionally exceed a 2s connection handshake.
+    # Avoid declaring durable storage dead on a single slow connection.
+    dst=dst.replace("connect_timeout=2)","connect_timeout=6)",1)
+
+    old_rt='''    cached=getattr(runtime_settings,'_cache',None)
+    if cached and time.time()-cached[0]<30:
+        return dict(cached[1])
+    out=dict(defaults)
+    try:
+        with pg_connect() as c:
+            rows=c.execute("SELECT key,value FROM system_settings").fetchall()
+        for r in rows:
+            v=r['value']
+            if isinstance(v,dict) and 'value' in v:
+                v=v['value']
+            out[r['key']]=v
+        runtime_settings._cache=(time.time(),dict(out))
+    except Exception as ex:
+        emit('runtime_settings_error',error=f'{type(ex).__name__}: {ex}')
+    return out'''
+    new_rt='''    cached=getattr(runtime_settings,'_cache',None)
+    # Runtime settings change rarely; do not hit PostgreSQL every 30 seconds.
+    if cached and time.time()-cached[0]<300:
+        return dict(cached[1])
+    out=dict(cached[1]) if cached else dict(defaults)
+    try:
+        with pg_connect() as c:
+            rows=c.execute("SELECT key,value FROM system_settings").fetchall()
+        fresh=dict(defaults)
+        for r in rows:
+            v=r['value']
+            if isinstance(v,dict) and 'value' in v:
+                v=v['value']
+            fresh[r['key']]=v
+        out=fresh
+        runtime_settings._cache=(time.time(),dict(out))
+    except Exception as ex:
+        # Keep the last confirmed settings; a transient DB timeout must not
+        # change trading behavior or blank the dashboard.
+        emit('runtime_settings_error',error=f'{type(ex).__name__}: {ex}',using_cached=bool(cached))
+    return out'''
+    if old_rt in dst:
+        dst=dst.replace(old_rt,new_rt,1)
+        applied.append("r20_runtime_settings_cache")
+
+    old_storage='''def pg_storage_status():
+    if not pg_enabled():
+        return {'enabled': False, 'ok': False, 'backend': 'sqlite-ephemeral'}
+    try:
+        with pg_connect() as c:
+            e = c.execute('SELECT COUNT(*) n FROM ledger_events').fetchone()['n']
+            s = c.execute('SELECT COUNT(*) n FROM knowledge_sources').fetchone()['n']
+            r = c.execute('SELECT COUNT(*) n FROM knowledge_rules').fetchone()['n']
+        return {'enabled': True, 'ok': True, 'backend': 'postgres-durable+sqlite-cache',
+                'ledger_events': e, 'knowledge_sources': s, 'knowledge_rules': r}
+    except Exception as ex:
+        return {'enabled': True, 'ok': False, 'backend': 'postgres-error+sqlite-cache',
+                'error': f'{type(ex).__name__}: {ex}'}'''
+    new_storage='''def pg_storage_status():
+    now_ts=time.time()
+    cached=getattr(pg_storage_status,'_cache',None)
+    if cached and now_ts-cached[0]<60:
+        return dict(cached[1])
+    if not pg_enabled():
+        if cached:
+            x=dict(cached[1]); x['stale']=True; x['health_note']='transient_db_probe_failed'; return x
+        return {'enabled': False, 'ok': False, 'backend': 'sqlite-ephemeral'}
+    try:
+        with pg_connect() as c:
+            e = c.execute('SELECT COUNT(*) n FROM ledger_events').fetchone()['n']
+            s = c.execute('SELECT COUNT(*) n FROM knowledge_sources').fetchone()['n']
+            r = c.execute('SELECT COUNT(*) n FROM knowledge_rules').fetchone()['n']
+        out={'enabled': True, 'ok': True, 'backend': 'postgres-durable+sqlite-cache',
+             'ledger_events': e, 'knowledge_sources': s, 'knowledge_rules': r, 'stale':False}
+        pg_storage_status._cache=(now_ts,dict(out))
+        return out
+    except Exception as ex:
+        if cached:
+            x=dict(cached[1]); x['stale']=True; x['health_note']=f'{type(ex).__name__}: {ex}'; return x
+        return {'enabled': True, 'ok': False, 'backend': 'postgres-error+sqlite-cache',
+                'error': f'{type(ex).__name__}: {ex}'}'''
+    if old_storage in dst:
+        dst=dst.replace(old_storage,new_storage,1)
+        applied.append("r20_storage_last_good_cache")
+
     # VERITAS V90 DATA CONTINUITY R18
     # Never erase previously valid cells because one asset/source timed out in the
     # current lane. Start from the last complete in-memory matrix and overwrite only
