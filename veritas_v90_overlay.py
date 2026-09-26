@@ -932,7 +932,10 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP64','domain':'exit','statement':'When trend persistence remains strong, avoid excessive early profit-taking; retain a campaign core and let the latest confirmed local swing and trailing stop govern the final exit.'},
  {'id':'EP65','domain':'reversal','statement':'After a climax, require a structural reversal sequence: impulse away from the extreme, weak retrace, then lower high plus local-low break for SHORT or higher low plus local-high break for LONG.'},
  {'id':'EP66','domain':'learning','statement':'Evaluate campaigns by capture ratio, peak-profit giveback, missed-trend opportunity, entry timing, add timing, stop quality, and exit quality, not only final PnL.'},
- {'id':'EP67','domain':'execution','statement':'When a priority trend-capture pattern is confirmed, generic WAIT logic should not override the structure unless an explicit hard veto is present.'}"""
+ {'id':'EP67','domain':'execution','statement':'When a priority trend-capture pattern is confirmed, generic WAIT logic should not override the structure unless an explicit hard veto is present.'},
+ {'id':'EP68','domain':'trend_transition','statement':'Trend Transition Engine promotes confirmed base-breakout acceptance, pullback continuation and climax reversal into explicit execution candidates across all portfolios.'},
+ {'id':'EP69','domain':'execution','statement':'A priority transition can override soft WAIT only after minimum reward-risk, expected-move, independent-evidence, source/time and hard-veto checks pass.'},
+ {'id':'EP70','domain':'learning','statement':'Persist the detected transition family, grade, score and evidence on every trade so missed captures and false transitions can be audited and recalibrated separately.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -6766,6 +6769,281 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         else:
             dst += "\n"+helper
         applied.append("recent_swing_trailing_r12")
+
+
+    # VERITAS V90 TREND TRANSITION ENGINE R13
+    if "# VERITAS V90 TREND TRANSITION ENGINE R13" not in dst:
+        helper = r'''
+# VERITAS V90 TREND TRANSITION ENGINE R13
+
+def _v90tte_detect(row):
+    row=row or {}
+    if not bool(row.get('source_gate_pass',True)) or not bool(row.get('market_open',True)):
+        return {'active':False,'reason':'SOURCE_OR_TIME_GATE'}
+    if not _v901_no_hard_veto(row):
+        return {'active':False,'reason':'HARD_VETO'}
+
+    hs=row.get('horizon_structure') or {}
+    inst=row.get('institutional_signal') or {}
+    evid=inst.get('evidence_independence') or {}
+    intra=row.get('intraday_structure') or {}
+    life=row.get('structure_breakout_current') or {}
+    plan=row.get('trade_plan') or {}
+    rev=row.get('tactical_reversal') or {}
+    ti=row.get('trend_impulse') or {}
+
+    direction=str(hs.get('direction') or hs.get('raw_direction') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        direction=str(life.get('direction') or intra.get('direction') or rev.get('direction') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        return {'active':False,'reason':'NO_STRUCTURAL_DIRECTION'}
+
+    try: hscore=float(hs.get('score') or 0.0)
+    except Exception: hscore=0.0
+    try: indep=int(evid.get('independent_count') or 0)
+    except Exception: indep=0
+    try: rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or rev.get('reward_risk') or 0.0)
+    except Exception: rr=0.0
+    try: exp=abs(float(plan.get('expected_move_pct') or 0.0))
+    except Exception: exp=0.0
+    horizon=str(row.get('horizon') or '1h')
+
+    state=str(life.get('state') or '')
+    lifecycle=str(intra.get('lifecycle') or '')
+    breakout_hold=bool(intra.get('breakout_hold') or state in ('BREAKOUT_ENTRY','TREND_CONTINUATION'))
+    volume=bool(intra.get('volume_confirmed') or ti.get('volume_confirmed'))
+    try:
+        vol_exp=float(life.get('volatility_expansion_ratio') or ti.get('volatility_expansion_ratio') or intra.get('relative_volume') or 1.0)
+    except Exception:
+        vol_exp=1.0
+
+    hstate=str(hs.get('state') or '')
+    structural=bool(hstate in ('BUILDING_TREND','CONFIRMED_TREND') and hscore>=0.60)
+    acceptance=bool(breakout_hold and structural)
+    confirmed_pivot=bool(
+        intra.get('recent_swing_anchor') is not None
+        or hs.get('recent_swing_anchor') is not None
+        or state=='TREND_CONTINUATION'
+        or hstate=='CONFIRMED_TREND'
+    )
+
+    # Climax/reversal: do not guess the extreme. Require active reversal plus
+    # structural direction agreement and multiple confirmations.
+    rev_active=bool(rev.get('active')) and str(rev.get('direction') or '')==direction
+    try: rev_conf=int(rev.get('confirmations') or 0)
+    except Exception: rev_conf=0
+    climax_reversal=bool(rev_active and rev_conf>=4 and structural and indep>=3)
+
+    base_breakout=bool(
+        state=='BREAKOUT_ENTRY'
+        and acceptance and confirmed_pivot
+        and indep>=3 and (volume or vol_exp>=1.15)
+    )
+    continuation=bool(
+        state=='TREND_CONTINUATION'
+        and structural and confirmed_pivot
+        and indep>=3
+    )
+
+    setup=('CLIMAX_REVERSAL' if climax_reversal else
+           'BASE_BREAKOUT_ACCEPTANCE' if base_breakout else
+           'PULLBACK_CONTINUATION' if continuation else None)
+    if not setup:
+        return {'active':False,'reason':'TRANSITION_NOT_CONFIRMED',
+                'direction':direction,'hscore':hscore,'independent':indep}
+
+    min_rr=1.35 if horizon=='5m' else 1.25
+    min_exp=0.0040 if horizon=='5m' else 0.0030 if horizon=='1h' else 0.0020
+    economics_ok=bool(rr>=min_rr and exp>=min_exp)
+    if not economics_ok:
+        return {'active':False,'reason':'TRANSITION_ECONOMICS_FAIL',
+                'direction':direction,'setup':setup,'rr':rr,'min_rr':min_rr,
+                'expected_move_pct':exp,'min_expected_move_pct':min_exp}
+
+    score=0
+    score += 2 if hstate=='CONFIRMED_TREND' else 1
+    score += 2 if hscore>=0.72 else 1
+    score += 2 if indep>=5 else 1
+    score += 1 if volume else 0
+    score += 1 if vol_exp>=1.20 else 0
+    score += 2 if rr>=1.75 else 1
+    score += 1 if confirmed_pivot else 0
+    score += 1 if climax_reversal else 0
+
+    grade='A+' if score>=10 else 'A' if score>=8 else 'B'
+    return {
+      'active':True,'direction':direction,'setup':setup,'score':score,'grade':grade,
+      'horizon':horizon,'hstate':hstate,'hscore':hscore,'independent':indep,
+      'volume_confirmed':volume,'volatility_expansion_ratio':vol_exp,
+      'acceptance':acceptance,'confirmed_pivot':confirmed_pivot,
+      'rr':rr,'expected_move_pct':exp
+    }
+
+
+def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
+    out={k:dict(v) for k,v in (core_candidates or {}).items()}
+    by_asset={}
+    for r0 in summary or []:
+        r=dict(r0); a=str(r.get('asset') or '')
+        if a: by_asset.setdefault(a,[]).append(r)
+
+    for asset,rows in by_asset.items():
+        best=None
+        for r0 in rows:
+            r=dict(r0)
+            t=_v90tte_detect(r)
+            if not t.get('active'):
+                continue
+            x=dict(r)
+            direction=str(t['direction'])
+            x['research_decision']=direction
+            x['_trend_transition']=t
+            x['_trend_transition_priority']=True
+            x['_setup_grade']=t.get('grade')
+            x['_setup_grade_score']=t.get('score')
+            x['_setup_grade_reasons']=['TREND_TRANSITION_ENGINE',str(t.get('setup'))]
+            p,source=_signal_probability(x)
+            x['_pwin']=p
+            x['_pwin_source']=source
+            x['_rank']=float(t.get('score') or 0.0)+float(p)
+            x['_execution_rank']=x['_rank']
+            x['_execution_rr']=float(t.get('rr') or 0.0)
+
+            plan=dict(x.get('trade_plan') or {})
+            plan['eligible']=True
+            plan['direction']=direction
+            plan['setup']=t.get('setup')
+            plan['trend_transition']=t
+            ti=dict(plan.get('trade_integrity') or {})
+            ti['hard_invalidation']=False
+            ti['entry_permission']='PRIORITY_TREND_CAPTURE'
+            plan['trade_integrity']=ti
+            x['trade_plan']=plan
+
+            if best is None or float(x['_rank'])>float(best['_rank']):
+                best=x
+
+        if best is None:
+            continue
+
+        # Upgrade an existing candidate with transition metadata, or create one
+        # if the legacy decision layer stayed in WAIT/NO_TRADE.
+        existing=out.get(asset)
+        if existing is None or float(best.get('_rank') or 0.0)>float(existing.get('_rank') or 0.0):
+            out[asset]=best
+        else:
+            existing=dict(existing)
+            existing['_trend_transition']=best.get('_trend_transition')
+            existing['_trend_transition_priority']=True
+            out[asset]=existing
+    return out
+
+
+_v90tte_base_admission=_signal_first_admission
+
+def _signal_first_admission(row,policy,drawdown):
+    base=dict(_v90tte_base_admission(row,policy,drawdown) or {})
+    row=row or {}
+    t=row.get('_trend_transition') or _v90tte_detect(row)
+    if not t.get('active'):
+        return base
+
+    # Hard vetoes always win.
+    if (not _v901_no_hard_veto(row)
+        or not bool(row.get('source_gate_pass',True))
+        or not bool(row.get('market_open',True))):
+        return base
+
+    mode=str((policy or {}).get('mode') or 'CORE')
+    grade=str(t.get('grade') or 'B')
+
+    # Preserve quality-first DNA. Priority transition may override soft WAIT,
+    # but only with a deliberately bounded starter size.
+    starter={
+      'IMPULSE_ONLY':0.25,
+      'AGGRESSIVE':0.35,
+      'CORE':0.20,
+      'CHALLENGER':0.15,
+    }.get(mode,0.15)
+    if grade=='A+':
+        starter={
+          'IMPULSE_ONLY':0.40,
+          'AGGRESSIVE':0.50,
+          'CORE':0.30,
+          'CHALLENGER':0.25,
+        }.get(mode,0.20)
+    elif grade=='B':
+        if mode not in ('IMPULSE_ONLY','AGGRESSIVE'):
+            return base
+        starter=0.10 if mode=='AGGRESSIVE' else 0.05
+
+    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:
+        return base
+    starter*=float(rg.get('multiplier') or 0.0)
+
+    # Keep the stop-risk cap absolute.
+    plan=row.get('trade_plan') or {}
+    try:
+        rp=float(plan.get('stop_distance_pct') or 0.0)
+        if rp>0:
+            starter=min(starter,MAX_STOP_RISK_NAV/rp)
+    except Exception:
+        pass
+
+    f=_clip(_round_step(starter),0,float((policy or {}).get('max_fraction') or 2.0))
+    if base.get('open'):
+        # Do not reduce a stronger already-approved admission.
+        base['fraction']=max(float(base.get('fraction') or 0.0),f)
+        base['reason']='R13_TREND_TRANSITION_UPGRADE'
+    else:
+        base={
+          'open':f>0,'fraction':f,'reason':'R13_PRIORITY_TREND_CAPTURE',
+          'risk_governor':rg
+        }
+    base['trend_transition']=t
+    base['setup_grade']=grade
+    base['quality_first_dna']=True
+    return base
+
+
+_v90tte_base_entry_patch=_v90j_entry_patch
+
+def _v90j_entry_patch(row,z,ts):
+    d=dict(_v90tte_base_entry_patch(row,z,ts) or {})
+    t=(row or {}).get('_trend_transition') or {}
+    if t.get('active'):
+        d['trend_transition_setup']=t.get('setup')
+        d['trend_transition_grade']=t.get('grade')
+        d['trend_transition_score']=t.get('score')
+        d['trend_transition_evidence']=t
+    return d
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor in dst:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        else:
+            dst += "\n"+helper
+
+        # Route every portfolio through the transition-aware candidate book.
+        old_route="""            mode=str(pol.get('mode') or '')
+            if mode=='IMPULSE_ONLY':
+                book=impulse_candidates
+            elif mode=='AGGRESSIVE':
+                book=_v90_aggressive_candidate_book(summary,candidates)
+            else:
+                book=candidates"""
+        new_route="""            mode=str(pol.get('mode') or '')
+            if mode=='IMPULSE_ONLY':
+                base_book=impulse_candidates
+            elif mode=='AGGRESSIVE':
+                base_book=_v90_aggressive_candidate_book(summary,candidates)
+            else:
+                base_book=candidates
+            book=_v90_trend_transition_candidate_book(summary,base_book,mode)"""
+        if old_route in dst:
+            dst=dst.replace(old_route,new_route,1)
+        applied.append("trend_transition_engine_r13")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
