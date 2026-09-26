@@ -5085,6 +5085,142 @@ report=_v90_open_position_report
             dst=dst.replace(anchor,"\n"+helper+anchor,1)
         applied.append("open_position_report_v2")
 
+
+    # VERITAS V90 QUALITY GATE R2
+    # Fail closed on low-quality paper admissions. Historical trades stay intact.
+    if "# VERITAS V90 QUALITY GATE R2" not in dst:
+        helper = r'''
+# VERITAS V90 QUALITY GATE R2
+_v90q2_base_signal_first_admission = _signal_first_admission
+
+def _v90q2_admission_thresholds(policy, empirical):
+    mode=str((policy or {}).get('mode') or 'CORE')
+    if empirical:
+        # True calibrated probability floors.
+        return {
+            'IMPULSE_ONLY':0.68,
+            'AGGRESSIVE':0.65,
+            'CORE':0.70,
+            'CHALLENGER':0.75,
+        }.get(mode,0.70)
+    # Model-quality scores are not probabilities, therefore require a higher bar.
+    return {
+        'IMPULSE_ONLY':0.74,
+        'AGGRESSIVE':0.72,
+        'CORE':0.76,
+        'CHALLENGER':0.80,
+    }.get(mode,0.76)
+
+def _v90q2_quality_gate(row,policy,drawdown):
+    base=dict(_v90q2_base_signal_first_admission(row,policy,drawdown) or {})
+    if not base.get('open'):
+        return base
+    row=row or {}
+    direction=str(row.get('research_decision') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        return {'open':False,'fraction':0.0,'reason':'Q2_NO_DIRECTION'}
+
+    plan=row.get('trade_plan') or {}
+    inst=row.get('institutional_signal') or {}
+    hs=row.get('horizon_structure') or {}
+    rev=row.get('tactical_reversal') or {}
+    rng=row.get('range_retest_breakout') or {}
+    ti=plan.get('trade_integrity') or {}
+    horizon=str(row.get('horizon') or '')
+
+    p,source=_signal_probability(row)
+    empirical=(source=='EMPIRICAL_CALIBRATION')
+    threshold=_v90q2_admission_thresholds(policy,empirical)
+
+    # Entry quality: an invalidated setup may not open a new trade merely because
+    # a generic reversal bridge produced a high score. Only a separately active,
+    # well-confirmed tactical reversal is allowed through.
+    entry_quality=str(row.get('entry_quality') or plan.get('entry_quality') or '')
+    rev_confirm=int(rev.get('confirmations') or 0)
+    rev_active=bool(rev.get('active')) and str(rev.get('direction') or '')==direction
+    if entry_quality=='INVALIDATED' and not (rev_active and rev_confirm>=5):
+        return {
+            'open':False,'fraction':0.0,'reason':'Q2_ENTRY_INVALIDATED',
+            'model_quality_score':None if empirical else float(p),
+            'probability':float(p) if empirical else None,
+            'probability_source':source
+        }
+
+    # True hard invalidation stays absolute.
+    if bool(ti.get('hard_invalidation')) or not _v901_no_hard_veto(row):
+        return {'open':False,'fraction':0.0,'reason':'Q2_HARD_VETO',
+                'probability_source':source}
+
+    # Cost-aware edge. Commission is 5 bps per leg = 10 bps round trip.
+    # Require at least another 10 bps expected net edge; 5m trades need 40 bps
+    # gross expected movement to avoid micro-churn.
+    try:
+        expected=abs(float(plan.get('expected_move_pct') or 0.0))
+    except Exception:
+        expected=0.0
+    min_expected=0.0040 if horizon=='5m' else 0.0030 if horizon=='1h' else 0.0020
+    if expected < min_expected:
+        return {'open':False,'fraction':0.0,'reason':'Q2_EXPECTED_MOVE_TOO_SMALL',
+                'expected_move_pct':expected,'minimum':min_expected,
+                'probability_source':source}
+
+    try:
+        rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception:
+        rr=0.0
+    min_rr=1.35 if horizon=='5m' else 1.25
+    if rr < min_rr:
+        return {'open':False,'fraction':0.0,'reason':'Q2_RR_TOO_LOW',
+                'rr':rr,'minimum_rr':min_rr,'probability_source':source}
+
+    # Require genuinely independent evidence for fast entries.
+    try:
+        indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception:
+        indep=0
+    supporting=list(row.get('_supporting_horizons') or [])
+    alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    mode=str((policy or {}).get('mode') or 'CORE')
+    min_indep=3 if horizon in ('5m','1h') else 2
+    if indep < min_indep:
+        return {'open':False,'fraction':0.0,'reason':'Q2_INSUFFICIENT_INDEPENDENT_EVIDENCE',
+                'independent':indep,'minimum':min_indep,'probability_source':source}
+    if mode in ('CORE','CHALLENGER') and alignment < 2:
+        return {'open':False,'fraction':0.0,'reason':'Q2_INSUFFICIENT_TF_ALIGNMENT',
+                'alignment_count':alignment,'minimum':2,'probability_source':source}
+
+    if float(p) < threshold:
+        return {'open':False,'fraction':0.0,
+                'reason':'Q2_CALIBRATED_PROBABILITY_BELOW_FLOOR' if empirical else 'Q2_MODEL_SCORE_BELOW_FLOOR',
+                'probability':float(p) if empirical else None,
+                'model_quality_score':None if empirical else float(p),
+                'floor':threshold,'probability_source':source}
+
+    # Range setup must be truly active, not merely near a level.
+    if rng and str(rng.get('state') or '') in ('APPROACH_RESISTANCE','APPROACH_SUPPORT') and not bool(rng.get('entry_active') or rng.get('add_active')):
+        return {'open':False,'fraction':0.0,'reason':'Q2_RANGE_WATCH_ONLY',
+                'probability_source':source}
+
+    base['quality_gate']='V90_Q2'
+    base['quality_floor']=threshold
+    base['cost_aware_min_expected_move']=min_expected
+    base['quality_rr_floor']=min_rr
+    base['quality_independent_evidence']=indep
+    base['quality_alignment_count']=alignment
+    return base
+
+_signal_first_admission = _v90q2_quality_gate
+'''
+        anchor2="\ndef _portfolio_rows(c,name):"
+        if anchor2 not in dst:
+            raise RuntimeError("v90 q2 portfolio anchor missing")
+        dst=dst.replace(anchor2,"\n"+helper+anchor2,1)
+
+        # Tighten the special fast-impulse escape hatch. It previously admitted
+        # R/R as low as 0.35, which is incompatible with the product objective.
+        dst=dst.replace("if rr<0.35:\\n            continue","if rr<1.25:\\n            continue")
+        applied.append("quality_gate_r2")
+
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
     if runtime_identity.strip() not in dst:
