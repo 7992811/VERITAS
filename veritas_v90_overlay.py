@@ -925,7 +925,7 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP36','domain':'data','statement':'If independent sources quote materially different prices for the same exact contract, freeze execution and marking for that asset until the conflict is resolved; keep the position and do not learn from the disputed mark.'},
  {'id':'EP37','domain':'breakout','statement':'In RANGE_LOW_VOL, a breakout label alone is insufficient for entry; require fresh structure, volume and volatility expansion, and aligned horizon structure.'},
  {'id':'EP38','domain':'regime','statement':'Low-volatility ranges have elevated false-breakout risk. Treat uncalibrated model scores conservatively and demand stronger independent evidence before committing capital.'},
- {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},\n {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},\n {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},\n {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'},\n {'id':'EP43','domain':'sizing','statement':'After partial profit-taking, position size may be rebuilt only on a new same-direction high-quality setup with fresh breakout evidence, volume confirmation, aligned structure and positive post-cost economics.'},\n {'id':'EP44','domain':'risk','statement':'Reloading a profitable position must never loosen an already protected stop. New size inherits the existing protected risk boundary unless a tighter structural stop is available.'},\n {'id':'EP45','domain':'execution','statement':'A profit reload is a new add-on decision, not an automatic reversal of prior profit-taking; require a minimum 5% position increment and re-check transaction-cost budget.'}"""
+ {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},\n {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},\n {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},\n {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'},\n {'id':'EP43','domain':'sizing','statement':'After partial profit-taking, position size may be rebuilt only on a new same-direction high-quality setup with fresh breakout evidence, volume confirmation, aligned structure and positive post-cost economics.'},\n {'id':'EP44','domain':'risk','statement':'Reloading a profitable position must never loosen an already protected stop. New size inherits the existing protected risk boundary unless a tighter structural stop is available.'},\n {'id':'EP45','domain':'execution','statement':'A profit reload is a new add-on decision, not an automatic reversal of prior profit-taking; require a minimum 5% position increment and re-check transaction-cost budget.'},\n {'id':'EP46','domain':'execution','statement':'Do not churn a newly opened fast-timeframe position on a small opposite signal while price remains inside a commission-dominated micro-move; require either time for the setup to mature or a materially adverse move.'},\n {'id':'EP47','domain':'cost','statement':'For 5m and other fast setups, a direction flip must be evaluated against round-trip transaction costs before closing and reopening; near-flat flips are execution noise, not alpha.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -6420,6 +6420,52 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         else:
             dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
         applied.append("profit_reload_r8")
+
+
+    # VERITAS V90 MICRO FLIP GUARD R9
+    if "# VERITAS V90 MICRO FLIP GUARD R9" not in dst:
+        helper = r'''
+# VERITAS V90 MICRO FLIP GUARD R9
+_v90mf_base_close_or_reduce=_close_or_reduce
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    if str(reason or '')=='V842_CONFIRMED_DIRECTION_FLIP':
+        try:
+            tid=(z or {}).get('active_trade_id')
+            tr=c.execute("SELECT opened_at,horizon,payload FROM paper_trades WHERE trade_id=%s",(tid,)).fetchone() if tid else None
+            payload=_v90j_json((tr or {}).get('payload'))
+            horizon=str((tr or {}).get('horizon') or payload.get('execution_timeframe') or '1h')
+            op=(tr or {}).get('opened_at')
+            now_dt=ts if hasattr(ts,'timestamp') else datetime.fromisoformat(str(ts).replace('Z','+00:00'))
+            op_dt=op if hasattr(op,'timestamp') else datetime.fromisoformat(str(op).replace('Z','+00:00'))
+            held=max(0.0,(now_dt-op_dt).total_seconds()) if op else 999999.0
+            entry=float((z or {}).get('avg_entry_price') or 0.0)
+            px=float(price or 0.0)
+            direction=str((z or {}).get('direction') or '')
+            signed=(px/entry-1.0) if entry>0 and direction=='LONG' else ((entry/px)-1.0 if entry>0 and px>0 and direction=='SHORT' else 0.0)
+            abs_move=abs(signed)
+            min_hold={'5m':900.0,'1h':1200.0}.get(horizon,0.0)
+            micro_band=max(2.0*float(COMMISSION)+0.0010,0.0020)
+            # A fast opposite signal is not enough to churn a nearly-flat position.
+            # Hard exits use other reasons and remain immediate.
+            if min_hold>0 and held<min_hold and abs_move<micro_band:
+                patch={'micro_flip_blocked':True,'micro_flip_blocked_at':_v90j_iso(ts),
+                       'micro_flip_held_seconds':held,'micro_flip_abs_move_pct':100.0*abs_move,
+                       'micro_flip_band_pct':100.0*micro_band,'micro_flip_horizon':horizon}
+                if tid:
+                    c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                              (json.dumps(patch,ensure_ascii=False,default=str),tid))
+                return 0.0
+        except Exception:
+            pass
+    return _v90mf_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        applied.append("micro_flip_guard_r9")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
