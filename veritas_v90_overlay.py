@@ -5545,6 +5545,232 @@ _close_or_reduce=_v90ld_close_or_reduce
             dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
         applied.append("loss_driven_guards")
 
+
+    # VERITAS V90 PRICE PATH INTEGRITY R3
+    if "# VERITAS V90 PRICE PATH INTEGRITY R3" not in dst:
+        helper = r'''
+# VERITAS V90 PRICE PATH INTEGRITY R3
+_v90pi_base_entry_patch=_v90j_entry_patch
+_v90pi_base_step_one=_step_one
+_v90pi_base_close_or_reduce=_close_or_reduce
+_v90pi_base_trade_report=trade_report
+_v90pi_base_learning_archive=learning_archive
+
+def _v90pi_entry_patch(row,z,ts):
+    d=dict(_v90pi_base_entry_patch(row,z,ts) or {})
+    row=row or {}
+    contract=row.get('contract') or {}
+    src=row.get('source_names') or {}
+    d['entry_verification_mode']=row.get('verification_mode')
+    d['entry_data_latency_class']=row.get('data_latency_class')
+    d['entry_primary_source']=src.get('primary')
+    d['entry_secondary_source']=src.get('secondary')
+    d['entry_contract_secid']=contract.get('secid')
+    d['entry_contract_unit']=contract.get('price_unit')
+    d['entry_source_divergence']=row.get('source_divergence')
+    d['data_integrity_status']='OK'
+    return d
+
+_v90j_entry_patch=_v90pi_entry_patch
+
+def _v90pi_jump_limit(asset):
+    return {
+      'BRENT':0.025,
+      'CNYRUBF':0.020,
+      'MOEX':0.030,
+      'NQ':0.035,
+      'GOLD':0.030,
+      'BTC':0.060,
+      'ETH':0.075,
+    }.get(str(asset),0.04)
+
+def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    safe_prices=dict(prices or {})
+    safe_candidates=dict(candidates or {})
+    try:
+        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        for z0 in positions:
+            z=dict(z0); asset=str(z.get('asset') or '')
+            old=float(z.get('last_price') or 0.0)
+            new=safe_prices.get(asset)
+            if not old or new in (None,0):
+                continue
+            try: new=float(new)
+            except Exception: continue
+            jump=abs(new/old-1.0)
+            if jump>_v90pi_jump_limit(asset):
+                payload=_v90j_json(z.get('payload'))
+                payload.update({
+                  'data_integrity_status':'DATA_DISCONTINUITY',
+                  'data_discontinuity_at':_v90j_iso(ts),
+                  'data_discontinuity_previous_price':old,
+                  'data_discontinuity_candidate_price':new,
+                  'data_discontinuity_return':jump,
+                })
+                tid=z.get('active_trade_id')
+                c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                          (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
+                if tid:
+                    c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb) || %s::jsonb WHERE trade_id=%s",
+                              (json.dumps({
+                                'data_integrity_status':'DATA_DISCONTINUITY',
+                                'data_discontinuity_at':_v90j_iso(ts),
+                                'data_discontinuity_previous_price':old,
+                                'data_discontinuity_candidate_price':new,
+                                'data_discontinuity_return':jump,
+                                'learning_eligible':False,
+                              },ensure_ascii=False,default=str),tid))
+                safe_prices[asset]=old
+                safe_candidates.pop(asset,None)
+    except Exception:
+        pass
+
+    # Profit protection from observed MFE, applied before management decisions.
+    try:
+        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        for z0 in positions:
+            z=dict(z0); payload=_v90j_json(z.get('payload'))
+            if str(payload.get('data_integrity_status') or 'OK')!='OK':
+                continue
+            mfe=float(payload.get('mfe_pct') or 0.0) / 100.0
+            if mfe < 0.004:
+                continue
+            entry=float(z.get('avg_entry_price') or 0.0)
+            if entry<=0: continue
+            direction=str(z.get('direction') or '')
+            # At +0.4% MFE move stop to roughly breakeven after round-trip costs.
+            # At +0.8% lock ~25% of MFE; at +1.5% lock ~40%.
+            lock=0.0012
+            if mfe>=0.015: lock=max(lock,0.40*mfe)
+            elif mfe>=0.008: lock=max(lock,0.25*mfe)
+            elif mfe>=0.004: lock=max(lock,0.0012)
+            proposed=entry*(1.0+lock) if direction=='LONG' else entry*(1.0-lock)
+            old_stop=z.get('stop_price')
+            improve=(old_stop is None or
+                     (direction=='LONG' and proposed>float(old_stop)) or
+                     (direction=='SHORT' and proposed<float(old_stop)))
+            if improve:
+                c.execute("""UPDATE paper_positions
+                             SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
+                             WHERE portfolio_name=%s AND asset=%s""",
+                          (proposed,json.dumps({
+                            'profit_protection_active':True,
+                            'profit_protection_mfe_pct':100.0*mfe,
+                            'profit_protection_stop':proposed,
+                          },ensure_ascii=False),name,z.get('asset')))
+    except Exception:
+        pass
+
+    return _v90pi_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,summary)
+
+_step_one=_v90pi_step_one
+
+def _v90pi_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    try:
+        payload=_v90j_json((z or {}).get('payload'))
+    except Exception:
+        payload={}
+    entry=float((z or {}).get('avg_entry_price') or 0.0)
+    direction=str((z or {}).get('direction') or '')
+    px=float(price or 0.0)
+    signed=(px/entry-1.0) if entry>0 and direction=='LONG' else ((entry/px)-1.0 if entry>0 and px>0 and direction=='SHORT' else 0.0)
+
+    # Never execute a take-profit that is actually below breakeven in trade direction.
+    if str(reason)=='TAKE_PROFIT' and signed<=0:
+        tid=(z or {}).get('active_trade_id')
+        try:
+            if tid:
+                c.execute("""UPDATE paper_trades
+                             SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
+                             WHERE trade_id=%s""",
+                          (json.dumps({
+                            'tp_integrity_blocked':True,
+                            'tp_integrity_blocked_at':_v90j_iso(ts),
+                            'tp_integrity_candidate_price':px,
+                            'tp_integrity_signed_return':signed,
+                          },ensure_ascii=False),tid))
+        except Exception:
+            pass
+        return 0.0
+
+    # A position with a detected source/contract discontinuity may not be closed
+    # by ordinary model logic until a clean same-series mark is restored.
+    if str(payload.get('data_integrity_status') or 'OK')=='DATA_DISCONTINUITY' and str(reason) not in ('RISK_HARD_STOP',):
+        return 0.0
+
+    return _v90pi_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
+
+_close_or_reduce=_v90pi_close_or_reduce
+
+def _v90pi_contaminated(row):
+    if not row: return False
+    if str(row.get('data_integrity_status') or '')=='DATA_DISCONTINUITY':
+        return True
+    # Known historical Brent source discontinuities: >2.5% entry/exit gap with
+    # incomplete/legacy source telemetry are kept for audit but excluded from R2 quality.
+    if str(row.get('asset') or '')=='BRENT':
+        try:
+            e=float(row.get('avg_entry_price') or 0.0); x=float(row.get('avg_exit_price') or 0.0)
+            if e>0 and x>0 and abs(x/e-1.0)>0.025 and (
+                row.get('entry_primary_source') is None or row.get('recovered')
+            ):
+                return True
+        except Exception:
+            pass
+    if str(row.get('exit_reason') or '')=='TAKE_PROFIT':
+        try:
+            e=float(row.get('avg_entry_price') or 0.0); x=float(row.get('avg_exit_price') or 0.0)
+            d=str(row.get('direction') or '')
+            if e>0 and x>0 and ((d=='LONG' and x<=e) or (d=='SHORT' and x>=e)):
+                return True
+        except Exception:
+            pass
+    return False
+
+def learning_archive(pg_connect,limit=2500):
+    rows=_v90pi_base_learning_archive(pg_connect,limit)
+    out=[]
+    for r0 in rows or []:
+        r=dict(r0)
+        if _v90pi_contaminated(r):
+            r['learning_eligible']=False
+            r['learning_weight']=0.0
+            r['data_integrity_status']='EXCLUDED_DATA_CONTAMINATION'
+        out.append(r)
+    return out
+
+def trade_report(pg_connect,limit=2500):
+    d=dict(_v90pi_base_trade_report(pg_connect,limit) or {})
+    # Recompute post-R2 quality summary excluding explicitly contaminated trades.
+    try:
+        rows=_v90j_load_closed(pg_connect,limit)
+        clean=[x for x in rows if str(x.get('opened_at') or '')>=V90_Q2_STARTED_AT and not _v90pi_contaminated(x)]
+        by={}
+        for x in clean:
+            p=str(x.get('portfolio_name') or 'UNKNOWN')
+            z=by.setdefault(p,{'portfolio_name':p,'closed_trades':0,'wins':0,'gross_pnl_rub':0.0,'fees_rub':0.0,'funding_rub':0.0,'net_pnl_rub':0.0})
+            z['closed_trades']+=1
+            z['wins']+=1 if float(x.get('net_pnl_rub') or 0.0)>0 else 0
+            for k in ('gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub'):
+                z[k]+=float(x.get(k) or 0.0)
+        q2=[]
+        for z in by.values():
+            z['win_rate']=z['wins']/z['closed_trades'] if z['closed_trades'] else None
+            q2.append(_jsonable(z))
+        d['quality_r2_summary']=q2
+        d['quality_r2_excluded_data_contamination']=sum(1 for x in rows if str(x.get('opened_at') or '')>=V90_Q2_STARTED_AT and _v90pi_contaminated(x))
+        d['quality_r2_integrity_policy']='exclude DATA_DISCONTINUITY and impossible TAKE_PROFIT; preserve in audit'
+    except Exception:
+        pass
+    return _jsonable(d)
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        applied.append("price_path_integrity_r3")
+
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
     if runtime_identity.strip() not in dst:
