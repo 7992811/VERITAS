@@ -16946,6 +16946,20 @@ def main():
         emit('v90_cold_start_snapshot',signal_cells=0,status='ERROR',
              error=f'{type(_cold_ex).__name__}: {_cold_ex}')
     _BOOTSTRAP_READY = True
+    try:
+        _boot_ui=_v90r26_dashboard_bootstrap()
+        emit('v90_dashboard_bootstrap_selftest',
+             status=_boot_ui.get('status'),
+             signal_count=_boot_ui.get('signal_count'),
+             portfolio_count=_boot_ui.get('portfolio_count'),
+             open_position_count=_boot_ui.get('open_position_count'),
+             trade_count=_boot_ui.get('trade_count'),
+             portfolio_names=[p.get('name') for p in (_boot_ui.get('portfolios') or [])],
+             open_positions=[{'portfolio':z.get('portfolio'),'asset':z.get('asset'),'direction':z.get('direction')}
+                             for z in (_boot_ui.get('positions') or [])[:10]])
+    except Exception as _ui_test_ex:
+        emit('v90_dashboard_bootstrap_selftest',status='ERROR',
+             error=f'{type(_ui_test_ex).__name__}: {_ui_test_ex}')
 
     # Knowledge/case corpora are already durable in PostgreSQL. Do not reseed on
     # every web-service restart: it competes with the live cycle for DB connections.
