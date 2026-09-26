@@ -295,6 +295,11 @@ def v90_migrate_core_data():
              closed_journal='DEFER_TO_UI_REQUEST',
              paper_execution_learning='DEFER_TO_MEMORY_GUARDED_HEAVY_LEARNING',
              principle='startup keeps only live portfolio state; historical analytics stay durable in PostgreSQL')
+        if hasattr(VP,'quality_loss_audit'):
+            try:
+                VP.quality_loss_audit(pg_connect)
+            except Exception as _la_ex:
+                emit('v90_loss_audit_error',error=f'{type(_la_ex).__name__}: {_la_ex}')
     case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}"""
     dst, ch = _replace_once(dst, old_main, new_main, "v90 migration startup")
     if ch:
