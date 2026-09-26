@@ -757,5 +757,120 @@ def apply_v90_ui(html):
     })();
     </script>"""
     value = value.replace('</body>', closed_journal_v2_js + '</body>')
+
+    # VERITAS V90 DECISION COCKPIT R15
+    cockpit_css = """<style id="V90_DECISION_COCKPIT_R15">
+    #v90-cockpit{grid-column:span 12;margin:2px 0 12px;display:grid;gap:10px}
+    .v90-cp-hero{display:grid;grid-template-columns:1.55fr .85fr;gap:10px}
+    .v90-cp-card{border:1px solid var(--border);border-radius:14px;background:rgba(18,23,28,.86);padding:12px 14px;min-width:0}
+    .v90-cp-title{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+    .v90-cp-opps{display:grid;gap:6px}
+    .v90-cp-opp{display:grid;grid-template-columns:72px 58px 56px minmax(0,1fr) 86px 86px;gap:7px;align-items:center;padding:7px 8px;border:1px solid var(--border);border-radius:10px}
+    .v90-cp-opp b{font-size:11px}.v90-cp-opp span{font-size:8px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .v90-cp-long{color:#59d694}.v90-cp-short{color:#ef6767}.v90-cp-wait{color:#d5b65b}
+    .v90-cp-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+    .v90-cp-kpi{padding:9px 10px;border:1px solid var(--border);border-radius:10px;min-width:0}
+    .v90-cp-kpi span{display:block;color:var(--muted);font-size:8px;text-transform:uppercase;letter-spacing:.06em}
+    .v90-cp-kpi b{display:block;font-size:17px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .v90-cp-kpi small{display:block;font-size:7.5px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .v90-cp-portfolios{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
+    .v90-cp-pf{padding:9px 10px;border:1px solid var(--border);border-radius:10px;min-width:0}
+    .v90-cp-pf-head{display:flex;justify-content:space-between;gap:6px;align-items:baseline}
+    .v90-cp-pf-head b{font-size:10px}.v90-cp-pf-head span{font-size:9px}
+    .v90-cp-pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 7px;margin-top:6px;font-size:8px;color:var(--muted)}
+    .v90-cp-pf-grid b{color:var(--text);font-size:8.5px}
+    .v90-cp-status{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
+    .v90-cp-status>div{padding:8px 10px;border:1px solid var(--border);border-radius:10px}
+    .v90-cp-status span{font-size:7.5px;color:var(--muted);text-transform:uppercase}.v90-cp-status b{display:block;font-size:10px;margin-top:2px}
+    .v90-cp-note{font-size:8px;color:var(--muted);line-height:1.35}
+    @media(max-width:900px){
+      .v90-cp-hero{grid-template-columns:1fr}
+      .v90-cp-opp{grid-template-columns:58px 50px 46px minmax(0,1fr);gap:5px}
+      .v90-cp-opp .v90-cp-stop,.v90-cp-opp .v90-cp-target{display:none}
+      .v90-cp-portfolios{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .v90-cp-status{grid-template-columns:repeat(2,minmax(0,1fr))}
+    }
+    </style>"""
+    value=value.replace('</head>',cockpit_css+'</head>')
+
+    cockpit_js = r"""<script id="V90_DECISION_COCKPIT_R15">
+    (function(){
+      const esc=s=>String(s==null?'—':s).replace(/[&<>"']/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]});
+      const px=v=>v==null?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:4});
+      const rub=v=>v==null?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽';
+      const pct=v=>v==null?'—':Number(v).toFixed(2)+'%';
+      const dirClass=d=>d==='LONG'?'v90-cp-long':d==='SHORT'?'v90-cp-short':'v90-cp-wait';
+      function install(){
+        const market=document.getElementById('market'); if(!market||document.getElementById('v90-cockpit'))return;
+        const el=document.createElement('section');el.id='v90-cockpit';
+        el.innerHTML='<div class="v90-cp-hero">'
+          +'<div class="v90-cp-card"><div class="v90-cp-title">Что делать сейчас</div><div id="v90-cp-opps" class="v90-cp-opps"><div class="v90-cp-note">Собираю лучшие возможности…</div></div></div>'
+          +'<div class="v90-cp-card"><div class="v90-cp-title">Интеллект VERITAS</div><div class="v90-cp-kpis">'
+          +'<div class="v90-cp-kpi"><span>Intelligence Index</span><b id="v90-cp-ii">—</b><small id="v90-cp-iic">ожидание выборки</small></div>'
+          +'<div class="v90-cp-kpi"><span>Чистых эпизодов</span><b id="v90-cp-episodes">—</b><small>после Quality Gate R2</small></div>'
+          +'<div class="v90-cp-kpi"><span>Win-rate</span><b id="v90-cp-wr">—</b><small>только новая логика</small></div>'
+          +'<div class="v90-cp-kpi"><span>Capture ratio</span><b id="v90-cp-cap">—</b><small>сколько движения забираем</small></div>'
+          +'</div></div></div>'
+          +'<div class="v90-cp-card"><div class="v90-cp-title">Портфели сейчас</div><div id="v90-cp-portfolios" class="v90-cp-portfolios"><div class="v90-cp-note">Загрузка портфелей…</div></div></div>'
+          +'<div class="v90-cp-card"><div class="v90-cp-title">Состояние системы</div><div class="v90-cp-status">'
+          +'<div><span>System</span><b id="v90-cp-system">—</b></div><div><span>Database</span><b id="v90-cp-db">—</b></div><div><span>Market data</span><b id="v90-cp-data">—</b></div><div><span>Market</span><b id="v90-cp-market">—</b></div>'
+          +'</div><div class="v90-cp-note" style="margin-top:7px">Закрытый рынок или исследовательский источник не означает сбой всей системы.</div></div>';
+        market.insertBefore(el,market.firstChild);
+      }
+      function renderSignals(d){
+        const rows=Array.isArray(d&&d.signals)?d.signals:[];
+        const rank=function(x){
+          const dec=String(x.research_decision||x.decision||'NO_TRADE');
+          if(['LONG','SHORT'].indexOf(dec)<0)return -999;
+          return 4*Number(x.horizon_structure_score||0)+2*Number(x.confidence||0)+Math.min(Number(x.expected_to_stop_ratio||0),3)+0.3*Number(x.independent_evidence_families||0)+(x.entry_quality==='FRESH_BREAKOUT'?1:0);
+        };
+        const best=rows.filter(function(x){return ['LONG','SHORT'].indexOf(String(x.research_decision||x.decision||''))>=0}).sort(function(a,b){return rank(b)-rank(a)}).slice(0,5);
+        const el=document.getElementById('v90-cp-opps');if(!el)return;
+        if(!best.length){el.innerHTML='<div class="v90-cp-note">Сейчас нет подтверждённых входов. NO TRADE лучше слабой сделки.</div>';return}
+        el.innerHTML=best.map(function(x){
+          const d=String(x.research_decision||x.decision||'NO_TRADE'), reason=x.plan_reason||x.entry_quality||x.regime||'—';
+          return '<div class="v90-cp-opp"><b>'+esc(x.asset)+'</b><b class="'+dirClass(d)+'">'+esc(d)+'</b><span>'+esc(x.horizon)+'</span><span>'+esc(reason)+' · HS '+Number(x.horizon_structure_score||0).toFixed(2)+' · RR '+(x.expected_to_stop_ratio==null?'—':Number(x.expected_to_stop_ratio).toFixed(2))+'</span><span class="v90-cp-stop">SL '+px(x.stop_price)+'</span><span class="v90-cp-target">TP '+px(x.target_price)+'</span></div>';
+        }).join('');
+      }
+      function renderPortfolios(d){
+        const ps=Array.isArray(d&&d.portfolios)?d.portfolios:[], el=document.getElementById('v90-cp-portfolios');if(!el)return;
+        if(!ps.length){el.innerHTML='<div class="v90-cp-note">Портфели временно недоступны.</div>';return}
+        el.innerHTML=ps.map(function(p){
+          const l=p.latest||{}, ret=l.total_return_pct!=null?l.total_return_pct:p.total_return_pct, gross=l.gross_leverage||0, nav=l.nav_rub!=null?l.nav_rub:p.nav_rub;
+          return '<div class="v90-cp-pf"><div class="v90-cp-pf-head"><b>'+esc(p.name)+'</b><span class="'+(Number(ret||0)>=0?'ok':'bad')+'">'+pct(ret)+'</span></div><div class="v90-cp-pf-grid"><span>NAV</span><b>'+rub(nav)+'</b><span>Gross</span><b>'+Number(gross||0).toFixed(2)+'×</b><span>Позиций</span><b>'+(Array.isArray(p.positions)?p.positions.length:0)+'</b><span>Win</span><b>'+(p.win_rate==null?'—':pct(100*Number(p.win_rate)))+'</b></div></div>';
+        }).join('');
+        const ii=d.intelligence_index||{}, ev=ii.evidence||{};
+        const set=function(id,v){const x=document.getElementById(id);if(x)x.textContent=v};
+        set('v90-cp-ii',ii.score==null?'—':Number(ii.score).toFixed(1)+'/100');
+        set('v90-cp-iic',ii.confidence?('confidence '+ii.confidence):'ожидание выборки');
+        set('v90-cp-episodes',ev.clean_post_r2_closed_trades==null?'—':ev.clean_post_r2_closed_trades);
+        set('v90-cp-wr',ev.win_rate==null?'—':(100*Number(ev.win_rate)).toFixed(1)+'%');
+        set('v90-cp-cap',ev.avg_capture_ratio==null?'—':(100*Number(ev.avg_capture_ratio)).toFixed(0)+'%');
+      }
+      function renderHealth(h,s){
+        const set=function(id,v,cls){const x=document.getElementById(id);if(x){x.textContent=v;x.className=cls||''}};
+        set('v90-cp-system',h&&h.ok?'OK':'STARTING',h&&h.ok?'ok':'warn');
+        set('v90-cp-db',h&&h.bootstrap_ready?'OK':'INIT',h&&h.bootstrap_ready?'ok':'warn');
+        const rows=Array.isArray(s&&s.signals)?s.signals:[], live=rows.filter(function(x){return x.source_gate_pass===true}).length, total=rows.length;
+        set('v90-cp-data',total?(live+'/'+total+' LIVE'):'—',live?'ok':'warn');
+        const open=rows.some(function(x){return x.market_open===true});
+        set('v90-cp-market',open?'OPEN / MIXED':'CLOSED / RESEARCH',open?'ok':'warn');
+      }
+      async function refresh(){
+        install();
+        const res=await Promise.allSettled([
+          fetch('/api/v1/signals',{cache:'no-store'}).then(function(r){return r.json()}),
+          fetch('/api/v1/paper-portfolios',{cache:'no-store'}).then(function(r){return r.json()}),
+          fetch('/healthz',{cache:'no-store'}).then(function(r){return r.json()})
+        ]);
+        const s=res[0].status==='fulfilled'?res[0].value:null, p=res[1].status==='fulfilled'?res[1].value:null, h=res[2].status==='fulfilled'?res[2].value:null;
+        if(s)renderSignals(s);if(p)renderPortfolios(p);renderHealth(h,s);
+      }
+      if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',refresh,{once:true});else refresh();
+      setInterval(refresh,30000);
+    })();
+    </script>"""
+    value=value.replace('</body>',cockpit_js+'</body>')
+    print(json.dumps({'event':'V90_DECISION_COCKPIT_R15','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     print(json.dumps({'event':'V90_CLOSED_JOURNAL_UI_V2','status':'single_owner_no_observer'},ensure_ascii=False,separators=(',',':')),flush=True)
     return value
