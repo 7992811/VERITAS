@@ -1969,7 +1969,7 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     if "# VERITAS V90 EMERGENCY STORAGE RECLAIM" not in dst:
         _cleanup_helper = r'''
 # VERITAS V90 EMERGENCY STORAGE RECLAIM
-_V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_26_v2'
+_V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_26_v3'
 
 def _v90_emergency_storage_reclaim():
     if not DATABASE_URL or psycopg is None:
@@ -1988,6 +1988,34 @@ def _v90_emergency_storage_reclaim():
                 return {'status':'ALREADY_COMPLETED'}
         except Exception:
             pass
+        # Legacy pre-v9 public-schema telemetry is not used by the current v9 engine.
+        # Drop the largest obsolete tables first to immediately return disk blocks to PostgreSQL.
+        legacy_drop=[
+            'product_snapshots','macro_snapshots','model_drift_snapshots',
+            'model_calibration_snapshots','validation_snapshots','product_alerts',
+            'visitor_sessions','paper_nav_history'
+        ]
+        legacy_dropped=[]
+        for table in legacy_drop:
+            try:
+                exists=c.execute("SELECT to_regclass(%s) AS r",(f'public.{table}',)).fetchone()
+                if exists and exists['r']:
+                    c.execute(f'DROP TABLE public."{table}" CASCADE')
+                    legacy_dropped.append(table)
+                    emit('db_cleanup_legacy_drop',table=table)
+            except Exception as ex:
+                emit('db_cleanup_legacy_drop_error',table=table,error=f'{type(ex).__name__}: {ex}')
+        # Old public ledger is a large pre-v9 event stream. Current v9 decisions,
+        # outcomes and learning are stored in veritas_v90 and remain untouched.
+        try:
+            exists=c.execute("SELECT to_regclass('public.ledger_events') AS r").fetchone()
+            if exists and exists['r']:
+                c.execute('DROP TABLE public.ledger_events CASCADE')
+                legacy_dropped.append('ledger_events')
+                emit('db_cleanup_legacy_drop',table='ledger_events')
+        except Exception as ex:
+            emit('db_cleanup_legacy_drop_error',table='ledger_events',error=f'{type(ex).__name__}: {ex}')
+
         sizes_before=[]
         try:
             sizes_before=c.execute("""
@@ -2045,10 +2073,6 @@ def _v90_emergency_storage_reclaim():
                 if n==0: break
                 if deleted_meta>=100000: break
             emit('db_cleanup_meta_signal_done',deleted=deleted_meta)
-            try:
-                c.execute('VACUUM (ANALYZE) veritas_v90.ledger_events')
-            except Exception as vex:
-                emit('db_cleanup_vacuum_error',table='ledger_events',error=f'{type(vex).__name__}: {vex}')
         except Exception as ex:
             emit('db_cleanup_meta_signal_error',deleted=deleted_meta,error=f'{type(ex).__name__}: {ex}')
 
@@ -2058,7 +2082,7 @@ def _v90_emergency_storage_reclaim():
                 VALUES(%s,%s::jsonb,NOW(),'emergency_cleanup')
                 ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,
                   updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by
-            """,(_V90_STORAGE_CLEANUP_MARKER,json.dumps({'truncated':reclaimed,'meta_signal_deleted':deleted_meta})))
+            """,(_V90_STORAGE_CLEANUP_MARKER,json.dumps({'legacy_dropped':legacy_dropped,'truncated':reclaimed,'meta_signal_deleted':deleted_meta})))
         except Exception as ex:
             emit('db_cleanup_marker_error',error=f'{type(ex).__name__}: {ex}')
 
@@ -2072,7 +2096,7 @@ def _v90_emergency_storage_reclaim():
             emit('db_cleanup_sizes_after',tables=[{'table':r['table_name'],'bytes':int(r['bytes'])} for r in sizes_after])
         except Exception as ex:
             emit('db_cleanup_size_probe_after_error',error=f'{type(ex).__name__}: {ex}')
-        emit('db_cleanup_complete',marker=_V90_STORAGE_CLEANUP_MARKER,truncated=reclaimed,meta_signal_deleted=deleted_meta)
+        emit('db_cleanup_complete',marker=_V90_STORAGE_CLEANUP_MARKER,legacy_dropped=legacy_dropped,truncated=reclaimed,meta_signal_deleted=deleted_meta)
         return {'status':'OK','truncated':reclaimed,'meta_signal_deleted':deleted_meta}
     finally:
         try: c.close()
