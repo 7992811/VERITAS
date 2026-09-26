@@ -526,17 +526,17 @@ def apply_v90_ui(html):
     value = value.replace('V86','V90').replace('v86','v90')
     nq_label_js = r"""<script id="V90_NQ_FUTURES_LABEL">
     (function(){
-      const label=a=>a==='NQ'?'NQ Futures':a;
+      const label=a=>a==='NQ'?'NDXf':a;
       const oldRender=window.renderMatrix;
       if(typeof oldRender==='function'){
         window.renderMatrix=function(rows){
           oldRender(rows);
           document.querySelectorAll('#matrix .asset-name').forEach(el=>{
-            if(el.textContent.trim()==='NQ')el.textContent='NQ Futures';
+            if(el.textContent.trim()==='NQ')el.textContent='NDXf';
           });
           document.querySelectorAll('#superstrip .superasset').forEach(el=>{
             el.childNodes.forEach(n=>{
-              if(n.nodeType===Node.TEXT_NODE && n.textContent.trim()==='NQ')n.textContent='NQ Futures';
+              if(n.nodeType===Node.TEXT_NODE && n.textContent.trim()==='NQ')n.textContent='NDXf';
             });
           });
         };
@@ -544,15 +544,101 @@ def apply_v90_ui(html):
       const observer=new MutationObserver(()=>{
         document.querySelectorAll('.asset-name,.assetview-name,.superasset,b').forEach(el=>{
           const t=el.textContent.trim();
-          if(t==='NQ')el.textContent='NQ Futures';
-          else if(t.startsWith('NQ ·'))el.textContent=t.replace(/^NQ\s*·/,'NQ Futures ·');
-          else if(t.includes('· NQ ·'))el.textContent=t.replace('· NQ ·','· NQ Futures ·');
+          if(t==='NQ')el.textContent='NDXf';
+          else if(t.startsWith('NQ ·'))el.textContent=t.replace(/^NQ\s*·/,'NDXf ·');
+          else if(t.includes('· NQ ·'))el.textContent=t.replace('· NQ ·','· NDXf ·');
         });
       });
       observer.observe(document.body,{subtree:true,childList:true});
     })();
     </script>"""
     value = value.replace('</body>', nq_label_js + '</body>')
+    # VERITAS V90 R17 MARKET VIEW
+    value = value.replace(
+        "const tfOrder=['1h','4h','1d','3d','7d'],assets=['BTC','ETH','NDX','BRENT','GOLD','MOEX','CNYRUBF'];",
+        "const tfOrder=['5m','1h','4h','1d','3d','7d'],assets=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'];"
+    )
+    value = value.replace(
+        "<th>Актив</th><th>1ч</th><th>4ч</th><th>1д</th><th>3д</th><th>7д</th>",
+        "<th>Актив</th><th>5м</th><th>1ч</th><th>4ч</th><th>1д</th><th>3д</th><th>7д</th>"
+    )
+    value = value.replace(
+        "Цифровой инвестиционный комитет · BTC / ETH / NDX / Brent / Gold / MOEX",
+        "Цифровой инвестиционный комитет · BTC / ETH / NDXf / Brent / Gold / MOEX / CNYRUBf"
+    )
+    value = value.replace(
+        "Эпизоды, а не повторяющиеся 5-минутные снимки. v70 пока оценивается в shadow.",
+        "Статистика считается по независимым рыночным эпизодам; повторные циклы не дублируют опыт."
+    )
+
+    dense_market_css = """<style id="V90_R17_MARKET_VIEW">
+    #thesis{line-height:1.25!important}
+    .v90-overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+    .v90-overview-row{border:1px solid var(--border);border-radius:9px;padding:7px 8px;min-width:0;background:rgba(255,255,255,.012)}
+    .v90-overview-head{display:grid;grid-template-columns:64px 64px 1fr auto;gap:6px;align-items:center;margin-bottom:5px}
+    .v90-overview-asset{font-size:11px;font-weight:800}
+    .v90-overview-dir{font-size:9px;font-weight:800}
+    .v90-overview-regime{font-size:8px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .v90-overview-price{font-size:10px;font-weight:750;text-align:right}
+    .v90-overview-tfs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;margin-bottom:5px}
+    .v90-overview-tf{padding:3px 2px;border-radius:5px;border:1px solid var(--border);text-align:center;font-size:7px;line-height:1.15}
+    .v90-overview-tf b{display:block;font-size:8px}
+    .v90-overview-foot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;font-size:7.5px;color:var(--muted)}
+    .v90-overview-foot b{color:var(--text);font-size:8px}
+    @media(max-width:900px){.v90-overview-grid{grid-template-columns:1fr}.v90-overview-head{grid-template-columns:56px 58px 1fr auto}}
+    </style>"""
+    value=value.replace('</head>',dense_market_css+'</head>')
+
+    dense_market_js = r"""<script id="V90_R17_DENSE_ASSET_OVERVIEW">
+    (function(){
+      const TF=['5m','1h','4h','1d','3d','7d'];
+      const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'];
+      const label=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
+      const dir=x=>{
+        const d=(x&&x.research_decision)||x?.decision||'NO_TRADE';
+        return d==='LONG'?'LONG':d==='SHORT'?'SHORT':'WAIT';
+      };
+      const cls=d=>d==='LONG'?'ok':d==='SHORT'?'bad':'warn';
+      const arrow=d=>d==='LONG'?'↑':d==='SHORT'?'↓':'→';
+      const fmt=v=>{
+        const n=Number(v);if(!Number.isFinite(n))return '—';
+        return n>=1000?n.toLocaleString('en-US',{maximumFractionDigits:2}):n.toLocaleString('en-US',{maximumFractionDigits:4});
+      };
+      window.renderDenseAssetOverview=function(rows){
+        const el=document.getElementById('thesis');if(!el)return;
+        rows=Array.isArray(rows)?rows:[];
+        const map={};rows.forEach(x=>{if(x?.asset&&x?.horizon)map[x.asset+'|'+x.horizon]=x});
+        const html=AS.map(a=>{
+          const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean);
+          const live5=map[a+'|5m'];
+          const best=xs.slice().sort((p,q)=>Number(q.confidence||0)-Number(p.confidence||0))[0]||{};
+          const dirs=xs.map(dir);
+          const longN=dirs.filter(x=>x==='LONG').length, shortN=dirs.filter(x=>x==='SHORT').length;
+          const consensus=longN>shortN?'LONG':shortN>longN?'SHORT':'WAIT';
+          const regime=(live5?.regime||best.regime||'—');
+          const price=live5?.price??best.price;
+          const indep=Math.max(0,...xs.map(x=>Number(x.independent_evidence_families||0)));
+          const bestRR=Math.max(0,...xs.map(x=>Number(x.expected_to_stop_ratio||0)).filter(Number.isFinite));
+          const execN=xs.filter(x=>x.execution_eligible===true).length;
+          const tfhtml=TF.map(tf=>{
+            const x=map[a+'|'+tf];
+            if(!x)return '<div class="v90-overview-tf"><b>'+tf+'</b>—</div>';
+            const d=dir(x);
+            return '<div class="v90-overview-tf '+cls(d)+'"><b>'+tf+'</b>'+arrow(d)+' '+(Number(x.confidence||0)*100).toFixed(0)+'%</div>';
+          }).join('');
+          return '<div class="v90-overview-row">'+
+            '<div class="v90-overview-head"><div class="v90-overview-asset">'+label(a)+'</div>'+
+            '<div class="v90-overview-dir '+cls(consensus)+'">'+arrow(consensus)+' '+consensus+'</div>'+
+            '<div class="v90-overview-regime">'+regime+'</div><div class="v90-overview-price">'+fmt(price)+'</div></div>'+
+            '<div class="v90-overview-tfs">'+tfhtml+'</div>'+
+            '<div class="v90-overview-foot"><div>подтверждения <b>'+indep+'</b></div><div>лучший R/R <b>'+(bestRR?bestRR.toFixed(2):'—')+'</b></div><div>исполнение <b>'+execN+'/'+xs.length+'</b></div></div>'+
+          '</div>';
+        }).join('');
+        el.innerHTML='<div class="v90-overview-grid">'+html+'</div>';
+      };
+    })();
+    </script>"""
+    value=value.replace('</body>',dense_market_js+'</body>')
     fast_signal_js = r"""<script id="V90_FAST_SIGNAL_FEED">
     (function(){
       let v90SignalsBusy=false;
@@ -568,6 +654,8 @@ def apply_v90_ui(html):
           const d=await r.json();
           const rows=Array.isArray(d.signals)?d.signals:[];
           if(typeof renderMatrix==='function')renderMatrix(rows);
+          window.V90_LAST_SIGNALS=rows;
+          if(typeof renderDenseAssetOverview==='function')renderDenseAssetOverview(rows);
           if(window.V90_SELECTED_SIGNAL && typeof window.showDetail==='function'){
             window.showDetail(window.V90_SELECTED_SIGNAL.asset,window.V90_SELECTED_SIGNAL.horizon,true);
           }
