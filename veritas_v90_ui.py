@@ -1109,6 +1109,65 @@ def apply_v90_ui(html):
     })();
     </script>"""
     value=value.replace('</body>',exec_js+'</body>')
+
+    portfolio_fast_js = r"""<script id="V90_PORTFOLIO_FAST_UI_R23">
+    (function(){
+      const rub=v=>v==null?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽';
+      const pct=v=>v==null?'—':Number(v).toFixed(2)+'%';
+      const esc=s=>String(s==null?'—':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+      async function get(url,ms){
+        const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),ms);
+        try{const r=await fetch(url,{cache:'no-store',signal:ctl.signal});if(!r.ok)throw new Error('HTTP '+r.status);return await r.json()}
+        finally{clearTimeout(tm)}
+      }
+      function renderPortfolios(pd){
+        const head=document.getElementById('portfolioheadline'),cards=document.getElementById('portfoliocards'),pos=document.getElementById('portfoliopositions');
+        if(!head||!cards||!pos)return;
+        const ps=Array.isArray(pd?.portfolios)?pd.portfolios:[];
+        head.innerHTML='Портфели <b>'+ps.length+'/4</b> · источник '+esc(pd.api_source||'live')+' · комиссия '+((Number(pd.commission_rate||0)*100)||0.05).toFixed(2)+'%';
+        cards.innerHTML=ps.map(p=>{
+          const l=p.latest||p, nav=l.nav_rub??p.nav_rub, ret=p.total_return_pct??l.total_return_pct, dd=p.drawdown_pct??(l.drawdown!=null?100*Number(l.drawdown):null), gross=l.gross_leverage??p.gross_leverage;
+          return '<div class="portfolio-card"><div class="portfolio-title"><span>'+esc(p.name)+'</span><span class="'+(Number(ret||0)>=0?'ok':'bad')+'">'+pct(ret)+'</span></div>'
+            +'<div class="portfolio-kpis"><div class="pkpi"><div class="k">NAV</div><div class="n">'+rub(nav)+'</div></div>'
+            +'<div class="pkpi"><div class="k">Просадка</div><div class="n">'+pct(dd)+'</div></div>'
+            +'<div class="pkpi"><div class="k">Gross</div><div class="n">'+(gross==null?'—':Number(gross).toFixed(2)+'×')+'</div></div>'
+            +'<div class="pkpi"><div class="k">Win rate</div><div class="n">'+(p.win_rate==null?'—':(100*Number(p.win_rate)).toFixed(1)+'%')+'</div></div></div></div>';
+        }).join('')||'<span class="stamp">Портфели ещё не рассчитаны.</span>';
+        const positions=[];ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push({...z,portfolio:p.name})));
+        pos.innerHTML=positions.length?positions.map(z=>'<div class="assetview"><div class="assetview-head"><b>'+esc(z.portfolio)+' · '+esc(z.asset)+'</b><b class="'+(z.direction==='LONG'?'ok':'bad')+'">'+esc(z.direction)+'</b></div><div class="assetmeta">Объём '+rub(z.notional_rub)+' · вход '+(z.avg_entry_price==null?'—':Number(z.avg_entry_price).toFixed(2))+' · текущая '+(z.last_price==null?'—':Number(z.last_price).toFixed(2))+' · P&L <b class="'+(Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad')+'">'+rub(z.unrealized_pnl_rub)+'</b></div></div>').join(''):'<span class="stamp">Открытых позиций нет.</span>';
+      }
+      function renderTrades(td){
+        const el=document.getElementById('portfoliotrades');if(!el)return;
+        let rows=[];
+        if(Array.isArray(td?.today_closed))rows=td.today_closed;
+        else if(Array.isArray(td?.trades))rows=td.trades;
+        else if(Array.isArray(td?.today))rows=td.today;
+        if(td?.status==='WARMING'&&!rows.length){el.innerHTML='<span class="stamp">Журнал загружается в фоне…</span>';setTimeout(loadTrades,2500);return}
+        el.innerHTML=rows.length?rows.slice(0,50).map(t=>{
+          const net=t.net_pnl_rub??t.pnl_rub??t.realized_pnl_rub;
+          return '<div class="assetview tradecompact"><b>'+esc(t.portfolio_name||t.portfolio)+' · '+esc(t.asset)+' · '+esc(t.direction)+'</b><div class="assetmeta">'
+            +(t.closed_at?new Date(t.closed_at).toLocaleString()+' · ':'')+'вход '+(t.avg_entry_price==null?'—':Number(t.avg_entry_price).toFixed(2))+' · выход '+(t.avg_exit_price==null?'—':Number(t.avg_exit_price).toFixed(2))
+            +' · Net <b class="'+(Number(net||0)>=0?'ok':'bad')+'">'+rub(net)+'</b></div></div>';
+        }).join(''):'<span class="stamp">Закрытых сделок пока нет.</span>';
+      }
+      async function loadTrades(){
+        try{renderTrades(await get('/api/v1/portfolio-trades',8000))}catch(e){
+          const el=document.getElementById('portfoliotrades');if(el)el.innerHTML='<span class="warn">Журнал обновляется, портфели работают независимо.</span>';
+        }
+      }
+      async function fastLoad(){
+        const head=document.getElementById('portfolioheadline');if(head)head.textContent='Портфели загружаются…';
+        try{renderPortfolios(await get('/api/v1/paper-portfolios',5000))}catch(e){
+          if(head)head.innerHTML='<span class="warn">Портфели временно обновляются…</span>';
+        }
+        loadTrades();
+      }
+      window.loadPortfolios=fastLoad;
+      document.querySelectorAll('.nav button[data-view="portfolios"]').forEach(b=>b.addEventListener('click',()=>setTimeout(fastLoad,0)));
+    })();
+    </script>"""
+    value=value.replace('</body>',portfolio_fast_js+'</body>')
+    print(json.dumps({'event':'V90_PORTFOLIO_FAST_UI_R23','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     print(json.dumps({'event':'V90_EXECUTIVE_PANEL_R21','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     print(json.dumps({'event':'V90_DECISION_COCKPIT_R15','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     print(json.dumps({'event':'V90_CLOSED_JOURNAL_UI_V2','status':'single_owner_no_observer'},ensure_ascii=False,separators=(',',':')),flush=True)
