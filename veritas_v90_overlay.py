@@ -3624,7 +3624,10 @@ def _v90_aggressive_candidate_book(summary, core_candidates):
                 book=_v90_aggressive_candidate_book(summary,candidates)
             else:
                 book=candidates"""
-    dst, ch = _replace_once(dst, old_route, new_route, "Aggressive early-setup candidate routing")
+    if "book=_v90_trend_transition_candidate_book(summary,base_book,mode)" in dst:
+        ch=False
+    else:
+        dst, ch = _replace_once(dst, old_route, new_route, "Aggressive early-setup candidate routing")
     if ch:
         applied.append("aggressive_setup_book")
 
