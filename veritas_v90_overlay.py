@@ -6467,6 +6467,48 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
             dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
         applied.append("micro_flip_guard_r9")
 
+
+    # VERITAS V90 HORIZON CONSISTENT EXIT R10
+    if "# VERITAS V90 HORIZON CONSISTENT EXIT R10" not in dst:
+        helper = r'''
+# VERITAS V90 HORIZON CONSISTENT EXIT R10
+_v90hx_base_close_or_reduce=_close_or_reduce
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    try:
+        tid=(z or {}).get('active_trade_id')
+        tr=c.execute("SELECT horizon FROM paper_trades WHERE trade_id=%s",(tid,)).fetchone() if tid else None
+        owner_h=str((tr or {}).get('horizon') or '')
+        if owner_h in ('3d','7d') and str(reason or '') in (
+            'V842_CONFIRMED_DIRECTION_FLIP','SOFT_SIZE_REDUCTION',
+            'SIGNAL_REDUCTION','SOFT_INVALIDATION_CONFIRMED'
+        ):
+            current_notional=abs(float((z or {}).get('units') or 0.0)*float(price or 0.0))
+            current_frac=current_notional/max(float(nav),1.0)
+            core_floor=max(0.05,_v90ph_round5(current_frac*0.75))
+            protected_target=max(float(target_fraction),core_floor)
+            if protected_target>=current_frac:
+                return 0.0
+            evt={'at':_v90j_iso(ts),'owner_horizon':owner_h,
+                 'requested_reason':str(reason or ''),
+                 'current_fraction':current_frac,
+                 'protected_target_fraction':protected_target,
+                 'rule':'HORIZON_CONSISTENT_EXIT_R10'}
+            if tid:
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                          (json.dumps({'last_lower_tf_tactical_reduce':evt},ensure_ascii=False,default=str),tid))
+            return _v90hx_base_close_or_reduce(c,p,name,z,price,protected_target,nav,ts,'LOWER_TF_TACTICAL_REDUCTION')
+    except Exception:
+        pass
+    return _v90hx_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor in dst:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        else:
+            dst += "\n"+helper
+        applied.append("horizon_consistent_exit_r10")
+
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
     if runtime_identity.strip() not in dst:
