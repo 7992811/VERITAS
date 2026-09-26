@@ -925,7 +925,7 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP36','domain':'data','statement':'If independent sources quote materially different prices for the same exact contract, freeze execution and marking for that asset until the conflict is resolved; keep the position and do not learn from the disputed mark.'},
  {'id':'EP37','domain':'breakout','statement':'In RANGE_LOW_VOL, a breakout label alone is insufficient for entry; require fresh structure, volume and volatility expansion, and aligned horizon structure.'},
  {'id':'EP38','domain':'regime','statement':'Low-volatility ranges have elevated false-breakout risk. Treat uncalibrated model scores conservatively and demand stronger independent evidence before committing capital.'},
- {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},\n {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},\n {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},\n {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'},\n {'id':'EP43','domain':'sizing','statement':'After partial profit-taking, position size may be rebuilt only on a new same-direction high-quality setup with fresh breakout evidence, volume confirmation, aligned structure and positive post-cost economics.'},\n {'id':'EP44','domain':'risk','statement':'Reloading a profitable position must never loosen an already protected stop. New size inherits the existing protected risk boundary unless a tighter structural stop is available.'},\n {'id':'EP45','domain':'execution','statement':'A profit reload is a new add-on decision, not an automatic reversal of prior profit-taking; require a minimum 5% position increment and re-check transaction-cost budget.'},\n {'id':'EP46','domain':'execution','statement':'Do not churn a newly opened fast-timeframe position on a small opposite signal while price remains inside a commission-dominated micro-move; require either time for the setup to mature or a materially adverse move.'},\n {'id':'EP47','domain':'cost','statement':'For 5m and other fast setups, a direction flip must be evaluated against round-trip transaction costs before closing and reopening; near-flat flips are execution noise, not alpha.'},\n {'id':'EP48','domain':'multitimeframe','statement':'For 3d/7d positions, lower-timeframe signals manage tactics but do not own the core thesis. A 5m/1h reversal may stop adding or trim a tactical sleeve, but the core remains until senior-horizon structure breaks.'},\n {'id':'EP49','domain':'risk','statement':'Hard risk exits remain immediate across all horizons, but soft lower-timeframe invalidations must not fully liquidate a structurally intact 3d/7d position.'},\n {'id':'EP50','domain':'sizing','statement':'When a lower timeframe turns against an intact senior-horizon position, reduce at most the tactical sleeve and preserve roughly 75% of current core exposure until the senior structure invalidates.'},\n {'id':'EP51','domain':'governance','statement':'VERITAS quality-first DNA: first eliminate weak/noisy/uneconomic trades, then scale only the strongest validated opportunities. NO_TRADE is preferable to a low-quality trade.'},\n {'id':'EP52','domain':'governance','statement':'Decision priority is: quality filter, structural confirmation, post-cost economics, sizing, then profit management. Later stages may never override a failed earlier stage.'},\n {'id':'EP53','domain':'sizing','statement':'Use risk capacity and leverage to amplify validated A/A+ opportunities rather than to compensate for marginal signal quality. Borderline setups should remain small or be skipped.'},\n {'id':'EP54','domain':'classification','statement':'Classify every executable setup as A+, A, B or C from structure, multi-timeframe alignment, independent evidence, volume/volatility confirmation, post-cost economics and calibration quality.'},\n {'id':'EP55','domain':'classification','statement':'A+ and A are institutional-quality execution classes; B is exploratory and may only be traded by Impulse/Aggressive at deliberately small size; C is NO_TRADE.'},\n {'id':'EP56','domain':'classification','statement':'A setup grade is not a substitute for hard gates: invalidation, data-integrity failure or failed economics always override a high raw score.'},\n {'id':'EP57','domain':'learning','statement':'Track realized PnL, win rate, MFE/MAE, costs and error type separately by setup grade so grade thresholds can be recalibrated from observed outcomes.'}"""
+ {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},\n {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},\n {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},\n {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'},\n {'id':'EP43','domain':'sizing','statement':'After partial profit-taking, position size may be rebuilt only on a new same-direction high-quality setup with fresh breakout evidence, volume confirmation, aligned structure and positive post-cost economics.'},\n {'id':'EP44','domain':'risk','statement':'Reloading a profitable position must never loosen an already protected stop. New size inherits the existing protected risk boundary unless a tighter structural stop is available.'},\n {'id':'EP45','domain':'execution','statement':'A profit reload is a new add-on decision, not an automatic reversal of prior profit-taking; require a minimum 5% position increment and re-check transaction-cost budget.'},\n {'id':'EP46','domain':'execution','statement':'Do not churn a newly opened fast-timeframe position on a small opposite signal while price remains inside a commission-dominated micro-move; require either time for the setup to mature or a materially adverse move.'},\n {'id':'EP47','domain':'cost','statement':'For 5m and other fast setups, a direction flip must be evaluated against round-trip transaction costs before closing and reopening; near-flat flips are execution noise, not alpha.'},\n {'id':'EP48','domain':'multitimeframe','statement':'For 3d/7d positions, lower-timeframe signals manage tactics but do not own the core thesis. A 5m/1h reversal may stop adding or trim a tactical sleeve, but the core remains until senior-horizon structure breaks.'},\n {'id':'EP49','domain':'risk','statement':'Hard risk exits remain immediate across all horizons, but soft lower-timeframe invalidations must not fully liquidate a structurally intact 3d/7d position.'},\n {'id':'EP50','domain':'sizing','statement':'When a lower timeframe turns against an intact senior-horizon position, reduce at most the tactical sleeve and preserve roughly 75% of current core exposure until the senior structure invalidates.'},\n {'id':'EP51','domain':'governance','statement':'VERITAS quality-first DNA: first eliminate weak/noisy/uneconomic trades, then scale only the strongest validated opportunities. NO_TRADE is preferable to a low-quality trade.'},\n {'id':'EP52','domain':'governance','statement':'Decision priority is: quality filter, structural confirmation, post-cost economics, sizing, then profit management. Later stages may never override a failed earlier stage.'},\n {'id':'EP53','domain':'sizing','statement':'Use risk capacity and leverage to amplify validated A/A+ opportunities rather than to compensate for marginal signal quality. Borderline setups should remain small or be skipped.'},\n {'id':'EP54','domain':'classification','statement':'Classify every executable setup as A+, A, B or C from structure, multi-timeframe alignment, independent evidence, volume/volatility confirmation, post-cost economics and calibration quality.'},\n {'id':'EP55','domain':'classification','statement':'A+ and A are institutional-quality execution classes; B is exploratory and may only be traded by Impulse/Aggressive at deliberately small size; C is NO_TRADE.'},\n {'id':'EP56','domain':'classification','statement':'A setup grade is not a substitute for hard gates: invalidation, data-integrity failure or failed economics always override a high raw score.'},\n {'id':'EP57','domain':'learning','statement':'Track realized PnL, win rate, MFE/MAE, costs and error type separately by setup grade so grade thresholds can be recalibrated from observed outcomes.'},\n {'id':'EP58','domain':'risk','statement':'For a profitable SHORT, ratchet the protective stop down continuously to just above the latest confirmed local swing high of the most recent downward leg; for LONG use the mirror rule below the latest confirmed local swing low.'},\n {'id':'EP59','domain':'risk','statement':'Recent local structure on the trade management timeframe has priority for trailing. Senior-timeframe levels are fallbacks, not reasons to leave a stale wide stop while a sequence of lower highs or higher lows develops.'},\n {'id':'EP60','domain':'risk','statement':'A structural trailing stop must never move away from profit protection: SHORT stops only move lower and LONG stops only move higher, with a volatility-aware buffer beyond the local pivot.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -1558,11 +1558,24 @@ def _v90_level_row(raw, timeframe):
     resistance_candidates=sorted(set(float(x) for x in above))
     support=support_candidates[0] if support_candidates else None
     resistance=resistance_candidates[0] if resistance_candidates else None
+
+    # Recency-aware confirmed local extrema for structural trailing.
+    # Keep the LAST confirmed pivot in time, not merely the nearest level by price.
+    recent_support=None; recent_resistance=None
+    for i in range(len(look)-2,0,-1):
+        if recent_support is None and lows[i] <= lows[i-1] and lows[i] <= lows[i+1] and lows[i] < p-eps:
+            recent_support=float(lows[i])
+        if recent_resistance is None and highs[i] >= highs[i-1] and highs[i] >= highs[i+1] and highs[i] > p+eps:
+            recent_resistance=float(highs[i])
+        if recent_support is not None and recent_resistance is not None:
+            break
+
     return {
         'timeframe':timeframe,'status':'OK','bars':len(bars),
         'last_close':closes[-1],'previous_high':float(previous['high']),
         'previous_low':float(previous['low']),
         'rolling_high':rolling_high,'rolling_low':rolling_low,
+        'recent_support':recent_support,'recent_resistance':recent_resistance,
         'support':support,'resistance':resistance,
         'support_candidates':support_candidates[:12],
         'resistance_candidates':resistance_candidates[:12],
@@ -6685,6 +6698,67 @@ def _v90j_entry_patch(row,z,ts):
         else:
             dst += "\n"+helper
         applied.append("setup_grade_r11")
+
+
+    # VERITAS V90 RECENT SWING TRAILING R12
+    if "# VERITAS V90 RECENT SWING TRAILING R12" not in dst:
+        helper = r'''
+# VERITAS V90 RECENT SWING TRAILING R12
+_v90rst_base_extract_levels=_v90tr_extract_levels
+
+def _v90tr_extract_levels(row,horizon,direction,current):
+    row=row or {}
+    plan=row.get('trade_plan') or {}
+    mtf=plan.get('multi_tf_levels') or ((row.get('features') or {}).get('multi_tf_levels') if isinstance(row.get('features'),dict) else {}) or {}
+    rows=(mtf or {}).get('timeframes') or {}
+
+    # The stop follows the LAST CONFIRMED LOCAL EXTREME of the latest movement.
+    # Management timeframe has priority. Senior TF is only a fallback when the
+    # management timeframe has no confirmed local pivot.
+    tfs=_v90tr_tf_order(horizon)
+    if not tfs:
+        return _v90rst_base_extract_levels(row,horizon,direction,current)
+
+    primary=tfs[0]
+    z=rows.get(primary) or {}
+    key='recent_support' if direction=='LONG' else 'recent_resistance'
+    lvl=z.get(key)
+    try: lvl=float(lvl) if lvl is not None else None
+    except Exception: lvl=None
+    if lvl is not None:
+        if direction=='LONG' and 0<lvl<current:
+            return [(primary,lvl)]
+        if direction=='SHORT' and lvl>current:
+            return [(primary,lvl)]
+
+    # Fallback: use the nearest valid confirmed structural candidate on the
+    # management timeframe; do not jump to a stale senior level unnecessarily.
+    vals=(z.get('support_candidates') if direction=='LONG' else z.get('resistance_candidates')) or []
+    clean=[]
+    for x in vals:
+        try: x=float(x)
+        except Exception: continue
+        if direction=='LONG' and 0<x<current: clean.append(x)
+        elif direction=='SHORT' and x>current: clean.append(x)
+    if clean:
+        chosen=max(clean) if direction=='LONG' else min(clean)
+        return [(primary,chosen)]
+
+    # Only if local structure is unavailable, fall back to senior-timeframe levels.
+    return _v90rst_base_extract_levels(row,horizon,direction,current)
+
+_v90rst_base_step_one=_step_one
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    out=_v90rst_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
+    return out
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor in dst:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        else:
+            dst += "\n"+helper
+        applied.append("recent_swing_trailing_r12")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
