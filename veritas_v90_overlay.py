@@ -295,6 +295,11 @@ def v90_migrate_core_data():
     if ch:
         applied.append("migration_startup")
 
+    # VERITAS V90 UI/DATA CONSISTENCY R17
+    if "for h in ('1h','4h','1d','3d','7d'):" in dst:
+        dst=dst.replace("for h in ('1h','4h','1d','3d','7d'):",
+                        "for h in ('5m','1h','4h','1d','3d','7d'):",1)
+        applied.append("r17_include_5m_signal_snapshot")
     # VERITAS V90 R16 FAST LIVE STARTUP
     old_seed_startup = """    case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}
     expert_principles = seed_expert_principles_pg() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}
