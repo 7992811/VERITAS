@@ -25,9 +25,26 @@ _CANONICAL_HTML = r'''<!doctype html>
 .row b{font-size:11px}.row span{font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .action{grid-template-columns:62px 58px 42px minmax(110px,1fr) 78px 78px}.asset{grid-template-columns:62px 58px minmax(180px,1fr) 85px}
 .tfs{display:grid;grid-template-columns:repeat(6,minmax(33px,1fr));gap:3px}.tf{font-size:7px;text-align:center;padding:3px 2px;border:1px solid var(--line);border-radius:5px;color:var(--muted)}
-.matrix-wrap{overflow:auto}.matrix{width:100%;border-collapse:separate;border-spacing:3px}.matrix th{font-size:9px;color:var(--muted);font-weight:500;padding:3px}
-.matrix td{padding:0}.cell{width:100%;border:1px solid var(--line);border-radius:6px;background:var(--card2);color:var(--text);padding:5px 3px;cursor:pointer;font-size:9px}
-.cell:hover{border-color:#53616d}.cell.sel{outline:1px solid #80909c}.cell small{display:block;font-size:7.5px;color:var(--muted);margin-top:2px}.sig-dot{display:inline-block;width:13px;height:13px;border-radius:50%;vertical-align:middle;box-shadow:0 0 0 1px rgba(255,255,255,.12)}.sig-dot.long{background:var(--ok);box-shadow:0 0 8px rgba(89,214,148,.35)}.sig-dot.short{background:var(--bad);box-shadow:0 0 8px rgba(239,103,103,.35)}.sig-dot.wait{background:var(--warn);box-shadow:0 0 8px rgba(214,183,94,.25)}.sig-dot.super{width:17px;height:17px;border:2px solid rgba(255,255,255,.75)}.sig-dot.super.long{box-shadow:0 0 5px #fff,0 0 13px rgba(89,214,148,.8),0 0 22px rgba(89,214,148,.35)}.sig-dot.super.short{box-shadow:0 0 5px #fff,0 0 13px rgba(239,103,103,.8),0 0 22px rgba(239,103,103,.35)}.super-label{font-weight:800;letter-spacing:.03em}
+.matrix-wrap{overflow:auto}.matrix{width:100%;border-collapse:separate;border-spacing:7px 8px}.matrix th{font-size:12px;color:#aeb9c4;font-weight:600;padding:5px 7px}
+.matrix th.asset-head{text-align:left;min-width:124px}.matrix td{padding:0;min-width:82px}
+.asset-label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:650;color:#dfe6ed;white-space:nowrap}
+.asset-icon{width:27px;height:27px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.14);background:#18212a;color:#eaf0f5;font-size:11px;font-weight:800;box-shadow:inset 0 0 0 1px rgba(255,255,255,.025)}
+.asset-icon.btc{color:#ffb35a;border-color:rgba(255,179,90,.35)}.asset-icon.eth{color:#bda7ff;border-color:rgba(189,167,255,.32)}
+.asset-icon.ndxf{color:#79b8ff;border-color:rgba(121,184,255,.32)}.asset-icon.brent{color:#c3d0dc;border-color:rgba(195,208,220,.28)}
+.asset-icon.gold{color:#e8c45a;border-color:rgba(232,196,90,.35)}.asset-icon.moex{color:#8bb9ff;border-color:rgba(139,185,255,.3)}
+.asset-icon.cny{color:#efc25a;border-color:rgba(239,194,90,.34);font-size:9px}
+.cell{width:100%;min-height:70px;border:1px solid var(--line);border-radius:12px;background:var(--card2);color:var(--text);padding:8px 5px;cursor:pointer;font-size:11px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.cell:hover{border-color:#53616d;transform:translateY(-1px)}.cell.sel{outline:2px solid #91a4b4;outline-offset:1px}
+.cell small{display:block;font-size:10px;color:#aab5bf;margin-top:6px;line-height:1;font-weight:550}
+.sig-dot{display:inline-block;width:21px;height:21px;border-radius:50%;vertical-align:middle;position:relative}
+.sig-dot.long{background:var(--ok);box-shadow:0 0 12px rgba(89,214,148,.42)}.sig-dot.short{background:var(--bad);box-shadow:0 0 12px rgba(239,103,103,.42)}.sig-dot.wait{background:var(--warn);box-shadow:0 0 10px rgba(214,183,94,.32)}
+.sig-dot.super{width:27px;height:27px;background:transparent!important;border:3px solid currentColor;box-shadow:none}
+.sig-dot.super::after{content:'';position:absolute;left:50%;top:50%;width:11px;height:11px;border-radius:50%;transform:translate(-50%,-50%)}
+.sig-dot.super.long{color:var(--ok);border-color:var(--ok);box-shadow:0 0 9px rgba(89,214,148,.75),0 0 19px rgba(89,214,148,.30)}
+.sig-dot.super.long::after{background:var(--ok);box-shadow:0 0 7px rgba(89,214,148,.9)}
+.sig-dot.super.short{color:var(--bad);border-color:var(--bad);box-shadow:0 0 9px rgba(239,103,103,.75),0 0 19px rgba(239,103,103,.30)}
+.sig-dot.super.short::after{background:var(--bad);box-shadow:0 0 7px rgba(239,103,103,.9)}
+.super-label{font-weight:800;letter-spacing:.04em;color:#eef3f7!important}
 .detail-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.metric{border:1px solid var(--line);border-radius:8px;padding:6px;min-width:0}
 .metric span{display:block;font-size:8px;color:var(--muted)}.metric b{display:block;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .detail-note{margin-top:6px;border-top:1px solid var(--line);padding-top:6px;font-size:9px;color:var(--muted)}
@@ -64,7 +81,7 @@ _CANONICAL_HTML = r'''<!doctype html>
     </div>
 
     <div class="card two section">
-      <div class="title">Матрица сигналов · 7 активов × 6 таймфреймов</div>
+      <div class="title" style="font-size:12px;font-weight:700;letter-spacing:.07em">Матрица сигналов · 7 активов × 6 таймфреймов</div>
       <div class="matrix-wrap"><table class="matrix"><thead><tr><th>Актив</th><th>5м</th><th>1ч</th><th>4ч</th><th>1д</th><th>3д</th><th>7д</th></tr></thead><tbody id="matrixBody"></tbody></table></div>
     </div>
 
@@ -114,6 +131,8 @@ const st={signals:null,portfolios:null,trades:null,health:null,learning:null,qua
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
+const assetIcon=a=>({BTC:'₿',ETH:'Ξ',NQ:'N',BRENT:'◆',GOLD:'Au',MOEX:'M',CNYRUBF:'¥₽'}[a]||'•');
+const assetIconClass=a=>({BTC:'btc',ETH:'eth',NQ:'ndxf',BRENT:'brent',GOLD:'gold',MOEX:'moex',CNYRUBF:'cny'}[a]||'');
 const dir=x=>String((x&&x.research_decision)||(x&&x.decision)||'NO_TRADE');
 const tier=x=>String((x&&x.signal_tier)||dir(x));
 const tierLabel=x=>tier(x)==='SUPER_LONG'?'SUPER LONG':tier(x)==='SUPER_SHORT'?'SUPER SHORT':dir(x)==='LONG'?'LONG':dir(x)==='SHORT'?'SHORT':'WAIT';
@@ -149,7 +168,7 @@ function renderSignals(){
 
   $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><b>'+lab(a)+'</b><b class="'+cls(D)+'">'+ar(D)+' '+D+'</b><span>'+TF.map(tf=>{const x=map[a+'|'+tf];return tf+':' +(x?ar(dir(x)):'—')}).join(' · ')+'</span><span style="text-align:right">'+n(p,4)+'</span></div>'}).join('');
 
-  $('matrixBody').innerHTML=AS.map(a=>'<tr><th>'+lab(a)+'</th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.25"></span><small>—</small></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',tag=T==='SUPER_LONG'?'SL':T==='SUPER_SHORT'?'SS':D==='LONG'?'L':D==='SHORT'?'S':'—';return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(0)+'%"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small class="'+(isSuper?'super-label':'')+'">'+tag+' · '+conf.toFixed(0)+'%</small></button></td>'}).join('')+'</tr>').join('');
+  $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label"><span class="asset-icon '+assetIconClass(a)+'">'+assetIcon(a)+'</span><span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.25"></span><small>—</small></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',tag=T==='SUPER_LONG'?'SL':T==='SUPER_SHORT'?'SS':D==='LONG'?'L':D==='SHORT'?'S':'—';return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(0)+'%"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small class="'+(isSuper?'super-label':'')+'">'+tag+' · '+conf.toFixed(0)+'%</small></button></td>'}).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
   if(!st.selected&&rows.length){const x=best[0]||rows[0];st.selected=x.asset+'|'+x.horizon}
   if(st.selected)selectSignal(st.selected,false);
