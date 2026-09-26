@@ -15148,7 +15148,7 @@ def _v90r25_portfolios_fast():
         z['notional_rub']=abs(units*px)
         z['unrealized_pnl_rub']=sign*units*(px-ep)
         z['unrealized_return_pct']=(100*sign*(px/ep-1)) if ep else None
-        pm.setdefault(z['portfolio_name'],[]).append(_jsonable(z))
+        pm.setdefault(z['portfolio_name'],[]).append(z)
     outp=[]
     for name in names:
         b=bm.get(name,{})
@@ -15157,7 +15157,7 @@ def _v90r25_portfolios_fast():
         closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0)
         nav_rub=latest.get('nav_rub')
         initial=float(b.get('initial_nav_rub') or 1000000)
-        outp.append({'name':name,'latest':_jsonable(latest),'positions':pm.get(name,[]),
+        outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),
                      'nav_rub':nav_rub,'nav_usd':latest.get('nav_usd'),
                      'total_return_pct':(100*(float(nav_rub)/initial-1)) if nav_rub is not None else None,
                      'drawdown_pct':100*float(latest.get('drawdown') or 0),
