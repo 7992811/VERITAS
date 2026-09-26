@@ -157,7 +157,7 @@ def apply_v90_ui(html):
        const el=document.getElementById('portfoliotrades');if(!el)return;
        observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(refreshClosed,180)});
        observer.observe(el,{childList:true,subtree:true,characterData:true});
-       refreshClosed();setInterval(refreshClosed,30000);
+       setTimeout(refreshClosed,10000);setInterval(refreshClosed,120000);
      }
      if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
     })();
@@ -555,7 +555,10 @@ def apply_v90_ui(html):
     value = value.replace('</body>', nq_label_js + '</body>')
     fast_signal_js = r"""<script id="V90_FAST_SIGNAL_FEED">
     (function(){
+      let v90SignalsBusy=false;
       async function v90LoadSignals(){
+        if(v90SignalsBusy)return;
+        v90SignalsBusy=true;
         try{
           const ctl=new AbortController();
           const tm=setTimeout(()=>ctl.abort(),6000);
@@ -576,6 +579,8 @@ def apply_v90_ui(html):
         }catch(e){
           const ms=document.getElementById('matrixstatus');
           if(ms && !ms.textContent.trim())ms.textContent='обновление сигналов…';
+        }finally{
+          v90SignalsBusy=false;
         }
       }
       window.v90LoadSignals=v90LoadSignals;
@@ -750,8 +755,8 @@ def apply_v90_ui(html):
       function start(){
         const el=document.getElementById('portfoliotrades');if(!el)return;
         el.dataset.v90Managed='1';
-        refresh();
-        setInterval(refresh,30000);
+        setTimeout(refresh,8000);
+        setInterval(refresh,120000);
       }
       if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
     })();
@@ -856,15 +861,30 @@ def apply_v90_ui(html):
         const open=rows.some(function(x){return x.market_open===true});
         set('v90-cp-market',open?'OPEN / MIXED':'CLOSED / RESEARCH',open?'ok':'warn');
       }
+      async function v90FetchJson(url,timeoutMs){
+        const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),timeoutMs||5000);
+        try{
+          const r=await fetch(url,{cache:'no-store',signal:ctl.signal});
+          if(!r.ok)throw new Error('HTTP '+r.status);
+          return await r.json();
+        }finally{clearTimeout(tm)}
+      }
       async function refresh(){
         install();
-        const res=await Promise.allSettled([
-          fetch('/api/v1/signals',{cache:'no-store'}).then(function(r){return r.json()}),
-          fetch('/api/v1/paper-portfolios',{cache:'no-store'}).then(function(r){return r.json()}),
-          fetch('/healthz',{cache:'no-store'}).then(function(r){return r.json()})
+        // Critical path: signals + health only. Never wait for PostgreSQL-heavy portfolio APIs.
+        const fast=await Promise.allSettled([
+          v90FetchJson('/api/v1/signals',5000),
+          v90FetchJson('/healthz',3000)
         ]);
-        const s=res[0].status==='fulfilled'?res[0].value:null, p=res[1].status==='fulfilled'?res[1].value:null, h=res[2].status==='fulfilled'?res[2].value:null;
-        if(s)renderSignals(s);if(p)renderPortfolios(p);renderHealth(h,s);
+        const s=fast[0].status==='fulfilled'?fast[0].value:null;
+        const h=fast[1].status==='fulfilled'?fast[1].value:null;
+        if(s)renderSignals(s);
+        renderHealth(h,s);
+
+        // Portfolio state is secondary and fail-soft.
+        v90FetchJson('/api/v1/paper-portfolios',6000)
+          .then(renderPortfolios)
+          .catch(function(){});
       }
       if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',refresh,{once:true});else refresh();
       setInterval(refresh,30000);
