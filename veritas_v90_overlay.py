@@ -2147,23 +2147,6 @@ def _v90_ensure_legacy_compat_views():
         dst=dst.replace(_main_anchor,"\n"+_compat_helper+"\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    _v90_ensure_legacy_compat_views()\n    init_db()",1)
         applied.append("legacy_compat_views")
 
-
-
-    # VERITAS V90 STARTUP LOSS AUDIT
-    if "# VERITAS V90 STARTUP LOSS AUDIT" not in dst:
-        old_main = "    init_db()\n    pg_boot = pg_init()"
-        new_main = """    init_db()
-    pg_boot = pg_init()
-    # VERITAS V90 STARTUP LOSS AUDIT
-    if pg_boot.get('ok') and VP is not None and hasattr(VP,'quality_loss_audit'):
-        try:
-            VP.quality_loss_audit(pg_connect)
-        except Exception as ex:
-            emit('v90_loss_audit_error',error=f'{type(ex).__name__}: {ex}')"""
-        if old_main in dst:
-            dst=dst.replace(old_main,new_main,1)
-            applied.append("startup_loss_audit")
-
     # VERITAS 9.0: feed de-duplicated paper execution outcomes into execution memory.
     if "# VERITAS V90 PAPER EXECUTION LEARNING V2" not in dst:
         helper = r'''
