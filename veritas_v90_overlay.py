@@ -47,6 +47,22 @@ def _patch_intelligence():
         dst = dst2
         applied.append("version")
 
+    # VERITAS V90 DATABASE ENV RECOVERY R19
+    old_db_assign = "DATABASE_URL = os.getenv('DATABASE_URL', '').strip()"
+    new_db_assign = """_V90_DB_ENV_KEYS=('DATABASE_URL','VERITAS_DATABASE_URL','POSTGRES_URL','POSTGRESQL_URL','POSTGRES_INTERNAL_URL','RENDER_DATABASE_URL')
+DATABASE_URL = next((os.getenv(k,'').strip() for k in _V90_DB_ENV_KEYS if os.getenv(k,'').strip()), '')
+if not DATABASE_URL:
+    _present=[k for k in os.environ if ('DATABASE' in k.upper() or 'POSTGRES' in k.upper())]
+    print(json.dumps({'event':'V90_DATABASE_ENV_DIAGNOSTIC','database_url_found':False,
+                      'candidate_keys_present':sorted(_present)},separators=(',',':')),flush=True)
+else:
+    _used=next((k for k in _V90_DB_ENV_KEYS if os.getenv(k,'').strip()),'DATABASE_URL')
+    print(json.dumps({'event':'V90_DATABASE_ENV_DIAGNOSTIC','database_url_found':True,
+                      'selected_key':_used},separators=(',',':')),flush=True)"""
+    if old_db_assign in dst:
+        dst=dst.replace(old_db_assign,new_db_assign,1)
+        applied.append("r19_database_env_recovery")
+
     old_pg = """def pg_connect():
     if not DATABASE_URL:
         raise RuntimeError('DATABASE_URL_NOT_SET')
