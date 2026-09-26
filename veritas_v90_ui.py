@@ -25,21 +25,21 @@ _CANONICAL_HTML = r'''<!doctype html>
 .row b{font-size:11px}.row span{font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .action{grid-template-columns:62px 58px 42px minmax(110px,1fr) 78px 78px}.asset{grid-template-columns:118px 72px minmax(0,1fr);gap:8px}.asset-main{min-width:0}.asset-main b{display:block}.asset-price{display:block!important;margin-top:2px;font-size:9px!important;color:#aab6c1!important;font-variant-numeric:tabular-nums}.asset-bias{text-align:left;white-space:nowrap}.asset-tfline{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px!important;color:#9aa6b1!important}
 .tfs{display:grid;grid-template-columns:repeat(6,minmax(33px,1fr));gap:3px}.tf{font-size:7px;text-align:center;padding:3px 2px;border:1px solid var(--line);border-radius:5px;color:var(--muted)}
-.matrix-wrap{overflow:auto}.matrix{width:100%;border-collapse:separate;border-spacing:7px 8px}.matrix th{font-size:12px;color:#aeb9c4;font-weight:600;padding:5px 4px}
-.matrix th.asset-head{text-align:left;min-width:116px;padding-left:0}.matrix td{padding:0;min-width:82px}
-.asset-label{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:650;color:#dfe6ed;white-space:nowrap;transform:translateX(-3px)}
-.asset-icon{width:27px;height:27px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.14);background:#18212a;color:#eaf0f5;font-size:11px;font-weight:800;box-shadow:inset 0 0 0 1px rgba(255,255,255,.025)}
+.matrix-wrap{overflow-x:hidden;overflow-y:visible}.matrix{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:2px 3px}.matrix th{font-size:13px;color:#aeb9c4;font-weight:650;padding:2px 2px;line-height:1.05}
+.matrix th:first-child{width:112px}.matrix th.asset-head{text-align:left;width:112px;min-width:0;padding-left:0}.matrix td{padding:0;min-width:0;width:auto}
+.asset-label{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:700;color:#dfe6ed;white-space:nowrap;transform:translateX(-4px)}
+.asset-icon{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.14);background:#18212a;color:#eaf0f5;font-size:11px;font-weight:800;box-shadow:inset 0 0 0 1px rgba(255,255,255,.025);flex:0 0 24px}
 .asset-icon.btc{color:#ffb35a;border-color:rgba(255,179,90,.35)}.asset-icon.eth{color:#bda7ff;border-color:rgba(189,167,255,.32)}
 .asset-icon.ndxf{color:#79b8ff;border-color:rgba(121,184,255,.32)}.asset-icon.brent{color:#c3d0dc;border-color:rgba(195,208,220,.28)}
 .asset-icon.gold{color:#e8c45a;border-color:rgba(232,196,90,.35)}.asset-icon.moex{color:#8bb9ff;border-color:rgba(139,185,255,.3)}
 .asset-icon.cny{color:#efc25a;border-color:rgba(239,194,90,.34);font-size:9px}
-.cell{width:100%;min-height:64px;border:0;border-radius:0;background:transparent;color:var(--text);padding:7px 4px;cursor:pointer;font-size:11px;display:flex;flex-direction:column;align-items:center;justify-content:center}
-.cell:hover{transform:translateY(-1px);background:rgba(255,255,255,.025);border-radius:8px}.cell.sel{outline:1px solid rgba(145,164,180,.45);outline-offset:0;border-radius:8px}
-.cell small{display:block;font-size:10px;color:#aab5bf;margin-top:6px;line-height:1;font-weight:550}
-.sig-dot{display:inline-block;width:21px;height:21px;border-radius:50%;vertical-align:middle;position:relative}
-.sig-dot.long{background:var(--ok);box-shadow:0 0 12px rgba(89,214,148,.42)}.sig-dot.short{background:var(--bad);box-shadow:0 0 12px rgba(239,103,103,.42)}.sig-dot.wait{background:var(--warn);box-shadow:0 0 10px rgba(214,183,94,.32)}
-.sig-dot.super{width:27px;height:27px;background:transparent!important;border:3px solid currentColor;box-shadow:none}
-.sig-dot.super::after{content:'';position:absolute;left:50%;top:50%;width:11px;height:11px;border-radius:50%;transform:translate(-50%,-50%)}
+.cell{width:100%;min-height:47px;border:0;border-radius:0;background:transparent;color:var(--text);padding:3px 1px;cursor:pointer;font-size:12px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.cell:hover{background:rgba(255,255,255,.025);border-radius:7px}.cell.sel{outline:1px solid rgba(145,164,180,.45);outline-offset:0;border-radius:7px}
+.cell small{display:block;font-size:10.5px;color:#b2bdc7;margin-top:3px;line-height:1;font-weight:600;white-space:nowrap}
+.sig-dot{display:inline-block;width:19px;height:19px;border-radius:50%;vertical-align:middle;position:relative}
+.sig-dot.long{background:var(--ok);box-shadow:0 0 11px rgba(89,214,148,.42)}.sig-dot.short{background:var(--bad);box-shadow:0 0 11px rgba(239,103,103,.42)}.sig-dot.wait{background:var(--warn);box-shadow:0 0 9px rgba(214,183,94,.32)}
+.sig-dot.super{width:24px;height:24px;background:transparent!important;border:3px solid currentColor;box-shadow:none}
+.sig-dot.super::after{content:'';position:absolute;left:50%;top:50%;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%)}
 .sig-dot.super.long{color:var(--ok);border-color:var(--ok);box-shadow:0 0 9px rgba(89,214,148,.75),0 0 19px rgba(89,214,148,.30)}
 .sig-dot.super.long::after{background:var(--ok);box-shadow:0 0 7px rgba(89,214,148,.9)}
 .sig-dot.super.short{color:var(--bad);border-color:var(--bad);box-shadow:0 0 9px rgba(239,103,103,.75),0 0 19px rgba(239,103,103,.30)}
@@ -81,7 +81,7 @@ _CANONICAL_HTML = r'''<!doctype html>
     </div>
 
     <div class="card two section">
-      <div class="title" style="font-size:12px;font-weight:700;letter-spacing:.07em">Матрица сигналов · 7 активов × 6 таймфреймов</div>
+      <div class="title" style="font-size:13px;font-weight:700;letter-spacing:.06em;margin-bottom:3px">Матрица сигналов · 7 активов × 6 таймфреймов</div>
       <div class="matrix-wrap"><table class="matrix"><thead><tr><th>Актив</th><th>5м</th><th>1ч</th><th>4ч</th><th>1д</th><th>3д</th><th>7д</th></tr></thead><tbody id="matrixBody"></tbody></table></div>
     </div>
 
