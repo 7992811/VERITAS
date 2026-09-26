@@ -1167,6 +1167,44 @@ def apply_v90_ui(html):
     })();
     </script>"""
     value=value.replace('</body>',portfolio_fast_js+'</body>')
+
+    request_broker_js = r"""<script id="V90_PORTFOLIO_REQUEST_BROKER_R25">
+    (function(){
+      if(window.__v90PortfolioBrokerInstalled)return;
+      window.__v90PortfolioBrokerInstalled=true;
+      const nativeFetch=window.fetch.bind(window);
+      const inflight=new Map(), cache=new Map();
+      function keyOf(input){
+        try{
+          const u=typeof input==='string'?input:(input&&input.url)||'';
+          if(u.includes('/api/v1/paper-portfolios'))return 'pf';
+          if(u.includes('/api/v1/portfolio-trades'))return 'tr';
+        }catch(e){}
+        return null;
+      }
+      window.fetch=function(input,init){
+        const k=keyOf(input);
+        if(!k)return nativeFetch(input,init);
+        const now=Date.now(), ttl=k==='pf'?3000:5000;
+        const hit=cache.get(k);
+        if(hit&&now-hit.at<ttl){
+          const txt=hit.text;
+          return Promise.resolve(new Response(txt,{status:200,headers:{'Content-Type':'application/json'}}));
+        }
+        if(inflight.has(k))return inflight.get(k).then(txt=>new Response(txt,{status:200,headers:{'Content-Type':'application/json'}}));
+        const p=nativeFetch(input,init).then(async r=>{
+          const txt=await r.clone().text();
+          if(r.ok)cache.set(k,{at:Date.now(),text:txt});
+          if(!r.ok)throw new Error('HTTP '+r.status);
+          return txt;
+        }).finally(()=>inflight.delete(k));
+        inflight.set(k,p);
+        return p.then(txt=>new Response(txt,{status:200,headers:{'Content-Type':'application/json'}}));
+      };
+    })();
+    </script>"""
+    value=value.replace('</body>',request_broker_js+'</body>')
+    print(json.dumps({'event':'V90_PORTFOLIO_REQUEST_BROKER_R25','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     print(json.dumps({'event':'V90_PORTFOLIO_FAST_UI_R23','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     print(json.dumps({'event':'V90_EXECUTIVE_PANEL_R21','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
     print(json.dumps({'event':'V90_DECISION_COCKPIT_R15','status':'installed'},ensure_ascii=False,separators=(',',':')),flush=True)
