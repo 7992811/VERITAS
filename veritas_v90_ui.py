@@ -27,7 +27,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .tfs{display:grid;grid-template-columns:repeat(6,minmax(33px,1fr));gap:3px}.tf{font-size:7px;text-align:center;padding:3px 2px;border:1px solid var(--line);border-radius:5px;color:var(--muted)}
 .matrix-wrap{overflow:auto}.matrix{width:100%;border-collapse:separate;border-spacing:3px}.matrix th{font-size:9px;color:var(--muted);font-weight:500;padding:3px}
 .matrix td{padding:0}.cell{width:100%;border:1px solid var(--line);border-radius:6px;background:var(--card2);color:var(--text);padding:5px 3px;cursor:pointer;font-size:9px}
-.cell:hover{border-color:#53616d}.cell.sel{outline:1px solid #80909c}.cell small{display:block;font-size:7.5px;color:var(--muted);margin-top:2px}.sig-dot{display:inline-block;width:13px;height:13px;border-radius:50%;vertical-align:middle;box-shadow:0 0 0 1px rgba(255,255,255,.12)}.sig-dot.long{background:var(--ok);box-shadow:0 0 8px rgba(89,214,148,.35)}.sig-dot.short{background:var(--bad);box-shadow:0 0 8px rgba(239,103,103,.35)}.sig-dot.wait{background:var(--warn);box-shadow:0 0 8px rgba(214,183,94,.25)}
+.cell:hover{border-color:#53616d}.cell.sel{outline:1px solid #80909c}.cell small{display:block;font-size:7.5px;color:var(--muted);margin-top:2px}.sig-dot{display:inline-block;width:13px;height:13px;border-radius:50%;vertical-align:middle;box-shadow:0 0 0 1px rgba(255,255,255,.12)}.sig-dot.long{background:var(--ok);box-shadow:0 0 8px rgba(89,214,148,.35)}.sig-dot.short{background:var(--bad);box-shadow:0 0 8px rgba(239,103,103,.35)}.sig-dot.wait{background:var(--warn);box-shadow:0 0 8px rgba(214,183,94,.25)}.sig-dot.super{width:17px;height:17px;border:2px solid rgba(255,255,255,.75)}.sig-dot.super.long{box-shadow:0 0 5px #fff,0 0 13px rgba(89,214,148,.8),0 0 22px rgba(89,214,148,.35)}.sig-dot.super.short{box-shadow:0 0 5px #fff,0 0 13px rgba(239,103,103,.8),0 0 22px rgba(239,103,103,.35)}.super-label{font-weight:800;letter-spacing:.03em}
 .detail-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.metric{border:1px solid var(--line);border-radius:8px;padding:6px;min-width:0}
 .metric span{display:block;font-size:8px;color:var(--muted)}.metric b{display:block;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .detail-note{margin-top:6px;border-top:1px solid var(--line);padding-top:6px;font-size:9px;color:var(--muted)}
@@ -115,6 +115,8 @@ const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
 const dir=x=>String((x&&x.research_decision)||(x&&x.decision)||'NO_TRADE');
+const tier=x=>String((x&&x.signal_tier)||dir(x));
+const tierLabel=x=>tier(x)==='SUPER_LONG'?'SUPER LONG':tier(x)==='SUPER_SHORT'?'SUPER SHORT':dir(x)==='LONG'?'LONG':dir(x)==='SHORT'?'SHORT':'WAIT';
 const cls=d=>d==='LONG'?'ok':d==='SHORT'?'bad':'warn', ar=d=>d==='LONG'?'↑':d==='SHORT'?'↓':'→';
 const n=(v,d=2)=>{v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{maximumFractionDigits:d}):'—'};
 const rub=v=>{v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽':'—'};
@@ -141,13 +143,13 @@ function renderSignals(){
   $('cells').textContent='DATA '+rows.length+'/42';$('cells').className='pill '+(rows.length>=42?'ok':rows.length?'warn':'bad');
   $('stamp').textContent=d.at?new Date(d.at).toLocaleTimeString():'—';
 
-  const rank=x=>{const D=dir(x);if(!['LONG','SHORT'].includes(D))return-999;return(x.plan_eligible===false?0:2)+4*Number(x.horizon_structure_score||0)+2*Number(x.confidence||0)+Math.min(Number(x.expected_to_stop_ratio||0),3)+.2*Number(x.independent_evidence_families||0)};
+  const rank=x=>{const D=dir(x),T=tier(x);if(!['LONG','SHORT'].includes(D))return-999;const superBoost=(T==='SUPER_LONG'||T==='SUPER_SHORT')?5:0;return superBoost+(x.plan_eligible===false?0:2)+4*Number(x.horizon_structure_score||0)+2*Number(x.confidence||0)+Math.min(Number(x.expected_to_stop_ratio||0),3)+.2*Number(x.independent_evidence_families||0)};
   const best=rows.filter(x=>['LONG','SHORT'].includes(dir(x))).sort((a,b)=>rank(b)-rank(a)).slice(0,5);
-  $('actions').innerHTML=best.length?best.map(x=>'<div class="row action"><b>'+lab(x.asset)+'</b><b class="'+cls(dir(x))+'">'+ar(dir(x))+' '+dir(x)+'</b><span>'+x.horizon+'</span><span>'+esc(x.entry_quality||x.plan_reason||x.regime||'—')+' · R/R '+(x.expected_to_stop_ratio==null?'—':Number(x.expected_to_stop_ratio).toFixed(2))+'</span><span class="sl">SL '+n(x.stop_price,4)+'</span><span class="tp">TP '+n(x.target_price,4)+'</span></div>').join(''):'<div class="msg">Сильных направленных идей сейчас нет.</div>';
+  $('actions').innerHTML=best.length?best.map(x=>'<div class="row action"><b>'+lab(x.asset)+'</b><b class="'+cls(dir(x))+' '+((tier(x)==='SUPER_LONG'||tier(x)==='SUPER_SHORT')?'super-label':'')+'">'+ar(dir(x))+' '+tierLabel(x)+'</b><span>'+x.horizon+'</span><span>'+esc(x.entry_quality||x.plan_reason||x.regime||'—')+' · R/R '+(x.expected_to_stop_ratio==null?'—':Number(x.expected_to_stop_ratio).toFixed(2))+'</span><span class="sl">SL '+n(x.stop_price,4)+'</span><span class="tp">TP '+n(x.target_price,4)+'</span></div>').join(''):'<div class="msg">Сильных направленных идей сейчас нет.</div>';
 
   $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><b>'+lab(a)+'</b><b class="'+cls(D)+'">'+ar(D)+' '+D+'</b><span>'+TF.map(tf=>{const x=map[a+'|'+tf];return tf+':' +(x?ar(dir(x)):'—')}).join(' · ')+'</span><span style="text-align:right">'+n(p,4)+'</span></div>'}).join('');
 
-  $('matrixBody').innerHTML=AS.map(a=>'<tr><th>'+lab(a)+'</th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.25"></span><small>—</small></button></td>';const D=dir(x),conf=100*Number(x.confidence||0),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',tag=D==='LONG'?'L':D==='SHORT'?'S':'—';return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(D)+' · '+conf.toFixed(0)+'%"><span class="sig-dot '+dc+'"></span><small>'+tag+' · '+conf.toFixed(0)+'%</small></button></td>'}).join('')+'</tr>').join('');
+  $('matrixBody').innerHTML=AS.map(a=>'<tr><th>'+lab(a)+'</th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.25"></span><small>—</small></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',tag=T==='SUPER_LONG'?'SL':T==='SUPER_SHORT'?'SS':D==='LONG'?'L':D==='SHORT'?'S':'—';return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(0)+'%"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small class="'+(isSuper?'super-label':'')+'">'+tag+' · '+conf.toFixed(0)+'%</small></button></td>'}).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
   if(!st.selected&&rows.length){const x=best[0]||rows[0];st.selected=x.asset+'|'+x.horizon}
   if(st.selected)selectSignal(st.selected,false);
@@ -158,7 +160,7 @@ function selectSignal(k,scroll=false){
   const x=signalMap()[k];if(!x){$('detail').innerHTML='<div class="msg">Нет данных.</div>';return}
   const sl=x.structural_levels||{}, plan=x.trade_plan||{}, D=dir(x);
   const items=[
-    ['Актив',lab(x.asset)],['ТФ',x.horizon],['Направление',D],['Цена',n(x.price,4)],
+    ['Актив',lab(x.asset)],['ТФ',x.horizon],['Сигнал',tierLabel(x)],['Направление',D],['Цена',n(x.price,4)],
     ['Confidence',x.confidence==null?'—':(100*Number(x.confidence)).toFixed(1)+'%'],['Structure',n(x.horizon_structure_score,3)],['Regime',x.regime],['Stage',x.decision_stage],
     ['Entry quality',x.entry_quality],['Подтверждения',x.independent_evidence_families],['Execution',bool(x.execution_eligible)],['Source gate',bool(x.source_gate_pass)],
     ['SL',n(x.stop_price??plan.stop_price,4)],['TP',n(x.target_price??plan.target_price,4)],['R/R',n(x.expected_to_stop_ratio??plan.expected_to_stop_ratio,2)],['Expected move',x.expected_move_pct==null?'—':(100*Number(x.expected_move_pct)).toFixed(2)+'%'],
