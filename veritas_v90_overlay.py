@@ -2106,7 +2106,47 @@ def _v90_emergency_storage_reclaim():
         if _main_anchor not in dst:
             raise RuntimeError("v90 storage reclaim main anchor missing")
         dst=dst.replace(_main_anchor,"\n"+_cleanup_helper+"\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    init_db()",1)
+
         applied.append("emergency_storage_reclaim")
+
+    # VERITAS V90 LEGACY COMPAT VIEWS
+    if "# VERITAS V90 LEGACY COMPAT VIEWS" not in dst:
+        _compat_helper = r'''
+# VERITAS V90 LEGACY COMPAT VIEWS
+def _v90_ensure_legacy_compat_views():
+    if not DATABASE_URL or psycopg is None:
+        return {'status':'SKIP'}
+    mapping=[
+      'ledger_events','product_snapshots','macro_snapshots','model_drift_snapshots',
+      'model_calibration_snapshots','validation_snapshots','product_alerts',
+      'visitor_sessions','paper_nav_history'
+    ]
+    made=[]; errors=[]
+    try:
+        c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=3)
+        try:
+            for name in mapping:
+                try:
+                    src=c.execute("SELECT to_regclass(%s) AS r",(f'veritas_v90.{name}',)).fetchone()
+                    dstrel=c.execute("SELECT to_regclass(%s) AS r",(f'public.{name}',)).fetchone()
+                    if src and src['r'] and not (dstrel and dstrel['r']):
+                        c.execute(f'CREATE VIEW public."{name}" AS SELECT * FROM veritas_v90."{name}"')
+                        made.append(name)
+                except Exception as ex:
+                    errors.append({'table':name,'error':f'{type(ex).__name__}: {ex}'})
+        finally:
+            c.close()
+    except Exception as ex:
+        return {'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
+    emit('v90_legacy_compat_views',created=made,errors=errors)
+    return {'status':'OK','created':made,'errors':errors}
+'''
+        _main_anchor="\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    init_db()"
+        if _main_anchor not in dst:
+            raise RuntimeError("v90 compat view main anchor missing")
+        dst=dst.replace(_main_anchor,"\n"+_compat_helper+"\ndef main():\n    global _BOOTSTRAP_READY\n    _v90_emergency_storage_reclaim()\n    _v90_ensure_legacy_compat_views()\n    init_db()",1)
+        applied.append("legacy_compat_views")
+
 
     # VERITAS 9.0: feed de-duplicated paper execution outcomes into execution memory.
     if "# VERITAS V90 PAPER EXECUTION LEARNING V2" not in dst:
