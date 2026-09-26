@@ -5258,6 +5258,51 @@ _signal_first_admission = _v90q2_quality_gate
 V90_Q2_STARTED_AT='2026-09-26T07:13:08+00:00'
 _v90q2_base_trade_report=trade_report
 
+
+def worst_trade_audit(pg_connect,limit=30):
+    rows=_v90j_load_closed(pg_connect,max(200,min(2500,int(limit or 30)*10)))
+    losses=[dict(x) for x in rows if float(x.get('net_pnl_rub') or 0.0)<0]
+    losses.sort(key=lambda x:float(x.get('net_pnl_rub') or 0.0))
+    out=[]
+    for x in losses[:max(1,min(100,int(limit or 30)))]:
+        out.append({
+          'trade_id':x.get('trade_id'),
+          'portfolio':x.get('portfolio_name'),
+          'asset':x.get('asset'),
+          'direction':x.get('direction'),
+          'horizon':x.get('horizon'),
+          'setup':x.get('setup') or x.get('setup_family'),
+          'regime':x.get('regime'),
+          'entry_quality':x.get('entry_quality'),
+          'opened_at':x.get('opened_at'),
+          'closed_at':x.get('closed_at'),
+          'held_seconds':x.get('held_seconds'),
+          'entry':x.get('avg_entry_price'),
+          'exit':x.get('avg_exit_price'),
+          'gross_pnl_rub':x.get('gross_pnl_rub'),
+          'fees_rub':x.get('fees_rub'),
+          'funding_rub':x.get('funding_rub'),
+          'net_pnl_rub':x.get('net_pnl_rub'),
+          'return_pct':x.get('return_pct'),
+          'mfe_pct':x.get('mfe_pct'),
+          'mae_pct':x.get('mae_pct'),
+          'giveback_pct':x.get('giveback_pct'),
+          'exit_reason':x.get('exit_reason'),
+          'entry_probability':x.get('entry_probability'),
+          'probability_source':x.get('probability_source'),
+          'model_quality_score':x.get('model_quality_score'),
+          'horizon_state':x.get('horizon_state'),
+          'learning_label':x.get('learning_label'),
+          'learning_conclusion':x.get('learning_conclusion'),
+          'telemetry_completeness':x.get('telemetry_completeness'),
+          'recovered':x.get('recovered'),
+        })
+    result={'status':'OK','count':len(out),'trades':out}
+    print(json.dumps({'event':'V90_WORST_TRADES_AUDIT',**result},
+                     ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return result
+
+
 def quality_loss_audit(pg_connect):
     with pg_connect() as c:
         patterns=c.execute("""
