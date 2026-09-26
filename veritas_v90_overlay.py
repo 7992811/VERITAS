@@ -62,7 +62,7 @@ def pg_connect():
         raise RuntimeError('DATABASE_URL_NOT_SET')
     if psycopg is None:
         raise RuntimeError('PSYCOPG_NOT_INSTALLED')
-    c = psycopg.connect(DATABASE_URL, autocommit=True, row_factory=dict_row)
+    c = psycopg.connect(DATABASE_URL, autocommit=True, row_factory=dict_row, connect_timeout=2)
     c.execute('CREATE SCHEMA IF NOT EXISTS veritas_v90')
     c.execute('SET search_path TO veritas_v90')
     return c
@@ -70,6 +70,67 @@ def pg_connect():
     dst, ch = _replace_once(dst, old_pg, new_pg, "isolated v90 schema connection")
     if ch:
         applied.append("schema_connection")
+
+    # VERITAS V90 POSTGRES FAIL-SOFT
+    if "# VERITAS V90 POSTGRES FAIL-SOFT" not in dst:
+        _pgfs_anchor="\ndef pg_init():"
+        _pgfs=r'''
+# VERITAS V90 POSTGRES FAIL-SOFT
+_v90_pg_raw_connect=pg_connect
+_v90_pg_health={'ok':None,'checked_at':0.0,'error':None}
+_v90_pg_health_lock=threading.Lock()
+V90_PG_HEALTH_OK_TTL=max(10,int(os.getenv('VERITAS_PG_HEALTH_OK_TTL','20')))
+V90_PG_HEALTH_FAIL_TTL=max(15,int(os.getenv('VERITAS_PG_HEALTH_FAIL_TTL','30')))
+
+def _v90_pg_health_set(ok,error=None):
+    with _v90_pg_health_lock:
+        _v90_pg_health['ok']=bool(ok)
+        _v90_pg_health['checked_at']=time.time()
+        _v90_pg_health['error']=None if ok else str(error or 'POSTGRES_UNAVAILABLE')
+
+def _v90_pg_health_snapshot():
+    with _v90_pg_health_lock:
+        return dict(_v90_pg_health)
+
+def _v90_pg_probe(force=False):
+    if not DATABASE_URL or psycopg is None:
+        _v90_pg_health_set(False,'DATABASE_URL_OR_DRIVER_UNAVAILABLE')
+        return False
+    now_ts=time.time()
+    with _v90_pg_health_lock:
+        ok=_v90_pg_health.get('ok')
+        checked=float(_v90_pg_health.get('checked_at') or 0.0)
+    ttl=V90_PG_HEALTH_OK_TTL if ok else V90_PG_HEALTH_FAIL_TTL
+    if not force and ok is not None and now_ts-checked<ttl:
+        return bool(ok)
+    try:
+        c=_v90_pg_raw_connect()
+        try:
+            c.execute('SELECT 1')
+        finally:
+            c.close()
+        _v90_pg_health_set(True,None)
+        return True
+    except Exception as ex:
+        _v90_pg_health_set(False,f'{type(ex).__name__}: {ex}')
+        return False
+
+def pg_enabled():
+    return _v90_pg_probe(False)
+
+def pg_connect():
+    try:
+        c=_v90_pg_raw_connect()
+        _v90_pg_health_set(True,None)
+        return c
+    except Exception as ex:
+        _v90_pg_health_set(False,f'{type(ex).__name__}: {ex}')
+        raise
+'''
+        if _pgfs_anchor not in dst:
+            raise RuntimeError("v90 postgres fail-soft anchor missing")
+        dst=dst.replace(_pgfs_anchor,"\n"+_pgfs+_pgfs_anchor,1)
+        applied.append("postgres_fail_soft")
 
     if MARKER not in dst:
         helper = r'''
@@ -4906,6 +4967,8 @@ def verify():
                                      and "_v90_knowledge_catalog_cache" in intel and "_v90_prev_signal_cache" in intel,
         'two_speed_5m_loop': "V90_FAST_5M_INTERVAL_SECONDS" in intel and "cycle(('5m',),'FAST_5M')" in intel
                              and "fresh_summary=list(summary)" in intel,
+        'postgres_fail_soft': "# VERITAS V90 POSTGRES FAIL-SOFT" in intel
+                              and "_v90_pg_probe" in intel and "connect_timeout=2" in intel,
     }
     failed = [k for k,v in checks.items() if not v]
     if failed:
