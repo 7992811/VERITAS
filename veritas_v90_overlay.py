@@ -2148,6 +2148,22 @@ def _v90_ensure_legacy_compat_views():
         applied.append("legacy_compat_views")
 
 
+
+    # VERITAS V90 STARTUP LOSS AUDIT
+    if "# VERITAS V90 STARTUP LOSS AUDIT" not in dst:
+        old_main = "    init_db()\n    pg_boot = pg_init()"
+        new_main = """    init_db()
+    pg_boot = pg_init()
+    # VERITAS V90 STARTUP LOSS AUDIT
+    if pg_boot.get('ok') and VP is not None and hasattr(VP,'quality_loss_audit'):
+        try:
+            VP.quality_loss_audit(pg_connect)
+        except Exception as ex:
+            emit('v90_loss_audit_error',error=f'{type(ex).__name__}: {ex}')"""
+        if old_main in dst:
+            dst=dst.replace(old_main,new_main,1)
+            applied.append("startup_loss_audit")
+
     # VERITAS 9.0: feed de-duplicated paper execution outcomes into execution memory.
     if "# VERITAS V90 PAPER EXECUTION LEARNING V2" not in dst:
         helper = r'''
@@ -5220,6 +5236,91 @@ _signal_first_admission = _v90q2_quality_gate
         # R/R as low as 0.35, which is incompatible with the product objective.
         dst=dst.replace("if rr<0.35:\\n            continue","if rr<1.25:\\n            continue")
         applied.append("quality_gate_r2")
+
+
+    # VERITAS V90 R2 PERFORMANCE SEGMENT + LOSS AUDIT
+    if "# VERITAS V90 R2 PERFORMANCE SEGMENT + LOSS AUDIT" not in dst:
+        helper = r'''
+# VERITAS V90 R2 PERFORMANCE SEGMENT + LOSS AUDIT
+V90_Q2_STARTED_AT='2026-09-26T07:13:08+00:00'
+_v90q2_base_trade_report=trade_report
+
+def quality_loss_audit(pg_connect):
+    with pg_connect() as c:
+        patterns=c.execute("""
+          SELECT
+            portfolio_name,
+            asset,
+            direction,
+            COALESCE(horizon,'UNKNOWN') AS horizon,
+            COALESCE(setup,'UNKNOWN') AS setup,
+            COALESCE(payload->>'exit_reason',payload->>'close_reason','UNKNOWN') AS exit_reason,
+            COUNT(*) AS trades,
+            SUM(CASE WHEN net_pnl_rub>0 THEN 1 ELSE 0 END) AS wins,
+            ROUND(COALESCE(SUM(gross_pnl_rub),0)::numeric,2) AS gross_pnl_rub,
+            ROUND(COALESCE(SUM(fees_rub+funding_rub),0)::numeric,2) AS costs_rub,
+            ROUND(COALESCE(SUM(net_pnl_rub),0)::numeric,2) AS net_pnl_rub,
+            ROUND(COALESCE(AVG(net_pnl_rub),0)::numeric,2) AS avg_net_pnl_rub,
+            ROUND(COALESCE(AVG(EXTRACT(EPOCH FROM (closed_at-opened_at))),0)::numeric,1) AS avg_hold_seconds
+          FROM paper_trades
+          WHERE (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
+            AND net_pnl_rub < 0
+          GROUP BY portfolio_name,asset,direction,COALESCE(horizon,'UNKNOWN'),
+                   COALESCE(setup,'UNKNOWN'),
+                   COALESCE(payload->>'exit_reason',payload->>'close_reason','UNKNOWN')
+          ORDER BY SUM(net_pnl_rub) ASC
+          LIMIT 30
+        """).fetchall()
+        systemic=c.execute("""
+          SELECT
+            COUNT(*) FILTER(WHERE net_pnl_rub<0) AS losses,
+            COUNT(*) FILTER(WHERE gross_pnl_rub>=0 AND net_pnl_rub<0) AS cost_dominated_losses,
+            COUNT(*) FILTER(WHERE net_pnl_rub<0 AND closed_at-opened_at < INTERVAL '10 minutes') AS losses_under_10m,
+            COUNT(*) FILTER(WHERE net_pnl_rub<0 AND COALESCE(payload->>'exit_reason',payload->>'close_reason','') ILIKE '%SIGNAL%') AS signal_exit_losses,
+            COUNT(*) FILTER(WHERE net_pnl_rub<0 AND COALESCE(payload->>'exit_reason',payload->>'close_reason','') ILIKE '%STOP%') AS stop_losses,
+            ROUND(COALESCE(SUM(fees_rub+funding_rub),0)::numeric,2) AS total_costs_rub,
+            ROUND(COALESCE(SUM(net_pnl_rub),0)::numeric,2) AS total_net_pnl_rub
+          FROM paper_trades
+          WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')
+        """).fetchone()
+    result={'status':'OK','patterns':[dict(x) for x in patterns],'systemic':dict(systemic or {})}
+    print(json.dumps({'event':'V90_LOSS_AUDIT',**result},ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return result
+
+def _v90q2_trade_report(pg_connect,limit=2500):
+    d=dict(_v90q2_base_trade_report(pg_connect,limit) or {})
+    with pg_connect() as c:
+        rows=c.execute("""
+          SELECT portfolio_name,
+                 COUNT(*) AS closed_trades,
+                 COUNT(*) FILTER(WHERE net_pnl_rub>0) AS wins,
+                 COALESCE(SUM(gross_pnl_rub),0) AS gross_pnl_rub,
+                 COALESCE(SUM(fees_rub),0) AS fees_rub,
+                 COALESCE(SUM(funding_rub),0) AS funding_rub,
+                 COALESCE(SUM(net_pnl_rub),0) AS net_pnl_rub
+          FROM paper_trades
+          WHERE (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
+            AND opened_at >= %s::timestamptz
+          GROUP BY portfolio_name
+          ORDER BY portfolio_name
+        """,(V90_Q2_STARTED_AT,)).fetchall()
+    q2=[]
+    for r0 in rows:
+        r=dict(r0); n=int(r.get('closed_trades') or 0); w=int(r.get('wins') or 0)
+        r['win_rate']=w/n if n else None
+        q2.append(_jsonable(r))
+    d['quality_r2_started_at']=V90_Q2_STARTED_AT
+    d['quality_r2_summary']=q2
+    return _jsonable(d)
+
+trade_report=_v90q2_trade_report
+'''
+        final_anchor="\n# VERITAS 90 FINAL RUNTIME IDENTITY"
+        if final_anchor not in dst:
+            dst += "\n"+helper
+        else:
+            dst=dst.replace(final_anchor,"\n"+helper+final_anchor,1)
+        applied.append("r2_performance_loss_audit")
 
         # VERITAS 90 FINAL RUNTIME IDENTITY
     runtime_identity = "\n# VERITAS 90 FINAL RUNTIME IDENTITY\nVERSION='" + V90_PORT + "'\n"
