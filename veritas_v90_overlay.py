@@ -935,7 +935,10 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
  {'id':'EP67','domain':'execution','statement':'When a priority trend-capture pattern is confirmed, generic WAIT logic should not override the structure unless an explicit hard veto is present.'},
  {'id':'EP68','domain':'trend_transition','statement':'Trend Transition Engine promotes confirmed base-breakout acceptance, pullback continuation and climax reversal into explicit execution candidates across all portfolios.'},
  {'id':'EP69','domain':'execution','statement':'A priority transition can override soft WAIT only after minimum reward-risk, expected-move, independent-evidence, source/time and hard-veto checks pass.'},
- {'id':'EP70','domain':'learning','statement':'Persist the detected transition family, grade, score and evidence on every trade so missed captures and false transitions can be audited and recalibrated separately.'}"""
+ {'id':'EP70','domain':'learning','statement':'Persist the detected transition family, grade, score and evidence on every trade so missed captures and false transitions can be audited and recalibrated separately.'},
+ {'id':'EP71','domain':'sizing','statement':'Aggressive may use substantially larger initial and continuation exposure on validated A/A+ trend transitions, including leverage, because its mandate allows up to 5x gross exposure.'},
+ {'id':'EP72','domain':'risk','statement':'Aggressive leverage is earned by evidence: higher exposure requires stronger structure, independent evidence, reward-risk and volatility confirmation; leverage capacity alone never justifies a larger position.'},
+ {'id':'EP73','domain':'sizing','statement':'For Aggressive, scale validated A+ campaigns progressively from roughly 1x toward 1.5x, 2.5x, 3.5x and at exceptional confirmation up to 5x, always bounded by stop-risk and portfolio risk governors.'}"""
     if _ep26 in dst and "'id':'EP27'" not in dst:
         dst=dst.replace(_ep26,_ep_more,1)
         applied.append("universal_structure_expert_policy")
@@ -6961,26 +6964,49 @@ def _signal_first_admission(row,policy,drawdown):
     # but only with a deliberately bounded starter size.
     starter={
       'IMPULSE_ONLY':0.25,
-      'AGGRESSIVE':0.35,
+      'AGGRESSIVE':0.50,
       'CORE':0.20,
       'CHALLENGER':0.15,
     }.get(mode,0.15)
     if grade=='A+':
         starter={
           'IMPULSE_ONLY':0.40,
-          'AGGRESSIVE':0.50,
+          'AGGRESSIVE':1.00,
           'CORE':0.30,
           'CHALLENGER':0.25,
         }.get(mode,0.20)
+    elif grade=='A' and mode=='AGGRESSIVE':
+        starter=max(starter,0.75)
     elif grade=='B':
         if mode not in ('IMPULSE_ONLY','AGGRESSIVE'):
             return base
-        starter=0.10 if mode=='AGGRESSIVE' else 0.05
+        starter=0.20 if mode=='AGGRESSIVE' else 0.05
 
     rg=_risk_governor(drawdown)
     if rg.get('new_risk') is False:
         return base
     starter*=float(rg.get('multiplier') or 0.0)
+
+    # Aggressive portfolio is allowed to exploit its 5x mandate on validated transitions.
+    # Scale is still conditional on quality and structure, never on leverage availability alone.
+    if mode=='AGGRESSIVE':
+        try:
+            rr=float(t.get('rr') or 0.0)
+            hscore=float(t.get('hscore') or 0.0)
+            indep=int(t.get('independent') or 0)
+            volx=float(t.get('volatility_expansion_ratio') or 1.0)
+        except Exception:
+            rr=0.0; hscore=0.0; indep=0; volx=1.0
+        setup=str(t.get('setup') or '')
+        if grade=='A+' and rr>=2.0 and hscore>=0.72 and indep>=4:
+            starter=max(starter,1.50)
+        if grade=='A+' and rr>=2.25 and hscore>=0.78 and indep>=5 and volx>=1.15:
+            starter=max(starter,2.50)
+        if grade=='A+' and rr>=2.50 and hscore>=0.82 and indep>=5 and volx>=1.25:
+            starter=max(starter,3.50)
+        if (grade=='A+' and rr>=3.0 and hscore>=0.86 and indep>=5 and volx>=1.35
+            and setup in ('BASE_BREAKOUT_ACCEPTANCE','PULLBACK_CONTINUATION','CLIMAX_REVERSAL')):
+            starter=max(starter,5.00)
 
     # Keep the stop-risk cap absolute.
     plan=row.get('trade_plan') or {}
