@@ -30,7 +30,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-VERSION = "veritas-max-product-v72.0-market-intelligence-causal-decision"
+VERSION = "veritas-max-product-v84.2-audited-learning-execution"
 SCHEMA_VERSION = 3
 
 # ---------------------------------------------------------------------------

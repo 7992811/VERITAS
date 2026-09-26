@@ -12,15 +12,18 @@ except Exception:
     psycopg = None
     dict_row = None
 
-VERSION = 'veritas-max-product-v70.8.4-range-participation'
+VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
 try:
     import veritas_v70 as V70
 except Exception:
     V70 = None
 try:
     import veritas_portfolio as VP
-except Exception:
+    VP_IMPORT_ERROR = None
+except Exception as _vp_ex:
     VP = None
+    VP_IMPORT_ERROR = f'{type(_vp_ex).__name__}: {_vp_ex}'
+    print(f'[VERITAS PORTFOLIO IMPORT] FAILED: {VP_IMPORT_ERROR}', flush=True)
 SERVICE_STARTED_AT = time.time()
 SERVICE_RUNTIME_ID = uuid.uuid4().hex[:12]
 SERVICE_ROLE = os.getenv('VERITAS_ROLE','web').strip().lower() or 'web'
@@ -42,7 +45,16 @@ FAST_LOOP_TARGET_SECONDS = max(10.0, float(os.getenv('VERITAS_FAST_LOOP_TARGET_S
 _BOOTSTRAP_READY = False
 
 DB_PATH = os.getenv('VERITAS_LEDGER_PATH', '/tmp/veritas_decisions.sqlite3')
-DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
+_V90_DB_ENV_KEYS=('DATABASE_URL','VERITAS_DATABASE_URL','POSTGRES_URL','POSTGRESQL_URL','POSTGRES_INTERNAL_URL','RENDER_DATABASE_URL')
+DATABASE_URL = next((os.getenv(k,'').strip() for k in _V90_DB_ENV_KEYS if os.getenv(k,'').strip()), '')
+if not DATABASE_URL:
+    _present=[k for k in os.environ if ('DATABASE' in k.upper() or 'POSTGRES' in k.upper())]
+    print(json.dumps({'event':'V90_DATABASE_ENV_DIAGNOSTIC','database_url_found':False,
+                      'candidate_keys_present':sorted(_present)},separators=(',',':')),flush=True)
+else:
+    _used=next((k for k in _V90_DB_ENV_KEYS if os.getenv(k,'').strip()),'DATABASE_URL')
+    print(json.dumps({'event':'V90_DATABASE_ENV_DIAGNOSTIC','database_url_found':True,
+                      'selected_key':_used},separators=(',',':')),flush=True)
 KNOWLEDGE_FILE = os.getenv('VERITAS_KNOWLEDGE_FILE', 'veritas_knowledge_seed.json')
 KNOWLEDGE_GLOB = os.getenv('VERITAS_KNOWLEDGE_GLOB', 'veritas_knowledge_seed*.json')
 KNOWLEDGE_AUTOMATION = os.getenv('VERITAS_KNOWLEDGE_AUTOMATION', '1').lower() not in ('0','false','no','off')
@@ -180,29 +192,31 @@ MAX_CLOCK_SKEW_SECONDS = int(os.getenv('VERITAS_MAX_CLOCK_SKEW_SECONDS', '120'))
 ASSETS = {
     'BTCUSDT': ('BTC', 'BTC-USD'),
     'ETHUSDT': ('ETH', 'ETH-USD'),
-    'NDX': ('NDX', '^NDX'),
+    'NQ': ('NQ', 'NQ%3DF'),
     'BRENT': ('BRENT', 'BZ%3DF'),
     'GOLD': ('GOLD', 'GC%3DF'),
     'MOEX': ('MOEX', 'IMOEX'),
     'CNYRUBF': ('CNYRUBF', 'CNYRUBF'),
 }
-DISPLAY_ASSETS = ('BTC','ETH','NDX','BRENT','GOLD','MOEX','CNYRUBF')
+DISPLAY_ASSETS = ('BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF')
 CRYPTO_ASSETS = {'BTC','ETH'}
-EQUITY_INDEX_ASSETS = {'NDX','MOEX'}
+EQUITY_INDEX_ASSETS = {'NQ','MOEX'}
 COMMODITY_ASSETS = {'BRENT','GOLD'}
 FX_FUTURES_ASSETS = {'CNYRUBF'}
-MARKET_BAR_ASSETS = {'NDX','BRENT','GOLD','MOEX','CNYRUBF'}
-HORIZONS = {'1h': 1, '4h': 4, '1d': 24, '3d': 72, '7d': 168}
+MARKET_BAR_ASSETS = {'NQ','BRENT','GOLD','MOEX','CNYRUBF'}
+HORIZONS = {'5m': 1.0/12.0, '1h': 1, '4h': 4, '1d': 24, '3d': 72, '7d': 168}
 ASSET_HORIZON_BARS = {
-    'NDX':   {'1h':1,'4h':4,'1d':7,'3d':20,'7d':46},
+    'NQ':    {'1h':1,'4h':4,'1d':23,'3d':69,'7d':161},
     'MOEX':  {'1h':1,'4h':4,'1d':9,'3d':27,'7d':63},
     'BRENT': {'1h':1,'4h':4,'1d':23,'3d':69,'7d':161},
     'GOLD':  {'1h':1,'4h':4,'1d':23,'3d':69,'7d':161},
     'CNYRUBF': {'1h':1,'4h':4,'1d':15,'3d':45,'7d':75},
 }
-NDX_HORIZON_BARS = ASSET_HORIZON_BARS['NDX']  # backward compatibility
+NQ_HORIZON_BARS = ASSET_HORIZON_BARS['NQ']
+NDX_HORIZON_BARS = NQ_HORIZON_BARS  # compatibility for legacy helper code
 
 def horizon_bars(asset,horizon):
+    if str(horizon)=='5m': return 1
     return ASSET_HORIZON_BARS.get(asset,HORIZONS).get(horizon,HORIZONS[horizon])
 BASE_WEIGHTS = {'MACRO': 1.0, 'QUANT': 1.2, 'TECH_FLOW': 1.1, 'IMPULSE': 1.35, 'DERIV': 1.0, 'RISK': 1.4}
 
@@ -228,7 +242,7 @@ AGENT_ADAPT_MIN_N = max(20, int(os.getenv('VERITAS_AGENT_ADAPT_MIN_N','30')))
 CALIBRATION_MIN_N = max(30, int(os.getenv('VERITAS_CALIBRATION_MIN_N','60')))
 BACKTEST_COST_BPS = max(0.0, float(os.getenv('VERITAS_BACKTEST_COST_BPS','20')))
 BACKTEST_OOS_SHARE = min(0.45, max(0.20, float(os.getenv('VERITAS_BACKTEST_OOS_SHARE','0.30'))))
-BACKTEST_METHOD_VERSION = 'v60_vault_timeblocks_costgrid_isotonic'
+BACKTEST_METHOD_VERSION = 'v75_walkforward_vault_stability_costs_profitability'
 AGENT_DECAY_HALF_LIFE_DAYS = max(14.0, float(os.getenv('VERITAS_AGENT_DECAY_HALF_LIFE_DAYS','60')))
 RULE_DECAY_HALF_LIFE_DAYS = max(14.0, float(os.getenv('VERITAS_RULE_DECAY_HALF_LIFE_DAYS','90')))
 PAIR_MIN_N = max(20, int(os.getenv('VERITAS_PAIR_MIN_N','40')))
@@ -251,6 +265,18 @@ BACKTEST_VAULT_SHARE = min(0.20, max(0.10, float(os.getenv('VERITAS_BACKTEST_VAU
 BACKTEST_TIME_BLOCKS = max(4, min(10, int(os.getenv('VERITAS_BACKTEST_TIME_BLOCKS','6'))))
 CALIBRATION_ISOTONIC_MIN_N = max(60, int(os.getenv('VERITAS_CALIBRATION_ISOTONIC_MIN_N','120')))
 EXPECTED_EDGE_MIN_N = max(20, int(os.getenv('VERITAS_EXPECTED_EDGE_MIN_N','30')))
+
+# v75 Walk-Forward Profitability Lab
+V75_CONF_GRID=(0.10,0.15,0.20,0.25,0.30,0.35)
+V75_ONSET_GRID=(0.00,0.20,0.35,0.50,0.65)
+V75_STRUCTURE_GRID=(0.00,0.20,0.35,0.50,0.65)
+V75_EFFICIENCY_GRID=(0.00,0.20,0.35,0.50)
+V75_VOLUME_GRID=(0.00,0.75,0.90,1.05,1.20)
+V75_MIN_OOS_N=max(12,int(os.getenv('VERITAS_V75_MIN_OOS_N','20')))
+V75_MIN_VAULT_N=max(8,int(os.getenv('VERITAS_V75_MIN_VAULT_N','12')))
+V75_MIN_PF=max(1.0,float(os.getenv('VERITAS_V75_MIN_PF','1.05')))
+V75_MIN_VAULT_PF=max(1.0,float(os.getenv('VERITAS_V75_MIN_VAULT_PF','1.02')))
+V75_PARAMETER_LAB_CACHE_SECONDS=max(60,int(os.getenv('VERITAS_V75_PARAMETER_LAB_CACHE_SECONDS','300')))
 
 META_CIO_ENABLED = os.getenv('VERITAS_META_CIO_ENABLED','0').lower() in ('1','true','yes','on')
 META_ALERT_MIN_GRADE = os.getenv('VERITAS_META_ALERT_MIN_GRADE','B').strip().upper() or 'B'
@@ -661,7 +687,7 @@ knowledge_automation_state = {
 # It changes architecture (trend-onset recognition) but carries zero direct trading weight.
 BOOTSTRAP_CASE_LESSONS = [
     {
-      'case_id':'NDX_2026_09_21_TREND_DAY_MISSED_ONSET', 'asset':'NDX', 'horizon':'1h',
+      'case_id':'NDX_2026_09_21_TREND_DAY_MISSED_ONSET', 'asset':'NQ', 'horizon':'1h',
       'observed_at':'2026-09-21T19:24:40Z', 'case_type':'MISSED_TREND_ONSET',
       'market_context':{'session_move_approx':0.0289,'champion_1h_score':0.1643,'challenger_1h_score':0.4072,
                         'champion_1d_score':0.2436,'challenger_1d_score':0.6037},
@@ -713,6 +739,23 @@ BOOTSTRAP_CASE_LESSONS = [
                                'increase exposure only when resistance breaks with impulse/volume confirmation',
                                'keep the wider core thesis and the tactical participation position as separate risk layers'],
       'direct_signal_weight':0.0, 'validation_policy':'architecture lesson from observed chart; no direct trading weight until independent future cases validate it'
+    },
+    {
+      'case_id':'BRENT_2026_09_25_5M_RANGE_BREAK_IMPULSE_EXIT', 'asset':'BRENT', 'horizon':'1h',
+      'observed_at':'2026-09-25T15:00:00Z', 'case_type':'MISSED_STRUCTURAL_BREAKOUT_AND_EXIT',
+      'market_context':{'chart_timeframe':'5m','reported_range_low':105.92,
+                        'reported_range_zone':'106.00-106.50','reported_impulse_low':103.13,
+                        'reported_preferred_exit_zone':'103.70-103.80'},
+      'diagnosis':['local range support break was actionable before the slower committee fully flipped',
+                    'volatility expansion plus ordered lower highs/lower lows confirmed continuation',
+                    'fixed admission and target logic reacted too slowly to the path',
+                    'the second bullish reclaim after volatility contraction provided a cleaner exit than waiting for a slow horizon reversal'],
+      'architectural_lessons':['apply the same range-break/volatility/ordered-extremes lifecycle on every timeframe',
+                               'use 5m as execution timing while preserving senior-timeframe context',
+                               'scale while ordered extremes persist and risk remains bounded',
+                               'exit the impulse on volatility contraction plus a second counter-direction candle reclaim'],
+      'direct_signal_weight':0.0,
+      'validation_policy':'durable expert execution lesson; deterministic structural lifecycle is active with hard risk gates, while statistical sizing calibration remains sample-driven'
     }
 ]
 
@@ -722,37 +765,37 @@ BOOTSTRAP_CASE_LESSONS = [
 
 NDX_KNOWLEDGE_RULES = [
  {'rule_id':'NDX_MA_TREND_LONG','source_id':'BROCK_LAKONISHOK_LEBARON_1992_JF','agent':'QUANT',
-  'asset_scope':['NDX'],'horizons':['1d','3d','7d'],'action':'LONG','status':'shadow',
+  'asset_scope':['NQ'],'horizons':['1d','3d','7d'],'action':'LONG','status':'shadow',
   'conditions':[{'field':'trend','op':'>','value':0.010},{'field':'momentum','op':'>','value':0.0}],
   'prior_weight':0.035,'hypothesis':'Positive Nasdaq-100 trend plus positive momentum may contain continuation information.',
   'mechanism':'Trend persistence / underreaction.','formalization_note':'VERITAS NDX proxy; OOS validation required.'},
  {'rule_id':'NDX_MA_TREND_SHORT','source_id':'BROCK_LAKONISHOK_LEBARON_1992_JF','agent':'QUANT',
-  'asset_scope':['NDX'],'horizons':['1d','3d','7d'],'action':'SHORT','status':'shadow',
+  'asset_scope':['NQ'],'horizons':['1d','3d','7d'],'action':'SHORT','status':'shadow',
   'conditions':[{'field':'trend','op':'<','value':-0.010},{'field':'momentum','op':'<','value':0.0}],
   'prior_weight':0.035,'hypothesis':'Negative Nasdaq-100 trend plus negative momentum may contain downside continuation information.',
   'mechanism':'Trend persistence / underreaction.','formalization_note':'VERITAS NDX proxy; OOS validation required.'},
  {'rule_id':'NDX_VOL_RISK_GUARD','source_id':'MOREIRA_MUIR_2017_JF','agent':'RISK',
-  'asset_scope':['NDX'],'horizons':['4h','1d','3d','7d'],'action':'NO_TRADE','status':'shadow',
+  'asset_scope':['NQ'],'horizons':['4h','1d','3d','7d'],'action':'NO_TRADE','status':'shadow',
   'conditions':[{'field':'rv','op':'>','value':0.035}],
   'prior_weight':0.06,'hypothesis':'Unusually high Nasdaq-100 realized volatility warrants lower directional conviction.',
   'mechanism':'Volatility-managed risk.','formalization_note':'NDX-specific provisional threshold.'},
  {'rule_id':'NDX_TSMOM_LONG','source_id':'MOSKOWITZ_OOI_PEDERSEN_2012_JFE','agent':'QUANT',
-  'asset_scope':['NDX'],'horizons':['3d','7d'],'action':'LONG','status':'shadow',
+  'asset_scope':['NQ'],'horizons':['3d','7d'],'action':'LONG','status':'shadow',
   'conditions':[{'field':'ret_168h','op':'>','value':0.020},{'field':'trend','op':'>','value':0.0}],
   'prior_weight':0.025,'hypothesis':'Positive medium-horizon return and trend can proxy a time-series momentum state in Nasdaq-100.',
   'mechanism':'Time-series momentum.','formalization_note':'Short-horizon adaptation; explicitly provisional.'},
  {'rule_id':'NDX_TSMOM_SHORT','source_id':'MOSKOWITZ_OOI_PEDERSEN_2012_JFE','agent':'QUANT',
-  'asset_scope':['NDX'],'horizons':['3d','7d'],'action':'SHORT','status':'shadow',
+  'asset_scope':['NQ'],'horizons':['3d','7d'],'action':'SHORT','status':'shadow',
   'conditions':[{'field':'ret_168h','op':'<','value':-0.020},{'field':'trend','op':'<','value':0.0}],
   'prior_weight':0.025,'hypothesis':'Negative medium-horizon return and trend can proxy a downside time-series momentum state in Nasdaq-100.',
   'mechanism':'Time-series momentum.','formalization_note':'Short-horizon adaptation; explicitly provisional.'},
  {'rule_id':'NDX_VOLUME_CONFIRM_LONG','source_id':'LO_MAMAYSKY_WANG_2000_JF','agent':'TECH_FLOW',
-  'asset_scope':['NDX'],'horizons':['4h','1d'],'action':'LONG','status':'shadow',
+  'asset_scope':['NQ'],'horizons':['4h','1d'],'action':'LONG','status':'shadow',
   'conditions':[{'field':'trend','op':'>','value':0.006},{'field':'volume_ratio','op':'>','value':1.15}],
   'prior_weight':0.02,'hypothesis':'Positive NDX trend confirmed by elevated QQQ proxy volume may be more informative than price alone.',
   'mechanism':'Objective pattern plus activity confirmation.','formalization_note':'QQQ volume is a proxy; shadow only.'},
  {'rule_id':'NDX_VOLUME_CONFIRM_SHORT','source_id':'LO_MAMAYSKY_WANG_2000_JF','agent':'TECH_FLOW',
-  'asset_scope':['NDX'],'horizons':['4h','1d'],'action':'SHORT','status':'shadow',
+  'asset_scope':['NQ'],'horizons':['4h','1d'],'action':'SHORT','status':'shadow',
   'conditions':[{'field':'trend','op':'<','value':-0.006},{'field':'volume_ratio','op':'>','value':1.15}],
   'prior_weight':0.02,'hypothesis':'Negative NDX trend confirmed by elevated QQQ proxy volume may be more informative than price alone.',
   'mechanism':'Objective pattern plus activity confirmation.','formalization_note':'QQQ volume is a proxy; shadow only.'},
@@ -897,13 +940,72 @@ def pg_enabled():
     return bool(DATABASE_URL)
 
 
+V90_DB_SCHEMA = 'veritas_v90'
+
+
 def pg_connect():
     if not DATABASE_URL:
         raise RuntimeError('DATABASE_URL_NOT_SET')
     if psycopg is None:
         raise RuntimeError('PSYCOPG_NOT_INSTALLED')
-    return psycopg.connect(DATABASE_URL, autocommit=True, row_factory=dict_row)
+    c = psycopg.connect(DATABASE_URL, autocommit=True, row_factory=dict_row, connect_timeout=6)
+    c.execute('CREATE SCHEMA IF NOT EXISTS veritas_v90')
+    c.execute('SET search_path TO veritas_v90')
+    return c
 
+
+
+# VERITAS V90 POSTGRES FAIL-SOFT
+_v90_pg_raw_connect=pg_connect
+_v90_pg_health={'ok':None,'checked_at':0.0,'error':None}
+_v90_pg_health_lock=threading.Lock()
+V90_PG_HEALTH_OK_TTL=max(10,int(os.getenv('VERITAS_PG_HEALTH_OK_TTL','20')))
+V90_PG_HEALTH_FAIL_TTL=max(15,int(os.getenv('VERITAS_PG_HEALTH_FAIL_TTL','30')))
+
+def _v90_pg_health_set(ok,error=None):
+    with _v90_pg_health_lock:
+        _v90_pg_health['ok']=bool(ok)
+        _v90_pg_health['checked_at']=time.time()
+        _v90_pg_health['error']=None if ok else str(error or 'POSTGRES_UNAVAILABLE')
+
+def _v90_pg_health_snapshot():
+    with _v90_pg_health_lock:
+        return dict(_v90_pg_health)
+
+def _v90_pg_probe(force=False):
+    if not DATABASE_URL or psycopg is None:
+        _v90_pg_health_set(False,'DATABASE_URL_OR_DRIVER_UNAVAILABLE')
+        return False
+    now_ts=time.time()
+    with _v90_pg_health_lock:
+        ok=_v90_pg_health.get('ok')
+        checked=float(_v90_pg_health.get('checked_at') or 0.0)
+    ttl=V90_PG_HEALTH_OK_TTL if ok else V90_PG_HEALTH_FAIL_TTL
+    if not force and ok is not None and now_ts-checked<ttl:
+        return bool(ok)
+    try:
+        c=_v90_pg_raw_connect()
+        try:
+            c.execute('SELECT 1')
+        finally:
+            c.close()
+        _v90_pg_health_set(True,None)
+        return True
+    except Exception as ex:
+        _v90_pg_health_set(False,f'{type(ex).__name__}: {ex}')
+        return False
+
+def pg_enabled():
+    return _v90_pg_probe(False)
+
+def pg_connect():
+    try:
+        c=_v90_pg_raw_connect()
+        _v90_pg_health_set(True,None)
+        return c
+    except Exception as ex:
+        _v90_pg_health_set(False,f'{type(ex).__name__}: {ex}')
+        raise
 
 def pg_init():
     if not pg_enabled():
@@ -1193,6 +1295,133 @@ def pg_init():
     return {'enabled': True, 'ok': True}
 
 
+
+# VERITAS V90 CORE SCHEMA
+# New logical database on the existing no-extra-cost PostgreSQL instance.
+# The old public schema is preserved as rollback storage until v90 is accepted.
+V90_MIGRATION_KEY = 'v90_core_migration_20260925'
+
+
+def _v90_qident(x):
+    s = str(x)
+    if not s or any((not (c.isalnum() or c == '_')) for c in s):
+        raise ValueError('invalid SQL identifier')
+    return '"' + s + '"'
+
+
+def _v90_copy_table(c, table, where_sql=None, order_by=None, limit=None):
+    src = c.execute("SELECT to_regclass(%s) AS r", (f'public.{table}',)).fetchone()
+    if not src or not src.get('r'):
+        return 0
+    tcols = c.execute("""SELECT column_name,column_default
+                         FROM information_schema.columns
+                         WHERE table_schema=%s AND table_name=%s
+                         ORDER BY ordinal_position""", (V90_DB_SCHEMA, table)).fetchall()
+    scols = {r['column_name'] for r in c.execute("""SELECT column_name
+                                                    FROM information_schema.columns
+                                                    WHERE table_schema='public' AND table_name=%s""",
+                                                 (table,)).fetchall()}
+    cols = []
+    for r in tcols:
+        name = r['column_name']
+        default = str(r.get('column_default') or '')
+        if name in scols and not default.startswith('nextval('):
+            cols.append(name)
+    if not cols:
+        return 0
+    qcols = ','.join(_v90_qident(x) for x in cols)
+    sql = f'INSERT INTO {_v90_qident(table)} ({qcols}) SELECT {qcols} FROM public.{_v90_qident(table)}'
+    if where_sql:
+        sql += ' WHERE ' + where_sql
+    if order_by:
+        sql += ' ORDER BY ' + order_by
+    if limit is not None:
+        sql += ' LIMIT ' + str(int(limit))
+    sql += ' ON CONFLICT DO NOTHING'
+    cur = c.execute(sql)
+    try:
+        return max(0, int(cur.rowcount))
+    except Exception:
+        return 0
+
+
+def v90_migrate_core_data():
+    if not pg_enabled():
+        return {'status': 'POSTGRES_REQUIRED', 'schema': V90_DB_SCHEMA}
+    copied = {}
+    errors = []
+    with pg_connect() as c:
+        row = c.execute("SELECT value FROM system_settings WHERE key=%s", (V90_MIGRATION_KEY,)).fetchone()
+        if row:
+            return {'status': 'READY', 'schema': V90_DB_SCHEMA, 'already_migrated': True,
+                    'details': row.get('value') if isinstance(row, dict) else None}
+
+        full_tables = [
+            'knowledge_sources','knowledge_rules','knowledge_rule_stats',
+            'knowledge_rule_status_history','knowledge_backtest_stats','backtest_runs',
+            'knowledge_backtest_oos_stats','knowledge_rule_regime_stats',
+            'knowledge_rule_decay_stats','knowledge_rule_pair_stats',
+            'knowledge_timeblock_stats','knowledge_cost_sensitivity',
+            'knowledge_admin_imports','knowledge_ingestion_runs',
+            'event_outcomes','expert_principles','learning_baselines',
+            'trade_setups','shadow_trades','shadow_experiments',
+            'decision_feedback','system_settings'
+        ]
+        for table in full_tables:
+            try:
+                copied[table] = _v90_copy_table(c, table)
+            except Exception as ex:
+                errors.append(f'{table}:{type(ex).__name__}:{ex}')
+
+        bounded = [
+            ('knowledge_candidates', None, 'discovered_at DESC', 1200),
+            ('validation_snapshots', None, 'created_at DESC', 300),
+            ('model_calibration_snapshots', None, 'created_at DESC', 700),
+            ('product_snapshots', None, 'created_at DESC', 80),
+            ('macro_snapshots', None, 'created_at DESC', 100),
+            ('model_drift_snapshots', None, 'created_at DESC', 200),
+            ('product_alerts', None, 'created_at DESC', 500),
+            ('event_signals', None, 'observed_at DESC', 800),
+            ('governance_actions', None, 'created_at DESC', 2000),
+            ('trade_lifecycle_events', None, 'created_at DESC', 6000),
+        ]
+        for table, where_sql, order_by, lim in bounded:
+            try:
+                copied[table] = _v90_copy_table(c, table, where_sql, order_by, lim)
+            except Exception as ex:
+                errors.append(f'{table}:{type(ex).__name__}:{ex}')
+
+        lesson_types = (
+            "'case_lesson','experience_lesson','rejected_signal_lesson',"
+            "'abstention_lesson','setup_learning','admission_learning'"
+        )
+        try:
+            copied['ledger_lessons'] = _v90_copy_table(
+                c, 'ledger_events', f'event_type IN ({lesson_types})', 'event_ts DESC', 8000)
+            copied['ledger_decisions'] = _v90_copy_table(
+                c, 'ledger_events', "event_type='decision'", 'event_ts DESC', 2500)
+            copied['ledger_outcomes'] = _v90_copy_table(
+                c, 'ledger_events', "event_type='outcome'", 'event_ts DESC', 2500)
+            copied['ledger_meta'] = _v90_copy_table(
+                c, 'ledger_events', "event_type='meta_signal'", 'event_ts DESC', 500)
+        except Exception as ex:
+            errors.append(f'ledger_events:{type(ex).__name__}:{ex}')
+
+        details = {
+            'schema': V90_DB_SCHEMA,
+            'policy': 'important_state_plus_bounded_raw_history',
+            'copied': copied,
+            'errors': errors,
+            'legacy_schema_preserved': True,
+        }
+        if not errors:
+            c.execute("""INSERT INTO system_settings(key,value,updated_at,updated_by)
+                         VALUES(%s,%s::jsonb,now(),'v90_migration')
+                         ON CONFLICT(key) DO UPDATE
+                         SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by""",
+                      (V90_MIGRATION_KEY, json.dumps(details, ensure_ascii=False)))
+        return {'status': 'OK' if not errors else 'DEGRADED', **details}
+
 def pg_event(event_type, entity_key, payload, asset=None, horizon=None, event_ts=None):
     if not pg_enabled():
         return False
@@ -1207,6 +1436,53 @@ def pg_event(event_type, entity_key, payload, asset=None, horizon=None, event_ts
            json.dumps(payload, ensure_ascii=False), VERSION))
     return True
 
+
+
+# VERITAS V90 BATCHED FAST-CYCLE LEDGER
+_v90_base_pg_event = pg_event
+_v90_pg_batch_local=threading.local()
+
+def _v90_pg_batch_begin():
+    _v90_pg_batch_local.queue=[]
+    return True
+
+def _v90_pg_batch_flush():
+    q=getattr(_v90_pg_batch_local,'queue',None)
+    _v90_pg_batch_local.queue=None
+    if not q or not pg_enabled():
+        return 0
+    rows=[]
+    for event_type,entity_key,payload,asset,horizon,event_ts in q:
+        ts=event_ts or now()
+        key=f'{event_type}:{entity_key}'
+        rows.append((key,entity_key,event_type,ts,asset,horizon,
+                     json.dumps(payload,ensure_ascii=False,default=str),VERSION))
+    try:
+        with pg_connect() as c:
+            with c.transaction():
+                c.executemany("""INSERT INTO ledger_events
+                  (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+                  VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+                  ON CONFLICT(event_key) DO NOTHING""",rows)
+        return len(rows)
+    except Exception as ex:
+        emit('v90_pg_batch_error',events=len(rows),error=f'{type(ex).__name__}: {ex}')
+        # Durability before speed: retry individually if the batched path fails.
+        ok=0
+        for event_type,entity_key,payload,asset,horizon,event_ts in q:
+            try:
+                _v90_base_pg_event(event_type,entity_key,payload,asset,horizon,event_ts); ok+=1
+            except Exception as ie:
+                emit('v90_pg_batch_retry_error',event_type=event_type,entity_key=entity_key,
+                     error=f'{type(ie).__name__}: {ie}')
+        return ok
+
+def pg_event(event_type,entity_key,payload,asset=None,horizon=None,event_ts=None):
+    q=getattr(_v90_pg_batch_local,'queue',None)
+    if q is not None and event_type in ('decision','setup_learning','admission_learning','meta_signal'):
+        q.append((event_type,entity_key,payload,asset,horizon,event_ts))
+        return True
+    return _v90_base_pg_event(event_type,entity_key,payload,asset,horizon,event_ts)
 
 def seed_case_lessons():
     if not pg_enabled():
@@ -1268,6 +1544,30 @@ def all_knowledge():
     return list(by_s.values()), list(by_r.values())
 
 
+
+
+# VERITAS V90 KNOWLEDGE CATALOG CACHE
+_v90_base_all_knowledge = all_knowledge
+_v90_knowledge_catalog_cache={'at':0.0,'value':None}
+_v90_knowledge_catalog_lock=threading.Lock()
+
+def _v90_invalidate_knowledge_cache():
+    with _v90_knowledge_catalog_lock:
+        _v90_knowledge_catalog_cache['at']=0.0
+        _v90_knowledge_catalog_cache['value']=None
+
+def all_knowledge():
+    now_ts=time.time()
+    with _v90_knowledge_catalog_lock:
+        val=_v90_knowledge_catalog_cache.get('value')
+        at=float(_v90_knowledge_catalog_cache.get('at') or 0.0)
+        if val is not None and now_ts-at<180:
+            return val
+    val=_v90_base_all_knowledge()
+    with _v90_knowledge_catalog_lock:
+        _v90_knowledge_catalog_cache['at']=now_ts
+        _v90_knowledge_catalog_cache['value']=val
+    return val
 
 def multilingual_library_summary():
     lang_counts={}
@@ -1360,16 +1660,26 @@ def pg_seed_knowledge():
 
 
 def pg_storage_status():
+    now_ts=time.time()
+    cached=getattr(pg_storage_status,'_cache',None)
+    if cached and now_ts-cached[0]<60:
+        return dict(cached[1])
     if not pg_enabled():
+        if cached:
+            x=dict(cached[1]); x['stale']=True; x['health_note']='transient_db_probe_failed'; return x
         return {'enabled': False, 'ok': False, 'backend': 'sqlite-ephemeral'}
     try:
         with pg_connect() as c:
             e = c.execute('SELECT COUNT(*) n FROM ledger_events').fetchone()['n']
             s = c.execute('SELECT COUNT(*) n FROM knowledge_sources').fetchone()['n']
             r = c.execute('SELECT COUNT(*) n FROM knowledge_rules').fetchone()['n']
-        return {'enabled': True, 'ok': True, 'backend': 'postgres-durable+sqlite-cache',
-                'ledger_events': e, 'knowledge_sources': s, 'knowledge_rules': r}
+        out={'enabled': True, 'ok': True, 'backend': 'postgres-durable+sqlite-cache',
+             'ledger_events': e, 'knowledge_sources': s, 'knowledge_rules': r, 'stale':False}
+        pg_storage_status._cache=(now_ts,dict(out))
+        return out
     except Exception as ex:
+        if cached:
+            x=dict(cached[1]); x['stale']=True; x['health_note']=f'{type(ex).__name__}: {ex}'; return x
         return {'enabled': True, 'ok': False, 'backend': 'postgres-error+sqlite-cache',
                 'error': f'{type(ex).__name__}: {ex}'}
 
@@ -1392,7 +1702,23 @@ def pg_pending_decisions(limit=None):
             AND NOT EXISTS (
               SELECT 1 FROM ledger_events o
               WHERE o.event_type='outcome' AND o.entity_key=d.entity_key)
-          ORDER BY d.event_ts
+            AND d.event_ts + CASE d.horizon
+                  WHEN '5m' THEN interval '5 minutes'
+                  WHEN '1h' THEN interval '1 hour'
+                  WHEN '4h' THEN interval '4 hours'
+                  WHEN '1d' THEN interval '1 day'
+                  WHEN '3d' THEN interval '3 days'
+                  WHEN '7d' THEN interval '7 days'
+                  ELSE interval '1 day' END <= now()
+          ORDER BY d.event_ts + CASE d.horizon
+                  WHEN '5m' THEN interval '5 minutes'
+                  WHEN '1h' THEN interval '1 hour'
+                  WHEN '4h' THEN interval '4 hours'
+                  WHEN '1d' THEN interval '1 day'
+                  WHEN '3d' THEN interval '3 days'
+                  WHEN '7d' THEN interval '7 days'
+                  ELSE interval '1 day' END,
+                   d.event_ts
           LIMIT %s
         """,(lim,)).fetchall()
 
@@ -1634,7 +1960,7 @@ def _episode_cte_sql():
                OR research_decision IS DISTINCT FROM prev_dec
                OR regime IS DISTINCT FROM prev_regime
                OR EXTRACT(EPOCH FROM (event_ts-prev_ts)) >
-                    CASE horizon WHEN '1h' THEN 1800 WHEN '4h' THEN 7200 WHEN '1d' THEN 21600
+                    CASE horizon WHEN '5m' THEN 300 WHEN '1h' THEN 1800 WHEN '4h' THEN 7200 WHEN '1d' THEN 21600
                                  WHEN '3d' THEN 43200 ELSE 86400 END
              THEN 1 ELSE 0 END AS new_episode
       FROM d0
@@ -1694,6 +2020,7 @@ def independent_experience_summary():
 
 def _no_trade_miss_threshold(horizon):
     return {
+        '5m': 0.0015,
         '1h': NO_TRADE_MISSED_MOVE_1H,
         '4h': NO_TRADE_MISSED_MOVE_4H,
         '1d': NO_TRADE_MISSED_MOVE_1D,
@@ -1720,7 +2047,7 @@ def trend_case_learning_board(limit=500):
           ORDER BY d.asset,d.horizon,d.event_ts ASC
         """).fetchall()
     now_dt=datetime.now(timezone.utc); groups={}; episodes=[]; last_selected={}
-    gap_s={'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
+    gap_s={'5m':300,'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
     for r in rows:
         dp=r['dp'] if isinstance(r['dp'],dict) else json.loads(r['dp']); ti=dp.get('trend_impulse') or (dp.get('features') or {}).get('trend_impulse') or {}
         phase=str(ti.get('phase') or 'NONE'); direction=str(ti.get('direction') or 'NO_TRADE')
@@ -2501,9 +2828,9 @@ def data_quality_snapshot():
         updated=source_quality_state.get('updated_at')
     names={x.get('source') for x in rows}
     structural=[
-      ('Yahoo Nasdaq GIDS','US index / NDX','primary shadow/live candidate','yahoo_nasdaq_gids'),
-      ('Nasdaq public index','US index / NDX','verification','nasdaq_public_index'),
-      ('Yahoo CME NQ futures','US index futures','after-hours context only','yahoo_cme_futures'),
+      ('Yahoo Nasdaq GIDS','cash Nasdaq-100 context','context only; never active instrument','yahoo_nasdaq_gids'),
+      ('Nasdaq public index','cash Nasdaq-100 context','context only; never active instrument','nasdaq_public_index'),
+      ('Yahoo CME NQ=F','Nasdaq-100 futures','active NQ futures instrument','yahoo_cme_futures'),
       ('Yahoo S&P index','US index','macro context','yahoo_sp_index'),
       ('Yahoo Cboe VIX','volatility index','macro context only','yahoo_cboe_index'),
       ('Yahoo ICE DXY','FX / dollar','macro context only','yahoo_ice_futures'),
@@ -2636,7 +2963,7 @@ def _ndx_market():
                  'CME feed path is documented by Yahoo as 10m delayed','Yahoo/ICE'))
     except Exception: pass
     _set_source_quality(quality)
-    return {'asset':'NDX','price':price,'coinbase_price':sec,'secondary_price':sec,'source_divergence':div,
+    return {'asset':'NQ','price':price,'coinbase_price':sec,'secondary_price':sec,'source_divergence':div,
             'closes':closes,'highs':highs,'lows':lows,'vols':vols,'taker_buy':taker,'returns':rets,
             'binance_close_time_ms':int(pbar['ts']*1000),'observed_at':pts,'source_gate_pass':gate,
             'market_open':rth,'source_quality':quality,'qqq_price':qqq1m[-1]['close'] if qqq1m else None,
@@ -2662,10 +2989,10 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
     last=bars5[-1] if bars5 else bars1h[-1]
     price=float(last['close'])
     observed=datetime.fromtimestamp(last['ts'],tz=timezone.utc).isoformat()
-    closes=[float(x['close']) for x in bars1h[-240:]]
-    highs=[float(x['high']) for x in bars1h[-240:]]
-    lows=[float(x['low']) for x in bars1h[-240:]]
-    vols=[float(x.get('volume') or 0) for x in bars1h[-240:]]
+    closes=[float(x['close']) for x in bars1h[-1800:]]
+    highs=[float(x['high']) for x in bars1h[-1800:]]
+    lows=[float(x['low']) for x in bars1h[-1800:]]
+    vols=[float(x.get('volume') or 0) for x in bars1h[-1800:]]
     taker=[v*0.5 for v in vols]
     rets=[closes[i]/closes[i-1]-1 for i in range(1,len(closes))]
     market_open=_futures_market_open_from_age(observed)
@@ -2864,9 +3191,10 @@ def _moex_futures_current_quote(secid):
 
 def _cnyrubf_market():
     end=time.time(); hist=_moex_futures_candles_between('CNYRUBF',end-120*86400,end+86400,60)
+    intr5=_moex_futures_candles_between('CNYRUBF',end-5*86400,end+86400,5)
     if len(hist)<120: raise RuntimeError(f'INSUFFICIENT_CNYRUBF_HOURLY_BARS {len(hist)}')
     q=_moex_futures_current_quote('CNYRUBF'); price=float(q['price']); observed=q['observed_at']
-    w=hist[-360:]; closes=[float(x[4]) for x in w]; highs=[float(x[2]) for x in w]; lows=[float(x[3]) for x in w]
+    w=hist[-1200:]; closes=[float(x[4]) for x in w]; highs=[float(x[2]) for x in w]; lows=[float(x[3]) for x in w]
     vols=[float(x[5]) for x in w]; taker=[v*0.5 for v in vols]; closes[-1]=price
     rets=[closes[i]/closes[i-1]-1 for i in range(1,len(closes))]
     age=_age_seconds(observed); market_open=_futures_market_open_from_age(observed); gate=bool(market_open and age is not None and age<=3600)
@@ -2878,6 +3206,10 @@ def _cnyrubf_market():
             'binance_close_time_ms':int(datetime.fromisoformat(observed.replace('Z','+00:00')).timestamp()*1000),
             'observed_at':observed,'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
             'data_latency_class':'DELAYED_RESEARCH','verification_mode':'single_direct_official',
+            'intraday_bars':[{'ts':int(x[0])//1000,'open':float(x[1]),'high':float(x[2]),'low':float(x[3]),
+                              'close':float(x[4]),'volume':float(x[5])} for x in intr5[-288:]],
+            'intraday_5m':[{'ts':int(x[0])//1000,'open':float(x[1]),'high':float(x[2]),'low':float(x[3]),
+                           'close':float(x[4]),'volume':float(x[5])} for x in intr5[-288:]],
             'source_names':{'primary':'MOEX ISS CNYRUBF','secondary':'NOT_CONFIGURED'},
             'contract':{'secid':'CNYRUBF','lot':1000,'price_tick':0.001,'tick_value_rub':1.0,'settlement':'cash','roll':'automatic'}}
 
@@ -2887,7 +3219,7 @@ def _moex_market():
         raise RuntimeError(f'INSUFFICIENT_MOEX_HOURLY_BARS {len(hist)}')
     q=_moex_current_quote()
     price=float(q['price']); observed=q['observed_at']
-    w=hist[-240:]
+    w=hist[-1200:]
     closes=[float(x[4]) for x in w]; highs=[float(x[2]) for x in w]; lows=[float(x[3]) for x in w]
     vols=[float(x[5]) for x in w]; taker=[v*0.5 for v in vols]
     # replace last history point with current official value for feature continuity
@@ -2919,7 +3251,7 @@ def _moex_market():
             'closes':closes,'highs':highs,'lows':lows,'vols':vols,'taker_buy':taker,'returns':rets,
             'binance_close_time_ms':int(datetime.fromisoformat(observed.replace('Z','+00:00')).timestamp()*1000),
             'observed_at':observed,'source_gate_pass':gate,'market_open':open_now,'source_quality':quality,
-            'data_latency_class':'DELAYED_RESEARCH','intraday_5m':moex5m,
+            'data_latency_class':'DELAYED_RESEARCH','intraday_5m':moex5m,'intraday_bars':moex5m,'entry_timing_resolution':'5m' if moex5m else '1h_fallback',
             'source_names':{'primary':'MOEX ISS IMOEX','secondary':'Yahoo IMOEX.ME'}}
 
 
@@ -2947,7 +3279,8 @@ def source_clock_gate():
 
 
 def market(symbol, coinbase_product):
-    k = get_json('https://api.binance.com/api/v3/klines', {'symbol': symbol, 'interval': '1h', 'limit': 240})
+    k = get_json('https://api.binance.com/api/v3/klines', {'symbol': symbol, 'interval': '1h', 'limit': 1000})
+    k5 = get_json('https://api.binance.com/api/v3/klines', {'symbol': symbol, 'interval': '5m', 'limit': 288})
     if len(k) < 200:
         raise RuntimeError(f'INSUFFICIENT_KLINES {symbol}: {len(k)}')
     closes = [float(x[4]) for x in k]
@@ -2975,6 +3308,10 @@ def market(symbol, coinbase_product):
         'asset':symbol.replace('USDT',''),'price': p, 'coinbase_price': cb, 'secondary_price':cb,
         'source_divergence': divergence,'closes': closes, 'highs': highs, 'lows': lows, 'vols': vols,
         'taker_buy': taker_buy, 'returns': rets, 'binance_close_time_ms': close_time_ms,
+        'intraday_bars':[{'ts':int(x[0])//1000,'open':float(x[1]),'high':float(x[2]),'low':float(x[3]),
+                          'close':float(x[4]),'volume':float(x[5])} for x in k5[-288:]],
+        'intraday_5m':[{'ts':int(x[0])//1000,'open':float(x[1]),'high':float(x[2]),'low':float(x[3]),
+                       'close':float(x[4]),'volume':float(x[5])} for x in k5[-288:]],
         'observed_at': obs,'source_gate_pass':True,'market_open':True,'source_quality':quality
     }
 
@@ -3598,6 +3935,141 @@ def structural_levels_features(raw):
 
 
 
+def impulse_genesis_setup(asset, raw, f, causal_score=0.0):
+    """Earliest tradable impulse transition at a pre-existing local level.
+
+    Detect the first meaningful break of a known local high/low and create a
+    small probe before slow 1h/4h confirmation. Structural stop is anchored
+    beyond the pre-impulse swing, not a random close-by bar inside the impulse.
+    """
+    p=float(f.get('price') or raw.get('price') or 0.0)
+    if p<=0:
+        return {'active':False,'direction':'NO_TRADE','setup':'IMPULSE_GENESIS','reason':'no_price'}
+
+    bars=list(raw.get('intraday_bars') or raw.get('intraday_5m') or [])
+    if len(bars)<10:
+        return {'active':False,'direction':'NO_TRADE','setup':'IMPULSE_GENESIS','reason':'insufficient_intraday_data'}
+
+    z=bars[-48:]
+    closes=[float(x.get('close') or 0.0) for x in z]
+    highs=[float(x.get('high') or x.get('close') or 0.0) for x in z]
+    lows=[float(x.get('low') or x.get('close') or 0.0) for x in z]
+    vols=[float(x.get('volume') or 0.0) for x in z]
+    if min(closes[-4:])<=0:
+        return {'active':False,'direction':'NO_TRADE','setup':'IMPULSE_GENESIS','reason':'bad_price'}
+
+    lev=f.get('structural_levels') or {}
+    st=f.get('intraday_structure') or {}
+    hs=f.get('horizon_structure') or {}
+
+    structural_res=lev.get('resistance')
+    structural_sup=lev.get('support')
+    recent_res=_recent_swing_anchor(highs[:-1],lows[:-1],'SHORT',lookback=24)
+    recent_sup=_recent_swing_anchor(highs[:-1],lows[:-1],'LONG',lookback=24)
+
+    long_trigger=None
+    short_trigger=None
+    for x in (structural_res,recent_res):
+        if x is not None and float(x)>0 and float(x)<=p*1.01:
+            long_trigger=max(float(x), long_trigger or float(x))
+    for x in (structural_sup,recent_sup):
+        if x is not None and float(x)>0 and float(x)>=p*0.99:
+            short_trigger=min(float(x), short_trigger or float(x))
+
+    atr=max(_bar_atr([{'high':highs[i],'low':lows[i],'close':closes[i]} for i in range(len(closes))],14),p*0.0006)
+    buf=max(0.04*atr,p*0.00020)
+
+    prev=max(closes[-3:-1]) if len(closes)>=3 else closes[-2]
+    prev_min=min(closes[-3:-1]) if len(closes)>=3 else closes[-2]
+    long_break=bool(long_trigger is not None and prev<=long_trigger+buf and p>long_trigger+buf)
+    short_break=bool(short_trigger is not None and prev_min>=short_trigger-buf and p<short_trigger-buf)
+
+    r1=closes[-1]/closes[-2]-1
+    r3=closes[-1]/closes[-4]-1 if len(closes)>=4 else r1
+    hist=[closes[i]/closes[i-1]-1 for i in range(1,len(closes)-1) if closes[i-1]]
+    sig=_robust_sigma(hist[-36:],0.0007)
+    z3=r3/max(sig*math.sqrt(3.0),1e-9)
+
+    lastv=sum(vols[-2:])/2.0 if len(vols)>=2 else vols[-1]
+    basev=[x for x in vols[-14:-2] if x>0]
+    med=_median_value(basev) if basev else 0.0
+    vr=(lastv/med) if med>0 else None
+    volume_ok=bool(vr is None or vr>=0.85)
+    strong_volume=bool(vr is not None and vr>=1.20)
+
+    k=min(6,len(closes)-1)
+    rrseq=[closes[i]/closes[i-1]-1 for i in range(len(closes)-k,len(closes)) if closes[i-1]]
+    path=sum(abs(x) for x in rrseq)
+    net=closes[-1]/closes[-1-k]-1 if len(closes)>k and closes[-1-k] else r3
+    eff=abs(net)/path if path>1e-12 else 0.0
+
+    bar_range=max(highs[-1]-lows[-1],1e-9)
+    close_pos=(closes[-1]-lows[-1])/bar_range
+
+    if long_break:
+        direction='LONG'
+        anchors=[x for x in (recent_sup,structural_sup) if x is not None and float(x)<float(long_trigger)]
+        if not anchors:
+            anchors=[min(lows[-min(12,len(lows)):-1])]
+        pre_impulse=float(max(anchors))
+        stop=pre_impulse-max(0.10*atr,p*0.00035)
+        risk=max(p-stop,p*0.0005)
+        target=p+max(1.6*risk,abs(p-float(long_trigger))*2.0)
+        impulse_ok=bool(r1>=0.0007 or r3>=0.0015 or z3>=0.85)
+        close_ok=close_pos>=0.58
+        native_ok=str(hs.get('direction') or '') in ('LONG','NO_TRADE')
+        trigger=long_trigger
+    elif short_break:
+        direction='SHORT'
+        anchors=[x for x in (recent_res,structural_res) if x is not None and float(x)>float(short_trigger)]
+        if not anchors:
+            anchors=[max(highs[-min(12,len(highs)):-1])]
+        pre_impulse=float(min(anchors))
+        stop=pre_impulse+max(0.10*atr,p*0.00035)
+        risk=max(stop-p,p*0.0005)
+        target=p-max(1.6*risk,abs(float(short_trigger)-p)*2.0)
+        impulse_ok=bool(r1<=-0.0007 or r3<=-0.0015 or z3<=-0.85)
+        close_ok=close_pos<=0.42
+        native_ok=str(hs.get('direction') or '') in ('SHORT','NO_TRADE')
+        trigger=short_trigger
+    else:
+        cand='LONG' if long_trigger is not None and p>=long_trigger*(1-0.0015) else 'SHORT' if short_trigger is not None and p<=short_trigger*(1+0.0015) else 'NO_TRADE'
+        return {'active':False,'direction':'NO_TRADE','candidate_direction':cand,'setup':'IMPULSE_GENESIS',
+                'reason':'waiting_for_level_break','long_trigger':long_trigger,'short_trigger':short_trigger,
+                'local_volume_ratio':vr,'z3':round(z3,3)}
+
+    stop_dist=abs(p-stop)/p
+    reward=abs(target-p)/p
+    rr=reward/max(stop_dist,1e-9)
+    old_invalid=str((f.get('trend_impulse') or {}).get('entry_quality') or '')=='INVALIDATED' or str(st.get('lifecycle') or '')=='FAILURE'
+    confirmations=sum([impulse_ok,volume_ok,eff>=0.35,close_ok,native_ok,old_invalid or strong_volume])
+
+    prob=0.58
+    prob += 0.08 if impulse_ok else 0.0
+    prob += 0.05 if volume_ok else 0.0
+    prob += 0.04 if strong_volume else 0.0
+    prob += 0.05 if eff>=0.35 else 0.0
+    prob += 0.04 if close_ok else 0.0
+    prob += 0.035 if native_ok else 0.0
+    prob += 0.025 if old_invalid else 0.0
+    prob=clip(prob,0.50,0.90)
+
+    active=bool(confirmations>=4 and prob>=0.68 and rr>=0.75)
+    initial=0.20 if prob>=0.78 and rr>=1.20 else 0.15 if prob>=0.72 else 0.10
+
+    return {'active':active,'direction':direction if active else 'NO_TRADE','candidate_direction':direction,
+            'setup':'IMPULSE_GENESIS','reason':'early_local_level_break' if active else 'genesis_quality_gate',
+            'probability':round(prob,4),'confirmations':confirmations,
+            'trigger_level':trigger,'pre_impulse_swing':pre_impulse,
+            'stop_price':stop,'target_price':target,'reward_risk':round(rr,3),
+            'initial_position_fraction':initial,'local_volume_ratio':vr,
+            'local_efficiency':round(eff,4),'z3':round(z3,3),
+            'structural_stop_policy':'PRE_IMPULSE_SWING',
+            'evidence':{'impulse':impulse_ok,'volume':volume_ok,'strong_volume':strong_volume,
+                        'path_efficiency':eff>=0.35,'close_location':close_ok,
+                        'native_not_opposed':native_ok,'old_structure_failed':old_invalid}}
+
+
 def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
     """Fast point-in-time 5m breakdown/breakout setup.
 
@@ -3935,7 +4407,8 @@ def regime_from(f):
     trend=f['trend']; rv=f['rv']; asset=f.get('asset')
     params={
       'NDX':(0.035,0.012,0.010),'MOEX':(0.055,0.015,0.012),
-      'GOLD':(0.050,0.012,0.010),'BRENT':(0.070,0.020,0.015)}
+      'GOLD':(0.050,0.012,0.010),'BRENT':(0.070,0.020,0.015),
+      'CNYRUBF':(0.025,0.006,0.005)}
     if asset in params:
         hi,lo,cut=params[asset]
         vol_state='HIGH_VOL' if rv>hi else 'LOW_VOL' if rv<lo else 'MID_VOL'
@@ -4377,23 +4850,26 @@ def validated_knowledge_adjustment(kmatches, asset, horizon, regime='*'):
 
 
 def agent_views(f, horizon, deriv, asset=None):
-    scale = {'1h': 1.10, '4h': 1.0, '1d': 0.90, '3d': 0.75, '7d': 0.65}[horizon]
+    scale = {'5m':1.22,'1h': 1.10, '4h': 1.0, '1d': 0.90, '3d': 0.75, '7d': 0.65}[horizon]
     trend, mom, rv, vr, tbs = f['trend'], f['momentum'], f['rv'], f['volume_ratio'], f['taker_buy_share']
     ret_h=float(f.get('ret_h') or 0.0)
-    if horizon=='1h':
-        qs = (0.50*ret_h + 0.30*mom + 0.20*trend) * scale
+    if horizon in ('5m','1h'):
+        qs = (0.55*ret_h + 0.30*mom + 0.15*trend) * scale
     else:
         qs = (0.55*trend + 0.45*mom) * scale
     aa=asset or f.get('asset')
     cutmap={'NDX':(0.0035,0.0030),'MOEX':(0.0050,0.0040),
             'GOLD':(0.0040,0.0035),'BRENT':(0.0060,0.0050)}
     quant_cut,tech_cut=cutmap.get(aa,(0.006,0.005))
-    if horizon=='1h':
+    if horizon=='5m':
+        quant_cut*=0.32
+        tech_cut*=0.32
+    elif horizon=='1h':
         quant_cut*=0.55
         tech_cut*=0.55
     flow = (tbs - 0.5) * 2
-    if horizon=='1h':
-        ts = (0.45*ret_h + 0.25*mom + 0.15*trend + 0.15*flow) * (1.10 if vr > 1 else 0.90) * scale
+    if horizon in ('5m','1h'):
+        ts = (0.50*ret_h + 0.25*mom + 0.10*trend + 0.15*flow) * (1.12 if vr > 1 else 0.88) * scale
     else:
         ts = (0.50*mom + 0.30*trend + 0.20*flow) * (1.08 if vr > 1 else 0.92) * scale
 
@@ -4559,7 +5035,7 @@ def _yahoo_between(symbol,start_ts,end_ts,interval='1h'):
 
 def fetch_path_asset(asset,symbol,start_ms,hours):
     ss=start_ms/1000
-    if asset=='NDX':
+    if asset=='NQ':
         return _yahoo_between('%5ENDX',ss-3600,ss+max(hours*3600,14*86400),'1h')
     if asset=='BRENT':
         return _yahoo_between('BZ%3DF',ss-3600,ss+max(hours*3600,14*86400),'1h')
@@ -4612,7 +5088,7 @@ def evaluate_outcomes():
         try:
             entry = float(r.get('entry_price') or 0.0)
             if entry<=0: continue
-            k = fetch_path_asset(r['asset'],symbol,int(created.timestamp()*1000),hours)
+            k = _v90_fetch_path_asset_horizon(r['asset'],symbol,int(created.timestamp()*1000),r['horizon'],hours)
             if not k: continue
             if r['asset'] in MARKET_BAR_ASSETS:
                 bars_needed=horizon_bars(r['asset'],r['horizon'])
@@ -4713,7 +5189,7 @@ def execution_eligibility(asset, raw, clock_info=None):
         return {'eligible':ok,'reason':'two_direct_crypto_quotes' if ok else 'crypto_direct_verification_failed',
                 'direct_sources':direct,'research_ok':research_ok,'time_ok':time_ok}
 
-    if asset=='NDX':
+    if asset=='NQ':
         # _ndx_market's source gate already requires current Nasdaq-100 quote + public cross-check.
         return {'eligible':bool(research_ok and time_ok),'reason':'two_direct_index_checks' if research_ok else 'ndx_verification_failed',
                 'direct_sources':2 if research_ok else 1,'research_ok':research_ok,'time_ok':time_ok}
@@ -4983,18 +5459,43 @@ def run_heavy_learning_maintenance(reason='scheduled'):
         t=time.time()
         rr=refresh_rule_stats()
         rule_seconds=time.time()-t
+        t=time.time()
+        xp=refresh_experience_lessons()
+        experience_lessons_seconds=time.time()-t
+        t=time.time()
+        new_xp=int(xp.get('trade_lessons') or 0)+int(xp.get('rejected_lessons') or 0)+int(xp.get('abstention_lessons') or 0) if isinstance(xp,dict) else 0
+        memory_cache=getattr(setup_memory_board,'_cache',None)
+        if new_xp>0 or not memory_cache:
+            memory_snapshot=setup_memory_board(force=True)
+        else:
+            memory_snapshot=setup_memory_board(force=False)
+        experience_memory_seconds=time.time()-t
+        experience_seconds=experience_lessons_seconds+experience_memory_seconds
         dur=time.time()-started
         with heavy_learning_state_lock:
             heavy_learning_state.update({
                 'status':'OK','last_finished_at':now(),'last_duration_seconds':round(dur,3),
-                'event_learning':ev,'rule_learning':rr,'last_error':None,
+                'event_learning':ev,'rule_learning':rr,'experience_learning':xp,'last_error':None,
                 'runs':int(heavy_learning_state.get('runs') or 0)+1,
-                'event_seconds':round(event_seconds,3),'rule_seconds':round(rule_seconds,3),'reason':reason
+                'event_seconds':round(event_seconds,3),'rule_seconds':round(rule_seconds,3),
+                'experience_seconds':round(experience_seconds,3),
+                'experience_lessons_seconds':round(experience_lessons_seconds,3),
+                'experience_memory_seconds':round(experience_memory_seconds,3),
+                'experience_memory_status':memory_snapshot.get('status') if isinstance(memory_snapshot,dict) else None,
+                'experience_memory_items':len(memory_snapshot.get('items') or []) if isinstance(memory_snapshot,dict) else 0,
+                'reason':reason
             })
         emit('heavy_learning_complete',reason=reason,duration_seconds=round(dur,3),
              event_seconds=round(event_seconds,3),rule_seconds=round(rule_seconds,3),
+             experience_seconds=round(experience_seconds,3),
+             experience_lessons_seconds=round(experience_lessons_seconds,3),
+             experience_memory_seconds=round(experience_memory_seconds,3),
+             experience_memory_items=len(memory_snapshot.get('items') or []) if isinstance(memory_snapshot,dict) else 0,
              event_written=ev.get('written') if isinstance(ev,dict) else None,
-             rule_rows=rr.get('rows') if isinstance(rr,dict) else None)
+             rule_rows=rr.get('rows') if isinstance(rr,dict) else None,
+             experience_trade_lessons=xp.get('trade_lessons') if isinstance(xp,dict) else None,
+             experience_rejected_lessons=xp.get('rejected_lessons') if isinstance(xp,dict) else None,
+             experience_abstention_lessons=xp.get('abstention_lessons') if isinstance(xp,dict) else None)
         return {'status':'OK','duration_seconds':dur}
     except Exception as ex:
         with heavy_learning_state_lock:
@@ -5036,12 +5537,639 @@ def heavy_learning_maintenance_loop():
         time.sleep(max(60,min(300,HEAVY_LEARNING_INTERVAL_SECONDS//3)))
 
 
+
+# VERITAS 9.0 MARKET DATA INTEGRITY
+
+def _v90_scale_ohlc(rows, scale):
+    out=[]
+    for z0 in rows or []:
+        z=dict(z0)
+        for k in ('open','high','low','close'):
+            if z.get(k) is not None:
+                z[k]=float(z[k])*float(scale)
+        out.append(z)
+    return out
+
+
+def _v90_yahoo_quote_price(symbol):
+    last_err=None
+    for host in ('query1.finance.yahoo.com','query2.finance.yahoo.com'):
+        try:
+            with httpx.Client(timeout=12,headers={'User-Agent':'Mozilla/5.0 VERITAS'}) as h:
+                r=h.get(f'https://{host}/v7/finance/quote',params={'symbols':symbol})
+                r.raise_for_status()
+                result=(((r.json() or {}).get('quoteResponse') or {}).get('result') or [])
+            if result:
+                z=result[0]
+                for k in ('regularMarketPrice','postMarketPrice','preMarketPrice'):
+                    if z.get(k) not in (None,0):
+                        return float(z[k]),z
+        except Exception as ex:
+            last_err=ex
+    raise RuntimeError(f'YAHOO_QUOTE_FAIL {symbol}: {last_err}')
+
+
+def _v90_add_months(year,month,delta):
+    x=year*12+(month-1)+int(delta)
+    return x//12,(x%12)+1
+
+
+def _v90_moex_front_brent_contract():
+    msk=datetime.now(timezone.utc).astimezone(ZoneInfo('Europe/Moscow'))
+    candidates=[]
+    for delta in range(0,4):
+        yy,mm=_v90_add_months(msk.year,msk.month,delta)
+        month_codes={1:'F',2:'G',3:'H',4:'J',5:'K',6:'M',7:'N',8:'Q',9:'U',10:'V',11:'X',12:'Z'}
+        secid=f"BR{month_codes[mm]}{str(yy)[-1:]}"
+        try:
+            q=_moex_futures_current_quote(secid)
+            row=q.get('row') or {}
+            age=_age_seconds(q.get('observed_at'))
+            if age is None or age>86400:
+                continue
+            activity=0.0
+            for k,w in (('VALTODAY',1.0),('VOLTODAY',1000.0),('NUMTRADES',10000.0),('OPENPOSITION',100.0)):
+                try: activity+=max(0.0,float(row.get(k) or 0.0))*w
+                except Exception: pass
+            candidates.append((activity,-delta,secid,q))
+        except Exception:
+            continue
+    if not candidates:
+        raise RuntimeError('MOEX_BRENT_FRONT_CONTRACT_NOT_FOUND')
+    candidates.sort(reverse=True,key=lambda x:(x[0],x[1]))
+    return candidates[0][2],candidates[0][3]
+
+
+def _v90_moex_exact_5m_klines(secid,start_ts,end_ts):
+    # MOEX FORTS 5-minute candles are produced from official 1-minute candles.
+    # This avoids relying on an interval=5 endpoint that is not consistently populated.
+    rows=_moex_futures_candles_between(secid,start_ts,end_ts,1)
+    buckets={}
+    for x in rows or []:
+        try:
+            ts=int(x[0])/1000.0
+            key=int(ts//300)*300
+            op=float(x[1]); hi=float(x[2]); lo=float(x[3]); cl=float(x[4]); vol=float(x[5])
+        except Exception:
+            continue
+        z=buckets.get(key)
+        if z is None:
+            buckets[key]={'open':op,'high':hi,'low':lo,'close':cl,'volume':vol}
+        else:
+            z['high']=max(float(z['high']),hi)
+            z['low']=min(float(z['low']),lo)
+            z['close']=cl
+            z['volume']=float(z.get('volume') or 0.0)+vol
+    out=[]
+    for key in sorted(buckets):
+        z=buckets[key]; vol=float(z.get('volume') or 0.0)
+        out.append([int(key*1000),str(z['open']),str(z['high']),str(z['low']),str(z['close']),str(vol),
+                    int((key+300)*1000)-1,'0','0',str(vol*0.5),'0','0'])
+    return out
+
+
+def _v90_brent_market():
+    # Primary: exchange-traded MOEX Brent front contract, quoted in USD/bbl and
+    # publicly delayed. This avoids Yahoo BZ=F continuous-contract roll gaps.
+    secid,q=_v90_moex_front_brent_contract()
+    price=float(q['price']); observed=q['observed_at']
+    end=time.time()
+    hist=_moex_futures_candles_between(secid,end-150*86400,end+86400,60)
+    if len(hist)<120:
+        raise RuntimeError(f'INSUFFICIENT_MOEX_BRENT_HOURLY_BARS {secid}: {len(hist)}')
+    w=hist[-2400:]
+    closes=[float(x[4]) for x in w]; highs=[float(x[2]) for x in w]
+    lows=[float(x[3]) for x in w]; vols=[float(x[5]) for x in w]
+    closes[-1]=price; highs[-1]=max(highs[-1],price); lows[-1]=min(lows[-1],price)
+    taker=[v*0.5 for v in vols]
+    rets=[closes[i]/closes[i-1]-1 for i in range(1,len(closes))]
+
+    intraday_5m=[]
+    try:
+        m5=_v90_moex_exact_5m_klines(secid,end-7*86400,end+86400)[-500:]
+        intraday_5m=[{'ts':int(x[0])/1000.0,'open':float(x[1]),'high':float(x[2]),
+                      'low':float(x[3]),'close':float(x[4]),'volume':float(x[5])} for x in m5]
+    except Exception:
+        intraday_5m=[]
+
+    secondary=None; secondary_status='UNAVAILABLE'; secondary_note='Yahoo BZ=F unavailable'
+    try:
+        y=_yahoo_research_futures_market('BRENT','BZ%3DF','BNO','yahoo_brent','Yahoo Brent BZ=F')
+        secondary=float(y.get('price') or 0.0) or None
+        if secondary:
+            div=abs(price-secondary)/max(1e-9,(price+secondary)/2.0)
+            secondary_status='CONTRACT_MISMATCH' if div>0.025 else 'OK'
+            secondary_note=f'Yahoo continuous={secondary:.2f}; MOEX front={price:.2f}; divergence={div:.2%}'
+    except Exception as ex:
+        secondary_note=f'Yahoo check failed: {type(ex).__name__}'
+
+    age=_age_seconds(observed); market_open=_futures_market_open_from_age(observed)
+    gate=bool(market_open and age is not None and age<=3600)
+    quality=[
+      _source_row(f'MOEX ISS {secid}','Brent front futures','primary official delayed',observed,900,
+                  'DELAYED_CONTEXT' if gate else 'STALE_OR_CLOSED',
+                  'Public exchange quote; used as Brent price authority','Moscow Exchange'),
+      _source_row('Yahoo BZ=F','Brent continuous futures','secondary contract check',now(),900,
+                  secondary_status,secondary_note,'Yahoo')
+    ]
+    _set_source_quality(quality)
+    divergence=(abs(price-secondary)/((price+secondary)/2.0) if secondary and (price+secondary) else 0.0)
+    return {'asset':'BRENT','price':price,'secondary_price':secondary,'coinbase_price':secondary,
+            'source_divergence':divergence,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
+            'taker_buy':taker,'returns':rets,
+            'binance_close_time_ms':int(datetime.fromisoformat(observed.replace('Z','+00:00')).timestamp()*1000),
+            'observed_at':observed,'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
+            'data_latency_class':'DELAYED_RESEARCH','verification_mode':'moex_front_contract_primary',
+            'intraday_5m':intraday_5m,'intraday_bars':intraday_5m,
+            'entry_timing_resolution':'5m' if intraday_5m else '1h_fallback',
+            'source_names':{'primary':f'MOEX ISS {secid}','secondary':'Yahoo BZ=F'},
+            'contract':{'secid':secid,'price_unit':'USD/bbl','roll':'highest_activity_near_month'},
+            'front_month_reference':price,'contract_roll_adjusted':False}
+
+
+def _v90_nq_market():
+    raw=_yahoo_research_futures_market('NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
+    raw['data_latency_class']='CME_FUTURES_DELAYED_RESEARCH'
+    raw['verification_mode']='nasdaq100_futures'
+    return raw
+
+
+# VERITAS V90 UNIVERSAL STRUCTURE LIFECYCLE
+# One market-structure rule across 5m/1h/4h/1d/3d/7d:
+# local range -> level break -> volatility expansion -> ordered extremes ->
+# hold while structure persists -> exit on volatility contraction + two-bar counter reclaim.
+V90_EXECUTION_TIMEFRAMES=('5m','1h','4h','1d','3d','7d')
+
+_v90_base_crypto_market = market
+_v90_legacy_impulse_breakdown_setup = impulse_breakdown_setup
+
+
+def market(symbol, coinbase_product):
+    raw=dict(_v90_base_crypto_market(symbol,coinbase_product))
+    bars5=[]
+    try:
+        k5=get_json('https://api.binance.com/api/v3/klines',
+                    {'symbol':symbol,'interval':'5m','limit':500})
+        bars5=[{'ts':float(x[0])/1000.0,'open':float(x[1]),'high':float(x[2]),
+                'low':float(x[3]),'close':float(x[4]),'volume':float(x[5])}
+               for x in k5 if len(x)>=6]
+    except Exception:
+        bars5=[]
+    raw['intraday_bars']=bars5
+    raw['intraday_5m']=bars5
+    raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
+    return raw
+
+
+def _v90_bar_tr(bar,prev_close=None):
+    h=float(bar.get('high') or bar.get('close') or 0.0)
+    l=float(bar.get('low') or bar.get('close') or 0.0)
+    if prev_close is None:
+        return max(0.0,h-l)
+    pc=float(prev_close)
+    return max(h-l,abs(h-pc),abs(l-pc))
+
+
+def _v90_hourly_bar_rows(raw):
+    c=[float(x) for x in (raw.get('closes') or [])]
+    h=[float(x) for x in (raw.get('highs') or [])]
+    l=[float(x) for x in (raw.get('lows') or [])]
+    v=[float(x or 0.0) for x in (raw.get('vols') or [])]
+    n=min(len(c),len(h),len(l))
+    if n<=0:
+        return []
+    if len(v)<n:
+        v=[0.0]*(n-len(v))+v
+    out=[]
+    for i in range(n):
+        op=c[i-1] if i>0 else c[i]
+        out.append({'ts':float(i),'open':op,'high':h[i],'low':l[i],
+                    'close':c[i],'volume':v[i] if i<len(v) else 0.0})
+    return out
+
+
+def _v90_aggregate_tf_bars(rows,group):
+    rows=list(rows or [])
+    g=max(1,int(group or 1))
+    if g<=1:
+        return rows
+    out=[]
+    end=len(rows)
+    # Align from the most recent bar so the current timeframe always contains
+    # the newest observable price; the first historical bucket may be partial.
+    start=end
+    chunks=[]
+    while start>0:
+        a=max(0,start-g)
+        chunks.append(rows[a:start])
+        start=a
+    for ch in reversed(chunks):
+        if not ch:
+            continue
+        out.append({'ts':ch[-1].get('ts'),
+                    'open':float(ch[0].get('open') or ch[0].get('close') or 0.0),
+                    'high':max(float(x.get('high') or x.get('close') or 0.0) for x in ch),
+                    'low':min(float(x.get('low') or x.get('close') or 0.0) for x in ch),
+                    'close':float(ch[-1].get('close') or 0.0),
+                    'volume':sum(float(x.get('volume') or 0.0) for x in ch)})
+    return out
+
+
+def _v90_tf_bars(raw,timeframe):
+    asset=str(raw.get('asset') or '')
+    tf=str(timeframe)
+    if tf=='5m':
+        bars=list(raw.get('intraday_bars') or raw.get('intraday_5m') or [])
+        return [dict(x) for x in bars[-500:] if isinstance(x,dict)]
+    hourly=_v90_hourly_bar_rows(raw)
+    if tf=='1h':
+        return hourly[-1000:]
+    try:
+        group=max(1,int(horizon_bars(asset,tf)))
+    except Exception:
+        group={'4h':4,'1d':24,'3d':72,'7d':168}.get(tf,1)
+    return _v90_aggregate_tf_bars(hourly,group)[-160:]
+
+
+def _v90_structure_lifecycle_one(asset,raw,timeframe):
+    bars=_v90_tf_bars(raw,timeframe)
+    if len(bars)<12:
+        return {'status':'DATA_REQUIRED','timeframe':timeframe,'bars':len(bars),
+                'entry_signal':False,'exit_signal':False,'state':'NO_DATA'}
+    bars=bars[-120:]
+    lookback=8
+    trs=[]
+    for i,b in enumerate(bars):
+        pc=float(bars[i-1].get('close') or 0.0) if i>0 else None
+        trs.append(_v90_bar_tr(b,pc))
+    event=None
+    scan_start=max(lookback,len(bars)-28)
+    for i in range(scan_start,len(bars)):
+        base=bars[i-lookback:i]
+        if len(base)<lookback:
+            continue
+        base_high=max(float(x.get('high') or x.get('close') or 0.0) for x in base)
+        base_low=min(float(x.get('low') or x.get('close') or 0.0) for x in base)
+        base_close=[float(x.get('close') or 0.0) for x in base]
+        base_tr_seq=[trs[j] for j in range(max(1,i-lookback),i) if trs[j]>0]
+        base_tr=_median_value(base_tr_seq) if base_tr_seq else max(base_high-base_low,1e-9)/4.0
+        if base_tr<=0:
+            continue
+        cur=bars[i]
+        close=float(cur.get('close') or 0.0)
+        high=float(cur.get('high') or close)
+        low=float(cur.get('low') or close)
+        if close<=0:
+            continue
+        cur_tr=trs[i]
+        expansion=cur_tr/max(base_tr,1e-9)
+        path=sum(abs(base_close[j]/base_close[j-1]-1.0) for j in range(1,len(base_close)) if base_close[j-1])
+        net=abs(base_close[-1]/base_close[0]-1.0) if base_close[0] else 0.0
+        base_eff=net/max(path,1e-12) if path>0 else 0.0
+        compact=((base_high-base_low)/max(base_tr,1e-9)<=5.0) or base_eff<=0.55
+        buf=max(0.08*base_tr,close*0.00015)
+        short_break=bool(close<base_low-buf)
+        long_break=bool(close>base_high+buf)
+        if expansion<1.25 or not compact or not (short_break or long_break):
+            continue
+        direction='SHORT' if short_break else 'LONG'
+        level=base_low if direction=='SHORT' else base_high
+        stop=(base_high+0.12*base_tr) if direction=='SHORT' else (base_low-0.12*base_tr)
+        risk=abs(close-stop)
+        if risk<=0:
+            continue
+        break_strength=abs(close-level)/max(base_tr,1e-9)
+        quality=clip(0.46+0.16*min(expansion/2.0,1.0)+0.14*min(break_strength/1.5,1.0)
+                     +0.12*(1.0-min(base_eff,1.0))+0.12,0.0,1.0)
+        event={'index':i,'direction':direction,'level':level,'range_high':base_high,
+               'range_low':base_low,'entry_price':close,'stop_price':stop,
+               'risk':risk,'base_tr':base_tr,'expansion_ratio':expansion,
+               'break_strength_atr':break_strength,'quality':quality,
+               'base_efficiency':base_eff}
+
+    if event is None:
+        return {'status':'OK','timeframe':timeframe,'bars':len(bars),
+                'entry_signal':False,'exit_signal':False,'state':'WAIT'}
+
+    i=int(event['index'])
+    after=bars[i:]
+    direction=event['direction']
+    age=len(bars)-1-i
+    recent=after[-min(6,len(after)):]
+    pairs=max(0,len(recent)-1)
+    lower_highs=sum(1 for j in range(1,len(recent))
+                    if float(recent[j].get('high') or 0.0)<float(recent[j-1].get('high') or 0.0))
+    lower_lows=sum(1 for j in range(1,len(recent))
+                   if float(recent[j].get('low') or 0.0)<float(recent[j-1].get('low') or 0.0))
+    higher_highs=sum(1 for j in range(1,len(recent))
+                     if float(recent[j].get('high') or 0.0)>float(recent[j-1].get('high') or 0.0))
+    higher_lows=sum(1 for j in range(1,len(recent))
+                    if float(recent[j].get('low') or 0.0)>float(recent[j-1].get('low') or 0.0))
+    if direction=='SHORT':
+        ordered=(lower_highs/max(1,pairs)>=0.50 and lower_lows/max(1,pairs)>=0.50)
+        best_price=min(float(x.get('low') or x.get('close') or 0.0) for x in after)
+        favorable=max(0.0,(event['entry_price']-best_price)/event['entry_price'])
+    else:
+        ordered=(higher_highs/max(1,pairs)>=0.50 and higher_lows/max(1,pairs)>=0.50)
+        best_price=max(float(x.get('high') or x.get('close') or 0.0) for x in after)
+        favorable=max(0.0,(best_price-event['entry_price'])/event['entry_price'])
+
+    post_tr=trs[i:]
+    peak_tr=max(post_tr) if post_tr else event['base_tr']
+    recent_tr=sum(post_tr[-2:])/max(1,min(2,len(post_tr))) if post_tr else event['base_tr']
+    vol_contraction=bool(recent_tr<=0.72*max(peak_tr,1e-9))
+    last2=after[-2:] if len(after)>=2 else []
+    second_counter=False
+    if len(last2)==2:
+        a,b=last2
+        if direction=='SHORT':
+            second_counter=bool(float(a.get('close') or 0)>float(a.get('open') or 0)
+                                and float(b.get('close') or 0)>float(b.get('open') or 0)
+                                and float(b.get('close') or 0)>float(a.get('close') or 0)
+                                and float(b.get('low') or 0)>=float(a.get('low') or 0))
+        else:
+            second_counter=bool(float(a.get('close') or 0)<float(a.get('open') or 0)
+                                and float(b.get('close') or 0)<float(b.get('open') or 0)
+                                and float(b.get('close') or 0)<float(a.get('close') or 0)
+                                and float(b.get('high') or 0)<=float(a.get('high') or 0))
+    min_favorable=max(0.0015,1.25*event['base_tr']/max(event['entry_price'],1e-9))
+    exit_signal=bool(age>=2 and favorable>=min_favorable and vol_contraction and second_counter)
+    entry_signal=bool(age<=1 and not exit_signal)
+    state=('EXIT_REVERSAL' if exit_signal else
+           'BREAKOUT_ENTRY' if entry_signal else
+           'TREND_CONTINUATION' if ordered else
+           'IMPULSE_WEAKENING')
+    return {'status':'OK','timeframe':timeframe,'bars':len(bars),'state':state,
+            'direction':direction,'entry_signal':entry_signal,'exit_signal':exit_signal,
+            'breakout_level':event['level'],'range_high':event['range_high'],
+            'range_low':event['range_low'],'entry_price':event['entry_price'],
+            'stop_price':event['stop_price'],'breakout_age_bars':age,
+            'volatility_expansion_ratio':round(float(event['expansion_ratio']),4),
+            'volatility_contraction':vol_contraction,
+            'structure_ordered':ordered,'lower_highs':lower_highs,'lower_lows':lower_lows,
+            'higher_highs':higher_highs,'higher_lows':higher_lows,
+            'second_counter_candle_confirmed':second_counter,
+            'favorable_excursion_pct':round(float(favorable),6),
+            'quality_score':round(float(event['quality']),6),'atr_5m':float(event['base_tr']),
+            'management_rule':'hold while ordered extremes persist; exit on contracted volatility plus second counter candle reclaim'}
+
+
+def _v90_structure_breakout_grid(raw):
+    asset=str(raw.get('asset') or '')
+    return {tf:_v90_structure_lifecycle_one(asset,raw,tf) for tf in V90_EXECUTION_TIMEFRAMES}
+
+
+def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
+    grid=f.get('structure_breakout_grid') or _v90_structure_breakout_grid(raw)
+    horizon=str(f.get('horizon') or '1h')
+    preferred=('5m','1h') if horizon=='1h' else (horizon,)
+    candidates=[]
+    for tf in preferred:
+        z=grid.get(tf) or {}
+        if z.get('entry_signal') and z.get('direction') in ('LONG','SHORT'):
+            candidates.append(z)
+    if candidates:
+        z=max(candidates,key=lambda x:float(x.get('quality_score') or 0.0))
+        p=float(z.get('entry_price') or f.get('price') or 0.0)
+        stop=float(z.get('stop_price') or 0.0)
+        risk=abs(p-stop)
+        if p>0 and risk>0:
+            expected=max(2.0*risk,0.004*p)
+            direction=z['direction']
+            target=p-expected if direction=='SHORT' else p+expected
+            prob=clip(0.62+0.20*float(z.get('quality_score') or 0.0),0.68,0.86)
+            return {'active':True,'direction':direction,'candidate_direction':direction,
+                    'setup':'STRUCTURAL_BREAKOUT_LIFECYCLE','execution_timeframe':z.get('timeframe'),
+                    'probability':round(prob,4),'probability_source':'EXPERT_STRUCTURE_RULE_UNCALIBRATED',
+                    'stop_price':stop,'target_price':target,
+                    'reward_risk':round(expected/max(risk,1e-9),3),
+                    'breakout_level':z.get('breakout_level'),'range_high':z.get('range_high'),
+                    'range_low':z.get('range_low'),'quality_score':z.get('quality_score'),
+                    'volatility_expansion_ratio':z.get('volatility_expansion_ratio'),
+                    'structure_ordered':z.get('structure_ordered'),
+                    'dynamic_exit_rule':'VOL_CONTRACTION_PLUS_SECOND_COUNTER_CANDLE',
+                    'reason':'qualified_universal_structure_breakout'}
+    legacy=_v90_legacy_impulse_breakdown_setup(asset,raw,f,causal_score)
+    if isinstance(legacy,dict):
+        legacy['structure_breakout_grid']=grid
+    return legacy
+
+
+def _v90_5m_horizon_structure(raw):
+    bars=_v90_tf_bars(raw,'5m')
+    asset=str(raw.get('asset') or '')
+    if len(bars)<12:
+        return {'status':'UNAVAILABLE','horizon':'5m','native_horizon':True,
+                'resolution':'5m_native_bars','direction':'NO_TRADE','score':0.0,
+                'state':'DATA_REQUIRED','bars':len(bars)}
+    c=[float(x.get('close') or 0.0) for x in bars]
+    h=[float(x.get('high') or x.get('close') or 0.0) for x in bars]
+    l=[float(x.get('low') or x.get('close') or 0.0) for x in bars]
+    p=float(raw.get('price') or c[-1])
+    if p>0:
+        c[-1]=p
+    rr=[c[i]/c[i-1]-1.0 for i in range(1,len(c)) if c[i-1]]
+    floor={'BTC':0.00035,'ETH':0.00045,'NQ':0.00018,'BRENT':0.00028,
+           'GOLD':0.00018,'MOEX':0.00022,'CNYRUBF':0.00016}.get(asset,0.00025)
+    sigma=_robust_sigma(rr[-min(120,len(rr)):],floor)
+    ret5=p/c[-2]-1.0 if len(c)>=2 and c[-2] else 0.0
+    n30=min(6,len(c)-1)
+    ret30=p/c[-1-n30]-1.0 if n30>=1 and c[-1-n30] else ret5
+    z5=ret5/max(sigma,1e-9)
+    z30=ret30/max(sigma*math.sqrt(float(max(1,n30))),1e-9)
+    life=_v90_structure_lifecycle_one(asset,raw,'5m')
+    ldir=str(life.get('direction') or 'NO_TRADE')
+    lstate=str(life.get('state') or 'WAIT')
+    quality=float(life.get('quality_score') or 0.0)
+    direction='NO_TRADE'
+    if not life.get('exit_signal') and ldir in ('LONG','SHORT') and lstate in ('BREAKOUT_ENTRY','TREND_CONTINUATION'):
+        direction=ldir
+    elif abs(z30)>=0.65:
+        direction='LONG' if ret30>0 else 'SHORT'
+    raw_direction='LONG' if ret5>0 else 'SHORT' if ret5<0 else 'NO_TRADE'
+    stats=_window_path_stats(c,h,l,min(8,len(c)-1),direction if direction in ('LONG','SHORT') else raw_direction)
+    ordered=bool(life.get('structure_ordered'))
+    expansion=float(life.get('volatility_expansion_ratio') or 1.0)
+    score=clip(0.42*quality
+               +0.22*clip((abs(z30)-0.25)/1.75,0.0,1.0)
+               +0.16*clip((abs(z5)-0.15)/1.60,0.0,1.0)
+               +0.12*(1.0 if ordered else clip(stats.get('persistence') or 0.0,0.0,1.0))
+               +0.08*clip((expansion-0.90)/1.10,0.0,1.0),0.0,1.0)
+    if life.get('exit_signal'):
+        direction='NO_TRADE'; state='EXIT_REVERSAL'
+    elif direction=='NO_TRADE':
+        state='NEUTRAL'
+    elif lstate=='BREAKOUT_ENTRY' and score>=0.52:
+        state='BUILDING_TREND'
+    elif lstate=='TREND_CONTINUATION' and (ordered or score>=0.66):
+        state='CONFIRMED_TREND'
+    elif score>=0.50:
+        state='BUILDING_TREND'
+    else:
+        state='WEAK'
+    return {'status':'OK','horizon':'5m','native_horizon':True,'resolution':'5m_native_bars',
+            'direction':direction,'raw_direction':raw_direction,'score':round(score,6),
+            'state':state,'return':ret5,'return_30m':ret30,'z':round(z5,6),'z30':round(z30,6),
+            'bars':len(bars),'sigma_5m':sigma,'path_efficiency':stats.get('efficiency'),
+            'persistence':stats.get('persistence'),'range_position':stats.get('range_position'),
+            'breakout':bool(life.get('entry_signal') or lstate=='TREND_CONTINUATION'),
+            'breakout_level':life.get('breakout_level'),'volume_ratio':expansion,
+            'structure_ordered':ordered,'lifecycle_state':lstate,
+            'stop_price':life.get('stop_price'),'exit_signal':bool(life.get('exit_signal'))}
+
+
+_v90_base_horizon_structure_features = horizon_structure_features
+
+
+def horizon_structure_features(raw,horizon):
+    if str(horizon)=='5m':
+        return _v90_5m_horizon_structure(raw)
+    return _v90_base_horizon_structure_features(raw,horizon)
+
+
+def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
+    ss=float(start_ms)/1000.0
+    # Historical NDX decisions remain valid learning records after the active
+    # instrument migrated to NQ; evaluate them against the original cash index.
+    if str(asset)=='NDX':
+        return _yahoo_between('%5ENDX',ss-600,
+                              ss+max(float(hours)*3600.0,3*3600.0),
+                              '5m' if str(horizon)=='5m' else '1h')
+    if str(horizon)!='5m':
+        return fetch_path_asset(asset,symbol,start_ms,hours)
+    end=ss+3*3600
+    if asset in ('BTC','ETH'):
+        return get_json('https://api.binance.com/api/v3/klines',
+                        {'symbol':symbol,'interval':'5m','startTime':int(start_ms),'limit':36})
+    if asset=='NQ':
+        return _yahoo_between('NQ%3DF',ss-600,end,'5m')
+    if asset=='GOLD':
+        return _yahoo_between('GC%3DF',ss-600,end,'5m')
+    if asset=='BRENT':
+        secid,_q=_v90_moex_front_brent_contract()
+        return _v90_moex_exact_5m_klines(secid,ss-600,end)
+    if asset=='MOEX':
+        return _yahoo_between('IMOEX.ME',ss-600,end,'5m')
+    if asset=='CNYRUBF':
+        return _v90_moex_exact_5m_klines('CNYRUBF',ss-600,end)
+    return fetch_path_asset(asset,symbol,start_ms,hours)
+
+
+# VERITAS V90 ASYNC OUTCOME REFRESH
+_v90_outcome_refresh_lock=threading.Lock()
+_v90_outcome_state={'status':'IDLE','last_started_at':None,'last_finished_at':None,
+                    'last_written':0,'last_duration_seconds':0.0,'last_error':None}
+
+def _v90_outcome_snapshot():
+    return dict(_v90_outcome_state)
+
+def _v90_run_outcome_refresh(reason='cycle_complete'):
+    if not _v90_outcome_refresh_lock.acquire(blocking=False):
+        return
+    t0=time.time()
+    try:
+        _v90_outcome_state.update({'status':'RUNNING','last_started_at':now(),
+                                   'last_error':None,'reason':reason})
+        n=evaluate_outcomes()
+        _v90_outcome_state.update({'status':'OK','last_finished_at':now(),
+                                   'last_written':int(n or 0),
+                                   'last_duration_seconds':round(time.time()-t0,3)})
+        emit('v90_outcome_refresh_complete',written=int(n or 0),
+             duration_seconds=round(time.time()-t0,3),reason=reason)
+    except Exception as ex:
+        _v90_outcome_state.update({'status':'ERROR','last_finished_at':now(),
+                                   'last_duration_seconds':round(time.time()-t0,3),
+                                   'last_error':f'{type(ex).__name__}: {ex}'})
+        emit('v90_outcome_refresh_error',error=f'{type(ex).__name__}: {ex}',reason=reason)
+    finally:
+        _v90_outcome_refresh_lock.release()
+
+def _v90_schedule_outcome_refresh(reason='cycle_complete'):
+    if _v90_outcome_refresh_lock.locked():
+        return False
+    threading.Thread(target=_v90_run_outcome_refresh,args=(reason,),daemon=True).start()
+    return True
+
+
+# VERITAS V90 R16 MOEX 5M DATA
+_v90r16_base_moex_market = _moex_market
+_v90r16_moex5_cache = {'at':0.0,'bars':[]}
+
+def _v90r16_moex_index_5m(force=False):
+    now_ts=time.time()
+    if (not force and _v90r16_moex5_cache.get('bars')
+            and now_ts-float(_v90r16_moex5_cache.get('at') or 0)<240):
+        return list(_v90r16_moex5_cache.get('bars') or [])
+    try:
+        frm=datetime.fromtimestamp(now_ts-5*86400,tz=timezone.utc).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()
+        till=datetime.fromtimestamp(now_ts+3600,tz=timezone.utc).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()
+        url='https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX/candles.json'
+        one=[]
+        start=0
+        with httpx.Client(timeout=20,headers={'User-Agent':'VERITAS/9.0 R16 research'}) as h:
+            for _ in range(40):
+                r=h.get(url,params={'from':frm,'till':till,'interval':1,'start':start,'iss.meta':'off'})
+                r.raise_for_status()
+                rows=_moex_block(r.json(),'candles')
+                if not rows:
+                    break
+                for x in rows:
+                    dt=_moex_parse_dt(x.get('begin') or x.get('BEGIN'))
+                    if not dt:
+                        continue
+                    cl=float(x.get('close') or x.get('CLOSE') or 0.0)
+                    if cl<=0:
+                        continue
+                    one.append({
+                      'ts':dt.timestamp(),
+                      'open':float(x.get('open') or x.get('OPEN') or cl),
+                      'high':float(x.get('high') or x.get('HIGH') or cl),
+                      'low':float(x.get('low') or x.get('LOW') or cl),
+                      'close':cl,
+                      'volume':float(x.get('value') or x.get('VALUE') or x.get('volume') or x.get('VOLUME') or 0.0),
+                    })
+                if len(rows)<100:
+                    break
+                start+=len(rows)
+        buckets={}
+        for x in one[-5000:]:
+            key=int(float(x['ts'])//300)*300
+            z=buckets.get(key)
+            if z is None:
+                buckets[key]={'ts':float(key),'open':x['open'],'high':x['high'],'low':x['low'],
+                              'close':x['close'],'volume':x['volume']}
+            else:
+                z['high']=max(float(z['high']),float(x['high']))
+                z['low']=min(float(z['low']),float(x['low']))
+                z['close']=float(x['close'])
+                z['volume']=float(z.get('volume') or 0.0)+float(x.get('volume') or 0.0)
+        bars=[buckets[k] for k in sorted(buckets)][-500:]
+        if len(bars)>=12:
+            _v90r16_moex5_cache['at']=now_ts
+            _v90r16_moex5_cache['bars']=list(bars)
+            return bars
+    except Exception as ex:
+        emit('r16_moex_5m_error',error=f'{type(ex).__name__}: {ex}')
+    return list(_v90r16_moex5_cache.get('bars') or [])
+
+def _moex_market():
+    raw=dict(_v90r16_base_moex_market())
+    bars=_v90r16_moex_index_5m()
+    if not bars:
+        bars=list(raw.get('intraday_5m') or raw.get('intraday_bars') or [])
+    raw['intraday_5m']=bars
+    raw['intraday_bars']=bars
+    raw['entry_timing_resolution']='5m' if len(bars)>=12 else '1h_fallback'
+    raw['analysis_data_available']=bool(len(bars)>=12)
+    raw['analysis_data_bars_5m']=len(bars)
+    return raw
+
 def _fetch_asset_bundle(symbol, asset, cb_product):
     t0=time.time()
-    if asset=='NDX':
-        raw=_ndx_market(); deriv=_ndx_derivatives_context()
+    if asset=='NQ':
+        raw=_v90_nq_market(); deriv=_research_only_derivatives(asset)
     elif asset=='BRENT':
-        raw=_yahoo_research_futures_market('BRENT','BZ%3DF','BNO','yahoo_brent','Yahoo Brent BZ=F')
+        raw=_v90_brent_market()
         deriv=_research_only_derivatives(asset)
     elif asset=='GOLD':
         raw=_yahoo_research_futures_market('GOLD','GC%3DF','GLD','yahoo_gold','Yahoo Gold GC=F')
@@ -5076,20 +6204,43 @@ def prefetch_market_bundles():
                 'parallel_wait_saved_estimate_seconds':max(0.0,fetch_sum-wall),'workers':workers}
 
 
-def cycle():
+
+# VERITAS V90 R22 DB-SAFE LIVE CONTEXT
+_v90r22_perf_cache={'at':0.0,'value':[]}
+def _v90r22_agent_perf_safe():
+    now_ts=time.time()
+    if _v90r22_perf_cache.get('value') and now_ts-float(_v90r22_perf_cache.get('at') or 0)<300:
+        return list(_v90r22_perf_cache['value'])
+    try:
+        v=pg_agent_performance() if pg_enabled() else performance_rows()
+        _v90r22_perf_cache.update({'at':now_ts,'value':list(v or [])})
+        return list(v or [])
+    except Exception as ex:
+        emit('r22_agent_perf_fallback',error=f'{type(ex).__name__}: {ex}')
+        return list(_v90r22_perf_cache.get('value') or performance_rows())
+
+
+def cycle(selected_horizons=None, cycle_mode='FULL'):
     cycle_wall_t0=time.time()
+    selected_horizons=tuple(selected_horizons or tuple(HORIZONS.keys()))
+    selected_horizons=tuple(h for h in selected_horizons if h in HORIZONS)
+    if not selected_horizons: selected_horizons=tuple(HORIZONS.keys())
+    cycle_mode=str(cycle_mode or 'FULL').upper()
     if not _BOOTSTRAP_READY:
         init_db(); seed_knowledge()
     pg_state = pg_storage_status()
     phase_seconds={}
-    phase_t0=time.time(); outcomes = evaluate_outcomes(); phase_seconds['outcomes']=time.time()-phase_t0
-    outcomes_seconds=phase_seconds['outcomes']
+    _outcome_bg=_v90_outcome_snapshot()
+    outcomes=0
+    phase_seconds['outcomes']=0.0
+    outcomes_seconds=0.0
+    phase_seconds['outcomes_background_last_seconds']=float(_outcome_bg.get('last_duration_seconds') or 0.0)
     # Heavy event/rule learning runs after the fast market cycle in a background maintenance lane.
     heavy_learning=heavy_learning_snapshot()
     event_learning=heavy_learning.get('event_learning') or {'status':'background_pending','written':0}
     rule_learning=heavy_learning.get('rule_learning') or {'status':'background_pending','rows':0,'status_changes':0}
     phase_seconds['event_learning']=0.0; phase_seconds['rule_learning']=0.0
-    phase_t0=time.time(); perf = pg_agent_performance() if pg_enabled() else performance_rows(); phase_seconds['agent_learning']=time.time()-phase_t0
+    phase_t0=time.time(); perf = _v90r22_agent_perf_safe(); phase_seconds['agent_learning']=time.time()-phase_t0
     phase_t0=time.time(); calibration_rows = pg_calibration_map() if pg_enabled() else []; phase_seconds['calibration']=time.time()-phase_t0
     phase_t0=time.time(); clock_info = source_clock_gate(); phase_seconds['clock_gate']=time.time()-phase_t0
     made = 0
@@ -5105,13 +6256,15 @@ def cycle():
     analog_seconds=time.time()-phase_t0; phase_seconds['structure_analogs']=analog_seconds
     cycle_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     pre_decision_seconds=time.time()-cycle_wall_t0
-    emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False),
+    emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False), cycle_mode=cycle_mode, updated_horizons=list(selected_horizons),
          pre_decision_seconds=round(pre_decision_seconds,3),outcomes_seconds=round(outcomes_seconds,3),analog_seconds=round(analog_seconds,3))
+    _v90_pg_batch_begin()
     decision_phase_t0=time.time()
     cycle_source_quality=[]
     market_bundles,prefetch_stats=prefetch_market_bundles()
     with lock:
         _prev_summary=list(last_cycle.get('summary') or [])
+    _v90_set_prev_signal_cache(_prev_summary)
     _prev_prices={}
     for _x in _prev_summary:
         if _x.get('asset') and _x.get('price') not in (None,0): _prev_prices.setdefault(str(_x['asset']),float(_x['price']))
@@ -5142,37 +6295,71 @@ def cycle():
             except Exception as ex:
                 emit('common_structure_cache_error',asset=asset,error=f'{type(ex).__name__}: {ex}')
             asset_timings[asset]['common_features']=time.time()-asset_phase_t0
-            for horizon in HORIZONS:
+            for horizon in selected_horizons:
                 horizon_wall_t0=time.time()
                 created_at = now()
                 f = features(raw, horizon, common_structure)
                 if common_structure is not None: common_feature_reuses += 1
                 kmatches = match_knowledge(asset, horizon, f, deriv)
+                knowledge_arbitration = arbitrate_knowledge_conflicts(kmatches,asset,horizon)
+                kmatches = knowledge_arbitration.get('selected_rules') or []
+                f['knowledge_rule_arbitration']=knowledge_arbitration
                 orth_evidence = orthogonal_knowledge_summary(kmatches)
-                knowledge_adjustment = validated_knowledge_adjustment(kmatches,asset,horizon,f['regime'])
+                knowledge_adjustment = dict(validated_knowledge_adjustment(kmatches,asset,horizon,f['regime']))
+                experience_prior=experience_direction_prior(asset,horizon,f)
+                base_knowledge_score=float(knowledge_adjustment.get('score',0.0) or 0.0)
+                experience_prior_score=float(experience_prior.get('score_adjustment') or 0.0)
+                combined_adjustment=clip(base_knowledge_score+experience_prior_score,-0.05,0.05)
+                knowledge_adjustment['base_score']=base_knowledge_score
+                knowledge_adjustment['experience_prior']=experience_prior
+                knowledge_adjustment['score_with_experience']=combined_adjustment
                 agents = agent_views(f, horizon, deriv, asset)
                 research_dec, conf, size, score, used_weights, impulse_overlay = committee(
-                    agents, asset, horizon, perf, f['regime'], knowledge_adjustment.get('score',0.0))
+                    agents, asset, horizon, perf, f['regime'], combined_adjustment)
                 research_challenger=challenger_committee(
-                    agents,asset,horizon,perf,f['regime'],knowledge_adjustment.get('score',0.0))
+                    agents,asset,horizon,perf,f['regime'],combined_adjustment)
                 tactical_reversal=tactical_reversal_features(asset,f,_prev_prices.get(asset),causal_shadow.get('score'))
+                impulse_genesis=impulse_genesis_setup(asset,raw,f,causal_shadow.get('score'))
                 pivot_break=impulse_breakdown_setup(asset,raw,f,causal_shadow.get('score'))
+
+                if impulse_genesis.get('active') and (not tactical_reversal.get('active') or float(impulse_genesis.get('probability') or 0)>=float(tactical_reversal.get('probability') or 0)-0.03):
+                    tactical_reversal=impulse_genesis
+                f['impulse_genesis']=impulse_genesis
                 # Prefer the higher-probability active fast setup. Pivot-break is specifically designed
                 # to react before hourly/4h trend reversal when a recent local level gives way.
-                if pivot_break.get('active') and (not tactical_reversal.get('active') or float(pivot_break.get('probability') or 0)>=float(tactical_reversal.get('probability') or 0)):
+                if pivot_break.get('active') and (not tactical_reversal.get('active') or float(pivot_break.get('probability') or 0)>=float(tactical_reversal.get('probability') or 0)+0.02):
                     tactical_reversal=pivot_break
                 f['impulse_pivot_break']=pivot_break
                 f['tactical_reversal']=tactical_reversal
+                if horizon in ('1h','4h') and (impulse_genesis.get('candidate_direction') in ('LONG','SHORT') or impulse_genesis.get('active')):
+                    try:
+                        pg_event('impulse_genesis_learning',f'{cycle_id}:{asset}:{horizon}:genesis',
+                                 {'setup':'IMPULSE_GENESIS','active':bool(impulse_genesis.get('active')),
+                                  'candidate_direction':impulse_genesis.get('candidate_direction'),
+                                  'price':f.get('price'),'trigger_level':impulse_genesis.get('trigger_level'),
+                                  'pre_impulse_swing':impulse_genesis.get('pre_impulse_swing'),
+                                  'stop_price':impulse_genesis.get('stop_price'),
+                                  'target_price':impulse_genesis.get('target_price'),
+                                  'reward_risk':impulse_genesis.get('reward_risk'),
+                                  'probability':impulse_genesis.get('probability'),
+                                  'counterfactual_entry_price':f.get('price'),
+                                  'lesson':'detect impulse at first meaningful local high/low break; entry timing and structural stop are separate decisions'},
+                                 asset,horizon,created_at)
+                    except Exception as ex:
+                        emit('impulse_genesis_learning_error',asset=asset,horizon=horizon,error=f'{type(ex).__name__}: {ex}')
                 f['reversal_probability']=tactical_reversal.get('probability'); f['cycle_return']=tactical_reversal.get('cycle_return',0.0)
                 # Fast tactical reversal may create a small opposite candidate before slow horizons flip.
-                if tactical_reversal.get('active') and horizon in ('1h','4h'):
+                if tactical_reversal.get('active') and horizon in ('5m','1h','4h','1d','3d','7d'):
                     research_dec=tactical_reversal.get('direction'); conf=max(float(conf or 0),float(tactical_reversal.get('probability') or 0))
                     size=min(max(float(size or 0),0.05),0.15)
                 calibration = calibrated_direction_probability(asset,horizon,conf,calibration_rows)
                 source_gate=bool(f.get('source_gate_pass',True))
                 time_gate=bool(f.get('market_open',True) or asset in CRYPTO_ASSETS)
                 kill=runtime_bool('kill_switch',KILL_SWITCH)
-                if not source_gate or not time_gate or kill:
+                # R16: preserve the research direction from available market data.
+                # source/time gates control execution below; only the global kill switch
+                # is allowed to erase the research direction itself.
+                if kill:
                     research_dec='NO_TRADE'
                 v70_pretrade=v70_pretrade_shadow(asset,horizon,research_dec,conf,calibration,agents,orth_evidence,source_gate,time_gate,f,event_shadow)
                 if V70_GATE_MODE=='enforce' and research_dec in ('LONG','SHORT') and (not v70_pretrade.get('allow',True) or v70_pretrade.get('action')=='WAIT'):
@@ -5192,16 +6379,67 @@ def cycle():
                 execution_signal_tier=research_signal_tier if execution_gate.get('eligible') else 'NO_TRADE'
                 trade_plan=technical_trade_plan(asset,horizon,f,research_dec,research_signal_tier,analog_board)
                 if tactical_reversal.get('active') and research_dec==tactical_reversal.get('direction'):
-                    trade_plan.update({'eligible':True,'reason':'tactical_reversal','stop_price':tactical_reversal.get('stop_price'),
+                    is_genesis=str(tactical_reversal.get('setup') or '')=='IMPULSE_GENESIS'
+                    trade_plan.update({'eligible':True,'reason':'impulse_genesis' if is_genesis else 'tactical_reversal',
+                                       'stop_price':tactical_reversal.get('stop_price'),
+                                       'stop_method':'PRE_IMPULSE_SWING' if is_genesis else 'TACTICAL_REVERSAL_STRUCTURE',
                                        'expected_move_pct':abs(float(tactical_reversal.get('target_price') or f.get('price'))/float(f.get('price') or 1)-1),
-                                       'expected_to_stop_ratio':tactical_reversal.get('reward_risk'),'min_expected_to_stop_ratio':1.30,
-                                       'initial_position_fraction':min(0.15,float(size or 0.05)),'scaling_policy':'TACTICAL_REVERSAL_5_15PCT',
-                                       'tactical_target_price':tactical_reversal.get('target_price'),'setup':tactical_reversal.get('setup') or 'TACTICAL_REVERSAL',
+                                       'expected_to_stop_ratio':tactical_reversal.get('reward_risk'),
+                                       'min_expected_to_stop_ratio':0.75 if is_genesis else 1.30,
+                                       'initial_position_fraction':tactical_reversal.get('initial_position_fraction',min(0.15,float(size or 0.05))),
+                                       'scaling_policy':'IMPULSE_GENESIS_PROBE_THEN_ADD' if is_genesis else 'TACTICAL_REVERSAL_5_15PCT',
+                                       'tactical_target_price':tactical_reversal.get('target_price'),
+                                       'setup':tactical_reversal.get('setup') or 'TACTICAL_REVERSAL',
+                                       'pre_impulse_swing':tactical_reversal.get('pre_impulse_swing'),
+                                       'trigger_level':tactical_reversal.get('trigger_level'),
                                        'reversal_probability':tactical_reversal.get('probability')})
                 institutional_signal=institutional_signal_overlay(asset,horizon,research_dec,conf,f,raw,orth_evidence,agents,v70_pretrade,trade_plan,research_challenger,causal_shadow,event_shadow)
                 range_setup=range_retest_breakout_setup(asset,raw,f,institutional_signal)
                 f['range_retest_breakout']=range_setup
-                if range_setup.get('active') and research_dec==range_setup.get('direction') and horizon in ('1h','4h','1d'):
+
+                # v72.3 Brent REVERSAL_CAPTURE.
+                # Do not wait for every slow regime label to flip when the fast layer already
+                # sees a strong opposite impulse, the old trend has failed, volume confirms,
+                # and the local range supplies acceptable stop/target economics.
+                reversal_capture=None
+                if asset=='BRENT' and horizon in ('1h','4h','1d') and research_dec in ('LONG','SHORT'):
+                    tr=tactical_reversal or {}
+                    rs=range_setup or {}
+                    tr_reasons=tr.get('reasons') or {}
+                    candidate=str(tr.get('candidate_direction') or 'NO_TRADE')
+                    rs_candidate=str(rs.get('candidate_direction') or 'NO_TRADE')
+                    prob=float(tr.get('probability') or 0.0)
+                    rr=float(rs.get('reward_risk') or 0.0)
+                    impulse_ok=bool(tr_reasons.get('impulse'))
+                    old_failed=bool(tr_reasons.get('old_trend_invalidated'))
+                    volume_ok=bool(tr_reasons.get('volume')) or float(rs.get('volume_ratio_5m') or 0.0)>=1.20
+                    local_econ_ok=bool(rr>=1.20 and rs.get('stop_price') is not None and rs.get('target_price') is not None)
+                    alignment_ok=bool(candidate==research_dec and rs_candidate==research_dec)
+                    if alignment_ok and prob>=0.72 and impulse_ok and old_failed and volume_ok and local_econ_ok:
+                        reversal_capture={
+                            'active':True,'direction':research_dec,'probability':round(prob,4),
+                            'stop_price':rs.get('stop_price'),'target_price':rs.get('target_price'),
+                            'reward_risk':rr,'setup':'BRENT_REVERSAL_CAPTURE',
+                            'initial_position_fraction':0.15 if prob>=0.78 and rr>=1.40 else 0.10,
+                            'evidence':{'impulse':impulse_ok,'old_trend_failed':old_failed,'volume':volume_ok,
+                                        'local_rr':rr,'range_state':rs.get('state')}
+                        }
+                        trade_plan.update({
+                            'eligible':True,'reason':'brent_reversal_capture',
+                            'stop_price':reversal_capture['stop_price'],
+                            'stop_method':'LOCAL_REVERSAL_RANGE_STOP',
+                            'stop_distance_pct':abs(float(f.get('price') or 0)-float(reversal_capture['stop_price']))/max(float(f.get('price') or 1),1e-9),
+                            'expected_move_pct':abs(float(reversal_capture['target_price'])/float(f.get('price') or 1)-1),
+                            'expected_to_stop_ratio':rr,'min_expected_to_stop_ratio':1.20,
+                            'initial_position_fraction':reversal_capture['initial_position_fraction'],
+                            'scaling_policy':'REVERSAL_CAPTURE_10_15PCT_THEN_CONFIRM',
+                            'tactical_target_price':reversal_capture['target_price'],
+                            'setup':'BRENT_REVERSAL_CAPTURE',
+                            'reversal_probability':prob
+                        })
+                        f['reversal_capture']=reversal_capture
+
+                if range_setup.get('active') and research_dec==range_setup.get('direction') and horizon in ('5m','1h','4h','1d'):
                     rs=range_setup.get('state')
                     if rs in ('RETEST_ENTRY','BREAKOUT_ADD'):
                         trade_plan.update({'eligible':True,'reason':'range_retest_breakout','stop_price':range_setup.get('stop_price'),
@@ -5259,16 +6497,81 @@ def cycle():
                     research_signal_tier=institutional_signal.get('signal_tier')
                     signal_tier=research_signal_tier
                     execution_signal_tier=research_signal_tier if execution_gate.get('eligible') else 'NO_TRADE'
+
+                # v74 closed-loop profitability gate. It acts only on sufficient CLOSED-trade
+                # evidence and never penalizes a new setup merely because history is sparse.
+                profit_gate=profitability_gate(asset,horizon,research_dec,f,trade_plan)
+                trade_plan['profitability_gate']=profit_gate
+                pm=float(profit_gate.get('size_multiplier') or 0.0)
+                if trade_plan.get('eligible') and not profit_gate.get('allow',True):
+                    trade_plan['eligible']=False
+                    trade_plan['reason']='historically_negative_setup_edge'
+                    trade_plan['initial_position_fraction']=0.0
+                elif trade_plan.get('eligible') and pm!=1.0:
+                    trade_plan['initial_position_fraction']=clip(float(trade_plan.get('initial_position_fraction') or 0.0)*pm,0.0,1.0)
+                    trade_plan['scaling_policy']=str(trade_plan.get('scaling_policy') or '')+'|PROFITABILITY_'+str(profit_gate.get('status') or 'BUILDING')
+                try:
+                    if profit_gate.get('status') in ('NEGATIVE_EDGE','DEGRADED','POSITIVE_EDGE'):
+                        pg_event('profitability_learning',f'{cycle_id}:{asset}:{horizon}:profitability',
+                                 {'direction':research_dec,'price':f.get('price'),
+                                  'setup':trade_plan.get('setup') or trade_plan.get('reason'),
+                                  'regime':f.get('regime'),'gate':profit_gate,
+                                  'lesson':'position size and recurrence are conditioned on realized closed-trade expectancy, not confidence alone'},
+                                 asset,horizon,created_at)
+                except Exception as ex:
+                    emit('profitability_learning_error',asset=asset,horizon=horizon,error=f'{type(ex).__name__}: {ex}')
+                trade_plan['trade_path_intelligence']=trade_path_intelligence(asset,horizon,research_dec,trade_plan)
+                trade_plan=v77_decision_quality_stack(asset,horizon,f,trade_plan,research_dec)
+                trade_plan=execution_consistency_layer(asset,horizon,f,trade_plan,research_dec)
+                trade_plan=system_rule_arbitration(asset,horizon,f,trade_plan,research_dec)
+                trade_plan=trade_integrity_layer(asset,horizon,f,trade_plan,research_dec)
                 trade_plan['institutional_signal']=institutional_signal
                 trade_plan['position_scaling']=institutional_signal.get('position_scaling')
                 f['institutional_signal']=institutional_signal
                 f['expected_move_pct']=float(trade_plan.get('expected_move_pct') or 0.0)
                 tradeability=tradeability_analog_stats(asset,horizon,f,research_dec)
+                v84_row=dict(f); v84_row.update({
+                    'asset':asset,'horizon':horizon,'research_decision':research_dec,
+                    'trade_plan':trade_plan,'institutional_signal':institutional_signal,
+                    'tactical_reversal':tactical_reversal,'impulse_pivot_break':f.get('impulse_pivot_break') or {},
+                    'range_retest_breakout':f.get('range_retest_breakout') or {},
+                    'horizon_structure':f.get('horizon_structure') or {}})
+                experience_decision=experience_profile_for_trade(asset,horizon,v84_row,research_dec,trade_plan,tradeability)
+                setup_memory=experience_decision.get('setup_memory') or setup_memory_profile(asset,horizon,v84_row,research_dec,trade_plan)
+                regime_policy=adaptive_regime_policy(asset,horizon,v84_row,research_dec,trade_plan,setup_memory)
+                execution_policy=execution_policy_v84(asset,horizon,v84_row,research_dec,trade_plan,setup_memory,regime_policy)
+                trade_plan=apply_v84_execution_to_trade_plan(v84_row,trade_plan,setup_memory,regime_policy,execution_policy)
+                trade_plan['experience_decision']=experience_decision
                 decision_stage=trade_decision_stage(research_dec,trade_plan,tradeability,f.get('intraday_structure') or {})
                 trade_plan['tradeability']=tradeability
                 trade_plan['decision_stage']=decision_stage
                 trade_plan['positive_trade_probability']=tradeability.get('positive_trade_probability')
                 trade_plan['statistical_noise_buffer_p80']=tradeability.get('p80_adverse_excursion')
+                f['experience_decision']=experience_decision
+                f['setup_memory']=setup_memory
+                f['adaptive_regime_policy']=regime_policy
+                f['execution_policy']=execution_policy
+
+                # v74 counterfactual lab: persist candidate stop hierarchy and early-entry
+                # anchors so outcomes can later compare which variant would have survived
+                # and captured more MFE. This is diagnostic until sufficient samples exist.
+                try:
+                    if research_dec in ('LONG','SHORT'):
+                        pg_event('trade_counterfactual_lab',f'{cycle_id}:{asset}:{horizon}:cf',
+                                 {'direction':research_dec,'entry_price':f.get('price'),
+                                  'setup':trade_plan.get('setup') or trade_plan.get('reason'),
+                                  'chosen_stop':trade_plan.get('stop_price'),
+                                  'chosen_stop_method':trade_plan.get('stop_method'),
+                                  'stop_candidates':trade_plan.get('stop_candidates') or [],
+                                  'pre_impulse_swing':trade_plan.get('pre_impulse_swing'),
+                                  'trigger_level':trade_plan.get('trigger_level'),
+                                  'expected_move_pct':trade_plan.get('expected_move_pct'),
+                                  'reward_risk':trade_plan.get('expected_to_stop_ratio'),
+                                  'profitability_gate':trade_plan.get('profitability_gate'),
+                                  'lesson':'compare entry timing and stop variants against realized path; do not equate late entry with close stop'},
+                                 asset,horizon,created_at)
+                except Exception as ex:
+                    emit('counterfactual_lab_error',asset=asset,horizon=horizon,error=f'{type(ex).__name__}: {ex}')
                 entity_key = f'{cycle_id}:{asset}:{horizon}'
                 with db() as c:
                     cur = c.execute('INSERT INTO market_states(ts,asset,horizon,features,source_times) VALUES(?,?,?,?,?)',
@@ -5356,14 +6659,14 @@ def cycle():
                      'signal_tier':signal_tier,'execution_signal_tier':execution_signal_tier,
                      'event_shadow_score':event_shadow.get('score',0.0),
                      'causal_score':causal_shadow.get('score'),'causal_label':causal_shadow.get('label'),
-                     'tactical_reversal':tactical_reversal,'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structural_levels':f.get('structural_levels') or {},
+                     'tactical_reversal':tactical_reversal,'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structure_breakout_grid':f.get('structure_breakout_grid') or {},'structural_levels':f.get('structural_levels') or {},
                      'sma18':f.get('sma18'),'sma50':f.get('sma50'),'support_level':f.get('support_level'),'resistance_level':f.get('resistance_level')}
-                summary.append(z)
+                summary.append(_v90_compact_live_row(z))
                 try:
                     maybe_create_alert(entity_key, asset, horizon, dec, conf, score, f['regime'], kmatches)
                 except Exception as ae:
                     emit('alert_error', asset=asset, horizon=horizon, error=f'{type(ae).__name__}: {ae}')
-                emit('decision', **z, durable=pg_enabled())
+                emit('decision', **_v90_compact_decision_log(z), durable=pg_enabled())
                 h_elapsed=time.time()-horizon_wall_t0
                 horizon_timings[horizon]=horizon_timings.get(horizon,0.0)+h_elapsed
                 asset_timings[asset]['horizons']+=h_elapsed
@@ -5375,8 +6678,32 @@ def cycle():
             err = {'asset': asset, 'error': f'{type(e).__name__}: {e}'}
             errors.append(err)
             emit('asset_error', **err)
+        finally:
+            try:
+                market_bundles.pop(asset,None)
+            except Exception:
+                pass
+            _v90_trim_memory('asset_'+str(asset),force=False)
+
+    # R18 continuity: every lane begins from the last valid matrix.
+    # Fresh cells overwrite old cells; failed/missing cells retain the latest valid value.
+    fresh_summary=list(summary)
+    with lock:
+        _carry=[dict(x) for x in (last_cycle.get('summary') or [])]
+    _merged={(str(x.get('asset') or ''),str(x.get('horizon') or '')):x for x in _carry
+             if x.get('asset') and x.get('horizon')}
+    for _x in fresh_summary:
+        _x=dict(_x)
+        _x['snapshot_stale']=False
+        _merged[(str(_x.get('asset') or ''),str(_x.get('horizon') or ''))]=_x
+    _fresh_keys={(str(x.get('asset') or ''),str(x.get('horizon') or '')) for x in fresh_summary}
+    for _k,_x in list(_merged.items()):
+        if _k not in _fresh_keys:
+            _x=dict(_x); _x['snapshot_stale']=True; _merged[_k]=_x
+    summary=[_merged[k] for k in sorted(_merged,key=lambda z:(DISPLAY_ASSETS.index(z[0]) if z[0] in DISPLAY_ASSETS else 999,
+                                                            ('5m','1h','4h','1d','3d','7d').index(z[1]) if z[1] in ('5m','1h','4h','1d','3d','7d') else 999))]
     storage = pg_storage_status()
-    expected = len(ASSETS)*len(HORIZONS)
+    expected = len(ASSETS)*len(selected_horizons)
     if made == expected and (not pg_enabled() or storage.get('ok')):
         status = 'ok'
     elif made:
@@ -5405,7 +6732,7 @@ def cycle():
                 emit=lambda event, **kw: emit(event, **kw))
         except Exception as ex:
             portfolio_autopilot={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
-            emit('portfolio_autopilot_error',error=portfolio_autopilot['error'])
+            emit('portfolio_autopilot_error',error=portfolio_autopilot['error'],trace=traceback.format_exc(limit=12))
     if pg_enabled():
         for mx in meta_cio.get('items',[]):
             try:
@@ -5413,8 +6740,10 @@ def cycle():
                          mx.get('asset'),mx.get('horizon'),now())
             except Exception as ex:
                 emit('meta_signal_persist_error',error=f'{type(ex).__name__}: {ex}')
+    _v90_pg_batch_written=_v90_pg_batch_flush()
     elapsed_seconds=time.time()-cycle_wall_t0
     phase_seconds['decision_total']=decision_seconds; phase_seconds['trade_alerts']=trade_alert_seconds; phase_seconds['meta_cio']=meta_seconds
+    phase_seconds['pg_batch_events']=float(_v90_pg_batch_written)
     slowest_assets=sorted(({'asset':a,**{k:round(float(v),4) for k,v in t.items()}} for a,t in asset_timings.items()),key=lambda x:x.get('total',0),reverse=True)[:6]
     telemetry={'elapsed_seconds':round(elapsed_seconds,3),'pre_decision_seconds':round(pre_decision_seconds,3),
                'decision_seconds':round(decision_seconds,3),'trade_alert_seconds':round(trade_alert_seconds,3),
@@ -5435,7 +6764,9 @@ def cycle():
         if len(cycle_telemetry_history)>CYCLE_TELEMETRY_HISTORY_LIMIT:
             del cycle_telemetry_history[:-CYCLE_TELEMETRY_HISTORY_LIMIT]
     state = {'status': status, 'at': now(), 'version': VERSION, 'decisions_written': made,
-             'outcomes_written': outcomes, 'summary': summary, 'trade_alerts_written':len(trade_alerts), 'trade_lifecycle_sync':lifecycle_sync, 'meta_cio':meta_cio,'meta_alerts_written':meta_alerts,
+             'outcomes_written': outcomes, 'summary': list(summary),
+             'cycle_mode':cycle_mode,'updated_horizons':list(selected_horizons),
+             'signal_cells':len(summary), 'trade_alerts_written':len(trade_alerts), 'trade_lifecycle_sync':lifecycle_sync, 'meta_cio':meta_cio,'meta_alerts_written':meta_alerts,
              'errors': errors,'source_quality':cycle_source_quality,
              'storage': storage, 'agent_learning': 'shadow_until_n>=30',
              'knowledge_learning': rule_learning,'event_learning':event_learning,
@@ -5443,26 +6774,61 @@ def cycle():
              'telemetry':telemetry,'knowledge': knowledge_summary(),'portfolio_autopilot':portfolio_autopilot}
     with lock:
         last_cycle.clear(); last_cycle.update(state)
+    try:
+        summary.clear()
+        market_bundles.clear()
+    except Exception:
+        pass
+    _v90_trim_memory('cycle_end',force=True)
     emit('cycle_complete', decisions_written=made, outcomes_written=outcomes, status=status,
          durable_storage=storage.get('ok', False),**telemetry)
     if pg_enabled():
         save_product_snapshot()
-    # Learning refresh happens only after the latency-sensitive decision snapshot is complete.
-    if outcomes or heavy_learning_due():
-        maybe_schedule_heavy_learning('new_outcomes' if outcomes else 'interval_due')
+    # Historical outcome downloads run after the decision snapshot and never delay 5m entries.
+    if cycle_mode=='FULL':
+        _v90_schedule_outcome_refresh('full_cycle_complete')
+        # Deep rule/event learning remains off the fast lane.
+        if heavy_learning_due():
+            maybe_schedule_heavy_learning('interval_due')
+
+V90_FAST_5M_INTERVAL_SECONDS=max(45,int(os.getenv('VERITAS_FAST_5M_INTERVAL_SECONDS','60')))
+V90_FULL_CYCLE_INTERVAL_SECONDS=max(240,int(os.getenv('VERITAS_FULL_CYCLE_INTERVAL_SECONDS',str(INTERVAL))))
 
 def loop():
+    next_full=time.monotonic()
+    next_fast=time.monotonic()
     while True:
+        now_m=time.monotonic()
+        mode='IDLE'
         try:
-            cycle()
+            if now_m>=next_full:
+                mode='FULL'
+                cycle(None,'FULL')
+                base=now_m
+                next_full=base+V90_FULL_CYCLE_INTERVAL_SECONDS
+                if next_fast<=base:
+                    next_fast=base+V90_FAST_5M_INTERVAL_SECONDS
+            elif now_m>=next_fast:
+                mode='FAST_5M'
+                cycle(('5m',),'FAST_5M')
+                while next_fast<=now_m:
+                    next_fast+=V90_FAST_5M_INTERVAL_SECONDS
+            else:
+                time.sleep(max(0.5,min(5.0,min(next_fast,next_full)-now_m)))
+                continue
         except Exception as e:
-            err = {'status': 'error', 'at': now(), 'version': VERSION, 'error': f'{type(e).__name__}: {e}'}
+            err={'status':'error','at':now(),'version':VERSION,'cycle_mode':mode,
+                 'error':f'{type(e).__name__}: {e}'}
             with lock:
-                last_cycle.clear(); last_cycle.update(err)
-            emit('cycle_error', error=err['error'], trace=traceback.format_exc(limit=3))
-        time.sleep(INTERVAL)
-
-
+                if last_cycle.get('summary'):
+                    last_cycle['last_cycle_error']=err
+                else:
+                    last_cycle.clear(); last_cycle.update(err)
+            emit('cycle_error',cycle_mode=mode,error=err['error'],trace=traceback.format_exc(limit=3))
+            if mode=='FULL':
+                next_full=time.monotonic()+30
+            elif mode=='FAST_5M':
+                next_fast=time.monotonic()+15
 def _historical_rules():
     _, rules = all_knowledge()
     out = []
@@ -5487,7 +6853,8 @@ def _fetch_ndx_history(days):
 
 def _fetch_history(symbol, days):
     end=int(time.time())
-    if symbol=='NDX': return _fetch_ndx_history(days)
+    if symbol=='NQ':
+        d=min(int(days),NDX_BACKTEST_DAYS); return _yahoo_between('NQ%3DF',end-d*86400,end,'1h')
     if symbol=='BRENT':
         d=min(int(days),COMMODITY_BACKTEST_DAYS); return _yahoo_between('BZ%3DF',end-d*86400,end,'1h')
     if symbol=='GOLD':
@@ -5591,6 +6958,8 @@ def run_bootstrap_backtest(reason='manual'):
                 raw=_raw_from_history(rows,idx); raw['asset']=asset; raw['source_gate_pass']=True; raw['market_open']=True
                 entry=float(raw['price'])
                 for horizon,hh in HORIZONS.items():
+                    if horizon=='5m':
+                        continue
                     bars_h=horizon_bars(asset,horizon)
                     stride=max(BACKTEST_SAMPLE_STEP_HOURS,bars_h)
                     if (idx-240)%stride!=0:
@@ -5805,7 +7174,6 @@ def run_bootstrap_backtest(reason='manual'):
     finally:
         backtest_lock.release()
 
-
 def backtest_status():
     out=dict(backtest_state); out.update({'enabled':BACKTEST_ENABLED,'days':BACKTEST_DAYS,'sample_step_hours':BACKTEST_SAMPLE_STEP_HOURS,'auto_refresh_hours':BACKTEST_REFRESH_HOURS,'promotion_from_backtest':False})
     if pg_enabled():
@@ -6015,7 +7383,7 @@ def expected_move_estimate(asset,horizon,f,direction,analog=None):
         e=max(0.0,0.50*float(row.get('mean_signed_return') or 0)+0.50*float(row.get('median_signed_return') or 0))
         return {'expected_move_pct':e,'method':'realized_analog','n':row['n'],'hit_rate':row.get('hit_rate'),'qualified':True}
     # Conservative technical projection while the analog sample is building. It is explicitly not a calibrated probability.
-    sig=float(ti.get('sigma_1h') or 0.0); strength=max(float(ti.get('onset_score') or 0),float(ti.get('impulse_score') or 0),float(st.get('score') or 0))
+    sig=float((ti.get('sigma_5m') if horizon=='5m' else ti.get('sigma_1h')) or 0.0); strength=max(float(ti.get('onset_score') or 0),float(ti.get('impulse_score') or 0),float(st.get('score') or 0))
     hb=max(1,horizon_bars(asset,horizon)); vol_room=sig*math.sqrt(min(hb,8))*clip(0.65+0.70*strength,0.65,1.25)
     technical_room=float(st.get('continuation_room_pct') or 0.0)
     e=max(0.0,min(0.05,max(vol_room,technical_room)))
@@ -6130,6 +7498,120 @@ def _quantile_simple(vals,q):
     return a[lo]*(hi-pos)+a[hi]*(pos-lo)
 
 
+
+def _v75_trade_metrics(vals):
+    a=[float(x) for x in vals if x is not None and math.isfinite(float(x))]
+    n=len(a)
+    if not n:
+        return {'n':0,'hit_rate':None,'avg_return':None,'profit_factor':None,'max_drawdown':None,'score':None}
+    wins=[x for x in a if x>0]; losses=[x for x in a if x<0]
+    hit=len(wins)/n; avg=sum(a)/n
+    gw=sum(wins); gl=abs(sum(losses))
+    pf=(gw/gl) if gl>1e-12 else (9.99 if gw>0 else 0.0)
+    eq=peak=maxdd=0.0
+    for r in a:
+        eq+=r; peak=max(peak,eq); maxdd=max(maxdd,peak-eq)
+    score=(avg*10000.0)+8.0*math.log(max(0.20,pf))+12.0*(hit-0.50)-80.0*maxdd
+    return {'n':n,'hit_rate':hit,'avg_return':avg,'profit_factor':pf,
+            'max_drawdown':maxdd,'total_return_arithmetic':sum(a),'score':score}
+
+def _v75_param_pass(r,param):
+    if str(r.get('research_decision') or '') not in ('LONG','SHORT'): return False
+    if float(r.get('confidence') or 0.0)<param['confidence_min']: return False
+    if float(r.get('onset_score') or 0.0)<param['onset_min']: return False
+    if float(r.get('structure_score') or 0.0)<param['structure_min']: return False
+    if float(r.get('session_efficiency') or 0.0)<param['efficiency_min']: return False
+    if param['volume_min']>0 and float(r.get('relative_volume') or 0.0)<param['volume_min']: return False
+    return True
+
+def _v75_signed_net(r):
+    fr=r.get('forward_return'); d=str(r.get('research_decision') or '')
+    if fr is None or d not in ('LONG','SHORT'): return None
+    gross=float(fr) if d=='LONG' else -float(fr)
+    return gross-BACKTEST_COST_BPS/10000.0
+
+def v75_parameter_lab(asset=None,horizon=None,force=False):
+    cache=getattr(v75_parameter_lab,'_cache',None); key=(asset,horizon)
+    if cache and not force and time.time()-cache[0]<V75_PARAMETER_LAB_CACHE_SECONDS and cache[1]==key:
+        return cache[2]
+
+    rows=list(reversed(_decision_memory_rows(force)))
+    if asset: rows=[x for x in rows if x.get('asset')==asset]
+    if horizon: rows=[x for x in rows if x.get('horizon')==horizon]
+    rows=[x for x in rows if x.get('forward_return') is not None and str(x.get('research_decision') or '') in ('LONG','SHORT')]
+    n=len(rows)
+    if n<40:
+        out={'status':'BUILDING','n':n,'asset':asset,'horizon':horizon,
+             'reason':'need_at_least_40_completed_directional_episodes',
+             'vault_used_for_selection':False,'automatic_champion_promotion':False}
+        v75_parameter_lab._cache=(time.time(),key,out); return out
+
+    i1=max(1,int(n*0.55)); i2=max(i1+1,int(n*0.85))
+    IS,OOS,VAULT=rows[:i1],rows[i1:i2],rows[i2:]
+    base_oos=_v75_trade_metrics([_v75_signed_net(x) for x in OOS])
+    base_vault=_v75_trade_metrics([_v75_signed_net(x) for x in VAULT])
+
+    grid=[]
+    for conf in V75_CONF_GRID:
+      for onset in V75_ONSET_GRID:
+       for struct in V75_STRUCTURE_GRID:
+        for eff in V75_EFFICIENCY_GRID:
+         for vol in V75_VOLUME_GRID:
+            q={'confidence_min':conf,'onset_min':onset,'structure_min':struct,'efficiency_min':eff,'volume_min':vol}
+            im=_v75_trade_metrics([_v75_signed_net(x) for x in IS if _v75_param_pass(x,q)])
+            om=_v75_trade_metrics([_v75_signed_net(x) for x in OOS if _v75_param_pass(x,q)])
+            if im['n']<20 or om['n']<V75_MIN_OOS_N: continue
+            if (im.get('avg_return') or 0)<=0 or (om.get('avg_return') or 0)<=0: continue
+            grid.append({'params':q,'is':im,'oos':om})
+
+    grid.sort(key=lambda x:(float(x['oos'].get('score') or -1e9),float(x['is'].get('score') or -1e9)),reverse=True)
+    selected=dict(grid[0]) if grid else None
+
+    if selected:
+        q=selected['params']
+        vm=_v75_trade_metrics([_v75_signed_net(x) for x in VAULT if _v75_param_pass(x,q)])
+        selected['vault']=vm
+        families={'confidence_min':V75_CONF_GRID,'onset_min':V75_ONSET_GRID,'structure_min':V75_STRUCTURE_GRID,
+                  'efficiency_min':V75_EFFICIENCY_GRID,'volume_min':V75_VOLUME_GRID}
+        neighbors=[]
+        for name,vals in families.items():
+            idx=vals.index(q[name])
+            for j in (idx-1,idx+1):
+                if 0<=j<len(vals):
+                    qq=dict(q); qq[name]=vals[j]
+                    m=_v75_trade_metrics([_v75_signed_net(x) for x in OOS if _v75_param_pass(x,qq)])
+                    if m['n']>=V75_MIN_OOS_N: neighbors.append({'changed':name,'value':vals[j],'oos':m})
+        good=sum(1 for z in neighbors if (z['oos'].get('avg_return') or 0)>0 and (z['oos'].get('profit_factor') or 0)>=1.0)
+        stability=good/len(neighbors) if neighbors else 0.0
+        om=selected['oos']
+        oos_pass=bool(om['n']>=V75_MIN_OOS_N and (om.get('avg_return') or 0)>0 and (om.get('profit_factor') or 0)>=V75_MIN_PF)
+        vault_pass=bool(vm['n']>=V75_MIN_VAULT_N and (vm.get('avg_return') or 0)>0 and (vm.get('profit_factor') or 0)>=V75_MIN_VAULT_PF)
+        improved=bool((om.get('avg_return') or -999)>(base_oos.get('avg_return') or -999) and
+                      (om.get('profit_factor') or 0)>=(base_oos.get('profit_factor') or 0))
+        selected['stability']={'neighbor_pass_share':stability,'neighbors':neighbors}
+        selected['oos_pass']=oos_pass; selected['vault_pass']=vault_pass; selected['baseline_improved']=improved
+        selected['promotion_status']='ROBUST_CHALLENGER' if (oos_pass and vault_pass and improved and stability>=0.60) else 'RESEARCH_ONLY'
+
+    out={'status':'MEASURABLE' if selected else 'NO_ROBUST_CANDIDATE','asset':asset,'horizon':horizon,'n':n,
+         'split':{'is_n':len(IS),'oos_n':len(OOS),'vault_n':len(VAULT),'is_share':0.55,'oos_share':0.30,'vault_share':0.15},
+         'baseline':{'oos':base_oos,'vault':base_vault},'selected':selected,'top_candidates':grid[:10],
+         'vault_used_for_selection':False,'automatic_champion_promotion':False,
+         'definition':'Candidate selected on chronological IS/OOS only; untouched VAULT is acceptance test; local neighbor stability required; costs deducted.',
+         'limitation':'Optimizes admission filters among historical directional decisions; missed NO_TRADE signals require the separate historical rule backtest.'}
+    v75_parameter_lab._cache=(time.time(),key,out); return out
+
+def v75_asset_parameter_board():
+    items=[]
+    for asset in DISPLAY_ASSETS:
+        for h in HORIZONS:
+            z=v75_parameter_lab(asset,h); s=z.get('selected') or {}
+            if z.get('status')=='MEASURABLE' or s:
+                items.append({'asset':asset,'horizon':h,'status':z.get('status'),'promotion_status':s.get('promotion_status'),
+                              'params':s.get('params'),'oos':s.get('oos'),'vault':s.get('vault'),
+                              'stability':s.get('stability'),'baseline':z.get('baseline')})
+    return {'version':VERSION,'items':items,
+            'promotion_policy':'Only ROBUST_CHALLENGER may be considered for champion promotion; no automatic parameter rewrite.'}
+
 def tradeability_analog_stats(asset,horizon,f,direction):
     """Estimate P(positive trade over the requested horizon) from nearest historical market states.
     This is a shadow evidence layer: it does not override the champion until separately validated.
@@ -6182,6 +7664,1196 @@ def tradeability_analog_stats(asset,horizon,f,direction):
             'median_favorable_excursion':_quantile_simple(favorable,0.5),'p80_adverse_excursion':_quantile_simple(adverse,0.80),
             'same_horizon_cross_asset_transfer':True,'nearest':compact,'decision_influence':False,
             'definition':'Nearest pre-decision states only; Bayesian shrinkage; current direction applied to realized forward return.'}
+
+
+
+# =========================
+# VERITAS v81-v84 ADAPTIVE EXPERIENCE EXECUTION
+# v81: outcome learning + error attribution + rejected signals
+# v82: hierarchical setup memory
+# v83: regime-conditioned adaptive policy
+# v84: entry / stop / exit optimization
+# =========================
+
+EXPERIENCE_MIN_SIZE_N = max(6, int(os.getenv('VERITAS_EXPERIENCE_MIN_SIZE_N','8')))
+EXPERIENCE_MIN_EXEC_N = max(12, int(os.getenv('VERITAS_EXPERIENCE_MIN_EXEC_N','20')))
+EXPERIENCE_MIN_WEIGHT_N = max(20, int(os.getenv('VERITAS_EXPERIENCE_MIN_WEIGHT_N','40')))
+EXPERIENCE_DECAY_HALF_LIFE_DAYS = max(30.0, float(os.getenv('VERITAS_EXPERIENCE_DECAY_HALF_LIFE_DAYS','90')))
+EXPERIENCE_MAX_EVENTS = max(500, min(20000, int(os.getenv('VERITAS_EXPERIENCE_MAX_EVENTS','6000'))))
+SETUP_MEMORY_CACHE_SECONDS = max(300, int(os.getenv('VERITAS_SETUP_MEMORY_CACHE_SECONDS','3600')))
+V84_DIRECTION_PRIOR_CAP = min(0.03, max(0.005, float(os.getenv('VERITAS_V84_DIRECTION_PRIOR_CAP','0.025'))))
+V84_STOP_WIDEN_CAP = min(1.40, max(1.0, float(os.getenv('VERITAS_V84_STOP_WIDEN_CAP','1.30'))))
+
+
+def _v84_json(x):
+    if isinstance(x,dict): return x
+    if not x: return {}
+    try: return json.loads(x)
+    except Exception: return {}
+
+
+def _v84_setup_family(row=None, plan=None):
+    row=row or {}
+    plan=plan or row.get('trade_plan') or {}
+    piv=row.get('impulse_pivot_break') or {}
+    rev=row.get('tactical_reversal') or {}
+    rng=row.get('range_retest_breakout') or {}
+    bq=(row.get('institutional_signal') or {}).get('breakout_quality') or {}
+    if piv.get('active'): return 'IMPULSE_PIVOT_BREAK'
+    if rev.get('active'): return 'TACTICAL_REVERSAL'
+    if rng.get('active'): return 'RANGE_RETEST_BREAKOUT'
+    if str(bq.get('state') or '') in ('EARLY_BREAKOUT','CONFIRMED_BREAKOUT'): return 'BREAKOUT'
+    if str(plan.get('regime_shift_state') or '') in ('NEW_REGIME_PROVISIONAL','NEW_REGIME_ACCEPTED'): return 'REGIME_SHIFT'
+    return 'TREND'
+
+
+def _v84_entry_state(row=None, plan=None):
+    row=row or {}
+    plan=plan or row.get('trade_plan') or {}
+    eq=str(plan.get('entry_quality') or row.get('entry_quality') or '')
+    life=str(plan.get('structure_lifecycle') or '')
+    rng=row.get('range_retest_breakout') or {}
+    if rng.get('active') and str(rng.get('state') or '')=='RETEST_ENTRY': return 'RETEST'
+    if 'LATE' in eq or plan.get('late_entry'): return 'LATE'
+    if 'BREAKOUT' in eq or plan.get('fresh_breakout'): return 'BREAKOUT'
+    if life in ('CONFIRMATION','EXTENSION') or 'CONFIRMED' in eq: return 'CONFIRMED'
+    if life in ('EARLY','APPROACH') or 'EARLY' in eq: return 'EARLY'
+    return 'NORMAL'
+
+
+def _v84_regime_bucket(row=None, plan=None):
+    row=row or {}
+    plan=plan or row.get('trade_plan') or {}
+    rg=str(row.get('regime') or plan.get('regime') or 'UNKNOWN').upper()
+    shift=str(plan.get('regime_shift_state') or '').upper()
+    if shift in ('NEW_REGIME_PROVISIONAL','TRANSITION','OLD_REGIME_WEAKENING') or 'TRANSITION' in rg:
+        return 'TRANSITION'
+    if 'PANIC' in rg or 'STRESS' in rg or 'HIGH_VOL' in rg:
+        if 'RANGE' in rg: return 'HIGH_VOL_RANGE'
+        return 'HIGH_VOL_TREND'
+    if 'RANGE' in rg or 'MEAN_REVERT' in rg: return 'RANGE'
+    if 'UPTREND' in rg or 'DOWNTREND' in rg or 'TREND' in rg: return 'TREND'
+    return 'ADAPTIVE'
+
+
+def _v84_horizon_state(row=None):
+    row=row or {}
+    hs=row.get('horizon_structure') or {}
+    return str(hs.get('state') or 'UNKNOWN')
+
+
+def _v84_event_weight(ts, base=1.0):
+    now_dt=datetime.now(timezone.utc)
+    if isinstance(ts,str):
+        try: ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
+        except Exception: ts=None
+    if ts is not None and getattr(ts,'tzinfo',None) is None:
+        ts=ts.replace(tzinfo=timezone.utc)
+    age=max(0.0,(now_dt-ts).total_seconds()/86400.0) if ts is not None else 0.0
+    return float(base)*math.exp(-math.log(2.0)*age/EXPERIENCE_DECAY_HALF_LIFE_DAYS)
+
+
+def experience_direction_prior(asset,horizon,f):
+    # Bounded analog prior. It refines marginal scores but never bypasses hard gates.
+    try:
+        row=tradeability_analog_stats(asset,horizon,f,'LONG')
+        n=int(row.get('raw_n') or 0); en=float(row.get('effective_n') or 0.0)
+        p=row.get('positive_trade_probability')
+        if p is None or n<TRADEABILITY_MIN_RAW_N or en<TRADEABILITY_MIN_EFFECTIVE_N:
+            return {'status':'BUILDING','decision_influence':False,'score_adjustment':0.0,
+                    'raw_n':n,'effective_n':en,'p_long':p}
+        p=float(p)
+        adj=clip((p-0.50)*0.16,-V84_DIRECTION_PRIOR_CAP,V84_DIRECTION_PRIOR_CAP)
+        return {'status':'ACTIVE','decision_influence':True,'score_adjustment':round(adj,5),
+                'raw_n':n,'effective_n':round(en,2),'p_long':round(p,4),
+                'principle':'bounded analog prior; hard gates remain absolute'}
+    except Exception as ex:
+        return {'status':'ERROR','decision_influence':False,'score_adjustment':0.0,
+                'error':f'{type(ex).__name__}: {ex}'}
+
+
+def refresh_experience_lessons(limit=400):
+    # Persist canonical trade lessons, rejected directional signals and abstentions.
+    if not pg_enabled():
+        return {'status':'POSTGRES_REQUIRED','trade_lessons':0,'rejected_lessons':0,'abstention_lessons':0}
+    limit=max(50,min(1500,int(limit)))
+    trade_lessons=rejected_lessons=abstention_lessons=0
+    errors=[]
+
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT t.trade_id,t.setup_id,t.asset,t.horizon,t.direction,t.status,
+                                     t.created_at,t.closed_at,t.total_pnl_fraction,t.high_price,t.low_price,
+                                     t.avg_entry_price,t.stop_price,t.add_count,t.reduce_count,
+                                     s.payload setup_payload,
+                                     d.entity_key,d.payload decision_payload,o.payload outcome_payload
+                              FROM shadow_trades t
+                              JOIN trade_setups s ON s.setup_id=t.setup_id
+                              LEFT JOIN LATERAL (
+                                SELECT entity_key,payload FROM ledger_events
+                                WHERE event_type='decision' AND asset=t.asset AND horizon=t.horizon
+                                  AND event_ts<=t.created_at
+                                ORDER BY event_ts DESC LIMIT 1
+                              ) d ON TRUE
+                              LEFT JOIN ledger_events o
+                                ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                              WHERE t.status<>'ACTIVE' AND t.total_pnl_fraction IS NOT NULL
+                              ORDER BY t.closed_at DESC NULLS LAST LIMIT %s""",(limit,)).fetchall()
+        for rr in rows:
+            x=dict(rr)
+            sp=_v84_json(x.get('setup_payload')); dp=_v84_json(x.get('decision_payload')); op=_v84_json(x.get('outcome_payload'))
+            pnl=float(x.get('total_pnl_fraction') or 0.0)
+            fr=op.get('forward_return')
+            sr=None if fr is None else (float(fr) if x['direction']=='LONG' else -float(fr))
+            rowctx={**(dp.get('features') or {}),**dp}
+            plan=dp.get('trade_plan') or sp
+            family=str(sp.get('setup_family') or _v84_setup_family(rowctx,plan))
+            regime=_v84_regime_bucket(rowctx,plan)
+            entry_state=_v84_entry_state(rowctx,plan)
+            hstate=_v84_horizon_state(rowctx)
+
+            if pnl>0:
+                label='GOOD_EXECUTION' if sr is None or sr>=0 else 'TACTICAL_WIN_AGAINST_HORIZON'
+            elif sr is not None and sr<0:
+                label='DIRECTION_ERROR'
+            elif sr is not None and sr>0 and str(x.get('status'))=='STOP':
+                label='RIGHT_DIRECTION_STOP_ERROR'
+            elif sr is not None and sr>0 and entry_state=='LATE':
+                label='RIGHT_DIRECTION_LATE_ENTRY'
+            elif sr is not None and sr>0 and str(x.get('status') or '') in ('EXIT','CLOSED'):
+                label='RIGHT_DIRECTION_PREMATURE_EXIT'
+            elif sr is not None and sr>0:
+                label='RIGHT_DIRECTION_EXECUTION_ERROR'
+            else:
+                label='NEGATIVE_EXECUTION'
+
+            entry=float(x.get('avg_entry_price') or 0.0)
+            high=x.get('high_price'); low=x.get('low_price')
+            mfe_trade=mae_trade=None
+            if entry>0 and high is not None and low is not None:
+                if x['direction']=='LONG':
+                    mfe_trade=float(high)/entry-1; mae_trade=float(low)/entry-1
+                else:
+                    mfe_trade=entry/float(low)-1 if float(low)>0 else None
+                    mae_trade=entry/float(high)-1 if float(high)>0 else None
+
+            payload={
+                'trade_id':x['trade_id'],'setup_id':x.get('setup_id'),
+                'setup_family':family,'regime_bucket':regime,'entry_state':entry_state,
+                'horizon_state':hstate,'direction':x['direction'],'label':label,
+                'profitable':bool(pnl>0),'actual_pnl_fraction':pnl,
+                'horizon_signed_return':sr,'outcome_mfe':op.get('mfe'),'outcome_mae':op.get('mae'),
+                'trade_mfe':mfe_trade,'trade_mae':mae_trade,
+                'add_count':int(x.get('add_count') or 0),'reduce_count':int(x.get('reduce_count') or 0),
+                'counterfactual_no_trade_utility':0.0,
+                'counterfactual_horizon_utility':sr,
+                'counterfactual_supported':['NO_TRADE','HOLD_TO_HORIZON'] if sr is not None else ['NO_TRADE'],
+                'counterfactual_not_identifiable':['DELAYED_ENTRY_WITH_PATH_ORDER','ALTERNATE_STOP_WITH_PATH_ORDER'],
+                'source':'CANONICAL_SHADOW_TRADE','learning_weight':1.0,
+            }
+            if pg_event('experience_lesson',x['trade_id'],payload,x['asset'],x['horizon'],x.get('closed_at') or now()):
+                trade_lessons+=1
+    except Exception as ex:
+        errors.append(f'trades:{type(ex).__name__}:{ex}')
+
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT d.entity_key,d.event_ts,d.asset,d.horizon,d.payload dp,o.payload op
+                              FROM ledger_events d
+                              JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                              WHERE d.event_type='decision'
+                              ORDER BY d.event_ts DESC LIMIT %s""",(limit*5,)).fetchall()
+        for rr in rows:
+            x=dict(rr); dp=_v84_json(x.get('dp')); op=_v84_json(x.get('op'))
+            research=str(dp.get('research_decision') or dp.get('decision') or 'NO_TRADE')
+            executed=str(dp.get('decision') or 'NO_TRADE')
+            fr=op.get('forward_return')
+            if fr is None: continue
+            fr=float(fr)
+
+            if research in ('LONG','SHORT') and executed not in ('LONG','SHORT'):
+                elig=dp.get('execution_eligibility') or {}; plan=dp.get('trade_plan') or {}
+                hard_veto=bool(
+                    (elig and not bool(elig.get('eligible',True))) or
+                    ((plan.get('trade_integrity') or {}).get('hard_invalidation')) or
+                    (((plan.get('rule_arbitration') or {}).get('hard_veto') or {}).get('decision')=='VETO')
+                )
+                sr=fr if research=='LONG' else -fr
+                significant=abs(fr)>=_no_trade_miss_threshold(x.get('horizon'))
+                label='REJECTED_WINNER' if sr>0 and significant else (
+                      'REJECTED_LOSER' if sr<0 and significant else 'REJECTED_NEUTRAL')
+                rowctx={**(dp.get('features') or {}),**dp}
+                payload={
+                    'direction':research,'label':label,'signed_return':sr,
+                    'setup_family':_v84_setup_family(rowctx,plan),
+                    'regime_bucket':_v84_regime_bucket(rowctx,plan),
+                    'entry_state':_v84_entry_state(rowctx,plan),
+                    'horizon_state':_v84_horizon_state(rowctx),
+                    'hard_gate':hard_veto,
+                    'learning_weight':0.0 if hard_veto else 1.0,
+                    'execution_eligibility':elig,'reason':plan.get('reason'),
+                    'source':'REJECTED_DIRECTIONAL_SIGNAL'
+                }
+                if pg_event('rejected_signal_lesson',x['entity_key'],payload,x['asset'],x['horizon'],x.get('event_ts') or now()):
+                    rejected_lessons+=1
+
+            if research=='NO_TRADE':
+                th=_no_trade_miss_threshold(x.get('horizon'))
+                label='GOOD_ABSTENTION' if abs(fr)<th else 'MISSED_LARGE_MOVE'
+                payload={'label':label,'forward_return':fr,'threshold':th,
+                         'learning_weight':0.5,'source':'ABSTENTION_OUTCOME'}
+                if pg_event('abstention_lesson',x['entity_key'],payload,x['asset'],x['horizon'],x.get('event_ts') or now()):
+                    abstention_lessons+=1
+    except Exception as ex:
+        errors.append(f'decisions:{type(ex).__name__}:{ex}')
+
+    if (trade_lessons+rejected_lessons+abstention_lessons)>0:
+        try:
+            setup_memory_board._cache=None
+        except Exception:
+            pass
+    return {'status':'OK' if not errors else 'DEGRADED',
+            'trade_lessons':trade_lessons,'rejected_lessons':rejected_lessons,
+            'abstention_lessons':abstention_lessons,'errors':errors}
+
+
+def setup_memory_board(force=False):
+    # Hierarchical setup memory. Exact states get most weight, broad families provide shrinkage.
+    cache=getattr(setup_memory_board,'_cache',None)
+    if cache and not force and time.time()-cache[0] < SETUP_MEMORY_CACHE_SECONDS:
+        return cache[1]
+    if not pg_enabled():
+        return {'status':'POSTGRES_REQUIRED','items':[]}
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT event_type,event_ts,asset,horizon,payload
+                              FROM ledger_events
+                              WHERE event_type IN ('experience_lesson','rejected_signal_lesson')
+                              ORDER BY event_ts DESC LIMIT %s""",(EXPERIENCE_MAX_EVENTS,)).fetchall()
+    except Exception as ex:
+        return {'status':'ERROR','items':[],'error':f'{type(ex).__name__}: {ex}'}
+
+    buckets={}
+    def touch(key):
+        return buckets.setdefault(key,{'n':0,'w':0.0,'wins':0.0,'pnl':0.0,'stop_err':0.0,
+                                       'dir_err':0.0,'late_err':0.0,'good':0.0,
+                                       'rej_win':0.0,'rej_loss':0.0,'rej_n':0})
+
+    for rr in rows:
+        x=dict(rr); p=_v84_json(x.get('payload'))
+        d=str(p.get('direction') or 'NO_TRADE')
+        if d not in ('LONG','SHORT'): continue
+        fam=str(p.get('setup_family') or 'UNKNOWN')
+        reg=str(p.get('regime_bucket') or 'ADAPTIVE')
+        ent=str(p.get('entry_state') or 'NORMAL')
+        asset=str(x.get('asset')); h=str(x.get('horizon'))
+        base=float(p.get('learning_weight',1.0) or 0.0)
+        w=_v84_event_weight(x.get('event_ts'),base)
+        if w<=0: continue
+
+        keys=[
+            ('EXACT',asset,h,fam,d,reg,ent),
+            ('ASSET_FAMILY',asset,h,fam,d,'*','*'),
+            ('REGIME_FAMILY','*',h,fam,d,reg,'*'),
+            ('FAMILY','*',h,fam,d,'*','*'),
+        ]
+        for key in keys:
+            z=touch(key)
+            if x.get('event_type')=='experience_lesson':
+                z['n']+=1; z['w']+=w
+                if p.get('profitable'): z['wins']+=w
+                z['pnl']+=w*float(p.get('actual_pnl_fraction') or 0.0)
+                label=str(p.get('label') or '')
+                if label=='RIGHT_DIRECTION_STOP_ERROR': z['stop_err']+=w
+                if label=='DIRECTION_ERROR': z['dir_err']+=w
+                if label=='RIGHT_DIRECTION_LATE_ENTRY': z['late_err']+=w
+                if label.startswith('GOOD_') or label=='TACTICAL_WIN_AGAINST_HORIZON': z['good']+=w
+            else:
+                z['rej_n']+=1
+                if p.get('label')=='REJECTED_WINNER': z['rej_win']+=w
+                elif p.get('label')=='REJECTED_LOSER': z['rej_loss']+=w
+
+    items=[]
+    for key,z in buckets.items():
+        level,asset,h,fam,d,reg,ent=key
+        en=float(z['w']); n=int(z['n'])
+        pwin=(z['wins']+5.0)/(en+10.0) if en>0 else None
+        rden=z['rej_win']+z['rej_loss']
+        items.append({
+            'level':level,'asset':asset,'horizon':h,'setup_family':fam,'direction':d,
+            'regime_bucket':reg,'entry_state':ent,'n':n,'effective_n':round(en,2),
+            'posterior_win_rate':None if pwin is None else round(pwin,4),
+            'weighted_avg_pnl':round(z['pnl']/en,6) if en else None,
+            'stop_error_rate':round(z['stop_err']/en,4) if en else None,
+            'direction_error_rate':round(z['dir_err']/en,4) if en else None,
+            'late_entry_error_rate':round(z['late_err']/en,4) if en else None,
+            'good_execution_rate':round(z['good']/en,4) if en else None,
+            'rejected_n':z['rej_n'],
+            'rejected_winner_rate':round(z['rej_win']/rden,4) if rden else None,
+            'status':'WEIGHT_READY' if en>=EXPERIENCE_MIN_WEIGHT_N else (
+                     'EXECUTION_READY' if en>=EXPERIENCE_MIN_EXEC_N else (
+                     'SIZE_READY' if en>=EXPERIENCE_MIN_SIZE_N else 'BUILDING'))
+        })
+    items.sort(key=lambda x:(x['level']!='EXACT',x['status']=='BUILDING',-float(x.get('effective_n') or 0)))
+    out={'status':'OK','items':items,
+         'thresholds':{'size':EXPERIENCE_MIN_SIZE_N,'execution':EXPERIENCE_MIN_EXEC_N,'weight':EXPERIENCE_MIN_WEIGHT_N},
+         'hierarchy':['EXACT','ASSET_FAMILY','REGIME_FAMILY','FAMILY'],
+         'principle':'exact setup/regime experience dominates; broader pools only shrink small samples'}
+    setup_memory_board._cache=(time.time(),out)
+    return out
+
+
+def setup_memory_profile(asset,horizon,row,direction,plan):
+    board=setup_memory_board()
+    fam=_v84_setup_family(row,plan); reg=_v84_regime_bucket(row,plan); ent=_v84_entry_state(row,plan)
+    wanted=[
+        ('EXACT',asset,horizon,fam,direction,reg,ent,1.00),
+        ('ASSET_FAMILY',asset,horizon,fam,direction,'*','*',0.70),
+        ('REGIME_FAMILY','*',horizon,fam,direction,reg,'*',0.55),
+        ('FAMILY','*',horizon,fam,direction,'*','*',0.35),
+    ]
+    selected=[]
+    for lvl,a,h,f,d,r,e,shrink in wanted:
+        x=next((q for q in board.get('items',[]) if q.get('level')==lvl and q.get('asset')==a
+                and q.get('horizon')==h and q.get('setup_family')==f and q.get('direction')==d
+                and q.get('regime_bucket')==r and q.get('entry_state')==e),None)
+        if x and float(x.get('effective_n') or 0)>0:
+            selected.append((x,shrink))
+    if not selected:
+        return {'status':'BUILDING','decision_influence':False,'setup_family':fam,
+                'regime_bucket':reg,'entry_state':ent,'effective_n':0.0}
+
+    num=den=0.0; pnl_num=0.0; stop_num=late_num=dir_num=rej_num=rej_den=0.0; eff=0.0
+    evidence=[]
+    for x,shrink in selected:
+        en=float(x.get('effective_n') or 0.0)
+        w=min(40.0,en)*shrink
+        p=x.get('posterior_win_rate')
+        if p is not None: num+=float(p)*w; den+=w
+        if x.get('weighted_avg_pnl') is not None: pnl_num+=float(x['weighted_avg_pnl'])*w
+        stop_num+=float(x.get('stop_error_rate') or 0.0)*w
+        late_num+=float(x.get('late_entry_error_rate') or 0.0)*w
+        dir_num+=float(x.get('direction_error_rate') or 0.0)*w
+        rw=x.get('rejected_winner_rate')
+        if rw is not None: rej_num+=float(rw)*w; rej_den+=w
+        eff=max(eff,en if x.get('level')=='EXACT' else en*shrink)
+        evidence.append({'level':x.get('level'),'effective_n':en,'pwin':p})
+    pwin=num/den if den else None
+    level='OBSERVE'
+    if eff>=EXPERIENCE_MIN_WEIGHT_N: level='WEIGHT_READY'
+    elif eff>=EXPERIENCE_MIN_EXEC_N: level='EXECUTION_READY'
+    elif eff>=EXPERIENCE_MIN_SIZE_N: level='SIZE_READY'
+    return {'status':level,'decision_influence':level!='OBSERVE',
+            'setup_family':fam,'regime_bucket':reg,'entry_state':ent,
+            'effective_n':round(eff,2),'posterior_win_rate':None if pwin is None else round(pwin,4),
+            'weighted_avg_pnl':round(pnl_num/den,6) if den else None,
+            'stop_error_rate':round(stop_num/den,4) if den else None,
+            'late_entry_error_rate':round(late_num/den,4) if den else None,
+            'direction_error_rate':round(dir_num/den,4) if den else None,
+            'rejected_winner_rate':round(rej_num/rej_den,4) if rej_den else None,
+            'evidence':evidence}
+
+
+def adaptive_regime_policy(asset,horizon,row,direction,plan,memory):
+    reg=_v84_regime_bucket(row,plan)
+    route=regime_route_for(asset,horizon,row.get('regime'),direction)
+    size=1.0; stop=1.0; confirmation='NORMAL'; add_allowed=True; exit_guard='NORMAL'
+
+    if reg=='TREND':
+        size=1.05; stop=1.05; confirmation='TREND_CONTINUATION'; exit_guard='STRONG'
+    elif reg=='RANGE':
+        size=0.80; stop=0.95; confirmation='RETEST_OR_EDGE'; add_allowed=False; exit_guard='NORMAL'
+    elif reg=='HIGH_VOL_TREND':
+        size=0.75; stop=1.18; confirmation='STAGED'; exit_guard='STRONG'
+    elif reg=='HIGH_VOL_RANGE':
+        size=0.65; stop=1.12; confirmation='RETEST_ONLY'; add_allowed=False; exit_guard='NORMAL'
+    elif reg=='TRANSITION':
+        size=0.65; stop=1.10; confirmation='PROBE_THEN_CONFIRM'; add_allowed=False; exit_guard='STRONG'
+
+    if route.get('decision_influence'):
+        size*=clip(float(route.get('position_multiplier') or 1.0),0.70,1.20)
+
+    p=(memory or {}).get('posterior_win_rate')
+    if (memory or {}).get('decision_influence') and p is not None:
+        p=float(p)
+        if p>=0.68: size*=1.10
+        elif p<=0.44: size*=0.75
+
+    size=clip(size,0.50,1.25)
+    stop=clip(stop,0.90,V84_STOP_WIDEN_CAP)
+    return {'regime_bucket':reg,'route':route.get('route'),'route_status':route.get('status'),
+            'decision_influence':True,'size_multiplier':round(size,4),
+            'stop_multiplier':round(stop,4),'confirmation_mode':confirmation,
+            'add_allowed':add_allowed,'exit_guard':exit_guard,
+            'direction_override':False}
+
+
+def execution_policy_v84(asset,horizon,row,direction,plan,memory,regime_policy):
+    entry_state=_v84_entry_state(row,plan)
+    p=(memory or {}).get('posterior_win_rate')
+    stop_err=float((memory or {}).get('stop_error_rate') or 0.0)
+    late_err=float((memory or {}).get('late_entry_error_rate') or 0.0)
+    rej=float((memory or {}).get('rejected_winner_rate') or 0.0)
+    eff=float((memory or {}).get('effective_n') or 0.0)
+
+    entry_mode='IMMEDIATE_PROBE'
+    if entry_state=='LATE':
+        entry_mode='PULLBACK_OR_MIN_PROBE'
+    elif entry_state=='RETEST':
+        entry_mode='RETEST_STAGED'
+    elif entry_state=='BREAKOUT':
+        entry_mode='BREAKOUT_PROBE_THEN_CONFIRM'
+    elif entry_state=='CONFIRMED':
+        entry_mode='CONFIRMED_SCALE'
+    elif (regime_policy or {}).get('confirmation_mode') in ('STAGED','PROBE_THEN_CONFIRM','RETEST_ONLY'):
+        entry_mode='REGIME_STAGED'
+
+    size_mult=float((regime_policy or {}).get('size_multiplier') or 1.0)
+    if eff>=EXPERIENCE_MIN_SIZE_N and p is not None:
+        if float(p)>=0.72: size_mult*=1.20
+        elif float(p)>=0.64: size_mult*=1.10
+        elif float(p)<=0.38: size_mult*=0.55
+        elif float(p)<=0.46: size_mult*=0.75
+    if late_err>=0.25 and entry_state=='LATE':
+        size_mult=min(size_mult,0.60)
+    if entry_mode in ('PULLBACK_OR_MIN_PROBE','REGIME_STAGED'):
+        size_mult=min(size_mult,0.70)
+    elif entry_mode in ('RETEST_STAGED','BREAKOUT_PROBE_THEN_CONFIRM'):
+        size_mult=min(size_mult,0.85)
+    elif entry_mode=='CONFIRMED_SCALE' and p is not None and float(p)>=0.60:
+        size_mult=max(size_mult,1.05)
+    mem_status=str((memory or {}).get('status') or 'OBSERVE')
+    if rej>=0.65 and mem_status in ('EXECUTION_READY','WEIGHT_READY'):
+        entry_mode='SIGNAL_FIRST_REINFORCED'
+
+    stop_mult=float((regime_policy or {}).get('stop_multiplier') or 1.0)
+    if mem_status in ('EXECUTION_READY','WEIGHT_READY') and stop_err>=0.25:
+        stop_mult*=min(1.20,1.0+0.45*(stop_err-0.20))
+    stop_mult=clip(stop_mult,0.90,V84_STOP_WIDEN_CAP)
+
+    # Exit optimization: protect against single-horizon noise. Hard invalidation remains immediate.
+    reg=(regime_policy or {}).get('regime_bucket')
+    flip_ratio=1.20 if reg=='TREND' else 1.30 if reg in ('HIGH_VOL_TREND','TRANSITION') else 1.15
+    flip_horizons=2
+    trail_activation_r=1.25 if reg=='TREND' else 1.50 if reg=='HIGH_VOL_TREND' else 0.90 if reg=='RANGE' else 1.10
+    return {'version':'v84','decision_influence':True,
+            'entry_mode':entry_mode,'size_multiplier':round(clip(size_mult,0.50,1.30),4),
+            'stop_distance_multiplier':round(stop_mult,4),
+            'add_allowed':bool((regime_policy or {}).get('add_allowed',True)),
+            'flip_confirmation_ratio':flip_ratio,'flip_confirmation_horizons':flip_horizons,
+            'premature_exit_guard':True,'hard_invalidation_immediate':True,
+            'trail_mode':'STRUCTURAL_ONLY','trail_activation_r':trail_activation_r,
+            'soft_deterioration_action':'HOLD_OR_REDUCE_NOT_EXIT',
+            'hard_gate_override':False}
+
+
+def apply_v84_execution_to_trade_plan(row,plan,memory,regime_policy,execution_policy):
+    plan=dict(plan or {})
+    plan['setup_memory']=memory
+    plan['adaptive_regime_policy']=regime_policy
+    plan['execution_policy']=execution_policy
+
+    f0=float(plan.get('initial_position_fraction') or 0.0)
+    if f0>0:
+        mult=float(execution_policy.get('size_multiplier') or 1.0)
+        plan['initial_position_fraction']=clip(max(0.05,f0*mult),0.05,1.0)
+    plan['experience_entry_mode']=execution_policy.get('entry_mode')
+
+    # Widen only when experience/regime evidence supports it; never tighten an established structural stop here.
+    sm=float(execution_policy.get('stop_distance_multiplier') or 1.0)
+    stop=plan.get('stop_price'); price=float((row or {}).get('price') or 0.0)
+    if sm>1.0 and stop is not None and price>0 and direction_valid(row):
+        d=str((row or {}).get('research_decision'))
+        try:
+            stop=float(stop); dist=abs(price-stop)
+            if dist>0:
+                nd=min(dist*sm,dist*V84_STOP_WIDEN_CAP)
+                candidate=price-nd if d=='LONG' else price+nd
+                if (d=='LONG' and candidate<stop) or (d=='SHORT' and candidate>stop):
+                    plan['experience_original_stop']=stop
+                    plan['stop_price']=candidate
+                    plan['stop_method']=str(plan.get('stop_method') or 'STRUCTURAL')+'+V84_BUFFER'
+        except Exception:
+            pass
+
+    # Recompute economics honestly after any stop change.
+    try:
+        stop=float(plan.get('stop_price')); price=float((row or {}).get('price') or 0.0)
+        if price>0:
+            dist=abs(price-stop)/price
+            plan['stop_distance_pct']=dist
+            exp=float(plan.get('expected_move_pct') or 0.0)
+            plan['expected_to_stop_ratio']=exp/dist if dist>1e-12 else 999.0
+    except Exception:
+        pass
+
+    plan['structural_stop_enforced']=True
+    return plan
+
+
+def direction_valid(row):
+    return str((row or {}).get('research_decision') or '') in ('LONG','SHORT')
+
+
+def experience_profile_for_trade(asset,horizon,row,direction,plan,tradeability):
+    memory=setup_memory_profile(asset,horizon,row,direction,plan)
+    analog_n=int((tradeability or {}).get('raw_n') or 0)
+    analog_eff=float((tradeability or {}).get('effective_n') or 0.0)
+    analog_p=(tradeability or {}).get('positive_trade_probability')
+    mp=memory.get('posterior_win_rate'); me=float(memory.get('effective_n') or 0.0)
+
+    weighted=[]
+    if analog_p is not None and analog_eff>0: weighted.append((float(analog_p),min(40.0,analog_eff)))
+    if mp is not None and me>0: weighted.append((float(mp),min(40.0,me)))
+    combined=sum(p*w for p,w in weighted)/sum(w for _,w in weighted) if weighted else None
+    effective=max(analog_eff,me)
+    level='OBSERVE'
+    if effective>=EXPERIENCE_MIN_WEIGHT_N: level='WEIGHT_READY'
+    elif effective>=EXPERIENCE_MIN_EXEC_N: level='EXECUTION_READY'
+    elif effective>=EXPERIENCE_MIN_SIZE_N: level='SIZE_READY'
+
+    return {'status':level,'decision_influence':level!='OBSERVE',
+            'asset':asset,'horizon':horizon,'direction':direction,
+            'combined_positive_probability':None if combined is None else round(combined,4),
+            'analog_raw_n':analog_n,'analog_effective_n':round(analog_eff,2),
+            'setup_memory_effective_n':round(me,2),'setup_memory':memory,
+            'hard_gate_override':False}
+
+
+def v84_direction_flip_confirmed(x,current_direction):
+    d=str((x or {}).get('research_decision') or 'NO_TRADE')
+    if d not in ('LONG','SHORT') or d==current_direction:
+        return False
+    piv=(x or {}).get('impulse_pivot_break') or {}
+    rev=(x or {}).get('tactical_reversal') or {}
+    if piv.get('active') and str(piv.get('direction') or '')==d and float(piv.get('probability') or 0)>=0.76:
+        return True
+    if rev.get('active') and str(rev.get('direction') or '')==d and float(rev.get('probability') or 0)>=0.78:
+        return True
+    support=(x or {}).get('_uec_direction_support') or {}
+    ours=float(support.get(d) or 0.0); other=float(support.get(current_direction) or 0.0)
+    hs=(x or {}).get('_uec_supporting_horizons') or []
+    ep=((x or {}).get('trade_plan') or {}).get('execution_policy') or {}
+    ratio=float(ep.get('flip_confirmation_ratio') or 1.20)
+    need=int(ep.get('flip_confirmation_horizons') or 2)
+    return bool(len(hs)>=need and ours>=max(0.01,other)*ratio)
+
+
+def execution_learning_board():
+    m=setup_memory_board()
+    items=m.get('items') or []
+    exact=[x for x in items if x.get('level')=='EXACT']
+    return {'status':m.get('status'),'exact_setups':len(exact),
+            'weight_ready':sum(1 for x in exact if x.get('status')=='WEIGHT_READY'),
+            'execution_ready':sum(1 for x in exact if x.get('status') in ('EXECUTION_READY','WEIGHT_READY')),
+            'top_setups':exact[:30],
+            'principle':'direction, entry, stop and exit learn separately; hard safety gates never decay from experience'}
+
+
+def learning_index_v2():
+    if not pg_enabled(): return {'status':'POSTGRES_REQUIRED'}
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT COALESCE(payload->>'model_version','UNKNOWN') model_version,
+                                     COUNT(*) n,
+                                     COUNT(*) FILTER(WHERE profitable) wins,
+                                     COALESCE(AVG(net_pnl_rub),0) avg_pnl,
+                                     COALESCE(SUM(net_pnl_rub),0) total_pnl
+                              FROM paper_trades WHERE status='CLOSED' GROUP BY 1""").fetchall()
+        by={str(r['model_version']):dict(r) for r in rows}
+        def norm(x):
+            if not x: return {'n':0,'wins':0,'win_rate':None,'avg_pnl':None,'total_pnl':None}
+            n=int(x.get('n') or 0); w=int(x.get('wins') or 0)
+            return {'n':n,'wins':w,'win_rate':w/n if n else None,
+                    'avg_pnl':float(x.get('avg_pnl') or 0.0),'total_pnl':float(x.get('total_pnl') or 0.0)}
+        base=norm(by.get('veritas-portfolio-v6-v80-unified-execution'))
+        cur=norm(by.get('veritas-portfolio-v8.2-v84-audited-execution'))
+        measurable=cur['n']>=20 and base['n']>=8
+        gate=None
+        if measurable:
+            gate=bool(cur['win_rate'] is not None and base['win_rate'] is not None
+                      and cur['win_rate']>=base['win_rate'] and cur['avg_pnl']>=base['avg_pnl'])
+        return {'status':'MEASURABLE' if measurable else 'BUILDING',
+                'frozen_baseline':'veritas-portfolio-v6-v80-unified-execution',
+                'baseline':base,'v84':cur,'quality_gate_pass':gate,
+                'promotion_rule':'win rate must improve or hold while average P&L does not deteriorate'}
+    except Exception as ex:
+        return {'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
+
+
+# =========================
+# VERITAS v84.2 AUDITED OVERRIDES
+# =========================
+# These definitions intentionally override earlier v84 helpers.
+# They keep the conceptual v81-v84 layers while correcting latency,
+# learning maturity, sizing consistency, data-source resilience and I/O.
+
+# ---------- durable event writes without a new TLS/DB handshake per event ----------
+_v842_pg_event_local = threading.local()
+
+def _v842_pg_event_conn():
+    if psycopg is None:
+        raise RuntimeError('PSYCOPG_NOT_INSTALLED')
+    c=getattr(_v842_pg_event_local,'conn',None)
+    if c is not None and not getattr(c,'closed',True):
+        return c
+    c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row)
+    _v842_pg_event_local.conn=c
+    return c
+
+def pg_event(event_type, entity_key, payload, asset=None, horizon=None, event_ts=None):
+    if not pg_enabled():
+        return False
+    ts=event_ts or now()
+    key=f'{event_type}:{entity_key}'
+    args=(key,entity_key,event_type,ts,asset,horizon,
+          json.dumps(payload,ensure_ascii=False),VERSION)
+    last=None
+    for _attempt in range(2):
+        try:
+            c=_v842_pg_event_conn()
+            row=c.execute("""INSERT INTO ledger_events
+              (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+              VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+              ON CONFLICT(event_key) DO NOTHING
+              RETURNING id""",args).fetchone()
+            return bool(row)
+        except Exception as ex:
+            last=ex
+            try:
+                c=getattr(_v842_pg_event_local,'conn',None)
+                if c is not None: c.close()
+            except Exception:
+                pass
+            _v842_pg_event_local.conn=None
+    raise last
+
+# ---------- fast decision-memory index: scan only matching horizon ----------
+def _v842_vectors_by_horizon():
+    vecs=_decision_memory_vectors()
+    token=(id(vecs),len(vecs))
+    cache=getattr(_v842_vectors_by_horizon,'_cache',None)
+    if cache and cache[0]==token:
+        return cache[1]
+    out={h:[] for h in HORIZONS}
+    for r,hv in vecs:
+        h=str(r.get('horizon') or '')
+        if h in out:
+            out[h].append((r,hv))
+    _v842_vectors_by_horizon._cache=(token,out)
+    return out
+
+def tradeability_analog_stats(asset,horizon,f,direction):
+    if direction not in ('LONG','SHORT') or not pg_enabled():
+        return {'status':'NO_DIRECTION','positive_trade_probability':None,
+                'raw_n':0,'effective_n':0.0,'decision_influence':False}
+    cur=_state_from_features(f)
+    cv=_normalized_state_vector(cur)
+    weights=[1.1,0.9,1.0,1.1,1.35,0.45,0.9,0.9,1.05,1.15,0.35,0.75,0.55]
+    candidates=[]
+    now_dt=datetime.now(timezone.utc)
+    for r,hv in _v842_vectors_by_horizon().get(horizon,()):
+        if r.get('forward_return') is None:
+            continue
+        dist=math.sqrt(sum(w*(a-b)*(a-b) for w,a,b in zip(weights,cv,hv))/max(1e-12,sum(weights)))
+        if str(r.get('regime') or '') != str(cur.get('regime') or ''):
+            dist += 0.12
+        dist *= 0.86 if r.get('asset')==asset else 1.04
+        candidates.append((dist,r))
+    candidates.sort(key=lambda z:z[0])
+    nearest=candidates[:ANALOG_NEIGHBORS]
+    if not nearest:
+        return {'status':'BUILDING','positive_trade_probability':None,
+                'raw_n':0,'effective_n':0.0,'decision_influence':False}
+    wh=wr=sw=0.0
+    signed=[]; favorable=[]; adverse=[]; compact=[]
+    for dist,r in nearest:
+        ts=r.get('event_ts')
+        if isinstance(ts,str):
+            try: ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
+            except Exception: ts=None
+        if ts is not None and ts.tzinfo is None:
+            ts=ts.replace(tzinfo=timezone.utc)
+        age=max(0.0,(now_dt-ts).total_seconds()/86400.0) if ts is not None else 0.0
+        w=math.exp(-2.2*dist)*math.exp(-math.log(2.0)*age/240.0)
+        if r.get('asset')==asset:
+            w*=1.10
+        fr=float(r['forward_return'])
+        sr=fr if direction=='LONG' else -fr
+        sw+=w
+        wh+=w*(1.0 if sr>0 else 0.0)
+        wr+=w*sr
+        signed.append(sr)
+        mfe=r.get('mfe'); mae=r.get('mae')
+        fav=(float(mfe) if direction=='LONG' else -float(mae)) if (mfe is not None and mae is not None) else None
+        adv=(-float(mae) if direction=='LONG' else float(mfe)) if (mfe is not None and mae is not None) else None
+        if fav is not None: favorable.append(max(0.0,fav))
+        if adv is not None: adverse.append(max(0.0,adv))
+        if len(compact)<6:
+            compact.append({'asset':r.get('asset'),'ts':r.get('event_ts'),
+                            'distance':round(dist,4),'forward_signed_return':round(sr,6)})
+    prior=TRADEABILITY_BETA_PRIOR
+    alpha=prior+wh
+    beta=prior+max(0.0,sw-wh)
+    post=alpha/(alpha+beta)
+    var=(alpha*beta)/(((alpha+beta)**2)*(alpha+beta+1.0)) if alpha+beta>0 else 0.0
+    sd=math.sqrt(max(0.0,var))
+    lower=max(0.0,post-1.2815515655*sd)
+    upper=min(1.0,post+1.2815515655*sd)
+    raw_n=len(nearest)
+    measurable=raw_n>=TRADEABILITY_MIN_RAW_N and sw>=TRADEABILITY_MIN_EFFECTIVE_N
+    if not measurable: label='BUILDING'
+    elif post>=TRADEABILITY_SUPPORT_P and (wr/sw if sw else 0)>0: label='SUPPORTED'
+    elif post<=TRADEABILITY_WEAK_P: label='WEAK'
+    else: label='NEUTRAL'
+    return {'status':label,
+            'positive_trade_probability':round(post,4) if measurable else None,
+            'shadow_posterior':round(post,4),
+            'probability_band_80':[round(lower,4),round(upper,4)],
+            'raw_n':raw_n,'effective_n':round(sw,2),
+            'weighted_avg_signed_return':round(wr/sw,6) if sw else None,
+            'median_signed_return':round(_quantile_simple(signed,0.5),6) if signed else None,
+            'median_favorable_excursion':_quantile_simple(favorable,0.5),
+            'p80_adverse_excursion':_quantile_simple(adverse,0.80),
+            'same_horizon_cross_asset_transfer':True,'nearest':compact,
+            'decision_influence':False,
+            'definition':'Nearest pre-decision states, horizon-indexed; Bayesian shrinkage; current direction applied to realized forward return.'}
+
+# ---------- bounded direction prior: only material analog skew participates ----------
+def experience_direction_prior(asset,horizon,f):
+    try:
+        row=tradeability_analog_stats(asset,horizon,f,'LONG')
+        n=int(row.get('raw_n') or 0)
+        en=float(row.get('effective_n') or 0.0)
+        p=row.get('positive_trade_probability')
+        prior_min_n=max(40,int(TRADEABILITY_MIN_RAW_N))
+        prior_min_eff=max(20.0,float(TRADEABILITY_MIN_EFFECTIVE_N)*2.0)
+        if p is None or n<prior_min_n or en<prior_min_eff:
+            return {'status':'BUILDING','decision_influence':False,'score_adjustment':0.0,
+                    'raw_n':n,'effective_n':en,'p_long':p,
+                    'required_raw_n':prior_min_n,'required_effective_n':prior_min_eff}
+        p=float(p)
+        if abs(p-0.50)<0.08:
+            adj=0.0
+            active=False
+        else:
+            adj=clip((p-0.50)*0.12,-V84_DIRECTION_PRIOR_CAP,V84_DIRECTION_PRIOR_CAP)
+            active=abs(adj)>1e-9
+        return {'status':'ACTIVE' if active else 'NEUTRAL',
+                'decision_influence':active,'score_adjustment':round(adj,5),
+                'raw_n':n,'effective_n':round(en,2),'p_long':round(p,4),
+                'principle':'small analog prior only; never overrides hard gates or a strong current signal'}
+    except Exception as ex:
+        return {'status':'ERROR','decision_influence':False,'score_adjustment':0.0,
+                'error':f'{type(ex).__name__}: {ex}'}
+
+# ---------- memory is built only in background ----------
+_v842_original_setup_memory_board=setup_memory_board
+
+def setup_memory_board(force=False):
+    cache=getattr(setup_memory_board,'_cache',None)
+    if cache and not force:
+        return cache[1]
+    if not force:
+        return {'status':'BACKGROUND_PENDING','items':[],
+                'decision_influence':False,
+                'principle':'fast path reads only a precomputed background experience snapshot'}
+    out=_v842_original_setup_memory_board(force=True)
+    setup_memory_board._cache=(time.time(),out)
+    return out
+
+def _v842_memory_lookup(board):
+    items=board.get('items') or []
+    token=(id(items),len(items))
+    cache=getattr(_v842_memory_lookup,'_cache',None)
+    if cache and cache[0]==token:
+        return cache[1]
+    idx={}
+    for x in items:
+        k=(x.get('level'),x.get('asset'),x.get('horizon'),x.get('setup_family'),
+           x.get('direction'),x.get('regime_bucket'),x.get('entry_state'))
+        idx[k]=x
+    _v842_memory_lookup._cache=(token,idx)
+    return idx
+
+def setup_memory_profile(asset,horizon,row,direction,plan):
+    fam=_v84_setup_family(row,plan)
+    reg=_v84_regime_bucket(row,plan)
+    ent=_v84_entry_state(row,plan)
+    if direction not in ('LONG','SHORT'):
+        return {'status':'BUILDING','decision_influence':False,'setup_family':fam,
+                'regime_bucket':reg,'entry_state':ent,'effective_n':0.0,
+                'exact_effective_n':0.0}
+    board=setup_memory_board()
+    idx=_v842_memory_lookup(board)
+    wanted=[
+        (('EXACT',asset,horizon,fam,direction,reg,ent),1.00),
+        (('ASSET_FAMILY',asset,horizon,fam,direction,'*','*'),0.45),
+        (('REGIME_FAMILY','*',horizon,fam,direction,reg,'*'),0.25),
+        (('FAMILY','*',horizon,fam,direction,'*','*'),0.12),
+    ]
+    selected=[]
+    for k,shrink in wanted:
+        x=idx.get(k)
+        if x and float(x.get('effective_n') or 0)>0:
+            selected.append((x,shrink))
+    if not selected:
+        return {'status':'BUILDING','decision_influence':False,'setup_family':fam,
+                'regime_bucket':reg,'entry_state':ent,'effective_n':0.0,
+                'exact_effective_n':0.0}
+
+    num=den=0.0
+    pnl_num=stop_num=late_num=dir_num=rej_num=rej_den=0.0
+    exact_en=0.0
+    support_eff=0.0
+    evidence=[]
+    for x,shrink in selected:
+        en=float(x.get('effective_n') or 0.0)
+        lvl=str(x.get('level') or '')
+        if lvl=='EXACT':
+            exact_en=en
+            maturity_part=en
+        elif lvl=='ASSET_FAMILY':
+            maturity_part=min(12.0,en*0.30)
+        elif lvl=='REGIME_FAMILY':
+            maturity_part=min(8.0,en*0.20)
+        else:
+            maturity_part=min(4.0,en*0.08)
+        if lvl!='EXACT':
+            support_eff+=maturity_part
+        w=min(40.0,en)*shrink
+        p=x.get('posterior_win_rate')
+        if p is not None:
+            num+=float(p)*w; den+=w
+        if x.get('weighted_avg_pnl') is not None:
+            pnl_num+=float(x['weighted_avg_pnl'])*w
+        stop_num+=float(x.get('stop_error_rate') or 0.0)*w
+        late_num+=float(x.get('late_entry_error_rate') or 0.0)*w
+        dir_num+=float(x.get('direction_error_rate') or 0.0)*w
+        rw=x.get('rejected_winner_rate')
+        if rw is not None:
+            rej_num+=float(rw)*w; rej_den+=w
+        evidence.append({'level':lvl,'effective_n':round(en,2),'pwin':p})
+    maturity=exact_en+support_eff
+    pwin=num/den if den else None
+
+    # Broad experience may affect sizing, but execution/weight maturity requires own exact history.
+    if exact_en>=20 and maturity>=40:
+        level='WEIGHT_READY'
+    elif exact_en>=8 and maturity>=20:
+        level='EXECUTION_READY'
+    elif maturity>=EXPERIENCE_MIN_SIZE_N:
+        level='SIZE_READY'
+    else:
+        level='OBSERVE'
+    return {'status':level,'decision_influence':level!='OBSERVE',
+            'setup_family':fam,'regime_bucket':reg,'entry_state':ent,
+            'effective_n':round(maturity,2),'exact_effective_n':round(exact_en,2),
+            'transfer_effective_n':round(support_eff,2),
+            'posterior_win_rate':None if pwin is None else round(pwin,4),
+            'weighted_avg_pnl':round(pnl_num/den,6) if den else None,
+            'stop_error_rate':round(stop_num/den,4) if den else None,
+            'late_entry_error_rate':round(late_num/den,4) if den else None,
+            'direction_error_rate':round(dir_num/den,4) if den else None,
+            'rejected_winner_rate':round(rej_num/rej_den,4) if rej_den else None,
+            'evidence':evidence,
+            'transfer_policy':'broad analogs may size; exact history required for execution/weight maturity'}
+
+# ---------- single authoritative execution target; no double sizing ----------
+def apply_v84_execution_to_trade_plan(row,plan,memory,regime_policy,execution_policy):
+    plan=dict(plan or {})
+    plan['setup_memory']=memory
+    plan['adaptive_regime_policy']=regime_policy
+    plan['execution_policy']=execution_policy
+
+    f0=float(plan.get('initial_position_fraction') or 0.0)
+    mult=float(execution_policy.get('size_multiplier') or 1.0)
+    plan['v84_raw_initial_fraction']=f0
+    if f0>0:
+        plan['v84_target_fraction']=clip(max(0.05,f0*mult),0.05,1.0)
+    else:
+        plan['v84_target_fraction']=0.0
+    plan['experience_entry_mode']=execution_policy.get('entry_mode')
+
+    sm=float(execution_policy.get('stop_distance_multiplier') or 1.0)
+    stop=plan.get('stop_price')
+    price=float((row or {}).get('price') or 0.0)
+    if sm>1.0 and stop is not None and price>0 and direction_valid(row):
+        d=str((row or {}).get('research_decision'))
+        try:
+            stop=float(stop); dist=abs(price-stop)
+            if dist>0:
+                nd=min(dist*sm,dist*V84_STOP_WIDEN_CAP)
+                candidate=price-nd if d=='LONG' else price+nd
+                if (d=='LONG' and candidate<stop) or (d=='SHORT' and candidate>stop):
+                    plan['experience_original_stop']=stop
+                    plan['stop_price']=candidate
+                    plan['stop_method']=str(plan.get('stop_method') or 'STRUCTURAL')+'+V84_BUFFER'
+        except Exception:
+            pass
+
+    try:
+        stop=float(plan.get('stop_price'))
+        price=float((row or {}).get('price') or 0.0)
+        if price>0:
+            dist=abs(price-stop)/price
+            plan['stop_distance_pct']=dist
+            exp=float(plan.get('expected_move_pct') or 0.0)
+            plan['expected_to_stop_ratio']=exp/dist if dist>1e-12 else 999.0
+    except Exception:
+        pass
+    plan['structural_stop_enforced']=True
+    plan['sizing_authority']='DECISION_LAYER_TARGET_THEN_PORTFOLIO_RISK'
+    return plan
+
+# ---------- faster crypto derivatives ----------
+def derivatives(symbol):
+    try:
+        base='https://fapi.binance.com'
+        jobs={
+            'premium':(base+'/fapi/v1/premiumIndex',{'symbol':symbol}),
+            'oi':(base+'/fapi/v1/openInterest',{'symbol':symbol}),
+            'oi_hist':(base+'/futures/data/openInterestHist',{'symbol':symbol,'period':'1h','limit':25}),
+            'taker':(base+'/futures/data/takerlongshortRatio',{'symbol':symbol,'period':'1h','limit':24}),
+            'gls':(base+'/futures/data/globalLongShortAccountRatio',{'symbol':symbol,'period':'1h','limit':24}),
+        }
+        out={}
+        with ThreadPoolExecutor(max_workers=3,thread_name_prefix='veritas-deriv') as pool:
+            fut={k:pool.submit(get_json,u,p) for k,(u,p) in jobs.items()}
+            for k,f in fut.items():
+                out[k]=f.result()
+        premium=out['premium']; oi=out['oi']; oi_hist=out['oi_hist']; taker=out['taker']; gls=out['gls']
+        oi_now=float(oi['openInterest'])
+        oi0=float(oi_hist[0]['sumOpenInterest']) if oi_hist else oi_now
+        oi_change=oi_now/oi0-1 if oi0 else 0
+        taker_ratio=float(taker[-1]['buySellRatio']) if taker else 1.0
+        long_short=float(gls[-1]['longShortRatio']) if gls else 1.0
+        mark=float(premium['markPrice']); index=float(premium['indexPrice'])
+        obs=now()
+        _set_source_quality([_source_row('Binance derivatives','crypto derivatives','live context',
+                                        obs,0,'OK','parallel public funding/mark/OI/taker/account ratios','Binance')])
+        cur='BTC' if symbol.startswith('BTC') else 'ETH' if symbol.startswith('ETH') else None
+        opt=deribit_options_context(cur) if cur else {'ok':False,'status':'not_applicable','decision_influence':False}
+        return {'ok':True,'funding':float(premium['lastFundingRate']),'mark':mark,'index':index,
+                'basis':mark/index-1 if index else 0,'open_interest':oi_now,'oi_change_24h':oi_change,
+                'taker_buy_sell_ratio':taker_ratio,'global_long_short_ratio':long_short,
+                'observed_at':obs,'options_shadow':opt}
+    except Exception as e:
+        return {'ok':False,'error':f'{type(e).__name__}: {e}'}
+
+# ---------- faster futures source collection ----------
+def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,source_name):
+    with ThreadPoolExecutor(max_workers=3,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
+        f5=pool.submit(_yahoo_series,yahoo_symbol,'5d','5m',True)
+        f1=pool.submit(_yahoo_series,yahoo_symbol,'3mo','1h',True)
+        fp=pool.submit(_yahoo_series,proxy_symbol,'5d','5m',True)
+        bars5,_=f5.result()
+        bars1h,_=f1.result()
+        try: pr,_=fp.result()
+        except Exception: pr=[]
+    if len(bars1h)<200:
+        raise RuntimeError(f'INSUFFICIENT_{asset}_HOURLY_BARS {len(bars1h)}')
+    last=bars5[-1] if bars5 else bars1h[-1]
+    price=float(last['close'])
+    observed=datetime.fromtimestamp(last['ts'],tz=timezone.utc).isoformat()
+    closes=[float(x['close']) for x in bars1h[-1800:]]
+    highs=[float(x['high']) for x in bars1h[-1800:]]
+    lows=[float(x['low']) for x in bars1h[-1800:]]
+    vols=[float(x.get('volume') or 0) for x in bars1h[-1800:]]
+    taker=[v*0.5 for v in vols]
+    rets=[closes[i]/closes[i-1]-1 for i in range(1,len(closes))]
+    market_open=_futures_market_open_from_age(observed)
+    age=_age_seconds(observed)
+    delay=DATA_SOURCE_POLICY[policy_key]['documented_delay_sec']
+    proxy_note='not checked'; proxy_obs=None
+    if pr:
+        proxy_obs=datetime.fromtimestamp(pr[-1]['ts'],tz=timezone.utc).isoformat()
+        if len(pr)>=5 and len(bars5)>=5:
+            r1=float(bars5[-1]['close'])/float(bars5[-5]['close'])-1
+            r2=float(pr[-1]['close'])/float(pr[-5]['close'])-1
+            proxy_note=f'4-bar directional proxy: primary={r1:.3%}, proxy={r2:.3%}'
+    gate=bool(market_open and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
+    quality=[
+      _source_row(source_name,f'{asset} futures','primary research delayed',observed,delay,
+                  'DELAYED_CONTEXT' if gate else 'STALE_OR_CLOSED',
+                  DATA_SOURCE_POLICY[policy_key]['commercial_note'],'Yahoo'),
+      _source_row(f'{proxy_symbol} proxy',f'{asset} proxy','verification proxy',proxy_obs,0,
+                  'OK' if proxy_obs else 'NOT_OBSERVED_YET',proxy_note,'Yahoo')]
+    _set_source_quality(quality)
+    return {'asset':asset,'price':price,'secondary_price':None,'coinbase_price':None,
+            'source_divergence':0.0,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
+            'intraday_bars':bars5,'taker_buy':taker,'returns':rets,
+            'binance_close_time_ms':int(last['ts']*1000),'observed_at':observed,
+            'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
+            'data_latency_class':'DELAYED_RESEARCH','verification_mode':'directional_proxy_only',
+            'source_names':{'primary':source_name,'secondary':f'{proxy_symbol} directional proxy'}}
+
+# ---------- NDX parallel fetch + fail-closed source fallback ----------
+_v842_ndx_lock=threading.Lock()
+_v842_ndx_last_good=None
+
+def _v842_ndx_cached_fallback(reason):
+    global _v842_ndx_last_good
+    with _v842_ndx_lock:
+        z=_v842_ndx_last_good
+    if not z:
+        return None
+    out=dict(z)
+    primary_age=_age_seconds(out.get('observed_at'))
+    fresh=bool(primary_age is not None and primary_age<=NDX_MAX_PRIMARY_AGE_SECONDS)
+    out['source_gate_pass']=bool(out.get('source_gate_pass') and fresh and _us_rth_now())
+    out['market_open']=_us_rth_now()
+    out['verification_mode']='LAST_GOOD_FAILSAFE'
+    out['data_latency_class']='FAILSAFE_CACHE'
+    out['fallback_reason']=reason
+    q=list(out.get('source_quality') or [])
+    q.append(_source_row('VERITAS last-good NDX cache','US index / NDX','failsafe only',
+                         out.get('observed_at'),0,'OK' if out['source_gate_pass'] else 'STALE_FAIL_CLOSED',
+                         f'fallback after {reason}; trading gate remains freshness-bound','VERITAS'))
+    out['source_quality']=q
+    return out
+
+def _ndx_market():
+    global _v842_ndx_last_good
+    jobs={}
+    try:
+        with ThreadPoolExecutor(max_workers=5,thread_name_prefix='veritas-ndx') as pool:
+            jobs['ndx1m']=pool.submit(_yahoo_series,'%5ENDX','1d','1m',False)
+            jobs['ndx1h']=pool.submit(_yahoo_series,'%5ENDX','3mo','1h',False)
+            jobs['qqq1h']=pool.submit(_yahoo_series,'QQQ','3mo','1h',False)
+            jobs['qqq1m']=pool.submit(_yahoo_series,'QQQ','1d','1m',True)
+            jobs['daily']=pool.submit(_yahoo_series,'%5ENDX',NDX_LONG_HISTORY_RANGE,'1d',False)
+            jobs['qqq5m']=pool.submit(_yahoo_series,'QQQ','5d','5m',True)
+            jobs['nas']=pool.submit(_nasdaq_ndx_quote)
+            ndx1m,_=jobs['ndx1m'].result()
+            ndx1h,_=jobs['ndx1h'].result()
+            qqq1h,_=jobs['qqq1h'].result()
+            qqq1m,_=jobs['qqq1m'].result()
+            ndxdaily,_=jobs['daily'].result()
+            try: qqq5m,_=jobs['qqq5m'].result()
+            except Exception: qqq5m=[]
+            try: nas=jobs['nas'].result()
+            except Exception as ex:
+                nas={'price':None,'observed_at':now(),'exchange_timestamp_utc':None,
+                     'exchange_timestamp':None,'is_real_time':None,'error':f'{type(ex).__name__}: {ex}'}
+        if not ndx1m or len(ndx1h)<200 or not qqq1h:
+            raise RuntimeError('NDX_REQUIRED_YAHOO_SERIES_UNAVAILABLE')
+        pbar=ndx1m[-1]; price=float(pbar['close'])
+        pts=datetime.fromtimestamp(pbar['ts'],tz=timezone.utc).isoformat()
+        sec=float(nas['price']) if nas.get('price') is not None else None
+        div=(abs(price-sec)/((price+sec)/2)) if sec is not None and (price+sec)!=0 else None
+        qmap={int(x['ts']//3600):x for x in qqq1h}
+        closes=[]; highs=[]; lows=[]; vols=[]; taker=[]
+        for x in ndx1h[-240:]:
+            closes.append(x['close']); highs.append(x['high']); lows.append(x['low'])
+            q=qmap.get(int(x['ts']//3600)); vv=float(q['volume']) if q else 0.0
+            vols.append(vv); taker.append(vv*0.5)
+        rets=[closes[i]/closes[i-1]-1 for i in range(1,len(closes))]
+        rth=_us_rth_now()
+        age=_age_seconds(pts)
+        nas_age=_age_seconds(nas.get('exchange_timestamp_utc')) if nas.get('exchange_timestamp_utc') else None
+        nas_ok=bool(sec is not None and (nas_age is None or nas_age<=300))
+        gate=bool(rth and age is not None and age<=NDX_MAX_PRIMARY_AGE_SECONDS and
+                  nas_ok and div is not None and div<=NDX_MAX_SOURCE_DIVERGENCE)
+        quality=[
+          _source_row('Yahoo Nasdaq GIDS','US index / NDX','primary live candidate',pts,0,
+                      'OK' if rth and age is not None and age<=NDX_MAX_PRIMARY_AGE_SECONDS else ('SESSION_CLOSED' if not rth else 'STALE'),
+                      DATA_SOURCE_POLICY['yahoo_nasdaq_gids']['commercial_note'],'Yahoo/ICE'),
+          _source_row('Nasdaq public index','US index / NDX','verification',
+                      nas.get('exchange_timestamp_utc') or nas.get('observed_at'),60,
+                      'OK' if nas_ok and div is not None and div<=NDX_MAX_SOURCE_DIVERGENCE else 'FAIL_CLOSED',
+                      f'price divergence={div}; raw_ts={nas.get("exchange_timestamp")}; error={nas.get("error")}',
+                      'Nasdaq'),
+          _source_row('Yahoo QQQ','US ETF proxy','volume proxy',
+                      datetime.fromtimestamp(qqq1m[-1]['ts'],tz=timezone.utc).isoformat() if qqq1m else None,
+                      0,'OK' if qqq1m else 'FAIL','QQQ volume proxy, not NDX price','Yahoo/ICE')]
+        out={'asset':'NQ','price':price,'coinbase_price':sec,'secondary_price':sec,
+             'source_divergence':div if div is not None else 0.0,
+             'closes':closes,'highs':highs,'lows':lows,'vols':vols,'taker_buy':taker,'returns':rets,
+             'binance_close_time_ms':int(pbar['ts']*1000),'observed_at':pts,
+             'source_gate_pass':gate,'market_open':rth,'source_quality':quality,
+             'qqq_price':qqq1m[-1]['close'] if qqq1m else None,
+             'intraday_bars':ndx1m,'daily_bars':ndxdaily,'volume_intraday_bars':qqq5m,
+             'verification_mode':'DIRECT_DUAL_SOURCE' if nas_ok else 'PRIMARY_ONLY_FAIL_CLOSED'}
+        _set_source_quality(quality)
+        with _v842_ndx_lock:
+            _v842_ndx_last_good=dict(out)
+        if not nas_ok:
+            emit('ndx_verification_fail_closed',error=nas.get('error'),price=price)
+        return out
+    except Exception as ex:
+        fb=_v842_ndx_cached_fallback(f'{type(ex).__name__}:{ex}')
+        if fb is not None:
+            emit('ndx_last_good_fallback',reason=f'{type(ex).__name__}:{ex}',
+                 source_gate_pass=fb.get('source_gate_pass'))
+            return fb
+        raise
+
+# ---------- parallel crypto market + derivatives ----------
+_v842_original_fetch_asset_bundle=_fetch_asset_bundle
+
+def _fetch_asset_bundle(symbol,asset,cb_product):
+    if asset in CRYPTO_ASSETS:
+        t0=time.time()
+        with ThreadPoolExecutor(max_workers=2,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
+            fr=pool.submit(market,symbol,cb_product)
+            fd=pool.submit(derivatives,symbol)
+            raw=fr.result(); deriv=fd.result()
+        return {'symbol':symbol,'asset':asset,'cb_product':cb_product,'raw':raw,'deriv':deriv,
+                'elapsed_seconds':time.time()-t0,'error':None}
+    return _v842_original_fetch_asset_bundle(symbol,asset,cb_product)
+
+# Keep outer asset fanout conservative; inner provider calls now run in parallel.
+FAST_LOOP_MARKET_WORKERS=max(4,min(5,FAST_LOOP_MARKET_WORKERS))
+
+
+def learning_index_v2():
+    if not pg_enabled():
+        return {'status':'POSTGRES_REQUIRED'}
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT COALESCE(payload->>'model_version','UNKNOWN') model_version,
+                                     COUNT(*) n,
+                                     COUNT(*) FILTER(WHERE profitable) wins,
+                                     COALESCE(AVG(net_pnl_rub),0) avg_pnl,
+                                     COALESCE(SUM(net_pnl_rub),0) total_pnl,
+                                     COALESCE(SUM(net_pnl_rub) FILTER(WHERE net_pnl_rub>0),0) gross_profit,
+                                     COALESCE(ABS(SUM(net_pnl_rub) FILTER(WHERE net_pnl_rub<0)),0) gross_loss,
+                                     COALESCE(AVG(net_pnl_rub) FILTER(WHERE net_pnl_rub>0),0) avg_win,
+                                     COALESCE(ABS(AVG(net_pnl_rub) FILTER(WHERE net_pnl_rub<0)),0) avg_loss
+                              FROM paper_trades
+                              WHERE status='CLOSED'
+                              GROUP BY 1""").fetchall()
+        by={str(r['model_version']):dict(r) for r in rows}
+        def norm(x):
+            if not x:
+                return {'n':0,'wins':0,'win_rate':None,'avg_pnl':None,'total_pnl':None,
+                        'profit_factor':None,'payoff_ratio':None}
+            n=int(x.get('n') or 0); w=int(x.get('wins') or 0)
+            gp=float(x.get('gross_profit') or 0.0); gl=float(x.get('gross_loss') or 0.0)
+            aw=float(x.get('avg_win') or 0.0); al=float(x.get('avg_loss') or 0.0)
+            return {'n':n,'wins':w,'win_rate':w/n if n else None,
+                    'avg_pnl':float(x.get('avg_pnl') or 0.0),
+                    'total_pnl':float(x.get('total_pnl') or 0.0),
+                    'profit_factor':gp/gl if gl>1e-9 else (999.0 if gp>0 else None),
+                    'payoff_ratio':aw/al if al>1e-9 else (999.0 if aw>0 else None)}
+        base=norm(by.get('veritas-portfolio-v6-v80-unified-execution'))
+        cur=norm(by.get('veritas-portfolio-v8.2-v84-audited-execution'))
+        measurable=cur['n']>=20 and base['n']>=8
+        gate=None
+        if measurable:
+            pf_ok=(base['profit_factor'] is None or
+                   (cur['profit_factor'] is not None and cur['profit_factor']>=base['profit_factor']))
+            gate=bool(cur['win_rate'] is not None and base['win_rate'] is not None
+                      and cur['win_rate']>=base['win_rate']
+                      and cur['avg_pnl']>=base['avg_pnl']
+                      and pf_ok)
+        return {'status':'MEASURABLE' if measurable else 'BUILDING',
+                'frozen_baseline':'veritas-portfolio-v6-v80-unified-execution',
+                'baseline':base,'v84_2':cur,'quality_gate_pass':gate,
+                'promotion_rule':'win rate must improve or hold; average P&L and profit factor may not deteriorate'}
+    except Exception as ex:
+        return {'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
 
 
 def trade_decision_stage(direction,trade_plan,tradeability,structure=None):
@@ -6237,13 +8909,90 @@ def intelligence_scorecard():
             'knowledge_growth':lp.get('knowledge_growth'),
             'principle':'System intelligence is measured by matched realized decision quality, path-dependent trade outcomes and large-move capture; source count alone never raises the score.'}
 
+def setup_profitability_profile(asset,horizon,direction,setup_name,regime=None,limit=240):
+    """Closed-loop profitability memory for comparable completed shadow trades.
+
+    Uses only completed trades. Sparse samples never block a trade. The gate becomes
+    influential only after enough independent closed observations exist.
+    """
+    if not pg_enabled() or direction not in ('LONG','SHORT'):
+        return {'status':'BUILDING','n':0,'decision_influence':False}
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT asset,horizon,direction,total_pnl_fraction,payload
+                              FROM shadow_trades
+                              WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
+                                AND asset=%s AND horizon=%s AND direction=%s
+                              ORDER BY closed_at DESC NULLS LAST LIMIT %s""",
+                           (asset,horizon,direction,int(limit))).fetchall()
+        vals=[]; matched=0
+        for rr in rows:
+            x=dict(rr); pay=x.get('payload')
+            if not isinstance(pay,dict):
+                try: pay=json.loads(pay or '{}')
+                except Exception: pay={}
+            psetup=str(pay.get('setup') or pay.get('trade_plan_setup') or pay.get('entry_setup') or '')
+            pregime=str(pay.get('regime') or '')
+            if setup_name and psetup and psetup!=setup_name:
+                continue
+            # Regime is a soft match: use exact regime where available, but don't discard old
+            # samples that predate regime tagging.
+            if regime and pregime and pregime!=str(regime):
+                continue
+            vals.append(float(x.get('total_pnl_fraction') or 0.0)); matched+=1
+
+        n=len(vals)
+        if not n:
+            return {'status':'BUILDING','n':0,'decision_influence':False}
+        wins=[v for v in vals if v>0]; losses=[v for v in vals if v<0]
+        avg=sum(vals)/n; hit=len(wins)/n
+        gross_win=sum(wins); gross_loss=abs(sum(losses))
+        pf=(gross_win/gross_loss) if gross_loss>1e-12 else (9.99 if gross_win>0 else 0.0)
+        # Bayesian shrinkage for win rate prevents small-sample overreaction.
+        post_hit=(len(wins)+3.0)/(n+6.0)
+        measurable=n>=8
+        strong=n>=12 and avg>0 and hit>=0.55 and pf>=1.20
+        weak=n>=12 and avg<0 and hit<=0.42 and pf<0.85
+        degraded=n>=8 and avg<0 and post_hit<0.48
+        status='POSITIVE_EDGE' if strong else 'NEGATIVE_EDGE' if weak else 'DEGRADED' if degraded else 'BUILDING'
+        return {'status':status,'n':n,'avg_pnl_fraction':avg,'hit_rate':hit,'posterior_hit_rate':post_hit,
+                'profit_factor':pf,'decision_influence':bool(measurable),
+                'setup':setup_name,'regime':regime}
+    except Exception as ex:
+        return {'status':'ERROR','n':0,'decision_influence':False,'error':f'{type(ex).__name__}: {ex}'}
+
+
+def profitability_gate(asset,horizon,direction,f,trade_plan):
+    """Use realized setup economics to size/suppress recurrence of losing patterns.
+
+    Sparse history never blocks. A hard block requires >=12 closed comparable trades,
+    negative mean P&L, low hit rate and profit factor below 0.85 simultaneously.
+    """
+    plan=trade_plan or {}
+    if direction not in ('LONG','SHORT') or not plan.get('eligible'):
+        return {'status':'NOT_APPLICABLE','allow':bool(plan.get('eligible')),'size_multiplier':1.0,'profile':{}}
+    setup_name=str(plan.get('setup') or plan.get('reason') or 'GENERIC')
+    profile=setup_profitability_profile(asset,horizon,direction,setup_name,f.get('regime'))
+    status=profile.get('status')
+    mult=1.0; allow=True
+    if status=='NEGATIVE_EDGE':
+        mult=0.0; allow=False
+    elif status=='DEGRADED':
+        mult=0.50
+    elif status=='POSITIVE_EDGE':
+        mult=1.15
+    # Never let this layer increase an initial fraction above 100%.
+    return {'status':status,'allow':allow,'size_multiplier':mult,'profile':profile,
+            'policy':'closed-trade setup memory; sparse samples cannot veto; confirmed negative edge can suppress recurrence'}
+
+
 def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
     if research_decision not in ('LONG','SHORT'): return {'eligible':False,'reason':'no_direction'}
     p=float(f.get('price') or 0.0); ti=f.get('trend_impulse') or {}; st=f.get('intraday_structure') or {}; direction=research_decision
     entryq=str(ti.get('entry_quality') or 'UNKNOWN')
     late=entryq in ('LATE_EXTENDED','EXTENDED_WAIT_PULLBACK'); invalid=entryq=='INVALIDATED' or bool(st.get('false_breakout'))
     est=expected_move_estimate(asset,horizon,f,direction,analog)
-    atr=float(st.get('atr_5m') or 0.0); sigma=float(ti.get('sigma_1h') or 0.0); rv=float(f.get('rv') or 0.0)
+    atr=float(st.get('atr_5m') or 0.0); sigma=float((ti.get('sigma_5m') if horizon=='5m' else ti.get('sigma_1h')) or 0.0); rv=float(f.get('rv') or 0.0)
     raw_inv=st.get('invalidation_price') or ti.get('invalidation_price')
     pullback=st.get('pullback_anchor'); breakout=st.get('breakout_level'); swing=st.get('recent_swing_anchor'); day_extreme=st.get('session_low') if direction=='LONG' else st.get('session_high')
     noise=max(atr*TRADE_ALERT_STOP_ATR_BUFFER,p*max(0.0005,0.25*sigma))
@@ -6258,16 +9007,51 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     add_candidate('BREAKOUT_LEVEL',breakout)
     add_candidate('SESSION_EXTREME',day_extreme)
     add_candidate('STRUCTURAL_INVALIDATION',raw_inv)
+
+    # v72.2 Breakout Capture Calibration.
+    held_breakout=bool(
+        st.get('breakout_hold') and not st.get('false_breakout') and
+        float(st.get('score') or 0.0)>=0.65 and
+        float(st.get('session_range_position') or 0.0)>=0.80 and
+        float(st.get('session_persistence') or 0.0)>=0.60 and
+        str(ti.get('phase') or '') in ('EARLY_TREND','TREND_DAY','IMPULSE_TREND')
+    )
+    tactical_breakout_anchor=None
+    if held_breakout and breakout is not None:
+        tactical_breakout_anchor=float(breakout)
+
+    psych_anchor=None
+    if held_breakout and asset=='MOEX' and p>0:
+        step=50.0
+        if direction=='LONG':
+            lvl=(p//step)*step
+            if lvl>0 and 0.0 <= (p-lvl)/p <= 0.0040:
+                psych_anchor=lvl
+        else:
+            lvl=((p+step-1e-12)//step)*step
+            if lvl>0 and 0.0 <= (lvl-p)/p <= 0.0040:
+                psych_anchor=lvl
+    if psych_anchor is not None:
+        tactical_breakout_anchor=psych_anchor
+
+    if tactical_breakout_anchor is not None:
+        add_candidate('TACTICAL_BREAKOUT_LEVEL',tactical_breakout_anchor)
+
     volstop=p*(1-max(0.0015,1.2*sigma)) if direction=='LONG' else p*(1+max(0.0015,1.2*sigma))
     candidates.append({'method':'VOLATILITY_FALLBACK','anchor':volstop,'stop_price':volstop,'distance_pct':abs(p-volstop)/p if p else None})
     # Expert policy: prefer the most recent confirmed structural pullback; otherwise the explicit breakout/invalidation level.
     fresh=bool(st.get('fresh_breakout'))
-    priority=(['RECENT_SWING_LOW_HIGH','CONFIRMED_PULLBACK_LOW_HIGH','STRUCTURAL_INVALIDATION','BREAKOUT_LEVEL','SESSION_EXTREME','VOLATILITY_FALLBACK']
-              if fresh else ['CONFIRMED_PULLBACK_LOW_HIGH','BREAKOUT_LEVEL','STRUCTURAL_INVALIDATION','SESSION_EXTREME','VOLATILITY_FALLBACK'])
+    if held_breakout and any(x.get('method')=='TACTICAL_BREAKOUT_LEVEL' for x in candidates):
+        priority=['TACTICAL_BREAKOUT_LEVEL','RECENT_SWING_LOW_HIGH','BREAKOUT_LEVEL','CONFIRMED_PULLBACK_LOW_HIGH','STRUCTURAL_INVALIDATION','SESSION_EXTREME','VOLATILITY_FALLBACK']
+    elif fresh:
+        priority=['RECENT_SWING_LOW_HIGH','CONFIRMED_PULLBACK_LOW_HIGH','STRUCTURAL_INVALIDATION','BREAKOUT_LEVEL','SESSION_EXTREME','VOLATILITY_FALLBACK']
+    else:
+        priority=['CONFIRMED_PULLBACK_LOW_HIGH','BREAKOUT_LEVEL','STRUCTURAL_INVALIDATION','SESSION_EXTREME','VOLATILITY_FALLBACK']
     chosen=next((x for meth in priority for x in candidates if x['method']==meth),candidates[0] if candidates else None)
     stop=float(chosen['stop_price']) if chosen else volstop; inv=float(chosen['anchor']) if chosen else stop
     stop_dist=abs(p-stop)/p if p else 999.0; exp=float(est.get('expected_move_pct') or 0.0)
-    if fresh: exp=max(exp,float(st.get('breakout_measured_move_pct') or 0.0))
+    if fresh or held_breakout:
+        exp=max(exp,float(st.get('breakout_measured_move_pct') or 0.0))
     ratio=exp/stop_dist if stop_dist>1e-12 else 999.0
     # Full size is reserved for strong, volume-confirmed impulse breakouts; otherwise stage the entry.
     strong_break=bool(((st.get('breakout_hold') and float(st.get('score') or 0)>=STRUCTURE_STRONG_SCORE) or
@@ -6377,7 +9161,8 @@ def manage_trade_alerts(summary):
         terminal=None; reason=None
         if stop is not None and ((direction=='LONG' and p<=float(stop)) or (direction=='SHORT' and p>=float(stop))): terminal='STOP'; reason='technical_stop_crossed'
         elif x.get('research_decision') in ('LONG','SHORT') and x.get('research_decision')!=direction: terminal='EXIT'; reason='direction_reversal'
-        elif str(x.get('entry_quality') or '')=='INVALIDATED': terminal='INVALIDATION'; reason='market_structure_failed'
+        elif str(x.get('v70_thesis_status') or '') in ('BROKEN','INVALIDATED') or str(x.get('v70_gate_class') or '')=='THESIS_VETO': terminal='INVALIDATION'; reason='thesis_failed'
+        elif h in ('1h','4h') and str(x.get('entry_quality') or '')=='INVALIDATED': terminal='INVALIDATION'; reason='tactical_entry_failed'
         if terminal:
             payload={**pay,'schema_version':TRADE_ALERT_SCHEMA_VERSION,'trigger_ts':now(),'action':terminal+'_'+direction,'trigger_price':p,'reason':reason,'robot_eligible':False,'execution_mode':'SHADOW_ONLY'}
             alert_rows.append((asset,h,terminal,'high',payload)); terminal_updates.append((terminal,payload,setup['setup_id']))
@@ -6438,6 +9223,249 @@ def manage_trade_alerts(summary):
     return out
 
 
+
+
+# ---------------- v80.0 Unified Execution Core ----------------
+
+def _uec_setup_family(x):
+    plan=x.get('trade_plan') or {}
+    piv=x.get('impulse_pivot_break') or {}
+    rev=x.get('tactical_reversal') or {}
+    rng=x.get('range_retest_breakout') or {}
+    bq=(x.get('institutional_signal') or {}).get('breakout_quality') or {}
+    if piv.get('active'): return 'IMPULSE_PIVOT_BREAK'
+    if rev.get('active'): return 'TACTICAL_REVERSAL'
+    if rng.get('active'): return 'RANGE_RETEST_BREAKOUT'
+    if str(bq.get('state') or '') in ('EARLY_BREAKOUT','CONFIRMED_BREAKOUT'): return 'BREAKOUT'
+    if str(plan.get('regime_shift_state') or '') in ('NEW_REGIME_PROVISIONAL','NEW_REGIME_ACCEPTED'): return 'REGIME_SHIFT'
+    return 'TREND'
+
+def _uec_anchor(x, direction):
+    plan=x.get('trade_plan') or {}
+    levels=x.get('structural_levels') or {}
+    vals=[
+        plan.get('breakout_level'),
+        plan.get('recent_swing_anchor'),
+        levels.get('resistance') if direction=='LONG' else levels.get('support'),
+        plan.get('invalidation_price'),
+        x.get('price'),
+    ]
+    for v in vals:
+        try:
+            if v is not None and float(v)>0:
+                return float(v)
+        except Exception:
+            pass
+    return 0.0
+
+def _uec_anchor_key(v):
+    try:
+        v=float(v)
+        if v<=0: return 'na'
+        # Four significant digits makes the setup stable through minor noise
+        # while allowing a materially new pivot to create a new setup.
+        return f'{v:.4g}'
+    except Exception:
+        return 'na'
+
+def _uec_canonical_setup_id(asset,direction,x):
+    family=_uec_setup_family(x)
+    anchor=_uec_anchor(x,direction)
+    raw=f'{asset}|{direction}|{family}|{_uec_anchor_key(anchor)}'
+    return 'UTS_'+hashlib.sha256(raw.encode()).hexdigest()[:20]
+
+def _uec_row_rank(x):
+    d=str(x.get('research_decision') or 'NO_TRADE')
+    if d not in ('LONG','SHORT'): return -999.0
+    plan=x.get('trade_plan') or {}
+    ti=plan.get('trade_integrity') or {}
+    ec=plan.get('execution_consistency') or {}
+    if ti.get('hard_invalidation') or ec.get('status')=='VETO':
+        return -500.0
+    inst=x.get('institutional_signal') or {}
+    ev=inst.get('evidence_independence') or {}
+    bq=inst.get('breakout_quality') or {}
+    hs=x.get('horizon_structure') or {}
+    conf=float(x.get('confidence') or 0.0)
+    indep=int(ev.get('independent_count') or 0)
+    q=float(bq.get('quality_score') or 0.0)
+    hscore=float(hs.get('score') or 0.0)
+    rr=float(plan.get('expected_to_stop_ratio') or 0.0)
+    h={'1h':0.00,'4h':0.02,'1d':0.04,'3d':0.025,'7d':0.015}.get(str(x.get('horizon') or ''),0.0)
+    return conf+0.06*min(indep,5)+0.12*q+0.10*hscore+0.04*min(max(rr,0.0),2.0)+h
+
+def _uec_asset_candidates(summary):
+    """One canonical directional trade candidate per asset.
+
+    Multiple horizons are evidence for one trade, not separate trades.
+    """
+    by_asset={}
+    for r0 in summary or []:
+        r=dict(r0)
+        d=str(r.get('research_decision') or 'NO_TRADE')
+        tr=r.get('tactical_reversal') or {}
+        if tr.get('active') and tr.get('direction') in ('LONG','SHORT'):
+            d=str(tr.get('direction')); r['research_decision']=d
+        if d not in ('LONG','SHORT'): continue
+        if not bool(r.get('source_gate_pass',True)): continue
+        if not bool(r.get('market_open',True)): continue
+        by_asset.setdefault(str(r.get('asset')),[]).append(r)
+
+    out={}
+    for asset,rows in by_asset.items():
+        # Sum support by direction, then choose the best execution row inside
+        # the dominant direction. This prevents one noisy horizon from flipping
+        # a stable multi-timeframe trade.
+        support={'LONG':0.0,'SHORT':0.0}
+        supporting={'LONG':[],'SHORT':[]}
+        for r in rows:
+            d=str(r.get('research_decision'))
+            rk=max(-1.0,_uec_row_rank(r))
+            support[d]+=max(0.01,rk)
+            supporting[d].append(str(r.get('horizon')))
+        if not support['LONG'] and not support['SHORT']: continue
+        direction='LONG' if support['LONG']>=support['SHORT'] else 'SHORT'
+        eligible=[r for r in rows if str(r.get('research_decision'))==direction]
+        if not eligible: continue
+        best=max(eligible,key=_uec_row_rank)
+        best=dict(best)
+        best['_uec_direction_support']=support
+        best['_uec_supporting_horizons']=sorted(set(supporting[direction]),key=lambda h:['1h','4h','1d','3d','7d'].index(h) if h in ['1h','4h','1d','3d','7d'] else 99)
+        best['_uec_rank']=_uec_row_rank(best)
+        best['_uec_setup_id']=_uec_canonical_setup_id(asset,direction,best)
+        out[asset]=best
+    return out
+
+def _uec_hard_terminal(x, current_direction):
+    plan=(x or {}).get('trade_plan') or {}
+    ti=plan.get('trade_integrity') or {}
+    ec=plan.get('execution_consistency') or {}
+    arb=plan.get('rule_arbitration') or {}
+    if ti.get('hard_invalidation'):
+        return 'INVALIDATION','hard_trade_integrity'
+    if ec.get('status')=='VETO':
+        return 'INVALIDATION','execution_consistency_veto'
+    hv=arb.get('hard_veto') or {}
+    if hv.get('decision')=='VETO':
+        return 'INVALIDATION','rule_arbitration_veto'
+    d=str((x or {}).get('research_decision') or 'NO_TRADE')
+    if d in ('LONG','SHORT') and d!=current_direction:
+        if v84_direction_flip_confirmed(x,current_direction):
+            return 'EXIT','v84_confirmed_multi_horizon_direction_flip'
+        return None,'v84_soft_direction_flip_ignored'
+    return None,None
+
+def manage_trade_alerts(summary):
+    """Unified asset-level setup manager.
+
+    One asset/direction/structural setup = one trade state.
+    Horizons confirm the trade; they no longer create parallel trades.
+    Soft timing failures never terminate a trade.
+    """
+    if not TRADE_ALERTS_ENABLED or not pg_enabled(): return []
+    candidates=_uec_asset_candidates(summary)
+    out=[]; alert_rows=[]; terminal_updates=[]; new_setups=[]
+    with pg_connect() as c:
+        rows=[dict(r) for r in c.execute("SELECT * FROM trade_setups WHERE status='ACTIVE' ORDER BY updated_at DESC").fetchall()]
+
+    # Collapse legacy horizon-duplicates to one active setup per asset.
+    active_by_asset={}
+    duplicate_ids=[]
+    for st in rows:
+        a=str(st.get('asset'))
+        if a not in active_by_asset:
+            active_by_asset[a]=st
+        else:
+            duplicate_ids.append(st['setup_id'])
+
+    # Manage existing trade states.
+    for asset,st in list(active_by_asset.items()):
+        x=candidates.get(asset)
+        pay=st['payload'] if isinstance(st.get('payload'),dict) else json.loads(st.get('payload') or '{}')
+        direction=str(st.get('direction'))
+        px=float((x or {}).get('price') or st.get('entry_price') or 0.0)
+        stop=st.get('stop_price')
+        terminal=None; reason=None
+
+        if stop is not None and px>0 and ((direction=='LONG' and px<=float(stop)) or (direction=='SHORT' and px>=float(stop))):
+            terminal='STOP'; reason='structural_stop_crossed'
+        elif x:
+            terminal,reason=_uec_hard_terminal(x,direction)
+
+        if terminal:
+            payload={**pay,'schema_version':TRADE_ALERT_SCHEMA_VERSION,'trigger_ts':now(),
+                     'action':terminal+'_'+direction,'trigger_price':px,'reason':reason,
+                     'canonical_trade_state':True,'robot_eligible':False,'execution_mode':'SHADOW_ONLY'}
+            alert_rows.append((asset,str(st.get('horizon') or (x or {}).get('horizon') or '1h'),terminal,'high',payload))
+            terminal_updates.append((terminal,payload,st['setup_id']))
+            active_by_asset.pop(asset,None)
+        elif x:
+            # Refresh support metadata without creating a new trade.
+            payload={**pay,
+                     'supporting_horizons':x.get('_uec_supporting_horizons') or [],
+                     'direction_support':x.get('_uec_direction_support') or {},
+                     'last_execution_horizon':x.get('horizon'),
+                     'last_seen_at':now()}
+            terminal_updates.append(('ACTIVE_REFRESH',payload,st['setup_id']))
+
+    # Create one new setup per asset after terminals have been resolved.
+    for asset,x in candidates.items():
+        if asset in active_by_asset: continue
+        d=str(x.get('research_decision') or 'NO_TRADE')
+        if d not in ('LONG','SHORT'): continue
+        plan=x.get('trade_plan') or {}
+        # Signal-first: secondary timing/economics affect scale, not existence.
+        ti=plan.get('trade_integrity') or {}
+        ec=plan.get('execution_consistency') or {}
+        arb=plan.get('rule_arbitration') or {}
+        hard=bool(ti.get('hard_invalidation') or ec.get('status')=='VETO' or ((arb.get('hard_veto') or {}).get('decision')=='VETO'))
+        if hard: continue
+
+        setup_id=str(x.get('_uec_setup_id') or _uec_canonical_setup_id(asset,d,x))
+        h=str(x.get('horizon') or '1h')
+        exp=float(plan.get('expected_move_pct') or 0.0)
+        frac=float(plan.get('initial_position_fraction') or 0.0)
+        if frac<=0: frac=0.10
+        frac=clip(frac,0.05,1.0)
+        payload={'schema_version':TRADE_ALERT_SCHEMA_VERSION,'setup_id':setup_id,'canonical_trade_state':True,
+                 'trigger_ts':now(),'asset':asset,'horizon':h,'execution_horizon':h,
+                 'supporting_horizons':x.get('_uec_supporting_horizons') or [h],
+                 'direction_support':x.get('_uec_direction_support') or {},
+                 'action':'ENTRY_'+d,'direction':d,'trigger_price':float(x.get('price') or plan.get('entry_price') or 0),
+                 'stop_price':plan.get('stop_price'),'invalidation_price':plan.get('invalidation_price'),
+                 'expected_move_pct':exp,'expected_move_method':plan.get('expected_move_method'),
+                 'signal_tier':x.get('signal_tier'),'signal_strength':x.get('confidence'),
+                 'entry_quality':plan.get('entry_quality'),'initial_position_fraction':frac,
+                 'scaling_policy':plan.get('scaling_policy'),'expected_to_stop_ratio':plan.get('expected_to_stop_ratio'),
+                 'stop_method':plan.get('stop_method'),'setup_family':_uec_setup_family(x),
+                 'experience_decision':plan.get('experience_decision'),
+                 'setup_memory':plan.get('setup_memory'),
+                 'adaptive_regime_policy':plan.get('adaptive_regime_policy'),
+                 'execution_policy':plan.get('execution_policy'),
+                 'structural_anchor':_uec_anchor(x,d),'robot_eligible':False,'execution_mode':'SHADOW_ONLY'}
+        alert_rows.append((asset,h,'ENTRY','medium',payload))
+        new_setups.append((setup_id,asset,h,d,plan,exp,payload))
+
+    if alert_rows or terminal_updates or new_setups or duplicate_ids:
+        with pg_connect() as c:
+            for dup in duplicate_ids:
+                c.execute("UPDATE trade_setups SET status='MERGED_DUPLICATE',updated_at=%s WHERE setup_id=%s",(now(),dup))
+            for asset,h,atype,sev,payload in alert_rows:
+                out.append(_insert_trade_alert_conn(c,asset,h,atype,sev,payload))
+            for terminal,payload,setup_id in terminal_updates:
+                if terminal=='ACTIVE_REFRESH':
+                    c.execute("UPDATE trade_setups SET updated_at=%s,payload=%s::jsonb WHERE setup_id=%s",
+                              (now(),json.dumps(payload,ensure_ascii=False),setup_id))
+                else:
+                    c.execute("UPDATE trade_setups SET status=%s,updated_at=%s,payload=%s::jsonb WHERE setup_id=%s",
+                              (terminal,now(),json.dumps(payload,ensure_ascii=False),setup_id))
+            for setup_id,asset,h,d,plan,exp,payload in new_setups:
+                c.execute("""INSERT INTO trade_setups(setup_id,created_at,updated_at,asset,horizon,direction,status,entry_price,stop_price,invalidation_price,expected_move_pct,payload)
+                             VALUES(%s,%s,%s,%s,%s,%s,'ACTIVE',%s,%s,%s,%s,%s::jsonb)
+                             ON CONFLICT(setup_id) DO UPDATE SET updated_at=EXCLUDED.updated_at,payload=EXCLUDED.payload""",
+                          (setup_id,now(),now(),asset,h,d,float(payload.get('trigger_price') or 0),plan.get('stop_price'),
+                           plan.get('invalidation_price'),exp,json.dumps(payload,ensure_ascii=False)))
+    return out
 
 def _signed_trade_return(direction,entry,price):
     if not entry or not price: return 0.0
@@ -6505,10 +9533,15 @@ def sync_shadow_trade_lifecycle(summary):
                 if not x or x.get('price') is None: continue
                 px=float(x['price']); direction=tr['direction']; cur=float(tr.get('current_fraction') or 0.0); avg=float(tr.get('avg_entry_price') or tr['entry_price'])
                 high=max(float(tr.get('high_price') or px),px); low=min(float(tr.get('low_price') or px),px)
-                stage=str(x.get('decision_stage') or tr.get('stage') or 'HOLD'); plan=x.get('trade_plan') or {}; ta=x.get('tradeability') or {}
-                desired=clip(float(plan.get('initial_position_fraction') or cur),0.0,1.0)
-                # Confirmation can add; deteriorating evidence can reduce, but only in shadow until separately validated.
-                if stage in ('CONFIRMED_SCALE','CONFIRMED_FULL') and desired>cur+1e-6:
+                plan=x.get('trade_plan') or {}
+                execp=plan.get('execution_policy') or setup_payload.get('execution_policy') or {}
+                stage=str(x.get('decision_stage') or tr.get('stage') or 'HOLD'); ta=x.get('tradeability') or {}
+                desired=clip(float(plan.get('initial_position_fraction') or cur),0.05,1.0)
+                if execp and not bool(execp.get('add_allowed',True)):
+                    desired=min(desired,cur)
+
+                # Scale only after confirmation and only when v84 regime/setup memory permits it.
+                if desired>cur+1e-6 and stage in ('CONFIRMED_SCALE','CONFIRMED_FULL','ENTER_AND_SCALE','ENTER_FULL_CANDIDATE'):
                     add=min(1.0-cur,desired-cur)
                     new_frac=cur+add; new_avg=((avg*cur)+(px*add))/new_frac if new_frac>0 else avg
                     cur=new_frac; avg=new_avg
@@ -6539,6 +9572,933 @@ def sync_shadow_trade_lifecycle(summary):
         emit('shadow_lifecycle_error',error=f'{type(ex).__name__}: {ex}')
         return {'status':'error','events':events,'error':f'{type(ex).__name__}: {ex}'}
 
+
+
+def trade_path_profile(asset,horizon,direction,setup_name=None,limit=300):
+    """Learn how profitable and losing trades actually travel after entry.
+
+    MFE/MAE are derived only from the path observed after entry.
+    Sparse history remains diagnostic and has no decision influence.
+    """
+    if not pg_enabled() or direction not in ('LONG','SHORT'):
+        return {'status':'BUILDING','n':0,'decision_influence':False}
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT direction,entry_price,high_price,low_price,total_pnl_fraction,payload
+                              FROM shadow_trades
+                              WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
+                                AND asset=%s AND horizon=%s AND direction=%s
+                              ORDER BY closed_at DESC NULLS LAST LIMIT %s""",
+                           (asset,horizon,direction,int(limit))).fetchall()
+        obs=[]
+        for rr in rows:
+            x=dict(rr)
+            pay=x.get('payload')
+            if not isinstance(pay,dict):
+                try: pay=json.loads(pay or '{}')
+                except Exception: pay={}
+            psetup=str(pay.get('setup') or pay.get('trade_plan_setup') or pay.get('entry_setup') or '')
+            if setup_name and psetup and psetup!=setup_name:
+                continue
+            entry=float(x.get('entry_price') or 0.0)
+            hi=float(x.get('high_price') or entry)
+            lo=float(x.get('low_price') or entry)
+            pnl=float(x.get('total_pnl_fraction') or 0.0)
+            if entry<=0: continue
+            if direction=='LONG':
+                mfe=max(0.0,hi/entry-1.0)
+                mae=max(0.0,1.0-lo/entry)
+            else:
+                mfe=max(0.0,1.0-lo/entry)
+                mae=max(0.0,hi/entry-1.0)
+            capture=(max(0.0,pnl)/mfe) if mfe>1e-9 else None
+            obs.append({'pnl':pnl,'mfe':mfe,'mae':mae,'capture':capture})
+        n=len(obs)
+        if not n:
+            return {'status':'BUILDING','n':0,'decision_influence':False}
+        wins=[z for z in obs if z['pnl']>0]
+        losers=[z for z in obs if z['pnl']<=0]
+        def q(vals,p):
+            vals=sorted(float(v) for v in vals if v is not None and math.isfinite(float(v)))
+            if not vals: return None
+            j=(len(vals)-1)*p; a=int(j); b=min(len(vals)-1,a+1); w=j-a
+            return vals[a]*(1-w)+vals[b]*w
+        win_mae=[z['mae'] for z in wins]
+        win_mfe=[z['mfe'] for z in wins]
+        cap=[z['capture'] for z in wins if z['capture'] is not None]
+        influence=n>=20 and len(wins)>=8
+        return {
+            'status':'MEASURABLE' if influence else 'BUILDING',
+            'n':n,'wins':len(wins),'losses':len(losers),
+            'hit_rate':len(wins)/n,
+            'median_winner_mfe':q(win_mfe,0.50),
+            'p75_winner_mfe':q(win_mfe,0.75),
+            'median_winner_mae':q(win_mae,0.50),
+            'p80_winner_mae':q(win_mae,0.80),
+            'median_capture_ratio':q(cap,0.50),
+            'p25_capture_ratio':q(cap,0.25),
+            'decision_influence':influence,
+            'setup':setup_name,
+            'principle':'Learn the normal profitable path before tightening stops or taking profit.'
+        }
+    except Exception as ex:
+        return {'status':'ERROR','n':0,'decision_influence':False,'error':f'{type(ex).__name__}: {ex}'}
+
+
+def trade_path_intelligence(asset,horizon,direction,trade_plan):
+    plan=trade_plan or {}
+    setup=str(plan.get('setup') or plan.get('reason') or 'GENERIC')
+    prof=trade_path_profile(asset,horizon,direction,setup)
+    out={'status':prof.get('status'),'profile':prof,'decision_influence':bool(prof.get('decision_influence'))}
+    if not prof.get('decision_influence'):
+        out.update({'management_policy':'BASELINE','normal_pullback_buffer_pct':None,'capture_problem':False})
+        return out
+
+    normal_pullback=float(prof.get('p80_winner_mae') or 0.0)
+    cap=prof.get('median_capture_ratio')
+    capture_problem=bool(cap is not None and float(cap)<0.35)
+    out.update({
+        'management_policy':'PATH_CONDITIONED',
+        'normal_pullback_buffer_pct':normal_pullback,
+        'winner_mfe_reference_pct':prof.get('median_winner_mfe'),
+        'capture_problem':capture_problem,
+        'recommended_behavior':(
+            'LET_WINNER_RUN_AND_TRAIL_STRUCTURALLY'
+            if capture_problem else
+            'NORMAL_STRUCTURAL_MANAGEMENT'
+        ),
+        'rule':'Do not tighten a stop inside the p80 adverse excursion historically survived by profitable comparable trades unless thesis invalidates.'
+    })
+    return out
+
+
+def trade_path_intelligence_board():
+    items=[]
+    for asset in DISPLAY_ASSETS:
+        for h in HORIZONS:
+            for d in ('LONG','SHORT'):
+                z=trade_path_profile(asset,h,d,None)
+                if int(z.get('n') or 0)>0:
+                    items.append({'asset':asset,'horizon':h,'direction':d,**z})
+    measurable=[x for x in items if x.get('decision_influence')]
+    return {'version':VERSION,'status':'MEASURABLE' if measurable else 'BUILDING',
+            'items':items,'measurable_cells':len(measurable),
+            'objective':'Increase realized capture of favorable moves while avoiding stops inside normal profitable-trade noise.'}
+
+
+# ---------------- v77 Decision Quality Stack ----------------
+
+_V77_RECENT_TRADE_CACHE = {}
+_V77_RECENT_TRADE_CACHE_SECONDS = 60
+
+def _v77_new_setup_signature(asset,horizon,direction,setup,trigger):
+    try:
+        t='na' if trigger is None else f'{float(trigger):.8g}'
+    except Exception:
+        t=str(trigger or 'na')
+    return f'{asset}:{horizon}:{direction}:{setup}:{t}'
+
+def _v77_recent_closed_trade(asset,horizon,direction):
+    """Light cache used only for churn suppression/re-entry logic."""
+    key=(asset,horizon,direction)
+    cached=_V77_RECENT_TRADE_CACHE.get(key)
+    if cached and time.time()-cached[0]<_V77_RECENT_TRADE_CACHE_SECONDS:
+        return cached[1]
+    if not pg_enabled():
+        return None
+    try:
+        with pg_connect() as c:
+            r=c.execute("""SELECT status,closed_at,entry_price,exit_price,payload
+                           FROM shadow_trades
+                           WHERE status<>'ACTIVE' AND asset=%s AND horizon=%s AND direction=%s
+                           ORDER BY closed_at DESC NULLS LAST LIMIT 1""",
+                        (asset,horizon,direction)).fetchone()
+        out=dict(r) if r else None
+        _V77_RECENT_TRADE_CACHE[key]=(time.time(),out)
+        return out
+    except Exception:
+        return None
+
+def _v77_valid_structural_stop(entry,direction,candidates,pre_impulse=None):
+    """Choose a structural invalidation first. Never tighten stop merely to improve RR."""
+    entry=float(entry or 0.0)
+    if entry<=0:
+        return None,None
+    usable=[]
+    for x in candidates or []:
+        try:
+            sp=float(x.get('stop_price'))
+            method=str(x.get('method') or '')
+        except Exception:
+            continue
+        if direction=='LONG' and sp>=entry: continue
+        if direction=='SHORT' and sp<=entry: continue
+        if method in ('RECENT_SWING_LOW_HIGH','STRUCTURAL_INVALIDATION','CONFIRMED_PULLBACK_LOW_HIGH','SESSION_EXTREME'):
+            usable.append((method,sp))
+    # A stored pre-impulse anchor is preferred when the plan already produced a valid stop from it.
+    # Otherwise use the nearest genuinely structural stop, not BREAKOUT_LEVEL.
+    priority=('RECENT_SWING_LOW_HIGH','CONFIRMED_PULLBACK_LOW_HIGH','STRUCTURAL_INVALIDATION','SESSION_EXTREME')
+    for m in priority:
+        rows=[z for z in usable if z[0]==m]
+        if rows:
+            if direction=='LONG':
+                return max(rows,key=lambda z:z[1])[1],m
+            return min(rows,key=lambda z:z[1])[1],m
+    return None,None
+
+def _v77_regime_shift_state(f, candidate_direction):
+    st=f.get('intraday_structure') or {}
+    hs=f.get('horizon_structure') or {}
+    ti=f.get('trend_impulse') or {}
+    gen=f.get('impulse_genesis') or {}
+    piv=f.get('impulse_pivot_break') or {}
+    transition=(f.get('institutional_signal') or {}).get('regime_transition') or {}
+    old_failed=str(st.get('lifecycle') or '')=='FAILURE' or str(ti.get('entry_quality') or '')=='INVALIDATED'
+    fast_break=bool(
+        (gen.get('candidate_direction')==candidate_direction and
+         (gen.get('active') or float(gen.get('probability') or 0)>=0.68))
+        or
+        (piv.get('candidate_direction')==candidate_direction and
+         (piv.get('active') or float(piv.get('probability') or 0)>=0.72))
+    )
+    path=max(float(gen.get('local_efficiency') or 0.0),float(piv.get('local_efficiency') or 0.0))
+    confirmations=max(int(gen.get('confirmations') or 0),int(piv.get('confirmations') or 0))
+    native_dir=str(hs.get('direction') or 'NO_TRADE')
+    native_not_opposed=native_dir in ('NO_TRADE',candidate_direction)
+    trans_state=str(transition.get('state') or '')
+    if fast_break and old_failed and path>=0.35 and confirmations>=3 and native_not_opposed:
+        return 'NEW_REGIME_PROVISIONAL'
+    if fast_break and confirmations>=4 and path>=0.45 and native_dir==candidate_direction:
+        return 'NEW_REGIME_ACCEPTED'
+    if old_failed:
+        return 'OLD_REGIME_WEAKENING'
+    if trans_state in ('TRANSITION','DESTABILIZING'):
+        return 'TRANSITION'
+    return 'STABLE'
+
+def _v77_error_cost_profile(plan):
+    """Cost attribution is attached to the decision so later learning penalizes the right engine."""
+    return {
+        'direction_error_weight':1.00,
+        'stop_execution_error_weight':0.85,
+        'late_entry_error_weight':0.70,
+        'premature_exit_error_weight':0.80,
+        'missed_impulse_opportunity_weight':0.90,
+        'small_early_probe_false_break_weight':0.30,
+        'churn_error_weight':0.65,
+        'principle':'Do not punish direction model for a correct-direction trade lost by stop, timing or exit.'
+    }
+
+def v77_decision_quality_stack(asset,horizon,f,trade_plan,research_dec):
+    """Post-process an otherwise formed trade plan.
+
+    Priorities:
+    1) a genuinely new setup is not vetoed by the previous setup's FAILURE state;
+    2) stop location is structural, position size absorbs the distance;
+    3) transition entries are staged, never full-size immediately;
+    4) re-entry needs a new market event, reducing ENTRY/EXIT churn;
+    5) late continuation remains allowed when remaining economics are positive.
+    """
+    plan=dict(trade_plan or {})
+    direction=str(research_dec or plan.get('direction') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        plan['v77']={'status':'NO_DIRECTION','error_cost':_v77_error_cost_profile(plan)}
+        return plan
+
+    gen=f.get('impulse_genesis') or {}
+    piv=f.get('impulse_pivot_break') or {}
+    rev=f.get('tactical_reversal') or {}
+    rng=f.get('range_retest_breakout') or {}
+    st=f.get('intraday_structure') or {}
+    hs=f.get('horizon_structure') or {}
+    inst=f.get('institutional_signal') or {}
+
+    candidate=None
+    for x in (gen,piv,rev,rng):
+        cd=str(x.get('direction') or x.get('candidate_direction') or '')
+        if cd==direction:
+            if candidate is None or float(x.get('probability') or 0)>float(candidate.get('probability') or 0):
+                candidate=x
+    candidate=candidate or {}
+
+    setup=str(plan.get('setup') or candidate.get('setup') or plan.get('reason') or 'GENERIC')
+    trigger=plan.get('trigger_level')
+    if trigger is None:
+        trigger=candidate.get('trigger_level')
+    if trigger is None:
+        if direction=='LONG':
+            trigger=(f.get('structural_levels') or {}).get('resistance')
+        else:
+            trigger=(f.get('structural_levels') or {}).get('support')
+    setup_id=_v77_new_setup_signature(asset,horizon,direction,setup,trigger)
+    plan['setup_id']=setup_id
+
+    shift=_v77_regime_shift_state(f,direction)
+    plan['regime_shift_state']=shift
+
+    # --- State Conflict Resolver ---
+    old_entry_invalid=str(st.get('entry_quality') or '')=='INVALIDATED' or str(st.get('lifecycle') or '')=='FAILURE'
+    prob=float(candidate.get('probability') or 0.0)
+    conf=int(candidate.get('confirmations') or 0)
+    fast_evidence=bool(
+        candidate and
+        (candidate.get('active') or prob>=0.72) and
+        conf>=3 and
+        shift in ('NEW_REGIME_PROVISIONAL','NEW_REGIME_ACCEPTED')
+    )
+    thesis_status=str(f.get('v70_thesis_status') or plan.get('v70_thesis_status') or '')
+    hard_thesis_fail=thesis_status in ('BROKEN','INVALIDATED') or str(f.get('v70_gate_class') or '')=='THESIS_VETO'
+
+    if old_entry_invalid and fast_evidence and not hard_thesis_fail:
+        # New setup has its own identity; previous failed setup cannot veto it.
+        plan['eligible']=True
+        plan['reason']='v77_new_setup_resets_old_entry_failure'
+        plan['entry_quality']='NEW_SETUP_PROVISIONAL'
+        plan['state_conflict_override']=True
+
+    # --- Structural Stop Enforcement ---
+    impulse_like=setup in ('IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL','BRENT_REVERSAL_CAPTURE') \
+        or shift in ('NEW_REGIME_PROVISIONAL','NEW_REGIME_ACCEPTED')
+    entry=float(plan.get('entry_price') or f.get('price') or 0.0)
+    if impulse_like and entry>0:
+        structural_stop,method=_v77_valid_structural_stop(entry,direction,plan.get('stop_candidates') or [],
+                                                          plan.get('pre_impulse_swing'))
+        # Candidate-generated pre-impulse stop may be the best available structural anchor.
+        if candidate.get('structural_stop_policy')=='PRE_IMPULSE_SWING' and candidate.get('stop_price') is not None:
+            try:
+                csp=float(candidate.get('stop_price'))
+                if (direction=='LONG' and csp<entry) or (direction=='SHORT' and csp>entry):
+                    structural_stop=csp; method='PRE_IMPULSE_SWING'
+            except Exception:
+                pass
+        if structural_stop is not None:
+            plan['stop_price']=structural_stop
+            plan['stop_method']=method
+            sd=abs(entry-structural_stop)/entry
+            plan['stop_distance_pct']=sd
+            exp=float(plan.get('expected_move_pct') or 0.0)
+            plan['expected_to_stop_ratio']=exp/sd if sd>1e-12 else 999.0
+            plan['structural_stop_enforced']=True
+
+    # --- Remaining Move / continuation economics ---
+    exp=float(plan.get('expected_move_pct') or 0.0)
+    sd=float(plan.get('stop_distance_pct') or 0.0)
+    rr=exp/sd if sd>1e-12 else float(plan.get('expected_to_stop_ratio') or 0.0)
+    late=bool(plan.get('late_entry') or (st.get('late_entry')))
+    plan['entry_lateness_policy']='ALLOWED_IF_REMAINING_EDGE_POSITIVE'
+    if late and plan.get('eligible'):
+        if exp<=0 or rr<0.75:
+            plan['eligible']=False
+            plan['reason']='late_entry_insufficient_remaining_edge'
+        else:
+            plan['continuation_entry']=True
+
+    # --- Staged Position Sizing ---
+    initial=float(plan.get('initial_position_fraction') or 0.0)
+    transition_state=shift in ('TRANSITION','OLD_REGIME_WEAKENING','NEW_REGIME_PROVISIONAL')
+    accepted=shift=='NEW_REGIME_ACCEPTED'
+    volume_ok=bool((st.get('volume_confirmed')) or float(candidate.get('local_volume_ratio') or 0)>=1.0)
+    if plan.get('eligible'):
+        if transition_state:
+            initial=min(initial if initial>0 else 0.10,0.10)
+            stage='PROBE_5_10'
+        elif accepted and volume_ok:
+            initial=min(initial if initial>0 else 0.25,0.25)
+            stage='ACCEPTED_15_25'
+        elif accepted:
+            initial=min(initial if initial>0 else 0.15,0.15)
+            stage='ACCEPTED_LOW_VOLUME_10_15'
+        else:
+            stage='BASELINE'
+        plan['initial_position_fraction']=initial
+        plan['position_stage']=stage
+        plan['scaling_policy']='V77_PROBE_THEN_ACCEPTANCE_THEN_CONFIRM'
+
+    # If structural economics are poor, reduce size / reject; never tighten the stop to fake RR.
+    rr=float(plan.get('expected_to_stop_ratio') or 0.0)
+    if plan.get('eligible') and impulse_like:
+        if rr<0.60:
+            plan['eligible']=False
+            plan['reason']='structural_stop_economics_insufficient'
+            plan['initial_position_fraction']=0.0
+        elif rr<0.90:
+            plan['initial_position_fraction']=min(float(plan.get('initial_position_fraction') or 0.0),0.05)
+            plan['position_stage']='MICRO_PROBE_POOR_RR'
+
+    # --- Churn suppression / Re-entry intelligence ---
+    recent=_v77_recent_closed_trade(asset,horizon,direction)
+    reentry={'checked':bool(recent),'allowed':True,'new_event_required':False}
+    if recent:
+        payload=recent.get('payload')
+        if not isinstance(payload,dict):
+            try: payload=json.loads(payload or '{}')
+            except Exception: payload={}
+        old_setup=str(payload.get('setup_id') or '')
+        old_trigger=payload.get('trigger_level')
+        closed_at=recent.get('closed_at')
+        age_min=None
+        try:
+            if isinstance(closed_at,str):
+                dt=datetime.fromisoformat(closed_at.replace('Z','+00:00'))
+            else:
+                dt=closed_at
+            if dt and dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)
+            if dt: age_min=max(0.0,(datetime.now(timezone.utc)-dt).total_seconds()/60.0)
+        except Exception:
+            pass
+
+        new_event=bool(
+            gen.get('active') or piv.get('active') or
+            str(rng.get('state') or '') in ('RETEST_ENTRY','BREAKOUT_ADD') or
+            shift=='NEW_REGIME_ACCEPTED'
+        )
+        trigger_changed=False
+        try:
+            if old_trigger is not None and trigger is not None and float(trigger)!=0:
+                trigger_changed=abs(float(trigger)-float(old_trigger))/abs(float(trigger))>=0.0015
+        except Exception:
+            pass
+
+        same_setup=bool(old_setup and old_setup==setup_id)
+        if age_min is not None and age_min<20 and same_setup and not (new_event or trigger_changed):
+            reentry.update({'allowed':False,'new_event_required':True,'age_minutes':round(age_min,2),
+                            'reason':'same_setup_recently_closed_without_new_structure'})
+            if plan.get('eligible'):
+                plan['eligible']=False
+                plan['reason']='v77_churn_suppression_wait_new_event'
+                plan['initial_position_fraction']=0.0
+        elif age_min is not None and age_min<45 and (new_event or trigger_changed):
+            reentry.update({'allowed':True,'new_event_required':False,'age_minutes':round(age_min,2),
+                            'reason':'new_reclaim_pivot_or_retest_event'})
+            plan['reentry_candidate']=True
+
+    plan['reentry_intelligence']=reentry
+
+    # --- Exit Alpha policy metadata ---
+    path=plan.get('trade_path_intelligence') or {}
+    path_prof=path.get('profile') or {}
+    plan['exit_alpha']={
+        'mode':'STRUCTURE_FIRST',
+        'close_on_entry_invalidation_only':False,
+        'full_exit_requires':'SETUP_OR_THESIS_INVALIDATION',
+        'reduce_on_timing_deterioration':True,
+        'normal_pullback_buffer_pct':path.get('normal_pullback_buffer_pct'),
+        'capture_problem':bool(path.get('capture_problem')),
+        'recommendation':path.get('recommended_behavior') or 'HOLD_UNTIL_STRUCTURE_CHANGES',
+        'principle':'Do not convert a temporary timing failure into a full thesis exit.'
+    }
+
+    # --- Trade Quality Score ---
+    dir_q=min(1.0,max(0.0,float(candidate.get('probability') or abs(float(f.get('score') or 0.0)))))
+    timing_q=1.0 if not late else 0.65
+    stop_q=1.0 if plan.get('structural_stop_enforced') else 0.55
+    remaining_q=min(1.0,max(0.0,rr/1.5)) if rr else 0.0
+    regime_q=1.0 if accepted else 0.75 if transition_state else 0.65
+    tq=(dir_q*timing_q*stop_q*remaining_q*regime_q)**0.2 if all(x>0 for x in (dir_q,timing_q,stop_q,remaining_q,regime_q)) else 0.0
+    plan['trade_quality_score']=round(tq,4)
+    plan['trade_quality_components']={
+        'direction':round(dir_q,4),'timing':timing_q,'stop':stop_q,
+        'remaining_move':round(remaining_q,4),'regime_fit':regime_q
+    }
+    plan['error_cost']=_v77_error_cost_profile(plan)
+    plan['v77']={
+        'status':'ACTIVE','setup_id':setup_id,'regime_shift_state':shift,
+        'old_failure_reset':bool(plan.get('state_conflict_override')),
+        'structural_stop_enforced':bool(plan.get('structural_stop_enforced')),
+        'position_stage':plan.get('position_stage'),
+        'reentry':reentry
+    }
+    return plan
+
+
+def execution_consistency_layer(asset,horizon,f,trade_plan,research_dec):
+    """Global final consistency gate before any portfolio/execution layer.
+
+    It does not invent a signal. It ensures that direction, setup identity,
+    stop, position stage, re-entry state and exit semantics are mutually
+    consistent. Corrections reduce risk; the layer never increases risk.
+    """
+    plan=dict(trade_plan or {})
+    direction=str(research_dec or plan.get('direction') or 'NO_TRADE')
+    corrections=[]
+    veto=None
+
+    if direction not in ('LONG','SHORT'):
+        plan['execution_consistency']={
+            'status':'NO_DIRECTION','corrections':[],'veto':None,
+            'principle':'No directional execution without a directional research decision.'
+        }
+        return plan
+
+    entry=float(plan.get('entry_price') or f.get('price') or 0.0)
+    stop=plan.get('stop_price')
+    v77=plan.get('v77') or {}
+    shift=str(plan.get('regime_shift_state') or v77.get('regime_shift_state') or 'STABLE')
+    reentry=plan.get('reentry_intelligence') or {}
+    exit_alpha=plan.get('exit_alpha') or {}
+    hard_thesis_fail=str(f.get('v70_thesis_status') or '') in ('BROKEN','INVALIDATED') or str(f.get('v70_gate_class') or '')=='THESIS_VETO'
+
+    # Direction must be internally consistent.
+    pd=str(plan.get('direction') or direction)
+    if pd in ('LONG','SHORT') and pd!=direction:
+        veto='DIRECTION_CONFLICT'
+
+    # Hard thesis failure always dominates entry logic.
+    if hard_thesis_fail:
+        veto='THESIS_INVALIDATED'
+
+    # Re-entry suppression is a hard admission gate.
+    if reentry and reentry.get('allowed') is False:
+        veto='REENTRY_BLOCKED_NO_NEW_EVENT'
+
+    # An eligible plan must have a valid stop on the correct side.
+    if plan.get('eligible'):
+        if stop is None or entry<=0:
+            veto=veto or 'MISSING_STOP_OR_ENTRY'
+        else:
+            try:
+                s=float(stop)
+                wrong=(direction=='LONG' and s>=entry) or (direction=='SHORT' and s<=entry)
+                if wrong:
+                    veto=veto or 'STOP_WRONG_SIDE'
+            except Exception:
+                veto=veto or 'INVALID_STOP'
+
+    # Impulse/reversal setups require a structural stop except explicit micro-probes.
+    setup=str(plan.get('setup') or '')
+    impulse_like=bool(
+        setup in ('IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL','BRENT_REVERSAL_CAPTURE')
+        or shift in ('NEW_REGIME_PROVISIONAL','NEW_REGIME_ACCEPTED')
+    )
+    stage=str(plan.get('position_stage') or '')
+    if plan.get('eligible') and impulse_like and not plan.get('structural_stop_enforced'):
+        if stage!='MICRO_PROBE_POOR_RR':
+            veto=veto or 'IMPULSE_WITHOUT_STRUCTURAL_STOP'
+
+    # Stage and size must agree. Never increase risk here.
+    size=float(plan.get('initial_position_fraction') or 0.0)
+    caps={
+        'PROBE_5_10':0.10,
+        'ACCEPTED_LOW_VOLUME_10_15':0.15,
+        'ACCEPTED_15_25':0.25,
+        'MICRO_PROBE_POOR_RR':0.05,
+    }
+    cap=caps.get(stage)
+    if cap is not None and size>cap:
+        plan['initial_position_fraction']=cap
+        corrections.append(f'size_capped_{stage}_{cap:.2f}')
+
+    # Late entries remain allowed only with remaining economics.
+    if bool(plan.get('late_entry') or (f.get('intraday_structure') or {}).get('late_entry')):
+        rr=float(plan.get('expected_to_stop_ratio') or 0.0)
+        if rr<0.75:
+            veto=veto or 'LATE_ENTRY_INSUFFICIENT_REMAINING_EDGE'
+
+    # ENTRY invalidation is timing information, not an automatic full-exit instruction.
+    if exit_alpha:
+        exit_alpha['close_on_entry_invalidation_only']=False
+        exit_alpha['full_exit_requires']='SETUP_OR_THESIS_INVALIDATION'
+        plan['exit_alpha']=exit_alpha
+
+    # Quality score controls size, not signal direction.
+    tq=float(plan.get('trade_quality_score') or 0.0)
+    if plan.get('eligible') and tq>0 and tq<0.45:
+        old=float(plan.get('initial_position_fraction') or 0.0)
+        new=min(old,0.05)
+        if new<old:
+            plan['initial_position_fraction']=new
+            corrections.append('low_trade_quality_micro_probe')
+
+    if veto:
+        plan['eligible']=False
+        plan['initial_position_fraction']=0.0
+        plan['reason']='execution_consistency_veto:'+veto
+
+    plan['execution_consistency']={
+        'status':'VETO' if veto else ('CORRECTED' if corrections else 'PASS'),
+        'veto':veto,'corrections':corrections,
+        'direction':direction,'setup_id':plan.get('setup_id'),
+        'structural_stop':bool(plan.get('structural_stop_enforced')),
+        'position_stage':plan.get('position_stage'),
+        'principle':'Signal, setup, structural stop, size and exit semantics must describe the same trade.'
+    }
+    return plan
+
+
+# ---------------- v78.1 Rule & Experience Arbitration ----------------
+
+RULE_HIERARCHY = {
+    'HARD_SAFETY_GATE':100,          # kill/source/time/data/thesis hard veto
+    'THESIS_INVALIDATION':98,
+    'STRUCTURAL_RISK':92,            # structural stop / portfolio risk / max loss
+    'REENTRY_GOVERNANCE':90,
+    'VALIDATED_STATISTICS':85,       # clean OOS/live evidence; EP23
+    'EXPERT_FOUNDATIONAL':80,        # explicit expert/user principles
+    'REGIME_HORIZON':72,
+    'SETUP_STRUCTURAL':68,
+    'TACTICAL_EXECUTION':60,
+    'SHADOW_KNOWLEDGE':45,
+    'EXPLORATORY_HYPOTHESIS':30,
+}
+
+_EVIDENCE_RANK={'A':5,'B':4,'C':3,'D':2,'E':1}
+
+def _knowledge_rule_rank(rule, source=None):
+    """Deterministic seniority for knowledge rules.
+
+    Newer code/rules do not win merely because they were added later.
+    A rule may displace a senior rule only through an explicit supersedes
+    relationship plus validation.
+    """
+    status=str(rule.get('status') or '')
+    action=str(rule.get('action') or '')
+    agent=str(rule.get('agent') or '')
+    source=source or {}
+    grade=str(source.get('evidence_grade') or 'E').upper()
+
+    if action in ('RISK_REDUCE','NO_TRADE') or agent=='RISK':
+        tier=RULE_HIERARCHY['STRUCTURAL_RISK']
+    elif status=='validated_candidate':
+        tier=RULE_HIERARCHY['VALIDATED_STATISTICS']
+    else:
+        tier=RULE_HIERARCHY['SHADOW_KNOWLEDGE']
+
+    evidence=_EVIDENCE_RANK.get(grade,0)
+    prior=float(rule.get('prior_weight') or 0.0)
+
+    # Explicit scope specificity is a tiebreaker, never enough to beat a higher tier.
+    assets=rule.get('asset_scope') or []
+    horizons=rule.get('horizons') or []
+    specificity=(1 if len(assets)==1 else 0)+(1 if len(horizons)==1 else 0)
+
+    return (tier,evidence,specificity,prior,str(rule.get('rule_id') or ''))
+
+def arbitrate_knowledge_conflicts(kmatches, asset, horizon):
+    """Resolve opposing matched knowledge rules before they reach scoring.
+
+    Same-direction evidence may coexist. For LONG-vs-SHORT conflicts, the
+    highest seniority rule wins. Exact ties fail closed to neutral knowledge.
+    Risk-reduction / NO_TRADE rules are retained independently and can never
+    be overruled by a lower directional rule.
+    """
+    if not kmatches:
+        return {'selected_rules':[],'suppressed_rules':[],'conflicts':[],
+                'status':'NO_RULES','policy':'seniority_first'}
+
+    _, rules=all_knowledge()
+    rule_map={str(r.get('rule_id')):r for r in rules}
+    sources,_rules_unused=all_knowledge()
+    source_map={str(s.get('source_id')):s for s in sources if isinstance(s,dict)}
+
+    enriched=[]
+    for m in kmatches:
+        r=rule_map.get(str(m.get('rule_id'))) or dict(m)
+        src=source_map.get(str(r.get('source_id'))) or {}
+        rank=_knowledge_rule_rank(r,src)
+        x=dict(m)
+        x['_rank']=rank
+        x['_tier']=rank[0]
+        x['_evidence_rank']=rank[1]
+        x['_rule_status']=r.get('status')
+        x['_evidence_grade']=src.get('evidence_grade')
+        enriched.append(x)
+
+    risk=[x for x in enriched if x.get('action') in ('RISK_REDUCE','NO_TRADE') or str(x.get('agent'))=='RISK']
+    long=[x for x in enriched if x.get('action')=='LONG']
+    short=[x for x in enriched if x.get('action')=='SHORT']
+    neutral=[x for x in enriched if x not in risk+long+short]
+
+    selected=list(risk)+list(neutral)
+    suppressed=[]
+    conflicts=[]
+
+    if long and short:
+        best_long=max(long,key=lambda x:x['_rank'])
+        best_short=max(short,key=lambda x:x['_rank'])
+        conflicts.append({
+            'type':'DIRECTIONAL_RULE_CONFLICT',
+            'long_rule':best_long.get('rule_id'),'long_rank':best_long['_rank'][:-1],
+            'short_rule':best_short.get('rule_id'),'short_rank':best_short['_rank'][:-1],
+        })
+        # Compare semantic rank without lexical rule_id tiebreaker.
+        lr=best_long['_rank'][:-1]; sr=best_short['_rank'][:-1]
+        if lr>sr:
+            selected.extend(long)
+            suppressed.extend(short)
+            resolution='LONG_HIGHER_SENIORITY'
+        elif sr>lr:
+            selected.extend(short)
+            suppressed.extend(long)
+            resolution='SHORT_HIGHER_SENIORITY'
+        else:
+            # Equal seniority = insufficient basis to choose. Fail closed.
+            suppressed.extend(long+short)
+            resolution='EQUAL_SENIORITY_NEUTRALIZED'
+        conflicts[-1]['resolution']=resolution
+    else:
+        selected.extend(long+short)
+
+    def clean(x):
+        z={k:v for k,v in x.items() if not k.startswith('_')}
+        z['rule_tier']=x.get('_tier')
+        z['evidence_rank']=x.get('_evidence_rank')
+        return z
+
+    return {
+        'status':'CONFLICT_RESOLVED' if conflicts else 'PASS',
+        'selected_rules':[clean(x) for x in selected],
+        'suppressed_rules':[clean(x) for x in suppressed],
+        'conflicts':conflicts,
+        'policy':'hard/risk > validated statistics > foundational expert > regime/structural setup > tactical > shadow; equal seniority fails closed',
+        'new_rule_override_policy':'NO_IMPLICIT_OVERRIDE; explicit supersedes + validation required',
+    }
+
+def system_rule_arbitration(asset,horizon,f,plan,research_dec):
+    """Final system-wide hierarchy for rule/experience conflicts."""
+    events=[]
+    direction=str(research_dec or plan.get('direction') or 'NO_TRADE')
+    shift=str(plan.get('regime_shift_state') or '')
+    reentry=plan.get('reentry_intelligence') or {}
+    prof=plan.get('profitability_gate') or {}
+    st=f.get('intraday_structure') or {}
+
+    def add(rule_id,tier,active,decision,reason):
+        if active:
+            events.append({'rule_id':rule_id,'tier':tier,'decision':decision,'reason':reason})
+
+    add('HARD_THESIS_VETO',RULE_HIERARCHY['THESIS_INVALIDATION'],
+        str(f.get('v70_thesis_status') or '') in ('BROKEN','INVALIDATED') or str(f.get('v70_gate_class') or '')=='THESIS_VETO',
+        'VETO','Full thesis invalidation dominates all entry rules.')
+
+    add('SOURCE_TIME_KILL_GATE',RULE_HIERARCHY['HARD_SAFETY_GATE'],
+        (not bool(f.get('source_gate_pass',True))) or
+        (not bool(f.get('market_open',True)) and asset not in CRYPTO_ASSETS) or
+        runtime_bool('kill_switch',KILL_SWITCH),
+        'VETO','Data/source/time/kill gates are absolute.')
+
+    add('STRUCTURAL_STOP_RULE',RULE_HIERARCHY['STRUCTURAL_RISK'],
+        bool(plan.get('structural_stop_enforced')),
+        'KEEP','Structural invalidation has priority over tactical stop convenience.')
+
+    add('REENTRY_BLOCK',RULE_HIERARCHY['REENTRY_GOVERNANCE'],
+        reentry.get('allowed') is False,
+        'VETO','No repeat trade without a new structural event.')
+
+    add('NEGATIVE_VALIDATED_SETUP_EDGE',RULE_HIERARCHY['VALIDATED_STATISTICS'],
+        str(prof.get('status') or '')=='NEGATIVE_EDGE' or
+        (prof.get('allow') is False and str((prof.get('profile') or {}).get('status') or '')=='NEGATIVE_EDGE'),
+        'VETO','Validated negative setup expectancy dominates tactical enthusiasm.')
+
+    add('NEW_SETUP_RESETS_OLD_ENTRY_FAILURE',RULE_HIERARCHY['SETUP_STRUCTURAL'],
+        shift in ('NEW_REGIME_PROVISIONAL','NEW_REGIME_ACCEPTED') and
+        str(st.get('lifecycle') or '')=='FAILURE' and
+        bool((plan.get('v77') or {}).get('old_failure_reset')),
+        'ALLOW_NEW_SETUP','Old entry failure belongs to the previous setup, not the new structural event.')
+
+    # Sort only by semantic tier; higher tier always wins.
+    events.sort(key=lambda x:x['tier'],reverse=True)
+    winner=events[0] if events else None
+
+    # Hard veto at a higher tier cannot be cancelled by lower allow/keep rules.
+    hard_veto=next((x for x in events if x['decision']=='VETO'),None)
+    if hard_veto:
+        plan['eligible']=False
+        plan['initial_position_fraction']=0.0
+        plan['reason']='rule_arbitration_veto:'+hard_veto['rule_id']
+
+    plan['rule_arbitration']={
+        'status':'CONFLICTS_RESOLVED' if len(events)>1 else ('PASS' if events else 'NO_CONFLICT'),
+        'winner':winner,
+        'hard_veto':hard_veto,
+        'active_rules':events,
+        'hierarchy':RULE_HIERARCHY,
+        'policy':'Higher semantic seniority wins. Newer/younger rule never overrides a senior rule unless explicit supersedes is validated.',
+    }
+    return plan
+
+
+# ---------------- v79.0 Trade Integrity / Win-Rate Layer ----------------
+
+def trade_integrity_layer(asset,horizon,f,trade_plan,research_dec):
+    """Final trade-state separation for win-rate quality.
+
+    Directional thesis and permission to enter are different states.
+    A temporary timing deterioration does not erase a valid thesis, but it
+    can block a fresh entry until the fast conflict resolves.
+    """
+    plan=dict(trade_plan or {})
+    direction=str(research_dec or plan.get('direction') or 'NO_TRADE')
+    thesis=str(f.get('v70_thesis_status') or plan.get('v70_thesis_status') or '')
+    gate=str(f.get('v70_gate_class') or '')
+    st=f.get('intraday_structure') or {}
+    piv=f.get('impulse_pivot_break') or {}
+    rev=f.get('tactical_reversal') or {}
+    ec=plan.get('execution_consistency') or {}
+    arb=plan.get('rule_arbitration') or {}
+
+    hard=False
+    hard_reasons=[]
+    if gate=='THESIS_VETO' or thesis in ('BROKEN','INVALIDATED'):
+        hard=True; hard_reasons.append('THESIS_INVALIDATION')
+    if ec.get('status')=='VETO':
+        hard=True; hard_reasons.append('EXECUTION_CONSISTENCY_VETO')
+    if (plan.get('reentry_intelligence') or {}).get('allowed') is False:
+        hard=True; hard_reasons.append('REENTRY_BLOCKED')
+    if (arb.get('hard_veto') or {}).get('decision')=='VETO':
+        hard=True; hard_reasons.append('RULE_ARBITRATION_VETO')
+
+    def opp_fast(x):
+        cd=str(x.get('direction') or x.get('candidate_direction') or 'NO_TRADE')
+        pr=float(x.get('probability') or 0.0)
+        cf=int(x.get('confirmations') or 0)
+        active=bool(x.get('active'))
+        return direction in ('LONG','SHORT') and cd in ('LONG','SHORT') and cd!=direction and (active or (pr>=0.72 and cf>=3))
+
+    fast_conflict=opp_fast(piv) or opp_fast(rev)
+
+    # Soft timing conflict: valid thesis but current entry timing is poor.
+    soft_reasons=[]
+    entryq=str(plan.get('entry_quality') or st.get('entry_quality') or '')
+    lifecycle=str(st.get('lifecycle') or '')
+    if entryq in ('INVALIDATED','WAIT_CONFIRMATION','LOWER_TF_CAUTION'):
+        soft_reasons.append('TIMING_NOT_READY')
+    if lifecycle=='FAILURE' and not bool((plan.get('v77') or {}).get('old_failure_reset')):
+        soft_reasons.append('OLD_OR_CURRENT_SETUP_FAILURE')
+    if fast_conflict:
+        soft_reasons.append('OPPOSITE_FAST_IMPULSE')
+    if direction in ('LONG','SHORT') and not bool(plan.get('eligible')) and not hard:
+        soft_reasons.append('PLAN_NOT_ELIGIBLE')
+
+    if direction not in ('LONG','SHORT'):
+        permission='NO_DIRECTION'
+    elif hard:
+        permission='VETO'
+    elif soft_reasons:
+        permission='WAIT_ENTRY'
+    else:
+        permission='ENTER'
+
+    plan['trade_integrity']={
+        'status':'HARD_INVALIDATION' if hard else ('SOFT_CONFLICT' if soft_reasons else 'PASS'),
+        'direction_state':direction,
+        'thesis_state':thesis or 'UNSPECIFIED',
+        'entry_permission':permission,
+        'hard_invalidation':hard,
+        'hard_reasons':hard_reasons,
+        'soft_reasons':soft_reasons,
+        'fast_tf_conflict':fast_conflict,
+        'setup_id':plan.get('setup_id'),
+        'execution_horizon':horizon,
+        'principle':'Direction != entry permission. Soft timing deterioration requires confirmation before exit; hard structural/thesis invalidation exits immediately.'
+    }
+    return plan
+
+
+def sync_shadow_trade_lifecycle(summary):
+    """Unified asset-level lifecycle for the canonical trade state."""
+    if not (SHADOW_LIFECYCLE_ENABLED and pg_enabled()): return {'status':'disabled','events':0}
+    candidates=_uec_asset_candidates(summary)
+    events=0
+    try:
+        with pg_connect() as c:
+            active_setups=[dict(r) for r in c.execute("SELECT * FROM trade_setups WHERE status='ACTIVE' ORDER BY updated_at DESC").fetchall()]
+            active_trades=[dict(r) for r in c.execute("""SELECT t.*,s.status setup_status,s.payload setup_payload
+                                                        FROM shadow_trades t JOIN trade_setups s ON s.setup_id=t.setup_id
+                                                        WHERE t.status='ACTIVE'""").fetchall()]
+            trades_by_setup={r['setup_id']:r for r in active_trades}
+
+            for st in active_setups:
+                if st['setup_id'] in trades_by_setup: continue
+                x=candidates.get(str(st['asset'])) or {}
+                sp=st['payload'] if isinstance(st['payload'],dict) else json.loads(st['payload'] or '{}')
+                frac=float(sp.get('initial_position_fraction') or ENTRY_SCALE_EARLY); frac=clip(frac,0.05,1.0)
+                price=float(st['entry_price']); trade_id='ST_'+hashlib.sha256((st['setup_id']+'|canonical').encode()).hexdigest()[:24]
+                stage='ENTRY'
+                payload={'canonical_trade_state':True,'execution_horizon':sp.get('execution_horizon') or st.get('horizon'),
+                         'supporting_horizons':sp.get('supporting_horizons') or [],
+                         'regime_open':x.get('regime'),'signal_tier_open':x.get('signal_tier'),
+                         'initial_stop_price':st.get('stop_price'),
+                         'experience_decision_open':sp.get('experience_decision'),
+                         'setup_memory_open':sp.get('setup_memory'),
+                         'adaptive_regime_policy_open':sp.get('adaptive_regime_policy'),
+                         'execution_policy_open':sp.get('execution_policy'),
+                         'execution_mode':'SHADOW_ONLY','path_dependent':True}
+                c.execute("""INSERT INTO shadow_trades
+                    (trade_id,setup_id,created_at,updated_at,asset,horizon,direction,status,entry_price,avg_entry_price,
+                     initial_fraction,current_fraction,max_fraction,stop_price,high_price,low_price,realized_pnl_fraction,total_pnl_fraction,stage,payload)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,'ACTIVE',%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s,%s::jsonb)
+                    ON CONFLICT(setup_id) DO NOTHING""",
+                    (trade_id,st['setup_id'],now(),now(),st['asset'],st['horizon'],st['direction'],price,price,frac,frac,frac,
+                     st.get('stop_price'),price,price,stage,json.dumps(payload,ensure_ascii=False)))
+                _lifecycle_event_conn(c,trade_id,st['setup_id'],st['asset'],st['horizon'],'ENTRY',price,frac,st.get('stop_price'),stage,payload)
+                events+=1
+
+            rows=[dict(r) for r in c.execute("""SELECT t.*,s.status setup_status,s.payload setup_payload,s.stop_price setup_stop
+                                               FROM shadow_trades t JOIN trade_setups s ON s.setup_id=t.setup_id
+                                               WHERE t.status='ACTIVE'""").fetchall()]
+            for tr in rows:
+                x=candidates.get(str(tr['asset'])) or {}
+                setup_payload=tr['setup_payload'] if isinstance(tr['setup_payload'],dict) else json.loads(tr['setup_payload'] or '{}')
+
+                if tr['setup_status']!='ACTIVE':
+                    px=float(setup_payload.get('trigger_price') or x.get('price') or tr['avg_entry_price'])
+                    rem=float(tr.get('current_fraction') or 0.0)
+                    realized=float(tr.get('realized_pnl_fraction') or 0.0)+rem*_signed_trade_return(tr['direction'],tr['avg_entry_price'],px)
+                    status=str(tr['setup_status']); stage='CLOSED_'+status
+                    c.execute("""UPDATE shadow_trades SET status=%s,updated_at=%s,closed_at=%s,exit_price=%s,current_fraction=0,
+                                 realized_pnl_fraction=%s,total_pnl_fraction=%s,stage=%s WHERE trade_id=%s""",
+                              (status,now(),now(),px,realized,realized,stage,tr['trade_id']))
+                    _lifecycle_event_conn(c,tr['trade_id'],tr['setup_id'],tr['asset'],tr['horizon'],status,px,0,tr.get('stop_price'),stage,
+                                          {'terminal_reason':setup_payload.get('reason'),'canonical_trade_state':True})
+                    events+=1
+                    continue
+
+                if not x or x.get('price') is None: continue
+                px=float(x['price']); direction=tr['direction']
+                cur=float(tr.get('current_fraction') or 0.0); avg=float(tr.get('avg_entry_price') or tr['entry_price'])
+                high=max(float(tr.get('high_price') or px),px); low=min(float(tr.get('low_price') or px),px)
+                plan=x.get('trade_plan') or {}
+                stage=str(x.get('decision_stage') or tr.get('stage') or 'HOLD')
+                desired=clip(float(plan.get('initial_position_fraction') or cur),0.05,1.0)
+
+                # Scale only; soft deterioration no longer forces an independent shadow reduction.
+                if desired>cur+1e-6 and stage in ('CONFIRMED_SCALE','CONFIRMED_FULL','ENTER_AND_SCALE','ENTER_FULL_CANDIDATE'):
+                    add=min(1.0-cur,desired-cur)
+                    new_frac=cur+add; new_avg=((avg*cur)+(px*add))/new_frac if new_frac>0 else avg
+                    cur=new_frac; avg=new_avg
+                    c.execute("UPDATE shadow_trades SET add_count=add_count+1 WHERE trade_id=%s",(tr['trade_id'],))
+                    _lifecycle_event_conn(c,tr['trade_id'],tr['setup_id'],tr['asset'],tr['horizon'],'ADD',px,add,tr.get('stop_price'),stage,
+                                          {'target_fraction':desired,'canonical_trade_state':True})
+                    events+=1
+
+                # Structural trailing only: never replace the active stop with a tactical/noise stop.
+                old_stop=tr.get('stop_price'); trail=old_stop
+                new_stop=plan.get('stop_price')
+                structural=bool(plan.get('structural_stop_enforced'))
+                if structural and new_stop is not None:
+                    ns=float(new_stop)
+                    if direction=='LONG' and ns<px and (old_stop is None or ns>float(old_stop)):
+                        trail=ns
+                    elif direction=='SHORT' and ns>px and (old_stop is None or ns<float(old_stop)):
+                        trail=ns
+                if trail is not None and old_stop is not None and abs(float(trail)-float(old_stop))>1e-9:
+                    _lifecycle_event_conn(c,tr['trade_id'],tr['setup_id'],tr['asset'],tr['horizon'],'STRUCTURAL_TRAIL',px,cur,trail,stage,
+                                          {'old_stop':old_stop,'new_stop':trail,'canonical_trade_state':True})
+                    events+=1
+
+                realized=float(tr.get('realized_pnl_fraction') or 0.0)
+                total=realized+cur*_signed_trade_return(direction,avg,px)
+                payload=tr['payload'] if isinstance(tr.get('payload'),dict) else json.loads(tr.get('payload') or '{}')
+                payload={**payload,'supporting_horizons':x.get('_uec_supporting_horizons') or [],
+                         'last_execution_horizon':x.get('horizon'),'canonical_trade_state':True}
+                c.execute("""UPDATE shadow_trades SET updated_at=%s,avg_entry_price=%s,current_fraction=%s,
+                             max_fraction=GREATEST(max_fraction,%s),stop_price=%s,high_price=%s,low_price=%s,
+                             total_pnl_fraction=%s,stage=%s,payload=%s::jsonb WHERE trade_id=%s""",
+                          (now(),avg,cur,cur,trail,high,low,total,stage,json.dumps(payload,ensure_ascii=False),tr['trade_id']))
+        return {'status':'ok','events':events,'mode':'UNIFIED_ASSET_TRADE_STATE'}
+    except Exception as ex:
+        emit('shadow_lifecycle_error',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'error','events':events,'error':f'{type(ex).__name__}: {ex}'}
 
 def trade_lifecycle_board(limit=100):
     if not pg_enabled(): return {'status':'postgres_required','active':[],'recent_closed':[]}
@@ -6987,7 +10947,57 @@ EXPERT_POLICY_V1 = [
  {'id':'EP23','domain':'evidence','statement':'When expert intuition conflicts with a sufficiently large clean statistical sample, validated statistics take precedence.'},
  {'id':'EP24','domain':'attribution','statement':'Separate direction error from execution error: bad entry, bad stop, late entry and early exit are different learning labels.'},
  {'id':'EP25','domain':'objective','statement':'Primary investor-facing objective is a high probability of positive trade outcomes, constrained by positive expectancy, bounded losses and drawdown.'},
- {'id':'EP26','domain':'learning','statement':'Expert Replay should run frequently and prioritize the most informative cases, not a fixed weekly quota.'}
+ {'id':'EP26','domain':'learning','statement':'Expert Replay should run frequently and prioritize the most informative cases, not a fixed weekly quota.'},
+ {'id':'EP27','domain':'breakout','statement':'The same structural breakout lifecycle applies on 5m, 1h, 4h, 1d, 3d and 7d: a local range boundary break confirmed by volatility expansion is an actionable directional event.'},
+ {'id':'EP28','domain':'trend','statement':'After a valid breakout, successive lower highs and lower lows confirm SHORT continuation; successive higher highs and higher lows confirm LONG continuation and justify holding or staged scaling.'},
+ {'id':'EP29','domain':'exit','statement':'For a structural impulse, do not rely on a fixed take-profit by default; exit when volatility contracts and a second counter-direction candle confirms a reclaim beyond the previous candle close without a new trend extreme.'},
+ {'id':'EP30','domain':'multitimeframe','statement':'Market-structure rules are timeframe-invariant; only volatility normalization, structural stop distance and position size change with timeframe.'},
+ {'id':'EP31','domain':'risk','statement':'Once an open trade has enough favorable movement to cover round-trip costs plus a safety buffer, move the protective stop to true breakeven; never widen it again.'},
+ {'id':'EP32','domain':'exit','statement':'As profit grows, trail LONG positions below the nearest confirmed support and SHORT positions above the nearest confirmed resistance on the trade management timeframe and its senior timeframes.'},
+ {'id':'EP33','domain':'multitimeframe','statement':'A structural trailing stop only ratchets in the profitable direction. Use the active trade timeframe first, then senior-timeframe levels; never move a stop backward merely because a later level is farther away.'},
+ {'id':'EP34','domain':'data','statement':'A sharp price move is not a data discontinuity when the exact futures contract and price series are unchanged; preserve genuine gap and impulse moves.'},
+ {'id':'EP35','domain':'data','statement':'For futures positions, persist the exact contract identifier at entry and calculate the lifecycle using the same contract identity. A contract roll or continuous-series switch must never be treated as trade P&L.'},
+ {'id':'EP36','domain':'data','statement':'If independent sources quote materially different prices for the same exact contract, freeze execution and marking for that asset until the conflict is resolved; keep the position and do not learn from the disputed mark.'},
+ {'id':'EP37','domain':'breakout','statement':'In RANGE_LOW_VOL, a breakout label alone is insufficient for entry; require fresh structure, volume and volatility expansion, and aligned horizon structure.'},
+ {'id':'EP38','domain':'regime','statement':'Low-volatility ranges have elevated false-breakout risk. Treat uncalibrated model scores conservatively and demand stronger independent evidence before committing capital.'},
+ {'id':'EP39','domain':'learning','statement':'When repeated losses share the same setup and regime with little or no MFE, classify the error primarily as entry/regime selection rather than stop placement.'},
+ {'id':'EP40','domain':'exit','statement':'Partial profit-taking should be dynamic, not fixed: use trend strength, volume confirmation, senior-timeframe alignment and distance to the next structural level to choose how much to realize.'},
+ {'id':'EP41','domain':'trend','statement':'When trend structure is strong and senior timeframes confirm, realize a smaller fraction at the first objective and let the remainder compound under structural trailing.'},
+ {'id':'EP42','domain':'exit','statement':'When momentum weakens or price reaches a nearby important structural objective, realize a larger fraction while preserving a runner if the higher-timeframe thesis remains intact.'},
+ {'id':'EP43','domain':'sizing','statement':'After partial profit-taking, position size may be rebuilt only on a new same-direction high-quality setup with fresh breakout evidence, volume confirmation, aligned structure and positive post-cost economics.'},
+ {'id':'EP44','domain':'risk','statement':'Reloading a profitable position must never loosen an already protected stop. New size inherits the existing protected risk boundary unless a tighter structural stop is available.'},
+ {'id':'EP45','domain':'execution','statement':'A profit reload is a new add-on decision, not an automatic reversal of prior profit-taking; require a minimum 5% position increment and re-check transaction-cost budget.'},
+ {'id':'EP46','domain':'execution','statement':'Do not churn a newly opened fast-timeframe position on a small opposite signal while price remains inside a commission-dominated micro-move; require either time for the setup to mature or a materially adverse move.'},
+ {'id':'EP47','domain':'cost','statement':'For 5m and other fast setups, a direction flip must be evaluated against round-trip transaction costs before closing and reopening; near-flat flips are execution noise, not alpha.'},
+ {'id':'EP48','domain':'multitimeframe','statement':'For 3d/7d positions, lower-timeframe signals manage tactics but do not own the core thesis. A 5m/1h reversal may stop adding or trim a tactical sleeve, but the core remains until senior-horizon structure breaks.'},
+ {'id':'EP49','domain':'risk','statement':'Hard risk exits remain immediate across all horizons, but soft lower-timeframe invalidations must not fully liquidate a structurally intact 3d/7d position.'},
+ {'id':'EP50','domain':'sizing','statement':'When a lower timeframe turns against an intact senior-horizon position, reduce at most the tactical sleeve and preserve roughly 75% of current core exposure until the senior structure invalidates.'},
+ {'id':'EP51','domain':'governance','statement':'VERITAS quality-first DNA: first eliminate weak/noisy/uneconomic trades, then scale only the strongest validated opportunities. NO_TRADE is preferable to a low-quality trade.'},
+ {'id':'EP52','domain':'governance','statement':'Decision priority is: quality filter, structural confirmation, post-cost economics, sizing, then profit management. Later stages may never override a failed earlier stage.'},
+ {'id':'EP53','domain':'sizing','statement':'Use risk capacity and leverage to amplify validated A/A+ opportunities rather than to compensate for marginal signal quality. Borderline setups should remain small or be skipped.'},
+ {'id':'EP54','domain':'classification','statement':'Classify every executable setup as A+, A, B or C from structure, multi-timeframe alignment, independent evidence, volume/volatility confirmation, post-cost economics and calibration quality.'},
+ {'id':'EP55','domain':'classification','statement':'A+ and A are institutional-quality execution classes; B is exploratory and may only be traded by Impulse/Aggressive at deliberately small size; C is NO_TRADE.'},
+ {'id':'EP56','domain':'classification','statement':'A setup grade is not a substitute for hard gates: invalidation, data-integrity failure or failed economics always override a high raw score.'},
+ {'id':'EP57','domain':'learning','statement':'Track realized PnL, win rate, MFE/MAE, costs and error type separately by setup grade so grade thresholds can be recalibrated from observed outcomes.'},
+ {'id':'EP58','domain':'risk','statement':'For a profitable SHORT, ratchet the protective stop down continuously to just above the latest confirmed local swing high of the most recent downward leg; for LONG use the mirror rule below the latest confirmed local swing low.'},
+ {'id':'EP59','domain':'risk','statement':'Recent local structure on the trade management timeframe has priority for trailing. Senior-timeframe levels are fallbacks, not reasons to leave a stale wide stop while a sequence of lower highs or higher lows develops.'},
+ {'id':'EP60','domain':'risk','statement':'A structural trailing stop must never move away from profit protection: SHORT stops only move lower and LONG stops only move higher, with a volatility-aware buffer beyond the local pivot.'},
+ {'id':'EP61','domain':'trend_transition','statement':'When a base or range transitions into a confirmed trend, treat the event as a priority capture setup after structural break, acceptance beyond the level, and the first confirming higher low for LONG or lower high for SHORT, subject to existing data, risk, and economics gates.'},
+ {'id':'EP62','domain':'trend_transition','statement':'Apply trend-transition logic symmetrically: LONG continuation uses higher lows plus breaks of local highs; SHORT continuation uses lower highs plus breaks of local lows.'},
+ {'id':'EP63','domain':'sizing','statement':'Within one confirmed trend campaign, add exposure on high-quality continuation legs after acceptance and a fresh confirming local pivot, while respecting portfolio risk limits.'},
+ {'id':'EP64','domain':'exit','statement':'When trend persistence remains strong, avoid excessive early profit-taking; retain a campaign core and let the latest confirmed local swing and trailing stop govern the final exit.'},
+ {'id':'EP65','domain':'reversal','statement':'After a climax, require a structural reversal sequence: impulse away from the extreme, weak retrace, then lower high plus local-low break for SHORT or higher low plus local-high break for LONG.'},
+ {'id':'EP66','domain':'learning','statement':'Evaluate campaigns by capture ratio, peak-profit giveback, missed-trend opportunity, entry timing, add timing, stop quality, and exit quality, not only final PnL.'},
+ {'id':'EP67','domain':'execution','statement':'When a priority trend-capture pattern is confirmed, generic WAIT logic should not override the structure unless an explicit hard veto is present.'},
+ {'id':'EP68','domain':'trend_transition','statement':'Trend Transition Engine promotes confirmed base-breakout acceptance, pullback continuation and climax reversal into explicit execution candidates across all portfolios.'},
+ {'id':'EP69','domain':'execution','statement':'A priority transition can override soft WAIT only after minimum reward-risk, expected-move, independent-evidence, source/time and hard-veto checks pass.'},
+ {'id':'EP70','domain':'learning','statement':'Persist the detected transition family, grade, score and evidence on every trade so missed captures and false transitions can be audited and recalibrated separately.'},
+ {'id':'EP71','domain':'sizing','statement':'Aggressive may use substantially larger initial and continuation exposure on validated A/A+ trend transitions, including leverage, because its mandate allows up to 5x gross exposure.'},
+ {'id':'EP72','domain':'risk','statement':'Aggressive leverage is earned by evidence: higher exposure requires stronger structure, independent evidence, reward-risk and volatility confirmation; leverage capacity alone never justifies a larger position.'},
+ {'id':'EP73','domain':'sizing','statement':'For Aggressive, scale validated A+ campaigns progressively from roughly 1x toward 1.5x, 2.5x, 3.5x and at exceptional confirmation up to 5x, always bounded by stop-risk and portfolio risk governors.'},
+ {'id':'EP74','domain':'learning','statement':'Measure system learning with a stable operational index that separates knowledge breadth from evidence maturity, outcome quality, execution capture quality and telemetry coverage.'},
+ {'id':'EP75','domain':'learning','statement':'Adding rules alone must not be interpreted as becoming smarter; a rule becomes valuable only when clean forward outcomes improve net expectancy, capture quality or decision calibration.'},
+ {'id':'EP76','domain':'audit','statement':'Every intelligence score must publish its sample size and confidence level so small samples cannot masquerade as durable learning progress.'}
 ]
 
 
@@ -7081,6 +11091,30 @@ def _recent_decision_for(asset,horizon,exclude_entity=None):
         return {'entity_key':r['entity_key'],'event_ts':r['event_ts'],'payload':p}
     return None
 
+
+
+# VERITAS V90 IN-MEMORY PREVIOUS SIGNAL CACHE
+_v90_base_recent_decision_for=_recent_decision_for
+_v90_prev_signal_cache={}
+
+def _v90_set_prev_signal_cache(rows):
+    global _v90_prev_signal_cache
+    out={}
+    for x in rows or []:
+        a=str(x.get('asset') or ''); h=str(x.get('horizon') or '')
+        if not a or not h: continue
+        out[(a,h)]={'entity_key':None,'event_ts':None,
+                    'payload':{'decision':x.get('decision') or 'NO_TRADE',
+                               'research_decision':x.get('research_decision') or x.get('decision') or 'NO_TRADE',
+                               'confidence':float(x.get('confidence') or 0.0)}}
+    _v90_prev_signal_cache=out
+    return len(out)
+
+def _recent_decision_for(asset,horizon,exclude_entity=None):
+    z=_v90_prev_signal_cache.get((str(asset),str(horizon)))
+    if z is not None:
+        return z
+    return _v90_base_recent_decision_for(asset,horizon,exclude_entity)
 
 def maybe_create_alert(entity_key, asset, horizon, decision, confidence, score, regime, kmatches):
     if not pg_enabled():
@@ -7186,7 +11220,7 @@ def asset_causal_shadow(asset):
         if ndx is not None: add('Nasdaq 1d',ndx,float(ndx)*5.0,'risk-asset linkage','Yahoo NDX')
         if dxy is not None: add('DXY 1d',dxy,-float(dxy)*6.0,'USD tightening can pressure crypto','Yahoo DXY')
         if real is not None: add('US 10y real yield Δ',real,-float(real)*0.8,'higher real yield raises opportunity cost','FRED DFII10')
-    elif asset=='NDX':
+    elif asset=='NQ':
         if real is not None: add('US 10y real yield Δ',real,-float(real)*1.1,'higher real yield pressures long-duration equities','FRED DFII10')
         if dxy is not None: add('DXY 1d',dxy,-float(dxy)*4.0,'stronger USD tightens global financial conditions','Yahoo DXY')
         if vix is not None: add('VIX 1d',vix,-float(vix)*2.0,'volatility shock is adverse to risk appetite','Yahoo VIX')
@@ -7413,6 +11447,7 @@ def explain_latest_decision(asset=None,horizon=None):
             'shadow_risk':p.get('shadow_risk'),'regime':p.get('regime'),'weights':p.get('weights'),
             'trend_impulse':p.get('trend_impulse') or (p.get('features') or {}).get('trend_impulse') or {},
             'intraday_structure':(p.get('features') or {}).get('intraday_structure') or {},
+            'structure_breakout_grid':(p.get('features') or {}).get('structure_breakout_grid') or {},
             'trade_plan':p.get('trade_plan') or {},
             'tradeability':p.get('tradeability') or (p.get('trade_plan') or {}).get('tradeability') or {},
             'decision_stage':p.get('decision_stage') or (p.get('trade_plan') or {}).get('decision_stage'),
@@ -7674,20 +11709,25 @@ def runtime_settings():
     if not (RUNTIME_SETTINGS_ENABLED and pg_enabled()):
         return defaults
     cached=getattr(runtime_settings,'_cache',None)
-    if cached and time.time()-cached[0]<30:
+    # Runtime settings change rarely; do not hit PostgreSQL every 30 seconds.
+    if cached and time.time()-cached[0]<300:
         return dict(cached[1])
-    out=dict(defaults)
+    out=dict(cached[1]) if cached else dict(defaults)
     try:
         with pg_connect() as c:
             rows=c.execute("SELECT key,value FROM system_settings").fetchall()
+        fresh=dict(defaults)
         for r in rows:
             v=r['value']
             if isinstance(v,dict) and 'value' in v:
                 v=v['value']
-            out[r['key']]=v
+            fresh[r['key']]=v
+        out=fresh
         runtime_settings._cache=(time.time(),dict(out))
     except Exception as ex:
-        emit('runtime_settings_error',error=f'{type(ex).__name__}: {ex}')
+        # Keep the last confirmed settings; a transient DB timeout must not
+        # change trading behavior or blank the dashboard.
+        emit('runtime_settings_error',error=f'{type(ex).__name__}: {ex}',using_cached=bool(cached))
     return out
 
 
@@ -8493,7 +12533,10 @@ def portfolio_stress():
 def validation_stack():
     return {'validation':oos_validation_board(200),'time_stability':timeblock_stability_board(200),
             'cost_sensitivity':cost_sensitivity_board(200),'calibration_quality':calibration_quality(),
-            'expected_edge':expected_edge_map(),'signal_readiness':signal_readiness_report(),'portfolio_stress':portfolio_stress()}
+            'expected_edge':expected_edge_map(),'signal_readiness':signal_readiness_report(),
+            'v75_parameter_lab':v75_asset_parameter_board(),
+            'trade_path_intelligence':trade_path_intelligence_board(),
+            'portfolio_stress':portfolio_stress()}
 
 
 
@@ -8747,7 +12790,7 @@ def contradiction_snapshot(asset,horizon,summary=None):
         opt=deribit_options_context(asset); skew=opt.get('near_skew_10pct_proxy') if isinstance(opt,dict) else None
         if skew is not None and sign>0 and float(skew)>8: score+=6; reasons.append('опционный skew указывает на повышенный спрос на downside protection')
         if skew is not None and sign<0 and float(skew)<-8: score+=6; reasons.append('опционный skew не подтверждает downside')
-    if asset=='NDX':
+    if asset=='NQ':
         b=(ndx_breadth_context() or {}).get('proxy') or {}
         if sign>0 and b.get('participation')=='MEGACAP_LED': score+=6; reasons.append('рост NDX узкий: мегакэпы опережают равновзвешенный индекс')
     score=max(0,min(100,score))
@@ -8886,7 +12929,7 @@ def _daily_yahoo_returns(symbol,days):
 def _daily_asset_returns(asset,days):
     if asset=='BTC': return _daily_crypto_returns('BTCUSDT',days)
     if asset=='ETH': return _daily_crypto_returns('ETHUSDT',days)
-    if asset=='NDX': return _daily_yahoo_returns('%5ENDX',days)
+    if asset=='NQ': return _daily_yahoo_returns('NQ%3DF',days)
     if asset=='BRENT': return _daily_yahoo_returns('BZ%3DF',days)
     if asset=='GOLD': return _daily_yahoo_returns('GC%3DF',days)
     if asset=='MOEX': return _daily_yahoo_returns('IMOEX.ME',days)
@@ -9795,6 +13838,218 @@ def _shadow_trade_learning_windows():
     return {'status':'MEASURABLE' if min(len(e),len(r))>=LEARNING_INDEX_TRADE_MIN_N else 'BUILDING','baseline':met(e),'current':met(r)}
 
 
+
+# =========================
+# VERITAS v84.3 BOUNDED LEARNING SQL
+# Keeps learning durable while preventing analytical full-table scans from blocking
+# the web/portfolio fast path on small PostgreSQL instances.
+# =========================
+
+def _bounded_completed_episode_rows(order='DESC', raw_limit=9000, episode_limit=600):
+    if not pg_enabled():
+        return []
+    order='ASC' if str(order).upper()=='ASC' else 'DESC'
+    raw_limit=max(1000,min(20000,int(raw_limit)))
+    episode_limit=max(50,min(4000,int(episode_limit)))
+    sql=f"""
+      WITH picked AS (
+        SELECT entity_key,event_ts,asset,horizon,payload,model_version
+        FROM ledger_events
+        WHERE event_type='decision'
+        ORDER BY event_ts {order}
+        LIMIT %s
+      )
+      SELECT d.entity_key,d.event_ts,d.asset,d.horizon,d.payload AS dp,d.model_version,
+             o.payload AS op
+      FROM picked d
+      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+      WHERE o.payload ? 'forward_return'
+      ORDER BY d.event_ts {order}
+    """
+    try:
+        with pg_connect() as c:
+            c.execute("SET statement_timeout TO '12s'")
+            rows=[dict(r) for r in c.execute(sql,(raw_limit,)).fetchall()]
+    except Exception as ex:
+        emit('bounded_learning_query_error',order=order,raw_limit=raw_limit,
+             error=f'{type(ex).__name__}: {ex}')
+        return []
+
+    # Episode detection must run chronologically. For a recent DESC slice, reverse first,
+    # then retain the newest independent episodes.
+    if order=='DESC':
+        rows=list(reversed(rows))
+    gaps={'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
+    last={}
+    episodes=[]
+    for r in rows:
+        dp=r.get('dp') if isinstance(r.get('dp'),dict) else _v84_json(r.get('dp'))
+        op=r.get('op') if isinstance(r.get('op'),dict) else _v84_json(r.get('op'))
+        fr=op.get('forward_return')
+        if fr is None:
+            continue
+        dec=str(dp.get('research_decision') or dp.get('decision') or 'NO_TRADE')
+        regime=str(dp.get('regime') or 'UNKNOWN')
+        ts=r.get('event_ts')
+        if isinstance(ts,str):
+            try: ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
+            except Exception: ts=None
+        if ts is not None and getattr(ts,'tzinfo',None) is None:
+            ts=ts.replace(tzinfo=timezone.utc)
+        key=(str(r.get('asset')),str(r.get('horizon')))
+        prev=last.get(key)
+        is_new=(prev is None or dec!=prev['decision'] or regime!=prev['regime'])
+        if not is_new and ts is not None and prev.get('ts') is not None:
+            is_new=(ts-prev['ts']).total_seconds()>gaps.get(key[1],86400)
+        last[key]={'decision':dec,'regime':regime,'ts':ts}
+        if not is_new:
+            continue
+        episodes.append({
+            'entity_key':r.get('entity_key'),'event_ts':r.get('event_ts'),
+            'asset':r.get('asset'),'horizon':r.get('horizon'),'regime':regime,
+            'decision':dec,'research_decision':dec,'forward_return':float(fr),
+            'model_version':r.get('model_version'),'dp':dp,'op':op
+        })
+    return episodes[-episode_limit:] if order=='DESC' else episodes[:episode_limit]
+
+
+def _matched_strata_learning():
+    if not pg_enabled():
+        return {'status':'postgres_required'}
+    fetch=max(200,min(600,LEARNING_PROGRESS_WINDOW*5))
+    raw=max(5000,min(12000,fetch*16))
+    early=_bounded_completed_episode_rows('ASC',raw,fetch)
+    recent=_bounded_completed_episode_rows('DESC',raw,fetch)
+    eg={}; rg={}
+    for r in early:
+        eg.setdefault((r['asset'],r['horizon'],str(r.get('regime') or 'UNKNOWN')),[]).append(r)
+    for r in recent:
+        rg.setdefault((r['asset'],r['horizon'],str(r.get('regime') or 'UNKNOWN')),[]).append(r)
+    pairs=[]
+    for k in sorted(set(eg)&set(rg)):
+        n=min(len(eg[k]),len(rg[k]),LEARNING_INDEX_MAX_PER_STRATUM)
+        if n<LEARNING_INDEX_STRATA_MIN_N:
+            continue
+        e=_learning_metrics_extended(eg[k][:n])
+        r=_learning_metrics_extended(rg[k][-n:])
+        pairs.append((k,n,e,r))
+    def avg(field,which):
+        vals=[]
+        for _,_,e,r in pairs:
+            v=(e if which=='e' else r).get(field)
+            if v is not None:
+                vals.append(float(v))
+        return sum(vals)/len(vals) if vals else None
+    em={x:avg(x,'e') for x in ('hit_rate','avg_signed_return','no_trade_miss_rate','capture_rate','wrong_side_rate')}
+    rm={x:avg(x,'r') for x in ('hit_rate','avg_signed_return','no_trade_miss_rate','capture_rate','wrong_side_rate')}
+    em['n']=sum(n for _,n,_,_ in pairs); rm['n']=em['n']
+    return {
+        'status':'ok' if pairs else 'BUILDING','baseline':em,'current':rm,
+        'matched_strata':len(pairs),'matched_observations_each_side':em['n'],
+        'strata':[{'asset':k[0],'horizon':k[1],'regime':k[2],'n_each':n} for k,n,_,_ in pairs[:80]],
+        'sampling':'bounded_indexed_episode_slices','raw_limit_each_side':raw,'episode_limit_each_side':fetch
+    }
+
+
+def learning_progress_v1():
+    if not pg_enabled():
+        return {'status':'postgres_required'}
+    lim=max(30,min(300,LEARNING_PROGRESS_WINDOW))
+    raw=max(3000,min(8000,lim*24))
+    early=_bounded_completed_episode_rows('ASC',raw,lim)
+    recent=_bounded_completed_episode_rows('DESC',raw,lim)
+    em=_window_learning_metrics(early)
+    rm=_window_learning_metrics(recent)
+    if em['n']<20 or rm['n']<20 or em.get('hit_rate') is None or rm.get('hit_rate') is None:
+        idx=None; status='BUILDING'
+    else:
+        hit_component=clip(rm['hit_rate']/max(em['hit_rate'],0.20),0.5,1.5)
+        bmiss=em.get('no_trade_miss_rate'); rmiss=rm.get('no_trade_miss_rate')
+        miss_component=1.0 if bmiss is None or rmiss is None else clip((1-rmiss)/max(0.2,1-bmiss),0.5,1.5)
+        be=em.get('avg_signed_return') or 0.0; re=rm.get('avg_signed_return') or 0.0
+        edge_component=clip(1.0+(re-be)/0.01,0.5,1.5)
+        idx=round(100*(0.55*hit_component+0.25*miss_component+0.20*edge_component),1)
+        status='MEASURABLE'
+    try:
+        with pg_connect() as c:
+            c.execute("SET statement_timeout TO '5s'")
+            kg=c.execute("SELECT COUNT(*) sources FROM knowledge_sources").fetchone()
+            kr=c.execute("SELECT COUNT(*) rules FROM knowledge_rules").fetchone()
+    except Exception:
+        kg=kr={}
+    versions=[]
+    for r in early+recent:
+        if r.get('model_version') and r['model_version'] not in versions:
+            versions.append(r['model_version'])
+    confidence='HIGH' if min(em['n'],rm['n'])>=100 else 'MEDIUM' if min(em['n'],rm['n'])>=40 else 'LOW'
+    return {
+        'status':status,'index_vs_start':idx,'baseline_index':100,'confidence':confidence,'window':lim,
+        'baseline':em,'current':rm,
+        'hit_rate_delta_pp':None if em.get('hit_rate') is None or rm.get('hit_rate') is None else round(100*(rm['hit_rate']-em['hit_rate']),2),
+        'avg_signed_return_delta':None if em.get('avg_signed_return') is None or rm.get('avg_signed_return') is None else rm['avg_signed_return']-em['avg_signed_return'],
+        'no_trade_miss_delta_pp':None if em.get('no_trade_miss_rate') is None or rm.get('no_trade_miss_rate') is None else round(100*(rm['no_trade_miss_rate']-em['no_trade_miss_rate']),2),
+        'knowledge_growth':{'current_sources':(kg or {}).get('sources'),'current_rules':(kr or {}).get('rules')},
+        'versions_seen':versions[-8:],
+        'sampling':'bounded_indexed_episode_slices',
+        'definition':'100 = earliest bounded independent completed-decision window; higher is better only when sample is measurable.'
+    }
+
+
+def refresh_rule_stats():
+    # Recent independent evidence is sufficient for live lifecycle governance; OOS statistics
+    # remain the promotion authority. Avoid recomputing window functions over the full ledger.
+    if not pg_enabled():
+        return {'rows':0,'status_changes':0,'status':'postgres_required'}
+    episodes=_bounded_completed_episode_rows('DESC',12000,3500)
+    if not episodes:
+        return {'rows':0,'status_changes':0,'status':'bounded_query_empty'}
+    buckets={}
+    for r in episodes:
+        dp=r.get('dp') or {}; op=r.get('op') or {}
+        try: fr=float(op.get('forward_return'))
+        except Exception: continue
+        mfe=op.get('mfe'); mae=op.get('mae')
+        try: mfe=None if mfe is None else float(mfe)
+        except Exception: mfe=None
+        try: mae=None if mae is None else float(mae)
+        except Exception: mae=None
+        for k in (dp.get('knowledge_shadow_matches') or []):
+            if not isinstance(k,dict):
+                continue
+            action=str(k.get('action') or '')
+            rid=k.get('rule_id')
+            if not rid or action not in ('LONG','SHORT'):
+                continue
+            key=(str(rid),str(r.get('asset')),str(r.get('horizon')))
+            z=buckets.setdefault(key,{'n':0,'hits':0,'ret':0.0,'mfe':0.0,'mfe_n':0,'mae':0.0,'mae_n':0})
+            sr=fr if action=='LONG' else -fr
+            z['n']+=1; z['hits']+=1 if sr>0 else 0; z['ret']+=sr
+            smfe=mfe if action=='LONG' else (None if mae is None else -mae)
+            smae=mae if action=='LONG' else (None if mfe is None else -mfe)
+            if smfe is not None: z['mfe']+=smfe; z['mfe_n']+=1
+            if smae is not None: z['mae']+=smae; z['mae_n']+=1
+    try:
+        with pg_connect() as c:
+            c.execute("SET statement_timeout TO '12s'")
+            for (rid,asset,horizon),z in buckets.items():
+                n=z['n']; hits=z['hits']; hr=hits/n if n else None
+                c.execute("""INSERT INTO knowledge_rule_stats(rule_id,asset,horizon,n,hits,hit_rate,avg_signed_return,avg_mfe,avg_mae,updated_at)
+                             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                             ON CONFLICT(rule_id,asset,horizon) DO UPDATE SET
+                             n=EXCLUDED.n,hits=EXCLUDED.hits,hit_rate=EXCLUDED.hit_rate,
+                             avg_signed_return=EXCLUDED.avg_signed_return,avg_mfe=EXCLUDED.avg_mfe,
+                             avg_mae=EXCLUDED.avg_mae,updated_at=EXCLUDED.updated_at""",
+                          (rid,asset,horizon,n,hits,hr,z['ret']/n if n else None,
+                           z['mfe']/z['mfe_n'] if z['mfe_n'] else None,
+                           z['mae']/z['mae_n'] if z['mae_n'] else None,now()))
+        changes=apply_rule_lifecycle()
+        return {'rows':len(buckets),'status_changes':changes,'status':'bounded_recent_episode_window',
+                'episodes_used':len(episodes)}
+    except Exception as ex:
+        emit('bounded_rule_stats_error',error=f'{type(ex).__name__}: {ex}')
+        return {'rows':0,'status_changes':0,'status':'error','error':f'{type(ex).__name__}: {ex}'}
+
+
 def _learning_progress_v2_compute():
     """Learning Index 2.0. Compares matched asset×horizon×regime strata so score changes cannot be created merely by sample mix.
     When enough path-dependent shadow trades exist, 20% of the index comes from realized virtual-trade outcomes.
@@ -10170,8 +14425,8 @@ def compute_product_overview():
             'investor_asset_view':v701_investor_asset_view(cyc.get('summary') or []),
             'v701_learning':v701_learning_bundle(),
             'assets':{'live_research':list(DISPLAY_ASSETS),
-                      'ndx_live_gate':'US RTH + current Yahoo Nasdaq GIDS + Nasdaq public price cross-check',
-                      'ndx_derivatives':'context only until licensed derivatives/options feed'},
+                      'nq_futures_feed':'CME Nasdaq-100 futures NQ=F · nearly 24h weekday session',
+                      'nq_futures_contract':'NQ=F · futures instrument; cash Nasdaq-100 only contextual'},
             'abstention':abstention_performance(),
             'agent_learning':pg_agent_performance()[:40] if pg_enabled() else [],
             'calibration':pg_calibration_map()[:40] if pg_enabled() else [],
@@ -10240,24 +14495,26 @@ def latest_signal_summary_pg():
 
 
 def fresh_cycle_snapshot():
-    """Merge live-memory cycle with durable latest decisions; never serve an empty/stale matrix if PG has data."""
+    """Serve the last valid in-memory matrix first; PostgreSQL is cold-start fallback only."""
     with lock:
         cyc=dict(last_cycle)
-        mem_summary=list((last_cycle or {}).get('summary') or [])
-    pg_summary=latest_signal_summary_pg()
-    merged={}
-    for x in pg_summary:
-        merged[(x.get('asset'),x.get('horizon'))]=x
-    for x in mem_summary:
-        merged[(x.get('asset'),x.get('horizon'))]=x
+        mem_summary=[dict(x) for x in ((last_cycle or {}).get('summary') or [])]
+    merged={(x.get('asset'),x.get('horizon')):x for x in mem_summary if x.get('asset') and x.get('horizon')}
+    expected=len(DISPLAY_ASSETS)*6
+    # Avoid DB contention on normal UI refreshes. Query durable history only when
+    # memory is genuinely insufficient (cold start / first cycle).
+    if len(merged)<max(7,expected//2):
+        for x in latest_signal_summary_pg():
+            merged.setdefault((x.get('asset'),x.get('horizon')),x)
     ordered=[]
     for asset in DISPLAY_ASSETS:
-        for h in ('1h','4h','1d','3d','7d'):
+        for h in ('5m','1h','4h','1d','3d','7d'):
             x=merged.get((asset,h))
             if x: ordered.append(x)
     cyc['summary']=ordered
-    cyc['summary_source']='live_memory+postgres_fallback'
+    cyc['summary_source']='live_memory' if len(mem_summary)>=max(7,expected//2) else 'live_memory+postgres_cold_fallback'
     cyc['summary_count']=len(ordered)
+    cyc['expected_summary_count']=expected
     return cyc
 
 
@@ -10586,6 +14843,7 @@ def fast_product_overview():
         'trade_lifecycle':trade_lifecycle_board(40),'users':user_metrics(),'signal_capacity':cap,
         'event_scan':event_web_scan_status(),'governance':governance_status(),'architecture_efficiency':architecture_efficiency_status(),
         'factory':knowledge_factory_status(),'research_discovery_health':research_discovery_health(),
+        'experience_learning':execution_learning_board(),'learning_index_v2':learning_index_v2(),
         'production_readiness':{'research_product_ready':bool(storage.get('ok')),
                                 'external_investor_ready':False,
                                 'blockers':['full readiness calculation pending'],
@@ -10686,7 +14944,7 @@ DASHBOARD_HTML = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <div class="card span12"><div class="k">Менеджерский корпус</div><div id="managerdetail" class="note">—</div></div></section>
 
 <section id="portfolios" class="view">
-<div class="card span12"><div class="k">Модельные портфели · Portfolio Autopilot</div><div class="note">Два независимых paper-портфеля по 1 000 000 ₽. Champion — порог входа 70%; Challenger — порог входа 77%. Реальные деньги не используются.</div></div>
+<div class="card span12"><div class="k">Модельные портфели · Portfolio Autopilot</div><div class="note">Четыре независимых paper-портфеля по 1 000 000 ₽: Импульсный, Агрессивный, Чемпион и Челленджер. История и обучение перенесены в БД 9.0; реальные деньги не используются.</div></div>
 <div class="card span12"><div id="portfolioheadline" class="note">загрузка…</div><div id="portfoliocards" class="portfolio-grid" style="margin-top:10px"></div></div>
 <div class="card span12"><div class="k">Открытые позиции</div><div id="portfoliopositions" class="note">загрузка…</div></div>
 <div class="card span12"><div class="k">Последние сделки</div><div id="portfoliotrades" class="note">загрузка…</div></div>
@@ -10707,8 +14965,8 @@ async function askVeritas(){try{const q=document.getElementById('askq').value||'
 async function showDetail(asset,horizon){const el=document.getElementById('detail');el.textContent='загрузка…';try{const r=await fetch(`/api/v1/explain?asset=${asset}&horizon=${horizon}`,{cache:'no-store'});const d=(await r.json()).explanation||{};if(d.status!=='ok'){el.textContent='нет данных';return}const cp=(d.calibration||{}).probability_correct;const fmt=a=>(a||[]).map(x=>`<div>${x.agent}: ${x.direction||''}</div>`).join('')||'—';const ex=d.execution_eligibility||{},ti=d.trend_impulse||{},st=d.intraday_structure||{},tp=d.trade_plan||{};el.innerHTML=`<b>${d.asset} · ${d.horizon}</b> · ${tierText({decision:d.decision,research_decision:d.research_decision,signal_tier:d.signal_tier})}<br>Сила: ${pct(d.confidence)} · калиброванная вероятность: ${cp==null?'ещё недостаточно данных':pct(cp)} · режим: ${d.regime||'—'}<br>Тренд: <b>${ti.phase||'NONE'}</b> · onset ${pct(ti.onset_score)} · impulse ${pct(ti.impulse_score)} · вход ${ti.entry_quality||'—'}<br>Структура: ${st.lifecycle||'—'} · score ${pct(st.score)} · near ATH ${st.near_ath?'ДА':'НЕТ'} · удержание пробоя ${st.breakout_hold?'ДА':'НЕТ'} · rVol ${st.relative_volume==null?'—':Number(st.relative_volume).toFixed(2)}<br>План: ожидаемый ход ${tp.expected_move_pct==null?'—':pct(tp.expected_move_pct)} · стоп ${tp.stop_price==null?'—':Number(tp.stop_price).toFixed(2)}<br>Decision Edge: <b>${d.decision_stage||tp.decision_stage||'—'}</b> · P+ ${d.positive_trade_probability==null?(tp.positive_trade_probability==null?'накапливается':pct(tp.positive_trade_probability)):pct(d.positive_trade_probability)} · аналоги n≈${d.analog_effective_n??(tp.tradeability||{}).effective_n??'—'}<br>Торговый допуск: <b>${ex.eligible?'ДА':'НЕТ'}</b>${ex.reason?' · '+ex.reason:''}<div class="detail-grid"><div class="detail-col"><div class="detail-title">За</div>${fmt(d.pro)}</div><div class="detail-col"><div class="detail-title">Против</div>${fmt(d.con)}</div><div class="detail-col"><div class="detail-title">Риск</div>${fmt(d.risk)}</div></div><div style="margin-top:8px">Совпало правил знаний: ${(d.knowledge_matches||[]).length}</div>`}catch(e){el.textContent=String(e)}}
 function renderMatrix(a){a=Array.isArray(a)?a:[];const map={};a.forEach(x=>{if(x&&x.asset&&x.horizon)map[x.asset+'|'+x.horizon]=x});document.getElementById('matrix').innerHTML=assets.map(asset=>`<tr><td><span class="asset-name">${asset}</span></td>${tfOrder.map(tf=>{const x=map[asset+'|'+tf];if(!x)return'<td><span class="stamp">нет данных</span></td>';return`<td><button class="signal-cell" onclick="showDetail('${asset}','${tf}')" title="${tierText(x)}${x.execution_eligible===false?' · research only':''}"><i class="dot ${dotClass(x)}"></i><div class="strength">${pct(x.confidence)}</div><div class="cal">${x.trend_phase&&x.trend_phase!=='NONE'?(x.trend_phase==='EARLY_TREND'?'старт':x.trend_phase==='IMPULSE_TREND'?'имп':'тренд'):(x.execution_eligible===false&&['LONG','SHORT'].includes(researchDecision(x))?'R':(x.calibrated_probability==null?'':'P '+pct(x.calibrated_probability)))}</div></button></td>`}).join('')}</tr>`).join('');const expected=assets.length*tfOrder.length,loaded=a.filter(x=>assets.includes(x.asset)&&tfOrder.includes(x.horizon)).length,missing=expected-loaded;document.getElementById('matrixstatus').textContent=missing<=0?`${loaded}/${expected} сигналов загружены`:`${loaded}/${expected} · отсутствует ${missing} ячеек`;document.getElementById('superstrip').innerHTML=tfOrder.map(tf=>{const xs=a.filter(x=>x.horizon===tf&&x.execution_eligible!==false&&(x.signal_tier==='SUPER_LONG'||x.signal_tier==='SUPER_SHORT'));return`<div class="superbox"><div class="tf">${tf}</div><div class="superline">${xs.length?xs.map(x=>`<span class="superasset"><i class="dot ${dotClass(x)}"></i>${x.asset}</span>`).join(''):'<span class="stamp">нет усиленного сигнала</span>'}</div></div>`}).join('')}
 function rub(x){return x==null?'—':Number(x).toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽'}function usd(x){return x==null?'—':'$'+Number(x).toLocaleString('en-US',{maximumFractionDigits:0})}function ppct(x,d=2){return x==null?'—':Number(x).toFixed(d)+'%'}
-async function loadPortfolios(){const head=document.getElementById('portfolioheadline'),cards=document.getElementById('portfoliocards'),posel=document.getElementById('portfoliopositions'),trel=document.getElementById('portfoliotrades');if(!head)return;try{const [pr,tr]=await Promise.all([fetch('/api/v1/paper-portfolios',{cache:'no-store'}),fetch('/api/v1/portfolio-trades',{cache:'no-store'})]);if(!pr.ok)throw new Error('portfolio HTTP '+pr.status);const pd=await pr.json(),td=tr.ok?await tr.json():{trades:[]};const ps=pd.portfolios||[];head.innerHTML=`Стартовый капитал каждого: <b>${rub(pd.initial_nav_rub)}</b> · комиссия ${(100*Number(pd.commission_rate||0)).toFixed(2)}% · max gross ${Number(pd.max_gross||0).toFixed(1)}× · max риск по стопу ${(100*Number(pd.max_stop_risk_nav||0)).toFixed(0)}% NAV · шаг ${(100*Number(pd.position_step||0)).toFixed(0)}%`;cards.innerHTML=ps.map(p=>{const x=p.latest||{},nav=x.nav_rub??pd.initial_nav_rub,ret=nav?100*(nav/pd.initial_nav_rub-1):null,bench=x.benchmark_nav_rub,exc=(nav&&bench)?100*(nav/bench-1):null;return `<div class="portfolio-card"><div class="portfolio-title"><span>${p.name}</span><span class="badge">${p.name==='Champion'?'70%+':'77%+'}</span></div><div class="portfolio-kpis"><div class="pkpi"><div class="k">NAV</div><div class="n">${rub(nav)}</div></div><div class="pkpi"><div class="k">USD</div><div class="n">${usd(x.nav_usd)}</div></div><div class="pkpi"><div class="k">Доходность</div><div class="n ${ret>=0?'ok':'bad'}">${ppct(ret)}</div></div><div class="pkpi"><div class="k">К RUONIA</div><div class="n ${exc>=0?'ok':'bad'}">${ppct(exc)}</div></div><div class="pkpi"><div class="k">Плечо gross</div><div class="n">${x.gross_leverage==null?'—':Number(x.gross_leverage).toFixed(2)+'×'}</div></div><div class="pkpi"><div class="k">Cash</div><div class="n">${x.gross_leverage==null?'—':ppct(100*Math.max(0,1-Number(x.gross_leverage)))}</div></div><div class="pkpi"><div class="k">Просадка</div><div class="n">${x.drawdown==null?'—':ppct(100*Number(x.drawdown))}</div></div><div class="pkpi"><div class="k">Win rate</div><div class="n">${p.win_rate==null?'—':ppct(100*Number(p.win_rate),1)}</div></div></div><div class="note" style="margin-top:10px">Закрыто сделок: ${p.closed_trades??0} · прибыльных: ${p.wins??0} · значимо прибыльных: ${p.meaningful_wins??0}<br>RUONIA ${x.ruonia==null?'—':Number(x.ruonia).toFixed(2)+'%'} · USD/RUB ${x.usdrub==null?'—':Number(x.usdrub).toFixed(4)}</div></div>`}).join('')||'портфели ещё не созданы';const positions=[];ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push({...z,portfolio:p.name})));posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview"><div class="assetview-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="assetmeta">Объём ${rub(z.notional_rub)} · единиц ${Number(z.units||0).toLocaleString('ru-RU',{maximumFractionDigits:6})}<br>Вход ${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · текущая ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · стоп ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:2})} · TP ${z.target_price==null?'—':Number(z.target_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}<br>Переоценка <b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b><br>Открыта ${z.opened_at?new Date(z.opened_at).toLocaleString():'—'} · вероятность ${z.payload?.pwin==null?'—':(100*Number(z.payload.pwin)).toFixed(1)+'%'} (${z.payload?.pwin_source||'—'})</div></div>`).join(''):'Открытых позиций нет — оба портфеля в cash.';const trades=td.trades||[];trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview tradecompact"><b>${t.portfolio_name} · ${t.asset} · ${t.direction}</b><div class="assetmeta">${t.status} · вход ${Number(t.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · выход ${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}<br>Gross ${rub(t.gross_pnl_rub)} · комиссии ${rub(t.fees_rub)} · фондирование ${rub(t.funding_rub)} · Net <b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)}</b><br>${t.horizon||'—'} · ${t.setup||'—'}</div></div>`).join(''):'Сделок в журнале пока нет.'}catch(e){head.innerHTML='<span class="err">Портфели: '+String(e)+'</span>';cards.innerHTML='';posel.textContent='—';trel.textContent='—'}}
-async function load(){try{const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),12000);const r=await fetch('/api/v1/overview',{cache:'no-store',signal:ctl.signal});clearTimeout(tm);if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const cts=d.cycle?.at?new Date(d.cycle.at):new Date();document.getElementById('stamp').textContent='сигналы '+cts.toLocaleString()+(d.overview_mode==='fast'?' · быстрый режим':'');document.getElementById('sys').innerHTML=d.cycle?.status==='ok'?'<span class="ok">ONLINE</span>':'<span class="err">'+(d.cycle?.status||'—')+'</span>';document.getElementById('src').textContent=d.storage?.knowledge_sources??'—';document.getElementById('rules').textContent=d.storage?.knowledge_rules??'—';document.getElementById('mgr').textContent=(d.managers?.postgres_sources??'—')+' / '+(d.managers?.postgres_rules??'—');document.getElementById('mgrsmall').textContent=(d.managers?.embedded_author_labels??'—')+' авторских меток';const lp=d.learning_progress||{};const ln=lp.matched_observations_each_side??0;document.getElementById('learnidx').textContent=lp.index_vs_start==null?`100.0*`:lp.index_vs_start;document.getElementById('learnsmall').textContent=lp.index_vs_start==null?`предварительно · выборка ${ln}/20 · надёжность ${lp.confidence||'LOW'}`:`100 = старт · Δ hit ${lp.hit_rate_delta_pp==null?'—':lp.hit_rate_delta_pp+' п.п.'} · ${lp.confidence||''}`;const um=d.users||{};document.getElementById('users').textContent=`${um.unique_users??0} / ${um.online_users??0}`;document.getElementById('userssmall').textContent='уникальных / онлайн сейчас';const cap=d.signal_capacity||{};document.getElementById('capacity').textContent=`${cap.decision_depth_score??'—'}/100`;document.getElementById('capacitysmall').textContent=`30 ячеек · ~${cap.avg_live_state_fields??0} полей/ячейку · ${cap.agents??0} агентов`;const a=d.cycle?.summary||[];renderMatrix(a);const ob=d.opportunity_board||{},opps=ob.opportunities||[];document.getElementById('opps').innerHTML=opps.slice(0,5).map(x=>`<div class="assetview"><div class="assetview-head"><b>${x.asset} · ${x.meta_decision} · ${x.horizon}</b><span class="badge">${x.grade} · ${x.meta_score}/100</span></div><div class="assetmeta">Стадия: ${x.decision_stage||'—'} · P+: ${x.positive_trade_probability==null?'модельная/накапливается':(100*x.positive_trade_probability).toFixed(1)+'%'} · R/R ${x.expected_to_stop_ratio==null?'—':Number(x.expected_to_stop_ratio).toFixed(2)}<br>Вход ${x.entry_price==null?'—':Number(x.entry_price).toFixed(2)} · стоп ${x.stop_price==null?'—':Number(x.stop_price).toFixed(2)} · ожидаемый ход ${x.expected_move_pct==null?'—':(100*x.expected_move_pct).toFixed(2)+'%'}<br><b>${x.trade_plan_eligible?'РАССМАТРИВАТЬ':'ЖДАТЬ / ПРОПУСТИТЬ'}</b></div></div>`).join('')||'<span class="stamp">Сейчас нет сделок, прошедших фильтры качества.</span>';const lmc=d.large_move_capture||{},lmco=lmc.overall||{};document.getElementById('capture').innerHTML=`Статус <b>${lmc.status||'—'}</b> · крупных движений ${lmco.large_moves??0} · захвачено ${lmco.capture_rate==null?'—':(100*lmco.capture_rate).toFixed(1)+'%'} · пропущено ${lmco.miss_rate==null?'—':(100*lmco.miss_rate).toFixed(1)+'%'} · против рынка ${lmco.wrong_side_rate==null?'—':(100*lmco.wrong_side_rate).toFixed(1)+'%'}`;const iv=(d.investor_asset_view||{}).items||[];const trCls=x=>String(x||'').includes('↑')?'trend-up':String(x||'').includes('↓')?'trend-down':'trend-flat';const thRu=x=>x==='VALID'?'тезис подтверждён':x==='CHALLENGED'?'тезис под вопросом':x==='BROKEN'?'тезис сломан':x==='UNKNOWN_DATA'?'не хватает данных':'нет тезиса';const enRu=x=>x==='READY'?'вход готов':x==='INVALIDATED'?'вход отменён':x==='LATE_OR_WAIT'?'вход поздний / ждать':x||'—';const acRu=x=>x==='ENTER_CANDIDATE'?'рассмотреть вход':x==='REDUCE'?'уменьшить размер':x==='WAIT'?'ждать':x||'—';document.getElementById('thesis').innerHTML=`<div class="assetview-grid">${iv.map(x=>`<div class="assetview"><div class="assetview-head"><span class="assetview-name">${x.asset} · ${x.investor_signal||'WAIT'}</span><span class="trend-arrow ${trCls(x.arrow)}">${x.arrow||'→'}</span></div><div class="horizon-line">1ч ${x.horizons?.['1h']||'→'} · 4ч ${x.horizons?.['4h']||'→'} · 1д ${x.horizons?.['1d']||'→'} · 3д ${x.horizons?.['3d']||'→'} · 7д ${x.horizons?.['7d']||'→'}</div><div class="assetmeta">${x.trend} · подтверждают ${x.directional_horizons||0}/${x.total_horizons||5} горизонтов · согласование ${Math.round(100*(x.alignment||0))}%<br>FAST ${x.fast||'→'} · MEDIUM ${x.medium||'→'} · SLOW ${x.slow||'→'}<br>параметров состояния ${x.state_parameters_used??'—'} · семейств факторов ${x.factor_family_count??'—'} · независимых подтверждений ${x.independent_evidence_families??'—'} · моделей ${x.model_agents??'—'}<br>${thRu(x.thesis_status)} · ${enRu(x.entry_status)} · действие: ${acRu(x.action)}</div></div>`).join('')}</div>`||'—';const pp=d.paper_portfolios||{},pps=pp.portfolios||[];const ppe=document.getElementById('paperportfolio');if(ppe)ppe.innerHTML=pps.map(x=>`<b>${x.name}</b>: NAV ${Number(x.nav_rub||0).toLocaleString('ru-RU',{maximumFractionDigits:0})} ₽ · $${Number(x.nav_usd||0).toLocaleString('en-US',{maximumFractionDigits:0})} · P&L ${x.total_return_pct==null?'—':Number(x.total_return_pct).toFixed(2)+'%'} · DD ${x.drawdown_pct==null?'—':Number(x.drawdown_pct).toFixed(2)+'%'} · плечо ${x.gross_leverage==null?'—':Number(x.gross_leverage).toFixed(2)+'×'} · win ${x.win_rate==null?'—':Number(100*x.win_rate).toFixed(1)+'%'} · meaningful ${x.meaningful_win_rate==null?'—':Number(100*x.meaningful_win_rate).toFixed(1)+'%'}`).join('<br>')||'накапливается';const f=d.factory||{};document.getElementById('factory').innerHTML=`Кандидаты:<div class="chips">${chips(f.candidates)}</div>Правила:<div class="chips">${chips(f.rules)}</div>`;const b=d.backtest||{},lr=b.latest_run||{};document.getElementById('bt').innerHTML=`${lr.status||b.status||'—'} · ${lr.days||b.days||'—'} дней · правил ${lr.rules_tested??'—'} · наблюдений ${lr.observations??'—'}<br><span class="badge">20 б.п. + OOS + неперекрывающиеся окна</span>`;const m=d.macro||{},md=m.data||{},ca=d.cross_asset_shadow||{};document.getElementById('macro').innerHTML=`UST 2Y ${fmtN(md.ust2y?.value,3)} · 10Y ${fmtN(md.ust10y?.value,3)} · 30Y ${fmtN(md.ust30y?.value,3)}<br>VIX ${fmtN((md.vix_live||md.vix_daily)?.value,2)} · S&P ${fmtN(md.sp500?.value,2)}<br>DXY ${fmtN(md.dxy?.value,2)} · Gold ${fmtN(md.gold?.value,2)}`;document.getElementById('cross').innerHTML=`Cross-asset: <b>${ca.regime||'—'}</b> · ${ca.score??'—'} <span class="badge">shadow</span>`;const al=d.alerts||[];document.getElementById('alerts').innerHTML=al.slice(0,6).map(x=>{const q=x.payload||{};const typ=x.alert_type||q.alert_type||'ALERT';const act=q.action||q.decision||'наблюдать';const sev=x.severity||'—';const px=q.trigger_price||q.price;return `<div class="assetview"><b>${x.asset||'SYSTEM'} ${x.horizon||''} · ${typ}</b> <span class="badge">${sev}</span><div class="assetmeta">Вывод: <b>${act}</b>${px?` · цена ${Number(px).toFixed(2)}`:''}<br>${q.reason||q.setup||q.invalidation_reason||'Изменение состояния требует перепроверки сигнала.'}</div></div>`}).join('')||'Нет новых алертов, требующих действия.';const qc=d.qc||{};document.getElementById('qc').innerHTML=`DATA ${qc.DATA||'—'} · MARKET ${qc.MARKET||'—'} · FORECAST ${qc.FORECAST||'—'}<br>AUDIT ${qc.AUDIT||'—'} · DECISION ${qc.DECISION||'—'}`;const vi=(d.validation||{}).items||[],vc={};vi.forEach(x=>vc[x.validation_label]=(vc[x.validation_label]||0)+1);document.getElementById('val').innerHTML=`ROBUST ${vc.ROBUST_CANDIDATE||0} · PROMISING ${vc.PROMISING||0} · WEAK ${vc.WEAK||0}`;const ad=d.adaptive||{},rs=ad.runtime_settings||{};document.getElementById('adaptive').innerHTML=`Regime edge: ${(ad.regime_counts||{}).REGIME_EDGE||0} · Pair promising: ${(ad.pair_counts||{}).PAIR_PROMISING||0}<br>Rule drift: ${ad.rule_drift_count??'—'} · min score ${rs.min_directional_score??'—'}`;const dr=d.drift||{},cc=d.champion_challenger||{};document.getElementById('drift').innerHTML=`Drift ${dr.status||'—'} · weakening/decaying ${dr.rule_drift_count??0}<br>Challengers ${(cc.challengers||[]).length} · Champion ${cc.champion?'есть':'нет'}`;const prisk=d.portfolio_risk||{},prc=prisk.tail_contributions||[],sc=prisk.strongest_abs_correlation||{};document.getElementById('portfoliorisk').innerHTML=`Статус: <b>${prisk.status||'—'}</b> · n=${prisk.observations??0}<br>VaR 95% ${prisk.var_95_loss_fraction==null?'—':(100*prisk.var_95_loss_fraction).toFixed(2)+'%'} · CVaR 95% ${prisk.cvar_95_loss_fraction==null?'—':(100*prisk.cvar_95_loss_fraction).toFixed(2)+'%'}<br>CVaR 99% ${prisk.cvar_99_loss_fraction==null?'—':(100*prisk.cvar_99_loss_fraction).toFixed(2)+'%'} · max |corr| ${sc.pair||'—'} ${sc.correlation==null?'':Number(sc.correlation).toFixed(2)}<br>${prc.slice(0,4).map(x=>`${x.asset}: ${(100*(x.cvar_contribution||0)).toFixed(2)}%`).join(' · ')||'вклад по активам накапливается'}<br><span class="badge">историческая симуляция · shadow</span>`;const rb=d.dynamic_risk_budget||{},rba=rb.asset_budgets||[];document.getElementById('riskbudget').innerHTML=`Режим: <b>${rb.risk_posture||'—'}</b> · CVaR-множитель ${rb.portfolio_multiplier==null?'—':Number(rb.portfolio_multiplier).toFixed(2)}<br>Исходный риск ${(100*(rb.gross_allocator_weight||0)).toFixed(1)}% → обученный бюджет ${(100*(rb.gross_research_risk_budget||0)).toFixed(1)}%<br>${rba.slice(0,6).map(x=>`${x.asset}: ${(100*(x.research_risk_budget||0)).toFixed(1)}% · опыт ×${Number(x.experience_multiplier||0).toFixed(2)} · n=${x.experience_n||0} · ${x.experience_state||'BUILDING'}`).join('<br>')||'нет направленных позиций'}<br><span class="badge">собственный опыт + режим + P&L-кластеры + CVaR · shadow</span>`;const au=d.autonomy||{};document.getElementById('autonomy').innerHTML=`${au.always_on_confirmed?'<span class="ok"><b>ALWAYS-ON</b></span>':'<span class="warn"><b>Хостинг не подтвержден 24/7</b></span>'}<br>рынок каждые ${Math.round((au.market_learning_cycle_seconds||0)/60)} мин · знания каждые ${Math.round((au.knowledge_discovery_interval_seconds||0)/3600)} ч<br>Postgres: ${au.persistent_experience_storage?'durable':'нет'} · uptime ${Math.round((au.process_uptime_seconds||0)/60)} мин`;const hi=d.horizon_integrity||{},hmiss=hi.missing_live||[];document.getElementById('horizonintegrity').innerHTML=`1ч: <b>${hmiss.length?'неполное':'6/6 активов'}</b> · ожидается ${hi.expected_signal_cells??30} ячеек (6 активов × 5 ТФ)<br>${Object.entries(hi.live_1h_seen||{}).map(([a,v])=>`${a} ${v?'✓':'…'}`).join(' · ')}`;const ac=(d.agent_consensus||{}).items||[];document.getElementById('consensus').innerHTML=ac.slice(0,6).map(x=>`${x.asset} ${x.horizon} ${x.direction}: ${x.agents} · n=${x.n}`).join('<br>')||'недостаточно данных';const ae=d.architecture_efficiency||{},hl=ae.heavy_learning||{};document.getElementById('archeff').innerHTML=`Цикл <b>${ae.cycle_seconds==null?'—':Number(ae.cycle_seconds).toFixed(1)+'с'}</b> · цель ≤${ae.target_cycle_seconds??30}с · ${ae.target_status||'—'}<br>p50 ${ae.cycle_p50_seconds==null?'—':Number(ae.cycle_p50_seconds).toFixed(1)+'с'} · p95 ${ae.cycle_p95_seconds==null?'—':Number(ae.cycle_p95_seconds).toFixed(1)+'с'} · n=${ae.history_n??0}<br>рынок параллельно: ${ae.market_prefetch_workers??'—'} потока · ожидание ${ae.market_prefetch_wall_seconds==null?'—':Number(ae.market_prefetch_wall_seconds).toFixed(1)+'с'} · сэкономлено ≈${ae.market_parallel_saved_estimate_seconds==null?'—':Number(ae.market_parallel_saved_estimate_seconds).toFixed(1)+'с'}<br>глубокое обучение: <b>${hl.status||'—'}</b> · последний цикл ${hl.last_duration_seconds==null?'—':Number(hl.last_duration_seconds).toFixed(1)+'с'} · вне быстрого контура<br>решения ${ae.decision_seconds==null?'—':Number(ae.decision_seconds).toFixed(1)+'с'} · память ${ae.rss_mb==null?'—':Number(ae.rss_mb).toFixed(1)+' МБ'} · исключено повторных расчётов ${ae.saved_recomputes??'—'}`;const pr=d.production_readiness||{},es=d.event_scan||{};document.getElementById('prodready').innerHTML=`Research RC: <b>${pr.research_product_ready?'ДА':'НЕТ'}</b> · внешний выпуск: <b>${pr.external_investor_ready?'ДА':'НЕТ'}</b><br>Блокеры: ${(pr.blockers||[]).join(', ')||'нет'}<br>Предупреждения: ${(pr.warnings||[]).join(', ')||'нет'}`;document.getElementById('eventscan').innerHTML=`${es.status||'—'} · найдено ${es.events_seen??0} · импортировано ${es.events_imported??0}<br><span class="badge">shadow, без прямого влияния на CIO</span>`;const pa=d.portfolio_allocator||{},pap=pa.positions||[];document.getElementById('alloc').innerHTML=pap.map(x=>`${x.asset} ${x.decision} · ${(100*(x.weight||0)).toFixed(1)}% · ${x.grade}`).join('<br>')||'нет аллокаций';const gv=d.governance||{};document.getElementById('gov').innerHTML=`${gv.status||'—'} · автопонижений ${gv.demotions??0}<br><span class="badge">автоповышение запрещено</span>`;const dq=d.data_quality||{},dqr=dq.rows||[],counts=dq.status_counts||{};document.getElementById('dqsum').textContent=(dq.research_gate_pass?'основные источники в норме':'есть проблема основных источников')+' · '+Object.entries(counts).map(([k,v])=>k+' '+v).join(' · ');document.getElementById('dq').innerHTML=dqr.map(x=>`<div class="dqrow"><div>${x.source}<br><span class="stamp">${x.asset_class||''} · ${x.role||''}</span></div><div class="${dqClass(x.status)}">${x.status||'—'}<br><span class="stamp">${x.age_seconds==null?'возраст н/д':'возраст '+Math.round(x.age_seconds)+'с'}</span></div><div>${x.effective_lag_seconds==null?'—':Math.round(x.effective_lag_seconds)+'с'}</div></div>`).join('');const de=d.decision_effectiveness||{},vg=d.v70_gate_effectiveness||{},li3=d.v70_incremental_learning||{};document.getElementById('decisionperf').innerHTML=`<div class="effect-summary"><span class="effect-pill">завершено <b>${de.completed_episodes??0}</b></span><span class="effect-pill">верное направление <b>${de.directional_hit_rate==null?'—':(100*de.directional_hit_rate).toFixed(1)+'%'}</b></span><span class="effect-pill">верное воздержание <b>${de.correct_abstention_rate==null?'—':(100*de.correct_abstention_rate).toFixed(1)+'%'}</b></span><span class="effect-pill">v70 изменил риск n=<b>${vg.adjusted_outcomes??0}</b> · польза ${vg.adjusted_precision==null?'накапливается':(100*vg.adjusted_precision).toFixed(1)+'%'}</span><span class="effect-pill">тайминг n=<b>${vg.timing_outcomes??0}</b> · польза ${vg.timing_precision==null?'накапливается':(100*vg.timing_precision).toFixed(1)+'%'}</span><span class="effect-pill">VETO n=<b>${vg.veto_outcomes??0}</b> · точность ${vg.veto_precision==null?'накапливается':(100*vg.veto_precision).toFixed(1)+'%'}</span><span class="effect-pill">Learning 3.0 <b>${li3.learning_index_3==null?'накапливается':li3.learning_index_3}</b></span></div><span class="stamp">Эпизоды, а не повторяющиеся 5-минутные снимки. v70 пока оценивается в shadow.</span>`;const ep=de.recent_episodes||[];const benefitCls=t=>String(t||'').includes('избежать')||String(t||'').includes('верное')?'benefit-good':String(t||'').includes('ошиб')||String(t||'').includes('пропущ')||String(t||'').includes('заблокировала бы прибыль')?'benefit-bad':'benefit-neutral';document.getElementById('history').innerHTML=ep.map(x=>`<tr><td>${new Date(x.ts).toLocaleString()}</td><td>${x.asset}</td><td>${x.horizon}</td><td>${x.decision==='LONG'?'↑ LONG':x.decision==='SHORT'?'↓ SHORT':'→ WAIT'}</td><td>${x.forward_return==null?'—':(100*x.forward_return).toFixed(2)+'%'}</td><td class="${benefitCls(x.benefit)}">${x.benefit}${x.gate_class?' · '+x.gate_class:''}</td></tr>`).join('')||`<tr><td colspan="6" class="stamp">Завершённые независимые эпизоды ещё накапливаются</td></tr>`;const cq=d.calibration_quality||{},cqi=cq.items||[];document.getElementById('calq').innerHTML=`Статус: <b>${cq.status||'—'}</b><br>${cqi.slice(0,6).map(x=>`${x.asset} ${x.horizon}: n=${x.n}, Brier ${x.brier_score==null?'—':x.brier_score.toFixed(3)}, ECE ${x.ece==null?'—':x.ece.toFixed(3)}`).join('<br>')||'выборка накапливается'}`;const oc=d.options_context||{},btcOpt=oc.BTC||{},ethOpt=oc.ETH||{};document.getElementById('optctx').innerHTML=`BTC ATM IV ${btcOpt.near_atm_iv==null?'—':btcOpt.near_atm_iv.toFixed(1)} · skew ${btcOpt.near_skew_10pct_proxy==null?'—':btcOpt.near_skew_10pct_proxy.toFixed(1)}<br>ETH ATM IV ${ethOpt.near_atm_iv==null?'—':ethOpt.near_atm_iv.toFixed(1)} · skew ${ethOpt.near_skew_10pct_proxy==null?'—':ethOpt.near_skew_10pct_proxy.toFixed(1)}<br><span class="badge">shadow</span>`;const nb=d.ndx_breadth||{},np=nb.proxy||{};document.getElementById('breadth').innerHTML=`${np.participation||'—'}<br>QQQ ${(100*(np.qqq_ret_1d||0)).toFixed(2)}% · QQEW ${(100*(np.qqew_ret_1d||0)).toFixed(2)}%<br>spread ${(100*(np.cap_vs_equal_spread||0)).toFixed(2)} п.п.<br><span class="badge">proxy</span>`;const vv=(d.validation||{}).items||[],vaultPass=vv.filter(x=>x.vault_pass).length;const ts=(d.time_stability||{}).items||[],stable=ts.filter(x=>x.stability_label==='STABLE').length;document.getElementById('vaultq').innerHTML=`VAULT pass <b>${vaultPass}</b> · стабильных по блокам <b>${stable}</b><br><span class="badge">holdout не участвует в подборе</span>`;const cs=(d.cost_sensitivity||{}).items||[],surv=cs.filter(x=>x.survives_high_cost).length;document.getElementById('costq').innerHTML=`Выживают при максимальных издержках: <b>${surv}</b><br>сетка ${(d.backtest?.latest_run?.details?.cost_grid_bps||[10,20,40]).join(' / ')} б.п.`;const rr=(d.signal_readiness||{}).signals||[];document.getElementById('readyq').innerHTML=rr.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.readiness}</b> ${x.readiness_score}`).join('<br>')||'накапливается';const lrn=d.learning_report||{},ix=d.independent_experience||{};document.getElementById('learning').innerHTML=`Источники <b>${lrn.sources_total??'—'}</b> · +${lrn.sources_added_today??0} сегодня<br>Правила <b>${lrn.rules_total??'—'}</b> · +${lrn.rules_added_today??0} сегодня<br>Авто-правила сегодня ${lrn.auto_rules_imported_today??0} · кандидаты +${lrn.candidates_added_today??0}`;document.getElementById('experience').innerHTML=`Сырые решения сегодня ${lrn.raw_decisions_today??'—'}<br>Независимые эпизоды сегодня <b>${lrn.independent_episodes_today??'—'}</b> · с исходом ${lrn.independent_episode_outcomes_today??'—'}<br>Всего эпизодов ${ix.episodes??'—'} · завершено ${ix.episodes_with_outcomes??'—'}`;const lib=d.multilingual_library||{},cd=d.causal_drivers||{},cdi=cd.items||[];document.getElementById('library').innerHTML=`Кураторская база: <b>${lib.embedded_sources??'—'}</b> источников · книги ${lib.book_sources??'—'} · peer-reviewed ${lib.peer_reviewed_sources??'—'}<br>Языки ${Object.entries(lib.languages||{}).map(([k,v])=>k+':'+v).join(' · ')||'—'}<br>Ротационных поисковых запросов ${lib.rotating_discovery_queries??'—'}<br><span class="badge">метаданные + оригинальные краткие выжимки, без копирования полных защищённых текстов</span>`;document.getElementById('causaldrivers').innerHTML=cdi.map(x=>`${x.asset}: <b>${x.label}</b> ${x.score}`).join('<br>')||'—';const pl=d.policy_lab||{},pli=pl.items||[];document.getElementById('policy').innerHTML=`n=${pl.n??0} · средний regret ${pl.overall_avg_regret==null?'—':(100*pl.overall_avg_regret).toFixed(2)+'%'}<br>${pli.filter(x=>x.status==='MEASURABLE').slice(0,4).map(x=>`${x.asset} ${x.horizon} ${x.decision}: net ${x.avg_net_utility==null?'—':(100*x.avg_net_utility).toFixed(2)+'%'}`).join('<br>')||'выборка накапливается'}`;const rt=d.regime_transitions||{},rti=rt.items||[];document.getElementById('regtrans').innerHTML=rti.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.transition_risk}</b> · persistence ${x.persistence_probability==null?'—':(100*x.persistence_probability).toFixed(0)+'%'}`).join('<br>')||'—';const rh=d.research_discovery_health||{};document.getElementById('researchhealth').innerHTML=`<b>${rh.status||'—'}</b> · zero-run streak ${rh.zero_candidate_run_streak??0}<br>${(rh.providers||[]).slice(0,5).map(x=>`${x.provider}: ${x.n}`).join(' · ')||'—'}`;const mp=d.meta_performance||{},mpi=mp.items||[];document.getElementById('metaperf').innerHTML=mpi.slice(0,8).map(x=>`${x.asset} ${x.horizon} ${x.grade}: n=${x.n} · hit ${(100*(x.posterior_hit_rate||0)).toFixed(1)}% · net ${x.avg_signed_return_net==null?'—':(100*x.avg_signed_return_net).toFixed(2)+'%'}`).join('<br>')||'выборка накапливается';const cb=d.contradictions||{},cbi=cb.items||[];document.getElementById('contrad').innerHTML=cbi.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.level}</b> ${x.contradiction_score}`).join('<br>')||'—';const el=d.event_learning||{},eli=el.items||[];document.getElementById('eventlearn').innerHTML=eli.slice(0,8).map(x=>`${x.category} ${x.target_asset} ${x.horizon}: n=${x.n} · ${x.reliability}`).join('<br>')||'выборка накапливается';const mr=d.managers||{};document.getElementById('managerdetail').innerHTML=`<div class="managerhead"><span class="managerstat"><b>${mr.postgres_sources??mr.embedded_sources??'—'}</b><br>источников</span><span class="managerstat"><b>${mr.postgres_rules??mr.embedded_rules??'—'}</b><br>правил</span><span class="managerstat"><b>${mr.embedded_author_labels??'—'}</b><br>авторских меток</span><span class="managerstat"><b>6</b><br>школ: macro / trend / quant / risk / fundamental / execution</span></div><div class="stamp">v70.7 расширяет поиск по Druckenmiller, PTJ, Kaminski, Harding, AQR/Man AHL и quality-compounding материалам; новые идеи остаются shadow до проверки.</div><div class="authorgrid">${(mr.by_author||[]).slice(0,28).map(x=>`<span class="chip">${x.authors}: ${x.n}</span>`).join('')}</div>`}catch(e){const sys=document.getElementById('sys');if(sys&&sys.textContent&&sys.textContent.trim()!=='—'){sys.innerHTML='<span class="warn">UPDATING</span>'}else if(sys){sys.innerHTML='<span class="warn">DEGRADED</span>'}document.getElementById('stamp').textContent='Последний экран сохранён · обновление данных задержано: '+String(e)}}const VKEY='veritas_visitor';let VID=localStorage.getItem(VKEY);if(!VID){VID=(crypto.randomUUID?crypto.randomUUID():(Date.now()+'-'+Math.random()));localStorage.setItem(VKEY,VID)}async function presence(){try{await fetch('/api/v1/presence',{headers:{'X-Veritas-Visitor':VID},cache:'no-store'})}catch(e){}}presence();setInterval(presence,45000);load();loadPortfolios();setInterval(load,30000);setInterval(loadPortfolios,30000);</script></body></html>"""
+async function loadPortfolios(){const head=document.getElementById('portfolioheadline'),cards=document.getElementById('portfoliocards'),posel=document.getElementById('portfoliopositions'),trel=document.getElementById('portfoliotrades');if(!head)return;try{const [pr,tr]=await Promise.all([fetch('/api/v1/paper-portfolios',{cache:'no-store'}),fetch('/api/v1/portfolio-trades',{cache:'no-store'})]);if(!pr.ok)throw new Error('portfolio HTTP '+pr.status);const pd=await pr.json(),td=tr.ok?await tr.json():{trades:[]};const ps=pd.portfolios||[];head.innerHTML=`Стартовый капитал каждого: <b>${rub(pd.initial_nav_rub)}</b> · комиссия ${(100*Number(pd.commission_rate||0)).toFixed(2)}% · max gross ${Number(pd.max_gross||0).toFixed(1)}× · max риск по стопу ${(100*Number(pd.max_stop_risk_nav||0)).toFixed(0)}% NAV · шаг ${(100*Number(pd.position_step||0)).toFixed(0)}%`;cards.innerHTML=ps.map(p=>{const x=p.latest||{},nav=x.nav_rub??pd.initial_nav_rub,ret=nav?100*(nav/pd.initial_nav_rub-1):null,bench=x.benchmark_nav_rub,exc=(nav&&bench)?100*(nav/bench-1):null;return `<div class="portfolio-card"><div class="portfolio-title"><span>${p.name}</span><span class="badge">${p.name==='Champion'?'70%+':'77%+'}</span></div><div class="portfolio-kpis"><div class="pkpi"><div class="k">NAV</div><div class="n">${rub(nav)}</div></div><div class="pkpi"><div class="k">USD</div><div class="n">${usd(x.nav_usd)}</div></div><div class="pkpi"><div class="k">Доходность</div><div class="n ${ret>=0?'ok':'bad'}">${ppct(ret)}</div></div><div class="pkpi"><div class="k">К RUONIA</div><div class="n ${exc>=0?'ok':'bad'}">${ppct(exc)}</div></div><div class="pkpi"><div class="k">Плечо gross</div><div class="n">${x.gross_leverage==null?'—':Number(x.gross_leverage).toFixed(2)+'×'}</div></div><div class="pkpi"><div class="k">Cash</div><div class="n">${x.gross_leverage==null?'—':ppct(100*Math.max(0,1-Number(x.gross_leverage)))}</div></div><div class="pkpi"><div class="k">Просадка</div><div class="n">${x.drawdown==null?'—':ppct(100*Number(x.drawdown))}</div></div><div class="pkpi"><div class="k">Win rate</div><div class="n">${p.win_rate==null?'—':ppct(100*Number(p.win_rate),1)}</div></div></div><div class="note" style="margin-top:10px">Закрыто сделок: ${p.closed_trades??0} · прибыльных: ${p.wins??0} · значимо прибыльных: ${p.meaningful_wins??0}<br>RUONIA ${x.ruonia==null?'—':Number(x.ruonia).toFixed(2)+'%'} · USD/RUB ${x.usdrub==null?'—':Number(x.usdrub).toFixed(4)}</div></div>`}).join('')||'портфели ещё не созданы';const positions=[];ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push({...z,portfolio:p.name})));posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview"><div class="assetview-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="assetmeta">Объём ${rub(z.notional_rub)} · единиц ${Number(z.units||0).toLocaleString('ru-RU',{maximumFractionDigits:6})}<br>Вход ${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · текущая ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · стоп ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:2})} · TP ${z.target_price==null?'—':Number(z.target_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}<br>Переоценка <b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b><br>Открыта ${z.opened_at?new Date(z.opened_at).toLocaleString():'—'} · вероятность ${z.payload?.pwin==null?'—':(100*Number(z.payload.pwin)).toFixed(1)+'%'} (${z.payload?.pwin_source||'—'})</div></div>`).join(''):'Открытых позиций нет — оба портфеля в cash.';const trades=td.trades||[];trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview tradecompact"><b>${t.portfolio_name} · ${t.asset} · ${t.direction}</b><div class="assetmeta">${t.status} · вход ${Number(t.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · выход ${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}<br>Gross ${rub(t.gross_pnl_rub)} · комиссии ${rub(t.fees_rub)} · фондирование ${rub(t.funding_rub)} · Net <b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)}${t.return_on_entry_nav==null?'':' · '+(100*Number(t.return_on_entry_nav)).toFixed(2)+'%'}</b><br>${t.horizon||'—'} · ${t.setup||'—'}</div></div>`).join(''):'Сделок в журнале пока нет.'}catch(e){head.innerHTML='<span class="err">Портфели: '+String(e)+'</span>';cards.innerHTML='';posel.textContent='—';trel.textContent='—'}}
+async function load(){try{const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),180000);const r=await fetch('/api/v1/overview',{cache:'no-store',signal:ctl.signal});clearTimeout(tm);if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const cts=d.cycle?.at?new Date(d.cycle.at):new Date();document.getElementById('stamp').textContent='сигналы '+cts.toLocaleString()+(d.overview_mode==='fast'?' · быстрый режим':'');document.getElementById('sys').innerHTML=d.cycle?.status==='ok'?'<span class="ok">ONLINE</span>':'<span class="err">'+(d.cycle?.status||'—')+'</span>';document.getElementById('src').textContent=d.storage?.knowledge_sources??'—';document.getElementById('rules').textContent=d.storage?.knowledge_rules??'—';document.getElementById('mgr').textContent=(d.managers?.postgres_sources??'—')+' / '+(d.managers?.postgres_rules??'—');document.getElementById('mgrsmall').textContent=(d.managers?.embedded_author_labels??'—')+' авторских меток';const lp=d.learning_progress||{};const ln=lp.matched_observations_each_side??0;document.getElementById('learnidx').textContent=lp.index_vs_start==null?`100.0*`:lp.index_vs_start;document.getElementById('learnsmall').textContent=lp.index_vs_start==null?`предварительно · выборка ${ln}/20 · надёжность ${lp.confidence||'LOW'}`:`100 = старт · Δ hit ${lp.hit_rate_delta_pp==null?'—':lp.hit_rate_delta_pp+' п.п.'} · ${lp.confidence||''}`;const um=d.users||{};document.getElementById('users').textContent=`${um.unique_users??0} / ${um.online_users??0}`;document.getElementById('userssmall').textContent='уникальных / онлайн сейчас';const cap=d.signal_capacity||{};document.getElementById('capacity').textContent=`${cap.decision_depth_score??'—'}/100`;document.getElementById('capacitysmall').textContent=`30 ячеек · ~${cap.avg_live_state_fields??0} полей/ячейку · ${cap.agents??0} агентов`;const a=d.cycle?.summary||[];renderMatrix(a);const ob=d.opportunity_board||{},opps=ob.opportunities||[];document.getElementById('opps').innerHTML=opps.slice(0,5).map(x=>`<div class="assetview"><div class="assetview-head"><b>${x.asset} · ${x.meta_decision} · ${x.horizon}</b><span class="badge">${x.grade} · ${x.meta_score}/100</span></div><div class="assetmeta">Стадия: ${x.decision_stage||'—'} · P+: ${x.positive_trade_probability==null?'модельная/накапливается':(100*x.positive_trade_probability).toFixed(1)+'%'} · R/R ${x.expected_to_stop_ratio==null?'—':Number(x.expected_to_stop_ratio).toFixed(2)}<br>Вход ${x.entry_price==null?'—':Number(x.entry_price).toFixed(2)} · стоп ${x.stop_price==null?'—':Number(x.stop_price).toFixed(2)} · ожидаемый ход ${x.expected_move_pct==null?'—':(100*x.expected_move_pct).toFixed(2)+'%'}<br><b>${x.trade_plan_eligible?'РАССМАТРИВАТЬ':'ЖДАТЬ / ПРОПУСТИТЬ'}</b></div></div>`).join('')||'<span class="stamp">Сейчас нет сделок, прошедших фильтры качества.</span>';const lmc=d.large_move_capture||{},lmco=lmc.overall||{};document.getElementById('capture').innerHTML=`Статус <b>${lmc.status||'—'}</b> · крупных движений ${lmco.large_moves??0} · захвачено ${lmco.capture_rate==null?'—':(100*lmco.capture_rate).toFixed(1)+'%'} · пропущено ${lmco.miss_rate==null?'—':(100*lmco.miss_rate).toFixed(1)+'%'} · против рынка ${lmco.wrong_side_rate==null?'—':(100*lmco.wrong_side_rate).toFixed(1)+'%'}`;const iv=(d.investor_asset_view||{}).items||[];const trCls=x=>String(x||'').includes('↑')?'trend-up':String(x||'').includes('↓')?'trend-down':'trend-flat';const thRu=x=>x==='VALID'?'тезис подтверждён':x==='CHALLENGED'?'тезис под вопросом':x==='BROKEN'?'тезис сломан':x==='UNKNOWN_DATA'?'не хватает данных':'нет тезиса';const enRu=x=>x==='READY'?'вход готов':x==='INVALIDATED'?'вход отменён':x==='LATE_OR_WAIT'?'вход поздний / ждать':x||'—';const acRu=x=>x==='ENTER_CANDIDATE'?'рассмотреть вход':x==='REDUCE'?'уменьшить размер':x==='WAIT'?'ждать':x||'—';document.getElementById('thesis').innerHTML=`<div class="assetview-grid">${iv.map(x=>`<div class="assetview"><div class="assetview-head"><span class="assetview-name">${x.asset} · ${x.investor_signal||'WAIT'}</span><span class="trend-arrow ${trCls(x.arrow)}">${x.arrow||'→'}</span></div><div class="horizon-line">1ч ${x.horizons?.['1h']||'→'} · 4ч ${x.horizons?.['4h']||'→'} · 1д ${x.horizons?.['1d']||'→'} · 3д ${x.horizons?.['3d']||'→'} · 7д ${x.horizons?.['7d']||'→'}</div><div class="assetmeta">${x.trend} · подтверждают ${x.directional_horizons||0}/${x.total_horizons||5} горизонтов · согласование ${Math.round(100*(x.alignment||0))}%<br>FAST ${x.fast||'→'} · MEDIUM ${x.medium||'→'} · SLOW ${x.slow||'→'}<br>параметров состояния ${x.state_parameters_used??'—'} · семейств факторов ${x.factor_family_count??'—'} · независимых подтверждений ${x.independent_evidence_families??'—'} · моделей ${x.model_agents??'—'}<br>${thRu(x.thesis_status)} · ${enRu(x.entry_status)} · действие: ${acRu(x.action)}</div></div>`).join('')}</div>`||'—';const pp=d.paper_portfolios||{},pps=pp.portfolios||[];const ppe=document.getElementById('paperportfolio');if(ppe)ppe.innerHTML=pps.map(x=>`<b>${x.name}</b>: NAV ${Number(x.nav_rub||0).toLocaleString('ru-RU',{maximumFractionDigits:0})} ₽ · $${Number(x.nav_usd||0).toLocaleString('en-US',{maximumFractionDigits:0})} · P&L ${x.total_return_pct==null?'—':Number(x.total_return_pct).toFixed(2)+'%'} · DD ${x.drawdown_pct==null?'—':Number(x.drawdown_pct).toFixed(2)+'%'} · плечо ${x.gross_leverage==null?'—':Number(x.gross_leverage).toFixed(2)+'×'} · win ${x.win_rate==null?'—':Number(100*x.win_rate).toFixed(1)+'%'} · meaningful ${x.meaningful_win_rate==null?'—':Number(100*x.meaningful_win_rate).toFixed(1)+'%'}`).join('<br>')||'накапливается';const f=d.factory||{};document.getElementById('factory').innerHTML=`Кандидаты:<div class="chips">${chips(f.candidates)}</div>Правила:<div class="chips">${chips(f.rules)}</div>`;const b=d.backtest||{},lr=b.latest_run||{};document.getElementById('bt').innerHTML=`${lr.status||b.status||'—'} · ${lr.days||b.days||'—'} дней · правил ${lr.rules_tested??'—'} · наблюдений ${lr.observations??'—'}<br><span class="badge">20 б.п. + OOS + неперекрывающиеся окна</span>`;const m=d.macro||{},md=m.data||{},ca=d.cross_asset_shadow||{};document.getElementById('macro').innerHTML=`UST 2Y ${fmtN(md.ust2y?.value,3)} · 10Y ${fmtN(md.ust10y?.value,3)} · 30Y ${fmtN(md.ust30y?.value,3)}<br>VIX ${fmtN((md.vix_live||md.vix_daily)?.value,2)} · S&P ${fmtN(md.sp500?.value,2)}<br>DXY ${fmtN(md.dxy?.value,2)} · Gold ${fmtN(md.gold?.value,2)}`;document.getElementById('cross').innerHTML=`Cross-asset: <b>${ca.regime||'—'}</b> · ${ca.score??'—'} <span class="badge">shadow</span>`;const al=d.alerts||[];document.getElementById('alerts').innerHTML=al.slice(0,6).map(x=>{const q=x.payload||{};const typ=x.alert_type||q.alert_type||'ALERT';const act=q.action||q.decision||'наблюдать';const sev=x.severity||'—';const px=q.trigger_price||q.price;return `<div class="assetview"><b>${x.asset||'SYSTEM'} ${x.horizon||''} · ${typ}</b> <span class="badge">${sev}</span><div class="assetmeta">Вывод: <b>${act}</b>${px?` · цена ${Number(px).toFixed(2)}`:''}<br>${q.reason||q.setup||q.invalidation_reason||'Изменение состояния требует перепроверки сигнала.'}</div></div>`}).join('')||'Нет новых алертов, требующих действия.';const qc=d.qc||{};document.getElementById('qc').innerHTML=`DATA ${qc.DATA||'—'} · MARKET ${qc.MARKET||'—'} · FORECAST ${qc.FORECAST||'—'}<br>AUDIT ${qc.AUDIT||'—'} · DECISION ${qc.DECISION||'—'}`;const vi=(d.validation||{}).items||[],vc={};vi.forEach(x=>vc[x.validation_label]=(vc[x.validation_label]||0)+1);document.getElementById('val').innerHTML=`ROBUST ${vc.ROBUST_CANDIDATE||0} · PROMISING ${vc.PROMISING||0} · WEAK ${vc.WEAK||0}`;const ad=d.adaptive||{},rs=ad.runtime_settings||{};document.getElementById('adaptive').innerHTML=`Regime edge: ${(ad.regime_counts||{}).REGIME_EDGE||0} · Pair promising: ${(ad.pair_counts||{}).PAIR_PROMISING||0}<br>Rule drift: ${ad.rule_drift_count??'—'} · min score ${rs.min_directional_score??'—'}`;const dr=d.drift||{},cc=d.champion_challenger||{};document.getElementById('drift').innerHTML=`Drift ${dr.status||'—'} · weakening/decaying ${dr.rule_drift_count??0}<br>Challengers ${(cc.challengers||[]).length} · Champion ${cc.champion?'есть':'нет'}`;const prisk=d.portfolio_risk||{},prc=prisk.tail_contributions||[],sc=prisk.strongest_abs_correlation||{};document.getElementById('portfoliorisk').innerHTML=`Статус: <b>${prisk.status||'—'}</b> · n=${prisk.observations??0}<br>VaR 95% ${prisk.var_95_loss_fraction==null?'—':(100*prisk.var_95_loss_fraction).toFixed(2)+'%'} · CVaR 95% ${prisk.cvar_95_loss_fraction==null?'—':(100*prisk.cvar_95_loss_fraction).toFixed(2)+'%'}<br>CVaR 99% ${prisk.cvar_99_loss_fraction==null?'—':(100*prisk.cvar_99_loss_fraction).toFixed(2)+'%'} · max |corr| ${sc.pair||'—'} ${sc.correlation==null?'':Number(sc.correlation).toFixed(2)}<br>${prc.slice(0,4).map(x=>`${x.asset}: ${(100*(x.cvar_contribution||0)).toFixed(2)}%`).join(' · ')||'вклад по активам накапливается'}<br><span class="badge">историческая симуляция · shadow</span>`;const rb=d.dynamic_risk_budget||{},rba=rb.asset_budgets||[];document.getElementById('riskbudget').innerHTML=`Режим: <b>${rb.risk_posture||'—'}</b> · CVaR-множитель ${rb.portfolio_multiplier==null?'—':Number(rb.portfolio_multiplier).toFixed(2)}<br>Исходный риск ${(100*(rb.gross_allocator_weight||0)).toFixed(1)}% → обученный бюджет ${(100*(rb.gross_research_risk_budget||0)).toFixed(1)}%<br>${rba.slice(0,6).map(x=>`${x.asset}: ${(100*(x.research_risk_budget||0)).toFixed(1)}% · опыт ×${Number(x.experience_multiplier||0).toFixed(2)} · n=${x.experience_n||0} · ${x.experience_state||'BUILDING'}`).join('<br>')||'нет направленных позиций'}<br><span class="badge">собственный опыт + режим + P&L-кластеры + CVaR · shadow</span>`;const au=d.autonomy||{};document.getElementById('autonomy').innerHTML=`${au.always_on_confirmed?'<span class="ok"><b>ALWAYS-ON</b></span>':'<span class="warn"><b>Хостинг не подтвержден 24/7</b></span>'}<br>рынок каждые ${Math.round((au.market_learning_cycle_seconds||0)/60)} мин · знания каждые ${Math.round((au.knowledge_discovery_interval_seconds||0)/3600)} ч<br>Postgres: ${au.persistent_experience_storage?'durable':'нет'} · uptime ${Math.round((au.process_uptime_seconds||0)/60)} мин`;const hi=d.horizon_integrity||{},hmiss=hi.missing_live||[];document.getElementById('horizonintegrity').innerHTML=`1ч: <b>${hmiss.length?'неполное':'6/6 активов'}</b> · ожидается ${hi.expected_signal_cells??30} ячеек (6 активов × 5 ТФ)<br>${Object.entries(hi.live_1h_seen||{}).map(([a,v])=>`${a} ${v?'✓':'…'}`).join(' · ')}`;const ac=(d.agent_consensus||{}).items||[];document.getElementById('consensus').innerHTML=ac.slice(0,6).map(x=>`${x.asset} ${x.horizon} ${x.direction}: ${x.agents} · n=${x.n}`).join('<br>')||'недостаточно данных';const ae=d.architecture_efficiency||{},hl=ae.heavy_learning||{};document.getElementById('archeff').innerHTML=`Цикл <b>${ae.cycle_seconds==null?'—':Number(ae.cycle_seconds).toFixed(1)+'с'}</b> · цель ≤${ae.target_cycle_seconds??30}с · ${ae.target_status||'—'}<br>p50 ${ae.cycle_p50_seconds==null?'—':Number(ae.cycle_p50_seconds).toFixed(1)+'с'} · p95 ${ae.cycle_p95_seconds==null?'—':Number(ae.cycle_p95_seconds).toFixed(1)+'с'} · n=${ae.history_n??0}<br>рынок параллельно: ${ae.market_prefetch_workers??'—'} потока · ожидание ${ae.market_prefetch_wall_seconds==null?'—':Number(ae.market_prefetch_wall_seconds).toFixed(1)+'с'} · сэкономлено ≈${ae.market_parallel_saved_estimate_seconds==null?'—':Number(ae.market_parallel_saved_estimate_seconds).toFixed(1)+'с'}<br>глубокое обучение: <b>${hl.status||'—'}</b> · последний цикл ${hl.last_duration_seconds==null?'—':Number(hl.last_duration_seconds).toFixed(1)+'с'} · вне быстрого контура<br>решения ${ae.decision_seconds==null?'—':Number(ae.decision_seconds).toFixed(1)+'с'} · память ${ae.rss_mb==null?'—':Number(ae.rss_mb).toFixed(1)+' МБ'} · исключено повторных расчётов ${ae.saved_recomputes??'—'}`;const pr=d.production_readiness||{},es=d.event_scan||{};document.getElementById('prodready').innerHTML=`Research RC: <b>${pr.research_product_ready?'ДА':'НЕТ'}</b> · внешний выпуск: <b>${pr.external_investor_ready?'ДА':'НЕТ'}</b><br>Блокеры: ${(pr.blockers||[]).join(', ')||'нет'}<br>Предупреждения: ${(pr.warnings||[]).join(', ')||'нет'}`;document.getElementById('eventscan').innerHTML=`${es.status||'—'} · найдено ${es.events_seen??0} · импортировано ${es.events_imported??0}<br><span class="badge">shadow, без прямого влияния на CIO</span>`;const pa=d.portfolio_allocator||{},pap=pa.positions||[];document.getElementById('alloc').innerHTML=pap.map(x=>`${x.asset} ${x.decision} · ${(100*(x.weight||0)).toFixed(1)}% · ${x.grade}`).join('<br>')||'нет аллокаций';const gv=d.governance||{};document.getElementById('gov').innerHTML=`${gv.status||'—'} · автопонижений ${gv.demotions??0}<br><span class="badge">автоповышение запрещено</span>`;const dq=d.data_quality||{},dqr=dq.rows||[],counts=dq.status_counts||{};document.getElementById('dqsum').textContent=(dq.research_gate_pass?'основные источники в норме':'есть проблема основных источников')+' · '+Object.entries(counts).map(([k,v])=>k+' '+v).join(' · ');document.getElementById('dq').innerHTML=dqr.map(x=>`<div class="dqrow"><div>${x.source}<br><span class="stamp">${x.asset_class||''} · ${x.role||''}</span></div><div class="${dqClass(x.status)}">${x.status||'—'}<br><span class="stamp">${x.age_seconds==null?'возраст н/д':'возраст '+Math.round(x.age_seconds)+'с'}</span></div><div>${x.effective_lag_seconds==null?'—':Math.round(x.effective_lag_seconds)+'с'}</div></div>`).join('');const de=d.decision_effectiveness||{},vg=d.v70_gate_effectiveness||{},li3=d.v70_incremental_learning||{};document.getElementById('decisionperf').innerHTML=`<div class="effect-summary"><span class="effect-pill">завершено <b>${de.completed_episodes??0}</b></span><span class="effect-pill">верное направление <b>${de.directional_hit_rate==null?'—':(100*de.directional_hit_rate).toFixed(1)+'%'}</b></span><span class="effect-pill">верное воздержание <b>${de.correct_abstention_rate==null?'—':(100*de.correct_abstention_rate).toFixed(1)+'%'}</b></span><span class="effect-pill">v70 изменил риск n=<b>${vg.adjusted_outcomes??0}</b> · польза ${vg.adjusted_precision==null?'накапливается':(100*vg.adjusted_precision).toFixed(1)+'%'}</span><span class="effect-pill">тайминг n=<b>${vg.timing_outcomes??0}</b> · польза ${vg.timing_precision==null?'накапливается':(100*vg.timing_precision).toFixed(1)+'%'}</span><span class="effect-pill">VETO n=<b>${vg.veto_outcomes??0}</b> · точность ${vg.veto_precision==null?'накапливается':(100*vg.veto_precision).toFixed(1)+'%'}</span><span class="effect-pill">Learning 3.0 <b>${li3.learning_index_3==null?'накапливается':li3.learning_index_3}</b></span></div><span class="stamp">Эпизоды, а не повторяющиеся 5-минутные снимки. v70 пока оценивается в shadow.</span>`;const ep=de.recent_episodes||[];const benefitCls=t=>String(t||'').includes('избежать')||String(t||'').includes('верное')?'benefit-good':String(t||'').includes('ошиб')||String(t||'').includes('пропущ')||String(t||'').includes('заблокировала бы прибыль')?'benefit-bad':'benefit-neutral';document.getElementById('history').innerHTML=ep.map(x=>`<tr><td>${new Date(x.ts).toLocaleString()}</td><td>${x.asset}</td><td>${x.horizon}</td><td>${x.decision==='LONG'?'↑ LONG':x.decision==='SHORT'?'↓ SHORT':'→ WAIT'}</td><td>${x.forward_return==null?'—':(100*x.forward_return).toFixed(2)+'%'}</td><td class="${benefitCls(x.benefit)}">${x.benefit}${x.gate_class?' · '+x.gate_class:''}</td></tr>`).join('')||`<tr><td colspan="6" class="stamp">Завершённые независимые эпизоды ещё накапливаются</td></tr>`;const cq=d.calibration_quality||{},cqi=cq.items||[];document.getElementById('calq').innerHTML=`Статус: <b>${cq.status||'—'}</b><br>${cqi.slice(0,6).map(x=>`${x.asset} ${x.horizon}: n=${x.n}, Brier ${x.brier_score==null?'—':x.brier_score.toFixed(3)}, ECE ${x.ece==null?'—':x.ece.toFixed(3)}`).join('<br>')||'выборка накапливается'}`;const oc=d.options_context||{},btcOpt=oc.BTC||{},ethOpt=oc.ETH||{};document.getElementById('optctx').innerHTML=`BTC ATM IV ${btcOpt.near_atm_iv==null?'—':btcOpt.near_atm_iv.toFixed(1)} · skew ${btcOpt.near_skew_10pct_proxy==null?'—':btcOpt.near_skew_10pct_proxy.toFixed(1)}<br>ETH ATM IV ${ethOpt.near_atm_iv==null?'—':ethOpt.near_atm_iv.toFixed(1)} · skew ${ethOpt.near_skew_10pct_proxy==null?'—':ethOpt.near_skew_10pct_proxy.toFixed(1)}<br><span class="badge">shadow</span>`;const nb=d.ndx_breadth||{},np=nb.proxy||{};document.getElementById('breadth').innerHTML=`${np.participation||'—'}<br>QQQ ${(100*(np.qqq_ret_1d||0)).toFixed(2)}% · QQEW ${(100*(np.qqew_ret_1d||0)).toFixed(2)}%<br>spread ${(100*(np.cap_vs_equal_spread||0)).toFixed(2)} п.п.<br><span class="badge">proxy</span>`;const vv=(d.validation||{}).items||[],vaultPass=vv.filter(x=>x.vault_pass).length;const ts=(d.time_stability||{}).items||[],stable=ts.filter(x=>x.stability_label==='STABLE').length;document.getElementById('vaultq').innerHTML=`VAULT pass <b>${vaultPass}</b> · стабильных по блокам <b>${stable}</b><br><span class="badge">holdout не участвует в подборе</span>`;const cs=(d.cost_sensitivity||{}).items||[],surv=cs.filter(x=>x.survives_high_cost).length;document.getElementById('costq').innerHTML=`Выживают при максимальных издержках: <b>${surv}</b><br>сетка ${(d.backtest?.latest_run?.details?.cost_grid_bps||[10,20,40]).join(' / ')} б.п.`;const rr=(d.signal_readiness||{}).signals||[];document.getElementById('readyq').innerHTML=rr.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.readiness}</b> ${x.readiness_score}`).join('<br>')||'накапливается';const lrn=d.learning_report||{},ix=d.independent_experience||{};document.getElementById('learning').innerHTML=`Источники <b>${lrn.sources_total??'—'}</b> · +${lrn.sources_added_today??0} сегодня<br>Правила <b>${lrn.rules_total??'—'}</b> · +${lrn.rules_added_today??0} сегодня<br>Авто-правила сегодня ${lrn.auto_rules_imported_today??0} · кандидаты +${lrn.candidates_added_today??0}`;document.getElementById('experience').innerHTML=`Сырые решения сегодня ${lrn.raw_decisions_today??'—'}<br>Независимые эпизоды сегодня <b>${lrn.independent_episodes_today??'—'}</b> · с исходом ${lrn.independent_episode_outcomes_today??'—'}<br>Всего эпизодов ${ix.episodes??'—'} · завершено ${ix.episodes_with_outcomes??'—'}`;const lib=d.multilingual_library||{},cd=d.causal_drivers||{},cdi=cd.items||[];document.getElementById('library').innerHTML=`Кураторская база: <b>${lib.embedded_sources??'—'}</b> источников · книги ${lib.book_sources??'—'} · peer-reviewed ${lib.peer_reviewed_sources??'—'}<br>Языки ${Object.entries(lib.languages||{}).map(([k,v])=>k+':'+v).join(' · ')||'—'}<br>Ротационных поисковых запросов ${lib.rotating_discovery_queries??'—'}<br><span class="badge">метаданные + оригинальные краткие выжимки, без копирования полных защищённых текстов</span>`;document.getElementById('causaldrivers').innerHTML=cdi.map(x=>`${x.asset}: <b>${x.label}</b> ${x.score}`).join('<br>')||'—';const pl=d.policy_lab||{},pli=pl.items||[];document.getElementById('policy').innerHTML=`n=${pl.n??0} · средний regret ${pl.overall_avg_regret==null?'—':(100*pl.overall_avg_regret).toFixed(2)+'%'}<br>${pli.filter(x=>x.status==='MEASURABLE').slice(0,4).map(x=>`${x.asset} ${x.horizon} ${x.decision}: net ${x.avg_net_utility==null?'—':(100*x.avg_net_utility).toFixed(2)+'%'}`).join('<br>')||'выборка накапливается'}`;const rt=d.regime_transitions||{},rti=rt.items||[];document.getElementById('regtrans').innerHTML=rti.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.transition_risk}</b> · persistence ${x.persistence_probability==null?'—':(100*x.persistence_probability).toFixed(0)+'%'}`).join('<br>')||'—';const rh=d.research_discovery_health||{};document.getElementById('researchhealth').innerHTML=`<b>${rh.status||'—'}</b> · zero-run streak ${rh.zero_candidate_run_streak??0}<br>${(rh.providers||[]).slice(0,5).map(x=>`${x.provider}: ${x.n}`).join(' · ')||'—'}`;const mp=d.meta_performance||{},mpi=mp.items||[];document.getElementById('metaperf').innerHTML=mpi.slice(0,8).map(x=>`${x.asset} ${x.horizon} ${x.grade}: n=${x.n} · hit ${(100*(x.posterior_hit_rate||0)).toFixed(1)}% · net ${x.avg_signed_return_net==null?'—':(100*x.avg_signed_return_net).toFixed(2)+'%'}`).join('<br>')||'выборка накапливается';const cb=d.contradictions||{},cbi=cb.items||[];document.getElementById('contrad').innerHTML=cbi.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.level}</b> ${x.contradiction_score}`).join('<br>')||'—';const el=d.event_learning||{},eli=el.items||[];document.getElementById('eventlearn').innerHTML=eli.slice(0,8).map(x=>`${x.category} ${x.target_asset} ${x.horizon}: n=${x.n} · ${x.reliability}`).join('<br>')||'выборка накапливается';const mr=d.managers||{};document.getElementById('managerdetail').innerHTML=`<div class="managerhead"><span class="managerstat"><b>${mr.postgres_sources??mr.embedded_sources??'—'}</b><br>источников</span><span class="managerstat"><b>${mr.postgres_rules??mr.embedded_rules??'—'}</b><br>правил</span><span class="managerstat"><b>${mr.embedded_author_labels??'—'}</b><br>авторских меток</span><span class="managerstat"><b>6</b><br>школ: macro / trend / quant / risk / fundamental / execution</span></div><div class="stamp">v70.7 расширяет поиск по Druckenmiller, PTJ, Kaminski, Harding, AQR/Man AHL и quality-compounding материалам; новые идеи остаются shadow до проверки.</div><div class="authorgrid">${(mr.by_author||[]).slice(0,28).map(x=>`<span class="chip">${x.authors}: ${x.n}</span>`).join('')}</div>`}catch(e){const sys=document.getElementById('sys');const aborted=(e&&e.name==='AbortError');if(sys&&sys.textContent&&sys.textContent.trim()!=='—'){sys.innerHTML='<span class="warn">UPDATING</span>'}else if(sys){sys.innerHTML='<span class="warn">DEGRADED</span>'}document.getElementById('stamp').textContent=aborted?'Последний экран сохранён · сервер ещё считает новый цикл':'Последний экран сохранён · обновление данных задержано: '+String(e)}}const VKEY='veritas_visitor';let VID=localStorage.getItem(VKEY);if(!VID){VID=(crypto.randomUUID?crypto.randomUUID():(Date.now()+'-'+Math.random()));localStorage.setItem(VKEY,VID)}async function presence(){try{await fetch('/api/v1/presence',{headers:{'X-Veritas-Visitor':VID},cache:'no-store'})}catch(e){}}presence();setInterval(presence,45000);load();loadPortfolios();setInterval(load,60000);setInterval(loadPortfolios,30000);</script></body></html>"""
 
 
 def model_status():
@@ -10833,6 +15091,117 @@ def model_status():
     }
 
 
+# VERITAS V90 APPROVED UI BRIDGE
+try:
+    from veritas_v90_ui import apply_v90_ui
+    DASHBOARD_HTML = apply_v90_ui(DASHBOARD_HTML)
+except Exception as _v90_ui_ex:
+    print("[VERITAS V90 UI] fallback: %s: %s" % (type(_v90_ui_ex).__name__, _v90_ui_ex), flush=True)
+
+
+# VERITAS V90 FAST PORTFOLIO READS R25
+_v90r25_pf_cache={'at':0.0,'value':None}
+_v90r25_pf_lock=threading.Lock()
+
+def _v90r25_portfolios_fast():
+    with _v90r25_pf_lock:
+        cached=_v90r25_pf_cache.get('value')
+        at=float(_v90r25_pf_cache.get('at') or 0.0)
+    if cached is not None and time.time()-at<120:
+        out=dict(cached); out['api_source']='memory_cache'; return out
+    # Prefer the portfolio snapshot already produced by the live cycle.
+    with lock:
+        live=dict((last_cycle or {}).get('portfolio_autopilot') or {})
+    if live and len(live.get('portfolios') or [])==4:
+        out=dict(live); out['api_source']='live_memory'
+        with _v90r25_pf_lock:
+            _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+        return out
+    if VP is None or not pg_enabled():
+        return {'status':'UNAVAILABLE','portfolios':[]}
+    # Cold fallback: one compact report call only.
+    out=VP.report(pg_connect)
+    out['api_source']='postgres_fallback'
+    with _v90r25_pf_lock:
+        _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+    return out
+
+def _v90r25_trades_fast(limit=80):
+    limit=max(20,min(200,int(limit or 80)))
+    if not pg_enabled():
+        return {'status':'UNAVAILABLE','trades':[]}
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
+                                     avg_entry_price,avg_exit_price,gross_pnl_rub,fees_rub,
+                                     funding_rub,net_pnl_rub,return_on_entry_nav,profitable,
+                                     meaningful_win,status,setup,horizon,payload
+                              FROM paper_trades
+                              ORDER BY COALESCE(closed_at,opened_at) DESC
+                              LIMIT %s""",(limit,)).fetchall()
+        trades=[]
+        for r0 in rows:
+            z=dict(r0)
+            p=z.get('payload') or {}
+            if not isinstance(p,dict):
+                try:p=json.loads(p)
+                except Exception:p={}
+            z['exit_reason']=p.get('exit_reason') or p.get('close_reason')
+            z['stop_price']=p.get('stop_price') or p.get('last_stop_price')
+            z['take_price']=p.get('take_price') or p.get('target_price')
+            z['learning_label']=p.get('learning_label')
+            trades.append(_jsonable(z))
+        return {'status':'OK','trades':trades,'returned_count':len(trades),'api_source':'fast_sql'}
+    except Exception as ex:
+        # Fall back to the last detailed cache if the compact query is momentarily unavailable.
+        with _v90r23_trade_lock:
+            v=_v90r23_trade_cache.get('value')
+        if v is not None:
+            out=dict(v); out['api_source']='detailed_cache_fallback'; return out
+        return {'status':'ERROR','trades':[],'error':f'{type(ex).__name__}: {ex}'}
+
+
+
+# VERITAS V90 PORTFOLIO API CACHE R23
+_v90r23_trade_cache={'at':0.0,'value':None,'refreshing':False}
+_v90r23_trade_lock=threading.Lock()
+
+def _v90r23_trade_refresh():
+    with _v90r23_trade_lock:
+        if _v90r23_trade_cache.get('refreshing'):
+            return
+        _v90r23_trade_cache['refreshing']=True
+    try:
+        if VP is not None and pg_enabled():
+            v=VP.trade_report(pg_connect)
+            with _v90r23_trade_lock:
+                _v90r23_trade_cache['value']=v
+                _v90r23_trade_cache['at']=time.time()
+    except Exception as ex:
+        emit('r23_trade_report_refresh_error',error=f'{type(ex).__name__}: {ex}')
+    finally:
+        with _v90r23_trade_lock:
+            _v90r23_trade_cache['refreshing']=False
+
+def _v90r23_trade_report_fast():
+    with _v90r23_trade_lock:
+        v=_v90r23_trade_cache.get('value')
+        at=float(_v90r23_trade_cache.get('at') or 0.0)
+        refreshing=bool(_v90r23_trade_cache.get('refreshing'))
+    age=time.time()-at if at else None
+    if v is not None:
+        out=dict(v)
+        out['api_source']='memory_cache'
+        out['cache_age_seconds']=round(age,1) if age is not None else None
+        if (age is None or age>60) and not refreshing:
+            threading.Thread(target=_v90r23_trade_refresh,daemon=True,name='veritas-trades-refresh').start()
+        return out
+    if not refreshing:
+        threading.Thread(target=_v90r23_trade_refresh,daemon=True,name='veritas-trades-refresh').start()
+    # Return immediately; UI keeps prior content and retries.
+    return {'status':'WARMING','trades':[],'today_closed':[],'older_history':[],
+            'api_source':'warming_cache','retry_after_seconds':2}
+
 class H(BaseHTTPRequestHandler):
     def reply(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode()
@@ -10887,8 +15256,17 @@ class H(BaseHTTPRequestHandler):
             elif self.path.startswith('/api/v1/overview'):
                 self.reply(product_overview())
             elif self.path.startswith('/api/v1/signals'):
-                with lock: x = dict(last_cycle)
-                self.reply({'version':VERSION,'signals':x.get('summary',[]),'at':x.get('at'),'status':x.get('status')})
+                x=fresh_cycle_snapshot()
+                _signals=[dict(z) for z in (x.get('summary') or []) if str(z.get('asset') or '')!='NDX']
+                for _z in _signals:
+                    if _z.get('asset')=='NQ':
+                        _z['instrument']='NQ Futures'
+                        _z['contract']='NQ=F'
+                        _z['instrument_type']='Nasdaq-100 futures'
+                self.reply({'version':VERSION,'signals':_signals,
+                            'summary_count':len(_signals),
+                            'summary_source':x.get('summary_source'),
+                            'at':x.get('at'),'status':x.get('status')})
             elif self.path.startswith('/api/v1/backtests'):
                 self.reply({'version':VERSION,'backtest':backtest_status()})
             elif self.path.startswith('/api/v1/history'):
@@ -10963,7 +15341,13 @@ class H(BaseHTTPRequestHandler):
             elif self.path.startswith('/api/v1/portfolio-trades'):
                 if VP is None or not pg_enabled(): self.reply({'status':'UNAVAILABLE'})
                 else:
-                    try: self.reply(VP.trade_report(pg_connect))
+                    try: self.reply(VP.trade_report(pg_connect,1000))
+                    except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/loss-audit'):
+                if VP is None or not pg_enabled() or not hasattr(VP,'quality_loss_audit'):
+                    self.reply({'status':'UNAVAILABLE'})
+                else:
+                    try: self.reply(VP.quality_loss_audit(pg_connect))
                     except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
             elif self.path.startswith('/api/v1/product-experience'):
                 self.reply(v708_product_experience_board())
@@ -11117,8 +15501,8 @@ class H(BaseHTTPRequestHandler):
                 self.reply({'version':VERSION,'horizons':list(HORIZONS.keys()),'assets':{
                   'BTC':{'status':'research_live','primary':'Binance','secondary':'Coinbase','hours':'24/7'},
                   'ETH':{'status':'research_live','primary':'Binance','secondary':'Coinbase','hours':'24/7'},
-                  'NDX':{'status':'research_live_RTH_fail_closed','primary':'Yahoo Nasdaq GIDS',
-                         'secondary':'Nasdaq public index','volume_proxy':'QQQ'},
+                  'NQ':{'status':'research_live_futures','primary':'Yahoo CME NQ=F',
+                        'secondary':'cash Nasdaq-100 contextual only','volume_proxy':'NQ futures volume'},
                   'BRENT':{'status':'research_shadow_delayed','primary':'Yahoo BZ=F',
                            'secondary':'directional proxy only','execution_gate':'needs second direct quote'},
                   'GOLD':{'status':'research_shadow_delayed','primary':'Yahoo GC=F',
@@ -11131,7 +15515,9 @@ class H(BaseHTTPRequestHandler):
                 self.reply({'status':'ok','version':VERSION,'ts':now(),'runtime_id':SERVICE_RUNTIME_ID})
             elif self.path.startswith('/api/v1/health'):
                 self.reply(product_health())
-            elif self.path in ('/', '/health'):
+            elif self.path == '/' or self.path.startswith('/?'):
+                self.reply_html(DASHBOARD_HTML)
+            elif self.path == '/health':
                 with lock: x = dict(last_cycle)
                 self.reply(x, 503 if x.get('status') == 'error' else 200)
             elif self.path.startswith('/decisions'):
@@ -11229,6 +15615,1184 @@ class H(BaseHTTPRequestHandler):
         pass
 
 
+
+# VERITAS V90 MULTI-TF QUALITY MODEL R2
+# Keep trend onset, impulse and price structure as separate evidence families.
+# Build point-in-time support/resistance across 1h/4h/1d/3d/7d and make
+# SUPER classification depend on the structure of the signal's own horizon.
+
+_v90_base_merge_trend_and_structure = merge_trend_and_structure
+_v90_base_regime_from = regime_from
+_v90_base_features = features
+_v90_base_classify_signal_tier = classify_signal_tier
+_v90_base_execution_eligibility = execution_eligibility
+_v90_base_technical_trade_plan = technical_trade_plan
+_v90_base_cnyrubf_market = _cnyrubf_market
+_v90_cny5_cache = {'at':0.0,'bars':[]}
+
+
+
+def _v90_cny_5m_bars(force=False):
+    now_ts=time.time()
+    if (not force and _v90_cny5_cache.get('bars')
+            and now_ts-float(_v90_cny5_cache.get('at') or 0)<240):
+        return list(_v90_cny5_cache.get('bars') or [])
+    try:
+        # MOEX ISS does not reliably expose a native 5-minute FORTS interval.
+        # Fetch official 1-minute candles and aggregate them locally to exact 5m buckets.
+        rows=_moex_futures_candles_between('CNYRUBF',now_ts-2*86400,now_ts+3600,1)
+        buckets={}
+        for x in rows[-3000:]:
+            ts=int(x[0])/1000.0
+            key=int(ts//300)*300
+            op=float(x[1]); hi=float(x[2]); lo=float(x[3]); cl=float(x[4]); vol=float(x[5])
+            z=buckets.get(key)
+            if z is None:
+                buckets[key]={'ts':float(key),'open':op,'high':hi,'low':lo,'close':cl,'volume':vol}
+            else:
+                z['high']=max(float(z['high']),hi); z['low']=min(float(z['low']),lo)
+                z['close']=cl; z['volume']=float(z.get('volume') or 0.0)+vol
+        bars=[buckets[k] for k in sorted(buckets)][-500:]
+        if bars:
+            _v90_cny5_cache['at']=now_ts
+            _v90_cny5_cache['bars']=list(bars)
+        return bars
+    except Exception:
+        return list(_v90_cny5_cache.get('bars') or [])
+
+
+def _cnyrubf_market():
+    raw=dict(_v90_base_cnyrubf_market())
+    bars5=_v90_cny_5m_bars()
+    raw['intraday_bars']=bars5
+    raw['intraday_5m']=bars5
+    raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
+    raw['direction_level_resolutions']=['5m','1h','4h','1d','3d','7d']
+    return raw
+
+
+def _v90_tf_group(asset, timeframe):
+    if timeframe == '1h':
+        return 1
+    if timeframe == '4h':
+        return 4
+    try:
+        return max(1, int(horizon_bars(asset, timeframe)))
+    except Exception:
+        return {'1d':24,'3d':72,'7d':168}.get(timeframe,1)
+
+
+def _v90_aggregate_hourly(raw, group):
+    c=[float(x) for x in raw.get('closes') or []]
+    h=[float(x) for x in raw.get('highs') or []]
+    l=[float(x) for x in raw.get('lows') or []]
+    v=[float(x or 0) for x in raw.get('vols') or []]
+    n=min(len(c),len(h),len(l))
+    if n<=0:
+        return []
+    group=max(1,int(group))
+    start=n % group
+    rows=[]
+    for i in range(start,n,group):
+        j=min(n,i+group)
+        if j-i < group:
+            continue
+        rows.append({
+            'open':float(c[i-1] if i>0 else c[i]),
+            'high':max(h[i:j]),
+            'low':min(l[i:j]),
+            'close':float(c[j-1]),
+            'volume':sum(v[i:j]) if v else 0.0,
+        })
+    return rows
+
+
+def _v90_level_row(raw, timeframe):
+    asset=str(raw.get('asset') or '')
+    p=float(raw.get('price') or 0.0)
+    bars=(_v90_tf_bars(raw,'5m') if str(timeframe)=='5m'
+          else _v90_aggregate_hourly(raw,_v90_tf_group(asset,timeframe)))
+    if p<=0 or len(bars)<3:
+        return {'timeframe':timeframe,'status':'INSUFFICIENT','bars':len(bars),
+                'support':None,'resistance':None}
+    look=bars[-min(64,len(bars)):]
+    lows=[float(x['low']) for x in look]
+    highs=[float(x['high']) for x in look]
+    closes=[float(x['close']) for x in look]
+    supports=[]; resistances=[]
+    for i in range(1,len(look)-1):
+        if lows[i] <= lows[i-1] and lows[i] <= lows[i+1]:
+            supports.append(lows[i])
+        if highs[i] >= highs[i-1] and highs[i] >= highs[i+1]:
+            resistances.append(highs[i])
+    eps=max(p*0.00005,1e-9)
+    below=[x for x in supports if x < p-eps]
+    above=[x for x in resistances if x > p+eps]
+    previous=look[-2] if len(look)>=2 else look[-1]
+    if float(previous['low']) < p-eps:
+        below.append(float(previous['low']))
+    if float(previous['high']) > p+eps:
+        above.append(float(previous['high']))
+    rolling_low=min(lows[-min(20,len(lows)):])
+    rolling_high=max(highs[-min(20,len(highs)):])
+    if rolling_low < p-eps:
+        below.append(rolling_low)
+    if rolling_high > p+eps:
+        above.append(rolling_high)
+    support_candidates=sorted(set(float(x) for x in below),reverse=True)
+    resistance_candidates=sorted(set(float(x) for x in above))
+    support=support_candidates[0] if support_candidates else None
+    resistance=resistance_candidates[0] if resistance_candidates else None
+
+    # Recency-aware confirmed local extrema for structural trailing.
+    # Keep the LAST confirmed pivot in time, not merely the nearest level by price.
+    recent_support=None; recent_resistance=None
+    for i in range(len(look)-2,0,-1):
+        if recent_support is None and lows[i] <= lows[i-1] and lows[i] <= lows[i+1] and lows[i] < p-eps:
+            recent_support=float(lows[i])
+        if recent_resistance is None and highs[i] >= highs[i-1] and highs[i] >= highs[i+1] and highs[i] > p+eps:
+            recent_resistance=float(highs[i])
+        if recent_support is not None and recent_resistance is not None:
+            break
+
+    return {
+        'timeframe':timeframe,'status':'OK','bars':len(bars),
+        'last_close':closes[-1],'previous_high':float(previous['high']),
+        'previous_low':float(previous['low']),
+        'rolling_high':rolling_high,'rolling_low':rolling_low,
+        'recent_support':recent_support,'recent_resistance':recent_resistance,
+        'support':support,'resistance':resistance,
+        'support_candidates':support_candidates[:12],
+        'resistance_candidates':resistance_candidates[:12],
+        'distance_to_support':None if support is None else (p-support)/p,
+        'distance_to_resistance':None if resistance is None else (resistance-p)/p,
+    }
+
+
+def _v90_multi_tf_levels(raw):
+    cached=raw.get('_v90_multi_tf_levels') if isinstance(raw,dict) else None
+    if isinstance(cached,dict) and cached.get('timeframes'):
+        return cached
+    p=float(raw.get('price') or 0.0)
+    rows={tf:_v90_level_row(raw,tf) for tf in ('5m','1h','4h','1d','3d','7d')}
+    def nearest(kind,tfs):
+        vals=[]
+        for tf in tfs:
+            z=rows.get(tf) or {}
+            x=z.get(kind)
+            if x is None:
+                continue
+            x=float(x)
+            if (kind=='support' and x<p) or (kind=='resistance' and x>p):
+                vals.append((abs(p-x),tf,x))
+        vals.sort()
+        return ({'timeframe':vals[0][1],'price':vals[0][2],
+                 'distance_pct':vals[0][0]/p} if vals and p>0 else None)
+    out={
+        'status':'OK' if any((z.get('status')=='OK') for z in rows.values()) else 'INSUFFICIENT',
+        'asset':str(raw.get('asset') or ''),'price':p,'timeframes':rows,
+        'nearest_support':nearest('support',('5m','1h','4h','1d','3d','7d')),
+        'nearest_resistance':nearest('resistance',('5m','1h','4h','1d','3d','7d')),
+        'senior_support':nearest('support',('1d','3d','7d')),
+        'senior_resistance':nearest('resistance',('1d','3d','7d')),
+        'method':'point_in_time_hourly_aggregation_no_future_bars',
+    }
+    if isinstance(raw,dict):
+        raw['_v90_multi_tf_levels']=out
+    return out
+
+
+def _v90_horizon_level_context(mtf,horizon,direction):
+    rows=(mtf or {}).get('timeframes') or {}
+    hierarchy={
+        '5m':('5m','1h','4h','1d','3d','7d'),
+        '1h':('1h','4h','1d','3d','7d'),
+        '4h':('4h','1d','3d','7d'),
+        '1d':('1d','3d','7d'),
+        '3d':('3d','7d'),
+        '7d':('7d',),
+    }
+    tfs=hierarchy.get(str(horizon),('5m','1h','4h','1d','3d','7d'))
+    p=float((mtf or {}).get('price') or 0.0)
+    asset=str((mtf or {}).get('asset') or '')
+    supports=[]; resistances=[]
+    for tf in tfs:
+        z=rows.get(tf) or {}
+        svals=z.get('support_candidates') or ([z.get('support')] if z.get('support') is not None else [])
+        rvals=z.get('resistance_candidates') or ([z.get('resistance')] if z.get('resistance') is not None else [])
+        for sx in svals:
+            if sx is not None and float(sx)<p:
+                supports.append((p-float(sx),tf,float(sx)))
+        for rx in rvals:
+            if rx is not None and float(rx)>p:
+                resistances.append((float(rx)-p,tf,float(rx)))
+    supports=sorted(set(supports)); resistances=sorted(set(resistances))
+    support=({'timeframe':supports[0][1],'price':supports[0][2],
+              'distance_pct':supports[0][0]/p} if supports and p>0 else None)
+    resistance=({'timeframe':resistances[0][1],'price':resistances[0][2],
+                 'distance_pct':resistances[0][0]/p} if resistances and p>0 else None)
+    base_floor={'5m':0.0007,'1h':0.0015,'4h':0.0025,'1d':0.0040,'3d':0.0060,'7d':0.0080}.get(str(horizon),0.0025)
+    if asset in ('BTC','ETH'):
+        base_floor*=2.5
+    elif asset in ('NQ','BRENT','GOLD','MOEX'):
+        base_floor*=1.5
+    target_pool=supports if direction=='SHORT' else resistances
+    significant=[x for x in target_pool if p>0 and (x[0]/p)>=base_floor]
+    target_ladder=[{'timeframe':x[1],'price':x[2],'distance_pct':x[0]/p}
+                   for x in significant[:16]] if p>0 else []
+    target_ref=target_ladder[0] if target_ladder else None
+    # For invalidation, prefer the signal timeframe's own level first;
+    # only fall through to a higher timeframe when that timeframe has no valid level.
+    stop_ref=None
+    stop_kind='resistance_candidates' if direction=='SHORT' else 'support_candidates'
+    for tf in tfs:
+        z=rows.get(tf) or {}
+        vals=list(z.get(stop_kind) or [])
+        if direction=='SHORT':
+            vals=sorted(float(x) for x in vals if x is not None and float(x)>p)
+        else:
+            vals=sorted((float(x) for x in vals if x is not None and float(x)<p),reverse=True)
+        if vals:
+            sp=vals[0]
+            stop_ref={'timeframe':tf,'price':sp,'distance_pct':abs(sp-p)/p}
+            break
+    if stop_ref is None:
+        stop_ref=resistance if direction=='SHORT' else support
+    return {'horizon':horizon,'direction':direction,'considered_timeframes':list(tfs),
+            'support':support,'resistance':resistance,'stop_reference':stop_ref,
+            'target_reference':target_ref,'target_ladder':target_ladder,
+            'target_noise_floor_pct':base_floor,
+            'execution_timeframe':'5m' if horizon=='5m' or asset=='CNYRUBF' else '1h',
+            'principle':'5m/lower TF is entry timing only; stop is anchored to signal-TF then higher-TF invalidation; targets use a significant multi-TF level ladder'}
+
+
+def merge_trend_and_structure(trend, structure):
+    trend=dict(trend or {})
+    st=structure or {}
+    z=dict(trend)
+    z['intraday_structure']=st
+    raw_onset=float(trend.get('onset_score') or 0.0)
+    raw_impulse=float(trend.get('impulse_score') or 0.0)
+    z['raw_onset_score']=raw_onset
+    z['raw_impulse_score']=raw_impulse
+    z['structural_confirmation_score']=float(st.get('score') or 0.0)
+    z['onset_score']=raw_onset
+    z['impulse_score']=raw_impulse
+    for k in ('near_ath','price_discovery','breakout_hold','relative_volume',
+              'fresh_breakout','volume_confirmed','breakout_level',
+              'recent_swing_anchor','breakout_measured_move_pct','invalidation_price'):
+        if k in st:
+            z[k]=st.get(k)
+    z['structure_score']=float(st.get('score') or 0.0)
+    sdir=str(st.get('direction') or 'NO_TRADE')
+    life=str(st.get('lifecycle') or '')
+    if sdir in ('LONG','SHORT'):
+        if life in ('FRESH_BREAKOUT','CONFIRMATION','EXTENSION') and not st.get('false_breakout'):
+            if str(z.get('direction') or 'NO_TRADE')=='NO_TRADE':
+                z['direction']=sdir
+                z['structure_promoted_direction']=True
+                if str(z.get('phase') or 'NONE')=='NONE':
+                    z['phase']='EARLY_TREND'
+            elif str(z.get('direction'))==sdir:
+                z['structure_confirmation']=True
+            if str(st.get('entry_quality') or '') not in ('','UNKNOWN','NEUTRAL'):
+                z['entry_quality']=st.get('entry_quality')
+        elif life=='FAILURE':
+            z['entry_quality']='INVALIDATED'
+    return z
+
+
+def regime_from(f):
+    asset=str(f.get('asset') or '')
+    if asset!='CNYRUBF':
+        return _v90_base_regime_from(f)
+    trend=float(f.get('trend') or 0.0)
+    ti=f.get('trend_impulse') or {}
+    sigma=max(0.00045,float(ti.get('sigma_1h') or 0.0))
+    daily_vol=sigma*math.sqrt(float(max(4,horizon_bars('CNYRUBF','1d'))))
+    trend_cut=clip(3.0*sigma,0.0030,0.0090)
+    vol_state='HIGH_VOL' if daily_vol>0.012 else 'LOW_VOL' if daily_vol<0.0055 else 'MID_VOL'
+    trend_state='UPTREND' if trend>trend_cut else 'DOWNTREND' if trend<-trend_cut else 'RANGE'
+    return f'{trend_state}_{vol_state}'
+
+
+def _v90_5m_features(raw,common_structure=None):
+    # Preserve senior context, then replace the tactical state with native 5m measurements.
+    f=_v90_base_features(raw,'1h',common_structure)
+    bars=_v90_tf_bars(raw,'5m')
+    f['horizon']='5m'
+    if len(bars)<8:
+        f['horizon_structure']=_v90_5m_horizon_structure(raw)
+        f['horizon_structure_score']=0.0
+        f['horizon_structure_direction']='NO_TRADE'
+        f['horizon_structure_state']='DATA_REQUIRED'
+        f['five_minute_data_status']='DATA_REQUIRED'
+        return f
+
+    c=[float(x.get('close') or 0.0) for x in bars]
+    h=[float(x.get('high') or x.get('close') or 0.0) for x in bars]
+    l=[float(x.get('low') or x.get('close') or 0.0) for x in bars]
+    v=[float(x.get('volume') or 0.0) for x in bars]
+    p=float(raw.get('price') or c[-1])
+    if p>0: c[-1]=p
+    rr=[c[i]/c[i-1]-1.0 for i in range(1,len(c)) if c[i-1]]
+    floor={'BTC':0.00035,'ETH':0.00045,'NQ':0.00018,'BRENT':0.00028,
+           'GOLD':0.00018,'MOEX':0.00022,'CNYRUBF':0.00016}.get(str(raw.get('asset') or ''),0.00025)
+    sigma5=_robust_sigma(rr[-min(120,len(rr)):],floor)
+    ret5=p/c[-2]-1.0 if len(c)>=2 and c[-2] else 0.0
+    n30=min(6,len(c)-1); ret30=p/c[-1-n30]-1.0 if n30>=1 and c[-1-n30] else ret5
+    local_n=min(24,len(c)); local_ma=sum(c[-local_n:])/local_n if local_n else p
+    local_trend=p/local_ma-1.0 if local_ma else 0.0
+    fast=min(12,len(rr)); rv5=(sum(x*x for x in rr[-fast:])/max(1,fast))**0.5*(fast**0.5) if rr else 0.0
+    recent_v=v[-3:] if len(v)>=3 else v
+    prior_v=v[-15:-3] if len(v)>=15 else v[:-3]
+    vr=(sum(recent_v)/len(recent_v))/(sum(prior_v)/len(prior_v)) if recent_v and prior_v and sum(prior_v)>0 else 1.0
+
+    hs=_v90_5m_horizon_structure(raw)
+    grid=(common_structure or {}).get('structure_breakout_grid') if isinstance(common_structure,dict) else None
+    if not grid:
+        grid=_v90_structure_breakout_grid(raw)
+        if isinstance(common_structure,dict): common_structure['structure_breakout_grid']=grid
+    life=grid.get('5m') or {}
+    state=str(life.get('state') or 'WAIT')
+    life_map={'BREAKOUT_ENTRY':'FRESH_BREAKOUT','TREND_CONTINUATION':'CONFIRMATION',
+              'IMPULSE_WEAKENING':'ONSET','EXIT_REVERSAL':'FAILURE','WAIT':'NONE'}
+    lifecycle=life_map.get(state,'NONE')
+    direction=str(hs.get('direction') or 'NO_TRADE')
+    entryq=('FRESH_BREAKOUT' if state=='BREAKOUT_ENTRY' else
+            'CONFIRMED_TREND' if state=='TREND_CONTINUATION' else
+            'INVALIDATED' if state=='EXIT_REVERSAL' else
+            'WAIT_CONFIRMATION' if direction in ('LONG','SHORT') else 'NEUTRAL')
+    st=dict(f.get('intraday_structure') or {})
+    st.update({'enabled':True,'status':'OK','resolution':'5m_native',
+               'direction':direction,'score':float(hs.get('score') or life.get('quality_score') or 0.0),
+               'lifecycle':lifecycle,'entry_quality':entryq,
+               'relative_volume':float(life.get('volatility_expansion_ratio') or vr or 1.0),
+               'volume_confirmed':bool(float(life.get('volatility_expansion_ratio') or 1.0)>=1.25),
+               'breakout_found':bool(life.get('breakout_level') is not None),
+               'breakout_level':life.get('breakout_level'),
+               'breakout_hold':bool(state in ('BREAKOUT_ENTRY','TREND_CONTINUATION')),
+               'fresh_breakout':bool(state=='BREAKOUT_ENTRY'),
+               'false_breakout':bool(state=='EXIT_REVERSAL'),
+               'invalidation_price':life.get('stop_price'),
+               'atr_5m':life.get('atr_5m'),
+               'session_efficiency':hs.get('path_efficiency'),
+               'session_persistence':hs.get('persistence'),
+               'session_range_position':hs.get('range_position'),
+               'continuation_room_pct':max(0.0,abs(ret30)*0.65)})
+
+    ti=dict(f.get('trend_impulse') or {})
+    phase=('EARLY_TREND' if state=='BREAKOUT_ENTRY' else
+           'IMPULSE_TREND' if state=='TREND_CONTINUATION' and direction in ('LONG','SHORT') else
+           'NONE')
+    ti.update({'current_horizon':'5m','current_horizon_structure':hs,
+               'current_horizon_structure_score':float(hs.get('score') or 0.0),
+               'current_horizon_structure_direction':direction,
+               'current_horizon_structure_state':hs.get('state') or 'UNKNOWN',
+               'direction':direction,'phase':phase,'entry_quality':entryq,
+               'onset_score':max(float(ti.get('onset_score') or 0.0),float(hs.get('score') or 0.0)) if phase!='NONE' else float(hs.get('score') or 0.0)*0.6,
+               'impulse_score':max(float(ti.get('impulse_score') or 0.0),float(life.get('quality_score') or 0.0)) if state=='TREND_CONTINUATION' else float(life.get('quality_score') or 0.0),
+               'sigma_5m':sigma5,'ret_5m':ret5,'ret_30m':ret30})
+
+    f.update({'price':p,'ret_h':ret5,'momentum':ret30,'trend':local_trend,'rv':rv5,
+              'volume_ratio':vr,'intraday_structure':st,'trend_impulse':ti,
+              'horizon_structure':hs,'horizon_structure_score':float(hs.get('score') or 0.0),
+              'horizon_structure_direction':direction,'horizon_structure_state':hs.get('state') or 'UNKNOWN',
+              'intraday_structure_score':float(st.get('score') or 0.0),
+              'relative_volume':float(st.get('relative_volume') or 0.0),
+              'session_efficiency':float(st.get('session_efficiency') or 0.0),
+              'session_persistence':float(st.get('session_persistence') or 0.0),
+              'trend_phase':phase,'trend_onset_score':float(ti.get('onset_score') or 0.0),
+              'impulse_score':float(ti.get('impulse_score') or 0.0),'entry_quality':entryq,
+              'structure_breakout_grid':grid,'structure_breakout_current':life,
+              'structure_breakout_5m':life,'five_minute_data_status':'OK'})
+    # 5m local levels: the broken range is the first invalidation/target context.
+    sl=dict(f.get('structural_levels') or {})
+    if direction=='SHORT':
+        sl['resistance']=life.get('range_high') or sl.get('resistance')
+        sl['support']=life.get('range_low') if life.get('range_low') is not None and float(life.get('range_low'))<p else sl.get('support')
+    elif direction=='LONG':
+        sl['support']=life.get('range_low') or sl.get('support')
+        sl['resistance']=life.get('range_high') if life.get('range_high') is not None and float(life.get('range_high'))>p else sl.get('resistance')
+    f['structural_levels']=sl
+    vol_state='HIGH_VOL' if float(life.get('volatility_expansion_ratio') or 1.0)>=1.6 else 'MID_VOL' if float(life.get('volatility_expansion_ratio') or 1.0)>=1.15 else 'LOW_VOL'
+    trend_state='UPTREND' if direction=='LONG' else 'DOWNTREND' if direction=='SHORT' else 'RANGE'
+    f['regime']=f'{trend_state}_{vol_state}'
+    return f
+
+
+def features(raw, horizon, common_structure=None):
+    f=_v90_5m_features(raw,common_structure) if str(horizon)=='5m' else _v90_base_features(raw,horizon,common_structure)
+    f['horizon']=horizon
+    grid=(common_structure or {}).get('structure_breakout_grid') if isinstance(common_structure,dict) else None
+    if not grid:
+        grid=_v90_structure_breakout_grid(raw)
+        if isinstance(common_structure,dict):
+            common_structure['structure_breakout_grid']=grid
+    f['structure_breakout_grid']=grid
+    f['structure_breakout_current']=grid.get(horizon) or {}
+    f['structure_breakout_5m']=grid.get('5m') or {}
+    mtf=_v90_multi_tf_levels(raw)
+    f['multi_tf_levels']=mtf
+    sl=dict(f.get('structural_levels') or {})
+    sl['multi_tf']=mtf
+    sl['senior_support']=(mtf.get('senior_support') or {}).get('price')
+    sl['senior_resistance']=(mtf.get('senior_resistance') or {}).get('price')
+    f['structural_levels']=sl
+    ti=dict(f.get('trend_impulse') or {})
+    hs=f.get('horizon_structure') or {}
+    ti['current_horizon']=horizon
+    ti['current_horizon_structure']=hs
+    ti['current_horizon_structure_score']=float(hs.get('score') or 0.0)
+    ti['current_horizon_structure_direction']=hs.get('direction') or 'NO_TRADE'
+    ti['current_horizon_structure_state']=hs.get('state') or 'UNKNOWN'
+    direction=str(ti.get('direction') or 'NO_TRADE')
+    senior_order={'5m':('1h','4h','1d','3d','7d'),'1h':('4h','1d','3d','7d'),'4h':('1d','3d','7d'),
+                  '1d':('3d','7d'),'3d':('7d',),'7d':()}
+    hs_all=(common_structure or {}).get('horizon_structures') or {}
+    senior=[]
+    for tf in senior_order.get(horizon,()):
+        z=hs_all.get(tf) or horizon_structure_features(raw,tf)
+        if str(z.get('direction') or 'NO_TRADE')==direction and float(z.get('score') or 0)>=0.52:
+            senior.append({'timeframe':tf,'score':float(z.get('score') or 0),
+                           'state':z.get('state'),'breakout':bool(z.get('breakout'))})
+    ti['senior_horizon_confirmations']=senior
+    f['trend_impulse']=ti
+    f['multi_tf_level_context']=_v90_horizon_level_context(mtf,horizon,
+        str(f.get('horizon_structure_direction') or direction))
+    if asset:=str(f.get('asset') or ''):
+        if asset=='CNYRUBF':
+            sigma=max(0.00045,float(ti.get('sigma_1h') or 0.0))
+            f['regime_parameters']={'source':'CNYRUBF_SPECIALIZED','sigma_1h':sigma,
+                'trend_cut':clip(3.0*sigma,0.0030,0.0090),
+                'daily_vol_proxy':sigma*math.sqrt(float(max(4,horizon_bars('CNYRUBF','1d'))))}
+    return f
+
+
+def classify_signal_tier(asset,decision,confidence,challenger,effective_evidence,source_gate,time_gate,
+                         calibration=None,trend_impulse=None):
+    if decision not in ('LONG','SHORT') or not source_gate or not time_gate:
+        return 'NO_TRADE'
+    ti=trend_impulse or {}
+    hs=ti.get('current_horizon_structure') or {}
+    horizon=str(ti.get('current_horizon') or '')
+    hdir=str(hs.get('direction') or 'NO_TRADE')
+    hscore=float(hs.get('score') or 0.0)
+    hstate=str(hs.get('state') or '')
+    min_score={'5m':0.48,'1h':0.52,'4h':0.58,'1d':0.60,'3d':0.64,'7d':0.66}.get(horizon,0.58)
+    horizon_ok=bool(hdir==decision and hscore>=min_score)
+    if horizon in ('3d','7d'):
+        horizon_ok=bool(horizon_ok and hstate in ('BUILDING_TREND','CONFIRMED_TREND'))
+    if not horizon_ok:
+        return decision
+    calibration=calibration or {}
+    cp=calibration.get('probability_correct')
+    cdec=str((challenger or {}).get('decision') or '')
+    cconf=float((challenger or {}).get('confidence') or 0.0)
+    threshold=runtime_float('min_directional_score',MIN_DIRECTIONAL_SCORE)+0.08
+    min_knowledge=2 if asset in MARKET_BAR_ASSETS else 3
+    super_cal=bool(cp is not None and float(cp)>=0.62 and cdec==decision)
+    super_cons=bool(float(confidence)>=threshold and cdec==decision and cconf>=0.60
+                    and int(effective_evidence or 0)>=min_knowledge)
+    phase=str(ti.get('phase') or 'NONE')
+    idir=str(ti.get('direction') or 'NO_TRADE')
+    entryq=str(ti.get('entry_quality') or '')
+    market_structure_super=bool(
+        phase in ('TREND_DAY','IMPULSE_TREND') and idir==decision
+        and entryq not in ('LATE_EXTENDED','EXTENDED_WAIT_PULLBACK','INVALIDATED')
+        and float(ti.get('impulse_score') or 0)>=TREND_DAY_MIN_SCORE
+        and float(confidence)>=max(runtime_float('min_directional_score',MIN_DIRECTIONAL_SCORE),threshold-0.04)
+        and cdec==decision and cconf>=0.50)
+    fresh_allowed=(horizon in ('1h','4h','1d') or bool(hs.get('breakout')))
+    fresh_breakout_super=bool(
+        fresh_allowed and entryq=='FRESH_BREAKOUT' and idir==decision
+        and bool(ti.get('volume_confirmed'))
+        and float(ti.get('structure_score') or 0)>=0.60
+        and float(ti.get('onset_score') or 0)>=0.58
+        and cdec==decision and cconf>=0.48)
+    return ('SUPER_'+decision) if (super_cal or super_cons or market_structure_super or fresh_breakout_super) else decision
+
+
+def execution_eligibility(asset, raw, clock_info=None):
+    out=dict(_v90_base_execution_eligibility(asset,raw,clock_info) or {})
+    if asset=='CNYRUBF':
+        research_ok=bool(raw.get('source_gate_pass',True))
+        time_ok=bool(raw.get('market_open',True))
+        if research_ok and time_ok and not STRICT_EXECUTION_SOURCE_GATE:
+            return {'eligible':True,'paper_eligible':True,'production_eligible':False,
+                    'reason':'paper_single_source_official_moex','direct_sources':1,
+                    'research_ok':True,'time_ok':True,
+                    'verification_mode':raw.get('verification_mode'),
+                    'gate_label':'PAPER_ONLY_1_DIRECT_SOURCE'}
+        out['paper_eligible']=bool(research_ok and time_ok)
+        out['production_eligible']=bool(out.get('eligible'))
+        out['gate_label']='PRODUCTION_VERIFIED' if out.get('eligible') else 'RESEARCH_ONLY'
+    else:
+        out.setdefault('paper_eligible',bool(out.get('eligible')))
+        out.setdefault('production_eligible',bool(out.get('eligible')))
+    return out
+
+
+def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
+    plan=dict(_v90_base_technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog) or {})
+    if research_decision not in ('LONG','SHORT'):
+        return plan
+    mtf=f.get('multi_tf_levels') or {}
+    ctx=_v90_horizon_level_context(mtf,horizon,research_decision)
+    plan['multi_tf_levels']=mtf
+    plan['multi_tf_level_context']=ctx
+    plan['higher_tf_stop_reference']=(ctx.get('stop_reference') or {}).get('price')
+    plan['higher_tf_target_reference']=(ctx.get('target_reference') or {}).get('price')
+    plan['level_timeframes_considered']=ctx.get('considered_timeframes') or []
+    p=float(f.get('price') or plan.get('entry_price') or 0.0)
+    technical_exp=float(plan.get('expected_move_pct') or 0.0)
+    base_reason=str(plan.get('reason') or '')
+    # Enforce a signal-timeframe/higher-timeframe invalidation reference.
+    sref=ctx.get('stop_reference') or {}
+    stop=plan.get('stop_price')
+    sigma=float((f.get('trend_impulse') or {}).get('sigma_1h') or 0.0)
+    level_buffer=max(p*0.0005,p*0.25*sigma) if p>0 else 0.0
+    if p>0 and sref.get('price') is not None:
+        anchor=float(sref['price'])
+        structural_stop=(anchor+level_buffer) if research_decision=='SHORT' else (anchor-level_buffer)
+        if stop is None:
+            stop=structural_stop
+        elif research_decision=='SHORT':
+            stop=max(float(stop),structural_stop)
+        else:
+            stop=min(float(stop),structural_stop)
+        plan['higher_tf_stop_anchor']=anchor
+        plan['higher_tf_stop_buffer']=level_buffer
+        plan['stop_price']=stop
+        plan['stop_method']=str(plan.get('stop_method') or 'STRUCTURE')+'+MULTI_TF_INVALIDATION'
+    stop_dist=abs(p-float(stop))/p if p>0 and stop is not None else 999.0
+    plan['stop_distance_pct']=stop_dist
+    minr=float(plan.get('min_expected_to_stop_ratio') or TRADE_MIN_EXPECTED_TO_STOP)
+    required=minr*stop_dist
+    ladder=list(ctx.get('target_ladder') or [])
+    plan['target_ladder']=ladder
+    plan['take_profit_1']=ladder[0] if ladder else None
+    # Pick the nearest structural target that produces adequate economics but
+    # remains inside the technically estimated move. Intermediate levels become TP1/partials.
+    upper=max(technical_exp*1.25,technical_exp+0.0010) if technical_exp>0 else 0.0
+    chosen=None
+    for z in ladder:
+        d=float(z.get('distance_pct') or 0.0)
+        if d>=required and (upper<=0 or d<=upper):
+            chosen=z
+            break
+    if chosen is not None:
+        exp=float(chosen['distance_pct'])
+        plan['target_price']=float(chosen['price'])
+        plan['target_method']='MULTI_TF_SIGNIFICANT_'+str(chosen.get('timeframe') or 'UNKNOWN')
+        plan['higher_tf_target_reference']=float(chosen['price'])
+    else:
+        exp=technical_exp
+        if p>0 and exp>0:
+            plan['target_price']=p*(1.0+exp if research_decision=='LONG' else 1.0-exp)
+            plan['target_method']='TECHNICAL_PROJECTION_WITH_MULTI_TF_PARTIALS'
+    plan['expected_move_pct']=exp
+    ratio=exp/stop_dist if stop_dist>1e-12 else 999.0
+    plan['expected_to_stop_ratio']=ratio
+    invalid=base_reason=='invalidated' or str(plan.get('entry_quality') or '')=='INVALIDATED'
+    plan['eligible']=bool(not invalid and p>0 and ratio>=minr)
+    plan['reason']='ok' if plan['eligible'] else ('invalidated' if invalid else 'multi_tf_expected_move_too_small_vs_stop')
+    plan['level_policy']='5M_TIMING + SIGNAL_TF_INVALIDATION + HIGHER_TF_LEVEL_LADDER'
+    return plan
+
+
+# VERITAS V90 EMERGENCY STORAGE RECLAIM
+_V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_26_v3'
+
+def _v90_emergency_storage_reclaim():
+    if not DATABASE_URL or psycopg is None:
+        return {'status':'SKIP','reason':'NO_POSTGRES'}
+    try:
+        c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=3)
+    except Exception as ex:
+        emit('db_cleanup_connection_error',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
+    try:
+        c.execute('SET search_path TO veritas_v90')
+        try:
+            row=c.execute("SELECT value FROM system_settings WHERE key=%s LIMIT 1",(_V90_STORAGE_CLEANUP_MARKER,)).fetchone()
+            if row:
+                emit('db_cleanup_skip',reason='already_completed',marker=_V90_STORAGE_CLEANUP_MARKER)
+                return {'status':'ALREADY_COMPLETED'}
+        except Exception:
+            pass
+        # Legacy pre-v9 public-schema telemetry is not used by the current v9 engine.
+        # Drop the largest obsolete tables first to immediately return disk blocks to PostgreSQL.
+        legacy_drop=[
+            'product_snapshots','macro_snapshots','model_drift_snapshots',
+            'model_calibration_snapshots','validation_snapshots','product_alerts',
+            'visitor_sessions','paper_nav_history'
+        ]
+        legacy_dropped=[]
+        for table in legacy_drop:
+            try:
+                exists=c.execute("SELECT to_regclass(%s) AS r",(f'public.{table}',)).fetchone()
+                if exists and exists['r']:
+                    c.execute(f'DROP TABLE public."{table}" CASCADE')
+                    legacy_dropped.append(table)
+                    emit('db_cleanup_legacy_drop',table=table)
+            except Exception as ex:
+                emit('db_cleanup_legacy_drop_error',table=table,error=f'{type(ex).__name__}: {ex}')
+        # Old public ledger is a large pre-v9 event stream. Current v9 decisions,
+        # outcomes and learning are stored in veritas_v90 and remain untouched.
+        try:
+            exists=c.execute("SELECT to_regclass('public.ledger_events') AS r").fetchone()
+            if exists and exists['r']:
+                c.execute('DROP TABLE public.ledger_events CASCADE')
+                legacy_dropped.append('ledger_events')
+                emit('db_cleanup_legacy_drop',table='ledger_events')
+        except Exception as ex:
+            emit('db_cleanup_legacy_drop_error',table='ledger_events',error=f'{type(ex).__name__}: {ex}')
+
+        sizes_before=[]
+        try:
+            sizes_before=c.execute("""
+                SELECT schemaname,relname AS table_name,pg_total_relation_size(relid) AS bytes
+                FROM pg_catalog.pg_statio_user_tables
+                WHERE schemaname='veritas_v90'
+                ORDER BY pg_total_relation_size(relid) DESC LIMIT 20
+            """).fetchall()
+            emit('db_cleanup_sizes_before',tables=[{'table':r['table_name'],'bytes':int(r['bytes'])} for r in sizes_before])
+        except Exception as ex:
+            emit('db_cleanup_size_probe_error',error=f'{type(ex).__name__}: {ex}')
+
+        # Rebuildable high-frequency state only. Preserve trades, positions,
+        # orders, decisions/outcomes, lifecycle events and all durable learning tables.
+        truncate_tables=[
+            'market_states','agent_views','product_snapshots','macro_snapshots',
+            'model_calibration_snapshots','model_drift_snapshots',
+            'validation_snapshots','visitor_sessions','paper_nav_history'
+        ]
+        reclaimed=[]
+        for table in truncate_tables:
+            try:
+                exists=c.execute("SELECT to_regclass(%s) AS r",(f'veritas_v90.{table}',)).fetchone()
+                if exists and exists['r']:
+                    c.execute(f'TRUNCATE TABLE veritas_v90."{table}" RESTART IDENTITY')
+                    reclaimed.append(table)
+                    emit('db_cleanup_truncate',table=table)
+            except Exception as ex:
+                emit('db_cleanup_truncate_error',table=table,error=f'{type(ex).__name__}: {ex}')
+
+        # Alerts are transient UI notifications; keep no stale copies during recovery.
+        try:
+            exists=c.execute("SELECT to_regclass('veritas_v90.product_alerts') AS r").fetchone()
+            if exists and exists['r']:
+                c.execute('TRUNCATE TABLE veritas_v90.product_alerts RESTART IDENTITY')
+                reclaimed.append('product_alerts')
+                emit('db_cleanup_truncate',table='product_alerts')
+        except Exception as ex:
+            emit('db_cleanup_truncate_error',table='product_alerts',error=f'{type(ex).__name__}: {ex}')
+
+        # Meta signals are derived every cycle. Delete them in small chunks only
+        # after TRUNCATE has created breathing room. Keep decision/outcome events.
+        deleted_meta=0
+        try:
+            while True:
+                rows=c.execute("""
+                    WITH doomed AS (
+                      SELECT ctid FROM veritas_v90.ledger_events
+                      WHERE event_type='meta_signal' LIMIT 2000
+                    )
+                    DELETE FROM veritas_v90.ledger_events l
+                    USING doomed d WHERE l.ctid=d.ctid RETURNING 1
+                """).fetchall()
+                n=len(rows); deleted_meta+=n
+                if n==0: break
+                if deleted_meta>=100000: break
+            emit('db_cleanup_meta_signal_done',deleted=deleted_meta)
+        except Exception as ex:
+            emit('db_cleanup_meta_signal_error',deleted=deleted_meta,error=f'{type(ex).__name__}: {ex}')
+
+        try:
+            c.execute("""
+                INSERT INTO veritas_v90.system_settings(key,value,updated_at,updated_by)
+                VALUES(%s,%s::jsonb,NOW(),'emergency_cleanup')
+                ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,
+                  updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by
+            """,(_V90_STORAGE_CLEANUP_MARKER,json.dumps({'legacy_dropped':legacy_dropped,'truncated':reclaimed,'meta_signal_deleted':deleted_meta})))
+        except Exception as ex:
+            emit('db_cleanup_marker_error',error=f'{type(ex).__name__}: {ex}')
+
+        try:
+            sizes_after=c.execute("""
+                SELECT schemaname,relname AS table_name,pg_total_relation_size(relid) AS bytes
+                FROM pg_catalog.pg_statio_user_tables
+                WHERE schemaname='veritas_v90'
+                ORDER BY pg_total_relation_size(relid) DESC LIMIT 20
+            """).fetchall()
+            emit('db_cleanup_sizes_after',tables=[{'table':r['table_name'],'bytes':int(r['bytes'])} for r in sizes_after])
+        except Exception as ex:
+            emit('db_cleanup_size_probe_after_error',error=f'{type(ex).__name__}: {ex}')
+        emit('db_cleanup_complete',marker=_V90_STORAGE_CLEANUP_MARKER,legacy_dropped=legacy_dropped,truncated=reclaimed,meta_signal_deleted=deleted_meta)
+        return {'status':'OK','truncated':reclaimed,'meta_signal_deleted':deleted_meta}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# VERITAS V90 LEGACY COMPAT VIEWS
+def _v90_ensure_legacy_compat_views():
+    if not DATABASE_URL or psycopg is None:
+        return {'status':'SKIP'}
+    mapping=[
+      'ledger_events','product_snapshots','macro_snapshots','model_drift_snapshots',
+      'model_calibration_snapshots','validation_snapshots','product_alerts',
+      'visitor_sessions','paper_nav_history'
+    ]
+    made=[]; errors=[]
+    try:
+        c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=3)
+        try:
+            for name in mapping:
+                try:
+                    src=c.execute("SELECT to_regclass(%s) AS r",(f'veritas_v90.{name}',)).fetchone()
+                    dstrel=c.execute("SELECT to_regclass(%s) AS r",(f'public.{name}',)).fetchone()
+                    if src and src['r'] and not (dstrel and dstrel['r']):
+                        c.execute(f'CREATE VIEW public."{name}" AS SELECT * FROM veritas_v90."{name}"')
+                        made.append(name)
+                except Exception as ex:
+                    errors.append({'table':name,'error':f'{type(ex).__name__}: {ex}'})
+        finally:
+            c.close()
+    except Exception as ex:
+        return {'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
+    emit('v90_legacy_compat_views',created=made,errors=errors)
+    return {'status':'OK','created':made,'errors':errors}
+
+
+# VERITAS V90 PAPER EXECUTION LEARNING V2
+_v90_base_refresh_experience_lessons = refresh_experience_lessons
+
+
+def _v90_publish_paper_execution_lessons(limit=2500):
+    if not pg_enabled() or VP is None or not hasattr(VP,'learning_archive'):
+        return {'status':'UNAVAILABLE','archived':0,'learning_fallback':0,'eligible':0}
+    try:
+        rows=VP.learning_archive(pg_connect,limit)
+    except Exception as ex:
+        return {'status':'ERROR','archived':0,'learning_fallback':0,'eligible':0,
+                'error':f'{type(ex).__name__}: {ex}'}
+    archived=0; learning_fallback=0; shadow_covered=0; eligible=0; errors=[]
+    for x in rows or []:
+        if not x.get('learning_eligible'):
+            continue
+        weight=float(x.get('learning_weight') or 0.0)
+        if weight<=0:
+            continue
+        eligible+=1
+        episode=str(x.get('episode_key') or '')
+        if not episode:
+            continue
+        label=str(x.get('learning_label') or 'NEGATIVE_EXECUTION')
+        payload={
+            'setup_id':episode,
+            'direction':x.get('direction'),
+            'setup_family':x.get('setup_family') or x.get('setup') or 'UNKNOWN',
+            'regime_bucket':x.get('regime_bucket') or x.get('regime') or 'ADAPTIVE',
+            'entry_state':x.get('entry_state') or 'NORMAL',
+            'horizon_state':x.get('horizon_state') or 'UNKNOWN',
+            'label':label,
+            'profitable':bool(float(x.get('avg_return_pct') or 0.0)>0),
+            'actual_pnl_fraction':float(x.get('avg_return_pct') or 0.0)/100.0,
+            'trade_mfe':None if x.get('avg_mfe_pct') is None else float(x['avg_mfe_pct'])/100.0,
+            'trade_mae':None if x.get('avg_mae_pct') is None else float(x['avg_mae_pct'])/100.0,
+            'giveback_fraction':None if x.get('avg_giveback_pct') is None else float(x['avg_giveback_pct'])/100.0,
+            'exit_reason':x.get('exit_reason'),
+            'portfolio_count':int(x.get('portfolio_count') or 0),
+            'paper_trade_count':int(x.get('trade_count') or 0),
+            'learning_weight':weight,
+            'learning_conclusion':x.get('learning_conclusion'),
+            'source':'PAPER_PORTFOLIO_UNIQUE_EXECUTION',
+            'unique_market_episode':True,
+            'portfolio_results_aggregated':True,
+        }
+        entity='paper_exec:'+episode
+        try:
+            with pg_connect() as pc:
+                # Always archive the unique execution lesson for audit/reporting.
+                archive_key='paper_execution_lesson:'+entity
+                pc.execute("""INSERT INTO ledger_events
+                    (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+                    VALUES(%s,%s,'paper_execution_lesson',%s,%s,%s,%s::jsonb,%s)
+                    ON CONFLICT(event_key) DO UPDATE SET
+                      event_ts=EXCLUDED.event_ts,asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,
+                      payload=EXCLUDED.payload,model_version=EXCLUDED.model_version""",
+                    (archive_key,entity,x.get('last_closed_at') or now(),
+                     x.get('asset'),x.get('horizon'),
+                     json.dumps(payload,ensure_ascii=False,default=str),VERSION))
+                archived+=1
+                # If the canonical shadow lifecycle already learned this setup, do not
+                # count the paper portfolios as another directional sample.
+                covered=pc.execute("""SELECT 1 FROM ledger_events
+                    WHERE event_type='experience_lesson'
+                      AND payload->>'source'='CANONICAL_SHADOW_TRADE'
+                      AND payload->>'setup_id'=%s LIMIT 1""",(episode,)).fetchone()
+                if covered:
+                    shadow_covered+=1
+                    continue
+                fallback=dict(payload)
+                fallback['source']='PAPER_PORTFOLIO_UNIQUE_EXECUTION_FALLBACK'
+                fallback['learning_weight']=min(0.20,weight)
+                learn_key='experience_lesson:'+entity
+                pc.execute("""INSERT INTO ledger_events
+                    (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+                    VALUES(%s,%s,'experience_lesson',%s,%s,%s,%s::jsonb,%s)
+                    ON CONFLICT(event_key) DO UPDATE SET
+                      event_ts=EXCLUDED.event_ts,asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,
+                      payload=EXCLUDED.payload,model_version=EXCLUDED.model_version""",
+                    (learn_key,entity,x.get('last_closed_at') or now(),
+                     x.get('asset'),x.get('horizon'),
+                     json.dumps(fallback,ensure_ascii=False,default=str),VERSION))
+                learning_fallback+=1
+        except Exception as ex:
+            errors.append(f'{episode}:{type(ex).__name__}:{ex}')
+    if learning_fallback:
+        try:
+            setup_memory_board._cache=None
+        except Exception:
+            pass
+    return {'status':'OK' if not errors else 'DEGRADED','archived':archived,
+            'learning_fallback':learning_fallback,'shadow_covered':shadow_covered,
+            'eligible':eligible,'unique_market_episodes':len(rows or []),'errors':errors[:10],
+            'principle':'one market episode once; portfolio duplicates aggregate; canonical shadow lesson has priority'}
+
+
+def refresh_experience_lessons(limit=400):
+    base=_v90_base_refresh_experience_lessons(limit)
+    paper=_v90_publish_paper_execution_lessons(max(500,min(5000,int(limit)*5)))
+    if not isinstance(base,dict):
+        base={'status':'DEGRADED','base_result':base}
+    base=dict(base)
+    base['paper_execution_learning']=paper
+    return base
+
+
+# VERITAS V90 MEMORY P0 R1
+# Keep full durable decision payloads in PostgreSQL/SQLite, but retain only the
+# execution/UI subset in process memory and in Render application logs.
+
+FAST_LOOP_MARKET_WORKERS=min(2,int(FAST_LOOP_MARKET_WORKERS))
+MEMORY_SOFT_LIMIT_MB=min(320,int(MEMORY_SOFT_LIMIT_MB))
+HEAVY_LEARNING_INTERVAL_SECONDS=max(3600,int(HEAVY_LEARNING_INTERVAL_SECONDS))
+HEAVY_LEARNING_START_DELAY_SECONDS=max(300,int(HEAVY_LEARNING_START_DELAY_SECONDS))
+OUTCOME_BATCH_LIMIT=min(12,int(OUTCOME_BATCH_LIMIT))
+V701_LEARNING_MAX_EPISODES=min(600,int(V701_LEARNING_MAX_EPISODES))
+V90_MEMORY_CAUTION_MB=280.0
+V90_MEMORY_PROTECT_MB=340.0
+V90_HEAVY_LEARNING_MAX_START_MB=260.0
+
+
+def _v90_small_dict(src,keys):
+    if not isinstance(src,dict):
+        return {}
+    return {k:src.get(k) for k in keys if src.get(k) is not None}
+
+
+def _v90_compact_live_row(z):
+    if not isinstance(z,dict):
+        return {}
+    hs=_v90_small_dict(z.get('horizon_structure'),(
+        'status','horizon','native_horizon','resolution','direction','raw_direction',
+        'score','state','return','z','bars','breakout','volume_ratio'))
+    st=_v90_small_dict(z.get('intraday_structure'),(
+        'enabled','status','resolution','direction','score','lifecycle','entry_quality',
+        'relative_volume','volume_confirmed','near_ath','price_discovery',
+        'breakout_found','breakout_level','breakout_hold','fresh_breakout',
+        'false_breakout','recent_swing_anchor','invalidation_price','late_entry'))
+    inst=z.get('institutional_signal') or {}
+    bq=_v90_small_dict(inst.get('breakout_quality'),(
+        'status','is_breakout','fresh_breakout','direction','quality_score',
+        'state','breakout_level','breakout_distance_pct','volume_ratio',
+        'native_score','consensus_count','consensus_score','late_entry'))
+    evid=_v90_small_dict(inst.get('evidence_independence'),(
+        'independent_count','independence_score','active_families'))
+    rt=_v90_small_dict(inst.get('regime_transition'),(
+        'state','transition_score','from_regime','candidate_regime'))
+    inst2=_v90_small_dict(inst,(
+        'version','signal_tier','investor_signal','action','recommended_initial_fraction',
+        'conflict_override','wait_reason','risk_pct','expected_to_stop_ratio',
+        'position_scaling','research_only','execution_gate_bypass'))
+    inst2['breakout_quality']=bq
+    inst2['evidence_independence']=evid
+    inst2['regime_transition']=rt
+    plan=z.get('trade_plan') or {}
+    plan2=_v90_small_dict(plan,(
+        'eligible','reason','direction','entry_price','entry_quality','late_entry',
+        'stop_price','stop_method','stop_distance_pct','invalidation_price',
+        'expected_move_pct','expected_move_method','expected_to_stop_ratio',
+        'min_expected_to_stop_ratio','initial_position_fraction','scaling_policy',
+        'signal_tier','structure_lifecycle','fresh_breakout','breakout_level',
+        'recent_swing_anchor','robot_eligible','execution_mode','target_price',
+        'tactical_target_price','target_method','setup','reversal_probability',
+        'decision_stage','positive_trade_probability','statistical_noise_buffer_p80'))
+    tp1=plan.get('take_profit_1')
+    if isinstance(tp1,dict):
+        plan2['take_profit_1']=_v90_small_dict(tp1,('timeframe','price','distance_pct'))
+    elif tp1 is not None:
+        plan2['take_profit_1']=tp1
+    ta=z.get('tradeability') or {}
+    ta2=_v90_small_dict(ta,(
+        'status','positive_trade_probability','raw_n','effective_n','decision_influence',
+        'weighted_avg_signed_return','p80_adverse_excursion'))
+    sl=z.get('structural_levels') or {}
+    sl2=_v90_small_dict(sl,(
+        'status','price','sma18','sma50','sma18_slope','sma50_slope',
+        'price_vs_sma18','price_vs_sma50','support','support_strength',
+        'resistance','resistance_strength'))
+    tr=_v90_small_dict(z.get('tactical_reversal'),(
+        'active','direction','candidate_direction','setup','state','probability',
+        'stop_price','target_price','reward_risk','min_reward_risk','reason',
+        'cycle_return','confirmations'))
+    rs=_v90_small_dict(z.get('range_retest_breakout'),(
+        'active','direction','candidate_direction','setup','state','probability',
+        'support','resistance','stop_price','target_price','reward_risk',
+        'min_reward_risk','initial_position_fraction','confirmations',
+        'entry_active','add_active','manage_active','reason'))
+    pb=_v90_small_dict(z.get('impulse_pivot_break'),(
+        'active','direction','candidate_direction','setup','state','probability',
+        'stop_price','target_price','reward_risk','reason','local_support',
+        'local_resistance','local_volume_ratio','local_efficiency'))
+    io=_v90_small_dict(z.get('impulse_overlay'),(
+        'active','phase','direction','confidence','base_score',
+        'active_directional_score','blend','entry_quality'))
+    keys=(
+        'asset','horizon','decision','research_decision','confidence','price','score',
+        'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
+        'source_gate_pass','market_open','execution_eligible','execution_reason',
+        'direct_sources','calibrated_probability','shadow_position',
+        'challenger_decision','challenger_confidence','v70_uncertainty',
+        'v70_falsification','v70_gate_status','v70_gate_class','v70_thesis_status',
+        'v70_entry_status','v70_action','v70_size_multiplier','v70_timing_multiplier',
+        'v70_entry_scope','v70_model_set_size','investor_signal','signal_quality',
+        'independent_evidence_families','regime_transition_state',
+        'horizon_structure_direction','horizon_structure_score','horizon_structure_state',
+        'trend_phase','trend_direction','trend_onset_score','impulse_score',
+        'entry_quality','positive_trade_probability','analog_effective_n',
+        'expected_move_pct','signal_tier','execution_signal_tier',
+        'event_shadow_score','causal_score','causal_label','decision_stage',
+        'sma18','sma50','support_level','resistance_level')
+    out=_v90_small_dict(z,keys)
+    out['horizon_structure']=hs
+    out['intraday_structure']=st
+    out['institutional_signal']=inst2
+    out['trade_plan']=plan2
+    out['tradeability']=ta2
+    out['structural_levels']=sl2
+    out['tactical_reversal']=tr
+    out['range_retest_breakout']=rs
+    out['impulse_pivot_break']=pb
+    out['impulse_overlay']=io
+    return out
+
+
+def _v90_compact_decision_log(z):
+    r=_v90_compact_live_row(z)
+    p=r.get('trade_plan') or {}
+    hs=r.get('horizon_structure') or {}
+    inst=r.get('institutional_signal') or {}
+    return {
+        'asset':r.get('asset'),'horizon':r.get('horizon'),
+        'decision':r.get('decision'),'research_decision':r.get('research_decision'),
+        'confidence':r.get('confidence'),'price':r.get('price'),'regime':r.get('regime'),
+        'signal_tier':r.get('signal_tier'),'execution_eligible':r.get('execution_eligible'),
+        'execution_reason':r.get('execution_reason'),
+        'calibrated_probability':r.get('calibrated_probability'),
+        'decision_stage':r.get('decision_stage'),
+        'horizon_structure_direction':hs.get('direction'),
+        'horizon_structure_score':hs.get('score'),'horizon_structure_state':hs.get('state'),
+        'entry_quality':r.get('entry_quality'),
+        'investor_signal':inst.get('investor_signal'),
+        'independent_evidence_families':r.get('independent_evidence_families'),
+        'stop_price':p.get('stop_price'),'target_price':p.get('target_price') or p.get('tactical_target_price'),
+        'expected_move_pct':p.get('expected_move_pct'),
+        'expected_to_stop_ratio':p.get('expected_to_stop_ratio'),
+        'plan_eligible':p.get('eligible'),'plan_reason':p.get('reason'),
+    }
+
+
+def _v90_prune_low_priority_caches(level_mb=None):
+    m=float(level_mb if level_mb is not None else (rss_mb() or 0.0))
+    if m < V90_MEMORY_CAUTION_MB:
+        return 0
+    cleared=0
+    try:
+        with analytics_cache_lock:
+            cleared+=len(analytics_cache); analytics_cache.clear()
+    except Exception:
+        pass
+    for box in (experience_cache,trend_case_cache,structure_analog_cache):
+        try:
+            if box.get('value') is not None:
+                box['value']=None; box['at']=0.0; cleared+=1
+        except Exception:
+            pass
+    if not FULL_OVERVIEW_ENABLED:
+        try:
+            with overview_cache_lock:
+                if overview_cache.get('value') is not None:
+                    overview_cache['value']=None; overview_cache['at']=0.0; cleared+=1
+        except Exception:
+            pass
+    for fn_name in ('_decision_memory_rows','_decision_memory_vectors',
+                    'v701_learning_bundle','v70_quality_board','learning_progress'):
+        try:
+            fn=globals().get(fn_name)
+            if fn is not None and getattr(fn,'_cache',None) is not None:
+                fn._cache=None; cleared+=1
+        except Exception:
+            pass
+    if m >= V90_MEMORY_PROTECT_MB:
+        try:
+            with market_cache_lock:
+                cleared+=len(market_cache); market_cache.clear()
+        except Exception:
+            pass
+        try:
+            boxes=getattr(_v27_cache,'_boxes',None)
+            if isinstance(boxes,dict):
+                cleared+=len(boxes); boxes.clear()
+        except Exception:
+            pass
+    return cleared
+
+
+def _v90_trim_memory(phase='unknown',force=False):
+    before=rss_mb()
+    if not force and before is not None and float(before)<V90_MEMORY_CAUTION_MB:
+        return {'phase':phase,'before_mb':before,'after_mb':before,'trimmed':False}
+    cleared=_v90_prune_low_priority_caches(before)
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import ctypes
+        libc=ctypes.CDLL('libc.so.6')
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+    after=rss_mb()
+    if force or (before is not None and after is not None and float(before)-float(after)>=8.0):
+        emit('memory_trim',phase=phase,before_mb=before,after_mb=after,
+             released_mb=None if before is None or after is None else round(float(before)-float(after),1),
+             caches_cleared=cleared)
+    return {'phase':phase,'before_mb':before,'after_mb':after,'trimmed':True,'caches_cleared':cleared}
+
+
+_v90_base_run_heavy_learning_maintenance=run_heavy_learning_maintenance
+
+
+def run_heavy_learning_maintenance(reason='scheduled'):
+    m=rss_mb()
+    if m is not None and float(m)>V90_HEAVY_LEARNING_MAX_START_MB:
+        with heavy_learning_state_lock:
+            heavy_learning_state.update({'status':'DEFERRED_MEMORY','reason':reason,
+                                         'rss_mb':round(float(m),1),
+                                         'memory_start_limit_mb':V90_HEAVY_LEARNING_MAX_START_MB})
+        emit('heavy_learning_deferred_memory',reason=reason,rss_mb=m,
+             max_start_mb=V90_HEAVY_LEARNING_MAX_START_MB)
+        return {'status':'DEFERRED_MEMORY','rss_mb':m}
+    try:
+        return _v90_base_run_heavy_learning_maintenance(reason)
+    finally:
+        try:
+            with heavy_learning_state_lock:
+                for k in ('event_learning','rule_learning','experience_learning'):
+                    x=heavy_learning_state.get(k)
+                    if isinstance(x,dict):
+                        heavy_learning_state[k]={q:x.get(q) for q in
+                            ('status','written','rows','status_changes','trade_lessons',
+                             'rejected_lessons','abstention_lessons') if x.get(q) is not None}
+        except Exception:
+            pass
+        _v90_trim_memory('heavy_learning_end',force=True)
+
+
+def maybe_schedule_heavy_learning(reason='scheduled',force=False):
+    if not force and not heavy_learning_due():
+        return False
+    m=rss_mb()
+    if m is not None and float(m)>V90_HEAVY_LEARNING_MAX_START_MB:
+        with heavy_learning_state_lock:
+            heavy_learning_state.update({'status':'DEFERRED_MEMORY','reason':reason,
+                                         'rss_mb':round(float(m),1),
+                                         'memory_start_limit_mb':V90_HEAVY_LEARNING_MAX_START_MB})
+        return False
+    threading.Thread(target=run_heavy_learning_maintenance,args=(reason,),daemon=True).start()
+    return True
+
+
+# VERITAS V90 CANONICAL PORTFOLIOS R24
+V90_CANONICAL_PORTFOLIOS=('Impulse','Aggressive','Champion','Challenger')
+
+def _v90r24_ensure_canonical_portfolios():
+    if VP is None or not pg_enabled():
+        return {'status':'UNAVAILABLE','names':[],'count':0}
+    try:
+        if hasattr(VP,'ensure_schema'):
+            VP.ensure_schema(pg_connect)
+        policies={
+          'Impulse': {'threshold':0.64,'strong_threshold':0.76,'min_independent':2,'mode':'IMPULSE_ONLY',
+                      'allowed_horizons':['5m','1h','4h','1d'],'max_fraction':0.50,
+                      'provisional_cap':0.10,'accepted_cap':0.25,'confirmed_cap':0.50},
+          'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE',
+                         'max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
+          'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':2.0},
+          'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':2.0},
+        }
+        with pg_connect() as c:
+            for name in V90_CANONICAL_PORTFOLIOS:
+                c.execute("""INSERT INTO paper_portfolios
+                  (name,created_at,updated_at,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,
+                   benchmark_nav_rub,high_water_nav_rub,policy,model_version)
+                  VALUES(%s,now(),now(),1000000,0,0,0,1000000,1000000,%s::jsonb,%s)
+                  ON CONFLICT(name) DO UPDATE SET
+                    policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()""",
+                  (name,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION','veritas-portfolio-v9.0-four-portfolio-core')))
+            rows=c.execute("""SELECT name FROM paper_portfolios
+                              WHERE name=ANY(%s)
+                              ORDER BY CASE name
+                                WHEN 'Impulse' THEN 1 WHEN 'Aggressive' THEN 2
+                                WHEN 'Champion' THEN 3 WHEN 'Challenger' THEN 4 ELSE 99 END""",
+                           (list(V90_CANONICAL_PORTFOLIOS),)).fetchall()
+        names=[str(x.get('name')) for x in rows]
+        ok=names==list(V90_CANONICAL_PORTFOLIOS)
+        out={'status':'OK' if ok else 'DEGRADED','names':names,'count':len(names),'expected':list(V90_CANONICAL_PORTFOLIOS)}
+        emit('v90_canonical_portfolios_ready',**out)
+        return out
+    except Exception as ex:
+        out={'status':'ERROR','names':[],'count':0,'error':f'{type(ex).__name__}: {ex}'}
+        emit('v90_canonical_portfolios_ready',**out)
+        return out
+
+def _v90r24_prime_portfolio_snapshot():
+    if VP is None or not pg_enabled():
+        return {'status':'UNAVAILABLE','count':0}
+    try:
+        rep=VP.report(pg_connect)
+        ps=list(rep.get('portfolios') or [])
+        by={str(p.get('name')):p for p in ps}
+        ordered=[by[n] for n in V90_CANONICAL_PORTFOLIOS if n in by]
+        rep['portfolios']=ordered
+        rep['canonical_names']=list(V90_CANONICAL_PORTFOLIOS)
+        rep['portfolio_count']=len(ordered)
+        rep['api_source']='postgres_cold_start'
+        with lock:
+            last_cycle['portfolio_autopilot']=rep
+        emit('v90_portfolio_cold_start',status='READY' if len(ordered)==4 else 'DEGRADED',
+             portfolio_count=len(ordered),names=[p.get('name') for p in ordered])
+        return {'status':'READY' if len(ordered)==4 else 'DEGRADED','count':len(ordered)}
+    except Exception as ex:
+        emit('v90_portfolio_cold_start',status='ERROR',portfolio_count=0,
+             error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','count':0}
+
 def main():
     global _BOOTSTRAP_READY
 
@@ -11240,13 +16804,61 @@ def main():
     emit('http_bound_early', port=int(os.getenv('PORT','10000')),
          bootstrap_ready=False, startup_mode='TWO_PHASE_READINESS')
 
+    _v90_emergency_storage_reclaim()
+    _v90_ensure_legacy_compat_views()
     init_db()
     pg_boot = pg_init()
-    case_lessons = seed_case_lessons() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}
-    expert_principles = seed_expert_principles_pg() if pg_boot.get('ok') else {'status':'postgres_required','seeded':0}
-    seed_knowledge()
-    pg_knowledge = pg_seed_knowledge() if pg_boot.get('ok') else {'durable': False}
+    v90_migration = v90_migrate_core_data() if pg_boot.get('ok') else {'status':'POSTGRES_REQUIRED','schema':V90_DB_SCHEMA}
+    emit('v90_database_ready', **v90_migration)
+    # R16 startup discipline: never block the live market loop on full historical
+    # portfolio reports or loss audits. They remain durable in PostgreSQL and are
+    # generated on demand / in background maintenance.
+    if pg_boot.get('ok') and VP is not None:
+        try:
+            _v90r24_ensure_canonical_portfolios()
+            _v90r24_prime_portfolio_snapshot()
+            emit('v90_live_state_ready',status='OK',
+                 historical_reports='DEFERRED',
+                 historical_audits='BACKGROUND',
+                 principle='market loop first; history on demand')
+        except Exception as _pr_ex:
+            emit('v90_live_state_ready',status='DEGRADED',
+                 error=f'{type(_pr_ex).__name__}: {_pr_ex}')
+        emit('v90_startup_memory_policy',
+             closed_journal='DEFER_TO_UI_REQUEST',
+             paper_execution_learning='DEFER_TO_MEMORY_GUARDED_HEAVY_LEARNING',
+             loss_audit='DEFER_TO_BACKGROUND',
+             principle='startup keeps only live state; historical analytics never block market cycles')
+    # R16: live market loop must not wait for durable knowledge reseeding.
+    case_lessons = {'status':'background','seeded':0}
+    expert_principles = {'status':'background','seeded':0}
+    pg_knowledge = {'durable': bool(pg_boot.get('ok')), 'status':'background'}
+    threading.Thread(target=_v90r23_trade_refresh,daemon=True,name='veritas-trades-prime').start()
+    # R22: publish the last durable 42-cell matrix immediately on startup.
+    try:
+        _cold=latest_signal_summary_pg() if pg_enabled() else []
+        if _cold:
+            _cold_map={(x.get('asset'),x.get('horizon')):dict(x) for x in _cold if x.get('asset') and x.get('horizon')}
+            _cold_rows=[]
+            for _a in DISPLAY_ASSETS:
+                for _h in ('5m','1h','4h','1d','3d','7d'):
+                    _x=_cold_map.get((_a,_h))
+                    if _x:
+                        _x['snapshot_stale']=True
+                        _cold_rows.append(_x)
+            with lock:
+                last_cycle.update({'status':'warming','at':now(),'version':VERSION,
+                                   'summary':_cold_rows,'summary_source':'postgres_cold_start',
+                                   'signal_cells':len(_cold_rows),'cycle_mode':'COLD_START'})
+            emit('v90_cold_start_snapshot',signal_cells=len(_cold_rows),status='READY')
+    except Exception as _cold_ex:
+        emit('v90_cold_start_snapshot',signal_cells=0,status='ERROR',
+             error=f'{type(_cold_ex).__name__}: {_cold_ex}')
     _BOOTSTRAP_READY = True
+
+    # Knowledge/case corpora are already durable in PostgreSQL. Do not reseed on
+    # every web-service restart: it competes with the live cycle for DB connections.
+    emit('r16_background_seed_complete',status='SKIPPED_ALREADY_DURABLE')
     emit('service_start', db_path=DB_PATH, interval=INTERVAL, postgres=pg_boot, knowledge_pg=pg_knowledge,
          runtime_id=SERVICE_RUNTIME_ID, always_on_confirmed=PRODUCTION_ALWAYS_ON, case_lessons=case_lessons, expert_principles=expert_principles,
          horizon_integrity=horizon_integrity_status(),
@@ -11309,6 +16921,14 @@ def main():
     # Keep the process alive on the already-serving HTTP thread.
     server_thread.join()
 
+
+
+# VERITAS 9.0 NQ FUTURES INVARIANT
+if 'NDX' in DISPLAY_ASSETS or any((v[0]=='NDX') for v in ASSETS.values()):
+    raise RuntimeError('ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES')
+
+# VERITAS 90 FINAL RUNTIME IDENTITY
+VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
 
 if __name__ == '__main__':
     main()
