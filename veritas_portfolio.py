@@ -6628,3 +6628,235 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),19)
+
+
+# VERITAS V90 AGGRESSIVE PROFILE R24
+# Aggressive is intentionally distinct from Champion:
+# - larger initial size on high-quality setups;
+# - SUPER may start at ~1.0x if structural stop risk allows;
+# - protected winning positions scale faster toward 1.5x/2x/3x/4x/5x;
+# - no relaxation of structural-stop validity, full-admission flip, cost gates,
+#   or the 10% portfolio hard-stop.
+#
+# Gross leverage ceiling remains 5x. Size is still bounded by money-at-risk
+# to the active structural stop and by R17 risk-neutral pyramiding.
+
+_v90r24_base_admission=_signal_first_admission
+_v90r24_base_open_or_add=_open_or_add
+_v90r24_base_report=report
+
+
+def _v90r24_aggressive_quality(row):
+    row=row or {}
+    plan=row.get('trade_plan') or {}
+    inst=row.get('institutional_signal') or {}
+    hs=row.get('horizon_structure') or {}
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    eq=str(row.get('entry_quality') or plan.get('entry_quality') or '')
+    stage=str(row.get('decision_stage') or '')
+    grade=str(row.get('_setup_grade') or '')
+
+    try:
+        indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception:
+        indep=0
+    try:
+        hscore=float(hs.get('score') or row.get('horizon_structure_score') or 0.0)
+    except Exception:
+        hscore=0.0
+    try:
+        rr=float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception:
+        rr=0.0
+    try:
+        exp=abs(float(plan.get('expected_move_pct') or row.get('expected_move_pct') or 0.0))
+    except Exception:
+        exp=0.0
+    try:
+        align=int(row.get('_alignment_count') or len(set(row.get('_supporting_horizons') or [])))
+    except Exception:
+        align=0
+
+    is_super=bool(row.get('_r20_super_priority') or tier in ('SUPER_LONG','SUPER_SHORT'))
+    confirmed=bool(
+        stage=='CONFIRMED_SCALE'
+        or eq=='CONFIRMED_TREND'
+        or str(hs.get('state') or row.get('horizon_structure_state') or '')=='CONFIRMED_TREND'
+    )
+    fresh=bool(eq=='FRESH_BREAKOUT' or stage=='EARLY_PROBE')
+
+    return {
+      'tier':tier,'grade':grade,'independent':indep,'hscore':hscore,
+      'rr':rr,'expected_move_pct':exp,'alignment':align,
+      'super':is_super,'confirmed':confirmed,'fresh':fresh,
+    }
+
+
+def _v90r24_stop_risk_cap(row):
+    plan=(row or {}).get('trade_plan') or {}
+    try:
+        rp=abs(float(plan.get('stop_distance_pct') or 0.0))
+    except Exception:
+        rp=0.0
+    if rp<=0:
+        try:
+            px=float((row or {}).get('price') or 0.0)
+            stop=float(plan.get('stop_price') or 0.0)
+            rp=abs(px-stop)/px if px>0 and stop>0 else 0.0
+        except Exception:
+            rp=0.0
+    if rp<=0:
+        return None
+    return float(MAX_STOP_RISK_NAV)/rp
+
+
+def _signal_first_admission(row,policy,drawdown):
+    base=dict(_v90r24_base_admission(row,policy,drawdown) or {})
+    mode=str((policy or {}).get('mode') or 'CORE')
+    if mode!='AGGRESSIVE' or not base.get('open'):
+        return base
+
+    q=_v90r24_aggressive_quality(row)
+    target=float(base.get('fraction') or 0.0)
+
+    # Ordinary fresh breakout: meaningfully larger than Champion, but still a probe.
+    if q['fresh'] and not q['super']:
+        if q['grade']=='A' and q['independent']>=4 and q['rr']>=1.35:
+            target=max(target,0.35)
+        elif q['independent']>=3 and q['rr']>=1.25:
+            target=max(target,0.25)
+        else:
+            target=max(target,0.20)
+
+    # Confirmed non-SUPER trend can carry materially more exposure.
+    if q['confirmed'] and not q['super']:
+        if q['independent']>=5 and q['rr']>=1.50 and q['alignment']>=3:
+            target=max(target,0.75)
+        elif q['independent']>=4 and q['rr']>=1.30:
+            target=max(target,0.50)
+
+    # A fully qualified SUPER starts around 1x, not 35%.
+    if q['super']:
+        if q['confirmed'] and q['independent']>=5 and q['rr']>=1.35 and q['alignment']>=3:
+            target=max(target,1.00)
+        elif q['independent']>=5 and q['rr']>=1.20:
+            target=max(target,0.75)
+        else:
+            target=max(target,0.50)
+
+    # Structural stop risk remains the final authority for the initial size.
+    risk_cap=_v90r24_stop_risk_cap(row)
+    if risk_cap is not None:
+        target=min(target,risk_cap)
+
+    # Portfolio hard-stop/gross ceiling remain untouched.
+    target=_clip(_round_step(target),0,float((policy or {}).get('max_fraction') or 5.0))
+    base['fraction']=target
+    base['open']=bool(target>0)
+    base['reason']=str(base.get('reason') or '')+'|R24_AGGRESSIVE_SIZING'
+    base['r24_aggressive_quality']=q
+    base['r24_structural_risk_cap_fraction']=risk_cap
+    return base
+
+
+def _v90r24_protected_scale_target(z,row,price,nav,current_target):
+    if not z:
+        return current_target,None
+
+    z=dict(z)
+    if str(z.get('direction') or '')!=str((row or {}).get('research_decision') or ''):
+        return current_target,None
+
+    q=_v90r24_aggressive_quality(row)
+    if not (q['confirmed'] or q['super']):
+        return current_target,None
+
+    payload=_v90j_json(z.get('payload'))
+    entry=float(z.get('avg_entry_price') or 0.0)
+    if entry<=0 or float(price)<=0:
+        return current_target,None
+    direction=str(z.get('direction') or '')
+    profit=(float(price)/entry-1.0) if direction=='LONG' else (entry/float(price)-1.0)
+
+    try:
+        stop=float(z.get('stop_price')) if z.get('stop_price') is not None else None
+    except Exception:
+        stop=None
+    protected=bool(
+        payload.get('profit_protection_active')
+        or payload.get('trailing_stop')
+        or (stop is not None and (
+            (direction=='LONG' and stop>=entry)
+            or (direction=='SHORT' and stop<=entry)
+        ))
+    )
+
+    desired=float(current_target)
+    stage='UNPROTECTED'
+    if q['super'] and q['independent']>=5 and q['rr']>=1.35:
+        desired=max(desired,1.00)
+
+    # Leverage above 1x must be earned by protected profit.
+    if protected:
+        if profit>=0.0020:
+            desired=max(desired,1.50); stage='PROTECTED_1_5X'
+        if profit>=0.0040 and q['alignment']>=3:
+            desired=max(desired,2.00); stage='PROTECTED_2X'
+        if profit>=0.0075 and q['super'] and q['alignment']>=3:
+            desired=max(desired,3.00); stage='PROTECTED_3X'
+        if profit>=0.0125 and q['super'] and q['independent']>=5:
+            desired=max(desired,4.00); stage='PROTECTED_4X'
+        if profit>=0.0200 and q['super'] and q['independent']>=6 and q['rr']>=1.50:
+            desired=max(desired,5.00); stage='PROTECTED_5X'
+
+    desired=min(desired,5.0)
+    return desired,{
+      'stage':stage,'protected':protected,'profit_pct':100.0*profit,
+      'requested_fraction':float(current_target),'scaled_fraction':desired,
+      'quality':q
+    }
+
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    if str(name)!='Aggressive':
+        return _v90r24_base_open_or_add(
+            c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason
+        )
+
+    z=c.execute(
+        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+        (name,asset)
+    ).fetchone()
+    desired,meta=_v90r24_protected_scale_target(
+        dict(z) if z else None,row,price,nav,target_fraction
+    )
+
+    if meta:
+        print(json.dumps({
+          'event':'V90_R24_AGGRESSIVE_SCALE_CHECK','portfolio':name,
+          'asset':asset,'direction':direction,**meta
+        },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+
+    return _v90r24_base_open_or_add(
+        c,p,name,asset,direction,price,desired,nav,ts,row,
+        'R24_AGGRESSIVE_SCALE' if desired>float(target_fraction)+0.001 else reason
+    )
+
+
+def report(pg_connect):
+    d=dict(_v90r24_base_report(pg_connect) or {})
+    d['execution_policy_r24']={
+      'aggressive_profile':True,
+      'fresh_breakout_target_fraction':'20-35%',
+      'confirmed_signal_target_fraction':'50-75%',
+      'qualified_super_initial_fraction':'up to 100%',
+      'protected_scale_path':['1.5x','2x','3x','4x','5x'],
+      'scale_above_1x_requires_protected_profit':True,
+      'structural_stop_risk_cap_nav':float(MAX_STOP_RISK_NAV),
+      'aggressive_max_gross':5.0,
+      'portfolio_hard_stop_drawdown_pct':10.0,
+    }
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),20)
