@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r25-compact-positions"
+UI_VERSION = "veritas-ui-v9.0-r26-position-merge-fix"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -479,11 +479,27 @@ function renderInsights(){
   $('macro').innerHTML=macroLines.slice(0,6).join('<br>')||'Макро-контекст обновляется отдельно и не блокирует торговые данные.';
 }
 
+function mergePortfolioSets(primary,secondary,preferPrimaryPositions=false){
+  const a=Array.isArray(primary&&primary.portfolios)?primary.portfolios:[],b=Array.isArray(secondary&&secondary.portfolios)?secondary.portfolios:[];
+  const map=new Map();
+  b.forEach(p=>map.set(String(p.name||''),Object.assign({},p)));
+  a.forEach(p=>{
+    const k=String(p.name||''),old=map.get(k)||{},hasPos=Array.isArray(p.positions);
+    const merged=Object.assign({},old,p);
+    if(preferPrimaryPositions){
+      merged.positions=hasPos?p.positions:(Array.isArray(old.positions)?old.positions:[]);
+    }else if(!hasPos&&Array.isArray(old.positions)){
+      merged.positions=old.positions;
+    }
+    map.set(k,merged);
+  });
+  return {portfolios:Array.from(map.values())};
+}
 function applyBootstrap(d){
   if(!d)return;
   st.health={ok:true,bootstrap_ready:!!(d.health&&d.health.bootstrap_ready)};
   st.signals={signals:d.signals||[],at:d.at,status:d.status};
-  if(!st.portfolios)st.portfolios={portfolios:d.portfolios||[]};
+  st.portfolios=mergePortfolioSets({portfolios:d.portfolios||[]},st.portfolios,true);
   st.trades={trades:d.trades||[]};
   st.learning=d.learning_summary||{};
   st.quality=d.data_quality_summary||{};
@@ -499,7 +515,7 @@ async function loadBootstrap(){
 async function loadPortfolios(){
   const d=await get('paper-portfolios','/api/v1/paper-portfolios',8000);
   if(d&&Array.isArray(d.portfolios)){
-    st.portfolios=d;
+    st.portfolios=mergePortfolioSets(d,st.portfolios,false);
     renderPortfolios();
     if(st.selected)selectSignal(st.selected,false);
   }
