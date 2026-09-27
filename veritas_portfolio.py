@@ -5409,3 +5409,85 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),15)
+
+
+# VERITAS V90 CLOSED TRADE DIAGNOSTIC R18
+# Read-only telemetry: emit only when the latest closed-trade marker changes.
+# This never alters admission, sizing, stops, exits, or portfolio state.
+_v90r18_base_step_all = step_all
+_v90r18_last_closed_marker = None
+
+def _v90r18_emit_latest_closed(c):
+    global _v90r18_last_closed_marker
+    try:
+        marker=c.execute("""SELECT COUNT(*) AS n,
+                                   MAX(COALESCE(closed_at,opened_at)) AS last_closed
+                            FROM paper_trades
+                            WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')""").fetchone()
+        sig=(int((marker or {}).get('n') or 0),str((marker or {}).get('last_closed') or ''))
+        if sig==_v90r18_last_closed_marker:
+            return
+        _v90r18_last_closed_marker=sig
+        rows=c.execute("""SELECT trade_id,portfolio_name,asset,direction,horizon,setup,
+                                 opened_at,closed_at,avg_entry_price,avg_exit_price,
+                                 max_fraction,gross_pnl_rub,fees_rub,funding_rub,
+                                 net_pnl_rub,return_on_entry_nav,payload
+                          FROM paper_trades
+                          WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')
+                          ORDER BY COALESCE(closed_at,opened_at) DESC
+                          LIMIT 12""").fetchall()
+        out=[]
+        for r0 in rows or []:
+            r=dict(r0); p=_v90j_json(r.get('payload'))
+            out.append({
+              'trade_id':r.get('trade_id'),
+              'portfolio':r.get('portfolio_name'),
+              'asset':r.get('asset'),
+              'direction':r.get('direction'),
+              'horizon':r.get('horizon'),
+              'setup':r.get('setup') or p.get('setup_family'),
+              'opened_at':_v90j_iso(r.get('opened_at')),
+              'closed_at':_v90j_iso(r.get('closed_at')),
+              'entry':r.get('avg_entry_price'),
+              'exit':r.get('avg_exit_price'),
+              'max_fraction':r.get('max_fraction'),
+              'opening_fraction':p.get('opening_fraction'),
+              'gross_pnl_rub':r.get('gross_pnl_rub'),
+              'fees_rub':r.get('fees_rub'),
+              'funding_rub':r.get('funding_rub'),
+              'net_pnl_rub':r.get('net_pnl_rub'),
+              'return_pct':(100.0*float(r.get('return_on_entry_nav'))) if r.get('return_on_entry_nav') is not None else p.get('return_pct'),
+              'mfe_pct':p.get('mfe_pct'),
+              'mae_pct':p.get('mae_pct'),
+              'giveback_pct':p.get('giveback_pct'),
+              'exit_reason':p.get('exit_reason') or p.get('close_reason'),
+              'stop_price':p.get('stop_price') or p.get('last_stop_price') or p.get('trailing_stop'),
+              'take_price':p.get('take_price') or p.get('target_price') or p.get('last_target_price'),
+              'entry_quality':p.get('entry_quality'),
+              'entry_state':p.get('entry_state'),
+              'horizon_state':p.get('horizon_state'),
+              'setup_grade':p.get('setup_grade'),
+              'trend_transition_setup':p.get('trend_transition_setup'),
+              'trailing_rule':p.get('trailing_rule'),
+              'trailing_stage':p.get('trailing_stage'),
+              'profit_protection_active':p.get('profit_protection_active'),
+              'learning_label':p.get('learning_label'),
+              'learning_conclusion':p.get('learning_conclusion'),
+              'data_integrity_status':p.get('data_integrity_status'),
+            })
+        print(json.dumps({'event':'V90_LATEST_CLOSED_TRADE_DIAGNOSTICS',
+                          'closed_marker':sig,'trades':out},
+                         ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    except Exception as e:
+        print(json.dumps({'event':'V90_LATEST_CLOSED_TRADE_DIAGNOSTICS_ERROR',
+                          'error':str(e)[:240]},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+
+def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
+    out=_v90r18_base_step_all(summary,pg_connect,model_version,observed_at,commission_rate,emit)
+    try:
+        with pg_connect() as c:
+            _v90r18_emit_latest_closed(c)
+    except Exception:
+        pass
+    return out
