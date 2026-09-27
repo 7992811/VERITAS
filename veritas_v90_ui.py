@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r26-position-merge-fix"
+UI_VERSION = "veritas-ui-v9.0-r27-direction-stop-ui"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -82,7 +82,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .position-learning{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
 .position-chip{border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:2px 5px;font-size:7.5px;color:#b7c2cb;background:rgba(255,255,255,.012);white-space:nowrap}
 .position-chip b{font-size:7.8px;color:#e4ebf0;font-weight:650}
-.position-util{font-size:8px;color:#b7c2cb;margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}.position-util b{color:#e7edf2}
+.position-util{font-size:8px;color:#b7c2cb;margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}.position-util b{color:#e7edf2}.position-nav-top,.trade-nav-top{color:#dce5ec;font-weight:700}.position-sl-top{color:#f2c46d;font-weight:700}
 .trade-card{border-top:1px solid rgba(255,255,255,.05);padding:9px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.trade-head b{font-size:11px}.trade-result{font-size:11px;font-weight:700;white-space:nowrap}.trade-meta{font-size:9px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:6px}.trade-money span{font-size:8px;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:9px;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
 
 .intel-wrap{display:grid;grid-template-columns:165px minmax(0,1fr);gap:10px;align-items:stretch}
@@ -191,8 +191,9 @@ const assetLogo=a=>{
 };
 const dir=x=>String((x&&x.research_decision)||(x&&x.decision)||'NO_TRADE');
 const tier=x=>String((x&&x.signal_tier)||dir(x));
-const tierLabel=x=>tier(x)==='SUPER_LONG'?'СУПЕР ЛОНГ':tier(x)==='SUPER_SHORT'?'СУПЕР ШОРТ':dir(x)==='LONG'?'ЛОНГ':dir(x)==='SHORT'?'ШОРТ':'ЖДАТЬ';
+const tierLabel=x=>tier(x)==='SUPER_LONG'?'Strong Long':tier(x)==='SUPER_SHORT'?'Strong Short':dir(x)==='LONG'?'Long':dir(x)==='SHORT'?'Short':'ЖДАТЬ';
 const cls=d=>d==='LONG'?'ok':d==='SHORT'?'bad':'warn', ar=d=>d==='LONG'?'↑':d==='SHORT'?'↓':'→';
+const directionLabel=(d,t)=>String(t||'')==='SUPER_LONG'?'Strong Long':String(t||'')==='SUPER_SHORT'?'Strong Short':String(d||'')==='LONG'?'Long':String(d||'')==='SHORT'?'Short':'Нет позиции';
 const n=(v,d=2)=>{v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{maximumFractionDigits:d}):'—'};
 const p2=v=>{v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2}):'—'};
 const probPct=v=>{v=Number(v);if(!Number.isFinite(v))return null;return v<=1.5?100*v:v};
@@ -205,7 +206,7 @@ const planOf=x=>(x&&x.trade_plan)||{};
 const rrOf=x=>x?.expected_to_stop_ratio??planOf(x).expected_to_stop_ratio;
 const stopOf=x=>x?.stop_price??planOf(x).stop_price;
 const targetOf=x=>x?.target_price??planOf(x).target_price??planOf(x).take_price;
-const dirRu=d=>d==='LONG'?'Лонг':d==='SHORT'?'Шорт':'Нет позиции';
+const dirRu=d=>directionLabel(d,null);
 const tfRu=tf=>({'5m':'5 мин','1h':'1 ч','4h':'4 ч','1d':'1 день','3d':'3 дня','7d':'7 дней'}[tf]||tf||'—');
 const holdRu=s=>{s=Number(s);if(!Number.isFinite(s)||s<0)return'—';const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.max(0,Math.floor((s%3600)/60));return(d?d+' д ':'')+(h?h+' ч ':'')+(m+' мин')};
 const dateRu=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
@@ -242,9 +243,9 @@ function renderSignals(){
 
   const rank=x=>{const D=dir(x),T=tier(x);if(!['LONG','SHORT'].includes(D))return-999;const superBoost=(T==='SUPER_LONG'||T==='SUPER_SHORT')?5:0;return superBoost+(x.plan_eligible===false?0:2)+4*Number(x.horizon_structure_score||0)+2*Number(x.confidence||0)+Math.min(Number(x.expected_to_stop_ratio||0),3)+.2*Number(x.independent_evidence_families||0)};
   const best=rows.filter(x=>{const D=dir(x),rr=Number(rrOf(x));return ['LONG','SHORT'].includes(D)&&String(x.entry_quality||'')!=='INVALIDATED'&&String(x.decision_stage||'')!=='INVALIDATED'&&Number.isFinite(rr)&&rr>0}).sort((a,b)=>rank(b)-rank(a)).slice(0,5);
-  $('actions').innerHTML=best.length?best.map(x=>{const rr=Number(rrOf(x)),ready=x.execution_eligible===true||planOf(x).eligible===true;const state=ready?'ГОТОВ К ВХОДУ':'НАБЛЮДЕНИЕ';const sig=tier(x)==='SUPER_LONG'?'СУПЕР ЛОНГ':tier(x)==='SUPER_SHORT'?'СУПЕР ШОРТ':dirRu(dir(x));return'<div class="row action"><b>'+lab(x.asset)+'</b><b class="'+cls(dir(x))+' '+((tier(x)==='SUPER_LONG'||tier(x)==='SUPER_SHORT')?'super-label':'')+'">'+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span><span>'+state+' · R/R '+rr.toFixed(2)+' · '+esc(x.regime||'режим не определён')+'</span><span class="sl">Стоп '+n(stopOf(x),4)+'</span><span class="tp">Цель '+n(targetOf(x),4)+'</span></div>'}).join(''):'<div class="msg">Готовых направленных входов сейчас нет — система ждёт подтверждения структуры и достаточного R/R.</div>';
+  $('actions').innerHTML=best.length?best.map(x=>{const rr=Number(rrOf(x)),ready=x.execution_eligible===true||planOf(x).eligible===true;const state=ready?'ГОТОВ К ВХОДУ':'НАБЛЮДЕНИЕ';const sig=directionLabel(dir(x),tier(x));return'<div class="row action"><b>'+lab(x.asset)+'</b><b class="'+cls(dir(x))+' '+((tier(x)==='SUPER_LONG'||tier(x)==='SUPER_SHORT')?'super-label':'')+'">'+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span><span>'+state+' · R/R '+rr.toFixed(2)+' · '+esc(x.regime||'режим не определён')+'</span><span class="sl">Стоп '+n(stopOf(x),4)+'</span><span class="tp">Цель '+n(targetOf(x),4)+'</span></div>'}).join(''):'<div class="msg">Готовых направленных входов сейчас нет — система ждёт подтверждения структуры и достаточного R/R.</div>';
 
-  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'ЛОНГ':D==='SHORT'?'ШОРТ':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=({'5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
+  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'Long':D==='SHORT'?'Short':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=({'5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
 
   $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.35"></span><small>—</small><em></em></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),eligible=(x.plan_eligible!==false)&&((x.trade_plan||{}).eligible!==false)&&String(x.decision_stage||'')!=='WAIT_RISK_REWARD'&&String(x.entry_quality||'')!=='INVALIDATED',isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT')&&eligible,dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',state=matrixStateRu(x);return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(1)+'%"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small>'+conf.toFixed(1)+'%</small><em>'+esc(state)+'</em></button></td>'}).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
@@ -338,10 +339,11 @@ function renderPortfolios(){
     const mfeText=Number.isFinite(mfe)?(mfe>=0?'+':'')+mfe.toFixed(2)+'%':'—';
     const maeText=Number.isFinite(mae)?mae.toFixed(2)+'%':'—';
     const giveText=Number.isFinite(give)?give.toFixed(2)+'%':'—';
+    const sideText=directionLabel(z.direction,tier),sideClass=cls(String(z.direction||'')); 
     return'<div class="position-card">'+
-      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<div><b>'+esc(z.portfolio)+' · '+lab(z.asset)+' · '+dirRu(z.direction)+'</b><div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · '+rub(z.notional_rub)+'</div></div></div><div class="position-result '+(pnl>=0?'ok':'bad')+'">'+rub(pnl)+(Number.isFinite(ret)?' · '+(ret>=0?'+':'')+ret.toFixed(2)+'%':'')+'</div></div>'+
-      '<div class="position-util"><span>Доля <b>'+frac.toFixed(0)+'% NAV</b></span><span>От максимума <b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span><span>В позиции <b>'+holdRu(held)+'</b></span></div>'+
-      '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Стоп</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>TP1 / цель</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
+      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<div><b>'+esc(z.portfolio)+' · '+lab(z.asset)+' · <span class="'+sideClass+'">'+sideText+'</span> · <span class="position-nav-top">'+frac.toFixed(0)+'% NAV</span> · <span class="position-sl-top">SL '+p2(stop)+'</span></b><div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · '+rub(z.notional_rub)+'</div></div></div><div class="position-result '+(pnl>=0?'ok':'bad')+'">'+rub(pnl)+(Number.isFinite(ret)?' · '+(ret>=0?'+':'')+ret.toFixed(2)+'%':'')+'</div></div>'+
+      '<div class="position-util"><span>От максимума <b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span><span>В позиции <b>'+holdRu(held)+'</b></span></div>'+
+      '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>TP1 / цель</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
       '<div class="position-learning">'+
         '<span class="position-chip">Вероятность <b>'+probText+'</b></span>'+
         '<span class="position-chip">MFE <b>'+mfeText+'</b></span>'+
@@ -369,7 +371,9 @@ function renderTrades(){
     const shownPct=openPct!=null?openPct:maxPct;
     const sizeText=shownPct==null?'—':shownPct.toFixed(0)+'%'+(shownPct>100?' · '+(shownPct/100).toFixed(2)+'×':'');
     const sizeLabel=openPct!=null?'Доля при открытии':'Макс. доля позиции';
-    return'<div class="trade-card"><div class="trade-head"><b>'+esc(t.portfolio_name)+' · '+lab(t.asset)+' · '+dirRu(D)+'</b><div class="trade-result '+(net>=0?'ok':'bad')+'">'+rub(net)+(retPct==null?'':' · '+(Number(retPct)>=0?'+':'')+Number(retPct).toFixed(2)+'%')+'</div></div><div class="trade-meta">'+tfRu(t.horizon)+' · Вход '+n(entry,4)+' → выход '+n(exit,4)+' · Закрыта '+dateRu(t.closed_at)+' · Удержание '+holdRu(held)+' · Причина: '+reason+'</div><div class="trade-money"><span>'+sizeLabel+'<b>'+sizeText+'</b></span><span>Объём входов<b>'+rub(t.entry_notional_rub)+'</b></span><span>Доход от цены<b>'+rub(g)+'</b></span><span>Комиссия<b>'+rub(fees)+'</b></span><span>Фондирование<b>'+rub(fund)+'</b></span><span>Итоговый результат<b class="'+(net>=0?'ok':'bad')+'">'+rub(net)+'</b></span></div></div>';
+    const entryTier=p.entry_signal_tier||p.signal_tier||'',sideText=directionLabel(D,entryTier),sideClass=cls(D),stopLoss=t.stop_price??p.stop_price??p.structural_stop??p.initial_stop_price;
+    const navTop=shownPct==null?'— NAV':shownPct.toFixed(0)+'% NAV';
+    return'<div class="trade-card"><div class="trade-head"><b>'+esc(t.portfolio_name)+' · '+lab(t.asset)+' · <span class="'+sideClass+'">'+sideText+'</span> · <span class="trade-nav-top">'+navTop+'</span></b><div class="trade-result '+(net>=0?'ok':'bad')+'">'+rub(net)+(retPct==null?'':' · '+(Number(retPct)>=0?'+':'')+Number(retPct).toFixed(2)+'%')+'</div></div><div class="trade-meta">'+tfRu(t.horizon)+' · Вход '+p2(entry)+' → выход '+p2(exit)+' · Stop Loss '+p2(stopLoss)+' · Закрыта '+dateRu(t.closed_at)+' · Удержание '+holdRu(held)+' · Причина: '+reason+'</div><div class="trade-money"><span>'+sizeLabel+'<b>'+sizeText+'</b></span><span>Stop Loss<b>'+p2(stopLoss)+'</b></span><span>Доход от цены<b>'+rub(g)+'</b></span><span>Комиссия<b>'+rub(fees)+'</b></span><span>Фондирование<b>'+rub(fund)+'</b></span><span>Итоговый результат<b class="'+(net>=0?'ok':'bad')+'">'+rub(net)+'</b></span></div></div>';
   }).join(''):'<div class="msg">Закрытых сделок пока нет.</div>';
 }
 
