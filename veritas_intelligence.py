@@ -16493,6 +16493,65 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     return plan
 
 
+
+# VERITAS V90 STORAGE AUDIT R36
+# Read-only storage telemetry used to identify what fills the Postgres quota.
+def _v90_storage_audit():
+    if not DATABASE_URL or psycopg is None:
+        return {'status':'SKIP','reason':'NO_POSTGRES'}
+    try:
+        c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5)
+    except Exception as ex:
+        emit('v90_storage_audit_error',phase='connect',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','error':str(ex)}
+    try:
+        c.execute("SET statement_timeout='7000ms'")
+        c.execute('SET search_path TO veritas_v90')
+        db=c.execute("""SELECT pg_database_size(current_database())::bigint AS bytes""").fetchone() or {}
+        tables=c.execute("""
+            SELECT relname AS table_name,
+                   pg_total_relation_size(relid)::bigint AS total_bytes,
+                   pg_relation_size(relid)::bigint AS heap_bytes,
+                   pg_indexes_size(relid)::bigint AS index_bytes,
+                   COALESCE(n_live_tup,0)::bigint AS est_rows
+            FROM pg_catalog.pg_statio_user_tables s
+            LEFT JOIN pg_stat_user_tables u
+              ON u.relid=s.relid
+            WHERE s.schemaname='veritas_v90'
+            ORDER BY pg_total_relation_size(relid) DESC
+            LIMIT 25
+        """).fetchall()
+        out={'status':'OK','database_bytes':int(db.get('bytes') or 0),
+             'tables':[{'table':r['table_name'],
+                        'total_bytes':int(r['total_bytes'] or 0),
+                        'heap_bytes':int(r['heap_bytes'] or 0),
+                        'index_bytes':int(r['index_bytes'] or 0),
+                        'est_rows':int(r['est_rows'] or 0)} for r in tables]}
+        try:
+            ev=c.execute("""
+                SELECT event_type,COUNT(*)::bigint AS n,
+                       COALESCE(SUM(pg_column_size(payload)),0)::bigint AS payload_bytes
+                FROM ledger_events
+                GROUP BY event_type
+                ORDER BY payload_bytes DESC
+                LIMIT 20
+            """).fetchall()
+            out['ledger_event_types']=[
+              {'event_type':r['event_type'],'n':int(r['n'] or 0),
+               'payload_bytes':int(r['payload_bytes'] or 0)} for r in ev
+            ]
+        except Exception as ex:
+            out['ledger_event_types_error']=f'{type(ex).__name__}: {ex}'
+        emit('v90_storage_audit',**out)
+        return out
+    except Exception as ex:
+        emit('v90_storage_audit_error',phase='query',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','error':str(ex)}
+    finally:
+        try:c.close()
+        except Exception:pass
+
+
 # VERITAS V90 EMERGENCY STORAGE RECLAIM
 _V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_26_v3'
 
@@ -17102,6 +17161,10 @@ def main():
     pg_boot = pg_init()
     v90_migration = v90_migrate_core_data() if pg_boot.get('ok') else {'status':'POSTGRES_REQUIRED','schema':V90_DB_SCHEMA}
     emit('v90_database_ready', **v90_migration)
+    if pg_boot.get('ok'):
+        try: _v90_storage_audit()
+        except Exception as _sa_ex:
+            emit('v90_storage_audit_error',phase='startup',error=f'{type(_sa_ex).__name__}: {_sa_ex}')
     # R16 startup discipline: never block the live market loop on full historical
     # portfolio reports or loss audits. They remain durable in PostgreSQL and are
     # generated on demand / in background maintenance.
