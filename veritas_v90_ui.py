@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r29-learning-summary"
+UI_VERSION = "veritas-ui-v9.0-r30-canonical-position-book"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -172,7 +172,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 (function(){
 'use strict';
 const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'], TF=['5m','1h','4h','1d','3d','7d'];
-const st={signals:null,portfolios:null,trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
+const st={signals:null,portfolios:null,positionBook:{},positionBookReady:false,trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
@@ -321,7 +321,12 @@ function selectSignal(k,scroll=false){
 }
 
 function renderPortfolios(){
-  const d=st.portfolios||{},ps=Array.isArray(d.portfolios)?d.portfolios:[],positions=[];
+  const d=st.portfolios||{},raw=Array.isArray(d.portfolios)?d.portfolios:[],positions=[];
+  const ps=raw.map(p=>{
+    const name=String(p.name||''),book=st.positionBook||{};
+    const pos=st.positionBookReady?(Array.isArray(book[name])?book[name]:[]):(Array.isArray(p.positions)?p.positions:[]);
+    return Object.assign({},p,{positions:pos});
+  });
   ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push(Object.assign({portfolio:p.name},z))));
   $('pfCount').textContent=ps.length+'/4';$('openCount').textContent=positions.length;
   const rets=ps.map(p=>Number(p.total_return_pct!=null?p.total_return_pct:((p.latest||{}).total_return_pct))).filter(Number.isFinite);
@@ -502,11 +507,21 @@ function mergePortfolioSets(primary,secondary,preferPrimaryPositions=false){
   });
   return Object.assign({},secondary||{},primary||{},{portfolios:Array.from(map.values())});
 }
+function updatePositionBookFromBootstrap(d){
+  const ps=Array.isArray(d&&d.portfolios)?d.portfolios:[];
+  const authoritative=ps.some(p=>Array.isArray(p&&p.positions));
+  if(!authoritative)return;
+  const next={};
+  ps.forEach(p=>{const name=String((p&&p.name)||'');if(name)next[name]=Array.isArray(p.positions)?p.positions:[]});
+  st.positionBook=next;
+  st.positionBookReady=true;
+}
 function applyBootstrap(d){
   if(!d)return;
   st.health={ok:true,bootstrap_ready:!!(d.health&&d.health.bootstrap_ready)};
   st.signals={signals:d.signals||[],at:d.at,status:d.status};
-  st.portfolios=mergePortfolioSets({portfolios:d.portfolios||[]},st.portfolios,true);
+  updatePositionBookFromBootstrap(d);
+  st.portfolios=mergePortfolioSets({portfolios:d.portfolios||[]},st.portfolios,false);
   st.trades={trades:d.trades||[]};
   st.learning=d.learning_summary||{};
   st.quality=d.data_quality_summary||{};
@@ -522,7 +537,8 @@ async function loadBootstrap(){
 async function loadPortfolios(){
   const d=await get('paper-portfolios','/api/v1/paper-portfolios',8000);
   if(d&&Array.isArray(d.portfolios)){
-    st.portfolios=mergePortfolioSets(d,st.portfolios,false);
+    const metricsOnly=Object.assign({},d,{portfolios:d.portfolios.map(p=>{const q=Object.assign({},p);delete q.positions;return q})});
+    st.portfolios=mergePortfolioSets(metricsOnly,st.portfolios,false);
     renderPortfolios();
     if(st.selected)selectSignal(st.selected,false);
   }
@@ -540,7 +556,7 @@ async function loadIntelligence(){
   st.intelligence=normalizeIntelligence(scorecard,progress,library);
   renderIntelligence();
 }
-function start(){loadBootstrap();setTimeout(loadPortfolios,250);setTimeout(loadIntelligence,500);setTimeout(loadMacro,1000);setInterval(loadPortfolios,10000);setInterval(loadBootstrap,30000);setInterval(loadIntelligence,60000);setInterval(loadMacro,120000)}
+function start(){loadBootstrap();setTimeout(loadPortfolios,250);setTimeout(loadIntelligence,500);setTimeout(loadMacro,1000);setInterval(loadPortfolios,10000);setInterval(loadBootstrap,15000);setInterval(loadIntelligence,60000);setInterval(loadMacro,120000)}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
 </script>
