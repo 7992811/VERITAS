@@ -16509,16 +16509,16 @@ def _v90_storage_audit():
         c.execute('SET search_path TO veritas_v90')
         db=c.execute("""SELECT pg_database_size(current_database())::bigint AS bytes""").fetchone() or {}
         tables=c.execute("""
-            SELECT relname AS table_name,
-                   pg_total_relation_size(relid)::bigint AS total_bytes,
-                   pg_relation_size(relid)::bigint AS heap_bytes,
-                   pg_indexes_size(relid)::bigint AS index_bytes,
-                   COALESCE(n_live_tup,0)::bigint AS est_rows
+            SELECT s.relname AS table_name,
+                   pg_total_relation_size(s.relid)::bigint AS total_bytes,
+                   pg_relation_size(s.relid)::bigint AS heap_bytes,
+                   pg_indexes_size(s.relid)::bigint AS index_bytes,
+                   COALESCE(u.n_live_tup,0)::bigint AS est_rows
             FROM pg_catalog.pg_statio_user_tables s
             LEFT JOIN pg_stat_user_tables u
               ON u.relid=s.relid
             WHERE s.schemaname='veritas_v90'
-            ORDER BY pg_total_relation_size(relid) DESC
+            ORDER BY pg_total_relation_size(s.relid) DESC
             LIMIT 25
         """).fetchall()
         out={'status':'OK','database_bytes':int(db.get('bytes') or 0),
@@ -16542,6 +16542,17 @@ def _v90_storage_audit():
             ]
         except Exception as ex:
             out['ledger_event_types_error']=f'{type(ex).__name__}: {ex}'
+        try:
+            files=c.execute("""
+                SELECT n.nspname AS schema_name,c.relname AS relation_name,c.relkind,
+                       pg_relation_filenode(c.oid)::bigint AS filenode
+                FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE pg_relation_filenode(c.oid) IN (86186,86175)
+                ORDER BY 1,2
+            """).fetchall()
+            out['diskfull_relations']=[dict(r) for r in files]
+        except Exception as ex:
+            out['diskfull_relations_error']=f'{type(ex).__name__}: {ex}'
         emit('v90_storage_audit',**out)
         return out
     except Exception as ex:
