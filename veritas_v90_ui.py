@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r31-stable-dense-positions"
+UI_VERSION = "veritas-ui-v9.0-r32-resilient-position-contract"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -519,23 +519,81 @@ function portfolioExposureNonZero(ps){
     return (Number.isFinite(g)&&Math.abs(g)>0.002)||(Number.isFinite(n)&&Math.abs(n)>0.002);
   });
 }
-function ingestPositionBook(ps,{allowClear=false}={}){
-  ps=Array.isArray(ps)?ps:[];
-  const hasArrays=ps.some(p=>Array.isArray(p&&p.positions));
-  if(!hasArrays)return false;
-  const next={},nonEmpty=[];
-  ps.forEach(p=>{const name=String((p&&p.name)||'');if(!name)return;const arr=Array.isArray(p.positions)?p.positions:[];next[name]=arr;if(arr.length)nonEmpty.push(...arr)});
-  if(nonEmpty.length){
+function normalizePosition(z,portfolioHint,d){
+  if(!z||typeof z!=='object')return null;
+  const p=Object.assign({},z.payload||{},z);
+  const portfolio=String(p.portfolio_name||p.portfolio||portfolioHint||'');
+  const asset=String(p.asset||p.symbol||'');
+  const direction=String(p.direction||p.side||'').toUpperCase();
+  if(!portfolio||!asset||!['LONG','SHORT'].includes(direction))return null;
+
+  const trades=Array.isArray(d&&d.trades)?d.trades:(Array.isArray(d&&d.trades&&d.trades.trades)?d.trades.trades:[]);
+  const tr=trades.find(t=>{
+    const status=String(t.status||'').toUpperCase();
+    return String(t.portfolio_name||t.portfolio||'')===portfolio&&String(t.asset||'')===asset&&(!status||['OPEN','ACTIVE'].includes(status));
+  })||{};
+  const tp=tr.payload||{};
+  const sigs=Array.isArray(d&&d.signals)?d.signals:[];
+  const sig=sigs.find(x=>String(x.asset||'')===asset&&String(x.horizon||'')==='5m')||sigs.find(x=>String(x.asset||'')===asset)||{};
+  const plan=sig.trade_plan||{};
+
+  const first=(...v)=>v.find(x=>x!==undefined&&x!==null&&x!=='');
+  const num=(...v)=>{const x=Number(first(...v));return Number.isFinite(x)?x:null};
+
+  return Object.assign({},tr,z,{
+    portfolio_name:portfolio,
+    portfolio:portfolio,
+    asset:asset,
+    direction:direction,
+    avg_entry_price:num(z.avg_entry_price,z.entry_price,tr.avg_entry_price,tp.entry_price),
+    last_price:num(z.last_price,z.price,sig.price,tr.last_price),
+    stop_price:num(z.stop_price,z.trailing_stop,tp.trailing_stop,tp.stop_price,tp.initial_stop_price,plan.stop_price),
+    target_fraction:num(z.target_fraction,z.current_fraction,tr.target_fraction,tp.target_fraction,tr.max_fraction,tp.opening_fraction),
+    opened_at:first(z.opened_at,z.entry_time,tr.opened_at,tp.entry_time),
+    horizon:first(z.horizon,z.execution_timeframe,tr.horizon,tp.execution_timeframe,sig.horizon),
+    take_price:num(z.take_price,z.target_price,tp.take_price,tp.target_price,tp.last_target_price,plan.target_price),
+    second_take_price:num(z.second_take_price,tp.tp2,tp.tp2_price,tp.second_target_price),
+    signal_probability:first(z.signal_probability,tp.pwin,tp.entry_probability),
+    probability_source:first(z.probability_source,tp.pwin_source,tp.probability_source),
+    signal_tier:first(z.signal_tier,tp.entry_signal_tier,tp.signal_tier,sig.signal_tier),
+    payload:Object.assign({},tp,z.payload||{})
+  });
+}
+function extractPositionCandidates(d){
+  const out=[];
+  const push=(arr,hint)=>{(Array.isArray(arr)?arr:[]).forEach(z=>{const n=normalizePosition(z,hint,d);if(n)out.push(n)})};
+  const ps=Array.isArray(d&&d.portfolios)?d.portfolios:[];
+  ps.forEach(p=>push(p&&p.positions,String((p&&p.name)||'')));
+  push(d&&d.open_positions,'');
+  push(d&&d.positions,'');
+  push(d&&d.portfolio_positions,'');
+  push(d&&d.paper_positions,'');
+  const t=Array.isArray(d&&d.trades)?d.trades:(Array.isArray(d&&d.trades&&d.trades.trades)?d.trades.trades:[]);
+  t.filter(x=>['OPEN','ACTIVE'].includes(String((x&&x.status)||'').toUpperCase())).forEach(x=>{const n=normalizePosition(x,String(x.portfolio_name||x.portfolio||''),d);if(n)out.push(n)});
+  const uniq=new Map();
+  out.forEach(z=>uniq.set(String(z.portfolio_name||z.portfolio)+'|'+String(z.asset),Object.assign({},uniq.get(String(z.portfolio_name||z.portfolio)+'|'+String(z.asset))||{},z)));
+  return Array.from(uniq.values());
+}
+function ingestExtractedPositions(d,{allowClear=false}={}){
+  const rows=extractPositionCandidates(d);
+  const ps=Array.isArray(d&&d.portfolios)?d.portfolios:[];
+  if(rows.length){
+    const next={};
+    rows.forEach(z=>{const name=String(z.portfolio_name||z.portfolio||'');if(!next[name])next[name]=[];next[name].push(z)});
+    ['Impulse','Aggressive','Champion','Challenger'].forEach(name=>{if(!next[name])next[name]=[]});
     st.positionBook=next;st.positionBookReady=true;savePositionCache(next);return true;
   }
-  if(allowClear&&!portfolioExposureNonZero(ps)){
+  if(allowClear&&ps.length&&!portfolioExposureNonZero(ps)){
+    const next={};ps.forEach(p=>{const name=String(p.name||'');if(name)next[name]=[]});
     st.positionBook=next;st.positionBookReady=true;savePositionCache(next);return true;
   }
   return false;
 }
+function ingestPositionBook(ps,{allowClear=false}={}){
+  return ingestExtractedPositions({portfolios:Array.isArray(ps)?ps:[]},{allowClear});
+}
 function updatePositionBookFromBootstrap(d){
-  const ps=Array.isArray(d&&d.portfolios)?d.portfolios:[];
-  ingestPositionBook(ps,{allowClear:!!(d&&d.health&&d.health.bootstrap_ready)});
+  ingestExtractedPositions(d,{allowClear:!!(d&&d.health&&d.health.bootstrap_ready)});
 }
 function applyBootstrap(d){
   if(!d)return;
@@ -543,7 +601,7 @@ function applyBootstrap(d){
   st.signals={signals:d.signals||[],at:d.at,status:d.status};
   updatePositionBookFromBootstrap(d);
   st.portfolios=mergePortfolioSets({portfolios:d.portfolios||[]},st.portfolios,false);
-  st.trades={trades:d.trades||[]};
+  st.trades=Array.isArray(d.trades)?{trades:d.trades}:(d.trades||{trades:[]});
   st.learning=d.learning_summary||{};
   st.quality=d.data_quality_summary||{};
   st.horizon=d.horizon_summary||{};
@@ -558,7 +616,7 @@ async function loadBootstrap(){
 async function loadPortfolios(){
   const d=await get('paper-portfolios','/api/v1/paper-portfolios',8000);
   if(d&&Array.isArray(d.portfolios)){
-    ingestPositionBook(d.portfolios,{allowClear:false});
+    ingestExtractedPositions(d,{allowClear:false});
     const metricsOnly=Object.assign({},d,{portfolios:d.portfolios.map(p=>{const q=Object.assign({},p);delete q.positions;return q})});
     st.portfolios=mergePortfolioSets(metricsOnly,st.portfolios,false);
     renderPortfolios();
