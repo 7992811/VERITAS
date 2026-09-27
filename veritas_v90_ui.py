@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r30-canonical-position-book"
+UI_VERSION = "veritas-ui-v9.0-r31-stable-dense-positions"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -73,17 +73,19 @@ _CANONICAL_HTML = r'''<!doctype html>
 .action-box{margin-top:7px;border-left:3px solid #6ea7d0;background:rgba(110,167,208,.06);padding:7px 8px;border-radius:0 8px 8px 0;font-size:9.5px;line-height:1.5;color:#d6dfe6}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.kpi{border:1px solid var(--line);border-radius:8px;padding:6px}.kpi span{display:block;color:var(--muted);font-size:8px}.kpi b{display:block;margin-top:2px;font-size:12px}
 .portfolio-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:7px}.portfolio-card{border:1px solid var(--line);border-radius:10px;padding:9px;background:var(--card2);min-width:0}.portfolio-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}.portfolio-head b{font-size:12px}.portfolio-nav{font-size:11px;color:#dce4ea;font-weight:650}.portfolio-sub{font-size:9px;color:var(--muted);margin-top:2px}.portfolio-metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:5px}.portfolio-metric{border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.portfolio-metric span{display:block;font-size:8px;color:var(--muted)}.portfolio-metric b{display:block;font-size:10px;margin-top:1px}
-.position-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
-.position-card{border:1px solid var(--line);border-radius:9px;padding:7px 8px;background:var(--card2);min-width:0;overflow:hidden}
-.position-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-head-main{display:flex;align-items:center;gap:6px;min-width:0}.position-head b{font-size:10.5px}.position-result{font-size:10.5px;font-weight:750;white-space:nowrap}
-.position-meta{font-size:8px;color:var(--muted);margin-top:2px;white-space:normal;overflow-wrap:anywhere}
-.position-levels{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin-top:6px}
-.position-level{min-width:0;border-top:1px solid rgba(255,255,255,.055);padding-top:4px}.position-level span{display:block;font-size:7.5px;color:var(--muted);white-space:nowrap}.position-level b{display:block;font-size:9.5px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.position-learning{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
-.position-chip{border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:2px 5px;font-size:7.5px;color:#b7c2cb;background:rgba(255,255,255,.012);white-space:nowrap}
-.position-chip b{font-size:7.8px;color:#e4ebf0;font-weight:650}
-.position-util{font-size:8px;color:#b7c2cb;margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}.position-util b{color:#e7edf2}.position-nav-top,.trade-nav-top{color:#dce5ec;font-weight:700}
-.trade-card{border-top:1px solid rgba(255,255,255,.05);padding:9px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.trade-head b{font-size:11px}.trade-result{font-size:11px;font-weight:700;white-space:nowrap}.trade-meta{font-size:9px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:6px}.trade-money span{font-size:8px;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:9px;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
+.position-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+.position-card{border:1px solid var(--line);border-radius:8px;padding:5px 7px;background:var(--card2);min-width:0;overflow:hidden}
+.position-card .asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}
+.position-card .asset-logo svg{width:14px;height:14px}
+.position-head{display:flex;align-items:center;justify-content:space-between;gap:6px}.position-head-main{display:flex;align-items:center;gap:5px;min-width:0}.position-head b{font-size:9.7px;line-height:1.15}.position-result{font-size:9.7px;font-weight:750;white-space:nowrap}
+.position-meta{font-size:7.3px;line-height:1.2;color:var(--muted);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
+.position-levels{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin-top:4px}
+.position-level{min-width:0;border-top:1px solid rgba(255,255,255,.055);padding-top:3px}.position-level span{display:block;font-size:6.9px;line-height:1.1;color:var(--muted);white-space:nowrap}.position-level b{display:block;font-size:8.7px;line-height:1.15;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.position-learning{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px}
+.position-chip{border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:1px 4px;font-size:6.9px;line-height:1.35;color:#b7c2cb;background:rgba(255,255,255,.012);white-space:nowrap}
+.position-chip b{font-size:7.1px;color:#e4ebf0;font-weight:650}
+.position-util{font-size:7.2px;line-height:1.2;color:#b7c2cb;margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}.position-util b{color:#e7edf2}.position-nav-top,.trade-nav-top{color:#dce5ec;font-weight:700}
+.trade-card{border-top:1px solid rgba(255,255,255,.05);padding:5px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:7px}.trade-head b{font-size:9.8px;line-height:1.15}.trade-result{font-size:9.8px;font-weight:700;white-space:nowrap}.trade-meta{font-size:7.7px;line-height:1.25;color:var(--muted);margin-top:1px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;margin-top:3px}.trade-money span{font-size:7px;line-height:1.15;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:8.2px;line-height:1.15;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
 
 .intel-wrap{display:grid;grid-template-columns:165px minmax(0,1fr);gap:10px;align-items:stretch}
 .intel-score{border:1px solid var(--line);border-radius:11px;background:linear-gradient(145deg,rgba(91,143,183,.08),rgba(255,255,255,.01));padding:10px;display:flex;flex-direction:column;justify-content:space-between;min-width:0}
@@ -172,7 +174,11 @@ _CANONICAL_HTML = r'''<!doctype html>
 (function(){
 'use strict';
 const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'], TF=['5m','1h','4h','1d','3d','7d'];
-const st={signals:null,portfolios:null,positionBook:{},positionBookReady:false,trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
+const POS_CACHE_KEY='veritas_v90_position_book_r31';
+const loadPositionCache=()=>{try{const x=JSON.parse(localStorage.getItem(POS_CACHE_KEY)||'null');if(x&&x.book&&Date.now()-Number(x.at||0)<86400000)return x.book}catch(e){}return {}};
+const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.stringify({at:Date.now(),book}))}catch(e){}};
+const initialPositionBook=loadPositionCache();
+const st={signals:null,portfolios:null,positionBook:initialPositionBook,positionBookReady:Object.keys(initialPositionBook).length>0,trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
@@ -507,14 +513,29 @@ function mergePortfolioSets(primary,secondary,preferPrimaryPositions=false){
   });
   return Object.assign({},secondary||{},primary||{},{portfolios:Array.from(map.values())});
 }
+function portfolioExposureNonZero(ps){
+  return (ps||[]).some(p=>{
+    const g=Number(p&&((p.latest||{}).gross_leverage??p.gross_leverage)),n=Number(p&&((p.latest||{}).net_exposure??p.net_exposure));
+    return (Number.isFinite(g)&&Math.abs(g)>0.002)||(Number.isFinite(n)&&Math.abs(n)>0.002);
+  });
+}
+function ingestPositionBook(ps,{allowClear=false}={}){
+  ps=Array.isArray(ps)?ps:[];
+  const hasArrays=ps.some(p=>Array.isArray(p&&p.positions));
+  if(!hasArrays)return false;
+  const next={},nonEmpty=[];
+  ps.forEach(p=>{const name=String((p&&p.name)||'');if(!name)return;const arr=Array.isArray(p.positions)?p.positions:[];next[name]=arr;if(arr.length)nonEmpty.push(...arr)});
+  if(nonEmpty.length){
+    st.positionBook=next;st.positionBookReady=true;savePositionCache(next);return true;
+  }
+  if(allowClear&&!portfolioExposureNonZero(ps)){
+    st.positionBook=next;st.positionBookReady=true;savePositionCache(next);return true;
+  }
+  return false;
+}
 function updatePositionBookFromBootstrap(d){
   const ps=Array.isArray(d&&d.portfolios)?d.portfolios:[];
-  const authoritative=ps.some(p=>Array.isArray(p&&p.positions));
-  if(!authoritative)return;
-  const next={};
-  ps.forEach(p=>{const name=String((p&&p.name)||'');if(name)next[name]=Array.isArray(p.positions)?p.positions:[]});
-  st.positionBook=next;
-  st.positionBookReady=true;
+  ingestPositionBook(ps,{allowClear:!!(d&&d.health&&d.health.bootstrap_ready)});
 }
 function applyBootstrap(d){
   if(!d)return;
@@ -537,6 +558,7 @@ async function loadBootstrap(){
 async function loadPortfolios(){
   const d=await get('paper-portfolios','/api/v1/paper-portfolios',8000);
   if(d&&Array.isArray(d.portfolios)){
+    ingestPositionBook(d.portfolios,{allowClear:false});
     const metricsOnly=Object.assign({},d,{portfolios:d.portfolios.map(p=>{const q=Object.assign({},p);delete q.positions;return q})});
     st.portfolios=mergePortfolioSets(metricsOnly,st.portfolios,false);
     renderPortfolios();
