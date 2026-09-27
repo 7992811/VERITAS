@@ -16,7 +16,7 @@ POSITION_STEP=0.05
 POLICIES={
  'Impulse': {
      'threshold':0.64,'strong_threshold':0.76,'min_independent':2,'mode':'IMPULSE_ONLY',
-     'allowed_horizons':('1h','4h','1d'),'max_fraction':0.50,'provisional_cap':0.10,
+     'allowed_horizons':('5m','1h','4h','1d'),'max_fraction':0.50,'provisional_cap':0.10,
      'accepted_cap':0.25,'confirmed_cap':0.50
  },
  'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE','max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
@@ -5858,3 +5858,291 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),16)
+
+
+# VERITAS V90 SUPER SIGNAL EXECUTION ROUTER R20
+# Keeps research and execution semantics aligned:
+# a confirmed SUPER signal must be considered by the portfolio router before a
+# weaker, later-blocked horizon candidate can shadow it.
+#
+# This is not an unconditional "trade SUPER" rule. The signal still needs:
+# - confirmed native structure,
+# - independent evidence,
+# - multi-timeframe agreement,
+# - post-cost movement,
+# - two-observation stability,
+# - no strong higher-timeframe conflict,
+# - structural stop / portfolio risk controls.
+V90_R20_SUPER_5M_MIN_MOVE=0.0045
+
+_v90r20_base_signal_first_admission=_signal_first_admission
+_v90r20_base_step_one=_step_one
+_v90r20_base_report=report
+
+
+def _v90r20_alignment(summary,asset,direction):
+    supporting=[]
+    same_score=0.0
+    opposite_score=0.0
+    opposite='SHORT' if direction=='LONG' else 'LONG'
+    for tf in ('5m','1h','4h','1d','3d','7d'):
+        r=_v90r19_exact_tf(summary,asset,tf)
+        if not r:
+            continue
+        eq=str(r.get('entry_quality') or
+               ((r.get('trade_plan') or {}).get('entry_quality')) or '')
+        rd=_v90r19_row_direction(r)
+        hs=r.get('horizon_structure') or {}
+        hsdir=str(hs.get('direction') or r.get('horizon_structure_direction') or 'NO_TRADE')
+        hstate=_v90r19_row_hstate(r)
+        hscore=_v90r19_row_hscore(r)
+        try:
+            conf=float(r.get('confidence') or 0.0)
+        except Exception:
+            conf=0.0
+        same=bool(
+            eq!='INVALIDATED'
+            and (
+              rd==direction
+              or (hsdir==direction and hscore>=0.55)
+            )
+        )
+        opp=bool(
+            eq!='INVALIDATED'
+            and (
+              (rd==opposite and conf>=0.55)
+              or (hsdir==opposite and hstate=='CONFIRMED_TREND' and hscore>=0.65)
+            )
+        )
+        if same:
+            supporting.append(tf)
+            same_score += max(conf,hscore,0.10)
+        if opp:
+            opposite_score += max(conf,hscore,0.10)
+    ratio=same_score/max(0.01,opposite_score)
+    return supporting,same_score,opposite_score,ratio
+
+
+def _v90r20_super_candidate(summary,asset):
+    choices=[]
+    for r0 in _v90r19_asset_rows(summary,asset):
+        r=dict(r0)
+        direction=str(r.get('research_decision') or 'NO_TRADE')
+        tier=str(r.get('signal_tier') or r.get('execution_signal_tier') or '')
+        horizon=str(r.get('horizon') or '')
+        if direction not in ('LONG','SHORT'):
+            continue
+        if tier not in ('SUPER_LONG','SUPER_SHORT'):
+            continue
+        if (tier=='SUPER_LONG' and direction!='LONG') or (tier=='SUPER_SHORT' and direction!='SHORT'):
+            continue
+        if horizon not in ('5m','1h'):
+            continue
+        if not bool(r.get('source_gate_pass',True)) or not bool(r.get('market_open',True)):
+            continue
+        if not _v901_no_hard_veto(r):
+            continue
+
+        plan=r.get('trade_plan') or {}
+        eq=str(r.get('entry_quality') or plan.get('entry_quality') or '')
+        hs=r.get('horizon_structure') or {}
+        hstate=_v90r19_row_hstate(r)
+        hscore=_v90r19_row_hscore(r)
+        try:
+            indep=int((((r.get('institutional_signal') or {})
+                        .get('evidence_independence') or {})
+                       .get('independent_count')) or 0)
+        except Exception:
+            indep=0
+        try:
+            expected=abs(float(plan.get('expected_move_pct') or
+                               r.get('expected_move_pct') or 0.0))
+        except Exception:
+            expected=0.0
+        try:
+            rr=float(plan.get('expected_to_stop_ratio') or
+                     r.get('expected_to_stop_ratio') or 0.0)
+        except Exception:
+            rr=0.0
+
+        min_move=V90_R20_SUPER_5M_MIN_MOVE if horizon=='5m' else 0.0030
+        if eq not in ('CONFIRMED_TREND','FRESH_BREAKOUT','CONFIRMED_BREAKOUT'):
+            continue
+        if hstate!='CONFIRMED_TREND' or hscore<0.70:
+            continue
+        if indep<5 or expected<min_move or rr<1.20:
+            continue
+        if not bool(plan.get('eligible',True)):
+            continue
+        conflict=_v90r19_strong_opposite_higher_tf(summary,r)
+        if conflict:
+            continue
+
+        supporting,same,opp,ratio=_v90r20_alignment(summary,asset,direction)
+        if len(set(supporting))<3 or ratio<1.50:
+            continue
+        if horizon=='5m':
+            ok1h,_=_v90r19_valid_1h_support(summary,r)
+            if not ok1h:
+                continue
+
+        p,source=_signal_probability(r)
+        x=dict(r)
+        x['_pwin']=float(p)
+        x['_pwin_source']=source
+        x['_supporting_horizons']=supporting
+        x['_alignment_count']=len(set(supporting))
+        x['_direction_support']={direction:same,'SHORT' if direction=='LONG' else 'LONG':opp}
+        x['_support_ratio']=ratio
+        x['_flip_confirmed']=True
+        x['_execution_rr']=rr
+        x['_execution_rank']=10.0+hscore+0.02*indep+min(rr,4.0)*0.04+min(expected,0.03)
+        x['_rank']=x['_execution_rank']
+        x['_r20_super_priority']=True
+        x['_r20_super_expected_move']=expected
+        x['_r20_super_min_move']=min_move
+        x['_r20_super_tier']=tier
+        choices.append(x)
+    if not choices:
+        return None
+    return max(choices,key=lambda x:float(x.get('_execution_rank') or 0.0))
+
+
+def _v90r20_super_soft_override(base,row,policy,drawdown):
+    mode=str((policy or {}).get('mode') or 'CORE')
+    if mode=='CHALLENGER':
+        return base
+    reason=str((base or {}).get('reason') or '')
+    soft=bool(
+        'MODEL_SCORE_BELOW' in reason
+        or 'R6_RANGE_LOW_VOL_BREAKOUT_UNCONFIRMED' in reason
+        or 'Q2_INSUFFICIENT_TF_ALIGNMENT' in reason
+        or 'R19_WAIT_SECOND_CONFIRMATION' in reason
+    )
+    # Stability remains mandatory; do not override the first observation.
+    if 'R19_WAIT_SECOND_CONFIRMATION' in reason:
+        return base
+    if not soft:
+        return base
+
+    score,source=_signal_probability(row)
+    alignment=int(row.get('_alignment_count') or 0)
+    try:
+        rr=float(row.get('_execution_rr') or
+                 ((row.get('trade_plan') or {}).get('expected_to_stop_ratio')) or 0.0)
+    except Exception:
+        rr=0.0
+
+    # Minimum score for a soft-floor exception. These are model quality scores,
+    # not claimed probabilities.
+    floor={'IMPULSE_ONLY':0.62,'AGGRESSIVE':0.64,'CORE':0.70}.get(mode,0.70)
+    if float(score)<floor or alignment<3 or rr<1.20:
+        return base
+
+    target={'IMPULSE_ONLY':0.25,'AGGRESSIVE':0.35,'CORE':0.20}.get(mode,0.10)
+    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:
+        return {'open':False,'fraction':0.0,'reason':'RISK_GOVERNOR_HARD',
+                'risk_governor':rg}
+
+    # Keep the global money-at-risk cap.
+    plan=row.get('trade_plan') or {}
+    try:
+        rp=abs(float(plan.get('stop_distance_pct') or 0.0))
+        if rp>0:
+            target=min(target,MAX_STOP_RISK_NAV/rp)
+    except Exception:
+        pass
+    target*=float(rg.get('multiplier') or 0.0)
+    target=_clip(_round_step(target),0,float((policy or {}).get('max_fraction') or 5.0))
+    return {
+      'open':target>0,'fraction':target,
+      'reason':'R20_CONFIRMED_SUPER_SOFT_FLOOR_OVERRIDE',
+      'model_quality_score':float(score) if source!='EMPIRICAL_CALIBRATION' else None,
+      'probability':float(score) if source=='EMPIRICAL_CALIBRATION' else None,
+      'probability_source':source,
+      'super_signal':True,
+      'alignment_count':alignment,
+      'support_ratio':row.get('_support_ratio'),
+      'rr':rr,
+      'risk_governor':rg,
+      'sizing_authority':'R20_SUPER_THEN_STRUCTURAL_RISK'
+    }
+
+
+def _signal_first_admission(row,policy,drawdown):
+    base=dict(_v90r20_base_signal_first_admission(row,policy,drawdown) or {})
+    if not (row or {}).get('_r20_super_priority'):
+        return base
+    if base.get('open'):
+        mode=str((policy or {}).get('mode') or 'CORE')
+        desired={'IMPULSE_ONLY':0.25,'AGGRESSIVE':0.35,'CORE':0.20,'CHALLENGER':0.10}.get(mode,0.10)
+        # Challenger never gets a soft bypass; if it passed its normal filters,
+        # the SUPER label may increase only within its already-permitted risk.
+        desired=max(float(base.get('fraction') or 0.0),desired)
+        plan=(row or {}).get('trade_plan') or {}
+        try:
+            rp=abs(float(plan.get('stop_distance_pct') or 0.0))
+            if rp>0:
+                desired=min(desired,MAX_STOP_RISK_NAV/rp)
+        except Exception:
+            pass
+        rg=_risk_governor(drawdown)
+        desired*=float(rg.get('multiplier') or 0.0)
+        desired=_clip(_round_step(desired),0,float((policy or {}).get('max_fraction') or 5.0))
+        base['fraction']=desired
+        base['open']=bool(desired>0)
+        base['reason']=str(base.get('reason') or '')+'|R20_SUPER_PRIORITY'
+        base['super_signal']=True
+        return base
+    return _v90r20_super_soft_override(base,row,policy,drawdown)
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    book={k:dict(v) for k,v in (candidates or {}).items()}
+    routed=[]
+    assets=set(str((r or {}).get('asset') or '') for r in (summary or []))
+    for asset in assets:
+        if not asset:
+            continue
+        super_row=_v90r20_super_candidate(summary,asset)
+        if super_row is None:
+            continue
+        old=book.get(asset)
+        old_h=str((old or {}).get('horizon') or '')
+        old_tier=str((old or {}).get('signal_tier') or '')
+        book[asset]=super_row
+        routed.append({
+          'asset':asset,'direction':super_row.get('research_decision'),
+          'horizon':super_row.get('horizon'),'tier':super_row.get('signal_tier'),
+          'replaced_horizon':old_h,'replaced_tier':old_tier,
+          'alignment':super_row.get('_alignment_count'),
+          'expected_move_pct':super_row.get('_r20_super_expected_move'),
+          'rr':super_row.get('_execution_rr')
+        })
+    if routed:
+        print(json.dumps({'event':'V90_R20_SUPER_ROUTE','portfolio':name,'routed':routed},
+                         ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return _v90r20_base_step_one(
+        c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary
+    )
+
+
+def report(pg_connect):
+    d=dict(_v90r20_base_report(pg_connect) or {})
+    d['execution_policy_r20']={
+      'super_signal_router':True,
+      'super_5m_min_expected_move_pct':100.0*V90_R20_SUPER_5M_MIN_MOVE,
+      'ordinary_5m_min_expected_move_pct':100.0*V90_R19_MIN_5M_EXPECTED_MOVE,
+      'super_requires_confirmed_structure':True,
+      'super_requires_independent_evidence':5,
+      'super_requires_multi_tf_alignment':3,
+      'super_requires_valid_1h_for_5m':True,
+      'super_requires_two_observations':True,
+      'aggressive_max_gross':5.0,
+      'impulse_allowed_horizons':list(POLICIES['Impulse']['allowed_horizons']),
+    }
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),17)
