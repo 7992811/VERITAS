@@ -6262,3 +6262,369 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),18)
+
+
+# VERITAS V90 EXECUTION QUALITY R22
+# Closed-loop fixes derived from the latest post-R19/R21 episodes:
+# 1) an opposite signal may close/reverse a position only if that opposite side
+#    itself passes the full current admission stack;
+# 2) fresh breakouts start smaller and earn size through confirmation;
+# 3) structural trailing searches the latest confirmed local swing across all
+#    management-row structural fields instead of depending on one MTF container;
+# 4) large positions are reduced once when expected edge collapses after entry.
+#
+# Risk ceilings are unchanged. Aggressive keeps its strategic 5x gross ceiling.
+
+_v90r22_base_admission=_signal_first_admission
+_v90r22_base_step_one=_step_one
+_v90r22_base_flip_confirmed=_v90r19_flip_confirmed
+_v90r22_base_exact_structural_stop=_v90r17_exact_structural_stop
+_v90r22_base_report=report
+
+_v90r22_active_policy=None
+_v90r22_active_drawdown=0.0
+_v90r22_active_portfolio=None
+_v90r22_edge_caps={}
+
+
+def _v90r22_float(v):
+    try:
+        x=float(v)
+        return x if math.isfinite(x) else None
+    except Exception:
+        return None
+
+
+def _v90r22_structural_candidates(row,direction,current):
+    row=row or {}
+    horizon=str(row.get('horizon') or
+                ((row.get('trade_plan') or {}).get('execution_timeframe')) or '1h')
+    plan=row.get('trade_plan') or {}
+    hs=row.get('horizon_structure') or {}
+    intra=row.get('intraday_structure') or {}
+    sl=row.get('structural_levels') or {}
+    features=row.get('features') or {}
+    mtf=(plan.get('multi_tf_levels') or
+         (features.get('multi_tf_levels') if isinstance(features,dict) else {}) or {})
+    rows=(mtf or {}).get('timeframes') or {}
+    primary=(rows.get(horizon) or {})
+
+    if direction=='LONG':
+        raw=[
+          ('INTRADAY',intra.get('recent_swing_anchor')),
+          ('INTRADAY',intra.get('recent_support')),
+          ('INTRADAY',intra.get('local_support')),
+          ('INTRADAY',intra.get('previous_low')),
+          ('INTRADAY',intra.get('swing_low')),
+          ('HORIZON',hs.get('recent_swing_anchor')),
+          ('HORIZON',hs.get('recent_support')),
+          ('STRUCTURAL',sl.get('support')),
+          ('STRUCTURAL',sl.get('local_support')),
+          ('PLAN',plan.get('recent_swing_anchor')),
+          ('MTF_'+horizon,primary.get('recent_support')),
+          ('MTF_'+horizon,primary.get('support')),
+        ]
+        for x in (primary.get('support_candidates') or []):
+            raw.append(('MTF_'+horizon,x))
+    else:
+        raw=[
+          ('INTRADAY',intra.get('recent_swing_anchor')),
+          ('INTRADAY',intra.get('recent_resistance')),
+          ('INTRADAY',intra.get('local_resistance')),
+          ('INTRADAY',intra.get('previous_high')),
+          ('INTRADAY',intra.get('swing_high')),
+          ('HORIZON',hs.get('recent_swing_anchor')),
+          ('HORIZON',hs.get('recent_resistance')),
+          ('STRUCTURAL',sl.get('resistance')),
+          ('STRUCTURAL',sl.get('local_resistance')),
+          ('PLAN',plan.get('recent_swing_anchor')),
+          ('MTF_'+horizon,primary.get('recent_resistance')),
+          ('MTF_'+horizon,primary.get('resistance')),
+        ]
+        for x in (primary.get('resistance_candidates') or []):
+            raw.append(('MTF_'+horizon,x))
+
+    out=[]
+    seen=set()
+    for source,v in raw:
+        x=_v90r22_float(v)
+        if x is None or x<=0:
+            continue
+        valid=(x<current) if direction=='LONG' else (x>current)
+        if not valid:
+            continue
+        key=round(x,10)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((source,x))
+    return horizon,out
+
+
+def _v90r17_exact_structural_stop(row,direction,current):
+    # Start with the previous R17/R12 result.
+    base_stop,base_tf,base_level=_v90r22_base_exact_structural_stop(
+        row,direction,current
+    )
+    horizon,levels=_v90r22_structural_candidates(row,direction,float(current))
+    asset=str((row or {}).get('asset') or '')
+    candidates=[]
+
+    if base_level is not None:
+        try:
+            candidates.append((abs(float(current)-float(base_level)),
+                               str(base_tf or horizon),float(base_level),'BASE_R17'))
+        except Exception:
+            pass
+
+    for source,lvl in levels:
+        candidates.append((abs(float(current)-float(lvl)),horizon,float(lvl),source))
+
+    if not candidates:
+        return base_stop,base_tf,base_level
+
+    # Previous local extreme nearest the live price is the current structural
+    # reference. We never place the stop inside that extreme.
+    _,tf,lvl,source=min(candidates,key=lambda x:x[0])
+    buf=_v90tr_level_buffer(asset,tf)
+    stop=lvl*(1.0-buf) if direction=='LONG' else lvl*(1.0+buf)
+    if direction=='LONG' and not (0<stop<float(current)):
+        return base_stop,base_tf,base_level
+    if direction=='SHORT' and not (stop>float(current)):
+        return base_stop,base_tf,base_level
+
+    return float(stop),str(tf),float(lvl)
+
+
+def _v90r22_full_admission_without_advancing_confirmation(row,policy,drawdown):
+    # Admission must be evaluated without converting a single observation into
+    # two confirmations merely because flip validation calls the gate twice.
+    snapshot={k:dict(v) for k,v in (_v90r19_confirm_state or {}).items()}
+    try:
+        return dict(_v90r22_base_admission(row,policy,drawdown) or {})
+    finally:
+        _v90r19_confirm_state.clear()
+        _v90r19_confirm_state.update(snapshot)
+
+
+def _v90r19_flip_confirmed(summary,z,row):
+    structural=_v90r22_base_flip_confirmed(summary,z,row)
+    if not structural:
+        return False
+
+    policy=_v90r22_active_policy or {}
+    drawdown=float(_v90r22_active_drawdown or 0.0)
+    if not policy:
+        return False
+
+    admission=_v90r22_full_admission_without_advancing_confirmation(
+        row,policy,drawdown
+    )
+    allowed=bool(admission.get('open') and float(admission.get('fraction') or 0.0)>0)
+
+    if not allowed:
+        print(json.dumps({
+          'event':'V90_R22_FLIP_BLOCKED_FULL_ADMISSION',
+          'portfolio':_v90r22_active_portfolio,
+          'asset':(row or {}).get('asset'),
+          'old_direction':(z or {}).get('direction'),
+          'new_direction':(row or {}).get('research_decision'),
+          'reason':admission.get('reason'),
+          'requested_fraction':admission.get('fraction'),
+        },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return allowed
+
+
+def _signal_first_admission(row,policy,drawdown):
+    base=dict(_v90r22_base_admission(row,policy,drawdown) or {})
+    if not base.get('open'):
+        return base
+
+    row=row or {}
+    mode=str((policy or {}).get('mode') or 'CORE')
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    is_super=bool(row.get('_r20_super_priority') or tier in ('SUPER_LONG','SUPER_SHORT'))
+    eq=str(row.get('entry_quality') or
+           ((row.get('trade_plan') or {}).get('entry_quality')) or '')
+    stage=str(row.get('decision_stage') or '')
+    fresh=bool(eq=='FRESH_BREAKOUT' or stage=='EARLY_PROBE')
+
+    # Fresh non-SUPER breakouts are probes. Size must be earned by subsequent
+    # confirmation instead of being granted on the first breakout state.
+    if fresh and not is_super:
+        cap={
+          'AGGRESSIVE':0.15,
+          'CORE':0.10,
+          'IMPULSE_ONLY':0.10,
+          'CHALLENGER':0.05,
+        }.get(mode,0.10)
+        if float(base.get('fraction') or 0.0)>cap:
+            base['fraction']=cap
+            base['reason']=str(base.get('reason') or '')+'|R22_FRESH_BREAKOUT_PROBE_CAP'
+
+    # After an edge-decay reduction, the current setup cannot immediately add
+    # the position back in the same cycle.
+    asset=str(row.get('asset') or '')
+    key=(_v90r22_active_portfolio,asset)
+    edge_cap=_v90r22_edge_caps.get(key)
+    if edge_cap is not None:
+        base['fraction']=min(float(base.get('fraction') or 0.0),float(edge_cap))
+        base['reason']=str(base.get('reason') or '')+'|R22_EDGE_DECAY_CAP'
+
+    base['fraction']=_clip(_round_step(base.get('fraction') or 0.0),0,
+                           float((policy or {}).get('max_fraction') or 5.0))
+    base['open']=bool(float(base.get('fraction') or 0.0)>0)
+    return base
+
+
+def _v90r22_position_age_seconds(z,ts):
+    try:
+        op=z.get('opened_at')
+        if not op:
+            return 0.0
+        op_dt=op if hasattr(op,'timestamp') else datetime.fromisoformat(str(op).replace('Z','+00:00'))
+        now_dt=ts if hasattr(ts,'timestamp') else datetime.fromisoformat(str(ts).replace('Z','+00:00'))
+        return max(0.0,(now_dt-op_dt).total_seconds())
+    except Exception:
+        return 0.0
+
+
+def _v90r22_edge_decay_reduce(c,p,name,z,row,price,nav,ts,mode):
+    z=dict(z or {})
+    row=row or {}
+    payload=_v90j_json(z.get('payload'))
+    if payload.get('r22_edge_decay_reduced_at'):
+        return None
+
+    direction=str(z.get('direction') or '')
+    if direction not in ('LONG','SHORT'):
+        return None
+
+    current_direction=str(row.get('research_decision') or
+                          ((row.get('horizon_structure') or {}).get('direction')) or '')
+    if current_direction not in ('',direction,'NO_TRADE'):
+        return None
+
+    initial=_v90r22_float(payload.get('expected_move_pct'))
+    plan=row.get('trade_plan') or {}
+    current=_v90r22_float(plan.get('expected_move_pct'))
+    rr=_v90r22_float(plan.get('expected_to_stop_ratio'))
+
+    if initial is None or initial<0.0040 or current is None:
+        return None
+
+    age=_v90r22_position_age_seconds(z,ts)
+    horizon=str(payload.get('execution_timeframe') or z.get('horizon') or
+                row.get('horizon') or '5m')
+    min_age={'5m':900.0,'1h':3600.0,'4h':7200.0}.get(horizon,3600.0)
+    if age<min_age:
+        return None
+
+    ratio=current/max(initial,1e-9)
+    post_cost_floor=max(2.0*float(COMMISSION)+0.0010,0.0020)
+    collapsed=bool(
+        current<post_cost_floor
+        or ratio<=0.35
+        or (rr is not None and rr<0.60)
+    )
+    if not collapsed:
+        return None
+
+    current_frac=abs(float(z.get('units') or 0.0)*float(price))/max(float(nav),1.0)
+    floor=0.15 if mode=='AGGRESSIVE' else 0.10
+    if current_frac<=floor+0.025:
+        return None
+
+    target=max(floor,_v90ph_round5(current_frac*0.50))
+    if target>=current_frac-0.025:
+        return None
+
+    _close_or_reduce(c,p,name,z,float(price),target,nav,ts,'EDGE_DECAY_REDUCTION_R22')
+    patch={
+      'r22_edge_decay_reduced_at':_v90j_iso(ts),
+      'r22_edge_decay_initial_expected_move_pct':initial,
+      'r22_edge_decay_current_expected_move_pct':current,
+      'r22_edge_decay_ratio':ratio,
+      'r22_edge_decay_rr':rr,
+      'r22_edge_decay_target_fraction':target,
+    }
+    c.execute("""UPDATE paper_positions
+                 SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
+                 WHERE portfolio_name=%s AND asset=%s""",
+              (json.dumps(patch,ensure_ascii=False,default=str),name,z.get('asset')))
+    tid=z.get('active_trade_id')
+    if tid:
+        c.execute("""UPDATE paper_trades
+                     SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
+                     WHERE trade_id=%s""",
+                  (json.dumps(patch,ensure_ascii=False,default=str),tid))
+
+    print(json.dumps({
+      'event':'V90_R22_EDGE_DECAY_REDUCTION','portfolio':name,
+      'asset':z.get('asset'),'direction':direction,
+      'current_fraction':current_frac,'target_fraction':target,
+      'initial_expected_move_pct':initial,
+      'current_expected_move_pct':current,'edge_ratio':ratio,'rr':rr
+    },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return target
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    global _v90r22_active_policy,_v90r22_active_drawdown,_v90r22_active_portfolio
+    book={a:dict(r) for a,r in (candidates or {}).items()}
+
+    p,pos=_portfolio_rows(c,name)
+    nav,unreal,gross,net=_mark_nav(p,pos,prices)
+    hwm=max(float(p['high_water_nav_rub']),nav)
+    dd=max(0.0,1-nav/max(hwm,1.0))
+
+    _v90r22_active_policy=policy
+    _v90r22_active_drawdown=dd
+    _v90r22_active_portfolio=name
+
+    # Apply edge decay before the ordinary target engine, then cap the same
+    # cycle so it cannot immediately reload what was just reduced.
+    mode=str((policy or {}).get('mode') or 'CORE')
+    for z0 in list(pos or []):
+        z=dict(z0)
+        asset=str(z.get('asset') or '')
+        if asset not in prices:
+            continue
+        mgmt=_v842_management_row(summary,z)
+        if not mgmt:
+            continue
+        target=_v90r22_edge_decay_reduce(
+            c,p,name,z,mgmt,float(prices[asset]),nav,ts,mode
+        )
+        if target is not None:
+            _v90r22_edge_caps[(name,asset)]=float(target)
+
+    try:
+        return _v90r22_base_step_one(
+            c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary
+        )
+    finally:
+        for key in [k for k in list(_v90r22_edge_caps) if k[0]==name]:
+            _v90r22_edge_caps.pop(key,None)
+        _v90r22_active_policy=None
+        _v90r22_active_drawdown=0.0
+        _v90r22_active_portfolio=None
+
+
+def report(pg_connect):
+    d=dict(_v90r22_base_report(pg_connect) or {})
+    d['execution_policy_r22']={
+      'flip_requires_full_opposite_admission':True,
+      'fresh_breakout_probe_caps':{
+        'Aggressive':0.15,'Champion':0.10,'Impulse':0.10,'Challenger':0.05
+      },
+      'structural_trailing_extended_local_swing_search':True,
+      'edge_decay_reduction':True,
+      'edge_decay_ratio_trigger':0.35,
+      'edge_decay_minimum_post_cost_move_pct':100.0*max(2.0*float(COMMISSION)+0.0010,0.0020),
+      'aggressive_max_gross':5.0,
+    }
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),19)
