@@ -5491,3 +5491,370 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
     except Exception:
         pass
     return out
+
+
+# VERITAS V90 ANTI-CHURN QUALITY CONTROL R19
+# Purpose:
+# - reject 5m moves that are too small after costs;
+# - require stable confirmation instead of threshold flicker;
+# - stop low-TF entries from overriding invalidated/conflicting higher TFs;
+# - allow direction flips only after a true structure break plus opposite confirmation;
+# - keep structural trailing alive from the position's management row even when
+#   the original setup disappears from the candidate book.
+#
+# Aggressive 5x remains a gross ceiling. This layer changes admission quality,
+# not the portfolio's strategic leverage ceiling.
+
+V90_R19_MIN_5M_EXPECTED_MOVE=0.0050
+V90_R19_CONFIRMATIONS_REQUIRED=2
+V90_R19_GRADE_B_AGGRESSIVE_PROBE=0.05
+
+_v90r19_base_signal_first_admission=_signal_first_admission
+_v90r19_base_step_one=_step_one
+_v90r19_base_report=report
+_v90r19_confirm_state={}
+
+
+def _v90r19_token(row):
+    row=row or {}
+    for key in ('observed_at','generated_at','as_of','timestamp','at','decision_at'):
+        v=row.get(key)
+        if v not in (None,''):
+            return str(v)
+    plan=row.get('trade_plan') or {}
+    hs=row.get('horizon_structure') or {}
+    parts=[
+      row.get('price'),row.get('confidence'),
+      plan.get('expected_move_pct'),plan.get('expected_to_stop_ratio'),
+      hs.get('score'),hs.get('state'),
+    ]
+    return '|'.join(str(x) for x in parts)
+
+
+def _v90r19_stable_confirmation(row):
+    row=row or {}
+    key=(str(row.get('asset') or ''),
+         str(row.get('horizon') or ''),
+         str(row.get('research_decision') or ''))
+    token=_v90r19_token(row)
+    st=dict(_v90r19_confirm_state.get(key) or {})
+    last=st.get('token')
+    count=int(st.get('count') or 0)
+    if token!=last:
+        count=min(V90_R19_CONFIRMATIONS_REQUIRED,count+1)
+        st={'token':token,'count':count}
+        _v90r19_confirm_state[key]=st
+    return count
+
+
+def _v90r19_row_direction(row):
+    if not row:
+        return 'NO_TRADE'
+    return str(row.get('research_decision') or
+               ((row.get('horizon_structure') or {}).get('direction')) or
+               row.get('horizon_structure_direction') or 'NO_TRADE')
+
+
+def _v90r19_row_hstate(row):
+    if not row:
+        return ''
+    return str(row.get('horizon_structure_state') or
+               ((row.get('horizon_structure') or {}).get('state')) or '')
+
+
+def _v90r19_row_hscore(row):
+    if not row:
+        return 0.0
+    try:
+        return float(row.get('horizon_structure_score') or
+                     ((row.get('horizon_structure') or {}).get('score')) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _v90r19_asset_rows(summary,asset):
+    return [r for r in (summary or []) if str((r or {}).get('asset') or '')==str(asset)]
+
+
+def _v90r19_exact_tf(summary,asset,tf):
+    rows=[r for r in _v90r19_asset_rows(summary,asset)
+          if str((r or {}).get('horizon') or '')==str(tf)]
+    if not rows:
+        return None
+    return max(rows,key=lambda r:float((r or {}).get('confidence') or 0.0))
+
+
+def _v90r19_strong_opposite_higher_tf(summary,row):
+    row=row or {}
+    direction=str(row.get('research_decision') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        return None
+    opposite='SHORT' if direction=='LONG' else 'LONG'
+    asset=str(row.get('asset') or '')
+    for tf in ('1h','4h','1d'):
+        r=_v90r19_exact_tf(summary,asset,tf)
+        if not r:
+            continue
+        eq=str(r.get('entry_quality') or
+               ((r.get('trade_plan') or {}).get('entry_quality')) or '')
+        rd=_v90r19_row_direction(r)
+        hsdir=str(((r.get('horizon_structure') or {}).get('direction')) or
+                  r.get('horizon_structure_direction') or 'NO_TRADE')
+        hstate=_v90r19_row_hstate(r)
+        hscore=_v90r19_row_hscore(r)
+        try:
+            conf=float(r.get('confidence') or 0.0)
+        except Exception:
+            conf=0.0
+        strong_decision=bool(
+            rd==opposite and eq!='INVALIDATED'
+            and (conf>=0.60 or hscore>=0.65)
+        )
+        strong_structure=bool(
+            hsdir==opposite
+            and hstate=='CONFIRMED_TREND'
+            and hscore>=0.70
+        )
+        if strong_decision or strong_structure:
+            return {'timeframe':tf,'direction':opposite,'confidence':conf,
+                    'structure_score':hscore,'state':hstate}
+    return None
+
+
+def _v90r19_valid_1h_support(summary,row):
+    row=row or {}
+    direction=str(row.get('research_decision') or 'NO_TRADE')
+    r=_v90r19_exact_tf(summary,row.get('asset'),'1h')
+    if not r:
+        return False,'MISSING_1H'
+    eq=str(r.get('entry_quality') or
+           ((r.get('trade_plan') or {}).get('entry_quality')) or '')
+    if eq=='INVALIDATED':
+        return False,'1H_INVALIDATED'
+    rd=_v90r19_row_direction(r)
+    hsdir=str(((r.get('horizon_structure') or {}).get('direction')) or
+              r.get('horizon_structure_direction') or 'NO_TRADE')
+    hscore=_v90r19_row_hscore(r)
+    same=bool(rd==direction or (hsdir==direction and hscore>=0.55))
+    return same,('1H_CONFIRMED' if same else '1H_NOT_ALIGNED')
+
+
+def _v90r19_prepare_candidate(summary,row,mode):
+    x=dict(row or {})
+    if str(x.get('horizon') or '')!='5m':
+        return x
+    direction=str(x.get('research_decision') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        return x
+
+    conflict=_v90r19_strong_opposite_higher_tf(summary,x)
+    if conflict:
+        x['_r19_entry_block_reason']='R19_STRONG_HIGHER_TF_CONFLICT'
+        x['_r19_higher_tf_conflict']=conflict
+        return x
+
+    ok1h,why1h=_v90r19_valid_1h_support(summary,x)
+    x['_r19_1h_state']=why1h
+    if str(mode) in ('CORE','CHALLENGER') and not ok1h:
+        x['_r19_entry_block_reason']='R19_CORE_REQUIRES_VALID_1H_ALIGNMENT'
+    elif str(mode)=='AGGRESSIVE' and not ok1h:
+        # Counter-trend / early 5m trades may still be studied by Aggressive,
+        # but only as a 5% probe until 1h confirms.
+        x['_r19_probe_cap']=V90_R19_GRADE_B_AGGRESSIVE_PROBE
+    return x
+
+
+def _v90r19_opposite_confirmation(row,new_direction):
+    row=row or {}
+    if str(row.get('research_decision') or '')!=str(new_direction):
+        return False
+    eq=str(row.get('entry_quality') or
+           ((row.get('trade_plan') or {}).get('entry_quality')) or '')
+    if eq not in ('FRESH_BREAKOUT','CONFIRMED_TREND','CONFIRMED_BREAKOUT'):
+        return False
+    hsdir=str(((row.get('horizon_structure') or {}).get('direction')) or
+              row.get('horizon_structure_direction') or 'NO_TRADE')
+    hstate=_v90r19_row_hstate(row)
+    hscore=_v90r19_row_hscore(row)
+    try:
+        indep=int((((row.get('institutional_signal') or {})
+                    .get('evidence_independence') or {})
+                   .get('independent_count')) or 0)
+    except Exception:
+        indep=0
+    return bool(
+        hsdir==new_direction
+        and hstate in ('BUILDING_TREND','CONFIRMED_TREND')
+        and hscore>=0.65
+        and indep>=3
+    )
+
+
+def _v90r19_old_structure_broken(summary,z):
+    mgmt=_v842_management_row(summary,z)
+    if not mgmt:
+        return False
+    if _v90_structure_exit_signal(mgmt,z):
+        return True
+    state=_v90r19_row_hstate(mgmt)
+    direction=str(z.get('direction') or '')
+    hsdir=str(((mgmt.get('horizon_structure') or {}).get('direction')) or
+              mgmt.get('horizon_structure_direction') or 'NO_TRADE')
+    score=_v90r19_row_hscore(mgmt)
+    return bool(
+        state=='EXIT_REVERSAL'
+        or (hsdir in ('LONG','SHORT') and hsdir!=direction and score>=0.68)
+    )
+
+
+def _v90r19_flip_confirmed(summary,z,row):
+    if not z or not row:
+        return False
+    new_direction=str(row.get('research_decision') or '')
+    old_direction=str(z.get('direction') or '')
+    if new_direction not in ('LONG','SHORT') or new_direction==old_direction:
+        return False
+    return bool(
+        _v90r19_old_structure_broken(summary,z)
+        and _v90r19_opposite_confirmation(row,new_direction)
+    )
+
+
+def _signal_first_admission(row,policy,drawdown):
+    row=row or {}
+    if row.get('_r19_entry_block_reason'):
+        return {
+          'open':False,'fraction':0.0,
+          'reason':str(row.get('_r19_entry_block_reason')),
+          'higher_tf_conflict':row.get('_r19_higher_tf_conflict'),
+          'r19_1h_state':row.get('_r19_1h_state')
+        }
+
+    base=dict(_v90r19_base_signal_first_admission(row,policy,drawdown) or {})
+    if not base.get('open'):
+        return base
+
+    horizon=str(row.get('horizon') or '')
+    mode=str((policy or {}).get('mode') or 'CORE')
+    plan=row.get('trade_plan') or {}
+
+    if horizon=='5m':
+        try:
+            expected=abs(float(plan.get('expected_move_pct') or
+                               row.get('expected_move_pct') or 0.0))
+        except Exception:
+            expected=0.0
+        if expected < float(V90_R19_MIN_5M_EXPECTED_MOVE):
+            return {
+              'open':False,'fraction':0.0,
+              'reason':'R19_5M_POST_COST_MOVE_TOO_SMALL',
+              'expected_move_pct':expected,
+              'minimum_required_move_pct':float(V90_R19_MIN_5M_EXPECTED_MOVE),
+              'round_trip_commission_pct':2.0*float(COMMISSION)
+            }
+
+        confirmation=_v90r19_stable_confirmation(row)
+        if confirmation < V90_R19_CONFIRMATIONS_REQUIRED:
+            return {
+              'open':False,'fraction':0.0,
+              'reason':'R19_WAIT_SECOND_CONFIRMATION',
+              'confirmation_count':confirmation,
+              'required':V90_R19_CONFIRMATIONS_REQUIRED
+            }
+
+        grade=str(base.get('setup_grade') or row.get('_setup_grade') or '')
+        if mode=='AGGRESSIVE' and grade=='B':
+            base['fraction']=min(float(base.get('fraction') or 0.0),
+                                 V90_R19_GRADE_B_AGGRESSIVE_PROBE)
+            base['reason']=str(base.get('reason') or '')+'|R19_GRADE_B_5PCT_PROBE'
+
+        if mode=='AGGRESSIVE' and row.get('_r19_probe_cap') is not None:
+            base['fraction']=min(float(base.get('fraction') or 0.0),
+                                 float(row.get('_r19_probe_cap') or 0.05))
+            base['reason']=str(base.get('reason') or '')+'|R19_WEAK_1H_5PCT_PROBE'
+
+    base['fraction']=_clip(_round_step(base.get('fraction') or 0.0),0,
+                           float((policy or {}).get('max_fraction') or 5.0))
+    base['open']=bool(float(base.get('fraction') or 0.0)>0)
+    base['r19_anti_churn']=True
+    return base
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    mode=str((policy or {}).get('mode') or 'CORE')
+
+    # 1) Give trailing a management row for every live position even if the
+    # setup is no longer in the candidate book.
+    try:
+        _,positions=_portfolio_rows(c,name)
+        management_book={}
+        for z0 in positions or []:
+            z=dict(z0)
+            mgmt=_v842_management_row(summary,z)
+            if mgmt:
+                management_book[str(z.get('asset') or '')]=dict(mgmt)
+        if management_book:
+            _v90tr_apply(c,name,management_book,prices,ts)
+    except Exception as e:
+        print(json.dumps({'event':'V90_R19_TRAILING_MANAGEMENT_ERROR',
+                          'portfolio':name,'error':str(e)[:180]},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+
+    # 2) Apply higher-timeframe admission checks to fresh/scale candidates.
+    book={}
+    for asset,row in (candidates or {}).items():
+        book[asset]=_v90r19_prepare_candidate(summary,row,mode)
+
+    # 3) Ordinary low-TF signal flips are not enough to close/reverse.
+    # Mark an opposite candidate as executable only when the old structure has
+    # broken and the new side is independently confirmed.
+    try:
+        _,positions=_portfolio_rows(c,name)
+        for z0 in positions or []:
+            z=dict(z0)
+            asset=str(z.get('asset') or '')
+            row=book.get(asset)
+            if not row:
+                continue
+            new_direction=str(row.get('research_decision') or '')
+            old_direction=str(z.get('direction') or '')
+            if new_direction in ('LONG','SHORT') and new_direction!=old_direction:
+                confirmed=_v90r19_flip_confirmed(summary,z,row)
+                row=dict(row)
+                row['_flip_confirmed']=bool(confirmed)
+                if not confirmed:
+                    row['_r19_entry_block_reason']='R19_OPPOSITE_SIGNAL_WITHOUT_STRUCTURE_BREAK'
+                book[asset]=row
+                print(json.dumps({
+                  'event':'V90_R19_FLIP_CHECK','portfolio':name,'asset':asset,
+                  'old_direction':old_direction,'new_direction':new_direction,
+                  'confirmed':bool(confirmed)
+                },ensure_ascii=False,separators=(',',':')),flush=True)
+    except Exception as e:
+        print(json.dumps({'event':'V90_R19_FLIP_CHECK_ERROR',
+                          'portfolio':name,'error':str(e)[:180]},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+
+    return _v90r19_base_step_one(
+        c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary
+    )
+
+
+def report(pg_connect):
+    d=dict(_v90r19_base_report(pg_connect) or {})
+    d['execution_policy_r19']={
+      'anti_churn':True,
+      'five_minute_min_expected_move_pct':100.0*V90_R19_MIN_5M_EXPECTED_MOVE,
+      'five_minute_confirmations_required':V90_R19_CONFIRMATIONS_REQUIRED,
+      'aggressive_grade_b_initial_fraction_pct':100.0*V90_R19_GRADE_B_AGGRESSIVE_PROBE,
+      'core_five_minute_requires_valid_1h':True,
+      'strong_higher_tf_conflict_blocks_entry':True,
+      'direction_flip_requires_old_structure_break':True,
+      'direction_flip_requires_opposite_confirmation':True,
+      'trailing_uses_position_management_row':True,
+      'aggressive_max_gross':5.0,
+    }
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),16)
