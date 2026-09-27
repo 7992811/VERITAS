@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r17-refined"
+UI_VERSION = "veritas-ui-v9.0-r18-intelligence"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -27,8 +27,12 @@ _CANONICAL_HTML = r'''<!doctype html>
 .row{display:grid;gap:6px;align-items:center;border-top:1px solid rgba(255,255,255,.045);padding:5px 0;min-width:0}.row:first-child{border-top:0}
 .row b{font-size:11px}.row span{font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .action{grid-template-columns:74px 92px 46px minmax(130px,1fr) 82px 82px}
-.asset{grid-template-columns:184px 78px minmax(0,1fr);gap:8px}
-.asset-main{min-width:0;display:flex;align-items:center;gap:8px}.asset-main b{display:inline-block}.asset-price{display:inline-block!important;font-size:10px!important;color:#b8c5d0!important;font-variant-numeric:tabular-nums}.asset-bias{text-align:left;white-space:nowrap}.asset-tfline{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px!important;color:#a5b1bc!important}
+.asset{grid-template-columns:150px 112px 88px minmax(0,1fr);gap:10px;align-items:center}
+.asset-main{min-width:0;display:flex;align-items:center;gap:8px}.asset-main b{display:inline-block}
+.asset-price{display:block!important;font-size:10px!important;color:#c4d0da!important;font-variant-numeric:tabular-nums;text-align:right;padding-right:8px}
+.asset-bias{text-align:left;white-space:nowrap}
+.asset-tfline{min-width:0;display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;overflow:visible!important;white-space:normal!important;text-overflow:clip!important}
+.asset-tfitem{display:block!important;min-width:0;padding:3px 2px;border:1px solid rgba(255,255,255,.045);border-radius:5px;background:rgba(255,255,255,.012);font-size:8px!important;color:#aeb9c3!important;text-align:center;white-space:nowrap!important;overflow:hidden;text-overflow:ellipsis}
 .tfs{display:grid;grid-template-columns:repeat(6,minmax(33px,1fr));gap:3px}.tf{font-size:7px;text-align:center;padding:3px 2px;border:1px solid var(--line);border-radius:5px;color:var(--muted)}
 .matrix-wrap{overflow-x:hidden;overflow-y:visible;padding:2px 0 3px}
 .matrix{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:10px 9px}
@@ -48,15 +52,15 @@ _CANONICAL_HTML = r'''<!doctype html>
 .cell:hover{background:rgba(255,255,255,.045);border-color:rgba(255,255,255,.10)}.cell.sel{outline:1px solid rgba(164,196,220,.62);outline-offset:1px;background:rgba(102,159,203,.055)}
 .cell small{display:block;font-size:10px;color:#c3ccd4;margin-top:5px;line-height:1;font-weight:650;white-space:nowrap}
 .sig-dot{display:inline-block;width:20px;height:20px;border-radius:50%;vertical-align:middle;position:relative}
-.sig-dot.long{background:#47e49b;box-shadow:0 0 12px rgba(71,228,155,.54)}
-.sig-dot.short{background:#ff636e;box-shadow:0 0 12px rgba(255,99,110,.52)}
-.sig-dot.wait{background:#e9c351;box-shadow:0 0 10px rgba(233,195,81,.38)}
+.sig-dot.long{background:#00e676;box-shadow:none}
+.sig-dot.short{background:#ff3b4d;box-shadow:none}
+.sig-dot.wait{background:#ffd21f;box-shadow:none}
 .sig-dot.super{width:25px;height:25px;background:transparent!important;border:3px solid currentColor;box-shadow:none}
 .sig-dot.super::after{content:'';position:absolute;left:50%;top:50%;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%)}
-.sig-dot.super.long{color:#47e49b;border-color:#47e49b;box-shadow:0 0 11px rgba(71,228,155,.82),0 0 22px rgba(71,228,155,.28)}
-.sig-dot.super.long::after{background:#47e49b;box-shadow:0 0 7px rgba(71,228,155,.95)}
-.sig-dot.super.short{color:#ff636e;border-color:#ff636e;box-shadow:0 0 11px rgba(255,99,110,.82),0 0 22px rgba(255,99,110,.28)}
-.sig-dot.super.short::after{background:#ff636e;box-shadow:0 0 7px rgba(255,99,110,.95)}
+.sig-dot.super.long{color:#00e676;border-color:#00e676;box-shadow:none}
+.sig-dot.super.long::after{background:#00e676;box-shadow:none}
+.sig-dot.super.short{color:#ff3b4d;border-color:#ff3b4d;box-shadow:none}
+.sig-dot.super.short::after{background:#ff3b4d;box-shadow:none}
 .super-label{font-weight:800;letter-spacing:.035em;color:#f3f7fa!important}
 .signal-detail{max-width:1120px;margin:0 auto}
 .signal-summary{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 12px;border:1px solid var(--line);border-radius:11px;background:linear-gradient(120deg,rgba(255,255,255,.025),rgba(255,255,255,.008))}
@@ -77,10 +81,17 @@ _CANONICAL_HTML = r'''<!doctype html>
 .position-meta{font-size:8.5px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere}
 .position-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;margin-top:7px}.position-metric{border-top:1px solid rgba(255,255,255,.05);padding-top:5px;min-width:0}.position-metric span{display:block;font-size:8px;color:var(--muted);white-space:normal}.position-metric b{display:block;font-size:9.5px;margin-top:2px;white-space:normal;overflow-wrap:anywhere;word-break:break-word}
 .trade-card{border-top:1px solid rgba(255,255,255,.05);padding:9px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.trade-head b{font-size:11px}.trade-result{font-size:11px;font-weight:700;white-space:nowrap}.trade-meta{font-size:9px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:6px}.trade-money span{font-size:8px;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:9px;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
+
+.intel-wrap{display:grid;grid-template-columns:165px minmax(0,1fr);gap:10px;align-items:stretch}
+.intel-score{border:1px solid var(--line);border-radius:11px;background:linear-gradient(145deg,rgba(91,143,183,.08),rgba(255,255,255,.01));padding:10px;display:flex;flex-direction:column;justify-content:space-between;min-width:0}
+.intel-score .label{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.intel-score .value{font-size:30px;font-weight:760;line-height:1;margin-top:5px}.intel-score .sub{font-size:8.5px;color:var(--muted);margin-top:5px}
+.intel-main{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}
+.intel-metric{border:1px solid var(--line);border-radius:9px;padding:7px;background:var(--card2);min-width:0}.intel-metric span{display:block;font-size:8px;color:var(--muted)}.intel-metric b{display:block;font-size:11px;margin-top:2px}.intel-bar{height:4px;border-radius:999px;background:#1b252e;margin-top:6px;overflow:hidden}.intel-fill{height:100%;border-radius:999px;background:#8eb8d7}
+.intel-foot{grid-column:1/-1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:2px}.intel-stat{font-size:8.5px;color:var(--muted);border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.intel-stat b{display:block;color:#dce5ec;font-size:10px;margin-top:1px}
 .insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.insight{border:1px solid var(--line);border-radius:8px;padding:7px;min-width:0}.insight h4{margin:0 0 5px;font-size:9px;color:var(--muted);font-weight:500;text-transform:uppercase}.insight div{font-size:9px;line-height:1.6}
 .scroll{max-height:450px;overflow:auto;padding-right:2px}
-@media(max-width:1050px){.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:650px){.wrap{padding:9px}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1050px){.asset{grid-template-columns:130px 100px 78px minmax(0,1fr)}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:108px 86px 66px minmax(0,1fr);gap:5px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -93,6 +104,11 @@ _CANONICAL_HTML = r'''<!doctype html>
     <span class="pill" id="db">БАЗА · —</span>
     <span class="pill" id="cells">ДАННЫЕ · —</span>
     <span class="pill" id="stamp">ОБНОВЛЕНО · —</span>
+  </div>
+
+  <div class="card full" style="margin-bottom:8px">
+    <div class="title">Интеллект VERITAS</div>
+    <div id="intelligence"><div class="msg">Загрузка уровня знаний и опыта…</div></div>
   </div>
 
   <div class="grid">
@@ -153,7 +169,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 (function(){
 'use strict';
 const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'], TF=['5m','1h','4h','1d','3d','7d'];
-const st={signals:null,portfolios:null,trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,busy:{},selected:null};
+const st={signals:null,portfolios:null,trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
@@ -219,7 +235,7 @@ function renderSignals(){
   const best=rows.filter(x=>{const D=dir(x),rr=Number(rrOf(x));return ['LONG','SHORT'].includes(D)&&String(x.entry_quality||'')!=='INVALIDATED'&&String(x.decision_stage||'')!=='INVALIDATED'&&Number.isFinite(rr)&&rr>0}).sort((a,b)=>rank(b)-rank(a)).slice(0,5);
   $('actions').innerHTML=best.length?best.map(x=>{const rr=Number(rrOf(x)),ready=x.execution_eligible===true||planOf(x).eligible===true;const state=ready?'ГОТОВ К ВХОДУ':'НАБЛЮДЕНИЕ';const sig=tier(x)==='SUPER_LONG'?'СУПЕР ЛОНГ':tier(x)==='SUPER_SHORT'?'СУПЕР ШОРТ':dirRu(dir(x));return'<div class="row action"><b>'+lab(x.asset)+'</b><b class="'+cls(dir(x))+' '+((tier(x)==='SUPER_LONG'||tier(x)==='SUPER_SHORT')?'super-label':'')+'">'+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span><span>'+state+' · R/R '+rr.toFixed(2)+' · '+esc(x.regime||'режим не определён')+'</span><span class="sl">Стоп '+n(stopOf(x),4)+'</span><span class="tp">Цель '+n(targetOf(x),4)+'</span></div>'}).join(''):'<div class="msg">Готовых направленных входов сейчас нет — система ждёт подтверждения структуры и достаточного R/R.</div>';
 
-  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b><span class="asset-price">'+n(p,4)+'</span></div><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'ЛОНГ':D==='SHORT'?'ШОРТ':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf];return tfRu(tf)+' '+(x?ar(dir(x)):'—')}).join('   ')+'</span></div>'}).join('');
+  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'ЛОНГ':D==='SHORT'?'ШОРТ':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf];return'<span class="asset-tfitem">'+tfRu(tf)+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
 
   $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.25"></span><small>—</small></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',tag=T==='SUPER_LONG'?'СЛ':T==='SUPER_SHORT'?'СШ':D==='LONG'?'Л':D==='SHORT'?'Ш':'—';return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(0)+'%"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small class="'+(isSuper?'super-label':'')+'">'+tag+' · '+conf.toFixed(0)+'%</small></button></td>'}).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
@@ -322,6 +338,22 @@ function renderTrades(){
   }).join(''):'<div class="msg">Закрытых сделок пока нет.</div>';
 }
 
+function renderIntelligence(){
+  const i=st.intelligence||{},c=i.components||{},k=i.knowledge||{},e=i.evidence||{};
+  if(!i||i.score==null){$('intelligence').innerHTML='<div class="msg">Индекс ещё формируется: системе нужны чистые завершённые эпизоды и полная телеметрия.</div>';return}
+  const score=Number(i.score||0), conf={LOW:'низкая',MEDIUM:'средняя',HIGH:'высокая'}[String(i.confidence||'')]||'формируется';
+  const comp=[
+    ['Знания',Number(c.knowledge_breadth||0),20],
+    ['Накопленный опыт',Number(c.evidence_maturity||0),20],
+    ['Качество результата',Number(c.outcome_quality||0),25],
+    ['Захват движения',Number(c.execution_capture_quality||0),20],
+    ['Качество обучения',Number(c.learning_telemetry_coverage||0),15]
+  ];
+  const capture=e.avg_capture_ratio==null?'—':(100*Number(e.avg_capture_ratio)).toFixed(1)+'%';
+  const wr=e.win_rate==null?'—':(100*Number(e.win_rate)).toFixed(1)+'%';
+  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">Индекс зрелости системы</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · достоверность оценки: '+conf+'</div></div><div class="sub">Рост индекса требует не только новых знаний, но и подтверждённого опыта, лучшего результата и большего захвата рыночных движений.</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div><div class="intel-foot"><div class="intel-stat">Экспертные принципы<b>'+esc(k.expert_principles??'—')+'</b></div><div class="intel-stat">Слоёв обучения<b>'+esc(k.core_learning_layers??'—')+'</b></div><div class="intel-stat">Чистых завершённых сделок<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate чистой выборки<b>'+wr+'</b></div><div class="intel-stat">Средний захват движения<b>'+capture+'</b></div></div></div></div>';
+}
+
 function renderInsights(){
   const l=st.learning||{}, q=st.quality||{}, h=st.horizon||{}, m=st.macro||{};
   const wr=l.win_rate==null?'—':(100*Number(l.win_rate)).toFixed(1)+'%';
@@ -344,7 +376,8 @@ function applyBootstrap(d){
   st.learning=d.learning_summary||{};
   st.quality=d.data_quality_summary||{};
   st.horizon=d.horizon_summary||{};
-  renderHealth();renderSignals();renderPortfolios();renderTrades();renderInsights();
+  if(d.intelligence_index)st.intelligence=d.intelligence_index;
+  renderHealth();renderSignals();renderPortfolios();renderTrades();renderIntelligence();renderInsights();
 }
 
 async function loadBootstrap(){
@@ -355,7 +388,11 @@ async function loadMacro(){
   const d=await get('macro','/api/v1/macro',7000);
   if(d){st.macro=d;renderInsights()}
 }
-function start(){loadBootstrap();setTimeout(loadMacro,1000);setInterval(loadBootstrap,30000);setInterval(loadMacro,120000)}
+async function loadIntelligence(){
+  const d=await get('intelligence','/api/v1/paper-portfolios',8000);
+  if(d&&d.intelligence_index){st.intelligence=d.intelligence_index;renderIntelligence()}
+}
+function start(){loadBootstrap();setTimeout(loadIntelligence,500);setTimeout(loadMacro,1000);setInterval(loadBootstrap,30000);setInterval(loadIntelligence,60000);setInterval(loadMacro,120000)}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
 </script>
