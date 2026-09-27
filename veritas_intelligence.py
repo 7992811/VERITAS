@@ -16749,6 +16749,64 @@ def _v90r37_storage_retention():
         return {'status':'ERROR','error':str(ex)}
 
 
+
+# VERITAS V90 STORAGE RESCUE LOOP R38
+# If a full Free Postgres instance is resumed by Render/the user, it may only
+# remain reachable briefly. This background loop catches that window, performs
+# R37 compaction immediately, then re-enables the normal durable path.
+_v90r38_rescue_state={'done':False,'attempts':0,'last_error':None}
+
+def _v90r38_storage_rescue_loop():
+    if not DATABASE_URL or psycopg is None:
+        return
+    while not _v90r38_rescue_state.get('done'):
+        _v90r38_rescue_state['attempts']=int(_v90r38_rescue_state.get('attempts') or 0)+1
+        try:
+            # Use a raw connection probe so the normal fail-soft TTL cannot hide
+            # the short recovery window after Resume Database.
+            c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=4)
+            try:
+                c.execute("SELECT 1")
+            finally:
+                c.close()
+
+            emit('v90_r38_storage_rescue_connection',
+                 attempt=_v90r38_rescue_state['attempts'],status='CONNECTED')
+
+            out=_v90_emergency_storage_reclaim()
+            status=str((out or {}).get('status') or '')
+            emit('v90_r38_storage_rescue_cleanup',status=status,result=out)
+
+            # Verify that Postgres can now write a tiny temp relation before
+            # declaring the rescue complete.
+            v=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5)
+            try:
+                v.execute("SET search_path TO veritas_v90")
+                v.execute("CREATE TEMP TABLE v90_r38_write_test(x int)")
+                v.execute("INSERT INTO v90_r38_write_test VALUES(1)")
+            finally:
+                v.close()
+
+            _v90_pg_health_set(True,None)
+            try:
+                _v90r24_ensure_canonical_portfolios()
+            except Exception as ex:
+                emit('v90_r38_portfolio_reprime_warning',
+                     error=f'{type(ex).__name__}: {ex}')
+            _v90r38_rescue_state.update({'done':True,'last_error':None})
+            emit('v90_r38_storage_rescue_complete',
+                 attempts=_v90r38_rescue_state['attempts'])
+            return
+        except Exception as ex:
+            err=f'{type(ex).__name__}: {ex}'
+            _v90r38_rescue_state['last_error']=err
+            # Log only every 5th failure to avoid turning recovery telemetry
+            # into another noisy stream.
+            if _v90r38_rescue_state['attempts'] in (1,2,3) or _v90r38_rescue_state['attempts']%5==0:
+                emit('v90_r38_storage_rescue_wait',
+                     attempt=_v90r38_rescue_state['attempts'],error=err[:240])
+        time.sleep(20)
+
 # VERITAS V90 STORAGE AUDIT R36
 # Read-only storage telemetry used to identify what fills the Postgres quota.
 def _v90_storage_audit():
@@ -17589,6 +17647,10 @@ def main():
                                'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY),
                                'manager_corpus': manager_corpus_summary()})
     threading.Thread(target=loop, daemon=True).start()
+    # R38 always runs: it exits immediately after a healthy write test, but if
+    # Postgres is temporarily unavailable/full it waits for the Resume window.
+    threading.Thread(target=_v90r38_storage_rescue_loop, daemon=True,
+                     name='veritas-storage-rescue').start()
     if pg_boot.get('ok'):
         threading.Thread(target=heavy_learning_maintenance_loop, daemon=True).start()
     heavy_role = SERVICE_ROLE in ('learning','all')
