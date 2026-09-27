@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r18-intelligence"
+UI_VERSION = "veritas-ui-v9.0-r20-visual-intelligence"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -27,12 +27,12 @@ _CANONICAL_HTML = r'''<!doctype html>
 .row{display:grid;gap:6px;align-items:center;border-top:1px solid rgba(255,255,255,.045);padding:5px 0;min-width:0}.row:first-child{border-top:0}
 .row b{font-size:11px}.row span{font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .action{grid-template-columns:74px 92px 46px minmax(130px,1fr) 82px 82px}
-.asset{grid-template-columns:142px 96px 72px minmax(360px,620px);gap:6px;align-items:center;justify-content:start}
+.asset{grid-template-columns:minmax(112px,142px) 82px 72px minmax(0,1fr);gap:5px;align-items:center;width:100%}
 .asset-main{min-width:0;display:flex;align-items:center;gap:8px}.asset-main b{display:inline-block}
 .asset-price{display:block!important;font-size:10px!important;color:#d2dbe3!important;font-variant-numeric:tabular-nums;text-align:left;padding-right:0}
 .asset-bias{text-align:left;white-space:nowrap}
-.asset-tfline{min-width:0;display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;overflow:visible!important;white-space:normal!important;text-overflow:clip!important}
-.asset-tfitem{display:block!important;min-width:0;padding:3px 2px;border:1px solid rgba(255,255,255,.045);border-radius:5px;background:rgba(255,255,255,.012);font-size:8px!important;color:#aeb9c3!important;text-align:center;white-space:nowrap!important;overflow:hidden;text-overflow:ellipsis}
+.asset-tfline{min-width:0;display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr));gap:2px;overflow:hidden!important;white-space:normal!important;text-overflow:clip!important}
+.asset-tfitem{display:block!important;min-width:0;padding:3px 1px;border:1px solid rgba(255,255,255,.04);border-radius:5px;background:rgba(255,255,255,.01);font-size:7.5px!important;color:#aeb9c3!important;text-align:center;white-space:nowrap!important;overflow:hidden;text-overflow:clip}
 .tfs{display:grid;grid-template-columns:repeat(6,minmax(33px,1fr));gap:3px}.tf{font-size:7px;text-align:center;padding:3px 2px;border:1px solid var(--line);border-radius:5px;color:var(--muted)}
 .matrix-wrap{overflow-x:hidden;overflow-y:visible;padding:2px 0 3px}
 .matrix{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:10px 9px}
@@ -48,19 +48,17 @@ _CANONICAL_HTML = r'''<!doctype html>
 .asset-logo.gold{color:#ffd45a;background:rgba(255,198,38,.11);border-color:rgba(255,212,90,.48)}
 .asset-logo.moex{color:#8fc5ff;background:rgba(74,143,255,.10);border-color:rgba(143,197,255,.45)}
 .asset-logo.cny{color:#ffd05d;background:rgba(221,67,67,.10);border-color:rgba(255,208,93,.45);font-size:10px}
-.cell{width:100%;min-height:58px;border:1px solid rgba(255,255,255,.035);border-radius:9px;background:rgba(255,255,255,.012);color:var(--text);padding:5px 3px;cursor:pointer;font-size:11px;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:.15s ease}
+.cell{width:100%;min-height:72px;border:1px solid rgba(255,255,255,.035);border-radius:9px;background:rgba(255,255,255,.012);color:var(--text);padding:5px 3px;cursor:pointer;font-size:11px;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:.15s ease}
 .cell:hover{background:rgba(255,255,255,.045);border-color:rgba(255,255,255,.10)}.cell.sel{outline:1px solid rgba(164,196,220,.62);outline-offset:1px;background:rgba(102,159,203,.055)}
-.cell small{display:block;font-size:10px;color:#c3ccd4;margin-top:5px;line-height:1;font-weight:650;white-space:nowrap}
-.sig-dot{display:inline-block;width:20px;height:20px;border-radius:50%;vertical-align:middle;position:relative}
-.sig-dot.long{background:#00ff57;box-shadow:none}
-.sig-dot.short{background:#ff1f2d;box-shadow:none}
-.sig-dot.wait{background:#ffe600;box-shadow:none}
-.sig-dot.super{width:25px;height:25px;background:transparent!important;border:3px solid currentColor;box-shadow:none}
-.sig-dot.super::after{content:'';position:absolute;left:50%;top:50%;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%)}
-.sig-dot.super.long{color:#00ff57;border-color:#00ff57;box-shadow:none}
-.sig-dot.super.long::after{background:#00ff57;box-shadow:none}
-.sig-dot.super.short{color:#ff1f2d;border-color:#ff1f2d;box-shadow:none}
-.sig-dot.super.short::after{background:#ff1f2d;box-shadow:none}
+.cell small{display:block;font-size:11px;color:#cfd5db;margin-top:5px;line-height:1.05;font-weight:520;white-space:nowrap}.cell em{display:block;font-style:normal;font-size:8.5px;color:#8f98a2;margin-top:4px;letter-spacing:.02em}
+.sig-dot{display:inline-block;width:22px;height:22px;border-radius:50%;vertical-align:middle;position:relative}
+.sig-dot.long{background:#52d98b;box-shadow:none}
+.sig-dot.short{background:#ff5f6d;box-shadow:none}
+.sig-dot.wait{background:#f6c451;box-shadow:none}
+.sig-dot.super{width:32px;height:32px;background:transparent!important;border:3px solid currentColor;box-shadow:none}
+.sig-dot.super::after{content:'';position:absolute;left:50%;top:50%;width:20px;height:20px;border-radius:50%;transform:translate(-50%,-50%);background:transparent!important;border:3px solid currentColor;box-shadow:none}
+.sig-dot.super.long{color:#52d98b;border-color:#52d98b;box-shadow:none}
+.sig-dot.super.short{color:#ff5f6d;border-color:#ff5f6d;box-shadow:none}
 .super-label{font-weight:800;letter-spacing:.035em;color:#f3f7fa!important}
 .signal-detail{max-width:1120px;margin:0 auto}
 .signal-summary{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 12px;border:1px solid var(--line);border-radius:11px;background:linear-gradient(120deg,rgba(255,255,255,.025),rgba(255,255,255,.008))}
@@ -90,8 +88,8 @@ _CANONICAL_HTML = r'''<!doctype html>
 .intel-foot{grid-column:1/-1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:2px}.intel-stat{font-size:8.5px;color:var(--muted);border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.intel-stat b{display:block;color:#dce5ec;font-size:10px;margin-top:1px}
 .insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.insight{border:1px solid var(--line);border-radius:8px;padding:7px;min-width:0}.insight h4{margin:0 0 5px;font-size:9px;color:var(--muted);font-weight:500;text-transform:uppercase}.insight div{font-size:9px;line-height:1.6}
 .scroll{max-height:450px;overflow:auto;padding-right:2px}
-@media(max-width:1050px){.asset{grid-template-columns:128px 90px 68px minmax(300px,1fr);gap:5px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:104px 82px 62px minmax(0,1fr);gap:4px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:100px 70px 58px minmax(0,1fr);gap:3px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -209,6 +207,8 @@ const qualityRu=v=>{const k=String(v||'');const m={FRESH_BREAKOUT:'Свежий 
 const stageRu=v=>{const k=String(v||'');const m={EARLY_PROBE:'Ранний вход',WAIT_RISK_REWARD:'Ожидание лучшего соотношения потенциала и риска',WAIT:'Ожидание',READY:'Готов к действию',INVALIDATED:'Сценарий отменён'};return m[k]||'Стадия уточняется'};
 const reasonRu=v=>{const k=String(v||'').toUpperCase();if(!k)return'Причина уточняется';if(k.includes('SOURCE_TIME_KILL_GATE')||k.includes('SOURCE_GATE'))return'Недостаточно подтверждения источника данных или торгового времени';if(k.includes('EXPECTED_MOVE_TOO_SMALL'))return'Ожидаемое движение слишком мало относительно издержек';if(k.includes('RR_TOO_LOW'))return'Потенциал движения недостаточен относительно риска';if(k.includes('MODEL_SCORE_BELOW'))return'Качество сигнала пока ниже порога входа';if(k.includes('ENTRY_INVALIDATED'))return'Условия входа уже утратили актуальность';if(k.includes('WAIT_CONFIRMATION'))return'Система ждёт подтверждения структуры';if(k.includes('WEAK_BREAKOUT'))return'Пробой недостаточно сильный';if(k.includes('COST_TO_EDGE'))return'Издержки слишком велики относительно ожидаемого движения';if(k.includes('TACTICAL_REVERSAL'))return'Подтверждён тактический разворот';if(k.includes('NO_DIRECTION'))return'Подтверждённого направления пока нет';return'Решение принято по совокупности структуры, силы сигнала и риска'};
 const setupRu=v=>{const k=String(v||'').toUpperCase();if(k.includes('CLIMAX_REVERSAL'))return'Разворот после истощения импульса';if(k.includes('BASE_BREAKOUT'))return'Пробой уровня с закреплением';if(k.includes('PULLBACK_CONTINUATION'))return'Продолжение тренда после отката';if(k.includes('STRUCTURAL_BREAKOUT'))return'Структурный пробой';if(k.includes('TACTICAL_REVERSAL'))return'Тактический разворот';if(k.includes('RANGE_RETEST'))return'Ретест границы диапазона';return'Комбинированный сигнал'};
+const matrixStateRu=x=>{if(!x)return'';const D=dir(x),eq=String(x.entry_quality||''),st=String(x.decision_stage||''),hs=String(x.horizon_structure_state||((x.horizon_structure||{}).state)||'');if(D==='NO_TRADE')return'';if(eq==='FRESH_BREAKOUT'||st==='EARLY_PROBE')return'старт';if(hs==='CONFIRMED_TREND'||hs==='BUILDING_TREND')return'тренд';return''};
+
 
 
 async function get(key,url,ms){
@@ -235,9 +235,9 @@ function renderSignals(){
   const best=rows.filter(x=>{const D=dir(x),rr=Number(rrOf(x));return ['LONG','SHORT'].includes(D)&&String(x.entry_quality||'')!=='INVALIDATED'&&String(x.decision_stage||'')!=='INVALIDATED'&&Number.isFinite(rr)&&rr>0}).sort((a,b)=>rank(b)-rank(a)).slice(0,5);
   $('actions').innerHTML=best.length?best.map(x=>{const rr=Number(rrOf(x)),ready=x.execution_eligible===true||planOf(x).eligible===true;const state=ready?'ГОТОВ К ВХОДУ':'НАБЛЮДЕНИЕ';const sig=tier(x)==='SUPER_LONG'?'СУПЕР ЛОНГ':tier(x)==='SUPER_SHORT'?'СУПЕР ШОРТ':dirRu(dir(x));return'<div class="row action"><b>'+lab(x.asset)+'</b><b class="'+cls(dir(x))+' '+((tier(x)==='SUPER_LONG'||tier(x)==='SUPER_SHORT')?'super-label':'')+'">'+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span><span>'+state+' · R/R '+rr.toFixed(2)+' · '+esc(x.regime||'режим не определён')+'</span><span class="sl">Стоп '+n(stopOf(x),4)+'</span><span class="tp">Цель '+n(targetOf(x),4)+'</span></div>'}).join(''):'<div class="msg">Готовых направленных входов сейчас нет — система ждёт подтверждения структуры и достаточного R/R.</div>';
 
-  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'ЛОНГ':D==='SHORT'?'ШОРТ':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf];return'<span class="asset-tfitem">'+tfRu(tf)+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
+  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'ЛОНГ':D==='SHORT'?'ШОРТ':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=({'5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
 
-  $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.25"></span><small>—</small></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',tag=T==='SUPER_LONG'?'СЛ':T==='SUPER_SHORT'?'СШ':D==='LONG'?'Л':D==='SHORT'?'Ш':'—';return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(0)+'%"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small class="'+(isSuper?'super-label':'')+'">'+tag+' · '+conf.toFixed(0)+'%</small></button></td>'}).join('')+'</tr>').join('');
+  $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.35"></span><small>—</small><em></em></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',state=matrixStateRu(x);return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(1)+'%"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small>'+conf.toFixed(1)+'%</small><em>'+esc(state)+'</em></button></td>'}).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
   if(!st.selected&&rows.length){const x=best[0]||rows[0];st.selected=x.asset+'|'+x.horizon}
   if(st.selected)selectSignal(st.selected,false);
@@ -338,10 +338,84 @@ function renderTrades(){
   }).join(''):'<div class="msg">Закрытых сделок пока нет.</div>';
 }
 
+function deepNum(obj,names){
+  const wanted=new Set(names.map(x=>String(x).toLowerCase()));
+  const seen=new Set();
+  function walk(v,depth){
+    if(v==null||depth>6)return null;
+    if(typeof v!=='object')return null;
+    if(seen.has(v))return null;seen.add(v);
+    for(const [k,val] of Object.entries(v)){
+      if(wanted.has(String(k).toLowerCase())){
+        const n=Number(val);if(Number.isFinite(n))return n;
+      }
+    }
+    for(const val of Object.values(v)){
+      const n=walk(val,depth+1);if(n!=null)return n;
+    }
+    return null;
+  }
+  return walk(obj,0);
+}
+function intelligenceRoot(raw){
+  if(!raw||typeof raw!=='object')return {};
+  return raw.intelligence_index||raw.intelligence_scorecard||raw.scorecard||raw.intelligence||raw.data||raw.result||raw;
+}
+function buildFallbackIntelligence(raw,progress,library){
+  const trades=Array.isArray(st.trades&&st.trades.trades)?st.trades.trades:[];
+  const closed=deepNum(progress,['clean_post_r2_closed_trades','clean_closed_trades','closed_episodes','closed_trades'])??Number((st.learning||{}).closed_trades||trades.length||0);
+  const wins=deepNum(progress,['wins','profitable_trades','winning_trades'])??Number((st.learning||{}).wins||0);
+  const wrRaw=deepNum(progress,['win_rate','clean_win_rate']);
+  const wr=wrRaw!=null?(wrRaw>1?wrRaw/100:wrRaw):(closed>0?wins/closed:0);
+  const sources=deepNum(library,['postgres_sources','knowledge_sources','source_count','sources'])??deepNum(raw,['postgres_sources','knowledge_sources','source_count']);
+  const rules=deepNum(library,['postgres_rules','knowledge_rules','rule_count','rules'])??deepNum(raw,['postgres_rules','knowledge_rules','rule_count']);
+  const principles=deepNum(library,['expert_principles','principles_count'])??deepNum(raw,['expert_principles','principles_count']);
+  const layers=deepNum(progress,['core_learning_layers','learning_layers'])??16;
+  let captureVals=[],covered=0;
+  trades.forEach(t=>{const p=t.payload||{},mfe=Number(p.mfe_pct??t.mfe_pct),cap=Number(p.capture_ratio??t.capture_ratio);if(Number.isFinite(cap))captureVals.push(cap>1?cap/100:cap);else if(Number.isFinite(mfe)&&mfe>0){const en=Number(t.avg_entry_price||0),ex=Number(t.avg_exit_price||0),D=String(t.direction||'');if(en>0&&ex>0){const fav=D==='SHORT'?(en/ex-1):(ex/en-1);if(fav>0)captureVals.push(Math.max(0,Math.min(1,fav/(mfe/100))))}}if((p.mfe_pct??t.mfe_pct)!=null&&(p.mae_pct??t.mae_pct)!=null&&(p.exit_reason??t.exit_reason??t.status)!=null)covered++});
+  const capture=captureVals.length?captureVals.reduce((a,b)=>a+b,0)/captureVals.length:0;
+  const coverage=trades.length?covered/trades.length:0;
+  const knowledge=10*Math.min(1,Number(sources||0)/100)+10*Math.min(1,Number(rules||0)/100);
+  const experience=20*Math.min(1,Number(closed||0)/250);
+  const outcome=25*Math.max(0,Math.min(1,(wr-0.20)/0.45));
+  const captureScore=20*Math.max(0,Math.min(1,capture/0.70));
+  const telemetry=15*Math.max(0,Math.min(1,coverage));
+  const score=knowledge+experience+outcome+captureScore+telemetry;
+  return {score,confidence:closed>=150?'HIGH':closed>=50?'MEDIUM':'LOW',components:{knowledge_breadth:knowledge,evidence_maturity:experience,outcome_quality:outcome,execution_capture_quality:captureScore,learning_telemetry_coverage:telemetry},knowledge:{expert_principles:principles,core_learning_layers:layers,sources,rules},evidence:{clean_post_r2_closed_trades:closed,win_rate:wr,avg_capture_ratio:capture,telemetry_coverage:coverage},derived_fallback:true};
+}
+function normalizeIntelligence(raw,progress,library){
+  const root=intelligenceRoot(raw),c=root.components||root.component_scores||root.scores||{},k=root.knowledge||root.knowledge_base||{},e=root.evidence||root.experience||root.statistics||{};
+  const score=deepNum(root,['score','intelligence_score','overall_score','maturity_score','maturity_index','intelligence_index']);
+  if(score==null)return buildFallbackIntelligence(raw,progress,library);
+  return {
+    score:Number(score),
+    confidence:String(root.confidence||root.confidence_level||''),
+    components:{
+      knowledge_breadth:deepNum(c,['knowledge_breadth','knowledge_score'])??0,
+      evidence_maturity:deepNum(c,['evidence_maturity','experience_score','experience_maturity'])??0,
+      outcome_quality:deepNum(c,['outcome_quality','result_quality','performance_quality'])??0,
+      execution_capture_quality:deepNum(c,['execution_capture_quality','capture_quality','movement_capture'])??0,
+      learning_telemetry_coverage:deepNum(c,['learning_telemetry_coverage','telemetry_coverage','learning_quality'])??0
+    },
+    knowledge:{
+      expert_principles:deepNum(k,['expert_principles','principles_count'])??deepNum(library,['expert_principles','principles_count']),
+      core_learning_layers:deepNum(k,['core_learning_layers','learning_layers'])??deepNum(progress,['core_learning_layers','learning_layers']),
+      sources:deepNum(k,['sources','knowledge_sources','postgres_sources'])??deepNum(library,['sources','knowledge_sources','postgres_sources']),
+      rules:deepNum(k,['rules','knowledge_rules','postgres_rules'])??deepNum(library,['rules','knowledge_rules','postgres_rules'])
+    },
+    evidence:{
+      clean_post_r2_closed_trades:deepNum(e,['clean_post_r2_closed_trades','clean_closed_trades','closed_episodes','closed_trades'])??deepNum(progress,['clean_post_r2_closed_trades','closed_trades']),
+      win_rate:deepNum(e,['win_rate','clean_win_rate'])??deepNum(progress,['win_rate','clean_win_rate']),
+      avg_capture_ratio:deepNum(e,['avg_capture_ratio','average_capture_ratio','capture_ratio']),
+      telemetry_coverage:deepNum(e,['telemetry_coverage','learning_telemetry_coverage'])
+    },
+    derived_fallback:false
+  };
+}
 function renderIntelligence(){
   const i=st.intelligence||{},c=i.components||{},k=i.knowledge||{},e=i.evidence||{};
-  if(!i||i.score==null){$('intelligence').innerHTML='<div class="msg">Индекс ещё формируется: системе нужны чистые завершённые эпизоды и полная телеметрия.</div>';return}
-  const score=Number(i.score||0), conf={LOW:'низкая',MEDIUM:'средняя',HIGH:'высокая'}[String(i.confidence||'')]||'формируется';
+  if(i.score==null){$('intelligence').innerHTML='<div class="msg warn">Данные интеллекта временно не получены. Торговая система продолжает работать; повторная загрузка выполняется автоматически.</div>';return}
+  const score=Number(i.score||0), conf={LOW:'низкая',MEDIUM:'средняя',HIGH:'высокая'}[String(i.confidence||'').toUpperCase()]||'формируется';
   const comp=[
     ['Знания',Number(c.knowledge_breadth||0),20],
     ['Накопленный опыт',Number(c.evidence_maturity||0),20],
@@ -349,9 +423,12 @@ function renderIntelligence(){
     ['Захват движения',Number(c.execution_capture_quality||0),20],
     ['Качество обучения',Number(c.learning_telemetry_coverage||0),15]
   ];
-  const capture=e.avg_capture_ratio==null?'—':(100*Number(e.avg_capture_ratio)).toFixed(1)+'%';
-  const wr=e.win_rate==null?'—':(100*Number(e.win_rate)).toFixed(1)+'%';
-  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">Индекс зрелости системы</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · достоверность оценки: '+conf+'</div></div><div class="sub">Рост индекса требует не только новых знаний, но и подтверждённого опыта, лучшего результата и большего захвата рыночных движений.</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div><div class="intel-foot"><div class="intel-stat">Экспертные принципы<b>'+esc(k.expert_principles??'—')+'</b></div><div class="intel-stat">Слоёв обучения<b>'+esc(k.core_learning_layers??'—')+'</b></div><div class="intel-stat">Чистых завершённых сделок<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate чистой выборки<b>'+wr+'</b></div><div class="intel-stat">Средний захват движения<b>'+capture+'</b></div></div></div></div>';
+  let wr=e.win_rate==null?null:Number(e.win_rate);if(wr!=null&&wr>1)wr/=100;
+  let capture=e.avg_capture_ratio==null?null:Number(e.avg_capture_ratio);if(capture!=null&&capture>1)capture/=100;
+  const captureText=capture==null?'—':(100*capture).toFixed(1)+'%';
+  const wrText=wr==null?'—':(100*wr).toFixed(1)+'%';
+  const origin=i.derived_fallback?'расчёт по текущей телеметрии':'индекс ядра VERITAS';
+  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">Индекс зрелости системы</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · '+origin+' · достоверность: '+conf+'</div></div><div class="sub">Рост индекса отражает расширение знаний, накопление завершённых эпизодов, качество решений, захват движения и полноту обратной связи.</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div><div class="intel-foot"><div class="intel-stat">Источники знаний<b>'+esc(k.sources??'—')+'</b></div><div class="intel-stat">Правила / принципы<b>'+esc(k.rules??k.expert_principles??'—')+'</b></div><div class="intel-stat">Завершённых эпизодов<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate выборки<b>'+wrText+'</b></div><div class="intel-stat">Средний захват движения<b>'+captureText+'</b></div></div></div></div>';
 }
 
 function renderInsights(){
@@ -376,7 +453,7 @@ function applyBootstrap(d){
   st.learning=d.learning_summary||{};
   st.quality=d.data_quality_summary||{};
   st.horizon=d.horizon_summary||{};
-  if(d.intelligence_index)st.intelligence=d.intelligence_index;
+  if(d.intelligence_index)st.intelligence=normalizeIntelligence(d.intelligence_index,null,null);
   renderHealth();renderSignals();renderPortfolios();renderTrades();renderIntelligence();renderInsights();
 }
 
@@ -389,8 +466,13 @@ async function loadMacro(){
   if(d){st.macro=d;renderInsights()}
 }
 async function loadIntelligence(){
-  const d=await get('intelligence','/api/v1/paper-portfolios',8000);
-  if(d&&d.intelligence_index){st.intelligence=d.intelligence_index;renderIntelligence()}
+  const [scorecard,progress,library]=await Promise.all([
+    get('intelligence-scorecard','/api/v1/intelligence-scorecard',9000),
+    get('learning-progress','/api/v1/learning-progress',9000),
+    get('library-summary','/api/v1/library-summary',9000)
+  ]);
+  st.intelligence=normalizeIntelligence(scorecard,progress,library);
+  renderIntelligence();
 }
 function start(){loadBootstrap();setTimeout(loadIntelligence,500);setTimeout(loadMacro,1000);setInterval(loadBootstrap,30000);setInterval(loadIntelligence,60000);setInterval(loadMacro,120000)}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
