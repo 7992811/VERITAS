@@ -8933,6 +8933,8 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
 
     baseline_key='daily_intelligence_msk_'+day
     baseline_created=False
+    baseline_proxy_backfilled=False
+
     with pg_connect() as c:
         totals=c.execute("""SELECT
           (SELECT COUNT(*) FROM knowledge_sources)::int AS sources,
@@ -8941,6 +8943,7 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
           (SELECT COUNT(*) FROM knowledge_sources WHERE imported_at>=%s AND imported_at<%s)::int AS sources_today,
           (SELECT COUNT(*) FROM knowledge_rules WHERE created_at>=%s AND created_at<%s)::int AS rules_today""",
           (start_utc,end_utc,start_utc,end_utc)).fetchone() or {}
+
         try:
             ep=c.execute("""SELECT
               COUNT(*) FILTER (WHERE learning_eligible=TRUE)::int AS total_eligible,
@@ -8948,6 +8951,7 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
               FROM v90_learning_episodes""",(start_utc,end_utc)).fetchone() or {}
         except Exception:
             ep={'total_eligible':0,'today_eligible':0}
+
         try:
             out=c.execute("""SELECT COUNT(DISTINCT entity_key)::int AS n
                              FROM ledger_events
@@ -8956,13 +8960,51 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
         except Exception:
             out={'n':0}
 
+        # A continuously measurable maturity proxy mirrors the dashboard's
+        # 0-100 maturity logic and is used only while the stricter learning index
+        # is still BUILDING.
+        try:
+            ts=c.execute("""SELECT
+                 COUNT(*) FILTER (WHERE status='CLOSED')::int AS closed,
+                 COUNT(*) FILTER (WHERE status='CLOSED' AND profitable=TRUE)::int AS wins
+                 FROM paper_trades""").fetchone() or {}
+            cap=c.execute("""SELECT
+                 AVG(CASE
+                   WHEN status='CLOSED'
+                    AND payload ? 'mfe_pct' AND payload ? 'price_return_pct'
+                    AND NULLIF(payload->>'mfe_pct','')::double precision>0
+                   THEN GREATEST(0.0,LEAST(1.0,
+                        NULLIF(payload->>'price_return_pct','')::double precision/
+                        NULLIF(payload->>'mfe_pct','')::double precision))
+                 END) AS avg_capture,
+                 AVG(CASE WHEN status='CLOSED' AND payload ? 'mfe_pct' AND payload ? 'mae_pct'
+                          THEN 1.0 ELSE 0.0 END) AS telemetry_coverage
+                 FROM paper_trades""").fetchone() or {}
+        except Exception:
+            ts={'closed':0,'wins':0}; cap={'avg_capture':0.0,'telemetry_coverage':0.0}
+
+        sources=int(totals.get('sources') or 0)
+        rules=int(totals.get('rules') or 0)
+        closed=int(ts.get('closed') or 0)
+        wins=int(ts.get('wins') or 0)
+        wr=(wins/closed) if closed else 0.0
+        avg_capture=float(cap.get('avg_capture') or 0.0)
+        coverage=float(cap.get('telemetry_coverage') or 0.0)
+        knowledge=10.0*min(1.0,sources/100.0)+10.0*min(1.0,rules/100.0)
+        experience=20.0*min(1.0,closed/250.0)
+        outcome=25.0*max(0.0,min(1.0,(wr-0.20)/0.45))
+        capture_score=20.0*max(0.0,min(1.0,avg_capture/0.70))
+        telemetry=15.0*max(0.0,min(1.0,coverage))
+        maturity_proxy=round(knowledge+experience+outcome+capture_score+telemetry,2)
+
         base=c.execute("SELECT created_at,payload FROM learning_baselines WHERE baseline_key=%s",(baseline_key,)).fetchone()
         if not base:
             payload={
               'date_msk':day,
               'learning_index':current_index,
-              'sources':int(totals.get('sources') or 0),
-              'rules':int(totals.get('rules') or 0),
+              'maturity_proxy':maturity_proxy,
+              'sources':sources,
+              'rules':rules,
               'eligible_trade_episodes':int(ep.get('total_eligible') or 0),
               'captured_at':now(),
               'index_version':lp.get('index_version'),
@@ -8974,20 +9016,43 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
             base={'created_at':datetime.now(timezone.utc),'payload':payload}
             baseline_created=True
 
-    bp=base.get('payload') if isinstance(base,dict) else base['payload']
-    if not isinstance(bp,dict):
-        try: bp=json.loads(bp or '{}')
-        except Exception: bp={}
+        bp=base.get('payload') if isinstance(base,dict) else base['payload']
+        if not isinstance(bp,dict):
+            try: bp=json.loads(bp or '{}')
+            except Exception: bp={}
+
+        # R34 was first installed during the current day. If today's already-created
+        # baseline predates the maturity proxy field, seed the missing proxy once.
+        if bp.get('maturity_proxy') is None:
+            bp['maturity_proxy']=maturity_proxy
+            bp['maturity_proxy_captured_at']=now()
+            c.execute("UPDATE learning_baselines SET payload=%s::jsonb WHERE baseline_key=%s",
+                      (json.dumps(bp,ensure_ascii=False,default=str),baseline_key))
+            baseline_proxy_backfilled=True
+
     base_index=bp.get('learning_index')
     try: base_index=float(base_index) if base_index is not None else None
     except Exception: base_index=None
-    delta=None if current_index is None or base_index is None else round(current_index-base_index,2)
+    base_maturity=bp.get('maturity_proxy')
+    try: base_maturity=float(base_maturity) if base_maturity is not None else None
+    except Exception: base_maturity=None
 
-    if delta is None:
+    learning_delta=None if current_index is None or base_index is None else round(current_index-base_index,2)
+    maturity_delta=None if base_maturity is None else round(maturity_proxy-base_maturity,2)
+    if learning_delta is not None:
+        intelligence_delta=learning_delta
+        delta_basis='CORE_LEARNING_INDEX'
+        current_metric=current_index
+    else:
+        intelligence_delta=maturity_delta
+        delta_basis='MATURITY_PROXY'
+        current_metric=maturity_proxy
+
+    if intelligence_delta is None:
         trend='BUILDING'
-    elif delta>0.05:
+    elif intelligence_delta>0.05:
         trend='UP'
-    elif delta<-0.05:
+    elif intelligence_delta<-0.05:
         trend='DOWN'
     else:
         trend='FLAT'
@@ -8999,7 +9064,13 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
       'baseline_at':str(base.get('created_at') if isinstance(base,dict) else base['created_at']),
       'baseline_learning_index':base_index,
       'current_learning_index':current_index,
-      'learning_index_delta_today':delta,
+      'learning_index_delta_today':learning_delta,
+      'baseline_maturity_index':base_maturity,
+      'current_maturity_index':maturity_proxy,
+      'maturity_index_delta_today':maturity_delta,
+      'intelligence_delta_today':intelligence_delta,
+      'current_intelligence_metric':current_metric,
+      'delta_basis':delta_basis,
       'trend':trend,
       'learning_status':lp.get('status'),
       'learning_confidence':lp.get('confidence'),
@@ -9007,19 +9078,24 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
       'decision_outcomes_today':int(out.get('n') or 0),
       'knowledge_sources_added_today':int(today_knowledge.get('sources_today') or 0),
       'knowledge_rules_added_today':int(today_knowledge.get('rules_today') or 0),
-      'current_sources':int(totals.get('sources') or 0),
-      'current_rules':int(totals.get('rules') or 0),
+      'current_sources':sources,
+      'current_rules':rules,
+      'current_closed_trades':closed,
+      'current_win_rate':wr,
+      'current_avg_capture_ratio':avg_capture,
+      'current_telemetry_coverage':coverage,
       'baseline_created_now':baseline_created,
-      'definition':'Daily intelligence growth = change in matched realized learning index from the first full-cycle checkpoint of the Moscow day. New rules/sources are reported separately and do not by themselves raise the index.'
+      'baseline_proxy_backfilled_now':baseline_proxy_backfilled,
+      'definition':'Daily intelligence growth uses the matched realized learning index when measurable; while it is BUILDING, it uses the 0-100 maturity proxy based on knowledge, completed experience, realized win rate, movement capture and telemetry coverage. Knowledge additions are shown separately.'
     }
     _v90_daily_intelligence_cache.update({'at':now_ts,'value':value})
-    if baseline_created:
+    if baseline_created or baseline_proxy_backfilled:
         emit('v90_daily_intelligence_baseline_created',
-             date_msk=day,learning_index=current_index,
-             sources=value['current_sources'],rules=value['current_rules'],
-             eligible_trade_episodes=int(ep.get('total_eligible') or 0))
+             date_msk=day,learning_index=current_index,maturity_index=maturity_proxy,
+             delta_basis=delta_basis,sources=sources,rules=rules,
+             eligible_trade_episodes=int(ep.get('total_eligible') or 0),
+             proxy_backfilled=baseline_proxy_backfilled)
     return dict(value)
-
 
 def intelligence_scorecard():
     lp=learning_progress(); lm=large_move_capture_board(); tl=trade_lifecycle_board(60)
