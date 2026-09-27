@@ -6945,3 +6945,488 @@ def report(pg_connect):
     return _jsonable(d)
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),21)
+
+
+# VERITAS V90 EPISODE ATTRIBUTION LEARNING R29
+# Closed-loop learning from completed independent episodes, not repeated snapshots.
+#
+# R29 explicitly separates:
+# - direction/entry error,
+# - expected-move overforecast,
+# - cost drag,
+# - exit/capture error,
+# - stop-structure error,
+# - good execution.
+#
+# Only entry/direction, overforecast and cost-drag evidence can reduce future
+# entry sizing. Exit/capture and stop errors DO NOT punish the directional model.
+# Positive evidence can modestly reinforce size after a minimum sample.
+_v90r29_base_admission=_signal_first_admission
+_v90r29_base_close_or_reduce=_close_or_reduce
+_v90r29_base_step_all=step_all
+_v90r29_base_report=report
+
+_v90r29_cache={'at':0.0,'profiles':{},'summary':{}}
+
+
+def _v90r29_num(v,default=None):
+    try:
+        if v is None:
+            return default
+        x=float(v)
+        return x if math.isfinite(x) else default
+    except Exception:
+        return default
+
+
+def _v90r29_ensure(c):
+    c.execute("""
+      CREATE TABLE IF NOT EXISTS v90_learning_episodes(
+        trade_id TEXT PRIMARY KEY,
+        closed_at TIMESTAMPTZ NOT NULL,
+        portfolio_name TEXT NOT NULL,
+        asset TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        horizon TEXT,
+        setup_family TEXT,
+        regime TEXT,
+        signal_tier TEXT,
+        setup_grade TEXT,
+        expected_move_pct DOUBLE PRECISION,
+        expected_to_stop_ratio DOUBLE PRECISION,
+        entry_probability DOUBLE PRECISION,
+        opening_fraction DOUBLE PRECISION,
+        max_fraction DOUBLE PRECISION,
+        price_return_pct DOUBLE PRECISION,
+        mfe_pct DOUBLE PRECISION,
+        mae_pct DOUBLE PRECISION,
+        giveback_pct DOUBLE PRECISION,
+        capture_ratio DOUBLE PRECISION,
+        movement_realization_ratio DOUBLE PRECISION,
+        gross_pnl_rub DOUBLE PRECISION,
+        fees_rub DOUBLE PRECISION,
+        funding_rub DOUBLE PRECISION,
+        net_pnl_rub DOUBLE PRECISION,
+        cost_to_expected_edge DOUBLE PRECISION,
+        primary_attribution TEXT NOT NULL,
+        attributions JSONB NOT NULL,
+        learning_action TEXT NOT NULL,
+        learning_eligible BOOLEAN NOT NULL DEFAULT TRUE,
+        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    """)
+    c.execute("""CREATE INDEX IF NOT EXISTS v90_learning_episodes_profile_idx
+                 ON v90_learning_episodes(asset,direction,horizon,setup_family,regime,closed_at DESC)""")
+
+
+def _v90r29_episode_from_trade(t):
+    t=dict(t or {})
+    p=_v90j_json(t.get('payload'))
+    entry=_v90r29_num(t.get('avg_entry_price'))
+    exitp=_v90r29_num(t.get('avg_exit_price'))
+    direction=str(t.get('direction') or '')
+    sign=1.0 if direction=='LONG' else -1.0
+    price_ret=_v90r29_num(p.get('price_return_pct'))
+    if price_ret is None and entry and exitp:
+        price_ret=100.0*sign*(exitp/entry-1.0)
+
+    exp=_v90r29_num(p.get('expected_move_pct'))
+    exp_pct=(100.0*abs(exp)) if exp is not None else None
+    mfe=max(0.0,_v90r29_num(p.get('mfe_pct'),0.0))
+    mae=min(0.0,_v90r29_num(p.get('mae_pct'),0.0))
+    give=_v90r29_num(p.get('giveback_pct'))
+    if give is None and price_ret is not None:
+        give=max(0.0,mfe-max(0.0,price_ret))
+
+    capture=None
+    if mfe>1e-9 and price_ret is not None:
+        capture=max(0.0,min(1.5,max(0.0,price_ret)/mfe))
+    realization=(mfe/exp_pct) if exp_pct and exp_pct>1e-9 else None
+
+    gross=_v90r29_num(t.get('gross_pnl_rub'),0.0)
+    fees=abs(_v90r29_num(t.get('fees_rub'),0.0))
+    funding=abs(_v90r29_num(t.get('funding_rub'),0.0))
+    net=_v90r29_num(t.get('net_pnl_rub'),0.0)
+
+    opening=_v90r29_num(p.get('opening_fraction'))
+    if opening is None:
+        opening=_v90r29_num(t.get('max_fraction'))
+    max_fraction=_v90r29_num(t.get('max_fraction'))
+    entry_nav=_v90r29_num(p.get('entry_nav_rub'))
+    expected_edge=None
+    if entry_nav and opening and exp is not None:
+        expected_edge=max(1.0,abs(entry_nav*opening*exp))
+    cost_to_edge=((fees+funding)/expected_edge) if expected_edge else None
+
+    exit_reason=str(p.get('exit_reason') or p.get('close_reason') or '')
+    integrity=str(p.get('data_integrity_status') or 'OK')
+    recovered=bool(p.get('recovered'))
+    completeness=_v90r29_num(p.get('telemetry_completeness'),0.0)
+    learning_eligible=bool(
+        not recovered
+        and integrity in ('','OK')
+        and mfe is not None and mae is not None
+        and str(t.get('opened_at') or '')>=str(V90_Q2_STARTED_AT)
+    )
+
+    issues=[]
+    entry_error=bool(mfe<0.10 and mae<=-0.15)
+    cost_drag=bool((gross>0 and net<=0) or (cost_to_edge is not None and cost_to_edge>=0.35))
+    exit_capture=bool(mfe>=0.20 and ((capture is not None and capture<0.45) or (give is not None and give>=0.25)))
+    overforecast=bool(exp_pct is not None and exp_pct>=0.40 and realization is not None and realization<0.45)
+    stop_error=bool('STOP' in exit_reason.upper() and mfe>=0.20)
+    good=bool(net>0 and (capture is None or capture>=0.55)
+              and (cost_to_edge is None or cost_to_edge<0.30))
+
+    if entry_error: issues.append('ENTRY_DIRECTION_ERROR')
+    if cost_drag: issues.append('COST_DRAG')
+    if exit_capture: issues.append('EXIT_CAPTURE_ERROR')
+    if overforecast: issues.append('EDGE_OVERFORECAST')
+    if stop_error: issues.append('STOP_STRUCTURE_ERROR')
+    if good: issues.append('GOOD_EXECUTION')
+    if not issues: issues=['MIXED_EXECUTION']
+
+    # Priority matters: entry failure and cost drag affect admission; exit/stop
+    # errors are management lessons and do not punish the directional model.
+    if entry_error:
+        primary='ENTRY_DIRECTION_ERROR'
+        action='REDUCE_ENTRY_SIZE_FOR_CONTEXT'
+    elif cost_drag:
+        primary='COST_DRAG'
+        action='DEMAND_MORE_EDGE_OR_REDUCE_TURNOVER'
+    elif exit_capture:
+        primary='EXIT_CAPTURE_ERROR'
+        action='IMPROVE_PROFIT_PROTECTION_NOT_DIRECTION'
+    elif overforecast:
+        primary='EDGE_OVERFORECAST'
+        action='CALIBRATE_EXPECTED_MOVE_DOWN'
+    elif stop_error:
+        primary='STOP_STRUCTURE_ERROR'
+        action='REVIEW_STRUCTURAL_STOP_NOT_DIRECTION'
+    elif good:
+        primary='GOOD_EXECUTION'
+        action='MODEST_REINFORCEMENT_AFTER_SAMPLE'
+    else:
+        primary='MIXED_EXECUTION'
+        action='OBSERVE_MORE_EPISODES'
+
+    return {
+      'trade_id':str(t.get('trade_id') or ''),
+      'closed_at':t.get('closed_at') or datetime.now(timezone.utc),
+      'portfolio_name':str(t.get('portfolio_name') or ''),
+      'asset':str(t.get('asset') or ''),
+      'direction':direction,
+      'horizon':str(t.get('horizon') or p.get('execution_timeframe') or ''),
+      'setup_family':str(p.get('setup_family') or t.get('setup') or 'UNKNOWN'),
+      'regime':str(p.get('regime') or p.get('entry_regime') or 'UNKNOWN'),
+      'signal_tier':str(p.get('entry_signal_tier') or ''),
+      'setup_grade':str(p.get('setup_grade') or ''),
+      'expected_move_pct':exp,
+      'expected_to_stop_ratio':_v90r29_num(p.get('expected_to_stop_ratio')),
+      'entry_probability':_v90r29_num(p.get('pwin') if p.get('pwin') is not None else p.get('entry_probability')),
+      'opening_fraction':opening,
+      'max_fraction':max_fraction,
+      'price_return_pct':price_ret,
+      'mfe_pct':mfe,'mae_pct':mae,'giveback_pct':give,
+      'capture_ratio':capture,'movement_realization_ratio':realization,
+      'gross_pnl_rub':gross,'fees_rub':fees,'funding_rub':funding,'net_pnl_rub':net,
+      'cost_to_expected_edge':cost_to_edge,
+      'primary_attribution':primary,'attributions':issues,
+      'learning_action':action,'learning_eligible':learning_eligible,
+      'payload':{
+        'exit_reason':exit_reason,
+        'telemetry_completeness':completeness,
+        'learning_label':p.get('learning_label'),
+        'learning_conclusion':p.get('learning_conclusion'),
+        'model_version':p.get('model_version'),
+      }
+    }
+
+
+def _v90r29_upsert_episode(c,t):
+    e=_v90r29_episode_from_trade(t)
+    if not e.get('trade_id'):
+        return False
+    _v90r29_ensure(c)
+    c.execute("""
+      INSERT INTO v90_learning_episodes(
+        trade_id,closed_at,portfolio_name,asset,direction,horizon,setup_family,regime,
+        signal_tier,setup_grade,expected_move_pct,expected_to_stop_ratio,entry_probability,
+        opening_fraction,max_fraction,price_return_pct,mfe_pct,mae_pct,giveback_pct,
+        capture_ratio,movement_realization_ratio,gross_pnl_rub,fees_rub,funding_rub,
+        net_pnl_rub,cost_to_expected_edge,primary_attribution,attributions,learning_action,
+        learning_eligible,payload
+      ) VALUES(
+        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+        %s,%s,%s,%s::jsonb,%s,%s,%s::jsonb
+      )
+      ON CONFLICT(trade_id) DO UPDATE SET
+        closed_at=EXCLUDED.closed_at,
+        price_return_pct=EXCLUDED.price_return_pct,
+        mfe_pct=EXCLUDED.mfe_pct,mae_pct=EXCLUDED.mae_pct,
+        giveback_pct=EXCLUDED.giveback_pct,capture_ratio=EXCLUDED.capture_ratio,
+        movement_realization_ratio=EXCLUDED.movement_realization_ratio,
+        gross_pnl_rub=EXCLUDED.gross_pnl_rub,fees_rub=EXCLUDED.fees_rub,
+        funding_rub=EXCLUDED.funding_rub,net_pnl_rub=EXCLUDED.net_pnl_rub,
+        cost_to_expected_edge=EXCLUDED.cost_to_expected_edge,
+        primary_attribution=EXCLUDED.primary_attribution,
+        attributions=EXCLUDED.attributions,learning_action=EXCLUDED.learning_action,
+        learning_eligible=EXCLUDED.learning_eligible,payload=EXCLUDED.payload
+    """,(
+      e['trade_id'],e['closed_at'],e['portfolio_name'],e['asset'],e['direction'],e['horizon'],
+      e['setup_family'],e['regime'],e['signal_tier'],e['setup_grade'],e['expected_move_pct'],
+      e['expected_to_stop_ratio'],e['entry_probability'],e['opening_fraction'],e['max_fraction'],
+      e['price_return_pct'],e['mfe_pct'],e['mae_pct'],e['giveback_pct'],e['capture_ratio'],
+      e['movement_realization_ratio'],e['gross_pnl_rub'],e['fees_rub'],e['funding_rub'],
+      e['net_pnl_rub'],e['cost_to_expected_edge'],e['primary_attribution'],
+      json.dumps(e['attributions'],ensure_ascii=False),e['learning_action'],
+      bool(e['learning_eligible']),json.dumps(e['payload'],ensure_ascii=False,default=str)
+    ))
+    return True
+
+
+def _v90r29_backfill(c,limit=1200):
+    _v90r29_ensure(c)
+    rows=c.execute("""
+      SELECT t.*
+      FROM paper_trades t
+      LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
+      WHERE e.trade_id IS NULL
+        AND (t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED'))
+        AND t.opened_at >= %s::timestamptz
+      ORDER BY COALESCE(t.closed_at,t.opened_at) DESC
+      LIMIT %s
+    """,(V90_Q2_STARTED_AT,int(limit))).fetchall()
+    n=0
+    for r in rows or []:
+        try:
+            n+=1 if _v90r29_upsert_episode(c,dict(r)) else 0
+        except Exception:
+            continue
+    return n
+
+
+def _v90r29_profile_keys(row):
+    row=row or {}
+    plan=row.get('trade_plan') or {}
+    inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    d=str(row.get('research_decision') or 'NO_TRADE')
+    h=str(row.get('horizon') or '')
+    setup=str(plan.get('setup') or bq.get('state') or inst.get('investor_signal') or 'UNKNOWN')
+    regime=str(row.get('regime') or 'UNKNOWN')
+    asset=str(row.get('asset') or '')
+    return [
+      ('FULL',asset,d,h,setup,regime),
+      ('SETUP',d,h,setup),
+      ('HORIZON',d,h),
+    ]
+
+
+def _v90r29_build_profiles(rows):
+    buckets={}
+    def add(key,r):
+        z=buckets.setdefault(key,{
+          'n':0,'wins':0,'net':0.0,'capture':[],'realization':[],
+          'entry_error':0,'cost_drag':0,'exit_capture':0,'overforecast':0,
+          'stop_error':0,'good':0,'last_closed_at':None
+        })
+        z['n']+=1
+        z['wins']+=1 if float(r.get('net_pnl_rub') or 0.0)>0 else 0
+        z['net']+=float(r.get('net_pnl_rub') or 0.0)
+        if r.get('capture_ratio') is not None: z['capture'].append(float(r['capture_ratio']))
+        if r.get('movement_realization_ratio') is not None: z['realization'].append(float(r['movement_realization_ratio']))
+        attrs=set(r.get('attributions') or [])
+        z['entry_error']+=1 if 'ENTRY_DIRECTION_ERROR' in attrs else 0
+        z['cost_drag']+=1 if 'COST_DRAG' in attrs else 0
+        z['exit_capture']+=1 if 'EXIT_CAPTURE_ERROR' in attrs else 0
+        z['overforecast']+=1 if 'EDGE_OVERFORECAST' in attrs else 0
+        z['stop_error']+=1 if 'STOP_STRUCTURE_ERROR' in attrs else 0
+        z['good']+=1 if 'GOOD_EXECUTION' in attrs else 0
+        cl=r.get('closed_at')
+        if z['last_closed_at'] is None or str(cl)>str(z['last_closed_at']):
+            z['last_closed_at']=cl
+
+    for r0 in rows or []:
+        r=dict(r0)
+        attrs=r.get('attributions')
+        if isinstance(attrs,str):
+            try: attrs=json.loads(attrs)
+            except Exception: attrs=[]
+        r['attributions']=attrs or []
+        asset=str(r.get('asset') or '')
+        d=str(r.get('direction') or '')
+        h=str(r.get('horizon') or '')
+        setup=str(r.get('setup_family') or 'UNKNOWN')
+        regime=str(r.get('regime') or 'UNKNOWN')
+        add(('FULL',asset,d,h,setup,regime),r)
+        add(('SETUP',d,h,setup),r)
+        add(('HORIZON',d,h),r)
+
+    out={}
+    for key,z in buckets.items():
+        n=max(1,z['n'])
+        avg=lambda a:(sum(a)/len(a) if a else None)
+        bayes=(z['wins']+2.0)/(n+4.0)  # 50% prior with four pseudo-observations
+        profile={
+          'n':z['n'],'wins':z['wins'],'bayesian_win_rate':bayes,
+          'avg_net_pnl_rub':z['net']/n,
+          'avg_capture_ratio':avg(z['capture']),
+          'avg_movement_realization_ratio':avg(z['realization']),
+          'entry_error_rate':z['entry_error']/n,
+          'cost_drag_rate':z['cost_drag']/n,
+          'exit_capture_error_rate':z['exit_capture']/n,
+          'overforecast_rate':z['overforecast']/n,
+          'stop_error_rate':z['stop_error']/n,
+          'good_execution_rate':z['good']/n,
+          'last_closed_at':z['last_closed_at'],
+        }
+        mult=1.0
+        if n>=8:
+            if profile['entry_error_rate']>=0.35: mult*=0.75
+            if profile['overforecast_rate']>=0.45: mult*=0.80
+            if profile['cost_drag_rate']>=0.45: mult*=0.80
+            if (bayes>=0.58 and profile['avg_net_pnl_rub']>0
+                    and profile['good_execution_rate']>=0.40):
+                mult*=1.10
+        profile['entry_size_multiplier']=max(0.55,min(1.15,mult))
+        profile['management_bias']=(
+          'PROTECT_PROFIT' if n>=8 and profile['exit_capture_error_rate']>=0.40
+          else 'REVIEW_STOP' if n>=8 and profile['stop_error_rate']>=0.35
+          else 'NORMAL'
+        )
+        out[key]=profile
+    return out
+
+
+def _v90r29_refresh(pg_connect,force=False):
+    now=time.time()
+    if not force and now-float(_v90r29_cache.get('at') or 0.0)<55.0:
+        return _v90r29_cache
+    with pg_connect() as c:
+        _v90r29_ensure(c)
+        backfilled=_v90r29_backfill(c,1200)
+        rows=c.execute("""
+          SELECT * FROM v90_learning_episodes
+          WHERE learning_eligible=TRUE
+            AND closed_at >= %s::timestamptz
+          ORDER BY closed_at DESC
+          LIMIT 1500
+        """,(V90_Q2_STARTED_AT,)).fetchall()
+        counts=c.execute("""
+          SELECT primary_attribution,COUNT(*) AS n
+          FROM v90_learning_episodes
+          WHERE learning_eligible=TRUE
+            AND closed_at >= %s::timestamptz
+          GROUP BY primary_attribution
+          ORDER BY n DESC
+        """,(V90_Q2_STARTED_AT,)).fetchall()
+    profiles=_v90r29_build_profiles([dict(r) for r in rows or []])
+    summary={
+      'eligible_episodes':len(rows or []),
+      'backfilled_on_refresh':backfilled,
+      'attribution_counts':{str(r['primary_attribution']):int(r['n']) for r in counts or []},
+      'profile_count':len(profiles),
+      'learning_mode':'COMPLETED_EPISODES_ONLY',
+      'feedback':'BOUNDED_SIZE_AND_EXPECTED_MOVE_CALIBRATION',
+    }
+    _v90r29_cache.update({'at':now,'profiles':profiles,'summary':summary})
+    return _v90r29_cache
+
+
+def _v90r29_profile_for_row(row):
+    profiles=_v90r29_cache.get('profiles') or {}
+    for key in _v90r29_profile_keys(row):
+        p=profiles.get(key)
+        if p and int(p.get('n') or 0)>=8:
+            return dict(p),key
+    return None,None
+
+
+def _signal_first_admission(row,policy,drawdown):
+    base=dict(_v90r29_base_admission(row,policy,drawdown) or {})
+    if not base.get('open'):
+        return base
+
+    profile,key=_v90r29_profile_for_row(row)
+    if not profile:
+        base['r29_learning']='INSUFFICIENT_EPISODES'
+        return base
+
+    mode=str((policy or {}).get('mode') or 'CORE')
+    mult=float(profile.get('entry_size_multiplier') or 1.0)
+    # Aggressive/Impulse may use positive learning a bit more; Core stays restrained.
+    if mult>1.0:
+        mult=min(mult,1.15 if mode in ('AGGRESSIVE','IMPULSE_ONLY') else 1.08)
+    else:
+        mult=max(mult,0.55 if mode in ('AGGRESSIVE','IMPULSE_ONLY') else 0.65)
+
+    before=float(base.get('fraction') or 0.0)
+    after=before*mult
+    after=_clip(_round_step(after),0,float((policy or {}).get('max_fraction') or 5.0))
+
+    # Learning never creates a trade that current rules rejected; it only sizes
+    # an already-admitted trade.
+    base['fraction']=after
+    base['open']=bool(after>0)
+    base['reason']=str(base.get('reason') or '')+'|R29_EPISODE_FEEDBACK'
+    base['r29_learning_profile']={
+      **profile,'profile_key':list(key),'applied_multiplier':mult,
+      'fraction_before':before,'fraction_after':after,
+    }
+    if isinstance(row,dict):
+        row['_r29_learning_profile']=base['r29_learning_profile']
+    return base
+
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    tid=(z or {}).get('active_trade_id')
+    result=_v90r29_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
+    if not tid:
+        return result
+    try:
+        tr=c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",(tid,)).fetchone()
+        if tr and str(tr.get('status') or '') in ('CLOSED','CLOSE','EXITED'):
+            if _v90r29_upsert_episode(c,dict(tr)):
+                _v90r29_cache['at']=0.0
+                ep=_v90r29_episode_from_trade(dict(tr))
+                print(json.dumps({
+                  'event':'V90_R29_LEARNING_EPISODE',
+                  'trade_id':tid,'portfolio':name,'asset':ep.get('asset'),
+                  'primary_attribution':ep.get('primary_attribution'),
+                  'attributions':ep.get('attributions'),
+                  'learning_action':ep.get('learning_action'),
+                  'capture_ratio':ep.get('capture_ratio'),
+                  'movement_realization_ratio':ep.get('movement_realization_ratio'),
+                  'cost_to_expected_edge':ep.get('cost_to_expected_edge'),
+                  'learning_eligible':ep.get('learning_eligible'),
+                },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    except Exception as e:
+        print(json.dumps({'event':'V90_R29_EPISODE_ERROR','error':str(e)[:180]},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+    return result
+
+
+def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
+    try:
+        _v90r29_refresh(pg_connect)
+    except Exception as e:
+        print(json.dumps({'event':'V90_R29_REFRESH_ERROR','error':str(e)[:180]},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+    return _v90r29_base_step_all(
+        summary,pg_connect,model_version,observed_at,commission_rate,emit
+    )
+
+
+def report(pg_connect):
+    d=dict(_v90r29_base_report(pg_connect) or {})
+    try:
+        learn=_v90r29_refresh(pg_connect)
+        d['episode_learning_r29']=learn.get('summary') or {}
+    except Exception as e:
+        d['episode_learning_r29']={'status':'UNAVAILABLE','error':str(e)[:180]}
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),22)
