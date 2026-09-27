@@ -6860,3 +6860,88 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),20)
+
+
+# VERITAS V90 OPEN POSITION LEARNING VIEW R25
+# Adds compact management + learning telemetry for the live UI.
+_v90r25_base_report=report
+
+def _v90r25_num(v):
+    try:
+        x=float(v)
+        return x if math.isfinite(x) else None
+    except Exception:
+        return None
+
+def _v90r25_first(payload,*keys):
+    for k in keys:
+        v=(payload or {}).get(k)
+        if v not in (None,''):
+            return v
+    return None
+
+def report(pg_connect):
+    d=dict(_v90r25_base_report(pg_connect) or {})
+    limits={name:float((POLICIES.get(name) or {}).get('max_fraction') or 2.0)
+            for name in POLICIES}
+    for p in d.get('portfolios') or []:
+        name=str(p.get('name') or '')
+        max_fraction=float(limits.get(name,2.0))
+        p['max_position_fraction']=max_fraction
+        for z in p.get('positions') or []:
+            payload=_v90j_json(z.get('payload'))
+            cur_fraction=_v90r25_num(z.get('target_fraction')) or 0.0
+            entry=_v90r25_num(z.get('avg_entry_price')) or 0.0
+            px=_v90r25_num(z.get('last_price')) or 0.0
+            direction=str(z.get('direction') or '')
+            sign=1.0 if direction=='LONG' else -1.0
+            current_ret=(100.0*sign*(px/entry-1.0)) if entry>0 and px>0 else None
+            mfe=max(0.0,_v90r25_num(payload.get('mfe_pct')) or 0.0)
+            mae=min(0.0,_v90r25_num(payload.get('mae_pct')) or 0.0)
+            positive_now=max(0.0,current_ret or 0.0)
+            capture=(positive_now/mfe) if mfe>1e-9 else None
+            giveback=max(0.0,mfe-positive_now) if mfe>0 else 0.0
+
+            z['max_position_fraction']=max_fraction
+            z['position_utilization_pct']=(100.0*cur_fraction/max_fraction) if max_fraction>0 else None
+            z['execution_timeframe']=_v90r25_first(
+                payload,'execution_timeframe','last_signal_horizon'
+            )
+            z['signal_probability']=_v90r25_first(
+                payload,'pwin','entry_probability','last_add_pwin','model_quality_score'
+            )
+            z['probability_source']=_v90r25_first(
+                payload,'pwin_source','probability_source'
+            )
+            z['signal_tier']=_v90r25_first(
+                payload,'entry_signal_tier','signal_tier'
+            )
+            z['setup_grade']=payload.get('setup_grade')
+            z['setup_grade_score']=payload.get('setup_grade_score')
+            z['entry_quality']=payload.get('entry_quality')
+            z['decision_stage']=payload.get('decision_stage')
+            z['expected_move_pct']=payload.get('expected_move_pct')
+            z['expected_to_stop_ratio']=payload.get('expected_to_stop_ratio')
+            z['mfe_pct']=mfe
+            z['mae_pct']=mae
+            z['live_capture_ratio']=capture
+            z['live_giveback_pct']=giveback
+            z['trailing_stage']=payload.get('trailing_stage')
+            z['profit_protection_active']=bool(payload.get('profit_protection_active'))
+            z['trailing_stop']=payload.get('trailing_stop')
+            z['take_price']=_v90r25_first(
+                payload,'take_price','target_price','last_target_price','tp_price'
+            )
+            z['second_take_price']=_v90r25_first(
+                payload,'tp2','tp2_price','second_target_price',
+                'target2_price','runner_target','runner_target_price'
+            )
+            z['learning_focus']=(
+                'ЗАЩИТА_ПРИБЫЛИ' if bool(payload.get('profit_protection_active'))
+                else 'УДЕРЖАНИЕ_ДВИЖЕНИЯ' if mfe>=0.20
+                else 'КАЧЕСТВО_ВХОДА'
+            )
+    d['open_position_learning_view']='R25_COMPACT_LIVE'
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),21)
