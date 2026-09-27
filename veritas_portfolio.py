@@ -7822,3 +7822,192 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),23)
+
+
+# VERITAS V90 OBJECTIVE AND DRAWDOWN R35
+# Strategic objective order:
+# 1) sustainable high win-rate;
+# 2) sustainable positive post-cost trade/portfolio profitability;
+# 3) drawdown control as a lower-priority safety constraint.
+#
+# Drawdown hard limits:
+# - Impulse / Champion / Challenger: 15%
+# - Aggressive: 20%
+#
+# Drawdown must not weaken signal-quality gates. It only controls exposure
+# and eventually new-risk permission near the hard portfolio limit.
+# The per-idea structural-stop money-risk cap remains unchanged.
+
+_v90r35_base_admission=_signal_first_admission
+_v90r35_base_step_one=_step_one
+_v90r35_base_report=report
+
+_v90r35_context_mode=None
+_v90r35_context_portfolio=None
+
+
+def _v90r35_profile(mode=None,portfolio=None):
+    mode=str(mode or '')
+    portfolio=str(portfolio or '')
+    aggressive=bool(mode=='AGGRESSIVE' or portfolio=='Aggressive')
+    if aggressive:
+        return {
+          'name':'AGGRESSIVE',
+          'hard_drawdown':0.20,
+          'normal_until':0.10,
+          'caution_until':0.14,
+          'defense_1_until':0.17,
+          'normal_max_gross':5.00,
+          'caution_max_gross':4.00,
+          'defense_1_max_gross':3.00,
+          'defense_2_max_gross':1.50,
+          'caution_multiplier':0.95,
+          'defense_1_multiplier':0.80,
+          'defense_2_multiplier':0.55,
+        }
+    return {
+      'name':'STANDARD',
+      'hard_drawdown':0.15,
+      'normal_until':0.08,
+      'caution_until':0.11,
+      'defense_1_until':0.135,
+      'normal_max_gross':2.00,
+      'caution_max_gross':1.75,
+      'defense_1_max_gross':1.25,
+      'defense_2_max_gross':0.75,
+      'caution_multiplier':0.90,
+      'defense_1_multiplier':0.70,
+      'defense_2_multiplier':0.45,
+    }
+
+
+def _v90r35_current_profile():
+    mode=_v90r35_context_mode
+    portfolio=_v90r35_context_portfolio
+    if not mode:
+        try:
+            mode=str((_v90r22_active_policy or {}).get('mode') or '')
+        except Exception:
+            mode=''
+    if not portfolio:
+        try:
+            portfolio=str(_v90r22_active_portfolio or '')
+        except Exception:
+            portfolio=''
+    return _v90r35_profile(mode,portfolio)
+
+
+def _risk_governor(drawdown):
+    d=max(0.0,float(drawdown or 0.0))
+    p=_v90r35_current_profile()
+    hard=float(p['hard_drawdown'])
+
+    if d>=hard:
+        return {
+          'state':'HARD_STOP','max_gross':0.25,'new_risk':False,'multiplier':0.0,
+          'hard_drawdown_limit':hard,'drawdown_priority':3,'profile':p['name']
+        }
+    if d>=float(p['defense_1_until']):
+        return {
+          'state':'DEFENSE','max_gross':float(p['defense_2_max_gross']),
+          'new_risk':True,'multiplier':float(p['defense_2_multiplier']),
+          'hard_drawdown_limit':hard,'drawdown_priority':3,'profile':p['name']
+        }
+    if d>=float(p['caution_until']):
+        return {
+          'state':'DEFENSE','max_gross':float(p['defense_1_max_gross']),
+          'new_risk':True,'multiplier':float(p['defense_1_multiplier']),
+          'hard_drawdown_limit':hard,'drawdown_priority':3,'profile':p['name']
+        }
+    if d>=float(p['normal_until']):
+        return {
+          'state':'CAUTION','max_gross':float(p['caution_max_gross']),
+          'new_risk':True,'multiplier':float(p['caution_multiplier']),
+          'hard_drawdown_limit':hard,'drawdown_priority':3,'profile':p['name']
+        }
+    return {
+      'state':'NORMAL','max_gross':float(p['normal_max_gross']),
+      'new_risk':True,'multiplier':1.0,
+      'hard_drawdown_limit':hard,'drawdown_priority':3,'profile':p['name']
+    }
+
+
+def _signal_first_admission(row,policy,drawdown):
+    global _v90r35_context_mode
+    old_mode=_v90r35_context_mode
+    try:
+        _v90r35_context_mode=str((policy or {}).get('mode') or '')
+        out=dict(_v90r35_base_admission(row,policy,drawdown) or {})
+        out['objective_priority']=[
+          'SUSTAINABLE_HIGH_WIN_RATE',
+          'SUSTAINABLE_POSITIVE_POST_COST_PROFIT',
+          'DRAWDOWN_CONTROL'
+        ]
+        out['drawdown_policy_r35']=_risk_governor(drawdown)
+        return out
+    finally:
+        _v90r35_context_mode=old_mode
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    global _v90r35_context_mode,_v90r35_context_portfolio
+    old_mode=_v90r35_context_mode
+    old_portfolio=_v90r35_context_portfolio
+    try:
+        _v90r35_context_mode=str((policy or {}).get('mode') or '')
+        _v90r35_context_portfolio=str(name or '')
+        return _v90r35_base_step_one(
+            c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
+        )
+    finally:
+        _v90r35_context_mode=old_mode
+        _v90r35_context_portfolio=old_portfolio
+
+
+def report(pg_connect):
+    d=dict(_v90r35_base_report(pg_connect) or {})
+    d['objective_policy_r35']={
+      'priority_order':[
+        'sustainable_high_win_rate',
+        'sustainable_positive_post_cost_profitability',
+        'drawdown_control'
+      ],
+      'target_win_rate':0.65,
+      'drawdown_priority':3,
+      'hard_drawdown_limits':{
+        'Impulse':0.15,
+        'Aggressive':0.20,
+        'Champion':0.15,
+        'Challenger':0.15,
+      },
+      'per_idea_structural_stop_risk_cap_nav':float(MAX_STOP_RISK_NAV),
+      'aggressive_strategic_max_gross':5.0,
+      'drawdown_changes_signal_quality_gate':False,
+      'drawdown_changes_position_size_near_limit':True,
+      'profitability_guaranteed':False,
+    }
+    # Recompute the displayed governor with the correct portfolio context so
+    # the UI/report does not show a stale generic 10% policy.
+    for p in d.get('portfolios') or []:
+        name=str(p.get('name') or '')
+        dd=float(p.get('drawdown') or p.get('drawdown_pct') or 0.0)
+        if dd>1.0:
+            dd/=100.0
+        pol=POLICIES.get(name) or {}
+        global _v90r35_context_mode,_v90r35_context_portfolio
+        old_mode=_v90r35_context_mode
+        old_portfolio=_v90r35_context_portfolio
+        try:
+            _v90r35_context_mode=str(pol.get('mode') or '')
+            _v90r35_context_portfolio=name
+            p['risk_governor_r35']=_risk_governor(dd)
+            p['hard_drawdown_limit_pct']=100.0*_v90r35_profile(
+                _v90r35_context_mode,name
+            )['hard_drawdown']
+        finally:
+            _v90r35_context_mode=old_mode
+            _v90r35_context_portfolio=old_portfolio
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),24)
