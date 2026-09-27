@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r23-live-positions"
+UI_VERSION = "veritas-ui-v9.0-r25-compact-positions"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -73,11 +73,16 @@ _CANONICAL_HTML = r'''<!doctype html>
 .action-box{margin-top:7px;border-left:3px solid #6ea7d0;background:rgba(110,167,208,.06);padding:7px 8px;border-radius:0 8px 8px 0;font-size:9.5px;line-height:1.5;color:#d6dfe6}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.kpi{border:1px solid var(--line);border-radius:8px;padding:6px}.kpi span{display:block;color:var(--muted);font-size:8px}.kpi b{display:block;margin-top:2px;font-size:12px}
 .portfolio-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:7px}.portfolio-card{border:1px solid var(--line);border-radius:10px;padding:9px;background:var(--card2);min-width:0}.portfolio-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}.portfolio-head b{font-size:12px}.portfolio-nav{font-size:11px;color:#dce4ea;font-weight:650}.portfolio-sub{font-size:9px;color:var(--muted);margin-top:2px}.portfolio-metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:5px}.portfolio-metric{border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.portfolio-metric span{display:block;font-size:8px;color:var(--muted)}.portfolio-metric b{display:block;font-size:10px;margin-top:1px}
-.position-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
-.position-card{border:1px solid var(--line);border-radius:10px;padding:9px;background:var(--card2);min-width:0;overflow:hidden}
-.position-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.position-head-main{display:flex;align-items:center;gap:8px;min-width:0}.position-head b{font-size:11px}.position-result{font-size:11px;font-weight:750;white-space:nowrap}
-.position-meta{font-size:8.5px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere}
-.position-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;margin-top:7px}.position-metric{border-top:1px solid rgba(255,255,255,.05);padding-top:5px;min-width:0}.position-metric span{display:block;font-size:8px;color:var(--muted);white-space:normal}.position-metric b{display:block;font-size:9.5px;margin-top:2px;white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+.position-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.position-card{border:1px solid var(--line);border-radius:9px;padding:7px 8px;background:var(--card2);min-width:0;overflow:hidden}
+.position-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-head-main{display:flex;align-items:center;gap:6px;min-width:0}.position-head b{font-size:10.5px}.position-result{font-size:10.5px;font-weight:750;white-space:nowrap}
+.position-meta{font-size:8px;color:var(--muted);margin-top:2px;white-space:normal;overflow-wrap:anywhere}
+.position-levels{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin-top:6px}
+.position-level{min-width:0;border-top:1px solid rgba(255,255,255,.055);padding-top:4px}.position-level span{display:block;font-size:7.5px;color:var(--muted);white-space:nowrap}.position-level b{display:block;font-size:9.5px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.position-learning{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.position-chip{border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:2px 5px;font-size:7.5px;color:#b7c2cb;background:rgba(255,255,255,.012);white-space:nowrap}
+.position-chip b{font-size:7.8px;color:#e4ebf0;font-weight:650}
+.position-util{font-size:8px;color:#b7c2cb;margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}.position-util b{color:#e7edf2}
 .trade-card{border-top:1px solid rgba(255,255,255,.05);padding:9px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.trade-head b{font-size:11px}.trade-result{font-size:11px;font-weight:700;white-space:nowrap}.trade-meta{font-size:9px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:6px}.trade-money span{font-size:8px;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:9px;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
 
 .intel-wrap{display:grid;grid-template-columns:165px minmax(0,1fr);gap:10px;align-items:stretch}
@@ -88,8 +93,8 @@ _CANONICAL_HTML = r'''<!doctype html>
 .intel-foot{grid-column:1/-1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:2px}.intel-stat{font-size:8.5px;color:var(--muted);border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.intel-stat b{display:block;color:#dce5ec;font-size:10px;margin-top:1px}
 .insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.insight{border:1px solid var(--line);border-radius:8px;padding:7px;min-width:0}.insight h4{margin:0 0 5px;font-size:9px;color:var(--muted);font-weight:500;text-transform:uppercase}.insight div{font-size:9px;line-height:1.6}
 .scroll{max-height:450px;overflow:auto;padding-right:2px}
-@media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:100px 70px 58px minmax(0,1fr);gap:3px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(5,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:100px 70px 58px minmax(0,1fr);gap:3px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(3,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -189,6 +194,10 @@ const tier=x=>String((x&&x.signal_tier)||dir(x));
 const tierLabel=x=>tier(x)==='SUPER_LONG'?'СУПЕР ЛОНГ':tier(x)==='SUPER_SHORT'?'СУПЕР ШОРТ':dir(x)==='LONG'?'ЛОНГ':dir(x)==='SHORT'?'ШОРТ':'ЖДАТЬ';
 const cls=d=>d==='LONG'?'ok':d==='SHORT'?'bad':'warn', ar=d=>d==='LONG'?'↑':d==='SHORT'?'↓':'→';
 const n=(v,d=2)=>{v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{maximumFractionDigits:d}):'—'};
+const p2=v=>{v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2}):'—'};
+const probPct=v=>{v=Number(v);if(!Number.isFinite(v))return null;return v<=1.5?100*v:v};
+const probSourceRu=v=>String(v||'').includes('EMPIRICAL')?'эмпир.':'модельн.';
+const focusRu=v=>({ЗАЩИТА_ПРИБЫЛИ:'защита прибыли',УДЕРЖАНИЕ_ДВИЖЕНИЯ:'удержание движения',КАЧЕСТВО_ВХОДА:'качество входа'}[String(v||'')]||'наблюдение');
 const rub=v=>{v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽':'—'};
 const pct=v=>{v=Number(v);return Number.isFinite(v)?v.toFixed(2)+'%':'—'};
 const bool=v=>v===true?'ДА':v===false?'НЕТ':'—';
@@ -320,7 +329,33 @@ function renderPortfolios(){
   $('portfolios').className='portfolio-grid';
   $('portfolios').innerHTML=ps.length?ps.map(p=>{const l=p.latest||p,nav=l.nav_rub??p.nav_rub,usd=l.nav_usd??p.nav_usd,ret=p.total_return_pct??l.total_return_pct,dd=p.drawdown_pct??(l.drawdown!=null?100*Number(l.drawdown):null),gross=l.gross_leverage??p.gross_leverage,net=l.net_exposure??p.net_exposure,cash=l.cash_equivalent_fraction??p.cash_equivalent_fraction,wr=p.win_rate==null?null:100*Number(p.win_rate),closed=Number(p.closed_trades||0),wins=Number(p.wins||0),pnl=Number(p.closed_trade_pnl_rub||0),openN=(p.positions||[]).length;return'<div class="portfolio-card"><div class="portfolio-head"><div><b>'+esc(p.name)+'</b><div class="portfolio-sub">'+openN+' открытых · '+closed+' закрытых сделок</div></div><b class="'+(Number(ret||0)>=0?'ok':'bad')+'">'+pct(ret)+'</b></div><div class="portfolio-nav">'+rub(nav)+' <span class="portfolio-sub">· '+(usd==null?'—':n(usd,0)+' $')+'</span></div><div class="portfolio-metrics"><div class="portfolio-metric"><span>Просадка</span><b>'+pct(dd)+'</b></div><div class="portfolio-metric"><span>Плечо gross</span><b>'+n(gross,2)+'×</b></div><div class="portfolio-metric"><span>Чистая экспозиция</span><b>'+n(net,2)+'×</b></div><div class="portfolio-metric"><span>Свободные средства</span><b>'+(cash==null?'—':pct(100*Number(cash)))+'</b></div><div class="portfolio-metric"><span>Win-rate</span><b>'+(wr==null?'—':wr.toFixed(1)+'%')+'</b></div><div class="portfolio-metric"><span>Прибыльных сделок</span><b>'+wins+' / '+closed+'</b></div><div class="portfolio-metric"><span>Итог закрытых</span><b class="'+(pnl>=0?'ok':'bad')+'">'+rub(pnl)+'</b></div><div class="portfolio-metric"><span>Открытых позиций</span><b>'+openN+'</b></div></div></div>'}).join(''):'<div class="msg warn">Портфели пока не получены.</div>';
   $('positions').className='position-grid';
-  $('positions').innerHTML=positions.length?positions.map(z=>{const pnl=Number(z.unrealized_pnl_rub||0),ret=z.unrealized_return_pct,frac=100*Number(z.target_fraction||0),p=z.payload||{},trail=p.trailing_stop??z.stop_price,held=z.held_seconds??z.holding_duration_seconds;return'<div class="position-card"><div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<div><b>'+esc(z.portfolio)+' · '+lab(z.asset)+'</b><div class="position-meta">'+dirRu(z.direction)+' · '+tfRu(z.horizon)+' · открыта '+dateRu(z.opened_at)+'</div></div></div><div class="position-result '+(pnl>=0?'ok':'bad')+'">'+rub(pnl)+(ret==null?'':' · '+(Number(ret)>=0?'+':'')+Number(ret).toFixed(2)+'%')+'</div></div><div class="position-metrics"><div class="position-metric"><span>Доля портфеля</span><b>'+pct(frac)+'</b></div><div class="position-metric"><span>Объём позиции</span><b>'+rub(z.notional_rub)+'</b></div><div class="position-metric"><span>Цена входа</span><b>'+n(z.avg_entry_price,4)+'</b></div><div class="position-metric"><span>Текущая цена</span><b>'+n(z.last_price,4)+'</b></div><div class="position-metric"><span>Стоп / трейлинг</span><b>'+n(trail,4)+'</b></div><div class="position-metric"><span>Цель</span><b>'+n(z.take_price??z.target_price,4)+'</b></div><div class="position-metric"><span>Объём в долларах</span><b>'+(z.notional_usd==null?'—':n(z.notional_usd,0)+' $')+'</b></div><div class="position-metric"><span>В позиции</span><b>'+holdRu(held)+'</b></div></div></div>'}).join(''):'<div class="msg">Открытых позиций нет.</div>';
+  $('positions').innerHTML=positions.length?positions.map(z=>{
+    const pnl=Number(z.unrealized_pnl_rub||0),ret=Number(z.unrealized_return_pct),frac=100*Number(z.target_fraction||0),util=Number(z.position_utilization_pct),held=z.held_seconds??z.holding_duration_seconds;
+    const stop=z.trailing_stop??z.stop_price,tp1=z.take_price,tp2=z.second_take_price,prob=probPct(z.signal_probability),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
+    const tf=z.execution_timeframe||z.horizon,grade=z.setup_grade||'—',tier=z.signal_tier||'',protect=z.profit_protection_active===true;
+    const probText=prob==null?'—':prob.toFixed(1)+'% '+probSourceRu(z.probability_source);
+    const capText=Number.isFinite(cap)?(100*cap).toFixed(0)+'%':'—';
+    const mfeText=Number.isFinite(mfe)?(mfe>=0?'+':'')+mfe.toFixed(2)+'%':'—';
+    const maeText=Number.isFinite(mae)?mae.toFixed(2)+'%':'—';
+    const giveText=Number.isFinite(give)?give.toFixed(2)+'%':'—';
+    return'<div class="position-card">'+
+      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<div><b>'+esc(z.portfolio)+' · '+lab(z.asset)+' · '+dirRu(z.direction)+'</b><div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · '+rub(z.notional_rub)+'</div></div></div><div class="position-result '+(pnl>=0?'ok':'bad')+'">'+rub(pnl)+(Number.isFinite(ret)?' · '+(ret>=0?'+':'')+ret.toFixed(2)+'%':'')+'</div></div>'+
+      '<div class="position-util"><span>Доля <b>'+frac.toFixed(0)+'% NAV</b></span><span>От максимума <b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span><span>В позиции <b>'+holdRu(held)+'</b></span></div>'+
+      '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Стоп</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>TP1 / цель</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
+      '<div class="position-learning">'+
+        '<span class="position-chip">Вероятность <b>'+probText+'</b></span>'+
+        '<span class="position-chip">MFE <b>'+mfeText+'</b></span>'+
+        '<span class="position-chip">MAE <b>'+maeText+'</b></span>'+
+        '<span class="position-chip">Захват <b>'+capText+'</b></span>'+
+        '<span class="position-chip">Отдано <b>'+giveText+'</b></span>'+
+        '<span class="position-chip">R/R <b>'+(Number.isFinite(rr)?rr.toFixed(2):'—')+'</b></span>'+
+        '<span class="position-chip">Ожид. ход <b>'+(Number.isFinite(exp)?(100*exp).toFixed(2)+'%':'—')+'</b></span>'+
+        '<span class="position-chip">Grade <b>'+esc(grade)+'</b></span>'+
+        '<span class="position-chip">Защита <b>'+(protect?'активна':'нет')+'</b></span>'+
+        '<span class="position-chip">Фокус <b>'+focusRu(z.learning_focus)+'</b></span>'+
+      '</div>'+
+    '</div>';
+  }).join(''):'<div class="msg">Открытых позиций нет.</div>';
 }
 
 function renderTrades(){
