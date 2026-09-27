@@ -6149,3 +6149,116 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),17)
+
+
+# VERITAS V90 SUPER EXECUTION COMPLETION R21
+# Fixes the last silent execution gap:
+# a fully confirmed R20 SUPER candidate must not be blocked by an older
+# range-retest "APPROACH_*" watch state that predates the confirmed move.
+# Also emits explicit OPEN/ADD telemetry so admission and execution can be
+# audited separately.
+_v90r21_base_open_or_add=_open_or_add
+_v90r21_base_step_one=_step_one
+_v90r21_base_report=report
+
+
+def _v90r21_execution_row(row):
+    x=dict(row or {})
+    if not x.get('_r20_super_priority'):
+        return x
+    rs=dict(x.get('range_retest_breakout') or {})
+    if rs.get('active') and str(rs.get('state') or '') in (
+        'APPROACH_RESISTANCE','APPROACH_SUPPORT'
+    ):
+        rs['r21_previous_state']=rs.get('state')
+        rs['state']='SUPER_CONFIRMED'
+        rs['entry_active']=True
+        rs['add_active']=True
+        rs['r21_super_override']=True
+        x['range_retest_breakout']=rs
+    return x
+
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    before=c.execute(
+        "SELECT direction,units,avg_entry_price,target_fraction,active_trade_id,stop_price "
+        "FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+        (name,asset)
+    ).fetchone()
+    before_d=dict(before) if before else None
+    row2=_v90r21_execution_row(row)
+    result=_v90r21_base_open_or_add(
+        c,p,name,asset,direction,price,target_fraction,nav,ts,row2,reason
+    )
+    after=c.execute(
+        "SELECT direction,units,avg_entry_price,target_fraction,active_trade_id,stop_price,payload "
+        "FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+        (name,asset)
+    ).fetchone()
+    after_d=dict(after) if after else None
+
+    try:
+        before_frac=(abs(float(before_d.get('units') or 0.0))*float(price)/max(float(nav),1.0)
+                     if before_d else 0.0)
+        after_frac=(abs(float(after_d.get('units') or 0.0))*float(price)/max(float(nav),1.0)
+                    if after_d else 0.0)
+    except Exception:
+        before_frac=after_frac=0.0
+
+    action=None
+    if not before_d and after_d:
+        action='OPEN'
+    elif before_d and after_d and after_frac>before_frac+0.0025:
+        action='ADD'
+
+    if action:
+        evt={
+          'event':'V90_R21_EXECUTED',
+          'portfolio':name,'asset':asset,'action':action,'direction':direction,
+          'price':float(price),'requested_target_fraction':float(target_fraction),
+          'before_fraction':before_frac,'after_fraction':after_frac,
+          'horizon':(row2 or {}).get('horizon'),
+          'signal_tier':(row2 or {}).get('signal_tier'),
+          'reason':reason,
+          'stop_price':after_d.get('stop_price') if after_d else None,
+          'trade_id':after_d.get('active_trade_id') if after_d else None,
+          'r20_super_priority':bool((row2 or {}).get('_r20_super_priority')),
+        }
+        print(json.dumps(evt,ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    elif (row2 or {}).get('_r20_super_priority'):
+        # Explicitly surface non-execution instead of silently returning.
+        meta={}
+        if after_d:
+            meta=_v90j_json(after_d.get('payload'))
+        print(json.dumps({
+          'event':'V90_R21_SUPER_NOT_EXECUTED',
+          'portfolio':name,'asset':asset,'direction':direction,
+          'requested_target_fraction':float(target_fraction),
+          'before_fraction':before_frac,'after_fraction':after_frac,
+          'horizon':(row2 or {}).get('horizon'),
+          'signal_tier':(row2 or {}).get('signal_tier'),
+          'stop_price':after_d.get('stop_price') if after_d else None,
+          'risk_neutral_check':meta.get('last_risk_neutral_pyramid_check') if meta else None,
+        },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return result
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    book={a:_v90r21_execution_row(r) for a,r in (candidates or {}).items()}
+    return _v90r21_base_step_one(
+        c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary
+    )
+
+
+def report(pg_connect):
+    d=dict(_v90r21_base_report(pg_connect) or {})
+    d['execution_policy_r21']={
+      'super_overrides_stale_range_approach_watch':True,
+      'explicit_open_add_telemetry':True,
+      'super_execution_auditable':True,
+      'aggressive_max_gross':5.0,
+    }
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),18)
