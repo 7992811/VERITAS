@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r20-visual-intelligence"
+UI_VERSION = "veritas-ui-v9.0-r23-live-positions"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -448,7 +448,7 @@ function applyBootstrap(d){
   if(!d)return;
   st.health={ok:true,bootstrap_ready:!!(d.health&&d.health.bootstrap_ready)};
   st.signals={signals:d.signals||[],at:d.at,status:d.status};
-  st.portfolios={portfolios:d.portfolios||[]};
+  if(!st.portfolios)st.portfolios={portfolios:d.portfolios||[]};
   st.trades={trades:d.trades||[]};
   st.learning=d.learning_summary||{};
   st.quality=d.data_quality_summary||{};
@@ -460,6 +460,14 @@ function applyBootstrap(d){
 async function loadBootstrap(){
   const d=await get('bootstrap','/api/v1/dashboard-bootstrap',8000);
   if(d)applyBootstrap(d);
+}
+async function loadPortfolios(){
+  const d=await get('paper-portfolios','/api/v1/paper-portfolios',8000);
+  if(d&&Array.isArray(d.portfolios)){
+    st.portfolios=d;
+    renderPortfolios();
+    if(st.selected)selectSignal(st.selected,false);
+  }
 }
 async function loadMacro(){
   const d=await get('macro','/api/v1/macro',7000);
@@ -474,7 +482,7 @@ async function loadIntelligence(){
   st.intelligence=normalizeIntelligence(scorecard,progress,library);
   renderIntelligence();
 }
-function start(){loadBootstrap();setTimeout(loadIntelligence,500);setTimeout(loadMacro,1000);setInterval(loadBootstrap,30000);setInterval(loadIntelligence,60000);setInterval(loadMacro,120000)}
+function start(){loadBootstrap();setTimeout(loadPortfolios,250);setTimeout(loadIntelligence,500);setTimeout(loadMacro,1000);setInterval(loadPortfolios,10000);setInterval(loadBootstrap,30000);setInterval(loadIntelligence,60000);setInterval(loadMacro,120000)}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
 </script>
