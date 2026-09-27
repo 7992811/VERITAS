@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r28-stop-main-only"
+UI_VERSION = "veritas-ui-v9.0-r29-learning-summary"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -471,9 +471,12 @@ function renderIntelligence(){
 }
 
 function renderInsights(){
-  const l=st.learning||{}, q=st.quality||{}, h=st.horizon||{}, m=st.macro||{};
+  const l=st.learning||{}, q=st.quality||{}, h=st.horizon||{}, m=st.macro||{}, ep=(st.portfolios||{}).episode_learning_r29||{};
   const wr=l.win_rate==null?'—':(100*Number(l.win_rate)).toFixed(1)+'%';
-  $('learning').innerHTML='<b>Закрытых сделок:</b> '+esc(l.closed_trades??'—')+'<br><b>Прибыльных:</b> '+esc(l.wins??'—')+'<br><b>Win-rate:</b> '+wr+'<br><b>Память опыта:</b> '+esc(l.experience_storage||'—');
+  const ac=ep.attribution_counts||{}, labels={ENTRY_DIRECTION_ERROR:'ошибка входа/направления',EDGE_OVERFORECAST:'переоценка ожидаемого хода',COST_DRAG:'издержки съели преимущество',EXIT_CAPTURE_ERROR:'потеря движения при сопровождении',STOP_STRUCTURE_ERROR:'ошибка стоп-структуры',GOOD_EXECUTION:'качественное исполнение',MIXED_EXECUTION:'смешанный результат'};
+  let topKey=null,topN=-1;Object.entries(ac).forEach(([k,v])=>{const n=Number(v||0);if(n>topN){topN=n;topKey=k}});
+  const epText=ep.eligible_episodes==null?'—':esc(ep.eligible_episodes),topText=topKey?(labels[topKey]||topKey)+' · '+topN:'—';
+  $('learning').innerHTML='<b>Закрытых сделок:</b> '+esc(l.closed_trades??'—')+'<br><b>Прибыльных:</b> '+esc(l.wins??'—')+'<br><b>Win-rate:</b> '+wr+'<br><b>Эпизодов R29:</b> '+epText+'<br><b>Главный урок:</b> '+esc(topText)+'<br><b>Память опыта:</b> '+esc(l.experience_storage||'—');
   $('quality').innerHTML='<b>Матрица:</b> '+esc(q.cells??'—')+'/'+esc(q.expected_cells??42)+'<br><b>Источник подтверждён:</b> '+esc(q.source_verified_cells??'—')+' ячеек<br><b>Можно исполнять:</b> '+esc(q.execution_eligible_cells??'—')+' ячеек<br><b>Устаревших:</b> '+esc(q.stale_cells??'—');
   $('horizon').innerHTML=TF.map(tf=>'<b>'+tf+':</b> '+esc(h[tf]??0)+'/7 активов').join('<br>');
   const macroObj=m.macro||m, regime=m.regime||{};
@@ -497,7 +500,7 @@ function mergePortfolioSets(primary,secondary,preferPrimaryPositions=false){
     }
     map.set(k,merged);
   });
-  return {portfolios:Array.from(map.values())};
+  return Object.assign({},secondary||{},primary||{},{portfolios:Array.from(map.values())});
 }
 function applyBootstrap(d){
   if(!d)return;
