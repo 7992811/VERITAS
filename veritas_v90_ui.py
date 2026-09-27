@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r34-daily-intelligence-growth"
+UI_VERSION = "veritas-ui-v9.0-r34-daily-intelligence-growth-v2"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -485,8 +485,13 @@ function renderIntelligence(){
   const captureText=capture==null?'—':(100*capture).toFixed(1)+'%';
   const wrText=wr==null?'—':(100*wr).toFixed(1)+'%';
   const origin=i.derived_fallback?'расчёт по текущей телеметрии':'индекс ядра VERITAS';
-  const d=i.daily_progress||{},di=Number(d.learning_index_delta_today),ci=Number(d.current_learning_index);
-  const deltaOk=Number.isFinite(di),currentOk=Number.isFinite(ci);
+  const d=i.daily_progress||{};
+  const numOrNull=v=>v==null||v===''?null:(Number.isFinite(Number(v))?Number(v):null);
+  const di=numOrNull(d.intelligence_delta_today??d.learning_index_delta_today);
+  const core=numOrNull(d.current_learning_index),maturity=numOrNull(d.current_maturity_index);
+  const currentMetric=core!=null?core:maturity,currentOk=currentMetric!=null,deltaOk=di!=null;
+  const basis=String(d.delta_basis||'');
+  const metricName=basis==='CORE_LEARNING_INDEX'?'индекс обучения':'индекс зрелости';
   const trend=String(d.trend||'BUILDING'),trendText=trend==='UP'?'↑ интеллект растёт':trend==='DOWN'?'↓ требуется улучшение':trend==='FLAT'?'→ без изменения':'накапливается';
   const trendClass=trend==='UP'?'ok':trend==='DOWN'?'bad':'warn';
   const deltaText=deltaOk?(di>0?'+':'')+di.toFixed(2)+' п.':'—';
@@ -496,7 +501,7 @@ function renderIntelligence(){
   const rulesToday=d.knowledge_rules_added_today==null?'—':d.knowledge_rules_added_today;
   const sourcesToday=d.knowledge_sources_added_today==null?'—':d.knowledge_sources_added_today;
   const daily='<div class="intel-daily">'+
-    '<div class="intel-daily-stat"><span>Рост интеллекта сегодня</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>'+dayText+(currentOk?' · индекс обучения '+ci.toFixed(1):'')+'</em></div>'+
+    '<div class="intel-daily-stat"><span>Рост интеллекта сегодня</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>'+dayText+(currentOk?' · '+metricName+' '+currentMetric.toFixed(1):'')+'</em></div>'+
     '<div class="intel-daily-stat"><span>Обучающих эпизодов</span><b>'+esc(episodes)+'</b><em>новых завершённых сделок</em></div>'+
     '<div class="intel-daily-stat"><span>Проверенных исходов</span><b>'+esc(outcomes)+'</b><em>независимых результатов</em></div>'+
     '<div class="intel-daily-stat"><span>Новых правил</span><b>+'+esc(rulesToday)+'</b><em>за день</em></div>'+
