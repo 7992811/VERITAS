@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r27-direction-stop-ui"
+UI_VERSION = "veritas-ui-v9.0-r28-stop-main-only"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -82,7 +82,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .position-learning{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
 .position-chip{border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:2px 5px;font-size:7.5px;color:#b7c2cb;background:rgba(255,255,255,.012);white-space:nowrap}
 .position-chip b{font-size:7.8px;color:#e4ebf0;font-weight:650}
-.position-util{font-size:8px;color:#b7c2cb;margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}.position-util b{color:#e7edf2}.position-nav-top,.trade-nav-top{color:#dce5ec;font-weight:700}.position-sl-top{color:#f2c46d;font-weight:700}
+.position-util{font-size:8px;color:#b7c2cb;margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}.position-util b{color:#e7edf2}.position-nav-top,.trade-nav-top{color:#dce5ec;font-weight:700}
 .trade-card{border-top:1px solid rgba(255,255,255,.05);padding:9px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.trade-head b{font-size:11px}.trade-result{font-size:11px;font-weight:700;white-space:nowrap}.trade-meta{font-size:9px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:6px}.trade-money span{font-size:8px;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:9px;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
 
 .intel-wrap{display:grid;grid-template-columns:165px minmax(0,1fr);gap:10px;align-items:stretch}
@@ -341,7 +341,7 @@ function renderPortfolios(){
     const giveText=Number.isFinite(give)?give.toFixed(2)+'%':'—';
     const sideText=directionLabel(z.direction,tier),sideClass=cls(String(z.direction||'')); 
     return'<div class="position-card">'+
-      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<div><b>'+esc(z.portfolio)+' · '+lab(z.asset)+' · <span class="'+sideClass+'">'+sideText+'</span> · <span class="position-nav-top">'+frac.toFixed(0)+'% NAV</span> · <span class="position-sl-top">SL '+p2(stop)+'</span></b><div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · '+rub(z.notional_rub)+'</div></div></div><div class="position-result '+(pnl>=0?'ok':'bad')+'">'+rub(pnl)+(Number.isFinite(ret)?' · '+(ret>=0?'+':'')+ret.toFixed(2)+'%':'')+'</div></div>'+
+      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<div><b>'+esc(z.portfolio)+' · '+lab(z.asset)+' · <span class="'+sideClass+'">'+sideText+'</span> · <span class="position-nav-top">'+frac.toFixed(0)+'% NAV</span></b><div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · '+rub(z.notional_rub)+'</div></div></div><div class="position-result '+(pnl>=0?'ok':'bad')+'">'+rub(pnl)+(Number.isFinite(ret)?' · '+(ret>=0?'+':'')+ret.toFixed(2)+'%':'')+'</div></div>'+
       '<div class="position-util"><span>От максимума <b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span><span>В позиции <b>'+holdRu(held)+'</b></span></div>'+
       '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>TP1 / цель</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
       '<div class="position-learning">'+
