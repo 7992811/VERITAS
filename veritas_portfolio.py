@@ -7332,6 +7332,8 @@ def _v90r29_refresh(pg_connect,force=False):
       'feedback':'BOUNDED_SIZE_AND_EXPECTED_MOVE_CALIBRATION',
     }
     _v90r29_cache.update({'at':now,'profiles':profiles,'summary':summary})
+    print(json.dumps({'event':'V90_R29_REFRESH_COMPLETE',**summary},
+                     ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return _v90r29_cache
 
 
