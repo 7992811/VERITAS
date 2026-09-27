@@ -6002,6 +6002,8 @@ def _v90r20_super_candidate(summary,asset):
         x['_r20_super_expected_move']=expected
         x['_r20_super_min_move']=min_move
         x['_r20_super_tier']=tier
+        x['_impulse_setup']='R20_CONFIRMED_SUPER'
+        x['_v901_multi_horizon']=True
         choices.append(x)
     if not choices:
         return None
@@ -6017,6 +6019,7 @@ def _v90r20_super_soft_override(base,row,policy,drawdown):
         'MODEL_SCORE_BELOW' in reason
         or 'R6_RANGE_LOW_VOL_BREAKOUT_UNCONFIRMED' in reason
         or 'Q2_INSUFFICIENT_TF_ALIGNMENT' in reason
+        or 'R19_5M_POST_COST_MOVE_TOO_SMALL' in reason
         or 'R19_WAIT_SECOND_CONFIRMATION' in reason
     )
     # Stability remains mandatory; do not override the first observation.
