@@ -6782,7 +6782,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     _v90_trim_memory('cycle_end',force=True)
     emit('cycle_complete', decisions_written=made, outcomes_written=outcomes, status=status,
          durable_storage=storage.get('ok', False),**telemetry)
-    if pg_enabled():
+    # R37: overview snapshots are archival, not minute-level telemetry.
+    # Persist them only on the FULL cycle.
+    if pg_enabled() and cycle_mode=='FULL':
         save_product_snapshot()
     # Historical outcome downloads run after the decision snapshot and never delay 5m entries.
     if cycle_mode=='FULL':
@@ -6792,6 +6794,11 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         except Exception as _daily_intel_ex:
             emit('v90_daily_intelligence_checkpoint_error',
                  error=f'{type(_daily_intel_ex).__name__}: {_daily_intel_ex}')
+        try:
+            _v90r37_storage_retention()
+        except Exception as _ret_ex:
+            emit('v90_r37_storage_retention_error',
+                 error=f'{type(_ret_ex).__name__}: {_ret_ex}')
         # Deep rule/event learning remains off the fast lane.
         if heavy_learning_due():
             maybe_schedule_heavy_learning('interval_due')
@@ -11797,16 +11804,52 @@ def save_product_snapshot():
     if not pg_enabled(): return
     try:
         drift=model_drift_status()
-        payload={'cycle':dict(last_cycle),'performance':pg_live_performance(),'health':product_health(),
-                 'drift':drift,'adaptive':adaptive_intelligence_summary()}
+        with lock:
+            cyc=dict(last_cycle)
+        compact_summary=[]
+        for z in (cyc.get('summary') or []):
+            if not isinstance(z,dict):
+                continue
+            compact_summary.append({
+              'asset':z.get('asset'),'horizon':z.get('horizon'),
+              'decision':z.get('decision'),'research_decision':z.get('research_decision'),
+              'confidence':z.get('confidence'),'price':z.get('price'),
+              'regime':z.get('regime'),'signal_tier':z.get('signal_tier'),
+              'execution_eligible':z.get('execution_eligible'),
+              'decision_stage':z.get('decision_stage'),
+              'horizon_structure_state':z.get('horizon_structure_state'),
+              'horizon_structure_score':z.get('horizon_structure_score'),
+              'entry_quality':z.get('entry_quality'),
+              'stop_price':z.get('stop_price'),'target_price':z.get('target_price'),
+              'expected_move_pct':z.get('expected_move_pct'),
+              'expected_to_stop_ratio':z.get('expected_to_stop_ratio'),
+            })
+        compact_cycle={
+          'status':cyc.get('status'),'at':cyc.get('at'),'version':cyc.get('version'),
+          'cycle_mode':cyc.get('cycle_mode'),'signal_cells':cyc.get('signal_cells'),
+          'decisions_written':cyc.get('decisions_written'),
+          'outcomes_written':cyc.get('outcomes_written'),
+          'summary':compact_summary,
+        }
+        payload={'cycle':compact_cycle,'performance':pg_live_performance(),
+                 'health':product_health(),'drift':drift}
         with pg_connect() as c:
             c.execute("INSERT INTO product_snapshots(created_at,snapshot_type,payload) VALUES(%s,%s,%s::jsonb)",
                       (now(),'overview',json.dumps(payload,ensure_ascii=False,default=str)))
             c.execute("INSERT INTO model_drift_snapshots(created_at,payload) VALUES(%s,%s::jsonb)",
                       (now(),json.dumps(drift,ensure_ascii=False,default=str)))
+            c.execute("""DELETE FROM product_snapshots
+                         WHERE snapshot_id NOT IN (
+                           SELECT snapshot_id FROM product_snapshots
+                           ORDER BY created_at DESC LIMIT 24
+                         )""")
+            c.execute("""DELETE FROM model_drift_snapshots
+                         WHERE snapshot_id NOT IN (
+                           SELECT snapshot_id FROM model_drift_snapshots
+                           ORDER BY created_at DESC LIMIT 100
+                         )""")
     except Exception as ex:
         emit('snapshot_error',error=f'{type(ex).__name__}: {ex}')
-
 
 def oos_validation_board(limit=100):
     if not pg_enabled(): return {'items':[],'method':'unavailable'}
@@ -16494,6 +16537,218 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
 
 
 
+
+# VERITAS V90 BOUNDED LEDGER R37
+# Persist one representative decision per completed signal bar (or immediately
+# on a material state change) and keep diagnostic event streams bounded.
+_v90r37_pg_event_base=pg_event
+_v90r37_event_cache={}
+_v90r37_event_lock=threading.Lock()
+_v90r37_horizon_seconds={'5m':300,'1h':3600,'4h':14400,'1d':86400,'3d':259200,'7d':604800}
+
+
+def _v90r37_features_compact(f):
+    f=f or {}
+    st=f.get('intraday_structure') or {}
+    ti=f.get('trend_impulse') or {}
+    return {
+      'price':f.get('price'),
+      'ret_4h':f.get('ret_4h'),'ret_24h':f.get('ret_24h'),
+      'trend':f.get('trend'),'momentum':f.get('momentum'),'rv':f.get('rv'),
+      'relative_volume':st.get('relative_volume',f.get('relative_volume')),
+      'session_efficiency':st.get('session_efficiency',f.get('session_efficiency')),
+      'session_persistence':st.get('session_persistence',f.get('session_persistence')),
+      'intraday_structure_score':st.get('score',f.get('intraday_structure_score')),
+      'trend_onset_score':ti.get('onset_score',f.get('trend_onset_score')),
+      'impulse_score':ti.get('impulse_score',f.get('impulse_score')),
+      'near_ath':1.0 if st.get('near_ath') else f.get('near_ath',0.0),
+      'breakout_hold':1.0 if st.get('breakout_hold') else f.get('breakout_hold',0.0),
+      'expected_move_pct':f.get('expected_move_pct'),
+      'regime':f.get('regime'),
+    }
+
+
+def _v90r37_compact_decision_payload(p):
+    p=dict(p or {})
+    plan=p.get('trade_plan') or {}
+    inst=p.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    ev=inst.get('evidence_independence') or {}
+    return {
+      'created_at':p.get('created_at'),'symbol':p.get('symbol'),
+      'asset':p.get('asset'),'horizon':p.get('horizon'),
+      'decision':p.get('decision'),'research_decision':p.get('research_decision'),
+      'confidence':p.get('confidence'),'sizing':p.get('sizing'),
+      'committee_score':p.get('committee_score'),'regime':p.get('regime'),
+      'signal_tier':p.get('signal_tier'),
+      'execution_signal_tier':p.get('execution_signal_tier'),
+      'decision_stage':p.get('decision_stage'),
+      'calibrated_probability':(p.get('calibration') or {}).get('probability_correct'),
+      'trade_plan':{
+        'eligible':plan.get('eligible'),'reason':plan.get('reason'),
+        'setup':plan.get('setup'),'direction':plan.get('direction'),
+        'entry_quality':plan.get('entry_quality'),
+        'entry_price':plan.get('entry_price'),'stop_price':plan.get('stop_price'),
+        'stop_distance_pct':plan.get('stop_distance_pct'),
+        'target_price':plan.get('target_price'),
+        'expected_move_pct':plan.get('expected_move_pct'),
+        'expected_to_stop_ratio':plan.get('expected_to_stop_ratio'),
+        'initial_position_fraction':plan.get('initial_position_fraction'),
+      },
+      'tradeability':{
+        'status':(p.get('tradeability') or {}).get('status'),
+        'positive_trade_probability':(p.get('tradeability') or {}).get('positive_trade_probability'),
+        'effective_n':(p.get('tradeability') or {}).get('effective_n'),
+      },
+      'institutional_signal':{
+        'signal_tier':inst.get('signal_tier'),
+        'investor_signal':inst.get('investor_signal'),
+        'action':inst.get('action'),
+        'breakout_quality':{
+          'state':bq.get('state'),'quality_score':bq.get('quality_score'),
+          'fresh_breakout':bq.get('fresh_breakout'),
+        },
+        'evidence_independence':{
+          'independent_count':ev.get('independent_count'),
+          'active_families':ev.get('active_families'),
+        },
+      },
+      'features':_v90r37_features_compact(p.get('features') or {}),
+      'gates':p.get('gates') or {},
+    }
+
+
+def _v90r37_signature(event_type,payload):
+    p=payload or {}
+    if event_type=='decision':
+        plan=p.get('trade_plan') or {}
+        inst=p.get('institutional_signal') or {}
+        bq=inst.get('breakout_quality') or {}
+        raw={
+          'research_decision':p.get('research_decision'),'decision':p.get('decision'),
+          'signal_tier':p.get('signal_tier'),'decision_stage':p.get('decision_stage'),
+          'regime':p.get('regime'),'eligible':plan.get('eligible'),
+          'plan_reason':plan.get('reason'),'entry_quality':plan.get('entry_quality'),
+          'breakout_state':bq.get('state'),
+        }
+    else:
+        gate=p.get('gate') or {}
+        raw={
+          'setup':p.get('setup'),'direction':p.get('direction'),
+          'research_direction':p.get('research_direction'),
+          'candidate_direction':p.get('candidate_direction'),
+          'active':p.get('active'),'state':p.get('state'),
+          'status':p.get('status'),'label':p.get('label'),
+          'old_plan_reason':p.get('old_plan_reason'),
+          'gate_status':gate.get('status') if isinstance(gate,dict) else None,
+        }
+    return hashlib.sha256(json.dumps(raw,sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()[:20]
+
+
+def _v90r37_should_persist(event_type,asset,horizon,payload):
+    high={
+      'decision','meta_signal','setup_learning','admission_learning',
+      'trade_counterfactual_lab','impulse_genesis_learning','profitability_learning'
+    }
+    if event_type not in high:
+        return True
+    now_ts=time.time()
+    key=(event_type,str(asset or ''),str(horizon or ''))
+    sig=_v90r37_signature(event_type,payload)
+    if event_type=='decision':
+        cooldown=int(_v90r37_horizon_seconds.get(str(horizon or ''),3600))
+    elif event_type=='meta_signal':
+        cooldown=1800
+    elif event_type in ('setup_learning','admission_learning','profitability_learning'):
+        cooldown=1800
+    else:
+        cooldown=3600
+    with _v90r37_event_lock:
+        prev=_v90r37_event_cache.get(key)
+        changed=not prev or prev.get('sig')!=sig
+        due=not prev or now_ts-float(prev.get('at') or 0)>=cooldown
+        if changed or due:
+            _v90r37_event_cache[key]={'sig':sig,'at':now_ts}
+            return True
+    return False
+
+
+def pg_event(event_type,entity_key,payload,asset=None,horizon=None,event_ts=None):
+    if not _v90r37_should_persist(event_type,asset,horizon,payload):
+        return True
+    if event_type=='decision':
+        payload=_v90r37_compact_decision_payload(payload)
+    return _v90r37_pg_event_base(event_type,entity_key,payload,asset,horizon,event_ts)
+
+
+_v90r37_maintenance_state={'last':0.0}
+def _v90r37_storage_retention():
+    if not pg_enabled():
+        return {'status':'SKIP'}
+    now_ts=time.time()
+    if now_ts-float(_v90r37_maintenance_state.get('last') or 0.0)<21600:
+        return {'status':'NOT_DUE'}
+    _v90r37_maintenance_state['last']=now_ts
+    try:
+        with pg_connect() as c:
+            deletes={}
+            specs={
+              'decision':4000,
+              'setup_learning':1500,
+              'admission_learning':1500,
+              'trade_counterfactual_lab':1000,
+              'impulse_genesis_learning':1000,
+              'meta_signal':500,
+            }
+            for et,lim in specs.items():
+                q=c.execute("""
+                  WITH keep AS (
+                    SELECT id FROM ledger_events
+                    WHERE event_type=%s
+                    ORDER BY event_ts DESC LIMIT %s
+                  ), doomed AS (
+                    SELECT id FROM ledger_events
+                    WHERE event_type=%s
+                      AND id NOT IN (SELECT id FROM keep)
+                      AND NOT (
+                        event_type='decision' AND EXISTS (
+                          SELECT 1 FROM ledger_events o
+                          WHERE o.event_type='outcome'
+                            AND o.entity_key=ledger_events.entity_key
+                        )
+                      )
+                    LIMIT 10000
+                  )
+                  DELETE FROM ledger_events l USING doomed d
+                  WHERE l.id=d.id RETURNING 1
+                """,(et,int(lim),et)).fetchall()
+                deletes[et]=len(q)
+            c.execute("""DELETE FROM product_snapshots
+                         WHERE snapshot_id NOT IN (
+                           SELECT snapshot_id FROM product_snapshots
+                           ORDER BY created_at DESC LIMIT 24
+                         )""")
+            c.execute("""DELETE FROM model_drift_snapshots
+                         WHERE snapshot_id NOT IN (
+                           SELECT snapshot_id FROM model_drift_snapshots
+                           ORDER BY created_at DESC LIMIT 100
+                         )""")
+            c.execute("DELETE FROM product_alerts WHERE created_at<NOW()-INTERVAL '24 hours'")
+            c.execute("DELETE FROM paper_nav_history WHERE observed_at<NOW()-INTERVAL '7 days'")
+        try:
+            cc=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5)
+            cc.execute('SET search_path TO veritas_v90')
+            cc.execute('VACUUM (ANALYZE) ledger_events')
+            cc.close()
+        except Exception:
+            pass
+        emit('v90_r37_storage_retention',deleted=deletes)
+        return {'status':'OK','deleted':deletes}
+    except Exception as ex:
+        emit('v90_r37_storage_retention_error',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','error':str(ex)}
+
+
 # VERITAS V90 STORAGE AUDIT R36
 # Read-only storage telemetry used to identify what fills the Postgres quota.
 def _v90_storage_audit():
@@ -16564,7 +16819,7 @@ def _v90_storage_audit():
 
 
 # VERITAS V90 EMERGENCY STORAGE RECLAIM
-_V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_26_v3'
+_V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_27_r37'
 
 def _v90_emergency_storage_reclaim():
     if not DATABASE_URL or psycopg is None:
@@ -16651,8 +16906,95 @@ def _v90_emergency_storage_reclaim():
         except Exception as ex:
             emit('db_cleanup_truncate_error',table='product_alerts',error=f'{type(ex).__name__}: {ex}')
 
+        # R37: compact the oversized raw ledger while preserving all outcome/lesson
+        # evidence and a bounded recent decision window used by analog learning.
+        ledger_compaction={'status':'SKIPPED'}
+        try:
+            c.execute("DROP TABLE IF EXISTS pg_temp.v90_ledger_keep")
+            c.execute("""
+              CREATE TEMP TABLE v90_ledger_keep AS
+              SELECT DISTINCT ON(event_key)
+                     event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+              FROM (
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM veritas_v90.ledger_events
+                WHERE event_type IN (
+                  'outcome','experience_lesson','paper_execution_lesson',
+                  'profitability_learning','abstention_lesson','case_lesson',
+                  'rejected_signal_lesson'
+                )
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='decision'
+                  ORDER BY event_ts DESC LIMIT 2500
+                ) qd
+                UNION ALL
+                SELECT d.event_key,d.entity_key,d.event_type,d.event_ts,d.asset,d.horizon,d.payload,d.model_version
+                FROM veritas_v90.ledger_events d
+                WHERE d.event_type='decision'
+                  AND EXISTS (
+                    SELECT 1 FROM veritas_v90.ledger_events o
+                    WHERE o.event_type='outcome' AND o.entity_key=d.entity_key
+                  )
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='setup_learning'
+                  ORDER BY event_ts DESC LIMIT 1000
+                ) qs
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='admission_learning'
+                  ORDER BY event_ts DESC LIMIT 1000
+                ) qa
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='trade_counterfactual_lab'
+                  ORDER BY event_ts DESC LIMIT 500
+                ) qc
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='impulse_genesis_learning'
+                  ORDER BY event_ts DESC LIMIT 500
+                ) qi
+              ) keep_rows
+              ORDER BY event_key,event_ts DESC
+            """)
+            keep_n=int((c.execute("SELECT COUNT(*) n FROM v90_ledger_keep").fetchone() or {}).get('n') or 0)
+            before_n=int((c.execute("SELECT COUNT(*) n FROM veritas_v90.ledger_events").fetchone() or {}).get('n') or 0)
+            c.execute("TRUNCATE TABLE veritas_v90.ledger_events RESTART IDENTITY")
+            c.execute("""
+              INSERT INTO veritas_v90.ledger_events
+                (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+              SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+              FROM v90_ledger_keep
+              ORDER BY event_ts
+              ON CONFLICT(event_key) DO NOTHING
+            """)
+            c.execute("ANALYZE veritas_v90.ledger_events")
+            ledger_compaction={'status':'OK','before_rows':before_n,'kept_rows':keep_n,
+                               'removed_rows':max(0,before_n-keep_n)}
+            emit('v90_r37_ledger_compaction',**ledger_compaction)
+        except Exception as ex:
+            ledger_compaction={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
+            emit('v90_r37_ledger_compaction_error',**ledger_compaction)
+
         # Meta signals are derived every cycle. Delete them in small chunks only
-        # after TRUNCATE has created breathing room. Keep decision/outcome events.
+        # after TRUNCATE has created breathing room.
         deleted_meta=0
         try:
             while True:
@@ -16677,7 +17019,7 @@ def _v90_emergency_storage_reclaim():
                 VALUES(%s,%s::jsonb,NOW(),'emergency_cleanup')
                 ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,
                   updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by
-            """,(_V90_STORAGE_CLEANUP_MARKER,json.dumps({'legacy_dropped':legacy_dropped,'truncated':reclaimed,'meta_signal_deleted':deleted_meta})))
+            """,(_V90_STORAGE_CLEANUP_MARKER,json.dumps({'legacy_dropped':legacy_dropped,'truncated':reclaimed,'meta_signal_deleted':deleted_meta,'ledger_compaction':ledger_compaction})))
         except Exception as ex:
             emit('db_cleanup_marker_error',error=f'{type(ex).__name__}: {ex}')
 
