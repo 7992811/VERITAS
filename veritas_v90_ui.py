@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r32-resilient-position-contract"
+UI_VERSION = "veritas-ui-v9.0-r34-daily-intelligence-growth"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -92,11 +92,16 @@ _CANONICAL_HTML = r'''<!doctype html>
 .intel-score .label{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.intel-score .value{font-size:30px;font-weight:760;line-height:1;margin-top:5px}.intel-score .sub{font-size:8.5px;color:var(--muted);margin-top:5px}
 .intel-main{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}
 .intel-metric{border:1px solid var(--line);border-radius:9px;padding:7px;background:var(--card2);min-width:0}.intel-metric span{display:block;font-size:8px;color:var(--muted)}.intel-metric b{display:block;font-size:11px;margin-top:2px}.intel-bar{height:4px;border-radius:999px;background:#1b252e;margin-top:6px;overflow:hidden}.intel-fill{height:100%;border-radius:999px;background:#8eb8d7}
-.intel-foot{grid-column:1/-1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:2px}.intel-stat{font-size:8.5px;color:var(--muted);border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.intel-stat b{display:block;color:#dce5ec;font-size:10px;margin-top:1px}
+.intel-daily{display:grid;grid-template-columns:1.25fr repeat(4,minmax(0,1fr));gap:5px;margin-top:6px}
+.intel-daily-stat{border:1px solid rgba(255,255,255,.055);border-radius:8px;padding:5px 6px;background:rgba(255,255,255,.012);min-width:0}
+.intel-daily-stat span{display:block;font-size:7.3px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.intel-daily-stat b{display:block;font-size:10px;margin-top:1px;white-space:nowrap}
+.intel-daily-stat em{display:block;font-size:6.9px;font-style:normal;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.intel-foot{grid-column:1/-1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:5px}.intel-stat{font-size:8.5px;color:var(--muted);border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.intel-stat b{display:block;color:#dce5ec;font-size:10px;margin-top:1px}
 .insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.insight{border:1px solid var(--line);border-radius:8px;padding:7px;min-width:0}.insight h4{margin:0 0 5px;font-size:9px;color:var(--muted);font-weight:500;text-transform:uppercase}.insight div{font-size:9px;line-height:1.6}
 .scroll{max-height:450px;overflow:auto;padding-right:2px}
-@media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(5,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:100px 70px 58px minmax(0,1fr);gap:3px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(3,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(5,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:100px 70px 58px minmax(0,1fr);gap:3px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(3,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -431,7 +436,7 @@ function buildFallbackIntelligence(raw,progress,library){
   const captureScore=20*Math.max(0,Math.min(1,capture/0.70));
   const telemetry=15*Math.max(0,Math.min(1,coverage));
   const score=knowledge+experience+outcome+captureScore+telemetry;
-  return {score,confidence:closed>=150?'HIGH':closed>=50?'MEDIUM':'LOW',components:{knowledge_breadth:knowledge,evidence_maturity:experience,outcome_quality:outcome,execution_capture_quality:captureScore,learning_telemetry_coverage:telemetry},knowledge:{expert_principles:principles,core_learning_layers:layers,sources,rules},evidence:{clean_post_r2_closed_trades:closed,win_rate:wr,avg_capture_ratio:capture,telemetry_coverage:coverage},derived_fallback:true};
+  return {score,confidence:closed>=150?'HIGH':closed>=50?'MEDIUM':'LOW',components:{knowledge_breadth:knowledge,evidence_maturity:experience,outcome_quality:outcome,execution_capture_quality:captureScore,learning_telemetry_coverage:telemetry},knowledge:{expert_principles:principles,core_learning_layers:layers,sources,rules},evidence:{clean_post_r2_closed_trades:closed,win_rate:wr,avg_capture_ratio:capture,telemetry_coverage:coverage},core_learning_index:deepNum(raw,['learning_index','index_vs_start']),daily_progress:(raw&&raw.daily_progress)||{},derived_fallback:true};
 }
 function normalizeIntelligence(raw,progress,library){
   const root=intelligenceRoot(raw),c=root.components||root.component_scores||root.scores||{},k=root.knowledge||root.knowledge_base||{},e=root.evidence||root.experience||root.statistics||{};
@@ -459,6 +464,8 @@ function normalizeIntelligence(raw,progress,library){
       avg_capture_ratio:deepNum(e,['avg_capture_ratio','average_capture_ratio','capture_ratio']),
       telemetry_coverage:deepNum(e,['telemetry_coverage','learning_telemetry_coverage'])
     },
+    core_learning_index:deepNum(raw,['learning_index','index_vs_start'])??deepNum(progress,['index_vs_start']),
+    daily_progress:(raw&&raw.daily_progress)||{},
     derived_fallback:false
   };
 }
@@ -478,7 +485,24 @@ function renderIntelligence(){
   const captureText=capture==null?'—':(100*capture).toFixed(1)+'%';
   const wrText=wr==null?'—':(100*wr).toFixed(1)+'%';
   const origin=i.derived_fallback?'расчёт по текущей телеметрии':'индекс ядра VERITAS';
-  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">Индекс зрелости системы</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · '+origin+' · достоверность: '+conf+'</div></div><div class="sub">Рост индекса отражает расширение знаний, накопление завершённых эпизодов, качество решений, захват движения и полноту обратной связи.</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div><div class="intel-foot"><div class="intel-stat">Источники знаний<b>'+esc(k.sources??'—')+'</b></div><div class="intel-stat">Правила / принципы<b>'+esc(k.rules??k.expert_principles??'—')+'</b></div><div class="intel-stat">Завершённых эпизодов<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate выборки<b>'+wrText+'</b></div><div class="intel-stat">Средний захват движения<b>'+captureText+'</b></div></div></div></div>';
+  const d=i.daily_progress||{},di=Number(d.learning_index_delta_today),ci=Number(d.current_learning_index);
+  const deltaOk=Number.isFinite(di),currentOk=Number.isFinite(ci);
+  const trend=String(d.trend||'BUILDING'),trendText=trend==='UP'?'↑ интеллект растёт':trend==='DOWN'?'↓ требуется улучшение':trend==='FLAT'?'→ без изменения':'накапливается';
+  const trendClass=trend==='UP'?'ok':trend==='DOWN'?'bad':'warn';
+  const deltaText=deltaOk?(di>0?'+':'')+di.toFixed(2)+' п.':'—';
+  const dayText=d.date_msk?String(d.date_msk).split('-').reverse().join('.'):'сегодня';
+  const episodes=d.trade_learning_episodes_today==null?'—':d.trade_learning_episodes_today;
+  const outcomes=d.decision_outcomes_today==null?'—':d.decision_outcomes_today;
+  const rulesToday=d.knowledge_rules_added_today==null?'—':d.knowledge_rules_added_today;
+  const sourcesToday=d.knowledge_sources_added_today==null?'—':d.knowledge_sources_added_today;
+  const daily='<div class="intel-daily">'+
+    '<div class="intel-daily-stat"><span>Рост интеллекта сегодня</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>'+dayText+(currentOk?' · индекс обучения '+ci.toFixed(1):'')+'</em></div>'+
+    '<div class="intel-daily-stat"><span>Обучающих эпизодов</span><b>'+esc(episodes)+'</b><em>новых завершённых сделок</em></div>'+
+    '<div class="intel-daily-stat"><span>Проверенных исходов</span><b>'+esc(outcomes)+'</b><em>независимых результатов</em></div>'+
+    '<div class="intel-daily-stat"><span>Новых правил</span><b>+'+esc(rulesToday)+'</b><em>за день</em></div>'+
+    '<div class="intel-daily-stat"><span>Новых источников</span><b>+'+esc(sourcesToday)+'</b><em>за день</em></div>'+
+  '</div>';
+  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">Индекс зрелости системы</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · '+origin+' · достоверность: '+conf+'</div></div><div class="sub">Рост индекса отражает расширение знаний, накопление завершённых эпизодов, качество решений, захват движения и полноту обратной связи.</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div>'+daily+'<div class="intel-foot"><div class="intel-stat">Источники знаний<b>'+esc(k.sources??'—')+'</b></div><div class="intel-stat">Правила / принципы<b>'+esc(k.rules??k.expert_principles??'—')+'</b></div><div class="intel-stat">Завершённых эпизодов<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate выборки<b>'+wrText+'</b></div><div class="intel-stat">Средний захват движения<b>'+captureText+'</b></div></div></div></div>';
 }
 
 function renderInsights(){
