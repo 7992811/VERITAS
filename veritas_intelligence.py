@@ -1377,9 +1377,9 @@ def v90_migrate_core_data():
             ('knowledge_candidates', None, 'discovered_at DESC', 1200),
             ('validation_snapshots', None, 'created_at DESC', 300),
             ('model_calibration_snapshots', None, 'created_at DESC', 700),
-            ('product_snapshots', None, 'created_at DESC', 80),
+            ('product_snapshots', None, 'created_at DESC', 24),
             ('macro_snapshots', None, 'created_at DESC', 100),
-            ('model_drift_snapshots', None, 'created_at DESC', 200),
+            ('model_drift_snapshots', None, 'created_at DESC', 48),
             ('product_alerts', None, 'created_at DESC', 500),
             ('event_signals', None, 'observed_at DESC', 800),
             ('governance_actions', None, 'created_at DESC', 2000),
@@ -11800,8 +11800,16 @@ def product_health():
             'storage':storage,'stale_after_min':PRODUCT_STALE_MINUTES,'backtest':backtest_status().get('latest_run')}
 
 
+_v90r39_snapshot_state={'last_at':0.0}
+
 def save_product_snapshot():
     if not pg_enabled(): return
+    # R39: product snapshots are archival only; the live UI reads current memory
+    # and canonical paper_* tables. Persist at most once per hour to prevent
+    # repeated large JSON/TOAST churn without changing visualization.
+    now_ts=time.time()
+    if now_ts-float(_v90r39_snapshot_state.get('last_at') or 0.0)<3600:
+        return
     try:
         drift=model_drift_status()
         with lock:
@@ -11846,8 +11854,9 @@ def save_product_snapshot():
             c.execute("""DELETE FROM model_drift_snapshots
                          WHERE snapshot_id NOT IN (
                            SELECT snapshot_id FROM model_drift_snapshots
-                           ORDER BY created_at DESC LIMIT 100
+                           ORDER BY created_at DESC LIMIT 48
                          )""")
+        _v90r39_snapshot_state['last_at']=now_ts
     except Exception as ex:
         emit('snapshot_error',error=f'{type(ex).__name__}: {ex}')
 
@@ -16686,19 +16695,21 @@ def _v90r37_storage_retention():
     if not pg_enabled():
         return {'status':'SKIP'}
     now_ts=time.time()
-    if now_ts-float(_v90r37_maintenance_state.get('last') or 0.0)<21600:
+    if now_ts-float(_v90r37_maintenance_state.get('last') or 0.0)<7200:
         return {'status':'NOT_DUE'}
     _v90r37_maintenance_state['last']=now_ts
     try:
         with pg_connect() as c:
             deletes={}
             specs={
-              'decision':4000,
-              'setup_learning':1500,
-              'admission_learning':1500,
-              'trade_counterfactual_lab':1000,
-              'impulse_genesis_learning':1000,
-              'meta_signal':500,
+              # Preserve all durable outcomes/lessons separately; these limits
+              # apply only to recent raw/rebuildable context windows.
+              'decision':1500,
+              'setup_learning':500,
+              'admission_learning':500,
+              'trade_counterfactual_lab':300,
+              'impulse_genesis_learning':300,
+              'meta_signal':200,
             }
             for et,lim in specs.items():
                 q=c.execute("""
@@ -16731,7 +16742,7 @@ def _v90r37_storage_retention():
             c.execute("""DELETE FROM model_drift_snapshots
                          WHERE snapshot_id NOT IN (
                            SELECT snapshot_id FROM model_drift_snapshots
-                           ORDER BY created_at DESC LIMIT 100
+                           ORDER BY created_at DESC LIMIT 48
                          )""")
             c.execute("DELETE FROM product_alerts WHERE created_at<NOW()-INTERVAL '24 hours'")
             c.execute("DELETE FROM paper_nav_history WHERE observed_at<NOW()-INTERVAL '7 days'")
@@ -16877,7 +16888,7 @@ def _v90_storage_audit():
 
 
 # VERITAS V90 EMERGENCY STORAGE RECLAIM
-_V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_27_r37'
+_V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_27_r39'
 
 def _v90_emergency_storage_reclaim():
     if not DATABASE_URL or psycopg is None:
@@ -16964,8 +16975,10 @@ def _v90_emergency_storage_reclaim():
         except Exception as ex:
             emit('db_cleanup_truncate_error',table='product_alerts',error=f'{type(ex).__name__}: {ex}')
 
-        # R37: compact the oversized raw ledger while preserving all outcome/lesson
-        # evidence and a bounded recent decision window used by analog learning.
+        # R39: compact the oversized raw ledger while preserving the intellectual
+        # capital: every outcome and durable lesson, plus matched decisions that
+        # produced outcomes. Only redundant raw context is bounded. UI state,
+        # paper_positions, paper_trades, orders and lifecycle data are untouched.
         ledger_compaction={'status':'SKIPPED'}
         try:
             c.execute("DROP TABLE IF EXISTS pg_temp.v90_ledger_keep")
@@ -16987,7 +17000,7 @@ def _v90_emergency_storage_reclaim():
                   SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
                   FROM veritas_v90.ledger_events
                   WHERE event_type='decision'
-                  ORDER BY event_ts DESC LIMIT 2500
+                  ORDER BY event_ts DESC LIMIT 1500
                 ) qd
                 UNION ALL
                 SELECT d.event_key,d.entity_key,d.event_type,d.event_ts,d.asset,d.horizon,d.payload,d.model_version
@@ -17003,7 +17016,7 @@ def _v90_emergency_storage_reclaim():
                   SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
                   FROM veritas_v90.ledger_events
                   WHERE event_type='setup_learning'
-                  ORDER BY event_ts DESC LIMIT 1000
+                  ORDER BY event_ts DESC LIMIT 500
                 ) qs
                 UNION ALL
                 SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
@@ -17011,7 +17024,7 @@ def _v90_emergency_storage_reclaim():
                   SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
                   FROM veritas_v90.ledger_events
                   WHERE event_type='admission_learning'
-                  ORDER BY event_ts DESC LIMIT 1000
+                  ORDER BY event_ts DESC LIMIT 500
                 ) qa
                 UNION ALL
                 SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
@@ -17019,7 +17032,7 @@ def _v90_emergency_storage_reclaim():
                   SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
                   FROM veritas_v90.ledger_events
                   WHERE event_type='trade_counterfactual_lab'
-                  ORDER BY event_ts DESC LIMIT 500
+                  ORDER BY event_ts DESC LIMIT 300
                 ) qc
                 UNION ALL
                 SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
@@ -17027,7 +17040,7 @@ def _v90_emergency_storage_reclaim():
                   SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
                   FROM veritas_v90.ledger_events
                   WHERE event_type='impulse_genesis_learning'
-                  ORDER BY event_ts DESC LIMIT 500
+                  ORDER BY event_ts DESC LIMIT 300
                 ) qi
               ) keep_rows
               ORDER BY event_key,event_ts DESC
