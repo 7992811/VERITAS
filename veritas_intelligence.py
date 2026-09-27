@@ -6787,6 +6787,11 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     # Historical outcome downloads run after the decision snapshot and never delay 5m entries.
     if cycle_mode=='FULL':
         _v90_schedule_outcome_refresh('full_cycle_complete')
+        try:
+            _v90_daily_intelligence_metrics()
+        except Exception as _daily_intel_ex:
+            emit('v90_daily_intelligence_checkpoint_error',
+                 error=f'{type(_daily_intel_ex).__name__}: {_daily_intel_ex}')
         # Deep rule/event learning remains off the fast lane.
         if heavy_learning_due():
             maybe_schedule_heavy_learning('interval_due')
@@ -8898,15 +8903,134 @@ def large_move_capture_board(limit=None):
             'definition':'Large move = |forward return| above horizon-specific miss threshold. Capture requires correct directional decision at episode start.'}
 
 
+# VERITAS V90 DAILY INTELLIGENCE R34
+# Durable Moscow-day baseline + exact daily learning activity.
+# The index delta measures decision-learning quality; knowledge counters are shown
+# separately so adding documents alone cannot masquerade as better intelligence.
+_v90_daily_intelligence_cache={'at':0.0,'value':None}
+
+def _v90_daily_intelligence_metrics(lp=None,force=False):
+    if not pg_enabled():
+        return {'status':'POSTGRES_REQUIRED'}
+    now_ts=time.time()
+    cached=_v90_daily_intelligence_cache.get('value')
+    if cached is not None and not force and now_ts-float(_v90_daily_intelligence_cache.get('at') or 0.0)<55.0:
+        return dict(cached)
+
+    tz=ZoneInfo('Europe/Moscow')
+    local_now=datetime.now(tz)
+    day=local_now.strftime('%Y-%m-%d')
+    start_local=local_now.replace(hour=0,minute=0,second=0,microsecond=0)
+    end_local=start_local+timedelta(days=1)
+    start_utc=start_local.astimezone(timezone.utc)
+    end_utc=end_local.astimezone(timezone.utc)
+    lp=lp or learning_progress()
+    current_index=lp.get('index_vs_start')
+    try:
+        current_index=float(current_index) if current_index is not None else None
+    except Exception:
+        current_index=None
+
+    baseline_key='daily_intelligence_msk_'+day
+    baseline_created=False
+    with pg_connect() as c:
+        totals=c.execute("""SELECT
+          (SELECT COUNT(*) FROM knowledge_sources)::int AS sources,
+          (SELECT COUNT(*) FROM knowledge_rules)::int AS rules""").fetchone() or {}
+        today_knowledge=c.execute("""SELECT
+          (SELECT COUNT(*) FROM knowledge_sources WHERE imported_at>=%s AND imported_at<%s)::int AS sources_today,
+          (SELECT COUNT(*) FROM knowledge_rules WHERE created_at>=%s AND created_at<%s)::int AS rules_today""",
+          (start_utc,end_utc,start_utc,end_utc)).fetchone() or {}
+        try:
+            ep=c.execute("""SELECT
+              COUNT(*) FILTER (WHERE learning_eligible=TRUE)::int AS total_eligible,
+              COUNT(*) FILTER (WHERE learning_eligible=TRUE AND closed_at>=%s AND closed_at<%s)::int AS today_eligible
+              FROM v90_learning_episodes""",(start_utc,end_utc)).fetchone() or {}
+        except Exception:
+            ep={'total_eligible':0,'today_eligible':0}
+        try:
+            out=c.execute("""SELECT COUNT(DISTINCT entity_key)::int AS n
+                             FROM ledger_events
+                             WHERE event_type='outcome' AND event_ts>=%s AND event_ts<%s""",
+                          (start_utc,end_utc)).fetchone() or {}
+        except Exception:
+            out={'n':0}
+
+        base=c.execute("SELECT created_at,payload FROM learning_baselines WHERE baseline_key=%s",(baseline_key,)).fetchone()
+        if not base:
+            payload={
+              'date_msk':day,
+              'learning_index':current_index,
+              'sources':int(totals.get('sources') or 0),
+              'rules':int(totals.get('rules') or 0),
+              'eligible_trade_episodes':int(ep.get('total_eligible') or 0),
+              'captured_at':now(),
+              'index_version':lp.get('index_version'),
+              'mode':lp.get('mode'),
+            }
+            c.execute("""INSERT INTO learning_baselines(baseline_key,created_at,payload)
+                         VALUES(%s,NOW(),%s::jsonb) ON CONFLICT DO NOTHING""",
+                      (baseline_key,json.dumps(payload,ensure_ascii=False,default=str)))
+            base={'created_at':datetime.now(timezone.utc),'payload':payload}
+            baseline_created=True
+
+    bp=base.get('payload') if isinstance(base,dict) else base['payload']
+    if not isinstance(bp,dict):
+        try: bp=json.loads(bp or '{}')
+        except Exception: bp={}
+    base_index=bp.get('learning_index')
+    try: base_index=float(base_index) if base_index is not None else None
+    except Exception: base_index=None
+    delta=None if current_index is None or base_index is None else round(current_index-base_index,2)
+
+    if delta is None:
+        trend='BUILDING'
+    elif delta>0.05:
+        trend='UP'
+    elif delta<-0.05:
+        trend='DOWN'
+    else:
+        trend='FLAT'
+
+    value={
+      'status':'OK',
+      'date_msk':day,
+      'timezone':'Europe/Moscow',
+      'baseline_at':str(base.get('created_at') if isinstance(base,dict) else base['created_at']),
+      'baseline_learning_index':base_index,
+      'current_learning_index':current_index,
+      'learning_index_delta_today':delta,
+      'trend':trend,
+      'learning_status':lp.get('status'),
+      'learning_confidence':lp.get('confidence'),
+      'trade_learning_episodes_today':int(ep.get('today_eligible') or 0),
+      'decision_outcomes_today':int(out.get('n') or 0),
+      'knowledge_sources_added_today':int(today_knowledge.get('sources_today') or 0),
+      'knowledge_rules_added_today':int(today_knowledge.get('rules_today') or 0),
+      'current_sources':int(totals.get('sources') or 0),
+      'current_rules':int(totals.get('rules') or 0),
+      'baseline_created_now':baseline_created,
+      'definition':'Daily intelligence growth = change in matched realized learning index from the first full-cycle checkpoint of the Moscow day. New rules/sources are reported separately and do not by themselves raise the index.'
+    }
+    _v90_daily_intelligence_cache.update({'at':now_ts,'value':value})
+    if baseline_created:
+        emit('v90_daily_intelligence_baseline_created',
+             date_msk=day,learning_index=current_index,
+             sources=value['current_sources'],rules=value['current_rules'],
+             eligible_trade_episodes=int(ep.get('total_eligible') or 0))
+    return dict(value)
+
+
 def intelligence_scorecard():
     lp=learning_progress(); lm=large_move_capture_board(); tl=trade_lifecycle_board(60)
     overall=lm.get('overall') or {}; capture=overall.get('capture_rate')
+    daily=_v90_daily_intelligence_metrics(lp)
     return {'version':VERSION,'learning_index':lp.get('index_vs_start'),'learning_index_version':lp.get('index_version'),'learning_mode':lp.get('mode'),
             'learning_status':lp.get('status'),'learning_confidence':lp.get('confidence'),'hit_rate_delta_pp':lp.get('hit_rate_delta_pp'),
             'large_move_capture_rate':capture,'large_moves_observed':overall.get('large_moves'),'large_move_miss_rate':overall.get('miss_rate'),
             'large_move_wrong_side_rate':overall.get('wrong_side_rate'),'shadow_trades_closed':tl.get('closed_n'),
             'shadow_trade_positive_rate':tl.get('positive_trade_rate'),'shadow_trade_avg_pnl':tl.get('avg_total_pnl_fraction'),
-            'knowledge_growth':lp.get('knowledge_growth'),
+            'knowledge_growth':lp.get('knowledge_growth'),'daily_progress':daily,
             'principle':'System intelligence is measured by matched realized decision quality, path-dependent trade outcomes and large-move capture; source count alone never raises the score.'}
 
 def setup_profitability_profile(asset,horizon,direction,setup_name,regime=None,limit=240):
