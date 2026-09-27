@@ -7432,3 +7432,393 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),22)
+
+
+# VERITAS V90 PROFITABILITY LEARNING R33
+# Goal: improve net profitability and win-rate without blindly increasing activity.
+#
+# Evidence used:
+# - R29 completed clean episodes only;
+# - realized MFE vs expected move;
+# - cost drag;
+# - entry/direction failures;
+# - live MFE giveback.
+#
+# R33 adds:
+# 1) a global clean-sample expected-move calibration while narrow R29 profiles
+#    are still too sparse;
+# 2) confirmation on DISTINCT 5m bars (not repeated observations in one bar);
+# 3) a calibrated post-cost entry gate;
+# 4) one-time partial profit harvest after a meaningful MFE starts giving back;
+# 5) cohort telemetry for all new R33 entries.
+#
+# It does not relax source gates, structural stops, higher-TF conflict gates,
+# full-admission flips, or portfolio hard drawdown limits.
+
+_v90r33_base_admission=_signal_first_admission
+_v90r33_base_step_one=_step_one
+_v90r33_base_step_all=step_all
+_v90r33_base_report=report
+_v90r33_base_entry_patch=_v90j_entry_patch
+_v90r33_previous_stable_confirmation=_v90r19_stable_confirmation
+_v90r33_previous_flip_confirmed=_v90r19_flip_confirmed
+
+_v90r33_cache={
+  'at':0.0,'n':0,'median_realization':1.0,'avg_realization':1.0,
+  'avg_capture':None,'overforecast_rate':0.0,'entry_error_rate':0.0,
+  'exit_capture_error_rate':0.0,'edge_haircut':1.0,
+}
+_v90r33_last_direction={}
+
+
+def _v90r33_median(xs):
+    vals=sorted(float(x) for x in xs if x is not None and math.isfinite(float(x)))
+    if not vals:
+        return None
+    n=len(vals)
+    m=n//2
+    return vals[m] if n%2 else 0.5*(vals[m-1]+vals[m])
+
+
+def _v90r33_refresh(pg_connect,force=False):
+    now=time.time()
+    if not force and now-float(_v90r33_cache.get('at') or 0.0)<55.0:
+        return _v90r33_cache
+    try:
+        with pg_connect() as c:
+            _v90r29_ensure(c)
+            rows=c.execute("""
+              SELECT movement_realization_ratio,capture_ratio,primary_attribution,
+                     net_pnl_rub,closed_at
+              FROM v90_learning_episodes
+              WHERE learning_eligible=TRUE
+                AND closed_at >= %s::timestamptz
+              ORDER BY closed_at DESC
+              LIMIT 100
+            """,(V90_Q2_STARTED_AT,)).fetchall()
+    except Exception as e:
+        print(json.dumps({'event':'V90_R33_REFRESH_ERROR','error':str(e)[:180]},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+        return _v90r33_cache
+
+    rr=[]; caps=[]; attrs=[]
+    for r0 in rows or []:
+        r=dict(r0)
+        x=_v90r29_num(r.get('movement_realization_ratio'))
+        if x is not None and 0.0<=x<=3.0:
+            rr.append(x)
+        c=_v90r29_num(r.get('capture_ratio'))
+        if c is not None and 0.0<=c<=1.5:
+            caps.append(c)
+        attrs.append(str(r.get('primary_attribution') or ''))
+
+    n=len(rows or [])
+    median_r=_v90r33_median(rr)
+    avg_r=(sum(rr)/len(rr)) if rr else None
+    avg_c=(sum(caps)/len(caps)) if caps else None
+    over=(sum(1 for x in attrs if x=='EDGE_OVERFORECAST')/n) if n else 0.0
+    entry=(sum(1 for x in attrs if x=='ENTRY_DIRECTION_ERROR')/n) if n else 0.0
+    exitcap=(sum(1 for x in attrs if x=='EXIT_CAPTURE_ERROR')/n) if n else 0.0
+
+    haircut=1.0
+    if n>=10 and median_r is not None:
+        # Smooth rather than copy the small-sample realization ratio directly.
+        # median 0.30 -> ~0.69; median 0.70 -> ~0.87.
+        haircut=_clip(0.55+0.45*median_r,0.60,0.95)
+        if over>=0.50:
+            haircut=min(haircut,0.80)
+        if over>=0.65:
+            haircut=min(haircut,0.70)
+
+    _v90r33_cache.update({
+      'at':now,'n':n,
+      'median_realization':median_r if median_r is not None else 1.0,
+      'avg_realization':avg_r if avg_r is not None else 1.0,
+      'avg_capture':avg_c,
+      'overforecast_rate':over,
+      'entry_error_rate':entry,
+      'exit_capture_error_rate':exitcap,
+      'edge_haircut':haircut,
+    })
+    print(json.dumps({
+      'event':'V90_R33_GLOBAL_CALIBRATION',
+      'episodes':n,'median_realization':median_r,'avg_realization':avg_r,
+      'avg_capture':avg_c,'overforecast_rate':over,
+      'entry_error_rate':entry,'exit_capture_error_rate':exitcap,
+      'edge_haircut':haircut,
+    },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return _v90r33_cache
+
+
+def _v90r33_timestamp(row):
+    row=row or {}
+    for key in ('observed_at','generated_at','as_of','timestamp','at','decision_at'):
+        v=row.get(key)
+        if v not in (None,''):
+            try:
+                dt=v if hasattr(v,'timestamp') else datetime.fromisoformat(str(v).replace('Z','+00:00'))
+                if dt.tzinfo is None:
+                    dt=dt.replace(tzinfo=timezone.utc)
+                return dt
+            except Exception:
+                continue
+    return datetime.now(timezone.utc)
+
+
+def _v90r19_stable_confirmation(row):
+    row=row or {}
+    tf=str(row.get('horizon') or '')
+    if tf!='5m':
+        return _v90r33_previous_stable_confirmation(row)
+
+    asset=str(row.get('asset') or '')
+    direction=str(row.get('research_decision') or '')
+    base_key=(asset,tf)
+    prev_dir=_v90r33_last_direction.get(base_key)
+    if prev_dir and prev_dir!=direction:
+        for k in list(_v90r19_confirm_state):
+            if len(k)>=2 and k[0]==asset and k[1]==tf:
+                _v90r19_confirm_state.pop(k,None)
+    _v90r33_last_direction[base_key]=direction
+
+    dt=_v90r33_timestamp(row)
+    bucket=int(dt.timestamp()//300)
+    key=(asset,tf,direction)
+    st=dict(_v90r19_confirm_state.get(key) or {})
+    last=st.get('bar_bucket')
+    count=int(st.get('count') or 0)
+
+    if last is None:
+        count=1
+    elif bucket>int(last):
+        # A long gap is a new episode, not a second confirmation.
+        count=1 if bucket-int(last)>2 else min(V90_R19_CONFIRMATIONS_REQUIRED,count+1)
+    elif bucket<int(last):
+        count=1
+
+    _v90r19_confirm_state[key]={
+      'bar_bucket':bucket,'count':count,
+      'token':f'5m:{bucket}'
+    }
+    return count
+
+
+def _v90r33_edge_eval(row):
+    row=row or {}
+    h=str(row.get('horizon') or '')
+    if h!='5m' or int(_v90r33_cache.get('n') or 0)<10:
+        return {'active':False,'pass':True}
+
+    plan=row.get('trade_plan') or {}
+    raw=_v90r29_num(plan.get('expected_move_pct'))
+    if raw is None:
+        raw=_v90r29_num(row.get('expected_move_pct'))
+    if raw is None:
+        return {'active':True,'pass':False,'reason':'R33_EXPECTED_MOVE_MISSING'}
+
+    raw=abs(float(raw))
+    haircut=float(_v90r33_cache.get('edge_haircut') or 1.0)
+    calibrated=raw*haircut
+    rr=_v90r29_num(plan.get('expected_to_stop_ratio'))
+    if rr is None:
+        rr=_v90r29_num(row.get('_execution_rr'),0.0)
+    calibrated_rr=float(rr or 0.0)*haircut
+
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    super_sig=tier in ('SUPER_LONG','SUPER_SHORT') or bool(row.get('_r20_super_priority'))
+    grade=str(row.get('_setup_grade') or ((row.get('trade_plan') or {}).get('setup_grade') or ''))
+    eq=str(row.get('entry_quality') or plan.get('entry_quality') or '')
+    fresh=eq=='FRESH_BREAKOUT' or str(row.get('decision_stage') or '')=='EARLY_PROBE'
+
+    all_in_cost=max(2.0*float(COMMISSION)+0.0005,0.0015)
+    min_move=max(2.20*all_in_cost,0.0030 if super_sig else 0.0035)
+    if fresh and grade=='B':
+        min_move=max(min_move,0.0040)
+    min_rr=1.10 if super_sig else 1.15
+
+    ok=bool(calibrated>=min_move and (calibrated_rr>=min_rr or float(rr or 0.0)<=0))
+    return {
+      'active':True,'pass':ok,
+      'reason':None if ok else 'R33_CALIBRATED_EDGE_TOO_SMALL',
+      'raw_expected_move_pct':raw,
+      'edge_haircut':haircut,
+      'calibrated_expected_move_pct':calibrated,
+      'raw_rr':float(rr or 0.0),
+      'calibrated_rr':calibrated_rr,
+      'minimum_move_pct':min_move,
+      'minimum_rr':min_rr,
+      'all_in_cost_floor_pct':all_in_cost,
+      'episodes':int(_v90r33_cache.get('n') or 0),
+    }
+
+
+def _signal_first_admission(row,policy,drawdown):
+    base=dict(_v90r33_base_admission(row,policy,drawdown) or {})
+    if not base.get('open'):
+        return base
+
+    ev=_v90r33_edge_eval(row)
+    if isinstance(row,dict):
+        row['_r33_edge_calibration']=ev
+    if ev.get('active') and not ev.get('pass'):
+        return {
+          'open':False,'fraction':0.0,
+          'reason':ev.get('reason') or 'R33_CALIBRATED_EDGE_TOO_SMALL',
+          'r33_edge_calibration':ev,
+          'risk_governor':base.get('risk_governor'),
+        }
+
+    base['r33_edge_calibration']=ev
+    return base
+
+
+def _v90r19_flip_confirmed(summary,z,row):
+    if not _v90r33_previous_flip_confirmed(summary,z,row):
+        return False
+    ev=_v90r33_edge_eval(row)
+    if ev.get('active') and not ev.get('pass'):
+        print(json.dumps({
+          'event':'V90_R33_FLIP_BLOCKED_EDGE',
+          'portfolio':_v90r22_active_portfolio,
+          'asset':(row or {}).get('asset'),
+          'old_direction':(z or {}).get('direction'),
+          'new_direction':(row or {}).get('research_decision'),
+          'edge':ev,
+        },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+        return False
+    return True
+
+
+def _v90r33_harvest(c,p,name,prices,nav,ts):
+    changes=[]
+    try:
+        _v90j_update_excursions(c,name,prices,ts)
+        rows=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+    except Exception:
+        return changes
+
+    for z0 in rows or []:
+        z=dict(z0)
+        asset=str(z.get('asset') or '')
+        if asset not in (prices or {}):
+            continue
+        payload=_v90j_json(z.get('payload'))
+        if payload.get('r33_mfe_harvest_done'):
+            continue
+        if str(payload.get('data_integrity_status') or 'OK') not in ('','OK'):
+            continue
+
+        try:
+            px=float(prices[asset]); entry=float(z.get('avg_entry_price') or 0.0)
+            units=abs(float(z.get('units') or 0.0))
+        except Exception:
+            continue
+        if px<=0 or entry<=0 or units<=0:
+            continue
+
+        direction=str(z.get('direction') or '')
+        current_pct=100.0*((px/entry-1.0) if direction=='LONG' else (entry/px-1.0))
+        mfe=float(payload.get('mfe_pct') or 0.0)
+        giveback=max(0.0,mfe-max(0.0,current_pct))
+
+        if mfe<0.30 or current_pct<0.20:
+            continue
+        if giveback<max(0.12,0.35*mfe):
+            continue
+
+        current_frac=units*px/max(float(nav),1.0)
+        keep_ratio=0.60 if str(name)=='Aggressive' else 0.50
+        target=_clip(_round_step(current_frac*keep_ratio),0.05,current_frac)
+        if target>=current_frac-0.025:
+            continue
+
+        _close_or_reduce(c,p,name,z,px,target,nav,ts,'R33_MFE_GIVEBACK_HARVEST')
+
+        patch={
+          'r33_mfe_harvest_done':True,
+          'r33_mfe_harvest_at':_v90j_iso(ts),
+          'r33_harvest_mfe_pct':mfe,
+          'r33_harvest_current_profit_pct':current_pct,
+          'r33_harvest_giveback_pct':giveback,
+          'r33_harvest_target_fraction':target,
+        }
+        c.execute("""UPDATE paper_positions
+                     SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
+                     WHERE portfolio_name=%s AND asset=%s""",
+                  (json.dumps(patch,ensure_ascii=False,default=str),name,asset))
+        tid=z.get('active_trade_id')
+        if tid:
+            c.execute("""UPDATE paper_trades
+                         SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
+                         WHERE trade_id=%s""",
+                      (json.dumps(patch,ensure_ascii=False,default=str),tid))
+        changes.append({
+          'portfolio':name,'asset':asset,'direction':direction,
+          'mfe_pct':mfe,'current_profit_pct':current_pct,
+          'giveback_pct':giveback,'target_fraction':target,
+        })
+    if changes:
+        print(json.dumps({'event':'V90_R33_MFE_HARVEST','changes':changes},
+                         ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return changes
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    p,pos=_portfolio_rows(c,name)
+    nav,_,_,_=_mark_nav(p,pos,prices)
+    _v90r33_harvest(c,p,name,prices,nav,ts)
+    return _v90r33_base_step_one(
+        c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
+    )
+
+
+def _v90j_entry_patch(row,z,ts):
+    d=dict(_v90r33_base_entry_patch(row,z,ts) or {})
+    ev=(row or {}).get('_r33_edge_calibration') or _v90r33_edge_eval(row)
+    d.update({
+      'r33_policy':'PROFITABILITY_LEARNING_R33',
+      'r33_learning_episodes':int(_v90r33_cache.get('n') or 0),
+      'r33_edge_haircut':float(_v90r33_cache.get('edge_haircut') or 1.0),
+      'r33_global_overforecast_rate':float(_v90r33_cache.get('overforecast_rate') or 0.0),
+      'r33_global_entry_error_rate':float(_v90r33_cache.get('entry_error_rate') or 0.0),
+      'r33_global_exit_capture_error_rate':float(_v90r33_cache.get('exit_capture_error_rate') or 0.0),
+      'r33_calibrated_expected_move_pct':ev.get('calibrated_expected_move_pct') if isinstance(ev,dict) else None,
+      'r33_calibrated_rr':ev.get('calibrated_rr') if isinstance(ev,dict) else None,
+    })
+    return d
+
+
+def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
+    try:
+        _v90r33_refresh(pg_connect)
+    except Exception:
+        pass
+    return _v90r33_base_step_all(
+        summary,pg_connect,model_version,observed_at,commission_rate,emit
+    )
+
+
+def report(pg_connect):
+    d=dict(_v90r33_base_report(pg_connect) or {})
+    try:
+        x=_v90r33_refresh(pg_connect)
+        d['profitability_learning_r33']={
+          'status':'ACTIVE',
+          'eligible_episodes':int(x.get('n') or 0),
+          'median_mfe_realization_ratio':x.get('median_realization'),
+          'avg_mfe_realization_ratio':x.get('avg_realization'),
+          'avg_capture_ratio':x.get('avg_capture'),
+          'edge_overforecast_rate':x.get('overforecast_rate'),
+          'entry_error_rate':x.get('entry_error_rate'),
+          'exit_capture_error_rate':x.get('exit_capture_error_rate'),
+          'expected_move_haircut':x.get('edge_haircut'),
+          'distinct_5m_bar_confirmation':True,
+          'mfe_giveback_harvest':True,
+          'profitability_guaranteed':False,
+        }
+    except Exception as e:
+        d['profitability_learning_r33']={'status':'UNAVAILABLE','error':str(e)[:180]}
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),23)
