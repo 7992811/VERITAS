@@ -1,4 +1,4 @@
-name: VERITAS live position probe
+name: VERITAS UI cache probe
 
 on:
   push:
@@ -12,16 +12,13 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe live APIs
+      - name: Probe app headers and UI version
         shell: bash
         run: |
-          set -o pipefail
           BASE="https://veritas-intelligence-v1.onrender.com"
-          echo "=== PAPER PORTFOLIOS ==="
-          curl -sS --max-time 30 -w "\nHTTP_STATUS:%{http_code}\nTIME_TOTAL:%{time_total}\n" "$BASE/api/v1/paper-portfolios" | head -c 60000
-          echo
-          echo "=== DASHBOARD BOOTSTRAP ==="
-          curl -sS --max-time 30 -w "\nHTTP_STATUS:%{http_code}\nTIME_TOTAL:%{time_total}\n" "$BASE/api/v1/dashboard-bootstrap" | head -c 60000
-          echo
-          echo "=== PORTFOLIO TRADES ==="
-          curl -sS --max-time 30 -w "\nHTTP_STATUS:%{http_code}\nTIME_TOTAL:%{time_total}\n" "$BASE/api/v1/portfolio-trades" | head -c 30000
+          echo "=== HEADERS ==="
+          curl -sS -D - -o /tmp/app.html --max-time 30 "$BASE/app?cb=$(date +%s)" | head -80
+          echo "=== UI MARKERS ==="
+          grep -Eo "veritas-ui-v9\.0-[^\"']+|veritas_v90_position_book_r[0-9]+" /tmp/app.html | head -20 || true
+          echo "=== POSITION API ==="
+          curl -sS --max-time 30 "$BASE/api/v1/paper-portfolios?cb=$(date +%s)" | python -c 'import sys,json; d=json.load(sys.stdin); print(json.dumps({"api_source":d.get("api_source"),"portfolios":[{"name":p.get("name"),"gross":p.get("gross_leverage") or (p.get("latest") or {}).get("gross_leverage"),"positions":[[z.get("asset"),z.get("direction"),z.get("target_fraction")] for z in p.get("positions") or []]} for p in d.get("portfolios") or []]},ensure_ascii=False))'
