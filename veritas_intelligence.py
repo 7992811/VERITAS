@@ -6070,6 +6070,7 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
                     'setup':'STRUCTURAL_BREAKOUT_LIFECYCLE','execution_timeframe':z.get('timeframe'),
                     'probability':round(prob,4),'probability_source':'EXPERT_STRUCTURE_RULE_UNCALIBRATED',
                     'stop_price':stop,'target_price':target,
+                    'stop_anchor':(z.get('range_high') if direction=='SHORT' else z.get('range_low')),
                     'reward_risk':round(expected/max(risk,1e-9),3),
                     'breakout_level':z.get('breakout_level'),'range_high':z.get('range_high'),
                     'range_low':z.get('range_low'),'quality_score':z.get('quality_score'),
