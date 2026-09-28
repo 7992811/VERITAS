@@ -217,7 +217,7 @@ def _best_by_asset(summary):
         if d not in ('LONG','SHORT'): continue
         rs=r.get('range_retest_breakout') or {}
         paper_research_ok=bool((rs.get('active') or tr.get('active')) and r.get('source_gate_pass') and int(r.get('direct_sources') or 0)>=1)
-        if not bool(r.get('execution_eligible')) and not paper_research_ok: continue
+        if not bool(r.get('paper_eligible',r.get('execution_eligible'))) and not paper_research_ok: continue
         inst=r.get('institutional_signal') or {}; action=str(inst.get('action') or '')
         if action=='WAIT' and not tr.get('active') and not rs.get('active'): continue
         p,source=_signal_probability(r)
@@ -281,7 +281,7 @@ def _best_impulse_by_asset(summary):
             continue
         if ec.get('status')=='VETO':
             continue
-        if not bool(r.get('execution_eligible')) and not bool(plan.get('eligible')):
+        if not bool(r.get('paper_eligible',r.get('execution_eligible'))) and not bool(plan.get('eligible')):
             continue
         if plan.get('eligible') is False and not raw.get('active'):
             continue
@@ -8128,9 +8128,11 @@ _v90r41_base_report = _report_r40
 
 def _signal_first_admission(row,policy,drawdown):
     row=row or {}
-    if not bool(row.get('execution_eligible')):
-        return {'open':False,'fraction':0.0,'reason':'R41_EXECUTION_QUALITY_GATE',
+    if not bool(row.get('paper_eligible',row.get('execution_eligible'))):
+        return {'open':False,'fraction':0.0,'reason':'R42_PAPER_SOURCE_GATE',
                 'execution_reason':row.get('execution_reason'),
+                'paper_execution_reason':row.get('paper_execution_reason'),
+                'production_eligible':bool(row.get('production_eligible')),
                 'research_signal_preserved':True}
     plan=row.get('trade_plan') or {}
     econ=plan.get('final_economics_gate') or {}
@@ -8138,7 +8140,11 @@ def _signal_first_admission(row,policy,drawdown):
         return {'open':False,'fraction':0.0,'reason':'R41_FINAL_ECONOMICS_GATE',
                 'economics_blockers':econ.get('blockers') or [],
                 'research_signal_preserved':True}
-    return _v90r41_base_admission(row,policy,drawdown)
+    out=_v90r41_base_admission(row,policy,drawdown)
+    if isinstance(out,dict):
+        out['paper_source_quality']='PRODUCTION_GRADE' if row.get('production_eligible') else 'RESEARCH_GRADE'
+        out['paper_is_live_fill_evidence']=False
+    return out
 
 def report(pg_connect):
     d=dict(_v90r41_base_report(pg_connect) or {})
@@ -8149,13 +8155,14 @@ def report(pg_connect):
             _payload.setdefault('quantity_semantics','NORMALIZED_PAPER_RETURN_UNITS')
     d['paper_execution_quality_r41']={
       'enabled':True,
-      'research_only_signals_can_open_positions':False,
-      'requires_execution_eligible':True,
+      'research_only_signals_can_open_positions':True,
+      'requires_paper_eligible':True,
+      'requires_production_eligible':False,
       'requires_final_economics_gate':True,
-      'pnl_interpretation':'execution-quality normalized paper P&L; still not broker-fill proof',
+      'pnl_interpretation':'research-grade or execution-grade normalized paper P&L; never broker-fill proof',
       'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
       'normalized_units_are_broker_quantity':False,
       'broker_quantity_requires_instrument_registry':True,
-      'blocked_assets_without_sufficient_feed':'remain visible as research signals and learning episodes',
+      'blocked_assets_without_sufficient_feed':'paper may use current research-grade feeds; live capital remains production-gated',
     }
     return _jsonable(d)
