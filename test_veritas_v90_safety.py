@@ -315,6 +315,10 @@ class ExecutionSafetyTests(unittest.TestCase):
             vi.pg_enabled=old_enabled
             vi._v90_pg_health.update(old_health)
 
+    def test_market_prefetch_not_silently_reduced_to_two_workers(self):
+        import veritas_intelligence as vi
+        self.assertGreaterEqual(vi.FAST_LOOP_MARKET_WORKERS,4)
+
     def test_features_runtime_smoke_no_recursion(self):
         import veritas_intelligence as vi
         n=520
