@@ -257,6 +257,25 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(out["paper_source_quality"],"RESEARCH_GRADE")
         self.assertFalse(out["paper_is_live_fill_evidence"])
 
+    def test_research_grade_paper_eligibility_survives_router_field_loss(self):
+        import veritas_portfolio as vp
+        row={
+            "asset":"BRENT","research_decision":"SHORT","execution_eligible":False,
+            "production_eligible":False,"source_gate_pass":True,"market_open":True,
+            "trade_plan":{"eligible":True,"final_economics_gate":{"status":"PASS","eligible":True}},
+        }
+        old=vp._v90r41_base_admission
+        try:
+            vp._v90r41_base_admission=lambda row,policy,drawdown: {
+                "open":True,"fraction":0.10,"reason":"BASE_PASS"
+            }
+            out=vp._signal_first_admission(row,vp.POLICIES["Aggressive"],0.0)
+        finally:
+            vp._v90r41_base_admission=old
+        self.assertTrue(out["open"])
+        self.assertTrue(row["paper_eligible"])
+        self.assertEqual(row["paper_execution_reason"],"research_grade_paper_feed")
+
     def test_final_plan_gate_cannot_be_bypassed_by_setup_mutation(self):
         import veritas_intelligence as vi
         plan={
