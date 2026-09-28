@@ -17763,6 +17763,16 @@ def features(raw, horizon, common_structure=None):
 
 def execution_eligibility(asset, raw, clock_info=None):
     out=dict(_v90r40_base_execution_eligibility(asset,raw,clock_info) or {})
+    # Execution-quality crypto requires a current executable top-of-book.
+    if asset in ('BTC','ETH'):
+        try:
+            _bid=float(raw.get('best_bid') or 0.0); _ask=float(raw.get('best_ask') or 0.0)
+        except Exception:
+            _bid=_ask=0.0
+        if not (_bid>0 and _ask>_bid):
+            out['eligible']=False
+            out['paper_eligible']=False
+            out['reason']='paper_top_of_book_required'
     # A delayed NQ research feed is useful for signal context but cannot honestly
     # simulate 5m/real-time execution. Keep the research direction; block fills.
     if asset=='NQ' and str(raw.get('data_latency_class') or '').startswith('CME_FUTURES_DELAYED'):
