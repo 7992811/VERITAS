@@ -4,6 +4,7 @@ import json, math, time, re
 from datetime import datetime, timezone, timedelta
 from xml.etree import ElementTree as ET
 import httpx
+import veritas_execution as VX
 
 VERSION='veritas-portfolio-v9.0-four-portfolio-core'
 INITIAL_NAV_RUB=1_000_000.0
@@ -134,6 +135,8 @@ def ensure_schema(pg_connect):
           fee_rub DOUBLE PRECISION NOT NULL, fraction_nav DOUBLE PRECISION NOT NULL,
           reason TEXT, payload JSONB NOT NULL
         );
+        ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS client_order_id TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_orders_client_order_id ON paper_orders(client_order_id) WHERE client_order_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_paper_orders_portfolio_ts ON paper_orders(portfolio_name,created_at DESC);
         CREATE TABLE IF NOT EXISTS paper_nav_history(
           portfolio_name TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL,
@@ -2037,22 +2040,30 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     current_notional=abs(float(z['units'])*price); target_notional=max(0.0,target_fraction*nav)
     close_notional=max(0.0,current_notional-target_notional)
     if close_notional<=max(1.0,0.0025*nav): return 0.0
-    close_units=min(abs(float(z['units'])),close_notional/price)
+    close_units=min(abs(float(z['units'])),close_notional/max(float(price),1e-12))
+    side='SELL' if z['direction']=='LONG' else 'BUY_TO_COVER'
+    cid=VX.make_client_order_id(name,z['asset'],'CLOSE_'+str(z['direction']),
+                                target_fraction,None,str(ts),reason)
+    if c.execute("SELECT 1 AS ok FROM paper_orders WHERE client_order_id=%s LIMIT 1",(cid,)).fetchone():
+        return 0.0
+    fill=VX.simulated_fill(z['asset'],side,price,close_notional/max(nav,1.0))
+    fill_price=float(fill['fill_price'])
+    executed_notional=close_units*fill_price
     sign=1 if z['direction']=='LONG' else -1
-    pnl=sign*close_units*(price-float(z['avg_entry_price']))
-    fee=close_notional*COMMISSION
-    frac=close_notional/max(nav,1)
+    pnl=sign*close_units*(fill_price-float(z['avg_entry_price']))
+    fee=executed_notional*COMMISSION
+    frac=executed_notional/max(nav,1)
     c.execute('UPDATE paper_portfolios SET realized_pnl_rub=realized_pnl_rub+%s,fees_rub=fees_rub+%s,updated_at=%s WHERE name=%s',(pnl,fee,ts,name))
     c.execute('UPDATE paper_trades SET gross_pnl_rub=gross_pnl_rub+%s,fees_rub=fees_rub+%s WHERE trade_id=%s',(pnl,fee,z['active_trade_id']))
     remain=abs(float(z['units']))-close_units
-    c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,z['active_trade_id'],ts,z['asset'],'SELL' if z['direction']=='LONG' else 'BUY_TO_COVER',price,close_notional,fee,frac,reason,json.dumps({})))
+    c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,z['active_trade_id'],ts,z['asset'],side,fill_price,executed_notional,fee,frac,reason,json.dumps({'execution_model':fill},ensure_ascii=False,default=str),cid))
     if remain<=1e-10 or target_fraction<=0:
         # close trade; net pnl after fees/funding accumulated on trade
         tr=c.execute('SELECT * FROM paper_trades WHERE trade_id=%s',(z['active_trade_id'],)).fetchone()
         gross=float(tr['gross_pnl_rub']) if tr else pnl; fees=float(tr['fees_rub']) if tr else fee; fund=float(tr['funding_rub']) if tr else 0.0
         net=gross-fees-fund; entry_nav=float((tr['payload'] or {}).get('entry_nav_rub',INITIAL_NAV_RUB)) if tr and isinstance(tr['payload'],dict) else INITIAL_NAV_RUB
         ret=net/max(entry_nav,1.0); prof=net>0; mw=ret>MEANINGFUL_WIN_NAV
-        c.execute('UPDATE paper_trades SET closed_at=%s,avg_exit_price=%s,net_pnl_rub=%s,return_on_entry_nav=%s,profitable=%s,meaningful_win=%s,status=%s WHERE trade_id=%s',(ts,price,net,ret,prof,mw,'CLOSED',z['active_trade_id']))
+        c.execute('UPDATE paper_trades SET closed_at=%s,avg_exit_price=%s,net_pnl_rub=%s,return_on_entry_nav=%s,profitable=%s,meaningful_win=%s,status=%s,payload=payload || %s::jsonb WHERE trade_id=%s',(ts,fill_price,net,ret,prof,mw,'CLOSED',json.dumps({'last_exit_execution_model':fill},ensure_ascii=False,default=str),z['active_trade_id']))
         c.execute('DELETE FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,z['asset']))
     else:
         c.execute('UPDATE paper_positions SET units=%s,last_price=%s,target_fraction=%s,updated_at=%s WHERE portfolio_name=%s AND asset=%s',(remain,price,target_fraction,ts,name,z['asset']))
@@ -2070,20 +2081,31 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     current=abs(float(z['units'])*price) if z else 0.0
     add=max(0.0,target_notional-current)
     if add<=max(1.0,0.0025*nav): return
-    fee=add*COMMISSION; units=add/price
+    side='BUY' if direction=='LONG' else 'SELL_SHORT'
+    intent=VX.build_order_intent(
+        name,asset,direction,target_fraction,price,row.get('horizon'),str(ts),reason,
+        production_eligible=bool(row.get('production_eligible',False))
+    )
+    if c.execute("SELECT 1 AS ok FROM paper_orders WHERE client_order_id=%s LIMIT 1",(intent.client_order_id,)).fetchone():
+        return
+    fill=VX.simulated_fill(asset,side,price,add/max(nav,1.0))
+    fill_price=float(fill['fill_price'])
+    fee=add*COMMISSION; units=add/fill_price
     c.execute('UPDATE paper_portfolios SET fees_rub=fees_rub+%s,updated_at=%s WHERE name=%s',(fee,ts,name))
     if z:
-        old_units=float(z['units']); avg=(old_units*float(z['avg_entry_price'])+units*price)/(old_units+units)
+        old_units=float(z['units']); avg=(old_units*float(z['avg_entry_price'])+units*fill_price)/(old_units+units)
         # Preserve the original structural stop/setup on adds. An add is not
         # permission to silently switch the active trade to another horizon's stop.
         old_payload=_position_payload(dict(z))
         old_payload.update({'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
                             'last_signal_horizon':row.get('horizon'),
                             'signal':(row.get('institutional_signal') or {}).get('investor_signal'),
-                            'soft_invalidation_count':0})
+                            'soft_invalidation_count':0,
+                            'last_entry_execution_model':fill,
+                            'last_client_order_id':intent.client_order_id})
         c.execute('UPDATE paper_positions SET units=%s,avg_entry_price=%s,last_price=%s,target_fraction=%s,updated_at=%s,payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s',
                   (old_units+units,avg,price,target_fraction,ts,json.dumps(old_payload),name,asset))
-        c.execute('UPDATE paper_trades SET fees_rub=fees_rub+%s,max_fraction=GREATEST(max_fraction,%s),payload=payload || %s::jsonb WHERE trade_id=%s',(fee,target_fraction,json.dumps({'last_add_pwin':row['_pwin']}),z['active_trade_id']))
+        c.execute('UPDATE paper_trades SET fees_rub=fees_rub+%s,max_fraction=GREATEST(max_fraction,%s),payload=payload || %s::jsonb WHERE trade_id=%s',(fee,target_fraction,json.dumps({'last_add_pwin':row['_pwin'],'last_entry_execution_model':fill,'last_client_order_id':intent.client_order_id},ensure_ascii=False,default=str),z['active_trade_id']))
         trade_id=z['active_trade_id']
     else:
         trade_id=f"{name}:{asset}:{int(time.time()*1000)}"
@@ -2099,10 +2121,14 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                  'independent':((row.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count'),
                  'model_version':VERSION,'setup_id':plan.get('setup_id'),'execution_horizon':row.get('horizon'),
                  'structural_stop_enforced':bool(plan.get('structural_stop_enforced')),
-                 'soft_invalidation_count':0,'entry_permission':(plan.get('trade_integrity') or {}).get('entry_permission')}
-        c.execute('INSERT INTO paper_trades(trade_id,portfolio_name,asset,direction,opened_at,avg_entry_price,max_fraction,fees_rub,status,setup,horizon,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(trade_id,name,asset,direction,ts,price,target_fraction,fee,'OPEN',setup,row.get('horizon'),json.dumps(payload)))
-        c.execute('INSERT INTO paper_positions(portfolio_name,asset,direction,units,avg_entry_price,opened_at,updated_at,active_trade_id,stop_price,target_fraction,last_price,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,asset,direction,units,price,ts,ts,trade_id,(row.get('trade_plan') or {}).get('stop_price'),target_fraction,price,json.dumps(payload)))
-    c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,trade_id,ts,asset,'BUY' if direction=='LONG' else 'SELL_SHORT',price,add,fee,add/max(nav,1),reason,json.dumps({'pwin':row['_pwin'],'pwin_source':row['_pwin_source']})))
+                 'soft_invalidation_count':0,'entry_permission':(plan.get('trade_integrity') or {}).get('entry_permission'),
+                 'entry_execution_model':fill,'client_order_id':intent.client_order_id,
+                 'normalized_paper_notional':True}
+        c.execute('INSERT INTO paper_trades(trade_id,portfolio_name,asset,direction,opened_at,avg_entry_price,max_fraction,fees_rub,status,setup,horizon,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(trade_id,name,asset,direction,ts,fill_price,target_fraction,fee,'OPEN',setup,row.get('horizon'),json.dumps(payload,ensure_ascii=False,default=str)))
+        c.execute('INSERT INTO paper_positions(portfolio_name,asset,direction,units,avg_entry_price,opened_at,updated_at,active_trade_id,stop_price,target_fraction,last_price,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,asset,direction,units,fill_price,ts,ts,trade_id,(row.get('trade_plan') or {}).get('stop_price'),target_fraction,price,json.dumps(payload,ensure_ascii=False,default=str)))
+    order_payload={'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+                   'execution_model':fill,'order_intent':intent.to_dict()}
+    c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,trade_id,ts,asset,side,fill_price,add,fee,add/max(nav,1),reason,json.dumps(order_payload,ensure_ascii=False,default=str),intent.client_order_id))
 
 
 def _apply_funding(c,p,pos,prices,ruonia,ts):
@@ -8011,3 +8037,29 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),24)
+
+
+# VERITAS V90 EXECUTION SAFETY R40
+# Final portfolio invariant: no setup-specific sizing path may bypass the
+# universal economics gate produced by veritas_intelligence.
+_v90r40_base_desired_fraction = _desired_fraction
+_v90r40_base_report = report
+
+def _desired_fraction(row,policy,drawdown):
+    gate=((row or {}).get('trade_plan') or {}).get('final_economics_gate') or {}
+    if gate and gate.get('status')=='BLOCK':
+        return 0.0
+    return _v90r40_base_desired_fraction(row,policy,drawdown)
+
+def report(pg_connect):
+    d=dict(_v90r40_base_report(pg_connect) or {})
+    d['execution_safety_r40']={
+      'version':VX.VERSION,
+      'paper_fill_model':'CONSERVATIVE_NORMALIZED_PAPER_FILL_V1',
+      'idempotent_client_order_ids':True,
+      'final_economics_gate':True,
+      'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
+      'live_broker_execution_enabled':False,
+      'principle':'research portfolios may stay aggressive; future live account is independently capped and fail-closed',
+    }
+    return _jsonable(d)
