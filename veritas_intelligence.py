@@ -1697,6 +1697,7 @@ def pg_pending_decisions(limit=None):
           SELECT d.entity_key,d.event_ts,d.asset,d.horizon,
                  COALESCE(d.payload->>'research_decision',d.payload->>'decision','NO_TRADE') AS decision,
                  NULLIF(d.payload->'features'->>'price','')::double precision AS entry_price,
+                 d.payload#>>'{features,market_contract,secid}' AS contract_secid,
                  NULLIF(d.payload->>'sqlite_decision_id','')::bigint AS sqlite_decision_id
           FROM ledger_events d
           WHERE d.event_type='decision'
@@ -5067,7 +5068,7 @@ def evaluate_outcomes():
                 'id': x.get('sqlite_decision_id'), 'entity_key': x['entity_key'],
                 'created_at': x['event_ts'].isoformat() if hasattr(x['event_ts'],'isoformat') else str(x['event_ts']),
                 'decision': x.get('decision') or 'NO_TRADE', 'asset': x['asset'], 'horizon': x['horizon'],
-                'entry_price': x.get('entry_price')
+                'entry_price': x.get('entry_price'),'contract_secid':x.get('contract_secid')
             } for x in pg_rows]
         except Exception as e:
             emit('pg_pending_error', error=f'{type(e).__name__}: {e}')
@@ -5091,7 +5092,7 @@ def evaluate_outcomes():
         try:
             entry = float(r.get('entry_price') or 0.0)
             if entry<=0: continue
-            k = _v90_fetch_path_asset_horizon(r['asset'],symbol,int(created.timestamp()*1000),r['horizon'],hours)
+            k = _v90_fetch_path_asset_horizon(r['asset'],symbol,int(created.timestamp()*1000),r['horizon'],hours,r.get('contract_secid'))
             if not k: continue
             if r['asset'] in MARKET_BAR_ASSETS:
                 bars_needed=horizon_bars(r['asset'],r['horizon'])
@@ -5169,6 +5170,13 @@ def stats():
     return out
 
 
+
+def features(raw,horizon):
+    f=dict(_v90r40_base_features(raw,horizon) or {})
+    f['market_contract']=raw.get('contract')
+    f['market_source_names']=raw.get('source_names')
+    f['market_observed_at']=raw.get('observed_at')
+    return f
 
 def execution_eligibility(asset, raw, clock_info=None):
     """
@@ -6030,7 +6038,7 @@ def horizon_structure_features(raw,horizon):
     return _v90_base_horizon_structure_features(raw,horizon)
 
 
-def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
+def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours,contract_secid=None):
     ss=float(start_ms)/1000.0
     # Historical NDX decisions remain valid learning records after the active
     # instrument migrated to NQ; evaluate them against the original cash index.
@@ -6038,6 +6046,19 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours):
         return _yahoo_between('%5ENDX',ss-600,
                               ss+max(float(hours)*3600.0,3*3600.0),
                               '5m' if str(horizon)=='5m' else '1h')
+    # Brent outcomes must use the exact exchange contract observed by the signal.
+    # Never score a MOEX front-contract decision on Yahoo continuous BZ=F.
+    if str(asset)=='BRENT':
+        secid=str(contract_secid or '')
+        if not secid:
+            try: secid,_q=_v90_moex_front_brent_contract()
+            except Exception: secid=''
+        if not secid:
+            return []
+        end=ss+max(float(hours)*3600.0,3*3600.0)+3600.0
+        if str(horizon)=='5m':
+            return _v90_moex_exact_5m_klines(secid,ss-600,end)
+        return _moex_futures_candles_between(secid,ss-3600,end,60)
     if str(horizon)!='5m':
         return fetch_path_asset(asset,symbol,start_ms,hours)
     end=ss+3*3600
@@ -16577,6 +16598,9 @@ def _v90r37_features_compact(f):
       'breakout_hold':1.0 if st.get('breakout_hold') else f.get('breakout_hold',0.0),
       'expected_move_pct':f.get('expected_move_pct'),
       'regime':f.get('regime'),
+      'market_contract':f.get('market_contract'),
+      'market_source_names':f.get('market_source_names'),
+      'market_observed_at':f.get('market_observed_at'),
     }
 
 
@@ -17574,6 +17598,7 @@ def _v90r24_prime_portfolio_snapshot():
 # VERITAS V90 EXECUTION SAFETY R40
 # One final gate sits after every setup-specific trade-plan branch. Research
 # signals remain visible even when the trade is blocked.
+_v90r40_base_features = features
 _v90r40_base_execution_eligibility = execution_eligibility
 _v90r40_base_technical_trade_plan = technical_trade_plan
 
