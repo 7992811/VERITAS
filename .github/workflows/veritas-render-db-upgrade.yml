@@ -1,0 +1,70 @@
+name: Upgrade VERITAS Render Postgres to 5GB
+
+on:
+  push:
+    paths:
+      - '.github/workflows/veritas-render-db-upgrade.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      CI: "true"
+      RENDER_OUTPUT: "json"
+      RENDER_CLI_CONFIG_DIR: "${{ runner.temp }}/render-cli"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Verify Render credential is available
+        shell: bash
+        run: |
+          if [ -z "$RENDER_API_KEY" ]; then
+            echo "RENDER_API_KEY_MISSING"
+            exit 2
+          fi
+          echo "RENDER_API_KEY_PRESENT"
+
+      - name: Install Render CLI
+        shell: bash
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/render-oss/cli/refs/heads/main/bin/install.sh | sh
+          if ! command -v render >/dev/null 2>&1; then
+            for p in "$HOME/.local/bin/render" "$HOME/bin/render" /usr/local/bin/render; do
+              if [ -x "$p" ]; then
+                echo "$(dirname "$p")" >> "$GITHUB_PATH"
+                break
+              fi
+            done
+          fi
+          render --version
+
+      - name: Select VERITAS workspace
+        shell: bash
+        run: render workspace set tea-dahn8kjm8hqs73ci751g --confirm --output text
+
+      - name: Upgrade existing VERITAS database
+        shell: bash
+        run: |
+          render pg update dpg-dao4ctp42hec738dab10-a             --plan 0.1c-256mb             --disk-size-gb 5             --confirm             --output json
+
+      - name: Resume database after resize
+        shell: bash
+        run: |
+          render pg resume dpg-dao4ctp42hec738dab10-a --output json || true
+          render pg get dpg-dao4ctp42hec738dab10-a --output json
+
+      - name: Remove one-shot workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/veritas-render-db-upgrade.yml
+          git config user.name "VERITAS Render Upgrade"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "VERITAS: remove one-shot Render DB upgrade workflow"
+          git push origin HEAD:main
