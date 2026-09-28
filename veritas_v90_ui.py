@@ -350,8 +350,8 @@ function renderPortfolios(){
   $('positions').className='position-grid';
   $('positions').innerHTML=positions.length?positions.map(z=>{
     const pnl=Number(z.unrealized_pnl_rub||0),ret=Number(z.unrealized_return_pct),frac=100*Number(z.target_fraction||0),util=Number(z.position_utilization_pct),held=z.held_seconds??z.holding_duration_seconds;
-    const stop=z.trailing_stop??z.stop_price,tp1=z.take_price,tp2=z.second_take_price,prob=probPct(z.signal_probability),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
-    const tf=z.execution_timeframe||z.horizon,grade=z.setup_grade||'—',tier=z.signal_tier||'',protect=z.profit_protection_active===true;
+    const stop=z.trailing_stop??z.stop_price,tp1=z.take_price??z.initial_take_price,tp1Label=z.take_price!=null?'TP1 / цель':z.initial_take_price!=null?'Цель входа':'TP1 / цель',tp2=z.second_take_price,prob=probPct(z.signal_probability),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
+    const tf=z.execution_timeframe||z.horizon,grade=z.setup_grade||(z.legacy_entry_recovered?'архив':'—'),tier=z.signal_tier||'',protect=z.profit_protection_active===true;
     const probText=prob==null?'—':prob.toFixed(1)+'% '+probSourceRu(z.probability_source);
     const capText=Number.isFinite(cap)?(100*cap).toFixed(0)+'%':'—';
     const mfeText=Number.isFinite(mfe)?(mfe>=0?'+':'')+mfe.toFixed(2)+'%':'—';
@@ -361,7 +361,7 @@ function renderPortfolios(){
     return'<div class="position-card">'+
       '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<div><b>'+esc(z.portfolio)+' · '+lab(z.asset)+' · <span class="'+sideClass+'">'+sideText+'</span> · <span class="position-nav-top">'+frac.toFixed(0)+'% NAV</span></b><div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · '+rub(z.notional_rub)+'</div></div></div><div class="position-result '+(pnl>=0?'ok':'bad')+'">'+rub(pnl)+(Number.isFinite(ret)?' · '+(ret>=0?'+':'')+ret.toFixed(2)+'%':'')+'</div></div>'+
       '<div class="position-util"><span>От максимума <b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span><span>В позиции <b>'+holdRu(held)+'</b></span></div>'+
-      '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>TP1 / цель</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
+      '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
       '<div class="position-learning">'+
         '<span class="position-chip">Вероятность <b>'+probText+'</b></span>'+
         '<span class="position-chip">MFE <b>'+mfeText+'</b></span>'+
