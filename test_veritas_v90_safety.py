@@ -125,7 +125,7 @@ class ExecutionSafetyTests(unittest.TestCase):
 
     def test_delayed_nq_is_research_only_not_execution_quality(self):
         import veritas_intelligence as vi
-        raw={"source_gate_pass":True,"market_open":True,
+        raw={"source_gate_pass":True,"market_open":True,"price":100.0,
              "data_latency_class":"CME_FUTURES_DELAYED_RESEARCH",
              "verification_mode":"nasdaq100_futures"}
         g=vi.execution_eligibility("NQ",raw,{"ok":True})
