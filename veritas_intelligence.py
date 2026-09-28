@@ -17686,6 +17686,12 @@ def features(raw, horizon, common_structure=None):
 
 def execution_eligibility(asset, raw, clock_info=None):
     out=dict(_v90r40_base_execution_eligibility(asset,raw,clock_info) or {})
+    # A delayed NQ research feed is useful for signal context but cannot honestly
+    # simulate 5m/real-time execution. Keep the research direction; block fills.
+    if asset=='NQ' and str(raw.get('data_latency_class') or '').startswith('CME_FUTURES_DELAYED'):
+        out['eligible']=False
+        out['reason']='research_only_delayed_nq_futures'
+        out['paper_eligible']=False
     prod=VX.production_source_gate(asset,raw,clock_info)
     out['paper_eligible']=bool(out.get('paper_eligible',out.get('eligible')))
     out['production_eligible']=bool(prod.get('eligible'))
