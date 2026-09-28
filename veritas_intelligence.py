@@ -5171,11 +5171,71 @@ def stats():
 
 
 
-def features(raw,horizon,common_structure=None):
-    f=dict(_v90r40_base_features(raw,horizon,common_structure) or {})
-    f['market_contract']=raw.get('contract')
-    f['market_source_names']=raw.get('source_names')
-    f['market_observed_at']=raw.get('observed_at')
+def features(raw, horizon, common_structure=None):
+    asset=raw.get('asset')
+    n = horizon_bars(asset,horizon)
+    c, v, tb, p = raw['closes'], raw['vols'], raw['taker_buy'], raw['price']
+    fast = max(4, min(n, 24))
+    slow = max(24, min(max(3*n, 72), min(168,len(c))))
+    prior = v[-slow:-fast]
+    denom = sum(v[-fast:])
+    taker_share = sum(tb[-fast:]) / denom if denom else 0.5
+    bar_4=4
+    bar_1d=horizon_bars(asset,'1d')
+    bar_3d=horizon_bars(asset,'3d')
+    bar_7d=horizon_bars(asset,'7d')
+    f = {
+        'asset':raw.get('asset'),'price': p,
+        'coinbase_price': raw.get('coinbase_price'),'secondary_price':raw.get('secondary_price',raw.get('coinbase_price')),
+        'source_divergence': raw['source_divergence'],
+        'ret_h': p / c[-1-n] - 1,
+        'ret_4h': p / c[-1-bar_4] - 1,
+        'ret_24h': p / c[-1-bar_1d] - 1,
+        'ret_72h': p / c[-1-bar_3d] - 1,
+        'ret_168h': p / c[-1-bar_7d] - 1,
+        'trend': p / (sum(c[-slow:]) / slow) - 1,
+        'momentum': p / c[-1-fast] - 1,
+        'rv': (sum(x*x for x in raw['returns'][-fast:]) / fast) ** 0.5 * (fast ** 0.5),
+        'volume_ratio': (sum(v[-fast:]) / fast) / (sum(prior) / len(prior)) if prior and sum(prior) else 1,
+        'taker_buy_share': taker_share,
+        'observed_at': raw['observed_at'],'binance_close_time_ms': raw['binance_close_time_ms'],
+        'source_gate_pass':raw.get('source_gate_pass',True),'market_open':raw.get('market_open',True),
+    }
+    if common_structure is not None:
+        f['intraday_structure'] = common_structure.get('intraday_structure') or {}
+        f['trend_impulse'] = dict(common_structure.get('trend_impulse') or {})
+        hs_all=common_structure.get('horizon_structures') or {}
+        f['horizon_structure'] = hs_all.get(horizon) or horizon_structure_features(raw,horizon)
+        idir=str(f['trend_impulse'].get('direction') or f['intraday_structure'].get('direction') or 'NO_TRADE')
+        confirm_rows=[hs_all.get(hh) or {} for hh in ('1h','4h','1d')]
+        confirm_scores=[float(z.get('score') or 0.0) for z in confirm_rows if str(z.get('direction') or 'NO_TRADE')==idir]
+        f['trend_impulse']['horizon_consensus_count']=len(confirm_scores)
+        f['trend_impulse']['horizon_consensus_score']=(sum(confirm_scores)/len(confirm_scores)) if confirm_scores else 0.0
+    else:
+        f['intraday_structure'] = intraday_structure_features(raw)
+        f['trend_impulse'] = merge_trend_and_structure(trend_onset_features(raw),f['intraday_structure'])
+        f['horizon_structure'] = horizon_structure_features(raw,horizon)
+    st=f['intraday_structure'] or {}
+    hs=f['horizon_structure'] or {}
+    f['horizon_structure_score']=float(hs.get('score') or 0.0)
+    f['horizon_structure_direction']=hs.get('direction') or 'NO_TRADE'
+    f['horizon_structure_state']=hs.get('state') or 'UNKNOWN'
+    f['intraday_structure_score']=float(st.get('score') or 0.0)
+    f['relative_volume']=float(st.get('relative_volume') or 0.0) if st.get('relative_volume') is not None else 0.0
+    f['near_ath']=1.0 if st.get('near_ath') else 0.0
+    f['price_discovery']=1.0 if st.get('price_discovery') else 0.0
+    f['breakout_hold']=1.0 if st.get('breakout_hold') else 0.0
+    f['session_efficiency']=float(st.get('session_efficiency') or 0.0)
+    f['session_persistence']=float(st.get('session_persistence') or 0.0)
+    f['trend_phase'] = f['trend_impulse'].get('phase','NONE')
+    f['trend_onset_score'] = f['trend_impulse'].get('onset_score',0.0)
+    f['impulse_score'] = f['trend_impulse'].get('impulse_score',0.0)
+    f['entry_quality'] = f['trend_impulse'].get('entry_quality','UNKNOWN')
+    f['structural_levels'] = structural_levels_features(raw)
+    f['sma18']=(f['structural_levels'] or {}).get('sma18'); f['sma50']=(f['structural_levels'] or {}).get('sma50')
+    f['support_level']=(f['structural_levels'] or {}).get('support'); f['resistance_level']=(f['structural_levels'] or {}).get('resistance')
+    f['reversal_probability']=None; f['cycle_return']=0.0
+    f['regime'] = regime_from(f)
     return f
 
 def execution_eligibility(asset, raw, clock_info=None):
@@ -17613,6 +17673,13 @@ def _v90r24_prime_portfolio_snapshot():
 _v90r40_base_features = _features_r39
 _v90r40_base_execution_eligibility = _execution_eligibility_r39
 _v90r40_base_technical_trade_plan = _technical_trade_plan_r39
+
+def features(raw, horizon, common_structure=None):
+    f=dict(_v90r40_base_features(raw,horizon,common_structure) or {})
+    f['market_contract']=raw.get('contract')
+    f['market_source_names']=raw.get('source_names')
+    f['market_observed_at']=raw.get('observed_at')
+    return f
 
 def execution_eligibility(asset, raw, clock_info=None):
     out=dict(_v90r40_base_execution_eligibility(asset,raw,clock_info) or {})
