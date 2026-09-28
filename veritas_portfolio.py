@@ -2088,7 +2088,10 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     )
     if c.execute("SELECT 1 AS ok FROM paper_orders WHERE client_order_id=%s LIMIT 1",(intent.client_order_id,)).fetchone():
         return
-    fill=VX.simulated_fill(asset,side,price,add/max(nav,1.0))
+    fill=VX.simulated_fill(
+        asset,side,price,add/max(nav,1.0),
+        bid=row.get('best_bid'),ask=row.get('best_ask')
+    )
     fill_price=float(fill['fill_price'])
     fee=add*COMMISSION; units=add/fill_price
     c.execute('UPDATE paper_portfolios SET fees_rub=fees_rub+%s,updated_at=%s WHERE name=%s',(fee,ts,name))
