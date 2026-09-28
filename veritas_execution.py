@@ -124,6 +124,9 @@ def production_source_gate(asset: str, raw: Optional[Dict[str, Any]], clock_info
             blockers.append("CLOCK_GATE_FAILED")
         if secondary is None:
             blockers.append("SECOND_DIRECT_QUOTE_MISSING")
+        bid=_num(r.get("best_bid")); ask=_num(r.get("best_ask"))
+        if bid is None or ask is None or bid<=0 or ask<=bid:
+            blockers.append("PRIMARY_TOP_OF_BOOK_MISSING")
         if divergence > float(os.getenv("VERITAS_PRODUCTION_MAX_SOURCE_DIVERGENCE", "0.003")):
             blockers.append("DIRECT_QUOTE_DIVERGENCE_TOO_LARGE")
     else:
