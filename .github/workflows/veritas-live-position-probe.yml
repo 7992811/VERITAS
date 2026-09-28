@@ -1,0 +1,27 @@
+name: VERITAS live position probe
+
+on:
+  push:
+    paths:
+      - ".github/workflows/veritas-live-position-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe live APIs
+        shell: bash
+        run: |
+          set -o pipefail
+          BASE="https://veritas-intelligence-v1.onrender.com"
+          echo "=== PAPER PORTFOLIOS ==="
+          curl -sS --max-time 30 -w "\nHTTP_STATUS:%{http_code}\nTIME_TOTAL:%{time_total}\n" "$BASE/api/v1/paper-portfolios" | head -c 60000
+          echo
+          echo "=== DASHBOARD BOOTSTRAP ==="
+          curl -sS --max-time 30 -w "\nHTTP_STATUS:%{http_code}\nTIME_TOTAL:%{time_total}\n" "$BASE/api/v1/dashboard-bootstrap" | head -c 60000
+          echo
+          echo "=== PORTFOLIO TRADES ==="
+          curl -sS --max-time 30 -w "\nHTTP_STATUS:%{http_code}\nTIME_TOTAL:%{time_total}\n" "$BASE/api/v1/portfolio-trades" | head -c 30000
