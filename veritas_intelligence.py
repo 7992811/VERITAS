@@ -17778,12 +17778,9 @@ def execution_eligibility(asset, raw, clock_info=None):
     except Exception:
         price_ok=False
 
-    # Paper/research execution and future live-capital execution are separate.
-    # A current primary research quote may be used to train paper portfolios,
-    # while live capital remains fail-closed behind production_source_gate().
+    # Paper may use research-grade data; live capital stays behind production_source_gate().
     paper_ok=bool(research_ok and time_ok and price_ok)
-
-    # Crypto paper P&L is execution-quality only when an executable top-of-book exists.
+    # Crypto paper requires executable top-of-book.
     if asset in ('BTC','ETH'):
         try:
             _bid=float(raw.get('best_bid') or 0.0); _ask=float(raw.get('best_ask') or 0.0)
@@ -17797,8 +17794,7 @@ def execution_eligibility(asset, raw, clock_info=None):
         out['eligible']=False
         out['reason']='research_only_delayed_nq_futures'
 
-    # Futures/official-market research feeds may participate in paper learning
-    # even when a second same-instrument direct quote is unavailable.
+    # Futures research feeds may participate in paper learning without live eligibility.
     if asset in ('NQ','BRENT','GOLD','CNYRUBF'):
         out['paper_eligible']=paper_ok
         out['paper_execution_reason']='research_grade_paper_feed' if paper_ok else 'paper_source_or_time_gate_failed'
