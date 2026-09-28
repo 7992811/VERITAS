@@ -7958,7 +7958,7 @@ def _risk_governor(drawdown):
     }
 
 
-def _signal_first_admission(row,policy,drawdown):
+def _signal_first_admission_r40(row,policy,drawdown):
     global _v90r35_context_mode
     old_mode=_v90r35_context_mode
     try:
@@ -8051,7 +8051,7 @@ def _desired_fraction(row,policy,drawdown):
         return 0.0
     return _v90r40_base_desired_fraction(row,policy,drawdown)
 
-def report(pg_connect):
+def _report_r40(pg_connect):
     d=dict(_v90r40_base_report(pg_connect) or {})
     d['execution_safety_r40']={
       'version':VX.VERSION,
@@ -8069,8 +8069,8 @@ def report(pg_connect):
 # VERITAS V90 EXECUTION-QUALITY PAPER R41
 # Final portfolio admission authority. Research-only signals remain visible in
 # the signal matrix/learning stream, but cannot create simulated P&L.
-_v90r41_base_admission = _signal_first_admission
-_v90r41_base_report = report
+_v90r41_base_admission = _signal_first_admission_r40
+_v90r41_base_report = _report_r40
 
 def _signal_first_admission(row,policy,drawdown):
     row=row or {}
