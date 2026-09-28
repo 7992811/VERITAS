@@ -1440,7 +1440,7 @@ def pg_event(event_type, entity_key, payload, asset=None, horizon=None, event_ts
           VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
           ON CONFLICT(event_key) DO NOTHING""",
           (key, entity_key, event_type, ts, asset, horizon,
-           json.dumps(payload, ensure_ascii=False), VERSION))
+           json.dumps(payload, ensure_ascii=False, default=str), VERSION))
     return True
 
 
@@ -8471,7 +8471,7 @@ def pg_event(event_type, entity_key, payload, asset=None, horizon=None, event_ts
     ts=event_ts or now()
     key=f'{event_type}:{entity_key}'
     args=(key,entity_key,event_type,ts,asset,horizon,
-          json.dumps(payload,ensure_ascii=False),VERSION)
+          json.dumps(payload,ensure_ascii=False,default=str),VERSION)
     last=None
     for _attempt in range(2):
         try:
@@ -8490,7 +8490,7 @@ def pg_event(event_type, entity_key, payload, asset=None, horizon=None, event_ts
             except Exception:
                 pass
             _v842_pg_event_local.conn=None
-    raise last
+    emit('pg_event_write_error',event_type=event_type,entity_key=entity_key,error=f'{type(last).__name__}: {last}'); return False
 
 # ---------- fast decision-memory index: scan only matching horizon ----------
 def _v842_vectors_by_horizon():
@@ -9450,7 +9450,7 @@ def _insert_trade_alert(asset,horizon,atype,severity,payload):
     with pg_connect() as c:
         c.execute("""INSERT INTO product_alerts(created_at,alert_key,asset,horizon,alert_type,severity,payload)
                      VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT(alert_key) DO NOTHING""",
-                  (now(),key,asset,horizon,atype,severity,json.dumps(payload,ensure_ascii=False)))
+                  (now(),key,asset,horizon,atype,severity,json.dumps(payload,ensure_ascii=False,default=str)))
     emit('trade_alert',asset=asset,horizon=horizon,alert_type=atype,severity=severity,action=payload.get('action'),price=payload.get('trigger_price'))
     maybe_deliver_telegram(payload)
     return payload
@@ -9495,7 +9495,7 @@ def _insert_trade_alert_conn(c,asset,horizon,atype,severity,payload):
     key=hashlib.sha256((atype+'|'+asset+'|'+horizon+'|'+str(payload.get('setup_id') or '')+'|'+str(payload.get('trigger_ts') or now())[:16]).encode()).hexdigest()
     c.execute("""INSERT INTO product_alerts(created_at,alert_key,asset,horizon,alert_type,severity,payload)
                      VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT(alert_key) DO NOTHING""",
-              (now(),key,asset,horizon,atype,severity,json.dumps(payload,ensure_ascii=False)))
+              (now(),key,asset,horizon,atype,severity,json.dumps(payload,ensure_ascii=False,default=str)))
     emit('trade_alert',asset=asset,horizon=horizon,alert_type=atype,severity=severity,action=payload.get('action'),price=payload.get('trigger_price'))
     maybe_deliver_telegram(payload)
     return payload
@@ -9574,11 +9574,11 @@ def manage_trade_alerts(summary):
                 out.append(_insert_trade_alert_conn(c,asset,h,atype,sev,payload))
             for terminal,payload,setup_id in terminal_updates:
                 c.execute("UPDATE trade_setups SET status=%s,updated_at=%s,payload=%s::jsonb WHERE setup_id=%s",
-                          (terminal,now(),json.dumps(payload,ensure_ascii=False),setup_id))
+                          (terminal,now(),json.dumps(payload,ensure_ascii=False,default=str),setup_id))
             for setup_id,asset,h,d,plan,exp,payload in new_setups:
                 c.execute("""INSERT INTO trade_setups(setup_id,created_at,updated_at,asset,horizon,direction,status,entry_price,stop_price,invalidation_price,expected_move_pct,payload)
                              VALUES(%s,%s,%s,%s,%s,%s,'ACTIVE',%s,%s,%s,%s,%s::jsonb) ON CONFLICT(setup_id) DO NOTHING""",
-                          (setup_id,now(),now(),asset,h,d,float(plan.get('entry_price') or 0),plan.get('stop_price'),plan.get('invalidation_price'),exp,json.dumps(payload,ensure_ascii=False)))
+                          (setup_id,now(),now(),asset,h,d,float(plan.get('entry_price') or 0),plan.get('stop_price'),plan.get('invalidation_price'),exp,json.dumps(payload,ensure_ascii=False,default=str)))
     return out
 
 
@@ -9814,16 +9814,16 @@ def manage_trade_alerts(summary):
             for terminal,payload,setup_id in terminal_updates:
                 if terminal=='ACTIVE_REFRESH':
                     c.execute("UPDATE trade_setups SET updated_at=%s,payload=%s::jsonb WHERE setup_id=%s",
-                              (now(),json.dumps(payload,ensure_ascii=False),setup_id))
+                              (now(),json.dumps(payload,ensure_ascii=False,default=str),setup_id))
                 else:
                     c.execute("UPDATE trade_setups SET status=%s,updated_at=%s,payload=%s::jsonb WHERE setup_id=%s",
-                              (terminal,now(),json.dumps(payload,ensure_ascii=False),setup_id))
+                              (terminal,now(),json.dumps(payload,ensure_ascii=False,default=str),setup_id))
             for setup_id,asset,h,d,plan,exp,payload in new_setups:
                 c.execute("""INSERT INTO trade_setups(setup_id,created_at,updated_at,asset,horizon,direction,status,entry_price,stop_price,invalidation_price,expected_move_pct,payload)
                              VALUES(%s,%s,%s,%s,%s,%s,'ACTIVE',%s,%s,%s,%s,%s::jsonb)
                              ON CONFLICT(setup_id) DO UPDATE SET updated_at=EXCLUDED.updated_at,payload=EXCLUDED.payload""",
                           (setup_id,now(),now(),asset,h,d,float(payload.get('trigger_price') or 0),plan.get('stop_price'),
-                           plan.get('invalidation_price'),exp,json.dumps(payload,ensure_ascii=False)))
+                           plan.get('invalidation_price'),exp,json.dumps(payload,ensure_ascii=False,default=str)))
     return out
 
 def _signed_trade_return(direction,entry,price):
@@ -9869,7 +9869,7 @@ def sync_shadow_trade_lifecycle(summary):
                      initial_fraction,current_fraction,max_fraction,stop_price,high_price,low_price,realized_pnl_fraction,total_pnl_fraction,stage,payload)
                     VALUES(%s,%s,%s,%s,%s,%s,%s,'ACTIVE',%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s,%s::jsonb)
                     ON CONFLICT(setup_id) DO NOTHING""",
-                    (trade_id,st['setup_id'],now(),now(),st['asset'],st['horizon'],st['direction'],price,price,frac,frac,frac,st.get('stop_price'),price,price,stage,json.dumps(payload,ensure_ascii=False)))
+                    (trade_id,st['setup_id'],now(),now(),st['asset'],st['horizon'],st['direction'],price,price,frac,frac,frac,st.get('stop_price'),price,price,stage,json.dumps(payload,ensure_ascii=False,default=str)))
                 _lifecycle_event_conn(c,trade_id,st['setup_id'],st['asset'],st['horizon'],'ENTRY',price,frac,st.get('stop_price'),stage,payload); events+=1
 
             # Refresh after possible inserts, and include terminal setups so active trades can close cleanly.
@@ -10788,7 +10788,7 @@ def sync_shadow_trade_lifecycle(summary):
                     VALUES(%s,%s,%s,%s,%s,%s,%s,'ACTIVE',%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s,%s::jsonb)
                     ON CONFLICT(setup_id) DO NOTHING""",
                     (trade_id,st['setup_id'],now(),now(),st['asset'],st['horizon'],st['direction'],price,price,frac,frac,frac,
-                     st.get('stop_price'),price,price,stage,json.dumps(payload,ensure_ascii=False)))
+                     st.get('stop_price'),price,price,stage,json.dumps(payload,ensure_ascii=False,default=str)))
                 _lifecycle_event_conn(c,trade_id,st['setup_id'],st['asset'],st['horizon'],'ENTRY',price,frac,st.get('stop_price'),stage,payload)
                 events+=1
 
@@ -10853,7 +10853,7 @@ def sync_shadow_trade_lifecycle(summary):
                 c.execute("""UPDATE shadow_trades SET updated_at=%s,avg_entry_price=%s,current_fraction=%s,
                              max_fraction=GREATEST(max_fraction,%s),stop_price=%s,high_price=%s,low_price=%s,
                              total_pnl_fraction=%s,stage=%s,payload=%s::jsonb WHERE trade_id=%s""",
-                          (now(),avg,cur,cur,trail,high,low,total,stage,json.dumps(payload,ensure_ascii=False),tr['trade_id']))
+                          (now(),avg,cur,cur,trail,high,low,total,stage,json.dumps(payload,ensure_ascii=False,default=str),tr['trade_id']))
         return {'status':'ok','events':events,'mode':'UNIFIED_ASSET_TRADE_STATE'}
     except Exception as ex:
         emit('shadow_lifecycle_error',error=f'{type(ex).__name__}: {ex}')
@@ -11431,7 +11431,7 @@ def save_decision_feedback(payload,source='expert'):
         if not d: return {'status':'error','reason':'decision_not_found'}
         c.execute("""INSERT INTO decision_feedback(created_at,entity_key,asset,horizon,label,comment,source,payload)
                      VALUES(%s,%s,%s,%s,%s,%s,%s,%s::jsonb)""",
-                  (now(),entity,d['asset'],d['horizon'],label,str(payload.get('comment') or '')[:1000],source,json.dumps(payload,ensure_ascii=False)))
+                  (now(),entity,d['asset'],d['horizon'],label,str(payload.get('comment') or '')[:1000],source,json.dumps(payload,ensure_ascii=False,default=str)))
     emit('decision_feedback',entity_key=entity,label=label,source=source)
     return {'status':'ok','entity_key':entity,'label':label}
 
@@ -11523,7 +11523,7 @@ def maybe_create_alert(entity_key, asset, horizon, decision, confidence, score, 
                      VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb)
                      ON CONFLICT(alert_key) DO NOTHING""",
                   (now(),key,asset,horizon,'signal_change',severity,
-                   json.dumps(payload,ensure_ascii=False)))
+                   json.dumps(payload,ensure_ascii=False,default=str)))
     emit('product_alert', asset=asset,horizon=horizon,severity=severity,reasons=reasons)
     maybe_deliver_telegram(payload)
     return payload
