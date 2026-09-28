@@ -15521,70 +15521,55 @@ _v90r25_pf_lock=threading.Lock()
 
 def _v90r25_portfolios_fast():
     with _v90r25_pf_lock:
-        cached=_v90r25_pf_cache.get('value')
-        at=float(_v90r25_pf_cache.get('at') or 0.0)
-    if cached is not None and time.time()-at<120:
+        cached=_v90r25_pf_cache.get('value'); at=float(_v90r25_pf_cache.get('at') or 0.0)
+    if cached is not None and time.time()-at<15:
         out=dict(cached); out['api_source']='memory_cache'; return out
     with lock:
-        live=dict((last_cycle or {}).get('portfolio_autopilot') or {})
+        live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
     if live and len(live.get('portfolios') or [])==4 and (any(p.get('positions') for p in live.get('portfolios') or []) or not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live.get('portfolios') or [])):
         out=dict(live); out['api_source']='live_memory'
-        with _v90r25_pf_lock:
-            _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+        with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
-    if not pg_enabled():
-        return {'status':'UNAVAILABLE','portfolios':[]}
+    if not pg_enabled(): return {'status':'UNAVAILABLE','portfolios':[]}
     names=list(V90_CANONICAL_PORTFOLIOS)
     with pg_connect() as c:
-        base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,
-                                 benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at
-                          FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
-        nav=c.execute("""SELECT DISTINCT ON (portfolio_name)
-                                portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,
-                                gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload
-                         FROM paper_nav_history
-                         WHERE portfolio_name=ANY(%s)
-                         ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
-        pos=c.execute("""SELECT portfolio_name,asset,direction,units,avg_entry_price,opened_at,
-                                updated_at,stop_price,target_fraction,last_price,payload
-                         FROM paper_positions
-                         WHERE portfolio_name=ANY(%s)
-                         ORDER BY portfolio_name,asset""",(names,)).fetchall()
-        stats=c.execute("""SELECT portfolio_name,
-                                  COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,
-                                  COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,
-                                  COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl
-                           FROM paper_trades WHERE portfolio_name=ANY(%s)
-                           GROUP BY portfolio_name""",(names,)).fetchall()
-    bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}
-    pm={}
+        base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
+        nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
+        pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction FROM paper_positions pp LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id WHERE pp.portfolio_name=ANY(%s) ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
+        stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
+    bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
+    def _n(v,d=None):
+        try:
+            x=float(v); return x if math.isfinite(x) else d
+        except Exception: return d
     for r0 in pos:
-        z=dict(r0); sign=1 if z.get('direction')=='LONG' else -1
-        px=float(z.get('last_price') or 0); ep=float(z.get('avg_entry_price') or 0); units=float(z.get('units') or 0)
-        z['notional_rub']=abs(units*px)
-        z['unrealized_pnl_rub']=sign*units*(px-ep)
-        z['unrealized_return_pct']=(100*sign*(px/ep-1)) if ep else None
-        pm.setdefault(z['portfolio_name'],[]).append(z)
+        z=dict(r0); p=z.get('payload') if isinstance(z.get('payload'),dict) else {}; tp=z.get('trade_payload') if isinstance(z.get('trade_payload'),dict) else {}; q=dict(tp); q.update(p)
+        sign=1 if z.get('direction')=='LONG' else -1; px=_n(z.get('last_price'),0.0); ep=_n(z.get('avg_entry_price'),0.0); units=_n(z.get('units'),0.0)
+        ret=(100*sign*(px/ep-1)) if ep else None; h=q.get('execution_timeframe') or q.get('last_signal_horizon') or z.get('trade_horizon')
+        cur=next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('horizon'))==str(h) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),None) or next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),{}) 
+        plan=(cur or {}).get('trade_plan') or {}; prob=next((v for v in (q.get('pwin'),q.get('entry_probability'),q.get('last_add_pwin'),q.get('model_quality_score'),cur.get('calibrated_probability'),cur.get('confidence')) if v not in (None,'')),None)
+        probsrc=q.get('pwin_source') or q.get('probability_source') or ('CURRENT_CALIBRATED' if cur.get('calibrated_probability') is not None else ('CURRENT_SIGNAL_SCORE' if cur else None))
+        mfe=max(0.0,_n(q.get('mfe_pct'),0.0),max(0.0,ret or 0.0)); mae=min(0.0,_n(q.get('mae_pct'),0.0),min(0.0,ret or 0.0)); posnow=max(0.0,ret or 0.0)
+        maxf=_n(((getattr(VP,'POLICIES',{}) if VP else {}).get(str(z.get('portfolio_name'))) or {}).get('max_fraction'),1.0) or 1.0
+        z.update({'notional_rub':abs(units*px),'unrealized_pnl_rub':sign*units*(px-ep),'unrealized_return_pct':ret,'execution_timeframe':h,'horizon':h,
+                  'signal_probability':prob,'probability_source':probsrc,'signal_tier':q.get('entry_signal_tier') or q.get('signal_tier') or cur.get('signal_tier'),
+                  'setup_grade':q.get('setup_grade') or plan.get('setup_grade') or cur.get('setup_grade'),'setup_grade_score':q.get('setup_grade_score'),
+                  'entry_quality':q.get('entry_quality') or plan.get('entry_quality') or cur.get('entry_quality'),'decision_stage':q.get('decision_stage') or cur.get('decision_stage'),
+                  'expected_move_pct':next((v for v in (q.get('expected_move_pct'),plan.get('expected_move_pct'),cur.get('expected_move_pct')) if v not in (None,'')),None),
+                  'expected_to_stop_ratio':next((v for v in (q.get('expected_to_stop_ratio'),plan.get('expected_to_stop_ratio'),cur.get('expected_to_stop_ratio')) if v not in (None,'')),None),
+                  'mfe_pct':mfe,'mae_pct':mae,'live_capture_ratio':(posnow/mfe if mfe>1e-9 else 0.0),'live_giveback_pct':max(0.0,mfe-posnow),
+                  'take_price':next((v for v in (q.get('take_price'),q.get('target_price'),q.get('last_target_price'),plan.get('target_price')) if v not in (None,'')),None),
+                  'second_take_price':next((v for v in (q.get('tp2'),q.get('tp2_price'),q.get('second_target_price'),q.get('runner_target_price')) if v not in (None,'')),None),
+                  'profit_protection_active':bool(q.get('profit_protection_active')),'trailing_stop':q.get('trailing_stop'),
+                  'max_position_fraction':maxf,'position_utilization_pct':100*_n(z.get('target_fraction'),0.0)/maxf,
+                  'learning_focus':('ЗАЩИТА_ПРИБЫЛИ' if q.get('profit_protection_active') else 'УДЕРЖАНИЕ_ДВИЖЕНИЯ' if mfe>=0.20 else 'КАЧЕСТВО_ВХОДА')})
+        z.pop('trade_payload',None); pm.setdefault(z['portfolio_name'],[]).append(z)
     outp=[]
     for name in names:
-        b=bm.get(name,{})
-        latest=nm.get(name,{})
-        st=sm.get(name,{})
-        closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0)
-        nav_rub=latest.get('nav_rub')
-        initial=float(b.get('initial_nav_rub') or 1000000)
-        outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),
-                     'nav_rub':nav_rub,'nav_usd':latest.get('nav_usd'),
-                     'total_return_pct':(100*(float(nav_rub)/initial-1)) if nav_rub is not None else None,
-                     'drawdown_pct':100*float(latest.get('drawdown') or 0),
-                     'gross_leverage':latest.get('gross_leverage'),'net_exposure':latest.get('net_exposure'),
-                     'cash_equivalent_fraction':max(0,1-float(latest.get('gross_leverage') or 0)),
-                     'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),
-                     'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
-    out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),
-         'initial_nav_rub':1000000.0,'commission_rate':0.0005,'api_source':'fast_sql'}
-    with _v90r25_pf_lock:
-        _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+        b=bm.get(name,{}); latest=nm.get(name,{}); st=sm.get(name,{}); closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0); nav_rub=latest.get('nav_rub'); initial=float(b.get('initial_nav_rub') or 1000000)
+        outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),'nav_rub':nav_rub,'nav_usd':latest.get('nav_usd'),'total_return_pct':(100*(float(nav_rub)/initial-1)) if nav_rub is not None else None,'drawdown_pct':100*float(latest.get('drawdown') or 0),'gross_leverage':latest.get('gross_leverage'),'net_exposure':latest.get('net_exposure'),'cash_equivalent_fraction':max(0,1-float(latest.get('gross_leverage') or 0)),'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
+    out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':0.0005,'api_source':'fast_sql_enriched'}
+    with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
     return out
 
 def _v90r25_trades_fast(limit=80):
