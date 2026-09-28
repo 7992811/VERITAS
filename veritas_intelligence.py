@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 import httpx
+import veritas_execution as VX
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     import psycopg
@@ -5036,7 +5037,9 @@ def _yahoo_between(symbol,start_ts,end_ts,interval='1h'):
 def fetch_path_asset(asset,symbol,start_ms,hours):
     ss=start_ms/1000
     if asset=='NQ':
-        return _yahoo_between('%5ENDX',ss-3600,ss+max(hours*3600,14*86400),'1h')
+        # Active NQ signals must be evaluated on the same futures instrument.
+        # Cash Nasdaq-100 remains context only; mixing it into NQ outcomes biases learning.
+        return _yahoo_between('NQ%3DF',ss-3600,ss+max(hours*3600,14*86400),'1h')
     if asset=='BRENT':
         return _yahoo_between('BZ%3DF',ss-3600,ss+max(hours*3600,14*86400),'1h')
     if asset=='GOLD':
@@ -17567,6 +17570,40 @@ def _v90r24_prime_portfolio_snapshot():
         emit('v90_portfolio_cold_start',status='ERROR',portfolio_count=0,
              error=f'{type(ex).__name__}: {ex}')
         return {'status':'ERROR','count':0}
+
+# VERITAS V90 EXECUTION SAFETY R40
+# One final gate sits after every setup-specific trade-plan branch. Research
+# signals remain visible even when the trade is blocked.
+_v90r40_base_execution_eligibility = execution_eligibility
+_v90r40_base_technical_trade_plan = technical_trade_plan
+
+def execution_eligibility(asset, raw, clock_info=None):
+    out=dict(_v90r40_base_execution_eligibility(asset,raw,clock_info) or {})
+    prod=VX.production_source_gate(asset,raw,clock_info)
+    out['paper_eligible']=bool(out.get('paper_eligible',out.get('eligible')))
+    out['production_eligible']=bool(prod.get('eligible'))
+    out['production_gate']=prod
+    out['live_capital_execution']=False
+    return out
+
+def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
+    plan=dict(_v90r40_base_technical_trade_plan(
+        asset,horizon,f,research_decision,signal_tier,analog
+    ) or {})
+    gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
+        'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
+    }
+    plan['final_economics_gate']=gate
+    # Never promote an already-invalid plan. But if a setup path says eligible,
+    # the universal post-cost gate has final authority.
+    if bool(plan.get('eligible')) and research_decision in ('LONG','SHORT') and not gate.get('eligible'):
+        prior_reason=str(plan.get('reason') or 'setup_eligible')
+        plan['eligible']=False
+        plan['pre_final_gate_reason']=prior_reason
+        plan['reason']='final_economics_gate:' + ','.join(gate.get('blockers') or ['BLOCK'])
+    plan['execution_safety_version']=VX.VERSION
+    return plan
+
 
 def main():
     global _BOOTSTRAP_READY
