@@ -3230,6 +3230,7 @@ report=_v90_open_position_report
 
 # VERITAS V90 R2 PERFORMANCE SEGMENT + LOSS AUDIT
 V90_Q2_STARTED_AT='2026-09-26T07:13:08+00:00'
+V90_R41_STARTED_AT=os.getenv('VERITAS_R41_STARTED_AT','2026-09-28T09:13:00+00:00')
 _v90q2_base_trade_report=trade_report
 
 
@@ -3709,6 +3710,29 @@ def trade_report(pg_connect,limit=2500):
         d['quality_r2_summary']=q2
         d['quality_r2_excluded_data_contamination']=sum(1 for x in rows if str(x.get('opened_at') or '')>=V90_Q2_STARTED_AT and _v90pi_contaminated(x))
         d['quality_r2_integrity_policy']='exclude DATA_DISCONTINUITY and impossible TAKE_PROFIT; preserve in audit'
+
+        # R41 is the comparable execution-quality cohort. Legacy paper trades
+        # remain visible for audit but are not evidence for the current execution model.
+        r41=[x for x in rows if str(x.get('opened_at') or '')>=V90_R41_STARTED_AT and not _v90pi_contaminated(x)]
+        by41={}
+        for x in r41:
+            p=str(x.get('portfolio_name') or 'UNKNOWN')
+            z=by41.setdefault(p,{'portfolio_name':p,'closed_trades':0,'wins':0,'gross_pnl_rub':0.0,
+                                 'fees_rub':0.0,'funding_rub':0.0,'net_pnl_rub':0.0})
+            z['closed_trades']+=1
+            z['wins']+=1 if float(x.get('net_pnl_rub') or 0.0)>0 else 0
+            for k in ('gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub'):
+                z[k]+=float(x.get(k) or 0.0)
+        r41_summary=[]
+        for z in by41.values():
+            z['win_rate']=z['wins']/z['closed_trades'] if z['closed_trades'] else None
+            z['avg_net_pnl_rub']=z['net_pnl_rub']/z['closed_trades'] if z['closed_trades'] else None
+            r41_summary.append(_jsonable(z))
+        d['execution_quality_r41_started_at']=V90_R41_STARTED_AT
+        d['execution_quality_r41_summary']=r41_summary
+        d['execution_quality_r41_closed_trades']=len(r41)
+        d['legacy_pre_r41_closed_trades']=sum(1 for x in rows if str(x.get('opened_at') or '')<V90_R41_STARTED_AT)
+        d['performance_evidence_policy']='R41+ execution-quality cohort is current evidence; pre-R41 paper P&L is legacy audit only'
     except Exception:
         pass
     return _jsonable(d)
