@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r35-position-sync-three-column-trades"
+UI_VERSION = "veritas-ui-v9.0-r36-ios-position-resync"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -667,7 +667,22 @@ async function loadIntelligence(){
   st.intelligence=normalizeIntelligence(scorecard,progress,library);
   renderIntelligence();
 }
-function start(){loadBootstrap();setTimeout(loadPortfolios,250);setTimeout(loadIntelligence,500);setTimeout(loadMacro,1000);setInterval(loadPortfolios,10000);setInterval(loadBootstrap,15000);setInterval(loadIntelligence,60000);setInterval(loadMacro,120000)}
+function refreshLiveState(){
+  loadPortfolios();
+  loadBootstrap();
+}
+function start(){
+  loadBootstrap();
+  setTimeout(loadPortfolios,250);
+  setTimeout(loadIntelligence,500);
+  setTimeout(loadMacro,1000);
+  setInterval(loadPortfolios,10000);
+  setInterval(loadBootstrap,15000);
+  setInterval(loadIntelligence,60000);
+  setInterval(loadMacro,120000);
+  window.addEventListener('pageshow',()=>setTimeout(refreshLiveState,50));
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')setTimeout(refreshLiveState,50)});
+}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
 </script>
