@@ -131,6 +131,7 @@ class ExecutionSafetyTests(unittest.TestCase):
         g=vi.execution_eligibility("NQ",raw,{"ok":True})
         self.assertFalse(g["eligible"])
         self.assertEqual(g["reason"],"research_only_delayed_nq_futures")
+        self.assertTrue(g["paper_eligible"])
         self.assertFalse(g["production_eligible"])
 
     def test_live_gate_requires_instrument_and_aggregate_risk(self):
@@ -219,19 +220,42 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertIsNone(q["broker_quantity"])
         self.assertFalse(q["broker_ready_quantity"])
 
-    def test_portfolio_blocks_research_only_signal_from_pnl(self):
+    def test_portfolio_blocks_only_when_paper_source_gate_fails(self):
         import veritas_portfolio as vp
         row={
             "asset":"CNYRUBF","research_decision":"LONG","execution_eligible":False,
+            "paper_eligible":False,"production_eligible":False,
             "execution_reason":"research_only_no_second_direct_cnyrubf_quote",
-            "source_gate_pass":True,"market_open":True,
+            "source_gate_pass":False,"market_open":True,
             "trade_plan":{"eligible":True,"final_economics_gate":{"status":"PASS","eligible":True}},
             "_pwin":0.85,"_pwin_source":"MODEL_PRIOR_UNCALIBRATED",
             "institutional_signal":{"evidence_independence":{"independent_count":5}},
         }
         out=vp._signal_first_admission(row,vp.POLICIES["Aggressive"],0.0)
         self.assertFalse(out["open"])
-        self.assertEqual(out["reason"],"R41_EXECUTION_QUALITY_GATE")
+        self.assertEqual(out["reason"],"R42_PAPER_SOURCE_GATE")
+
+    def test_research_grade_paper_can_pass_while_production_remains_blocked(self):
+        import veritas_portfolio as vp
+        row={
+            "asset":"CNYRUBF","research_decision":"LONG","execution_eligible":False,
+            "paper_eligible":True,"production_eligible":False,
+            "execution_reason":"research_only_no_second_direct_cnyrubf_quote",
+            "paper_execution_reason":"research_grade_paper_feed",
+            "source_gate_pass":True,"market_open":True,
+            "trade_plan":{"eligible":True,"final_economics_gate":{"status":"PASS","eligible":True}},
+        }
+        old=vp._v90r41_base_admission
+        try:
+            vp._v90r41_base_admission=lambda row,policy,drawdown: {
+                "open":True,"fraction":0.10,"reason":"BASE_PASS"
+            }
+            out=vp._signal_first_admission(row,vp.POLICIES["Aggressive"],0.0)
+        finally:
+            vp._v90r41_base_admission=old
+        self.assertTrue(out["open"])
+        self.assertEqual(out["paper_source_quality"],"RESEARCH_GRADE")
+        self.assertFalse(out["paper_is_live_fill_evidence"])
 
     def test_final_plan_gate_cannot_be_bypassed_by_setup_mutation(self):
         import veritas_intelligence as vi
