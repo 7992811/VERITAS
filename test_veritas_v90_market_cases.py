@@ -121,6 +121,19 @@ class MarketCaseRegressionTests(unittest.TestCase):
         self.assertEqual(out2["entry_quality"],"INVALIDATED")
         self.assertNotIn("entry_quality_rebased_from_old_setup",out2)
 
+    def test_moex_5m_outcome_uses_official_runtime_path(self):
+        old=VI._v90r16_moex_index_5m
+        try:
+            VI._v90r16_moex_index_5m=lambda: [
+                {"ts":1000.0,"open":2240.0,"high":2250.0,"low":2235.0,"close":2248.0,"volume":10.0},
+                {"ts":1300.0,"open":2248.0,"high":2252.0,"low":2240.0,"close":2250.0,"volume":12.0},
+            ]
+            out=VI._v90_fetch_path_asset_horizon("MOEX","MOEX",1000_000,"5m",1.0)
+        finally:
+            VI._v90r16_moex_index_5m=old
+        self.assertEqual(len(out),2)
+        self.assertEqual(float(out[-1][4]),2250.0)
+
 
 if __name__=="__main__":
     unittest.main()
