@@ -5171,8 +5171,8 @@ def stats():
 
 
 
-def features(raw,horizon):
-    f=dict(_v90r40_base_features(raw,horizon) or {})
+def features(raw,horizon,common_structure=None):
+    f=dict(_v90r40_base_features(raw,horizon,common_structure) or {})
     f['market_contract']=raw.get('contract')
     f['market_source_names']=raw.get('source_names')
     f['market_observed_at']=raw.get('observed_at')
