@@ -72,8 +72,7 @@ class PortfolioApiCompletenessTests(unittest.TestCase):
             vi._v90r25_pf_cache.clear()
             vi._v90r25_pf_cache.update(old_cache)
 '''
-    anchor="
-if __name__ == '__main__':"
+    anchor="\nif __name__ == '__main__':"
     if anchor in ts:
         ts=ts.replace(anchor,block+anchor,1)
     else:
