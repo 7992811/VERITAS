@@ -79,6 +79,29 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertGreater(buy["fill_price"],100.0)
         self.assertLess(sell["fill_price"],100.0)
 
+    def test_fully_validated_live_gate_can_pass(self):
+        gate=VX.production_order_gate(
+            "BTC",
+            {"eligible":True,"entry_price":100.0,"stop_price":99.0,
+             "expected_move_pct":0.02,"expected_to_stop_ratio":2.0},
+            source_gate={"eligible":True},
+            durable_storage=True,calibrated_probability=0.75,
+            stop_risk_nav=0.003,single_asset_fraction=0.20,gross_after=1.0,drawdown=0.01,
+            total_open_stop_risk_nav_after=0.015,correlated_stop_risk_nav_after=0.008,
+            instrument_spec_validated=True,model_promoted=True,model_version="approved-v1",
+            broker_reconciled=True,kill_switch=False)
+        self.assertTrue(gate["eligible"],gate)
+
+    def test_delayed_nq_is_research_only_not_execution_quality(self):
+        import veritas_intelligence as vi
+        raw={"source_gate_pass":True,"market_open":True,
+             "data_latency_class":"CME_FUTURES_DELAYED_RESEARCH",
+             "verification_mode":"nasdaq100_futures"}
+        g=vi.execution_eligibility("NQ",raw,{"ok":True})
+        self.assertFalse(g["eligible"])
+        self.assertEqual(g["reason"],"research_only_delayed_nq_futures")
+        self.assertFalse(g["production_eligible"])
+
     def test_live_gate_requires_instrument_and_aggregate_risk(self):
         gate = VX.production_order_gate(
             "BTC",
