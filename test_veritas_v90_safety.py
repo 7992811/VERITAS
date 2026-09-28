@@ -432,3 +432,51 @@ class ExecutionSafetyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortfolioApiCompletenessTests(unittest.TestCase):
+    def test_nonzero_exposure_without_position_rows_uses_sql_fallback(self):
+        import veritas_intelligence as vi
+        old_cycle=vi.last_cycle
+        old_enabled=vi.pg_enabled
+        old_connect=vi.pg_connect
+        old_cache=dict(vi._v90r25_pf_cache)
+        try:
+            vi.last_cycle={'portfolio_autopilot':{'portfolios':[
+                {'name':'Impulse','gross_leverage':0.05},
+                {'name':'Aggressive','gross_leverage':0.30},
+                {'name':'Champion','gross_leverage':0.0},
+                {'name':'Challenger','gross_leverage':0.0},
+            ]}}
+            vi._v90r25_pf_cache.update({'at':0.0,'value':None})
+            vi.pg_enabled=lambda: True
+            def sql_fallback_reached():
+                raise RuntimeError('SQL_FALLBACK_REACHED')
+            vi.pg_connect=sql_fallback_reached
+            with self.assertRaisesRegex(RuntimeError,'SQL_FALLBACK_REACHED'):
+                vi._v90r25_portfolios_fast()
+        finally:
+            vi.last_cycle=old_cycle
+            vi.pg_enabled=old_enabled
+            vi.pg_connect=old_connect
+            vi._v90r25_pf_cache.clear()
+            vi._v90r25_pf_cache.update(old_cache)
+
+    def test_zero_exposure_can_use_fast_memory_without_positions(self):
+        import veritas_intelligence as vi
+        old_cycle=vi.last_cycle
+        old_cache=dict(vi._v90r25_pf_cache)
+        try:
+            vi.last_cycle={'portfolio_autopilot':{'portfolios':[
+                {'name':'Impulse','gross_leverage':0.0},
+                {'name':'Aggressive','gross_leverage':0.0},
+                {'name':'Champion','gross_leverage':0.0},
+                {'name':'Challenger','gross_leverage':0.0},
+            ]}}
+            vi._v90r25_pf_cache.update({'at':0.0,'value':None})
+            out=vi._v90r25_portfolios_fast()
+            self.assertEqual(out.get('api_source'),'live_memory')
+        finally:
+            vi.last_cycle=old_cycle
+            vi._v90r25_pf_cache.clear()
+            vi._v90r25_pf_cache.update(old_cache)

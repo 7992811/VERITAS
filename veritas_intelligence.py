@@ -15527,7 +15527,7 @@ def _v90r25_portfolios_fast():
         out=dict(cached); out['api_source']='memory_cache'; return out
     with lock:
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {})
-    if live and len(live.get('portfolios') or [])==4:
+    if live and len(live.get('portfolios') or [])==4 and (any(p.get('positions') for p in live.get('portfolios') or []) or not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live.get('portfolios') or [])):
         out=dict(live); out['api_source']='live_memory'
         with _v90r25_pf_lock:
             _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
