@@ -6625,6 +6625,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 regime_policy=adaptive_regime_policy(asset,horizon,v84_row,research_dec,trade_plan,setup_memory)
                 execution_policy=execution_policy_v84(asset,horizon,v84_row,research_dec,trade_plan,setup_memory,regime_policy)
                 trade_plan=apply_v84_execution_to_trade_plan(v84_row,trade_plan,setup_memory,regime_policy,execution_policy)
+                # R40 has final authority only after every setup/learning/execution
+                # layer has finished mutating the plan. Nothing below may re-enable it.
+                trade_plan=final_execution_safety(asset,research_dec,trade_plan)
                 trade_plan['experience_decision']=experience_decision
                 decision_stage=trade_decision_stage(research_dec,trade_plan,tradeability,f.get('intraday_structure') or {})
                 trade_plan['tradeability']=tradeability
@@ -17690,23 +17693,28 @@ def execution_eligibility(asset, raw, clock_info=None):
     out['live_capital_execution']=False
     return out
 
-def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
-    plan=dict(_v90r40_base_technical_trade_plan(
-        asset,horizon,f,research_decision,signal_tier,analog
-    ) or {})
+def final_execution_safety(asset,research_decision,plan):
+    plan=dict(plan or {})
     gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
         'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
     }
     plan['final_economics_gate']=gate
-    # Never promote an already-invalid plan. But if a setup path says eligible,
-    # the universal post-cost gate has final authority.
     if bool(plan.get('eligible')) and research_decision in ('LONG','SHORT') and not gate.get('eligible'):
         prior_reason=str(plan.get('reason') or 'setup_eligible')
         plan['eligible']=False
         plan['pre_final_gate_reason']=prior_reason
         plan['reason']='final_economics_gate:' + ','.join(gate.get('blockers') or ['BLOCK'])
+        plan['initial_position_fraction']=0.0
     plan['execution_safety_version']=VX.VERSION
     return plan
+
+def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
+    plan=dict(_v90r40_base_technical_trade_plan(
+        asset,horizon,f,research_decision,signal_tier,analog
+    ) or {})
+    # Early annotation is useful for explainability. The same gate is applied
+    # again after all setup-specific mutations in cycle(), where it is final.
+    return final_execution_safety(asset,research_decision,plan)
 
 
 def main():
