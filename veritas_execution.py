@@ -236,6 +236,17 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
         blockers.append("CALIBRATED_PROBABILITY_REQUIRED")
     elif p < min_p:
         blockers.append("CALIBRATED_PROBABILITY_TOO_LOW")
+
+    rr = _num(econ.get("expected_to_stop_ratio"))
+    stop_distance = _num(econ.get("stop_distance_pct"))
+    cost_r = (round_trip_cost_pct() / stop_distance) if stop_distance and stop_distance > 0 else None
+    expectancy_r = (p * rr - (1.0 - p) - cost_r) if (p is not None and rr is not None and cost_r is not None) else None
+    min_expectancy_r = float(os.getenv("VERITAS_LIVE_MIN_EXPECTANCY_R", "0.05"))
+    if expectancy_r is None:
+        blockers.append("POST_COST_EXPECTANCY_UNAVAILABLE")
+    elif expectancy_r <= min_expectancy_r:
+        blockers.append("POST_COST_EXPECTANCY_TOO_LOW")
+
     sr = _num(stop_risk_nav)
     if sr is None or sr > LIVE_RISK_PROFILE["max_stop_risk_nav"]:
         blockers.append("STOP_RISK_LIMIT")
@@ -268,6 +279,9 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
         "source_gate": source_gate,
         "calibrated_probability": p,
         "minimum_calibrated_probability": min_p,
+        "post_cost_expectancy_r": expectancy_r,
+        "minimum_post_cost_expectancy_r": min_expectancy_r,
+        "modeled_cost_r": cost_r,
         "live_risk_profile": dict(LIVE_RISK_PROFILE),
         "principle": "Real-money orders require data, edge, calibration, durable state, broker reconciliation and risk limits simultaneously.",
     }
