@@ -214,3 +214,60 @@ def build_order_intent(portfolio: str, asset: str, direction: str, target_fracti
         reason=str(reason or ""),
         production_eligible=bool(production_eligible),
     )
+
+
+def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gate: Dict[str, Any],
+                          durable_storage: bool, calibrated_probability: Optional[float],
+                          stop_risk_nav: Optional[float], single_asset_fraction: Optional[float],
+                          gross_after: Optional[float], drawdown: Optional[float],
+                          daily_pnl_pct: Optional[float] = None, weekly_pnl_pct: Optional[float] = None,
+                          broker_reconciled: bool = False, kill_switch: bool = False) -> Dict[str, Any]:
+    blockers = []
+    econ = economics_gate(asset, plan)
+    if not econ.get("eligible"):
+        blockers.extend(econ.get("blockers") or ["ECONOMICS_BLOCK"])
+    if not bool((source_gate or {}).get("eligible")):
+        blockers.append("PRODUCTION_SOURCE_GATE_FAILED")
+    if not durable_storage:
+        blockers.append("DURABLE_STORAGE_REQUIRED")
+    p = _num(calibrated_probability)
+    min_p = float(os.getenv("VERITAS_LIVE_MIN_CALIBRATED_PROBABILITY", "0.60"))
+    if p is None:
+        blockers.append("CALIBRATED_PROBABILITY_REQUIRED")
+    elif p < min_p:
+        blockers.append("CALIBRATED_PROBABILITY_TOO_LOW")
+    sr = _num(stop_risk_nav)
+    if sr is None or sr > LIVE_RISK_PROFILE["max_stop_risk_nav"]:
+        blockers.append("STOP_RISK_LIMIT")
+    sf = _num(single_asset_fraction)
+    if sf is None or sf > LIVE_RISK_PROFILE["max_single_asset_fraction"]:
+        blockers.append("SINGLE_ASSET_LIMIT")
+    ga = _num(gross_after)
+    if ga is None or ga > LIVE_RISK_PROFILE["max_gross"]:
+        blockers.append("GROSS_LIMIT")
+    dd = _num(drawdown)
+    if dd is None or dd >= LIVE_RISK_PROFILE["hard_drawdown_stop"]:
+        blockers.append("DRAWDOWN_LIMIT")
+    dp = _num(daily_pnl_pct, 0.0)
+    if dp is not None and dp <= -LIVE_RISK_PROFILE["daily_loss_stop"]:
+        blockers.append("DAILY_LOSS_STOP")
+    wp = _num(weekly_pnl_pct, 0.0)
+    if wp is not None and wp <= -LIVE_RISK_PROFILE["weekly_loss_stop"]:
+        blockers.append("WEEKLY_LOSS_STOP")
+    if not broker_reconciled:
+        blockers.append("BROKER_RECONCILIATION_REQUIRED")
+    if kill_switch:
+        blockers.append("KILL_SWITCH_ACTIVE")
+    ok = len(blockers) == 0
+    return {
+        "eligible": ok,
+        "status": "PASS" if ok else "BLOCK",
+        "asset": str(asset or ""),
+        "blockers": list(dict.fromkeys(blockers)),
+        "economics": econ,
+        "source_gate": source_gate,
+        "calibrated_probability": p,
+        "minimum_calibrated_probability": min_p,
+        "live_risk_profile": dict(LIVE_RISK_PROFILE),
+        "principle": "Real-money orders require data, edge, calibration, durable state, broker reconciliation and risk limits simultaneously.",
+    }
