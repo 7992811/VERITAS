@@ -16,11 +16,11 @@ def install_storage_guard(ns: Dict[str, Any]) -> None:
 
     soft_bytes = max(
         128 * 1024 * 1024,
-        int(os.getenv("VERITAS_STORAGE_SOFT_BYTES", str(650 * 1024 * 1024))),
+        int(os.getenv("VERITAS_STORAGE_SOFT_BYTES", str(3584 * 1024 * 1024))),
     )
     hard_bytes = max(
         soft_bytes + 64 * 1024 * 1024,
-        int(os.getenv("VERITAS_STORAGE_HARD_BYTES", str(800 * 1024 * 1024))),
+        int(os.getenv("VERITAS_STORAGE_HARD_BYTES", str(4300 * 1024 * 1024))),
     )
     check_seconds = max(60, int(os.getenv("VERITAS_STORAGE_CHECK_SECONDS", "300")))
 
