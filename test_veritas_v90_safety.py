@@ -144,6 +144,20 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertLessEqual(VX.LIVE_RISK_PROFILE["max_gross"],1.25)
         self.assertFalse(VX.LIVE_RISK_PROFILE["allow_new_risk_without_durable_storage"])
 
+    def test_portfolio_blocks_research_only_signal_from_pnl(self):
+        import veritas_portfolio as vp
+        row={
+            "asset":"CNYRUBF","research_decision":"LONG","execution_eligible":False,
+            "execution_reason":"research_only_no_second_direct_cnyrubf_quote",
+            "source_gate_pass":True,"market_open":True,
+            "trade_plan":{"eligible":True,"final_economics_gate":{"status":"PASS","eligible":True}},
+            "_pwin":0.85,"_pwin_source":"MODEL_PRIOR_UNCALIBRATED",
+            "institutional_signal":{"evidence_independence":{"independent_count":5}},
+        }
+        out=vp._signal_first_admission(row,vp.POLICIES["Aggressive"],0.0)
+        self.assertFalse(out["open"])
+        self.assertEqual(out["reason"],"R41_EXECUTION_QUALITY_GATE")
+
     def test_final_plan_gate_cannot_be_bypassed_by_setup_mutation(self):
         import veritas_intelligence as vi
         plan={
