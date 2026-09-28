@@ -82,6 +82,23 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertLessEqual(VX.LIVE_RISK_PROFILE["max_gross"],1.25)
         self.assertFalse(VX.LIVE_RISK_PROFILE["allow_new_risk_without_durable_storage"])
 
+    def test_live_gate_rejects_negative_post_cost_expectancy(self):
+        gate = VX.production_order_gate(
+            "BTC",
+            {"eligible": True, "entry_price": 100.0, "stop_price": 99.8,
+             "expected_move_pct": 0.006, "expected_to_stop_ratio": 1.20},
+            source_gate={"eligible": True},
+            durable_storage=True,
+            calibrated_probability=0.62,
+            stop_risk_nav=0.003,
+            single_asset_fraction=0.20,
+            gross_after=1.0,
+            drawdown=0.01,
+            broker_reconciled=True,
+        )
+        self.assertFalse(gate["eligible"])
+        self.assertIn("POST_COST_EXPECTANCY_TOO_LOW", gate["blockers"])
+
     def test_live_gate_requires_durable_storage_and_reconciliation(self):
         source = {"eligible": True}
         gate = VX.production_order_gate(
