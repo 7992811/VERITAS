@@ -8108,6 +8108,19 @@ def _report_r40(pg_connect):
 
 
 # VERITAS V90 EXECUTION-QUALITY PAPER R41
+def paper_quantity_metadata(units):
+    try:
+        normalized=abs(float(units or 0.0))
+    except Exception:
+        normalized=0.0
+    return {
+      'normalized_units':normalized,
+      'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
+      'broker_quantity':None,
+      'broker_quantity_source':None,
+      'broker_ready_quantity':False,
+    }
+
 # Final portfolio admission authority. Research-only signals remain visible in
 # the signal matrix/learning stream, but cannot create simulated P&L.
 _v90r41_base_admission = _signal_first_admission_r40
@@ -8132,12 +8145,7 @@ def report(pg_connect):
     for _p in d.get('portfolios') or []:
         for _z in _p.get('positions') or []:
             _payload=_v90j_json(_z.get('payload'))
-            _norm=abs(float(_z.get('units') or 0.0))
-            _z['normalized_units']=_norm
-            _z['quantity_semantics']='NORMALIZED_PAPER_RETURN_UNITS'
-            _z['broker_quantity']=None
-            _z['broker_quantity_source']=None
-            _z['broker_ready_quantity']=False
+            _z.update(paper_quantity_metadata(_z.get('units')))
             _payload.setdefault('quantity_semantics','NORMALIZED_PAPER_RETURN_UNITS')
     d['paper_execution_quality_r41']={
       'enabled':True,
