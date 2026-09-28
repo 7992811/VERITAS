@@ -5699,13 +5699,25 @@ def _v90_moex_exact_5m_klines(secid,start_ts,end_ts):
     return out
 
 
+_v90_brent_cache={'secid':None,'hist_at':0.0,'hist':[],'m5_at':0.0,'m5':[],
+                    'secondary_at':0.0,'secondary':None,'secondary_observed_at':None}
+
 def _v90_brent_market():
-    # Primary: exchange-traded MOEX Brent front contract, quoted in USD/bbl and
-    # publicly delayed. This avoids Yahoo BZ=F continuous-contract roll gaps.
+    # Current quote is always refreshed. Historical bars are cached briefly because
+    # refetching 100+ days on every 5m loop adds latency without adding information.
     secid,q=_v90_moex_front_brent_contract()
     price=float(q['price']); observed=q['observed_at']
     end=time.time()
-    hist=_moex_futures_candles_between(secid,end-150*86400,end+86400,60)
+    cache=_v90_brent_cache
+    if cache.get('secid')!=secid:
+        cache.update({'secid':secid,'hist_at':0.0,'hist':[],'m5_at':0.0,'m5':[],
+                      'secondary_at':0.0,'secondary':None,'secondary_observed_at':None})
+
+    hist=list(cache.get('hist') or [])
+    if not hist or end-float(cache.get('hist_at') or 0.0)>=300:
+        hist=_moex_futures_candles_between(secid,end-150*86400,end+86400,60)
+        if len(hist)>=120:
+            cache['hist']=list(hist); cache['hist_at']=end
     if len(hist)<120:
         raise RuntimeError(f'INSUFFICIENT_MOEX_BRENT_HOURLY_BARS {secid}: {len(hist)}')
     w=hist[-2400:]
@@ -5715,24 +5727,38 @@ def _v90_brent_market():
     taker=[v*0.5 for v in vols]
     rets=[closes[i]/closes[i-1]-1 for i in range(1,len(closes))]
 
-    intraday_5m=[]
-    try:
-        m5=_v90_moex_exact_5m_klines(secid,end-7*86400,end+86400)[-500:]
-        intraday_5m=[{'ts':int(x[0])/1000.0,'open':float(x[1]),'high':float(x[2]),
-                      'low':float(x[3]),'close':float(x[4]),'volume':float(x[5])} for x in m5]
-    except Exception:
-        intraday_5m=[]
+    intraday_5m=list(cache.get('m5') or [])
+    if not intraday_5m or end-float(cache.get('m5_at') or 0.0)>=60:
+        try:
+            # 500 five-minute bars require <2 days; 3 days gives a safe buffer.
+            m5=_v90_moex_exact_5m_klines(secid,end-3*86400,end+86400)[-500:]
+            intraday_5m=[{'ts':int(x[0])/1000.0,'open':float(x[1]),'high':float(x[2]),
+                          'low':float(x[3]),'close':float(x[4]),'volume':float(x[5])} for x in m5]
+            if intraday_5m:
+                cache['m5']=list(intraday_5m); cache['m5_at']=end
+        except Exception:
+            intraday_5m=list(cache.get('m5') or [])
 
-    secondary=None; secondary_status='UNAVAILABLE'; secondary_note='Yahoo BZ=F unavailable'
-    try:
-        y=_yahoo_research_futures_market('BRENT','BZ%3DF','BNO','yahoo_brent','Yahoo Brent BZ=F')
-        secondary=float(y.get('price') or 0.0) or None
-        if secondary:
-            div=abs(price-secondary)/max(1e-9,(price+secondary)/2.0)
-            secondary_status='CONTRACT_MISMATCH' if div>0.025 else 'OK'
-            secondary_note=f'Yahoo continuous={secondary:.2f}; MOEX front={price:.2f}; divergence={div:.2%}'
-    except Exception as ex:
-        secondary_note=f'Yahoo check failed: {type(ex).__name__}'
+    secondary=cache.get('secondary')
+    secondary_obs=cache.get('secondary_observed_at')
+    if secondary is None or end-float(cache.get('secondary_at') or 0.0)>=60:
+        try:
+            y5,_meta=_yahoo_series('BZ%3DF','5d','5m',True)
+            if y5:
+                secondary=float(y5[-1]['close'])
+                secondary_obs=datetime.fromtimestamp(float(y5[-1]['ts']),tz=timezone.utc).isoformat()
+                cache['secondary']=secondary
+                cache['secondary_observed_at']=secondary_obs
+                cache['secondary_at']=end
+        except Exception:
+            secondary=cache.get('secondary')
+            secondary_obs=cache.get('secondary_observed_at')
+
+    secondary_status='UNAVAILABLE'; secondary_note='Yahoo BZ=F unavailable'
+    if secondary:
+        div=abs(price-secondary)/max(1e-9,(price+secondary)/2.0)
+        secondary_status='CONTRACT_MISMATCH' if div>0.025 else 'OK'
+        secondary_note=f'Yahoo continuous={secondary:.2f}; MOEX front={price:.2f}; divergence={div:.2%}'
 
     age=_age_seconds(observed); market_open=_futures_market_open_from_age(observed)
     gate=bool(market_open and age is not None and age<=3600)
@@ -5740,7 +5766,7 @@ def _v90_brent_market():
       _source_row(f'MOEX ISS {secid}','Brent front futures','primary official delayed',observed,900,
                   'DELAYED_CONTEXT' if gate else 'STALE_OR_CLOSED',
                   'Public exchange quote; used as Brent price authority','Moscow Exchange'),
-      _source_row('Yahoo BZ=F','Brent continuous futures','secondary contract check',now(),900,
+      _source_row('Yahoo BZ=F','Brent continuous futures','secondary contract check',secondary_obs,900,
                   secondary_status,secondary_note,'Yahoo')
     ]
     _set_source_quality(quality)
