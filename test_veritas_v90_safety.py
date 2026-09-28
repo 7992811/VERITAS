@@ -73,6 +73,24 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(a,b)
         self.assertNotEqual(a,c)
 
+    def test_bid_ask_fill_never_improves_executable_quote(self):
+        buy=VX.simulated_fill("BTC","BUY",100.0,0.10,bid=99.99,ask=100.01)
+        sell=VX.simulated_fill("BTC","SELL",100.0,0.10,bid=99.99,ask=100.01)
+        self.assertGreaterEqual(buy["fill_price"],100.01)
+        self.assertLessEqual(sell["fill_price"],99.99)
+        self.assertTrue(buy["quote_valid"])
+        self.assertEqual(buy["model"],"BID_ASK_ADVERSE_PAPER_FILL_V2")
+
+    def test_wider_spread_raises_economics_cost_floor(self):
+        tight=VX.economics_gate("BTC",{
+            "entry_price":100.0,"stop_price":99.0,"expected_move_pct":0.02,
+            "expected_to_stop_ratio":2.0,"spread_bps":2.0})
+        wide=VX.economics_gate("BTC",{
+            "entry_price":100.0,"stop_price":99.0,"expected_move_pct":0.02,
+            "expected_to_stop_ratio":2.0,"spread_bps":35.0})
+        self.assertGreaterEqual(wide["modeled_round_trip_cost_pct"],tight["modeled_round_trip_cost_pct"])
+        self.assertGreaterEqual(wide["minimum_expected_move_pct"],tight["minimum_expected_move_pct"])
+
     def test_paper_fill_is_adverse(self):
         buy = VX.simulated_fill("BTC","BUY",100.0,0.25)
         sell = VX.simulated_fill("BTC","SELL",100.0,0.25)
