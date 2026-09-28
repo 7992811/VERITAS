@@ -17417,7 +17417,9 @@ def refresh_experience_lessons(limit=400):
 # Keep full durable decision payloads in PostgreSQL/SQLite, but retain only the
 # execution/UI subset in process memory and in Render application logs.
 
-FAST_LOOP_MARKET_WORKERS=min(2,int(FAST_LOOP_MARKET_WORKERS))
+# Four outer workers are safe under the current memory envelope; heavy
+# learning remains memory-gated separately. This restores the intended I/O parallelism.
+FAST_LOOP_MARKET_WORKERS=min(4,max(2,int(FAST_LOOP_MARKET_WORKERS)))
 MEMORY_SOFT_LIMIT_MB=min(320,int(MEMORY_SOFT_LIMIT_MB))
 HEAVY_LEARNING_INTERVAL_SECONDS=max(3600,int(HEAVY_LEARNING_INTERVAL_SECONDS))
 HEAVY_LEARNING_START_DELAY_SECONDS=max(300,int(HEAVY_LEARNING_START_DELAY_SECONDS))
