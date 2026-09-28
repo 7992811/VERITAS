@@ -48,6 +48,7 @@ class ExecutionSafetyTests(unittest.TestCase):
             "source_gate_pass": True,
             "market_open": True,
             "secondary_price": 100.01,
+            "best_bid":99.99,"best_ask":100.01,
             "source_divergence": 0.0001,
         }, {"ok": True})
         self.assertTrue(good["eligible"])
@@ -55,9 +56,19 @@ class ExecutionSafetyTests(unittest.TestCase):
             "source_gate_pass": True,
             "market_open": True,
             "secondary_price": None,
+            "best_bid":99.99,"best_ask":100.01,
             "source_divergence": 0.0,
         }, {"ok": True})
         self.assertFalse(bad["eligible"])
+
+    def test_crypto_execution_requires_top_of_book(self):
+        gate = VX.production_source_gate("BTC", {
+            "source_gate_pass":True,"market_open":True,
+            "secondary_price":100.01,"source_divergence":0.0001,
+            "best_bid":None,"best_ask":None,
+        }, {"ok":True})
+        self.assertFalse(gate["eligible"])
+        self.assertIn("PRIMARY_TOP_OF_BOOK_MISSING",gate["blockers"])
 
     def test_research_futures_feed_is_not_production_ready(self):
         gate = VX.production_source_gate("NQ", {
