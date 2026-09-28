@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 import veritas_execution as VX
+import veritas_broker as VB
 
 
 class ExecutionSafetyTests(unittest.TestCase):
@@ -79,6 +80,40 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertLessEqual(VX.LIVE_RISK_PROFILE["max_stop_risk_nav"],0.005)
         self.assertLessEqual(VX.LIVE_RISK_PROFILE["max_gross"],1.25)
         self.assertFalse(VX.LIVE_RISK_PROFILE["allow_new_risk_without_durable_storage"])
+
+    def test_live_gate_requires_durable_storage_and_reconciliation(self):
+        source = {"eligible": True}
+        gate = VX.production_order_gate(
+            "BTC",
+            {"eligible": True, "entry_price": 100.0, "stop_price": 99.0,
+             "expected_move_pct": 0.012, "expected_to_stop_ratio": 1.5},
+            source_gate=source,
+            durable_storage=False,
+            calibrated_probability=0.70,
+            stop_risk_nav=0.003,
+            single_asset_fraction=0.20,
+            gross_after=1.0,
+            drawdown=0.02,
+            broker_reconciled=False,
+        )
+        self.assertFalse(gate["eligible"])
+        self.assertIn("DURABLE_STORAGE_REQUIRED", gate["blockers"])
+        self.assertIn("BROKER_RECONCILIATION_REQUIRED", gate["blockers"])
+
+    def test_broker_reconciliation_detects_orphan_position(self):
+        class Fake(VB.BrokerAdapter):
+            def heartbeat(self): return True
+            def list_positions(self): return [VB.BrokerPosition("BTC", 2.0)]
+            def list_open_orders(self): return []
+            def get_order_by_client_id(self, client_order_id): return None
+            def submit_order(self, intent, quantity):
+                return VB.BrokerOrder(intent.client_order_id,"B1",intent.asset,intent.side,quantity,quantity,
+                                      intent.reference_price,VB.OrderStatus.FILLED)
+            def cancel_order(self, broker_order_id):
+                raise NotImplementedError
+        rc = VB.LiveExecutionCoordinator(Fake()).reconcile({"BTC": 1.0})
+        self.assertFalse(rc.ok)
+        self.assertEqual(len(rc.mismatches), 1)
 
     def test_nq_outcomes_use_nq_futures(self):
         src = Path("veritas_intelligence.py").read_text(encoding="utf-8")
