@@ -2105,7 +2105,11 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                             'signal':(row.get('institutional_signal') or {}).get('investor_signal'),
                             'soft_invalidation_count':0,
                             'last_entry_execution_model':fill,
-                            'last_client_order_id':intent.client_order_id})
+                            'last_client_order_id':intent.client_order_id,
+                            'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
+                            'normalized_units':old_units+units,
+                            'broker_quantity':None,
+                            'broker_quantity_source':None})
         c.execute('UPDATE paper_positions SET units=%s,avg_entry_price=%s,last_price=%s,target_fraction=%s,updated_at=%s,payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s',
                   (old_units+units,avg,price,target_fraction,ts,json.dumps(old_payload),name,asset))
         c.execute('UPDATE paper_trades SET fees_rub=fees_rub+%s,max_fraction=GREATEST(max_fraction,%s),payload=payload || %s::jsonb WHERE trade_id=%s',(fee,target_fraction,json.dumps({'last_add_pwin':row['_pwin'],'last_entry_execution_model':fill,'last_client_order_id':intent.client_order_id},ensure_ascii=False,default=str),z['active_trade_id']))
@@ -2126,7 +2130,11 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                  'structural_stop_enforced':bool(plan.get('structural_stop_enforced')),
                  'soft_invalidation_count':0,'entry_permission':(plan.get('trade_integrity') or {}).get('entry_permission'),
                  'entry_execution_model':fill,'client_order_id':intent.client_order_id,
-                 'normalized_paper_notional':True}
+                 'normalized_paper_notional':True,
+                 'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
+                 'normalized_units':units,
+                 'broker_quantity':None,
+                 'broker_quantity_source':None}
         c.execute('INSERT INTO paper_trades(trade_id,portfolio_name,asset,direction,opened_at,avg_entry_price,max_fraction,fees_rub,status,setup,horizon,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(trade_id,name,asset,direction,ts,fill_price,target_fraction,fee,'OPEN',setup,row.get('horizon'),json.dumps(payload,ensure_ascii=False,default=str)))
         c.execute('INSERT INTO paper_positions(portfolio_name,asset,direction,units,avg_entry_price,opened_at,updated_at,active_trade_id,stop_price,target_fraction,last_price,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,asset,direction,units,fill_price,ts,ts,trade_id,(row.get('trade_plan') or {}).get('stop_price'),target_fraction,price,json.dumps(payload,ensure_ascii=False,default=str)))
     order_payload={'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
@@ -2571,8 +2579,14 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                 payload[k]=v
         payload['last_stop_price']=(row.get('trade_plan') or {}).get('stop_price')
         payload['last_target_price']=(row.get('trade_plan') or {}).get('target_price')
-        payload['quantity']=abs(float(z.get('units') or 0.0))
-        payload['units']=abs(float(z.get('units') or 0.0))
+        payload['normalized_units']=abs(float(z.get('units') or 0.0))
+        payload['quantity_semantics']='NORMALIZED_PAPER_RETURN_UNITS'
+        payload['broker_quantity']=None
+        payload['broker_quantity_source']=None
+        # Legacy aliases are kept for backward-compatible UI reads only and are
+        # explicitly marked non-broker quantities.
+        payload['quantity']=payload['normalized_units']
+        payload['units']=payload['normalized_units']
         payload['last_update_at']=_v90j_iso(ts)
         c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id=%s",
                   (json.dumps(payload,ensure_ascii=False,default=str),tid))
@@ -8091,12 +8105,25 @@ def _signal_first_admission(row,policy,drawdown):
 
 def report(pg_connect):
     d=dict(_v90r41_base_report(pg_connect) or {})
+    for _p in d.get('portfolios') or []:
+        for _z in _p.get('positions') or []:
+            _payload=_v90j_json(_z.get('payload'))
+            _norm=abs(float(_z.get('units') or 0.0))
+            _z['normalized_units']=_norm
+            _z['quantity_semantics']='NORMALIZED_PAPER_RETURN_UNITS'
+            _z['broker_quantity']=None
+            _z['broker_quantity_source']=None
+            _z['broker_ready_quantity']=False
+            _payload.setdefault('quantity_semantics','NORMALIZED_PAPER_RETURN_UNITS')
     d['paper_execution_quality_r41']={
       'enabled':True,
       'research_only_signals_can_open_positions':False,
       'requires_execution_eligible':True,
       'requires_final_economics_gate':True,
       'pnl_interpretation':'execution-quality normalized paper P&L; still not broker-fill proof',
+      'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
+      'normalized_units_are_broker_quantity':False,
+      'broker_quantity_requires_instrument_registry':True,
       'blocked_assets_without_sufficient_feed':'remain visible as research signals and learning episodes',
     }
     return _jsonable(d)
