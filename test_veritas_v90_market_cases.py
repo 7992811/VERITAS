@@ -103,6 +103,24 @@ class MarketCaseRegressionTests(unittest.TestCase):
         self.assertEqual(out["initial_position_fraction"],0.0)
         self.assertIn("RR_BELOW_FINAL_FLOOR",out["final_economics_gate"]["blockers"])
 
+    def test_valid_new_setup_rebases_stale_entry_invalidation(self):
+        plan={
+            "eligible":True,"reason":"tactical_reversal","setup":"TACTICAL_REVERSAL",
+            "entry_quality":"INVALIDATED","entry_price":100.0,"stop_price":99.0,
+            "expected_move_pct":0.02,"expected_to_stop_ratio":2.0,
+            "initial_position_fraction":0.10,
+        }
+        out=VI.final_execution_safety("BRENT","SHORT",plan)
+        self.assertTrue(out["eligible"])
+        self.assertEqual(out["entry_quality"],"NEW_SETUP_PROVISIONAL")
+        self.assertTrue(out["entry_quality_rebased_from_old_setup"])
+
+        ordinary=dict(plan,setup="TREND")
+        ordinary.pop("entry_quality_rebased_from_old_setup",None)
+        out2=VI.final_execution_safety("BRENT","SHORT",ordinary)
+        self.assertEqual(out2["entry_quality"],"INVALIDATED")
+        self.assertNotIn("entry_quality_rebased_from_old_setup",out2)
+
 
 if __name__=="__main__":
     unittest.main()
