@@ -8128,7 +8128,12 @@ _v90r41_base_report = _report_r40
 
 def _signal_first_admission(row,policy,drawdown):
     row=row or {}
-    if not bool(row.get('paper_eligible',row.get('execution_eligible'))):
+    paper_ok=row.get('paper_eligible')
+    if paper_ok is None and str(row.get('asset') or '') in ('NQ','BRENT','GOLD','CNYRUBF'):
+        paper_ok=bool(row.get('source_gate_pass',True) and row.get('market_open',True))
+        row['paper_eligible']=paper_ok
+        row.setdefault('paper_execution_reason','research_grade_paper_feed' if paper_ok else 'paper_source_or_time_gate_failed')
+    if not bool(paper_ok if paper_ok is not None else row.get('execution_eligible')):
         return {'open':False,'fraction':0.0,'reason':'R42_PAPER_SOURCE_GATE',
                 'execution_reason':row.get('execution_reason'),
                 'paper_execution_reason':row.get('paper_execution_reason'),
