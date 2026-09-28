@@ -133,6 +133,33 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertFalse(rc.ok)
         self.assertEqual(len(rc.mismatches), 1)
 
+    def test_features_runtime_smoke_no_recursion(self):
+        import veritas_intelligence as vi
+        n=520
+        closes=[100.0+0.01*i for i in range(n)]
+        highs=[x+0.10 for x in closes]
+        lows=[x-0.10 for x in closes]
+        vols=[100.0+(i%7) for i in range(n)]
+        rets=[closes[i]/closes[i-1]-1.0 for i in range(1,n)]
+        bars=[]
+        for i in range(160):
+            c=105.0+0.002*i
+            bars.append({"ts":float(i*300),"open":c-0.01,"high":c+0.04,
+                         "low":c-0.04,"close":c,"volume":100.0})
+        raw={"asset":"BTC","price":closes[-1],"coinbase_price":closes[-1],
+             "secondary_price":closes[-1],"source_divergence":0.0,
+             "closes":closes,"highs":highs,"lows":lows,"vols":vols,
+             "taker_buy":[v*0.5 for v in vols],"returns":rets,
+             "observed_at":"2026-09-28T00:00:00+00:00","binance_close_time_ms":0,
+             "source_gate_pass":True,"market_open":True,
+             "intraday_bars":bars,"intraday_5m":bars,
+             "contract":None,"source_names":{"primary":"synthetic"}}
+        one=vi.features(raw,"1h",{})
+        five=vi.features(raw,"5m",{})
+        self.assertEqual(one["horizon"],"1h")
+        self.assertEqual(five["horizon"],"5m")
+        self.assertEqual(one["market_source_names"]["primary"],"synthetic")
+
     def test_r40_features_preserves_three_argument_signature(self):
         tree = ast.parse(Path("veritas_intelligence.py").read_text(encoding="utf-8"))
         defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "features"]
