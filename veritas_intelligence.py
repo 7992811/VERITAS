@@ -13779,8 +13779,17 @@ def production_readiness():
     if not champion_challenger_board().get('challengers'):
         warnings.append('no_robust_challenger_yet')
     research_ready=bool(storage.get('ok') and not dq.get('critical_failures'))
+    live_blockers=[]
+    if not storage.get('ok'): live_blockers.append('durable_storage_required')
+    live_blockers.extend(['broker_adapter_not_configured','broker_reconciliation_not_active',
+                          'production_contract_specs_not_configured','live_execution_disabled'])
+    if measurable<3: live_blockers.append('calibrated_probability_sample_insufficient')
+    if not LICENSED_MARKET_DATA: live_blockers.append('production_market_data_not_configured')
     return {'version':VERSION,'research_product_ready':research_ready,
             'external_investor_ready':research_ready and not blockers,
+            'real_money_ready':False,
+            'real_money_blockers':list(dict.fromkeys(live_blockers)),
+            'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
             'blockers':blockers,'warnings':warnings,
             'current_phase':'RESEARCH_RC' if research_ready else 'ENGINE_BUILD',
             'required_for_external_release':[
@@ -15122,6 +15131,9 @@ def fast_product_overview():
         'experience_learning':execution_learning_board(),'learning_index_v2':learning_index_v2(),
         'production_readiness':{'research_product_ready':bool(storage.get('ok')),
                                 'external_investor_ready':False,
+                                'real_money_ready':False,
+                                'real_money_blockers':['durable_storage_required'] if not storage.get('ok') else ['broker_adapter_not_configured','broker_reconciliation_not_active','production_market_data_not_configured','live_execution_disabled'],
+                                'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
                                 'blockers':['full readiness calculation pending'],
                                 'warnings':[]},
     }
