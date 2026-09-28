@@ -1,0 +1,38 @@
+name: Repair VERITAS open position API
+
+on:
+  push:
+    paths:
+      - ".github/workflows/veritas-fix-position-api.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - name: Apply position API repair
+        run: python tools/fix_position_api_r44.py
+      - name: Install dependencies
+        run: pip install -r requirements-intelligence.txt
+      - name: Verify runtime and tests
+        run: |
+          python -m py_compile veritas_intelligence.py veritas_portfolio.py veritas_v90_ui.py
+          python -m unittest -v test_veritas_v90_safety.py
+          python -m unittest -v test_veritas_v90_market_cases.py
+          python tools/architecture_guard.py
+      - name: Commit repair
+        run: |
+          git config user.name "VERITAS Position Repair"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "VERITAS v9.0: repair server-side open position payload"
+          git push origin HEAD:main
