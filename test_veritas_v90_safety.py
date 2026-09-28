@@ -277,6 +277,25 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertFalse(rc.ok)
         self.assertEqual(len(rc.mismatches), 1)
 
+    def test_pg_init_distinguishes_unavailable_from_unconfigured(self):
+        import veritas_intelligence as vi
+        old_url=vi.DATABASE_URL
+        old_enabled=vi.pg_enabled
+        old_health=dict(vi._v90_pg_health)
+        try:
+            vi.DATABASE_URL="postgresql://configured-but-unreachable"
+            vi._v90_pg_health_set(False,"OperationalError: host unavailable")
+            vi.pg_enabled=lambda: False
+            out=vi.pg_init()
+            self.assertTrue(out["configured"])
+            self.assertTrue(out["enabled"])
+            self.assertEqual(out["reason"],"POSTGRES_UNAVAILABLE")
+            self.assertIn("host unavailable",out["error"])
+        finally:
+            vi.DATABASE_URL=old_url
+            vi.pg_enabled=old_enabled
+            vi._v90_pg_health.update(old_health)
+
     def test_features_runtime_smoke_no_recursion(self):
         import veritas_intelligence as vi
         n=520
