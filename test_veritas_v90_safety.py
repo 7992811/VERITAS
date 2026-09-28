@@ -1,3 +1,4 @@
+import ast
 import unittest
 from pathlib import Path
 
@@ -114,6 +115,13 @@ class ExecutionSafetyTests(unittest.TestCase):
         rc = VB.LiveExecutionCoordinator(Fake()).reconcile({"BTC": 1.0})
         self.assertFalse(rc.ok)
         self.assertEqual(len(rc.mismatches), 1)
+
+    def test_r40_features_preserves_three_argument_signature(self):
+        tree = ast.parse(Path("veritas_intelligence.py").read_text(encoding="utf-8"))
+        defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "features"]
+        self.assertTrue(defs)
+        last = defs[-1]
+        self.assertEqual([a.arg for a in last.args.args], ["raw", "horizon", "common_structure"])
 
     def test_nq_outcomes_use_nq_futures(self):
         src = Path("veritas_intelligence.py").read_text(encoding="utf-8")
