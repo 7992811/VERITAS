@@ -6804,7 +6804,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'trend_phase':(f.get('trend_impulse') or {}).get('phase'),'trend_direction':(f.get('trend_impulse') or {}).get('direction'),
                      'trend_onset_score':round(float((f.get('trend_impulse') or {}).get('onset_score') or 0),4),
                      'impulse_score':round(float((f.get('trend_impulse') or {}).get('impulse_score') or 0),4),
-                     'entry_quality':(f.get('trend_impulse') or {}).get('entry_quality'),'impulse_overlay':impulse_overlay,
+                     'entry_quality':trade_plan.get('entry_quality') or (f.get('trend_impulse') or {}).get('entry_quality'),'impulse_overlay':impulse_overlay,
                      'intraday_structure':f.get('intraday_structure') or {},'trade_plan':trade_plan,'tradeability':tradeability,'decision_stage':decision_stage,
                      'positive_trade_probability':tradeability.get('positive_trade_probability'),'analog_effective_n':tradeability.get('effective_n'),
                      'expected_move_pct':round(float(trade_plan.get('expected_move_pct') or 0.0),6),
@@ -17821,6 +17821,7 @@ def final_execution_safety(asset,research_decision,plan):
         plan['pre_final_gate_reason']=prior_reason
         plan['reason']='final_economics_gate:' + ','.join(gate.get('blockers') or ['BLOCK'])
         plan['initial_position_fraction']=0.0
+    if plan.get('eligible') and str(plan.get('entry_quality') or '')=='INVALIDATED' and str(plan.get('setup') or '') in ('IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL','BRENT_REVERSAL_CAPTURE','REVERSAL_ADMISSION_BRIDGE','RANGE_RETEST_BREAKOUT'): plan['entry_quality']='NEW_SETUP_PROVISIONAL'; plan['entry_quality_rebased_from_old_setup']=True
     plan['execution_safety_version']=VX.VERSION
     return plan
 
@@ -17828,8 +17829,7 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     plan=dict(_v90r40_base_technical_trade_plan(
         asset,horizon,f,research_decision,signal_tier,analog
     ) or {})
-    # Early annotation is useful for explainability. The same gate is applied
-    # again after all setup-specific mutations in cycle(), where it is final.
+    # The same gate is applied again after setup-specific mutations in cycle().
     return final_execution_safety(asset,research_decision,plan)
 
 
