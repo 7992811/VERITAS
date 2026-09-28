@@ -6,6 +6,8 @@ import veritas_execution as VX
 import veritas_broker as VB
 import veritas_instruments as VI
 import veritas_promotion as VPR
+import veritas_risk as VR
+import veritas_live as VL
 
 
 class ExecutionSafetyTests(unittest.TestCase):
@@ -144,6 +146,42 @@ class ExecutionSafetyTests(unittest.TestCase):
         q=VI.quantity_for_notional(spec,100000.0,5000.0)
         self.assertEqual(q["status"],"PASS")
         self.assertEqual(q["quantity"],1.0)
+
+    def test_correlated_stop_risk_aggregates_cluster(self):
+        rows=[
+            VR.PositionRisk("BTC","LONG",0.20,100.0,98.0),
+            VR.PositionRisk("ETH","LONG",0.20,100.0,98.0),
+            VR.PositionRisk("GOLD","LONG",0.20,100.0,99.0),
+        ]
+        corr={"BTC":{"ETH":0.85,"GOLD":0.10},"ETH":{"GOLD":0.05}}
+        out=VR.portfolio_stop_risk(rows,corr)
+        self.assertEqual(out["status"],"PASS")
+        self.assertAlmostEqual(out["total_open_stop_risk_nav"],0.01,places=6)
+        self.assertAlmostEqual(out["max_correlated_stop_risk_nav"],0.008,places=6)
+
+    def test_live_authorization_default_switch_is_off(self):
+        reg=VI.InstrumentRegistry()
+        reg.put(VI.InstrumentSpec(
+            asset="BTC",venue="TEST",instrument_id="BTC-TEST",instrument_type="spot",
+            quote_currency="USD",pnl_currency="USD",tick_size=0.01,lot_size=0.0001,
+            contract_multiplier=1.0,min_quantity=0.0001,source="test",
+            observed_at="2026-09-28T00:00:00Z"))
+        ev=VPR.PromotionEvidence(
+            model_version="m1",oos_n=200,oos_expectancy=0.01,oos_profit_factor=1.3,
+            vault_n=100,vault_expectancy=0.01,vault_profit_factor=1.2,
+            high_cost_expectancy=0.005,calibration_n=200,ece=0.05,
+            shadow_trades=100,shadow_expectancy=0.01,shadow_max_drawdown=0.05,
+            code_ci_pass=True,data_parity_pass=True)
+        c=VL.LiveCandidate(
+            asset="BTC",direction="LONG",fraction_nav=0.10,entry_price=100.0,stop_price=98.0,
+            gross_after=0.5,drawdown=0.01,calibrated_probability=0.75,model_version="m1",
+            plan={"eligible":True,"entry_price":100.0,"stop_price":98.0,
+                  "expected_move_pct":0.04,"expected_to_stop_ratio":2.0},
+            source_gate={"eligible":True})
+        out=VL.authorize_candidate(c,[],{},reg,ev,True,True,False)
+        self.assertFalse(out["eligible"])
+        self.assertIn("LIVE_EXECUTION_DISABLED",out["blockers"])
+        self.assertIn("LIVE_EXECUTION_NOT_ARMED",out["blockers"])
 
     def test_model_promotion_is_fail_closed_without_independent_evidence(self):
         e=VPR.PromotionEvidence(
