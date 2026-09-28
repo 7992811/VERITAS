@@ -1,0 +1,56 @@
+name: Verify VERITAS open positions API
+
+on:
+  push:
+    paths:
+      - ".github/workflows/veritas-position-api-smoke.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check live paper-portfolios payload
+        run: |
+          python - <<'PY'
+          import json, urllib.request, time
+          url='https://veritas-intelligence-v1.onrender.com/api/v1/paper-portfolios'
+          last=None
+          for _ in range(4):
+              with urllib.request.urlopen(url,timeout=30) as r:
+                  d=json.load(r)
+              ps=d.get('portfolios') or []
+              gross=[]
+              positions=[]
+              for p in ps:
+                  g=p.get('gross_leverage')
+                  if g is None:
+                      g=(p.get('latest') or {}).get('gross_leverage')
+                  try:g=float(g or 0)
+                  except:g=0.0
+                  gross.append((p.get('name'),g))
+                  for z in p.get('positions') or []:
+                      positions.append((p.get('name'),z.get('asset'),z.get('direction'),z.get('target_fraction')))
+              last={'api_source':d.get('api_source'),'gross':gross,'positions':positions}
+              if any(abs(g)>0.002 for _,g in gross):
+                  assert positions, 'NONZERO_EXPOSURE_WITHOUT_POSITION_ROWS: '+json.dumps(last)
+                  break
+              time.sleep(3)
+          print(json.dumps(last,ensure_ascii=False))
+          PY
+      - name: Remove one-shot smoke workflow
+        run: |
+          rm -f .github/workflows/veritas-position-api-smoke.yml
+          git config user.name "VERITAS Position Smoke"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "VERITAS: remove completed position API smoke workflow"
+          git push origin HEAD:main
