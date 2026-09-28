@@ -82,6 +82,18 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertLessEqual(VX.LIVE_RISK_PROFILE["max_gross"],1.25)
         self.assertFalse(VX.LIVE_RISK_PROFILE["allow_new_risk_without_durable_storage"])
 
+    def test_final_plan_gate_cannot_be_bypassed_by_setup_mutation(self):
+        import veritas_intelligence as vi
+        plan={
+            "eligible":True,"reason":"tactical_reversal","entry_price":100.0,
+            "stop_price":99.0,"expected_move_pct":0.008,
+            "expected_to_stop_ratio":1.10,"initial_position_fraction":0.15
+        }
+        out=vi.final_execution_safety("BTC","LONG",plan)
+        self.assertFalse(out["eligible"])
+        self.assertEqual(out["initial_position_fraction"],0.0)
+        self.assertTrue(out["reason"].startswith("final_economics_gate:"))
+
     def test_live_gate_rejects_negative_post_cost_expectancy(self):
         gate = VX.production_order_gate(
             "BTC",
