@@ -17992,6 +17992,7 @@ if 'NDX' in DISPLAY_ASSETS or any((v[0]=='NDX') for v in ASSETS.values()):
 VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
 
 
+from veritas_market_runtime import install_market_runtime_guard as _v90_install_market_guard; _v90_install_market_guard(globals())
 from veritas_storage_guard import install_storage_guard as _v90_install_storage_guard
 _v90_install_storage_guard(globals())
 
