@@ -30,6 +30,7 @@ _DEFAULT_FILL_BPS = {
 LIVE_RISK_PROFILE = {
     "max_stop_risk_nav": 0.005,
     "max_total_open_stop_risk_nav": 0.025,
+    "max_correlated_stop_risk_nav": 0.0125,
     "max_single_asset_fraction": 0.25,
     "max_gross": 1.25,
     "daily_loss_stop": 0.02,
@@ -220,6 +221,9 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
                           durable_storage: bool, calibrated_probability: Optional[float],
                           stop_risk_nav: Optional[float], single_asset_fraction: Optional[float],
                           gross_after: Optional[float], drawdown: Optional[float],
+                          total_open_stop_risk_nav_after: Optional[float] = None,
+                          correlated_stop_risk_nav_after: Optional[float] = None,
+                          instrument_spec_validated: bool = False,
                           daily_pnl_pct: Optional[float] = None, weekly_pnl_pct: Optional[float] = None,
                           broker_reconciled: bool = False, kill_switch: bool = False) -> Dict[str, Any]:
     blockers = []
@@ -250,9 +254,21 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
     sr = _num(stop_risk_nav)
     if sr is None or sr > LIVE_RISK_PROFILE["max_stop_risk_nav"]:
         blockers.append("STOP_RISK_LIMIT")
+    total_sr = _num(total_open_stop_risk_nav_after)
+    if total_sr is None:
+        blockers.append("TOTAL_OPEN_STOP_RISK_REQUIRED")
+    elif total_sr > LIVE_RISK_PROFILE["max_total_open_stop_risk_nav"]:
+        blockers.append("TOTAL_OPEN_STOP_RISK_LIMIT")
+    corr_sr = _num(correlated_stop_risk_nav_after)
+    if corr_sr is None:
+        blockers.append("CORRELATED_STOP_RISK_REQUIRED")
+    elif corr_sr > LIVE_RISK_PROFILE["max_correlated_stop_risk_nav"]:
+        blockers.append("CORRELATED_STOP_RISK_LIMIT")
     sf = _num(single_asset_fraction)
     if sf is None or sf > LIVE_RISK_PROFILE["max_single_asset_fraction"]:
         blockers.append("SINGLE_ASSET_LIMIT")
+    if not instrument_spec_validated:
+        blockers.append("INSTRUMENT_SPEC_REQUIRED")
     ga = _num(gross_after)
     if ga is None or ga > LIVE_RISK_PROFILE["max_gross"]:
         blockers.append("GROSS_LIMIT")
