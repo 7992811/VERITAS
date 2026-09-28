@@ -339,6 +339,34 @@ class ExecutionSafetyTests(unittest.TestCase):
             vi.pg_enabled=old_enabled
             vi._v90_pg_health.update(old_health)
 
+    def test_durable_event_payload_accepts_datetime(self):
+        import json
+        from datetime import datetime, timezone
+        import veritas_intelligence as vi
+        old_enabled=vi.pg_enabled
+        old_conn=vi._v842_pg_event_conn
+        seen={}
+        class Result:
+            def fetchone(self): return {"id":1}
+        class Conn:
+            def execute(self,sql,args):
+                seen["args"]=args
+                return Result()
+        try:
+            vi.pg_enabled=lambda: True
+            vi._v842_pg_event_conn=lambda: Conn()
+            ok=vi._v90r37_pg_event_base(
+                "test_event","datetime-payload",
+                {"when":datetime(2026,9,28,17,0,tzinfo=timezone.utc)},
+                "BTC","1h",
+            )
+            self.assertTrue(ok)
+            payload=json.loads(seen["args"][6])
+            self.assertEqual(payload["when"],"2026-09-28 17:00:00+00:00")
+        finally:
+            vi.pg_enabled=old_enabled
+            vi._v842_pg_event_conn=old_conn
+
     def test_market_prefetch_not_silently_reduced_to_two_workers(self):
         import veritas_intelligence as vi
         self.assertGreaterEqual(vi.FAST_LOOP_MARKET_WORKERS,4)
