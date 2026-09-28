@@ -6191,19 +6191,7 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours,contract_s
         secid,_q=_v90_moex_front_brent_contract()
         return _v90_moex_exact_5m_klines(secid,ss-600,end)
     if asset=='MOEX':
-        bars=_v90r16_moex_index_5m()
-        out=[]
-        for x in bars or []:
-            try:
-                ts=float(x.get('ts') or 0.0)
-                if ts<ss-600 or ts>end:
-                    continue
-                vol=float(x.get('volume') or 0.0)
-                out.append([int(ts*1000),str(x.get('open')),str(x.get('high')),str(x.get('low')),str(x.get('close')),str(vol),
-                            int((ts+300)*1000)-1,'0','0',str(vol*0.5),'0','0'])
-            except Exception:
-                continue
-        return out
+        return _v90_moex_outcome_5m(ss,end)
     if asset=='CNYRUBF':
         return _v90_moex_exact_5m_klines('CNYRUBF',ss-600,end)
     return fetch_path_asset(asset,symbol,start_ms,hours)
