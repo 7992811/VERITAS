@@ -15547,22 +15547,22 @@ def _v90r25_portfolios_fast():
         sign=1 if z.get('direction')=='LONG' else -1; px=_n(z.get('last_price'),0.0); ep=_n(z.get('avg_entry_price'),0.0); units=_n(z.get('units'),0.0)
         ret=(100*sign*(px/ep-1)) if ep else None; h=q.get('execution_timeframe') or q.get('last_signal_horizon') or z.get('trade_horizon')
         cur=next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('horizon'))==str(h) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),None) or next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),{}) 
-        plan=(cur or {}).get('trade_plan') or {}; prob=next((v for v in (q.get('pwin'),q.get('entry_probability'),q.get('last_add_pwin'),q.get('model_quality_score'),cur.get('calibrated_probability'),cur.get('confidence')) if v not in (None,'')),None)
+        plan=(cur or {}).get('trade_plan') or {}; rec=({'UTS_fcc6b7cbd267bd850803':{'expected_move_pct':0.004869093231162136,'expected_to_stop_ratio':2.383706389896139,'decision_stage':'EARLY_PROBE','signal_tier':'LONG','entry_quality':'INVALIDATED','initial_stop_price':12.5024096}}).get(str(q.get('canonical_setup_id') or '')) or {}; prob=next((v for v in (q.get('pwin'),q.get('entry_probability'),q.get('last_add_pwin'),q.get('model_quality_score'),cur.get('calibrated_probability'),cur.get('confidence')) if v not in (None,'')),None)
         probsrc=q.get('pwin_source') or q.get('probability_source') or ('CURRENT_CALIBRATED' if cur.get('calibrated_probability') is not None else ('CURRENT_SIGNAL_SCORE' if cur else None))
         mfe=max(0.0,_n(q.get('mfe_pct'),0.0),max(0.0,ret or 0.0)); mae=min(0.0,_n(q.get('mae_pct'),0.0),min(0.0,ret or 0.0)); posnow=max(0.0,ret or 0.0)
         maxf=_n(((getattr(VP,'POLICIES',{}) if VP else {}).get(str(z.get('portfolio_name'))) or {}).get('max_fraction'),1.0) or 1.0
         z.update({'notional_rub':abs(units*px),'unrealized_pnl_rub':sign*units*(px-ep),'unrealized_return_pct':ret,'execution_timeframe':h,'horizon':h,
-                  'signal_probability':prob,'probability_source':probsrc,'signal_tier':q.get('entry_signal_tier') or q.get('signal_tier') or cur.get('signal_tier'),
+                  'signal_probability':prob,'probability_source':probsrc,'signal_tier':q.get('entry_signal_tier') or q.get('signal_tier') or rec.get('signal_tier') or cur.get('signal_tier'),
                   'setup_grade':q.get('setup_grade') or plan.get('setup_grade') or cur.get('setup_grade'),'setup_grade_score':q.get('setup_grade_score'),
-                  'entry_quality':q.get('entry_quality') or plan.get('entry_quality') or cur.get('entry_quality'),'decision_stage':q.get('decision_stage') or cur.get('decision_stage'),
-                  'expected_move_pct':next((v for v in (q.get('expected_move_pct'),plan.get('expected_move_pct'),cur.get('expected_move_pct')) if v not in (None,'')),None),
-                  'expected_to_stop_ratio':next((v for v in (q.get('expected_to_stop_ratio'),plan.get('expected_to_stop_ratio'),cur.get('expected_to_stop_ratio')) if v not in (None,'')),None),
+                  'entry_quality':q.get('entry_quality') or rec.get('entry_quality') or plan.get('entry_quality') or cur.get('entry_quality'),'decision_stage':q.get('decision_stage') or rec.get('decision_stage') or cur.get('decision_stage'),
+                  'expected_move_pct':next((v for v in (q.get('expected_move_pct'),rec.get('expected_move_pct'),plan.get('expected_move_pct'),cur.get('expected_move_pct')) if v not in (None,'')),None),
+                  'expected_to_stop_ratio':next((v for v in (q.get('expected_to_stop_ratio'),rec.get('expected_to_stop_ratio'),plan.get('expected_to_stop_ratio'),cur.get('expected_to_stop_ratio')) if v not in (None,'')),None),
                   'mfe_pct':mfe,'mae_pct':mae,'live_capture_ratio':(posnow/mfe if mfe>1e-9 else 0.0),'live_giveback_pct':max(0.0,mfe-posnow),
                   'take_price':next((v for v in (q.get('take_price'),q.get('target_price'),q.get('last_target_price'),plan.get('target_price')) if v not in (None,'')),None),
                   'second_take_price':next((v for v in (q.get('tp2'),q.get('tp2_price'),q.get('second_target_price'),q.get('runner_target_price')) if v not in (None,'')),None),
                   'profit_protection_active':bool(q.get('profit_protection_active')),'trailing_stop':q.get('trailing_stop'),
                   'max_position_fraction':maxf,'position_utilization_pct':100*_n(z.get('target_fraction'),0.0)/maxf,
-                  'learning_focus':('ЗАЩИТА_ПРИБЫЛИ' if q.get('profit_protection_active') else 'УДЕРЖАНИЕ_ДВИЖЕНИЯ' if mfe>=0.20 else 'КАЧЕСТВО_ВХОДА')})
+                  'learning_focus':('ЗАЩИТА_ПРИБЫЛИ' if q.get('profit_protection_active') else 'УДЕРЖАНИЕ_ДВИЖЕНИЯ' if mfe>=0.20 else 'КАЧЕСТВО_ВХОДА'),'held_seconds':max(0.0,(datetime.now(timezone.utc)-z.get('opened_at')).total_seconds()) if isinstance(z.get('opened_at'),datetime) else None,'legacy_entry_recovered':bool(rec),'initial_stop_price':q.get('initial_stop_price') or rec.get('initial_stop_price')})
         z.pop('trade_payload',None); pm.setdefault(z['portfolio_name'],[]).append(z)
     outp=[]
     for name in names:
