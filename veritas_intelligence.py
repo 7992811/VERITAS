@@ -904,7 +904,7 @@ def now():
 
 
 def emit(event, **fields):
-    print(json.dumps({'ts': now(), 'event': event, 'version': VERSION, **fields}, ensure_ascii=False), flush=True)
+    print(json.dumps({'ts': now(), 'event': event, 'version': VERSION, **fields}, ensure_ascii=False, default=str), flush=True)
 
 
 def clip(x, lo, hi):
@@ -6191,7 +6191,19 @@ def _v90_fetch_path_asset_horizon(asset,symbol,start_ms,horizon,hours,contract_s
         secid,_q=_v90_moex_front_brent_contract()
         return _v90_moex_exact_5m_klines(secid,ss-600,end)
     if asset=='MOEX':
-        return _yahoo_between('IMOEX.ME',ss-600,end,'5m')
+        bars=_v90r16_moex_index_5m()
+        out=[]
+        for x in bars or []:
+            try:
+                ts=float(x.get('ts') or 0.0)
+                if ts<ss-600 or ts>end:
+                    continue
+                vol=float(x.get('volume') or 0.0)
+                out.append([int(ts*1000),str(x.get('open')),str(x.get('high')),str(x.get('low')),str(x.get('close')),str(vol),
+                            int((ts+300)*1000)-1,'0','0',str(vol*0.5),'0','0'])
+            except Exception:
+                continue
+        return out
     if asset=='CNYRUBF':
         return _v90_moex_exact_5m_klines('CNYRUBF',ss-600,end)
     return fetch_path_asset(asset,symbol,start_ms,hours)
@@ -6722,15 +6734,15 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 entity_key = f'{cycle_id}:{asset}:{horizon}'
                 with db() as c:
                     cur = c.execute('INSERT INTO market_states(ts,asset,horizon,features,source_times) VALUES(?,?,?,?,?)',
-                                    (created_at, asset, horizon, json.dumps(f), json.dumps({
-                                        'primary': f['observed_at'], 'secondary': f['observed_at'], 'clock': clock_info})))
+                                    (created_at, asset, horizon, json.dumps(f,default=str), json.dumps({
+                                        'primary': f['observed_at'], 'secondary': f['observed_at'], 'clock': clock_info},default=str)))
                     sid = cur.lastrowid
                     for km in kmatches:
                         c.execute('INSERT OR IGNORE INTO knowledge_matches(state_id,rule_id,action,shadow_score,matched_at) VALUES(?,?,?,?,?)',
                                   (sid,km['rule_id'],km['action'],km['shadow_score'],created_at))
                     for a, d, cf, r in agents:
                         c.execute('INSERT INTO agent_views(state_id,agent,direction,confidence,rationale) VALUES(?,?,?,?,?)',
-                                  (sid, a, d, cf, json.dumps(r)))
+                                  (sid, a, d, cf, json.dumps(r,default=str)))
                     dcur = c.execute('INSERT INTO decisions(state_id,decision,confidence,sizing,synthesis,model_version,created_at) VALUES(?,?,?,?,?,?,?)',
                               (sid, dec, conf, size, json.dumps({'committee_score': score, 'weights': used_weights,
                                'regime': f['regime'], 'trend_impulse':f.get('trend_impulse'),'impulse_overlay':impulse_overlay,'knowledge_shadow_matches': kmatches,'orthogonal_evidence':orth_evidence,
@@ -6741,7 +6753,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                                'research_decision':research_dec,'signal_tier':signal_tier,
                                'execution_signal_tier':execution_signal_tier,'execution_eligibility':execution_gate,'trade_plan':trade_plan,
                                'gates': {'scope': True, 'metric': True, 'source': source_gate, 'time': time_gate,
-                                         'execution':bool(execution_gate.get('eligible'))}}), VERSION, created_at))
+                                         'execution':bool(execution_gate.get('eligible'))}},default=str), VERSION, created_at))
                     sqlite_decision_id = dcur.lastrowid
                 if pg_enabled():
                     try:
