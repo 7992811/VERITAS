@@ -48,8 +48,15 @@ def _num(x: Any, default: Optional[float] = None) -> Optional[float]:
         return default
 
 
-def round_trip_cost_pct() -> float:
-    return ROUND_TRIP_COST_BPS / 10000.0
+def round_trip_cost_pct(spread_bps: Optional[float] = None) -> float:
+    base = ROUND_TRIP_COST_BPS / 10000.0
+    sb = _num(spread_bps)
+    if sb is None or sb < 0:
+        return base
+    # Spread is paid once over a buy->sell round trip (half on each side).
+    # Preserve the configured commission/slippage floor if it is more conservative.
+    spread_cost = sb / 10000.0
+    return max(base, spread_cost)
 
 
 def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -60,8 +67,10 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
     if move is not None:
         move = abs(move)
 
+    spread_bps = _num(p.get("spread_bps"))
+    modeled_cost = round_trip_cost_pct(spread_bps)
     # Require enough gross move to survive modeled round-trip costs with margin.
-    min_move = max(MIN_EXPECTED_MOVE_PCT, 2.5 * round_trip_cost_pct())
+    min_move = max(MIN_EXPECTED_MOVE_PCT, 2.5 * modeled_cost)
     if rr is None or rr < MIN_REWARD_RISK:
         blockers.append("RR_BELOW_FINAL_FLOOR")
     if move is None or move < min_move:
@@ -88,7 +97,8 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
         "minimum_reward_risk": MIN_REWARD_RISK,
         "expected_move_pct": move,
         "minimum_expected_move_pct": min_move,
-        "modeled_round_trip_cost_pct": round_trip_cost_pct(),
+        "modeled_round_trip_cost_pct": modeled_cost,
+        "observed_spread_bps": spread_bps,
         "stop_distance_pct": stop_distance,
         "principle": "No signal tier or setup may bypass final post-cost economics.",
     }
@@ -135,31 +145,56 @@ def production_source_gate(asset: str, raw: Optional[Dict[str, Any]], clock_info
     }
 
 
-def simulated_fill(asset: str, side: str, reference_price: float, fraction_nav: float = 0.0) -> Dict[str, Any]:
+def simulated_fill(asset: str, side: str, reference_price: float, fraction_nav: float = 0.0,
+                   bid: Optional[float] = None, ask: Optional[float] = None) -> Dict[str, Any]:
     px = float(reference_price)
     if not math.isfinite(px) or px <= 0:
         raise ValueError("reference_price must be positive")
     asset = str(asset or "")
     side = str(side or "").upper()
+    is_buy = side in ("BUY", "BUY_TO_COVER")
 
     base_bps = float(os.getenv(f"VERITAS_PAPER_FILL_BPS_{asset}", str(_DEFAULT_FILL_BPS.get(asset, 6.0))))
-    # Simple size penalty for normalized paper exposure. This is not a substitute
-    # for a real order-book simulator, but prevents perfect-price fills.
     size_bps = min(20.0, max(0.0, float(fraction_nav or 0.0) - 0.10) * 3.0)
-    adverse_bps = max(0.0, base_bps + size_bps)
-    bump = adverse_bps / 10000.0
 
-    is_buy = side in ("BUY", "BUY_TO_COVER")
-    fill = px * (1.0 + bump if is_buy else 1.0 - bump)
+    b = _num(bid)
+    a = _num(ask)
+    quote_valid = bool(b is not None and a is not None and b > 0 and a > b)
+    if quote_valid:
+        executable_quote = a if is_buy else b
+        mid = 0.5 * (a + b)
+        spread_bps = (a - b) / mid * 10000.0 if mid > 0 else None
+        # Quote already includes spread. Add only residual adverse slippage + size impact.
+        residual_bps = max(1.0, 0.40 * base_bps)
+        impact_bps = residual_bps + size_bps
+        bump = impact_bps / 10000.0
+        fill = executable_quote * (1.0 + bump if is_buy else 1.0 - bump)
+        model = "BID_ASK_ADVERSE_PAPER_FILL_V2"
+    else:
+        executable_quote = px
+        spread_bps = None
+        residual_bps = base_bps
+        impact_bps = base_bps + size_bps
+        bump = impact_bps / 10000.0
+        fill = px * (1.0 + bump if is_buy else 1.0 - bump)
+        model = "CONSERVATIVE_NORMALIZED_PAPER_FILL_V1_FALLBACK"
+
+    adverse_vs_reference_bps = abs(fill / px - 1.0) * 10000.0
     return {
         "reference_price": px,
+        "executable_quote": executable_quote,
+        "bid": b,
+        "ask": a,
+        "spread_bps": spread_bps,
         "fill_price": fill,
-        "adverse_fill_bps": adverse_bps,
+        "adverse_fill_bps": adverse_vs_reference_bps,
         "base_fill_bps": base_bps,
+        "residual_slippage_bps": residual_bps,
         "size_impact_bps": size_bps,
         "side": side,
         "asset": asset,
-        "model": "CONSERVATIVE_NORMALIZED_PAPER_FILL_V1",
+        "model": model,
+        "quote_valid": quote_valid,
     }
 
 
@@ -245,7 +280,7 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
 
     rr = _num(econ.get("expected_to_stop_ratio"))
     stop_distance = _num(econ.get("stop_distance_pct"))
-    cost_r = (round_trip_cost_pct() / stop_distance) if stop_distance and stop_distance > 0 else None
+    cost_r = (float(econ.get("modeled_round_trip_cost_pct") or round_trip_cost_pct()) / stop_distance) if stop_distance and stop_distance > 0 else None
     expectancy_r = (p * rr - (1.0 - p) - cost_r) if (p is not None and rr is not None and cost_r is not None) else None
     min_expectancy_r = float(os.getenv("VERITAS_LIVE_MIN_EXPECTANCY_R", "0.05"))
     if expectancy_r is None:
