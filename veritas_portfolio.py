@@ -8064,3 +8064,36 @@ def report(pg_connect):
       'principle':'research portfolios may stay aggressive; future live account is independently capped and fail-closed',
     }
     return _jsonable(d)
+
+
+# VERITAS V90 EXECUTION-QUALITY PAPER R41
+# Final portfolio admission authority. Research-only signals remain visible in
+# the signal matrix/learning stream, but cannot create simulated P&L.
+_v90r41_base_admission = _signal_first_admission
+_v90r41_base_report = report
+
+def _signal_first_admission(row,policy,drawdown):
+    row=row or {}
+    if not bool(row.get('execution_eligible')):
+        return {'open':False,'fraction':0.0,'reason':'R41_EXECUTION_QUALITY_GATE',
+                'execution_reason':row.get('execution_reason'),
+                'research_signal_preserved':True}
+    plan=row.get('trade_plan') or {}
+    econ=plan.get('final_economics_gate') or {}
+    if econ and econ.get('status')=='BLOCK':
+        return {'open':False,'fraction':0.0,'reason':'R41_FINAL_ECONOMICS_GATE',
+                'economics_blockers':econ.get('blockers') or [],
+                'research_signal_preserved':True}
+    return _v90r41_base_admission(row,policy,drawdown)
+
+def report(pg_connect):
+    d=dict(_v90r41_base_report(pg_connect) or {})
+    d['paper_execution_quality_r41']={
+      'enabled':True,
+      'research_only_signals_can_open_positions':False,
+      'requires_execution_eligible':True,
+      'requires_final_economics_gate':True,
+      'pnl_interpretation':'execution-quality normalized paper P&L; still not broker-fill proof',
+      'blocked_assets_without_sufficient_feed':'remain visible as research signals and learning episodes',
+    }
+    return _jsonable(d)
