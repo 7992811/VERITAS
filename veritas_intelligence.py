@@ -3291,7 +3291,23 @@ def market(symbol, coinbase_product):
     vols = [float(x[5]) for x in k]
     taker_buy = [float(x[9]) for x in k]
     p = closes[-1]
-    cb = float(get_json(f'https://api.exchange.coinbase.com/products/{coinbase_product}/ticker')['price'])
+    cb_tick = get_json(f'https://api.exchange.coinbase.com/products/{coinbase_product}/ticker')
+    cb = float(cb_tick['price'])
+    try:
+        book = get_json('https://api.binance.com/api/v3/ticker/bookTicker', {'symbol':symbol})
+        best_bid=float(book.get('bidPrice') or 0.0); best_ask=float(book.get('askPrice') or 0.0)
+        if not (best_bid>0 and best_ask>best_bid):
+            best_bid=best_ask=None
+    except Exception:
+        best_bid=best_ask=None
+    try:
+        cb_bid=float(cb_tick.get('bid') or 0.0); cb_ask=float(cb_tick.get('ask') or 0.0)
+        if not (cb_bid>0 and cb_ask>cb_bid):
+            cb_bid=cb_ask=None
+    except Exception:
+        cb_bid=cb_ask=None
+    quote_mid=(0.5*(best_bid+best_ask)) if best_bid and best_ask else p
+    spread_bps=((best_ask-best_bid)/quote_mid*10000.0) if best_bid and best_ask and quote_mid>0 else None
     mid = (p + cb) / 2
     divergence = abs(p - cb) / mid if mid else 999
     if divergence > MAX_SOURCE_DIVERGENCE:
@@ -3308,6 +3324,8 @@ def market(symbol, coinbase_product):
     _set_source_quality(quality)
     return {
         'asset':symbol.replace('USDT',''),'price': p, 'coinbase_price': cb, 'secondary_price':cb,
+        'best_bid':best_bid,'best_ask':best_ask,'spread_bps':spread_bps,
+        'secondary_bid':cb_bid,'secondary_ask':cb_ask,
         'source_divergence': divergence,'closes': closes, 'highs': highs, 'lows': lows, 'vols': vols,
         'taker_buy': taker_buy, 'returns': rets, 'binance_close_time_ms': close_time_ms,
         'intraday_bars':[{'ts':int(x[0])//1000,'open':float(x[1]),'high':float(x[2]),'low':float(x[3]),
@@ -6653,6 +6671,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 trade_plan=apply_v84_execution_to_trade_plan(v84_row,trade_plan,setup_memory,regime_policy,execution_policy)
                 # R40 has final authority only after every setup/learning/execution
                 # layer has finished mutating the plan. Nothing below may re-enable it.
+                trade_plan['entry_price']=float(trade_plan.get('entry_price') or f.get('price') or 0.0)
+                trade_plan['spread_bps']=f.get('spread_bps')
                 trade_plan=final_execution_safety(asset,research_dec,trade_plan)
                 trade_plan['experience_decision']=experience_decision
                 decision_stage=trade_decision_stage(research_dec,trade_plan,tradeability,f.get('intraday_structure') or {})
@@ -6744,6 +6764,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'execution_eligible':bool(execution_gate.get('eligible')),
                      'execution_reason':execution_gate.get('reason'),
                      'direct_sources':execution_gate.get('direct_sources'),
+                     'best_bid':f.get('best_bid'),'best_ask':f.get('best_ask'),'spread_bps':f.get('spread_bps'),
                      'calibrated_probability': calibration.get('probability_correct'),
                      'shadow_position': shadow_risk.get('fraction_of_capital',0.0),
                      'challenger_decision':research_challenger.get('decision'),
@@ -16699,6 +16720,7 @@ def _v90r37_features_compact(f):
       'near_ath':1.0 if st.get('near_ath') else f.get('near_ath',0.0),
       'breakout_hold':1.0 if st.get('breakout_hold') else f.get('breakout_hold',0.0),
       'expected_move_pct':f.get('expected_move_pct'),
+      'best_bid':f.get('best_bid'),'best_ask':f.get('best_ask'),'spread_bps':f.get('spread_bps'),
       'regime':f.get('regime'),
       'market_contract':f.get('market_contract'),
       'market_source_names':f.get('market_source_names'),
@@ -17709,6 +17731,9 @@ def features(raw, horizon, common_structure=None):
     f['market_contract']=raw.get('contract')
     f['market_source_names']=raw.get('source_names')
     f['market_observed_at']=raw.get('observed_at')
+    f['best_bid']=raw.get('best_bid')
+    f['best_ask']=raw.get('best_ask')
+    f['spread_bps']=raw.get('spread_bps')
     return f
 
 def execution_eligibility(asset, raw, clock_info=None):
