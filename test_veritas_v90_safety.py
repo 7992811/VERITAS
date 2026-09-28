@@ -4,6 +4,8 @@ from pathlib import Path
 
 import veritas_execution as VX
 import veritas_broker as VB
+import veritas_instruments as VI
+import veritas_promotion as VPR
 
 
 class ExecutionSafetyTests(unittest.TestCase):
@@ -76,6 +78,43 @@ class ExecutionSafetyTests(unittest.TestCase):
         sell = VX.simulated_fill("BTC","SELL",100.0,0.25)
         self.assertGreater(buy["fill_price"],100.0)
         self.assertLess(sell["fill_price"],100.0)
+
+    def test_live_gate_requires_instrument_and_aggregate_risk(self):
+        gate = VX.production_order_gate(
+            "BTC",
+            {"eligible":True,"entry_price":100.0,"stop_price":99.0,
+             "expected_move_pct":0.02,"expected_to_stop_ratio":2.0},
+            source_gate={"eligible":True},
+            durable_storage=True,calibrated_probability=0.75,
+            stop_risk_nav=0.003,single_asset_fraction=0.20,gross_after=1.0,drawdown=0.01,
+            total_open_stop_risk_nav_after=None,correlated_stop_risk_nav_after=None,
+            instrument_spec_validated=False,broker_reconciled=True,
+        )
+        self.assertIn("TOTAL_OPEN_STOP_RISK_REQUIRED",gate["blockers"])
+        self.assertIn("CORRELATED_STOP_RISK_REQUIRED",gate["blockers"])
+        self.assertIn("INSTRUMENT_SPEC_REQUIRED",gate["blockers"])
+
+    def test_instrument_spec_validates_and_rounds_contract_quantity(self):
+        spec=VI.InstrumentSpec(
+            asset="TEST",venue="X",instrument_id="T1",instrument_type="future",
+            quote_currency="USD",pnl_currency="USD",tick_size=0.25,lot_size=1.0,
+            contract_multiplier=20.0,min_quantity=1.0,source="broker",observed_at="2026-09-28T00:00:00Z")
+        self.assertTrue(spec.validate()["valid"])
+        q=VI.quantity_for_notional(spec,100000.0,5000.0)
+        self.assertEqual(q["status"],"PASS")
+        self.assertEqual(q["quantity"],1.0)
+
+    def test_model_promotion_is_fail_closed_without_independent_evidence(self):
+        e=VPR.PromotionEvidence(
+            model_version="candidate",oos_n=20,oos_expectancy=0.01,oos_profit_factor=1.2,
+            vault_n=5,vault_expectancy=0.01,vault_profit_factor=1.1,
+            high_cost_expectancy=0.01,calibration_n=10,ece=0.05,
+            shadow_trades=5,shadow_expectancy=0.01,shadow_max_drawdown=0.02,
+            code_ci_pass=True,data_parity_pass=True)
+        g=VPR.promotion_gate(e)
+        self.assertFalse(g["eligible_for_production"])
+        self.assertIn("OOS_SAMPLE_TOO_SMALL",g["blockers"])
+        self.assertIn("VAULT_SAMPLE_TOO_SMALL",g["blockers"])
 
     def test_live_risk_profile_is_conservative(self):
         self.assertLessEqual(VX.LIVE_RISK_PROFILE["max_stop_risk_nav"],0.005)
