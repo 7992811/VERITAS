@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r34-daily-intelligence-growth-v2"
+UI_VERSION = "veritas-ui-v9.0-r35-position-sync-three-column-trades"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -85,7 +85,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .position-chip{border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:1px 4px;font-size:6.9px;line-height:1.35;color:#b7c2cb;background:rgba(255,255,255,.012);white-space:nowrap}
 .position-chip b{font-size:7.1px;color:#e4ebf0;font-weight:650}
 .position-util{font-size:7.2px;line-height:1.2;color:#b7c2cb;margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}.position-util b{color:#e7edf2}.position-nav-top,.trade-nav-top{color:#dce5ec;font-weight:700}
-.trade-card{border-top:1px solid rgba(255,255,255,.05);padding:5px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:7px}.trade-head b{font-size:9.8px;line-height:1.15}.trade-result{font-size:9.8px;font-weight:700;white-space:nowrap}.trade-meta{font-size:7.7px;line-height:1.25;color:var(--muted);margin-top:1px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;margin-top:3px}.trade-money span{font-size:7px;line-height:1.15;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:8.2px;line-height:1.15;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
+.trade-card{border-top:1px solid rgba(255,255,255,.05);padding:5px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:7px}.trade-head b{font-size:9.8px;line-height:1.15}.trade-result{font-size:9.8px;font-weight:700;white-space:nowrap}.trade-meta{font-size:7.7px;line-height:1.25;color:var(--muted);margin-top:1px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 6px;margin-top:4px}.trade-money span{font-size:7px;line-height:1.15;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:8.2px;line-height:1.15;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
 
 .intel-wrap{display:grid;grid-template-columns:165px minmax(0,1fr);gap:10px;align-items:stretch}
 .intel-score{border:1px solid var(--line);border-radius:11px;background:linear-gradient(145deg,rgba(91,143,183,.08),rgba(255,255,255,.01));padding:10px;display:flex;flex-direction:column;justify-content:space-between;min-width:0}
@@ -179,11 +179,11 @@ _CANONICAL_HTML = r'''<!doctype html>
 (function(){
 'use strict';
 const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'], TF=['5m','1h','4h','1d','3d','7d'];
-const POS_CACHE_KEY='veritas_v90_position_book_r31';
+const POS_CACHE_KEY='veritas_v90_position_book_r35';
 const loadPositionCache=()=>{try{const x=JSON.parse(localStorage.getItem(POS_CACHE_KEY)||'null');if(x&&x.book&&Date.now()-Number(x.at||0)<86400000)return x.book}catch(e){}return {}};
 const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.stringify({at:Date.now(),book}))}catch(e){}};
 const initialPositionBook=loadPositionCache();
-const st={signals:null,portfolios:null,positionBook:initialPositionBook,positionBookReady:Object.keys(initialPositionBook).length>0,trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
+const st={signals:null,portfolios:null,positionBook:initialPositionBook,positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
@@ -335,11 +335,13 @@ function renderPortfolios(){
   const d=st.portfolios||{},raw=Array.isArray(d.portfolios)?d.portfolios:[],positions=[];
   const ps=raw.map(p=>{
     const name=String(p.name||''),book=st.positionBook||{};
-    const pos=st.positionBookReady?(Array.isArray(book[name])?book[name]:[]):(Array.isArray(p.positions)?p.positions:[]);
+    const cached=Array.isArray(book[name])?book[name]:[],live=Array.isArray(p.positions)?p.positions:[];
+    const pos=cached.length?cached:live.length?live:(st.positionBookReady?cached:live);
     return Object.assign({},p,{positions:pos});
   });
   ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push(Object.assign({portfolio:p.name},z))));
-  $('pfCount').textContent=ps.length+'/4';$('openCount').textContent=positions.length;
+  const exposureMismatch=positions.length===0&&portfolioExposureNonZero(ps);
+  $('pfCount').textContent=ps.length+'/4';$('openCount').textContent=exposureMismatch?'синхр.':positions.length;
   const rets=ps.map(p=>Number(p.total_return_pct!=null?p.total_return_pct:((p.latest||{}).total_return_pct))).filter(Number.isFinite);
   const dds=ps.map(p=>Number(p.drawdown_pct!=null?p.drawdown_pct:(((p.latest||{}).drawdown!=null)?100*Number((p.latest||{}).drawdown):NaN))).filter(Number.isFinite);
   $('bestRet').textContent=rets.length?Math.max(...rets).toFixed(2)+'%':'—';$('maxDD').textContent=dds.length?Math.max(...dds).toFixed(2)+'%':'—';
@@ -373,7 +375,7 @@ function renderPortfolios(){
         '<span class="position-chip">Фокус <b>'+focusRu(z.learning_focus)+'</b></span>'+
       '</div>'+
     '</div>';
-  }).join(''):'<div class="msg">Открытых позиций нет.</div>';
+  }).join(''):(exposureMismatch?'<div class="msg warn">Экспозиция есть — позиции синхронизируются с PostgreSQL…</div>':'<div class="msg">Открытых позиций нет.</div>');
 }
 
 function renderTrades(){
@@ -643,7 +645,7 @@ async function loadBootstrap(){
   if(d)applyBootstrap(d);
 }
 async function loadPortfolios(){
-  const d=await get('paper-portfolios','/api/v1/paper-portfolios',8000);
+  const d=await get('paper-portfolios','/api/v1/paper-portfolios',12000);
   if(d&&Array.isArray(d.portfolios)){
     ingestExtractedPositions(d,{allowClear:false});
     const metricsOnly=Object.assign({},d,{portfolios:d.portfolios.map(p=>{const q=Object.assign({},p);delete q.positions;return q})});
