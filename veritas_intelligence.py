@@ -6776,7 +6776,11 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'effective_evidence':orth_evidence.get('effective_evidence_count',0),
                      'source_gate_pass':f.get('source_gate_pass',True),'market_open':f.get('market_open',True),
                      'execution_eligible':bool(execution_gate.get('eligible')),
+                     'paper_eligible':bool(execution_gate.get('paper_eligible')),
+                     'production_eligible':bool(execution_gate.get('production_eligible')),
                      'execution_reason':execution_gate.get('reason'),
+                     'paper_execution_reason':execution_gate.get('paper_execution_reason'),
+                     'data_latency_class':raw.get('data_latency_class'),
                      'direct_sources':execution_gate.get('direct_sources'),
                      'best_bid':f.get('best_bid'),'best_ask':f.get('best_ask'),'spread_bps':f.get('spread_bps'),
                      'calibrated_probability': calibration.get('probability_correct'),
@@ -17512,7 +17516,8 @@ def _v90_compact_live_row(z):
     keys=(
         'asset','horizon','decision','research_decision','confidence','price','score',
         'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
-        'source_gate_pass','market_open','execution_eligible','execution_reason',
+        'source_gate_pass','market_open','execution_eligible','paper_eligible','production_eligible',
+        'execution_reason','paper_execution_reason','data_latency_class',
         'direct_sources','best_bid','best_ask','spread_bps',
         'calibrated_probability','shadow_position',
         'challenger_decision','challenger_confidence','v70_uncertainty',
@@ -17550,7 +17555,8 @@ def _v90_compact_decision_log(z):
         'decision':r.get('decision'),'research_decision':r.get('research_decision'),
         'confidence':r.get('confidence'),'price':r.get('price'),'regime':r.get('regime'),
         'signal_tier':r.get('signal_tier'),'execution_eligible':r.get('execution_eligible'),
-        'execution_reason':r.get('execution_reason'),
+        'paper_eligible':r.get('paper_eligible'),'production_eligible':r.get('production_eligible'),
+        'execution_reason':r.get('execution_reason'),'paper_execution_reason':r.get('paper_execution_reason'),
         'spread_bps':r.get('spread_bps'),
         'final_gate_status':(p.get('final_economics_gate') or {}).get('status'),
         'final_gate_blockers':(p.get('final_economics_gate') or {}).get('blockers'),
@@ -17765,27 +17771,46 @@ def features(raw, horizon, common_structure=None):
 
 def execution_eligibility(asset, raw, clock_info=None):
     out=dict(_v90r40_base_execution_eligibility(asset,raw,clock_info) or {})
-    # Execution-quality crypto requires a current executable top-of-book.
+    research_ok=bool(raw.get('source_gate_pass',True))
+    time_ok=bool(raw.get('market_open',True) or asset in ('BTC','ETH'))
+    try:
+        price_ok=float(raw.get('price') or 0.0)>0
+    except Exception:
+        price_ok=False
+
+    # Paper/research execution and future live-capital execution are separate.
+    # A current primary research quote may be used to train paper portfolios,
+    # while live capital remains fail-closed behind production_source_gate().
+    paper_ok=bool(research_ok and time_ok and price_ok)
+
+    # Crypto paper P&L is execution-quality only when an executable top-of-book exists.
     if asset in ('BTC','ETH'):
         try:
             _bid=float(raw.get('best_bid') or 0.0); _ask=float(raw.get('best_ask') or 0.0)
         except Exception:
             _bid=_ask=0.0
         if not (_bid>0 and _ask>_bid):
-            out['eligible']=False
-            out['paper_eligible']=False
+            paper_ok=False
             out['reason']='paper_top_of_book_required'
-    # A delayed NQ research feed is useful for signal context but cannot honestly
-    # simulate 5m/real-time execution. Keep the research direction; block fills.
+
     if asset=='NQ' and str(raw.get('data_latency_class') or '').startswith('CME_FUTURES_DELAYED'):
         out['eligible']=False
         out['reason']='research_only_delayed_nq_futures'
-        out['paper_eligible']=False
+
+    # Futures/official-market research feeds may participate in paper learning
+    # even when a second same-instrument direct quote is unavailable.
+    if asset in ('NQ','BRENT','GOLD','CNYRUBF'):
+        out['paper_eligible']=paper_ok
+        out['paper_execution_reason']='research_grade_paper_feed' if paper_ok else 'paper_source_or_time_gate_failed'
+    else:
+        out['paper_eligible']=bool(out.get('paper_eligible',paper_ok and out.get('eligible',True)))
+        out['paper_execution_reason']='execution_grade_paper_feed' if out['paper_eligible'] else str(out.get('reason') or 'paper_gate_failed')
+
     prod=VX.production_source_gate(asset,raw,clock_info)
-    out['paper_eligible']=bool(out.get('paper_eligible',out.get('eligible')))
     out['production_eligible']=bool(prod.get('eligible'))
     out['production_gate']=prod
     out['live_capital_execution']=False
+    out['paper_is_live_fill_evidence']=False
     return out
 
 def final_execution_safety(asset,research_decision,plan):
