@@ -1009,8 +1009,14 @@ def pg_connect():
         raise
 
 def pg_init():
+    if not DATABASE_URL:
+        return {'enabled':False,'configured':False,'ok':False,'reason':'DATABASE_URL_NOT_SET'}
+    if psycopg is None:
+        return {'enabled':False,'configured':True,'ok':False,'reason':'PSYCOPG_NOT_INSTALLED'}
     if not pg_enabled():
-        return {'enabled': False, 'ok': False, 'reason': 'DATABASE_URL_NOT_SET'}
+        h=_v90_pg_health_snapshot()
+        return {'enabled':True,'configured':True,'ok':False,'reason':'POSTGRES_UNAVAILABLE',
+                'error':h.get('error'),'checked_at':h.get('checked_at')}
     with pg_connect() as c:
         # v9 storage lives in its own schema. Public contains compatibility views,
         # so all bootstrap DDL must resolve against veritas_v90 first.
@@ -1666,16 +1672,23 @@ def pg_storage_status():
     if cached and now_ts-cached[0]<60:
         return dict(cached[1])
     if not pg_enabled():
+        health=_v90_pg_health_snapshot()
         if cached:
-            x=dict(cached[1]); x['stale']=True; x['health_note']='transient_db_probe_failed'; return x
-        return {'enabled': False, 'ok': False, 'backend': 'sqlite-ephemeral'}
+            x=dict(cached[1]); x['stale']=True
+            x['health_note']=health.get('error') or 'transient_db_probe_failed'
+            x['configured']=bool(DATABASE_URL)
+            return x
+        return {'enabled':bool(DATABASE_URL),'configured':bool(DATABASE_URL),'ok':False,
+                'backend':'postgres-unavailable+sqlite-ephemeral' if DATABASE_URL else 'sqlite-ephemeral',
+                'reason':'POSTGRES_UNAVAILABLE' if DATABASE_URL else 'DATABASE_URL_NOT_SET',
+                'error':health.get('error')}
     try:
         with pg_connect() as c:
             e = c.execute('SELECT COUNT(*) n FROM ledger_events').fetchone()['n']
             s = c.execute('SELECT COUNT(*) n FROM knowledge_sources').fetchone()['n']
             r = c.execute('SELECT COUNT(*) n FROM knowledge_rules').fetchone()['n']
-        out={'enabled': True, 'ok': True, 'backend': 'postgres-durable+sqlite-cache',
-             'ledger_events': e, 'knowledge_sources': s, 'knowledge_rules': r, 'stale':False}
+        out={'enabled':True,'configured':True,'ok':True,'backend':'postgres-durable+sqlite-cache',
+             'ledger_events':e,'knowledge_sources':s,'knowledge_rules':r,'stale':False}
         pg_storage_status._cache=(now_ts,dict(out))
         return out
     except Exception as ex:
