@@ -937,14 +937,14 @@ def db():
     return c
 
 
-def pg_enabled():
+def _v90_pg_configured():
     return bool(DATABASE_URL)
 
 
 V90_DB_SCHEMA = 'veritas_v90'
 
 
-def pg_connect():
+def _v90_pg_raw_connect_impl():
     if not DATABASE_URL:
         raise RuntimeError('DATABASE_URL_NOT_SET')
     if psycopg is None:
@@ -957,7 +957,7 @@ def pg_connect():
 
 
 # VERITAS V90 POSTGRES FAIL-SOFT
-_v90_pg_raw_connect=pg_connect
+_v90_pg_raw_connect=_v90_pg_raw_connect_impl
 _v90_pg_health={'ok':None,'checked_at':0.0,'error':None}
 _v90_pg_health_lock=threading.Lock()
 V90_PG_HEALTH_OK_TTL=max(10,int(os.getenv('VERITAS_PG_HEALTH_OK_TTL','20')))
