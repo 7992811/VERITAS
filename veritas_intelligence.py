@@ -16401,7 +16401,7 @@ def _v90_5m_features(raw,common_structure=None):
     return f
 
 
-def features(raw, horizon, common_structure=None):
+def _features_r39(raw, horizon, common_structure=None):
     f=_v90_5m_features(raw,common_structure) if str(horizon)=='5m' else _v90_base_features(raw,horizon,common_structure)
     f['horizon']=horizon
     grid=(common_structure or {}).get('structure_breakout_grid') if isinstance(common_structure,dict) else None
@@ -16493,7 +16493,7 @@ def classify_signal_tier(asset,decision,confidence,challenger,effective_evidence
     return ('SUPER_'+decision) if (super_cal or super_cons or market_structure_super or fresh_breakout_super) else decision
 
 
-def execution_eligibility(asset, raw, clock_info=None):
+def _execution_eligibility_r39(asset, raw, clock_info=None):
     out=dict(_v90_base_execution_eligibility(asset,raw,clock_info) or {})
     if asset=='CNYRUBF':
         research_ok=bool(raw.get('source_gate_pass',True))
@@ -16513,7 +16513,7 @@ def execution_eligibility(asset, raw, clock_info=None):
     return out
 
 
-def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
+def _technical_trade_plan_r39(asset,horizon,f,research_decision,signal_tier,analog=None):
     plan=dict(_v90_base_technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog) or {})
     if research_decision not in ('LONG','SHORT'):
         return plan
@@ -17610,9 +17610,9 @@ def _v90r24_prime_portfolio_snapshot():
 # VERITAS V90 EXECUTION SAFETY R40
 # One final gate sits after every setup-specific trade-plan branch. Research
 # signals remain visible even when the trade is blocked.
-_v90r40_base_features = features
-_v90r40_base_execution_eligibility = execution_eligibility
-_v90r40_base_technical_trade_plan = technical_trade_plan
+_v90r40_base_features = _features_r39
+_v90r40_base_execution_eligibility = _execution_eligibility_r39
+_v90r40_base_technical_trade_plan = _technical_trade_plan_r39
 
 def execution_eligibility(asset, raw, clock_info=None):
     out=dict(_v90r40_base_execution_eligibility(asset,raw,clock_info) or {})
