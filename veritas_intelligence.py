@@ -13871,7 +13871,8 @@ def production_readiness():
     live_blockers=[]
     if not storage.get('ok'): live_blockers.append('durable_storage_required')
     live_blockers.extend(['broker_adapter_not_configured','broker_reconciliation_not_active',
-                          'production_contract_specs_not_configured','live_execution_disabled'])
+                          'production_contract_specs_not_configured','instrument_specs_not_validated',
+                          'model_promotion_gate_not_passed','live_execution_disabled'])
     if measurable<3: live_blockers.append('calibrated_probability_sample_insufficient')
     if not LICENSED_MARKET_DATA: live_blockers.append('production_market_data_not_configured')
     return {'version':VERSION,'research_product_ready':research_ready,
@@ -15221,7 +15222,7 @@ def fast_product_overview():
         'production_readiness':{'research_product_ready':bool(storage.get('ok')),
                                 'external_investor_ready':False,
                                 'real_money_ready':False,
-                                'real_money_blockers':['durable_storage_required'] if not storage.get('ok') else ['broker_adapter_not_configured','broker_reconciliation_not_active','production_market_data_not_configured','live_execution_disabled'],
+                                'real_money_blockers':['durable_storage_required'] if not storage.get('ok') else ['broker_adapter_not_configured','broker_reconciliation_not_active','production_market_data_not_configured','instrument_specs_not_validated','model_promotion_gate_not_passed','live_execution_disabled'],
                                 'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
                                 'blockers':['full readiness calculation pending'],
                                 'warnings':[]},
