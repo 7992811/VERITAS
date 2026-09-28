@@ -224,6 +224,8 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
                           total_open_stop_risk_nav_after: Optional[float] = None,
                           correlated_stop_risk_nav_after: Optional[float] = None,
                           instrument_spec_validated: bool = False,
+                          model_promoted: bool = False,
+                          model_version: Optional[str] = None,
                           daily_pnl_pct: Optional[float] = None, weekly_pnl_pct: Optional[float] = None,
                           broker_reconciled: bool = False, kill_switch: bool = False) -> Dict[str, Any]:
     blockers = []
@@ -269,6 +271,8 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
         blockers.append("SINGLE_ASSET_LIMIT")
     if not instrument_spec_validated:
         blockers.append("INSTRUMENT_SPEC_REQUIRED")
+    if not model_promoted:
+        blockers.append("MODEL_PROMOTION_REQUIRED")
     ga = _num(gross_after)
     if ga is None or ga > LIVE_RISK_PROFILE["max_gross"]:
         blockers.append("GROSS_LIMIT")
@@ -290,6 +294,8 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
         "eligible": ok,
         "status": "PASS" if ok else "BLOCK",
         "asset": str(asset or ""),
+        "model_version": model_version,
+        "model_promoted": bool(model_promoted),
         "blockers": list(dict.fromkeys(blockers)),
         "economics": econ,
         "source_gate": source_gate,
