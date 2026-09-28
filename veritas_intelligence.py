@@ -17456,7 +17456,13 @@ def _v90_compact_live_row(z):
         'signal_tier','structure_lifecycle','fresh_breakout','breakout_level',
         'recent_swing_anchor','robot_eligible','execution_mode','target_price',
         'tactical_target_price','target_method','setup','reversal_probability',
-        'decision_stage','positive_trade_probability','statistical_noise_buffer_p80'))
+        'decision_stage','positive_trade_probability','statistical_noise_buffer_p80',
+        'spread_bps','execution_safety_version'))
+    econ=plan.get('final_economics_gate') or {}
+    plan2['final_economics_gate']=_v90_small_dict(econ,(
+        'status','eligible','blockers','expected_to_stop_ratio','minimum_reward_risk',
+        'expected_move_pct','minimum_expected_move_pct','modeled_round_trip_cost_pct',
+        'observed_spread_bps','stop_distance_pct'))
     tp1=plan.get('take_profit_1')
     if isinstance(tp1,dict):
         plan2['take_profit_1']=_v90_small_dict(tp1,('timeframe','price','distance_pct'))
@@ -17491,7 +17497,8 @@ def _v90_compact_live_row(z):
         'asset','horizon','decision','research_decision','confidence','price','score',
         'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
         'source_gate_pass','market_open','execution_eligible','execution_reason',
-        'direct_sources','calibrated_probability','shadow_position',
+        'direct_sources','best_bid','best_ask','spread_bps',
+        'calibrated_probability','shadow_position',
         'challenger_decision','challenger_confidence','v70_uncertainty',
         'v70_falsification','v70_gate_status','v70_gate_class','v70_thesis_status',
         'v70_entry_status','v70_action','v70_size_multiplier','v70_timing_multiplier',
@@ -17528,6 +17535,10 @@ def _v90_compact_decision_log(z):
         'confidence':r.get('confidence'),'price':r.get('price'),'regime':r.get('regime'),
         'signal_tier':r.get('signal_tier'),'execution_eligible':r.get('execution_eligible'),
         'execution_reason':r.get('execution_reason'),
+        'spread_bps':r.get('spread_bps'),
+        'final_gate_status':(p.get('final_economics_gate') or {}).get('status'),
+        'final_gate_blockers':(p.get('final_economics_gate') or {}).get('blockers'),
+        'modeled_round_trip_cost_pct':(p.get('final_economics_gate') or {}).get('modeled_round_trip_cost_pct'),
         'calibrated_probability':r.get('calibrated_probability'),
         'decision_stage':r.get('decision_stage'),
         'horizon_structure_direction':hs.get('direction'),
