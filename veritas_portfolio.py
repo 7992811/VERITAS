@@ -8060,6 +8060,7 @@ def report(pg_connect):
       'final_economics_gate':True,
       'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
       'live_broker_execution_enabled':False,
+      'objective_priority':['positive_post_cost_expectancy','calibrated_edge_robustness','win_rate_target_65pct_kpi','drawdown_constraints'],
       'principle':'research portfolios may stay aggressive; future live account is independently capped and fail-closed',
     }
     return _jsonable(d)
