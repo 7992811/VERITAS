@@ -5,8 +5,8 @@ from collections import Counter
 from pathlib import Path
 
 LIMITS = {
-    "veritas_intelligence.py": {"max_lines": 18000, "max_redefinitions": 39, "max_duplicate_names": 34},
-    "veritas_portfolio.py": {"max_lines": 8066, "max_redefinitions": 70, "max_duplicate_names": 21},
+    "veritas_intelligence.py": {"max_lines": 18000, "max_redefinitions": 36, "max_duplicate_names": 34},
+    "veritas_portfolio.py": {"max_lines": 8066, "max_redefinitions": 68, "max_duplicate_names": 20},
 }
 
 
