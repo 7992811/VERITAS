@@ -200,6 +200,14 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertLessEqual(VX.LIVE_RISK_PROFILE["max_gross"],1.25)
         self.assertFalse(VX.LIVE_RISK_PROFILE["allow_new_risk_without_durable_storage"])
 
+    def test_paper_quantity_is_never_broker_quantity(self):
+        import veritas_portfolio as vp
+        q=vp.paper_quantity_metadata(12.5)
+        self.assertEqual(q["normalized_units"],12.5)
+        self.assertEqual(q["quantity_semantics"],"NORMALIZED_PAPER_RETURN_UNITS")
+        self.assertIsNone(q["broker_quantity"])
+        self.assertFalse(q["broker_ready_quantity"])
+
     def test_portfolio_blocks_research_only_signal_from_pnl(self):
         import veritas_portfolio as vp
         row={
