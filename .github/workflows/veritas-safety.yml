@@ -20,5 +20,7 @@ jobs:
         run: python -m py_compile veritas_execution.py veritas_broker.py veritas_instruments.py veritas_promotion.py veritas_risk.py veritas_live.py veritas_signal_core.py veritas_portfolio.py veritas_intelligence.py veritas_v90_ui.py
       - name: Execution safety tests
         run: python -m unittest -v test_veritas_v90_safety.py
+      - name: Market case regressions
+        run: python -m unittest -v test_veritas_v90_market_cases.py
       - name: Architecture debt guard
         run: python tools/architecture_guard.py
