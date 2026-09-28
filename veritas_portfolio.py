@@ -1322,7 +1322,7 @@ def _risk_governor(drawdown):
     return {'state':'NORMAL','max_gross':2.00,'new_risk':True,'multiplier':1.0}
 
 
-def _desired_fraction(row,policy,drawdown):
+def _desired_fraction_r39(row,policy,drawdown):
     sf=_signal_first_admission(row,policy,drawdown)
     if not sf.get('open'): return 0.0
     mode=str(policy.get('mode') or 'CORE')
@@ -7990,7 +7990,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         _v90r35_context_portfolio=old_portfolio
 
 
-def report(pg_connect):
+def _report_r39(pg_connect):
     d=dict(_v90r35_base_report(pg_connect) or {})
     d['objective_policy_r35']={
       'priority_order':[
@@ -8042,8 +8042,8 @@ V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),24)
 # VERITAS V90 EXECUTION SAFETY R40
 # Final portfolio invariant: no setup-specific sizing path may bypass the
 # universal economics gate produced by veritas_intelligence.
-_v90r40_base_desired_fraction = _desired_fraction
-_v90r40_base_report = report
+_v90r40_base_desired_fraction = _desired_fraction_r39
+_v90r40_base_report = _report_r39
 
 def _desired_fraction(row,policy,drawdown):
     gate=((row or {}).get('trade_plan') or {}).get('final_economics_gate') or {}
