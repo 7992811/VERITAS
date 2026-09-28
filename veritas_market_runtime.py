@@ -309,6 +309,26 @@ def install_market_runtime_guard(ns):
 
     ns["_moex_candles_between"] = moex_index_candles
 
+    def moex_outcome_5m(start_ts, end_ts):
+        bars = ns["_v90r16_moex_index_5m"]()
+        out = []
+        for x in bars or []:
+            try:
+                ts = float(x.get("ts") or 0.0)
+                if ts < float(start_ts) - 600 or ts > float(end_ts):
+                    continue
+                vol = float(x.get("volume") or 0.0)
+                out.append([
+                    int(ts * 1000), str(x.get("open")), str(x.get("high")),
+                    str(x.get("low")), str(x.get("close")), str(vol),
+                    int((ts + 300) * 1000) - 1, "0", "0", str(vol * 0.5), "0", "0",
+                ])
+            except Exception:
+                continue
+        return out
+
+    ns["_v90_moex_outcome_5m"] = moex_outcome_5m
+
     original_fetch = ns["_fetch_asset_bundle"]
     assets = ns["ASSETS"]
 
