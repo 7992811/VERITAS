@@ -9162,3 +9162,137 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),26)
+
+
+# VERITAS V90 CLEAN PRODUCTION EVIDENCE R45
+# Real-capital readiness must be proven only by trades opened under the current
+# closed-loop + data-hygiene logic. Migration/rebase trades and older kernels
+# remain auditable but cannot satisfy the promotion gate.
+
+V90_R45_PRODUCTION_EVIDENCE_EPOCH=os.getenv(
+    'VERITAS_R45_PRODUCTION_EVIDENCE_EPOCH','2026-09-29T20:20:00+00:00'
+)
+V90_R45_EXECUTION_COHORT='R45_CLEAN_CLOSED_LOOP'
+
+_v90r45_base_entry_patch=_v90j_entry_patch
+_v90r45_base_candidate_metrics=_v90_candidate_metrics
+_v90r45_base_readiness=production_candidate_readiness
+_v90r45_base_report=report
+
+
+def _v90j_entry_patch(row,z,ts):
+    d=dict(_v90r45_base_entry_patch(row,z,ts) or {})
+    d.update({
+      'execution_cohort':V90_R45_EXECUTION_COHORT,
+      'closed_loop_learning_r43':True,
+      'learning_data_hygiene_r44':True,
+      'production_evidence_epoch':V90_R45_PRODUCTION_EVIDENCE_EPOCH,
+    })
+    return d
+
+
+def _v90_candidate_metrics(pg_connect,name):
+    with pg_connect() as c:
+        r=c.execute("""
+          SELECT COUNT(*) AS closed_trades,
+                 COUNT(DISTINCT COALESCE(payload->>'canonical_setup_id',trade_id)) AS unique_episodes,
+                 COUNT(*) FILTER(WHERE net_pnl_rub>0) AS wins,
+                 COALESCE(SUM(net_pnl_rub),0) AS net_pnl_rub,
+                 COALESCE(AVG(net_pnl_rub),0) AS avg_net_pnl_rub,
+                 COALESCE(SUM(CASE WHEN net_pnl_rub>0 THEN net_pnl_rub ELSE 0 END),0) AS gross_wins_rub,
+                 ABS(COALESCE(SUM(CASE WHEN net_pnl_rub<0 THEN net_pnl_rub ELSE 0 END),0)) AS gross_losses_rub,
+                 COALESCE(SUM(fees_rub+funding_rub),0) AS costs_rub,
+                 COUNT(*) FILTER(
+                   WHERE COALESCE(payload->>'exit_reason',payload->>'close_reason','') IN ('','UNKNOWN')
+                 ) AS unknown_exits
+          FROM paper_trades
+          WHERE portfolio_name=%s
+            AND opened_at >= %s::timestamptz
+            AND COALESCE(payload->>'execution_cohort','')=%s
+            AND UPPER(COALESCE(payload->>'exit_reason',payload->>'close_reason','')) NOT LIKE '%%REBASE%%'
+            AND (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
+        """,(name,V90_R45_PRODUCTION_EVIDENCE_EPOCH,V90_R45_EXECUTION_COHORT)).fetchone()
+        dd=c.execute("""
+          WITH x AS (
+            SELECT observed_at,nav_rub,
+                   MAX(nav_rub) OVER (
+                     ORDER BY observed_at
+                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                   ) AS hwm
+            FROM paper_nav_history
+            WHERE portfolio_name=%s
+              AND observed_at >= %s::timestamptz
+          )
+          SELECT COALESCE(
+                   MAX(CASE WHEN hwm>0 THEN (hwm-nav_rub)/hwm ELSE 0 END),0
+                 ) AS max_drawdown
+          FROM x
+        """,(name,V90_R45_PRODUCTION_EVIDENCE_EPOCH)).fetchone()
+        ex=c.execute("""
+          SELECT COUNT(*) AS n
+          FROM paper_trades
+          WHERE portfolio_name=%s
+            AND opened_at >= %s::timestamptz
+            AND (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
+            AND (
+              COALESCE(payload->>'execution_cohort','')<>%s
+              OR UPPER(COALESCE(payload->>'exit_reason',payload->>'close_reason','')) LIKE '%%REBASE%%'
+            )
+        """,(name,V90_R45_PRODUCTION_EVIDENCE_EPOCH,V90_R45_EXECUTION_COHORT)).fetchone()
+    n=int((r or {}).get('closed_trades') or 0)
+    wins=int((r or {}).get('wins') or 0)
+    gw=float((r or {}).get('gross_wins_rub') or 0.0)
+    gl=float((r or {}).get('gross_losses_rub') or 0.0)
+    pf=(gw/gl) if gl>0 else (999.0 if gw>0 else None)
+    return {
+      'portfolio':name,
+      'closed_trades':n,
+      'unique_episodes':int((r or {}).get('unique_episodes') or 0),
+      'wins':wins,
+      'win_rate':wins/n if n else None,
+      'net_pnl_rub':float((r or {}).get('net_pnl_rub') or 0.0),
+      'avg_net_pnl_rub':float((r or {}).get('avg_net_pnl_rub') or 0.0),
+      'profit_factor':pf,
+      'costs_rub':float((r or {}).get('costs_rub') or 0.0),
+      'unknown_exits':int((r or {}).get('unknown_exits') or 0),
+      'max_drawdown':float((dd or {}).get('max_drawdown') or 0.0),
+      'evidence_epoch':V90_R45_PRODUCTION_EVIDENCE_EPOCH,
+      'execution_cohort':V90_R45_EXECUTION_COHORT,
+      'noncomparable_closed_trades_excluded':int((ex or {}).get('n') or 0),
+      'administrative_rebase_excluded':True,
+    }
+
+
+def production_candidate_readiness(pg_connect):
+    d=dict(_v90r45_base_readiness(pg_connect) or {})
+    d['epoch']=V90_R45_PRODUCTION_EVIDENCE_EPOCH
+    d['execution_cohort']=V90_R45_EXECUTION_COHORT
+    d['evidence_policy']='ONLY_R45_CLEAN_CLOSED_LOOP_TRADES'
+    d['administrative_rebase_excluded']=True
+    d['pre_r45_trades_count_toward_live_gate']=False
+    d['principle']=(
+      'Real-money promotion requires fresh post-cost evidence from the current '
+      'closed-loop execution cohort; migration/rebase and older-kernel trades '
+      'remain audit history only.'
+    )
+    return d
+
+
+def report(pg_connect):
+    d=dict(_v90r45_base_report(pg_connect) or {})
+    d['production_evidence_r45']={
+      'status':'ACTIVE',
+      'epoch':V90_R45_PRODUCTION_EVIDENCE_EPOCH,
+      'execution_cohort':V90_R45_EXECUTION_COHORT,
+      'requires_cohort_marker':True,
+      'excludes_rebase_closures':True,
+      'legacy_history_kept_for_audit':True,
+      'live_gate_uses_fresh_comparable_evidence_only':True,
+    }
+    # Ensure the top-level readiness object is the R45 clean cohort even if a
+    # previous report wrapper materialized the older field first.
+    d['production_candidate_readiness']=production_candidate_readiness(pg_connect)
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),27)
