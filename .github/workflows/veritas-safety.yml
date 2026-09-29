@@ -27,5 +27,7 @@ jobs:
         run: python -m unittest -v test_veritas_learning_index.py
       - name: Paper signal UI regressions
         run: node tools/test_paper_ui.cjs
+      - name: Trade accounting view regressions
+        run: python -m unittest -v test_veritas_trade_view.py
       - name: Architecture debt guard
         run: python tools/architecture_guard.py

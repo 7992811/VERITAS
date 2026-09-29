@@ -11,7 +11,7 @@ const context = vm.createContext({
     getElementById: id => elements[id] ||= {},
   },
 });
-vm.runInContext(script.replace(/\}\)\(\);\s*$/, 'globalThis.ui={paperStatus,renderSignals,st};})();'), context);
+vm.runInContext(script.replace(/\}\)\(\);\s*$/, 'globalThis.ui={paperStatus,renderSignals,renderPortfolios,renderTrades,normalizePosition,st};})();'), context);
 const ui = context.ui;
 const signal = {
   asset: 'MOEX', horizon: '1h', research_decision: 'SHORT', signal_tier: 'SUPER_SHORT',
@@ -46,3 +46,31 @@ ui.renderSignals();
 assert.match(elements.actions.innerHTML, /МОДЕЛЬНЫЙ ДОПУСК/);
 assert.match(elements.detail.innerHTML, /Открытие и размер определяет портфель/);
 console.log('Paper signal UI regressions passed');
+
+const partial = {
+  portfolio_name: 'Impulse', asset: 'MOEX', direction: 'LONG', active_trade_id: 'partial',
+  avg_entry_price: 100, last_price: 99, target_fraction: .1, take_price: 105,
+  total_trade_pnl_rub: 33, total_trade_return_pct: .0033,
+  realized_gross_pnl_rub: 50, unrealized_pnl_rub: -10, trade_fees_rub: 5, trade_funding_rub: 2,
+  tp1_done: true, tp1_partial: true, tp1_at: '2026-09-29T06:47:17Z', payload: {r17_tp1_done: true},
+};
+// Normalization and cache round-trip must retain both the fill status and whole-trade result.
+ui.st.positionBook = {Impulse: [JSON.parse(JSON.stringify(ui.normalizePosition(partial, 'Impulse', {})))]};
+ui.st.portfolios = {portfolios: [{name: 'Impulse', positions: [partial]}]};
+ui.renderPortfolios();
+assert.match(elements.positions.innerHTML, /TP1 ✓ исполнен/);
+assert.match(elements.positions.innerHTML, /TP1 · частично исполнен/);
+assert.match(elements.positions.innerHTML, /Итог сделки 33/);
+assert.match(elements.positions.innerHTML, /Зафиксировано до издержек/);
+assert.match(elements.positions.innerHTML, /Переоценка остатка/);
+assert.match(elements.positions.innerHTML, /Фондирование/);
+ui.st.trades = {trades: [{...partial, status: 'CLOSED', net_pnl_rub: -75,
+  total_trade_pnl_rub: -75, total_trade_return_pct: -.0075,
+  avg_exit_price: 110, gross_pnl_rub: 120, fees_rub: 192, funding_rub: 3,
+  exit_reason: 'TAKE_PROFIT_FULL_MIN_POSITION_R17'}]};
+ui.renderTrades();
+assert.match(elements.trades.innerHTML, /-0.01% NAV/);
+assert.doesNotMatch(elements.trades.innerHTML, /10.00%/);
+assert.match(elements.trades.innerHTML, /Фиксация по тейку/);
+assert.match(elements.trades.innerHTML, /TP1 · частично исполнен/);
+console.log('Partial take-profit and whole-trade UI regressions passed');
