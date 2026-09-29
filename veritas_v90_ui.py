@@ -374,7 +374,7 @@ function renderPortfolios(){
   $('positions').innerHTML=positions.length?positions.map(z=>{
     const pnl=tradeTotal(z),ret=tradeReturn(z),frac=100*Number(z.target_fraction||0),util=Number(z.position_utilization_pct),held=z.held_seconds??z.holding_duration_seconds;
     const stop=z.trailing_stop??z.stop_price,tp1=z.take_price??z.initial_take_price,tp1Label=tpDone(z)?'TP1 ✓ исполнен':z.take_price!=null?'TP1 / цель':z.initial_take_price!=null?'Цель входа':'TP1 / цель',tp2=z.second_take_price,prob=probPct(z.signal_probability),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
-    const tf=z.execution_timeframe||z.horizon,grade=z.setup_grade||(z.legacy_entry_recovered?'архив':'—'),tier=z.signal_tier||'',protect=z.profit_protection_active===true;
+    const tf=z.execution_timeframe||z.horizon,grade=z.setup_grade||(z.legacy_entry_recovered?'архив':'—'),tier=z.signal_tier||'',protection=z.net_profit_protection||{},protect=protection.version==='NET_STOP_AFTER_COSTS_V1'&&protection.state==='PROTECTED'&&Number(protection.net_at_stop_rub)>=0.01;
     const probText=prob==null?'—':prob.toFixed(1)+'% '+probSourceRu(z.probability_source);
     const capText=Number.isFinite(cap)?(100*cap).toFixed(0)+'%':'—';
     const mfeText=Number.isFinite(mfe)?(mfe>=0?'+':'')+mfe.toFixed(2)+'%':'—';
@@ -396,7 +396,9 @@ function renderPortfolios(){
         '<span class="position-chip">R/R <b>'+(Number.isFinite(rr)?rr.toFixed(2):'—')+'</b></span>'+
         '<span class="position-chip">Ожид. ход <b>'+(Number.isFinite(exp)?(100*exp).toFixed(2)+'%':'—')+'</b></span>'+
         '<span class="position-chip">Grade <b>'+esc(grade)+'</b></span>'+
-        '<span class="position-chip">Защита <b>'+(protect?'активна':'нет')+'</b></span>'+
+        '<span class="position-chip">Защита <b>'+(protect?'после расходов':protection.state==='STOP_REACHED'?'стоп достигнут':protection.state==='COSTS_NOT_COVERED'?'нет чистой прибыли':'нет расчёта')+'</b></span>'+
+        '<span class="position-chip" title="Расчётный итог всей сделки при выходе по текущему стопу: с фиксациями, комиссиями, начисленным фондированием и проскальзыванием. Разрыв цены может изменить исполнение.">По стопу после расходов <b class="'+(protection.net_at_stop_rub==null?'warn':Number(protection.net_at_stop_rub)>=0?'ok':'bad')+'">'+(protection.net_at_stop_rub==null?'—':n(protection.net_at_stop_rub,2)+' ₽')+'</b></span>'+
+        '<span class="position-chip" title="Расчётная цена стопа для нулевого итога всей сделки после расходов на текущий момент.">Безубыток <b>'+n(protection.break_even_stop_price,4)+'</b></span>'+
         '<span class="position-chip">Фокус <b>'+focusRu(z.learning_focus)+'</b></span>'+
       '</div>'+
     '</div>';

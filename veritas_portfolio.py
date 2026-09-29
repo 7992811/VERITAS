@@ -6,6 +6,7 @@ from xml.etree import ElementTree as ET
 import httpx
 import veritas_execution as VX
 import veritas_position_guard as VPG
+import veritas_profit_protection as VPP
 
 VERSION='veritas-portfolio-v9.0-four-portfolio-core'
 INITIAL_NAV_RUB=1_000_000.0
@@ -2333,6 +2334,7 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
                 base_book=candidates
             book=_v90_trend_transition_candidate_book(summary,base_book,mode)
             results.append(_step_one(c,name,pol,book,prices,ruonia,usdrub,ts,commission_rate,summary))
+        VPP.refresh(c,commission=commission_rate)
     out={'status':'OK','version':VERSION,'portfolios':results,'market_candidates':len(candidates),'impulse_candidates':len(impulse_candidates),
          'signal_first_policy':True,'signal_first_probe_fraction_core':0.10,'signal_first_probe_fraction_impulse':0.05,'ruonia_source':rusrc,'usdrub_source':fxsrc,'objective_order':['WIN_RATE','TOTAL_RETURN','DRAWDOWN'],'meaningful_win_threshold_nav':MEANINGFUL_WIN_NAV,'admission_probability_floor':{'Impulse':0.64,'Aggressive':0.62,'Champion':0.70,'Challenger':0.75},'probability_note':'EMPIRICAL_CALIBRATION when available; otherwise MODEL_PRIOR_UNCALIBRATED. Prior is never reported as observed hit probability.','live_capital':False}
     if emit: emit('paper_portfolio_cycle',portfolios=results,market_candidates=len(candidates),
@@ -3623,7 +3625,7 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
                              SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
                              WHERE portfolio_name=%s AND asset=%s""",
                           (proposed,json.dumps({
-                            'profit_protection_active':True,
+                            **VPP.assess(c,z,stop=proposed,now=ts,commission=COMMISSION),
                             'profit_protection_mfe_pct':100.0*mfe,
                             'profit_protection_stop':proposed,
                           },ensure_ascii=False),name,z.get('asset')))
@@ -4307,7 +4309,7 @@ def _v90pr_reload_allowed(c,name,z,row,price,nav,target_fraction):
 
     # Existing protected stop must not be weakened by reload.
     old_stop=z.get('stop_price')
-    protected=bool(payload.get('profit_protection_active') or payload.get('trailing_stop'))
+    protected=VPP.is_protected(z)
     return True,{'reload':True,'old_stop':old_stop,'protected':protected,
                  'current_fraction':current_frac,'target_fraction':float(target_fraction)}
 
@@ -5243,9 +5245,8 @@ def _v90tr_apply(c,name,candidates,prices,ts):
         if direction=='SHORT' and stop<=current:
             continue
 
-        stage=('PROFIT_LOCK_STRUCTURAL' if
-               ((direction=='LONG' and stop>entry) or (direction=='SHORT' and stop<entry))
-               else 'RISK_REDUCTION_STRUCTURAL')
+        protection=VPP.assess(c,z,stop=stop,price=current,now=ts,commission=COMMISSION)
+        stage=protection['trailing_stage']
         hist=list(payload.get('trailing_history') or [])
         event={
           'at':_v90j_iso(ts),'stage':stage,'old_stop':old_stop,'new_stop':stop,
@@ -5255,7 +5256,7 @@ def _v90tr_apply(c,name,candidates,prices,ts):
         }
         hist=(hist+[event])[-32:]
         patch={
-          'profit_protection_active':stage=='PROFIT_LOCK_STRUCTURAL',
+          **protection,
           'trailing_rule':'R17_LAST_CONFIRMED_SWING_TRAIL',
           'trailing_stage':stage,'trailing_stop':stop,
           'trailing_reference_timeframe':ref_tf,
@@ -6867,14 +6868,7 @@ def _v90r24_protected_scale_target(z,row,price,nav,current_target):
         stop=float(z.get('stop_price')) if z.get('stop_price') is not None else None
     except Exception:
         stop=None
-    protected=bool(
-        payload.get('profit_protection_active')
-        or payload.get('trailing_stop')
-        or (stop is not None and (
-            (direction=='LONG' and stop>=entry)
-            or (direction=='SHORT' and stop<=entry)
-        ))
-    )
+    protected=VPP.is_protected(z)
 
     desired=float(current_target)
     stage='UNPROTECTED'
@@ -6912,6 +6906,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
         (name,asset)
     ).fetchone()
+    if z: z=dict(z); z['payload']={**_v90j_json(z.get('payload')),**VPP.assess(c,z,price=price,nav=nav,now=ts,commission=COMMISSION)}
     desired,meta=_v90r24_protected_scale_target(
         dict(z) if z else None,row,price,nav,target_fraction
     )
