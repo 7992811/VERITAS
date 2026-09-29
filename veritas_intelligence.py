@@ -15535,7 +15535,21 @@ def _v90r25_portfolios_fast():
     with pg_connect() as c:
         base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
         nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
-        pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction FROM paper_positions pp LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id WHERE pp.portfolio_name=ANY(%s) ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
+        pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,ed.payload AS entry_decision_payload
+                         FROM paper_positions pp
+                         LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id
+                         LEFT JOIN LATERAL (
+                           SELECT le.payload
+                           FROM ledger_events le
+                           WHERE le.event_type='decision'
+                             AND le.asset=pp.asset
+                             AND le.event_ts<=pp.opened_at+INTERVAL '3 minutes'
+                             AND COALESCE(le.payload->>'research_decision',le.payload->>'decision','')=pp.direction
+                           ORDER BY ABS(EXTRACT(EPOCH FROM (le.event_ts-pp.opened_at))) ASC
+                           LIMIT 1
+                         ) ed ON TRUE
+                         WHERE pp.portfolio_name=ANY(%s)
+                         ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
         stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
     bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
     def _n(v,d=None):
@@ -15543,22 +15557,23 @@ def _v90r25_portfolios_fast():
             x=float(v); return x if math.isfinite(x) else d
         except Exception: return d
     for r0 in pos:
-        z=dict(r0); p=z.get('payload') if isinstance(z.get('payload'),dict) else {}; tp=z.get('trade_payload') if isinstance(z.get('trade_payload'),dict) else {}; q=dict(tp); q.update(p)
+        z=dict(r0); p=z.get('payload') if isinstance(z.get('payload'),dict) else {}; tp=z.get('trade_payload') if isinstance(z.get('trade_payload'),dict) else {}; q=dict(tp); q.update(p); entry_dec=z.get('entry_decision_payload') if isinstance(z.get('entry_decision_payload'),dict) else {}
         sign=1 if z.get('direction')=='LONG' else -1; px=_n(z.get('last_price'),0.0); ep=_n(z.get('avg_entry_price'),0.0); units=_n(z.get('units'),0.0)
-        ret=(100*sign*(px/ep-1)) if ep else None; h=q.get('execution_timeframe') or q.get('last_signal_horizon') or z.get('trade_horizon')
-        cur=next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('horizon'))==str(h) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),None) or next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),{}) 
-        plan=(cur or {}).get('trade_plan') or {}; rec=({'UTS_fcc6b7cbd267bd850803':{'expected_move_pct':0.004869093231162136,'expected_to_stop_ratio':2.383706389896139,'decision_stage':'EARLY_PROBE','signal_tier':'LONG','entry_quality':'INVALIDATED','initial_stop_price':12.5024096,'initial_take_price':12.589}}).get(str(q.get('canonical_setup_id') or '')) or {}; prob=next((v for v in (q.get('pwin'),q.get('entry_probability'),q.get('last_add_pwin'),q.get('model_quality_score'),cur.get('calibrated_probability'),cur.get('confidence')) if v not in (None,'')),None)
-        probsrc=q.get('pwin_source') or q.get('probability_source') or ('CURRENT_CALIBRATED' if cur.get('calibrated_probability') is not None else ('CURRENT_SIGNAL_SCORE' if cur else None))
+        ret=(100*sign*(px/ep-1)) if ep else None; h=q.get('execution_timeframe') or q.get('last_signal_horizon') or z.get('trade_horizon') or entry_dec.get('horizon')
+        cur=next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('horizon'))==str(h) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),None) or next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),{})
+        plan=(cur or {}).get('trade_plan') or {}; entry_plan=(entry_dec or {}).get('trade_plan') or {}; rec=({'UTS_fcc6b7cbd267bd850803':{'expected_move_pct':0.004869093231162136,'expected_to_stop_ratio':2.383706389896139,'decision_stage':'EARLY_PROBE','signal_tier':'LONG','entry_quality':'INVALIDATED','initial_stop_price':12.5024096,'initial_take_price':12.589}}).get(str(q.get('canonical_setup_id') or '')) or {}; prob=next((v for v in (q.get('pwin'),q.get('entry_probability'),q.get('last_add_pwin'),q.get('model_quality_score'),entry_dec.get('calibrated_probability'),entry_dec.get('confidence'),cur.get('calibrated_probability'),cur.get('confidence')) if v not in (None,'')),None)
+        probsrc=q.get('pwin_source') or q.get('probability_source') or ('ENTRY_CALIBRATED' if entry_dec.get('calibrated_probability') is not None else ('ENTRY_SIGNAL_SCORE' if entry_dec else ('CURRENT_CALIBRATED' if cur.get('calibrated_probability') is not None else ('CURRENT_SIGNAL_SCORE' if cur else None))))
+        had_path=(q.get('mfe_pct') is not None or q.get('mae_pct') is not None)
         mfe=max(0.0,_n(q.get('mfe_pct'),0.0),max(0.0,ret or 0.0)); mae=min(0.0,_n(q.get('mae_pct'),0.0),min(0.0,ret or 0.0)); posnow=max(0.0,ret or 0.0)
         maxf=_n(((getattr(VP,'POLICIES',{}) if VP else {}).get(str(z.get('portfolio_name'))) or {}).get('max_fraction'),1.0) or 1.0
         z.update({'notional_rub':abs(units*px),'unrealized_pnl_rub':sign*units*(px-ep),'unrealized_return_pct':ret,'execution_timeframe':h,'horizon':h,
-                  'signal_probability':prob,'probability_source':probsrc,'signal_tier':q.get('entry_signal_tier') or q.get('signal_tier') or rec.get('signal_tier') or cur.get('signal_tier'),
-                  'setup_grade':q.get('setup_grade') or plan.get('setup_grade') or cur.get('setup_grade'),'setup_grade_score':q.get('setup_grade_score'),
-                  'entry_quality':q.get('entry_quality') or rec.get('entry_quality') or plan.get('entry_quality') or cur.get('entry_quality'),'decision_stage':q.get('decision_stage') or rec.get('decision_stage') or cur.get('decision_stage'),
-                  'expected_move_pct':next((v for v in (q.get('expected_move_pct'),rec.get('expected_move_pct'),plan.get('expected_move_pct'),cur.get('expected_move_pct')) if v not in (None,'')),None),
-                  'expected_to_stop_ratio':next((v for v in (q.get('expected_to_stop_ratio'),rec.get('expected_to_stop_ratio'),plan.get('expected_to_stop_ratio'),cur.get('expected_to_stop_ratio')) if v not in (None,'')),None),
-                  'mfe_pct':mfe,'mae_pct':mae,'live_capture_ratio':(posnow/mfe if mfe>1e-9 else 0.0),'live_giveback_pct':max(0.0,mfe-posnow),
-                  'take_price':next((v for v in (q.get('take_price'),q.get('target_price'),q.get('last_target_price'),plan.get('target_price')) if v not in (None,'')),None),
+                  'signal_probability':prob,'probability_source':probsrc,'signal_tier':q.get('entry_signal_tier') or q.get('signal_tier') or entry_dec.get('signal_tier') or rec.get('signal_tier') or cur.get('signal_tier'),
+                  'setup_grade':q.get('setup_grade') or entry_plan.get('setup_grade') or entry_dec.get('setup_grade') or plan.get('setup_grade') or cur.get('setup_grade'),'setup_grade_score':q.get('setup_grade_score') or entry_plan.get('setup_grade_score') or entry_dec.get('setup_grade_score'),
+                  'entry_quality':q.get('entry_quality') or entry_plan.get('entry_quality') or entry_dec.get('entry_quality') or rec.get('entry_quality') or plan.get('entry_quality') or cur.get('entry_quality'),'decision_stage':q.get('decision_stage') or entry_dec.get('decision_stage') or rec.get('decision_stage') or cur.get('decision_stage'),
+                  'expected_move_pct':next((v for v in (q.get('expected_move_pct'),entry_plan.get('expected_move_pct'),entry_dec.get('expected_move_pct'),rec.get('expected_move_pct'),plan.get('expected_move_pct'),cur.get('expected_move_pct')) if v not in (None,'')),None),
+                  'expected_to_stop_ratio':next((v for v in (q.get('expected_to_stop_ratio'),entry_plan.get('expected_to_stop_ratio'),entry_dec.get('expected_to_stop_ratio'),rec.get('expected_to_stop_ratio'),plan.get('expected_to_stop_ratio'),cur.get('expected_to_stop_ratio')) if v not in (None,'')),None),
+                  'mfe_pct':mfe,'mae_pct':mae,'live_capture_ratio':(posnow/mfe if mfe>1e-9 else 0.0),'live_giveback_pct':max(0.0,mfe-posnow),'path_telemetry_quality':'FULL_PATH' if had_path else 'RECOVERED_LOWER_BOUND',
+                  'take_price':next((v for v in (q.get('take_price'),q.get('target_price'),q.get('last_target_price'),entry_plan.get('target_price'),entry_dec.get('target_price'),plan.get('target_price')) if v not in (None,'')),None),
                   'second_take_price':next((v for v in (q.get('tp2'),q.get('tp2_price'),q.get('second_target_price'),q.get('runner_target_price')) if v not in (None,'')),None),
                   'profit_protection_active':bool(q.get('profit_protection_active')),'trailing_stop':q.get('trailing_stop'),
                   'max_position_fraction':maxf,'position_utilization_pct':100*_n(z.get('target_fraction'),0.0)/maxf,
