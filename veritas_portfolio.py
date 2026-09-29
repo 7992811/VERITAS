@@ -608,20 +608,6 @@ def _candidate_book_v84(summary):
 _v901_legacy_impulse_book = _best_impulse_by_asset
 
 
-def _effective_entry_quality(row):
-    """Final entry quality after setup mutation/rebasing.
-
-    Row-level entry_quality describes the original thesis.  When final execution
-    safety explicitly rebases that thesis to a new independently validated setup,
-    every downstream portfolio gate must use the final plan value.
-    """
-    row=row or {}
-    plan=row.get('trade_plan') or {}
-    if bool(plan.get('entry_quality_rebased_from_old_setup')):
-        return str(plan.get('entry_quality') or '')
-    return str(row.get('entry_quality') or plan.get('entry_quality') or '')
-
-
 def _v901_no_hard_veto(row):
     plan=(row or {}).get('trade_plan') or {}
     ti=plan.get('trade_integrity') or {}
@@ -825,7 +811,7 @@ def _v902_execution_metrics(row, direction):
     impulse=_v902_impulse_evidence(row,direction)
     ti=plan.get('trade_integrity') or {}
     soft_wait=(str(ti.get('entry_permission') or '')=='WAIT_ENTRY'
-               or _effective_entry_quality(row)=='INVALIDATED'
+               or str(plan.get('entry_quality') if plan.get('entry_quality_rebased_from_old_setup') else (row.get('entry_quality') or plan.get('entry_quality') or ''))=='INVALIDATED'
                or str(row.get('v70_gate_class') or '')=='ENTRY_VETO')
     score=(float(p)
            +0.16*min(max(rr,0.0),2.0)/2.0
@@ -1956,10 +1942,7 @@ def _v90q2_quality_gate(row,policy,drawdown):
     # Entry quality: an invalidated setup may not open a new trade merely because
     # a generic reversal bridge produced a high score. Only a separately active,
     # well-confirmed tactical reversal is allowed through.
-    # final_execution_safety may rebase an INVALIDATED old thesis when a new,
-    # independently validated tactical setup replaces it.  The row-level field
-    # still describes the old thesis, so it must not shadow the final plan.
-    entry_quality=_effective_entry_quality(row)
+    entry_quality=str(plan.get('entry_quality') if plan.get('entry_quality_rebased_from_old_setup') else (row.get('entry_quality') or plan.get('entry_quality') or ''))
     rev_confirm=int(rev.get('confirmations') or 0)
     rev_active=bool(rev.get('active')) and str(rev.get('direction') or '')==direction
     if entry_quality=='INVALIDATED' and not (rev_active and rev_confirm>=5):
@@ -4448,7 +4431,7 @@ def _v90sg_grade(row):
     hs=row.get('horizon_structure') or {}
     ti=row.get('trend_impulse') or {}
     regime=str(row.get('regime') or '')
-    entryq=_effective_entry_quality(row)
+    entryq=str(plan.get('entry_quality') if plan.get('entry_quality_rebased_from_old_setup') else (row.get('entry_quality') or plan.get('entry_quality') or ''))
     state=str(bq.get('state') or '')
     horizon=str(row.get('horizon') or '')
     p,source=_signal_probability(row)
@@ -6755,7 +6738,7 @@ def _v90r24_aggressive_quality(row):
     inst=row.get('institutional_signal') or {}
     hs=row.get('horizon_structure') or {}
     tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
-    eq=_effective_entry_quality(row)
+    eq=str(plan.get('entry_quality') if plan.get('entry_quality_rebased_from_old_setup') else (row.get('entry_quality') or plan.get('entry_quality') or ''))
     stage=str(row.get('decision_stage') or '')
     grade=str(row.get('_setup_grade') or '')
 
@@ -7724,7 +7707,7 @@ def _v90r33_edge_eval(row):
     tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
     super_sig=tier in ('SUPER_LONG','SUPER_SHORT') or bool(row.get('_r20_super_priority'))
     grade=str(row.get('_setup_grade') or ((row.get('trade_plan') or {}).get('setup_grade') or ''))
-    eq=_effective_entry_quality(row)
+    eq=str(plan.get('entry_quality') if plan.get('entry_quality_rebased_from_old_setup') else (row.get('entry_quality') or plan.get('entry_quality') or ''))
     fresh=eq=='FRESH_BREAKOUT' or str(row.get('decision_stage') or '')=='EARLY_PROBE'
 
     all_in_cost=max(2.0*float(COMMISSION)+0.0005,0.0015)
