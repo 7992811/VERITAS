@@ -25,5 +25,7 @@ jobs:
         run: python -m unittest -v test_veritas_v90_market_cases.py
       - name: Learning index regressions
         run: python -m unittest -v test_veritas_learning_index.py
+      - name: Paper signal UI regressions
+        run: node tools/test_paper_ui.cjs
       - name: Architecture debt guard
         run: python tools/architecture_guard.py

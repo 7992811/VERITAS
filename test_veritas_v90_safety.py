@@ -223,7 +223,7 @@ class ExecutionSafetyTests(unittest.TestCase):
     def test_portfolio_blocks_only_when_paper_source_gate_fails(self):
         import veritas_portfolio as vp
         row={
-            "asset":"CNYRUBF","research_decision":"LONG","execution_eligible":False,
+            "asset":"CNYRUBF","price":12.0,"research_decision":"LONG","execution_eligible":False,
             "paper_eligible":False,"production_eligible":False,
             "execution_reason":"research_only_no_second_direct_cnyrubf_quote",
             "source_gate_pass":False,"market_open":True,
@@ -238,7 +238,7 @@ class ExecutionSafetyTests(unittest.TestCase):
     def test_research_grade_paper_can_pass_while_production_remains_blocked(self):
         import veritas_portfolio as vp
         row={
-            "asset":"CNYRUBF","research_decision":"LONG","execution_eligible":False,
+            "asset":"CNYRUBF","price":12.0,"research_decision":"LONG","execution_eligible":False,
             "paper_eligible":True,"production_eligible":False,
             "execution_reason":"research_only_no_second_direct_cnyrubf_quote",
             "paper_execution_reason":"research_grade_paper_feed",
@@ -260,7 +260,7 @@ class ExecutionSafetyTests(unittest.TestCase):
     def test_research_grade_paper_eligibility_survives_router_field_loss(self):
         import veritas_portfolio as vp
         row={
-            "asset":"BRENT","research_decision":"SHORT","execution_eligible":False,
+            "asset":"BRENT","price":100.0,"research_decision":"SHORT","execution_eligible":False,
             "production_eligible":False,"source_gate_pass":True,"market_open":True,
             "trade_plan":{"eligible":True,"final_economics_gate":{"status":"PASS","eligible":True}},
         }

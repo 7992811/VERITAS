@@ -14811,6 +14811,11 @@ def latest_signal_summary_pg():
                 'execution_eligible':bool((p.get('execution_eligibility') or {}).get('eligible',
                                           (p.get('gates') or {}).get('execution',True))),
                 'execution_reason':(p.get('execution_eligibility') or {}).get('reason'),
+                'paper_eligible':(p.get('execution_eligibility') or {}).get('paper_eligible'),
+                'paper_execution_reason':(p.get('execution_eligibility') or {}).get('paper_execution_reason'),
+                'production_eligible':bool((p.get('execution_eligibility') or {}).get('production_eligible')),
+                'price':(p.get('features') or {}).get('price'),
+                'trade_plan':p.get('trade_plan') or {},
                 'confidence':float(p.get('confidence') or 0.0),
                 'score':float(p.get('committee_score') or p.get('confidence') or 0.0),
                 'regime':p.get('regime'),
@@ -17733,8 +17738,9 @@ def execution_eligibility(asset, raw, clock_info=None):
         out['eligible']=False
         out['reason']='research_only_delayed_nq_futures'
 
-    # Futures research feeds may participate in paper learning without live eligibility.
-    if asset in ('NQ','BRENT','GOLD','CNYRUBF'):
+    # Includes the official MOEX index feed; no second quote is required for paper.
+    if asset in VX.RESEARCH_PAPER_ASSETS:
+        paper_ok=VX.research_paper_source_ok(raw)
         out['paper_eligible']=paper_ok
         out['paper_execution_reason']='research_grade_paper_feed' if paper_ok else 'paper_source_or_time_gate_failed'
     else:

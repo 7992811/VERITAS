@@ -8140,18 +8140,17 @@ def paper_quantity_metadata(units):
       'broker_ready_quantity':False,
     }
 
-# Final portfolio admission authority. Research-only signals remain visible in
-# the signal matrix/learning stream, but cannot create simulated P&L.
+# Final paper admission authority; source approval and trade economics are independent.
 _v90r41_base_admission = _signal_first_admission_r40
 _v90r41_base_report = _report_r40
 
 def _signal_first_admission(row,policy,drawdown):
     row=row or {}
     paper_ok=row.get('paper_eligible')
-    if paper_ok is None and str(row.get('asset') or '') in ('NQ','BRENT','GOLD','CNYRUBF'):
-        paper_ok=bool(row.get('source_gate_pass',True) and row.get('market_open',True))
+    if str(row.get('asset') or '') in VX.RESEARCH_PAPER_ASSETS:
+        paper_ok=VX.research_paper_source_ok(row) and paper_ok is not False
         row['paper_eligible']=paper_ok
-        row.setdefault('paper_execution_reason','research_grade_paper_feed' if paper_ok else 'paper_source_or_time_gate_failed')
+        row['paper_execution_reason']='research_grade_paper_feed' if paper_ok else 'paper_source_or_time_gate_failed'
     if not bool(paper_ok if paper_ok is not None else row.get('execution_eligible')):
         return {'open':False,'fraction':0.0,'reason':'R42_PAPER_SOURCE_GATE',
                 'execution_reason':row.get('execution_reason'),
