@@ -8792,3 +8792,221 @@ def report(pg_connect):
     }
     d['production_candidate_readiness']=production_candidate_readiness(pg_connect)
     return _jsonable(d)
+
+
+# VERITAS V90 CLOSED-LOOP LEARNING BRIDGE R43
+# Fixes the final R42 feedback gap found in the closed-trade audit.
+#
+# R29/R33 already learn from completed clean episodes, but R42 introduced a
+# canonical admission path that did not fully consume their learned edge
+# calibration and context sizing. R43 reconnects those layers without bringing
+# back the historical nested soft-veto chain.
+#
+# Principles:
+# - learning comes only from completed, integrity-clean episodes;
+# - exit/stop-management errors never punish directional quality by themselves;
+# - expected-move overforecast recalibrates reward/risk before sizing;
+# - repeated entry-direction/cost failures can veto Champion/Challenger context;
+# - research books remain able to explore, but learned weakness reduces size;
+# - positive learning remains bounded and cannot bypass hard source/risk/economics gates.
+
+V90_R43_STARTED_AT=os.getenv(
+    'VERITAS_R43_STARTED_AT','2026-09-29T19:54:00+00:00'
+)
+
+_v90r43_base_candidate_guard=_v90_candidate_profit_guard
+_v90r43_base_admission=_signal_first_admission
+_v90r43_base_report=report
+
+
+def _v90r43_learning_edge(row,guard=None):
+    row=row or {}
+    guard=guard or {}
+
+    episodes=int(_v90r33_cache.get('n') or 0)
+    global_haircut=1.0
+    if episodes>=10:
+        try:
+            global_haircut=_clip(float(_v90r33_cache.get('edge_haircut') or 1.0),0.60,1.0)
+        except Exception:
+            global_haircut=1.0
+
+    profile,key=_v90r29_profile_for_row(row)
+    profile_haircut=1.0
+    if profile and int(profile.get('n') or 0)>=8:
+        realized=_v90r29_num(profile.get('avg_movement_realization_ratio'))
+        if realized is not None:
+            profile_haircut=_clip(0.55+0.45*max(0.0,min(1.0,float(realized))),0.60,0.95)
+
+    # Use the more conservative clean-sample estimate. This is the same bounded
+    # calibration principle as R33, now connected to the final R42 authority.
+    haircut=min(global_haircut,profile_haircut)
+
+    raw_expected=_v90r29_num(guard.get('expected_move_pct'))
+    if raw_expected is None:
+        plan=row.get('trade_plan') or {}
+        raw_expected=_v90r29_num(plan.get('expected_move_pct'),0.0)
+    raw_expected=abs(float(raw_expected or 0.0))
+
+    raw_rr=_v90r29_num(guard.get('net_reward_risk'))
+    if raw_rr is None:
+        raw_rr=_v90r29_num((row.get('trade_plan') or {}).get('expected_to_stop_ratio'),0.0)
+    raw_rr=float(raw_rr or 0.0)
+
+    cost=abs(float(_v90r29_num(guard.get('modeled_round_trip_cost_pct'),0.0) or 0.0))
+    calibrated_expected=raw_expected*haircut
+    calibrated_rr=raw_rr*haircut
+    cost_to_edge=(cost/calibrated_expected) if calibrated_expected>1e-12 else 999.0
+
+    return {
+      'active':bool(episodes>=10 or (profile and int(profile.get('n') or 0)>=8)),
+      'episodes':episodes,
+      'global_edge_haircut':global_haircut,
+      'profile_edge_haircut':profile_haircut,
+      'applied_edge_haircut':haircut,
+      'raw_expected_move_pct':raw_expected,
+      'calibrated_expected_move_pct':calibrated_expected,
+      'raw_net_reward_risk':raw_rr,
+      'calibrated_net_reward_risk':calibrated_rr,
+      'modeled_round_trip_cost_pct':cost,
+      'calibrated_cost_to_edge_ratio':cost_to_edge,
+      'profile_key':list(key) if key else None,
+      'profile':dict(profile) if profile else None,
+    }
+
+
+def _v90_candidate_profit_guard(row,policy,economics):
+    base=dict(_v90r43_base_candidate_guard(row,policy,economics) or {})
+    learn=_v90r43_learning_edge(row,base)
+    blockers=list(base.get('blockers') or [])
+    mode=str((policy or {}).get('mode') or 'CORE')
+
+    if learn.get('active'):
+        calibrated_expected=float(learn.get('calibrated_expected_move_pct') or 0.0)
+        calibrated_rr=float(learn.get('calibrated_net_reward_risk') or 0.0)
+        calibrated_cost=float(learn.get('calibrated_cost_to_edge_ratio') or 999.0)
+
+        # Friction is compared with empirically realizable movement, not the
+        # original forecast. This directly addresses COST_DRAG + EDGE_OVERFORECAST.
+        max_cost_ratio=0.30 if mode in ('IMPULSE_ONLY','AGGRESSIVE') else 0.25
+        if calibrated_expected<=0 or calibrated_cost>max_cost_ratio:
+            blockers.append('LEARNED_COST_TO_REALIZED_EDGE_TOO_HIGH')
+
+        # Production candidates require post-learning R/R. Research books keep
+        # exploring, but their size is calculated from calibrated R/R below.
+        if mode in ('CORE','CHALLENGER'):
+            need_rr=1.35 if mode=='CORE' else 1.50
+            if calibrated_rr<need_rr:
+                blockers.append('LEARNED_CALIBRATED_RR_TOO_LOW')
+
+            state=str(base.get('breakout_state') or '')
+            if state=='EARLY_BREAKOUT':
+                need_early_rr=1.60
+                cost=float(learn.get('modeled_round_trip_cost_pct') or 0.0)
+                if calibrated_rr<need_early_rr or calibrated_expected<max(0.006,3.0*cost):
+                    blockers.append('LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL')
+
+            # Context learning is directional only when R29 observed repeated
+            # entry failures. Stop/capture errors deliberately do not veto entry.
+            profile=learn.get('profile') or {}
+            pn=int(profile.get('n') or 0)
+            if pn>=8:
+                entry_error=float(profile.get('entry_error_rate') or 0.0)
+                cost_drag=float(profile.get('cost_drag_rate') or 0.0)
+                bayes=float(profile.get('bayesian_win_rate') or 0.5)
+                avg_pnl=float(profile.get('avg_net_pnl_rub') or 0.0)
+                if entry_error>=0.35:
+                    blockers.append('LEARNED_ENTRY_DIRECTION_ERROR_CLUSTER')
+                if cost_drag>=0.45:
+                    blockers.append('LEARNED_COST_DRAG_CLUSTER')
+                if bayes<0.45 and avg_pnl<=0:
+                    blockers.append('LEARNED_NEGATIVE_CONTEXT_EXPECTANCY')
+
+        # Downstream canonical sizing must consume learned economics.
+        base['raw_expected_move_pct']=learn.get('raw_expected_move_pct')
+        base['raw_net_reward_risk']=learn.get('raw_net_reward_risk')
+        base['expected_move_pct']=learn.get('calibrated_expected_move_pct')
+        base['net_reward_risk']=learn.get('calibrated_net_reward_risk')
+        base['cost_to_edge_ratio']=learn.get('calibrated_cost_to_edge_ratio')
+
+    base['blockers']=list(dict.fromkeys(blockers))
+    base['eligible']=not base['blockers']
+    base['status']='PASS' if base['eligible'] else 'BLOCK'
+    base['closed_loop_learning_r43']=learn
+    return base
+
+
+def _signal_first_admission(row,policy,drawdown):
+    out=dict(_v90r43_base_admission(row,policy,drawdown) or {})
+    if not out.get('open'):
+        return out
+
+    profile,key=_v90r29_profile_for_row(row)
+    if not profile or int(profile.get('n') or 0)<8:
+        out['r43_context_learning']='INSUFFICIENT_CONTEXT_SAMPLE'
+        return out
+
+    mode=str((policy or {}).get('mode') or 'CORE')
+    mult=float(profile.get('entry_size_multiplier') or 1.0)
+
+    # Preserve R29's bounded exploration policy. Negative evidence reduces size;
+    # positive evidence only modestly increases an already-admitted trade.
+    if mult>1.0:
+        mult=min(mult,1.15 if mode in ('AGGRESSIVE','IMPULSE_ONLY') else 1.08)
+    else:
+        mult=max(mult,0.55 if mode in ('AGGRESSIVE','IMPULSE_ONLY') else 0.65)
+
+    before=float(out.get('fraction') or 0.0)
+    after=_clip(
+        _round_step(before*mult),
+        0.0,
+        float((policy or {}).get('max_fraction') or 5.0)
+    )
+    out['fraction']=after
+    out['open']=bool(after>0)
+    out['r43_context_learning']={
+      'profile_key':list(key) if key else None,
+      'episodes':int(profile.get('n') or 0),
+      'bayesian_win_rate':profile.get('bayesian_win_rate'),
+      'avg_net_pnl_rub':profile.get('avg_net_pnl_rub'),
+      'entry_error_rate':profile.get('entry_error_rate'),
+      'cost_drag_rate':profile.get('cost_drag_rate'),
+      'exit_capture_error_rate':profile.get('exit_capture_error_rate'),
+      'stop_error_rate':profile.get('stop_error_rate'),
+      'management_bias':profile.get('management_bias'),
+      'applied_size_multiplier':mult,
+      'fraction_before':before,
+      'fraction_after':after,
+    }
+    if isinstance(row,dict):
+        row['_r43_context_learning']=out['r43_context_learning']
+    return out
+
+
+def report(pg_connect):
+    d=dict(_v90r43_base_report(pg_connect) or {})
+    d['closed_loop_learning_r43']={
+      'status':'ACTIVE',
+      'started_at':V90_R43_STARTED_AT,
+      'final_r42_feedback_bridge':True,
+      'eligible_closed_episodes':int((_v90r29_cache.get('summary') or {}).get('eligible_episodes') or 0),
+      'attribution_counts':dict((_v90r29_cache.get('summary') or {}).get('attribution_counts') or {}),
+      'global_edge_haircut':float(_v90r33_cache.get('edge_haircut') or 1.0),
+      'global_overforecast_rate':float(_v90r33_cache.get('overforecast_rate') or 0.0),
+      'global_entry_error_rate':float(_v90r33_cache.get('entry_error_rate') or 0.0),
+      'global_exit_capture_error_rate':float(_v90r33_cache.get('exit_capture_error_rate') or 0.0),
+      'context_profile_count':len(_v90r29_cache.get('profiles') or {}),
+      'candidate_context_vetoes':[
+        'entry_direction_error_cluster',
+        'cost_drag_cluster',
+        'negative_context_expectancy',
+        'calibrated_reward_risk',
+      ],
+      'management_errors_penalize_direction':False,
+      'research_books_keep_bounded_exploration':True,
+      'profitability_guaranteed':False,
+    }
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),25)
