@@ -9098,7 +9098,7 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
               SELECT COUNT(*) AS n
               FROM v90_learning_episodes
               WHERE primary_attribution='ADMINISTRATIVE_EXIT_EXCLUDED'
-                 OR COALESCE((payload->>'administrative_exit')::boolean,FALSE)=TRUE
+                 OR LOWER(COALESCE(payload->>'administrative_exit','false'))='true'
             """).fetchone()
             total=int((row or {}).get('n') or 0)
     except Exception as ex:
