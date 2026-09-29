@@ -219,5 +219,41 @@ class ProtectiveExitTests(unittest.TestCase):
         self.assertTrue(any('INSERT INTO paper_nav_history' in x for x in sql))
 
 
+class TrendHoldR46Tests(unittest.TestCase):
+    def test_strong_trend_tp_keeps_larger_runner(self):
+        z = dict(payload={'r46_tp_runner_ratio': .75})
+        target, reason = PG.take_profit_action(z, .40, .40, VP._v90ph_round5)
+        self.assertAlmostEqual(target, .30)
+        self.assertEqual(reason, 'TAKE_PROFIT_PARTIAL_R46_TREND_RUNNER')
+
+    def test_small_strong_trend_position_is_not_forced_closed_at_tp(self):
+        z = dict(payload={'r46_tp_runner_ratio': .80})
+        self.assertIsNone(PG.take_profit_action(z, .10, .10, VP._v90ph_round5))
+
+    def test_soft_reduction_cannot_cut_confirmed_trend(self):
+        z = dict(asset='BRENT', direction='SHORT', active_trade_id='t-r46',
+                 units=100, payload={'r46_trend_hold_active': True,
+                                    'r46_trend_strength_score': 7,
+                                    'r46_horizon_state': 'CONFIRMED_TREND'})
+        c = MagicMock()
+        with patch.object(VP, '_v90r46_base_close_or_reduce', return_value=55) as base:
+            out = VP._close_or_reduce(c, {}, 'Aggressive', z, 102.0, .20,
+                                      1e6, NOW.isoformat(), 'SOFT_SIZE_REDUCTION')
+        self.assertEqual(out, 0.0)
+        base.assert_not_called()
+
+    def test_hard_stop_still_overrides_trend_hold(self):
+        z = dict(asset='BRENT', direction='SHORT', active_trade_id='t-r46',
+                 units=100, payload={'r46_trend_hold_active': True,
+                                    'r46_trend_strength_score': 8,
+                                    'r46_horizon_state': 'CONFIRMED_TREND'})
+        with patch.object(VP, '_v90r46_base_close_or_reduce', return_value=55) as base:
+            out = VP._close_or_reduce(MagicMock(), {}, 'Aggressive', z, 104.0, 0.0,
+                                      1e6, NOW.isoformat(), 'STOP')
+        self.assertEqual(out, 55)
+        base.assert_called_once()
+
+
+
 if __name__ == '__main__':
     unittest.main()
