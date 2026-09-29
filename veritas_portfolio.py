@@ -9298,3 +9298,309 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),27)
+
+
+# VERITAS V90 TREND HOLD / MOVEMENT CAPTURE R46
+# Closed-trade review showed that correct directional calls were often converted
+# into near-zero trades by two execution behaviours:
+# 1) soft sizing deterioration could reduce an already-confirmed same-direction
+#    position even though it should only block a fresh add;
+# 2) TP1 always kept roughly a 50% runner regardless of trend strength.
+#
+# R46 separates ENTRY economics from HOLD/EXIT management and adds an earlier,
+# cost-aware MFE giveback harvest while preserving a larger runner in strong trends.
+# Hard stops, hard thesis invalidation, confirmed reversal, structure exhaustion
+# and portfolio hard-risk controls remain authoritative.
+
+V90_R46_STARTED_AT=os.getenv(
+    'VERITAS_R46_STARTED_AT','2026-09-29T20:25:00+00:00'
+)
+
+_v90r46_base_step_one=_step_one
+_v90r46_base_close_or_reduce=_close_or_reduce
+_v90r46_base_report=report
+
+
+def _v90r46_hold_context(name,z,row):
+    row=row or {}
+    direction=str((z or {}).get('direction') or '')
+    signal_direction=str(row.get('research_decision') or 'NO_TRADE')
+    hs=row.get('horizon_structure') or {}
+    ti=row.get('trend_impulse') or {}
+    hstate=str(hs.get('state') or '')
+    try:
+        strength=int(_v90ph_strength(row,direction))
+    except Exception:
+        strength=0
+    phase=str(ti.get('phase') or '')
+    same_direction=bool(direction in ('LONG','SHORT') and signal_direction==direction)
+    try:
+        hard=bool(_v842_hard_thesis_exit(row))
+    except Exception:
+        hard=False
+
+    hold=bool(
+        same_direction
+        and not hard
+        and hstate in ('BUILDING_TREND','CONFIRMED_TREND')
+        and strength>=4
+    )
+
+    if hold and phase in ('TREND_DAY','IMPULSE_TREND') and strength>=6:
+        runner=0.85
+    elif hold and strength>=8:
+        runner=0.80
+    elif hold and strength>=6:
+        runner=0.75
+    elif hold:
+        runner=0.65
+    else:
+        runner=0.50
+
+    return {
+      'active':hold,
+      'same_direction':same_direction,
+      'hard_thesis_exit':hard,
+      'horizon_state':hstate,
+      'trend_strength_score':strength,
+      'trend_phase':phase,
+      'tp_runner_ratio':runner,
+      'portfolio':str(name or ''),
+    }
+
+
+def _v90r46_mark_trend_hold(c,name,candidates,summary,ts):
+    marked=[]
+    try:
+        rows=c.execute(
+            "SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)
+        ).fetchall()
+    except Exception:
+        return marked
+
+    for z0 in rows or []:
+        z=dict(z0)
+        asset=str(z.get('asset') or '')
+        row=(candidates or {}).get(asset)
+        if not row:
+            try:
+                row=_v842_management_row(summary,z) or {}
+            except Exception:
+                row={}
+        ctx=_v90r46_hold_context(name,z,row)
+        patch={
+          'r46_trend_hold_active':bool(ctx.get('active')),
+          'r46_same_direction':bool(ctx.get('same_direction')),
+          'r46_trend_strength_score':int(ctx.get('trend_strength_score') or 0),
+          'r46_trend_phase':ctx.get('trend_phase'),
+          'r46_horizon_state':ctx.get('horizon_state'),
+          'r46_tp_runner_ratio':float(ctx.get('tp_runner_ratio') or 0.50),
+          'r46_hold_updated_at':_v90j_iso(ts),
+        }
+        tid=z.get('active_trade_id')
+        c.execute(
+            "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+            "WHERE portfolio_name=%s AND asset=%s",
+            (json.dumps(patch,ensure_ascii=False,default=str),name,asset)
+        )
+        if tid:
+            c.execute(
+                "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                "WHERE trade_id=%s",
+                (json.dumps(patch,ensure_ascii=False,default=str),tid)
+            )
+        marked.append({'asset':asset,**ctx})
+    return marked
+
+
+def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
+    changes=[]
+    try:
+        rows=c.execute(
+            "SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)
+        ).fetchall()
+    except Exception:
+        return changes
+
+    # Commission is 0.05% per leg. Require a positive post-cost floor rather
+    # than waiting for the trade to retrace back through zero.
+    net_floor_pct=max(0.15,100.0*(2.0*float(COMMISSION)+0.0003))
+
+    for z0 in rows or []:
+        z=dict(z0)
+        asset=str(z.get('asset') or '')
+        if asset not in (prices or {}):
+            continue
+        payload=_v90j_json(z.get('payload'))
+        if payload.get('r46_giveback_harvest_done'):
+            continue
+        if str(payload.get('data_integrity_status') or 'OK') not in ('','OK'):
+            continue
+
+        try:
+            px=float(prices[asset])
+            entry=float(z.get('avg_entry_price') or 0.0)
+            units=abs(float(z.get('units') or 0.0))
+        except Exception:
+            continue
+        if px<=0 or entry<=0 or units<=0:
+            continue
+
+        direction=str(z.get('direction') or '')
+        current_pct=100.0*((px/entry-1.0) if direction=='LONG' else (entry/px-1.0))
+        mfe=max(float(payload.get('mfe_pct') or 0.0),current_pct,0.0)
+        giveback=max(0.0,mfe-max(0.0,current_pct))
+
+        if mfe<0.30 or current_pct<net_floor_pct:
+            continue
+        if giveback<max(0.08,0.25*mfe):
+            continue
+
+        current_frac=units*px/max(float(nav),1.0)
+        try:
+            runner=float(payload.get('r46_tp_runner_ratio') or 0.60)
+        except Exception:
+            runner=0.60
+        runner=min(0.85,max(0.60,runner))
+        target=_v90ph_round5(current_frac*runner)
+        target=max(0.05,min(current_frac,target))
+        if target>=current_frac-0.025:
+            continue
+
+        result=_v90r46_base_close_or_reduce(
+            c,p,name,z,px,target,nav,ts,'R46_MFE_GIVEBACK_HARVEST'
+        )
+        if not result:
+            continue
+
+        patch={
+          'r46_giveback_harvest_done':True,
+          'r46_giveback_harvest_at':_v90j_iso(ts),
+          'r46_harvest_mfe_pct':mfe,
+          'r46_harvest_current_profit_pct':current_pct,
+          'r46_harvest_giveback_pct':giveback,
+          'r46_harvest_net_floor_pct':net_floor_pct,
+          'r46_harvest_runner_ratio':runner,
+          'r46_harvest_target_fraction':target,
+          # This is the first profit harvest for the position; do not immediately
+          # execute the legacy TP1 again in the same/next cycle.
+          'r17_tp1_done':True,
+          'r17_tp1_at':_v90j_iso(ts),
+          'r17_tp1_price':px,
+          'r33_mfe_harvest_done':True,
+          'profit_exit_policy':'R46_EARLY_GIVEBACK_HARVEST_THEN_STRUCTURAL_RUNNER',
+        }
+        c.execute(
+            "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+            "WHERE portfolio_name=%s AND asset=%s",
+            (json.dumps(patch,ensure_ascii=False,default=str),name,asset)
+        )
+        tid=z.get('active_trade_id')
+        if tid:
+            c.execute(
+                "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                "WHERE trade_id=%s",
+                (json.dumps(patch,ensure_ascii=False,default=str),tid)
+            )
+        changes.append({
+          'portfolio':name,'asset':asset,'direction':direction,
+          'mfe_pct':mfe,'current_profit_pct':current_pct,
+          'giveback_pct':giveback,'runner_ratio':runner,
+          'target_fraction':target,
+        })
+
+    if changes:
+        print(json.dumps(
+            {'event':'V90_R46_GIVEBACK_HARVEST','changes':changes},
+            ensure_ascii=False,default=str,separators=(',',':')
+        ),flush=True)
+    return changes
+
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    z=dict(z or {})
+    payload=_v90j_json(z.get('payload'))
+
+    # Entry-quality/economics deterioration may block NEW risk, but it must not
+    # cut an already-confirmed same-direction trend. Explicit exit authorities
+    # still pass through untouched.
+    if (str(reason or '')=='SOFT_SIZE_REDUCTION'
+            and bool(payload.get('r46_trend_hold_active'))):
+        tid=z.get('active_trade_id')
+        patch={
+          'r46_soft_reduction_blocked':True,
+          'r46_soft_reduction_blocked_at':_v90j_iso(ts),
+          'r46_soft_reduction_requested_fraction':float(target_fraction or 0.0),
+          'r46_hold_strength_score':payload.get('r46_trend_strength_score'),
+          'r46_hold_horizon_state':payload.get('r46_horizon_state'),
+          'r46_hold_rule':'ENTRY_GATE_CANNOT_CUT_CONFIRMED_TREND',
+        }
+        if tid:
+            c.execute(
+                "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                "WHERE trade_id=%s",
+                (json.dumps(patch,ensure_ascii=False,default=str),tid)
+            )
+        print(json.dumps(
+            {'event':'V90_R46_SOFT_REDUCTION_BLOCKED','portfolio':name,
+             'asset':z.get('asset'),'direction':z.get('direction'),
+             'requested_fraction':target_fraction,
+             'strength':payload.get('r46_trend_strength_score')},
+            ensure_ascii=False,default=str,separators=(',',':')
+        ),flush=True)
+        return 0.0
+
+    return _v90r46_base_close_or_reduce(
+        c,p,name,z,price,target_fraction,nav,ts,reason
+    )
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    # Refresh MFE before deciding whether profit has started to give back.
+    try:
+        _v90j_update_excursions(c,name,prices,ts)
+    except Exception:
+        pass
+    _v90r46_mark_trend_hold(c,name,candidates,summary,ts)
+
+    try:
+        p,pos=_portfolio_rows(c,name)
+        nav,_,_,_=_mark_nav(p,pos,prices)
+        _v90r46_giveback_harvest(c,p,name,prices,nav,ts)
+    except Exception:
+        pass
+
+    return _v90r46_base_step_one(
+        c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
+    )
+
+
+def report(pg_connect):
+    d=dict(_v90r46_base_report(pg_connect) or {})
+    d['trend_hold_r46']={
+      'status':'ACTIVE',
+      'started_at':V90_R46_STARTED_AT,
+      'entry_gate_can_soft_reduce_confirmed_trend':False,
+      'tp1_runner_ratio':{
+        'ordinary':0.50,
+        'confirmed_strength_4plus':0.65,
+        'strong_strength_6plus':0.75,
+        'very_strong_strength_8plus':0.80,
+        'trend_day_or_impulse':0.85,
+      },
+      'mfe_giveback_harvest':{
+        'minimum_mfe_pct':0.30,
+        'minimum_post_cost_profit_pct':0.15,
+        'giveback_trigger':'max(0.08 percentage points, 25% of MFE)',
+        'runner_range':'60%-85%',
+      },
+      'hard_exit_authorities_unchanged':[
+        'STOP','HARD_THESIS_INVALIDATION','STRUCTURE_EXHAUSTION',
+        'CONFIRMED_REVERSAL','RISK_HARD_STOP'
+      ],
+      'principle':'fresh-entry economics controls adds; existing trend exposure is managed by structure, stops and profit protection',
+    }
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),28)
