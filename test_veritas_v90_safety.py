@@ -76,7 +76,7 @@ class ExecutionSafetyTests(unittest.TestCase):
     def test_rebased_entry_quality_survives_live_and_durable_compaction(self):
         import veritas_intelligence as vi
         plan=vi.final_execution_safety("BRENT","SHORT",{
-            "eligible":True,"reason":"tactical_reversal","setup":"TACTICAL_REVERSAL",
+            "eligible":True,"reason":"tactical_reversal","setup":"GENERIC_BASE",
             "entry_quality":"INVALIDATED","entry_price":100.0,"stop_price":102.0,
             "target_price":96.0,"expected_move_pct":0.04,
             "expected_to_stop_ratio":2.0,"initial_position_fraction":0.10,

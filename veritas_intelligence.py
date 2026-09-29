@@ -17755,7 +17755,7 @@ def final_execution_safety(asset,research_decision,plan):
         plan['pre_final_gate_reason']=prior_reason
         plan['reason']='final_economics_gate:' + ','.join(gate.get('blockers') or ['BLOCK'])
         plan['initial_position_fraction']=0.0
-    if plan.get('eligible') and str(plan.get('entry_quality') or '')=='INVALIDATED' and str(plan.get('setup') or '') in ('IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL','BRENT_REVERSAL_CAPTURE','REVERSAL_ADMISSION_BRIDGE','RANGE_RETEST_BREAKOUT'): plan['entry_quality']='NEW_SETUP_PROVISIONAL'; plan['entry_quality_rebased_from_old_setup']=True
+    if plan.get('eligible') and str(plan.get('entry_quality') or '')=='INVALIDATED' and (str(plan.get('setup') or '') in ('IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL','BRENT_REVERSAL_CAPTURE','REVERSAL_ADMISSION_BRIDGE','RANGE_RETEST_BREAKOUT') or str(plan.get('reason') or '') in ('tactical_reversal','impulse_genesis','impulse_pivot_break','brent_reversal_capture','range_retest_breakout','reversal_admission_bridge')): plan['entry_quality']='NEW_SETUP_PROVISIONAL'; plan['entry_quality_rebased_from_old_setup']=True
     plan['execution_safety_version']=VX.VERSION
     return plan
 
