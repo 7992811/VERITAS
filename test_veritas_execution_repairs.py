@@ -143,6 +143,7 @@ class ProtectiveExitTests(unittest.TestCase):
         z = self.position()
         z['direction'] = 'LONG'
         z['avg_entry_price'] = 100.0
+        z['last_price'] = 101.5
         z['payload'].pop('take_price', None)
         z['payload'].pop('target_price', None)
         z['payload']['expected_move_pct'] = .02
