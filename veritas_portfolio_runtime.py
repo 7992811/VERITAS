@@ -1278,7 +1278,7 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
         if target>=current_frac-0.025:
             continue
 
-        result=_v90r46_base_close_or_reduce(
+        result=_vp_base._v90r46_base_close_or_reduce(
             c,p,name,z,px,target,nav,ts,'R46_MFE_GIVEBACK_HARVEST'
         )
         if not result:
@@ -1361,7 +1361,7 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         ),flush=True)
         return 0.0
 
-    return _v90r46_base_close_or_reduce(
+    return _vp_base._v90r46_base_close_or_reduce(
         c,p,name,z,price,target_fraction,nav,ts,reason
     )
 
