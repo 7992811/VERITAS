@@ -63,6 +63,16 @@ class MarketCaseRegressionTests(unittest.TestCase):
                 self.assertTrue(out['open'], out)
                 self.assertNotEqual(out['reason'], 'Q2_ENTRY_INVALIDATED')
 
+    def test_admission_trace_separates_probability_from_uncalibrated_score(self):
+        row=self._moex_single_source_row()
+        row['_pwin']=0.88
+        row['_pwin_source']='MODEL_PRIOR_UNCALIBRATED'
+        trace=VP._portfolio_admission_trace({'MOEX':row},VP.POLICIES['Impulse'],0.0)[0]
+        self.assertIsNone(trace['pwin'])
+        self.assertIsNotNone(trace['model_quality_score'])
+        self.assertEqual(trace['signal_prior'],0.88)
+        self.assertIn('UNCALIBRATED',trace['probability_source'])
+
     def test_moex_one_source_reaches_all_paper_portfolio_admissions(self):
         for lost_flag in (False, True):
             for name, policy in VP.POLICIES.items():
