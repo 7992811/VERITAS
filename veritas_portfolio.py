@@ -536,7 +536,7 @@ def _portfolio_admission_trace(candidates,policy,drawdown):
         plan=row.get('trade_plan') or {}
         out.append({'asset':asset,'direction':row.get('research_decision'),'horizon':row.get('horizon'),
                     'canonical_setup_id':_portfolio_canonical_setup_id(row),
-                    'pwin':row.get('_pwin'),'rank':row.get('_rank'),
+                    'pwin':sf.get('probability'),'model_quality_score':sf.get('model_quality_score'),'signal_prior':row.get('_pwin'),'probability_source':sf.get('probability_source') or row.get('_pwin_source'),'quality_floor':sf.get('floor') or sf.get('quality_floor'),'rank':row.get('_rank'),
                     'rr':plan.get('expected_to_stop_ratio'),
                     'hard_veto':not bool(sf.get('open')),
                     'target_fraction':sf.get('fraction'),'reason':sf.get('reason'),
