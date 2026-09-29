@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from xml.etree import ElementTree as ET
 import httpx
 import veritas_execution as VX
+import veritas_position_guard as VPG
 
 VERSION='veritas-portfolio-v9.0-four-portfolio-core'
 INITIAL_NAV_RUB=1_000_000.0
@@ -2039,7 +2040,7 @@ def _mark_nav(p,pos,prices):
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     current_notional=abs(float(z['units'])*price); target_notional=max(0.0,target_fraction*nav)
     close_notional=max(0.0,current_notional-target_notional)
-    if close_notional<=max(1.0,0.0025*nav): return 0.0
+    if close_notional<=0 or (target_fraction>0 and close_notional<=max(1.0,0.0025*nav)): return 0.0
     close_units=min(abs(float(z['units'])),close_notional/max(float(price),1e-12))
     side='SELL' if z['direction']=='LONG' else 'BUY_TO_COVER'
     cid=VX.make_client_order_id(name,z['asset'],'CLOSE_'+str(z['direction']),
@@ -2078,6 +2079,11 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             return
         _close_or_reduce(c,p,name,z,price,0.0,nav,ts,'V84_CONFIRMED_DIRECTION_FLIP')
         z=None
+    final_gate=VX.entry_gate(row,price,direction,target_fraction,z)
+    if not final_gate['eligible']:
+        print(json.dumps({'event':'PAPER_ENTRY_BLOCKED_FINAL','portfolio':name,'asset':asset,'gate':final_gate},default=str),flush=True)
+        return
+    row['_fill_economics_gate']=final_gate
     current=abs(float(z['units'])*price) if z else 0.0
     add=max(0.0,target_notional-current)
     if add<=max(1.0,0.0025*nav): return
@@ -2258,7 +2264,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             if risk>0:
                 tp=entry+1.5*risk if z['direction']=='LONG' else entry-1.5*risk
                 tp_source='R_MULTIPLE'
-        tp_hit=bool(tp is not None and ((z['direction']=='LONG' and px>=float(tp)) or (z['direction']=='SHORT' and px<=float(tp))))
+        tp_hit=bool(not pos_payload.get('r17_tp1_done') and tp is not None and ((z['direction']=='LONG' and px>=float(tp)) or (z['direction']=='SHORT' and px<=float(tp))))
         structure_exit=_v90_structure_exit_signal(mgmt or row,z)
         if opposite and not confirmed_flip and not hard_exit and not stop_hit and not tp_hit and not structure_exit:
             target=current_frac; targets[z['asset']]=current_frac
@@ -2274,7 +2280,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             else:
                 targets[z['asset']]=0.0
         if target<current_frac-0.025:
-            reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'STRUCTURE_BREAK_EXIT_TO_CASH' if confirmed_flip and row and row.get('_v90_exit_only_flip') else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'
+            reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STOP' if stop_hit else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STRUCTURE_BREAK_EXIT_TO_CASH' if confirmed_flip and row and row.get('_v90_exit_only_flip') else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'
             _close_or_reduce(c,p,name,z,px,target,nav,ts,reason)
     p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices)
     # Add/increase only when risk governor allows new risk.
@@ -2309,11 +2315,9 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
     ensure_schema(pg_connect); ts=observed_at or _now()
     candidates=_candidate_book_v84(summary)
     impulse_candidates=_best_impulse_by_asset(summary)
-    prices={}
-    for r in summary or []:
-        if r.get('asset') and r.get('price') not in (None,0): prices[str(r['asset'])]=float(r['price'])
+    prices=VPG.latest_prices(summary)
     usdrub,fxsrc=_fetch_usdrub(); ruonia,rusrc=_fetch_ruonia()
-    with pg_connect() as c:
+    with pg_connect() as c, VPG.book_transaction(c):
         # retain last good official values if network temporarily unavailable
         last=c.execute("SELECT last_ruonia,last_usdrub FROM paper_portfolios WHERE name='Champion'").fetchone()
         if ruonia is None and last: ruonia=last['last_ruonia']
@@ -2549,6 +2553,8 @@ def _v90j_entry_patch(row,z,ts):
     return {
         'canonical_setup_id':canonical,
         'entry_time':_v90j_iso(ts),
+        'entry_market_observed_at':row.get('market_observed_at') or row.get('observed_at'),
+        'fill_economics_gate':row.get('_fill_economics_gate'),
         'entry_price':_v90j_float(row.get('price')),
         'entry_regime':row.get('regime'),
         'regime':row.get('regime'),
@@ -2561,8 +2567,8 @@ def _v90j_entry_patch(row,z,ts):
         'stop_price':plan.get('stop_price'),
         'target_price':plan.get('target_price') or plan.get('tactical_target_price'),
         'take_price':plan.get('target_price') or plan.get('tactical_target_price'),
-        'expected_move_pct':plan.get('expected_move_pct'),
-        'expected_to_stop_ratio':plan.get('expected_to_stop_ratio'),
+        'expected_move_pct':(row.get('_fill_economics_gate') or {}).get('expected_move_pct',plan.get('expected_move_pct')),
+        'expected_to_stop_ratio':(row.get('_fill_economics_gate') or {}).get('expected_to_stop_ratio',plan.get('expected_to_stop_ratio')),
         'execution_timeframe':plan.get('execution_timeframe')
             or ((row.get('impulse_pivot_break') or {}).get('execution_timeframe'))
             or ((row.get('tactical_reversal') or {}).get('execution_timeframe'))
@@ -5441,26 +5447,19 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     # The remaining runner is exited by the structural trailing stop, a true
     # structure-exhaustion signal, hard invalidation, or confirmed reversal.
     if str(reason or '')=='TAKE_PROFIT':
-        # Minimum 5% probes cannot partial-exit in 5% steps: TP closes them fully.
-        if peak<=0.075 or current_frac<=0.075:
-            return _v90r17_base_close_or_reduce(
-                c,p,name,z,price,0.0,nav,ts,'TAKE_PROFIT_FULL_MIN_POSITION_R17')
-        first_floor=max(runner_floor,_v90ph_round5(peak*0.50))
-        if current_frac<=first_floor+0.025:
+        action=VPG.take_profit_action(z,current_frac,peak,_v90ph_round5)
+        if action is None:
             return 0.0
-        result=_v90r17_base_close_or_reduce(
-            c,p,name,z,price,max(float(target_fraction),first_floor),nav,ts,'TAKE_PROFIT_PARTIAL_R17')
-        patch={'r17_tp1_done':True,'r17_tp1_at':_v90j_iso(ts),
-               'r17_tp1_price':float(price),'runner_floor_fraction':runner_floor,
-               'profit_exit_policy':'PARTIAL_TP_THEN_STRUCTURAL_RUNNER'}
-        try:
+        target,tp_reason=action
+        result=_v90r17_base_close_or_reduce(c,p,name,z,price,target,nav,ts,tp_reason)
+        if result and target>0:
+            patch={'r17_tp1_done':True,'r17_tp1_at':_v90j_iso(ts),
+                   'r17_tp1_price':float(price),'runner_floor_fraction':runner_floor,
+                   'profit_exit_policy':'PARTIAL_TP_THEN_STRUCTURAL_RUNNER'}
             c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
-                      (json.dumps(patch,ensure_ascii=False,default=str),name,z.get('asset')))
-            if z.get('active_trade_id'):
-                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
-                          (json.dumps(patch,ensure_ascii=False,default=str),z.get('active_trade_id')))
-        except Exception:
-            pass
+                      (json.dumps(patch,default=str),name,z.get('asset')))
+            c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                      (json.dumps(patch,default=str),z.get('active_trade_id')))
         return result
 
     # Dynamic profit harvest may scale down, but a strong move always keeps a
@@ -8158,8 +8157,8 @@ def _signal_first_admission(row,policy,drawdown):
                 'production_eligible':bool(row.get('production_eligible')),
                 'research_signal_preserved':True}
     plan=row.get('trade_plan') or {}
-    econ=plan.get('final_economics_gate') or {}
-    if econ and econ.get('status')=='BLOCK':
+    econ=VX.entry_gate(row,row.get('price'),row.get('research_decision'),plan.get('initial_position_fraction',0.1))
+    if econ.get('status')=='BLOCK':
         return {'open':False,'fraction':0.0,'reason':'R41_FINAL_ECONOMICS_GATE',
                 'economics_blockers':econ.get('blockers') or [],
                 'research_signal_preserved':True}

@@ -5,6 +5,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 import httpx
 import veritas_execution as VX
+import veritas_position_guard as VPG
+from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
 import veritas_trade_view as VTV
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3097,12 +3099,7 @@ def _moex_current_quote():
             except Exception: pass
     if price is None:
         raise RuntimeError('MOEX_ISS_NO_CURRENT_VALUE')
-    dt=None
-    for k in ('SYSTIME','TRADEDATE','UPDATETIME','TIME'):
-        if row.get(k):
-            dt=_moex_parse_dt(row[k])
-            if dt: break
-    return {'price':price,'observed_at':(dt or datetime.now(timezone.utc)).isoformat(),'row':row}
+    return {'price':price,'observed_at':moex_observed_at(row),'row':row}
 
 
 def _moex_yahoo_klines(start_ts,end_ts):
@@ -3202,12 +3199,7 @@ def _moex_futures_current_quote(secid):
             try: price=float(row[k]); break
             except Exception: pass
     if price is None: raise RuntimeError(f'MOEX_FORTS_NO_PRICE {secid}')
-    dt=None
-    for k in ('SYSTIME','UPDATETIME','TIME'):
-        if row.get(k):
-            dt=_moex_parse_dt(row[k])
-            if dt: break
-    return {'price':price,'observed_at':(dt or datetime.now(timezone.utc)).isoformat(),'row':row}
+    return {'price':price,'observed_at':moex_observed_at(row),'row':row}
 
 
 def _cnyrubf_market():
@@ -6327,6 +6319,7 @@ def _fetch_asset_bundle(symbol, asset, cb_product):
         raw=_cnyrubf_market(); deriv=_research_only_derivatives(asset)
     else:
         raw=market(symbol,cb_product); deriv=derivatives(symbol)
+    VPG.publish_quote(asset,raw)
     return {'symbol':symbol,'asset':asset,'cb_product':cb_product,'raw':raw,'deriv':deriv,
             'elapsed_seconds':time.time()-t0,'error':None}
 
@@ -6692,6 +6685,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 # layer has finished mutating the plan. Nothing below may re-enable it.
                 trade_plan['entry_price']=float(trade_plan.get('entry_price') or f.get('price') or 0.0)
                 trade_plan['spread_bps']=f.get('spread_bps')
+                trade_plan.update(horizon=horizon,market_observed_at=raw.get('observed_at'),best_bid=raw.get('best_bid'),best_ask=raw.get('best_ask'))
                 trade_plan=final_execution_safety(asset,research_dec,trade_plan)
                 trade_plan['experience_decision']=experience_decision
                 decision_stage=trade_decision_stage(research_dec,trade_plan,tradeability,f.get('intraday_structure') or {})
@@ -6785,7 +6779,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'production_eligible':bool(execution_gate.get('production_eligible')),
                      'execution_reason':execution_gate.get('reason'),
                      'paper_execution_reason':execution_gate.get('paper_execution_reason'),
-                     'data_latency_class':raw.get('data_latency_class'),
+                     'data_latency_class':raw.get('data_latency_class'),'market_observed_at':raw.get('observed_at'),
+                     'contract':raw.get('contract'),'source_names':raw.get('source_names'),
                      'direct_sources':execution_gate.get('direct_sources'),
                      'best_bid':f.get('best_bid'),'best_ask':f.get('best_ask'),'spread_bps':f.get('spread_bps'),
                      'calibrated_probability': calibration.get('probability_correct'),
@@ -14816,6 +14811,7 @@ def latest_signal_summary_pg():
                 'paper_execution_reason':(p.get('execution_eligibility') or {}).get('paper_execution_reason'),
                 'production_eligible':bool((p.get('execution_eligibility') or {}).get('production_eligible')),
                 'price':(p.get('features') or {}).get('price'),
+                'market_observed_at':(p.get('features') or {}).get('market_observed_at'),
                 'trade_plan':p.get('trade_plan') or {},
                 'confidence':float(p.get('confidence') or 0.0),
                 'score':float(p.get('committee_score') or p.get('confidence') or 0.0),
@@ -15799,6 +15795,8 @@ class H(BaseHTTPRequestHandler):
                     self.reply(_v90r25_trades_fast(80))
                 except Exception as ex:
                     self.reply({'status':'ERROR','trades':[],'error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/protective-guard'):
+                self.reply(VPG.snapshot())
             elif self.path.startswith('/api/v1/loss-audit'):
                 if VP is None or not pg_enabled() or not hasattr(VP,'quality_loss_audit'):
                     self.reply({'status':'UNAVAILABLE'})
@@ -17430,12 +17428,13 @@ def _v90_compact_live_row(z):
         'recent_swing_anchor','robot_eligible','execution_mode','target_price',
         'tactical_target_price','target_method','setup','reversal_probability',
         'decision_stage','positive_trade_probability','statistical_noise_buffer_p80',
-        'spread_bps','execution_safety_version'))
+        'spread_bps','execution_safety_version','horizon','market_observed_at','best_bid','best_ask'))
     econ=plan.get('final_economics_gate') or {}
     plan2['final_economics_gate']=_v90_small_dict(econ,(
         'status','eligible','blockers','expected_to_stop_ratio','minimum_reward_risk',
         'expected_move_pct','minimum_expected_move_pct','modeled_round_trip_cost_pct',
-        'observed_spread_bps','stop_distance_pct'))
+        'observed_spread_bps','stop_distance_pct','target_price','target_distance_pct','modeled_entry_fill',
+        'modeled_target_fill','modeled_stop_fill','net_reward_pct','net_risk_pct','quote_time_gate'))
     tp1=plan.get('take_profit_1')
     if isinstance(tp1,dict):
         plan2['take_profit_1']=_v90_small_dict(tp1,('timeframe','price','distance_pct'))
@@ -17470,7 +17469,7 @@ def _v90_compact_live_row(z):
         'asset','horizon','decision','research_decision','confidence','price','score',
         'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
         'source_gate_pass','market_open','execution_eligible','paper_eligible','production_eligible',
-        'execution_reason','paper_execution_reason','data_latency_class',
+        'execution_reason','paper_execution_reason','data_latency_class','market_observed_at','contract','source_names',
         'direct_sources','best_bid','best_ask','spread_bps',
         'calibrated_probability','shadow_position',
         'challenger_decision','challenger_confidence','v70_uncertainty',
@@ -17764,10 +17763,13 @@ def execution_eligibility(asset, raw, clock_info=None):
     return out
 
 def final_execution_safety(asset,research_decision,plan):
-    plan=dict(plan or {})
+    plan=dict(plan or {}); plan['direction']=research_decision
     gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
         'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
     }
+    if 'market_observed_at' in plan and research_decision in ('LONG','SHORT'):
+        timing=quote_gate(plan['market_observed_at'],plan.get('horizon')); gate['quote_time_gate']=timing
+        if not timing['eligible']: gate.update(status='BLOCK',eligible=False); gate['blockers'].append(timing['reason'])
     plan['final_economics_gate']=gate
     if bool(plan.get('eligible')) and research_decision in ('LONG','SHORT') and not gate.get('eligible'):
         prior_reason=str(plan.get('reason') or 'setup_eligible')
@@ -17783,6 +17785,7 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     plan=dict(_v90r40_base_technical_trade_plan(
         asset,horizon,f,research_decision,signal_tier,analog
     ) or {})
+    plan.update(horizon=horizon,market_observed_at=f.get('market_observed_at'),best_bid=f.get('best_bid'),best_ask=f.get('best_ask'))
     # The same gate is applied again after setup-specific mutations in cycle().
     return final_execution_safety(asset,research_decision,plan)
 
@@ -17878,6 +17881,7 @@ def main():
                                'min_relevance':KNOWLEDGE_MIN_RELEVANCE,
                                'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY),
                                'manager_corpus': manager_corpus_summary()})
+    if pg_boot.get('ok') and VP is not None: VPG.start(globals())
     threading.Thread(target=loop, daemon=True).start()
     # R38 always runs: it exits immediately after a healthy write test, but if
     # Postgres is temporarily unavailable/full it waits for the Resume window.

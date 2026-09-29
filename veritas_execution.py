@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
 
-VERSION = "veritas-execution-safety-v1"
+VERSION = "veritas-execution-safety-v2"
 RESEARCH_PAPER_ASSETS = frozenset(("NQ", "BRENT", "GOLD", "MOEX", "CNYRUBF"))
 
 # Research/paper economics gate. This is deliberately independent from signal quality:
@@ -72,48 +72,105 @@ def round_trip_cost_pct(spread_bps: Optional[float] = None) -> float:
 
 
 def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Validate the same target, stop, size and adverse fills used by paper execution."""
     p = dict(plan or {})
     blockers = []
-    rr = _num(p.get("expected_to_stop_ratio"))
-    move = _num(p.get("expected_move_pct"))
-    if move is not None:
-        move = abs(move)
+    forecast_rr = _num(p.get("expected_to_stop_ratio"))
+    forecast_move = _num(p.get("expected_move_pct"))
+    entry, stop = _num(p.get("entry_price")), _num(p.get("stop_price"))
+    target = _num(p.get("target_price") or p.get("tactical_target_price"))
+    direction = str(p.get("direction") or "")
+    if direction not in ("LONG", "SHORT") and entry and stop:
+        direction = "LONG" if stop < entry else "SHORT"
+    sign = 1 if direction == "LONG" else -1
+    valid_entry = entry is not None and entry > 0
+    if not valid_entry:
+        blockers.append("ENTRY_PRICE_INVALID")
+    if stop is None or stop <= 0:
+        blockers.append("STOP_MISSING")
+    elif valid_entry and sign * (entry - stop) <= 0:
+        blockers.append("STOP_DIRECTION_INVALID")
+    if target is None or target <= 0:
+        blockers.append("TARGET_MISSING")
+    elif valid_entry and sign * (target - entry) <= 0:
+        blockers.append("TARGET_DIRECTION_INVALID")
+    if forecast_rr is None or forecast_rr < MIN_REWARD_RISK:
+        blockers.append("RR_BELOW_FINAL_FLOOR")
 
     spread_bps = _num(p.get("spread_bps"))
     modeled_cost = round_trip_cost_pct(spread_bps)
-    # Require enough gross move to survive modeled round-trip costs with margin.
+    stop_distance = abs(entry - stop) / entry if valid_entry and stop else None
+    reward = risk = net_rr = target_move = entry_fill = target_fill = stop_fill = None
+    if valid_entry and stop and stop > 0 and target and target > 0:
+        fraction = max(0.0, _num(p.get("initial_position_fraction"), 0.10))
+        commission = 0.0005
+        buy = direction == "LONG"
+        entry_fill = simulated_fill(asset, "BUY" if buy else "SELL_SHORT", entry,
+                                    fraction, bid=p.get("best_bid"), ask=p.get("best_ask"))["fill_price"]
+        # The current exit engine uses an adverse reference-price fill; use that
+        # same model here, including size impact and both commission legs.
+        target_fill = simulated_fill(asset, "SELL" if buy else "BUY_TO_COVER", target,
+                                     fraction * target / entry_fill)["fill_price"]
+        stop_fill = simulated_fill(asset, "SELL" if buy else "BUY_TO_COVER", stop,
+                                   fraction * stop / entry_fill)["fill_price"]
+        hold = max(0.0, _num(p.get("expected_hold_seconds"),
+                   {"5m": 300, "1h": 3600, "4h": 14400, "1d": 86400,
+                    "3d": 259200, "7d": 604800}.get(p.get("horizon"), 3600)))
+        funding = entry_fill * 0.16 * hold / (365.25 * 86400)
+        fees = commission * (entry_fill + target_fill)
+        modeled_cost = max(modeled_cost, (abs(entry_fill-entry) + abs(target_fill-target)
+                                          + fees + funding) / entry)
+        reward = (sign * (target_fill-entry_fill) - fees - funding) / entry_fill
+        risk = (sign * (entry_fill-stop_fill) + commission * (entry_fill+stop_fill)
+                + funding) / entry_fill
+        net_rr = reward / risk if risk > 0 else None
+        target_move = sign * (target-entry) / entry
+        if reward <= 0:
+            blockers.append("TARGET_NOT_PROFITABLE_AFTER_COSTS")
+        if net_rr is None or net_rr < MIN_REWARD_RISK:
+            blockers.append("NET_REWARD_RISK_BELOW_FLOOR")
+
     min_move = max(MIN_EXPECTED_MOVE_PCT, 2.5 * modeled_cost)
-    if rr is None or rr < MIN_REWARD_RISK:
-        blockers.append("RR_BELOW_FINAL_FLOOR")
-    if move is None or move < min_move:
+    effective_move = min(abs(forecast_move), target_move) if forecast_move is not None and target_move is not None else None
+    if effective_move is None or effective_move < min_move:
         blockers.append("EXPECTED_MOVE_BELOW_COST_BUFFER")
-
-    stop = _num(p.get("stop_price"))
-    entry = _num(p.get("entry_price"))
-    if stop is None:
-        blockers.append("STOP_MISSING")
-    if entry is not None and entry > 0 and stop is not None:
-        stop_distance = abs(entry - stop) / entry
-        if stop_distance <= 0:
-            blockers.append("STOP_DISTANCE_INVALID")
-    else:
-        stop_distance = None
-
-    passed = len(blockers) == 0
     return {
-        "status": "PASS" if passed else "BLOCK",
-        "eligible": passed,
-        "asset": str(asset or ""),
-        "blockers": blockers,
-        "expected_to_stop_ratio": rr,
+        "status": "BLOCK" if blockers else "PASS", "eligible": not blockers,
+        "asset": str(asset or ""), "blockers": blockers,
+        "expected_to_stop_ratio": net_rr, "forecast_reward_risk": forecast_rr,
         "minimum_reward_risk": MIN_REWARD_RISK,
-        "expected_move_pct": move,
+        "expected_move_pct": effective_move, "forecast_move_pct": forecast_move,
         "minimum_expected_move_pct": min_move,
         "modeled_round_trip_cost_pct": modeled_cost,
-        "observed_spread_bps": spread_bps,
-        "stop_distance_pct": stop_distance,
-        "principle": "No signal tier or setup may bypass final post-cost economics.",
+        "observed_spread_bps": spread_bps, "stop_distance_pct": stop_distance,
+        "target_price": target, "target_distance_pct": target_move,
+        "modeled_entry_fill": entry_fill, "modeled_target_fill": target_fill,
+        "modeled_stop_fill": stop_fill, "net_reward_pct": reward, "net_risk_pct": risk,
+        "principle": "Actual target/stop economics after adverse fills, commission and funding.",
     }
+
+
+def entry_gate(row, price, direction, fraction, position=None):
+    """Last check after all setup/sizing mutations, immediately before any order."""
+    from veritas_quote_time import quote_gate
+    row = row or {}
+    plan = dict(row.get('trade_plan') or {})
+    if position:
+        payload = position.get('payload') or {}
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        plan['stop_price'] = position.get('stop_price')
+        plan['target_price'] = payload.get('take_price') or payload.get('target_price')
+    plan.update(entry_price=price, direction=direction, initial_position_fraction=fraction,
+                horizon=row.get('horizon'), best_bid=row.get('best_bid'), best_ask=row.get('best_ask'))
+    gate = economics_gate(row.get('asset'), plan)
+    timing = quote_gate(row.get('market_observed_at') or row.get('observed_at') or plan.get('market_observed_at'), row.get('horizon'))
+    gate['quote_time_gate'] = timing
+    if not timing['eligible']:
+        gate['eligible'] = False
+        gate['status'] = 'BLOCK'
+        gate['blockers'].append(timing['reason'])
+    return gate
 
 
 def production_source_gate(asset: str, raw: Optional[Dict[str, Any]], clock_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -296,7 +353,7 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
     rr = _num(econ.get("expected_to_stop_ratio"))
     stop_distance = _num(econ.get("stop_distance_pct"))
     cost_r = (float(econ.get("modeled_round_trip_cost_pct") or round_trip_cost_pct()) / stop_distance) if stop_distance and stop_distance > 0 else None
-    expectancy_r = (p * rr - (1.0 - p) - cost_r) if (p is not None and rr is not None and cost_r is not None) else None
+    expectancy_r = (p * rr - (1.0 - p)) if (p is not None and rr is not None and cost_r is not None) else None
     min_expectancy_r = float(os.getenv("VERITAS_LIVE_MIN_EXPECTANCY_R", "0.05"))
     if expectancy_r is None:
         blockers.append("POST_COST_EXPECTANCY_UNAVAILABLE")

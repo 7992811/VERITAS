@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import veritas_intelligence as VI
@@ -33,7 +34,7 @@ class MarketCaseRegressionTests(unittest.TestCase):
 
     def _moex_single_source_row(self):
         raw = dict(price=2229.78, source_gate_pass=True, market_open=True,
-                   secondary_price=None)
+                   secondary_price=None,market_observed_at=datetime.now(timezone.utc).isoformat())
         gate = VI.execution_eligibility('MOEX', raw)
         return dict(raw, asset='MOEX', horizon='1h', research_decision='SHORT',
                     signal_tier='SUPER_SHORT', confidence=.85,
@@ -45,8 +46,8 @@ class MarketCaseRegressionTests(unittest.TestCase):
                     institutional_signal=dict(evidence_independence=dict(independent_count=5),
                                               action='ENTER_CANDIDATE'),
                     trade_plan=VI.final_execution_safety('MOEX', 'SHORT', dict(
-                        eligible=True, entry_price=2229.78, stop_price=2250.50,
-                        expected_to_stop_ratio=1.7369, expected_move_pct=.01614,
+                        eligible=True, entry_price=2229.78, stop_price=2250.50, target_price=2185.185,
+                        expected_to_stop_ratio=2.15, expected_move_pct=.020,
                         stop_distance_pct=.00929, initial_position_fraction=.1)))
 
     def test_moex_one_source_reaches_all_paper_portfolio_admissions(self):
@@ -190,7 +191,7 @@ class MarketCaseRegressionTests(unittest.TestCase):
     def test_valid_new_setup_rebases_stale_entry_invalidation(self):
         plan={
             "eligible":True,"reason":"tactical_reversal","setup":"TACTICAL_REVERSAL",
-            "entry_quality":"INVALIDATED","entry_price":100.0,"stop_price":99.0,
+            "entry_quality":"INVALIDATED","entry_price":100.0,"stop_price":101.0,"target_price":98.0,
             "expected_move_pct":0.02,"expected_to_stop_ratio":2.0,
             "initial_position_fraction":0.10,
         }
