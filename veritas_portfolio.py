@@ -8184,3 +8184,303 @@ def report(pg_connect):
       'blocked_assets_without_sufficient_feed':'paper may use current research-grade feeds; live capital remains production-gated',
     }
     return _jsonable(d)
+
+
+# VERITAS V90 CANONICAL EXECUTION KERNEL R42
+# One authoritative paper-admission path. Historical R16/Q2/R19/R40/R41
+# layers remain in the file for migration/audit history, but are no longer
+# allowed to veto a directional setup after the hard safety domains pass.
+#
+# Invariant:
+#   signal -> source/time -> final economics -> hard setup/risk -> sizing -> order
+# Soft model-quality / probability information changes size, not the existence
+# of a research-paper probe. Live capital remains independently fail-closed in
+# veritas_live + veritas_execution.production_order_gate.
+
+def _v90_canonical_quality_admission(row, policy, drawdown):
+    row = row or {}
+    policy = policy or {}
+    direction = str(row.get('research_decision') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        return {
+            'open':False,'fraction':0.0,'reason':'CANONICAL_NO_DIRECTION',
+            'probability':None,'model_quality_score':None,
+            'probability_source':None,
+        }
+
+    # These are the only setup-level vetoes that survive the canonical route.
+    if not _v901_no_hard_veto(row):
+        score, source = _signal_probability(row)
+        empirical = source == 'EMPIRICAL_CALIBRATION'
+        return {
+            'open':False,'fraction':0.0,'reason':'CANONICAL_HARD_VETO',
+            'probability':float(score) if empirical else None,
+            'model_quality_score':None if empirical else float(score),
+            'probability_source':source,
+        }
+
+    rg = _risk_governor(drawdown)
+    if rg.get('new_risk') is False:
+        score, source = _signal_probability(row)
+        empirical = source == 'EMPIRICAL_CALIBRATION'
+        return {
+            'open':False,'fraction':0.0,'reason':'CANONICAL_RISK_GOVERNOR_HARD',
+            'probability':float(score) if empirical else None,
+            'model_quality_score':None if empirical else float(score),
+            'probability_source':source,'risk_governor':rg,
+        }
+
+    mode = str(policy.get('mode') or 'CORE')
+    plan = row.get('trade_plan') or {}
+    hs = row.get('horizon_structure') or {}
+    inst = row.get('institutional_signal') or {}
+    score, source = _signal_probability(row)
+    empirical = source == 'EMPIRICAL_CALIBRATION'
+
+    try:
+        rr = float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception:
+        rr = 0.0
+    try:
+        hscore = float(hs.get('score') or 0.0)
+    except Exception:
+        hscore = 0.0
+    try:
+        independent = int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception:
+        independent = 0
+
+    supporting = list(row.get('_supporting_horizons') or [])
+    alignment = int(row.get('_alignment_count') or len(set(supporting)))
+    tier = str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+
+    # Every economically valid directional setup gets a starter position.
+    base = {
+        'IMPULSE_ONLY':0.10,
+        'AGGRESSIVE':0.15,
+        'CORE':0.10,
+        'CHALLENGER':0.05,
+    }.get(mode,0.05)
+    f = base
+
+    # Quality determines how far we scale the starter position.
+    quality = float(score)
+    if rr >= 1.25 and independent >= 2 and hscore >= 0.55:
+        f = max(f, {
+            'IMPULSE_ONLY':0.15,'AGGRESSIVE':0.25,
+            'CORE':0.15,'CHALLENGER':0.10,
+        }.get(mode,0.10))
+    if alignment >= 3 and rr >= 1.35 and independent >= 3 and hscore >= 0.62:
+        f = max(f, {
+            'IMPULSE_ONLY':0.25,'AGGRESSIVE':0.40,
+            'CORE':0.20,'CHALLENGER':0.15,
+        }.get(mode,0.15))
+    if alignment >= 4 and rr >= 1.50 and independent >= 4 and hscore >= 0.68:
+        f = max(f, {
+            'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.75,
+            'CORE':0.25,'CHALLENGER':0.20,
+        }.get(mode,0.20))
+
+    # Empirical calibration may further confirm scale, but an uncalibrated
+    # model score is never presented as a win probability.
+    threshold = float(policy.get('threshold') or 0.0)
+    strong_threshold = float(policy.get('strong_threshold') or 1.0)
+    if empirical and quality >= threshold:
+        f = max(f, {
+            'IMPULSE_ONLY':0.20,'AGGRESSIVE':0.30,
+            'CORE':0.15,'CHALLENGER':0.10,
+        }.get(mode,0.10))
+    if empirical and quality >= strong_threshold and tier in ('SUPER_LONG','SUPER_SHORT'):
+        f = max(f, {
+            'IMPULSE_ONLY':0.50,'AGGRESSIVE':1.00,
+            'CORE':0.50,'CHALLENGER':0.35,
+        }.get(mode,0.25))
+
+    # The user's aggressive profile may reach 5x only with empirical evidence
+    # and the already-defined strong multi-timeframe context.
+    if mode == 'AGGRESSIVE':
+        strong_f = _v90_aggressive_strong_fraction(row, policy, drawdown)
+        if strong_f is not None:
+            f = max(f, float(strong_f))
+
+    # Uncalibrated research signals may collect evidence, but cannot use the
+    # high-leverage path merely because a model-quality score looks large.
+    if not empirical:
+        f = min(f, {
+            'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.75,
+            'CORE':0.25,'CHALLENGER':0.20,
+        }.get(mode,0.20))
+
+    # Structural stop risk caps position size independently of signal quality.
+    risk_pct = plan.get('stop_distance_pct')
+    if risk_pct is None:
+        risk_pct = (inst or {}).get('risk_pct')
+    try:
+        rp = float(risk_pct or 0.0)
+        if rp > 0:
+            f = min(f, MAX_STOP_RISK_NAV / rp)
+    except Exception:
+        pass
+
+    f *= float(rg.get('multiplier') or 0.0)
+    max_fraction = float(policy.get('max_fraction') or 2.0)
+    f = _clip(_round_step(f), 0.0, max_fraction)
+
+    return {
+        'open':f > 0.0,
+        'fraction':f,
+        'reason':'CANONICAL_SIGNAL_ENTRY',
+        'probability':float(score) if empirical else None,
+        'model_quality_score':None if empirical else round(float(score),6),
+        'probability_source':source,
+        'empirical':empirical,
+        'rr':rr,
+        'alignment_count':alignment,
+        'independent_evidence':independent,
+        'horizon_structure_score':hscore,
+        'risk_governor':rg,
+        'sizing_authority':'CANONICAL_SIGNAL_THEN_RISK',
+        'legacy_soft_gates_authoritative':False,
+    }
+
+
+# Keep this alias injectable for existing regression tests, while replacing
+# the historical nested chain with the canonical quality/sizing authority.
+_v90r41_base_admission = _v90_canonical_quality_admission
+
+
+def _signal_first_admission(row, policy, drawdown):
+    row = row or {}
+    asset = str(row.get('asset') or '')
+
+    # Paper uses one valid primary source. An explicit retained denial remains
+    # authoritative; missing router fields are reconstructed from the source gate.
+    source_gate = VX.paper_source_gate(asset, row) if asset in VX.PAPER_ASSETS else {
+        'eligible':bool(row.get('execution_eligible')),
+        'reason':row.get('paper_execution_reason') or row.get('execution_reason'),
+        'blockers':[],
+    }
+    explicit_paper = row.get('paper_eligible')
+    paper_ok = bool(source_gate.get('eligible')) and explicit_paper is not False
+    row['paper_eligible'] = paper_ok
+    row['paper_execution_reason'] = (
+        source_gate.get('reason') if paper_ok
+        else source_gate.get('reason') if not source_gate.get('eligible')
+        else 'paper_explicit_denial'
+    )
+    if not paper_ok:
+        return {
+            'open':False,'fraction':0.0,'reason':'R42_PAPER_SOURCE_GATE',
+            'source_blockers':source_gate.get('blockers') or [],
+            'execution_reason':row.get('execution_reason'),
+            'paper_execution_reason':row.get('paper_execution_reason'),
+            'production_eligible':bool(row.get('production_eligible')),
+            'research_signal_preserved':True,
+        }
+
+    direction = str(row.get('research_decision') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        return {
+            'open':False,'fraction':0.0,'reason':'CANONICAL_NO_DIRECTION',
+            'paper_source_quality':'PRODUCTION_GRADE' if row.get('production_eligible') else 'RESEARCH_GRADE',
+            'paper_is_live_fill_evidence':False,
+        }
+
+    plan = row.get('trade_plan') or {}
+    economics = VX.entry_gate(
+        row, row.get('price'), direction,
+        plan.get('initial_position_fraction', 0.10)
+    )
+    if economics.get('status') == 'BLOCK':
+        return {
+            'open':False,'fraction':0.0,'reason':'R41_FINAL_ECONOMICS_GATE',
+            'economics_blockers':economics.get('blockers') or [],
+            'quote_time_gate':economics.get('quote_time_gate'),
+            'modeled_round_trip_cost_pct':economics.get('modeled_round_trip_cost_pct'),
+            'minimum_expected_move_pct':economics.get('minimum_expected_move_pct'),
+            'net_reward_risk':economics.get('expected_to_stop_ratio'),
+            'research_signal_preserved':True,
+            'paper_source_quality':'PRODUCTION_GRADE' if row.get('production_eligible') else 'RESEARCH_GRADE',
+            'paper_is_live_fill_evidence':False,
+        }
+
+    out = dict(_v90r41_base_admission(row, policy, drawdown) or {})
+    out['paper_source_quality'] = 'PRODUCTION_GRADE' if row.get('production_eligible') else 'RESEARCH_GRADE'
+    out['paper_is_live_fill_evidence'] = False
+    out['economics_gate'] = 'PASS'
+    out['modeled_round_trip_cost_pct'] = economics.get('modeled_round_trip_cost_pct')
+    out['net_reward_risk'] = economics.get('expected_to_stop_ratio')
+    out['production_eligible'] = bool(row.get('production_eligible'))
+    return out
+
+
+def _desired_fraction(row, policy, drawdown):
+    admission = _signal_first_admission(row, policy, drawdown)
+    if not admission.get('open'):
+        return 0.0
+
+    # Impulse has its own candidate book; retain its timeframe/setup boundary.
+    if str((policy or {}).get('mode') or '') == 'IMPULSE_ONLY':
+        h = str((row or {}).get('horizon') or '')
+        allowed = tuple((policy or {}).get('allowed_horizons') or ('5m','1h','4h','1d'))
+        if h not in allowed:
+            return 0.0
+        if not (
+            (row or {}).get('_impulse_setup')
+            or ((row or {}).get('impulse_genesis') or {}).get('active')
+            or ((row or {}).get('impulse_pivot_break') or {}).get('active')
+            or ((row or {}).get('tactical_reversal') or {}).get('active')
+            or ((row or {}).get('range_retest_breakout') or {}).get('active')
+        ):
+            return 0.0
+    return float(admission.get('fraction') or 0.0)
+
+
+def _portfolio_admission_trace(candidates, policy, drawdown):
+    out = []
+    for asset, row in sorted((candidates or {}).items()):
+        sf = _signal_first_admission(row, policy, drawdown)
+        plan = row.get('trade_plan') or {}
+        out.append({
+            'asset':asset,
+            'direction':row.get('research_decision'),
+            'horizon':row.get('horizon'),
+            'canonical_setup_id':_portfolio_canonical_setup_id(row),
+            'pwin':sf.get('probability'),
+            'model_quality_score':sf.get('model_quality_score'),
+            'signal_prior':row.get('_pwin'),
+            'probability_source':sf.get('probability_source') or row.get('_pwin_source'),
+            'rank':row.get('_rank'),
+            'rr':plan.get('expected_to_stop_ratio'),
+            'hard_veto':not bool(sf.get('open')),
+            'target_fraction':sf.get('fraction'),
+            'reason':sf.get('reason'),
+            'economics_blockers':sf.get('economics_blockers'),
+            'source_blockers':sf.get('source_blockers'),
+            'quote_time_gate':sf.get('quote_time_gate'),
+            'modeled_round_trip_cost_pct':sf.get('modeled_round_trip_cost_pct'),
+            'net_reward_risk':sf.get('net_reward_risk'),
+            'supporting_horizons':row.get('_supporting_horizons'),
+            'direction_support':row.get('_direction_support'),
+            'flip_confirmed':row.get('_flip_confirmed'),
+            'experience_decision':sf.get('experience_decision') or plan.get('execution_policy'),
+        })
+    return out
+
+
+_v90_canonical_report_base = report
+
+def report(pg_connect):
+    d = dict(_v90_canonical_report_base(pg_connect) or {})
+    d['canonical_execution_kernel'] = {
+        'active':True,
+        'version':'v9.0',
+        'path':'signal -> source/time -> economics -> hard setup/risk -> sizing -> order',
+        'legacy_soft_gates_authoritative':False,
+        'starter_position_on_valid_directional_signal':True,
+        'quality_controls_size_not_signal_existence':True,
+        'live_capital_gate_independent':True,
+        'live_execution_armed':False,
+        'principle':'Paper gathers evidence; real capital stays fail-closed until broker, direct data, instrument, promotion and risk gates pass.',
+    }
+    return _jsonable(d)
