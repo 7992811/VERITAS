@@ -9289,9 +9289,8 @@ def report(pg_connect):
       'legacy_history_kept_for_audit':True,
       'live_gate_uses_fresh_comparable_evidence_only':True,
     }
-    # Ensure the top-level readiness object is the R45 clean cohort even if a
-    # previous report wrapper materialized the older field first.
-    d['production_candidate_readiness']=production_candidate_readiness(pg_connect)
+    # The nested R42 report resolves production_candidate_readiness dynamically,
+    # so it already contains the R45 cohort here; avoid a duplicate DB pass.
     return _jsonable(d)
 
 
