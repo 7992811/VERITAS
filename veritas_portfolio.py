@@ -8197,6 +8197,126 @@ def report(pg_connect):
 # of a research-paper probe. Live capital remains independently fail-closed in
 # veritas_live + veritas_execution.production_order_gate.
 
+V90_PRODUCTION_CANDIDATE_EPOCH=os.getenv(
+    'VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-29T18:30:00+00:00'
+)
+V90_PRODUCTION_CANDIDATES=('Champion','Challenger')
+
+
+def _v90_candidate_profit_guard(row,policy,economics):
+    """Profitability-first gate for the production-candidate paper books.
+
+    Research signal generation stays broad. The candidate books trade only
+    confirmed, cost-efficient setups and stop repeating empirically weak ones.
+    """
+    row=row or {}; policy=policy or {}; economics=economics or {}
+    mode=str(policy.get('mode') or 'CORE')
+    plan=row.get('trade_plan') or {}
+    inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    hs=row.get('horizon_structure') or {}
+    memory=plan.get('setup_memory') or {}
+    state=str(bq.get('state') or '')
+    blockers=[]
+
+    try: indep=int(((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception: indep=0
+    supporting=list(row.get('_supporting_horizons') or [])
+    alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    try: hscore=float(hs.get('score') or 0.0)
+    except Exception: hscore=0.0
+    try: rr=float(economics.get('expected_to_stop_ratio') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+    try: expected=abs(float(economics.get('expected_move_pct') or plan.get('expected_move_pct') or 0.0))
+    except Exception: expected=0.0
+    try: cost=float(economics.get('modeled_round_trip_cost_pct') or 0.0)
+    except Exception: cost=0.0
+    cost_to_edge=(cost/expected) if expected>0 else 999.0
+
+    # Loss audit: weak breakouts repeatedly generated zero-win clusters.
+    if state=='WEAK_BREAKOUT':
+        blockers.append('WEAK_BREAKOUT_NEGATIVE_HISTORY')
+
+    # Never spend most of the expected move on friction.
+    max_cost_ratio=0.30 if mode in ('IMPULSE_ONLY','AGGRESSIVE') else 0.25
+    if expected<=0 or cost_to_edge>max_cost_ratio:
+        blockers.append('COST_TO_EDGE_TOO_HIGH')
+
+    # Champion and Challenger are the production-candidate books.
+    if mode in ('CORE','CHALLENGER'):
+        need_indep=3 if mode=='CORE' else 4
+        need_align=2 if mode=='CORE' else 3
+        need_hscore=0.60 if mode=='CORE' else 0.64
+        need_rr=1.35 if mode=='CORE' else 1.50
+        if indep<need_indep:
+            blockers.append('INSUFFICIENT_INDEPENDENT_EVIDENCE')
+        if alignment<need_align:
+            blockers.append('INSUFFICIENT_MULTI_TF_ALIGNMENT')
+        if hscore<need_hscore:
+            blockers.append('HORIZON_STRUCTURE_TOO_WEAK')
+        if rr<need_rr:
+            blockers.append('NET_REWARD_RISK_TOO_LOW')
+
+        entry_quality=str(plan.get('entry_quality') or row.get('entry_quality') or '')
+        rebased=bool(plan.get('entry_quality_rebased_from_old_setup'))
+        if entry_quality=='INVALIDATED' and not rebased:
+            blockers.append('ENTRY_QUALITY_INVALIDATED')
+
+        # Early breakouts may be researched, but production candidates wait for
+        # substantially stronger confirmation.
+        if state=='EARLY_BREAKOUT':
+            if not (indep>=4 and alignment>=3 and hscore>=0.68
+                    and rr>=1.60 and expected>=max(0.006,3.0*cost)):
+                blockers.append('EARLY_BREAKOUT_WAIT_CONFIRMATION')
+
+        # Do not keep repeating a setup once durable experience says its
+        # realized economics are negative.
+        try: mem_n=float(memory.get('effective_n') or 0.0)
+        except Exception: mem_n=0.0
+        mem_p=memory.get('posterior_win_rate')
+        mem_pnl=memory.get('weighted_avg_pnl')
+        if mem_n>=8:
+            try:
+                if mem_pnl is not None and float(mem_pnl)<=0:
+                    blockers.append('NEGATIVE_SETUP_EXPECTANCY_HISTORY')
+            except Exception:
+                pass
+            try:
+                if mem_p is not None and float(mem_p)<0.48:
+                    blockers.append('SETUP_WIN_RATE_TOO_LOW')
+            except Exception:
+                pass
+        if mem_n>=20:
+            try:
+                if mem_p is not None and float(mem_p)<0.55:
+                    blockers.append('MATURE_SETUP_WIN_RATE_TOO_LOW')
+            except Exception:
+                pass
+
+        analog_n=row.get('analog_effective_n')
+        analog_p=row.get('positive_trade_probability')
+        try:
+            if analog_n is not None and float(analog_n)>=8 and analog_p is not None and float(analog_p)<0.50:
+                blockers.append('NEGATIVE_ANALOG_EDGE')
+        except Exception:
+            pass
+
+    return {
+        'eligible':not blockers,
+        'status':'PASS' if not blockers else 'BLOCK',
+        'blockers':list(dict.fromkeys(blockers)),
+        'independent':indep,'alignment_count':alignment,
+        'horizon_structure_score':hscore,
+        'net_reward_risk':rr,'expected_move_pct':expected,
+        'modeled_round_trip_cost_pct':cost,
+        'cost_to_edge_ratio':cost_to_edge,
+        'breakout_state':state,
+        'setup_memory_effective_n':memory.get('effective_n'),
+        'setup_memory_win_rate':memory.get('posterior_win_rate'),
+        'setup_memory_avg_pnl':memory.get('weighted_avg_pnl'),
+    }
+
+
 def _v90_canonical_quality_admission(row, policy, drawdown):
     row = row or {}
     policy = policy or {}
@@ -8208,7 +8328,6 @@ def _v90_canonical_quality_admission(row, policy, drawdown):
             'probability_source':None,
         }
 
-    # These are the only setup-level vetoes that survive the canonical route.
     if not _v901_no_hard_veto(row):
         score, source = _signal_probability(row)
         empirical = source == 'EMPIRICAL_CALIBRATION'
@@ -8236,9 +8355,21 @@ def _v90_canonical_quality_admission(row, policy, drawdown):
     inst = row.get('institutional_signal') or {}
     score, source = _signal_probability(row)
     empirical = source == 'EMPIRICAL_CALIBRATION'
+    economics=row.get('_canonical_economics_gate') or {}
+
+    guard=_v90_candidate_profit_guard(row,policy,economics)
+    if not guard.get('eligible'):
+        return {
+            'open':False,'fraction':0.0,'reason':'PROFITABILITY_GATE',
+            'profitability_blockers':guard.get('blockers') or [],
+            'profitability_gate':guard,
+            'probability':float(score) if empirical else None,
+            'model_quality_score':None if empirical else round(float(score),6),
+            'probability_source':source,
+        }
 
     try:
-        rr = float(row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+        rr = float(guard.get('net_reward_risk') or plan.get('expected_to_stop_ratio') or 0.0)
     except Exception:
         rr = 0.0
     try:
@@ -8254,64 +8385,66 @@ def _v90_canonical_quality_admission(row, policy, drawdown):
     alignment = int(row.get('_alignment_count') or len(set(supporting)))
     tier = str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
 
-    # Every economically valid directional setup gets a starter position.
+    # Research books explore; production candidates start smaller and earn size.
     base = {
         'IMPULSE_ONLY':0.10,
         'AGGRESSIVE':0.15,
-        'CORE':0.10,
+        'CORE':0.05,
         'CHALLENGER':0.05,
     }.get(mode,0.05)
     f = base
-
-    # Quality determines how far we scale the starter position.
     quality = float(score)
-    if rr >= 1.25 and independent >= 2 and hscore >= 0.55:
+
+    if rr >= 1.40 and independent >= 3 and hscore >= 0.60:
         f = max(f, {
             'IMPULSE_ONLY':0.15,'AGGRESSIVE':0.25,
-            'CORE':0.15,'CHALLENGER':0.10,
+            'CORE':0.10,'CHALLENGER':0.10,
         }.get(mode,0.10))
-    if alignment >= 3 and rr >= 1.35 and independent >= 3 and hscore >= 0.62:
+    if alignment >= 3 and rr >= 1.60 and independent >= 4 and hscore >= 0.68:
         f = max(f, {
             'IMPULSE_ONLY':0.25,'AGGRESSIVE':0.40,
-            'CORE':0.20,'CHALLENGER':0.15,
+            'CORE':0.15,'CHALLENGER':0.15,
         }.get(mode,0.15))
-    if alignment >= 4 and rr >= 1.50 and independent >= 4 and hscore >= 0.68:
+    if alignment >= 4 and rr >= 1.80 and independent >= 4 and hscore >= 0.74:
         f = max(f, {
             'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.75,
             'CORE':0.25,'CHALLENGER':0.20,
         }.get(mode,0.20))
 
-    # Empirical calibration may further confirm scale, but an uncalibrated
-    # model score is never presented as a win probability.
     threshold = float(policy.get('threshold') or 0.0)
     strong_threshold = float(policy.get('strong_threshold') or 1.0)
     if empirical and quality >= threshold:
         f = max(f, {
             'IMPULSE_ONLY':0.20,'AGGRESSIVE':0.30,
-            'CORE':0.15,'CHALLENGER':0.10,
+            'CORE':0.10,'CHALLENGER':0.10,
         }.get(mode,0.10))
     if empirical and quality >= strong_threshold and tier in ('SUPER_LONG','SUPER_SHORT'):
         f = max(f, {
             'IMPULSE_ONLY':0.50,'AGGRESSIVE':1.00,
-            'CORE':0.50,'CHALLENGER':0.35,
+            'CORE':0.40,'CHALLENGER':0.30,
         }.get(mode,0.25))
 
-    # The user's aggressive profile may reach 5x only with empirical evidence
-    # and the already-defined strong multi-timeframe context.
     if mode == 'AGGRESSIVE':
         strong_f = _v90_aggressive_strong_fraction(row, policy, drawdown)
         if strong_f is not None:
             f = max(f, float(strong_f))
 
-    # Uncalibrated research signals may collect evidence, but cannot use the
-    # high-leverage path merely because a model-quality score looks large.
     if not empirical:
         f = min(f, {
             'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.75,
             'CORE':0.25,'CHALLENGER':0.20,
         }.get(mode,0.20))
 
-    # Structural stop risk caps position size independently of signal quality.
+    memory=plan.get('setup_memory') or {}
+    try:
+        mem_n=float(memory.get('effective_n') or 0.0)
+        mem_p=float(memory.get('posterior_win_rate')) if memory.get('posterior_win_rate') is not None else None
+        mem_pnl=float(memory.get('weighted_avg_pnl')) if memory.get('weighted_avg_pnl') is not None else None
+        if mem_n>=8 and mem_p is not None and mem_p>=0.65 and (mem_pnl is None or mem_pnl>0):
+            f*=1.15
+    except Exception:
+        pass
+
     risk_pct = plan.get('stop_distance_pct')
     if risk_pct is None:
         risk_pct = (inst or {}).get('risk_pct')
@@ -8338,8 +8471,9 @@ def _v90_canonical_quality_admission(row, policy, drawdown):
         'alignment_count':alignment,
         'independent_evidence':independent,
         'horizon_structure_score':hscore,
+        'profitability_gate':guard,
         'risk_governor':rg,
-        'sizing_authority':'CANONICAL_SIGNAL_THEN_RISK',
+        'sizing_authority':'PROFITABILITY_FIRST_SIGNAL_THEN_RISK',
         'legacy_soft_gates_authoritative':False,
     }
 
@@ -8404,6 +8538,7 @@ def _signal_first_admission(row, policy, drawdown):
             'paper_is_live_fill_evidence':False,
         }
 
+    row['_canonical_economics_gate']=economics
     out = dict(_v90r41_base_admission(row, policy, drawdown) or {})
     out['paper_source_quality'] = 'PRODUCTION_GRADE' if row.get('production_eligible') else 'RESEARCH_GRADE'
     out['paper_is_live_fill_evidence'] = False
@@ -8456,6 +8591,8 @@ def _portfolio_admission_trace(candidates, policy, drawdown):
             'target_fraction':sf.get('fraction'),
             'reason':sf.get('reason'),
             'economics_blockers':sf.get('economics_blockers'),
+            'profitability_blockers':sf.get('profitability_blockers'),
+            'profitability_gate':sf.get('profitability_gate'),
             'source_blockers':sf.get('source_blockers'),
             'quote_time_gate':sf.get('quote_time_gate'),
             'modeled_round_trip_cost_pct':sf.get('modeled_round_trip_cost_pct'),
@@ -8466,6 +8603,138 @@ def _portfolio_admission_trace(candidates, policy, drawdown):
             'experience_decision':sf.get('experience_decision') or plan.get('execution_policy'),
         })
     return out
+
+
+
+_v90_candidate_base_step_one=_step_one
+
+
+def _v90_candidate_epoch_rebase(c,name,prices,ts):
+    if name not in V90_PRODUCTION_CANDIDATES:
+        return {'status':'NOT_APPLICABLE','closed':0}
+    marker='production_candidate_epoch_20260929_'+str(name)
+    try:
+        row=c.execute("SELECT 1 AS ok FROM v90_migration_state WHERE key=%s",(marker,)).fetchone()
+        if row:
+            return {'status':'ALREADY_REBASED','closed':0}
+        p,pos=_portfolio_rows(c,name)
+        nav,_,_,_=_mark_nav(p,pos,prices)
+        closed=0
+        for z0 in list(pos):
+            z=dict(z0); px=float((prices or {}).get(z.get('asset'),z.get('last_price')))
+            _close_or_reduce(c,p,name,z,px,0.0,nav,ts,'PRODUCTION_CANDIDATE_REBASE')
+            closed+=1
+        c.execute("""INSERT INTO v90_migration_state(key,migrated_at,details)
+                     VALUES(%s,now(),%s::jsonb) ON CONFLICT(key) DO NOTHING""",
+                  (marker,json.dumps({'portfolio':name,'epoch':V90_PRODUCTION_CANDIDATE_EPOCH,
+                                      'closed_legacy_positions':closed})))
+        return {'status':'REBASED','closed':closed}
+    except Exception as ex:
+        return {'status':'ERROR','closed':0,'error':f'{type(ex).__name__}: {ex}'}
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    _v90_candidate_epoch_rebase(c,name,prices,ts)
+    return _v90_candidate_base_step_one(
+        c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
+    )
+
+
+def _v90_candidate_metrics(pg_connect,name):
+    with pg_connect() as c:
+        r=c.execute("""
+          SELECT COUNT(*) AS closed_trades,
+                 COUNT(DISTINCT COALESCE(payload->>'canonical_setup_id',trade_id)) AS unique_episodes,
+                 COUNT(*) FILTER(WHERE net_pnl_rub>0) AS wins,
+                 COALESCE(SUM(net_pnl_rub),0) AS net_pnl_rub,
+                 COALESCE(AVG(net_pnl_rub),0) AS avg_net_pnl_rub,
+                 COALESCE(SUM(CASE WHEN net_pnl_rub>0 THEN net_pnl_rub ELSE 0 END),0) AS gross_wins_rub,
+                 ABS(COALESCE(SUM(CASE WHEN net_pnl_rub<0 THEN net_pnl_rub ELSE 0 END),0)) AS gross_losses_rub,
+                 COALESCE(SUM(fees_rub+funding_rub),0) AS costs_rub,
+                 COUNT(*) FILTER(WHERE COALESCE(payload->>'exit_reason',payload->>'close_reason','') IN ('','UNKNOWN')) AS unknown_exits
+          FROM paper_trades
+          WHERE portfolio_name=%s
+            AND opened_at >= %s::timestamptz
+            AND (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
+        """,(name,V90_PRODUCTION_CANDIDATE_EPOCH)).fetchone()
+        dd=c.execute("""
+          WITH x AS (
+            SELECT observed_at,nav_rub,
+                   MAX(nav_rub) OVER (ORDER BY observed_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS hwm
+            FROM paper_nav_history
+            WHERE portfolio_name=%s AND observed_at >= %s::timestamptz
+          )
+          SELECT COALESCE(MAX(CASE WHEN hwm>0 THEN (hwm-nav_rub)/hwm ELSE 0 END),0) AS max_drawdown
+          FROM x
+        """,(name,V90_PRODUCTION_CANDIDATE_EPOCH)).fetchone()
+    n=int((r or {}).get('closed_trades') or 0)
+    wins=int((r or {}).get('wins') or 0)
+    gw=float((r or {}).get('gross_wins_rub') or 0.0)
+    gl=float((r or {}).get('gross_losses_rub') or 0.0)
+    pf=(gw/gl) if gl>0 else (999.0 if gw>0 else None)
+    return {
+      'portfolio':name,
+      'closed_trades':n,
+      'unique_episodes':int((r or {}).get('unique_episodes') or 0),
+      'wins':wins,
+      'win_rate':wins/n if n else None,
+      'net_pnl_rub':float((r or {}).get('net_pnl_rub') or 0.0),
+      'avg_net_pnl_rub':float((r or {}).get('avg_net_pnl_rub') or 0.0),
+      'profit_factor':pf,
+      'costs_rub':float((r or {}).get('costs_rub') or 0.0),
+      'unknown_exits':int((r or {}).get('unknown_exits') or 0),
+      'max_drawdown':float((dd or {}).get('max_drawdown') or 0.0),
+    }
+
+
+def production_candidate_readiness(pg_connect):
+    thresholds={
+      'min_unique_episodes':50,
+      'min_win_rate':0.65,
+      'min_profit_factor':1.25,
+      'max_drawdown':0.10,
+      'require_positive_net_pnl':True,
+      'require_positive_avg_trade':True,
+      'unknown_exit_tolerance':0,
+    }
+    try:
+        champion=_v90_candidate_metrics(pg_connect,'Champion')
+        challenger=_v90_candidate_metrics(pg_connect,'Challenger')
+    except Exception as ex:
+        return {'status':'UNAVAILABLE','ready':False,'epoch':V90_PRODUCTION_CANDIDATE_EPOCH,
+                'error':f'{type(ex).__name__}: {ex}','thresholds':thresholds}
+
+    def evaluate(m):
+        checks={
+          'sample':int(m.get('unique_episodes') or 0)>=thresholds['min_unique_episodes'],
+          'win_rate':m.get('win_rate') is not None and float(m['win_rate'])>=thresholds['min_win_rate'],
+          'profit_factor':m.get('profit_factor') is not None and float(m['profit_factor'])>=thresholds['min_profit_factor'],
+          'positive_net_pnl':float(m.get('net_pnl_rub') or 0.0)>0,
+          'positive_avg_trade':float(m.get('avg_net_pnl_rub') or 0.0)>0,
+          'drawdown':float(m.get('max_drawdown') or 0.0)<=thresholds['max_drawdown'],
+          'exit_telemetry':int(m.get('unknown_exits') or 0)<=thresholds['unknown_exit_tolerance'],
+        }
+        return checks,all(checks.values())
+    cc,cr=evaluate(champion); hc,hr=evaluate(challenger)
+    champion['checks']=cc; champion['ready']=cr
+    challenger['checks']=hc; challenger['ready']=hr
+    return {
+      'status':'PASS' if cr else 'BUILDING',
+      'ready':cr,
+      'primary_candidate':'Champion',
+      'challenger_required_for_live':False,
+      'epoch':V90_PRODUCTION_CANDIDATE_EPOCH,
+      'thresholds':thresholds,
+      'roles':{
+        'Impulse':'research / impulse discovery',
+        'Aggressive':'research / high-risk discovery',
+        'Champion':'primary production candidate',
+        'Challenger':'strict alternative candidate',
+      },
+      'Champion':champion,'Challenger':challenger,
+      'profitability_guaranteed':False,
+      'principle':'No real-money promotion until the primary paper candidate proves positive post-cost performance on a fresh independent execution epoch.',
+    }
 
 
 _v90_canonical_report_base = report
@@ -8479,8 +8748,12 @@ def report(pg_connect):
         'legacy_soft_gates_authoritative':False,
         'starter_position_on_valid_directional_signal':True,
         'quality_controls_size_not_signal_existence':True,
+        'profitability_first_candidate_books':['Champion','Challenger'],
+        'weak_breakout_trading_enabled':False,
+        'candidate_epoch':V90_PRODUCTION_CANDIDATE_EPOCH,
         'live_capital_gate_independent':True,
         'live_execution_armed':False,
         'principle':'Paper gathers evidence; real capital stays fail-closed until broker, direct data, instrument, promotion and risk gates pass.',
     }
+    d['production_candidate_readiness']=production_candidate_readiness(pg_connect)
     return _jsonable(d)
