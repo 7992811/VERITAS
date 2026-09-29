@@ -97,21 +97,35 @@ def protective_reason(z, quote, now=None):
             return None
     except (TypeError, ValueError, KeyError):
         return None
+    expected_contract = p.get('entry_contract_secid') or (p.get('contract_identity') or {}).get('contract_id')
+    current_contract = (quote.get('contract') or {}).get('secid')
+    if expected_contract and current_contract and expected_contract != current_contract:
+        return None
+
+    long = z.get('direction') == 'LONG'
+    stops = [float(s) for s in (z.get('stop_price'), p.get('trailing_stop')) if s is not None]
+    stop = (max(stops) if long else min(stops)) if stops else None
+
+    # A fresh verified quote that breaches the protective stop must never be
+    # suppressed merely because the stored mark is stale and the move is large.
+    if stop is not None and ((long and px <= stop) or (not long and px >= stop)):
+        return 'STOP'
+
     old = float(z.get('last_price') or 0)
     jump = {'BTC': .06, 'ETH': .075, 'CNYRUBF': .02, 'MOEX': .03,
             'BRENT': .025, 'GOLD': .03, 'NQ': .035}.get(z.get('asset'), .04)
     if old > 0 and abs(px / old - 1) > jump:
         return None
-    expected_contract = p.get('entry_contract_secid') or (p.get('contract_identity') or {}).get('contract_id')
-    current_contract = (quote.get('contract') or {}).get('secid')
-    if expected_contract and current_contract and expected_contract != current_contract:
-        return None
-    long = z.get('direction') == 'LONG'
-    stops = [float(s) for s in (z.get('stop_price'), p.get('trailing_stop')) if s is not None]
-    stop = (max(stops) if long else min(stops)) if stops else None
-    if stop is not None and ((long and px <= stop) or (not long and px >= stop)):
-        return 'STOP'
-    target = p.get('take_price') or p.get('target_price')
+
+    target = p.get('take_price') or p.get('target_price') or p.get('last_target_price')
+    if not target:
+        try:
+            entry = float(z.get('avg_entry_price') or p.get('entry_price') or 0.0)
+            expected = abs(float(p.get('expected_move_pct') or 0.0))
+            if entry > 0 and expected > 0:
+                target = entry * (1.0 + expected if long else 1.0 - expected)
+        except (TypeError, ValueError):
+            target = None
     if target and not p.get('r17_tp1_done') and ((long and px >= float(target)) or (not long and px <= float(target))):
         return 'TAKE_PROFIT'
     return None
