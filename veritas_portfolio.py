@@ -4961,6 +4961,9 @@ def _v90_intelligence_index(c):
         p=_v90ii_payload(r.get('payload'))
         if str(p.get('data_integrity_status') or 'OK') not in ('','OK'):
             continue
+        _exit_reason=str(p.get('exit_reason') or p.get('close_reason') or '').upper()
+        if bool(p.get('administrative_exit')) or 'REBASE' in _exit_reason:
+            continue
         q2.append(r)
 
     n=len(q2)
