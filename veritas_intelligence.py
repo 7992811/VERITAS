@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 import httpx
 import veritas_execution as VX
+import veritas_learning_index as VLI
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     import psycopg
@@ -1265,6 +1266,10 @@ def pg_init():
           request_count BIGINT NOT NULL DEFAULT 1, last_path TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_visitor_sessions_last_seen ON visitor_sessions(last_seen DESC);
+        CREATE TABLE IF NOT EXISTS intelligence_score_history(
+          bucket_at TIMESTAMPTZ NOT NULL, index_version TEXT NOT NULL, mode TEXT NOT NULL,
+          payload JSONB NOT NULL, PRIMARY KEY(bucket_at,index_version,mode)
+        );
         CREATE TABLE IF NOT EXISTS learning_baselines(
           baseline_key TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL
         );
@@ -9083,14 +9088,14 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
     start_utc=start_local.astimezone(timezone.utc)
     end_utc=end_local.astimezone(timezone.utc)
     lp=lp or learning_progress()
+    if lp.get('index_version')!=VLI.INDEX_VERSION:
+        return {'status':'LEARNING_UNAVAILABLE','trend':'BUILDING'}
     current_index=lp.get('index_vs_start')
     try:
         current_index=float(current_index) if current_index is not None else None
     except Exception:
         current_index=None
 
-    baseline_key='daily_intelligence_msk_'+day
-    baseline_created=False
     baseline_proxy_backfilled=False
 
     with pg_connect() as c:
@@ -9155,38 +9160,8 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
         telemetry=15.0*max(0.0,min(1.0,coverage))
         maturity_proxy=round(knowledge+experience+outcome+capture_score+telemetry,2)
 
-        base=c.execute("SELECT created_at,payload FROM learning_baselines WHERE baseline_key=%s",(baseline_key,)).fetchone()
-        if not base:
-            payload={
-              'date_msk':day,
-              'learning_index':current_index,
-              'maturity_proxy':maturity_proxy,
-              'sources':sources,
-              'rules':rules,
-              'eligible_trade_episodes':int(ep.get('total_eligible') or 0),
-              'captured_at':now(),
-              'index_version':lp.get('index_version'),
-              'mode':lp.get('mode'),
-            }
-            c.execute("""INSERT INTO learning_baselines(baseline_key,created_at,payload)
-                         VALUES(%s,NOW(),%s::jsonb) ON CONFLICT DO NOTHING""",
-                      (baseline_key,json.dumps(payload,ensure_ascii=False,default=str)))
-            base={'created_at':datetime.now(timezone.utc),'payload':payload}
-            baseline_created=True
-
-        bp=base.get('payload') if isinstance(base,dict) else base['payload']
-        if not isinstance(bp,dict):
-            try: bp=json.loads(bp or '{}')
-            except Exception: bp={}
-
-        # R34 was first installed during the current day. If today's already-created
-        # baseline predates the maturity proxy field, seed the missing proxy once.
-        if bp.get('maturity_proxy') is None:
-            bp['maturity_proxy']=maturity_proxy
-            bp['maturity_proxy_captured_at']=now()
-            c.execute("UPDATE learning_baselines SET payload=%s::jsonb WHERE baseline_key=%s",
-                      (json.dumps(bp,ensure_ascii=False,default=str),baseline_key))
-            baseline_proxy_backfilled=True
+        base,bp,baseline_created,audit=VLI.daily_audit(
+            c,lp,day,maturity_proxy,sources,rules,int(ep.get('total_eligible') or 0))
 
     base_index=bp.get('learning_index')
     try: base_index=float(base_index) if base_index is not None else None
@@ -9217,6 +9192,7 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
 
     value={
       'status':'OK',
+      **audit,
       'date_msk':day,
       'timezone':'Europe/Moscow',
       'baseline_at':str(base.get('created_at') if isinstance(base,dict) else base['created_at']),
@@ -14464,52 +14440,14 @@ def refresh_rule_stats():
 
 
 def _learning_progress_v2_compute():
-    """Learning Index 2.0. Compares matched asset×horizon×regime strata so score changes cannot be created merely by sample mix.
-    When enough path-dependent shadow trades exist, 20% of the index comes from realized virtual-trade outcomes.
-    """
+    """Matched learning quality with identity-preserving normalisation and audit."""
     if not pg_enabled(): return {'status':'postgres_required'}
     try:
-        ms=_matched_strata_learning(); em=ms.get('baseline') or {}; rm=ms.get('current') or {}
-        def ratio_good(cur,base,floor=0.20):
-            if cur is None or base is None: return 1.0
-            return clip(float(cur)/max(float(base),floor),0.5,1.5)
-        hit=ratio_good(rm.get('hit_rate'),em.get('hit_rate'))
-        bmiss,rmiss=em.get('no_trade_miss_rate'),rm.get('no_trade_miss_rate')
-        miss=1.0 if bmiss is None or rmiss is None else clip((1-float(rmiss))/max(0.20,1-float(bmiss)),0.5,1.5)
-        be,re=em.get('avg_signed_return'),rm.get('avg_signed_return')
-        edge=1.0 if be is None or re is None else clip(1.0+(float(re)-float(be))/0.01,0.5,1.5)
-        cap=ratio_good(rm.get('capture_rate'),em.get('capture_rate'))
-        bw,rw=em.get('wrong_side_rate'),rm.get('wrong_side_rate')
-        wrong=1.0 if bw is None or rw is None else clip((1-float(rw))/max(0.20,1-float(bw)),0.5,1.5)
-        tw=_shadow_trade_learning_windows(); execution=None
-        if tw.get('status')=='MEASURABLE':
-            teb=tw['baseline']; ter=tw['current']
-            win=ratio_good(ter.get('positive_rate'),teb.get('positive_rate'))
-            ep=1.0 if teb.get('avg_pnl') is None or ter.get('avg_pnl') is None else clip(1.0+(float(ter['avg_pnl'])-float(teb['avg_pnl']))/0.01,0.5,1.5)
-            execution=0.70*win+0.30*ep
-            score=100*(0.32*hit+0.16*miss+0.10*edge+0.12*cap+0.10*wrong+0.20*execution)
-            mode='MATCHED_STRATA_PLUS_SHADOW_TRADES'
-        else:
-            score=100*(0.40*hit+0.20*miss+0.15*edge+0.15*cap+0.10*wrong)
-            mode='MATCHED_STRATA_PROXY_UNTIL_TRADE_SAMPLE'
-        n=int(ms.get('matched_observations_each_side') or 0); idx=round(score,1) if n>=20 else None
-        confidence='HIGH' if n>=120 and tw.get('status')=='MEASURABLE' else 'MEDIUM' if n>=50 else 'LOW'
+        out=VLI.calculate(_matched_strata_learning(),_shadow_trade_learning_windows())
         old=learning_progress_v1()
-        try:
-            with pg_connect() as c:
-                kg=c.execute("SELECT COUNT(*) sources FROM knowledge_sources").fetchone(); kr=c.execute("SELECT COUNT(*) rules FROM knowledge_rules").fetchone()
-        except Exception: kg=kr={}
-        return {'status':'MEASURABLE' if idx is not None else 'BUILDING','index_vs_start':idx,'baseline_index':100,'index_version':'2.0',
-                'mode':mode,'confidence':confidence,'matched_strata':ms.get('matched_strata'),'matched_observations_each_side':n,
-                'baseline':em,'current':rm,
-                'components':{'hit':round(hit,4),'miss_control':round(miss,4),'edge':round(edge,4),'large_move_capture':round(cap,4),'wrong_side_control':round(wrong,4),'execution':None if execution is None else round(execution,4)},
-                'shadow_trade_learning':tw,
-                'hit_rate_delta_pp':None if em.get('hit_rate') is None or rm.get('hit_rate') is None else round(100*(rm['hit_rate']-em['hit_rate']),2),
-                'no_trade_miss_delta_pp':None if em.get('no_trade_miss_rate') is None or rm.get('no_trade_miss_rate') is None else round(100*(rm['no_trade_miss_rate']-em['no_trade_miss_rate']),2),
-                'large_move_capture_delta_pp':None if em.get('capture_rate') is None or rm.get('capture_rate') is None else round(100*(rm['capture_rate']-em['capture_rate']),2),
-                'knowledge_growth':old.get('knowledge_growth') or {'current_sources':(kg or {}).get('sources'),'current_rules':(kr or {}).get('rules')},
-                'legacy_index_v1':old.get('index_vs_start'),
-                'definition':'100 = matched early baseline. Asset×horizon×regime composition is held comparable; path-dependent shadow trades enter only after minimum sample.'}
+        out['knowledge_growth']=old.get('knowledge_growth') or {}
+        out['legacy_index_v1']=old.get('index_vs_start')
+        return out
     except Exception as ex:
         return {'status':'error','error':f'{type(ex).__name__}: {ex}'}
 
@@ -15805,6 +15743,8 @@ class H(BaseHTTPRequestHandler):
                 self.reply({'version':VERSION,'status':'ok' if item else 'not_found','item':item},200 if item else 404)
             elif self.path.startswith('/api/v1/large-move-capture'):
                 self.reply({'version':VERSION,**large_move_capture_board()})
+            elif self.path.startswith('/api/v1/intelligence-history'):
+                self.reply({'version':VERSION,**VLI.history(pg_connect)})
             elif self.path.startswith('/api/v1/intelligence-scorecard'):
                 self.reply({'version':VERSION,**intelligence_scorecard()})
             elif self.path.startswith('/api/v1/trade-lifecycle'):
