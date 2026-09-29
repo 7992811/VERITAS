@@ -14083,6 +14083,11 @@ def lightweight_opportunity_board(summary=None):
                     'entry_quality':x.get('entry_quality'),'trade_plan_eligible':bool(tp.get('eligible')),
                     'entry_price':tp.get('entry_price'),'stop_price':tp.get('stop_price'),'stop_method':tp.get('stop_method'),
                     'expected_move_pct':tp.get('expected_move_pct'),'expected_to_stop_ratio':tp.get('expected_to_stop_ratio'),
+                    'block_reason':tp.get('reason'),
+                    'economics_blockers':((tp.get('final_economics_gate') or {}).get('blockers') or []),
+                    'entry_permission':((tp.get('trade_integrity') or {}).get('entry_permission')),
+                    'hard_reasons':((tp.get('trade_integrity') or {}).get('hard_reasons') or []),
+                    'soft_reasons':((tp.get('trade_integrity') or {}).get('soft_reasons') or []),
                     'probability_status':ta.get('status'),'decision_influence':'shadow_probability_layer'})
     out.sort(key=lambda x:(x['grade']=='A',x['grade']=='B',x['meta_score']),reverse=True)
     return {'generated_at':now(),'opportunities':out,'top':out[0] if out else None,'mode':'decision_edge_v26',
@@ -15247,13 +15252,46 @@ DASHBOARD_HTML = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 .matrix-wrap{overflow-x:hidden;margin-top:5px}.signal-table{width:min(100%,460px);min-width:0;table-layout:fixed;border-collapse:separate;border-spacing:0}.signal-table th,.signal-table td{padding:6px 2px;border-bottom:1px solid var(--line);text-align:center}.signal-table th{color:var(--muted);font-size:11px}.signal-table th:first-child,.signal-table td:first-child{text-align:left;width:64px}.asset-name{font-size:14px;font-weight:800;white-space:nowrap;letter-spacing:-.15px}.signal-cell{border:0;background:transparent;color:var(--text);padding:2px 0;min-width:0;width:100%;cursor:pointer}.dot{display:inline-flex;width:16px;height:16px;border-radius:50%;align-items:center;justify-content:center;vertical-align:middle}.dot.long{background:var(--up)}.dot.short{background:var(--down)}.dot.flat{background:var(--flat)}.dot.super{box-shadow:0 0 0 2px var(--card),0 0 0 4px currentColor}.dot.long.super{color:var(--up)}.dot.short.super{color:var(--down)}.strength{font-size:10px;color:#d8dde3;margin-top:2px}.cal{font-size:9px;color:var(--muted);margin-top:1px}.legend{display:flex;flex-wrap:wrap;gap:13px;align-items:center;color:var(--muted);font-size:12px;margin-top:8px}.legend span{display:inline-flex;align-items:center;gap:6px}.legend .dot{width:11px;height:11px}.superstrip{display:grid;grid-template-columns:repeat(5,minmax(105px,1fr));gap:8px;margin-top:13px}.superbox{background:var(--card2);border:1px solid var(--line);border-radius:11px;padding:9px}.superbox .tf{color:var(--muted);font-size:11px;text-transform:uppercase}.superline{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}.superasset{display:inline-flex;align-items:center;gap:5px;font-size:12px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0}.chip{display:inline-flex;padding:5px 9px;border-radius:999px;background:#20262d;color:#cbd2d9;font-size:12px}.dqrow{display:grid;grid-template-columns:minmax(180px,1.4fr) minmax(100px,.5fr) minmax(95px,.45fr);gap:8px;padding:7px 0;border-bottom:1px solid var(--line)}details.clean{background:var(--card);border:1px solid var(--line);border-radius:15px;grid-column:span 12}details.clean summary{cursor:pointer;padding:14px;list-style:none;display:flex;justify-content:space-between;align-items:center}.details-body{padding:0 14px 14px;border-top:1px solid var(--line)}table.hist{width:100%;border-collapse:collapse;margin-top:8px}.hist th,.hist td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);white-space:nowrap}.hist th{color:var(--muted);font-size:12px}.detail-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px}.detail-col{background:var(--card2);border-radius:10px;padding:10px}.detail-title{font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px}.authorgrid{display:flex;flex-wrap:wrap;gap:6px}.managerhead{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0 12px}.managerstat b{font-size:18px}.assetview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:8px}.assetview{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:10px}.tradecompact{padding:5px 8px;border-radius:8px;margin-bottom:4px}.tradecompact .assetmeta{margin-top:2px;font-size:10px;line-height:1.25}.assetview-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.assetview-name{font-weight:800;font-size:15px}.trend-arrow{font-weight:900;font-size:22px;letter-spacing:-2px}.trend-up{color:var(--up)}.trend-down{color:var(--down)}.trend-flat{color:var(--flat)}.horizon-line{margin-top:5px;font-size:12px;word-spacing:4px}.assetmeta{margin-top:5px;color:var(--muted);font-size:11px;line-height:1.45}.effect-summary{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.portfolio-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.portfolio-card{background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:14px}.portfolio-title{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:18px;font-weight:800}.portfolio-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}.pkpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px}.pkpi .n{font-size:17px;font-weight:750;margin-top:3px}.position-row{display:grid;grid-template-columns:80px 70px 1fr 1fr 1fr;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);align-items:center}.position-row:last-child{border-bottom:0}.trade-row{display:grid;grid-template-columns:120px 70px 70px 1fr 1fr;gap:8px;padding:7px 0;border-bottom:1px solid var(--line)}@media(max-width:900px){.portfolio-grid{grid-template-columns:1fr}.portfolio-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.position-row{grid-template-columns:58px 58px 1fr}.position-row .hide-mobile,.trade-row .hide-mobile{display:none}.trade-row{grid-template-columns:90px 58px 58px 1fr}}.effect-pill{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:7px 9px;font-size:12px}.benefit-good{color:var(--up)}.benefit-bad{color:var(--down)}.benefit-neutral{color:var(--muted)}
 .decision-card{background:var(--card2);border:1px solid var(--line);border-radius:13px;padding:12px;margin-top:9px}.decision-card .head{display:flex;justify-content:space-between;gap:8px;align-items:center}.decision-card .big{font-size:18px;font-weight:800}.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:9px}.metric{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:8px}.metric b{display:block;margin-top:3px}.funnel{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}.funnel-step{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}.qa-row{display:flex;gap:7px;margin-top:8px}.qa-row input{flex:1;background:#0d1014;border:1px solid var(--line);border-radius:10px;color:var(--text);padding:10px}.qa-row button{background:#252d36;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 12px}.scenario-row{display:grid;grid-template-columns:80px 1fr 1fr 1fr;gap:7px;padding:7px 0;border-bottom:1px solid var(--line)}@media(max-width:900px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.scenario-row{grid-template-columns:62px 1fr}.scenario-row .sm-hide{display:none}}
 @media(max-width:900px){.assetview-grid{grid-template-columns:1fr}.span3,.span4,.span6,.span8{grid-column:span 12}.top{align-items:flex-start;flex-direction:column}.wrap{padding:8px}.superstrip{grid-template-columns:repeat(2,1fr)}.detail-grid{grid-template-columns:1fr}.dqrow{grid-template-columns:1fr}.v{font-size:21px}.card{padding:10px}.signal-table th,.signal-table td{padding:5px 1px}.signal-table th:first-child,.signal-table td:first-child{width:46px}.signal-table th{font-size:10px}.asset-name{font-size:11px}.signal-cell{padding:1px 0}.signal-cell .dot{width:14px;height:14px}.signal-cell .strength{font-size:9px;margin-top:1px}.signal-cell .cal{font-size:8px;margin-top:0}.legend{gap:7px;font-size:10px}.superstrip{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* v90 compact UI: action / positions / portfolios */
+.action-now-card{padding-top:9px;padding-bottom:9px}
+.action-now .assetview{padding:6px 8px;margin-bottom:4px}
+.action-now .assetmeta{margin-top:3px;line-height:1.25}
+.block-reason{margin-top:3px;color:var(--muted);white-space:normal!important;overflow:visible!important;text-overflow:clip!important;overflow-wrap:anywhere;word-break:break-word;line-height:1.28}
+.block-reason b{color:var(--text)}
+.positioncompact{padding:5px 7px;border-radius:9px;margin-bottom:4px}
+.positioncompact .assetview-head{font-size:12px;line-height:1.1}
+.positioncompact .assetmeta{margin-top:3px;font-size:10.5px;line-height:1.2}
+.positioncompact .posline{display:flex;flex-wrap:wrap;gap:2px 7px;align-items:baseline}
+.positioncompact .posline+.posline{margin-top:2px}
+.portfolio-grid{gap:7px}
+.portfolio-card{padding:8px 9px;border-radius:10px}
+.portfolio-title{font-size:14px;line-height:1.1}
+.portfolio-kpis{gap:4px;margin-top:6px}
+.pkpi{padding:4px 5px;border-radius:7px;min-width:0}
+.pkpi .k{font-size:8.5px;line-height:1.05}
+.pkpi .n{font-size:12px;font-weight:750;margin-top:1px;line-height:1.1}
+.portfolio-foot{margin-top:4px!important;font-size:9.5px!important;line-height:1.2!important}
+#portfolioheadline{font-size:10px;line-height:1.2}
+#portfoliopositions,#portfoliotrades{line-height:1.2}
+@media(max-width:900px){
+  .portfolio-grid{gap:5px}
+  .portfolio-card{padding:6px 7px}
+  .portfolio-kpis{grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;margin-top:5px}
+  .pkpi{padding:3px 2px;text-align:center}
+  .pkpi .k{font-size:7.5px}
+  .pkpi .n{font-size:9.5px;letter-spacing:-.25px}
+  .portfolio-title{font-size:13px}
+  .positioncompact{padding:4px 6px}
+  .positioncompact .assetmeta{font-size:9.5px;line-height:1.15}
+}
 </style></head><body><div class="wrap">
 <div class="top"><div><h1>VERITAS Markets</h1><div class="sub">Цифровой инвестиционный комитет · BTC / ETH / NDX / Brent / Gold / MOEX</div></div><div id="stamp" class="stamp">загрузка…</div></div>
 <div class="nav"><button class="active" data-view="market">Рынок</button><button data-view="portfolios">Портфели</button><button data-view="decisions">Решения</button><button data-view="research">Исследование</button><button data-view="system">Система</button></div>
 
 <section id="market" class="view active">
 <div class="card span3"><div class="k">Система</div><div id="sys" class="v">—</div></div><div class="card span3"><div class="k">Индекс обучения</div><div id="learnidx" class="v">—</div><div id="learnsmall" class="stamp"></div></div><div class="card span3"><div class="k">Пользователи</div><div id="users" class="v">—</div><div id="userssmall" class="stamp"></div></div><div class="card span3"><div class="k">Глубина решения</div><div id="capacity" class="v">—</div><div id="capacitysmall" class="stamp"></div></div><div class="card span3"><div class="k">Знания</div><div id="src" class="v">—</div></div><div class="card span3"><div class="k">Правила</div><div id="rules" class="v">—</div></div><div class="card span3"><div class="k">Менеджерский корпус</div><div id="mgr" class="v">—</div><div id="mgrsmall" class="stamp"></div></div>
-<div class="card span12"><div class="k">Лучшие торговые возможности · Decision Edge</div><div id="opps" class="note">—</div></div><div class="card span12"><div class="k">Захват крупных движений</div><div id="capture" class="note">—</div></div><div class="card span12"><div class="k">Общий взгляд по активам</div><div id="thesis" class="note">—</div></div>
+<div class="card span12 action-now-card"><div class="k">Что делать сейчас?</div><div id="opps" class="note action-now">—</div></div><div class="card span12"><div class="k">Захват крупных движений</div><div id="capture" class="note">—</div></div><div class="card span12"><div class="k">Общий взгляд по активам</div><div id="thesis" class="note">—</div></div>
 <div class="card span12"><div class="k">Сигналы по инструментам</div><div class="matrix-wrap"><table class="signal-table"><thead><tr><th>Актив</th><th>1ч</th><th>4ч</th><th>1д</th><th>3д</th><th>7д</th></tr></thead><tbody id="matrix"></tbody></table></div><div id="matrixstatus" class="stamp" style="margin-top:6px"></div><div class="legend"><span><i class="dot long"></i>лонг</span><span><i class="dot short"></i>шорт</span><span><i class="dot flat"></i>нет сделки</span><span><i class="dot long super"></i>усиленный сигнал</span><span>процент = сила сигнала, не вероятность</span></div><div class="superstrip" id="superstrip"></div></div>
 <div class="card span8"><div class="k">Разбор выбранного сигнала</div><div id="detail" class="note">Нажмите на круг сигнала: покажу аргументы за/против, риск, режим и калибровку.</div></div><div class="card span4"><div class="k">Макро / кросс-активы</div><div id="macro" class="note">—</div><div id="cross" class="note" style="margin-top:8px">—</div></div>
 <div class="card span12"><div class="k">Алерты</div><div id="alerts" class="note">—</div></div>
@@ -15316,7 +15354,2680 @@ async function runWhatIf(){try{const a=document.getElementById('whatifasset').va
 async function askVeritas(){try{const q=document.getElementById('askq').value||'';const r=await fetch('/api/v1/ask-veritas?q='+encodeURIComponent(q),{cache:'no-store'});const x=await r.json();document.getElementById('askanswer').textContent=x.answer||'—'}catch(e){document.getElementById('askanswer').textContent=String(e)}}
 async function showDetail(asset,horizon){const el=document.getElementById('detail');el.textContent='загрузка…';try{const r=await fetch(`/api/v1/explain?asset=${asset}&horizon=${horizon}`,{cache:'no-store'});const d=(await r.json()).explanation||{};if(d.status!=='ok'){el.textContent='нет данных';return}const cp=(d.calibration||{}).probability_correct;const fmt=a=>(a||[]).map(x=>`<div>${x.agent}: ${x.direction||''}</div>`).join('')||'—';const ex=d.execution_eligibility||{},ti=d.trend_impulse||{},st=d.intraday_structure||{},tp=d.trade_plan||{};el.innerHTML=`<b>${d.asset} · ${d.horizon}</b> · ${tierText({decision:d.decision,research_decision:d.research_decision,signal_tier:d.signal_tier})}<br>Сила: ${pct(d.confidence)} · калиброванная вероятность: ${cp==null?'ещё недостаточно данных':pct(cp)} · режим: ${d.regime||'—'}<br>Тренд: <b>${ti.phase||'NONE'}</b> · onset ${pct(ti.onset_score)} · impulse ${pct(ti.impulse_score)} · вход ${ti.entry_quality||'—'}<br>Структура: ${st.lifecycle||'—'} · score ${pct(st.score)} · near ATH ${st.near_ath?'ДА':'НЕТ'} · удержание пробоя ${st.breakout_hold?'ДА':'НЕТ'} · rVol ${st.relative_volume==null?'—':Number(st.relative_volume).toFixed(2)}<br>План: ожидаемый ход ${tp.expected_move_pct==null?'—':pct(tp.expected_move_pct)} · стоп ${tp.stop_price==null?'—':Number(tp.stop_price).toFixed(2)}<br>Decision Edge: <b>${d.decision_stage||tp.decision_stage||'—'}</b> · P+ ${d.positive_trade_probability==null?(tp.positive_trade_probability==null?'накапливается':pct(tp.positive_trade_probability)):pct(d.positive_trade_probability)} · аналоги n≈${d.analog_effective_n??(tp.tradeability||{}).effective_n??'—'}<br>Торговый допуск: <b>${ex.eligible?'ДА':'НЕТ'}</b>${ex.reason?' · '+ex.reason:''}<div class="detail-grid"><div class="detail-col"><div class="detail-title">За</div>${fmt(d.pro)}</div><div class="detail-col"><div class="detail-title">Против</div>${fmt(d.con)}</div><div class="detail-col"><div class="detail-title">Риск</div>${fmt(d.risk)}</div></div><div style="margin-top:8px">Совпало правил знаний: ${(d.knowledge_matches||[]).length}</div>`}catch(e){el.textContent=String(e)}}
 function renderMatrix(a){a=Array.isArray(a)?a:[];const map={};a.forEach(x=>{if(x&&x.asset&&x.horizon)map[x.asset+'|'+x.horizon]=x});document.getElementById('matrix').innerHTML=assets.map(asset=>`<tr><td><span class="asset-name">${asset}</span></td>${tfOrder.map(tf=>{const x=map[asset+'|'+tf];if(!x)return'<td><span class="stamp">нет данных</span></td>';return`<td><button class="signal-cell" onclick="showDetail('${asset}','${tf}')" title="${tierText(x)}${x.execution_eligible===false?' · research only':''}"><i class="dot ${dotClass(x)}"></i><div class="strength">${pct(x.confidence)}</div><div class="cal">${x.trend_phase&&x.trend_phase!=='NONE'?(x.trend_phase==='EARLY_TREND'?'старт':x.trend_phase==='IMPULSE_TREND'?'имп':'тренд'):(x.execution_eligible===false&&['LONG','SHORT'].includes(researchDecision(x))?'R':(x.calibrated_probability==null?'':'P '+pct(x.calibrated_probability)))}</div></button></td>`}).join('')}</tr>`).join('');const expected=assets.length*tfOrder.length,loaded=a.filter(x=>assets.includes(x.asset)&&tfOrder.includes(x.horizon)).length,missing=expected-loaded;document.getElementById('matrixstatus').textContent=missing<=0?`${loaded}/${expected} сигналов загружены`:`${loaded}/${expected} · отсутствует ${missing} ячеек`;document.getElementById('superstrip').innerHTML=tfOrder.map(tf=>{const xs=a.filter(x=>x.horizon===tf&&x.execution_eligible!==false&&(x.signal_tier==='SUPER_LONG'||x.signal_tier==='SUPER_SHORT'));return`<div class="superbox"><div class="tf">${tf}</div><div class="superline">${xs.length?xs.map(x=>`<span class="superasset"><i class="dot ${dotClass(x)}"></i>${x.asset}</span>`).join(''):'<span class="stamp">нет усиленного сигнала</span>'}</div></div>`}).join('')}
-function rub(x){return x==null?'—':Number(x).toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽'}function usd(x){return x==null?'—':'$'+Number(x).toLocaleString('en-US',{maximumFractionDigits:0})}function ppct(x,d=2){return x==null?'—':Number(x).toFixed(d)+'%'}
+function rub(x){return x==null?'—':Number(x).toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽'}function usd(x){return x==null?'—':'
+async function loadPortfolios(){const head=document.getElementById('portfolioheadline'),cards=document.getElementById('portfoliocards'),posel=document.getElementById('portfoliopositions'),trel=document.getElementById('portfoliotrades');if(!head)return;try{const [pr,tr]=await Promise.all([fetch('/api/v1/paper-portfolios',{cache:'no-store'}),fetch('/api/v1/portfolio-trades',{cache:'no-store'})]);if(!pr.ok)throw new Error('portfolio HTTP '+pr.status);const pd=await pr.json(),td=tr.ok?await tr.json():{trades:[]};const ps=pd.portfolios||[];head.innerHTML=`Старт <b>${rub(pd.initial_nav_rub)}</b> · комиссия ${(100*Number(pd.commission_rate||0)).toFixed(2)}% · gross ≤ ${Number(pd.max_gross||0).toFixed(1)}× · риск по стопу ≤ ${(100*Number(pd.max_stop_risk_nav||0)).toFixed(0)}% · шаг ${(100*Number(pd.position_step||0)).toFixed(0)}%`;cards.innerHTML=ps.map(p=>{const x=p.latest||{},nav=x.nav_rub??pd.initial_nav_rub,ret=nav?100*(nav/pd.initial_nav_rub-1):null,bench=x.benchmark_nav_rub,exc=(nav&&bench)?100*(nav/bench-1):null;return `<div class="portfolio-card"><div class="portfolio-title"><span>${p.name}</span><span class="badge">${p.name==='Champion'?'70%+':(p.name==='Challenger'?'75%+':(p.name==='Aggressive'?'AGGR':'IMPULSE'))}</span></div><div class="portfolio-kpis"><div class="pkpi"><div class="k">NAV</div><div class="n">${rub(nav)}</div></div><div class="pkpi"><div class="k">USD</div><div class="n">${usd(x.nav_usd)}</div></div><div class="pkpi"><div class="k">Доходность</div><div class="n ${ret>=0?'ok':'bad'}">${ppct(ret)}</div></div><div class="pkpi"><div class="k">К RUONIA</div><div class="n ${exc>=0?'ok':'bad'}">${ppct(exc)}</div></div><div class="pkpi"><div class="k">Плечо gross</div><div class="n">${x.gross_leverage==null?'—':Number(x.gross_leverage).toFixed(2)+'×'}</div></div><div class="pkpi"><div class="k">Cash</div><div class="n">${x.gross_leverage==null?'—':ppct(100*Math.max(0,1-Number(x.gross_leverage)))}</div></div><div class="pkpi"><div class="k">Просадка</div><div class="n">${x.drawdown==null?'—':ppct(100*Number(x.drawdown))}</div></div><div class="pkpi"><div class="k">Win rate</div><div class="n">${p.win_rate==null?'—':ppct(100*Number(p.win_rate),1)}</div></div></div><div class="note portfolio-foot">Сделки ${p.closed_trades??0} · плюс ${p.wins??0} · значимые ${p.meaningful_wins??0} · RUONIA ${x.ruonia==null?'—':Number(x.ruonia).toFixed(2)+'%'} · USD/RUB ${x.usdrub==null?'—':Number(x.usdrub).toFixed(4)}</div></div>`}).join('')||'портфели ещё не созданы';const positions=[];ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push({...z,portfolio:p.name})));posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview positioncompact"><div class="assetview-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="assetmeta"><div class="posline"><span>${rub(z.notional_rub)}</span><span>кол-во ${Number(z.units||0).toLocaleString('ru-RU',{maximumFractionDigits:6})}</span><span>вход ${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} → ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})}</span><b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b></div><div class="posline"><span>SL ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}</span><span>TP ${(z.take_price??z.target_price)==null?'—':Number(z.take_price??z.target_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}</span><span>${z.opened_at?new Date(z.opened_at).toLocaleString():'—'}</span><span>${z.entry_metric_label==='PROBABILITY'?'P '+(z.entry_probability==null?'—':(100*Number(z.entry_probability)).toFixed(1)+'%'):(z.entry_metric_value==null?'оценка —':'оценка '+Number(z.entry_metric_value).toFixed(2))}</span></div></div></div>`).join(''):'Открытых позиций нет.';const trades=td.trades||[];trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview tradecompact"><b>${t.portfolio_name} · ${t.asset} · ${t.direction}</b><div class="assetmeta">${t.status} · вход ${Number(t.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · выход ${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}<br>Gross ${rub(t.gross_pnl_rub)} · комиссии ${rub(t.fees_rub)} · фондирование ${rub(t.funding_rub)} · Net <b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)}${t.return_on_entry_nav==null?'':' · '+(100*Number(t.return_on_entry_nav)).toFixed(2)+'%'}</b><br>${t.horizon||'—'} · ${t.setup||'—'}</div></div>`).join(''):'Сделок в журнале пока нет.'}catch(e){head.innerHTML='<span class="err">Портфели: '+String(e)+'</span>';cards.innerHTML='';posel.textContent='—';trel.textContent='—'}}
+async function load(){try{const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),180000);const r=await fetch('/api/v1/overview',{cache:'no-store',signal:ctl.signal});clearTimeout(tm);if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const cts=d.cycle?.at?new Date(d.cycle.at):new Date();document.getElementById('stamp').textContent='сигналы '+cts.toLocaleString()+(d.overview_mode==='fast'?' · быстрый режим':'');document.getElementById('sys').innerHTML=d.cycle?.status==='ok'?'<span class="ok">ONLINE</span>':'<span class="err">'+(d.cycle?.status||'—')+'</span>';document.getElementById('src').textContent=d.storage?.knowledge_sources??'—';document.getElementById('rules').textContent=d.storage?.knowledge_rules??'—';document.getElementById('mgr').textContent=(d.managers?.postgres_sources??'—')+' / '+(d.managers?.postgres_rules??'—');document.getElementById('mgrsmall').textContent=(d.managers?.embedded_author_labels??'—')+' авторских меток';const lp=d.learning_progress||{};const ln=lp.matched_observations_each_side??0;document.getElementById('learnidx').textContent=lp.index_vs_start==null?`100.0*`:lp.index_vs_start;document.getElementById('learnsmall').textContent=lp.index_vs_start==null?`предварительно · выборка ${ln}/20 · надёжность ${lp.confidence||'LOW'}`:`100 = старт · Δ hit ${lp.hit_rate_delta_pp==null?'—':lp.hit_rate_delta_pp+' п.п.'} · ${lp.confidence||''}`;const um=d.users||{};document.getElementById('users').textContent=`${um.unique_users??0} / ${um.online_users??0}`;document.getElementById('userssmall').textContent='уникальных / онлайн сейчас';const cap=d.signal_capacity||{};document.getElementById('capacity').textContent=`${cap.decision_depth_score??'—'}/100`;document.getElementById('capacitysmall').textContent=`30 ячеек · ~${cap.avg_live_state_fields??0} полей/ячейку · ${cap.agents??0} агентов`;const a=d.cycle?.summary||[];renderMatrix(a);const ob=d.opportunity_board||{},opps=ob.opportunities||[];document.getElementById('opps').innerHTML=opps.slice(0,5).map(x=>`<div class="assetview"><div class="assetview-head"><b>${x.asset} · ${x.meta_decision} · ${x.horizon}</b><span class="badge">${x.grade} · ${x.meta_score}/100</span></div><div class="assetmeta"><b class="${x.trade_plan_eligible?'ok':'warn'}">${x.trade_plan_eligible?'ВХОД ДОПУЩЕН':'ВХОД ЗАБЛОКИРОВАН'}</b> · R/R ${x.expected_to_stop_ratio==null?'—':Number(x.expected_to_stop_ratio).toFixed(2)} · ход ${x.expected_move_pct==null?'—':(100*x.expected_move_pct).toFixed(2)+'%'} · стадия ${x.decision_stage||'—'}<br>Вход ${x.entry_price==null?'—':Number(x.entry_price).toFixed(2)} · стоп ${x.stop_price==null?'—':Number(x.stop_price).toFixed(2)}${x.trade_plan_eligible?'':`<div class="block-reason"><b>Почему:</b> ${blockReasonRU(x)}</div>`}</div></div>`).join('')||'<span class="stamp">Сейчас нет направленных сетапов для оценки.</span>';const lmc=d.large_move_capture||{},lmco=lmc.overall||{};document.getElementById('capture').innerHTML=`Статус <b>${lmc.status||'—'}</b> · крупных движений ${lmco.large_moves??0} · захвачено ${lmco.capture_rate==null?'—':(100*lmco.capture_rate).toFixed(1)+'%'} · пропущено ${lmco.miss_rate==null?'—':(100*lmco.miss_rate).toFixed(1)+'%'} · против рынка ${lmco.wrong_side_rate==null?'—':(100*lmco.wrong_side_rate).toFixed(1)+'%'}`;const iv=(d.investor_asset_view||{}).items||[];const trCls=x=>String(x||'').includes('↑')?'trend-up':String(x||'').includes('↓')?'trend-down':'trend-flat';const thRu=x=>x==='VALID'?'тезис подтверждён':x==='CHALLENGED'?'тезис под вопросом':x==='BROKEN'?'тезис сломан':x==='UNKNOWN_DATA'?'не хватает данных':'нет тезиса';const enRu=x=>x==='READY'?'вход готов':x==='INVALIDATED'?'вход отменён':x==='LATE_OR_WAIT'?'вход поздний / ждать':x||'—';const acRu=x=>x==='ENTER_CANDIDATE'?'рассмотреть вход':x==='REDUCE'?'уменьшить размер':x==='WAIT'?'ждать':x||'—';document.getElementById('thesis').innerHTML=`<div class="assetview-grid">${iv.map(x=>`<div class="assetview"><div class="assetview-head"><span class="assetview-name">${x.asset} · ${x.investor_signal||'WAIT'}</span><span class="trend-arrow ${trCls(x.arrow)}">${x.arrow||'→'}</span></div><div class="horizon-line">1ч ${x.horizons?.['1h']||'→'} · 4ч ${x.horizons?.['4h']||'→'} · 1д ${x.horizons?.['1d']||'→'} · 3д ${x.horizons?.['3d']||'→'} · 7д ${x.horizons?.['7d']||'→'}</div><div class="assetmeta">${x.trend} · подтверждают ${x.directional_horizons||0}/${x.total_horizons||5} горизонтов · согласование ${Math.round(100*(x.alignment||0))}%<br>FAST ${x.fast||'→'} · MEDIUM ${x.medium||'→'} · SLOW ${x.slow||'→'}<br>параметров состояния ${x.state_parameters_used??'—'} · семейств факторов ${x.factor_family_count??'—'} · независимых подтверждений ${x.independent_evidence_families??'—'} · моделей ${x.model_agents??'—'}<br>${thRu(x.thesis_status)} · ${enRu(x.entry_status)} · действие: ${acRu(x.action)}</div></div>`).join('')}</div>`||'—';const pp=d.paper_portfolios||{},pps=pp.portfolios||[];const ppe=document.getElementById('paperportfolio');if(ppe)ppe.innerHTML=pps.map(x=>`<b>${x.name}</b>: NAV ${Number(x.nav_rub||0).toLocaleString('ru-RU',{maximumFractionDigits:0})} ₽ · $${Number(x.nav_usd||0).toLocaleString('en-US',{maximumFractionDigits:0})} · P&L ${x.total_return_pct==null?'—':Number(x.total_return_pct).toFixed(2)+'%'} · DD ${x.drawdown_pct==null?'—':Number(x.drawdown_pct).toFixed(2)+'%'} · плечо ${x.gross_leverage==null?'—':Number(x.gross_leverage).toFixed(2)+'×'} · win ${x.win_rate==null?'—':Number(100*x.win_rate).toFixed(1)+'%'} · meaningful ${x.meaningful_win_rate==null?'—':Number(100*x.meaningful_win_rate).toFixed(1)+'%'}`).join('<br>')||'накапливается';const f=d.factory||{};document.getElementById('factory').innerHTML=`Кандидаты:<div class="chips">${chips(f.candidates)}</div>Правила:<div class="chips">${chips(f.rules)}</div>`;const b=d.backtest||{},lr=b.latest_run||{};document.getElementById('bt').innerHTML=`${lr.status||b.status||'—'} · ${lr.days||b.days||'—'} дней · правил ${lr.rules_tested??'—'} · наблюдений ${lr.observations??'—'}<br><span class="badge">20 б.п. + OOS + неперекрывающиеся окна</span>`;const m=d.macro||{},md=m.data||{},ca=d.cross_asset_shadow||{};document.getElementById('macro').innerHTML=`UST 2Y ${fmtN(md.ust2y?.value,3)} · 10Y ${fmtN(md.ust10y?.value,3)} · 30Y ${fmtN(md.ust30y?.value,3)}<br>VIX ${fmtN((md.vix_live||md.vix_daily)?.value,2)} · S&P ${fmtN(md.sp500?.value,2)}<br>DXY ${fmtN(md.dxy?.value,2)} · Gold ${fmtN(md.gold?.value,2)}`;document.getElementById('cross').innerHTML=`Cross-asset: <b>${ca.regime||'—'}</b> · ${ca.score??'—'} <span class="badge">shadow</span>`;const al=d.alerts||[];document.getElementById('alerts').innerHTML=al.slice(0,6).map(x=>{const q=x.payload||{};const typ=x.alert_type||q.alert_type||'ALERT';const act=q.action||q.decision||'наблюдать';const sev=x.severity||'—';const px=q.trigger_price||q.price;return `<div class="assetview"><b>${x.asset||'SYSTEM'} ${x.horizon||''} · ${typ}</b> <span class="badge">${sev}</span><div class="assetmeta">Вывод: <b>${act}</b>${px?` · цена ${Number(px).toFixed(2)}`:''}<br>${q.reason||q.setup||q.invalidation_reason||'Изменение состояния требует перепроверки сигнала.'}</div></div>`}).join('')||'Нет новых алертов, требующих действия.';const qc=d.qc||{};document.getElementById('qc').innerHTML=`DATA ${qc.DATA||'—'} · MARKET ${qc.MARKET||'—'} · FORECAST ${qc.FORECAST||'—'}<br>AUDIT ${qc.AUDIT||'—'} · DECISION ${qc.DECISION||'—'}`;const vi=(d.validation||{}).items||[],vc={};vi.forEach(x=>vc[x.validation_label]=(vc[x.validation_label]||0)+1);document.getElementById('val').innerHTML=`ROBUST ${vc.ROBUST_CANDIDATE||0} · PROMISING ${vc.PROMISING||0} · WEAK ${vc.WEAK||0}`;const ad=d.adaptive||{},rs=ad.runtime_settings||{};document.getElementById('adaptive').innerHTML=`Regime edge: ${(ad.regime_counts||{}).REGIME_EDGE||0} · Pair promising: ${(ad.pair_counts||{}).PAIR_PROMISING||0}<br>Rule drift: ${ad.rule_drift_count??'—'} · min score ${rs.min_directional_score??'—'}`;const dr=d.drift||{},cc=d.champion_challenger||{};document.getElementById('drift').innerHTML=`Drift ${dr.status||'—'} · weakening/decaying ${dr.rule_drift_count??0}<br>Challengers ${(cc.challengers||[]).length} · Champion ${cc.champion?'есть':'нет'}`;const prisk=d.portfolio_risk||{},prc=prisk.tail_contributions||[],sc=prisk.strongest_abs_correlation||{};document.getElementById('portfoliorisk').innerHTML=`Статус: <b>${prisk.status||'—'}</b> · n=${prisk.observations??0}<br>VaR 95% ${prisk.var_95_loss_fraction==null?'—':(100*prisk.var_95_loss_fraction).toFixed(2)+'%'} · CVaR 95% ${prisk.cvar_95_loss_fraction==null?'—':(100*prisk.cvar_95_loss_fraction).toFixed(2)+'%'}<br>CVaR 99% ${prisk.cvar_99_loss_fraction==null?'—':(100*prisk.cvar_99_loss_fraction).toFixed(2)+'%'} · max |corr| ${sc.pair||'—'} ${sc.correlation==null?'':Number(sc.correlation).toFixed(2)}<br>${prc.slice(0,4).map(x=>`${x.asset}: ${(100*(x.cvar_contribution||0)).toFixed(2)}%`).join(' · ')||'вклад по активам накапливается'}<br><span class="badge">историческая симуляция · shadow</span>`;const rb=d.dynamic_risk_budget||{},rba=rb.asset_budgets||[];document.getElementById('riskbudget').innerHTML=`Режим: <b>${rb.risk_posture||'—'}</b> · CVaR-множитель ${rb.portfolio_multiplier==null?'—':Number(rb.portfolio_multiplier).toFixed(2)}<br>Исходный риск ${(100*(rb.gross_allocator_weight||0)).toFixed(1)}% → обученный бюджет ${(100*(rb.gross_research_risk_budget||0)).toFixed(1)}%<br>${rba.slice(0,6).map(x=>`${x.asset}: ${(100*(x.research_risk_budget||0)).toFixed(1)}% · опыт ×${Number(x.experience_multiplier||0).toFixed(2)} · n=${x.experience_n||0} · ${x.experience_state||'BUILDING'}`).join('<br>')||'нет направленных позиций'}<br><span class="badge">собственный опыт + режим + P&L-кластеры + CVaR · shadow</span>`;const au=d.autonomy||{};document.getElementById('autonomy').innerHTML=`${au.always_on_confirmed?'<span class="ok"><b>ALWAYS-ON</b></span>':'<span class="warn"><b>Хостинг не подтвержден 24/7</b></span>'}<br>рынок каждые ${Math.round((au.market_learning_cycle_seconds||0)/60)} мин · знания каждые ${Math.round((au.knowledge_discovery_interval_seconds||0)/3600)} ч<br>Postgres: ${au.persistent_experience_storage?'durable':'нет'} · uptime ${Math.round((au.process_uptime_seconds||0)/60)} мин`;const hi=d.horizon_integrity||{},hmiss=hi.missing_live||[];document.getElementById('horizonintegrity').innerHTML=`1ч: <b>${hmiss.length?'неполное':'6/6 активов'}</b> · ожидается ${hi.expected_signal_cells??30} ячеек (6 активов × 5 ТФ)<br>${Object.entries(hi.live_1h_seen||{}).map(([a,v])=>`${a} ${v?'✓':'…'}`).join(' · ')}`;const ac=(d.agent_consensus||{}).items||[];document.getElementById('consensus').innerHTML=ac.slice(0,6).map(x=>`${x.asset} ${x.horizon} ${x.direction}: ${x.agents} · n=${x.n}`).join('<br>')||'недостаточно данных';const ae=d.architecture_efficiency||{},hl=ae.heavy_learning||{};document.getElementById('archeff').innerHTML=`Цикл <b>${ae.cycle_seconds==null?'—':Number(ae.cycle_seconds).toFixed(1)+'с'}</b> · цель ≤${ae.target_cycle_seconds??30}с · ${ae.target_status||'—'}<br>p50 ${ae.cycle_p50_seconds==null?'—':Number(ae.cycle_p50_seconds).toFixed(1)+'с'} · p95 ${ae.cycle_p95_seconds==null?'—':Number(ae.cycle_p95_seconds).toFixed(1)+'с'} · n=${ae.history_n??0}<br>рынок параллельно: ${ae.market_prefetch_workers??'—'} потока · ожидание ${ae.market_prefetch_wall_seconds==null?'—':Number(ae.market_prefetch_wall_seconds).toFixed(1)+'с'} · сэкономлено ≈${ae.market_parallel_saved_estimate_seconds==null?'—':Number(ae.market_parallel_saved_estimate_seconds).toFixed(1)+'с'}<br>глубокое обучение: <b>${hl.status||'—'}</b> · последний цикл ${hl.last_duration_seconds==null?'—':Number(hl.last_duration_seconds).toFixed(1)+'с'} · вне быстрого контура<br>решения ${ae.decision_seconds==null?'—':Number(ae.decision_seconds).toFixed(1)+'с'} · память ${ae.rss_mb==null?'—':Number(ae.rss_mb).toFixed(1)+' МБ'} · исключено повторных расчётов ${ae.saved_recomputes??'—'}`;const pr=d.production_readiness||{},es=d.event_scan||{};document.getElementById('prodready').innerHTML=`Research RC: <b>${pr.research_product_ready?'ДА':'НЕТ'}</b> · внешний выпуск: <b>${pr.external_investor_ready?'ДА':'НЕТ'}</b><br>Блокеры: ${(pr.blockers||[]).join(', ')||'нет'}<br>Предупреждения: ${(pr.warnings||[]).join(', ')||'нет'}`;document.getElementById('eventscan').innerHTML=`${es.status||'—'} · найдено ${es.events_seen??0} · импортировано ${es.events_imported??0}<br><span class="badge">shadow, без прямого влияния на CIO</span>`;const pa=d.portfolio_allocator||{},pap=pa.positions||[];document.getElementById('alloc').innerHTML=pap.map(x=>`${x.asset} ${x.decision} · ${(100*(x.weight||0)).toFixed(1)}% · ${x.grade}`).join('<br>')||'нет аллокаций';const gv=d.governance||{};document.getElementById('gov').innerHTML=`${gv.status||'—'} · автопонижений ${gv.demotions??0}<br><span class="badge">автоповышение запрещено</span>`;const dq=d.data_quality||{},dqr=dq.rows||[],counts=dq.status_counts||{};document.getElementById('dqsum').textContent=(dq.research_gate_pass?'основные источники в норме':'есть проблема основных источников')+' · '+Object.entries(counts).map(([k,v])=>k+' '+v).join(' · ');document.getElementById('dq').innerHTML=dqr.map(x=>`<div class="dqrow"><div>${x.source}<br><span class="stamp">${x.asset_class||''} · ${x.role||''}</span></div><div class="${dqClass(x.status)}">${x.status||'—'}<br><span class="stamp">${x.age_seconds==null?'возраст н/д':'возраст '+Math.round(x.age_seconds)+'с'}</span></div><div>${x.effective_lag_seconds==null?'—':Math.round(x.effective_lag_seconds)+'с'}</div></div>`).join('');const de=d.decision_effectiveness||{},vg=d.v70_gate_effectiveness||{},li3=d.v70_incremental_learning||{};document.getElementById('decisionperf').innerHTML=`<div class="effect-summary"><span class="effect-pill">завершено <b>${de.completed_episodes??0}</b></span><span class="effect-pill">верное направление <b>${de.directional_hit_rate==null?'—':(100*de.directional_hit_rate).toFixed(1)+'%'}</b></span><span class="effect-pill">верное воздержание <b>${de.correct_abstention_rate==null?'—':(100*de.correct_abstention_rate).toFixed(1)+'%'}</b></span><span class="effect-pill">v70 изменил риск n=<b>${vg.adjusted_outcomes??0}</b> · польза ${vg.adjusted_precision==null?'накапливается':(100*vg.adjusted_precision).toFixed(1)+'%'}</span><span class="effect-pill">тайминг n=<b>${vg.timing_outcomes??0}</b> · польза ${vg.timing_precision==null?'накапливается':(100*vg.timing_precision).toFixed(1)+'%'}</span><span class="effect-pill">VETO n=<b>${vg.veto_outcomes??0}</b> · точность ${vg.veto_precision==null?'накапливается':(100*vg.veto_precision).toFixed(1)+'%'}</span><span class="effect-pill">Learning 3.0 <b>${li3.learning_index_3==null?'накапливается':li3.learning_index_3}</b></span></div><span class="stamp">Эпизоды, а не повторяющиеся 5-минутные снимки. v70 пока оценивается в shadow.</span>`;const ep=de.recent_episodes||[];const benefitCls=t=>String(t||'').includes('избежать')||String(t||'').includes('верное')?'benefit-good':String(t||'').includes('ошиб')||String(t||'').includes('пропущ')||String(t||'').includes('заблокировала бы прибыль')?'benefit-bad':'benefit-neutral';document.getElementById('history').innerHTML=ep.map(x=>`<tr><td>${new Date(x.ts).toLocaleString()}</td><td>${x.asset}</td><td>${x.horizon}</td><td>${x.decision==='LONG'?'↑ LONG':x.decision==='SHORT'?'↓ SHORT':'→ WAIT'}</td><td>${x.forward_return==null?'—':(100*x.forward_return).toFixed(2)+'%'}</td><td class="${benefitCls(x.benefit)}">${x.benefit}${x.gate_class?' · '+x.gate_class:''}</td></tr>`).join('')||`<tr><td colspan="6" class="stamp">Завершённые независимые эпизоды ещё накапливаются</td></tr>`;const cq=d.calibration_quality||{},cqi=cq.items||[];document.getElementById('calq').innerHTML=`Статус: <b>${cq.status||'—'}</b><br>${cqi.slice(0,6).map(x=>`${x.asset} ${x.horizon}: n=${x.n}, Brier ${x.brier_score==null?'—':x.brier_score.toFixed(3)}, ECE ${x.ece==null?'—':x.ece.toFixed(3)}`).join('<br>')||'выборка накапливается'}`;const oc=d.options_context||{},btcOpt=oc.BTC||{},ethOpt=oc.ETH||{};document.getElementById('optctx').innerHTML=`BTC ATM IV ${btcOpt.near_atm_iv==null?'—':btcOpt.near_atm_iv.toFixed(1)} · skew ${btcOpt.near_skew_10pct_proxy==null?'—':btcOpt.near_skew_10pct_proxy.toFixed(1)}<br>ETH ATM IV ${ethOpt.near_atm_iv==null?'—':ethOpt.near_atm_iv.toFixed(1)} · skew ${ethOpt.near_skew_10pct_proxy==null?'—':ethOpt.near_skew_10pct_proxy.toFixed(1)}<br><span class="badge">shadow</span>`;const nb=d.ndx_breadth||{},np=nb.proxy||{};document.getElementById('breadth').innerHTML=`${np.participation||'—'}<br>QQQ ${(100*(np.qqq_ret_1d||0)).toFixed(2)}% · QQEW ${(100*(np.qqew_ret_1d||0)).toFixed(2)}%<br>spread ${(100*(np.cap_vs_equal_spread||0)).toFixed(2)} п.п.<br><span class="badge">proxy</span>`;const vv=(d.validation||{}).items||[],vaultPass=vv.filter(x=>x.vault_pass).length;const ts=(d.time_stability||{}).items||[],stable=ts.filter(x=>x.stability_label==='STABLE').length;document.getElementById('vaultq').innerHTML=`VAULT pass <b>${vaultPass}</b> · стабильных по блокам <b>${stable}</b><br><span class="badge">holdout не участвует в подборе</span>`;const cs=(d.cost_sensitivity||{}).items||[],surv=cs.filter(x=>x.survives_high_cost).length;document.getElementById('costq').innerHTML=`Выживают при максимальных издержках: <b>${surv}</b><br>сетка ${(d.backtest?.latest_run?.details?.cost_grid_bps||[10,20,40]).join(' / ')} б.п.`;const rr=(d.signal_readiness||{}).signals||[];document.getElementById('readyq').innerHTML=rr.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.readiness}</b> ${x.readiness_score}`).join('<br>')||'накапливается';const lrn=d.learning_report||{},ix=d.independent_experience||{};document.getElementById('learning').innerHTML=`Источники <b>${lrn.sources_total??'—'}</b> · +${lrn.sources_added_today??0} сегодня<br>Правила <b>${lrn.rules_total??'—'}</b> · +${lrn.rules_added_today??0} сегодня<br>Авто-правила сегодня ${lrn.auto_rules_imported_today??0} · кандидаты +${lrn.candidates_added_today??0}`;document.getElementById('experience').innerHTML=`Сырые решения сегодня ${lrn.raw_decisions_today??'—'}<br>Независимые эпизоды сегодня <b>${lrn.independent_episodes_today??'—'}</b> · с исходом ${lrn.independent_episode_outcomes_today??'—'}<br>Всего эпизодов ${ix.episodes??'—'} · завершено ${ix.episodes_with_outcomes??'—'}`;const lib=d.multilingual_library||{},cd=d.causal_drivers||{},cdi=cd.items||[];document.getElementById('library').innerHTML=`Кураторская база: <b>${lib.embedded_sources??'—'}</b> источников · книги ${lib.book_sources??'—'} · peer-reviewed ${lib.peer_reviewed_sources??'—'}<br>Языки ${Object.entries(lib.languages||{}).map(([k,v])=>k+':'+v).join(' · ')||'—'}<br>Ротационных поисковых запросов ${lib.rotating_discovery_queries??'—'}<br><span class="badge">метаданные + оригинальные краткие выжимки, без копирования полных защищённых текстов</span>`;document.getElementById('causaldrivers').innerHTML=cdi.map(x=>`${x.asset}: <b>${x.label}</b> ${x.score}`).join('<br>')||'—';const pl=d.policy_lab||{},pli=pl.items||[];document.getElementById('policy').innerHTML=`n=${pl.n??0} · средний regret ${pl.overall_avg_regret==null?'—':(100*pl.overall_avg_regret).toFixed(2)+'%'}<br>${pli.filter(x=>x.status==='MEASURABLE').slice(0,4).map(x=>`${x.asset} ${x.horizon} ${x.decision}: net ${x.avg_net_utility==null?'—':(100*x.avg_net_utility).toFixed(2)+'%'}`).join('<br>')||'выборка накапливается'}`;const rt=d.regime_transitions||{},rti=rt.items||[];document.getElementById('regtrans').innerHTML=rti.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.transition_risk}</b> · persistence ${x.persistence_probability==null?'—':(100*x.persistence_probability).toFixed(0)+'%'}`).join('<br>')||'—';const rh=d.research_discovery_health||{};document.getElementById('researchhealth').innerHTML=`<b>${rh.status||'—'}</b> · zero-run streak ${rh.zero_candidate_run_streak??0}<br>${(rh.providers||[]).slice(0,5).map(x=>`${x.provider}: ${x.n}`).join(' · ')||'—'}`;const mp=d.meta_performance||{},mpi=mp.items||[];document.getElementById('metaperf').innerHTML=mpi.slice(0,8).map(x=>`${x.asset} ${x.horizon} ${x.grade}: n=${x.n} · hit ${(100*(x.posterior_hit_rate||0)).toFixed(1)}% · net ${x.avg_signed_return_net==null?'—':(100*x.avg_signed_return_net).toFixed(2)+'%'}`).join('<br>')||'выборка накапливается';const cb=d.contradictions||{},cbi=cb.items||[];document.getElementById('contrad').innerHTML=cbi.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.level}</b> ${x.contradiction_score}`).join('<br>')||'—';const el=d.event_learning||{},eli=el.items||[];document.getElementById('eventlearn').innerHTML=eli.slice(0,8).map(x=>`${x.category} ${x.target_asset} ${x.horizon}: n=${x.n} · ${x.reliability}`).join('<br>')||'выборка накапливается';const mr=d.managers||{};document.getElementById('managerdetail').innerHTML=`<div class="managerhead"><span class="managerstat"><b>${mr.postgres_sources??mr.embedded_sources??'—'}</b><br>источников</span><span class="managerstat"><b>${mr.postgres_rules??mr.embedded_rules??'—'}</b><br>правил</span><span class="managerstat"><b>${mr.embedded_author_labels??'—'}</b><br>авторских меток</span><span class="managerstat"><b>6</b><br>школ: macro / trend / quant / risk / fundamental / execution</span></div><div class="stamp">v70.7 расширяет поиск по Druckenmiller, PTJ, Kaminski, Harding, AQR/Man AHL и quality-compounding материалам; новые идеи остаются shadow до проверки.</div><div class="authorgrid">${(mr.by_author||[]).slice(0,28).map(x=>`<span class="chip">${x.authors}: ${x.n}</span>`).join('')}</div>`}catch(e){const sys=document.getElementById('sys');const aborted=(e&&e.name==='AbortError');if(sys&&sys.textContent&&sys.textContent.trim()!=='—'){sys.innerHTML='<span class="warn">UPDATING</span>'}else if(sys){sys.innerHTML='<span class="warn">DEGRADED</span>'}document.getElementById('stamp').textContent=aborted?'Последний экран сохранён · сервер ещё считает новый цикл':'Последний экран сохранён · обновление данных задержано: '+String(e)}}const VKEY='veritas_visitor';let VID=localStorage.getItem(VKEY);if(!VID){VID=(crypto.randomUUID?crypto.randomUUID():(Date.now()+'-'+Math.random()));localStorage.setItem(VKEY,VID)}async function presence(){try{await fetch('/api/v1/presence',{headers:{'X-Veritas-Visitor':VID},cache:'no-store'})}catch(e){}}presence();setInterval(presence,45000);load();loadPortfolios();setInterval(load,60000);setInterval(loadPortfolios,30000);</script></body></html>"""
+
+
+def model_status():
+    with lock:
+        cyc=dict(last_cycle)
+    return {
+      'version':VERSION,
+      'architecture':{
+        'agents':['MACRO','QUANT','TECH_FLOW','IMPULSE','DERIV','RISK'],
+        'durable_agent_learning':True,
+        'regime_conditioned_agent_weights':True,
+        'probability_calibration':True,
+        'shadow_position_sizing':True,
+        'cross_asset_shadow':True,
+        'knowledge_factory':True,
+        'oos_backtest':True,
+        'no_trade_evaluation':True,
+        'causal_explanation':True,
+        'telegram_delivery_capability':True,
+        'knowledge_api_import':True,
+        'assets':list(DISPLAY_ASSETS),
+        'data_quality_monitor':True,
+        'statistical_oos_validation':True,
+        'multiple_testing_control':True,
+        'closed_loop_qc':True,
+        'regime_conditioned_rule_validation':True,
+        'rule_pair_research':True,
+        'edge_decay_monitor':True,
+        'agent_time_decay':True,
+        'champion_challenger_registry':True,
+        'runtime_settings_without_code_upload':True,
+        'agent_consensus_learning':True,
+        'shadow_portfolio_risk_budget':True,
+        'cross_asset_correlation_all_assets':True,
+        'portfolio_cvar_historical_simulation':True,
+        'portfolio_level_meta_cio':True,
+        'regime_aware_dynamic_risk_budget':True,
+        'experience_conditioned_risk_budget':True,
+        'bayesian_independent_episode_learning':True,
+        'no_trade_regret_learning':True,
+        'dynamic_pnl_correlation_clusters':True,
+        'analytics_scan_cache':True,
+        'shared_portfolio_return_cache':True,
+        'autonomy_runtime_monitor':True,
+        'one_hour_integrity_monitor':True,
+        'trend_onset_engine':True,
+        'impulse_trend_day_engine':True,
+        'trend_strength_vs_entry_quality_separation':True,
+        'neutral_agent_impulse_dilution_fix':True,
+        'durable_trend_case_learning':True,
+        'intraday_5m_structure_engine':True,
+        'impulse_pivot_break_engine':True,
+        'range_retest_breakout_engine':True,
+        'long_history_near_ath_context':True,
+        'breakout_retest_hold_logic':True,
+        'relative_volume_false_breakout_filter':True,
+        'trend_lifecycle_engine':True,
+        'structure_analog_memory':True,
+        'robot_ready_shadow_alert_schema':True,
+        'expert_decision_feedback_journal':True,
+        'adaptive_volatility_parent_move_tactical_gate':True,
+        'structural_pullback_stop_lab':True,
+        'staged_entry_scaling':True,
+        'whipsaw_reentry_guard':True,
+        'persistent_expert_policy_memory':True,
+        'active_learning_expert_replay_queue':True,
+        'rule_degradation_expert_review_alerts':True,
+        'external_event_feed_shadow_hook':True,
+        'manager_corpus_expanded':True,
+        'v25_learning_progress_index':True,
+        'privacy_preserving_user_presence':True,
+        'memory_safe_outcome_batches':True,
+        'lightweight_market_overview':True,
+        'healthcheck_fast_path':True,
+        'signal_matrix_ui':True,
+        'super_signal_research_tier':True,
+        'strict_research_vs_execution_gate':True,
+        'one_hour_horizon_all_assets':True,
+        'asset_specific_causal_drivers_shadow':True,
+        'multilingual_knowledge_library':True,
+        'multilingual_rotating_discovery':True,
+        'book_bibliography_discovery_no_auto_compile':True,
+        'independent_experience_episodes':True,
+        'daily_learning_audit':True,
+        'arxiv_discovery_fallback':True,
+        'semantic_scholar_rate_limit_backoff':True,
+        'v27_event_reaction_absorption_engine':True,
+        'v27_oos_regime_router_size_only':True,
+        'v27_early_entry_efficiency_audit':True,
+        'v27_direction_vs_execution_error_attribution':True,
+        'v27_autonomous_shadow_research_agenda':True,
+        'v27_durable_shadow_experiment_registry':True,
+        'v27_multilingual_event_microstructure_discovery':True,
+        'v708_decision_cards':True,
+        'v708_confidence_trust_meter':True,
+        'v708_portfolio_command_center':True,
+        'v708_abstention_explainability':True,
+        'v708_opportunity_funnel':True,
+        'v708_missed_opportunity_audit':True,
+        'v708_learning_center_provisional_index':True,
+        'v708_personal_cio_shadow_profiles':True,
+        'v708_smart_alerts':True,
+        'v708_scenario_map':True,
+        'v708_portfolio_what_if':True,
+        'v708_decision_replay':True,
+        'v708_quality_badges':True,
+        'v708_ask_veritas_readonly':True
+      },
+      'gates':{
+        'macro_cio_enabled':runtime_bool('macro_cio_enabled',MACRO_CIO_ENABLED),
+        'knowledge_cio_enabled':runtime_bool('knowledge_cio_enabled',KNOWLEDGE_CIO_ENABLED),
+        'live_capital_execution':False,
+        'kill_switch':runtime_bool('kill_switch',KILL_SWITCH),
+        'min_directional_score':runtime_float('min_directional_score',MIN_DIRECTIONAL_SCORE),
+        'telegram_enabled':TELEGRAM_ALERTS_ENABLED and bool(TELEGRAM_BOT_TOKEN and VERITAS_ALERT_CHAT_ID)
+      },
+      'cycle':{'status':cyc.get('status'),'at':cyc.get('at')},
+      'storage':pg_storage_status(),
+      'knowledge':knowledge_summary(),
+      'backtest':backtest_status().get('latest_run'),
+      'data_quality':data_quality_snapshot()
+    }
+
+
+# VERITAS V90 APPROVED UI BRIDGE
+try:
+    from veritas_v90_ui import apply_v90_ui
+    DASHBOARD_HTML = apply_v90_ui(DASHBOARD_HTML)
+except Exception as _v90_ui_ex:
+    print("[VERITAS V90 UI] fallback: %s: %s" % (type(_v90_ui_ex).__name__, _v90_ui_ex), flush=True)
+
+
+# VERITAS V90 FAST PORTFOLIO READS R25
+_v90r25_pf_cache={'at':0.0,'value':None}
+_v90r25_pf_lock=threading.Lock()
+
+def _v90r25_portfolios_fast():
+    with _v90r25_pf_lock:
+        cached=_v90r25_pf_cache.get('value'); at=float(_v90r25_pf_cache.get('at') or 0.0)
+    if cached is not None and time.time()-at<15:
+        out=dict(cached); out['api_source']='memory_cache'; return out
+    with lock:
+        live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
+    if live and len(live.get('portfolios') or [])==4 and (any(p.get('positions') for p in live.get('portfolios') or []) or not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live.get('portfolios') or [])):
+        out=VTV.enrich_positions(live,pg_connect); out['api_source']='live_memory'
+        with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+        return out
+    if not pg_enabled(): return {'status':'UNAVAILABLE','portfolios':[]}
+    names=list(V90_CANONICAL_PORTFOLIOS)
+    with pg_connect() as c:
+        base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
+        nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
+        pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,ed.payload AS entry_decision_payload
+                         FROM paper_positions pp
+                         LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id
+                         LEFT JOIN LATERAL (
+                           SELECT le.payload
+                           FROM ledger_events le
+                           WHERE le.event_type='decision'
+                             AND le.asset=pp.asset
+                             AND le.event_ts<=pp.opened_at+INTERVAL '3 minutes'
+                             AND COALESCE(le.payload->>'research_decision',le.payload->>'decision','')=pp.direction
+                           ORDER BY ABS(EXTRACT(EPOCH FROM (le.event_ts-pp.opened_at))) ASC
+                           LIMIT 1
+                         ) ed ON TRUE
+                         WHERE pp.portfolio_name=ANY(%s)
+                         ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
+        stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
+    bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
+    def _n(v,d=None):
+        try:
+            x=float(v); return x if math.isfinite(x) else d
+        except Exception: return d
+    for r0 in pos:
+        z=dict(r0); p=z.get('payload') if isinstance(z.get('payload'),dict) else {}; tp=z.get('trade_payload') if isinstance(z.get('trade_payload'),dict) else {}; q=dict(tp); q.update(p); entry_dec=z.get('entry_decision_payload') if isinstance(z.get('entry_decision_payload'),dict) else {}
+        sign=1 if z.get('direction')=='LONG' else -1; px=_n(z.get('last_price'),0.0); ep=_n(z.get('avg_entry_price'),0.0); units=_n(z.get('units'),0.0)
+        ret=(100*sign*(px/ep-1)) if ep else None; h=q.get('execution_timeframe') or q.get('last_signal_horizon') or z.get('trade_horizon') or entry_dec.get('horizon')
+        cur=next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('horizon'))==str(h) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),None) or next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),{})
+        plan=(cur or {}).get('trade_plan') or {}; entry_plan=(entry_dec or {}).get('trade_plan') or {}; rec=({'UTS_fcc6b7cbd267bd850803':{'expected_move_pct':0.004869093231162136,'expected_to_stop_ratio':2.383706389896139,'decision_stage':'EARLY_PROBE','signal_tier':'LONG','entry_quality':'INVALIDATED','initial_stop_price':12.5024096,'initial_take_price':12.589}}).get(str(q.get('canonical_setup_id') or '')) or {}; prob=next((v for v in (q.get('pwin'),q.get('entry_probability'),q.get('last_add_pwin'),q.get('model_quality_score'),entry_dec.get('calibrated_probability'),entry_dec.get('confidence'),cur.get('calibrated_probability'),cur.get('confidence')) if v not in (None,'')),None)
+        probsrc=q.get('pwin_source') or q.get('probability_source') or ('ENTRY_CALIBRATED' if entry_dec.get('calibrated_probability') is not None else ('ENTRY_SIGNAL_SCORE' if entry_dec else ('CURRENT_CALIBRATED' if cur.get('calibrated_probability') is not None else ('CURRENT_SIGNAL_SCORE' if cur else None))))
+        had_path=(q.get('mfe_pct') is not None or q.get('mae_pct') is not None)
+        mfe=max(0.0,_n(q.get('mfe_pct'),0.0),max(0.0,ret or 0.0)); mae=min(0.0,_n(q.get('mae_pct'),0.0),min(0.0,ret or 0.0)); posnow=max(0.0,ret or 0.0)
+        maxf=_n(((getattr(VP,'POLICIES',{}) if VP else {}).get(str(z.get('portfolio_name'))) or {}).get('max_fraction'),1.0) or 1.0
+        z.update({'notional_rub':abs(units*px),'unrealized_pnl_rub':sign*units*(px-ep),'unrealized_return_pct':ret,'execution_timeframe':h,'horizon':h,
+                  'signal_probability':prob,'probability_source':probsrc,'signal_tier':q.get('entry_signal_tier') or q.get('signal_tier') or entry_dec.get('signal_tier') or rec.get('signal_tier') or cur.get('signal_tier'),
+                  'setup_grade':q.get('setup_grade') or entry_plan.get('setup_grade') or entry_dec.get('setup_grade') or plan.get('setup_grade') or cur.get('setup_grade'),'setup_grade_score':q.get('setup_grade_score') or entry_plan.get('setup_grade_score') or entry_dec.get('setup_grade_score'),
+                  'entry_quality':q.get('entry_quality') or entry_plan.get('entry_quality') or entry_dec.get('entry_quality') or rec.get('entry_quality') or plan.get('entry_quality') or cur.get('entry_quality'),'decision_stage':q.get('decision_stage') or entry_dec.get('decision_stage') or rec.get('decision_stage') or cur.get('decision_stage'),
+                  'expected_move_pct':next((v for v in (q.get('expected_move_pct'),entry_plan.get('expected_move_pct'),entry_dec.get('expected_move_pct'),rec.get('expected_move_pct'),plan.get('expected_move_pct'),cur.get('expected_move_pct')) if v not in (None,'')),None),
+                  'expected_to_stop_ratio':next((v for v in (q.get('expected_to_stop_ratio'),entry_plan.get('expected_to_stop_ratio'),entry_dec.get('expected_to_stop_ratio'),rec.get('expected_to_stop_ratio'),plan.get('expected_to_stop_ratio'),cur.get('expected_to_stop_ratio')) if v not in (None,'')),None),
+                  'mfe_pct':mfe,'mae_pct':mae,'live_capture_ratio':(posnow/mfe if mfe>1e-9 else 0.0),'live_giveback_pct':max(0.0,mfe-posnow),'path_telemetry_quality':'FULL_PATH' if had_path else 'RECOVERED_LOWER_BOUND',
+                  'take_price':next((v for v in (q.get('take_price'),q.get('target_price'),q.get('last_target_price'),entry_plan.get('target_price'),entry_dec.get('target_price'),plan.get('target_price')) if v not in (None,'')),None),
+                  'second_take_price':next((v for v in (q.get('tp2'),q.get('tp2_price'),q.get('second_target_price'),q.get('runner_target_price')) if v not in (None,'')),None),
+                  'profit_protection_active':bool(q.get('profit_protection_active')),'trailing_stop':q.get('trailing_stop'),
+                  'max_position_fraction':maxf,'position_utilization_pct':100*_n(z.get('target_fraction'),0.0)/maxf,
+                  'learning_focus':('ЗАЩИТА_ПРИБЫЛИ' if q.get('profit_protection_active') else 'УДЕРЖАНИЕ_ДВИЖЕНИЯ' if mfe>=0.20 else 'КАЧЕСТВО_ВХОДА'),'held_seconds':max(0.0,(datetime.now(timezone.utc)-z.get('opened_at')).total_seconds()) if isinstance(z.get('opened_at'),datetime) else None,'legacy_entry_recovered':bool(rec),'initial_stop_price':q.get('initial_stop_price') or rec.get('initial_stop_price'),'initial_take_price':q.get('initial_take_price') or rec.get('initial_take_price')})
+        z.pop('trade_payload',None); pm.setdefault(z['portfolio_name'],[]).append(z)
+    outp=[]
+    for name in names:
+        b=bm.get(name,{}); latest=nm.get(name,{}); st=sm.get(name,{}); closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0); nav_rub=latest.get('nav_rub'); initial=float(b.get('initial_nav_rub') or 1000000)
+        outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),'nav_rub':nav_rub,'nav_usd':latest.get('nav_usd'),'total_return_pct':(100*(float(nav_rub)/initial-1)) if nav_rub is not None else None,'drawdown_pct':100*float(latest.get('drawdown') or 0),'gross_leverage':latest.get('gross_leverage'),'net_exposure':latest.get('net_exposure'),'cash_equivalent_fraction':max(0,1-float(latest.get('gross_leverage') or 0)),'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
+    out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':0.0005,'api_source':'fast_sql_enriched'}
+    out=VTV.enrich_positions(out,pg_connect)
+    with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+    return out
+
+def _v90r25_trades_fast(limit=80):
+    limit=max(20,min(200,int(limit or 80)))
+    if not pg_enabled():
+        return {'status':'UNAVAILABLE','trades':[]}
+    try:
+        with pg_connect() as c:
+            rows=c.execute("""SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
+                                     avg_entry_price,avg_exit_price,gross_pnl_rub,fees_rub,
+                                     funding_rub,net_pnl_rub,return_on_entry_nav,profitable,
+                                     meaningful_win,status,setup,horizon,payload
+                              FROM paper_trades
+                              WHERE closed_at IS NOT NULL OR status='CLOSED'
+                              ORDER BY COALESCE(closed_at,opened_at) DESC
+                              LIMIT %s""",(limit,)).fetchall()
+        trades=[]
+        for r0 in rows:
+            z=dict(r0)
+            p=z.get('payload') or {}
+            if not isinstance(p,dict):
+                try:p=json.loads(p)
+                except Exception:p={}
+            z['exit_reason']=p.get('exit_reason') or p.get('close_reason')
+            z['stop_price']=p.get('stop_price') or p.get('last_stop_price')
+            z['take_price']=p.get('take_price') or p.get('target_price')
+            z['learning_label']=p.get('learning_label')
+            z.update(VTV.trade_result(z))
+            trades.append(z)
+        return {'status':'OK','trades':trades,'returned_count':len(trades),'api_source':'fast_sql'}
+    except Exception as ex:
+        # Fall back to the last detailed cache if the compact query is momentarily unavailable.
+        with _v90r23_trade_lock:
+            v=_v90r23_trade_cache.get('value')
+        if v is not None:
+            out=dict(v); out['api_source']='detailed_cache_fallback'; return out
+        return {'status':'ERROR','trades':[],'error':f'{type(ex).__name__}: {ex}'}
+
+
+
+# VERITAS V90 PORTFOLIO API CACHE R23
+_v90r23_trade_cache={'at':0.0,'value':None,'refreshing':False}
+_v90r23_trade_lock=threading.Lock()
+
+def _v90r23_trade_refresh():
+    with _v90r23_trade_lock:
+        if _v90r23_trade_cache.get('refreshing'):
+            return
+        _v90r23_trade_cache['refreshing']=True
+    try:
+        if VP is not None and pg_enabled():
+            v=VP.trade_report(pg_connect)
+            with _v90r23_trade_lock:
+                _v90r23_trade_cache['value']=v
+                _v90r23_trade_cache['at']=time.time()
+    except Exception as ex:
+        emit('r23_trade_report_refresh_error',error=f'{type(ex).__name__}: {ex}')
+    finally:
+        with _v90r23_trade_lock:
+            _v90r23_trade_cache['refreshing']=False
+
+def _v90r23_trade_report_fast():
+    with _v90r23_trade_lock:
+        v=_v90r23_trade_cache.get('value')
+        at=float(_v90r23_trade_cache.get('at') or 0.0)
+        refreshing=bool(_v90r23_trade_cache.get('refreshing'))
+    age=time.time()-at if at else None
+    if v is not None:
+        out=dict(v)
+        out['api_source']='memory_cache'
+        out['cache_age_seconds']=round(age,1) if age is not None else None
+        if (age is None or age>60) and not refreshing:
+            threading.Thread(target=_v90r23_trade_refresh,daemon=True,name='veritas-trades-refresh').start()
+        return out
+    if not refreshing:
+        threading.Thread(target=_v90r23_trade_refresh,daemon=True,name='veritas-trades-refresh').start()
+    # Return immediately; UI keeps prior content and retries.
+    return {'status':'WARMING','trades':[],'today_closed':[],'older_history':[],
+            'api_source':'warming_cache','retry_after_seconds':2}
+
+
+def _v90r26_dashboard_bootstrap():
+    """One fast UI payload: signals, four portfolios, open positions and recent closed trades."""
+    cyc=fresh_cycle_snapshot()
+    signals=[dict(z) for z in (cyc.get('summary') or []) if str(z.get('asset') or '')!='NDX']
+    pf=_v90r25_portfolios_fast()
+    tr=_v90r25_trades_fast(100)
+    ps=list(pf.get('portfolios') or [])
+    positions=[]
+    for p in ps:
+        for z0 in (p.get('positions') or []):
+            z=dict(z0)
+            z['portfolio']=p.get('name')
+            positions.append(z)
+    # Clear, decision-useful summaries instead of raw diagnostics.
+    source_ok=sum(1 for x in signals if x.get('source_gate_pass') is True)
+    exec_ok=sum(1 for x in signals if x.get('execution_eligible') is True)
+    stale=sum(1 for x in signals if x.get('snapshot_stale') is True)
+    horizon_counts={h:sum(1 for x in signals if x.get('horizon')==h) for h in ('5m','1h','4h','1d','3d','7d')}
+    closed_total=sum(int(p.get('closed_trades') or 0) for p in ps)
+    wins_total=sum(int(p.get('wins') or 0) for p in ps)
+    return {
+      'status':'OK','version':VERSION,'at':cyc.get('at'),
+      'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled())},
+      'signals':signals,'signal_count':len(signals),
+      'portfolios':ps,'portfolio_count':len(ps),
+      'positions':positions,'open_position_count':len(positions),
+      'trades':list(tr.get('trades') or []),
+      'trade_count':len(tr.get('trades') or []),
+      'learning_summary':{
+        'closed_trades':closed_total,'wins':wins_total,
+        'win_rate':(wins_total/closed_total if closed_total else None),
+        'experience_storage':'ACTIVE' if pg_enabled() else 'UNAVAILABLE'
+      },
+      'data_quality_summary':{
+        'cells':len(signals),'expected_cells':42,'source_verified_cells':source_ok,
+        'execution_eligible_cells':exec_ok,'stale_cells':stale
+      },
+      'horizon_summary':horizon_counts
+    }
+
+
+class H(BaseHTTPRequestHandler):
+    def reply(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False, default=str).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Length', str(len(body)))
+        try:
+            self.end_headers(); self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def reply_html(self, html, code=200):
+        body = html.encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Length', str(len(body)))
+        try:
+            self.end_headers(); self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def do_GET(self):
+        try:
+            if self.path.startswith('/internal/v90/database-lease'):
+                import hmac
+                expected=os.getenv('VERITAS_V90_BRIDGE_TOKEN','').strip()
+                supplied=self.headers.get('X-Veritas-V90-Token','').strip()
+                if not expected or not supplied or not hmac.compare_digest(expected,supplied):
+                    self.reply({'status':'UNAUTHORIZED'},403)
+                elif not DATABASE_URL:
+                    self.reply({'status':'UNAVAILABLE','reason':'DATABASE_URL_NOT_SET'},503)
+                else:
+                    self.reply({'status':'OK','contract':'VERITAS_V90_DB_LEASE_V1',
+                                'storage_generation':'9.0','database_url':DATABASE_URL},200)
+            elif self.path.startswith('/healthz'):
+                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,
+                            'bootstrap_ready':bool(_BOOTSTRAP_READY),
+                            'phase':'READY' if _BOOTSTRAP_READY else 'STARTING',
+                            'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})
+            elif self.path.startswith('/api/v1/presence'):
+                tok=self.headers.get('X-Veritas-Visitor',''); record_presence(tok,self.path); self.reply({'version':VERSION,**user_metrics()})
+            elif self.path.startswith('/api/v1/users'):
+                self.reply({'version':VERSION,**user_metrics()})
+            elif self.path.startswith('/api/v1/learning-progress'):
+                self.reply({'version':VERSION,**learning_progress()})
+            elif self.path.startswith('/api/v1/signal-capacity'):
+                self.reply({'version':VERSION,**signal_capacity_status()})
+            elif self.path == '/app' or self.path.startswith('/app?'):
+                self.reply_html(DASHBOARD_HTML)
+            elif self.path.startswith('/api/v1/overview'):
+                self.reply(product_overview())
+            elif self.path.startswith('/api/v1/dashboard-bootstrap'):
+                try:
+                    self.reply(_v90r26_dashboard_bootstrap())
+                except Exception as ex:
+                    self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/signals'):
+                x=fresh_cycle_snapshot()
+                _signals=[dict(z) for z in (x.get('summary') or []) if str(z.get('asset') or '')!='NDX']
+                for _z in _signals:
+                    if _z.get('asset')=='NQ':
+                        _z['instrument']='NQ Futures'
+                        _z['contract']='NQ=F'
+                        _z['instrument_type']='Nasdaq-100 futures'
+                self.reply({'version':VERSION,'signals':_signals,
+                            'summary_count':len(_signals),
+                            'summary_source':x.get('summary_source'),
+                            'at':x.get('at'),'status':x.get('status')})
+            elif self.path.startswith('/api/v1/backtests'):
+                self.reply({'version':VERSION,'backtest':backtest_status()})
+            elif self.path.startswith('/api/v1/history'):
+                self.reply({'version':VERSION,'history':pg_signal_history()})
+            elif self.path.startswith('/api/v1/performance'):
+                self.reply({'version':VERSION,'performance':pg_live_performance()})
+            elif self.path.startswith('/api/v1/ruleboard'):
+                self.reply({'version':VERSION,**ruleboard()})
+            elif self.path.startswith('/api/v1/macro'):
+                self.reply({'version':VERSION,'macro':get_macro_context(),'regime':macro_regime_summary()})
+            elif self.path.startswith('/api/v1/alerts'):
+                self.reply({'version':VERSION,'alerts':recent_alerts()})
+            elif self.path.startswith('/api/v1/trade-alerts'):
+                self.reply({'version':VERSION,'alerts':[x for x in recent_alerts(100) if x.get('alert_type') in ('ENTRY','TACTICAL_ENTRY','EXIT','STOP','INVALIDATION')]})
+            elif self.path.startswith('/api/v1/structure-analogs'):
+                self.reply({'version':VERSION,**structure_analog_board(1200)})
+            elif self.path.startswith('/api/v1/decision-journal'):
+                self.reply({'version':VERSION,**decision_feedback_board()})
+            elif self.path.startswith('/api/v1/expert-policy'):
+                self.reply({'version':VERSION,**expert_policy_board()})
+            elif self.path.startswith('/api/v1/expert-replay'):
+                self.reply({'version':VERSION,**expert_replay_candidates()})
+            elif self.path.startswith('/api/v1/tradeability'):
+                q=parse_qs(urlparse(self.path).query); asset=(q.get('asset') or [None])[0]; horizon=(q.get('horizon') or [None])[0]
+                with lock: rows=list(last_cycle.get('summary') or [])
+                item=next((x for x in rows if x.get('asset')==asset and x.get('horizon')==horizon),None)
+                self.reply({'version':VERSION,'status':'ok' if item else 'not_found','item':item},200 if item else 404)
+            elif self.path.startswith('/api/v1/large-move-capture'):
+                self.reply({'version':VERSION,**large_move_capture_board()})
+            elif self.path.startswith('/api/v1/intelligence-history'):
+                self.reply({'version':VERSION,**VLI.history(pg_connect)})
+            elif self.path.startswith('/api/v1/intelligence-scorecard'):
+                self.reply({'version':VERSION,**intelligence_scorecard()})
+            elif self.path.startswith('/api/v1/trade-lifecycle'):
+                self.reply({'version':VERSION,**trade_lifecycle_board()})
+            elif self.path.startswith('/api/v1/missed-trends'):
+                self.reply({'version':VERSION,**missed_trend_backtracker()})
+            elif self.path.startswith('/api/v1/early-entry-efficiency'):
+                self.reply({'version':VERSION,**early_entry_efficiency_board()})
+            elif self.path.startswith('/api/v1/event-reaction'):
+                self.reply({'version':VERSION,**event_reaction_board()})
+            elif self.path.startswith('/api/v1/regime-router'):
+                self.reply({'version':VERSION,**regime_router_board()})
+            elif self.path.startswith('/api/v1/error-attribution'):
+                self.reply({'version':VERSION,**decision_error_attribution_board()})
+            elif self.path.startswith('/api/v1/research-agenda'):
+                self.reply({'version':VERSION,**autonomous_research_agenda()})
+            elif self.path.startswith('/api/v1/experiments'):
+                self.reply({'version':VERSION,**shadow_experiment_board()})
+            elif self.path.startswith('/api/v1/v27-quality'):
+                self.reply(v27_quality_board())
+            elif self.path.startswith('/api/v1/architecture-efficiency'):
+                self.reply({'version':VERSION,**architecture_efficiency_status()})
+            elif self.path.startswith('/api/v1/heavy-learning'):
+                self.reply({'version':VERSION,**heavy_learning_snapshot()})
+            elif self.path.startswith('/api/v1/v70-effectiveness'):
+                self.reply({'version':VERSION,**v701_learning_bundle().get('effectiveness',{})})
+            elif self.path.startswith('/api/v1/v70-learning'):
+                self.reply({'version':VERSION,**v701_learning_bundle().get('incremental_learning',{})})
+            elif self.path.startswith('/api/v1/v70-counterfactual'):
+                self.reply({'version':VERSION,**v701_learning_bundle().get('counterfactual_learning',{})})
+            elif self.path.startswith('/api/v1/v70-layer-attribution'):
+                self.reply({'version':VERSION,**v701_learning_bundle().get('layer_attribution',{})})
+            elif self.path.startswith('/api/v1/investor-asset-view'):
+                self.reply({'version':VERSION,**v701_investor_asset_view()})
+            elif self.path == '/api/v1/v70' or self.path.startswith('/api/v1/v70?'):
+                self.reply(v70_quality_board())
+            elif self.path.startswith('/api/v1/paper-portfolios'):
+                try:
+                    self.reply(_v90r25_portfolios_fast())
+                except Exception as ex:
+                    self.reply({'status':'ERROR','portfolios':[],'error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/portfolio-trades'):
+                try:
+                    self.reply(_v90r25_trades_fast(80))
+                except Exception as ex:
+                    self.reply({'status':'ERROR','trades':[],'error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/protective-guard'):
+                self.reply(VPG.snapshot())
+            elif self.path.startswith('/api/v1/loss-audit'):
+                if VP is None or not pg_enabled() or not hasattr(VP,'quality_loss_audit'):
+                    self.reply({'status':'UNAVAILABLE'})
+                else:
+                    try: self.reply(VP.quality_loss_audit(pg_connect))
+                    except Exception as ex: self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/product-experience'):
+                self.reply(v708_product_experience_board())
+            elif self.path.startswith('/api/v1/ask-veritas'):
+                q=parse_qs(urlparse(self.path).query); self.reply(v708_ask((q.get('q') or [''])[0]))
+            elif self.path.startswith('/api/v1/portfolio-what-if'):
+                q=parse_qs(urlparse(self.path).query); self.reply(v708_what_if((q.get('asset') or ['BRENT'])[0],float((q.get('fraction') or ['0.10'])[0]),(q.get('direction') or ['LONG'])[0],(q.get('portfolio') or ['Champion'])[0]))
+            elif self.path.startswith('/api/v1/institutional-signals'):
+                self.reply({'version':VERSION,'portfolio':institutional_portfolio_board(),'false_discovery_control':research_false_discovery_control_board(),'learning_roi':institutional_learning_roi_board()})
+            elif self.path.startswith('/api/v1/cross-asset'):
+                self.reply({'version':VERSION,'cross_asset':cross_asset_shadow(),
+                            'factor_attribution':current_factor_attribution()})
+            elif self.path.startswith('/api/v1/brief'):
+                self.reply(investor_brief())
+            elif self.path.startswith('/api/v1/research-board'):
+                self.reply({'version':VERSION,**rule_research_board()})
+            elif self.path.startswith('/api/v1/abstention'):
+                self.reply({'version':VERSION,'abstention':abstention_performance()})
+            elif self.path.startswith('/api/v1/agent-performance'):
+                self.reply({'version':VERSION,'agents':pg_agent_performance()})
+            elif self.path == '/api/v1/calibration' or self.path.startswith('/api/v1/calibration?'):
+                self.reply({'version':VERSION,'calibration':pg_calibration_map()})
+            elif self.path.startswith('/api/v1/explain'):
+                u=urlparse(self.path); q=parse_qs(u.query)
+                self.reply({'version':VERSION,'explanation':explain_latest_decision((q.get('asset') or [None])[0],(q.get('horizon') or [None])[0])})
+            elif self.path.startswith('/api/v1/managers'):
+                self.reply({'version':VERSION,'managers':manager_corpus_detail()})
+            elif self.path == '/api/v1/model' or self.path.startswith('/api/v1/model?'):
+                self.reply(model_status())
+            elif self.path.startswith('/api/v1/data-quality'):
+                self.reply({'version':VERSION,'data_quality':data_quality_snapshot()})
+            elif self.path.startswith('/api/v1/options'):
+                self.reply({'version':VERSION,'options':options_context()})
+            elif self.path.startswith('/api/v1/ndx-breadth'):
+                self.reply({'version':VERSION,'ndx_breadth':ndx_breadth_context()})
+            elif self.path.startswith('/api/v1/calibration-quality'):
+                self.reply({'version':VERSION,**calibration_quality()})
+            elif self.path.startswith('/api/v1/signal-quality'):
+                self.reply(signal_quality_report())
+            elif self.path.startswith('/api/v1/robustness'):
+                self.reply({'version':VERSION,**robustness_board()})
+            elif self.path.startswith('/api/v1/time-stability'):
+                self.reply({'version':VERSION,**timeblock_stability_board()})
+            elif self.path.startswith('/api/v1/cost-sensitivity'):
+                self.reply({'version':VERSION,**cost_sensitivity_board()})
+            elif self.path.startswith('/api/v1/expected-edge'):
+                self.reply({'version':VERSION,'expected_edge':expected_edge_map()})
+            elif self.path.startswith('/api/v1/readiness'):
+                self.reply(signal_readiness_report())
+            elif self.path.startswith('/api/v1/stress'):
+                self.reply({'version':VERSION,**portfolio_stress()})
+            elif self.path.startswith('/api/v1/validation-stack'):
+                self.reply({'version':VERSION,**validation_stack()})
+            elif self.path.startswith('/api/v1/validation'):
+                self.reply({'version':VERSION,**oos_validation_board()})
+            elif self.path.startswith('/api/v1/qc'):
+                self.reply(qc_snapshot())
+            elif self.path.startswith('/api/v1/adaptive'):
+                self.reply({'version':VERSION,'adaptive':adaptive_intelligence_summary()})
+            elif self.path.startswith('/api/v1/drift'):
+                self.reply({'version':VERSION,'drift':model_drift_status()})
+            elif self.path.startswith('/api/v1/regime-edges'):
+                self.reply({'version':VERSION,**regime_edge_board()})
+            elif self.path.startswith('/api/v1/rule-pairs'):
+                self.reply({'version':VERSION,**rule_pair_board()})
+            elif self.path.startswith('/api/v1/champion-challenger'):
+                self.reply({'version':VERSION,**champion_challenger_board()})
+            elif self.path.startswith('/api/v1/settings'):
+                self.reply({'version':VERSION,'settings':runtime_settings()})
+            elif self.path.startswith('/api/v1/audit-pack'):
+                self.reply(audit_pack())
+            elif self.path.startswith('/api/v1/activation-gate'):
+                self.reply({'version':VERSION,'gate':research_activation_gate()})
+            elif self.path.startswith('/api/v1/self-test'):
+                self.reply(self_test())
+            elif self.path.startswith('/api/v1/agent-consensus'):
+                self.reply({'version':VERSION,**agent_consensus_board()})
+            elif self.path.startswith('/api/v1/challenger-performance'):
+                self.reply({'version':VERSION,**challenger_performance()})
+            elif self.path == '/api/v1/portfolio' or self.path.startswith('/api/v1/portfolio?'):
+                self.reply({'version':VERSION,'portfolio':shadow_portfolio()})
+            elif self.path.startswith('/api/v1/events'):
+                self.reply({'version':VERSION,'events':current_event_context(),'scanner':event_web_scan_status()})
+            elif self.path.startswith('/api/v1/meta-cio'):
+                self.reply({'version':VERSION,**meta_cio_board_from_summary()})
+            elif self.path.startswith('/api/v1/opportunities'):
+                self.reply({'version':VERSION,**opportunity_board()})
+            elif self.path.startswith('/api/v1/causal-brief'):
+                u=urlparse(self.path); q=parse_qs(u.query)
+                self.reply({'version':VERSION,'brief':causal_brief((q.get('asset') or [None])[0],
+                                                                  (q.get('horizon') or [None])[0])})
+            elif self.path.startswith('/api/v1/production-readiness'):
+                self.reply(production_readiness())
+            elif self.path.startswith('/api/v1/release-candidate'):
+                self.reply({'version':VERSION,**release_candidate_dashboard()})
+            elif self.path.startswith('/api/v1/meta-performance'):
+                self.reply({'version':VERSION,**meta_performance_board()})
+            elif self.path.startswith('/api/v1/contradictions'):
+                self.reply({'version':VERSION,**contradiction_board()})
+            elif self.path.startswith('/api/v1/event-learning'):
+                self.reply({'version':VERSION,**event_learning_board()})
+            elif self.path.startswith('/api/v1/portfolio-risk'):
+                self.reply({'version':VERSION,**portfolio_tail_risk()})
+            elif self.path.startswith('/api/v1/risk-budget'):
+                alloc=portfolio_allocator(); risk=portfolio_tail_risk(alloc)
+                self.reply({'version':VERSION,**dynamic_risk_budget(alloc,risk)})
+            elif self.path.startswith('/api/v1/experience-edge'):
+                self.reply({'version':VERSION,**experience_edge_board(500)})
+            elif self.path.startswith('/api/v1/abstention-learning'):
+                self.reply({'version':VERSION,**abstention_learning_board()})
+            elif self.path.startswith('/api/v1/trend-case-learning'):
+                self.reply({'version':VERSION,**trend_case_learning_board(500)})
+            elif self.path.startswith('/api/v1/correlation-clusters'):
+                alloc=portfolio_allocator(); self.reply({'version':VERSION,**(alloc.get('correlation_clusters') or {})})
+            elif self.path.startswith('/api/v1/portfolio-learning'):
+                alloc=portfolio_allocator(); risk=portfolio_tail_risk(alloc); rb=dynamic_risk_budget(alloc,risk)
+                self.reply({'version':VERSION,**portfolio_learning_policy(alloc,risk,rb)})
+            elif self.path.startswith('/api/v1/portfolio-meta-cio'):
+                self.reply({'version':VERSION,**portfolio_meta_cio()})
+            elif self.path.startswith('/api/v1/autonomy'):
+                self.reply({'version':VERSION,**autonomy_status()})
+            elif self.path.startswith('/api/v1/horizon-integrity'):
+                self.reply({'version':VERSION,**horizon_integrity_status()})
+            elif self.path.startswith('/api/v1/portfolio-allocator'):
+                self.reply({'version':VERSION,**portfolio_allocator()})
+            elif self.path.startswith('/api/v1/correlations'):
+                self.reply({'version':VERSION,**correlation_matrix()})
+            elif self.path.startswith('/api/v1/scenarios'):
+                self.reply({'version':VERSION,**scenario_board()})
+            elif self.path.startswith('/api/v1/governance'):
+                self.reply({'version':VERSION,**governance_status()})
+            elif self.path.startswith('/api/v1/policy-lab'):
+                self.reply({'version':VERSION,**policy_counterfactual_board()})
+            elif self.path.startswith('/api/v1/regime-transitions'):
+                self.reply({'version':VERSION,**regime_transition_board()})
+            elif self.path.startswith('/api/v1/asset-thesis'):
+                self.reply({'version':VERSION,**asset_thesis_board()})
+            elif self.path.startswith('/api/v1/research-health'):
+                self.reply({'version':VERSION,**research_discovery_health()})
+            elif self.path.startswith('/api/v1/model-card'):
+                self.reply(model_card())
+            elif self.path.startswith('/api/v1/experience'):
+                self.reply({'version':VERSION,**independent_experience_summary()})
+            elif self.path.startswith('/api/v1/learning-report'):
+                self.reply({'version':VERSION,**daily_learning_report()})
+            elif self.path.startswith('/api/v1/causal-drivers'):
+                self.reply({'version':VERSION,**causal_driver_board()})
+            elif self.path.startswith('/api/v1/library-summary'):
+                self.reply({'version':VERSION,**multilingual_library_summary()})
+            elif self.path.startswith('/api/v1/assets'):
+                self.reply({'version':VERSION,'horizons':list(HORIZONS.keys()),'assets':{
+                  'BTC':{'status':'research_live','primary':'Binance','secondary':'Coinbase','hours':'24/7'},
+                  'ETH':{'status':'research_live','primary':'Binance','secondary':'Coinbase','hours':'24/7'},
+                  'NQ':{'status':'research_live_futures','primary':'Yahoo CME NQ=F',
+                        'secondary':'cash Nasdaq-100 contextual only','volume_proxy':'NQ futures volume'},
+                  'BRENT':{'status':'research_shadow_delayed','primary':'Yahoo BZ=F',
+                           'secondary':'directional proxy only','execution_gate':'one valid primary source for paper; freshness required'},
+                  'GOLD':{'status':'research_shadow_delayed','primary':'Yahoo GC=F',
+                          'secondary':'directional proxy only','execution_gate':'one valid primary source for paper; freshness required'},
+                  'MOEX':{'status':'research_shadow_RTH_fail_closed','primary':'MOEX ISS IMOEX',
+                          'secondary':'Yahoo IMOEX.ME when fresh'},
+                  'CNYRUBF':{'status':'research_shadow_delayed_fail_closed','primary':'MOEX ISS CNYRUBF','secondary':'not configured'}
+                }})
+            elif self.path.startswith('/api/v1/ping'):
+                self.reply({'status':'ok','version':VERSION,'ts':now(),'runtime_id':SERVICE_RUNTIME_ID})
+            elif self.path.startswith('/api/v1/health'):
+                self.reply(product_health())
+            elif self.path == '/' or self.path.startswith('/?'):
+                self.reply_html(DASHBOARD_HTML)
+            elif self.path == '/health':
+                with lock: x = dict(last_cycle)
+                self.reply(x, 503 if x.get('status') == 'error' else 200)
+            elif self.path.startswith('/decisions'):
+                self.reply({'version': VERSION, 'decisions': latest()})
+            elif self.path.startswith('/stats'):
+                self.reply({'version': VERSION, 'stats': stats()})
+            elif self.path.startswith('/agents'):
+                self.reply({'version': VERSION, 'agents': performance_rows()})
+            elif self.path == '/knowledge' or self.path.startswith('/knowledge?'):
+                self.reply({'version': VERSION, 'summary': knowledge_summary(), 'rules': knowledge_catalog()})
+            elif self.path.startswith('/knowledge/stats'):
+                self.reply({'version': VERSION, 'summary': knowledge_summary(), 'performance': knowledge_performance()})
+            elif self.path.startswith('/knowledge/factory'):
+                self.reply({'version': VERSION, 'factory': knowledge_factory_status()})
+            elif self.path.startswith('/knowledge/managers'):
+                self.reply({'version': VERSION, 'managers': manager_corpus_summary()})
+            elif self.path.startswith('/storage'):
+                self.reply({'version': VERSION, 'storage': pg_storage_status()})
+            elif self.path.startswith('/knowledge/automation'):
+                self.reply({'version': VERSION, 'automation': knowledge_automation_status()})
+            else:
+                self.reply({'error': 'not found'}, 404)
+        except Exception as e:
+            self.reply({'error': f'{type(e).__name__}: {e}'}, 503)
+
+    def do_POST(self):
+        try:
+            if self.path.startswith('/knowledge/automation/run'):
+                token = self.headers.get('X-Veritas-Token','')
+                if AUTOMATION_TOKEN and token != AUTOMATION_TOKEN:
+                    self.reply({'error':'unauthorized'},403); return
+                threading.Thread(target=run_knowledge_discovery,args=('external_trigger',),daemon=True).start()
+                self.reply({'version':VERSION,'accepted':True},202)
+            elif self.path.startswith('/backtest/run'):
+                token = self.headers.get('X-Veritas-Token','')
+                if AUTOMATION_TOKEN and token != AUTOMATION_TOKEN:
+                    self.reply({'error':'unauthorized'},403); return
+                threading.Thread(target=run_bootstrap_backtest,args=('external_trigger',),daemon=True).start()
+                self.reply({'version':VERSION,'accepted':True},202)
+            elif self.path.startswith('/admin/knowledge/import'):
+                token = self.headers.get('X-Veritas-Token','')
+                if not AUTOMATION_TOKEN or token != AUTOMATION_TOKEN:
+                    self.reply({'error':'unauthorized'},403); return
+                n=int(self.headers.get('Content-Length','0') or 0)
+                if n<=0 or n>2000000:
+                    self.reply({'error':'invalid body size'},400); return
+                payload=json.loads(self.rfile.read(n).decode('utf-8'))
+                result=import_knowledge_payload(payload,'admin_api')
+                self.reply({'version':VERSION,**result},200)
+            elif self.path.startswith('/admin/decision-feedback'):
+                token = self.headers.get('X-Veritas-Token','')
+                if not EXPERT_FEEDBACK_ENABLED or not AUTOMATION_TOKEN or token != AUTOMATION_TOKEN:
+                    self.reply({'error':'unauthorized'},403); return
+                n=int(self.headers.get('Content-Length','0') or 0)
+                if n<=0 or n>100000:
+                    self.reply({'error':'invalid body size'},400); return
+                payload=json.loads(self.rfile.read(n).decode('utf-8'))
+                self.reply({'version':VERSION,**save_decision_feedback(payload,'expert')},200)
+            elif self.path.startswith('/admin/settings'):
+                token = self.headers.get('X-Veritas-Token','')
+                if not AUTOMATION_TOKEN or token != AUTOMATION_TOKEN:
+                    self.reply({'error':'unauthorized'},403); return
+                n=int(self.headers.get('Content-Length','0') or 0)
+                if n<=0 or n>100000:
+                    self.reply({'error':'invalid body size'},400); return
+                payload=json.loads(self.rfile.read(n).decode('utf-8'))
+                result=update_runtime_settings(payload,'admin_api')
+                self.reply({'version':VERSION,**result},200)
+            elif self.path.startswith('/admin/recovery/export'):
+                token = self.headers.get('X-Veritas-Token','')
+                if not AUTOMATION_TOKEN or token != AUTOMATION_TOKEN:
+                    self.reply({'error':'unauthorized'},403); return
+                self.reply(recovery_export(),200)
+            elif self.path.startswith('/admin/events/scan'):
+                token = self.headers.get('X-Veritas-Token','')
+                if not AUTOMATION_TOKEN or token != AUTOMATION_TOKEN:
+                    self.reply({'error':'unauthorized'},403); return
+                threading.Thread(target=run_event_web_scan,args=('admin_trigger',),daemon=True).start()
+                self.reply({'version':VERSION,'accepted':True},202)
+            elif self.path.startswith('/admin/events/import'):
+                token = self.headers.get('X-Veritas-Token','')
+                if not AUTOMATION_TOKEN or token != AUTOMATION_TOKEN:
+                    self.reply({'error':'unauthorized'},403); return
+                n=int(self.headers.get('Content-Length','0') or 0)
+                if n<=0 or n>1000000:
+                    self.reply({'error':'invalid body size'},400); return
+                payload=json.loads(self.rfile.read(n).decode('utf-8'))
+                self.reply({'version':VERSION,**import_event_signals(payload)},200)
+            else:
+                self.reply({'error':'not found'},404)
+        except Exception as e:
+            self.reply({'error':f'{type(e).__name__}: {e}'},503)
+
+    def log_message(self, *args):
+        pass
+
+
+
+# VERITAS V90 MULTI-TF QUALITY MODEL R2
+# Keep trend onset, impulse and price structure as separate evidence families.
+# Build point-in-time support/resistance across 1h/4h/1d/3d/7d and make
+# SUPER classification depend on the structure of the signal's own horizon.
+
+_v90_base_merge_trend_and_structure = merge_trend_and_structure
+_v90_base_regime_from = regime_from
+_v90_base_features = features
+_v90_base_classify_signal_tier = classify_signal_tier
+_v90_base_execution_eligibility = execution_eligibility
+_v90_base_technical_trade_plan = technical_trade_plan
+_v90_base_cnyrubf_market = _cnyrubf_market
+_v90_cny5_cache = {'at':0.0,'bars':[]}
+
+
+
+def _v90_cny_5m_bars(force=False):
+    now_ts=time.time()
+    if (not force and _v90_cny5_cache.get('bars')
+            and now_ts-float(_v90_cny5_cache.get('at') or 0)<240):
+        return list(_v90_cny5_cache.get('bars') or [])
+    try:
+        # MOEX ISS does not reliably expose a native 5-minute FORTS interval.
+        # Fetch official 1-minute candles and aggregate them locally to exact 5m buckets.
+        rows=_moex_futures_candles_between('CNYRUBF',now_ts-2*86400,now_ts+3600,1)
+        buckets={}
+        for x in rows[-3000:]:
+            ts=int(x[0])/1000.0
+            key=int(ts//300)*300
+            op=float(x[1]); hi=float(x[2]); lo=float(x[3]); cl=float(x[4]); vol=float(x[5])
+            z=buckets.get(key)
+            if z is None:
+                buckets[key]={'ts':float(key),'open':op,'high':hi,'low':lo,'close':cl,'volume':vol}
+            else:
+                z['high']=max(float(z['high']),hi); z['low']=min(float(z['low']),lo)
+                z['close']=cl; z['volume']=float(z.get('volume') or 0.0)+vol
+        bars=[buckets[k] for k in sorted(buckets)][-500:]
+        if bars:
+            _v90_cny5_cache['at']=now_ts
+            _v90_cny5_cache['bars']=list(bars)
+        return bars
+    except Exception:
+        return list(_v90_cny5_cache.get('bars') or [])
+
+
+def _cnyrubf_market():
+    raw=dict(_v90_base_cnyrubf_market())
+    bars5=_v90_cny_5m_bars()
+    raw['intraday_bars']=bars5
+    raw['intraday_5m']=bars5
+    raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
+    raw['direction_level_resolutions']=['5m','1h','4h','1d','3d','7d']
+    return raw
+
+
+def _v90_tf_group(asset, timeframe):
+    if timeframe == '1h':
+        return 1
+    if timeframe == '4h':
+        return 4
+    try:
+        return max(1, int(horizon_bars(asset, timeframe)))
+    except Exception:
+        return {'1d':24,'3d':72,'7d':168}.get(timeframe,1)
+
+
+def _v90_aggregate_hourly(raw, group):
+    c=[float(x) for x in raw.get('closes') or []]
+    h=[float(x) for x in raw.get('highs') or []]
+    l=[float(x) for x in raw.get('lows') or []]
+    v=[float(x or 0) for x in raw.get('vols') or []]
+    n=min(len(c),len(h),len(l))
+    if n<=0:
+        return []
+    group=max(1,int(group))
+    start=n % group
+    rows=[]
+    for i in range(start,n,group):
+        j=min(n,i+group)
+        if j-i < group:
+            continue
+        rows.append({
+            'open':float(c[i-1] if i>0 else c[i]),
+            'high':max(h[i:j]),
+            'low':min(l[i:j]),
+            'close':float(c[j-1]),
+            'volume':sum(v[i:j]) if v else 0.0,
+        })
+    return rows
+
+
+def _v90_level_row(raw, timeframe):
+    asset=str(raw.get('asset') or '')
+    p=float(raw.get('price') or 0.0)
+    bars=(_v90_tf_bars(raw,'5m') if str(timeframe)=='5m'
+          else _v90_aggregate_hourly(raw,_v90_tf_group(asset,timeframe)))
+    if p<=0 or len(bars)<3:
+        return {'timeframe':timeframe,'status':'INSUFFICIENT','bars':len(bars),
+                'support':None,'resistance':None}
+    look=bars[-min(64,len(bars)):]
+    lows=[float(x['low']) for x in look]
+    highs=[float(x['high']) for x in look]
+    closes=[float(x['close']) for x in look]
+    supports=[]; resistances=[]
+    for i in range(1,len(look)-1):
+        if lows[i] <= lows[i-1] and lows[i] <= lows[i+1]:
+            supports.append(lows[i])
+        if highs[i] >= highs[i-1] and highs[i] >= highs[i+1]:
+            resistances.append(highs[i])
+    eps=max(p*0.00005,1e-9)
+    below=[x for x in supports if x < p-eps]
+    above=[x for x in resistances if x > p+eps]
+    previous=look[-2] if len(look)>=2 else look[-1]
+    if float(previous['low']) < p-eps:
+        below.append(float(previous['low']))
+    if float(previous['high']) > p+eps:
+        above.append(float(previous['high']))
+    rolling_low=min(lows[-min(20,len(lows)):])
+    rolling_high=max(highs[-min(20,len(highs)):])
+    if rolling_low < p-eps:
+        below.append(rolling_low)
+    if rolling_high > p+eps:
+        above.append(rolling_high)
+    support_candidates=sorted(set(float(x) for x in below),reverse=True)
+    resistance_candidates=sorted(set(float(x) for x in above))
+    support=support_candidates[0] if support_candidates else None
+    resistance=resistance_candidates[0] if resistance_candidates else None
+
+    # Recency-aware confirmed local extrema for structural trailing.
+    # Keep the LAST confirmed pivot in time, not merely the nearest level by price.
+    recent_support=None; recent_resistance=None
+    for i in range(len(look)-2,0,-1):
+        if recent_support is None and lows[i] <= lows[i-1] and lows[i] <= lows[i+1] and lows[i] < p-eps:
+            recent_support=float(lows[i])
+        if recent_resistance is None and highs[i] >= highs[i-1] and highs[i] >= highs[i+1] and highs[i] > p+eps:
+            recent_resistance=float(highs[i])
+        if recent_support is not None and recent_resistance is not None:
+            break
+
+    return {
+        'timeframe':timeframe,'status':'OK','bars':len(bars),
+        'last_close':closes[-1],'previous_high':float(previous['high']),
+        'previous_low':float(previous['low']),
+        'rolling_high':rolling_high,'rolling_low':rolling_low,
+        'recent_support':recent_support,'recent_resistance':recent_resistance,
+        'support':support,'resistance':resistance,
+        'support_candidates':support_candidates[:12],
+        'resistance_candidates':resistance_candidates[:12],
+        'distance_to_support':None if support is None else (p-support)/p,
+        'distance_to_resistance':None if resistance is None else (resistance-p)/p,
+    }
+
+
+def _v90_multi_tf_levels(raw):
+    cached=raw.get('_v90_multi_tf_levels') if isinstance(raw,dict) else None
+    if isinstance(cached,dict) and cached.get('timeframes'):
+        return cached
+    p=float(raw.get('price') or 0.0)
+    rows={tf:_v90_level_row(raw,tf) for tf in ('5m','1h','4h','1d','3d','7d')}
+    def nearest(kind,tfs):
+        vals=[]
+        for tf in tfs:
+            z=rows.get(tf) or {}
+            x=z.get(kind)
+            if x is None:
+                continue
+            x=float(x)
+            if (kind=='support' and x<p) or (kind=='resistance' and x>p):
+                vals.append((abs(p-x),tf,x))
+        vals.sort()
+        return ({'timeframe':vals[0][1],'price':vals[0][2],
+                 'distance_pct':vals[0][0]/p} if vals and p>0 else None)
+    out={
+        'status':'OK' if any((z.get('status')=='OK') for z in rows.values()) else 'INSUFFICIENT',
+        'asset':str(raw.get('asset') or ''),'price':p,'timeframes':rows,
+        'nearest_support':nearest('support',('5m','1h','4h','1d','3d','7d')),
+        'nearest_resistance':nearest('resistance',('5m','1h','4h','1d','3d','7d')),
+        'senior_support':nearest('support',('1d','3d','7d')),
+        'senior_resistance':nearest('resistance',('1d','3d','7d')),
+        'method':'point_in_time_hourly_aggregation_no_future_bars',
+    }
+    if isinstance(raw,dict):
+        raw['_v90_multi_tf_levels']=out
+    return out
+
+
+def _v90_horizon_level_context(mtf,horizon,direction):
+    rows=(mtf or {}).get('timeframes') or {}
+    hierarchy={
+        '5m':('5m','1h','4h','1d','3d','7d'),
+        '1h':('1h','4h','1d','3d','7d'),
+        '4h':('4h','1d','3d','7d'),
+        '1d':('1d','3d','7d'),
+        '3d':('3d','7d'),
+        '7d':('7d',),
+    }
+    tfs=hierarchy.get(str(horizon),('5m','1h','4h','1d','3d','7d'))
+    p=float((mtf or {}).get('price') or 0.0)
+    asset=str((mtf or {}).get('asset') or '')
+    supports=[]; resistances=[]
+    for tf in tfs:
+        z=rows.get(tf) or {}
+        svals=z.get('support_candidates') or ([z.get('support')] if z.get('support') is not None else [])
+        rvals=z.get('resistance_candidates') or ([z.get('resistance')] if z.get('resistance') is not None else [])
+        for sx in svals:
+            if sx is not None and float(sx)<p:
+                supports.append((p-float(sx),tf,float(sx)))
+        for rx in rvals:
+            if rx is not None and float(rx)>p:
+                resistances.append((float(rx)-p,tf,float(rx)))
+    supports=sorted(set(supports)); resistances=sorted(set(resistances))
+    support=({'timeframe':supports[0][1],'price':supports[0][2],
+              'distance_pct':supports[0][0]/p} if supports and p>0 else None)
+    resistance=({'timeframe':resistances[0][1],'price':resistances[0][2],
+                 'distance_pct':resistances[0][0]/p} if resistances and p>0 else None)
+    base_floor={'5m':0.0007,'1h':0.0015,'4h':0.0025,'1d':0.0040,'3d':0.0060,'7d':0.0080}.get(str(horizon),0.0025)
+    if asset in ('BTC','ETH'):
+        base_floor*=2.5
+    elif asset in ('NQ','BRENT','GOLD','MOEX'):
+        base_floor*=1.5
+    target_pool=supports if direction=='SHORT' else resistances
+    significant=[x for x in target_pool if p>0 and (x[0]/p)>=base_floor]
+    target_ladder=[{'timeframe':x[1],'price':x[2],'distance_pct':x[0]/p}
+                   for x in significant[:16]] if p>0 else []
+    target_ref=target_ladder[0] if target_ladder else None
+    # For invalidation, prefer the signal timeframe's own level first;
+    # only fall through to a higher timeframe when that timeframe has no valid level.
+    stop_ref=None
+    stop_kind='resistance_candidates' if direction=='SHORT' else 'support_candidates'
+    for tf in tfs:
+        z=rows.get(tf) or {}
+        vals=list(z.get(stop_kind) or [])
+        if direction=='SHORT':
+            vals=sorted(float(x) for x in vals if x is not None and float(x)>p)
+        else:
+            vals=sorted((float(x) for x in vals if x is not None and float(x)<p),reverse=True)
+        if vals:
+            sp=vals[0]
+            stop_ref={'timeframe':tf,'price':sp,'distance_pct':abs(sp-p)/p}
+            break
+    if stop_ref is None:
+        stop_ref=resistance if direction=='SHORT' else support
+    return {'horizon':horizon,'direction':direction,'considered_timeframes':list(tfs),
+            'support':support,'resistance':resistance,'stop_reference':stop_ref,
+            'target_reference':target_ref,'target_ladder':target_ladder,
+            'target_noise_floor_pct':base_floor,
+            'execution_timeframe':'5m' if horizon=='5m' or asset=='CNYRUBF' else '1h',
+            'principle':'5m/lower TF is entry timing only; stop is anchored to signal-TF then higher-TF invalidation; targets use a significant multi-TF level ladder'}
+
+
+def merge_trend_and_structure(trend, structure):
+    trend=dict(trend or {})
+    st=structure or {}
+    z=dict(trend)
+    z['intraday_structure']=st
+    raw_onset=float(trend.get('onset_score') or 0.0)
+    raw_impulse=float(trend.get('impulse_score') or 0.0)
+    z['raw_onset_score']=raw_onset
+    z['raw_impulse_score']=raw_impulse
+    z['structural_confirmation_score']=float(st.get('score') or 0.0)
+    z['onset_score']=raw_onset
+    z['impulse_score']=raw_impulse
+    for k in ('near_ath','price_discovery','breakout_hold','relative_volume',
+              'fresh_breakout','volume_confirmed','breakout_level',
+              'recent_swing_anchor','breakout_measured_move_pct','invalidation_price'):
+        if k in st:
+            z[k]=st.get(k)
+    z['structure_score']=float(st.get('score') or 0.0)
+    sdir=str(st.get('direction') or 'NO_TRADE')
+    life=str(st.get('lifecycle') or '')
+    if sdir in ('LONG','SHORT'):
+        if life in ('FRESH_BREAKOUT','CONFIRMATION','EXTENSION') and not st.get('false_breakout'):
+            if str(z.get('direction') or 'NO_TRADE')=='NO_TRADE':
+                z['direction']=sdir
+                z['structure_promoted_direction']=True
+                if str(z.get('phase') or 'NONE')=='NONE':
+                    z['phase']='EARLY_TREND'
+            elif str(z.get('direction'))==sdir:
+                z['structure_confirmation']=True
+            if str(st.get('entry_quality') or '') not in ('','UNKNOWN','NEUTRAL'):
+                z['entry_quality']=st.get('entry_quality')
+        elif life=='FAILURE':
+            z['entry_quality']='INVALIDATED'
+    return z
+
+
+def regime_from(f):
+    asset=str(f.get('asset') or '')
+    if asset!='CNYRUBF':
+        return _v90_base_regime_from(f)
+    trend=float(f.get('trend') or 0.0)
+    ti=f.get('trend_impulse') or {}
+    sigma=max(0.00045,float(ti.get('sigma_1h') or 0.0))
+    daily_vol=sigma*math.sqrt(float(max(4,horizon_bars('CNYRUBF','1d'))))
+    trend_cut=clip(3.0*sigma,0.0030,0.0090)
+    vol_state='HIGH_VOL' if daily_vol>0.012 else 'LOW_VOL' if daily_vol<0.0055 else 'MID_VOL'
+    trend_state='UPTREND' if trend>trend_cut else 'DOWNTREND' if trend<-trend_cut else 'RANGE'
+    return f'{trend_state}_{vol_state}'
+
+
+def _v90_5m_features(raw,common_structure=None):
+    # Preserve senior context, then replace the tactical state with native 5m measurements.
+    f=_v90_base_features(raw,'1h',common_structure)
+    bars=_v90_tf_bars(raw,'5m')
+    f['horizon']='5m'
+    if len(bars)<8:
+        f['horizon_structure']=_v90_5m_horizon_structure(raw)
+        f['horizon_structure_score']=0.0
+        f['horizon_structure_direction']='NO_TRADE'
+        f['horizon_structure_state']='DATA_REQUIRED'
+        f['five_minute_data_status']='DATA_REQUIRED'
+        return f
+
+    c=[float(x.get('close') or 0.0) for x in bars]
+    h=[float(x.get('high') or x.get('close') or 0.0) for x in bars]
+    l=[float(x.get('low') or x.get('close') or 0.0) for x in bars]
+    v=[float(x.get('volume') or 0.0) for x in bars]
+    p=float(raw.get('price') or c[-1])
+    if p>0: c[-1]=p
+    rr=[c[i]/c[i-1]-1.0 for i in range(1,len(c)) if c[i-1]]
+    floor={'BTC':0.00035,'ETH':0.00045,'NQ':0.00018,'BRENT':0.00028,
+           'GOLD':0.00018,'MOEX':0.00022,'CNYRUBF':0.00016}.get(str(raw.get('asset') or ''),0.00025)
+    sigma5=_robust_sigma(rr[-min(120,len(rr)):],floor)
+    ret5=p/c[-2]-1.0 if len(c)>=2 and c[-2] else 0.0
+    n30=min(6,len(c)-1); ret30=p/c[-1-n30]-1.0 if n30>=1 and c[-1-n30] else ret5
+    local_n=min(24,len(c)); local_ma=sum(c[-local_n:])/local_n if local_n else p
+    local_trend=p/local_ma-1.0 if local_ma else 0.0
+    fast=min(12,len(rr)); rv5=(sum(x*x for x in rr[-fast:])/max(1,fast))**0.5*(fast**0.5) if rr else 0.0
+    recent_v=v[-3:] if len(v)>=3 else v
+    prior_v=v[-15:-3] if len(v)>=15 else v[:-3]
+    vr=(sum(recent_v)/len(recent_v))/(sum(prior_v)/len(prior_v)) if recent_v and prior_v and sum(prior_v)>0 else 1.0
+
+    hs=_v90_5m_horizon_structure(raw)
+    grid=(common_structure or {}).get('structure_breakout_grid') if isinstance(common_structure,dict) else None
+    if not grid:
+        grid=_v90_structure_breakout_grid(raw)
+        if isinstance(common_structure,dict): common_structure['structure_breakout_grid']=grid
+    life=grid.get('5m') or {}
+    state=str(life.get('state') or 'WAIT')
+    life_map={'BREAKOUT_ENTRY':'FRESH_BREAKOUT','TREND_CONTINUATION':'CONFIRMATION',
+              'IMPULSE_WEAKENING':'ONSET','EXIT_REVERSAL':'FAILURE','WAIT':'NONE'}
+    lifecycle=life_map.get(state,'NONE')
+    direction=str(hs.get('direction') or 'NO_TRADE')
+    entryq=('FRESH_BREAKOUT' if state=='BREAKOUT_ENTRY' else
+            'CONFIRMED_TREND' if state=='TREND_CONTINUATION' else
+            'INVALIDATED' if state=='EXIT_REVERSAL' else
+            'WAIT_CONFIRMATION' if direction in ('LONG','SHORT') else 'NEUTRAL')
+    st=dict(f.get('intraday_structure') or {})
+    st.update({'enabled':True,'status':'OK','resolution':'5m_native',
+               'direction':direction,'score':float(hs.get('score') or life.get('quality_score') or 0.0),
+               'lifecycle':lifecycle,'entry_quality':entryq,
+               'relative_volume':float(life.get('volatility_expansion_ratio') or vr or 1.0),
+               'volume_confirmed':bool(float(life.get('volatility_expansion_ratio') or 1.0)>=1.25),
+               'breakout_found':bool(life.get('breakout_level') is not None),
+               'breakout_level':life.get('breakout_level'),
+               'breakout_hold':bool(state in ('BREAKOUT_ENTRY','TREND_CONTINUATION')),
+               'fresh_breakout':bool(state=='BREAKOUT_ENTRY'),
+               'false_breakout':bool(state=='EXIT_REVERSAL'),
+               'invalidation_price':life.get('stop_price'),
+               'atr_5m':life.get('atr_5m'),
+               'session_efficiency':hs.get('path_efficiency'),
+               'session_persistence':hs.get('persistence'),
+               'session_range_position':hs.get('range_position'),
+               'continuation_room_pct':max(0.0,abs(ret30)*0.65)})
+
+    ti=dict(f.get('trend_impulse') or {})
+    phase=('EARLY_TREND' if state=='BREAKOUT_ENTRY' else
+           'IMPULSE_TREND' if state=='TREND_CONTINUATION' and direction in ('LONG','SHORT') else
+           'NONE')
+    ti.update({'current_horizon':'5m','current_horizon_structure':hs,
+               'current_horizon_structure_score':float(hs.get('score') or 0.0),
+               'current_horizon_structure_direction':direction,
+               'current_horizon_structure_state':hs.get('state') or 'UNKNOWN',
+               'direction':direction,'phase':phase,'entry_quality':entryq,
+               'onset_score':max(float(ti.get('onset_score') or 0.0),float(hs.get('score') or 0.0)) if phase!='NONE' else float(hs.get('score') or 0.0)*0.6,
+               'impulse_score':max(float(ti.get('impulse_score') or 0.0),float(life.get('quality_score') or 0.0)) if state=='TREND_CONTINUATION' else float(life.get('quality_score') or 0.0),
+               'sigma_5m':sigma5,'ret_5m':ret5,'ret_30m':ret30})
+
+    f.update({'price':p,'ret_h':ret5,'momentum':ret30,'trend':local_trend,'rv':rv5,
+              'volume_ratio':vr,'intraday_structure':st,'trend_impulse':ti,
+              'horizon_structure':hs,'horizon_structure_score':float(hs.get('score') or 0.0),
+              'horizon_structure_direction':direction,'horizon_structure_state':hs.get('state') or 'UNKNOWN',
+              'intraday_structure_score':float(st.get('score') or 0.0),
+              'relative_volume':float(st.get('relative_volume') or 0.0),
+              'session_efficiency':float(st.get('session_efficiency') or 0.0),
+              'session_persistence':float(st.get('session_persistence') or 0.0),
+              'trend_phase':phase,'trend_onset_score':float(ti.get('onset_score') or 0.0),
+              'impulse_score':float(ti.get('impulse_score') or 0.0),'entry_quality':entryq,
+              'structure_breakout_grid':grid,'structure_breakout_current':life,
+              'structure_breakout_5m':life,'five_minute_data_status':'OK'})
+    # 5m local levels: the broken range is the first invalidation/target context.
+    sl=dict(f.get('structural_levels') or {})
+    if direction=='SHORT':
+        sl['resistance']=life.get('range_high') or sl.get('resistance')
+        sl['support']=life.get('range_low') if life.get('range_low') is not None and float(life.get('range_low'))<p else sl.get('support')
+    elif direction=='LONG':
+        sl['support']=life.get('range_low') or sl.get('support')
+        sl['resistance']=life.get('range_high') if life.get('range_high') is not None and float(life.get('range_high'))>p else sl.get('resistance')
+    f['structural_levels']=sl
+    vol_state='HIGH_VOL' if float(life.get('volatility_expansion_ratio') or 1.0)>=1.6 else 'MID_VOL' if float(life.get('volatility_expansion_ratio') or 1.0)>=1.15 else 'LOW_VOL'
+    trend_state='UPTREND' if direction=='LONG' else 'DOWNTREND' if direction=='SHORT' else 'RANGE'
+    f['regime']=f'{trend_state}_{vol_state}'
+    return f
+
+
+def _features_r39(raw, horizon, common_structure=None):
+    f=_v90_5m_features(raw,common_structure) if str(horizon)=='5m' else _v90_base_features(raw,horizon,common_structure)
+    f['horizon']=horizon
+    grid=(common_structure or {}).get('structure_breakout_grid') if isinstance(common_structure,dict) else None
+    if not grid:
+        grid=_v90_structure_breakout_grid(raw)
+        if isinstance(common_structure,dict):
+            common_structure['structure_breakout_grid']=grid
+    f['structure_breakout_grid']=grid
+    f['structure_breakout_current']=grid.get(horizon) or {}
+    f['structure_breakout_5m']=grid.get('5m') or {}
+    mtf=_v90_multi_tf_levels(raw)
+    f['multi_tf_levels']=mtf
+    sl=dict(f.get('structural_levels') or {})
+    sl['multi_tf']=mtf
+    sl['senior_support']=(mtf.get('senior_support') or {}).get('price')
+    sl['senior_resistance']=(mtf.get('senior_resistance') or {}).get('price')
+    f['structural_levels']=sl
+    ti=dict(f.get('trend_impulse') or {})
+    hs=f.get('horizon_structure') or {}
+    ti['current_horizon']=horizon
+    ti['current_horizon_structure']=hs
+    ti['current_horizon_structure_score']=float(hs.get('score') or 0.0)
+    ti['current_horizon_structure_direction']=hs.get('direction') or 'NO_TRADE'
+    ti['current_horizon_structure_state']=hs.get('state') or 'UNKNOWN'
+    direction=str(ti.get('direction') or 'NO_TRADE')
+    senior_order={'5m':('1h','4h','1d','3d','7d'),'1h':('4h','1d','3d','7d'),'4h':('1d','3d','7d'),
+                  '1d':('3d','7d'),'3d':('7d',),'7d':()}
+    hs_all=(common_structure or {}).get('horizon_structures') or {}
+    senior=[]
+    for tf in senior_order.get(horizon,()):
+        z=hs_all.get(tf) or horizon_structure_features(raw,tf)
+        if str(z.get('direction') or 'NO_TRADE')==direction and float(z.get('score') or 0)>=0.52:
+            senior.append({'timeframe':tf,'score':float(z.get('score') or 0),
+                           'state':z.get('state'),'breakout':bool(z.get('breakout'))})
+    ti['senior_horizon_confirmations']=senior
+    f['trend_impulse']=ti
+    f['multi_tf_level_context']=_v90_horizon_level_context(mtf,horizon,
+        str(f.get('horizon_structure_direction') or direction))
+    if asset:=str(f.get('asset') or ''):
+        if asset=='CNYRUBF':
+            sigma=max(0.00045,float(ti.get('sigma_1h') or 0.0))
+            f['regime_parameters']={'source':'CNYRUBF_SPECIALIZED','sigma_1h':sigma,
+                'trend_cut':clip(3.0*sigma,0.0030,0.0090),
+                'daily_vol_proxy':sigma*math.sqrt(float(max(4,horizon_bars('CNYRUBF','1d'))))}
+    return f
+
+
+def classify_signal_tier(asset,decision,confidence,challenger,effective_evidence,source_gate,time_gate,
+                         calibration=None,trend_impulse=None):
+    if decision not in ('LONG','SHORT') or not source_gate or not time_gate:
+        return 'NO_TRADE'
+    ti=trend_impulse or {}
+    hs=ti.get('current_horizon_structure') or {}
+    horizon=str(ti.get('current_horizon') or '')
+    hdir=str(hs.get('direction') or 'NO_TRADE')
+    hscore=float(hs.get('score') or 0.0)
+    hstate=str(hs.get('state') or '')
+    min_score={'5m':0.48,'1h':0.52,'4h':0.58,'1d':0.60,'3d':0.64,'7d':0.66}.get(horizon,0.58)
+    horizon_ok=bool(hdir==decision and hscore>=min_score)
+    if horizon in ('3d','7d'):
+        horizon_ok=bool(horizon_ok and hstate in ('BUILDING_TREND','CONFIRMED_TREND'))
+    if not horizon_ok:
+        return decision
+    calibration=calibration or {}
+    cp=calibration.get('probability_correct')
+    cdec=str((challenger or {}).get('decision') or '')
+    cconf=float((challenger or {}).get('confidence') or 0.0)
+    threshold=runtime_float('min_directional_score',MIN_DIRECTIONAL_SCORE)+0.08
+    min_knowledge=2 if asset in MARKET_BAR_ASSETS else 3
+    super_cal=bool(cp is not None and float(cp)>=0.62 and cdec==decision)
+    super_cons=bool(float(confidence)>=threshold and cdec==decision and cconf>=0.60
+                    and int(effective_evidence or 0)>=min_knowledge)
+    phase=str(ti.get('phase') or 'NONE')
+    idir=str(ti.get('direction') or 'NO_TRADE')
+    entryq=str(ti.get('entry_quality') or '')
+    market_structure_super=bool(
+        phase in ('TREND_DAY','IMPULSE_TREND') and idir==decision
+        and entryq not in ('LATE_EXTENDED','EXTENDED_WAIT_PULLBACK','INVALIDATED')
+        and float(ti.get('impulse_score') or 0)>=TREND_DAY_MIN_SCORE
+        and float(confidence)>=max(runtime_float('min_directional_score',MIN_DIRECTIONAL_SCORE),threshold-0.04)
+        and cdec==decision and cconf>=0.50)
+    fresh_allowed=(horizon in ('1h','4h','1d') or bool(hs.get('breakout')))
+    fresh_breakout_super=bool(
+        fresh_allowed and entryq=='FRESH_BREAKOUT' and idir==decision
+        and bool(ti.get('volume_confirmed'))
+        and float(ti.get('structure_score') or 0)>=0.60
+        and float(ti.get('onset_score') or 0)>=0.58
+        and cdec==decision and cconf>=0.48)
+    return ('SUPER_'+decision) if (super_cal or super_cons or market_structure_super or fresh_breakout_super) else decision
+
+
+def _execution_eligibility_r39(asset, raw, clock_info=None):
+    return _v90_base_execution_eligibility(asset, raw, clock_info)
+
+
+
+def _technical_trade_plan_r39(asset,horizon,f,research_decision,signal_tier,analog=None):
+    plan=dict(_v90_base_technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog) or {})
+    if research_decision not in ('LONG','SHORT'):
+        return plan
+    mtf=f.get('multi_tf_levels') or {}
+    ctx=_v90_horizon_level_context(mtf,horizon,research_decision)
+    plan['multi_tf_levels']=mtf
+    plan['multi_tf_level_context']=ctx
+    plan['higher_tf_stop_reference']=(ctx.get('stop_reference') or {}).get('price')
+    plan['higher_tf_target_reference']=(ctx.get('target_reference') or {}).get('price')
+    plan['level_timeframes_considered']=ctx.get('considered_timeframes') or []
+    p=float(f.get('price') or plan.get('entry_price') or 0.0)
+    technical_exp=float(plan.get('expected_move_pct') or 0.0)
+    base_reason=str(plan.get('reason') or '')
+    # Enforce a signal-timeframe/higher-timeframe invalidation reference.
+    sref=ctx.get('stop_reference') or {}
+    stop=plan.get('stop_price')
+    sigma=float((f.get('trend_impulse') or {}).get('sigma_1h') or 0.0)
+    level_buffer=max(p*0.0005,p*0.25*sigma) if p>0 else 0.0
+    if p>0 and sref.get('price') is not None:
+        anchor=float(sref['price'])
+        structural_stop=(anchor+level_buffer) if research_decision=='SHORT' else (anchor-level_buffer)
+        if stop is None:
+            stop=structural_stop
+        elif research_decision=='SHORT':
+            stop=max(float(stop),structural_stop)
+        else:
+            stop=min(float(stop),structural_stop)
+        plan['higher_tf_stop_anchor']=anchor
+        plan['higher_tf_stop_buffer']=level_buffer
+        plan['stop_price']=stop
+        plan['stop_method']=str(plan.get('stop_method') or 'STRUCTURE')+'+MULTI_TF_INVALIDATION'
+    stop_dist=abs(p-float(stop))/p if p>0 and stop is not None else 999.0
+    plan['stop_distance_pct']=stop_dist
+    minr=float(plan.get('min_expected_to_stop_ratio') or TRADE_MIN_EXPECTED_TO_STOP)
+    required=minr*stop_dist
+    ladder=list(ctx.get('target_ladder') or [])
+    plan['target_ladder']=ladder
+    plan['take_profit_1']=ladder[0] if ladder else None
+    # Pick the nearest structural target that produces adequate economics but
+    # remains inside the technically estimated move. Intermediate levels become TP1/partials.
+    upper=max(technical_exp*1.25,technical_exp+0.0010) if technical_exp>0 else 0.0
+    chosen=None
+    for z in ladder:
+        d=float(z.get('distance_pct') or 0.0)
+        if d>=required and (upper<=0 or d<=upper):
+            chosen=z
+            break
+    if chosen is not None:
+        exp=float(chosen['distance_pct'])
+        plan['target_price']=float(chosen['price'])
+        plan['target_method']='MULTI_TF_SIGNIFICANT_'+str(chosen.get('timeframe') or 'UNKNOWN')
+        plan['higher_tf_target_reference']=float(chosen['price'])
+    else:
+        exp=technical_exp
+        if p>0 and exp>0:
+            plan['target_price']=p*(1.0+exp if research_decision=='LONG' else 1.0-exp)
+            plan['target_method']='TECHNICAL_PROJECTION_WITH_MULTI_TF_PARTIALS'
+    plan['expected_move_pct']=exp
+    ratio=exp/stop_dist if stop_dist>1e-12 else 999.0
+    plan['expected_to_stop_ratio']=ratio
+    invalid=base_reason=='invalidated' or str(plan.get('entry_quality') or '')=='INVALIDATED'
+    plan['eligible']=bool(not invalid and p>0 and ratio>=minr)
+    plan['reason']='ok' if plan['eligible'] else ('invalidated' if invalid else 'multi_tf_expected_move_too_small_vs_stop')
+    plan['level_policy']='5M_TIMING + SIGNAL_TF_INVALIDATION + HIGHER_TF_LEVEL_LADDER'
+    return plan
+
+
+
+
+# VERITAS V90 BOUNDED LEDGER R37
+# Persist one representative decision per completed signal bar (or immediately
+# on a material state change) and keep diagnostic event streams bounded.
+_v90r37_pg_event_base=pg_event
+_v90r37_event_cache={}
+_v90r37_event_lock=threading.Lock()
+_v90r37_horizon_seconds={'5m':300,'1h':3600,'4h':14400,'1d':86400,'3d':259200,'7d':604800}
+
+
+def _v90r37_features_compact(f):
+    f=f or {}
+    st=f.get('intraday_structure') or {}
+    ti=f.get('trend_impulse') or {}
+    return {
+      'price':f.get('price'),
+      'ret_4h':f.get('ret_4h'),'ret_24h':f.get('ret_24h'),
+      'trend':f.get('trend'),'momentum':f.get('momentum'),'rv':f.get('rv'),
+      'relative_volume':st.get('relative_volume',f.get('relative_volume')),
+      'session_efficiency':st.get('session_efficiency',f.get('session_efficiency')),
+      'session_persistence':st.get('session_persistence',f.get('session_persistence')),
+      'intraday_structure_score':st.get('score',f.get('intraday_structure_score')),
+      'trend_onset_score':ti.get('onset_score',f.get('trend_onset_score')),
+      'impulse_score':ti.get('impulse_score',f.get('impulse_score')),
+      'near_ath':1.0 if st.get('near_ath') else f.get('near_ath',0.0),
+      'breakout_hold':1.0 if st.get('breakout_hold') else f.get('breakout_hold',0.0),
+      'expected_move_pct':f.get('expected_move_pct'),
+      'best_bid':f.get('best_bid'),'best_ask':f.get('best_ask'),'spread_bps':f.get('spread_bps'),
+      'regime':f.get('regime'),
+      'market_contract':f.get('market_contract'),
+      'market_source_names':f.get('market_source_names'),
+      'market_observed_at':f.get('market_observed_at'),
+    }
+
+
+def _v90r37_compact_decision_payload(p):
+    p=dict(p or {})
+    plan=p.get('trade_plan') or {}
+    inst=p.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    ev=inst.get('evidence_independence') or {}
+    return {
+      'created_at':p.get('created_at'),'symbol':p.get('symbol'),
+      'asset':p.get('asset'),'horizon':p.get('horizon'),
+      'decision':p.get('decision'),'research_decision':p.get('research_decision'),
+      'confidence':p.get('confidence'),'sizing':p.get('sizing'),
+      'committee_score':p.get('committee_score'),'regime':p.get('regime'),
+      'signal_tier':p.get('signal_tier'),
+      'execution_signal_tier':p.get('execution_signal_tier'),
+      'execution_eligibility':_v90_small_dict(p.get('execution_eligibility'),(
+          'eligible','reason','paper_eligible','paper_execution_reason','production_eligible','direct_sources',
+          'source_policy','minimum_sources','paper_source_blockers')),
+      'decision_stage':p.get('decision_stage'),
+      'calibrated_probability':(p.get('calibration') or {}).get('probability_correct'),
+      'trade_plan':{
+        'eligible':plan.get('eligible'),'reason':plan.get('reason'),
+        'setup':plan.get('setup'),'direction':plan.get('direction'),
+        'entry_quality':plan.get('entry_quality'),'entry_quality_rebased_from_old_setup':plan.get('entry_quality_rebased_from_old_setup'),
+        'entry_price':plan.get('entry_price'),'stop_price':plan.get('stop_price'),
+        'stop_distance_pct':plan.get('stop_distance_pct'),
+        'target_price':plan.get('target_price'),
+        'expected_move_pct':plan.get('expected_move_pct'),
+        'expected_to_stop_ratio':plan.get('expected_to_stop_ratio'),
+        'initial_position_fraction':plan.get('initial_position_fraction'),
+        'final_economics_gate':plan.get('final_economics_gate') or {},
+      },
+      'tradeability':{
+        'status':(p.get('tradeability') or {}).get('status'),
+        'positive_trade_probability':(p.get('tradeability') or {}).get('positive_trade_probability'),
+        'effective_n':(p.get('tradeability') or {}).get('effective_n'),
+      },
+      'institutional_signal':{
+        'signal_tier':inst.get('signal_tier'),
+        'investor_signal':inst.get('investor_signal'),
+        'action':inst.get('action'),
+        'breakout_quality':{
+          'state':bq.get('state'),'quality_score':bq.get('quality_score'),
+          'fresh_breakout':bq.get('fresh_breakout'),
+        },
+        'evidence_independence':{
+          'independent_count':ev.get('independent_count'),
+          'active_families':ev.get('active_families'),
+        },
+      },
+      'features':_v90r37_features_compact(p.get('features') or {}),
+      'gates':p.get('gates') or {},
+    }
+
+
+def _v90r37_signature(event_type,payload):
+    p=payload or {}
+    if event_type=='decision':
+        plan=p.get('trade_plan') or {}
+        inst=p.get('institutional_signal') or {}
+        bq=inst.get('breakout_quality') or {}
+        raw={
+          'research_decision':p.get('research_decision'),'decision':p.get('decision'),
+          'signal_tier':p.get('signal_tier'),'decision_stage':p.get('decision_stage'),
+          'regime':p.get('regime'),'eligible':plan.get('eligible'),
+          'plan_reason':plan.get('reason'),'entry_quality':plan.get('entry_quality'),
+          'breakout_state':bq.get('state'),
+          'paper_eligible':(p.get('execution_eligibility') or {}).get('paper_eligible'),
+          'source_gate':(p.get('gates') or {}).get('source'),
+          'market_open':(p.get('gates') or {}).get('time'),
+        }
+    else:
+        gate=p.get('gate') or {}
+        raw={
+          'setup':p.get('setup'),'direction':p.get('direction'),
+          'research_direction':p.get('research_direction'),
+          'candidate_direction':p.get('candidate_direction'),
+          'active':p.get('active'),'state':p.get('state'),
+          'status':p.get('status'),'label':p.get('label'),
+          'old_plan_reason':p.get('old_plan_reason'),
+          'gate_status':gate.get('status') if isinstance(gate,dict) else None,
+        }
+    return hashlib.sha256(json.dumps(raw,sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()[:20]
+
+
+def _v90r37_should_persist(event_type,asset,horizon,payload):
+    high={
+      'decision','meta_signal','setup_learning','admission_learning',
+      'trade_counterfactual_lab','impulse_genesis_learning','profitability_learning'
+    }
+    if event_type not in high:
+        return True
+    now_ts=time.time()
+    key=(event_type,str(asset or ''),str(horizon or ''))
+    sig=_v90r37_signature(event_type,payload)
+    if event_type=='decision':
+        cooldown=int(_v90r37_horizon_seconds.get(str(horizon or ''),3600))
+    elif event_type=='meta_signal':
+        cooldown=1800
+    elif event_type in ('setup_learning','admission_learning','profitability_learning'):
+        cooldown=1800
+    else:
+        cooldown=3600
+    with _v90r37_event_lock:
+        prev=_v90r37_event_cache.get(key)
+        changed=not prev or prev.get('sig')!=sig
+        due=not prev or now_ts-float(prev.get('at') or 0)>=cooldown
+        if changed or due:
+            _v90r37_event_cache[key]={'sig':sig,'at':now_ts}
+            return True
+    return False
+
+
+def pg_event(event_type,entity_key,payload,asset=None,horizon=None,event_ts=None):
+    if not _v90r37_should_persist(event_type,asset,horizon,payload):
+        return True
+    if event_type=='decision':
+        payload=_v90r37_compact_decision_payload(payload)
+    return _v90r37_pg_event_base(event_type,entity_key,payload,asset,horizon,event_ts)
+
+
+_v90r37_maintenance_state={'last':0.0}
+def _v90r37_storage_retention():
+    if not pg_enabled():
+        return {'status':'SKIP'}
+    now_ts=time.time()
+    if now_ts-float(_v90r37_maintenance_state.get('last') or 0.0)<7200:
+        return {'status':'NOT_DUE'}
+    _v90r37_maintenance_state['last']=now_ts
+    try:
+        with pg_connect() as c:
+            deletes={}
+            specs={
+              # Preserve all durable outcomes/lessons separately; these limits
+              # apply only to recent raw/rebuildable context windows.
+              'decision':1500,
+              'setup_learning':500,
+              'admission_learning':500,
+              'trade_counterfactual_lab':300,
+              'impulse_genesis_learning':300,
+              'meta_signal':200,
+            }
+            for et,lim in specs.items():
+                q=c.execute("""
+                  WITH keep AS (
+                    SELECT id FROM ledger_events
+                    WHERE event_type=%s
+                    ORDER BY event_ts DESC LIMIT %s
+                  ), doomed AS (
+                    SELECT id FROM ledger_events
+                    WHERE event_type=%s
+                      AND id NOT IN (SELECT id FROM keep)
+                      AND NOT (
+                        event_type='decision' AND EXISTS (
+                          SELECT 1 FROM ledger_events o
+                          WHERE o.event_type='outcome'
+                            AND o.entity_key=ledger_events.entity_key
+                        )
+                      )
+                    LIMIT 10000
+                  )
+                  DELETE FROM ledger_events l USING doomed d
+                  WHERE l.id=d.id RETURNING 1
+                """,(et,int(lim),et)).fetchall()
+                deletes[et]=len(q)
+            c.execute("""DELETE FROM product_snapshots
+                         WHERE snapshot_id NOT IN (
+                           SELECT snapshot_id FROM product_snapshots
+                           ORDER BY created_at DESC LIMIT 24
+                         )""")
+            c.execute("""DELETE FROM model_drift_snapshots
+                         WHERE snapshot_id NOT IN (
+                           SELECT snapshot_id FROM model_drift_snapshots
+                           ORDER BY created_at DESC LIMIT 48
+                         )""")
+            c.execute("DELETE FROM product_alerts WHERE created_at<NOW()-INTERVAL '24 hours'")
+            c.execute("DELETE FROM paper_nav_history WHERE observed_at<NOW()-INTERVAL '7 days'")
+        try:
+            cc=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5)
+            cc.execute('SET search_path TO veritas_v90')
+            cc.execute('VACUUM (ANALYZE) ledger_events')
+            cc.close()
+        except Exception:
+            pass
+        emit('v90_r37_storage_retention',deleted=deletes)
+        return {'status':'OK','deleted':deletes}
+    except Exception as ex:
+        emit('v90_r37_storage_retention_error',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','error':str(ex)}
+
+
+
+# VERITAS V90 STORAGE RESCUE LOOP R38
+# If a full Free Postgres instance is resumed by Render/the user, it may only
+# remain reachable briefly. This background loop catches that window, performs
+# R37 compaction immediately, then re-enables the normal durable path.
+_v90r38_rescue_state={'done':False,'attempts':0,'last_error':None}
+
+def _v90r38_storage_rescue_loop():
+    if not DATABASE_URL or psycopg is None:
+        return
+    while not _v90r38_rescue_state.get('done'):
+        _v90r38_rescue_state['attempts']=int(_v90r38_rescue_state.get('attempts') or 0)+1
+        try:
+            # Use a raw connection probe so the normal fail-soft TTL cannot hide
+            # the short recovery window after Resume Database.
+            c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=4)
+            try:
+                c.execute("SELECT 1")
+            finally:
+                c.close()
+
+            emit('v90_r38_storage_rescue_connection',
+                 attempt=_v90r38_rescue_state['attempts'],status='CONNECTED')
+
+            out=_v90_emergency_storage_reclaim()
+            status=str((out or {}).get('status') or '')
+            emit('v90_r38_storage_rescue_cleanup',status=status,result=out)
+
+            # Verify that Postgres can now write a tiny temp relation before
+            # declaring the rescue complete.
+            v=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5)
+            try:
+                v.execute("SET search_path TO veritas_v90")
+                v.execute("CREATE TEMP TABLE v90_r38_write_test(x int)")
+                v.execute("INSERT INTO v90_r38_write_test VALUES(1)")
+            finally:
+                v.close()
+
+            _v90_pg_health_set(True,None)
+            try:
+                _v90r24_ensure_canonical_portfolios()
+            except Exception as ex:
+                emit('v90_r38_portfolio_reprime_warning',
+                     error=f'{type(ex).__name__}: {ex}')
+            _v90r38_rescue_state.update({'done':True,'last_error':None})
+            emit('v90_r38_storage_rescue_complete',
+                 attempts=_v90r38_rescue_state['attempts'])
+            return
+        except Exception as ex:
+            err=f'{type(ex).__name__}: {ex}'
+            _v90r38_rescue_state['last_error']=err
+            # Log only every 5th failure to avoid turning recovery telemetry
+            # into another noisy stream.
+            if _v90r38_rescue_state['attempts'] in (1,2,3) or _v90r38_rescue_state['attempts']%5==0:
+                emit('v90_r38_storage_rescue_wait',
+                     attempt=_v90r38_rescue_state['attempts'],error=err[:240])
+        time.sleep(20)
+
+# VERITAS V90 STORAGE AUDIT R36
+# Read-only storage telemetry used to identify what fills the Postgres quota.
+def _v90_storage_audit():
+    if not DATABASE_URL or psycopg is None:
+        return {'status':'SKIP','reason':'NO_POSTGRES'}
+    try:
+        c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5)
+    except Exception as ex:
+        emit('v90_storage_audit_error',phase='connect',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','error':str(ex)}
+    try:
+        c.execute("SET statement_timeout='7000ms'")
+        c.execute('SET search_path TO veritas_v90')
+        db=c.execute("""SELECT pg_database_size(current_database())::bigint AS bytes""").fetchone() or {}
+        tables=c.execute("""
+            SELECT s.relname AS table_name,
+                   pg_total_relation_size(s.relid)::bigint AS total_bytes,
+                   pg_relation_size(s.relid)::bigint AS heap_bytes,
+                   pg_indexes_size(s.relid)::bigint AS index_bytes,
+                   COALESCE(u.n_live_tup,0)::bigint AS est_rows
+            FROM pg_catalog.pg_statio_user_tables s
+            LEFT JOIN pg_stat_user_tables u
+              ON u.relid=s.relid
+            WHERE s.schemaname='veritas_v90'
+            ORDER BY pg_total_relation_size(s.relid) DESC
+            LIMIT 25
+        """).fetchall()
+        out={'status':'OK','database_bytes':int(db.get('bytes') or 0),
+             'tables':[{'table':r['table_name'],
+                        'total_bytes':int(r['total_bytes'] or 0),
+                        'heap_bytes':int(r['heap_bytes'] or 0),
+                        'index_bytes':int(r['index_bytes'] or 0),
+                        'est_rows':int(r['est_rows'] or 0)} for r in tables]}
+        try:
+            ev=c.execute("""
+                SELECT event_type,COUNT(*)::bigint AS n,
+                       COALESCE(SUM(pg_column_size(payload)),0)::bigint AS payload_bytes
+                FROM ledger_events
+                GROUP BY event_type
+                ORDER BY payload_bytes DESC
+                LIMIT 20
+            """).fetchall()
+            out['ledger_event_types']=[
+              {'event_type':r['event_type'],'n':int(r['n'] or 0),
+               'payload_bytes':int(r['payload_bytes'] or 0)} for r in ev
+            ]
+        except Exception as ex:
+            out['ledger_event_types_error']=f'{type(ex).__name__}: {ex}'
+        try:
+            files=c.execute("""
+                SELECT n.nspname AS schema_name,c.relname AS relation_name,c.relkind,
+                       pg_relation_filenode(c.oid)::bigint AS filenode
+                FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE pg_relation_filenode(c.oid) IN (86186,86175)
+                ORDER BY 1,2
+            """).fetchall()
+            out['diskfull_relations']=[dict(r) for r in files]
+        except Exception as ex:
+            out['diskfull_relations_error']=f'{type(ex).__name__}: {ex}'
+        emit('v90_storage_audit',**out)
+        return out
+    except Exception as ex:
+        emit('v90_storage_audit_error',phase='query',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','error':str(ex)}
+    finally:
+        try:c.close()
+        except Exception:pass
+
+
+# VERITAS V90 EMERGENCY STORAGE RECLAIM
+_V90_STORAGE_CLEANUP_MARKER='maintenance.emergency_storage_reclaim_2026_09_27_r39'
+
+def _v90_emergency_storage_reclaim():
+    if not DATABASE_URL or psycopg is None:
+        return {'status':'SKIP','reason':'NO_POSTGRES'}
+    try:
+        c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=3)
+    except Exception as ex:
+        emit('db_cleanup_connection_error',error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
+    try:
+        c.execute('SET search_path TO veritas_v90')
+        try:
+            row=c.execute("SELECT value FROM system_settings WHERE key=%s LIMIT 1",(_V90_STORAGE_CLEANUP_MARKER,)).fetchone()
+            if row:
+                emit('db_cleanup_skip',reason='already_completed',marker=_V90_STORAGE_CLEANUP_MARKER)
+                return {'status':'ALREADY_COMPLETED'}
+        except Exception:
+            pass
+        # Legacy pre-v9 public-schema telemetry is not used by the current v9 engine.
+        # Drop the largest obsolete tables first to immediately return disk blocks to PostgreSQL.
+        legacy_drop=[
+            'product_snapshots','macro_snapshots','model_drift_snapshots',
+            'model_calibration_snapshots','validation_snapshots','product_alerts',
+            'visitor_sessions','paper_nav_history'
+        ]
+        legacy_dropped=[]
+        for table in legacy_drop:
+            try:
+                exists=c.execute("SELECT to_regclass(%s) AS r",(f'public.{table}',)).fetchone()
+                if exists and exists['r']:
+                    c.execute(f'DROP TABLE public."{table}" CASCADE')
+                    legacy_dropped.append(table)
+                    emit('db_cleanup_legacy_drop',table=table)
+            except Exception as ex:
+                emit('db_cleanup_legacy_drop_error',table=table,error=f'{type(ex).__name__}: {ex}')
+        # Old public ledger is a large pre-v9 event stream. Current v9 decisions,
+        # outcomes and learning are stored in veritas_v90 and remain untouched.
+        try:
+            exists=c.execute("SELECT to_regclass('public.ledger_events') AS r").fetchone()
+            if exists and exists['r']:
+                c.execute('DROP TABLE public.ledger_events CASCADE')
+                legacy_dropped.append('ledger_events')
+                emit('db_cleanup_legacy_drop',table='ledger_events')
+        except Exception as ex:
+            emit('db_cleanup_legacy_drop_error',table='ledger_events',error=f'{type(ex).__name__}: {ex}')
+
+        sizes_before=[]
+        try:
+            sizes_before=c.execute("""
+                SELECT schemaname,relname AS table_name,pg_total_relation_size(relid) AS bytes
+                FROM pg_catalog.pg_statio_user_tables
+                WHERE schemaname='veritas_v90'
+                ORDER BY pg_total_relation_size(relid) DESC LIMIT 20
+            """).fetchall()
+            emit('db_cleanup_sizes_before',tables=[{'table':r['table_name'],'bytes':int(r['bytes'])} for r in sizes_before])
+        except Exception as ex:
+            emit('db_cleanup_size_probe_error',error=f'{type(ex).__name__}: {ex}')
+
+        # Rebuildable high-frequency state only. Preserve trades, positions,
+        # orders, decisions/outcomes, lifecycle events and all durable learning tables.
+        truncate_tables=[
+            'market_states','agent_views','product_snapshots','macro_snapshots',
+            'model_calibration_snapshots','model_drift_snapshots',
+            'validation_snapshots','visitor_sessions','paper_nav_history'
+        ]
+        reclaimed=[]
+        for table in truncate_tables:
+            try:
+                exists=c.execute("SELECT to_regclass(%s) AS r",(f'veritas_v90.{table}',)).fetchone()
+                if exists and exists['r']:
+                    c.execute(f'TRUNCATE TABLE veritas_v90."{table}" RESTART IDENTITY')
+                    reclaimed.append(table)
+                    emit('db_cleanup_truncate',table=table)
+            except Exception as ex:
+                emit('db_cleanup_truncate_error',table=table,error=f'{type(ex).__name__}: {ex}')
+
+        # Alerts are transient UI notifications; keep no stale copies during recovery.
+        try:
+            exists=c.execute("SELECT to_regclass('veritas_v90.product_alerts') AS r").fetchone()
+            if exists and exists['r']:
+                c.execute('TRUNCATE TABLE veritas_v90.product_alerts RESTART IDENTITY')
+                reclaimed.append('product_alerts')
+                emit('db_cleanup_truncate',table='product_alerts')
+        except Exception as ex:
+            emit('db_cleanup_truncate_error',table='product_alerts',error=f'{type(ex).__name__}: {ex}')
+
+        # R39: compact the oversized raw ledger while preserving the intellectual
+        # capital: every outcome and durable lesson, plus matched decisions that
+        # produced outcomes. Only redundant raw context is bounded. UI state,
+        # paper_positions, paper_trades, orders and lifecycle data are untouched.
+        ledger_compaction={'status':'SKIPPED'}
+        try:
+            c.execute("DROP TABLE IF EXISTS pg_temp.v90_ledger_keep")
+            c.execute("""
+              CREATE TEMP TABLE v90_ledger_keep AS
+              SELECT DISTINCT ON(event_key)
+                     event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+              FROM (
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM veritas_v90.ledger_events
+                WHERE event_type IN (
+                  'outcome','experience_lesson','paper_execution_lesson',
+                  'profitability_learning','abstention_lesson','case_lesson',
+                  'rejected_signal_lesson'
+                )
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='decision'
+                  ORDER BY event_ts DESC LIMIT 1500
+                ) qd
+                UNION ALL
+                SELECT d.event_key,d.entity_key,d.event_type,d.event_ts,d.asset,d.horizon,d.payload,d.model_version
+                FROM veritas_v90.ledger_events d
+                WHERE d.event_type='decision'
+                  AND EXISTS (
+                    SELECT 1 FROM veritas_v90.ledger_events o
+                    WHERE o.event_type='outcome' AND o.entity_key=d.entity_key
+                  )
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='setup_learning'
+                  ORDER BY event_ts DESC LIMIT 500
+                ) qs
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='admission_learning'
+                  ORDER BY event_ts DESC LIMIT 500
+                ) qa
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='trade_counterfactual_lab'
+                  ORDER BY event_ts DESC LIMIT 300
+                ) qc
+                UNION ALL
+                SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                FROM (
+                  SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+                  FROM veritas_v90.ledger_events
+                  WHERE event_type='impulse_genesis_learning'
+                  ORDER BY event_ts DESC LIMIT 300
+                ) qi
+              ) keep_rows
+              ORDER BY event_key,event_ts DESC
+            """)
+            keep_n=int((c.execute("SELECT COUNT(*) n FROM v90_ledger_keep").fetchone() or {}).get('n') or 0)
+            before_n=int((c.execute("SELECT COUNT(*) n FROM veritas_v90.ledger_events").fetchone() or {}).get('n') or 0)
+            c.execute("TRUNCATE TABLE veritas_v90.ledger_events RESTART IDENTITY")
+            c.execute("""
+              INSERT INTO veritas_v90.ledger_events
+                (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+              SELECT event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version
+              FROM v90_ledger_keep
+              ORDER BY event_ts
+              ON CONFLICT(event_key) DO NOTHING
+            """)
+            c.execute("ANALYZE veritas_v90.ledger_events")
+            ledger_compaction={'status':'OK','before_rows':before_n,'kept_rows':keep_n,
+                               'removed_rows':max(0,before_n-keep_n)}
+            emit('v90_r37_ledger_compaction',**ledger_compaction)
+        except Exception as ex:
+            ledger_compaction={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
+            emit('v90_r37_ledger_compaction_error',**ledger_compaction)
+
+        # Meta signals are derived every cycle. Delete them in small chunks only
+        # after TRUNCATE has created breathing room.
+        deleted_meta=0
+        try:
+            while True:
+                rows=c.execute("""
+                    WITH doomed AS (
+                      SELECT ctid FROM veritas_v90.ledger_events
+                      WHERE event_type='meta_signal' LIMIT 2000
+                    )
+                    DELETE FROM veritas_v90.ledger_events l
+                    USING doomed d WHERE l.ctid=d.ctid RETURNING 1
+                """).fetchall()
+                n=len(rows); deleted_meta+=n
+                if n==0: break
+                if deleted_meta>=100000: break
+            emit('db_cleanup_meta_signal_done',deleted=deleted_meta)
+        except Exception as ex:
+            emit('db_cleanup_meta_signal_error',deleted=deleted_meta,error=f'{type(ex).__name__}: {ex}')
+
+        try:
+            c.execute("""
+                INSERT INTO veritas_v90.system_settings(key,value,updated_at,updated_by)
+                VALUES(%s,%s::jsonb,NOW(),'emergency_cleanup')
+                ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,
+                  updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by
+            """,(_V90_STORAGE_CLEANUP_MARKER,json.dumps({'legacy_dropped':legacy_dropped,'truncated':reclaimed,'meta_signal_deleted':deleted_meta,'ledger_compaction':ledger_compaction})))
+        except Exception as ex:
+            emit('db_cleanup_marker_error',error=f'{type(ex).__name__}: {ex}')
+
+        try:
+            sizes_after=c.execute("""
+                SELECT schemaname,relname AS table_name,pg_total_relation_size(relid) AS bytes
+                FROM pg_catalog.pg_statio_user_tables
+                WHERE schemaname='veritas_v90'
+                ORDER BY pg_total_relation_size(relid) DESC LIMIT 20
+            """).fetchall()
+            emit('db_cleanup_sizes_after',tables=[{'table':r['table_name'],'bytes':int(r['bytes'])} for r in sizes_after])
+        except Exception as ex:
+            emit('db_cleanup_size_probe_after_error',error=f'{type(ex).__name__}: {ex}')
+        emit('db_cleanup_complete',marker=_V90_STORAGE_CLEANUP_MARKER,legacy_dropped=legacy_dropped,truncated=reclaimed,meta_signal_deleted=deleted_meta)
+        return {'status':'OK','truncated':reclaimed,'meta_signal_deleted':deleted_meta}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# VERITAS V90 LEGACY COMPAT VIEWS
+def _v90_ensure_legacy_compat_views():
+    if not DATABASE_URL or psycopg is None:
+        return {'status':'SKIP'}
+    mapping=[
+      'ledger_events','product_snapshots','macro_snapshots','model_drift_snapshots',
+      'model_calibration_snapshots','validation_snapshots','product_alerts',
+      'visitor_sessions','paper_nav_history'
+    ]
+    made=[]; errors=[]
+    try:
+        c=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=3)
+        try:
+            for name in mapping:
+                try:
+                    src=c.execute("SELECT to_regclass(%s) AS r",(f'veritas_v90.{name}',)).fetchone()
+                    dstrel=c.execute("SELECT to_regclass(%s) AS r",(f'public.{name}',)).fetchone()
+                    if src and src['r'] and not (dstrel and dstrel['r']):
+                        c.execute(f'CREATE VIEW public."{name}" AS SELECT * FROM veritas_v90."{name}"')
+                        made.append(name)
+                except Exception as ex:
+                    errors.append({'table':name,'error':f'{type(ex).__name__}: {ex}'})
+        finally:
+            c.close()
+    except Exception as ex:
+        return {'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
+    emit('v90_legacy_compat_views',created=made,errors=errors)
+    return {'status':'OK','created':made,'errors':errors}
+
+
+# VERITAS V90 PAPER EXECUTION LEARNING V2
+_v90_base_refresh_experience_lessons = refresh_experience_lessons
+
+
+def _v90_publish_paper_execution_lessons(limit=2500):
+    if not pg_enabled() or VP is None or not hasattr(VP,'learning_archive'):
+        return {'status':'UNAVAILABLE','archived':0,'learning_fallback':0,'eligible':0}
+    try:
+        rows=VP.learning_archive(pg_connect,limit)
+    except Exception as ex:
+        return {'status':'ERROR','archived':0,'learning_fallback':0,'eligible':0,
+                'error':f'{type(ex).__name__}: {ex}'}
+    archived=0; learning_fallback=0; shadow_covered=0; eligible=0; errors=[]
+    for x in rows or []:
+        if not x.get('learning_eligible'):
+            continue
+        weight=float(x.get('learning_weight') or 0.0)
+        if weight<=0:
+            continue
+        eligible+=1
+        episode=str(x.get('episode_key') or '')
+        if not episode:
+            continue
+        label=str(x.get('learning_label') or 'NEGATIVE_EXECUTION')
+        payload={
+            'setup_id':episode,
+            'direction':x.get('direction'),
+            'setup_family':x.get('setup_family') or x.get('setup') or 'UNKNOWN',
+            'regime_bucket':x.get('regime_bucket') or x.get('regime') or 'ADAPTIVE',
+            'entry_state':x.get('entry_state') or 'NORMAL',
+            'horizon_state':x.get('horizon_state') or 'UNKNOWN',
+            'label':label,
+            'profitable':bool(float(x.get('avg_return_pct') or 0.0)>0),
+            'actual_pnl_fraction':float(x.get('avg_return_pct') or 0.0)/100.0,
+            'trade_mfe':None if x.get('avg_mfe_pct') is None else float(x['avg_mfe_pct'])/100.0,
+            'trade_mae':None if x.get('avg_mae_pct') is None else float(x['avg_mae_pct'])/100.0,
+            'giveback_fraction':None if x.get('avg_giveback_pct') is None else float(x['avg_giveback_pct'])/100.0,
+            'exit_reason':x.get('exit_reason'),
+            'portfolio_count':int(x.get('portfolio_count') or 0),
+            'paper_trade_count':int(x.get('trade_count') or 0),
+            'learning_weight':weight,
+            'learning_conclusion':x.get('learning_conclusion'),
+            'source':'PAPER_PORTFOLIO_UNIQUE_EXECUTION',
+            'unique_market_episode':True,
+            'portfolio_results_aggregated':True,
+        }
+        entity='paper_exec:'+episode
+        try:
+            with pg_connect() as pc:
+                # Always archive the unique execution lesson for audit/reporting.
+                archive_key='paper_execution_lesson:'+entity
+                pc.execute("""INSERT INTO ledger_events
+                    (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+                    VALUES(%s,%s,'paper_execution_lesson',%s,%s,%s,%s::jsonb,%s)
+                    ON CONFLICT(event_key) DO UPDATE SET
+                      event_ts=EXCLUDED.event_ts,asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,
+                      payload=EXCLUDED.payload,model_version=EXCLUDED.model_version""",
+                    (archive_key,entity,x.get('last_closed_at') or now(),
+                     x.get('asset'),x.get('horizon'),
+                     json.dumps(payload,ensure_ascii=False,default=str),VERSION))
+                archived+=1
+                # If the canonical shadow lifecycle already learned this setup, do not
+                # count the paper portfolios as another directional sample.
+                covered=pc.execute("""SELECT 1 FROM ledger_events
+                    WHERE event_type='experience_lesson'
+                      AND payload->>'source'='CANONICAL_SHADOW_TRADE'
+                      AND payload->>'setup_id'=%s LIMIT 1""",(episode,)).fetchone()
+                if covered:
+                    shadow_covered+=1
+                    continue
+                fallback=dict(payload)
+                fallback['source']='PAPER_PORTFOLIO_UNIQUE_EXECUTION_FALLBACK'
+                fallback['learning_weight']=min(0.20,weight)
+                learn_key='experience_lesson:'+entity
+                pc.execute("""INSERT INTO ledger_events
+                    (event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+                    VALUES(%s,%s,'experience_lesson',%s,%s,%s,%s::jsonb,%s)
+                    ON CONFLICT(event_key) DO UPDATE SET
+                      event_ts=EXCLUDED.event_ts,asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,
+                      payload=EXCLUDED.payload,model_version=EXCLUDED.model_version""",
+                    (learn_key,entity,x.get('last_closed_at') or now(),
+                     x.get('asset'),x.get('horizon'),
+                     json.dumps(fallback,ensure_ascii=False,default=str),VERSION))
+                learning_fallback+=1
+        except Exception as ex:
+            errors.append(f'{episode}:{type(ex).__name__}:{ex}')
+    if learning_fallback:
+        try:
+            setup_memory_board._cache=None
+        except Exception:
+            pass
+    return {'status':'OK' if not errors else 'DEGRADED','archived':archived,
+            'learning_fallback':learning_fallback,'shadow_covered':shadow_covered,
+            'eligible':eligible,'unique_market_episodes':len(rows or []),'errors':errors[:10],
+            'principle':'one market episode once; portfolio duplicates aggregate; canonical shadow lesson has priority'}
+
+
+def refresh_experience_lessons(limit=400):
+    base=_v90_base_refresh_experience_lessons(limit)
+    paper=_v90_publish_paper_execution_lessons(max(500,min(5000,int(limit)*5)))
+    if not isinstance(base,dict):
+        base={'status':'DEGRADED','base_result':base}
+    base=dict(base)
+    base['paper_execution_learning']=paper
+    return base
+
+
+# VERITAS V90 MEMORY P0 R1
+# Keep full durable decision payloads in PostgreSQL/SQLite, but retain only the
+# execution/UI subset in process memory and in Render application logs.
+
+# Four outer workers are safe under the current memory envelope; heavy
+# learning remains memory-gated separately. This restores the intended I/O parallelism.
+FAST_LOOP_MARKET_WORKERS=min(4,max(2,int(FAST_LOOP_MARKET_WORKERS)))
+MEMORY_SOFT_LIMIT_MB=min(320,int(MEMORY_SOFT_LIMIT_MB))
+HEAVY_LEARNING_INTERVAL_SECONDS=max(3600,int(HEAVY_LEARNING_INTERVAL_SECONDS))
+HEAVY_LEARNING_START_DELAY_SECONDS=max(300,int(HEAVY_LEARNING_START_DELAY_SECONDS))
+OUTCOME_BATCH_LIMIT=min(12,int(OUTCOME_BATCH_LIMIT))
+V701_LEARNING_MAX_EPISODES=min(600,int(V701_LEARNING_MAX_EPISODES))
+V90_MEMORY_CAUTION_MB=280.0
+V90_MEMORY_PROTECT_MB=340.0
+V90_HEAVY_LEARNING_MAX_START_MB=260.0
+
+
+def _v90_small_dict(src,keys):
+    if not isinstance(src,dict):
+        return {}
+    return {k:src.get(k) for k in keys if src.get(k) is not None}
+
+
+def _v90_compact_live_row(z):
+    if not isinstance(z,dict):
+        return {}
+    hs=_v90_small_dict(z.get('horizon_structure'),(
+        'status','horizon','native_horizon','resolution','direction','raw_direction',
+        'score','state','return','z','bars','breakout','volume_ratio'))
+    st=_v90_small_dict(z.get('intraday_structure'),(
+        'enabled','status','resolution','direction','score','lifecycle','entry_quality',
+        'relative_volume','volume_confirmed','near_ath','price_discovery',
+        'breakout_found','breakout_level','breakout_hold','fresh_breakout',
+        'false_breakout','recent_swing_anchor','invalidation_price','late_entry'))
+    inst=z.get('institutional_signal') or {}
+    bq=_v90_small_dict(inst.get('breakout_quality'),(
+        'status','is_breakout','fresh_breakout','direction','quality_score',
+        'state','breakout_level','breakout_distance_pct','volume_ratio',
+        'native_score','consensus_count','consensus_score','late_entry'))
+    evid=_v90_small_dict(inst.get('evidence_independence'),(
+        'independent_count','independence_score','active_families'))
+    rt=_v90_small_dict(inst.get('regime_transition'),(
+        'state','transition_score','from_regime','candidate_regime'))
+    inst2=_v90_small_dict(inst,(
+        'version','signal_tier','investor_signal','action','recommended_initial_fraction',
+        'conflict_override','wait_reason','risk_pct','expected_to_stop_ratio',
+        'position_scaling','research_only','execution_gate_bypass'))
+    inst2['breakout_quality']=bq
+    inst2['evidence_independence']=evid
+    inst2['regime_transition']=rt
+    plan=z.get('trade_plan') or {}
+    plan2=_v90_small_dict(plan,(
+        'eligible','reason','direction','entry_price','entry_quality','entry_quality_rebased_from_old_setup','late_entry',
+        'stop_price','stop_method','stop_distance_pct','invalidation_price',
+        'expected_move_pct','expected_move_method','expected_to_stop_ratio',
+        'min_expected_to_stop_ratio','initial_position_fraction','scaling_policy',
+        'signal_tier','structure_lifecycle','fresh_breakout','breakout_level',
+        'recent_swing_anchor','robot_eligible','execution_mode','target_price',
+        'tactical_target_price','target_method','setup','reversal_probability',
+        'decision_stage','positive_trade_probability','statistical_noise_buffer_p80',
+        'spread_bps','execution_safety_version','horizon','market_observed_at','best_bid','best_ask'))
+    econ=plan.get('final_economics_gate') or {}
+    plan2['final_economics_gate']=_v90_small_dict(econ,(
+        'status','eligible','blockers','expected_to_stop_ratio','minimum_reward_risk',
+        'expected_move_pct','minimum_expected_move_pct','modeled_round_trip_cost_pct',
+        'observed_spread_bps','stop_distance_pct','target_price','target_distance_pct','modeled_entry_fill',
+        'modeled_target_fill','modeled_stop_fill','net_reward_pct','net_risk_pct','quote_time_gate'))
+    tp1=plan.get('take_profit_1')
+    if isinstance(tp1,dict):
+        plan2['take_profit_1']=_v90_small_dict(tp1,('timeframe','price','distance_pct'))
+    elif tp1 is not None:
+        plan2['take_profit_1']=tp1
+    ta=z.get('tradeability') or {}
+    ta2=_v90_small_dict(ta,(
+        'status','positive_trade_probability','raw_n','effective_n','decision_influence',
+        'weighted_avg_signed_return','p80_adverse_excursion'))
+    sl=z.get('structural_levels') or {}
+    sl2=_v90_small_dict(sl,(
+        'status','price','sma18','sma50','sma18_slope','sma50_slope',
+        'price_vs_sma18','price_vs_sma50','support','support_strength',
+        'resistance','resistance_strength'))
+    tr=_v90_small_dict(z.get('tactical_reversal'),(
+        'active','direction','candidate_direction','setup','state','probability',
+        'stop_price','target_price','reward_risk','min_reward_risk','reason',
+        'cycle_return','confirmations'))
+    rs=_v90_small_dict(z.get('range_retest_breakout'),(
+        'active','direction','candidate_direction','setup','state','probability',
+        'support','resistance','stop_price','target_price','reward_risk',
+        'min_reward_risk','initial_position_fraction','confirmations',
+        'entry_active','add_active','manage_active','reason'))
+    pb=_v90_small_dict(z.get('impulse_pivot_break'),(
+        'active','direction','candidate_direction','setup','state','probability',
+        'stop_price','target_price','reward_risk','reason','local_support',
+        'local_resistance','local_volume_ratio','local_efficiency'))
+    io=_v90_small_dict(z.get('impulse_overlay'),(
+        'active','phase','direction','confidence','base_score',
+        'active_directional_score','blend','entry_quality'))
+    keys=(
+        'asset','horizon','decision','research_decision','confidence','price','score',
+        'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
+        'source_gate_pass','market_open','execution_eligible','paper_eligible','production_eligible',
+        'execution_reason','paper_execution_reason','data_latency_class','market_observed_at','contract','source_names',
+        'direct_sources','best_bid','best_ask','spread_bps','source_policy','minimum_sources',
+        'calibrated_probability','shadow_position',
+        'challenger_decision','challenger_confidence','v70_uncertainty',
+        'v70_falsification','v70_gate_status','v70_gate_class','v70_thesis_status',
+        'v70_entry_status','v70_action','v70_size_multiplier','v70_timing_multiplier',
+        'v70_entry_scope','v70_model_set_size','investor_signal','signal_quality',
+        'independent_evidence_families','regime_transition_state',
+        'horizon_structure_direction','horizon_structure_score','horizon_structure_state',
+        'trend_phase','trend_direction','trend_onset_score','impulse_score',
+        'entry_quality','positive_trade_probability','analog_effective_n',
+        'expected_move_pct','signal_tier','execution_signal_tier',
+        'event_shadow_score','causal_score','causal_label','decision_stage',
+        'sma18','sma50','support_level','resistance_level')
+    out=_v90_small_dict(z,keys)
+    out['horizon_structure']=hs
+    out['intraday_structure']=st
+    out['institutional_signal']=inst2
+    out['trade_plan']=plan2
+    out['tradeability']=ta2
+    out['structural_levels']=sl2
+    out['tactical_reversal']=tr
+    out['range_retest_breakout']=rs
+    out['impulse_pivot_break']=pb
+    out['impulse_overlay']=io
+    return out
+
+
+def _v90_compact_decision_log(z):
+    r=_v90_compact_live_row(z)
+    p=r.get('trade_plan') or {}
+    hs=r.get('horizon_structure') or {}
+    inst=r.get('institutional_signal') or {}
+    return {
+        'asset':r.get('asset'),'horizon':r.get('horizon'),
+        'decision':r.get('decision'),'research_decision':r.get('research_decision'),
+        'confidence':r.get('confidence'),'price':r.get('price'),'regime':r.get('regime'),
+        'signal_tier':r.get('signal_tier'),'execution_eligible':r.get('execution_eligible'),
+        'paper_eligible':r.get('paper_eligible'),'production_eligible':r.get('production_eligible'),
+        'execution_reason':r.get('execution_reason'),'paper_execution_reason':r.get('paper_execution_reason'),
+        'spread_bps':r.get('spread_bps'),
+        'final_gate_status':(p.get('final_economics_gate') or {}).get('status'),
+        'final_gate_blockers':(p.get('final_economics_gate') or {}).get('blockers'),
+        'modeled_round_trip_cost_pct':(p.get('final_economics_gate') or {}).get('modeled_round_trip_cost_pct'),
+        'calibrated_probability':r.get('calibrated_probability'),
+        'decision_stage':r.get('decision_stage'),
+        'horizon_structure_direction':hs.get('direction'),
+        'horizon_structure_score':hs.get('score'),'horizon_structure_state':hs.get('state'),
+        'entry_quality':r.get('entry_quality'),
+        'investor_signal':inst.get('investor_signal'),
+        'independent_evidence_families':r.get('independent_evidence_families'),
+        'stop_price':p.get('stop_price'),'target_price':p.get('target_price') or p.get('tactical_target_price'),
+        'expected_move_pct':p.get('expected_move_pct'),
+        'expected_to_stop_ratio':p.get('expected_to_stop_ratio'),
+        'plan_eligible':p.get('eligible'),'plan_reason':p.get('reason'),
+    }
+
+
+def _v90_prune_low_priority_caches(level_mb=None):
+    m=float(level_mb if level_mb is not None else (rss_mb() or 0.0))
+    if m < V90_MEMORY_CAUTION_MB:
+        return 0
+    cleared=0
+    try:
+        with analytics_cache_lock:
+            cleared+=len(analytics_cache); analytics_cache.clear()
+    except Exception:
+        pass
+    for box in (experience_cache,trend_case_cache,structure_analog_cache):
+        try:
+            if box.get('value') is not None:
+                box['value']=None; box['at']=0.0; cleared+=1
+        except Exception:
+            pass
+    if not FULL_OVERVIEW_ENABLED:
+        try:
+            with overview_cache_lock:
+                if overview_cache.get('value') is not None:
+                    overview_cache['value']=None; overview_cache['at']=0.0; cleared+=1
+        except Exception:
+            pass
+    for fn_name in ('_decision_memory_rows','_decision_memory_vectors',
+                    'v701_learning_bundle','v70_quality_board','learning_progress'):
+        try:
+            fn=globals().get(fn_name)
+            if fn is not None and getattr(fn,'_cache',None) is not None:
+                fn._cache=None; cleared+=1
+        except Exception:
+            pass
+    if m >= V90_MEMORY_PROTECT_MB:
+        try:
+            with market_cache_lock:
+                cleared+=len(market_cache); market_cache.clear()
+        except Exception:
+            pass
+        try:
+            boxes=getattr(_v27_cache,'_boxes',None)
+            if isinstance(boxes,dict):
+                cleared+=len(boxes); boxes.clear()
+        except Exception:
+            pass
+    return cleared
+
+
+def _v90_trim_memory(phase='unknown',force=False):
+    before=rss_mb()
+    if not force and before is not None and float(before)<V90_MEMORY_CAUTION_MB:
+        return {'phase':phase,'before_mb':before,'after_mb':before,'trimmed':False}
+    cleared=_v90_prune_low_priority_caches(before)
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import ctypes
+        libc=ctypes.CDLL('libc.so.6')
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+    after=rss_mb()
+    if force or (before is not None and after is not None and float(before)-float(after)>=8.0):
+        emit('memory_trim',phase=phase,before_mb=before,after_mb=after,
+             released_mb=None if before is None or after is None else round(float(before)-float(after),1),
+             caches_cleared=cleared)
+    return {'phase':phase,'before_mb':before,'after_mb':after,'trimmed':True,'caches_cleared':cleared}
+
+
+_v90_base_run_heavy_learning_maintenance=run_heavy_learning_maintenance
+
+
+def run_heavy_learning_maintenance(reason='scheduled'):
+    m=rss_mb()
+    if m is not None and float(m)>V90_HEAVY_LEARNING_MAX_START_MB:
+        with heavy_learning_state_lock:
+            heavy_learning_state.update({'status':'DEFERRED_MEMORY','reason':reason,
+                                         'rss_mb':round(float(m),1),
+                                         'memory_start_limit_mb':V90_HEAVY_LEARNING_MAX_START_MB})
+        emit('heavy_learning_deferred_memory',reason=reason,rss_mb=m,
+             max_start_mb=V90_HEAVY_LEARNING_MAX_START_MB)
+        return {'status':'DEFERRED_MEMORY','rss_mb':m}
+    try:
+        return _v90_base_run_heavy_learning_maintenance(reason)
+    finally:
+        try:
+            with heavy_learning_state_lock:
+                for k in ('event_learning','rule_learning','experience_learning'):
+                    x=heavy_learning_state.get(k)
+                    if isinstance(x,dict):
+                        heavy_learning_state[k]={q:x.get(q) for q in
+                            ('status','written','rows','status_changes','trade_lessons',
+                             'rejected_lessons','abstention_lessons') if x.get(q) is not None}
+        except Exception:
+            pass
+        _v90_trim_memory('heavy_learning_end',force=True)
+
+
+def maybe_schedule_heavy_learning(reason='scheduled',force=False):
+    if not force and not heavy_learning_due():
+        return False
+    m=rss_mb()
+    if m is not None and float(m)>V90_HEAVY_LEARNING_MAX_START_MB:
+        with heavy_learning_state_lock:
+            heavy_learning_state.update({'status':'DEFERRED_MEMORY','reason':reason,
+                                         'rss_mb':round(float(m),1),
+                                         'memory_start_limit_mb':V90_HEAVY_LEARNING_MAX_START_MB})
+        return False
+    threading.Thread(target=run_heavy_learning_maintenance,args=(reason,),daemon=True).start()
+    return True
+
+
+# VERITAS V90 CANONICAL PORTFOLIOS R24
+V90_CANONICAL_PORTFOLIOS=('Impulse','Aggressive','Champion','Challenger')
+
+def _v90r24_ensure_canonical_portfolios():
+    if VP is None or not pg_enabled():
+        return {'status':'UNAVAILABLE','names':[],'count':0}
+    try:
+        if hasattr(VP,'ensure_schema'):
+            VP.ensure_schema(pg_connect)
+        policies={
+          'Impulse': {'threshold':0.64,'strong_threshold':0.76,'min_independent':2,'mode':'IMPULSE_ONLY',
+                      'allowed_horizons':['5m','1h','4h','1d'],'max_fraction':0.50,
+                      'provisional_cap':0.10,'accepted_cap':0.25,'confirmed_cap':0.50},
+          'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE',
+                         'max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
+          'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':2.0},
+          'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':2.0},
+        }
+        with pg_connect() as c:
+            for name in V90_CANONICAL_PORTFOLIOS:
+                c.execute("""INSERT INTO paper_portfolios
+                  (name,created_at,updated_at,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,
+                   benchmark_nav_rub,high_water_nav_rub,policy,model_version)
+                  VALUES(%s,now(),now(),1000000,0,0,0,1000000,1000000,%s::jsonb,%s)
+                  ON CONFLICT(name) DO UPDATE SET
+                    policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()""",
+                  (name,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION','veritas-portfolio-v9.0-four-portfolio-core')))
+            rows=c.execute("""SELECT name FROM paper_portfolios
+                              WHERE name=ANY(%s)
+                              ORDER BY CASE name
+                                WHEN 'Impulse' THEN 1 WHEN 'Aggressive' THEN 2
+                                WHEN 'Champion' THEN 3 WHEN 'Challenger' THEN 4 ELSE 99 END""",
+                           (list(V90_CANONICAL_PORTFOLIOS),)).fetchall()
+        names=[str(x.get('name')) for x in rows]
+        ok=names==list(V90_CANONICAL_PORTFOLIOS)
+        out={'status':'OK' if ok else 'DEGRADED','names':names,'count':len(names),'expected':list(V90_CANONICAL_PORTFOLIOS)}
+        emit('v90_canonical_portfolios_ready',**out)
+        return out
+    except Exception as ex:
+        out={'status':'ERROR','names':[],'count':0,'error':f'{type(ex).__name__}: {ex}'}
+        emit('v90_canonical_portfolios_ready',**out)
+        return out
+
+def _v90r24_prime_portfolio_snapshot():
+    if VP is None or not pg_enabled():
+        return {'status':'UNAVAILABLE','count':0}
+    try:
+        rep=VP.report(pg_connect)
+        ps=list(rep.get('portfolios') or [])
+        by={str(p.get('name')):p for p in ps}
+        ordered=[by[n] for n in V90_CANONICAL_PORTFOLIOS if n in by]
+        rep['portfolios']=ordered
+        rep['canonical_names']=list(V90_CANONICAL_PORTFOLIOS)
+        rep['portfolio_count']=len(ordered)
+        rep['api_source']='postgres_cold_start'
+        with lock:
+            last_cycle['portfolio_autopilot']=rep
+        emit('v90_portfolio_cold_start',status='READY' if len(ordered)==4 else 'DEGRADED',
+             portfolio_count=len(ordered),names=[p.get('name') for p in ordered])
+        return {'status':'READY' if len(ordered)==4 else 'DEGRADED','count':len(ordered)}
+    except Exception as ex:
+        emit('v90_portfolio_cold_start',status='ERROR',portfolio_count=0,
+             error=f'{type(ex).__name__}: {ex}')
+        return {'status':'ERROR','count':0}
+
+# VERITAS V90 EXECUTION SAFETY R40
+# One final gate sits after every setup-specific trade-plan branch. Research
+# signals remain visible even when the trade is blocked.
+_v90r40_base_features = _features_r39
+_v90r40_base_execution_eligibility = _execution_eligibility_r39
+_v90r40_base_technical_trade_plan = _technical_trade_plan_r39
+
+def features(raw, horizon, common_structure=None):
+    f=dict(_v90r40_base_features(raw,horizon,common_structure) or {})
+    f['market_contract']=raw.get('contract')
+    f['market_source_names']=raw.get('source_names')
+    f['market_observed_at']=raw.get('observed_at')
+    f['best_bid']=raw.get('best_bid')
+    f['best_ask']=raw.get('best_ask')
+    f['spread_bps']=raw.get('spread_bps')
+    return f
+
+def execution_eligibility(asset, raw, clock_info=None):
+    # The active engine executes normalized paper portfolios. Its canonical
+    # eligibility must use the same one-source policy as portfolio admission.
+    paper=VX.paper_source_gate(asset,raw,clock_info)
+    prod=VX.production_source_gate(asset,raw,clock_info)
+    secondary=raw.get('secondary_price',raw.get('coinbase_price'))
+    direct=1 if VX.research_paper_source_ok(raw) else 0
+    # Proxies and a different futures contract are not a second direct quote.
+    if direct and secondary is not None and (asset in CRYPTO_ASSETS or
+            raw.get('verification_mode')=='direct_independent'):
+        direct=2
+    return {'eligible':paper['eligible'],'paper_eligible':paper['eligible'],
+            'reason':paper['reason'],'paper_execution_reason':paper['reason'],
+            'paper_source_blockers':paper['blockers'],
+            'source_policy':paper['source_policy'],'minimum_sources':1,
+            'direct_sources':direct,'research_ok':bool(raw.get('source_gate_pass')),
+            'time_ok':bool(raw.get('market_open')),
+            'production_eligible':bool(prod.get('eligible')),'production_gate':prod,
+            'live_capital_execution':False,'paper_is_live_fill_evidence':False}
+
+
+def final_execution_safety(asset,research_decision,plan):
+    plan=dict(plan or {}); plan['direction']=research_decision
+
+    # R43 final-level invariant: setup-specific mutations must leave one canonical
+    # target. Recompute gross move/RR from the FINAL entry, stop and target before
+    # the post-cost economics gate. This prevents stale core target/RR fields from
+    # blocking (or incorrectly admitting) a later tactical setup.
+    setup=str(plan.get('setup') or '')
+    reason=str(plan.get('reason') or '')
+    tactical_target=plan.get('tactical_target_price')
+    setup_target_override=(
+        setup in ('TACTICAL_REVERSAL','IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK',
+                  'BRENT_REVERSAL_CAPTURE','RANGE_RETEST_BREAKOUT','REVERSAL_ADMISSION_BRIDGE')
+        or reason in ('tactical_reversal','impulse_genesis','brent_reversal_capture',
+                      'range_retest_breakout','reversal_admission_bridge')
+    )
+    if tactical_target is not None and setup_target_override:
+        plan['target_price']=tactical_target
+        plan['target_method']='SETUP_SPECIFIC_CANONICAL_TARGET'
+
+    try:
+        entry=float(plan.get('entry_price'))
+        stop=float(plan.get('stop_price'))
+        target=float(plan.get('target_price') if plan.get('target_price') is not None
+                     else plan.get('tactical_target_price'))
+        if entry>0 and stop>0 and target>0 and research_decision in ('LONG','SHORT'):
+            sign=1.0 if research_decision=='LONG' else -1.0
+            move=sign*(target-entry)/entry
+            risk=sign*(entry-stop)/entry
+            if move>0 and risk>0:
+                prior_move=plan.get('expected_move_pct')
+                prior_rr=plan.get('expected_to_stop_ratio')
+                plan['expected_move_pct']=move
+                plan['expected_to_stop_ratio']=move/risk
+                plan['stop_distance_pct']=risk
+                plan['final_level_sync']={
+                    'status':'SYNCED','entry_price':entry,'stop_price':stop,'target_price':target,
+                    'prior_expected_move_pct':prior_move,'prior_expected_to_stop_ratio':prior_rr,
+                    'final_expected_move_pct':move,'final_expected_to_stop_ratio':move/risk,
+                }
+    except (TypeError,ValueError,ZeroDivisionError):
+        pass
+
+    gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
+        'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
+    }
+    if 'market_observed_at' in plan and research_decision in ('LONG','SHORT'):
+        timing=quote_gate(plan['market_observed_at'],plan.get('horizon')); gate['quote_time_gate']=timing
+        if not timing['eligible']: gate.update(status='BLOCK',eligible=False); gate['blockers'].append(timing['reason'])
+    plan['final_economics_gate']=gate
+    if bool(plan.get('eligible')) and research_decision in ('LONG','SHORT') and not gate.get('eligible'):
+        prior_reason=str(plan.get('reason') or 'setup_eligible')
+        plan['eligible']=False
+        plan['pre_final_gate_reason']=prior_reason
+        plan['reason']='final_economics_gate:' + ','.join(gate.get('blockers') or ['BLOCK'])
+        plan['initial_position_fraction']=0.0
+    if plan.get('eligible') and str(plan.get('entry_quality') or '')=='INVALIDATED' and (str(plan.get('setup') or '') in ('IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL','BRENT_REVERSAL_CAPTURE','REVERSAL_ADMISSION_BRIDGE','RANGE_RETEST_BREAKOUT') or bool(plan.get('new_setup_identity'))): plan['entry_quality']='NEW_SETUP_PROVISIONAL'; plan['entry_quality_rebased_from_old_setup']=True
+    plan['execution_safety_version']=VX.VERSION
+    return plan
+
+def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
+    plan=dict(_v90r40_base_technical_trade_plan(
+        asset,horizon,f,research_decision,signal_tier,analog
+    ) or {})
+    plan.update(horizon=horizon,market_observed_at=f.get('market_observed_at'),best_bid=f.get('best_bid'),best_ask=f.get('best_ask'))
+    # The same gate is applied again after setup-specific mutations in cycle().
+    return final_execution_safety(asset,research_decision,plan)
+
+
+def main():
+    global _BOOTSTRAP_READY
+
+    # Bind and serve HTTP first so Render health checks do not wait for
+    # PostgreSQL migration/seeding or any other startup work.
+    server=ThreadingHTTPServer(('0.0.0.0', int(os.getenv('PORT', '10000'))), H)
+    server_thread=threading.Thread(target=server.serve_forever,daemon=True,name='veritas-http')
+    server_thread.start()
+    emit('http_bound_early', port=int(os.getenv('PORT','10000')),
+         bootstrap_ready=False, startup_mode='TWO_PHASE_READINESS')
+
+    _v90_emergency_storage_reclaim()
+    _v90_ensure_legacy_compat_views()
+    init_db()
+    pg_boot = pg_init()
+    v90_migration = v90_migrate_core_data() if pg_boot.get('ok') else {'status':'POSTGRES_REQUIRED','schema':V90_DB_SCHEMA}
+    emit('v90_database_ready', **v90_migration)
+    if pg_boot.get('ok'):
+        try: _v90_storage_audit()
+        except Exception as _sa_ex:
+            emit('v90_storage_audit_error',phase='startup',error=f'{type(_sa_ex).__name__}: {_sa_ex}')
+    # R16 startup discipline: never block the live market loop on full historical
+    # portfolio reports or loss audits. They remain durable in PostgreSQL and are
+    # generated on demand / in background maintenance.
+    if pg_boot.get('ok') and VP is not None:
+        try:
+            _v90r24_ensure_canonical_portfolios()
+            emit('v90_live_state_ready',status='OK',
+                 historical_reports='DEFERRED',
+                 historical_audits='BACKGROUND',
+                 portfolio_snapshot='FAST_API_ON_DEMAND',
+                 principle='market loop first; history on demand')
+        except Exception as _pr_ex:
+            emit('v90_live_state_ready',status='DEGRADED',
+                 error=f'{type(_pr_ex).__name__}: {_pr_ex}')
+        emit('v90_startup_memory_policy',
+             closed_journal='DEFER_TO_UI_REQUEST',
+             paper_execution_learning='DEFER_TO_MEMORY_GUARDED_HEAVY_LEARNING',
+             loss_audit='DEFER_TO_BACKGROUND',
+             principle='startup keeps only live state; historical analytics never block market cycles')
+    # R16: live market loop must not wait for durable knowledge reseeding.
+    case_lessons = {'status':'background','seeded':0}
+    expert_principles = {'status':'background','seeded':0}
+    pg_knowledge = {'durable': bool(pg_boot.get('ok')), 'status':'background'}
+    # R22: publish the last durable 42-cell matrix immediately on startup.
+    try:
+        _cold=latest_signal_summary_pg() if pg_enabled() else []
+        if _cold:
+            _cold_map={(x.get('asset'),x.get('horizon')):dict(x) for x in _cold if x.get('asset') and x.get('horizon')}
+            _cold_rows=[]
+            for _a in DISPLAY_ASSETS:
+                for _h in ('5m','1h','4h','1d','3d','7d'):
+                    _x=_cold_map.get((_a,_h))
+                    if _x:
+                        _x['snapshot_stale']=True
+                        _cold_rows.append(_x)
+            with lock:
+                last_cycle.update({'status':'warming','at':now(),'version':VERSION,
+                                   'summary':_cold_rows,'summary_source':'postgres_cold_start',
+                                   'signal_cells':len(_cold_rows),'cycle_mode':'COLD_START'})
+            emit('v90_cold_start_snapshot',signal_cells=len(_cold_rows),status='READY')
+    except Exception as _cold_ex:
+        emit('v90_cold_start_snapshot',signal_cells=0,status='ERROR',
+             error=f'{type(_cold_ex).__name__}: {_cold_ex}')
+    _BOOTSTRAP_READY = True
+    try:
+        _boot_ui=_v90r26_dashboard_bootstrap()
+        emit('v90_dashboard_bootstrap_selftest',
+             status=_boot_ui.get('status'),
+             signal_count=_boot_ui.get('signal_count'),
+             portfolio_count=_boot_ui.get('portfolio_count'),
+             open_position_count=_boot_ui.get('open_position_count'),
+             trade_count=_boot_ui.get('trade_count'),
+             portfolio_names=[p.get('name') for p in (_boot_ui.get('portfolios') or [])],
+             open_positions=[{'portfolio':z.get('portfolio'),'asset':z.get('asset'),'direction':z.get('direction')}
+                             for z in (_boot_ui.get('positions') or [])[:10]])
+    except Exception as _ui_test_ex:
+        emit('v90_dashboard_bootstrap_selftest',status='ERROR',
+             error=f'{type(_ui_test_ex).__name__}: {_ui_test_ex}')
+
+    # Knowledge/case corpora are already durable in PostgreSQL. Do not reseed on
+    # every web-service restart: it competes with the live cycle for DB connections.
+    emit('r16_background_seed_complete',status='SKIPPED_ALREADY_DURABLE')
+    emit('service_start', db_path=DB_PATH, interval=INTERVAL, postgres=pg_boot, knowledge_pg=pg_knowledge,
+         runtime_id=SERVICE_RUNTIME_ID, always_on_confirmed=PRODUCTION_ALWAYS_ON, case_lessons=case_lessons, expert_principles=expert_principles,
+         horizon_integrity=horizon_integrity_status(),
+         knowledge_automation={'enabled':KNOWLEDGE_AUTOMATION,'seed_glob':KNOWLEDGE_GLOB,
+                               'interval_seconds':KNOWLEDGE_DISCOVERY_INTERVAL,'compile_limit':KNOWLEDGE_COMPILE_LIMIT,
+                               'min_relevance':KNOWLEDGE_MIN_RELEVANCE,
+                               'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY),
+                               'manager_corpus': manager_corpus_summary()})
+    if pg_boot.get('ok') and VP is not None: VPG.start(globals())
+    threading.Thread(target=loop, daemon=True).start()
+    # R38 always runs: it exits immediately after a healthy write test, but if
+    # Postgres is temporarily unavailable/full it waits for the Resume window.
+    threading.Thread(target=_v90r38_storage_rescue_loop, daemon=True,
+                     name='veritas-storage-rescue').start()
+    if pg_boot.get('ok'):
+        threading.Thread(target=heavy_learning_maintenance_loop, daemon=True).start()
+    heavy_role = SERVICE_ROLE in ('learning','all')
+    if KNOWLEDGE_AUTOMATION and heavy_role:
+        threading.Thread(target=knowledge_discovery_loop, daemon=True).start()
+    if BACKTEST_ENABLED and heavy_role:
+        threading.Thread(target=backtest_boot_loop, daemon=True).start()
+    if MACRO_ENABLED:
+        threading.Thread(target=macro_refresh_loop, daemon=True).start()
+    if EVENT_WEB_SCAN_ENABLED and heavy_role:
+        threading.Thread(target=event_web_scan_loop, daemon=True).start()
+    if GOVERNANCE_AUTO_DEMOTE:
+        threading.Thread(target=governance_loop, daemon=True).start()
+    if heavy_role:
+        threading.Thread(target=autonomous_research_loop, daemon=True).start()
+    if FULL_OVERVIEW_ENABLED:
+        threading.Thread(target=overview_cache_loop, daemon=True).start()
+    emit('product_ready', dashboard='/app', api='/api/v1/overview', history_api='/api/v1/history',
+         performance_api='/api/v1/performance', ruleboard_api='/api/v1/ruleboard',
+         macro_api='/api/v1/macro', alerts_api='/api/v1/alerts', trade_alerts_api='/api/v1/trade-alerts',
+         expert_replay_api='/api/v1/expert-replay', expert_policy_api='/api/v1/expert-policy', decision_journal_api='/api/v1/decision-journal', structure_analogs_api='/api/v1/structure-analogs', tradeability_api='/api/v1/tradeability', large_move_capture_api='/api/v1/large-move-capture', intelligence_scorecard_api='/api/v1/intelligence-scorecard', trade_lifecycle_api='/api/v1/trade-lifecycle', missed_trends_api='/api/v1/missed-trends', early_entry_efficiency_api='/api/v1/early-entry-efficiency', event_reaction_api='/api/v1/event-reaction', regime_router_api='/api/v1/regime-router', error_attribution_api='/api/v1/error-attribution', research_agenda_api='/api/v1/research-agenda', experiments_api='/api/v1/experiments', v27_quality_api='/api/v1/v27-quality', v70_api='/api/v1/v70', architecture_efficiency_api='/api/v1/architecture-efficiency', heavy_learning_api='/api/v1/heavy-learning', institutional_signals_api='/api/v1/institutional-signals', product_experience_api='/api/v1/product-experience', ask_veritas_api='/api/v1/ask-veritas', portfolio_what_if_api='/api/v1/portfolio-what-if', paper_portfolios_api='/api/v1/paper-portfolios', portfolio_trades_api='/api/v1/portfolio-trades', v70_effectiveness_api='/api/v1/v70-effectiveness', v70_learning_api='/api/v1/v70-learning', investor_asset_view_api='/api/v1/investor-asset-view',
+         cross_asset_api='/api/v1/cross-asset', brief_api='/api/v1/brief',
+         research_board_api='/api/v1/research-board', abstention_api='/api/v1/abstention',
+         agent_performance_api='/api/v1/agent-performance', calibration_api='/api/v1/calibration',
+         explanation_api='/api/v1/explain', model_api='/api/v1/model',
+         validation_api='/api/v1/validation', qc_api='/api/v1/qc', data_quality_api='/api/v1/data-quality',
+         options_api='/api/v1/options', ndx_breadth_api='/api/v1/ndx-breadth',
+         calibration_quality_api='/api/v1/calibration-quality', signal_quality_api='/api/v1/signal-quality',
+         robustness_api='/api/v1/robustness', time_stability_api='/api/v1/time-stability',
+         cost_sensitivity_api='/api/v1/cost-sensitivity', expected_edge_api='/api/v1/expected-edge',
+         readiness_api='/api/v1/readiness', stress_api='/api/v1/stress',
+         validation_stack_api='/api/v1/validation-stack',
+         adaptive_api='/api/v1/adaptive', drift_api='/api/v1/drift', regime_edges_api='/api/v1/regime-edges',
+         rule_pairs_api='/api/v1/rule-pairs', champion_api='/api/v1/champion-challenger',
+         settings_api='/api/v1/settings', settings_admin_api='/admin/settings',
+         meta_cio_api='/api/v1/meta-cio', opportunities_api='/api/v1/opportunities',
+         causal_brief_api='/api/v1/causal-brief', production_readiness_api='/api/v1/production-readiness',
+         release_candidate_api='/api/v1/release-candidate', event_scan_admin_api='/admin/events/scan',
+         meta_performance_api='/api/v1/meta-performance', contradiction_api='/api/v1/contradictions',
+         event_learning_api='/api/v1/event-learning', trend_case_learning_api='/api/v1/trend-case-learning', portfolio_allocator_api='/api/v1/portfolio-allocator',
+         portfolio_risk_api='/api/v1/portfolio-risk', risk_budget_api='/api/v1/risk-budget',
+         portfolio_meta_cio_api='/api/v1/portfolio-meta-cio', autonomy_api='/api/v1/autonomy',
+         horizon_integrity_api='/api/v1/horizon-integrity',
+         correlations_api='/api/v1/correlations', scenarios_api='/api/v1/scenarios', governance_api='/api/v1/governance',
+         policy_lab_api='/api/v1/policy-lab', regime_transitions_api='/api/v1/regime-transitions',
+         asset_thesis_api='/api/v1/asset-thesis', research_health_api='/api/v1/research-health', ping_api='/api/v1/ping',
+         model_card_api='/api/v1/model-card', causal_drivers_api='/api/v1/causal-drivers', library_summary_api='/api/v1/library-summary', knowledge_import_api='/admin/knowledge/import',
+         backtest_enabled=BACKTEST_ENABLED, backtest_days=BACKTEST_DAYS, macro_enabled=MACRO_ENABLED,
+         event_web_scan_enabled=EVENT_WEB_SCAN_ENABLED and heavy_role, overview_cache_enabled=FULL_OVERVIEW_ENABLED, service_role=SERVICE_ROLE, memory_soft_limit_mb=MEMORY_SOFT_LIMIT_MB, outcome_batch_limit=OUTCOME_BATCH_LIMIT, users_api='/api/v1/users', learning_progress_api='/api/v1/learning-progress', health_api='/healthz',
+         startup_mode='TWO_PHASE_READINESS')
+    # Keep the process alive on the already-serving HTTP thread.
+    server_thread.join()
+
+
+
+# VERITAS 9.0 NQ FUTURES INVARIANT
+if 'NDX' in DISPLAY_ASSETS or any((v[0]=='NDX') for v in ASSETS.values()):
+    raise RuntimeError('ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES')
+
+# VERITAS 90 FINAL RUNTIME IDENTITY
+VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
+
+
+from veritas_market_runtime import install_market_runtime_guard as _v90_install_market_guard; _v90_install_market_guard(globals())
+from veritas_storage_guard import install_storage_guard as _v90_install_storage_guard
+_v90_install_storage_guard(globals())
+
+if __name__ == '__main__':
+    main()
++Number(x).toLocaleString('en-US',{maximumFractionDigits:0})}function ppct(x,d=2){return x==null?'—':Number(x).toFixed(d)+'%'}
+function blockReasonRU(x){
+ const map={
+  RR_BELOW_FINAL_FLOOR:'R/R ниже минимального',
+  TARGET_NOT_PROFITABLE_AFTER_COSTS:'цель не покрывает издержки',
+  NET_REWARD_RISK_BELOW_FLOOR:'чистый R/R ниже минимального',
+  EXPECTED_MOVE_BELOW_COST_BUFFER:'ожидаемый ход слишком мал после издержек',
+  QUOTE_TOO_OLD_FOR_HORIZON:'котировка устарела для этого горизонта',
+  SOURCE_TIME_KILL_GATE:'нет свежих исполнимых данных / рынок закрыт',
+  THESIS_INVALIDATION:'торговый тезис отменён',
+  THESIS_INVALIDATED:'торговый тезис отменён',
+  REENTRY_BLOCKED_NO_NEW_EVENT:'повторный вход без нового события запрещён',
+  TIMING_NOT_READY:'тайминг входа ещё не готов',
+  OLD_OR_CURRENT_SETUP_FAILURE:'предыдущий или текущий сетап не подтверждён',
+  OPPOSITE_FAST_IMPULSE:'быстрый импульс идёт против входа',
+  PLAN_NOT_ELIGIBLE:'условия входа не подтверждены',
+  NEGATIVE_VALIDATED_SETUP_EDGE:'у сетапа отрицательное матожидание',
+  DIRECTION_CONFLICT:'конфликт направления',
+  MISSING_STOP_OR_ENTRY:'нет корректного входа или стопа',
+  STOP_WRONG_SIDE:'стоп расположен с неверной стороны',
+  LATE_ENTRY_INSUFFICIENT_REMAINING_EDGE:'вход поздний — остаточный потенциал слишком мал'
+ };
+ const raw=[...(x.economics_blockers||[]),...(x.hard_reasons||[]),...(x.soft_reasons||[])];
+ if(raw.length)return [...new Set(raw)].map(v=>map[v]||String(v).replaceAll('_',' ').toLowerCase()).join(' · ');
+ const r=String(x.block_reason||'').trim();
+ if(!r)return 'условия входа пока не выполнены';
+ const parts=r.includes(':')?r.split(':').slice(1).join(':').split(',').filter(Boolean):[];
+ if(parts.length)return parts.map(v=>map[v]||String(v).replaceAll('_',' ').toLowerCase()).join(' · ');
+ const token=r.split(':').pop();
+ return map[token]||r.replaceAll('_',' ').toLowerCase();
+}
 async function loadPortfolios(){const head=document.getElementById('portfolioheadline'),cards=document.getElementById('portfoliocards'),posel=document.getElementById('portfoliopositions'),trel=document.getElementById('portfoliotrades');if(!head)return;try{const [pr,tr]=await Promise.all([fetch('/api/v1/paper-portfolios',{cache:'no-store'}),fetch('/api/v1/portfolio-trades',{cache:'no-store'})]);if(!pr.ok)throw new Error('portfolio HTTP '+pr.status);const pd=await pr.json(),td=tr.ok?await tr.json():{trades:[]};const ps=pd.portfolios||[];head.innerHTML=`Стартовый капитал каждого: <b>${rub(pd.initial_nav_rub)}</b> · комиссия ${(100*Number(pd.commission_rate||0)).toFixed(2)}% · max gross ${Number(pd.max_gross||0).toFixed(1)}× · max риск по стопу ${(100*Number(pd.max_stop_risk_nav||0)).toFixed(0)}% NAV · шаг ${(100*Number(pd.position_step||0)).toFixed(0)}%`;cards.innerHTML=ps.map(p=>{const x=p.latest||{},nav=x.nav_rub??pd.initial_nav_rub,ret=nav?100*(nav/pd.initial_nav_rub-1):null,bench=x.benchmark_nav_rub,exc=(nav&&bench)?100*(nav/bench-1):null;return `<div class="portfolio-card"><div class="portfolio-title"><span>${p.name}</span><span class="badge">${p.name==='Champion'?'70%+':(p.name==='Challenger'?'75%+':(p.name==='Aggressive'?'AGGR':'IMPULSE'))}</span></div><div class="portfolio-kpis"><div class="pkpi"><div class="k">NAV</div><div class="n">${rub(nav)}</div></div><div class="pkpi"><div class="k">USD</div><div class="n">${usd(x.nav_usd)}</div></div><div class="pkpi"><div class="k">Доходность</div><div class="n ${ret>=0?'ok':'bad'}">${ppct(ret)}</div></div><div class="pkpi"><div class="k">К RUONIA</div><div class="n ${exc>=0?'ok':'bad'}">${ppct(exc)}</div></div><div class="pkpi"><div class="k">Плечо gross</div><div class="n">${x.gross_leverage==null?'—':Number(x.gross_leverage).toFixed(2)+'×'}</div></div><div class="pkpi"><div class="k">Cash</div><div class="n">${x.gross_leverage==null?'—':ppct(100*Math.max(0,1-Number(x.gross_leverage)))}</div></div><div class="pkpi"><div class="k">Просадка</div><div class="n">${x.drawdown==null?'—':ppct(100*Number(x.drawdown))}</div></div><div class="pkpi"><div class="k">Win rate</div><div class="n">${p.win_rate==null?'—':ppct(100*Number(p.win_rate),1)}</div></div></div><div class="note" style="margin-top:10px">Закрыто сделок: ${p.closed_trades??0} · прибыльных: ${p.wins??0} · значимо прибыльных: ${p.meaningful_wins??0}<br>RUONIA ${x.ruonia==null?'—':Number(x.ruonia).toFixed(2)+'%'} · USD/RUB ${x.usdrub==null?'—':Number(x.usdrub).toFixed(4)}</div></div>`}).join('')||'портфели ещё не созданы';const positions=[];ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push({...z,portfolio:p.name})));posel.innerHTML=positions.length?positions.map(z=>`<div class="assetview"><div class="assetview-head"><b>${z.portfolio} · ${z.asset}</b><b class="${z.direction==='LONG'?'ok':'bad'}">${z.direction} · ${(100*Number(z.target_fraction||0)).toFixed(0)}%</b></div><div class="assetmeta">Объём ${rub(z.notional_rub)} · единиц ${Number(z.units||0).toLocaleString('ru-RU',{maximumFractionDigits:6})}<br>Вход ${Number(z.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · текущая ${Number(z.last_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · стоп ${z.stop_price==null?'—':Number(z.stop_price).toLocaleString('ru-RU',{maximumFractionDigits:2})} · TP ${z.target_price==null?'—':Number(z.target_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}<br>Переоценка <b class="${Number(z.unrealized_pnl_rub||0)>=0?'ok':'bad'}">${rub(z.unrealized_pnl_rub)} · ${z.unrealized_return_pct==null?'—':Number(z.unrealized_return_pct).toFixed(2)+'%'}</b><br>Открыта ${z.opened_at?new Date(z.opened_at).toLocaleString():'—'} · вероятность ${z.payload?.pwin==null?'—':(100*Number(z.payload.pwin)).toFixed(1)+'%'} (${z.payload?.pwin_source||'—'})</div></div>`).join(''):'Открытых позиций нет — оба портфеля в cash.';const trades=td.trades||[];trel.innerHTML=trades.length?trades.slice(0,40).map(t=>`<div class="assetview tradecompact"><b>${t.portfolio_name} · ${t.asset} · ${t.direction}</b><div class="assetmeta">${t.status} · вход ${Number(t.avg_entry_price||0).toLocaleString('ru-RU',{maximumFractionDigits:2})} · выход ${t.avg_exit_price==null?'—':Number(t.avg_exit_price).toLocaleString('ru-RU',{maximumFractionDigits:2})}<br>Gross ${rub(t.gross_pnl_rub)} · комиссии ${rub(t.fees_rub)} · фондирование ${rub(t.funding_rub)} · Net <b class="${Number(t.net_pnl_rub||0)>=0?'ok':'bad'}">${t.net_pnl_rub==null?'—':rub(t.net_pnl_rub)}${t.return_on_entry_nav==null?'':' · '+(100*Number(t.return_on_entry_nav)).toFixed(2)+'%'}</b><br>${t.horizon||'—'} · ${t.setup||'—'}</div></div>`).join(''):'Сделок в журнале пока нет.'}catch(e){head.innerHTML='<span class="err">Портфели: '+String(e)+'</span>';cards.innerHTML='';posel.textContent='—';trel.textContent='—'}}
 async function load(){try{const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),180000);const r=await fetch('/api/v1/overview',{cache:'no-store',signal:ctl.signal});clearTimeout(tm);if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const cts=d.cycle?.at?new Date(d.cycle.at):new Date();document.getElementById('stamp').textContent='сигналы '+cts.toLocaleString()+(d.overview_mode==='fast'?' · быстрый режим':'');document.getElementById('sys').innerHTML=d.cycle?.status==='ok'?'<span class="ok">ONLINE</span>':'<span class="err">'+(d.cycle?.status||'—')+'</span>';document.getElementById('src').textContent=d.storage?.knowledge_sources??'—';document.getElementById('rules').textContent=d.storage?.knowledge_rules??'—';document.getElementById('mgr').textContent=(d.managers?.postgres_sources??'—')+' / '+(d.managers?.postgres_rules??'—');document.getElementById('mgrsmall').textContent=(d.managers?.embedded_author_labels??'—')+' авторских меток';const lp=d.learning_progress||{};const ln=lp.matched_observations_each_side??0;document.getElementById('learnidx').textContent=lp.index_vs_start==null?`100.0*`:lp.index_vs_start;document.getElementById('learnsmall').textContent=lp.index_vs_start==null?`предварительно · выборка ${ln}/20 · надёжность ${lp.confidence||'LOW'}`:`100 = старт · Δ hit ${lp.hit_rate_delta_pp==null?'—':lp.hit_rate_delta_pp+' п.п.'} · ${lp.confidence||''}`;const um=d.users||{};document.getElementById('users').textContent=`${um.unique_users??0} / ${um.online_users??0}`;document.getElementById('userssmall').textContent='уникальных / онлайн сейчас';const cap=d.signal_capacity||{};document.getElementById('capacity').textContent=`${cap.decision_depth_score??'—'}/100`;document.getElementById('capacitysmall').textContent=`30 ячеек · ~${cap.avg_live_state_fields??0} полей/ячейку · ${cap.agents??0} агентов`;const a=d.cycle?.summary||[];renderMatrix(a);const ob=d.opportunity_board||{},opps=ob.opportunities||[];document.getElementById('opps').innerHTML=opps.slice(0,5).map(x=>`<div class="assetview"><div class="assetview-head"><b>${x.asset} · ${x.meta_decision} · ${x.horizon}</b><span class="badge">${x.grade} · ${x.meta_score}/100</span></div><div class="assetmeta">Стадия: ${x.decision_stage||'—'} · P+: ${x.positive_trade_probability==null?'модельная/накапливается':(100*x.positive_trade_probability).toFixed(1)+'%'} · R/R ${x.expected_to_stop_ratio==null?'—':Number(x.expected_to_stop_ratio).toFixed(2)}<br>Вход ${x.entry_price==null?'—':Number(x.entry_price).toFixed(2)} · стоп ${x.stop_price==null?'—':Number(x.stop_price).toFixed(2)} · ожидаемый ход ${x.expected_move_pct==null?'—':(100*x.expected_move_pct).toFixed(2)+'%'}<br><b>${x.trade_plan_eligible?'РАССМАТРИВАТЬ':'ЖДАТЬ / ПРОПУСТИТЬ'}</b></div></div>`).join('')||'<span class="stamp">Сейчас нет сделок, прошедших фильтры качества.</span>';const lmc=d.large_move_capture||{},lmco=lmc.overall||{};document.getElementById('capture').innerHTML=`Статус <b>${lmc.status||'—'}</b> · крупных движений ${lmco.large_moves??0} · захвачено ${lmco.capture_rate==null?'—':(100*lmco.capture_rate).toFixed(1)+'%'} · пропущено ${lmco.miss_rate==null?'—':(100*lmco.miss_rate).toFixed(1)+'%'} · против рынка ${lmco.wrong_side_rate==null?'—':(100*lmco.wrong_side_rate).toFixed(1)+'%'}`;const iv=(d.investor_asset_view||{}).items||[];const trCls=x=>String(x||'').includes('↑')?'trend-up':String(x||'').includes('↓')?'trend-down':'trend-flat';const thRu=x=>x==='VALID'?'тезис подтверждён':x==='CHALLENGED'?'тезис под вопросом':x==='BROKEN'?'тезис сломан':x==='UNKNOWN_DATA'?'не хватает данных':'нет тезиса';const enRu=x=>x==='READY'?'вход готов':x==='INVALIDATED'?'вход отменён':x==='LATE_OR_WAIT'?'вход поздний / ждать':x||'—';const acRu=x=>x==='ENTER_CANDIDATE'?'рассмотреть вход':x==='REDUCE'?'уменьшить размер':x==='WAIT'?'ждать':x||'—';document.getElementById('thesis').innerHTML=`<div class="assetview-grid">${iv.map(x=>`<div class="assetview"><div class="assetview-head"><span class="assetview-name">${x.asset} · ${x.investor_signal||'WAIT'}</span><span class="trend-arrow ${trCls(x.arrow)}">${x.arrow||'→'}</span></div><div class="horizon-line">1ч ${x.horizons?.['1h']||'→'} · 4ч ${x.horizons?.['4h']||'→'} · 1д ${x.horizons?.['1d']||'→'} · 3д ${x.horizons?.['3d']||'→'} · 7д ${x.horizons?.['7d']||'→'}</div><div class="assetmeta">${x.trend} · подтверждают ${x.directional_horizons||0}/${x.total_horizons||5} горизонтов · согласование ${Math.round(100*(x.alignment||0))}%<br>FAST ${x.fast||'→'} · MEDIUM ${x.medium||'→'} · SLOW ${x.slow||'→'}<br>параметров состояния ${x.state_parameters_used??'—'} · семейств факторов ${x.factor_family_count??'—'} · независимых подтверждений ${x.independent_evidence_families??'—'} · моделей ${x.model_agents??'—'}<br>${thRu(x.thesis_status)} · ${enRu(x.entry_status)} · действие: ${acRu(x.action)}</div></div>`).join('')}</div>`||'—';const pp=d.paper_portfolios||{},pps=pp.portfolios||[];const ppe=document.getElementById('paperportfolio');if(ppe)ppe.innerHTML=pps.map(x=>`<b>${x.name}</b>: NAV ${Number(x.nav_rub||0).toLocaleString('ru-RU',{maximumFractionDigits:0})} ₽ · $${Number(x.nav_usd||0).toLocaleString('en-US',{maximumFractionDigits:0})} · P&L ${x.total_return_pct==null?'—':Number(x.total_return_pct).toFixed(2)+'%'} · DD ${x.drawdown_pct==null?'—':Number(x.drawdown_pct).toFixed(2)+'%'} · плечо ${x.gross_leverage==null?'—':Number(x.gross_leverage).toFixed(2)+'×'} · win ${x.win_rate==null?'—':Number(100*x.win_rate).toFixed(1)+'%'} · meaningful ${x.meaningful_win_rate==null?'—':Number(100*x.meaningful_win_rate).toFixed(1)+'%'}`).join('<br>')||'накапливается';const f=d.factory||{};document.getElementById('factory').innerHTML=`Кандидаты:<div class="chips">${chips(f.candidates)}</div>Правила:<div class="chips">${chips(f.rules)}</div>`;const b=d.backtest||{},lr=b.latest_run||{};document.getElementById('bt').innerHTML=`${lr.status||b.status||'—'} · ${lr.days||b.days||'—'} дней · правил ${lr.rules_tested??'—'} · наблюдений ${lr.observations??'—'}<br><span class="badge">20 б.п. + OOS + неперекрывающиеся окна</span>`;const m=d.macro||{},md=m.data||{},ca=d.cross_asset_shadow||{};document.getElementById('macro').innerHTML=`UST 2Y ${fmtN(md.ust2y?.value,3)} · 10Y ${fmtN(md.ust10y?.value,3)} · 30Y ${fmtN(md.ust30y?.value,3)}<br>VIX ${fmtN((md.vix_live||md.vix_daily)?.value,2)} · S&P ${fmtN(md.sp500?.value,2)}<br>DXY ${fmtN(md.dxy?.value,2)} · Gold ${fmtN(md.gold?.value,2)}`;document.getElementById('cross').innerHTML=`Cross-asset: <b>${ca.regime||'—'}</b> · ${ca.score??'—'} <span class="badge">shadow</span>`;const al=d.alerts||[];document.getElementById('alerts').innerHTML=al.slice(0,6).map(x=>{const q=x.payload||{};const typ=x.alert_type||q.alert_type||'ALERT';const act=q.action||q.decision||'наблюдать';const sev=x.severity||'—';const px=q.trigger_price||q.price;return `<div class="assetview"><b>${x.asset||'SYSTEM'} ${x.horizon||''} · ${typ}</b> <span class="badge">${sev}</span><div class="assetmeta">Вывод: <b>${act}</b>${px?` · цена ${Number(px).toFixed(2)}`:''}<br>${q.reason||q.setup||q.invalidation_reason||'Изменение состояния требует перепроверки сигнала.'}</div></div>`}).join('')||'Нет новых алертов, требующих действия.';const qc=d.qc||{};document.getElementById('qc').innerHTML=`DATA ${qc.DATA||'—'} · MARKET ${qc.MARKET||'—'} · FORECAST ${qc.FORECAST||'—'}<br>AUDIT ${qc.AUDIT||'—'} · DECISION ${qc.DECISION||'—'}`;const vi=(d.validation||{}).items||[],vc={};vi.forEach(x=>vc[x.validation_label]=(vc[x.validation_label]||0)+1);document.getElementById('val').innerHTML=`ROBUST ${vc.ROBUST_CANDIDATE||0} · PROMISING ${vc.PROMISING||0} · WEAK ${vc.WEAK||0}`;const ad=d.adaptive||{},rs=ad.runtime_settings||{};document.getElementById('adaptive').innerHTML=`Regime edge: ${(ad.regime_counts||{}).REGIME_EDGE||0} · Pair promising: ${(ad.pair_counts||{}).PAIR_PROMISING||0}<br>Rule drift: ${ad.rule_drift_count??'—'} · min score ${rs.min_directional_score??'—'}`;const dr=d.drift||{},cc=d.champion_challenger||{};document.getElementById('drift').innerHTML=`Drift ${dr.status||'—'} · weakening/decaying ${dr.rule_drift_count??0}<br>Challengers ${(cc.challengers||[]).length} · Champion ${cc.champion?'есть':'нет'}`;const prisk=d.portfolio_risk||{},prc=prisk.tail_contributions||[],sc=prisk.strongest_abs_correlation||{};document.getElementById('portfoliorisk').innerHTML=`Статус: <b>${prisk.status||'—'}</b> · n=${prisk.observations??0}<br>VaR 95% ${prisk.var_95_loss_fraction==null?'—':(100*prisk.var_95_loss_fraction).toFixed(2)+'%'} · CVaR 95% ${prisk.cvar_95_loss_fraction==null?'—':(100*prisk.cvar_95_loss_fraction).toFixed(2)+'%'}<br>CVaR 99% ${prisk.cvar_99_loss_fraction==null?'—':(100*prisk.cvar_99_loss_fraction).toFixed(2)+'%'} · max |corr| ${sc.pair||'—'} ${sc.correlation==null?'':Number(sc.correlation).toFixed(2)}<br>${prc.slice(0,4).map(x=>`${x.asset}: ${(100*(x.cvar_contribution||0)).toFixed(2)}%`).join(' · ')||'вклад по активам накапливается'}<br><span class="badge">историческая симуляция · shadow</span>`;const rb=d.dynamic_risk_budget||{},rba=rb.asset_budgets||[];document.getElementById('riskbudget').innerHTML=`Режим: <b>${rb.risk_posture||'—'}</b> · CVaR-множитель ${rb.portfolio_multiplier==null?'—':Number(rb.portfolio_multiplier).toFixed(2)}<br>Исходный риск ${(100*(rb.gross_allocator_weight||0)).toFixed(1)}% → обученный бюджет ${(100*(rb.gross_research_risk_budget||0)).toFixed(1)}%<br>${rba.slice(0,6).map(x=>`${x.asset}: ${(100*(x.research_risk_budget||0)).toFixed(1)}% · опыт ×${Number(x.experience_multiplier||0).toFixed(2)} · n=${x.experience_n||0} · ${x.experience_state||'BUILDING'}`).join('<br>')||'нет направленных позиций'}<br><span class="badge">собственный опыт + режим + P&L-кластеры + CVaR · shadow</span>`;const au=d.autonomy||{};document.getElementById('autonomy').innerHTML=`${au.always_on_confirmed?'<span class="ok"><b>ALWAYS-ON</b></span>':'<span class="warn"><b>Хостинг не подтвержден 24/7</b></span>'}<br>рынок каждые ${Math.round((au.market_learning_cycle_seconds||0)/60)} мин · знания каждые ${Math.round((au.knowledge_discovery_interval_seconds||0)/3600)} ч<br>Postgres: ${au.persistent_experience_storage?'durable':'нет'} · uptime ${Math.round((au.process_uptime_seconds||0)/60)} мин`;const hi=d.horizon_integrity||{},hmiss=hi.missing_live||[];document.getElementById('horizonintegrity').innerHTML=`1ч: <b>${hmiss.length?'неполное':'6/6 активов'}</b> · ожидается ${hi.expected_signal_cells??30} ячеек (6 активов × 5 ТФ)<br>${Object.entries(hi.live_1h_seen||{}).map(([a,v])=>`${a} ${v?'✓':'…'}`).join(' · ')}`;const ac=(d.agent_consensus||{}).items||[];document.getElementById('consensus').innerHTML=ac.slice(0,6).map(x=>`${x.asset} ${x.horizon} ${x.direction}: ${x.agents} · n=${x.n}`).join('<br>')||'недостаточно данных';const ae=d.architecture_efficiency||{},hl=ae.heavy_learning||{};document.getElementById('archeff').innerHTML=`Цикл <b>${ae.cycle_seconds==null?'—':Number(ae.cycle_seconds).toFixed(1)+'с'}</b> · цель ≤${ae.target_cycle_seconds??30}с · ${ae.target_status||'—'}<br>p50 ${ae.cycle_p50_seconds==null?'—':Number(ae.cycle_p50_seconds).toFixed(1)+'с'} · p95 ${ae.cycle_p95_seconds==null?'—':Number(ae.cycle_p95_seconds).toFixed(1)+'с'} · n=${ae.history_n??0}<br>рынок параллельно: ${ae.market_prefetch_workers??'—'} потока · ожидание ${ae.market_prefetch_wall_seconds==null?'—':Number(ae.market_prefetch_wall_seconds).toFixed(1)+'с'} · сэкономлено ≈${ae.market_parallel_saved_estimate_seconds==null?'—':Number(ae.market_parallel_saved_estimate_seconds).toFixed(1)+'с'}<br>глубокое обучение: <b>${hl.status||'—'}</b> · последний цикл ${hl.last_duration_seconds==null?'—':Number(hl.last_duration_seconds).toFixed(1)+'с'} · вне быстрого контура<br>решения ${ae.decision_seconds==null?'—':Number(ae.decision_seconds).toFixed(1)+'с'} · память ${ae.rss_mb==null?'—':Number(ae.rss_mb).toFixed(1)+' МБ'} · исключено повторных расчётов ${ae.saved_recomputes??'—'}`;const pr=d.production_readiness||{},es=d.event_scan||{};document.getElementById('prodready').innerHTML=`Research RC: <b>${pr.research_product_ready?'ДА':'НЕТ'}</b> · внешний выпуск: <b>${pr.external_investor_ready?'ДА':'НЕТ'}</b><br>Блокеры: ${(pr.blockers||[]).join(', ')||'нет'}<br>Предупреждения: ${(pr.warnings||[]).join(', ')||'нет'}`;document.getElementById('eventscan').innerHTML=`${es.status||'—'} · найдено ${es.events_seen??0} · импортировано ${es.events_imported??0}<br><span class="badge">shadow, без прямого влияния на CIO</span>`;const pa=d.portfolio_allocator||{},pap=pa.positions||[];document.getElementById('alloc').innerHTML=pap.map(x=>`${x.asset} ${x.decision} · ${(100*(x.weight||0)).toFixed(1)}% · ${x.grade}`).join('<br>')||'нет аллокаций';const gv=d.governance||{};document.getElementById('gov').innerHTML=`${gv.status||'—'} · автопонижений ${gv.demotions??0}<br><span class="badge">автоповышение запрещено</span>`;const dq=d.data_quality||{},dqr=dq.rows||[],counts=dq.status_counts||{};document.getElementById('dqsum').textContent=(dq.research_gate_pass?'основные источники в норме':'есть проблема основных источников')+' · '+Object.entries(counts).map(([k,v])=>k+' '+v).join(' · ');document.getElementById('dq').innerHTML=dqr.map(x=>`<div class="dqrow"><div>${x.source}<br><span class="stamp">${x.asset_class||''} · ${x.role||''}</span></div><div class="${dqClass(x.status)}">${x.status||'—'}<br><span class="stamp">${x.age_seconds==null?'возраст н/д':'возраст '+Math.round(x.age_seconds)+'с'}</span></div><div>${x.effective_lag_seconds==null?'—':Math.round(x.effective_lag_seconds)+'с'}</div></div>`).join('');const de=d.decision_effectiveness||{},vg=d.v70_gate_effectiveness||{},li3=d.v70_incremental_learning||{};document.getElementById('decisionperf').innerHTML=`<div class="effect-summary"><span class="effect-pill">завершено <b>${de.completed_episodes??0}</b></span><span class="effect-pill">верное направление <b>${de.directional_hit_rate==null?'—':(100*de.directional_hit_rate).toFixed(1)+'%'}</b></span><span class="effect-pill">верное воздержание <b>${de.correct_abstention_rate==null?'—':(100*de.correct_abstention_rate).toFixed(1)+'%'}</b></span><span class="effect-pill">v70 изменил риск n=<b>${vg.adjusted_outcomes??0}</b> · польза ${vg.adjusted_precision==null?'накапливается':(100*vg.adjusted_precision).toFixed(1)+'%'}</span><span class="effect-pill">тайминг n=<b>${vg.timing_outcomes??0}</b> · польза ${vg.timing_precision==null?'накапливается':(100*vg.timing_precision).toFixed(1)+'%'}</span><span class="effect-pill">VETO n=<b>${vg.veto_outcomes??0}</b> · точность ${vg.veto_precision==null?'накапливается':(100*vg.veto_precision).toFixed(1)+'%'}</span><span class="effect-pill">Learning 3.0 <b>${li3.learning_index_3==null?'накапливается':li3.learning_index_3}</b></span></div><span class="stamp">Эпизоды, а не повторяющиеся 5-минутные снимки. v70 пока оценивается в shadow.</span>`;const ep=de.recent_episodes||[];const benefitCls=t=>String(t||'').includes('избежать')||String(t||'').includes('верное')?'benefit-good':String(t||'').includes('ошиб')||String(t||'').includes('пропущ')||String(t||'').includes('заблокировала бы прибыль')?'benefit-bad':'benefit-neutral';document.getElementById('history').innerHTML=ep.map(x=>`<tr><td>${new Date(x.ts).toLocaleString()}</td><td>${x.asset}</td><td>${x.horizon}</td><td>${x.decision==='LONG'?'↑ LONG':x.decision==='SHORT'?'↓ SHORT':'→ WAIT'}</td><td>${x.forward_return==null?'—':(100*x.forward_return).toFixed(2)+'%'}</td><td class="${benefitCls(x.benefit)}">${x.benefit}${x.gate_class?' · '+x.gate_class:''}</td></tr>`).join('')||`<tr><td colspan="6" class="stamp">Завершённые независимые эпизоды ещё накапливаются</td></tr>`;const cq=d.calibration_quality||{},cqi=cq.items||[];document.getElementById('calq').innerHTML=`Статус: <b>${cq.status||'—'}</b><br>${cqi.slice(0,6).map(x=>`${x.asset} ${x.horizon}: n=${x.n}, Brier ${x.brier_score==null?'—':x.brier_score.toFixed(3)}, ECE ${x.ece==null?'—':x.ece.toFixed(3)}`).join('<br>')||'выборка накапливается'}`;const oc=d.options_context||{},btcOpt=oc.BTC||{},ethOpt=oc.ETH||{};document.getElementById('optctx').innerHTML=`BTC ATM IV ${btcOpt.near_atm_iv==null?'—':btcOpt.near_atm_iv.toFixed(1)} · skew ${btcOpt.near_skew_10pct_proxy==null?'—':btcOpt.near_skew_10pct_proxy.toFixed(1)}<br>ETH ATM IV ${ethOpt.near_atm_iv==null?'—':ethOpt.near_atm_iv.toFixed(1)} · skew ${ethOpt.near_skew_10pct_proxy==null?'—':ethOpt.near_skew_10pct_proxy.toFixed(1)}<br><span class="badge">shadow</span>`;const nb=d.ndx_breadth||{},np=nb.proxy||{};document.getElementById('breadth').innerHTML=`${np.participation||'—'}<br>QQQ ${(100*(np.qqq_ret_1d||0)).toFixed(2)}% · QQEW ${(100*(np.qqew_ret_1d||0)).toFixed(2)}%<br>spread ${(100*(np.cap_vs_equal_spread||0)).toFixed(2)} п.п.<br><span class="badge">proxy</span>`;const vv=(d.validation||{}).items||[],vaultPass=vv.filter(x=>x.vault_pass).length;const ts=(d.time_stability||{}).items||[],stable=ts.filter(x=>x.stability_label==='STABLE').length;document.getElementById('vaultq').innerHTML=`VAULT pass <b>${vaultPass}</b> · стабильных по блокам <b>${stable}</b><br><span class="badge">holdout не участвует в подборе</span>`;const cs=(d.cost_sensitivity||{}).items||[],surv=cs.filter(x=>x.survives_high_cost).length;document.getElementById('costq').innerHTML=`Выживают при максимальных издержках: <b>${surv}</b><br>сетка ${(d.backtest?.latest_run?.details?.cost_grid_bps||[10,20,40]).join(' / ')} б.п.`;const rr=(d.signal_readiness||{}).signals||[];document.getElementById('readyq').innerHTML=rr.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.readiness}</b> ${x.readiness_score}`).join('<br>')||'накапливается';const lrn=d.learning_report||{},ix=d.independent_experience||{};document.getElementById('learning').innerHTML=`Источники <b>${lrn.sources_total??'—'}</b> · +${lrn.sources_added_today??0} сегодня<br>Правила <b>${lrn.rules_total??'—'}</b> · +${lrn.rules_added_today??0} сегодня<br>Авто-правила сегодня ${lrn.auto_rules_imported_today??0} · кандидаты +${lrn.candidates_added_today??0}`;document.getElementById('experience').innerHTML=`Сырые решения сегодня ${lrn.raw_decisions_today??'—'}<br>Независимые эпизоды сегодня <b>${lrn.independent_episodes_today??'—'}</b> · с исходом ${lrn.independent_episode_outcomes_today??'—'}<br>Всего эпизодов ${ix.episodes??'—'} · завершено ${ix.episodes_with_outcomes??'—'}`;const lib=d.multilingual_library||{},cd=d.causal_drivers||{},cdi=cd.items||[];document.getElementById('library').innerHTML=`Кураторская база: <b>${lib.embedded_sources??'—'}</b> источников · книги ${lib.book_sources??'—'} · peer-reviewed ${lib.peer_reviewed_sources??'—'}<br>Языки ${Object.entries(lib.languages||{}).map(([k,v])=>k+':'+v).join(' · ')||'—'}<br>Ротационных поисковых запросов ${lib.rotating_discovery_queries??'—'}<br><span class="badge">метаданные + оригинальные краткие выжимки, без копирования полных защищённых текстов</span>`;document.getElementById('causaldrivers').innerHTML=cdi.map(x=>`${x.asset}: <b>${x.label}</b> ${x.score}`).join('<br>')||'—';const pl=d.policy_lab||{},pli=pl.items||[];document.getElementById('policy').innerHTML=`n=${pl.n??0} · средний regret ${pl.overall_avg_regret==null?'—':(100*pl.overall_avg_regret).toFixed(2)+'%'}<br>${pli.filter(x=>x.status==='MEASURABLE').slice(0,4).map(x=>`${x.asset} ${x.horizon} ${x.decision}: net ${x.avg_net_utility==null?'—':(100*x.avg_net_utility).toFixed(2)+'%'}`).join('<br>')||'выборка накапливается'}`;const rt=d.regime_transitions||{},rti=rt.items||[];document.getElementById('regtrans').innerHTML=rti.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.transition_risk}</b> · persistence ${x.persistence_probability==null?'—':(100*x.persistence_probability).toFixed(0)+'%'}`).join('<br>')||'—';const rh=d.research_discovery_health||{};document.getElementById('researchhealth').innerHTML=`<b>${rh.status||'—'}</b> · zero-run streak ${rh.zero_candidate_run_streak??0}<br>${(rh.providers||[]).slice(0,5).map(x=>`${x.provider}: ${x.n}`).join(' · ')||'—'}`;const mp=d.meta_performance||{},mpi=mp.items||[];document.getElementById('metaperf').innerHTML=mpi.slice(0,8).map(x=>`${x.asset} ${x.horizon} ${x.grade}: n=${x.n} · hit ${(100*(x.posterior_hit_rate||0)).toFixed(1)}% · net ${x.avg_signed_return_net==null?'—':(100*x.avg_signed_return_net).toFixed(2)+'%'}`).join('<br>')||'выборка накапливается';const cb=d.contradictions||{},cbi=cb.items||[];document.getElementById('contrad').innerHTML=cbi.slice(0,8).map(x=>`${x.asset} ${x.horizon}: <b>${x.level}</b> ${x.contradiction_score}`).join('<br>')||'—';const el=d.event_learning||{},eli=el.items||[];document.getElementById('eventlearn').innerHTML=eli.slice(0,8).map(x=>`${x.category} ${x.target_asset} ${x.horizon}: n=${x.n} · ${x.reliability}`).join('<br>')||'выборка накапливается';const mr=d.managers||{};document.getElementById('managerdetail').innerHTML=`<div class="managerhead"><span class="managerstat"><b>${mr.postgres_sources??mr.embedded_sources??'—'}</b><br>источников</span><span class="managerstat"><b>${mr.postgres_rules??mr.embedded_rules??'—'}</b><br>правил</span><span class="managerstat"><b>${mr.embedded_author_labels??'—'}</b><br>авторских меток</span><span class="managerstat"><b>6</b><br>школ: macro / trend / quant / risk / fundamental / execution</span></div><div class="stamp">v70.7 расширяет поиск по Druckenmiller, PTJ, Kaminski, Harding, AQR/Man AHL и quality-compounding материалам; новые идеи остаются shadow до проверки.</div><div class="authorgrid">${(mr.by_author||[]).slice(0,28).map(x=>`<span class="chip">${x.authors}: ${x.n}</span>`).join('')}</div>`}catch(e){const sys=document.getElementById('sys');const aborted=(e&&e.name==='AbortError');if(sys&&sys.textContent&&sys.textContent.trim()!=='—'){sys.innerHTML='<span class="warn">UPDATING</span>'}else if(sys){sys.innerHTML='<span class="warn">DEGRADED</span>'}document.getElementById('stamp').textContent=aborted?'Последний экран сохранён · сервер ещё считает новый цикл':'Последний экран сохранён · обновление данных задержано: '+String(e)}}const VKEY='veritas_visitor';let VID=localStorage.getItem(VKEY);if(!VID){VID=(crypto.randomUUID?crypto.randomUUID():(Date.now()+'-'+Math.random()));localStorage.setItem(VKEY,VID)}async function presence(){try{await fetch('/api/v1/presence',{headers:{'X-Veritas-Visitor':VID},cache:'no-store'})}catch(e){}}presence();setInterval(presence,45000);load();loadPortfolios();setInterval(load,60000);setInterval(loadPortfolios,30000);</script></body></html>"""
 
