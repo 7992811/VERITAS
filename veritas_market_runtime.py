@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
+from veritas_quote_time import moex_observed_at
 
 VERSION = "veritas-market-runtime-guard-v1"
 
@@ -193,13 +194,7 @@ def install_market_runtime_guard(ns):
                     pass
         if price is None:
             raise RuntimeError(f"MOEX_FORTS_NO_PRICE {secid}")
-        dt = None
-        for key in ("SYSTIME", "UPDATETIME", "TIME"):
-            if row.get(key):
-                dt = moex_parse_dt(row[key])
-                if dt:
-                    break
-        return {"price": price, "observed_at": (dt or datetime.now(timezone.utc)).isoformat(), "row": row}
+        return {"price": price, "observed_at": moex_observed_at(row), "row": row}
 
     ns["_moex_futures_current_quote"] = current_quote
 

@@ -1,5 +1,6 @@
 import ast
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 import veritas_execution as VX
@@ -37,8 +38,8 @@ class ExecutionSafetyTests(unittest.TestCase):
         gate = VX.economics_gate("BTC", {
             "eligible": True,
             "entry_price": 100.0,
-            "stop_price": 99.0,
-            "expected_move_pct": 0.012,
+            "stop_price": 99.0, "target_price": 102.0,
+            "expected_move_pct": 0.02,
             "expected_to_stop_ratio": 1.50,
         })
         self.assertTrue(gate["eligible"])
@@ -113,7 +114,7 @@ class ExecutionSafetyTests(unittest.TestCase):
     def test_fully_validated_live_gate_can_pass(self):
         gate=VX.production_order_gate(
             "BTC",
-            {"eligible":True,"entry_price":100.0,"stop_price":99.0,
+            {"eligible":True,"entry_price":100.0,"stop_price":99.0,"target_price":102.0,
              "expected_move_pct":0.02,"expected_to_stop_ratio":2.0},
             source_gate={"eligible":True},
             durable_storage=True,calibrated_probability=0.75,
@@ -243,7 +244,9 @@ class ExecutionSafetyTests(unittest.TestCase):
             "execution_reason":"research_only_no_second_direct_cnyrubf_quote",
             "paper_execution_reason":"research_grade_paper_feed",
             "source_gate_pass":True,"market_open":True,
-            "trade_plan":{"eligible":True,"final_economics_gate":{"status":"PASS","eligible":True}},
+            "market_observed_at":datetime.now(timezone.utc).isoformat(),"horizon":"1h",
+            "trade_plan":{"eligible":True,"entry_price":12,"stop_price":11.9,"target_price":12.3,
+                          "direction":"LONG","expected_move_pct":.02,"expected_to_stop_ratio":2.0},
         }
         old=vp._v90r41_base_admission
         try:
@@ -262,7 +265,9 @@ class ExecutionSafetyTests(unittest.TestCase):
         row={
             "asset":"BRENT","price":100.0,"research_decision":"SHORT","execution_eligible":False,
             "production_eligible":False,"source_gate_pass":True,"market_open":True,
-            "trade_plan":{"eligible":True,"final_economics_gate":{"status":"PASS","eligible":True}},
+            "market_observed_at":datetime.now(timezone.utc).isoformat(),"horizon":"1h",
+            "trade_plan":{"eligible":True,"entry_price":100,"stop_price":101,"target_price":98,
+                          "direction":"SHORT","expected_move_pct":.02,"expected_to_stop_ratio":2.0},
         }
         old=vp._v90r41_base_admission
         try:
@@ -291,7 +296,7 @@ class ExecutionSafetyTests(unittest.TestCase):
     def test_live_gate_rejects_negative_post_cost_expectancy(self):
         gate = VX.production_order_gate(
             "BTC",
-            {"eligible": True, "entry_price": 100.0, "stop_price": 99.8,
+            {"eligible": True, "entry_price": 100.0, "stop_price": 99.8, "target_price": 100.24,
              "expected_move_pct": 0.006, "expected_to_stop_ratio": 1.20},
             source_gate={"eligible": True},
             durable_storage=True,
