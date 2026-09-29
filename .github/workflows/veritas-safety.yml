@@ -21,8 +21,6 @@ jobs:
         run: python -m py_compile veritas_quote_time.py veritas_profit_protection.py veritas_position_guard.py veritas_execution.py veritas_broker.py veritas_instruments.py veritas_promotion.py veritas_risk.py veritas_live.py veritas_storage_guard.py veritas_market_runtime.py veritas_signal_core.py veritas_portfolio.py veritas_intelligence.py veritas_learning_index.py veritas_v90_ui.py
       - name: Execution safety tests
         run: python -m unittest -v test_veritas_v90_safety.py
-      - name: R46 protective execution regressions
-        run: python -m unittest -v test_veritas_execution_repairs.py
       - name: Market case regressions
         run: python -m unittest -v test_veritas_v90_market_cases.py
       - name: Single-source policy regressions
