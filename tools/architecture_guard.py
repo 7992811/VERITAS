@@ -7,6 +7,7 @@ from pathlib import Path
 LIMITS = {
     "veritas_intelligence.py": {"max_lines": 18000, "max_redefinitions": 35, "max_duplicate_names": 32},
     "veritas_portfolio.py": {"max_lines": 8200, "max_redefinitions": 68, "max_duplicate_names": 20},
+    "veritas_portfolio_runtime.py": {"max_lines": 1450, "max_redefinitions": 16, "max_duplicate_names": 8},
 }
 
 
