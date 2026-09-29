@@ -8198,7 +8198,7 @@ def report(pg_connect):
 # veritas_live + veritas_execution.production_order_gate.
 
 V90_PRODUCTION_CANDIDATE_EPOCH=os.getenv(
-    'VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-29T18:30:00+00:00'
+    'VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-29T18:42:15+00:00'
 )
 V90_PRODUCTION_CANDIDATES=('Champion','Challenger')
 
@@ -8612,7 +8612,7 @@ _v90_candidate_base_step_one=_step_one
 def _v90_candidate_epoch_rebase(c,name,prices,ts):
     if name not in V90_PRODUCTION_CANDIDATES:
         return {'status':'NOT_APPLICABLE','closed':0}
-    marker='production_candidate_epoch_20260929_'+str(name)
+    marker='production_candidate_epoch_20260929_profit_v2_'+str(name)
     try:
         row=c.execute("SELECT 1 AS ok FROM v90_migration_state WHERE key=%s",(marker,)).fetchone()
         if row:
