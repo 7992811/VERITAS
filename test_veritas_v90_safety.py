@@ -44,6 +44,35 @@ class ExecutionSafetyTests(unittest.TestCase):
         })
         self.assertTrue(gate["eligible"])
 
+    def test_final_safety_uses_setup_specific_target_not_stale_core_target(self):
+        import veritas_intelligence as vi
+        plan={
+            "eligible":True,"reason":"tactical_reversal","setup":"TACTICAL_REVERSAL",
+            "entry_price":100.0,"stop_price":102.0,
+            "target_price":99.7,"tactical_target_price":96.0,
+            "expected_move_pct":0.04,"expected_to_stop_ratio":2.0,
+            "initial_position_fraction":0.10,
+        }
+        out=vi.final_execution_safety("BRENT","SHORT",plan)
+        self.assertEqual(out["target_price"],96.0)
+        self.assertAlmostEqual(out["expected_move_pct"],0.04,places=8)
+        self.assertAlmostEqual(out["expected_to_stop_ratio"],2.0,places=8)
+        self.assertEqual(out["final_level_sync"]["status"],"SYNCED")
+        self.assertTrue(out["final_economics_gate"]["eligible"],out)
+
+    def test_final_safety_recomputes_rr_from_final_levels(self):
+        import veritas_intelligence as vi
+        plan={
+            "eligible":True,"reason":"ok","entry_price":100.0,
+            "stop_price":104.0,"target_price":94.0,
+            "expected_move_pct":0.20,"expected_to_stop_ratio":9.0,
+            "initial_position_fraction":0.10,
+        }
+        out=vi.final_execution_safety("BRENT","SHORT",plan)
+        self.assertAlmostEqual(out["expected_move_pct"],0.06,places=8)
+        self.assertAlmostEqual(out["expected_to_stop_ratio"],1.5,places=8)
+        self.assertTrue(out["final_economics_gate"]["eligible"],out)
+
     def test_crypto_production_needs_two_direct_quotes(self):
         good = VX.production_source_gate("BTC", {
             "source_gate_pass": True,

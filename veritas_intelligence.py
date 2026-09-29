@@ -6495,6 +6495,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                                        'initial_position_fraction':tactical_reversal.get('initial_position_fraction',min(0.15,float(size or 0.05))),
                                        'scaling_policy':'IMPULSE_GENESIS_PROBE_THEN_ADD' if is_genesis else 'TACTICAL_REVERSAL_5_15PCT',
                                        'tactical_target_price':tactical_reversal.get('target_price'),
+                                       'target_price':tactical_reversal.get('target_price'),
                                        'setup':tactical_reversal.get('setup') or 'TACTICAL_REVERSAL',
                                        'pre_impulse_swing':tactical_reversal.get('pre_impulse_swing'),
                                        'trigger_level':tactical_reversal.get('trigger_level'),
@@ -6540,6 +6541,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                             'initial_position_fraction':reversal_capture['initial_position_fraction'],
                             'scaling_policy':'REVERSAL_CAPTURE_10_15PCT_THEN_CONFIRM',
                             'tactical_target_price':reversal_capture['target_price'],
+                            'target_price':reversal_capture['target_price'],
                             'setup':'BRENT_REVERSAL_CAPTURE',
                             'reversal_probability':prob
                         })
@@ -6554,7 +6556,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                                            'expected_to_stop_ratio':range_setup.get('reward_risk'),'min_expected_to_stop_ratio':1.20,
                                            'initial_position_fraction':range_setup.get('initial_position_fraction',0.10),
                                            'scaling_policy':'RANGE_RETEST_10_15PCT_THEN_BREAKOUT_ADD',
-                                           'tactical_target_price':range_setup.get('target_price'),'setup':'RANGE_RETEST_BREAKOUT'})
+                                           'tactical_target_price':range_setup.get('target_price'),'target_price':range_setup.get('target_price'),'setup':'RANGE_RETEST_BREAKOUT'})
                     try:
                         pg_event('setup_learning',f'{cycle_id}:{asset}:{horizon}:range_retest',
                                  {'setup':'RANGE_RETEST_BREAKOUT','state':rs,'price':f.get('price'),'details':range_setup,
@@ -6574,7 +6576,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                                            'expected_move_pct':abs(float(bridge.get('target_price') or f.get('price'))/float(f.get('price') or 1)-1),
                                            'expected_to_stop_ratio':bridge.get('reward_risk'),'min_expected_to_stop_ratio':bridge.get('min_reward_risk',1.30),
                                            'initial_position_fraction':0.05,'scaling_policy':'REVERSAL_BRIDGE_5_15PCT',
-                                           'tactical_target_price':bridge.get('target_price'),'setup':'REVERSAL_ADMISSION_BRIDGE',
+                                           'tactical_target_price':bridge.get('target_price'),'target_price':bridge.get('target_price'),'setup':'REVERSAL_ADMISSION_BRIDGE',
                                            'reversal_probability':bridge.get('probability')})
                     # Durable, zero-weight experience event for self-learning / counterfactual review.
                     if original_plan_reason in ('invalidated','no_direction'):
@@ -17699,6 +17701,47 @@ def execution_eligibility(asset, raw, clock_info=None):
 
 def final_execution_safety(asset,research_decision,plan):
     plan=dict(plan or {}); plan['direction']=research_decision
+
+    # R43 final-level invariant: setup-specific mutations must leave one canonical
+    # target. Recompute gross move/RR from the FINAL entry, stop and target before
+    # the post-cost economics gate. This prevents stale core target/RR fields from
+    # blocking (or incorrectly admitting) a later tactical setup.
+    setup=str(plan.get('setup') or '')
+    reason=str(plan.get('reason') or '')
+    tactical_target=plan.get('tactical_target_price')
+    setup_target_override=(
+        setup in ('TACTICAL_REVERSAL','IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK',
+                  'BRENT_REVERSAL_CAPTURE','RANGE_RETEST_BREAKOUT','REVERSAL_ADMISSION_BRIDGE')
+        or reason in ('tactical_reversal','impulse_genesis','brent_reversal_capture',
+                      'range_retest_breakout','reversal_admission_bridge')
+    )
+    if tactical_target is not None and setup_target_override:
+        plan['target_price']=tactical_target
+        plan['target_method']='SETUP_SPECIFIC_CANONICAL_TARGET'
+
+    try:
+        entry=float(plan.get('entry_price'))
+        stop=float(plan.get('stop_price'))
+        target=float(plan.get('target_price') if plan.get('target_price') is not None
+                     else plan.get('tactical_target_price'))
+        if entry>0 and stop>0 and target>0 and research_decision in ('LONG','SHORT'):
+            sign=1.0 if research_decision=='LONG' else -1.0
+            move=sign*(target-entry)/entry
+            risk=sign*(entry-stop)/entry
+            if move>0 and risk>0:
+                prior_move=plan.get('expected_move_pct')
+                prior_rr=plan.get('expected_to_stop_ratio')
+                plan['expected_move_pct']=move
+                plan['expected_to_stop_ratio']=move/risk
+                plan['stop_distance_pct']=risk
+                plan['final_level_sync']={
+                    'status':'SYNCED','entry_price':entry,'stop_price':stop,'target_price':target,
+                    'prior_expected_move_pct':prior_move,'prior_expected_to_stop_ratio':prior_rr,
+                    'final_expected_move_pct':move,'final_expected_to_stop_ratio':move/risk,
+                }
+    except (TypeError,ValueError,ZeroDivisionError):
+        pass
+
     gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
         'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
     }
