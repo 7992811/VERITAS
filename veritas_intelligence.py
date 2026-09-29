@@ -16704,6 +16704,8 @@ def _v90r37_compact_decision_payload(p):
       'committee_score':p.get('committee_score'),'regime':p.get('regime'),
       'signal_tier':p.get('signal_tier'),
       'execution_signal_tier':p.get('execution_signal_tier'),
+      'execution_eligibility':_v90_small_dict(p.get('execution_eligibility'),(
+          'eligible','reason','paper_eligible','paper_execution_reason','production_eligible','direct_sources')),
       'decision_stage':p.get('decision_stage'),
       'calibrated_probability':(p.get('calibration') or {}).get('probability_correct'),
       'trade_plan':{
@@ -16716,6 +16718,7 @@ def _v90r37_compact_decision_payload(p):
         'expected_move_pct':plan.get('expected_move_pct'),
         'expected_to_stop_ratio':plan.get('expected_to_stop_ratio'),
         'initial_position_fraction':plan.get('initial_position_fraction'),
+        'final_economics_gate':plan.get('final_economics_gate') or {},
       },
       'tradeability':{
         'status':(p.get('tradeability') or {}).get('status'),
@@ -16752,6 +16755,9 @@ def _v90r37_signature(event_type,payload):
           'regime':p.get('regime'),'eligible':plan.get('eligible'),
           'plan_reason':plan.get('reason'),'entry_quality':plan.get('entry_quality'),
           'breakout_state':bq.get('state'),
+          'paper_eligible':(p.get('execution_eligibility') or {}).get('paper_eligible'),
+          'source_gate':(p.get('gates') or {}).get('source'),
+          'market_open':(p.get('gates') or {}).get('time'),
         }
     else:
         gate=p.get('gate') or {}
