@@ -6651,7 +6651,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 trade_plan=apply_v84_execution_to_trade_plan(v84_row,trade_plan,setup_memory,regime_policy,execution_policy)
                 # R40 has final authority only after every setup/learning/execution
                 # layer has finished mutating the plan. Nothing below may re-enable it.
-                trade_plan['entry_price']=float(trade_plan.get('entry_price') or f.get('price') or 0.0)
+                trade_plan['entry_price']=float(trade_plan.get('entry_price') or f.get('price') or 0.0); trade_plan['entry_quality']=trade_plan.get('entry_quality') or (f.get('trend_impulse') or {}).get('entry_quality') or f.get('entry_quality')
                 trade_plan['spread_bps']=f.get('spread_bps')
                 trade_plan.update(horizon=horizon,market_observed_at=raw.get('observed_at'),best_bid=raw.get('best_bid'),best_ask=raw.get('best_ask'))
                 trade_plan=final_execution_safety(asset,research_dec,trade_plan)
@@ -16669,7 +16669,7 @@ def _v90r37_compact_decision_payload(p):
       'trade_plan':{
         'eligible':plan.get('eligible'),'reason':plan.get('reason'),
         'setup':plan.get('setup'),'direction':plan.get('direction'),
-        'entry_quality':plan.get('entry_quality'),
+        'entry_quality':plan.get('entry_quality'),'entry_quality_rebased_from_old_setup':plan.get('entry_quality_rebased_from_old_setup'),
         'entry_price':plan.get('entry_price'),'stop_price':plan.get('stop_price'),
         'stop_distance_pct':plan.get('stop_distance_pct'),
         'target_price':plan.get('target_price'),
@@ -17377,7 +17377,7 @@ def _v90_compact_live_row(z):
     inst2['regime_transition']=rt
     plan=z.get('trade_plan') or {}
     plan2=_v90_small_dict(plan,(
-        'eligible','reason','direction','entry_price','entry_quality','late_entry',
+        'eligible','reason','direction','entry_price','entry_quality','entry_quality_rebased_from_old_setup','late_entry',
         'stop_price','stop_method','stop_distance_pct','invalidation_price',
         'expected_move_pct','expected_move_method','expected_to_stop_ratio',
         'min_expected_to_stop_ratio','initial_position_fraction','scaling_policy',

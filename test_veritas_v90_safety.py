@@ -73,6 +73,23 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertAlmostEqual(out["expected_to_stop_ratio"],1.5,places=8)
         self.assertTrue(out["final_economics_gate"]["eligible"],out)
 
+    def test_rebased_entry_quality_survives_live_and_durable_compaction(self):
+        import veritas_intelligence as vi
+        plan=vi.final_execution_safety("BRENT","SHORT",{
+            "eligible":True,"reason":"tactical_reversal","setup":"TACTICAL_REVERSAL",
+            "entry_quality":"INVALIDATED","entry_price":100.0,"stop_price":102.0,
+            "target_price":96.0,"expected_move_pct":0.04,
+            "expected_to_stop_ratio":2.0,"initial_position_fraction":0.10,
+        })
+        self.assertTrue(plan["entry_quality_rebased_from_old_setup"])
+        row={"asset":"BRENT","horizon":"1h","research_decision":"SHORT",
+             "entry_quality":plan["entry_quality"],"trade_plan":plan}
+        live=vi._v90_compact_live_row(row)
+        self.assertEqual(live["trade_plan"]["entry_quality"],"NEW_SETUP_PROVISIONAL")
+        self.assertTrue(live["trade_plan"]["entry_quality_rebased_from_old_setup"])
+        durable=vi._v90r37_compact_decision_payload(row)
+        self.assertTrue(durable["trade_plan"]["entry_quality_rebased_from_old_setup"])
+
     def test_crypto_production_needs_two_direct_quotes(self):
         good = VX.production_source_gate("BTC", {
             "source_gate_pass": True,
