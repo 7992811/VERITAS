@@ -23,6 +23,8 @@ jobs:
         run: python -m unittest -v test_veritas_v90_safety.py
       - name: Market case regressions
         run: python -m unittest -v test_veritas_v90_market_cases.py
+      - name: Single-source policy regressions
+        run: python -m unittest -v test_veritas_single_source.py
       - name: Learning index regressions
         run: python -m unittest -v test_veritas_learning_index.py
       - name: Paper signal UI regressions
