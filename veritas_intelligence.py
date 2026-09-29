@@ -13840,34 +13840,59 @@ def production_readiness():
             warnings.append('database_expiry_date_invalid')
     else:
         warnings.append('database_expiry_date_unknown')
+
     measurable=sum(1 for x in cq.get('items',[]) if x.get('status')=='MEASURABLE')
     if measurable<3: warnings.append('probability_calibration_sample_still_building')
     if event_web_scan_status().get('status') not in ('ok','starting'):
         warnings.append('automatic_event_scan_not_healthy')
     if not champion_challenger_board().get('challengers'):
         warnings.append('no_robust_challenger_yet')
+
+    candidate={'status':'UNAVAILABLE','ready':False}
+    if VP is not None and pg_enabled() and hasattr(VP,'production_candidate_readiness'):
+        try:
+            candidate=VP.production_candidate_readiness(pg_connect)
+        except Exception as ex:
+            candidate={'status':'ERROR','ready':False,'error':f'{type(ex).__name__}: {ex}'}
+    if not candidate.get('ready'):
+        warnings.append('fresh_paper_profitability_proof_building')
+
     research_ready=bool(storage.get('ok') and not dq.get('critical_failures'))
     live_blockers=[]
     if not storage.get('ok'): live_blockers.append('durable_storage_required')
+    if not candidate.get('ready'): live_blockers.append('paper_profitability_gate_not_passed')
     live_blockers.extend(['broker_adapter_not_configured','broker_reconciliation_not_active',
                           'production_contract_specs_not_configured','instrument_specs_not_validated',
                           'model_promotion_gate_not_passed','live_execution_disabled'])
     if measurable<3: live_blockers.append('calibrated_probability_sample_insufficient')
     if not LICENSED_MARKET_DATA: live_blockers.append('production_market_data_not_configured')
-    return {'version':VERSION,'research_product_ready':research_ready,
-            'external_investor_ready':research_ready and not blockers,
-            'real_money_ready':False,
-            'real_money_blockers':list(dict.fromkeys(live_blockers)),
-            'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
-            'blockers':blockers,'warnings':warnings,
-            'current_phase':'RESEARCH_RC' if research_ready else 'ENGINE_BUILD',
-            'required_for_external_release':[
-                'persistent non-expiring database + independent backup',
-                'always-on hosting/scheduler','licensed redistribution-safe market data',
-                'authentication/access controls','sufficient live calibration and shadow performance'
-            ]}
 
-
+    return {
+        'version':VERSION,
+        'research_product_ready':research_ready,
+        'test_strategy_ready':bool(candidate.get('ready')),
+        'production_candidate':candidate,
+        'external_investor_ready':research_ready and not blockers,
+        'real_money_ready':False,
+        'real_money_blockers':list(dict.fromkeys(live_blockers)),
+        'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
+        'blockers':blockers,'warnings':warnings,
+        'current_phase':'TEST_PRODUCTION_CANDIDATE' if research_ready else 'ENGINE_BUILD',
+        'promotion_order':[
+            'fresh paper profitability proof',
+            'independent OOS/VAULT promotion evidence',
+            'direct production-grade market data',
+            'validated instrument specifications',
+            'broker sandbox + position/order reconciliation',
+            'manual arming of real-money execution'
+        ],
+        'required_for_external_release':[
+            'persistent non-expiring database + independent backup',
+            'always-on hosting/scheduler','licensed redistribution-safe market data',
+            'authentication/access controls','sufficient live calibration and shadow performance'
+        ],
+        'principle':'The test build may trade autonomously, but real-money execution stays fail-closed until fresh post-cost profitability and all independent safety domains pass.'
+    }
 
 
 def research_discovery_health():
