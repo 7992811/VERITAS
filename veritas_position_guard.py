@@ -8,6 +8,7 @@ import threading
 import time
 
 import httpx
+import veritas_profit_protection as VPP
 from veritas_quote_time import quote_gate, utc_datetime
 
 BOOK_LOCK_ID = 90390929
@@ -161,6 +162,8 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                        p.get('last_usdrub'), json.dumps({'unrealized_pnl_rub': unreal, 'protective_guard': True})))
             changes.append({'portfolio': name, 'asset': z['asset'], 'trade_id': tid,
                             'reason': reason, 'price': px, 'market_observed_at': q['observed_at']})
+        if changes:
+            VPP.refresh(c, commission=getattr(vp, 'COMMISSION', .0005))
     return changes
 
 

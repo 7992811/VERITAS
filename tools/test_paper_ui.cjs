@@ -74,3 +74,22 @@ assert.doesNotMatch(elements.trades.innerHTML, /10.00%/);
 assert.match(elements.trades.innerHTML, /Фиксация по тейку/);
 assert.match(elements.trades.innerHTML, /TP1 · частично исполнен/);
 console.log('Partial take-profit and whole-trade UI regressions passed');
+
+for (const [state, net, label] of [
+  ['COSTS_NOT_COVERED', -81, 'нет чистой прибыли'],
+  ['PROTECTED', 230, 'после расходов'],
+  ['UNAVAILABLE', null, 'нет расчёта'],
+  ['STOP_REACHED', 50, 'стоп достигнут'],
+]) {
+  const position = {...partial, profit_protection_active: true,
+    net_profit_protection: {version: 'NET_STOP_AFTER_COSTS_V1', state,
+      net_at_stop_rub: net, break_even_stop_price: 100.182}};
+  ui.st.positionBook = {Impulse: [JSON.parse(JSON.stringify(ui.normalizePosition(position, 'Impulse', {})))]};
+  ui.st.portfolios = {portfolios: [{name: 'Impulse', positions: [position]}]};
+  ui.renderPortfolios();
+  assert.ok(elements.positions.innerHTML.includes('Защита <b>'+label+'</b>'));
+  assert.match(elements.positions.innerHTML, /По стопу после расходов/);
+  assert.match(elements.positions.innerHTML, /Безубыток/);
+  assert.doesNotMatch(elements.positions.innerHTML, /Защита <b>активна/);
+}
+console.log('Net profit protection UI regressions passed');

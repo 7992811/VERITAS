@@ -1,6 +1,7 @@
 """Read-only trade accounting for the dashboard; no execution decisions."""
 import json
 import math
+import veritas_profit_protection as VPP
 
 
 def _number(value):
@@ -63,12 +64,11 @@ def enrich_positions(report, pg_connect):
     if ids:
         try:
             with pg_connect() as conn:
-                rows = conn.execute('''SELECT trade_id,gross_pnl_rub,fees_rub,funding_rub,payload
-                                       FROM paper_trades WHERE trade_id=ANY(%s)''', (ids,)).fetchall()
-            trades = {r['trade_id']: dict(r) for r in rows}
+                trades = VPP.load_accounts(conn, ids)
         except Exception:
             # Keep the position visible, but never substitute zero for unknown costs.
             pass
     for position in positions:
         position.update(trade_result(trades.get(position.get('active_trade_id')), position))
+        position.update(VPP.evaluate(position, trades.get(position.get('active_trade_id'))))
     return out
