@@ -3604,17 +3604,23 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
             if str(payload.get('data_integrity_status') or 'OK')!='OK':
                 continue
             mfe=float(payload.get('mfe_pct') or 0.0) / 100.0
-            if mfe < 0.004:
+            round_trip_commission=max(0.0,2.0*float(commission_rate or COMMISSION))
+            # Protect once the favorable move is large enough to pay both commissions
+            # plus a small buffer. This implements the portfolio rule:
+            # profit -> net breakeven/profit floor -> structural trailing.
+            protection_trigger=max(0.0025,round_trip_commission+0.0012)
+            if mfe < protection_trigger:
                 continue
             entry=float(z.get('avg_entry_price') or 0.0)
             if entry<=0: continue
             direction=str(z.get('direction') or '')
-            # At +0.4% MFE move stop to roughly breakeven after round-trip costs.
-            # At +0.8% lock ~25% of MFE; at +1.5% lock ~40%.
-            lock=0.0012
+            # The first ratchet must be net-positive after the 0.05%/leg commission.
+            # Larger moves progressively lock a share of MFE; structural trailing
+            # remains the next-stage authority and may tighten further.
+            cost_floor=round_trip_commission+0.0003
+            lock=max(cost_floor,0.45*mfe if mfe<0.008 else 0.0)
             if mfe>=0.015: lock=max(lock,0.40*mfe)
             elif mfe>=0.008: lock=max(lock,0.25*mfe)
-            elif mfe>=0.004: lock=max(lock,0.0012)
             proposed=entry*(1.0+lock) if direction=='LONG' else entry*(1.0-lock)
             old_stop=z.get('stop_price')
             improve=(old_stop is None or
@@ -3627,6 +3633,9 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
                           (proposed,json.dumps({
                             **VPP.assess(c,z,stop=proposed,now=ts,commission=COMMISSION),
                             'profit_protection_mfe_pct':100.0*mfe,
+                            'profit_protection_trigger_pct':100.0*protection_trigger,
+                            'profit_protection_round_trip_commission_pct':100.0*round_trip_commission,
+                            'profit_protection_net_lock_pct':100.0*lock,
                             'profit_protection_stop':proposed,
                           },ensure_ascii=False),name,z.get('asset')))
     except Exception:
@@ -8610,25 +8619,48 @@ _v90_candidate_base_step_one=_step_one
 
 
 def _v90_candidate_epoch_rebase(c,name,prices,ts):
-    if name not in V90_PRODUCTION_CANDIDATES:
-        return {'status':'NOT_APPLICABLE','closed':0}
-    marker='production_candidate_epoch_20260929_profit_v2_'+str(name)
+    # One-time hygiene for ALL four books: positions opened by the superseded
+    # admission kernel must not keep generating P/L after the clean test epoch.
+    # Historical trades/P&L remain untouched; only still-open legacy exposure closes.
+    marker='execution_epoch_cleanup_20260929_profit_v3_'+str(name)
     try:
         row=c.execute("SELECT 1 AS ok FROM v90_migration_state WHERE key=%s",(marker,)).fetchone()
         if row:
             return {'status':'ALREADY_REBASED','closed':0}
+        epoch=datetime.fromisoformat(str(V90_PRODUCTION_CANDIDATE_EPOCH).replace('Z','+00:00'))
+        if epoch.tzinfo is None:
+            epoch=epoch.replace(tzinfo=timezone.utc)
         p,pos=_portfolio_rows(c,name)
         nav,_,_,_=_mark_nav(p,pos,prices)
         closed=0
+        kept=0
         for z0 in list(pos):
-            z=dict(z0); px=float((prices or {}).get(z.get('asset'),z.get('last_price')))
-            _close_or_reduce(c,p,name,z,px,0.0,nav,ts,'PRODUCTION_CANDIDATE_REBASE')
+            z=dict(z0)
+            opened=z.get('opened_at')
+            try:
+                odt=opened if isinstance(opened,datetime) else datetime.fromisoformat(str(opened).replace('Z','+00:00'))
+                if odt.tzinfo is None:
+                    odt=odt.replace(tzinfo=timezone.utc)
+            except Exception:
+                kept+=1
+                continue
+            if odt>=epoch:
+                kept+=1
+                continue
+            px=float((prices or {}).get(z.get('asset'),z.get('last_price')))
+            _close_or_reduce(c,p,name,z,px,0.0,nav,ts,'LEGACY_KERNEL_REBASE')
             closed+=1
         c.execute("""INSERT INTO v90_migration_state(key,migrated_at,details)
                      VALUES(%s,now(),%s::jsonb) ON CONFLICT(key) DO NOTHING""",
                   (marker,json.dumps({'portfolio':name,'epoch':V90_PRODUCTION_CANDIDATE_EPOCH,
-                                      'closed_legacy_positions':closed})))
-        return {'status':'REBASED','closed':closed}
+                                      'closed_pre_epoch_positions':closed,
+                                      'kept_current_epoch_positions':kept})))
+        if closed:
+            print(json.dumps({'event':'V90_LEGACY_KERNEL_REBASE','portfolio':name,
+                              'epoch':V90_PRODUCTION_CANDIDATE_EPOCH,
+                              'closed':closed,'kept':kept},
+                             ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+        return {'status':'REBASED','closed':closed,'kept':kept}
     except Exception as ex:
         return {'status':'ERROR','closed':0,'error':f'{type(ex).__name__}: {ex}'}
 
@@ -8750,6 +8782,9 @@ def report(pg_connect):
         'quality_controls_size_not_signal_existence':True,
         'profitability_first_candidate_books':['Champion','Challenger'],
         'weak_breakout_trading_enabled':False,
+        'profit_protection_trigger':'max(0.25%, round-trip commission + 0.12%)',
+        'profit_floor_after_trigger':'round-trip commission + 0.03%',
+        'pre_epoch_open_positions_allowed':False,
         'candidate_epoch':V90_PRODUCTION_CANDIDATE_EPOCH,
         'live_capital_gate_independent':True,
         'live_execution_armed':False,
