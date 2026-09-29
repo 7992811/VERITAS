@@ -9010,3 +9010,155 @@ def report(pg_connect):
 
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),25)
+
+
+# VERITAS V90 LEARNING DATA HYGIENE R44
+# Administrative portfolio migrations/rebases are accounting events, not market
+# outcomes. Keep them in the trade journal and portfolio P/L, but never allow
+# them to teach direction, entry quality, expected move, stop quality or exit
+# capture. This also sanitizes already-created R29 episodes.
+
+V90_R44_STARTED_AT=os.getenv(
+    'VERITAS_R44_STARTED_AT','2026-09-29T20:08:00+00:00'
+)
+
+_v90r44_base_episode_from_trade=_v90r29_episode_from_trade
+_v90r44_base_step_all=step_all
+_v90r44_base_report=report
+_v90r44_sanitize_state={
+  'at':0.0,
+  'last_changed':0,
+  'total_admin_excluded':0,
+  'last_error':None,
+}
+
+
+def _v90r44_administrative_exit(reason):
+    u=str(reason or '').upper().strip()
+    # "REBASE" is reserved for engine / migration accounting closures in v9.0.
+    # Market exits use STOP / TAKE_PROFIT / TRAIL / STRUCTURE_* / thesis reasons.
+    return bool(u and 'REBASE' in u)
+
+
+def _v90r29_episode_from_trade(t):
+    e=dict(_v90r44_base_episode_from_trade(t) or {})
+    raw_payload=_v90j_json((t or {}).get('payload'))
+    ep_payload=dict(e.get('payload') or {})
+    reason=str(
+        ep_payload.get('exit_reason')
+        or raw_payload.get('exit_reason')
+        or raw_payload.get('close_reason')
+        or ''
+    )
+    if _v90r44_administrative_exit(reason):
+        original=e.get('primary_attribution')
+        e['learning_eligible']=False
+        e['primary_attribution']='ADMINISTRATIVE_EXIT_EXCLUDED'
+        e['attributions']=['ADMINISTRATIVE_EXIT_EXCLUDED']
+        e['learning_action']='EXCLUDE_FROM_LEARNING'
+        ep_payload.update({
+          'administrative_exit':True,
+          'learning_exclusion_reason':'ADMINISTRATIVE_REBASE',
+          'excluded_original_primary_attribution':original,
+          'exit_reason':reason,
+        })
+        e['payload']=ep_payload
+    return e
+
+
+def _v90r44_sanitize_learning(pg_connect,force=False):
+    now=time.time()
+    if (not force
+            and now-float(_v90r44_sanitize_state.get('at') or 0.0)<50.0):
+        return dict(_v90r44_sanitize_state)
+
+    changed=0
+    total=0
+    err=None
+    try:
+        with pg_connect() as c:
+            _v90r29_ensure(c)
+            cur=c.execute("""
+              UPDATE v90_learning_episodes
+              SET learning_eligible=FALSE,
+                  primary_attribution='ADMINISTRATIVE_EXIT_EXCLUDED',
+                  attributions='["ADMINISTRATIVE_EXIT_EXCLUDED"]'::jsonb,
+                  learning_action='EXCLUDE_FROM_LEARNING',
+                  payload=COALESCE(payload,'{}'::jsonb) || jsonb_build_object(
+                    'administrative_exit',TRUE,
+                    'learning_exclusion_reason','ADMINISTRATIVE_REBASE',
+                    'excluded_original_primary_attribution',primary_attribution,
+                    'learning_excluded_at',now()
+                  )
+              WHERE learning_eligible=TRUE
+                AND UPPER(COALESCE(payload->>'exit_reason','')) LIKE '%REBASE%'
+            """)
+            changed=max(0,int(getattr(cur,'rowcount',0) or 0))
+            row=c.execute("""
+              SELECT COUNT(*) AS n
+              FROM v90_learning_episodes
+              WHERE primary_attribution='ADMINISTRATIVE_EXIT_EXCLUDED'
+                 OR COALESCE((payload->>'administrative_exit')::boolean,FALSE)=TRUE
+            """).fetchone()
+            total=int((row or {}).get('n') or 0)
+    except Exception as ex:
+        err=f'{type(ex).__name__}: {ex}'[:240]
+
+    _v90r44_sanitize_state.update({
+      'at':now,
+      'last_changed':changed,
+      'total_admin_excluded':total,
+      'last_error':err,
+    })
+
+    if changed:
+        # Both learning caches must be rebuilt from the sanitized episode set.
+        _v90r29_cache['at']=0.0
+        _v90r33_cache['at']=0.0
+        print(json.dumps({
+          'event':'V90_R44_LEARNING_SANITIZED',
+          'changed':changed,
+          'total_admin_excluded':total,
+          'policy':'ADMINISTRATIVE_REBASE_EXCLUDED_FROM_LEARNING',
+        },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    elif err:
+        print(json.dumps({
+          'event':'V90_R44_SANITIZE_ERROR',
+          'error':err,
+        },ensure_ascii=False,separators=(',',':')),flush=True)
+    return dict(_v90r44_sanitize_state)
+
+
+def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
+    try:
+        _v90r44_sanitize_learning(pg_connect)
+    except Exception:
+        pass
+    return _v90r44_base_step_all(
+        summary,pg_connect,model_version,observed_at,commission_rate,emit
+    )
+
+
+def report(pg_connect):
+    try:
+        hygiene=_v90r44_sanitize_learning(pg_connect)
+    except Exception as ex:
+        hygiene={
+          'last_changed':0,'total_admin_excluded':0,
+          'last_error':f'{type(ex).__name__}: {ex}'[:240],
+        }
+    d=dict(_v90r44_base_report(pg_connect) or {})
+    d['learning_data_hygiene_r44']={
+      'status':'ACTIVE' if not hygiene.get('last_error') else 'DEGRADED',
+      'started_at':V90_R44_STARTED_AT,
+      'administrative_rebase_is_learning_eligible':False,
+      'administrative_trades_remain_in_trade_journal':True,
+      'administrative_trades_remain_in_portfolio_pnl':True,
+      'last_sanitized_rows':int(hygiene.get('last_changed') or 0),
+      'total_administrative_episodes_excluded':int(hygiene.get('total_admin_excluded') or 0),
+      'error':hygiene.get('last_error'),
+    }
+    return _jsonable(d)
+
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),26)
