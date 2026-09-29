@@ -66,18 +66,38 @@ def payload_of(z):
 
 
 def take_profit_action(z, current_fraction, peak, round5):
-    """Return (remaining fraction, reason), or None after TP1 was executed."""
+    """Return (remaining fraction, reason), or None after TP1 was executed.
+
+    R46 makes the first harvest trend-aware. A strong confirmed trend keeps a
+    larger runner instead of mechanically cutting every position to 50% at TP1.
+    The default remains the legacy 50% runner when no live trend context exists.
+    """
     p = payload_of(z)
     if p.get('r17_tp1_done'):
         return None
     if peak <= .075 or current_fraction <= .075:
         return 0.0, 'TAKE_PROFIT_FULL_MIN_POSITION_R17'
-    floor = max(.05, round5(peak * .40), round5(peak * .50))
+
+    try:
+        runner_ratio = float(p.get('r46_tp_runner_ratio', .50))
+    except (TypeError, ValueError):
+        runner_ratio = .50
+    runner_ratio = min(.85, max(.50, runner_ratio))
+    floor = max(.05, round5(peak * runner_ratio))
+
     if current_fraction <= floor + .025:
-        # A prior edge-decay/soft reduction is not an executed take-profit.
-        # Do not strand its remainder below the original first-harvest threshold.
+        # Under a strong-trend runner policy, a small position may be too small
+        # for another 5%-step harvest. Keep it rather than liquidating it only
+        # because the desired partial is below the portfolio step.
+        if runner_ratio > .50:
+            return None
+        # Legacy behaviour is retained for a remainder that was already reduced
+        # for other reasons before the first TP.
         return 0.0, 'TAKE_PROFIT_REMAINDER_AFTER_REDUCTION'
-    return floor, 'TAKE_PROFIT_PARTIAL_R17'
+
+    reason = ('TAKE_PROFIT_PARTIAL_R46_TREND_RUNNER'
+              if runner_ratio > .50 else 'TAKE_PROFIT_PARTIAL_R17')
+    return floor, reason
 
 
 def protective_reason(z, quote, now=None):
