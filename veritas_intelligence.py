@@ -6,6 +6,7 @@ from urllib.parse import urlparse, parse_qs
 import httpx
 import veritas_execution as VX
 import veritas_learning_index as VLI
+import veritas_trade_view as VTV
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     import psycopg
@@ -15470,7 +15471,7 @@ def _v90r25_portfolios_fast():
     with lock:
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
     if live and len(live.get('portfolios') or [])==4 and (any(p.get('positions') for p in live.get('portfolios') or []) or not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live.get('portfolios') or [])):
-        out=dict(live); out['api_source']='live_memory'
+        out=VTV.enrich_positions(live,pg_connect); out['api_source']='live_memory'
         with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
     if not pg_enabled(): return {'status':'UNAVAILABLE','portfolios':[]}
@@ -15478,7 +15479,7 @@ def _v90r25_portfolios_fast():
     with pg_connect() as c:
         base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
         nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
-        pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,ed.payload AS entry_decision_payload
+        pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,ed.payload AS entry_decision_payload
                          FROM paper_positions pp
                          LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id
                          LEFT JOIN LATERAL (
@@ -15527,6 +15528,7 @@ def _v90r25_portfolios_fast():
         b=bm.get(name,{}); latest=nm.get(name,{}); st=sm.get(name,{}); closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0); nav_rub=latest.get('nav_rub'); initial=float(b.get('initial_nav_rub') or 1000000)
         outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),'nav_rub':nav_rub,'nav_usd':latest.get('nav_usd'),'total_return_pct':(100*(float(nav_rub)/initial-1)) if nav_rub is not None else None,'drawdown_pct':100*float(latest.get('drawdown') or 0),'gross_leverage':latest.get('gross_leverage'),'net_exposure':latest.get('net_exposure'),'cash_equivalent_fraction':max(0,1-float(latest.get('gross_leverage') or 0)),'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
     out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':0.0005,'api_source':'fast_sql_enriched'}
+    out=VTV.enrich_positions(out,pg_connect)
     with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
     return out
 
@@ -15555,6 +15557,7 @@ def _v90r25_trades_fast(limit=80):
             z['stop_price']=p.get('stop_price') or p.get('last_stop_price')
             z['take_price']=p.get('take_price') or p.get('target_price')
             z['learning_label']=p.get('learning_label')
+            z.update(VTV.trade_result(z))
             trades.append(z)
         return {'status':'OK','trades':trades,'returned_count':len(trades),'api_source':'fast_sql'}
     except Exception as ex:
