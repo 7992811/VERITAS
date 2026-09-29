@@ -5441,8 +5441,7 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     # The remaining runner is exited by the structural trailing stop, a true
     # structure-exhaustion signal, hard invalidation, or confirmed reversal.
     if str(reason or '')=='TAKE_PROFIT':
-        # A minimum 5% probe has no room for a partial exit in 5% portfolio steps.
-        # If its entry target is reached, close it fully instead of leaving a stale runner forever.
+        # Minimum 5% probes cannot partial-exit in 5% steps: TP closes them fully.
         if peak<=0.075 or current_frac<=0.075:
             return _v90r17_base_close_or_reduce(
                 c,p,name,z,price,0.0,nav,ts,'TAKE_PROFIT_FULL_MIN_POSITION_R17')
@@ -7760,36 +7759,19 @@ def _signal_first_admission(row,policy,drawdown):
 
 
 def _v90r19_flip_confirmed(summary,z,row):
-    row=row or {}
-    new_direction=str(row.get('research_decision') or '')
-    old_direction=str((z or {}).get('direction') or '')
-    structural_exit=bool(
-        new_direction in ('LONG','SHORT')
-        and new_direction!=old_direction
-        and _v90r19_old_structure_broken(summary,z)
-        and _v90r19_opposite_confirmation(row,new_direction)
-    )
-    if not structural_exit:
+    row=row or {}; new_direction=str(row.get('research_decision') or ''); old_direction=str((z or {}).get('direction') or '')
+    if not (new_direction in ('LONG','SHORT') and new_direction!=old_direction
+            and _v90r19_old_structure_broken(summary,z)
+            and _v90r19_opposite_confirmation(row,new_direction)):
         return False
-
-    reverse_allowed=_v90r33_previous_flip_confirmed(summary,z,row)
-    ev=_v90r33_edge_eval(row)
-    if (not reverse_allowed) or (ev.get('active') and not ev.get('pass')):
-        if isinstance(row,dict):
-            row['_v90_exit_only_flip']=True
-        print(json.dumps({
-          'event':'V90_EXIT_OLD_THESIS_TO_CASH',
-          'portfolio':_v90r22_active_portfolio,
-          'asset':row.get('asset'),
-          'old_direction':old_direction,
-          'new_direction':new_direction,
-          'reverse_allowed':bool(reverse_allowed),
-          'edge':ev,
-        },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
-        return True
-
-    if isinstance(row,dict):
-        row['_v90_exit_only_flip']=False
+    reverse_allowed=_v90r33_previous_flip_confirmed(summary,z,row); ev=_v90r33_edge_eval(row)
+    exit_only=(not reverse_allowed) or bool(ev.get('active') and not ev.get('pass'))
+    if isinstance(row,dict): row['_v90_exit_only_flip']=exit_only
+    if exit_only:
+        print(json.dumps({'event':'V90_EXIT_OLD_THESIS_TO_CASH','portfolio':_v90r22_active_portfolio,
+          'asset':row.get('asset'),'old_direction':old_direction,'new_direction':new_direction,
+          'reverse_allowed':bool(reverse_allowed),'edge':ev},
+          ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return True
 
 
