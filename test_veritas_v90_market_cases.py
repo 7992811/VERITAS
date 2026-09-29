@@ -46,8 +46,8 @@ class MarketCaseRegressionTests(unittest.TestCase):
                     institutional_signal=dict(evidence_independence=dict(independent_count=5),
                                               action='ENTER_CANDIDATE'),
                     trade_plan=VI.final_execution_safety('MOEX', 'SHORT', dict(
-                        eligible=True, entry_price=2229.78, stop_price=2250.50, target_price=2185.185,
-                        expected_to_stop_ratio=2.15, expected_move_pct=.020,
+                        eligible=True, entry_price=2229.78, stop_price=2250.50, target_price=2170.0,
+                        expected_to_stop_ratio=2.80, expected_move_pct=.027,
                         stop_distance_pct=.00929, initial_position_fraction=.1)))
 
     def test_rebased_tactical_plan_overrides_stale_row_entry_invalidation(self):
@@ -65,6 +65,7 @@ class MarketCaseRegressionTests(unittest.TestCase):
 
     def test_admission_trace_separates_probability_from_uncalibrated_score(self):
         row=self._moex_single_source_row()
+        row.pop('calibrated_probability', None)
         row['_pwin']=0.88
         row['_pwin_source']='MODEL_PRIOR_UNCALIBRATED'
         trace=VP._portfolio_admission_trace({'MOEX':row},VP.POLICIES['Impulse'],0.0)[0]
