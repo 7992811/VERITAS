@@ -9,6 +9,8 @@ from typing import Any, Dict, Optional
 
 VERSION = "veritas-execution-safety-v2"
 RESEARCH_PAPER_ASSETS = frozenset(("NQ", "BRENT", "GOLD", "MOEX", "CNYRUBF"))
+PAPER_ASSETS = RESEARCH_PAPER_ASSETS | frozenset(("BTC", "ETH"))
+PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
 
 # Research/paper economics gate. This is deliberately independent from signal quality:
 # even a SUPER signal cannot bypass bad trade economics.
@@ -58,6 +60,41 @@ def research_paper_source_ok(raw: Dict[str, Any]) -> bool:
     price = _num(raw.get("price"))
     return bool(raw.get("source_gate_pass") and raw.get("market_open")
                 and price is not None and price > 0)
+
+
+def paper_source_gate(asset, raw, clock_info=None):
+    """Single authority for source admission to every normalized paper portfolio.
+
+    Optional cross-checks may reject contradictory data, but their absence is
+    never a veto. Quote age and trade economics are checked again at entry.
+    """
+    r = raw or {}
+    blockers = []
+    if asset not in PAPER_ASSETS:
+        blockers.append("UNSUPPORTED_PAPER_ASSET")
+    if not r.get("source_gate_pass"):
+        blockers.append("PRIMARY_SOURCE_GATE_FAILED")
+    if not r.get("market_open"):
+        blockers.append("MARKET_TIME_GATE_FAILED")
+    price = _num(r.get("price"))
+    if price is None or price <= 0:
+        blockers.append("PRIMARY_PRICE_INVALID")
+    if r.get("direct_sources") is not None and (_num(r["direct_sources"], 0) < 1):
+        blockers.append("PRIMARY_SOURCE_MISSING")
+    secondary = _num(r.get("secondary_price", r.get("coinbase_price")))
+    if asset in ("BTC", "ETH"):
+        bid, ask = _num(r.get("best_bid")), _num(r.get("best_ask"))
+        if bid is None or ask is None or bid <= 0 or ask <= bid:
+            blockers.append("PRIMARY_TOP_OF_BOOK_MISSING")
+        if clock_info is not None and not clock_info.get("ok", False):
+            blockers.append("CLOCK_GATE_FAILED")
+        if secondary is not None and secondary > 0 and price is not None and price > 0:
+            divergence = abs(price-secondary) / ((price+secondary)/2)
+            if divergence > float(os.getenv("VERITAS_MAX_SOURCE_DIVERGENCE", "0.01")):
+                blockers.append("DIRECT_QUOTE_DIVERGENCE_TOO_LARGE")
+    return {"eligible": not blockers, "reason": "paper_one_valid_source" if not blockers else blockers[0],
+            "blockers": blockers, "source_policy": PAPER_SOURCE_POLICY,
+            "minimum_sources": 1}
 
 
 def round_trip_cost_pct(spread_bps: Optional[float] = None) -> float:

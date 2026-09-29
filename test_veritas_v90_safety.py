@@ -124,14 +124,14 @@ class ExecutionSafetyTests(unittest.TestCase):
             broker_reconciled=True,kill_switch=False)
         self.assertTrue(gate["eligible"],gate)
 
-    def test_delayed_nq_is_research_only_not_execution_quality(self):
+    def test_delayed_nq_has_paper_source_admission_without_live_admission(self):
         import veritas_intelligence as vi
         raw={"source_gate_pass":True,"market_open":True,"price":100.0,
              "data_latency_class":"CME_FUTURES_DELAYED_RESEARCH",
              "verification_mode":"nasdaq100_futures"}
         g=vi.execution_eligibility("NQ",raw,{"ok":True})
-        self.assertFalse(g["eligible"])
-        self.assertEqual(g["reason"],"research_only_delayed_nq_futures")
+        self.assertTrue(g["eligible"])
+        self.assertEqual(g["reason"],"paper_one_valid_source")
         self.assertTrue(g["paper_eligible"])
         self.assertFalse(g["production_eligible"])
 
@@ -279,7 +279,7 @@ class ExecutionSafetyTests(unittest.TestCase):
             vp._v90r41_base_admission=old
         self.assertTrue(out["open"])
         self.assertTrue(row["paper_eligible"])
-        self.assertEqual(row["paper_execution_reason"],"research_grade_paper_feed")
+        self.assertEqual(row["paper_execution_reason"],"paper_one_valid_source")
 
     def test_final_plan_gate_cannot_be_bypassed_by_setup_mutation(self):
         import veritas_intelligence as vi

@@ -3275,19 +3275,22 @@ def _ndx_derivatives_context():
 
 
 def source_clock_gate():
-    local_ms=int(time.time()*1000); out={'ok':True,'errors':[]}
+    out={'ok':True,'errors':[],'available_clocks':0,'minimum_clocks':1}
     try:
         b=int(get_json('https://api.binance.com/api/v3/time')['serverTime'])
-        out['binance_skew_s']=abs(local_ms-b)/1000
+        out['available_clocks']+=1
+        out['binance_skew_s']=abs(int(time.time()*1000)-b)/1000
         if out['binance_skew_s']>MAX_CLOCK_SKEW_SECONDS: out['ok']=False
     except Exception as ex:
-        out['ok']=False; out['errors'].append(f'Binance clock: {type(ex).__name__}')
+        out['errors'].append(f'Binance clock: {type(ex).__name__}')
     try:
         cb=float(get_json('https://api.exchange.coinbase.com/time')['epoch'])*1000
-        out['coinbase_skew_s']=abs(local_ms-cb)/1000
+        out['available_clocks']+=1
+        out['coinbase_skew_s']=abs(int(time.time()*1000)-cb)/1000
         if out['coinbase_skew_s']>MAX_CLOCK_SKEW_SECONDS: out['ok']=False
     except Exception as ex:
-        out['ok']=False; out['errors'].append(f'Coinbase clock: {type(ex).__name__}')
+        out['errors'].append(f'Coinbase clock: {type(ex).__name__}')
+    out['ok']=bool(out['ok'] and out['available_clocks']>=1)
     return out
 
 
@@ -3302,8 +3305,14 @@ def market(symbol, coinbase_product):
     vols = [float(x[5]) for x in k]
     taker_buy = [float(x[9]) for x in k]
     p = closes[-1]
-    cb_tick = get_json(f'https://api.exchange.coinbase.com/products/{coinbase_product}/ticker')
-    cb = float(cb_tick['price'])
+    cb_tick = {}; cb = None; secondary_error = None
+    try:
+        cb_tick = get_json(f'https://api.exchange.coinbase.com/products/{coinbase_product}/ticker')
+        cb = float(cb_tick['price'])
+        if not math.isfinite(cb) or cb<=0:
+            raise ValueError('invalid secondary price')
+    except Exception as ex:
+        cb_tick = {}; cb = None; secondary_error = type(ex).__name__
     try:
         book = get_json('https://api.binance.com/api/v3/ticker/bookTicker', {'symbol':symbol})
         best_bid=float(book.get('bidPrice') or 0.0); best_ask=float(book.get('askPrice') or 0.0)
@@ -3319,8 +3328,8 @@ def market(symbol, coinbase_product):
         cb_bid=cb_ask=None
     quote_mid=(0.5*(best_bid+best_ask)) if best_bid and best_ask else p
     spread_bps=((best_ask-best_bid)/quote_mid*10000.0) if best_bid and best_ask and quote_mid>0 else None
-    mid = (p + cb) / 2
-    divergence = abs(p - cb) / mid if mid else 999
+    mid = (p + cb) / 2 if cb is not None else None
+    divergence = abs(p - cb) / mid if mid else 0.0
     if divergence > MAX_SOURCE_DIVERGENCE:
         raise RuntimeError(f'SOURCE_DIVERGENCE {symbol}: Binance={p} Coinbase={cb} diff={divergence:.4%}')
     close_time_ms = int(k[-1][6])
@@ -3330,11 +3339,14 @@ def market(symbol, coinbase_product):
     rets = [closes[i] / closes[i-1] - 1 for i in range(1, len(closes))]
     obs=now()
     quality=[
-      _source_row('Binance spot','crypto spot','primary live',obs,0,'OK','current open 1h candle snapshot, cross-checked to Coinbase','Binance'),
-      _source_row('Coinbase spot','crypto spot','independent live check',obs,0,'OK',f'cross-venue divergence={divergence:.4%}','Coinbase')]
+      _source_row('Binance spot','crypto spot','primary live',obs,0,'OK','current open 1h candle snapshot; one valid primary source is sufficient for paper','Binance'),
+      _source_row('Coinbase spot','crypto spot','optional independent check',obs if cb is not None else None,0,
+                  'OK' if cb is not None else 'UNAVAILABLE',
+                  f'cross-venue divergence={divergence:.4%}' if cb is not None else f'optional source unavailable: {secondary_error}','Coinbase')]
     _set_source_quality(quality)
     return {
         'asset':symbol.replace('USDT',''),'price': p, 'coinbase_price': cb, 'secondary_price':cb,
+        'direct_sources':2 if cb is not None else 1,
         'best_bid':best_bid,'best_ask':best_ask,'spread_bps':spread_bps,
         'secondary_bid':cb_bid,'secondary_ask':cb_ask,
         'source_divergence': divergence,'closes': closes, 'highs': highs, 'lows': lows, 'vols': vols,
@@ -5268,59 +5280,8 @@ def features(raw, horizon, common_structure=None):
     return f
 
 def execution_eligibility(asset, raw, clock_info=None):
-    """
-    Research signal and execution eligibility are deliberately separate.
-    A directional research signal may be shown even when execution eligibility is false.
-    """
-    research_ok=bool(raw.get('source_gate_pass',True))
-    time_ok=bool(raw.get('market_open',True) or asset in CRYPTO_ASSETS)
-    if not research_ok or not time_ok:
-        return {'eligible':False,'reason':'research_source_or_time_gate_failed',
-                'direct_sources':0,'research_ok':research_ok,'time_ok':time_ok}
-
-    if not STRICT_EXECUTION_SOURCE_GATE:
-        return {'eligible':True,'reason':'strict_gate_disabled','direct_sources':1,
-                'research_ok':research_ok,'time_ok':time_ok}
-
-    if asset in CRYPTO_ASSETS:
-        clock_ok=bool((clock_info or {}).get('ok',True))
-        direct=2 if raw.get('secondary_price',raw.get('coinbase_price')) is not None else 1
-        ok=bool(clock_ok and direct>=2 and float(raw.get('source_divergence') or 0)<=MAX_SOURCE_DIVERGENCE)
-        return {'eligible':ok,'reason':'two_direct_crypto_quotes' if ok else 'crypto_direct_verification_failed',
-                'direct_sources':direct,'research_ok':research_ok,'time_ok':time_ok}
-
-    if asset=='NQ':
-        # _ndx_market's source gate already requires current Nasdaq-100 quote + public cross-check.
-        return {'eligible':bool(research_ok and time_ok),'reason':'two_direct_index_checks' if research_ok else 'ndx_verification_failed',
-                'direct_sources':2 if research_ok else 1,'research_ok':research_ok,'time_ok':time_ok}
-
-    if asset in ('BRENT','GOLD'):
-        # Current free stack has a delayed futures quote plus an ETF/spot directional proxy,
-        # not two independent direct quotes of the same instrument.
-        direct_mode=(raw.get('verification_mode')=='direct_independent')
-        direct=2 if direct_mode and raw.get('secondary_price') is not None else 1
-        ok=bool(direct>=2 and research_ok and time_ok)
-        return {'eligible':ok,'reason':'two_direct_futures_quotes' if ok else 'research_only_no_second_direct_futures_quote',
-                'direct_sources':direct,'research_ok':research_ok,'time_ok':time_ok}
-
-    if asset=='CNYRUBF':
-        return {'eligible':False,'reason':'research_only_no_second_direct_cnyrubf_quote','direct_sources':1,
-                'research_ok':research_ok,'time_ok':time_ok,'verification_mode':raw.get('verification_mode')}
-
-    if asset=='MOEX':
-        sec=raw.get('secondary_price')
-        sec_ts=raw.get('secondary_observed_at')
-        age=_age_seconds(sec_ts) if sec_ts else None
-        divergence=float(raw.get('source_divergence') or 0.0)
-        direct=2 if sec is not None and age is not None and age<=MOEX_EXEC_MAX_SECONDARY_AGE_SECONDS else 1
-        ok=bool(research_ok and time_ok and direct>=2 and divergence<=MOEX_EXEC_MAX_DIVERGENCE)
-        reason='two_direct_moex_quotes' if ok else 'research_only_no_fresh_independent_moex_quote'
-        return {'eligible':ok,'reason':reason,'direct_sources':direct,'secondary_age_seconds':age,
-                'divergence':divergence,'research_ok':research_ok,'time_ok':time_ok}
-
-    return {'eligible':False,'reason':'unsupported_execution_asset','direct_sources':0,
-            'research_ok':research_ok,'time_ok':time_ok}
-
+    # Legacy aliases also use the canonical single-source paper policy.
+    return VX.paper_source_gate(asset, raw, clock_info)
 
 
 
@@ -6420,10 +6381,15 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             raw=bundle['raw']; deriv=bundle['deriv']
             asset_timings[asset]['market_fetch']=float(bundle.get('elapsed_seconds') or 0.0)
             cycle_source_quality.extend(raw.get('source_quality') or [])
+            asset_execution_gate=execution_eligibility(asset,raw,clock_info)
             emit('market_verified',asset=asset,primary=raw['price'],secondary=raw.get('secondary_price',raw.get('coinbase_price')),
                  divergence=raw['source_divergence'],derivatives_ok=deriv.get('ok'),
                  source_gate_pass=raw.get('source_gate_pass',True),market_open=raw.get('market_open',True),
-                 data_latency_class=raw.get('data_latency_class'),verification_mode=raw.get('verification_mode'))
+                 data_latency_class=raw.get('data_latency_class'),verification_mode=raw.get('verification_mode'),
+                 paper_eligible=asset_execution_gate.get('paper_eligible'),
+                 execution_eligible=asset_execution_gate.get('eligible'),
+                 paper_execution_reason=asset_execution_gate.get('paper_execution_reason'),
+                 paper_source_policy=asset_execution_gate.get('source_policy'),minimum_sources=1)
             asset_phase_t0=time.time(); causal_shadow=asset_causal_shadow(asset); event_shadow=event_shadow_score(asset); asset_timings[asset]['context']=time.time()-asset_phase_t0
             common_structure=None
             asset_phase_t0=time.time()
@@ -6509,7 +6475,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 research_signal_tier=classify_signal_tier(
                     asset,research_dec,conf,research_challenger,
                     orth_evidence.get('effective_evidence_count',0),source_gate,time_gate,calibration,f.get('trend_impulse'))
-                execution_gate=execution_eligibility(asset,raw,clock_info)
+                execution_gate=dict(asset_execution_gate)
                 dec=research_dec
                 challenger=dict(research_challenger)
                 if not execution_gate.get('eligible') or research_dec=='NO_TRADE' or kill:
@@ -6782,6 +6748,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'data_latency_class':raw.get('data_latency_class'),'market_observed_at':raw.get('observed_at'),
                      'contract':raw.get('contract'),'source_names':raw.get('source_names'),
                      'direct_sources':execution_gate.get('direct_sources'),
+                     'source_policy':execution_gate.get('source_policy'),'minimum_sources':execution_gate.get('minimum_sources'),
                      'best_bid':f.get('best_bid'),'best_ask':f.get('best_ask'),'spread_bps':f.get('spread_bps'),
                      'calibrated_probability': calibration.get('probability_correct'),
                      'shadow_position': shadow_risk.get('fraction_of_capital',0.0),
@@ -14810,6 +14777,8 @@ def latest_signal_summary_pg():
                 'paper_eligible':(p.get('execution_eligibility') or {}).get('paper_eligible'),
                 'paper_execution_reason':(p.get('execution_eligibility') or {}).get('paper_execution_reason'),
                 'production_eligible':bool((p.get('execution_eligibility') or {}).get('production_eligible')),
+                'source_policy':(p.get('execution_eligibility') or {}).get('source_policy'),
+                'minimum_sources':(p.get('execution_eligibility') or {}).get('minimum_sources'),
                 'price':(p.get('features') or {}).get('price'),
                 'market_observed_at':(p.get('features') or {}).get('market_observed_at'),
                 'trade_plan':p.get('trade_plan') or {},
@@ -15958,9 +15927,9 @@ class H(BaseHTTPRequestHandler):
                   'NQ':{'status':'research_live_futures','primary':'Yahoo CME NQ=F',
                         'secondary':'cash Nasdaq-100 contextual only','volume_proxy':'NQ futures volume'},
                   'BRENT':{'status':'research_shadow_delayed','primary':'Yahoo BZ=F',
-                           'secondary':'directional proxy only','execution_gate':'needs second direct quote'},
+                           'secondary':'directional proxy only','execution_gate':'one valid primary source for paper; freshness required'},
                   'GOLD':{'status':'research_shadow_delayed','primary':'Yahoo GC=F',
-                          'secondary':'directional proxy only','execution_gate':'needs second direct quote'},
+                          'secondary':'directional proxy only','execution_gate':'one valid primary source for paper; freshness required'},
                   'MOEX':{'status':'research_shadow_RTH_fail_closed','primary':'MOEX ISS IMOEX',
                           'secondary':'Yahoo IMOEX.ME when fresh'},
                   'CNYRUBF':{'status':'research_shadow_delayed_fail_closed','primary':'MOEX ISS CNYRUBF','secondary':'not configured'}
@@ -16568,23 +16537,8 @@ def classify_signal_tier(asset,decision,confidence,challenger,effective_evidence
 
 
 def _execution_eligibility_r39(asset, raw, clock_info=None):
-    out=dict(_v90_base_execution_eligibility(asset,raw,clock_info) or {})
-    if asset=='CNYRUBF':
-        research_ok=bool(raw.get('source_gate_pass',True))
-        time_ok=bool(raw.get('market_open',True))
-        if research_ok and time_ok and not STRICT_EXECUTION_SOURCE_GATE:
-            return {'eligible':True,'paper_eligible':True,'production_eligible':False,
-                    'reason':'paper_single_source_official_moex','direct_sources':1,
-                    'research_ok':True,'time_ok':True,
-                    'verification_mode':raw.get('verification_mode'),
-                    'gate_label':'PAPER_ONLY_1_DIRECT_SOURCE'}
-        out['paper_eligible']=bool(research_ok and time_ok)
-        out['production_eligible']=bool(out.get('eligible'))
-        out['gate_label']='PRODUCTION_VERIFIED' if out.get('eligible') else 'RESEARCH_ONLY'
-    else:
-        out.setdefault('paper_eligible',bool(out.get('eligible')))
-        out.setdefault('production_eligible',bool(out.get('eligible')))
-    return out
+    return _v90_base_execution_eligibility(asset, raw, clock_info)
+
 
 
 def _technical_trade_plan_r39(asset,horizon,f,research_decision,signal_tier,analog=None):
@@ -16706,7 +16660,8 @@ def _v90r37_compact_decision_payload(p):
       'signal_tier':p.get('signal_tier'),
       'execution_signal_tier':p.get('execution_signal_tier'),
       'execution_eligibility':_v90_small_dict(p.get('execution_eligibility'),(
-          'eligible','reason','paper_eligible','paper_execution_reason','production_eligible','direct_sources')),
+          'eligible','reason','paper_eligible','paper_execution_reason','production_eligible','direct_sources',
+          'source_policy','minimum_sources','paper_source_blockers')),
       'decision_stage':p.get('decision_stage'),
       'calibrated_probability':(p.get('calibration') or {}).get('probability_correct'),
       'trade_plan':{
@@ -17470,7 +17425,7 @@ def _v90_compact_live_row(z):
         'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
         'source_gate_pass','market_open','execution_eligible','paper_eligible','production_eligible',
         'execution_reason','paper_execution_reason','data_latency_class','market_observed_at','contract','source_names',
-        'direct_sources','best_bid','best_ask','spread_bps',
+        'direct_sources','best_bid','best_ask','spread_bps','source_policy','minimum_sources',
         'calibrated_probability','shadow_position',
         'challenger_decision','challenger_confidence','v70_uncertainty',
         'v70_falsification','v70_gate_status','v70_gate_class','v70_thesis_status',
@@ -17722,45 +17677,25 @@ def features(raw, horizon, common_structure=None):
     return f
 
 def execution_eligibility(asset, raw, clock_info=None):
-    out=dict(_v90r40_base_execution_eligibility(asset,raw,clock_info) or {})
-    research_ok=bool(raw.get('source_gate_pass',True))
-    time_ok=bool(raw.get('market_open',True) or asset in ('BTC','ETH'))
-    try:
-        price_ok=float(raw.get('price') or 0.0)>0
-    except Exception:
-        price_ok=False
-
-    # Paper may use research-grade data; live capital stays behind production_source_gate().
-    paper_ok=bool(research_ok and time_ok and price_ok)
-    # Crypto paper requires executable top-of-book.
-    if asset in ('BTC','ETH'):
-        try:
-            _bid=float(raw.get('best_bid') or 0.0); _ask=float(raw.get('best_ask') or 0.0)
-        except Exception:
-            _bid=_ask=0.0
-        if not (_bid>0 and _ask>_bid):
-            paper_ok=False
-            out['reason']='paper_top_of_book_required'
-
-    if asset=='NQ' and str(raw.get('data_latency_class') or '').startswith('CME_FUTURES_DELAYED'):
-        out['eligible']=False
-        out['reason']='research_only_delayed_nq_futures'
-
-    # Includes the official MOEX index feed; no second quote is required for paper.
-    if asset in VX.RESEARCH_PAPER_ASSETS:
-        paper_ok=VX.research_paper_source_ok(raw)
-        out['paper_eligible']=paper_ok
-        out['paper_execution_reason']='research_grade_paper_feed' if paper_ok else 'paper_source_or_time_gate_failed'
-    else:
-        out['paper_eligible']=bool(out.get('paper_eligible',paper_ok and out.get('eligible',True)))
-        out['paper_execution_reason']='execution_grade_paper_feed' if out['paper_eligible'] else str(out.get('reason') or 'paper_gate_failed')
-
+    # The active engine executes normalized paper portfolios. Its canonical
+    # eligibility must use the same one-source policy as portfolio admission.
+    paper=VX.paper_source_gate(asset,raw,clock_info)
     prod=VX.production_source_gate(asset,raw,clock_info)
-    out['production_eligible']=bool(prod.get('eligible'))
-    out['production_gate']=prod
-    out['live_capital_execution']=False
-    out['paper_is_live_fill_evidence']=False
-    return out
+    secondary=raw.get('secondary_price',raw.get('coinbase_price'))
+    direct=1 if VX.research_paper_source_ok(raw) else 0
+    # Proxies and a different futures contract are not a second direct quote.
+    if direct and secondary is not None and (asset in CRYPTO_ASSETS or
+            raw.get('verification_mode')=='direct_independent'):
+        direct=2
+    return {'eligible':paper['eligible'],'paper_eligible':paper['eligible'],
+            'reason':paper['reason'],'paper_execution_reason':paper['reason'],
+            'paper_source_blockers':paper['blockers'],
+            'source_policy':paper['source_policy'],'minimum_sources':1,
+            'direct_sources':direct,'research_ok':bool(raw.get('source_gate_pass')),
+            'time_ok':bool(raw.get('market_open')),
+            'production_eligible':bool(prod.get('eligible')),'production_gate':prod,
+            'live_capital_execution':False,'paper_is_live_fill_evidence':False}
+
 
 def final_execution_safety(asset,research_decision,plan):
     plan=dict(plan or {}); plan['direction']=research_decision

@@ -23,6 +23,7 @@ const signal = {
 assert.equal(ui.paperStatus(signal).ready, true);
 for (const [patch, reason] of [
   [{paper_eligible: false}, 'данные'],
+  [{trade_plan:{eligible:false,final_economics_gate:{status:'BLOCK',blockers:['QUOTE_TOO_OLD_FOR_HORIZON']}}}, 'цена'],
   [{market_open: false}, 'сессия'],
   [{source_gate_pass: false}, 'данные'],
   [{entry_quality: 'INVALIDATED'}, 'отмена'],
