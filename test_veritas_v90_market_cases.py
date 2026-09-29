@@ -83,7 +83,7 @@ class MarketCaseRegressionTests(unittest.TestCase):
         self.assertEqual(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
                          ['reason'], 'R42_PAPER_SOURCE_GATE')
         row = self._moex_single_source_row()
-        row['trade_plan']['expected_to_stop_ratio'] = .8
+        row['trade_plan']['target_price'] = 2220.0  # actual final levels must fail economics, not stale metadata
         row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
         out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
         self.assertFalse(out['open'])
