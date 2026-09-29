@@ -1,10 +1,36 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
 import veritas_intelligence as VI
 import veritas_portfolio as VP
 
 
 class MarketCaseRegressionTests(unittest.TestCase):
+    def test_paper_admission_survives_durable_compaction_and_cold_start(self):
+        for eligible in (False, True):
+            with self.subTest(paper_eligible=eligible):
+                row = self._moex_single_source_row()
+                gate = dict(eligible=False, paper_eligible=eligible, production_eligible=False,
+                            paper_execution_reason='research_grade_paper_feed', direct_sources=1)
+                original = dict(asset='MOEX', horizon='1h', decision='NO_TRADE',
+                                research_decision='SHORT', execution_eligibility=gate,
+                                trade_plan=row['trade_plan'], features={'price': row['price']},
+                                gates={'source': True, 'time': True, 'execution': False})
+                payload = VI._v90r37_compact_decision_payload(original)
+                conn = MagicMock()
+                conn.__enter__.return_value.execute.return_value.fetchall.return_value = [
+                    dict(asset='MOEX', horizon='1h', event_ts='2026-09-29T08:00:00Z', payload=payload)]
+                with patch.object(VI, 'pg_enabled', return_value=True), patch.object(VI, 'pg_connect', return_value=conn):
+                    restored = VI.latest_signal_summary_pg()[0]
+                self.assertIs(restored['paper_eligible'], eligible)
+                self.assertFalse(restored['production_eligible'])
+                self.assertEqual(restored['price'], row['price'])
+                self.assertEqual(restored['trade_plan']['final_economics_gate'],
+                                 row['trade_plan']['final_economics_gate'])
+                changed = dict(original, execution_eligibility=dict(gate, paper_eligible=not eligible))
+                self.assertNotEqual(VI._v90r37_signature('decision', original),
+                                    VI._v90r37_signature('decision', changed))
+
     def _moex_single_source_row(self):
         raw = dict(price=2229.78, source_gate_pass=True, market_open=True,
                    secondary_price=None)
