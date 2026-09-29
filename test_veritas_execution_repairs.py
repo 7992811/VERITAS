@@ -133,6 +133,22 @@ class ProtectiveExitTests(unittest.TestCase):
         self.assertEqual(PG.protective_reason(z, q, NOW), 'STOP')
         self.assertIsNone(PG.protective_reason(z, dict(q, price=12.586), NOW))
 
+    def test_large_fresh_gap_still_executes_stop(self):
+        z = self.position()
+        z.update(direction='LONG', last_price=100.0, stop_price=99.0)
+        q = dict(price=90.0, observed_at=NOW.isoformat(), source_gate_pass=True)
+        self.assertEqual(PG.protective_reason(z, q, NOW), 'STOP')
+
+    def test_missing_take_profit_recovers_from_expected_move(self):
+        z = self.position()
+        z['direction'] = 'LONG'
+        z['avg_entry_price'] = 100.0
+        z['payload'].pop('take_price', None)
+        z['payload'].pop('target_price', None)
+        z['payload']['expected_move_pct'] = .02
+        q = dict(price=102.1, observed_at=NOW.isoformat(), source_gate_pass=True)
+        self.assertEqual(PG.protective_reason(z, q, NOW), 'TAKE_PROFIT')
+
     def test_old_quote_or_wrong_contract_cannot_trigger_exit(self):
         z = self.position()
         q = dict(price=12.612, observed_at=(NOW-timedelta(hours=2)).isoformat(), source_gate_pass=True)
