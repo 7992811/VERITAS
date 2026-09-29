@@ -8689,7 +8689,7 @@ def _v90_candidate_metrics(pg_connect,name):
 
 def production_candidate_readiness(pg_connect):
     thresholds={
-      'min_unique_episodes':50,
+      'min_closed_trades':50,
       'min_win_rate':0.65,
       'min_profit_factor':1.25,
       'max_drawdown':0.10,
@@ -8706,7 +8706,7 @@ def production_candidate_readiness(pg_connect):
 
     def evaluate(m):
         checks={
-          'sample':int(m.get('unique_episodes') or 0)>=thresholds['min_unique_episodes'],
+          'sample':int(m.get('closed_trades') or 0)>=thresholds['min_closed_trades'],
           'win_rate':m.get('win_rate') is not None and float(m['win_rate'])>=thresholds['min_win_rate'],
           'profit_factor':m.get('profit_factor') is not None and float(m['profit_factor'])>=thresholds['min_profit_factor'],
           'positive_net_pnl':float(m.get('net_pnl_rub') or 0.0)>0,
