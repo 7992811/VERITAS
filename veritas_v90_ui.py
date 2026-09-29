@@ -502,14 +502,21 @@ function renderIntelligence(){
   const outcomes=d.decision_outcomes_today==null?'—':d.decision_outcomes_today;
   const rulesToday=d.knowledge_rules_added_today==null?'—':d.knowledge_rules_added_today;
   const sourcesToday=d.knowledge_sources_added_today==null?'—':d.knowledge_sources_added_today;
+  const rebased=['FORMULA_CHANGE','SAMPLE_MODE_CHANGE'].includes(d.baseline_origin);
+  const since=d.baseline_at?new Date(String(d.baseline_at).replace(' ','T')).toLocaleTimeString('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'}):'';
+  const dailyTitle=rebased?'Изменение после пересчёта':'Изменение индекса сегодня';
+  const attribution=(d.component_deltas_today||[]).filter(x=>Math.abs(Number(x.points))>=0.005).sort((a,b)=>Math.abs(b.points)-Math.abs(a.points));
+  const attributionText=attribution.map(x=>esc(x.label)+': '+(Number(x.points)>0?'+':'')+Number(x.points).toFixed(2)+' п.').join(' · ');
+  const auditNote=rebased?(d.baseline_origin==='FORMULA_CHANGE'?'Исправлена формула расчёта. ':'Изменился состав оценки. ')+'Сравнение с '+since+' МСК; пересчёт не считается обучением.':(since?'Сравнение с '+since+' МСК.':'');
+  const auditHtml='<div class="sub">'+esc(auditNote)+(attributionText?'<br>'+attributionText:'')+(d.history_status==='ERROR'?'<br>История компонентов временно недоступна.':'')+'</div>';
   const daily='<div class="intel-daily">'+
-    '<div class="intel-daily-stat"><span>Рост интеллекта сегодня</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>'+dayText+(currentOk?' · '+metricName+' '+currentMetric.toFixed(1):'')+'</em></div>'+
+    '<div class="intel-daily-stat"><span>'+dailyTitle+'</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>'+dayText+(currentOk?' · '+metricName+' '+currentMetric.toFixed(1):'')+'</em></div>'+
     '<div class="intel-daily-stat"><span>Обучающих эпизодов</span><b>'+esc(episodes)+'</b><em>новых завершённых сделок</em></div>'+
-    '<div class="intel-daily-stat"><span>Проверенных исходов</span><b>'+esc(outcomes)+'</b><em>независимых результатов</em></div>'+
+    '<div class="intel-daily-stat"><span>Проверенных исходов</span><b>'+esc(outcomes)+'</b><em>оценённых решений</em></div>'+
     '<div class="intel-daily-stat"><span>Новых правил</span><b>+'+esc(rulesToday)+'</b><em>за день</em></div>'+
     '<div class="intel-daily-stat"><span>Новых источников</span><b>+'+esc(sourcesToday)+'</b><em>за день</em></div>'+
   '</div>';
-  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">Индекс зрелости системы</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · '+origin+' · достоверность: '+conf+'</div></div><div class="sub">Рост индекса отражает расширение знаний, накопление завершённых эпизодов, качество решений, захват движения и полноту обратной связи.</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div>'+daily+'<div class="intel-foot"><div class="intel-stat">Источники знаний<b>'+esc(k.sources??'—')+'</b></div><div class="intel-stat">Правила / принципы<b>'+esc(k.rules??k.expert_principles??'—')+'</b></div><div class="intel-stat">Завершённых эпизодов<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate выборки<b>'+wrText+'</b></div><div class="intel-stat">Средний захват движения<b>'+captureText+'</b></div></div></div></div>';
+  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">Индекс зрелости системы</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · '+origin+' · достоверность: '+conf+'</div></div><div class="sub">Рост индекса отражает расширение знаний, накопление завершённых эпизодов, качество решений, захват движения и полноту обратной связи.</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div>'+daily+auditHtml+'<div class="intel-foot"><div class="intel-stat">Источники знаний<b>'+esc(k.sources??'—')+'</b></div><div class="intel-stat">Правила / принципы<b>'+esc(k.rules??k.expert_principles??'—')+'</b></div><div class="intel-stat">Завершённых эпизодов<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate выборки<b>'+wrText+'</b></div><div class="intel-stat">Средний захват движения<b>'+captureText+'</b></div></div></div></div>';
 }
 
 function renderInsights(){
