@@ -214,6 +214,19 @@ const rub=v=>{if(v==null||v==='')return'—';v=Number(v);return Number.isFinite(
 const pct=v=>{if(v==null||v==='')return'—';v=Number(v);return Number.isFinite(v)?v.toFixed(2)+'%':'—'};
 const bool=v=>v===true?'ДА':v===false?'НЕТ':'—';
 const planOf=x=>(x&&x.trade_plan)||{};
+const paperStatus=x=>{
+  const p=planOf(x),econ=p.final_economics_gate||{},blocked=(short,reason)=>({ready:false,short,reason});
+  if(!['LONG','SHORT'].includes(dir(x)))return blocked('','Направление не подтверждено');
+  if(x.market_open===false)return blocked('сессия','Торговая сессия закрыта');
+  if(x.source_gate_pass===false)return blocked('данные','Цена устарела или источник не прошёл проверку');
+  if((x.paper_eligible??x.execution_eligible)!==true)return blocked('данные','Нет допуска данных для модельной сделки');
+  const blockers=econ.blockers||x.final_gate_blockers||[];
+  if(econ.status==='BLOCK'||x.final_gate_status==='BLOCK')return blocked('R/R',blockers.map(v=>({RR_BELOW_FINAL_FLOOR:'Потенциал относительно риска ниже порога',EXPECTED_MOVE_BELOW_COST_BUFFER:'Ожидаемое движение не покрывает издержки с запасом',STOP_MISSING:'Не задан стоп',STOP_DISTANCE_INVALID:'Некорректное расстояние до стопа'}[v]||'Не пройдена проверка торгового плана')).join('; ')||'Не пройдена проверка торгового плана');
+  if(x.entry_quality==='INVALIDATED'||p.entry_quality==='INVALIDATED'||x.decision_stage==='INVALIDATED')return blocked('отмена','Условия входа утратили актуальность');
+  if(x.plan_eligible===false||p.eligible===false||x.decision_stage==='WAIT_RISK_REWARD')return blocked('ожидание',reasonRu(x.plan_reason||p.reason));
+  if((x.plan_eligible??p.eligible)!==true)return blocked('план','Допуск торгового плана ещё не подтверждён');
+  return {ready:true,short:'допущен',reason:'Сигнал допущен для модельной сделки; размер и открытие определяет портфель'};
+};
 const rrOf=x=>x?.expected_to_stop_ratio??planOf(x).expected_to_stop_ratio;
 const stopOf=x=>x?.stop_price??planOf(x).stop_price;
 const targetOf=x=>x?.target_price??planOf(x).target_price??planOf(x).take_price;
@@ -228,7 +241,7 @@ const qualityRu=v=>{const k=String(v||'');const m={FRESH_BREAKOUT:'Свежий 
 const stageRu=v=>{const k=String(v||'');const m={EARLY_PROBE:'Ранний вход',WAIT_RISK_REWARD:'Ожидание лучшего соотношения потенциала и риска',WAIT:'Ожидание',READY:'Готов к действию',INVALIDATED:'Сценарий отменён'};return m[k]||'Стадия уточняется'};
 const reasonRu=v=>{const k=String(v||'').toUpperCase();if(!k)return'Причина уточняется';if(k.includes('SOURCE_TIME_KILL_GATE')||k.includes('SOURCE_GATE'))return'Недостаточно подтверждения источника данных или торгового времени';if(k.includes('EXPECTED_MOVE_TOO_SMALL'))return'Ожидаемое движение слишком мало относительно издержек';if(k.includes('RR_TOO_LOW'))return'Потенциал движения недостаточен относительно риска';if(k.includes('MODEL_SCORE_BELOW'))return'Качество сигнала пока ниже порога входа';if(k.includes('ENTRY_INVALIDATED'))return'Условия входа уже утратили актуальность';if(k.includes('WAIT_CONFIRMATION'))return'Система ждёт подтверждения структуры';if(k.includes('WEAK_BREAKOUT'))return'Пробой недостаточно сильный';if(k.includes('COST_TO_EDGE'))return'Издержки слишком велики относительно ожидаемого движения';if(k.includes('TACTICAL_REVERSAL'))return'Подтверждён тактический разворот';if(k.includes('NO_DIRECTION'))return'Подтверждённого направления пока нет';return'Решение принято по совокупности структуры, силы сигнала и риска'};
 const setupRu=v=>{const k=String(v||'').toUpperCase();if(k.includes('CLIMAX_REVERSAL'))return'Разворот после истощения импульса';if(k.includes('BASE_BREAKOUT'))return'Пробой уровня с закреплением';if(k.includes('PULLBACK_CONTINUATION'))return'Продолжение тренда после отката';if(k.includes('STRUCTURAL_BREAKOUT'))return'Структурный пробой';if(k.includes('TACTICAL_REVERSAL'))return'Тактический разворот';if(k.includes('RANGE_RETEST'))return'Ретест границы диапазона';return'Комбинированный сигнал'};
-const matrixStateRu=x=>{if(!x)return'';const D=dir(x),eq=String(x.entry_quality||''),st=String(x.decision_stage||''),hs=String(x.horizon_structure_state||((x.horizon_structure||{}).state)||''),eligible=(x.plan_eligible!==false)&&((x.trade_plan||{}).eligible!==false);if(D==='NO_TRADE')return'';if(!eligible||st==='WAIT_RISK_REWARD')return'ожидание';if(eq==='FRESH_BREAKOUT'||st==='EARLY_PROBE')return'старт';if(hs==='CONFIRMED_TREND'||hs==='BUILDING_TREND')return'тренд';return''};
+const matrixStateRu=x=>x?paperStatus(x).short:'';
 
 
 
@@ -254,11 +267,11 @@ function renderSignals(){
 
   const rank=x=>{const D=dir(x),T=tier(x);if(!['LONG','SHORT'].includes(D))return-999;const superBoost=(T==='SUPER_LONG'||T==='SUPER_SHORT')?5:0;return superBoost+(x.plan_eligible===false?0:2)+4*Number(x.horizon_structure_score||0)+2*Number(x.confidence||0)+Math.min(Number(x.expected_to_stop_ratio||0),3)+.2*Number(x.independent_evidence_families||0)};
   const best=rows.filter(x=>{const D=dir(x),rr=Number(rrOf(x));return ['LONG','SHORT'].includes(D)&&String(x.entry_quality||'')!=='INVALIDATED'&&String(x.decision_stage||'')!=='INVALIDATED'&&Number.isFinite(rr)&&rr>0}).sort((a,b)=>rank(b)-rank(a)).slice(0,5);
-  $('actions').innerHTML=best.length?best.map(x=>{const rr=Number(rrOf(x)),ready=x.execution_eligible===true||planOf(x).eligible===true;const state=ready?'ГОТОВ К ВХОДУ':'НАБЛЮДЕНИЕ';const sig=directionLabel(dir(x),tier(x));return'<div class="row action"><b>'+lab(x.asset)+'</b><b class="'+cls(dir(x))+' '+((tier(x)==='SUPER_LONG'||tier(x)==='SUPER_SHORT')?'super-label':'')+'">'+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span><span>'+state+' · R/R '+rr.toFixed(2)+' · '+esc(x.regime||'режим не определён')+'</span><span class="sl">Стоп '+n(stopOf(x),4)+'</span><span class="tp">Цель '+n(targetOf(x),4)+'</span></div>'}).join(''):'<div class="msg">Готовых направленных входов сейчас нет — система ждёт подтверждения структуры и достаточного R/R.</div>';
+  $('actions').innerHTML=best.length?best.map(x=>{const rr=Number(rrOf(x)),admission=paperStatus(x),ready=admission.ready;const state=ready?'МОДЕЛЬНЫЙ ДОПУСК':'ВХОД ЗАБЛОКИРОВАН: '+esc(admission.reason);const sig=directionLabel(dir(x),tier(x));return'<div class="row action"><b>'+lab(x.asset)+'</b><b class="'+cls(dir(x))+' '+((tier(x)==='SUPER_LONG'||tier(x)==='SUPER_SHORT')?'super-label':'')+'">'+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span><span>'+state+' · R/R '+rr.toFixed(2)+' · '+esc(x.regime||'режим не определён')+'</span><span class="sl">Стоп '+n(stopOf(x),4)+'</span><span class="tp">Цель '+n(targetOf(x),4)+'</span></div>'}).join(''):'<div class="msg">Готовых направленных входов сейчас нет — система ждёт подтверждения структуры и достаточного R/R.</div>';
 
   $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'Long':D==='SHORT'?'Short':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=({'5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
 
-  $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.35"></span><small>—</small><em></em></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),eligible=(x.plan_eligible!==false)&&((x.trade_plan||{}).eligible!==false)&&String(x.decision_stage||'')!=='WAIT_RISK_REWARD'&&String(x.entry_quality||'')!=='INVALIDATED',isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT')&&eligible,dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',state=matrixStateRu(x);return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(1)+'%"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small>'+conf.toFixed(1)+'%</small><em>'+esc(state)+'</em></button></td>'}).join('')+'</tr>').join('');
+  $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.35"></span><small>—</small><em></em></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',state=matrixStateRu(x);return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(1)+'% · '+esc(paperStatus(x).reason)+'"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small>'+conf.toFixed(1)+'%</small><em>'+esc(state)+'</em></button></td>'}).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
   if(!st.selected&&rows.length){const x=best[0]||rows[0];st.selected=x.asset+'|'+x.horizon}
   if(st.selected)selectSignal(st.selected,false);
@@ -271,7 +284,7 @@ function selectSignal(k,scroll=false){
   const rr=Number(rrOf(x)), conf=x.confidence==null?null:100*Number(x.confidence), exp=x.expected_move_pct??plan.expected_move_pct;
   const stop=stopOf(x), target=targetOf(x), confirms=Number(x.independent_evidence_families||0);
   const hstate=x.horizon_structure_state||hs.state, hscore=x.horizon_structure_score??hs.score;
-  const ready=(x.execution_eligible===true||plan.eligible===true)&&String(x.entry_quality||'')!=='INVALIDATED';
+  const admission=paperStatus(x),ready=admission.ready;
   const setup=plan.setup||((plan.trend_transition||{}).setup)||'';
   const pfs=(st.portfolios&&st.portfolios.portfolios)||[];
   const openPositions=[];
@@ -280,10 +293,10 @@ function selectSignal(k,scroll=false){
   const openText=openPositions.length?openPositions.map(q=>esc(q.p)+' '+dirRu(q.z.direction)+' '+pct(100*Number(q.z.target_fraction||0))).join(' · '):'Открытой позиции по активу сейчас нет';
   const directionText=D==='LONG'?'Преимущество покупателей':D==='SHORT'?'Преимущество продавцов':'Направление не подтверждено';
   const structureText=structureRu(hstate)+(Number.isFinite(Number(hscore))?' · сила структуры '+(100*Number(hscore)).toFixed(0)+'%':'');
-  const signalText=ready?(D==='LONG'?'Система допускает вход в лонг.':'Система допускает вход в шорт.'):'Система пока не разрешает новый вход.';
+  const signalText=ready?'Сигнал допущен для модельной сделки. Открытие и размер определяет портфель.':'Новый модельный вход пока заблокирован.';
   const actionText=ready
     ? signalText+' Стоп располагается за подтверждённой локальной структурой, прибыль сопровождается защитным трейлинг-стопом. При развитии движения возможен добор без увеличения исходного денежного риска.'
-    : signalText+' '+reasonRu(x.plan_reason||plan.reason||x.execution_reason)+'.';
+    : signalText+' '+esc(admission.reason)+'.';
   const invalidation=D==='LONG'
     ? 'Сценарий ослабнет при потере локальной поддержки и будет отменён при подтверждённом пробое структурного минимума.'
     : D==='SHORT'
@@ -298,7 +311,7 @@ function selectSignal(k,scroll=false){
           '<span class="signal-chip '+cls(D)+'">'+tierLabel(x)+'</span>'+
           '<span class="signal-chip">Уверенность '+(conf==null?'—':conf.toFixed(1)+'%')+'</span>'+
           '<span class="signal-chip">Подтверждений '+confirms+'</span>'+
-          '<span class="signal-chip">'+(ready?'Вход разрешён':'Ожидание')+'</span>'+
+          '<span class="signal-chip" title="'+esc(admission.reason)+'">'+(ready?'Модельный допуск':'Вход: '+esc(admission.short))+'</span>'+
         '</div>'+
       '</div>'+
       '<div class="detail-columns">'+

@@ -1,9 +1,67 @@
 import unittest
 
 import veritas_intelligence as VI
+import veritas_portfolio as VP
 
 
 class MarketCaseRegressionTests(unittest.TestCase):
+    def _moex_single_source_row(self):
+        raw = dict(price=2229.78, source_gate_pass=True, market_open=True,
+                   secondary_price=None)
+        gate = VI.execution_eligibility('MOEX', raw)
+        return dict(raw, asset='MOEX', horizon='1h', research_decision='SHORT',
+                    signal_tier='SUPER_SHORT', confidence=.85,
+                    execution_eligible=gate['eligible'], paper_eligible=gate['paper_eligible'],
+                    production_eligible=gate['production_eligible'],
+                    calibrated_probability=.85, _pwin=.85, _pwin_source='EMPIRICAL_CALIBRATION',
+                    _alignment_count=3, entry_quality='CONFIRMED_TREND',
+                    horizon_structure=dict(direction='SHORT', score=.85, state='CONFIRMED_TREND'),
+                    institutional_signal=dict(evidence_independence=dict(independent_count=5),
+                                              action='ENTER_CANDIDATE'),
+                    trade_plan=VI.final_execution_safety('MOEX', 'SHORT', dict(
+                        eligible=True, entry_price=2229.78, stop_price=2250.50,
+                        expected_to_stop_ratio=1.7369, expected_move_pct=.01614,
+                        stop_distance_pct=.00929, initial_position_fraction=.1)))
+
+    def test_moex_one_source_reaches_all_paper_portfolio_admissions(self):
+        for lost_flag in (False, True):
+            for name, policy in VP.POLICIES.items():
+                with self.subTest(portfolio=name, router_lost_flag=lost_flag):
+                    row = self._moex_single_source_row()
+                    self.assertTrue(row['paper_eligible'])
+                    self.assertFalse(row['production_eligible'])
+                    if lost_flag:
+                        row.pop('paper_eligible')
+                    out = VP._signal_first_admission(row, policy, 0.0)
+                    self.assertTrue(out['open'], out)
+                    self.assertGreater(out['fraction'], 0)
+                    self.assertEqual(out['paper_source_quality'], 'RESEARCH_GRADE')
+
+    def test_moex_single_source_keeps_price_freshness_and_session_gates(self):
+        for changes in ({'source_gate_pass': False}, {'source_gate_pass': None},
+                        {'market_open': False}, {'market_open': None},
+                        *({'price': p} for p in (None, 0, -1, float('nan'), float('inf')))):
+            with self.subTest(changes=changes):
+                row = self._moex_single_source_row()
+                row.update(changes)
+                self.assertFalse(VI.execution_eligibility('MOEX', row)['paper_eligible'])
+                # Even a retained True flag cannot override failed source checks.
+                out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
+                self.assertFalse(out['open'], out)
+                self.assertEqual(out['reason'], 'R42_PAPER_SOURCE_GATE')
+
+    def test_moex_one_source_does_not_override_economics_or_explicit_denial(self):
+        row = self._moex_single_source_row()
+        row['paper_eligible'] = False
+        self.assertEqual(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
+                         ['reason'], 'R42_PAPER_SOURCE_GATE')
+        row = self._moex_single_source_row()
+        row['trade_plan']['expected_to_stop_ratio'] = .8
+        row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
+        out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
+        self.assertFalse(out['open'])
+        self.assertEqual(out['reason'], 'R41_FINAL_ECONOMICS_GATE')
+
     def _brent_bars(self):
         # Learned case: range -> downside break with volume -> lower lows.
         px=[106.22,106.35,106.48,106.30,106.18,106.42,106.28,106.12,

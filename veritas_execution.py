@@ -8,6 +8,7 @@ from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
 
 VERSION = "veritas-execution-safety-v1"
+RESEARCH_PAPER_ASSETS = frozenset(("NQ", "BRENT", "GOLD", "MOEX", "CNYRUBF"))
 
 # Research/paper economics gate. This is deliberately independent from signal quality:
 # even a SUPER signal cannot bypass bad trade economics.
@@ -46,6 +47,17 @@ def _num(x: Any, default: Optional[float] = None) -> Optional[float]:
         return v if math.isfinite(v) else default
     except Exception:
         return default
+
+
+def research_paper_source_ok(raw: Dict[str, Any]) -> bool:
+    """One research source is enough after its freshness/session gate passes.
+
+    source_gate_pass is set by the feed adapter (MOEX checks quote age there).
+    Missing gate evidence or an invalid price must not admit a paper position.
+    """
+    price = _num(raw.get("price"))
+    return bool(raw.get("source_gate_pass") and raw.get("market_open")
+                and price is not None and price > 0)
 
 
 def round_trip_cost_pct(spread_bps: Optional[float] = None) -> float:
