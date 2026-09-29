@@ -1942,7 +1942,13 @@ def _v90q2_quality_gate(row,policy,drawdown):
     # Entry quality: an invalidated setup may not open a new trade merely because
     # a generic reversal bridge produced a high score. Only a separately active,
     # well-confirmed tactical reversal is allowed through.
-    entry_quality=str(row.get('entry_quality') or plan.get('entry_quality') or '')
+    # final_execution_safety may rebase an INVALIDATED old thesis when a new,
+    # independently validated tactical setup replaces it.  The row-level field
+    # still describes the old thesis, so it must not shadow the final plan.
+    if bool(plan.get('entry_quality_rebased_from_old_setup')):
+        entry_quality=str(plan.get('entry_quality') or '')
+    else:
+        entry_quality=str(row.get('entry_quality') or plan.get('entry_quality') or '')
     rev_confirm=int(rev.get('confirmations') or 0)
     rev_active=bool(rev.get('active')) and str(rev.get('direction') or '')==direction
     if entry_quality=='INVALIDATED' and not (rev_active and rev_confirm>=5):

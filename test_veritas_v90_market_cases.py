@@ -50,6 +50,19 @@ class MarketCaseRegressionTests(unittest.TestCase):
                         expected_to_stop_ratio=2.15, expected_move_pct=.020,
                         stop_distance_pct=.00929, initial_position_fraction=.1)))
 
+    def test_rebased_tactical_plan_overrides_stale_row_entry_invalidation(self):
+        row = self._moex_single_source_row()
+        row['entry_quality'] = 'INVALIDATED'
+        row['trade_plan']['setup'] = 'TACTICAL_REVERSAL'
+        row['trade_plan']['reason'] = 'tactical_reversal'
+        row['trade_plan']['entry_quality'] = 'NEW_SETUP_PROVISIONAL'
+        row['trade_plan']['entry_quality_rebased_from_old_setup'] = True
+        for name, policy in VP.POLICIES.items():
+            with self.subTest(portfolio=name):
+                out = VP._signal_first_admission(dict(row), policy, 0.0)
+                self.assertTrue(out['open'], out)
+                self.assertNotEqual(out['reason'], 'Q2_ENTRY_INVALIDATED')
+
     def test_moex_one_source_reaches_all_paper_portfolio_admissions(self):
         for lost_flag in (False, True):
             for name, policy in VP.POLICIES.items():
