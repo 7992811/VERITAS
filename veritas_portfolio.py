@@ -2220,6 +2220,20 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         rng=(src.get('range_retest_breakout') or {}) if isinstance(src,dict) else {}
         tp=None
         tp_source=None
+        pos_payload=_v842_position_payload(dict(z))
+        entry=float(z.get('avg_entry_price') or 0.0)
+        stored_tp=(pos_payload.get('take_price') or pos_payload.get('target_price')
+                   or pos_payload.get('initial_take_price') or pos_payload.get('last_target_price'))
+        if stored_tp is None and str(pos_payload.get('canonical_setup_id') or '')=='UTS_fcc6b7cbd267bd850803':
+            stored_tp=12.589
+        try:
+            stored_tp=float(stored_tp) if stored_tp is not None else None
+        except Exception:
+            stored_tp=None
+        if stored_tp is not None and entry>0:
+            valid_stored=(z['direction']=='LONG' and stored_tp>entry) or (z['direction']=='SHORT' and stored_tp<entry)
+            if valid_stored:
+                tp=stored_tp; tp_source='ENTRY_STORED_TARGET'
         rev_dir=str(rev.get('direction') or rev.get('candidate_direction') or '')
         rng_dir=str(rng.get('direction') or rng.get('candidate_direction') or '')
         rng_state=str(rng.get('state') or '')
@@ -2227,11 +2241,10 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             str(plan.get('setup') or '')=='STRUCTURAL_BREAKOUT_LIFECYCLE'
             or str(rev.get('setup') or '')=='STRUCTURAL_BREAKOUT_LIFECYCLE'
         )
-        if bool(rev.get('active')) and rev_dir in ('',z['direction']) and not structural_dynamic:
+        if tp is None and bool(rev.get('active')) and rev_dir in ('',z['direction']) and not structural_dynamic:
             tp=rev.get('target_price'); tp_source='TACTICAL_REVERSAL'
-        elif bool(rng.get('active')) and rng_dir in ('',z['direction']) and rng_state in ('RETEST_ENTRY','BREAKOUT_ADD','CONFIRMED','MANAGE'):
+        elif tp is None and bool(rng.get('active')) and rng_dir in ('',z['direction']) and rng_state in ('RETEST_ENTRY','BREAKOUT_ADD','CONFIRMED','MANAGE'):
             tp=rng.get('target_price'); tp_source='ACTIVE_RANGE_SETUP'
-        entry=float(z.get('avg_entry_price') or 0.0)
         if tp is None and entry>0:
             try:
                 exp=abs(float(plan.get('expected_move_pct') or 0.0))
@@ -2261,7 +2274,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             else:
                 targets[z['asset']]=0.0
         if target<current_frac-0.025:
-            reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'
+            reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STOP' if stop_hit else 'STRUCTURE_BREAK_EXIT_TO_CASH' if confirmed_flip and row and row.get('_v90_exit_only_flip') else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'
             _close_or_reduce(c,p,name,z,px,target,nav,ts,reason)
     p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices)
     # Add/increase only when risk governor allows new risk.
@@ -5428,6 +5441,11 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     # The remaining runner is exited by the structural trailing stop, a true
     # structure-exhaustion signal, hard invalidation, or confirmed reversal.
     if str(reason or '')=='TAKE_PROFIT':
+        # A minimum 5% probe has no room for a partial exit in 5% portfolio steps.
+        # If its entry target is reached, close it fully instead of leaving a stale runner forever.
+        if peak<=0.075 or current_frac<=0.075:
+            return _v90r17_base_close_or_reduce(
+                c,p,name,z,price,0.0,nav,ts,'TAKE_PROFIT_FULL_MIN_POSITION_R17')
         first_floor=max(runner_floor,_v90ph_round5(peak*0.50))
         if current_frac<=first_floor+0.025:
             return 0.0
@@ -5889,7 +5907,9 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                 confirmed=_v90r19_flip_confirmed(summary,z,row)
                 row=dict(row)
                 row['_flip_confirmed']=bool(confirmed)
-                if not confirmed:
+                if row.get('_v90_exit_only_flip'):
+                    row['_r19_entry_block_reason']='R19_EXIT_ONLY_STRUCTURE_BREAK'
+                elif not confirmed:
                     row['_r19_entry_block_reason']='R19_OPPOSITE_SIGNAL_WITHOUT_STRUCTURE_BREAK'
                 book[asset]=row
                 print(json.dumps({
@@ -7740,19 +7760,36 @@ def _signal_first_admission(row,policy,drawdown):
 
 
 def _v90r19_flip_confirmed(summary,z,row):
-    if not _v90r33_previous_flip_confirmed(summary,z,row):
+    row=row or {}
+    new_direction=str(row.get('research_decision') or '')
+    old_direction=str((z or {}).get('direction') or '')
+    structural_exit=bool(
+        new_direction in ('LONG','SHORT')
+        and new_direction!=old_direction
+        and _v90r19_old_structure_broken(summary,z)
+        and _v90r19_opposite_confirmation(row,new_direction)
+    )
+    if not structural_exit:
         return False
+
+    reverse_allowed=_v90r33_previous_flip_confirmed(summary,z,row)
     ev=_v90r33_edge_eval(row)
-    if ev.get('active') and not ev.get('pass'):
+    if (not reverse_allowed) or (ev.get('active') and not ev.get('pass')):
+        if isinstance(row,dict):
+            row['_v90_exit_only_flip']=True
         print(json.dumps({
-          'event':'V90_R33_FLIP_BLOCKED_EDGE',
+          'event':'V90_EXIT_OLD_THESIS_TO_CASH',
           'portfolio':_v90r22_active_portfolio,
-          'asset':(row or {}).get('asset'),
-          'old_direction':(z or {}).get('direction'),
-          'new_direction':(row or {}).get('research_decision'),
+          'asset':row.get('asset'),
+          'old_direction':old_direction,
+          'new_direction':new_direction,
+          'reverse_allowed':bool(reverse_allowed),
           'edge':ev,
         },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
-        return False
+        return True
+
+    if isinstance(row,dict):
+        row['_v90_exit_only_flip']=False
     return True
 
 
