@@ -6486,7 +6486,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 trade_plan=technical_trade_plan(asset,horizon,f,research_dec,research_signal_tier,analog_board)
                 if tactical_reversal.get('active') and research_dec==tactical_reversal.get('direction'):
                     is_genesis=str(tactical_reversal.get('setup') or '')=='IMPULSE_GENESIS'
-                    trade_plan.update({'eligible':True,'reason':'impulse_genesis' if is_genesis else 'tactical_reversal',
+                    trade_plan.update({'eligible':True,'new_setup_identity':True,'reason':'impulse_genesis' if is_genesis else 'tactical_reversal',
                                        'stop_price':tactical_reversal.get('stop_price'),
                                        'stop_method':'PRE_IMPULSE_SWING' if is_genesis else 'TACTICAL_REVERSAL_STRUCTURE',
                                        'expected_move_pct':abs(float(tactical_reversal.get('target_price') or f.get('price'))/float(f.get('price') or 1)-1),
@@ -6532,7 +6532,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                                         'local_rr':rr,'range_state':rs.get('state')}
                         }
                         trade_plan.update({
-                            'eligible':True,'reason':'brent_reversal_capture',
+                            'eligible':True,'new_setup_identity':True,'reason':'brent_reversal_capture',
                             'stop_price':reversal_capture['stop_price'],
                             'stop_method':'LOCAL_REVERSAL_RANGE_STOP',
                             'stop_distance_pct':abs(float(f.get('price') or 0)-float(reversal_capture['stop_price']))/max(float(f.get('price') or 1),1e-9),
@@ -6550,7 +6550,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 if range_setup.get('active') and research_dec==range_setup.get('direction') and horizon in ('5m','1h','4h','1d'):
                     rs=range_setup.get('state')
                     if rs in ('RETEST_ENTRY','BREAKOUT_ADD'):
-                        trade_plan.update({'eligible':True,'reason':'range_retest_breakout','stop_price':range_setup.get('stop_price'),
+                        trade_plan.update({'eligible':True,'new_setup_identity':True,'reason':'range_retest_breakout','stop_price':range_setup.get('stop_price'),
                                            'stop_method':'LOCAL_RETEST_STRUCTURE','stop_distance_pct':abs(float(f.get('price') or 0)-float(range_setup.get('stop_price') or f.get('price') or 0))/max(float(f.get('price') or 1),1e-9),
                                            'expected_move_pct':abs(float(range_setup.get('target_price') or f.get('price'))/float(f.get('price') or 1)-1),
                                            'expected_to_stop_ratio':range_setup.get('reward_risk'),'min_expected_to_stop_ratio':1.20,
@@ -6572,7 +6572,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                     if bridge.get('active'):
                         tactical_reversal=bridge
                         f['tactical_reversal']=bridge; f['reversal_probability']=bridge.get('probability')
-                        trade_plan.update({'eligible':True,'reason':'reversal_admission_bridge','stop_price':bridge.get('stop_price'),
+                        trade_plan.update({'eligible':True,'new_setup_identity':True,'reason':'reversal_admission_bridge','stop_price':bridge.get('stop_price'),
                                            'expected_move_pct':abs(float(bridge.get('target_price') or f.get('price'))/float(f.get('price') or 1)-1),
                                            'expected_to_stop_ratio':bridge.get('reward_risk'),'min_expected_to_stop_ratio':bridge.get('min_reward_risk',1.30),
                                            'initial_position_fraction':0.05,'scaling_policy':'REVERSAL_BRIDGE_5_15PCT',
@@ -17755,7 +17755,7 @@ def final_execution_safety(asset,research_decision,plan):
         plan['pre_final_gate_reason']=prior_reason
         plan['reason']='final_economics_gate:' + ','.join(gate.get('blockers') or ['BLOCK'])
         plan['initial_position_fraction']=0.0
-    if plan.get('eligible') and str(plan.get('entry_quality') or '')=='INVALIDATED' and (str(plan.get('setup') or '') in ('IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL','BRENT_REVERSAL_CAPTURE','REVERSAL_ADMISSION_BRIDGE','RANGE_RETEST_BREAKOUT') or str(plan.get('reason') or '') in ('tactical_reversal','impulse_genesis','impulse_pivot_break','brent_reversal_capture','range_retest_breakout','reversal_admission_bridge')): plan['entry_quality']='NEW_SETUP_PROVISIONAL'; plan['entry_quality_rebased_from_old_setup']=True
+    if plan.get('eligible') and str(plan.get('entry_quality') or '')=='INVALIDATED' and (str(plan.get('setup') or '') in ('IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL','BRENT_REVERSAL_CAPTURE','REVERSAL_ADMISSION_BRIDGE','RANGE_RETEST_BREAKOUT') or bool(plan.get('new_setup_identity'))): plan['entry_quality']='NEW_SETUP_PROVISIONAL'; plan['entry_quality_rebased_from_old_setup']=True
     plan['execution_safety_version']=VX.VERSION
     return plan
 
