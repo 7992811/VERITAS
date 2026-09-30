@@ -315,6 +315,53 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
         self.assertFalse(VPR._v842_hard_thesis_exit(confirmed))
 
 
+    def test_small_learning_sample_is_shrunk_toward_neutral_prior(self):
+        row = self._row()
+        with patch.object(VPR, '_v90r33_cache', {'n': 39, 'edge_haircut': .60}), \
+             patch.object(VPR, '_v90r29_profile_for_row', return_value=(None, None)):
+            learned = VPR._v90r43_learning_edge(
+                row, {'expected_move_pct': .02, 'net_reward_risk': 1.60,
+                      'modeled_round_trip_cost_pct': .002})
+        self.assertGreater(learned['applied_edge_haircut'], .80)
+        self.assertLess(learned['applied_edge_haircut'], 1.0)
+        self.assertAlmostEqual(learned['raw_global_edge_haircut'], .60)
+
+    def test_aggressive_weak_breakout_can_be_bounded_probe_not_binary_veto(self):
+        row = self._row(state='WEAK_BREAKOUT', regime='UPTREND_MID_VOL')
+        econ = {'expected_to_stop_ratio': 1.55, 'expected_move_pct': .018,
+                'modeled_round_trip_cost_pct': .002}
+        learned = {'active': True, 'episodes': 39,
+                   'calibrated_expected_move_pct': .015,
+                   'calibrated_net_reward_risk': 1.30,
+                   'calibrated_cost_to_edge_ratio': .133,
+                   'modeled_round_trip_cost_pct': .002, 'profile': None}
+        with patch.object(VPR, '_v90r43_learning_edge', return_value=learned):
+            guard = VPR._v90_candidate_profit_guard(
+                row, VP.POLICIES['Aggressive'], econ)
+        self.assertTrue(guard['eligible'])
+        self.assertIn('WEAK_BREAKOUT_NEGATIVE_HISTORY', guard['soft_warnings'])
+        self.assertNotIn('WEAK_BREAKOUT_NEGATIVE_HISTORY', guard['blockers'])
+        self.assertLessEqual(guard['size_cap'], .10)
+
+    def test_soft_warning_cap_survives_aggressive_strong_sizing(self):
+        row = self._row(state='WEAK_BREAKOUT')
+        guard = {'eligible': True, 'status': 'PASS', 'blockers': [],
+                 'soft_warnings': ['WEAK_BREAKOUT_NEGATIVE_HISTORY'],
+                 'size_multiplier': .60, 'size_cap': .10,
+                 'net_reward_risk': 1.50, 'expected_move_pct': .02,
+                 'modeled_round_trip_cost_pct': .002, 'cost_to_edge_ratio': .10,
+                 'breakout_state': 'WEAK_BREAKOUT'}
+        with patch.object(VPR, '_v901_no_hard_veto', return_value=True), \
+             patch.object(VPR, '_signal_probability',
+                          return_value=(.90, 'EMPIRICAL_CALIBRATION')), \
+             patch.object(VPR, '_v90_candidate_profit_guard', return_value=guard), \
+             patch.object(VPR, '_v90_aggressive_strong_fraction', return_value=1.50):
+            out = VPR._v90_canonical_quality_admission(
+                row, VP.POLICIES['Aggressive'], 0.0)
+        self.assertTrue(out['open'])
+        self.assertAlmostEqual(out['fraction'], .10)
+
+
 
 if __name__ == '__main__':
     unittest.main()
