@@ -8,6 +8,7 @@ import veritas_execution as VX
 import veritas_position_guard as VPG
 from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
+import veritas_asset_management_intelligence as VAMI
 import veritas_trade_view as VTV
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
@@ -9200,13 +9201,19 @@ def intelligence_scorecard():
     lp=learning_progress(); lm=large_move_capture_board(); tl=trade_lifecycle_board(60)
     overall=lm.get('overall') or {}; capture=overall.get('capture_rate')
     daily=_v90_daily_intelligence_metrics(lp)
-    return {'version':VERSION,'learning_index':lp.get('index_vs_start'),'learning_index_version':lp.get('index_version'),'learning_mode':lp.get('mode'),
-            'learning_status':lp.get('status'),'learning_confidence':lp.get('confidence'),'hit_rate_delta_pp':lp.get('hit_rate_delta_pp'),
-            'large_move_capture_rate':capture,'large_moves_observed':overall.get('large_moves'),'large_move_miss_rate':overall.get('miss_rate'),
-            'large_move_wrong_side_rate':overall.get('wrong_side_rate'),'shadow_trades_closed':tl.get('closed_n'),
-            'shadow_trade_positive_rate':tl.get('positive_trade_rate'),'shadow_trade_avg_pnl':tl.get('avg_total_pnl_fraction'),
-            'knowledge_growth':lp.get('knowledge_growth'),'daily_progress':daily,
-            'principle':'System intelligence is measured by matched realized decision quality, path-dependent trade outcomes and large-move capture; source count alone never raises the score.'}
+    base={'version':VERSION,'learning_index':lp.get('index_vs_start'),'learning_index_version':lp.get('index_version'),'learning_mode':lp.get('mode'),
+          'learning_status':lp.get('status'),'learning_confidence':lp.get('confidence'),'hit_rate_delta_pp':lp.get('hit_rate_delta_pp'),
+          'large_move_capture_rate':capture,'large_moves_observed':overall.get('large_moves'),'large_move_miss_rate':overall.get('miss_rate'),
+          'large_move_wrong_side_rate':overall.get('wrong_side_rate'),'shadow_trades_closed':tl.get('closed_n'),
+          'shadow_trade_positive_rate':tl.get('positive_trade_rate'),'shadow_trade_avg_pnl':tl.get('avg_total_pnl_fraction'),
+          'knowledge_growth':lp.get('knowledge_growth'),'daily_progress':daily,
+          'principle':'System intelligence is measured by demonstrated asset-management capability, not data volume or a claimed IQ.'}
+    try:
+        epoch=os.getenv('VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-30T04:59:29.357862+00:00')
+        base['asset_management_intelligence']=VAMI.build_scorecard(pg_connect,lp,epoch)
+    except Exception as ex:
+        base['asset_management_intelligence']={'status':'ERROR','version':VAMI.VERSION,'error':f'{type(ex).__name__}: {ex}'}
+    return base
 
 def setup_profitability_profile(asset,horizon,direction,setup_name,regime=None,limit=240):
     """Closed-loop profitability memory for comparable completed shadow trades.
