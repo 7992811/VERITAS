@@ -2017,6 +2017,453 @@ def report(pg_connect):
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),31)
 
+
+# VERITAS V90 AGGRESSIVE DYNAMIC EXPOSURE R54
+# User policy:
+# - once a qualified signal passes hard source/economics/risk gates, Aggressive
+#   starts at 50%-100% NAV, never at a tiny discovery allocation;
+# - leverage above 1x is earned dynamically after entry from price impulse
+#   relative to recent realized volatility plus structure / volume / multi-TF
+#   confirmation;
+# - exposure is reduced as impulse quality fades even while direction persists;
+# - stops are placed behind the most recent local structural extreme and ratchet
+#   behind newer confirmed extrema. Stops are never loosened.
+V90_R54_STARTED_AT=os.getenv('VERITAS_R54_EPOCH','2026-09-30T12:45:00+00:00')
+_v90r54_base_admission=_signal_first_admission
+_v90r54_base_step_one=_step_one
+_v90r54_base_open_or_add=_open_or_add
+_v90r54_base_close_or_reduce=_close_or_reduce
+_v90r54_base_report=report
+
+def _v90r54_metrics(row):
+    row=row or {}
+    hs=row.get('horizon_structure') or {}
+    st=row.get('intraday_structure') or {}
+    inst=row.get('institutional_signal') or {}
+    direction=str(row.get('research_decision') or 'NO_TRADE')
+    try: hscore=float(hs.get('score') or row.get('horizon_structure_score') or 0.0)
+    except Exception: hscore=0.0
+    try: impulse=float(row.get('impulse_score') or 0.0)
+    except Exception: impulse=0.0
+    try: onset=float(row.get('trend_onset_score') or 0.0)
+    except Exception: onset=0.0
+    try: hret=float(row.get('horizon_return') or 0.0)
+    except Exception: hret=0.0
+    try: rv=abs(float(row.get('realized_vol') or 0.0))
+    except Exception: rv=0.0
+    vol_ratio=abs(hret)/max(rv,0.0005)
+    signed_ok=bool(
+        (direction=='LONG' and hret>=0)
+        or (direction=='SHORT' and hret<=0)
+        or abs(hret)<1e-9
+    )
+    try:
+        indep=int(((inst.get('evidence_independence') or {}).get('independent_count'))
+                  or row.get('independent_evidence_families') or 0)
+    except Exception:
+        indep=0
+    supporting=list(row.get('_supporting_horizons') or [])
+    try: alignment=int(row.get('_alignment_count') or len(set(supporting)))
+    except Exception: alignment=0
+    try: relvol=float(st.get('relative_volume') if st.get('relative_volume') is not None else row.get('relative_volume') or 0.0)
+    except Exception: relvol=0.0
+    try: efficiency=float(st.get('session_efficiency') or row.get('session_efficiency') or 0.0)
+    except Exception: efficiency=0.0
+    try: persistence=float(st.get('session_persistence') or row.get('session_persistence') or 0.0)
+    except Exception: persistence=0.0
+    hstate=str(hs.get('state') or row.get('horizon_structure_state') or '')
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    phase=str(row.get('trend_phase') or '')
+    super_signal=tier in ('SUPER_LONG','SUPER_SHORT')
+    breakout_state=str(((inst.get('breakout_quality') or {}).get('state')) or '')
+    vol_component=min(1.0,vol_ratio/2.0)
+    relvol_component=min(1.0,max(0.0,relvol)/1.5) if relvol>0 else 0.45
+    score=(
+        0.24*max(0.0,min(1.0,hscore))
+        +0.20*max(0.0,min(1.0,impulse))
+        +0.08*max(0.0,min(1.0,onset))
+        +0.10*min(1.0,indep/6.0)
+        +0.10*min(1.0,alignment/6.0)
+        +0.08*max(0.0,min(1.0,efficiency))
+        +0.06*max(0.0,min(1.0,persistence))
+        +0.07*vol_component
+        +0.04*relvol_component
+        +0.03*(1.0 if super_signal else 0.0)
+    )
+    if not signed_ok:
+        score*=0.65
+    if hstate=='CONFIRMED_TREND':
+        score=min(1.0,score+0.05)
+    if phase in ('TREND_DAY','IMPULSE_TREND'):
+        score=min(1.0,score+0.05)
+    if breakout_state in ('HIGH_QUALITY_BREAKOUT','CONFIRMED_BREAKOUT'):
+        score=min(1.0,score+0.03)
+    return {
+      'direction':direction,'strength':score,'horizon_structure_score':hscore,
+      'horizon_structure_state':hstate,'impulse_score':impulse,
+      'trend_onset_score':onset,'horizon_return':hret,'realized_vol':rv,
+      'impulse_to_volatility':vol_ratio,'signed_impulse_confirmed':signed_ok,
+      'independent':indep,'alignment':alignment,'relative_volume':relvol,
+      'session_efficiency':efficiency,'session_persistence':persistence,
+      'signal_tier':tier,'super':super_signal,'trend_phase':phase,
+      'breakout_state':breakout_state,
+    }
+
+def _v90r54_initial_fraction(row):
+    m=_v90r54_metrics(row)
+    # A qualified signal is meaningful risk for Aggressive, not a 5%-15% probe.
+    if m['super'] or m['strength']>=0.82:
+        f=1.00
+        stage='INITIAL_100_STRONG'
+    elif m['strength']>=0.65:
+        f=0.75
+        stage='INITIAL_75_CONFIRMED'
+    else:
+        f=0.50
+        stage='INITIAL_50_SIGNAL'
+    return f,{**m,'stage':stage,'target_fraction':f}
+
+def _v90r54_dynamic_fraction(row,current_fraction):
+    m=_v90r54_metrics(row)
+    base,_=_v90r54_initial_fraction(row)
+    s=float(m['strength']); vr=float(m['impulse_to_volatility'])
+    imp=float(m['impulse_score']); align=int(m['alignment'])
+    indep=int(m['independent']); hscore=float(m['horizon_structure_score'])
+    rv=float(m['relative_volume']); eff=float(m['session_efficiency'])
+    pers=float(m['session_persistence']); super_signal=bool(m['super'])
+    confirmed=m['horizon_structure_state']=='CONFIRMED_TREND'
+    signed=bool(m['signed_impulse_confirmed'])
+
+    raw=base
+    stage=str(_v90r54_initial_fraction(row)[1]['stage'])
+    # Leverage path: price impulse must be meaningful relative to its own recent
+    # volatility; model confidence alone can never request leverage.
+    if signed and confirmed and s>=0.70 and vr>=0.75:
+        raw=max(raw,1.25); stage='SCALE_125'
+    if signed and s>=0.76 and vr>=0.95 and imp>=0.55 and align>=3:
+        raw=max(raw,1.50); stage='SCALE_150'
+    if signed and s>=0.81 and vr>=1.15 and imp>=0.65 and align>=4 and (rv>=0.95 or eff>=0.52):
+        raw=max(raw,2.00); stage='SCALE_200'
+    if signed and s>=0.86 and vr>=1.40 and imp>=0.72 and align>=4 and indep>=4 and hscore>=0.78:
+        raw=max(raw,3.00); stage='SCALE_300'
+    if signed and s>=0.90 and vr>=1.70 and imp>=0.78 and align>=5 and indep>=5 and super_signal:
+        raw=max(raw,4.00); stage='SCALE_400'
+    if (signed and s>=0.93 and vr>=2.00 and imp>=0.82 and align>=5
+            and indep>=5 and super_signal and hscore>=0.88
+            and (rv>=1.10 or eff>=0.60) and pers>=0.55):
+        raw=5.00; stage='SCALE_500'
+
+    # Same-direction deterioration is an exposure-management signal.
+    weakening=bool(
+        not signed
+        or s<0.58
+        or m['horizon_structure_state'] in ('WEAK','NEUTRAL')
+        or (imp<0.35 and vr<0.65)
+    )
+    if weakening:
+        raw=0.50
+        stage='REDUCE_TO_CORE_50'
+    elif current_fraction>1.0 and (s<0.70 or vr<0.75 or imp<0.45):
+        raw=min(raw,1.00)
+        stage='REDUCE_LEVERAGE_TO_100'
+
+    current=max(0.0,float(current_fraction or 0.0))
+    # Scale down progressively while the thesis is intact; hard invalidation and
+    # stop logic remain separate and can exit immediately.
+    target=raw
+    if current>raw+0.025:
+        reduction_step=0.50 if current>2.0 else 0.25
+        target=max(raw,current-reduction_step)
+        stage=stage+'|STEPWISE_REDUCTION'
+    target=_clip(_round_step(target),0.0,5.0)
+    return target,{**m,'stage':stage,'raw_target_fraction':raw,
+                  'current_fraction':current,'target_fraction':target}
+
+def _v90r54_structural_stop(row):
+    row=row or {}
+    d=str(row.get('research_decision') or 'NO_TRADE')
+    try: px=float(row.get('price') or 0.0)
+    except Exception: px=0.0
+    if d not in ('LONG','SHORT') or px<=0:
+        return None
+    st=row.get('intraday_structure') or {}
+    pb=row.get('impulse_pivot_break') or {}
+    rs=row.get('range_retest_breakout') or {}
+    sl=row.get('structural_levels') or {}
+    plan=row.get('trade_plan') or {}
+    candidates=[]
+    # Most recent confirmed swing is authoritative when available.
+    for source,val in (
+        ('RECENT_LOCAL_SWING',st.get('recent_swing_anchor')),
+        ('IMPULSE_LOCAL_EXTREME',pb.get('local_support' if d=='LONG' else 'local_resistance')),
+        ('RANGE_LOCAL_EXTREME',rs.get('support' if d=='LONG' else 'resistance')),
+        ('STRUCTURAL_LEVEL',sl.get('support' if d=='LONG' else 'resistance')),
+    ):
+        try: v=float(val)
+        except Exception: continue
+        if v<=0: continue
+        if (d=='LONG' and v<px) or (d=='SHORT' and v>px):
+            candidates.append((source,v))
+    if not candidates:
+        return None
+    # Preserve priority order above: recent swing first, then nearest local
+    # structural substitute.
+    source,anchor=candidates[0]
+    try: rv=abs(float(row.get('realized_vol') or plan.get('realized_vol') or 0.0))
+    except Exception: rv=0.0
+    try: atr=abs(float(st.get('atr_5m') or 0.0))
+    except Exception: atr=0.0
+    atr_pct=(atr/px) if atr>0 and px>0 else 0.0
+    buffer_pct=max(0.00030,min(0.00250,max(0.05*rv,0.10*atr_pct)))
+    buffer=px*buffer_pct
+    stop=anchor-buffer if d=='LONG' else anchor+buffer
+    if (d=='LONG' and not (0<stop<px)) or (d=='SHORT' and not (stop>px)):
+        return None
+    target=None
+    try: target=float(plan.get('target_price')) if plan.get('target_price') is not None else None
+    except Exception: target=None
+    risk=abs(px-stop)/px
+    reward=(abs(target-px)/px) if target and ((d=='LONG' and target>px) or (d=='SHORT' and target<px)) else None
+    return {
+      'stop_price':stop,'anchor':anchor,'anchor_source':source,
+      'buffer':buffer,'buffer_pct':buffer_pct,'stop_distance_pct':risk,
+      'expected_to_stop_ratio':(reward/risk if reward is not None and risk>0 else None),
+      'original_stop_price':plan.get('stop_price'),
+    }
+
+def _v90r54_apply_structural_stop(row):
+    x=dict(row or {})
+    plan=dict(x.get('trade_plan') or {})
+    meta=_v90r54_structural_stop(x)
+    if not meta:
+        return x,None
+    plan['stop_price']=meta['stop_price']
+    plan['stop_distance_pct']=meta['stop_distance_pct']
+    plan['stop_method']='R54_PREVIOUS_LOCAL_EXTREME'
+    plan['recent_swing_anchor']=meta['anchor']
+    plan['stop_anchor_source']=meta['anchor_source']
+    plan['stop_volatility_buffer_pct']=meta['buffer_pct']
+    if meta.get('expected_to_stop_ratio') is not None:
+        plan['expected_to_stop_ratio']=meta['expected_to_stop_ratio']
+    plan['r54_original_stop_price']=meta.get('original_stop_price')
+    x['trade_plan']=plan
+    return x,meta
+
+def _signal_first_admission(row,policy,drawdown):
+    out=dict(_v90r54_base_admission(row,policy,drawdown) or {})
+    if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not out.get('open'):
+        return out
+    target_meta=(row or {}).get('_r54_position_management') or {}
+    target=target_meta.get('target_fraction')
+    if target is None:
+        target,target_meta=_v90r54_initial_fraction(row)
+    # Override legacy discovery-size caps for Aggressive only. Hard source,
+    # economics and risk gates have already passed in the wrapped admission.
+    target=_clip(_round_step(max(0.50,float(target))),0.50,5.0)
+    out['fraction']=target
+    out['open']=True
+    out['reason']='R54_AGGRESSIVE_DYNAMIC_EXPOSURE'
+    out['r54_position_management']=target_meta
+    out['r54_initial_range']='50%-100%'
+    out['r54_dynamic_leverage_ceiling']=5.0
+    out['five_minute_sizing_policy']='R54_AGGRESSIVE_50_100_THEN_DYNAMIC'
+    out['five_minute_size_cap']=None
+    out['sizing_authority']='R54_SIGNAL_STRENGTH_IMPULSE_VS_VOLATILITY'
+    return out
+
+def _v90r54_tighten_position_stop(c,name,z,row,price,ts):
+    if not z or not row:
+        return None
+    d=str(z.get('direction') or '')
+    if d!=str(row.get('research_decision') or ''):
+        return None
+    meta=_v90r54_structural_stop(row)
+    if not meta:
+        return None
+    candidate=float(meta['stop_price'])
+    px=float(price)
+    payload=_v90j_json(z.get('payload'))
+    active=[]
+    for s in (z.get('stop_price'),payload.get('trailing_stop')):
+        try:
+            v=float(s)
+            if v>0: active.append(v)
+        except Exception:
+            pass
+    existing=(max(active) if d=='LONG' else min(active)) if active else None
+    improves=bool(
+        (d=='LONG' and candidate<px and (existing is None or candidate>existing))
+        or (d=='SHORT' and candidate>px and (existing is None or candidate<existing))
+    )
+    if not improves:
+        return None
+    patch={
+      'r54_structural_stop_active':True,
+      'r54_structural_stop_at':_v90j_iso(ts),
+      'r54_structural_stop_anchor':meta['anchor'],
+      'r54_structural_stop_anchor_source':meta['anchor_source'],
+      'r54_structural_stop_buffer_pct':meta['buffer_pct'],
+      'r54_previous_effective_stop':existing,
+      'trailing_stop':candidate,
+      'trailing_rule':'R54_PREVIOUS_LOCAL_EXTREME',
+    }
+    c.execute(
+        "UPDATE paper_positions SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+        "WHERE portfolio_name=%s AND asset=%s",
+        (candidate,json.dumps(patch,ensure_ascii=False,default=str),name,z.get('asset'))
+    )
+    tid=z.get('active_trade_id')
+    if tid:
+        c.execute(
+            "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+            (json.dumps(patch,ensure_ascii=False,default=str),tid)
+        )
+    return {'asset':z.get('asset'),'direction':d,'old_stop':existing,
+            'new_stop':candidate,'anchor':meta['anchor'],
+            'anchor_source':meta['anchor_source'],'buffer_pct':meta['buffer_pct']}
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    if str((policy or {}).get('mode') or '')!='AGGRESSIVE':
+        return _v90r54_base_step_one(
+            c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
+        )
+    work={}
+    try:
+        p,pos=_portfolio_rows(c,name)
+        nav,_,_,_=_mark_nav(p,pos,prices)
+        posmap={str(z.get('asset')):dict(z) for z in pos}
+    except Exception:
+        nav=INITIAL_NAV_RUB; posmap={}
+    stop_changes=[]
+    for asset,row0 in (candidates or {}).items():
+        row,stop_meta=_v90r54_apply_structural_stop(row0)
+        z=posmap.get(str(asset))
+        px=float(prices.get(asset,row.get('price') or 0.0))
+        current=0.0
+        if z and str(z.get('direction') or '')==str(row.get('research_decision') or '') and px>0:
+            current=abs(float(z.get('units') or 0.0)*px)/max(float(nav),1.0)
+        target,meta=_v90r54_dynamic_fraction(row,current) if current>0 else _v90r54_initial_fraction(row)
+        row['_r54_position_management']=meta
+        row['_r54_target_fraction']=target
+        work[asset]=row
+        if z and current>0:
+            ch=_v90r54_tighten_position_stop(c,name,z,row,px,ts)
+            if ch: stop_changes.append(ch)
+            if current>target+0.025:
+                patch={
+                  'r54_dynamic_reduction_allowed':True,
+                  'r54_dynamic_reduction_target':target,
+                  'r54_dynamic_reduction_stage':meta.get('stage'),
+                  'r54_dynamic_reduction_metrics':meta,
+                  'r54_dynamic_reduction_at':_v90j_iso(ts),
+                }
+                c.execute(
+                    "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                    "WHERE portfolio_name=%s AND asset=%s",
+                    (json.dumps(patch,ensure_ascii=False,default=str),name,asset)
+                )
+    if stop_changes:
+        print(json.dumps({'event':'V90_R54_STRUCTURAL_STOP_RATCHET',
+                          'portfolio':name,'changes':stop_changes},
+                         ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return _v90r54_base_step_one(
+        c,name,policy,work,prices,ruonia,usdrub,ts,commission_rate,summary
+    )
+
+def _v90r54_scale_profit_cap(z,price,requested):
+    z=dict(z or {})
+    try:
+        entry=float(z.get('avg_entry_price') or 0.0); px=float(price)
+    except Exception:
+        return float(requested),{'profit_pct':None,'cap':1.0}
+    if entry<=0 or px<=0:
+        return float(requested),{'profit_pct':None,'cap':1.0}
+    d=str(z.get('direction') or '')
+    profit=(px/entry-1.0) if d=='LONG' else (entry/px-1.0)
+    # Initial exposure is max 100%. Leverage is added only once price has moved
+    # favorably enough to cover friction and demonstrate actual impulse.
+    if profit<0.0015: cap=1.00
+    elif profit<0.0030: cap=1.50
+    elif profit<0.0050: cap=2.00
+    elif profit<0.0080: cap=3.00
+    elif profit<0.0120: cap=4.00
+    else: cap=5.00
+    return min(float(requested),cap),{'profit_pct':100.0*profit,'cap':cap}
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    if str(name)!='Aggressive':
+        return _v90r54_base_open_or_add(
+            c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason
+        )
+    existing=c.execute(
+        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+        (name,asset)
+    ).fetchone()
+    requested=float(target_fraction or 0.0)
+    gate_meta=None
+    if existing and str(existing.get('direction') or '')==str(direction):
+        requested,gate_meta=_v90r54_scale_profit_cap(dict(existing),price,requested)
+    else:
+        requested=min(requested,1.0)
+    print(json.dumps({
+      'event':'V90_R54_DYNAMIC_SIZE_CHECK','portfolio':name,'asset':asset,
+      'direction':direction,'requested_fraction':float(target_fraction or 0.0),
+      'profit_gated_fraction':requested,'profit_gate':gate_meta,
+      'metrics':(row or {}).get('_r54_position_management'),
+    },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return _v90r54_base_open_or_add(
+        c,p,name,asset,direction,price,requested,nav,ts,row,
+        'R54_DYNAMIC_IMPULSE_SCALE' if requested>1.0 else reason
+    )
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    z=dict(z or {})
+    payload=_v90j_json(z.get('payload'))
+    if str(name)=='Aggressive' and str(reason or '')=='SOFT_SIZE_REDUCTION':
+        allowed=bool(payload.get('r54_dynamic_reduction_allowed'))
+        requested=_v90r51_num(payload.get('r54_dynamic_reduction_target'))
+        if allowed and requested is not None and abs(float(target_fraction)-requested)<=0.051:
+            print(json.dumps({
+              'event':'V90_R54_DYNAMIC_REDUCTION','portfolio':name,
+              'asset':z.get('asset'),'direction':z.get('direction'),
+              'from_fraction':abs(float(z.get('units') or 0.0)*float(price))/max(float(nav),1.0),
+              'to_fraction':float(target_fraction),
+              'stage':payload.get('r54_dynamic_reduction_stage'),
+            },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+            return _v90r46_base_close_or_reduce(
+                c,p,name,z,price,target_fraction,nav,ts,'R54_DYNAMIC_IMPULSE_REDUCTION'
+            )
+    return _v90r54_base_close_or_reduce(
+        c,p,name,z,price,target_fraction,nav,ts,reason
+    )
+
+def report(pg_connect):
+    d=dict(_v90r54_base_report(pg_connect) or {})
+    d['aggressive_dynamic_exposure_r54']={
+      'status':'ACTIVE',
+      'started_at':V90_R54_STARTED_AT,
+      'initial_signal_fraction':{'ordinary':0.50,'confirmed':0.75,'strong_or_super':1.00},
+      'post_entry_scale_path':[1.25,1.50,2.00,3.00,4.00,5.00],
+      'scale_inputs':[
+        'price_impulse_vs_realized_volatility','impulse_score','trend_onset_score',
+        'multi_timeframe_alignment','independent_evidence','relative_volume',
+        'session_efficiency','session_persistence','horizon_structure'
+      ],
+      'leverage_requires_favorable_price_progress':True,
+      'same_direction_weakening_reduces_exposure':True,
+      'reduction_style':'STEPWISE_25_50_PERCENT_NAV',
+      'stop_policy':'PREVIOUS_LOCAL_EXTREME_PLUS_VOLATILITY_BUFFER',
+      'stop_priority':[
+        'recent_local_swing','impulse_local_extreme','range_local_extreme','structural_support_resistance'
+      ],
+      'stop_never_loosened':True,
+      'max_gross':5.0,
+      'principle':'50-100% on qualified signal; add or cut from observed impulse, not confidence alone',
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),32)
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
