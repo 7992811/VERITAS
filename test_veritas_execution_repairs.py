@@ -795,5 +795,127 @@ class AggressiveLegacyInitialRebaseR541Tests(unittest.TestCase):
 
 
 
+class ExecutionDisciplineR55Tests(unittest.TestCase):
+    def _row(self,h='5m'):
+        return {
+            'asset':'BTC','horizon':h,'research_decision':'LONG','price':100.0,
+            'market_observed_at':'2026-09-30T14:05:00+00:00',
+            'realized_vol':.01,'horizon_return':.012,'impulse_score':.75,
+            'trend_onset_score':.78,'signal_tier':'SUPER_LONG',
+            '_alignment_count':3,'_supporting_horizons':['5m'],
+            'horizon_structure':{'state':'CONFIRMED_TREND','score':.85},
+            'intraday_structure':{'recent_swing_anchor':99.2,'relative_volume':1.2},
+            'institutional_signal':{
+                'evidence_independence':{'independent_count':5},
+                'breakout_quality':{'state':'HIGH_QUALITY_BREAKOUT'},
+            },
+            'trade_plan':{
+                'eligible':True,'entry_quality':'CONFIRMED_TREND',
+                'stop_price':98.5,'target_price':104.0,
+                'expected_move_pct':.04,'expected_to_stop_ratio':2.0,
+                'final_economics_gate':{
+                    'status':'PASS','modeled_round_trip_cost_pct':.002,
+                    'net_reward_risk':1.6,
+                },
+            },
+        }
+
+    def test_invalidated_setup_is_absolute_veto_even_if_wrapped_admission_would_open(self):
+        row=self._row('4h')
+        row['entry_quality']='INVALIDATED'
+        row['decision_stage']='INVALIDATED'
+        with patch.object(VPR,'_v90r55_base_admission',
+                          return_value={'open':True,'fraction':1.0,'reason':'legacy'}):
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertFalse(out['open'])
+        self.assertEqual(out['reason'],'R55_ABSOLUTE_INVALIDATED_VETO')
+
+    def test_structural_stop_cannot_resurrect_invalidated_setup(self):
+        row=self._row('4h')
+        row['decision_stage']='INVALIDATED'
+        row['entry_quality']='INVALIDATED'
+        out,meta=VPR._v90r54_apply_structural_stop(row)
+        self.assertIsNone(meta)
+        self.assertEqual(out['_r55_absolute_veto'],'INVALIDATED_SETUP')
+
+    def test_aggressive_5m_initial_size_is_50_without_1h(self):
+        row=self._row('5m')
+        with patch.object(VPR,'_v90r55_base_admission',
+                          return_value={'open':True,'fraction':1.0}):
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertAlmostEqual(out['fraction'],.50)
+
+    def test_aggressive_5m_initial_size_is_75_with_1h(self):
+        row=self._row('5m')
+        row['_supporting_horizons']=['5m','1h']
+        with patch.object(VPR,'_v90r55_base_admission',
+                          return_value={'open':True,'fraction':1.0}):
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertAlmostEqual(out['fraction'],.75)
+
+    def test_aggressive_5m_initial_size_is_100_with_1h_and_4h_super(self):
+        row=self._row('5m')
+        row['_supporting_horizons']=['5m','1h','4h']
+        row['_alignment_count']=3
+        with patch.object(VPR,'_v90r55_base_admission',
+                          return_value={'open':True,'fraction':1.0}):
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertAlmostEqual(out['fraction'],1.0)
+
+    def test_recent_stop_blocks_same_setup_reentry_without_new_price_event(self):
+        row=self._row('4h')
+        row['market_observed_at']='2026-09-30T14:05:20+00:00'
+        c=MagicMock()
+        c.execute.return_value.fetchone.return_value={
+            'trade_id':'old','closed_at':datetime(2026,9,30,14,5,0,tzinfo=timezone.utc),
+            'avg_exit_price':100.0,
+            'payload':{'exit_reason':'STOP','canonical_setup_id':'same'},
+        }
+        with patch.object(VPR,'_portfolio_canonical_setup_id',return_value='same'):
+            out=VPR._v90r55_reentry_gate(
+                c,'Aggressive','BTC','LONG',row,100.10,
+                datetime(2026,9,30,14,5,21,tzinfo=timezone.utc))
+        self.assertFalse(out['eligible'])
+        self.assertEqual(out['reason'],'R55_STALE_SAME_DIRECTION_REENTRY')
+
+    def test_recent_stop_allows_new_setup_only_after_fresh_breakout_and_price_progress(self):
+        row=self._row('4h')
+        row['market_observed_at']='2026-09-30T14:06:00+00:00'
+        c=MagicMock()
+        c.execute.return_value.fetchone.return_value={
+            'trade_id':'old','closed_at':datetime(2026,9,30,14,5,0,tzinfo=timezone.utc),
+            'avg_exit_price':100.0,
+            'payload':{'exit_reason':'STOP','canonical_setup_id':'old_setup'},
+        }
+        with patch.object(VPR,'_portfolio_canonical_setup_id',return_value='new_setup'):
+            out=VPR._v90r55_reentry_gate(
+                c,'Aggressive','BTC','LONG',row,100.30,
+                datetime(2026,9,30,14,6,1,tzinfo=timezone.utc))
+        self.assertTrue(out['eligible'])
+
+    def test_add_without_new_impulse_event_is_blocked(self):
+        row=self._row('4h')
+        row['price']=100.05
+        row['intraday_structure']['recent_swing_anchor']=99.2
+        z={
+            'direction':'LONG','avg_entry_price':99.8,'units':1000,
+            'payload':{'r55_last_scale_price':100.0,'r55_last_scale_anchor':99.2},
+        }
+        out=VPR._v90r55_add_event_gate(z,row,100.05)
+        self.assertFalse(out['eligible'])
+
+    def test_add_after_new_price_impulse_and_new_swing_can_pass(self):
+        row=self._row('4h')
+        row['price']=100.40
+        row['intraday_structure']['recent_swing_anchor']=99.6
+        z={
+            'direction':'LONG','avg_entry_price':99.8,'units':1000,
+            'payload':{'r55_last_scale_price':100.0,'r55_last_scale_anchor':99.2},
+        }
+        out=VPR._v90r55_add_event_gate(z,row,100.40)
+        self.assertTrue(out['eligible'],out)
+
+
+
 if __name__ == '__main__':
     unittest.main()
