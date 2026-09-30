@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import veritas_execution as VX
 import veritas_intelligence as VI
 import veritas_portfolio as VP
+import veritas_portfolio_runtime as VPR
 import veritas_position_guard as PG
 from veritas_quote_time import moex_observed_at, quote_gate
 
@@ -275,8 +276,8 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
         learned = {'active': True, 'episodes': 32, 'calibrated_expected_move_pct': .0074,
                    'calibrated_net_reward_risk': .77, 'calibrated_cost_to_edge_ratio': .27,
                    'modeled_round_trip_cost_pct': .002, 'profile': None}
-        with patch.object(VP, '_v90r43_learning_edge', return_value=learned):
-            guard = VP._v90_candidate_profit_guard(row, VP.POLICIES['Aggressive'], econ)
+        with patch.object(VPR, '_v90r43_learning_edge', return_value=learned):
+            guard = VPR._v90_candidate_profit_guard(row, VP.POLICIES['Aggressive'], econ)
         self.assertFalse(guard['eligible'])
         self.assertIn('LEARNED_CALIBRATED_RR_TOO_LOW', guard['blockers'])
 
@@ -286,8 +287,8 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
                  'net_reward_risk': 2.0, 'expected_move_pct': .03,
                  'modeled_round_trip_cost_pct': .002, 'cost_to_edge_ratio': .067,
                  'breakout_state': 'EARLY_BREAKOUT'}
-        with patch.object(VP, '_v901_no_hard_veto', return_value=True),              patch.object(VP, '_signal_probability', return_value=(.80, 'MODEL_PRIOR_UNCALIBRATED')),              patch.object(VP, '_v90_candidate_profit_guard', return_value=guard),              patch.object(VP, '_v90_aggressive_strong_fraction', return_value=.75):
-            out = VP._v90_canonical_quality_admission(row, VP.POLICIES['Aggressive'], 0.0)
+        with patch.object(VPR, '_v901_no_hard_veto', return_value=True),              patch.object(VPR, '_signal_probability', return_value=(.80, 'MODEL_PRIOR_UNCALIBRATED')),              patch.object(VPR, '_v90_candidate_profit_guard', return_value=guard),              patch.object(VPR, '_v90_aggressive_strong_fraction', return_value=.75):
+            out = VPR._v90_canonical_quality_admission(row, VP.POLICIES['Aggressive'], 0.0)
         self.assertTrue(out['open'])
         self.assertAlmostEqual(out['fraction'], .05)
 
@@ -299,8 +300,8 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
         learned = {'active': True, 'episodes': 32, 'calibrated_expected_move_pct': .02,
                    'calibrated_net_reward_risk': 1.55, 'calibrated_cost_to_edge_ratio': .10,
                    'modeled_round_trip_cost_pct': .002, 'profile': None}
-        with patch.object(VP, '_v90r43_learning_edge', return_value=learned):
-            guard = VP._v90_candidate_profit_guard(row, VP.POLICIES['Aggressive'], econ)
+        with patch.object(VPR, '_v90r43_learning_edge', return_value=learned):
+            guard = VPR._v90_candidate_profit_guard(row, VP.POLICIES['Aggressive'], econ)
         self.assertFalse(guard['eligible'])
         self.assertIn('EARLY_BREAKOUT_IN_RANGE_REGIME', guard['blockers'])
 
@@ -308,10 +309,10 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
         base = {'research_decision': 'NO_TRADE', 'entry_quality': 'INVALIDATED',
                 'trade_plan': {'entry_quality': 'INVALIDATED'},
                 'horizon_structure': {'state': 'BUILDING_TREND'}}
-        self.assertTrue(VP._v842_hard_thesis_exit(base))
+        self.assertTrue(VPR._v842_hard_thesis_exit(base))
         confirmed = copy.deepcopy(base)
         confirmed['horizon_structure']['state'] = 'CONFIRMED_TREND'
-        self.assertFalse(VP._v842_hard_thesis_exit(confirmed))
+        self.assertFalse(VPR._v842_hard_thesis_exit(confirmed))
 
 
 
