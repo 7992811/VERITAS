@@ -1884,7 +1884,18 @@ def _v90r51_safe_combined_scale(z,row,price,nav,requested):
             desired=max(desired,min(ceiling,before+extra))
 
     desired=min(desired,5.0)
-    stop=_v90r51_num(z.get('stop_price'))
+    # R53: use the strongest actually active stop, including R48 profit lock /
+    # structural trailing. The original stop alone can be stale and would make
+    # safe pyramiding unnecessarily conservative.
+    raw_stops=[]
+    for _s in (z.get('stop_price'),payload.get('trailing_stop')):
+        _v=_v90r51_num(_s)
+        if _v is not None and _v>0:
+            raw_stops.append(_v)
+    if raw_stops:
+        stop=max(raw_stops) if direction=='LONG' else min(raw_stops)
+    else:
+        stop=None
     safe_target=desired
     protection_lock=2.0*float(COMMISSION)+0.0001
     stop_safe=None
@@ -1914,7 +1925,9 @@ def _v90r51_safe_combined_scale(z,row,price,nav,requested):
       'status':'PASS','protected':protected,'profit_pct':100.0*profit,
       'before_fraction':before,'requested_fraction':float(requested or 0.0),
       'pre_stop_target_fraction':desired,'safe_target_fraction':safe_target,
-      'stop_price':stop,'combined_stop_protection_safe':stop_safe,
+      'stop_price':stop,'original_stop_price':_v90r51_num(z.get('stop_price')),
+      'trailing_stop':_v90r51_num(payload.get('trailing_stop')),
+      'combined_stop_protection_safe':stop_safe,
       'protection_lock_pct':100.0*protection_lock,'stage':extra_stage,'quality':q,
     }
 
