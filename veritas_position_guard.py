@@ -100,6 +100,58 @@ def take_profit_action(z, current_fraction, peak, round5):
     return floor, reason
 
 
+def profit_lock_stop(z, quote, commission=.0005):
+    """Return a stronger cost-covering stop once a live quote shows enough profit.
+
+    This is not a take-profit. It only ratchets protection toward a small
+    post-cost gain; subsequent structural trailing may tighten it further.
+    """
+    if not quote or not quote.get('source_gate_pass'):
+        return None
+    p=payload_of(z)
+    try:
+        entry=float(z.get('avg_entry_price') or p.get('entry_price') or 0.0)
+        px=float(quote.get('price') or 0.0)
+        if entry<=0 or px<=0 or not math.isfinite(entry) or not math.isfinite(px):
+            return None
+    except (TypeError,ValueError):
+        return None
+
+    long=z.get('direction')=='LONG'
+    current_pct=100.0*((px/entry-1.0) if long else (entry/px-1.0))
+    # With 0.05% commission per leg, 0.25% activation avoids turning normal
+    # noise into churn. The locked level covers estimated round-trip commission
+    # plus a small positive cushion.
+    activation_pct=max(0.25,100.0*(2.0*float(commission)+0.0005))
+    lock_pct=max(0.10,100.0*(2.0*float(commission)+0.0001))
+    if current_pct < activation_pct:
+        return None
+
+    candidate=entry*(1.0+lock_pct/100.0 if long else 1.0-lock_pct/100.0)
+    stops=[]
+    for s in (z.get('stop_price'),p.get('trailing_stop')):
+        try:
+            if s is not None:
+                stops.append(float(s))
+        except (TypeError,ValueError):
+            pass
+    existing=(max(stops) if long else min(stops)) if stops else None
+
+    if existing is not None:
+        if long and candidate<=existing:
+            return None
+        if (not long) and candidate>=existing:
+            return None
+
+    return {
+        'stop_price':candidate,
+        'activation_profit_pct':activation_pct,
+        'locked_profit_pct':lock_pct,
+        'current_profit_pct':current_pct,
+        'policy':'R48_COST_COVERING_PROFIT_LOCK',
+    }
+
+
 def protective_reason(z, quote, now=None):
     now = now or datetime.now(timezone.utc)
     p = payload_of(z)
@@ -160,6 +212,36 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
         for item in positions:
             z = dict(item)
             q = quotes.get(z['asset'])
+
+            # R48: once a fresh quote shows a meaningful profit, ratchet the
+            # protective stop to a small post-cost gain. Do not take profit here;
+            # preserve the position and let structural trailing/TP manage upside.
+            lock = profit_lock_stop(z, q, getattr(vp, 'COMMISSION', .0005))
+            if lock:
+                pl_patch = {
+                    'trailing_stop': lock['stop_price'],
+                    'r48_profit_lock_active': True,
+                    'r48_profit_lock_at': ts,
+                    'r48_profit_lock_activation_pct': lock['activation_profit_pct'],
+                    'r48_profit_lock_locked_pct': lock['locked_profit_pct'],
+                    'r48_profit_lock_seen_profit_pct': lock['current_profit_pct'],
+                    'r48_profit_lock_policy': lock['policy'],
+                }
+                c.execute(
+                    "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                    "WHERE active_trade_id=%s",
+                    (json.dumps(pl_patch), z.get('active_trade_id'))
+                )
+                if z.get('active_trade_id'):
+                    c.execute(
+                        "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                        "WHERE trade_id=%s",
+                        (json.dumps(pl_patch), z.get('active_trade_id'))
+                    )
+                zp=payload_of(z)
+                zp.update(pl_patch)
+                z['payload']=zp
+
             reason = protective_reason(z, q, now)
             if not reason:
                 continue
