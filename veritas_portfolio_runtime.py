@@ -25,7 +25,6 @@ V90_PRODUCTION_CANDIDATE_EPOCH=os.getenv(
 )
 V90_PRODUCTION_CANDIDATES=('Champion','Challenger')
 
-
 def _v90_candidate_profit_guard(row,policy,economics):
     """Profitability-first gate for the production-candidate paper books.
 
@@ -138,7 +137,6 @@ def _v90_candidate_profit_guard(row,policy,economics):
         'setup_memory_win_rate':memory.get('posterior_win_rate'),
         'setup_memory_avg_pnl':memory.get('weighted_avg_pnl'),
     }
-
 
 def _v90_canonical_quality_admission(row, policy, drawdown):
     row = row or {}
@@ -306,11 +304,9 @@ def _v90_canonical_quality_admission(row, policy, drawdown):
         'legacy_soft_gates_authoritative':False,
     }
 
-
 # Keep this alias injectable for existing regression tests, while replacing
 # the historical nested chain with the canonical quality/sizing authority.
 _v90r41_base_admission = _v90_canonical_quality_admission
-
 
 def _signal_first_admission(row, policy, drawdown):
     row = row or {}
@@ -377,7 +373,6 @@ def _signal_first_admission(row, policy, drawdown):
     out['production_eligible'] = bool(row.get('production_eligible'))
     return out
 
-
 def _desired_fraction(row, policy, drawdown):
     admission = _signal_first_admission(row, policy, drawdown)
     if not admission.get('open'):
@@ -398,7 +393,6 @@ def _desired_fraction(row, policy, drawdown):
         ):
             return 0.0
     return float(admission.get('fraction') or 0.0)
-
 
 def _portfolio_admission_trace(candidates, policy, drawdown):
     out = []
@@ -433,10 +427,7 @@ def _portfolio_admission_trace(candidates, policy, drawdown):
         })
     return out
 
-
-
 _v90_candidate_base_step_one=_step_one
-
 
 def _v90_candidate_epoch_rebase(c,name,prices,ts):
     # One-time hygiene for ALL four books: positions opened by the superseded
@@ -485,13 +476,11 @@ def _v90_candidate_epoch_rebase(c,name,prices,ts):
     except Exception as ex:
         return {'status':'ERROR','closed':0,'error':f'{type(ex).__name__}: {ex}'}
 
-
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     _v90_candidate_epoch_rebase(c,name,prices,ts)
     return _v90_candidate_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
     )
-
 
 def _v90_candidate_metrics(pg_connect,name):
     with pg_connect() as c:
@@ -538,7 +527,6 @@ def _v90_candidate_metrics(pg_connect,name):
       'unknown_exits':int((r or {}).get('unknown_exits') or 0),
       'max_drawdown':float((dd or {}).get('max_drawdown') or 0.0),
     }
-
 
 def production_candidate_readiness(pg_connect):
     thresholds={
@@ -589,7 +577,6 @@ def production_candidate_readiness(pg_connect):
       'principle':'No real-money promotion until the primary paper candidate proves positive post-cost performance on a fresh independent execution epoch.',
     }
 
-
 _v90_canonical_report_base = report
 
 def report(pg_connect):
@@ -614,7 +601,6 @@ def report(pg_connect):
     d['production_candidate_readiness']=production_candidate_readiness(pg_connect)
     return _jsonable(d)
 
-
 # VERITAS V90 CLOSED-LOOP LEARNING BRIDGE R43
 # Fixes the final R42 feedback gap found in the closed-trade audit.
 #
@@ -638,7 +624,6 @@ V90_R43_STARTED_AT=os.getenv(
 _v90r43_base_candidate_guard=_v90_candidate_profit_guard
 _v90r43_base_admission=_signal_first_admission
 _v90r43_base_report=report
-
 
 def _v90r43_learning_edge(row,guard=None):
     row=row or {}
@@ -694,7 +679,6 @@ def _v90r43_learning_edge(row,guard=None):
       'profile_key':list(key) if key else None,
       'profile':dict(profile) if profile else None,
     }
-
 
 def _v90_candidate_profit_guard(row,policy,economics):
     base=dict(_v90r43_base_candidate_guard(row,policy,economics) or {})
@@ -780,7 +764,6 @@ def _v90_candidate_profit_guard(row,policy,economics):
     base['closed_loop_learning_r43']=learn
     return base
 
-
 def _signal_first_admission(row,policy,drawdown):
     out=dict(_v90r43_base_admission(row,policy,drawdown) or {})
     if not out.get('open'):
@@ -827,7 +810,6 @@ def _signal_first_admission(row,policy,drawdown):
         row['_r43_context_learning']=out['r43_context_learning']
     return out
 
-
 def report(pg_connect):
     d=dict(_v90r43_base_report(pg_connect) or {})
     d['closed_loop_learning_r43']={
@@ -853,9 +835,7 @@ def report(pg_connect):
     }
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),25)
-
 
 # VERITAS V90 LEARNING DATA HYGIENE R44
 # Administrative portfolio migrations/rebases are accounting events, not market
@@ -877,13 +857,11 @@ _v90r44_sanitize_state={
   'last_error':None,
 }
 
-
 def _v90r44_administrative_exit(reason):
     u=str(reason or '').upper().strip()
     # "REBASE" is reserved for engine / migration accounting closures in v9.0.
     # Market exits use STOP / TAKE_PROFIT / TRAIL / STRUCTURE_* / thesis reasons.
     return bool(u and 'REBASE' in u)
-
 
 def _v90r29_episode_from_trade(t):
     e=dict(_v90r44_base_episode_from_trade(t) or {})
@@ -909,7 +887,6 @@ def _v90r29_episode_from_trade(t):
         })
         e['payload']=ep_payload
     return e
-
 
 def _v90r44_sanitize_learning(pg_connect,force=False):
     now=time.time()
@@ -973,7 +950,6 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
         },ensure_ascii=False,separators=(',',':')),flush=True)
     return dict(_v90r44_sanitize_state)
 
-
 def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
     try:
         _v90r44_sanitize_learning(pg_connect)
@@ -982,7 +958,6 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
     return _v90r44_base_step_all(
         summary,pg_connect,model_version,observed_at,commission_rate,emit
     )
-
 
 def report(pg_connect):
     try:
@@ -1005,9 +980,7 @@ def report(pg_connect):
     }
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),26)
-
 
 # VERITAS V90 CLEAN PRODUCTION EVIDENCE R45
 # Real-capital readiness must be proven only by trades opened under the current
@@ -1024,7 +997,6 @@ _v90r45_base_candidate_metrics=_v90_candidate_metrics
 _v90r45_base_readiness=production_candidate_readiness
 _v90r45_base_report=report
 
-
 def _v90j_entry_patch(row,z,ts):
     d=dict(_v90r45_base_entry_patch(row,z,ts) or {})
     d.update({
@@ -1034,7 +1006,6 @@ def _v90j_entry_patch(row,z,ts):
       'production_evidence_epoch':V90_R45_PRODUCTION_EVIDENCE_EPOCH,
     })
     return d
-
 
 def _v90_candidate_metrics(pg_connect,name):
     with pg_connect() as c:
@@ -1107,7 +1078,6 @@ def _v90_candidate_metrics(pg_connect,name):
       'administrative_rebase_excluded':True,
     }
 
-
 def production_candidate_readiness(pg_connect):
     d=dict(_v90r45_base_readiness(pg_connect) or {})
     d['epoch']=V90_R45_PRODUCTION_EVIDENCE_EPOCH
@@ -1121,7 +1091,6 @@ def production_candidate_readiness(pg_connect):
       'remain audit history only.'
     )
     return d
-
 
 def report(pg_connect):
     d=dict(_v90r45_base_report(pg_connect) or {})
@@ -1138,9 +1107,7 @@ def report(pg_connect):
     # so it already contains the R45 cohort here; avoid a duplicate DB pass.
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),27)
-
 
 # VERITAS V90 TREND HOLD / MOVEMENT CAPTURE R46
 # Closed-trade review showed that correct directional calls were often converted
@@ -1161,7 +1128,6 @@ V90_R46_STARTED_AT=os.getenv(
 _v90r46_base_step_one=_step_one
 _v90r46_base_close_or_reduce=_close_or_reduce
 _v90r46_base_report=report
-
 
 def _v842_hard_thesis_exit(row):
     """Exit authority for the position's original execution horizon.
@@ -1190,7 +1156,6 @@ def _v842_hard_thesis_exit(row):
         and decision=='NO_TRADE'
         and hstate!='CONFIRMED_TREND'
     )
-
 
 def _v90r46_hold_context(name,z,row):
     row=row or {}
@@ -1239,7 +1204,6 @@ def _v90r46_hold_context(name,z,row):
       'portfolio':str(name or ''),
     }
 
-
 def _v90r46_mark_trend_hold(c,name,candidates,summary,ts):
     marked=[]
     try:
@@ -1282,7 +1246,6 @@ def _v90r46_mark_trend_hold(c,name,candidates,summary,ts):
             )
         marked.append({'asset':asset,**ctx})
     return marked
-
 
 def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
     changes=[]
@@ -1387,7 +1350,6 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
         ),flush=True)
     return changes
 
-
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     z=dict(z or {})
     payload=_v90j_json(z.get('payload'))
@@ -1425,7 +1387,6 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         c,p,name,z,price,target_fraction,nav,ts,reason
     )
 
-
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     # Refresh MFE before deciding whether profit has started to give back.
     try:
@@ -1444,7 +1405,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     return _v90r46_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
     )
-
 
 def report(pg_connect):
     d=dict(_v90r46_base_report(pg_connect) or {})
@@ -1480,7 +1440,6 @@ def report(pg_connect):
       'principle':'fresh-entry economics controls adds; existing trend exposure is managed by structure, stops and profit protection',
     }
     return _jsonable(d)
-
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),28)
 
