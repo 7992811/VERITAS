@@ -521,3 +521,34 @@ def build_scorecard(pg_connect, learning_progress, production_epoch, cache_secon
     }
     _CACHE.update({"at": now, "epoch": production_epoch, "value": value})
     return dict(value)
+
+
+def startup_snapshot(pg_connect, learning_progress, production_epoch, delay_seconds=12):
+    """Emit one bounded diagnostic snapshot after service startup."""
+    try:
+        time.sleep(max(0.0, float(delay_seconds or 0.0)))
+        value = build_scorecard(pg_connect, learning_progress(), production_epoch, cache_seconds=0)
+        b = value.get("benchmarks") or {}
+        stateless = b.get("stateless_ai") or {}
+        print(json.dumps({
+            "event": "V90_ASSET_MANAGEMENT_INTELLIGENCE",
+            "version": value.get("version"),
+            "score": value.get("score"),
+            "stage": value.get("stage"),
+            "confidence": value.get("confidence"),
+            "components": value.get("components"),
+            "initial_veritas": b.get("initial_veritas_decision_learning"),
+            "stateless_ai": {
+                "status": stateless.get("status"),
+                "sample_n": stateless.get("sample_n"),
+                "hit_rate_delta_pp": stateless.get("hit_rate_delta_pp"),
+                "large_move_capture_delta_pp": stateless.get("large_move_capture_delta_pp"),
+                "normalized_utility_delta": stateless.get("normalized_utility_delta"),
+            },
+            "fresh_candidate_trades": ((value.get("evidence") or {}).get("fresh_candidate_trades") or {}).get("n"),
+        }, ensure_ascii=False, default=str, separators=(",", ":")), flush=True)
+    except Exception as ex:
+        print(json.dumps({
+            "event": "V90_ASSET_MANAGEMENT_INTELLIGENCE_ERROR",
+            "error": f"{type(ex).__name__}: {ex}"[:300],
+        }, ensure_ascii=False, separators=(",", ":")), flush=True)
