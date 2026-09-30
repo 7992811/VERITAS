@@ -654,5 +654,104 @@ class EffectiveStopR53Tests(unittest.TestCase):
 
 
 
+class AggressiveDynamicExposureR54Tests(unittest.TestCase):
+    def _row(self, super_signal=False):
+        return {
+            'asset':'CNYRUBF','horizon':'1h','research_decision':'SHORT',
+            'price':12.30,'regime':'DOWNTREND_MID_VOL',
+            'signal_tier':'SUPER_SHORT' if super_signal else 'SHORT',
+            'horizon_return':-.018,'realized_vol':.014,
+            'impulse_score':.72,'trend_onset_score':.68,
+            '_alignment_count':4,'_supporting_horizons':['5m','1h','4h','1d'],
+            'horizon_structure':{'direction':'SHORT','state':'CONFIRMED_TREND','score':.84},
+            'intraday_structure':{
+                'recent_swing_anchor':12.39,'relative_volume':1.15,
+                'session_efficiency':.60,'session_persistence':.62,'atr_5m':.025,
+            },
+            'institutional_signal':{
+                'evidence_independence':{'independent_count':5},
+                'breakout_quality':{'state':'CONFIRMED_BREAKOUT'},
+            },
+            'trade_plan':{
+                'eligible':True,'direction':'SHORT','stop_price':12.45,
+                'target_price':12.05,'expected_move_pct':.02,
+                'expected_to_stop_ratio':1.7,
+            },
+        }
+
+    def test_qualified_aggressive_signal_never_opens_below_fifty_percent(self):
+        row=self._row(False)
+        with patch.object(VPR,'_v90r54_base_admission',
+                          return_value={'open':True,'fraction':.05,'reason':'legacy'}):
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out['open'])
+        self.assertGreaterEqual(out['fraction'],.50)
+        self.assertLessEqual(out['fraction'],1.00)
+
+    def test_super_signal_initial_size_is_one_hundred_percent(self):
+        row=self._row(True)
+        row['impulse_score']=.90
+        row['horizon_structure']['score']=.95
+        row['_alignment_count']=6
+        row['institutional_signal']['evidence_independence']['independent_count']=6
+        with patch.object(VPR,'_v90r54_base_admission',
+                          return_value={'open':True,'fraction':.05,'reason':'legacy'}):
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertAlmostEqual(out['fraction'],1.0)
+
+    def test_large_impulse_vs_volatility_can_scale_existing_position_toward_five_x(self):
+        row=self._row(True)
+        row.update(horizon_return=-.035,realized_vol=.012,
+                   impulse_score=.92,trend_onset_score=.90,trend_phase='IMPULSE_TREND')
+        row['horizon_structure'].update(score=.96,state='CONFIRMED_TREND')
+        row['intraday_structure'].update(relative_volume=1.35,
+                                         session_efficiency=.78,
+                                         session_persistence=.72)
+        row['_alignment_count']=6
+        row['institutional_signal']['evidence_independence']['independent_count']=6
+        target,meta=VPR._v90r54_dynamic_fraction(row,1.0)
+        self.assertGreaterEqual(target,4.0)
+        self.assertGreater(meta['impulse_to_volatility'],2.0)
+
+    def test_fading_impulse_reduces_leverage_stepwise_not_all_at_once(self):
+        row=self._row(False)
+        row.update(horizon_return=.001,realized_vol=.02,
+                   impulse_score=.20,trend_onset_score=.20)
+        row['horizon_structure'].update(score=.45,state='WEAK')
+        target,meta=VPR._v90r54_dynamic_fraction(row,3.0)
+        self.assertAlmostEqual(target,2.5)
+        self.assertIn('STEPWISE_REDUCTION',meta['stage'])
+
+    def test_short_stop_is_above_previous_local_high_with_volatility_buffer(self):
+        row=self._row(False)
+        meta=VPR._v90r54_structural_stop(row)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta['anchor_source'],'RECENT_LOCAL_SWING')
+        self.assertGreater(meta['stop_price'],12.39)
+        self.assertGreater(meta['stop_price'],row['price'])
+        self.assertLess(meta['stop_price'],12.45)
+
+    def test_long_stop_is_below_previous_local_low(self):
+        row=self._row(False)
+        row['research_decision']='LONG'
+        row['signal_tier']='LONG'
+        row['horizon_return']=.018
+        row['intraday_structure']['recent_swing_anchor']=12.20
+        row['trade_plan'].update(direction='LONG',stop_price=12.15,target_price=12.55)
+        meta=VPR._v90r54_structural_stop(row)
+        self.assertIsNotNone(meta)
+        self.assertLess(meta['stop_price'],12.20)
+        self.assertLess(meta['stop_price'],row['price'])
+
+    def test_leverage_above_one_x_requires_favorable_price_progress(self):
+        z={'direction':'SHORT','avg_entry_price':12.50}
+        target,meta=VPR._v90r54_scale_profit_cap(z,12.49,5.0)
+        self.assertEqual(target,1.0)
+        target2,meta2=VPR._v90r54_scale_profit_cap(z,12.43,5.0)
+        self.assertGreaterEqual(target2,2.0)
+        self.assertLessEqual(target2,3.0)
+
+
+
 if __name__ == '__main__':
     unittest.main()
