@@ -1,24 +1,19 @@
 """Evidence-weighted asset-management intelligence for VERITAS.
-
 This is not an IQ score. It measures demonstrated capability to make market
 decisions, convert them into post-cost portfolio outcomes, apply validated
 knowledge, manage movement/risk, accumulate independent experience, and improve
 through closed-loop learning.
-
 A stateless reference AI is reconstructed from saved agent votes on the same
 completed episodes. It deliberately ignores memory, adaptive weights,
 knowledge adjustments and trade-learning feedback.
 """
 from __future__ import annotations
-
 from datetime import datetime, timezone
 import json
 import math
 import time
-
 VERSION = "ami-v1.0"
 _CACHE = {"at": 0.0, "epoch": None, "value": None}
-
 MOVE_THRESHOLDS = {
     "5m": 0.0015,
     "1h": 0.012,
@@ -38,21 +33,15 @@ EPISODE_GAPS = {
 BAD_LEARNING_ATTRS = {
     "ENTRY_DIRECTION_ERROR", "EDGE_OVERFORECAST", "COST_DRAG",
 }
-
-
 def _clip(x, lo=0.0, hi=1.0):
     try:
         return max(lo, min(hi, float(x)))
     except Exception:
         return lo
-
-
 def _scale(x, lo, hi):
     if x is None or hi <= lo:
         return 0.0
     return _clip((float(x) - lo) / (hi - lo))
-
-
 def _j(v):
     if isinstance(v, dict):
         return v
@@ -60,17 +49,11 @@ def _j(v):
         return json.loads(v or "{}")
     except Exception:
         return {}
-
-
 def _mean(values):
     vals = [float(x) for x in values if x is not None and math.isfinite(float(x))]
     return sum(vals) / len(vals) if vals else None
-
-
 def _threshold(horizon):
     return MOVE_THRESHOLDS.get(str(horizon), MOVE_THRESHOLDS["1d"])
-
-
 def _static_ai_decision(payload):
     """Equal-weight confidence vote: a deliberately simple AI without memory."""
     agents = (payload or {}).get("agents") or []
@@ -97,7 +80,6 @@ def _static_ai_decision(payload):
     if margin <= -0.18:
         return "SHORT"
     return "NO_TRADE"
-
 
 def _independent_episodes(rows, limit=360):
     ordered = sorted(rows, key=lambda r: str(r.get("event_ts") or ""))
