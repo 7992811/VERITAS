@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import veritas_execution as VX
 import veritas_intelligence as VI
 import veritas_portfolio as VP
+import veritas_portfolio_runtime as VPR
 import veritas_position_guard as PG
 from veritas_quote_time import moex_observed_at, quote_gate
 
@@ -252,6 +253,66 @@ class TrendHoldR46Tests(unittest.TestCase):
                                       1e6, NOW.isoformat(), 'STOP')
         self.assertEqual(out, 55)
         base.assert_called_once()
+
+
+
+class ProfitabilityAdmissionRepairTests(unittest.TestCase):
+    def _row(self, state='CONFIRMED_BREAKOUT', regime='UPTREND_MID_VOL'):
+        return {
+            'asset': 'ETH', 'research_decision': 'SHORT', 'signal_tier': 'SHORT',
+            'regime': regime, '_alignment_count': 2,
+            'trade_plan': {'stop_distance_pct': .01},
+            'horizon_structure': {'score': .84, 'state': 'CONFIRMED_TREND'},
+            'institutional_signal': {
+                'evidence_independence': {'independent_count': 3},
+                'breakout_quality': {'state': state},
+            },
+        }
+
+    def test_aggressive_rejects_low_learned_rr(self):
+        row = self._row()
+        econ = {'expected_to_stop_ratio': 1.22, 'expected_move_pct': .0117,
+                'modeled_round_trip_cost_pct': .002}
+        learned = {'active': True, 'episodes': 32, 'calibrated_expected_move_pct': .0074,
+                   'calibrated_net_reward_risk': .77, 'calibrated_cost_to_edge_ratio': .27,
+                   'modeled_round_trip_cost_pct': .002, 'profile': None}
+        with patch.object(VPR, '_v90r43_learning_edge', return_value=learned):
+            guard = VPR._v90_candidate_profit_guard(row, VP.POLICIES['Aggressive'], econ)
+        self.assertFalse(guard['eligible'])
+        self.assertIn('LEARNED_CALIBRATED_RR_TOO_LOW', guard['blockers'])
+
+    def test_early_breakout_is_only_five_percent_initial_probe(self):
+        row = self._row(state='EARLY_BREAKOUT')
+        guard = {'eligible': True, 'status': 'PASS', 'blockers': [],
+                 'net_reward_risk': 2.0, 'expected_move_pct': .03,
+                 'modeled_round_trip_cost_pct': .002, 'cost_to_edge_ratio': .067,
+                 'breakout_state': 'EARLY_BREAKOUT'}
+        with patch.object(VPR, '_v901_no_hard_veto', return_value=True),              patch.object(VPR, '_signal_probability', return_value=(.80, 'MODEL_PRIOR_UNCALIBRATED')),              patch.object(VPR, '_v90_candidate_profit_guard', return_value=guard),              patch.object(VPR, '_v90_aggressive_strong_fraction', return_value=.75):
+            out = VPR._v90_canonical_quality_admission(row, VP.POLICIES['Aggressive'], 0.0)
+        self.assertTrue(out['open'])
+        self.assertAlmostEqual(out['fraction'], .05)
+
+    def test_range_regime_early_breakout_is_blocked(self):
+        row = self._row(state='EARLY_BREAKOUT', regime='RANGE_LOW_VOL')
+        row['_alignment_count'] = 4
+        econ = {'expected_to_stop_ratio': 2.0, 'expected_move_pct': .03,
+                'modeled_round_trip_cost_pct': .002}
+        learned = {'active': True, 'episodes': 32, 'calibrated_expected_move_pct': .02,
+                   'calibrated_net_reward_risk': 1.55, 'calibrated_cost_to_edge_ratio': .10,
+                   'modeled_round_trip_cost_pct': .002, 'profile': None}
+        with patch.object(VPR, '_v90r43_learning_edge', return_value=learned):
+            guard = VPR._v90_candidate_profit_guard(row, VP.POLICIES['Aggressive'], econ)
+        self.assertFalse(guard['eligible'])
+        self.assertIn('EARLY_BREAKOUT_IN_RANGE_REGIME', guard['blockers'])
+
+    def test_invalidated_execution_horizon_exits_unless_trend_confirmed(self):
+        base = {'research_decision': 'NO_TRADE', 'entry_quality': 'INVALIDATED',
+                'trade_plan': {'entry_quality': 'INVALIDATED'},
+                'horizon_structure': {'state': 'BUILDING_TREND'}}
+        self.assertTrue(VPR._v842_hard_thesis_exit(base))
+        confirmed = copy.deepcopy(base)
+        confirmed['horizon_structure']['state'] = 'CONFIRMED_TREND'
+        self.assertFalse(VPR._v842_hard_thesis_exit(confirmed))
 
 
 
