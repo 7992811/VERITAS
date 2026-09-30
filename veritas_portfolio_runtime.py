@@ -1553,7 +1553,417 @@ def report(pg_connect):
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),28)
 
-# Export only names added or replaced by R42-R46.
+
+# VERITAS V90 CNY TREND CAPTURE / SAFE PYRAMIDING R51
+# Incident-driven repair after the 2026-09-30 CNYRUBF downtrend audit.
+# Goals:
+# - delayed 5m research data may trigger only a small 1h-risk transition probe;
+# - higher-timeframe regime alignment blocks obvious counter-trend entries;
+# - targets are bounded by current structure/risk rather than unconstrained forecasts;
+# - protected winners may never be pyramided into a combined stop-loss;
+# - a STOP cannot be followed by an immediate same-direction re-entry on delayed CNY data.
+V90_R51_STARTED_AT=os.getenv('VERITAS_R51_EPOCH','2026-09-30T12:20:00+00:00')
+_v90r51_base_admission=_signal_first_admission
+_v90r51_base_open_or_add=_open_or_add
+_v90r51_base_candidate_book=_candidate_book_v84
+_v90r51_base_aggressive_book=_v90_aggressive_candidate_book
+_v90r51_base_impulse_book=_best_impulse_by_asset
+_v90r51_base_report=report
+
+def _v90r51_num(v,default=None):
+    try:
+        if v is None:
+            return default
+        x=float(v)
+        return x if math.isfinite(x) else default
+    except Exception:
+        return default
+
+def _v90r51_htf_bias(summary,asset):
+    weights={'1d':1.0,'3d':1.25,'7d':1.50}
+    up=down=0.0
+    evidence=[]
+    for r in summary or []:
+        if str((r or {}).get('asset') or '')!=str(asset):
+            continue
+        tf=str((r or {}).get('horizon') or '')
+        if tf not in weights:
+            continue
+        regime=str((r or {}).get('regime') or '')
+        decision=str((r or {}).get('research_decision') or 'NO_TRADE')
+        w=weights[tf]
+        if regime.startswith('UPTREND'):
+            up+=w
+        elif regime.startswith('DOWNTREND'):
+            down+=w
+        if decision=='LONG':
+            up+=0.50*w
+        elif decision=='SHORT':
+            down+=0.50*w
+        evidence.append({'horizon':tf,'regime':regime,'decision':decision})
+    direction='NO_TRADE'
+    if down>=2.0 and down>=up+1.0:
+        direction='SHORT'
+    elif up>=2.0 and up>=down+1.0:
+        direction='LONG'
+    return {'direction':direction,'up_score':up,'down_score':down,'evidence':evidence}
+
+def _v90r51_mark_countertrend(row,summary):
+    if not row:
+        return row
+    x=dict(row)
+    if str(x.get('asset') or '')!='CNYRUBF':
+        return x
+    d=str(x.get('research_decision') or 'NO_TRADE')
+    if d not in ('LONG','SHORT'):
+        return x
+    bias=_v90r51_htf_bias(summary,'CNYRUBF')
+    opposite='SHORT' if d=='LONG' else 'LONG'
+    if bias.get('direction')==opposite:
+        x['_r51_countertrend_block']='R51_CNY_HIGHER_TF_REGIME_CONFLICT'
+        x['_r51_higher_tf_bias']=bias
+    return x
+
+def _candidate_book_v84(summary):
+    out=dict(_v90r51_base_candidate_book(summary) or {})
+    for asset,row in list(out.items()):
+        out[asset]=_v90r51_mark_countertrend(row,summary)
+    return out
+
+def _best_impulse_by_asset(summary):
+    out=dict(_v90r51_base_impulse_book(summary) or {})
+    for asset,row in list(out.items()):
+        out[asset]=_v90r51_mark_countertrend(row,summary)
+    c=_v90r51_cny_transition_candidate(summary)
+    if c is not None:
+        old=out.get('CNYRUBF')
+        if old is None or old.get('_r51_countertrend_block') or float(c.get('_rank') or 0)>float(old.get('_rank') or 0):
+            out['CNYRUBF']=c
+    return out
+
+def _v90r51_cny_transition_candidate(summary):
+    rows=[dict(r) for r in (summary or [])
+          if str((r or {}).get('asset') or '')=='CNYRUBF'
+          and str((r or {}).get('horizon') or '')=='5m']
+    if not rows:
+        return None
+    best=None
+    bias=_v90r51_htf_bias(summary,'CNYRUBF')
+    for x in rows:
+        d=str(x.get('research_decision') or 'NO_TRADE')
+        if d not in ('LONG','SHORT') or bias.get('direction')!=d:
+            continue
+        if not bool(x.get('source_gate_pass')) or not bool(x.get('market_open')):
+            continue
+        hs=x.get('horizon_structure') or {}
+        hstate=str(hs.get('state') or x.get('horizon_structure_state') or '')
+        hscore=_v90r51_num(hs.get('score'),_v90r51_num(x.get('horizon_structure_score'),0.0)) or 0.0
+        try:
+            indep=int((((x.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count')) or
+                      x.get('independent_evidence_families') or 0)
+        except Exception:
+            indep=0
+        regime=str(x.get('regime') or '')
+        regime_ok=(d=='SHORT' and regime.startswith('DOWNTREND')) or (d=='LONG' and regime.startswith('UPTREND'))
+        if hstate not in ('BUILDING_TREND','CONFIRMED_TREND') or hscore<0.70 or indep<4 or not regime_ok:
+            continue
+        plan=dict(x.get('trade_plan') or {})
+        ti=dict(plan.get('trade_integrity') or {})
+        ti['hard_invalidation']=False
+        ti['entry_permission']='EARLY_PROBE'
+        plan['trade_integrity']=ti
+        plan['eligible']=True
+        plan['entry_quality']='FRESH_BREAKOUT'
+        plan['reason']='R51_CNY_DELAYED_5M_TO_1H_TRANSITION'
+        plan['execution_timeframe']='5m delayed trigger / 1h risk'
+        y=dict(x)
+        y['horizon']='1h'
+        y['entry_quality']='FRESH_BREAKOUT'
+        y['trade_plan']=plan
+        y['_r51_cny_delayed_transition']=True
+        y['_r51_original_horizon']='5m'
+        y['_r51_higher_tf_bias']=bias
+        supporting=['5m']+[e['horizon'] for e in bias.get('evidence') or []
+                            if ((d=='SHORT' and str(e.get('regime') or '').startswith('DOWNTREND'))
+                                or (d=='LONG' and str(e.get('regime') or '').startswith('UPTREND')))]
+        y['_supporting_horizons']=list(dict.fromkeys(supporting))
+        y['_alignment_count']=len(y['_supporting_horizons'])
+        y['_direction_support']={d:hscore+0.30*len(y['_supporting_horizons']),
+                                 'SHORT' if d=='LONG' else 'LONG':0.0}
+        y['_support_ratio']=100.0
+        y['_flip_confirmed']=False
+        y['_rank']=1.50+0.20*hscore+0.03*min(indep,6)+0.05*len(y['_supporting_horizons'])
+        if best is None or float(y['_rank'])>float(best.get('_rank') or 0):
+            best=y
+    return best
+
+def _v90_aggressive_candidate_book(summary,core_candidates):
+    out=dict(_v90r51_base_aggressive_book(summary,core_candidates) or {})
+    for asset,row in list(out.items()):
+        out[asset]=_v90r51_mark_countertrend(row,summary)
+    c=_v90r51_cny_transition_candidate(summary)
+    if c is not None:
+        old=out.get('CNYRUBF')
+        old_bad=bool(old and old.get('_r51_countertrend_block'))
+        old_plan=(old or {}).get('trade_plan') or {}
+        old_gate=old_plan.get('final_economics_gate') or {}
+        old_blocked=bool(old_gate and old_gate.get('status')=='BLOCK')
+        if old is None or old_bad or old_blocked or float(c.get('_rank') or 0)>float((old or {}).get('_rank') or 0):
+            out['CNYRUBF']=c
+    return out
+
+def _v90r51_cny_target_repair(row):
+    row=row or {}
+    plan=dict(row.get('trade_plan') or {})
+    if str(row.get('asset') or '')!='CNYRUBF':
+        return plan
+    d=str(row.get('research_decision') or plan.get('direction') or '')
+    px=_v90r51_num(row.get('price'))
+    stop=_v90r51_num(plan.get('stop_price'))
+    if d not in ('LONG','SHORT') or not px or px<=0 or not stop or stop<=0:
+        return plan
+    if (d=='LONG' and stop>=px) or (d=='SHORT' and stop<=px):
+        return plan
+    stop_risk=abs(px-stop)/px
+    if stop_risk<=0:
+        return plan
+
+    h=str(row.get('horizon') or '')
+    caps={'5m':0.008,'1h':0.015,'4h':0.020,'1d':0.035,'3d':0.050,'7d':0.070}
+    cap=float(caps.get(h,0.020))
+    if row.get('_r51_cny_delayed_transition'):
+        cap=min(cap,0.012)
+
+    modeled_cost=float(VX.round_trip_cost_pct(row.get('spread_bps')))
+    target_net_rr=1.25 if row.get('_r51_cny_delayed_transition') else 1.30
+    required=max(0.0050,target_net_rr*stop_risk+(1.0+target_net_rr)*modeled_cost)
+    required=min(required,cap)
+
+    sign=1.0 if d=='LONG' else -1.0
+    old_target=_v90r51_num(plan.get('target_price') or plan.get('tactical_target_price'))
+    old_move=(sign*(old_target-px)/px) if old_target else 0.0
+
+    structural=[]
+    levels=row.get('structural_levels') or {}
+    names=('resistance','resistance2','next_resistance') if d=='LONG' else ('support','support2','next_support')
+    for k in names:
+        v=_v90r51_num(levels.get(k))
+        if v and sign*(v-px)>0:
+            structural.append(sign*(v-px)/px)
+    for block in (row.get('range_retest_breakout') or {},
+                  row.get('impulse_pivot_break') or {},
+                  row.get('tactical_reversal') or {}):
+        keys=('resistance','local_resistance','target_price') if d=='LONG' else ('support','local_support','target_price')
+        for k in keys:
+            v=_v90r51_num(block.get(k))
+            if v and sign*(v-px)>0:
+                structural.append(sign*(v-px)/px)
+
+    valid_struct=[m for m in structural if required<=m<=cap]
+    if valid_struct:
+        desired=min(valid_struct)
+        source='STRUCTURAL_LEVEL'
+    else:
+        desired=max(required,min(cap,old_move if old_move>0 else required))
+        source='RISK_BOUNDED_FALLBACK'
+    desired=min(cap,max(0.0,desired))
+    if desired<=0:
+        return plan
+
+    new_target=px*(1.0+sign*desired)
+    plan['target_price']=new_target
+    plan['expected_move_pct']=desired
+    plan['expected_to_stop_ratio']=desired/max(stop_risk,1e-9)
+    plan['r51_target_repaired']=True
+    plan['r51_target_source']=source
+    plan['r51_original_target_price']=old_target
+    plan['r51_original_target_move_pct']=old_move
+    plan['r51_target_cap_pct']=cap
+    plan['r51_required_move_pct']=required
+    plan['r51_stop_risk_pct']=stop_risk
+    return plan
+
+def _signal_first_admission(row,policy,drawdown):
+    row=row or {}
+    if row.get('_r51_countertrend_block'):
+        score,source=_signal_probability(row)
+        return {
+          'open':False,'fraction':0.0,'reason':row.get('_r51_countertrend_block'),
+          'probability':float(score) if source=='EMPIRICAL_CALIBRATION' else None,
+          'model_quality_score':None if source=='EMPIRICAL_CALIBRATION' else float(score),
+          'probability_source':source,
+          'r51_higher_tf_bias':row.get('_r51_higher_tf_bias'),
+        }
+    if str(row.get('asset') or '')=='CNYRUBF':
+        row['trade_plan']=_v90r51_cny_target_repair(row)
+    out=dict(_v90r51_base_admission(row,policy,drawdown) or {})
+    if row.get('_r51_cny_delayed_transition') and out.get('open'):
+        mode=str((policy or {}).get('mode') or '')
+        if mode in ('AGGRESSIVE','IMPULSE_ONLY'):
+            out['fraction']=min(float(out.get('fraction') or 0.0),0.05)
+            out['open']=bool(out['fraction']>0)
+            out['reason']='R51_CNY_DELAYED_TRANSITION_PROBE'
+            out['r51_delayed_transition']=True
+            out['r51_original_horizon']='5m'
+            out['r51_execution_horizon']='1h'
+    return out
+
+def _v90r51_safe_combined_scale(z,row,price,nav,requested):
+    z=dict(z or {})
+    if not z:
+        return float(requested),{'status':'NO_EXISTING_POSITION'}
+    entry=_v90r51_num(z.get('avg_entry_price'))
+    px=_v90r51_num(price)
+    if not entry or not px or entry<=0 or px<=0 or not nav:
+        return float(requested),{'status':'INVALID_INPUT'}
+    direction=str(z.get('direction') or '')
+    before=abs(float(z.get('units') or 0.0)*px)/max(float(nav),1.0)
+    desired=max(before,float(requested or 0.0))
+    payload=_v90j_json(z.get('payload'))
+    assessed=VPP.assess(None,z,price=px,nav=nav,commission=COMMISSION) if False else {}
+    protected=bool(VPP.is_protected(z) or payload.get('profit_protection_active'))
+    profit=(px/entry-1.0) if direction=='LONG' else (entry/px-1.0)
+    q=_v90r24_aggressive_quality(row)
+
+    extra_stage='BASE_REQUEST'
+    if protected and (q.get('confirmed') or q.get('super')):
+        extra=0.0
+        ceiling=desired
+        if profit>=0.030 and q.get('super') and q.get('independent',0)>=5:
+            extra=1.00; ceiling=5.0; extra_stage='PROTECTED_DEEP_TREND'
+        elif profit>=0.020:
+            extra=0.75; ceiling=3.0; extra_stage='PROTECTED_2PCT'
+        elif profit>=0.0125:
+            extra=0.50; ceiling=2.0; extra_stage='PROTECTED_1_25PCT'
+        elif profit>=0.0080:
+            extra=0.35; ceiling=1.50; extra_stage='PROTECTED_0_8PCT'
+        elif profit>=0.0040:
+            extra=0.25; ceiling=1.00; extra_stage='PROTECTED_0_4PCT'
+        if extra>0:
+            desired=max(desired,min(ceiling,before+extra))
+
+    desired=min(desired,5.0)
+    stop=_v90r51_num(z.get('stop_price'))
+    safe_target=desired
+    protection_lock=2.0*float(COMMISSION)+0.0001
+    stop_safe=None
+    if protected and desired>before+0.001:
+        if not stop or stop<=0:
+            safe_target=before
+            stop_safe=False
+        else:
+            side='BUY' if direction=='LONG' else 'SELL_SHORT'
+            try:
+                fill=float(VX.simulated_fill(str(z.get('asset') or ''),side,px,max(0.05,desired-before)).get('fill_price') or px)
+            except Exception:
+                fill=px
+            candidates=[]
+            step=0.05
+            n=int(max(0.0,desired-before)/step+1e-9)
+            for i in range(1,n+1):
+                cand=min(desired,before+i*step)
+                add=max(0.0,cand-before)
+                avg=(before*entry+add*fill)/max(cand,1e-9)
+                ok=(stop>=avg*(1.0+protection_lock)) if direction=='LONG' else (stop<=avg*(1.0-protection_lock))
+                if ok:
+                    candidates.append(cand)
+            safe_target=max(candidates) if candidates else before
+            stop_safe=bool(candidates)
+    return safe_target,{
+      'status':'PASS','protected':protected,'profit_pct':100.0*profit,
+      'before_fraction':before,'requested_fraction':float(requested or 0.0),
+      'pre_stop_target_fraction':desired,'safe_target_fraction':safe_target,
+      'stop_price':stop,'combined_stop_protection_safe':stop_safe,
+      'protection_lock_pct':100.0*protection_lock,'stage':extra_stage,'quality':q,
+    }
+
+def _v90r51_recent_cny_stop(c,name,direction,ts,seconds=900):
+    try:
+        r=c.execute("""SELECT direction,closed_at,payload FROM paper_trades
+                       WHERE portfolio_name=%s AND asset='CNYRUBF'
+                         AND closed_at IS NOT NULL
+                       ORDER BY closed_at DESC LIMIT 1""",(name,)).fetchone()
+        if not r or str(r.get('direction') or '')!=str(direction):
+            return None
+        p=_v90j_json(r.get('payload'))
+        reason=str(p.get('exit_reason') or p.get('close_reason') or '')
+        if 'STOP' not in reason:
+            return None
+        closed=r.get('closed_at')
+        now_dt=ts if isinstance(ts,datetime) else datetime.fromisoformat(str(ts).replace('Z','+00:00'))
+        cl_dt=closed if isinstance(closed,datetime) else datetime.fromisoformat(str(closed).replace('Z','+00:00'))
+        if now_dt.tzinfo is None: now_dt=now_dt.replace(tzinfo=timezone.utc)
+        if cl_dt.tzinfo is None: cl_dt=cl_dt.replace(tzinfo=timezone.utc)
+        age=max(0.0,(now_dt-cl_dt).total_seconds())
+        if age<float(seconds):
+            return {'age_seconds':age,'cooldown_seconds':seconds,'exit_reason':reason,'closed_at':_v90j_iso(closed)}
+    except Exception:
+        return None
+    return None
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    existing=c.execute(
+        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+        (name,asset)
+    ).fetchone()
+    if not existing and str(asset)=='CNYRUBF':
+        cd=_v90r51_recent_cny_stop(c,name,direction,ts,900)
+        if cd:
+            print(json.dumps({
+              'event':'V90_R51_CNY_STOP_COOLDOWN','portfolio':name,'asset':asset,
+              'direction':direction,**cd
+            },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+            return 0.0
+
+    if str(name)!='Aggressive' or not existing:
+        return _v90r51_base_open_or_add(
+            c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason
+        )
+
+    z=dict(existing)
+    # Refresh protection state before deciding whether a winner may be enlarged.
+    try:
+        z['payload']={**_v90j_json(z.get('payload')),
+                      **VPP.assess(c,z,price=price,nav=nav,now=ts,commission=COMMISSION)}
+    except Exception:
+        z['payload']=_v90j_json(z.get('payload'))
+
+    safe,meta=_v90r51_safe_combined_scale(z,row,price,nav,target_fraction)
+    print(json.dumps({
+      'event':'V90_R51_SAFE_SCALE_CHECK','portfolio':name,'asset':asset,
+      'direction':direction,**meta
+    },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+
+    # Bypass legacy R24 auto-jump; its intended leverage path is now replaced by
+    # the combined-position protection test above.
+    return _vp_base._v90r24_base_open_or_add(
+        c,p,name,asset,direction,price,safe,nav,ts,row,
+        'R51_SAFE_SCALE' if safe>float(target_fraction or 0.0)+0.001 else reason
+    )
+
+def report(pg_connect):
+    d=dict(_v90r51_base_report(pg_connect) or {})
+    d['cny_trend_capture_r51']={
+      'status':'ACTIVE',
+      'epoch':V90_R51_STARTED_AT,
+      'official_source':'MOEX ISS CNYRUBF',
+      'source_latency_class':'DELAYED_RESEARCH',
+      'five_minute_direct_execution':False,
+      'five_minute_transition_to_1h_probe':True,
+      'transition_probe_fraction':0.05,
+      'higher_tf_countertrend_block':True,
+      'same_direction_stop_cooldown_minutes':15,
+      'target_policy':'STRUCTURAL_LEVEL_ELSE_POST_COST_RISK_BOUNDED',
+      'cny_target_caps':{'5m':'0.8%','1h':'1.5%','4h':'2.0%','1d':'3.5%','3d':'5.0%','7d':'7.0%'},
+      'protected_scale_rule':'ADD_ONLY_IF_COMBINED_POSITION_REMAINS_NET_PROTECTED_AT_CURRENT_STOP',
+      'legacy_r24_protected_jump_authoritative':False,
+      'incident_reference':'2026-09-30 CNYRUBF >1% downtrend / late scale loss',
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),31)
+
+# Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
     if not k.startswith('__')
