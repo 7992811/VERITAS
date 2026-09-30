@@ -1,14 +1,11 @@
 """Canonical VERITAS portfolio runtime layers R42-R46.
-
 Separated from veritas_portfolio.py to keep the base engine stable and prevent
 further monkey-patch accumulation in the core module. The runtime module is
 loaded only after the R41 base has finished initializing.
 """
 import veritas_portfolio as _vp_base
-
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
-
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
 # One authoritative paper-admission path. Historical R16/Q2/R19/R40/R41
 # layers remain in the file for migration/audit history, but are no longer
@@ -19,12 +16,10 @@ globals().update(_BASE)
 # Soft model-quality / probability information changes size, not the existence
 # of a research-paper probe. Live capital remains independently fail-closed in
 # veritas_live + veritas_execution.production_order_gate.
-
 V90_PRODUCTION_CANDIDATE_EPOCH=os.getenv(
     'VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-29T18:42:15+00:00'
 )
 V90_PRODUCTION_CANDIDATES=('Champion','Challenger')
-
 def _v90_candidate_profit_guard(row,policy,economics):
     """Profitability-first gate for the production-candidate paper books.
 
