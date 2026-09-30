@@ -562,5 +562,65 @@ class CNYIncidentR51Tests(unittest.TestCase):
 
 
 
+class LearningAttributionR52Tests(unittest.TestCase):
+    def _row(self):
+        return {
+            'asset':'CNYRUBF','research_decision':'SHORT','horizon':'1h',
+            'regime':'DOWNTREND_LOW_VOL','_alignment_count':5,
+            'trade_plan':{'stop_distance_pct':.01},
+            'horizon_structure':{'score':.90,'state':'CONFIRMED_TREND'},
+            'institutional_signal':{
+                'evidence_independence':{'independent_count':5},
+                'breakout_quality':{'state':'CONFIRMED_BREAKOUT'},
+            },
+        }
+
+    def test_management_dominated_negative_history_is_soft_for_aggressive(self):
+        row=self._row()
+        econ={'expected_to_stop_ratio':1.70,'expected_move_pct':.02,
+              'modeled_round_trip_cost_pct':.002}
+        profile={
+            'n':9,'bayesian_win_rate':.31,'avg_net_pnl_rub':-700,
+            'entry_error_rate':.22,'cost_drag_rate':0.0,
+            'stop_error_rate':.34,'exit_capture_error_rate':.22,
+            'overforecast_rate':1.0,
+        }
+        learned={
+            'active':True,'episodes':41,'calibrated_expected_move_pct':.017,
+            'calibrated_net_reward_risk':1.42,'calibrated_cost_to_edge_ratio':.118,
+            'modeled_round_trip_cost_pct':.002,'profile':profile,
+        }
+        with patch.object(VPR,'_v90r43_learning_edge',return_value=learned):
+            g=VPR._v90_candidate_profit_guard(row,VP.POLICIES['Aggressive'],econ)
+        self.assertTrue(g['eligible'],g)
+        self.assertIn('LEARNED_NEGATIVE_CONTEXT_EXPECTANCY_MANAGEMENT_DOMINATED',
+                      g['soft_warnings'])
+        self.assertNotIn('LEARNED_NEGATIVE_CONTEXT_EXPECTANCY',g['blockers'])
+        self.assertTrue(g['learning_attribution']['management_dominated'])
+        self.assertLessEqual(g['size_cap'],.15)
+
+    def test_direction_error_dominated_negative_history_stays_hard(self):
+        row=self._row()
+        econ={'expected_to_stop_ratio':1.70,'expected_move_pct':.02,
+              'modeled_round_trip_cost_pct':.002}
+        profile={
+            'n':12,'bayesian_win_rate':.30,'avg_net_pnl_rub':-800,
+            'entry_error_rate':.45,'cost_drag_rate':0.0,
+            'stop_error_rate':.10,'exit_capture_error_rate':.05,
+            'overforecast_rate':.50,
+        }
+        learned={
+            'active':True,'episodes':50,'calibrated_expected_move_pct':.017,
+            'calibrated_net_reward_risk':1.42,'calibrated_cost_to_edge_ratio':.118,
+            'modeled_round_trip_cost_pct':.002,'profile':profile,
+        }
+        with patch.object(VPR,'_v90r43_learning_edge',return_value=learned):
+            g=VPR._v90_candidate_profit_guard(row,VP.POLICIES['Aggressive'],econ)
+        self.assertFalse(g['eligible'])
+        self.assertIn('LEARNED_ENTRY_DIRECTION_ERROR_CLUSTER',g['blockers'])
+        self.assertIn('LEARNED_NEGATIVE_CONTEXT_EXPECTANCY',g['blockers'])
+        self.assertFalse(g['learning_attribution']['management_dominated'])
+
+
 if __name__ == '__main__':
     unittest.main()
