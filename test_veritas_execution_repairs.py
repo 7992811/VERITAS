@@ -753,5 +753,47 @@ class AggressiveDynamicExposureR54Tests(unittest.TestCase):
 
 
 
+class AggressiveLegacyInitialRebaseR541Tests(unittest.TestCase):
+    def _cursor(self, z):
+        q=MagicMock()
+        q.fetchone.return_value=z
+        return q
+
+    def test_legacy_fifteen_percent_probe_can_rebase_risk_budget_to_one_x(self):
+        nav=1_000_000.0; price=100.0
+        z={
+            'asset':'BTC','direction':'LONG','units':1500.0,
+            'avg_entry_price':99.9,'stop_price':99.0,
+            'active_trade_id':'t1',
+            'payload':{'opening_fraction':.15,'initial_risk_budget_rub':1350.0},
+        }
+        c=MagicMock()
+        meta=VPR._v90r54_rebase_legacy_initial_risk(
+            c,'Aggressive',z,price,nav,1.0,
+            datetime(2026,9,30,13,10,tzinfo=timezone.utc))
+        self.assertTrue(meta['eligible'])
+        self.assertAlmostEqual(meta['requested_fraction'],1.0)
+        self.assertGreater(meta['new_budget_rub'],1350.0)
+        self.assertLessEqual(meta['new_budget_rub'],nav*VP.MAX_STOP_RISK_NAV)
+        self.assertTrue(c.execute.called)
+
+    def test_legacy_rebase_never_exceeds_hard_stop_risk(self):
+        nav=1_000_000.0; price=100.0
+        z={
+            'asset':'BTC','direction':'LONG','units':1500.0,
+            'avg_entry_price':100.0,'stop_price':90.0,
+            'active_trade_id':'t1',
+            'payload':{'opening_fraction':.15,'initial_risk_budget_rub':15000.0},
+        }
+        c=MagicMock()
+        meta=VPR._v90r54_rebase_legacy_initial_risk(
+            c,'Aggressive',z,price,nav,1.0,
+            datetime(2026,9,30,13,10,tzinfo=timezone.utc))
+        self.assertFalse(meta['eligible'])
+        self.assertEqual(meta['reason'],
+                         'R54_INITIAL_COMPLETION_EXCEEDS_HARD_STOP_RISK')
+
+
+
 if __name__ == '__main__':
     unittest.main()
