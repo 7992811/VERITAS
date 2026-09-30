@@ -2390,6 +2390,85 @@ def _v90r54_scale_profit_cap(z,price,requested):
     else: cap=5.00
     return min(float(requested),cap),{'profit_pct':100.0*profit,'cap':cap}
 
+def _v90r54_rebase_legacy_initial_risk(c,name,z,price,nav,target_fraction,ts):
+    """Let a pre-R54 sub-50% position complete the intended initial allocation.
+
+    R17 correctly freezes the original money-risk budget, but legacy 5%-15%
+    entries would otherwise remain permanently tiny after R54. Rebase only the
+    INITIAL allocation up to 100%, never leverage, and never beyond the global
+    hard stop-risk budget.
+    """
+    z=dict(z or {})
+    if not z:
+        return None
+    payload=_v90j_json(z.get('payload'))
+    try:
+        opening=float(payload.get('opening_fraction') or 0.0)
+        px=float(price); nav=float(nav); target=min(1.0,float(target_fraction))
+        units=abs(float(z.get('units') or 0.0))
+        entry=float(z.get('avg_entry_price') or 0.0)
+        stop=float(z.get('stop_price') or 0.0)
+        d=str(z.get('direction') or '')
+    except Exception:
+        return None
+    current=units*px/max(nav,1.0)
+    # Only migrate legacy tiny entries. Positions already born under R54 keep
+    # their original risk budget and are governed by ordinary pyramiding rules.
+    if opening>=0.50 or current>=0.50 or target<=current+0.025:
+        return None
+    if d=='LONG' and not (0<stop<px):
+        return None
+    if d=='SHORT' and not (stop>px):
+        return None
+
+    add_notional=max(0.0,target*nav-units*px)
+    add_units=add_notional/max(px,1e-9)
+    existing_risk=(units*max(0.0,entry-stop) if d=='LONG'
+                   else units*max(0.0,stop-entry))
+    marginal_risk=(add_units*max(0.0,px-stop) if d=='LONG'
+                   else add_units*max(0.0,stop-px))
+    projected=max(0.0,existing_risk+marginal_risk)
+    hard=float(nav)*float(MAX_STOP_RISK_NAV)
+    if projected>hard+1e-6:
+        return {
+          'eligible':False,'reason':'R54_INITIAL_COMPLETION_EXCEEDS_HARD_STOP_RISK',
+          'opening_fraction':opening,'current_fraction':current,
+          'requested_fraction':target,'projected_stop_risk_rub':projected,
+          'hard_stop_risk_rub':hard,
+        }
+    old_budget=None
+    try: old_budget=float(payload.get('initial_risk_budget_rub'))
+    except Exception: old_budget=None
+    new_budget=max(float(old_budget or 0.0),projected)
+    patch={
+      'r54_legacy_initial_rebase':True,
+      'r54_legacy_initial_rebase_at':_v90j_iso(ts),
+      'r54_pre_rebase_opening_fraction':opening,
+      'r54_pre_rebase_current_fraction':current,
+      'r54_initial_completion_target':target,
+      'r54_initial_completion_projected_stop_risk_rub':projected,
+      'r54_initial_completion_hard_stop_risk_rub':hard,
+      'initial_risk_budget_rub':new_budget,
+      # From this point this trade is treated as having the R54 intended initial
+      # allocation, not the historical tiny probe.
+      'opening_fraction':target,
+    }
+    c.execute(
+        "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+        "WHERE portfolio_name=%s AND asset=%s",
+        (json.dumps(patch,ensure_ascii=False,default=str),name,z.get('asset'))
+    )
+    tid=z.get('active_trade_id')
+    if tid:
+        c.execute(
+            "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+            (json.dumps(patch,ensure_ascii=False,default=str),tid)
+        )
+    return {'eligible':True,'old_budget_rub':old_budget,'new_budget_rub':new_budget,
+            'opening_fraction':opening,'current_fraction':current,
+            'requested_fraction':target,'projected_stop_risk_rub':projected,
+            'hard_stop_risk_rub':hard}
+
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     if str(name)!='Aggressive':
         return _v90r54_base_open_or_add(
@@ -2401,14 +2480,24 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     ).fetchone()
     requested=float(target_fraction or 0.0)
     gate_meta=None
+    migration_meta=None
     if existing and str(existing.get('direction') or '')==str(direction):
         requested,gate_meta=_v90r54_scale_profit_cap(dict(existing),price,requested)
+        # Complete legacy tiny initial allocations to the new 50%-100% policy
+        # before treating further increases as pyramiding.
+        if requested<=1.0+1e-9:
+            migration_meta=_v90r54_rebase_legacy_initial_risk(
+                c,name,dict(existing),price,nav,requested,ts
+            )
+            if migration_meta and migration_meta.get('eligible') is False:
+                requested=abs(float(existing.get('units') or 0.0)*float(price))/max(float(nav),1.0)
     else:
         requested=min(requested,1.0)
     print(json.dumps({
       'event':'V90_R54_DYNAMIC_SIZE_CHECK','portfolio':name,'asset':asset,
       'direction':direction,'requested_fraction':float(target_fraction or 0.0),
       'profit_gated_fraction':requested,'profit_gate':gate_meta,
+      'legacy_initial_rebase':migration_meta,
       'metrics':(row or {}).get('_r54_position_management'),
     },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return _v90r54_base_open_or_add(
