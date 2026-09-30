@@ -622,5 +622,37 @@ class LearningAttributionR52Tests(unittest.TestCase):
         self.assertFalse(g['learning_attribution']['management_dominated'])
 
 
+class EffectiveStopR53Tests(unittest.TestCase):
+    def test_safe_scale_uses_stronger_short_trailing_stop(self):
+        nav=1_000_000.0
+        price=12.20
+        before=.10
+        z={
+            'asset':'CNYRUBF','direction':'SHORT',
+            'avg_entry_price':12.50,'stop_price':12.70,
+            'units':before*nav/price,
+            'payload':{
+                'profit_protection_active':True,
+                'trailing_stop':12.35,
+            },
+        }
+        row={
+            'asset':'CNYRUBF','horizon':'1h','research_decision':'SHORT',
+            'signal_tier':'SUPER_SHORT','decision_stage':'CONFIRMED_SCALE',
+            '_alignment_count':6,
+            'trade_plan':{'expected_to_stop_ratio':2.0,'expected_move_pct':.02},
+            'horizon_structure':{'state':'CONFIRMED_TREND','score':1.0},
+            'institutional_signal':{'evidence_independence':{'independent_count':6}},
+        }
+        with patch.object(VPR.VPP,'is_protected',return_value=True):
+            safe,meta=VPR._v90r51_safe_combined_scale(z,row,price,nav,.50)
+        self.assertAlmostEqual(meta['stop_price'],12.35)
+        self.assertAlmostEqual(meta['original_stop_price'],12.70)
+        self.assertAlmostEqual(meta['trailing_stop'],12.35)
+        self.assertGreaterEqual(safe,before)
+        self.assertLessEqual(safe,.50)
+
+
+
 if __name__ == '__main__':
     unittest.main()
