@@ -362,7 +362,7 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
         self.assertAlmostEqual(out['fraction'], .10)
 
 
-    def test_uncalibrated_5m_signal_is_ten_percent_discovery_probe(self):
+    def test_uncalibrated_5m_signal_is_five_percent_discovery_probe(self):
         row = self._row(state='CONFIRMED_BREAKOUT')
         row['horizon'] = '5m'
         row['_alignment_count'] = 4
@@ -380,9 +380,9 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
             out = VPR._v90_canonical_quality_admission(
                 row, VP.POLICIES['Aggressive'], 0.0)
         self.assertTrue(out['open'])
-        self.assertAlmostEqual(out['fraction'], .10)
+        self.assertAlmostEqual(out['fraction'], .05)
         self.assertEqual(out['five_minute_sizing_policy'],
-                         'DISCOVERY_PROBE_AWAIT_SENIOR_CONFIRMATION')
+                         'UNCALIBRATED_DISCOVERY_PROBE')
 
     def test_mature_empirical_5m_signal_can_earn_larger_but_bounded_size(self):
         row = self._row(state='CONFIRMED_BREAKOUT')
@@ -403,9 +403,31 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
             out = VPR._v90_canonical_quality_admission(
                 row, VP.POLICIES['Aggressive'], 0.0)
         self.assertTrue(out['open'])
-        self.assertAlmostEqual(out['fraction'], .50)
+        self.assertAlmostEqual(out['fraction'], .25)
         self.assertEqual(out['five_minute_sizing_policy'],
                          'MATURE_EMPIRICAL_SENIOR_CONFIRMED')
+
+    def test_empirical_5m_probe_can_earn_ten_percent_before_maturity(self):
+        row = self._row(state='CONFIRMED_BREAKOUT')
+        row['horizon'] = '5m'
+        row['_alignment_count'] = 3
+        row['_supporting_horizons'] = ['5m','1h','4h']
+        row['institutional_signal']['evidence_independence']['independent_count'] = 4
+        guard = {'eligible': True, 'status': 'PASS', 'blockers': [],
+                 'net_reward_risk': 1.55, 'expected_move_pct': .02,
+                 'modeled_round_trip_cost_pct': .002, 'cost_to_edge_ratio': .10,
+                 'breakout_state': 'CONFIRMED_BREAKOUT'}
+        with patch.object(VPR, '_v901_no_hard_veto', return_value=True), \
+             patch.object(VPR, '_signal_probability',
+                          return_value=(.66, 'EMPIRICAL_CALIBRATION')), \
+             patch.object(VPR, '_v90_candidate_profit_guard', return_value=guard), \
+             patch.object(VPR, '_v90_aggressive_strong_fraction', return_value=None):
+            out = VPR._v90_canonical_quality_admission(
+                row, VP.POLICIES['Aggressive'], 0.0)
+        self.assertTrue(out['open'])
+        self.assertAlmostEqual(out['fraction'], .10)
+        self.assertEqual(out['five_minute_sizing_policy'],
+                         'EMPIRICAL_DISCOVERY_PROBE')
 
     def test_one_hour_aggressive_strong_signal_is_not_subject_to_5m_cap(self):
         row = self._row(state='CONFIRMED_BREAKOUT')
