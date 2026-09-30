@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r37-compact-open-positions"
+UI_VERSION = "veritas-ui-v9.0-r38-real-management-intelligence"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -90,18 +90,23 @@ _CANONICAL_HTML = r'''<!doctype html>
 .intel-wrap{display:grid;grid-template-columns:165px minmax(0,1fr);gap:10px;align-items:stretch}
 .intel-score{border:1px solid var(--line);border-radius:11px;background:linear-gradient(145deg,rgba(91,143,183,.08),rgba(255,255,255,.01));padding:10px;display:flex;flex-direction:column;justify-content:space-between;min-width:0}
 .intel-score .label{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.intel-score .value{font-size:30px;font-weight:760;line-height:1;margin-top:5px}.intel-score .sub{font-size:8.5px;color:var(--muted);margin-top:5px}
-.intel-main{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}
+.intel-main{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.intel-compare{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin-top:6px}
+.intel-compare-card{border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:6px;background:rgba(255,255,255,.012);min-width:0}
+.intel-compare-card span{display:block;font-size:7.2px;color:var(--muted)}
+.intel-compare-card b{display:block;font-size:10px;margin-top:2px;line-height:1.15}
+.intel-compare-card em{display:block;font-size:6.8px;font-style:normal;color:var(--muted);margin-top:2px;line-height:1.2}
 .intel-metric{border:1px solid var(--line);border-radius:9px;padding:7px;background:var(--card2);min-width:0}.intel-metric span{display:block;font-size:8px;color:var(--muted)}.intel-metric b{display:block;font-size:11px;margin-top:2px}.intel-bar{height:4px;border-radius:999px;background:#1b252e;margin-top:6px;overflow:hidden}.intel-fill{height:100%;border-radius:999px;background:#8eb8d7}
 .intel-daily{display:grid;grid-template-columns:1.25fr repeat(4,minmax(0,1fr));gap:5px;margin-top:6px}
 .intel-daily-stat{border:1px solid rgba(255,255,255,.055);border-radius:8px;padding:5px 6px;background:rgba(255,255,255,.012);min-width:0}
 .intel-daily-stat span{display:block;font-size:7.3px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .intel-daily-stat b{display:block;font-size:10px;margin-top:1px;white-space:nowrap}
 .intel-daily-stat em{display:block;font-size:6.9px;font-style:normal;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.intel-foot{grid-column:1/-1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:5px}.intel-stat{font-size:8.5px;color:var(--muted);border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.intel-stat b{display:block;color:#dce5ec;font-size:10px;margin-top:1px}
+.intel-foot{grid-column:1/-1;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:5px}.intel-stat{font-size:8.5px;color:var(--muted);border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.intel-stat b{display:block;color:#dce5ec;font-size:10px;margin-top:1px}
 .insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.insight{border:1px solid var(--line);border-radius:8px;padding:7px;min-width:0}.insight h4{margin:0 0 5px;font-size:9px;color:var(--muted);font-weight:500;text-transform:uppercase}.insight div{font-size:9px;line-height:1.6}
 .scroll{max-height:450px;overflow:auto;padding-right:2px}
-@media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(5,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:100px 70px 58px minmax(0,1fr);gap:3px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(3,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-compare{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(5,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:100px 70px 58px minmax(0,1fr);gap:3px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-compare{grid-template-columns:1fr}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(3,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .position-accounting{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin:2px 0 0;font-size:6.4px;line-height:1.08;color:var(--muted)}.position-accounting span{min-width:0}.position-accounting b{display:block;color:var(--text);font-size:7.8px;line-height:1.08;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tp-status{font-size:6.8px;line-height:1.2;margin:2px 0}.position-result{max-width:42%;text-align:right}@media(max-width:650px){.position-accounting{grid-template-columns:repeat(3,minmax(0,1fr))}.tp-status{font-size:7.2px}}
 </style>
 </head>
@@ -469,12 +474,21 @@ function buildFallbackIntelligence(raw,progress,library){
   return {score,confidence:closed>=150?'HIGH':closed>=50?'MEDIUM':'LOW',components:{knowledge_breadth:knowledge,evidence_maturity:experience,outcome_quality:outcome,execution_capture_quality:captureScore,learning_telemetry_coverage:telemetry},knowledge:{expert_principles:principles,core_learning_layers:layers,sources,rules},evidence:{clean_post_r2_closed_trades:closed,win_rate:wr,avg_capture_ratio:capture,telemetry_coverage:coverage},core_learning_index:deepNum(raw,['learning_index','index_vs_start']),daily_progress:(raw&&raw.daily_progress)||{},derived_fallback:true};
 }
 function normalizeIntelligence(raw,progress,library){
+  const ami=raw&&raw.asset_management_intelligence;
+  if(ami&&ami.status==='OK'&&ami.score!=null){
+    return {
+      score:Number(ami.score),stage:String(ami.stage||''),confidence:String(ami.confidence||''),
+      components:ami.components||{},component_maximums:ami.component_maximums||{},
+      benchmarks:ami.benchmarks||{},evidence:ami.evidence||{},
+      daily_progress:(raw&&raw.daily_progress)||{},core_learning_index:deepNum(raw,['learning_index','index_vs_start']),
+      derived_fallback:false,real_asset_management_index:true,version:ami.version
+    };
+  }
   const root=intelligenceRoot(raw),c=root.components||root.component_scores||root.scores||{},k=root.knowledge||root.knowledge_base||{},e=root.evidence||root.experience||root.statistics||{};
   const score=deepNum(root,['score','intelligence_score','overall_score','maturity_score','maturity_index','intelligence_index']);
   if(score==null)return buildFallbackIntelligence(raw,progress,library);
   return {
-    score:Number(score),
-    confidence:String(root.confidence||root.confidence_level||''),
+    score:Number(score),confidence:String(root.confidence||root.confidence_level||''),
     components:{
       knowledge_breadth:deepNum(c,['knowledge_breadth','knowledge_score'])??0,
       evidence_maturity:deepNum(c,['evidence_maturity','experience_score','experience_maturity'])??0,
@@ -495,58 +509,76 @@ function normalizeIntelligence(raw,progress,library){
       telemetry_coverage:deepNum(e,['telemetry_coverage','learning_telemetry_coverage'])
     },
     core_learning_index:deepNum(raw,['learning_index','index_vs_start'])??deepNum(progress,['index_vs_start']),
-    daily_progress:(raw&&raw.daily_progress)||{},
-    derived_fallback:false
+    daily_progress:(raw&&raw.daily_progress)||{},derived_fallback:false,real_asset_management_index:false
   };
 }
 function renderIntelligence(){
-  const i=st.intelligence||{},c=i.components||{},k=i.knowledge||{},e=i.evidence||{};
+  const i=st.intelligence||{},c=i.components||{};
   if(i.score==null){$('intelligence').innerHTML='<div class="msg warn">Данные интеллекта временно не получены. Торговая система продолжает работать; повторная загрузка выполняется автоматически.</div>';return}
-  const score=Number(i.score||0), conf={LOW:'низкая',MEDIUM:'средняя',HIGH:'высокая'}[String(i.confidence||'').toUpperCase()]||'формируется';
-  const comp=[
+  const score=Number(i.score||0),conf={LOW:'низкая',MEDIUM:'средняя',HIGH:'высокая'}[String(i.confidence||'').toUpperCase()]||'формируется';
+  const real=!!i.real_asset_management_index;
+  const comp=real?[
+    ['Решения рынка',Number(c.decision_intelligence||0),20],
+    ['Результат портфелей',Number(c.portfolio_outcome_quality||0),25],
+    ['Движение и риск',Number(c.movement_risk_management||0),15],
+    ['Знания на практике',Number(c.knowledge_application||0),15],
+    ['Независимый опыт',Number(c.experience_depth||0),10],
+    ['Самообучение',Number(c.self_learning_effectiveness||0),15]
+  ]:[
     ['Знания',Number(c.knowledge_breadth||0),20],
     ['Накопленный опыт',Number(c.evidence_maturity||0),20],
     ['Качество результата',Number(c.outcome_quality||0),25],
     ['Захват движения',Number(c.execution_capture_quality||0),20],
     ['Качество обучения',Number(c.learning_telemetry_coverage||0),15]
   ];
-  let wr=e.win_rate==null?null:Number(e.win_rate);if(wr!=null&&wr>1)wr/=100;
-  let capture=e.avg_capture_ratio==null?null:Number(e.avg_capture_ratio);if(capture!=null&&capture>1)capture/=100;
-  const captureText=capture==null?'—':(100*capture).toFixed(1)+'%';
-  const wrText=wr==null?'—':(100*wr).toFixed(1)+'%';
-  const origin=i.derived_fallback?'расчёт по текущей телеметрии':'индекс ядра VERITAS';
-  const d=i.daily_progress||{};
-  const numOrNull=v=>v==null||v===''?null:(Number.isFinite(Number(v))?Number(v):null);
+  const d=i.daily_progress||{},numOrNull=v=>v==null||v===''?null:(Number.isFinite(Number(v))?Number(v):null);
   const di=numOrNull(d.intelligence_delta_today??d.learning_index_delta_today);
-  const core=numOrNull(d.current_learning_index),maturity=numOrNull(d.current_maturity_index);
-  const currentMetric=core!=null?core:maturity,currentOk=currentMetric!=null,deltaOk=di!=null;
-  const basis=String(d.delta_basis||'');
-  const metricName=basis==='CORE_LEARNING_INDEX'?'индекс обучения':'индекс зрелости';
-  const trend=String(d.trend||'BUILDING'),trendText=trend==='UP'?'↑ интеллект растёт':trend==='DOWN'?'↓ требуется улучшение':trend==='FLAT'?'→ без изменения':'накапливается';
-  const trendClass=trend==='UP'?'ok':trend==='DOWN'?'bad':'warn';
-  const deltaText=deltaOk?(di>0?'+':'')+di.toFixed(2)+' п.':'—';
-  const dayText=d.date_msk?String(d.date_msk).split('-').reverse().join('.'):'сегодня';
-  const episodes=d.trade_learning_episodes_today==null?'—':d.trade_learning_episodes_today;
-  const outcomes=d.decision_outcomes_today==null?'—':d.decision_outcomes_today;
-  const rulesToday=d.knowledge_rules_added_today==null?'—':d.knowledge_rules_added_today;
-  const sourcesToday=d.knowledge_sources_added_today==null?'—':d.knowledge_sources_added_today;
-  const rebased=['FORMULA_CHANGE','SAMPLE_MODE_CHANGE'].includes(d.baseline_origin);
-  const since=d.baseline_at?new Date(String(d.baseline_at).replace(' ','T')).toLocaleTimeString('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'}):'';
-  const dailyTitle=rebased?'Изменение после пересчёта':'Изменение индекса сегодня';
-  const attribution=(d.component_deltas_today||[]).filter(x=>Math.abs(Number(x.points))>=0.005).sort((a,b)=>Math.abs(b.points)-Math.abs(a.points));
-  const attributionText=attribution.map(x=>esc(x.label)+': '+(Number(x.points)>0?'+':'')+Number(x.points).toFixed(2)+' п.').join(' · ');
-  const auditNote=rebased?(d.baseline_origin==='FORMULA_CHANGE'?'Исправлена формула расчёта. ':'Изменился состав оценки. ')+'Сравнение с '+since+' МСК; пересчёт не считается обучением.':(since?'Сравнение с '+since+' МСК.':'');
-  const auditHtml='<div class="sub">'+esc(auditNote)+(attributionText?'<br>'+attributionText:'')+(d.history_status==='ERROR'?'<br>История компонентов временно недоступна.':'')+'</div>';
+  const trend=String(d.trend||'BUILDING'),trendText=trend==='UP'?'↑ качество растёт':trend==='DOWN'?'↓ качество снизилось':trend==='FLAT'?'→ без изменения':'накапливается';
+  const trendClass=trend==='UP'?'ok':trend==='DOWN'?'bad':'warn',deltaText=di==null?'—':(di>0?'+':'')+di.toFixed(2)+' п.';
+  const episodes=d.trade_learning_episodes_today==null?'—':d.trade_learning_episodes_today,outcomes=d.decision_outcomes_today==null?'—':d.decision_outcomes_today;
+  const rulesToday=d.knowledge_rules_added_today==null?'—':d.knowledge_rules_added_today,sourcesToday=d.knowledge_sources_added_today==null?'—':d.knowledge_sources_added_today;
+  let compare='';
+  if(real){
+    const b=i.benchmarks||{},iv=b.initial_veritas_decision_learning||{},sa=b.stateless_ai||{},rb=b.rollout_absolute_score||{};
+    const ivDelta=iv.delta_points==null?'—':(Number(iv.delta_points)>=0?'+':'')+Number(iv.delta_points).toFixed(1)+' п.';
+    const aiHit=sa.hit_rate_delta_pp==null?'—':(Number(sa.hit_rate_delta_pp)>=0?'+':'')+Number(sa.hit_rate_delta_pp).toFixed(1)+' п.п.';
+    const aiCap=sa.large_move_capture_delta_pp==null?'—':(Number(sa.large_move_capture_delta_pp)>=0?'+':'')+Number(sa.large_move_capture_delta_pp).toFixed(1)+' п.п.';
+    const roll=rb.delta_points==null?'0.0':(Number(rb.delta_points)>=0?'+':'')+Number(rb.delta_points).toFixed(1);
+    const le=(i.evidence||{}).learning_episodes||{},badEarly=numOrNull(le.early_bad_rate),badRecent=numOrNull(le.recent_bad_rate),rEarly=numOrNull(le.early_realization),rRecent=numOrNull(le.recent_realization);
+    const learnText=(badEarly!=null&&badRecent!=null)?(100*badEarly).toFixed(0)+'% → '+(100*badRecent).toFixed(0)+'% ошибок':'выборка формируется';
+    const realText=(rEarly!=null&&rRecent!=null)?(100*rEarly).toFixed(0)+'% → '+(100*rRecent).toFixed(0)+'% реализации':'—';
+    compare='<div class="intel-compare">'+
+      '<div class="intel-compare-card"><span>К стартовому VERITAS</span><b class="'+(Number(iv.delta_points||0)>=0?'ok':'bad')+'">'+ivDelta+'</b><em>индекс решений: '+esc(iv.current??'—')+' при базе 100</em></div>'+
+      '<div class="intel-compare-card"><span>К AI без памяти</span><b class="'+(Number(sa.hit_rate_delta_pp||0)>=0?'ok':'bad')+'">'+aiHit+' точность</b><em>'+aiCap+' захват · n='+esc(sa.sample_n??0)+' · '+esc(sa.status||'BUILDING')+'</em></div>'+
+      '<div class="intel-compare-card"><span>Самообучение</span><b>'+learnText+'</b><em>реализация ожидаемого хода: '+realText+' · от запуска индекса '+roll+' п.</em></div>'+
+    '</div>';
+  }
   const daily='<div class="intel-daily">'+
-    '<div class="intel-daily-stat"><span>'+dailyTitle+'</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>'+dayText+(currentOk?' · '+metricName+' '+currentMetric.toFixed(1):'')+'</em></div>'+
+    '<div class="intel-daily-stat"><span>Эффективность сегодня</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>не объём знаний, а изменение качества решений</em></div>'+
     '<div class="intel-daily-stat"><span>Обучающих эпизодов</span><b>'+esc(episodes)+'</b><em>новых завершённых сделок</em></div>'+
-    '<div class="intel-daily-stat"><span>Проверенных исходов</span><b>'+esc(outcomes)+'</b><em>оценённых решений</em></div>'+
-    '<div class="intel-daily-stat"><span>Новых правил</span><b>+'+esc(rulesToday)+'</b><em>за день</em></div>'+
-    '<div class="intel-daily-stat"><span>Новых источников</span><b>+'+esc(sourcesToday)+'</b><em>за день</em></div>'+
+    '<div class="intel-daily-stat"><span>Проверенных исходов</span><b>'+esc(outcomes)+'</b><em>решений с известным результатом</em></div>'+
+    '<div class="intel-daily-stat"><span>Новых правил</span><b>+'+esc(rulesToday)+'</b><em>информативно, сами по себе балл почти не дают</em></div>'+
+    '<div class="intel-daily-stat"><span>Новых источников</span><b>+'+esc(sourcesToday)+'</b><em>информативно, без доказанной пользы не повышают интеллект</em></div>'+
   '</div>';
-  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">Индекс зрелости системы</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · '+origin+' · достоверность: '+conf+'</div></div><div class="sub">Рост индекса отражает расширение знаний, накопление завершённых эпизодов, качество решений, захват движения и полноту обратной связи.</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div>'+daily+auditHtml+'<div class="intel-foot"><div class="intel-stat">Источники знаний<b>'+esc(k.sources??'—')+'</b></div><div class="intel-stat">Правила / принципы<b>'+esc(k.rules??k.expert_principles??'—')+'</b></div><div class="intel-stat">Завершённых эпизодов<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate выборки<b>'+wrText+'</b></div><div class="intel-stat">Средний захват движения<b>'+captureText+'</b></div></div></div></div>';
+  let foot='';
+  if(real){
+    const e=i.evidence||{},k=e.knowledge||{},p=e.fresh_candidate_trades||{},l=e.learning_episodes||{};
+    foot='<div class="intel-foot">'+
+      '<div class="intel-stat">Независимых эпизодов<b>'+esc(e.independent_decision_episodes??'—')+'</b></div>'+
+      '<div class="intel-stat">Новая чистая эпоха<b>'+esc(p.n??0)+' сделок</b></div>'+
+      '<div class="intel-stat">OOS-подтверждённых правил<b>'+esc(k.validated_oos_rules??0)+'</b></div>'+
+      '<div class="intel-stat">Знания применены<b>'+((Number(k.application_rate)||0)*100).toFixed(1)+'%</b></div>'+
+      '<div class="intel-stat">Эпизодов самообучения<b>'+esc(l.n??0)+'</b></div>'+
+      '<div class="intel-stat">Средний захват движения<b>'+((Number(l.avg_capture_ratio)||0)*100).toFixed(1)+'%</b></div>'+
+    '</div>';
+  }else{
+    const k=i.knowledge||{},e=i.evidence||{},wr=e.win_rate==null?'—':(100*Number(e.win_rate)).toFixed(1)+'%',capture=e.avg_capture_ratio==null?'—':(100*Number(e.avg_capture_ratio)).toFixed(1)+'%';
+    foot='<div class="intel-foot"><div class="intel-stat">Источники знаний<b>'+esc(k.sources??'—')+'</b></div><div class="intel-stat">Правила / принципы<b>'+esc(k.rules??k.expert_principles??'—')+'</b></div><div class="intel-stat">Завершённых эпизодов<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate выборки<b>'+wr+'</b></div><div class="intel-stat">Средний захват движения<b>'+capture+'</b></div></div>';
+  }
+  const title=real?'Прикладной интеллект управления активами':'Индекс зрелости системы';
+  const explanation=real?'Не IQ: измеренная способность анализировать рынок, применять знания, управлять риском и улучшать решения на фактических исходах.':'Рост индекса отражает знания, опыт, качество решений и полноту обратной связи.';
+  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">'+title+'</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · уровень: '+esc(i.stage||'—')+' · доказательность: '+conf+'</div></div><div class="sub">'+explanation+'</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div>'+compare+daily+foot+'</div></div>';
 }
-
 function renderInsights(){
   const l=st.learning||{}, q=st.quality||{}, h=st.horizon||{}, m=st.macro||{}, ep=(st.portfolios||{}).episode_learning_r29||{};
   const wr=l.win_rate==null?'—':(100*Number(l.win_rate)).toFixed(1)+'%';
