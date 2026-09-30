@@ -17,7 +17,6 @@ try:
 except Exception:
     psycopg = None
     dict_row = None
-
 VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
 try:
     import veritas_signal_core as V70
@@ -49,7 +48,6 @@ HEAVY_LEARNING_INTERVAL_SECONDS = max(600, int(os.getenv('VERITAS_HEAVY_LEARNING
 HEAVY_LEARNING_START_DELAY_SECONDS = max(15, int(os.getenv('VERITAS_HEAVY_LEARNING_START_DELAY_SECONDS','45')))
 FAST_LOOP_TARGET_SECONDS = max(10.0, float(os.getenv('VERITAS_FAST_LOOP_TARGET_SECONDS','30')))
 _BOOTSTRAP_READY = False
-
 DB_PATH = os.getenv('VERITAS_LEDGER_PATH', '/tmp/veritas_decisions.sqlite3')
 _V90_DB_ENV_KEYS=('DATABASE_URL','VERITAS_DATABASE_URL','POSTGRES_URL','POSTGRESQL_URL','POSTGRES_INTERNAL_URL','RENDER_DATABASE_URL')
 DATABASE_URL = next((os.getenv(k,'').strip() for k in _V90_DB_ENV_KEYS if os.getenv(k,'').strip()), '')
@@ -183,7 +181,6 @@ MULTILINGUAL_RESEARCH_QUERIES_V27 = [
     "notícias reação do mercado absorção fluxo de ordens desequilíbrio liquidez momentum pesquisa",
 ]
 MULTILINGUAL_DISCOVERY_QUERIES = list(dict.fromkeys(MULTILINGUAL_DISCOVERY_QUERIES + MULTILINGUAL_STRUCTURE_QUERIES + MULTILINGUAL_RESEARCH_QUERIES_V265 + MULTILINGUAL_RESEARCH_QUERIES_V27))
-
 def multilingual_discovery_batch():
     if not MULTILINGUAL_DISCOVERY_QUERIES:
         return []
@@ -191,7 +188,6 @@ def multilingual_discovery_batch():
     n=len(MULTILINGUAL_DISCOVERY_QUERIES)
     start=(slot*MULTILINGUAL_DISCOVERY_BATCH)%n
     return [MULTILINGUAL_DISCOVERY_QUERIES[(start+i)%n] for i in range(min(MULTILINGUAL_DISCOVERY_BATCH,n))]
-
 INTERVAL = max(300, int(os.getenv('VERITAS_INTERVAL_SECONDS', '300')))
 MAX_SOURCE_DIVERGENCE = float(os.getenv('VERITAS_MAX_SOURCE_DIVERGENCE', '0.01'))
 MAX_CLOCK_SKEW_SECONDS = int(os.getenv('VERITAS_MAX_CLOCK_SKEW_SECONDS', '120'))
@@ -220,7 +216,6 @@ ASSET_HORIZON_BARS = {
 }
 NQ_HORIZON_BARS = ASSET_HORIZON_BARS['NQ']
 NDX_HORIZON_BARS = NQ_HORIZON_BARS  # compatibility for legacy helper code
-
 def horizon_bars(asset,horizon):
     if str(horizon)=='5m': return 1
     return ASSET_HORIZON_BARS.get(asset,HORIZONS).get(horizon,HORIZONS[horizon])
