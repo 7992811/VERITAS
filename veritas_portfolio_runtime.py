@@ -1717,6 +1717,16 @@ def _v90r51_cny_target_repair(row):
     plan=dict(row.get('trade_plan') or {})
     if str(row.get('asset') or '')!='CNYRUBF':
         return plan
+    # Apply the incident repair only to the actual delayed official CNY feed.
+    # Generic/synthetic CNY unit cases and future direct feeds retain their
+    # normal target semantics.
+    is_delayed_official=bool(
+        row.get('_r51_cny_delayed_transition')
+        or str(row.get('data_latency_class') or '')=='DELAYED_RESEARCH'
+        or str(row.get('verification_mode') or '')=='single_direct_official'
+    )
+    if not is_delayed_official:
+        return plan
     d=str(row.get('research_decision') or plan.get('direction') or '')
     px=_v90r51_num(row.get('price'))
     stop=_v90r51_num(plan.get('stop_price'))
