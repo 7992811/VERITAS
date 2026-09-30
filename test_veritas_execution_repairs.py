@@ -508,6 +508,8 @@ class CNYIncidentR51Tests(unittest.TestCase):
         row={
             'asset':'CNYRUBF','horizon':'4h','research_decision':'SHORT',
             'price':12.457,'spread_bps':None,
+            'data_latency_class':'DELAYED_RESEARCH',
+            'verification_mode':'single_direct_official',
             'structural_levels':{},
             'trade_plan':{
                 'direction':'SHORT','stop_price':12.5517995,
