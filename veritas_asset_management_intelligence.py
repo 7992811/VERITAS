@@ -405,12 +405,15 @@ def build_scorecard(pg_connect, learning_progress, production_epoch, cache_secon
 
         # 4) Knowledge: breadth is deliberately only 2/15; validation/application dominate.
         applied_quality = 0.5 * _scale(knowledge.get("applied_hit_rate"), 0.45, 0.65)                           + 0.5 * _scale(knowledge.get("applied_utility"), -0.10, 0.25)
+        validation_factor = min(1.0, knowledge["validated_oos_rules"] / 10.0)
         knowledge_score = (
             1.0 * min(1.0, knowledge["sources"] / 150.0)
             + 1.0 * min(1.0, knowledge["rules"] / 150.0)
             + 5.0 * min(1.0, knowledge["validated_oos_rules"] / 20.0)
-            + 4.0 * min(1.0, knowledge["application_rate"] / 0.60)
-            + 4.0 * applied_quality
+            + validation_factor * (
+                4.0 * min(1.0, knowledge["application_rate"] / 0.60)
+                + 4.0 * applied_quality
+            )
         )
 
         # 5) Independent experience and diversity: 10.
