@@ -8,6 +8,7 @@ import veritas_execution as VX
 import veritas_position_guard as VPG
 from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
+import veritas_asset_management_intelligence as VAMI
 import veritas_trade_view as VTV
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
@@ -16,7 +17,6 @@ try:
 except Exception:
     psycopg = None
     dict_row = None
-
 VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
 try:
     import veritas_signal_core as V70
@@ -48,7 +48,6 @@ HEAVY_LEARNING_INTERVAL_SECONDS = max(600, int(os.getenv('VERITAS_HEAVY_LEARNING
 HEAVY_LEARNING_START_DELAY_SECONDS = max(15, int(os.getenv('VERITAS_HEAVY_LEARNING_START_DELAY_SECONDS','45')))
 FAST_LOOP_TARGET_SECONDS = max(10.0, float(os.getenv('VERITAS_FAST_LOOP_TARGET_SECONDS','30')))
 _BOOTSTRAP_READY = False
-
 DB_PATH = os.getenv('VERITAS_LEDGER_PATH', '/tmp/veritas_decisions.sqlite3')
 _V90_DB_ENV_KEYS=('DATABASE_URL','VERITAS_DATABASE_URL','POSTGRES_URL','POSTGRESQL_URL','POSTGRES_INTERNAL_URL','RENDER_DATABASE_URL')
 DATABASE_URL = next((os.getenv(k,'').strip() for k in _V90_DB_ENV_KEYS if os.getenv(k,'').strip()), '')
@@ -182,7 +181,6 @@ MULTILINGUAL_RESEARCH_QUERIES_V27 = [
     "notícias reação do mercado absorção fluxo de ordens desequilíbrio liquidez momentum pesquisa",
 ]
 MULTILINGUAL_DISCOVERY_QUERIES = list(dict.fromkeys(MULTILINGUAL_DISCOVERY_QUERIES + MULTILINGUAL_STRUCTURE_QUERIES + MULTILINGUAL_RESEARCH_QUERIES_V265 + MULTILINGUAL_RESEARCH_QUERIES_V27))
-
 def multilingual_discovery_batch():
     if not MULTILINGUAL_DISCOVERY_QUERIES:
         return []
@@ -190,7 +188,6 @@ def multilingual_discovery_batch():
     n=len(MULTILINGUAL_DISCOVERY_QUERIES)
     start=(slot*MULTILINGUAL_DISCOVERY_BATCH)%n
     return [MULTILINGUAL_DISCOVERY_QUERIES[(start+i)%n] for i in range(min(MULTILINGUAL_DISCOVERY_BATCH,n))]
-
 INTERVAL = max(300, int(os.getenv('VERITAS_INTERVAL_SECONDS', '300')))
 MAX_SOURCE_DIVERGENCE = float(os.getenv('VERITAS_MAX_SOURCE_DIVERGENCE', '0.01'))
 MAX_CLOCK_SKEW_SECONDS = int(os.getenv('VERITAS_MAX_CLOCK_SKEW_SECONDS', '120'))
@@ -219,7 +216,6 @@ ASSET_HORIZON_BARS = {
 }
 NQ_HORIZON_BARS = ASSET_HORIZON_BARS['NQ']
 NDX_HORIZON_BARS = NQ_HORIZON_BARS  # compatibility for legacy helper code
-
 def horizon_bars(asset,horizon):
     if str(horizon)=='5m': return 1
     return ASSET_HORIZON_BARS.get(asset,HORIZONS).get(horizon,HORIZONS[horizon])
@@ -9200,13 +9196,19 @@ def intelligence_scorecard():
     lp=learning_progress(); lm=large_move_capture_board(); tl=trade_lifecycle_board(60)
     overall=lm.get('overall') or {}; capture=overall.get('capture_rate')
     daily=_v90_daily_intelligence_metrics(lp)
-    return {'version':VERSION,'learning_index':lp.get('index_vs_start'),'learning_index_version':lp.get('index_version'),'learning_mode':lp.get('mode'),
-            'learning_status':lp.get('status'),'learning_confidence':lp.get('confidence'),'hit_rate_delta_pp':lp.get('hit_rate_delta_pp'),
-            'large_move_capture_rate':capture,'large_moves_observed':overall.get('large_moves'),'large_move_miss_rate':overall.get('miss_rate'),
-            'large_move_wrong_side_rate':overall.get('wrong_side_rate'),'shadow_trades_closed':tl.get('closed_n'),
-            'shadow_trade_positive_rate':tl.get('positive_trade_rate'),'shadow_trade_avg_pnl':tl.get('avg_total_pnl_fraction'),
-            'knowledge_growth':lp.get('knowledge_growth'),'daily_progress':daily,
-            'principle':'System intelligence is measured by matched realized decision quality, path-dependent trade outcomes and large-move capture; source count alone never raises the score.'}
+    base={'version':VERSION,'learning_index':lp.get('index_vs_start'),'learning_index_version':lp.get('index_version'),'learning_mode':lp.get('mode'),
+          'learning_status':lp.get('status'),'learning_confidence':lp.get('confidence'),'hit_rate_delta_pp':lp.get('hit_rate_delta_pp'),
+          'large_move_capture_rate':capture,'large_moves_observed':overall.get('large_moves'),'large_move_miss_rate':overall.get('miss_rate'),
+          'large_move_wrong_side_rate':overall.get('wrong_side_rate'),'shadow_trades_closed':tl.get('closed_n'),
+          'shadow_trade_positive_rate':tl.get('positive_trade_rate'),'shadow_trade_avg_pnl':tl.get('avg_total_pnl_fraction'),
+          'knowledge_growth':lp.get('knowledge_growth'),'daily_progress':daily,
+          'principle':'System intelligence is measured by demonstrated asset-management capability, not data volume or a claimed IQ.'}
+    try:
+        epoch=os.getenv('VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-30T04:59:29.357862+00:00')
+        base['asset_management_intelligence']=VAMI.build_scorecard(pg_connect,lp,epoch)
+    except Exception as ex:
+        base['asset_management_intelligence']={'status':'ERROR','version':VAMI.VERSION,'error':f'{type(ex).__name__}: {ex}'}
+    return base
 
 def setup_profitability_profile(asset,horizon,direction,setup_name,regime=None,limit=240):
     """Closed-loop profitability memory for comparable completed shadow trades.
