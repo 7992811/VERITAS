@@ -85,7 +85,6 @@ def _static_ai_decision(payload):
     if margin <= -0.18:
         return "SHORT"
     return "NO_TRADE"
-
 def _independent_episodes(rows, limit=360):
     ordered = sorted(rows, key=lambda r: str(r.get("event_ts") or ""))
     last = {}
@@ -123,8 +122,6 @@ def _independent_episodes(rows, limit=360):
             "payload": dp, "reference_decision": _static_ai_decision(dp),
         })
     return out[-int(limit):]
-
-
 def _decision_metrics(episodes, decision_key="decision"):
     directional = hits = large = captured = wrong = no_trade = missed = 0
     utility = []
