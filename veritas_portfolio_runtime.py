@@ -267,6 +267,18 @@ def _v90_canonical_quality_admission(row, policy, drawdown):
     except Exception:
         pass
 
+    # R47 bounded exploration: soft learning warnings can only REDUCE an
+    # otherwise valid research trade. They cannot bypass final economics.
+    try:
+        f*=float(guard.get('size_multiplier') or 1.0)
+    except Exception:
+        pass
+    try:
+        if guard.get('size_cap') is not None:
+            f=min(f,float(guard.get('size_cap')))
+    except Exception:
+        pass
+
     risk_pct = plan.get('stop_distance_pct')
     if risk_pct is None:
         risk_pct = (inst or {}).get('risk_pct')
@@ -625,23 +637,32 @@ def _v90r43_learning_edge(row,guard=None):
     guard=guard or {}
 
     episodes=int(_v90r33_cache.get('n') or 0)
-    global_haircut=1.0
+    raw_global_haircut=1.0
     if episodes>=10:
         try:
-            global_haircut=_clip(float(_v90r33_cache.get('edge_haircut') or 1.0),0.60,1.0)
+            raw_global_haircut=_clip(float(_v90r33_cache.get('edge_haircut') or 1.0),0.60,1.0)
         except Exception:
-            global_haircut=1.0
+            raw_global_haircut=1.0
+
+    # Small samples must not receive the full mature-learning penalty. Shrink
+    # the empirical haircut toward the neutral prior (1.0) and let it earn
+    # authority gradually as independent completed episodes accumulate.
+    global_credibility=(float(episodes)/(float(episodes)+60.0)) if episodes>0 else 0.0
+    global_haircut=1.0-global_credibility*(1.0-raw_global_haircut)
 
     profile,key=_v90r29_profile_for_row(row)
-    profile_haircut=1.0
-    if profile and int(profile.get('n') or 0)>=8:
+    profile_n=int((profile or {}).get('n') or 0)
+    raw_profile_haircut=1.0
+    if profile and profile_n>=8:
         realized=_v90r29_num(profile.get('avg_movement_realization_ratio'))
         if realized is not None:
-            profile_haircut=_clip(0.55+0.45*max(0.0,min(1.0,float(realized))),0.60,0.95)
+            raw_profile_haircut=_clip(
+                0.55+0.45*max(0.0,min(1.0,float(realized))),0.60,0.95
+            )
+    profile_credibility=(float(profile_n)/(float(profile_n)+24.0)) if profile_n>0 else 0.0
+    profile_haircut=1.0-profile_credibility*(1.0-raw_profile_haircut)
 
-    # Use the more conservative clean-sample estimate. This is the same bounded
-    # calibration principle as R33, now connected to the final R42 authority.
-    haircut=min(global_haircut,profile_haircut)
+    haircut=_clip(min(global_haircut,profile_haircut),0.60,1.0)
 
     raw_expected=_v90r29_num(guard.get('expected_move_pct'))
     if raw_expected is None:
@@ -660,9 +681,13 @@ def _v90r43_learning_edge(row,guard=None):
     cost_to_edge=(cost/calibrated_expected) if calibrated_expected>1e-12 else 999.0
 
     return {
-      'active':bool(episodes>=10 or (profile and int(profile.get('n') or 0)>=8)),
+      'active':bool(episodes>=10 or profile_n>=8),
       'episodes':episodes,
+      'raw_global_edge_haircut':raw_global_haircut,
+      'global_learning_credibility':global_credibility,
       'global_edge_haircut':global_haircut,
+      'raw_profile_edge_haircut':raw_profile_haircut,
+      'profile_learning_credibility':profile_credibility,
       'profile_edge_haircut':profile_haircut,
       'applied_edge_haircut':haircut,
       'raw_expected_move_pct':raw_expected,
@@ -680,22 +705,22 @@ def _v90_candidate_profit_guard(row,policy,economics):
     learn=_v90r43_learning_edge(row,base)
     blockers=list(base.get('blockers') or [])
     mode=str((policy or {}).get('mode') or 'CORE')
+    soft_warnings=[]
+    size_multiplier=1.0
+    size_cap=None
 
+    calibrated_expected=None
+    calibrated_rr=None
     if learn.get('active'):
         calibrated_expected=float(learn.get('calibrated_expected_move_pct') or 0.0)
         calibrated_rr=float(learn.get('calibrated_net_reward_risk') or 0.0)
         calibrated_cost=float(learn.get('calibrated_cost_to_edge_ratio') or 999.0)
 
-        # Friction is compared with empirically realizable movement, not the
-        # original forecast. This directly addresses COST_DRAG + EDGE_OVERFORECAST.
+        # Friction and genuinely negative learned economics remain hard vetoes.
         max_cost_ratio=0.30 if mode in ('IMPULSE_ONLY','AGGRESSIVE') else 0.25
         if calibrated_expected<=0 or calibrated_cost>max_cost_ratio:
             blockers.append('LEARNED_COST_TO_REALIZED_EDGE_TOO_HIGH')
 
-        # Closed-loop economics are authoritative for every portfolio.
-        # Impulse/Aggressive may accept lower thresholds than the production
-        # candidates, but they may no longer open negative/near-unit learned R/R
-        # merely because they are "research" books.
         learned_rr_floor={
           'IMPULSE_ONLY':1.15,
           'AGGRESSIVE':1.20,
@@ -726,12 +751,10 @@ def _v90_candidate_profit_guard(row,policy,economics):
                     or calibrated_expected<max(0.006,3.0*cost)
                     or weak_confirmation):
                 blockers.append('LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL')
-            # Range regimes need a confirmed break/retest, not an early probe.
             if regime.startswith('RANGE_'):
                 blockers.append('EARLY_BREAKOUT_IN_RANGE_REGIME')
 
-        # Context learning is directional only when R29 observed repeated
-        # entry failures. Stop/capture errors deliberately do not veto entry.
+        # Mature context evidence about wrong direction/cost drag stays hard.
         profile=learn.get('profile') or {}
         pn=int(profile.get('n') or 0)
         if pn>=8:
@@ -746,16 +769,57 @@ def _v90_candidate_profit_guard(row,policy,economics):
             if bayes<0.45 and avg_pnl<=0:
                 blockers.append('LEARNED_NEGATIVE_CONTEXT_EXPECTANCY')
 
-        # Downstream canonical sizing must consume learned economics.
         base['raw_expected_move_pct']=learn.get('raw_expected_move_pct')
         base['raw_net_reward_risk']=learn.get('raw_net_reward_risk')
         base['expected_move_pct']=learn.get('calibrated_expected_move_pct')
         base['net_reward_risk']=learn.get('calibrated_net_reward_risk')
         base['cost_to_edge_ratio']=learn.get('calibrated_cost_to_edge_ratio')
 
-    base['blockers']=list(dict.fromkeys(blockers))
-    base['eligible']=not base['blockers']
+    # R47: learning uncertainty changes research-book SIZE before it becomes a
+    # binary veto. Safety/economics/freshness remain hard. Champion/Challenger
+    # remain strict production candidates.
+    if mode in ('IMPULSE_ONLY','AGGRESSIVE'):
+        regime=str((row or {}).get('regime') or '')
+        indep=int(base.get('independent') or 0)
+        alignment=int(base.get('alignment_count') or 0)
+        hscore=float(base.get('horizon_structure_score') or 0.0)
+        non_range=not regime.startswith('RANGE_')
+        structural_probe_ok=bool(non_range and indep>=2 and alignment>=1 and hscore>=0.58)
+        probe_rr_floor=1.00 if mode=='IMPULSE_ONLY' else 1.05
+
+        def soften(code, cap, mult):
+            nonlocal size_cap, size_multiplier
+            if code in blockers:
+                blockers.remove(code)
+                soft_warnings.append(code)
+                size_cap=cap if size_cap is None else min(size_cap,cap)
+                size_multiplier=min(size_multiplier,mult)
+
+        if structural_probe_ok:
+            soften('WEAK_BREAKOUT_NEGATIVE_HISTORY',
+                   0.05 if mode=='IMPULSE_ONLY' else 0.10,0.60)
+            if calibrated_rr is not None and calibrated_rr>=probe_rr_floor:
+                soften('LEARNED_CALIBRATED_RR_TOO_LOW',
+                       0.10 if mode=='IMPULSE_ONLY' else 0.15,0.70)
+
+        state=str(base.get('breakout_state') or '')
+        early_probe_ok=bool(
+            state=='EARLY_BREAKOUT' and non_range and indep>=3
+            and alignment>=2 and hscore>=0.68
+            and calibrated_rr is not None and calibrated_rr>=probe_rr_floor
+        )
+        if early_probe_ok:
+            soften('LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL',0.05,0.55)
+
+    blockers=list(dict.fromkeys(blockers))
+    soft_warnings=list(dict.fromkeys(soft_warnings))
+    base['blockers']=blockers
+    base['soft_warnings']=soft_warnings
+    base['eligible']=not blockers
     base['status']='PASS' if base['eligible'] else 'BLOCK'
+    base['size_multiplier']=size_multiplier
+    base['size_cap']=size_cap
+    base['admission_policy']='HARD_SAFETY_SOFT_LEARNING_R47'
     base['closed_loop_learning_r43']=learn
     return base
 
