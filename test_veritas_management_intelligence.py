@@ -1,0 +1,127 @@
+import unittest
+from datetime import datetime, timezone, timedelta
+
+import veritas_asset_management_intelligence as VAMI
+
+
+class _Result:
+    def __init__(self, one=None, many=None):
+        self.one = one
+        self.many = many or []
+    def fetchone(self):
+        return self.one
+    def fetchall(self):
+        return self.many
+
+
+class _FakeConn:
+    def __init__(self):
+        self.baseline = None
+        now = datetime(2026, 9, 30, tzinfo=timezone.utc)
+        self.decisions = []
+        for i in range(48):
+            ts = now - timedelta(hours=48-i)
+            up = (i % 3) != 0
+            fr = 0.02 if up else -0.015
+            agents = [
+                {"agent": "A", "direction": "LONG" if up else "SHORT", "confidence": .7},
+                {"agent": "B", "direction": "LONG" if up else "SHORT", "confidence": .6},
+                {"agent": "C", "direction": "SHORT" if up else "LONG", "confidence": .2},
+            ]
+            dp = {
+                "research_decision": "LONG" if up else "SHORT",
+                "regime": "UPTREND_MID_VOL" if up else "DOWNTREND_MID_VOL",
+                "agents": agents,
+                "knowledge_shadow_matches": [{"rule_id": "R1"}],
+                "knowledge_cio_adjustment": {"score_with_experience": .02 if up else -.02},
+            }
+            self.decisions.append({
+                "event_ts": ts, "asset": "BTC" if i % 2 else "ETH",
+                "horizon": "1h", "dp": dp, "op": {"forward_return": fr},
+            })
+        self.learning = []
+        for i in range(40):
+            attrs = ["EDGE_OVERFORECAST"] if i < 20 else (["GOOD_EXECUTION"] if i % 2 else [])
+            self.learning.append({
+                "closed_at": now - timedelta(days=40-i), "asset": "BTC", "horizon": "1h",
+                "regime": "UPTREND_MID_VOL", "capture_ratio": .45 if i >= 20 else .25,
+                "movement_realization_ratio": .50 if i >= 20 else .25,
+                "giveback_pct": .12, "primary_attribution": attrs[0] if attrs else "MIXED_EXECUTION",
+                "attributions": attrs, "net_pnl_rub": 100 if i >= 20 else -50,
+            })
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return False
+    def execute(self, sql, args=None):
+        q = " ".join(sql.split())
+        if q.startswith("SET LOCAL"):
+            return _Result()
+        if "FROM ledger_events d" in q:
+            return _Result(many=self.decisions)
+        if "FROM paper_trades" in q:
+            return _Result(one={"n": 0, "wins": 0, "net": 0, "avg_net": 0,
+                                "avg_return": 0, "gross_win": 0, "gross_loss": 0})
+        if "FROM paper_nav_history" in q:
+            return _Result(one={"dd": 0})
+        if "FROM v90_learning_episodes" in q:
+            return _Result(many=self.learning)
+        if "(SELECT COUNT(*) FROM knowledge_sources)" in q:
+            return _Result(one={"sources": 500, "rules": 500})
+        if "FROM knowledge_backtest_oos_stats" in q:
+            return _Result(one={"n": 0})
+        if "SELECT created_at,payload FROM learning_baselines" in q:
+            return _Result(one=self.baseline)
+        if "INSERT INTO learning_baselines" in q:
+            payload = args[1]
+            import json
+            self.baseline = {"created_at": now_iso(), "payload": json.loads(payload)}
+            return _Result()
+        raise AssertionError("Unexpected SQL: " + q)
+
+
+def now_iso():
+    return datetime(2026, 9, 30, tzinfo=timezone.utc).isoformat()
+
+
+class AssetManagementIntelligenceTests(unittest.TestCase):
+    def test_stateless_ai_is_memory_free_vote(self):
+        payload = {
+            "agents": [
+                {"direction": "LONG", "confidence": .7},
+                {"direction": "LONG", "confidence": .6},
+                {"direction": "SHORT", "confidence": .2},
+            ],
+            "knowledge_cio_adjustment": {"score_with_experience": -999},
+        }
+        self.assertEqual(VAMI._static_ai_decision(payload), "LONG")
+
+    def test_reference_metrics_penalize_missed_large_move(self):
+        eps = [{"horizon": "1h", "forward_return": .03, "reference_decision": "NO_TRADE"}]
+        m = VAMI._decision_metrics(eps, "reference_decision")
+        self.assertEqual(m["no_trade_miss_rate"], 1.0)
+        self.assertLess(m["avg_normalized_utility"], 0)
+
+    def test_knowledge_count_alone_cannot_create_high_intelligence(self):
+        c = _FakeConn()
+        out = VAMI.build_scorecard(lambda: c, {"index_vs_start": 105.0},
+                                   "2026-09-30T04:59:29+00:00", cache_seconds=0)
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["components"]["portfolio_outcome_quality"], 0)
+        self.assertLessEqual(out["components"]["knowledge_application"], 2.01)
+        self.assertEqual(out["benchmarks"]["stateless_ai"]["status"], "MEASURABLE")
+        self.assertIn(out["stage"], {
+            "НАЧАЛЬНЫЙ", "РАЗВИВАЮЩИЙСЯ", "РАБОЧИЙ",
+            "ПРОДВИНУТЫЙ", "ВЫСОКО ПОДТВЕРЖДЁННЫЙ"
+        })
+
+    def test_absolute_score_is_sum_of_practical_components(self):
+        c = _FakeConn()
+        out = VAMI.build_scorecard(lambda: c, {"index_vs_start": 110.0},
+                                   "2026-09-30T04:59:29+00:00", cache_seconds=0)
+        self.assertAlmostEqual(out["score"], round(sum(out["components"].values()), 1))
+        self.assertEqual(sum(out["component_maximums"].values()), 100)
+
+
+if __name__ == "__main__":
+    unittest.main()
