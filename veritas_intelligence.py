@@ -17927,7 +17927,7 @@ def main():
     threading.Thread(target=_v90r38_storage_rescue_loop, daemon=True,
                      name='veritas-storage-rescue').start()
     if pg_boot.get('ok'):
-        threading.Thread(target=heavy_learning_maintenance_loop, daemon=True).start()
+        threading.Thread(target=heavy_learning_maintenance_loop, daemon=True).start(); threading.Thread(target=VAMI.startup_snapshot,args=(pg_connect,learning_progress,os.getenv('VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-30T04:59:29.357862+00:00')),daemon=True,name='veritas-ami-snapshot').start()
     heavy_role = SERVICE_ROLE in ('learning','all')
     if KNOWLEDGE_AUTOMATION and heavy_role:
         threading.Thread(target=knowledge_discovery_loop, daemon=True).start()
