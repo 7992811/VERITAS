@@ -100,11 +100,15 @@ def take_profit_action(z, current_fraction, peak, round5):
     return floor, reason
 
 
-def profit_lock_stop(z, quote, commission=.0005):
-    """Return a stronger cost-covering stop once a live quote shows enough profit.
+def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
+                     slippage_pct=.0005, min_net_pct=.0005):
+    """Return a stop that protects positive NET P&L, not merely price P&L.
 
-    This is not a take-profit. It only ratchets protection toward a small
-    post-cost gain; subsequent structural trailing may tighten it further.
+    The locked stop explicitly covers:
+    - fees already paid on the trade;
+    - estimated exit commission;
+    - adverse execution / slippage allowance;
+    - a small positive net-profit cushion.
     """
     if not quote or not quote.get('source_gate_pass'):
         return None
@@ -112,22 +116,53 @@ def profit_lock_stop(z, quote, commission=.0005):
     try:
         entry=float(z.get('avg_entry_price') or p.get('entry_price') or 0.0)
         px=float(quote.get('price') or 0.0)
-        if entry<=0 or px<=0 or not math.isfinite(entry) or not math.isfinite(px):
+        units=abs(float(z.get('units') or 0.0))
+        fees_paid=max(0.0,float(fees_paid_rub or 0.0))
+        if entry<=0 or px<=0 or units<=0:
+            return None
+        if not all(math.isfinite(v) for v in (entry,px,units,fees_paid)):
             return None
     except (TypeError,ValueError):
         return None
 
     long=z.get('direction')=='LONG'
     current_pct=100.0*((px/entry-1.0) if long else (entry/px-1.0))
-    # With 0.05% commission per leg, 0.25% activation avoids turning normal
-    # noise into churn. The locked level covers estimated round-trip commission
-    # plus a small positive cushion.
-    activation_pct=max(0.25,100.0*(2.0*float(commission)+0.0005))
-    lock_pct=max(0.10,100.0*(2.0*float(commission)+0.0001))
-    if current_pct < activation_pct:
+    current_notional=units*px
+    entry_notional=units*entry
+    gross_current=units*(px-entry) if long else units*(entry-px)
+
+    exit_fee_now=current_notional*float(commission)
+    slippage_now=current_notional*float(slippage_pct)
+    min_net_rub=current_notional*float(min_net_pct)
+    current_required=fees_paid+exit_fee_now+slippage_now+min_net_rub
+    required_activation_pct=100.0*current_required/max(entry_notional,1e-9)
+    activation_pct=max(0.25,required_activation_pct)
+    if current_pct<activation_pct or gross_current<current_required:
         return None
 
-    candidate=entry*(1.0+lock_pct/100.0 if long else 1.0-lock_pct/100.0)
+    friction=float(commission)+float(slippage_pct)
+    if long:
+        denom=units*max(1e-9,1.0-friction)
+        candidate=(units*entry+fees_paid+min_net_rub)/denom
+        projected_exit_fee=units*candidate*float(commission)
+        projected_slippage=units*candidate*float(slippage_pct)
+        gross_at_stop=units*(candidate-entry)
+    else:
+        denom=units*(1.0+friction)
+        candidate=(units*entry-fees_paid-min_net_rub)/max(denom,1e-9)
+        projected_exit_fee=units*candidate*float(commission)
+        projected_slippage=units*candidate*float(slippage_pct)
+        gross_at_stop=units*(entry-candidate)
+
+    if candidate<=0 or not math.isfinite(candidate):
+        return None
+    if (long and candidate>=px) or ((not long) and candidate<=px):
+        return None
+
+    projected_net=gross_at_stop-fees_paid-projected_exit_fee-projected_slippage
+    if projected_net<=0:
+        return None
+
     stops=[]
     for s in (z.get('stop_price'),p.get('trailing_stop')):
         try:
@@ -136,19 +171,24 @@ def profit_lock_stop(z, quote, commission=.0005):
         except (TypeError,ValueError):
             pass
     existing=(max(stops) if long else min(stops)) if stops else None
-
     if existing is not None:
         if long and candidate<=existing:
             return None
         if (not long) and candidate>=existing:
             return None
 
+    locked_price_pct=100.0*((candidate/entry-1.0) if long else (entry/candidate-1.0))
     return {
         'stop_price':candidate,
         'activation_profit_pct':activation_pct,
-        'locked_profit_pct':lock_pct,
+        'locked_profit_pct':locked_price_pct,
         'current_profit_pct':current_pct,
-        'policy':'R48_COST_COVERING_PROFIT_LOCK',
+        'fees_paid_rub':fees_paid,
+        'estimated_exit_fee_rub':projected_exit_fee,
+        'estimated_slippage_rub':projected_slippage,
+        'minimum_net_profit_rub':min_net_rub,
+        'projected_net_profit_at_stop_rub':projected_net,
+        'policy':'R55_NET_PNL_PROFIT_LOCK',
     }
 
 
@@ -213,10 +253,52 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             z = dict(item)
             q = quotes.get(z['asset'])
 
-            # R48: once a fresh quote shows a meaningful profit, ratchet the
-            # protective stop to a small post-cost gain. Do not take profit here;
-            # preserve the position and let structural trailing/TP manage upside.
-            lock = profit_lock_stop(z, q, getattr(vp, 'COMMISSION', .0005))
+            # R55: persist lifetime excursion from the independent fresh
+            # quote before any partial reduction / exit mutates the position.
+            zp=payload_of(z)
+            try:
+                _entry=float(z.get('avg_entry_price') or zp.get('entry_price') or 0.0)
+                _px=float((q or {}).get('price') or 0.0)
+                if _entry>0 and _px>0:
+                    _signed=100.0*((_px/_entry-1.0) if z.get('direction')=='LONG'
+                                    else (_entry/_px-1.0))
+                    _path={
+                      'mfe_pct':max(float(zp.get('mfe_pct') or 0.0),_signed,0.0),
+                      'mae_pct':min(float(zp.get('mae_pct') or 0.0),_signed,0.0),
+                      'r55_lifetime_mfe_pct':max(float(zp.get('r55_lifetime_mfe_pct') or 0.0),
+                                                 float(zp.get('mfe_pct') or 0.0),_signed,0.0),
+                      'r55_lifetime_mae_pct':min(float(zp.get('r55_lifetime_mae_pct') or 0.0),
+                                                 float(zp.get('mae_pct') or 0.0),_signed,0.0),
+                      'r55_last_path_mark_at':ts,
+                      'r55_last_path_mark_price':_px,
+                    }
+                    c.execute(
+                        "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                        "WHERE active_trade_id=%s",(json.dumps(_path),z.get('active_trade_id'))
+                    )
+                    if z.get('active_trade_id'):
+                        c.execute(
+                            "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                            "WHERE trade_id=%s",(json.dumps(_path),z.get('active_trade_id'))
+                        )
+                    zp.update(_path); z['payload']=zp
+            except Exception:
+                pass
+
+            fees_paid=0.0
+            if z.get('active_trade_id'):
+                try:
+                    _tr=c.execute("SELECT fees_rub FROM paper_trades WHERE trade_id=%s",
+                                  (z.get('active_trade_id'),)).fetchone()
+                    fees_paid=float((_tr or {}).get('fees_rub') or 0.0)
+                except Exception:
+                    fees_paid=0.0
+
+            # R55: lock positive NET P&L after all known/estimated friction.
+            lock = profit_lock_stop(
+                z,q,getattr(vp,'COMMISSION',.0005),fees_paid_rub=fees_paid,
+                slippage_pct=.0005,min_net_pct=.0005
+            )
             if lock:
                 pl_patch = {
                     'trailing_stop': lock['stop_price'],
@@ -226,6 +308,12 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                     'r48_profit_lock_locked_pct': lock['locked_profit_pct'],
                     'r48_profit_lock_seen_profit_pct': lock['current_profit_pct'],
                     'r48_profit_lock_policy': lock['policy'],
+                    'r55_net_profit_lock_active': True,
+                    'r55_fees_paid_rub': lock.get('fees_paid_rub'),
+                    'r55_estimated_exit_fee_rub': lock.get('estimated_exit_fee_rub'),
+                    'r55_estimated_slippage_rub': lock.get('estimated_slippage_rub'),
+                    'r55_minimum_net_profit_rub': lock.get('minimum_net_profit_rub'),
+                    'r55_projected_net_profit_at_stop_rub': lock.get('projected_net_profit_at_stop_rub'),
                 }
                 c.execute(
                     "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
@@ -252,6 +340,8 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                     'locked_profit_pct': lock['locked_profit_pct'],
                     'seen_profit_pct': lock['current_profit_pct'],
                     'policy': lock['policy'],
+                    'fees_paid_rub': lock.get('fees_paid_rub'),
+                    'projected_net_profit_at_stop_rub': lock.get('projected_net_profit_at_stop_rub'),
                 })
 
             reason = protective_reason(z, q, now)
