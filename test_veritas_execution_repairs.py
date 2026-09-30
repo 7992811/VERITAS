@@ -449,5 +449,116 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
 
 
 
+class CNYIncidentR51Tests(unittest.TestCase):
+    def _cny_5m_short(self):
+        return {
+            'asset':'CNYRUBF','horizon':'5m','research_decision':'SHORT',
+            'price':12.544,'regime':'DOWNTREND_MID_VOL',
+            'source_gate_pass':True,'market_open':True,
+            'data_latency_class':'DELAYED_RESEARCH',
+            'market_observed_at':'2026-09-30T08:45:00+00:00',
+            'horizon_structure':{
+                'direction':'SHORT','state':'CONFIRMED_TREND','score':.80
+            },
+            'institutional_signal':{
+                'evidence_independence':{'independent_count':5},
+                'breakout_quality':{'state':'CONFIRMED_BREAKOUT'},
+            },
+            'trade_plan':{
+                'eligible':False,'direction':'SHORT',
+                'stop_price':12.575,'target_price':12.50,
+                'expected_move_pct':.0035,'expected_to_stop_ratio':1.4,
+            },
+        }
+
+    def test_cny_countertrend_long_is_marked_against_3d_7d_downtrend(self):
+        row={'asset':'CNYRUBF','horizon':'1h','research_decision':'LONG'}
+        summary=[
+            row,
+            {'asset':'CNYRUBF','horizon':'3d','research_decision':'NO_TRADE',
+             'regime':'DOWNTREND_LOW_VOL'},
+            {'asset':'CNYRUBF','horizon':'7d','research_decision':'NO_TRADE',
+             'regime':'DOWNTREND_LOW_VOL'},
+        ]
+        out=VPR._v90r51_mark_countertrend(row,summary)
+        self.assertEqual(out['_r51_countertrend_block'],
+                         'R51_CNY_HIGHER_TF_REGIME_CONFLICT')
+        blocked=VPR._signal_first_admission(out,VP.POLICIES['Aggressive'],0.0)
+        self.assertFalse(blocked['open'])
+
+    def test_delayed_5m_cny_short_becomes_small_1h_risk_transition_candidate(self):
+        row=self._cny_5m_short()
+        summary=[
+            row,
+            {'asset':'CNYRUBF','horizon':'1d','research_decision':'NO_TRADE',
+             'regime':'RANGE_LOW_VOL'},
+            {'asset':'CNYRUBF','horizon':'3d','research_decision':'NO_TRADE',
+             'regime':'DOWNTREND_LOW_VOL'},
+            {'asset':'CNYRUBF','horizon':'7d','research_decision':'NO_TRADE',
+             'regime':'DOWNTREND_LOW_VOL'},
+        ]
+        out=VPR._v90r51_cny_transition_candidate(summary)
+        self.assertIsNotNone(out)
+        self.assertEqual(out['research_decision'],'SHORT')
+        self.assertEqual(out['horizon'],'1h')
+        self.assertTrue(out['_r51_cny_delayed_transition'])
+        self.assertEqual(out['_r51_original_horizon'],'5m')
+
+    def test_cny_target_is_bounded_from_unrealistic_four_percent_forecast(self):
+        row={
+            'asset':'CNYRUBF','horizon':'4h','research_decision':'SHORT',
+            'price':12.457,'spread_bps':None,
+            'structural_levels':{},
+            'trade_plan':{
+                'direction':'SHORT','stop_price':12.5517995,
+                'target_price':12.0224,'expected_move_pct':.042759,
+                'expected_to_stop_ratio':1.82,
+            },
+        }
+        p=VPR._v90r51_cny_target_repair(row)
+        self.assertTrue(p['r51_target_repaired'])
+        self.assertLessEqual(p['expected_move_pct'],.0200001)
+        self.assertGreater(p['target_price'],12.457*(1-.020001))
+        self.assertLess(p['target_price'],12.457)
+
+    def test_protected_short_cannot_jump_to_1_5x_if_stop_would_turn_combined_trade_negative(self):
+        nav=1_000_000.0
+        price=12.409
+        before=.10
+        z={
+            'asset':'CNYRUBF','direction':'SHORT',
+            'avg_entry_price':12.446847545,'stop_price':12.42666614975,
+            'units':before*nav/price,
+            'payload':{'profit_protection_active':True},
+        }
+        row={
+            'asset':'CNYRUBF','horizon':'4h','research_decision':'SHORT',
+            'signal_tier':'SUPER_SHORT','decision_stage':'CONFIRMED_SCALE',
+            '_alignment_count':6,
+            'trade_plan':{'expected_to_stop_ratio':1.82,'expected_move_pct':.02},
+            'horizon_structure':{'state':'CONFIRMED_TREND','score':1.0},
+            'institutional_signal':{'evidence_independence':{'independent_count':5}},
+        }
+        with patch.object(VPR.VPP,'is_protected',return_value=True):
+            safe,meta=VPR._v90r51_safe_combined_scale(z,row,price,nav,1.50)
+        self.assertLess(safe,.25)
+        self.assertLess(safe,1.50)
+        self.assertTrue(meta['protected'])
+
+    def test_same_direction_cny_stop_has_fifteen_minute_cooldown(self):
+        c=MagicMock()
+        c.execute.return_value.fetchone.return_value={
+            'direction':'SHORT',
+            'closed_at':datetime(2026,9,30,11,56,10,tzinfo=timezone.utc),
+            'payload':{'exit_reason':'STOP'},
+        }
+        out=VPR._v90r51_recent_cny_stop(
+            c,'Aggressive','SHORT',
+            datetime(2026,9,30,11,57,8,tzinfo=timezone.utc),900)
+        self.assertIsNotNone(out)
+        self.assertLess(out['age_seconds'],60)
+
+
+
 if __name__ == '__main__':
     unittest.main()
