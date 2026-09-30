@@ -241,6 +241,18 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                 zp=payload_of(z)
                 zp.update(pl_patch)
                 z['payload']=zp
+                changes.append({
+                    'portfolio': z.get('portfolio_name'),
+                    'asset': z.get('asset'),
+                    'trade_id': z.get('active_trade_id'),
+                    'reason': 'PROFIT_LOCK_UPDATED',
+                    'price': float((q or {}).get('price') or 0.0),
+                    'new_stop_price': lock['stop_price'],
+                    'activation_profit_pct': lock['activation_profit_pct'],
+                    'locked_profit_pct': lock['locked_profit_pct'],
+                    'seen_profit_pct': lock['current_profit_pct'],
+                    'policy': lock['policy'],
+                })
 
             reason = protective_reason(z, q, now)
             if not reason:
