@@ -59,13 +59,18 @@ def _static_ai_decision(payload):
     agents = (payload or {}).get("agents") or []
     signed = total = 0.0
     for a in agents:
-        if not isinstance(a, dict):
+        if isinstance(a, dict):
+            d = str(a.get("direction") or "").upper()
+            raw_c = a.get("confidence")
+        elif isinstance(a, (list, tuple)) and len(a) >= 3:
+            d = str(a[1] or "").upper()
+            raw_c = a[2]
+        else:
             continue
-        d = str(a.get("direction") or "").upper()
         if d not in ("LONG", "SHORT"):
             continue
         try:
-            c = max(0.0, min(1.0, float(a.get("confidence") or 0.0)))
+            c = max(0.0, min(1.0, float(raw_c or 0.0)))
         except Exception:
             continue
         if c <= 0:
