@@ -252,6 +252,12 @@ def _v90_canonical_quality_admission(row, policy, drawdown):
         if strong_f is not None:
             f = max(f, float(strong_f))
 
+    # Original execution rule: an early entry is a small probe, then add only
+    # after confirmation. Never let score/portfolio aggressiveness turn
+    # EARLY_BREAKOUT directly into a large initial position.
+    if str(guard.get('breakout_state') or '')=='EARLY_BREAKOUT':
+        f=min(f,0.05)
+
     if not empirical:
         f = min(f, {
             'IMPULSE_ONLY':0.35,'AGGRESSIVE':0.75,
@@ -436,7 +442,8 @@ def _v90_candidate_epoch_rebase(c,name,prices,ts):
     # One-time hygiene for ALL four books: positions opened by the superseded
     # admission kernel must not keep generating P/L after the clean test epoch.
     # Historical trades/P&L remain untouched; only still-open legacy exposure closes.
-    marker='execution_epoch_cleanup_20260929_profit_v3_'+str(name)
+    epoch_key=re.sub(r'[^0-9A-Za-z]+','_',str(V90_PRODUCTION_CANDIDATE_EPOCH)).strip('_')[-48:]
+    marker='execution_epoch_cleanup_'+epoch_key+'_'+str(name)
     try:
         row=c.execute("SELECT 1 AS ok FROM v90_migration_state WHERE key=%s",(marker,)).fetchone()
         if row:
@@ -706,35 +713,59 @@ def _v90_candidate_profit_guard(row,policy,economics):
         if calibrated_expected<=0 or calibrated_cost>max_cost_ratio:
             blockers.append('LEARNED_COST_TO_REALIZED_EDGE_TOO_HIGH')
 
-        # Production candidates require post-learning R/R. Research books keep
-        # exploring, but their size is calculated from calibrated R/R below.
-        if mode in ('CORE','CHALLENGER'):
-            need_rr=1.35 if mode=='CORE' else 1.50
-            if calibrated_rr<need_rr:
-                blockers.append('LEARNED_CALIBRATED_RR_TOO_LOW')
+        # Closed-loop economics are authoritative for every portfolio.
+        # Impulse/Aggressive may accept lower thresholds than the production
+        # candidates, but they may no longer open negative/near-unit learned R/R
+        # merely because they are "research" books.
+        learned_rr_floor={
+          'IMPULSE_ONLY':1.15,
+          'AGGRESSIVE':1.20,
+          'CORE':1.35,
+          'CHALLENGER':1.50,
+        }.get(mode,1.20)
+        if calibrated_rr<learned_rr_floor:
+            blockers.append('LEARNED_CALIBRATED_RR_TOO_LOW')
 
-            state=str(base.get('breakout_state') or '')
-            if state=='EARLY_BREAKOUT':
-                need_early_rr=1.60
-                cost=float(learn.get('modeled_round_trip_cost_pct') or 0.0)
-                if calibrated_rr<need_early_rr or calibrated_expected<max(0.006,3.0*cost):
-                    blockers.append('LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL')
+        state=str(base.get('breakout_state') or '')
+        regime=str((row or {}).get('regime') or '')
+        if state=='EARLY_BREAKOUT':
+            early_rr_floor={
+              'IMPULSE_ONLY':1.30,
+              'AGGRESSIVE':1.35,
+              'CORE':1.60,
+              'CHALLENGER':1.70,
+            }.get(mode,1.35)
+            cost=float(learn.get('modeled_round_trip_cost_pct') or 0.0)
+            indep=int(base.get('independent') or 0)
+            alignment=int(base.get('alignment_count') or 0)
+            hscore=float(base.get('horizon_structure_score') or 0.0)
+            weak_confirmation=bool(
+                indep<3 or hscore<0.68
+                or (mode in ('AGGRESSIVE','CORE','CHALLENGER') and alignment<2)
+            )
+            if (calibrated_rr<early_rr_floor
+                    or calibrated_expected<max(0.006,3.0*cost)
+                    or weak_confirmation):
+                blockers.append('LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL')
+            # Range regimes need a confirmed break/retest, not an early probe.
+            if regime.startswith('RANGE_'):
+                blockers.append('EARLY_BREAKOUT_IN_RANGE_REGIME')
 
-            # Context learning is directional only when R29 observed repeated
-            # entry failures. Stop/capture errors deliberately do not veto entry.
-            profile=learn.get('profile') or {}
-            pn=int(profile.get('n') or 0)
-            if pn>=8:
-                entry_error=float(profile.get('entry_error_rate') or 0.0)
-                cost_drag=float(profile.get('cost_drag_rate') or 0.0)
-                bayes=float(profile.get('bayesian_win_rate') or 0.5)
-                avg_pnl=float(profile.get('avg_net_pnl_rub') or 0.0)
-                if entry_error>=0.35:
-                    blockers.append('LEARNED_ENTRY_DIRECTION_ERROR_CLUSTER')
-                if cost_drag>=0.45:
-                    blockers.append('LEARNED_COST_DRAG_CLUSTER')
-                if bayes<0.45 and avg_pnl<=0:
-                    blockers.append('LEARNED_NEGATIVE_CONTEXT_EXPECTANCY')
+        # Context learning is directional only when R29 observed repeated
+        # entry failures. Stop/capture errors deliberately do not veto entry.
+        profile=learn.get('profile') or {}
+        pn=int(profile.get('n') or 0)
+        if pn>=8:
+            entry_error=float(profile.get('entry_error_rate') or 0.0)
+            cost_drag=float(profile.get('cost_drag_rate') or 0.0)
+            bayes=float(profile.get('bayesian_win_rate') or 0.5)
+            avg_pnl=float(profile.get('avg_net_pnl_rub') or 0.0)
+            if entry_error>=0.35:
+                blockers.append('LEARNED_ENTRY_DIRECTION_ERROR_CLUSTER')
+            if cost_drag>=0.45:
+                blockers.append('LEARNED_COST_DRAG_CLUSTER')
+            if bayes<0.45 and avg_pnl<=0:
+                blockers.append('LEARNED_NEGATIVE_CONTEXT_EXPECTANCY')
 
         # Downstream canonical sizing must consume learned economics.
         base['raw_expected_move_pct']=learn.get('raw_expected_move_pct')
@@ -1132,6 +1163,35 @@ _v90r46_base_close_or_reduce=_close_or_reduce
 _v90r46_base_report=report
 
 
+def _v842_hard_thesis_exit(row):
+    """Exit authority for the position's original execution horizon.
+
+    INVALIDATED is authoritative once that horizon is no longer a confirmed
+    trend. This prevents a stale open position from surviving indefinitely just
+    because it disappeared from the fresh candidate book. A confirmed trend is
+    still allowed to run, preserving the R46 trend-hold rule.
+    """
+    if not row:
+        return False
+    plan=row.get('trade_plan') or {}
+    ti=plan.get('trade_integrity') or {}
+    if bool(ti.get('hard_invalidation')):
+        return True
+    entry_quality=str(
+        row.get('entry_quality')
+        or plan.get('entry_quality')
+        or ''
+    ).upper()
+    hs=row.get('horizon_structure') or {}
+    hstate=str(hs.get('state') or row.get('horizon_structure_state') or '').upper()
+    decision=str(row.get('research_decision') or row.get('decision') or 'NO_TRADE').upper()
+    return bool(
+        entry_quality=='INVALIDATED'
+        and decision=='NO_TRADE'
+        and hstate!='CONFIRMED_TREND'
+    )
+
+
 def _v90r46_hold_context(name,z,row):
     row=row or {}
     direction=str((z or {}).get('direction') or '')
@@ -1409,6 +1469,14 @@ def report(pg_connect):
         'STOP','HARD_THESIS_INVALIDATION','STRUCTURE_EXHAUSTION',
         'CONFIRMED_REVERSAL','RISK_HARD_STOP'
       ],
+      'profitability_admission_repair':{
+        'learned_rr_floors':{
+          'Impulse':1.15,'Aggressive':1.20,'Champion':1.35,'Challenger':1.50,
+        },
+        'early_breakout_initial_fraction':0.05,
+        'range_regime_early_breakout_allowed':False,
+        'invalidated_execution_horizon_exit':True,
+      },
       'principle':'fresh-entry economics controls adds; existing trend exposure is managed by structure, stops and profit protection',
     }
     return _jsonable(d)
