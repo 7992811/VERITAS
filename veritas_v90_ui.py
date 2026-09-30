@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r36-ios-position-resync"
+UI_VERSION = "veritas-ui-v9.0-r37-compact-open-positions"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
