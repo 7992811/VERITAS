@@ -61,8 +61,11 @@ ui.st.portfolios = {portfolios: [{name: 'Impulse', positions: [partial]}]};
 ui.renderPortfolios();
 assert.match(elements.positions.innerHTML, /TP1 ✓ исполнен/);
 assert.match(elements.positions.innerHTML, /TP1 · частично исполнен/);
-assert.match(elements.positions.innerHTML, /Итог сделки 33/);
-assert.match(elements.positions.innerHTML, /Зафиксировано до издержек/);
+assert.doesNotMatch(elements.positions.innerHTML, /Итог сделки/);
+assert.doesNotMatch(elements.positions.innerHTML, /NAV/);
+assert.match(elements.positions.innerHTML, />33 ₽/);
+assert.ok(elements.positions.innerHTML.indexOf('Вход') < elements.positions.innerHTML.indexOf('Зафиксировано'));
+assert.match(elements.positions.innerHTML, /Зафиксировано/);
 assert.match(elements.positions.innerHTML, /Переоценка остатка/);
 assert.match(elements.positions.innerHTML, /Фондирование/);
 ui.st.trades = {trades: [{...partial, status: 'CLOSED', net_pnl_rub: -75,
