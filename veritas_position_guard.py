@@ -116,7 +116,10 @@ def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
     try:
         entry=float(z.get('avg_entry_price') or p.get('entry_price') or 0.0)
         px=float(quote.get('price') or 0.0)
-        units=abs(float(z.get('units') or 0.0))
+        # Production positions always carry normalized units. A unit-less
+        # pure helper/test call uses one normalized unit so percentage-only
+        # protection remains backward-compatible.
+        units=abs(float(z.get('units') or 1.0))
         fees_paid=max(0.0,float(fees_paid_rub or 0.0))
         if entry<=0 or px<=0 or units<=0:
             return None
