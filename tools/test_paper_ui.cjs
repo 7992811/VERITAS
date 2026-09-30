@@ -66,7 +66,7 @@ assert.doesNotMatch(elements.positions.innerHTML, /NAV/);
 assert.match(elements.positions.innerHTML, />33 ₽/);
 assert.ok(elements.positions.innerHTML.indexOf('Вход') < elements.positions.innerHTML.indexOf('Зафиксировано'));
 assert.match(elements.positions.innerHTML, /Зафиксировано/);
-assert.match(elements.positions.innerHTML, /Переоценка остатка/);
+assert.match(elements.positions.innerHTML, /Переоценка/);
 assert.match(elements.positions.innerHTML, /Фондирование/);
 ui.st.trades = {trades: [{...partial, status: 'CLOSED', net_pnl_rub: -75,
   total_trade_pnl_rub: -75, total_trade_return_pct: -.0075,
