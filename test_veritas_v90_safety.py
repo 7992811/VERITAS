@@ -559,3 +559,24 @@ class PortfolioApiCompletenessTests(unittest.TestCase):
             vi.last_cycle=old_cycle
             vi._v90r25_pf_cache.clear()
             vi._v90r25_pf_cache.update(old_cache)
+
+
+class NetProfitLockR55Tests(unittest.TestCase):
+    def test_profit_lock_covers_paid_fees_exit_fee_slippage_and_positive_net(self):
+        z={'direction':'LONG','avg_entry_price':100.0,'stop_price':99.0,
+           'units':10000.0,'payload':{}}
+        q={'price':100.40,'source_gate_pass':True}
+        out=VPG.profit_lock_stop(
+            z,q,.0005,fees_paid_rub=500.0,slippage_pct=.0005,min_net_pct=.0005)
+        self.assertIsNotNone(out)
+        self.assertGreater(out['projected_net_profit_at_stop_rub'],0.0)
+        self.assertGreater(out['stop_price'],100.15)
+        self.assertLess(out['stop_price'],100.40)
+
+    def test_profit_lock_does_not_claim_protection_when_current_move_cannot_cover_costs(self):
+        z={'direction':'SHORT','avg_entry_price':100.0,'stop_price':101.0,
+           'units':10000.0,'payload':{}}
+        q={'price':99.90,'source_gate_pass':True}
+        out=VPG.profit_lock_stop(
+            z,q,.0005,fees_paid_rub=800.0,slippage_pct=.0005,min_net_pct=.0005)
+        self.assertIsNone(out)
