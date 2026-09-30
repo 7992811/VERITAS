@@ -9,9 +9,37 @@ import veritas_instruments as VI
 import veritas_promotion as VPR
 import veritas_risk as VR
 import veritas_live as VL
+import veritas_position_guard as VPG
 
 
 class ExecutionSafetyTests(unittest.TestCase):
+    def test_profit_lock_waits_for_meaningful_profit(self):
+        z={'direction':'LONG','avg_entry_price':100.0,'stop_price':99.0,'payload':{}}
+        q={'price':100.20,'source_gate_pass':True}
+        self.assertIsNone(VPG.profit_lock_stop(z,q,.0005))
+
+    def test_profit_lock_long_covers_round_trip_costs(self):
+        z={'direction':'LONG','avg_entry_price':100.0,'stop_price':99.0,'payload':{}}
+        q={'price':100.30,'source_gate_pass':True}
+        out=VPG.profit_lock_stop(z,q,.0005)
+        self.assertIsNotNone(out)
+        self.assertGreater(out['stop_price'],100.10)
+        self.assertLess(out['stop_price'],q['price'])
+
+    def test_profit_lock_short_covers_round_trip_costs(self):
+        z={'direction':'SHORT','avg_entry_price':100.0,'stop_price':101.0,'payload':{}}
+        q={'price':99.70,'source_gate_pass':True}
+        out=VPG.profit_lock_stop(z,q,.0005)
+        self.assertIsNotNone(out)
+        self.assertLess(out['stop_price'],99.90)
+        self.assertGreater(out['stop_price'],q['price'])
+
+    def test_profit_lock_never_weakens_existing_trailing_stop(self):
+        z={'direction':'LONG','avg_entry_price':100.0,'stop_price':99.0,
+           'payload':{'trailing_stop':100.20}}
+        q={'price':100.40,'source_gate_pass':True}
+        self.assertIsNone(VPG.profit_lock_stop(z,q,.0005))
+
     def test_bad_rr_is_blocked_even_for_setup(self):
         gate = VX.economics_gate("BTC", {
             "eligible": True,
