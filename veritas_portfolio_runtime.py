@@ -2553,6 +2553,377 @@ def report(pg_connect):
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),32)
 
+
+# VERITAS V90 EXECUTION DISCIPLINE R55
+# Variant B:
+# - Aggressive opens 50/75/100% only after the setup is genuinely admissible;
+# - INVALIDATED / hard-invalidated ideas are absolute vetoes and may not be
+#   resurrected by a tighter structural stop;
+# - a stop / hard invalidation cannot be followed by the same-direction stale
+#   setup; a fresh post-exit market event is required;
+# - 5m initial size depends on higher-TF confirmation: 50% / 75% / 100%;
+# - leverage adds require a fresh favorable event plus separate remaining-edge
+#   economics, not confidence alone;
+# - partial reductions preserve lifetime MFE/MAE in the position/trade payload.
+V90_R55_STARTED_AT=os.getenv('VERITAS_R55_EPOCH','2026-09-30T19:45:00+00:00')
+_v90r55_base_admission=_signal_first_admission
+_v90r55_base_open_or_add=_open_or_add
+_v90r55_base_close_or_reduce=_close_or_reduce
+_v90r55_base_apply_structural_stop=_v90r54_apply_structural_stop
+_v90r55_base_report=report
+
+def _v90r55_dt(v):
+    if v is None:
+        return None
+    if isinstance(v,datetime):
+        d=v
+    else:
+        try:
+            d=datetime.fromisoformat(str(v).replace('Z','+00:00'))
+        except Exception:
+            return None
+    if d.tzinfo is None:
+        d=d.replace(tzinfo=timezone.utc)
+    return d
+
+def _v90r55_invalidated(row):
+    row=row or {}
+    plan=row.get('trade_plan') or {}
+    ti=plan.get('trade_integrity') or {}
+    return bool(
+        ti.get('hard_invalidation')
+        or str(row.get('decision_stage') or '').upper()=='INVALIDATED'
+        or str(row.get('entry_quality') or '').upper()=='INVALIDATED'
+        or str(plan.get('entry_quality') or '').upper()=='INVALIDATED'
+    )
+
+def _v90r54_apply_structural_stop(row):
+    if _v90r55_invalidated(row):
+        x=dict(row or {})
+        x['_r55_absolute_veto']='INVALIDATED_SETUP'
+        return x,None
+    return _v90r55_base_apply_structural_stop(row)
+
+def _v90r55_5m_initial_fraction(row,out):
+    row=row or {}
+    if str(row.get('horizon') or '')!='5m':
+        return None
+    supporting=set(str(x) for x in (row.get('_supporting_horizons') or []))
+    # Require actual senior-TF agreement for larger first size.
+    has_1h='1h' in supporting
+    has_4h=bool({'4h','1d','3d','7d'} & supporting)
+    m=_v90r54_metrics(row)
+    if has_1h and has_4h and m.get('super') and float(m.get('strength') or 0)>=0.72:
+        return 1.00,'R55_5M_100_SENIOR_CONFIRMED'
+    if has_1h:
+        return 0.75,'R55_5M_75_ONE_HOUR_CONFIRMED'
+    return 0.50,'R55_5M_50_LOCAL_SIGNAL_ONLY'
+
+def _signal_first_admission(row,policy,drawdown):
+    row=row or {}
+    if _v90r55_invalidated(row) or row.get('_r55_absolute_veto'):
+        return {
+          'open':False,'fraction':0.0,'reason':'R55_ABSOLUTE_INVALIDATED_VETO',
+          'hard_veto':True,'r55_invalidated':True,
+        }
+    out=dict(_v90r55_base_admission(row,policy,drawdown) or {})
+    if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not out.get('open'):
+        return out
+    s=_v90r55_5m_initial_fraction(row,out)
+    if s:
+        fraction,reason=s
+        out['fraction']=fraction
+        out['reason']='R55_AGGRESSIVE_VARIANT_B'
+        out['r55_initial_size_reason']=reason
+        out['r55_initial_size_fraction']=fraction
+    else:
+        # Non-5m keeps R54's qualified 50/75/100 start.
+        out['fraction']=max(0.50,min(1.0,float(out.get('fraction') or 0.50)))
+        out['reason']='R55_AGGRESSIVE_VARIANT_B'
+        out['r55_initial_size_reason']='R55_1H_PLUS_50_75_100'
+        out['r55_initial_size_fraction']=out['fraction']
+    return out
+
+def _v90r55_recent_failed_trade(c,name,asset,direction):
+    try:
+        r=c.execute(
+            """SELECT trade_id,closed_at,avg_exit_price,payload
+               FROM paper_trades
+               WHERE portfolio_name=%s AND asset=%s AND direction=%s
+                 AND status='CLOSED' AND closed_at IS NOT NULL
+               ORDER BY closed_at DESC LIMIT 1""",
+            (name,asset,direction)
+        ).fetchone()
+        return dict(r) if r else None
+    except Exception:
+        return None
+
+def _v90r55_reentry_gate(c,name,asset,direction,row,price,ts):
+    last=_v90r55_recent_failed_trade(c,name,asset,direction)
+    if not last:
+        return {'eligible':True,'reason':'NO_RECENT_FAILED_TRADE'}
+    p=_v90j_json(last.get('payload'))
+    reason=str(p.get('exit_reason') or p.get('close_reason') or '').upper()
+    if reason not in (
+        'STOP','HARD_THESIS_INVALIDATION','V842_HARD_THESIS_EXIT',
+        'V84_CONFIRMED_DIRECTION_FLIP','RISK_HARD_STOP'
+    ):
+        return {'eligible':True,'reason':'LAST_EXIT_NOT_FAILURE'}
+    closed=_v90r55_dt(last.get('closed_at'))
+    now=_v90r55_dt(ts) or datetime.now(timezone.utc)
+    if not closed:
+        return {'eligible':False,'reason':'RECENT_FAILURE_TIME_UNKNOWN'}
+    age=max(0.0,(now-closed).total_seconds())
+    if age>=1800.0:
+        return {'eligible':True,'reason':'FAILURE_QUARANTINE_EXPIRED','age_seconds':age}
+
+    observed=_v90r55_dt(row.get('market_observed_at') or row.get('observed_at'))
+    fresh_after_exit=bool(observed and observed>closed)
+    old_setup=str(p.get('canonical_setup_id') or p.get('setup_id') or '')
+    try:
+        new_setup=str(_portfolio_canonical_setup_id(row) or '')
+    except Exception:
+        new_setup=''
+    bq=str((((row.get('institutional_signal') or {}).get('breakout_quality') or {}).get('state')) or '')
+    hs=row.get('horizon_structure') or {}
+    try: hscore=float(hs.get('score') or row.get('horizon_structure_score') or 0.0)
+    except Exception: hscore=0.0
+    structural=bool(
+        str(hs.get('state') or row.get('horizon_structure_state') or '') in ('BUILDING_TREND','CONFIRMED_TREND')
+        and hscore>=0.70
+    )
+    new_setup_ok=bool(new_setup and old_setup and new_setup!=old_setup)
+    exit_price=_v90r51_num(last.get('avg_exit_price'))
+    px=_v90r51_num(price)
+    try: rv=abs(float(row.get('realized_vol') or 0.0))
+    except Exception: rv=0.0
+    progress_floor=min(0.006,max(0.0015,0.20*rv))
+    progress=0.0
+    if exit_price and px and exit_price>0:
+        progress=(px/exit_price-1.0) if direction=='LONG' else (exit_price/px-1.0)
+    price_event=bool(progress>=progress_floor)
+    breakout_event=bq in (
+        'FRESH_BREAKOUT','HIGH_QUALITY_BREAKOUT','CONFIRMED_BREAKOUT','SUPER_CONFIRMED'
+    )
+    eligible=bool(fresh_after_exit and structural and breakout_event and new_setup_ok and price_event)
+    return {
+      'eligible':eligible,
+      'reason':'NEW_POST_EXIT_EVENT' if eligible else 'R55_STALE_SAME_DIRECTION_REENTRY',
+      'age_seconds':age,'fresh_after_exit':fresh_after_exit,
+      'old_setup_id':old_setup,'new_setup_id':new_setup,'new_setup':new_setup_ok,
+      'breakout_state':bq,'structural':structural,'horizon_structure_score':hscore,
+      'price_progress_from_exit':progress,'required_progress':progress_floor,
+    }
+
+def _v90r55_add_event_gate(z,row,price):
+    z=dict(z or {}); row=row or {}
+    p=_v90j_json(z.get('payload'))
+    d=str(z.get('direction') or '')
+    px=_v90r51_num(price)
+    if d not in ('LONG','SHORT') or not px or px<=0:
+        return {'eligible':False,'reason':'R55_ADD_INVALID_INPUT'}
+    m=_v90r54_metrics(row)
+    plan=row.get('trade_plan') or {}
+    target=_v90r51_num(plan.get('target_price') or plan.get('tactical_target_price'))
+    remaining=0.0
+    if target:
+        remaining=((target/px)-1.0) if d=='LONG' else ((px/target)-1.0)
+    remaining=max(0.0,remaining)
+    cost=_v90r51_num(((plan.get('final_economics_gate') or {}).get('modeled_round_trip_cost_pct')))
+    if cost is None:
+        try: cost=float(VX.round_trip_cost_pct(row.get('spread_bps')))
+        except Exception: cost=2.0*float(COMMISSION)
+    try: rr=float((plan.get('final_economics_gate') or {}).get('net_reward_risk')
+                  or row.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+
+    last_px=_v90r51_num(p.get('r55_last_scale_price'))
+    last_anchor=_v90r51_num(p.get('r55_last_scale_anchor'))
+    current_anchor=_v90r51_num(((row.get('intraday_structure') or {}).get('recent_swing_anchor')))
+    if last_px:
+        progress=(px/last_px-1.0) if d=='LONG' else (last_px/px-1.0)
+    else:
+        try:
+            entry=float(z.get('avg_entry_price') or 0.0)
+            progress=(px/entry-1.0) if d=='LONG' else (entry/px-1.0)
+        except Exception:
+            progress=0.0
+    rv=abs(float(row.get('realized_vol') or 0.0))
+    progress_floor=min(0.008,max(0.0015,0.18*rv))
+    new_price_impulse=bool(progress>=progress_floor)
+    new_anchor=bool(
+        current_anchor is not None and (
+            last_anchor is None
+            or (d=='LONG' and current_anchor>last_anchor)
+            or (d=='SHORT' and current_anchor<last_anchor)
+        )
+    )
+    high_quality=bool(
+        m.get('signed_impulse_confirmed')
+        and float(m.get('impulse_score') or 0)>=0.55
+        and float(m.get('impulse_to_volatility') or 0)>=0.75
+        and int(m.get('independent') or 0)>=3
+        and int(m.get('alignment') or 0)>=2
+    )
+    economics_ok=bool(remaining>=max(0.004,3.0*float(cost or 0.0)) and rr>=1.20)
+    event_ok=bool(new_price_impulse and (new_anchor or str(m.get('breakout_state') or '') in (
+        'FRESH_BREAKOUT','HIGH_QUALITY_BREAKOUT','CONFIRMED_BREAKOUT','SUPER_CONFIRMED'
+    )))
+    return {
+      'eligible':bool(event_ok and high_quality and economics_ok),
+      'reason':'R55_ADD_EVENT_CONFIRMED' if (event_ok and high_quality and economics_ok)
+               else 'R55_ADD_NEEDS_NEW_IMPULSE_EVENT',
+      'price_progress':progress,'required_progress':progress_floor,
+      'new_anchor':new_anchor,'current_anchor':current_anchor,'last_anchor':last_anchor,
+      'impulse_score':m.get('impulse_score'),
+      'impulse_to_volatility':m.get('impulse_to_volatility'),
+      'independent':m.get('independent'),'alignment':m.get('alignment'),
+      'remaining_edge_pct':remaining,'cost_pct':cost,'net_rr':rr,
+      'economics_ok':economics_ok,'event_ok':event_ok,'high_quality':high_quality,
+    }
+
+def _v90r55_mark_scale_event(c,name,z,row,price,ts):
+    z=dict(z or {}); row=row or {}
+    anchor=_v90r51_num(((row.get('intraday_structure') or {}).get('recent_swing_anchor')))
+    patch={
+      'r55_last_scale_at':_v90j_iso(ts),
+      'r55_last_scale_price':float(price),
+      'r55_last_scale_anchor':anchor,
+      'r55_last_scale_horizon':row.get('horizon'),
+      'r55_last_scale_setup_id':_portfolio_canonical_setup_id(row),
+    }
+    c.execute(
+        "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+        "WHERE portfolio_name=%s AND asset=%s",
+        (json.dumps(patch,ensure_ascii=False,default=str),name,z.get('asset'))
+    )
+    tid=z.get('active_trade_id')
+    if tid:
+        c.execute(
+            "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+            (json.dumps(patch,ensure_ascii=False,default=str),tid)
+        )
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    row=row or {}
+    if _v90r55_invalidated(row):
+        print(json.dumps({
+          'event':'V90_R55_ENTRY_BLOCKED','portfolio':name,'asset':asset,
+          'direction':direction,'reason':'INVALIDATED_SETUP'
+        },ensure_ascii=False,separators=(',',':')),flush=True)
+        return 0.0
+
+    existing=c.execute(
+        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+        (name,asset)
+    ).fetchone()
+
+    if not existing:
+        rg=_v90r55_reentry_gate(c,name,asset,direction,row,price,ts)
+        if not rg.get('eligible'):
+            print(json.dumps({
+              'event':'V90_R55_REENTRY_BLOCKED','portfolio':name,'asset':asset,
+              'direction':direction,**rg
+            },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+            return 0.0
+
+    requested=float(target_fraction or 0.0)
+    current=0.0
+    if existing and str(existing.get('direction') or '')==str(direction):
+        current=abs(float(existing.get('units') or 0.0)*float(price))/max(float(nav),1.0)
+        if requested>current+0.025:
+            # Completing a legacy pre-R54 initial allocation to <=100% is still
+            # allowed under the hard stop-risk rebase. New leverage / further
+            # scaling requires a new market event.
+            pld=_v90j_json(existing.get('payload'))
+            legacy_opening=float(pld.get('r54_pre_rebase_opening_fraction')
+                                 or pld.get('opening_fraction') or current)
+            is_legacy_completion=bool(current<0.50 and requested<=1.0 and legacy_opening<0.50)
+            if not is_legacy_completion:
+                ag=_v90r55_add_event_gate(dict(existing),row,price)
+                if not ag.get('eligible'):
+                    print(json.dumps({
+                      'event':'V90_R55_ADD_BLOCKED','portfolio':name,'asset':asset,
+                      'direction':direction,'current_fraction':current,
+                      'requested_fraction':requested,**ag
+                    },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+                    return 0.0
+
+    result=_v90r55_base_open_or_add(
+        c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason
+    )
+    try:
+        after=c.execute(
+            "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+            (name,asset)
+        ).fetchone()
+        if after and str(after.get('direction') or '')==str(direction):
+            after_frac=abs(float(after.get('units') or 0.0)*float(price))/max(float(nav),1.0)
+            if after_frac>current+0.025:
+                _v90r55_mark_scale_event(c,name,dict(after),row,price,ts)
+    except Exception:
+        pass
+    return result
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    z=dict(z or {})
+    pre=_v90j_json(z.get('payload'))
+    pre_mfe=_v90r51_num(pre.get('mfe_pct'),0.0) or 0.0
+    pre_mae=_v90r51_num(pre.get('mae_pct'),0.0) or 0.0
+    result=_v90r55_base_close_or_reduce(
+        c,p,name,z,price,target_fraction,nav,ts,reason
+    )
+    # A partial reduction must never erase the lifetime path of the trade.
+    if result and float(target_fraction or 0.0)>0:
+        try:
+            z2=c.execute(
+                "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+                (name,z.get('asset'))
+            ).fetchone()
+            if z2:
+                p2=_v90j_json(z2.get('payload'))
+                mfe=max(pre_mfe,float(p2.get('mfe_pct') or 0.0))
+                mae=min(pre_mae,float(p2.get('mae_pct') or 0.0))
+                patch={'mfe_pct':mfe,'mae_pct':mae,
+                       'r55_lifetime_excursion_preserved':True}
+                c.execute(
+                    "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                    "WHERE portfolio_name=%s AND asset=%s",
+                    (json.dumps(patch),name,z.get('asset'))
+                )
+                tid=z2.get('active_trade_id')
+                if tid:
+                    c.execute(
+                        "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                        "WHERE trade_id=%s",(json.dumps(patch),tid)
+                    )
+        except Exception:
+            pass
+    return result
+
+def report(pg_connect):
+    d=dict(_v90r55_base_report(pg_connect) or {})
+    d['execution_discipline_r55']={
+      'status':'ACTIVE','started_at':V90_R55_STARTED_AT,
+      'aggressive_variant':'B',
+      'initial_size':{
+        'qualified_base':'50%-100%',
+        '5m_without_1h':'50%',
+        '5m_plus_1h':'75%',
+        '5m_plus_1h_and_4h_super':'100%',
+      },
+      'absolute_invalidated_veto':True,
+      'same_direction_failure_quarantine_minutes':30,
+      'reentry_requires_new_setup_and_post_exit_price_event':True,
+      'adds_require_new_price_impulse_or_structural_extreme':True,
+      'adds_require_remaining_post_cost_edge':True,
+      'partial_reduction_preserves_lifetime_mfe_mae':True,
+      'leverage_ceiling':5.0,
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),33)
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
