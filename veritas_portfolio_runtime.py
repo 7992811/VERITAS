@@ -811,14 +811,45 @@ def _v90_candidate_profit_guard(row,policy,economics):
         if pn>=8:
             entry_error=float(profile.get('entry_error_rate') or 0.0)
             cost_drag=float(profile.get('cost_drag_rate') or 0.0)
+            stop_error=float(profile.get('stop_error_rate') or 0.0)
+            exit_error=float(profile.get('exit_capture_error_rate') or 0.0)
+            overforecast=float(profile.get('overforecast_rate') or 0.0)
             bayes=float(profile.get('bayesian_win_rate') or 0.5)
             avg_pnl=float(profile.get('avg_net_pnl_rub') or 0.0)
+            management_error_rate=min(1.0,stop_error+exit_error)
+            management_dominated=bool(
+                entry_error<0.30
+                and management_error_rate>=0.30
+            )
             if entry_error>=0.35:
                 blockers.append('LEARNED_ENTRY_DIRECTION_ERROR_CLUSTER')
             if cost_drag>=0.45:
                 blockers.append('LEARNED_COST_DRAG_CLUSTER')
             if bayes<0.45 and avg_pnl<=0:
-                blockers.append('LEARNED_NEGATIVE_CONTEXT_EXPECTANCY')
+                if mode in ('IMPULSE_ONLY','AGGRESSIVE') and management_dominated:
+                    # R52: a losing historical P&L caused substantially by stop /
+                    # exit-management errors is not evidence that direction is bad.
+                    # Preserve a small research probe; the economics gate and
+                    # calibrated RR remain authoritative.
+                    soft_warnings.append(
+                        'LEARNED_NEGATIVE_CONTEXT_EXPECTANCY_MANAGEMENT_DOMINATED'
+                    )
+                    size_cap=(0.10 if mode=='IMPULSE_ONLY' else 0.15) if size_cap is None else min(
+                        size_cap,0.10 if mode=='IMPULSE_ONLY' else 0.15
+                    )
+                    size_multiplier=min(size_multiplier,0.60)
+                else:
+                    blockers.append('LEARNED_NEGATIVE_CONTEXT_EXPECTANCY')
+            base['learning_attribution']={
+              'entry_error_rate':entry_error,
+              'cost_drag_rate':cost_drag,
+              'stop_error_rate':stop_error,
+              'exit_capture_error_rate':exit_error,
+              'management_error_rate':management_error_rate,
+              'overforecast_rate':overforecast,
+              'management_dominated':management_dominated,
+              'negative_expectancy_is_directional':not management_dominated,
+            }
 
         base['raw_expected_move_pct']=learn.get('raw_expected_move_pct')
         base['raw_net_reward_risk']=learn.get('raw_net_reward_risk')
@@ -870,7 +901,7 @@ def _v90_candidate_profit_guard(row,policy,economics):
     base['status']='PASS' if base['eligible'] else 'BLOCK'
     base['size_multiplier']=size_multiplier
     base['size_cap']=size_cap
-    base['admission_policy']='HARD_SAFETY_SOFT_LEARNING_R47'
+    base['admission_policy']='HARD_SAFETY_ATTRIBUTED_LEARNING_R52'
     base['closed_loop_learning_r43']=learn
     return base
 
