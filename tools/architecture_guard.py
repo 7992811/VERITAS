@@ -9,6 +9,7 @@ LIMITS = {
     "veritas_portfolio.py": {"max_lines": 8200, "max_redefinitions": 68, "max_duplicate_names": 20},
     "veritas_portfolio_runtime.py": {"max_lines": 1450, "max_redefinitions": 16, "max_duplicate_names": 8},
     "veritas_decision_signature.py": {"max_lines": 50, "max_redefinitions": 0, "max_duplicate_names": 0},
+    "veritas_asset_management_intelligence.py": {"max_lines": 540, "max_redefinitions": 0, "max_duplicate_names": 0},
 }
 
 
