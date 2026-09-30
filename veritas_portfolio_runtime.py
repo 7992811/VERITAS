@@ -279,38 +279,51 @@ def _v90_canonical_quality_admission(row, policy, drawdown):
     except Exception:
         pass
 
-    # R49: 5-minute signals are discovery entries, not full-size authority.
-    # Historical independent episodes showed materially worse outcomes once the
-    # first 5m allocation exceeded 20% NAV. Keep the first entry small and earn
-    # size from senior-timeframe confirmation plus empirical calibration.
+    # R50: three-stage 5m sizing. The first 5m trade is evidence collection,
+    # not full-size authority. Historical independent episodes showed that large
+    # first allocations (>20%) concentrated most losses, while <=10% was far
+    # less damaging. Earn size only with empirical calibration and senior-TF
+    # confirmation; use 1h+ to authorize material scale-up.
     five_minute_policy=None
     if str(row.get('horizon') or '')=='5m':
         senior_support=any(
             str(h) in ('1h','4h','1d','3d','7d') for h in supporting
         )
         breakout_state=str(guard.get('breakout_state') or '')
-        mature_5m=bool(
+        empirical_probe=bool(
             empirical
+            and quality>=threshold
+            and independent>=3
+            and alignment>=2
+            and hscore>=0.62
+            and rr>=1.35
+            and senior_support
+            and breakout_state not in ('WEAK_BREAKOUT',)
+        )
+        mature_5m=bool(
+            empirical_probe
             and quality>=strong_threshold
             and independent>=4
             and alignment>=4
             and hscore>=0.74
             and rr>=1.80
-            and senior_support
             and breakout_state not in ('EARLY_BREAKOUT','WEAK_BREAKOUT')
         )
         if mature_5m:
             cap={
-              'IMPULSE_ONLY':0.25,'AGGRESSIVE':0.50,
-              'CORE':0.15,'CHALLENGER':0.10,
+              'IMPULSE_ONLY':0.15,'AGGRESSIVE':0.25,
+              'CORE':0.10,'CHALLENGER':0.10,
             }.get(mode,0.10)
             five_minute_policy='MATURE_EMPIRICAL_SENIOR_CONFIRMED'
-        else:
+        elif empirical_probe:
             cap={
               'IMPULSE_ONLY':0.10,'AGGRESSIVE':0.10,
               'CORE':0.05,'CHALLENGER':0.05,
             }.get(mode,0.05)
-            five_minute_policy='DISCOVERY_PROBE_AWAIT_SENIOR_CONFIRMATION'
+            five_minute_policy='EMPIRICAL_DISCOVERY_PROBE'
+        else:
+            cap=0.05
+            five_minute_policy='UNCALIBRATED_DISCOVERY_PROBE'
         f=min(f,cap)
         row['_five_minute_sizing_policy']=five_minute_policy
         row['_five_minute_size_cap']=cap
