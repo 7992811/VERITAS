@@ -1062,5 +1062,51 @@ class R56TpBackfillTests(unittest.TestCase):
         self.assertTrue(c.execute.called)
 
 
+class R561TrailingResetTests(unittest.TestCase):
+    def test_legacy_migration_replaces_obsolete_tight_trailing_stop(self):
+        c=MagicMock()
+        z={
+            'portfolio_name':'Aggressive','asset':'CNYRUBF','direction':'SHORT',
+            'units':40000.0,'avg_entry_price':12.36,'last_price':12.37,
+            'stop_price':12.3835,'active_trade_id':'legacy1',
+            'payload':{
+                'execution_horizon':'3d',
+                'trailing_stop':12.3835,
+                'r48_profit_lock_active':True,
+                'r55_net_profit_lock_active':True,
+            }
+        }
+        row={
+            'asset':'CNYRUBF','horizon':'4h','research_decision':'SHORT',
+            'price':12.37,'realized_vol':.0095,
+            'intraday_structure':{'recent_swing_anchor':12.38},
+            'trade_plan':{'stop_price':12.70,'target_price':11.10},
+        }
+        patch=VPR._v90r56_migrate_legacy_senior_position(
+            c,'Aggressive',z,row,12.37,1_000_000.0,
+            datetime(2026,10,1,3,30,tzinfo=timezone.utc))
+        self.assertIsNotNone(patch)
+        self.assertGreater(patch['trailing_stop'],12.3835)
+        self.assertAlmostEqual(patch['trailing_stop'],patch['r56_management_stop'])
+        self.assertFalse(patch['r48_profit_lock_active'])
+        self.assertFalse(patch['r55_net_profit_lock_active'])
+
+    def test_reframed_short_does_not_stop_on_price_below_new_management_stop(self):
+        z={
+            'asset':'CNYRUBF','direction':'SHORT','avg_entry_price':12.36,
+            'last_price':12.37,'stop_price':12.4357,
+            'payload':{'trailing_stop':12.4357}
+        }
+        q={
+            'price':12.387,'source_gate_pass':True,
+            'observed_at':'2026-10-01T04:06:12+00:00',
+            'contract':{'secid':'CNYRUBF'}
+        }
+        out=VPG.protective_reason(
+            z,q,datetime(2026,10,1,4,6,20,tzinfo=timezone.utc))
+        self.assertIsNone(out)
+
+
+
 if __name__ == '__main__':
     unittest.main()
