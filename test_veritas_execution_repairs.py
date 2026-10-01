@@ -24,7 +24,11 @@ class QuoteTimeTests(unittest.TestCase):
         self.assertEqual(observed, '2026-09-29T09:18:58+00:00')
         self.assertFalse(quote_gate(observed, '5m', NOW)['eligible'])
         self.assertTrue(quote_gate(observed, '1h', NOW)['eligible'])
-        self.assertTrue(quote_gate(observed, '5m', NOW, protective=True)['eligible'])
+        # R58: research-grade delayed data may still inform a 1h thesis, but it
+        # cannot execute a protective fill when the observation is >5 minutes old.
+        self.assertFalse(quote_gate(observed, '5m', NOW, protective=True)['eligible'])
+        fresh_protective = (NOW-timedelta(minutes=4)).isoformat()
+        self.assertTrue(quote_gate(fresh_protective, '5m', NOW, protective=True)['eligible'])
 
     def test_server_timestamp_alone_and_future_quotes_are_rejected(self):
         for row in ({'SYSTIME': '2026-09-29 12:34:00'},

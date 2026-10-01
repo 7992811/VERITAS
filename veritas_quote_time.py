@@ -44,9 +44,14 @@ def quote_gate(observed_at, horizon=None, now=None, *, protective=False):
     now = now or datetime.now(timezone.utc)
     dt = utc_datetime(observed_at)
     age = (now - dt).total_seconds() if dt else None
-    # One source remains sufficient. Delayed research quotes must not masquerade
-    # as fast entries. Protective exits may use the newest delayed observation.
-    limit = 3600 if protective or horizon != '5m' else 300
+    # One source remains sufficient, but protective execution is stricter than
+    # research admission. A stop / take-profit must never be simulated from a
+    # materially stale quote: if no <=5 minute observation exists, the protective
+    # lane degrades fail-closed until a fresh observation arrives.
+    if protective:
+        limit = 300
+    else:
+        limit = 300 if horizon == '5m' else 3600
     ok = age is not None and math.isfinite(age) and -5 <= age <= limit
     return {'eligible': ok, 'observed_at': dt.isoformat() if dt else None,
             'age_seconds': age, 'max_age_seconds': limit,

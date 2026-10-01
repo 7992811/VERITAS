@@ -256,6 +256,15 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             z = dict(item)
             q = quotes.get(z['asset'])
 
+            # R58: every protective-side mutation (MFE/MAE, profit lock, STOP/TP)
+            # requires the same fresh protective quote. Previously the guard could
+            # reject a stale quote for the final exit but still update path/profit
+            # protection from it, and protective=True allowed observations up to
+            # one hour old. Fail closed before touching the position.
+            q_quality = quote_gate((q or {}).get('observed_at'), now=now, protective=True)
+            if not (q or {}).get('source_gate_pass') or not q_quality.get('eligible'):
+                continue
+
             # R55: persist lifetime excursion from the independent fresh
             # quote before any partial reduction / exit mutates the position.
             zp=payload_of(z)
