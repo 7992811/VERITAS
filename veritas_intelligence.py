@@ -1036,7 +1036,27 @@ def pg_init():
         );
         CREATE INDEX IF NOT EXISTS idx_ledger_type_ts ON ledger_events(event_type,event_ts DESC);
         CREATE INDEX IF NOT EXISTS idx_ledger_entity ON ledger_events(entity_key,event_type);
+        CREATE INDEX IF NOT EXISTS idx_ledger_entity_type_ts ON ledger_events(entity_key,event_type,event_ts DESC);
         CREATE INDEX IF NOT EXISTS idx_ledger_asset_horizon ON ledger_events(asset,horizon,event_ts DESC);
+        CREATE TABLE IF NOT EXISTS v90_decision_episodes(
+          entity_key TEXT PRIMARY KEY,
+          decision_ts TIMESTAMPTZ NOT NULL,
+          outcome_ts TIMESTAMPTZ NOT NULL,
+          asset TEXT NOT NULL,
+          horizon TEXT NOT NULL,
+          regime TEXT NOT NULL,
+          decision TEXT NOT NULL,
+          forward_return DOUBLE PRECISION NOT NULL,
+          mfe DOUBLE PRECISION,
+          mae DOUBLE PRECISION,
+          model_version TEXT,
+          knowledge_shadow_matches JSONB NOT NULL DEFAULT '[]'::jsonb,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_v90_decision_episodes_ts
+          ON v90_decision_episodes(decision_ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_v90_decision_episodes_strata
+          ON v90_decision_episodes(asset,horizon,regime,decision_ts DESC);
         CREATE TABLE IF NOT EXISTS knowledge_sources(
           source_id TEXT PRIMARY KEY, title TEXT NOT NULL, authors TEXT, year INTEGER,
           source_type TEXT, url TEXT, evidence_grade TEXT, claim TEXT,
@@ -1488,12 +1508,114 @@ def _v90_pg_batch_flush():
                      error=f'{type(ie).__name__}: {ie}')
         return ok
 
+_v90_decision_episode_backfill_state={'at':0.0,'inserted':0,'status':'NOT_STARTED','error':None}
+
+def _v90_materialize_decision_episode(entity_key,outcome_payload,outcome_ts=None):
+    op=outcome_payload if isinstance(outcome_payload,dict) else {}
+    fr=op.get('forward_return')
+    if fr is None or not entity_key or not pg_enabled():
+        return False
+    try:
+        fr=float(fr)
+        mfe=None if op.get('mfe') is None else float(op.get('mfe'))
+        mae=None if op.get('mae') is None else float(op.get('mae'))
+    except Exception:
+        return False
+    ots=outcome_ts or now()
+    try:
+        with pg_connect() as c:
+            c.execute("""WITH d AS (
+                SELECT entity_key,event_ts,asset,horizon,payload,model_version
+                FROM ledger_events
+                WHERE entity_key=%s AND event_type='decision'
+                ORDER BY event_ts DESC
+                LIMIT 1
+              )
+              INSERT INTO v90_decision_episodes(
+                entity_key,decision_ts,outcome_ts,asset,horizon,regime,decision,
+                forward_return,mfe,mae,model_version,knowledge_shadow_matches,updated_at
+              )
+              SELECT d.entity_key,d.event_ts,%s,d.asset,d.horizon,
+                     COALESCE(d.payload->>'regime','UNKNOWN'),
+                     COALESCE(d.payload->>'research_decision',d.payload->>'decision','NO_TRADE'),
+                     %s,%s,%s,d.model_version,
+                     COALESCE(d.payload->'knowledge_shadow_matches','[]'::jsonb),now()
+              FROM d
+              ON CONFLICT(entity_key) DO UPDATE SET
+                decision_ts=EXCLUDED.decision_ts,outcome_ts=EXCLUDED.outcome_ts,
+                asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,regime=EXCLUDED.regime,
+                decision=EXCLUDED.decision,forward_return=EXCLUDED.forward_return,
+                mfe=EXCLUDED.mfe,mae=EXCLUDED.mae,model_version=EXCLUDED.model_version,
+                knowledge_shadow_matches=EXCLUDED.knowledge_shadow_matches,updated_at=now()
+            """,(str(entity_key),ots,fr,mfe,mae))
+        return True
+    except Exception as ex:
+        emit('decision_episode_materialize_error',entity_key=str(entity_key),
+             error=f'{type(ex).__name__}: {ex}')
+        return False
+
+def _v90_backfill_decision_episodes(batch_size=500,max_batches=20,max_seconds=18.0):
+    if not pg_enabled():
+        return {'status':'POSTGRES_REQUIRED','inserted':0}
+    started=time.time(); total=0; batches=0; err=None
+    try:
+        while batches<int(max_batches) and time.time()-started<float(max_seconds):
+            with pg_connect() as c:
+                c.execute("SET statement_timeout TO '4s'")
+                rows=c.execute("""WITH picked AS (
+                    SELECT o.entity_key,o.event_ts AS outcome_ts,o.payload AS op,
+                           d.event_ts AS decision_ts,d.asset,d.horizon,d.payload AS dp,d.model_version
+                    FROM ledger_events o
+                    JOIN ledger_events d
+                      ON d.entity_key=o.entity_key AND d.event_type='decision'
+                    LEFT JOIN v90_decision_episodes e ON e.entity_key=o.entity_key
+                    WHERE o.event_type='outcome'
+                      AND o.payload ? 'forward_return'
+                      AND e.entity_key IS NULL
+                    ORDER BY o.event_ts ASC
+                    LIMIT %s
+                  )
+                  INSERT INTO v90_decision_episodes(
+                    entity_key,decision_ts,outcome_ts,asset,horizon,regime,decision,
+                    forward_return,mfe,mae,model_version,knowledge_shadow_matches,updated_at
+                  )
+                  SELECT entity_key,decision_ts,outcome_ts,asset,horizon,
+                         COALESCE(dp->>'regime','UNKNOWN'),
+                         COALESCE(dp->>'research_decision',dp->>'decision','NO_TRADE'),
+                         (op->>'forward_return')::double precision,
+                         CASE WHEN op ? 'mfe' THEN NULLIF(op->>'mfe','')::double precision END,
+                         CASE WHEN op ? 'mae' THEN NULLIF(op->>'mae','')::double precision END,
+                         model_version,COALESCE(dp->'knowledge_shadow_matches','[]'::jsonb),now()
+                  FROM picked
+                  ON CONFLICT(entity_key) DO NOTHING
+                  RETURNING entity_key""",(max(50,min(1000,int(batch_size))),)).fetchall()
+            n=len(rows or []); total+=n; batches+=1
+            if n < max(50,min(1000,int(batch_size))):
+                break
+            time.sleep(0.03)
+        status='OK'
+    except Exception as ex:
+        err=f'{type(ex).__name__}: {ex}'
+        status='DEGRADED'
+        emit('decision_episode_backfill_error',inserted=total,batches=batches,error=err)
+    _v90_decision_episode_backfill_state.update({
+      'at':time.time(),'inserted':total,'status':status,'error':err,
+      'batches':batches,'duration_seconds':round(time.time()-started,3)
+    })
+    if total:
+        emit('decision_episode_backfill_complete',inserted=total,batches=batches,
+             duration_seconds=round(time.time()-started,3))
+    return dict(_v90_decision_episode_backfill_state)
+
 def pg_event(event_type,entity_key,payload,asset=None,horizon=None,event_ts=None):
     q=getattr(_v90_pg_batch_local,'queue',None)
     if q is not None and event_type in ('decision','setup_learning','admission_learning','meta_signal'):
         q.append((event_type,entity_key,payload,asset,horizon,event_ts))
         return True
-    return _v90_base_pg_event(event_type,entity_key,payload,asset,horizon,event_ts)
+    ok=_v90_base_pg_event(event_type,entity_key,payload,asset,horizon,event_ts)
+    if ok and event_type=='outcome':
+        _v90_materialize_decision_episode(entity_key,payload,event_ts)
+    return ok
 
 def seed_case_lessons():
     if not pg_enabled():
@@ -5511,11 +5633,17 @@ def run_heavy_learning_maintenance(reason='scheduled'):
         heavy_learning_state.update({'status':'RUNNING','last_started_at':started_at,'reason':reason,'last_error':None})
     try:
         t=time.time()
+        decision_backfill=_v90_backfill_decision_episodes()
+        decision_backfill_seconds=time.time()-t
+        t=time.time()
         ev=refresh_event_outcomes() if EVENT_LEARNING_ENABLED else {'status':'disabled','written':0}
         event_seconds=time.time()-t
         t=time.time()
         rr=refresh_rule_stats()
         rule_seconds=time.time()-t
+        t=time.time()
+        learning_index=_learning_progress_refresh_sync('heavy_learning')
+        learning_index_seconds=time.time()-t
         t=time.time()
         xp=refresh_experience_lessons()
         experience_lessons_seconds=time.time()-t
@@ -5532,8 +5660,11 @@ def run_heavy_learning_maintenance(reason='scheduled'):
         with heavy_learning_state_lock:
             heavy_learning_state.update({
                 'status':'OK','last_finished_at':now(),'last_duration_seconds':round(dur,3),
-                'event_learning':ev,'rule_learning':rr,'experience_learning':xp,'last_error':None,
+                'event_learning':ev,'rule_learning':rr,'experience_learning':xp,
+                'decision_episode_backfill':decision_backfill,'learning_index':learning_index,'last_error':None,
                 'runs':int(heavy_learning_state.get('runs') or 0)+1,
+                'decision_backfill_seconds':round(decision_backfill_seconds,3),
+                'learning_index_seconds':round(learning_index_seconds,3),
                 'event_seconds':round(event_seconds,3),'rule_seconds':round(rule_seconds,3),
                 'experience_seconds':round(experience_seconds,3),
                 'experience_lessons_seconds':round(experience_lessons_seconds,3),
@@ -14235,57 +14366,34 @@ def _bounded_completed_episode_rows(order='DESC', raw_limit=6000, episode_limit=
     if not pg_enabled():
         return []
     order='ASC' if str(order).upper()=='ASC' else 'DESC'
-    # R59.2: bounded learning must never contend with the market loop. Five to
-    # six thousand decisions are enough to build independent episodes; larger
-    # scans produced repeated 12s statement timeouts on the small production DB.
-    raw_limit=max(1000,min(6000,int(raw_limit)))
+    raw_limit=max(100,min(8000,int(raw_limit)))
     episode_limit=max(50,min(3000,int(episode_limit)))
     sql=f"""
-      WITH picked AS MATERIALIZED (
-        SELECT entity_key,event_ts,asset,horizon,payload,model_version
-        FROM ledger_events
-        WHERE event_type='decision'
-        ORDER BY event_ts {order}
-        LIMIT %s
-      )
-      SELECT d.entity_key,d.event_ts,d.asset,d.horizon,d.payload AS dp,d.model_version,
-             o.payload AS op
-      FROM picked d
-      JOIN LATERAL (
-        SELECT le.payload
-        FROM ledger_events le
-        WHERE le.entity_key=d.entity_key
-          AND le.event_type='outcome'
-          AND le.payload ? 'forward_return'
-        ORDER BY le.event_ts DESC
-        LIMIT 1
-      ) o ON TRUE
-      ORDER BY d.event_ts {order}
+      SELECT entity_key,decision_ts AS event_ts,asset,horizon,regime,decision,
+             forward_return,mfe,mae,model_version,knowledge_shadow_matches
+      FROM v90_decision_episodes
+      ORDER BY decision_ts {order}
+      LIMIT %s
     """
     try:
         with pg_connect() as c:
-            c.execute("SET statement_timeout TO '6s'")
+            c.execute("SET statement_timeout TO '3s'")
             rows=[dict(r) for r in c.execute(sql,(raw_limit,)).fetchall()]
     except Exception as ex:
-        emit('bounded_learning_query_error',order=order,raw_limit=raw_limit,
+        emit('compact_learning_query_error',order=order,raw_limit=raw_limit,
              error=f'{type(ex).__name__}: {ex}')
         return []
 
-    # Episode detection must run chronologically. For a recent DESC slice, reverse first,
-    # then retain the newest independent episodes.
+    # Preserve the original independent-episode semantics in Python. The DB path
+    # is now a compact durable table, so NO_TRADE and missed-move learning remain
+    # available without repeatedly joining the raw ledger.
     if order=='DESC':
         rows=list(reversed(rows))
-    gaps={'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
-    last={}
-    episodes=[]
+    gaps={'5m':900,'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
+    last={}; episodes=[]
     for r in rows:
-        dp=r.get('dp') if isinstance(r.get('dp'),dict) else _v84_json(r.get('dp'))
-        op=r.get('op') if isinstance(r.get('op'),dict) else _v84_json(r.get('op'))
-        fr=op.get('forward_return')
-        if fr is None:
-            continue
-        dec=str(dp.get('research_decision') or dp.get('decision') or 'NO_TRADE')
-        regime=str(dp.get('regime') or 'UNKNOWN')
+        dec=str(r.get('decision') or 'NO_TRADE')
+        regime=str(r.get('regime') or 'UNKNOWN')
         ts=r.get('event_ts')
         if isinstance(ts,str):
             try: ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
@@ -14300,14 +14408,21 @@ def _bounded_completed_episode_rows(order='DESC', raw_limit=6000, episode_limit=
         last[key]={'decision':dec,'regime':regime,'ts':ts}
         if not is_new:
             continue
+        ksm=r.get('knowledge_shadow_matches')
+        if not isinstance(ksm,list):
+            try: ksm=json.loads(ksm or '[]')
+            except Exception: ksm=[]
+        op={'forward_return':r.get('forward_return'),'mfe':r.get('mfe'),'mae':r.get('mae')}
+        dp={'research_decision':dec,'decision':dec,'regime':regime,
+            'knowledge_shadow_matches':ksm}
         episodes.append({
-            'entity_key':r.get('entity_key'),'event_ts':r.get('event_ts'),
-            'asset':r.get('asset'),'horizon':r.get('horizon'),'regime':regime,
-            'decision':dec,'research_decision':dec,'forward_return':float(fr),
-            'model_version':r.get('model_version'),'dp':dp,'op':op
+          'entity_key':r.get('entity_key'),'event_ts':r.get('event_ts'),
+          'asset':r.get('asset'),'horizon':r.get('horizon'),'regime':regime,
+          'decision':dec,'research_decision':dec,
+          'forward_return':float(r.get('forward_return') or 0.0),
+          'model_version':r.get('model_version'),'dp':dp,'op':op
         })
     return episodes[-episode_limit:] if order=='DESC' else episodes[:episode_limit]
-
 
 def _matched_strata_learning():
     if not pg_enabled():
@@ -14460,14 +14575,51 @@ def _learning_progress_v2_compute():
 
 
 
+_learning_progress_refresh_lock=threading.Lock()
+_learning_progress_state={'status':'NOT_STARTED','last_started_at':None,
+                          'last_finished_at':None,'last_error':None}
+
+def _learning_progress_refresh_sync(reason='background'):
+    if not _learning_progress_refresh_lock.acquire(blocking=False):
+        cache=getattr(learning_progress,'_cache',None)
+        return cache[1] if cache else {'status':'BUILDING','background_refresh':True}
+    try:
+        _learning_progress_state.update(status='RUNNING',last_started_at=now(),last_error=None)
+        out=_learning_progress_v2_compute()
+        learning_progress._cache=(time.time(),out)
+        _learning_progress_state.update(status='OK',last_finished_at=now(),last_error=None)
+        return out
+    except Exception as ex:
+        err=f'{type(ex).__name__}: {ex}'
+        _learning_progress_state.update(status='ERROR',last_finished_at=now(),last_error=err)
+        emit('learning_progress_background_error',reason=reason,error=err)
+        cache=getattr(learning_progress,'_cache',None)
+        return cache[1] if cache else {'status':'BUILDING','background_refresh':True,'last_error':err}
+    finally:
+        _learning_progress_refresh_lock.release()
+
+def _learning_progress_refresh_worker(reason='background'):
+    _learning_progress_refresh_sync(reason)
+
 def learning_progress():
     cache=getattr(learning_progress,'_cache',None)
-    if cache and time.time()-cache[0] < max(60,ANALYTICS_CACHE_SECONDS):
+    ttl=max(60,ANALYTICS_CACHE_SECONDS)
+    if cache and time.time()-cache[0] < ttl:
         return cache[1]
-    out=_learning_progress_v2_compute()
-    learning_progress._cache=(time.time(),out)
-    return out
-
+    if not _learning_progress_refresh_lock.locked():
+        threading.Thread(target=_learning_progress_refresh_worker,args=('nonblocking_read',),
+                         daemon=True,name='veritas-learning-progress').start()
+    if cache:
+        out=dict(cache[1]); out['background_refresh']=True
+        out['cache_age_seconds']=round(max(0.0,time.time()-cache[0]),2)
+        return out
+    return {
+      'status':'BUILDING','index_vs_start':None,'baseline_index':100,
+      'confidence':'LOW','background_refresh':True,
+      'sampling':'compact_decision_episode_cache',
+      'knowledge_growth':{},
+      'definition':'Decision/outcome learning refreshes outside the latency-sensitive market/UI path.'
+    }
 
 def record_presence(visitor_token,path='/app'):
     if not pg_enabled() or not visitor_token: return False

@@ -1305,5 +1305,34 @@ class LossRootCauseGateR59Tests(unittest.TestCase):
             z,99.95,(NOW+timedelta(minutes=2)).isoformat(),
             'V842_CONFIRMED_DIRECTION_FLIP'))
 
+
+
+class LearningFastPathR593Tests(unittest.TestCase):
+    def test_learning_progress_is_nonblocking_on_cold_cache(self):
+        import veritas_intelligence as vi
+        old=getattr(vi.learning_progress,'_cache',None)
+        try:
+            if hasattr(vi.learning_progress,'_cache'):
+                delattr(vi.learning_progress,'_cache')
+            with patch.object(vi.threading,'Thread') as th:
+                out=vi.learning_progress()
+            self.assertEqual(out.get('status'),'BUILDING')
+            self.assertTrue(out.get('background_refresh'))
+            th.assert_called_once()
+        finally:
+            if old is not None:
+                vi.learning_progress._cache=old
+
+    def test_compact_decision_episode_store_replaces_raw_learning_join(self):
+        src=Path("veritas_intelligence.py").read_text(encoding="utf-8")
+        start=src.index("def _bounded_completed_episode_rows")
+        end=src.index("def _matched_strata_learning",start)
+        body=src[start:end]
+        self.assertIn("FROM v90_decision_episodes",body)
+        self.assertNotIn("JOIN LATERAL",body)
+        self.assertNotIn("FROM ledger_events",body)
+        self.assertIn("v90_decision_episodes",src)
+        self.assertIn("_v90_materialize_decision_episode",src)
+
 if __name__ == '__main__':
     unittest.main()
