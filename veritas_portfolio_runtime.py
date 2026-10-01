@@ -3633,6 +3633,12 @@ def _v90_aggressive_candidate_book(summary,core_candidates):
         x['_r57_senior_aligned']=aligned
         x['_r57_direction_confirmation']=confirm
         x['_r57_original_candidate_horizon']=str((out.get(asset) or {}).get('horizon') or '')
+        _old_h=x['_r57_original_candidate_horizon']
+        x['_r56_thesis_horizon']=_old_h if _old_h in _R56_SENIOR_HORIZONS else (
+            max((e.get('horizon') for e in (senior.get('evidence') or [])
+                 if str(e.get('direction') or '')==direction),
+                key=lambda h:{'1d':1,'3d':2,'7d':3}.get(h,0),default=None)
+        )
 
         # Senior view changes initial risk, never the existence of a valid tactical trade.
         if conflict:
