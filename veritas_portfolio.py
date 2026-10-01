@@ -502,31 +502,64 @@ def _candidate_book_signal_first(summary):
     return out
 
 
+def _v90_setup_identity_bucket(row):
+    row=row or {}
+    h=str(row.get('horizon') or '1h')
+    seconds={'5m':900,'1h':3600,'4h':14400,'1d':86400,'3d':86400,'7d':86400}.get(h,3600)
+    raw_ts=(row.get('market_observed_at') or row.get('observed_at')
+            or row.get('generated_at') or row.get('decision_at'))
+    try:
+        dt=raw_ts if isinstance(raw_ts,datetime) else datetime.fromisoformat(str(raw_ts).replace('Z','+00:00'))
+        if dt.tzinfo is None:
+            dt=dt.replace(tzinfo=timezone.utc)
+        bucket=int(dt.timestamp()//seconds)
+    except Exception:
+        bucket=0
+    return f'{h}:{bucket}'
+
+
 def _portfolio_canonical_setup_id(row):
-    d=str((row or {}).get('research_decision') or 'NO_TRADE')
-    if d not in ('LONG','SHORT'): return None
-    plan=(row or {}).get('trade_plan') or {}
-    piv=(row or {}).get('impulse_pivot_break') or {}
-    rev=(row or {}).get('tactical_reversal') or {}
-    rng=(row or {}).get('range_retest_breakout') or {}
-    bq=((row or {}).get('institutional_signal') or {}).get('breakout_quality') or {}
+    """Stable market-setup identity used by re-entry guards and learning.
+
+    Management fields (current price, moving stop / invalidation) must never
+    manufacture a new setup id. Prefer the original structural trigger. If the
+    feed has no explicit structural level, use a horizon-aware event-time bucket.
+    """
+    row=row or {}
+    d=str(row.get('research_decision') or 'NO_TRADE')
+    if d not in ('LONG','SHORT'):
+        return None
+    plan=row.get('trade_plan') or {}
+    piv=row.get('impulse_pivot_break') or {}
+    rev=row.get('tactical_reversal') or {}
+    rng=row.get('range_retest_breakout') or {}
+    bq=(row.get('institutional_signal') or {}).get('breakout_quality') or {}
     if piv.get('active'): family='IMPULSE_PIVOT_BREAK'
     elif rev.get('active'): family='TACTICAL_REVERSAL'
     elif rng.get('active'): family='RANGE_RETEST_BREAKOUT'
-    elif str(bq.get('state') or '') in ('EARLY_BREAKOUT','CONFIRMED_BREAKOUT'): family='BREAKOUT'
+    elif str(bq.get('state') or '') in ('EARLY_BREAKOUT','CONFIRMED_BREAKOUT','HIGH_QUALITY_BREAKOUT','SUPER_CONFIRMED'): family='BREAKOUT'
     elif str(plan.get('regime_shift_state') or '') in ('NEW_REGIME_PROVISIONAL','NEW_REGIME_ACCEPTED'): family='REGIME_SHIFT'
     else: family='TREND'
-    vals=[plan.get('breakout_level'),plan.get('recent_swing_anchor'),
-          ((row or {}).get('structural_levels') or {}).get('resistance' if d=='LONG' else 'support'),
-          plan.get('invalidation_price'),(row or {}).get('price')]
+
+    structural=row.get('structural_levels') or {}
+    vals=[
+      piv.get('trigger_level'),piv.get('breakout_level'),piv.get('pre_impulse_swing'),
+      rev.get('trigger_level'),rev.get('level'),rev.get('pivot_level'),
+      rng.get('trigger_level'),rng.get('breakout_level'),rng.get('retest_level'),
+      plan.get('breakout_level'),
+      structural.get('resistance' if d=='LONG' else 'support'),
+      plan.get('recent_swing_anchor'),
+    ]
     anchor=0.0
     for v in vals:
         try:
             if v is not None and float(v)>0:
-                anchor=float(v); break
-        except Exception: pass
-    akey=f'{anchor:.4g}' if anchor>0 else 'na'
-    raw=f"{(row or {}).get('asset')}|{d}|{family}|{akey}"
+                anchor=float(v)
+                break
+        except Exception:
+            pass
+    identity=('L:'+f'{anchor:.4g}') if anchor>0 else ('T:'+_v90_setup_identity_bucket(row))
+    raw=f"{row.get('asset')}|{d}|{family}|{identity}"
     return 'UTS_'+hashlib.sha256(raw.encode()).hexdigest()[:20]
 
 def _portfolio_admission_trace(candidates,policy,drawdown):
@@ -7110,6 +7143,114 @@ def _v90r29_ensure(c):
     """)
     c.execute("""CREATE INDEX IF NOT EXISTS v90_learning_episodes_profile_idx
                  ON v90_learning_episodes(asset,direction,horizon,setup_family,regime,closed_at DESC)""")
+    c.execute("""CREATE INDEX IF NOT EXISTS v90_learning_episodes_independent_idx
+                 ON v90_learning_episodes((payload->>'independent_episode_key'))
+                 WHERE learning_eligible=TRUE""")
+
+
+def _v90r60_independent_episode_key(t,p=None):
+    t=dict(t or {})
+    p=_v90j_json(t.get('payload')) if p is None else dict(p or {})
+    canonical=str(p.get('canonical_setup_id') or p.get('setup_id') or '').strip()
+    if not canonical:
+        return None
+    h=str(t.get('horizon') or p.get('execution_timeframe') or '')
+    seconds={'5m':900,'1h':3600,'4h':14400,'1d':86400,'3d':86400,'7d':86400}.get(h,3600)
+    opened=t.get('opened_at')
+    try:
+        dt=opened if isinstance(opened,datetime) else datetime.fromisoformat(str(opened).replace('Z','+00:00'))
+        if dt.tzinfo is None:
+            dt=dt.replace(tzinfo=timezone.utc)
+        bucket=int(dt.timestamp()//seconds)
+    except Exception:
+        return None
+    return f'{canonical}|{h}|{bucket}'
+
+
+_v90r60_dedup_state={'at':0.0,'changed':0,'duplicates_excluded':0,'last_error':None}
+
+
+def _v90r60_sanitize_duplicate_learning(c,force=False):
+    now_ts=time.time()
+    if not force and now_ts-float(_v90r60_dedup_state.get('at') or 0.0)<300.0:
+        return dict(_v90r60_dedup_state)
+    changed=duplicates=0
+    err=None
+    try:
+        cur=c.execute("""
+          WITH keys AS (
+            SELECT e.trade_id,
+                   COALESCE(NULLIF(t.payload->>'canonical_setup_id',''),
+                            NULLIF(e.payload->>'canonical_setup_id','')) AS canonical_setup_id,
+                   COALESCE(NULLIF(t.horizon,''),NULLIF(e.horizon,''),'1h') AS horizon,
+                   t.opened_at,
+                   CASE COALESCE(NULLIF(t.horizon,''),NULLIF(e.horizon,''),'1h')
+                     WHEN '5m' THEN 900 WHEN '1h' THEN 3600 WHEN '4h' THEN 14400
+                     WHEN '1d' THEN 86400 WHEN '3d' THEN 86400 WHEN '7d' THEN 86400
+                     ELSE 3600 END AS bucket_seconds
+            FROM v90_learning_episodes e
+            JOIN paper_trades t ON t.trade_id=e.trade_id
+          ), prepared AS (
+            SELECT trade_id,canonical_setup_id,
+                   canonical_setup_id||'|'||horizon||'|'||
+                   (FLOOR(EXTRACT(EPOCH FROM opened_at)/bucket_seconds))::bigint::text
+                   AS independent_episode_key
+            FROM keys
+            WHERE canonical_setup_id IS NOT NULL AND canonical_setup_id<>''
+          )
+          UPDATE v90_learning_episodes e
+          SET payload=COALESCE(e.payload,'{}'::jsonb)||jsonb_build_object(
+                'canonical_setup_id',p.canonical_setup_id,
+                'independent_episode_key',p.independent_episode_key,
+                'independent_episode_policy','R60_CANONICAL_SETUP_TIME_BUCKET')
+          FROM prepared p
+          WHERE e.trade_id=p.trade_id
+            AND (COALESCE(e.payload->>'independent_episode_key','')<>p.independent_episode_key
+                 OR COALESCE(e.payload->>'canonical_setup_id','')<>p.canonical_setup_id)
+        """)
+        changed=max(0,int(getattr(cur,'rowcount',0) or 0))
+        cur=c.execute("""
+          WITH ranked AS (
+            SELECT trade_id,payload->>'independent_episode_key' AS episode_key,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY payload->>'independent_episode_key'
+                     ORDER BY closed_at ASC,trade_id ASC
+                   ) AS rn,
+                   FIRST_VALUE(trade_id) OVER (
+                     PARTITION BY payload->>'independent_episode_key'
+                     ORDER BY closed_at ASC,trade_id ASC
+                   ) AS representative_trade_id
+            FROM v90_learning_episodes
+            WHERE learning_eligible=TRUE
+              AND COALESCE(payload->>'independent_episode_key','')<>''
+          )
+          UPDATE v90_learning_episodes e
+          SET learning_eligible=FALSE,
+              learning_action='EXCLUDE_DUPLICATE_MARKET_EPISODE',
+              payload=COALESCE(e.payload,'{}'::jsonb)||jsonb_build_object(
+                'duplicate_market_episode',TRUE,
+                'learning_exclusion_reason','DUPLICATE_MARKET_EPISODE',
+                'duplicate_of_trade_id',r.representative_trade_id,
+                'deduplicated_by','R60_INDEPENDENT_EPISODE_POLICY')
+          FROM ranked r
+          WHERE e.trade_id=r.trade_id AND r.rn>1
+        """)
+        duplicates=max(0,int(getattr(cur,'rowcount',0) or 0))
+    except Exception as ex:
+        err=f'{type(ex).__name__}: {ex}'[:240]
+    _v90r60_dedup_state.update({
+      'at':now_ts,'changed':changed,'duplicates_excluded':duplicates,'last_error':err
+    })
+    if changed or duplicates:
+        print(json.dumps({
+          'event':'V90_R60_INDEPENDENT_EPISODE_SANITIZED',
+          'keys_backfilled':changed,'duplicates_excluded':duplicates,
+          'policy':'ONE_MARKET_IDEA_ONE_LEARNING_EPISODE',
+        },ensure_ascii=False,separators=(',',':')),flush=True)
+    elif err:
+        print(json.dumps({'event':'V90_R60_INDEPENDENT_EPISODE_ERROR','error':err},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+    return dict(_v90r60_dedup_state)
 
 
 def _v90r29_episode_from_trade(t):
@@ -7232,6 +7373,9 @@ def _v90r29_episode_from_trade(t):
         'learning_label':p.get('learning_label'),
         'learning_conclusion':p.get('learning_conclusion'),
         'model_version':p.get('model_version'),
+        'canonical_setup_id':p.get('canonical_setup_id') or p.get('setup_id'),
+        'independent_episode_key':_v90r60_independent_episode_key(t,p),
+        'independent_episode_policy':'R60_CANONICAL_SETUP_TIME_BUCKET',
       }
     }
 
@@ -7241,6 +7385,27 @@ def _v90r29_upsert_episode(c,t):
     if not e.get('trade_id'):
         return False
     _v90r29_ensure(c)
+    ikey=str((e.get('payload') or {}).get('independent_episode_key') or '').strip()
+    if e.get('learning_eligible') and ikey:
+        dup=c.execute("""
+          SELECT trade_id FROM v90_learning_episodes
+          WHERE learning_eligible=TRUE
+            AND trade_id<>%s
+            AND COALESCE(payload->>'independent_episode_key','')=%s
+          ORDER BY closed_at ASC,trade_id ASC
+          LIMIT 1
+        """,(e['trade_id'],ikey)).fetchone()
+        if dup:
+            e['learning_eligible']=False
+            e['learning_action']='EXCLUDE_DUPLICATE_MARKET_EPISODE'
+            ep=dict(e.get('payload') or {})
+            ep.update({
+              'duplicate_market_episode':True,
+              'learning_exclusion_reason':'DUPLICATE_MARKET_EPISODE',
+              'duplicate_of_trade_id':dup.get('trade_id'),
+              'deduplicated_by':'R60_INDEPENDENT_EPISODE_POLICY',
+            })
+            e['payload']=ep
     c.execute("""
       INSERT INTO v90_learning_episodes(
         trade_id,closed_at,portfolio_name,asset,direction,horizon,setup_family,regime,
@@ -7399,6 +7564,7 @@ def _v90r29_refresh(pg_connect,force=False):
     with pg_connect() as c:
         _v90r29_ensure(c)
         backfilled=_v90r29_backfill(c,1200)
+        dedup=_v90r60_sanitize_duplicate_learning(c)
         rows=c.execute("""
           SELECT * FROM v90_learning_episodes
           WHERE learning_eligible=TRUE
@@ -7418,9 +7584,11 @@ def _v90r29_refresh(pg_connect,force=False):
     summary={
       'eligible_episodes':len(rows or []),
       'backfilled_on_refresh':backfilled,
+      'duplicate_market_episodes_excluded':int((dedup or {}).get('duplicates_excluded') or 0),
+      'independent_episode_policy':'ONE_MARKET_IDEA_ONE_LEARNING_EPISODE',
       'attribution_counts':{str(r['primary_attribution']):int(r['n']) for r in counts or []},
       'profile_count':len(profiles),
-      'learning_mode':'COMPLETED_EPISODES_ONLY',
+      'learning_mode':'COMPLETED_INDEPENDENT_EPISODES_ONLY',
       'feedback':'BOUNDED_SIZE_AND_EXPECTED_MOVE_CALIBRATION',
     }
     _v90r29_cache.update({'at':now,'profiles':profiles,'summary':summary})

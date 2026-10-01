@@ -1308,6 +1308,52 @@ class LossRootCauseGateR59Tests(unittest.TestCase):
 
 
 
+class StableSetupIdentityAndIndependentLearningR60Tests(unittest.TestCase):
+    def _row(self, observed, price=100.0, stop=99.0, breakout=None):
+        row={
+          'asset':'BTC','horizon':'5m','research_decision':'LONG',
+          'market_observed_at':observed,'price':price,
+          'trade_plan':{'stop_price':stop},
+          'institutional_signal':{'breakout_quality':{'state':'CONFIRMED_BREAKOUT'}},
+        }
+        if breakout is not None:
+            row['trade_plan']['breakout_level']=breakout
+        return row
+
+    def test_price_and_moving_stop_do_not_manufacture_new_setup_id(self):
+        a=self._row(NOW.isoformat(),100.0,99.0)
+        b=self._row((NOW+timedelta(minutes=4)).isoformat(),101.5,100.4)
+        self.assertEqual(VP._portfolio_canonical_setup_id(a),
+                         VP._portfolio_canonical_setup_id(b))
+
+    def test_structural_breakout_level_defines_setup_identity(self):
+        a=self._row(NOW.isoformat(),100.0,99.0,breakout=100.0)
+        b=self._row((NOW+timedelta(minutes=4)).isoformat(),101.0,100.2,breakout=100.0)
+        c=self._row((NOW+timedelta(minutes=4)).isoformat(),102.0,100.5,breakout=102.0)
+        self.assertEqual(VP._portfolio_canonical_setup_id(a),
+                         VP._portfolio_canonical_setup_id(b))
+        self.assertNotEqual(VP._portfolio_canonical_setup_id(a),
+                            VP._portfolio_canonical_setup_id(c))
+
+    def test_fallback_setup_identity_changes_only_after_event_bucket(self):
+        a=self._row(NOW.isoformat())
+        b=self._row((NOW+timedelta(minutes=4)).isoformat(),101.0)
+        c=self._row((NOW+timedelta(minutes=20)).isoformat(),101.0)
+        self.assertEqual(VP._portfolio_canonical_setup_id(a),
+                         VP._portfolio_canonical_setup_id(b))
+        self.assertNotEqual(VP._portfolio_canonical_setup_id(a),
+                            VP._portfolio_canonical_setup_id(c))
+
+    def test_same_market_idea_across_portfolios_has_one_independent_episode_key(self):
+        payload={'canonical_setup_id':'UTS_same','execution_timeframe':'5m'}
+        t1={'trade_id':'A','portfolio_name':'Aggressive','horizon':'5m',
+            'opened_at':NOW.isoformat(),'payload':payload}
+        t2={'trade_id':'C','portfolio_name':'Champion','horizon':'5m',
+            'opened_at':(NOW+timedelta(seconds=20)).isoformat(),'payload':payload}
+        self.assertEqual(VP._v90r60_independent_episode_key(t1),
+                         VP._v90r60_independent_episode_key(t2))
+
+
 class LearningFastPathR593Tests(unittest.TestCase):
     def test_learning_progress_is_nonblocking_on_cold_cache(self):
         import veritas_intelligence as vi

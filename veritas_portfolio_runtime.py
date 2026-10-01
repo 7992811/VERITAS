@@ -3994,6 +3994,32 @@ def report(pg_connect):
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),36)
 
 
+# VERITAS V90 INDEPENDENT EPISODE / STABLE SETUP ID R60
+_v90r60_base_report=report
+
+def report(pg_connect):
+    d=dict(_v90r60_base_report(pg_connect) or {})
+    try:
+        learn=_v90r29_refresh(pg_connect)
+        summary=dict((learn or {}).get('summary') or {})
+    except Exception as ex:
+        summary={'status':'UNAVAILABLE','error':f'{type(ex).__name__}: {ex}'[:180]}
+    d['independent_episode_learning_r60']={
+      'status':'ACTIVE' if not summary.get('error') else 'DEGRADED',
+      'stable_setup_identity':True,
+      'current_price_can_create_new_setup_id':False,
+      'moving_stop_can_create_new_setup_id':False,
+      'one_market_idea_one_learning_episode':True,
+      'independent_episode_policy':summary.get('independent_episode_policy')
+          or 'ONE_MARKET_IDEA_ONE_LEARNING_EPISODE',
+      'eligible_independent_episodes':summary.get('eligible_episodes'),
+      'duplicates_excluded_last_sanitize':summary.get('duplicate_market_episodes_excluded',0),
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),37)
+
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
