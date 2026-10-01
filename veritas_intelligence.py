@@ -3412,8 +3412,11 @@ def _moex_candles_between(start_ts,end_ts):
     for base in urls:
         try:
             out=[]; start=0
-            with httpx.Client(timeout=25,headers={'User-Agent':'VERITAS/15.1 research'}) as h:
-                for _ in range(30):
+            with httpx.Client(timeout=8,headers={'User-Agent':'VERITAS/15.1 research'}) as h:
+                _deadline=time.monotonic()+12.0
+                for _ in range(16):
+                    if time.monotonic()>=_deadline:
+                        break
                     r=h.get(base,params={'from':frm,'till':till,'interval':60,'start':start,'iss.meta':'off'})
                     r.raise_for_status(); j=r.json()
                     rows=_moex_block(j,'candles')
@@ -3513,7 +3516,7 @@ def _cnyrubf_market():
             'contract':{'secid':'CNYRUBF','lot':1000,'price_tick':0.001,'tick_value_rub':1.0,'settlement':'cash','roll':'automatic'}}
 
 def _moex_market():
-    end=time.time(); hist=_moex_candles_between(end-90*86400,end+86400)
+    end=time.time(); hist=_moex_candles_between(end-35*86400,end+86400)
     if len(hist)<80:
         raise RuntimeError(f'INSUFFICIENT_MOEX_HOURLY_BARS {len(hist)}')
     q=_moex_current_quote()
@@ -6537,13 +6540,18 @@ def _v90r16_moex_index_5m(force=False):
             and now_ts-float(_v90r16_moex5_cache.get('at') or 0)<240):
         return list(_v90r16_moex5_cache.get('bars') or [])
     try:
-        frm=datetime.fromtimestamp(now_ts-5*86400,tz=timezone.utc).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()
+        # Two trading days are sufficient for tactical 5m structure and avoid
+        # downloading thousands of 1-minute rows on every cold start.
+        frm=datetime.fromtimestamp(now_ts-2*86400,tz=timezone.utc).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()
         till=datetime.fromtimestamp(now_ts+3600,tz=timezone.utc).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()
         url='https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX/candles.json'
         one=[]
         start=0
-        with httpx.Client(timeout=20,headers={'User-Agent':'VERITAS/9.0 R16 research'}) as h:
-            for _ in range(40):
+        with httpx.Client(timeout=5,headers={'User-Agent':'VERITAS/9.0 R63 research'}) as h:
+            _deadline=time.monotonic()+7.0
+            for _ in range(16):
+                if time.monotonic()>=_deadline:
+                    break
                 r=h.get(url,params={'from':frm,'till':till,'interval':1,'start':start,'iss.meta':'off'})
                 r.raise_for_status()
                 rows=_moex_block(r.json(),'candles')
@@ -6589,8 +6597,22 @@ def _v90r16_moex_index_5m(force=False):
     return list(_v90r16_moex5_cache.get('bars') or [])
 
 def _moex_market():
-    raw=dict(_v90r16_base_moex_market())
-    bars=_v90r16_moex_index_5m()
+    pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='veritas-moex')
+    fb=pool.submit(_v90r16_base_moex_market)
+    f5=pool.submit(_v90r16_moex_index_5m)
+    try:
+        raw=dict(fb.result(timeout=18.0))
+    finally:
+        # Do not let tactical history hold a valid current/hourly MOEX bundle.
+        pass
+    try:
+        bars=list(f5.result(timeout=8.0) or [])
+    except Exception as ex:
+        bars=[]
+        emit('r63_moex_5m_fallback',status='HISTORY_UNAVAILABLE',
+             detail=f'{type(ex).__name__}: {ex}')
+    finally:
+        pool.shutdown(wait=False,cancel_futures=True)
     if not bars:
         bars=list(raw.get('intraday_5m') or raw.get('intraday_bars') or [])
     raw['intraday_5m']=bars
@@ -6598,6 +6620,7 @@ def _moex_market():
     raw['entry_timing_resolution']='5m' if len(bars)>=12 else '1h_fallback'
     raw['analysis_data_available']=bool(len(bars)>=12)
     raw['analysis_data_bars_5m']=len(bars)
+    raw['r63_5m_fail_soft']=bool(len(bars)<12)
     return raw
 
 def _fetch_asset_bundle(symbol, asset, cb_product):
@@ -6696,13 +6719,50 @@ def _v90r61_calibration_rows():
                              name='veritas-calibration-refresh').start()
     return cached
 
+_v90r63_context_refresh_lock=threading.Lock()
+_v90r63_context_refresh_inflight={'clock':False,'analogs':False}
+
+def _v90r63_context_refresh(key):
+    try:
+        if key=='clock':
+            val=source_clock_gate()
+        else:
+            val=structure_analog_board(1200)
+        with _v90r61_predecision_lock:
+            _v90r61_predecision_cache[key]=(time.time(),val)
+        emit('r63_context_refresh',context=key,status='OK')
+    except Exception as ex:
+        emit('r63_context_refresh',context=key,status='ERROR',
+             detail=f'{type(ex).__name__}: {ex}')
+    finally:
+        with _v90r63_context_refresh_lock:
+            _v90r63_context_refresh_inflight[key]=False
+
+def _v90r63_context_cached_or_background(key,ttl,default):
+    now_ts=time.time()
+    with _v90r61_predecision_lock:
+        at,val=_v90r61_predecision_cache.get(key,(0.0,None))
+    if val is not None and now_ts-float(at or 0.0)<float(ttl):
+        return val
+    with _v90r63_context_refresh_lock:
+        if not _v90r63_context_refresh_inflight.get(key):
+            _v90r63_context_refresh_inflight[key]=True
+            threading.Thread(target=_v90r63_context_refresh,args=(key,),daemon=True,
+                             name=f'veritas-{key}-refresh').start()
+    return val if val is not None else default
+
 def _v90r61_clock_info():
-    return _v90r61_cached_predecision('clock',75.0,source_clock_gate,
-        {'ok':False,'errors':['clock_unavailable']})
+    # Fail closed for execution while the independent clock check warms,
+    # but never stall the tactical market loop on external clock endpoints.
+    return _v90r63_context_cached_or_background(
+        'clock',75.0,{'ok':False,'errors':['clock_refresh_pending'],
+                      'available_clocks':0,'minimum_clocks':1})
 
 def _v90r61_analog_board():
-    return _v90r61_cached_predecision('analogs',600.0,
-        lambda: structure_analog_board(1200),{'status':'unavailable','items':[]})
+    # Analogs are contextual, never a safety authority. Missing cold-start
+    # analogs must not delay or block a fresh market decision.
+    return _v90r63_context_cached_or_background(
+        'analogs',600.0,{'status':'background_pending','items':[]})
 _v90r63_perf_refresh_lock=threading.Lock()
 _v90r63_perf_refresh_inflight=False
 
@@ -6729,14 +6789,10 @@ def _v90r22_agent_perf_safe():
             _v90r63_perf_refresh_inflight=True
             threading.Thread(target=_v90r63_refresh_agent_perf,daemon=True,
                              name='veritas-agent-perf-refresh').start()
-    # Cold start must not hold the market loop for a multi-second PostgreSQL
-    # aggregate. Neutral/no-adaptation is safer than delayed execution.
-    if cached:
-        return cached
-    try:
-        return list(performance_rows() or [])
-    except Exception:
-        return []
+    # Cold start must not hold the market loop for any historical aggregate.
+    # Neutral/no-adaptation is safer than delayed execution; the daemon refresh
+    # will populate the cache for the next cycle.
+    return cached
 
 
 def _v90r63_nq_trend_bridge(asset,horizon,f,research_dec,confidence):
@@ -9407,11 +9463,11 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
         try: bars5,_=f5.result(timeout=10.0)
         except Exception as ex:
             bars5=list(_hc.get('bars5') or []) if _cache_ok else []
-            emit('r63_futures_5m_cache_fallback',asset=asset,bars=len(bars5),error=f'{type(ex).__name__}: {ex}')
+            emit('r63_futures_5m_cache_fallback',asset=asset,bars=len(bars5),provider_detail=f'{type(ex).__name__}: {ex}')
         try: bars1h,_=f1.result(timeout=10.0)
         except Exception as ex:
             bars1h=list(_hc.get('bars1h') or []) if _cache_ok else []
-            emit('r63_futures_1h_cache_fallback',asset=asset,bars=len(bars1h),error=f'{type(ex).__name__}: {ex}')
+            emit('r63_futures_1h_cache_fallback',asset=asset,bars=len(bars1h),provider_detail=f'{type(ex).__name__}: {ex}')
         try: pr,_=fp.result(timeout=4.0)
         except Exception: pr=list(_hc.get('proxy') or []) if _cache_ok else []
         try: sq=fs.result(timeout=4.0) if fs is not None else {'ok':False,'error':'not_configured'}

@@ -1740,5 +1740,46 @@ class MarketSchedulerAndNQTargetR63CTests(unittest.TestCase):
         self.assertIn('next_fast=_start',src)
 
 
+class ColdFastLaneAndMOEXR63DTests(unittest.TestCase):
+    def test_cold_clock_and_analogs_are_background_not_synchronous(self):
+        old=dict(VI._v90r61_predecision_cache)
+        oldf=dict(VI._v90r63_context_refresh_inflight)
+        try:
+            VI._v90r61_predecision_cache['clock']=(0.0,None)
+            VI._v90r61_predecision_cache['analogs']=(0.0,None)
+            with patch.object(VI.threading,'Thread') as th:
+                clock=VI._v90r61_clock_info()
+                analog=VI._v90r61_analog_board()
+            self.assertFalse(clock['ok'])
+            self.assertEqual(clock['errors'],['clock_refresh_pending'])
+            self.assertEqual(analog['status'],'background_pending')
+            self.assertGreaterEqual(th.call_count,1)
+        finally:
+            VI._v90r61_predecision_cache.clear()
+            VI._v90r61_predecision_cache.update(old)
+            VI._v90r63_context_refresh_inflight.clear()
+            VI._v90r63_context_refresh_inflight.update(oldf)
+
+    def test_moex_tactical_history_is_bounded_and_fail_soft(self):
+        src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
+        pos=src.index('def _v90r16_moex_index_5m')
+        body=src[pos:pos+6500]
+        self.assertIn('now_ts-2*86400',body)
+        self.assertIn("httpx.Client(timeout=5",body)
+        self.assertIn("_deadline=time.monotonic()+7.0",body)
+        wpos=src.index('def _moex_market():',pos)
+        wrapper=src[wpos:wpos+2200]
+        self.assertIn("ThreadPoolExecutor(max_workers=2",wrapper)
+        self.assertIn("f5.result(timeout=8.0)",wrapper)
+        self.assertIn("r63_5m_fail_soft",wrapper)
+
+    def test_agent_perf_cold_path_is_neutral_and_nonblocking(self):
+        src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
+        pos=src.index('def _v90r22_agent_perf_safe')
+        body=src[pos:pos+1500]
+        self.assertNotIn('performance_rows()',body)
+        self.assertIn('return cached',body)
+
+
 if __name__ == '__main__':
     unittest.main()
