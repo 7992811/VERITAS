@@ -42,6 +42,13 @@ def _jsonable(x):
 def _clip(x,a,b): return max(a,min(b,float(x)))
 def _round_step(x, step=POSITION_STEP): return round(max(0.0,float(x))/step)*step
 
+def _execution_price_or_none(prices, asset):
+    try:
+        px=float((prices or {}).get(asset))
+        return px if math.isfinite(px) and px>0 else None
+    except (TypeError, ValueError):
+        return None
+
 
 # VERITAS v90 portfolio migration
 V90_PORTFOLIOS = ('Impulse','Aggressive','Champion','Challenger')
@@ -2322,7 +2329,11 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         for asset,row in sorted(candidates.items(),key=lambda kv:float(kv[1].get('_rank') or 0.0),reverse=True):
             target=float(targets.get(asset,0.0));
             if target<=0: continue
-            px=float(prices[asset]); z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
+            px=_execution_price_or_none(prices,asset)
+            if px is None:
+                row['_execution_skip_reason']='MARKET_PRICE_UNAVAILABLE'
+                continue
+            z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
             rs=row.get('range_retest_breakout') or {}
             if not z and rs.get('active') and str(rs.get('state') or '') in ('APPROACH_RESISTANCE','APPROACH_SUPPORT'):
                 continue

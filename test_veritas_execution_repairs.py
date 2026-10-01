@@ -1623,5 +1623,44 @@ class ExecutionCandidateRankInvariantR594Tests(unittest.TestCase):
         self.assertAlmostEqual(out['_rank'],1.234)
         self.assertNotIn('_rank_fallback',out)
 
+class ExecutionAndProfitProtectionR63Tests(unittest.TestCase):
+    def test_missing_one_asset_price_is_fail_soft(self):
+        self.assertIsNone(VP._execution_price_or_none({'BTC':100.0},'BRENT'))
+        self.assertEqual(VP._execution_price_or_none({'BTC':100.0},'BTC'),100.0)
+
+    def test_crypto_guard_quote_preserves_executable_book(self):
+        class Resp:
+            def raise_for_status(self): pass
+            def json(self): return {'bidPrice':'2684.90','askPrice':'2685.10'}
+        class Client:
+            def __enter__(self): return self
+            def __exit__(self,*a): return False
+            def get(self,*a,**k): return Resp()
+        with patch.object(VPG.httpx,'Client',return_value=Client()):
+            q=VPG.fetch_guard_quote({},'ETH',[])
+        self.assertEqual(q['best_bid'],2684.90)
+        self.assertEqual(q['best_ask'],2685.10)
+
+    def test_cost_only_soft_profit_stop_is_rearmed_not_forced_exit(self):
+        z={'asset':'ETH','direction':'SHORT','avg_entry_price':2686.302632,'units':18.6,
+           'stop_price':2707.8,
+           'payload':{'trailing_stop':2684.8,'r55_net_profit_lock_active':True}}
+        q={'price':2685.0,'best_bid':2684.9,'best_ask':2685.1,'source_gate_pass':True}
+        tr={'gross_pnl_rub':0.0,'fees_rub':25.0,'funding_rub':0.25}
+        out=VPG._r63_soft_profit_stop_assessment(z,q,tr,1_000_000,.0005)
+        self.assertTrue(out['soft_only'])
+        self.assertTrue(out['suppress'])
+        self.assertLessEqual(out['net_pnl_rub'],0)
+
+    def test_hard_stop_is_never_suppressed(self):
+        z={'asset':'ETH','direction':'SHORT','avg_entry_price':2686.3,'units':18.6,
+           'stop_price':2684.0,
+           'payload':{'trailing_stop':2683.0,'r55_net_profit_lock_active':True}}
+        q={'price':2685.0,'best_bid':2684.9,'best_ask':2685.1,'source_gate_pass':True}
+        out=VPG._r63_soft_profit_stop_assessment(z,q,{'fees_rub':25},1_000_000,.0005)
+        self.assertFalse(out['suppress'])
+        self.assertFalse(out['soft_only'])
+
+
 if __name__ == '__main__':
     unittest.main()

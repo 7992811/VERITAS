@@ -8,6 +8,7 @@ import threading
 import time
 
 import httpx
+import veritas_execution as VX
 import veritas_profit_protection as VPP
 from veritas_quote_time import quote_gate, utc_datetime
 
@@ -35,8 +36,9 @@ def publish_quote(asset, raw):
         old = _quotes.get(asset) or {}
         dt, prev = utc_datetime(raw['observed_at']), utc_datetime(old.get('observed_at'))
         if dt and (prev is None or dt >= prev):
-            _quotes[asset] = {k: raw.get(k) for k in ('price', 'observed_at', 'contract',
-                             'source_gate_pass', 'market_open', 'data_latency_class')}
+            _quotes[asset] = {k: raw.get(k) for k in ('price', 'best_bid', 'best_ask', 'bid', 'ask',
+                             'observed_at', 'contract', 'source_gate_pass', 'market_open',
+                             'data_latency_class')}
 
 
 def latest_prices(summary, now=None):
@@ -63,6 +65,65 @@ def latest_prices(summary, now=None):
 def payload_of(z):
     p = z.get('payload') or {}
     return json.loads(p) if isinstance(p, str) else dict(p)
+
+
+def _r63_hard_stop_breached(z, px):
+    try:
+        stop=float(z.get('stop_price'))
+        px=float(px)
+    except (TypeError,ValueError):
+        return False
+    return px<=stop if z.get('direction')=='LONG' else px>=stop
+
+
+def _r63_projected_exit_net(z, quote, trade, nav, commission=.0005):
+    trade=dict(trade or {})
+    p=payload_of(z)
+    try:
+        px=float((quote or {}).get('price') or 0.0)
+        entry=float(z.get('avg_entry_price') or p.get('entry_price') or 0.0)
+        units=abs(float(z.get('units') or 0.0))
+        nav=max(float(nav or 0.0),1.0)
+        if px<=0 or entry<=0 or units<=0:
+            return {'valid':False}
+        fraction=abs(units*px)/nav
+        side='SELL' if z.get('direction')=='LONG' else 'BUY_TO_COVER'
+        bid=(quote or {}).get('best_bid',(quote or {}).get('bid'))
+        ask=(quote or {}).get('best_ask',(quote or {}).get('ask'))
+        fill=VX.simulated_fill(z.get('asset'),side,px,fraction,bid=bid,ask=ask)
+        fill_px=float(fill['fill_price'])
+        signed_mid=(px-entry) if z.get('direction')=='LONG' else (entry-px)
+        gross_open=units*((fill_px-entry) if z.get('direction')=='LONG' else (entry-fill_px))
+        prior_gross=float(trade.get('gross_pnl_rub') or 0.0)
+        prior_fees=float(trade.get('fees_rub') or 0.0)
+        funding=float(trade.get('funding_rub') or 0.0)
+        exit_fee=units*fill_px*float(commission)
+        net=prior_gross+gross_open-prior_fees-exit_fee-funding
+        return {'valid':True,'net_pnl_rub':net,'fill_price':fill_px,
+                'exit_fee_rub':exit_fee,'signed_mid_rub':units*signed_mid,
+                'adverse_fill_bps':fill.get('adverse_fill_bps'),
+                'fraction_nav':fraction}
+    except Exception:
+        return {'valid':False}
+
+
+def _r63_soft_profit_stop_assessment(z, quote, trade, nav, commission=.0005):
+    p=payload_of(z)
+    px=(quote or {}).get('price')
+    if not p.get('r55_net_profit_lock_active') or px is None or _r63_hard_stop_breached(z,px):
+        return {'soft_only':False,'suppress':False}
+    try:
+        trailing=float(p.get('trailing_stop'))
+        px=float(px)
+        soft_breached=(px<=trailing if z.get('direction')=='LONG' else px>=trailing)
+    except (TypeError,ValueError):
+        soft_breached=False
+    if not soft_breached:
+        return {'soft_only':False,'suppress':False}
+    est=_r63_projected_exit_net(z,quote,trade,nav,commission)
+    suppress=bool(est.get('valid') and float(est.get('signed_mid_rub') or 0.0)>0
+                  and float(est.get('net_pnl_rub') or 0.0)<=0)
+    return {'soft_only':True,'suppress':suppress,**est}
 
 
 def take_profit_action(z, current_fraction, peak, round5):
@@ -306,10 +367,18 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                 except Exception:
                     fees_paid=0.0
 
-            # R55: lock positive NET P&L after all known/estimated friction.
-            lock = profit_lock_stop(
+            # R63: leave real execution room around the soft profit lock.
+            _rearm_after=float(zp.get('r63_profit_lock_rearm_after_pct') or 0.0)
+            try:
+                _entry_lock=float(z.get('avg_entry_price') or zp.get('entry_price') or 0.0)
+                _px_lock=float((q or {}).get('price') or 0.0)
+                _cur_lock_pct=100.0*((_px_lock/_entry_lock-1.0) if z.get('direction')=='LONG'
+                                     else (_entry_lock/_px_lock-1.0)) if _entry_lock>0 and _px_lock>0 else 0.0
+            except Exception:
+                _cur_lock_pct=0.0
+            lock = None if (_rearm_after and _cur_lock_pct<_rearm_after) else profit_lock_stop(
                 z,q,getattr(vp,'COMMISSION',.0005),fees_paid_rub=fees_paid,
-                slippage_pct=.0005,min_net_pct=.0005
+                slippage_pct=.0010,min_net_pct=.0010
             )
             if lock:
                 pl_patch = {
@@ -368,6 +437,37 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             c.execute('UPDATE paper_portfolios SET last_mark_at=%s WHERE name=%s', (ts, name))
             p, pos = vp._portfolio_rows(c, name)
             nav, _, _, _ = vp._mark_nav(p, pos, prices)
+            if reason=='STOP' and z.get('active_trade_id'):
+                _tr_full=c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
+                                   (z.get('active_trade_id'),)).fetchone()
+                _soft=_r63_soft_profit_stop_assessment(
+                    z,q,_tr_full,nav,getattr(vp,'COMMISSION',.0005))
+                if _soft.get('suppress'):
+                    _p=payload_of(z)
+                    try:
+                        _entry=float(z.get('avg_entry_price') or _p.get('entry_price') or 0.0)
+                        _px=float(q.get('price') or 0.0)
+                        _pct=100.0*((_px/_entry-1.0) if z.get('direction')=='LONG'
+                                    else (_entry/_px-1.0)) if _entry>0 and _px>0 else 0.0
+                    except Exception:
+                        _pct=0.0
+                    _rearm=max(_pct+0.10,float(_p.get('r63_profit_lock_rearm_after_pct') or 0.0))
+                    _patch={'trailing_stop':None,'r48_profit_lock_active':False,
+                            'r55_net_profit_lock_active':False,
+                            'r63_profit_lock_rearm_after_pct':_rearm,
+                            'r63_last_soft_stop_suppressed_at':ts,
+                            'r63_last_soft_stop_projected_net_rub':_soft.get('net_pnl_rub'),
+                            'r63_last_soft_stop_fill_price':_soft.get('fill_price')}
+                    c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE active_trade_id=%s",
+                              (json.dumps(_patch),z.get('active_trade_id')))
+                    c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                              (json.dumps(_patch),z.get('active_trade_id')))
+                    changes.append({'portfolio':name,'asset':z.get('asset'),'trade_id':z.get('active_trade_id'),
+                                    'reason':'PROFIT_LOCK_SOFT_STOP_NET_NEGATIVE_REARMED',
+                                    'price':px,'projected_net_pnl_rub':_soft.get('net_pnl_rub'),
+                                    'modeled_fill_price':_soft.get('fill_price'),
+                                    'rearm_after_profit_pct':_rearm})
+                    continue
             vp._v90j_update_excursions(c, name, prices, ts)
             patch = {'last_guard_market_observed_at': q['observed_at'],
                      'last_guard_checked_at': ts, 'protective_exit_lane': 'INDEPENDENT_PAPER_GUARD'}
@@ -412,7 +512,8 @@ def fetch_guard_quote(ns, asset, positions):
         bid, ask = float(book['bidPrice']), float(book['askPrice'])
         if not 0 < bid < ask:
             raise ValueError('PROTECTIVE_BOOK_INVALID')
-        return {'price': (bid+ask)/2, 'observed_at': datetime.now(timezone.utc).isoformat(),
+        return {'price': (bid+ask)/2, 'best_bid':bid, 'best_ask':ask,
+                'bid':bid, 'ask':ask, 'observed_at': datetime.now(timezone.utc).isoformat(),
                 'source_gate_pass': True, 'market_open': True}
     if asset == 'BRENT':
         contracts = {payload_of(z).get('entry_contract_secid') for z in positions}
