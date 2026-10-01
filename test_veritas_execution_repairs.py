@@ -1035,5 +1035,32 @@ class MultiTimeframeTradeFramingR56Tests(unittest.TestCase):
         self.assertEqual(patch['r56_runner_target_price'],11.10)
 
 
+class R56TpBackfillTests(unittest.TestCase):
+    def test_migrated_open_position_gets_tactical_tp_even_when_snapshot_is_no_trade(self):
+        c=MagicMock()
+        z={
+            'asset':'CNYRUBF','direction':'SHORT','stop_price':12.4357,
+            'active_trade_id':'t56',
+            'payload':{
+                'r56_trade_frame_migrated':True,
+                'r56_management_horizon':'4h',
+                'r56_tp1_price':None,
+            },
+        }
+        row={
+            'asset':'CNYRUBF','horizon':'4h','research_decision':'NO_TRADE',
+            'price':12.38,'realized_vol':.0095,
+            'intraday_structure':{'recent_swing_anchor':12.38},
+            'trade_plan':{},
+        }
+        out=VPR._v90r56_backfill_missing_tp(
+            c,'Aggressive',z,row,12.38,
+            datetime(2026,10,1,3,35,tzinfo=timezone.utc))
+        self.assertIsNotNone(out)
+        self.assertLess(out['r56_tp1_price'],12.38)
+        self.assertGreater(out['r56_tp1_price'],12.20)
+        self.assertTrue(c.execute.called)
+
+
 if __name__ == '__main__':
     unittest.main()
