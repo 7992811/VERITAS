@@ -3311,7 +3311,22 @@ def _v90r56_migrate_legacy_senior_position(c,name,z,row,price,nav,ts):
         new_stop=float(price)*(1.0-max_dist if d=='LONG' else 1.0+max_dist)
         stop_risk=current_frac*abs(new_stop/float(price)-1.0)
     sm={'stop_price':new_stop,'management_horizon':'4h','noise_floor_pct':floor}
-    tp=_v90r56_tp_plan(row,sm)
+    # The current market snapshot may be NO_TRADE/closed while an existing
+    # position still needs a deterministic management target. Reuse the
+    # position direction for TP1 framing and preserve any older distant target
+    # only as a runner reference.
+    tp_row=dict(row)
+    tp_row['research_decision']=d
+    tp_row['_r56_management_horizon']='4h'
+    old_runner=_v90r51_num(
+        p.get('r56_runner_target_price') or p.get('take_price')
+        or p.get('target_price') or p.get('initial_take_price')
+    )
+    tp_plan=dict(tp_row.get('trade_plan') or {})
+    if old_runner:
+        tp_plan['target_price']=old_runner
+    tp_row['trade_plan']=tp_plan
+    tp=_v90r56_tp_plan(tp_row,sm)
     patch={
       'r56_trade_frame_migrated':True,'r56_trade_frame_migrated_at':_v90j_iso(ts),
       'r56_thesis_horizon':h,'r56_entry_horizon':'LEGACY_SENIOR_ONLY',
@@ -3342,6 +3357,52 @@ def _v90r56_migrate_legacy_senior_position(c,name,z,row,price,nav,ts):
     },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return patch
 
+def _v90r56_backfill_missing_tp(c,name,z,row,price,ts):
+    z=dict(z or {}); p=_v90j_json(z.get('payload'))
+    if str(name)!='Aggressive' or not p.get('r56_trade_frame_migrated'):
+        return None
+    if _v90r51_num(p.get('r56_tp1_price')):
+        return None
+    d=str(z.get('direction') or '')
+    if d not in ('LONG','SHORT'):
+        return None
+    r=dict(row or {})
+    r['price']=price
+    r['research_decision']=d
+    r['_r56_management_horizon']=str(p.get('r56_management_horizon') or '4h')
+    sm={'stop_price':_v90r51_num(z.get('stop_price')),
+        'management_horizon':r['_r56_management_horizon']}
+    tp=_v90r56_tp_plan(r,sm)
+    if not tp or not tp.get('tp1_price'):
+        return None
+    patch={
+      'r56_tp1_price':tp.get('tp1_price'),
+      'r56_tp1_source':tp.get('tp1_source'),
+      'r56_runner_target_price':tp.get('runner_target_price'),
+      'take_price':tp.get('tp1_price'),
+      'target_price':tp.get('tp1_price'),
+      'initial_take_price':tp.get('tp1_price'),
+      'r56_tp1_backfilled_at':_v90j_iso(ts),
+    }
+    c.execute(
+      "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+      "WHERE portfolio_name=%s AND asset=%s",
+      (json.dumps(patch,ensure_ascii=False,default=str),name,z.get('asset'))
+    )
+    if z.get('active_trade_id'):
+        c.execute(
+          "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+          (json.dumps(patch,ensure_ascii=False,default=str),z.get('active_trade_id'))
+        )
+    print(json.dumps({
+      'event':'V90_R56_TP1_BACKFILL','portfolio':name,'asset':z.get('asset'),
+      'trade_id':z.get('active_trade_id'),'direction':d,
+      'tp1':tp.get('tp1_price'),'source':tp.get('tp1_source'),
+      'runner_target':tp.get('runner_target_price'),
+      'management_horizon':r['_r56_management_horizon'],
+    },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return patch
+
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     if str((policy or {}).get('mode') or '')=='AGGRESSIVE':
         try:
@@ -3358,6 +3419,14 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                     row=next((r for r in same if str(r.get('horizon'))=='4h'),None)                         or next((r for r in same if str(r.get('horizon'))=='1h'),None)                         or next((r for r in same if str(r.get('horizon'))=='5m'),None)
                 if row is not None:
                     _v90r56_migrate_legacy_senior_position(c,name,z,row,px,nav,ts)
+                    # Re-read after migration because the first R56 live cycle may
+                    # have migrated the stop before a TP could be framed.
+                    zfresh=c.execute(
+                        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+                        (name,asset)
+                    ).fetchone()
+                    if zfresh:
+                        _v90r56_backfill_missing_tp(c,name,dict(zfresh),row,px,ts)
         except Exception as ex:
             print(json.dumps({'event':'V90_R56_MIGRATION_ERROR','error':f'{type(ex).__name__}: {ex}'},
                              ensure_ascii=False,separators=(',',':')),flush=True)
