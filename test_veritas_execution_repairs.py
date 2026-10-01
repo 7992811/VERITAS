@@ -1109,5 +1109,27 @@ class R561TrailingResetTests(unittest.TestCase):
 
 
 
+class R562CandidateRankTests(unittest.TestCase):
+    def test_promoted_trigger_always_has_rank(self):
+        trigger={
+            'asset':'CNYRUBF','horizon':'4h','research_decision':'SHORT',
+            'price':12.37,'entry_quality':'NEW_SETUP_PROVISIONAL',
+            'horizon_structure':{'state':'BUILDING_TREND','score':.70},
+            'institutional_signal':{
+                'evidence_independence':{'independent_count':4},
+                'breakout_quality':{'state':'CONFIRMED_BREAKOUT'},
+            },
+            'trade_plan':{
+                'eligible':True,
+                'final_economics_gate':{'status':'PASS'}
+            }
+        }
+        out=VPR._v90r56_trigger_row([trigger],'CNYRUBF','SHORT')
+        self.assertIsNotNone(out)
+        self.assertIn('_rank',out)
+        self.assertGreater(out['_rank'],0.0)
+
+
+
 if __name__ == '__main__':
     unittest.main()
