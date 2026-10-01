@@ -14231,14 +14231,17 @@ def _shadow_trade_learning_windows():
 # the web/portfolio fast path on small PostgreSQL instances.
 # =========================
 
-def _bounded_completed_episode_rows(order='DESC', raw_limit=9000, episode_limit=600):
+def _bounded_completed_episode_rows(order='DESC', raw_limit=6000, episode_limit=600):
     if not pg_enabled():
         return []
     order='ASC' if str(order).upper()=='ASC' else 'DESC'
-    raw_limit=max(1000,min(20000,int(raw_limit)))
-    episode_limit=max(50,min(4000,int(episode_limit)))
+    # R59.2: bounded learning must never contend with the market loop. Five to
+    # six thousand decisions are enough to build independent episodes; larger
+    # scans produced repeated 12s statement timeouts on the small production DB.
+    raw_limit=max(1000,min(6000,int(raw_limit)))
+    episode_limit=max(50,min(3000,int(episode_limit)))
     sql=f"""
-      WITH picked AS (
+      WITH picked AS MATERIALIZED (
         SELECT entity_key,event_ts,asset,horizon,payload,model_version
         FROM ledger_events
         WHERE event_type='decision'
@@ -14248,13 +14251,20 @@ def _bounded_completed_episode_rows(order='DESC', raw_limit=9000, episode_limit=
       SELECT d.entity_key,d.event_ts,d.asset,d.horizon,d.payload AS dp,d.model_version,
              o.payload AS op
       FROM picked d
-      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-      WHERE o.payload ? 'forward_return'
+      JOIN LATERAL (
+        SELECT le.payload
+        FROM ledger_events le
+        WHERE le.entity_key=d.entity_key
+          AND le.event_type='outcome'
+          AND le.payload ? 'forward_return'
+        ORDER BY le.event_ts DESC
+        LIMIT 1
+      ) o ON TRUE
       ORDER BY d.event_ts {order}
     """
     try:
         with pg_connect() as c:
-            c.execute("SET statement_timeout TO '12s'")
+            c.execute("SET statement_timeout TO '6s'")
             rows=[dict(r) for r in c.execute(sql,(raw_limit,)).fetchall()]
     except Exception as ex:
         emit('bounded_learning_query_error',order=order,raw_limit=raw_limit,
@@ -14303,7 +14313,7 @@ def _matched_strata_learning():
     if not pg_enabled():
         return {'status':'postgres_required'}
     fetch=max(200,min(600,LEARNING_PROGRESS_WINDOW*5))
-    raw=max(5000,min(12000,fetch*16))
+    raw=max(3500,min(6000,fetch*10))
     early=_bounded_completed_episode_rows('ASC',raw,fetch)
     recent=_bounded_completed_episode_rows('DESC',raw,fetch)
     eg={}; rg={}
@@ -14386,7 +14396,7 @@ def refresh_rule_stats():
     # remain the promotion authority. Avoid recomputing window functions over the full ledger.
     if not pg_enabled():
         return {'rows':0,'status_changes':0,'status':'postgres_required'}
-    episodes=_bounded_completed_episode_rows('DESC',12000,3500)
+    episodes=_bounded_completed_episode_rows('DESC',6000,2500)
     if not episodes:
         return {'rows':0,'status_changes':0,'status':'bounded_query_empty'}
     buckets={}
