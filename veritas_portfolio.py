@@ -8403,8 +8403,18 @@ def _signal_first_admission(row,policy,drawdown):
             q=_v90r24_aggressive_quality(row)
             conf=float(row.get('confidence') or row.get('_pwin') or 0.0)
             floor=0.0
-            if q.get('super'):
-                floor=1.00 if (conf>=0.82 and q.get('independent',0)>=5 and q.get('rr',0)>=1.35) else 0.75
+            h=str(row.get('horizon') or '')
+            supporting=set(row.get('_supporting_horizons') or [])
+            # 5m entries are explicitly staged: 50% on the tactical trigger,
+            # 75% once 1h confirms, 100% only when 1h+4h confirm a SUPER/high-quality setup.
+            if h=='5m' and (q.get('fresh') or q.get('confirmed') or q.get('super')):
+                floor=0.50
+                if '1h' in supporting:
+                    floor=0.75
+                if '1h' in supporting and '4h' in supporting and q.get('super'):
+                    floor=1.00
+            elif q.get('super'):
+                floor=1.00 if (conf>=0.82 and q.get('independent',0)>=5 and q.get('rr',0)>=1.35 and q.get('alignment',0)>=3) else 0.75
             elif q.get('fresh'):
                 floor=1.00 if (conf>=0.82 and q.get('independent',0)>=5 and q.get('rr',0)>=1.50 and q.get('alignment',0)>=3) else \
                       0.75 if (conf>=0.72 and q.get('independent',0)>=4 and q.get('rr',0)>=1.30) else 0.50
@@ -8421,8 +8431,8 @@ def _signal_first_admission(row,policy,drawdown):
                 if floor>before:
                     out['fraction']=floor
                     out['open']=True
-                    out['reason']=str(out.get('reason') or '')+'|R61_FINAL_AGGRESSIVE_FLOOR'
                     out['r61_fraction_before_floor']=before
+                    out['r61_sizing_floor_applied']=True
                     out['r61_final_aggressive_floor']=floor
                     out['r61_quality']=q
         out['paper_source_quality']='PRODUCTION_GRADE' if row.get('production_eligible') else 'RESEARCH_GRADE'
