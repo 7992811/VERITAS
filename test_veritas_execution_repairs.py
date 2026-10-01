@@ -1448,7 +1448,7 @@ class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
         old_cache=dict(VI._v90r62_bundle_cache)
         try:
             VI._v90r62_bundle_cache.clear()
-            VI._v90r62_bundle_cache['NQ']={'at':time.time(),'bundle':bundle}
+            VI._v90r62_bundle_cache['NQ']={'at':VI.time.time(),'bundle':bundle}
             VI._v90r62_active_cycle_mode='FULL'
             out=VI._v90r62_cached_bundle('NQ')
             self.assertIsNotNone(out)
