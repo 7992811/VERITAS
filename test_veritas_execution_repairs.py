@@ -1781,5 +1781,15 @@ class ColdFastLaneAndMOEXR63DTests(unittest.TestCase):
         self.assertIn('return cached',body)
 
 
+class ColdClockRecheckR63ETests(unittest.TestCase):
+    def test_cycle_rechecks_clock_after_market_prefetch(self):
+        src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
+        pos=src.index('market_bundles,prefetch_stats=_market_future.result()')
+        body=src[pos:pos+1800]
+        self.assertIn("clock_refresh_pending",body)
+        self.assertIn("_clock_after_prefetch=_v90r61_clock_info()",body)
+        self.assertIn("r63_clock_recheck",body)
+
+
 if __name__ == '__main__':
     unittest.main()

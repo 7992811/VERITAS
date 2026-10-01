@@ -6888,6 +6888,21 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     cycle_source_quality=[]
     market_bundles,prefetch_stats=_market_future.result()
     _market_pool.shutdown(wait=False)
+    # R63e: cold start begins fail-closed while the clock verifier warms in the
+    # background. Market prefetch normally gives it enough time to finish. Re-read
+    # the already-cached result here so the whole cycle does not keep a stale
+    # CLOCK_GATE_FAILED snapshot after verification has actually succeeded.
+    if (not bool((clock_info or {}).get('ok'))
+            and 'clock_refresh_pending' in ((clock_info or {}).get('errors') or [])):
+        _clock_after_prefetch=_v90r61_clock_info()
+        if isinstance(_clock_after_prefetch,dict):
+            _old_clock=dict(clock_info or {})
+            clock_info=_clock_after_prefetch
+            emit('r63_clock_recheck',
+                 old_ok=bool(_old_clock.get('ok')),
+                 new_ok=bool(clock_info.get('ok')),
+                 old_errors=_old_clock.get('errors') or [],
+                 new_errors=clock_info.get('errors') or [])
     try: _warm_knowledge.result(timeout=0.05)
     except Exception: pass
     try: _warm_memory.result(timeout=0.05)
