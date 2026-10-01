@@ -3802,9 +3802,20 @@ def _v90r59_quality_gate(row,policy):
     if m['move']<move_floor:
         blockers.append('R59_POST_COST_MOVE_MARGIN_TOO_LOW')
     if m['entry_quality']=='NEW_SETUP_PROVISIONAL':
-        if not (m['hstate'] in ('BUILDING_TREND','CONFIRMED_TREND')
-                and m['hscore']>=0.65 and m['independent']>=4
-                and m['rr']>=max(1.50,rr_floor)):
+        # Preserve R57's explicit 1h/4h tactical authority. Those candidates
+        # have already passed the execution router and were introduced to stop
+        # stale senior bias from suppressing a fresh tactical trade. R59's
+        # stricter maturity rule targets unpromoted provisional ideas, especially
+        # the historically high-churn 5m bucket.
+        r57_promoted=bool(
+            (row or {}).get('_r56_trigger_selected')
+            and (row or {}).get('_r57_trigger_score')
+            and m['horizon'] in ('1h','4h')
+        )
+        if (not r57_promoted
+                and not (m['hstate'] in ('BUILDING_TREND','CONFIRMED_TREND')
+                         and m['hscore']>=0.65 and m['independent']>=4
+                         and m['rr']>=max(1.50,rr_floor))):
             blockers.append('R59_PROVISIONAL_SETUP_NOT_MATURE')
     if (m['direction'] in ('LONG','SHORT') and m['hdir'] in ('LONG','SHORT')
             and m['hdir']!=m['direction']
