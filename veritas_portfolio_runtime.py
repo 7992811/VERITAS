@@ -3713,6 +3713,148 @@ def report(pg_connect):
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),35)
 
+
+# VERITAS V90 NQ / CONFLICT ROUTING R57
+# Invalidated senior decisions cannot vote the portfolio direction. When
+# executable horizons disagree, the strongest local trigger by structure and
+# independent evidence is surfaced to the portfolio, even when its execution
+# gate is blocked. This keeps the portfolio trace aligned with the signal matrix
+# without bypassing quote freshness or economics.
+V90_R57_STARTED_AT=os.getenv('VERITAS_R57_EPOCH','2026-10-01T07:45:00+00:00')
+_v90r57_base_aggressive_book=_v90_aggressive_candidate_book
+_v90r57_base_report=report
+
+def _v90r57_senior_bias(summary,asset):
+    votes={'LONG':0.0,'SHORT':0.0}
+    evidence=[]
+    weights={'1d':1.0,'3d':1.25,'7d':1.50}
+    for r in summary or []:
+        if str((r or {}).get('asset') or '')!=str(asset):
+            continue
+        h=str((r or {}).get('horizon') or '')
+        if h not in weights:
+            continue
+        d=_v90r56_direction(r)
+        regime=str((r or {}).get('regime') or '')
+        invalid=_v90r55_invalidated(r)
+        pass_dir=bool(not invalid and _v90r56_plan_pass(r))
+        try: hs=float(((r.get('horizon_structure') or {}).get('score'))
+                     or r.get('horizon_structure_score') or 0.0)
+        except Exception: hs=0.0
+        w=weights[h]
+        # Directional model votes count only when the senior setup itself is
+        # admissible. INVALIDATED LONG/SHORT cannot dominate a fresh lower-TF
+        # reversal.
+        if pass_dir and d in ('LONG','SHORT'):
+            votes[d]+=w*(0.75+0.25*max(0.0,min(1.0,hs)))
+        # Regime remains context, but with lower authority than a valid signal.
+        if regime.startswith('UPTREND'):
+            votes['LONG']+=0.20*w
+        elif regime.startswith('DOWNTREND'):
+            votes['SHORT']+=0.20*w
+        evidence.append({'horizon':h,'direction':d,'regime':regime,'score':hs,
+                         'invalidated':invalid,'direction_vote_counted':pass_dir})
+    direction='NO_TRADE'
+    if votes['LONG']>=1.25 and votes['LONG']>=votes['SHORT']+0.45:
+        direction='LONG'
+    elif votes['SHORT']>=1.25 and votes['SHORT']>=votes['LONG']+0.45:
+        direction='SHORT'
+    return {'direction':direction,'votes':votes,'evidence':evidence}
+
+def _v90r57_trigger_score(row):
+    row=row or {}
+    h=str(row.get('horizon') or '')
+    if h not in _R56_TRIGGER_HORIZONS:
+        return -999.0
+    d=_v90r56_direction(row)
+    if d not in ('LONG','SHORT'):
+        return -999.0
+    hs=row.get('horizon_structure') or {}
+    try: hscore=float(hs.get('score') or row.get('horizon_structure_score') or 0.0)
+    except Exception: hscore=0.0
+    try:
+        indep=int((((row.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count'))
+                  or row.get('independent_evidence_families') or 0)
+    except Exception: indep=0
+    st=str(hs.get('state') or row.get('horizon_structure_state') or '')
+    q=str(row.get('entry_quality') or '')
+    final=str(((row.get('trade_plan') or {}).get('final_economics_gate') or {}).get('status') or '')
+    pri={'5m':0.30,'1h':0.22,'4h':0.12}.get(h,0.0)
+    score=pri+0.85*hscore+0.055*min(indep,6)
+    if st=='CONFIRMED_TREND': score+=0.20
+    elif st=='BUILDING_TREND': score+=0.10
+    if q in ('FRESH_BREAKOUT','CONFIRMED_TREND'): score+=0.12
+    elif q=='NEW_SETUP_PROVISIONAL': score+=0.04
+    if final=='PASS': score+=0.18
+    if _v90r55_invalidated(row): score-=0.80
+    return score
+
+def _v90r57_best_local_direction(summary,asset):
+    rows=[dict(r) for r in (summary or [])
+          if str((r or {}).get('asset') or '')==str(asset)
+          and str((r or {}).get('horizon') or '') in _R56_TRIGGER_HORIZONS
+          and _v90r56_direction(r) in ('LONG','SHORT')]
+    if not rows:
+        return None
+    rows.sort(key=_v90r57_trigger_score,reverse=True)
+    best=rows[0]
+    if _v90r57_trigger_score(best)<0.55:
+        return None
+    return best
+
+def _v90_aggressive_candidate_book(summary,core_candidates):
+    base=dict(_v90r57_base_aggressive_book(summary,core_candidates) or {})
+    assets=set(base)
+    assets.update(str((r or {}).get('asset')) for r in (summary or []) if (r or {}).get('asset'))
+    out=dict(base)
+    for asset in assets:
+        senior=_v90r57_senior_bias(summary,asset)
+        local=_v90r57_best_local_direction(summary,asset)
+        current=out.get(asset)
+        if local is None:
+            continue
+        local_dir=_v90r56_direction(local)
+        senior_dir=str(senior.get('direction') or 'NO_TRADE')
+        # A valid senior trend may veto a local countertrend. Invalidated senior
+        # model output cannot. If senior bias is neutral, strongest local trigger
+        # is authoritative for the portfolio trace.
+        if senior_dir in ('LONG','SHORT') and senior_dir!=local_dir:
+            continue
+        cur_score=_v90r57_trigger_score(current) if current else -999.0
+        local_score=_v90r57_trigger_score(local)
+        if current is None or local_score>cur_score+0.12 or _v90r55_invalidated(current):
+            x=dict(local)
+            x['_r57_conflict_routed']=True
+            x['_r57_trigger_score']=local_score
+            x['_r57_previous_candidate_direction']=_v90r56_direction(current)
+            x['_r57_previous_candidate_horizon']=str((current or {}).get('horizon') or '')
+            x['_r56_senior_bias']=senior
+            # If the local row passed all gates it becomes an R56 trigger. If it
+            # is blocked, surface the true blocked SHORT/LONG reason but do not
+            # bypass the base admission gate.
+            if _v90r56_plan_pass(x):
+                x['_r56_trigger_selected']=True
+                x['_r56_entry_horizon']=str(x.get('horizon') or '')
+                x['_r56_management_horizon']=str(x.get('horizon') or '')
+            out[asset]=x
+    return out
+
+def report(pg_connect):
+    d=dict(_v90r57_base_report(pg_connect) or {})
+    d['conflict_routing_r57']={
+      'status':'ACTIVE','started_at':V90_R57_STARTED_AT,
+      'invalidated_senior_direction_votes':False,
+      'strong_local_trigger_can_replace_weak_opposite_candidate':True,
+      'blocked_local_trigger_is_surfaced_not_executed':True,
+      'quote_freshness_bypass':False,
+      'economics_bypass':False,
+      'nq_current_feed':'Yahoo CME NQ=F delayed research',
+      'nq_5m_requires_fresh_execution_feed':True,
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),35)
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
