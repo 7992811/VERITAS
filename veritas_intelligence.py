@@ -6680,6 +6680,7 @@ def _v90r22_agent_perf_safe():
 
 
 def cycle(selected_horizons=None, cycle_mode='FULL'):
+    global _v90_last_fast5m_monotonic
     cycle_wall_t0=time.time()
     selected_horizons=tuple(selected_horizons or tuple(HORIZONS.keys()))
     selected_horizons=tuple(h for h in selected_horizons if h in HORIZONS)
@@ -7272,7 +7273,6 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
              'telemetry':telemetry,'knowledge': knowledge_summary(),'portfolio_autopilot':portfolio_autopilot}
     with lock:
         last_cycle.clear(); last_cycle.update(state)
-    global _v90_last_fast5m_monotonic
     if cycle_mode=='FAST_5M' and status in ('ok','degraded') and made:
         _v90_last_fast5m_monotonic=time.monotonic()
     try:
