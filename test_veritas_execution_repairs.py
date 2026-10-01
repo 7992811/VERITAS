@@ -1662,5 +1662,39 @@ class ExecutionAndProfitProtectionR63Tests(unittest.TestCase):
         self.assertFalse(out['soft_only'])
 
 
+class NQTrendAndCycleR63Tests(unittest.TestCase):
+    def test_nq_strong_trend_can_bridge_neutral_committee(self):
+        f={'trend_impulse':{'direction':'LONG','phase':'TREND_DAY','impulse_score':.78,
+                            'onset_score':.75,'entry_quality':'TREND_CONTINUATION',
+                            'horizon_consensus_count':2},
+           'intraday_structure':{'direction':'LONG','lifecycle':'CONFIRMATION',
+                                 'score':.80,'breakout_hold':True,'false_breakout':False},
+           'horizon_structure':{'direction':'LONG','state':'CONFIRMED_TREND','score':.74}}
+        out=VI._v90r63_nq_trend_bridge('NQ','5m',f,'NO_TRADE',0.0)
+        self.assertTrue(out['active'])
+        self.assertEqual(out['direction'],'LONG')
+
+    def test_nq_bridge_does_not_override_weak_or_conflicting_structure(self):
+        f={'trend_impulse':{'direction':'LONG','phase':'EARLY_TREND','impulse_score':.55,
+                            'onset_score':.60,'horizon_consensus_count':0},
+           'intraday_structure':{'direction':'LONG','lifecycle':'PROBE','score':.55,'breakout_hold':False},
+           'horizon_structure':{'direction':'SHORT','state':'CONFIRMED_TREND','score':.80}}
+        self.assertFalse(VI._v90r63_nq_trend_bridge('NQ','5m',f,'NO_TRADE',0.0)['active'])
+
+    def test_full_cycle_source_contains_fast5m_reuse_path(self):
+        src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
+        self.assertIn('_reuse_fast5m_decisions',src)
+        self.assertIn('processing_horizons',src)
+        self.assertIn("expected = len(ASSETS)*len(processing_horizons)",src)
+
+    def test_futures_history_has_bounded_provider_wait_and_cache(self):
+        src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
+        pos=src.rfind("def _yahoo_research_futures_market")
+        body=src[pos:pos+8000]
+        self.assertIn("f5.result(timeout=10.0)",body)
+        self.assertIn("_v90r63_futures_history_cache",body)
+        self.assertIn("shutdown(wait=False,cancel_futures=True)",body)
+
+
 if __name__ == '__main__':
     unittest.main()

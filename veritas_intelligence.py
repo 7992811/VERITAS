@@ -6689,6 +6689,43 @@ def _v90r22_agent_perf_safe():
         return list(_v90r22_perf_cache.get('value') or performance_rows())
 
 
+def _v90r63_nq_trend_bridge(asset,horizon,f,research_dec,confidence):
+    """Recover a strong NQ trend-day that the neutral committee would otherwise miss.
+
+    This creates only a research direction. Freshness, stop/target economics,
+    profitability history and portfolio admission remain mandatory downstream.
+    """
+    if str(asset)!='NQ' or str(horizon) not in ('5m','1h') or str(research_dec)!='NO_TRADE':
+        return {'active':False}
+    f=f or {}; ti=f.get('trend_impulse') or {}; st=f.get('intraday_structure') or {}
+    direction=str(ti.get('direction') or st.get('direction') or 'NO_TRADE')
+    if direction not in ('LONG','SHORT'):
+        return {'active':False}
+    phase=str(ti.get('phase') or 'NONE')
+    entryq=str(ti.get('entry_quality') or st.get('entry_quality') or '')
+    lifecycle=str(st.get('lifecycle') or '')
+    if entryq in ('INVALIDATED','LATE_EXTENDED','EXTENDED_WAIT_PULLBACK') or st.get('false_breakout'):
+        return {'active':False}
+    impulse=float(ti.get('impulse_score') or 0.0)
+    onset=float(ti.get('onset_score') or 0.0)
+    sscore=float(st.get('score') or 0.0)
+    consensus=int(ti.get('horizon_consensus_count') or 0)
+    hs=f.get('horizon_structure') or {}
+    hs_same=str(hs.get('direction') or 'NO_TRADE')==direction
+    hs_score=float(hs.get('score') or 0.0)
+    strong_phase=bool(phase in ('TREND_DAY','IMPULSE_TREND') and impulse>=0.68)
+    strong_structure=bool(lifecycle in ('CONFIRMATION','EXTENSION')
+                          and sscore>=0.72 and bool(st.get('breakout_hold')))
+    aligned=bool(consensus>=2 or (hs_same and hs_score>=0.62))
+    if not aligned or not (strong_phase or strong_structure):
+        return {'active':False}
+    conf=max(float(confidence or 0.0),0.68,min(0.86,max(impulse,onset,sscore)))
+    return {'active':True,'direction':direction,'confidence':conf,
+            'reason':'R63_NQ_STRONG_TREND_BRIDGE','phase':phase,
+            'impulse_score':impulse,'structure_score':sscore,
+            'horizon_consensus_count':consensus,'horizon_score':hs_score}
+
+
 def cycle(selected_horizons=None, cycle_mode='FULL'):
     global _v90_last_fast5m_monotonic, _v90r62_active_cycle_mode
     cycle_wall_t0=time.time()
@@ -6697,6 +6734,14 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     if not selected_horizons: selected_horizons=tuple(HORIZONS.keys())
     cycle_mode=str(cycle_mode or 'FULL').upper()
     _v90r62_active_cycle_mode=cycle_mode
+    processing_horizons=selected_horizons
+    _reuse_fast5m_decisions=bool(cycle_mode=='FULL' and '5m' in selected_horizons
+        and _v90_last_fast5m_monotonic>0
+        and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
+    if _reuse_fast5m_decisions:
+        _slow=tuple(h for h in selected_horizons if h!='5m')
+        if _slow:
+            processing_horizons=_slow
     if not _BOOTSTRAP_READY:
         init_db(); seed_knowledge()
     pg_state = pg_storage_status()
@@ -6730,7 +6775,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     analog_seconds=time.time()-phase_t0; phase_seconds['structure_analogs']=analog_seconds
     cycle_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     pre_decision_seconds=time.time()-cycle_wall_t0
-    emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False), cycle_mode=cycle_mode, updated_horizons=list(selected_horizons),
+    emit('cycle_start', clock=clock_info, durable_storage=pg_state.get('ok', False), cycle_mode=cycle_mode, updated_horizons=list(processing_horizons), reused_fast5m_decisions=_reuse_fast5m_decisions,
          pre_decision_seconds=round(pre_decision_seconds,3),outcomes_seconds=round(outcomes_seconds,3),analog_seconds=round(analog_seconds,3))
     _v90_pg_batch_begin()
     decision_phase_t0=time.time()
@@ -6777,14 +6822,14 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             try:
                 common_structure={'intraday_structure':intraday_structure_features(raw)}
                 common_structure['trend_impulse']=merge_trend_and_structure(trend_onset_features(raw),common_structure['intraday_structure'])
-                _needed_h=set(selected_horizons)|{'1h','4h','1d'}
+                _needed_h=set(processing_horizons)|{'1h','4h','1d'}
                 common_structure['horizon_structures']={h:horizon_structure_features(raw,h) for h in HORIZONS if h in _needed_h}
                 common_structure['structural_levels']=structural_levels_features(raw)
                 common_feature_builds += 1
             except Exception as ex:
                 emit('common_structure_cache_error',asset=asset,error=f'{type(ex).__name__}: {ex}')
             asset_timings[asset]['common_features']=time.time()-asset_phase_t0
-            for horizon in selected_horizons:
+            for horizon in processing_horizons:
                 horizon_wall_t0=time.time()
                 created_at = now()
                 f = features(raw, horizon, common_structure)
@@ -6820,6 +6865,12 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                     tactical_reversal=pivot_break
                 f['impulse_pivot_break']=pivot_break
                 f['tactical_reversal']=tactical_reversal
+                nq_trend_bridge=_v90r63_nq_trend_bridge(asset,horizon,f,research_dec,conf)
+                f['nq_trend_bridge']=nq_trend_bridge
+                if nq_trend_bridge.get('active') and not tactical_reversal.get('active'):
+                    research_dec=nq_trend_bridge['direction']
+                    conf=max(float(conf or 0.0),float(nq_trend_bridge.get('confidence') or 0.0))
+                    size=max(float(size or 0.0),0.10)
                 if horizon in ('1h','4h') and (impulse_genesis.get('candidate_direction') in ('LONG','SHORT') or impulse_genesis.get('active')):
                     try:
                         pg_event('impulse_genesis_learning',f'{cycle_id}:{asset}:{horizon}:genesis',
@@ -7213,7 +7264,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     summary=[_merged[k] for k in sorted(_merged,key=lambda z:(DISPLAY_ASSETS.index(z[0]) if z[0] in DISPLAY_ASSETS else 999,
                                                             ('5m','1h','4h','1d','3d','7d').index(z[1]) if z[1] in ('5m','1h','4h','1d','3d','7d') else 999))]
     storage = pg_storage_status()
-    expected = len(ASSETS)*len(selected_horizons)
+    expected = len(ASSETS)*len(processing_horizons)
     if made == expected and (not pg_enabled() or storage.get('ok')):
         status = 'ok'
     elif made:
@@ -7275,7 +7326,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             del cycle_telemetry_history[:-CYCLE_TELEMETRY_HISTORY_LIMIT]
     state = {'status': status, 'at': now(), 'version': VERSION, 'decisions_written': made,
              'outcomes_written': outcomes, 'summary': list(summary),
-             'cycle_mode':cycle_mode,'updated_horizons':list(selected_horizons),
+             'cycle_mode':cycle_mode,'updated_horizons':list(processing_horizons),'requested_horizons':list(selected_horizons),'reused_fast5m_decisions':_reuse_fast5m_decisions,
              'signal_cells':len(summary), 'trade_alerts_written':len(trade_alerts), 'trade_lifecycle_sync':lifecycle_sync, 'meta_cio':meta_cio,'meta_alerts_written':meta_alerts,
              'errors': errors,'source_quality':cycle_source_quality,
              'storage': storage, 'agent_learning': 'shadow_until_n>=30',
@@ -9287,24 +9338,42 @@ def _v90_proxy_bridge_intraday(primary_bars,proxy_bars,live_price=None,live_ts=N
     return primary[-500:]
 
 # ---------- faster futures source collection ----------
+_v90r63_futures_history_cache={}
+_v90r63_futures_history_lock=threading.Lock()
+
 def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,source_name):
     stooq_symbol={'NQ':'nq.f','GOLD':'gc.f'}.get(str(asset))
-    with ThreadPoolExecutor(max_workers=5,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
+    with _v90r63_futures_history_lock:
+        _hc=dict(_v90r63_futures_history_cache.get(str(asset)) or {})
+    _cache_ok=bool(_hc and time.time()-float(_hc.get('at') or 0.0)<=900.0)
+    pool=ThreadPoolExecutor(max_workers=5,thread_name_prefix=f'veritas-{asset.lower()}')
+    try:
         f5=pool.submit(_yahoo_series,yahoo_symbol,'5d','5m',True)
         f1=pool.submit(_yahoo_series,yahoo_symbol,'3mo','1h',True)
         fp=pool.submit(_yahoo_series,proxy_symbol,'5d','5m',True)
         fs=pool.submit(_v90_stooq_public_quote,stooq_symbol) if stooq_symbol else None
         fpf=pool.submit(_v90r61_profinance_quote,asset) if str(asset) in ('NQ','GOLD') else None
-        bars5,_=f5.result()
-        bars1h,_=f1.result()
-        try: pr,_=fp.result()
-        except Exception: pr=[]
-        try: sq=fs.result() if fs is not None else {'ok':False,'error':'not_configured'}
+        try: bars5,_=f5.result(timeout=10.0)
+        except Exception as ex:
+            bars5=list(_hc.get('bars5') or []) if _cache_ok else []
+            emit('r63_futures_5m_cache_fallback',asset=asset,bars=len(bars5),error=f'{type(ex).__name__}: {ex}')
+        try: bars1h,_=f1.result(timeout=10.0)
+        except Exception as ex:
+            bars1h=list(_hc.get('bars1h') or []) if _cache_ok else []
+            emit('r63_futures_1h_cache_fallback',asset=asset,bars=len(bars1h),error=f'{type(ex).__name__}: {ex}')
+        try: pr,_=fp.result(timeout=4.0)
+        except Exception: pr=list(_hc.get('proxy') or []) if _cache_ok else []
+        try: sq=fs.result(timeout=4.0) if fs is not None else {'ok':False,'error':'not_configured'}
         except Exception as ex: sq={'ok':False,'error':f'{type(ex).__name__}: {ex}'}
-        try: pf=fpf.result() if fpf is not None else {}
+        try: pf=fpf.result(timeout=4.0) if fpf is not None else {}
         except Exception: pf={}
+    finally:
+        pool.shutdown(wait=False,cancel_futures=True)
     if len(bars1h)<200:
         raise RuntimeError(f'INSUFFICIENT_{asset}_HOURLY_BARS {len(bars1h)}')
+    with _v90r63_futures_history_lock:
+        _v90r63_futures_history_cache[str(asset)]={'at':time.time(),
+            'bars5':list(bars5),'bars1h':list(bars1h),'proxy':list(pr or [])}
     last=bars5[-1] if bars5 else bars1h[-1]
     delayed_price=float(last['close'])
     delayed_observed=datetime.fromtimestamp(last['ts'],tz=timezone.utc).isoformat()
@@ -9578,7 +9647,7 @@ def _fetch_asset_bundle(symbol,asset,cb_product):
     return out
 
 # Keep outer asset fanout conservative; inner provider calls now run in parallel.
-FAST_LOOP_MARKET_WORKERS=max(4,min(5,FAST_LOOP_MARKET_WORKERS))
+FAST_LOOP_MARKET_WORKERS=max(5,min(6,FAST_LOOP_MARKET_WORKERS))
 
 
 def learning_index_v2():
