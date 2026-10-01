@@ -1131,5 +1131,99 @@ class R562CandidateRankTests(unittest.TestCase):
 
 
 
+class TacticalTriggerPriorityR57Tests(unittest.TestCase):
+    def _nq(self,h,d,gate='PASS',price=30973.5):
+        blocked=(gate=='BLOCK')
+        return {
+            'asset':'NQ','horizon':h,'research_decision':d,'price':price,
+            'signal_tier':'SHORT' if d=='SHORT' else 'LONG',
+            'decision_stage':'EARLY_PROBE' if not blocked else 'WAIT_RISK_REWARD',
+            'entry_quality':'NEW_SETUP_PROVISIONAL' if not blocked else 'CONFIRMED_TREND',
+            'regime':'RANGE_LOW_VOL',
+            'horizon_return':-.004 if d=='SHORT' else .004,
+            'realized_vol':.010,
+            'horizon_structure':{
+                'state':'BUILDING_TREND' if h!='5m' else 'CONFIRMED_TREND',
+                'score':.72 if h!='5m' else .80,
+                'direction':d,
+            },
+            'institutional_signal':{
+                'evidence_independence':{'independent_count':5 if h=='5m' else 2},
+                'breakout_quality':{'state':'CONFIRMED_BREAKOUT'},
+            },
+            'trade_plan':{
+                'eligible':not blocked,'direction':d,
+                'stop_price':31162.0 if d=='SHORT' else 30780.0,
+                'target_price':30627.0 if d=='SHORT' else 31300.0,
+                'expected_move_pct':.0112,
+                'expected_to_stop_ratio':1.84,
+                'final_economics_gate':{
+                    'status':gate,
+                    'net_reward_risk':1.45 if not blocked else .50,
+                    'modeled_round_trip_cost_pct':.002,
+                },
+            },
+            '_rank':1.0,
+        }
+
+    def test_valid_one_hour_short_beats_conflicting_senior_long_bias(self):
+        short1=self._nq('1h','SHORT','PASS')
+        stale5=self._nq('5m','SHORT','BLOCK')
+        long4=self._nq('4h','LONG','PASS')
+        long1d=self._nq('1d','LONG','BLOCK')
+        long3d=self._nq('3d','LONG','BLOCK')
+        summary=[stale5,short1,long4,long1d,long3d]
+        with patch.object(VPR,'_v90r57_base_aggressive_book',
+                          return_value={'NQ':long4}):
+            out=VPR._v90_aggressive_candidate_book(summary,{'NQ':long4})
+        self.assertEqual(out['NQ']['research_decision'],'SHORT')
+        self.assertEqual(out['NQ']['horizon'],'1h')
+        self.assertTrue(out['NQ']['_r57_senior_conflict'])
+        self.assertAlmostEqual(out['NQ']['_r57_initial_size_cap'],.50)
+
+    def test_counter_senior_valid_one_hour_short_opens_fifty_percent(self):
+        row=self._nq('1h','SHORT','PASS')
+        row['_r56_trigger_selected']=True
+        row['_r56_entry_horizon']='1h'
+        row['_r56_management_horizon']='1h'
+        row['_r57_trigger_score']=4.0
+        row['_r57_senior_conflict']=True
+        row['_r57_senior_aligned']=False
+        row['_r57_initial_size_cap']=.50
+        row['_r57_size_reason']='COUNTER_SENIOR_TACTICAL_50'
+        row['_r57_direction_confirmation']={
+            '5m':{'state':'CONFIRMED_TREND','score':.80,'independent':5,'plan_pass':False},
+            '1h':{'state':'BUILDING_TREND','score':.72,'independent':2,'plan_pass':True},
+            '4h':None,
+        }
+        with patch.object(VPR,'_v90r57_base_admission',
+                          return_value={'open':True,'fraction':.75,'reason':'legacy'}):
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out['open'])
+        self.assertAlmostEqual(out['fraction'],.50)
+        self.assertEqual(out['reason'],'R57_TACTICAL_TRIGGER_PRIORITY')
+
+    def test_blocked_stale_5m_short_cannot_be_selected_as_execution_row(self):
+        stale5=self._nq('5m','SHORT','BLOCK')
+        fresh1=self._nq('1h','SHORT','PASS')
+        out=VPR._v90r57_best_trigger([stale5,fresh1],'NQ')
+        self.assertEqual(out['horizon'],'1h')
+
+    def test_senior_aligned_valid_trigger_can_open_up_to_one_hundred_percent(self):
+        row=self._nq('1h','SHORT','PASS')
+        row['_r56_trigger_selected']=True
+        row['_r57_trigger_score']=4.0
+        row['_r57_senior_conflict']=False
+        row['_r57_senior_aligned']=True
+        row['_r57_initial_size_cap']=1.0
+        row['_r57_size_reason']='SENIOR_ALIGNED_UP_TO_100'
+        row['_r57_direction_confirmation']={'5m':None,'1h':None,'4h':None}
+        with patch.object(VPR,'_v90r57_base_admission',
+                          return_value={'open':True,'fraction':1.0,'reason':'legacy'}):
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertAlmostEqual(out['fraction'],1.0)
+
+
+
 if __name__ == '__main__':
     unittest.main()
