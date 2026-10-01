@@ -1354,6 +1354,39 @@ class StableSetupIdentityAndIndependentLearningR60Tests(unittest.TestCase):
                          VP._v90r60_independent_episode_key(t2))
 
 
+class CompactLearningQueryR602Tests(unittest.TestCase):
+    def _run(self, include_knowledge=False):
+        seen={}
+        class Cursor:
+            def __init__(self, rows=None): self._rows=rows or []
+            def fetchall(self): return self._rows
+        class Conn:
+            def __enter__(self): return self
+            def __exit__(self,*args): return False
+            def execute(self,sql,args=None):
+                if 'SELECT entity_key,decision_ts AS event_ts' in sql:
+                    seen['sql']=sql
+                    seen['args']=args
+                    return Cursor([])
+                return Cursor([])
+        with patch.object(VI,'pg_enabled',return_value=True), \
+             patch.object(VI,'pg_connect',return_value=Conn()):
+            VI._bounded_completed_episode_rows(
+                'DESC',6000,600,include_knowledge=include_knowledge)
+        return seen
+
+    def test_fast_learning_slice_omits_heavy_rule_match_json(self):
+        seen=self._run(False)
+        self.assertIn("'[]'::jsonb AS knowledge_shadow_matches",seen['sql'])
+        self.assertNotIn("model_version,knowledge_shadow_matches",seen['sql'])
+        self.assertEqual(seen['args'],(3500,))
+
+    def test_rule_stats_can_explicitly_request_rule_match_json(self):
+        seen=self._run(True)
+        self.assertIn("model_version,knowledge_shadow_matches",seen['sql'])
+        self.assertEqual(seen['args'],(3500,))
+
+
 class R601LearningCacheInvalidationTests(unittest.TestCase):
     def test_dedup_immediately_invalidates_r29_and_r33_caches(self):
         class Cur:

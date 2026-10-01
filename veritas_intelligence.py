@@ -14362,25 +14362,33 @@ def _shadow_trade_learning_windows():
 # the web/portfolio fast path on small PostgreSQL instances.
 # =========================
 
-def _bounded_completed_episode_rows(order='DESC', raw_limit=6000, episode_limit=600):
+def _bounded_completed_episode_rows(order='DESC', raw_limit=6000, episode_limit=600,
+                                    include_knowledge=False):
     if not pg_enabled():
         return []
     order='ASC' if str(order).upper()=='ASC' else 'DESC'
-    raw_limit=max(100,min(8000,int(raw_limit)))
+    requested_raw_limit=max(100,min(8000,int(raw_limit)))
+    # R60.2: keep the live learning slice small enough for the 0.1 CPU Postgres
+    # plan. Direction/miss calibration does not need the per-decision rule JSON.
+    query_limit=min(requested_raw_limit,3500)
     episode_limit=max(50,min(3000,int(episode_limit)))
+    knowledge_sql=("knowledge_shadow_matches" if include_knowledge
+                   else "'[]'::jsonb AS knowledge_shadow_matches")
     sql=f"""
       SELECT entity_key,decision_ts AS event_ts,asset,horizon,regime,decision,
-             forward_return,mfe,mae,model_version,knowledge_shadow_matches
+             forward_return,mfe,mae,model_version,{knowledge_sql}
       FROM v90_decision_episodes
       ORDER BY decision_ts {order}
       LIMIT %s
     """
     try:
         with pg_connect() as c:
-            c.execute("SET statement_timeout TO '3s'")
-            rows=[dict(r) for r in c.execute(sql,(raw_limit,)).fetchall()]
+            c.execute("SET statement_timeout TO '4s'")
+            rows=[dict(r) for r in c.execute(sql,(query_limit,)).fetchall()]
     except Exception as ex:
-        emit('compact_learning_query_error',order=order,raw_limit=raw_limit,
+        emit('compact_learning_query_error',order=order,
+             raw_limit=requested_raw_limit,query_limit=query_limit,
+             include_knowledge=bool(include_knowledge),
              error=f'{type(ex).__name__}: {ex}')
         return []
 
@@ -14511,7 +14519,8 @@ def refresh_rule_stats():
     # remain the promotion authority. Avoid recomputing window functions over the full ledger.
     if not pg_enabled():
         return {'rows':0,'status_changes':0,'status':'postgres_required'}
-    episodes=_bounded_completed_episode_rows('DESC',6000,2500)
+    # Rule lifecycle needs rule-match JSON, but not the full 6000-row live slice.
+    episodes=_bounded_completed_episode_rows('DESC',3500,2500,include_knowledge=True)
     if not episodes:
         return {'rows':0,'status_changes':0,'status':'bounded_query_empty'}
     buckets={}
