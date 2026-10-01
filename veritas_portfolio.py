@@ -8396,6 +8396,35 @@ def _signal_first_admission(row,policy,drawdown):
                 'research_signal_preserved':True}
     out=_v90r41_base_admission(row,policy,drawdown)
     if isinstance(out,dict):
+        # R61.2 final sizing invariant: source + economics have already passed.
+        # Later learning layers may refine size, but cannot collapse a qualified
+        # Aggressive fresh/confirmed signal back to a Champion-style probe.
+        if str((policy or {}).get('mode') or '')=='AGGRESSIVE' and out.get('open'):
+            q=_v90r24_aggressive_quality(row)
+            conf=float(row.get('confidence') or row.get('_pwin') or 0.0)
+            floor=0.0
+            if q.get('super'):
+                floor=1.00 if (conf>=0.82 and q.get('independent',0)>=5 and q.get('rr',0)>=1.35) else 0.75
+            elif q.get('fresh'):
+                floor=1.00 if (conf>=0.82 and q.get('independent',0)>=5 and q.get('rr',0)>=1.50 and q.get('alignment',0)>=3) else \
+                      0.75 if (conf>=0.72 and q.get('independent',0)>=4 and q.get('rr',0)>=1.30) else 0.50
+            elif q.get('confirmed'):
+                floor=0.75 if (q.get('independent',0)>=5 and q.get('rr',0)>=1.50) else \
+                      0.50 if (q.get('independent',0)>=4 and q.get('rr',0)>=1.30) else 0.0
+            if floor>0:
+                risk_cap=_v90r24_stop_risk_cap(row)
+                if risk_cap is not None:
+                    floor=min(floor,float(risk_cap))
+                maxf=float((policy or {}).get('max_fraction') or 5.0)
+                floor=_clip(_round_step(floor),0.05,maxf)
+                before=float(out.get('fraction') or 0.0)
+                if floor>before:
+                    out['fraction']=floor
+                    out['open']=True
+                    out['reason']=str(out.get('reason') or '')+'|R61_FINAL_AGGRESSIVE_FLOOR'
+                    out['r61_fraction_before_floor']=before
+                    out['r61_final_aggressive_floor']=floor
+                    out['r61_quality']=q
         out['paper_source_quality']='PRODUCTION_GRADE' if row.get('production_eligible') else 'RESEARCH_GRADE'
         out['paper_is_live_fill_evidence']=False
     return out

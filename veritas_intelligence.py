@@ -3133,7 +3133,7 @@ _v90r61_public_quote_lock=threading.Lock()
 def _v90r61_parse_clock_msk(value,now_dt=None):
     now_dt=now_dt or datetime.now(timezone.utc)
     s=str(value or '').strip()
-    m=re.search(r'(?<!\\d)(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?!\\d)',s)
+    m=re.search(r'(?<!\d)(\d{1,2}):(\d{2})(?::(\d{2}))?(?!\d)',s)
     if not m:
         return None
     hh,mm,ss=int(m.group(1)),int(m.group(2)),int(m.group(3) or 0)
@@ -3152,7 +3152,7 @@ def _v90r61_parse_profinance_text(text,asset,now_dt=None):
     if not text:
         return None
     clean=_html.unescape(re.sub(r'<[^>]+>',' ',str(text)))
-    clean=re.sub(r'\\s+',' ',clean)
+    clean=re.sub(r'\s+',' ',clean)
     asset=str(asset or '').upper()
     if asset=='NQ':
         section=clean
@@ -3177,7 +3177,7 @@ def _v90r61_parse_profinance_text(text,asset,now_dt=None):
         if pos<0:
             continue
         tail=section[pos+len(label):pos+len(label)+260]
-        nums=re.findall(r'(?<![A-Za-z])[-+]?\\d[\\d ,]*(?:\\.\\d+)?',tail)
+        nums=re.findall(r'(?<![A-Za-z])[-+]?\d[\d ,]*(?:\.\d+)?',tail)
         price=None
         for raw in nums:
             z=raw.replace(' ','').replace(',','')
@@ -3188,7 +3188,7 @@ def _v90r61_parse_profinance_text(text,asset,now_dt=None):
                     break
             except Exception:
                 pass
-        tm=re.search(r'(?<!\\d)(\\d{1,2}:\\d{2}(?::\\d{2})?)(?!\\d)',tail)
+        tm=re.search(r'(?<!\d)(\d{1,2}:\d{2}(?::\d{2})?)(?!\d)',tail)
         obs=_v90r61_parse_clock_msk(tm.group(1),now_dt) if tm else None
         if price and price>0 and obs:
             return {'price':price,'observed_at':obs.isoformat(),'source':'ProFinance',
