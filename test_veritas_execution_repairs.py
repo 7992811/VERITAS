@@ -1231,5 +1231,79 @@ class TacticalTriggerPriorityR57Tests(unittest.TestCase):
 
 
 
+
+
+class LossRootCauseGateR59Tests(unittest.TestCase):
+    def _row(self, **overrides):
+        row={
+          'asset':'BTC','horizon':'5m','research_decision':'LONG',
+          'market_observed_at':NOW.isoformat(),'entry_quality':'FRESH_BREAKOUT',
+          'horizon_structure':{'state':'CONFIRMED_TREND','score':.82,'direction':'LONG'},
+          'institutional_signal':{
+            'evidence_independence':{'independent_count':5},
+            'breakout_quality':{'state':'CONFIRMED_BREAKOUT'}},
+          'trade_plan':{
+            'eligible':True,'entry_price':100.0,'stop_price':99.2,'target_price':101.2,
+            'expected_move_pct':.012,'expected_to_stop_ratio':1.8,
+            'final_economics_gate':{
+              'status':'PASS','net_reward_risk':1.8,
+              'expected_move_pct':.012,'modeled_round_trip_cost_pct':.002}},
+        }
+        row.update(overrides)
+        return row
+
+    def test_r59_blocks_cost_dominated_five_minute_entry(self):
+        row=self._row()
+        row['trade_plan']['expected_move_pct']=.005
+        row['trade_plan']['final_economics_gate'].update(
+            net_reward_risk=1.8,expected_move_pct=.005,modeled_round_trip_cost_pct=.002)
+        old=VPR._v90r59_base_admission
+        try:
+            VPR._v90r59_base_admission=lambda r,p,d:{'open':True,'fraction':.50,'reason':'BASE_PASS'}
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        finally:
+            VPR._v90r59_base_admission=old
+        self.assertFalse(out['open'])
+        self.assertEqual(out['reason'],'R59_POST_COST_MOVE_MARGIN_TOO_LOW')
+
+    def test_r59_keeps_qualified_aggressive_signal_at_fifty_or_more(self):
+        row=self._row()
+        old=VPR._v90r59_base_admission
+        try:
+            VPR._v90r59_base_admission=lambda r,p,d:{'open':True,'fraction':.50,'reason':'BASE_PASS'}
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        finally:
+            VPR._v90r59_base_admission=old
+        self.assertTrue(out['open'])
+        self.assertGreaterEqual(out['fraction'],.50)
+
+    def test_r59_blocks_counter_structure_without_strong_reversal(self):
+        row=self._row(horizon_structure={'state':'CONFIRMED_TREND','score':.80,'direction':'SHORT'})
+        row['institutional_signal']['evidence_independence']['independent_count']=3
+        old=VPR._v90r59_base_admission
+        try:
+            VPR._v90r59_base_admission=lambda r,p,d:{'open':True,'fraction':.50,'reason':'BASE_PASS'}
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        finally:
+            VPR._v90r59_base_admission=old
+        self.assertFalse(out['open'])
+        self.assertEqual(out['reason'],'R59_EXECUTION_TF_DIRECTION_CONFLICT')
+
+    def test_r59_friction_sets_stop_noise_floor(self):
+        row=self._row()
+        row['trade_plan']['final_economics_gate']['modeled_round_trip_cost_pct']=.003
+        self.assertGreaterEqual(VPR._v90r56_stop_noise_floor(row,'5m'),.00375)
+
+    def test_r59_near_flat_flip_waits_one_confirmation_cycle(self):
+        z={'direction':'LONG','avg_entry_price':100.0,'payload':{},
+           'asset':'BTC','active_trade_id':'t-r59'}
+        self.assertTrue(VPR._v90r59_near_flat_flip_should_wait(
+            z,99.95,NOW.isoformat(),'V842_CONFIRMED_DIRECTION_FLIP'))
+        z['payload']={'r59_pending_flip_reason':'V842_CONFIRMED_DIRECTION_FLIP',
+                      'r59_pending_flip_at':NOW.isoformat(),'r59_pending_flip_count':1}
+        self.assertFalse(VPR._v90r59_near_flat_flip_should_wait(
+            z,99.95,(NOW+timedelta(minutes=2)).isoformat(),
+            'V842_CONFIRMED_DIRECTION_FLIP'))
+
 if __name__ == '__main__':
     unittest.main()

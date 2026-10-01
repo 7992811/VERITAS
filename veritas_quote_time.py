@@ -53,7 +53,16 @@ def quote_gate(observed_at, horizon=None, now=None, *, protective=False):
     if protective:
         limit = PROTECTIVE_MAX_AGE_SECONDS
     else:
-        limit = 300 if horizon == '5m' else 3600
+        # Entry freshness is horizon-specific. A slower thesis may use older
+        # context, but the simulated order still needs a recent observation.
+        limit = {
+            '5m': 300,
+            '1h': 1200,
+            '4h': 1800,
+            '1d': 3600,
+            '3d': 3600,
+            '7d': 3600,
+        }.get(str(horizon or ''), 3600)
     ok = age is not None and math.isfinite(age) and -5 <= age <= limit
     return {'eligible': ok, 'observed_at': dt.isoformat() if dt else None,
             'age_seconds': age, 'max_age_seconds': limit,

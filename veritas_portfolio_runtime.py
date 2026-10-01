@@ -3714,6 +3714,275 @@ def report(pg_connect):
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),35)
 
 
+
+
+# VERITAS V90 LOSS ROOT-CAUSE GATE R59
+# Consolidated repair for repeated historical loss classes:
+# cost drag / overforecasted edge, counter-structure entries, stops too close
+# to trading friction, near-flat signal-flip churn, and same-observation reversal.
+V90_R59_STARTED_AT=os.getenv('VERITAS_R59_EPOCH','2026-10-01T12:00:00+00:00')
+_v90r59_base_admission=_signal_first_admission
+_v90r59_base_open_or_add=_open_or_add
+_v90r59_base_close_or_reduce=_close_or_reduce
+_v90r59_base_stop_noise_floor=_v90r56_stop_noise_floor
+_v90r59_base_report=report
+
+def _v90r59_float(v,default=0.0):
+    try:
+        x=float(v)
+        return x if math.isfinite(x) else default
+    except Exception:
+        return default
+
+def _v90r59_entry_metrics(row):
+    row=row or {}
+    plan=row.get('trade_plan') or {}
+    gate=plan.get('final_economics_gate') or {}
+    rr=_v90r59_float(
+        gate.get('net_reward_risk') or row.get('_execution_rr')
+        or plan.get('expected_to_stop_ratio') or row.get('expected_to_stop_ratio'),0.0)
+    move=abs(_v90r59_float(
+        gate.get('expected_move_pct') or plan.get('expected_move_pct')
+        or row.get('expected_move_pct'),0.0))
+    cost=max(
+        _v90r59_float(gate.get('modeled_round_trip_cost_pct'),0.0),
+        _v90r59_float(VX.round_trip_cost_pct(row.get('spread_bps')),0.0))
+    hs=row.get('horizon_structure') or {}
+    inst=row.get('institutional_signal') or {}
+    bq=inst.get('breakout_quality') or {}
+    try:
+        indep=int((inst.get('evidence_independence') or {}).get('independent_count')
+                  or row.get('independent_evidence_families') or 0)
+    except Exception:
+        indep=0
+    return {
+      'rr':rr,'move':move,'cost':cost,
+      'horizon':str(row.get('horizon') or ''),
+      'direction':_v90r56_direction(row),
+      'hstate':str(hs.get('state') or row.get('horizon_structure_state') or ''),
+      'hdir':str(hs.get('direction') or row.get('horizon_structure_direction') or 'NO_TRADE'),
+      'hscore':_v90r59_float(hs.get('score') or row.get('horizon_structure_score'),0.0),
+      'independent':indep,
+      'breakout_state':str(bq.get('state') or ''),
+      'entry_quality':str(row.get('entry_quality') or plan.get('entry_quality') or ''),
+      'tactical_reversal':row.get('tactical_reversal') or {},
+    }
+
+def _v90r59_thresholds(policy,horizon,cost):
+    mode=str((policy or {}).get('mode') or 'CORE')
+    rr_floor={'IMPULSE_ONLY':1.30,'AGGRESSIVE':1.35,'CORE':1.45,'CHALLENGER':1.55}.get(mode,1.45)
+    if horizon=='5m':
+        rr_floor+=0.10
+    cost_mult={'5m':3.50,'1h':3.25,'4h':3.00}.get(horizon,2.75)
+    move_floor=max(0.0040,cost_mult*max(0.0,float(cost or 0.0)))
+    return rr_floor,move_floor
+
+def _v90r59_strong_reversal(row,metrics=None):
+    m=metrics or _v90r59_entry_metrics(row)
+    tr=m.get('tactical_reversal') or {}
+    tr_dir=str(tr.get('direction') or '')
+    explicit=bool(tr.get('active') and tr_dir in ('',m.get('direction')))
+    breakout=m.get('breakout_state') in (
+      'HIGH_QUALITY_BREAKOUT','CONFIRMED_BREAKOUT','SUPER_CONFIRMED')
+    return bool(
+      (explicit or breakout)
+      and m.get('entry_quality') in ('FRESH_BREAKOUT','CONFIRMED_TREND')
+      and float(m.get('hscore') or 0.0)>=0.72
+      and int(m.get('independent') or 0)>=4
+      and float(m.get('rr') or 0.0)>=1.50
+      and float(m.get('move') or 0.0)>=max(0.0060,4.0*float(m.get('cost') or 0.0))
+    )
+
+def _v90r59_quality_gate(row,policy):
+    m=_v90r59_entry_metrics(row)
+    rr_floor,move_floor=_v90r59_thresholds(policy,m['horizon'],m['cost'])
+    blockers=[]
+    if m['rr']<rr_floor:
+        blockers.append('R59_POST_COST_RR_MARGIN_TOO_LOW')
+    if m['move']<move_floor:
+        blockers.append('R59_POST_COST_MOVE_MARGIN_TOO_LOW')
+    if m['entry_quality']=='NEW_SETUP_PROVISIONAL':
+        if not (m['hstate'] in ('BUILDING_TREND','CONFIRMED_TREND')
+                and m['hscore']>=0.65 and m['independent']>=4
+                and m['rr']>=max(1.50,rr_floor)):
+            blockers.append('R59_PROVISIONAL_SETUP_NOT_MATURE')
+    if (m['direction'] in ('LONG','SHORT') and m['hdir'] in ('LONG','SHORT')
+            and m['hdir']!=m['direction']
+            and m['hstate'] in ('BUILDING_TREND','CONFIRMED_TREND')
+            and not _v90r59_strong_reversal(row,m)):
+        blockers.append('R59_EXECUTION_TF_DIRECTION_CONFLICT')
+    if (m['horizon']=='5m' and bool((row or {}).get('_r57_senior_conflict'))
+            and not _v90r59_strong_reversal(row,m)):
+        blockers.append('R59_5M_COUNTER_SENIOR_NOT_CONFIRMED')
+    return {'eligible':not blockers,'blockers':blockers,
+            'rr_floor':rr_floor,'move_floor':move_floor,**m}
+
+def _signal_first_admission(row,policy,drawdown):
+    out=dict(_v90r59_base_admission(row,policy,drawdown) or {})
+    if not out.get('open'):
+        return out
+    q=_v90r59_quality_gate(row,policy)
+    if not q.get('eligible'):
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':q['blockers'][0],'r59_quality_gate':q}
+    out['r59_quality_gate']=q
+    return out
+
+def _v90r56_stop_noise_floor(row,horizon=None):
+    base=float(_v90r59_base_stop_noise_floor(row,horizon))
+    row=row or {}
+    h=str(horizon or row.get('_r56_management_horizon') or row.get('horizon') or '')
+    gate=((row.get('trade_plan') or {}).get('final_economics_gate') or {})
+    cost=max(
+      _v90r59_float(gate.get('modeled_round_trip_cost_pct'),0.0),
+      _v90r59_float(VX.round_trip_cost_pct(row.get('spread_bps')),0.0))
+    return max(base,{'5m':1.25,'1h':1.15,'4h':1.00}.get(h,1.00)*cost)
+
+def _v90r59_dt(v):
+    if not v:
+        return None
+    if isinstance(v,datetime):
+        d=v
+    else:
+        try:
+            d=datetime.fromisoformat(str(v).replace('Z','+00:00'))
+        except Exception:
+            return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+def _v90r59_recent_opposite_exit(c,name,asset,direction,row,ts):
+    try:
+        last=c.execute(
+          """SELECT direction,closed_at,payload FROM paper_trades
+             WHERE portfolio_name=%s AND asset=%s AND status='CLOSED'
+               AND closed_at IS NOT NULL
+             ORDER BY closed_at DESC LIMIT 1""",(name,asset)).fetchone()
+    except Exception:
+        last=None
+    if not last or str(last.get('direction') or '')==str(direction):
+        return None
+    closed=_v90r59_dt(last.get('closed_at'))
+    now=_v90r59_dt(ts) or datetime.now(timezone.utc)
+    if not closed:
+        return {'blocked':True,'reason':'R59_OPPOSITE_EXIT_TIME_UNKNOWN'}
+    age=max(0.0,(now-closed).total_seconds())
+    if age>=600.0:
+        return None
+    observed=_v90r59_dt((row or {}).get('market_observed_at') or (row or {}).get('observed_at'))
+    fresh=bool(observed and observed>closed)
+    strong=_v90r59_strong_reversal(row)
+    if fresh and strong:
+        return None
+    return {'blocked':True,'reason':'R59_WAIT_FRESH_OPPOSITE_EVENT',
+            'age_seconds':age,'fresh_after_exit':fresh,'strong_reversal':strong}
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    existing=c.execute(
+      "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+      (name,asset)).fetchone()
+    if not existing:
+        policy=POLICIES.get(str(name),{})
+        actual=VX.entry_gate(row,price,direction,target_fraction)
+        q=_v90r59_quality_gate(row,policy)
+        actual_rr=_v90r59_float(actual.get('expected_to_stop_ratio'),0.0)
+        actual_move=abs(_v90r59_float(actual.get('expected_move_pct'),0.0))
+        actual_cost=_v90r59_float(actual.get('modeled_round_trip_cost_pct'),q.get('cost') or 0.0)
+        rr_floor,move_floor=_v90r59_thresholds(
+            policy,str((row or {}).get('horizon') or ''),actual_cost)
+        blockers=list(actual.get('blockers') or [])
+        if actual_rr<rr_floor:
+            blockers.append('R59_FINAL_FILL_RR_MARGIN_TOO_LOW')
+        if actual_move<move_floor:
+            blockers.append('R59_FINAL_FILL_MOVE_MARGIN_TOO_LOW')
+        blockers=list(dict.fromkeys(blockers))
+        if (not actual.get('eligible')) or blockers:
+            print(json.dumps({
+              'event':'V90_R59_ENTRY_BLOCKED','portfolio':name,'asset':asset,
+              'direction':direction,'reason':blockers[0] if blockers else 'R59_FINAL_FILL_GATE',
+              'blockers':blockers,'actual_rr':actual_rr,'rr_floor':rr_floor,
+              'actual_move':actual_move,'move_floor':move_floor,'modeled_cost':actual_cost,
+            },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+            return 0.0
+        opposite=_v90r59_recent_opposite_exit(c,name,asset,direction,row,ts)
+        if opposite and opposite.get('blocked'):
+            print(json.dumps({
+              'event':'V90_R59_ENTRY_BLOCKED','portfolio':name,'asset':asset,
+              'direction':direction,**opposite,
+            },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+            return 0.0
+    return _v90r59_base_open_or_add(
+      c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason)
+
+def _v90r59_near_flat_flip_should_wait(z,price,ts,reason):
+    if str(reason or '') not in ('V842_CONFIRMED_DIRECTION_FLIP','STRUCTURE_BREAK_EXIT_TO_CASH'):
+        return False
+    z=dict(z or {}); p=_v90j_json(z.get('payload'))
+    entry=_v90r59_float(z.get('avg_entry_price') or p.get('entry_price'),0.0)
+    px=_v90r59_float(price,0.0); d=str(z.get('direction') or '')
+    if entry<=0 or px<=0 or d not in ('LONG','SHORT'):
+        return False
+    signed=(px/entry-1.0) if d=='LONG' else (entry/px-1.0)
+    flat_band=max(0.0015,1.50*(2.0*float(COMMISSION)))
+    if abs(signed)>=flat_band:
+        return False
+    now=_v90r59_dt(ts) or datetime.now(timezone.utc)
+    previous_reason=str(p.get('r59_pending_flip_reason') or '')
+    previous_at=_v90r59_dt(p.get('r59_pending_flip_at'))
+    count=int(p.get('r59_pending_flip_count') or 0)
+    if previous_reason==str(reason) and previous_at:
+        age=max(0.0,(now-previous_at).total_seconds())
+        if age<=600.0 and count>=1:
+            return False
+    return True
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    if (float(target_fraction or 0.0)<=0.0
+            and _v90r59_near_flat_flip_should_wait(z,price,ts,reason)):
+        patch={'r59_pending_flip_reason':str(reason),
+               'r59_pending_flip_at':_v90j_iso(ts),'r59_pending_flip_count':1,
+               'r59_flip_debounce':'ONE_CONFIRMATION_CYCLE_WHILE_NEAR_FLAT'}
+        try:
+            tid=(z or {}).get('active_trade_id')
+            c.execute(
+              "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+              "WHERE portfolio_name=%s AND asset=%s",
+              (json.dumps(patch,ensure_ascii=False),name,(z or {}).get('asset')))
+            if tid:
+                c.execute(
+                  "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                  "WHERE trade_id=%s",(json.dumps(patch,ensure_ascii=False),tid))
+        except Exception:
+            pass
+        print(json.dumps({
+          'event':'V90_R59_NEAR_FLAT_FLIP_DEBOUNCED','portfolio':name,
+          'asset':(z or {}).get('asset'),'direction':(z or {}).get('direction'),
+          'reason':reason,'price':price,
+        },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+        return 0.0
+    return _v90r59_base_close_or_reduce(
+      c,p,name,z,price,target_fraction,nav,ts,reason)
+
+def report(pg_connect):
+    d=dict(_v90r59_base_report(pg_connect) or {})
+    d['loss_root_cause_gate_r59']={
+      'status':'ACTIVE','started_at':V90_R59_STARTED_AT,
+      'post_cost_rr_floors':{
+        'Impulse':'1.30 (+0.10 on 5m)','Aggressive':'1.35 (+0.10 on 5m)',
+        'Champion':'1.45 (+0.10 on 5m)','Challenger':'1.55 (+0.10 on 5m)'},
+      'minimum_expected_move':'max(0.40%, 2.75x-3.50x modeled round-trip cost)',
+      'provisional_setup_requires_mature_structure':True,
+      'execution_tf_direction_conflict_requires_strong_reversal':True,
+      'five_minute_counter_senior_requires_strong_reversal':True,
+      'stop_noise_floor_includes_modeled_friction':True,
+      'near_flat_signal_flip_requires_second_confirmation_cycle':True,
+      'opposite_reentry_requires_fresh_post_exit_event':True,
+      'aggressive_qualified_initial_size_policy':'50%-100% unchanged after R59 quality admission',
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),36)
+
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
