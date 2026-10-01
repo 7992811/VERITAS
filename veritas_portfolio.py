@@ -7242,6 +7242,12 @@ def _v90r60_sanitize_duplicate_learning(c,force=False):
       'at':now_ts,'changed':changed,'duplicates_excluded':duplicates,'last_error':err
     })
     if changed or duplicates:
+        # Dedup changes the statistical sample. Any learning/calibration cache
+        # built before this transaction is invalid immediately, not at its TTL.
+        _v90r29_cache['at']=0.0
+        r33=globals().get('_v90r33_cache')
+        if isinstance(r33,dict):
+            r33['at']=0.0
         print(json.dumps({
           'event':'V90_R60_INDEPENDENT_EPISODE_SANITIZED',
           'keys_backfilled':changed,'duplicates_excluded':duplicates,

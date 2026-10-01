@@ -1354,6 +1354,36 @@ class StableSetupIdentityAndIndependentLearningR60Tests(unittest.TestCase):
                          VP._v90r60_independent_episode_key(t2))
 
 
+class R601LearningCacheInvalidationTests(unittest.TestCase):
+    def test_dedup_immediately_invalidates_r29_and_r33_caches(self):
+        class Cur:
+            def __init__(self,rowcount=0): self.rowcount=rowcount
+        class Conn:
+            def __init__(self): self.calls=0
+            def execute(self,sql,args=None):
+                self.calls+=1
+                # first UPDATE backfills keys, second UPDATE excludes duplicate
+                if 'UPDATE v90_learning_episodes e' in sql:
+                    return Cur(1)
+                return Cur(0)
+        old29=VP._v90r29_cache.get('at')
+        old33=VP._v90r33_cache.get('at')
+        oldstate=dict(VP._v90r60_dedup_state)
+        try:
+            VP._v90r29_cache['at']=123.0
+            VP._v90r33_cache['at']=456.0
+            VP._v90r60_dedup_state['at']=0.0
+            out=VP._v90r60_sanitize_duplicate_learning(Conn(),force=True)
+            self.assertEqual(VP._v90r29_cache['at'],0.0)
+            self.assertEqual(VP._v90r33_cache['at'],0.0)
+            self.assertGreaterEqual(out['changed']+out['duplicates_excluded'],1)
+        finally:
+            VP._v90r29_cache['at']=old29
+            VP._v90r33_cache['at']=old33
+            VP._v90r60_dedup_state.clear()
+            VP._v90r60_dedup_state.update(oldstate)
+
+
 class LearningFastPathR593Tests(unittest.TestCase):
     def test_learning_progress_is_nonblocking_on_cold_cache(self):
         import veritas_intelligence as vi
