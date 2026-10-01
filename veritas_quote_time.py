@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import math
 
+PROTECTIVE_MAX_AGE_SECONDS = 300
+
 
 def utc_datetime(value):
     if not value:
@@ -49,7 +51,7 @@ def quote_gate(observed_at, horizon=None, now=None, *, protective=False):
     # materially stale quote: if no <=5 minute observation exists, the protective
     # lane degrades fail-closed until a fresh observation arrives.
     if protective:
-        limit = 300
+        limit = PROTECTIVE_MAX_AGE_SECONDS
     else:
         limit = 300 if horizon == '5m' else 3600
     ok = age is not None and math.isfinite(age) and -5 <= age <= limit
