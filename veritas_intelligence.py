@@ -6023,7 +6023,16 @@ _v90_brent_cache={'secid':None,'hist_at':0.0,'hist':[],'m5_at':0.0,'m5':[],
 def _v90_brent_market():
     # Current quote is always refreshed. Historical bars are cached briefly because
     # refetching 100+ days on every 5m loop adds latency without adding information.
-    secid,q=_v90_moex_front_brent_contract()
+    # R61.5: MOEX contract discovery is not allowed to abort the whole market cycle.
+    try:
+        secid,q=_v90_moex_front_brent_contract()
+    except Exception as ex:
+        raw=_yahoo_research_futures_market(
+            'BRENT','BZ%3DF','BNO','yahoo_brent','Yahoo Brent BZ=F')
+        raw['verification_mode']='yahoo_brent_futures_fallback'
+        raw['brent_primary_fallback_reason']=f'{type(ex).__name__}: {ex}'
+        raw['production_eligible']=False
+        return raw
     price=float(q['price']); observed=q['observed_at']
     end=time.time()
     cache=_v90_brent_cache
