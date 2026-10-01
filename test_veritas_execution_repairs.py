@@ -1354,6 +1354,91 @@ class StableSetupIdentityAndIndependentLearningR60Tests(unittest.TestCase):
                          VP._v90r60_independent_episode_key(t2))
 
 
+class NQFreshDataAndMigrationR61Tests(unittest.TestCase):
+    def test_nq_uses_index_specific_regime_thresholds(self):
+        f={'trend':-0.015,'rv':0.040,'asset':'NQ'}
+        self.assertEqual(VI.regime_from(f),'DOWNTREND_HIGH_VOL')
+
+    def test_nq_is_admitted_to_fast_pivot_break_engine(self):
+        bars=[]
+        px=100.0
+        for i in range(20):
+            bars.append({'ts':i*300.0,'open':px,'high':px+0.2,'low':px-0.2,
+                         'close':px,'volume':100.0})
+            px-=0.02
+        raw={'asset':'NQ','price':bars[-1]['close'],'intraday_bars':bars}
+        f={'price':bars[-1]['close'],'structural_levels':{},'intraday_structure':{},
+           'horizon_structure':{},'trend_impulse':{}}
+        out=VI.impulse_breakdown_setup('NQ',raw,f,0.0)
+        self.assertNotEqual(out.get('reason'),'insufficient_5m_data')
+
+    def test_ndx_shadow_rule_scope_aliases_to_nq(self):
+        rules=[{'rule_id':'R','source_id':'S','agent':'QUANT','asset_scope':['NDX'],
+                'horizons':['1h'],'action':'SHORT','status':'shadow',
+                'conditions':[{'field':'trend','op':'<','value':0.0}],'prior_weight':0.1}]
+        with patch.object(VI,'all_knowledge',return_value=([],rules)):
+            out=VI.match_knowledge('NQ','1h',{'trend':-0.01},{'ok':False})
+        self.assertEqual([x['rule_id'] for x in out],['R'])
+
+    def test_public_futures_quote_parser_timestamp_and_price(self):
+        payload=("Symbol,Date,Time,Open,High,Low,Close,Volume,Name,Prev\n"
+                 "NQ.F,2026-09-29,09:34:00,30000,30100,29900,30050,123,NQ,29950\n")
+        class Resp:
+            text=payload
+            def raise_for_status(self): return None
+        class Client:
+            def __init__(self,*a,**k): pass
+            def __enter__(self): return self
+            def __exit__(self,*a): return False
+            def get(self,*a,**k): return Resp()
+        with patch.object(VI.httpx,'Client',Client), \
+             patch.object(VI,'_v90_stooq_observed_at',
+                          return_value=('2026-09-29T09:34:00+00:00',{'age_seconds':1.0,'clock_interpretation':'UTC'})):
+            q=VI._v90_stooq_public_quote('nq.f')
+        self.assertTrue(q['ok'])
+        self.assertEqual(q['price'],30050.0)
+
+    def test_proxy_bridge_appends_fresh_direct_anchor(self):
+        primary=[{'ts':1000,'open':100,'high':101,'low':99,'close':100,'volume':10}]
+        proxy=[{'ts':1000,'open':10,'high':10.1,'low':9.9,'close':10,'volume':100},
+               {'ts':1300,'open':10,'high':10.2,'low':9.95,'close':10.1,'volume':110}]
+        out=VI._v90_proxy_bridge_intraday(primary,proxy,102.0,1300)
+        self.assertAlmostEqual(out[-1]['close'],102.0)
+        self.assertEqual(out[-1]['source'],'DIRECT_QUOTE_ANCHOR')
+
+    def test_nq_intraday_structure_uses_5m_futures_lane(self):
+        bars=[]
+        p=100.0
+        for i in range(40):
+            p*=1.0005
+            bars.append({'ts':1700000000+i*300,'open':p/1.0005,'high':p*1.0002,
+                         'low':p*0.9998,'close':p,'volume':100+i})
+        raw={'asset':'NQ','price':p,'intraday_bars':bars,'daily_bars':[]}
+        with patch.object(VI,'_v90_5m_horizon_structure',return_value={
+            'direction':'LONG','score':0.8,'state':'CONFIRMED_TREND','breakout':True,
+            'path_efficiency':0.7,'persistence':0.75,'range_position':0.9,
+            'volume_ratio':1.2,'breakout_level':p*0.99,'stop_price':p*0.98}):
+            out=VI.intraday_structure_features(raw)
+        self.assertEqual(out['resolution'],'5m_nq_futures_24x5')
+        self.assertEqual(out['direction'],'LONG')
+
+
+class AggressiveInitialSizingR61Tests(unittest.TestCase):
+    def test_fresh_high_quality_signal_starts_at_least_seventy_five_percent(self):
+        row={'confidence':0.79,'signal_tier':'SHORT','decision_stage':'EARLY_PROBE',
+             'entry_quality':'FRESH_BREAKOUT','research_decision':'SHORT',
+             '_supporting_horizons':['5m','1h','4h','1d'],
+             '_alignment_count':4,
+             'institutional_signal':{'evidence_independence':{'independent_count':5}},
+             'horizon_structure':{'state':'BUILDING_TREND','score':0.74},
+             'trade_plan':{'expected_to_stop_ratio':1.65,'stop_distance_pct':0.005}}
+        policy={'mode':'AGGRESSIVE','max_fraction':5.0}
+        base={'open':True,'fraction':0.10,'reason':'BASE'}
+        with patch.object(VP,'_v90r24_base_admission',return_value=base), \
+             patch.object(VP,'_v90r24_stop_risk_cap',return_value=5.0):
+            out=VP._signal_first_admission(row,policy,0.0)
+        self.assertGreaterEqual(out['fraction'],0.75)
+
 class CompactLearningQueryR602Tests(unittest.TestCase):
     def _run(self, include_knowledge=False):
         seen={}

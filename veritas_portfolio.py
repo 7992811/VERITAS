@@ -6850,14 +6850,17 @@ def _signal_first_admission(row,policy,drawdown):
     q=_v90r24_aggressive_quality(row)
     target=float(base.get('fraction') or 0.0)
 
-    # Ordinary fresh breakout: meaningfully larger than Champion, but still a probe.
+    # R61 user mandate: once a fresh signal has passed the final economics/source
+    # gates, Aggressive starts at 50-100%, not a Champion-sized discovery probe.
+    # Structural stop risk remains the final authority below.
     if q['fresh'] and not q['super']:
-        if q['grade']=='A' and q['independent']>=4 and q['rr']>=1.35:
-            target=max(target,0.35)
-        elif q['independent']>=3 and q['rr']>=1.25:
-            target=max(target,0.25)
+        conf=float((row or {}).get('confidence') or (row or {}).get('_pwin') or 0.0)
+        if conf>=0.82 and q['independent']>=5 and q['rr']>=1.50 and q['alignment']>=3:
+            target=max(target,1.00)
+        elif conf>=0.72 and q['independent']>=4 and q['rr']>=1.30:
+            target=max(target,0.75)
         else:
-            target=max(target,0.20)
+            target=max(target,0.50)
 
     # Confirmed non-SUPER trend can carry materially more exposure.
     if q['confirmed'] and not q['super']:
@@ -6972,8 +6975,8 @@ def report(pg_connect):
     d=dict(_v90r24_base_report(pg_connect) or {})
     d['execution_policy_r24']={
       'aggressive_profile':True,
-      'fresh_breakout_target_fraction':'20-35%',
-      'confirmed_signal_target_fraction':'50-75%',
+      'fresh_breakout_target_fraction':'50-100% after final admission',
+      'confirmed_signal_target_fraction':'50-100%',
       'qualified_super_initial_fraction':'up to 100%',
       'protected_scale_path':['1.5x','2x','3x','4x','5x'],
       'scale_above_1x_requires_protected_profit':True,

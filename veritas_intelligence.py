@@ -43,7 +43,7 @@ V70_GATE_MODE = os.getenv('VERITAS_V70_GATE_MODE','shadow').strip().lower() or '
 V70_OVERVIEW_ENABLED = os.getenv('VERITAS_V70_OVERVIEW_ENABLED','1').lower() not in ('0','false','no','off')
 V701_LEARNING_CACHE_SECONDS = max(30, int(os.getenv('VERITAS_V701_LEARNING_CACHE_SECONDS','90')))
 V701_LEARNING_MAX_EPISODES = max(100, min(5000, int(os.getenv('VERITAS_V701_LEARNING_MAX_EPISODES','1200'))))
-FAST_LOOP_MARKET_WORKERS = max(2, min(6, int(os.getenv('VERITAS_FAST_LOOP_MARKET_WORKERS','4'))))
+FAST_LOOP_MARKET_WORKERS = max(2, min(6, int(os.getenv('VERITAS_FAST_LOOP_MARKET_WORKERS','6'))))
 HEAVY_LEARNING_INTERVAL_SECONDS = max(600, int(os.getenv('VERITAS_HEAVY_LEARNING_INTERVAL_SECONDS','900')))
 HEAVY_LEARNING_START_DELAY_SECONDS = max(15, int(os.getenv('VERITAS_HEAVY_LEARNING_START_DELAY_SECONDS','45')))
 FAST_LOOP_TARGET_SECONDS = max(10.0, float(os.getenv('VERITAS_FAST_LOOP_TARGET_SECONDS','30')))
@@ -1944,7 +1944,9 @@ def match_knowledge(asset, horizon, f, deriv):
     for r in rules:
         if r['status'] not in ('shadow','validated_candidate'):
             continue
-        if asset not in r['asset_scope'] or horizon not in r['horizons']:
+        scope=r['asset_scope'] or []
+        asset_match=(asset in scope) or (asset=='NQ' and 'NDX' in scope)
+        if not asset_match or horizon not in r['horizons']:
             continue
         if all(_condition_ok(ctx,c) for c in r['conditions']):
             out.append({'rule_id':r['rule_id'],'action':r['action'],'shadow_score':r['prior_weight'],
@@ -3003,7 +3005,7 @@ def data_quality_snapshot():
             ]}
 
 def _yahoo_series(symbol, range_='30d', interval='1h', prepost=False):
-    ttl=45 if interval in ('1m','2m','5m') else 240 if interval in ('15m','30m','60m','1h') else 1800
+    ttl=45 if interval in ('1m','2m','5m') else 900 if interval in ('15m','30m','60m','1h') else 3600
     key=(symbol,range_,interval,bool(prepost)); tnow=time.time()
     with market_cache_lock:
         z=market_cache.get(key)
@@ -3807,6 +3809,37 @@ def intraday_structure_features(raw):
     ib=raw.get('intraday_bars') or []; db=raw.get('daily_bars') or []
     if not INTRADAY_STRUCTURE_ENABLED:
         return {'enabled':False,'status':'DISABLED','score':0.0,'direction':'NO_TRADE','lifecycle':'NONE','entry_quality':'UNKNOWN'}
+    if asset=='NQ' and len(ib)>=12:
+        # NQ is nearly 24/5. Do not inherit the old cash-NDX regular-hours restriction.
+        # The universal 5m lifecycle uses the futures bars directly and therefore catches
+        # overnight / pre-market impulse breaks as well as the US cash session.
+        hs=_v90_5m_horizon_structure(raw)
+        bars=[dict(x) for x in ib[-288:] if isinstance(x,dict)]
+        highs=[float(x.get('high') or x.get('close') or 0.0) for x in bars]
+        lows=[float(x.get('low') or x.get('close') or 0.0) for x in bars]
+        direction=str(hs.get('direction') or 'NO_TRADE')
+        state=str(hs.get('state') or 'NEUTRAL')
+        life='CONFIRMATION' if state=='CONFIRMED_TREND' else 'ONSET' if state=='BUILDING_TREND' else 'FAILURE' if state=='WEAK' and direction!='NO_TRADE' else 'NONE'
+        entry='CONFIRMED_BREAKOUT' if hs.get('breakout') and state=='CONFIRMED_TREND' else 'FRESH_BREAKOUT' if hs.get('breakout') else 'CONFIRMED_TREND' if state=='CONFIRMED_TREND' else 'WAIT_CONFIRMATION' if state=='BUILDING_TREND' else 'NEUTRAL'
+        return {
+          'enabled':True,'status':'OK','resolution':'5m_nq_futures_24x5',
+          'direction':direction,'score':float(hs.get('score') or 0.0),
+          'lifecycle':life,'entry_quality':entry,
+          'session_efficiency':float(hs.get('path_efficiency') or 0.0),
+          'session_persistence':float(hs.get('persistence') or 0.0),
+          'session_range_position':float(hs.get('range_position') or 0.5),
+          'relative_volume':hs.get('volume_ratio'),
+          'volume_confirmed':None if hs.get('volume_ratio') is None else float(hs.get('volume_ratio'))>=STRUCTURE_RVOL_MIN,
+          'breakout_found':bool(hs.get('breakout')),'breakout_hold':bool(hs.get('breakout')),
+          'fresh_breakout':bool(hs.get('breakout')),'false_breakout':False,
+          'breakout_level':hs.get('breakout_level'),
+          'recent_swing_anchor':hs.get('breakout_level'),
+          'invalidation_price':hs.get('stop_price'),
+          'session_low':min(lows) if lows else None,'session_high':max(highs) if highs else None,
+          'atr_5m':_bar_atr(bars,14) if bars else None,'late_entry':False,
+          'near_ath':False,'price_discovery':False,'breadth_participation':'SHADOW_ONLY',
+          'principle':'NQ futures use continuous 5m structure across the nearly-24h session; old cash-NDX RTH restriction removed'
+        }
     if asset!='NDX' or len(ib)<15 or len(db)<100:
         return generic_structure_features(raw)
     bars=_aggregate_bars(ib,300); tz=ZoneInfo('America/New_York')
@@ -3914,7 +3947,7 @@ def trend_onset_features(raw):
         return {'enabled':TREND_ONSET_ENABLED,'phase':'NONE','direction':'NO_TRADE','onset_score':0.0,'impulse_score':0.0,'entry_quality':'UNKNOWN','reason':'insufficient_history'}
     p=float(raw.get('price') or c[-1]); asset=raw.get('asset'); rets=[float(x) for x in raw.get('returns') or []]
     hist=rets[-min(160,len(rets)):] if rets else []
-    floors={'BTC':0.0015,'ETH':0.0020,'NDX':0.0010,'BRENT':0.0015,'GOLD':0.0008,'MOEX':0.0012,'CNYRUBF':0.0008}
+    floors={'BTC':0.0015,'ETH':0.0020,'NDX':0.0010,'NQ':0.0010,'BRENT':0.0015,'GOLD':0.0008,'MOEX':0.0012,'CNYRUBF':0.0008}
     sigma=_robust_sigma(hist,floors.get(asset,0.001))
     def ret(n):
         n=max(1,min(int(n),len(c)-1)); return p/float(c[-1-n])-1
@@ -3998,7 +4031,7 @@ def horizon_structure_features(raw, horizon):
                 'direction':'NO_TRADE','score':0.0,'state':'DATA_REQUIRED'}
     n=max(1,min(horizon_bars(asset,horizon),len(c)-2))
     rets=[c[i]/c[i-1]-1 for i in range(1,len(c)) if c[i-1]]
-    floor={'BTC':0.0015,'ETH':0.0020,'NDX':0.0008,'BRENT':0.0012,'GOLD':0.0007,'MOEX':0.0010,'CNYRUBF':0.0007}.get(asset,0.001)
+    floor={'BTC':0.0015,'ETH':0.0020,'NDX':0.0008,'NQ':0.0008,'BRENT':0.0012,'GOLD':0.0007,'MOEX':0.0010,'CNYRUBF':0.0007}.get(asset,0.001)
     sigma=_robust_sigma(rets[-min(200,len(rets)):],floor)
     ret_h=p/c[-1-n]-1 if c[-1-n] else 0.0
     z=ret_h/(sigma*math.sqrt(float(n))) if sigma else 0.0
@@ -4239,7 +4272,7 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
     Older higher-timeframe trend is context only and cannot veto a qualified setup.
     """
     bars=list(raw.get('intraday_bars') or [])
-    if asset not in ('BRENT','GOLD','NDX','CNYRUBF','MOEX') or len(bars)<12:
+    if asset not in ('BRENT','GOLD','NDX','NQ','CNYRUBF','MOEX') or len(bars)<12:
         return {'active':False,'direction':'NO_TRADE','setup':'IMPULSE_PIVOT_BREAK','reason':'insufficient_5m_data'}
     # Use only information available up to the latest bar. Keep a bounded recent window.
     z=bars[-48:]
@@ -4467,7 +4500,7 @@ def tactical_reversal_features(asset,f,prev_price=None,causal_score=0.0):
     cycle_ret=(p/prev-1) if p>0 and prev>0 else 0.0
     sigma=float(ti.get('sigma_1h') or 0.0); sigma5=max(0.0005,sigma*math.sqrt(5.0/60.0))
     z=cycle_ret/sigma5 if sigma5 else 0.0
-    threshold={'BRENT':0.0018,'MOEX':0.0012,'NDX':0.0015,'GOLD':0.0012,'BTC':0.0025,'ETH':0.0030,'CNYRUBF':0.0010}.get(asset,0.0015)
+    threshold={'BRENT':0.0018,'MOEX':0.0012,'NDX':0.0015,'NQ':0.0015,'GOLD':0.0012,'BTC':0.0025,'ETH':0.0030,'CNYRUBF':0.0010}.get(asset,0.0015)
     down=cycle_ret<=-threshold or z<=-1.25; up=cycle_ret>=threshold or z>=1.25
     invalid=str(ti.get('entry_quality') or '')=='INVALIDATED' or str(st.get('lifecycle') or '')=='FAILURE'
     support=lev.get('support'); resistance=lev.get('resistance'); sma18=lev.get('sma18'); sma50=lev.get('sma50')
@@ -4567,7 +4600,7 @@ def reversal_admission_bridge(asset,horizon,f,research_decision,trade_plan,insti
 def regime_from(f):
     trend=f['trend']; rv=f['rv']; asset=f.get('asset')
     params={
-      'NDX':(0.035,0.012,0.010),'MOEX':(0.055,0.015,0.012),
+      'NDX':(0.035,0.012,0.010),'NQ':(0.035,0.012,0.010),'MOEX':(0.055,0.015,0.012),
       'GOLD':(0.050,0.012,0.010),'BRENT':(0.070,0.020,0.015),
       'CNYRUBF':(0.025,0.006,0.005)}
     if asset in params:
@@ -5019,7 +5052,7 @@ def agent_views(f, horizon, deriv, asset=None):
     else:
         qs = (0.55*trend + 0.45*mom) * scale
     aa=asset or f.get('asset')
-    cutmap={'NDX':(0.0035,0.0030),'MOEX':(0.0050,0.0040),
+    cutmap={'NDX':(0.0035,0.0030),'NQ':(0.0035,0.0030),'MOEX':(0.0050,0.0040),
             'GOLD':(0.0040,0.0035),'BRENT':(0.0060,0.0050)}
     quant_cut,tech_cut=cutmap.get(aa,(0.006,0.005))
     if horizon=='5m':
@@ -5077,8 +5110,8 @@ def agent_views(f, horizon, deriv, asset=None):
     else:
         out.append(('DERIV', 'NO_TRADE', 0.10, {'reason': 'derivatives unavailable', 'error': deriv.get('error')}))
     aa=asset or f.get('asset')
-    div_limit={'NDX':NDX_MAX_SOURCE_DIVERGENCE,'MOEX':0.05,'GOLD':0.10,'BRENT':0.10}.get(aa,MAX_SOURCE_DIVERGENCE)
-    rv_limit={'NDX':0.045,'MOEX':0.065,'GOLD':0.060,'BRENT':0.085}.get(aa,0.10)
+    div_limit={'NDX':NDX_MAX_SOURCE_DIVERGENCE,'NQ':NDX_MAX_SOURCE_DIVERGENCE,'MOEX':0.05,'GOLD':0.10,'BRENT':0.10}.get(aa,MAX_SOURCE_DIVERGENCE)
+    rv_limit={'NDX':0.045,'NQ':0.045,'MOEX':0.065,'GOLD':0.060,'BRENT':0.085}.get(aa,0.10)
     veto=rv>rv_limit or f['source_divergence']>div_limit or not f.get('source_gate_pass',True)
     out.append(('RISK','NO_TRADE',0.92 if veto else 0.45,{'rv':rv,'veto':veto,'regime':f['regime'],'source_gate_pass':f.get('source_gate_pass',True),'market_open':f.get('market_open',True)}))
     return out
@@ -5903,8 +5936,7 @@ def _v90_brent_market():
 
 def _v90_nq_market():
     raw=_yahoo_research_futures_market('NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
-    raw['data_latency_class']='CME_FUTURES_DELAYED_RESEARCH'
-    raw['verification_mode']='nasdaq100_futures'
+    raw['verification_mode']=raw.get('verification_mode') or 'nasdaq100_futures'
     return raw
 
 
@@ -6435,6 +6467,38 @@ def prefetch_market_bundles():
 
 # VERITAS V90 R22 DB-SAFE LIVE CONTEXT
 _v90r22_perf_cache={'at':0.0,'value':[]}
+_v90r61_predecision_cache={'calibration':(0.0,[]),'clock':(0.0,None),'analogs':(0.0,None)}
+_v90r61_predecision_lock=threading.Lock()
+_v90_last_fast5m_monotonic=0.0
+V90_FAST_5M_REUSE_MAX_AGE_SECONDS=max(90.0,float(os.getenv('VERITAS_FAST_5M_REUSE_MAX_AGE_SECONDS','150')))
+
+def _v90r61_cached_predecision(key,ttl,fn,default):
+    now_ts=time.time()
+    with _v90r61_predecision_lock:
+        at,val=_v90r61_predecision_cache.get(key,(0.0,None))
+        if val is not None and now_ts-float(at or 0.0)<float(ttl):
+            return val
+    try:
+        val=fn()
+    except Exception:
+        with _v90r61_predecision_lock:
+            _at,_val=_v90r61_predecision_cache.get(key,(0.0,None))
+        return _val if _val is not None else default
+    with _v90r61_predecision_lock:
+        _v90r61_predecision_cache[key]=(now_ts,val)
+    return val
+
+def _v90r61_calibration_rows():
+    return _v90r61_cached_predecision('calibration',180.0,
+        lambda: pg_calibration_map() if pg_enabled() else [],[])
+
+def _v90r61_clock_info():
+    return _v90r61_cached_predecision('clock',75.0,source_clock_gate,
+        {'ok':False,'errors':['clock_unavailable']})
+
+def _v90r61_analog_board():
+    return _v90r61_cached_predecision('analogs',180.0,
+        lambda: structure_analog_board(1200),{'status':'unavailable','items':[]})
 def _v90r22_agent_perf_safe():
     now_ts=time.time()
     if _v90r22_perf_cache.get('value') and now_ts-float(_v90r22_perf_cache.get('at') or 0)<300:
@@ -6469,8 +6533,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     rule_learning=heavy_learning.get('rule_learning') or {'status':'background_pending','rows':0,'status_changes':0}
     phase_seconds['event_learning']=0.0; phase_seconds['rule_learning']=0.0
     phase_t0=time.time(); perf = _v90r22_agent_perf_safe(); phase_seconds['agent_learning']=time.time()-phase_t0
-    phase_t0=time.time(); calibration_rows = pg_calibration_map() if pg_enabled() else []; phase_seconds['calibration']=time.time()-phase_t0
-    phase_t0=time.time(); clock_info = source_clock_gate(); phase_seconds['clock_gate']=time.time()-phase_t0
+    phase_t0=time.time(); calibration_rows = _v90r61_calibration_rows(); phase_seconds['calibration']=time.time()-phase_t0
+    phase_t0=time.time(); clock_info = _v90r61_clock_info(); phase_seconds['clock_gate']=time.time()-phase_t0
     made = 0
     summary = []
     errors = []
@@ -6478,9 +6542,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     common_feature_reuses = 0
     asset_timings={}
     horizon_timings={}
-    phase_t0=time.time()
-    try: analog_board=structure_analog_board(1200)
-    except Exception: analog_board={'status':'unavailable','items':[]}
+    phase_t0=time.time(); analog_board=_v90r61_analog_board()
     analog_seconds=time.time()-phase_t0; phase_seconds['structure_analogs']=analog_seconds
     cycle_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     pre_decision_seconds=time.time()-cycle_wall_t0
@@ -6947,7 +7009,13 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     _fresh_keys={(str(x.get('asset') or ''),str(x.get('horizon') or '')) for x in fresh_summary}
     for _k,_x in list(_merged.items()):
         if _k not in _fresh_keys:
-            _x=dict(_x); _x['snapshot_stale']=True; _merged[_k]=_x
+            _x=dict(_x)
+            _reuse_fast5m=bool(cycle_mode=='FULL' and _k[1]=='5m' and _v90_last_fast5m_monotonic>0
+                               and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
+            _x['snapshot_stale']=not _reuse_fast5m
+            if _reuse_fast5m:
+                _x['snapshot_reused_from_fast5m']=True
+            _merged[_k]=_x
     summary=[_merged[k] for k in sorted(_merged,key=lambda z:(DISPLAY_ASSETS.index(z[0]) if z[0] in DISPLAY_ASSETS else 999,
                                                             ('5m','1h','4h','1d','3d','7d').index(z[1]) if z[1] in ('5m','1h','4h','1d','3d','7d') else 999))]
     storage = pg_storage_status()
@@ -7022,6 +7090,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
              'telemetry':telemetry,'knowledge': knowledge_summary(),'portfolio_autopilot':portfolio_autopilot}
     with lock:
         last_cycle.clear(); last_cycle.update(state)
+    global _v90_last_fast5m_monotonic
+    if cycle_mode=='FAST_5M' and status in ('ok','degraded') and made:
+        _v90_last_fast5m_monotonic=time.monotonic()
     try:
         summary.clear()
         market_bundles.clear()
@@ -7063,7 +7134,10 @@ def loop():
         try:
             if now_m>=next_full:
                 mode='FULL'
-                cycle(None,'FULL')
+                _reuse=bool(_v90_last_fast5m_monotonic>0 and
+                            now_m-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
+                _full_horizons=tuple(h for h in HORIZONS if h!='5m') if _reuse else None
+                cycle(_full_horizons,'FULL')
                 base=now_m
                 next_full=base+V90_FULL_CYCLE_INTERVAL_SECONDS
                 if next_fast<=base:
@@ -7200,7 +7274,7 @@ def run_bootstrap_backtest(reason='manual'):
             b['end']=obs_at
 
         for symbol,(asset,_) in ASSETS.items():
-            target_days=(NDX_BACKTEST_DAYS if asset=='NDX' else
+            target_days=(NDX_BACKTEST_DAYS if asset in ('NDX','NQ') else
                          COMMODITY_BACKTEST_DAYS if asset in COMMODITY_ASSETS else
                          MOEX_BACKTEST_DAYS if asset=='MOEX' else BACKTEST_DAYS)
             rows=_fetch_history(symbol,target_days)
@@ -8901,52 +8975,227 @@ def derivatives(symbol):
     except Exception as e:
         return {'ok':False,'error':f'{type(e).__name__}: {e}'}
 
+# ---------- R61 fresh public futures timing bridge ----------
+V90_PUBLIC_FUTURES_FRESH_SECONDS=max(60,int(os.getenv('VERITAS_PUBLIC_FUTURES_FRESH_SECONDS','180')))
+V90_PROXY_BRIDGE_FRESH_SECONDS=max(60,int(os.getenv('VERITAS_PROXY_BRIDGE_FRESH_SECONDS','180')))
+
+def _v90_stooq_observed_at(date_s,time_s,ref=None):
+    ref=ref or datetime.now(timezone.utc)
+    try:
+        naive=datetime.strptime(f'{date_s} {time_s}','%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return None,None
+    # Stooq timestamp conventions have varied by endpoint/client. Normalize against
+    # plausible source clocks, but only accept a non-future time reasonably close
+    # to the current market clock. The chosen interpretation is persisted.
+    zones=[('UTC',timezone.utc),('EUROPE_WARSAW',ZoneInfo('Europe/Warsaw')),
+           ('CME_CHICAGO',ZoneInfo('America/Chicago'))]
+    cand=[]
+    for name,z in zones:
+        dt=naive.replace(tzinfo=z).astimezone(timezone.utc)
+        age=(ref-dt).total_seconds()
+        if -90.0<=age<=6*3600:
+            cand.append((abs(age),max(0.0,age),dt,name))
+    if not cand:
+        return None,None
+    cand.sort(key=lambda x:(x[0],x[1]))
+    _,age,dt,name=cand[0]
+    return dt.isoformat(),{'age_seconds':age,'clock_interpretation':name}
+
+def _v90_stooq_public_quote(symbol):
+    url='https://stooq.com/q/l/'
+    try:
+        with httpx.Client(timeout=6,headers={'User-Agent':'Mozilla/5.0 VERITAS-R61'}) as h:
+            r=h.get(url,params={'s':symbol,'f':'sd2t2ohlcvnp','h':'','e':'csv'})
+            r.raise_for_status()
+            text=r.text.strip()
+        rows=list(csv.DictReader(io.StringIO(text)))
+        if not rows:
+            raise RuntimeError('EMPTY_STOOQ_QUOTE')
+        x=rows[0]
+        close=x.get('Close') or x.get('close')
+        if close in (None,'','N/D'):
+            raise RuntimeError('STOOQ_CLOSE_UNAVAILABLE')
+        price=float(close)
+        if not math.isfinite(price) or price<=0:
+            raise RuntimeError('STOOQ_BAD_PRICE')
+        obs,clock=_v90_stooq_observed_at(x.get('Date') or x.get('date'),x.get('Time') or x.get('time'))
+        return {'ok':bool(obs),'price':price,'observed_at':obs,
+                'source_date':x.get('Date') or x.get('date'),'source_time':x.get('Time') or x.get('time'),
+                'open':_safe_float(x.get('Open') or x.get('open'),None),
+                'high':_safe_float(x.get('High') or x.get('high'),None),
+                'low':_safe_float(x.get('Low') or x.get('low'),None),
+                'volume':_safe_float(x.get('Volume') or x.get('volume'),None),
+                'prev':_safe_float(x.get('Prev') or x.get('prev'),None),
+                'clock':clock,'source':'Stooq public futures quote'}
+    except Exception as ex:
+        return {'ok':False,'error':f'{type(ex).__name__}: {ex}','source':'Stooq public futures quote'}
+
+def _v90_hourly_to_daily(rows):
+    out=[]; cur=None
+    for b in rows or []:
+        try:
+            dt=datetime.fromtimestamp(float(b.get('ts')),tz=timezone.utc)
+            key=dt.date().isoformat()
+            o=float(b.get('open') or b.get('close')); hi=float(b.get('high') or b.get('close'))
+            lo=float(b.get('low') or b.get('close')); c=float(b.get('close')); v=float(b.get('volume') or 0.0)
+        except Exception:
+            continue
+        if cur is None or cur['key']!=key:
+            if cur is not None:
+                z=dict(cur); z.pop('key',None); out.append(z)
+            cur={'key':key,'ts':float(b.get('ts')),'open':o,'high':hi,'low':lo,'close':c,'volume':v}
+        else:
+            cur['ts']=float(b.get('ts')); cur['high']=max(cur['high'],hi); cur['low']=min(cur['low'],lo)
+            cur['close']=c; cur['volume']+=v
+    if cur is not None:
+        z=dict(cur); z.pop('key',None); out.append(z)
+    return out
+
+def _v90_proxy_bridge_intraday(primary_bars,proxy_bars,live_price=None,live_ts=None):
+    primary=[dict(x) for x in (primary_bars or []) if isinstance(x,dict)]
+    proxy=[dict(x) for x in (proxy_bars or []) if isinstance(x,dict)]
+    if not primary or not proxy:
+        return primary
+    primary.sort(key=lambda x:float(x.get('ts') or 0.0))
+    proxy.sort(key=lambda x:float(x.get('ts') or 0.0))
+    last=primary[-1]; last_ts=float(last.get('ts') or 0.0); last_close=float(last.get('close') or 0.0)
+    if last_ts<=0 or last_close<=0:
+        return primary
+    base=min(proxy,key=lambda x:abs(float(x.get('ts') or 0.0)-last_ts))
+    base_close=float(base.get('close') or 0.0)
+    if base_close<=0 or abs(float(base.get('ts') or 0.0)-last_ts)>1800:
+        return primary
+    scale=last_close/base_close
+    limit_ts=float(live_ts or (proxy[-1].get('ts') or last_ts))
+    for b in proxy:
+        ts=float(b.get('ts') or 0.0)
+        if ts<=last_ts+30 or ts>limit_ts+300:
+            continue
+        try:
+            primary.append({'ts':ts,'open':float(b.get('open') or b.get('close'))*scale,
+                            'high':float(b.get('high') or b.get('close'))*scale,
+                            'low':float(b.get('low') or b.get('close'))*scale,
+                            'close':float(b.get('close'))*scale,
+                            'volume':float(b.get('volume') or 0.0),'source':'PROXY_TIMING_BRIDGE'})
+        except Exception:
+            continue
+    primary.sort(key=lambda x:float(x.get('ts') or 0.0))
+    if live_price is not None and float(live_price)>0:
+        lp=float(live_price); ts=float(live_ts or time.time())
+        bucket=int(ts//300)*300
+        if primary and int(float(primary[-1].get('ts') or 0)//300)*300==bucket:
+            b=primary[-1]; b['high']=max(float(b.get('high') or lp),lp); b['low']=min(float(b.get('low') or lp),lp)
+            b['close']=lp; b['ts']=ts; b['source']='DIRECT_QUOTE_ANCHOR'
+        else:
+            op=float(primary[-1].get('close') or lp) if primary else lp
+            primary.append({'ts':ts,'open':op,'high':max(op,lp),'low':min(op,lp),'close':lp,
+                            'volume':float(proxy[-1].get('volume') or 0.0),'source':'DIRECT_QUOTE_ANCHOR'})
+    return primary[-500:]
+
 # ---------- faster futures source collection ----------
 def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,source_name):
-    with ThreadPoolExecutor(max_workers=3,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
+    stooq_symbol={'NQ':'nq.f','GOLD':'gc.f'}.get(str(asset))
+    with ThreadPoolExecutor(max_workers=4,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
         f5=pool.submit(_yahoo_series,yahoo_symbol,'5d','5m',True)
         f1=pool.submit(_yahoo_series,yahoo_symbol,'3mo','1h',True)
         fp=pool.submit(_yahoo_series,proxy_symbol,'5d','5m',True)
+        fs=pool.submit(_v90_stooq_public_quote,stooq_symbol) if stooq_symbol else None
         bars5,_=f5.result()
         bars1h,_=f1.result()
         try: pr,_=fp.result()
         except Exception: pr=[]
+        sq=fs.result() if fs is not None else {'ok':False,'error':'not_configured'}
     if len(bars1h)<200:
         raise RuntimeError(f'INSUFFICIENT_{asset}_HOURLY_BARS {len(bars1h)}')
     last=bars5[-1] if bars5 else bars1h[-1]
-    price=float(last['close'])
-    observed=datetime.fromtimestamp(last['ts'],tz=timezone.utc).isoformat()
+    delayed_price=float(last['close'])
+    delayed_observed=datetime.fromtimestamp(last['ts'],tz=timezone.utc).isoformat()
     closes=[float(x['close']) for x in bars1h[-1800:]]
     highs=[float(x['high']) for x in bars1h[-1800:]]
     lows=[float(x['low']) for x in bars1h[-1800:]]
     vols=[float(x.get('volume') or 0) for x in bars1h[-1800:]]
     taker=[v*0.5 for v in vols]
     rets=[closes[i]/closes[i-1]-1 for i in range(1,len(closes))]
-    market_open=_futures_market_open_from_age(observed)
-    age=_age_seconds(observed)
+    delayed_age=_age_seconds(delayed_observed)
     delay=DATA_SOURCE_POLICY[policy_key]['documented_delay_sec']
-    proxy_note='not checked'; proxy_obs=None
+    proxy_obs=None; proxy_age=None; proxy_note='not checked'
     if pr:
         proxy_obs=datetime.fromtimestamp(pr[-1]['ts'],tz=timezone.utc).isoformat()
+        proxy_age=_age_seconds(proxy_obs)
         if len(pr)>=5 and len(bars5)>=5:
             r1=float(bars5[-1]['close'])/float(bars5[-5]['close'])-1
             r2=float(pr[-1]['close'])/float(pr[-5]['close'])-1
             proxy_note=f'4-bar directional proxy: primary={r1:.3%}, proxy={r2:.3%}'
+    direct_age=_age_seconds(sq.get('observed_at')) if sq.get('ok') else None
+    direct_price=float(sq.get('price') or 0.0) if sq.get('ok') else None
+    direct_div=(abs(direct_price-delayed_price)/((direct_price+delayed_price)/2.0)
+                if direct_price and delayed_price else None)
+    max_div=0.006 if asset=='NQ' else 0.012
+    direct_fresh=bool(sq.get('ok') and direct_age is not None and direct_age<=V90_PUBLIC_FUTURES_FRESH_SECONDS
+                      and direct_div is not None and direct_div<=max_div)
+    proxy_fresh=bool(pr and proxy_age is not None and proxy_age<=V90_PROXY_BRIDGE_FRESH_SECONDS)
+    delayed_usable=bool(delayed_age is not None and delayed_age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
+    # Preferred paper path: a current public futures quote anchored to the delayed
+    # Yahoo history. Fail-soft path: use the liquid ETF proxy only for timing/price
+    # interpolation while keeping the delayed futures basis. Both remain paper-only.
+    if direct_fresh:
+        price=direct_price
+        observed=sq.get('observed_at')
+        mode='PUBLIC_DIRECT_FUTURES_PAPER'
+        latency='PUBLIC_DIRECT_PAPER'
+        live_ts=datetime.fromisoformat(str(observed).replace('Z','+00:00')).timestamp()
+        ib=_v90_proxy_bridge_intraday(bars5,pr,price,live_ts)
+        secondary=delayed_price
+        divergence=float(direct_div or 0.0)
+    elif proxy_fresh and delayed_usable and bars5 and pr:
+        base=min(pr,key=lambda x:abs(float(x.get('ts') or 0)-float(last.get('ts') or 0)))
+        bp=float(base.get('close') or 0.0); pp=float(pr[-1].get('close') or 0.0)
+        if bp>0 and pp>0:
+            price=delayed_price*(pp/bp)
+            observed=proxy_obs
+            mode='PROXY_BRIDGED_FUTURES_PAPER'
+            latency='PROXY_BRIDGED_PAPER'
+            ib=_v90_proxy_bridge_intraday(bars5,pr,price,float(pr[-1].get('ts') or time.time()))
+            secondary=delayed_price
+            divergence=abs(price-delayed_price)/((price+delayed_price)/2.0)
+        else:
+            price=delayed_price; observed=delayed_observed; mode='DELAYED_RESEARCH'; latency='DELAYED_RESEARCH'
+            ib=bars5; secondary=None; divergence=0.0
+    else:
+        price=delayed_price; observed=delayed_observed; mode='DELAYED_RESEARCH'; latency='DELAYED_RESEARCH'
+        ib=bars5; secondary=None; divergence=0.0
+    market_open=_futures_market_open_from_age(observed)
+    age=_age_seconds(observed)
     gate=bool(market_open and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
-    quality=[
-      _source_row(source_name,f'{asset} futures','primary research delayed',observed,delay,
-                  'DELAYED_CONTEXT' if gate else 'STALE_OR_CLOSED',
+    quality=[]
+    if stooq_symbol:
+        quality.append(_source_row('Stooq public futures quote',f'{asset} futures','fresh paper quote candidate',
+                    sq.get('observed_at'),0,'OK' if direct_fresh else 'UNAVAILABLE_OR_STALE',
+                    f"paper-only public quote; age={direct_age}; divergence_vs_yahoo={direct_div}; error={sq.get('error')}",'Stooq'))
+    quality.extend([
+      _source_row(source_name,f'{asset} futures','historical/delayed anchor',delayed_observed,delay,
+                  'OK_ANCHOR' if delayed_usable else 'STALE_OR_CLOSED',
                   DATA_SOURCE_POLICY[policy_key]['commercial_note'],'Yahoo'),
-      _source_row(f'{proxy_symbol} proxy',f'{asset} proxy','verification proxy',proxy_obs,0,
-                  'OK' if proxy_obs else 'NOT_OBSERVED_YET',proxy_note,'Yahoo')]
+      _source_row(f'{proxy_symbol} proxy',f'{asset} proxy','fresh timing verification',proxy_obs,0,
+                  'OK' if proxy_fresh else 'NOT_FRESH',proxy_note,'Yahoo')
+    ])
     _set_source_quality(quality)
-    return {'asset':asset,'price':price,'secondary_price':None,'coinbase_price':None,
-            'source_divergence':0.0,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
-            'intraday_bars':bars5,'taker_buy':taker,'returns':rets,
-            'binance_close_time_ms':int(last['ts']*1000),'observed_at':observed,
-            'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
-            'data_latency_class':'DELAYED_RESEARCH','verification_mode':'directional_proxy_only',
-            'source_names':{'primary':source_name,'secondary':f'{proxy_symbol} directional proxy'}}
+    return {'asset':asset,'price':price,'secondary_price':secondary,'coinbase_price':None,
+            'source_divergence':divergence,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
+            'intraday_bars':ib,'intraday_5m':ib,'volume_intraday_bars':pr,
+            'daily_bars':_v90_hourly_to_daily(bars1h),'hourly_bars':bars1h,
+            'taker_buy':taker,'returns':rets,
+            'binance_close_time_ms':int((datetime.fromisoformat(str(observed).replace('Z','+00:00')).timestamp())*1000),
+            'observed_at':observed,'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
+            'data_latency_class':latency,'verification_mode':mode,
+            'production_direct_feed':False,
+            'source_names':{'primary':'Stooq public futures quote' if direct_fresh else (f'{proxy_symbol} proxy bridge' if mode.startswith('PROXY') else source_name),
+                            'secondary':source_name if direct_fresh else f'{proxy_symbol} timing proxy'},
+            'fresh_quote_diagnostics':{'direct_fresh':direct_fresh,'direct_age_seconds':direct_age,
+                                       'proxy_fresh':proxy_fresh,'proxy_age_seconds':proxy_age,
+                                       'delayed_age_seconds':delayed_age,'direct_divergence':direct_div,
+                                       'mode':mode}}
 
 # ---------- NDX parallel fetch + fail-closed source fallback ----------
 _v842_ndx_lock=threading.Lock()
@@ -12459,7 +12708,7 @@ def shadow_portfolio():
             if x['asset'] in ('BTC','ETH'):
                 x['final_fraction']*=scale
     for x in selected:
-        if x['asset'] in ('NDX','MOEX'):
+        if x['asset'] in ('NDX','NQ','MOEX'):
             x['final_fraction']=min(x['final_fraction'],0.08)
         elif x['asset'] in ('BRENT','GOLD'):
             x['final_fraction']=min(x['final_fraction'],0.06)
@@ -12992,9 +13241,9 @@ def signal_readiness_report():
 
 
 def portfolio_stress():
-    pf=shadow_portfolio(); scenarios={'RISK_OFF':{'BTC':-0.12,'ETH':-0.15,'NDX':-0.06},
-      'CRYPTO_CRASH':{'BTC':-0.20,'ETH':-0.25,'NDX':-0.03},'EQUITY_SHOCK':{'BTC':-0.05,'ETH':-0.06,'NDX':-0.10},
-      'RISK_ON':{'BTC':0.10,'ETH':0.12,'NDX':0.05}}
+    pf=shadow_portfolio(); scenarios={'RISK_OFF':{'BTC':-0.12,'ETH':-0.15,'NDX':-0.06,'NQ':-0.06},
+      'CRYPTO_CRASH':{'BTC':-0.20,'ETH':-0.25,'NDX':-0.03,'NQ':-0.03},'EQUITY_SHOCK':{'BTC':-0.05,'ETH':-0.06,'NDX':-0.10,'NQ':-0.10},
+      'RISK_ON':{'BTC':0.10,'ETH':0.12,'NDX':0.05,'NQ':0.05}}
     results=[]
     for name,rets in scenarios.items():
         pnl=0.0; legs=[]
@@ -13158,7 +13407,7 @@ def meta_cio_board_from_summary(summary=None):
             'expected_edge':edge,'event_shadow_score':event_score,'cross_asset_regime':cross_regime,
             'reasons':reasons[:8],'cautions':cautions[:8],
             'options_shadow':options.get(asset) if asset in ('BTC','ETH') else None,
-            'breadth_shadow':breadth.get('proxy') if asset=='NDX' else None,
+            'breadth_shadow':breadth.get('proxy') if asset in ('NDX','NQ') else None,
             'meta_reliability':mr,'contradiction':contradiction,'regime_transition':rt,
             'execution_eligible':exec_ok,'research_direction':dec,
             'live_influence':False
@@ -15236,7 +15485,7 @@ def v708_portfolio_command_center():
         latest=p.get('latest') or {}; pos=p.get('positions') or []; risk=sum(abs(float(z.get('unrealized_pnl_rub') or 0)) for z in pos)
         factors={}
         for z in pos:
-            a=str(z.get('asset')); factor='CRYPTO' if a in ('BTC','ETH') else 'RISK_ON' if a in ('NDX','MOEX') else 'COMMODITY'
+            a=str(z.get('asset')); factor='CRYPTO' if a in ('BTC','ETH') else 'RISK_ON' if a in ('NDX','NQ','MOEX') else 'COMMODITY'
             factors[factor]=factors.get(factor,0)+abs(float(z.get('notional_rub') or 0))
         out.append({'name':p.get('name'),'nav_rub':latest.get('nav_rub'),'nav_usd':latest.get('nav_usd'),'gross_leverage':latest.get('gross_leverage'),'net_exposure':latest.get('net_exposure'),'drawdown':latest.get('drawdown'),
                     'positions':pos,'open_positions':len(pos),'cash_fraction':max(0,1-float(latest.get('gross_leverage') or 0)),'factor_exposure':factors,'mark_to_market_abs_rub':round(risk,2)})
@@ -17563,7 +17812,7 @@ def refresh_experience_lessons(limit=400):
 
 # Four outer workers are safe under the current memory envelope; heavy
 # learning remains memory-gated separately. This restores the intended I/O parallelism.
-FAST_LOOP_MARKET_WORKERS=min(4,max(2,int(FAST_LOOP_MARKET_WORKERS)))
+FAST_LOOP_MARKET_WORKERS=min(6,max(2,int(FAST_LOOP_MARKET_WORKERS)))
 MEMORY_SOFT_LIMIT_MB=min(320,int(MEMORY_SOFT_LIMIT_MB))
 HEAVY_LEARNING_INTERVAL_SECONDS=max(3600,int(HEAVY_LEARNING_INTERVAL_SECONDS))
 HEAVY_LEARNING_START_DELAY_SECONDS=max(300,int(HEAVY_LEARNING_START_DELAY_SECONDS))
