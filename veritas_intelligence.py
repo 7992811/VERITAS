@@ -1,4 +1,4 @@
-import csv, glob, hashlib, io, json, math, os, sqlite3, threading, time, traceback, uuid, gc, xml.etree.ElementTree as ET
+import csv, glob, hashlib, io, json, math, os, re, sqlite3, threading, time, traceback, uuid, gc, xml.etree.ElementTree as ET
 import html as _html
 import re
 from datetime import datetime, timezone, timedelta

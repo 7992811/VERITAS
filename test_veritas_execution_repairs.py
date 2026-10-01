@@ -1434,13 +1434,11 @@ class AggressiveInitialSizingR61Tests(unittest.TestCase):
              'trade_plan':{'expected_to_stop_ratio':1.65,'stop_distance_pct':0.005}}
         policy={'mode':'AGGRESSIVE','max_fraction':5.0}
         base={'open':True,'fraction':0.10,'reason':'BASE'}
-        row.update({'execution_eligible':True,'paper_eligible':True})
-        with patch.object(VP,'_v90r24_base_admission',return_value=base), \
-             patch.object(VP,'_v90r24_stop_risk_cap',return_value=5.0), \
-             patch.object(VP,'_v90r33_edge_eval',return_value={'active':False,'pass':True}), \
-             patch.object(VP.VX,'entry_gate',return_value={'status':'PASS','eligible':True,'blockers':[]}):
-            out=VP._signal_first_admission(row,policy,0.0)
+        with patch.object(VPR,'_v90r61_base_admission',return_value=base), \
+             patch.object(VPR,'_v90r24_stop_risk_cap',return_value=5.0):
+            out=VPR._signal_first_admission(row,policy,0.0)
         self.assertGreaterEqual(out['fraction'],0.75)
+
 
 class FreshFuturesVerificationR61Tests(unittest.TestCase):
     def test_profinance_parser_extracts_nq_futures_row(self):

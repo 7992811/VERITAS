@@ -3994,6 +3994,61 @@ def report(pg_connect):
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),36)
 
 
+# VERITAS V90 AGGRESSIVE INITIAL EXPOSURE AUTHORITY R61
+_v90r61_base_admission=_signal_first_admission
+
+def _v90r61_aggressive_initial_floor(row,policy,drawdown,out):
+    row=row or {}; policy=policy or {}; out=dict(out or {})
+    if str(policy.get('mode') or '')!='AGGRESSIVE' or not out.get('open'):
+        return out
+    direction=str(row.get('research_decision') or '')
+    if direction not in ('LONG','SHORT'):
+        return out
+    m=_v90r59_entry_metrics(row)
+    supporting=set(row.get('_supporting_horizons') or [])
+    try: align=int(row.get('_alignment_count') or len(supporting))
+    except Exception: align=len(supporting)
+    try: conf=float(row.get('confidence') or row.get('_pwin') or 0.0)
+    except Exception: conf=0.0
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    super_sig=tier in ('SUPER_LONG','SUPER_SHORT') or bool(row.get('_r20_super_priority'))
+
+    floor=0.50
+    if (super_sig or (conf>=0.82 and int(m.get('independent') or 0)>=5
+                      and float(m.get('rr') or 0.0)>=1.50 and align>=3)):
+        floor=1.00
+    elif (conf>=0.72 and int(m.get('independent') or 0)>=4
+          and float(m.get('rr') or 0.0)>=1.30):
+        floor=0.75
+
+    rg=_risk_governor(drawdown)
+    mult=max(0.0,min(1.0,float(rg.get('multiplier') or 0.0)))
+    if not rg.get('new_risk',True):
+        return {**out,'open':False,'fraction':0.0,'reason':'R61_RISK_GOVERNOR_BLOCK'}
+    floor*=mult
+
+    try: risk_cap=_v90r24_stop_risk_cap(row)
+    except Exception: risk_cap=None
+    target=max(float(out.get('fraction') or 0.0),floor)
+    if risk_cap is not None:
+        target=min(target,float(risk_cap))
+    target=_clip(_round_step(target),0.0,float(policy.get('max_fraction') or 5.0))
+    out['fraction']=target
+    out['open']=bool(target>0)
+    out['reason']=str(out.get('reason') or '')+'|R61_AGGRESSIVE_INITIAL_50_100'
+    out['r61_aggressive_initial']={
+      'requested_floor':floor,'final_fraction':target,'risk_cap_fraction':risk_cap,
+      'confidence':conf,'independent':int(m.get('independent') or 0),
+      'rr':float(m.get('rr') or 0.0),'alignment':align,'super':super_sig,
+      'risk_multiplier':mult,
+    }
+    return out
+
+def _signal_first_admission(row,policy,drawdown):
+    out=dict(_v90r61_base_admission(row,policy,drawdown) or {})
+    return _v90r61_aggressive_initial_floor(row,policy,drawdown,out)
+
+
 # VERITAS V90 INDEPENDENT EPISODE / STABLE SETUP ID R60
 _v90r60_base_report=report
 
