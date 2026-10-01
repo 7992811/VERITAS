@@ -9467,22 +9467,44 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
     stooq_symbol={'NQ':'nq.f','GOLD':'gc.f'}.get(str(asset))
     with _v90r63_futures_history_lock:
         _hc=dict(_v90r63_futures_history_cache.get(str(asset)) or {})
-    _cache_ok=bool(_hc and time.time()-float(_hc.get('at') or 0.0)<=900.0)
+    now_fetch=time.time()
+    _cache_age=(now_fetch-float(_hc.get('at') or 0.0)) if _hc else 9e9
+    _cache_ok=bool(_hc and _cache_age<=900.0)
+    _b5_at=float(_hc.get('bars5_at') or _hc.get('at') or 0.0)
+    _b1_at=float(_hc.get('bars1h_at') or _hc.get('at') or 0.0)
+    # R64.1: current price/timing refresh every cycle, while the expensive
+    # historical bars refresh at their natural cadence. 5m history is reusable
+    # for three minutes; 1h history for fifteen minutes. The fresh direct/proxy
+    # quote is still fetched on every call and bridged into the cached bars.
+    reuse5=bool(_hc.get('bars5') and now_fetch-_b5_at<=180.0)
+    reuse1=bool(len(_hc.get('bars1h') or [])>=200 and now_fetch-_b1_at<=900.0)
+    bars5_fetched=False
+    bars1h_fetched=False
     pool=ThreadPoolExecutor(max_workers=5,thread_name_prefix=f'veritas-{asset.lower()}')
     try:
-        f5=pool.submit(_yahoo_series,yahoo_symbol,'5d','5m',True)
-        f1=pool.submit(_yahoo_series,yahoo_symbol,'3mo','1h',True)
+        f5=None if reuse5 else pool.submit(_yahoo_series,yahoo_symbol,'5d','5m',True)
+        f1=None if reuse1 else pool.submit(_yahoo_series,yahoo_symbol,'3mo','1h',True)
         fp=pool.submit(_yahoo_series,proxy_symbol,'5d','5m',True)
         fs=pool.submit(_v90_stooq_public_quote,stooq_symbol) if stooq_symbol else None
         fpf=pool.submit(_v90r61_profinance_quote,asset) if str(asset) in ('NQ','GOLD') else None
-        try: bars5,_=f5.result(timeout=10.0)
-        except Exception as ex:
-            bars5=list(_hc.get('bars5') or []) if _cache_ok else []
-            emit('r63_futures_5m_cache_fallback',asset=asset,bars=len(bars5),provider_detail=f'{type(ex).__name__}: {ex}')
-        try: bars1h,_=f1.result(timeout=10.0)
-        except Exception as ex:
-            bars1h=list(_hc.get('bars1h') or []) if _cache_ok else []
-            emit('r63_futures_1h_cache_fallback',asset=asset,bars=len(bars1h),provider_detail=f'{type(ex).__name__}: {ex}')
+        if reuse5:
+            bars5=list(_hc.get('bars5') or [])
+        else:
+            try:
+                bars5,_=f5.result(timeout=10.0)
+                bars5_fetched=True
+            except Exception as ex:
+                bars5=list(_hc.get('bars5') or []) if _cache_ok else []
+                emit('r64_futures_5m_cache_fallback',asset=asset,bars=len(bars5),provider_detail=f'{type(ex).__name__}: {ex}')
+        if reuse1:
+            bars1h=list(_hc.get('bars1h') or [])
+        else:
+            try:
+                bars1h,_=f1.result(timeout=10.0)
+                bars1h_fetched=True
+            except Exception as ex:
+                bars1h=list(_hc.get('bars1h') or []) if _cache_ok else []
+                emit('r64_futures_1h_cache_fallback',asset=asset,bars=len(bars1h),provider_detail=f'{type(ex).__name__}: {ex}')
         try: pr,_=fp.result(timeout=4.0)
         except Exception: pr=list(_hc.get('proxy') or []) if _cache_ok else []
         try: sq=fs.result(timeout=4.0) if fs is not None else {'ok':False,'error':'not_configured'}
@@ -9493,8 +9515,12 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
         pool.shutdown(wait=False,cancel_futures=True)
     if len(bars1h)<200:
         raise RuntimeError(f'INSUFFICIENT_{asset}_HOURLY_BARS {len(bars1h)}')
+    refreshed_at=time.time()
+    bars5_at=(refreshed_at if bars5_fetched else (_b5_at or refreshed_at))
+    bars1h_at=(refreshed_at if bars1h_fetched else (_b1_at or refreshed_at))
     with _v90r63_futures_history_lock:
-        _v90r63_futures_history_cache[str(asset)]={'at':time.time(),
+        _v90r63_futures_history_cache[str(asset)]={
+            'at':refreshed_at,'bars5_at':bars5_at,'bars1h_at':bars1h_at,
             'bars5':list(bars5),'bars1h':list(bars1h),'proxy':list(pr or [])}
     last=bars5[-1] if bars5 else bars1h[-1]
     delayed_price=float(last['close'])
@@ -9616,7 +9642,13 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
             'fresh_quote_diagnostics':{'direct_candidates':direct_candidates,
                                        'selected_direct_source':direct.get('source') if direct else None,
                                        'proxy_fresh':proxy_fresh,'proxy_age_seconds':proxy_age,
-                                       'delayed_age_seconds':delayed_age,'mode':mode}}
+                                       'delayed_age_seconds':delayed_age,'mode':mode,
+                                       'history_cache':{
+                                           'bars5_reused':reuse5,
+                                           'bars1h_reused':reuse1,
+                                           'bars5_age_seconds':max(0.0,refreshed_at-bars5_at),
+                                           'bars1h_age_seconds':max(0.0,refreshed_at-bars1h_at),
+                                           'fresh_quote_refreshed_each_cycle':True}}}
 
 
 # ---------- NDX parallel fetch + fail-closed source fallback ----------

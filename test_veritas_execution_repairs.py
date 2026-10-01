@@ -1470,13 +1470,47 @@ class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
                  'close':30000,'volume':100} for i in reversed(range(220))]
         proxy=[{'ts':now.timestamp()-300*i,'open':500,'high':501,'low':499,
                 'close':500,'volume':1000} for i in reversed(range(20))]
-        with patch.object(VI,'_yahoo_series',side_effect=[(bars5,{}),(bars1h,{}),(proxy,{})]), \
-             patch.object(VI,'_v90_stooq_public_quote',return_value={'ok':False,'error':'x'}), \
-             patch.object(VI,'_v90r61_profinance_quote',return_value=pf):
-            out=VI._yahoo_research_futures_market('NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
-        self.assertEqual(out['source_names']['primary'],'ProFinance')
-        self.assertEqual(out['verification_mode'],'PUBLIC_DIRECT_FUTURES_PAPER')
-        self.assertEqual((out['freshness_verification']['best'] or {}).get('source'),'ProFinance')
+        old_cache=dict(VI._v90r63_futures_history_cache)
+        try:
+            VI._v90r63_futures_history_cache.clear()
+            with patch.object(VI,'_yahoo_series',side_effect=[(bars5,{}),(bars1h,{}),(proxy,{})]), \
+                 patch.object(VI,'_v90_stooq_public_quote',return_value={'ok':False,'error':'x'}), \
+                 patch.object(VI,'_v90r61_profinance_quote',return_value=pf):
+                out=VI._yahoo_research_futures_market('NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
+            self.assertEqual(out['source_names']['primary'],'ProFinance')
+            self.assertEqual(out['verification_mode'],'PUBLIC_DIRECT_FUTURES_PAPER')
+            self.assertEqual((out['freshness_verification']['best'] or {}).get('source'),'ProFinance')
+        finally:
+            VI._v90r63_futures_history_cache.clear()
+            VI._v90r63_futures_history_cache.update(old_cache)
+
+    def test_warm_nq_refresh_reuses_history_but_refreshes_live_proxy(self):
+        now=datetime.now(timezone.utc)
+        bars5=[{'ts':now.timestamp()-300*i,'open':30000,'high':30020,'low':29980,
+                'close':30000,'volume':100} for i in reversed(range(20))]
+        bars1h=[{'ts':now.timestamp()-3600*i,'open':30000,'high':30020,'low':29980,
+                 'close':30000,'volume':100} for i in reversed(range(220))]
+        proxy=[{'ts':now.timestamp()-300*i,'open':500,'high':501,'low':499,
+                'close':500,'volume':1000} for i in reversed(range(20))]
+        old_cache=dict(VI._v90r63_futures_history_cache)
+        try:
+            VI._v90r63_futures_history_cache.clear()
+            VI._v90r63_futures_history_cache['NQ']={
+                'at':VI.time.time(),'bars5_at':VI.time.time(),'bars1h_at':VI.time.time(),
+                'bars5':bars5,'bars1h':bars1h,'proxy':proxy}
+            with patch.object(VI,'_yahoo_series',return_value=(proxy,{})) as ys, \
+                 patch.object(VI,'_v90_stooq_public_quote',return_value={'ok':False,'error':'x'}), \
+                 patch.object(VI,'_v90r61_profinance_quote',return_value={}):
+                out=VI._yahoo_research_futures_market(
+                    'NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
+            self.assertEqual(ys.call_count,1)
+            hc=out['fresh_quote_diagnostics']['history_cache']
+            self.assertTrue(hc['bars5_reused'])
+            self.assertTrue(hc['bars1h_reused'])
+            self.assertTrue(hc['fresh_quote_refreshed_each_cycle'])
+        finally:
+            VI._v90r63_futures_history_cache.clear()
+            VI._v90r63_futures_history_cache.update(old_cache)
 
 
 class FreshFuturesVerificationR61Tests(unittest.TestCase):
