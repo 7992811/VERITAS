@@ -917,5 +917,123 @@ class ExecutionDisciplineR55Tests(unittest.TestCase):
 
 
 
+class MultiTimeframeTradeFramingR56Tests(unittest.TestCase):
+    def _row(self,h='4h',direction='SHORT',price=100.0):
+        return {
+            'asset':'CNYRUBF','horizon':h,'research_decision':direction,'price':price,
+            'realized_vol':.01,'horizon_return':-.004 if direction=='SHORT' else .004,
+            'signal_tier':'SHORT' if direction=='SHORT' else 'LONG',
+            'decision_stage':'EARLY_PROBE','entry_quality':'NEW_SETUP_PROVISIONAL',
+            'regime':'DOWNTREND_LOW_VOL' if direction=='SHORT' else 'UPTREND_LOW_VOL',
+            'horizon_structure':{'state':'BUILDING_TREND','score':.72,'direction':direction},
+            'intraday_structure':{'recent_swing_anchor':101.0 if direction=='SHORT' else 99.0},
+            'institutional_signal':{
+                'evidence_independence':{'independent_count':4},
+                'breakout_quality':{'state':'CONFIRMED_BREAKOUT'},
+            },
+            'trade_plan':{
+                'eligible':True,'direction':direction,
+                'stop_price':102.0 if direction=='SHORT' else 98.0,
+                'target_price':90.0 if direction=='SHORT' else 110.0,
+                'expected_move_pct':.10,'expected_to_stop_ratio':5.0,
+                'final_economics_gate':{'status':'PASS','net_reward_risk':2.0,
+                                        'modeled_round_trip_cost_pct':.002},
+            },
+            '_rank':1.0,
+        }
+
+    def test_senior_only_aggressive_candidate_is_replaced_by_lower_tf_trigger(self):
+        senior=self._row('3d'); senior['_rank']=2.0
+        trigger=self._row('4h'); trigger['_rank']=1.0
+        summary=[trigger,senior]
+        with patch.object(VPR,'_v90r56_base_aggressive_book',
+                          return_value={'CNYRUBF':senior}):
+            out=VPR._v90_aggressive_candidate_book(summary,{'CNYRUBF':senior})
+        self.assertEqual(out['CNYRUBF']['horizon'],'4h')
+        self.assertTrue(out['CNYRUBF']['_r56_trigger_selected'])
+        self.assertEqual(out['CNYRUBF']['_r56_thesis_horizon'],'3d')
+
+    def test_senior_only_aggressive_candidate_without_trigger_is_blocked(self):
+        senior=self._row('3d')
+        with patch.object(VPR,'_v90r56_base_aggressive_book',
+                          return_value={'CNYRUBF':senior}):
+            book=VPR._v90_aggressive_candidate_book([senior],{'CNYRUBF':senior})
+        self.assertTrue(book['CNYRUBF']['_r56_missing_execution_trigger'])
+        out=VPR._signal_first_admission(
+            book['CNYRUBF'],VP.POLICIES['Aggressive'],0.0)
+        self.assertFalse(out['open'])
+        self.assertEqual(out['reason'],'R56_SENIOR_BIAS_REQUIRES_ENTRY_TRIGGER')
+
+    def test_late_entry_after_consuming_volatility_budget_waits_for_retest(self):
+        row=self._row('1h',price=100.0)
+        row['horizon_return']=-.012
+        row['realized_vol']=.010
+        out=VPR._v90r56_late_entry_gate(row)
+        self.assertFalse(out['eligible'])
+        self.assertEqual(out['reason'],'R56_WAIT_RETEST_LATE_ENTRY')
+
+    def test_fresh_entry_inside_volatility_budget_is_allowed(self):
+        row=self._row('1h',price=100.0)
+        row['horizon_return']=-.004
+        row['realized_vol']=.010
+        out=VPR._v90r56_late_entry_gate(row)
+        self.assertTrue(out['eligible'])
+
+    def test_entry_stop_has_management_timeframe_noise_floor(self):
+        row=self._row('4h',price=100.0)
+        row['intraday_structure']['recent_swing_anchor']=100.10
+        row['_r56_management_horizon']='4h'
+        meta=VPR._v90r56_entry_stop(row)
+        self.assertIsNotNone(meta)
+        self.assertGreaterEqual(meta['stop_price'],100.45)
+        self.assertEqual(meta['management_horizon'],'4h')
+
+    def test_tp1_uses_entry_timeframe_cap_not_three_day_target(self):
+        row=self._row('4h',price=100.0)
+        row['_r56_management_horizon']='4h'
+        sm={'stop_price':100.50}
+        tp=VPR._v90r56_tp_plan(row,sm)
+        self.assertIsNotNone(tp)
+        self.assertLessEqual(tp['tp1_move_pct'],.0200001)
+        self.assertGreater(tp['tp1_price'],97.99)
+        self.assertEqual(tp['runner_target_price'],90.0)
+
+    def test_trailing_is_off_before_favorable_move(self):
+        row=self._row('4h',price=99.9)
+        z={'direction':'SHORT','avg_entry_price':100.0,'last_price':99.9,
+           'payload':{'r56_management_horizon':'4h'}}
+        g=VPR._v90r56_trailing_activation(z,row)
+        self.assertFalse(g['active'])
+
+    def test_trailing_turns_on_after_favorable_move(self):
+        row=self._row('4h',price=99.2)
+        z={'direction':'SHORT','avg_entry_price':100.0,'last_price':99.2,
+           'payload':{'r56_management_horizon':'4h'}}
+        g=VPR._v90r56_trailing_activation(z,row)
+        self.assertTrue(g['active'])
+
+    def test_legacy_senior_position_migration_sets_4h_stop_and_near_tp1(self):
+        c=MagicMock()
+        z={
+            'portfolio_name':'Aggressive','asset':'CNYRUBF','direction':'SHORT',
+            'units':40000.0,'avg_entry_price':12.36,'last_price':12.37,
+            'stop_price':12.3835,'active_trade_id':'legacy1',
+            'payload':{'execution_horizon':'3d'}
+        }
+        row=self._row('4h','SHORT',12.37)
+        row['realized_vol']=.0095
+        row['intraday_structure']['recent_swing_anchor']=12.38
+        row['trade_plan']['target_price']=11.10
+        patch=VPR._v90r56_migrate_legacy_senior_position(
+            c,'Aggressive',z,row,12.37,1_000_000.0,
+            datetime(2026,10,1,3,30,tzinfo=timezone.utc))
+        self.assertIsNotNone(patch)
+        self.assertEqual(patch['r56_management_horizon'],'4h')
+        self.assertGreater(patch['r56_management_stop'],12.3835)
+        self.assertGreater(patch['r56_tp1_price'],12.12)
+        self.assertLess(patch['r56_tp1_price'],12.37)
+        self.assertEqual(patch['r56_runner_target_price'],11.10)
+
+
 if __name__ == '__main__':
     unittest.main()
