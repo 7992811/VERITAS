@@ -4013,9 +4013,20 @@ def _v90r61_aggressive_initial_floor(row,policy,drawdown,out):
     tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
     super_sig=tier in ('SUPER_LONG','SUPER_SHORT') or bool(row.get('_r20_super_priority'))
 
+    h=str(row.get('horizon') or '')
     floor=0.50
-    if (super_sig or (conf>=0.82 and int(m.get('independent') or 0)>=5
-                      and float(m.get('rr') or 0.0)>=1.50 and align>=3)):
+    # Canonical initial ladder. A 5m SUPER is not automatically 100%:
+    # 5m alone=50%, +1h=75%, +1h+4h=100%.
+    if h=='5m':
+        if '1h' in supporting:
+            floor=0.75
+        if '1h' in supporting and '4h' in supporting and super_sig:
+            floor=1.00
+    elif h=='1h':
+        # A valid 1h tactical reversal starts at 50%; scale is earned later.
+        floor=0.50
+    elif (super_sig or (conf>=0.82 and int(m.get('independent') or 0)>=5
+                        and float(m.get('rr') or 0.0)>=1.50 and align>=3)):
         floor=1.00
     elif (conf>=0.72 and int(m.get('independent') or 0)>=4
           and float(m.get('rr') or 0.0)>=1.30):
@@ -4035,7 +4046,6 @@ def _v90r61_aggressive_initial_floor(row,policy,drawdown,out):
     target=_clip(_round_step(target),0.0,float(policy.get('max_fraction') or 5.0))
     out['fraction']=target
     out['open']=bool(target>0)
-    out['reason']=str(out.get('reason') or '')+'|R61_AGGRESSIVE_INITIAL_50_100'
     out['r61_aggressive_initial']={
       'requested_floor':floor,'final_fraction':target,'risk_cap_fraction':risk_cap,
       'confidence':conf,'independent':int(m.get('independent') or 0),
