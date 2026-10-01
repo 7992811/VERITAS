@@ -3216,28 +3216,40 @@ def _v90r56_prepare_entry_row(row):
 def _signal_first_admission(row,policy,drawdown):
     row=row or {}
     mode=str((policy or {}).get('mode') or '')
-    if mode=='AGGRESSIVE':
-        if str(row.get('horizon') or '') in _R56_SENIOR_HORIZONS or row.get('_r56_missing_execution_trigger'):
-            return {
-              'open':False,'fraction':0.0,'hard_veto':True,
-              'reason':'R56_SENIOR_BIAS_REQUIRES_ENTRY_TRIGGER',
-              'r56_thesis_horizon':row.get('_r56_thesis_horizon') or row.get('horizon'),
-            }
+    if mode=='AGGRESSIVE' and (
+        str(row.get('horizon') or '') in _R56_SENIOR_HORIZONS
+        or row.get('_r56_missing_execution_trigger')
+    ):
+        return {
+          'open':False,'fraction':0.0,'hard_veto':True,
+          'reason':'R56_SENIOR_BIAS_REQUIRES_ENTRY_TRIGGER',
+          'r56_thesis_horizon':row.get('_r56_thesis_horizon') or row.get('horizon'),
+        }
+
+    # Preserve all pre-R56 hard/source/economics gates and their reason ordering.
+    # Timing/entry-frame rules only act on a candidate explicitly selected by
+    # the R56 5m/1h/4h trigger router.
+    selected=bool(mode=='AGGRESSIVE' and row.get('_r56_trigger_selected'))
+    work=row
+    if selected:
+        if _v90r55_invalidated(row):
+            return dict(_v90r56_base_admission(row,policy,drawdown) or {})
         timing=_v90r56_late_entry_gate(row)
         if not timing.get('eligible'):
             return {
               'open':False,'fraction':0.0,'hard_veto':True,
               'reason':'R56_WAIT_RETEST_LATE_ENTRY','r56_late_entry':timing,
             }
-        row=_v90r56_prepare_entry_row(row)
-    out=dict(_v90r56_base_admission(row,policy,drawdown) or {})
-    if mode=='AGGRESSIVE':
-        out['r56_thesis_horizon']=row.get('_r56_thesis_horizon')
-        out['r56_entry_horizon']=row.get('_r56_entry_horizon') or row.get('horizon')
-        out['r56_management_horizon']=row.get('_r56_management_horizon') or row.get('horizon')
-        out['r56_late_entry']=_v90r56_late_entry_gate(row)
-        out['r56_stop_plan']=row.get('_r56_stop_plan')
-        out['r56_tp_plan']=row.get('_r56_tp_plan')
+        work=_v90r56_prepare_entry_row(row)
+
+    out=dict(_v90r56_base_admission(work,policy,drawdown) or {})
+    if mode=='AGGRESSIVE' and selected:
+        out['r56_thesis_horizon']=work.get('_r56_thesis_horizon')
+        out['r56_entry_horizon']=work.get('_r56_entry_horizon') or work.get('horizon')
+        out['r56_management_horizon']=work.get('_r56_management_horizon') or work.get('horizon')
+        out['r56_late_entry']=_v90r56_late_entry_gate(work)
+        out['r56_stop_plan']=work.get('_r56_stop_plan')
+        out['r56_tp_plan']=work.get('_r56_tp_plan')
     return out
 
 def _v90r56_trailing_activation(z,row):
