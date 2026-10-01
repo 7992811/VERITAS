@@ -3515,6 +3515,198 @@ def report(pg_connect):
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),34)
 
+
+# VERITAS V90 TACTICAL TRIGGER PRIORITY R57
+# Repair for 2026-10-01 NQ: a valid 1h SHORT (PASS, R/R ~1.84) was blocked
+# because stale senior LONG bias was treated as an execution veto. From R57,
+# senior TFs influence INITIAL SIZE; they do not cancel a fresh valid 5m/1h/4h trigger.
+V90_R57_STARTED_AT=os.getenv('VERITAS_R57_EPOCH','2026-10-01T07:40:00+00:00')
+_v90r57_base_aggressive_book=_v90_aggressive_candidate_book
+_v90r57_base_admission=_signal_first_admission
+_v90r57_base_report=report
+
+def _v90r57_valid_trigger(row):
+    row=row or {}
+    if str(row.get('horizon') or '') not in _R56_TRIGGER_HORIZONS:
+        return False
+    if _v90r55_invalidated(row):
+        return False
+    if _v90r56_direction(row) not in ('LONG','SHORT'):
+        return False
+    plan=row.get('trade_plan') or {}
+    gate=plan.get('final_economics_gate') or {}
+    if str(gate.get('status') or row.get('final_gate_status') or '')=='BLOCK':
+        return False
+    if gate and str(gate.get('status') or '') not in ('PASS',''):
+        return False
+    return bool(plan.get('eligible',True))
+
+def _v90r57_trigger_score(row):
+    row=row or {}
+    h=str(row.get('horizon') or '')
+    base={'1h':3.40,'5m':3.20,'4h':2.60}.get(h,0.0)
+    hs=row.get('horizon_structure') or {}
+    try: hscore=float(hs.get('score') or row.get('horizon_structure_score') or 0.0)
+    except Exception: hscore=0.0
+    try:
+        indep=int((((row.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count'))
+                  or row.get('independent_evidence_families') or 0)
+    except Exception: indep=0
+    try:
+        rr=float(((row.get('trade_plan') or {}).get('final_economics_gate') or {}).get('net_reward_risk')
+                 or (row.get('trade_plan') or {}).get('expected_to_stop_ratio')
+                 or row.get('expected_to_stop_ratio') or 0.0)
+    except Exception: rr=0.0
+    try:
+        move=abs(float((row.get('trade_plan') or {}).get('expected_move_pct')
+                       or row.get('expected_move_pct') or 0.0))
+    except Exception: move=0.0
+    q=str(row.get('entry_quality') or '')
+    qbonus=0.45 if q in ('CONFIRMED_TREND','FRESH_BREAKOUT') else 0.20 if q=='NEW_SETUP_PROVISIONAL' else 0.0
+    return base+0.65*hscore+0.06*min(indep,6)+0.10*min(rr,3.0)+0.05*min(move/0.01,2.0)+qbonus
+
+def _v90r57_best_trigger(summary,asset):
+    rows=[]
+    for r0 in summary or []:
+        if str((r0 or {}).get('asset') or '')!=str(asset):
+            continue
+        if not _v90r57_valid_trigger(r0):
+            continue
+        rows.append((_v90r57_trigger_score(r0),dict(r0)))
+    if not rows:
+        return None
+    rows.sort(key=lambda z:z[0],reverse=True)
+    x=rows[0][1]
+    x['_r57_trigger_score']=rows[0][0]
+    return x
+
+def _v90r57_direction_confirmation(summary,asset,direction):
+    out={}
+    for h in _R56_TRIGGER_HORIZONS:
+        best=None
+        for r0 in summary or []:
+            if str((r0 or {}).get('asset') or '')!=str(asset):
+                continue
+            if str((r0 or {}).get('horizon') or '')!=h:
+                continue
+            if _v90r56_direction(r0)!=direction:
+                continue
+            r=dict(r0)
+            hs=r.get('horizon_structure') or {}
+            try: score=float(hs.get('score') or r.get('horizon_structure_score') or 0.0)
+            except Exception: score=0.0
+            try:
+                indep=int((((r.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count'))
+                          or r.get('independent_evidence_families') or 0)
+            except Exception: indep=0
+            best={
+              'score':score,'state':str(hs.get('state') or r.get('horizon_structure_state') or ''),
+              'independent':indep,'plan_pass':_v90r57_valid_trigger(r),
+              'entry_quality':str(r.get('entry_quality') or ''),
+            }
+            break
+        out[h]=best
+    return out
+
+def _v90_aggressive_candidate_book(summary,core_candidates):
+    out=dict(_v90r57_base_aggressive_book(summary,core_candidates) or {})
+    assets=set(out)
+    assets.update(str((r or {}).get('asset')) for r in (summary or []) if (r or {}).get('asset'))
+    for asset in list(assets):
+        trigger=_v90r57_best_trigger(summary,asset)
+        if trigger is None:
+            continue
+
+        direction=_v90r56_direction(trigger)
+        senior=_v90r56_senior_bias(summary,asset)
+        senior_dir=str(senior.get('direction') or 'NO_TRADE')
+        conflict=bool(senior_dir in ('LONG','SHORT') and senior_dir!=direction)
+        aligned=bool(senior_dir==direction)
+        confirm=_v90r57_direction_confirmation(summary,asset,direction)
+
+        x=dict(trigger)
+        x['_r56_trigger_selected']=True
+        x['_r56_entry_horizon']=str(trigger.get('horizon') or '')
+        x['_r56_management_horizon']=str(trigger.get('horizon') or '')
+        x['_r57_senior_bias']=senior
+        x['_r57_senior_conflict']=conflict
+        x['_r57_senior_aligned']=aligned
+        x['_r57_direction_confirmation']=confirm
+        x['_r57_original_candidate_horizon']=str((out.get(asset) or {}).get('horizon') or '')
+
+        # Senior view changes initial risk, never the existence of a valid tactical trade.
+        if conflict:
+            cap=0.50
+            size_reason='COUNTER_SENIOR_TACTICAL_50'
+        elif aligned:
+            cap=1.00
+            size_reason='SENIOR_ALIGNED_UP_TO_100'
+        else:
+            cap=0.75
+            size_reason='SENIOR_NEUTRAL_UP_TO_75'
+        x['_r57_initial_size_cap']=cap
+        x['_r57_size_reason']=size_reason
+
+        support=list(x.get('_supporting_horizons') or [])
+        for h in ('5m','1h','4h'):
+            if confirm.get(h) is not None:
+                support.append(h)
+        x['_supporting_horizons']=list(dict.fromkeys(support))
+        x['_alignment_count']=len(x['_supporting_horizons'])
+        out[asset]=x
+    return out
+
+def _signal_first_admission(row,policy,drawdown):
+    out=dict(_v90r57_base_admission(row,policy,drawdown) or {})
+    if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not out.get('open'):
+        return out
+    if not (row or {}).get('_r57_trigger_score'):
+        return out
+
+    cap=float((row or {}).get('_r57_initial_size_cap') or 1.0)
+    # Variant B floor remains 50% for an admitted tactical signal.
+    desired=max(0.50,float(out.get('fraction') or 0.50))
+    desired=min(desired,cap)
+
+    # A 1h PASS against stale senior bias opens 50%, not 0%.
+    # If 5m simultaneously confirms a strong trend, preserve the same 50% cap
+    # but flag the trade for faster event-driven scaling.
+    confirm=(row or {}).get('_r57_direction_confirmation') or {}
+    five=confirm.get('5m') or {}
+    fast_confirm=bool(
+        five
+        and five.get('state') in ('BUILDING_TREND','CONFIRMED_TREND')
+        and float(five.get('score') or 0.0)>=0.65
+        and int(five.get('independent') or 0)>=4
+    )
+    out['fraction']=_round_step(desired)
+    out['open']=bool(out['fraction']>0)
+    out['reason']='R57_TACTICAL_TRIGGER_PRIORITY'
+    out['r57_senior_conflict']=bool((row or {}).get('_r57_senior_conflict'))
+    out['r57_senior_aligned']=bool((row or {}).get('_r57_senior_aligned'))
+    out['r57_initial_size_cap']=cap
+    out['r57_size_reason']=(row or {}).get('_r57_size_reason')
+    out['r57_fast_confirmation']=fast_confirm
+    out['r57_trigger_horizon']=(row or {}).get('horizon')
+    return out
+
+def report(pg_connect):
+    d=dict(_v90r57_base_report(pg_connect) or {})
+    d['tactical_trigger_priority_r57']={
+      'status':'ACTIVE','started_at':V90_R57_STARTED_AT,
+      'principle':'fresh valid 5m/1h/4h trigger may trade; senior TF changes size, not existence',
+      'counter_senior_initial_cap':0.50,
+      'senior_neutral_initial_cap':0.75,
+      'senior_aligned_initial_cap':1.00,
+      'one_hour_valid_trigger_authoritative':True,
+      'stale_or_blocked_5m_cannot_execute':True,
+      'leverage_still_requires_R55_new_impulse_event':True,
+      'incident_reference':'NQ 2026-10-01 07:24 UTC valid 1h SHORT blocked by senior LONG bias',
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),35)
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
