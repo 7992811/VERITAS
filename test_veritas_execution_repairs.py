@@ -1440,6 +1440,45 @@ class AggressiveInitialSizingR61Tests(unittest.TestCase):
         self.assertGreaterEqual(out['fraction'],0.75)
 
 
+class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
+    def test_full_cycle_reuses_recent_fast_market_bundle(self):
+        bundle={'asset':'NQ','raw':{'asset':'NQ','price':100.0},'deriv':{'ok':False},
+                'elapsed_seconds':1.0,'error':None}
+        old_mode=VI._v90r62_active_cycle_mode
+        old_cache=dict(VI._v90r62_bundle_cache)
+        try:
+            VI._v90r62_bundle_cache.clear()
+            VI._v90r62_bundle_cache['NQ']={'at':time.time(),'bundle':bundle}
+            VI._v90r62_active_cycle_mode='FULL'
+            out=VI._v90r62_cached_bundle('NQ')
+            self.assertIsNotNone(out)
+            self.assertTrue(out['reused_market_bundle'])
+            self.assertEqual(out['elapsed_seconds'],0.0)
+            VI._v90r62_active_cycle_mode='FAST_5M'
+            self.assertIsNone(VI._v90r62_cached_bundle('NQ'))
+        finally:
+            VI._v90r62_active_cycle_mode=old_mode
+            VI._v90r62_bundle_cache.clear()
+            VI._v90r62_bundle_cache.update(old_cache)
+
+    def test_profinance_can_be_selected_as_direct_nq_futures_source(self):
+        now=datetime.now(timezone.utc)
+        pf={'price':30010.0,'observed_at':now.isoformat(),'source':'ProFinance'}
+        bars5=[{'ts':now.timestamp()-300*i,'open':30000,'high':30020,'low':29980,
+                'close':30000,'volume':100} for i in reversed(range(20))]
+        bars1h=[{'ts':now.timestamp()-3600*i,'open':30000,'high':30020,'low':29980,
+                 'close':30000,'volume':100} for i in reversed(range(220))]
+        proxy=[{'ts':now.timestamp()-300*i,'open':500,'high':501,'low':499,
+                'close':500,'volume':1000} for i in reversed(range(20))]
+        with patch.object(VI,'_yahoo_series',side_effect=[(bars5,{}),(bars1h,{}),(proxy,{})]), \
+             patch.object(VI,'_v90_stooq_public_quote',return_value={'ok':False,'error':'x'}), \
+             patch.object(VI,'_v90r61_profinance_quote',return_value=pf):
+            out=VI._yahoo_research_futures_market('NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
+        self.assertEqual(out['source_names']['primary'],'ProFinance')
+        self.assertEqual(out['verification_mode'],'PUBLIC_DIRECT_FUTURES_PAPER')
+        self.assertEqual((out['freshness_verification']['best'] or {}).get('source'),'ProFinance')
+
+
 class FreshFuturesVerificationR61Tests(unittest.TestCase):
     def test_profinance_parser_extracts_nq_futures_row(self):
         html='Фьючерсы на индексы Type Last Chg Chg% Time NASD100 30865.50 +252.25 +0.82% 17:30:00 Облигации'

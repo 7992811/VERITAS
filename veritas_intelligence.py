@@ -6690,12 +6690,13 @@ def _v90r22_agent_perf_safe():
 
 
 def cycle(selected_horizons=None, cycle_mode='FULL'):
-    global _v90_last_fast5m_monotonic
+    global _v90_last_fast5m_monotonic, _v90r62_active_cycle_mode
     cycle_wall_t0=time.time()
     selected_horizons=tuple(selected_horizons or tuple(HORIZONS.keys()))
     selected_horizons=tuple(h for h in selected_horizons if h in HORIZONS)
     if not selected_horizons: selected_horizons=tuple(HORIZONS.keys())
     cycle_mode=str(cycle_mode or 'FULL').upper()
+    _v90r62_active_cycle_mode=cycle_mode
     if not _BOOTSTRAP_READY:
         init_db(); seed_knowledge()
     pg_state = pg_storage_status()
@@ -9288,16 +9289,20 @@ def _v90_proxy_bridge_intraday(primary_bars,proxy_bars,live_price=None,live_ts=N
 # ---------- faster futures source collection ----------
 def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,source_name):
     stooq_symbol={'NQ':'nq.f','GOLD':'gc.f'}.get(str(asset))
-    with ThreadPoolExecutor(max_workers=4,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
+    with ThreadPoolExecutor(max_workers=5,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
         f5=pool.submit(_yahoo_series,yahoo_symbol,'5d','5m',True)
         f1=pool.submit(_yahoo_series,yahoo_symbol,'3mo','1h',True)
         fp=pool.submit(_yahoo_series,proxy_symbol,'5d','5m',True)
         fs=pool.submit(_v90_stooq_public_quote,stooq_symbol) if stooq_symbol else None
+        fpf=pool.submit(_v90r61_profinance_quote,asset) if str(asset) in ('NQ','GOLD') else None
         bars5,_=f5.result()
         bars1h,_=f1.result()
         try: pr,_=fp.result()
         except Exception: pr=[]
-        sq=fs.result() if fs is not None else {'ok':False,'error':'not_configured'}
+        try: sq=fs.result() if fs is not None else {'ok':False,'error':'not_configured'}
+        except Exception as ex: sq={'ok':False,'error':f'{type(ex).__name__}: {ex}'}
+        try: pf=fpf.result() if fpf is not None else {}
+        except Exception: pf={}
     if len(bars1h)<200:
         raise RuntimeError(f'INSUFFICIENT_{asset}_HOURLY_BARS {len(bars1h)}')
     last=bars5[-1] if bars5 else bars1h[-1]
@@ -9319,52 +9324,83 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
             r1=float(bars5[-1]['close'])/float(bars5[-5]['close'])-1
             r2=float(pr[-1]['close'])/float(pr[-5]['close'])-1
             proxy_note=f'4-bar directional proxy: primary={r1:.3%}, proxy={r2:.3%}'
-    direct_age=_age_seconds(sq.get('observed_at')) if sq.get('ok') else None
-    direct_price=float(sq.get('price') or 0.0) if sq.get('ok') else None
-    direct_div=(abs(direct_price-delayed_price)/((direct_price+delayed_price)/2.0)
-                if direct_price and delayed_price else None)
+
     max_div=0.006 if asset=='NQ' else 0.012
-    direct_fresh=bool(sq.get('ok') and direct_age is not None and direct_age<=V90_PUBLIC_FUTURES_FRESH_SECONDS
-                      and direct_div is not None and direct_div<=max_div)
-    proxy_fresh=bool(pr and proxy_age is not None and proxy_age<=V90_PROXY_BRIDGE_FRESH_SECONDS)
+    direct_candidates=[]
+    if sq.get('ok'):
+        try:
+            sp=float(sq.get('price') or 0.0); sa=_age_seconds(sq.get('observed_at'))
+            sd=abs(sp-delayed_price)/((sp+delayed_price)/2.0) if sp>0 else None
+            direct_candidates.append({'source':'Stooq public futures quote','price':sp,
+                                      'observed_at':sq.get('observed_at'),'age_seconds':sa,
+                                      'divergence':sd,'ok':bool(sa is not None and -5<=sa<=V90_PUBLIC_FUTURES_FRESH_SECONDS
+                                                               and sd is not None and sd<=max_div)})
+        except Exception:
+            pass
+    if pf:
+        try:
+            pp=float(pf.get('price') or 0.0); pa=_age_seconds(pf.get('observed_at'))
+            pd=abs(pp-delayed_price)/((pp+delayed_price)/2.0) if pp>0 else None
+            direct_candidates.append({'source':'ProFinance','price':pp,
+                                      'observed_at':pf.get('observed_at'),'age_seconds':pa,
+                                      'divergence':pd,'ok':bool(pa is not None and -5<=pa<=180
+                                                               and pd is not None and pd<=max_div)})
+        except Exception:
+            pass
+    usable_direct=[x for x in direct_candidates if x.get('ok')]
+    # Prefer the freshest direct futures quote; ProFinance wins ties.
+    direct=min(usable_direct,key=lambda x:(float(x.get('age_seconds') or 9e9),
+                                           0 if x.get('source')=='ProFinance' else 1)) if usable_direct else None
+    proxy_fresh=bool(pr and proxy_age is not None and -5<=proxy_age<=V90_PROXY_BRIDGE_FRESH_SECONDS)
     delayed_usable=bool(delayed_age is not None and delayed_age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
-    # Preferred paper path: a current public futures quote anchored to the delayed
-    # Yahoo history. Fail-soft path: use the liquid ETF proxy only for timing/price
-    # interpolation while keeping the delayed futures basis. Both remain paper-only.
-    if direct_fresh:
-        price=direct_price
-        observed=sq.get('observed_at')
-        mode='PUBLIC_DIRECT_FUTURES_PAPER'
-        latency='PUBLIC_DIRECT_PAPER'
+
+    if direct:
+        price=float(direct['price']); observed=direct['observed_at']
+        mode='PUBLIC_DIRECT_FUTURES_PAPER'; latency='PUBLIC_DIRECT_PAPER'
         live_ts=datetime.fromisoformat(str(observed).replace('Z','+00:00')).timestamp()
         ib=_v90_proxy_bridge_intraday(bars5,pr,price,live_ts)
-        secondary=delayed_price
-        divergence=float(direct_div or 0.0)
+        secondary=delayed_price; divergence=float(direct.get('divergence') or 0.0)
     elif proxy_fresh and delayed_usable and bars5 and pr:
         base=min(pr,key=lambda x:abs(float(x.get('ts') or 0)-float(last.get('ts') or 0)))
         bp=float(base.get('close') or 0.0); pp=float(pr[-1].get('close') or 0.0)
         if bp>0 and pp>0:
-            price=delayed_price*(pp/bp)
-            observed=proxy_obs
-            mode='PROXY_BRIDGED_FUTURES_PAPER'
-            latency='PROXY_BRIDGED_PAPER'
+            price=delayed_price*(pp/bp); observed=proxy_obs
+            mode='PROXY_BRIDGED_FUTURES_PAPER'; latency='PROXY_BRIDGED_PAPER'
             ib=_v90_proxy_bridge_intraday(bars5,pr,price,float(pr[-1].get('ts') or time.time()))
             secondary=delayed_price
             divergence=abs(price-delayed_price)/((price+delayed_price)/2.0)
         else:
-            price=delayed_price; observed=delayed_observed; mode='DELAYED_RESEARCH'; latency='DELAYED_RESEARCH'
-            ib=bars5; secondary=None; divergence=0.0
+            price=delayed_price; observed=delayed_observed
+            mode='DELAYED_RESEARCH'; latency='DELAYED_RESEARCH'; ib=bars5
+            secondary=None; divergence=0.0
     else:
-        price=delayed_price; observed=delayed_observed; mode='DELAYED_RESEARCH'; latency='DELAYED_RESEARCH'
-        ib=bars5; secondary=None; divergence=0.0
+        price=delayed_price; observed=delayed_observed
+        mode='DELAYED_RESEARCH'; latency='DELAYED_RESEARCH'; ib=bars5
+        secondary=None; divergence=0.0
+
     market_open=_futures_market_open_from_age(observed)
     age=_age_seconds(observed)
     gate=bool(market_open and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
+    freshness=_v90r61_freshness_verification(asset,delayed_price,bars5,pr,proxy_symbol,pf)
+    if direct:
+        freshness={'eligible':True,
+                   'best':{'source':direct['source'],'observed_at':direct['observed_at'],
+                           'age_seconds':direct['age_seconds'],'price':direct['price'],
+                           'divergence':direct['divergence'],'fresh':True,
+                           'direction_agrees':True,'role':'direct_futures_quote'},
+                   'checks':direct_candidates+(freshness.get('checks') or []),
+                   'policy':'PREFER_FRESH_DIRECT_FUTURES_THEN_PROXY_BRIDGE',
+                   'production_eligible':False}
     quality=[]
+    quality.append(_source_row('ProFinance',f'{asset} futures','fresh public verifier',
+                  pf.get('observed_at') if pf else None,0,
+                  'OK' if any(x.get('source')=='ProFinance' and x.get('ok') for x in direct_candidates) else 'UNAVAILABLE_OR_STALE',
+                  'paper-only public quote verification','ProFinance'))
     if stooq_symbol:
         quality.append(_source_row('Stooq public futures quote',f'{asset} futures','fresh paper quote candidate',
-                    sq.get('observed_at'),0,'OK' if direct_fresh else 'UNAVAILABLE_OR_STALE',
-                    f"paper-only public quote; age={direct_age}; divergence_vs_yahoo={direct_div}; error={sq.get('error')}",'Stooq'))
+                    sq.get('observed_at'),0,
+                    'OK' if any(x.get('source')=='Stooq public futures quote' and x.get('ok') for x in direct_candidates) else 'UNAVAILABLE_OR_STALE',
+                    f"paper-only public quote; error={sq.get('error')}",'Stooq'))
     quality.extend([
       _source_row(source_name,f'{asset} futures','historical/delayed anchor',delayed_observed,delay,
                   'OK_ANCHOR' if delayed_usable else 'STALE_OR_CLOSED',
@@ -9373,6 +9409,8 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
                   'OK' if proxy_fresh else 'NOT_FRESH',proxy_note,'Yahoo')
     ])
     _set_source_quality(quality)
+    primary_name=(direct.get('source') if direct else
+                  (f'{proxy_symbol} proxy bridge' if mode.startswith('PROXY') else source_name))
     return {'asset':asset,'price':price,'secondary_price':secondary,'coinbase_price':None,
             'source_divergence':divergence,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
             'intraday_bars':ib,'intraday_5m':ib,'volume_intraday_bars':pr,
@@ -9381,13 +9419,14 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
             'binance_close_time_ms':int((datetime.fromisoformat(str(observed).replace('Z','+00:00')).timestamp())*1000),
             'observed_at':observed,'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
             'data_latency_class':latency,'verification_mode':mode,
+            'freshness_verification':freshness,
             'production_direct_feed':False,
-            'source_names':{'primary':'Stooq public futures quote' if direct_fresh else (f'{proxy_symbol} proxy bridge' if mode.startswith('PROXY') else source_name),
-                            'secondary':source_name if direct_fresh else f'{proxy_symbol} timing proxy'},
-            'fresh_quote_diagnostics':{'direct_fresh':direct_fresh,'direct_age_seconds':direct_age,
+            'source_names':{'primary':primary_name,'secondary':source_name if direct else f'{proxy_symbol} timing proxy'},
+            'fresh_quote_diagnostics':{'direct_candidates':direct_candidates,
+                                       'selected_direct_source':direct.get('source') if direct else None,
                                        'proxy_fresh':proxy_fresh,'proxy_age_seconds':proxy_age,
-                                       'delayed_age_seconds':delayed_age,'direct_divergence':direct_div,
-                                       'mode':mode}}
+                                       'delayed_age_seconds':delayed_age,'mode':mode}}
+
 
 # ---------- NDX parallel fetch + fail-closed source fallback ----------
 _v842_ndx_lock=threading.Lock()
@@ -9492,17 +9531,51 @@ def _ndx_market():
 
 # ---------- parallel crypto market + derivatives ----------
 _v842_original_fetch_asset_bundle=_fetch_asset_bundle
+_v90r62_bundle_cache={}
+_v90r62_bundle_cache_lock=threading.Lock()
+_v90r62_active_cycle_mode='FULL'
+V90R62_FULL_REUSE_SECONDS=max(60.0,float(os.getenv('VERITAS_FULL_BUNDLE_REUSE_SECONDS','150')))
+
+def _v90r62_cached_bundle(asset):
+    if str(globals().get('_v90r62_active_cycle_mode') or '').upper()!='FULL':
+        return None
+    with _v90r62_bundle_cache_lock:
+        z=_v90r62_bundle_cache.get(str(asset))
+        if not z:
+            return None
+        age=time.time()-float(z.get('at') or 0.0)
+        if age>V90R62_FULL_REUSE_SECONDS:
+            return None
+        out=dict(z.get('bundle') or {})
+    if out.get('raw') is None or out.get('error'):
+        return None
+    out['elapsed_seconds']=0.0
+    out['reused_market_bundle']=True
+    out['reused_market_bundle_age_seconds']=age
+    return out
+
+def _v90r62_store_bundle(asset,bundle):
+    if not bundle or bundle.get('raw') is None or bundle.get('error'):
+        return
+    with _v90r62_bundle_cache_lock:
+        _v90r62_bundle_cache[str(asset)]={'at':time.time(),'bundle':dict(bundle)}
 
 def _fetch_asset_bundle(symbol,asset,cb_product):
+    cached=_v90r62_cached_bundle(asset)
+    if cached is not None:
+        return cached
     if asset in CRYPTO_ASSETS:
         t0=time.time()
         with ThreadPoolExecutor(max_workers=2,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
             fr=pool.submit(market,symbol,cb_product)
             fd=pool.submit(derivatives,symbol)
             raw=fr.result(); deriv=fd.result()
-        return {'symbol':symbol,'asset':asset,'cb_product':cb_product,'raw':raw,'deriv':deriv,
-                'elapsed_seconds':time.time()-t0,'error':None}
-    return _v842_original_fetch_asset_bundle(symbol,asset,cb_product)
+        out={'symbol':symbol,'asset':asset,'cb_product':cb_product,'raw':raw,'deriv':deriv,
+             'elapsed_seconds':time.time()-t0,'error':None}
+    else:
+        out=_v842_original_fetch_asset_bundle(symbol,asset,cb_product)
+    _v90r62_store_bundle(asset,out)
+    return out
 
 # Keep outer asset fanout conservative; inner provider calls now run in parallel.
 FAST_LOOP_MARKET_WORKERS=max(4,min(5,FAST_LOOP_MARKET_WORKERS))
