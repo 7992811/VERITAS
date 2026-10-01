@@ -1335,5 +1335,29 @@ class LearningFastPathR593Tests(unittest.TestCase):
         self.assertIn("v90_decision_episodes",src)
         self.assertIn("_v90_materialize_decision_episode",src)
 
+
+
+class ExecutionCandidateRankInvariantR594Tests(unittest.TestCase):
+    def test_missing_rank_is_recomputed_at_execution_boundary(self):
+        row={
+          'asset':'MOEX','horizon':'5m','research_decision':'LONG',
+          'confidence':.61,
+          'horizon_structure':{'state':'BUILDING_TREND','score':.70,'direction':'LONG'},
+          'institutional_signal':{
+            'evidence_independence':{'independent_count':4},
+            'breakout_quality':{'quality_score':.70,'state':'CONFIRMED_BREAKOUT'}},
+          'trade_plan':{'expected_to_stop_ratio':1.6}
+        }
+        out=VP._v90_execution_candidate_rank(row)
+        self.assertIn('_rank',out)
+        self.assertGreater(out['_rank'],0.0)
+        self.assertEqual(out['_rank_fallback'],'R59_4_EXECUTION_BOUNDARY_RECOMPUTE')
+
+    def test_existing_rank_is_preserved(self):
+        row={'asset':'BTC','_rank':1.234}
+        out=VP._v90_execution_candidate_rank(row)
+        self.assertAlmostEqual(out['_rank'],1.234)
+        self.assertNotIn('_rank_fallback',out)
+
 if __name__ == '__main__':
     unittest.main()

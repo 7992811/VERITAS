@@ -2286,7 +2286,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices)
     # Add/increase only when risk governor allows new risk.
     if rg['new_risk']:
-        for asset,row in sorted(candidates.items(),key=lambda kv:kv[1]['_rank'],reverse=True):
+        for asset,row in sorted(candidates.items(),key=lambda kv:float(kv[1].get('_rank') or 0.0),reverse=True):
             target=float(targets.get(asset,0.0));
             if target<=0: continue
             px=float(prices[asset]); z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
@@ -7855,7 +7855,54 @@ def _v90r33_harvest(c,p,name,prices,nav,ts):
     return changes
 
 
+def _v90_execution_candidate_rank(row):
+    """Execution-boundary invariant: every portfolio candidate has a finite rank.
+
+    Candidate routers may replace or synthesize rows. Losing an internal _rank
+    must degrade to a deterministic recomputation, never abort the whole
+    portfolio cycle.
+    """
+    x=dict(row or {})
+    try:
+        rank=float(x.get('_rank')) if x.get('_rank') is not None else None
+        if rank is not None and math.isfinite(rank):
+            return x
+    except Exception:
+        rank=None
+    try:
+        er=float(x.get('_execution_rank')) if x.get('_execution_rank') is not None else None
+        if er is not None and math.isfinite(er):
+            x['_rank']=er
+            x['_rank_fallback']='EXECUTION_RANK'
+            return x
+    except Exception:
+        pass
+    p,source=_signal_probability(x)
+    inst=x.get('institutional_signal') or {}
+    hs=x.get('horizon_structure') or {}
+    plan=x.get('trade_plan') or {}
+    try:
+        indep=int((inst.get('evidence_independence') or {}).get('independent_count') or 0)
+    except Exception:
+        indep=0
+    try:
+        hscore=float(hs.get('score') or x.get('horizon_structure_score') or 0.0)
+    except Exception:
+        hscore=0.0
+    try:
+        rr=float(x.get('_execution_rr') or plan.get('expected_to_stop_ratio') or 0.0)
+    except Exception:
+        rr=0.0
+    rank=float(p)+0.02*min(max(indep,0),6)+0.04*max(0.0,min(1.0,hscore))+0.03*max(0.0,min(2.0,rr))
+    x['_rank']=max(0.01,rank)
+    x['_rank_fallback']='R59_4_EXECUTION_BOUNDARY_RECOMPUTE'
+    x['_rank_probability_source']=source
+    return x
+
+
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    candidates={str(asset):_v90_execution_candidate_rank(row)
+                for asset,row in (candidates or {}).items()}
     p,pos=_portfolio_rows(c,name)
     nav,_,_,_=_mark_nav(p,pos,prices)
     _v90r33_harvest(c,p,name,prices,nav,ts)
