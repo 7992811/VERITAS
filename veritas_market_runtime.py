@@ -327,11 +327,37 @@ def install_market_runtime_guard(ns):
     original_fetch = ns["_fetch_asset_bundle"]
     assets = ns["ASSETS"]
 
+    def _r63_timeout_bundle(asset):
+        cache = ns.get("_v90r62_bundle_cache") or {}
+        lock = ns.get("_v90r62_bundle_cache_lock")
+        try:
+            if lock is not None:
+                with lock:
+                    z = dict(cache.get(str(asset)) or {})
+            else:
+                z = dict(cache.get(str(asset)) or {})
+            age = time.time() - float(z.get("at") or 0.0)
+            bundle = dict(z.get("bundle") or {})
+            if age <= 600.0 and bundle.get("raw") is not None and not bundle.get("error"):
+                bundle["elapsed_seconds"] = 0.0
+                bundle["reused_market_bundle"] = True
+                bundle["reused_market_bundle_timeout_fallback"] = True
+                bundle["reused_market_bundle_age_seconds"] = age
+                return bundle
+        except Exception:
+            pass
+        return None
+
     def prefetch_market_bundles():
+        # Start exchange-specific / historically slow feeds first. Previously the
+        # first five submissions occupied every worker and MOEX/CNYRUBF could sit
+        # queued until the global 25s budget expired without ever starting.
+        priority = {"MOEX":0, "CNYRUBF":1, "NQ":2, "GOLD":3, "BRENT":4, "BTC":5, "ETH":6}
         items = [(symbol, asset, cb_product) for symbol, (asset, cb_product) in assets.items()]
+        items.sort(key=lambda x: priority.get(str(x[1]), 99))
         out = {}
         t0 = time.time()
-        workers = min(int(ns.get("FAST_LOOP_MARKET_WORKERS", 4)), max(1, len(items)))
+        workers = min(6, max(1, len(items)))
         pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="veritas-market")
         futures = {pool.submit(original_fetch, *item): item for item in items}
         done, pending = wait(futures, timeout=25.0)
@@ -342,18 +368,29 @@ def install_market_runtime_guard(ns):
             except Exception as ex:
                 out[asset] = {"symbol":symbol,"asset":asset,"cb_product":cb_product,"raw":None,"deriv":None,
                               "elapsed_seconds":time.time()-t0,"error":f"{type(ex).__name__}: {ex}"}
+        timed_out = []
+        cache_fallback = []
         for fut in pending:
             symbol, asset, cb_product = futures[fut]
             fut.cancel()
-            out[asset] = {"symbol":symbol,"asset":asset,"cb_product":cb_product,"raw":None,"deriv":None,
-                          "elapsed_seconds":time.time()-t0,"error":"MARKET_PREFETCH_TIMEOUT_25S"}
-            _emit("market_prefetch_timeout", asset=asset, budget_seconds=25.0)
+            fallback = _r63_timeout_bundle(asset)
+            if fallback is not None:
+                out[asset] = fallback
+                cache_fallback.append(asset)
+                _emit("market_prefetch_timeout_cache_fallback", asset=asset,
+                      age_seconds=fallback.get("reused_market_bundle_age_seconds"))
+            else:
+                out[asset] = {"symbol":symbol,"asset":asset,"cb_product":cb_product,"raw":None,"deriv":None,
+                              "elapsed_seconds":time.time()-t0,"error":"MARKET_PREFETCH_TIMEOUT_25S"}
+                timed_out.append(asset)
+                _emit("market_prefetch_timeout", asset=asset, budget_seconds=25.0)
         pool.shutdown(wait=False, cancel_futures=True)
         wall = time.time() - t0
         fetch_sum = sum(float(x.get("elapsed_seconds") or 0) for x in out.values())
         return out, {"wall_seconds":wall,"sum_asset_seconds":fetch_sum,
                      "parallel_wait_saved_estimate_seconds":max(0.0,fetch_sum-wall),"workers":workers,
-                     "timed_out_assets":[a for a,z in out.items() if z.get("error")=="MARKET_PREFETCH_TIMEOUT_25S"]}
+                     "timed_out_assets":timed_out,"timeout_cache_fallback_assets":cache_fallback,
+                     "priority_order":[x[1] for x in items]}
 
     ns["prefetch_market_bundles"] = prefetch_market_bundles
     ns["MARKET_RUNTIME_GUARD_VERSION"] = VERSION

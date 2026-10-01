@@ -1696,5 +1696,49 @@ class NQTrendAndCycleR63Tests(unittest.TestCase):
         self.assertIn("shutdown(wait=False,cancel_futures=True)",body)
 
 
+class MarketSchedulerAndNQTargetR63CTests(unittest.TestCase):
+    def test_runtime_guard_prioritizes_exchange_feeds_and_six_workers(self):
+        src=Path('veritas_market_runtime.py').read_text(encoding='utf-8')
+        self.assertIn('"MOEX":0, "CNYRUBF":1, "NQ":2',src)
+        self.assertIn('workers = min(6, max(1, len(items)))',src)
+        self.assertIn('market_prefetch_timeout_cache_fallback',src)
+
+    def test_nq_strong_trend_extends_target_only_when_capacity_supports_it(self):
+        f={'price':30800.0,'spread_bps':0.0,
+           'trend_impulse':{'direction':'LONG','phase':'TREND_DAY','impulse_score':.76,
+                            'onset_score':.72,'sigma_1h':.0012,'ret_4h':.012,'ret_day':.018},
+           'horizon_structure':{'direction':'LONG','state':'CONFIRMED_TREND','score':.72},
+           'intraday_structure':{'direction':'LONG','lifecycle':'CONFIRMATION','score':.78,
+                                 'breakout_hold':True,'continuation_room_pct':.007}}
+        plan={'entry_price':30800.0,'stop_price':30720.0,'target_price':30870.0,
+              'expected_move_pct':.00227,'expected_to_stop_ratio':.87,
+              'entry_quality':'CONFIRMED_TREND','reason':'multi_tf_expected_move_too_small_vs_stop',
+              'eligible':False}
+        out=VI._v90r63_nq_trend_target_projection('NQ','1h',f,'LONG',plan)
+        self.assertEqual(out['r63_nq_trend_projection']['status'],'APPLIED')
+        self.assertGreaterEqual(out['expected_move_pct'],.004)
+        self.assertGreater(out['expected_to_stop_ratio'],1.15)
+        self.assertTrue(out['eligible'])
+
+    def test_nq_target_not_invented_without_trend_capacity(self):
+        f={'price':30800.0,'spread_bps':0.0,
+           'trend_impulse':{'direction':'LONG','phase':'EARLY_TREND','impulse_score':.30,
+                            'onset_score':.35,'sigma_1h':.0008,'ret_4h':.001},
+           'horizon_structure':{'direction':'NO_TRADE','state':'NEUTRAL','score':.30},
+           'intraday_structure':{'direction':'NO_TRADE','lifecycle':'NONE','score':.20}}
+        plan={'entry_price':30800.0,'stop_price':30720.0,'target_price':30870.0,
+              'expected_move_pct':.00227,'expected_to_stop_ratio':.87,
+              'entry_quality':'NEUTRAL','reason':'multi_tf_expected_move_too_small_vs_stop',
+              'eligible':False}
+        out=VI._v90r63_nq_trend_target_projection('NQ','1h',f,'LONG',plan)
+        self.assertEqual(out['target_price'],30870.0)
+        self.assertFalse(out['eligible'])
+
+    def test_cold_start_runs_fast_lane_before_full(self):
+        src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
+        self.assertIn('next_full=_start+5.0',src)
+        self.assertIn('next_fast=_start',src)
+
+
 if __name__ == '__main__':
     unittest.main()

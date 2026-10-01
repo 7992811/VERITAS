@@ -6665,28 +6665,78 @@ def _v90r61_cached_predecision(key,ttl,fn,default):
         _v90r61_predecision_cache[key]=(now_ts,val)
     return val
 
+_v90r63_calibration_refresh_lock=threading.Lock()
+_v90r63_calibration_refresh_inflight=False
+
+def _v90r63_refresh_calibration():
+    global _v90r63_calibration_refresh_inflight
+    try:
+        val=pg_calibration_map() if pg_enabled() else []
+        with _v90r61_predecision_lock:
+            _v90r61_predecision_cache['calibration']=(time.time(),list(val or []))
+        emit('r63_calibration_refresh',rows=len(val or []),status='OK')
+    except Exception as ex:
+        emit('r63_calibration_refresh',rows=0,status='ERROR',error=f'{type(ex).__name__}: {ex}')
+    finally:
+        with _v90r63_calibration_refresh_lock:
+            _v90r63_calibration_refresh_inflight=False
+
 def _v90r61_calibration_rows():
-    return _v90r61_cached_predecision('calibration',180.0,
-        lambda: pg_calibration_map() if pg_enabled() else [],[])
+    global _v90r63_calibration_refresh_inflight
+    now_ts=time.time()
+    with _v90r61_predecision_lock:
+        at,val=_v90r61_predecision_cache.get('calibration',(0.0,[]))
+        cached=list(val or [])
+    if cached and now_ts-float(at or 0.0)<600.0:
+        return cached
+    with _v90r63_calibration_refresh_lock:
+        if not _v90r63_calibration_refresh_inflight:
+            _v90r63_calibration_refresh_inflight=True
+            threading.Thread(target=_v90r63_refresh_calibration,daemon=True,
+                             name='veritas-calibration-refresh').start()
+    return cached
 
 def _v90r61_clock_info():
     return _v90r61_cached_predecision('clock',75.0,source_clock_gate,
         {'ok':False,'errors':['clock_unavailable']})
 
 def _v90r61_analog_board():
-    return _v90r61_cached_predecision('analogs',180.0,
+    return _v90r61_cached_predecision('analogs',600.0,
         lambda: structure_analog_board(1200),{'status':'unavailable','items':[]})
-def _v90r22_agent_perf_safe():
-    now_ts=time.time()
-    if _v90r22_perf_cache.get('value') and now_ts-float(_v90r22_perf_cache.get('at') or 0)<300:
-        return list(_v90r22_perf_cache['value'])
+_v90r63_perf_refresh_lock=threading.Lock()
+_v90r63_perf_refresh_inflight=False
+
+def _v90r63_refresh_agent_perf():
+    global _v90r63_perf_refresh_inflight
     try:
         v=pg_agent_performance() if pg_enabled() else performance_rows()
-        _v90r22_perf_cache.update({'at':now_ts,'value':list(v or [])})
-        return list(v or [])
+        _v90r22_perf_cache.update({'at':time.time(),'value':list(v or [])})
+        emit('r63_agent_perf_refresh',rows=len(v or []),status='OK')
     except Exception as ex:
-        emit('r22_agent_perf_fallback',error=f'{type(ex).__name__}: {ex}')
-        return list(_v90r22_perf_cache.get('value') or performance_rows())
+        emit('r63_agent_perf_refresh',rows=0,status='ERROR',error=f'{type(ex).__name__}: {ex}')
+    finally:
+        with _v90r63_perf_refresh_lock:
+            _v90r63_perf_refresh_inflight=False
+
+def _v90r22_agent_perf_safe():
+    global _v90r63_perf_refresh_inflight
+    now_ts=time.time()
+    cached=list(_v90r22_perf_cache.get('value') or [])
+    if cached and now_ts-float(_v90r22_perf_cache.get('at') or 0)<900:
+        return cached
+    with _v90r63_perf_refresh_lock:
+        if not _v90r63_perf_refresh_inflight:
+            _v90r63_perf_refresh_inflight=True
+            threading.Thread(target=_v90r63_refresh_agent_perf,daemon=True,
+                             name='veritas-agent-perf-refresh').start()
+    # Cold start must not hold the market loop for a multi-second PostgreSQL
+    # aggregate. Neutral/no-adaptation is safer than delayed execution.
+    if cached:
+        return cached
+    try:
+        return list(performance_rows() or [])
+    except Exception:
+        return []
 
 
 def _v90r63_nq_trend_bridge(asset,horizon,f,research_dec,confidence):
@@ -7370,8 +7420,9 @@ V90_FAST_5M_INTERVAL_SECONDS=max(45,int(os.getenv('VERITAS_FAST_5M_INTERVAL_SECO
 V90_FULL_CYCLE_INTERVAL_SECONDS=max(240,int(os.getenv('VERITAS_FULL_CYCLE_INTERVAL_SECONDS',str(INTERVAL))))
 
 def loop():
-    next_full=time.monotonic()
-    next_fast=time.monotonic()
+    _start=time.monotonic()
+    next_fast=_start
+    next_full=_start+5.0
     while True:
         now_m=time.monotonic()
         mode='IDLE'
@@ -18581,12 +18632,84 @@ def final_execution_safety(asset,research_decision,plan):
     plan['execution_safety_version']=VX.VERSION
     return plan
 
+def _v90r63_nq_trend_target_projection(asset,horizon,f,direction,plan):
+    plan=dict(plan or {})
+    if str(asset)!='NQ' or str(horizon) not in ('1h','4h') or direction not in ('LONG','SHORT'):
+        return plan
+    f=f or {}; ti=f.get('trend_impulse') or {}; hs=f.get('horizon_structure') or {}
+    st=f.get('intraday_structure') or {}
+    if str(plan.get('entry_quality') or '') in ('INVALIDATED','LATE_EXTENDED','EXTENDED_WAIT_PULLBACK'):
+        return plan
+    tdir=str(ti.get('direction') or 'NO_TRADE')
+    hdir=str(hs.get('direction') or 'NO_TRADE')
+    sdir=str(st.get('direction') or 'NO_TRADE')
+    phase=str(ti.get('phase') or 'NONE')
+    impulse=float(ti.get('impulse_score') or 0.0)
+    onset=float(ti.get('onset_score') or 0.0)
+    hscore=float(hs.get('score') or 0.0)
+    hstate=str(hs.get('state') or 'NEUTRAL')
+    sscore=float(st.get('score') or 0.0)
+    slife=str(st.get('lifecycle') or '')
+    strong=bool(
+        (tdir==direction and phase in ('TREND_DAY','IMPULSE_TREND') and impulse>=0.62) or
+        (hdir==direction and hstate in ('BUILDING_TREND','CONFIRMED_TREND') and hscore>=0.60
+         and tdir==direction and max(onset,impulse)>=0.55) or
+        (sdir==direction and slife in ('CONFIRMATION','EXTENSION') and sscore>=0.70
+         and bool(st.get('breakout_hold')))
+    )
+    if not strong:
+        return plan
+    try:
+        entry=float(plan.get('entry_price') or f.get('price') or 0.0)
+        stop=float(plan.get('stop_price') or 0.0)
+        if entry<=0 or stop<=0:
+            return plan
+        risk=abs(entry-stop)/entry
+        if risk<=0:
+            return plan
+        existing=max(0.0,float(plan.get('expected_move_pct') or 0.0))
+        sigma=max(0.0008,float(ti.get('sigma_1h') or 0.0))
+        r4=abs(float(ti.get('ret_4h') or 0.0))
+        rday=abs(float(ti.get('ret_day') or 0.0))
+        continuation=max(0.0,float(st.get('continuation_room_pct') or 0.0))
+        measured=max(0.0,float(st.get('breakout_measured_move_pct')
+                               or ti.get('breakout_measured_move_pct') or 0.0))
+        vol_mult=5.0 if str(horizon)=='1h' else 7.0
+        hard_cap=0.015 if str(horizon)=='1h' else 0.025
+        capacity=min(hard_cap,max(existing,measured,continuation,
+                                  sigma*vol_mult,0.65*r4,0.35*rday))
+        cost=VX.round_trip_cost_pct(f.get('spread_bps'))
+        required=max(0.004, VX.MIN_REWARD_RISK*risk + cost)
+        if capacity < required*1.02:
+            plan['r63_nq_trend_projection']={
+                'status':'INSUFFICIENT_CAPACITY','capacity_pct':capacity,
+                'required_pct':required,'risk_pct':risk}
+            return plan
+        projected=min(capacity,max(required*1.08,existing))
+        sign=1.0 if direction=='LONG' else -1.0
+        target=entry*(1.0+sign*projected)
+        plan.update(target_price=target,expected_move_pct=projected,
+                    expected_to_stop_ratio=projected/risk,
+                    target_method='R63_NQ_TREND_VOLATILITY_PROJECTION')
+        if str(plan.get('reason') or '')=='multi_tf_expected_move_too_small_vs_stop':
+            plan['eligible']=True
+            plan['reason']='ok'
+        plan['r63_nq_trend_projection']={
+            'status':'APPLIED','capacity_pct':capacity,'required_pct':required,
+            'projected_pct':projected,'risk_pct':risk,'sigma_1h':sigma,
+            'ret_4h':r4,'ret_day':rday,'continuation_room_pct':continuation,
+            'measured_move_pct':measured}
+    except Exception:
+        pass
+    return plan
+
 def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
     plan=dict(_v90r40_base_technical_trade_plan(
         asset,horizon,f,research_decision,signal_tier,analog
     ) or {})
     plan.update(horizon=horizon,market_observed_at=f.get('market_observed_at'),best_bid=f.get('best_bid'),best_ask=f.get('best_ask'),
                 freshness_verification=f.get('freshness_verification') or {})
+    plan=_v90r63_nq_trend_target_projection(asset,horizon,f,research_decision,plan)
     # The same gate is applied again after setup-specific mutations in cycle().
     return final_execution_safety(asset,research_decision,plan)
 
