@@ -3331,7 +3331,17 @@ def _v90r56_migrate_legacy_senior_position(c,name,z,row,price,nav,ts):
       'r56_trade_frame_migrated':True,'r56_trade_frame_migrated_at':_v90j_iso(ts),
       'r56_thesis_horizon':h,'r56_entry_horizon':'LEGACY_SENIOR_ONLY',
       'r56_management_horizon':'4h','r56_pre_migration_stop':z.get('stop_price'),
+      'r56_pre_migration_trailing_stop':p.get('trailing_stop'),
       'r56_management_stop':new_stop,'r56_stop_risk_nav':stop_risk,
+      # R56.1: protective_reason uses the strongest of stop_price/trailing_stop.
+      # Leaving the old short trailing stop below the reframed 4h stop would
+      # silently keep the obsolete tight stop authoritative. Reset both to the
+      # same management stop and clear stale profit-protection state.
+      'trailing_stop':new_stop,
+      'trailing_rule':'R56_REFRAMED_4H_STOP',
+      'trailing_stage':'R56_FRAME_RESET',
+      'r48_profit_lock_active':False,
+      'r55_net_profit_lock_active':False,
       'r56_tp1_price':(tp or {}).get('tp1_price'),
       'r56_runner_target_price':(tp or {}).get('runner_target_price'),
       'take_price':(tp or {}).get('tp1_price'),
