@@ -9,6 +9,7 @@ import veritas_execution as VX
 import veritas_intelligence as VI
 import veritas_portfolio as VP
 import veritas_portfolio_runtime as VPR
+import veritas_position_guard as VPG
 import veritas_position_guard as PG
 from veritas_quote_time import moex_observed_at, quote_gate
 
