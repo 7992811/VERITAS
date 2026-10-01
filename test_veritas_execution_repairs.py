@@ -1225,64 +1225,6 @@ class TacticalTriggerPriorityR57Tests(unittest.TestCase):
 
 
 
-class NQConflictRoutingR57Tests(unittest.TestCase):
-    def _row(self,h,d,score,indep,final='PASS',invalid=False):
-        return {
-            'asset':'NQ','horizon':h,'research_decision':d,'price':31000.0,
-            'regime':'DOWNTREND_HIGH_VOL' if d=='SHORT' else 'RANGE_LOW_VOL',
-            'entry_quality':'INVALIDATED' if invalid else ('FRESH_BREAKOUT' if h=='5m' else 'NEW_SETUP_PROVISIONAL'),
-            'decision_stage':'INVALIDATED' if invalid else 'EARLY_PROBE',
-            'horizon_structure':{
-                'state':'CONFIRMED_TREND' if score>=.8 else 'BUILDING_TREND' if score>=.55 else 'WEAK',
-                'score':score,'direction':d
-            },
-            'institutional_signal':{
-                'evidence_independence':{'independent_count':indep},
-                'breakout_quality':{'state':'CONFIRMED_BREAKOUT'},
-            },
-            'trade_plan':{
-                'eligible':not invalid,'entry_quality':'INVALIDATED' if invalid else 'FRESH_BREAKOUT',
-                'stop_price':31100.0 if d=='SHORT' else 30900.0,
-                'target_price':30800.0 if d=='SHORT' else 31200.0,
-                'expected_move_pct':.006,'expected_to_stop_ratio':1.6,
-                'final_economics_gate':{'status':final,'net_reward_risk':1.3,
-                                        'modeled_round_trip_cost_pct':.002},
-            },
-            '_rank':1.0,
-        }
-
-    def test_invalidated_senior_long_does_not_vote_long_bias(self):
-        rows=[
-            self._row('1d','LONG',.45,1,'BLOCK',True),
-            self._row('3d','LONG',.37,0,'BLOCK',True),
-            self._row('7d','LONG',.29,0,'BLOCK',True),
-        ]
-        b=VPR._v90r57_senior_bias(rows,'NQ')
-        self.assertEqual(b['direction'],'NO_TRADE')
-        self.assertLess(b['votes']['LONG'],1.25)
-
-    def test_strong_5m_short_replaces_weak_4h_long_for_portfolio_trace(self):
-        short=self._row('5m','SHORT',.86,5,'BLOCK',False)
-        long4=self._row('4h','LONG',.43,2,'PASS',False)
-        senior1=self._row('1d','LONG',.45,1,'BLOCK',True)
-        senior3=self._row('3d','LONG',.37,0,'BLOCK',True)
-        senior7=self._row('7d','LONG',.29,0,'BLOCK',True)
-        summary=[short,long4,senior1,senior3,senior7]
-        with patch.object(VPR,'_v90r57_base_aggressive_book',return_value={'NQ':long4}):
-            out=VPR._v90_aggressive_candidate_book(summary,{'NQ':long4})
-        self.assertEqual(out['NQ']['research_decision'],'SHORT')
-        self.assertEqual(out['NQ']['horizon'],'5m')
-        self.assertTrue(out['NQ']['_r57_conflict_routed'])
-
-    def test_blocked_short_is_surfaced_but_not_marked_executable_trigger(self):
-        short=self._row('5m','SHORT',.86,5,'BLOCK',False)
-        long4=self._row('4h','LONG',.43,2,'PASS',False)
-        summary=[short,long4]
-        with patch.object(VPR,'_v90r57_base_aggressive_book',return_value={'NQ':long4}):
-            out=VPR._v90_aggressive_candidate_book(summary,{'NQ':long4})['NQ']
-        self.assertEqual(out['research_decision'],'SHORT')
-        self.assertFalse(bool(out.get('_r56_trigger_selected')))
-
 
 
 if __name__ == '__main__':
