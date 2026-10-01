@@ -4085,6 +4085,163 @@ def report(pg_connect):
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),37)
 
 
+# VERITAS V90 NQ TREND EXECUTION CONTRACT R64
+# Root-cause repair for 2026-10-01 missed NQ trend:
+# 1) admission economics use the full runner/thesis target; TP1 remains a partial
+#    management exit and must not collapse reward/risk before the trade exists;
+# 2) historical losses attributed mainly to stop/exit management do not veto a
+#    fresh, independently confirmed NQ trend. They reduce size instead.
+V90_R64_STARTED_AT=os.getenv('VERITAS_R64_EPOCH','2026-10-01T17:30:00+00:00')
+_v90r64_base_prepare_entry_row=_v90r56_prepare_entry_row
+_v90r64_base_candidate_guard=_v90_candidate_profit_guard
+_v90r64_base_report=report
+
+def _v90r56_prepare_entry_row(row):
+    original=dict(row or {})
+    original_plan=dict(original.get('trade_plan') or {})
+    x=dict(_v90r64_base_prepare_entry_row(original) or {})
+    plan=dict(x.get('trade_plan') or {})
+    tp=dict(x.get('_r56_tp_plan') or {})
+    d=_v90r56_direction(original)
+    try:
+        px=float(original.get('price') or 0.0)
+        runner=float(original_plan.get('target_price') or 0.0)
+        stop=float(plan.get('stop_price') or 0.0)
+        original_expected=abs(float(original_plan.get('expected_move_pct') or 0.0))
+    except Exception:
+        px=runner=stop=original_expected=0.0
+    runner_valid=bool(
+        px>0 and runner>0 and stop>0 and d in ('LONG','SHORT')
+        and ((d=='LONG' and runner>px>stop) or (d=='SHORT' and runner<px<stop))
+    )
+    if runner_valid and tp.get('tp1_price'):
+        runner_move=abs(runner/px-1.0)
+        expected=runner_move if original_expected<=0 else min(runner_move,original_expected)
+        stop_dist=abs(stop/px-1.0)
+        if expected>0 and stop_dist>0:
+            # The entry is justified by the total trade thesis. TP1 is a partial
+            # harvest level; the remaining runner continues toward this target.
+            plan['target_price']=runner
+            plan['expected_move_pct']=expected
+            plan['expected_to_stop_ratio']=expected/max(stop_dist,1e-9)
+            plan['r64_admission_target_price']=runner
+            plan['r64_admission_target_method']='RUNNER_THESIS_TARGET'
+            plan['r64_partial_tp1_price']=tp.get('tp1_price')
+            plan['r64_partial_tp1_move_pct']=tp.get('tp1_move_pct')
+            plan['r64_partial_tp1_not_final_target']=True
+            x['trade_plan']=plan
+            x['_r64_runner_economics']=True
+    return x
+
+def _v90r64_nq_management_recovery(row,policy,economics,guard):
+    row=row or {}; policy=policy or {}; economics=economics or {}; guard=dict(guard or {})
+    if str(row.get('asset') or '')!='NQ':
+        return guard
+    direction=str(row.get('research_decision') or '')
+    horizon=str(row.get('horizon') or '')
+    if direction not in ('LONG','SHORT') or horizon not in ('5m','1h'):
+        return guard
+    regime=str(row.get('regime') or '')
+    if regime.startswith('RANGE_'):
+        return guard
+    attr=dict(guard.get('learning_attribution') or {})
+    if not attr.get('management_dominated') or attr.get('negative_expectancy_is_directional'):
+        return guard
+    try:
+        entry_error=float(attr.get('entry_error_rate') or 0.0)
+        rr=float(economics.get('expected_to_stop_ratio') or 0.0)
+        move=abs(float(economics.get('expected_move_pct') or 0.0))
+        cost=abs(float(economics.get('modeled_round_trip_cost_pct') or 0.0))
+        hscore=float(guard.get('horizon_structure_score') or
+                     ((row.get('horizon_structure') or {}).get('score')) or 0.0)
+        indep=int(guard.get('independent') or 0)
+        alignment=int(guard.get('alignment_count') or 0)
+    except Exception:
+        return guard
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    entry_quality=str(row.get('entry_quality') or (row.get('trade_plan') or {}).get('entry_quality') or '')
+    strong_current=bool(
+        rr>=1.60 and move>=max(0.008,4.0*cost)
+        and hscore>=0.65 and indep>=4 and alignment>=2
+        and entry_error<=0.20
+        and (tier in ('SUPER_LONG','SUPER_SHORT')
+             or entry_quality in ('FRESH_BREAKOUT','CONFIRMED_TREND'))
+    )
+    if not strong_current:
+        return guard
+
+    # Only historical/management-derived vetoes are softened. Current quote,
+    # current economics, direction conflicts and hard invalidation are untouched.
+    soft_codes={
+      'LEARNED_CALIBRATED_RR_TOO_LOW',
+      'LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL',
+      'LEARNED_COST_DRAG_CLUSTER',
+      'LEARNED_NEGATIVE_CONTEXT_EXPECTANCY',
+      'EARLY_BREAKOUT_WAIT_CONFIRMATION',
+    }
+    # Challenger normally needs 3-TF alignment; a fresh NQ 5m+1h trend may take
+    # only a small probe while the third timeframe is still forming.
+    if alignment>=2:
+        soft_codes.add('INSUFFICIENT_MULTI_TF_ALIGNMENT')
+
+    blockers=list(guard.get('blockers') or [])
+    softened=[b for b in blockers if b in soft_codes]
+    if not softened:
+        return guard
+    blockers=[b for b in blockers if b not in soft_codes]
+    warnings=list(guard.get('soft_warnings') or [])+[
+        'R64_NQ_STRONG_TREND_MANAGEMENT_HISTORY_SOFTENED:'+b for b in softened
+    ]
+    mode=str(policy.get('mode') or 'CORE')
+    cap={'IMPULSE_ONLY':0.10,'AGGRESSIVE':0.50,'CORE':0.05,'CHALLENGER':0.05}.get(mode,0.05)
+    oldcap=guard.get('size_cap')
+    if oldcap is not None:
+        try: cap=min(cap,float(oldcap))
+        except Exception: pass
+    guard.update({
+      'blockers':list(dict.fromkeys(blockers)),
+      'soft_warnings':list(dict.fromkeys(warnings)),
+      'eligible':not blockers,
+      'status':'PASS' if not blockers else 'BLOCK',
+      'size_cap':cap,
+      'size_multiplier':min(float(guard.get('size_multiplier') or 1.0),0.75),
+      'r64_nq_management_recovery':{
+        'active':True,'softened_blockers':softened,
+        'current_rr':rr,'current_expected_move_pct':move,
+        'current_cost_pct':cost,'horizon_structure_score':hscore,
+        'independent':indep,'alignment_count':alignment,
+        'entry_error_rate':entry_error,
+        'principle':'current strong trend may probe; old management errors cannot veto direction',
+      },
+    })
+    return guard
+
+def _v90_candidate_profit_guard(row,policy,economics):
+    base=dict(_v90r64_base_candidate_guard(row,policy,economics) or {})
+    return _v90r64_nq_management_recovery(row,policy,economics,base)
+
+def report(pg_connect):
+    d=dict(_v90r64_base_report(pg_connect) or {})
+    d['nq_trend_execution_contract_r64']={
+      'status':'ACTIVE','started_at':V90_R64_STARTED_AT,
+      'runner_target_authoritative_for_entry_economics':True,
+      'tp1_role':'partial_profit_harvest_not_final_reward',
+      'management_dominated_history_can_veto_direction':False,
+      'strong_nq_recovery_requires':{
+        'horizons':['5m','1h'],'raw_post_cost_rr_min':1.60,
+        'expected_move_min':'max(0.8%, 4x current modeled cost)',
+        'horizon_structure_score_min':0.65,'independent_evidence_min':4,
+        'alignment_min':2,'entry_error_rate_max':0.20,
+      },
+      'hard_current_economics_still_authoritative':True,
+      'freshness_still_authoritative':True,
+      'incident_reference':'NQ 2026-10-01 17:33-17:35 UTC SUPER_LONG/PASS not executed',
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),38)
+
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()

@@ -1542,6 +1542,82 @@ class CompactLearningQueryR602Tests(unittest.TestCase):
         self.assertEqual(seen['args'],(3500,))
 
 
+class NQTrendExecutionContractR64Tests(unittest.TestCase):
+    def _nq(self):
+        return {
+          'asset':'NQ','horizon':'5m','research_decision':'LONG',
+          'signal_tier':'SUPER_LONG','entry_quality':'FRESH_BREAKOUT',
+          'price':30786.44,'regime':'UPTREND_MID_VOL','_alignment_count':2,
+          '_supporting_horizons':['5m','1h'],
+          'horizon_structure':{'direction':'LONG','state':'BUILDING_TREND','score':.73},
+          'institutional_signal':{
+            'evidence_independence':{'independent_count':4},
+            'breakout_quality':{'state':'EARLY_BREAKOUT'},
+          },
+          'trade_plan':{
+            'eligible':True,'direction':'LONG','stop_price':30538.72,
+            'target_price':31322.89,'expected_move_pct':.01742,
+            'expected_to_stop_ratio':2.16,
+          },
+        }
+
+    def test_aggressive_tp1_is_partial_not_entry_economics_target(self):
+        row=self._nq()
+        out=VPR._v90r56_prepare_entry_row(row)
+        self.assertTrue(out.get('_r64_runner_economics'),out)
+        self.assertAlmostEqual(out['trade_plan']['target_price'],31322.89,places=2)
+        self.assertLess(out['_r56_tp_plan']['tp1_price'],31322.89)
+        self.assertGreater(out['trade_plan']['expected_to_stop_ratio'],1.60)
+        self.assertTrue(out['trade_plan']['r64_partial_tp1_not_final_target'])
+
+    def test_management_dominated_nq_history_becomes_size_warning(self):
+        row=self._nq()
+        econ={'status':'PASS','eligible':True,'expected_to_stop_ratio':2.16,
+              'expected_move_pct':.01742,'modeled_round_trip_cost_pct':.002}
+        base={
+          'eligible':False,'status':'BLOCK',
+          'blockers':['EARLY_BREAKOUT_WAIT_CONFIRMATION',
+                      'LEARNED_CALIBRATED_RR_TOO_LOW',
+                      'LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL',
+                      'LEARNED_COST_DRAG_CLUSTER',
+                      'LEARNED_NEGATIVE_CONTEXT_EXPECTANCY'],
+          'soft_warnings':[],'size_multiplier':1.0,'size_cap':None,
+          'independent':4,'alignment_count':2,'horizon_structure_score':.73,
+          'learning_attribution':{
+            'entry_error_rate':.09,'cost_drag_rate':.45,
+            'stop_error_rate':.09,'exit_capture_error_rate':.45,
+            'management_error_rate':.54,'management_dominated':True,
+            'negative_expectancy_is_directional':False,
+          },
+        }
+        with patch.object(VPR,'_v90r64_base_candidate_guard',return_value=base):
+            g=VPR._v90_candidate_profit_guard(row,VP.POLICIES['Champion'],econ)
+        self.assertTrue(g['eligible'],g)
+        self.assertEqual(g['blockers'],[])
+        self.assertEqual(g['size_cap'],.05)
+        self.assertTrue(g['r64_nq_management_recovery']['active'])
+
+    def test_direction_error_history_remains_hard(self):
+        row=self._nq()
+        econ={'status':'PASS','eligible':True,'expected_to_stop_ratio':2.16,
+              'expected_move_pct':.01742,'modeled_round_trip_cost_pct':.002}
+        base={
+          'eligible':False,'status':'BLOCK',
+          'blockers':['LEARNED_ENTRY_DIRECTION_ERROR_CLUSTER',
+                      'LEARNED_NEGATIVE_CONTEXT_EXPECTANCY'],
+          'soft_warnings':[],'size_multiplier':1.0,'size_cap':None,
+          'independent':4,'alignment_count':2,'horizon_structure_score':.73,
+          'learning_attribution':{
+            'entry_error_rate':.45,'management_dominated':False,
+            'negative_expectancy_is_directional':True,
+          },
+        }
+        with patch.object(VPR,'_v90r64_base_candidate_guard',return_value=base):
+            g=VPR._v90_candidate_profit_guard(row,VP.POLICIES['Aggressive'],econ)
+        self.assertFalse(g['eligible'])
+        self.assertIn('LEARNED_ENTRY_DIRECTION_ERROR_CLUSTER',g['blockers'])
+
+
 class R601LearningCacheInvalidationTests(unittest.TestCase):
     def test_dedup_immediately_invalidates_r29_and_r33_caches(self):
         class Cur:
