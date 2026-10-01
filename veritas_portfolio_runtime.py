@@ -2924,6 +2924,496 @@ def report(pg_connect):
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),33)
 
+
+# VERITAS V90 MULTI-TIMEFRAME TRADE FRAMING R56
+# Thesis TF != Entry TF != Management TF.
+# Senior horizons (1d/3d/7d) define bias only for Aggressive. A fresh 5m/1h/4h
+# trigger is required to open risk. Stops/TP1 are tied to the entry/management TF.
+V90_R56_STARTED_AT=os.getenv('VERITAS_R56_EPOCH','2026-10-01T03:24:00+00:00')
+_v90r56_base_aggressive_book=_v90_aggressive_candidate_book
+_v90r56_base_admission=_signal_first_admission
+_v90r56_base_open_or_add=_open_or_add
+_v90r56_base_tighten_stop=_v90r54_tighten_position_stop
+_v90r56_base_step_one=_step_one
+_v90r56_base_report=report
+
+_R56_TRIGGER_HORIZONS=('5m','1h','4h')
+_R56_SENIOR_HORIZONS=('1d','3d','7d')
+
+def _v90r56_direction(row):
+    return str((row or {}).get('research_decision') or 'NO_TRADE')
+
+def _v90r56_plan_pass(row):
+    row=row or {}
+    plan=row.get('trade_plan') or {}
+    gate=plan.get('final_economics_gate') or {}
+    if _v90r55_invalidated(row):
+        return False
+    if _v90r56_direction(row) not in ('LONG','SHORT'):
+        return False
+    if gate and str(gate.get('status') or '')=='BLOCK':
+        return False
+    return bool(plan.get('eligible',True))
+
+def _v90r56_senior_bias(summary,asset):
+    votes={'LONG':0.0,'SHORT':0.0}
+    evidence=[]
+    weights={'1d':1.0,'3d':1.25,'7d':1.50}
+    for r in summary or []:
+        if str((r or {}).get('asset') or '')!=str(asset):
+            continue
+        h=str((r or {}).get('horizon') or '')
+        if h not in weights:
+            continue
+        d=_v90r56_direction(r)
+        regime=str((r or {}).get('regime') or '')
+        try: hs=float(((r.get('horizon_structure') or {}).get('score'))
+                     or r.get('horizon_structure_score') or 0.0)
+        except Exception: hs=0.0
+        w=weights[h]
+        if d in ('LONG','SHORT'):
+            votes[d]+=w*(0.75+0.25*max(0.0,min(1.0,hs)))
+        if regime.startswith('UPTREND'):
+            votes['LONG']+=0.35*w
+        elif regime.startswith('DOWNTREND'):
+            votes['SHORT']+=0.35*w
+        evidence.append({'horizon':h,'direction':d,'regime':regime,'score':hs})
+    direction='NO_TRADE'
+    if votes['LONG']>=1.25 and votes['LONG']>=votes['SHORT']+0.40:
+        direction='LONG'
+    elif votes['SHORT']>=1.25 and votes['SHORT']>=votes['LONG']+0.40:
+        direction='SHORT'
+    return {'direction':direction,'votes':votes,'evidence':evidence}
+
+def _v90r56_trigger_row(summary,asset,direction):
+    candidates=[]
+    priority={'5m':3.0,'1h':2.5,'4h':2.0}
+    for r0 in summary or []:
+        if str((r0 or {}).get('asset') or '')!=str(asset):
+            continue
+        if str((r0 or {}).get('horizon') or '') not in _R56_TRIGGER_HORIZONS:
+            continue
+        if _v90r56_direction(r0)!=direction or not _v90r56_plan_pass(r0):
+            continue
+        r=dict(r0)
+        h=str(r.get('horizon'))
+        hs=r.get('horizon_structure') or {}
+        try: hscore=float(hs.get('score') or r.get('horizon_structure_score') or 0.0)
+        except Exception: hscore=0.0
+        try:
+            indep=int((((r.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count'))
+                      or r.get('independent_evidence_families') or 0)
+        except Exception: indep=0
+        q=str(r.get('entry_quality') or '')
+        qbonus=0.35 if q in ('CONFIRMED_TREND','FRESH_BREAKOUT') else 0.15 if q=='NEW_SETUP_PROVISIONAL' else 0.0
+        score=priority[h]+0.65*hscore+0.05*min(indep,6)+qbonus
+        candidates.append((score,r))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda z:z[0],reverse=True)
+    return candidates[0][1]
+
+def _v90_aggressive_candidate_book(summary,core_candidates):
+    out=dict(_v90r56_base_aggressive_book(summary,core_candidates) or {})
+    assets=set(out)
+    assets.update(str((r or {}).get('asset')) for r in (summary or []) if (r or {}).get('asset'))
+    for asset in list(assets):
+        senior=_v90r56_senior_bias(summary,asset)
+        selected=out.get(asset)
+        direction=_v90r56_direction(selected)
+        thesis_h=str((selected or {}).get('horizon') or '')
+        if senior.get('direction') in ('LONG','SHORT'):
+            direction=senior['direction']
+        if direction not in ('LONG','SHORT'):
+            continue
+        trigger=_v90r56_trigger_row(summary,asset,direction)
+        if trigger is None:
+            if selected is not None:
+                x=dict(selected)
+                x['_r56_missing_execution_trigger']=True
+                x['_r56_thesis_horizon']=thesis_h if thesis_h in _R56_SENIOR_HORIZONS else None
+                x['_r56_senior_bias']=senior
+                out[asset]=x
+            continue
+        x=dict(trigger)
+        x['_r56_entry_horizon']=str(trigger.get('horizon') or '')
+        x['_r56_management_horizon']=str(trigger.get('horizon') or '')
+        x['_r56_thesis_horizon']=thesis_h if thesis_h in _R56_SENIOR_HORIZONS else (
+            max((e['horizon'] for e in senior.get('evidence') or [] if e.get('direction')==direction),
+                key=lambda h:{'1d':1,'3d':2,'7d':3}.get(h,0),default=None)
+        )
+        x['_r56_senior_bias']=senior
+        support=list(x.get('_supporting_horizons') or [])
+        support += [e['horizon'] for e in senior.get('evidence') or []
+                    if e.get('direction')==direction]
+        x['_supporting_horizons']=list(dict.fromkeys(support))
+        x['_alignment_count']=len(x['_supporting_horizons'])
+        x['_r56_trigger_selected']=True
+        out[asset]=x
+    return out
+
+def _v90r56_trigger_level(row):
+    row=row or {}
+    d=_v90r56_direction(row)
+    blocks=[
+      row.get('impulse_pivot_break') or {},
+      row.get('range_retest_breakout') or {},
+      row.get('tactical_reversal') or {},
+      row.get('impulse_genesis') or {},
+    ]
+    keys=('trigger_level','breakout_level','pre_impulse_swing','level')
+    for b in blocks:
+        for k in keys:
+            v=_v90r51_num(b.get(k))
+            if v and v>0:
+                if d=='LONG' and v<=float(row.get('price') or v):
+                    return v
+                if d=='SHORT' and v>=float(row.get('price') or v):
+                    return v
+    return None
+
+def _v90r56_late_entry_gate(row):
+    row=row or {}
+    h=str(row.get('horizon') or '')
+    if h not in _R56_TRIGGER_HORIZONS:
+        return {'eligible':False,'reason':'R56_NO_EXECUTION_TIMEFRAME'}
+    d=_v90r56_direction(row)
+    px=_v90r51_num(row.get('price'))
+    if d not in ('LONG','SHORT') or not px or px<=0:
+        return {'eligible':False,'reason':'R56_NO_DIRECTION'}
+    rv=abs(float(row.get('realized_vol') or 0.0))
+    trigger=_v90r56_trigger_level(row)
+    if trigger:
+        consumed=((px/trigger)-1.0) if d=='LONG' else ((trigger/px)-1.0)
+        source='TRIGGER_LEVEL'
+    else:
+        try: hr=float(row.get('horizon_return') or 0.0)
+        except Exception: hr=0.0
+        consumed=max(0.0,hr if d=='LONG' else -hr)
+        source='HORIZON_RETURN'
+    # 5m/1h should not chase a move after most of its normal volatility budget
+    # is consumed. 4h gets a little more room.
+    ratio=0.80 if h in ('5m','1h') else 1.00
+    floor={'5m':0.0040,'1h':0.0060,'4h':0.0100}.get(h,0.006)
+    limit=max(floor,ratio*max(rv,0.0025))
+    late=bool(consumed>limit)
+    return {
+      'eligible':not late,
+      'reason':'R56_WAIT_RETEST_LATE_ENTRY' if late else 'R56_ENTRY_TIMING_OK',
+      'consumed_move_pct':consumed,'late_entry_limit_pct':limit,
+      'realized_vol':rv,'measurement_source':source,'trigger_level':trigger,
+    }
+
+def _v90r56_stop_noise_floor(row,horizon=None):
+    row=row or {}
+    h=str(horizon or row.get('_r56_management_horizon') or row.get('horizon') or '1h')
+    rv=abs(float(row.get('realized_vol') or 0.0))
+    base={'5m':0.0020,'1h':0.0030,'4h':0.0045}.get(h,0.0045)
+    mult={'5m':0.30,'1h':0.40,'4h':0.50}.get(h,0.50)
+    return max(base,mult*max(rv,0.0025))
+
+def _v90r56_entry_stop(row):
+    row=row or {}
+    d=_v90r56_direction(row)
+    px=_v90r51_num(row.get('price'))
+    if d not in ('LONG','SHORT') or not px or px<=0:
+        return None
+    h=str(row.get('_r56_management_horizon') or row.get('horizon') or '1h')
+    base=_v90r54_structural_stop(row)
+    plan=row.get('trade_plan') or {}
+    planned=_v90r51_num(plan.get('stop_price'))
+    candidate=_v90r51_num((base or {}).get('stop_price'),planned)
+    if not candidate:
+        return None
+    floor=_v90r56_stop_noise_floor(row,h)
+    if d=='LONG':
+        candidate=min(candidate,px*(1.0-floor))
+        if candidate<=0 or candidate>=px: return None
+    else:
+        candidate=max(candidate,px*(1.0+floor))
+        if candidate<=px: return None
+    return {
+      'stop_price':candidate,'management_horizon':h,
+      'noise_floor_pct':floor,'structural':base,
+      'planned_stop_price':planned,
+    }
+
+def _v90r56_structural_levels(row,direction):
+    row=row or {}
+    px=_v90r51_num(row.get('price')) or 0.0
+    vals=[]
+    def add(source,v):
+        x=_v90r51_num(v)
+        if not x or x<=0 or px<=0: return
+        if (direction=='LONG' and x>px) or (direction=='SHORT' and x<px):
+            vals.append((abs(x/px-1.0),source,x))
+    sl=row.get('structural_levels') or {}
+    if direction=='LONG':
+        for k in ('resistance','resistance2','next_resistance'): add('STRUCTURAL_'+k.upper(),sl.get(k))
+    else:
+        for k in ('support','support2','next_support'): add('STRUCTURAL_'+k.upper(),sl.get(k))
+    for name,b in (
+        ('PIVOT',row.get('impulse_pivot_break') or {}),
+        ('RANGE',row.get('range_retest_breakout') or {}),
+        ('TACTICAL',row.get('tactical_reversal') or {}),
+    ):
+        for k in (('target_price','resistance','local_resistance') if direction=='LONG'
+                  else ('target_price','support','local_support')):
+            add(name+'_'+k.upper(),b.get(k))
+    vals.sort(key=lambda x:x[0])
+    return vals
+
+def _v90r56_tp_plan(row,stop_meta=None):
+    row=row or {}
+    d=_v90r56_direction(row)
+    px=_v90r51_num(row.get('price'))
+    if d not in ('LONG','SHORT') or not px or px<=0:
+        return None
+    h=str(row.get('_r56_management_horizon') or row.get('horizon') or '1h')
+    cap={'5m':0.0060,'1h':0.0120,'4h':0.0200}.get(h,0.0200)
+    stop=_v90r51_num((stop_meta or {}).get('stop_price'))
+    if not stop:
+        stop=_v90r51_num((row.get('trade_plan') or {}).get('stop_price'))
+    risk=abs(stop/px-1.0) if stop else 0.0
+    min_reward=max(0.0030,1.25*risk)
+    levels=_v90r56_structural_levels(row,d)
+    chosen=None
+    for dist,source,val in levels:
+        if min_reward<=dist<=cap:
+            chosen=(dist,source,val); break
+    if chosen is None:
+        dist=min(cap,max(min_reward,0.0060 if h!='5m' else 0.0040))
+        val=px*(1.0+dist if d=='LONG' else 1.0-dist)
+        source='R56_RISK_BOUNDED_TP1'
+    else:
+        dist,source,val=chosen
+    thesis_target=_v90r51_num((row.get('trade_plan') or {}).get('target_price'))
+    return {
+      'tp1_price':val,'tp1_move_pct':dist,'tp1_source':source,
+      'runner_target_price':thesis_target,'management_horizon':h,
+      'tp1_cap_pct':cap,'risk_pct':risk,
+    }
+
+def _v90r56_prepare_entry_row(row):
+    x=dict(row or {})
+    plan=dict(x.get('trade_plan') or {})
+    sm=_v90r56_entry_stop(x)
+    if sm:
+        plan['stop_price']=sm['stop_price']
+        plan['stop_distance_pct']=abs(float(x.get('price'))-sm['stop_price'])/float(x.get('price'))
+        plan['stop_method']='R56_ENTRY_TF_LOCAL_EXTREME'
+    tp=_v90r56_tp_plan(x,sm)
+    if tp:
+        plan['target_price']=tp['tp1_price']
+        plan['expected_move_pct']=tp['tp1_move_pct']
+        if sm and plan.get('stop_distance_pct'):
+            plan['expected_to_stop_ratio']=tp['tp1_move_pct']/max(float(plan['stop_distance_pct']),1e-9)
+    x['trade_plan']=plan
+    x['_r56_stop_plan']=sm
+    x['_r56_tp_plan']=tp
+    return x
+
+def _signal_first_admission(row,policy,drawdown):
+    row=row or {}
+    mode=str((policy or {}).get('mode') or '')
+    if mode=='AGGRESSIVE':
+        if str(row.get('horizon') or '') in _R56_SENIOR_HORIZONS or row.get('_r56_missing_execution_trigger'):
+            return {
+              'open':False,'fraction':0.0,'hard_veto':True,
+              'reason':'R56_SENIOR_BIAS_REQUIRES_ENTRY_TRIGGER',
+              'r56_thesis_horizon':row.get('_r56_thesis_horizon') or row.get('horizon'),
+            }
+        timing=_v90r56_late_entry_gate(row)
+        if not timing.get('eligible'):
+            return {
+              'open':False,'fraction':0.0,'hard_veto':True,
+              'reason':'R56_WAIT_RETEST_LATE_ENTRY','r56_late_entry':timing,
+            }
+        row=_v90r56_prepare_entry_row(row)
+    out=dict(_v90r56_base_admission(row,policy,drawdown) or {})
+    if mode=='AGGRESSIVE':
+        out['r56_thesis_horizon']=row.get('_r56_thesis_horizon')
+        out['r56_entry_horizon']=row.get('_r56_entry_horizon') or row.get('horizon')
+        out['r56_management_horizon']=row.get('_r56_management_horizon') or row.get('horizon')
+        out['r56_late_entry']=_v90r56_late_entry_gate(row)
+        out['r56_stop_plan']=row.get('_r56_stop_plan')
+        out['r56_tp_plan']=row.get('_r56_tp_plan')
+    return out
+
+def _v90r56_trailing_activation(z,row):
+    z=dict(z or {}); row=row or {}
+    p=_v90j_json(z.get('payload'))
+    h=str(p.get('r56_management_horizon') or p.get('execution_horizon')
+          or row.get('_r56_management_horizon') or row.get('horizon') or '4h')
+    if h in _R56_SENIOR_HORIZONS:
+        h='4h'
+    try:
+        entry=float(z.get('avg_entry_price') or 0.0); px=float(row.get('price') or z.get('last_price') or 0.0)
+    except Exception:
+        return {'active':False,'reason':'INVALID_PRICE'}
+    if entry<=0 or px<=0:
+        return {'active':False,'reason':'INVALID_PRICE'}
+    d=str(z.get('direction') or '')
+    favorable=(px/entry-1.0) if d=='LONG' else (entry/px-1.0)
+    floor=_v90r56_stop_noise_floor(row,h)
+    activation=max({'5m':0.0025,'1h':0.0035,'4h':0.0050}.get(h,0.0050),0.75*floor)
+    return {'active':bool(favorable>=activation),'favorable_move_pct':favorable,
+            'activation_pct':activation,'management_horizon':h}
+
+def _v90r54_tighten_position_stop(c,name,z,row,price,ts):
+    z=dict(z or {}); row=dict(row or {})
+    row['price']=price
+    gate=_v90r56_trailing_activation(z,row)
+    if not gate.get('active'):
+        return None
+    return _v90r56_base_tighten_stop(c,name,z,row,price,ts)
+
+def _v90r56_migrate_legacy_senior_position(c,name,z,row,price,nav,ts):
+    z=dict(z or {}); row=dict(row or {})
+    if str(name)!='Aggressive': return None
+    p=_v90j_json(z.get('payload'))
+    if p.get('r56_trade_frame_migrated'): return None
+    h=str(p.get('execution_horizon') or '')
+    if h not in _R56_SENIOR_HORIZONS: return None
+    d=str(z.get('direction') or '')
+    if d not in ('LONG','SHORT'): return None
+    # Legacy senior-only position is migrated to 4h management. A volatility
+    # floor repairs a prematurely tightened local stop without restoring the
+    # original multi-day stop.
+    row['price']=price
+    row['_r56_management_horizon']='4h'
+    floor=_v90r56_stop_noise_floor(row,'4h')
+    swing=_v90r51_num(((row.get('intraday_structure') or {}).get('recent_swing_anchor')))
+    if d=='LONG':
+        new_stop=float(price)*(1.0-floor)
+        if swing and swing<float(price): new_stop=min(new_stop,swing-float(price)*0.0003)
+    else:
+        new_stop=float(price)*(1.0+floor)
+        if swing and swing>float(price): new_stop=max(new_stop,swing+float(price)*0.0003)
+    current_frac=abs(float(z.get('units') or 0.0)*float(price))/max(float(nav),1.0)
+    stop_risk=current_frac*abs(new_stop/float(price)-1.0)
+    hard=min(0.015,float(MAX_STOP_RISK_NAV))
+    if stop_risk>hard:
+        # Do not widen risk beyond hard budget.
+        max_dist=hard/max(current_frac,0.05)
+        new_stop=float(price)*(1.0-max_dist if d=='LONG' else 1.0+max_dist)
+        stop_risk=current_frac*abs(new_stop/float(price)-1.0)
+    sm={'stop_price':new_stop,'management_horizon':'4h','noise_floor_pct':floor}
+    tp=_v90r56_tp_plan(row,sm)
+    patch={
+      'r56_trade_frame_migrated':True,'r56_trade_frame_migrated_at':_v90j_iso(ts),
+      'r56_thesis_horizon':h,'r56_entry_horizon':'LEGACY_SENIOR_ONLY',
+      'r56_management_horizon':'4h','r56_pre_migration_stop':z.get('stop_price'),
+      'r56_management_stop':new_stop,'r56_stop_risk_nav':stop_risk,
+      'r56_tp1_price':(tp or {}).get('tp1_price'),
+      'r56_runner_target_price':(tp or {}).get('runner_target_price'),
+      'take_price':(tp or {}).get('tp1_price'),
+      'target_price':(tp or {}).get('tp1_price'),
+      'initial_take_price':(tp or {}).get('tp1_price'),
+    }
+    c.execute(
+      "UPDATE paper_positions SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+      "WHERE portfolio_name=%s AND asset=%s",
+      (new_stop,json.dumps(patch,ensure_ascii=False,default=str),name,z.get('asset'))
+    )
+    if z.get('active_trade_id'):
+        c.execute(
+          "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+          (json.dumps(patch,ensure_ascii=False,default=str),z.get('active_trade_id'))
+        )
+    print(json.dumps({
+      'event':'V90_R56_LEGACY_TRADE_FRAME_MIGRATION','portfolio':name,
+      'asset':z.get('asset'),'trade_id':z.get('active_trade_id'),
+      'direction':d,'old_stop':z.get('stop_price'),'new_stop':new_stop,
+      'tp1':(tp or {}).get('tp1_price'),'runner_target':(tp or {}).get('runner_target_price'),
+      'management_horizon':'4h','stop_risk_nav':stop_risk,
+    },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return patch
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    if str((policy or {}).get('mode') or '')=='AGGRESSIVE':
+        try:
+            p,pos=_portfolio_rows(c,name)
+            nav,_,_,_=_mark_nav(p,pos,prices)
+            for z0 in pos:
+                z=dict(z0)
+                asset=str(z.get('asset') or '')
+                px=float(prices.get(asset,z.get('last_price') or 0.0))
+                row=(candidates or {}).get(asset)
+                if row is None:
+                    same=[dict(r) for r in (summary or []) if str((r or {}).get('asset') or '')==asset]
+                    # Use the freshest available lower-TF context for volatility/swing
+                    row=next((r for r in same if str(r.get('horizon'))=='4h'),None)                         or next((r for r in same if str(r.get('horizon'))=='1h'),None)                         or next((r for r in same if str(r.get('horizon'))=='5m'),None)
+                if row is not None:
+                    _v90r56_migrate_legacy_senior_position(c,name,z,row,px,nav,ts)
+        except Exception as ex:
+            print(json.dumps({'event':'V90_R56_MIGRATION_ERROR','error':f'{type(ex).__name__}: {ex}'},
+                             ensure_ascii=False,separators=(',',':')),flush=True)
+    return _v90r56_base_step_one(
+        c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
+    )
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    row=dict(row or {})
+    if str(name)=='Aggressive':
+        row=_v90r56_prepare_entry_row(row)
+    before=c.execute(
+        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",(name,asset)
+    ).fetchone()
+    result=_v90r56_base_open_or_add(
+        c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason
+    )
+    try:
+        after=c.execute(
+            "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",(name,asset)
+        ).fetchone()
+        if after and (not before):
+            tp=row.get('_r56_tp_plan') or {}
+            sm=row.get('_r56_stop_plan') or {}
+            patch={
+              'r56_thesis_horizon':row.get('_r56_thesis_horizon'),
+              'r56_entry_horizon':row.get('_r56_entry_horizon') or row.get('horizon'),
+              'r56_management_horizon':row.get('_r56_management_horizon') or row.get('horizon'),
+              'r56_entry_stop_price':sm.get('stop_price'),
+              'r56_tp1_price':tp.get('tp1_price'),
+              'r56_tp1_source':tp.get('tp1_source'),
+              'r56_runner_target_price':tp.get('runner_target_price'),
+              'take_price':tp.get('tp1_price'),
+              'target_price':tp.get('tp1_price'),
+              'initial_take_price':tp.get('tp1_price'),
+            }
+            c.execute(
+              "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+              "WHERE portfolio_name=%s AND asset=%s",
+              (json.dumps(patch,ensure_ascii=False,default=str),name,asset)
+            )
+            tid=after.get('active_trade_id')
+            if tid:
+                c.execute(
+                  "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                  (json.dumps(patch,ensure_ascii=False,default=str),tid)
+                )
+    except Exception:
+        pass
+    return result
+
+def report(pg_connect):
+    d=dict(_v90r56_base_report(pg_connect) or {})
+    d['multi_timeframe_trade_framing_r56']={
+      'status':'ACTIVE','started_at':V90_R56_STARTED_AT,
+      'principle':'senior TF=bias; 5m/1h/4h=entry; entry TF=stop and TP1',
+      'senior_horizons':['1d','3d','7d'],
+      'entry_horizons':['5m','1h','4h'],
+      'senior_only_aggressive_entry':False,
+      'late_entry_policy':'block and wait for retest after 0.8-1.0x realized volatility budget',
+      'trailing_activation':'only after favorable move reaches entry-TF activation threshold',
+      'tp_policy':'nearest entry-TF structural level or bounded R-multiple; senior target is runner only',
+      'legacy_senior_positions':'migrate to 4h management within hard stop-risk budget',
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),34)
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
