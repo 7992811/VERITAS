@@ -3007,6 +3007,16 @@ def _v90r56_trigger_row(summary,asset,direction):
         q=str(r.get('entry_quality') or '')
         qbonus=0.35 if q in ('CONFIRMED_TREND','FRESH_BREAKOUT') else 0.15 if q=='NEW_SETUP_PROVISIONAL' else 0.0
         score=priority[h]+0.65*hscore+0.05*min(indep,6)+qbonus
+        # Downstream portfolio routing requires _rank on every candidate.
+        # Summary rows do not necessarily carry it, so R56 must always attach
+        # a bounded comparable rank when promoting a trigger row.
+        try:
+            inherited_rank=float(r.get('_rank')) if r.get('_rank') is not None else None
+        except Exception:
+            inherited_rank=None
+        normalized_rank=min(1.50,max(0.05,score/4.0))
+        r['_r56_trigger_score']=score
+        r['_rank']=max(normalized_rank,float(inherited_rank or 0.0))
         candidates.append((score,r))
     if not candidates:
         return None
