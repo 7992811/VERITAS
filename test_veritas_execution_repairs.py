@@ -1439,6 +1439,36 @@ class AggressiveInitialSizingR61Tests(unittest.TestCase):
             out=VP._signal_first_admission(row,policy,0.0)
         self.assertGreaterEqual(out['fraction'],0.75)
 
+class FreshFuturesVerificationR61Tests(unittest.TestCase):
+    def test_profinance_parser_extracts_nq_futures_row(self):
+        html='Фьючерсы на индексы Type Last Chg Chg% Time NASD100 30865.50 +252.25 +0.82% 17:30:00 Облигации'
+        now=datetime(2026,10,1,14,31,0,tzinfo=timezone.utc)
+        q=VI._v90r61_parse_profinance_text(html,'NQ',now)
+        self.assertIsNotNone(q)
+        self.assertAlmostEqual(q['price'],30865.50)
+        self.assertIn('13:30:00+00:00',q['observed_at'])
+
+    def test_stale_delayed_future_can_be_rescued_only_with_material_edge(self):
+        timing={'eligible':False,'observed_at':'2026-10-01T14:00:00+00:00',
+                'age_seconds':600.0,'max_age_seconds':300,'reason':'QUOTE_TOO_OLD_FOR_HORIZON'}
+        plan={'expected_move_pct':0.015,'expected_to_stop_ratio':2.1,
+              'modeled_round_trip_cost_pct':0.002,
+              'freshness_verification':{'eligible':True,'best':{
+                  'source':'ProFinance','observed_at':'2026-10-01T14:09:30+00:00',
+                  'age_seconds':30.0,'direction_agrees':True}}}
+        out=VI._v90r61_quote_rescue(plan,timing,'SHORT')
+        self.assertTrue(out['eligible'])
+        self.assertEqual(out['verification_source'],'ProFinance')
+
+    def test_small_move_cannot_bypass_stale_quote_gate(self):
+        timing={'eligible':False,'age_seconds':600.0,'reason':'QUOTE_TOO_OLD_FOR_HORIZON'}
+        plan={'expected_move_pct':0.0025,'expected_to_stop_ratio':2.0,
+              'modeled_round_trip_cost_pct':0.002,
+              'freshness_verification':{'eligible':True,'best':{
+                  'source':'ProFinance','age_seconds':20.0,'direction_agrees':True}}}
+        self.assertFalse(VI._v90r61_quote_rescue(plan,timing,'SHORT')['eligible'])
+
+
 class CompactLearningQueryR602Tests(unittest.TestCase):
     def _run(self, include_knowledge=False):
         seen={}

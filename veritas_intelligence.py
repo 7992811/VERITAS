@@ -1,4 +1,5 @@
 import csv, glob, hashlib, io, json, math, os, sqlite3, threading, time, traceback, uuid, gc, xml.etree.ElementTree as ET
+import html as _html
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -3124,6 +3125,170 @@ def _futures_market_open_from_age(observed_at):
     return bool(wd<5 and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
 
 
+# VERITAS V90 R61 FRESH PUBLIC FUTURES VERIFICATION
+_v90r61_public_quote_cache={}
+_v90r61_public_quote_lock=threading.Lock()
+
+def _v90r61_parse_clock_msk(value,now_dt=None):
+    now_dt=now_dt or datetime.now(timezone.utc)
+    s=str(value or '').strip()
+    m=re.search(r'(?<!\\d)(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?!\\d)',s)
+    if not m:
+        return None
+    hh,mm,ss=int(m.group(1)),int(m.group(2)),int(m.group(3) or 0)
+    if hh>23 or mm>59 or ss>59:
+        return None
+    zone=ZoneInfo('Europe/Moscow')
+    local_now=now_dt.astimezone(zone)
+    dt=datetime.combine(local_now.date(),datetime.min.time(),tzinfo=zone).replace(
+        hour=hh,minute=mm,second=ss)
+    utc=dt.astimezone(timezone.utc)
+    if utc>now_dt+timedelta(minutes=5):
+        utc-=timedelta(days=1)
+    return utc
+
+def _v90r61_parse_profinance_text(text,asset,now_dt=None):
+    if not text:
+        return None
+    clean=_html.unescape(re.sub(r'<[^>]+>',' ',str(text)))
+    clean=re.sub(r'\\s+',' ',clean)
+    asset=str(asset or '').upper()
+    if asset=='NQ':
+        section=clean
+        for marker in ('Фьючерсы на индексы','Index Futures'):
+            pos=clean.find(marker)
+            if pos>=0:
+                section=clean[pos:pos+1800]
+                break
+        labels=('NASD100','Nasdaq 100')
+    elif asset=='GOLD':
+        section=clean
+        for marker in ('Товарные рынки','Commodities'):
+            pos=clean.find(marker)
+            if pos>=0:
+                section=clean[pos:pos+2200]
+                break
+        labels=('Золото','Gold')
+    else:
+        return None
+    for label in labels:
+        pos=section.lower().find(label.lower())
+        if pos<0:
+            continue
+        tail=section[pos+len(label):pos+len(label)+260]
+        nums=re.findall(r'(?<![A-Za-z])[-+]?\\d[\\d ,]*(?:\\.\\d+)?',tail)
+        price=None
+        for raw in nums:
+            z=raw.replace(' ','').replace(',','')
+            try:
+                v=float(z)
+                if v>10:
+                    price=v
+                    break
+            except Exception:
+                pass
+        tm=re.search(r'(?<!\\d)(\\d{1,2}:\\d{2}(?::\\d{2})?)(?!\\d)',tail)
+        obs=_v90r61_parse_clock_msk(tm.group(1),now_dt) if tm else None
+        if price and price>0 and obs:
+            return {'price':price,'observed_at':obs.isoformat(),'source':'ProFinance',
+                    'source_role':'public_freshness_verification',
+                    'time_basis':'Europe/Moscow UI clock','raw_label':label}
+    return None
+
+def _v90r61_profinance_quote(asset,force=False):
+    now_ts=time.time()
+    key=str(asset or '').upper()
+    with _v90r61_public_quote_lock:
+        cached=_v90r61_public_quote_cache.get(key)
+        if cached and not force and now_ts-float(cached.get('at') or 0)<45:
+            return dict(cached.get('value') or {})
+    urls=(
+      'https://jq.profinance.ru/html/htmlquotes/qtable2.htm?r=1000',
+      'https://www.profinance.ru/_quote_show_/java/',
+    )
+    value={}
+    for url in urls:
+        try:
+            with httpx.Client(timeout=3.0,headers={'User-Agent':'Mozilla/5.0 VERITAS/90 research'}) as h:
+                r=h.get(url)
+                r.raise_for_status()
+                q=_v90r61_parse_profinance_text(r.text,key)
+            if q:
+                value=q
+                break
+        except Exception:
+            continue
+    with _v90r61_public_quote_lock:
+        _v90r61_public_quote_cache[key]={'at':now_ts,'value':dict(value)}
+    return value
+
+def _v90r61_freshness_verification(asset,futures_price,futures_bars,proxy_rows,proxy_symbol,pf=None):
+    checks=[]
+    pf=pf or {}
+    if pf:
+        p=float(pf.get('price') or 0.0)
+        obs=pf.get('observed_at')
+        age=_age_seconds(obs)
+        div=abs(p-futures_price)/max(1e-9,(p+futures_price)/2.0) if p>0 and futures_price>0 else None
+        div_lim=0.006 if str(asset)=='NQ' else 0.015
+        checks.append({'source':'ProFinance','observed_at':obs,'age_seconds':age,
+                       'price':p,'divergence':div,
+                       'fresh':bool(age is not None and -5<=age<=180 and div is not None and div<=div_lim),
+                       'direction_agrees':bool(div is not None and div<=div_lim),
+                       'role':'public_quote_verifier'})
+    if proxy_rows:
+        proxy_obs=datetime.fromtimestamp(float(proxy_rows[-1]['ts']),tz=timezone.utc).isoformat()
+        age=_age_seconds(proxy_obs)
+        direction_agrees=False
+        proxy_move=None
+        fut_move=None
+        if len(proxy_rows)>=5 and len(futures_bars)>=5:
+            try:
+                proxy_move=float(proxy_rows[-1]['close'])/float(proxy_rows[-5]['close'])-1.0
+                fut_move=float(futures_bars[-1]['close'])/float(futures_bars[-5]['close'])-1.0
+                direction_agrees=(proxy_move==0 or fut_move==0 or proxy_move*fut_move>0)
+            except Exception:
+                pass
+        checks.append({'source':proxy_symbol,'observed_at':proxy_obs,'age_seconds':age,
+                       'price':float(proxy_rows[-1]['close']),'fresh':bool(age is not None and -5<=age<=180),
+                       'direction_agrees':bool(direction_agrees),
+                       'proxy_move_4bars':proxy_move,'futures_move_4bars':fut_move,
+                       'role':'fresh_correlated_proxy'})
+    usable=[x for x in checks if x.get('fresh') and x.get('direction_agrees')]
+    best=min(usable,key=lambda x:float(x.get('age_seconds') or 9e9)) if usable else None
+    return {'eligible':bool(best),'best':best,'checks':checks,
+            'policy':'DELAYED_FUTURES_MAY_USE_FRESH_INDEPENDENT_CONFIRMATION_FOR_PAPER_ENTRY_ONLY',
+            'production_eligible':False}
+
+def _v90r61_quote_rescue(plan,timing,direction):
+    if timing.get('eligible') or direction not in ('LONG','SHORT'):
+        return timing
+    ver=plan.get('freshness_verification') or {}
+    best=ver.get('best') or {}
+    try:
+        original_age=float(timing.get('age_seconds'))
+        verify_age=float(best.get('age_seconds'))
+        move=abs(float(plan.get('expected_move_pct') or 0.0))
+        rr=float(plan.get('expected_to_stop_ratio') or 0.0)
+        costs=float(((plan.get('final_economics_gate') or {}).get('modeled_round_trip_cost_pct'))
+                    or plan.get('modeled_round_trip_cost_pct') or 0.002)
+    except Exception:
+        return timing
+    ok=bool(ver.get('eligible') and best.get('direction_agrees')
+            and -5<=verify_age<=180 and 0<=original_age<=1200
+            and move>=max(0.004,2.0*costs+0.001) and rr>=1.25)
+    if not ok:
+        return timing
+    out=dict(timing)
+    out.update({'eligible':True,'reason':None,
+                'rescue_reason':'DELAYED_FUTURES_CONFIRMED_BY_FRESH_INDEPENDENT_SOURCE',
+                'verification_source':best.get('source'),
+                'verification_observed_at':best.get('observed_at'),
+                'verification_age_seconds':verify_age,
+                'original_quote_age_seconds':original_age,
+                'paper_only':True})
+    return out
+
 def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,source_name):
     bars5,_=_yahoo_series(yahoo_symbol,'5d','5m',True)
     bars1h,_=_yahoo_series(yahoo_symbol,'3mo','1h',True)
@@ -4672,7 +4837,8 @@ def features(raw, horizon, common_structure=None):
     f['trend_onset_score'] = f['trend_impulse'].get('onset_score',0.0)
     f['impulse_score'] = f['trend_impulse'].get('impulse_score',0.0)
     f['entry_quality'] = f['trend_impulse'].get('entry_quality','UNKNOWN')
-    f['structural_levels'] = structural_levels_features(raw)
+    f['structural_levels'] = ((common_structure or {}).get('structural_levels')
+                              if common_structure is not None else None) or structural_levels_features(raw)
     f['sma18']=(f['structural_levels'] or {}).get('sma18'); f['sma50']=(f['structural_levels'] or {}).get('sma50')
     f['support_level']=(f['structural_levels'] or {}).get('support'); f['resistance_level']=(f['structural_levels'] or {}).get('resistance')
     f['reversal_probability']=None; f['cycle_return']=0.0
@@ -5423,7 +5589,8 @@ def features(raw, horizon, common_structure=None):
     f['trend_onset_score'] = f['trend_impulse'].get('onset_score',0.0)
     f['impulse_score'] = f['trend_impulse'].get('impulse_score',0.0)
     f['entry_quality'] = f['trend_impulse'].get('entry_quality','UNKNOWN')
-    f['structural_levels'] = structural_levels_features(raw)
+    f['structural_levels'] = ((common_structure or {}).get('structural_levels')
+                              if common_structure is not None else None) or structural_levels_features(raw)
     f['sma18']=(f['structural_levels'] or {}).get('sma18'); f['sma50']=(f['structural_levels'] or {}).get('sma50')
     f['support_level']=(f['structural_levels'] or {}).get('support'); f['resistance_level']=(f['structural_levels'] or {}).get('resistance')
     f['reversal_probability']=None; f['cycle_return']=0.0
@@ -6532,6 +6699,11 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     event_learning=heavy_learning.get('event_learning') or {'status':'background_pending','written':0}
     rule_learning=heavy_learning.get('rule_learning') or {'status':'background_pending','rows':0,'status_changes':0}
     phase_seconds['event_learning']=0.0; phase_seconds['rule_learning']=0.0
+    _market_pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='veritas-market-pipeline')
+    _market_future=_market_pool.submit(prefetch_market_bundles)
+    _warm_pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='veritas-cycle-warm')
+    _warm_knowledge=_warm_pool.submit(all_knowledge)
+    _warm_memory=_warm_pool.submit(_decision_memory_vectors)
     phase_t0=time.time(); perf = _v90r22_agent_perf_safe(); phase_seconds['agent_learning']=time.time()-phase_t0
     phase_t0=time.time(); calibration_rows = _v90r61_calibration_rows(); phase_seconds['calibration']=time.time()-phase_t0
     phase_t0=time.time(); clock_info = _v90r61_clock_info(); phase_seconds['clock_gate']=time.time()-phase_t0
@@ -6551,7 +6723,13 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     _v90_pg_batch_begin()
     decision_phase_t0=time.time()
     cycle_source_quality=[]
-    market_bundles,prefetch_stats=prefetch_market_bundles()
+    market_bundles,prefetch_stats=_market_future.result()
+    _market_pool.shutdown(wait=False)
+    try: _warm_knowledge.result(timeout=0.05)
+    except Exception: pass
+    try: _warm_memory.result(timeout=0.05)
+    except Exception: pass
+    _warm_pool.shutdown(wait=False)
     with lock:
         _prev_summary=list(last_cycle.get('summary') or [])
     _v90_set_prev_signal_cache(_prev_summary)
@@ -6575,6 +6753,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                  divergence=raw['source_divergence'],derivatives_ok=deriv.get('ok'),
                  source_gate_pass=raw.get('source_gate_pass',True),market_open=raw.get('market_open',True),
                  data_latency_class=raw.get('data_latency_class'),verification_mode=raw.get('verification_mode'),
+                 freshness_verifier=((raw.get('freshness_verification') or {}).get('best') or {}).get('source'),
+                 freshness_verifier_age_seconds=((raw.get('freshness_verification') or {}).get('best') or {}).get('age_seconds'),
                  paper_eligible=asset_execution_gate.get('paper_eligible'),
                  execution_eligible=asset_execution_gate.get('eligible'),
                  paper_execution_reason=asset_execution_gate.get('paper_execution_reason'),
@@ -6585,7 +6765,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             try:
                 common_structure={'intraday_structure':intraday_structure_features(raw)}
                 common_structure['trend_impulse']=merge_trend_and_structure(trend_onset_features(raw),common_structure['intraday_structure'])
-                common_structure['horizon_structures']={h:horizon_structure_features(raw,h) for h in HORIZONS}
+                _needed_h=set(selected_horizons)|{'1h','4h','1d'}
+                common_structure['horizon_structures']={h:horizon_structure_features(raw,h) for h in HORIZONS if h in _needed_h}
+                common_structure['structural_levels']=structural_levels_features(raw)
                 common_feature_builds += 1
             except Exception as ex:
                 emit('common_structure_cache_error',asset=asset,error=f'{type(ex).__name__}: {ex}')
@@ -18157,6 +18339,7 @@ def features(raw, horizon, common_structure=None):
     f['best_bid']=raw.get('best_bid')
     f['best_ask']=raw.get('best_ask')
     f['spread_bps']=raw.get('spread_bps')
+    f['freshness_verification']=raw.get('freshness_verification') or {}
     return f
 
 def execution_eligibility(asset, raw, clock_info=None):
@@ -18227,8 +18410,14 @@ def final_execution_safety(asset,research_decision,plan):
         'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
     }
     if 'market_observed_at' in plan and research_decision in ('LONG','SHORT'):
-        timing=quote_gate(plan['market_observed_at'],plan.get('horizon')); gate['quote_time_gate']=timing
-        if not timing['eligible']: gate.update(status='BLOCK',eligible=False); gate['blockers'].append(timing['reason'])
+        timing=quote_gate(plan['market_observed_at'],plan.get('horizon'))
+        timing=_v90r61_quote_rescue({**plan,'final_economics_gate':gate},timing,research_decision)
+        gate['quote_time_gate']=timing
+        if not timing['eligible']:
+            gate.update(status='BLOCK',eligible=False)
+            gate['blockers'].append(timing['reason'])
+        elif timing.get('rescue_reason'):
+            gate['paper_freshness_rescue']=timing.get('rescue_reason')
     plan['final_economics_gate']=gate
     if bool(plan.get('eligible')) and research_decision in ('LONG','SHORT') and not gate.get('eligible'):
         prior_reason=str(plan.get('reason') or 'setup_eligible')
@@ -18244,7 +18433,8 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     plan=dict(_v90r40_base_technical_trade_plan(
         asset,horizon,f,research_decision,signal_tier,analog
     ) or {})
-    plan.update(horizon=horizon,market_observed_at=f.get('market_observed_at'),best_bid=f.get('best_bid'),best_ask=f.get('best_ask'))
+    plan.update(horizon=horizon,market_observed_at=f.get('market_observed_at'),best_bid=f.get('best_bid'),best_ask=f.get('best_ask'),
+                freshness_verification=f.get('freshness_verification') or {})
     # The same gate is applied again after setup-specific mutations in cycle().
     return final_execution_safety(asset,research_decision,plan)
 
