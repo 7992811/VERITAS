@@ -66,6 +66,26 @@ def payload_of(z):
     p = z.get('payload') or {}
     return json.loads(p) if isinstance(p, str) else dict(p)
 
+def exit_execution_quote(z,now=None):
+    """One fresh quote contract for protection assessment and the actual fill."""
+    now=utc_datetime(now) or datetime.now(timezone.utc)
+    quote=z.get('_execution_quote')
+    if quote is None:
+        with _quotes_lock:
+            quote=dict(_quotes.get(z.get('asset')) or {})
+    if not quote or not quote.get('source_gate_pass'):
+        return {}
+    if not quote_gate(quote.get('observed_at'),now=now,protective=True)['eligible']:
+        return {}
+    return quote
+
+def exit_fill(z,price,fraction,ts):
+    quote=exit_execution_quote(z,ts)
+    return VX.simulated_fill(z.get('asset'),
+        'SELL' if z.get('direction')=='LONG' else 'BUY_TO_COVER',price,fraction,
+        bid=quote.get('best_bid',quote.get('bid')),
+        ask=quote.get('best_ask',quote.get('ask')))
+
 
 def _r63_hard_stop_breached(z, px):
     try:
@@ -88,9 +108,7 @@ def _r63_projected_exit_net(z, quote, trade, nav, commission=.0005):
             return {'valid':False}
         fraction=abs(units*px)/nav
         side='SELL' if z.get('direction')=='LONG' else 'BUY_TO_COVER'
-        bid=(quote or {}).get('best_bid',(quote or {}).get('bid'))
-        ask=(quote or {}).get('best_ask',(quote or {}).get('ask'))
-        fill=VX.simulated_fill(z.get('asset'),side,px,fraction,bid=bid,ask=ask)
+        fill=exit_fill({**z,'_execution_quote':quote},px,fraction,quote.get('observed_at'))
         fill_px=float(fill['fill_price'])
         signed_mid=(px-entry) if z.get('direction')=='LONG' else (entry-px)
         gross_open=units*((fill_px-entry) if z.get('direction')=='LONG' else (entry-fill_px))
@@ -162,7 +180,8 @@ def take_profit_action(z, current_fraction, peak, round5):
 
 
 def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
-                     slippage_pct=.0005, min_net_pct=.0005):
+                     slippage_pct=.0005, min_net_pct=.0005,
+                     funding_rub=0.0,realized_gross_rub=0.0):
     """Return a stop that protects positive NET P&L, not merely price P&L.
 
     The locked stop explicitly covers:
@@ -182,9 +201,11 @@ def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
         # protection remains backward-compatible.
         units=abs(float(z.get('units') or 1.0))
         fees_paid=max(0.0,float(fees_paid_rub or 0.0))
+        funding=max(0.0,float(funding_rub or 0.0))
+        realized=float(realized_gross_rub or 0.0)
         if entry<=0 or px<=0 or units<=0:
             return None
-        if not all(math.isfinite(v) for v in (entry,px,units,fees_paid)):
+        if not all(math.isfinite(v) for v in (entry,px,units,fees_paid,funding,realized)):
             return None
     except (TypeError,ValueError):
         return None
@@ -198,7 +219,8 @@ def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
     exit_fee_now=current_notional*float(commission)
     slippage_now=current_notional*float(slippage_pct)
     min_net_rub=current_notional*float(min_net_pct)
-    current_required=fees_paid+exit_fee_now+slippage_now+min_net_rub
+    paid_cost=fees_paid+funding-realized
+    current_required=paid_cost+exit_fee_now+slippage_now+min_net_rub
     required_activation_pct=100.0*current_required/max(entry_notional,1e-9)
     activation_pct=max(0.25,required_activation_pct)
     if current_pct<activation_pct or gross_current<current_required:
@@ -207,13 +229,13 @@ def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
     friction=float(commission)+float(slippage_pct)
     if long:
         denom=units*max(1e-9,1.0-friction)
-        candidate=(units*entry+fees_paid+min_net_rub)/denom
+        candidate=(units*entry+paid_cost+min_net_rub)/denom
         projected_exit_fee=units*candidate*float(commission)
         projected_slippage=units*candidate*float(slippage_pct)
         gross_at_stop=units*(candidate-entry)
     else:
         denom=units*(1.0+friction)
-        candidate=(units*entry-fees_paid-min_net_rub)/max(denom,1e-9)
+        candidate=(units*entry-paid_cost-min_net_rub)/max(denom,1e-9)
         projected_exit_fee=units*candidate*float(commission)
         projected_slippage=units*candidate*float(slippage_pct)
         gross_at_stop=units*(entry-candidate)
@@ -223,7 +245,7 @@ def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
     if (long and candidate>=px) or ((not long) and candidate<=px):
         return None
 
-    projected_net=gross_at_stop-fees_paid-projected_exit_fee-projected_slippage
+    projected_net=gross_at_stop-paid_cost-projected_exit_fee-projected_slippage
     if projected_net<=0:
         return None
 
@@ -248,6 +270,7 @@ def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
         'locked_profit_pct':locked_price_pct,
         'current_profit_pct':current_pct,
         'fees_paid_rub':fees_paid,
+        'funding_rub':funding,'realized_gross_rub':realized,
         'estimated_exit_fee_rub':projected_exit_fee,
         'estimated_slippage_rub':projected_slippage,
         'minimum_net_profit_rub':min_net_rub,
@@ -359,10 +382,12 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                 pass
 
             fees_paid=0.0
+            _lock_trade={}
             if z.get('active_trade_id'):
                 try:
-                    _tr=c.execute("SELECT fees_rub FROM paper_trades WHERE trade_id=%s",
+                    _tr=c.execute("SELECT fees_rub,funding_rub,gross_pnl_rub FROM paper_trades WHERE trade_id=%s",
                                   (z.get('active_trade_id'),)).fetchone()
+                    _lock_trade=dict(_tr or {})
                     fees_paid=float((_tr or {}).get('fees_rub') or 0.0)
                 except Exception:
                     fees_paid=0.0
@@ -384,9 +409,17 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             _crypto_lock=str(z.get('asset') or '') in ('BTC','ETH')
             _lock_slippage=.00025 if _crypto_lock else .0010
             _lock_min_net=.00025 if _crypto_lock else .0010
+            if _crypto_lock:
+                _nav=max(float(zp.get('entry_nav_rub') or 1_000_000.0),1.0)
+                _fraction=abs(float(z.get('units') or 0.0)*float(q.get('price') or 0.0))/_nav
+                _fill=exit_fill({**z,'_execution_quote':q},float(q['price']),_fraction,ts)
+                # Includes actual spread, residual slippage and size impact.
+                _lock_slippage=max(_lock_slippage,float(_fill['adverse_fill_bps'])/10000.0)
             lock = None if (_rearm_after and _cur_lock_pct<_rearm_after) else profit_lock_stop(
                 z,q,getattr(vp,'COMMISSION',.0005),fees_paid_rub=fees_paid,
-                slippage_pct=_lock_slippage,min_net_pct=_lock_min_net
+                slippage_pct=_lock_slippage,min_net_pct=_lock_min_net,
+                funding_rub=_lock_trade.get('funding_rub',0.0),
+                realized_gross_rub=_lock_trade.get('gross_pnl_rub',0.0)
             )
             if lock:
                 pl_patch = {
@@ -482,6 +515,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             c.execute("UPDATE paper_positions SET payload=payload||%s::jsonb WHERE active_trade_id=%s",
                       (json.dumps(patch), tid))
             c.execute("UPDATE paper_trades SET payload=payload||%s::jsonb WHERE trade_id=%s", (json.dumps(patch), tid))
+            z['_execution_quote']=dict(q)
             result = vp._close_or_reduce(c, p, name, z, px, 0.0, nav, ts, reason)
             if not result:
                 continue

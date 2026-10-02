@@ -4440,8 +4440,8 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
     accelerating move and expanding volume before slow 1h/4h trend models reverse.
     Older higher-timeframe trend is context only and cannot veto a qualified setup.
     """
-    bars=list(raw.get('intraday_bars') or [])
-    if asset not in ('BRENT','GOLD','NDX','NQ','CNYRUBF','MOEX') or len(bars)<12:
+    bars=list(raw.get('intraday_bars') or raw.get('intraday_5m') or [])
+    if asset not in ('BTC','ETH','BRENT','GOLD','NDX','NQ','CNYRUBF','MOEX') or len(bars)<12:
         return {'active':False,'direction':'NO_TRADE','setup':'IMPULSE_PIVOT_BREAK','reason':'insufficient_5m_data'}
     # Use only information available up to the latest bar. Keep a bounded recent window.
     z=bars[-48:]
@@ -4553,9 +4553,12 @@ def impulse_breakdown_setup(asset, raw, f, causal_score=0.0):
     # Required: break + impulse + at least two additional quality checks, probability floor and R/R.
     quality_extras=sum(bool(v) for k,v in confirmations.items() if k not in ('local_support_break','negative_impulse','local_resistance_break','positive_impulse'))
     active=bool(prob>=0.70 and rr>=1.50 and quality_extras>=2)
+    if asset in ('BTC','ETH'):
+        active=bool(active and local_volume_ratio is not None and local_volume_ratio>=1.15)
     return {'active':active,'direction':direction if active else 'NO_TRADE','candidate_direction':direction,
             'setup':'IMPULSE_PIVOT_BREAK','probability':round(prob,4),'probability_source':'MODEL_PRIOR_UNCALIBRATED',
             'stop_price':stop,'stop_anchor':stop_anchor,'target_price':target,'reward_risk':round(rr,3),
+            'trigger_level':resistance if direction=='LONG' else support,
             'local_support':support,'local_resistance':resistance,'break_buffer':break_buf,
             'local_volume_ratio':local_volume_ratio,'local_efficiency':round(local_eff,4),'z3':round(z3,3),
             'confirmations':sum(bool(v) for v in confirmations.values()),'evidence':confirmations,
@@ -7335,7 +7338,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'signal_tier':signal_tier,'execution_signal_tier':execution_signal_tier,
                      'event_shadow_score':event_shadow.get('score',0.0),
                      'causal_score':causal_shadow.get('score'),'causal_label':causal_shadow.get('label'),
-                     'tactical_reversal':tactical_reversal,'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structure_breakout_grid':f.get('structure_breakout_grid') or {},'structural_levels':f.get('structural_levels') or {},
+                     'tactical_reversal':tactical_reversal,'impulse_genesis':f.get('impulse_genesis') or {},'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structure_breakout_grid':f.get('structure_breakout_grid') or {},'structural_levels':f.get('structural_levels') or {},
                      'sma18':f.get('sma18'),'sma50':f.get('sma50'),'support_level':f.get('support_level'),'resistance_level':f.get('resistance_level')}
                 summary.append(_v90_compact_live_row(z))
                 try:
@@ -18322,7 +18325,8 @@ def _v90_compact_live_row(z):
         return {}
     hs=_v90_small_dict(z.get('horizon_structure'),(
         'status','horizon','native_horizon','resolution','direction','raw_direction',
-        'score','state','return','z','bars','breakout','volume_ratio'))
+        'score','state','return','z','bars','breakout','volume_ratio',
+        'breakout_level','return_30m','sigma_5m','lifecycle_state','exit_signal'))
     st=_v90_small_dict(z.get('intraday_structure'),(
         'enabled','status','resolution','direction','score','lifecycle','entry_quality',
         'relative_volume','volume_confirmed','near_ath','price_discovery',
@@ -18378,16 +18382,17 @@ def _v90_compact_live_row(z):
     tr=_v90_small_dict(z.get('tactical_reversal'),(
         'active','direction','candidate_direction','setup','state','probability',
         'stop_price','target_price','reward_risk','min_reward_risk','reason',
-        'cycle_return','confirmations'))
+        'cycle_return','confirmations','trigger_level','breakout_level','pre_impulse_swing'))
     rs=_v90_small_dict(z.get('range_retest_breakout'),(
         'active','direction','candidate_direction','setup','state','probability',
         'support','resistance','stop_price','target_price','reward_risk',
         'min_reward_risk','initial_position_fraction','confirmations',
-        'entry_active','add_active','manage_active','reason'))
+        'entry_active','add_active','manage_active','reason','trigger_level','breakout_level'))
     pb=_v90_small_dict(z.get('impulse_pivot_break'),(
         'active','direction','candidate_direction','setup','state','probability',
         'stop_price','target_price','reward_risk','reason','local_support',
-        'local_resistance','local_volume_ratio','local_efficiency'))
+        'local_resistance','local_volume_ratio','local_efficiency',
+        'trigger_level','breakout_level','pre_impulse_swing','stop_anchor','break_buffer'))
     io=_v90_small_dict(z.get('impulse_overlay'),(
         'active','phase','direction','confidence','base_score',
         'active_directional_score','blend','entry_quality'))
@@ -18421,6 +18426,9 @@ def _v90_compact_live_row(z):
     out['tradeability']=ta2
     out['structural_levels']=sl2
     out['tactical_reversal']=tr
+    out['impulse_genesis']=_v90_small_dict(z.get('impulse_genesis'),(
+        'active','direction','candidate_direction','setup','probability','reason',
+        'trigger_level','pre_impulse_swing','stop_price','target_price','reward_risk'))
     out['range_retest_breakout']=rs
     out['impulse_pivot_break']=pb
     out['impulse_overlay']=io

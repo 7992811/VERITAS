@@ -2026,5 +2026,152 @@ class ColdClockRecheckR63ETests(unittest.TestCase):
         self.assertIn("r63_clock_recheck",body)
 
 
+class CryptoEntryPathRegressionTests(unittest.TestCase):
+    def row(self,asset='BTC',horizon='5m'):
+        row=CryptoEarlyCaptureR65Tests()._row()
+        row.update(asset=asset,horizon=horizon,market_observed_at=NOW.isoformat(),
+                   best_bid=99.99,best_ask=100.01)
+        return row
+
+    def test_compaction_preserves_origin_and_rejects_late_live_fill(self):
+        row=self.row()
+        row['price']=102.0; row['realized_vol']=.005
+        row['horizon_return']=.001  # last bar alone hides the earlier impulse
+        row['impulse_pivot_break']['breakout_level']=100.0
+        compact=VI._v90_compact_live_row(row)
+        self.assertEqual(compact['impulse_pivot_break']['breakout_level'],100.0)
+        self.assertFalse(VPR._v90r56_late_entry_gate(compact)['eligible'])
+
+    def test_genesis_and_tactical_origin_survive_compaction(self):
+        row=self.row()
+        for name in ('impulse_genesis','tactical_reversal'):
+            row[name]={'active':True,'direction':'LONG','trigger_level':99.7,
+                       'pre_impulse_swing':99.0}
+        compact=VI._v90_compact_live_row(row)
+        for name in ('impulse_genesis','tactical_reversal'):
+            self.assertEqual(compact[name]['trigger_level'],99.7)
+
+    def test_actual_fill_reprices_original_return_when_trigger_missing(self):
+        row=self.row(); row['impulse_pivot_break']={}; row['realized_vol']=.005
+        self.assertTrue(VPR._v90r56_late_entry_gate(row)['eligible'])
+        self.assertFalse(VPR._v90r56_late_entry_gate(row,102.0)['eligible'])
+        row.update(research_decision='SHORT',horizon_return=-.002)
+        self.assertFalse(VPR._v90r56_late_entry_gate(row,98.0)['eligible'])
+
+    def test_inactive_or_opposite_trigger_cannot_reset_move_origin(self):
+        row=self.row(); row.update(price=102.0,horizon_return=.02,realized_vol=.005)
+        for update in ({'active':False},{'active':True,'direction':'SHORT'}):
+            row['impulse_pivot_break']={'breakout_level':101.9,**update}
+            self.assertFalse(VPR._v90r56_late_entry_gate(row)['eligible'])
+
+    def test_missing_origin_fails_closed(self):
+        row=self.row(); row['impulse_pivot_break']={}; row.pop('horizon_return')
+        self.assertFalse(VPR._v90r56_late_entry_gate(row)['eligible'])
+
+    def test_early_pivot_fallback_covers_both_crypto_assets_and_directions(self):
+        # A local range, a bounce, then a volume-backed break. The universal
+        # lifecycle lane is absent to exercise the previously excluded lane.
+        px=[101.30,101.42,101.26,101.20,101.35,101.55,101.72,
+            101.80,101.66,101.54,101.38,101.28,101.05,101.00]
+        for asset in ('BTC','ETH'):
+            for direction in ('LONG','SHORT'):
+                seq=px if direction=='SHORT' else [203-v for v in px]
+                bars=[dict(open=seq[max(0,i-1)],high=v+.05,low=v-.05,close=v,
+                           volume=100 if i<11 else 220) for i,v in enumerate(seq)]
+                raw=dict(asset=asset,price=seq[-1],intraday_5m=bars)
+                old='LONG' if direction=='SHORT' else 'SHORT'
+                f=dict(horizon='5m',price=seq[-1],structure_breakout_grid={'5m':{}},
+                       trend_impulse={'direction':old,'entry_quality':'INVALIDATED'},
+                       intraday_structure={'lifecycle':'FAILURE'},
+                       structural_levels={'sma18':101.4 if direction=='SHORT' else 101.6})
+                out=VI.impulse_breakdown_setup(asset,raw,f)
+                self.assertTrue(out['active'],out)
+                self.assertEqual(out['direction'],direction)
+                self.assertIsNotNone(out['trigger_level'])
+
+    def test_hourly_trend_cannot_override_local_exit_reversal(self):
+        row=self.row(horizon='1h'); local=self.row()
+        local['horizon_structure']={'state':'EXIT_REVERSAL','direction':'NO_TRADE'}
+        row['_r65_tactical_context']=local
+        out=VPR._v90r65_execution_timing(row,100.0,'LONG',NOW)
+        self.assertEqual(out['reason'],'R65_WAIT_LOCAL_REVERSAL')
+        # Neutral NO_TRADE alone is not a reversal veto.
+        local['horizon_structure']={'state':'NEUTRAL','direction':'NO_TRADE'}
+        self.assertTrue(VPR._v90r65_execution_timing(row,100.0,'LONG',NOW)['eligible'])
+
+    def test_all_portfolios_block_senior_only_entries_and_late_adds(self):
+        for name in VP.POLICIES:
+            for existing in (None,{'direction':'LONG','units':1000.0}):
+                c=MagicMock(); c.execute.return_value.fetchone.return_value=existing
+                row=self.row(horizon='1d' if existing is None else '5m')
+                row.update(best_bid=102.0,best_ask=102.01,realized_vol=.005)
+                with patch.object(VPR,'_v90r65_base_open_or_add') as base:
+                    result=VPR._open_or_add(c,{},name,'BTC','LONG',102.0,.50,
+                                           1e6,NOW.isoformat(),row,'test')
+                self.assertEqual(result,0.0)
+                base.assert_not_called()
+
+    def test_new_small_position_is_not_legacy_completion_after_tp(self):
+        z={'direction':'LONG','units':500.0,'opened_at':NOW.isoformat(),
+           'payload':{'opening_fraction':.15,'r17_tp1_done':True}}
+        c=MagicMock(); c.execute.return_value.fetchone.return_value=z
+        with patch.object(VPR,'_v90r55_add_event_gate',return_value={'eligible':False}), \
+             patch.object(VPR,'_v90r55_base_open_or_add') as base:
+            result=VPR._v90r56_base_open_or_add(c,{},'Impulse','BTC','LONG',100.0,
+                                              .15,1e6,NOW.isoformat(),self.row(),'test')
+        self.assertEqual(result,0.0); base.assert_not_called()
+
+    def test_stale_tactical_quote_cannot_be_used_for_order(self):
+        row=self.row(); row['market_observed_at']=(NOW-timedelta(minutes=6)).isoformat()
+        self.assertFalse(VPR._v90r65_execution_timing(row,100,'LONG',NOW)['eligible'])
+
+
+class CryptoProtectiveFillRegressionTests(unittest.TestCase):
+    def test_projected_and_booked_exit_match_for_both_directions(self):
+        for direction in ('LONG','SHORT'):
+            px=100.2 if direction=='LONG' else 99.8
+            quote=dict(price=px,best_bid=px-.005,best_ask=px+.005,
+                       observed_at=NOW.isoformat(),source_gate_pass=True)
+            z=dict(asset='BTC',direction=direction,units=1000.0,avg_entry_price=100.0,
+                   active_trade_id='test',payload={},_execution_quote=quote)
+            trade=dict(gross_pnl_rub=0.0,fees_rub=50.0,funding_rub=.3,
+                       payload={'entry_nav_rub':1e6})
+            expected=VPG._r63_projected_exit_net(z,quote,trade,1e6)
+            orders=[]
+            def execute(sql,args=()):
+                if sql.startswith('SELECT 1'):
+                    return SimpleNamespace(fetchone=lambda:None)
+                if sql.startswith('UPDATE paper_trades SET gross_pnl_rub='):
+                    trade['gross_pnl_rub']+=args[0]; trade['fees_rub']+=args[1]
+                if sql.startswith('INSERT INTO paper_orders'):
+                    orders.append(args)
+                return SimpleNamespace(fetchone=lambda:trade)
+            c=SimpleNamespace(execute=execute)
+            VP._v90j_base_close_or_reduce(c,{},'Champion',z,px,0.0,1e6,NOW.isoformat(),'STOP')
+            self.assertAlmostEqual(orders[0][5],expected['fill_price'])
+            self.assertAlmostEqual(trade['gross_pnl_rub']-trade['fees_rub']-trade['funding_rub'],
+                                   expected['net_pnl_rub'])
+            self.assertIn('BID_ASK_ADVERSE_PAPER_FILL_V2',orders[0][10])
+
+    def test_old_book_is_not_reused_and_hard_exit_still_has_fallback(self):
+        quote=dict(best_bid=110,best_ask=111,source_gate_pass=True,
+                   observed_at=(NOW-timedelta(minutes=6)).isoformat())
+        z=dict(asset='ETH',direction='LONG',_execution_quote=quote)
+        fill=VPG.exit_fill(z,100,.1,NOW)
+        self.assertFalse(fill['quote_valid'])
+        self.assertLess(fill['fill_price'],100)
+
+    def test_profit_lock_counts_realized_result_fees_and_funding(self):
+        z=dict(asset='BTC',direction='LONG',units=500,avg_entry_price=100,payload={})
+        q=dict(price=101,source_gate_pass=True)
+        lock=VPG.profit_lock_stop(z,q,fees_paid_rub=75,funding_rub=9,
+                                 realized_gross_rub=30,slippage_pct=.0005,min_net_pct=.00025)
+        self.assertIsNotNone(lock)
+        stop=lock['stop_price']
+        net=30+500*(stop-100)-75-9-500*stop*(.0005+.0005)
+        self.assertAlmostEqual(net,lock['projected_net_profit_at_stop_rub'])
+        self.assertGreater(net,0)
+
+
 if __name__ == '__main__':
     unittest.main()

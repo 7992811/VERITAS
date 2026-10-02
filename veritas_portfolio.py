@@ -2088,7 +2088,7 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
                                 target_fraction,None,str(ts),reason)
     if c.execute("SELECT 1 AS ok FROM paper_orders WHERE client_order_id=%s LIMIT 1",(cid,)).fetchone():
         return 0.0
-    fill=VX.simulated_fill(z['asset'],side,price,close_notional/max(nav,1.0))
+    fill=VPG.exit_fill(z,price,close_notional/max(nav,1.0),ts)
     fill_price=float(fill['fill_price'])
     executed_notional=close_units*fill_price
     sign=1 if z['direction']=='LONG' else -1
@@ -2152,6 +2152,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                             'signal':(row.get('institutional_signal') or {}).get('investor_signal'),
                             'soft_invalidation_count':0,
                             'last_entry_execution_model':fill,
+                            'last_entry_timing':row.get('_r65_entry_timing'),
                             'last_client_order_id':intent.client_order_id,
                             'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
                             'normalized_units':old_units+units,
@@ -2177,6 +2178,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                  'structural_stop_enforced':bool(plan.get('structural_stop_enforced')),
                  'soft_invalidation_count':0,'entry_permission':(plan.get('trade_integrity') or {}).get('entry_permission'),
                  'entry_execution_model':fill,'client_order_id':intent.client_order_id,
+                 'entry_timing':row.get('_r65_entry_timing'),
                  'normalized_paper_notional':True,
                  'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
                  'normalized_units':units,
@@ -2185,6 +2187,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         c.execute('INSERT INTO paper_trades(trade_id,portfolio_name,asset,direction,opened_at,avg_entry_price,max_fraction,fees_rub,status,setup,horizon,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(trade_id,name,asset,direction,ts,fill_price,target_fraction,fee,'OPEN',setup,row.get('horizon'),json.dumps(payload,ensure_ascii=False,default=str)))
         c.execute('INSERT INTO paper_positions(portfolio_name,asset,direction,units,avg_entry_price,opened_at,updated_at,active_trade_id,stop_price,target_fraction,last_price,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,asset,direction,units,fill_price,ts,ts,trade_id,(row.get('trade_plan') or {}).get('stop_price'),target_fraction,price,json.dumps(payload,ensure_ascii=False,default=str)))
     order_payload={'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+                   'entry_timing':row.get('_r65_entry_timing'),
                    'execution_model':fill,'order_intent':intent.to_dict()}
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,trade_id,ts,asset,side,fill_price,add,fee,add/max(nav,1),reason,json.dumps(order_payload,ensure_ascii=False,default=str),intent.client_order_id))
 

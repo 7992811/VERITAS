@@ -2838,7 +2838,11 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             pld=_v90j_json(existing.get('payload'))
             legacy_opening=float(pld.get('r54_pre_rebase_opening_fraction')
                                  or pld.get('opening_fraction') or current)
-            is_legacy_completion=bool(current<0.50 and requested<=1.0 and legacy_opening<0.50)
+            opened=_v90r55_dt(existing.get('opened_at'))
+            legacy_epoch=_v90r55_dt(V90_R54_STARTED_AT)
+            is_legacy_completion=bool(str(name)=='Aggressive' and opened and legacy_epoch
+                                     and opened<legacy_epoch and not pld.get('r17_tp1_done')
+                                     and current<0.50 and requested<=1.0 and legacy_opening<0.50)
             if not is_legacy_completion:
                 ag=_v90r55_add_event_gate(dict(existing),row,price)
                 if not ag.get('eligible'):
@@ -3070,9 +3074,12 @@ def _v90r56_trigger_level(row):
       row.get('range_retest_breakout') or {},
       row.get('tactical_reversal') or {},
       row.get('impulse_genesis') or {},
+      row.get('trade_plan') or {},
     ]
     keys=('trigger_level','breakout_level','pre_impulse_swing','level')
     for b in blocks:
+        if b.get('active') is False or b.get('direction',d) not in (d,None):
+            continue
         for k in keys:
             v=_v90r51_num(b.get(k))
             if v and v>0:
@@ -3082,23 +3089,28 @@ def _v90r56_trigger_level(row):
                     return v
     return None
 
-def _v90r56_late_entry_gate(row):
+def _v90r56_late_entry_gate(row,price=None):
     row=row or {}
     h=str(row.get('horizon') or '')
     if h not in _R56_TRIGGER_HORIZONS:
         return {'eligible':False,'reason':'R56_NO_EXECUTION_TIMEFRAME'}
     d=_v90r56_direction(row)
-    px=_v90r51_num(row.get('price'))
+    reference=_v90r51_num(row.get('price'))
+    px=_v90r51_num(price) if price is not None else reference
     if d not in ('LONG','SHORT') or not px or px<=0:
         return {'eligible':False,'reason':'R56_NO_DIRECTION'}
-    rv=abs(float(row.get('realized_vol') or 0.0))
+    rv=abs(_v90r51_num(row.get('realized_vol'),0.0) or 0.0)
     trigger=_v90r56_trigger_level(row)
     if trigger:
         consumed=((px/trigger)-1.0) if d=='LONG' else ((trigger/px)-1.0)
         source='TRIGGER_LEVEL'
     else:
-        try: hr=float(row.get('horizon_return') or 0.0)
-        except Exception: hr=0.0
+        hr=_v90r51_num(row.get('horizon_return'))
+        if hr is None or not reference or reference<=0 or hr<=-1:
+            return {'eligible':False,'reason':'R65_ENTRY_ORIGIN_MISSING'}
+        # Reprice against the ORIGINAL bar origin; replacing row.price alone
+        # would leave a stale return unchanged and admit a late actual fill.
+        hr=(1.0+hr)*px/reference-1.0
         consumed=max(0.0,hr if d=='LONG' else -hr)
         source='HORIZON_RETURN'
     # 5m/1h should not chase a move after most of its normal volatility budget
@@ -3112,6 +3124,7 @@ def _v90r56_late_entry_gate(row):
       'reason':'R56_WAIT_RETEST_LATE_ENTRY' if late else 'R56_ENTRY_TIMING_OK',
       'consumed_move_pct':consumed,'late_entry_limit_pct':limit,
       'realized_vol':rv,'measurement_source':source,'trigger_level':trigger,
+      'evaluated_price':px,'signal_price':reference,
     }
 
 def _v90r56_stop_noise_floor(row,horizon=None):
@@ -4333,15 +4346,68 @@ def _v90r65_best_crypto_genesis(summary,asset):
     rows.sort(key=lambda z:z[0],reverse=True)
     return rows[0][1]
 
+def _v90r65_execution_timing(row,price,direction,ts):
+    """Validate new crypto risk at the executable price, including adds.
+
+    A senior thesis is not an entry trigger. A neutral tactical row is allowed;
+    an observed local reversal is not overridden by an older hourly trend.
+    """
+    row=dict(row or {})
+    if str(row.get('horizon') or '') not in _R56_TRIGGER_HORIZONS:
+        return {'eligible':False,'reason':'R65_LOCAL_ENTRY_TRIGGER_REQUIRED'}
+    now=_v90r55_dt(ts) or datetime.now(timezone.utc)
+    observed=row.get('market_observed_at') or row.get('observed_at')
+    fresh=VPG.quote_gate(observed,now=now,protective=True)
+    if not fresh.get('eligible'):
+        return {'eligible':False,'reason':'R65_ENTRY_QUOTE_NOT_FRESH','quote_gate':fresh}
+    tactical=row.get('_r65_tactical_context')
+    if row.get('horizon')=='5m':
+        tactical=row
+    if not tactical:
+        return {'eligible':False,'reason':'R65_LOCAL_ENTRY_CONTEXT_REQUIRED'}
+    local_fresh=VPG.quote_gate(tactical.get('market_observed_at') or tactical.get('observed_at'),
+                             now=now,protective=True)
+    if not local_fresh.get('eligible'):
+        return {'eligible':False,'reason':'R65_LOCAL_ENTRY_CONTEXT_STALE'}
+    hs=tactical.get('horizon_structure') or {}
+    local_direction=str(hs.get('direction') or '')
+    reversal=str(hs.get('state') or '')=='EXIT_REVERSAL'
+    opposed=bool(local_direction in ('LONG','SHORT') and local_direction!=direction
+                 and str(hs.get('state') or '') in ('BUILDING_TREND','CONFIRMED_TREND'))
+    if reversal or opposed:
+        return {'eligible':False,'reason':'R65_WAIT_LOCAL_REVERSAL',
+                'local_state':hs.get('state'),'local_direction':local_direction}
+    side='BUY' if direction=='LONG' else 'SELL_SHORT'
+    # Use the most recent tactical book; never execute from an old hourly book.
+    fill=VX.simulated_fill(row.get('asset'),side,price,
+                          row.get('_r65_order_fraction',.10),
+                          bid=tactical.get('best_bid'),ask=tactical.get('best_ask'))
+    timing=_v90r56_late_entry_gate(row,fill['fill_price'])
+    return {**timing,'execution_model':fill,'local_state':hs.get('state')}
+
 def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
     out=dict(_v90r65_base_transition_book(summary,core_candidates,mode) or {})
     for asset in _R65_CRYPTO:
         g=_v90r65_best_crypto_genesis(summary,asset)
-        if not g:
-            continue
         old=out.get(asset)
-        if old is None or str(old.get('research_decision') or '')==str(g.get('research_decision') or ''):
+        if g and (old is None or str(old.get('research_decision') or '')==str(g.get('research_decision') or '')):
             out[asset]=g
+        selected=out.get(asset)
+        if not selected:
+            continue
+        # Senior horizons retain their thesis role, but must route an order
+        # through an actual local trigger in every portfolio.
+        if selected.get('horizon') in _R56_SENIOR_HORIZONS:
+            trigger=_v90r56_trigger_row(summary,asset,_v90r56_direction(selected))
+            if trigger:
+                selected={**trigger,'_r56_thesis_horizon':selected.get('horizon')}
+                selected['_pwin'],selected['_pwin_source']=_probability(trigger)
+        selected=dict(selected)
+        local=[r for r in summary or [] if r.get('asset')==asset and r.get('horizon')=='5m']
+        if local:
+            selected['_r65_tactical_context']=dict(max(local,key=lambda r:str(
+                r.get('market_observed_at') or r.get('observed_at') or '')))
+        out[asset]=selected
     return out
 
 def _v90r65_genesis_fraction(row,policy,drawdown):
@@ -4412,14 +4478,26 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     existing=c.execute(
       "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
       (name,asset)).fetchone()
-    if not existing and str(row.get('horizon') or '') in _R56_TRIGGER_HORIZONS:
-        timing=_v90r56_late_entry_gate(row)
+    current=(abs(float(existing.get('units') or 0.0)*float(price))/max(float(nav),1.0)
+             if existing and existing.get('direction')==direction else 0.0)
+    increases_risk=bool(not existing or existing.get('direction')!=direction
+                        or float(target_fraction)>current+.0025)
+    if increases_risk and (asset in _R65_CRYPTO or
+                          (not existing and str(row.get('horizon') or '') in _R56_TRIGGER_HORIZONS)):
+        row['_r65_order_fraction']=max(0.0,float(target_fraction)-current)
+        timing=(_v90r65_execution_timing(row,price,direction,ts) if asset in _R65_CRYPTO
+                else _v90r56_late_entry_gate(row,price))
         if not timing.get('eligible'):
             print(json.dumps({
               'event':'V90_R65_LATE_ENTRY_BLOCKED','portfolio':name,'asset':asset,
               'direction':direction,'price':price,**timing,
             },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
             return 0.0
+        row['_r65_entry_timing']=timing
+        if asset in _R65_CRYPTO:
+            # Preserve the exact book used by the timing check in the fill lane.
+            model=timing.get('execution_model') or {}
+            row['best_bid']=model.get('bid'); row['best_ask']=model.get('ask')
     if not existing and (row.get('_r65_crypto_genesis') or {}).get('eligible'):
         fill=_v90r65_actual_genesis_fill_ok(row,price,direction,target_fraction)
         if not fill.get('eligible'):
@@ -4471,10 +4549,13 @@ def report(pg_connect):
     d=dict(_v90r65_base_report(pg_connect) or {})
     d['crypto_early_capture_r65']={
       'status':'ACTIVE','started_at':V90_R65_STARTED_AT,
+      'entry_path_revision':'2026-10-02-origin-and-executable-fill',
       'assets':['BTC','ETH'],
       'early_genesis':'5m/1h/4h current evidence can start risk before mature-history confirmation',
       'aggressive_initial':'50%; 75% only on strong non-marginal genesis, then add dynamically',
-      'anti_chase':'all portfolios block a NEW 5m/1h/4h entry after volatility budget is consumed',
+      'anti_chase':'all portfolios reprice new entries and adds from the preserved breakout origin; senior-only entries require a local trigger',
+      'local_reversal_veto':True,'trigger_origin_preserved':True,
+      'protective_exit_uses_observed_book':True,
       'historical_management_errors':'may reduce size but cannot force waiting until the local extreme',
       'current_hard_economics':'still authoritative',
       'crypto_structural_trailing_activation_pct':.35,
