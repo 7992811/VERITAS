@@ -79,6 +79,8 @@ const vetoReason=ui.paperStatus(signal).reason;
 assert.equal(vetoReason.split('; ').length,3);
 assert.equal((vetoReason.match(/проверку ожидаемой эффективности/g)||[]).length,1);
 assert.match(vetoReason,/выходом из бокового рынка/);
+assert.match(ui.paperStatus({...signal,trade_plan:{eligible:false,
+  reason:'rule_arbitration_veto:NEGATIVE_VALIDATED_SETUP_EDGE'}}).reason,/Историческая проверка похожих сценариев/);
 ui.st.portfolios=null;
 console.log('Paper signal UI regressions passed');
 

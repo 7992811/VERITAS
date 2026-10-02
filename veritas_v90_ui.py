@@ -319,6 +319,7 @@ const reasonRu=v=>{
   };
   if(exact[k])return exact[k];
   if(!k)return'Причина уточняется';
+  if(k.includes('NEGATIVE_VALIDATED_SETUP_EDGE')||k.includes('NEGATIVE_CONTEXT_EXPECTANCY'))return'Историческая проверка похожих сценариев показывает отрицательный результат';
   if(k.includes('LATE_ENTRY')||k.includes('NO_CHASE'))return'Движение уже прошло слишком далеко; ожидается откат или новый пробой';
   if(k.includes('QUOTE_')||k.includes('CONTEXT_STALE'))return'Котировка или локальный контекст устарели';
   if(k.includes('INVALIDATED'))return'Условия входа утратили актуальность';
