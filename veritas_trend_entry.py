@@ -8,7 +8,8 @@ import hashlib
 import math
 from statistics import median
 
-VERSION = 'R67_LOCAL_LEVEL_BREAKOUT'
+VERSION = 'R68_FRESH_STRUCTURE_DIRECT_QUOTES'
+MAX_CONTEXT_AGE_SECONDS = 900
 
 
 def number(value, default=None):
@@ -81,6 +82,12 @@ def build_context(bars, now, asset='', minute_bars=None, quote=None):
     result = {'version':VERSION, 'status':'INSUFFICIENT', 'event':None,
               'closed_at':bars[-1]['ts']+300 if bars else None, 'levels':[], 'bars':len(bars),
               'asset':asset, 'local_breakout_required':asset=='NQ'}
+    end=timestamp(now)
+    age=end-result['closed_at'] if end is not None and result['closed_at'] is not None else None
+    result.update(age_seconds=age,max_age_seconds=MAX_CONTEXT_AGE_SECONDS)
+    if age is not None and not -5<=age<=MAX_CONTEXT_AGE_SECONDS:
+        result['status']='STALE'
+        return result
     if len(bars) < 36 or any(bars[i]['ts']-bars[i-1]['ts'] != 300 for i in range(len(bars)-24, len(bars))):
         return result
     trs = [max(b['high']-b['low'], abs(b['high']-bars[i-1]['close']),
@@ -215,30 +222,55 @@ def prepare_row(row, price=None):
     return x
 
 
+def context_gate(row, now=None):
+    """Check candle time even when there is no breakout event to inspect."""
+    ctx=context_of(row)
+    if not ctx:
+        return {'eligible':row.get('asset')!='NQ',
+                'reason':'R67_LOCAL_CONTEXT_REQUIRED' if row.get('asset')=='NQ' else 'R66_LEGACY_SIGNAL_PATH'}
+    t=timestamp(now if now is not None else datetime.now(timezone.utc))
+    closed=number(ctx.get('closed_at'))
+    age=t-closed if t is not None and closed is not None else None
+    if age is None or not -5<=age<=MAX_CONTEXT_AGE_SECONDS or ctx.get('status')=='STALE':
+        return {'eligible':False,'reason':'R66_CLOSED_CONTEXT_STALE',
+                'closed_at':closed,'age_seconds':age,'max_age_seconds':MAX_CONTEXT_AGE_SECONDS}
+    if ctx.get('status')!='OK':
+        return {'eligible':False,'reason':'R68_LOCAL_CONTEXT_INCOMPLETE',
+                'closed_at':closed,'age_seconds':age,'bars':ctx.get('bars')}
+    return {'eligible':True,'reason':'R68_CONTEXT_FRESH','closed_at':closed,'age_seconds':age}
+
+
 def event_gate(row, price, direction, now=None):
     ctx=context_of(row); event=ctx.get('event') or {}
     required = row.get('asset')=='NQ' or ctx.get('local_breakout_required')
-    sources=(row.get('_execution_quote') or {}).get('source_names') or row.get('source_names') or row.get('market_source_names') or {}
-    if required and 'proxy' in str(sources.get('primary') or row.get('verification_mode') or '').lower():
+    from veritas_execution import is_proxy_price
+    if is_proxy_price(row.get('asset'),row.get('_execution_quote') or row):
         return {'eligible':False,'reason':'R67_DIRECT_NQ_QUOTE_REQUIRED'}
+    freshness=context_gate(row,now)
+    if not freshness['eligible']:
+        return freshness
     if required and (ctx.get('status')!='OK' or not event):
         return {'eligible':False,'reason':'R67_LOCAL_CONTEXT_REQUIRED' if ctx.get('status')!='OK' else 'R67_WAIT_LOCAL_BREAKOUT'}
     if not event:
         return {'eligible':True,'reason':'R66_LEGACY_SIGNAL_PATH'}
-    t=timestamp(now); closed=number(ctx.get('closed_at'))
+    t=timestamp(now if now is not None else datetime.now(timezone.utc)); closed=number(ctx.get('closed_at'))
     if event.get('direction')!=direction:
         return {'eligible':False,'reason':'R66_LOCAL_EVENT_OPPOSED'}
-    if t and (closed is None or not -5<=t-closed<=900):
-        return {'eligible':False,'reason':'R66_CLOSED_CONTEXT_STALE'}
     a=number(event.get('atr'),0); level=number(event.get('trigger_level'),0); px=number(price,0)
     d=1 if direction=='LONG' else -1
     extension=d*(px-level)/a if a>0 else math.inf
-    recent_retest=bool(event.get('retest_at') and closed and closed-event['retest_at']<=600)
-    timely=event.get('bars_since_signal',99)<=2 or recent_retest
+    # An old serialized snapshot cannot freeze the event's age at zero.
+    clock=t if t is not None else closed
+    signal=number(event.get('signal_at'))
+    event_age=max(number(event.get('bars_since_signal'),99),
+                  max(0.,(clock-signal)//300) if clock and signal else 0.)
+    recent_retest=bool(event.get('retest_at') and clock and 0<=clock-event['retest_at']<=600)
+    timely=event_age<=2 or recent_retest
     ok=bool(timely and -.15<=extension<=(1.5 if required else 1.2))
     return {'eligible':ok,'reason':'R66_EVENT_READY' if ok else 'R66_WAIT_RETEST',
             'event_id':event.get('event_id'),'extension_atr':extension,'recent_retest':recent_retest,
-            'trigger_level':level,'stop_price':event.get('stop_price'), 'signal_at':event.get('signal_at')}
+            'trigger_level':level,'stop_price':event.get('stop_price'), 'signal_at':event.get('signal_at'),
+            'bars_since_signal':event_age,'context_freshness':freshness}
 
 
 def scale_decision(position,row,price,requested,nav,cost=.002,risk_cap=.01):
@@ -272,6 +304,8 @@ def scale_decision(position,row,price,requested,nav,cost=.002,risk_cap=.01):
 
 def trailing_stop(position,row,price,cost=.002):
     ctx=context_of(row); d=1 if position.get('direction')=='LONG' else -1
+    if ctx.get('status')!='OK':
+        return None
     px=number(price,0); entry=number(position.get('avg_entry_price'),0); old=number(position.get('stop_price'))
     a=number(ctx.get('atr'),0); anchor=number(ctx.get('local_support' if d==1 else 'local_resistance'))
     if not old or not anchor or min(px,entry,a)<=0:

@@ -3108,9 +3108,10 @@ def _v90r56_trigger_level(row):
 
 def _v90r56_late_entry_gate(row,price=None):
     row=row or {}
-    if row.get('asset')=='NQ':
-        return VTE.event_gate(row,price if price is not None else row.get('price'),
-                              _v90r56_direction(row),datetime.now(timezone.utc))
+    shared=VTE.event_gate(row,price if price is not None else row.get('price'),
+                         _v90r56_direction(row),datetime.now(timezone.utc))
+    if shared.get('reason')!='R66_LEGACY_SIGNAL_PATH':
+        return shared
     h=str(row.get('horizon') or '')
     if h not in _R56_TRIGGER_HORIZONS:
         return {'eligible':False,'reason':'R56_NO_EXECUTION_TIMEFRAME'}
@@ -4485,7 +4486,7 @@ def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
         if direction not in ('LONG','SHORT') or event.get('direction')!=direction:continue
         old=out.get(asset)
         if old and old.get('research_decision')!=direction:continue
-        ready=VTE.event_gate(r0,r0.get('price'),direction)
+        ready=VTE.event_gate(r0,r0.get('price'),direction,datetime.now(timezone.utc))
         if not ready.get('eligible'):continue
         selected=VTE.prepare_row(r0)
         selected['_pwin'],selected['_pwin_source']=_signal_probability(selected)
@@ -4529,10 +4530,9 @@ def _v90r65_genesis_fraction(row,policy,drawdown):
 
 def _signal_first_admission(row,policy,drawdown):
     row=VTE.prepare_row(row)
-    if row.get('asset')=='NQ':
-        event=VTE.event_gate(row,row.get('price'),row.get('research_decision'),datetime.now(timezone.utc))
-        if not event.get('eligible'):
-            return {'open':False,'fraction':0.,'hard_veto':True,'reason':event['reason'],'trend_event':event}
+    event=VTE.event_gate(row,row.get('price'),row.get('research_decision'),datetime.now(timezone.utc))
+    if not event.get('eligible'):
+        return {'open':False,'fraction':0.,'hard_veto':True,'reason':event['reason'],'trend_event':event}
     g=(row.get('trade_plan') or {}).get('r66_geometry') or {}
     if g.get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
         return {'open':False,'fraction':0.0,'hard_veto':True,'reason':g['reason'],'r66_geometry':g}
@@ -4582,6 +4582,13 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     increases_risk=bool(not existing or existing.get('direction')!=direction
                         or float(target_fraction)>current+.0025)
     if increases_risk:
+        if VX.is_proxy_price(asset,quote or row):
+            _record_entry_outcome(row,'BLOCKED','R67_DIRECT_NQ_QUOTE_REQUIRED')
+            return 0.0
+        context=VTE.context_gate(row,_v90r55_dt(ts))
+        if not context['eligible']:
+            _record_entry_outcome(row,'BLOCKED',context['reason'],context_freshness=context)
+            return 0.0
         fresh=VPG.quote_gate(quote.get('observed_at') or row.get('market_observed_at') or row.get('observed_at'),
                             now=_v90r55_dt(ts),execution=True,asset=asset)
         if not fresh.get('eligible'):

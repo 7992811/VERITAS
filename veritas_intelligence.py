@@ -6528,66 +6528,33 @@ _v90r16_base_moex_market = _moex_market
 _v90r16_moex5_cache = {'at':0.0,'bars':[]}
 
 def _v90r16_moex_index_5m(force=False):
+    import veritas_market_history as MH
     now_ts=time.time()
-    if (not force and _v90r16_moex5_cache.get('bars')
-            and now_ts-float(_v90r16_moex5_cache.get('at') or 0)<240):
-        return list(_v90r16_moex5_cache.get('bars') or [])
-    try:
-        # Two trading days are sufficient for tactical 5m structure and avoid
-        # downloading thousands of 1-minute rows on every cold start.
-        frm=datetime.fromtimestamp(now_ts-2*86400,tz=timezone.utc).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()
-        till=datetime.fromtimestamp(now_ts+3600,tz=timezone.utc).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat()
-        url='https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX/candles.json'
-        one=[]
-        start=0
-        with httpx.Client(timeout=5,headers={'User-Agent':'VERITAS/9.0 R63 research'}) as h:
-            _deadline=time.monotonic()+7.0
-            for _ in range(16):
-                if time.monotonic()>=_deadline:
-                    break
-                r=h.get(url,params={'from':frm,'till':till,'interval':1,'start':start,'iss.meta':'off'})
-                r.raise_for_status()
-                rows=_moex_block(r.json(),'candles')
-                if not rows:
-                    break
-                for x in rows:
-                    dt=_moex_parse_dt(x.get('begin') or x.get('BEGIN'))
-                    if not dt:
-                        continue
-                    cl=float(x.get('close') or x.get('CLOSE') or 0.0)
-                    if cl<=0:
-                        continue
-                    one.append({
-                      'ts':dt.timestamp(),
-                      'open':float(x.get('open') or x.get('OPEN') or cl),
-                      'high':float(x.get('high') or x.get('HIGH') or cl),
-                      'low':float(x.get('low') or x.get('LOW') or cl),
-                      'close':cl,
-                      'volume':float(x.get('value') or x.get('VALUE') or x.get('volume') or x.get('VOLUME') or 0.0),
-                    })
-                if len(rows)<100:
-                    break
-                start+=len(rows)
-        buckets={}
-        for x in one[-5000:]:
-            key=int(float(x['ts'])//300)*300
-            z=buckets.get(key)
-            if z is None:
-                buckets[key]={'ts':float(key),'open':x['open'],'high':x['high'],'low':x['low'],
-                              'close':x['close'],'volume':x['volume']}
-            else:
-                z['high']=max(float(z['high']),float(x['high']))
-                z['low']=min(float(z['low']),float(x['low']))
-                z['close']=float(x['close'])
-                z['volume']=float(z.get('volume') or 0.0)+float(x.get('volume') or 0.0)
-        bars=[buckets[k] for k in sorted(buckets)][-500:]
-        if len(bars)>=12:
-            _v90r16_moex5_cache['at']=now_ts
-            _v90r16_moex5_cache['bars']=list(bars)
-            return bars
-    except Exception as ex:
-        emit('r16_moex_5m_error',error=f'{type(ex).__name__}: {ex}')
-    return list(_v90r16_moex5_cache.get('bars') or [])
+    cache=_v90r16_moex5_cache
+    bars=list(cache.get('bars') or [])
+    closed=bars[-1]['ts']+300 if bars else None
+    # Retrieval cadence and actual last closed candle are independent clocks.
+    if (not force and bars and now_ts-float(cache.get('at') or 0)<60
+            and closed is not None and -5<=now_ts-closed<=900):
+        return bars
+    url='https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX/candles.json'
+    with httpx.Client(timeout=3,headers={'User-Agent':'VERITAS/9.0 R68 research'}) as h:
+        def fetch(params,remaining):
+            response=h.get(url,params=params,timeout=min(3.,remaining))
+            response.raise_for_status()
+            return _moex_block(response.json(),'candles')
+        result=MH.recent_moex_minutes(fetch,now_ts,cache.get('minutes') or [])
+    # Keep new minutes even when a later backfill times out; never replace a
+    # newer cache with older history or certify data by request completion.
+    cache.update(minutes=result['minutes'],bars=result['bars'],at=now_ts,
+                 history_age_seconds=result['history_age_seconds'],
+                 last_closed_at=result['last_closed_at'],fresh=result['fresh'])
+    if result['error'] or not result['fresh']:
+        emit('r68_moex_history',status='FRESH_PARTIAL_BACKFILL' if result['fresh'] else 'STALE',
+             last_closed_at=result['last_closed_at'],age_seconds=result['history_age_seconds'],
+             pages=result['pages'],error=result['error'])
+    return list(result['bars'])
+
 
 def _moex_market():
     pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='veritas-moex')
@@ -9487,7 +9454,7 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
         fm=pool.submit(_yahoo_series,yahoo_symbol,'1d','1m',True) if asset=='NQ' else None
         f5=None if reuse5 else pool.submit(_yahoo_series,yahoo_symbol,'5d','5m',True)
         f1=None if reuse1 else pool.submit(_yahoo_series,yahoo_symbol,'3mo','1h',True)
-        fp=pool.submit(_yahoo_series,proxy_symbol,'5d','5m',True)
+        fp=pool.submit(_yahoo_series,proxy_symbol,'5d','5m',True) if asset!='NQ' else None
         fs=pool.submit(_v90_stooq_public_quote,stooq_symbol) if stooq_symbol else None
         fpf=pool.submit(_v90r61_profinance_quote,asset) if str(asset) in ('NQ','GOLD','BRENT') else None
         if reuse5:
@@ -9508,8 +9475,8 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
             except Exception as ex:
                 bars1h=list(_hc.get('bars1h') or []) if _cache_ok else []
                 emit('r64_futures_1h_cache_fallback',asset=asset,bars=len(bars1h),provider_detail=f'{type(ex).__name__}: {ex}')
-        try: pr,_=fp.result(timeout=4.0)
-        except Exception: pr=list(_hc.get('proxy') or []) if _cache_ok else []
+        try: pr,_=fp.result(timeout=4.0) if fp is not None else ([],{})
+        except Exception: pr=list(_hc.get('proxy') or []) if _cache_ok and asset!='NQ' else []
         try: sq=fs.result(timeout=4.0) if fs is not None else {'ok':False,'error':'not_configured'}
         except Exception as ex: sq={'ok':False,'error':f'{type(ex).__name__}: {ex}'}
         try: pf=fpf.result(timeout=4.0) if fpf is not None else {}
@@ -9520,6 +9487,11 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
         pool.shutdown(wait=False,cancel_futures=True)
     if len(bars1h)<200:
         raise RuntimeError(f'INSUFFICIENT_{asset}_HOURLY_BARS {len(bars1h)}')
+    if asset=='NQ':
+        from veritas_local_breakout import backfill_five_minutes
+        # Direct minutes may complete cached bars; QQQ and quote-anchor bars
+        # never enter any NQ structure consumer, not just the new event module.
+        bars5=backfill_five_minutes(bars5,minutes,datetime.now(timezone.utc))
     refreshed_at=time.time()
     bars5_at=(refreshed_at if bars5_fetched else (_b5_at or refreshed_at))
     bars1h_at=(refreshed_at if bars1h_fetched else (_b1_at or refreshed_at))
@@ -9528,6 +9500,12 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
             'at':refreshed_at,'bars5_at':bars5_at,'bars1h_at':bars1h_at,
             'bars5':list(bars5),'bars1h':list(bars1h),'proxy':list(pr or []),'minutes':list(minutes)}
     last=bars5[-1] if bars5 else bars1h[-1]
+    if asset=='NQ' and minutes:
+        observed_minutes=[b for b in minutes if float(b.get('ts') or 0)<=time.time()+5
+                          and b.get('source') not in ('PROXY_TIMING_BRIDGE','DIRECT_QUOTE_ANCHOR')]
+        if observed_minutes:
+            newest=max(observed_minutes,key=lambda b:float(b['ts']))
+            if newest['ts']>last['ts']:last=newest
     delayed_price=float(last['close'])
     delayed_observed=datetime.fromtimestamp(last['ts'],tz=timezone.utc).isoformat()
     closes=[float(x['close']) for x in bars1h[-1800:]]
@@ -9563,16 +9541,17 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
         try:
             pp=float(pf.get('price') or 0.0); pa=_age_seconds(pf.get('observed_at'))
             pd=abs(pp-delayed_price)/((pp+delayed_price)/2.0) if pp>0 else None
-            direct_candidates.append({'source':'ProFinance','price':pp,
+            direct_candidates.append({'source':'ProFinance NASD100_FUT' if asset=='NQ' else 'ProFinance','price':pp,
                                       'observed_at':pf.get('observed_at'),'age_seconds':pa,
-                                      'divergence':pd,'ok':bool(pa is not None and -5<=pa<=180
+                                      'divergence':pd,'ok':bool((asset!='NQ' or pf.get('raw_label')=='NASD100_FUT')
+                                                               and pa is not None and -5<=pa<=120
                                                                and pd is not None and pd<=max_div)})
         except Exception:
             pass
     usable_direct=[x for x in direct_candidates if x.get('ok')]
     # Prefer the freshest direct futures quote; ProFinance wins ties.
     direct=min(usable_direct,key=lambda x:(float(x.get('age_seconds') or 9e9),
-                                           0 if x.get('source')=='ProFinance' else 1)) if usable_direct else None
+                                           0 if str(x.get('source')).startswith('ProFinance') else 1)) if usable_direct else None
     proxy_fresh=bool(pr and proxy_age is not None and -5<=proxy_age<=V90_PROXY_BRIDGE_FRESH_SECONDS)
     delayed_usable=bool(delayed_age is not None and delayed_age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
 
@@ -9580,9 +9559,9 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
         price=float(direct['price']); observed=direct['observed_at']
         mode='PUBLIC_DIRECT_FUTURES_PAPER'; latency='PUBLIC_DIRECT_PAPER'
         live_ts=datetime.fromisoformat(str(observed).replace('Z','+00:00')).timestamp()
-        ib=_v90_proxy_bridge_intraday(bars5,pr,price,live_ts)
+        ib=bars5 if asset=='NQ' else _v90_proxy_bridge_intraday(bars5,pr,price,live_ts)
         secondary=delayed_price; divergence=float(direct.get('divergence') or 0.0)
-    elif proxy_fresh and delayed_usable and bars5 and pr:
+    elif asset!='NQ' and proxy_fresh and delayed_usable and bars5 and pr:
         base=min(pr,key=lambda x:abs(float(x.get('ts') or 0)-float(last.get('ts') or 0)))
         bp=float(base.get('close') or 0.0); pp=float(pr[-1].get('close') or 0.0)
         if bp>0 and pp>0:
@@ -9611,12 +9590,12 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
                            'divergence':direct['divergence'],'fresh':True,
                            'direction_agrees':True,'role':'direct_futures_quote'},
                    'checks':direct_candidates+(freshness.get('checks') or []),
-                   'policy':'PREFER_FRESH_DIRECT_FUTURES_THEN_PROXY_BRIDGE',
+                   'policy':'DIRECT_NQ_ONLY' if asset=='NQ' else 'PREFER_FRESH_DIRECT_FUTURES_THEN_PROXY_BRIDGE',
                    'production_eligible':False}
     quality=[]
     quality.append(_source_row('ProFinance',f'{asset} futures','fresh public verifier',
                   pf.get('observed_at') if pf else None,0,
-                  'OK' if any(x.get('source')=='ProFinance' and x.get('ok') for x in direct_candidates) else 'UNAVAILABLE_OR_STALE',
+                  'OK' if any(str(x.get('source')).startswith('ProFinance') and x.get('ok') for x in direct_candidates) else 'UNAVAILABLE_OR_STALE',
                   'paper-only public quote verification','ProFinance'))
     if stooq_symbol:
         quality.append(_source_row('Stooq public futures quote',f'{asset} futures','fresh paper quote candidate',
@@ -9626,16 +9605,17 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
     quality.extend([
       _source_row(source_name,f'{asset} futures','historical/delayed anchor',delayed_observed,delay,
                   'OK_ANCHOR' if delayed_usable else 'STALE_OR_CLOSED',
-                  DATA_SOURCE_POLICY[policy_key]['commercial_note'],'Yahoo'),
-      _source_row(f'{proxy_symbol} proxy',f'{asset} proxy','fresh timing verification',proxy_obs,0,
-                  'OK' if proxy_fresh else 'NOT_FRESH',proxy_note,'Yahoo')
+                  DATA_SOURCE_POLICY[policy_key]['commercial_note'],'Yahoo')
     ])
+    if asset!='NQ':
+        quality.append(_source_row(f'{proxy_symbol} proxy',f'{asset} proxy','fresh timing verification',proxy_obs,0,
+                       'OK' if proxy_fresh else 'NOT_FRESH',proxy_note,'Yahoo'))
     _set_source_quality(quality)
     primary_name=(direct.get('source') if direct else
                   (f'{proxy_symbol} proxy bridge' if mode.startswith('PROXY') else source_name))
     return {'asset':asset,'price':price,'secondary_price':secondary,'coinbase_price':None,
             'source_divergence':divergence,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
-            'intraday_bars':ib,'intraday_5m':ib,'volume_intraday_bars':pr,
+            'intraday_bars':ib,'intraday_5m':ib,'volume_intraday_bars':bars5 if asset=='NQ' else pr,
             'structure_intraday_bars':bars5,'structure_minute_bars':minutes,
             'structure_quote':{'price':price,'observed_at':observed,
                                'direct':bool(direct), 'paper_only':True},
@@ -9646,7 +9626,8 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
             'data_latency_class':latency,'verification_mode':mode,
             'freshness_verification':freshness,
             'production_direct_feed':False,
-            'source_names':{'primary':primary_name,'secondary':source_name if direct else f'{proxy_symbol} timing proxy'},
+            'source_names':{'primary':primary_name,'secondary':source_name if direct else
+                            ('NOT_CONFIGURED' if asset=='NQ' else f'{proxy_symbol} timing proxy')},
             'fresh_quote_diagnostics':{'direct_candidates':direct_candidates,
                                        'selected_direct_source':direct.get('source') if direct else None,
                                        'proxy_fresh':proxy_fresh,'proxy_age_seconds':proxy_age,
@@ -12767,7 +12748,13 @@ def product_health():
     except Exception: pass
     storage=pg_storage_status()
     status='ok' if cyc.get('status')=='ok' and storage.get('ok') and (age is None or age<=PRODUCT_STALE_MINUTES) else 'degraded'
+    market_data={}
+    for row in cyc.get('summary') or []:
+        asset=row.get('asset')
+        if asset and (row.get('horizon')=='5m' or asset not in market_data):
+            market_data[asset]=VTE.context_gate(row,datetime.now(timezone.utc))
     return {'status':status,'version':VERSION,'execution_revision':VTE.VERSION,'cycle_age_min':age,'cycle_status':cyc.get('status'),
+            'entry_context_by_asset':market_data,
             'storage':storage,'stale_after_min':PRODUCT_STALE_MINUTES,'backtest':backtest_status().get('latest_run')}
 
 
@@ -18757,6 +18744,11 @@ def final_execution_safety(asset,research_decision,plan):
     gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
         'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
     }
+    context=VTE.context_gate({'asset':asset,'trade_plan':plan},datetime.now(timezone.utc))
+    gate['context_freshness']=context
+    if research_decision in ('LONG','SHORT') and not context['eligible']:
+        gate.update(status='BLOCK',eligible=False)
+        gate['blockers'].append(context['reason'])
     if (plan.get('r66_geometry') or {}).get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
         gate.update(status='BLOCK',eligible=False)
         gate['blockers'].append('R66_SENIOR_BREAK_NOT_HELD')

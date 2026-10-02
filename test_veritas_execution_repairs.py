@@ -1466,7 +1466,7 @@ class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
 
     def test_profinance_can_be_selected_as_direct_nq_futures_source(self):
         now=datetime.now(timezone.utc)
-        pf={'price':30010.0,'observed_at':now.isoformat(),'source':'ProFinance'}
+        pf={'price':30010.0,'observed_at':now.isoformat(),'source':'ProFinance','raw_label':'NASD100_FUT'}
         bars5=[{'ts':now.timestamp()-300*i,'open':30000,'high':30020,'low':29980,
                 'close':30000,'volume':100} for i in reversed(range(20))]
         bars1h=[{'ts':now.timestamp()-3600*i,'open':30000,'high':30020,'low':29980,
@@ -1482,14 +1482,14 @@ class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
                  patch.object(VI,'_v90_stooq_public_quote',return_value={'ok':False,'error':'x'}), \
                  patch.object(VI,'_v90r61_profinance_quote',return_value=pf):
                 out=VI._yahoo_research_futures_market('NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
-            self.assertEqual(out['source_names']['primary'],'ProFinance')
+            self.assertEqual(out['source_names']['primary'],'ProFinance NASD100_FUT')
             self.assertEqual(out['verification_mode'],'PUBLIC_DIRECT_FUTURES_PAPER')
-            self.assertEqual((out['freshness_verification']['best'] or {}).get('source'),'ProFinance')
+            self.assertEqual((out['freshness_verification']['best'] or {}).get('source'),'ProFinance NASD100_FUT')
         finally:
             VI._v90r63_futures_history_cache.clear()
             VI._v90r63_futures_history_cache.update(old_cache)
 
-    def test_warm_nq_refresh_reuses_history_but_refreshes_live_proxy(self):
+    def test_warm_nq_refresh_reuses_history_without_fetching_proxy(self):
         now=datetime.now(timezone.utc)
         bars5=[{'ts':now.timestamp()-300*i,'open':30000,'high':30020,'low':29980,
                 'close':30000,'volume':100} for i in reversed(range(20))]
@@ -1508,8 +1508,8 @@ class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
                  patch.object(VI,'_v90r61_profinance_quote',return_value={}):
                 out=VI._yahoo_research_futures_market(
                     'NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
-            self.assertEqual(ys.call_count,2)  # fresh proxy and independent NQ 1m trigger
-            self.assertEqual({call.args[2] for call in ys.call_args_list},{'1m','5m'})
+            self.assertEqual(ys.call_count,1)  # independent direct NQ 1m trigger
+            self.assertEqual({call.args[2] for call in ys.call_args_list},{'1m'})
             hc=out['fresh_quote_diagnostics']['history_cache']
             self.assertTrue(hc['bars5_reused'])
             self.assertTrue(hc['bars1h_reused'])
@@ -2005,9 +2005,8 @@ class ColdFastLaneAndMOEXR63DTests(unittest.TestCase):
         src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
         pos=src.index('def _v90r16_moex_index_5m')
         body=src[pos:pos+6500]
-        self.assertIn('now_ts-2*86400',body)
-        self.assertIn("httpx.Client(timeout=5",body)
-        self.assertIn("_deadline=time.monotonic()+7.0",body)
+        self.assertIn('MH.recent_moex_minutes',body)
+        self.assertIn("httpx.Client(timeout=3",body)
         wpos=src.index('def _moex_market():',pos)
         wrapper=src[wpos:wpos+2200]
         self.assertIn("ThreadPoolExecutor(max_workers=2",wrapper)

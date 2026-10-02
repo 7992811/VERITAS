@@ -63,6 +63,17 @@ def research_paper_source_ok(raw: Dict[str, Any]) -> bool:
                 and price is not None and price > 0)
 
 
+def is_proxy_price(asset, raw):
+    """NQ prices must remain observed futures prices across the entire book."""
+    if asset != 'NQ':
+        return False
+    raw=raw or {}
+    names=raw.get('source_names') or raw.get('market_source_names') or {}
+    labels=' '.join(str(v or '') for v in (
+        names.get('primary'),raw.get('verification_mode'),raw.get('data_latency_class'),raw.get('source'))).upper()
+    return 'PROXY' in labels or 'QQQ' in labels
+
+
 def paper_source_gate(asset, raw, clock_info=None):
     """Single authority for source admission to every normalized paper portfolio.
 
@@ -73,6 +84,8 @@ def paper_source_gate(asset, raw, clock_info=None):
     blockers = []
     if asset not in PAPER_ASSETS:
         blockers.append("UNSUPPORTED_PAPER_ASSET")
+    if is_proxy_price(asset,r):
+        blockers.append("R67_DIRECT_NQ_QUOTE_REQUIRED")
     if not r.get("source_gate_pass"):
         blockers.append("PRIMARY_SOURCE_GATE_FAILED")
     if not r.get("market_open"):
@@ -217,12 +230,15 @@ def entry_gate(row, price, direction, fraction, position=None):
     timing = quote_gate(execution.get('observed_at') or row.get('market_observed_at') or row.get('observed_at') or plan.get('market_observed_at'),
                         row.get('horizon'),execution=True,asset=row.get('asset'))
     gate['entry_geometry']=geometry
-    if row.get('asset')=='NQ' and not position:
-        event=VTE.event_gate(row,gate.get('modeled_entry_fill') or price,direction,datetime.now(timezone.utc))
-        gate['trend_event']=event
-        if not event.get('eligible'):
-            gate.update(eligible=False,status='BLOCK')
-            gate['blockers'].append(event['reason'])
+    if is_proxy_price(row.get('asset'),execution or row):
+        gate.update(eligible=False,status='BLOCK')
+        gate['blockers'].append('R67_DIRECT_NQ_QUOTE_REQUIRED')
+    event=(VTE.context_gate(row,datetime.now(timezone.utc)) if position else
+           VTE.event_gate(row,gate.get('modeled_entry_fill') or price,direction,datetime.now(timezone.utc)))
+    gate['trend_event']=event
+    if not event.get('eligible'):
+        gate.update(eligible=False,status='BLOCK')
+        gate['blockers'].append(event['reason'])
     if geometry.get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
         gate['eligible']=False;gate['status']='BLOCK';gate['blockers'].append(geometry['reason'])
     gate['quote_time_gate'] = timing

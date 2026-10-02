@@ -36,7 +36,8 @@ def refresh_entry_quotes(summary):
     refresh=[]
     for asset in assets:
         q=cached[asset]
-        if q.get('source_gate_pass') and quote_gate(q.get('observed_at'),now=now,execution=True,asset=asset)['eligible']:
+        if (q.get('source_gate_pass') and not VX.is_proxy_price(asset,q)
+                and quote_gate(q.get('observed_at'),now=now,execution=True,asset=asset)['eligible']):
             quotes[asset]=q
         else:
             refresh.append(asset)
@@ -45,7 +46,8 @@ def refresh_entry_quotes(summary):
         for asset,job in jobs.items():
             try:
                 q=job.result()
-                if q.get('source_gate_pass') and quote_gate(q.get('observed_at'),execution=True,asset=asset)['eligible']:
+                if (q.get('source_gate_pass') and not VX.is_proxy_price(asset,q)
+                        and quote_gate(q.get('observed_at'),execution=True,asset=asset)['eligible']):
                     publish_quote(asset,q);quotes[asset]=q
             except Exception:
                 pass
@@ -72,7 +74,7 @@ def book_transaction(c):
 
 
 def publish_quote(asset, raw):
-    if not raw or not raw.get('observed_at') or not raw.get('source_gate_pass'):
+    if not raw or not raw.get('observed_at') or not raw.get('source_gate_pass') or VX.is_proxy_price(asset,raw):
         return
     with _quotes_lock:
         old = _quotes.get(asset) or {}
@@ -89,6 +91,8 @@ def latest_prices(summary, now=None):
     best = {}
     for row in summary or []:
         execution=row.get('_execution_quote') or {}
+        if VX.is_proxy_price(row.get('asset'),execution or row):
+            continue
         observed = execution.get('observed_at') or row.get('market_observed_at') or row.get('observed_at')
         if not row.get('asset') or not quote_gate(observed, now=now, protective=True)['eligible']:
             continue
@@ -116,7 +120,7 @@ def exit_execution_quote(z,now=None):
     if quote is None:
         with _quotes_lock:
             quote=dict(_quotes.get(z.get('asset')) or {})
-    if not quote or not quote.get('source_gate_pass'):
+    if not quote or not quote.get('source_gate_pass') or VX.is_proxy_price(z.get('asset'),quote):
         return {}
     if not quote_gate(quote.get('observed_at'),now=now,protective=True)['eligible']:
         return {}
@@ -389,7 +393,8 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             # protection from it, and protective=True allowed observations up to
             # one hour old. Fail closed before touching the position.
             q_quality = quote_gate((q or {}).get('observed_at'), now=now, protective=True)
-            if not (q or {}).get('source_gate_pass') or not q_quality.get('eligible'):
+            if (not (q or {}).get('source_gate_pass') or not q_quality.get('eligible')
+                    or VX.is_proxy_price(z['asset'],q)):
                 continue
 
             # R55: persist lifetime excursion from the independent fresh
