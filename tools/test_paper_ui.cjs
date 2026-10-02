@@ -68,6 +68,17 @@ trace.execution={checked_at:new Date().toISOString(),status:'HELD',reason:'TARGE
 assert.equal(ui.paperStatus(signal).short,'позиция');
 trace.horizon='4h';
 assert.equal(ui.paperStatus(signal).short,'другой ТФ');
+// Overlapping refusals from multiple portfolios must each appear only once.
+const veto={...trace,horizon:'1h',hard_veto:true,
+  execution:{checked_at:new Date().toISOString(),status:'NOT_REQUESTED',reason:'NO_NEW_ALLOCATION'}};
+ui.st.portfolios={portfolios:[
+  {name:'Impulse',admission_trace:[{...veto,profitability_blockers:['LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL','EARLY_BREAKOUT_IN_RANGE_REGIME']}]},
+  {name:'Champion',admission_trace:[{...veto,profitability_blockers:['INSUFFICIENT_INDEPENDENT_EVIDENCE','LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL','EARLY_BREAKOUT_IN_RANGE_REGIME']}]},
+]};
+const vetoReason=ui.paperStatus(signal).reason;
+assert.equal(vetoReason.split('; ').length,3);
+assert.equal((vetoReason.match(/проверку ожидаемой эффективности/g)||[]).length,1);
+assert.match(vetoReason,/выходом из бокового рынка/);
 ui.st.portfolios=null;
 console.log('Paper signal UI regressions passed');
 

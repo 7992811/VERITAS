@@ -272,7 +272,7 @@ const paperStatus=x=>{
   if(checked.some(t=>t.execution?.status==='EXECUTED'))return{ready:true,short:'исполнен',reason:checked.filter(t=>t.execution?.status==='EXECUTED').map(t=>t.portfolio).join(', ')+': ордер исполнен'};
   const held=checked.filter(t=>t.execution?.status==='HELD');
   if(held.length)return{ready:false,short:'позиция',reason:held.map(t=>t.portfolio).join(', ')+': '+traceReason(held[0])};
-  return{ready:false,short:'ожидание',reason:[...new Set(checked.map(traceReason))].join('; ')};
+  return{ready:false,short:'ожидание',reason:[...new Set(checked.flatMap(t=>traceReason(t).split('; ')))].join('; ')};
 };
 const rrOf=x=>x?.expected_to_stop_ratio??planOf(x).expected_to_stop_ratio;
 const stopOf=x=>x?.stop_price??planOf(x).stop_price;
@@ -307,6 +307,7 @@ const reasonRu=v=>{
     INSUFFICIENT_MULTI_TF_ALIGNMENT:'Недостаточно согласованных периодов',
     HORIZON_STRUCTURE_TOO_WEAK:'Структура тренда недостаточно сильная',
     LEARNED_EARLY_BREAKOUT_EDGE_TOO_SMALL:'Ранний пробой пока не прошёл проверку ожидаемой эффективности',
+    EARLY_BREAKOUT_IN_RANGE_REGIME:'Ранний пробой ещё не подтверждён выходом из бокового рынка',
     R56_SENIOR_BIAS_REQUIRES_ENTRY_TRIGGER:'Нет подтверждённой локальной точки входа',
     R65_LOCAL_ENTRY_TRIGGER_REQUIRED:'Старший прогноз требует локальной точки входа',
     R65_LOCAL_ENTRY_CONTEXT_REQUIRED:'Нет актуального пятиминутного контекста',
