@@ -80,7 +80,7 @@ def publish_quote(asset, raw):
         if dt and (prev is None or dt >= prev):
             _quotes[asset] = {k: raw.get(k) for k in ('price', 'best_bid', 'best_ask', 'bid', 'ask',
                              'observed_at', 'contract', 'source_gate_pass', 'market_open',
-                             'data_latency_class')}
+                             'data_latency_class','source_names','verification_mode')}
 
 
 def latest_prices(summary, now=None):
@@ -611,11 +611,27 @@ def fetch_guard_quote(ns, asset, positions):
             return dict(ns['_moex_futures_current_quote'](contract), source_gate_pass=True,
                         contract={'secid': contract})
     if asset in ('NQ', 'GOLD'):
+        # Match the main paper adapter's fresh NQ channel. Do not treat an index
+        # quote or a differently specified contract as a futures protective quote.
+        if asset=='NQ' and ns.get('_v90r61_profinance_quote') and not any(
+                payload_of(z).get('entry_contract_secid') or
+                (payload_of(z).get('contract_identity') or {}).get('contract_id') for z in positions):
+            try:
+                q=ns['_v90r61_profinance_quote']('NQ') or {}
+                price=float(q.get('price') or 0.)
+                if (q.get('raw_label')=='NASD100_FUT' and math.isfinite(price) and price>0
+                        and quote_gate(q.get('observed_at'),execution=True,asset='NQ')['eligible']):
+                    return dict(q,price=price,source_gate_pass=True,market_open=True,
+                                source_names={'primary':'ProFinance NASD100_FUT'},
+                                verification_mode='PUBLIC_DIRECT_FUTURES_PAPER',paper_only=True)
+            except Exception:
+                pass
         rows, _ = ns['_yahoo_series']({'NQ': 'NQ%3DF', 'GOLD': 'GC%3DF'}[asset], '1d', '1m', True)
         if rows:
             row = rows[-1]
             return {'price': row['close'], 'observed_at': datetime.fromtimestamp(row['ts'], timezone.utc).isoformat(),
-                    'source_gate_pass': True, 'market_open': True}
+                    'source_gate_pass': True, 'market_open': True,
+                    'source_names':{'primary':'Yahoo '+asset+' futures'},'paper_only':True}
     return cached
 
 

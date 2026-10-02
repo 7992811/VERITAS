@@ -6796,6 +6796,15 @@ def _v90r63_nq_trend_bridge(asset,horizon,f,research_dec,confidence):
     """
     if str(asset)!='NQ' or str(horizon) not in ('5m','1h') or str(research_dec)!='NO_TRADE':
         return {'active':False}
+    import veritas_trend_entry as VTE
+    ctx=(f or {}).get('trend_entry_context') or {}
+    event=ctx.get('event') or {}
+    early=VTE.event_gate({'asset':asset,'trend_entry_context':ctx},
+                        (f or {}).get('price'),event.get('direction'),datetime.now(timezone.utc))
+    if early.get('eligible'):
+        return {'active':True,'direction':event['direction'],
+                'confidence':max(float(confidence or 0),.60),
+                'reason':'R67_LOCAL_LEVEL_BREAKOUT','trend_event':event}
     f=f or {}; ti=f.get('trend_impulse') or {}; st=f.get('intraday_structure') or {}
     direction=str(ti.get('direction') or st.get('direction') or 'NO_TRADE')
     if direction not in ('LONG','SHORT'):
@@ -9473,8 +9482,9 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
     reuse1=bool(len(_hc.get('bars1h') or [])>=200 and now_fetch-_b1_at<=900.0)
     bars5_fetched=False
     bars1h_fetched=False
-    pool=ThreadPoolExecutor(max_workers=5,thread_name_prefix=f'veritas-{asset.lower()}')
+    pool=ThreadPoolExecutor(max_workers=6,thread_name_prefix=f'veritas-{asset.lower()}')
     try:
+        fm=pool.submit(_yahoo_series,yahoo_symbol,'1d','1m',True) if asset=='NQ' else None
         f5=None if reuse5 else pool.submit(_yahoo_series,yahoo_symbol,'5d','5m',True)
         f1=None if reuse1 else pool.submit(_yahoo_series,yahoo_symbol,'3mo','1h',True)
         fp=pool.submit(_yahoo_series,proxy_symbol,'5d','5m',True)
@@ -9504,6 +9514,8 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
         except Exception as ex: sq={'ok':False,'error':f'{type(ex).__name__}: {ex}'}
         try: pf=fpf.result(timeout=4.0) if fpf is not None else {}
         except Exception: pf={}
+        try: minutes,_=fm.result(timeout=3.0) if fm is not None else ([],{})
+        except Exception: minutes=list(_hc.get('minutes') or [])
     finally:
         pool.shutdown(wait=False,cancel_futures=True)
     if len(bars1h)<200:
@@ -9514,7 +9526,7 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
     with _v90r63_futures_history_lock:
         _v90r63_futures_history_cache[str(asset)]={
             'at':refreshed_at,'bars5_at':bars5_at,'bars1h_at':bars1h_at,
-            'bars5':list(bars5),'bars1h':list(bars1h),'proxy':list(pr or [])}
+            'bars5':list(bars5),'bars1h':list(bars1h),'proxy':list(pr or []),'minutes':list(minutes)}
     last=bars5[-1] if bars5 else bars1h[-1]
     delayed_price=float(last['close'])
     delayed_observed=datetime.fromtimestamp(last['ts'],tz=timezone.utc).isoformat()
@@ -9624,6 +9636,9 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
     return {'asset':asset,'price':price,'secondary_price':secondary,'coinbase_price':None,
             'source_divergence':divergence,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
             'intraday_bars':ib,'intraday_5m':ib,'volume_intraday_bars':pr,
+            'structure_intraday_bars':bars5,'structure_minute_bars':minutes,
+            'structure_quote':{'price':price,'observed_at':observed,
+                               'direct':bool(direct), 'paper_only':True},
             'daily_bars':_v90_hourly_to_daily(bars1h),'hourly_bars':bars1h,
             'taker_buy':taker,'returns':rets,
             'binance_close_time_ms':int((datetime.fromisoformat(str(observed).replace('Z','+00:00')).timestamp())*1000),
@@ -18658,8 +18673,9 @@ def features(raw, horizon, common_structure=None):
     import veritas_trend_entry as VTE
     if '_r66_trend_context' not in raw:
         raw['_r66_trend_context']=VTE.build_context(
-            raw.get('intraday_bars') or raw.get('intraday_5m') or [],
-            datetime.now(timezone.utc),raw.get('asset') or '')
+            raw.get('structure_intraday_bars',raw.get('intraday_bars') or raw.get('intraday_5m') or []),
+            datetime.now(timezone.utc),raw.get('asset') or '',
+            minute_bars=raw.get('structure_minute_bars'),quote=raw.get('structure_quote'))
     f['trend_entry_context']=raw['_r66_trend_context']
     f['market_contract']=raw.get('contract')
     f['market_source_names']=raw.get('source_names')

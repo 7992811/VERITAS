@@ -472,6 +472,7 @@ def _portfolio_admission_trace(candidates, policy, drawdown):
             'hard_veto':not bool(sf.get('open')),
             'target_fraction':sf.get('fraction'),
             'reason':sf.get('reason'),
+            'trend_event':sf.get('trend_event'),
             'execution':dict(row.get('_execution_audit') or {}),
             'signal_observed_at':row.get('market_observed_at') or row.get('observed_at'),
             'economics_blockers':sf.get('economics_blockers'),
@@ -3107,6 +3108,9 @@ def _v90r56_trigger_level(row):
 
 def _v90r56_late_entry_gate(row,price=None):
     row=row or {}
+    if row.get('asset')=='NQ':
+        return VTE.event_gate(row,price if price is not None else row.get('price'),
+                              _v90r56_direction(row),datetime.now(timezone.utc))
     h=str(row.get('horizon') or '')
     if h not in _R56_TRIGGER_HORIZONS:
         return {'eligible':False,'reason':'R56_NO_EXECUTION_TIMEFRAME'}
@@ -3157,6 +3161,12 @@ def _v90r56_entry_stop(row):
     px=_v90r51_num(row.get('price'))
     if d not in ('LONG','SHORT') or not px or px<=0:
         return None
+    event=VTE.context_of(row).get('event') or {}
+    if row.get('asset')=='NQ' and event.get('direction')==d:
+        stop=VTE.number(event.get('stop_price'))
+        if stop and (px-stop)*(1 if d=='LONG' else -1)>0:
+            return {'stop_price':stop,'management_horizon':'5m','noise_floor_pct':0.,
+                    'structural':event,'planned_stop_price':stop,'method':'R67_IMPULSE_ORIGIN'}
     h=str(row.get('_r56_management_horizon') or row.get('horizon') or '1h')
     base=_v90r54_structural_stop(row)
     plan=row.get('trade_plan') or {}
@@ -3235,6 +3245,14 @@ def _v90r56_tp_plan(row,stop_meta=None):
 
 def _v90r56_prepare_entry_row(row):
     x=dict(row or {})
+    if x.get('asset')=='NQ' and (VTE.context_of(x).get('event') or {}).get('event_type')=='LOCAL_RANGE_BREAKOUT':
+        x=VTE.prepare_row(x)
+        x['_r56_stop_plan']=_v90r56_entry_stop(x)
+        plan=x.get('trade_plan') or {}
+        x['_r56_tp_plan']={'tp1_price':plan.get('target_price'),
+                          'runner_target_price':plan.get('r66_runner_target_price'),
+                          'tp1_source':'R67_NEAREST_SENIOR_BARRIER','management_horizon':'5m'}
+        return x
     plan=dict(x.get('trade_plan') or {})
     sm=_v90r56_entry_stop(x)
     if sm:
@@ -4511,6 +4529,10 @@ def _v90r65_genesis_fraction(row,policy,drawdown):
 
 def _signal_first_admission(row,policy,drawdown):
     row=VTE.prepare_row(row)
+    if row.get('asset')=='NQ':
+        event=VTE.event_gate(row,row.get('price'),row.get('research_decision'),datetime.now(timezone.utc))
+        if not event.get('eligible'):
+            return {'open':False,'fraction':0.,'hard_veto':True,'reason':event['reason'],'trend_event':event}
     g=(row.get('trade_plan') or {}).get('r66_geometry') or {}
     if g.get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
         return {'open':False,'fraction':0.0,'hard_veto':True,'reason':g['reason'],'r66_geometry':g}
@@ -4565,11 +4587,29 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         if not fresh.get('eligible'):
             _record_entry_outcome(row,'BLOCKED','R66_EXECUTION_QUOTE_STALE',quote_gate=fresh)
             return 0.0
-        if not existing:
-            event=VTE.event_gate(row,price,direction,ts)
+        if not existing or existing.get('direction')!=direction:
+            fill=VX.simulated_fill(asset,'BUY' if direction=='LONG' else 'SELL_SHORT',price,
+                                  target_fraction,bid=row.get('best_bid'),ask=row.get('best_ask'))
+            event=VTE.event_gate(row,fill['fill_price'],direction,ts)
             if not event['eligible']:
                 _record_entry_outcome(row,'BLOCKED',event['reason'],trend_event=event)
                 return 0.0
+            if asset=='NQ':
+                stop=VTE.number((row.get('trade_plan') or {}).get('stop_price'))
+                risk=abs(float(fill['fill_price'])-stop)/float(fill['fill_price']) if stop else 0.
+                costs=VX.economics_gate(asset,dict(row.get('trade_plan') or {},entry_price=price,
+                    direction=direction,initial_position_fraction=target_fraction,horizon=row.get('horizon')))
+                net_risk=max(risk+VX.round_trip_cost_pct(row.get('spread_bps')),
+                             float(costs.get('net_risk_pct') or 0.))
+                cap=MAX_STOP_RISK_NAV/net_risk if risk>0 else 0.
+                target_fraction=min(float(target_fraction),math.floor(cap/.05)*.05)
+                if target_fraction<=0:
+                    _record_entry_outcome(row,'BLOCKED','R67_STRUCTURAL_STOP_RISK_LIMIT')
+                    return 0.0
+                row['_r65_entry_timing']=event
+        elif asset=='NQ' and VTE.context_of(row).get('status')!='OK':
+            _record_entry_outcome(row,'BLOCKED','R67_LOCAL_CONTEXT_REQUIRED')
+            return 0.0
         elif existing.get('direction')==direction and VTE.context_of(row).get('status')=='OK':
             held=dict(existing);held['payload']=_v90j_json(existing.get('payload'))
             scale=VTE.scale_decision(held,row,price,target_fraction,nav,

@@ -14,7 +14,10 @@ class SingleSourceTests(unittest.TestCase):
                    observed_at=datetime.now(timezone.utc).isoformat(), direct_sources=1,
                    best_bid=99.99, best_ask=100.01, secondary_price=None)
         gate = VI.execution_eligibility(asset, raw, {'ok': True})
-        return dict(raw, horizon='1h', market_observed_at=raw['observed_at'],
+        context={} if asset!='NQ' else {'status':'OK','closed_at':datetime.now(timezone.utc).timestamp(),
+            'event':{'direction':'SHORT','trigger_level':100.2,'atr':1.,'stop_price':101.,
+                     'bars_since_signal':0,'signal_price':100.}}
+        return dict(raw, horizon='1h', market_observed_at=raw['observed_at'],trend_entry_context=context,
                     research_decision='SHORT', signal_tier='SUPER_SHORT', confidence=.9,
                     calibrated_probability=.9, _pwin=.9, _pwin_source='EMPIRICAL_CALIBRATION',
                     _alignment_count=3, entry_quality='CONFIRMED_TREND',
@@ -79,6 +82,7 @@ class SingleSourceTests(unittest.TestCase):
                         row['market_observed_at'] = (datetime.now(timezone.utc)-timedelta(hours=2)).isoformat()
                     elif mode == 'bad_economics':
                         row['trade_plan']['expected_to_stop_ratio'] = .5
+                        row['trade_plan']['target_price'] = 99.5  # bad actual geometry, even after recomputation
                     else:
                         row['paper_eligible'] = False
                     self.assertFalse(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.)['open'])

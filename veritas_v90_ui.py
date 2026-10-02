@@ -259,6 +259,7 @@ const traceReason=t=>{
   let text=[...new Set(reasons.filter(Boolean).map(reasonRu))].join('; ');
   if(['EXECUTION_QUOTE_UNAVAILABLE','R66_EXECUTION_QUOTE_STALE'].includes(e.reason)&&e.quote_gate?.age_seconds!=null)text+=': возраст '+Math.max(0,Number(e.quote_gate.age_seconds)).toFixed(0)+' с, допустимо '+Number(e.quote_gate.max_age_seconds||300).toFixed(0)+' с';
   if(e.timing?.consumed_move_pct!=null)text+=': движение '+(100*Number(e.timing.consumed_move_pct)).toFixed(2)+'%, предел '+(100*Number(e.timing.late_entry_limit_pct)).toFixed(2)+'%';
+  const event=e.trend_event||t.trend_event;if(event?.extension_atr!=null)text+=': исходный уровень '+Number(event.trigger_level).toLocaleString('ru-RU',{maximumFractionDigits:2})+', удаление '+Number(event.extension_atr).toFixed(2)+' ATR';
   return text||'Окончательное решение ещё не получено';
 };
 const paperStatus=x=>{
@@ -301,6 +302,10 @@ const reasonRu=v=>{
     R66_EXECUTION_QUOTE_STALE:'Котировка устарела: вход ожидает свежую цену',
     R66_SENIOR_BREAK_NOT_HELD:'Старший уровень пробит, но ещё не удержан',
     R66_WAIT_RETEST:'Импульс уже прошёл: ожидается удержание уровня или ретест',
+    R67_LOCAL_CONTEXT_REQUIRED:'Нет надёжных локальных свечей NQ: новый риск запрещён',
+    R67_DIRECT_NQ_QUOTE_REQUIRED:'Ожидается свежая котировка NQ: расчёт через QQQ не подтверждает вход',
+    R67_WAIT_LOCAL_BREAKOUT:'Ожидается пробой заранее определённого локального уровня',
+    R67_STRUCTURAL_STOP_RISK_LIMIT:'Размер ограничен риском до основания импульса',
     R66_LOCAL_EVENT_OPPOSED:'Последний локальный пробой направлен против сигнала',
     R66_CLOSED_CONTEXT_STALE:'Ожидается обновление закрытых свечей',
     R66_ADD_NEEDS_CONFIRMATION:'Добор ожидает новое подтверждение в прибыльной стороне',

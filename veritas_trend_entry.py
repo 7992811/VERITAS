@@ -8,7 +8,7 @@ import hashlib
 import math
 from statistics import median
 
-VERSION = 'R66_CLOSED_EVENT_MTF_EXECUTION'
+VERSION = 'R67_LOCAL_LEVEL_BREAKOUT'
 
 
 def number(value, default=None):
@@ -35,7 +35,9 @@ def closed_bars(bars, now):
     for row in bars or []:
         t = number(row.get('ts'))
         vals = {k: number(row.get(k)) for k in ('open', 'high', 'low', 'close')}
-        if t is None or end is None or t + 300 > end or any(v is None or v <= 0 for v in vals.values()):
+        if (t is None or end is None or t % 300 or t + 300 > end
+                or row.get('source') in ('PROXY_TIMING_BRIDGE','DIRECT_QUOTE_ANCHOR')
+                or any(v is None or v <= 0 for v in vals.values())):
             continue
         if vals['low'] > min(vals['open'], vals['close']) or vals['high'] < max(vals['open'], vals['close']):
             continue
@@ -71,10 +73,14 @@ def confirmed_levels(bars, timeframe):
     return out[-24:]
 
 
-def build_context(bars, now, asset=''):
+def build_context(bars, now, asset='', minute_bars=None, quote=None):
+    if asset=='NQ' and minute_bars:
+        from veritas_local_breakout import backfill_five_minutes
+        bars=backfill_five_minutes(bars,minute_bars,now)
     bars = closed_bars(bars, now)
     result = {'version':VERSION, 'status':'INSUFFICIENT', 'event':None,
-              'closed_at':bars[-1]['ts']+300 if bars else None, 'levels':[], 'bars':len(bars)}
+              'closed_at':bars[-1]['ts']+300 if bars else None, 'levels':[], 'bars':len(bars),
+              'asset':asset, 'local_breakout_required':asset=='NQ'}
     if len(bars) < 36 or any(bars[i]['ts']-bars[i-1]['ts'] != 300 for i in range(len(bars)-24, len(bars))):
         return result
     trs = [max(b['high']-b['low'], abs(b['high']-bars[i-1]['close']),
@@ -91,6 +97,9 @@ def build_context(bars, now, asset=''):
                   local_support=next((x['price'] for x in reversed(pivots) if x['kind']=='support'),None),
                   local_resistance=next((x['price'] for x in reversed(pivots) if x['kind']=='resistance'),None),
                   confirmation_15m=m15[-1] if m15 else None)
+    if asset == 'NQ':
+        from veritas_local_breakout import enrich
+        return enrich(result,bars,now,minute_bars,quote)
     # Keep the originating breakout through its confirmation, never reset it
     # to the current quote on a later poll of the same event.
     for i in range(max(24,len(bars)-12),len(bars)):
@@ -149,7 +158,8 @@ def geometry(row, price=None, direction=None, stop_override=None):
     if direction not in ('LONG','SHORT') or not px or px<=0:
         return out
     stop=number(stop_override) if stop_override is not None else number(plan.get('stop_price'))
-    if stop_override is None and row.get('horizon')=='5m' and event.get('direction')==direction:
+    if (stop_override is None and (row.get('horizon')=='5m' or ctx.get('local_breakout_required'))
+            and event.get('direction')==direction):
         stop=number(event.get('stop_price'),stop)
     if not stop or stop<=0 or d*(px-stop)<=0:
         return out
@@ -207,6 +217,12 @@ def prepare_row(row, price=None):
 
 def event_gate(row, price, direction, now=None):
     ctx=context_of(row); event=ctx.get('event') or {}
+    required = row.get('asset')=='NQ' or ctx.get('local_breakout_required')
+    sources=(row.get('_execution_quote') or {}).get('source_names') or row.get('source_names') or row.get('market_source_names') or {}
+    if required and 'proxy' in str(sources.get('primary') or row.get('verification_mode') or '').lower():
+        return {'eligible':False,'reason':'R67_DIRECT_NQ_QUOTE_REQUIRED'}
+    if required and (ctx.get('status')!='OK' or not event):
+        return {'eligible':False,'reason':'R67_LOCAL_CONTEXT_REQUIRED' if ctx.get('status')!='OK' else 'R67_WAIT_LOCAL_BREAKOUT'}
     if not event:
         return {'eligible':True,'reason':'R66_LEGACY_SIGNAL_PATH'}
     t=timestamp(now); closed=number(ctx.get('closed_at'))
@@ -219,9 +235,10 @@ def event_gate(row, price, direction, now=None):
     extension=d*(px-level)/a if a>0 else math.inf
     recent_retest=bool(event.get('retest_at') and closed and closed-event['retest_at']<=600)
     timely=event.get('bars_since_signal',99)<=2 or recent_retest
-    ok=bool(timely and -.15<=extension<=1.2)
+    ok=bool(timely and -.15<=extension<=(1.5 if required else 1.2))
     return {'eligible':ok,'reason':'R66_EVENT_READY' if ok else 'R66_WAIT_RETEST',
-            'event_id':event.get('event_id'),'extension_atr':extension,'recent_retest':recent_retest}
+            'event_id':event.get('event_id'),'extension_atr':extension,'recent_retest':recent_retest,
+            'trigger_level':level,'stop_price':event.get('stop_price'), 'signal_at':event.get('signal_at')}
 
 
 def scale_decision(position,row,price,requested,nav,cost=.002,risk_cap=.01):

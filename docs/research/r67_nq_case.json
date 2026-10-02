@@ -1,0 +1,193 @@
+{
+  "case": "NQ 2026-10-02",
+  "policy": "R67_LOCAL_LEVEL_BREAKOUT",
+  "method": "Closed candles only; modeled adverse fills and fees; 75% initial notional; nearest known H1/H4 barrier",
+  "limitations": [
+    "Downloaded historical candles do not prove real-time delivery.",
+    "The public quote/proxy used by the old paper trade is not an exchange execution.",
+    "This single selected case does not establish profitability.",
+    "No order qualifies in this case: the early entry lacks net reward/risk; the later entry is extended."
+  ],
+  "snapshots": [
+    {
+      "time_utc": "2026-10-02T12:29:00+00:00",
+      "reference_price": 30990.0,
+      "event_id": null,
+      "trigger_level": null,
+      "impulse_origin": null,
+      "stop_price": null,
+      "confirmation": null,
+      "timing": {
+        "eligible": false,
+        "reason": "R67_WAIT_LOCAL_BREAKOUT"
+      },
+      "economics": {
+        "status": "BLOCK",
+        "eligible": false,
+        "asset": "NQ",
+        "blockers": [
+          "RR_BELOW_FINAL_FLOOR",
+          "TARGET_NOT_PROFITABLE_AFTER_COSTS",
+          "NET_REWARD_RISK_BELOW_FLOOR",
+          "EXPECTED_MOVE_BELOW_COST_BUFFER"
+        ],
+        "expected_to_stop_ratio": -0.02126718468395765,
+        "forecast_reward_risk": 0.045959595959595964,
+        "minimum_reward_risk": 1.15,
+        "expected_move_pct": 0.001468215553404324,
+        "forecast_move_pct": 0.001468215553404324,
+        "minimum_expected_move_pct": 0.00548331434775595,
+        "modeled_round_trip_cost_pct": 0.0021933257391023803,
+        "observed_spread_bps": null,
+        "stop_distance_pct": 0.031945788964181994,
+        "target_price": 31035.5,
+        "target_distance_pct": 0.001468215553404324,
+        "modeled_entry_fill": 31008.439049999997,
+        "modeled_target_fill": 31017.02778347265,
+        "modeled_stop_fill": 29982.369519711283,
+        "net_reward_pct": -0.0007246790016920498,
+        "net_risk_pct": 0.03407498512197022,
+        "principle": "Actual target/stop economics after adverse fills, commission and funding."
+      },
+      "order_eligible": false
+    },
+    {
+      "time_utc": "2026-10-02T12:31:00+00:00",
+      "reference_price": 31047.25,
+      "event_id": "R67_8f51366505e945dc2a1d",
+      "trigger_level": 31035.5,
+      "impulse_origin": 30913.25,
+      "stop_price": 30909.831875,
+      "confirmation": "1m_CLOSE",
+      "timing": {
+        "eligible": true,
+        "reason": "R66_EVENT_READY",
+        "event_id": "R67_8f51366505e945dc2a1d",
+        "extension_atr": 1.326302303894611,
+        "recent_retest": false,
+        "trigger_level": 31035.5,
+        "stop_price": 30909.831875,
+        "signal_at": 1790944260.0
+      },
+      "economics": {
+        "status": "BLOCK",
+        "eligible": false,
+        "asset": "NQ",
+        "blockers": [
+          "RR_BELOW_FINAL_FLOOR",
+          "NET_REWARD_RISK_BELOW_FLOOR",
+          "EXPECTED_MOVE_BELOW_COST_BUFFER"
+        ],
+        "expected_to_stop_ratio": 0.175745030051628,
+        "forecast_reward_risk": 0.7586335499774858,
+        "minimum_reward_risk": 1.15,
+        "expected_move_pct": 0.0033577853110984064,
+        "forecast_move_pct": 0.0033577853110984064,
+        "minimum_expected_move_pct": 0.0054895518515616065,
+        "modeled_round_trip_cost_pct": 0.0021958207406246426,
+        "observed_spread_bps": null,
+        "stop_distance_pct": 0.0044260965141840304,
+        "target_price": 31151.5,
+        "target_distance_pct": 0.0033577853110984064,
+        "modeled_entry_fill": 31065.72311375,
+        "modeled_target_fill": 31132.9455044111,
+        "modeled_stop_fill": 30891.475424550204,
+        "net_reward_pct": 0.0011612736126742225,
+        "net_risk_pct": 0.006607718080750729,
+        "principle": "Actual target/stop economics after adverse fills, commission and funding."
+      },
+      "order_eligible": false
+    },
+    {
+      "time_utc": "2026-10-02T12:35:00+00:00",
+      "reference_price": 31118.25,
+      "event_id": "R67_8f51366505e945dc2a1d",
+      "trigger_level": 31035.5,
+      "impulse_origin": 30913.25,
+      "stop_price": 30909.831875,
+      "confirmation": "1m_CLOSE",
+      "timing": {
+        "eligible": false,
+        "reason": "R66_WAIT_RETEST",
+        "event_id": "R67_8f51366505e945dc2a1d",
+        "extension_atr": 4.443899451453444,
+        "recent_retest": false,
+        "trigger_level": 31035.5,
+        "stop_price": 30909.831875,
+        "signal_at": 1790944260.0
+      },
+      "economics": {
+        "status": "BLOCK",
+        "eligible": false,
+        "asset": "NQ",
+        "blockers": [
+          "RR_BELOW_FINAL_FLOOR",
+          "TARGET_NOT_PROFITABLE_AFTER_COSTS",
+          "NET_REWARD_RISK_BELOW_FLOOR",
+          "EXPECTED_MOVE_BELOW_COST_BUFFER"
+        ],
+        "expected_to_stop_ratio": -0.12660705734644942,
+        "forecast_reward_risk": 0.1595350692268246,
+        "minimum_reward_risk": 1.15,
+        "expected_move_pct": 0.0010685048163055443,
+        "forecast_move_pct": 0.0010685048163055443,
+        "minimum_expected_move_pct": 0.0054819954095650415,
+        "modeled_round_trip_cost_pct": 0.0021927981638260167,
+        "observed_spread_bps": null,
+        "stop_distance_pct": 0.006697617153920935,
+        "target_price": 31151.5,
+        "target_distance_pct": 0.0010685048163055443,
+        "modeled_entry_fill": 31136.765358749995,
+        "modeled_target_fill": 31132.961540636847,
+        "modeled_stop_fill": 30891.491212928362,
+        "net_reward_pct": -0.0011236247907699644,
+        "net_risk_pct": 0.008874898558737219,
+        "principle": "Actual target/stop economics after adverse fills, commission and funding."
+      },
+      "order_eligible": false
+    },
+    {
+      "time_utc": "2026-10-02T13:22:00+00:00",
+      "reference_price": 31205.09,
+      "event_id": "R67_8f51366505e945dc2a1d",
+      "trigger_level": 31035.5,
+      "impulse_origin": 30913.25,
+      "stop_price": 30909.831875,
+      "confirmation": "1m_CLOSE",
+      "timing": {
+        "eligible": false,
+        "reason": "R66_WAIT_RETEST",
+        "event_id": "R67_8f51366505e945dc2a1d",
+        "extension_atr": 8.257028131651053,
+        "recent_retest": false,
+        "trigger_level": 31035.5,
+        "stop_price": 30909.831875,
+        "signal_at": 1790944260.0
+      },
+      "economics": {
+        "status": "PASS",
+        "eligible": true,
+        "asset": "NQ",
+        "blockers": [],
+        "expected_to_stop_ratio": 3.371786356016355,
+        "forecast_reward_risk": 4.385687946775381,
+        "minimum_reward_risk": 1.15,
+        "expected_move_pct": 0.041496755817720755,
+        "forecast_move_pct": 0.041496755817720755,
+        "minimum_expected_move_pct": 0.005616307079528708,
+        "modeled_round_trip_cost_pct": 0.0022465228318114833,
+        "observed_spread_bps": null,
+        "stop_distance_pct": 0.009461857825117641,
+        "target_price": 32500.0,
+        "target_distance_pct": 0.041496755817720755,
+        "modeled_entry_fill": 31223.65702855,
+        "modeled_target_fill": 32480.363583765742,
+        "modeled_stop_fill": 30891.51042599483,
+        "net_reward_pct": 0.03922689298458345,
+        "net_risk_pct": 0.011633860761845131,
+        "principle": "Actual target/stop economics after adverse fills, commission and funding."
+      },
+      "order_eligible": false
+    }
+  ]
+}

@@ -1141,6 +1141,9 @@ class TacticalTriggerPriorityR57Tests(unittest.TestCase):
         blocked=(gate=='BLOCK')
         return {
             'asset':'NQ','horizon':h,'research_decision':d,'price':price,
+            'trend_entry_context':{'status':'OK','closed_at':datetime.now(timezone.utc).timestamp(),
+                'event':{'direction':d,'trigger_level':price+(1 if d=='SHORT' else -1),
+                         'atr':20.,'signal_price':price,'bars_since_signal':0}},
             'signal_tier':'SHORT' if d=='SHORT' else 'LONG',
             'decision_stage':'EARLY_PROBE' if not blocked else 'WAIT_RISK_REWARD',
             'entry_quality':'NEW_SETUP_PROVISIONAL' if not blocked else 'CONFIRMED_TREND',
@@ -1473,7 +1476,9 @@ class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
         old_cache=dict(VI._v90r63_futures_history_cache)
         try:
             VI._v90r63_futures_history_cache.clear()
-            with patch.object(VI,'_yahoo_series',side_effect=[(bars5,{}),(bars1h,{}),(proxy,{})]), \
+            def series(symbol,range_,interval,prepost):
+                return (proxy if symbol=='QQQ' else bars1h if interval=='1h' else bars5 if interval=='5m' else []),{}
+            with patch.object(VI,'_yahoo_series',side_effect=series), \
                  patch.object(VI,'_v90_stooq_public_quote',return_value={'ok':False,'error':'x'}), \
                  patch.object(VI,'_v90r61_profinance_quote',return_value=pf):
                 out=VI._yahoo_research_futures_market('NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
@@ -1503,7 +1508,8 @@ class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
                  patch.object(VI,'_v90r61_profinance_quote',return_value={}):
                 out=VI._yahoo_research_futures_market(
                     'NQ','NQ%3DF','QQQ','yahoo_cme_futures','Yahoo CME NQ=F')
-            self.assertEqual(ys.call_count,1)
+            self.assertEqual(ys.call_count,2)  # fresh proxy and independent NQ 1m trigger
+            self.assertEqual({call.args[2] for call in ys.call_args_list},{'1m','5m'})
             hc=out['fresh_quote_diagnostics']['history_cache']
             self.assertTrue(hc['bars5_reused'])
             self.assertTrue(hc['bars1h_reused'])

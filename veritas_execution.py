@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
 
@@ -216,6 +217,12 @@ def entry_gate(row, price, direction, fraction, position=None):
     timing = quote_gate(execution.get('observed_at') or row.get('market_observed_at') or row.get('observed_at') or plan.get('market_observed_at'),
                         row.get('horizon'),execution=True,asset=row.get('asset'))
     gate['entry_geometry']=geometry
+    if row.get('asset')=='NQ' and not position:
+        event=VTE.event_gate(row,gate.get('modeled_entry_fill') or price,direction,datetime.now(timezone.utc))
+        gate['trend_event']=event
+        if not event.get('eligible'):
+            gate.update(eligible=False,status='BLOCK')
+            gate['blockers'].append(event['reason'])
     if geometry.get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
         gate['eligible']=False;gate['status']='BLOCK';gate['blockers'].append(geometry['reason'])
     gate['quote_time_gate'] = timing
