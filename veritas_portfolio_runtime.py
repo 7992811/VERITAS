@@ -2804,6 +2804,7 @@ def _v90r55_mark_scale_event(c,name,z,row,price,ts):
     context=VTE.context_of(row);event=context.get('event') or {}
     previous=_v90j_json(z.get('payload'))
     patch.update(r66_event_id=event.get('event_id'),
+                 r69_trigger_level=event.get('trigger_level'),r69_atr=event.get('atr'),
                  r66_last_confirmation_at=event.get('confirmed_at'),
                  r66_initial_fraction=previous.get('r66_initial_fraction') or previous.get('opening_fraction') or z.get('target_fraction'))
     c.execute(
@@ -2958,7 +2959,7 @@ _v90r56_base_tighten_stop=_v90r54_tighten_position_stop
 _v90r56_base_step_one=_step_one
 _v90r56_base_report=report
 
-_R56_TRIGGER_HORIZONS=('5m','1h','4h')
+_R56_TRIGGER_HORIZONS=('1m','5m','1h','4h')
 _R56_SENIOR_HORIZONS=('1d','3d','7d')
 
 def _v90r56_direction(row):
@@ -3335,6 +3336,14 @@ def _v90r54_tighten_position_stop(c,name,z,row,price,ts):
     row['price']=price
     if VTE.context_of(row).get('status')=='OK':
         stop=VTE.trailing_stop(z,row,price,float(VX.round_trip_cost_pct(row.get('spread_bps'))))
+        if stop is not None and str(_v90j_json(z.get('payload')).get('r66_event_id','')).startswith('R69_'):
+            import veritas_profit_protection as VPP
+            entry=float(z.get('avg_entry_price') or 0.);d=1 if z.get('direction')=='LONG' else -1
+            if d*(stop-entry)>0:
+                assessed=VPP.assess(c,z,stop=stop,price=price,now=_v90r55_dt(ts),commission=COMMISSION)
+                spread=max(0.,float(row.get('spread_bps') or 0.))/10000.
+                cushion=abs(float(z.get('units') or 0.)*float(price))*max(.0005,2*spread+.0004)
+                if float((assessed.get('net_profit_protection') or {}).get('net_at_stop_rub') or -1.)<cushion:return None
         if stop is not None:
             c.execute("UPDATE paper_positions SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
                 (stop,json.dumps({'trailing_stop':stop,'r66_trailing_at':str(ts),'trailing_method':VTE.VERSION}),name,z['asset']))
@@ -4011,6 +4020,10 @@ def _v90r59_near_flat_flip_should_wait(z,price,ts,reason):
     return True
 
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    payload=_v90j_json((z or {}).get('payload'))
+    if str(payload.get('r66_event_id','')).startswith('R69_'):
+        soft=any(k in str(reason) for k in ('EDGE_DECAY','LOW_PROB','CONFIDENCE','SIGNAL_WEAK'))
+        if soft:return 0.0
     if (float(target_fraction or 0.0)<=0.0
             and _v90r59_near_flat_flip_should_wait(z,price,ts,reason)):
         patch={'r59_pending_flip_reason':str(reason),
@@ -4413,7 +4426,7 @@ def _v90r65_execution_timing(row,price,direction,ts):
     if not fresh.get('eligible'):
         return {'eligible':False,'reason':'R65_ENTRY_QUOTE_NOT_FRESH','quote_gate':fresh}
     tactical=row.get('_r65_tactical_context')
-    if row.get('horizon')=='5m':
+    if row.get('horizon') in ('1m','5m'):
         tactical=row
     if not tactical:
         return {'eligible':False,'reason':'R65_LOCAL_ENTRY_CONTEXT_REQUIRED'}
@@ -4480,18 +4493,19 @@ def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
     # Prefer a fresh closed 5m event in the SAME published direction. A senior
     # forecast cannot postpone this trigger, and no opposite signal is invented.
     for r0 in summary or []:
-        if r0.get('horizon')!='5m' or _v90r55_invalidated(r0):continue
+        if r0.get('horizon') not in ('1m','5m') or _v90r55_invalidated(r0):continue
         asset=r0.get('asset');direction=r0.get('research_decision')
         event=VTE.context_of(r0).get('event') or {}
         if direction not in ('LONG','SHORT') or event.get('direction')!=direction:continue
         old=out.get(asset)
         if old and old.get('research_decision')!=direction:continue
+        if old and old.get('horizon')=='1m' and r0.get('horizon')=='5m':continue
         ready=VTE.event_gate(r0,r0.get('price'),direction,datetime.now(timezone.utc))
         if not ready.get('eligible'):continue
         selected=VTE.prepare_row(r0)
         selected['_pwin'],selected['_pwin_source']=_signal_probability(selected)
         selected['_r56_trigger_selected']=True
-        selected['_r56_entry_horizon']='5m';selected['_r56_management_horizon']='5m'
+        selected['_r56_entry_horizon']=r0.get('horizon');selected['_r56_management_horizon']='5m'
         selected['_r65_tactical_context']=dict(r0)
         selected['_r66_closed_trigger']=ready
         if old:selected['_r56_thesis_horizon']=old.get('horizon')
@@ -4536,6 +4550,27 @@ def _signal_first_admission(row,policy,drawdown):
     g=(row.get('trade_plan') or {}).get('r66_geometry') or {}
     if g.get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
         return {'open':False,'fraction':0.0,'hard_veto':True,'reason':g['reason'],'r66_geometry':g}
+    ev=VTE.context_of(row).get('event') or {}
+    if str(ev.get('event_id','')).startswith('R69_'):
+        from veritas_minute_entry import structural_fraction
+        rg=_risk_governor(drawdown)
+        cap=min(float(policy.get('max_fraction') or 1.),float(_v90r24_stop_risk_cap(row) or 0.))
+        f=structural_fraction(row,policy.get('mode'),cap)
+        f=math.floor(f*float(rg.get('multiplier') or 0.)/.05+1e-9)*.05
+        economics=VX.entry_gate(row,row.get('price'),row.get('research_decision'),f)
+        plan=row.get('trade_plan') or {}
+        history=plan.get('profitability_gate') or {}
+        hard=bool((plan.get('trade_integrity') or {}).get('hard_invalidation')
+                  or (plan.get('rule_arbitration') or {}).get('hard_veto')
+                  or (plan.get('reentry_intelligence') or {}).get('allowed') is False
+                  or history.get('allow') is False or history.get('status')=='NEGATIVE_EDGE')
+        ok=bool(f>0 and not hard and plan.get('eligible',True) and rg.get('new_risk') is not False and row.get('execution_eligible')
+                and row.get('source_gate_pass') and economics.get('eligible'))
+        return {'open':ok,'fraction':f if ok else 0.,'hard_veto':not ok,
+                'reason':'R69_STRUCTURAL_EVENT' if ok else 'R69_SOURCE_RISK_OR_ECONOMICS',
+                'trend_event':event,'economics':economics,
+                'probability':None,'probability_source':'UNCALIBRATED_STRUCTURAL_RULE',
+                'signal_score':row.get('confidence')}
     base=dict(_v90r65_base_admission(row,policy,drawdown) or {})
     m=dict((row or {}).get('_r65_crypto_genesis') or {})
     if not m.get('eligible'):
@@ -4601,7 +4636,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             if not event['eligible']:
                 _record_entry_outcome(row,'BLOCKED',event['reason'],trend_event=event)
                 return 0.0
-            if asset=='NQ':
+            if VTE.context_of(row).get('local_breakout_required'):
                 stop=VTE.number((row.get('trade_plan') or {}).get('stop_price'))
                 risk=abs(float(fill['fill_price'])-stop)/float(fill['fill_price']) if stop else 0.
                 costs=VX.economics_gate(asset,dict(row.get('trade_plan') or {},entry_price=price,

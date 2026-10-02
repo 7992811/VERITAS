@@ -469,6 +469,8 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                 funding_rub=_lock_trade.get('funding_rub',0.0),
                 realized_gross_rub=_lock_trade.get('gross_pnl_rub',0.0)
             )
+            if str(zp.get('r66_event_id','')).startswith('R69_'):
+                lock=None # R69 uses confirmed structural pivots and whole-trade net checks.
             if lock:
                 pl_patch = {
                     'trailing_stop': lock['stop_price'],

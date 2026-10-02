@@ -8,7 +8,7 @@ import hashlib
 import math
 from statistics import median
 
-VERSION = 'R68_FRESH_STRUCTURE_DIRECT_QUOTES'
+VERSION = 'R69_MINUTE_STRUCTURAL_ENTRY'
 MAX_CONTEXT_AGE_SECONDS = 900
 
 
@@ -75,13 +75,13 @@ def confirmed_levels(bars, timeframe):
 
 
 def build_context(bars, now, asset='', minute_bars=None, quote=None):
-    if asset=='NQ' and minute_bars:
+    if minute_bars:
         from veritas_local_breakout import backfill_five_minutes
         bars=backfill_five_minutes(bars,minute_bars,now)
     bars = closed_bars(bars, now)
     result = {'version':VERSION, 'status':'INSUFFICIENT', 'event':None,
               'closed_at':bars[-1]['ts']+300 if bars else None, 'levels':[], 'bars':len(bars),
-              'asset':asset, 'local_breakout_required':asset=='NQ'}
+              'asset':asset, 'local_breakout_required':True}
     end=timestamp(now)
     age=end-result['closed_at'] if end is not None and result['closed_at'] is not None else None
     result.update(age_seconds=age,max_age_seconds=MAX_CONTEXT_AGE_SECONDS)
@@ -96,7 +96,7 @@ def build_context(bars, now, asset='', minute_bars=None, quote=None):
     if atr <= 0:
         return result
     h1, h4, m15 = aggregate(bars,3600), aggregate(bars,14400), aggregate(bars,900)
-    levels = confirmed_levels(h1,'1h') + confirmed_levels(h4,'4h')
+    levels = confirmed_levels(m15,'15m') + confirmed_levels(h1,'1h') + confirmed_levels(h4,'4h')
     local = [dict(b,available_at=b['ts']+300) for b in bars]
     pivots = confirmed_levels(local,'5m')
     result.update(status='OK', atr=atr, last_close=bars[-1]['close'],
@@ -104,45 +104,8 @@ def build_context(bars, now, asset='', minute_bars=None, quote=None):
                   local_support=next((x['price'] for x in reversed(pivots) if x['kind']=='support'),None),
                   local_resistance=next((x['price'] for x in reversed(pivots) if x['kind']=='resistance'),None),
                   confirmation_15m=m15[-1] if m15 else None)
-    if asset == 'NQ':
-        from veritas_local_breakout import enrich
-        return enrich(result,bars,now,minute_bars,quote)
-    # Keep the originating breakout through its confirmation, never reset it
-    # to the current quote on a later poll of the same event.
-    for i in range(max(24,len(bars)-12),len(bars)):
-        b=bars[i]; a=sum(trs[i-19:i+1])/20; prior=bars[i-12:i]
-        vol=median(x['volume'] for x in bars[i-20:i])
-        span=b['high']-b['low']
-        if a<=0 or vol<=0 or not .8*a<=span<=2.8*a or b['volume']/vol<1.2:
-            continue
-        for d,side in ((1,'LONG'),(-1,'SHORT')):
-            level=max(x['high'] for x in prior) if d==1 else min(x['low'] for x in prior)
-            close_position=(b['close']-b['low'])/span if d==1 else (b['high']-b['close'])/span
-            if not (.05*a < d*(b['close']-level) <= .8*a and d*(b['close']-b['open'])>=.35*span and close_position>=.7):
-                continue
-            tail=bars[i+1:]
-            failed=any(d*(x['close']-level)<-.15*a and d*(y['close']-level)<-.15*a for x,y in zip(tail,tail[1:]))
-            if failed or d*(bars[-1]['close']-level)<=0:
-                continue
-            anchor=min(x['low'] for x in bars[max(0,i-5):i+1]) if d==1 else max(x['high'] for x in bars[max(0,i-5):i+1])
-            stop=anchor-d*.15*a
-            stop=min(stop,b['close']-1.2*a) if d==1 else max(stop,b['close']+1.2*a)
-            retests=[x for x in tail if ((x['low']<=level+.25*a) if d==1 else (x['high']>=level-.25*a))
-                     and d*(x['close']-level)>.2*a and d*(x['close']-x['open'])>0]
-            last=bars[-1]
-            continuation=bool(tail and d*(last['close']-b['close'])>=a and d*(last['close']-last['open'])>0
-                              and last['volume']>=1.2*median(x['volume'] for x in bars[-21:-1]))
-            event={'direction':side,'trigger_level':level,'signal_at':b['ts']+300,
-                   'signal_price':b['close'],'stop_price':stop,'atr':a,'bars_since_signal':len(tail),
-                   'relative_volume':b['volume']/vol,'retest_confirmed':bool(retests),
-                   'retest_at':retests[-1]['ts']+300 if retests else None,
-                   'continuation_confirmed':continuation,
-                   'confirmed_at':last['ts']+300 if continuation else (retests[-1]['ts']+300 if retests else b['ts']+300),
-                   'held_bars':sum(d*(x['close']-level)>0 for x in tail)}
-            event['event_id']='R66_'+hashlib.sha256(f'{asset}|5m|{side}|{event["signal_at"]}|{level:.10f}'.encode()).hexdigest()[:20]
-            result['event']=event
-            return result
-    return result
+    from veritas_minute_entry import enrich
+    return enrich(result,bars,now,minute_bars,quote)
 
 
 def context_of(row):
@@ -165,7 +128,7 @@ def geometry(row, price=None, direction=None, stop_override=None):
     if direction not in ('LONG','SHORT') or not px or px<=0:
         return out
     stop=number(stop_override) if stop_override is not None else number(plan.get('stop_price'))
-    if (stop_override is None and (row.get('horizon')=='5m' or ctx.get('local_breakout_required'))
+    if (stop_override is None and (row.get('horizon') in ('1m','5m') or ctx.get('local_breakout_required'))
             and event.get('direction')==direction):
         stop=number(event.get('stop_price'),stop)
     if not stop or stop<=0 or d*(px-stop)<=0:
@@ -190,6 +153,9 @@ def geometry(row, price=None, direction=None, stop_override=None):
     nearest=ahead[0][1] if ahead else None
     if nearest and (target is None or d*(float(nearest['price'])-px)<d*(target-px)):
         target=float(nearest['price'])
+    if event.get('event_id','').startswith('R69_'):
+        structural_target=px+d*2.*abs(px-stop)
+        if target is None or d*(target-px)>d*(structural_target-px):target=structural_target
     if target is None:
         return out
     risk=d*(px-stop)/px; room=d*(target-px)/px
@@ -226,8 +192,7 @@ def context_gate(row, now=None):
     """Check candle time even when there is no breakout event to inspect."""
     ctx=context_of(row)
     if not ctx:
-        return {'eligible':row.get('asset')!='NQ',
-                'reason':'R67_LOCAL_CONTEXT_REQUIRED' if row.get('asset')=='NQ' else 'R66_LEGACY_SIGNAL_PATH'}
+        return {'eligible':False,'reason':'R69_LOCAL_CONTEXT_REQUIRED'}
     t=timestamp(now if now is not None else datetime.now(timezone.utc))
     closed=number(ctx.get('closed_at'))
     age=t-closed if t is not None and closed is not None else None
@@ -242,7 +207,7 @@ def context_gate(row, now=None):
 
 def event_gate(row, price, direction, now=None):
     ctx=context_of(row); event=ctx.get('event') or {}
-    required = row.get('asset')=='NQ' or ctx.get('local_breakout_required')
+    required = True
     from veritas_execution import is_proxy_price
     if is_proxy_price(row.get('asset'),row.get('_execution_quote') or row):
         return {'eligible':False,'reason':'R67_DIRECT_NQ_QUOTE_REQUIRED'}
@@ -250,9 +215,9 @@ def event_gate(row, price, direction, now=None):
     if not freshness['eligible']:
         return freshness
     if required and (ctx.get('status')!='OK' or not event):
-        return {'eligible':False,'reason':'R67_LOCAL_CONTEXT_REQUIRED' if ctx.get('status')!='OK' else 'R67_WAIT_LOCAL_BREAKOUT'}
+        return {'eligible':False,'reason':'R67_LOCAL_CONTEXT_REQUIRED' if ctx.get('status')!='OK' else 'R69_WAIT_LOCAL_BREAKOUT'}
     if not event:
-        return {'eligible':True,'reason':'R66_LEGACY_SIGNAL_PATH'}
+        return {'eligible':False,'reason':'R69_WAIT_LOCAL_BREAKOUT'}
     t=timestamp(now if now is not None else datetime.now(timezone.utc)); closed=number(ctx.get('closed_at'))
     if event.get('direction')!=direction:
         return {'eligible':False,'reason':'R66_LOCAL_EVENT_OPPOSED'}
@@ -264,9 +229,13 @@ def event_gate(row, price, direction, now=None):
     signal=number(event.get('signal_at'))
     event_age=max(number(event.get('bars_since_signal'),99),
                   max(0.,(clock-signal)//300) if clock and signal else 0.)
-    recent_retest=bool(event.get('retest_at') and clock and 0<=clock-event['retest_at']<=600)
-    timely=event_age<=2 or recent_retest
-    ok=bool(timely and -.15<=extension<=(1.5 if required else 1.2))
+    recent_retest=bool(event.get('retest_at') and clock and 0<=clock-event['retest_at']<=120)
+    timely=bool(signal and clock and 0<=clock-signal<=120) or recent_retest
+    if not event.get('activity_confirmed'):
+        return {'eligible':False,'reason':'R69_BREAKOUT_ACTIVITY_REQUIRED'}
+    if row.get('horizon')=='1m' and (ctx.get('minute_status')!='OK' or not ctx.get('minute_closed_at') or not -5<=clock-ctx['minute_closed_at']<=90):
+        return {'eligible':False,'reason':'R69_MINUTE_DATA_STALE'}
+    ok=bool(timely and -.10<=extension<=.5)
     return {'eligible':ok,'reason':'R66_EVENT_READY' if ok else 'R66_WAIT_RETEST',
             'event_id':event.get('event_id'),'extension_atr':extension,'recent_retest':recent_retest,
             'trigger_level':level,'stop_price':event.get('stop_price'), 'signal_at':event.get('signal_at'),

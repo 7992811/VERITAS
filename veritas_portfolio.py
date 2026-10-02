@@ -19,7 +19,7 @@ POSITION_STEP=0.05
 POLICIES={
  'Impulse': {
      'threshold':0.64,'strong_threshold':0.76,'min_independent':2,'mode':'IMPULSE_ONLY',
-     'allowed_horizons':('5m','1h','4h','1d'),'max_fraction':0.50,'provisional_cap':0.10,
+     'allowed_horizons':('1m','5m','1h','4h','1d'),'max_fraction':0.50,'provisional_cap':0.10,
      'accepted_cap':0.25,'confirmed_cap':0.50
  },
  'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE','max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},

@@ -191,7 +191,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 <script>
 (function(){
 'use strict';
-const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'], TF=['5m','1h','4h','1d','3d','7d'];
+const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'], TF=['1m','5m','1h','4h','1d','3d','7d'];
 const POS_CACHE_KEY='veritas_v90_position_book_r35';
 const loadPositionCache=()=>{try{const x=JSON.parse(localStorage.getItem(POS_CACHE_KEY)||'null');if(x&&x.book&&Date.now()-Number(x.at||0)<86400000)return x.book}catch(e){}return {}};
 const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.stringify({at:Date.now(),book}))}catch(e){}};
@@ -279,7 +279,7 @@ const rrOf=x=>x?.expected_to_stop_ratio??planOf(x).expected_to_stop_ratio;
 const stopOf=x=>x?.stop_price??planOf(x).stop_price;
 const targetOf=x=>x?.target_price??planOf(x).target_price??planOf(x).take_price;
 const dirRu=d=>directionLabel(d,null);
-const tfRu=tf=>({'5m':'5 мин','1h':'1 ч','4h':'4 ч','1d':'1 день','3d':'3 дня','7d':'7 дней'}[tf]||tf||'—');
+const tfRu=tf=>({'1m':'1 мин','5m':'5 мин','1h':'1 ч','4h':'4 ч','1d':'1 день','3d':'3 дня','7d':'7 дней'}[tf]||tf||'—');
 const holdRu=s=>{s=Number(s);if(!Number.isFinite(s)||s<0)return'—';const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.max(0,Math.floor((s%3600)/60));return(d?d+' д ':'')+(h?h+' ч ':'')+(m+' мин')};
 const dateRu=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
 const exitRu=r=>{r=String(r||'').toUpperCase();if(r.startsWith('TAKE_PROFIT'))return'Фиксация по тейку';const m={TAKE_PROFIT:'Цель достигнута',TP:'Цель достигнута',STOP:'Стоп',STOP_LOSS:'Стоп',SIGNAL_FLIP:'Смена сигнала',TIMEOUT:'Выход по времени',PROFIT_HARVEST:'Фиксация прибыли',MANUAL:'Ручное закрытие',CLOSED:'Закрыта'};return m[r]||'Закрытие системой'};
@@ -308,6 +308,11 @@ const reasonRu=v=>{
     R67_STRUCTURAL_STOP_RISK_LIMIT:'Размер ограничен риском до основания импульса',
     R66_LOCAL_EVENT_OPPOSED:'Последний локальный пробой направлен против сигнала',
     R66_CLOSED_CONTEXT_STALE:'Ожидается обновление закрытых свечей',
+    R69_LOCAL_CONTEXT_REQUIRED:'Нет локальной структуры для входа',
+    R69_WAIT_LOCAL_BREAKOUT:'Ждём новый пробой уровня',
+    R69_BREAKOUT_ACTIVITY_REQUIRED:'Пробой не подтверждён активностью',
+    R69_MINUTE_DATA_STALE:'Минутные свечи устарели или недоступны',
+    R69_SOURCE_RISK_OR_ECONOMICS:'Вход не прошёл проверку данных, риска или расходов',
     R68_LOCAL_CONTEXT_INCOMPLETE:'Недостаточно полных локальных свечей для проверки входа',
     R66_ADD_NEEDS_CONFIRMATION:'Добор ожидает новое подтверждение в прибыльной стороне',
     R66_ADD_INSUFFICIENT_ROOM:'До ближайшего старшего уровня недостаточно хода для добора',
@@ -387,7 +392,7 @@ function renderSignals(){
   }).join(''):'<div class="msg">Направленных сигналов сейчас нет — ожидается подтверждение структуры.</div>';
   document.querySelectorAll('.action-link[data-signal]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.signal,true));
 
-  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'Long':D==='SHORT'?'Short':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=({'5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
+  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'Long':D==='SHORT'?'Short':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=({'1m':'1м','5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
 
   $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.35"></span><small>—</small><em></em></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',state=matrixStateRu(x);return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(1)+'% · '+esc(paperStatus(x).reason)+'"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small>'+conf.toFixed(1)+'%</small><em>'+esc(state)+'</em></button></td>'}).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));

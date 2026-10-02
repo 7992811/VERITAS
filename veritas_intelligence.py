@@ -208,7 +208,7 @@ EQUITY_INDEX_ASSETS = {'NQ','MOEX'}
 COMMODITY_ASSETS = {'BRENT','GOLD'}
 FX_FUTURES_ASSETS = {'CNYRUBF'}
 MARKET_BAR_ASSETS = {'NQ','BRENT','GOLD','MOEX','CNYRUBF'}
-HORIZONS = {'5m': 1.0/12.0, '1h': 1, '4h': 4, '1d': 24, '3d': 72, '7d': 168}
+HORIZONS = {'1m': 1.0/60.0, '5m': 1.0/12.0, '1h': 1, '4h': 4, '1d': 24, '3d': 72, '7d': 168}
 ASSET_HORIZON_BARS = {
     'NQ':    {'1h':1,'4h':4,'1d':23,'3d':69,'7d':161},
     'MOEX':  {'1h':1,'4h':4,'1d':9,'3d':27,'7d':63},
@@ -219,7 +219,7 @@ ASSET_HORIZON_BARS = {
 NQ_HORIZON_BARS = ASSET_HORIZON_BARS['NQ']
 NDX_HORIZON_BARS = NQ_HORIZON_BARS  # compatibility for legacy helper code
 def horizon_bars(asset,horizon):
-    if str(horizon)=='5m': return 1
+    if str(horizon) in ('1m','5m'): return 1
     return ASSET_HORIZON_BARS.get(asset,HORIZONS).get(horizon,HORIZONS[horizon])
 BASE_WEIGHTS = {'MACRO': 1.0, 'QUANT': 1.2, 'TECH_FLOW': 1.1, 'IMPULSE': 1.35, 'DERIV': 1.0, 'RISK': 1.4}
 
@@ -6814,7 +6814,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         and _v90_last_fast5m_monotonic>0
         and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
     if _reuse_fast5m_decisions:
-        _slow=tuple(h for h in selected_horizons if h!='5m')
+        _slow=tuple(h for h in selected_horizons if h not in ('1m','5m'))
         if _slow:
             processing_horizons=_slow
     if not _BOOTSTRAP_READY:
@@ -6982,6 +6982,24 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 if tactical_reversal.get('active') and horizon in ('5m','1h','4h','1d','3d','7d'):
                     research_dec=tactical_reversal.get('direction'); conf=max(float(conf or 0),float(tactical_reversal.get('probability') or 0))
                     size=min(max(float(size or 0),0.05),0.15)
+                if horizon=='1m':
+                    import veritas_trend_entry as VTE
+                    ev=(f.get('trend_entry_context') or {}).get('event') or {}
+                    candidate=ev.get('direction','NO_TRADE')
+                    minute_gate=VTE.event_gate({'asset':asset,'horizon':'1m',
+                        'trend_entry_context':f.get('trend_entry_context')},f.get('price'),candidate,datetime.now(timezone.utc))
+                    research_dec=candidate if minute_gate.get('eligible') and f.get('minute_data_status')=='OK' else 'NO_TRADE'
+                    conf=.70 if research_dec!='NO_TRADE' else 0.
+                    size=.10 if research_dec!='NO_TRADE' else 0.
+                    tactical_reversal={'active':False}
+                    f['minute_entry_gate']=minute_gate
+                    f['horizon_structure']=dict(f.get('horizon_structure') or {},horizon='1m',
+                        resolution='1m_NATIVE_TRIGGER_5m_STRUCTURE',direction=research_dec,
+                        state='BUILDING_TREND' if research_dec!='NO_TRADE' else 'WAIT',score=conf)
+                    f['horizon_structure_direction']=research_dec
+                    f['horizon_structure_state']=f['horizon_structure']['state']
+                    f['entry_quality']='FRESH_BREAKOUT' if research_dec!='NO_TRADE' else 'WAIT_CONFIRMATION'
+
                 calibration = calibrated_direction_probability(asset,horizon,conf,calibration_rows)
                 source_gate=bool(f.get('source_gate_pass',True))
                 time_gate=bool(f.get('market_open',True) or asset in CRYPTO_ASSETS)
@@ -7306,6 +7324,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'causal_score':causal_shadow.get('score'),'causal_label':causal_shadow.get('label'),
                      'tactical_reversal':tactical_reversal,'impulse_genesis':f.get('impulse_genesis') or {},'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structure_breakout_grid':f.get('structure_breakout_grid') or {},'structural_levels':f.get('structural_levels') or {},
                      'sma18':f.get('sma18'),'sma50':f.get('sma50'),'support_level':f.get('support_level'),'resistance_level':f.get('resistance_level')}
+                if horizon=='1m':
+                    z.update(minute_data_status=f.get('minute_data_status'),
+                             minute_closed_at=f.get('minute_closed_at'),minute_entry_gate=f.get('minute_entry_gate'))
                 summary.append(_v90_compact_live_row(z))
                 try:
                     maybe_create_alert(entity_key, asset, horizon, dec, conf, score, f['regime'], kmatches)
@@ -7345,14 +7366,14 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     for _k,_x in list(_merged.items()):
         if _k not in _fresh_keys:
             _x=dict(_x)
-            _reuse_fast5m=bool(cycle_mode=='FULL' and _k[1]=='5m' and _v90_last_fast5m_monotonic>0
+            _reuse_fast5m=bool(cycle_mode=='FULL' and _k[1] in ('1m','5m') and _v90_last_fast5m_monotonic>0
                                and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
             _x['snapshot_stale']=not _reuse_fast5m
             if _reuse_fast5m:
                 _x['snapshot_reused_from_fast5m']=True
             _merged[_k]=_x
     summary=[_merged[k] for k in sorted(_merged,key=lambda z:(DISPLAY_ASSETS.index(z[0]) if z[0] in DISPLAY_ASSETS else 999,
-                                                            ('5m','1h','4h','1d','3d','7d').index(z[1]) if z[1] in ('5m','1h','4h','1d','3d','7d') else 999))]
+                                                            ('1m','5m','1h','4h','1d','3d','7d').index(z[1]) if z[1] in ('1m','5m','1h','4h','1d','3d','7d') else 999))]
     storage = pg_storage_status()
     expected = len(ASSETS)*len(processing_horizons)
     if made == expected and (not pg_enabled() or storage.get('ok')):
@@ -7456,7 +7477,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         if heavy_learning_due():
             maybe_schedule_heavy_learning('interval_due')
 
-V90_FAST_5M_INTERVAL_SECONDS=max(45,int(os.getenv('VERITAS_FAST_5M_INTERVAL_SECONDS','60')))
+V90_FAST_5M_INTERVAL_SECONDS=max(20,int(os.getenv('VERITAS_FAST_1M_INTERVAL_SECONDS','30')))
 V90_FULL_CYCLE_INTERVAL_SECONDS=max(240,int(os.getenv('VERITAS_FULL_CYCLE_INTERVAL_SECONDS',str(INTERVAL))))
 
 def loop():
@@ -7471,7 +7492,7 @@ def loop():
                 mode='FULL'
                 _reuse=bool(_v90_last_fast5m_monotonic>0 and
                             now_m-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
-                _full_horizons=tuple(h for h in HORIZONS if h!='5m') if _reuse else None
+                _full_horizons=tuple(h for h in HORIZONS if h not in ('1m','5m')) if _reuse else None
                 cycle(_full_horizons,'FULL')
                 base=now_m
                 next_full=base+V90_FULL_CYCLE_INTERVAL_SECONDS
@@ -7479,7 +7500,7 @@ def loop():
                     next_fast=base+V90_FAST_5M_INTERVAL_SECONDS
             elif now_m>=next_fast:
                 mode='FAST_5M'
-                cycle(('5m',),'FAST_5M')
+                cycle(('1m','5m'),'FAST_5M')
                 while next_fast<=now_m:
                     next_fast+=V90_FAST_5M_INTERVAL_SECONDS
             else:
@@ -7627,7 +7648,7 @@ def run_bootstrap_backtest(reason='manual'):
                 raw=_raw_from_history(rows,idx); raw['asset']=asset; raw['source_gate_pass']=True; raw['market_open']=True
                 entry=float(raw['price'])
                 for horizon,hh in HORIZONS.items():
-                    if horizon=='5m':
+                    if horizon in ('1m','5m'):
                         continue
                     bars_h=horizon_bars(asset,horizon)
                     stride=max(BACKTEST_SAMPLE_STEP_HOURS,bars_h)
@@ -9786,6 +9807,8 @@ def _fetch_asset_bundle(symbol,asset,cb_product):
              'elapsed_seconds':time.time()-t0,'error':None}
     else:
         out=_v842_original_fetch_asset_bundle(symbol,asset,cb_product)
+    from veritas_minute_entry import attach_minutes
+    out['raw']=attach_minutes(out['raw'],symbol,globals())
     _v90r62_store_bundle(asset,out)
     return out
 
@@ -16593,7 +16616,7 @@ def _v90r26_dashboard_bootstrap():
     source_ok=sum(1 for x in signals if x.get('source_gate_pass') is True)
     exec_ok=sum(1 for x in signals if x.get('execution_eligible') is True)
     stale=sum(1 for x in signals if x.get('snapshot_stale') is True)
-    horizon_counts={h:sum(1 for x in signals if x.get('horizon')==h) for h in ('5m','1h','4h','1d','3d','7d')}
+    horizon_counts={h:sum(1 for x in signals if x.get('horizon')==h) for h in ('1m','5m','1h','4h','1d','3d','7d')}
     closed_total=sum(int(p.get('closed_trades') or 0) for p in ps)
     wins_total=sum(int(p.get('wins') or 0) for p in ps)
     return {
@@ -17617,7 +17640,7 @@ def _technical_trade_plan_r39(asset,horizon,f,research_decision,signal_tier,anal
 _v90r37_pg_event_base=pg_event
 _v90r37_event_cache={}
 _v90r37_event_lock=threading.Lock()
-_v90r37_horizon_seconds={'5m':300,'1h':3600,'4h':14400,'1d':86400,'3d':259200,'7d':604800}
+_v90r37_horizon_seconds={'1m':60,'5m':300,'1h':3600,'4h':14400,'1d':86400,'3d':259200,'7d':604800}
 
 
 def _v90r37_features_compact(f):
@@ -18356,7 +18379,8 @@ def _v90_compact_live_row(z):
         'tactical_target_price','target_method','setup','reversal_probability',
         'decision_stage','positive_trade_probability','statistical_noise_buffer_p80',
         'spread_bps','execution_safety_version','horizon','market_observed_at','best_bid','best_ask'))
-    for key in ('trend_entry_context','r66_geometry','r66_runner_target_price','multi_tf_level_context'):
+    for key in ('trend_entry_context','r66_geometry','r66_runner_target_price','multi_tf_level_context',
+                'profitability_gate','trade_integrity','rule_arbitration','reentry_intelligence'):
         if plan.get(key):plan2[key]=plan[key]
     econ=plan.get('final_economics_gate') or {}
     plan2['final_economics_gate']=_v90_small_dict(econ,(
@@ -18412,7 +18436,8 @@ def _v90_compact_live_row(z):
         'entry_quality','positive_trade_probability','analog_effective_n',
         'expected_move_pct','signal_tier','execution_signal_tier',
         'event_shadow_score','causal_score','causal_label','decision_stage',
-        'sma18','sma50','support_level','resistance_level')
+        'sma18','sma50','support_level','resistance_level',
+        'minute_data_status','minute_closed_at','minute_entry_gate')
     out=_v90_small_dict(z,keys)
     # R65.1: preserve executable crypto quote fields at row level for paper_source_gate.
     for _qk in ('best_bid','best_ask','spread_bps','market_observed_at'):
@@ -18594,7 +18619,7 @@ def _v90r24_ensure_canonical_portfolios():
             VP.ensure_schema(pg_connect)
         policies={
           'Impulse': {'threshold':0.64,'strong_threshold':0.76,'min_independent':2,'mode':'IMPULSE_ONLY',
-                      'allowed_horizons':['5m','1h','4h','1d'],'max_fraction':0.50,
+                      'allowed_horizons':['1m','5m','1h','4h','1d'],'max_fraction':0.50,
                       'provisional_cap':0.10,'accepted_cap':0.25,'confirmed_cap':0.50},
           'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE',
                          'max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
@@ -18656,7 +18681,10 @@ _v90r40_base_execution_eligibility = _execution_eligibility_r39
 _v90r40_base_technical_trade_plan = _technical_trade_plan_r39
 
 def features(raw, horizon, common_structure=None):
-    f=dict(_v90r40_base_features(raw,horizon,common_structure) or {})
+    f=dict(_v90r40_base_features(raw,'5m' if horizon=='1m' else horizon,common_structure) or {})
+    if horizon=='1m':
+        from veritas_minute_entry import minute_features
+        f=minute_features(f,raw,datetime.now(timezone.utc))
     import veritas_trend_entry as VTE
     if '_r66_trend_context' not in raw:
         raw['_r66_trend_context']=VTE.build_context(
@@ -18845,14 +18873,22 @@ def _v90r63_nq_trend_target_projection(asset,horizon,f,direction,plan):
 
 def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
     plan=dict(_v90r40_base_technical_trade_plan(
-        asset,horizon,f,research_decision,signal_tier,analog
+        asset,'5m' if horizon=='1m' else horizon,f,research_decision,signal_tier,analog
     ) or {})
     plan.update(horizon=horizon,market_observed_at=f.get('market_observed_at'),best_bid=f.get('best_bid'),best_ask=f.get('best_ask'),
                 freshness_verification=f.get('freshness_verification') or {})
     plan=_v90r63_nq_trend_target_projection(asset,horizon,f,research_decision,plan)
     import veritas_trend_entry as VTE
     plan['trend_entry_context']=f.get('trend_entry_context') or {}
-    if research_decision in ('LONG','SHORT') and horizon in ('5m','1h','4h'):
+    ev=plan['trend_entry_context'].get('event') or {}
+    if ev.get('direction')==research_decision and str(ev.get('event_id','')).startswith('R69_'):
+        entry=float(f['price']);stop=float(ev['stop_price']);sign=1 if research_decision=='LONG' else -1
+        plan.update(entry_price=entry,stop_price=stop,target_price=entry+sign*2*abs(entry-stop),
+                    expected_move_pct=2*abs(entry-stop)/entry,expected_to_stop_ratio=2.,
+                    setup='R69_STRUCTURAL_BREAKOUT',entry_quality='FRESH_BREAKOUT',
+                    eligible=True,reason='R69_STRUCTURAL_EVENT',execution_timeframe=horizon)
+
+    if research_decision in ('LONG','SHORT') and horizon in ('1m','5m','1h','4h'):
         work=VTE.prepare_row({'price':f.get('price'),'horizon':horizon,
             'research_decision':research_decision,'trade_plan':plan})
         plan=work['trade_plan']
@@ -18904,14 +18940,14 @@ def main():
     case_lessons = {'status':'background','seeded':0}
     expert_principles = {'status':'background','seeded':0}
     pg_knowledge = {'durable': bool(pg_boot.get('ok')), 'status':'background'}
-    # R22: publish the last durable 42-cell matrix immediately on startup.
+    # Publish the last durable matrix, including the minute lane, on startup.
     try:
         _cold=latest_signal_summary_pg() if pg_enabled() else []
         if _cold:
             _cold_map={(x.get('asset'),x.get('horizon')):dict(x) for x in _cold if x.get('asset') and x.get('horizon')}
             _cold_rows=[]
             for _a in DISPLAY_ASSETS:
-                for _h in ('5m','1h','4h','1d','3d','7d'):
+                for _h in ('1m','5m','1h','4h','1d','3d','7d'):
                     _x=_cold_map.get((_a,_h))
                     if _x:
                         _x['snapshot_stale']=True

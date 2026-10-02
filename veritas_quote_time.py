@@ -58,6 +58,7 @@ def quote_gate(observed_at, horizon=None, now=None, *, protective=False, executi
         # Entry freshness is horizon-specific. A slower thesis may use older
         # context, but the simulated order still needs a recent observation.
         limit = {
+            '1m': 90,
             '5m': 300,
             '1h': 1200,
             '4h': 1800,
