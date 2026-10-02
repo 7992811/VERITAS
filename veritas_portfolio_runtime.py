@@ -4322,6 +4322,10 @@ def _v90r65_best_crypto_genesis(summary,asset):
             x['_r56_trigger_selected']=True
             x['_r56_entry_horizon']=x.get('horizon')
             x['_r56_management_horizon']=x.get('horizon')
+            # R65.2: preserve the base order-journal probability contract.
+            _p,_ps=_signal_probability(x)
+            x['_pwin']=float(_p)
+            x['_pwin_source']='R65_CRYPTO_GENESIS_'+str(_ps)
             x['_rank']=max(float(x.get('_rank') or 0.0),float(m.get('score') or 0.0))
             rows.append((float(m.get('score') or 0.0),x))
     if not rows:

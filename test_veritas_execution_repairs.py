@@ -1731,6 +1731,14 @@ class CryptoEarlyCaptureR65Tests(unittest.TestCase):
         self.assertFalse(m['eligible'])
         self.assertEqual(m['timing']['reason'],'R56_WAIT_RETEST_LATE_ENTRY')
 
+    def test_genesis_candidate_carries_order_probability_contract(self):
+        row=self._row()
+        got=VPR._v90r65_best_crypto_genesis([row],'BTC')
+        self.assertIsNotNone(got)
+        self.assertIn('_pwin',got)
+        self.assertIn('_pwin_source',got)
+        self.assertGreaterEqual(got['_pwin'],0.0)
+
     def test_aggressive_genesis_starts_at_least_fifty_percent(self):
         row=self._row()
         row['_r65_crypto_genesis']=VPR._v90r65_genesis_metrics(row)
