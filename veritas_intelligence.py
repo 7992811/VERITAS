@@ -16492,9 +16492,13 @@ def _v90r25_portfolios_fast():
                   'learning_focus':('ЗАЩИТА_ПРИБЫЛИ' if q.get('profit_protection_active') else 'УДЕРЖАНИЕ_ДВИЖЕНИЯ' if mfe>=0.20 else 'КАЧЕСТВО_ВХОДА'),'held_seconds':max(0.0,(datetime.now(timezone.utc)-z.get('opened_at')).total_seconds()) if isinstance(z.get('opened_at'),datetime) else None,'legacy_entry_recovered':bool(rec),'initial_stop_price':q.get('initial_stop_price') or rec.get('initial_stop_price'),'initial_take_price':q.get('initial_take_price') or rec.get('initial_take_price')})
         z.pop('trade_payload',None); pm.setdefault(z['portfolio_name'],[]).append(z)
     outp=[]
+    live_by_name={p.get('name'):p for p in live.get('portfolios') or []}
     for name in names:
         b=bm.get(name,{}); latest=nm.get(name,{}); st=sm.get(name,{}); closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0); nav_rub=latest.get('nav_rub'); initial=float(b.get('initial_nav_rub') or 1000000)
         outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),'nav_rub':nav_rub,'nav_usd':latest.get('nav_usd'),'total_return_pct':(100*(float(nav_rub)/initial-1)) if nav_rub is not None else None,'drawdown_pct':100*float(latest.get('drawdown') or 0),'gross_leverage':latest.get('gross_leverage'),'net_exposure':latest.get('net_exposure'),'cash_equivalent_fraction':max(0,1-float(latest.get('gross_leverage') or 0)),'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
+        # SQL enriches positions; the current execution decisions come from
+        # the same completed market cycle, without recomputing admission here.
+        outp[-1]['admission_trace']=live_by_name.get(name,{}).get('admission_trace',[])
     out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':0.0005,'api_source':'fast_sql_enriched'}
     out=VTV.enrich_positions(out,pg_connect)
     with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})

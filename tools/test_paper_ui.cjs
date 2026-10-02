@@ -11,7 +11,7 @@ const context = vm.createContext({
     getElementById: id => elements[id] ||= {},
   },
 });
-vm.runInContext(script.replace(/\}\)\(\);\s*$/, 'globalThis.ui={paperStatus,renderSignals,renderPortfolios,renderTrades,normalizePosition,st};})();'), context);
+vm.runInContext(script.replace(/\}\)\(\);\s*$/, 'globalThis.ui={planStatus,paperStatus,renderSignals,renderPortfolios,renderTrades,normalizePosition,st};})();'), context);
 const ui = context.ui;
 const signal = {
   asset: 'MOEX', horizon: '1h', research_decision: 'SHORT', signal_tier: 'SUPER_SHORT',
@@ -20,7 +20,9 @@ const signal = {
   trade_plan: {eligible: true, expected_to_stop_ratio: 1.74,
     final_economics_gate: {status: 'PASS', blockers: []}},
 };
-assert.equal(ui.paperStatus(signal).ready, true);
+assert.equal(ui.planStatus(signal).ready, true);
+assert.equal(ui.paperStatus(signal).ready, false);
+assert.equal(ui.paperStatus(signal).short, 'проверка');
 for (const [patch, reason] of [
   [{paper_eligible: false}, 'данные'],
   [{trade_plan:{eligible:false,final_economics_gate:{status:'BLOCK',blockers:['QUOTE_TOO_OLD_FOR_HORIZON']}}}, 'цена'],
@@ -44,8 +46,29 @@ assert.match(elements.detail.innerHTML, /Новый модельный вход 
 assert.doesNotMatch(elements.detail.innerHTML, /Модельный допуск/);
 ui.st.signals = {signals: [signal]};
 ui.renderSignals();
-assert.match(elements.actions.innerHTML, /МОДЕЛЬНЫЙ ДОПУСК/);
-assert.match(elements.detail.innerHTML, /Открытие и размер определяет портфель/);
+assert.match(elements.actions.innerHTML, /ПРОВЕРКА ВХОДА/);
+assert.match(elements.detail.innerHTML, /Ожидается решение исполнителя/);
+const trace={asset:'MOEX',horizon:'1h',direction:'SHORT',hard_veto:false,
+  execution:{checked_at:new Date().toISOString(),status:'BLOCKED',reason:'EXECUTION_QUOTE_UNAVAILABLE',
+    quote_gate:{age_seconds:960,max_age_seconds:300}}};
+ui.st.portfolios={portfolios:[{name:'Aggressive',admission_trace:[trace]}]};
+ui.renderSignals();
+assert.equal(ui.paperStatus(signal).ready,false);
+assert.match(elements.actions.innerHTML,/возраст 16.0 мин, допустимо 5 мин/);
+assert.match(elements.detail.innerHTML,/Нет свежей котировки для исполнения/);
+assert.doesNotMatch(elements.actions.innerHTML,/МОДЕЛЬНЫЙ ДОПУСК/);
+assert.match(elements.actions.innerHTML,/action-reason/);
+trace.execution={checked_at:new Date().toISOString(),status:'EXECUTED',reason:'ORDER_RECORDED'};
+ui.renderSignals();
+assert.equal(ui.paperStatus(signal).ready,true);
+assert.match(elements.actions.innerHTML,/ОРДЕР ИСПОЛНЕН/);
+trace.execution.checked_at=new Date(Date.now()-240000).toISOString();
+assert.equal(ui.paperStatus(signal).ready,false);
+trace.execution={checked_at:new Date().toISOString(),status:'HELD',reason:'TARGET_ALREADY_REACHED'};
+assert.equal(ui.paperStatus(signal).short,'позиция');
+trace.horizon='4h';
+assert.equal(ui.paperStatus(signal).short,'другой ТФ');
+ui.st.portfolios=null;
 console.log('Paper signal UI regressions passed');
 
 const partial = {

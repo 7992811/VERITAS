@@ -2129,6 +2129,56 @@ class CryptoEntryPathRegressionTests(unittest.TestCase):
                 self.assertEqual(selected['_pwin_source'],source)
                 self.assertEqual(selected['_r65_tactical_context'],local)
 
+    def test_cancelled_high_rank_candidate_cannot_mask_valid_local_trigger(self):
+        for asset in ('BTC','ETH','BRENT'):
+            stale=self.row(asset,'4h');stale.update(entry_quality='INVALIDATED',_rank=9.9)
+            trigger=self.row(asset,'1h');local=self.row(asset)
+            local.update(research_decision='NO_TRADE')
+            for mode in ('CORE','CHALLENGER','AGGRESSIVE','IMPULSE_ONLY'):
+                with patch.object(VPR,'_v90r65_base_transition_book',return_value={asset:stale}), \
+                     patch.object(VPR,'_v90r65_best_crypto_genesis',return_value=None):
+                    out=VPR._v90_trend_transition_candidate_book([stale,trigger,local],{asset:stale},mode)
+                self.assertEqual(out[asset]['horizon'],'1h')
+                self.assertFalse(VPR._v90r55_invalidated(out[asset]))
+
+    def test_cancelled_candidate_never_switches_to_opposite_trigger(self):
+        stale=self.row(horizon='4h');stale['entry_quality']='INVALIDATED'
+        trigger=self.row(horizon='1h');trigger['research_decision']='SHORT'
+        with patch.object(VPR,'_v90r65_base_transition_book',return_value={'BTC':stale}), \
+             patch.object(VPR,'_v90r65_best_crypto_genesis',return_value=None):
+            out=VPR._v90_trend_transition_candidate_book([stale,trigger],{'BTC':stale},'CORE')
+        self.assertTrue(VPR._v90r55_invalidated(out['BTC']))
+
+    def test_actual_timing_rejection_reaches_admission_trace(self):
+        row=self.row();row['_execution_audit']={'checked_at':NOW.isoformat()}
+        c=MagicMock();c.execute.return_value.fetchone.return_value=None
+        row.update(best_bid=102.0,best_ask=102.01,realized_vol=.005)
+        VPR._open_or_add(c,{},'Champion','BTC','LONG',102.0,.10,1e6,NOW.isoformat(),row,'test')
+        with patch.object(VPR,'_signal_first_admission',return_value={'open':True,'fraction':.10}):
+            trace=VPR._portfolio_admission_trace({'BTC':row},VP.POLICIES['Champion'],0)[0]
+        self.assertFalse(trace['hard_veto'])
+        self.assertEqual(trace['execution']['status'],'BLOCKED')
+        self.assertEqual(trace['execution']['reason'],'R56_WAIT_RETEST_LATE_ENTRY')
+
+    def test_plan_admitted_but_stale_execution_quote_is_reported(self):
+        row=self.row('BRENT','1h')
+        row['market_observed_at']=(NOW-timedelta(minutes=16)).isoformat()
+        book=dict(high_water_nav_rub=1e6,benchmark_nav_rub=1e6,last_mark_at=None)
+        with ExitStack() as stack:
+            for name,value in {'_portfolio_rows':(book,[]),'_mark_nav':(1e6,0,0,0),
+                    '_apply_funding':0,'_risk_governor':{'new_risk':True,'max_gross':2},
+                    '_desired_fraction':.10,'_stats':{}}.items():
+                stack.enter_context(patch.object(VP,name,return_value=value))
+            stack.enter_context(patch.object(VPR,'_signal_first_admission',return_value={'open':True,'fraction':.10}))
+            entry=stack.enter_context(patch.object(VP,'_open_or_add'))
+            out=VP._v90j_base_step_one(MagicMock(),'Champion',VP.POLICIES['Champion'],
+                {'BRENT':row},{},14.1,84.4,NOW.isoformat(),.0005,[row])
+        entry.assert_not_called()
+        trace=out['admission_trace'][0]
+        self.assertFalse(trace['hard_veto'])
+        self.assertEqual(trace['execution']['reason'],'EXECUTION_QUOTE_UNAVAILABLE')
+        self.assertEqual(trace['execution']['quote_gate']['age_seconds'],960)
+
     def test_new_small_position_is_not_legacy_completion_after_tp(self):
         z={'direction':'LONG','units':500.0,'opened_at':NOW.isoformat(),
            'payload':{'opening_fraction':.15,'r17_tp1_done':True}}

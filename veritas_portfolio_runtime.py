@@ -471,6 +471,8 @@ def _portfolio_admission_trace(candidates, policy, drawdown):
             'hard_veto':not bool(sf.get('open')),
             'target_fraction':sf.get('fraction'),
             'reason':sf.get('reason'),
+            'execution':dict(row.get('_execution_audit') or {}),
+            'signal_observed_at':row.get('market_observed_at') or row.get('observed_at'),
             'economics_blockers':sf.get('economics_blockers'),
             'profitability_blockers':sf.get('profitability_blockers'),
             'profitability_gate':sf.get('profitability_gate'),
@@ -2807,6 +2809,7 @@ def _v90r55_mark_scale_event(c,name,z,row,price,ts):
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     row=row or {}
     if _v90r55_invalidated(row):
+        _record_entry_outcome(row,'BLOCKED','INVALIDATED_SETUP')
         print(json.dumps({
           'event':'V90_R55_ENTRY_BLOCKED','portfolio':name,'asset':asset,
           'direction':direction,'reason':'INVALIDATED_SETUP'
@@ -2821,6 +2824,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     if not existing:
         rg=_v90r55_reentry_gate(c,name,asset,direction,row,price,ts)
         if not rg.get('eligible'):
+            _record_entry_outcome(row,'BLOCKED',rg.get('reason') or 'REENTRY_BLOCKED')
             print(json.dumps({
               'event':'V90_R55_REENTRY_BLOCKED','portfolio':name,'asset':asset,
               'direction':direction,**rg
@@ -2846,6 +2850,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             if not is_legacy_completion:
                 ag=_v90r55_add_event_gate(dict(existing),row,price)
                 if not ag.get('eligible'):
+                    _record_entry_outcome(row,'BLOCKED',ag.get('reason') or 'ADD_REQUIRES_NEW_EVENT')
                     print(json.dumps({
                       'event':'V90_R55_ADD_BLOCKED','portfolio':name,'asset':asset,
                       'direction':direction,'current_fraction':current,
@@ -3920,6 +3925,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             blockers.append('R59_FINAL_FILL_MOVE_MARGIN_TOO_LOW')
         blockers=list(dict.fromkeys(blockers))
         if (not actual.get('eligible')) or blockers:
+            _record_entry_outcome(row,'BLOCKED',blockers[0] if blockers else 'R59_FINAL_FILL_GATE',blockers=blockers)
             print(json.dumps({
               'event':'V90_R59_ENTRY_BLOCKED','portfolio':name,'asset':asset,
               'direction':direction,'reason':blockers[0] if blockers else 'R59_FINAL_FILL_GATE',
@@ -3929,6 +3935,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             return 0.0
         opposite=_v90r59_recent_opposite_exit(c,name,asset,direction,row,ts)
         if opposite and opposite.get('blocked'):
+            _record_entry_outcome(row,'BLOCKED',opposite.get('reason') or 'RECENT_OPPOSITE_EXIT')
             print(json.dumps({
               'event':'V90_R59_ENTRY_BLOCKED','portfolio':name,'asset':asset,
               'direction':direction,**opposite,
@@ -4387,6 +4394,15 @@ def _v90r65_execution_timing(row,price,direction,ts):
 
 def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
     out=dict(_v90r65_base_transition_book(summary,core_candidates,mode) or {})
+    # A cancelled high-rank scenario must not mask a valid same-direction
+    # local trigger. The replacement still passes every portfolio/fill gate.
+    for asset,selected in list(out.items()):
+        if _v90r55_invalidated(selected):
+            trigger=_v90r56_trigger_row(summary,asset,_v90r56_direction(selected))
+            if trigger:
+                trigger=dict(trigger)
+                trigger['_pwin'],trigger['_pwin_source']=_signal_probability(trigger)
+                out[asset]=trigger
     for asset in _R65_CRYPTO:
         g=_v90r65_best_crypto_genesis(summary,asset)
         old=out.get(asset)
@@ -4488,6 +4504,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         timing=(_v90r65_execution_timing(row,price,direction,ts) if asset in _R65_CRYPTO
                 else _v90r56_late_entry_gate(row,price))
         if not timing.get('eligible'):
+            _record_entry_outcome(row,'BLOCKED',timing.get('reason'),timing=timing)
             print(json.dumps({
               'event':'V90_R65_LATE_ENTRY_BLOCKED','portfolio':name,'asset':asset,
               'direction':direction,'price':price,**timing,
@@ -4501,6 +4518,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     if not existing and (row.get('_r65_crypto_genesis') or {}).get('eligible'):
         fill=_v90r65_actual_genesis_fill_ok(row,price,direction,target_fraction)
         if not fill.get('eligible'):
+            _record_entry_outcome(row,'BLOCKED','R65_GENESIS_FILL_BLOCKED',blockers=fill.get('blockers'))
             print(json.dumps({
               'event':'V90_R65_GENESIS_FILL_BLOCKED','portfolio':name,'asset':asset,
               'direction':direction,'price':price,**fill,
@@ -4508,6 +4526,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             return 0.0
         opposite=_v90r59_recent_opposite_exit(c,name,asset,direction,row,ts)
         if opposite and opposite.get('blocked'):
+            _record_entry_outcome(row,'BLOCKED',opposite.get('reason') or 'RECENT_OPPOSITE_EXIT')
             return 0.0
         # Use the pre-R59 mutation path only for this tightly bounded genesis lane;
         # re-entry, stop-risk, source and all earlier hard controls still apply.

@@ -2112,28 +2112,38 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     return fee
 
 
+def _record_entry_outcome(row,status,reason,**details):
+    # Nested audit survives the shallow copies used by execution layers.
+    audit=row.setdefault('_execution_audit',{})
+    audit.update(status=status,reason=reason,**details)
+
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     target_notional=target_fraction*nav
     z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
     if z and z['direction']!=direction:
         if not bool(row.get('_flip_confirmed',False)):
+            _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED')
             return
         _close_or_reduce(c,p,name,z,price,0.0,nav,ts,'V84_CONFIRMED_DIRECTION_FLIP')
         z=None
     final_gate=VX.entry_gate(row,price,direction,target_fraction,z)
     if not final_gate['eligible']:
+        _record_entry_outcome(row,'BLOCKED','FINAL_EXECUTION_ECONOMICS',blockers=final_gate.get('blockers'))
         print(json.dumps({'event':'PAPER_ENTRY_BLOCKED_FINAL','portfolio':name,'asset':asset,'gate':final_gate},default=str),flush=True)
         return
     row['_fill_economics_gate']=final_gate
     current=abs(float(z['units'])*price) if z else 0.0
     add=max(0.0,target_notional-current)
-    if add<=max(1.0,0.0025*nav): return
+    if add<=max(1.0,0.0025*nav):
+        _record_entry_outcome(row,'HELD','TARGET_ALREADY_REACHED')
+        return
     side='BUY' if direction=='LONG' else 'SELL_SHORT'
     intent=VX.build_order_intent(
         name,asset,direction,target_fraction,price,row.get('horizon'),str(ts),reason,
         production_eligible=bool(row.get('production_eligible',False))
     )
     if c.execute("SELECT 1 AS ok FROM paper_orders WHERE client_order_id=%s LIMIT 1",(intent.client_order_id,)).fetchone():
+        _record_entry_outcome(row,'HELD','ORDER_ALREADY_RECORDED')
         return
     fill=VX.simulated_fill(
         asset,side,price,add/max(nav,1.0),
@@ -2190,6 +2200,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                    'entry_timing':row.get('_r65_entry_timing'),
                    'execution_model':fill,'order_intent':intent.to_dict()}
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,trade_id,ts,asset,side,fill_price,add,fee,add/max(nav,1),reason,json.dumps(order_payload,ensure_ascii=False,default=str),intent.client_order_id))
+    _record_entry_outcome(row,'EXECUTED','ORDER_RECORDED',fill_price=fill_price,order_id=intent.client_order_id)
 
 
 def _apply_funding(c,p,pos,prices,ruonia,ts):
@@ -2219,6 +2230,8 @@ def _stats(c,name):
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     global COMMISSION; COMMISSION=float(commission_rate)
+    for row in candidates.values():
+        row['_execution_audit']={'checked_at':str(ts),'status':'NOT_REQUESTED','reason':'NO_NEW_ALLOCATION'}
     p,pos=_portfolio_rows(c,name)
     _apply_funding(c,p,pos,prices,ruonia,ts)
     p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices)
@@ -2335,13 +2348,26 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             px=_execution_price_or_none(prices,asset)
             if px is None:
                 row['_execution_skip_reason']='MARKET_PRICE_UNAVAILABLE'
+                latest=max((r for r in summary or [] if r.get('asset')==asset),
+                           key=lambda r:str(r.get('market_observed_at') or r.get('observed_at') or ''),default=row)
+                observed=latest.get('market_observed_at') or latest.get('observed_at')
+                _record_entry_outcome(row,'BLOCKED','EXECUTION_QUOTE_UNAVAILABLE',
+                    quote_gate=VPG.quote_gate(observed,now=VPG.utc_datetime(ts),protective=True))
                 continue
             z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
             rs=row.get('range_retest_breakout') or {}
             if not z and rs.get('active') and str(rs.get('state') or '') in ('APPROACH_RESISTANCE','APPROACH_SUPPORT'):
+                _record_entry_outcome(row,'BLOCKED','WAIT_LEVEL_BREAK')
                 continue
             cur=abs(float(z['units'])*px)/max(nav,1.0) if z else 0.0
-            if target>cur+0.025: _open_or_add(c,p,name,asset,row['research_decision'],px,target,nav,ts,row,'ADMISSION_OR_ADD')
+            if target>cur+0.025:
+                _record_entry_outcome(row,'BLOCKED','EXECUTION_CONTROL_BLOCKED',requested_fraction=target)
+                _open_or_add(c,p,name,asset,row['research_decision'],px,target,nav,ts,row,'ADMISSION_OR_ADD')
+            else:
+                _record_entry_outcome(row,'HELD','TARGET_ALREADY_REACHED',current_fraction=cur)
+    else:
+        for row in candidates.values():
+            _record_entry_outcome(row,'BLOCKED','PORTFOLIO_RISK_LIMIT')
     p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices); hwm=max(float(p['high_water_nav_rub']),nav); dd=max(0.0,1-nav/max(hwm,1.0))
     # benchmark accrual since last mark
     bench=float(p['benchmark_nav_rub']); last=p['last_mark_at']
