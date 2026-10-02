@@ -18453,7 +18453,7 @@ def _v90_compact_decision_log(z):
     }
 
 
-def _v90_prune_low_priority_caches(level_mb=None):
+def _v90_prune_low_priority_caches(level_mb=None,preserve_active_cycle=False):
     m=float(level_mb if level_mb is not None else (rss_mb() or 0.0))
     if m < V90_MEMORY_CAUTION_MB:
         return 0
@@ -18484,7 +18484,7 @@ def _v90_prune_low_priority_caches(level_mb=None):
                 fn._cache=None; cleared+=1
         except Exception:
             pass
-    if m >= V90_MEMORY_PROTECT_MB:
+    if m >= V90_MEMORY_PROTECT_MB and not preserve_active_cycle:
         try:
             with market_cache_lock:
                 cleared+=len(market_cache); market_cache.clear()
@@ -18503,7 +18503,10 @@ def _v90_trim_memory(phase='unknown',force=False):
     before=rss_mb()
     if not force and before is not None and float(before)<V90_MEMORY_CAUTION_MB:
         return {'phase':phase,'before_mb':before,'after_mb':before,'trimmed':False}
-    cleared=_v90_prune_low_priority_caches(before)
+    # R65: per-asset GC may release objects, but must not evict the warm
+    # market/feature caches needed by the remaining assets in the SAME cycle.
+    preserve_active_cycle=str(phase or '').startswith('asset_')
+    cleared=_v90_prune_low_priority_caches(before,preserve_active_cycle=preserve_active_cycle)
     try:
         gc.collect()
     except Exception:

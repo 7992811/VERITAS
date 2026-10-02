@@ -1652,6 +1652,95 @@ class NQTrendExecutionContractR64Tests(unittest.TestCase):
         self.assertIn('LEARNED_ENTRY_DIRECTION_ERROR_CLUSTER',g['blockers'])
 
 
+class CryptoEarlyCaptureR65Tests(unittest.TestCase):
+    def _row(self, price=100.0, horizon='5m', rr=1.7, move=.012, conf=.81,
+             hscore=.82, blockers=None, quality='FRESH_BREAKOUT'):
+        blockers=list(blockers or [])
+        return {
+          'asset':'BTC','horizon':horizon,'research_decision':'LONG',
+          'confidence':conf,'signal_tier':'SUPER_LONG','price':price,
+          'market_open':True,'source_gate_pass':True,'realized_vol':.012,
+          'horizon_return':.003,
+          'entry_quality':quality,'independent_evidence_families':4,
+          'horizon_structure':{'direction':'LONG','state':'BUILDING_TREND','score':hscore},
+          'institutional_signal':{
+            'evidence_independence':{'independent_count':4},
+            'breakout_quality':{'state':'HIGH_QUALITY_BREAKOUT'}},
+          'impulse_pivot_break':{'active':True,'direction':'LONG','breakout_level':99.8},
+          'trade_plan':{
+            'eligible':True,'direction':'LONG','entry_price':price,
+            'stop_price':99.3,'target_price':price*(1+move),
+            'expected_move_pct':move,'expected_to_stop_ratio':rr,
+            'entry_quality':quality,
+            'final_economics_gate':{
+              'status':'PASS' if not blockers else 'BLOCK',
+              'blockers':blockers,'modeled_round_trip_cost_pct':.002,
+              'expected_to_stop_ratio':rr,'expected_move_pct':move}},
+        }
+
+    def test_strong_fresh_crypto_breakout_is_genesis_candidate(self):
+        m=VPR._v90r65_genesis_metrics(self._row())
+        self.assertTrue(m['eligible'],m)
+
+    def test_lone_net_rr_blocker_can_be_bounded_genesis_probe(self):
+        m=VPR._v90r65_genesis_metrics(
+            self._row(rr=1.47,move=.0062,hscore=.61,conf=.79,
+                      blockers=['NET_REWARD_RISK_BELOW_FLOOR']))
+        self.assertTrue(m['eligible'],m)
+        self.assertTrue(m['marginal_economics'])
+
+    def test_stale_or_target_unprofitable_is_never_softened(self):
+        for blocker in ('QUOTE_TOO_OLD_FOR_HORIZON','TARGET_NOT_PROFITABLE_AFTER_COSTS'):
+            with self.subTest(blocker=blocker):
+                m=VPR._v90r65_genesis_metrics(self._row(blockers=[blocker]))
+                self.assertFalse(m['eligible'])
+
+    def test_late_crypto_entry_is_rejected_even_when_signal_is_strong(self):
+        row=self._row(price=102.0)
+        row['impulse_pivot_break']['breakout_level']=100.0
+        row['realized_vol']=.005
+        m=VPR._v90r65_genesis_metrics(row)
+        self.assertFalse(m['eligible'])
+        self.assertEqual(m['timing']['reason'],'R56_WAIT_RETEST_LATE_ENTRY')
+
+    def test_aggressive_genesis_starts_at_least_fifty_percent(self):
+        row=self._row()
+        row['_r65_crypto_genesis']=VPR._v90r65_genesis_metrics(row)
+        with patch.object(VPR,'_v90r65_base_admission',
+                          return_value={'open':False,'fraction':0.0,'reason':'PROFITABILITY_GATE'}):
+            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out['open'],out)
+        self.assertGreaterEqual(out['fraction'],.50)
+
+    def test_crypto_structural_trailing_waits_until_meaningful_profit(self):
+        self.assertFalse(VPR._v90r65_crypto_trailing_activation('BTC',.0028)['active'])
+        self.assertTrue(VPR._v90r65_crypto_trailing_activation('BTC',.0036)['active'])
+
+
+class CryptoNetProfitLockR65Tests(unittest.TestCase):
+    def test_crypto_27bp_move_can_lock_positive_net_after_paid_fee(self):
+        z={'asset':'BTC','direction':'LONG','avg_entry_price':100.0,'units':1000.0,
+           'stop_price':99.0,'payload':{}}
+        q={'price':100.27,'source_gate_pass':True}
+        lock=VPG.profit_lock_stop(z,q,.0005,fees_paid_rub=50.0,
+                                  slippage_pct=.00025,min_net_pct=.00025)
+        self.assertIsNotNone(lock)
+        self.assertGreater(lock['projected_net_profit_at_stop_rub'],0)
+        self.assertGreater(lock['stop_price'],100.0)
+
+
+class ActiveCycleCacheR65Tests(unittest.TestCase):
+    def test_per_asset_trim_preserves_hot_market_and_feature_caches(self):
+        src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
+        pos=src.index('def _v90_trim_memory')
+        body=src[pos:pos+1600]
+        self.assertIn("startswith('asset_')",body)
+        self.assertIn('preserve_active_cycle=preserve_active_cycle',body)
+        p=src.index('def _v90_prune_low_priority_caches')
+        pbody=src[p:p+2600]
+        self.assertIn('and not preserve_active_cycle',pbody)
+
+
 class R601LearningCacheInvalidationTests(unittest.TestCase):
     def test_dedup_immediately_invalidates_r29_and_r33_caches(self):
         class Cur:

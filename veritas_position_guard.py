@@ -376,9 +376,17 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                                      else (_entry_lock/_px_lock-1.0)) if _entry_lock>0 and _px_lock>0 else 0.0
             except Exception:
                 _cur_lock_pct=0.0
+            # R65: BTC/ETH protective fills use a live top-of-book execution model.
+            # A 10bp synthetic slippage + 10bp profit cushion delayed protection
+            # until ~30bp and allowed 26-28bp MFE to round-trip into fee losses.
+            # Keep the universal 25bp activation floor, but use a realistic 2.5bp
+            # slippage allowance and 2.5bp positive-net cushion for crypto.
+            _crypto_lock=str(z.get('asset') or '') in ('BTC','ETH')
+            _lock_slippage=.00025 if _crypto_lock else .0010
+            _lock_min_net=.00025 if _crypto_lock else .0010
             lock = None if (_rearm_after and _cur_lock_pct<_rearm_after) else profit_lock_stop(
                 z,q,getattr(vp,'COMMISSION',.0005),fees_paid_rub=fees_paid,
-                slippage_pct=.0010,min_net_pct=.0010
+                slippage_pct=_lock_slippage,min_net_pct=_lock_min_net
             )
             if lock:
                 pl_patch = {

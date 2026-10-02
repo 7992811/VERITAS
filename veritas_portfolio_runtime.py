@@ -4242,6 +4242,245 @@ def report(pg_connect):
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),38)
 
 
+# VERITAS V90 CRYPTO EARLY CAPTURE / ANTI-CHASE R65
+# Repairs the 2026-10-02 BTC/ETH pattern: the engine saw the impulse early,
+# historical soft vetoes delayed execution, and Core/Impulse later entered
+# after most of the move had already been consumed.
+V90_R65_STARTED_AT=os.getenv('VERITAS_R65_EPOCH','2026-10-02T06:00:00+00:00')
+_v90r65_base_transition_book=_v90_trend_transition_candidate_book
+_v90r65_base_admission=_signal_first_admission
+_v90r65_base_open_or_add=_open_or_add
+_v90r65_base_trailing_apply=_v90tr_apply
+_v90r65_base_report=report
+_R65_CRYPTO={'BTC','ETH'}
+_R65_ALLOWED_CURRENT_ECON={'NET_REWARD_RISK_BELOW_FLOOR'}
+
+def _v90r65_num(v,default=0.0):
+    try:
+        x=float(v)
+        return x if math.isfinite(x) else float(default)
+    except Exception:
+        return float(default)
+
+def _v90r65_genesis_metrics(row):
+    row=dict(row or {})
+    asset=str(row.get('asset') or '')
+    h=str(row.get('horizon') or '')
+    d=_v90r56_direction(row)
+    if asset not in _R65_CRYPTO or h not in _R56_TRIGGER_HORIZONS or d not in ('LONG','SHORT'):
+        return {'eligible':False,'reason':'R65_SCOPE'}
+    if _v90r55_invalidated(row) or not bool(row.get('source_gate_pass',True)) or not bool(row.get('market_open',True)):
+        return {'eligible':False,'reason':'R65_HARD_OR_SOURCE_VETO'}
+    plan=dict(row.get('trade_plan') or {})
+    gate=dict(plan.get('final_economics_gate') or {})
+    blockers=list(gate.get('blockers') or [])
+    hard=[b for b in blockers if b not in _R65_ALLOWED_CURRENT_ECON]
+    if hard:
+        return {'eligible':False,'reason':'R65_CURRENT_ECONOMICS_VETO','blockers':blockers}
+    reason=str(plan.get('reason') or '')
+    if 'rule_arbitration_veto:' in reason and 'NEGATIVE_VALIDATED_SETUP_EDGE' not in reason:
+        return {'eligible':False,'reason':'R65_CURRENT_RULE_VETO'}
+    hs=dict(row.get('horizon_structure') or {})
+    hscore=_v90r65_num(hs.get('score') or row.get('horizon_structure_score'))
+    hstate=str(hs.get('state') or row.get('horizon_structure_state') or '')
+    indep=int(_v90r65_num(
+        (((row.get('institutional_signal') or {}).get('evidence_independence') or {}).get('independent_count'))
+        or row.get('independent_evidence_families'),0))
+    conf=_v90r65_num(row.get('confidence') or row.get('_pwin'))
+    rr=_v90r65_num(plan.get('expected_to_stop_ratio') or row.get('expected_to_stop_ratio'))
+    move=abs(_v90r65_num(plan.get('expected_move_pct') or row.get('expected_move_pct')))
+    cost=abs(_v90r65_num(gate.get('modeled_round_trip_cost_pct')))
+    quality=str(row.get('entry_quality') or plan.get('entry_quality') or '')
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    hmin={'5m':.58,'1h':.55,'4h':.65}.get(h,.65)
+    rrmin={'5m':1.35,'1h':1.45,'4h':1.55}.get(h,1.55)
+    movemin=max({'5m':.0050,'1h':.0060,'4h':.0080}.get(h,.0080),
+                2.50*max(cost,.0015))
+    quality_ok=quality in ('FRESH_BREAKOUT','CONFIRMED_TREND','NEW_SETUP_PROVISIONAL')
+    trend_ok=hstate in ('BUILDING_TREND','CONFIRMED_TREND') or tier in ('SUPER_LONG','SUPER_SHORT')
+    timing=_v90r56_late_entry_gate(row)
+    eligible=bool(conf>=.72 and hscore>=hmin and indep>=3 and rr>=rrmin
+                  and move>=movemin and quality_ok and trend_ok and timing.get('eligible'))
+    score=(3.6 if h=='5m' else 3.3 if h=='1h' else 3.0)+hscore+0.50*conf+0.08*min(indep,6)+0.12*min(rr,3.0)
+    return {
+      'eligible':eligible,'reason':'R65_CRYPTO_TREND_GENESIS' if eligible else 'R65_GENESIS_QUALITY_WAIT',
+      'asset':asset,'horizon':h,'direction':d,'confidence':conf,'hscore':hscore,
+      'hstate':hstate,'independent':indep,'rr':rr,'expected_move_pct':move,
+      'modeled_cost_pct':cost,'entry_quality':quality,'signal_tier':tier,
+      'current_economics_blockers':blockers,'timing':timing,'score':score,
+      'marginal_economics':bool(blockers),
+    }
+
+def _v90r65_best_crypto_genesis(summary,asset):
+    rows=[]
+    for r0 in summary or []:
+        if str((r0 or {}).get('asset') or '')!=str(asset):
+            continue
+        m=_v90r65_genesis_metrics(r0)
+        if m.get('eligible'):
+            x=dict(r0); x['_r65_crypto_genesis']=m
+            x['_r56_trigger_selected']=True
+            x['_r56_entry_horizon']=x.get('horizon')
+            x['_r56_management_horizon']=x.get('horizon')
+            x['_rank']=max(float(x.get('_rank') or 0.0),float(m.get('score') or 0.0))
+            rows.append((float(m.get('score') or 0.0),x))
+    if not rows:
+        return None
+    rows.sort(key=lambda z:z[0],reverse=True)
+    return rows[0][1]
+
+def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
+    out=dict(_v90r65_base_transition_book(summary,core_candidates,mode) or {})
+    for asset in _R65_CRYPTO:
+        g=_v90r65_best_crypto_genesis(summary,asset)
+        if not g:
+            continue
+        old=out.get(asset)
+        if old is None or str(old.get('research_decision') or '')==str(g.get('research_decision') or ''):
+            out[asset]=g
+    return out
+
+def _v90r65_genesis_fraction(row,policy,drawdown):
+    m=dict((row or {}).get('_r65_crypto_genesis') or {})
+    mode=str((policy or {}).get('mode') or 'CORE')
+    conf=float(m.get('confidence') or 0.0)
+    hscore=float(m.get('hscore') or 0.0)
+    marginal=bool(m.get('marginal_economics'))
+    if mode=='AGGRESSIVE':
+        f=.50
+        if not marginal and conf>=.80 and hscore>=.80:
+            f=.75
+    elif mode=='IMPULSE_ONLY':
+        f=.10
+    elif mode=='CORE':
+        f=.05 if marginal or str(m.get('horizon'))=='5m' else .10
+    else:
+        if conf<.78 or int(m.get('independent') or 0)<4:
+            return 0.0
+        f=.05
+    try:
+        cap=_v90r24_stop_risk_cap(row)
+        if cap is not None:
+            f=min(f,float(cap))
+    except Exception:
+        pass
+    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:
+        return 0.0
+    f*=float(rg.get('multiplier') or 0.0)
+    return _clip(_round_step(f),0.0,float((policy or {}).get('max_fraction') or 2.0))
+
+def _signal_first_admission(row,policy,drawdown):
+    base=dict(_v90r65_base_admission(row,policy,drawdown) or {})
+    m=dict((row or {}).get('_r65_crypto_genesis') or {})
+    if not m.get('eligible'):
+        return base
+    timing=m.get('timing') or {}
+    if not timing.get('eligible'):
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':'R65_WAIT_RETEST_NO_CHASE','r65_crypto_genesis':m}
+    f=_v90r65_genesis_fraction(row,policy,drawdown)
+    if f<=0:
+        return base
+    # Current source/hard economics stay authoritative. R65 softens only
+    # management/history maturity and, for a tiny genesis probe, a lone
+    # NET_REWARD_RISK_BELOW_FLOOR current blocker.
+    base.update({
+      'open':True,'fraction':max(f,float(base.get('fraction') or 0.0) if base.get('open') else 0.0),
+      'reason':'R65_CRYPTO_TREND_GENESIS','hard_veto':False,
+      'r65_crypto_genesis':m,'r65_early_capture':True,
+    })
+    return base
+
+def _v90r65_actual_genesis_fill_ok(row,price,direction,target_fraction):
+    actual=VX.entry_gate(row,price,direction,target_fraction)
+    blockers=list(actual.get('blockers') or [])
+    hard=[b for b in blockers if b not in _R65_ALLOWED_CURRENT_ECON]
+    rr=_v90r65_num(actual.get('expected_to_stop_ratio'))
+    move=abs(_v90r65_num(actual.get('expected_move_pct')))
+    cost=abs(_v90r65_num(actual.get('modeled_round_trip_cost_pct'),.002))
+    ok=bool(not hard and rr>=.95 and move>=max(.0040,2.25*cost))
+    return {'eligible':ok,'blockers':blockers,'hard_blockers':hard,
+            'actual_rr':rr,'actual_move':move,'modeled_cost':cost}
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    row=dict(row or {})
+    existing=c.execute(
+      "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+      (name,asset)).fetchone()
+    if not existing and str(row.get('horizon') or '') in _R56_TRIGGER_HORIZONS:
+        timing=_v90r56_late_entry_gate(row)
+        if not timing.get('eligible'):
+            print(json.dumps({
+              'event':'V90_R65_LATE_ENTRY_BLOCKED','portfolio':name,'asset':asset,
+              'direction':direction,'price':price,**timing,
+            },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+            return 0.0
+    if not existing and (row.get('_r65_crypto_genesis') or {}).get('eligible'):
+        fill=_v90r65_actual_genesis_fill_ok(row,price,direction,target_fraction)
+        if not fill.get('eligible'):
+            print(json.dumps({
+              'event':'V90_R65_GENESIS_FILL_BLOCKED','portfolio':name,'asset':asset,
+              'direction':direction,'price':price,**fill,
+            },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+            return 0.0
+        opposite=_v90r59_recent_opposite_exit(c,name,asset,direction,row,ts)
+        if opposite and opposite.get('blocked'):
+            return 0.0
+        # Use the pre-R59 mutation path only for this tightly bounded genesis lane;
+        # re-entry, stop-risk, source and all earlier hard controls still apply.
+        return _v90r59_base_open_or_add(
+          c,p,name,asset,direction,price,target_fraction,nav,ts,row,'R65_CRYPTO_TREND_GENESIS')
+    return _v90r65_base_open_or_add(
+      c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason)
+
+def _v90r65_crypto_trailing_activation(asset,signed_profit):
+    threshold=.0035 if str(asset) in _R65_CRYPTO else 0.0
+    return {'active':bool(float(signed_profit)>=threshold),
+            'threshold_pct':100.0*threshold,'signed_profit_pct':100.0*float(signed_profit)}
+
+def _v90tr_apply(c,name,candidates,prices,ts):
+    # R17 used to ratchet crypto stops after ANY positive tick. That turned
+    # +0.26%-0.28% MFE into fee-negative STOPs. Before the net-profit lock has
+    # room to arm, do not create a structural trailing stop for BTC/ETH.
+    work=dict(candidates or {})
+    try:
+        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        for z0 in positions or []:
+            z=dict(z0); asset=str(z.get('asset') or '')
+            if asset not in _R65_CRYPTO or asset not in work or asset not in (prices or {}):
+                continue
+            entry=_v90r65_num(z.get('avg_entry_price'))
+            px=_v90r65_num((prices or {}).get(asset))
+            d=str(z.get('direction') or '')
+            if entry<=0 or px<=0 or d not in ('LONG','SHORT'):
+                continue
+            signed=(px/entry-1.0) if d=='LONG' else (entry/px-1.0)
+            gate=_v90r65_crypto_trailing_activation(asset,signed)
+            if not gate.get('active'):
+                work.pop(asset,None)
+    except Exception:
+        pass
+    return _v90r65_base_trailing_apply(c,name,work,prices,ts)
+
+def report(pg_connect):
+    d=dict(_v90r65_base_report(pg_connect) or {})
+    d['crypto_early_capture_r65']={
+      'status':'ACTIVE','started_at':V90_R65_STARTED_AT,
+      'assets':['BTC','ETH'],
+      'early_genesis':'5m/1h/4h current evidence can start risk before mature-history confirmation',
+      'aggressive_initial':'50%; 75% only on strong non-marginal genesis, then add dynamically',
+      'anti_chase':'all portfolios block a NEW 5m/1h/4h entry after volatility budget is consumed',
+      'historical_management_errors':'may reduce size but cannot force waiting until the local extreme',
+      'current_hard_economics':'still authoritative',
+      'crypto_structural_trailing_activation_pct':.35,
+      'incident_reference':'BTC/ETH 2026-10-02 early signal seen, execution delayed to local high',
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),39)
+
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
