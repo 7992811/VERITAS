@@ -8102,6 +8102,17 @@ def _v90_execution_candidate_rank(row):
     portfolio cycle.
     """
     x=dict(row or {})
+    # Tactical routers may replace a ranked candidate with a raw signal.
+    # The order writer requires both the score and its provenance, even when
+    # rank already exists; restore this invariant before either early return.
+    try:
+        pwin=float(x.get('_pwin'))
+        probability_ok=math.isfinite(pwin) and 0.0<=pwin<=1.0 and bool(x.get('_pwin_source'))
+    except (TypeError,ValueError):
+        probability_ok=False
+    if not probability_ok:
+        x['_pwin'],x['_pwin_source']=_signal_probability(x)
+        x['_probability_fallback']='R66_EXECUTION_BOUNDARY_RECOMPUTE'
     try:
         rank=float(x.get('_rank')) if x.get('_rank') is not None else None
         if rank is not None and math.isfinite(rank):

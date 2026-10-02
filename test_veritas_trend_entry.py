@@ -137,6 +137,28 @@ class ScaleAndStopTests(unittest.TestCase):
 
 
 class ExecutionIntegrationTests(unittest.TestCase):
+    def test_raw_tactical_trigger_restores_order_probability_at_execution_boundary(self):
+        trigger=row();trigger['confidence']=.71
+        with patch.object(R,'_v90r57_base_aggressive_book',return_value={}),\
+             patch.object(R,'_v90r57_best_trigger',return_value=trigger),\
+             patch.object(R,'_v90r56_senior_bias',return_value={}),\
+             patch.object(R,'_v90r57_direction_confirmation',return_value={}):
+            selected=R._v90_aggressive_candidate_book([trigger],{})['BTC']
+        for rank_fields in ({},{'_rank':2.0},{'_execution_rank':3.0}):
+            with self.subTest(rank_fields=rank_fields):
+                candidate=P._v90_execution_candidate_rank(dict(selected,**rank_fields))
+                p,source=P._signal_probability(trigger)
+                self.assertEqual((candidate['_pwin'],candidate['_pwin_source']),(p,source))
+                self.assertGreater(candidate['_rank'],0)
+
+    def test_execution_boundary_keeps_calibrated_probability_and_repairs_invalid_metadata(self):
+        r=dict(row(),_rank=2.,_pwin=.63,_pwin_source='VALIDATED_CALIBRATION')
+        out=P._v90_execution_candidate_rank(r)
+        self.assertEqual((out['_pwin'],out['_pwin_source']),(.63,'VALIDATED_CALIBRATION'))
+        for invalid in (None,float('nan'),-1,2):
+            candidate=P._v90_execution_candidate_rank(dict(r,_pwin=invalid))
+            self.assertEqual((candidate['_pwin'],candidate['_pwin_source']),P._signal_probability(r))
+
     def test_profinance_exact_futures_label_and_quote_time(self):
         text='1;I=1;S=NASD100;LP=31000;T=15:00:00\n1;I=57;S=NASD100_FUT;LP=31084.5;T=14:59:57\n1;I=27;S=Brent oil;LP=99.56;T=14:59:54'
         q=PF.parse_quotes(text,NOW)
