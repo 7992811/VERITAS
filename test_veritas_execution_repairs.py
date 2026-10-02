@@ -1652,6 +1652,34 @@ class NQTrendExecutionContractR64Tests(unittest.TestCase):
         self.assertIn('LEARNED_ENTRY_DIRECTION_ERROR_CLUSTER',g['blockers'])
 
 
+class CompactCryptoExecutionFieldsR651Tests(unittest.TestCase):
+    def test_compaction_preserves_crypto_top_of_book_from_trade_plan(self):
+        z={
+          'asset':'BTC','horizon':'1h','research_decision':'LONG',
+          'price':100.0,'source_gate_pass':True,'market_open':True,
+          'trade_plan':{
+            'eligible':True,'direction':'LONG','entry_price':100.0,
+            'stop_price':99.0,'target_price':102.0,
+            'best_bid':99.99,'best_ask':100.01,'spread_bps':2.0,
+            'market_observed_at':NOW.isoformat(),
+            'final_economics_gate':{'status':'PASS','blockers':[]}},
+        }
+        row=VI._v90_compact_live_row(z)
+        self.assertEqual(row['best_bid'],99.99)
+        self.assertEqual(row['best_ask'],100.01)
+        self.assertEqual(row['market_observed_at'],NOW.isoformat())
+        gate=VX.paper_source_gate('BTC',row,{'ok':True})
+        self.assertTrue(gate['eligible'],gate)
+
+    def test_asset_level_trim_cannot_clear_hot_cycle_caches(self):
+        src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
+        pos=src.index('def _v90_prune_low_priority_caches')
+        body=src[pos:pos+1100]
+        self.assertIn('if preserve_active_cycle:',body)
+        self.assertLess(body.index('if preserve_active_cycle:'),
+                        body.index('with analytics_cache_lock'))
+
+
 class CryptoEarlyCaptureR65Tests(unittest.TestCase):
     def _row(self, price=100.0, horizon='5m', rr=1.7, move=.012, conf=.81,
              hscore=.82, blockers=None, quality='FRESH_BREAKOUT'):

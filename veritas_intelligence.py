@@ -18410,6 +18410,10 @@ def _v90_compact_live_row(z):
         'event_shadow_score','causal_score','causal_label','decision_stage',
         'sma18','sma50','support_level','resistance_level')
     out=_v90_small_dict(z,keys)
+    # R65.1: preserve executable crypto quote fields at row level for paper_source_gate.
+    for _qk in ('best_bid','best_ask','spread_bps','market_observed_at'):
+        if out.get(_qk) is None and plan2.get(_qk) is not None:
+            out[_qk]=plan2.get(_qk)
     out['horizon_structure']=hs
     out['intraday_structure']=st
     out['institutional_signal']=inst2
@@ -18454,6 +18458,10 @@ def _v90_compact_decision_log(z):
 
 
 def _v90_prune_low_priority_caches(level_mb=None,preserve_active_cycle=False):
+    # R65.1: asset-level GC must not invalidate reusable caches during the same cycle.
+    # GOLD/CNY were rebuilding caches cleared by earlier assets and adding 10-15s.
+    if preserve_active_cycle:
+        return 0
     m=float(level_mb if level_mb is not None else (rss_mb() or 0.0))
     if m < V90_MEMORY_CAUTION_MB:
         return 0
