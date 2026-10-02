@@ -17,6 +17,48 @@ _mutex = threading.RLock()
 _quotes_lock = threading.Lock()
 _quotes = {}
 _state = {'status': 'NOT_STARTED', 'paper_only': True}
+_entry_namespace = None
+
+
+def refresh_entry_quotes(summary):
+    """One quote refresh per asset before the portfolio DB transaction.
+
+    Preserve signal price/time. The execution observation lives separately and
+    is reused by all four books; a failed refresh never renews an old timestamp.
+    """
+    if _entry_namespace is None:
+        return summary
+    now=datetime.now(timezone.utc)
+    assets={r.get('asset') for r in summary or [] if r.get('research_decision') in ('LONG','SHORT')}
+    quotes={}
+    with _quotes_lock:
+        cached={a:dict(_quotes.get(a) or {}) for a in assets}
+    refresh=[]
+    for asset in assets:
+        q=cached[asset]
+        if q.get('source_gate_pass') and quote_gate(q.get('observed_at'),now=now,execution=True,asset=asset)['eligible']:
+            quotes[asset]=q
+        else:
+            refresh.append(asset)
+    with ThreadPoolExecutor(max_workers=4,thread_name_prefix='veritas-entry-quote') as pool:
+        jobs={a:pool.submit(fetch_guard_quote,_entry_namespace,a,[]) for a in refresh}
+        for asset,job in jobs.items():
+            try:
+                q=job.result()
+                if q.get('source_gate_pass') and quote_gate(q.get('observed_at'),execution=True,asset=asset)['eligible']:
+                    publish_quote(asset,q);quotes[asset]=q
+            except Exception:
+                pass
+    out=[]
+    for original in summary or []:
+        row=dict(original);q=quotes.get(row.get('asset'))
+        if q:
+            original_id=(row.get('contract') or {}).get('secid')
+            quote_id=(q.get('contract') or {}).get('secid')
+            if not original_id or original_id==quote_id:
+                row['_execution_quote']=dict(q)
+        out.append(row)
+    return out
 
 
 @contextmanager
@@ -46,11 +88,12 @@ def latest_prices(summary, now=None):
     now = now or datetime.now(timezone.utc)
     best = {}
     for row in summary or []:
-        observed = row.get('market_observed_at') or row.get('observed_at')
+        execution=row.get('_execution_quote') or {}
+        observed = execution.get('observed_at') or row.get('market_observed_at') or row.get('observed_at')
         if not row.get('asset') or not quote_gate(observed, now=now, protective=True)['eligible']:
             continue
         try:
-            price = float(row.get('price'))
+            price = float(execution.get('price') or row.get('price'))
         except (TypeError, ValueError):
             continue
         if not math.isfinite(price) or price <= 0 or row.get('source_gate_pass') is False:
@@ -547,10 +590,13 @@ def fetch_guard_quote(ns, asset, positions):
         return dict(q, source_gate_pass=True, contract={'secid': asset})
     if asset in ('BTC', 'ETH'):
         # This independent quote request contains no indicators/history/learning.
-        with httpx.Client(timeout=httpx.Timeout(4.0, connect=2.0)) as client:
-            r = client.get('https://api.binance.com/api/v3/ticker/bookTicker', params={'symbol': asset+'USDT'})
-            r.raise_for_status()
-            book = r.json()
+        with httpx.Client(timeout=httpx.Timeout(3.0, connect=1.5)) as client:
+            for host in ('https://data-api.binance.vision','https://api.binance.com'):
+                try:
+                    r = client.get(host+'/api/v3/ticker/bookTicker', params={'symbol': asset+'USDT'})
+                    r.raise_for_status();book=r.json();break
+                except Exception:
+                    if host.endswith('binance.com'):raise
         bid, ask = float(book['bidPrice']), float(book['askPrice'])
         if not 0 < bid < ask:
             raise ValueError('PROTECTIVE_BOOK_INVALID')
@@ -578,6 +624,8 @@ def snapshot():
 
 
 def start(ns):
+    global _entry_namespace
+    _entry_namespace=ns
     if _state['status'] != 'NOT_STARTED':
         return
     _state.update(status='STARTING', interval_seconds=15)

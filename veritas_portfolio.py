@@ -2119,6 +2119,8 @@ def _record_entry_outcome(row,status,reason,**details):
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     target_notional=target_fraction*nav
+    import veritas_trend_entry as VTE
+    row=VTE.prepare_row(row,price)
     z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
     if z and z['direction']!=direction:
         if not bool(row.get('_flip_confirmed',False)):
@@ -2189,6 +2191,8 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                  'soft_invalidation_count':0,'entry_permission':(plan.get('trade_integrity') or {}).get('entry_permission'),
                  'entry_execution_model':fill,'client_order_id':intent.client_order_id,
                  'entry_timing':row.get('_r65_entry_timing'),
+                 'r66_event_id':(VTE.context_of(row).get('event') or {}).get('event_id'),
+                 'r66_entry_geometry':plan.get('r66_geometry'),
                  'normalized_paper_notional':True,
                  'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
                  'normalized_units':units,
@@ -2239,6 +2243,20 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     # Determine targets, first by per-asset merit.
     targets={}
     for asset,row in candidates.items(): targets[asset]=_desired_fraction(row,policy,dd)
+    # Confirmed profitable events can earn the next allocation step without
+    # waiting for an unrelated model-score threshold to change.
+    import veritas_trend_entry as VTE
+    if rg.get('new_risk'):
+        for z0 in pos:
+            z=dict(z0);row=candidates.get(z['asset'])
+            if not row or row.get('research_decision')!=z['direction'] or targets.get(z['asset'],0)<=0:
+                continue
+            z['payload']=_position_payload(z)
+            px=float(prices.get(z['asset'],z['last_price']))
+            request=float(policy.get('max_fraction') or 1.0)
+            scale=VTE.scale_decision(z,row,px,request,nav,
+                float(VX.round_trip_cost_pct(row.get('spread_bps'))),MAX_STOP_RISK_NAV)
+            if scale.get('eligible'):targets[z['asset']]=max(targets[z['asset']],scale['fraction'])
     # Missing a fresh candidate is soft deterioration, not an exit.
     # Hold current exposure unless the execution-horizon row has a hard thesis invalidation.
     for z in pos:
@@ -2358,6 +2376,10 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             rs=row.get('range_retest_breakout') or {}
             if not z and rs.get('active') and str(rs.get('state') or '') in ('APPROACH_RESISTANCE','APPROACH_SUPPORT'):
                 _record_entry_outcome(row,'BLOCKED','WAIT_LEVEL_BREAK')
+                continue
+            if z and z['direction']!=row.get('research_decision'):
+                _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED',
+                    held_direction=z['direction'],signal_direction=row.get('research_decision'))
                 continue
             cur=abs(float(z['units'])*px)/max(nav,1.0) if z else 0.0
             if target>cur+0.025:

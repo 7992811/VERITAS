@@ -257,7 +257,7 @@ const traceReason=t=>{
   if(e.status==='HELD')return reasonRu(e.reason);
   const reasons=e.status==='BLOCKED'?(e.blockers?.length?e.blockers:[e.reason]):(t.hard_veto?(t.profitability_blockers||t.economics_blockers||t.source_blockers||[t.reason]):[e.reason||'EXECUTION_PENDING']);
   let text=[...new Set(reasons.filter(Boolean).map(reasonRu))].join('; ');
-  if(e.reason==='EXECUTION_QUOTE_UNAVAILABLE'&&e.quote_gate?.age_seconds!=null)text+=': возраст '+Math.max(0,Number(e.quote_gate.age_seconds)/60).toFixed(1)+' мин, допустимо '+(Number(e.quote_gate.max_age_seconds||300)/60).toFixed(0)+' мин';
+  if(['EXECUTION_QUOTE_UNAVAILABLE','R66_EXECUTION_QUOTE_STALE'].includes(e.reason)&&e.quote_gate?.age_seconds!=null)text+=': возраст '+Math.max(0,Number(e.quote_gate.age_seconds)).toFixed(0)+' с, допустимо '+Number(e.quote_gate.max_age_seconds||300).toFixed(0)+' с';
   if(e.timing?.consumed_move_pct!=null)text+=': движение '+(100*Number(e.timing.consumed_move_pct)).toFixed(2)+'%, предел '+(100*Number(e.timing.late_entry_limit_pct)).toFixed(2)+'%';
   return text||'Окончательное решение ещё не получено';
 };
@@ -298,6 +298,14 @@ const reasonRu=v=>{
     WAIT_LEVEL_BREAK:'Ожидается пробой уровня',
     PORTFOLIO_RISK_LIMIT:'Достигнут лимит риска портфеля',
     DIRECTION_FLIP_NOT_CONFIRMED:'Разворот позиции ещё не подтверждён',
+    R66_EXECUTION_QUOTE_STALE:'Котировка устарела: вход ожидает свежую цену',
+    R66_SENIOR_BREAK_NOT_HELD:'Старший уровень пробит, но ещё не удержан',
+    R66_WAIT_RETEST:'Импульс уже прошёл: ожидается удержание уровня или ретест',
+    R66_LOCAL_EVENT_OPPOSED:'Последний локальный пробой направлен против сигнала',
+    R66_CLOSED_CONTEXT_STALE:'Ожидается обновление закрытых свечей',
+    R66_ADD_NEEDS_CONFIRMATION:'Добор ожидает новое подтверждение в прибыльной стороне',
+    R66_ADD_INSUFFICIENT_ROOM:'До ближайшего старшего уровня недостаточно хода для добора',
+    R66_ADD_RISK_LIMIT:'Добор превышает допустимый риск по стопу',
     RR_BELOW_FINAL_FLOOR:'Потенциал относительно риска ниже порога',
     NET_REWARD_RISK_BELOW_FLOOR:'Потенциал после расходов недостаточен относительно риска',
     TARGET_NOT_PROFITABLE_AFTER_COSTS:'Доход до цели не покрывает расходы',

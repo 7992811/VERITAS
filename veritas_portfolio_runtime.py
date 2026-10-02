@@ -4,6 +4,7 @@ further monkey-patch accumulation in the core module. The runtime module is
 loaded only after the R41 base has finished initializing.
 """
 import veritas_portfolio as _vp_base
+import veritas_trend_entry as VTE
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -1094,6 +1095,9 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
     return dict(_v90r44_sanitize_state)
 
 def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
+    summary=VPG.refresh_entry_quotes(summary)
+    if VPG._entry_namespace is not None:
+        observed_at=_now()  # execution clock follows quote refresh, not scan start
     try:
         _v90r44_sanitize_learning(pg_connect)
     except Exception:
@@ -2719,6 +2723,8 @@ def _v90r55_reentry_gate(c,name,asset,direction,row,price,ts):
 
 def _v90r55_add_event_gate(z,row,price):
     z=dict(z or {}); row=row or {}
+    if row.get('_r66_add_decision'):
+        return row['_r66_add_decision']
     p=_v90j_json(z.get('payload'))
     d=str(z.get('direction') or '')
     px=_v90r51_num(price)
@@ -2794,6 +2800,11 @@ def _v90r55_mark_scale_event(c,name,z,row,price,ts):
       'r55_last_scale_horizon':row.get('horizon'),
       'r55_last_scale_setup_id':_portfolio_canonical_setup_id(row),
     }
+    context=VTE.context_of(row);event=context.get('event') or {}
+    previous=_v90j_json(z.get('payload'))
+    patch.update(r66_event_id=event.get('event_id'),
+                 r66_last_confirmation_at=event.get('confirmed_at'),
+                 r66_initial_fraction=previous.get('r66_initial_fraction') or previous.get('opening_fraction') or z.get('target_fraction'))
     c.execute(
         "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
         "WHERE portfolio_name=%s AND asset=%s",
@@ -3303,6 +3314,12 @@ def _v90r56_trailing_activation(z,row):
 def _v90r54_tighten_position_stop(c,name,z,row,price,ts):
     z=dict(z or {}); row=dict(row or {})
     row['price']=price
+    if VTE.context_of(row).get('status')=='OK':
+        stop=VTE.trailing_stop(z,row,price,float(VX.round_trip_cost_pct(row.get('spread_bps'))))
+        if stop is not None:
+            c.execute("UPDATE paper_positions SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                (stop,json.dumps({'trailing_stop':stop,'r66_trailing_at':str(ts),'trailing_method':VTE.VERSION}),name,z['asset']))
+        return stop
     gate=_v90r56_trailing_activation(z,row)
     if not gate.get('active'):
         return None
@@ -3474,6 +3491,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     row=dict(row or {})
+    row=VTE.prepare_row(row,price)
     if str(name)=='Aggressive':
         row=_v90r56_prepare_entry_row(row)
     before=c.execute(
@@ -3501,6 +3519,13 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
               'target_price':tp.get('tp1_price'),
               'initial_take_price':tp.get('tp1_price'),
             }
+            # All portfolios retain a real TP1. Do not overwrite valid targets
+            # with null merely because the legacy Aggressive helper did not run.
+            nearest=(row.get('trade_plan') or {}).get('target_price')
+            for key in ('take_price','target_price','initial_take_price','r56_tp1_price'):
+                if patch.get(key) is None:patch[key]=nearest
+            patch['r66_entry_geometry']=(row.get('trade_plan') or {}).get('r66_geometry')
+            patch['r66_initial_fraction']=float(target_fraction)
             c.execute(
               "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
               "WHERE portfolio_name=%s AND asset=%s",
@@ -4151,7 +4176,7 @@ def _v90r56_prepare_entry_row(row):
             plan['r64_partial_tp1_not_final_target']=True
             x['trade_plan']=plan
             x['_r64_runner_economics']=True
-    return x
+    return VTE.prepare_row(x)
 
 def _v90r64_nq_management_recovery(row,policy,economics,guard):
     row=row or {}; policy=policy or {}; economics=economics or {}; guard=dict(guard or {})
@@ -4363,8 +4388,9 @@ def _v90r65_execution_timing(row,price,direction,ts):
     if str(row.get('horizon') or '') not in _R56_TRIGGER_HORIZONS:
         return {'eligible':False,'reason':'R65_LOCAL_ENTRY_TRIGGER_REQUIRED'}
     now=_v90r55_dt(ts) or datetime.now(timezone.utc)
-    observed=row.get('market_observed_at') or row.get('observed_at')
-    fresh=VPG.quote_gate(observed,now=now,protective=True)
+    quote=row.get('_execution_quote') or {}
+    observed=quote.get('observed_at') or row.get('market_observed_at') or row.get('observed_at')
+    fresh=VPG.quote_gate(observed,now=now,execution=True,asset=row.get('asset'))
     if not fresh.get('eligible'):
         return {'eligible':False,'reason':'R65_ENTRY_QUOTE_NOT_FRESH','quote_gate':fresh}
     tactical=row.get('_r65_tactical_context')
@@ -4388,8 +4414,16 @@ def _v90r65_execution_timing(row,price,direction,ts):
     # Use the most recent tactical book; never execute from an old hourly book.
     fill=VX.simulated_fill(row.get('asset'),side,price,
                           row.get('_r65_order_fraction',.10),
-                          bid=tactical.get('best_bid'),ask=tactical.get('best_ask'))
-    timing=_v90r56_late_entry_gate(row,fill['fill_price'])
+                          bid=quote.get('best_bid') or tactical.get('best_bid'),
+                          ask=quote.get('best_ask') or tactical.get('best_ask'))
+    if (row.get('_r66_add_decision') or {}).get('eligible'):
+        ctx=VTE.context_of(row);anchor=VTE.number(ctx.get('last_close'),0)
+        atr=VTE.number(ctx.get('atr'),0)
+        displacement=abs(fill['fill_price']-anchor)/atr if atr>0 else float('inf')
+        timing={'eligible':displacement<=.8,'reason':'R66_ADD_CONFIRMED' if displacement<=.8 else 'R66_WAIT_RETEST',
+                'confirmation_displacement_atr':displacement}
+    else:
+        timing=_v90r56_late_entry_gate(row,fill['fill_price'])
     return {**timing,'execution_model':fill,'local_state':hs.get('state')}
 
 def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
@@ -4424,6 +4458,25 @@ def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
             selected['_r65_tactical_context']=dict(max(local,key=lambda r:str(
                 r.get('market_observed_at') or r.get('observed_at') or '')))
         out[asset]=selected
+    # Prefer a fresh closed 5m event in the SAME published direction. A senior
+    # forecast cannot postpone this trigger, and no opposite signal is invented.
+    for r0 in summary or []:
+        if r0.get('horizon')!='5m' or _v90r55_invalidated(r0):continue
+        asset=r0.get('asset');direction=r0.get('research_decision')
+        event=VTE.context_of(r0).get('event') or {}
+        if direction not in ('LONG','SHORT') or event.get('direction')!=direction:continue
+        old=out.get(asset)
+        if old and old.get('research_decision')!=direction:continue
+        ready=VTE.event_gate(r0,r0.get('price'),direction)
+        if not ready.get('eligible'):continue
+        selected=VTE.prepare_row(r0)
+        selected['_pwin'],selected['_pwin_source']=_signal_probability(selected)
+        selected['_r56_trigger_selected']=True
+        selected['_r56_entry_horizon']='5m';selected['_r56_management_horizon']='5m'
+        selected['_r65_tactical_context']=dict(r0)
+        selected['_r66_closed_trigger']=ready
+        if old:selected['_r56_thesis_horizon']=old.get('horizon')
+        out[asset]=selected
     return out
 
 def _v90r65_genesis_fraction(row,policy,drawdown):
@@ -4457,6 +4510,10 @@ def _v90r65_genesis_fraction(row,policy,drawdown):
     return _clip(_round_step(f),0.0,float((policy or {}).get('max_fraction') or 2.0))
 
 def _signal_first_admission(row,policy,drawdown):
+    row=VTE.prepare_row(row)
+    g=(row.get('trade_plan') or {}).get('r66_geometry') or {}
+    if g.get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
+        return {'open':False,'fraction':0.0,'hard_veto':True,'reason':g['reason'],'r66_geometry':g}
     base=dict(_v90r65_base_admission(row,policy,drawdown) or {})
     m=dict((row or {}).get('_r65_crypto_genesis') or {})
     if not m.get('eligible'):
@@ -4494,10 +4551,34 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     existing=c.execute(
       "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
       (name,asset)).fetchone()
+    row=VTE.prepare_row(row,price)
+    quote=row.get('_execution_quote') or {}
+    if quote:
+        row['best_bid']=quote.get('best_bid');row['best_ask']=quote.get('best_ask')
     current=(abs(float(existing.get('units') or 0.0)*float(price))/max(float(nav),1.0)
              if existing and existing.get('direction')==direction else 0.0)
     increases_risk=bool(not existing or existing.get('direction')!=direction
                         or float(target_fraction)>current+.0025)
+    if increases_risk:
+        fresh=VPG.quote_gate(quote.get('observed_at') or row.get('market_observed_at') or row.get('observed_at'),
+                            now=_v90r55_dt(ts),execution=True,asset=asset)
+        if not fresh.get('eligible'):
+            _record_entry_outcome(row,'BLOCKED','R66_EXECUTION_QUOTE_STALE',quote_gate=fresh)
+            return 0.0
+        if not existing:
+            event=VTE.event_gate(row,price,direction,ts)
+            if not event['eligible']:
+                _record_entry_outcome(row,'BLOCKED',event['reason'],trend_event=event)
+                return 0.0
+        elif existing.get('direction')==direction and VTE.context_of(row).get('status')=='OK':
+            held=dict(existing);held['payload']=_v90j_json(existing.get('payload'))
+            scale=VTE.scale_decision(held,row,price,target_fraction,nav,
+                float(VX.round_trip_cost_pct(row.get('spread_bps'))),MAX_STOP_RISK_NAV)
+            if not scale.get('eligible'):
+                _record_entry_outcome(row,'BLOCKED',scale['reason'],scale=scale)
+                return 0.0
+            target_fraction=scale['fraction']
+            row['_r66_add_decision']=scale
     if increases_risk and (asset in _R65_CRYPTO or
                           (not existing and str(row.get('horizon') or '') in _R56_TRIGGER_HORIZONS)):
         row['_r65_order_fraction']=max(0.0,float(target_fraction)-current)
@@ -4549,6 +4630,11 @@ def _v90tr_apply(c,name,candidates,prices,ts):
         positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
         for z0 in positions or []:
             z=dict(z0); asset=str(z.get('asset') or '')
+            if asset in work and asset in (prices or {}) and VTE.context_of(work[asset]).get('status')=='OK':
+                z['payload']=_v90j_json(z.get('payload'))
+                _v90r54_tighten_position_stop(c,name,z,work[asset],prices[asset],ts)
+                work.pop(asset,None)
+                continue
             if asset not in _R65_CRYPTO or asset not in work or asset not in (prices or {}):
                 continue
             entry=_v90r65_num(z.get('avg_entry_price'))
@@ -4566,6 +4652,11 @@ def _v90tr_apply(c,name,candidates,prices,ts):
 
 def report(pg_connect):
     d=dict(_v90r65_base_report(pg_connect) or {})
+    d['trend_execution_r66']={'version':VTE.VERSION,'status':'ACTIVE','paper_only':True,
+        'closed_candle_events':True,'nearest_senior_level_limits_entry':True,
+        'distinct_confirmation_per_add':True,'initial_size_policy_preserved':True,
+        'execution_quote_max_age_seconds':{'BTC':30,'ETH':30,'other':120},
+        'research_validation':'SEE_REPLAY_REPORT','profitability_proven':False}
     d['crypto_early_capture_r65']={
       'status':'ACTIVE','started_at':V90_R65_STARTED_AT,
       'entry_path_revision':'2026-10-02-origin-and-executable-fill',

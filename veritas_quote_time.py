@@ -42,7 +42,7 @@ def moex_observed_at(row, now=None):
     raise ValueError('MOEX_QUOTE_EXCHANGE_TIME_MISSING_OR_FUTURE')
 
 
-def quote_gate(observed_at, horizon=None, now=None, *, protective=False):
+def quote_gate(observed_at, horizon=None, now=None, *, protective=False, execution=False, asset=None):
     now = now or datetime.now(timezone.utc)
     dt = utc_datetime(observed_at)
     age = (now - dt).total_seconds() if dt else None
@@ -50,7 +50,9 @@ def quote_gate(observed_at, horizon=None, now=None, *, protective=False):
     # research admission. A stop / take-profit must never be simulated from a
     # materially stale quote: if no <=5 minute observation exists, the protective
     # lane degrades fail-closed until a fresh observation arrives.
-    if protective:
+    if execution:
+        limit = 30 if asset in ('BTC','ETH') else 120
+    elif protective:
         limit = PROTECTIVE_MAX_AGE_SECONDS
     else:
         # Entry freshness is horizon-specific. A slower thesis may use older

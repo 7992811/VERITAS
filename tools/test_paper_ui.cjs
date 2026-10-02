@@ -54,7 +54,7 @@ const trace={asset:'MOEX',horizon:'1h',direction:'SHORT',hard_veto:false,
 ui.st.portfolios={portfolios:[{name:'Aggressive',admission_trace:[trace]}]};
 ui.renderSignals();
 assert.equal(ui.paperStatus(signal).ready,false);
-assert.match(elements.actions.innerHTML,/возраст 16.0 мин, допустимо 5 мин/);
+assert.match(elements.actions.innerHTML,/возраст 960 с, допустимо 300 с/);
 assert.match(elements.detail.innerHTML,/Нет свежей котировки для исполнения/);
 assert.doesNotMatch(elements.actions.innerHTML,/МОДЕЛЬНЫЙ ДОПУСК/);
 assert.match(elements.actions.innerHTML,/action-reason/);

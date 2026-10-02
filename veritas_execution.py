@@ -192,16 +192,32 @@ def entry_gate(row, price, direction, fraction, position=None):
     from veritas_quote_time import quote_gate
     row = row or {}
     plan = dict(row.get('trade_plan') or {})
+    import veritas_trend_entry as VTE
+    execution=row.get('_execution_quote') or {}
     if position:
         payload = position.get('payload') or {}
         if isinstance(payload, str):
             payload = json.loads(payload)
         plan['stop_price'] = position.get('stop_price')
-        plan['target_price'] = payload.get('take_price') or payload.get('target_price')
+        # An add needs room from its own fill to the current nearest obstacle.
+        # The original position's target is not evidence for a fresh add.
+        plan['target_price'] = plan.get('target_price') or payload.get('take_price') or payload.get('target_price')
+    geometry=VTE.geometry(dict(row,trade_plan=plan),price,direction,
+                          position.get('stop_price') if position else None)
+    if geometry.get('stop_price') and VTE.has_geometry_context(row):
+        forecast=_num(plan.get('expected_move_pct'))
+        expected=min(forecast,geometry['remaining_move_pct']) if forecast is not None and forecast>=0 else geometry['remaining_move_pct']
+        plan.update(stop_price=geometry['stop_price'],target_price=geometry['target_price'],
+                    expected_move_pct=expected,expected_to_stop_ratio=geometry['reward_risk'])
     plan.update(entry_price=price, direction=direction, initial_position_fraction=fraction,
-                horizon=row.get('horizon'), best_bid=row.get('best_bid'), best_ask=row.get('best_ask'))
+                horizon=row.get('horizon'), best_bid=execution.get('best_bid') or row.get('best_bid'),
+                best_ask=execution.get('best_ask') or row.get('best_ask'))
     gate = economics_gate(row.get('asset'), plan)
-    timing = quote_gate(row.get('market_observed_at') or row.get('observed_at') or plan.get('market_observed_at'), row.get('horizon'))
+    timing = quote_gate(execution.get('observed_at') or row.get('market_observed_at') or row.get('observed_at') or plan.get('market_observed_at'),
+                        row.get('horizon'),execution=True,asset=row.get('asset'))
+    gate['entry_geometry']=geometry
+    if geometry.get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
+        gate['eligible']=False;gate['status']='BLOCK';gate['blockers'].append(geometry['reason'])
     gate['quote_time_gate'] = timing
     if not timing['eligible']:
         gate['eligible'] = False

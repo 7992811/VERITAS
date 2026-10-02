@@ -3203,23 +3203,13 @@ def _v90r61_profinance_quote(asset,force=False):
         cached=_v90r61_public_quote_cache.get(key)
         if cached and not force and now_ts-float(cached.get('at') or 0)<45:
             return dict(cached.get('value') or {})
-    urls=(
-      'https://jq.profinance.ru/html/htmlquotes/qtable2.htm?r=1000',
-      'https://www.profinance.ru/_quote_show_/java/',
-    )
-    value={}
-    for url in urls:
-        try:
-            with httpx.Client(timeout=3.0,headers={'User-Agent':'Mozilla/5.0 VERITAS/90 research'}) as h:
-                r=h.get(url)
-                r.raise_for_status()
-                q=_v90r61_parse_profinance_text(r.text,key)
-            if q:
-                value=q
-                break
-        except Exception:
-            continue
+    import veritas_profinance as PF
+    try:quotes=PF.fetch_quotes()
+    except Exception:quotes={}
+    value=quotes.get(key) or {}
     with _v90r61_public_quote_lock:
+        for name,quote in quotes.items():
+            _v90r61_public_quote_cache[name]={'at':now_ts,'value':dict(quote)}
         _v90r61_public_quote_cache[key]={'at':now_ts,'value':dict(value)}
     return value
 
@@ -9489,7 +9479,7 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
         f1=None if reuse1 else pool.submit(_yahoo_series,yahoo_symbol,'3mo','1h',True)
         fp=pool.submit(_yahoo_series,proxy_symbol,'5d','5m',True)
         fs=pool.submit(_v90_stooq_public_quote,stooq_symbol) if stooq_symbol else None
-        fpf=pool.submit(_v90r61_profinance_quote,asset) if str(asset) in ('NQ','GOLD') else None
+        fpf=pool.submit(_v90r61_profinance_quote,asset) if str(asset) in ('NQ','GOLD','BRENT') else None
         if reuse5:
             bars5=list(_hc.get('bars5') or [])
         else:
@@ -12752,6 +12742,7 @@ def ruleboard():
 
 
 def product_health():
+    import veritas_trend_entry as VTE
     with lock: cyc=dict(last_cycle)
     age=None
     try:
@@ -12761,7 +12752,7 @@ def product_health():
     except Exception: pass
     storage=pg_storage_status()
     status='ok' if cyc.get('status')=='ok' and storage.get('ok') and (age is None or age<=PRODUCT_STALE_MINUTES) else 'degraded'
-    return {'status':status,'version':VERSION,'cycle_age_min':age,'cycle_status':cyc.get('status'),
+    return {'status':status,'version':VERSION,'execution_revision':VTE.VERSION,'cycle_age_min':age,'cycle_status':cyc.get('status'),
             'storage':storage,'stale_after_min':PRODUCT_STALE_MINUTES,'backtest':backtest_status().get('latest_run')}
 
 
@@ -17397,8 +17388,8 @@ def _v90_5m_features(raw,common_structure=None):
     st.update({'enabled':True,'status':'OK','resolution':'5m_native',
                'direction':direction,'score':float(hs.get('score') or life.get('quality_score') or 0.0),
                'lifecycle':lifecycle,'entry_quality':entryq,
-               'relative_volume':float(life.get('volatility_expansion_ratio') or vr or 1.0),
-               'volume_confirmed':bool(float(life.get('volatility_expansion_ratio') or 1.0)>=1.25),
+               'relative_volume':float(vr or 1.0),
+               'volume_confirmed':bool(vr>=1.25),
                'breakout_found':bool(life.get('breakout_level') is not None),
                'breakout_level':life.get('breakout_level'),
                'breakout_hold':bool(state in ('BREAKOUT_ENTRY','TREND_CONTINUATION')),
@@ -18363,6 +18354,8 @@ def _v90_compact_live_row(z):
         'tactical_target_price','target_method','setup','reversal_probability',
         'decision_stage','positive_trade_probability','statistical_noise_buffer_p80',
         'spread_bps','execution_safety_version','horizon','market_observed_at','best_bid','best_ask'))
+    for key in ('trend_entry_context','r66_geometry','r66_runner_target_price','multi_tf_level_context'):
+        if plan.get(key):plan2[key]=plan[key]
     econ=plan.get('final_economics_gate') or {}
     plan2['final_economics_gate']=_v90_small_dict(econ,(
         'status','eligible','blockers','expected_to_stop_ratio','minimum_reward_risk',
@@ -18662,6 +18655,12 @@ _v90r40_base_technical_trade_plan = _technical_trade_plan_r39
 
 def features(raw, horizon, common_structure=None):
     f=dict(_v90r40_base_features(raw,horizon,common_structure) or {})
+    import veritas_trend_entry as VTE
+    if '_r66_trend_context' not in raw:
+        raw['_r66_trend_context']=VTE.build_context(
+            raw.get('intraday_bars') or raw.get('intraday_5m') or [],
+            datetime.now(timezone.utc),raw.get('asset') or '')
+    f['trend_entry_context']=raw['_r66_trend_context']
     f['market_contract']=raw.get('contract')
     f['market_source_names']=raw.get('source_names')
     f['market_observed_at']=raw.get('observed_at')
@@ -18735,9 +18734,16 @@ def final_execution_safety(asset,research_decision,plan):
     except (TypeError,ValueError,ZeroDivisionError):
         pass
 
+    import veritas_trend_entry as VTE
+    if VTE.has_geometry_context({'trade_plan':plan}):
+        plan=VTE.prepare_row({'price':plan.get('entry_price'),'horizon':plan.get('horizon'),
+            'research_decision':research_decision,'trade_plan':plan})['trade_plan']
     gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
         'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
     }
+    if (plan.get('r66_geometry') or {}).get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
+        gate.update(status='BLOCK',eligible=False)
+        gate['blockers'].append('R66_SENIOR_BREAK_NOT_HELD')
     if 'market_observed_at' in plan and research_decision in ('LONG','SHORT'):
         timing=quote_gate(plan['market_observed_at'],plan.get('horizon'))
         timing=_v90r61_quote_rescue({**plan,'final_economics_gate':gate},timing,research_decision)
@@ -18836,6 +18842,12 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     plan.update(horizon=horizon,market_observed_at=f.get('market_observed_at'),best_bid=f.get('best_bid'),best_ask=f.get('best_ask'),
                 freshness_verification=f.get('freshness_verification') or {})
     plan=_v90r63_nq_trend_target_projection(asset,horizon,f,research_decision,plan)
+    import veritas_trend_entry as VTE
+    plan['trend_entry_context']=f.get('trend_entry_context') or {}
+    if research_decision in ('LONG','SHORT') and horizon in ('5m','1h','4h'):
+        work=VTE.prepare_row({'price':f.get('price'),'horizon':horizon,
+            'research_decision':research_decision,'trade_plan':plan})
+        plan=work['trade_plan']
     # The same gate is applied again after setup-specific mutations in cycle().
     return final_execution_safety(asset,research_decision,plan)
 
