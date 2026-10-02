@@ -4401,7 +4401,7 @@ def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
             trigger=_v90r56_trigger_row(summary,asset,_v90r56_direction(selected))
             if trigger:
                 selected={**trigger,'_r56_thesis_horizon':selected.get('horizon')}
-                selected['_pwin'],selected['_pwin_source']=_probability(trigger)
+                selected['_pwin'],selected['_pwin_source']=_signal_probability(trigger)
         selected=dict(selected)
         local=[r for r in summary or [] if r.get('asset')==asset and r.get('horizon')=='5m']
         if local:

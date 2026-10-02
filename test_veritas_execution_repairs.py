@@ -2111,6 +2111,24 @@ class CryptoEntryPathRegressionTests(unittest.TestCase):
                 self.assertEqual(result,0.0)
                 base.assert_not_called()
 
+    def test_senior_crypto_candidate_routes_to_trigger_with_probability(self):
+        for asset in ('BTC','ETH'):
+            for policy in VP.POLICIES.values():
+                senior=self.row(asset,horizon='1d')
+                trigger=self.row(asset,horizon='1h')
+                local=self.row(asset)
+                summary=[senior,trigger,local]
+                with patch.object(VPR,'_v90r65_base_transition_book',return_value={asset:senior}), \
+                     patch.object(VPR,'_v90r65_best_crypto_genesis',return_value=None):
+                    out=VPR._v90_trend_transition_candidate_book(summary,{asset:senior},policy['mode'])
+                selected=out[asset]
+                self.assertIn(selected['horizon'],('5m','1h'))
+                self.assertEqual(selected['_r56_thesis_horizon'],'1d')
+                probability,source=VPR._signal_probability(selected)
+                self.assertEqual(selected['_pwin'],probability)
+                self.assertEqual(selected['_pwin_source'],source)
+                self.assertEqual(selected['_r65_tactical_context'],local)
+
     def test_new_small_position_is_not_legacy_completion_after_tp(self):
         z={'direction':'LONG','units':500.0,'opened_at':NOW.isoformat(),
            'payload':{'opening_fraction':.15,'r17_tp1_done':True}}
