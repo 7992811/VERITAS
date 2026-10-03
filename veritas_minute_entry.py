@@ -2,6 +2,7 @@
 from statistics import median
 import hashlib
 import math
+from bisect import bisect_left
 
 VERSION='R69_MINUTE_STRUCTURAL_ENTRY'
 
@@ -13,6 +14,7 @@ def enrich(context, bars, now, minute_bars=None, quote=None):
     out=dict(context,event=None,local_breakout_required=True,structure_source='CLOSED_5M_RANGE_1M_TRIGGER',
              minute_closed_at=None,minute_status='UNAVAILABLE',armed_levels=[],failed_breakouts=0)
     minutes=closed_minutes(minute_bars,now)
+    minute_times=sorted(minutes)
     if minutes:
         out['minute_closed_at']=max(minutes)+60
         out['minute_status']='OK' if -5<=end-out['minute_closed_at']<=90 else 'STALE'
@@ -45,7 +47,7 @@ def enrich(context, bars, now, minute_bars=None, quote=None):
                 zones.append(zone)
             arms.append(zone)
         if i==len(bars):out['armed_levels']=[dict(z) for z in arms]
-        observations=[minutes[t] for t in sorted(minutes) if closed<=t<closed+300]
+        observations=[minutes[t] for t in minute_times[bisect_left(minute_times,closed):bisect_left(minute_times,closed+300)]]
         if i<len(bars) and (not observations or observations[-1]['available_at']<closed+300):
             observations.append(dict(bars[i],available_at=closed+300,resolution=300))
         for obs in observations:
@@ -65,7 +67,8 @@ def enrich(context, bars, now, minute_bars=None, quote=None):
                     if d*(obs['close']-active['signal_price'])>=active['atr']:
                         active['continuation_confirmed']=True;active['confirmed_at']=obs['available_at']
             if active:continue
-            history=([minutes[t]['volume'] for t in sorted(minutes) if t+60<=obs['ts']][-20:] if resolution==60 else [b['volume'] for b in prior[-20:]])
+            previous_end=bisect_left(minute_times,obs['ts']-59)
+            history=([minutes[t]['volume'] for t in minute_times[max(0,previous_end-20):previous_end]] if resolution==60 else [b['volume'] for b in prior[-20:]])
             baseline=median(history) if len(history)>=20 else 0
             relative=obs.get('volume',0)/baseline if baseline>0 else 0
             span=obs['high']-obs['low']
