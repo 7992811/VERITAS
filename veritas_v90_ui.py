@@ -38,9 +38,9 @@ _CANONICAL_HTML = r'''<!doctype html>
 .asset-main{min-width:0;display:flex;align-items:center;gap:8px}.asset-main b{display:inline-block}
 .asset-price{display:block!important;font-size:10px!important;color:#d2dbe3!important;font-variant-numeric:tabular-nums;text-align:left;padding-right:0}
 .asset-bias{text-align:left;white-space:nowrap}
-.asset-tfline{min-width:0;display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr));gap:2px;overflow:hidden!important;white-space:normal!important;text-overflow:clip!important}
+.asset-tfline{min-width:0;display:grid!important;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px;overflow:hidden!important;white-space:normal!important;text-overflow:clip!important}
 .asset-tfitem{display:block!important;min-width:0;padding:3px 1px;border:1px solid rgba(255,255,255,.04);border-radius:5px;background:rgba(255,255,255,.01);font-size:7.5px!important;color:#aeb9c3!important;text-align:center;white-space:nowrap!important;overflow:hidden;text-overflow:clip}
-.tfs{display:grid;grid-template-columns:repeat(6,minmax(33px,1fr));gap:3px}.tf{font-size:7px;text-align:center;padding:3px 2px;border:1px solid var(--line);border-radius:5px;color:var(--muted)}
+.tfs{display:grid;grid-template-columns:repeat(7,minmax(33px,1fr));gap:3px}.tf{font-size:7px;text-align:center;padding:3px 2px;border:1px solid var(--line);border-radius:5px;color:var(--muted)}
 .matrix-wrap{overflow-x:hidden;overflow-y:visible;padding:2px 0 3px}
 .matrix{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:10px 9px}
 .matrix th{font-size:12px;color:#c0cbd4;font-weight:650;padding:3px 2px;line-height:1.05;text-align:center}
@@ -147,7 +147,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 
     <div class="card full section">
       <div class="title" style="font-size:12px;font-weight:700;letter-spacing:.06em;margin-bottom:5px">Матрица сигналов</div>
-      <div class="matrix-wrap"><table class="matrix"><thead><tr><th>Актив</th><th>5м</th><th>1ч</th><th>4ч</th><th>1д</th><th>3д</th><th>7д</th></tr></thead><tbody id="matrixBody"></tbody></table></div>
+      <div class="matrix-wrap"><table class="matrix"><thead><tr id="matrixHead"><th scope="col">Актив</th></tr></thead><tbody id="matrixBody"></tbody></table></div>
     </div>
 
     <div class="card full section">
@@ -279,6 +279,7 @@ const rrOf=x=>x?.expected_to_stop_ratio??planOf(x).expected_to_stop_ratio;
 const stopOf=x=>x?.stop_price??planOf(x).stop_price;
 const targetOf=x=>x?.target_price??planOf(x).target_price??planOf(x).take_price;
 const dirRu=d=>directionLabel(d,null);
+const tfShort=tf=>({'1m':'1м','5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf||'—');
 const tfRu=tf=>({'1m':'1 мин','5m':'5 мин','1h':'1 ч','4h':'4 ч','1d':'1 день','3d':'3 дня','7d':'7 дней'}[tf]||tf||'—');
 const holdRu=s=>{s=Number(s);if(!Number.isFinite(s)||s<0)return'—';const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.max(0,Math.floor((s%3600)/60));return(d?d+' д ':'')+(h?h+' ч ':'')+(m+' мин')};
 const dateRu=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
@@ -375,7 +376,9 @@ function signalMap(){const m={};((st.signals&&st.signals.signals)||[]).forEach(x
 
 function renderSignals(){
   const d=st.signals||{}, rows=Array.isArray(d.signals)?d.signals:[], map=signalMap();
-  $('cells').textContent='ДАННЫЕ · '+rows.length+'/42';$('cells').className='pill '+(rows.length>=42?'ok':rows.length?'warn':'bad');
+  const expectedCells=AS.length*TF.length;
+  $('matrixHead').innerHTML='<th scope="col">Актив</th>'+TF.map(tf=>'<th scope="col" data-timeframe="'+tf+'" title="'+tfRu(tf)+'">'+tfShort(tf)+'</th>').join('');
+  $('cells').textContent='ДАННЫЕ · '+rows.length+'/'+expectedCells;$('cells').className='pill '+(rows.length>=expectedCells?'ok':rows.length?'warn':'bad');
   $('stamp').textContent='ОБНОВЛЕНО · '+(d.at?new Date(d.at).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—');
 
   const rank=x=>{const D=dir(x),T=tier(x);if(!['LONG','SHORT'].includes(D))return-999;const superBoost=(T==='SUPER_LONG'||T==='SUPER_SHORT')?5:0;return superBoost+(x.plan_eligible===false?0:2)+4*Number(x.horizon_structure_score||0)+2*Number(x.confidence||0)+Math.min(Number(x.expected_to_stop_ratio||0),3)+.2*Number(x.independent_evidence_families||0)};
@@ -392,7 +395,7 @@ function renderSignals(){
   }).join(''):'<div class="msg">Направленных сигналов сейчас нет — ожидается подтверждение структуры.</div>';
   document.querySelectorAll('.action-link[data-signal]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.signal,true));
 
-  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'Long':D==='SHORT'?'Short':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=({'1m':'1м','5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
+  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'Long':D==='SHORT'?'Short':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=tfShort(tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
 
   $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.35"></span><small>—</small><em></em></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',state=matrixStateRu(x);return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(1)+'% · '+esc(paperStatus(x).reason)+'"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small>'+conf.toFixed(1)+'%</small><em>'+esc(state)+'</em></button></td>'}).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
