@@ -1,0 +1,7 @@
+# Optional offline research environment; do not add to the production image.
+numpy==2.3.5
+pandas==2.2.3
+scikit-learn==1.8.0
+scipy==1.17.0
+joblib==1.5.3
+httpx==0.28.1
