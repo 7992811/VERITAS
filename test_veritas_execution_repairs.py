@@ -1938,10 +1938,9 @@ class NQTrendAndCycleR63Tests(unittest.TestCase):
 
 
 class MarketSchedulerAndNQTargetR63CTests(unittest.TestCase):
-    def test_runtime_guard_prioritizes_exchange_feeds_and_six_workers(self):
+    def test_runtime_guard_preserves_feed_priority_and_timeout_fallback(self):
         src=Path('veritas_market_runtime.py').read_text(encoding='utf-8')
         self.assertIn('"MOEX":0, "CNYRUBF":1, "NQ":2',src)
-        self.assertIn('workers = min(6, max(1, len(items)))',src)
         self.assertIn('market_prefetch_timeout_cache_fallback',src)
 
     def test_nq_strong_trend_extends_target_only_when_capacity_supports_it(self):

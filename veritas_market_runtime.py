@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from veritas_quote_time import moex_observed_at
 
-VERSION = "veritas-market-runtime-guard-v1"
+VERSION = "veritas-market-runtime-guard-v2"
 
 
 def install_market_runtime_guard(ns):
@@ -349,15 +349,16 @@ def install_market_runtime_guard(ns):
         return None
 
     def prefetch_market_bundles():
-        # Start exchange-specific / historically slow feeds first. Previously the
-        # first five submissions occupied every worker and MOEX/CNYRUBF could sit
-        # queued until the global 25s budget expired without ever starting.
+        # Every configured asset must start within the same 25s budget. A pool
+        # of six for seven assets left ETH queued behind slow exchange feeds.
+        # Keep deterministic submission order, but never spend an asset's
+        # freshness budget waiting for another asset to release a worker.
         priority = {"MOEX":0, "CNYRUBF":1, "NQ":2, "GOLD":3, "BRENT":4, "BTC":5, "ETH":6}
         items = [(symbol, asset, cb_product) for symbol, (asset, cb_product) in assets.items()]
         items.sort(key=lambda x: priority.get(str(x[1]), 99))
         out = {}
         t0 = time.time()
-        workers = min(6, max(1, len(items)))
+        workers = max(1, len(items))
         pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="veritas-market")
         futures = {pool.submit(original_fetch, *item): item for item in items}
         done, pending = wait(futures, timeout=25.0)
