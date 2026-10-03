@@ -3396,46 +3396,11 @@ def worst_trade_audit(pg_connect,limit=30):
 
 
 def quality_loss_audit(pg_connect):
+    from veritas_trade_audit import audit_closed_trades
     with pg_connect() as c:
-        patterns=c.execute("""
-          SELECT
-            portfolio_name,
-            asset,
-            direction,
-            COALESCE(horizon,'UNKNOWN') AS horizon,
-            COALESCE(setup,'UNKNOWN') AS setup,
-            COALESCE(payload->>'exit_reason',payload->>'close_reason','UNKNOWN') AS exit_reason,
-            COUNT(*) AS trades,
-            SUM(CASE WHEN net_pnl_rub>0 THEN 1 ELSE 0 END) AS wins,
-            ROUND(COALESCE(SUM(gross_pnl_rub),0)::numeric,2) AS gross_pnl_rub,
-            ROUND(COALESCE(SUM(fees_rub+funding_rub),0)::numeric,2) AS costs_rub,
-            ROUND(COALESCE(SUM(net_pnl_rub),0)::numeric,2) AS net_pnl_rub,
-            ROUND(COALESCE(AVG(net_pnl_rub),0)::numeric,2) AS avg_net_pnl_rub,
-            ROUND(COALESCE(AVG(EXTRACT(EPOCH FROM (closed_at-opened_at))),0)::numeric,1) AS avg_hold_seconds
-          FROM paper_trades
-          WHERE (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
-            AND net_pnl_rub < 0
-          GROUP BY portfolio_name,asset,direction,COALESCE(horizon,'UNKNOWN'),
-                   COALESCE(setup,'UNKNOWN'),
-                   COALESCE(payload->>'exit_reason',payload->>'close_reason','UNKNOWN')
-          ORDER BY SUM(net_pnl_rub) ASC
-          LIMIT 30
-        """).fetchall()
-        systemic=c.execute("""
-          SELECT
-            COUNT(*) FILTER(WHERE net_pnl_rub<0) AS losses,
-            COUNT(*) FILTER(WHERE gross_pnl_rub>=0 AND net_pnl_rub<0) AS cost_dominated_losses,
-            COUNT(*) FILTER(WHERE net_pnl_rub<0 AND closed_at-opened_at < INTERVAL '10 minutes') AS losses_under_10m,
-            COUNT(*) FILTER(WHERE net_pnl_rub<0 AND COALESCE(payload->>'exit_reason',payload->>'close_reason','') ILIKE '%SIGNAL%') AS signal_exit_losses,
-            COUNT(*) FILTER(WHERE net_pnl_rub<0 AND COALESCE(payload->>'exit_reason',payload->>'close_reason','') ILIKE '%STOP%') AS stop_losses,
-            ROUND(COALESCE(SUM(fees_rub+funding_rub),0)::numeric,2) AS total_costs_rub,
-            ROUND(COALESCE(SUM(net_pnl_rub),0)::numeric,2) AS total_net_pnl_rub
-          FROM paper_trades
-          WHERE closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED')
-        """).fetchone()
-    result={'status':'OK','patterns':[dict(x) for x in patterns],'systemic':dict(systemic or {})}
-    print(json.dumps({'event':'V90_LOSS_AUDIT',**result},ensure_ascii=False,default=str,separators=(',',':')),flush=True)
-    return result
+        result=audit_closed_trades(c)
+    return _jsonable(result)
+
 
 def _v90q2_trade_report(pg_connect,limit=2500):
     d=dict(_v90q2_base_trade_report(pg_connect,limit) or {})

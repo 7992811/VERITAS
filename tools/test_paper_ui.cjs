@@ -87,7 +87,8 @@ console.log('Paper signal UI regressions passed');
 const partial = {
   portfolio_name: 'Impulse', asset: 'MOEX', direction: 'LONG', active_trade_id: 'partial',
   avg_entry_price: 100, last_price: 99, target_fraction: .1, take_price: 105,
-  total_trade_pnl_rub: 33, total_trade_return_pct: .0033,
+  total_trade_pnl_rub: 33, total_trade_return_pct: 3.3,
+  trade_return_basis: 'ENTRY_NOTIONAL', trade_return_basis_rub: 1000,
   realized_gross_pnl_rub: 50, unrealized_pnl_rub: -10, trade_fees_rub: 5, trade_funding_rub: 2,
   tp1_done: true, tp1_partial: true, tp1_at: '2026-09-29T06:47:17Z', payload: {r17_tp1_done: true},
 };
@@ -100,21 +101,25 @@ assert.match(elements.positions.innerHTML, /TP1 · частично исполн
 assert.doesNotMatch(elements.positions.innerHTML, /Итог сделки/);
 assert.doesNotMatch(elements.positions.innerHTML, /NAV/);
 assert.match(elements.positions.innerHTML, />33 ₽/);
+assert.match(elements.positions.innerHTML, /\+3.30%<small>33 ₽<\/small>/);
 assert.ok(elements.positions.innerHTML.indexOf('Вход') < elements.positions.innerHTML.indexOf('Зафиксировано'));
 assert.match(elements.positions.innerHTML, /Зафиксировано/);
 assert.match(elements.positions.innerHTML, /Переоценка/);
 assert.match(elements.positions.innerHTML, /Фондирование/);
 ui.st.trades = {trades: [{...partial, status: 'CLOSED', net_pnl_rub: -75,
-  total_trade_pnl_rub: -75, total_trade_return_pct: -.0075,
+  total_trade_pnl_rub: -75, total_trade_return_pct: -7.5,
   avg_exit_price: 110, gross_pnl_rub: 120, fees_rub: 192, funding_rub: 3,
   exit_reason: 'TAKE_PROFIT_FULL_MIN_POSITION_R17'}]};
 ui.renderTrades();
-assert.match(elements.trades.innerHTML, /-0.01%<\/small>/);
+assert.match(elements.trades.innerHTML, /-7.50%<small>-75 ₽<\/small>/);
 assert.doesNotMatch(elements.trades.innerHTML, /NAV|к капиталу/);
 assert.doesNotMatch(elements.trades.innerHTML, /10.00%/);
 assert.match(elements.trades.innerHTML, /Фиксация по тейку/);
 assert.match(elements.trades.innerHTML, /TP1 · частично исполнен/);
 console.log('Partial take-profit and whole-trade UI regressions passed');
+ui.st.trades = {trades: [{status:'CLOSED',asset:'BTC',net_pnl_rub:10,return_on_entry_nav:.1234}]};
+ui.renderTrades();
+assert.doesNotMatch(elements.trades.innerHTML,/12.34%/);
 
 for (const [state, net, label] of [
   ['COSTS_NOT_COVERED', -81, 'нет чистой прибыли'],

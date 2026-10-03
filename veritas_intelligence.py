@@ -16532,14 +16532,17 @@ def _v90r25_trades_fast(limit=80):
         return {'status':'UNAVAILABLE','trades':[]}
     try:
         with pg_connect() as c:
-            rows=c.execute("""SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
+            rows=c.execute("""WITH recent AS (SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
                                      avg_entry_price,avg_exit_price,gross_pnl_rub,fees_rub,
                                      funding_rub,net_pnl_rub,return_on_entry_nav,profitable,
                                      meaningful_win,status,setup,horizon,payload
                               FROM paper_trades
                               WHERE closed_at IS NOT NULL OR status='CLOSED'
                               ORDER BY COALESCE(closed_at,opened_at) DESC
-                              LIMIT %s""",(limit,)).fetchall()
+                              LIMIT %s)
+                              SELECT t.*,(SELECT SUM(o.notional_rub) FROM paper_orders o
+                                WHERE o.trade_id=t.trade_id AND o.side IN ('BUY','SELL_SHORT')) AS entry_notional_rub
+                              FROM recent t ORDER BY COALESCE(t.closed_at,t.opened_at) DESC""",(limit,)).fetchall()
         trades=[]
         for r0 in rows:
             z=dict(r0)

@@ -34,11 +34,12 @@ def trade_result(trade, position=None):
     # The durable net result is authoritative for a fully closed trade.
     if position is None and str(trade.get('status')) == 'CLOSED':
         total = _number(trade.get('net_pnl_rub')) if trade.get('net_pnl_rub') is not None else total
-    nav = _number(payload.get('entry_nav_rub'))
-    return_pct = 100 * total / nav if total is not None and nav is not None and nav > 0 else None
-    if position is None and return_pct is None:
-        fraction = _number(trade.get('return_on_entry_nav'))
-        return_pct = 100 * fraction if fraction is not None else None
+    # Sum actual opening/add fills. Exits never reduce this denominator: after
+    # a partial close the numerator still contains the entire trade's result.
+    # Portfolio balance and its historical return field are never substitutes.
+    basis = _number(trade.get('entry_notional_rub'))
+    basis = basis if basis is not None and basis > 0 else None
+    return_pct = 100 * total / basis if total is not None and basis is not None else None
     full_tp = position is None and str(trade.get('exit_reason') or payload.get('exit_reason') or '').startswith('TAKE_PROFIT')
     return {
         'trade_result_status': 'COMPLETE' if complete else 'INCOMPLETE',
@@ -47,6 +48,8 @@ def trade_result(trade, position=None):
         'trade_funding_rub': funding,
         'total_trade_pnl_rub': total,
         'total_trade_return_pct': return_pct,
+        'trade_return_basis': 'ENTRY_NOTIONAL' if basis is not None else 'UNAVAILABLE',
+        'trade_return_basis_rub': basis,
         'tp1_done': bool(payload.get('r17_tp1_done') or full_tp),
         'tp1_at': payload.get('r17_tp1_at') or (trade.get('closed_at') if full_tp else None),
         'tp1_partial': bool(payload.get('r17_tp1_done')),
@@ -64,7 +67,7 @@ def enrich_positions(report, pg_connect):
     if ids:
         try:
             with pg_connect() as conn:
-                trades = VPP.load_accounts(conn, ids)
+                trades = VPP.load_accounts(conn, ids, include_entry_notional=True)
         except Exception:
             # Keep the position visible, but never substitute zero for unknown costs.
             pass

@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r70-portfolio-performance"
+UI_VERSION = "veritas-ui-v9.0-r71-position-returns"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -130,6 +130,7 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 .pf-ledger{grid-template-columns:repeat(4,minmax(0,1fr))}
 @media(max-width:780px){.pf-sections{grid-template-columns:1fr 1fr}.pf-section:last-child{grid-column:1/-1}.pf-quality{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-width:500px){.pf-row{grid-template-columns:minmax(88px,1.25fr) repeat(3,minmax(0,1fr));gap:4px;padding:9px 7px}button.pf-row{font-size:11px}.pf-row.pf-colnames{font-size:9px}.pf-row small{font-size:8px}.pf-detail{padding:11px}.pf-heading h3{font-size:13px}.pf-amount{font-size:23px}.pf-status{font-size:9px;max-width:104px}.pf-performance{gap:7px}.pf-value b{font-size:14px}.pf-value span{font-size:9px}.pf-sections{grid-template-columns:1fr;gap:10px}.pf-section:last-child{grid-column:auto}.pf-quality,.pf-ledger{grid-template-columns:1fr 1fr}.pf-quality .pf-value b{font-size:18px}.deal{padding:10px}.deal-result{font-size:15px}.deal-name{font-size:12px}.deal-breakdown{grid-template-columns:repeat(2,minmax(0,1fr))}.deal-filters small{flex-basis:100%;margin:0}.deal-outcome{gap:7px}}
+.trade-direction{display:inline-block;margin-left:7px}.position-result{font-size:12px;line-height:1.25}.position-result small{display:block;font-size:9px;font-weight:550;margin-top:2px}.deal-result small{font-size:11px}
 </style>
 </head>
 <body>
@@ -244,7 +245,7 @@ const bool=v=>v===true?'ДА':v===false?'НЕТ':'—';
 const planOf=x=>(x&&x.trade_plan)||{};
 const knownNumber=v=>v==null||v===''?null:(Number.isFinite(Number(v))?Number(v):null);
 const tradeTotal=z=>knownNumber(z.total_trade_pnl_rub??(z.status==='CLOSED'?z.net_pnl_rub:null));
-const tradeReturn=z=>knownNumber(z.total_trade_return_pct??(z.return_on_entry_nav==null?null:100*Number(z.return_on_entry_nav)));
+const tradeReturn=z=>z.trade_return_basis==='ENTRY_NOTIONAL'?knownNumber(z.total_trade_return_pct):null;
 const tpDone=z=>z.tp1_done??Boolean((z.payload||{}).r17_tp1_done||String(z.exit_reason||(z.payload||{}).exit_reason||'').startsWith('TAKE_PROFIT'));
 const tpNotice=(z,open=false)=>{
   if(!tpDone(z))return '';
@@ -548,7 +549,7 @@ function renderPortfolios(){
     const giveText=Number.isFinite(give)?give.toFixed(2)+'%':'—';
     const sideText=directionLabel(z.direction,tier),sideClass=cls(String(z.direction||'')); 
     return'<div class="position-card">'+
-      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' · <span class="'+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Текущий результат открытой позиции: фиксации + переоценка остатка − комиссии и фондирование.">'+rub(pnl)+(ret!=null?' · '+(ret>=0?'+':'')+ret.toFixed(2)+'%':'')+'</div></div>'+
+      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' <span class="trade-direction '+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Результат всей сделки после расходов / сумма фактических входов и доборов. Частичные закрытия не уменьшают базу процента.">'+signedPct(ret)+'<small>'+rub(pnl)+'</small></div></div>'+
       '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
       '<div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · в позиции '+holdRu(held)+' · объём '+rub(z.notional_rub)+'</div>'+
       tpNotice(z,true)+
@@ -591,9 +592,9 @@ function renderTrades(){
     const sizeLabel=openPct!=null?'При открытии':'Максимальный объём';
     const sideText=directionLabel(D,p.entry_signal_tier||p.signal_tier||''),sideClass=cls(D),stopLoss=t.stop_price??p.stop_price??p.structural_stop??p.initial_stop_price;
     const key=String(t.trade_id||[t.portfolio_name,t.asset,t.opened_at,t.closed_at].join('|'));
-    return'<article class="deal"><div class="deal-head"><div><div class="deal-name">'+esc(lab(t.asset))+' <span class="deal-side '+sideClass+'">'+sideText+'</span>'+(shownPct==null?'':' · <span>'+n(shownPct,0)+'%</span>')+'</div><div class="deal-book">'+esc(portfolioName(t.portfolio_name))+' · '+tfRu(t.horizon)+'</div></div><div class="deal-result '+tone(net)+'">'+rub(net)+'<small>'+signedPct(retPct)+'</small></div></div>'+
+    return'<article class="deal"><div class="deal-head"><div><div class="deal-name">'+esc(lab(t.asset))+' <span class="deal-side trade-direction '+sideClass+'">'+sideText+'</span>'+(shownPct==null?'':' · <span>'+n(shownPct,0)+'%</span>')+'</div><div class="deal-book">'+esc(portfolioName(t.portfolio_name))+' · '+tfRu(t.horizon)+'</div></div><div class="deal-result '+tone(net)+'" title="Результат после расходов / сумма фактических входов и доборов.">'+signedPct(retPct)+'<small>'+rub(net)+'</small></div></div>'+
       '<div class="deal-path"><div class="deal-point">Вход <b>'+p2(entry)+'</b><time>'+dateRu(t.opened_at)+'</time></div><div class="deal-point">Выход <b>'+p2(exit)+'</b><time>'+dateRu(t.closed_at)+'</time></div></div><div class="deal-outcome"><b>'+esc(reason)+'</b><span>'+holdRu(held)+'</span></div>'+tpNotice(t)+
-      '<details data-trade="'+esc(key)+'"'+(st.expandedTrades.has(key)?' open':'')+'><summary>Расчёт и параметры</summary><div class="deal-breakdown"><span>Доход от цены<b>'+rub(t.gross_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(t.fees_rub)+'</b></span><span>Фондирование<b>'+rub(t.funding_rub)+'</b></span><span>Stop Loss<b>'+p2(stopLoss)+'</b></span><span>'+sizeLabel+'<b>'+sizeText+'</b></span></div></details></article>';
+      '<details data-trade="'+esc(key)+'"'+(st.expandedTrades.has(key)?' open':'')+'><summary>Расчёт и параметры</summary><div class="deal-breakdown"><span>Доход от цены<b>'+rub(t.gross_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(t.fees_rub)+'</b></span><span>Фондирование<b>'+rub(t.funding_rub)+'</b></span><span>Объём входов<b>'+rub(t.trade_return_basis_rub)+'</b></span><span>Stop Loss<b>'+p2(stopLoss)+'</b></span><span>'+sizeLabel+'<b>'+sizeText+'</b></span></div></details></article>';
   }).join(''):'<div class="msg">'+(all.length?'Нет сделок с выбранным фильтром.':'Закрытых сделок пока нет.')+'</div>';
   document.querySelectorAll('#trades details[data-trade]').forEach(el=>{el.ontoggle=()=>{if(el.open)st.expandedTrades.add(el.dataset.trade);else st.expandedTrades.delete(el.dataset.trade);};});
 }

@@ -94,13 +94,16 @@ def evaluate(z, accounting, *, stop=None, price=None, nav=None, now=None, commis
     return finish()
 
 
-def load_accounts(c, ids):
+def load_accounts(c, ids, include_entry_notional=False):
+    notional_sql = ''' , (SELECT SUM(o.notional_rub) FROM paper_orders o
+                         WHERE o.trade_id=t.trade_id AND o.side IN ('BUY','SELL_SHORT'))
+                         AS entry_notional_rub''' if include_entry_notional else ''
     rows = c.execute('''SELECT t.trade_id,t.status,t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.payload,
                p.last_mark_at,p.last_ruonia,
                p.initial_nav_rub+p.realized_pnl_rub-p.fees_rub-p.funding_rub+
                COALESCE((SELECT SUM((CASE WHEN z.direction='LONG' THEN 1 ELSE -1 END)*
                                     z.units*(z.last_price-z.avg_entry_price))
-                         FROM paper_positions z WHERE z.portfolio_name=p.name),0) AS portfolio_nav_rub
+                         FROM paper_positions z WHERE z.portfolio_name=p.name),0) AS portfolio_nav_rub''' + notional_sql + '''
         FROM paper_trades t JOIN paper_portfolios p ON p.name=t.portfolio_name
         WHERE t.trade_id=ANY(%s)''', (ids,)).fetchall()
     return {r['trade_id']: dict(r) for r in rows}
