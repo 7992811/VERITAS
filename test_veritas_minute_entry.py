@@ -149,6 +149,18 @@ class Integration(unittest.TestCase):
         self.assertFalse(compact['trade_plan']['profitability_gate']['allow'])
         self.assertTrue(compact['trade_plan']['trade_integrity']['hard_invalidation'])
 
+    def test_all_horizons_reach_agent_and_committee_calculation(self):
+        f=dict(trend=.001,momentum=.002,rv=.001,volume_ratio=1.5,taker_buy_share=.55,
+               ret_h=.001,source_divergence=0,regime='TREND',source_gate_pass=True,market_open=True)
+        with patch.object(I,'runtime_bool',return_value=False),patch.object(I,'runtime_settings',return_value={}):
+            for asset in ('BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'):
+                for horizon in I.HORIZONS:
+                    with self.subTest(asset=asset,horizon=horizon):
+                        views=I.agent_views(dict(f,asset=asset),horizon,{'ok':False},asset)
+                        decision=I.committee(views,asset,horizon,{},'TREND')
+                        self.assertIn(decision[0],('LONG','SHORT','NO_TRADE'))
+                        self.assertEqual(views[-1][0],'RISK')
+
     def test_size_cap_does_not_move_the_stop(self):
         r=row();stop=r['trade_plan']['stop_price'];f=M.structural_fraction(r,'AGGRESSIVE',.23)
         self.assertEqual(f,.2);self.assertEqual(r['trade_plan']['stop_price'],stop)

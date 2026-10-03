@@ -5207,10 +5207,10 @@ def validated_knowledge_adjustment(kmatches, asset, horizon, regime='*'):
 
 
 def agent_views(f, horizon, deriv, asset=None):
-    scale = {'5m':1.22,'1h': 1.10, '4h': 1.0, '1d': 0.90, '3d': 0.75, '7d': 0.65}[horizon]
+    scale = {'1m':1.22,'5m':1.22,'1h': 1.10, '4h': 1.0, '1d': 0.90, '3d': 0.75, '7d': 0.65}[horizon]
     trend, mom, rv, vr, tbs = f['trend'], f['momentum'], f['rv'], f['volume_ratio'], f['taker_buy_share']
     ret_h=float(f.get('ret_h') or 0.0)
-    if horizon in ('5m','1h'):
+    if horizon in ('1m','5m','1h'):
         qs = (0.55*ret_h + 0.30*mom + 0.15*trend) * scale
     else:
         qs = (0.55*trend + 0.45*mom) * scale
@@ -5218,14 +5218,14 @@ def agent_views(f, horizon, deriv, asset=None):
     cutmap={'NDX':(0.0035,0.0030),'NQ':(0.0035,0.0030),'MOEX':(0.0050,0.0040),
             'GOLD':(0.0040,0.0035),'BRENT':(0.0060,0.0050)}
     quant_cut,tech_cut=cutmap.get(aa,(0.006,0.005))
-    if horizon=='5m':
+    if horizon in ('1m','5m'):
         quant_cut*=0.32
         tech_cut*=0.32
     elif horizon=='1h':
         quant_cut*=0.55
         tech_cut*=0.55
     flow = (tbs - 0.5) * 2
-    if horizon in ('5m','1h'):
+    if horizon in ('1m','5m','1h'):
         ts = (0.50*ret_h + 0.25*mom + 0.10*trend + 0.15*flow) * (1.12 if vr > 1 else 0.88) * scale
     else:
         ts = (0.50*mom + 0.30*trend + 0.20*flow) * (1.08 if vr > 1 else 0.92) * scale
