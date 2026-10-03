@@ -15783,7 +15783,7 @@ def fresh_cycle_snapshot():
         cyc=dict(last_cycle)
         mem_summary=[dict(x) for x in ((last_cycle or {}).get('summary') or [])]
     merged={(x.get('asset'),x.get('horizon')):x for x in mem_summary if x.get('asset') and x.get('horizon')}
-    expected=len(DISPLAY_ASSETS)*6
+    expected=len(DISPLAY_ASSETS)*len(HORIZONS)
     # Avoid DB contention on normal UI refreshes. Query durable history only when
     # memory is genuinely insufficient (cold start / first cycle).
     if len(merged)<max(7,expected//2):
@@ -15791,7 +15791,7 @@ def fresh_cycle_snapshot():
             merged.setdefault((x.get('asset'),x.get('horizon')),x)
     ordered=[]
     for asset in DISPLAY_ASSETS:
-        for h in ('5m','1h','4h','1d','3d','7d'):
+        for h in HORIZONS:
             x=merged.get((asset,h))
             if x: ordered.append(x)
     cyc['summary']=ordered
@@ -16633,7 +16633,7 @@ def _v90r26_dashboard_bootstrap():
         'experience_storage':'ACTIVE' if pg_enabled() else 'UNAVAILABLE'
       },
       'data_quality_summary':{
-        'cells':len(signals),'expected_cells':42,'source_verified_cells':source_ok,
+        'cells':len(signals),'expected_cells':len(DISPLAY_ASSETS)*len(HORIZONS),'source_verified_cells':source_ok,
         'execution_eligible_cells':exec_ok,'stale_cells':stale
       },
       'horizon_summary':horizon_counts

@@ -161,6 +161,17 @@ class Integration(unittest.TestCase):
                         self.assertIn(decision[0],('LONG','SHORT','NO_TRADE'))
                         self.assertEqual(views[-1][0],'RISK')
 
+    def test_public_snapshot_contains_all_seven_horizons(self):
+        rows=[dict(asset=a,horizon=h,price=100,minute_data_status='OK' if h=='1m' else None)
+              for a in I.DISPLAY_ASSETS for h in I.HORIZONS]
+        with patch.object(I,'last_cycle',{'status':'ok','summary':rows}),patch.object(I,'latest_signal_summary_pg') as fallback:
+            snapshot=I.fresh_cycle_snapshot()
+            self.assertEqual(snapshot['summary_count'],49)
+            self.assertEqual(snapshot['expected_summary_count'],49)
+            self.assertEqual(len([r for r in snapshot['summary'] if r['horizon']=='1m']),7)
+            self.assertEqual(snapshot['summary'][0]['horizon'],'1m')
+            fallback.assert_not_called()
+
     def test_size_cap_does_not_move_the_stop(self):
         r=row();stop=r['trade_plan']['stop_price'];f=M.structural_fraction(r,'AGGRESSIVE',.23)
         self.assertEqual(f,.2);self.assertEqual(r['trade_plan']['stop_price'],stop)
