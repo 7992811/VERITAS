@@ -109,7 +109,8 @@ ui.st.trades = {trades: [{...partial, status: 'CLOSED', net_pnl_rub: -75,
   avg_exit_price: 110, gross_pnl_rub: 120, fees_rub: 192, funding_rub: 3,
   exit_reason: 'TAKE_PROFIT_FULL_MIN_POSITION_R17'}]};
 ui.renderTrades();
-assert.match(elements.trades.innerHTML, /-0.01% NAV/);
+assert.match(elements.trades.innerHTML, /-0.01%<\/small>/);
+assert.doesNotMatch(elements.trades.innerHTML, /NAV|к капиталу/);
 assert.doesNotMatch(elements.trades.innerHTML, /10.00%/);
 assert.match(elements.trades.innerHTML, /Фиксация по тейку/);
 assert.match(elements.trades.innerHTML, /TP1 · частично исполнен/);

@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r38-real-management-intelligence"
+UI_VERSION = "veritas-ui-v9.0-r70-portfolio-performance"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -91,7 +91,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .position-learning{display:flex;flex-wrap:wrap;gap:2px;margin-top:2px}
 .position-chip{border:1px solid rgba(255,255,255,.055);border-radius:999px;padding:1px 3px;font-size:6.2px;line-height:1.2;color:#aebac3;background:rgba(255,255,255,.01);white-space:nowrap}
 .position-chip b{font-size:6.5px;color:#e4ebf0;font-weight:650}
-.position-nav-top,.trade-nav-top{color:#dce5ec;font-weight:700}
+.position-size-top,.trade-size-top{color:#dce5ec;font-weight:700}
 .trade-card{border-top:1px solid rgba(255,255,255,.05);padding:5px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:7px}.trade-head b{font-size:9.8px;line-height:1.15}.trade-result{font-size:9.8px;font-weight:700;white-space:nowrap}.trade-meta{font-size:7.7px;line-height:1.25;color:var(--muted);margin-top:1px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 6px;margin-top:4px}.trade-money span{font-size:7px;line-height:1.15;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:8.2px;line-height:1.15;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
 
 .intel-wrap{display:grid;grid-template-columns:165px minmax(0,1fr);gap:10px;align-items:stretch}
@@ -115,6 +115,21 @@ _CANONICAL_HTML = r'''<!doctype html>
 @media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-compare{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(5,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:100px 70px 58px minmax(0,1fr);gap:3px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-compare{grid-template-columns:1fr}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(3,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .position-accounting{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin:2px 0 0;font-size:6.4px;line-height:1.08;color:var(--muted)}.position-accounting span{min-width:0}.position-accounting b{display:block;color:var(--text);font-size:7.8px;line-height:1.08;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tp-status{font-size:6.8px;line-height:1.2;margin:2px 0}.position-result{max-width:42%;text-align:right}@media(max-width:650px){.position-accounting{grid-template-columns:repeat(3,minmax(0,1fr))}.tp-status{font-size:7.2px}}
+
+/* Performance, exposure and complete-ledger quality, with readable mobile rows. */
+.pf-panel{font-variant-numeric:tabular-nums}.pf-caption{font-size:10px;color:var(--muted);margin:10px 0 6px;line-height:1.45}
+.pf-compare{border:1px solid var(--line);border-radius:10px;overflow:hidden}.pf-row{display:grid;grid-template-columns:minmax(110px,1.4fr) repeat(3,minmax(0,1fr));gap:8px;align-items:center;padding:10px 12px;width:100%;text-align:right;box-sizing:border-box}
+button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;background:var(--card2);color:var(--text);font:inherit;font-size:12px;cursor:pointer;min-height:46px}
+.pf-row>:first-child{text-align:left}.pf-row.pf-colnames{color:var(--muted);font-size:10px;background:var(--card)}.pf-row[aria-pressed="true"]{background:#192937;box-shadow:inset 3px 0 #87b9d9}.pf-row:hover{background:#172530}.pf-row:focus-visible,.deal-filters select:focus-visible{outline:2px solid #87b9d9;outline-offset:-3px}
+.pf-row small{font-size:9px;color:var(--muted);display:block;margin-top:3px}.pf-detail{margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--card2)}
+.pf-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.pf-heading h3{font-size:15px;margin:0 0 5px}.pf-amount{font-size:26px;line-height:1.2;font-weight:720;letter-spacing:-.03em}.pf-secondary{font-size:11px;color:var(--muted);margin-top:4px}.pf-status{font-size:10px;border:1px solid var(--line);border-radius:6px;padding:6px 8px;text-align:right;line-height:1.4}
+.pf-performance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:15px;padding-top:12px;border-top:1px solid var(--line)}.pf-value{min-width:0}.pf-value span{display:block;font-size:10px;line-height:1.35;color:var(--muted)}.pf-value b{display:block;font-size:16px;font-weight:650;margin-top:4px;overflow-wrap:anywhere}.pf-value small{display:block;color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4}
+.pf-sections{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:18px}.pf-section{min-width:0;border-top:1px solid var(--line);padding-top:11px}.pf-section h4{margin:0 0 11px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#b6c6d2}.pf-pair{display:flex;justify-content:space-between;gap:9px;font-size:11px;line-height:1.4;margin:8px 0}.pf-pair span{color:var(--muted)}.pf-pair b{text-align:right;font-weight:600;white-space:nowrap}.pf-meter{height:5px;background:#25313c;border-radius:3px;overflow:hidden;margin:6px 0 12px}.pf-meter i{display:block;height:100%;background:#87b9d9;border-radius:3px}.pf-meter.is-risk i{background:var(--warn)}.pf-meter.is-breach i{background:var(--bad)}.pf-quality{display:grid;grid-template-columns:1fr 1fr;gap:12px}.pf-quality .pf-value b{font-size:19px}.pf-foot{font-size:9px;color:var(--muted);line-height:1.5;margin-top:10px}
+.deal-filters{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:9px}.deal-filters select{background:var(--card2);border:1px solid var(--line);border-radius:7px;color:var(--text);font:inherit;font-size:11px;min-height:36px;padding:5px 8px;max-width:100%}.deal-filters small{font-size:10px;color:var(--muted);margin-left:auto}
+#trades{max-height:620px}.deal{border:1px solid var(--line);border-radius:9px;background:var(--card2);padding:11px 12px;margin-bottom:7px;font-variant-numeric:tabular-nums}.deal-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.deal-name{font-size:13px;font-weight:650;line-height:1.4}.deal-name .deal-side{font-size:11px}.deal-book{font-size:10px;color:var(--muted);margin-top:2px}.deal-result{text-align:right;flex-shrink:0;font-size:16px;font-weight:720;line-height:1.25}.deal-result small{display:block;font-size:10px;font-weight:500;margin-top:3px}.deal-path{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}.deal-point{border-top:1px solid var(--line);padding-top:7px;font-size:10px;color:var(--muted)}.deal-point b{display:inline-block;font-size:12px;color:var(--text);margin-left:5px}.deal-point time{display:block;font-size:9px;margin-top:3px}.deal-outcome{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-top:9px;font-size:10px;line-height:1.4}.deal-outcome span{color:var(--muted);text-align:right;flex-shrink:0}.deal details{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}.deal summary{cursor:pointer;font-size:10px;color:#9ebad0;min-height:24px;line-height:24px}.deal-breakdown{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:5px}.deal-breakdown span{font-size:9px;color:var(--muted)}.deal-breakdown b{display:block;font-size:11px;color:var(--text);margin-top:3px}.deal .tp-status{font-size:10px;margin-top:7px}
+.pf-ledger{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:780px){.pf-sections{grid-template-columns:1fr 1fr}.pf-section:last-child{grid-column:1/-1}.pf-quality{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:500px){.pf-row{grid-template-columns:minmax(88px,1.25fr) repeat(3,minmax(0,1fr));gap:4px;padding:9px 7px}button.pf-row{font-size:11px}.pf-row.pf-colnames{font-size:9px}.pf-row small{font-size:8px}.pf-detail{padding:11px}.pf-heading h3{font-size:13px}.pf-amount{font-size:23px}.pf-status{font-size:9px;max-width:104px}.pf-performance{gap:7px}.pf-value b{font-size:14px}.pf-value span{font-size:9px}.pf-sections{grid-template-columns:1fr;gap:10px}.pf-section:last-child{grid-column:auto}.pf-quality,.pf-ledger{grid-template-columns:1fr 1fr}.pf-quality .pf-value b{font-size:18px}.deal{padding:10px}.deal-result{font-size:15px}.deal-name{font-size:12px}.deal-breakdown{grid-template-columns:repeat(2,minmax(0,1fr))}.deal-filters small{flex-basis:100%;margin:0}.deal-outcome{gap:7px}}
 </style>
 </head>
 <body>
@@ -161,7 +176,7 @@ _CANONICAL_HTML = r'''<!doctype html>
         <div class="kpi"><span>Портфелей</span><b id="pfCount">—</b></div>
         <div class="kpi"><span>Открытых позиций</span><b id="openCount">—</b></div>
         <div class="kpi"><span>Лучшая доходность</span><b id="bestRet">—</b></div>
-        <div class="kpi"><span>Макс. просадка</span><b id="maxDD">—</b></div>
+        <div class="kpi"><span>Наибольшая текущая просадка</span><b id="maxDD">—</b></div>
       </div>
       <div id="portfolios" style="margin-top:6px"><div class="msg">Загрузка портфелей…</div></div>
     </div>
@@ -172,8 +187,8 @@ _CANONICAL_HTML = r'''<!doctype html>
     </div>
 
     <div class="card full section">
-      <div class="title">Последние сделки</div>
-      <div id="trades" class="scroll"><div class="msg">Загрузка журнала…</div></div>
+      <div class="title">Закрытые сделки</div>
+      <div id="tradeFilters"></div><div id="trades" class="scroll"><div class="msg">Загрузка журнала…</div></div>
     </div>
 
     <div class="card full section">
@@ -281,9 +296,9 @@ const targetOf=x=>x?.target_price??planOf(x).target_price??planOf(x).take_price;
 const dirRu=d=>directionLabel(d,null);
 const tfShort=tf=>({'1m':'1м','5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf||'—');
 const tfRu=tf=>({'1m':'1 мин','5m':'5 мин','1h':'1 ч','4h':'4 ч','1d':'1 день','3d':'3 дня','7d':'7 дней'}[tf]||tf||'—');
-const holdRu=s=>{s=Number(s);if(!Number.isFinite(s)||s<0)return'—';const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.max(0,Math.floor((s%3600)/60));return(d?d+' д ':'')+(h?h+' ч ':'')+(m+' мин')};
+const holdRu=s=>{if(s==null||s==='')return'—';s=Number(s);if(!Number.isFinite(s)||s<0)return'—';const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.max(0,Math.floor((s%3600)/60));return(d?d+' д ':'')+(h?h+' ч ':'')+(m+' мин')};
 const dateRu=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
-const exitRu=r=>{r=String(r||'').toUpperCase();if(r.startsWith('TAKE_PROFIT'))return'Фиксация по тейку';const m={TAKE_PROFIT:'Цель достигнута',TP:'Цель достигнута',STOP:'Стоп',STOP_LOSS:'Стоп',SIGNAL_FLIP:'Смена сигнала',TIMEOUT:'Выход по времени',PROFIT_HARVEST:'Фиксация прибыли',MANUAL:'Ручное закрытие',CLOSED:'Закрыта'};return m[r]||'Закрытие системой'};
+const exitRu=r=>{r=String(r||'').toUpperCase();if(r.startsWith('TAKE_PROFIT'))return'Фиксация по тейку';const m={TAKE_PROFIT:'Цель достигнута',TP:'Цель достигнута',STOP:'Стоп',STOP_LOSS:'Стоп',SIGNAL_FLIP:'Смена сигнала',TIMEOUT:'Выход по времени',PROFIT_HARVEST:'Фиксация прибыли',MANUAL:'Ручное закрытие',HARD_THESIS_INVALIDATION:'Сценарий отменён',PRODUCTION_CANDIDATE_REBASE:'Перезапуск портфеля',LEGACY_KERNEL_REBASE:'Переход на новые правила',V84_CONFIRMED_DIRECTION_FLIP:'Подтверждена смена направления',STRUCTURE_BREAK_EXIT_TO_CASH:'Нарушена структура тренда',CLOSED:'Закрыта'};return m[r]||'Закрытие системой'};
 const regimeRu=v=>{const k=String(v||'');const m={UPTREND_HIGH_VOL:'Восходящий тренд, высокая волатильность',UPTREND_MID_VOL:'Восходящий тренд, средняя волатильность',UPTREND_LOW_VOL:'Восходящий тренд, низкая волатильность',DOWNTREND_HIGH_VOL:'Нисходящий тренд, высокая волатильность',DOWNTREND_MID_VOL:'Нисходящий тренд, средняя волатильность',DOWNTREND_LOW_VOL:'Нисходящий тренд, низкая волатильность',RANGE_HIGH_VOL:'Боковой рынок, высокая волатильность',RANGE_MID_VOL:'Боковой рынок, средняя волатильность',RANGE_LOW_VOL:'Боковой рынок, низкая волатильность'};return m[k]||'Режим уточняется'};
 const structureRu=v=>{const k=String(v||'');const m={CONFIRMED_TREND:'Тренд подтверждён',BUILDING_TREND:'Тренд формируется',NEUTRAL:'Нейтральная структура',EXIT_REVERSAL:'Структура развернулась'};return m[k]||'Структура уточняется'};
 const qualityRu=v=>{const k=String(v||'');const m={FRESH_BREAKOUT:'Свежий пробой',CONFIRMED_TREND:'Подтверждённый тренд',WAIT_CONFIRMATION:'Ожидание подтверждения',NEUTRAL:'Нейтрально',INVALIDATED:'Сценарий отменён'};return m[k]||'Оценка формируется'};
@@ -471,6 +486,41 @@ function selectSignal(k,scroll=false){
   if(scroll)$('detail').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
+
+const portfolioName=name=>({Impulse:'Импульсный',Aggressive:'Агрессивный',Champion:'Чемпион',Challenger:'Челленджер'}[name]||name||'—');
+const tone=value=>value==null?'':Number(value)>0?'ok':Number(value)<0?'bad':'';
+const signedPct=value=>value==null?'—':(Number(value)>0?'+':'')+pct(value);
+function portfolioView(p){
+  const l=p.latest||{},risk=p.risk_governor||(l.payload||{}).risk_governor||{};
+  const value=key=>knownNumber(p[key]??l[key]);
+  const gross=value('gross_leverage'),net=value('net_exposure'),closed=knownNumber(p.closed_trades),pnl=value('closed_trade_pnl_rub');
+  return {balance:value('nav_rub'),usd:value('nav_usd'),ret:value('total_return_pct'),dd:knownNumber(p.drawdown_pct??(l.drawdown!=null?100*Number(l.drawdown):null)),
+    gross,net,risk,limit:knownNumber(risk.max_gross),ddLimit:risk.hard_drawdown_limit==null?null:100*Number(risk.hard_drawdown_limit),
+    long:gross==null||net==null?null:Math.max(0,(gross+net)/2),short:gross==null||net==null?null:Math.max(0,(gross-net)/2),
+    cash:value('cash_equivalent_fraction'),closed,wins:knownNumber(p.wins),winRate:p.win_rate==null?null:100*Number(p.win_rate),pnl,
+    avg:knownNumber(p.avg_closed_trade_pnl_rub)??(closed>0&&pnl!=null?pnl/closed:null),excess:value('excess_vs_ruonia_pct')};
+}
+function renderPortfolioPanel(ps){
+  const root=$('portfolios');root.className='pf-panel';
+  if(!ps.length){root.innerHTML='<div class="msg warn">Портфели пока не получены.</div>';return;}
+  if(!ps.some(p=>p.name===st.selectedPortfolio))st.selectedPortfolio=ps[0].name;
+  const p=ps.find(p=>p.name===st.selectedPortfolio),v=portfolioView(p),open=(p.positions||[]).length;
+  const pair=(label,value,c='')=>'<div class="pf-pair"><span>'+label+'</span><b class="'+c+'">'+value+'</b></div>';
+  const metric=(label,value,c='',sub='')=>'<div class="pf-value"><span>'+label+'</span><b class="'+c+'">'+value+'</b>'+(sub?'<small>'+sub+'</small>':'')+'</div>';
+  const meter=(value,limit,risk=false)=>value==null||!(limit>0)?'':'<div class="pf-meter '+(risk?(value>=limit?'is-breach':'is-risk'):'')+'" aria-hidden="true"><i style="width:'+Math.min(100,Math.max(0,100*value/limit)).toFixed(2)+'%"></i></div>';
+  const mult=x=>x==null?'—':n(x,2)+'×';
+  const status=v.risk.new_risk===false?'Новый риск запрещён':open>0?open+' поз. открыто':v.gross==null?'Данные обновляются':v.gross>.002?'Позиции синхронизируются':'Вне рынка';
+  const pf=knownNumber(p.profit_factor),pfText=pf==null?(p.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(pf,2);
+  root.innerHTML='<div class="pf-caption">С начала учёта · выберите портфель для подробностей</div><div class="pf-compare"><div class="pf-row pf-colnames"><span>Портфель</span><span>Доходность</span><span>Просадка</span><span>Прибыльных</span></div>'+ps.map(q=>{const a=portfolioView(q);return'<button type="button" class="pf-row" data-portfolio="'+esc(q.name)+'" aria-pressed="'+(q.name===p.name)+'"><span><b>'+esc(portfolioName(q.name))+'</b><small>'+esc(q.name)+'</small></span><b class="'+tone(a.ret)+'">'+signedPct(a.ret)+'</b><span>'+pct(a.dd)+'</span><span>'+(a.winRate==null?'—':n(a.winRate,1)+'%')+'</span></button>';}).join('')+'</div>'+
+    '<div class="pf-detail"><div class="pf-heading"><div><h3>'+esc(portfolioName(p.name))+'</h3><div class="pf-amount">'+rub(v.balance)+'</div><div class="pf-secondary">'+(v.usd==null?'—':n(v.usd,0)+' $')+'</div></div><div class="pf-status '+(v.risk.new_risk===false?'warn':'')+'">'+status+'</div></div>'+
+    '<div class="pf-performance">'+metric('Доходность',signedPct(v.ret),tone(v.ret),'С начала учёта')+metric('К RUONIA',signedPct(v.excess),tone(v.excess),'Относительно эталона')+metric('Закрытые сделки',rub(v.pnl),tone(v.pnl),'После всех расходов')+'</div>'+
+    '<div class="pf-sections"><section class="pf-section"><h4>Риск и ограничения</h4>'+pair('Текущая просадка',pct(v.dd),v.dd>0?'warn':'')+meter(v.dd,v.ddLimit,true)+pair('Лимит просадки',pct(v.ddLimit))+pair('Загрузка / лимит',mult(v.gross)+' / '+mult(v.limit))+meter(v.gross,v.limit)+pair('Новые позиции',v.risk.new_risk===true?'Разрешены':v.risk.new_risk===false?'Заблокированы':'—')+'</section>'+
+    '<section class="pf-section"><h4>Экспозиция</h4>'+pair('Длинные позиции',mult(v.long))+pair('Короткие позиции',mult(v.short))+pair('Чистая экспозиция',mult(v.net))+pair('Вне позиций',v.cash==null?'—':pct(100*v.cash))+'<div class="pf-foot">Объём позиций относительно размера портфеля. 1× = 100%. Показатель «Вне позиций» не учитывает требования к марже.</div></section>'+
+    '<section class="pf-section"><h4>Качество сделок</h4><div class="pf-quality">'+metric('Прибыльных',v.winRate==null?'—':n(v.winRate,1)+'%','',v.closed==null?'Нет статистики':(v.wins??'—')+' из '+v.closed)+metric('Коэф. прибыли',pfText,pf==null?'':pf>=1?'ok':'bad','Прибыли / убытки')+metric('Средняя сделка',rub(v.avg),tone(v.avg))+metric('Прибыль / убыток',p.payoff_ratio==null?'—':n(p.payoff_ratio,2),'','Средние значения')+'</div></section></div>'+
+    '<div class="pf-section" style="margin-top:14px"><h4>Результат всех закрытых сделок</h4><div class="pf-quality pf-ledger">'+metric('Доход от цены',rub(p.closed_gross_pnl_rub),tone(p.closed_gross_pnl_rub))+metric('Комиссии',rub(p.closed_fees_rub))+metric('Фондирование',rub(p.closed_funding_rub))+metric('Итог',rub(v.pnl),tone(v.pnl))+'</div><div class="pf-foot">Коэффициент прибыли и средняя сделка рассчитаны после комиссий и фондирования по всей истории закрытых сделок. Просадка показана от достигнутого пика до текущего значения.</div></div></div>';
+  document.querySelectorAll('#portfolios [data-portfolio]').forEach(el=>{el.onclick=()=>{st.selectedPortfolio=el.dataset.portfolio;renderPortfolioPanel(ps);};});
+}
+
 function renderPortfolios(){
   const d=st.portfolios||{},raw=Array.isArray(d.portfolios)?d.portfolios:[],positions=[];
   const ps=raw.map(p=>{
@@ -482,11 +532,10 @@ function renderPortfolios(){
   ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push(Object.assign({portfolio:p.name},z))));
   const exposureMismatch=positions.length===0&&portfolioExposureNonZero(ps);
   $('pfCount').textContent=ps.length+'/4';$('openCount').textContent=exposureMismatch?'синхр.':positions.length;
-  const rets=ps.map(p=>Number(p.total_return_pct!=null?p.total_return_pct:((p.latest||{}).total_return_pct))).filter(Number.isFinite);
+  const rets=ps.map(p=>knownNumber(p.total_return_pct??(p.latest||{}).total_return_pct)).filter(v=>v!=null);
   const dds=ps.map(p=>Number(p.drawdown_pct!=null?p.drawdown_pct:(((p.latest||{}).drawdown!=null)?100*Number((p.latest||{}).drawdown):NaN))).filter(Number.isFinite);
   $('bestRet').textContent=rets.length?Math.max(...rets).toFixed(2)+'%':'—';$('maxDD').textContent=dds.length?Math.max(...dds).toFixed(2)+'%':'—';
-  $('portfolios').className='portfolio-grid';
-  $('portfolios').innerHTML=ps.length?ps.map(p=>{const l=p.latest||p,nav=l.nav_rub??p.nav_rub,usd=l.nav_usd??p.nav_usd,ret=p.total_return_pct??l.total_return_pct,dd=p.drawdown_pct??(l.drawdown!=null?100*Number(l.drawdown):null),gross=l.gross_leverage??p.gross_leverage,net=l.net_exposure??p.net_exposure,cash=l.cash_equivalent_fraction??p.cash_equivalent_fraction,wr=p.win_rate==null?null:100*Number(p.win_rate),closed=Number(p.closed_trades||0),wins=Number(p.wins||0),pnl=Number(p.closed_trade_pnl_rub||0),openN=(p.positions||[]).length;return'<div class="portfolio-card"><div class="portfolio-head"><div><b>'+esc(p.name)+'</b><div class="portfolio-sub">'+openN+' открытых · '+closed+' закрытых сделок</div></div><b class="'+(Number(ret||0)>=0?'ok':'bad')+'">'+pct(ret)+'</b></div><div class="portfolio-nav">'+rub(nav)+' <span class="portfolio-sub">· '+(usd==null?'—':n(usd,0)+' $')+'</span></div><div class="portfolio-metrics"><div class="portfolio-metric"><span>Просадка</span><b>'+pct(dd)+'</b></div><div class="portfolio-metric"><span>Плечо gross</span><b>'+n(gross,2)+'×</b></div><div class="portfolio-metric"><span>Чистая экспозиция</span><b>'+n(net,2)+'×</b></div><div class="portfolio-metric"><span>Свободные средства</span><b>'+(cash==null?'—':pct(100*Number(cash)))+'</b></div><div class="portfolio-metric"><span>Win-rate</span><b>'+(wr==null?'—':wr.toFixed(1)+'%')+'</b></div><div class="portfolio-metric"><span>Прибыльных сделок</span><b>'+wins+' / '+closed+'</b></div><div class="portfolio-metric"><span>Итог закрытых</span><b class="'+(pnl>=0?'ok':'bad')+'">'+rub(pnl)+'</b></div><div class="portfolio-metric"><span>Открытых позиций</span><b>'+openN+'</b></div></div></div>'}).join(''):'<div class="msg warn">Портфели пока не получены.</div>';
+  renderPortfolioPanel(ps);
   $('positions').className='position-grid';
   $('positions').innerHTML=positions.length?positions.map(z=>{
     const pnl=tradeTotal(z),ret=tradeReturn(z),frac=100*Number(z.target_fraction||0),util=Number(z.position_utilization_pct),held=z.held_seconds??z.holding_duration_seconds;
@@ -499,7 +548,7 @@ function renderPortfolios(){
     const giveText=Number.isFinite(give)?give.toFixed(2)+'%':'—';
     const sideText=directionLabel(z.direction,tier),sideClass=cls(String(z.direction||'')); 
     return'<div class="position-card">'+
-      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' · <span class="'+sideClass+'">'+sideText+'</span> · <span class="position-nav-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Текущий результат открытой позиции: фиксации + переоценка остатка − комиссии и фондирование.">'+rub(pnl)+(ret!=null?' · '+(ret>=0?'+':'')+ret.toFixed(2)+'%':'')+'</div></div>'+
+      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' · <span class="'+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Текущий результат открытой позиции: фиксации + переоценка остатка − комиссии и фондирование.">'+rub(pnl)+(ret!=null?' · '+(ret>=0?'+':'')+ret.toFixed(2)+'%':'')+'</div></div>'+
       '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
       '<div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · в позиции '+holdRu(held)+' · объём '+rub(z.notional_rub)+'</div>'+
       tpNotice(z,true)+
@@ -523,20 +572,30 @@ function renderPortfolios(){
 }
 
 function renderTrades(){
-  const rows=Array.isArray(st.trades&&st.trades.trades)?st.trades.trades:[];
-  $('trades').innerHTML=rows.length?rows.slice(0,80).map(t=>{
-    const net=tradeTotal(t),g=Number(t.gross_pnl_rub||0),fees=Number(t.fees_rub||0),fund=Number(t.funding_rub||0),p=t.payload||{},entry=Number(t.avg_entry_price||0),exit=Number(t.avg_exit_price||0),D=String(t.direction||'');
+  const all=Array.isArray(st.trades&&st.trades.trades)?st.trades.trades.slice(0,80):[];
+  st.tradeFilter=st.tradeFilter||{portfolio:'',result:''};
+  st.expandedTrades=st.expandedTrades||new Set();
+  const f=st.tradeFilter,books=[...new Set([...(st.portfolios?.portfolios||[]).map(p=>p.name),...all.map(t=>t.portfolio_name)])].filter(Boolean);
+  const selected=(a,b)=>a===b?' selected':'';
+  const rows=all.filter(t=>(!f.portfolio||t.portfolio_name===f.portfolio)&&(!f.result||(tradeTotal(t)!=null&&(f.result==='win'?tradeTotal(t)>0:tradeTotal(t)<0))));
+  $('tradeFilters').innerHTML='<div class="deal-filters"><select id="tradePortfolio" aria-label="Портфель закрытых сделок"><option value="">Все портфели</option>'+books.map(b=>'<option value="'+esc(b)+'"'+selected(f.portfolio,b)+'>'+esc(portfolioName(b))+'</option>').join('')+'</select><select id="tradeResult" aria-label="Результат закрытых сделок"><option value="">Любой результат</option><option value="win"'+selected(f.result,'win')+'>Прибыльные</option><option value="loss"'+selected(f.result,'loss')+'>Убыточные</option></select><small>'+rows.length+' из '+all.length+' последних сделок</small></div>';
+  $('tradePortfolio').onchange=e=>{f.portfolio=e.target.value;renderTrades();};
+  $('tradeResult').onchange=e=>{f.result=e.target.value;renderTrades();};
+  $('trades').innerHTML=rows.length?rows.map(t=>{
+    const net=tradeTotal(t),p=t.payload||{},entry=knownNumber(t.avg_entry_price),exit=knownNumber(t.avg_exit_price),D=String(t.direction||'');
     const heldRaw=t.holding_duration_seconds??t.held_seconds,held=heldRaw!=null?Number(heldRaw):(t.opened_at&&t.closed_at?Math.max(0,(new Date(t.closed_at)-new Date(t.opened_at))/1000):null);
     const retPct=tradeReturn(t),reason=exitRu(t.exit_reason||p.exit_reason||t.status);
-    const openPct=t.opening_fraction_pct!=null?Number(t.opening_fraction_pct):(p.opening_fraction!=null?100*Number(p.opening_fraction):null);
-    const maxPct=t.max_fraction_pct!=null?Number(t.max_fraction_pct):(t.max_fraction!=null?100*Number(t.max_fraction):null);
-    const shownPct=openPct!=null?openPct:maxPct;
-    const sizeText=shownPct==null?'—':shownPct.toFixed(0)+'%'+(shownPct>100?' · '+(shownPct/100).toFixed(2)+'×':'');
-    const sizeLabel=openPct!=null?'Доля при открытии':'Макс. доля позиции';
-    const entryTier=p.entry_signal_tier||p.signal_tier||'',sideText=directionLabel(D,entryTier),sideClass=cls(D),stopLoss=t.stop_price??p.stop_price??p.structural_stop??p.initial_stop_price;
-    const navTop=shownPct==null?'— NAV':shownPct.toFixed(0)+'% NAV';
-    return'<div class="trade-card"><div class="trade-head"><b>'+esc(t.portfolio_name)+' · '+lab(t.asset)+' · <span class="'+sideClass+'">'+sideText+'</span> · <span class="trade-nav-top">'+navTop+'</span></b><div class="trade-result '+(net>=0?'ok':'bad')+'">'+rub(net)+(retPct==null?'':' · '+(Number(retPct)>=0?'+':'')+Number(retPct).toFixed(2)+'% NAV')+'</div></div><div class="trade-meta">'+tfRu(t.horizon)+' · Вход '+p2(entry)+' → выход '+p2(exit)+' · Stop Loss '+p2(stopLoss)+' · Закрыта '+dateRu(t.closed_at)+' · Удержание '+holdRu(held)+' · Причина: '+reason+'</div>'+tpNotice(t)+'<div class="trade-money"><span>'+sizeLabel+'<b>'+sizeText+'</b></span><span>Stop Loss<b>'+p2(stopLoss)+'</b></span><span>Доход от цены<b>'+rub(g)+'</b></span><span>Комиссия<b>'+rub(fees)+'</b></span><span>Фондирование<b>'+rub(fund)+'</b></span><span>Итоговый результат<b class="'+(net>=0?'ok':'bad')+'">'+rub(net)+'</b></span></div></div>';
-  }).join(''):'<div class="msg">Закрытых сделок пока нет.</div>';
+    const openPct=knownNumber(t.opening_fraction_pct??(p.opening_fraction!=null?100*Number(p.opening_fraction):null));
+    const maxPct=knownNumber(t.max_fraction_pct??(t.max_fraction!=null?100*Number(t.max_fraction):null));
+    const shownPct=openPct??maxPct,sizeText=shownPct==null?'—':n(shownPct,0)+'%'+(shownPct>100?' · '+n(shownPct/100,2)+'×':'');
+    const sizeLabel=openPct!=null?'При открытии':'Максимальный объём';
+    const sideText=directionLabel(D,p.entry_signal_tier||p.signal_tier||''),sideClass=cls(D),stopLoss=t.stop_price??p.stop_price??p.structural_stop??p.initial_stop_price;
+    const key=String(t.trade_id||[t.portfolio_name,t.asset,t.opened_at,t.closed_at].join('|'));
+    return'<article class="deal"><div class="deal-head"><div><div class="deal-name">'+esc(lab(t.asset))+' <span class="deal-side '+sideClass+'">'+sideText+'</span>'+(shownPct==null?'':' · <span>'+n(shownPct,0)+'%</span>')+'</div><div class="deal-book">'+esc(portfolioName(t.portfolio_name))+' · '+tfRu(t.horizon)+'</div></div><div class="deal-result '+tone(net)+'">'+rub(net)+'<small>'+signedPct(retPct)+'</small></div></div>'+
+      '<div class="deal-path"><div class="deal-point">Вход <b>'+p2(entry)+'</b><time>'+dateRu(t.opened_at)+'</time></div><div class="deal-point">Выход <b>'+p2(exit)+'</b><time>'+dateRu(t.closed_at)+'</time></div></div><div class="deal-outcome"><b>'+esc(reason)+'</b><span>'+holdRu(held)+'</span></div>'+tpNotice(t)+
+      '<details data-trade="'+esc(key)+'"'+(st.expandedTrades.has(key)?' open':'')+'><summary>Расчёт и параметры</summary><div class="deal-breakdown"><span>Доход от цены<b>'+rub(t.gross_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(t.fees_rub)+'</b></span><span>Фондирование<b>'+rub(t.funding_rub)+'</b></span><span>Stop Loss<b>'+p2(stopLoss)+'</b></span><span>'+sizeLabel+'<b>'+sizeText+'</b></span></div></details></article>';
+  }).join(''):'<div class="msg">'+(all.length?'Нет сделок с выбранным фильтром.':'Закрытых сделок пока нет.')+'</div>';
+  document.querySelectorAll('#trades details[data-trade]').forEach(el=>{el.ontoggle=()=>{if(el.open)st.expandedTrades.add(el.dataset.trade);else st.expandedTrades.delete(el.dataset.trade);};});
 }
 
 function deepNum(obj,names){

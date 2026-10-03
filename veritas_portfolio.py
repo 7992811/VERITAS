@@ -7,6 +7,7 @@ import httpx
 import veritas_execution as VX
 import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
+from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
 VERSION='veritas-portfolio-v9.0-four-portfolio-core'
 INITIAL_NAV_RUB=1_000_000.0
@@ -2227,9 +2228,9 @@ def _apply_funding(c,p,pos,prices,ruonia,ts):
 
 def _stats(c,name):
     r=c.execute('''SELECT count(*) n, count(*) FILTER(WHERE profitable) wins, count(*) FILTER(WHERE meaningful_win) mw,
-                          COALESCE(sum(net_pnl_rub),0) pnl, COALESCE(avg(net_pnl_rub),0) avg_pnl
+                          COALESCE(sum(net_pnl_rub),0) pnl, COALESCE(avg(net_pnl_rub),0) avg_pnl, ''' + CLOSED_METRICS_SQL + '''
                    FROM paper_trades WHERE portfolio_name=%s AND status='CLOSED' ''',(name,)).fetchone()
-    n=int(r['n'] or 0); return {'closed_trades':n,'wins':int(r['wins'] or 0),'meaningful_wins':int(r['mw'] or 0),'win_rate':(float(r['wins'])/n if n else None),'meaningful_win_rate':(float(r['mw'])/n if n else None),'closed_trade_pnl_rub':float(r['pnl'] or 0),'avg_closed_trade_pnl_rub':float(r['avg_pnl'] or 0)}
+    n=int(r['n'] or 0); return {'closed_trades':n,'wins':int(r['wins'] or 0),'meaningful_wins':int(r['mw'] or 0),'win_rate':(float(r['wins'])/n if n else None),'meaningful_win_rate':(float(r['mw'])/n if n else None),'closed_trade_pnl_rub':float(r['pnl'] or 0),'avg_closed_trade_pnl_rub':float(r['avg_pnl'] or 0),**closed_trade_metrics(r,n)}
 
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):

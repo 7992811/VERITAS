@@ -12,6 +12,7 @@ from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
 import veritas_asset_management_intelligence as VAMI
 import veritas_trade_view as VTV
+from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     import psycopg
@@ -16478,7 +16479,7 @@ def _v90r25_portfolios_fast():
                          ) ed ON TRUE
                          WHERE pp.portfolio_name=ANY(%s)
                          ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
-        stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
+        stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl, """ + CLOSED_METRICS_SQL + """ FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
     bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
     def _n(v,d=None):
         try:
@@ -16515,6 +16516,11 @@ def _v90r25_portfolios_fast():
         # SQL enriches positions; the current execution decisions come from
         # the same completed market cycle, without recomputing admission here.
         outp[-1]['admission_trace']=live_by_name.get(name,{}).get('admission_trace',[])
+        outp[-1].update(closed_trade_metrics(st,closed))
+        outp[-1]['avg_closed_trade_pnl_rub']=float(st.get('closed_pnl') or 0)/closed if closed else None
+        outp[-1]['risk_governor']=live_by_name.get(name,{}).get('risk_governor') or (latest.get('payload') or {}).get('risk_governor') or {}
+        benchmark=latest.get('benchmark_nav_rub') or b.get('benchmark_nav_rub')
+        outp[-1]['excess_vs_ruonia_pct']=100*(float(nav_rub)/float(benchmark)-1) if nav_rub is not None and benchmark and float(benchmark)>0 else None
     out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':0.0005,'api_source':'fast_sql_enriched'}
     out=VTV.enrich_positions(out,pg_connect)
     with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
