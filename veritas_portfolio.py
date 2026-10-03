@@ -2177,10 +2177,13 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         trade_id=z['active_trade_id']
     else:
         trade_id=f"{name}:{asset}:{int(time.time()*1000)}"
+        from veritas_launch_readiness import COHORT
         setup=((row.get('institutional_signal') or {}).get('breakout_quality') or {}).get('state') or (row.get('institutional_signal') or {}).get('investor_signal')
         plan=row.get('trade_plan') or {}
         canonical_setup_id=_portfolio_canonical_setup_id(row)
         payload={'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+                 'entry_rule_revision':COHORT,'execution_cohort':COHORT,
+                 'production_evidence_epoch':str(ts),
                  'canonical_setup_id':canonical_setup_id,
                  'experience_decision':plan.get('experience_decision'),
                  'setup_memory':plan.get('setup_memory'),
@@ -7303,8 +7306,10 @@ def _v90r29_episode_from_trade(t):
 
     exp=_v90r29_num(p.get('expected_move_pct'))
     exp_pct=(100.0*abs(exp)) if exp is not None else None
-    mfe=max(0.0,_v90r29_num(p.get('mfe_pct'),0.0))
-    mae=min(0.0,_v90r29_num(p.get('mae_pct'),0.0))
+    raw_mfe=_v90r29_num(p.get('r55_lifetime_mfe_pct',p.get('mfe_pct')))
+    raw_mae=_v90r29_num(p.get('r55_lifetime_mae_pct',p.get('mae_pct')))
+    mfe=max(0.0,raw_mfe or 0.0)
+    mae=min(0.0,raw_mae or 0.0)
     give=_v90r29_num(p.get('giveback_pct'))
     if give is None and price_ret is not None:
         give=max(0.0,mfe-max(0.0,price_ret))
@@ -7333,10 +7338,12 @@ def _v90r29_episode_from_trade(t):
     integrity=str(p.get('data_integrity_status') or 'OK')
     recovered=bool(p.get('recovered'))
     completeness=_v90r29_num(p.get('telemetry_completeness'),0.0)
+    from veritas_trade_audit import evidence_exclusion
+    exclusion=evidence_exclusion(t)
     learning_eligible=bool(
         not recovered
-        and integrity in ('','OK')
-        and mfe is not None and mae is not None
+        and integrity.upper() in ('','OK','VALID','CLEAN')
+        and raw_mfe is not None and raw_mae is not None and exclusion is None
         and str(t.get('opened_at') or '')>=str(V90_Q2_STARTED_AT)
     )
 
@@ -7413,6 +7420,7 @@ def _v90r29_episode_from_trade(t):
         'canonical_setup_id':p.get('canonical_setup_id') or p.get('setup_id'),
         'independent_episode_key':_v90r60_independent_episode_key(t,p),
         'independent_episode_policy':'R60_CANONICAL_SETUP_TIME_BUCKET',
+        'learning_exclusion_reason':exclusion or ('MISSING_PATH_TELEMETRY' if raw_mfe is None or raw_mae is None else None),
       }
     }
 

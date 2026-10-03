@@ -191,6 +191,23 @@ def _r63_soft_profit_stop_assessment(z, quote, trade, nav, commission=.0005):
     return {'soft_only':True,'suppress':suppress,**est}
 
 
+def profit_exit_assessment(z, quote, trade, nav, commission=.0005):
+    """Profit-taking needs positive whole-trade net at an adverse exit fill.
+
+    Applies only to discretionary profit harvests, never to a stop or risk exit.
+    Unknown paid costs cannot be replaced by zero to approve a profit harvest.
+    """
+    accounting=trade or {}
+    values=[VPP.number(accounting.get(k)) for k in ('gross_pnl_rub','fees_rub','funding_rub')]
+    if any(v is None for v in values):
+        return {'eligible':False,'reason':'R72_PROFIT_ACCOUNTING_UNAVAILABLE'}
+    result=_r63_projected_exit_net(z,quote,accounting,nav,commission)
+    net=VPP.number(result.get('net_pnl_rub'))
+    eligible=bool(result.get('valid') and net is not None and net>0)
+    return dict(result,eligible=eligible,
+        reason='R72_NET_PROFIT_CONFIRMED' if eligible else 'R72_TAKE_PROFIT_NET_NEGATIVE')
+
+
 def take_profit_action(z, current_fraction, peak, round5):
     """Return (remaining fraction, reason), or None after TP1 was executed.
 

@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r71-position-returns"
+UI_VERSION = "veritas-ui-v9.0-r72-cost-aware-trades"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -330,6 +330,9 @@ const reasonRu=v=>{
     R69_BREAKOUT_ACTIVITY_REQUIRED:'Пробой не подтверждён активностью',
     R69_MINUTE_DATA_STALE:'Минутные свечи устарели или недоступны',
     R69_SOURCE_RISK_OR_ECONOMICS:'Вход не прошёл проверку данных, риска или расходов',
+    R72_EVENT_ALREADY_TRADED:'Этот импульс уже отторгован — нужен новый сигнал',
+    R72_EVENT_ID_MISSING:'Не определён исходный сигнал для входа',
+    R72_EVENT_HISTORY_UNAVAILABLE:'Не удалось проверить историю исполнений',
     R68_LOCAL_CONTEXT_INCOMPLETE:'Недостаточно полных локальных свечей для проверки входа',
     R66_ADD_NEEDS_CONFIRMATION:'Добор ожидает новое подтверждение в прибыльной стороне',
     R66_ADD_INSUFFICIENT_ROOM:'До ближайшего старшего уровня недостаточно хода для добора',

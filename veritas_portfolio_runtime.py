@@ -5,6 +5,7 @@ loaded only after the R41 base has finished initializing.
 """
 import veritas_portfolio as _vp_base
 import veritas_trend_entry as VTE
+import veritas_launch_readiness as VLR
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -593,6 +594,7 @@ def _v90_candidate_metrics(pg_connect,name):
 def production_candidate_readiness(pg_connect):
     thresholds={
       'min_closed_trades':50,
+      'min_unique_episodes':50,
       'min_win_rate':0.65,
       'min_profit_factor':1.25,
       'max_drawdown':0.10,
@@ -610,11 +612,15 @@ def production_candidate_readiness(pg_connect):
     def evaluate(m):
         checks={
           'sample':int(m.get('closed_trades') or 0)>=thresholds['min_closed_trades'],
+          'independent_sample':int(m.get('unique_episodes') or 0)>=thresholds['min_unique_episodes'],
           'win_rate':m.get('win_rate') is not None and float(m['win_rate'])>=thresholds['min_win_rate'],
-          'profit_factor':m.get('profit_factor') is not None and float(m['profit_factor'])>=thresholds['min_profit_factor'],
+          'profit_factor':(m.get('profit_factor') is not None and float(m['profit_factor'])>=thresholds['min_profit_factor'])
+              or m.get('profit_factor_state')=='NO_LOSSES',
           'positive_net_pnl':float(m.get('net_pnl_rub') or 0.0)>0,
           'positive_avg_trade':float(m.get('avg_net_pnl_rub') or 0.0)>0,
-          'drawdown':float(m.get('max_drawdown') or 0.0)<=thresholds['max_drawdown'],
+          'drawdown':m.get('max_drawdown') is not None and float(m['max_drawdown'])<=thresholds['max_drawdown'],
+          'history_coverage':bool(m.get('history_complete')),
+          'accounting':bool(m.get('accounting_complete')),
           'exit_telemetry':int(m.get('unknown_exits') or 0)<=thresholds['unknown_exit_tolerance'],
         }
         return checks,all(checks.values())
@@ -1061,6 +1067,26 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
                 AND UPPER(COALESCE(payload->>'exit_reason','')) LIKE '%REBASE%'
             """)
             changed=max(0,int(getattr(cur,'rowcount',0) or 0))
+            cur=c.execute("""
+          UPDATE v90_learning_episodes e SET learning_eligible=FALSE,
+            learning_action='EXCLUDE_FROM_LEARNING',
+            primary_attribution='DATA_EVIDENCE_EXCLUDED',
+            attributions='["DATA_EVIDENCE_EXCLUDED"]'::jsonb,
+            payload=COALESCE(e.payload,'{}'::jsonb)||jsonb_build_object(
+              'learning_exclusion_reason','DATA_INTEGRITY_PROXY_OR_MISSING_PATH',
+              'excluded_original_primary_attribution',e.primary_attribution,
+              'learning_excluded_at',now())
+          FROM paper_trades t
+          WHERE e.trade_id=t.trade_id AND e.learning_eligible=TRUE AND (
+            UPPER(COALESCE(t.payload->>'data_integrity_status','OK')) NOT IN ('','OK','VALID','CLEAN')
+            OR COALESCE(t.payload->>'r55_lifetime_mfe_pct',t.payload->>'mfe_pct') IS NULL
+            OR COALESCE(t.payload->>'r55_lifetime_mae_pct',t.payload->>'mae_pct') IS NULL
+            OR (t.asset IN ('NQ','NDX') AND UPPER(CONCAT_WS(' ',
+                t.payload->>'entry_primary_source',t.payload->>'entry_data_latency_class',
+                t.payload->'contract_identity'->>'primary_source')) ~ '(PROXY|QQQ)')
+          )
+            """)
+            changed+=max(0,int(getattr(cur,'rowcount',0) or 0))
             row=c.execute("""
               SELECT COUNT(*) AS n
               FROM v90_learning_episodes
@@ -1086,7 +1112,7 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
           'event':'V90_R44_LEARNING_SANITIZED',
           'changed':changed,
           'total_admin_excluded':total,
-          'policy':'ADMINISTRATIVE_REBASE_EXCLUDED_FROM_LEARNING',
+          'policy':'ADMINISTRATIVE_AND_INCOMPLETE_EVIDENCE_EXCLUDED_FROM_LEARNING',
         },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     elif err:
         print(json.dumps({
@@ -1157,80 +1183,14 @@ def _v90j_entry_patch(row,z,ts):
 
 def _v90_candidate_metrics(pg_connect,name):
     with pg_connect() as c:
-        r=c.execute("""
-          SELECT COUNT(*) AS closed_trades,
-                 COUNT(DISTINCT COALESCE(payload->>'canonical_setup_id',trade_id)) AS unique_episodes,
-                 COUNT(*) FILTER(WHERE net_pnl_rub>0) AS wins,
-                 COALESCE(SUM(net_pnl_rub),0) AS net_pnl_rub,
-                 COALESCE(AVG(net_pnl_rub),0) AS avg_net_pnl_rub,
-                 COALESCE(SUM(CASE WHEN net_pnl_rub>0 THEN net_pnl_rub ELSE 0 END),0) AS gross_wins_rub,
-                 ABS(COALESCE(SUM(CASE WHEN net_pnl_rub<0 THEN net_pnl_rub ELSE 0 END),0)) AS gross_losses_rub,
-                 COALESCE(SUM(fees_rub+funding_rub),0) AS costs_rub,
-                 COUNT(*) FILTER(
-                   WHERE COALESCE(payload->>'exit_reason',payload->>'close_reason','') IN ('','UNKNOWN')
-                 ) AS unknown_exits
-          FROM paper_trades
-          WHERE portfolio_name=%s
-            AND opened_at >= %s::timestamptz
-            AND COALESCE(payload->>'execution_cohort','')=%s
-            AND UPPER(COALESCE(payload->>'exit_reason',payload->>'close_reason','')) NOT LIKE '%%REBASE%%'
-            AND (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
-        """,(name,V90_R45_PRODUCTION_EVIDENCE_EPOCH,V90_R45_EXECUTION_COHORT)).fetchone()
-        dd=c.execute("""
-          WITH x AS (
-            SELECT observed_at,nav_rub,
-                   MAX(nav_rub) OVER (
-                     ORDER BY observed_at
-                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                   ) AS hwm
-            FROM paper_nav_history
-            WHERE portfolio_name=%s
-              AND observed_at >= %s::timestamptz
-          )
-          SELECT COALESCE(
-                   MAX(CASE WHEN hwm>0 THEN (hwm-nav_rub)/hwm ELSE 0 END),0
-                 ) AS max_drawdown
-          FROM x
-        """,(name,V90_R45_PRODUCTION_EVIDENCE_EPOCH)).fetchone()
-        ex=c.execute("""
-          SELECT COUNT(*) AS n
-          FROM paper_trades
-          WHERE portfolio_name=%s
-            AND opened_at >= %s::timestamptz
-            AND (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
-            AND (
-              COALESCE(payload->>'execution_cohort','')<>%s
-              OR UPPER(COALESCE(payload->>'exit_reason',payload->>'close_reason','')) LIKE '%%REBASE%%'
-            )
-        """,(name,V90_R45_PRODUCTION_EVIDENCE_EPOCH,V90_R45_EXECUTION_COHORT)).fetchone()
-    n=int((r or {}).get('closed_trades') or 0)
-    wins=int((r or {}).get('wins') or 0)
-    gw=float((r or {}).get('gross_wins_rub') or 0.0)
-    gl=float((r or {}).get('gross_losses_rub') or 0.0)
-    pf=(gw/gl) if gl>0 else (999.0 if gw>0 else None)
-    return {
-      'portfolio':name,
-      'closed_trades':n,
-      'unique_episodes':int((r or {}).get('unique_episodes') or 0),
-      'wins':wins,
-      'win_rate':wins/n if n else None,
-      'net_pnl_rub':float((r or {}).get('net_pnl_rub') or 0.0),
-      'avg_net_pnl_rub':float((r or {}).get('avg_net_pnl_rub') or 0.0),
-      'profit_factor':pf,
-      'costs_rub':float((r or {}).get('costs_rub') or 0.0),
-      'unknown_exits':int((r or {}).get('unknown_exits') or 0),
-      'max_drawdown':float((dd or {}).get('max_drawdown') or 0.0),
-      'evidence_epoch':V90_R45_PRODUCTION_EVIDENCE_EPOCH,
-      'execution_cohort':V90_R45_EXECUTION_COHORT,
-      'noncomparable_closed_trades_excluded':int((ex or {}).get('n') or 0),
-      'administrative_rebase_excluded':True,
-    }
+        return VLR.candidate_metrics(c,name)
+
 
 def production_candidate_readiness(pg_connect):
     d=dict(_v90r45_base_readiness(pg_connect) or {})
-    d['epoch']=V90_R45_PRODUCTION_EVIDENCE_EPOCH
-    d['execution_cohort']=V90_R45_EXECUTION_COHORT
-    d['evidence_policy']='ONLY_R45_CLEAN_CLOSED_LOOP_TRADES'
+    d['epoch']=None
+    d['execution_cohort']=VLR.COHORT
+    d['evidence_policy']='ONLY_CURRENT_RULES_INDEPENDENT_CLEAN_TRADES'
     d['administrative_rebase_excluded']=True
     d['pre_r45_trades_count_toward_live_gate']=False
     d['principle']=(
@@ -1244,8 +1204,8 @@ def report(pg_connect):
     d=dict(_v90r45_base_report(pg_connect) or {})
     d['production_evidence_r45']={
       'status':'ACTIVE',
-      'epoch':V90_R45_PRODUCTION_EVIDENCE_EPOCH,
-      'execution_cohort':V90_R45_EXECUTION_COHORT,
+      'epoch_policy':'FIRST_VERIFIED_CURRENT_RULE_ENTRY',
+      'execution_cohort':VLR.COHORT,
       'requires_cohort_marker':True,
       'excludes_rebase_closures':True,
       'legacy_history_kept_for_audit':True,
@@ -4020,6 +3980,14 @@ def _v90r59_near_flat_flip_should_wait(z,price,ts,reason):
     return True
 
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    if str(reason).startswith(('TAKE_PROFIT','DYNAMIC_PARTIAL_PROFIT')):
+        trade=c.execute('SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades WHERE trade_id=%s',
+                        (z.get('active_trade_id'),)).fetchone()
+        quote=dict(VPG.exit_execution_quote(z,ts),price=price)
+        quote.setdefault('observed_at',ts)
+        profit=VPG.profit_exit_assessment(z,quote,trade,nav,COMMISSION)
+        if not profit['eligible']:
+            return 0.0
     payload=_v90j_json((z or {}).get('payload'))
     if str(payload.get('r66_event_id','')).startswith('R69_'):
         soft=any(k in str(reason) for k in ('EDGE_DECAY','LOW_PROB','CONFIDENCE','SIGNAL_WEAK'))
@@ -4603,6 +4571,21 @@ def _v90r65_actual_genesis_fill_ok(row,price,direction,target_fraction):
     return {'eligible':ok,'blockers':blockers,'hard_blockers':hard,
             'actual_rr':rr,'actual_move':move,'modeled_cost':cost}
 
+def _r72_event_reentry_gate(c,name,asset,direction,event):
+    event_id=(event or {}).get('event_id')
+    if not event_id:
+        return {'eligible':False,'reason':'R72_EVENT_ID_MISSING'}
+    try:
+        prior=c.execute("""SELECT trade_id FROM paper_trades
+            WHERE portfolio_name=%s AND asset=%s AND direction=%s
+              AND (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
+              AND payload->>'r66_event_id'=%s LIMIT 1""",
+            (name,asset,direction,event_id)).fetchone()
+    except Exception:
+        return {'eligible':False,'reason':'R72_EVENT_HISTORY_UNAVAILABLE'}
+    return {'eligible':not bool(prior),'reason':'R72_EVENT_ALREADY_TRADED' if prior else 'R72_NEW_EVENT',
+            'event_id':event_id}
+
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     row=dict(row or {})
     existing=c.execute(
@@ -4635,6 +4618,10 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             event=VTE.event_gate(row,fill['fill_price'],direction,ts)
             if not event['eligible']:
                 _record_entry_outcome(row,'BLOCKED',event['reason'],trend_event=event)
+                return 0.0
+            reuse=_r72_event_reentry_gate(c,name,asset,direction,VTE.context_of(row).get('event'))
+            if not reuse['eligible']:
+                _record_entry_outcome(row,'BLOCKED',reuse['reason'],event_reentry=reuse)
                 return 0.0
             if VTE.context_of(row).get('local_breakout_required'):
                 stop=VTE.number((row.get('trade_plan') or {}).get('stop_price'))
