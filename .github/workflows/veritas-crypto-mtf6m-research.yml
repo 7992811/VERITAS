@@ -6,6 +6,7 @@ on:
       - research/crypto-mtf-6m-20261004
     paths:
       - tools/research_crypto_mtf6m.py
+      - tools/research_crypto_mtf6m_oos.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
 
@@ -23,22 +24,22 @@ jobs:
           cache: 'pip'
       - name: Install research dependencies
         run: python -m pip install numpy==2.3.5 pandas==2.2.3
-      - name: Run causal 1m-to-4h research
-        run: python tools/research_crypto_mtf6m.py
-      - name: Print compact result
+      - name: Run 2025-selected causal 1m-to-4h research
+        run: python tools/research_crypto_mtf6m_oos.py
+      - name: Print compact pass set
         if: always()
         run: |
-          if [ -f research_out/result.json ]; then
+          if [ -f research_oos/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('research_out/result.json'))
-          print('VERITAS_SELECTED='+json.dumps(x.get('selected'),separators=(',',':')))
+          x=json.load(open('research_oos/result.json'))
+          print('VERITAS_OOS_PASSES_COMPACT='+json.dumps(x.get('passes'),separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-crypto-mtf6m-result
-          path: research_out/
+          name: veritas-crypto-mtf6m-oos-result
+          path: research_oos/
           retention-days: 7
