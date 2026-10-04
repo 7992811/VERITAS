@@ -1,10 +1,11 @@
-name: VERITAS manager-library crypto research v2
+name: VERITAS crypto quality-score research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
+      - tools/research_crypto_quality_score.py
       - tools/research_crypto_manager_library.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
@@ -23,22 +24,23 @@ jobs:
           cache: 'pip'
       - name: Install research dependencies
         run: python -m pip install numpy==2.3.5 pandas==2.2.3
-      - name: Run manager-inspired causal multi-regime research
-        run: python tools/research_crypto_manager_library.py
+      - name: Run impulse-quality multi-regime research
+        run: python tools/research_crypto_quality_score.py
       - name: Print compact pass set
         if: always()
         run: |
-          if [ -f manager_library_out/result.json ]; then
+          if [ -f quality_score_out/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('manager_library_out/result.json'))
-          print('VERITAS_MANAGER_PASSES_COMPACT='+json.dumps(x.get('passes'),separators=(',',':')))
+          x=json.load(open('quality_score_out/result.json'))
+          compact={m:[r for r in rows if r.get('passed_oos')][:3] for m,rows in x.get('modules',{}).items()}
+          print('VERITAS_QUALITY_PASSES_COMPACT='+json.dumps(compact,separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-manager-library-result
-          path: manager_library_out/
+          name: veritas-quality-score-result
+          path: quality_score_out/
           retention-days: 7
