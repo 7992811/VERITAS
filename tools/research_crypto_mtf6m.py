@@ -81,7 +81,7 @@ def load_asset(asset):
         y,m=map(int,ym.split('-'))
         month_start=pd.Timestamp(f'{ym}-01',tz='UTC')
         month_end=month_start+pd.offsets.MonthBegin(1)
-        if month_end<=END:
+        if month_end<=END-pd.Timedelta(days=10):
             url=f'https://data.binance.vision/data/spot/monthly/klines/{symbol}/1m/{symbol}-1m-{ym}.zip'
             print('download',asset,ym,flush=True)
             chunks.append(csv_zip_to_frame(fetch_bytes(url)))
