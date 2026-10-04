@@ -1,0 +1,44 @@
+name: VERITAS crypto MTF 6M research
+
+on:
+  push:
+    branches:
+      - research/crypto-mtf-6m-20261004
+    paths:
+      - tools/research_crypto_mtf6m.py
+      - .github/workflows/veritas-crypto-mtf6m-research.yml
+  workflow_dispatch:
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/crypto-mtf-6m-20261004
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install research dependencies
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3
+      - name: Run causal 1m-to-4h research
+        run: python tools/research_crypto_mtf6m.py
+      - name: Print compact result
+        if: always()
+        run: |
+          if [ -f research_out/result.json ]; then
+            python - <<'PY'
+          import json
+          x=json.load(open('research_out/result.json'))
+          print('VERITAS_SELECTED='+json.dumps(x.get('selected'),separators=(',',':')))
+          PY
+          fi
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-crypto-mtf6m-result
+          path: research_out/
+          retention-days: 7
