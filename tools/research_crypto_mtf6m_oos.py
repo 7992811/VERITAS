@@ -184,29 +184,31 @@ def met(v):
     return {'n':len(a),'win_rate':float((a>0).mean()),'avg':float(a.mean()),'sum':float(a.sum()),'pf':float(p/n) if n else 99.,'dd':float((pk-eq).max())}
 
 def configs():
+    # Deliberately compact, predeclared profiles: broad enough to test different
+    # volatility/volume regimes without a combinatorial threshold minefield.
     out=[]
+    profiles=[
+        (1.0,.40,1.00,.50),
+        (1.3,.50,1.10,.35),
+        (1.5,.60,1.20,.25),
+        (1.0,.55,.90,.25),
+    ]
     for fam in ('STRUCT','SQUEEZE'):
       for side in ('BOTH','LONG','SHORT'):
        for mode in ('STRICT','EARLY','H1','H4'):
         for level in (12,24,48):
-         for vol in (1.0,1.4):
-          for body in (.4,.6):
-           for ar in (1.0,1.2):
-            for ext in (.25,.5):
-             if fam=='STRUCT':out.append(dict(family=fam,side=side,mode=mode,level=level,vol=vol,body=body,ar=ar,ext=ext,sq=1.0,wick=.1))
-             else:
-              for sq in (.70,.85):out.append(dict(family=fam,side=side,mode=mode,level=level,vol=vol,body=body,ar=ar,ext=ext,sq=sq,wick=.1))
+         for vol,body,ar,ext in profiles:
+            out.append(dict(family=fam,side=side,mode=mode,level=level,vol=vol,body=body,ar=ar,ext=ext,
+                            sq=.80 if fam=='SQUEEZE' else 1.0,wick=.1))
     for side in ('BOTH','LONG','SHORT'):
      for mode in ('STRICT','EARLY','H1'):
-      for vol in (1.0,1.3):
-       for body in (.35,.55):
-        for ar in (.9,1.1):
-         for ext in (.25,.5):out.append(dict(family='PULLBACK',side=side,mode=mode,level=12,vol=vol,body=body,ar=ar,ext=ext,sq=1.,wick=.1))
+      for vol,body,ar,ext in profiles:
+        out.append(dict(family='PULLBACK',side=side,mode=mode,level=12,vol=vol,body=max(.35,body-.1),
+                        ar=max(.9,ar-.1),ext=ext,sq=1.,wick=.1))
     for side in ('BOTH','LONG','SHORT'):
      for level in (12,24,48):
-      for vol in (1.0,1.3):
-       for body in (.25,.45):
-        for wick in (.10,.20):out.append(dict(family='FAILED',side=side,mode='RANGE',level=level,vol=vol,body=body,ar=1.,ext=.5,sq=1.,wick=wick))
+      for vol,body,wick in ((1.0,.25,.10),(1.3,.35,.15),(1.5,.45,.20)):
+        out.append(dict(family='FAILED',side=side,mode='RANGE',level=level,vol=vol,body=body,ar=1.,ext=.5,sq=1.,wick=wick))
     return out
 
 def month_blocks(start,end):
@@ -227,18 +229,18 @@ def research(asset,x):
         if a['n']>=20 and b['n']>=10:
             score=min(a['pf'],b['pf'])+70*min(a['avg'] or -9,b['avg'] or -9)+.15*min(a['win_rate'],b['win_rate'])
             stage.append((score,c,ev,a,b))
-    stage.sort(key=lambda z:z[0],reverse=True);stage=stage[:50];print(asset,'entry_stage',len(stage),flush=True)
+    stage.sort(key=lambda z:z[0],reverse=True);stage=stage[:20];print(asset,'entry_stage',len(stage),flush=True)
     fin=[]
     for _,c,ev,_,_ in stage:
       for buf in (.05,.10,.20):
-       for rr in (.8,1.,1.2,1.5,2.):
+       for rr in (.8,1.,1.5,2.):
         for ex in ('FIXED','PARTIAL'):
             a=met(sim(x,ev,buf,rr,ex,d0,d1));b=met(sim(x,ev,buf,rr,ex,d1,v1))
             if a['n']<20 or b['n']<10:continue
             if min(a['avg'] or -9,b['avg'] or -9)<=0 or min(a['pf'],b['pf'])<1.08:continue
             score=min(a['pf'],b['pf'])+100*min(a['avg'],b['avg'])+.2*min(a['win_rate'],b['win_rate'])
             fin.append((score,c,ev,buf,rr,ex,a,b))
-    fin.sort(key=lambda z:z[0],reverse=True);frozen=fin[:15];print(asset,'frozen',len(frozen),flush=True)
+    fin.sort(key=lambda z:z[0],reverse=True);frozen=fin[:10];print(asset,'frozen',len(frozen),flush=True)
     result=[]
     blocks=[(ts(pd.Timestamp('2026-04-04T00:00:00Z')),ts(pd.Timestamp('2026-06-01T00:00:00Z'))),
             (ts(pd.Timestamp('2026-06-01T00:00:00Z')),ts(pd.Timestamp('2026-08-01T00:00:00Z'))),
