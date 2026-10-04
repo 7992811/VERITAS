@@ -256,8 +256,10 @@ def stage1(asset,x):
             masks=event_mask(x,asset,family,mode,lb,vol_thr,body,ar,ext)
             td=simulate(x,masks,15,1.0,'FIXED',start,d_end); tv=simulate(x,masks,15,1.0,'FIXED',d_end,v_end)
             md,mv=metrics(td),metrics(tv)
-            if md['n']>=12 and mv['n']>=8 and (md['avg_net'] or -9)>0 and (mv['avg_net'] or -9)>0 and md['pf']>=1.05 and mv['pf']>=1.05:
-                score=min(md['pf'],mv['pf']) + 80*min(md['avg_net'],mv['avg_net']) + 0.15*min(md['win_rate'],mv['win_rate'])
+            if md['n']>=10 and mv['n']>=6:
+                # Soft entry ranking only; do not discard an entry family merely because
+                # a fixed 1R exit is suboptimal. Stage 2 searches stop/exit geometry.
+                score=min(md['pf'],mv['pf']) + 60*min(md['avg_net'] or -9,mv['avg_net'] or -9) + 0.10*min(md['win_rate'],mv['win_rate'])
                 rows.append(dict(asset=asset,family=family,mode=mode,lb=lb,vol_thr=vol_thr,body=body,atr_ratio=ar,max_ext=ext,disc=md,val=mv,score=score))
     rows.sort(key=lambda z:z['score'],reverse=True)
     return rows[:30]
@@ -272,7 +274,7 @@ def stage2(asset,x,base_rows):
           for rr in (0.8,1.0,1.2,1.5,2.0):
            for exit_mode in ('FIXED','PARTIAL_TRAIL'):
             md=metrics(simulate(x,masks,stop_lb,rr,exit_mode,start,d_end)); mv=metrics(simulate(x,masks,stop_lb,rr,exit_mode,d_end,v_end))
-            if md['n']<12 or mv['n']<8: continue
+            if md['n']<10 or mv['n']<6: continue
             if min(md['avg_net'] or -9,mv['avg_net'] or -9)<=0: continue
             if min(md['pf'],mv['pf'])<1.12: continue
             score=min(md['pf'],mv['pf'])+100*min(md['avg_net'],mv['avg_net'])+0.20*min(md['win_rate'],mv['win_rate'])
