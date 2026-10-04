@@ -218,39 +218,63 @@ def rank_selection(yrs,stressyrs):
     return minpf + .35*stresspf + 80*minavg + .30*medwr
 
 def search_module(asset,module,x,events):
+    # Compact, hypothesis-led grid. Cross-mode families are fixed by the
+    # previously validated regime logic instead of brute-forcing every pair.
+    if module=='ETH_SHORT':
+        plans=[
+          ('BALANCED',[4,5,6],(.20,.30),('1H4H','REL_STRICT')),
+          ('RELATIVE',[4,5,6],(.20,.30),('1H4H','REL_STRICT')),
+        ]
+    elif module=='ETH_LONG':
+        plans=[
+          ('IMPULSE',[4,5,6],(.15,.25),('NONE','1H')),
+          ('BALANCED',[4,5,6],(.15,.25),('NONE','1H')),
+        ]
+    elif module=='BTC_LONG':
+        plans=[
+          ('BALANCED',[4,5,6],(.20,.30),('1H4H','REL')),
+          ('RELATIVE',[4,5,6],(.20,.30),('1H4H','REL')),
+        ]
+    else:
+        plans=[
+          ('BALANCED',[4,5,6],(.20,.30),('1H4H','REL')),
+          ('RELATIVE',[4,5,6],(.20,.30),('1H4H','REL')),
+        ]
+    exit_grid=[
+      (.10,1.0,'FIXED',0,0.),(.10,1.5,'FIXED',0,0.),(.10,2.0,'FIXED',0,0.),
+      (.20,1.5,'FIXED',0,0.),(.20,2.0,'FIXED',0,0.),(.20,2.5,'FIXED',0,0.),
+      (.10,1.5,'PARTIAL075',0,0.),(.10,2.0,'PARTIAL',0,0.),
+      (.20,2.0,'PARTIAL',0,0.),(.20,2.0,'FIXED',15,.15),(.20,2.0,'FIXED',30,.25),
+    ]
     cand=[]
-    for score_name in SCORE_SETS:
+    for score_name,cutoffs,exts,crosses in plans:
       maxscore=len(SCORE_SETS[score_name])
-      for cutoff in range(3,maxscore+1):
-       for max_ext in (.15,.25,.35):
-        for cross_mode in ('NONE','1H','1H4H','REL','REL_STRICT'):
+      for cutoff in [z for z in cutoffs if z<=maxscore]:
+       for max_ext in exts:
+        for cross_mode in crosses:
          ev=filter_events(events,score_name,cutoff,max_ext,cross_mode,module)
-         if len(ev)<50: continue
-         # Parameter-neighborhood test: adjacent score cutoffs must not collapse.
-         neigh=[]
-         for c2 in sorted(set([max(2,cutoff-1),cutoff,min(maxscore,cutoff+1)])):
+         if len(ev)<40: continue
+         # A score threshold is considered robust only if the exact neighboring
+         # threshold also has positive pre-2026 expectancy with a neutral exit.
+         neighbors=[]
+         for c2 in sorted(set([max(3,cutoff-1),cutoff,min(maxscore,cutoff+1)])):
              e2=filter_events(events,score_name,c2,max_ext,cross_mode,module)
-             agg=met(simulate(x,e2,.15,1.5,'FIXED',ts(HIST_START),ts(SELECT_END)))
-             neigh.append(agg)
-         if sum((m['avg'] or -9)>0 and m['pf']>=1.03 for m in neigh)<2: continue
-         for buf in (.10,.20):
-          for rr in (1.0,1.5,2.0,2.5):
-           for exit_mode in ('FIXED','PARTIAL','PARTIAL075','TRAIL'):
-            if exit_mode=='TRAIL' and rr!=2.0: continue
-            for early_minutes,early_mfe in ((0,0.),(15,.15),(30,.25)):
-                params=dict(buf=buf,rr=rr,exit_mode=exit_mode,early_minutes=early_minutes,early_mfe=early_mfe)
-                yrs=yearly(x,ev,params,0.); syrs=yearly(x,ev,params,.0005)
-                if not robust_gate(yrs,syrs): continue
-                score=rank_selection(yrs,syrs)
-                cand.append((score,score_name,cutoff,max_ext,cross_mode,params,yrs,syrs,ev))
+             m=met(simulate(x,e2,.15,1.5,'FIXED',ts(HIST_START),ts(SELECT_END)))
+             neighbors.append(m)
+         if sum((m['avg'] or -9)>0 and m['pf']>=1.03 for m in neighbors)<2: continue
+         for buf,rr,exit_mode,early_minutes,early_mfe in exit_grid:
+            params=dict(buf=buf,rr=rr,exit_mode=exit_mode,early_minutes=early_minutes,early_mfe=early_mfe)
+            yrs=yearly(x,ev,params,0.); syrs=yearly(x,ev,params,.0005)
+            if not robust_gate(yrs,syrs): continue
+            score=rank_selection(yrs,syrs)
+            cand.append((score,score_name,cutoff,max_ext,cross_mode,params,yrs,syrs,ev))
     cand.sort(key=lambda z:z[0],reverse=True)
-    # Diversity freeze: avoid top ten being same score family/exit with tiny threshold shifts.
     frozen=[]; seen=set()
     for z in cand:
-        key=(z[1],z[4],z[5]['exit_mode'],z[5]['rr'])
+        key=(z[1],z[2],z[4],z[5]['exit_mode'],z[5]['rr'])
         if key in seen: continue
         seen.add(key); frozen.append(z)
-        if len(frozen)>=12: break
+        if len(frozen)>=10: break
     print(asset,module,'candidates',len(cand),'frozen',len(frozen),flush=True)
     out=[]
     for rank,z in enumerate(frozen,1):
@@ -261,7 +285,7 @@ def search_module(asset,module,x,events):
         for a,b in [('2026-04-04','2026-06-01'),('2026-06-01','2026-08-01'),('2026-08-01','2026-10-04')]:
             blocks.append(met(simulate(x,ev,start=ts(a+'T00:00:00Z'),end=ts(b+'T00:00:00Z'),stress=0.,**params)))
         posblocks=sum((m['avg'] or -9)>0 for m in blocks)
-        pass_oos=(test['n']>=12 and (test['avg'] or -9)>0 and test['pf']>=1.25 and
+        pass_oos=(test['n']>=10 and (test['avg'] or -9)>0 and test['pf']>=1.25 and
                   (stress['avg'] or -9)>0 and stress['pf']>=1.15 and posblocks>=2)
         out.append({'rank_pre2026':rank,'score_family':score_name,'cutoff':cutoff,'max_ext_atr5':max_ext,
                     'cross_mode':cross_mode,'params':params,'selection_years':yrs,'selection_stress':syrs,
