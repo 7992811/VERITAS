@@ -72,9 +72,9 @@ def months_between(start,end):
 
 
 def load_asset(asset):
-    path=CACHE/f'{asset}_1m.parquet'
+    path=CACHE/f'{asset}_1m.pkl'
     if path.exists():
-        f=pd.read_parquet(path)
+        f=pd.read_pickle(path)
         if len(f)>100000: return f
     symbol=SYMBOLS[asset]; chunks=[]
     for ym in months_between(START,END):
@@ -100,7 +100,7 @@ def load_asset(asset):
     if len(inside)<250000 or not np.all(dif==60):
         bad=np.where(dif!=60)[0][:10]
         raise RuntimeError(f'{asset} incomplete minute history rows={len(inside)} gaps={bad.tolist()}')
-    f.to_parquet(path,index=False)
+    f.to_pickle(path)
     return f
 
 
