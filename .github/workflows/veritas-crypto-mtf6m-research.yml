@@ -1,10 +1,11 @@
-name: VERITAS state-conditional EV router research
+name: VERITAS hierarchical EV policy research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
+      - tools/research_crypto_hierarchical_policy.py
       - tools/research_crypto_state_router.py
       - tools/research_crypto_manager_library.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
@@ -31,23 +32,23 @@ jobs:
           path: manager_library_out
           github-token: ${{ github.token }}
           run-id: 37210798801
-      - name: Run state-conditional EV router
-        run: python tools/research_crypto_state_router.py
+      - name: Run hierarchical walk-forward EV policy
+        run: python tools/research_crypto_hierarchical_policy.py
       - name: Print compact result
         if: always()
         run: |
-          if [ -f state_router_out/result.json ]; then
+          if [ -f hierarchical_policy_out/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('state_router_out/result.json'))
-          out={a:{'router_2026':v.get('router_2026'),'router_stress_5bp':v.get('router_stress_5bp'),'top_rules':v.get('rules',[])[:5]} for a,v in x.get('assets',{}).items()}
-          print('VERITAS_STATE_ROUTER_COMPACT='+json.dumps(out,separators=(',',':')))
+          x=json.load(open('hierarchical_policy_out/result.json'))
+          out={a:{k:v.get(k) for k in ('walkforward','n_final_rules','test_2026','test_stress_5bp','confidence_tiers')} for a,v in x.get('assets',{}).items()}
+          print('VERITAS_HIERARCHICAL_POLICY_COMPACT='+json.dumps(out,separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-state-router-result
-          path: state_router_out/
+          name: veritas-hierarchical-policy-result
+          path: hierarchical_policy_out/
           retention-days: 7
