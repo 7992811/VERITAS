@@ -94,7 +94,7 @@ def feat(f):
         a=align(z,x.ts.to_numpy())
         for c in ('atr','sma18','sma50','trend','eff','close'):x[f'{tag}_{c}']=a[c].to_numpy()
         if tag=='m5':
-            x['m5_ar']=a.ar.to_numpy();x['m5_squeeze']=a.squeeze.to_numpy()
+            x['m5_ar']=a['ar'].to_numpy();x['m5_squeeze']=a['squeeze'].to_numpy()
             for n in (12,24,48):x[f'm5_hi{n}']=a[f'hi{n}'].to_numpy();x[f'm5_lo{n}']=a[f'lo{n}'].to_numpy()
     x['atr1']=atr(x);x['vmed']=x.volume.rolling(20).median().shift(1);x['vr']=x.volume/x.vmed.replace(0,np.nan)
     rng=(x.high-x.low).replace(0,np.nan);x['bull']=(x.close-x.open)/rng;x['bear']=(x.open-x.close)/rng
