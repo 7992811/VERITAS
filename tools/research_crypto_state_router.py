@@ -26,6 +26,12 @@ MIN_RISK=.003
 MAX_RISK=.035
 STRESS=.0005
 
+def json_default(o):
+    if isinstance(o,(np.integer,)): return int(o)
+    if isinstance(o,(np.floating,)): return float(o)
+    if isinstance(o,(np.bool_,)): return bool(o)
+    raise TypeError(f'Object of type {type(o).__name__} is not JSON serializable')
+
 def rsi(s,n=14):
     d=s.diff()
     up=d.clip(lower=0).ewm(alpha=1/n,adjust=False,min_periods=n).mean()
@@ -344,8 +350,8 @@ def main():
          'assets':{}}
     out['assets']['ETH']=run_asset('ETH',eth,btc)
     out['assets']['BTC']=run_asset('BTC',btc,eth)
-    (OUT/'result.json').write_text(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False))
+    (OUT/'result.json').write_text(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False,default=json_default))
     compact={a:{'router_2026':v['router_2026'],'router_stress_5bp':v['router_stress_5bp'],'top_rules':v['rules'][:5]} for a,v in out['assets'].items()}
-    print('VERITAS_STATE_ROUTER='+json.dumps(compact,ensure_ascii=False,separators=(',',':')),flush=True)
+    print('VERITAS_STATE_ROUTER='+json.dumps(compact,ensure_ascii=False,separators=(',',':'),default=json_default),flush=True)
 
 if __name__=='__main__':main()
