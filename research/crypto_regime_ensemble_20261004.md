@@ -127,3 +127,9 @@ Conclusion: do not add the current mean-reversion family to the portfolio.
 - Test early invalidation / time-stop based on failure to achieve MFE, selected only on pre-2026 data.
 - Bootstrap / Monte Carlo trade-order stress and additional cost stress.
 - Reserve live shadow forward data as the next genuinely unseen validation layer.
+
+
+### 6. Interpretable meta-filter
+A shallow decision-tree meta-filter (depth 1-3; min leaf 15-30) was tested on the robust ETH short base signal using only causal signal-time features: volume ratio, candle body, ATR expansion, 1h/4h efficiency, ETH/BTC returns and relative strength. Selection used leave-one-year-out validation across 2022-2025.
+
+Result: no tree/threshold combination produced a stable improvement that remained positive across enough held-out years. Therefore no ML/meta-filter is promoted. Keep the simpler cross-market rule rather than adding an unstable learned filter.
