@@ -50,7 +50,7 @@ def add_period(asset,start,end,chunks):
             url=f'https://data.binance.vision/data/spot/monthly/klines/{sym}/1m/{sym}-1m-{p}.zip'
             print('download',asset,p,flush=True);chunks.append(readzip(get(url)))
         else:
-            day=max(first,start.normalize());stop=min(nxt,end.normalize()+pd.Timedelta(days=1))
+            day=max(first,start.normalize());stop=min(nxt,end.normalize())
             while day<stop:
                 ds=day.strftime('%Y-%m-%d');url=f'https://data.binance.vision/data/spot/daily/klines/{sym}/1m/{sym}-1m-{ds}.zip'
                 print('download',asset,ds,flush=True);chunks.append(readzip(get(url)));day+=pd.Timedelta(days=1)
