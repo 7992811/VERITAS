@@ -1,12 +1,11 @@
-name: VERITAS crypto MTF 6M research
+name: VERITAS manager-library crypto research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
-      - tools/research_crypto_mtf6m.py
-      - tools/research_crypto_mtf6m_oos.py
+      - tools/research_crypto_manager_library.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
 
@@ -24,22 +23,22 @@ jobs:
           cache: 'pip'
       - name: Install research dependencies
         run: python -m pip install numpy==2.3.5 pandas==2.2.3
-      - name: Run 2025-selected causal 1m-to-4h research
-        run: python tools/research_crypto_mtf6m_oos.py
+      - name: Run manager-inspired causal multi-regime research
+        run: python tools/research_crypto_manager_library.py
       - name: Print compact pass set
         if: always()
         run: |
-          if [ -f research_oos/result.json ]; then
+          if [ -f manager_library_out/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('research_oos/result.json'))
-          print('VERITAS_OOS_PASSES_COMPACT='+json.dumps(x.get('passes'),separators=(',',':')))
+          x=json.load(open('manager_library_out/result.json'))
+          print('VERITAS_MANAGER_PASSES_COMPACT='+json.dumps(x.get('passes'),separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-crypto-mtf6m-oos-result
-          path: research_oos/
+          name: veritas-manager-library-result
+          path: manager_library_out/
           retention-days: 7
