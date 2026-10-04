@@ -1,11 +1,11 @@
-name: VERITAS focused ETH-long robustness
+name: VERITAS state-conditional EV router research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
-      - tools/research_eth_long_neighborhood.py
+      - tools/research_crypto_state_router.py
       - tools/research_crypto_manager_library.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
@@ -24,22 +24,23 @@ jobs:
           cache: 'pip'
       - name: Install research dependencies
         run: python -m pip install numpy==2.3.5 pandas==2.2.3
-      - name: Run focused ETH long robustness research
-        run: python tools/research_eth_long_neighborhood.py
-      - name: Print compact pass set
+      - name: Run state-conditional EV router
+        run: python tools/research_crypto_state_router.py
+      - name: Print compact result
         if: always()
         run: |
-          if [ -f eth_long_neighborhood_out/result.json ]; then
+          if [ -f state_router_out/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('eth_long_neighborhood_out/result.json'))
-          print('ETH_LONG_PASSES_COMPACT='+json.dumps(x.get('passes',[])[:5],separators=(',',':')))
+          x=json.load(open('state_router_out/result.json'))
+          out={a:{'router_2026':v.get('router_2026'),'router_stress_5bp':v.get('router_stress_5bp'),'top_rules':v.get('rules',[])[:5]} for a,v in x.get('assets',{}).items()}
+          print('VERITAS_STATE_ROUTER_COMPACT='+json.dumps(out,separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-eth-long-neighborhood-result
-          path: eth_long_neighborhood_out/
+          name: veritas-state-router-result
+          path: state_router_out/
           retention-days: 7
