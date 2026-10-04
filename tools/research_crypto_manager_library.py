@@ -73,8 +73,10 @@ def load(asset):
     parts=[]; add_months(asset,HIST_START-pd.Timedelta(days=5),SELECT_END,parts); add_months(asset,TEST_START-pd.Timedelta(days=5),TEST_END,parts)
     f=pd.concat(parts,ignore_index=True).drop_duplicates('ts').sort_values('ts').reset_index(drop=True)
     for a,b in [(HIST_START,SELECT_END),(TEST_START,TEST_END)]:
-        z=f[(f.ts>=ts(a))&(f.ts<ts(b))]; d=np.diff(z.ts.to_numpy())
-        if len(z)<200000 or not np.all(d==60): raise RuntimeError(f'{asset} minute gaps in {a}:{b}')
+        z=f[(f.ts>=ts(a))&(f.ts<ts(b))]; d=np.diff(z.ts.to_numpy()); bad=d[d!=60]
+        if len(z)<200000 or len(bad)>300 or (len(bad) and bad.max()>21600):
+            raise RuntimeError(f'{asset} excessive minute gaps in {a}:{b}: count={len(bad)} max={bad.max() if len(bad) else 60}')
+        print(asset,'gap_check',str(a.date()),str(b.date()),'gaps',len(bad),'max_seconds',int(bad.max()) if len(bad) else 60,flush=True)
     f.to_pickle(p); return f
 
 def atr(f,n=20):
@@ -105,6 +107,7 @@ def features(f):
         if tag=='m5':
             x['m5_atr_ratio']=a['atr_ratio'].to_numpy(); x['m5_squeeze']=a['squeeze'].to_numpy()
             for n in (12,24,48): x[f'm5_hi{n}']=a[f'hi{n}'].to_numpy(); x[f'm5_lo{n}']=a[f'lo{n}'].to_numpy()
+    x['contig1440']=(x.ts.diff().eq(60).rolling(1440,min_periods=1440).min()==1)
     x['vmed20']=x.volume.rolling(20).median().shift(1); x['vr']=x.volume/x.vmed20.replace(0,np.nan)
     rng=(x.high-x.low).replace(0,np.nan); x['bull']=(x.close-x.open)/rng; x['bear']=(x.open-x.close)/rng
     for n in (5,10,15,30,60): x[f'hi{n}']=x.high.rolling(n).max().shift(1); x[f'lo{n}']=x.low.rolling(n).min().shift(1)
@@ -159,7 +162,7 @@ def events(x,r):
     for d in (1,-1):
         if not side_ok(d,r['side']): continue
         body=x.bull if d>0 else x.bear
-        common=(x.vr>=r['vol'])&(body>=r['body'])&x.m5_atr.notna()
+        common=(x.vr>=r['vol'])&(body>=r['body'])&x.m5_atr.notna()&x.contig1440
         fam=r['family']
         if fam in ('TIME_SERIES_MOMENTUM','DONCHIAN','VOL_EXPANSION'):
             level=x[f"m5_{'hi' if d>0 else 'lo'}{r['level']}"]
