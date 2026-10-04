@@ -99,10 +99,19 @@ def quality_components(asset,module,x,i,d):
     extension=(d*(float(x.close.iloc[i])-level)/float(x.m5_atr.iloc[i])) if np.isfinite(level) else 9.
     rel60=d*(own60-o60); rel240=d*(own240-o240)
     components={
+      'volume14': vr>=1.40,
+      'volume15': vr>=1.50,
+      'volume18': vr>=1.80,
       'volume': vr>=1.50,
       'volume_extreme': vr>=2.00,
+      'body50': body>=.50,
+      'body55': body>=.55,
+      'body65': body>=.65,
       'body': body>=.55,
       'body_strong': body>=.70,
+      'atr110': ar>=1.10,
+      'atr115': ar>=1.15,
+      'atr125': ar>=1.25,
       'vol_expansion': ar>=1.10,
       'vol_expansion_strong': ar>=1.25,
       'h1_eff': float(x.h1_eff.iloc[i])>=.35,
@@ -124,6 +133,9 @@ def quality_components(asset,module,x,i,d):
     return components
 
 SCORE_SETS={
+  'ETH_SHORT_CORE':['volume14','body50','atr110','cross_1h','cross_4h'],
+  'ETH_LONG_CORE':['volume18','body65','atr125'],
+  'BTC_LONG_CORE':['volume15','body55','atr115','cross_1h','cross_4h'],
   'BALANCED':['volume','body','vol_expansion','h1_eff','cross_1h','cross_4h','relative_1h','senior_h4','fresh_pullback'],
   'IMPULSE':['volume_extreme','body_strong','vol_expansion_strong','own_1h','own_4h','cross_1h','cross_4h','relative_1h','relative_4h'],
   'TOPDOWN':['volume','body','vol_expansion','h1_eff','h4_eff','senior_h4','senior_d1','cross_1h','cross_4h'],
@@ -222,16 +234,19 @@ def search_module(asset,module,x,events):
     # previously validated regime logic instead of brute-forcing every pair.
     if module=='ETH_SHORT':
         plans=[
+          ('ETH_SHORT_CORE',[5],(.30,),('1H4H',)),
           ('BALANCED',[4,5,6],(.20,.30),('1H4H','REL_STRICT')),
           ('RELATIVE',[4,5,6],(.20,.30),('1H4H','REL_STRICT')),
         ]
     elif module=='ETH_LONG':
         plans=[
+          ('ETH_LONG_CORE',[3],(.15,),('NONE',)),
           ('IMPULSE',[4,5,6],(.15,.25),('NONE','1H')),
           ('BALANCED',[4,5,6],(.15,.25),('NONE','1H')),
         ]
     elif module=='BTC_LONG':
         plans=[
+          ('BTC_LONG_CORE',[5],(.25,),('1H4H',)),
           ('BALANCED',[4,5,6],(.20,.30),('1H4H','REL')),
           ('RELATIVE',[4,5,6],(.20,.30),('1H4H','REL')),
         ]
@@ -311,7 +326,10 @@ def main():
         ('BTC','BTC_LONG',btc_raw,eth_raw,'eth'),
         ('BTC','BTC_SHORT',btc_raw,eth_raw,'eth'),
     ]:
-        x=features(raw); x=add_pullback_recency(raw,x)
+        x=features(raw)
+        x['hi20']=x.high.rolling(20).max().shift(1)
+        x['lo20']=x.low.rolling(20).min().shift(1)
+        x=add_pullback_recency(raw,x)
         for k,v in other_returns(other,x.ts.to_numpy(),prefix).items(): x[k]=v
         ev=annotate_scores(asset,module,x,base_events(asset,x,module))
         print(asset,module,'base_events',len(ev),flush=True)
