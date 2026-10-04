@@ -24,6 +24,13 @@ jobs:
           cache: 'pip'
       - name: Install research dependencies
         run: python -m pip install numpy==2.3.5 pandas==2.2.3
+      - name: Download cached minute data
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
       - name: Run state-conditional EV router
         run: python tools/research_crypto_state_router.py
       - name: Print compact result
