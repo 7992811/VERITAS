@@ -130,31 +130,38 @@ def score(yrs,syrs):
     return min(m['pf'] for m in vals)+.30*min(m['pf'] for m in svals)+80*min(m['avg'] for m in vals)+.35*np.median([m['win_rate'] for m in vals])
 
 def search(asset,d,x):
+    # Pre-declared theory-led combinations. No full Cartesian grid.
+    plans=[
+      ('EARLY','QUALITY',5,'BREAKOUT'),('EARLY','QUALITY',10,'BREAKOUT'),
+      ('EARLY','QUALITY',5,'PULLBACK'),('EARLY','QUALITY',10,'PULLBACK'),
+      ('CONFIRMED','NORMAL',10,'PULLBACK'),('CONFIRMED','NORMAL',20,'PULLBACK'),
+      ('CONFIRMED','QUALITY',10,'BREAKOUT'),('CONFIRMED','QUALITY',20,'BREAKOUT'),
+      ('ACCEL','QUALITY',5,'SQUEEZE'),('ACCEL','QUALITY',10,'SQUEEZE'),
+      ('ACCEL','QUALITY',5,'BREAKOUT'),('ACCEL','QUALITY',10,'BREAKOUT'),
+      ('BROAD','IMPULSE',10,'PULLBACK'),('BROAD','IMPULSE',20,'PULLBACK'),
+      ('BROAD','QUALITY',10,'PULLBACK'),('BROAD','QUALITY',20,'PULLBACK'),
+    ]
+    exits=[
+      (.10,1.0,'FIXED',0),(.10,1.5,'FIXED',0),(.10,2.0,'FIXED',0),
+      (.20,1.5,'FIXED',0),(.20,2.0,'FIXED',0),(.20,2.5,'FIXED',0),
+      (.10,1.5,'PARTIAL075',0),(.20,2.0,'PARTIAL1',0),
+    ]
     candidates=[]
-    for profile in PROFILES:
-      for quality in QUALITY:
-       for level in (5,10,20,30):
-        for setup in ('BREAKOUT','PULLBACK','SQUEEZE'):
-            ev=setup_events(asset,d,x,profile,quality,level,setup)
-            if len(ev)<35: continue
-            for buf,rr,mode,tstop in [
-              (.10,1.0,'FIXED',0),(.10,1.5,'FIXED',0),(.10,2.0,'FIXED',0),
-              (.20,1.5,'FIXED',0),(.20,2.0,'FIXED',0),(.20,2.5,'FIXED',0),
-              (.10,1.5,'PARTIAL075',0),(.10,2.0,'PARTIAL1',0),
-              (.20,2.0,'PARTIAL1',0),(.20,2.0,'TRAIL',0),
-              (.20,2.0,'FIXED',30),
-            ]:
-                pars=dict(buf=buf,rr=rr,mode=mode,time_stop=tstop)
-                yrs=eval_years(x,ev,pars,0.); syrs=eval_years(x,ev,pars,.0005)
-                if not stable(yrs,syrs): continue
-                candidates.append((score(yrs,syrs),profile,quality,level,setup,pars,yrs,syrs,ev))
+    for profile,quality,level,setup in plans:
+        ev=setup_events(asset,d,x,profile,quality,level,setup)
+        if len(ev)<30: continue
+        for buf,rr,mode,tstop in exits:
+            pars=dict(buf=buf,rr=rr,mode=mode,time_stop=tstop)
+            yrs=eval_years(x,ev,pars,0.); syrs=eval_years(x,ev,pars,.0005)
+            if not stable(yrs,syrs): continue
+            candidates.append((score(yrs,syrs),profile,quality,level,setup,pars,yrs,syrs,ev))
     candidates.sort(key=lambda z:z[0],reverse=True)
     frozen=[]; seen=set()
     for z in candidates:
         key=(z[1],z[2],z[4],z[5]['rr'],z[5]['mode'])
         if key in seen: continue
         seen.add(key); frozen.append(z)
-        if len(frozen)>=12: break
+        if len(frozen)>=10: break
     out=[]
     for rank,z in enumerate(frozen,1):
         sc,profile,quality,level,setup,pars,yrs,syrs,ev=z
