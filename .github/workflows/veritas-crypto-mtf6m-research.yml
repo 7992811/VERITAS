@@ -1,17 +1,20 @@
-name: VERITAS external 2020-2021 holdout
+name: VERITAS focused microstructure research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
-      - tools/research_crypto_external_holdout.py
-      - tools/research_crypto_manager_library.py
+      - tools/research_crypto_focused_microstructure.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
 
 jobs:
   research:
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -22,24 +25,47 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-      - name: Install research dependencies
+      - name: Install dependencies
         run: python -m pip install numpy==2.3.5 pandas==2.2.3
-      - name: Run frozen external holdout
-        run: python tools/research_crypto_external_holdout.py
-      - name: Print compact result
+      - name: Download spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
+      - name: Download derivative cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-derivative-policy-${{ matrix.asset }}
+          path: derivative_router_out
+          github-token: ${{ github.token }}
+          run-id: 37267616597
+      - name: Download positioning cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-positioning-policy-${{ matrix.asset }}
+          path: positioning_router_out
+          github-token: ${{ github.token }}
+          run-id: 37268559122
+      - name: Run focused hypotheses
+        run: python tools/research_crypto_focused_microstructure.py --asset ${{ matrix.asset }}
+      - name: Print result
         if: always()
         run: |
-          if [ -f external_holdout_out/result.json ]; then
-            python - <<'PY'
-          import json
-          x=json.load(open('external_holdout_out/result.json'))
-          print('VERITAS_EXTERNAL_HOLDOUT_COMPACT='+json.dumps(x.get('assets',{}),separators=(',',':')))
+          ASSET_LOWER=$(echo "${{ matrix.asset }}" | tr '[:upper:]' '[:lower:]')
+          FILE="focused_microstructure_out/${ASSET_LOWER}/result.json"
+          if [ -f "$FILE" ]; then
+            python - "$FILE" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          print('VERITAS_FOCUSED_MICRO_COMPACT='+json.dumps({'asset':x.get('asset'),'selected':x.get('selected',[]),'rejected':[{'family':r.get('family'),'reason':r.get('reason')} for r in x.get('rejected',[])]},separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-external-holdout
-          path: external_holdout_out/
+          name: veritas-focused-micro-${{ matrix.asset }}
+          path: focused_microstructure_out/
           retention-days: 7
