@@ -21,26 +21,62 @@ _entry_namespace = None
 
 
 def refresh_entry_quotes(summary):
-    """One quote refresh per asset before the portfolio DB transaction.
+    """One fresh execution quote per directional asset before the DB transaction.
 
-    Preserve signal price/time. The execution observation lives separately and
-    is reused by all four books; a failed refresh never renews an old timestamp.
+    A slow 1h/4h/1d signal must not carry its old signal timestamp into execution
+    when the same scan already contains a newer verified 1m/5m observation.
+    Prefer the freshest verified same-asset observation already in the summary;
+    then cached/protective quotes; finally perform an independent refresh.
+    Signal price/time are preserved separately for audit.
     """
     if _entry_namespace is None:
         return summary
     now=datetime.now(timezone.utc)
-    assets={r.get('asset') for r in summary or [] if r.get('research_decision') in ('LONG','SHORT')}
+    rows=list(summary or [])
+    assets={r.get('asset') for r in rows if r.get('research_decision') in ('LONG','SHORT')}
     quotes={}
+
+    # R79.1: harvest the freshest VERIFIED market observation from any horizon,
+    # including a NO_TRADE 1m/5m row. Execution freshness belongs to the market,
+    # not to the age of the slow signal that selected the direction.
+    for r in rows:
+        asset=r.get('asset')
+        if asset not in assets or not r.get('source_gate_pass') or VX.is_proxy_price(asset,r):
+            continue
+        observed=r.get('market_observed_at') or r.get('observed_at')
+        gate=quote_gate(observed,now=now,execution=True,asset=asset)
+        try:
+            px=float(r.get('price') or 0.0)
+        except Exception:
+            px=0.0
+        if not gate.get('eligible') or not math.isfinite(px) or px<=0:
+            continue
+        q={
+          'price':px,'best_bid':r.get('best_bid'),'best_ask':r.get('best_ask'),
+          'bid':r.get('bid'),'ask':r.get('ask'),'observed_at':observed,
+          'contract':r.get('contract'),'source_gate_pass':True,
+          'market_open':r.get('market_open',True),
+          'data_latency_class':r.get('data_latency_class'),
+          'source_names':r.get('source_names') or r.get('market_source_names'),
+          'verification_mode':r.get('verification_mode'),
+        }
+        prev=quotes.get(asset)
+        obs_dt=utc_datetime(observed)
+        prev_dt=utc_datetime((prev or {}).get('observed_at'))
+        if prev is None or (obs_dt and (prev_dt is None or obs_dt>=prev_dt)):
+            quotes[asset]=q
+
     with _quotes_lock:
         cached={a:dict(_quotes.get(a) or {}) for a in assets}
     refresh=[]
     for asset in assets:
-        q=cached[asset]
+        q=quotes.get(asset) or cached.get(asset) or {}
         if (q.get('source_gate_pass') and not VX.is_proxy_price(asset,q)
                 and quote_gate(q.get('observed_at'),now=now,execution=True,asset=asset)['eligible']):
             quotes[asset]=q
         else:
             refresh.append(asset)
+
     with ThreadPoolExecutor(max_workers=4,thread_name_prefix='veritas-entry-quote') as pool:
         jobs={a:pool.submit(fetch_guard_quote,_entry_namespace,a,[]) for a in refresh}
         for asset,job in jobs.items():
@@ -51,13 +87,15 @@ def refresh_entry_quotes(summary):
                     publish_quote(asset,q);quotes[asset]=q
             except Exception:
                 pass
+
     out=[]
-    for original in summary or []:
-        row=dict(original);q=quotes.get(row.get('asset'))
+    for original in rows:
+        row=dict(original);asset=row.get('asset');q=quotes.get(asset)
         if q:
             original_id=(row.get('contract') or {}).get('secid')
             quote_id=(q.get('contract') or {}).get('secid')
-            if not original_id or original_id==quote_id:
+            normalized_roll=asset in ('CNYRUBF','MOEX')
+            if normalized_roll or not original_id or not quote_id or original_id==quote_id:
                 row['_execution_quote']=dict(q)
         out.append(row)
     return out
