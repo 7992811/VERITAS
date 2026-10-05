@@ -675,8 +675,9 @@ class OperationalSemanticsR84Tests(unittest.TestCase):
     def test_shadow_alert_source_no_longer_labels_signal_as_entry(self):
         import inspect
         import veritas_intelligence as vi
-        src=inspect.getsource(vi.manage_trade_alerts)
+        src=inspect.getsource(vi.manage_trade_alerts).replace(' ','')
         self.assertIn("'action':'SIGNAL_'+d",src)
-        self.assertIn("'TACTICAL_SIGNAL'",src)
+        self.assertIn("'SIGNAL','medium'",src)
         self.assertNotIn("'action':'ENTRY_'+d",src)
+        self.assertNotIn("alert_rows.append((asset,h,'ENTRY'",src)
 

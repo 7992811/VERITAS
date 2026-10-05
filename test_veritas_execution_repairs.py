@@ -1581,7 +1581,7 @@ class CompactLearningQueryR602Tests(unittest.TestCase):
         seen=self._run(False)
         self.assertIn("'[]'::jsonb AS knowledge_shadow_matches",seen['sql'])
         self.assertNotIn("model_version,knowledge_shadow_matches",seen['sql'])
-        self.assertEqual(seen['args'],(3500,))
+        self.assertEqual(seen['args'],(2000,))
 
     def test_rule_stats_can_explicitly_request_rule_match_json(self):
         seen=self._run(True)

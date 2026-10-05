@@ -10555,7 +10555,7 @@ def _uec_hard_terminal(x, current_direction):
     return None,None
 
 def manage_trade_alerts(summary):
-    """Unified asset-level setup manager.
+    """Unified asset-level shadow SIGNAL manager.
 
     One asset/direction/structural setup = one trade state.
     Horizons confirm the trade; they no longer create parallel trades.
@@ -10630,7 +10630,7 @@ def manage_trade_alerts(summary):
                  'trigger_ts':now(),'asset':asset,'horizon':h,'execution_horizon':h,
                  'supporting_horizons':x.get('_uec_supporting_horizons') or [h],
                  'direction_support':x.get('_uec_direction_support') or {},
-                 'action':'ENTRY_'+d,'direction':d,'trigger_price':float(x.get('price') or plan.get('entry_price') or 0),
+                 'action':'SIGNAL_'+d,'direction':d,'trigger_price':float(x.get('price') or plan.get('entry_price') or 0),
                  'stop_price':plan.get('stop_price'),'invalidation_price':plan.get('invalidation_price'),
                  'expected_move_pct':exp,'expected_move_method':plan.get('expected_move_method'),
                  'signal_tier':x.get('signal_tier'),'signal_strength':x.get('confidence'),
@@ -10641,8 +10641,9 @@ def manage_trade_alerts(summary):
                  'setup_memory':plan.get('setup_memory'),
                  'adaptive_regime_policy':plan.get('adaptive_regime_policy'),
                  'execution_policy':plan.get('execution_policy'),
-                 'structural_anchor':_uec_anchor(x,d),'robot_eligible':False,'execution_mode':'SHADOW_ONLY'}
-        alert_rows.append((asset,h,'ENTRY','medium',payload))
+                 'structural_anchor':_uec_anchor(x,d),'robot_eligible':False,
+                 'execution_mode':'SHADOW_SIGNAL_ONLY','simulated_entry_only':True}
+        alert_rows.append((asset,h,'SIGNAL','medium',payload))
         new_setups.append((setup_id,asset,h,d,plan,exp,payload))
 
     if alert_rows or terminal_updates or new_setups or duplicate_ids:
