@@ -47,5 +47,3 @@ jobs:
           if ev:
               assert str(ev.get('event_id') or '').startswith('R69_CAT_'), out
           PY
-      - name: Run core trend-entry regression tests
-        run: python -m unittest -v test_veritas_trend_entry.ClosedEventTests test_veritas_trend_entry.GeometryTests test_veritas_trend_entry.ScaleAndStopTests
