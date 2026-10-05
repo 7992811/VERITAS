@@ -86,15 +86,18 @@ def build_context(bars, now, asset='', minute_bars=None, quote=None):
     end=timestamp(now)
     age=end-result['closed_at'] if end is not None and result['closed_at'] is not None else None
     result.update(age_seconds=age,max_age_seconds=MAX_CONTEXT_AGE_SECONDS)
+    from veritas_market_history import local_history_status
+    result.update(local_history_status(bars))
     if age is not None and not -5<=age<=MAX_CONTEXT_AGE_SECONDS:
         result['status']='STALE'
         return result
-    if len(bars) < 36 or any(bars[i]['ts']-bars[i-1]['ts'] != 300 for i in range(len(bars)-24, len(bars))):
+    if not result['history_ready']:
         return result
     trs = [max(b['high']-b['low'], abs(b['high']-bars[i-1]['close']),
                abs(b['low']-bars[i-1]['close'])) if i else b['high']-b['low'] for i,b in enumerate(bars)]
     atr = sum(trs[-20:])/20
     if atr <= 0:
+        result.update(history_reason='ZERO_RANGE',history_ready=False)
         return result
     h1, h4, m15 = aggregate(bars,3600), aggregate(bars,14400), aggregate(bars,900)
     levels = confirmed_levels(m15,'15m') + confirmed_levels(h1,'1h') + confirmed_levels(h4,'4h')
@@ -237,7 +240,9 @@ def context_gate(row, now=None):
                 'closed_at':closed,'age_seconds':age,'max_age_seconds':MAX_CONTEXT_AGE_SECONDS}
     if ctx.get('status')!='OK':
         return {'eligible':False,'reason':'R68_LOCAL_CONTEXT_INCOMPLETE',
-                'closed_at':closed,'age_seconds':age,'bars':ctx.get('bars')}
+                'closed_at':closed,'age_seconds':age,'bars':ctx.get('bars'),
+                **{k:ctx.get(k) for k in ('history_reason','required_bars',
+                                          'contiguous_bars','required_contiguous_bars')}}
     return {'eligible':True,'reason':'R68_CONTEXT_FRESH','closed_at':closed,'age_seconds':age}
 
 
@@ -255,8 +260,12 @@ def event_gate(row, price, direction, now=None):
     if not event:
         return {'eligible':False,'reason':'R69_WAIT_LOCAL_BREAKOUT'}
     t=timestamp(now if now is not None else datetime.now(timezone.utc)); closed=number(ctx.get('closed_at'))
+    if direction not in ('LONG','SHORT'):
+        return {'eligible':False,'reason':'R77_NO_ENTRY_DIRECTION',
+                'local_direction':event.get('direction')}
     if event.get('direction')!=direction:
-        return {'eligible':False,'reason':'R66_LOCAL_EVENT_OPPOSED'}
+        return {'eligible':False,'reason':'R66_LOCAL_EVENT_OPPOSED',
+                'local_direction':event.get('direction'),'signal_direction':direction}
     a=number(event.get('atr'),0); level=number(event.get('trigger_level'),0); px=number(price,0)
     d=1 if direction=='LONG' else -1
     extension=d*(px-level)/a if a>0 else math.inf

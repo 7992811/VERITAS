@@ -253,6 +253,12 @@ const tpNotice=(z,open=false)=>{
   const p=z.payload||{},at=z.tp1_at||p.r17_tp1_at||z.closed_at,partial=z.tp1_partial??Boolean(p.r17_tp1_done);
   return '<div class="tp-status ok">'+(partial?'TP1 · частично исполнен':'Тейк · исполнен')+(at?' · '+dateRu(at):'')+(open?' · остаток сопровождается стопом':'')+'</div>';
 };
+const localHistoryDetail=g=>{
+  if(g?.reason!=='R68_LOCAL_CONTEXT_INCOMPLETE')return '';
+  const count=g.bars!=null?'закрытых свечей '+g.bars+' из '+(g.required_bars||36):'';
+  const gap=g.history_reason==='RECENT_CANDLE_GAP'?'подряд '+(g.contiguous_bars||0)+' из '+(g.required_contiguous_bars||25):'';
+  return [count,gap].filter(Boolean).join(', ');
+};
 const planStatus=x=>{
   const p=planOf(x),econ=p.final_economics_gate||{},blocked=(short,reason)=>({ready:false,short,reason});
   if(!['LONG','SHORT'].includes(dir(x)))return blocked('','Направление не подтверждено');
@@ -262,7 +268,7 @@ const planStatus=x=>{
   const timing=p.entry_timing_gate||{},quote=p.execution_quote_gate||{};
   const blockers=[...new Set([...(econ.blockers||x.final_gate_blockers||[]),
     ...(timing.eligible===false?[timing.reason]:[]),...(quote.eligible===false?[quote.reason]:[])].filter(Boolean))];
-  const explanation=[...new Set(blockers.map(reasonRu))].join('; ');
+  const explanation=[...new Set(blockers.map(reasonRu)),localHistoryDetail(timing)].filter(Boolean).join('; ');
   if(timing.eligible===false)return blocked(blockerShort(timing.reason),explanation);
   if(blockers.some(v=>String(v).startsWith('QUOTE_')))return blocked('цена',blockers.map(v=>({QUOTE_TIME_MISSING:'Нет времени котировки',QUOTE_TIME_FUTURE:'Время котировки некорректно',QUOTE_TOO_OLD_FOR_HORIZON:'Котировка устарела для выбранного периода'}[v]||'')).filter(Boolean).join('; '));
   if(econ.status==='BLOCK'||x.final_gate_status==='BLOCK')return blocked(blockerShort(blockers[0]),explanation||'Не пройдена проверка торгового плана');
@@ -281,6 +287,7 @@ const traceReason=t=>{
   if(['EXECUTION_QUOTE_UNAVAILABLE','R66_EXECUTION_QUOTE_STALE'].includes(e.reason)&&e.quote_gate?.age_seconds!=null)text+=': возраст '+Math.max(0,Number(e.quote_gate.age_seconds)).toFixed(0)+' с, допустимо '+Number(e.quote_gate.max_age_seconds||300).toFixed(0)+' с';
   if(e.timing?.consumed_move_pct!=null)text+=': движение '+(100*Number(e.timing.consumed_move_pct)).toFixed(2)+'%, предел '+(100*Number(e.timing.late_entry_limit_pct)).toFixed(2)+'%';
   const event=e.trend_event||t.trend_event;if(event?.extension_atr!=null)text+=': исходный уровень '+Number(event.trigger_level).toLocaleString('ru-RU',{maximumFractionDigits:2})+', удаление '+Number(event.extension_atr).toFixed(2)+' ATR';
+  const history=localHistoryDetail(event);if(history)text+=': '+history;
   return text||'Окончательное решение ещё не получено';
 };
 const paperStatus=x=>{
@@ -347,6 +354,7 @@ const reasonRu=v=>{
     R67_WAIT_LOCAL_BREAKOUT:'Ожидается пробой заранее определённого локального уровня',
     R67_STRUCTURAL_STOP_RISK_LIMIT:'Размер ограничен риском до основания импульса',
     R66_LOCAL_EVENT_OPPOSED:'Последний локальный пробой направлен против сигнала',
+    R77_NO_ENTRY_DIRECTION:'Нет подтверждённого направления для входа',
     R66_CLOSED_CONTEXT_STALE:'Ожидается обновление закрытых свечей',
     R69_LOCAL_CONTEXT_REQUIRED:'Нет локальной структуры для входа',
     R69_WAIT_LOCAL_BREAKOUT:'Ждём новый пробой уровня',
