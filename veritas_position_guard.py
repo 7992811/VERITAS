@@ -19,6 +19,7 @@ _mutex = threading.RLock()
 _quotes_lock = threading.Lock()
 _quotes = {}
 _source_quotes = {}
+_market_state = {}
 _state = {'status': 'NOT_STARTED', 'paper_only': True}
 _entry_namespace = None
 
@@ -127,7 +128,18 @@ def book_transaction(c):
 
 
 def publish_quote(asset, raw):
-    if not raw or not raw.get('observed_at') or not raw.get('source_gate_pass') or VX.is_proxy_price(asset,raw):
+    if not raw or not raw.get('observed_at'):
+        return
+    with _quotes_lock:
+        old_state=_market_state.get(asset) or {}
+        dt,prev=utc_datetime(raw.get('observed_at')),utc_datetime(old_state.get('observed_at'))
+        if dt and (prev is None or dt>=prev):
+            _market_state[asset]={
+              'observed_at':raw.get('observed_at'),
+              'market_open':raw.get('market_open'),
+              'source_gate_pass':raw.get('source_gate_pass'),
+            }
+    if not raw.get('source_gate_pass') or VX.is_proxy_price(asset,raw):
         return
     with _quotes_lock:
         identity=VPS.identity(asset,raw)
@@ -862,6 +874,11 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
     return quote_for_position(positions[0],q)
 
 
+def market_state(asset):
+    with _quotes_lock:
+        return dict(_market_state.get(asset) or {})
+
+
 def snapshot():
     return dict(_state)
 
@@ -881,11 +898,18 @@ def start(ns):
                 with ns['pg_connect']() as c:
                     positions = [dict(z) for z in c.execute('SELECT * FROM paper_positions').fetchall()]
                 refresh_position_quotes(ns,positions)
-                quotes, errors = {}, {}
+                quotes, errors, paused = {}, {}, {}
                 for z in positions:
                     q=quote_for_position(z)
-                    if q: quotes[z['asset']]=q
-                    else: errors[z.get('active_trade_id') or z['asset']]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
+                    if q:
+                        quotes[z['asset']]=q
+                    else:
+                        state=market_state(z.get('asset'))
+                        key=z.get('active_trade_id') or z['asset']
+                        if state.get('market_open') is False:
+                            paused[key]='MARKET_CLOSED'
+                        else:
+                            errors[key]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
                 changes = run_protective_pass(ns['VP'], ns['pg_connect'], quotes) if positions else []
                 if changes:
                     with ns['_v90r25_pf_lock']:
@@ -894,9 +918,13 @@ def start(ns):
                         ns['last_cycle']['portfolio_autopilot'] = {}
                     with ns['_v90r23_trade_lock']:
                         ns['_v90r23_trade_cache'].update(at=0.0, value=None)
-                _state.update(status='DEGRADED' if errors else 'OK', checked_at=datetime.now(timezone.utc).isoformat(),
+                status=('DEGRADED' if errors else
+                        'PAUSED_MARKET_CLOSED' if paused and positions else 'OK')
+                _state.update(status=status, checked_at=datetime.now(timezone.utc).isoformat(),
                               open_positions=len(positions), quotes=len(quotes), errors=errors,
-                              last_changes=changes or _state.get('last_changes', []), duration_seconds=round(time.monotonic()-started, 3))
+                              paused=paused,
+                              last_changes=changes or _state.get('last_changes', []),
+                              duration_seconds=round(time.monotonic()-started, 3))
                 if changes or errors or time.monotonic()-last_log >= 60:
                     ns['emit']('paper_protective_guard', **snapshot())
                     last_log = time.monotonic()

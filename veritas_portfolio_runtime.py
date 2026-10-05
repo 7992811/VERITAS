@@ -4829,11 +4829,91 @@ _R79_HARD_COST_BLOCKERS={
 }
 
 
+def _v90r83_fresh_execution_row(row,now=None):
+    """Attach the freshest same-source executable quote without changing signal audit time."""
+    x=dict(row or {})
+    asset=str(x.get('asset') or '')
+    clock=_v90r55_dt(now) or datetime.now(timezone.utc)
+    signal_px=VTE.number(x.get('price'))
+    x['_r83_signal_reference_price']=signal_px
+    q=dict(x.get('_execution_quote') or {})
+
+    def valid(candidate):
+        if not candidate or not candidate.get('source_gate_pass'):
+            return False
+        if VX.is_proxy_price(asset,candidate) or not VPS.positive(candidate.get('price')):
+            return False
+        return bool(VPG.quote_gate(candidate.get('observed_at'),now=clock,
+                                   execution=True,asset=asset).get('eligible'))
+
+    if not valid(q):
+        expected=VPS.identity(asset,x)
+        if expected:
+            pseudo={'asset':asset,'payload':{'price_source_lock':expected}}
+            q=VPG.quote_for_position(pseudo,now=clock)
+        else:
+            try:
+                with VPG._quotes_lock:
+                    q=dict(VPG._quotes.get(asset) or {})
+            except Exception:
+                q={}
+
+    if valid(q):
+        x['_execution_quote']=dict(q)
+        x['execution_observed_at']=q.get('observed_at')
+        x['price']=float(q['price'])
+        if q.get('best_bid') is not None:
+            x['best_bid']=q.get('best_bid')
+        if q.get('best_ask') is not None:
+            x['best_ask']=q.get('best_ask')
+        if q.get('market_open') is not None:
+            x['market_open']=bool(q.get('market_open'))
+    return x
+
+
+def _v90r83_actual_chase_gate(row,price=None):
+    """Measure extension at the executable price even for signal-authoritative events."""
+    row=row or {}
+    h=str(row.get('horizon') or '')
+    if h not in _R56_TRIGGER_HORIZONS:
+        return {'eligible':True,'reason':'R83_CHASE_NOT_APPLICABLE'}
+    d=_v90r56_direction(row)
+    px=_v90r51_num(price if price is not None else row.get('price'))
+    reference=_v90r51_num(row.get('_r83_signal_reference_price'),_v90r51_num(row.get('price')))
+    if d not in ('LONG','SHORT') or not px or px<=0 or not reference or reference<=0:
+        return {'eligible':True,'reason':'R83_CHASE_UNMEASURED'}
+
+    rv=abs(_v90r51_num(row.get('realized_vol'),0.0) or 0.0)
+    trigger=_v90r56_trigger_level(row)
+    if trigger:
+        consumed=((px/trigger)-1.0) if d=='LONG' else ((trigger/px)-1.0)
+        source='TRIGGER_LEVEL'
+    else:
+        hr=_v90r51_num(row.get('horizon_return'))
+        if hr is None or hr<=-1:
+            return {'eligible':True,'reason':'R83_CHASE_UNMEASURED'}
+        hr=(1.0+hr)*px/reference-1.0
+        consumed=max(0.0,hr if d=='LONG' else -hr)
+        source='HORIZON_RETURN_REPRICED'
+
+    ratio=0.80 if h in ('5m','1h') else 1.00
+    floor={'5m':0.0040,'1h':0.0060,'4h':0.0100}.get(h,0.0060)
+    limit=max(floor,ratio*max(rv,0.0025))
+    late=bool(consumed>limit)
+    return {
+      'eligible':not late,
+      'reason':'R83_WAIT_RETEST_LATE_EXECUTION' if late else 'R83_EXECUTION_TIMING_OK',
+      'consumed_move_pct':consumed,'late_entry_limit_pct':limit,
+      'realized_vol':rv,'measurement_source':source,
+      'trigger_level':trigger,'evaluated_price':px,'signal_reference_price':reference,
+    }
+
+
 def _v90r79_signal_state(row,now=None):
-    row=dict(row or {})
+    clock=now if now is not None else datetime.now(timezone.utc)
+    row=_v90r83_fresh_execution_row(row,clock)
     q=row.get('_execution_quote') or {}
     px=VTE.number(q.get('price'),VTE.number(row.get('price')))
-    clock=now if now is not None else datetime.now(timezone.utc)
     work=VTE.prepare_row(row,px,clock)
     ev=VTE.context_of(work).get('event') or {}
     direction=VTE.displayed_signal_direction(work)
@@ -4886,9 +4966,19 @@ def _v90r79_hard_signal_veto(row):
 def _signal_first_admission(row,policy,drawdown):
     if (policy or {}).get('mode')=='CURRENCY':
         return {'open':False,'fraction':0.0,'hard_veto':True,'reason':VCP.BLOCK_REASON}
-    work,ev,direction,active=_v90r79_signal_state(row,datetime.now(timezone.utc))
+    raw=dict(row or {})
+    # New risk can never resurrect an invalidated setup. This is deliberately
+    # stricter than HOLD logic for an already-open position.
+    if _v90r55_invalidated(raw) or raw.get('_r55_absolute_veto'):
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':'R55_ABSOLUTE_INVALIDATED_VETO','r55_invalidated':True}
+    if (raw.get('source_gate_pass') is False or raw.get('paper_eligible') is False
+            or raw.get('market_open') is False):
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':'R79_SOURCE_OR_SESSION_BLOCK'}
+    work,ev,direction,active=_v90r79_signal_state(raw,datetime.now(timezone.utc))
     if not active:
-        return dict(_v90r79_base_admission(row,policy,drawdown) or {})
+        return dict(_v90r79_base_admission(work,policy,drawdown) or {})
 
     asset=str(work.get('asset') or '')
     source=VX.paper_source_gate(asset,work) if asset in VX.PAPER_ASSETS else {
@@ -4905,10 +4995,27 @@ def _signal_first_admission(row,policy,drawdown):
         return {'open':False,'fraction':0.0,'hard_veto':True,
                 'reason':'R79_'+hard[0],'hard_blockers':hard}
 
+    # Keep the one execution-timeframe conflict veto that protects against
+    # entering directly against a confirmed local structure. Do not restore
+    # all historical score filters: a valid published signal may still probe.
+    r59=_v90r59_quality_gate(work,policy)
+    conflict=next((b for b in (r59.get('blockers') or []) if b in (
+        'R59_EXECUTION_TF_DIRECTION_CONFLICT','R59_5M_COUNTER_SENIOR_NOT_CONFIRMED'
+    )),None)
+    if conflict:
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':conflict,'r59_quality_gate':r59}
+
     event=VTE.event_gate(work,work.get('price'),direction,datetime.now(timezone.utc))
     if not event.get('eligible'):
         return {'open':False,'fraction':0.0,'hard_veto':True,
                 'reason':event.get('reason') or 'R79_EVENT_NOT_READY','trend_event':event}
+
+    chase=_v90r83_actual_chase_gate(work,work.get('price'))
+    if not chase.get('eligible'):
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':chase.get('reason'),'trend_event':event,
+                'execution_timing':chase}
 
     f=_v90r79_signal_fraction(work,policy,drawdown)
     if f<=0:
@@ -4972,6 +5079,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         return 0.0
     cycle_clock=_v90r55_dt(ts) or datetime.now(timezone.utc)
     work,ev,signal_direction,active=_v90r79_signal_state(dict(row or {},price=price),cycle_clock)
+    price=float(work.get('price') or price)
     if not active or signal_direction!=direction:
         return _v90r79_base_open_or_add(
             c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason)
@@ -4999,6 +5107,17 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     event=VTE.event_gate(work,price,direction,ts)
     if not event.get('eligible'):
         _record_entry_outcome(work,'BLOCKED',event.get('reason') or 'R79_EVENT_NOT_READY',trend_event=event)
+        return 0.0
+    chase=_v90r83_actual_chase_gate(work,price)
+    if not chase.get('eligible'):
+        _record_entry_outcome(work,'BLOCKED',chase.get('reason'),execution_timing=chase)
+        return 0.0
+    r59=_v90r59_quality_gate(work,{'mode':'AGGRESSIVE' if name=='Aggressive' else 'CORE'})
+    conflict=next((b for b in (r59.get('blockers') or []) if b in (
+        'R59_EXECUTION_TF_DIRECTION_CONFLICT','R59_5M_COUNTER_SENIOR_NOT_CONFIRMED'
+    )),None)
+    if conflict:
+        _record_entry_outcome(work,'BLOCKED',conflict,r59_quality_gate=r59)
         return 0.0
     reuse=_r72_event_reentry_gate(c,name,asset,direction,ev)
     if not reuse.get('eligible'):
@@ -5056,9 +5175,11 @@ def report(pg_connect):
       'impulse_initial':{'normal':0.20,'super':0.40},
       'core_initial':{'normal':0.10,'super':0.25},
       'challenger_initial':{'normal':0.10,'super':0.25},
-      'hard_vetoes_preserved':['source/session','quote freshness','invalid stop',
-          'hard invalidation','fast-TF conflict','negative validated edge','stop-risk cap'],
+      'hard_vetoes_preserved':['source/session','fresh same-source execution quote',
+          'invalid stop','hard invalidation','fast-TF conflict','negative validated edge',
+          'execution-TF direction conflict','actual-price late-entry chase','stop-risk cap'],
       'soft_vetoes_no_longer_flatten_signal':sorted(_R79_SOFT_ECON_BLOCKERS),
+      'r83_execution_price_policy':'signal chooses direction; fresh same-source quote chooses fill and economics',
       'adds':'normal confirmation/risk path remains authoritative',
     }
     return _jsonable(VCP.decorate_report(d))

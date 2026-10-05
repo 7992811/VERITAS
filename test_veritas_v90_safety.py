@@ -615,3 +615,47 @@ class LossConflictR81Tests(unittest.TestCase):
         self.assertAlmostEqual(VC.COST_BUFFER_MULTIPLE,1.2,places=9)
         self.assertAlmostEqual(VC.ROUND_TRIP_RATE,0.0018,places=9)
 
+class ExecutionInvariantR83Tests(unittest.TestCase):
+    def test_fresh_same_source_quote_replaces_stale_signal_quote_for_execution(self):
+        import veritas_portfolio_runtime as VRT
+        now=datetime(2026,10,5,21,30,tzinfo=timezone.utc)
+        VPG.publish_quote('BRENT',{
+            'price':101.0,'observed_at':now.isoformat(),
+            'source_gate_pass':True,'market_open':True,
+            'source_names':{'primary':'MOEX ISS BRV6'},
+            'contract':{'secid':'BRV6'},
+        })
+        row={
+            'asset':'BRENT','price':100.0,
+            'market_observed_at':'2026-10-05T20:30:00+00:00',
+            'source_gate_pass':True,'market_open':True,
+            'source_names':{'primary':'MOEX ISS BRV6'},
+            'contract':{'secid':'BRV6'},
+        }
+        out=VRT._v90r83_fresh_execution_row(row,now)
+        self.assertEqual(out['_execution_quote']['price'],101.0)
+        self.assertEqual(out['price'],101.0)
+        self.assertEqual(out['_r83_signal_reference_price'],100.0)
+
+    def test_actual_execution_price_blocks_chasing_completed_impulse(self):
+        import veritas_portfolio_runtime as VRT
+        row={
+            'asset':'BTC','horizon':'5m','research_decision':'LONG',
+            'price':101.0,'_r83_signal_reference_price':100.0,
+            'horizon_return':0.001,'realized_vol':0.005,
+            'trade_plan':{},
+        }
+        out=VRT._v90r83_actual_chase_gate(row,101.0)
+        self.assertFalse(out['eligible'])
+        self.assertEqual(out['reason'],'R83_WAIT_RETEST_LATE_EXECUTION')
+
+    def test_market_closed_is_recorded_separately_from_quote_failure(self):
+        VPG.publish_quote('MOEX',{
+            'price':2321.57,'observed_at':'2026-10-05T21:30:00+00:00',
+            'source_gate_pass':False,'market_open':False,
+            'source_names':{'primary':'MOEX ISS IMOEX'},
+        })
+        state=VPG.market_state('MOEX')
+        self.assertIs(state.get('market_open'),False)
+        self.assertIs(state.get('source_gate_pass'),False)
+
