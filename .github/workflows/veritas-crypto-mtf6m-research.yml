@@ -1,25 +1,19 @@
-name: VERITAS bull-episode long research
+name: VERITAS external 2020-2021 holdout
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
-      - tools/research_crypto_bull_episodes.py
+      - tools/research_crypto_external_holdout.py
       - tools/research_crypto_manager_library.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
 
 jobs:
   research:
-    strategy:
-      fail-fast: false
-      matrix:
-        asset: [ETH, BTC]
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    env:
-      RESEARCH_ASSET: ${{ matrix.asset }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,29 +24,22 @@ jobs:
           cache: 'pip'
       - name: Install research dependencies
         run: python -m pip install numpy==2.3.5 pandas==2.2.3
-      - name: Download cached minute data
-        uses: actions/download-artifact@v4
-        with:
-          name: veritas-manager-library-result
-          path: manager_library_out
-          github-token: ${{ github.token }}
-          run-id: 37210798801
-      - name: Run bull-episode study
-        run: python tools/research_crypto_bull_episodes.py
+      - name: Run frozen external holdout
+        run: python tools/research_crypto_external_holdout.py
       - name: Print compact result
         if: always()
         run: |
-          if [ -f bull_episode_out/result.json ]; then
+          if [ -f external_holdout_out/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('bull_episode_out/result.json'))
-          print('VERITAS_BULL_EP_PASSES_COMPACT='+json.dumps(x.get('passes',[])[:8],separators=(',',':')))
+          x=json.load(open('external_holdout_out/result.json'))
+          print('VERITAS_EXTERNAL_HOLDOUT_COMPACT='+json.dumps(x.get('assets',{}),separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-bull-episodes-${{ matrix.asset }}
-          path: bull_episode_out/
+          name: veritas-external-holdout
+          path: external_holdout_out/
           retention-days: 7
