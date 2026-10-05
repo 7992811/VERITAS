@@ -427,7 +427,7 @@ def run(asset):
     df = make_labels(asset, raw, other)
     print(asset, "labels", len(df), flush=True)
 
-    ranked = choose_config(asset, df)
+    ranked, diagnostics = choose_config(asset, df)
     out = {
         "asset": asset,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -436,9 +436,11 @@ def run(asset):
         "n_labels": int(len(df)),
         "selected": None,
         "alternatives": ranked[:8],
+        "diagnostics": diagnostics,
     }
     if not ranked:
         print(asset, "NO_WALKFORWARD_CONFIG_PASSED", flush=True)
+        print(asset, "NEAR_MISSES", json.dumps(diagnostics[:6], separators=(",", ":"), default=json_default), flush=True)
         return out
 
     best = ranked[0]
