@@ -101,7 +101,7 @@ def events(x):
 
         # Low implied vol + spot compression, then structural breakout.
         m,lvl=cross(x,d,72)
-        q=m&(x.dvol_pct<=.30)&(x.squeeze.shift(3)<=.80)&(x.atr_ratio>=1.05)&(x.vr>=1.2)&(body>=.40)
+        q=m&(x.dvol_pct<=.30)&(x["squeeze"].shift(3)<=.80)&(x.atr_ratio>=1.05)&(x.vr>=1.2)&(body>=.40)
         out+=collect(x,q,d,"IV_COMPRESSION_BREAK",lvl)
 
         # IV shock + price exhaustion -> contrarian reversal.
