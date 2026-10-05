@@ -7,6 +7,7 @@ on:
     paths:
       - tools/research_crypto_arsenal_expansion.py
       - tools/research_crypto_options_volatility.py
+      - tools/research_crypto_event_driven.py
       - docs/VERITAS_FULL_ARSENAL_PROTOCOL.md
       - .github/workflows/veritas-full-arsenal.yml
   workflow_dispatch:
@@ -36,6 +37,8 @@ jobs:
         run: python tools/research_crypto_arsenal_expansion.py
       - name: Run options volatility module
         run: python tools/research_crypto_options_volatility.py
+      - name: Run scheduled event module
+        run: python tools/research_crypto_event_driven.py
       - name: Print compact result
         if: always()
         run: |
@@ -60,4 +63,5 @@ jobs:
           path: |
             full_arsenal_out/
             options_vol_out/
+            event_driven_out/
           retention-days: 14
