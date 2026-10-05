@@ -281,10 +281,9 @@ def _signal_continuation_event(row,price=None,now=None):
     integrity=plan.get('trade_integrity') or {}
     if integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict'):
         return None
-    arbitration=plan.get('rule_arbitration') or {}
-    if arbitration.get('hard_veto'):
-        return None
-
+    # Once the decision layer publishes LONG/SHORT, stale/legacy arbitration
+    # metadata cannot contradict that same published decision. Current hard
+    # trade-integrity conflicts above remain authoritative.
     ctx=dict(context_of(row) or {})
     current=dict(ctx.get('event') or {})
     if current.get('catalyst_continuation'):
@@ -315,9 +314,12 @@ def _signal_continuation_event(row,price=None,now=None):
         return None
 
     observed=((row.get('_execution_quote') or {}).get('observed_at')
-              or row.get('market_observed_at') or row.get('observed_at') or now
+              or row.get('market_observed_at') or row.get('observed_at')
               or datetime.now(timezone.utc))
-    t=timestamp(observed)
+    # Rebase occurs NOW at the execution boundary. The signal may have been
+    # produced on a slow 1h/4h cadence, but if it is still the displayed current
+    # decision it is a current setup, not an 18-minute-old breakout.
+    t=timestamp(now if now is not None else observed)
     if t is None:
         t=datetime.now(timezone.utc).timestamp()
 
@@ -354,13 +356,20 @@ def _rebase_displayed_signal_setup(row,price=None,now=None):
     ctx['event']=event
     x['trend_entry_context']=ctx
     x['_signal_authoritative']=True
-    # Current displayed signal is a new setup; old "target reached" / "late"
-    # metadata belongs to the parent setup and cannot invalidate this one.
+    # Preserve stale labels only for audit. They belong to the parent setup.
+    x['_r79_parent_entry_quality']=x.get('entry_quality')
+    x['_r79_parent_decision_stage']=x.get('decision_stage')
+    x['entry_quality']='CURRENT_SIGNAL'
+    x['decision_stage']='SIGNAL_ACTIVE'
+    # Current displayed signal is a new setup; old "target reached", "late" and
+    # INVALIDATED labels belong to the parent setup and cannot invalidate it.
     plan.update(
       eligible=True,reason='displayed_signal_continuation',
       setup='SIGNAL_CONTINUATION',setup_id=event['event_id'],
       entry_event_id=event['event_id'],new_setup_identity=True,
-      signal_authoritative=True,stop_price=event['stop_price'],
+      signal_authoritative=True,entry_quality='CURRENT_SIGNAL',
+      entry_quality_rebased_from_old_setup=True,
+      stop_price=event['stop_price'],
       stop_method='CURRENT_SIGNAL_STRUCTURE',
       target_method='CURRENT_SIGNAL_2R_CAPPED_BY_LEVEL',
     )
