@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r88-dimensional-signal-circles"
+UI_VERSION = "veritas-ui-v9.0-r89-regular-matrix-type"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -177,6 +177,17 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
   .matrix .sig-dot{width:18px;height:18px}
   .matrix .sig-dot.super{width:12px;height:12px}
 }
+/* Regular weight throughout the signal matrix, including table headers and labels. */
+.matrix-panel .title,
+.matrix-panel .matrix th,
+.matrix-panel .asset-label,
+.matrix-panel .asset-logo,
+.matrix-panel .cell,
+.matrix-panel .cell small,
+.matrix-panel .cell em,
+.matrix-panel .matrix-legend,
+.matrix-panel b,
+.matrix-panel strong{font-weight:400}
 </style>
 </head>
 <body>
