@@ -12,8 +12,14 @@ on:
 
 jobs:
   research:
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [ETH, BTC]
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      RESEARCH_ASSET: ${{ matrix.asset }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +53,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-phase-transition-result
+          name: veritas-phase-transition-${{ matrix.asset }}
           path: phase_transition_out/
           retention-days: 7
