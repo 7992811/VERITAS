@@ -4456,16 +4456,18 @@ def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
             selected['_r65_tactical_context']=dict(max(local,key=lambda r:str(
                 r.get('market_observed_at') or r.get('observed_at') or '')))
         out[asset]=selected
-    # Prefer a fresh closed 5m event in the SAME published direction. A senior
-    # forecast cannot postpone this trigger, and no opposite signal is invented.
+    # A published fresh local event is an independent entry candidate, including
+    # against a senior forecast. Its own direction, stop and target remain intact;
+    # every admission/fill gate still runs before any paper position can open.
     for r0 in summary or []:
         if r0.get('horizon') not in ('1m','5m') or _v90r55_invalidated(r0):continue
         asset=r0.get('asset');direction=r0.get('research_decision')
         event=VTE.context_of(r0).get('event') or {}
         if direction not in ('LONG','SHORT') or event.get('direction')!=direction:continue
         old=out.get(asset)
-        if old and old.get('research_decision')!=direction:continue
-        if old and old.get('horizon')=='1m' and r0.get('horizon')=='5m':continue
+        if (old and old.get('horizon')=='1m' and r0.get('horizon')=='5m'
+                and VTE.event_gate(old,old.get('price'),old.get('research_decision'),
+                                   datetime.now(timezone.utc)).get('eligible')):continue
         ready=VTE.event_gate(r0,r0.get('price'),direction,datetime.now(timezone.utc))
         if not ready.get('eligible'):continue
         selected=VTE.prepare_row(r0)
@@ -4474,7 +4476,9 @@ def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
         selected['_r56_entry_horizon']=r0.get('horizon');selected['_r56_management_horizon']='5m'
         selected['_r65_tactical_context']=dict(r0)
         selected['_r66_closed_trigger']=ready
-        if old:selected['_r56_thesis_horizon']=old.get('horizon')
+        if old:
+            selected['_r56_thesis_horizon']=old.get('horizon')
+            selected['_r77_prior_candidate_direction']=old.get('research_decision')
         out[asset]=selected
     return out
 

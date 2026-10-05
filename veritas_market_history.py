@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
 
 MOSCOW = ZoneInfo('Europe/Moscow')
 
@@ -47,7 +48,21 @@ def complete_five_minutes(minutes, now):
     return result[-500:]
 
 
-def recent_moex_minutes(fetch_page, now, cached=(), budget_seconds=7., monotonic=time.monotonic):
+def local_history_status(bars):
+    """Use the same history requirement in retrieval, cache and entry diagnostics."""
+    tail = 1 if bars else 0
+    for a, b in zip(reversed(bars[:-1]), reversed(bars[1:])):
+        if b['ts'] - a['ts'] != 300:
+            break
+        tail += 1
+    reason = ('HISTORY_TOO_SHORT' if len(bars) < 36 else
+              'RECENT_CANDLE_GAP' if tail < 25 else 'READY')
+    return dict(history_ready=reason == 'READY', history_reason=reason,
+                required_bars=36, contiguous_bars=tail, required_contiguous_bars=25)
+
+
+def recent_moex_minutes(fetch_page, now, cached=(), budget_seconds=7., monotonic=time.monotonic,
+                        workers=1):
     """Fetch the latest hour first, then backfill bounded earlier hourly slices.
 
     Each inclusive MOEX slice contains at most 64 minutes, below its 100-row
@@ -63,32 +78,72 @@ def recent_moex_minutes(fetch_page, now, cached=(), budget_seconds=7., monotonic
     error = None
     # Begin on a 5m boundary so every requested hour contains complete buckets.
     right = end
+    slices = []
     for _ in range(96):
-        if monotonic() >= deadline:
-            break
         left = int((right-59*60)//300)*300
         expected = set(range(left, right+1, 60))
         # Always refresh the newest slice; older complete cached slices cost no IO.
-        if fetched == 0 or not expected.issubset(rows):
-            params = {'from':datetime.fromtimestamp(left,MOSCOW).strftime('%Y-%m-%d %H:%M:%S'),
-                      'till':datetime.fromtimestamp(right,MOSCOW).strftime('%Y-%m-%d %H:%M:%S'),
-                      'interval':1,'start':0,'iss.meta':'off','iss.only':'candles'}
-            try:
-                page = fetch_page(params, max(.1, deadline-monotonic()))
-                fetched += 1
-                for item in page:
-                    b = moex_minute(item)
-                    if b and left <= b['ts'] <= right and b['ts']+60 <= now:
-                        rows[b['ts']] = b
-            except Exception as exc:
-                error = f'{type(exc).__name__}: {exc}'[:220]
-                break
+        if right == end or not expected.issubset(rows):
+            slices.append((left, right))
         right = left-60
-        if len(rows) >= 2500 or right < floor:
+        if right < floor:
             break
+
+    def fetch(bounds):
+        left, right = bounds
+        remaining = deadline-monotonic()
+        if remaining <= 0:
+            raise TimeoutError('minute history budget exhausted')
+        params = {'from':datetime.fromtimestamp(left,MOSCOW).strftime('%Y-%m-%d %H:%M:%S'),
+                  'till':datetime.fromtimestamp(right,MOSCOW).strftime('%Y-%m-%d %H:%M:%S'),
+                  'interval':1,'start':0,'iss.meta':'off','iss.only':'candles'}
+        return fetch_page(params, remaining)
+
+    def merge(page, bounds):
+        left, right = bounds
+        for item in page:
+            b = moex_minute(item)
+            if b and left <= b['ts'] <= right and b['ts']+60 <= now:
+                rows[b['ts']] = b
+
+    # A slow older hour must not prevent the other hours needed for the initial
+    # 36 closed bars from arriving. Fetch the newest slice first, then bounded
+    # parallel batches in recency order; workers never mutate shared cache state.
+    workers = max(1, min(4, int(workers)))
+    pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+    try:
+        while slices and monotonic() < deadline:
+            batch = [slices.pop(0)] if fetched == 0 else slices[:workers]
+            if fetched != 0:
+                del slices[:workers]
+            if pool:
+                futures = {pool.submit(fetch, bounds): bounds for bounds in batch}
+                done, pending = wait(futures, timeout=max(0., deadline-monotonic()))
+                for future in done:
+                    try:
+                        merge(future.result(), futures[future]); fetched += 1
+                    except Exception as exc:
+                        error = f'{type(exc).__name__}: {exc}'[:220]
+                if pending:
+                    for future in pending:
+                        future.cancel()
+                    error = error or 'TimeoutError: minute history budget exhausted'
+                    break
+            else:
+                try:
+                    merge(fetch(batch[0]), batch[0]); fetched += 1
+                except Exception as exc:
+                    error = f'{type(exc).__name__}: {exc}'[:220]
+                    break
+            if len(rows) >= 2500:
+                break
+    finally:
+        if pool:
+            pool.shutdown(wait=False, cancel_futures=True)
     minutes = [rows[t] for t in sorted(rows)][-5000:]
     bars = complete_five_minutes(minutes, now)
     closed = bars[-1]['ts']+300 if bars else None
     return {'minutes':minutes,'bars':bars,'pages':fetched,'error':error,
             'last_closed_at':closed,'history_age_seconds':now-closed if closed else None,
-            'fresh':bool(closed and -5 <= now-closed <= 900)}
+            'fresh':bool(closed and -5 <= now-closed <= 900),
+            **local_history_status(bars)}

@@ -6527,15 +6527,23 @@ def _v90_schedule_outcome_refresh(reason='cycle_complete'):
 # VERITAS V90 R16 MOEX 5M DATA
 _v90r16_base_moex_market = _moex_market
 _v90r16_moex5_cache = {'at':0.0,'bars':[]}
+_v90r77_moex_history_lock = threading.Lock()
 
 def _v90r16_moex_index_5m(force=False):
+    # Market cycles and outcome refreshes share this cache. Serialize updates so
+    # a slower request cannot replace minutes fetched by a newer request.
+    with _v90r77_moex_history_lock:
+        return _v90r77_load_moex_index_5m(force)
+
+def _v90r77_load_moex_index_5m(force=False):
     import veritas_market_history as MH
     now_ts=time.time()
     cache=_v90r16_moex5_cache
     bars=list(cache.get('bars') or [])
     closed=bars[-1]['ts']+300 if bars else None
     # Retrieval cadence and actual last closed candle are independent clocks.
-    if (not force and bars and now_ts-float(cache.get('at') or 0)<60
+    cadence=60 if MH.local_history_status(bars)['history_ready'] else 5
+    if (not force and bars and now_ts-float(cache.get('at') or 0)<cadence
             and closed is not None and -5<=now_ts-closed<=900):
         return bars
     url='https://iss.moex.com/iss/engines/stock/markets/index/securities/IMOEX/candles.json'
@@ -6544,16 +6552,19 @@ def _v90r16_moex_index_5m(force=False):
             response=h.get(url,params=params,timeout=min(3.,remaining))
             response.raise_for_status()
             return _moex_block(response.json(),'candles')
-        result=MH.recent_moex_minutes(fetch,now_ts,cache.get('minutes') or [])
+        result=MH.recent_moex_minutes(fetch,now_ts,cache.get('minutes') or [],workers=4)
     # Keep new minutes even when a later backfill times out; never replace a
     # newer cache with older history or certify data by request completion.
     cache.update(minutes=result['minutes'],bars=result['bars'],at=now_ts,
                  history_age_seconds=result['history_age_seconds'],
-                 last_closed_at=result['last_closed_at'],fresh=result['fresh'])
-    if result['error'] or not result['fresh']:
-        emit('r68_moex_history',status='FRESH_PARTIAL_BACKFILL' if result['fresh'] else 'STALE',
+                 last_closed_at=result['last_closed_at'],fresh=result['fresh'],
+                 history_ready=result['history_ready'],history_reason=result['history_reason'])
+    if result['error'] or not result['fresh'] or not result['history_ready']:
+        status='STALE' if not result['fresh'] else 'READY' if result['history_ready'] else 'INCOMPLETE'
+        emit('r68_moex_history',status=status,
              last_closed_at=result['last_closed_at'],age_seconds=result['history_age_seconds'],
-             pages=result['pages'],error=result['error'])
+             pages=result['pages'],bars=len(result['bars']),required_bars=result['required_bars'],
+             contiguous_bars=result['contiguous_bars'],history_reason=result['history_reason'],error=result['error'])
     return list(result['bars'])
 
 
@@ -6563,25 +6574,25 @@ def _moex_market():
     f5=pool.submit(_v90r16_moex_index_5m)
     try:
         raw=dict(fb.result(timeout=18.0))
-    finally:
-        # Do not let tactical history hold a valid current/hourly MOEX bundle.
-        pass
-    try:
-        bars=list(f5.result(timeout=8.0) or [])
-    except Exception as ex:
-        bars=[]
-        emit('r63_moex_5m_fallback',status='HISTORY_UNAVAILABLE',
-             detail=f'{type(ex).__name__}: {ex}')
+        try:
+            bars=list(f5.result(timeout=8.0) or [])
+        except Exception as ex:
+            bars=list(_v90r16_moex5_cache.get('bars') or [])
+            emit('r63_moex_5m_fallback',status='HISTORY_UNAVAILABLE',
+                 detail=f'{type(ex).__name__}: {ex}')
     finally:
         pool.shutdown(wait=False,cancel_futures=True)
     if not bars:
         bars=list(raw.get('intraday_5m') or raw.get('intraday_bars') or [])
     raw['intraday_5m']=bars
     raw['intraday_bars']=bars
-    raw['entry_timing_resolution']='5m' if len(bars)>=12 else '1h_fallback'
-    raw['analysis_data_available']=bool(len(bars)>=12)
+    import veritas_market_history as MH
+    history=MH.local_history_status(bars)
+    raw['entry_timing_resolution']='5m' if history['history_ready'] else '1h_fallback'
+    raw['analysis_data_available']=history['history_ready']
     raw['analysis_data_bars_5m']=len(bars)
-    raw['r63_5m_fail_soft']=bool(len(bars)<12)
+    raw['r63_5m_fail_soft']=not history['history_ready']
+    raw['local_history_diagnostics']=history
     return raw
 
 def _fetch_asset_bundle(symbol, asset, cb_product):
