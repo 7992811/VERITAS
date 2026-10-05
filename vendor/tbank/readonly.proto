@@ -744,3 +744,67 @@ message VirtualPortfolioPosition {
   string ticker = 32;
   string class_code = 33;
 }
+
+
+message Future {
+  string figi = 1;
+  string ticker = 2;
+  string class_code = 3;
+  int32 lot = 4;
+  string currency = 5;
+
+  Quotation klong = 6;
+  Quotation kshort = 7;
+  Quotation dlong = 8;
+  Quotation dshort = 9;
+  Quotation dlong_min = 10;
+  Quotation dshort_min = 11;
+  bool short_enabled_flag = 12;
+  string name = 13;
+  string exchange = 14;
+
+  google.protobuf.Timestamp first_trade_date = 15;
+  google.protobuf.Timestamp last_trade_date = 16;
+  string futures_type = 17;
+  string asset_type = 18;
+  string basic_asset = 19;
+  Quotation basic_asset_size = 20;
+
+  string country_of_risk = 21;
+  string country_of_risk_name = 22;
+  string sector = 23;
+  google.protobuf.Timestamp expiration_date = 24;
+
+  SecurityTradingStatus trading_status = 25;
+  bool otc_flag = 26;
+  bool buy_available_flag = 27;
+  bool sell_available_flag = 28;
+  Quotation min_price_increment = 29;
+  bool api_trade_available_flag = 30;
+
+  string uid = 31;
+  RealExchange real_exchange = 32;
+  string position_uid = 33;
+  string basic_asset_position_uid = 34;
+
+  repeated string required_tests = 35;
+
+  bool for_iis_flag = 41;
+  bool for_qual_investor_flag = 42;
+  bool weekend_flag = 43;
+  bool blocked_tca_flag = 44;
+  google.protobuf.Timestamp first_1min_candle_date = 56;
+  google.protobuf.Timestamp first_1day_candle_date = 57;
+
+  MoneyValue initial_margin_on_buy = 61;
+  MoneyValue initial_margin_on_sell = 62;
+  Quotation min_price_increment_amount = 63;
+  BrandData brand = 64;
+
+  Quotation dlong_client = 90;
+  Quotation dshort_client = 91;
+}
+
+message FutureResponse {
+  Future instrument = 1;
+}

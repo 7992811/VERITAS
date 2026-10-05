@@ -1,5 +1,9 @@
 # R83 — T-Invest read-only connection
 
+The expanded instrument defaults, history intervals and scheduling introduced in
+R87 are documented in [README_R87_TBANK.md](README_R87_TBANK.md). The original
+R83 setup and authentication design below remain applicable.
+
 The Python service can authenticate to T-Invest through gRPC, read accounts and
 an explicitly selected portfolio, resolve exact instrument identifiers, download
 completed 5-minute/hourly candles, load order books and receive streamed prices.

@@ -3,7 +3,7 @@ import unittest
 import threading
 from http.server import ThreadingHTTPServer
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import grpc
@@ -15,6 +15,7 @@ class FakeReader:
     def __init__(self):
         self.calls = []
         self.now = T.iso()
+        self.ids = {'CNYRUBF':'exact-contract', 'NAZ6':'nasd-contract', 'IMOEXF':'imoex-contract'}
 
     def call(self, name, **kw):
         self.calls.append((name, kw))
@@ -24,15 +25,24 @@ class FakeReader:
         if name == 'portfolio':
             return {'account_id':kw['account_id'], 'total_amount_portfolio':{'units':'1000000','currency':'rub'}}
         if name == 'find':
-            return {'instruments':[{'ticker':'CNYRUBF','uid':'exact-contract'},
-                                   {'ticker':'CNYRUBF_OTHER','uid':'other'}]}
+            ticker=kw['query']
+            return {'instruments':[{'ticker':ticker,'uid':self.ids[ticker]},
+                                   {'ticker':ticker+'_OTHER','uid':'other'}]}
         if name == 'instrument':
-            return {'instrument': {'uid':'exact-contract','ticker':'CNYRUBF','lot':1000}}
+            ticker=next(t for t,uid in self.ids.items() if uid==kw['id'])
+            return {'instrument': {'uid':kw['id'],'ticker':ticker,'lot':1,'instrument_type':'futures'}}
+        if name == 'future':
+            ticker=next(t for t,uid in self.ids.items() if uid==kw['id'])
+            return {'instrument': {'uid':kw['id'],'ticker':ticker,'lot':1,
+                'real_exchange':'REAL_EXCHANGE_MOEX','exchange':'MOEX','name':ticker,
+                'expiration_date':T.iso(T.utcnow()+timedelta(days=365)),
+                'min_price_increment':{'units':'0','nano':1000000},
+                'min_price_increment_amount':{'units':'1'}}}
         if name == 'prices':
-            return {'last_prices':[{'instrument_uid':'exact-contract','time':self.now,
-                                   'price':{'units':'12','nano':759000000}}]}
+            return {'last_prices':[{'instrument_uid':uid,'time':self.now,
+                                   'price':{'units':'12','nano':759000000}} for uid in kw['instrument_id']]}
         if name == 'book':
-            return {'instrument_uid':'exact-contract','orderbook_ts':self.now,
+            return {'instrument_uid':kw['instrument_id'],'orderbook_ts':self.now,
                     'bids':[{'price':{'units':'12','nano':758000000},'quantity':'10'}]}
         if name == 'candles':
             closed={'time':self.now, 'is_complete':True, 'open':{'units':'12'},
@@ -134,7 +144,7 @@ class ConnectionTests(unittest.TestCase):
         c.reader=FakeReader()
         with patch.object(T,'exact_instrument',side_effect=T.TBankError('INSTRUMENT_NOT_FOUND')):
             c.refresh()
-        self.assertEqual(c.status()['instrument_errors'],{'CNYRUBF':'INSTRUMENT_NOT_FOUND'})
+        self.assertEqual(c.status()['instrument_errors'],{a:'INSTRUMENT_NOT_FOUND' for a in T.DEFAULT_TICKERS})
         self.assertEqual(c.market_data()['quotes'],{})
 
 
@@ -151,9 +161,16 @@ class WireTests(unittest.TestCase):
         def stream(request,context):
             assert request.subscribe_last_price_request.instruments[0].instrument_id=='contract'
             yield P.MarketDataResponse(last_price=P.LastPrice(instrument_uid='contract',price=P.Quotation(units=12)))
+        def future(request,context):
+            assert request.id=='nasd-contract' and request.id_type==P.INSTRUMENT_ID_TYPE_UID
+            return P.FutureResponse(instrument=P.Future(uid=request.id,ticker='NAZ6',lot=1,
+                real_exchange=P.REAL_EXCHANGE_MOEX, basic_asset='NASDAQ100',
+                min_price_increment=P.Quotation(units=1), min_price_increment_amount=P.Quotation(nano=800000000),
+                expiration_date={'seconds':int((T.utcnow()+timedelta(days=30)).timestamp())}))
         cls.server.add_generic_rpc_handlers((
             grpc.method_handlers_generic_handler(T.PACKAGE+'.UsersService',{'GetAccounts':grpc.unary_unary_rpc_method_handler(accounts,request_deserializer=P.GetAccountsRequest.FromString,response_serializer=lambda x:x.SerializeToString())}),
             grpc.method_handlers_generic_handler(T.PACKAGE+'.MarketDataStreamService',{'MarketDataServerSideStream':grpc.unary_stream_rpc_method_handler(stream,request_deserializer=P.MarketDataServerSideStreamRequest.FromString,response_serializer=lambda x:x.SerializeToString())}),
+            grpc.method_handlers_generic_handler(T.PACKAGE+'.InstrumentsService',{'FutureBy':grpc.unary_unary_rpc_method_handler(future,request_deserializer=P.InstrumentRequest.FromString,response_serializer=lambda x:x.SerializeToString())}),
         ))
         cls.port=cls.server.add_insecure_port('127.0.0.1:0')
         cls.server.start()
@@ -177,6 +194,12 @@ class WireTests(unittest.TestCase):
         values=list(self.reader.stream_prices(['contract']))
         self.assertEqual(values[0]['last_price']['instrument_uid'],'contract')
 
+    def test_future_specification_on_actual_grpc_wire(self):
+        result=T.future_metadata(self.reader,{'uid':'nasd-contract','ticker':'NAZ6'})
+        self.assertEqual(result['basic_asset'],'NASDAQ100')
+        self.assertEqual(T.price(result['min_price_increment_amount']),0.8)
+        self.assertFalse(result['perpetual'])
+
     def test_rpc_error_details_are_not_exposed(self):
         with self.assertRaises(T.TBankError) as ex:
             self.reader.call('accounts')
@@ -194,6 +217,113 @@ class WireTests(unittest.TestCase):
         self.assertEqual(secure.call_args.args[0],T.TARGET)
         roots=tls.call_args.args[0]
         self.assertGreater(roots.count(b'BEGIN CERTIFICATE'),1)
+
+
+class MultiAssetHistoryTests(unittest.TestCase):
+    def connection(self):
+        c=T.TBankConnection({'TBANK_API_TOKEN':'test-secret'})
+        c.reader=FakeReader()
+        return c
+
+    def test_all_three_contracts_have_separate_uids_and_all_requested_intervals(self):
+        c=self.connection();c.refresh();c.refresh()
+        s=c.status()
+        self.assertEqual(set(s['instruments']),{'CNYRUBF','NQF','MOEXF'})
+        self.assertEqual(len({v['uid'] for v in s['instruments'].values()}),3)
+        self.assertEqual(s['instruments']['NQF']['ticker'],'NAZ6')
+        self.assertEqual(s['instruments']['MOEXF']['ticker'],'IMOEXF')
+        self.assertEqual(s['requested_timeframes'],['1m','5m','1h','4h','1d','3d','7d'])
+        for asset in s['instruments']:
+            for tf in T.HISTORY:
+                snapshot=c.candle_snapshot(asset,tf)
+                self.assertEqual(snapshot['status'],'OK')
+                self.assertEqual(snapshot['instrument_uid'],s['instruments'][asset]['uid'])
+        self.assertEqual(c.candle_snapshot('NQf','1h')['status'],'OK')
+        self.assertEqual(c.candle_snapshot('NQf','bad')['status'],'INVALID_INTERVAL')
+
+    def test_native_request_limits_exchange_only_and_no_redundant_downloads(self):
+        c=self.connection();c.refresh();c.refresh();c.refresh()
+        calls=[kw for name,kw in c.reader.calls if name=='candles']
+        self.assertEqual(len(calls),18)
+        self.assertEqual(sum(name=='accounts' for name,_ in c.reader.calls),1)
+        for kw in calls:
+            config=next(v for v in T.HISTORY.values() if v[0]==kw['interval'])
+            self.assertEqual(kw['limit'],config[3])
+            self.assertEqual(kw['candle_source_type'],'CANDLE_SOURCE_EXCHANGE')
+            begin=datetime.fromisoformat(kw['from'].replace('Z','+00:00'))
+            end=datetime.fromisoformat(kw['to'].replace('Z','+00:00'))
+            self.assertEqual((end-begin).days,config[1])
+
+    def test_one_failed_interval_does_not_block_other_contracts_or_fabricate_history(self):
+        c=self.connection();original=c.reader.call
+        def call(name,**kw):
+            if name=='candles' and kw['interval']=='CANDLE_INTERVAL_DAY' and kw['instrument_id']=='nasd-contract':
+                raise T.TBankError('RESOURCE_EXHAUSTED')
+            return original(name,**kw)
+        with patch.object(c.reader,'call',side_effect=call):
+            c.refresh();c.refresh()
+        self.assertEqual(c.status()['status'],'CONNECTED')
+        self.assertEqual(c.candle_snapshot('NQF','1d')['status'],'ERROR')
+        self.assertEqual(c.candle_snapshot('NQF','3d')['status'],'ERROR')
+        self.assertEqual(c.candle_snapshot('MOEXF','1d')['status'],'OK')
+        self.assertEqual(c.candle_snapshot('NQF','7d')['status'],'OK')
+
+    def test_expired_contract_is_not_loaded_or_replaced_by_another_expiry(self):
+        c=self.connection();original=c.reader.call
+        def call(name,**kw):
+            result=original(name,**kw)
+            if name=='future' and kw['id']=='nasd-contract':
+                result['instrument']['expiration_date']=T.iso(T.utcnow()-timedelta(days=1))
+            return result
+        with patch.object(c.reader,'call',side_effect=call):c.refresh()
+        self.assertEqual(c.status()['instrument_errors']['NQF'],'FUTURE_EXPIRED_OR_EXPIRY_MISSING')
+        self.assertNotIn('NQF',c.market_data()['quotes'])
+        self.assertEqual(set(c.instruments),{'CNYRUBF','MOEXF'})
+
+    def test_future_uid_venue_and_expiry_must_be_verified(self):
+        for field,value,code in [('uid','other','FUTURE_IDENTITY_MISMATCH'),
+            ('real_exchange','REAL_EXCHANGE_RTS','FUTURE_VENUE_MISMATCH'),
+            ('expiration_date','bad','FUTURE_EXPIRED_OR_EXPIRY_MISSING')]:
+            with self.subTest(field=field):
+                reader=FakeReader();reply=reader.call('future',id='nasd-contract');reply['instrument'][field]=value
+                with patch.object(reader,'call',return_value=reply),self.assertRaisesRegex(T.TBankError,code):
+                    T.future_metadata(reader,{'uid':'nasd-contract','ticker':'NAZ6'})
+
+    def test_closed_bar_validation_rejects_future_invalid_ohlc_and_forming_candles(self):
+        now=T.utcnow();base={'time':T.iso(now-timedelta(minutes=1)), 'is_complete':True,
+            'open':{'units':'12'},'high':{'units':'13'},'low':{'units':'11'},'close':{'units':'12'},'volume':'20'}
+        items=[base,base,{**base,'is_complete':False},{**base,'time':T.iso(now+timedelta(days=1))},
+               {**base,'high':{'units':'1'}},{**base,'volume':'-1'}]
+        self.assertEqual(len(T.closed_candles(items,now)),1)
+
+    def test_three_day_ohlcv_has_fixed_boundaries_no_current_bucket_and_no_initial_partial(self):
+        width=3*86400
+        epoch=datetime(2026,1,10,tzinfo=timezone.utc).timestamp()
+        start=datetime.fromtimestamp(int(epoch//width)*width,timezone.utc)
+        daily=[{'time':T.iso(start+timedelta(days=i)),'open':10+i,'high':12+i,'low':9+i,
+                'close':11+i,'volume_lots':i+1} for i in range(8)]
+        result=T.three_day_candles(daily,start+timedelta(days=8))
+        self.assertEqual(len(result),2)
+        self.assertEqual(result[0],{'time':T.iso(start),'open':10,'high':14,'low':9,'close':13,
+                                   'volume_lots':6,'source_bar_count':3})
+        trimmed=T.three_day_candles(daily[1:],start+timedelta(days=8))
+        self.assertEqual(len(trimmed),1)
+        self.assertEqual(trimmed[0]['time'],T.iso(start+timedelta(days=3)))
+
+    def test_no_candle_is_created_for_dates_missing_from_native_daily_history(self):
+        width=3*86400;start=int(datetime(2026,1,10,tzinfo=timezone.utc).timestamp()//width)*width
+        daily=[{'time':T.iso(datetime.fromtimestamp(start+i*86400,timezone.utc)),
+            'open':10,'high':12,'low':9,'close':11,'volume_lots':10} for i in (0,2,6)]
+        result=T.three_day_candles(daily,datetime.fromtimestamp(start+9*86400,timezone.utc))
+        self.assertEqual(len(result),2)
+        self.assertEqual(result[0]['volume_lots'],20)
+        self.assertEqual(result[0]['source_bar_count'],2)
+
+    def test_stale_download_is_reported_even_when_candles_remain_cached(self):
+        c=self.connection();c.refresh()
+        c.candles[('NQF','1m')]['loaded_at']=T.iso(T.utcnow()-timedelta(minutes=4))
+        self.assertEqual(c.candle_snapshot('NQF','1m')['status'],'STALE')
+        self.assertEqual(c.status()['timeframes']['NQF']['1m']['status'],'STALE')
 
 
 class HttpPrivacyTests(unittest.TestCase):
