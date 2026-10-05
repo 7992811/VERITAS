@@ -120,7 +120,10 @@ def simulate(z,s,p,pol,pnl_stress=0.):
         last=min(len(z)-1,i+pol["max_events"])
         while j<=last:
             rr=z.iloc[j]
-            funding_sum+=float(rr.rate)
+            mk=base.close_before(p,int(rr.ts))
+            if mk is not None:
+                mark,_=mk
+                funding_sum+=float(rr.rate)*(mark/perp0)
             held=j-entry_i
             if exit_now(rr,held):
                 reason="CARRY_END";break
@@ -130,9 +133,12 @@ def simulate(z,s,p,pol,pnl_stress=0.):
         so=nearest_open(s,exit_event_ts);po=nearest_open(p,exit_event_ts)
         if so is None or po is None:break
         spot1,ets=so;perp1,etp=po
-        spot_pnl=spot1/spot0-1.
-        perp_pnl=1.-perp1/perp0
-        costs=PAIR_RT+pnl_stress
+        spot_ratio=spot1/spot0
+        perp_ratio=perp1/perp0
+        spot_pnl=spot_ratio-1.
+        perp_pnl=1.-perp_ratio
+        execution_cost=LEG*(1.+1.+spot_ratio+perp_ratio)
+        costs=execution_cost+pnl_stress
         pair_pnl=spot_pnl+perp_pnl+funding_sum-costs
         capital_return=pair_pnl/2.
         # Hourly mark-to-market path of the hedged pair, including realized
@@ -152,6 +158,8 @@ def simulate(z,s,p,pol,pnl_stress=0.):
             "opened":entry_ts,"closed":max(ets,etp),"net":float(capital_return),
             "raw_pair_pnl":float(pair_pnl),"funding":float(funding_sum),
             "spot":float(spot_pnl),"perp":float(perp_pnl),
+            "execution_cost":float(execution_cost),
+            "spot_exit_ratio":float(spot_ratio),"perp_exit_ratio":float(perp_ratio),
             "entry_basis":float(r.basis),"events":int(j-entry_i),"reason":reason,
             "forecast_lcb":float(r.forecast_lcb),"positive_frac":float(r.positive_frac),
             "pair_price_mae":mae,
