@@ -1,0 +1,74 @@
+name: VERITAS relative-value perpetual research
+
+on:
+  push:
+    branches:
+      - research/full-arsenal-20261005
+    paths:
+      - tools/research_crypto_relative_value_perp.py
+      - tools/research_crypto_carry.py
+      - .github/workflows/veritas-rv-perp.yml
+  workflow_dispatch:
+
+jobs:
+  rv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/full-arsenal-20261005
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3
+      - name: Download 2022-2026 spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
+      - name: Download 2020-2021 spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-external-holdout
+          path: external_holdout_out
+          github-token: ${{ github.token }}
+          run-id: 37268494688
+      - name: Reuse BTC carry cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-carry-BTC
+          path: carry_out
+          github-token: ${{ github.token }}
+          run-id: 37272502854
+      - name: Reuse ETH carry cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-carry-ETH
+          path: carry_out
+          github-token: ${{ github.token }}
+          run-id: 37272502854
+      - name: Run relative-value research
+        run: python tools/research_crypto_relative_value_perp.py
+      - name: Print compact
+        if: always()
+        run: |
+          if [ -f rv_perp_out/result.json ]; then
+            python - <<'PY'
+          import json
+          x=json.load(open('rv_perp_out/result.json'))
+          out={k:{q:v.get(q) for q in ('base','stress5','years','stress_years','bootstrap')} for k,v in x.get('variants',{}).items()}
+          print('VERITAS_RV_PERP_COMPACT='+json.dumps(out,separators=(',',':')))
+          PY
+          fi
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-rv-perp
+          path: rv_perp_out/
+          retention-days: 14
