@@ -51,6 +51,7 @@ MODULE_ACTION={
  "CROWDED_FADE":"F15",
  "MACRO_TREND":"P30",
  "ONCHAIN_TREND":"P30",
+ "ONCHAIN_VALUE":"W25",
 }
 ACTION={a["name"]:a for a in ar.ACTIONS}
 
