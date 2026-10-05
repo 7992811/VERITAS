@@ -9,6 +9,9 @@ no order, cancellation, or transfer request messages or service definitions.
 Unknown response fields are handled by protobuf's normal forward compatibility.
 Transport methods are an explicit read-only allowlist in `veritas_tbank.py`.
 
+R87 adds Future and FutureResponse from the same source commit, used only by the
+read-only FutureBy method to verify venue, expiry, lot and tick metadata.
+
 Generated with `grpcio-tools==1.78.0`; runtime `protobuf==6.33.5`.
 The archived SDK and quarantined PyPI `t-tech-investments` package are not used.
 The current bank-hosted SDK registry could not be fetched from the build workspace.
