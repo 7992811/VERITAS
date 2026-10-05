@@ -16,7 +16,9 @@ PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
 # Research/paper economics gate. This is deliberately independent from signal quality:
 # even a SUPER signal cannot bypass bad trade economics.
 MIN_REWARD_RISK = max(1.0, float(os.getenv("VERITAS_FINAL_MIN_RR", "1.15")))
-MIN_EXPECTED_MOVE_PCT = max(0.0025, float(os.getenv("VERITAS_FINAL_MIN_EXPECTED_MOVE", "0.004")))
+MIN_EXPECTED_MOVE_PCT = max(0.0025, float(os.getenv("VERITAS_FINAL_MIN_EXPECTED_MOVE", "0.0025")))
+MIN_MOVE_COST_MULTIPLE = max(1.0, float(os.getenv("VERITAS_FINAL_MOVE_COST_MULTIPLE", "1.5")))
+MOVE_POLICY_VERSION = "R75_COST_COVERED_MOVE"
 ROUND_TRIP_COST_BPS = max(1.0, float(os.getenv("VERITAS_EXECUTION_ROUND_TRIP_COST_BPS", "20")))
 
 # Adverse fill assumptions for the normalized paper book. These are configurable
@@ -122,6 +124,11 @@ def round_trip_cost_pct(spread_bps: Optional[float] = None) -> float:
     return max(base, spread_cost)
 
 
+def minimum_expected_move_pct(modeled_cost: float) -> float:
+    """One move floor for planning and final fills; net profit/RR remain separate gates."""
+    return max(MIN_EXPECTED_MOVE_PCT, MIN_MOVE_COST_MULTIPLE * max(0.0, _num(modeled_cost, 0.0)))
+
+
 def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Validate the same target, stop, size and adverse fills used by paper execution."""
     p = dict(plan or {})
@@ -181,7 +188,7 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
         if net_rr is None or net_rr < MIN_REWARD_RISK:
             blockers.append("NET_REWARD_RISK_BELOW_FLOOR")
 
-    min_move = max(MIN_EXPECTED_MOVE_PCT, 2.5 * modeled_cost)
+    min_move = minimum_expected_move_pct(modeled_cost)
     effective_move = min(abs(forecast_move), target_move) if forecast_move is not None and target_move is not None else None
     if effective_move is None or effective_move < min_move:
         blockers.append("EXPECTED_MOVE_BELOW_COST_BUFFER")

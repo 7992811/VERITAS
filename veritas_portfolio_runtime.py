@@ -3804,8 +3804,7 @@ def _v90r59_thresholds(policy,horizon,cost):
     rr_floor={'IMPULSE_ONLY':1.30,'AGGRESSIVE':1.35,'CORE':1.45,'CHALLENGER':1.55}.get(mode,1.45)
     if horizon=='5m':
         rr_floor+=0.10
-    cost_mult={'5m':3.50,'1h':3.25,'4h':3.00}.get(horizon,2.75)
-    move_floor=max(0.0040,cost_mult*max(0.0,float(cost or 0.0)))
+    move_floor=VX.minimum_expected_move_pct(cost)
     return rr_floor,move_floor
 
 def _v90r59_strong_reversal(row,metrics=None):
@@ -4025,7 +4024,7 @@ def report(pg_connect):
       'post_cost_rr_floors':{
         'Impulse':'1.30 (+0.10 on 5m)','Aggressive':'1.35 (+0.10 on 5m)',
         'Champion':'1.45 (+0.10 on 5m)','Challenger':'1.55 (+0.10 on 5m)'},
-      'minimum_expected_move':'max(0.40%, 2.75x-3.50x modeled round-trip cost)',
+      'minimum_expected_move':f'max({100*VX.MIN_EXPECTED_MOVE_PCT:.2f}%, {VX.MIN_MOVE_COST_MULTIPLE:.2f}x modeled round-trip cost)',
       'provisional_setup_requires_mature_structure':True,
       'execution_tf_direction_conflict_requires_strong_reversal':True,
       'five_minute_counter_senior_requires_strong_reversal':True,
@@ -4339,8 +4338,7 @@ def _v90r65_genesis_metrics(row):
     tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
     hmin={'5m':.58,'1h':.55,'4h':.65}.get(h,.65)
     rrmin={'5m':1.35,'1h':1.45,'4h':1.55}.get(h,1.55)
-    movemin=max({'5m':.0050,'1h':.0060,'4h':.0080}.get(h,.0080),
-                2.50*max(cost,.0015))
+    movemin=VX.minimum_expected_move_pct(cost)
     quality_ok=quality in ('FRESH_BREAKOUT','CONFIRMED_TREND','NEW_SETUP_PROVISIONAL')
     trend_ok=hstate in ('BUILDING_TREND','CONFIRMED_TREND') or tier in ('SUPER_LONG','SUPER_SHORT')
     timing=_v90r56_late_entry_gate(row)
@@ -4578,7 +4576,7 @@ def _v90r65_actual_genesis_fill_ok(row,price,direction,target_fraction):
     rr=_v90r65_num(actual.get('expected_to_stop_ratio'))
     move=abs(_v90r65_num(actual.get('expected_move_pct')))
     cost=abs(_v90r65_num(actual.get('modeled_round_trip_cost_pct'),.002))
-    ok=bool(not hard and rr>=.95 and move>=max(.0040,2.25*cost))
+    ok=bool(not hard and rr>=.95 and move>=VX.minimum_expected_move_pct(cost))
     return {'eligible':ok,'blockers':blockers,'hard_blockers':hard,
             'actual_rr':rr,'actual_move':move,'modeled_cost':cost}
 
@@ -4736,7 +4734,12 @@ def report(pg_connect):
         'closed_candle_events':True,'nearest_senior_level_limits_entry':True,
         'distinct_confirmation_per_add':True,'initial_size_policy_preserved':True,
         'execution_quote_max_age_seconds':{'BTC':30,'ETH':30,'other':120},
-        'research_validation':'SEE_REPLAY_REPORT','profitability_proven':False}
+        'research_validation':'SEE_REPLAY_REPORT','profitability_proven':False,
+        'entry_economics':{'move_policy_version':VX.MOVE_POLICY_VERSION,
+            'minimum_move_pct':VX.MIN_EXPECTED_MOVE_PCT,
+            'minimum_move_cost_multiple':VX.MIN_MOVE_COST_MULTIPLE,
+            'minimum_net_reward_risk':VX.MIN_REWARD_RISK,
+            'positive_net_target_required':True}}
     d['crypto_early_capture_r65']={
       'status':'ACTIVE','started_at':V90_R65_STARTED_AT,
       'entry_path_revision':'2026-10-02-origin-and-executable-fill',
