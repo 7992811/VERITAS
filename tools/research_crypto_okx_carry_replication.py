@@ -230,18 +230,23 @@ def attach(asset):
     s=candles(spot);p=candles(swap)
     if f.empty or s.empty or p.empty:return pd.DataFrame(),s,p
 
-    # Attach first common 1h open at/after one hour after funding timestamp.
-    common=s[["ts","open","close"]].merge(p[["ts","open","close"]],on="ts",suffixes=("_s","_p")).sort_values("ts")
+    # Strict causal sequence:
+    # funding settlement T -> observe the completed common 1h close before T ->
+    # decide -> execute at first common 1h open >= T+1h.
+    common=s[["ts","open","close"]].merge(p[["ts","open","close"]],on="ts",suffixes=("_s","_p")).sort_values("ts").reset_index(drop=True)
     T=common.ts.to_numpy(np.int64)
-    et=f.ts.to_numpy(np.int64)+3600
-    ix=np.searchsorted(T,et,side="left")
-    good=ix<len(common)
+    ft=f.ts.to_numpy(np.int64)
+    obs=np.searchsorted(T,ft,side="left")-1
+    ent=np.searchsorted(T,ft+3600,side="left")
+    good=(obs>=0)&(ent<len(common))
     z=f.loc[good].copy().reset_index(drop=True)
-    ix=ix[good]
-    z["entry_ts"]=T[ix]
-    z["spot_open"]=common.open_s.to_numpy()[ix]
-    z["perp_open"]=common.open_p.to_numpy()[ix]
-    z["basis"]=z.perp_open/z.spot_open-1.
+    obs=obs[good];ent=ent[good]
+    z["basis_obs_ts"]=T[obs]+3600
+    z["basis"]=common.close_p.to_numpy()[obs]/common.close_s.to_numpy()[obs]-1.
+    z["entry_ts"]=T[ent]
+    z["spot_open"]=common.open_s.to_numpy()[ent]
+    z["perp_open"]=common.open_p.to_numpy()[ent]
+    z=z[z.basis_obs_ts<=z.entry_ts].reset_index(drop=True)
 
     # Causal features; current settled rate is known before post-settlement entry.
     z["mean3"]=z.rate.rolling(3).mean().shift(1)
@@ -287,7 +292,12 @@ def simulate(z,common,stress=0.):
         p0=float(PO[ci])*(1-SLIP) # short swap
         funding_sum=0.;j=i+1;last=min(len(z)-1,i+int(r.max_events));reason="MAX"
         while j<=last:
-            rr=z.iloc[j];funding_sum+=float(rr.rate)
+            rr=z.iloc[j]
+            mt=int(rr.ts)
+            mi=np.searchsorted(T,mt,side="left")-1
+            if mi>=0:
+                mark=float(PC[mi])
+                funding_sum+=float(rr.rate)*(mark/p0)
             if exit_now(rr,j-entry_i):
                 reason="CARRY_END";break
             j+=1
@@ -297,9 +307,14 @@ def simulate(z,common,stress=0.):
         if cj>=len(T):break
         s1=float(SO[cj])*(1-SLIP)
         p1=float(PO[cj])*(1+SLIP)
-        spot_pnl=s1/s0-1.
-        perp_pnl=1.-p1/p0
-        pair=spot_pnl+perp_pnl+funding_sum-(2*SPOT_FEE+2*SWAP_FEE)-stress
+        spot_ratio=s1/s0
+        perp_ratio=p1/p0
+        spot_pnl=spot_ratio-1.
+        perp_pnl=1.-perp_ratio
+        # Entry fee on one initial notional per leg; exit fee scales with
+        # actual exit notionals. Slippage is kept as explicit four-execution cost.
+        execution_cost=SPOT_FEE*(1.+spot_ratio)+SWAP_FEE*(1.+perp_ratio)+4*SLIP
+        pair=spot_pnl+perp_pnl+funding_sum-execution_cost-stress
         net=pair/2.
 
         # Pair price MAE, excluding positive funding credit.
@@ -308,6 +323,8 @@ def simulate(z,common,stress=0.):
         mae=float(min(0.,np.min((path_s+path_p)/2.))) if len(path_s) else 0.
         trades.append({"opened":entry_ts,"closed":int(T[cj]),"net":float(net),
                        "funding":float(funding_sum),"spot":float(spot_pnl),"perp":float(perp_pnl),
+                       "execution_cost":float(execution_cost),
+                       "spot_exit_ratio":float(spot_ratio),"perp_exit_ratio":float(perp_ratio),
                        "pair_price_mae":mae,"entry_basis":float(r.basis),
                        "events":int(j-entry_i),"reason":reason})
         i=j+1
