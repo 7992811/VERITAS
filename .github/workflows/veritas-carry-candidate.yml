@@ -7,6 +7,7 @@ on:
     paths:
       - tools/research_crypto_carry_candidate.py
       - tools/research_crypto_adaptive_carry.py
+      - tools/research_crypto_carry.py
       - .github/workflows/veritas-carry-candidate.yml
   workflow_dispatch:
 
