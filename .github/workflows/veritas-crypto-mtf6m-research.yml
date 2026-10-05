@@ -1,11 +1,11 @@
-name: VERITAS long reversal research
+name: VERITAS bull-episode long research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
-      - tools/research_crypto_long_reversal.py
+      - tools/research_crypto_bull_episodes.py
       - tools/research_crypto_manager_library.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
@@ -37,22 +37,22 @@ jobs:
           path: manager_library_out
           github-token: ${{ github.token }}
           run-id: 37210798801
-      - name: Run long reversal study
-        run: python tools/research_crypto_long_reversal.py
+      - name: Run bull-episode study
+        run: python tools/research_crypto_bull_episodes.py
       - name: Print compact result
         if: always()
         run: |
-          if [ -f long_reversal_out/result.json ]; then
+          if [ -f bull_episode_out/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('long_reversal_out/result.json'))
-          print('VERITAS_REV_LONG_PASSES_COMPACT='+json.dumps(x.get('passes',[])[:8],separators=(',',':')))
+          x=json.load(open('bull_episode_out/result.json'))
+          print('VERITAS_BULL_EP_PASSES_COMPACT='+json.dumps(x.get('passes',[])[:8],separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-long-reversal-${{ matrix.asset }}
-          path: long_reversal_out/
+          name: veritas-bull-episodes-${{ matrix.asset }}
+          path: bull_episode_out/
           retention-days: 7
