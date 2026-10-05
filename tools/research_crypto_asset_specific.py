@@ -317,6 +317,14 @@ def evaluate(df, rules, year, quality):
     s["avg_size"] = float(np.mean([p["size"] for p in picks])) if picks else None
     return {"summary": s, "stress": summarize(stress), "by_direction": by, "trades": picks}
 
+def aggregate_parts(parts):
+    vals = []
+    stress = []
+    for p in parts:
+        vals.extend(t["net"] for t in p["trades"])
+        stress.extend(t["net"] - STRESS for t in p["trades"])
+    return summarize(vals), summarize(stress)
+
 def walkforward_score(parts):
     nonempty = [p for p in parts if p["summary"]["n"] > 0]
     if len(nonempty) < 2:
@@ -327,24 +335,33 @@ def walkforward_score(parts):
         return None
     if any(p["summary"]["pf"] < 1.05 for p in nonempty):
         return None
-    vals = []
-    stress = []
-    for p in nonempty:
-        vals.extend(t["net"] for t in p["trades"])
-        stress.extend(t["net"] - STRESS for t in p["trades"])
-    s = summarize(vals)
-    ss = summarize(stress)
+    s, ss = aggregate_parts(nonempty)
     if s["n"] < 20 or s["avg"] <= 0 or s["pf"] < 1.15:
         return None
     if ss["avg"] <= 0 or ss["pf"] < 1.05:
         return None
-    # User priority: win-rate first, then profit factor / EV, then drawdown.
     return (
         1.20 * s["win_rate"]
         + 0.28 * min(s["pf"], 3.0)
         + 70.0 * s["avg"]
         - 0.08 * s["dd"]
     ), s, ss
+
+def diagnostic_score(parts):
+    s, ss = aggregate_parts(parts)
+    avgs = [p["summary"]["avg"] if p["summary"]["n"] else -0.05 for p in parts]
+    pfs = [p["summary"]["pf"] if p["summary"]["n"] else 0.0 for p in parts]
+    ns = [p["summary"]["n"] for p in parts]
+    # Rank near-misses by worst validation year first, then aggregate robustness.
+    score = (
+        180.0 * min(avgs)
+        + 0.50 * min(pfs)
+        + 0.25 * min(s["pf"], 3.0)
+        + 0.60 * (s["win_rate"] or 0.0)
+        + 35.0 * (ss["avg"] or -0.05)
+        + 0.002 * min(sum(ns), 250)
+    )
+    return float(score), s, ss
 
 def choose_config(asset, df):
     catalogs = {}
@@ -353,11 +370,36 @@ def choose_config(asset, df):
             catalogs[(quality, train_end)] = build_catalog(df, train_end, quality)
 
     ranked = []
+    diagnostics = []
     for cfg in candidate_configs(asset):
         parts = []
+        rule_counts = []
         for y in (2024, 2025):
             rules = select_rules(catalogs[(cfg["quality"], y - 1)], cfg, y - 1)
+            rule_counts.append(len(rules))
             parts.append(evaluate(df, rules, y, cfg["quality"]))
+
+        dscore, dagg, dstress = diagnostic_score(parts)
+        diagnostics.append({
+            "score": dscore,
+            "config": cfg,
+            "walkforward": dagg,
+            "walkforward_stress": dstress,
+            "rule_counts": {"2024": rule_counts[0], "2025": rule_counts[1]},
+            "years": {
+                "2024": parts[0]["summary"],
+                "2025": parts[1]["summary"],
+            },
+            "year_stress": {
+                "2024": parts[0]["stress"],
+                "2025": parts[1]["stress"],
+            },
+            "by_direction": {
+                "2024": parts[0]["by_direction"],
+                "2025": parts[1]["by_direction"],
+            },
+        })
+
         sc = walkforward_score(parts)
         if sc is None:
             continue
@@ -372,8 +414,10 @@ def choose_config(asset, df):
                 "2025": parts[1]["summary"],
             },
         })
+
     ranked.sort(key=lambda r: r["score"], reverse=True)
-    return ranked
+    diagnostics.sort(key=lambda r: r["score"], reverse=True)
+    return ranked, diagnostics[:12]
 
 def run(asset):
     btc = load("BTC")
