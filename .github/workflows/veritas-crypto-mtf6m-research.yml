@@ -1,11 +1,11 @@
-name: VERITAS multi-horizon trend research
+name: VERITAS asymmetric long-sequence research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
-      - tools/research_crypto_multihorizon_trend.py
+      - tools/research_crypto_long_sequences.py
       - tools/research_crypto_manager_library.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
@@ -37,22 +37,22 @@ jobs:
           path: manager_library_out
           github-token: ${{ github.token }}
           run-id: 37210798801
-      - name: Run multi-horizon trend study
-        run: python tools/research_crypto_multihorizon_trend.py
+      - name: Run asymmetric long-sequence study
+        run: python tools/research_crypto_long_sequences.py
       - name: Print compact result
         if: always()
         run: |
-          if [ -f multihorizon_out/result.json ]; then
+          if [ -f long_sequence_out/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('multihorizon_out/result.json'))
-          print('VERITAS_MULTIHORIZON_PASSES_COMPACT='+json.dumps(x.get('passes',[])[:8],separators=(',',':')))
+          x=json.load(open('long_sequence_out/result.json'))
+          print('VERITAS_LONG_SEQUENCE_PASSES_COMPACT='+json.dumps(x.get('passes',[])[:8],separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-multihorizon-${{ matrix.asset }}
-          path: multihorizon_out/
+          name: veritas-long-sequence-${{ matrix.asset }}
+          path: long_sequence_out/
           retention-days: 7
