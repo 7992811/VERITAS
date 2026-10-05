@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r91-single-row-signal-legend"
+UI_VERSION = "veritas-ui-v9.0-currency-portfolio-setup"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -409,6 +409,7 @@ const stageRu=v=>{const k=String(v||'');const m={EARLY_PROBE:'Ранний вх�
 const reasonRu=v=>{
   const k=String(v||'').toUpperCase();
   const exact={
+    CURRENCY_PORTFOLIO_SETUP_PENDING:'Валютный портфель ожидает настройки капитала и ограничений риска',
     EXECUTION_QUOTE_UNAVAILABLE:'Нет свежей котировки для исполнения',
     EXECUTION_PENDING:'Ожидается окончательная проверка исполнения',
     EXECUTION_CONTROL_BLOCKED:'Ордер не прошёл дополнительный контроль исполнения',
@@ -605,11 +606,11 @@ function selectSignal(k,scroll=false){
 }
 
 
-const portfolioName=name=>({Impulse:'Импульсный',Aggressive:'Агрессивный',Champion:'Чемпион',Challenger:'Челленджер'}[name]||name||'—');
+const portfolioName=name=>({Impulse:'Импульсный',Aggressive:'Агрессивный',Champion:'Чемпион',Challenger:'Челленджер',Currency:'Валютный портфель'}[name]||name||'—');
 const tone=value=>value==null?'':Number(value)>0?'ok':Number(value)<0?'bad':'';
 const signedPct=value=>value==null?'—':(Number(value)>0?'+':'')+pct(value);
 function portfolioView(p){
-  const l=p.latest||{},risk=p.risk_governor||(l.payload||{}).risk_governor||{};
+  const l=p.configuration_status==='SETUP_PENDING'?{}:(p.latest||{}),risk=p.risk_governor||(l.payload||{}).risk_governor||{};
   const value=key=>knownNumber(p[key]??l[key]);
   const gross=value('gross_leverage'),net=value('net_exposure'),closed=knownNumber(p.closed_trades),pnl=value('closed_trade_pnl_rub');
   return {balance:value('nav_rub'),usd:value('nav_usd'),ret:value('total_return_pct'),dd:knownNumber(p.drawdown_pct??(l.drawdown!=null?100*Number(l.drawdown):null)),
@@ -627,10 +628,11 @@ function renderPortfolioPanel(ps){
   const metric=(label,value,c='',sub='')=>'<div class="pf-value"><span>'+label+'</span><b class="'+c+'">'+value+'</b>'+(sub?'<small>'+sub+'</small>':'')+'</div>';
   const meter=(value,limit,risk=false)=>value==null||!(limit>0)?'':'<div class="pf-meter '+(risk?(value>=limit?'is-breach':'is-risk'):'')+'" aria-hidden="true"><i style="width:'+Math.min(100,Math.max(0,100*value/limit)).toFixed(2)+'%"></i></div>';
   const mult=x=>x==null?'—':n(x,2)+'×';
-  const status=v.risk.new_risk===false?'Новый риск запрещён':open>0?open+' поз. открыто':v.gross==null?'Данные обновляются':v.gross>.002?'Позиции синхронизируются':'Вне рынка';
+  const status=p.configuration_status==='SETUP_PENDING'?'Настройка':v.risk.new_risk===false?'Новый риск запрещён':open>0?open+' поз. открыто':v.gross==null?'Данные обновляются':v.gross>.002?'Позиции синхронизируются':'Вне рынка';
   const pf=knownNumber(p.profit_factor),pfText=pf==null?(p.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(pf,2);
-  root.innerHTML='<div class="pf-caption">С начала учёта · выберите портфель для подробностей</div><div class="pf-compare"><div class="pf-row pf-colnames"><span>Портфель</span><span>Доходность</span><span>Просадка</span><span>Прибыльных</span></div>'+ps.map(q=>{const a=portfolioView(q);return'<button type="button" class="pf-row" data-portfolio="'+esc(q.name)+'" aria-pressed="'+(q.name===p.name)+'"><span><b>'+esc(portfolioName(q.name))+'</b><small>'+esc(q.name)+'</small></span><b class="'+tone(a.ret)+'">'+signedPct(a.ret)+'</b><span>'+pct(a.dd)+'</span><span>'+(a.winRate==null?'—':n(a.winRate,1)+'%')+'</span></button>';}).join('')+'</div>'+
+  root.innerHTML='<div class="pf-caption">С начала учёта · выберите портфель для подробностей</div><div class="pf-compare"><div class="pf-row pf-colnames"><span>Портфель</span><span>Доходность</span><span>Просадка</span><span>Прибыльных</span></div>'+ps.map(q=>{const a=portfolioView(q);return'<button type="button" class="pf-row" data-portfolio="'+esc(q.name)+'" aria-pressed="'+(q.name===p.name)+'"><span><b>'+esc(portfolioName(q.name))+'</b><small>'+esc(q.name==='Currency'?'CNYRUBf':q.name)+'</small></span><b class="'+tone(a.ret)+'">'+signedPct(a.ret)+'</b><span>'+pct(a.dd)+'</span><span>'+(a.winRate==null?'—':n(a.winRate,1)+'%')+'</span></button>';}).join('')+'</div>'+
     '<div class="pf-detail"><div class="pf-heading"><div><h3>'+esc(portfolioName(p.name))+'</h3><div class="pf-amount">'+rub(v.balance)+'</div><div class="pf-secondary">'+(v.usd==null?'—':n(v.usd,0)+' $')+'</div></div><div class="pf-status '+(v.risk.new_risk===false?'warn':'')+'">'+status+'</div></div>'+
+    (p.name==='Currency'?'<div class="pf-foot">Только CNYRUBf. Капитал и ограничения риска ещё не заданы; сделки не выполняются.</div>':'')+
     '<div class="pf-performance">'+metric('Доходность',signedPct(v.ret),tone(v.ret),'С начала учёта')+metric('К RUONIA',signedPct(v.excess),tone(v.excess),'Относительно эталона')+metric('Закрытые сделки',rub(v.pnl),tone(v.pnl),'После всех расходов')+'</div>'+
     '<div class="pf-sections"><section class="pf-section"><h4>Риск и ограничения</h4>'+pair('Текущая просадка',pct(v.dd),v.dd>0?'warn':'')+meter(v.dd,v.ddLimit,true)+pair('Лимит просадки',pct(v.ddLimit))+pair('Загрузка / лимит',mult(v.gross)+' / '+mult(v.limit))+meter(v.gross,v.limit)+pair('Новые позиции',v.risk.new_risk===true?'Разрешены':v.risk.new_risk===false?'Заблокированы':'—')+'</section>'+
     '<section class="pf-section"><h4>Экспозиция</h4>'+pair('Длинные позиции',mult(v.long))+pair('Короткие позиции',mult(v.short))+pair('Чистая экспозиция',mult(v.net))+pair('Вне позиций',v.cash==null?'—':pct(100*v.cash))+'<div class="pf-foot">Объём позиций относительно размера портфеля. 1× = 100%. Показатель «Вне позиций» не учитывает требования к марже.</div></section>'+
@@ -967,7 +969,7 @@ function ingestExtractedPositions(d,{allowClear=false}={}){
   if(rows.length){
     const next={};
     rows.forEach(z=>{const name=String(z.portfolio_name||z.portfolio||'');if(!next[name])next[name]=[];next[name].push(z)});
-    ['Impulse','Aggressive','Champion','Challenger'].forEach(name=>{if(!next[name])next[name]=[]});
+    ['Impulse','Aggressive','Champion','Challenger','Currency'].forEach(name=>{if(!next[name])next[name]=[]});
     st.positionBook=next;st.positionBookReady=true;savePositionCache(next);return true;
   }
   if(allowClear&&ps.length&&!portfolioExposureNonZero(ps)){
@@ -1003,7 +1005,7 @@ async function loadPortfolios(){
   if(st.busy['paper-portfolios'])return;
   const d=await get('paper-portfolios','/api/v1/paper-portfolios',30000);
   const complete=d&&d.status==='OK'&&Array.isArray(d.portfolios)&&
-    ['Impulse','Aggressive','Champion','Challenger'].every(name=>d.portfolios.some(p=>p.name===name&&Array.isArray(p.positions)));
+    ['Impulse','Aggressive','Champion','Challenger','Currency'].every(name=>d.portfolios.some(p=>p.name===name&&Array.isArray(p.positions)));
   if(complete){
     const ingested=ingestExtractedPositions(d,{allowClear:true});
     st.portfolios=mergePortfolioSets(d,st.portfolios,true);
@@ -1048,7 +1050,7 @@ function refreshLiveState(){
 }
 function start(){
   if(st.positionBookReady){
-    st.portfolios={portfolios:['Impulse','Aggressive','Champion','Challenger'].map(name=>({name,positions:st.positionBook[name]||[]}))};
+    st.portfolios={portfolios:['Impulse','Aggressive','Champion','Challenger','Currency'].map(name=>({name,positions:st.positionBook[name]||[]}))};
     renderPortfolios();
     $('positionSync').textContent='Сохранённые позиции. Получаем актуальное состояние…';
   }

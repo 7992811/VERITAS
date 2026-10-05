@@ -4892,6 +4892,8 @@ def _v90r79_hard_signal_veto(row):
 
 
 def _signal_first_admission(row,policy,drawdown):
+    if (policy or {}).get('mode')=='CURRENCY':
+        return {'open':False,'fraction':0.0,'hard_veto':True,'reason':VCP.BLOCK_REASON}
     work,ev,direction,active=_v90r79_signal_state(row,datetime.now(timezone.utc))
     if not active:
         return dict(_v90r79_base_admission(row,policy,drawdown) or {})
@@ -4973,6 +4975,9 @@ def _signal_first_admission(row,policy,drawdown):
 
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    if name==VCP.PORTFOLIO_KEY:
+        _record_entry_outcome(row,'BLOCKED',VCP.BLOCK_REASON)
+        return 0.0
     cycle_clock=_v90r55_dt(ts) or datetime.now(timezone.utc)
     work,ev,signal_direction,active=_v90r79_signal_state(dict(row or {},price=price),cycle_clock)
     if not active or signal_direction!=direction:
@@ -5064,7 +5069,7 @@ def report(pg_connect):
       'soft_vetoes_no_longer_flatten_signal':sorted(_R79_SOFT_ECON_BLOCKERS),
       'adds':'normal confirmation/risk path remains authoritative',
     }
-    return _jsonable(d)
+    return _jsonable(VCP.decorate_report(d))
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),40)
 
@@ -5112,6 +5117,8 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
 
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    if name==VCP.PORTFOLIO_KEY:
+        return VCP.pending_state()
     rows=[dict(z) for z in c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s',(name,)).fetchall()]
     safe_prices=dict(prices or {}); safe_candidates=dict(candidates or {}); safe_summary=list(summary or [])
     for z in rows:

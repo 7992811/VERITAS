@@ -16472,8 +16472,8 @@ def _v90r25_portfolios_fast():
         out=dict(cached); out['api_source']='memory_cache'; return out
     with lock:
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
-    if live and len(live.get('portfolios') or [])==4 and (any(p.get('positions') for p in live.get('portfolios') or []) or not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live.get('portfolios') or [])):
-        out=VTV.enrich_positions(live,pg_connect); out['api_source']='live_memory'
+    if live and len(live.get('portfolios') or [])==len(V90_CANONICAL_PORTFOLIOS) and (any(p.get('positions') for p in live.get('portfolios') or []) or not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live.get('portfolios') or [])):
+        out=VP.VCP.decorate_report(VTV.enrich_positions(live,pg_connect)); out['api_source']='live_memory'
         with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
     if not pg_enabled(): return {'status':'UNAVAILABLE','portfolios':[]}
@@ -16539,7 +16539,7 @@ def _v90r25_portfolios_fast():
         benchmark=latest.get('benchmark_nav_rub') or b.get('benchmark_nav_rub')
         outp[-1]['excess_vs_ruonia_pct']=100*(float(nav_rub)/float(benchmark)-1) if nav_rub is not None and benchmark and float(benchmark)>0 else None
     out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':VX.VC.COMMISSION_RATE,'api_source':'fast_sql_enriched'}
-    out=VTV.enrich_positions(out,pg_connect)
+    out=VP.VCP.decorate_report(VTV.enrich_positions(out,pg_connect))
     with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
     return out
 
@@ -18676,7 +18676,7 @@ def maybe_schedule_heavy_learning(reason='scheduled',force=False):
 
 
 # VERITAS V90 CANONICAL PORTFOLIOS R24
-V90_CANONICAL_PORTFOLIOS=('Impulse','Aggressive','Champion','Challenger')
+V90_CANONICAL_PORTFOLIOS=('Impulse','Aggressive','Champion','Challenger','Currency')
 
 def _v90r24_ensure_canonical_portfolios():
     if VP is None or not pg_enabled():
@@ -18692,16 +18692,18 @@ def _v90r24_ensure_canonical_portfolios():
                          'max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
           'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':2.0},
           'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':2.0},
+          'Currency': VP.VCP.policy(),
         }
         with pg_connect() as c:
             for name in V90_CANONICAL_PORTFOLIOS:
+                initial_nav=float(policies[name].get('initial_nav_rub',1000000))
                 c.execute("""INSERT INTO paper_portfolios
                   (name,created_at,updated_at,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,
                    benchmark_nav_rub,high_water_nav_rub,policy,model_version)
-                  VALUES(%s,now(),now(),1000000,0,0,0,1000000,1000000,%s::jsonb,%s)
+                  VALUES(%s,now(),now(),%s,0,0,0,%s,%s,%s::jsonb,%s)
                   ON CONFLICT(name) DO UPDATE SET
                     policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()""",
-                  (name,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION','veritas-portfolio-v9.0-four-portfolio-core')))
+                  (name,initial_nav,initial_nav,initial_nav,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION','veritas-portfolio-v9.0-four-portfolio-core')))
             rows=c.execute("""SELECT name FROM paper_portfolios
                               WHERE name=ANY(%s)
                               ORDER BY CASE name
@@ -18732,9 +18734,9 @@ def _v90r24_prime_portfolio_snapshot():
         rep['api_source']='postgres_cold_start'
         with lock:
             last_cycle['portfolio_autopilot']=rep
-        emit('v90_portfolio_cold_start',status='READY' if len(ordered)==4 else 'DEGRADED',
+        emit('v90_portfolio_cold_start',status='READY' if len(ordered)==len(V90_CANONICAL_PORTFOLIOS) else 'DEGRADED',
              portfolio_count=len(ordered),names=[p.get('name') for p in ordered])
-        return {'status':'READY' if len(ordered)==4 else 'DEGRADED','count':len(ordered)}
+        return {'status':'READY' if len(ordered)==len(V90_CANONICAL_PORTFOLIOS) else 'DEGRADED','count':len(ordered)}
     except Exception as ex:
         emit('v90_portfolio_cold_start',status='ERROR',portfolio_count=0,
              error=f'{type(ex).__name__}: {ex}')

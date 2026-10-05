@@ -9,6 +9,7 @@ import veritas_execution as VX
 import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
+import veritas_currency_portfolio as VCP
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
 VERSION='veritas-portfolio-v9.0-four-portfolio-core'
@@ -28,6 +29,7 @@ POLICIES={
  'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE','max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
  'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':2.0},
  'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':2.0},
+ 'Currency': VCP.policy(),
 }
 
 
@@ -54,7 +56,7 @@ def _execution_price_or_none(prices, asset):
 
 
 # VERITAS v90 portfolio migration
-V90_PORTFOLIOS = ('Impulse','Aggressive','Champion','Challenger')
+V90_PORTFOLIOS = ('Impulse','Aggressive','Champion','Challenger','Currency')
 
 
 def _v90_port_ident(x):
@@ -161,9 +163,10 @@ def ensure_schema(pg_connect):
         ''')
         _v90_migrate_portfolio_data(c)
         for name,pol in POLICIES.items():
+            initial_nav=float(pol.get('initial_nav_rub',INITIAL_NAV_RUB))
             c.execute('''INSERT INTO paper_portfolios(name,created_at,updated_at,initial_nav_rub,benchmark_nav_rub,high_water_nav_rub,policy,model_version)
                          VALUES(%s,now(),now(),%s,%s,%s,%s::jsonb,%s)
-                         ON CONFLICT(name) DO UPDATE SET policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()''',(name,INITIAL_NAV_RUB,INITIAL_NAV_RUB,INITIAL_NAV_RUB,json.dumps(pol),VERSION))
+                         ON CONFLICT(name) DO UPDATE SET policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()''',(name,initial_nav,initial_nav,initial_nav,json.dumps(pol),VERSION))
 
 
 def _fetch_usdrub():
