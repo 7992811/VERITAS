@@ -575,6 +575,8 @@ def sim_pair(x,mode,start,end,stress=0.0):
             else:
                 if (side>0 and zj<=stop_z) or (side<0 and zj>=-stop_z): reason="EXIT"; break
             j+=1
+        if j>last:
+            j=last
         move=side*(float(x.spread.iloc[j])-ent_sp)
         # Approximate pair P&L in log-return units, both legs incur costs.
         net=move-2*(2*(FEE+SLIP)+stress)
