@@ -165,7 +165,7 @@ class SignalAuthoritativeR79Tests(unittest.TestCase):
               'event_gate':T.event_gate(work,2300.0,'LONG',datetime.now(timezone.utc)),
               'stop':(work.get('trade_plan') or {}).get('stop_price')})
         with patch.object(R,'_r72_event_reentry_gate',return_value={'eligible':True,'reason':'R72_NEW_EVENT'}),\
-             patch.object(R,'_v90r55_base_open_or_add',return_value=.50) as mutation:
+             patch.object(R,'_v90pr_base_open_or_add',return_value=.50) as mutation:
             out=R._open_or_add(c,{},'Aggressive','MOEX','LONG',2300.0,.50,1_000_000.0,
                                datetime.now(timezone.utc).isoformat(),r,'test')
         self.assertGreater(out,0)
