@@ -1,0 +1,84 @@
+name: VERITAS cycle regime quick validation
+
+on:
+  push:
+    branches:
+      - research/full-arsenal-20261005
+    paths:
+      - tools/research_crypto_cycle_regimes.py
+      - tools/research_crypto_arsenal_expansion.py
+      - .github/workflows/veritas-cycle-quick.yml
+  workflow_dispatch:
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/full-arsenal-20261005
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3
+      - name: Download spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
+      - name: Reuse BTC derivative cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-derivative-policy-BTC
+          path: derivative_router_out
+          github-token: ${{ github.token }}
+          run-id: 37267616597
+      - name: Reuse ETH derivative cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-derivative-policy-ETH
+          path: derivative_router_out
+          github-token: ${{ github.token }}
+          run-id: 37267616597
+      - name: Reuse BTC positioning cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-positioning-policy-BTC
+          path: positioning_router_out
+          github-token: ${{ github.token }}
+          run-id: 37268559122
+      - name: Reuse ETH positioning cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-positioning-policy-ETH
+          path: positioning_router_out
+          github-token: ${{ github.token }}
+          run-id: 37268559122
+      - name: Run cycle engine
+        run: python tools/research_crypto_cycle_regimes.py --asset ALL
+      - name: Print compact
+        if: always()
+        run: |
+          if [ -f cycle_regime_out/result.json ]; then
+            python - <<'PY'
+          import json
+          x=json.load(open('cycle_regime_out/result.json'))
+          out={}
+          for a,v in x.get('assets',{}).items():
+              robust={k:r for k,r in v.get('transition_library',{}).items() if r.get('robust_pre2026')}
+              out[a]={'current':v.get('current'),'robust_count':len(robust),'robust':robust}
+          print('VERITAS_CYCLE_QUICK='+json.dumps(out,separators=(',',':')))
+          PY
+          fi
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-cycle-quick
+          path: cycle_regime_out/
+          retention-days: 14
