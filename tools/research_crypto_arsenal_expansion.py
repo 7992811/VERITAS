@@ -459,7 +459,7 @@ def simulate(x,events,action,start,end,stress=0.0):
             j=min(j,last); q=C[j]*(1-d*eslip)
             gross+=rem*d*(q/entry-1); cost+=rem*(FEE+stress/2)*q/entry
         out.append({"opened":int(T[i]),"closed":int(T[j]),"d":d,"net":float(gross-cost),
-                    "family":e["family"],"action":action["name"],"reason":reason})
+                    "risk":float(risk),"family":e["family"],"action":action["name"],"reason":reason})
         free=j+COOLDOWN
     return out
 
