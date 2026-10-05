@@ -37,27 +37,27 @@ STRESS=.0005
 POLICIES=[
     {
       "name":"BREAKEVEN_14D",
-      "forecast_events":42,
+      "target_days":14,
       "cost_multiple":1.25,
       "min_positive_frac":.67,
       "min_basis":-.0010,
-      "max_events":84,
+      "max_days":28,
     },
     {
       "name":"STRONG_21D",
-      "forecast_events":63,
+      "target_days":21,
       "cost_multiple":1.50,
       "min_positive_frac":.78,
       "min_basis":-.0005,
-      "max_events":126,
+      "max_days":42,
     },
     {
       "name":"HIGH_CONVICTION_28D",
-      "forecast_events":84,
+      "target_days":28,
       "cost_multiple":1.75,
       "min_positive_frac":.82,
       "min_basis":0.0,
-      "max_events":168,
+      "max_days":56,
     },
 ]
 
@@ -79,14 +79,19 @@ def prep(asset):
     z["fund_vol"]=z.rate.rolling(21,min_periods=9).std().shift(1)
     z["forecast_lcb"]=z.forecast_rate-.50*z.fund_vol.fillna(0)
     z["positive_frac"]=(.55*z.pos9+.45*z.pos21)
+    # Causal funding frequency. Use only intervals completed before the current
+    # settlement. This keeps "14/21/28D" in calendar time if the venue changes
+    # funding from 8h to another interval.
+    z["interval_sec"]=z.ts.diff().rolling(21,min_periods=9).median().shift(1)
     return z,s,p
 
 def entry_ok(r,pol):
-    vals=(r.forecast_lcb,r.positive_frac,r.basis,r.mean3,r.mean9,r.rate)
+    vals=(r.forecast_lcb,r.positive_frac,r.basis,r.mean3,r.mean9,r.rate,r.interval_sec)
     if not all(np.isfinite(v) for v in vals):return False
     # Four executions. Stress is round-trip pair stress and is added once.
     cost=PAIR_RT
-    expected=max(0.,float(r.forecast_lcb))*pol["forecast_events"]
+    forecast_events=int(max(1,round(pol["target_days"]*86400/float(r.interval_sec))))
+    expected=max(0.,float(r.forecast_lcb))*forecast_events
     return (
         expected >= pol["cost_multiple"]*cost
         and r.positive_frac >= pol["min_positive_frac"]
@@ -117,7 +122,10 @@ def simulate(z,s,p,pol,pnl_stress=0.):
         entry_i=i;entry_ts=int(r.entry_ts)
         spot0=float(r.spot_open);perp0=float(r.perp_open)
         funding_sum=0.;reason="MAX";j=i+1
-        last=min(len(z)-1,i+pol["max_events"])
+        if not np.isfinite(r.interval_sec) or r.interval_sec<=0:
+            i+=1;continue
+        max_events=int(max(1,round(pol["max_days"]*86400/float(r.interval_sec))))
+        last=min(len(z)-1,i+max_events)
         while j<=last:
             rr=z.iloc[j]
             mk=base.close_before(p,int(rr.ts))
@@ -162,6 +170,8 @@ def simulate(z,s,p,pol,pnl_stress=0.):
             "spot_exit_ratio":float(spot_ratio),"perp_exit_ratio":float(perp_ratio),
             "entry_basis":float(r.basis),"events":int(j-entry_i),"reason":reason,
             "forecast_lcb":float(r.forecast_lcb),"positive_frac":float(r.positive_frac),
+            "funding_interval_sec":float(r.interval_sec),
+            "target_days":int(pol["target_days"]),"max_days":int(pol["max_days"]),
             "pair_price_mae":mae,
         })
         i=j+1
