@@ -241,13 +241,10 @@ def entry_gate(row, price, direction, fraction, position=None):
     if is_proxy_price(row.get('asset'),execution or row):
         gate.update(eligible=False,status='BLOCK')
         gate['blockers'].append('R67_DIRECT_NQ_QUOTE_REQUIRED')
-    ctx_event=(VTE.context_of(row).get('event') or {})
-    rebased_timing=bool(ctx_event.get('catalyst_continuation') or
-                       ctx_event.get('signal_authoritative') or
-                       ctx_event.get('event_type') in ('CATALYST_CONTINUATION','SIGNAL_CONTINUATION'))
-    # Anti-chase measures MARKET displacement. Simulated adverse fill is a cost
-    # assumption and must not make a freshly rebased displayed signal look late.
-    timing_price=(price if rebased_timing else (gate.get('modeled_entry_fill') or price))
+    # Technical distance uses the actual refreshed quote for every setup.
+    # Modeled slippage is charged above in net economics, not added to the
+    # observed breakout extension as though it were an extra price movement.
+    timing_price=price
     event=(VTE.context_gate(row,datetime.now(timezone.utc)) if position else
            VTE.event_gate(row,timing_price,direction,datetime.now(timezone.utc)))
     gate['trend_event']=event

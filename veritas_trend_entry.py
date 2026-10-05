@@ -479,6 +479,12 @@ def prepare_row(row, price=None, now=None):
                     r66_runner_target_price=g.get('runner_target_price'))
         if ev:
             catalyst=bool(ev.get('catalyst_continuation') or ev.get('event_type')=='CATALYST_CONTINUATION')
+            # A consumed parent plan is obsolete once a separate closed-bar
+            # continuation exists. Recompute admission for its own geometry;
+            # negative history, source and risk vetoes are checked downstream.
+            if (ev.get('parent_event_id') and g.get('eligible')
+                    and plan.get('reason') in ('R74_EVENT_TARGET_REACHED','R66_WAIT_RETEST')):
+                plan.update(eligible=True,reason='R79_CONTINUATION_PLAN')
             plan.update(entry_price=number(price,number(x.get('price'),number(plan.get('entry_price')))),
                         direction=ev['direction'],entry_plan_version=PLAN_VERSION,
                         entry_event_id=ev['event_id'],setup_id=ev['event_id'],
