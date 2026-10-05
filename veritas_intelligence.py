@@ -12,6 +12,7 @@ from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
 import veritas_asset_management_intelligence as VAMI
 import veritas_trade_view as VTV
+import veritas_tbank as VTB
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
@@ -16740,6 +16741,24 @@ class H(BaseHTTPRequestHandler):
                     self.reply(_v90r26_dashboard_bootstrap(signals_only=(q.get('view')==['signals'])))
                 except Exception as ex:
                     self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif urlparse(self.path).path == '/integrations/tbank':
+                self.reply_html(VTB.status_page())
+            elif urlparse(self.path).path.startswith('/api/v1/integrations/tbank'):
+                route = urlparse(self.path).path
+                if route == '/api/v1/integrations/tbank':
+                    self.reply(VTB.connection.status())
+                elif route == '/api/v1/integrations/tbank/market-data':
+                    self.reply(VTB.connection.market_data())
+                elif route == '/api/v1/integrations/tbank/candles':
+                    q = parse_qs(urlparse(self.path).query)
+                    self.reply(VTB.connection.candle_snapshot(q.get('asset',['CNYRUBF'])[0], q.get('interval',['1h'])[0]))
+                elif route in ('/api/v1/integrations/tbank/accounts', '/api/v1/integrations/tbank/portfolio'):
+                    if not VTB.private_access(self.headers):
+                        self.reply({'status':'UNAUTHORIZED'},403)
+                    else:
+                        self.reply(VTB.connection.private_snapshot(route.rsplit('/',1)[-1]))
+                else:
+                    self.reply({'error':'not found'},404)
             elif self.path.startswith('/api/v1/cost-policy'):
                 self.reply(VX.VC.policy())
             elif self.path.startswith('/api/v1/signals'):
@@ -18986,6 +19005,8 @@ def main():
     server_thread.start()
     emit('http_bound_early', port=int(os.getenv('PORT','10000')),
          bootstrap_ready=False, startup_mode='TWO_PHASE_READINESS')
+    # R83: optional read-only broker connection; no token means no thread or RPC.
+    VTB.connection.start()
 
     _v90_emergency_storage_reclaim()
     _v90_ensure_legacy_compat_views()
