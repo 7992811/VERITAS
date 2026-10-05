@@ -65,6 +65,19 @@ class SignalAuthoritativeR79Tests(unittest.TestCase):
         self.assertGreaterEqual(out.get('fraction',0),.50)
         self.assertLessEqual(out.get('fraction',0),1.0)
 
+    def test_weak_economics_signal_still_opens_small_probe(self):
+        r=self.row('LONG')
+        r['trend_entry_context']['local_support']=2299.0
+        r['trade_plan']['stop_price']=2299.0
+        r['trade_plan']['target_price']=2300.5
+        r['trade_plan']['expected_move_pct']=0.0002
+        r['trade_plan']['expected_to_stop_ratio']=0.2
+        out=R._signal_first_admission(r,P.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out.get('open'),out)
+        self.assertEqual(out.get('reason'),'R79_SIGNAL_PROBE')
+        self.assertGreater(out.get('fraction',0),0.0)
+        self.assertLessEqual(out.get('fraction',0),0.10)
+
     def test_full_open_path_no_longer_calls_soft_veto_chain(self):
         r=self.row('LONG')
         c=MagicMock()
