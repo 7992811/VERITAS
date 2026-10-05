@@ -1,0 +1,208 @@
+"""VERITAS adaptive market-neutral spot/perpetual carry research.
+
+Research only. No directional BTC/ETH prediction.
+
+Position:
+    long spot + short USD-M perpetual, equal notionals.
+
+Unlike the earlier fixed carry rule, entry is based on a causal break-even test:
+expected cumulative funding over a fixed horizon must exceed all four execution
+costs by a safety margin. Funding persistence and basis are observed, not
+forecast with future data.
+
+Three theory-led policies are evaluated unchanged across 2020-2026. There is no
+calendar-year parameter search.
+
+PnL uses actual spot/perpetual prices, realized funding, fees/slippage and +5bp
+stress. BTC and ETH are independent.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+import research_crypto_carry as base
+from research_crypto_manager_library import FEE, SLIP, ts
+
+OUT=Path("adaptive_carry_out");OUT.mkdir(exist_ok=True)
+LEG=FEE+SLIP
+PAIR_RT=4*LEG
+STRESS=.0005
+
+POLICIES=[
+    {
+      "name":"BREAKEVEN_14D",
+      "forecast_events":42,
+      "cost_multiple":1.25,
+      "min_positive_frac":.67,
+      "min_basis":-.0010,
+      "max_events":84,
+    },
+    {
+      "name":"STRONG_21D",
+      "forecast_events":63,
+      "cost_multiple":1.50,
+      "min_positive_frac":.78,
+      "min_basis":-.0005,
+      "max_events":126,
+    },
+    {
+      "name":"HIGH_CONVICTION_28D",
+      "forecast_events":84,
+      "cost_multiple":1.75,
+      "min_positive_frac":.82,
+      "min_basis":0.0,
+      "max_events":168,
+    },
+]
+
+def jd(o):
+    if isinstance(o,np.integer):return int(o)
+    if isinstance(o,np.floating):return float(o)
+    if isinstance(o,np.bool_):return bool(o)
+    raise TypeError(type(o).__name__)
+
+def prep(asset):
+    f=base.funding(asset)
+    z,s,p=base.attach_prices(asset,f)
+    z=z.copy()
+    z["pos9"]=z.rate.gt(0).rolling(9,min_periods=9).mean().shift(1)
+    z["pos21"]=z.rate.gt(0).rolling(21,min_periods=21).mean().shift(1)
+    # Forecast uses only previously observed rates plus the just-settled current
+    # rate that is known before the post-settlement entry.
+    z["forecast_rate"]=(.45*z.mean3+.35*z.mean9+.20*z.rate).clip(lower=-.01,upper=.01)
+    z["fund_vol"]=z.rate.rolling(21,min_periods=9).std().shift(1)
+    z["forecast_lcb"]=z.forecast_rate-.50*z.fund_vol.fillna(0)
+    z["positive_frac"]=(.55*z.pos9+.45*z.pos21)
+    return z,s,p
+
+def entry_ok(r,pol,stress):
+    vals=(r.forecast_lcb,r.positive_frac,r.basis,r.mean3,r.mean9,r.rate)
+    if not all(np.isfinite(v) for v in vals):return False
+    # Four executions. Stress is round-trip pair stress and is added once.
+    cost=PAIR_RT+stress
+    expected=max(0.,float(r.forecast_lcb))*pol["forecast_events"]
+    return (
+        expected >= pol["cost_multiple"]*cost
+        and r.positive_frac >= pol["min_positive_frac"]
+        and r.basis >= pol["min_basis"]
+        and r.mean3>0 and r.mean9>0 and r.rate>0
+    )
+
+def exit_now(r,held_events):
+    # Hysteresis reduces churn: one weak print does not force an exit after we
+    # already paid entry costs. Exit on persistent loss of carry economics.
+    if held_events<3:return False
+    bad_short=(r.mean3<=0 and r.rate<=0)
+    bad_medium=(r.mean9<=0)
+    basis_flip=(r.basis<-.004)
+    return bool(bad_short or bad_medium or basis_flip)
+
+def nearest_open(df,t):
+    i=np.searchsorted(df.ts.to_numpy(),t,side="left")
+    if i>=len(df):return None
+    return float(df.open.iloc[i]),int(df.ts.iloc[i])
+
+def simulate(z,s,p,pol,stress=0.):
+    trades=[];i=0
+    while i<len(z):
+        r=z.iloc[i]
+        if not entry_ok(r,pol,stress):
+            i+=1;continue
+        entry_i=i;entry_ts=int(r.entry_ts)
+        spot0=float(r.spot_open);perp0=float(r.perp_open)
+        funding_sum=0.;reason="MAX";j=i+1
+        last=min(len(z)-1,i+pol["max_events"])
+        while j<=last:
+            rr=z.iloc[j]
+            funding_sum+=float(rr.rate)
+            held=j-entry_i
+            if exit_now(rr,held):
+                reason="CARRY_END";break
+            j+=1
+        if j>last:j=last
+        exit_event_ts=int(z.iloc[j].ts)+3600
+        so=nearest_open(s,exit_event_ts);po=nearest_open(p,exit_event_ts)
+        if so is None or po is None:break
+        spot1,ets=so;perp1,etp=po
+        spot_pnl=spot1/spot0-1.
+        perp_pnl=1.-perp1/perp0
+        costs=PAIR_RT+stress
+        pair_pnl=spot_pnl+perp_pnl+funding_sum-costs
+        capital_return=pair_pnl/2.
+        trades.append({
+            "opened":entry_ts,"closed":max(ets,etp),"net":float(capital_return),
+            "raw_pair_pnl":float(pair_pnl),"funding":float(funding_sum),
+            "spot":float(spot_pnl),"perp":float(perp_pnl),
+            "entry_basis":float(r.basis),"events":int(j-entry_i),"reason":reason,
+            "forecast_lcb":float(r.forecast_lcb),"positive_frac":float(r.positive_frac),
+        })
+        i=j+1
+    return trades
+
+def met(tr):
+    if not tr:return {"n":0,"win_rate":None,"avg":None,"sum":0.,"pf":0.,"dd":0.}
+    a=np.asarray([x["net"] for x in tr],float)
+    pos=a[a>0].sum();neg=-a[a<0].sum()
+    eq=np.cumsum(a);pk=np.maximum.accumulate(np.r_[0.,eq])[1:]
+    return {"n":int(len(a)),"win_rate":float((a>0).mean()),"avg":float(a.mean()),
+            "sum":float(a.sum()),"pf":float(pos/neg) if neg else 99.,
+            "dd":float((pk-eq).max())}
+
+def yearly(tr):
+    out={}
+    for y in range(2020,2027):
+        a=ts(f"{y}-01-01T00:00:00Z")
+        b=ts(f"{y+1}-01-01T00:00:00Z") if y<2026 else ts("2026-10-04T00:00:00Z")
+        out[str(y)]=met([x for x in tr if a<=x["opened"]<b])
+    return out
+
+def bootstrap(tr,nboot=2000,block=3):
+    if len(tr)<12:return {"n":len(tr),"p_positive":None,"p05_sum":None,"p95_dd":None}
+    a=np.asarray([x["net"] for x in tr],float);n=len(a)
+    rng=np.random.default_rng(20261005)
+    starts=np.arange(max(1,n-block+1));sums=[];dds=[]
+    for _ in range(nboot):
+        z=[]
+        while len(z)<n:
+            k=int(rng.choice(starts));z.extend(a[k:k+block].tolist())
+        z=np.asarray(z[:n],float)
+        eq=np.cumsum(z);pk=np.maximum.accumulate(np.r_[0.,eq])[1:]
+        sums.append(float(z.sum()));dds.append(float((pk-eq).max()))
+    return {"n":n,"p_positive":float(np.mean(np.asarray(sums)>0)),
+            "p05_sum":float(np.quantile(sums,.05)),
+            "p95_dd":float(np.quantile(dds,.95))}
+
+def run(asset):
+    z,s,p=prep(asset)
+    out={"asset":asset,"generated_at":datetime.now(timezone.utc).isoformat(),
+         "method":"Causal funding break-even market-neutral carry; fixed policies across all years.",
+         "policies":{}}
+    for pol in POLICIES:
+        b=simulate(z,s,p,pol,0.);st=simulate(z,s,p,pol,STRESS)
+        out["policies"][pol["name"]]={
+            "policy":pol,"base":met(b),"stress5":met(st),
+            "years":yearly(b),"stress_years":yearly(st),
+            "bootstrap":bootstrap(b),"trades":b,
+        }
+        print(asset,pol["name"],"ADAPTIVE_CARRY",json.dumps({
+            "base":out["policies"][pol["name"]]["base"],
+            "stress5":out["policies"][pol["name"]]["stress5"],
+            "years":out["policies"][pol["name"]]["years"],
+            "stress_years":out["policies"][pol["name"]]["stress_years"],
+            "bootstrap":out["policies"][pol["name"]]["bootstrap"],
+        },separators=(",",":"),default=jd),flush=True)
+    q=OUT/asset.lower();q.mkdir(parents=True,exist_ok=True)
+    (q/"result.json").write_text(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False,default=jd))
+    print("VERITAS_ADAPTIVE_CARRY="+json.dumps({"asset":asset,"policies":{k:{q:v[q] for q in ("base","stress5","years","stress_years","bootstrap")} for k,v in out["policies"].items()}},separators=(",",":"),default=jd),flush=True)
+
+def main():
+    ap=argparse.ArgumentParser();ap.add_argument("--asset",choices=["BTC","ETH"],required=True);args=ap.parse_args()
+    run(args.asset)
+
+if __name__=="__main__":main()
