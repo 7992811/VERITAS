@@ -86,6 +86,7 @@ class SignalAuthoritativeR79Tests(unittest.TestCase):
           'horizon':'1h','entry_quality':'INVALIDATED','decision_stage':'WAIT_LOCAL_ENTRY',
           'horizon_structure':{'direction':'SHORT','score':.61,'state':'CONFIRMED_TREND'},
         })
+        r['_execution_quote']={'price':4184.0,'observed_at':datetime.now(timezone.utc).isoformat()}
         r['trade_plan'].update({'entry_quality':'INVALIDATED','stop_price':4191.0,
                                 'target_price':4170.0,'expected_move_pct':.0033,
                                 'expected_to_stop_ratio':2.0})
@@ -110,6 +111,7 @@ class SignalAuthoritativeR79Tests(unittest.TestCase):
           'market_observed_at':(now-timedelta(minutes=25)).isoformat(),
           'horizon_structure':{'direction':'LONG','score':.56,'state':'BUILDING_TREND'},
         })
+        r['_execution_quote']={'price':102.65,'observed_at':now.isoformat()}
         r['trade_plan'].update({'entry_quality':'INVALIDATED','stop_price':101.8,
                                 'target_price':104.35,'expected_move_pct':.0165,
                                 'expected_to_stop_ratio':2.0})
