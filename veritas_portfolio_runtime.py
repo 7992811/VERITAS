@@ -4543,13 +4543,61 @@ def _signal_first_admission(row,policy,drawdown):
                   or history.get('status')=='NEGATIVE_EDGE')
         ok=bool(f>0 and not hard and plan.get('eligible',True) and rg.get('new_risk') is not False and row.get('execution_eligible')
                 and row.get('source_gate_pass') and economics.get('eligible'))
+
+        # R78: verified fundamental catalyst = a new continuation setup, not a
+        # resurrection of the spent breakout. If the normal fixed-R/R gate is
+        # the ONLY economics veto, allow a deliberately small paper probe when
+        # post-cost reward is still positive and current structure is unusually
+        # strong. The existing scale engine may add only after a distinct new
+        # structural confirmation. Source, quote freshness, stop risk, negative
+        # historical edge and hard invalidations remain absolute vetoes.
+        catalyst=bool(ev.get('catalyst_continuation') or
+                      ev.get('event_type')=='CATALYST_CONTINUATION')
+        econ_blockers=set(str(x) for x in (economics.get('blockers') or []))
+        allowed_probe_blockers={'NET_REWARD_RISK_BELOW_FLOOR'}
+        try: conf=float(row.get('confidence') or row.get('_pwin') or 0.0)
+        except Exception: conf=0.0
+        hs=row.get('horizon_structure') or {}
+        try: hscore=float(hs.get('score') or row.get('horizon_structure_score') or 0.0)
+        except Exception: hscore=0.0
+        try:
+            indep=int((((row.get('institutional_signal') or {}).get('evidence_independence') or {})
+                       .get('independent_count')) or row.get('independent_evidence_families') or 0)
+        except Exception:
+            indep=0
+        try: cstrength=float(((ev.get('catalyst') or {}).get('strength')) or 0.0)
+        except Exception: cstrength=0.0
+        try: net_reward=float(economics.get('net_reward_pct') or 0.0)
+        except Exception: net_reward=0.0
+        try: net_rr=float(economics.get('expected_to_stop_ratio') or 0.0)
+        except Exception: net_rr=0.0
+        qgate=economics.get('quote_time_gate') or {}
+        catalyst_probe=bool(
+            catalyst and not ok and f>0 and not hard
+            and plan.get('eligible',True)
+            and rg.get('new_risk') is not False
+            and row.get('execution_eligible') and row.get('source_gate_pass')
+            and bool(qgate.get('eligible',True))
+            and econ_blockers and econ_blockers.issubset(allowed_probe_blockers)
+            and net_reward>0 and net_rr>=0.45
+            and conf>=0.75 and hscore>=0.78 and indep>=5 and cstrength>=0.85
+        )
+        if catalyst_probe:
+            probe={'AGGRESSIVE':0.25,'IMPULSE_ONLY':0.15,'CORE':0.10,'CHALLENGER':0.10}.get(
+                str((policy or {}).get('mode') or 'CORE'),0.10)
+            f=min(float(f),float(probe))
+            f=math.floor(f/.05+1e-9)*.05
+            ok=bool(f>0)
         return {'open':ok,'fraction':f if ok else 0.,'hard_veto':not ok,
-                'reason':'R69_STRUCTURAL_EVENT' if ok else 'R69_SOURCE_RISK_OR_ECONOMICS',
+                'reason':('R78_CATALYST_CONTINUATION_PROBE' if catalyst_probe else
+                          'R69_STRUCTURAL_EVENT' if ok else 'R69_SOURCE_RISK_OR_ECONOMICS'),
                 'trend_event':event,'economics':economics,
                 'economics_blockers':economics.get('blockers') or [],
                 'quote_time_gate':economics.get('quote_time_gate'),
                 'net_reward_risk':economics.get('expected_to_stop_ratio'),
                 'profitability_gate':history,
+                'catalyst_probe':catalyst_probe,
+                'catalyst':ev.get('catalyst') if catalyst else None,
                 'probability':None,'probability_source':'UNCALIBRATED_STRUCTURAL_RULE',
                 'signal_score':row.get('confidence')}
     base=dict(_v90r65_base_admission(row,policy,drawdown) or {})
