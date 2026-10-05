@@ -121,7 +121,7 @@ class CatalystContinuationTests(unittest.TestCase):
         self.assertGreater(g['target_price'],12.69)
         gate=T.event_gate(r,12.69,'LONG',self.NOW)
         self.assertTrue(gate['eligible'],gate)
-        self.assertEqual(gate['entry_mode'],'BREAKOUT')
+        self.assertEqual(gate['entry_mode'],'CONTINUATION')
 
     def test_catalyst_context_grace_is_bounded_and_expires(self):
         r=self.cny()
