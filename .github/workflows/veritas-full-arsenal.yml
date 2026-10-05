@@ -1,0 +1,58 @@
+name: VERITAS full arsenal expansion
+
+on:
+  push:
+    branches:
+      - research/full-arsenal-20261005
+    paths:
+      - tools/research_crypto_arsenal_expansion.py
+      - docs/VERITAS_FULL_ARSENAL_PROTOCOL.md
+      - .github/workflows/veritas-full-arsenal.yml
+  workflow_dispatch:
+
+jobs:
+  arsenal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/full-arsenal-20261005
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3
+      - name: Download cached BTC ETH minute data
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
+      - name: Run full arsenal expansion
+        run: python tools/research_crypto_arsenal_expansion.py
+      - name: Print compact result
+        if: always()
+        run: |
+          if [ -f full_arsenal_out/result.json ]; then
+            python - <<'PY'
+          import json
+          x=json.load(open('full_arsenal_out/result.json'))
+          out={'assets':{},'pair_modules':x.get('pair_modules',{})}
+          for a,v in x.get('assets',{}).items():
+              fam={}
+              for k,r in v.get('families',{}).items():
+                  fam[k]={q:r.get(q) for q in ('validated_2024_2025','test_2026','test_stress_5bp')}
+              out['assets'][a]={'families':fam,'rejected':v.get('rejected',{}),'data_status':v.get('data_status',{})}
+          print('VERITAS_FULL_ARSENAL_COMPACT='+json.dumps(out,separators=(',',':')))
+          PY
+          fi
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-full-arsenal-result
+          path: full_arsenal_out/
+          retention-days: 14
