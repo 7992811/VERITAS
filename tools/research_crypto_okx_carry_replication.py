@@ -27,9 +27,12 @@ Historical public API coverage determines the usable independent sample.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import math
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -37,6 +40,8 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 import pandas as pd
+
+from research_crypto_manager_library import ts
 
 OUT=Path("okx_carry_out")
 CACHE=OUT/"data"
@@ -81,10 +86,92 @@ def get(path,params):
             last=e;time.sleep(.5+1.0*k)
     raise RuntimeError(f"{path}: {last}")
 
+def get_bytes(url):
+    last=None
+    for k in range(6):
+        try:
+            req=Request(url,headers={"User-Agent":"VERITAS-OKX-carry-replication/1.0"})
+            with urlopen(req,timeout=60) as r:
+                return r.read()
+        except Exception as e:
+            last=e;time.sleep(.5+1.0*k)
+    raise RuntimeError(f"download {url}: {last}")
+
+def parse_funding_archive(blob, inst):
+    rows=[]
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        names=[n for n in zf.namelist() if not n.endswith("/")]
+        for name in names:
+            raw=zf.read(name)
+            try:
+                df=pd.read_csv(io.BytesIO(raw))
+            except Exception:
+                continue
+            cols={str(x).strip().lower():x for x in df.columns}
+            tcol=next((cols[k] for k in ("fundingtime","funding_time","ts","timestamp") if k in cols),None)
+            rcol=next((cols[k] for k in ("realizedrate","realized_rate","fundingrate","funding_rate") if k in cols),None)
+            icol=next((cols[k] for k in ("instid","inst_id") if k in cols),None)
+            if tcol is None or rcol is None:
+                print("OKX_ARCHIVE_HEADER_UNKNOWN",name,list(df.columns),flush=True)
+                continue
+            for rr in df.itertuples(index=False):
+                d=rr._asdict()
+                try:
+                    if icol is not None and str(d.get(str(icol),d.get(icol,""))) not in ("",inst):
+                        continue
+                except Exception:
+                    pass
+            for _,rr in df.iterrows():
+                try:
+                    if icol is not None and str(rr[icol])!=inst:continue
+                    t=int(float(rr[tcol]));t=t//1000 if t>10**11 else t
+                    rate=float(rr[rcol]);rows.append((t,rate))
+                except Exception:
+                    continue
+    return rows
+
+def archive_funding(inst):
+    # Public archive module 3 = funding rate. Monthly files are available from
+    # March 2022. Query <=10 inclusive months at a time.
+    family=inst.replace("-SWAP","")
+    start=pd.Timestamp("2022-03-01",tz="UTC")
+    # T+2 publication lag; recent history is merged from normal REST below.
+    end=pd.Timestamp.now(tz="UTC").normalize()-pd.Timedelta(days=4)
+    rows=[];cur=start
+    while cur<=end:
+        chunk_end=min(cur+pd.DateOffset(months=8),end)
+        q={
+          "module":"3","instType":"SWAP","dateAggrType":"monthly",
+          "begin":str(int(cur.timestamp()*1000)),
+          "end":str(int(chunk_end.timestamp()*1000)),
+          "instFamilyList":family,
+        }
+        try:
+            data=get("/api/v5/public/market-data-history",q)
+        except Exception as e:
+            print(inst,"archive_query_fail",cur.date(),chunk_end.date(),str(e)[:180],flush=True)
+            cur=(chunk_end+pd.Timedelta(days=1)).replace(day=1)
+            continue
+        urls=[]
+        for root in data:
+            for item in root.get("details",[]) or []:
+                for gd in item.get("groupDetails",[]) or []:
+                    u=gd.get("url")
+                    if u:urls.append(u)
+        print(inst,"archive_range",str(cur.date()),str(chunk_end.date()),"files",len(urls),flush=True)
+        for u in sorted(set(urls)):
+            try:rows.extend(parse_funding_archive(get_bytes(u),inst))
+            except Exception as e:print(inst,"archive_file_fail",u,str(e)[:160],flush=True)
+        cur=(chunk_end+pd.DateOffset(months=1)).replace(day=1)
+        time.sleep(.25)
+    return rows
+
 def funding(inst):
     p=CACHE/f"{inst}_funding.pkl"
     if p.exists():return pd.read_pickle(p)
-    rows=[];after=None;last_old=None
+    rows=archive_funding(inst)
+    after=None;last_old=None
+    # Merge recent normal REST history (roughly most recent months).
     for _ in range(40):
         q={"instId":inst,"limit":"400"}
         if after is not None:q["after"]=str(after)
