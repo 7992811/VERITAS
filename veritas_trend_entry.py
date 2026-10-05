@@ -531,7 +531,9 @@ def event_gate(row, price, direction, now=None):
     freshness=context_gate(row,now)
     if not freshness['eligible']:
         return freshness
-    if required and (ctx.get('status')!='OK' or not event):
+    rebased_event=bool(event.get('signal_authoritative') or event.get('catalyst_continuation')
+                       or event.get('event_type') in ('SIGNAL_CONTINUATION','CATALYST_CONTINUATION'))
+    if required and ((ctx.get('status')!='OK' and not rebased_event) or not event):
         return {'eligible':False,'reason':'R67_LOCAL_CONTEXT_REQUIRED' if ctx.get('status')!='OK' else 'R69_WAIT_LOCAL_BREAKOUT'}
     if not event:
         return {'eligible':False,'reason':'R69_WAIT_LOCAL_BREAKOUT'}
