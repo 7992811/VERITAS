@@ -370,7 +370,7 @@ def build_events(asset,x):
 
         # 5) Compression -> volatility expansion.
         cross,lvl=event_cross(x,d,72)
-        m=cross&(x.squeeze.shift(3)<=.75)&(x.atr_ratio>=1.10)&(x.rv_ratio>=1.10)&(x.vr>=1.25)&(body>=.45)
+        m=cross&(x["squeeze"].shift(3)<=.75)&(x.atr_ratio>=1.10)&(x.rv_ratio>=1.10)&(x.vr>=1.25)&(body>=.45)
         rows += collect(x,m,d,"VOL_EXPANSION",lvl)
 
         # 6) Carry-aligned trend: collect funding while following price trend.
