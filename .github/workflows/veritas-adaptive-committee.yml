@@ -1,0 +1,62 @@
+name: VERITAS adaptive committee research
+
+on:
+  push:
+    branches:
+      - research/full-arsenal-20261005
+    paths:
+      - tools/research_crypto_adaptive_committee.py
+      - .github/workflows/veritas-adaptive-committee.yml
+  workflow_dispatch:
+
+jobs:
+  committee:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/full-arsenal-20261005
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3
+      - name: Download 2022-2026 spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
+      - name: Download 2020-2021 spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-external-holdout
+          path: external_holdout_out
+          github-token: ${{ github.token }}
+          run-id: 37268494688
+      - name: Run adaptive committee
+        run: python tools/research_crypto_adaptive_committee.py
+      - name: Print compact result
+        if: always()
+        run: |
+          if [ -f adaptive_committee_out/result.json ]; then
+            python - <<'PY'
+          import json
+          x=json.load(open('adaptive_committee_out/result.json'))
+          r=x.get('result',{})
+          print('VERITAS_ADAPTIVE_COMMITTEE_COMPACT='+json.dumps({
+            'aggregate':r.get('aggregate'),'years':r.get('years'),
+            'by_module':r.get('by_module'),'n_trades':r.get('n_trades')
+          },separators=(',',':')))
+          PY
+          fi
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-adaptive-committee-result
+          path: adaptive_committee_out/
+          retention-days: 14
