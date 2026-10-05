@@ -1364,7 +1364,7 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
     except Exception:
         return changes
 
-    # Commission is 0.05% per leg. Require a positive post-cost floor rather
+    # Commission is 0.04% per leg. Require a positive post-cost floor rather
     # than waiting for the trade to retrace back through zero.
     net_floor_pct=max(0.15,100.0*(2.0*float(COMMISSION)+0.0003))
 

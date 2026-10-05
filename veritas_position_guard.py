@@ -8,6 +8,7 @@ import threading
 import time
 
 import httpx
+import veritas_costs as VC
 import veritas_execution as VX
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
@@ -272,7 +273,7 @@ def _r63_hard_stop_breached(z, px):
     return px<=stop if z.get('direction')=='LONG' else px>=stop
 
 
-def _r63_projected_exit_net(z, quote, trade, nav, commission=.0005):
+def _r63_projected_exit_net(z, quote, trade, nav, commission=VC.COMMISSION_RATE):
     trade=dict(trade or {})
     p=payload_of(z)
     try:
@@ -301,7 +302,7 @@ def _r63_projected_exit_net(z, quote, trade, nav, commission=.0005):
         return {'valid':False}
 
 
-def _r63_soft_profit_stop_assessment(z, quote, trade, nav, commission=.0005):
+def _r63_soft_profit_stop_assessment(z, quote, trade, nav, commission=VC.COMMISSION_RATE):
     p=payload_of(z)
     px=(quote or {}).get('price')
     if not p.get('r55_net_profit_lock_active') or px is None or _r63_hard_stop_breached(z,px):
@@ -320,7 +321,7 @@ def _r63_soft_profit_stop_assessment(z, quote, trade, nav, commission=.0005):
     return {'soft_only':True,'suppress':suppress,**est}
 
 
-def profit_exit_assessment(z, quote, trade, nav, commission=.0005):
+def profit_exit_assessment(z, quote, trade, nav, commission=VC.COMMISSION_RATE):
     """Profit-taking needs positive whole-trade net at an adverse exit fill.
 
     Applies only to discretionary profit harvests, never to a stop or risk exit.
@@ -372,8 +373,8 @@ def take_profit_action(z, current_fraction, peak, round5):
     return floor, reason
 
 
-def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
-                     slippage_pct=.0005, min_net_pct=.0005,
+def profit_lock_stop(z, quote, commission=VC.COMMISSION_RATE, fees_paid_rub=0.0,
+                     slippage_pct=VC.SLIPPAGE_RATE, min_net_pct=.0005,
                      funding_rub=0.0,realized_gross_rub=0.0):
     """Return a stop that protects positive NET P&L, not merely price P&L.
 
@@ -605,7 +606,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             # Keep the universal 25bp activation floor, but use a realistic 2.5bp
             # slippage allowance and 2.5bp positive-net cushion for crypto.
             _crypto_lock=str(z.get('asset') or '') in ('BTC','ETH')
-            _lock_slippage=.00025 if _crypto_lock else .0010
+            _lock_slippage=VC.SLIPPAGE_RATE
             _lock_min_net=.00025 if _crypto_lock else .0010
             if _crypto_lock:
                 _nav=max(float(zp.get('entry_nav_rub') or 1_000_000.0),1.0)
@@ -614,7 +615,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                 # Includes actual spread, residual slippage and size impact.
                 _lock_slippage=max(_lock_slippage,float(_fill['adverse_fill_bps'])/10000.0)
             lock = None if (_rearm_after and _cur_lock_pct<_rearm_after) else profit_lock_stop(
-                z,q,getattr(vp,'COMMISSION',.0005),fees_paid_rub=fees_paid,
+                z,q,getattr(vp,'COMMISSION',VC.COMMISSION_RATE),fees_paid_rub=fees_paid,
                 slippage_pct=_lock_slippage,min_net_pct=_lock_min_net,
                 funding_rub=_lock_trade.get('funding_rub',0.0),
                 realized_gross_rub=_lock_trade.get('gross_pnl_rub',0.0)
@@ -682,7 +683,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                 _tr_full=c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
                                    (z.get('active_trade_id'),)).fetchone()
                 _soft=_r63_soft_profit_stop_assessment(
-                    z,q,_tr_full,nav,getattr(vp,'COMMISSION',.0005))
+                    z,q,_tr_full,nav,getattr(vp,'COMMISSION',VC.COMMISSION_RATE))
                 if _soft.get('suppress'):
                     _p=payload_of(z)
                     try:
@@ -735,7 +736,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             changes.append({'portfolio': name, 'asset': z['asset'], 'trade_id': tid,
                             'reason': reason, 'price': px, 'market_observed_at': q['observed_at']})
         if changes:
-            VPP.refresh(c, commission=getattr(vp, 'COMMISSION', .0005))
+            VPP.refresh(c, commission=getattr(vp, 'COMMISSION', VC.COMMISSION_RATE))
     return changes
 
 

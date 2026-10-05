@@ -31,7 +31,7 @@ class CostAwareExitTests(unittest.TestCase):
             result = G.profit_exit_assessment(z,q,trade,1e6)
             fill = G.exit_fill(dict(z,_execution_quote=q),price,1000*price/1e6,NOW)['fill_price']
             gross = 1000*(fill-100)*(1 if direction=='LONG' else -1)
-            self.assertAlmostEqual(result['net_pnl_rub'],-15+gross-50-20-1000*fill*.0005)
+            self.assertAlmostEqual(result['net_pnl_rub'],-15+gross-50-20-1000*fill*.0004)
             self.assertTrue(result['eligible'])
 
     def test_unknown_paid_costs_never_authorize_profit_taking(self):

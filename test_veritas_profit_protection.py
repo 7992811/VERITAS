@@ -13,7 +13,7 @@ class NetProtectionTests(unittest.TestCase):
     def setUp(self):
         self.now = datetime.now(timezone.utc)
         self.z = dict(asset='CNYRUBF', direction='LONG', units=1000, avg_entry_price=100,
-                      last_price=104, stop_price=101, active_trade_id='t1', payload={})
+                      last_price=104, stop_price=101, active_trade_id='t1', opened_at=self.now-timedelta(days=3), payload={})
         self.a = dict(trade_id='t1', status='OPEN', gross_pnl_rub=0, fees_rub=50, funding_rub=0,
                       last_mark_at=self.now, last_ruonia=14.1, portfolio_nav_rub=1e6)
 
@@ -32,9 +32,9 @@ class NetProtectionTests(unittest.TestCase):
         self.z['units'] = 500
         result = self.check()['net_profit_protection']
         fill = VX.simulated_fill('CNYRUBF', 'SELL', 101, .0505)['fill_price']
-        expected = -150 + 500*(fill-100) - 125 - 17 - 500*fill*.0005
+        expected = -150 + 500*(fill-100) - 125 - 17 - 500*fill*.0004
         self.assertAlmostEqual(result['net_at_stop_rub'], expected)
-        self.assertAlmostEqual(result['estimated_exit_commission_rub'], 500*fill*.0005)
+        self.assertAlmostEqual(result['estimated_exit_commission_rub'], 500*fill*.0004)
 
     def test_realized_profit_can_cover_remainder_below_entry(self):
         self.z['stop_price'] = 99.90
@@ -50,13 +50,13 @@ class NetProtectionTests(unittest.TestCase):
         self.a['last_mark_at'] = self.now-timedelta(hours=2)
         result = self.check()['net_profit_protection']
         fill = VX.simulated_fill('CNYRUBF', 'BUY_TO_COVER', 99, .099)['fill_price']
-        due = 1000*97*.161*7200/(365.25*86400)
+        due = 1000*97*.16*7200/(365.25*86400)
         self.assertAlmostEqual(result['modeled_stop_fill'], fill)
         self.assertAlmostEqual(result['unbooked_funding_rub'], due)
-        self.assertAlmostEqual(result['net_at_stop_rub'], 1000*(100-fill)-50-due-1000*fill*.0005)
+        self.assertAlmostEqual(result['net_at_stop_rub'], 1000*(100-fill)-50-due-1000*fill*.0004)
 
     def test_funding_can_remove_protection_without_a_stop_change(self):
-        self.z['stop_price'] = 100.20
+        self.z['stop_price'] = 100.17
         self.assertTrue(self.check()['profit_protection_active'])
         self.a['last_mark_at'] = self.now-timedelta(days=1)
         self.assertFalse(self.check()['profit_protection_active'])
@@ -71,7 +71,7 @@ class NetProtectionTests(unittest.TestCase):
                 self.assertAlmostEqual(self.check(stop=be)['net_profit_protection']['net_at_stop_rub'], 0, places=6)
 
     def test_missing_funding_or_commission_never_becomes_zero(self):
-        for key in ('fees_rub', 'funding_rub', 'last_ruonia', 'last_mark_at', 'portfolio_nav_rub'):
+        for key in ('fees_rub', 'funding_rub', 'last_mark_at', 'portfolio_nav_rub'):
             a = dict(self.a); a.pop(key)
             with self.subTest(key=key):
                 result = PP.evaluate(self.z, a, now=self.now)
