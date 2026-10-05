@@ -1,0 +1,71 @@
+name: VERITAS carry capital-margin study
+
+on:
+  push:
+    branches:
+      - research/full-arsenal-20261005
+    paths:
+      - tools/research_crypto_carry_capital.py
+      - tools/research_crypto_adaptive_carry.py
+      - tools/research_crypto_carry.py
+      - tools/research_crypto_carry_operational_stress.py
+      - .github/workflows/veritas-carry-capital.yml
+  workflow_dispatch:
+
+jobs:
+  capital:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/full-arsenal-20261005
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3
+      - name: Download 2022-2026 spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
+      - name: Download 2020-2021 spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-external-holdout
+          path: external_holdout_out
+          github-token: ${{ github.token }}
+          run-id: 37268494688
+      - name: Reuse BTC carry cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-carry-BTC
+          path: carry_out
+          github-token: ${{ github.token }}
+          run-id: 37272502854
+      - name: Reuse ETH carry cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-carry-ETH
+          path: carry_out
+          github-token: ${{ github.token }}
+          run-id: 37272502854
+      - name: Run capital-margin study
+        run: python tools/research_crypto_carry_capital.py
+      - name: Print
+        if: always()
+        run: |
+          if [ -f carry_capital_out/result.json ]; then
+            cat carry_capital_out/result.json
+          fi
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-carry-capital
+          path: carry_capital_out/
+          retention-days: 14
