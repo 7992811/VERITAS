@@ -6,6 +6,7 @@ on:
       - research/full-arsenal-20261005
     paths:
       - tools/research_crypto_arsenal_expansion.py
+      - tools/research_crypto_options_volatility.py
       - docs/VERITAS_FULL_ARSENAL_PROTOCOL.md
       - .github/workflows/veritas-full-arsenal.yml
   workflow_dispatch:
@@ -33,6 +34,8 @@ jobs:
           run-id: 37210798801
       - name: Run full arsenal expansion
         run: python tools/research_crypto_arsenal_expansion.py
+      - name: Run options volatility module
+        run: python tools/research_crypto_options_volatility.py
       - name: Print compact result
         if: always()
         run: |
@@ -54,5 +57,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: veritas-full-arsenal-result
-          path: full_arsenal_out/
+          path: |
+            full_arsenal_out/
+            options_vol_out/
           retention-days: 14
