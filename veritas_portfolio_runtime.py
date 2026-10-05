@@ -4825,6 +4825,7 @@ _R79_SOFT_ECON_BLOCKERS={
     'RR_BELOW_FINAL_FLOOR',
     'NET_REWARD_RISK_BELOW_FLOOR',
     'EXPECTED_MOVE_BELOW_COST_BUFFER',
+    'TARGET_NOT_PROFITABLE_AFTER_COSTS',
 }
 
 
@@ -4921,8 +4922,24 @@ def _signal_first_admission(row,policy,drawdown):
     # Directional signal is authoritative for STARTING risk. Low fixed R/R or
     # a small cost-buffer miss changes sizing/management; it no longer means
     # "show LONG/SHORT but stay flat". Negative target economics still blocks.
-    soft_probe=bool(econ_blockers and not hard_econ and net_reward>0 and qgate.get('eligible',True))
+    soft_probe=bool(econ_blockers and not hard_econ and qgate.get('eligible',True))
+    # If the current signal survives every hard safety check but its current
+    # modeled target economics are weak, execute a SMALL probe rather than stay
+    # flat. A subsequent confirmation can add; a reversal/stop exits it.
+    if soft_probe:
+        mode=str((policy or {}).get('mode') or 'CORE')
+        tier=str(work.get('signal_tier') or work.get('execution_signal_tier') or '').upper()
+        super_sig=tier in ('SUPER_LONG','SUPER_SHORT')
+        probe_cap={
+          'AGGRESSIVE': .25 if super_sig else .10,
+          'IMPULSE_ONLY': .15 if super_sig else .10,
+          'CORE': .10 if super_sig else .05,
+          'CHALLENGER': .10 if super_sig else .05,
+        }.get(mode,.05)
+        f=min(float(f),float(probe_cap))
+        f=math.floor(f/.05+1e-9)*.05
     ok=bool((economics.get('eligible') or soft_probe)
+            and f>0
             and work.get('execution_eligible')
             and work.get('source_gate_pass'))
     if not ok:
