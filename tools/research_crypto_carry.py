@@ -158,6 +158,11 @@ def nearest_open(df,t):
  if i>=len(df):return None
  return float(df.open.iloc[i]),int(df.ts.iloc[i])
 
+def close_before(df,t):
+ i=np.searchsorted(df.ts.to_numpy(),t,side='left')-1
+ if i<0:return None
+ return float(df.close.iloc[i]),int(df.ts.iloc[i]+3600)
+
 def simulate(z,s,p,rule,stress=0.):
  trades=[];i=0
  while i<len(z):
@@ -169,8 +174,14 @@ def simulate(z,s,p,rule,stress=0.):
   last=min(len(z)-1,i+rule['max_events'])
   while j<=last:
    rr=z.iloc[j]
-   # Position is already open, so funding paid at this future settlement is earned.
-   funding_sum+=float(rr.rate)
+   # Position is already open, so funding paid at this future settlement is
+   # earned. USD-M funding is charged on CURRENT position value. With fixed
+   # coin quantity q=N/perp0, funding relative to initial notional is
+   # rate * current_mark/perp0.
+   mk=close_before(p,int(rr.ts))
+   if mk is not None:
+    mark,_=mk
+    funding_sum+=float(rr.rate)*(mark/perp0)
    if rule['exit'](rr):
     reason='CARRY_END';break
    j+=1
@@ -179,16 +190,22 @@ def simulate(z,s,p,rule,stress=0.):
   so=nearest_open(s,exit_event_ts);po=nearest_open(p,exit_event_ts)
   if so is None or po is None:break
   spot1,exit_ts_s=so;perp1,exit_ts_p=po
-  # Equal notional long spot + short perp.
-  spot_pnl=spot1/spot0-1.
-  perp_pnl=1.-perp1/perp0
-  # 4 executions: enter/exit on each of two legs.
-  costs=4*(LEG_COST+stress/4)
+  # Equal initial-notional long spot + short perp.
+  spot_ratio=spot1/spot0
+  perp_ratio=perp1/perp0
+  spot_pnl=spot_ratio-1.
+  perp_pnl=1.-perp_ratio
+  # Entry executions each cost one initial notional. Exit costs scale with
+  # the actual exit notionals. SLIP is modeled as a cost here (not in prices).
+  execution_cost=LEG_COST*(1.+1.+spot_ratio+perp_ratio)
+  costs=execution_cost+stress
   net_one_notional=spot_pnl+perp_pnl+funding_sum-costs
   gross_capital_return=net_one_notional/2.
   trades.append({'opened':entry_ts,'closed':max(exit_ts_s,exit_ts_p),'net':float(gross_capital_return),
                  'raw_pair_pnl':float(net_one_notional),'funding':float(funding_sum),'spot':float(spot_pnl),
-                 'perp':float(perp_pnl),'events':int(j-entry_i),'reason':reason})
+                 'perp':float(perp_pnl),'execution_cost':float(execution_cost),
+                 'spot_exit_ratio':float(spot_ratio),'perp_exit_ratio':float(perp_ratio),
+                 'events':int(j-entry_i),'reason':reason})
   i=j+1
  return trades
 
