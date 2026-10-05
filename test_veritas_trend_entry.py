@@ -74,6 +74,66 @@ class ClosedEventTests(unittest.TestCase):
         self.assertFalse(f['intraday_structure']['volume_confirmed'])
 
 
+
+class CatalystContinuationTests(unittest.TestCase):
+    NOW=datetime(2026,10,5,10,5,tzinfo=timezone.utc)
+
+    def cny(self):
+        now=self.NOW
+        return {
+          'asset':'CNYRUBF','horizon':'5m','price':12.69,
+          'research_decision':'LONG','signal_tier':'SUPER_LONG',
+          'entry_quality':'FRESH_BREAKOUT','source_gate_pass':True,'market_open':True,
+          'market_observed_at':now.isoformat(),
+          'horizon_structure':{'direction':'LONG','score':.81,'state':'BUILDING_TREND'},
+          'institutional_signal':{'evidence_independence':{'independent_count':5},'action':'ENTER_CANDIDATE'},
+          '_supporting_horizons':['5m','1h','4h','1d'],
+          'trade_plan':{
+             'stop_price':12.6539,'target_price':12.742,
+             'expected_move_pct':.0041,'expected_to_stop_ratio':1.52,
+             'entry_quality':'FRESH_BREAKOUT','eligible':False,
+             'reason':'R74_EVENT_TARGET_REACHED',
+          },
+          'trend_entry_context':{
+             'status':'OK','closed_at':now.timestamp()-1000,'atr':.006,
+             'last_close':12.68,'last_two_closes':[12.67,12.68],
+             'local_support':12.655,'local_resistance':12.695,'levels':[],
+             'event':{
+                'direction':'LONG','trigger_level':12.559,'signal_price':12.56,
+                'signal_at':now.timestamp()-46*300,'atr':.006,'stop_price':12.53913,
+                'bars_since_signal':46,'event_id':'R69_old_cny_event',
+                'activity_confirmed':True,'confirmation':'1m_CLOSE'
+             }
+          }
+        }
+
+    def test_verified_minfin_catalyst_rebases_old_spent_impulse(self):
+        r=T.prepare_row(self.cny(),12.69,self.NOW)
+        e=T.context_of(r)['event']
+        self.assertTrue(e.get('catalyst_continuation'),e)
+        self.assertTrue(str(e.get('event_id')).startswith('R69_CAT_'))
+        self.assertEqual(e.get('parent_event_id'),'R69_old_cny_event')
+        self.assertAlmostEqual(e.get('trigger_level'),12.69)
+        self.assertEqual(r['trade_plan']['setup'],'CATALYST_CONTINUATION')
+        self.assertTrue(r['trade_plan']['eligible'])
+        g=T.geometry(r,12.69,'LONG')
+        self.assertTrue(g['eligible'],g)
+        self.assertGreater(g['target_price'],12.69)
+        gate=T.event_gate(r,12.69,'LONG',self.NOW)
+        self.assertTrue(gate['eligible'],gate)
+        self.assertEqual(gate['entry_mode'],'BREAKOUT')
+
+    def test_catalyst_context_grace_is_bounded_and_expires(self):
+        r=self.cny()
+        prepared=T.prepare_row(r,12.69,self.NOW)
+        fresh=T.context_gate(prepared,self.NOW)
+        self.assertTrue(fresh['eligible'],fresh)
+        self.assertEqual(fresh['reason'],'R78_CATALYST_CONTEXT_GRACE')
+        late=self.NOW+timedelta(hours=8)
+        ordinary=T.prepare_row(r,12.69,late)
+        self.assertFalse(T.context_gate(ordinary,late)['eligible'])
+
+
 class GeometryTests(unittest.TestCase):
     def test_near_senior_obstacle_cannot_be_skipped_for_a_distant_target(self):
         for direction,level in [('LONG',100.3),('SHORT',99.7)]:
