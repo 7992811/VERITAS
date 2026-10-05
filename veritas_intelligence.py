@@ -15146,7 +15146,7 @@ def _bounded_completed_episode_rows(order='DESC', raw_limit=6000, episode_limit=
     # R84: the 0.1 CPU Postgres repeatedly timed out at 3500 rows.
     # Use a smaller normal slice and retry once with an emergency compact slice.
     # Learning is background analytics; it must never block the market loop.
-    query_limit=min(requested_raw_limit,2000)
+    query_limit=min(requested_raw_limit,1200 if include_knowledge else 2000)
     episode_limit=max(50,min(3000,int(episode_limit)))
     knowledge_sql=("knowledge_shadow_matches" if include_knowledge
                    else "'[]'::jsonb AS knowledge_shadow_matches")

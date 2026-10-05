@@ -1586,7 +1586,7 @@ class CompactLearningQueryR602Tests(unittest.TestCase):
     def test_rule_stats_can_explicitly_request_rule_match_json(self):
         seen=self._run(True)
         self.assertIn("model_version,knowledge_shadow_matches",seen['sql'])
-        self.assertEqual(seen['args'],(3500,))
+        self.assertEqual(seen['args'],(1200,))
 
 
 class NQTrendExecutionContractR64Tests(unittest.TestCase):
@@ -2210,9 +2210,12 @@ class CryptoProtectiveFillRegressionTests(unittest.TestCase):
         for direction in ('LONG','SHORT'):
             px=100.2 if direction=='LONG' else 99.8
             quote=dict(price=px,best_bid=px-.005,best_ask=px+.005,
-                       observed_at=NOW.isoformat(),source_gate_pass=True)
+                       observed_at=NOW.isoformat(),source_gate_pass=True,market_open=True,
+                       source_names={'primary':'Binance spot'})
+            source_lock=VP.VPS.identity('BTC',quote)
             z=dict(asset='BTC',direction=direction,units=1000.0,avg_entry_price=100.0,
-                   active_trade_id='test',payload={},_execution_quote=quote)
+                   active_trade_id='test',payload={'price_source_lock':source_lock},
+                   _execution_quote=quote)
             trade=dict(gross_pnl_rub=0.0,fees_rub=50.0,funding_rub=.3,
                        payload={'entry_nav_rub':1e6})
             expected=VPG._r63_projected_exit_net(z,quote,trade,1e6)
@@ -2226,7 +2229,7 @@ class CryptoProtectiveFillRegressionTests(unittest.TestCase):
                     orders.append(args)
                 return SimpleNamespace(fetchone=lambda:trade)
             c=SimpleNamespace(execute=execute)
-            VP._v90j_base_close_or_reduce(c,{},'Champion',z,px,0.0,1e6,NOW.isoformat(),'STOP')
+            VP._v90j_base_close_or_reduce(c,{},'Champion',z,px,0.0,1e6,NOW.isoformat(),'HARD_THESIS_INVALIDATION')
             self.assertAlmostEqual(orders[0][5],expected['fill_price'])
             self.assertAlmostEqual(trade['gross_pnl_rub']-trade['fees_rub']-trade['funding_rub'],
                                    expected['net_pnl_rub'])

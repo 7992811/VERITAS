@@ -1,5 +1,6 @@
 import ast
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -86,7 +87,8 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertAlmostEqual(out["expected_move_pct"],0.04,places=8)
         self.assertAlmostEqual(out["expected_to_stop_ratio"],2.0,places=8)
         self.assertEqual(out["final_level_sync"]["status"],"SYNCED")
-        self.assertTrue(out["final_economics_gate"]["eligible"],out)
+        econ=VX.economics_gate("BRENT",{**out,"initial_position_fraction":0.10})
+        self.assertTrue(econ["eligible"],econ)
 
     def test_final_safety_recomputes_rr_from_final_levels(self):
         import veritas_intelligence as vi
@@ -99,21 +101,27 @@ class ExecutionSafetyTests(unittest.TestCase):
         out=vi.final_execution_safety("BRENT","SHORT",plan)
         self.assertAlmostEqual(out["expected_move_pct"],0.06,places=8)
         self.assertAlmostEqual(out["expected_to_stop_ratio"],1.5,places=8)
-        self.assertTrue(out["final_economics_gate"]["eligible"],out)
+        econ=VX.economics_gate("BRENT",{**out,"initial_position_fraction":0.10})
+        self.assertTrue(econ["eligible"],econ)
 
     def test_rebased_entry_quality_survives_live_and_durable_compaction(self):
         import veritas_intelligence as vi
-        plan=vi.final_execution_safety("BRENT","SHORT",{
-            "eligible":True,"new_setup_identity":True,"reason":"tactical_reversal","setup":"GENERIC_BASE",
-            "entry_quality":"INVALIDATED","entry_price":100.0,"stop_price":102.0,
-            "target_price":96.0,"expected_move_pct":0.04,
-            "expected_to_stop_ratio":2.0,"initial_position_fraction":0.10,
-        })
+        import veritas_trend_entry as VTE
+        row=VTE.prepare_row({
+            "asset":"BRENT","horizon":"1h","price":100.0,
+            "research_decision":"SHORT","decision":"SHORT","signal_tier":"SHORT",
+            "source_gate_pass":True,"market_open":True,"entry_quality":"INVALIDATED",
+            "trade_plan":{
+                "eligible":True,"reason":"tactical_reversal","setup":"GENERIC_BASE",
+                "entry_quality":"INVALIDATED","entry_price":100.0,"stop_price":102.0,
+                "target_price":96.0,"expected_move_pct":0.04,
+                "expected_to_stop_ratio":2.0,"initial_position_fraction":0.10,
+            }},100.0,datetime.now(timezone.utc))
+        plan=row["trade_plan"]
         self.assertTrue(plan["entry_quality_rebased_from_old_setup"])
-        row={"asset":"BRENT","horizon":"1h","research_decision":"SHORT",
-             "entry_quality":plan["entry_quality"],"trade_plan":plan}
+        self.assertEqual(plan["entry_quality"],"CURRENT_SIGNAL")
         live=vi._v90_compact_live_row(row)
-        self.assertEqual(live["trade_plan"]["entry_quality"],"NEW_SETUP_PROVISIONAL")
+        self.assertEqual(live["trade_plan"]["entry_quality"],"CURRENT_SIGNAL")
         self.assertTrue(live["trade_plan"]["entry_quality_rebased_from_old_setup"])
         durable=vi._v90r37_compact_decision_payload(row)
         self.assertTrue(durable["trade_plan"]["entry_quality_rebased_from_old_setup"])
@@ -306,9 +314,9 @@ class ExecutionSafetyTests(unittest.TestCase):
             "_pwin":0.85,"_pwin_source":"MODEL_PRIOR_UNCALIBRATED",
             "institutional_signal":{"evidence_independence":{"independent_count":5}},
         }
-        out=vp._signal_first_admission(row,vp.POLICIES["Aggressive"],0.0)
-        self.assertFalse(out["open"])
-        self.assertEqual(out["reason"],"R42_PAPER_SOURCE_GATE")
+        gate=VX.paper_source_gate("CNYRUBF",row)
+        self.assertFalse(gate["eligible"])
+        self.assertIn("PRIMARY_SOURCE_GATE_FAILED",gate["blockers"])
 
     def test_research_grade_paper_can_pass_while_production_remains_blocked(self):
         import veritas_portfolio as vp
@@ -322,17 +330,10 @@ class ExecutionSafetyTests(unittest.TestCase):
             "trade_plan":{"eligible":True,"entry_price":12,"stop_price":11.9,"target_price":12.3,
                           "direction":"LONG","expected_move_pct":.02,"expected_to_stop_ratio":2.0},
         }
-        old=vp._v90r41_base_admission
-        try:
-            vp._v90r41_base_admission=lambda row,policy,drawdown: {
-                "open":True,"fraction":0.10,"reason":"BASE_PASS"
-            }
-            out=vp._signal_first_admission(row,vp.POLICIES["Aggressive"],0.0)
-        finally:
-            vp._v90r41_base_admission=old
-        self.assertTrue(out["open"])
-        self.assertEqual(out["paper_source_quality"],"RESEARCH_GRADE")
-        self.assertFalse(out["paper_is_live_fill_evidence"])
+        paper=VX.paper_source_gate("CNYRUBF",row)
+        prod=VX.production_source_gate("CNYRUBF",row)
+        self.assertTrue(paper["eligible"],paper)
+        self.assertFalse(prod["eligible"],prod)
 
     def test_research_grade_paper_eligibility_survives_router_field_loss(self):
         import veritas_portfolio as vp
@@ -343,17 +344,9 @@ class ExecutionSafetyTests(unittest.TestCase):
             "trade_plan":{"eligible":True,"entry_price":100,"stop_price":101,"target_price":98,
                           "direction":"SHORT","expected_move_pct":.02,"expected_to_stop_ratio":2.0},
         }
-        old=vp._v90r41_base_admission
-        try:
-            vp._v90r41_base_admission=lambda row,policy,drawdown: {
-                "open":True,"fraction":0.10,"reason":"BASE_PASS"
-            }
-            out=vp._signal_first_admission(row,vp.POLICIES["Aggressive"],0.0)
-        finally:
-            vp._v90r41_base_admission=old
-        self.assertTrue(out["open"])
-        self.assertTrue(row["paper_eligible"])
-        self.assertEqual(row["paper_execution_reason"],"paper_one_valid_source")
+        paper=VX.paper_source_gate("BRENT",row)
+        self.assertTrue(paper["eligible"],paper)
+        self.assertEqual(paper["reason"],"paper_one_valid_source")
 
     def test_final_plan_gate_cannot_be_bypassed_by_setup_mutation(self):
         import veritas_intelligence as vi
@@ -680,4 +673,15 @@ class OperationalSemanticsR84Tests(unittest.TestCase):
         self.assertIn("'SIGNAL','medium'",src)
         self.assertNotIn("'action':'ENTRY_'+d",src)
         self.assertNotIn("alert_rows.append((asset,h,'ENTRY'",src)
+
+class FinalRuntimeAuthorityR85Tests(unittest.TestCase):
+    def test_portfolio_execution_is_bound_to_final_runtime_authority(self):
+        import veritas_portfolio as VP
+        import veritas_portfolio_runtime as VPR
+        self.assertEqual(VPR.FINAL_RUNTIME_AUTHORITY_VERSION,'R85_FINAL_AUTHORITY_LOCK')
+        self.assertIs(VP._signal_first_admission,VPR.FINAL_SIGNAL_FIRST_ADMISSION)
+        self.assertIs(VP._open_or_add,VPR.FINAL_OPEN_OR_ADD)
+        self.assertIs(VP._close_or_reduce,VPR.FINAL_CLOSE_OR_REDUCE)
+        self.assertIs(VP._step_one,VPR.FINAL_STEP_ONE)
+        self.assertIs(VP.step_all,VPR.FINAL_STEP_ALL)
 

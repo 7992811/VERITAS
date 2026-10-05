@@ -8589,4 +8589,14 @@ def report(pg_connect):
     }
     return _jsonable(d)
 
-from veritas_portfolio_runtime import *  # canonical R42-R46 runtime
+import veritas_portfolio_runtime as _VERITAS_RUNTIME
+from veritas_portfolio_runtime import *  # canonical final runtime
+
+# R85: explicit execution authority. Historical local definitions above remain
+# available as captured helpers, but cannot silently reclaim production control.
+_signal_first_admission=_VERITAS_RUNTIME.FINAL_SIGNAL_FIRST_ADMISSION
+_open_or_add=_VERITAS_RUNTIME.FINAL_OPEN_OR_ADD
+_close_or_reduce=_VERITAS_RUNTIME.FINAL_CLOSE_OR_REDUCE
+_step_one=_VERITAS_RUNTIME.FINAL_STEP_ONE
+step_all=_VERITAS_RUNTIME.FINAL_STEP_ALL
+report=_VERITAS_RUNTIME.FINAL_REPORT

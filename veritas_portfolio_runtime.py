@@ -5271,6 +5271,29 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     return _r80_base_close_or_reduce(c,p,name,dict(z,_execution_quote=q),actual,target_fraction,nav,ts,reason)
 
 
+# R85 FINAL RUNTIME AUTHORITY LOCK
+# Historical R42-R84 functions stay importable for audit, but the portfolio
+# module binds execution only to these final callables.
+FINAL_RUNTIME_AUTHORITY_VERSION='R85_FINAL_AUTHORITY_LOCK'
+FINAL_SIGNAL_FIRST_ADMISSION=_signal_first_admission
+FINAL_OPEN_OR_ADD=_open_or_add
+FINAL_CLOSE_OR_REDUCE=_close_or_reduce
+FINAL_STEP_ONE=_step_one
+FINAL_STEP_ALL=step_all
+FINAL_REPORT=report
+
+def runtime_authority_snapshot():
+    return {
+      'version':FINAL_RUNTIME_AUTHORITY_VERSION,
+      'signal_first_admission':FINAL_SIGNAL_FIRST_ADMISSION.__name__,
+      'open_or_add':FINAL_OPEN_OR_ADD.__name__,
+      'close_or_reduce':FINAL_CLOSE_OR_REDUCE.__name__,
+      'step_one':FINAL_STEP_ONE.__name__,
+      'step_all':FINAL_STEP_ALL.__name__,
+      'report':FINAL_REPORT.__name__,
+    }
+
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
