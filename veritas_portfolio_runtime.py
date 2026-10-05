@@ -4811,6 +4811,217 @@ def report(pg_connect):
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),39)
 
 
+
+# VERITAS V90 SIGNAL-AUTHORITATIVE ENTRY R79
+# User policy: when the system itself publishes a directional signal, paper
+# execution must start risk rather than let an older local event veto it.
+# This is a staged-entry policy, NOT a removal of source/quote/stop/risk safety.
+V90_R79_STARTED_AT=os.getenv('VERITAS_R79_EPOCH','2026-10-05T10:35:00+00:00')
+_v90r79_base_admission=_signal_first_admission
+_v90r79_base_open_or_add=_open_or_add
+_v90r79_base_report=report
+
+_R79_SOFT_ECON_BLOCKERS={
+    'RR_BELOW_FINAL_FLOOR',
+    'NET_REWARD_RISK_BELOW_FLOOR',
+    'EXPECTED_MOVE_BELOW_COST_BUFFER',
+}
+
+
+def _v90r79_signal_state(row):
+    row=dict(row or {})
+    q=row.get('_execution_quote') or {}
+    px=VTE.number(q.get('price'),VTE.number(row.get('price')))
+    work=VTE.prepare_row(row,px,datetime.now(timezone.utc))
+    ev=VTE.context_of(work).get('event') or {}
+    direction=VTE.displayed_signal_direction(work)
+    active=bool(direction in ('LONG','SHORT') and ev.get('signal_authoritative')
+                and ev.get('direction')==direction)
+    return work,ev,direction,active
+
+
+def _v90r79_signal_fraction(row,policy,drawdown):
+    mode=str((policy or {}).get('mode') or 'CORE')
+    tier=str((row or {}).get('signal_tier') or (row or {}).get('execution_signal_tier') or '').upper()
+    super_sig=tier in ('SUPER_LONG','SUPER_SHORT')
+    if mode=='AGGRESSIVE':
+        f=1.00 if super_sig else .50
+    elif mode=='IMPULSE_ONLY':
+        f=.40 if super_sig else .20
+    elif mode=='CORE':
+        f=.25 if super_sig else .10
+    else:
+        f=.25 if super_sig else .10
+    try:
+        cap=_v90r24_stop_risk_cap(row)
+        if cap is not None:
+            f=min(f,float(cap))
+    except Exception:
+        pass
+    rg=_risk_governor(drawdown)
+    if rg.get('new_risk') is False:
+        return 0.0
+    f*=float(rg.get('multiplier') or 0.0)
+    f=min(f,float((policy or {}).get('max_fraction') or 2.0))
+    return max(0.0,math.floor(f/.05+1e-9)*.05)
+
+
+def _v90r79_hard_signal_veto(row):
+    plan=(row or {}).get('trade_plan') or {}
+    integrity=plan.get('trade_integrity') or {}
+    history=plan.get('profitability_gate') or {}
+    arbitration=plan.get('rule_arbitration') or {}
+    blockers=[]
+    if integrity.get('hard_invalidation'):blockers.append('HARD_INVALIDATION')
+    if integrity.get('fast_tf_conflict'):blockers.append('FAST_TF_CONFLICT')
+    if arbitration.get('hard_veto'):blockers.append('RULE_ARBITRATION_HARD_VETO')
+    if (plan.get('reentry_intelligence') or {}).get('allowed') is False:
+        blockers.append('REENTRY_EXPLICITLY_BLOCKED')
+    if history.get('status')=='NEGATIVE_EDGE':
+        blockers.append('NEGATIVE_VALIDATED_SETUP_EDGE')
+    return blockers
+
+
+def _signal_first_admission(row,policy,drawdown):
+    work,ev,direction,active=_v90r79_signal_state(row)
+    if not active:
+        return dict(_v90r79_base_admission(row,policy,drawdown) or {})
+
+    asset=str(work.get('asset') or '')
+    source=VX.paper_source_gate(asset,work) if asset in VX.PAPER_ASSETS else {
+        'eligible':bool(work.get('execution_eligible')),
+        'reason':work.get('execution_reason'),'blockers':[]
+    }
+    if not source.get('eligible') or work.get('paper_eligible') is False:
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':'R79_SOURCE_OR_SESSION_BLOCK',
+                'source_blockers':source.get('blockers') or []}
+
+    hard=_v90r79_hard_signal_veto(work)
+    if hard:
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':'R79_'+hard[0],'hard_blockers':hard}
+
+    event=VTE.event_gate(work,work.get('price'),direction,datetime.now(timezone.utc))
+    if not event.get('eligible'):
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':event.get('reason') or 'R79_EVENT_NOT_READY','trend_event':event}
+
+    f=_v90r79_signal_fraction(work,policy,drawdown)
+    if f<=0:
+        return {'open':False,'fraction':0.0,'hard_veto':True,'reason':'R79_RISK_CAP_ZERO'}
+
+    economics=VX.entry_gate(work,work.get('price'),direction,f)
+    econ_blockers=set(str(x) for x in (economics.get('blockers') or []))
+    hard_econ=econ_blockers-_R79_SOFT_ECON_BLOCKERS
+    qgate=economics.get('quote_time_gate') or {}
+    try: net_reward=float(economics.get('net_reward_pct') or 0.0)
+    except Exception: net_reward=0.0
+
+    # Directional signal is authoritative for STARTING risk. Low fixed R/R or
+    # a small cost-buffer miss changes sizing/management; it no longer means
+    # "show LONG/SHORT but stay flat". Negative target economics still blocks.
+    soft_probe=bool(econ_blockers and not hard_econ and net_reward>0 and qgate.get('eligible',True))
+    ok=bool((economics.get('eligible') or soft_probe)
+            and work.get('execution_eligible')
+            and work.get('source_gate_pass'))
+    if not ok:
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':'R79_HARD_EXECUTION_BLOCK',
+                'economics_blockers':list(econ_blockers),
+                'hard_economics_blockers':list(hard_econ),
+                'trend_event':event,'economics':economics,
+                'quote_time_gate':qgate}
+
+    return {
+      'open':True,'fraction':f,'hard_veto':False,
+      'reason':'R79_SIGNAL_PROBE' if soft_probe else 'R79_SIGNAL_ENTRY',
+      'signal_authoritative':True,'signal_tier':work.get('signal_tier'),
+      'trend_event':event,'economics':economics,
+      'economics_blockers':list(econ_blockers),
+      'quote_time_gate':qgate,
+      'net_reward_risk':economics.get('expected_to_stop_ratio'),
+      'probability':work.get('_pwin'),
+      'probability_source':work.get('_pwin_source') or 'DISPLAYED_SIGNAL',
+      'signal_score':work.get('confidence'),
+    }
+
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    work,ev,signal_direction,active=_v90r79_signal_state(dict(row or {},price=price))
+    if not active or signal_direction!=direction:
+        return _v90r79_base_open_or_add(
+            c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason)
+
+    existing=c.execute(
+      "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+      (name,asset)).fetchone()
+    if existing and str(existing.get('direction') or '')==str(direction):
+        # Existing position adds still require the normal confirmation/risk path.
+        return _v90r79_base_open_or_add(
+            c,p,name,asset,direction,price,target_fraction,nav,ts,work,reason)
+
+    source=VX.paper_source_gate(asset,work)
+    if not source.get('eligible'):
+        _record_entry_outcome(work,'BLOCKED','R79_SOURCE_OR_SESSION_BLOCK',
+                              source_blockers=source.get('blockers') or [])
+        return 0.0
+    quote=work.get('_execution_quote') or {}
+    fresh=VPG.quote_gate(quote.get('observed_at') or work.get('market_observed_at') or work.get('observed_at'),
+                         now=_v90r55_dt(ts),execution=True,asset=asset)
+    if not fresh.get('eligible'):
+        _record_entry_outcome(work,'BLOCKED','R79_EXECUTION_QUOTE_STALE',quote_gate=fresh)
+        return 0.0
+
+    event=VTE.event_gate(work,price,direction,ts)
+    if not event.get('eligible'):
+        _record_entry_outcome(work,'BLOCKED',event.get('reason') or 'R79_EVENT_NOT_READY',trend_event=event)
+        return 0.0
+    reuse=_r72_event_reentry_gate(c,name,asset,direction,ev)
+    if not reuse.get('eligible'):
+        _record_entry_outcome(work,'BLOCKED',reuse.get('reason') or 'R79_EVENT_REUSE',event_reentry=reuse)
+        return 0.0
+
+    stop=VTE.number((work.get('trade_plan') or {}).get('stop_price'))
+    if not stop or stop<=0 or ((direction=='LONG' and stop>=price) or (direction=='SHORT' and stop<=price)):
+        _record_entry_outcome(work,'BLOCKED','R79_STOP_INVALID')
+        return 0.0
+    net_risk=abs(float(price)-stop)/float(price)+float(VX.round_trip_cost_pct(work.get('spread_bps')))
+    if net_risk<=0:
+        return 0.0
+    cap=float(MAX_STOP_RISK_NAV)/net_risk
+    target_fraction=min(float(target_fraction),float(cap))
+    target_fraction=math.floor(max(0.0,target_fraction)/.05+1e-9)*.05
+    if target_fraction<=0:
+        _record_entry_outcome(work,'BLOCKED','R79_STOP_RISK_LIMIT')
+        return 0.0
+
+    # Bypass only the historical R59/R66 soft timing/quality veto chain. The
+    # pre-R59 execution path still applies order mutation, fees, stop storage,
+    # position limits and the database/re-entry contract.
+    return _v90r59_base_open_or_add(
+        c,p,name,asset,direction,price,target_fraction,nav,ts,work,'R79_SIGNAL_ENTRY')
+
+
+def report(pg_connect):
+    d=dict(_v90r79_base_report(pg_connect) or {})
+    d['signal_authoritative_entry_r79']={
+      'status':'ACTIVE','started_at':V90_R79_STARTED_AT,'paper_only':True,
+      'policy':'published LONG/SHORT starts staged risk; stale parent-event timing is not a veto',
+      'aggressive_initial':{'normal':0.50,'super':1.00},
+      'impulse_initial':{'normal':0.20,'super':0.40},
+      'core_initial':{'normal':0.10,'super':0.25},
+      'challenger_initial':{'normal':0.10,'super':0.25},
+      'hard_vetoes_preserved':['source/session','quote freshness','invalid stop',
+          'hard invalidation','fast-TF conflict','negative validated edge','stop-risk cap'],
+      'soft_vetoes_no_longer_flatten_signal':sorted(_R79_SOFT_ECON_BLOCKERS),
+      'adds':'normal confirmation/risk path remains authoritative',
+    }
+    return _jsonable(d)
+
+V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),40)
+
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()
