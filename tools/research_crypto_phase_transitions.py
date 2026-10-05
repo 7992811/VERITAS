@@ -10,7 +10,7 @@ Candidate rules describe transitions:
 All rule/parameter selection uses 2022-2025 only. Apr-Oct 2026 is held out.
 """
 from __future__ import annotations
-import gc, json, math
+import gc, json, math, os
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
@@ -284,10 +284,15 @@ def research(asset,x):
 
 def main():
     btc=load('BTC');eth=load('ETH')
+    only=os.environ.get('RESEARCH_ASSET','').upper().strip()
+    pairs=[('ETH',eth,btc),('BTC',btc,eth)]
+    if only:
+        pairs=[p for p in pairs if p[0]==only]
+        if not pairs: raise RuntimeError(f'Unsupported RESEARCH_ASSET={only}')
     out={'generated_at':datetime.now(timezone.utc).isoformat(),
          'method':'Causal phase-transition templates; selection 2022-2025 only; 2026 held out.',
          'assets':{}}
-    for asset,raw,other in [('ETH',eth,btc),('BTC',btc,eth)]:
+    for asset,raw,other in pairs:
         x=features(raw);x=add_sequence_features(raw,x,other)
         out['assets'][asset]=research(asset,x)
         del x;gc.collect()
