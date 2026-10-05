@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r90-matte-signal-circles"
+UI_VERSION = "veritas-ui-v9.0-r91-single-row-signal-legend"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -85,7 +85,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .matrix-panel .sig-dot.super::after{content:'';position:absolute;inset:-8px;width:auto;height:auto;transform:none;border:3px solid var(--signal-color);border-radius:50%;background:transparent!important;box-shadow:none}
 .matrix-panel .sig-dot.unavailable{background:transparent;border:1px dashed #75818d;color:#a7b1bb;display:inline-flex;align-items:center;justify-content:center;font-size:15px;box-shadow:none}
 .matrix .cell:disabled{cursor:default}
-.matrix-legend{display:flex;flex-wrap:wrap;align-items:center;gap:12px 24px;padding-top:12px;margin-top:6px;border-top:1px solid var(--line);font-size:12px;font-weight:500;color:#cbd6df}
+.matrix-legend{display:flex;flex-wrap:nowrap;align-items:center;gap:24px;padding-top:12px;margin-top:6px;border-top:1px solid var(--line);font-size:12px;font-weight:500;color:#cbd6df}
 .matrix-legend>span{display:inline-flex;align-items:center;gap:9px;min-height:22px;white-space:nowrap}
 .matrix-legend .sig-dot{--signal-edge:none;width:12px;height:12px;margin:0 4px}
 .matrix-legend .sig-dot.super{width:8px;height:8px;margin:0 6px}
@@ -166,8 +166,11 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
   .matrix .sig-dot{width:22px;height:22px}
   .matrix .sig-dot.super{width:16px;height:16px}
   .matrix .sig-dot.super::after{inset:-6px;border-width:2px}
-  .matrix-legend{gap:10px 16px;font-size:11px;padding-top:14px}
-  .matrix-legend>span{gap:6px}
+  .matrix-legend{justify-content:space-between;gap:6px;font-size:11px;padding-top:12px}
+  .matrix-legend>span{gap:4px}
+  .matrix-legend .sig-dot{width:10px;height:10px;margin:0 2px}
+  .matrix-legend .sig-dot.super{width:6px;height:6px;margin:0 4px}
+  .matrix-legend .sig-dot.super::after{inset:-4px}
 }
 @media(max-width:380px){
   .matrix th:first-child,.matrix th.asset-head{width:76px}
@@ -176,6 +179,10 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
   .matrix .asset-logo svg{width:11px;height:11px}
   .matrix .sig-dot{width:18px;height:18px}
   .matrix .sig-dot.super{width:12px;height:12px}
+  .matrix-legend{gap:4px;font-size:10px}
+  .matrix-legend>span{gap:3px}
+  .matrix-legend .sig-dot{width:8px;height:8px}
+  .matrix-legend .sig-dot.super{width:4px;height:4px}
 }
 /* Regular weight throughout the signal matrix, including table headers and labels. */
 .matrix-panel .title,
