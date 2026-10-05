@@ -4871,13 +4871,12 @@ def _v90r79_hard_signal_veto(row):
     plan=(row or {}).get('trade_plan') or {}
     integrity=plan.get('trade_integrity') or {}
     history=plan.get('profitability_gate') or {}
-    arbitration=plan.get('rule_arbitration') or {}
     blockers=[]
     if integrity.get('hard_invalidation'):blockers.append('HARD_INVALIDATION')
     if integrity.get('fast_tf_conflict'):blockers.append('FAST_TF_CONFLICT')
-    if arbitration.get('hard_veto'):blockers.append('RULE_ARBITRATION_HARD_VETO')
-    if (plan.get('reentry_intelligence') or {}).get('allowed') is False:
-        blockers.append('REENTRY_EXPLICITLY_BLOCKED')
+    # A published current direction has already survived upstream arbitration.
+    # Stale rule-arbitration/reentry labels from the parent setup are audit data,
+    # not a second execution veto.
     if history.get('status')=='NEGATIVE_EDGE':
         blockers.append('NEGATIVE_VALIDATED_SETUP_EDGE')
     return blockers
@@ -5013,10 +5012,11 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         _record_entry_outcome(work,'BLOCKED','R79_STOP_RISK_LIMIT')
         return 0.0
 
-    # Bypass only the historical R59/R66 soft timing/quality veto chain. The
-    # pre-R59 execution path still applies order mutation, fees, stop storage,
-    # position limits and the database/re-entry contract.
-    return _v90r59_base_open_or_add(
+    # Bypass the historical R55/R59 parent-setup invalidation/reentry chain.
+    # R79 already enforced current source, fresh quote, current direction,
+    # stop-risk and stable event-id reuse above. The pre-R55 mutation path still
+    # applies fills, fees, position accounting and storage.
+    return _v90r55_base_open_or_add(
         c,p,name,asset,direction,price,target_fraction,nav,ts,work,'R79_SIGNAL_ENTRY')
 
 
