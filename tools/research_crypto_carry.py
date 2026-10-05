@@ -121,12 +121,27 @@ def spot_1h(asset):
 
 def attach_prices(asset,f):
  s=spot_1h(asset);p=futures_1h(asset)
- # Funding at T -> enter at the first 1h bar whose open time >= T+1h.
- et=f.ts.to_numpy()+3600
- si=np.searchsorted(s.ts.to_numpy(),et,side='left');pi=np.searchsorted(p.ts.to_numpy(),et,side='left')
- good=(si<len(s))&(pi<len(p));z=f.loc[good].copy();si=si[good];pi=pi[good]
- z['spot_open']=s.open.to_numpy()[si];z['perp_open']=p.open.to_numpy()[pi];z['entry_ts']=np.maximum(s.ts.to_numpy()[si],p.ts.to_numpy()[pi])
- z['basis']=z.perp_open/z.spot_open-1
+ # Strict causal sequencing:
+ # funding settlement at T is known at/after T;
+ # basis observation uses the COMPLETED 1h bar immediately before T;
+ # entry is delayed to the first 1h open >= T+1h.
+ ft=f.ts.to_numpy(np.int64)
+ st=s.ts.to_numpy(np.int64);pt=p.ts.to_numpy(np.int64)
+ obs_si=np.searchsorted(st,ft,side='left')-1
+ obs_pi=np.searchsorted(pt,ft,side='left')-1
+ et=ft+3600
+ ent_si=np.searchsorted(st,et,side='left')
+ ent_pi=np.searchsorted(pt,et,side='left')
+ good=(obs_si>=0)&(obs_pi>=0)&(ent_si<len(s))&(ent_pi<len(p))
+ z=f.loc[good].copy()
+ obs_si=obs_si[good];obs_pi=obs_pi[good];ent_si=ent_si[good];ent_pi=ent_pi[good]
+ z['basis_obs_ts']=np.minimum(st[obs_si]+3600,pt[obs_pi]+3600)
+ z['basis']=p.close.to_numpy()[obs_pi]/s.close.to_numpy()[obs_si]-1
+ z['spot_open']=s.open.to_numpy()[ent_si]
+ z['perp_open']=p.open.to_numpy()[ent_pi]
+ z['entry_ts']=np.maximum(st[ent_si],pt[ent_pi])
+ # Guard: every feature timestamp must precede execution.
+ z=z[z.basis_obs_ts<=z.entry_ts].copy()
  mu=z.basis.rolling(90,min_periods=30).mean().shift(1);sd=z.basis.rolling(90,min_periods=30).std().shift(1)
  z['basis_z']=(z.basis-mu)/sd.replace(0,np.nan)
  return z.reset_index(drop=True),s,p
