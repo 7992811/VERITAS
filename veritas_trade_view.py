@@ -2,6 +2,8 @@
 import json
 import math
 import veritas_profit_protection as VPP
+import veritas_position_guard as VPG
+import veritas_price_source as VPS
 
 
 def _number(value):
@@ -72,6 +74,22 @@ def enrich_positions(report, pg_connect):
             # Keep the position visible, but never substitute zero for unknown costs.
             pass
     for position in positions:
+        trade=trades.get(position.get('active_trade_id')) or {}
+        combined=dict(_payload(trade.get('payload')));combined.update(_payload(position.get('payload')))
+        position['payload']=combined
+        quote=VPG.quote_for_position(position)
+        mark=combined.get('source_locked_mark') or {}
+        current=float(quote['price']) if quote else VPS.frozen_price(position)
+        position.update(last_price=current,price_source_lock=VPS.position_identity(position),
+                        price_source_status='OK' if quote else 'PINNED_SOURCE_QUOTE_UNAVAILABLE',
+                        last_mark_at=quote.get('observed_at') or mark.get('observed_at'),
+                        mark_source='PINNED_ENTRY_SOURCE' if quote else 'LAST_PINNED_SOURCE_PRICE')
+        entry=_number(position.get('avg_entry_price'));units=_number(position.get('units'))
+        if entry and units is not None:
+            sign=1 if position.get('direction')=='LONG' else -1
+            position.update(notional_rub=abs(units*current),
+                            unrealized_pnl_rub=sign*units*(current-entry),
+                            unrealized_return_pct=100*sign*(current/entry-1))
         position.update(trade_result(trades.get(position.get('active_trade_id')), position))
         position.update(VPP.evaluate(position, trades.get(position.get('active_trade_id'))))
     return out

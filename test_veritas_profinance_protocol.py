@@ -35,6 +35,10 @@ class QuoteProtocolTests(TestCase):
 
 
 class GoldProtectiveSourceTests(TestCase):
+    def setUp(self):
+        self.enterContext(patch.dict(G._quotes,{},clear=True))
+        self.enterContext(patch.dict(G._source_quotes,{},clear=True))
+
     def position(self,source='ProFinance'):
         return {'asset':'GOLD','direction':'SHORT','stop_price':4182.,'last_price':4140.,
                 'payload':{'entry_primary_source':source,

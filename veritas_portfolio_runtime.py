@@ -5069,6 +5069,88 @@ def report(pg_connect):
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),40)
 
 
+# R80: the position owns its quote source for its entire lifetime.
+_r80_base_step_one=_step_one
+_r80_base_step_all=step_all
+_r80_base_close_or_reduce=_close_or_reduce
+_r80_incident_checked=False
+
+
+def _r80_quarantine_source_incident(pg_connect):
+    global _r80_incident_checked
+    if _r80_incident_checked:
+        return
+    # Reconciled against the 2026-10-05 journal + Render market_verified logs.
+    # Preserve the accounting ledger. Exclude contaminated marks from learning.
+    ids=['Impulse:GOLD:1791207888095','Aggressive:GOLD:1791207888305',
+         'Champion:GOLD:1791207888491','Challenger:GOLD:1791207888980']
+    audit={'data_integrity_status':'MIXED_PRICE_SOURCES','learning_eligible':False,
+           'learning_exclusion_reason':'ENTRY_PROFINANCE_MARK_GLD_GC_PROXY',
+           'source_integrity_incident':'GOLD_20261005_1344_1400',
+           'source_integrity_note':'ProFinance entry; GLD/GC proxy marks observed in 13:57-14:00 UTC logs. Ledger retained.'}
+    with pg_connect() as c, c.transaction():
+        c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                  "WHERE trade_id=ANY(%s) AND payload->>'source_integrity_incident' IS DISTINCT FROM %s",
+                  (json.dumps(audit),ids,audit['source_integrity_incident']))
+        c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                  "WHERE active_trade_id=ANY(%s) AND payload->>'source_integrity_incident' IS DISTINCT FROM %s",
+                  (json.dumps(audit),ids,audit['source_integrity_incident']))
+    _v90r44_sanitize_state['at']=0.0
+    _v90r29_cache['at']=0.0; _v90r33_cache['at']=0.0
+    _r80_incident_checked=True
+
+
+def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
+    for row in summary or []:
+        VPG.publish_quote(row.get('asset'),VPS.quote_from_row(row))
+    _r80_quarantine_source_incident(pg_connect)
+    with pg_connect() as c:
+        positions=[dict(z) for z in c.execute('SELECT * FROM paper_positions').fetchall()]
+    if VPG._entry_namespace is not None:
+        VPG.refresh_position_quotes(VPG._entry_namespace,positions)
+    return _r80_base_step_all(summary,pg_connect,model_version,observed_at,commission_rate,emit)
+
+
+def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    rows=[dict(z) for z in c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s',(name,)).fetchall()]
+    safe_prices=dict(prices or {}); safe_candidates=dict(candidates or {}); safe_summary=list(summary or [])
+    for z in rows:
+        asset=z['asset']; identity=VPS.position_identity(z); q=VPG.quote_for_position(z,now=ts)
+        safe_prices[asset]=float(q['price']) if q else VPS.frozen_price(z)
+        status='OK' if q else 'PINNED_SOURCE_QUOTE_UNAVAILABLE'
+        audit={'price_source_status':status}
+        if identity:
+            audit['price_source_lock']=identity
+        if q:
+            audit['source_locked_mark']={'identity':VPS.identity(asset,q),'price':float(q['price']),
+                                         'observed_at':q['observed_at']}
+        c.execute("UPDATE paper_positions SET last_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                  "WHERE portfolio_name=%s AND asset=%s",
+                  (safe_prices[asset],json.dumps(audit),name,asset))
+        if z.get('active_trade_id'):
+            c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                      (json.dumps(audit),z['active_trade_id']))
+        candidate=safe_candidates.get(asset)
+        # Foreign-source indicator changes cannot invalidate a held position.
+        def usable(row):
+            return bool(q and VPS.same(identity,VPS.identity(asset,row))
+                        and VPS.same(identity,VPS.identity(asset,VPS.quote_from_row(row))))
+        if candidate and not usable(candidate):
+            safe_candidates.pop(asset,None)
+        safe_summary=[r for r in safe_summary if r.get('asset')!=asset or usable(r)]
+    return _r80_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,safe_summary)
+
+
+def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    q=VPG.quote_for_position(dict(z),now=ts)
+    if not q:
+        return 0.0
+    actual=float(q['price'])
+    if str(reason)=='STOP' and VPG.protective_reason(dict(z),q,VPG.utc_datetime(ts))!='STOP':
+        return 0.0
+    return _r80_base_close_or_reduce(c,p,name,dict(z,_execution_quote=q),actual,target_fraction,nav,ts,reason)
+
+
 # Export only names added or replaced by canonical runtime layers.
 __all__ = [
     k for k, v in globals().items()

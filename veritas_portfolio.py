@@ -7,6 +7,7 @@ import httpx
 import veritas_execution as VX
 import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
+import veritas_price_source as VPS
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
 VERSION='veritas-portfolio-v9.0-four-portfolio-core'
@@ -2068,18 +2069,25 @@ def _portfolio_rows(c,name):
 def _mark_nav(p,pos,prices):
     unreal=0.0; gross=0.0; net=0.0
     for z in pos:
-        px=float(prices.get(z['asset'],z['last_price']))
+        px=VPG.position_mark_price(dict(z))
         units=float(z['units']); sign=1 if z['direction']=='LONG' else -1
         unreal += sign*units*(px-float(z['avg_entry_price']))
     base=float(p['initial_nav_rub'])+float(p['realized_pnl_rub'])-float(p['fees_rub'])-float(p['funding_rub'])
     nav=base+unreal
     for z in pos:
-        px=float(prices.get(z['asset'],z['last_price'])); notional=abs(float(z['units'])*px)
+        px=VPG.position_mark_price(dict(z)); notional=abs(float(z['units'])*px)
         gross+=notional/max(nav,1.0); net+=(notional/max(nav,1.0))*(1 if z['direction']=='LONG' else -1)
     return nav,unreal,gross,net
 
 
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    # Final accounting boundary: no unlabelled scalar can close a position.
+    quote=VPG.quote_for_position(dict(z),now=ts)
+    if not quote:
+        return 0.0
+    if str(reason)=='STOP' and VPG.protective_reason(dict(z),quote,VPG.utc_datetime(ts))!='STOP':
+        return 0.0
+    price=float(quote['price']); z=dict(z,_execution_quote=quote)
     current_notional=abs(float(z['units'])*price); target_notional=max(0.0,target_fraction*nav)
     close_notional=max(0.0,current_notional-target_notional)
     if close_notional<=0 or (target_fraction>0 and close_notional<=max(1.0,0.0025*nav)): return 0.0
@@ -2099,7 +2107,12 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     c.execute('UPDATE paper_portfolios SET realized_pnl_rub=realized_pnl_rub+%s,fees_rub=fees_rub+%s,updated_at=%s WHERE name=%s',(pnl,fee,ts,name))
     c.execute('UPDATE paper_trades SET gross_pnl_rub=gross_pnl_rub+%s,fees_rub=fees_rub+%s WHERE trade_id=%s',(pnl,fee,z['active_trade_id']))
     remain=abs(float(z['units']))-close_units
-    c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,z['active_trade_id'],ts,z['asset'],side,fill_price,executed_notional,fee,frac,reason,json.dumps({'execution_model':fill},ensure_ascii=False,default=str),cid))
+    source_audit={'execution_model':fill,'price_source_identity':VPS.identity(z['asset'],quote),
+                  'market_observed_at':quote['observed_at'],'reference_price':price}
+    c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,z['active_trade_id'],ts,z['asset'],side,fill_price,executed_notional,fee,frac,reason,json.dumps(source_audit,ensure_ascii=False,default=str),cid))
+    c.execute("UPDATE paper_trades SET payload=payload || %s::jsonb WHERE trade_id=%s",
+              (json.dumps({'last_exit_source_identity':source_audit['price_source_identity'],
+                           'last_exit_market_observed_at':quote['observed_at']},default=str),z['active_trade_id']))
     if remain<=1e-10 or target_fraction<=0:
         # close trade; net pnl after fees/funding accumulated on trade
         tr=c.execute('SELECT * FROM paper_trades WHERE trade_id=%s',(z['active_trade_id'],)).fetchone()
@@ -2119,10 +2132,27 @@ def _record_entry_outcome(row,status,reason,**details):
     audit.update(status=status,reason=reason,**details)
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    quote=VPS.quote_from_row(row); source_lock=VPS.identity(asset,quote)
+    if (not source_lock or not VPS.positive(quote.get('price')) or not quote.get('source_gate_pass')
+            or quote.get('market_open') is False):
+        _record_entry_outcome(row,'BLOCKED','SOURCE_IDENTITY_MISSING')
+        return 0.0
+    signal_source=VPS.identity(asset,row)
+    if signal_source and not VPS.same(signal_source,source_lock):
+        _record_entry_outcome(row,'BLOCKED','ENTRY_SOURCE_MISMATCH')
+        return 0.0
+    if not VPG.quote_gate(quote.get('observed_at'),now=VPG.utc_datetime(ts),execution=True,asset=asset)['eligible']:
+        _record_entry_outcome(row,'BLOCKED','PINNED_SOURCE_QUOTE_UNAVAILABLE')
+        return 0.0
+    price=float(quote['price'])
+    VPG.publish_quote(asset,quote)
     target_notional=target_fraction*nav
     import veritas_trend_entry as VTE
     row=VTE.prepare_row(row,price)
     z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
+    if z and not VPS.matches(dict(z),quote):
+        _record_entry_outcome(row,'BLOCKED','POSITION_SOURCE_MISMATCH')
+        return 0.0
     if z and z['direction']!=direction:
         if not bool(row.get('_flip_confirmed',False)):
             _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED')
@@ -2214,6 +2244,11 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         plan=row.get('trade_plan') or {}
         canonical_setup_id=_portfolio_canonical_setup_id(row)
         payload={'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+                 'price_source_lock':source_lock,'price_source_status':'OK',
+                 'entry_execution_source_identity':source_lock,
+                 'entry_primary_source':source_lock['primary_source'],
+                 'entry_execution_observed_at':quote['observed_at'],
+                 'source_locked_mark':{'identity':source_lock,'price':price,'observed_at':quote['observed_at']},
                  'entry_rule_revision':COHORT,'execution_cohort':COHORT,
                  'production_evidence_epoch':str(ts),
                  'canonical_setup_id':canonical_setup_id,
@@ -2237,6 +2272,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         c.execute('INSERT INTO paper_trades(trade_id,portfolio_name,asset,direction,opened_at,avg_entry_price,max_fraction,fees_rub,status,setup,horizon,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(trade_id,name,asset,direction,ts,fill_price,target_fraction,fee,'OPEN',setup,row.get('horizon'),json.dumps(payload,ensure_ascii=False,default=str)))
         c.execute('INSERT INTO paper_positions(portfolio_name,asset,direction,units,avg_entry_price,opened_at,updated_at,active_trade_id,stop_price,target_fraction,last_price,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,asset,direction,units,fill_price,ts,ts,trade_id,(row.get('trade_plan') or {}).get('stop_price'),target_fraction,price,json.dumps(payload,ensure_ascii=False,default=str)))
     order_payload={'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+                   'price_source_identity':source_lock,'market_observed_at':quote['observed_at'],
                    'entry_timing':row.get('_r65_entry_timing'),
                    'execution_model':fill,'order_intent':intent.to_dict()}
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,trade_id,ts,asset,side,fill_price,add,fee,add/max(nav,1),reason,json.dumps(order_payload,ensure_ascii=False,default=str),intent.client_order_id))
@@ -2754,7 +2790,9 @@ def _v90j_update_excursions(c,name,prices,ts):
     try:
         rows=c.execute("""SELECT * FROM paper_positions WHERE portfolio_name=%s""",(name,)).fetchall()
         for z0 in rows:
-            z=dict(z0); asset=z.get('asset'); px=_v90j_float((prices or {}).get(asset,z.get('last_price')))
+            z=dict(z0); asset=z.get('asset'); quote=VPG.quote_for_position(z,now=ts)
+            if not quote: continue
+            px=float(quote['price'])
             entry=_v90j_float(z.get('avg_entry_price'))
             if px is None or entry is None or entry<=0:
                 continue
@@ -2788,7 +2826,9 @@ def _v90j_mark_open_positions(c,name,prices,ts):
         if asset not in (prices or {}):
             continue
         try:
-            px=float(prices[asset])
+            quote=VPG.quote_for_position(r,now=ts)
+            if not quote: continue
+            px=float(quote['price'])
             if not math.isfinite(px) or px<=0:
                 continue
         except Exception:
@@ -2796,6 +2836,10 @@ def _v90j_mark_open_positions(c,name,prices,ts):
         payload=_v90j_json(r.get('payload'))
         payload['last_mark_price']=px
         payload['last_mark_at']=_v90j_iso(ts)
+        payload['price_source_lock']=VPS.position_identity(r)
+        payload['price_source_status']='OK'
+        payload['source_locked_mark']={'identity':VPS.identity(asset,quote),
+                                       'price':px,'observed_at':quote['observed_at']}
         c.execute("""UPDATE paper_positions
                      SET last_price=%s,updated_at=%s,payload=%s::jsonb
                      WHERE portfolio_name=%s AND asset=%s""",
@@ -3306,12 +3350,14 @@ def _v90_open_position_report(pg_connect):
             plan=decision.get('trade_plan') or {}
             stored=_v90p_float(z.get('last_price'),0.0) or 0.0
             market_payload=_v90p_json(raw.get('latest_market_payload'))
-            live_mark=_v90p_float(market_payload.get('price'))
-            current=live_mark if live_mark is not None and live_mark>0 else stored
+            quote=VPG.quote_for_position(dict(z,payload=payload),VPS.quote_from_row(market_payload))
+            current=float(quote['price']) if quote else VPS.frozen_price(dict(z,payload=payload))
             z['stored_last_price']=stored
             z['last_price']=current
-            z['mark_source']='LATEST_DECISION_PRICE' if live_mark is not None and live_mark>0 else 'POSITION_LAST_PRICE'
-            z['last_mark_at']=raw.get('latest_market_at') if live_mark is not None and live_mark>0 else (payload.get('last_mark_at') or raw.get('updated_at'))
+            z['mark_source']='PINNED_ENTRY_SOURCE' if quote else 'LAST_PINNED_SOURCE_PRICE'
+            z['price_source_lock']=VPS.position_identity(dict(z,payload=payload))
+            z['price_source_status']='OK' if quote else 'PINNED_SOURCE_QUOTE_UNAVAILABLE'
+            z['last_mark_at']=quote.get('observed_at') or (payload.get('source_locked_mark') or {}).get('observed_at')
             entry=_v90p_float(z.get('avg_entry_price'),0.0) or 0.0
             units=abs(_v90p_float(z.get('units'),0.0) or 0.0)
             notional=abs(units*current)
@@ -4064,6 +4110,9 @@ def _v90ci_entry_patch(row,z,ts):
 _v90j_entry_patch=_v90ci_entry_patch
 
 def _v90ci_same_contract(payload,row):
+    if (payload or {}).get('price_source_lock'):
+        lock=payload['price_source_lock']
+        return VPS.same(lock,VPS.identity(lock.get('asset'),row))
     p=(payload or {}).get('contract_identity') or {}
     r=(row or {}).get('contract') or {}
     rid=r.get('secid') or r.get('symbol') or (row or {}).get('contract_id')

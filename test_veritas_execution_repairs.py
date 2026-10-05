@@ -191,6 +191,8 @@ class ProtectiveExitTests(unittest.TestCase):
     def test_full_exit_is_not_blocked_by_small_rebalance_threshold(self):
         z = self.position()
         z['units'] = 1
+        z['_execution_quote']={'price':12.612,'observed_at':NOW.isoformat(),
+                               'source_gate_pass':True,'source_names':{'primary':'MOEX ISS CNYRUBF'}}
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
         fee = VP._v90j_base_close_or_reduce(conn, {}, 'Aggressive', z, 12.612, 0,
@@ -215,7 +217,8 @@ class ProtectiveExitTests(unittest.TestCase):
         vp = SimpleNamespace(_portfolio_rows=lambda c, n: (book, positions),
              _mark_nav=lambda p, z, q: (966000, 0, 0, 0), _apply_funding=MagicMock(),
              _v90j_update_excursions=MagicMock(), _close_or_reduce=MagicMock(side_effect=close))
-        quotes = {'CNYRUBF': dict(price=12.612, observed_at=NOW.isoformat(), source_gate_pass=True)}
+        quotes = {'CNYRUBF': dict(price=12.612, observed_at=NOW.isoformat(), source_gate_pass=True,
+                                source_names={'primary':'MOEX ISS CNYRUBF'})}
         self.assertEqual(len(PG.run_protective_pass(vp, lambda: conn, quotes, NOW)), 1)
         self.assertEqual(PG.run_protective_pass(vp, lambda: conn, quotes, NOW), [])
         vp._close_or_reduce.assert_called_once()

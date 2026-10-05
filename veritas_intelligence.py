@@ -3626,6 +3626,7 @@ def market(symbol, coinbase_product):
     _set_source_quality(quality)
     return {
         'asset':symbol.replace('USDT',''),'price': p, 'coinbase_price': cb, 'secondary_price':cb,
+        'source_names':{'primary':'Binance spot','secondary':'Coinbase spot'},
         'direct_sources':2 if cb is not None else 1,
         'best_bid':best_bid,'best_ask':best_ask,'spread_bps':spread_bps,
         'secondary_bid':cb_bid,'secondary_ask':cb_ask,

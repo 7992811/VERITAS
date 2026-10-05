@@ -591,6 +591,7 @@ function renderPortfolios(){
       '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' <span class="trade-direction '+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Результат всей сделки после расходов / сумма фактических входов и доборов. Частичные закрытия не уменьшают базу процента.">'+signedPct(ret)+'<small>'+rub(pnl)+'</small></div></div>'+
       '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
       '<div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · в позиции '+holdRu(held)+' · объём '+rub(z.notional_rub)+'</div>'+
+      '<div class="position-meta">Источник: '+esc(z.price_source_lock?.primary_source||z.payload?.price_source_lock?.primary_source||'не установлен')+' · '+(z.price_source_status==='OK'?'котировка '+dateRu(z.last_mark_at):'<span class="warn">ожидаем котировку источника входа · сохранена последняя подтверждённая цена</span>')+'</div>'+
       tpNotice(z,true)+
       '<div class="position-accounting"><span>Зафиксировано<b>'+rub(z.realized_gross_pnl_rub)+'</b></span><span>Переоценка<b>'+rub(z.unrealized_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(z.trade_fees_rub)+'</b></span><span>Фондирование<b>'+rub(z.trade_funding_rub)+'</b></span><span>От максимума<b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span></div>'+
       '<div class="position-learning">'+
@@ -854,7 +855,7 @@ function normalizePosition(z,portfolioHint,d){
     asset:asset,
     direction:direction,
     avg_entry_price:num(z.avg_entry_price,z.entry_price,tr.avg_entry_price,tp.entry_price),
-    last_price:num(z.last_price,z.price,sig.price,tr.last_price),
+    last_price:num(z.last_price,z.payload?.source_locked_mark?.price,tp.source_locked_mark?.price,tr.last_price,z.avg_entry_price,tr.avg_entry_price,tp.entry_price),
     stop_price:num(z.stop_price,z.trailing_stop,tp.trailing_stop,tp.stop_price,tp.initial_stop_price,plan.stop_price),
     target_fraction:num(z.target_fraction,z.current_fraction,tr.target_fraction,tp.target_fraction,tr.max_fraction,tp.opening_fraction),
     opened_at:first(z.opened_at,z.entry_time,tr.opened_at,tp.entry_time),
