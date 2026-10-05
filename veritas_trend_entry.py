@@ -335,16 +335,22 @@ def prepare_row(row, price=None, now=None):
                     expected_to_stop_ratio=g['reward_risk'],r66_geometry=g,
                     r66_runner_target_price=g.get('runner_target_price'))
         if ev:
+            catalyst=bool(ev.get('catalyst_continuation') or ev.get('event_type')=='CATALYST_CONTINUATION')
             plan.update(entry_price=number(price,number(x.get('price'),number(plan.get('entry_price')))),
                         direction=ev['direction'],entry_plan_version=PLAN_VERSION,
                         entry_event_id=ev['event_id'],setup_id=ev['event_id'],
-                        setup='R69_STRUCTURAL_BREAKOUT',new_setup_identity=True,
-                        stop_method='LOCAL_EVENT_INVALIDATION',target_method='EVENT_ORIGIN_2R_CAPPED_BY_LEVEL',
+                        setup='CATALYST_CONTINUATION' if catalyst else 'R69_STRUCTURAL_BREAKOUT',
+                        new_setup_identity=True,
+                        stop_method='CATALYST_CURRENT_STRUCTURE' if catalyst else 'LOCAL_EVENT_INVALIDATION',
+                        target_method='CATALYST_CURRENT_2R_CAPPED_BY_LEVEL' if catalyst else 'EVENT_ORIGIN_2R_CAPPED_BY_LEVEL',
                         tactical_target_price=g['target_price'],take_price=g['target_price'],
                         take_profit_1={'price':g['target_price'],
                             'timeframe':(g.get('nearest_level') or {}).get('timeframe','5m'),
                             'distance_pct':g['remaining_move_pct']},
-                        expected_move_method='structural_projection_unvalidated')
+                        expected_move_method='catalyst_continuation_projection' if catalyst else 'structural_projection_unvalidated')
+            if catalyst:
+                plan['catalyst_continuation']=True
+                plan['catalyst']=ev.get('catalyst')
     elif ev:
         plan.update(eligible=False,reason=g['reason'],r66_geometry=g)
     x['trade_plan']=plan
