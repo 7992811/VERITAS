@@ -80,7 +80,7 @@ def resample15(raw):
     g = z.resample("15min", closed="left", label="right")
     x = g.agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"})
     cnt = g.size()
-    x = x[cnt >= 14].copy()
+    x = x[cnt == 15].copy()
     x["ts"] = (x.index.view("int64") // 10**9).astype(np.int64)
     return x.reset_index(drop=True)
 
@@ -102,8 +102,8 @@ def features(raw):
     x["ret16"] = x.close / x.close.shift(16) - 1
     x["ret48"] = x.close / x.close.shift(48) - 1
     x["ret96"] = x.close / x.close.shift(96) - 1
-    x["eff16"] = (x.close-x.close.shift(16)).abs() / r.abs().rolling(16).sum().replace(0, np.nan)
-    x["eff48"] = (x.close-x.close.shift(48)).abs() / r.abs().rolling(48).sum().replace(0, np.nan)
+    x["eff16"] = (x.close/x.close.shift(16)-1).abs() / r.abs().rolling(16).sum().replace(0, np.nan)
+    x["eff48"] = (x.close/x.close.shift(48)-1).abs() / r.abs().rolling(48).sum().replace(0, np.nan)
 
     x["m96"] = x.close.rolling(96, min_periods=96).mean().shift(1)
     x["s96"] = x.close.rolling(96, min_periods=96).std().shift(1)
@@ -344,10 +344,38 @@ def yearly(rows):
         out[str(y)]=metrics([r for r in rows if a<=r["opened"]<b])
     return out
 
+def bootstrap_risk(rows, nboot=1000, block=5):
+    if len(rows)<12:
+        return {"n":len(rows),"p_positive":None,"p05_sum":None,"p95_dd":None,"max_loss_streak":None}
+    a=np.asarray([r["net"] for r in rows],float)
+    rng=np.random.default_rng(20261005)
+    sums=[];dds=[]
+    n=len(a)
+    starts=np.arange(max(1,n-block+1))
+    for _ in range(nboot):
+        z=[]
+        while len(z)<n:
+            s=int(rng.choice(starts))
+            z.extend(a[s:s+block].tolist())
+        z=np.asarray(z[:n],float)
+        eq=np.cumsum(z);pk=np.maximum.accumulate(np.r_[0.,eq])[1:]
+        sums.append(float(z.sum()));dds.append(float((pk-eq).max()))
+    streak=0;best=0
+    for v in a:
+        streak=streak+1 if v<=0 else 0
+        best=max(best,streak)
+    return {"n":n,"p_positive":float(np.mean(np.asarray(sums)>0)),
+            "p05_sum":float(np.quantile(sums,.05)),
+            "p95_dd":float(np.quantile(dds,.95)),
+            "max_loss_streak":int(best)}
+
 def diagnostics(rows):
-    by_state={k:metrics(v) for k,v in pd.DataFrame(rows).groupby("state").apply(lambda g:g.to_dict("records")).items()} if rows else {}
-    by_h={k:metrics(v) for k,v in pd.DataFrame(rows).groupby("horizon").apply(lambda g:g.to_dict("records")).items()} if rows else {}
-    return {"by_state":by_state,"by_horizon":by_h}
+    if not rows:
+        return {"by_state":{},"by_horizon":{},"bootstrap":bootstrap_risk([])}
+    df=pd.DataFrame(rows)
+    by_state={str(k):metrics(g.to_dict("records")) for k,g in df.groupby("state",sort=False)}
+    by_h={str(k):metrics(g.to_dict("records")) for k,g in df.groupby("horizon",sort=False)}
+    return {"by_state":by_state,"by_horizon":by_h,"bootstrap":bootstrap_risk(rows)}
 
 def run_asset(asset):
     raw=combine(asset)
