@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r86-terminal-signal-matrix"
+UI_VERSION = "veritas-ui-v9.0-r87-unified-signal-matrix"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -66,28 +66,25 @@ _CANONICAL_HTML = r'''<!doctype html>
 .sig-dot.super::after{content:'';position:absolute;left:50%;top:50%;width:20px;height:20px;border-radius:50%;transform:translate(-50%,-50%);background:transparent!important;border:3px solid currentColor;box-shadow:none}
 .sig-dot.super.long{color:#52d98b;border-color:#52d98b;box-shadow:none}
 .sig-dot.super.short{color:#ff5f6d;border-color:#ff5f6d;box-shadow:none}
-/* R86: high-contrast terminal presentation, scoped to the signal matrix. */
-.matrix-panel{--matrix-mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;padding:16px;border-color:#38434f;border-radius:7px;background:#080e14;box-shadow:none}
-.matrix-panel .title{font-size:12px;font-weight:750;line-height:20px;text-transform:uppercase;letter-spacing:.12em;color:#ffc170;border-left:3px solid #ffac42;padding-left:10px;margin-bottom:14px}
-.matrix thead{background:#121d28}
-.matrix thead th{font-family:var(--matrix-mono);font-size:13px;font-weight:600;letter-spacing:0;font-variant-numeric:tabular-nums;color:#c1ceda;padding:12px 0}
-.matrix thead th:first-child{text-align:left;padding-left:8px;font:600 11px/1.2 Inter,Arial,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:#8fa2b4}
-.matrix .asset-label{font-family:var(--matrix-mono);font-size:14px;font-weight:650;letter-spacing:0;color:#f0f5fa}
+/* R87: shared dashboard card and typography, with slightly smaller signal circles. */
+.matrix thead th{font-size:13px;font-weight:650;font-variant-numeric:tabular-nums;color:#cbd6df;padding:10px 0}
+.matrix thead th:first-child{text-align:left}
+.matrix .asset-label{font-size:13px;font-weight:650;color:var(--text)}
 .matrix .asset-logo{box-shadow:none}
-.matrix tbody th,.matrix td{border-top:1px solid #19242e}
-.matrix .cell{min-height:56px;padding:8px 0;border:0;background:transparent;border-radius:3px}
-.matrix .cell:hover{background:#142331}
-.matrix .cell.sel{outline:1px solid #52758f;outline-offset:-3px;background:#102334}
-.matrix .cell:focus-visible{outline:2px solid #ffc170;outline-offset:-3px}
-.matrix-panel .sig-dot{--signal-color:#ffd037;width:28px;height:28px;flex:0 0 auto;background:var(--signal-color);border:0;color:var(--signal-color);box-shadow:none}
+.matrix tbody th,.matrix td{border-top:1px solid rgba(255,255,255,.045)}
+.matrix .cell{min-height:52px;padding:8px 0;border:0;background:transparent;border-radius:7px}
+.matrix .cell:hover{background:rgba(255,255,255,.045)}
+.matrix .cell.sel{outline:1px solid rgba(164,196,220,.62);outline-offset:-3px;background:rgba(102,159,203,.055)}
+.matrix .cell:focus-visible{outline:2px solid #87b9d9;outline-offset:-3px}
+.matrix-panel .sig-dot{--signal-color:#ffd037;width:24px;height:24px;flex:0 0 auto;background:var(--signal-color);border:0;color:var(--signal-color);box-shadow:none}
 .matrix-panel .sig-dot.long{--signal-color:#00ed95}
 .matrix-panel .sig-dot.short{--signal-color:#ff4058}
 .matrix-panel .sig-dot.wait{--signal-color:#ffd037}
-.matrix-panel .sig-dot.super{width:22px;height:22px;background:var(--signal-color)!important;border:0;box-shadow:none}
-.matrix-panel .sig-dot.super::after{content:'';position:absolute;inset:-9px;width:auto;height:auto;transform:none;border:3px solid var(--signal-color);border-radius:50%;background:transparent!important;box-shadow:none}
+.matrix-panel .sig-dot.super{width:18px;height:18px;background:var(--signal-color)!important;border:0;box-shadow:none}
+.matrix-panel .sig-dot.super::after{content:'';position:absolute;inset:-8px;width:auto;height:auto;transform:none;border:3px solid var(--signal-color);border-radius:50%;background:transparent!important;box-shadow:none}
 .matrix-panel .sig-dot.unavailable{background:transparent;border:1px dashed #75818d;color:#a7b1bb;display:inline-flex;align-items:center;justify-content:center;font-size:15px}
 .matrix .cell:disabled{cursor:default}
-.matrix-legend{display:flex;flex-wrap:wrap;align-items:center;gap:12px 28px;padding-top:14px;margin-top:8px;border-top:1px solid #34424f;font-family:var(--matrix-mono);font-size:12px;font-weight:600;letter-spacing:0;color:#d1dce6}
+.matrix-legend{display:flex;flex-wrap:wrap;align-items:center;gap:12px 24px;padding-top:12px;margin-top:6px;border-top:1px solid var(--line);font-size:12px;font-weight:500;color:#cbd6df}
 .matrix-legend>span{display:inline-flex;align-items:center;gap:9px;min-height:22px;white-space:nowrap}
 .matrix-legend .sig-dot{width:12px;height:12px;margin:0 4px}
 .matrix-legend .sig-dot.super{width:8px;height:8px;margin:0 6px}
@@ -158,18 +155,16 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 @media(max-width:500px){.pf-row{grid-template-columns:minmax(88px,1.25fr) repeat(3,minmax(0,1fr));gap:4px;padding:9px 7px}button.pf-row{font-size:11px}.pf-row.pf-colnames{font-size:9px}.pf-row small{font-size:8px}.pf-detail{padding:11px}.pf-heading h3{font-size:13px}.pf-amount{font-size:23px}.pf-status{font-size:9px;max-width:104px}.pf-performance{gap:7px}.pf-value b{font-size:14px}.pf-value span{font-size:9px}.pf-sections{grid-template-columns:1fr;gap:10px}.pf-section:last-child{grid-column:auto}.pf-quality,.pf-ledger{grid-template-columns:1fr 1fr}.pf-quality .pf-value b{font-size:18px}.deal{padding:10px}.deal-result{font-size:15px}.deal-name{font-size:12px}.deal-breakdown{grid-template-columns:repeat(2,minmax(0,1fr))}.deal-filters small{flex-basis:100%;margin:0}.deal-outcome{gap:7px}}
 .trade-direction{display:inline-block;margin-left:7px}.position-result{font-size:12px;line-height:1.25}.position-result small{display:block;font-size:9px;font-weight:550;margin-top:2px}.deal-result small{font-size:11px}
 @media(max-width:650px){
-  .matrix-panel{padding:12px 10px;border-radius:5px}
-  .matrix-panel .title{font-size:11px;letter-spacing:.1em;margin-bottom:10px}
   .matrix{border-spacing:0}
   .matrix th{font-size:13px;padding:10px 0}
   .matrix th:first-child,.matrix th.asset-head{width:88px}
   .matrix .asset-label{font-size:12px;gap:4px;letter-spacing:-.2px}
   .matrix .asset-logo{width:18px;height:18px;flex-basis:18px;font-size:8px}
   .matrix .asset-logo svg{width:13px;height:13px}
-  .matrix .cell{min-height:48px;padding:7px 0}
-  .matrix .sig-dot{width:24px;height:24px}
-  .matrix .sig-dot.super{width:18px;height:18px}
-  .matrix .sig-dot.super::after{inset:-7px;border-width:2px}
+  .matrix .cell{min-height:44px;padding:7px 0}
+  .matrix .sig-dot{width:22px;height:22px}
+  .matrix .sig-dot.super{width:16px;height:16px}
+  .matrix .sig-dot.super::after{inset:-6px;border-width:2px}
   .matrix-legend{gap:10px 16px;font-size:11px;padding-top:14px}
   .matrix-legend>span{gap:6px}
 }
@@ -178,8 +173,8 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
   .matrix .asset-label{font-size:11px;gap:3px}
   .matrix .asset-logo{width:16px;height:16px;flex-basis:16px;font-size:7px}
   .matrix .asset-logo svg{width:11px;height:11px}
-  .matrix .sig-dot{width:20px;height:20px}
-  .matrix .sig-dot.super{width:14px;height:14px}
+  .matrix .sig-dot{width:18px;height:18px}
+  .matrix .sig-dot.super{width:12px;height:12px}
 }
 </style>
 </head>
@@ -211,7 +206,7 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
       <div id="assets"><div class="msg">Загрузка рынка…</div></div>
     </div>
 
-    <div class="card full section matrix-panel" data-matrix-design="terminal-ring-r86">
+    <div class="card full section matrix-panel" data-matrix-design="unified-ring-r87">
       <div class="title">Матрица сигналов</div>
       <div class="matrix-wrap"><table class="matrix"><thead><tr id="matrixHead"><th scope="col">Актив</th></tr></thead><tbody id="matrixBody"></tbody></table></div>
       <div class="matrix-legend" aria-label="Обозначения сигналов">
