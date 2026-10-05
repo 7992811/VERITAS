@@ -77,8 +77,17 @@ def refresh_entry_quotes(summary):
         else:
             refresh.append(asset)
 
+    candidate_contracts={}
+    for r in rows:
+        a=r.get('asset')
+        cid=((r.get('contract') or {}).get('secid')
+             or ((r.get('trade_plan') or {}).get('contract_identity') or {}).get('contract_id')
+             or (r.get('trade_plan') or {}).get('entry_contract_secid'))
+        if a in assets and cid:
+            candidate_contracts.setdefault(a,str(cid))
     with ThreadPoolExecutor(max_workers=4,thread_name_prefix='veritas-entry-quote') as pool:
-        jobs={a:pool.submit(fetch_guard_quote,_entry_namespace,a,[]) for a in refresh}
+        jobs={a:pool.submit(fetch_guard_quote,_entry_namespace,a,[],candidate_contracts.get(a))
+              for a in refresh}
         for asset,job in jobs.items():
             try:
                 q=job.result()
@@ -644,12 +653,38 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
     return changes
 
 
-def fetch_guard_quote(ns, asset, positions):
+def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
     with _quotes_lock:
         cached = dict(_quotes.get(asset) or {})
     if asset in ('CNYRUBF', 'MOEX'):
-        q = ns['_moex_futures_current_quote'](asset) if asset == 'CNYRUBF' else ns['_moex_current_quote']()
-        return dict(q, source_gate_pass=True, contract={'secid': asset})
+        if asset=='MOEX':
+            q=ns['_moex_current_quote']()
+            return dict(q,source_gate_pass=True,contract={'secid':'MOEX'})
+        # CNYRUBF is a normalized continuous asset; the MOEX current-quote
+        # adapter may require the actual front-contract secid. Prefer the
+        # contract carried by the current signal/position, then cached identity,
+        # and use the normalized name only as a last fallback.
+        contracts=[]
+        if candidate_contract:
+            contracts.append(str(candidate_contract))
+        for z in positions or []:
+            p=payload_of(z)
+            cid=(p.get('entry_contract_secid')
+                 or (p.get('contract_identity') or {}).get('contract_id'))
+            if cid:contracts.append(str(cid))
+        cid=(cached.get('contract') or {}).get('secid')
+        if cid:contracts.append(str(cid))
+        contracts.append('CNYRUBF')
+        last=None
+        for cid in dict.fromkeys(contracts):
+            try:
+                q=ns['_moex_futures_current_quote'](cid)
+                if q and float(q.get('price') or 0)>0:
+                    return dict(q,source_gate_pass=True,contract={'secid':cid})
+            except Exception as exc:
+                last=exc
+        if last: raise last
+        raise RuntimeError('CNYRUBF_CURRENT_QUOTE_UNAVAILABLE')
     if asset in ('BTC', 'ETH'):
         # This independent quote request contains no indicators/history/learning.
         with httpx.Client(timeout=httpx.Timeout(3.0, connect=1.5)) as client:
