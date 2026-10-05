@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r87-unified-signal-matrix"
+UI_VERSION = "veritas-ui-v9.0-r88-dimensional-signal-circles"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -76,19 +76,20 @@ _CANONICAL_HTML = r'''<!doctype html>
 .matrix .cell:hover{background:rgba(255,255,255,.045)}
 .matrix .cell.sel{outline:1px solid rgba(164,196,220,.62);outline-offset:-3px;background:rgba(102,159,203,.055)}
 .matrix .cell:focus-visible{outline:2px solid #87b9d9;outline-offset:-3px}
-.matrix-panel .sig-dot{--signal-color:#ffd037;width:24px;height:24px;flex:0 0 auto;background:var(--signal-color);border:0;color:var(--signal-color);box-shadow:none}
-.matrix-panel .sig-dot.long{--signal-color:#00ed95}
-.matrix-panel .sig-dot.short{--signal-color:#ff4058}
-.matrix-panel .sig-dot.wait{--signal-color:#ffd037}
-.matrix-panel .sig-dot.super{width:18px;height:18px;background:var(--signal-color)!important;border:0;box-shadow:none}
-.matrix-panel .sig-dot.super::after{content:'';position:absolute;inset:-8px;width:auto;height:auto;transform:none;border:3px solid var(--signal-color);border-radius:50%;background:transparent!important;box-shadow:none}
-.matrix-panel .sig-dot.unavailable{background:transparent;border:1px dashed #75818d;color:#a7b1bb;display:inline-flex;align-items:center;justify-content:center;font-size:15px}
+/* R88: directional highlights and inset shading add depth without a colored glow. */
+.matrix-panel .sig-dot{--signal-color:#ffd037;--signal-light:#ffe984;--signal-shade:#a56b00;--signal-fill:radial-gradient(circle at 30% 24%,rgba(255,255,255,.72) 0%,rgba(255,255,255,.18) 20%,transparent 45%),radial-gradient(circle at 37% 32%,var(--signal-light) 0%,var(--signal-color) 44%,var(--signal-shade) 100%);--signal-depth:inset 0 1px 1px rgba(255,255,255,.55),inset 0 -2px 3px rgba(0,0,0,.30),0 2px 3px rgba(0,0,0,.4);width:24px;height:24px;flex:0 0 auto;background:var(--signal-fill);border:0;color:var(--signal-color);box-shadow:var(--signal-depth)}
+.matrix-panel .sig-dot.long{--signal-color:#00ed95;--signal-light:#82ffd0;--signal-shade:#008454}
+.matrix-panel .sig-dot.short{--signal-color:#ff4058;--signal-light:#ff9ba8;--signal-shade:#a3132d}
+.matrix-panel .sig-dot.wait{--signal-color:#ffd037;--signal-light:#ffe984;--signal-shade:#a56b00}
+.matrix-panel .sig-dot.super{width:18px;height:18px;background:var(--signal-fill)!important;border:0;box-shadow:var(--signal-depth)}
+.matrix-panel .sig-dot.super::after{content:'';position:absolute;inset:-8px;width:auto;height:auto;transform:none;border:3px solid var(--signal-color);border-radius:50%;background:transparent!important;box-shadow:inset 0 1px 1px rgba(255,255,255,.25),inset 0 -1px 1px rgba(0,0,0,.3),0 2px 3px rgba(0,0,0,.35)}
+.matrix-panel .sig-dot.unavailable{background:transparent;border:1px dashed #75818d;color:#a7b1bb;display:inline-flex;align-items:center;justify-content:center;font-size:15px;box-shadow:none}
 .matrix .cell:disabled{cursor:default}
 .matrix-legend{display:flex;flex-wrap:wrap;align-items:center;gap:12px 24px;padding-top:12px;margin-top:6px;border-top:1px solid var(--line);font-size:12px;font-weight:500;color:#cbd6df}
 .matrix-legend>span{display:inline-flex;align-items:center;gap:9px;min-height:22px;white-space:nowrap}
-.matrix-legend .sig-dot{width:12px;height:12px;margin:0 4px}
+.matrix-legend .sig-dot{--signal-depth:inset 0 1px 1px rgba(255,255,255,.45),inset 0 -1px 1px rgba(0,0,0,.28),0 1px 2px rgba(0,0,0,.3);width:12px;height:12px;margin:0 4px}
 .matrix-legend .sig-dot.super{width:8px;height:8px;margin:0 6px}
-.matrix-legend .sig-dot.super::after{inset:-5px;border-width:2px}
+.matrix-legend .sig-dot.super::after{inset:-5px;border-width:2px;box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 1px 2px rgba(0,0,0,.3)}
 .super-label{font-weight:800;letter-spacing:.035em;color:#f3f7fa!important}
 .signal-detail{max-width:1120px;margin:0 auto}
 .signal-summary{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 12px;border:1px solid var(--line);border-radius:11px;background:linear-gradient(120deg,rgba(255,255,255,.025),rgba(255,255,255,.008))}
@@ -206,7 +207,7 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
       <div id="assets"><div class="msg">Загрузка рынка…</div></div>
     </div>
 
-    <div class="card full section matrix-panel" data-matrix-design="unified-ring-r87">
+    <div class="card full section matrix-panel" data-matrix-design="dimensional-ring-r88">
       <div class="title">Матрица сигналов</div>
       <div class="matrix-wrap"><table class="matrix"><thead><tr id="matrixHead"><th scope="col">Актив</th></tr></thead><tbody id="matrixBody"></tbody></table></div>
       <div class="matrix-legend" aria-label="Обозначения сигналов">
