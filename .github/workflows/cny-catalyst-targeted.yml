@@ -1,0 +1,27 @@
+name: CNY catalyst targeted test
+
+on:
+  push:
+    branches:
+      - test/cny-catalyst-continuation-20261005
+  workflow_dispatch:
+
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: test/cny-catalyst-continuation-20261005
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - name: Install runtime dependencies
+        run: pip install -r requirements-intelligence.txt
+      - name: Compile changed runtime
+        run: python -m py_compile veritas_event_catalyst.py veritas_trend_entry.py veritas_minute_entry.py veritas_portfolio_runtime.py veritas_execution.py
+      - name: Run catalyst continuation tests
+        run: python -m unittest -v test_veritas_trend_entry.CatalystContinuationTests
+      - name: Run core trend-entry regression tests
+        run: python -m unittest -v test_veritas_trend_entry.ClosedEventTests test_veritas_trend_entry.GeometryTests test_veritas_trend_entry.ScaleAndStopTests
