@@ -16624,10 +16624,26 @@ def _v90r23_trade_report_fast():
             'api_source':'warming_cache','retry_after_seconds':2}
 
 
-def _v90r26_dashboard_bootstrap():
+def _v90r26_dashboard_bootstrap(signals_only=False):
     """One fast UI payload: signals, four portfolios, open positions and recent closed trades."""
     cyc=fresh_cycle_snapshot()
     signals=[dict(z) for z in (cyc.get('summary') or []) if str(z.get('asset') or '')!='NDX']
+    if signals_only:
+        # The matrix must not wait for portfolio enrichment or trade history.
+        # Omit those sections (never send empty authoritative books on this path).
+        return {
+            'status':'OK','version':VERSION,'at':cyc.get('at'),
+            'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled())},
+            'signals':signals,'signal_count':len(signals),
+            'data_quality_summary':{
+                'cells':len(signals),'expected_cells':len(DISPLAY_ASSETS)*len(HORIZONS),
+                'source_verified_cells':sum(x.get('source_gate_pass') is True for x in signals),
+                'execution_eligible_cells':sum(x.get('execution_eligible') is True for x in signals),
+                'stale_cells':sum(x.get('snapshot_stale') is True for x in signals)
+            },
+            'horizon_summary':{h:sum(x.get('horizon')==h for x in signals)
+                               for h in ('1m','5m','1h','4h','1d','3d','7d')}
+        }
     pf=_v90r25_portfolios_fast()
     tr=_v90r25_trades_fast(100)
     ps=list(pf.get('portfolios') or [])
@@ -16720,7 +16736,8 @@ class H(BaseHTTPRequestHandler):
                 self.reply(product_overview())
             elif self.path.startswith('/api/v1/dashboard-bootstrap'):
                 try:
-                    self.reply(_v90r26_dashboard_bootstrap())
+                    q=parse_qs(urlparse(self.path).query)
+                    self.reply(_v90r26_dashboard_bootstrap(signals_only=(q.get('view')==['signals'])))
                 except Exception as ex:
                     self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
             elif self.path.startswith('/api/v1/signals'):
