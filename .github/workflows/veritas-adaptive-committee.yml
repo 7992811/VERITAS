@@ -6,6 +6,8 @@ on:
       - research/full-arsenal-20261005
     paths:
       - tools/research_crypto_adaptive_committee.py
+      - tools/research_crypto_arsenal_expansion.py
+      - tools/research_crypto_carry.py
       - .github/workflows/veritas-adaptive-committee.yml
   workflow_dispatch:
 
@@ -37,6 +39,34 @@ jobs:
           path: external_holdout_out
           github-token: ${{ github.token }}
           run-id: 37268494688
+      - name: Reuse BTC derivative cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-derivative-policy-BTC
+          path: derivative_router_out
+          github-token: ${{ github.token }}
+          run-id: 37267616597
+      - name: Reuse ETH derivative cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-derivative-policy-ETH
+          path: derivative_router_out
+          github-token: ${{ github.token }}
+          run-id: 37267616597
+      - name: Reuse BTC carry cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-carry-BTC
+          path: carry_out
+          github-token: ${{ github.token }}
+          run-id: 37272502854
+      - name: Reuse ETH carry cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-carry-ETH
+          path: carry_out
+          github-token: ${{ github.token }}
+          run-id: 37272502854
       - name: Run adaptive committee
         run: python tools/research_crypto_adaptive_committee.py
       - name: Print compact result
