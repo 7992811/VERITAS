@@ -1,11 +1,11 @@
-name: VERITAS slow long trend research
+name: VERITAS long reversal research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
-      - tools/research_crypto_slow_long.py
+      - tools/research_crypto_long_reversal.py
       - tools/research_crypto_manager_library.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
@@ -37,22 +37,22 @@ jobs:
           path: manager_library_out
           github-token: ${{ github.token }}
           run-id: 37210798801
-      - name: Run slow long study
-        run: python tools/research_crypto_slow_long.py
+      - name: Run long reversal study
+        run: python tools/research_crypto_long_reversal.py
       - name: Print compact result
         if: always()
         run: |
-          if [ -f slow_long_out/result.json ]; then
+          if [ -f long_reversal_out/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('slow_long_out/result.json'))
-          print('VERITAS_SLOW_LONG_PASSES_COMPACT='+json.dumps(x.get('passes',[])[:8],separators=(',',':')))
+          x=json.load(open('long_reversal_out/result.json'))
+          print('VERITAS_REV_LONG_PASSES_COMPACT='+json.dumps(x.get('passes',[])[:8],separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-slow-long-${{ matrix.asset }}
-          path: slow_long_out/
+          name: veritas-long-reversal-${{ matrix.asset }}
+          path: long_reversal_out/
           retention-days: 7
