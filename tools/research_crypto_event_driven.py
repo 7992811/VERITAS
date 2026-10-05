@@ -81,6 +81,24 @@ def atr1(raw,n=60):
     tr=pd.concat([raw.high-raw.low,(raw.high-pc).abs(),(raw.low-pc).abs()],axis=1).max(axis=1)
     return tr.rolling(n,min_periods=n).mean()
 
+def fomc_events():
+    # Official FOMC scheduled decision dates. Statements are normally released
+    # at 14:00 ET. Dates are frozen from the Federal Reserve meeting calendar.
+    dates=[
+      "2022-01-26","2022-03-16","2022-05-04","2022-06-15","2022-07-27","2022-09-21","2022-11-02","2022-12-14",
+      "2023-02-01","2023-03-22","2023-05-03","2023-06-14","2023-07-26","2023-09-20","2023-11-01","2023-12-13",
+      "2024-01-31","2024-03-20","2024-05-01","2024-06-12","2024-07-31","2024-09-18","2024-11-07","2024-12-18",
+      "2025-01-29","2025-03-19","2025-05-07","2025-06-18","2025-07-30","2025-09-17","2025-10-29","2025-12-10",
+      "2026-01-28","2026-03-18","2026-04-29","2026-06-17","2026-07-29","2026-09-16","2026-10-28","2026-12-09",
+    ]
+    out=[]
+    for ds in dates:
+        d=pd.Timestamp(ds).date()
+        loc=datetime(d.year,d.month,d.day,14,0,tzinfo=ET)
+        out.append({"kind":"FOMC","ts":int(loc.astimezone(timezone.utc).timestamp()),
+                    "source":"Federal Reserve FOMC meeting calendar"})
+    return out
+
 def event_trade(raw,event,mode):
     T=raw.ts.to_numpy(np.int64);O=raw.open.to_numpy();H=raw.high.to_numpy();L=raw.low.to_numpy();C=raw.close.to_numpy()
     i=int(np.searchsorted(T,event["ts"]))
@@ -157,9 +175,10 @@ def run_asset(asset,events):
     return rows
 
 def main():
-    ev=bls_events()
+    ev=bls_events()+fomc_events()
+    seen=set(); ev=[e for e in sorted(ev,key=lambda x:x["ts"]) if not ((e["kind"],e["ts"]) in seen or seen.add((e["kind"],e["ts"])))]
     out={"generated_at":datetime.now(timezone.utc).isoformat(),"event_count":len(ev),
-         "sources":"Official BLS annual release calendars; CPI and Employment Situation.",
+         "sources":"Official BLS annual release calendars for CPI/Employment Situation plus official Federal Reserve FOMC decision calendar.",
          "assets":{a:run_asset(a,ev) for a in ("BTC","ETH")}}
     (OUT/"result.json").write_text(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False,default=jd))
     print("VERITAS_EVENT_DRIVEN="+json.dumps(out,separators=(",",":"),default=jd),flush=True)
