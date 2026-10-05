@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 
 import research_crypto_arsenal_expansion as ar
+import research_crypto_carry as carry
 from research_crypto_external_holdout import load_old
 from research_crypto_manager_library import load, ts
 
@@ -85,6 +86,24 @@ def pair_streams(btc5,eth5):
       "PAIR_MEANREV": ar.sim_pair(p,"PAIR_MEANREV","2020-01-01T00:00:00Z","2026-10-04T00:00:00Z",0.0),
       "PAIR_MOMENTUM": ar.sim_pair(p,"PAIR_MOMENTUM","2020-01-01T00:00:00Z","2026-10-04T00:00:00Z",0.0),
     }
+
+def carry_stream(asset):
+    f=carry.funding(asset)
+    z,s,p=carry.attach_prices(asset,f)
+    rule=next(r for r in carry.RULES if r["name"]=="PERSISTENT_CARRY")
+    rows=carry.simulate(z,s,p,rule,0.0)
+    # Market-neutral sleeve: direction 0, independent from directional exposure.
+    for r in rows:
+        r["d"]=0
+    return rows
+
+def sleeve(module):
+    if module.startswith("BTC_"): return "BTC_DIRECTIONAL"
+    if module.startswith("ETH_"): return "ETH_DIRECTIONAL"
+    if module=="PAIR_MEANREV" or module=="PAIR_MOMENTUM": return "PAIR"
+    if module=="BTC_CARRY": return "BTC_CARRY"
+    if module=="ETH_CARRY": return "ETH_CARRY"
+    return module
 
 def metrics(vals):
     a=np.asarray(vals,float)
@@ -139,21 +158,23 @@ def monthly_decisions(streams,start="2021-01-01",end="2026-10-01"):
                     cand.append({**r,"module":name,"score":g["score"],"size":g["size"],
                                  "weighted_net":float(r["net"])*g["size"]})
         cand.sort(key=lambda r:(r["opened"],-r["score"]))
-        # Portfolio conflict handling. One trade per asset/pair at a time within
-        # this aggregate committee; near-tied opposite directions cancel.
-        kept=[];free=-1;i=0
+        # One position per sleeve. BTC, ETH, pair-RV and market-neutral carry
+        # can coexist; conflicting directional signals inside the same sleeve cancel.
+        kept=[];free_by={};i=0
         while i<len(cand):
             t=cand[i]["opened"]
             same=[]
             while i<len(cand) and cand[i]["opened"]==t:
                 same.append(cand[i]);i+=1
-            if t<free:continue
-            same.sort(key=lambda r:r["score"],reverse=True)
-            best=same[0]
-            opp=[q for q in same[1:] if q.get("d",0)==-best.get("d",0)]
-            if opp and opp[0]["score"]>=best["score"]*.92:
-                continue
-            kept.append(best);free=best["closed"]+15*60
+            for sl in sorted(set(sleeve(q["module"]) for q in same)):
+                group=[q for q in same if sleeve(q["module"])==sl]
+                if t<free_by.get(sl,-1):continue
+                group.sort(key=lambda r:r["score"],reverse=True)
+                best=group[0]
+                opp=[q for q in group[1:] if best.get("d",0)!=0 and q.get("d",0)==-best.get("d",0)]
+                if opp and opp[0]["score"]>=best["score"]*.92:
+                    continue
+                kept.append(best);free_by[sl]=best["closed"]+15*60
         out.append({"month":t0.strftime("%Y-%m"),"gates":gates,"trades":kept})
     return out
 
@@ -180,6 +201,8 @@ def main():
         for name,rows in s.items():streams[f"{a}_{name}"]=rows
     pair=pair_streams(x["BTC"],x["ETH"])
     streams.update(pair)
+    streams["BTC_CARRY"]=carry_stream("BTC")
+    streams["ETH_CARRY"]=carry_stream("ETH")
     months=monthly_decisions(streams)
     result=summarize_months(months)
     out={"generated_at":datetime.now(timezone.utc).isoformat(),
