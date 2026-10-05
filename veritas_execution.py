@@ -16,9 +16,9 @@ PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
 # Research/paper economics gate. This is deliberately independent from signal quality:
 # even a SUPER signal cannot bypass bad trade economics.
 MIN_REWARD_RISK = max(1.0, float(os.getenv("VERITAS_FINAL_MIN_RR", "1.15")))
-MIN_EXPECTED_MOVE_PCT = max(0.0025, float(os.getenv("VERITAS_FINAL_MIN_EXPECTED_MOVE", "0.0025")))
-MIN_MOVE_COST_MULTIPLE = max(1.0, float(os.getenv("VERITAS_FINAL_MOVE_COST_MULTIPLE", "1.5")))
-MOVE_POLICY_VERSION = "R75_COST_COVERED_MOVE"
+MIN_EXPECTED_MOVE_PCT = max(0.0019, float(os.getenv("VERITAS_FINAL_MIN_EXPECTED_MOVE", "0.0019")))
+MIN_MOVE_COST_MULTIPLE = max(1.0, float(os.getenv("VERITAS_FINAL_MOVE_COST_MULTIPLE", "1.2")))
+MOVE_POLICY_VERSION = "R76_COST_COVERED_MOVE"
 ROUND_TRIP_COST_BPS = max(1.0, float(os.getenv("VERITAS_EXECUTION_ROUND_TRIP_COST_BPS", "20")))
 
 # Adverse fill assumptions for the normalized paper book. These are configurable

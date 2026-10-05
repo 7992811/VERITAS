@@ -76,7 +76,7 @@ class LowerMoveFloor(unittest.TestCase):
         gate = X.economics_gate('BTC', plan)
         self.assertFalse(gate['eligible'])
         self.assertIn('EXPECTED_MOVE_BELOW_COST_BUFFER', gate['blockers'])
-        self.assertGreater(gate['minimum_expected_move_pct'], .01)
+        self.assertGreater(gate['minimum_expected_move_pct'], .008)
 
 
 if __name__ == '__main__':
