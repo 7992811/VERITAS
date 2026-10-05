@@ -23,5 +23,29 @@ jobs:
         run: python -m py_compile veritas_event_catalyst.py veritas_trend_entry.py veritas_minute_entry.py veritas_portfolio_runtime.py veritas_execution.py
       - name: Run catalyst continuation tests
         run: python -m unittest -v test_veritas_trend_entry.CatalystContinuationTests
+      - name: Diagnose full CNY portfolio admission
+        run: |
+          python - <<'PY'
+          from datetime import datetime,timezone
+          import json
+          import veritas_portfolio as P
+          import veritas_portfolio_runtime as R
+          from test_veritas_trend_entry import CatalystContinuationTests
+          now=datetime.now(timezone.utc)
+          r=CatalystContinuationTests().cny()
+          r['market_observed_at']=now.isoformat()
+          r['_execution_quote']={'price':12.69,'observed_at':now.isoformat()}
+          r['paper_eligible']=True
+          r['execution_eligible']=True
+          r['production_eligible']=False
+          r['trend_entry_context']['closed_at']=now.timestamp()-1000
+          r['trend_entry_context']['event']['signal_at']=now.timestamp()-46*300
+          out=R._signal_first_admission(r,P.POLICIES['Aggressive'],0.0)
+          print('CNY_ADMISSION='+json.dumps(out,default=str,separators=(',',':')))
+          assert out.get('reason') not in ('R66_WAIT_RETEST','R74_EVENT_TARGET_REACHED','R65_WAIT_RETEST_NO_CHASE'), out
+          ev=(out.get('trend_event') or {})
+          if ev:
+              assert str(ev.get('event_id') or '').startswith('R69_CAT_'), out
+          PY
       - name: Run core trend-entry regression tests
         run: python -m unittest -v test_veritas_trend_entry.ClosedEventTests test_veritas_trend_entry.GeometryTests test_veritas_trend_entry.ScaleAndStopTests
