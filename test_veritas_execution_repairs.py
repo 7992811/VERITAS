@@ -314,14 +314,18 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
         self.assertFalse(guard['eligible'])
         self.assertIn('EARLY_BREAKOUT_IN_RANGE_REGIME', guard['blockers'])
 
-    def test_invalidated_execution_horizon_exits_unless_trend_confirmed(self):
+    def test_soft_invalidated_execution_horizon_does_not_force_loss_exit(self):
         base = {'research_decision': 'NO_TRADE', 'entry_quality': 'INVALIDATED',
-                'trade_plan': {'entry_quality': 'INVALIDATED'},
+                'trade_plan': {'entry_quality': 'INVALIDATED',
+                               'trade_integrity': {'hard_invalidation': False}},
                 'horizon_structure': {'state': 'BUILDING_TREND'}}
-        self.assertTrue(VPR._v842_hard_thesis_exit(base))
-        confirmed = copy.deepcopy(base)
-        confirmed['horizon_structure']['state'] = 'CONFIRMED_TREND'
-        self.assertFalse(VPR._v842_hard_thesis_exit(confirmed))
+        self.assertFalse(VPR._v842_hard_thesis_exit(base))
+        weak = copy.deepcopy(base)
+        weak['horizon_structure']['state'] = 'WEAK'
+        self.assertFalse(VPR._v842_hard_thesis_exit(weak))
+        hard = copy.deepcopy(base)
+        hard['trade_plan']['trade_integrity']['hard_invalidation'] = True
+        self.assertTrue(VPR._v842_hard_thesis_exit(hard))
 
 
     def test_small_learning_sample_is_shrunk_toward_neutral_prior(self):
