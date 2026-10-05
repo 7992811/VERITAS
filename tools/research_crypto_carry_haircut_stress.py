@@ -35,7 +35,8 @@ def metrics(tr):
 def revalue(base,haircut,extra):
  out=[]
  for r in base:
-  pair=float(r["spot"])+float(r["perp"])+(1-haircut)*float(r["funding"])-ac.PAIR_RT-extra
+  base_cost=float(r.get("execution_cost",ac.PAIR_RT))
+  pair=float(r["spot"])+float(r["perp"])+(1-haircut)*float(r["funding"])-base_cost-extra
   z=dict(r);z["net"]=pair/2.;out.append(z)
  return out
 
