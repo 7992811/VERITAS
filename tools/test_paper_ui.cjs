@@ -96,6 +96,15 @@ const partial = {
 ui.st.positionBook = {Impulse: [JSON.parse(JSON.stringify(ui.normalizePosition(partial, 'Impulse', {})))]};
 ui.st.portfolios = {portfolios: [{name: 'Impulse', positions: [partial]}]};
 ui.renderPortfolios();
+assert.match(elements.positions.innerHTML, /ожидаем котировку источника входа/);
+const sourcePosition={...partial,price_source_lock:{primary_source:'ProFinance'},price_source_status:'OK',last_mark_at:new Date().toISOString()};
+ui.st.positionBook={Impulse:[JSON.parse(JSON.stringify(ui.normalizePosition(sourcePosition,'Impulse',{})))]};
+ui.st.portfolios={portfolios:[{name:'Impulse',positions:[sourcePosition]}]};
+ui.renderPortfolios();
+assert.match(elements.positions.innerHTML, /Источник: ProFinance/);
+assert.doesNotMatch(elements.positions.innerHTML, /ожидаем котировку источника входа/);
+const noMark=ui.normalizePosition({...sourcePosition,last_price:null,avg_entry_price:100,payload:{source_locked_mark:{price:99}}},'Impulse',{signals:[{asset:'MOEX',price:5000}]});
+assert.equal(noMark.last_price,99);
 assert.match(elements.positions.innerHTML, /TP1 ✓ исполнен/);
 assert.match(elements.positions.innerHTML, /TP1 · частично исполнен/);
 assert.doesNotMatch(elements.positions.innerHTML, /Итог сделки/);

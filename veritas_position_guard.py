@@ -10,12 +10,14 @@ import time
 import httpx
 import veritas_execution as VX
 import veritas_profit_protection as VPP
+import veritas_price_source as VPS
 from veritas_quote_time import quote_gate, utc_datetime
 
 BOOK_LOCK_ID = 90390929
 _mutex = threading.RLock()
 _quotes_lock = threading.Lock()
 _quotes = {}
+_source_quotes = {}
 _state = {'status': 'NOT_STARTED', 'paper_only': True}
 _entry_namespace = None
 
@@ -100,6 +102,9 @@ def refresh_entry_quotes(summary):
     out=[]
     for original in rows:
         row=dict(original);asset=row.get('asset');q=quotes.get(asset)
+        expected=VPS.identity(asset,row)
+        if expected:
+            q=quote_for_position({'asset':asset,'payload':{'price_source_lock':expected}},q,now)
         if q:
             original_id=(row.get('contract') or {}).get('secid')
             quote_id=(q.get('contract') or {}).get('secid')
@@ -124,12 +129,65 @@ def publish_quote(asset, raw):
     if not raw or not raw.get('observed_at') or not raw.get('source_gate_pass') or VX.is_proxy_price(asset,raw):
         return
     with _quotes_lock:
+        identity=VPS.identity(asset,raw)
+        if identity:
+            key=(asset,identity['key'],identity.get('contract_id'))
+            prior=_source_quotes.get(key) or {}
+            dt,prev=utc_datetime(raw['observed_at']),utc_datetime(prior.get('observed_at'))
+            if dt and (prev is None or dt>=prev):
+                _source_quotes[key]=dict(raw)
         old = _quotes.get(asset) or {}
         dt, prev = utc_datetime(raw['observed_at']), utc_datetime(old.get('observed_at'))
         if dt and (prev is None or dt >= prev):
             _quotes[asset] = {k: raw.get(k) for k in ('price', 'best_bid', 'best_ask', 'bid', 'ask',
                              'observed_at', 'contract', 'source_gate_pass', 'market_open',
                              'data_latency_class','source_names','verification_mode')}
+
+
+def quote_for_position(position, candidate=None, now=None):
+    """Resolve a fresh quote without crossing the entry provider or contract."""
+    now=utc_datetime(now) or datetime.now(timezone.utc)
+    with _quotes_lock:
+        quotes=[dict(q) for key,q in _source_quotes.items() if key[0]==position.get('asset')]
+        quotes.append(dict(_quotes.get(position.get('asset')) or {}))
+    quotes.extend([candidate or {},position.get('_execution_quote') or {}])
+    valid=[]
+    p=VPS.payload(position)
+    last=utc_datetime((p.get('source_locked_mark') or {}).get('observed_at'))
+    entered=utc_datetime(p.get('entry_execution_observed_at') or p.get('entry_market_observed_at'))
+    if entered and (last is None or entered>last):last=entered
+    for q in quotes:
+        observed=utc_datetime(q.get('observed_at'))
+        if (q.get('source_gate_pass') and VPS.matches(position,q) and VPS.positive(q.get('price'))
+                and quote_gate(q.get('observed_at'),now=now,protective=True)['eligible']
+                and (last is None or observed>=last)):
+            valid.append(q)
+    return dict(max(valid,key=lambda q:utc_datetime(q['observed_at']))) if valid else {}
+
+
+def position_mark_price(position, now=None):
+    q=quote_for_position(position,now=now)
+    return float(q['price']) if q else VPS.frozen_price(position)
+
+
+def refresh_position_quotes(ns, positions):
+    groups={}
+    for z in positions:
+        identity=VPS.position_identity(z)
+        if identity:
+            groups.setdefault((z['asset'],identity['key'],identity.get('contract_id')),[]).append(z)
+    results={}
+    with ThreadPoolExecutor(max_workers=4,thread_name_prefix='veritas-source-quote') as pool:
+        jobs={key:pool.submit(fetch_guard_quote,ns,key[0],rows) for key,rows in groups.items()}
+        for key,job in jobs.items():
+            try:
+                q=job.result()
+                if q:
+                    publish_quote(key[0],q)
+                    results[key]=q
+            except Exception:
+                pass
+    return results
 
 
 def latest_prices(summary, now=None):
@@ -189,10 +247,7 @@ def quote_matches_position(z, quote):
 def exit_execution_quote(z,now=None):
     """One fresh quote contract for protection assessment and the actual fill."""
     now=utc_datetime(now) or datetime.now(timezone.utc)
-    quote=z.get('_execution_quote')
-    if quote is None:
-        with _quotes_lock:
-            quote=dict(_quotes.get(z.get('asset')) or {})
+    quote=quote_for_position(z,now=now)
     if (not quote or not quote.get('source_gate_pass') or VX.is_proxy_price(z.get('asset'),quote)
             or not quote_matches_position(z,quote)):
         return {}
@@ -476,7 +531,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
         positions = c.execute('SELECT * FROM paper_positions ORDER BY portfolio_name,asset FOR UPDATE').fetchall()
         for item in positions:
             z = dict(item)
-            q = quotes.get(z['asset'])
+            q = quote_for_position(z,quotes.get(z['asset']),now)
 
             # R58: every protective-side mutation (MFE/MAE, profit lock, STOP/TP)
             # requires the same fresh protective quote. Previously the guard could
@@ -498,6 +553,10 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                     _signed=100.0*((_px/_entry-1.0) if z.get('direction')=='LONG'
                                     else (_entry/_px-1.0))
                     _path={
+                      'price_source_lock':VPS.position_identity(z),
+                      'price_source_status':'OK',
+                      'source_locked_mark':{'identity':VPS.identity(z['asset'],q),
+                                            'price':_px,'observed_at':q['observed_at']},
                       'mfe_pct':max(float(zp.get('mfe_pct') or 0.0),_signed,0.0),
                       'mae_pct':min(float(zp.get('mae_pct') or 0.0),_signed,0.0),
                       'r55_lifetime_mfe_pct':max(float(zp.get('r55_lifetime_mfe_pct') or 0.0),
@@ -680,13 +739,14 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
     return changes
 
 
-def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
+def _fetch_guard_quote_unlocked(ns, asset, positions, candidate_contract=None):
     with _quotes_lock:
         cached = dict(_quotes.get(asset) or {})
     if asset in ('CNYRUBF', 'MOEX'):
         if asset=='MOEX':
             q=ns['_moex_current_quote']()
-            return dict(q,source_gate_pass=True,contract={'secid':'MOEX'})
+            return dict(q,source_gate_pass=True,contract={'secid':'MOEX'},
+                        source_names={'primary':'MOEX ISS IMOEX'})
         # CNYRUBF is a normalized continuous asset; the MOEX current-quote
         # adapter may require the actual front-contract secid. Prefer the
         # contract carried by the current signal/position, then cached identity,
@@ -707,7 +767,8 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
             try:
                 q=ns['_moex_futures_current_quote'](cid)
                 if q and float(q.get('price') or 0)>0:
-                    return dict(q,source_gate_pass=True,contract={'secid':cid})
+                    return dict(q,source_gate_pass=True,contract={'secid':cid},
+                                source_names={'primary':'MOEX ISS CNYRUBF'})
             except Exception as exc:
                 last=exc
         if last: raise last
@@ -726,14 +787,15 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
             raise ValueError('PROTECTIVE_BOOK_INVALID')
         return {'price': (bid+ask)/2, 'best_bid':bid, 'best_ask':ask,
                 'bid':bid, 'ask':ask, 'observed_at': datetime.now(timezone.utc).isoformat(),
-                'source_gate_pass': True, 'market_open': True}
+                'source_gate_pass': True, 'market_open': True,
+                'source_names':{'primary':'Binance spot'}}
     if asset == 'BRENT':
         contracts = {payload_of(z).get('entry_contract_secid') for z in positions}
         contracts.discard(None)
         contract = next(iter(contracts)) if len(contracts) == 1 else (cached.get('contract') or {}).get('secid')
         if contract:
             return dict(ns['_moex_futures_current_quote'](contract), source_gate_pass=True,
-                        contract={'secid': contract})
+                        contract={'secid': contract},source_names={'primary':'MOEX ISS '+contract})
     if asset in ('NQ', 'GOLD'):
         # Match the main paper adapter. A Gold entry from ProFinance cannot be
         # stopped using GC=F, whose exact contract/basis is not reconciled.
@@ -766,6 +828,39 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
     return cached
 
 
+def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
+    """Fetch the pinned source; another provider is never its fallback."""
+    identities=[VPS.position_identity(z) for z in positions or []]
+    if not identities:
+        return _fetch_guard_quote_unlocked(ns,asset,positions,candidate_contract)
+    if any(not i for i in identities) or len({(i['key'],i.get('contract_id')) for i in identities})!=1:
+        return {}
+    expected=identities[0]; key=expected['key']; q={}
+    try:
+        if key.startswith('PROFINANCE:') and not expected.get('contract_id'):
+            raw=ns['_v90r61_profinance_quote'](asset) or {}
+            q=dict(raw,source_gate_pass=True,market_open=True,paper_only=True,
+                   source_names={'primary':expected['primary_source']})
+        elif key.startswith('YAHOO:') and asset in ('NQ','GOLD','BRENT') and not expected.get('contract_id'):
+            symbol={'NQ':'NQ%3DF','GOLD':'GC%3DF','BRENT':'BZ%3DF'}[asset]
+            rows,_=ns['_yahoo_series'](symbol,'1d','1m',True)
+            if rows:
+                q={'price':rows[-1]['close'],'observed_at':datetime.fromtimestamp(rows[-1]['ts'],timezone.utc).isoformat(),
+                   'source_gate_pass':True,'market_open':True,'paper_only':True,
+                   'source_names':{'primary':expected['primary_source']}}
+        elif key.startswith('STOOQ:') and not expected.get('contract_id'):
+            raw=ns['_v90_stooq_public_quote']({'NQ':'nq.f','GOLD':'gc.f','BRENT':'cb.f'}[asset]) or {}
+            if raw.get('ok'):
+                q=dict(raw,source_gate_pass=True,source_names={'primary':expected['primary_source']})
+        elif key.startswith(('MOEX:','BINANCE:')):
+            q=_fetch_guard_quote_unlocked(ns,asset,positions,candidate_contract)
+    except Exception:
+        pass
+    if q and VPS.matches(positions[0],q):
+        publish_quote(asset,q)
+    return quote_for_position(positions[0],q)
+
+
 def snapshot():
     return dict(_state)
 
@@ -784,17 +879,12 @@ def start(ns):
             try:
                 with ns['pg_connect']() as c:
                     positions = [dict(z) for z in c.execute('SELECT * FROM paper_positions').fetchall()]
+                refresh_position_quotes(ns,positions)
                 quotes, errors = {}, {}
-                with ThreadPoolExecutor(max_workers=4, thread_name_prefix='veritas-protective-quote') as pool:
-                    jobs = {asset: pool.submit(fetch_guard_quote, ns, asset, [z for z in positions if z['asset'] == asset])
-                            for asset in sorted({z['asset'] for z in positions})}
-                    for asset, job in jobs.items():
-                        try:
-                            quotes[asset] = job.result()
-                            quality = quote_gate(quotes[asset].get('observed_at'), protective=True)
-                            if not quality['eligible']: errors[asset] = quality['reason']
-                        except Exception as exc:
-                            errors[asset] = f'{type(exc).__name__}: {exc}'[:220]
+                for z in positions:
+                    q=quote_for_position(z)
+                    if q: quotes[z['asset']]=q
+                    else: errors[z.get('active_trade_id') or z['asset']]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
                 changes = run_protective_pass(ns['VP'], ns['pg_connect'], quotes) if positions else []
                 if changes:
                     with ns['_v90r25_pf_lock']:
