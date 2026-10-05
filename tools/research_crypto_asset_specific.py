@@ -272,9 +272,9 @@ def evaluate(df, rules, year, quality):
         rt = pd.DataFrame([{
             **{c: v for c, v in zip(cols, r["key"])},
             "profile": r["profile"],
-            "_score": r["score"],
-            "_cev": r["conservative_ev"],
-            "_pattern": pattern,
+            "rule_score": r["score"],
+            "rule_cev": r["conservative_ev"],
+            "rule_pattern": pattern,
         } for r in rr])
         m = val.merge(rt, on=["profile"] + cols, how="inner")
         if not m.empty:
@@ -282,7 +282,7 @@ def evaluate(df, rules, year, quality):
     if not pieces:
         return {"summary": summarize([]), "stress": summarize([]), "by_direction": {}, "trades": []}
     cand = pd.concat(pieces, ignore_index=True)
-    cand = cand.sort_values(["open_ts", "_score"], ascending=[True, False])
+    cand = cand.sort_values(["open_ts", "rule_score"], ascending=[True, False])
 
     # Same event may match coarse and specific states. Keep the best score.
     cand = cand.drop_duplicates(["open_ts", "close_ts", "d", "trigger"], keep="first")
@@ -291,7 +291,7 @@ def evaluate(df, rules, year, quality):
     for r in cand.itertuples(index=False):
         if int(r.open_ts) < free:
             continue
-        size = 0.25 if r._cev < 0.00075 else (0.50 if r._cev < 0.0015 else (0.75 if r._cev < 0.003 else 1.0))
+        size = 0.25 if r.rule_cev < 0.00075 else (0.50 if r.rule_cev < 0.0015 else (0.75 if r.rule_cev < 0.003 else 1.0))
         picks.append({
             "open_ts": int(r.open_ts),
             "close_ts": int(r.close_ts),
@@ -299,8 +299,8 @@ def evaluate(df, rules, year, quality):
             "trigger": str(r.trigger),
             "profile": str(r.profile),
             "net": float(r.net),
-            "score": float(r._score),
-            "conservative_ev": float(r._cev),
+            "score": float(r.rule_score),
+            "conservative_ev": float(r.rule_cev),
             "size": float(size),
         })
         free = int(r.close_ts) + COOLDOWN
