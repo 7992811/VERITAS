@@ -659,3 +659,24 @@ class ExecutionInvariantR83Tests(unittest.TestCase):
         self.assertIs(state.get('market_open'),False)
         self.assertIs(state.get('source_gate_pass'),False)
 
+class OperationalSemanticsR84Tests(unittest.TestCase):
+    def test_moex_broad_session_is_closed_after_midnight_moscow(self):
+        at=datetime(2026,10,5,21,30,tzinfo=timezone.utc)  # 00:30 MSK next day
+        self.assertFalse(VPG.expected_exchange_session_open('MOEX',at))
+
+    def test_moex_broad_session_is_expected_open_midday(self):
+        at=datetime(2026,10,5,9,0,tzinfo=timezone.utc)  # 12:00 MSK
+        self.assertTrue(VPG.expected_exchange_session_open('MOEX',at))
+
+    def test_non_moex_asset_has_no_session_classification_authority(self):
+        self.assertIsNone(VPG.expected_exchange_session_open('BTC',
+            datetime(2026,10,5,9,0,tzinfo=timezone.utc)))
+
+    def test_shadow_alert_source_no_longer_labels_signal_as_entry(self):
+        import inspect
+        import veritas_intelligence as vi
+        src=inspect.getsource(vi.manage_trade_alerts)
+        self.assertIn("'action':'SIGNAL_'+d",src)
+        self.assertIn("'TACTICAL_SIGNAL'",src)
+        self.assertNotIn("'action':'ENTRY_'+d",src)
+

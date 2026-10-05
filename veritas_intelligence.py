@@ -10342,7 +10342,7 @@ def _insert_trade_alert_conn(c,asset,horizon,atype,severity,payload):
 
 
 def manage_trade_alerts(summary):
-    """Create ENTRY/TACTICAL_ENTRY and manage EXIT/STOP/INVALIDATION in shadow mode.
+    """Create SIGNAL/TACTICAL_SIGNAL and manage EXIT/STOP/INVALIDATION in shadow mode.
     v22.2 batches reads and writes so alert evaluation does not open dozens of remote
     Postgres connections on every 30-cell cycle. No live order execution.
     """
@@ -10367,7 +10367,7 @@ def manage_trade_alerts(summary):
             alert_rows.append((asset,h,terminal,'high',payload)); terminal_updates.append((terminal,payload,setup['setup_id']))
             active.pop((asset,h),None)
 
-    # Create new entries from the same in-memory active-set map.
+    # Create new shadow SIGNAL setups from the same in-memory active-set map.
     for (asset,h),x in by.items():
         if (asset,h) in active: continue
         d=x.get('research_decision'); plan=x.get('trade_plan') or {}
@@ -10385,10 +10385,10 @@ def manage_trade_alerts(summary):
                 if not (str(st.get('lifecycle') or '') in ('CONFIRMATION','EXTENSION') and st.get('breakout_hold') and 'HIGH_VOL' not in rg):
                     continue
         breakout_alert=bool(plan.get('fresh_breakout') and x.get('signal_tier') in ('SUPER_LONG','SUPER_SHORT') and not counter)
-        atype='BREAKOUT_ENTRY' if breakout_alert else ('TACTICAL_ENTRY' if counter else 'ENTRY')
+        atype='BREAKOUT_SIGNAL' if breakout_alert else ('TACTICAL_SIGNAL' if counter else 'SIGNAL')
         setup_id=hashlib.sha256(f"{asset}|{h}|{d}|{now()[:16]}".encode()).hexdigest()[:24]
         payload={'schema_version':TRADE_ALERT_SCHEMA_VERSION,'setup_id':setup_id,'trigger_ts':now(),'asset':asset,'horizon':h,
-                 'action':'ENTRY_'+d,'direction':d,'trigger_price':plan.get('entry_price'),'stop_price':plan.get('stop_price'),
+                 'action':'SIGNAL_'+d,'direction':d,'trigger_price':plan.get('entry_price'),'stop_price':plan.get('stop_price'),
                  'invalidation_price':plan.get('invalidation_price'),'expected_move_pct':exp,'expected_move_method':plan.get('expected_move_method'),
                  'signal_tier':x.get('signal_tier'),'signal_strength':x.get('confidence'),'entry_quality':plan.get('entry_quality'),
                  'structure_lifecycle':plan.get('structure_lifecycle'),'counter_higher_tf':counter,'higher_tf':hh,'higher_tf_direction':higher_dir,
@@ -10399,7 +10399,7 @@ def manage_trade_alerts(summary):
                  'investor_signal':('STRONG BUY' if breakout_alert and d=='LONG' else 'STRONG SELL' if breakout_alert and d=='SHORT' else d),
                  'breakout_level':plan.get('breakout_level'),'recent_swing_anchor':plan.get('recent_swing_anchor'),
                  'comment':('Сильный свежий пробой диапазона на подтвержденном объеме; вход подтвержден несколькими горизонтами, стоп ниже/выше последнего структурного экстремума.' if breakout_alert else ('Тактический вход против старшего таймфрейма; минимальный ход нормирован на волатильность и масштаб движения старшего ТФ.' if counter else 'Вход подтвержден структурой текущего таймфрейма.')),
-                 'robot_eligible':False,'execution_mode':'SHADOW_ONLY'}
+                 'robot_eligible':False,'execution_mode':'SHADOW_SIGNAL_ONLY','simulated_entry_only':True}
         payload['late_entry_warning']=bool(plan.get('late_entry'))
         if plan.get('late_entry'): payload['comment']=(payload.get('comment') or '')+' Поздняя точка: размер снижен, сигнал не усиливается.'
         sev='high' if breakout_alert else ('medium' if plan.get('late_entry') else ('high' if x.get('signal_tier') in ('SUPER_LONG','SUPER_SHORT') else 'medium'))
@@ -15142,9 +15142,10 @@ def _bounded_completed_episode_rows(order='DESC', raw_limit=6000, episode_limit=
         return []
     order='ASC' if str(order).upper()=='ASC' else 'DESC'
     requested_raw_limit=max(100,min(8000,int(raw_limit)))
-    # R60.2: keep the live learning slice small enough for the 0.1 CPU Postgres
-    # plan. Direction/miss calibration does not need the per-decision rule JSON.
-    query_limit=min(requested_raw_limit,3500)
+    # R84: the 0.1 CPU Postgres repeatedly timed out at 3500 rows.
+    # Use a smaller normal slice and retry once with an emergency compact slice.
+    # Learning is background analytics; it must never block the market loop.
+    query_limit=min(requested_raw_limit,2000)
     episode_limit=max(50,min(3000,int(episode_limit)))
     knowledge_sql=("knowledge_shadow_matches" if include_knowledge
                    else "'[]'::jsonb AS knowledge_shadow_matches")
@@ -15155,15 +15156,34 @@ def _bounded_completed_episode_rows(order='DESC', raw_limit=6000, episode_limit=
       ORDER BY decision_ts {order}
       LIMIT %s
     """
-    try:
-        with pg_connect() as c:
-            c.execute("SET statement_timeout TO '4s'")
-            rows=[dict(r) for r in c.execute(sql,(query_limit,)).fetchall()]
-    except Exception as ex:
+    rows=None
+    attempts=[query_limit]
+    if query_limit>800:
+        attempts.append(800)
+    last_error=None
+    used_limit=None
+    for attempt_limit in attempts:
+        try:
+            with pg_connect() as c:
+                c.execute("SET statement_timeout TO '4s'")
+                rows=[dict(r) for r in c.execute(sql,(attempt_limit,)).fetchall()]
+            used_limit=attempt_limit
+            if attempt_limit!=query_limit:
+                emit('compact_learning_query_retry_success',order=order,
+                     requested_limit=query_limit,used_limit=attempt_limit,
+                     include_knowledge=bool(include_knowledge))
+            break
+        except Exception as ex:
+            last_error=ex
+            if attempt_limit!=attempts[-1]:
+                emit('compact_learning_query_retry',order=order,
+                     failed_limit=attempt_limit,next_limit=attempts[-1],
+                     error=f'{type(ex).__name__}: {ex}')
+    if rows is None:
         emit('compact_learning_query_error',order=order,
              raw_limit=requested_raw_limit,query_limit=query_limit,
              include_knowledge=bool(include_knowledge),
-             error=f'{type(ex).__name__}: {ex}')
+             error=f'{type(last_error).__name__}: {last_error}' if last_error else 'unknown')
         return []
 
     # Preserve the original independent-episode semantics in Python. The DB path

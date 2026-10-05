@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import json
 import math
 import threading
@@ -879,6 +880,29 @@ def market_state(asset):
         return dict(_market_state.get(asset) or {})
 
 
+def expected_exchange_session_open(asset, now=None):
+    """Conservative broad session check used only to classify missing quotes.
+
+    False means the venue is definitely outside its normal broad trading window.
+    True does NOT prove the venue is healthy/open (holidays/outages still degrade);
+    None means this helper has no authority for that asset.
+    """
+    asset=str(asset or '')
+    if asset not in ('MOEX','CNYRUBF','BRENT'):
+        return None
+    dt=utc_datetime(now) or datetime.now(timezone.utc)
+    msk=dt.astimezone(ZoneInfo('Europe/Moscow'))
+    if msk.weekday()>=5:
+        return False
+    minute=msk.hour*60+msk.minute
+    # Broad envelope deliberately spans the known morning/main/evening sessions.
+    # Exchange breaks inside the envelope remain "expected open" so a real feed
+    # outage is never hidden as a normal pause.
+    start=6*60+45 if asset=='MOEX' else 8*60+45
+    end=23*60+55
+    return bool(start<=minute<=end)
+
+
 def snapshot():
     return dict(_state)
 
@@ -906,7 +930,8 @@ def start(ns):
                     else:
                         state=market_state(z.get('asset'))
                         key=z.get('active_trade_id') or z['asset']
-                        if state.get('market_open') is False:
+                        scheduled=expected_exchange_session_open(z.get('asset'),datetime.now(timezone.utc))
+                        if state.get('market_open') is False or scheduled is False:
                             paused[key]='MARKET_CLOSED'
                         else:
                             errors[key]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
