@@ -7,9 +7,9 @@ Previously booked costs are historical facts and are never recomputed here.
 from datetime import datetime, timedelta, timezone
 
 VERSION = "R82_USER_COST_POLICY"
-COMMISSION_RATE = 0.0004
+COMMISSION_RATE = 0.0005
 SLIPPAGE_RATE = 0.0004
-COST_BUFFER_MULTIPLE = 1.1
+COST_BUFFER_MULTIPLE = 1.2
 FUNDING_ANNUAL_RATE = 0.16
 FUNDING_FREE_SECONDS = 86400.0
 YEAR_SECONDS = 365.25 * 86400.0

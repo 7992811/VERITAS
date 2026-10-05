@@ -609,3 +609,9 @@ class LossConflictR81Tests(unittest.TestCase):
         self.assertIn('EXPECTED_MOVE_BELOW_COST_BUFFER',VRT._R79_HARD_COST_BLOCKERS)
         self.assertIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',VRT._R79_HARD_COST_BLOCKERS)
 
+    def test_cost_policy_matches_fixed_veritas_parameters(self):
+        import veritas_costs as VC
+        self.assertAlmostEqual(VC.COMMISSION_RATE,0.0005,places=9)
+        self.assertAlmostEqual(VC.COST_BUFFER_MULTIPLE,1.2,places=9)
+        self.assertAlmostEqual(VC.ROUND_TRIP_RATE,0.0018,places=9)
+
