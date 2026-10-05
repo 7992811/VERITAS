@@ -27,16 +27,20 @@ reported separately.
 | Interval | History requested | Refresh |
 | --- | --- | --- |
 | 1m | 1 day | 20 seconds |
-| 5m | 7 days | 60 seconds |
-| 1h | 90 days | 5 minutes |
-| 4h | 90 days | 15 minutes |
-| 1d | 5 years, limited by this contract's actual history | 1 hour |
+| 5m | 1 day | 60 seconds |
+| 1h | 7 days | 5 minutes |
+| 4h | 30 days | 15 minutes |
+| 1d | 1 year, limited by this contract's actual history | 1 hour |
 | 3d | Derived from the same native daily history | With 1d |
-| 7d | Native broker weekly bars, up to 5 years | 1 hour |
+| 7d | Native broker weekly bars, up to 2 years | 1 hour |
 
-All native requests use exchange candles and the documented per-interval request
-limits. Only complete, valid, non-future OHLCV bars are cached, sorted and
-deduplicated by timestamp. Empty history is NO_DATA, not a ready source. A failed
+The live endpoint rejected the expanded requests with INVALID_ARGUMENT. Requests
+therefore use conservative per-interval time windows and the minimal parameter
+set that worked in R83, without optional limit/source filters. The broker's
+response source classification is retained on each native candle; explicitly
+classified dealer-weekend bars are excluded and unspecified sources remain
+explicitly unspecified. Only complete, valid, non-future OHLCV bars are cached,
+sorted and deduplicated by timestamp. Empty history is NO_DATA, not a ready source. A failed
 interval is ERROR without preventing other instruments/intervals from loading.
 Old successful caches become STALE if no timely download confirms them.
 

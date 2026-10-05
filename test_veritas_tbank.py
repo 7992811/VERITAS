@@ -241,15 +241,15 @@ class MultiAssetHistoryTests(unittest.TestCase):
         self.assertEqual(c.candle_snapshot('NQf','1h')['status'],'OK')
         self.assertEqual(c.candle_snapshot('NQf','bad')['status'],'INVALID_INTERVAL')
 
-    def test_native_request_limits_exchange_only_and_no_redundant_downloads(self):
+    def test_compatible_request_windows_no_optional_filters_and_no_redundant_downloads(self):
         c=self.connection();c.refresh();c.refresh();c.refresh()
         calls=[kw for name,kw in c.reader.calls if name=='candles']
         self.assertEqual(len(calls),18)
         self.assertEqual(sum(name=='accounts' for name,_ in c.reader.calls),1)
         for kw in calls:
             config=next(v for v in T.HISTORY.values() if v[0]==kw['interval'])
-            self.assertEqual(kw['limit'],config[3])
-            self.assertEqual(kw['candle_source_type'],'CANDLE_SOURCE_EXCHANGE')
+            self.assertNotIn('limit',kw)
+            self.assertNotIn('candle_source_type',kw)
             begin=datetime.fromisoformat(kw['from'].replace('Z','+00:00'))
             end=datetime.fromisoformat(kw['to'].replace('Z','+00:00'))
             self.assertEqual((end-begin).days,config[1])
@@ -293,7 +293,8 @@ class MultiAssetHistoryTests(unittest.TestCase):
         now=T.utcnow();base={'time':T.iso(now-timedelta(minutes=1)), 'is_complete':True,
             'open':{'units':'12'},'high':{'units':'13'},'low':{'units':'11'},'close':{'units':'12'},'volume':'20'}
         items=[base,base,{**base,'is_complete':False},{**base,'time':T.iso(now+timedelta(days=1))},
-               {**base,'high':{'units':'1'}},{**base,'volume':'-1'}]
+               {**base,'high':{'units':'1'}},{**base,'volume':'-1'},
+               {**base,'candle_source':'CANDLE_SOURCE_DEALER_WEEKEND'}]
         self.assertEqual(len(T.closed_candles(items,now)),1)
 
     def test_three_day_ohlcv_has_fixed_boundaries_no_current_bucket_and_no_initial_partial(self):

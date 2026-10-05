@@ -23,11 +23,11 @@ TIMEFRAMES = ("1m", "5m", "1h", "4h", "1d", "3d", "7d")
 # Native history: enum, lookback days, refresh seconds, response cap.
 HISTORY = {
     "1m": ("CANDLE_INTERVAL_1_MIN", 1, 20, 2400),
-    "5m": ("CANDLE_INTERVAL_5_MIN", 7, 60, 2400),
-    "1h": ("CANDLE_INTERVAL_HOUR", 90, 300, 2400),
-    "4h": ("CANDLE_INTERVAL_4_HOUR", 90, 900, 700),
-    "1d": ("CANDLE_INTERVAL_DAY", 5 * 365, 3600, 2400),
-    "7d": ("CANDLE_INTERVAL_WEEK", 5 * 365, 3600, 300),
+    "5m": ("CANDLE_INTERVAL_5_MIN", 1, 60, 2400),
+    "1h": ("CANDLE_INTERVAL_HOUR", 7, 300, 2400),
+    "4h": ("CANDLE_INTERVAL_4_HOUR", 30, 900, 700),
+    "1d": ("CANDLE_INTERVAL_DAY", 365, 3600, 2400),
+    "7d": ("CANDLE_INTERVAL_WEEK", 2 * 365, 3600, 300),
 }
 METHODS = {
     "accounts": ("UsersService/GetAccounts", "GetAccountsRequest", "GetAccountsResponse"),
@@ -185,7 +185,7 @@ def closed_candles(items, now=None):
     now = now or utcnow()
     bars = {}
     for item in items:
-        if not item.get("is_complete"):
+        if not item.get("is_complete") or item.get("candle_source") == "CANDLE_SOURCE_DEALER_WEEKEND":
             continue
         try:
             at = datetime.fromisoformat(item["time"].replace("Z", "+00:00"))
@@ -194,7 +194,8 @@ def closed_candles(items, now=None):
             bar = {key: price(item.get(key, {})) for key in ("open", "high", "low", "close")}
             if min(bar.values()) <= 0 or bar["low"] > min(bar["open"], bar["close"]) or bar["high"] < max(bar["open"], bar["close"]):
                 continue
-            bar.update(time=iso(at), volume_lots=int(item.get("volume", 0)))
+            bar.update(time=iso(at), volume_lots=int(item.get("volume", 0)),
+                       candle_source=item.get("candle_source", "CANDLE_SOURCE_UNSPECIFIED"))
             if bar["volume_lots"] >= 0:
                 bars[at] = bar
         except (KeyError, TypeError, ValueError, ArithmeticError):
@@ -402,12 +403,11 @@ class TBankConnection:
             self.history_attempts[key] = iso(now)
             try:
                 reply = self.reader.call("candles", **{"instrument_id": uid, "interval": enum,
-                    "from": iso(now - timedelta(days=days)), "to": iso(now), "limit": limit,
-                    "candle_source_type": "CANDLE_SOURCE_EXCHANGE"})
+                    "from": iso(now - timedelta(days=days)), "to": iso(now)})
                 bars = closed_candles(reply.get("candles", []), now)
                 value = {"status": "OK" if bars else "NO_DATA", "source": "TBANK_GRPC",
                     "instrument_uid": uid, "interval": interval, "loaded_at": iso(), "aggregation": "NATIVE",
-                    "price_unit": "BROKER_NATIVE", "candle_source": "EXCHANGE", "candles": bars[-limit:]}
+                    "price_unit": "BROKER_NATIVE", "candle_source": "BROKER_DEFAULT_DEALER_BARS_EXCLUDED", "candles": bars[-limit:]}
                 with self.lock:
                     self.candles[key] = value
                     if interval == "1d":
