@@ -306,7 +306,10 @@ def attach_onchain(asset,x):
     out=x.copy()
     cols=["AdrActCnt","TxCnt","CapMrktCurUSD","CapRealUSD","NVTAdj","CapMVRVCur"]
     if z.empty:
-        for c in cols: out["oc_"+c]=np.nan
+        for col in cols:
+            out["oc_"+col]=np.nan
+        out["oc_mvrv_z"]=np.nan
+        out["oc_nvt_z"]=np.nan
         return out
     # Compute MVRV if the direct community metric is unavailable.
     if ("CapMVRVCur" not in z or z.get("CapMVRVCur",pd.Series(dtype=float)).isna().all()) and "CapMrktCurUSD" in z and "CapRealUSD" in z:
