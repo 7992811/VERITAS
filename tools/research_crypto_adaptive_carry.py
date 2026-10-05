@@ -81,11 +81,11 @@ def prep(asset):
     z["positive_frac"]=(.55*z.pos9+.45*z.pos21)
     return z,s,p
 
-def entry_ok(r,pol,stress):
+def entry_ok(r,pol):
     vals=(r.forecast_lcb,r.positive_frac,r.basis,r.mean3,r.mean9,r.rate)
     if not all(np.isfinite(v) for v in vals):return False
     # Four executions. Stress is round-trip pair stress and is added once.
-    cost=PAIR_RT+stress
+    cost=PAIR_RT
     expected=max(0.,float(r.forecast_lcb))*pol["forecast_events"]
     return (
         expected >= pol["cost_multiple"]*cost
@@ -108,11 +108,11 @@ def nearest_open(df,t):
     if i>=len(df):return None
     return float(df.open.iloc[i]),int(df.ts.iloc[i])
 
-def simulate(z,s,p,pol,stress=0.):
+def simulate(z,s,p,pol,pnl_stress=0.):
     trades=[];i=0
     while i<len(z):
         r=z.iloc[i]
-        if not entry_ok(r,pol,stress):
+        if not entry_ok(r,pol):
             i+=1;continue
         entry_i=i;entry_ts=int(r.entry_ts)
         spot0=float(r.spot_open);perp0=float(r.perp_open)
@@ -132,27 +132,42 @@ def simulate(z,s,p,pol,stress=0.):
         spot1,ets=so;perp1,etp=po
         spot_pnl=spot1/spot0-1.
         perp_pnl=1.-perp1/perp0
-        costs=PAIR_RT+stress
+        costs=PAIR_RT+pnl_stress
         pair_pnl=spot_pnl+perp_pnl+funding_sum-costs
         capital_return=pair_pnl/2.
+        # Hourly mark-to-market path of the hedged pair, including realized
+        # funding as it accrues. This measures basis/liquidation stress while open.
+        t0=entry_ts; t1=max(ets,etp)
+        ss=s[(s.ts>=t0)&(s.ts<=t1)]
+        pp=p[(p.ts>=t0)&(p.ts<=t1)]
+        mm=ss[["ts","close"]].merge(pp[["ts","close"]],on="ts",suffixes=("_s","_p"))
+        mae=0.0
+        if len(mm):
+            ff=base.funding(asset) if False else None
+            # Price-only pair MAE is conservative enough for basis drift; funding
+            # is positive carry and is not credited to the intratrade risk figure.
+            path=(mm.close_s/spot0-1.)+(1.-mm.close_p/perp0)
+            mae=float(min(0.0,path.min()/2.0))
         trades.append({
             "opened":entry_ts,"closed":max(ets,etp),"net":float(capital_return),
             "raw_pair_pnl":float(pair_pnl),"funding":float(funding_sum),
             "spot":float(spot_pnl),"perp":float(perp_pnl),
             "entry_basis":float(r.basis),"events":int(j-entry_i),"reason":reason,
             "forecast_lcb":float(r.forecast_lcb),"positive_frac":float(r.positive_frac),
+            "pair_price_mae":mae,
         })
         i=j+1
     return trades
 
 def met(tr):
-    if not tr:return {"n":0,"win_rate":None,"avg":None,"sum":0.,"pf":0.,"dd":0.}
+    if not tr:return {"n":0,"win_rate":None,"avg":None,"sum":0.,"pf":0.,"dd":0.,"worst_pair_mae":None}
     a=np.asarray([x["net"] for x in tr],float)
     pos=a[a>0].sum();neg=-a[a<0].sum()
     eq=np.cumsum(a);pk=np.maximum.accumulate(np.r_[0.,eq])[1:]
+    maes=[float(x.get("pair_price_mae",0.0)) for x in tr]
     return {"n":int(len(a)),"win_rate":float((a>0).mean()),"avg":float(a.mean()),
             "sum":float(a.sum()),"pf":float(pos/neg) if neg else 99.,
-            "dd":float((pk-eq).max())}
+            "dd":float((pk-eq).max()),"worst_pair_mae":float(min(maes)) if maes else None}
 
 def yearly(tr):
     out={}
@@ -184,22 +199,24 @@ def run(asset):
          "method":"Causal funding break-even market-neutral carry; fixed policies across all years.",
          "policies":{}}
     for pol in POLICIES:
-        b=simulate(z,s,p,pol,0.);st=simulate(z,s,p,pol,STRESS)
+        b=simulate(z,s,p,pol,0.);s5=simulate(z,s,p,pol,.0005);s10=simulate(z,s,p,pol,.0010);s20=simulate(z,s,p,pol,.0020)
         out["policies"][pol["name"]]={
-            "policy":pol,"base":met(b),"stress5":met(st),
-            "years":yearly(b),"stress_years":yearly(st),
+            "policy":pol,"base":met(b),"stress5":met(s5),"stress10":met(s10),"stress20":met(s20),
+            "years":yearly(b),"stress_years":yearly(s5),
             "bootstrap":bootstrap(b),"trades":b,
         }
         print(asset,pol["name"],"ADAPTIVE_CARRY",json.dumps({
             "base":out["policies"][pol["name"]]["base"],
             "stress5":out["policies"][pol["name"]]["stress5"],
+            "stress10":out["policies"][pol["name"]]["stress10"],
+            "stress20":out["policies"][pol["name"]]["stress20"],
             "years":out["policies"][pol["name"]]["years"],
             "stress_years":out["policies"][pol["name"]]["stress_years"],
             "bootstrap":out["policies"][pol["name"]]["bootstrap"],
         },separators=(",",":"),default=jd),flush=True)
     q=OUT/asset.lower();q.mkdir(parents=True,exist_ok=True)
     (q/"result.json").write_text(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False,default=jd))
-    print("VERITAS_ADAPTIVE_CARRY="+json.dumps({"asset":asset,"policies":{k:{q:v[q] for q in ("base","stress5","years","stress_years","bootstrap")} for k,v in out["policies"].items()}},separators=(",",":"),default=jd),flush=True)
+    print("VERITAS_ADAPTIVE_CARRY="+json.dumps({"asset":asset,"policies":{k:{q:v[q] for q in ("base","stress5","stress10","stress20","years","stress_years","bootstrap")} for k,v in out["policies"].items()}},separators=(",",":"),default=jd),flush=True)
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument("--asset",choices=["BTC","ETH"],required=True);args=ap.parse_args()
