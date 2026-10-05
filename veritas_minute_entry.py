@@ -7,6 +7,45 @@ from bisect import bisect_left
 VERSION='R69_MINUTE_STRUCTURAL_ENTRY'
 
 
+def continuation_arm(prior, active, atr, zones, asset):
+    """Use a closed 15-minute pause as a new step in an existing trend.
+
+    The high/low must be known before the trigger candle. Directional candles
+    alone do not form a pause. Preserve each zone's stop and failure count.
+    """
+    if not active or not active.get('continuation_confirmed'):
+        return None
+    base=prior[-3:]
+    if len(base)!=3 or base[0]['ts']<active['signal_at']:
+        return None
+    d=1 if active['direction']=='LONG' else -1
+    high=max(b['high'] for b in base);low=min(b['low'] for b in base)
+    level=high if d==1 else low
+    anchor=low if d==1 else high
+    pause=(any(d*(b['close']-b['open'])<0 for b in base) or
+           any(d*(b['close']-a['close'])<0 for a,b in zip(base,base[1:])))
+    if (not pause or high-low>3*atr or high-low<.3*atr
+            or d*(anchor-active['trigger_level'])<.25*atr
+            or d*(level-active['signal_price'])<.5*atr):
+        return None
+    exhausted=[z for z in zones if z['direction']==active['direction'] and z['failures']>=2]
+    if any(base[0]['ts']<z.get('last_failure_at',0) for z in exhausted):
+        return None
+    zone=next((z for z in zones if z.get('short_pause')
+        and z['direction']==active['direction'] and abs(z['trigger_level']-level)<=.25*z['atr']),None)
+    if zone is None:
+        zone=dict(direction=active['direction'],trigger_level=level,atr=atr,
+            stop_price=anchor-d*.15*atr,impulse_origin=anchor,
+            level_available_at=base[-1]['ts']+300,zone_started_at=base[0]['ts'],
+            failures=0,short_pause=True,activity_basis=base[-1].get('activity_basis','volume'))
+        identity=f'{asset}|{zone["direction"]}|{level:.10f}|{base[0]["ts"]}'
+        zone['event_id']='R69_'+hashlib.sha256(identity.encode()).hexdigest()[:20]
+        zones.append(zone)
+    if zone is active['_zone'] or zone['zone_started_at']<active['signal_at']:
+        return None
+    return zone
+
+
 def enrich(context, bars, now, minute_bars=None, quote=None):
     from veritas_trend_entry import timestamp
     from veritas_local_breakout import closed_minutes
@@ -52,6 +91,9 @@ def enrich(context, bars, now, minute_bars=None, quote=None):
                           activity_basis=window[-1].get('activity_basis','volume'))
                 zones.append(zone)
             arms.append(zone)
+        short_arm=continuation_arm(prior,active,atr,zones,context.get('asset'))
+        if short_arm:
+            arms.append(short_arm)
         if i==len(bars):out['armed_levels']=[dict(z) for z in arms]
         observations=[minutes[t] for t in minute_times[bisect_left(minute_times,closed):bisect_left(minute_times,closed+300)]]
         if i<len(bars) and (not observations or observations[-1]['available_at']<closed+300):
@@ -77,12 +119,12 @@ def enrich(context, bars, now, minute_bars=None, quote=None):
             parent_id=None
             if active:
                 # A still-valid old trend must not hide a genuinely NEW base.
-                # Use the existing 12-bar/two-touch zone detector, wholly after
-                # the original crossing; a higher last price is not a new setup.
+                # Accept a full base or a shorter closed pause, wholly after
+                # the crossing; a higher last price alone is not a new setup.
                 candidate_arms=[z for z in arms if z['direction']==active['direction']
-                    and z is not active['_zone'] and window[0]['ts']>=active['signal_at']
-                    and z['zone_started_at']>=active['signal_at']
-                    and max(b['high'] for b in window)-min(b['low'] for b in window)<=2.5*atr]
+                    and z is not active['_zone'] and z['zone_started_at']>=active['signal_at']
+                    and (z.get('short_pause') or (window[0]['ts']>=active['signal_at']
+                    and max(b['high'] for b in window)-min(b['low'] for b in window)<=2.5*atr))]
                 if not candidate_arms:continue
                 parent_id=active['event_id']
             previous_end=bisect_left(minute_times,obs['ts']-59)

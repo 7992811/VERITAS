@@ -4682,7 +4682,9 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         if not existing or existing.get('direction')!=direction:
             fill=VX.simulated_fill(asset,'BUY' if direction=='LONG' else 'SELL_SHORT',price,
                                   target_fraction,bid=row.get('best_bid'),ask=row.get('best_ask'))
-            event=VTE.event_gate(row,fill['fill_price'],direction,ts)
+            # Use the observed quote for technical timing, exactly as the
+            # planner and final entry gate do; fill costs remain in risk below.
+            event=VTE.event_gate(row,price,direction,ts)
             if not event['eligible']:
                 _record_entry_outcome(row,'BLOCKED',event['reason'],trend_event=event)
                 return 0.0
