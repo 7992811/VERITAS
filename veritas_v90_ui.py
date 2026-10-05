@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r84-solid-signal-matrix"
+UI_VERSION = "veritas-ui-v9.0-r85-refined-signal-matrix"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -66,27 +66,31 @@ _CANONICAL_HTML = r'''<!doctype html>
 .sig-dot.super::after{content:'';position:absolute;left:50%;top:50%;width:20px;height:20px;border-radius:50%;transform:translate(-50%,-50%);background:transparent!important;border:3px solid currentColor;box-shadow:none}
 .sig-dot.super.long{color:#52d98b;border-color:#52d98b;box-shadow:none}
 .sig-dot.super.short{color:#ff5f6d;border-color:#ff5f6d;box-shadow:none}
-/* R84: approved solid circle with an outer ring, scoped to the signal matrix. */
-.matrix-panel .title{font-size:14px;font-weight:700;letter-spacing:.06em;margin-bottom:5px}
-.matrix-caption{font-size:12px;color:#aab8c5;line-height:1.4}
-.matrix .asset-label{font-size:15px}
-.matrix tbody th,.matrix td{border-top:1px solid rgba(203,214,223,.07)}
-.matrix .cell{min-height:60px;padding:8px 0;border:0;background:transparent;border-radius:7px}
-.matrix .cell:hover{background:rgba(203,214,223,.045)}
-.matrix .cell.sel{outline:1px solid rgba(164,196,220,.55);outline-offset:-2px;background:rgba(102,159,203,.055)}
-.matrix-panel .sig-dot{--signal-color:#f6c451;width:28px;height:28px;flex:0 0 auto;background:var(--signal-color);border:0;color:var(--signal-color);box-shadow:none}
-.matrix-panel .sig-dot.long{--signal-color:#52e18d}
-.matrix-panel .sig-dot.short{--signal-color:#ff606d}
-.matrix-panel .sig-dot.wait{--signal-color:#f6cc4a}
-.matrix-panel .sig-dot.super{width:28px;height:28px;background:var(--signal-color)!important;border:0;box-shadow:none}
-.matrix-panel .sig-dot.super::after{content:'';position:absolute;inset:-6px;width:auto;height:auto;transform:none;border:2px solid var(--signal-color);border-radius:50%;background:transparent!important;box-shadow:none}
+/* R85: restrained matrix styling with a smaller core inside strong-signal rings. */
+.matrix-panel{padding:20px;border-color:#2b3540;border-radius:16px;background:linear-gradient(150deg,#141c25 0%,#10171f 65%);box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 8px 28px rgba(0,0,0,.12)}
+.matrix-panel .title{font-size:15px;font-weight:600;text-transform:none;letter-spacing:-.01em;color:#e4eaf0;margin-bottom:14px}
+.matrix thead th{font-size:12px;font-weight:550;letter-spacing:.025em;color:#96a5b4;padding-bottom:14px}
+.matrix thead th:first-child{text-align:left}
+.matrix .asset-label{font-size:14px;font-weight:600;letter-spacing:.015em;color:#dbe4ec}
+.matrix .asset-logo{box-shadow:none}
+.matrix tbody th,.matrix td{border-top:1px solid rgba(203,214,223,.055)}
+.matrix .cell{min-height:62px;padding:8px 0;border:0;background:transparent;border-radius:8px}
+.matrix .cell:hover{background:rgba(203,214,223,.035)}
+.matrix .cell.sel{outline:1px solid rgba(164,196,220,.32);outline-offset:-4px;background:rgba(102,159,203,.04)}
+.matrix .cell:focus-visible{outline:2px solid #a4c4dc;outline-offset:-4px}
+.matrix-panel .sig-dot{--signal-color:#dfbd72;width:28px;height:28px;flex:0 0 auto;background:var(--signal-color);border:0;color:var(--signal-color);box-shadow:none}
+.matrix-panel .sig-dot.long{--signal-color:#59d2a0}
+.matrix-panel .sig-dot.short{--signal-color:#ee7987}
+.matrix-panel .sig-dot.wait{--signal-color:#dfbd72}
+.matrix-panel .sig-dot.super{width:22px;height:22px;background:var(--signal-color)!important;border:0;box-shadow:none}
+.matrix-panel .sig-dot.super::after{content:'';position:absolute;inset:-9px;width:auto;height:auto;transform:none;border:1.5px solid var(--signal-color);border-radius:50%;background:transparent!important;box-shadow:none}
 .matrix-panel .sig-dot.unavailable{background:transparent;border:1px dashed #75818d;color:#a7b1bb;display:inline-flex;align-items:center;justify-content:center;font-size:15px}
 .matrix .cell:disabled{cursor:default}
-.matrix-legend{display:flex;flex-wrap:wrap;align-items:center;gap:13px 23px;padding-top:16px;margin-top:6px;border-top:1px solid rgba(203,214,223,.07);font-size:12px;color:#cbd6df}
-.matrix-legend>span{display:inline-flex;align-items:center;gap:9px;min-height:24px}
-.matrix-legend .sig-dot,.matrix-legend .sig-dot.super{width:16px;height:16px}
-.matrix-legend .sig-dot.super::after{inset:-4px;border-width:1.5px}
-.matrix-hint{font-size:11px;line-height:1.45;color:#aab8c5;margin-top:12px}
+.matrix-legend{display:flex;flex-wrap:wrap;align-items:center;gap:12px 28px;padding-top:17px;margin-top:8px;border-top:1px solid rgba(203,214,223,.08);font-size:12px;font-weight:500;letter-spacing:.01em;color:#aebcc9}
+.matrix-legend>span{display:inline-flex;align-items:center;gap:9px;min-height:22px;white-space:nowrap}
+.matrix-legend .sig-dot{width:12px;height:12px;margin:0 4px}
+.matrix-legend .sig-dot.super{width:8px;height:8px;margin:0 6px}
+.matrix-legend .sig-dot.super::after{inset:-5px;border-width:1.25px}
 .super-label{font-weight:800;letter-spacing:.035em;color:#f3f7fa!important}
 .signal-detail{max-width:1120px;margin:0 auto}
 .signal-summary{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 12px;border:1px solid var(--line);border-radius:11px;background:linear-gradient(120deg,rgba(255,255,255,.025),rgba(255,255,255,.008))}
@@ -153,6 +157,8 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 @media(max-width:500px){.pf-row{grid-template-columns:minmax(88px,1.25fr) repeat(3,minmax(0,1fr));gap:4px;padding:9px 7px}button.pf-row{font-size:11px}.pf-row.pf-colnames{font-size:9px}.pf-row small{font-size:8px}.pf-detail{padding:11px}.pf-heading h3{font-size:13px}.pf-amount{font-size:23px}.pf-status{font-size:9px;max-width:104px}.pf-performance{gap:7px}.pf-value b{font-size:14px}.pf-value span{font-size:9px}.pf-sections{grid-template-columns:1fr;gap:10px}.pf-section:last-child{grid-column:auto}.pf-quality,.pf-ledger{grid-template-columns:1fr 1fr}.pf-quality .pf-value b{font-size:18px}.deal{padding:10px}.deal-result{font-size:15px}.deal-name{font-size:12px}.deal-breakdown{grid-template-columns:repeat(2,minmax(0,1fr))}.deal-filters small{flex-basis:100%;margin:0}.deal-outcome{gap:7px}}
 .trade-direction{display:inline-block;margin-left:7px}.position-result{font-size:12px;line-height:1.25}.position-result small{display:block;font-size:9px;font-weight:550;margin-top:2px}.deal-result small{font-size:11px}
 @media(max-width:650px){
+  .matrix-panel{padding:14px 10px;border-radius:13px}
+  .matrix-panel .title{font-size:14px;margin-bottom:10px}
   .matrix{border-spacing:0}
   .matrix th{font-size:13px;padding:10px 0}
   .matrix th:first-child,.matrix th.asset-head{width:88px}
@@ -160,17 +166,19 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
   .matrix .asset-logo{width:18px;height:18px;flex-basis:18px;font-size:8px}
   .matrix .asset-logo svg{width:13px;height:13px}
   .matrix .cell{min-height:48px;padding:7px 0}
-  .matrix .sig-dot,.matrix .sig-dot.super{width:24px;height:24px}
-  .matrix .sig-dot.super::after{inset:-4px;border-width:2px}
-  .matrix-legend{gap:12px 18px;font-size:11px;padding-top:14px}
-  .matrix-legend>span{gap:8px}
+  .matrix .sig-dot{width:24px;height:24px}
+  .matrix .sig-dot.super{width:18px;height:18px}
+  .matrix .sig-dot.super::after{inset:-7px}
+  .matrix-legend{gap:10px 16px;font-size:11px;padding-top:14px}
+  .matrix-legend>span{gap:6px}
 }
 @media(max-width:380px){
   .matrix th:first-child,.matrix th.asset-head{width:76px}
   .matrix .asset-label{font-size:11px;gap:3px}
   .matrix .asset-logo{width:16px;height:16px;flex-basis:16px;font-size:7px}
   .matrix .asset-logo svg{width:11px;height:11px}
-  .matrix .sig-dot,.matrix .sig-dot.super{width:20px;height:20px}
+  .matrix .sig-dot{width:20px;height:20px}
+  .matrix .sig-dot.super{width:14px;height:14px}
 }
 </style>
 </head>
@@ -202,18 +210,16 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
       <div id="assets"><div class="msg">Загрузка рынка…</div></div>
     </div>
 
-    <div class="card full section matrix-panel" data-matrix-design="solid-ring-r84">
+    <div class="card full section matrix-panel" data-matrix-design="refined-ring-r85">
       <div class="title">Матрица сигналов</div>
-      <div class="matrix-caption">Цвет — направление · внешнее кольцо — сильный сигнал</div>
       <div class="matrix-wrap"><table class="matrix"><thead><tr id="matrixHead"><th scope="col">Актив</th></tr></thead><tbody id="matrixBody"></tbody></table></div>
       <div class="matrix-legend" aria-label="Обозначения сигналов">
-        <span><i class="sig-dot long" aria-hidden="true"></i>Лонг</span>
-        <span><i class="sig-dot long super" aria-hidden="true"></i>Сильный лонг</span>
-        <span><i class="sig-dot short" aria-hidden="true"></i>Шорт</span>
-        <span><i class="sig-dot short super" aria-hidden="true"></i>Сильный шорт</span>
-        <span><i class="sig-dot wait" aria-hidden="true"></i>Вне рынка</span>
+        <span><i class="sig-dot long" aria-hidden="true"></i>Long</span>
+        <span><i class="sig-dot long super" aria-hidden="true"></i>Strong Long</span>
+        <span><i class="sig-dot short" aria-hidden="true"></i>Short</span>
+        <span><i class="sig-dot short super" aria-hidden="true"></i>Strong Short</span>
+        <span><i class="sig-dot wait" aria-hidden="true"></i>Wait</span>
       </div>
-      <div class="matrix-hint">Нажмите на круг: оценка сигнала и состояние входа — в разборе ниже. Пунктир — нет данных.</div>
     </div>
 
     <div class="card full section">
