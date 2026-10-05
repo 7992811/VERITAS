@@ -19,7 +19,13 @@ def parse_quotes(text,now=None):
         asset=next((a for a,s in SYMBOLS.items() if s==symbol),None)
         if not asset:continue
         try:
-            price=float(fields['LP'])
+            # The public widget hides one leading LP sign before displaying
+            # price (q_show.js: setValueToTdById(..., hide_sign=true)). It is
+            # quote-direction formatting, not a negative instrument price.
+            raw_price=fields['LP'].strip()
+            magnitude=raw_price[1:] if raw_price[:1] in ('+','-') else raw_price
+            if not re.fullmatch(r'\d+(?:\.\d+)?',magnitude):continue
+            price=float(magnitude)
             clock=datetime.strptime(fields['T'],'%H:%M:%S').time()
             observed=datetime.combine(local.date(),clock,tzinfo=local.tzinfo)
             if observed>local+timedelta(seconds=5):observed-=timedelta(days=1)
@@ -29,6 +35,7 @@ def parse_quotes(text,now=None):
         out[asset]={'price':price,'observed_at':observed.astimezone(timezone.utc).isoformat(),
                     'source':'ProFinance','source_role':'public_freshness_verification',
                     'raw_label':symbol,'instrument_id':fields.get('I'),
+                    'raw_price':raw_price,'quote_direction_sign':raw_price[:1] if raw_price[:1] in ('+','-') else None,
                     'time_basis':'Europe/Moscow quote clock; date inferred',
                     'date_verified':False,'exact_contract_verified':False,
                     'execution_eligible':False,'reference_only':True}

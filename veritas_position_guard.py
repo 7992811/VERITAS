@@ -160,6 +160,32 @@ def payload_of(z):
     p = z.get('payload') or {}
     return json.loads(p) if isinstance(p, str) else dict(p)
 
+def quote_matches_position(z, quote):
+    """Keep a GOLD entry and its protective marks on the same price basis.
+
+    ProFinance's unqualified Gold label has no verified GC contract identity.
+    Price proximity alone cannot make it interchangeable with Yahoo GC=F.
+    """
+    p=payload_of(z)
+    identity=p.get('contract_identity') or {}
+    expected=p.get('entry_contract_secid') or identity.get('contract_id')
+    actual=(quote.get('contract') or {}).get('secid')
+    if expected and actual:
+        return str(expected)==str(actual)
+    if z.get('asset')!='GOLD':
+        return True
+    source=identity.get('primary_source') or p.get('entry_primary_source')
+    if not source:
+        return True  # Legacy positions did not persist their entry source.
+    current=(quote.get('source_names') or {}).get('primary') or quote.get('source')
+    if str(source).startswith('ProFinance'):
+        return bool(str(current).startswith('ProFinance') and
+                    quote.get('raw_label','Gold')=='Gold')
+    if str(source).startswith('Yahoo') and 'GC=F' in str(source):
+        return bool(str(current).startswith('Yahoo') and
+                    ('GC=F' in str(current) or current=='Yahoo GOLD futures'))
+    return bool(current and str(current)==str(source))
+
 def exit_execution_quote(z,now=None):
     """One fresh quote contract for protection assessment and the actual fill."""
     now=utc_datetime(now) or datetime.now(timezone.utc)
@@ -167,7 +193,8 @@ def exit_execution_quote(z,now=None):
     if quote is None:
         with _quotes_lock:
             quote=dict(_quotes.get(z.get('asset')) or {})
-    if not quote or not quote.get('source_gate_pass') or VX.is_proxy_price(z.get('asset'),quote):
+    if (not quote or not quote.get('source_gate_pass') or VX.is_proxy_price(z.get('asset'),quote)
+            or not quote_matches_position(z,quote)):
         return {}
     if not quote_gate(quote.get('observed_at'),now=now,protective=True)['eligible']:
         return {}
@@ -301,7 +328,7 @@ def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
     - adverse execution / slippage allowance;
     - a small positive net-profit cushion.
     """
-    if not quote or not quote.get('source_gate_pass'):
+    if not quote or not quote.get('source_gate_pass') or not quote_matches_position(z,quote):
         return None
     p=payload_of(z)
     try:
@@ -393,7 +420,7 @@ def profit_lock_stop(z, quote, commission=.0005, fees_paid_rub=0.0,
 def protective_reason(z, quote, now=None):
     now = now or datetime.now(timezone.utc)
     p = payload_of(z)
-    if not quote or not quote.get('source_gate_pass'):
+    if not quote or not quote.get('source_gate_pass') or not quote_matches_position(z,quote):
         return None
     gate = quote_gate(quote.get('observed_at'), now=now, protective=True)
     observed = utc_datetime(quote.get('observed_at'))
@@ -458,7 +485,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             # one hour old. Fail closed before touching the position.
             q_quality = quote_gate((q or {}).get('observed_at'), now=now, protective=True)
             if (not (q or {}).get('source_gate_pass') or not q_quality.get('eligible')
-                    or VX.is_proxy_price(z['asset'],q)):
+                    or VX.is_proxy_price(z['asset'],q) or not quote_matches_position(z,q)):
                 continue
 
             # R55: persist lifetime excursion from the independent fresh
@@ -708,21 +735,28 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
             return dict(ns['_moex_futures_current_quote'](contract), source_gate_pass=True,
                         contract={'secid': contract})
     if asset in ('NQ', 'GOLD'):
-        # Match the main paper adapter's fresh NQ channel. Do not treat an index
-        # quote or a differently specified contract as a futures protective quote.
-        if asset=='NQ' and ns.get('_v90r61_profinance_quote') and not any(
+        # Match the main paper adapter. A Gold entry from ProFinance cannot be
+        # stopped using GC=F, whose exact contract/basis is not reconciled.
+        pf_gold=bool(asset=='GOLD' and positions and all(
+            str((payload_of(z).get('contract_identity') or {}).get('primary_source')
+                or payload_of(z).get('entry_primary_source') or '').startswith('ProFinance')
+            for z in positions))
+        if (asset=='NQ' or pf_gold) and ns.get('_v90r61_profinance_quote') and not any(
                 payload_of(z).get('entry_contract_secid') or
                 (payload_of(z).get('contract_identity') or {}).get('contract_id') for z in positions):
             try:
-                q=ns['_v90r61_profinance_quote']('NQ') or {}
+                q=ns['_v90r61_profinance_quote'](asset) or {}
                 price=float(q.get('price') or 0.)
-                if (q.get('raw_label')=='NASD100_FUT' and math.isfinite(price) and price>0
-                        and quote_gate(q.get('observed_at'),execution=True,asset='NQ')['eligible']):
+                if (q.get('raw_label')=={'NQ':'NASD100_FUT','GOLD':'Gold'}[asset]
+                        and math.isfinite(price) and price>0
+                        and quote_gate(q.get('observed_at'),execution=True,asset=asset)['eligible']):
                     return dict(q,price=price,source_gate_pass=True,market_open=True,
-                                source_names={'primary':'ProFinance NASD100_FUT'},
+                                source_names={'primary':'ProFinance NASD100_FUT' if asset=='NQ' else 'ProFinance'},
                                 verification_mode='PUBLIC_DIRECT_FUTURES_PAPER',paper_only=True)
             except Exception:
                 pass
+        if pf_gold:
+            return cached if cached and all(quote_matches_position(z,cached) for z in positions) else {}
         rows, _ = ns['_yahoo_series']({'NQ': 'NQ%3DF', 'GOLD': 'GC%3DF'}[asset], '1d', '1m', True)
         if rows:
             row = rows[-1]
