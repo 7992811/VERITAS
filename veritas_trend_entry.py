@@ -116,6 +116,130 @@ def context_of(row):
     return (row or {}).get('trend_entry_context') or ((row or {}).get('trade_plan') or {}).get('trend_entry_context') or {}
 
 
+CATALYST_CONTEXT_GRACE_SECONDS=1800
+CATALYST_MIN_STRUCTURE_SCORE=.72
+CATALYST_MIN_INDEPENDENT=4
+CATALYST_MIN_EXPECTED_MOVE=.0035
+CATALYST_MIN_RR=1.25
+CATALYST_MAX_STOP_DISTANCE=.012
+
+
+def _catalyst_continuation_event(row,price=None,now=None):
+    """Create a NEW setup identity when a verified catalyst starts a fresh wave.
+
+    This is deliberately stricter than a normal continuation. It does not revive
+    the old breakout target. It requires a fresh current setup, strong same-
+    direction structure, independent evidence and positive remaining economics.
+    """
+    row=row or {}
+    direction=str(row.get('research_decision') or '')
+    if direction not in ('LONG','SHORT'):
+        return None
+    try:
+        from veritas_event_catalyst import active_catalyst
+        catalyst=active_catalyst(row,direction,now)
+    except Exception:
+        catalyst=None
+    if not catalyst:
+        return None
+    if row.get('source_gate_pass') is False or row.get('market_open') is False:
+        return None
+
+    plan=dict(row.get('trade_plan') or {})
+    integrity=plan.get('trade_integrity') or {}
+    if integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict'):
+        return None
+
+    entryq=str(row.get('entry_quality') or plan.get('entry_quality') or '')
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    expected=number(plan.get('expected_move_pct'),0.) or 0.
+    rr=number(plan.get('expected_to_stop_ratio'),0.) or 0.
+    if entryq not in ('FRESH_BREAKOUT','CONFIRMED_BREAKOUT','CONFIRMED_TREND'):
+        return None
+    if tier not in ('SUPER_LONG','SUPER_SHORT') and entryq!='CONFIRMED_TREND':
+        return None
+    if expected<CATALYST_MIN_EXPECTED_MOVE or rr<CATALYST_MIN_RR:
+        return None
+
+    hs=row.get('horizon_structure') or {}
+    hdir=str(hs.get('direction') or row.get('horizon_structure_direction') or '')
+    hstate=str(hs.get('state') or row.get('horizon_structure_state') or '')
+    hscore=number(hs.get('score'),number(row.get('horizon_structure_score'),0.)) or 0.
+    try:
+        indep=int((((row.get('institutional_signal') or {}).get('evidence_independence') or {})
+                   .get('independent_count')) or row.get('independent_evidence_families') or 0)
+    except Exception:
+        indep=0
+    supporting=set(row.get('_supporting_horizons') or [])
+    aligned=bool(hdir==direction and hstate in ('BUILDING_TREND','CONFIRMED_TREND')
+                 and hscore>=CATALYST_MIN_STRUCTURE_SCORE)
+    senior=bool({'1h','4h'}.issubset(supporting) and len(supporting)>=3)
+    if not (aligned or senior) or indep<CATALYST_MIN_INDEPENDENT:
+        return None
+
+    px=number(price,number(row.get('price')))
+    stop=number(plan.get('stop_price'))
+    d=1 if direction=='LONG' else -1
+    if not px or not stop or min(px,stop)<=0 or d*(px-stop)<=0:
+        return None
+    stop_distance=d*(px-stop)/px
+    if stop_distance<=0 or stop_distance>CATALYST_MAX_STOP_DISTANCE:
+        return None
+
+    ctx=dict(context_of(row) or {})
+    old=dict(ctx.get('event') or {})
+    t=timestamp(now if now is not None else
+                ((row.get('_execution_quote') or {}).get('observed_at') or
+                 row.get('market_observed_at') or row.get('observed_at') or
+                 datetime.now(timezone.utc)))
+    if t is None:
+        t=datetime.now(timezone.utc).timestamp()
+    setup_id=str(row.get('canonical_setup_id') or plan.get('setup_id') or
+                 plan.get('canonical_setup_id') or old.get('event_id') or 'CATALYST')
+    identity='|'.join((str(row.get('asset') or ''),direction,
+                       str(catalyst.get('id') or catalyst.get('category') or 'EVENT'),setup_id))
+    eid='R69_CAT_'+hashlib.sha256(identity.encode()).hexdigest()[:18]
+
+    return {
+      'direction':direction,'trigger_level':px,'signal_price':px,'signal_at':t,
+      'atr':number(ctx.get('atr'),number(old.get('atr'),0.)) or 0.,
+      'stop_price':stop,'impulse_origin':stop,'level_available_at':t,
+      'zone_started_at':t,'event_id':eid,'failures':0,
+      'activity_basis':'FUNDAMENTAL_CATALYST','activity_confirmed':True,
+      'confirmation':'CATALYST_CONTINUATION','event_type':'CATALYST_CONTINUATION',
+      'relative_volume':number(((row.get('intraday_structure') or {}).get('relative_volume')),
+                               number(((row.get('trend_impulse') or {}).get('relative_volume')),0.)) or 0.,
+      'confirmed_at':t,'continuation_confirmed':True,'retest_confirmed':False,
+      'retest_at':None,'bars_since_signal':0,'age_seconds':0,
+      'parent_event_id':old.get('event_id'),'catalyst_continuation':True,
+      'catalyst':dict(catalyst),'expected_move_pct_at_rebase':expected,
+      'expected_to_stop_ratio_at_rebase':rr,'structure_score_at_rebase':hscore,
+      'independent_evidence_at_rebase':indep,
+    }
+
+
+def _rebase_catalyst_setup(row,price=None,now=None):
+    x=dict(row or {}); plan=dict(x.get('trade_plan') or {})
+    event=_catalyst_continuation_event(x,price,now)
+    if not event:
+        return x
+    ctx=dict(context_of(x) or {})
+    ctx['event']=event
+    x['trend_entry_context']=ctx
+    x['_catalyst_continuation']=dict(event.get('catalyst') or {})
+    x['entry_quality']='FRESH_BREAKOUT'
+    plan.update(
+      eligible=True,reason='catalyst_continuation',setup='CATALYST_CONTINUATION',
+      setup_id=event['event_id'],entry_event_id=event['event_id'],
+      new_setup_identity=True,entry_quality='FRESH_BREAKOUT',
+      entry_quality_rebased_from_old_setup=True,
+      catalyst_continuation=True,catalyst=event.get('catalyst'),
+      stop_price=event['stop_price'],
+    )
+    x['trade_plan']=plan
+    return x
+
+
 def has_geometry_context(row):
     plan=(row or {}).get('trade_plan') or {}
     return bool(context_of(row).get('status')=='OK' or
@@ -197,8 +321,8 @@ def geometry(row, price=None, direction=None, stop_override=None):
     return out
 
 
-def prepare_row(row, price=None):
-    x=dict(row or {}); plan=dict(x.get('trade_plan') or {})
+def prepare_row(row, price=None, now=None):
+    x=_rebase_catalyst_setup(row,price,now); plan=dict(x.get('trade_plan') or {})
     if not has_geometry_context(x):return x
     g=geometry(x,price)
     ev=structural_event(x)
@@ -236,6 +360,13 @@ def context_gate(row, now=None):
     closed=number(ctx.get('closed_at'))
     age=t-closed if t is not None and closed is not None else None
     if age is None or not -5<=age<=MAX_CONTEXT_AGE_SECONDS or ctx.get('status')=='STALE':
+        rebased=_catalyst_continuation_event(row,number((row or {}).get('price')),now)
+        if (rebased and age is not None and -5<=age<=CATALYST_CONTEXT_GRACE_SECONDS):
+            return {'eligible':True,'reason':'R78_CATALYST_CONTEXT_GRACE',
+                    'closed_at':closed,'age_seconds':age,
+                    'max_age_seconds':MAX_CONTEXT_AGE_SECONDS,
+                    'catalyst_grace_seconds':CATALYST_CONTEXT_GRACE_SECONDS,
+                    'catalyst':rebased.get('catalyst')}
         return {'eligible':False,'reason':'R66_CLOSED_CONTEXT_STALE',
                 'closed_at':closed,'age_seconds':age,'max_age_seconds':MAX_CONTEXT_AGE_SECONDS}
     if ctx.get('status')!='OK':
