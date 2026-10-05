@@ -1,2 +1,4 @@
 httpx==0.28.1
 psycopg[binary]==3.3.6
+grpcio==1.78.0
+protobuf==6.33.5
