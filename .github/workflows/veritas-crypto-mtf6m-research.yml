@@ -1,11 +1,11 @@
-name: VERITAS macro tactical research
+name: VERITAS spot perpetual carry research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
-      - tools/research_crypto_macro_tactical.py
+      - tools/research_crypto_carry.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
 
@@ -34,31 +34,31 @@ jobs:
           path: manager_library_out
           github-token: ${{ github.token }}
           run-id: 37210798801
-      - name: Download 2020-2021 external cache
+      - name: Download 2020-2021 spot cache
         uses: actions/download-artifact@v4
         with:
           name: veritas-external-holdout
           path: external_holdout_out
           github-token: ${{ github.token }}
           run-id: 37268494688
-      - name: Run fixed macro tactical system
-        run: python tools/research_crypto_macro_tactical.py --asset ${{ matrix.asset }}
+      - name: Run carry study
+        run: python tools/research_crypto_carry.py --asset ${{ matrix.asset }}
       - name: Print result
         if: always()
         run: |
           ASSET_LOWER=$(echo "${{ matrix.asset }}" | tr '[:upper:]' '[:lower:]')
-          FILE="macro_tactical_out/${ASSET_LOWER}/result.json"
+          FILE="carry_out/${ASSET_LOWER}/result.json"
           if [ -f "$FILE" ]; then
             python - "$FILE" <<'PY'
           import json,sys
           x=json.load(open(sys.argv[1]))
-          print('VERITAS_MACRO_TACTICAL_COMPACT='+json.dumps(x,separators=(',',':')))
+          print('VERITAS_CARRY_COMPACT='+json.dumps({'asset':x.get('asset'),'rules':{k:{kk:v.get(kk) for kk in ('years','aggregate','aggregate_stress5')} for k,v in x.get('rules',{}).items()}},separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-macro-tactical-${{ matrix.asset }}
-          path: macro_tactical_out/
+          name: veritas-carry-${{ matrix.asset }}
+          path: carry_out/
           retention-days: 7
