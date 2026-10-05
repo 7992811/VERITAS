@@ -47,24 +47,28 @@ def bls_events():
         url=f"https://www.bls.gov/schedule/{y}/"
         try:
             html=fetch_html(url)
-            # The BLS annual list has rows containing month/day, time and release title.
-            # Strip tags into row-like text, then parse target releases.
-            for row in re.findall(r"<tr[^>]*>(.*?)</tr>",html,flags=re.I|re.S):
-                txt=re.sub(r"<[^>]+>"," ",row)
-                txt=re.sub(r"&nbsp;"," ",txt)
-                txt=re.sub(r"\s+"," ",txt).strip()
-                kind=None
-                if "Consumer Price Index" in txt: kind="CPI"
-                elif "Employment Situation" in txt: kind="NFP"
-                if not kind:continue
-                md=re.search(r"([A-Z][a-z]{2,8}\.?\s+\d{1,2},?\s+%d)"%y,txt)
-                tm=re.search(r"(\d{1,2}:\d{2})\s*(AM|PM)",txt,re.I)
-                if not md or not tm:continue
-                ds=md.group(1).replace(".","")
-                dt=pd.to_datetime(ds).to_pydatetime()
-                hh,mm=map(int,tm.group(1).split(":"))
-                if tm.group(2).upper()=="PM" and hh!=12:hh+=12
-                if tm.group(2).upper()=="AM" and hh==12:hh=0
+            # Annual BLS pages are not structurally identical across years.
+            # Parse the entire rendered text rather than relying on <tr> markup.
+            txt=re.sub(r"<script[^>]*>.*?</script>"," ",html,flags=re.I|re.S)
+            txt=re.sub(r"<style[^>]*>.*?</style>"," ",txt,flags=re.I|re.S)
+            txt=re.sub(r"<[^>]+>"," ",txt)
+            txt=txt.replace("&nbsp;"," ")
+            txt=re.sub(r"&[a-zA-Z#0-9]+;"," ",txt)
+            txt=re.sub(r"\s+"," ",txt).strip()
+            # Example: "Friday, April 3, 2026 08:30 AM Employment Situation for March 2026"
+            pat=re.compile(
+                r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+"
+                r"([A-Z][a-z]+\s+\d{1,2},\s+%d)\s+"
+                r"(\d{1,2}:\d{2})\s*(AM|PM)\s+"
+                r"(Employment Situation|Consumer Price Index)" % y,
+                re.I
+            )
+            for md,clock,ampm,title in pat.findall(txt):
+                kind="CPI" if "Consumer Price Index" in title else "NFP"
+                dt=pd.to_datetime(md).to_pydatetime()
+                hh,mm=map(int,clock.split(":"))
+                if ampm.upper()=="PM" and hh!=12:hh+=12
+                if ampm.upper()=="AM" and hh==12:hh=0
                 loc=datetime(dt.year,dt.month,dt.day,hh,mm,tzinfo=ET)
                 out.append({"kind":kind,"ts":int(loc.astimezone(timezone.utc).timestamp()),"source":url})
         except Exception as e:
