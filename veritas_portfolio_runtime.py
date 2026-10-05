@@ -5020,12 +5020,32 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         _record_entry_outcome(work,'BLOCKED','R79_STOP_RISK_LIMIT')
         return 0.0
 
-    # Bypass the historical R55/R59 parent-setup invalidation/reentry chain.
-    # R79 already enforced current source, fresh quote, current direction,
-    # stop-risk and stable event-id reuse above. The pre-R55 mutation path still
-    # applies fills, fees, position accounting and storage.
-    return _v90r55_base_open_or_add(
+    # R79 has already enforced source, fresh quote, current direction,
+    # stable event-id reuse, valid structural stop and stop-risk cap. Commit the
+    # admitted signal through the journal+raw accounting layer only; do not run
+    # the historical R8/R17/R21/R24/R51/R54 entry filters a second time.
+    # _v90pr_base_open_or_add is the journal wrapper captured before those layers
+    # and retains fills, fees, DB accounting and durable entry telemetry.
+    before=c.execute(
+      "SELECT direction,units,active_trade_id FROM paper_positions "
+      "WHERE portfolio_name=%s AND asset=%s",(name,asset)).fetchone()
+    result=_v90pr_base_open_or_add(
         c,p,name,asset,direction,price,target_fraction,nav,ts,work,'R79_SIGNAL_ENTRY')
+    after=c.execute(
+      "SELECT direction,units,active_trade_id,stop_price FROM paper_positions "
+      "WHERE portfolio_name=%s AND asset=%s",(name,asset)).fetchone()
+    if after and (not before or abs(float(after.get('units') or 0.0))>
+                  abs(float((before or {}).get('units') or 0.0))+1e-12):
+        _record_entry_outcome(work,'EXECUTED','R79_ORDER_RECORDED',
+                              trade_id=after.get('active_trade_id'),
+                              stop_price=after.get('stop_price'))
+        print(json.dumps({
+          'event':'V90_R79_EXECUTED','portfolio':name,'asset':asset,
+          'direction':direction,'price':price,'target_fraction':target_fraction,
+          'trade_id':after.get('active_trade_id'),'stop_price':after.get('stop_price'),
+          'signal_tier':work.get('signal_tier'),'horizon':work.get('horizon'),
+        },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    return result
 
 
 def report(pg_connect):
