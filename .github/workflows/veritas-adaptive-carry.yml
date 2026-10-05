@@ -1,0 +1,82 @@
+name: VERITAS adaptive carry research
+
+on:
+  push:
+    branches:
+      - research/full-arsenal-20261005
+    paths:
+      - tools/research_crypto_adaptive_carry.py
+      - tools/research_crypto_carry.py
+      - .github/workflows/veritas-adaptive-carry.yml
+  workflow_dispatch:
+
+jobs:
+  carry:
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/full-arsenal-20261005
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3
+      - name: Download 2022-2026 spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
+      - name: Download 2020-2021 spot cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-external-holdout
+          path: external_holdout_out
+          github-token: ${{ github.token }}
+          run-id: 37268494688
+      - name: Reuse BTC carry cache
+        if: matrix.asset == 'BTC'
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-carry-BTC
+          path: carry_out
+          github-token: ${{ github.token }}
+          run-id: 37272502854
+      - name: Reuse ETH carry cache
+        if: matrix.asset == 'ETH'
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-carry-ETH
+          path: carry_out
+          github-token: ${{ github.token }}
+          run-id: 37272502854
+      - name: Run adaptive carry
+        run: python tools/research_crypto_adaptive_carry.py --asset ${{ matrix.asset }}
+      - name: Print compact
+        if: always()
+        run: |
+          A=$(echo "${{ matrix.asset }}" | tr '[:upper:]' '[:lower:]')
+          F="adaptive_carry_out/$A/result.json"
+          if [ -f "$F" ]; then
+            python - "$F" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          out={k:{q:v.get(q) for q in ('base','stress5','years','stress_years','bootstrap')} for k,v in x.get('policies',{}).items()}
+          print('VERITAS_ADAPTIVE_CARRY_COMPACT='+json.dumps({'asset':x.get('asset'),'policies':out},separators=(',',':')))
+          PY
+          fi
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-adaptive-carry-${{ matrix.asset }}
+          path: adaptive_carry_out/
+          retention-days: 14
