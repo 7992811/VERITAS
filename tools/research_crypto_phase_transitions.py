@@ -34,6 +34,10 @@ def json_default(o):
     raise TypeError(type(o).__name__)
 
 def add_sequence_features(raw,x,other):
+    # Local levels not present in the shared base feature set.
+    if 'hi20' not in x: x['hi20']=raw.high.rolling(20).max().shift(1)
+    if 'lo20' not in x: x['lo20']=raw.low.rolling(20).min().shift(1)
+
     # 1m volatility path.
     r=raw.close.pct_change()
     rv30=r.rolling(30,min_periods=30).std().shift(1)
