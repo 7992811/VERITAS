@@ -138,8 +138,17 @@ def structural_fraction(row,mode,cap):
     from veritas_trend_entry import context_of
     e=context_of(row).get('event') or {}
     if not e.get('activity_confirmed'):return 0.
-    strong=float(e.get('relative_volume') or 0)>=1.8 and e.get('continuation_confirmed')
-    size=(1. if strong else .5) if mode=='AGGRESSIVE' else .15 if mode=='IMPULSE_ONLY' else .10
+    catalyst=bool(e.get('catalyst_continuation') or e.get('event_type')=='CATALYST_CONTINUATION')
+    strong=(float(e.get('relative_volume') or 0)>=1.8 and e.get('continuation_confirmed'))
+    # A verified catalyst continuation is an independent activity source. It may
+    # open the normal staged allocation even when the old local-breakout volume
+    # ratio is no longer meaningful. It does not get the 100% "strong volume"
+    # size unless current volume itself confirms.
+    if catalyst:
+        size=.5 if mode=='AGGRESSIVE' else .15 if mode=='IMPULSE_ONLY' else .10
+        if strong and mode=='AGGRESSIVE':size=1.
+    else:
+        size=(1. if strong else .5) if mode=='AGGRESSIVE' else .15 if mode=='IMPULSE_ONLY' else .10
     return max(0.,math.floor(min(size,cap)/.05+1e-9)*.05)
 
 
