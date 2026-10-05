@@ -177,8 +177,14 @@ def monthly_decisions(streams,start="2021-01-01",end="2026-10-01"):
             if not g["active"]:continue
             for r in rows:
                 if c<=r["opened"]<e:
-                    cand.append({**r,"module":name,"score":g["score"],"size":g["size"],
-                                 "weighted_net":float(r["net"])*g["size"]})
+                    # Confidence determines a ceiling; structural stop distance
+                    # determines how much notional fits the fixed risk budget.
+                    risk=float(r.get("risk",0.0) or 0.0)
+                    risk_cap=(.005/risk) if risk>0 else 1.0
+                    size=min(float(g["size"]),max(.10,min(1.0,risk_cap)))
+                    cand.append({**r,"module":name,"score":g["score"],"size":size,
+                                 "risk_budget":.005 if risk>0 else None,
+                                 "weighted_net":float(r["net"])*size})
         cand.sort(key=lambda r:(r["opened"],-r["score"]))
         # One position per sleeve. BTC, ETH, pair-RV and market-neutral carry
         # can coexist; conflicting directional signals inside the same sleeve cancel.
@@ -238,7 +244,8 @@ def main():
     out={"generated_at":datetime.now(timezone.utc).isoformat(),
          "method":"Fixed multi-strategy library with causal rolling 365d/90d EV gate; no future-year selection.",
          "gate":{"lookback_days":365,"recent_days":90,"min_trades":6,"min_pf":1.05,"stress":STRESS},
-         "portfolio_risk":{"separate_sleeves":True,"same_direction_crypto_beta_haircut":[1.0,.70,.50],
+         "portfolio_risk":{"separate_sleeves":True,"risk_budget_per_directional_trade":.005,
+                           "same_direction_crypto_beta_haircut":[1.0,.70,.50],
                            "market_neutral_carry_independent":True,"pair_relative_value_independent":True},
          "result":result,
          "monthly_gates":[{"month":m["month"],"active":[k for k,v in m["gates"].items() if v["active"]]} for m in months]}
