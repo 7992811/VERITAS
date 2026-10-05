@@ -44,7 +44,7 @@ def fetch_html(url):
 def bls_events():
     out=[]
     for y in range(2022,2027):
-        url=f"https://www.bls.gov/schedule/{y}/"
+        url=f"https://www.bls.gov/schedule/{y}/home.htm"
         try:
             html=fetch_html(url)
             # Annual BLS pages are not structurally identical across years.
