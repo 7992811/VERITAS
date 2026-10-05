@@ -163,6 +163,7 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 
     <div class="card full section">
       <div class="title" style="font-size:12px;font-weight:700;letter-spacing:.06em;margin-bottom:5px">Матрица сигналов</div>
+      <div class="stamp">Цвет — направление · число — оценка модели из 100, не вероятность прибыли</div>
       <div class="matrix-wrap"><table class="matrix"><thead><tr id="matrixHead"><th scope="col">Актив</th></tr></thead><tbody id="matrixBody"></tbody></table></div>
     </div>
 
@@ -258,9 +259,13 @@ const planStatus=x=>{
   if(x.market_open===false)return blocked('сессия','Торговая сессия закрыта');
   if(x.source_gate_pass===false)return blocked('данные','Цена устарела или источник не прошёл проверку');
   if((x.paper_eligible??x.execution_eligible)!==true)return blocked('данные','Нет допуска данных для модельной сделки');
-  const blockers=econ.blockers||x.final_gate_blockers||[];
+  const timing=p.entry_timing_gate||{},quote=p.execution_quote_gate||{};
+  const blockers=[...new Set([...(econ.blockers||x.final_gate_blockers||[]),
+    ...(timing.eligible===false?[timing.reason]:[]),...(quote.eligible===false?[quote.reason]:[])].filter(Boolean))];
+  const explanation=[...new Set(blockers.map(reasonRu))].join('; ');
+  if(timing.eligible===false)return blocked(blockerShort(timing.reason),explanation);
   if(blockers.some(v=>String(v).startsWith('QUOTE_')))return blocked('цена',blockers.map(v=>({QUOTE_TIME_MISSING:'Нет времени котировки',QUOTE_TIME_FUTURE:'Время котировки некорректно',QUOTE_TOO_OLD_FOR_HORIZON:'Котировка устарела для выбранного периода'}[v]||'')).filter(Boolean).join('; '));
-  if(econ.status==='BLOCK'||x.final_gate_status==='BLOCK')return blocked('R/R',[...new Set(blockers.map(reasonRu))].join('; ')||'Не пройдена проверка торгового плана');
+  if(econ.status==='BLOCK'||x.final_gate_status==='BLOCK')return blocked(blockerShort(blockers[0]),explanation||'Не пройдена проверка торгового плана');
   if(x.entry_quality==='INVALIDATED'||p.entry_quality==='INVALIDATED'||x.decision_stage==='INVALIDATED')return blocked('отмена','Условия входа утратили актуальность');
   if(x.plan_eligible===false||p.eligible===false||x.decision_stage==='WAIT_RISK_REWARD')return blocked('ожидание',reasonRu(x.plan_reason||p.reason));
   if((x.plan_eligible??p.eligible)!==true)return blocked('план','Допуск торгового плана ещё не подтверждён');
@@ -279,21 +284,39 @@ const traceReason=t=>{
   return text||'Окончательное решение ещё не получено';
 };
 const paperStatus=x=>{
-  const plan=planStatus(x);if(!plan.ready)return plan;
+  const plan=planStatus(x);
+  if(['сессия','данные'].includes(plan.short))return plan;
   const all=portfolioDecisions(x),exact=all.filter(t=>t.horizon===x.horizon);
   const checked=exact.filter(t=>{const at=Date.parse(t.execution?.checked_at||'');return Number.isFinite(at)&&Date.now()-at<=180000&&Date.now()-at>=-60000&&(!t.signal_observed_at||!x.market_observed_at||t.signal_observed_at===x.market_observed_at)});
   if(!checked.length){
+    if(!plan.ready)return plan;
     if(all.length&&!exact.length)return{ready:false,short:'другой ТФ',reason:'Для входа портфели выбрали другой период: '+[...new Set(all.map(t=>tfRu(t.horizon)))].join(', ')};
     return{ready:false,short:'проверка',reason:'Торговый план прошёл проверку; ожидается актуальное решение исполнителя'};
   }
   if(checked.some(t=>t.execution?.status==='EXECUTED'))return{ready:true,short:'исполнен',reason:checked.filter(t=>t.execution?.status==='EXECUTED').map(t=>t.portfolio).join(', ')+': ордер исполнен'};
   const held=checked.filter(t=>t.execution?.status==='HELD');
   if(held.length)return{ready:false,short:'позиция',reason:held.map(t=>t.portfolio).join(', ')+': '+traceReason(held[0])};
-  return{ready:false,short:'ожидание',reason:[...new Set(checked.flatMap(t=>traceReason(t).split('; ')))].join('; ')};
+  const codes=checked.flatMap(t=>[t.execution?.status==='BLOCKED'?t.execution.reason:t.reason,
+    ...(t.economics_blockers||[]),...(t.source_blockers||[])]).filter(Boolean);
+  return{ready:false,short:blockerShort(codes[0]),reason:[...new Set([
+    ...checked.flatMap(t=>traceReason(t).split('; ')),...(!plan.ready?[plan.reason]:[])
+  ].flatMap(v=>v.split('; ')).filter(Boolean))].join('; ')};
 };
-const rrOf=x=>x?.expected_to_stop_ratio??planOf(x).expected_to_stop_ratio;
-const stopOf=x=>x?.stop_price??planOf(x).stop_price;
-const targetOf=x=>x?.target_price??planOf(x).target_price??planOf(x).take_price;
+const blockerShort=code=>{
+  const c=String(code||'');
+  if(c.includes('QUOTE')||c.includes('MINUTE_DATA'))return'цена';
+  if(c.includes('CONTEXT'))return'свечи';
+  if(c.includes('RETEST'))return'ретест';
+  if(c.includes('LOCAL_BREAKOUT'))return'пробой';
+  if(c.includes('ACTIVITY'))return'объём';
+  if(c.includes('TARGET_REACHED'))return'цель';
+  if(c.includes('PROFITABLE')||c.includes('COST_BUFFER'))return'расходы';
+  if(c.includes('RR_')||c.includes('REWARD_RISK'))return'R/R';
+  return'ожидание';
+};
+const rrOf=x=>planOf(x).execution_levels_ready===false?undefined:planOf(x).final_economics_gate?.expected_to_stop_ratio??planOf(x).expected_to_stop_ratio??x?.expected_to_stop_ratio;
+const stopOf=x=>planOf(x).execution_levels_ready===false?null:planOf(x).stop_price??x?.stop_price;
+const targetOf=x=>planOf(x).execution_levels_ready===false?null:planOf(x).target_price??x?.target_price??planOf(x).take_price;
 const dirRu=d=>directionLabel(d,null);
 const tfShort=tf=>({'1m':'1м','5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':'3д','7d':'7д'}[tf]||tf||'—');
 const tfRu=tf=>({'1m':'1 мин','5m':'5 мин','1h':'1 ч','4h':'4 ч','1d':'1 день','3d':'3 дня','7d':'7 дней'}[tf]||tf||'—');
@@ -303,7 +326,7 @@ const exitRu=r=>{r=String(r||'').toUpperCase();if(r.startsWith('TAKE_PROFIT'))re
 const regimeRu=v=>{const k=String(v||'');const m={UPTREND_HIGH_VOL:'Восходящий тренд, высокая волатильность',UPTREND_MID_VOL:'Восходящий тренд, средняя волатильность',UPTREND_LOW_VOL:'Восходящий тренд, низкая волатильность',DOWNTREND_HIGH_VOL:'Нисходящий тренд, высокая волатильность',DOWNTREND_MID_VOL:'Нисходящий тренд, средняя волатильность',DOWNTREND_LOW_VOL:'Нисходящий тренд, низкая волатильность',RANGE_HIGH_VOL:'Боковой рынок, высокая волатильность',RANGE_MID_VOL:'Боковой рынок, средняя волатильность',RANGE_LOW_VOL:'Боковой рынок, низкая волатильность'};return m[k]||'Режим уточняется'};
 const structureRu=v=>{const k=String(v||'');const m={CONFIRMED_TREND:'Тренд подтверждён',BUILDING_TREND:'Тренд формируется',NEUTRAL:'Нейтральная структура',EXIT_REVERSAL:'Структура развернулась'};return m[k]||'Структура уточняется'};
 const qualityRu=v=>{const k=String(v||'');const m={FRESH_BREAKOUT:'Свежий пробой',CONFIRMED_TREND:'Подтверждённый тренд',WAIT_CONFIRMATION:'Ожидание подтверждения',NEUTRAL:'Нейтрально',INVALIDATED:'Сценарий отменён'};return m[k]||'Оценка формируется'};
-const stageRu=v=>{const k=String(v||'');const m={EARLY_PROBE:'Ранний вход',WAIT_RISK_REWARD:'Ожидание лучшего соотношения потенциала и риска',WAIT:'Ожидание',READY:'Готов к действию',INVALIDATED:'Сценарий отменён'};return m[k]||'Стадия уточняется'};
+const stageRu=v=>{const k=String(v||'');const m={EARLY_PROBE:'Ранний вход',WAIT_LOCAL_ENTRY:'Ожидание локального входа',WAIT_RISK_REWARD:'Ожидание лучшего соотношения потенциала и риска',WAIT:'Ожидание',READY:'Готов к действию',INVALIDATED:'Сценарий отменён'};return m[k]||'Стадия уточняется'};
 const reasonRu=v=>{
   const k=String(v||'').toUpperCase();
   const exact={
@@ -330,6 +353,11 @@ const reasonRu=v=>{
     R69_BREAKOUT_ACTIVITY_REQUIRED:'Пробой не подтверждён активностью',
     R69_MINUTE_DATA_STALE:'Минутные свечи устарели или недоступны',
     R69_SOURCE_RISK_OR_ECONOMICS:'Вход не прошёл проверку данных, риска или расходов',
+    R74_EVENT_TARGET_REACHED:'Исходная цель импульса уже пройдена: нужен новый сценарий',
+    R66_INVALID_GEOMETRY:'Нет согласованного плана входа, стопа и цели',
+    QUOTE_TOO_OLD_FOR_HORIZON:'Котировка устарела для исполнения',
+    QUOTE_TIME_MISSING:'Нет времени котировки',
+    QUOTE_TIME_FUTURE:'Некорректное время котировки',
     R72_EVENT_ALREADY_TRADED:'Этот импульс уже отторгован — нужен новый сигнал',
     R72_EVENT_ID_MISSING:'Не определён исходный сигнал для входа',
     R72_EVENT_HISTORY_UNAVAILABLE:'Не удалось проверить историю исполнений',
@@ -410,13 +438,13 @@ function renderSignals(){
     const state=admission.ready?'ОРДЕР ИСПОЛНЕН':admission.short==='позиция'?'ПОЗИЦИЯ ОТКРЫТА':admission.short==='проверка'?'ПРОВЕРКА ВХОДА':'ВХОД ЗАБЛОКИРОВАН';
     return '<div class="row action"><div class="action-head"><button class="action-link" data-signal="'+esc(x.asset+'|'+x.horizon)+'"><b>'+lab(x.asset)+'</b></button><b class="'+cls(dir(x))+'">'+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span></div>'+
       '<span class="action-reason"><b>'+state+'</b> · '+esc(admission.reason)+'</span>'+
-      '<span class="action-meta">Потенциал / риск '+(Number.isFinite(rr)?rr.toFixed(2):'—')+' · Стоп '+p2(stopOf(x))+' · Цель '+p2(targetOf(x))+'</span></div>';
+      '<span class="action-meta">Потенциал / риск после расходов '+(Number.isFinite(rr)?rr.toFixed(2):'—')+' · Стоп '+p2(stopOf(x))+' · Цель '+p2(targetOf(x))+'</span></div>';
   }).join(''):'<div class="msg">Направленных сигналов сейчас нет — ожидается подтверждение структуры.</div>';
   document.querySelectorAll('.action-link[data-signal]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.signal,true));
 
   $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'Long':D==='SHORT'?'Short':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=tfShort(tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
 
-  $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.35"></span><small>—</small><em></em></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',state=matrixStateRu(x);return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(1)+'% · '+esc(paperStatus(x).reason)+'"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small>'+conf.toFixed(1)+'%</small><em>'+esc(state)+'</em></button></td>'}).join('')+'</tr>').join('');
+  $('matrixBody').innerHTML=AS.map(a=>'<tr><th class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{const x=map[a+'|'+tf];if(!x)return'<td><button class="cell"><span class="sig-dot wait" style="opacity:.35"></span><small>—</small><em></em></button></td>';const D=dir(x),T=tier(x),conf=100*Number(x.confidence||0),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait',state=matrixStateRu(x);return'<td><button class="cell" data-k="'+a+'|'+tf+'" title="'+esc(tierLabel(x))+' · '+conf.toFixed(1)+'/100 · '+esc(paperStatus(x).reason)+'"><span class="sig-dot '+dc+(isSuper?' super':'')+'"></span><small>'+conf.toFixed(1)+'/100</small><em>'+esc(state)+'</em></button></td>'}).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
   if(!st.selected&&rows.length){const x=best[0]||rows[0];st.selected=x.asset+'|'+x.horizon}
   if(st.selected)selectSignal(st.selected,false);
@@ -426,7 +454,7 @@ function selectSignal(k,scroll=false){
   st.selected=k;document.querySelectorAll('.cell').forEach(x=>x.classList.toggle('sel',x.dataset.k===k));
   const x=signalMap()[k];if(!x){$('detail').innerHTML='<div class="msg">Нет данных.</div>';return}
   const plan=x.trade_plan||{}, sl=x.structural_levels||{}, hs=x.horizon_structure||{}, D=dir(x);
-  const rr=Number(rrOf(x)), conf=x.confidence==null?null:100*Number(x.confidence), exp=x.expected_move_pct??plan.expected_move_pct;
+  const rr=Number(rrOf(x)), conf=x.confidence==null?null:100*Number(x.confidence), exp=plan.expected_move_pct??x.expected_move_pct;
   const stop=stopOf(x), target=targetOf(x), confirms=Number(x.independent_evidence_families||0);
   const hstate=x.horizon_structure_state||hs.state, hscore=x.horizon_structure_score??hs.score;
   const admission=paperStatus(x),ready=admission.ready;
@@ -454,7 +482,7 @@ function selectSignal(k,scroll=false){
         '<div class="signal-identity">'+assetLogo(x.asset)+'<div><div class="signal-name">'+lab(x.asset)+' · '+tfRu(x.horizon)+'</div><div class="signal-sub">'+regimeRu(x.regime)+'</div></div></div>'+
         '<div class="signal-chips">'+
           '<span class="signal-chip '+cls(D)+'">'+tierLabel(x)+'</span>'+
-          '<span class="signal-chip">Уверенность '+(conf==null?'—':conf.toFixed(1)+'%')+'</span>'+
+          '<span class="signal-chip">Оценка сигнала '+(conf==null?'—':conf.toFixed(1)+'/100')+'</span>'+
           '<span class="signal-chip">Подтверждений '+confirms+'</span>'+
           '<span class="signal-chip" title="'+esc(admission.reason)+'">'+(ready?'Ордер исполнен':'Вход: '+esc(admission.short))+'</span>'+
         '</div>'+
@@ -478,8 +506,8 @@ function selectSignal(k,scroll=false){
           '<div class="plan-metric"><span>Доля в портфелях</span><b>'+positionMetric+'</b></div>'+
           '<div class="plan-metric"><span>Стоп</span><b>'+n(stop,4)+'</b></div>'+
           '<div class="plan-metric"><span>Ближайшая цель</span><b>'+n(target,4)+'</b></div>'+
-          '<div class="plan-metric"><span>Потенциал / риск</span><b>'+(!Number.isFinite(rr)?'—':rr.toFixed(2))+'</b></div>'+
-          '<div class="plan-metric"><span>Ожидаемое движение</span><b>'+(exp==null?'—':(100*Number(exp)).toFixed(2)+'%')+'</b></div>'+
+          '<div class="plan-metric"><span>Потенциал / риск после расходов</span><b>'+(!Number.isFinite(rr)?'—':rr.toFixed(2))+'</b></div>'+
+          '<div class="plan-metric"><span>Ход до цели</span><b>'+(exp==null?'—':(100*Number(exp)).toFixed(2)+'%')+'</b></div>'+
           '<div class="plan-metric"><span>Поддержка</span><b>'+n(sl.support,4)+'</b></div>'+
           '<div class="plan-metric"><span>Сопротивление</span><b>'+n(sl.resistance,4)+'</b></div>'+
           '<div class="plan-metric"><span>Средняя 18</span><b>'+n(sl.sma18,4)+'</b></div>'+

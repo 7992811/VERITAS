@@ -32,6 +32,12 @@ def enrich(context, bars, now, minute_bars=None, quote=None):
             touches=[b['ts'] for b in window if abs(b['high' if d==1 else 'low']-level)<=.25*atr]
             if len(touches)<2 or touches[-1]-touches[0]<300:continue
             zone=next((z for z in zones if z['direction']==direction and abs(z['trigger_level']-level)<=.5*z['atr']),None)
+            if (zone is not None and active and zone is not active['_zone']
+                    and zone['failures']==0 and window[0]['ts']>=active['signal_at']
+                    and zone['zone_started_at']<active['signal_at']):
+                # An untraded arm formed across the original crossing may still
+                # carry its old stop. Replace it only after a whole new base.
+                zones.remove(zone);zone=None
             if zone is None:
                 exhausted=[z for z in zones if z['direction']==direction and z['failures']>=2]
                 if exhausted:
@@ -64,15 +70,27 @@ def enrich(context, bars, now, minute_bars=None, quote=None):
                     touch=obs['low']<=active['trigger_level']+.15*active['atr'] if d==1 else obs['high']>=active['trigger_level']-.15*active['atr']
                     if touch and d*(obs['close']-active['trigger_level'])>.1*active['atr'] and d*(obs['close']-obs['open'])>0:
                         active['retest_at']=obs['available_at'];active['retest_confirmed']=True
+                        active['retest_resolution_seconds']=resolution
                     if d*(obs['close']-active['signal_price'])>=active['atr']:
                         active['continuation_confirmed']=True;active['confirmed_at']=obs['available_at']
-            if active:continue
+            candidate_arms=arms
+            parent_id=None
+            if active:
+                # A still-valid old trend must not hide a genuinely NEW base.
+                # Use the existing 12-bar/two-touch zone detector, wholly after
+                # the original crossing; a higher last price is not a new setup.
+                candidate_arms=[z for z in arms if z['direction']==active['direction']
+                    and z is not active['_zone'] and window[0]['ts']>=active['signal_at']
+                    and z['zone_started_at']>=active['signal_at']
+                    and max(b['high'] for b in window)-min(b['low'] for b in window)<=2.5*atr]
+                if not candidate_arms:continue
+                parent_id=active['event_id']
             previous_end=bisect_left(minute_times,obs['ts']-59)
             history=([minutes[t]['volume'] for t in minute_times[max(0,previous_end-20):previous_end]] if resolution==60 else [b['volume'] for b in prior[-20:]])
             baseline=median(history) if len(history)>=20 else 0
             relative=obs.get('volume',0)/baseline if baseline>0 else 0
             span=obs['high']-obs['low']
-            for z in arms:
+            for z in candidate_arms:
                 d=1 if z['direction']=='LONG' else -1
                 # The crossing is recorded even if overextended: later polls
                 # cannot rename a spent impulse as a new opportunity.
@@ -86,6 +104,8 @@ def enrich(context, bars, now, minute_bars=None, quote=None):
                     confirmation='1m_CLOSE' if resolution==60 else '5m_CLOSE',event_type='LOCAL_RANGE_BREAKOUT',
                     relative_volume=relative,activity_confirmed=quality,confirmed_at=obs['available_at'],
                     continuation_confirmed=False,retest_confirmed=False,retest_at=None,_zone=z)
+                if parent_id:
+                    active.update(parent_event_id=parent_id,event_type='LOCAL_CONTINUATION_BREAKOUT')
                 active['event_id']='R69_'+hashlib.sha256(event_identity.encode()).hexdigest()[:20]
                 break
     out['failed_breakouts']=max((z['failures'] for z in zones),default=0)

@@ -139,3 +139,33 @@ for (const [state, net, label] of [
   assert.doesNotMatch(elements.positions.innerHTML, /Защита <b>активна/);
 }
 console.log('Net profit protection UI regressions passed');
+
+// R74: a direction score is not a win probability, and timing/quote failures
+// must not disappear behind the generic economics label.
+const timingBlocked={...signal,trade_plan:{eligible:false,execution_levels_ready:true,
+  entry_timing_gate:{eligible:false,reason:'R66_WAIT_RETEST'},
+  final_economics_gate:{status:'BLOCK',blockers:['RR_BELOW_FINAL_FLOOR','TARGET_NOT_PROFITABLE_AFTER_COSTS']}}};
+ui.st.portfolios=null;
+assert.equal(ui.paperStatus(timingBlocked).short,'ретест');
+assert.match(ui.paperStatus(timingBlocked).reason,/Доход до цели не покрывает расходы/);
+ui.st.signals={signals:[timingBlocked]};ui.renderSignals();
+assert.match(elements.matrixBody.innerHTML,/80.0\/100/);
+assert.doesNotMatch(elements.matrixBody.innerHTML,/80.0%/);
+assert.match(elements.detail.innerHTML,/Оценка сигнала/);
+const goldWait={...timingBlocked,asset:'GOLD',trade_plan:{...timingBlocked.trade_plan,
+  stop_price:4836.32,execution_levels_ready:false,
+  entry_timing_gate:{eligible:false,reason:'R69_WAIT_LOCAL_BREAKOUT'}}};
+assert.equal(ui.paperStatus(goldWait).short,'пробой');
+ui.st.selected='GOLD|1h';ui.st.signals={signals:[goldWait]};ui.renderSignals();
+assert.doesNotMatch(elements.actions.innerHTML,/4836|4.?836/);
+// A current execution rejection must remain visible even if the plan is blocked.
+ui.st.portfolios={portfolios:[{name:'Champion',admission_trace:[{
+  asset:'MOEX',horizon:'1h',direction:'SHORT',hard_veto:true,reason:'R66_WAIT_RETEST',
+  execution:{checked_at:new Date().toISOString(),status:'NOT_REQUESTED',reason:'NO_NEW_ALLOCATION'}
+}]}]};
+const economicsOnly={...signal,trade_plan:{eligible:false,final_economics_gate:{status:'BLOCK',blockers:['RR_BELOW_FINAL_FLOOR']}}};
+assert.equal(ui.paperStatus(economicsOnly).short,'ретест');
+assert.match(ui.paperStatus(economicsOnly).reason,/Потенциал относительно риска/);
+ui.st.portfolios=null;
+assert.equal(ui.paperStatus({...signal,trade_plan:{eligible:true,execution_quote_gate:{eligible:false,reason:'QUOTE_TOO_OLD_FOR_HORIZON'}}}).short,'цена');
+console.log('R74 entry diagnosis and signal-score UI regressions passed');

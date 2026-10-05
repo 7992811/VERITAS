@@ -205,8 +205,9 @@ def entry_gate(row, price, direction, fraction, position=None):
     """Last check after all setup/sizing mutations, immediately before any order."""
     from veritas_quote_time import quote_gate
     row = row or {}
-    plan = dict(row.get('trade_plan') or {})
     import veritas_trend_entry as VTE
+    row = VTE.prepare_row(row, price)
+    plan = dict(row.get('trade_plan') or {})
     execution=row.get('_execution_quote') or {}
     if position:
         payload = position.get('payload') or {}
@@ -218,7 +219,7 @@ def entry_gate(row, price, direction, fraction, position=None):
         plan['target_price'] = plan.get('target_price') or payload.get('take_price') or payload.get('target_price')
     geometry=VTE.geometry(dict(row,trade_plan=plan),price,direction,
                           position.get('stop_price') if position else None)
-    if geometry.get('stop_price') and VTE.has_geometry_context(row):
+    if (geometry.get('eligible') or geometry.get('reason')=='R66_SENIOR_BREAK_NOT_HELD') and VTE.has_geometry_context(row):
         forecast=_num(plan.get('expected_move_pct'))
         expected=min(forecast,geometry['remaining_move_pct']) if forecast is not None and forecast>=0 else geometry['remaining_move_pct']
         plan.update(stop_price=geometry['stop_price'],target_price=geometry['target_price'],
@@ -239,7 +240,7 @@ def entry_gate(row, price, direction, fraction, position=None):
     if not event.get('eligible'):
         gate.update(eligible=False,status='BLOCK')
         gate['blockers'].append(event['reason'])
-    if geometry.get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
+    if VTE.has_geometry_context(row) and not geometry.get('eligible'):
         gate['eligible']=False;gate['status']='BLOCK';gate['blockers'].append(geometry['reason'])
     gate['quote_time_gate'] = timing
     if not timing['eligible']:
