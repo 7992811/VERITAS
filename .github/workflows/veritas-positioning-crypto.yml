@@ -1,0 +1,59 @@
+name: VERITAS positioning BTC ETH research
+
+on:
+  push:
+    branches:
+      - research/crypto-mtf-6m-20261004
+    paths:
+      - tools/research_crypto_positioning_router.py
+      - .github/workflows/veritas-positioning-crypto.yml
+  workflow_dispatch:
+
+jobs:
+  positioning-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/crypto-mtf-6m-20261004
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install research dependencies
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3
+      - name: Download cached spot minute data
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
+      - name: Run positioning-state policy
+        run: python tools/research_crypto_positioning_router.py --asset ${{ matrix.asset }}
+      - name: Print compact result
+        if: always()
+        run: |
+          ASSET_LOWER=$(echo "${{ matrix.asset }}" | tr '[:upper:]' '[:lower:]')
+          FILE="positioning_router_out/${ASSET_LOWER}/result.json"
+          if [ -f "$FILE" ]; then
+            python - "$FILE" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          s=x.get('selected')
+          out=None if not s else {k:s.get(k) for k in ('config','walkforward','walkforward_stress','n_final_rules','test_2026','test_2026_stress_5bp','by_direction')}
+          print('VERITAS_POSITIONING_COMPACT='+json.dumps({'asset':x.get('asset'),'selected':out,'near':x.get('diagnostics',[])[:3]},separators=(',',':')))
+          PY
+          fi
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-positioning-policy-${{ matrix.asset }}
+          path: positioning_router_out/
+          retention-days: 7
