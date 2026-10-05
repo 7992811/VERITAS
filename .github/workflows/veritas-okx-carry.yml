@@ -34,10 +34,12 @@ jobs:
           x=json.load(open('okx_carry_out/result.json'))
           out={}
           for a,z in x.get('assets',{}).items():
-              out[a]={'data':z.get('data'),'costs':z.get('costs')}
-              for k,v in z.items():
-                  if k=='base' or k.startswith('stress_'):
-                      out[a][k]={'metrics':v.get('metrics'),'years':v.get('years'),'bootstrap':v.get('bootstrap')}
+              out[a]={'data':z.get('data'),'costs':z.get('costs'),'policies':{}}
+              for p,pr in z.get('policies',{}).items():
+                  out[a]['policies'][p]={}
+                  for k,v in pr.items():
+                      if k=='base' or k.startswith('stress_'):
+                          out[a]['policies'][p][k]={'metrics':v.get('metrics'),'years':v.get('years'),'bootstrap':v.get('bootstrap')}
           print('VERITAS_OKX_CARRY_COMPACT='+json.dumps(out,separators=(',',':')))
           PY
           fi
