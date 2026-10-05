@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-r72-cost-aware-trades"
+UI_VERSION = "veritas-ui-v9.0-r81-independent-trade-loading"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -185,11 +185,13 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 
     <div class="card full section">
       <div class="title">Открытые позиции</div>
+      <div id="positionSync" class="msg" role="status"></div>
       <div id="positions"><div class="msg">Загрузка позиций…</div></div>
     </div>
 
     <div class="card full section">
       <div class="title">Закрытые сделки</div>
+      <div id="tradeSync" class="msg" role="status"></div>
       <div id="tradeFilters"></div><div id="trades" class="scroll"><div class="msg">Загрузка журнала…</div></div>
     </div>
 
@@ -566,7 +568,7 @@ function renderPortfolios(){
   const ps=raw.map(p=>{
     const name=String(p.name||''),book=st.positionBook||{};
     const cached=Array.isArray(book[name])?book[name]:[],live=Array.isArray(p.positions)?p.positions:[];
-    const pos=cached.length?cached:live.length?live:(st.positionBookReady?cached:live);
+    const pos=st.positionBookReady?cached:live;
     return Object.assign({},p,{positions:pos});
   });
   ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push(Object.assign({portfolio:p.name},z))));
@@ -908,28 +910,46 @@ function applyBootstrap(d){
   if(!d)return;
   st.health={ok:true,bootstrap_ready:!!(d.health&&d.health.bootstrap_ready)};
   st.signals={signals:d.signals||[],at:d.at,status:d.status};
-  updatePositionBookFromBootstrap(d);
-  st.portfolios=mergePortfolioSets({portfolios:d.portfolios||[]},st.portfolios,false);
-  st.trades=Array.isArray(d.trades)?{trades:d.trades}:(d.trades||{trades:[]});
-  st.learning=d.learning_summary||{};
+  // Portfolio and trade reads own their state. A slow or partial matrix refresh
+  // must never replace either ledger with an empty or older snapshot.
+  if(d.learning_summary)st.learning=d.learning_summary;
   st.quality=d.data_quality_summary||{};
   st.horizon=d.horizon_summary||{};
   if(d.intelligence_index)st.intelligence=normalizeIntelligence(d.intelligence_index,null,null);
-  renderHealth();renderSignals();renderPortfolios();renderTrades();renderIntelligence();renderInsights();
+  renderHealth();renderSignals();renderIntelligence();renderInsights();
 }
 
 async function loadBootstrap(){
-  const d=await get('bootstrap','/api/v1/dashboard-bootstrap',8000);
-  if(d)applyBootstrap(d);
+  const d=await get('bootstrap','/api/v1/dashboard-bootstrap?view=signals',30000);
+  if(d&&d.status==='OK')applyBootstrap(d);
 }
 async function loadPortfolios(){
-  const d=await get('paper-portfolios','/api/v1/paper-portfolios',12000);
-  if(d&&Array.isArray(d.portfolios)){
-    ingestExtractedPositions(d,{allowClear:false});
-    const metricsOnly=Object.assign({},d,{portfolios:d.portfolios.map(p=>{const q=Object.assign({},p);delete q.positions;return q})});
-    st.portfolios=mergePortfolioSets(metricsOnly,st.portfolios,false);
+  if(st.busy['paper-portfolios'])return;
+  const d=await get('paper-portfolios','/api/v1/paper-portfolios',30000);
+  const complete=d&&d.status==='OK'&&Array.isArray(d.portfolios)&&
+    ['Impulse','Aggressive','Champion','Challenger'].every(name=>d.portfolios.some(p=>p.name===name&&Array.isArray(p.positions)));
+  if(complete){
+    const ingested=ingestExtractedPositions(d,{allowClear:true});
+    st.portfolios=mergePortfolioSets(d,st.portfolios,true);
+    $('positionSync').textContent=ingested?'':'Позиции синхронизируются. Сохранены последние полученные данные.';
+    const closed=d.portfolios.reduce((n,p)=>n+Number(p.closed_trades||0),0),wins=d.portfolios.reduce((n,p)=>n+Number(p.wins||0),0);
+    st.learning={closed_trades:closed,wins,win_rate:closed?wins/closed:null,experience_storage:'ACTIVE'};
     renderPortfolios();
     renderSignals();
+    renderInsights();
+  }else{
+    $('positionSync').textContent=st.positionBookReady?'Обновление задержано. Показаны последние полученные позиции.':'Загрузка позиций задержана. Повторяем запрос…';
+  }
+}
+async function loadTrades(){
+  if(st.busy['portfolio-trades'])return;
+  const d=await get('portfolio-trades','/api/v1/portfolio-trades',30000);
+  if(d&&d.status==='OK'&&Array.isArray(d.trades)){
+    st.trades=d;
+    $('tradeSync').textContent='';
+    renderTrades();
+  }else{
+    $('tradeSync').textContent=st.trades?'Обновление задержано. Показаны последние полученные сделки.':'Загрузка сделок задержана. Повторяем запрос…';
   }
 }
 async function loadMacro(){
@@ -947,15 +967,21 @@ async function loadIntelligence(){
 }
 function refreshLiveState(){
   loadPortfolios();
+  loadTrades();
   loadBootstrap();
 }
 function start(){
-  loadBootstrap();
-  setTimeout(loadPortfolios,250);
+  if(st.positionBookReady){
+    st.portfolios={portfolios:['Impulse','Aggressive','Champion','Challenger'].map(name=>({name,positions:st.positionBook[name]||[]}))};
+    renderPortfolios();
+    $('positionSync').textContent='Сохранённые позиции. Получаем актуальное состояние…';
+  }
+  refreshLiveState();
   setTimeout(loadIntelligence,500);
   setTimeout(loadMacro,1000);
-  setInterval(loadPortfolios,10000);
-  setInterval(loadBootstrap,15000);
+  setInterval(loadPortfolios,15000);
+  setInterval(loadTrades,15000);
+  setInterval(loadBootstrap,30000);
   setInterval(loadIntelligence,60000);
   setInterval(loadMacro,120000);
   window.addEventListener('pageshow',()=>setTimeout(refreshLiveState,50));
