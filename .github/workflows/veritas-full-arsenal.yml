@@ -35,15 +35,48 @@ jobs:
           path: manager_library_out
           github-token: ${{ github.token }}
           run-id: 37210798801
+      - name: Reuse BTC derivative cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-derivative-policy-BTC
+          path: derivative_router_out
+          github-token: ${{ github.token }}
+          run-id: 37267616597
+      - name: Reuse ETH derivative cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-derivative-policy-ETH
+          path: derivative_router_out
+          github-token: ${{ github.token }}
+          run-id: 37267616597
+      - name: Reuse BTC positioning cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-positioning-policy-BTC
+          path: positioning_router_out
+          github-token: ${{ github.token }}
+          run-id: 37268559122
+      - name: Reuse ETH positioning cache
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-positioning-policy-ETH
+          path: positioning_router_out
+          github-token: ${{ github.token }}
+          run-id: 37268559122
       - name: Run full arsenal expansion
+        continue-on-error: true
         run: python tools/research_crypto_arsenal_expansion.py
       - name: Run options volatility module
+        continue-on-error: true
         run: python tools/research_crypto_options_volatility.py
       - name: Run scheduled event module
+        continue-on-error: true
         run: python tools/research_crypto_event_driven.py
       - name: Capture live options surface shadow context
+        continue-on-error: true
         run: python tools/research_crypto_options_surface_shadow.py
       - name: Run cycle regime transition engine
+        continue-on-error: true
         run: python tools/research_crypto_cycle_regimes.py --asset ALL
       - name: Print compact result
         if: always()
