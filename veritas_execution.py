@@ -242,12 +242,12 @@ def entry_gate(row, price, direction, fraction, position=None):
         gate.update(eligible=False,status='BLOCK')
         gate['blockers'].append('R67_DIRECT_NQ_QUOTE_REQUIRED')
     ctx_event=(VTE.context_of(row).get('event') or {})
-    catalyst_timing=bool(ctx_event.get('catalyst_continuation') or
-                         ctx_event.get('event_type')=='CATALYST_CONTINUATION')
-    # Anti-chase measures whether the MARKET has moved away from the trigger.
-    # A conservative simulated fill is a cost assumption, not market movement,
-    # so it must not make a fresh catalyst continuation look several ATR late.
-    timing_price=(price if catalyst_timing else (gate.get('modeled_entry_fill') or price))
+    rebased_timing=bool(ctx_event.get('catalyst_continuation') or
+                       ctx_event.get('signal_authoritative') or
+                       ctx_event.get('event_type') in ('CATALYST_CONTINUATION','SIGNAL_CONTINUATION'))
+    # Anti-chase measures MARKET displacement. Simulated adverse fill is a cost
+    # assumption and must not make a freshly rebased displayed signal look late.
+    timing_price=(price if rebased_timing else (gate.get('modeled_entry_fill') or price))
     event=(VTE.context_gate(row,datetime.now(timezone.utc)) if position else
            VTE.event_gate(row,timing_price,direction,datetime.now(timezone.utc)))
     gate['trend_event']=event
