@@ -4835,11 +4835,12 @@ _R79_SOFT_ECON_BLOCKERS={
 }
 
 
-def _v90r79_signal_state(row):
+def _v90r79_signal_state(row,now=None):
     row=dict(row or {})
     q=row.get('_execution_quote') or {}
     px=VTE.number(q.get('price'),VTE.number(row.get('price')))
-    work=VTE.prepare_row(row,px,datetime.now(timezone.utc))
+    clock=now if now is not None else datetime.now(timezone.utc)
+    work=VTE.prepare_row(row,px,clock)
     ev=VTE.context_of(work).get('event') or {}
     direction=VTE.displayed_signal_direction(work)
     active=bool(direction in ('LONG','SHORT') and ev.get('signal_authoritative')
@@ -4889,7 +4890,7 @@ def _v90r79_hard_signal_veto(row):
 
 
 def _signal_first_admission(row,policy,drawdown):
-    work,ev,direction,active=_v90r79_signal_state(row)
+    work,ev,direction,active=_v90r79_signal_state(row,datetime.now(timezone.utc))
     if not active:
         return dict(_v90r79_base_admission(row,policy,drawdown) or {})
 
@@ -4970,7 +4971,8 @@ def _signal_first_admission(row,policy,drawdown):
 
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
-    work,ev,signal_direction,active=_v90r79_signal_state(dict(row or {},price=price))
+    cycle_clock=_v90r55_dt(ts) or datetime.now(timezone.utc)
+    work,ev,signal_direction,active=_v90r79_signal_state(dict(row or {},price=price),cycle_clock)
     if not active or signal_direction!=direction:
         return _v90r79_base_open_or_add(
             c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason)
