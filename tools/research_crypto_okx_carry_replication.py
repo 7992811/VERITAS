@@ -54,14 +54,11 @@ SLIP=.00025
 PAIR_RT=2*(SPOT_FEE+SLIP)+2*(SWAP_FEE+SLIP)  # 40bp pair capital before stress
 STRESS_LEVELS=(0.,.0005,.0010,.0020)
 
-POL={
-    "name":"STRONG_21D",
-    "cost_multiple":1.50,
-    "min_positive_frac":.78,
-    "min_basis":-.0005,
-    "target_days":21,
-    "max_days":42,
-}
+POLICIES=[
+ {"name":"BREAKEVEN_14D","cost_multiple":1.25,"min_positive_frac":.67,"min_basis":-.0010,"target_days":14,"max_days":28},
+ {"name":"STRONG_21D","cost_multiple":1.50,"min_positive_frac":.78,"min_basis":-.0005,"target_days":21,"max_days":42},
+ {"name":"HIGH_CONVICTION_28D","cost_multiple":1.75,"min_positive_frac":.82,"min_basis":0.0,"target_days":28,"max_days":56},
+]
 START_TS=int(pd.Timestamp("2022-03-01T00:00:00Z").timestamp()*1000)
 END_TS=int(pd.Timestamp("2026-10-05T00:00:00Z").timestamp()*1000)
 
@@ -264,26 +261,26 @@ def attach(asset):
     z["max_events"]=(POL["max_days"]*86400/z.interval_sec).round().clip(1,2000)
     return z,common,common
 
-def entry_ok(r):
+def entry_ok(r,pol):
     vals=(r.forecast_lcb,r.positive_frac,r.basis,r.mean3,r.mean9,r.rate,r.forecast_events,r.max_events)
     if not all(np.isfinite(v) for v in vals):return False
-    expected=max(0.,float(r.forecast_lcb))*int(r.forecast_events)
-    return (expected>=POL["cost_multiple"]*PAIR_RT and
-            r.positive_frac>=POL["min_positive_frac"] and
-            r.basis>=POL["min_basis"] and r.mean3>0 and r.mean9>0 and r.rate>0)
+    expected=max(0.,float(r.forecast_lcb))*int(round(pol["target_days"]*86400/float(r.interval_sec)))
+    return (expected>=pol["cost_multiple"]*PAIR_RT and
+            r.positive_frac>=pol["min_positive_frac"] and
+            r.basis>=pol["min_basis"] and r.mean3>0 and r.mean9>0 and r.rate>0)
 
 def exit_now(r,held):
     if held<3:return False
     return bool((r.mean3<=0 and r.rate<=0) or r.mean9<=0 or r.basis<-.004)
 
-def simulate(z,common,stress=0.):
+def simulate(z,common,pol,stress=0.):
     if z.empty:return []
     T=common.ts.to_numpy(np.int64);SO=common.open_s.to_numpy(float);SC=common.close_s.to_numpy(float)
     PO=common.open_p.to_numpy(float);PC=common.close_p.to_numpy(float)
     trades=[];i=0
     while i<len(z):
         r=z.iloc[i]
-        if not entry_ok(r):
+        if not entry_ok(r,pol):
             i+=1;continue
         entry_i=i;entry_ts=int(r.entry_ts)
         ci=np.searchsorted(T,entry_ts)
@@ -363,14 +360,17 @@ def run(asset):
     out={"asset":asset,"data":{"funding_rows":int(len(z)),"common_hourly_rows":int(len(common)),
                                "start_ts":int(common.ts.min()) if len(common) else None,
                                "end_ts":int(common.ts.max()) if len(common) else None},
-         "policy":POL,"costs":{"spot_fee_each_side":SPOT_FEE,"swap_fee_each_side":SWAP_FEE,
-                               "slippage_each_execution":SLIP,"pair_roundtrip_cost":PAIR_RT}}
-    for st in STRESS_LEVELS:
-        tr=simulate(z,common,st)
-        key=f"stress_{int(st*10000)}bp" if st else "base"
-        out[key]={"metrics":met(tr),"years":yearly(tr),"bootstrap":bootstrap(tr),"trades":tr}
-    print(asset,"OKX_CARRY",json.dumps({k:v for k,v in out.items() if k!="base" and not k.startswith("stress_")},separators=(",",":"),default=jd),flush=True)
-    print(asset,"OKX_CARRY_RESULT",json.dumps({k:{"metrics":v["metrics"],"years":v["years"],"bootstrap":v["bootstrap"]} for k,v in out.items() if k=="base" or k.startswith("stress_")},separators=(",",":"),default=jd),flush=True)
+         "costs":{"spot_fee_each_side":SPOT_FEE,"swap_fee_each_side":SWAP_FEE,
+                  "slippage_each_execution":SLIP,"pair_roundtrip_cost":PAIR_RT},
+         "policies":{}}
+    for pol in POLICIES:
+        pr={"policy":pol}
+        for st in STRESS_LEVELS:
+            tr=simulate(z,common,pol,st)
+            key=f"stress_{int(st*10000)}bp" if st else "base"
+            pr[key]={"metrics":met(tr),"years":yearly(tr),"bootstrap":bootstrap(tr),"trades":tr}
+        out["policies"][pol["name"]]=pr
+        print(asset,pol["name"],"OKX_CARRY_RESULT",json.dumps({k:{"metrics":v["metrics"],"years":v["years"],"bootstrap":v["bootstrap"]} for k,v in pr.items() if k=="base" or k.startswith("stress_")},separators=(",",":"),default=jd),flush=True)
     return out
 
 def main():
@@ -380,7 +380,7 @@ def main():
     for a in ("BTC","ETH"):
         out["assets"][a]=run(a)
     (OUT/"result.json").write_text(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False,default=jd))
-    print("VERITAS_OKX_CARRY="+json.dumps({a:{k:{"metrics":v["metrics"],"bootstrap":v["bootstrap"]} for k,v in z.items() if k=="base" or k.startswith("stress_")} for a,z in out["assets"].items()},separators=(",",":"),default=jd),flush=True)
+    print("VERITAS_OKX_CARRY="+json.dumps({a:{p:{k:{"metrics":v["metrics"],"bootstrap":v["bootstrap"]} for k,v in pr.items() if k=="base" or k.startswith("stress_")} for p,pr in z["policies"].items()} for a,z in out["assets"].items()},separators=(",",":"),default=jd),flush=True)
 
 if __name__=="__main__":
     main()
