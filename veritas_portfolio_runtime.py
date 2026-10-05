@@ -1238,32 +1238,20 @@ _v90r46_base_close_or_reduce=_close_or_reduce
 _v90r46_base_report=report
 
 def _v842_hard_thesis_exit(row):
-    """Exit authority for the position's original execution horizon.
+    """Immediate full exit is reserved for explicit hard thesis invalidation.
 
-    INVALIDATED is authoritative once that horizon is no longer a confirmed
-    trend. This prevents a stale open position from surviving indefinitely just
-    because it disappeared from the fresh candidate book. A confirmed trend is
-    still allowed to run, preserving the R46 trend-hold rule.
+    Entry-quality INVALIDATED / NO_TRADE states are admission and refresh
+    telemetry. They can block new risk, but they are not by themselves proof
+    that an already-open thesis has failed. Promoting them to a hard exit was
+    crystallising fee-negative closes while the execution horizon could still
+    be BUILDING_TREND. Held positions remain protected by the real stop,
+    confirmed direction-flip, structure-exhaustion and portfolio risk lanes.
     """
     if not row:
         return False
     plan=row.get('trade_plan') or {}
     ti=plan.get('trade_integrity') or {}
-    if bool(ti.get('hard_invalidation')):
-        return True
-    entry_quality=str(
-        row.get('entry_quality')
-        or plan.get('entry_quality')
-        or ''
-    ).upper()
-    hs=row.get('horizon_structure') or {}
-    hstate=str(hs.get('state') or row.get('horizon_structure_state') or '').upper()
-    decision=str(row.get('research_decision') or row.get('decision') or 'NO_TRADE').upper()
-    return bool(
-        entry_quality=='INVALIDATED'
-        and decision=='NO_TRADE'
-        and hstate!='CONFIRMED_TREND'
-    )
+    return bool(ti.get('hard_invalidation'))
 
 def _v90r46_hold_context(name,z,row):
     row=row or {}
@@ -4830,8 +4818,12 @@ _v90r79_base_open_or_add=_open_or_add
 _v90r79_base_report=report
 
 _R79_SOFT_ECON_BLOCKERS={
+    # A directional signal may start a small paper probe with sub-floor R/R
+    # only when the trade is still net-profitable after modeled execution cost.
     'RR_BELOW_FINAL_FLOOR',
     'NET_REWARD_RISK_BELOW_FLOOR',
+}
+_R79_HARD_COST_BLOCKERS={
     'EXPECTED_MOVE_BELOW_COST_BUFFER',
     'TARGET_NOT_PROFITABLE_AFTER_COSTS',
 }

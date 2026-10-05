@@ -580,3 +580,32 @@ class NetProfitLockR55Tests(unittest.TestCase):
         out=VPG.profit_lock_stop(
             z,q,.0005,fees_paid_rub=800.0,slippage_pct=.0005,min_net_pct=.0005)
         self.assertIsNone(out)
+
+class LossConflictR81Tests(unittest.TestCase):
+    def test_soft_invalidated_no_trade_does_not_force_hard_exit(self):
+        import veritas_portfolio_runtime as VRT
+        row={
+            'entry_quality':'INVALIDATED',
+            'research_decision':'NO_TRADE',
+            'horizon_structure_state':'BUILDING_TREND',
+            'trade_plan':{'trade_integrity':{'hard_invalidation':False}},
+        }
+        self.assertFalse(VRT._v842_hard_thesis_exit(row))
+
+    def test_explicit_hard_invalidation_still_forces_exit(self):
+        import veritas_portfolio_runtime as VRT
+        row={
+            'entry_quality':'INVALIDATED',
+            'research_decision':'NO_TRADE',
+            'horizon_structure_state':'WEAK',
+            'trade_plan':{'trade_integrity':{'hard_invalidation':True}},
+        }
+        self.assertTrue(VRT._v842_hard_thesis_exit(row))
+
+    def test_cost_negative_economics_cannot_be_soft_probed(self):
+        import veritas_portfolio_runtime as VRT
+        self.assertNotIn('EXPECTED_MOVE_BELOW_COST_BUFFER',VRT._R79_SOFT_ECON_BLOCKERS)
+        self.assertNotIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',VRT._R79_SOFT_ECON_BLOCKERS)
+        self.assertIn('EXPECTED_MOVE_BELOW_COST_BUFFER',VRT._R79_HARD_COST_BLOCKERS)
+        self.assertIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',VRT._R79_HARD_COST_BLOCKERS)
+
