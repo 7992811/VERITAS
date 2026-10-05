@@ -1,12 +1,11 @@
-name: VERITAS probability meta-label research
+name: VERITAS phase-transition research
 
 on:
   push:
     branches:
       - research/crypto-mtf-6m-20261004
     paths:
-      - tools/research_crypto_probability_meta.py
-      - tools/research_crypto_state_router.py
+      - tools/research_crypto_phase_transitions.py
       - tools/research_crypto_manager_library.py
       - .github/workflows/veritas-crypto-mtf6m-research.yml
   workflow_dispatch:
@@ -24,7 +23,7 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
       - name: Install research dependencies
-        run: python -m pip install numpy==2.3.5 pandas==2.2.3 scikit-learn==1.7.2
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3
       - name: Download cached minute data
         uses: actions/download-artifact@v4
         with:
@@ -32,23 +31,22 @@ jobs:
           path: manager_library_out
           github-token: ${{ github.token }}
           run-id: 37210798801
-      - name: Run probability meta-label study
-        run: python tools/research_crypto_probability_meta.py
+      - name: Run phase-transition study
+        run: python tools/research_crypto_phase_transitions.py
       - name: Print compact result
         if: always()
         run: |
-          if [ -f probability_meta_out/result.json ]; then
+          if [ -f phase_transition_out/result.json ]; then
             python - <<'PY'
           import json
-          x=json.load(open('probability_meta_out/result.json'))
-          out={a:{k:v.get(k) for k in ('test_2026','test_stress_5bp','by_direction')} for a,v in x.get('assets',{}).items()}
-          print('VERITAS_PROBABILITY_META_COMPACT='+json.dumps(out,separators=(',',':')))
+          x=json.load(open('phase_transition_out/result.json'))
+          print('VERITAS_PHASE_PASSES_COMPACT='+json.dumps({a:v[:8] for a,v in x.get('passes',{}).items()},separators=(',',':')))
           PY
           fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: veritas-probability-meta-result
-          path: probability_meta_out/
+          name: veritas-phase-transition-result
+          path: phase_transition_out/
           retention-days: 7
