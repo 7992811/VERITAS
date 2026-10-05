@@ -4500,12 +4500,18 @@ def _v90r65_genesis_fraction(row,policy,drawdown):
         if conf<.78 or int(m.get('independent') or 0)<4:
             return 0.0
         f=.05
+    # Compute stop-risk cap from the CURRENT rebased signal geometry only.
+    # Do not inherit a zero/invalid cap from the parent setup.
     try:
-        cap=_v90r24_stop_risk_cap(row)
-        if cap is not None:
-            f=min(f,float(cap))
+        px=float((row or {}).get('price') or 0.0)
+        stop=float(((row or {}).get('trade_plan') or {}).get('stop_price') or 0.0)
+        rp=abs(px-stop)/px if px>0 and stop>0 else 0.0
+        if rp>0:
+            f=min(f,float(MAX_STOP_RISK_NAV)/rp)
+        else:
+            return 0.0
     except Exception:
-        pass
+        return 0.0
     rg=_risk_governor(drawdown)
     if rg.get('new_risk') is False:
         return 0.0
