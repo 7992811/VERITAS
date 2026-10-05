@@ -4,6 +4,7 @@ import json, math, time, re, os
 from datetime import datetime, timezone, timedelta
 from xml.etree import ElementTree as ET
 import httpx
+import veritas_costs as VC
 import veritas_execution as VX
 import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
@@ -13,7 +14,7 @@ from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 VERSION='veritas-portfolio-v9.0-four-portfolio-core'
 INITIAL_NAV_RUB=1_000_000.0
 MAX_GROSS=2.0
-COMMISSION=0.0005
+COMMISSION=VC.COMMISSION_RATE
 MEANINGFUL_WIN_NAV=0.001
 MAX_STOP_RISK_NAV=0.10
 POSITION_STEP=0.05
@@ -2280,18 +2281,15 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
 
 
 def _apply_funding(c,p,pos,prices,ruonia,ts):
+    # R82: fixed 16%, free first 24h, identical for LONG and SHORT.
+    # Portfolio last_mark_at is the transactional accrual cursor; no back-charge.
     if not pos or p['last_mark_at'] is None: return 0.0
-    try:
-        t0=p['last_mark_at']; t0=t0 if hasattr(t0,'timestamp') else datetime.fromisoformat(str(t0).replace('Z','+00:00'))
-        dt=max(0.0,(datetime.now(timezone.utc)-t0).total_seconds())
-    except Exception: dt=0.0
-    if dt<=0: return 0.0
-    annual=(float(ruonia or p['last_ruonia'] or 0)/100.0)
     cost=0.0
     for z in pos:
         notional=abs(float(z['units'])*float(prices.get(z['asset'],z['last_price'])))
-        rate=annual+(0.02 if z['direction']=='SHORT' else 0.0)
-        fc=notional*rate*dt/(365.25*86400.0); cost+=fc
+        fc=VC.funding_between(notional,z['opened_at'],p['last_mark_at'],ts)
+        if fc<=0: continue
+        cost+=fc
         c.execute('UPDATE paper_trades SET funding_rub=funding_rub+%s WHERE trade_id=%s',(fc,z['active_trade_id']))
     if cost: c.execute('UPDATE paper_portfolios SET funding_rub=funding_rub+%s WHERE name=%s',(cost,p['name']))
     return cost
@@ -3756,7 +3754,7 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
             entry=float(z.get('avg_entry_price') or 0.0)
             if entry<=0: continue
             direction=str(z.get('direction') or '')
-            # The first ratchet must be net-positive after the 0.05%/leg commission.
+            # The first ratchet must be net-positive after the 0.04%/leg commission.
             # Larger moves progressively lock a share of MFE; structural trailing
             # remains the next-stage authority and may tighten further.
             cost_floor=round_trip_commission+0.0003

@@ -26,7 +26,7 @@ def retest_row(asset, target):
 
 class LowerMoveFloor(unittest.TestCase):
     def test_profitable_small_btc_move_passes_only_new_move_policy(self):
-        r = retest_row('BTC', 100.48)
+        r = retest_row('BTC', 100.38)
         with patch.object(X, 'datetime', Frozen), patch.object(QT, 'datetime', Frozen):
             current = X.entry_gate(r, 100., 'LONG', .1)
             with patch.object(X, 'MIN_EXPECTED_MOVE_PCT', .004), patch.object(X, 'MIN_MOVE_COST_MULTIPLE', 2.5):
@@ -36,7 +36,7 @@ class LowerMoveFloor(unittest.TestCase):
         self.assertEqual(previous['blockers'], ['EXPECTED_MOVE_BELOW_COST_BUFFER'])
 
     def test_final_fill_does_not_restore_old_portfolio_move_floor(self):
-        for asset, target in [('BTC', 100.48), ('MOEX', 100.8)]:
+        for asset, target in [('BTC', 100.48), ('MOEX', 100.48)]:
             for book in ('Impulse', 'Aggressive', 'Champion', 'Challenger'):
                 r = retest_row(asset, target)
                 connection = MagicMock()

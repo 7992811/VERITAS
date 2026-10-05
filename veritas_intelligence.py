@@ -7413,7 +7413,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         try:
             portfolio_autopilot=VP.step_all(
                 summary=summary, pg_connect=pg_connect, model_version=VERSION,
-                observed_at=now(), commission_rate=0.0005,
+                observed_at=now(), commission_rate=VX.VC.COMMISSION_RATE,
                 emit=lambda event, **kw: emit(event, **kw))
         except Exception as ex:
             portfolio_autopilot={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
@@ -16537,7 +16537,7 @@ def _v90r25_portfolios_fast():
         outp[-1]['risk_governor']=live_by_name.get(name,{}).get('risk_governor') or (latest.get('payload') or {}).get('risk_governor') or {}
         benchmark=latest.get('benchmark_nav_rub') or b.get('benchmark_nav_rub')
         outp[-1]['excess_vs_ruonia_pct']=100*(float(nav_rub)/float(benchmark)-1) if nav_rub is not None and benchmark and float(benchmark)>0 else None
-    out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':0.0005,'api_source':'fast_sql_enriched'}
+    out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':VX.VC.COMMISSION_RATE,'api_source':'fast_sql_enriched'}
     out=VTV.enrich_positions(out,pg_connect)
     with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
     return out
@@ -16740,6 +16740,8 @@ class H(BaseHTTPRequestHandler):
                     self.reply(_v90r26_dashboard_bootstrap(signals_only=(q.get('view')==['signals'])))
                 except Exception as ex:
                     self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif self.path.startswith('/api/v1/cost-policy'):
+                self.reply(VX.VC.policy())
             elif self.path.startswith('/api/v1/signals'):
                 x=fresh_cycle_snapshot()
                 _signals=[dict(z) for z in (x.get('summary') or []) if str(z.get('asset') or '')!='NDX']
@@ -18430,6 +18432,7 @@ def _v90_compact_live_row(z):
     plan2['final_economics_gate']=_v90_small_dict(econ,(
         'status','eligible','blockers','expected_to_stop_ratio','minimum_reward_risk',
         'expected_move_pct','minimum_expected_move_pct','modeled_round_trip_cost_pct',
+        'cost_policy','modeled_commission_pct','modeled_execution_cost_pct','modeled_funding_pct',
         'observed_spread_bps','stop_distance_pct','target_price','target_distance_pct','modeled_entry_fill',
         'modeled_target_fill','modeled_stop_fill','net_reward_pct','net_risk_pct','quote_time_gate',
         'context_freshness','trend_event'))

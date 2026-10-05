@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import veritas_costs as VC
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
@@ -17,21 +18,13 @@ PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
 # even a SUPER signal cannot bypass bad trade economics.
 MIN_REWARD_RISK = max(1.0, float(os.getenv("VERITAS_FINAL_MIN_RR", "1.15")))
 MIN_EXPECTED_MOVE_PCT = max(0.0019, float(os.getenv("VERITAS_FINAL_MIN_EXPECTED_MOVE", "0.0019")))
-MIN_MOVE_COST_MULTIPLE = max(1.0, float(os.getenv("VERITAS_FINAL_MOVE_COST_MULTIPLE", "1.2")))
-MOVE_POLICY_VERSION = "R76_COST_COVERED_MOVE"
-ROUND_TRIP_COST_BPS = max(1.0, float(os.getenv("VERITAS_EXECUTION_ROUND_TRIP_COST_BPS", "20")))
+MIN_MOVE_COST_MULTIPLE = VC.COST_BUFFER_MULTIPLE
+MOVE_POLICY_VERSION = VC.VERSION
+ROUND_TRIP_COST_BPS = VC.ROUND_TRIP_RATE * 10000.0
 
-# Adverse fill assumptions for the normalized paper book. These are configurable
-# and intentionally conservative relative to perfect mid/last execution.
-_DEFAULT_FILL_BPS = {
-    "BTC": 5.0,
-    "ETH": 5.0,
-    "NQ": 4.0,
-    "BRENT": 6.0,
-    "GOLD": 5.0,
-    "MOEX": 8.0,
-    "CNYRUBF": 8.0,
-}
+# User-approved fixed paper slippage; observed bid/ask remains the execution anchor.
+_DEFAULT_FILL_BPS = {asset: VC.SLIPPAGE_RATE * 10000.0 for asset in PAPER_ASSETS}
+
 
 LIVE_RISK_PROFILE = {
     "max_stop_risk_nav": 0.005,
@@ -159,9 +152,10 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
     modeled_cost = round_trip_cost_pct(spread_bps)
     stop_distance = abs(entry - stop) / entry if valid_entry and stop else None
     reward = risk = net_rr = target_move = entry_fill = target_fill = stop_fill = None
+    fees = funding = slippage = None
     if valid_entry and stop and stop > 0 and target and target > 0:
         fraction = max(0.0, _num(p.get("initial_position_fraction"), 0.10))
-        commission = 0.0005
+        commission = VC.COMMISSION_RATE
         buy = direction == "LONG"
         entry_fill = simulated_fill(asset, "BUY" if buy else "SELL_SHORT", entry,
                                     fraction, bid=p.get("best_bid"), ask=p.get("best_ask"))["fill_price"]
@@ -174,10 +168,10 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
         hold = max(0.0, _num(p.get("expected_hold_seconds"),
                    {"5m": 300, "1h": 3600, "4h": 14400, "1d": 86400,
                     "3d": 259200, "7d": 604800}.get(p.get("horizon"), 3600)))
-        funding = entry_fill * 0.16 * hold / (365.25 * 86400)
+        funding = entry_fill * VC.funding_fraction(hold)
         fees = commission * (entry_fill + target_fill)
-        modeled_cost = max(modeled_cost, (abs(entry_fill-entry) + abs(target_fill-target)
-                                          + fees + funding) / entry)
+        slippage = (abs(entry_fill-entry) + abs(target_fill-target)) / entry
+        modeled_cost = max(modeled_cost, slippage + (fees + funding) / entry)
         reward = (sign * (target_fill-entry_fill) - fees - funding) / entry_fill
         risk = (sign * (entry_fill-stop_fill) + commission * (entry_fill+stop_fill)
                 + funding) / entry_fill
@@ -195,6 +189,10 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
     return {
         "status": "BLOCK" if blockers else "PASS", "eligible": not blockers,
         "asset": str(asset or ""), "blockers": blockers,
+        "cost_policy": VC.policy(),
+        "modeled_commission_pct": fees / entry if fees is not None else None,
+        "modeled_execution_cost_pct": slippage,
+        "modeled_funding_pct": funding / entry if funding is not None else None,
         "expected_to_stop_ratio": net_rr, "forecast_reward_risk": forecast_rr,
         "minimum_reward_risk": MIN_REWARD_RISK,
         "expected_move_pct": effective_move, "forecast_move_pct": forecast_move,
@@ -314,8 +312,8 @@ def simulated_fill(asset: str, side: str, reference_price: float, fraction_nav: 
     side = str(side or "").upper()
     is_buy = side in ("BUY", "BUY_TO_COVER")
 
-    base_bps = float(os.getenv(f"VERITAS_PAPER_FILL_BPS_{asset}", str(_DEFAULT_FILL_BPS.get(asset, 6.0))))
-    size_bps = min(20.0, max(0.0, float(fraction_nav or 0.0) - 0.10) * 3.0)
+    base_bps = VC.SLIPPAGE_RATE * 10000.0
+    size_bps = 0.0  # R82 fixed 0.04% slippage per side at every paper position size.
 
     b = _num(bid)
     a = _num(ask)
@@ -325,7 +323,7 @@ def simulated_fill(asset: str, side: str, reference_price: float, fraction_nav: 
         mid = 0.5 * (a + b)
         spread_bps = (a - b) / mid * 10000.0 if mid > 0 else None
         # Quote already includes spread. Add only residual adverse slippage + size impact.
-        residual_bps = max(1.0, 0.40 * base_bps)
+        residual_bps = base_bps
         impact_bps = residual_bps + size_bps
         bump = impact_bps / 10000.0
         fill = executable_quote * (1.0 + bump if is_buy else 1.0 - bump)
@@ -354,6 +352,7 @@ def simulated_fill(asset: str, side: str, reference_price: float, fraction_nav: 
         "side": side,
         "asset": asset,
         "model": model,
+        "cost_policy_version": VC.VERSION,
         "quote_valid": quote_valid,
     }
 

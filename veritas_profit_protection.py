@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 import math
 
+import veritas_costs as VC
 import veritas_execution as VX
 from veritas_quote_time import utc_datetime
 
@@ -28,7 +29,7 @@ def effective_stop(z):
     return (max(stops) if z.get('direction') == 'LONG' else min(stops)) if stops else None
 
 
-def evaluate(z, accounting, *, stop=None, price=None, nav=None, now=None, commission=.0005):
+def evaluate(z, accounting, *, stop=None, price=None, nav=None, now=None, commission=VC.COMMISSION_RATE):
     """Fees/funding already booked are subtracted once, across all partial fills.
 
     Outstanding funding accrues to this observation; future holding time and gaps
@@ -41,7 +42,8 @@ def evaluate(z, accounting, *, stop=None, price=None, nav=None, now=None, commis
     mark = number(price if price is not None else z.get('last_price'))
     nav = number(nav if nav is not None else a.get('portfolio_nav_rub'))
     gross, fees, funding = [number(a.get(k)) for k in ('gross_pnl_rub', 'fees_rub', 'funding_rub')]
-    ruonia, rate = number(a.get('last_ruonia')), number(commission)
+    rate = number(commission)
+    opened = utc_datetime(z.get('opened_at') or a.get('opened_at') or payload(z).get('entry_time'))
     last_mark = utc_datetime(a.get('last_mark_at'))
     direction = z.get('direction')
     result = {'version': VERSION, 'state': 'UNAVAILABLE', 'checked_at': now.isoformat(),
@@ -54,14 +56,14 @@ def evaluate(z, accounting, *, stop=None, price=None, nav=None, now=None, commis
                 'trailing_stage': 'NET_PROFIT_PROTECTED' if protected else
                 'PROTECTION_UNVERIFIED' if result['state'] == 'UNAVAILABLE' else 'RISK_REDUCTION_STRUCTURAL'}
     if (direction not in ('LONG', 'SHORT') or a.get('status') == 'CLOSED'
-            or any(x is None for x in (units, entry, mark, nav, stop, gross, fees, funding, ruonia, rate))
-            or min(units, entry, mark, nav, stop) <= 0 or min(fees, funding, ruonia, rate) < 0
-            or rate >= 1 or last_mark is None or (last_mark-now).total_seconds() > 5
+            or any(x is None for x in (units, entry, mark, nav, stop, gross, fees, funding, rate))
+            or min(units, entry, mark, nav, stop) <= 0 or min(fees, funding, rate) < 0
+            or rate >= 1 or opened is None or last_mark is None or (last_mark-now).total_seconds() > 5
             or payload(z).get('data_integrity_status', 'OK') not in ('', 'OK')):
         return finish()
     sign = 1 if direction == 'LONG' else -1
-    annual = ruonia / 100 + (.02 if direction == 'SHORT' else 0)
-    unbooked = units * mark * annual * max(0, (now-last_mark).total_seconds()) / (365.25*86400)
+    annual = VC.FUNDING_ANNUAL_RATE
+    unbooked = VC.funding_between(units * mark, opened, last_mark, now)
     side = 'SELL' if direction == 'LONG' else 'BUY_TO_COVER'
 
     def exit_result(reference):
@@ -98,7 +100,7 @@ def load_accounts(c, ids, include_entry_notional=False):
     notional_sql = ''' , (SELECT SUM(o.notional_rub) FROM paper_orders o
                          WHERE o.trade_id=t.trade_id AND o.side IN ('BUY','SELL_SHORT'))
                          AS entry_notional_rub''' if include_entry_notional else ''
-    rows = c.execute('''SELECT t.trade_id,t.status,t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.payload,
+    rows = c.execute('''SELECT t.trade_id,t.status,t.opened_at,t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.payload,
                p.last_mark_at,p.last_ruonia,
                p.initial_nav_rub+p.realized_pnl_rub-p.fees_rub-p.funding_rub+
                COALESCE((SELECT SUM((CASE WHEN z.direction='LONG' THEN 1 ELSE -1 END)*
@@ -120,7 +122,7 @@ def assess(c, z, **kwargs):
     return evaluate(z, a, **kwargs)
 
 
-def refresh(c, name=None, now=None, commission=.0005):
+def refresh(c, name=None, now=None, commission=VC.COMMISSION_RATE):
     """Refresh persisted flags after fills/funding, without changing any stop."""
     rows = c.execute('SELECT * FROM paper_positions' + (' WHERE portfolio_name=%s' if name else ''),
                      (name,) if name else ()).fetchall()
