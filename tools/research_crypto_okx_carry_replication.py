@@ -257,12 +257,10 @@ def attach(asset):
 
     dt=pd.Series(z.ts).diff()
     z["interval_sec"]=dt.rolling(21,min_periods=9).median().shift(1)
-    z["forecast_events"]=(POL["target_days"]*86400/z.interval_sec).round().clip(1,1000)
-    z["max_events"]=(POL["max_days"]*86400/z.interval_sec).round().clip(1,2000)
     return z,common,common
 
 def entry_ok(r,pol):
-    vals=(r.forecast_lcb,r.positive_frac,r.basis,r.mean3,r.mean9,r.rate,r.forecast_events,r.max_events)
+    vals=(r.forecast_lcb,r.positive_frac,r.basis,r.mean3,r.mean9,r.rate,r.interval_sec)
     if not all(np.isfinite(v) for v in vals):return False
     expected=max(0.,float(r.forecast_lcb))*int(round(pol["target_days"]*86400/float(r.interval_sec)))
     return (expected>=pol["cost_multiple"]*PAIR_RT and
@@ -287,7 +285,9 @@ def simulate(z,common,pol,stress=0.):
         if ci>=len(T):break
         s0=float(SO[ci])*(1+SLIP) # buy spot
         p0=float(PO[ci])*(1-SLIP) # short swap
-        funding_sum=0.;j=i+1;last=min(len(z)-1,i+int(r.max_events));reason="MAX"
+        max_events=int(round(pol["max_days"]*86400/float(r.interval_sec)))
+        max_events=max(1,min(2000,max_events))
+        funding_sum=0.;j=i+1;last=min(len(z)-1,i+max_events);reason="MAX"
         while j<=last:
             rr=z.iloc[j]
             mt=int(rr.ts)

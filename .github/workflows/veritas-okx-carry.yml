@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - research/full-arsenal-20261005
+      - research/okx-plateau-fix-20261005
     paths:
       - tools/research_crypto_okx_carry_replication.py
       - .github/workflows/veritas-okx-carry.yml
@@ -16,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research/full-arsenal-20261005
+          ref: research/okx-plateau-fix-20261005
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
