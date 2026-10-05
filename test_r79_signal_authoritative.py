@@ -5,6 +5,7 @@ import unittest
 import veritas_trend_entry as T
 import veritas_portfolio_runtime as R
 import veritas_portfolio as P
+import veritas_position_guard as VPG
 
 
 class SignalAuthoritativeR79Tests(unittest.TestCase):
@@ -126,6 +127,31 @@ class SignalAuthoritativeR79Tests(unittest.TestCase):
         self.assertTrue(T.context_gate(work,now)['eligible'])
         out=R._signal_first_admission(r,P.POLICIES['Aggressive'],0.0)
         self.assertTrue(out.get('open'),out)
+
+    def test_slow_cny_signal_uses_fresh_fast_same_asset_quote(self):
+        now=datetime.now(timezone.utc)
+        slow=self.row('LONG')
+        slow.update({
+          'asset':'CNYRUBF','horizon':'1d','price':12.60,
+          'market_observed_at':(now-timedelta(minutes=20)).isoformat(),
+          'contract':{'secid':'OLD_CONTINUOUS'},
+        })
+        fast={
+          'asset':'CNYRUBF','horizon':'5m','price':12.707,
+          'research_decision':'NO_TRADE','decision':'NO_TRADE',
+          'source_gate_pass':True,'market_open':True,
+          'market_observed_at':now.isoformat(),
+          'contract':{'secid':'CURRENT_CONTINUOUS'},
+        }
+        old_ns=VPG._entry_namespace
+        VPG._entry_namespace={}
+        try:
+            out=VPG.refresh_entry_quotes([slow,fast])
+        finally:
+            VPG._entry_namespace=old_ns
+        q=out[0].get('_execution_quote') or {}
+        self.assertAlmostEqual(q.get('price'),12.707)
+        self.assertEqual(q.get('observed_at'),fast['market_observed_at'])
 
     def test_full_open_path_no_longer_calls_soft_veto_chain(self):
         r=self.row('LONG')
