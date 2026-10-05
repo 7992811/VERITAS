@@ -280,10 +280,10 @@ def attach_macro(x):
 def coinmetrics_daily(asset):
     p=CACHE/f"{asset}_onchain.pkl"
     if p.exists(): return pd.read_pickle(p)
-    metrics=["AdrActCnt","TxCnt","CapMrktCurUSD","CapRealUSD","NVTAdj"]
+    metrics=["AdrActCnt","TxCnt","CapMrktCurUSD","CapRealUSD","NVTAdj","CapMVRVCur"]
     params={
         "assets":asset.lower(),"metrics":",".join(metrics),"frequency":"1d",
-        "start_time":"2022-01-01","end_time":"2026-10-04","page_size":10000
+        "start_time":"2018-01-01","end_time":"2026-10-04","page_size":10000
     }
     url="https://community-api.coinmetrics.io/v4/timeseries/asset-metrics?"+urlencode(params)
     try:
@@ -304,13 +304,24 @@ def coinmetrics_daily(asset):
 def attach_onchain(asset,x):
     z=coinmetrics_daily(asset)
     out=x.copy()
-    cols=["AdrActCnt","TxCnt","CapMrktCurUSD","CapRealUSD","NVTAdj"]
+    cols=["AdrActCnt","TxCnt","CapMrktCurUSD","CapRealUSD","NVTAdj","CapMVRVCur"]
     if z.empty:
         for c in cols: out["oc_"+c]=np.nan
         return out
+    # Compute MVRV if the direct community metric is unavailable.
+    if ("CapMVRVCur" not in z or z.get("CapMVRVCur",pd.Series(dtype=float)).isna().all()) and "CapMrktCurUSD" in z and "CapRealUSD" in z:
+        z["CapMVRVCur"]=z["CapMrktCurUSD"]/z["CapRealUSD"].replace(0,np.nan)
     for c in cols:
         if c in z:
             z[c+"_roc30"]=z[c].pct_change(30)
+    if "CapMVRVCur" in z:
+        mu=z.CapMVRVCur.rolling(730,min_periods=365).mean().shift(1)
+        sd=z.CapMVRVCur.rolling(730,min_periods=365).std().shift(1)
+        z["MVRV_z"]=(z.CapMVRVCur-mu)/sd.replace(0,np.nan)
+    if "NVTAdj" in z:
+        mu=z.NVTAdj.rolling(730,min_periods=365).mean().shift(1)
+        sd=z.NVTAdj.rolling(730,min_periods=365).std().shift(1)
+        z["NVT_z"]=(z.NVTAdj-mu)/sd.replace(0,np.nan)
     t=out.ts.to_numpy(np.int64); zt=z.ts.to_numpy(np.int64)
     ix=np.searchsorted(zt,t,side="right")-1; good=ix>=0
     for c in cols:
@@ -318,6 +329,10 @@ def attach_onchain(asset,x):
         src=c+"_roc30"
         if src in z and good.any(): arr[good]=z[src].to_numpy()[ix[good]]
         out["oc_"+c]=arr
+    for src,dst in (("MVRV_z","oc_mvrv_z"),("NVT_z","oc_nvt_z")):
+        arr=np.full(len(out),np.nan)
+        if src in z and good.any(): arr[good]=z[src].to_numpy()[ix[good]]
+        out[dst]=arr
     return out
 
 def event_cross(x,d,n):
@@ -389,6 +404,18 @@ def build_events(asset,x):
             om=(act<0)&(tx<0)
         m=cross&om&(d*x.ret288>0)&(body>=.25)
         rows += collect(x,m,d,"ONCHAIN_TREND",lvl)
+
+        # 10) On-chain value / valuation re-rating. Use trailing standardized
+        # MVRV and NVT only after their daily observation is available.
+        cross,lvl=event_cross(x,d,144)
+        if d>0:
+            value=(x.oc_mvrv_z<=-0.75)&(x.oc_nvt_z<=.50)
+            turn=(x.ret48>0)
+        else:
+            value=(x.oc_mvrv_z>=1.25)&(x.oc_nvt_z>=-.25)
+            turn=(x.ret48<0)
+        m=cross&value&turn&(body>=.25)&(x.atr_ratio<=1.75)
+        rows += collect(x,m,d,"ONCHAIN_VALUE",lvl)
 
     # one signal per family/direction/bar
     seen=set(); out=[]
@@ -583,7 +610,7 @@ def run():
          "costs":{"fee_each_side":FEE,"base_slippage_each_side":SLIP,"dynamic_slippage_cap_each_side":0.0015,"stress_round_trip":STRESS},
          "assets":{},"pair_modules":{}}
     families=["TREND_FAST","TREND_SLOW","MEAN_REVERSION","FAILED_BREAKOUT","VOL_EXPANSION",
-              "CARRY_TREND","CROWDED_FADE","MACRO_TREND","ONCHAIN_TREND"]
+              "CARRY_TREND","CROWDED_FADE","MACRO_TREND","ONCHAIN_TREND","ONCHAIN_VALUE"]
     for a in ASSETS:
         ev=build_events(a,x[a])
         rr={}; rej={}
@@ -595,7 +622,8 @@ def run():
                           "data_status":{"funding":bool(np.isfinite(x[a].funding).any()),
                                          "basis":bool(np.isfinite(x[a].basis_z).any()),
                                          "macro":bool(np.isfinite(x[a].vix).any()),
-                                         "onchain":bool(np.isfinite(x[a].oc_AdrActCnt).any())}}
+                                         "onchain":bool(np.isfinite(x[a].oc_AdrActCnt).any()),
+                                         "onchain_value":bool(np.isfinite(x[a].oc_mvrv_z).any())}}
         print(a,"ARSENAL",json.dumps({"families":rr,"rejected":rej,"data_status":out["assets"][a]["data_status"]},
                                       separators=(",",":"),default=jdefault),flush=True)
     pair=pair_trade_frame(x["BTC"],x["ETH"])
