@@ -81,7 +81,7 @@ class CatalystContinuationTests(unittest.TestCase):
     def cny(self):
         now=self.NOW
         return {
-          'asset':'CNYRUBF','horizon':'5m','price':12.69,
+          'asset':'CNYRUBF','horizon':'5m','price':12.69,'confidence':.785,
           'research_decision':'LONG','signal_tier':'SUPER_LONG',
           'entry_quality':'FRESH_BREAKOUT','source_gate_pass':True,'market_open':True,
           'market_observed_at':now.isoformat(),
