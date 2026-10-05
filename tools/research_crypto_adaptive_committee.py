@@ -141,6 +141,28 @@ def gate(rows,cutoff):
     else:size=.25
     return {"active":True,"long":m,"recent":r,"ew_ev":ew,"score":float(score),"size":size}
 
+def portfolio_risk_multiplier(active_trades, candidate):
+    """Portfolio-level diversification/risk overlay.
+
+    This is intentionally simple and causal: it penalizes multiple simultaneous
+    directional exposures to the same risk factor, while leaving market-neutral
+    carry and pair relative-value sleeves largely independent.
+    """
+    sl=sleeve(candidate["module"])
+    if sl in ("BTC_CARRY","ETH_CARRY","PAIR"):
+        return 1.0
+    # BTC and ETH directional books are highly correlated crypto beta. If another
+    # directional sleeve is already open in the same direction, reduce marginal
+    # notional rather than treating two module votes as independent alpha.
+    same_dir=0
+    for q in active_trades:
+        qsl=sleeve(q["module"])
+        if qsl in ("BTC_DIRECTIONAL","ETH_DIRECTIONAL") and q.get("d",0)==candidate.get("d",0):
+            same_dir+=1
+    if same_dir>=2:return .50
+    if same_dir==1:return .70
+    return 1.0
+
 def monthly_decisions(streams,start="2021-01-01",end="2026-10-01"):
     months=pd.date_range(start,end,freq="MS",tz="UTC")
     out=[]
@@ -174,6 +196,14 @@ def monthly_decisions(streams,start="2021-01-01",end="2026-10-01"):
                 opp=[q for q in group[1:] if best.get("d",0)!=0 and q.get("d",0)==-best.get("d",0)]
                 if opp and opp[0]["score"]>=best["score"]*.92:
                     continue
+                # Portfolio-level crypto-beta concentration haircut.
+                mult=portfolio_risk_multiplier(
+                    [q for q in kept if q["opened"]<=t<q["closed"]], best
+                )
+                best=dict(best)
+                best["risk_multiplier"]=float(mult)
+                best["weighted_net"]=float(best["weighted_net"])*mult
+                best["size"]=float(best["size"])*mult
                 kept.append(best);free_by[sl]=best["closed"]+15*60
         out.append({"month":t0.strftime("%Y-%m"),"gates":gates,"trades":kept})
     return out
@@ -208,6 +238,8 @@ def main():
     out={"generated_at":datetime.now(timezone.utc).isoformat(),
          "method":"Fixed multi-strategy library with causal rolling 365d/90d EV gate; no future-year selection.",
          "gate":{"lookback_days":365,"recent_days":90,"min_trades":6,"min_pf":1.05,"stress":STRESS},
+         "portfolio_risk":{"separate_sleeves":True,"same_direction_crypto_beta_haircut":[1.0,.70,.50],
+                           "market_neutral_carry_independent":True,"pair_relative_value_independent":True},
          "result":result,
          "monthly_gates":[{"month":m["month"],"active":[k for k,v in m["gates"].items() if v["active"]]} for m in months]}
     (OUT/"result.json").write_text(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False,default=jd))
