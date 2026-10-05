@@ -1,0 +1,44 @@
+name: VERITAS nonlinear ML meta research
+
+on:
+  push:
+    branches:
+      - research/full-arsenal-20261005
+    paths:
+      - tools/research_crypto_nonlinear_ml_meta.py
+      - tools/research_crypto_probability_meta.py
+      - tools/research_crypto_state_router.py
+      - tools/research_crypto_manager_library.py
+      - .github/workflows/veritas-ml-meta.yml
+  workflow_dispatch:
+
+jobs:
+  ml-meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/full-arsenal-20261005
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: python -m pip install numpy==2.3.5 pandas==2.2.3 scikit-learn==1.7.2
+      - name: Download cached minute data
+        uses: actions/download-artifact@v4
+        with:
+          name: veritas-manager-library-result
+          path: manager_library_out
+          github-token: ${{ github.token }}
+          run-id: 37210798801
+      - name: Run nonlinear ML meta-filter
+        run: python tools/research_crypto_nonlinear_ml_meta.py
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-nonlinear-ml-meta
+          path: ml_meta_out/
+          retention-days: 14
