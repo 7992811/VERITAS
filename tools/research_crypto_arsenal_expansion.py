@@ -409,6 +409,18 @@ def collect(x,mask,d,family,level):
                         "level":float(lv),"atr":float(av)})
     return out
 
+def execution_slip(x,i):
+    """Dynamic one-way slippage proxy from volatility and liquidity state.
+
+    Base is 2.5bp. High volatility / weak relative volume increases expected
+    slippage. The cap is deliberately conservative because we do not have
+    historical full-depth L2 for the complete sample.
+    """
+    ar=float(x.atr_ratio.iloc[i]) if np.isfinite(x.atr_ratio.iloc[i]) else 1.0
+    vr=float(x.vr.iloc[i]) if np.isfinite(x.vr.iloc[i]) else 1.0
+    mult=max(1.0, math.sqrt(max(ar,0.25))/math.sqrt(max(vr,0.25)))
+    return float(min(0.0015, max(SLIP, SLIP*mult)))
+
 def simulate(x,events,action,start,end,stress=0.0):
     T=x.ts.to_numpy(np.int64); O=x.open.to_numpy(); H=x.high.to_numpy(); L=x.low.to_numpy(); C=x.close.to_numpy()
     st=ts(start) if isinstance(start,str) else int(start)
@@ -419,7 +431,7 @@ def simulate(x,events,action,start,end,stress=0.0):
         if T[sig]<st or T[sig]>=en-BAR: continue
         i=sig+1
         if i<free or i>=ei: continue
-        d=e["d"]; entry=O[i]*(1+d*SLIP)
+        d=e["d"]; eslip=execution_slip(x,i); entry=O[i]*(1+d*eslip)
         stop=entry-d*action["stop_atr"]*e["atr"]
         risk=d*(entry-stop)/entry
         if not (.0025<=risk<=.05): continue
@@ -430,21 +442,21 @@ def simulate(x,events,action,start,end,stress=0.0):
             if j>i: cost+=rem*(FUND_LONG if d>0 else FUND_SHORT)/(YEAR_MIN/5)
             hitstop=(L[j]<=stop if d>0 else H[j]>=stop)
             if hitstop:
-                q=(min(O[j],stop) if d>0 else max(O[j],stop))*(1-d*SLIP)
+                q=(min(O[j],stop) if d>0 else max(O[j],stop))*(1-d*eslip)
                 gross+=rem*d*(q/entry-1); cost+=rem*(FEE+stress/2)*q/entry; rem=0; reason="STOP"; break
             if action["partial"] and not partial:
                 one=entry*(1+d*risk)
                 if (H[j]>=one if d>0 else L[j]<=one):
-                    q=one*(1-d*SLIP)
+                    q=one*(1-d*eslip)
                     gross+=.5*d*(q/entry-1); cost+=.5*(FEE+stress/2)*q/entry
                     rem=.5; partial=True; stop=entry
             if (H[j]>=target if d>0 else L[j]<=target):
-                q=target*(1-d*SLIP)
+                q=target*(1-d*eslip)
                 gross+=rem*d*(q/entry-1); cost+=rem*(FEE+stress/2)*q/entry
                 rem=0; reason="TARGET"; break
             j+=1
         if rem:
-            j=min(j,last); q=C[j]*(1-d*SLIP)
+            j=min(j,last); q=C[j]*(1-d*eslip)
             gross+=rem*d*(q/entry-1); cost+=rem*(FEE+stress/2)*q/entry
         out.append({"opened":int(T[i]),"closed":int(T[j]),"d":d,"net":float(gross-cost),
                     "family":e["family"],"action":action["name"],"reason":reason})
@@ -568,7 +580,7 @@ def run():
         x[a]=attach_onchain(a,x[a])
     out={"generated_at":datetime.now(timezone.utc).isoformat(),
          "method":"Fixed full-arsenal expansion hypotheses; 2022-23 discovery, 2024+2025 frozen validation, 2026 inspected only after pass.",
-         "costs":{"fee_each_side":FEE,"slippage_each_side":SLIP,"stress_round_trip":STRESS},
+         "costs":{"fee_each_side":FEE,"base_slippage_each_side":SLIP,"dynamic_slippage_cap_each_side":0.0015,"stress_round_trip":STRESS},
          "assets":{},"pair_modules":{}}
     families=["TREND_FAST","TREND_SLOW","MEAN_REVERSION","FAILED_BREAKOUT","VOL_EXPANSION",
               "CARRY_TREND","CROWDED_FADE","MACRO_TREND","ONCHAIN_TREND"]
