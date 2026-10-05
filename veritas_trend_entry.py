@@ -240,6 +240,134 @@ def _rebase_catalyst_setup(row,price=None,now=None):
     return x
 
 
+SIGNAL_CONTEXT_GRACE_SECONDS=600
+
+_SIGNAL_LONG_TIERS={'LONG','STRONG_LONG','SUPER_LONG','BUY','STRONG_BUY'}
+_SIGNAL_SHORT_TIERS={'SHORT','STRONG_SHORT','SUPER_SHORT','SELL','SELL_SHORT','STRONG_SELL'}
+
+
+def displayed_signal_direction(row):
+    """Return a direction only when the current UI/decision layer is directional."""
+    row=row or {}
+    direction=str(row.get('research_decision') or row.get('decision') or '').upper()
+    if direction not in ('LONG','SHORT'):
+        return None
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '').upper()
+    investor=str(row.get('investor_signal') or '').upper()
+    decision=str(row.get('decision') or '').upper()
+    long_seen=(tier in _SIGNAL_LONG_TIERS or investor in _SIGNAL_LONG_TIERS or decision=='LONG')
+    short_seen=(tier in _SIGNAL_SHORT_TIERS or investor in _SIGNAL_SHORT_TIERS or decision=='SHORT')
+    if direction=='LONG' and long_seen and not short_seen:
+        return 'LONG'
+    if direction=='SHORT' and short_seen and not long_seen:
+        return 'SHORT'
+    return None
+
+
+def _signal_continuation_event(row,price=None,now=None):
+    """Rebase a CURRENT displayed signal into a fresh executable setup identity.
+
+    A displayed signal is treated as the current market thesis. Old breakout
+    age/extension may not veto it. This does NOT bypass source freshness, market
+    session, hard invalidation, direction conflict, stop validity, or risk caps.
+    """
+    row=row or {}
+    direction=displayed_signal_direction(row)
+    if direction not in ('LONG','SHORT'):
+        return None
+    if row.get('source_gate_pass') is False or row.get('market_open') is False:
+        return None
+    plan=dict(row.get('trade_plan') or {})
+    integrity=plan.get('trade_integrity') or {}
+    if integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict'):
+        return None
+    arbitration=plan.get('rule_arbitration') or {}
+    if arbitration.get('hard_veto'):
+        return None
+
+    ctx=dict(context_of(row) or {})
+    current=dict(ctx.get('event') or {})
+    if current.get('catalyst_continuation'):
+        return None
+
+    hs=row.get('horizon_structure') or {}
+    hdir=str(hs.get('direction') or row.get('horizon_structure_direction') or '')
+    hstate=str(hs.get('state') or row.get('horizon_structure_state') or '')
+    if hdir in ('LONG','SHORT') and hdir!=direction and hstate in ('BUILDING_TREND','CONFIRMED_TREND'):
+        return None
+
+    px=number(price,number((row.get('_execution_quote') or {}).get('price'),number(row.get('price'))))
+    if not px or px<=0:
+        return None
+    d=1 if direction=='LONG' else -1
+
+    # Prefer CURRENT structural anchors. A stale event stop is only a fallback.
+    local=number(ctx.get('local_support' if d==1 else 'local_resistance'))
+    planned=number(plan.get('stop_price'))
+    old_stop=number(current.get('stop_price'))
+    candidates=[v for v in (local,planned,old_stop) if v and v>0 and d*(px-v)>0]
+    if not candidates:
+        return None
+    # Nearest valid structural stop avoids inheriting an obsolete distant stop.
+    stop=max(candidates) if d==1 else min(candidates)
+    stop_dist=d*(px-stop)/px
+    if stop_dist<=0 or stop_dist>.05:
+        return None
+
+    observed=((row.get('_execution_quote') or {}).get('observed_at')
+              or row.get('market_observed_at') or row.get('observed_at') or now
+              or datetime.now(timezone.utc))
+    t=timestamp(observed)
+    if t is None:
+        t=datetime.now(timezone.utc).timestamp()
+
+    setup_id=str(row.get('canonical_setup_id') or plan.get('setup_id') or
+                 plan.get('canonical_setup_id') or current.get('event_id') or
+                 (str(row.get('asset') or '')+'-'+str(row.get('horizon') or '')))
+    identity='|'.join((str(row.get('asset') or ''),direction,str(row.get('horizon') or ''),setup_id))
+    eid='R79_SIG_'+hashlib.sha256(identity.encode()).hexdigest()[:18]
+    atr=number(ctx.get('atr'),number(current.get('atr'),0.)) or 0.
+    if atr<=0:
+        atr=max(px*.001,abs(px-stop)/2.)
+
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '').upper()
+    return {
+      'direction':direction,'trigger_level':px,'signal_price':px,'signal_at':t,
+      'atr':atr,'stop_price':stop,'impulse_origin':stop,'level_available_at':t,
+      'zone_started_at':t,'event_id':eid,'failures':0,
+      'activity_basis':'DISPLAYED_SIGNAL','activity_confirmed':True,
+      'confirmation':'SIGNAL_CONTINUATION','event_type':'SIGNAL_CONTINUATION',
+      'signal_authoritative':True,'signal_tier':tier,
+      'confirmed_at':t,'continuation_confirmed':True,'retest_confirmed':False,
+      'retest_at':None,'bars_since_signal':0,'age_seconds':0,
+      'parent_event_id':current.get('event_id'),
+      'canonical_setup_id':setup_id,
+    }
+
+
+def _rebase_displayed_signal_setup(row,price=None,now=None):
+    x=dict(row or {}); plan=dict(x.get('trade_plan') or {})
+    event=_signal_continuation_event(x,price,now)
+    if not event:
+        return x
+    ctx=dict(context_of(x) or {})
+    ctx['event']=event
+    x['trend_entry_context']=ctx
+    x['_signal_authoritative']=True
+    # Current displayed signal is a new setup; old "target reached" / "late"
+    # metadata belongs to the parent setup and cannot invalidate this one.
+    plan.update(
+      eligible=True,reason='displayed_signal_continuation',
+      setup='SIGNAL_CONTINUATION',setup_id=event['event_id'],
+      entry_event_id=event['event_id'],new_setup_identity=True,
+      signal_authoritative=True,stop_price=event['stop_price'],
+      stop_method='CURRENT_SIGNAL_STRUCTURE',
+      target_method='CURRENT_SIGNAL_2R_CAPPED_BY_LEVEL',
+    )
+    x['trade_plan']=plan
+    return x
+
+
 def has_geometry_context(row):
     plan=(row or {}).get('trade_plan') or {}
     return bool(context_of(row).get('status')=='OK' or
@@ -322,7 +450,9 @@ def geometry(row, price=None, direction=None, stop_override=None):
 
 
 def prepare_row(row, price=None, now=None):
-    x=_rebase_catalyst_setup(row,price,now); plan=dict(x.get('trade_plan') or {})
+    x=_rebase_catalyst_setup(row,price,now)
+    x=_rebase_displayed_signal_setup(x,price,now)
+    plan=dict(x.get('trade_plan') or {})
     if not has_geometry_context(x):return x
     g=geometry(x,price)
     ev=structural_event(x)
@@ -366,6 +496,15 @@ def context_gate(row, now=None):
     closed=number(ctx.get('closed_at'))
     age=t-closed if t is not None and closed is not None else None
     if age is None or not -5<=age<=MAX_CONTEXT_AGE_SECONDS or ctx.get('status')=='STALE':
+        event=ctx.get('event') or {}
+        signal_at=number(event.get('signal_at'))
+        if (event.get('signal_authoritative') and t is not None and signal_at is not None
+                and 0<=t-signal_at<=SIGNAL_CONTEXT_GRACE_SECONDS):
+            return {'eligible':True,'reason':'R79_SIGNAL_CONTEXT_FRESH',
+                    'closed_at':closed,'age_seconds':age,
+                    'max_age_seconds':MAX_CONTEXT_AGE_SECONDS,
+                    'signal_age_seconds':t-signal_at,
+                    'signal_context_grace_seconds':SIGNAL_CONTEXT_GRACE_SECONDS}
         rebased=_catalyst_continuation_event(row,number((row or {}).get('price')),now)
         if (rebased and age is not None and -5<=age<=CATALYST_CONTEXT_GRACE_SECONDS):
             return {'eligible':True,'reason':'R78_CATALYST_CONTEXT_GRACE',
@@ -405,7 +544,10 @@ def event_gate(row, price, direction, now=None):
                 'local_direction':event.get('direction'),'signal_direction':direction}
     a=number(event.get('atr'),0); level=number(event.get('trigger_level'),0); px=number(price,0)
     d=1 if direction=='LONG' else -1
-    extension=d*(px-level)/a if a>0 else math.inf
+    # The displayed signal is itself the fresh execution trigger. Conservative
+    # modeled fill impact is not market extension and may not re-create "late".
+    extension=(0.0 if event.get('signal_authoritative')
+               else d*(px-level)/a if a>0 else math.inf)
     # An old serialized snapshot cannot freeze the event's age at zero.
     clock=t if t is not None else closed
     signal=number(event.get('signal_at'))
@@ -420,7 +562,9 @@ def event_gate(row, price, direction, now=None):
     recent_retest=bool(event.get('retest_at') and clock and signal
                        and signal<event['retest_at']<=clock
                        and 0<=clock-event['retest_at']<=retest_window)
-    timely=bool(signal and clock and 0<=clock-signal<=window) or recent_retest
+    timely=(bool(signal and clock and 0<=clock-signal<=window) or recent_retest
+            or bool(event.get('signal_authoritative') and signal and clock
+                    and 0<=clock-signal<=SIGNAL_CONTEXT_GRACE_SECONDS))
     if not event.get('activity_confirmed'):
         return {'eligible':False,'reason':'R69_BREAKOUT_ACTIVITY_REQUIRED'}
     if row.get('horizon')=='1m' and (ctx.get('minute_status')!='OK' or not ctx.get('minute_closed_at') or not -5<=clock-ctx['minute_closed_at']<=90):
