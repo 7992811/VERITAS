@@ -9869,6 +9869,10 @@ def learning_index_v2():
 def trade_decision_stage(direction,trade_plan,tradeability,structure=None):
     if direction not in ('LONG','SHORT'): return 'WAIT'
     tp=trade_plan or {}; st=structure or {}
+    if tp.get('entry_plan_version')=='R74_COHERENT_EVENT_PLAN' or tp.get('entry_timing_gate'):
+        timing=tp.get('entry_timing_gate') or {}
+        if not timing.get('eligible',True): return 'WAIT_LOCAL_ENTRY'
+        if not tp.get('eligible'): return 'WAIT_RISK_REWARD'
     if not tp.get('eligible'):
         return 'INVALIDATED' if tp.get('reason')=='invalidated' or str(st.get('entry_quality') or '')=='INVALIDATED' else 'WAIT_RISK_REWARD'
     if tp.get('late_entry'): return 'LATE_SMALL_ONLY'
@@ -18387,16 +18391,19 @@ def _v90_compact_live_row(z):
         'recent_swing_anchor','robot_eligible','execution_mode','target_price',
         'tactical_target_price','target_method','setup','reversal_probability',
         'decision_stage','positive_trade_probability','statistical_noise_buffer_p80',
-        'spread_bps','execution_safety_version','horizon','market_observed_at','best_bid','best_ask'))
+        'spread_bps','execution_safety_version','horizon','market_observed_at','best_bid','best_ask',
+        'entry_plan_version','entry_event_id','setup_id','expected_hold_seconds','execution_levels_ready'))
     for key in ('trend_entry_context','r66_geometry','r66_runner_target_price','multi_tf_level_context',
-                'profitability_gate','trade_integrity','rule_arbitration','reentry_intelligence'):
+                'profitability_gate','trade_integrity','rule_arbitration','reentry_intelligence',
+                'entry_timing_gate','execution_quote_gate'):
         if plan.get(key):plan2[key]=plan[key]
     econ=plan.get('final_economics_gate') or {}
     plan2['final_economics_gate']=_v90_small_dict(econ,(
         'status','eligible','blockers','expected_to_stop_ratio','minimum_reward_risk',
         'expected_move_pct','minimum_expected_move_pct','modeled_round_trip_cost_pct',
         'observed_spread_bps','stop_distance_pct','target_price','target_distance_pct','modeled_entry_fill',
-        'modeled_target_fill','modeled_stop_fill','net_reward_pct','net_risk_pct','quote_time_gate'))
+        'modeled_target_fill','modeled_stop_fill','net_reward_pct','net_risk_pct','quote_time_gate',
+        'context_freshness','trend_event'))
     tp1=plan.get('take_profit_1')
     if isinstance(tp1,dict):
         plan2['take_profit_1']=_v90_small_dict(tp1,('timeframe','price','distance_pct'))
@@ -18778,17 +18785,53 @@ def final_execution_safety(asset,research_decision,plan):
     if VTE.has_geometry_context({'trade_plan':plan}):
         plan=VTE.prepare_row({'price':plan.get('entry_price'),'horizon':plan.get('horizon'),
             'research_decision':research_decision,'trade_plan':plan})['trade_plan']
+    local_row={'asset':asset,'price':plan.get('entry_price'),'horizon':plan.get('horizon'),
+               'research_decision':research_decision,'trade_plan':plan}
+    entry_timing=VTE.event_gate(local_row,plan.get('entry_price'),research_decision,datetime.now(timezone.utc))
+    plan['entry_timing_gate']=entry_timing
+    plan['execution_levels_ready']=bool(VTE.structural_event(local_row)
+        and (plan.get('r66_geometry') or {}).get('eligible'))
+    plan['execution_quote_gate']=quote_gate(plan.get('market_observed_at'),plan.get('horizon'),
+                                            execution=True,asset=asset)
+    # Reconcile stale PLAN states only. Validated negative edge, structural
+    # invalidation, reentry and portfolio limits remain independent vetoes.
+    history=plan.get('profitability_gate') or {}
+    integrity=plan.get('trade_integrity') or {}
+    hard=bool(integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict')
+              or (plan.get('rule_arbitration') or {}).get('hard_veto')
+              or (plan.get('reentry_intelligence') or {}).get('allowed') is False
+              or history.get('status')=='NEGATIVE_EDGE'
+              or (history.get('allow') is False and history.get('status')!='NOT_APPLICABLE'))
+    prior_reason=str(plan.get('reason') or '')
+    geometry_reason=(plan.get('r66_geometry') or {}).get('reason')
+    rebuildable=(plan.get('eligible') or prior_reason in (
+        'invalidated','multi_tf_expected_move_too_small_vs_stop','expected_move_too_small_vs_stop',
+        'R69_STRUCTURAL_EVENT') or prior_reason.startswith('final_economics_gate:'))
+    if (VTE.structural_event(local_row) and entry_timing.get('eligible') and rebuildable
+            and geometry_reason=='R66_GEOMETRY_OK' and not hard):
+        plan.update(eligible=True,reason='R69_STRUCTURAL_EVENT',entry_quality='FRESH_BREAKOUT',
+                    structure_lifecycle='CONFIRMATION',late_entry=False)
+        if integrity:
+            soft=[s for s in integrity.get('soft_reasons',[]) if s not in
+                  ('TIMING_NOT_READY','OLD_OR_CURRENT_SETUP_FAILURE','PLAN_NOT_ELIGIBLE')]
+            plan['trade_integrity']=dict(integrity,setup_id=plan.get('entry_event_id'),
+                soft_reasons=soft,status='SOFT_CONFLICT' if soft else 'PASS',
+                entry_permission='WAIT_ENTRY' if soft else 'ENTER')
     gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
         'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
     }
     context=VTE.context_gate({'asset':asset,'trade_plan':plan},datetime.now(timezone.utc))
     gate['context_freshness']=context
+    gate['trend_event']=entry_timing
+    if research_decision in ('LONG','SHORT') and not entry_timing['eligible']:
+        gate.update(status='BLOCK',eligible=False)
+        gate['blockers'].append(entry_timing['reason'])
     if research_decision in ('LONG','SHORT') and not context['eligible']:
         gate.update(status='BLOCK',eligible=False)
         gate['blockers'].append(context['reason'])
-    if (plan.get('r66_geometry') or {}).get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
+    if geometry_reason in ('R66_SENIOR_BREAK_NOT_HELD','R74_EVENT_TARGET_REACHED','R66_INVALID_GEOMETRY'):
         gate.update(status='BLOCK',eligible=False)
-        gate['blockers'].append('R66_SENIOR_BREAK_NOT_HELD')
+        gate['blockers'].append(geometry_reason)
     if 'market_observed_at' in plan and research_decision in ('LONG','SHORT'):
         timing=quote_gate(plan['market_observed_at'],plan.get('horizon'))
         timing=_v90r61_quote_rescue({**plan,'final_economics_gate':gate},timing,research_decision)
@@ -18889,13 +18932,9 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     plan=_v90r63_nq_trend_target_projection(asset,horizon,f,research_decision,plan)
     import veritas_trend_entry as VTE
     plan['trend_entry_context']=f.get('trend_entry_context') or {}
-    ev=plan['trend_entry_context'].get('event') or {}
-    if ev.get('direction')==research_decision and str(ev.get('event_id','')).startswith('R69_'):
-        entry=float(f['price']);stop=float(ev['stop_price']);sign=1 if research_decision=='LONG' else -1
-        plan.update(entry_price=entry,stop_price=stop,target_price=entry+sign*2*abs(entry-stop),
-                    expected_move_pct=2*abs(entry-stop)/entry,expected_to_stop_ratio=2.,
-                    setup='R69_STRUCTURAL_BREAKOUT',entry_quality='FRESH_BREAKOUT',
-                    eligible=True,reason='R69_STRUCTURAL_EVENT',execution_timeframe=horizon)
+    if VTE.structural_event({'research_decision':research_decision,'trade_plan':plan}):
+        plan.update(entry_price=float(f['price']),eligible=True,reason='R69_STRUCTURAL_EVENT',
+                    execution_timeframe='5m',entry_quality='FRESH_BREAKOUT')
 
     if research_decision in ('LONG','SHORT') and horizon in ('1m','5m','1h','4h'):
         work=VTE.prepare_row({'price':f.get('price'),'horizon':horizon,

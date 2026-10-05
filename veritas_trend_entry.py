@@ -9,6 +9,7 @@ import math
 from statistics import median
 
 VERSION = 'R69_MINUTE_STRUCTURAL_ENTRY'
+PLAN_VERSION = 'R74_COHERENT_EVENT_PLAN'
 MAX_CONTEXT_AGE_SECONDS = 900
 
 
@@ -118,17 +119,29 @@ def has_geometry_context(row):
                 (plan.get('multi_tf_level_context') or {}).get('target_ladder') or plan.get('target_ladder'))
 
 
+def structural_event(row, direction=None):
+    event = context_of(row).get('event') or {}
+    direction = direction or (row or {}).get('research_decision')
+    origin, stop = number(event.get('signal_price')), number(event.get('stop_price'))
+    sign = 1 if direction == 'LONG' else -1
+    if (direction in ('LONG', 'SHORT') and event.get('direction') == direction
+            and str(event.get('event_id', '')).startswith('R69_')
+            and origin and stop and min(origin, stop) > 0 and sign*(origin-stop) > 0):
+        return event
+    return {}
+
+
 def geometry(row, price=None, direction=None, stop_override=None):
     """First unpassed HTF barrier, not the first distant profitable target."""
     row=row or {}; plan=dict(row.get('trade_plan') or {})
     px=number(price,number(row.get('price'))); direction=direction or row.get('research_decision')
     d=1 if direction=='LONG' else -1
-    ctx=context_of(row); event=ctx.get('event') or {}
+    ctx=context_of(row); event=ctx.get('event') or {}; local_event=structural_event(row,direction)
     out={'version':VERSION,'eligible':False,'reason':'R66_INVALID_GEOMETRY'}
     if direction not in ('LONG','SHORT') or not px or px<=0:
         return out
     stop=number(stop_override) if stop_override is not None else number(plan.get('stop_price'))
-    if (stop_override is None and (row.get('horizon') in ('1m','5m') or ctx.get('local_breakout_required'))
+    if (stop_override is None and (local_event or row.get('horizon') in ('1m','5m') or ctx.get('local_breakout_required'))
             and event.get('direction')==direction):
         stop=number(event.get('stop_price'),stop)
     if not stop or stop<=0 or d*(px-stop)<=0:
@@ -148,12 +161,20 @@ def geometry(row, price=None, direction=None, stop_override=None):
     candidates=[(d*(number(x.get('price'),0)-px),x) for x in levels if number(x.get('price'),0)>0]
     ahead=[v for v in candidates if v[0]>max(1e-10,px*.00001)]
     ahead.sort(key=lambda z:z[0])
-    planned=number(plan.get('target_price') or plan.get('tactical_target_price'))
+    # A local entry owns BOTH its stop and projection. Never combine a new
+    # stop with a previous reversal's target, or extend the target as price runs.
+    if local_event:
+        origin=local_event['signal_price']; original_stop=local_event['stop_price']
+        planned=origin+d*2.*abs(origin-original_stop)
+    else:
+        planned=number(plan.get('target_price') or plan.get('tactical_target_price'))
+    if local_event and d*(planned-px)<=0:
+        return dict(out,reason='R74_EVENT_TARGET_REACHED',target_price=planned,stop_price=stop)
     target=planned if planned and d*(planned-px)>0 else None
     nearest=ahead[0][1] if ahead else None
     if nearest and (target is None or d*(float(nearest['price'])-px)<d*(target-px)):
         target=float(nearest['price'])
-    if event.get('event_id','').startswith('R69_'):
+    if event.get('event_id','').startswith('R69_') and not local_event:
         structural_target=px+d*2.*abs(px-stop)
         if target is None or d*(target-px)>d*(structural_target-px):target=structural_target
     if target is None:
@@ -177,13 +198,28 @@ def prepare_row(row, price=None):
     x=dict(row or {}); plan=dict(x.get('trade_plan') or {})
     if not has_geometry_context(x):return x
     g=geometry(x,price)
-    if g.get('stop_price'):
+    ev=structural_event(x)
+    if g.get('eligible') or g.get('reason')=='R66_SENIOR_BREAK_NOT_HELD':
         forecast=number(plan.get('expected_move_pct'))
-        expected=min(forecast,g['remaining_move_pct']) if forecast is not None and forecast>=0 else g['remaining_move_pct']
+        expected=(g['remaining_move_pct'] if ev else
+                  min(forecast,g['remaining_move_pct']) if forecast is not None and forecast>=0 else g['remaining_move_pct'])
         plan.update(stop_price=g['stop_price'],stop_distance_pct=g['stop_distance_pct'],
                     target_price=g['target_price'],expected_move_pct=expected,
                     expected_to_stop_ratio=g['reward_risk'],r66_geometry=g,
                     r66_runner_target_price=g.get('runner_target_price'))
+        if ev:
+            plan.update(entry_price=number(price,number(x.get('price'),number(plan.get('entry_price')))),
+                        direction=ev['direction'],entry_plan_version=PLAN_VERSION,
+                        entry_event_id=ev['event_id'],setup_id=ev['event_id'],
+                        setup='R69_STRUCTURAL_BREAKOUT',new_setup_identity=True,
+                        stop_method='LOCAL_EVENT_INVALIDATION',target_method='EVENT_ORIGIN_2R_CAPPED_BY_LEVEL',
+                        tactical_target_price=g['target_price'],take_price=g['target_price'],
+                        take_profit_1={'price':g['target_price'],
+                            'timeframe':(g.get('nearest_level') or {}).get('timeframe','5m'),
+                            'distance_pct':g['remaining_move_pct']},
+                        expected_move_method='structural_projection_unvalidated')
+    elif ev:
+        plan.update(eligible=False,reason=g['reason'],r66_geometry=g)
     x['trade_plan']=plan
     return x
 
@@ -229,8 +265,16 @@ def event_gate(row, price, direction, now=None):
     signal=number(event.get('signal_at'))
     event_age=max(number(event.get('bars_since_signal'),99),
                   max(0.,(clock-signal)//300) if clock and signal else 0.)
-    recent_retest=bool(event.get('retest_at') and clock and 0<=clock-event['retest_at']<=120)
-    timely=bool(signal and clock and 0<=clock-signal<=120) or recent_retest
+    # Validity follows the observed confirmation candle, not the thesis horizon.
+    # Native 1m triggers retain 120s; a closed 5m confirmation has two bars.
+    resolution=300 if event.get('confirmation')=='5m_CLOSE' else 60
+    window=2*resolution
+    retest_resolution=number(event.get('retest_resolution_seconds'),resolution)
+    retest_window=2*(300 if retest_resolution==300 else 60)
+    recent_retest=bool(event.get('retest_at') and clock and signal
+                       and signal<event['retest_at']<=clock
+                       and 0<=clock-event['retest_at']<=retest_window)
+    timely=bool(signal and clock and 0<=clock-signal<=window) or recent_retest
     if not event.get('activity_confirmed'):
         return {'eligible':False,'reason':'R69_BREAKOUT_ACTIVITY_REQUIRED'}
     if row.get('horizon')=='1m' and (ctx.get('minute_status')!='OK' or not ctx.get('minute_closed_at') or not -5<=clock-ctx['minute_closed_at']<=90):
@@ -239,7 +283,10 @@ def event_gate(row, price, direction, now=None):
     return {'eligible':ok,'reason':'R66_EVENT_READY' if ok else 'R66_WAIT_RETEST',
             'event_id':event.get('event_id'),'extension_atr':extension,'recent_retest':recent_retest,
             'trigger_level':level,'stop_price':event.get('stop_price'), 'signal_at':event.get('signal_at'),
-            'bars_since_signal':event_age,'context_freshness':freshness}
+            'bars_since_signal':event_age,'context_freshness':freshness,
+            'confirmation_window_seconds':window,'retest_window_seconds':retest_window,
+            'entry_mode':'RETEST' if recent_retest else
+                'CONTINUATION' if event.get('parent_event_id') else 'BREAKOUT'}
 
 
 def scale_decision(position,row,price,requested,nav,cost=.002,risk_cap=.01):

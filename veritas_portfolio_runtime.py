@@ -4511,6 +4511,11 @@ def _v90r65_genesis_fraction(row,policy,drawdown):
     return _clip(_round_step(f),0.0,float((policy or {}).get('max_fraction') or 2.0))
 
 def _signal_first_admission(row,policy,drawdown):
+    # Quote refresh can precede admission; its timestamp must never validate
+    # economics or distance computed from an older signal price.
+    row=dict(row or {})
+    q=row.get('_execution_quote') or {}
+    row['price']=VTE.number(q.get('price'),row.get('price'))
     row=VTE.prepare_row(row)
     event=VTE.event_gate(row,row.get('price'),row.get('research_decision'),datetime.now(timezone.utc))
     if not event.get('eligible'):
@@ -4529,14 +4534,20 @@ def _signal_first_admission(row,policy,drawdown):
         plan=row.get('trade_plan') or {}
         history=plan.get('profitability_gate') or {}
         hard=bool((plan.get('trade_integrity') or {}).get('hard_invalidation')
+                  or (plan.get('trade_integrity') or {}).get('fast_tf_conflict')
                   or (plan.get('rule_arbitration') or {}).get('hard_veto')
                   or (plan.get('reentry_intelligence') or {}).get('allowed') is False
-                  or history.get('allow') is False or history.get('status')=='NEGATIVE_EDGE')
+                  or (history.get('allow') is False and history.get('status')!='NOT_APPLICABLE')
+                  or history.get('status')=='NEGATIVE_EDGE')
         ok=bool(f>0 and not hard and plan.get('eligible',True) and rg.get('new_risk') is not False and row.get('execution_eligible')
                 and row.get('source_gate_pass') and economics.get('eligible'))
         return {'open':ok,'fraction':f if ok else 0.,'hard_veto':not ok,
                 'reason':'R69_STRUCTURAL_EVENT' if ok else 'R69_SOURCE_RISK_OR_ECONOMICS',
                 'trend_event':event,'economics':economics,
+                'economics_blockers':economics.get('blockers') or [],
+                'quote_time_gate':economics.get('quote_time_gate'),
+                'net_reward_risk':economics.get('expected_to_stop_ratio'),
+                'profitability_gate':history,
                 'probability':None,'probability_source':'UNCALIBRATED_STRUCTURAL_RULE',
                 'signal_score':row.get('confidence')}
     base=dict(_v90r65_base_admission(row,policy,drawdown) or {})
