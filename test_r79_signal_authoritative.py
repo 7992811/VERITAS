@@ -78,12 +78,59 @@ class SignalAuthoritativeR79Tests(unittest.TestCase):
         self.assertGreater(out.get('fraction',0),0.0)
         self.assertLessEqual(out.get('fraction',0),0.10)
 
+    def test_gold_invalidated_parent_label_does_not_block_current_short(self):
+        r=self.row('SHORT')
+        r.update({
+          'asset':'GOLD','price':4184.0,'research_decision':'SHORT','decision':'SHORT',
+          'investor_signal':'SELL','signal_tier':'SHORT','confidence':.60,
+          'horizon':'1h','entry_quality':'INVALIDATED','decision_stage':'WAIT_LOCAL_ENTRY',
+          'horizon_structure':{'direction':'SHORT','score':.61,'state':'CONFIRMED_TREND'},
+        })
+        r['trade_plan'].update({'entry_quality':'INVALIDATED','stop_price':4191.0,
+                                'target_price':4170.0,'expected_move_pct':.0033,
+                                'expected_to_stop_ratio':2.0})
+        r['trend_entry_context'].update({
+          'status':'STALE',
+          'closed_at':(datetime.now(timezone.utc)-timedelta(minutes=20)).timestamp(),
+          'local_resistance':4191.0,'local_support':4175.0,
+        })
+        out=R._signal_first_admission(r,P.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out.get('open'),out)
+        work=T.prepare_row(r,4184.0,datetime.now(timezone.utc))
+        self.assertEqual(work.get('entry_quality'),'CURRENT_SIGNAL')
+        self.assertEqual((work.get('trade_plan') or {}).get('entry_quality'),'CURRENT_SIGNAL')
+
+    def test_brent_slow_horizon_signal_rebases_now_not_old_observation(self):
+        now=datetime.now(timezone.utc)
+        r=self.row('LONG')
+        r.update({
+          'asset':'BRENT','price':102.65,'research_decision':'LONG','decision':'LONG',
+          'investor_signal':'BUY','signal_tier':'LONG','confidence':.18,
+          'horizon':'4h','entry_quality':'INVALIDATED','decision_stage':'WAIT_LOCAL_ENTRY',
+          'market_observed_at':(now-timedelta(minutes=25)).isoformat(),
+          'horizon_structure':{'direction':'LONG','score':.56,'state':'BUILDING_TREND'},
+        })
+        r['trade_plan'].update({'entry_quality':'INVALIDATED','stop_price':101.8,
+                                'target_price':104.35,'expected_move_pct':.0165,
+                                'expected_to_stop_ratio':2.0})
+        r['trend_entry_context'].update({
+          'status':'STALE','closed_at':(now-timedelta(minutes=25)).timestamp(),
+          'local_support':101.9,'local_resistance':102.8,
+        })
+        work=T.prepare_row(r,102.65,now)
+        ev=T.context_of(work)['event']
+        self.assertTrue(ev.get('signal_authoritative'),ev)
+        self.assertLess(abs(ev['signal_at']-now.timestamp()),5.0)
+        self.assertTrue(T.context_gate(work,now)['eligible'])
+        out=R._signal_first_admission(r,P.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out.get('open'),out)
+
     def test_full_open_path_no_longer_calls_soft_veto_chain(self):
         r=self.row('LONG')
         c=MagicMock()
         c.execute.return_value.fetchone.return_value=None
         with patch.object(R,'_r72_event_reentry_gate',return_value={'eligible':True,'reason':'R72_NEW_EVENT'}),\
-             patch.object(R,'_v90r59_base_open_or_add',return_value=.50) as mutation:
+             patch.object(R,'_v90r55_base_open_or_add',return_value=.50) as mutation:
             out=R._open_or_add(c,{},'Aggressive','MOEX','LONG',2300.0,.50,1_000_000.0,
                                datetime.now(timezone.utc).isoformat(),r,'test')
         self.assertGreater(out,0)
