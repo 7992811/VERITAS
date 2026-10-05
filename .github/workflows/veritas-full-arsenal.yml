@@ -9,6 +9,7 @@ on:
       - tools/research_crypto_options_volatility.py
       - tools/research_crypto_event_driven.py
       - tools/research_crypto_options_surface_shadow.py
+      - tools/research_crypto_cycle_regimes.py
       - docs/VERITAS_FULL_ARSENAL_PROTOCOL.md
       - .github/workflows/veritas-full-arsenal.yml
   workflow_dispatch:
@@ -42,6 +43,8 @@ jobs:
         run: python tools/research_crypto_event_driven.py
       - name: Capture live options surface shadow context
         run: python tools/research_crypto_options_surface_shadow.py
+      - name: Run cycle regime transition engine
+        run: python tools/research_crypto_cycle_regimes.py --asset ALL
       - name: Print compact result
         if: always()
         run: |
@@ -68,4 +71,5 @@ jobs:
             options_vol_out/
             event_driven_out/
             options_surface_shadow_out/
+            cycle_regime_out/
           retention-days: 14
