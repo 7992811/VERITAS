@@ -418,6 +418,7 @@ def geometry(row, price=None, direction=None, stop_override=None):
     ahead.sort(key=lambda z:z[0])
     # A local entry owns BOTH its stop and projection. Never combine a new
     # stop with a previous reversal's target, or extend the target as price runs.
+    signal_event=bool(local_event and local_event.get('signal_authoritative'))
     if local_event:
         origin=local_event['signal_price']; original_stop=local_event['stop_price']
         planned=origin+d*2.*abs(origin-original_stop)
@@ -427,7 +428,10 @@ def geometry(row, price=None, direction=None, stop_override=None):
         return dict(out,reason='R74_EVENT_TARGET_REACHED',target_price=planned,stop_price=stop)
     target=planned if planned and d*(planned-px)>0 else None
     nearest=ahead[0][1] if ahead else None
-    if nearest and (target is None or d*(float(nearest['price'])-px)<d*(target-px)):
+    # R79: a displayed directional signal owns a runner target from CURRENT
+    # structure. A nearby level is a partial-profit/confirmation level, not a
+    # reason to shrink the entire trade target until costs dominate it.
+    if nearest and not signal_event and (target is None or d*(float(nearest['price'])-px)<d*(target-px)):
         target=float(nearest['price'])
     if event.get('event_id','').startswith('R69_') and not local_event:
         structural_target=px+d*2.*abs(px-stop)
