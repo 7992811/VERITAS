@@ -131,6 +131,13 @@ class SignalAuthoritativeR79Tests(unittest.TestCase):
         r=self.row('LONG')
         c=MagicMock()
         c.execute.return_value.fetchone.return_value=None
+        work,ev,direction,active=R._v90r79_signal_state(dict(r,price=2300.0))
+        print('R79_DIAG',{'active':active,'direction':direction,'event':ev,
+              'source':R.VX.paper_source_gate('MOEX',work),
+              'quote':R.VPG.quote_gate((work.get('_execution_quote') or {}).get('observed_at'),
+                                       now=datetime.now(timezone.utc),execution=True,asset='MOEX'),
+              'event_gate':T.event_gate(work,2300.0,'LONG',datetime.now(timezone.utc)),
+              'stop':(work.get('trade_plan') or {}).get('stop_price')})
         with patch.object(R,'_r72_event_reentry_gate',return_value={'eligible':True,'reason':'R72_NEW_EVENT'}),\
              patch.object(R,'_v90r55_base_open_or_add',return_value=.50) as mutation:
             out=R._open_or_add(c,{},'Aggressive','MOEX','LONG',2300.0,.50,1_000_000.0,
