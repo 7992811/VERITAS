@@ -7,6 +7,8 @@ import veritas_portfolio as _vp_base
 import veritas_trend_entry as VTE
 import veritas_launch_readiness as VLR
 import veritas_canonical_constitution as CTC
+import veritas_canonical_runtime as VCR
+import veritas_release as VR
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -4818,14 +4820,10 @@ _v90r79_base_admission=_signal_first_admission
 _v90r79_base_open_or_add=_open_or_add
 _v90r79_base_report=report
 
-_R79_SOFT_ECON_BLOCKERS={
-    # Published direction may probe through R/R/local timing, never post-cost blockers.
-    'RR_BELOW_FINAL_FLOOR','NET_REWARD_RISK_BELOW_FLOOR',
-    'R69_WAIT_LOCAL_BREAKOUT','R69_BREAKOUT_ACTIVITY_REQUIRED',
-}
+_R79_SOFT_ECON_BLOCKERS=set(CTC.SOFT_VETOES)
 _R79_HARD_COST_BLOCKERS={
-    'EXPECTED_MOVE_BELOW_COST_BUFFER',
-    'TARGET_NOT_PROFITABLE_AFTER_COSTS',
+    x for x in CTC.HARD_VETOES
+    if x in {'EXPECTED_MOVE_BELOW_COST_BUFFER','TARGET_NOT_PROFITABLE_AFTER_COSTS'}
 }
 
 
@@ -5301,19 +5299,138 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     return _r80_base_close_or_reduce(c,p,name,dict(z,_execution_quote=q),actual,target_fraction,nav,ts,reason)
 
 
-# CANONICAL FINAL RUNTIME AUTHORITY
-# Historical R42-R85 functions remain audit/migration implementation details.
-# Execution goes through one admission object and one frozen set of lifecycle callables.
-_R85_POLICY_ADMISSION=_signal_first_admission
+# CANONICAL FINAL RUNTIME AUTHORITY — CTC v2
+# Historical Rxx functions remain replay/lifecycle compatibility only. Candidate
+# routing, admission, sizing and mutation authority are replaced below.
+LEGACY_R85_POLICY_ADMISSION=_signal_first_admission
+
+
+def _canonical_desired_fraction(row,policy,drawdown):
+    out=VCR.evaluate(row,policy,drawdown)
+    return float(out.get('fraction') or 0.0) if out.get('open') else 0.0
+
+
+def _canonical_payload(z):
+    p=(z or {}).get('payload') or {}
+    if isinstance(p,dict):
+        return dict(p)
+    try:
+        return json.loads(p)
+    except Exception:
+        return {}
+
+
+def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    policy=dict(POLICIES.get(str(name)) or {})
+    hwm=float((p or {}).get('high_water_nav_rub') or nav or 1.0)
+    dd=max(0.0,1.0-float(nav)/max(hwm,1.0))
+    admission=VCR.evaluate(dict(row or {},research_decision=direction),policy,dd,ts)
+    if not admission.get('open'):
+        _record_entry_outcome(row,'BLOCKED',admission.get('reason') or 'CANONICAL_ADMISSION_BLOCK',
+                              canonical_admission=admission)
+        return 0.0
+    existing=c.execute(
+        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+        (name,asset)).fetchone()
+    requested=max(0.0,float(target_fraction or 0.0))
+    if not existing:
+        requested=min(requested or float(admission['fraction']),float(admission['fraction']))
+        event=(admission.get('trend_event') or VTE.context_of(row or {}).get('event') or {})
+        event_id=event.get('event_id')
+        if event_id:
+            prior=c.execute("""SELECT 1 AS ok FROM paper_trades
+                WHERE portfolio_name=%s AND asset=%s AND direction=%s
+                  AND payload->>'r66_event_id'=%s
+                  AND (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
+                LIMIT 1""",(name,asset,direction,str(event_id))).fetchone()
+            if prior:
+                _record_entry_outcome(row,'BLOCKED','EVENT_REUSE_WITHOUT_NEW_CONFIRMATION',
+                                      canonical_admission=admission,event_id=event_id)
+                return 0.0
+    elif str(existing.get('direction') or '')==str(direction):
+        current=abs(float(existing.get('units') or 0.0)*float(price))/max(float(nav),1.0)
+        if requested<=current+0.0025:
+            _record_entry_outcome(row,'HELD','TARGET_ALREADY_REACHED',current_fraction=current)
+            return 0.0
+        avg=float(existing.get('avg_entry_price') or price)
+        favorable=((float(price)/avg)-1.0)*(1 if direction=='LONG' else -1)
+        if favorable<=0:
+            _record_entry_outcome(row,'BLOCKED','CANONICAL_NO_AVERAGING_LOSER',
+                                  current_fraction=current,favorable_progress=favorable)
+            return 0.0
+        payload=_canonical_payload(existing)
+        old_event=payload.get('r66_event_id')
+        new_event=(admission.get('trend_event') or VTE.context_of(row or {}).get('event') or {}).get('event_id')
+        if old_event and new_event and str(old_event)==str(new_event):
+            _record_entry_outcome(row,'BLOCKED','CANONICAL_ADD_REQUIRES_NEW_CONFIRMATION',
+                                  event_id=new_event)
+            return 0.0
+        actual=VX.entry_gate(row,float(price),direction,requested,existing)
+        hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
+        if hard:
+            _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
+            return 0.0
+        stop=float(existing.get('stop_price') or 0.0)
+        if stop>0:
+            net_risk=abs(float(price)-stop)/max(float(price),1e-12)+float(VX.round_trip_cost_pct((row or {}).get('spread_bps')))
+            if net_risk>0:
+                requested=min(requested,float(CTC.PAPER_RISK_POLICY['per_idea_structural_stop_risk_cap_nav'])/net_risk)
+    else:
+        if not bool((row or {}).get('_flip_confirmed')):
+            _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED')
+            return 0.0
+        requested=min(requested or float(admission['fraction']),float(admission['fraction']))
+
+    cap=float(policy.get('max_fraction') or policy.get('max_single_asset_fraction') or 0.0)
+    if cap>0:
+        requested=min(requested,cap)
+    step=float(policy.get('position_step') or .05)
+    requested=max(0.0,math.floor(requested/step+1e-9)*step)
+    if requested<=0:
+        _record_entry_outcome(row,'BLOCKED','STOP_RISK_CAP_EXCEEDED')
+        return 0.0
+    work=dict(row or {})
+    work['_canonical_admission']=admission
+    work.setdefault('_pwin',admission.get('probability') or work.get('confidence') or .5)
+    work.setdefault('_pwin_source',admission.get('probability_source') or 'CTC_V2_CANONICAL')
+    return _vp_base.CANONICAL_ACCOUNTING_OPEN_OR_ADD(
+        c,p,name,asset,direction,float(price),requested,nav,ts,work,'CTC_V2_'+str(reason or 'ENTRY'))
+
+
+def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+    z=dict(z or {})
+    q=VPG.quote_for_position(z,now=ts)
+    if not q:
+        return 0.0
+    actual=float(q['price'])
+    reason=str(reason or '')
+    current=abs(float(z.get('units') or 0.0)*actual)/max(float(nav),1.0)
+    full=float(target_fraction or 0.0)<=0.0
+    full_ok=reason.startswith((
+        'STOP','HARD_THESIS','V842_CONFIRMED_DIRECTION_FLIP','STRUCTURE_BREAK',
+        'PORTFOLIO_HARD_STOP','RISK_HARD_STOP','PRODUCTION_CANDIDATE_REBASE',
+        'LEGACY_KERNEL_REBASE','SOURCE_INCIDENT_QUARANTINE'))
+    partial_ok=(not full and (
+        reason.startswith(('TAKE_PROFIT','DYNAMIC_PARTIAL_PROFIT','PROFIT_HARVEST',
+                           'EDGE_DECAY','RISK_REDUCTION','TRAILING_REDUCTION'))
+        or float(target_fraction)<current))
+    if not (full_ok or partial_ok):
+        print(json.dumps({'event':'CTC_V2_EXIT_BLOCKED','portfolio':name,'asset':z.get('asset'),
+                          'reason':reason,'target_fraction':target_fraction},
+                         ensure_ascii=False,separators=(',',':')),flush=True)
+        return 0.0
+    if reason=='STOP' and VPG.protective_reason(z,q,VPG.utc_datetime(ts))!='STOP':
+        return 0.0
+    return _vp_base.CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE(
+        c,p,name,dict(z,_execution_quote=q),actual,target_fraction,nav,ts,reason)
 
 
 class CanonicalAdmissionEngine:
     version=CTC.VERSION
-
     def evaluate(self,row,policy,drawdown):
-        policy=dict(policy or {})
-        out=dict(_R85_POLICY_ADMISSION(row,policy,drawdown) or {})
+        out=dict(VCR.evaluate(row,dict(policy or {}),drawdown) or {})
         out['canonical_policy_version']=self.version
+        out['canonical_runtime_version']=VCR.VERSION
         out['canonical_stage_order']=list(CTC.STAGE_ORDER)
         out['objective_hard_constraint']=CTC.OBJECTIVE_POLICY['hard_constraint']
         out['objective_priority']=list(CTC.OBJECTIVE_POLICY['priority_order'])
@@ -5321,13 +5438,6 @@ class CanonicalAdmissionEngine:
         out.setdefault('paper_source_quality',
                        'PRODUCTION_GRADE' if source_row.get('production_eligible') else 'RESEARCH_GRADE')
         out.setdefault('paper_is_live_fill_evidence',False)
-        # Portfolio capacity is a hard final sizing ceiling. This makes legacy
-        # internal wrappers unable to re-introduce 2x Champion/Challenger size.
-        if out.get('open'):
-            cap=float(policy.get('max_fraction') or 0.0)
-            if cap>0:
-                out['fraction']=min(float(out.get('fraction') or 0.0),cap)
-                out['open']=bool(out['fraction']>0)
         return out
 
 
@@ -5338,20 +5448,29 @@ def canonical_signal_first_admission(row,policy,drawdown):
     return CANONICAL_ADMISSION_ENGINE.evaluate(row,policy,drawdown)
 
 
-FINAL_RUNTIME_AUTHORITY_VERSION='CTC_V1_FINAL_AUTHORITY'
+# Patch strategy-routing globals used by historical lifecycle wrappers. This is
+# what prevents those wrappers from silently deleting/re-ranking current signals.
+_candidate_book_v84=VCR.candidate_book
+_best_impulse_by_asset=VCR.impulse_candidate_book
+_v90_aggressive_candidate_book=VCR.aggressive_candidate_book
+_v90_trend_transition_candidate_book=VCR.transition_candidate_book
+_desired_fraction=_canonical_desired_fraction
+
+FINAL_RUNTIME_AUTHORITY_VERSION=CTC.BASIS_RUNTIME
 FINAL_SIGNAL_FIRST_ADMISSION=canonical_signal_first_admission
-FINAL_OPEN_OR_ADD=_open_or_add
-FINAL_CLOSE_OR_REDUCE=_close_or_reduce
+FINAL_OPEN_OR_ADD=canonical_open_or_add
+FINAL_CLOSE_OR_REDUCE=canonical_close_or_reduce
 FINAL_STEP_ONE=_step_one
 FINAL_STEP_ALL=step_all
 FINAL_REPORT=report
 
-# Historical module-level helper names remain available for regression/audit.
-# Production execution never resolves them dynamically: veritas_portfolio is
-# patched below to the frozen FINAL_* callables.
-
-# Import-order-independent patch: direct import of veritas_portfolio_runtime
-# first loads the legacy base, then atomically replaces its execution authority here.
+# Import-order-independent binding. Legacy helpers stay inspectable but cannot
+# replace canonical candidate/admission/size/mutation authority.
+_vp_base._candidate_book_v84=VCR.candidate_book
+_vp_base._best_impulse_by_asset=VCR.impulse_candidate_book
+_vp_base._v90_aggressive_candidate_book=VCR.aggressive_candidate_book
+_vp_base._v90_trend_transition_candidate_book=VCR.transition_candidate_book
+_vp_base._desired_fraction=_canonical_desired_fraction
 _vp_base._signal_first_admission=FINAL_SIGNAL_FIRST_ADMISSION
 _vp_base._open_or_add=FINAL_OPEN_OR_ADD
 _vp_base._close_or_reduce=FINAL_CLOSE_OR_REDUCE
@@ -5360,11 +5479,10 @@ _vp_base.step_all=FINAL_STEP_ALL
 _vp_base.report=FINAL_REPORT
 _vp_base._VERITAS_RUNTIME=__import__(__name__)
 
-# Compatibility export for historical layer-specific regression tests and audit
-# tools. This deliberately excludes the six production execution entry points.
 _PRODUCTION_AUTHORITY_NAMES={
-    '_signal_first_admission','_open_or_add','_close_or_reduce',
-    '_step_one','step_all','report'
+    '_candidate_book_v84','_best_impulse_by_asset','_v90_aggressive_candidate_book',
+    '_v90_trend_transition_candidate_book','_desired_fraction',
+    '_signal_first_admission','_open_or_add','_close_or_reduce','_step_one','step_all','report'
 }
 for _compat_name,_compat_value in list(globals().items()):
     if (_compat_name.startswith(('_v90','_r'))
@@ -5373,14 +5491,17 @@ for _compat_name,_compat_value in list(globals().items()):
 
 def runtime_authority_snapshot():
     return {
-      'version':FINAL_RUNTIME_AUTHORITY_VERSION,
-      'policy_version':CTC.VERSION,
+      'version':FINAL_RUNTIME_AUTHORITY_VERSION,'policy_version':CTC.VERSION,
+      'canonical_runtime':VCR.VERSION,'release':VR.snapshot(),
+      'candidate_book':'veritas_canonical_runtime.candidate_book',
       'signal_first_admission':FINAL_SIGNAL_FIRST_ADMISSION.__name__,
       'open_or_add':FINAL_OPEN_OR_ADD.__name__,
       'close_or_reduce':FINAL_CLOSE_OR_REDUCE.__name__,
-      'step_one':FINAL_STEP_ONE.__name__,
-      'step_all':FINAL_STEP_ALL.__name__,
+      'step_one':FINAL_STEP_ONE.__name__,'step_all':FINAL_STEP_ALL.__name__,
       'report':FINAL_REPORT.__name__,
+      'legacy_admission_authoritative':False,
+      'legacy_candidate_routing_authoritative':False,
+      'lifecycle_compatibility':'RXX_MANAGEMENT_ONLY',
     }
 
 
