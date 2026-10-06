@@ -1,4 +1,7 @@
 import copy
+import json
+import os
+from dataclasses import replace
 import inspect
 import math
 import unittest
@@ -6,6 +9,7 @@ from datetime import datetime,timedelta,timezone
 from unittest.mock import patch
 import veritas_direct_cny as D
 import veritas_strategy_quality as Q
+import veritas_promotion as PROMOTION
 import veritas_strategy_roles as R
 import veritas_canonical_constitution as C
 import veritas_execution as E
@@ -136,7 +140,8 @@ class EvidenceTests(unittest.TestCase):
                 'gross_pnl_rub':100,'fees_rub':60,'funding_rub':10,'net_pnl_rub':net,
                 'entry_notional_rub':10000,'entry_order_count':1,
                 'payload':{'mfe_pct':2,'mae_pct':-.5,'idea_id':key,'idea_id_verified':True,
-                           'strategy_epoch':epoch or C.STRATEGY_EPOCH,'exit_reason':'TAKE_PROFIT'}}
+                           'strategy_epoch':epoch or C.STRATEGY_EPOCH,'exit_reason':'TAKE_PROFIT',
+                           'data_integrity_status':'OK'}}
 
     def test_profit_is_not_subtracted_twice_and_capture_is_not_nav(self):
         report=Q.review(self.trade())
@@ -204,5 +209,119 @@ class EvidenceTests(unittest.TestCase):
         t.pop('fees_rub');r=Q.review(t)
         self.assertEqual(r['evidence_status'],'INCOMPLETE_OR_SOURCE_UNVERIFIED')
         self.assertFalse(r['parameter_changes_applied'])
+
+
+    def test_missing_source_integrity_never_becomes_observed_path(self):
+        for state in (None, '', ' ', 'UNKNOWN', 'SOURCE_MISMATCH'):
+            with self.subTest(state=state):
+                t=self.trade()
+                if state is None:
+                    t['payload'].pop('data_integrity_status')
+                else:
+                    t['payload']['data_integrity_status']=state
+                before=copy.deepcopy(t)
+                out=Q.review(t)
+                self.assertEqual(out['evidence_status'],'INCOMPLETE_OR_SOURCE_UNVERIFIED')
+                self.assertEqual(out['component'],'UNVERIFIED')
+                self.assertIsNone(out['capture_ratio'])
+                self.assertIsNone(out['net_capture_ratio'])
+                self.assertEqual(out['net_pnl_rub'],30)
+                self.assertFalse(out['parameter_changes_applied'])
+                self.assertEqual(t,before)
+                if state in (None,'',' '):
+                    self.assertEqual(out['source_integrity_status'],'UNKNOWN')
+
+    def test_explicit_null_source_integrity_remains_unknown(self):
+        t=self.trade();t['payload']['data_integrity_status']=None
+        out=Q.review(t)
+        self.assertEqual(out['source_integrity_status'],'UNKNOWN')
+        self.assertEqual(out['evidence_status'],'INCOMPLETE_OR_SOURCE_UNVERIFIED')
+
+    def test_review_version_rechecks_previous_cached_classification(self):
+        t=self.trade()
+        with patch.object(Q,'VERSION','OLD_REVIEW'):
+            old=Q.review(t)
+        with patch.object(Q,'VERSION','NEW_REVIEW'):
+            new=Q.review(t)
+        self.assertNotEqual(old['input_hash'],new['input_hash'])
+        self.assertEqual(old['net_pnl_rub'],new['net_pnl_rub'])
+
+
+class PromotionEvidenceIntegrityTests(unittest.TestCase):
+    def setUp(self):
+        cfg={
+            'VERITAS_PROMOTION_MIN_OOS_N':'100',
+            'VERITAS_PROMOTION_MIN_VAULT_N':'50',
+            'VERITAS_PROMOTION_MIN_CALIBRATION_N':'100',
+            'VERITAS_PROMOTION_MIN_SHADOW_TRADES':'50',
+            'VERITAS_PROMOTION_MAX_ECE':'0.10',
+            'VERITAS_PROMOTION_MAX_SHADOW_DRAWDOWN':'0.10',
+        }
+        guard=patch.dict(os.environ,cfg)
+        guard.start();self.addCleanup(guard.stop)
+
+    def evidence(self):
+        return PROMOTION.PromotionEvidence(
+            model_version='candidate-observed',oos_n=200,oos_expectancy=.01,
+            oos_profit_factor=1.3,vault_n=100,vault_expectancy=.01,
+            vault_profit_factor=1.2,high_cost_expectancy=.005,calibration_n=200,
+            ece=.05,shadow_trades=100,shadow_expectancy=.01,
+            shadow_max_drawdown=.05,code_ci_pass=True,data_parity_pass=True)
+
+    def test_nonfinite_performance_cannot_pass_promotion(self):
+        fields=('oos_expectancy','oos_profit_factor','vault_expectancy',
+                'vault_profit_factor','high_cost_expectancy','ece',
+                'shadow_expectancy','shadow_max_drawdown')
+        for field in fields:
+            for bad in (float('nan'),float('inf'),float('-inf')):
+                with self.subTest(field=field,bad=bad):
+                    out=PROMOTION.promotion_gate(replace(self.evidence(),**{field:bad}))
+                    self.assertFalse(out['eligible_for_production'],out)
+                    self.assertIn(field,out['invalid_evidence_fields'])
+                    json.dumps(out,allow_nan=False)
+
+    def test_invalid_domains_counts_and_types_are_blocked(self):
+        cases=[('ece',-.01),('ece',1.01),('shadow_max_drawdown',-.01),
+               ('shadow_max_drawdown',1.01),('oos_profit_factor',-.1),
+               ('vault_profit_factor',-.1),('oos_expectancy','0.1'),
+               ('shadow_expectancy',True),('ece',None),
+               ('model_version',''),('model_version',' '),('model_version',None),
+               ('code_ci_pass','false'),('data_parity_pass',1)]
+        for field in ('oos_n','vault_n','calibration_n','shadow_trades'):
+            cases.extend((field,v) for v in (-1,200.5,True,float('nan'),float('inf'),'200',None))
+        for field,bad in cases:
+            with self.subTest(field=field,bad=bad):
+                out=PROMOTION.promotion_gate(replace(self.evidence(),**{field:bad}))
+                self.assertFalse(out['eligible_for_production'],out)
+                self.assertIn(field,out['invalid_evidence_fields'])
+                json.dumps(out,allow_nan=False)
+
+    def test_invalid_configuration_does_not_disable_promotion_requirements(self):
+        names=('VERITAS_PROMOTION_MIN_OOS_N','VERITAS_PROMOTION_MIN_VAULT_N',
+               'VERITAS_PROMOTION_MIN_CALIBRATION_N','VERITAS_PROMOTION_MIN_SHADOW_TRADES')
+        cases=[(name,value) for name in names for value in ('0','-1','nan','bad','1.5')]
+        for name in ('VERITAS_PROMOTION_MAX_ECE','VERITAS_PROMOTION_MAX_SHADOW_DRAWDOWN'):
+            cases.extend((name,value) for value in ('nan','inf','-inf','-0.01','1.01','bad'))
+        for name,value in cases:
+            with self.subTest(name=name,value=value),patch.dict(os.environ,{name:value}):
+                out=PROMOTION.promotion_gate(self.evidence())
+                self.assertFalse(out['eligible_for_production'],out)
+                self.assertIn(name,out['invalid_configuration_fields'])
+                json.dumps(out,allow_nan=False)
+
+    def test_valid_evidence_preserves_existing_thresholds(self):
+        out=PROMOTION.promotion_gate(self.evidence())
+        self.assertTrue(out['eligible_for_production'],out)
+        self.assertEqual(out['invalid_evidence_fields'],[])
+        self.assertEqual(out['invalid_configuration_fields'],[])
+        for field,bad in (('oos_expectancy',0),('vault_expectancy',-.001),
+                          ('shadow_expectancy',0),('high_cost_expectancy',-.001),
+                          ('oos_n',99),('shadow_trades',49),
+                          ('code_ci_pass',False),('data_parity_pass',False)):
+            with self.subTest(field=field):
+                self.assertFalse(PROMOTION.promotion_gate(
+                    replace(self.evidence(),**{field:bad}))['eligible_for_production'])
+        zero_risk=replace(self.evidence(),ece=0,shadow_max_drawdown=0)
+        self.assertTrue(PROMOTION.promotion_gate(zero_risk)['eligible_for_production'])
 
 if __name__=='__main__':unittest.main()
