@@ -89,6 +89,37 @@ def json_safe(value: Any) -> Any:
     raise TradePlanBlocked("UNSUPPORTED_TERMS_VALUE")
 
 
+def native_context_json(context: Mapping[str, Any]) -> str:
+    """Preserve native numeric evidence inside the signed terms, without order-money floats."""
+    if not isinstance(context, Mapping):
+        raise TradePlanBlocked("INVALID_NATIVE_ENTRY_CONTEXT")
+    try:
+        return json.dumps(dict(context), sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError):
+        raise TradePlanBlocked("INVALID_NATIVE_ENTRY_CONTEXT") from None
+
+
+def approved_entry_context(terms: Mapping[str, Any]) -> dict:
+    raw = terms.get("entry_context_json")
+    if not isinstance(raw, str):
+        raise TradePlanBlocked("NATIVE_ENTRY_CONTEXT_REQUIRED")
+    try:
+        context = json.loads(raw)
+        if not isinstance(context, dict):
+            raise ValueError
+        # The readable normalized view and exact native evidence are both signed.
+        # Compare canonical encodings so bool/int equality cannot hide a type change.
+        if fingerprint(context) != fingerprint(terms.get("entry_context") or {}):
+            raise TradePlanBlocked("ENTRY_CONTEXT_REPRESENTATION_MISMATCH")
+        native_context_json(context)  # Reject non-finite JSON numeric values.
+    except (TypeError, ValueError, OverflowError) as error:
+        if isinstance(error, TradePlanBlocked):
+            raise
+        raise TradePlanBlocked("INVALID_NATIVE_ENTRY_CONTEXT") from None
+    return context
+
+
 def fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(json_safe(value), sort_keys=True, ensure_ascii=False,
                                      separators=(",", ":"), allow_nan=False).encode()).hexdigest()
@@ -320,7 +351,7 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
                  total_stop_risk_rub=stop_risk, cost_multiple=decimal(economics["minimum_expected_move_pct"]) /
                  decimal(economics["modeled_round_trip_cost_pct"], positive=True),
                  canonical_cost_multiple=decimal(VX.VC.policy(ASSET)["entry_cost_multiple"]), economics=economics,
-                 entry_context=context, model_version=str(row.get("model_version") or CTC.VERSION),
+                 entry_context=context, entry_context_json=native_context_json(context), model_version=str(row.get("model_version") or CTC.VERSION),
                  source_identity=source, broker_execution_source="TINVEST_EXACT_INSTRUMENT", reduce_only=False)
     return json_safe(terms)
 
@@ -382,7 +413,7 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
         return
     if canonical_event_valid is not True:
         raise TradePlanBlocked("CANONICAL_EVENT_NO_LONGER_VALID")
-    _structural(terms.get("entry_context") or {}, limit, terms["direction"], now)
+    _structural(approved_entry_context(terms), limit, terms["direction"], now)
     if account.drawdown >= currency_limits()["hard_drawdown"]:
         raise TradePlanBlocked("CURRENCY_DRAWDOWN_STOP")
     margin = decimal(spec.margin_buy_rub if side == "BUY" else spec.margin_sell_rub, positive=True) * spec.lot_size * lots

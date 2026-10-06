@@ -1,0 +1,111 @@
+# Native daily averages, rebound entries and stable Brent source
+
+## Owner intent and scope
+
+The owner requested daily SMA50/SMA200 as potential support/resistance and
+confirmed rebounds as an additional entry scenario. This supplements the
+previous same-timeframe structural-breakout instruction. All five configured
+paper portfolios use the common canonical entry path; their asset, timeframe,
+trend/evidence and risk limits remain separate admission requirements.
+
+The original teaching ledger record is unchanged. The new instruction has the
+separate key `user_teaching:USER_DAILY_MA_REBOUND_2026_10_07`.
+This is an operational policy, not an ML training result or a validated edge.
+The strategy epoch is `EQ4_2026_10_07_NATIVE_MA` to keep evaluation evidence separate.
+
+## Daily data
+
+SMA18, SMA50 and SMA200 use actual completed native daily candles. Each period
+has its own availability status: 60 daily bars can provide SMA50 but cannot
+provide SMA200. Hourly row groups, partial days, conflicting observations,
+another instrument or another venue are not valid daily input.
+
+Sources match the selected execution identity:
+
+| Execution source | Native daily data |
+| --- | --- |
+| Binance spot BTC/ETH | Spot klines, interval 1d |
+| ProFinance NQ/GOLD/BRENT | Native Last-price daily history |
+| MOEX IMOEX/CNYRUBF | ISS candles, interval 24, exact security |
+| T-Invest CNYRUBF | Existing read-only D1 candle snapshot, exact UID and price normalization |
+
+The bounded cache is shared by execution timeframes, preserves source identity
+and reports missing/stale data explicitly. No broker order RPC is involved.
+
+## Rebound sequence
+
+1. Price approaches the daily average from a clear side.
+2. A completed candle of the selected execution timeframe touches its zone.
+3. Freeze the daily MA value, period, availability time and source proof before
+   that touch. Later daily closes cannot move this episode's level.
+4. A subsequent completed local candle reclaims/holds the average and closes
+   beyond the local touch high for LONG or touch low for SHORT.
+5. Set the stop beyond the preceding local episode extreme, with that
+   timeframe's ATR buffer. Project the target using the same local ATR/risk.
+6. Apply the unchanged freshness, anti-chase, source, cost, net reward/risk,
+   event-reuse and portfolio checks at the actual modeled fill.
+
+The first confirmation consumes the episode even if admission later fails.
+Repeated polling or another crossing inside that episode cannot restart its
+clock. Rearming requires a separate observed price excursion.
+
+Missing daily data disables the MA scenario alone. Structural breakout
+candidates remain available. When both exist, current timing and modeled cost
+admission take precedence, followed by original confirmation time.
+Confirmed aligned trend state survives a fresh trigger.
+
+## Parameter status
+
+These are explicit, unvalidated implementation defaults:
+
+| Parameter | Default |
+| --- | --- |
+| Daily MA periods used for rebound | 50, 200 |
+| Touch half-width | 0.10 daily ATR |
+| Clear approach / rearm | 3 local bars beyond 0.25 daily ATR |
+| Maximum touch episode | 12 local bars |
+| Daily slope measurement | 5 completed days, normalized by daily ATR |
+| Maximum adverse slope | 0.25 daily ATR |
+| Flat/repeated-crossing filter | Flat slope within 0.10 ATR and at least 3 crossings in 10 days |
+| Supported rebound execution TF | 1m, 5m, 1h, 4h, 1d |
+
+Common structural risk parameters retain ATR20, stop buffer0.15 ATR,
+maximum stop3 ATR, extension0.5 ATR, age1 local bar, and initial target
+max(2R,1.5 ATR). These numerical choices require independent post-cost,
+out-of-sample evaluation.
+
+Without a full exchange calendar, daily data expires after four calendar days
+(one for continuous Binance), plus60seconds. Long exchange holidays can make
+the MA scenario unavailable until another actual daily close is received.
+No artificial holiday bars are inserted.
+
+## Brent repairs
+
+New normalized BRENT candidates use ProFinance for both OHLC and quote.
+MOEX discovery no longer silently selects a delayed contract or switches the
+entry price basis between near contracts. A temporary ProFinance failure
+produces an explicit unavailable/stale state.
+
+Existing positions retain their entry source and exact contract, including
+MOEX positions. Their guarded mark/exit route is unchanged.
+
+Native1m/5m history is requested before slower history within the existing
+bounded budget. Already attached native history bypasses redundant Yahoo
+minute retrieval and duplicate history retrieval. Partial hourly research
+data is explicitly marked and cannot crash independently valid minute
+processing or manufacture missing returns.
+
+## Costs and validation
+
+The owner-approved default entry threshold remains
+max(0.19%, 2.0 * modeled round-trip costs). CNYRUBF retains the explicitly
+requested exception: max(0.19%, 1.1 * modeled round-trip costs). Both structural
+breakout and daily-MA rebound entries use the asset-specific canonical cost
+threshold. Commission and paper slippage remain 0.04% per side each; the
+minimum expected-move floor remains 0.19%. The base-buffer setting remains
+1.1, while the final entry multiple is 1.1 for CNYRUBF and 2.0 for other assets.
+
+Safety CI requires native-provider/source, causal MA, event lifetime,
+same-timeframe geometry, full canonical admission for all five portfolios,
+partial-hourly and existing accounting/risk regressions.
+No profitability conclusion follows from passing implementation tests.

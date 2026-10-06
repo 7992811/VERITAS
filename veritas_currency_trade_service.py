@@ -206,7 +206,8 @@ class BrokerFactsProvider:
             raise ServiceError("INVALID_POSITIONS_RESPONSE")
         if "accountId" in raw and raw["accountId"] != self.account_id:
             raise ServiceError("BROKER_ACCOUNT_MISMATCH")
-        if raw.get("limitsLoadingInProgress") is not False:
+        # ProtoJSON omits a default false scalar; explicit non-bools stay invalid.
+        if raw.get("limitsLoadingInProgress", False) is not False:
             raise ServiceError("BROKER_LIMITS_NOT_READY")
         matched = []
         for item in _rows(raw.get("futures", []), "INVALID_FUTURES_POSITIONS"):
@@ -221,7 +222,7 @@ class BrokerFactsProvider:
             raise ServiceError("DUPLICATE_CNY_POSITION")
         held, blocked = 0, 0
         if matched:
-            balance = _integer(matched[0].get("balance"))
+            balance = _integer(matched[0].get("balance", 0))
             reserved = _integer(matched[0].get("blocked", 0), nonnegative=True)
             if balance % spec.lot_size or reserved % spec.lot_size:
                 raise ServiceError("POSITION_NOT_AN_INTEGER_LOT")
@@ -274,6 +275,28 @@ class BrokerFactsProvider:
                            status.get("limitOrderAvailableFlag") is True
                            and status.get("apiTradeAvailableFlag") is True)
 
+    def _withdrawable_rub(self):
+        # GetPositions does not expose collateral reserved for futures.
+        # WithdrawLimits supplies separate cash, blocked cash and guarantees.
+        # Unknown capacity is zero for entry/bind; exits do not use this value.
+        try:
+            raw = self.adapter.get_withdraw_limits(self.account_id)
+            if not isinstance(raw, Mapping):
+                return ZERO
+            if "accountId" in raw and raw["accountId"] != self.account_id:
+                return ZERO
+
+            def amount(name):
+                found = [x for x in _rows(raw.get(name, []), "INVALID_WITHDRAW_LIMITS")
+                         if str(x.get("currency", "")).upper() == "RUB"]
+                if len(found) > 1:
+                    raise ServiceError("DUPLICATE_RUB_WITHDRAW_LIMIT")
+                return _rub(found[0], nonnegative=name != "money") if found else ZERO
+
+            return max(ZERO, amount("money") - amount("blocked") - amount("blockedGuarantee"))
+        except (TradingError, ServiceError, AttributeError, TypeError):
+            return ZERO
+
     def _max_lots(self, price, side):
         # Missing entry capacity is zero, so it never prevents reducing an
         # existing position through the separate exit path.
@@ -301,6 +324,7 @@ class BrokerFactsProvider:
             raise ServiceError("EXACT_OPEN_FULL_ACCESS_ACCOUNT_REQUIRED")
         spec = self._spec(self.adapter.get_future(self.instrument_uid), observed)
         signed, blocked, cash = self._position(self.adapter.get_positions(self.account_id), spec)
+        cash = min(cash, self._withdrawable_rub())
         active = self._active_orders()
         status = self.adapter.get_trading_status(self.instrument_uid)
         quote = self._quote(self.adapter.get_order_book(self.instrument_uid, depth=1), status)
@@ -329,6 +353,11 @@ class BrokerFactsProvider:
     def __call__(self):
         self.block_reason = None
         facts = self._read()
+        if facts.blocked_lots:
+            # The broker labels balance as unblocked holdings. Do not mistake
+            # a reservation for an external position change and latch a freeze.
+            self.block_reason = "WORKING_ORDER_RECONCILIATION_REQUIRED"
+            raise ServiceError(self.block_reason)
         valuation = InstrumentValuation.from_contract(facts.spec)
         with self.connect() as c:
             with c.transaction():
@@ -633,7 +662,7 @@ class TradeHttpApplication:
                         account_id=self.account_id, owner_user_id=self.owner.user_id,
                         instrument_uid=self.instrument_uid, execution_environment=self.environment,
                         limit=limit, updated_after=since)
-                    return {"ok": True, "items": [self._public(p) for p in rows],
+                    return {"ok": True, "items": [self._public(p) for p in self._scoped(rows)],
                             "execution_enabled": self.execution_enabled}, 200
                 if operation == "decision":
                     callback = body.get("callback_data")

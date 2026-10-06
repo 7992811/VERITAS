@@ -41,8 +41,10 @@ No GET route enables trading.
 CNYRUBF has an asset-specific entry cost multiple of 1.1. The effective minimum
 expected move is max(0.0019, 1.1 * modeled round-trip execution cost). Commission
 remains 0.0004 per side. Other instruments retain their canonical cost multiple.
-The native structural event, current structural entry geometry, source identity,
-local confirmation and final execution economics remain required.
+The native structural or confirmed DAILY_MA_REBOUND event, current entry geometry,
+source identity, local confirmation and final execution economics remain required.
+The daily-average policy and strategy epoch from the current canonical runtime
+are preserved.
 
 Currency starts with a separate 10,000 RUB allocation. The existing canonical
 maximum gross exposure is 10 times that allocation; its hard drawdown threshold
@@ -55,7 +57,10 @@ One lot's point-price notional is:
 Desired whole lots are rounded down from the canonical admitted notional.
 Existing lots are subtracted for ADD. The result is limited by actual available
 margin, the broker's current maximum lots, commission reserve and the whole
-position's structural stop risk cap.
+position's structural stop risk cap. Available margin is bounded by both
+GetPositions money minus blocked cash and GetWithdrawLimits money minus blocked
+cash and blockedGuarantee. Missing withdrawal-limit evidence gives zero capacity
+for a new entry or initial allocation binding; it does not veto a valid close.
 
 A maximum leverage of 10 does not turn a canonical admitted fraction of 0.8
 into 8.0. A 10,000 RUB allocation at a fraction below 1 may admit less than one
@@ -87,8 +92,11 @@ assumption; a detected mismatch freezes new risk.
 A proposal binds all financial terms, canonical event, instrument, account,
 policy revision, ledger revision, execution environment, owner, private chat,
 bot, expiry and a unique client order UUID. JSON financial values use decimal
-strings. Changes to signed terms require a different valid proposal; they
-cannot be applied under an old approval.
+strings. Native signal evidence is also retained as a signed JSON string, preserving
+the numeric timestamps and proof types required by the canonical MA validator.
+Before revalidation its normalized view must exactly match entry_context; the
+validator consumes the original native evidence. Changes to signed terms require
+a different valid proposal; they cannot be applied under an old approval.
 
 Only the explicitly configured Telegram user, in that user's private chat,
 on the original message sent by the configured bot, can approve. A channel
@@ -189,14 +197,16 @@ PostgreSQL trading tests require the explicit database name
 ci_ephemeral_test_only and use temporary test schemas. Existing strategy-quality
 tests retain their separate veritas_quality_test database.
 
-The required tests cover exact lot rounding, native causal structural events,
-stale market data, adverse price change, owner and environment changes, signed
-terms, concurrent claims, transaction rollback, ambiguous submission, repeated
-callbacks, partial fills, execution identity and ledger reconciliation.
+The required tests cover exact lot rounding, native causal structural events and
+daily MA proof serialization, stale market data, adverse price change, owner and
+environment changes, signed terms, concurrent claims, transaction rollback,
+ambiguous submission, repeated callbacks, exit generations, partial fills,
+execution identity, margin facts and ledger reconciliation. The HTTP and Telegram
+integration uses the actual signed proposal repository with fake network transports.
 
-A workspace failure required source recovery into checkpoint branches.
-Pre-failure local test results are not a substitute for CI on the final commit.
-See the draft pull request checks for the current validation result.
+See the draft pull request checks for the validation result on its current commit.
+The repository also retains a separate nonblocking legacy execution audit; its
+status must not be presented as part of an unqualified all-tests-passed claim.
 
 ## Primary protocol references
 

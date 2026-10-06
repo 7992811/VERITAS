@@ -166,19 +166,60 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(bar["high"], 102.)
         self.assertEqual(bar["source_identity"]["key"], "PROFINANCE:Gold")
 
-    def test_budget_loads_senior_native_periods_first_and_resumes_next_cycle(self):
+    def test_budget_loads_fast_native_periods_first_and_resumes_senior_next_cycle(self):
         self.cost = 1.2
         first = self.cache.fetch_bundle("NQ", budget_seconds=3.5)
         requested = [p["tt"] for u, p in self.calls if u.endswith("history")]
-        self.assertEqual(requested, [6, 8])
-        self.assertEqual(first["status_by_timeframe"]["1d"]["status"], "UNAVAILABLE")
-        self.assertEqual(first["status_by_timeframe"]["1d"]["reason"], "BUDGET_EXHAUSTED")
+        self.assertEqual(requested, [1, 3])
+        self.assertEqual(first["status_by_timeframe"]["1h"]["status"], "UNAVAILABLE")
+        self.assertEqual(first["status_by_timeframe"]["1h"]["reason"], "BUDGET_EXHAUSTED")
         self.clock.advance(6)
         self.calls.clear()
         second = self.cache.fetch_bundle("NQ", budget_seconds=4)
         requested = [p["tt"] for u, p in self.calls if u.endswith("history")]
-        self.assertEqual(requested, [9, 1, 3])
+        self.assertEqual(requested, [6, 8, 9])
         self.assertTrue(all(x["status"] == "READY" for x in second["status_by_timeframe"].values()))
+
+
+    def _slow_daily_fetch(self, url, params, remaining):
+        self.calls.append((url, dict(params)))
+        if url.endswith("refresh"):
+            self.clock.advance(.1)
+            return REFRESH.format(ticker="brent")
+        if params["tt"] == 9:
+            self.clock.advance(remaining)
+            raise TimeoutError("daily history exceeded the shared budget")
+        self.clock.advance(.2)
+        return history_text(params["tt"], self.clock.now)
+
+    def test_slow_daily_fetch_cannot_starve_minute_and_five_minute_data(self):
+        cache = H.HistoryCache(self._slow_daily_fetch,
+                              lambda: self.clock.now, lambda: self.clock.elapsed)
+        result = cache.fetch_bundle("BRENT", budget_seconds=2.)
+        requested = [p["tt"] for u, p in self.calls if u.endswith("history")]
+        self.assertEqual(requested, [1, 3, 6, 8, 9])
+        for tf in ("1m", "5m"):
+            self.assertTrue(result["bars_by_timeframe"][tf])
+            self.assertEqual(result["status_by_timeframe"][tf]["status"], "READY")
+        self.assertEqual(result["status_by_timeframe"]["1d"]["status"], "UNAVAILABLE")
+        self.assertIn("TimeoutError", result["status_by_timeframe"]["1d"]["fetch_error"])
+        self.assertAlmostEqual(self.clock.elapsed, 2.)
+
+    def test_daily_timeout_retry_cannot_preempt_expired_minute_cache(self):
+        cache = H.HistoryCache(self._slow_daily_fetch,
+                              lambda: self.clock.now, lambda: self.clock.elapsed)
+        first = cache.fetch_bundle("BRENT", budget_seconds=2.)
+        first_minute_fetch = first["status_by_timeframe"]["1m"]["fetched_at"]
+        self.clock.advance(16)
+        self.calls.clear()
+        second = cache.fetch_bundle("BRENT", budget_seconds=2.)
+        requested = [p["tt"] for u, p in self.calls if u.endswith("history")]
+        self.assertEqual(requested, [1, 9])
+        self.assertGreater(second["status_by_timeframe"]["1m"]["fetched_at"], first_minute_fetch)
+        self.assertEqual(second["status_by_timeframe"]["1m"]["status"], "READY")
+        self.assertTrue(second["status_by_timeframe"]["5m"]["cache_reused"])
+        self.assertEqual(second["status_by_timeframe"]["1d"]["status"], "UNAVAILABLE")
+        self.assertFalse(second["bars_by_timeframe"]["1d"])
 
     def test_access_denial_stops_other_timeframes_and_backs_off(self):
         response = httpx.Response(403, request=httpx.Request("GET", H.BASE+"history"))

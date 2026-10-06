@@ -448,5 +448,99 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertEqual(self.transport.calls, [])
 
 
+    def test_other_timeframe_or_pinned_source_cannot_trigger_held_position_flip(self):
+        self.facts = C.TradeFacts(self.spec,
+            replace(self.account, signed_lots=2, managed_signed_lots=2),
+            self.quote, self.held)
+        candidates = (
+            structural_row(self.now, asset="CNYRUBF", timeframe="1h",
+                           direction="SHORT", price=float(self.quote.bid), width=.26),
+            structural_row(self.now, asset="CNYRUBF", timeframe="5m",
+                           direction="SHORT", price=float(self.quote.bid), width=.26,
+                           contract_id="different-pinned-contract"),
+        )
+        for row in candidates:
+            with self.subTest(horizon=row["horizon"], contract=row.get("contract_id")):
+                gate = C.TFP.entry_gate(row, float(self.quote.bid), "SHORT", self.now)
+                self.assertTrue(gate["eligible"], gate)
+                coordinator = self.make_coordinator(summary=lambda row=row: [row])
+                with patch.object(coordinator, "_create", return_value={"prepared": True}) as create, \
+                     patch.object(C.TFP, "entry_gate", wraps=C.TFP.entry_gate) as native_gate:
+                    self.assertEqual(coordinator.prepare_next(), {"prepared": True})
+                # The unrelated confirmed event never reaches the held-position
+                # decision. The fallback can independently consider entry/add.
+                native_gate.assert_not_called()
+                create.assert_called_once_with(self.facts, self.now)
+        self.assertEqual(self.transport.calls, [])
+
+    def test_same_timeframe_opposite_event_closes_despite_new_entry_economics(self):
+        # Scale the entire OHLC history to a small, still causal structural move.
+        # Its potential cannot cover entry costs. That says nothing about the
+        # need to close an already held position on a confirmed opposite event.
+        opposite = structural_row(self.now, asset="CNYRUBF", timeframe="5m",
+                                  direction="SHORT", price=float(self.quote.bid), width=.005)
+        gate = C.TFP.entry_gate(opposite, float(self.quote.bid), "SHORT", self.now)
+        self.assertTrue(gate["eligible"], gate)
+        admission = C.VCR.evaluate(opposite, CTC.runtime_portfolio_policy("Currency"), 0., self.now)
+        self.assertFalse(admission["open"], admission)
+        self.assertEqual(admission["canonical_stage"], "ECONOMICS", admission)
+        self.facts = C.TradeFacts(self.spec,
+            replace(self.account, signed_lots=2, managed_signed_lots=2,
+                    available_margin_rub=D("0"), broker_max_sell_lots=0,
+                    costs_reconciled=False), self.quote, self.held)
+        coordinator = self.make_coordinator(summary=lambda: [opposite])
+        # No VCR entry evaluation or candidate ranking is permitted to become
+        # a second veto on this protective same-timeframe exit.
+        with patch.object(C.VCR, "evaluate", side_effect=AssertionError("entry economics used for exit")), \
+             patch.object(C.VCR, "currency_candidate_book", side_effect=AssertionError("entry ranking used for exit")):
+            proposal = coordinator.prepare_next()
+        terms = proposal["terms"]
+        self.assertEqual(terms["action"], "CLOSE")
+        self.assertEqual(terms["side"], "SELL")
+        self.assertEqual(terms["lots"], 2)
+        self.assertEqual(terms["exit_reason"], "CONFIRMED_OPPOSITE_CANONICAL_EVENT")
+        self.assertEqual(terms["horizon"], self.held["horizon"])
+        self.assertEqual(terms["source_identity"], self.held["source_identity"])
+        self.assertEqual(terms["exit_trigger_event_id"], opposite["timeframe_entry_context"]["event"]["event_id"])
+        self.assertEqual(P.fingerprint(terms["exit_trigger_context"]),
+                         P.fingerprint(opposite["timeframe_entry_context"]))
+        self.assertEqual(terms["held_entry_event_id"], self.held["canonical_event_id"])
+        self.assertEqual(proposal["status"], "PENDING_DELIVERY")
+        self.assertEqual(terms["protective_order_mode"], "EXIT_REQUIRES_SEPARATE_CONFIRMATION")
+        self.assertEqual(self.transport.calls, [])
+
+    def test_decision_clock_is_captured_after_broker_facts_io(self):
+        def read_facts():
+            started = self.now
+            self.now += timedelta(seconds=3)
+            self.facts = C.TradeFacts(
+                replace(self.spec, observed_at=started),
+                replace(self.account, observed_at=started),
+                replace(self.quote, observed_at=self.now))
+            return self.facts
+
+        coordinator = self.make_coordinator(facts=read_facts)
+        def actual_plan(facts, now, requested_exit=None):
+            self.assertIsNone(requested_exit)
+            self.assertGreaterEqual(now, facts.quote.observed_at)
+            return P.prepare_entry(self.row, self.admission, facts.spec,
+                                   facts.account, facts.quote, now=now)
+        # Use the real sizing/causal/freshness boundary while keeping these two
+        # independent clock checks out of proposal-event uniqueness.
+        for method in ("prepare", "prepare_next"):
+            with self.subTest(method=method), patch.object(coordinator, "_create", side_effect=actual_plan):
+                terms = getattr(coordinator, method)()
+                self.assertEqual(terms["lots"], 2)
+
+        proposal = coordinator.prepare()
+        approved = self.approve(proposal)
+        self.transport.handlers["PostOrder"] = lambda body: Response(
+            order(client=body["orderId"], timeInForce=body["timeInForce"]))
+        result = coordinator.execute_approved(approved["proposal_id"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.transport.count("PostOrder"), 1)
+        self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "ACKNOWLEDGED")
+
+
 if __name__ == "__main__":
     unittest.main()

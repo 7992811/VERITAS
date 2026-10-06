@@ -12,7 +12,7 @@ from __future__ import annotations
 VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
-STRATEGY_EPOCH = "EQ3_2026_10_06"
+STRATEGY_EPOCH = "EQ4_2026_10_07_NATIVE_MA"
 STRATEGY_ROLE_POLICY = {
     "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
     "AGGRESSIVE": {"name":"CONFIRMED_TREND","horizons":("5m","1h","4h","1d"),
@@ -37,6 +37,23 @@ STRUCTURAL_ENTRY_POLICY = {
     "closed_bar_confirmation": True, "immutable_event_time": True,
     "same_source_candles_and_execution": True,
     "minimum_net_reward_risk": 1.15,
+    "parameter_validation_status": "UNVALIDATED_DEFAULTS",
+}
+
+# Daily context is native D1 from the execution instrument. The actual rebound
+# confirmation, swing stop, ATR and target remain on the selected entry TF.
+MA_REBOUND_POLICY = {
+    "version": "CTC_DAILY_MA_REBOUND_V1",
+    "teaching_id": "USER_DAILY_MA_REBOUND_2026_10_07",
+    "enabled": True, "periods": [50, 200],
+    "zone_atr_daily": 0.10, "max_episode_bars": 12,
+    "rearm_bars": 3, "rearm_atr_daily": 0.25,
+    "slope_lookback_days": 5, "max_adverse_slope_atr": 0.25,
+    "flat_slope_atr": 0.10, "max_flat_crossings_10d": 3,
+    "supported_timeframes": ["1m", "5m", "1h", "4h", "1d"],
+    "native_closed_daily_bars_required": True,
+    "daily_context_frozen_before_touch": True,
+    "independent_structural_breakout_remains_available": True,
     "parameter_validation_status": "UNVALIDATED_DEFAULTS",
 }
 
@@ -74,9 +91,9 @@ COST_POLICY = {
     "cost_buffer_multiple": 1.1,
     "minimum_expected_move_floor_pct": 0.0019,
     "entry_cost_multiple": 2.0,
-    # Explicit Currency instruction survives changes to the general entry floor.
+    # Explicit owner instruction: CNYRUBf retains 1.1x; other assets keep 2.0x.
     "entry_cost_multiple_by_asset": {"CNYRUBF": 1.1},
-    "minimum_expected_move_formula": "max(0.19%, 2.0 * modeled_round_trip_cost)",
+    "minimum_expected_move_formula": "CNYRUBF: max(0.19%, 1.1 * modeled_round_trip_cost); default: max(0.19%, 2.0 * modeled_round_trip_cost)",
     "funding_annual_rate": 0.16,
     "funding_free_seconds": 86400,
     "funding_basis": "ACT/365.25_AFTER_FIRST_24H_ON_CURRENT_NOTIONAL",
@@ -252,7 +269,7 @@ SIGNAL_POLICY = {
     "published_direction": ("LONG", "SHORT"),
     "principle": (
         "A directional thesis needs an independently confirmed same-timeframe "
-        "structural breakout. Publishing or refreshing LONG/SHORT cannot create "
+        "structural breakout or confirmed daily-MA rebound. Publishing or refreshing LONG/SHORT cannot create "
         "a new event, move its trigger, or reset its original confirmation time."
     ),
     "normal_signal_can_probe_below_rr_floor_if_net_positive": False,
@@ -325,7 +342,7 @@ CANONICAL_RULES = [
     _rule("CTC15","data","Mixed-source, contract-mismatch and corrupted-price episodes are excluded from learning without rewriting the accounting ledger."),
 
     _rule("CTC16","signal","Quality filtering occurs before publication of LONG/SHORT."),
-    _rule("CTC17","signal","A thesis opens risk only on a confirmed breakout of a previously known structural extreme on the chosen entry timeframe."),
+    _rule("CTC17","signal","A thesis opens risk on a confirmed structural breakout or native daily SMA50/200 rebound, confirmed on the chosen entry timeframe."),
     _rule("CTC18","signal","Refreshing a directional forecast never resets breakout time, restores a spent event, or creates a new current-price trigger."),
     _rule("CTC19","signal","Post-cost R/R below the canonical floor blocks new risk in every portfolio, including probes."),
     _rule("CTC20","signal","A cost-negative target or expected move below the canonical cost buffer is never eligible even as a probe."),
@@ -344,7 +361,7 @@ CANONICAL_RULES = [
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
     _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
-    _rule("CTC34","economics","Base modeled round trip is 0.16%; minimum move is max(0.19%, 1.1 x modeled round-trip cost)."),
+    _rule("CTC34","economics","Base modeled round trip is 0.16%; entry requires max(0.19%, 1.1 x modeled round-trip cost) for CNYRUBF and max(0.19%, 2.0 x modeled round-trip cost) for other assets."),
     _rule("CTC35","economics","Funding is 16% ACT/365.25 on current notional after a free first 24 hours."),
     _rule("CTC36","economics","Target, stop and adverse modeled fills are recomputed at final entry after all setup/sizing mutations."),
     _rule("CTC37","economics","Adds must have their own remaining room and economics; the original target cannot justify a fresh add."),
@@ -382,7 +399,7 @@ RESOLVED_IMPLEMENTATION_GAPS = [
     {"id":"GAP03","resolution":"Currency: 10,000 RUB, CNYRUBF only, 10x, 35% hard DD, weekend carry."},
     {"id":"GAP04","resolution":"CanonicalAdmissionEngine v2 owns production admission; legacy admission is non-authoritative."},
     {"id":"GAP05","resolution":"Objective policy is canonical."},
-    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, 1.1x buffer."},
+    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, 1.1x base buffer, CNYRUBF entry multiple 1.1x and default 2.0x for other assets; the 0.19% floor remains."},
     {"id":"GAP07","resolution":"Cost module reads CTC directly."},
     {"id":"GAP08","resolution":"External knowledge remains shadow-first and independently validated."},
     {"id":"GAP09","resolution":"Runtime binding is import-order independent."},
