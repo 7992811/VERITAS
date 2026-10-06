@@ -6,7 +6,7 @@ import veritas_canonical_constitution as C
 class CanonicalConstitutionRegistryTests(unittest.TestCase):
     def test_registry_is_self_consistent(self):
         self.assertTrue(C.validate_constitution())
-        self.assertEqual(C.VERSION, "CTC_V1_2026_10_06")
+        self.assertEqual(C.VERSION, "CTC_V2_2026_10_06")
         self.assertEqual(len(C.CANONICAL_RULES), 60)
         self.assertEqual(len({x["id"] for x in C.CANONICAL_RULES}), 60)
         self.assertFalse(set(C.HARD_VETOES) & set(C.SOFT_VETOES))
@@ -36,7 +36,7 @@ class CanonicalConstitutionRegistryTests(unittest.TestCase):
         )
 
 
-class CanonicalConstitutionCurrentR85AlignmentTests(unittest.TestCase):
+class CanonicalConstitutionCurrentRuntimeAlignmentTests(unittest.TestCase):
     def test_current_cost_module_matches_canonical_values(self):
         import veritas_costs as VC
         self.assertAlmostEqual(VC.COMMISSION_RATE, C.COST_POLICY["commission_rate_per_side"])
@@ -55,7 +55,7 @@ class CanonicalConstitutionCurrentR85AlignmentTests(unittest.TestCase):
             max(0.0019, 1.1 * 0.0016),
         )
 
-    def test_r85_runtime_authority_is_explicit(self):
+    def test_ctc_v2_runtime_authority_is_explicit(self):
         import veritas_portfolio as VP
         import veritas_portfolio_runtime as VPR
         self.assertEqual(VPR.FINAL_RUNTIME_AUTHORITY_VERSION, C.BASIS_RUNTIME)
@@ -86,12 +86,15 @@ class CanonicalConstitutionDeclaredGapsTests(unittest.TestCase):
     def test_resolved_gap_registry_is_closed(self):
         self.assertEqual(C.IMPLEMENTATION_GAPS, [])
         self.assertEqual({x["id"] for x in C.RESOLVED_IMPLEMENTATION_GAPS},
-                         {f"GAP{i:02d}" for i in range(1,11)})
+                         {f"GAP{i:02d}" for i in range(1,19)})
 
     def test_core_caps_match_canonical(self):
         import veritas_portfolio as VP
         self.assertEqual(VP.POLICIES["Champion"]["max_fraction"], 1.0)
         self.assertEqual(VP.POLICIES["Challenger"]["max_fraction"], 1.0)
+        self.assertEqual(VP.POLICIES["Impulse"]["max_gross"], 0.50)
+        for name in C.PORTFOLIO_ORDER:
+            self.assertEqual(VP.POLICIES[name], C.runtime_portfolio_policy(name))
 
     def test_currency_owner_policy_is_active(self):
         import veritas_currency_portfolio as VCP
