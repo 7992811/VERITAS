@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 
-PRODUCT_VERSION="veritas-max-product-v91.1-execution-quality-v3"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.1-execution-quality-v3"
-UI_VERSION="veritas-ui-v9.1.1-execution-quality-v3"
+PRODUCT_VERSION="veritas-max-product-v91.3-native-daily-ma"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.3-native-daily-ma"
+UI_VERSION="veritas-ui-v9.1.3-native-daily-ma"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -24,7 +24,9 @@ def snapshot():
         "ctc_version":CTC.VERSION,
         "strategy_epoch":CTC.STRATEGY_EPOCH,
         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
+        "daily_ma_rebound_policy":dict(CTC.MA_REBOUND_POLICY),
         "active_user_teaching_id":CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"],
+        "active_user_teaching_ids":[CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"]],
         "runtime_authority":CTC.BASIS_RUNTIME,
         "ui_version":UI_VERSION,
         "db_schema_version":DB_SCHEMA_VERSION,

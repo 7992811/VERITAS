@@ -33,7 +33,9 @@ TIMEFRAMES = {
     "1h": (6, 3600, 240), "4h": (8, 14400, 300),
     "1d": (9, 86400, 900),
 }
-DEFAULT_TIMEFRAMES = ("1h", "4h", "1d", "1m", "5m")
+# Fast entry contexts have the shortest useful lifetime. A slow senior request
+# must not consume the shared budget before either fast timeframe is attempted.
+DEFAULT_TIMEFRAMES = ("1m", "5m", "1h", "4h", "1d")
 MAX_BARS = 500
 MAX_RESPONSE_BYTES = 256 * 1024
 SESSION_SECONDS = 20 * 60

@@ -370,12 +370,18 @@ def entry_gate(context, price, direction, now, config=None):
     if not event:
         return dict(out, reason="SAME_TF_WAIT_STRUCTURAL_BREAKOUT")
     timeframe = str(context.get("timeframe") or "")
-    if (event.get("version") != VERSION or event.get("event_type") != "SAME_TIMEFRAME_STRUCTURAL_BREAKOUT"
+    if (event.get("version") != VERSION or event.get("event_type") not in (
+            "SAME_TIMEFRAME_STRUCTURAL_BREAKOUT", "DAILY_MA_REBOUND")
             or any(event.get(k) != timeframe for k in ("timeframe", "atr_timeframe", "stop_timeframe", "target_timeframe"))
             or event.get("confirmation") != "CLOSED_" + timeframe + "_BAR"):
         return dict(out, reason="SAME_TF_PROVENANCE_MISMATCH")
     if not _same_source(event.get("source_identity"), context.get("source_identity")):
         return dict(out, reason="SAME_TF_SOURCE_IDENTITY_MISMATCH")
+    if event.get("event_type") == "DAILY_MA_REBOUND":
+        from veritas_ma_rebound import validate_event
+        proof = validate_event(event, source_identity=context.get("source_identity"))
+        if not proof.get("eligible"):
+            return dict(out, reason=proof.get("reason") or "DAILY_MA_REBOUND_PROOF_INVALID")
     direction = str(direction or "").upper()
     if direction not in ("LONG", "SHORT") or event.get("direction") != direction:
         return dict(out, reason="SAME_TF_DIRECTION_CONFLICT")

@@ -255,6 +255,23 @@ class EvidenceTests(unittest.TestCase):
                 if state in (None,'',' '):
                     self.assertEqual(out['source_integrity_status'],'UNKNOWN')
 
+    def test_verified_integrity_aliases_use_the_same_learning_definition(self):
+        for status in ('OK', 'VALID', 'CLEAN', ' ok ', ' valid ', ' clean '):
+            with self.subTest(status=status):
+                trade=self.trade()
+                trade['payload']['data_integrity_status']=status
+                before=copy.deepcopy(trade)
+                reviewed=Q.review(trade)
+                self.assertEqual(reviewed['evidence_status'],'OBSERVED_PAPER_PATH')
+                self.assertEqual(reviewed['source_integrity_status'],status.strip().upper())
+                self.assertIsNone(reviewed['evidence_exclusion'])
+                self.assertEqual(Q.statistics([trade])['learning_evidence']['trades'],1)
+                self.assertEqual(reviewed['net_pnl_rub'],30)
+                self.assertEqual(trade,before)
+        unknown=self.trade()
+        unknown['payload']['data_integrity_status']=' unknown '
+        self.assertEqual(Q.statistics([unknown])['learning_evidence']['trades'],0)
+
     def test_explicit_null_source_integrity_remains_unknown(self):
         t=self.trade();t['payload']['data_integrity_status']=None
         out=Q.review(t)

@@ -99,9 +99,9 @@ def review(trade):
         ('gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub','entry_notional_rub'))
     mfe,mae=num(p.get('mfe_pct')),num(p.get('mae_pct'))
     integrity=p.get('data_integrity_status')
-    integrity=integrity if isinstance(integrity,str) and integrity.strip() else 'UNKNOWN'
+    integrity=integrity.strip().upper() if isinstance(integrity,str) and integrity.strip() else 'UNKNOWN'
     exclusion=AUDIT.evidence_exclusion(trade)
-    data_ok=integrity=='OK' and exclusion is None
+    data_ok=exclusion is None
     idea_id,idea_verified=idea_key(trade)
     if trade.get('direction')=='SHORT' and mfe is not None and mfe>=0:
         # Existing telemetry uses entry/price-1 for shorts. Convert to the same

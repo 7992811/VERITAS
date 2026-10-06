@@ -10,7 +10,7 @@
   "source_run_url": "https://github.com/7992811/VERITAS/actions/runs/37535559682",
   "mode": "PAPER_ONLY",
   "baseline_strategy_epoch": "EQ3_2026_10_06",
-  "next_strategy_epoch": "EQ4_2026_10_07",
+  "next_strategy_epoch": "EQ5_2026_10_07_AUDIT",
   "financial_all_history": {
     "trades": 646,
     "accounting_complete": 646,
@@ -167,5 +167,28 @@
     "MFE does not prove an executable counterfactual exit.",
     "Accounting keeps all losses; learning exclusions must not rewrite financial results.",
     "Current epoch had zero closed cycles at baseline snapshot."
-  ]
+  ],
+  "concurrent_main": {
+    "sha": "101d6d2c3a9b379a1921ff1e5c4450cae7a7da62",
+    "pr": 53,
+    "epoch": "EQ4_2026_10_07_NATIVE_MA",
+    "preserve_native_daily_ma_and_brent": true
+  },
+  "parallel_main_updates": [
+    {
+      "sha": "101d6d2c3a9b379a1921ff1e5c4450cae7a7da62",
+      "pr": 53,
+      "merged_at": "2026-10-06T22:04:05Z",
+      "scope": "Native daily SMA50/200 and Brent source; preserved"
+    },
+    {
+      "sha": "cef232e4ff94ab126529bd0324cfb55b2c934630",
+      "pr": 59,
+      "merged_at": "2026-10-06T22:17:58Z",
+      "scope": "Exact causal daily-context index; preserved"
+    }
+  ],
+  "integration_pr": "https://github.com/7992811/VERITAS/pull/56",
+  "audit_epoch": "EQ5_2026_10_07_AUDIT",
+  "financial_snapshot_scope": "All financial numbers here belong to 2026-10-06T21:40:45Z–21:40:52Z runtime reads; no claim of EQ5 performance."
 }

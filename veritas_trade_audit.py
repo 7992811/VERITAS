@@ -55,7 +55,11 @@ def observed_event(trade):
         return event_id,False
     timeframe=event.get('timeframe')
     seconds=TIMEFRAMES.get(timeframe) if isinstance(timeframe,str) else None
-    if (event.get('event_type')!='SAME_TIMEFRAME_STRUCTURAL_BREAKOUT'
+    ma_event=event.get('event_type')=='DAILY_MA_REBOUND'
+    if ((event_id.startswith('MAR_') or event.get('ma_proof') or event.get('ma_rebound_version'))
+            and not ma_event):
+        return event_id,False
+    if (event.get('event_type') not in ('SAME_TIMEFRAME_STRUCTURAL_BREAKOUT','DAILY_MA_REBOUND')
             or seconds is None or timeframe!=trade.get('horizon')
             or event.get('confirmation')!='CLOSED_'+timeframe+'_BAR'
             or any(event.get(field)!=timeframe for field in
@@ -69,6 +73,15 @@ def observed_event(trade):
             or not expected.get('key') or expected.get('asset')!=trade.get('asset')
             or actual.get('asset')!=trade.get('asset') or not VPS.same(expected,actual)):
         return event_id,False
+    if ma_event:
+        try:
+            from veritas_ma_rebound import validate_event
+            proof=event.get('ma_proof') or {}
+            if ((proof.get('daily_provenance') or {}).get('native_timeframe')!='1d'
+                    or not validate_event(event,source_identity=expected).get('eligible')):
+                return event_id,False
+        except (ImportError,AttributeError,KeyError,TypeError,ValueError,OverflowError):
+            return event_id,False
     opening,signal,confirmed,entered=(_timestamp(value) for value in
         (event.get('breakout_bar_at'),event.get('signal_at'),event.get('confirmed_at'),trade.get('opened_at')))
     known=[_timestamp(event.get(key)) for key in

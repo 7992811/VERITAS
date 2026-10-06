@@ -1044,6 +1044,7 @@ def _v90r29_episode_from_trade(t):
     return e
 
 def _v90r44_sanitize_learning(pg_connect,force=False):
+    import veritas_learning_integrity as VLI
     now=time.time()
     if (not force
             and now-float(_v90r44_sanitize_state.get('at') or 0.0)<50.0):
@@ -1052,9 +1053,13 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
     changed=0
     total=0
     err=None
+    evidence_revalidation=None
     try:
         with pg_connect() as c:
+            c.execute("SET LOCAL statement_timeout = '4000ms'")
             _v90r29_ensure(c)
+            evidence_revalidation=VLI.revalidate_eligible(c)
+            changed=evidence_revalidation['staged']+evidence_revalidation['processed']
             cur=c.execute("""
               UPDATE v90_learning_episodes
               SET learning_eligible=FALSE,
@@ -1070,7 +1075,7 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
               WHERE learning_eligible=TRUE
                 AND UPPER(COALESCE(payload->>'exit_reason','')) LIKE '%REBASE%'
             """)
-            changed=max(0,int(getattr(cur,'rowcount',0) or 0))
+            changed+=max(0,int(getattr(cur,'rowcount',0) or 0))
             cur=c.execute("""
           UPDATE v90_learning_episodes e SET learning_eligible=FALSE,
             learning_action='EXCLUDE_FROM_LEARNING',
@@ -1099,6 +1104,8 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
             """).fetchone()
             total=int((row or {}).get('n') or 0)
     except Exception as ex:
+        changed=0  # Transaction rolled back; stale readers still require verified evidence.
+        evidence_revalidation=None
         err=f'{type(ex).__name__}: {ex}'[:240]
 
     _v90r44_sanitize_state.update({
@@ -1106,12 +1113,16 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
       'last_changed':changed,
       'total_admin_excluded':total,
       'last_error':err,
+      'evidence_revalidation':evidence_revalidation,
     })
 
+    if changed or err:
+        # A failed read must not leave a previously learned profile in force.
+        _v90r29_cache.update(at=0.0,profiles={},summary={'status':'EVIDENCE_REVALIDATION_REQUIRED'})
+        _v90r33_cache.update(at=0.0,n=0,median_realization=1.0,avg_realization=1.0,
+                            avg_capture=None,overforecast_rate=0.0,entry_error_rate=0.0,
+                            exit_capture_error_rate=0.0,edge_haircut=1.0)
     if changed:
-        # Both learning caches must be rebuilt from the sanitized episode set.
-        _v90r29_cache['at']=0.0
-        _v90r33_cache['at']=0.0
         print(json.dumps({
           'event':'V90_R44_LEARNING_SANITIZED',
           'changed':changed,
@@ -1356,8 +1367,8 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
     except Exception:
         return changes
 
-    # Commission is 0.04% per leg. Require a positive post-cost floor rather
-    # than waiting for the trade to retrace back through zero.
+    # This percentage is only a price-move trigger. Canonical exit authority
+    # must independently verify whole-cycle net after all paid and exit costs.
     net_floor_pct=max(0.15,100.0*(2.0*float(COMMISSION)+0.0003))
 
     for z0 in rows or []:
@@ -1401,7 +1412,7 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
         if target>=current_frac-0.025:
             continue
 
-        result=_vp_base._v90r46_base_close_or_reduce(
+        result=canonical_close_or_reduce(
             c,p,name,z,px,target,nav,ts,'R46_MFE_GIVEBACK_HARVEST'
         )
         if not result:
@@ -5161,7 +5172,7 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     # CTC lifecycle: the first take-profit harvests part of a position and keeps
     # a structural runner whenever the 5% position step permits it. Never take
     # discretionary profit unless the whole-trade result is positive after costs.
-    if full and reason.startswith('TAKE_PROFIT'):
+    if VPG.is_discretionary_profit_exit(reason):
         trade=(c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
                          (z.get('active_trade_id'),)).fetchone()
                if z.get('active_trade_id') else None)
@@ -5170,9 +5181,11 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         if not assessment.get('eligible'):
             print(json.dumps({'event':'CTC_V2_TP_SUPPRESSED','portfolio':name,
                               'asset':z.get('asset'),'reason':assessment.get('reason'),
-                              'projected_net_pnl_rub':assessment.get('net_pnl_rub')},
+                              'projected_net_pnl_rub':assessment.get('net_pnl_rub'),
+                              'exit_reason':reason,'target_fraction':target_fraction},
                              ensure_ascii=False,default=str,separators=(',',':')),flush=True)
             return 0.0
+    if full and reason.startswith('TAKE_PROFIT'):
         policy=dict(POLICIES.get(str(name)) or {})
         step=float(policy.get('position_step') or CTC.LIFECYCLE_POLICY['minimum_position_step'])
         payload=_canonical_payload(z)
