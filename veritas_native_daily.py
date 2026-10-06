@@ -17,7 +17,7 @@ import veritas_daily_averages as DA
 import veritas_price_source as VPS
 from veritas_timeframe_structure import timestamp
 
-VERSION = "SOURCE_LOCKED_NATIVE_DAILY_V1"
+VERSION = "SOURCE_LOCKED_NATIVE_DAILY_V2"
 MAX_BARS = 500
 MAX_RESPONSE_BYTES = 512*1024
 TTL_SECONDS = 900
@@ -28,6 +28,17 @@ _NETWORK_GATE = threading.BoundedSemaphore(2)
 
 def _identity(raw):
     return VPS.identity(str((raw or {}).get("asset") or ""),raw)
+
+
+def _supplied_profinance_daily(raw):
+    mapping=raw.get("structure_bars_by_timeframe") or {}
+    attached=raw.get("native_source_history_attached") is True
+    if attached and "native_daily_evidence" in raw:
+        # The source bundle's untouched D1 observations carry first-proof and
+        # revision times, even when a historical structural cutoff hides them.
+        return True,raw.get("native_daily_evidence") or []
+    return attached and "1d" in mapping,mapping.get("1d") or []
+
 
 
 def _number(value):
@@ -199,12 +210,11 @@ class DailyHistoryCache:
     def _load(self,raw,identity,now,deadline):
         asset,key=str(raw.get("asset")),identity["key"]
         if key.startswith("PROFINANCE:"):
-            mapping=raw.get("structure_bars_by_timeframe") or {}
-            supplied=mapping.get("1d") or []
+            attached,supplied=_supplied_profinance_daily(raw)
             # A shared source bundle already exhausted this cycle\'s budget.
             # Its explicit empty D1 is evidence of unavailability, not a reason
             # to start another provider request for the same asset and cycle.
-            if raw.get("native_source_history_attached") is True and "1d" in mapping:
+            if attached:
                 return deepcopy(supplied)
             if supplied and any(DA._native(b) for b in supplied):
                 return deepcopy(supplied)
@@ -272,7 +282,12 @@ class DailyHistoryCache:
             cached=deepcopy(self._cache.get(key))
             attempt=self._attempts.get(key)
             error=self._errors.get(key)
-            due=not cached or not 0<=at-cached["fetched_at"]<TTL_SECONDS
+            attached,supplied=_supplied_profinance_daily(raw)
+            supplied_update=(identity["key"].startswith("PROFINANCE:") and cached is not None
+                             and attached and supplied != cached["bars"])
+            # Fresh native bundles were already fetched under the shared budget.
+            # Their revision proof must not be hidden by this secondary cache.
+            due=bool(supplied_update or not cached or not 0<=at-cached["fetched_at"]<TTL_SECONDS)
             if cached and cached["bars"]:
                 valid,_=DA.validated_bars(cached["bars"],asof,source_identity=identity)
                 if valid:
@@ -282,7 +297,7 @@ class DailyHistoryCache:
                 else:
                     due=True
             can_fetch=(due and key not in self._running
-                       and (attempt is None or at-attempt>=RETRY_SECONDS or at<attempt))
+                       and (supplied_update or attempt is None or at-attempt>=RETRY_SECONDS or at<attempt))
             if can_fetch:
                 self._running.add(key)
                 self._attempts[key]=at
@@ -298,11 +313,18 @@ class DailyHistoryCache:
                 if budget is None or budget<=0:
                     raise TimeoutError("NATIVE_DAILY_BUDGET_EXHAUSTED")
                 bars=self._load(raw,identity,asof,self._monotonic()+min(8.,budget))
-                # Do not cache a forming ProFinance day as a finished boundary.
-                bars=[b for b in bars if timestamp(b.get("end_ts")) is None
-                      or timestamp(b.get("end_ts"))<=asof]
+                profinance=identity["key"].startswith("PROFINANCE:")
+                if not profinance:
+                    bars=[b for b in bars if timestamp(b.get("end_ts")) is None
+                          or timestamp(b.get("end_ts"))<=asof]
+                # A real completion proof can be later than a historical replay
+                # clock. Keep it (and any revision watermark) in the transport;
+                # DA controls when that observation can contribute to an SMA.
                 valid,diagnostics=DA.validated_bars(bars,asof,source_identity=identity)
-                if not valid:
+                certified_future=profinance and any(
+                    isinstance(b,dict) and VPS.same(identity,DA._source(b.get("source_identity")))
+                    and DA._native(b) for b in bars)
+                if not valid and not certified_future:
                     raise ValueError("NATIVE_DAILY_NO_VALID_CLOSED_BARS")
                 cached={"bars":deepcopy(bars[-MAX_BARS:]),"fetched_at":self._clock(),
                         "diagnostics":diagnostics}
@@ -329,7 +351,10 @@ class DailyHistoryCache:
                           cache_reused=not can_fetch or error is not None)
             context=DA.build_context(result["bars"],asof,asset=result["asset"],source_identity=identity)
             result.update(status="READY" if context["status"]=="OK" else context["status"],
-                          last_closed_at=context.get("daily_asof"),diagnostics=context.get("diagnostics"))
+                          last_closed_at=context.get("provenance",{}).get("last_closed_at"),
+                          daily_asof=context.get("daily_asof"),
+                          daily_asof_basis=context.get("daily_asof_basis"),
+                          known_at=context.get("known_at"),diagnostics=context.get("diagnostics"))
         result["reason"]=error or ("FETCH_IN_PROGRESS_OR_COOLDOWN" if due and not can_fetch else None)
         return result
 

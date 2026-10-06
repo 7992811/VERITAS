@@ -27,7 +27,7 @@ Sources match the selected execution identity:
 | Execution source | Native daily data |
 | --- | --- |
 | Binance spot BTC/ETH | Spot klines, interval 1d |
-| ProFinance NQ/GOLD/BRENT | Native Last-price daily history |
+| ProFinance NQ/GOLD/BRENT | Native Last-price daily history with observed successor-day completion proof |
 | MOEX IMOEX/CNYRUBF | ISS candles, interval 24, exact security |
 | T-Invest CNYRUBF | Existing read-only D1 candle snapshot, exact UID and price normalization |
 
@@ -99,12 +99,15 @@ processing or manufacture missing returns.
 
 ## Costs and validation
 
-The system audit reconciles the canonical entry threshold to
-max(0.19%,1.1 * modeled round-trip costs) in every paper portfolio. Commission
-and paper slippage remain 0.04% per side each. The separate net reward/risk
-floor remains 1.15. The previous 2.0 entry multiple conflicted with the recorded
-1.1 buffer; no separate explicit owner instruction for 2.0 was established in
-the reviewed history. See docs/audits/2026-10-07-system-audit.md.
+The current canonical entry threshold is
+max(0.19%,1.1 * modeled round-trip costs) in all five paper portfolios.
+Commission and paper slippage remain 0.04% per side each; the separate net
+reward/risk floor is 1.15. The owner's later instruction at 2026-10-06
+20:08:32 UTC, "Фильтр по потенциалу оставь 1,1х", supersedes the earlier
+19:30:38 UTC approval of a proposed 2.0 threshold. The current main audit
+already restores 1.1; this daily-completion release preserves that policy.
+The later instruction was retrieved while integrating the concurrent audit;
+a previous review had found only the earlier 2.0 approval.
 
 Safety CI requires native-provider/source, causal MA, event lifetime,
 same-timeframe geometry, full canonical admission for all five portfolios,
@@ -127,3 +130,30 @@ reported as a measurement, not a machine-dependent pass threshold.
 
 This optimization keeps the entry policy, source checks, cost limits, strategy
 epoch and immutable owner teaching snapshots unchanged.
+
+## ProFinance daily completion evidence
+
+The date-only ProFinance daily response does not certify a physical session
+closing time. A date label is retained as a nominal ordering index. The latest
+native daily record is excluded; an actually observed later valid native date
+certifies the preceding record. The certificate binds source, both date labels,
+OHLC digest and first observation time.
+
+Repeated unchanged data keeps its first certificate. A changed certified OHLC
+has a new availability time and a revision watermark. Historical snapshots
+before that watermark are explicitly unavailable when the old revision cannot
+be reconstructed; the calculation cannot silently substitute an older day.
+A refresh that loses a previously certified date within the retained range is
+rejected while preserving the prior complete snapshot and its original age.
+
+Daily MA availability uses the real certificate observation time. A historical
+touch before the first certificate cannot become a new signal at fetch time.
+Future approach, touch and confirmation candles can use the certified levels.
+
+For these date-only inputs, diagnostics expose the provider period label,
+completion observation and nominal-date basis. A verified physical close time
+remains null. Date-only native records cannot supply structural D1/3d/7d event
+timestamps. Independently complete observed hourly buckets may still define
+explicit fixed UTC execution intervals; these aggregated intervals never
+replace native daily input for SMA calculation. Other providers retain their
+verified native interval boundaries.

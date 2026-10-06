@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 
-PRODUCT_VERSION="veritas-max-product-v91.3-native-daily-ma"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.3-native-daily-ma"
-UI_VERSION="veritas-ui-v9.1.3-native-daily-ma"
+PRODUCT_VERSION="veritas-max-product-v91.4-native-daily-ma"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.4-native-daily-ma"
+UI_VERSION="veritas-ui-v9.1.4-native-daily-ma"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 

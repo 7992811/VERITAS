@@ -15,7 +15,17 @@ import veritas_price_source as VPS
 from test_veritas_timeframe_policy import structural_row
 
 
-def native_days(clock, identity, value=100., count=220):
+def native_days(clock, identity, value=100., count=220, known_before=None):
+    if str(identity.get("key", "")).startswith("PROFINANCE:"):
+        import veritas_profinance_history as PF
+        proof_clock = known_before or clock
+        end = int(proof_clock.timestamp())//86400*86400
+        lines = ["0;Open;High;Low;Close;Date"]
+        for i in range(count+1):
+            label = datetime.fromtimestamp(end-(count-i)*86400, timezone.utc).strftime("%d.%m.%Y")
+            lines.append("%s;%s;%s;%s;%s;%s" % (i, value, value+1.5, value-1.5, value, label))
+        return PF.parse_history("\n".join(lines), identity["asset"], "1d",
+                                now=proof_clock, observed_at=proof_clock)["bars"]
     end = int(clock.timestamp())//86400*86400
     return [dict(ts=end-(count-i)*86400, end_ts=end-(count-i-1)*86400,
                  open=value, high=value+1.5, low=value-1.5, close=value,
@@ -44,7 +54,7 @@ def rebound_raw(clock, timeframe="5m", asset="NQ", direction="LONG"):
     return dict(asset=asset, price=rows[-1]["close"], source=provider,
         source_names={"primary":provider}, structure_source_identity=identity,
         structure_bars_by_timeframe={timeframe:rows},
-        native_daily_bars=native_days(clock,identity),
+        native_daily_bars=native_days(clock,identity,known_before=clock-timedelta(seconds=40*step)),
         observed_at=clock.isoformat(), market_observed_at=clock.isoformat(),
         source_gate_pass=True, market_open=True, paper_eligible=True,
         direct_sources=1, source_divergence=0.,

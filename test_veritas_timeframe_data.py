@@ -1,6 +1,6 @@
 """Source attachment, completed aggregation and persisted entry provenance."""
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
 
@@ -52,10 +52,24 @@ class NativeTimeframeDataTests(unittest.TestCase):
         identity = VPS.identity('NQ', raw)
         with patch('veritas_profinance_history.fetch_history_bundle', return_value={
                 'source_identity':identity, 'bars_by_timeframe':{},
-                'status_by_timeframe':{'1h':{'status':'UNAVAILABLE'}}}):
+                'status_by_timeframe':{'1h':{'status':'UNAVAILABLE'}}}), \
+             patch('veritas_native_daily.fetch_native_daily', return_value={
+                'source_identity':identity, 'bars':[], 'status':'UNAVAILABLE'}):
             attached = TFD.attach(raw, now)
-        self.assertEqual(attached['structure_bars_by_timeframe'], {})
-        self.assertIsNone(TFD.context(attached,'1h',now)['event'])
+        self.assertEqual(attached['structure_bars_by_timeframe'],
+                         {'1d':[], '3d':[], '7d':[]})
+        self.assertEqual(attached['canonical_hourly_bars'],rows)
+        self.assertEqual(attached['intraday_bars'],rows)
+        self.assertEqual(attached['structure_minute_bars'],[])
+        self.assertEqual(attached['structure_intraday_bars'],[])
+        self.assertEqual(attached['native_daily_bars'],[])
+        for horizon in ('1h','1d','3d','7d'):
+            self.assertIsNone(TFD.context(attached,horizon,now)['event'])
+        for horizon in ('1d','3d','7d'):
+            status = attached['structure_history_status'][horizon]
+            self.assertEqual(status['status'],'UNAVAILABLE')
+            self.assertEqual(status['reason'],'NATIVE_DAILY_INTERVAL_UNVERIFIED')
+            self.assertFalse(status['interval_boundary_verified'])
 
     def test_context_is_recomputed_when_a_candle_closes_without_retrieval(self):
         rows, now = example()
@@ -76,18 +90,68 @@ class NativeTimeframeDataTests(unittest.TestCase):
         self.assertIsNone(TFD.context(attached,'5m',now)['event'])
 
     def test_daily_native_phase_survives_fixed_weekly_aggregation(self):
-        # Monday midnight Moscow is Sunday 21:00 UTC. Never slide this bucket.
+        from veritas_native_daily import parse_moex
+        # These native interval24 observations explicitly report a full Moscow
+        # calendar day. Their provider begin/end establish the non-UTC phase.
+        local_start = datetime(2026,9,28)
         start = datetime(2026,9,27,21,tzinfo=timezone.utc).timestamp()
-        rows = [dict(ts=start+i*86400,open=100+i,high=102+i,low=99+i,
-                     close=101+i,timeframe='1d') for i in range(14)]
-        raw = {'asset':'NQ','source':'ProFinance NASD100_FUT'}
-        identity = VPS.identity('NQ',raw)
-        with patch('veritas_profinance_history.fetch_history_bundle',return_value={
-                'source_identity':identity,'bars_by_timeframe':{'1d':rows}}):
-            result = TFD.attach(raw,start+14*86400)['structure_bars_by_timeframe']['7d']
+        now = start+14*86400
+        raw = {'asset':'CNYRUBF','source':'MOEX CNYRUBF'}
+        identity = VPS.identity('CNYRUBF',raw)
+        self.assertEqual(identity['key'],'MOEX:CNYRUBF')
+        data = []
+        for i in range(14):
+            begin = local_start+timedelta(days=i)
+            end = begin+timedelta(days=1,seconds=-1)
+            data.append([begin.isoformat(),end.isoformat(),100+i,102+i,99+i,101+i,1.])
+        rows = parse_moex({'candles':{
+            'columns':['begin','end','open','high','low','close','volume'],
+            'data':data}},identity,now)
+        self.assertEqual(rows[0]['ts'],start)
+        self.assertEqual(rows[0]['end_ts'],start+86400)
+        self.assertEqual(rows[0]['provider_end_ts'],start+86400-1)
+        self.assertEqual(rows[0]['native_interval'],24)
+        raw['canonical_daily_bars'] = rows
+        with patch('veritas_native_daily.fetch_native_daily',return_value={
+                'source_identity':identity,'bars':rows,'status':'READY'}):
+            result = TFD.attach(raw,now)['structure_bars_by_timeframe']['7d']
         self.assertEqual([b['ts'] for b in result],[start,start+7*86400])
         self.assertEqual(result[0]['open'],100)
         self.assertEqual(result[0]['close'],107)
+
+    def test_profinance_daily_date_labels_remain_ma_context_not_structural_clock(self):
+        from test_veritas_ma_rebound import pf_example
+        _,daily,now = pf_example()
+        foreign, _ = example('1h')
+        raw = {'asset':'NQ','source':'ProFinance NASD100_FUT',
+               'canonical_hourly_bars':foreign,'intraday_bars':foreign}
+        identity = VPS.identity('NQ',raw)
+        for bar in daily:
+            bar['source_identity'] = deepcopy(identity)
+            bar['completion_proof']['source_identity'] = {
+                'key':identity['key'],'contract_id':identity.get('contract_id')}
+        original = deepcopy(daily)
+        with patch('veritas_profinance_history.fetch_history_bundle',return_value={
+                'source_identity':identity,'bars_by_timeframe':{'1d':daily}}), \
+             patch('veritas_native_daily.fetch_native_daily',return_value={
+                'source_identity':identity,'bars':daily,'status':'READY'}):
+            attached = TFD.attach(raw,now)
+        self.assertEqual(daily,original)
+        self.assertEqual(attached['native_daily_bars'],original)
+        self.assertNotIn('1h',attached['structure_bars_by_timeframe'])
+        for horizon in ('1d','3d','7d'):
+            self.assertEqual(attached['structure_bars_by_timeframe'][horizon],[])
+            status = attached['structure_history_status'][horizon]
+            self.assertEqual(status['reason'],'NATIVE_DAILY_INTERVAL_UNVERIFIED')
+            self.assertEqual(status['status'],'UNAVAILABLE')
+            self.assertFalse(status['interval_boundary_verified'])
+            self.assertIsNone(TFD.context(attached,horizon,now)['event'])
+        daily_context = TFD.daily_context(attached,now)
+        self.assertEqual(daily_context['status'],'OK')
+        self.assertEqual(daily_context['periods']['200']['sample_count'],200)
+        self.assertEqual(daily_context['periods']['200']['value'],100.)
+        self.assertEqual(daily_context['daily_asof_basis'],'PROVIDER_DATE_LABEL_ONLY')
+        self.assertIsNone(daily_context['provenance']['last_closed_at'])
 
     def test_currency_5m_requires_all_five_observed_minutes(self):
         import veritas_intelligence as VI

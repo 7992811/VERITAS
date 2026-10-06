@@ -26,14 +26,17 @@ def attach(raw, now=None):
     if not identity:
         return r
     mapping = {}
-    if identity['key'].startswith('PROFINANCE:'):
+    profinance = identity['key'].startswith('PROFINANCE:')
+    if profinance:
         from veritas_profinance_history import fetch_history_bundle
         bundle = (dict(source_identity=attached_identity,
                        bars_by_timeframe=attached_mapping,
                        forming_bars_by_timeframe=r.get('structure_forming_bars_by_timeframe') or {},
                        status_by_timeframe=r.get('structure_history_status'))
                   if r.get('native_source_history_attached')
-                  else fetch_history_bundle(asset=asset, now=clock))
+                  else fetch_history_bundle(asset=asset, now=now))
+        if now is None:
+            clock = datetime.now(timezone.utc)
         r['structure_history_status'] = bundle.get('status_by_timeframe') or {}
         if not VPS.same(identity, bundle.get('source_identity')):
             r['structure_history_error'] = 'SAME_TF_SOURCE_MISMATCH'
@@ -67,7 +70,13 @@ def attach(raw, now=None):
     daily = fetch_native_daily(r, clock)
     r['native_daily_bars'] = daily.get('bars') or []
     r['native_daily_history_status'] = {k:v for k,v in daily.items() if k != 'bars'}
-    if not labelled.get('1d') and r['native_daily_bars']:
+    if profinance:
+        # A provider date label is sufficient to order certified MA observations,
+        # but cannot establish the timestamp of a native structural breakout.
+        for tf in ('1d', '3d', '7d'):
+            labelled[tf] = [b for b in labelled.get(tf, [])
+                            if b.get('interval_boundary_verified') is True]
+    elif not labelled.get('1d') and r['native_daily_bars']:
         labelled['1d'] = r['native_daily_bars']
     for source_tf, tf in (('1h','4h'), ('1h','1d'), ('1d','3d'), ('1d','7d')):
         if not labelled.get(tf) and labelled.get(source_tf):
@@ -78,6 +87,20 @@ def attach(raw, now=None):
             anchor = (345600 if tf == '7d' else 0) + offset
             labelled[tf] = TS.aggregate_closed_bars(labelled[source_tf], source_tf, tf,
                                                    clock, anchor=anchor)
+            if profinance:
+                for bar in labelled[tf]:
+                    bar.update(interval_boundary_verified=True,
+                               native_time_basis='COMPLETE_OBSERVED_UTC_BUCKET',
+                               source_identity=identity)
+    if profinance:
+        statuses = dict(r.get('structure_history_status') or {})
+        for tf in ('1d', '3d', '7d'):
+            rows = labelled.get(tf) or []
+            statuses[tf] = dict(statuses.get(tf) or {}, bars=len(rows),
+                status='READY' if rows else 'UNAVAILABLE',
+                reason='COMPLETE_OBSERVED_TIME_BUCKETS' if rows else 'NATIVE_DAILY_INTERVAL_UNVERIFIED',
+                interval_boundary_verified=bool(rows))
+        r['structure_history_status'] = statuses
     r['structure_bars_by_timeframe'] = labelled
     return r
 
@@ -89,9 +112,18 @@ def context(raw, horizon, now=None):
     cached = cache.get(horizon)
     if cached is None or cached['as_of'] != stamp:
         rows = (raw.get('structure_bars_by_timeframe') or {}).get(horizon) or []
+        identity = raw.get('structure_source_identity') or {}
+        daily_clock_missing = bool(str(identity.get('key', '')).startswith('PROFINANCE:')
+            and horizon in ('1d', '3d', '7d')
+            and any(b.get('interval_boundary_verified') is not True for b in rows))
+        if daily_clock_missing:
+            rows = []
         result = TS.build_context(rows, horizon, clock,
                     asset=raw.get('asset') or '', source_identity=raw.get('structure_source_identity'),
                     config=CTC.STRUCTURAL_ENTRY_POLICY)
-        result = select_context(raw, horizon, clock, result)
+        if daily_clock_missing:
+            result['input_issue'] = 'NATIVE_DAILY_INTERVAL_UNVERIFIED'
+        else:
+            result = select_context(raw, horizon, clock, result)
         cache[horizon] = {'as_of':stamp, 'context':result}
     return cache[horizon]['context']

@@ -136,6 +136,27 @@ class BrentNativeSourceTests(TestCase):
         self.assertEqual(len(r["structure_bars_by_timeframe"]["1m"]), 59)
         self.assertTrue(all(b["end_ts"] <= NOW.timestamp() for b in r["structure_minute_bars"]))
 
+
+    def test_daily_evidence_preserves_future_revision_but_not_foreign_source(self):
+        h = history()
+        future = h["bars_by_timeframe"]["1d"][-1]
+        future.update(available_at=NOW.timestamp()+10, revision_observed_at=NOW.timestamp()+10)
+        h["bars_by_timeframe"]["1d"][0]["source_identity"] = {"key":"YAHOO:BZ=F"}
+        before = deepcopy(h)
+        r = B.build_market(quote(), h, NOW)
+        self.assertEqual(len(r["native_daily_evidence"]),59)
+        self.assertEqual(len(r["structure_bars_by_timeframe"]["1d"]),58)
+        self.assertEqual(r["native_daily_evidence"][-1]["revision_observed_at"],NOW.timestamp()+10)
+        self.assertEqual(h,before)
+        r["native_daily_evidence"][-1]["close"] = 999
+        self.assertEqual(h,before)
+
+    def test_rejected_history_does_not_forward_daily_evidence(self):
+        h = history()
+        h["source_identity"] = {"key":"YAHOO:BZ=F"}
+        r = B.build_market(quote(),h,NOW)
+        self.assertEqual(r["native_daily_evidence"],[])
+
     def test_no_data_is_explicit_unavailability(self):
         h = history(count=0)
         with self.assertRaisesRegex(RuntimeError, "BRENT_PROFINANCE_DATA_UNAVAILABLE"):
