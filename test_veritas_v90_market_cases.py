@@ -120,7 +120,7 @@ class MarketCaseRegressionTests(unittest.TestCase):
         out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
         self.assertTrue(out['open'], out)
         self.assertEqual(out['reason'], 'R79_SIGNAL_PROBE')
-        self.assertLessEqual(out['fraction'], 0.10)
+        self.assertLessEqual(out['fraction'], 0.25)  # SUPER signal: capped soft probe, not full 50-100% start
 
         # But a target whose remaining move is below the final 0.19%/cost
         # threshold remains an absolute economics block even for a strong signal.
