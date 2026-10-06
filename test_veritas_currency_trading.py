@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -142,6 +143,23 @@ class ContractSizingTests(Fixtures, unittest.TestCase):
             self.entry(account=replace(self.account, signed_lots=2, managed_signed_lots=2), held_terms=self.held)
         with self.assertRaisesRegex(P.TradePlanBlocked, "CLOSE_OPPOSITE_POSITION_FIRST"):
             self.entry(account=replace(self.account, signed_lots=-1, managed_signed_lots=-1))
+
+    def test_signed_json_roundtrip_preserves_causal_native_event_and_fingerprint(self):
+        terms = self.entry()
+        restored = json.loads(json.dumps(terms, sort_keys=True, allow_nan=False))
+        original_event = self.row["timeframe_entry_context"]["event"]
+        restored_event = restored["entry_context"]["event"]
+        self.assertEqual(P.fingerprint(original_event), P.fingerprint(restored_event))
+        for key in ("signal_at", "confirmed_at", "breakout_bar_at", "level_available_at",
+                    "stop_level_available_at", "atr_observed_until"):
+            with self.subTest(key=key):
+                self.assertEqual(P.TS.timestamp(restored_event[key]), P.TS.timestamp(original_event[key]))
+        gate = P.TS.entry_gate(restored["entry_context"], float(self.quote.ask), "LONG", self.now,
+                               config=CTC.STRUCTURAL_ENTRY_POLICY)
+        self.assertTrue(gate["eligible"], gate)
+        P.revalidate(restored, self.spec, self.account, self.quote, now=self.now, canonical_event_valid=True)
+        self.assertIsInstance(restored["limit_price"], str)
+        self.assertEqual(D(restored["limit_price"]), self.quote.ask)
 
     def test_fresh_broker_quote_cannot_revive_expired_native_event(self):
         terms = self.entry()
@@ -377,6 +395,31 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertEqual(self.ingested[0][1].executions[0].trade_id, "execution-1")
         self.assertEqual(self.ingested[0][1].executed_commission, D("0.80"))
         self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "FILLED")
+        self.assertEqual(self.transport.count("PostOrder"), 1)
+
+    def test_unknown_first_binding_requires_uuid_returned_by_broker_receipt(self):
+        approved = self.approve()
+        self.transport.handlers["PostOrder"] = TimeoutError("synthetic lost reply")
+        self.coordinator.execute_approved(approved["proposal_id"])
+        self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "UNKNOWN")
+        # Exercise the coordinator's independent boundary with a normalized
+        # receipt missing the broker's UUID echo. The real adapter rejects this
+        # too; its guard must not be the coordinator's only identity guarantee.
+        for returned_uuid in (None, "55555555-5555-4555-8555-555555555555"):
+            receipt = T.OrderResult(returned_uuid, "broker-order-1", UID, "BUY", 2, 0,
+                "NEW", "ACCEPTED", broker_status="EXECUTION_REPORT_STATUS_NEW",
+                order_type="ORDER_TYPE_LIMIT", limit_price=D("12.345"))
+            with self.subTest(returned_uuid=returned_uuid):
+                with patch.object(self.adapter, "get_order", return_value=receipt), \
+                     patch.object(self.repo, "update_execution", wraps=self.repo.update_execution) as update:
+                    result = self.coordinator.reconcile()
+                self.assertEqual(result[0]["code"], "EXECUTION_RECONCILIATION_PENDING")
+                update.assert_not_called()
+                held = self.repo.get(approved["proposal_id"])
+                self.assertEqual(held["status"], "UNKNOWN")
+                self.assertIsNone(held["broker_order_id"])
+                self.assertEqual(held["client_order_id"], approved["client_order_id"])
+                self.assertEqual(self.ingested, [])
         self.assertEqual(self.transport.count("PostOrder"), 1)
 
     def test_reconciliation_rejects_foreign_order_identity_before_accounting(self):

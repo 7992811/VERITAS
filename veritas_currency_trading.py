@@ -12,6 +12,7 @@ import uuid
 
 import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
+import veritas_timeframe_policy as TFP
 from veritas_currency_trade_plan import (
     AccountSnapshot, BrokerQuote, ContractSpec, TradePlanBlocked, currency_limits,
     decimal, fingerprint, integer, json_safe, prepare_entry, prepare_exit,
@@ -88,23 +89,29 @@ class CurrencyTradingCoordinator:
                 lots=request.get("lots"), horizon=request.get("horizon") or held.get("horizon"),
                 stop_price=held.get("stop_price"), target_price=held.get("target_price"),
                 source_identity=request.get("source_identity") or held.get("source_identity"))
+        if requested_exit is not None:
+            terms["exit_trigger_event_id"] = requested_exit.get("trigger_event_id")
+            terms["exit_trigger_context"] = requested_exit.get("trigger_context")
+            terms["held_entry_event_id"] = (facts.held_terms or {}).get("canonical_event_id")
         terms["protective_order_mode"] = "EXIT_REQUIRES_SEPARATE_CONFIRMATION"
         terms["execution_environment"] = self.adapter.environment
-        return self.repository.create(terms, owner_user_id=self.owner.user_id,
+        create = self.repository.create_exit_successor if requested_exit is not None else self.repository.create
+        return create(terms, owner_user_id=self.owner.user_id,
             private_chat_id=self.owner.private_chat_id, bot_id=self.owner.bot_id,
             expires_at=now + timedelta(seconds=self.approval_ttl_seconds),
             economics_revision=1)
 
     def prepare(self, requested_exit=None):
         with self._lock:
-            now = utc(self.clock())
-            return self._create(self._checked_facts(), now, requested_exit)
+            facts = self._checked_facts()
+            return self._create(facts, utc(self.clock()), requested_exit)
 
     def prepare_next(self):
         with self._lock:
-            now, facts = utc(self.clock()), self._checked_facts()
+            facts = self._checked_facts()
+            now = utc(self.clock())
             held = facts.held_terms or {}
-            reason = None
+            reason, trigger_event_id, trigger_context = None, None, None
             if facts.account.managed_signed_lots:
                 sign = 1 if facts.account.managed_signed_lots > 0 else -1
                 price = decimal(facts.quote.bid if sign > 0 else facts.quote.ask)
@@ -116,17 +123,31 @@ class CurrencyTradingCoordinator:
                 elif target is not None and sign * (price - decimal(target)) >= 0:
                     reason = "STRATEGY_TARGET_REACHED"
                 else:
-                    row = VCR.currency_candidate_book(self.summary()).get("CNYRUBF")
-                    if row:
-                        signal = VCR.evaluate(row, CTC.runtime_portfolio_policy("Currency"), 0.0, now)
-                        direction = (signal.get("prepared_plan") or {}).get("direction")
-                        if signal.get("open") is True and direction == ("SHORT" if sign > 0 else "LONG"):
-                            reason = "CONFIRMED_OPPOSITE_CANONICAL_EVENT"
+                    opposite = "SHORT" if sign > 0 else "LONG"
+                    eligible = []
+                    for row in self.summary():
+                        context = row.get("timeframe_entry_context") or {}
+                        event = context.get("event") or {}
+                        if (row.get("asset") != "CNYRUBF" or row.get("horizon") != held.get("horizon")
+                                or json_safe(context.get("source_identity")) != held.get("source_identity")
+                                or event.get("direction") != opposite or not event.get("event_id")):
+                            continue
+                        gate = TFP.entry_gate(row, float(price), opposite, now)
+                        confirmation = VCR.local_confirmation_gate(row, gate)
+                        if gate.get("eligible") is True and confirmation.get("eligible") is True:
+                            eligible.append((str(event.get("event_id")), context, gate))
+                    if eligible:
+                        event_id, trigger_context, gate = max(eligible,
+                            key=lambda item: (TFP.TS.timestamp(item[1]["event"].get("signal_at")) or 0, item[0]))
+                        reason, trigger_event_id = "CONFIRMED_OPPOSITE_CANONICAL_EVENT", event_id
                 if reason:
                     event_id = "EXIT-" + fingerprint({
                         "entry": held.get("canonical_event_id"),
-                        "ledger_revision": facts.account.ledger_revision, "reason": reason})
-                    return self._create(facts, now, {"event_id": event_id, "reason": reason})
+                        "ledger_revision": facts.account.ledger_revision, "reason": reason,
+                        "trigger_event_id": trigger_event_id})
+                    return self._create(facts, now, {"event_id": event_id, "reason": reason,
+                                                    "trigger_event_id": trigger_event_id,
+                                                    "trigger_context": json_safe(trigger_context)})
             return self._create(facts, now)
 
     def _event_still_valid(self, terms, facts, now):
@@ -162,7 +183,8 @@ class CurrencyTradingCoordinator:
             if self.execution_enabled is not True:
                 return {"ok": False, "code": "BROKER_EXECUTION_DISABLED"}
             try:
-                now, facts = utc(self.clock()), self._checked_facts()
+                facts = self._checked_facts()
+                now = utc(self.clock())
                 revalidate(terms, facts.spec, facts.account, facts.quote, now=now,
                            canonical_event_valid=self._event_still_valid(terms, facts, now))
             except TradePlanBlocked as exc:

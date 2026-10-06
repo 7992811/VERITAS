@@ -75,8 +75,12 @@ replace those levels.
 REDUCE and CLOSE use a separate reduction path. New-entry potential, entry
 margin and drawdown admission cannot veto a verified reduction. Quantity may
 not exceed either the actual broker holding or the managed Currency holding,
-and the order must not reverse the position. Unresolved working orders still
-require reconciliation to avoid a race.
+and the approved quantity must not reverse the position at that snapshot.
+Unresolved working orders still require reconciliation to avoid a race. This
+local reduce-only check is not a broker-enforced atomic position condition:
+manual or external CNY orders racing between the final read and submission can
+change the holding. Exclusive management of this instrument is an operating
+assumption; a detected mismatch freezes new risk.
 
 ## Approval identity and durability
 
@@ -100,6 +104,14 @@ A repeated button, callback replay, concurrent worker or process restart cannot
 create a second claim. An ambiguous broker response remains UNKNOWN and locks
 the account/instrument scope pending broker reconciliation. It is never
 interpreted as rejection and automatically retried with a new UUID.
+
+Protective exits have durable proposal generations. A fresh price and deadline
+require a newly signed confirmation after an expired or blocked pre-submission
+proposal, or after a fully reconciled zero-fill cancellation/rejection. An
+unresolved submission or unaccounted execution cannot be replaced by a new
+generation. Owner rejection is not automatically re-proposed. Opposite-signal
+exits use the held timeframe and pinned source; an entry economics filter cannot
+veto this reduction path.
 
 The bot advances getUpdates offset only after the decision handler returns.
 Temporary service or database failure leaves that update available for replay;
@@ -131,8 +143,12 @@ therefore does not guarantee a maximum realized loss.
 
 The ledger supports explicit funding charge/credit records. Automated completeness
 of perpetual-contract funding is a separate data requirement; fill commissions
-alone do not prove that every funding charge has been reconciled. This draft
-must not declare a live NAV complete across unverified funding periods.
+alone do not prove that every funding charge has been reconciled. The service
+therefore marks costs incomplete after the first actual fill and blocks later
+OPEN/ADD proposals until a settlement-completeness integration is implemented.
+CLOSE/REDUCE can still be proposed and confirmed. Recording an individual
+funding item does not bypass this data-completeness barrier. No elapsed-hour
+heuristic or empty API response is treated as proof of final settlement.
 
 ## Configuration contract
 
@@ -184,6 +200,8 @@ See the draft pull request checks for the current validation result.
 
 ## Primary protocol references
 
+- https://www.moex.com/a8141
+- https://developer.tbank.ru/invest/services/operations/methods
 - https://developer.tbank.ru/invest/services/orders/methods
 - https://developer.tbank.ru/invest/intro/intro/token
 - https://developer.tbank.ru/invest/services/accounts/users

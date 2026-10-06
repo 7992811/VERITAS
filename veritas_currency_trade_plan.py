@@ -71,7 +71,7 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, Mapping):
         native_times = {"signal_at", "confirmed_at", "breakout_bar_at",
                         "level_available_at", "stop_level_available_at", "atr_observed_until",
-                        "closed_at", "pivot_at", "level_pivot_at", "stop_pivot_at",
+                        "closed_at", "pivot_at", "level_pivot_at", "trigger_pivot_at", "stop_pivot_at", "ts",
                         "available_at", "spent_at"}
         result = {}
         for key, item in value.items():

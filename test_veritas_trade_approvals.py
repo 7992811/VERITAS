@@ -19,7 +19,7 @@ import unittest
 import uuid
 
 from veritas_trade_approvals import (
-    ApprovalError, TradeApprovals, canonical_terms, TABLE, SCOPES, CALLBACKS, AUDIT,
+    ApprovalError, TradeApprovals, canonical_terms, TABLE, SCOPES, CALLBACKS, AUDIT, EXIT_FAMILIES,
 )
 
 UTC = timezone.utc
@@ -131,6 +131,12 @@ class Helpers:
         args.update(kwargs)
         return self.repo.create(terms() if value is None else value, **args)
 
+    def create_exit(self, value=None, **kwargs):
+        args = dict(owner_user_id=OWNER, private_chat_id=OWNER, bot_id=BOT)
+        args.update(kwargs)
+        return self.repo.create_exit_successor(
+            terms(action="CLOSE") if value is None else value, **args)
+
     def deliver(self, row, message_id=100):
         current = self.repo.get(row["proposal_id"])
         if current["delivery_token"] is None:
@@ -175,7 +181,7 @@ class Helpers:
         return caught.exception
 
     def count(self, table):
-        assert table in {TABLE, SCOPES, CALLBACKS, AUDIT}
+        assert table in {TABLE, SCOPES, CALLBACKS, AUDIT, EXIT_FAMILIES}
         with self.connect() as c:
             return c.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
 
@@ -617,6 +623,158 @@ class TradeApprovalTests(Helpers, unittest.TestCase):
                   execution_environment="anything")
 
 
+    def test_exit_family_pending_reuses_exact_terms_uuid_and_expiry(self):
+        row = self.create_exit()
+        self.now += timedelta(seconds=30)
+        again = self.create_exit(terms(action="CLOSE", limit_price="11.31", lots=2))
+        self.assertEqual(row["proposal_id"], again["proposal_id"])
+        for key in ("terms", "terms_hash", "client_order_id", "expires_at", "callbacks"):
+            self.assertEqual(row[key], again[key])
+        self.assertEqual(row["terms"]["root_exit_event_id"], "signal-1")
+        self.assertEqual(row["terms"]["exit_generation"], 0)
+        self.assertIsNone(row["terms"]["parent_proposal_id"])
+        self.assertEqual(self.count(EXIT_FAMILIES), 1)
+        self.assertEqual(self.count(TABLE), 1)
+
+    def test_exit_family_concurrent_refresh_creates_one_successor(self):
+        old = self.deliver(self.create_exit(), message_id=100)
+        self.now += timedelta(seconds=121)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            rows = list(pool.map(lambda _: self.create_exit(
+                terms(action="CLOSE", limit_price="11.31")), range(8)))
+        self.assertEqual(len({r["proposal_id"] for r in rows}), 1)
+        child = rows[0]
+        self.assertNotEqual(child["proposal_id"], old["proposal_id"])
+        self.assertNotEqual(child["client_order_id"], old["client_order_id"])
+        self.assertNotEqual(child["callbacks"], old["callbacks"])
+        self.assertEqual(child["terms"]["parent_proposal_id"], old["proposal_id"])
+        self.assertEqual(child["terms"]["root_exit_event_id"], old["canonical_event_id"])
+        self.assertEqual(child["terms"]["exit_generation"], 1)
+        self.assertEqual(child["terms"]["limit_price"], "11.31")
+        self.assertEqual(self.count(TABLE), 2)
+        self.assertEqual(self.count(EXIT_FAMILIES), 1)
+        self.assertEqual(self.repo.get(old["proposal_id"])["status"], "EXPIRED")
+        self.assertFalse(self.decide(old, callback_id="stale-parent")["accepted"])
+        self.assertEqual(self.repo.get(child["proposal_id"])["status"], "PENDING_DELIVERY")
+        self.assertEqual(self.decide(self.deliver(child, message_id=101))["status"], "APPROVED")
+
+    def test_exit_family_blocked_unsent_requires_fresh_owner_approval(self):
+        old = self.decide(self.deliver(self.create_exit()))
+        self.repo.block(old["proposal_id"], "QUOTE_CHANGED")
+        child = self.create_exit(terms(action="CLOSE", limit_price="11.35"))
+        self.assertEqual(child["terms"]["exit_generation"], 1)
+        self.assertEqual(child["status"], "PENDING_DELIVERY")
+        self.assertIsNone(child["approved_at"])
+        self.assertIsNone(child["claim_token"])
+        self.assertIsNone(self.claim(child))
+        self.assertEqual(self.repo.get(old["proposal_id"])["status"], "BLOCKED")
+
+    def test_exit_family_owner_rejection_and_unknown_are_not_renewed(self):
+        rejected = self.decide(self.deliver(self.create_exit()), action="reject")
+        again = self.create_exit(terms(action="CLOSE", limit_price="11.32"))
+        self.assertEqual(again["proposal_id"], rejected["proposal_id"])
+        self.assertEqual(again["status"], "REJECTED")
+        self.assertTrue(again["renewal_blocked"])
+        value = terms(event="unknown-exit", action="CLOSE")
+        approved = self.decide(self.deliver(self.create_exit(value), message_id=101))
+        sending = self.claim(approved)
+        self.assertEqual(self.create_exit(value)["proposal_id"], sending["proposal_id"])
+        unknown = self.submit(sending, outcome="UNKNOWN")
+        self.now += timedelta(seconds=500)
+        self.repo.expire()
+        refreshed = self.create_exit(dict(value, limit_price="11.4"))
+        self.assertEqual(refreshed["proposal_id"], unknown["proposal_id"])
+        self.assertEqual(refreshed["status"], "UNKNOWN")
+        self.assertEqual(refreshed["client_order_id"], unknown["client_order_id"])
+        self.assertTrue(refreshed["renewal_blocked"])
+        self.assertEqual(self.count(TABLE), 2)
+
+    def test_exit_family_cancelled_or_rejected_zero_requires_reconciled_accounting(self):
+        row = self.decide(self.deliver(self.create_exit()))
+        cancelled = self.submit(row, broker_status="CANCELLED", filled_lots=0)
+        self.assertEqual(self.create_exit()["proposal_id"], cancelled["proposal_id"])
+        self.repo.mark_execution_reconciled(
+            cancelled["proposal_id"], cancelled["broker_order_id"], 0)
+        child = self.create_exit(terms(action="CLOSE", limit_price="11.2"))
+        self.assertEqual(child["terms"]["exit_generation"], 1)
+        self.assertEqual(child["status"], "PENDING_DELIVERY")
+        rejected = self.submit(self.decide(self.deliver(child, message_id=101)), outcome="REJECTED")
+        self.assertEqual(self.create_exit()["proposal_id"], rejected["proposal_id"])
+        self.repo.mark_execution_reconciled(rejected["proposal_id"], None, 0)
+        successor = self.create_exit()
+        self.assertEqual(successor["terms"]["exit_generation"], 2)
+        self.assertEqual(successor["terms"]["parent_proposal_id"], rejected["proposal_id"])
+        self.assertEqual(self.count(TABLE), 3)
+
+    def test_exit_family_partial_fill_never_reuses_same_family_for_another_order(self):
+        row = self.decide(self.deliver(self.create_exit()))
+        cancelled = self.submit(row, broker_status="CANCELLED", filled_lots=1,
+                                average_fill_price="11.12")
+        self.repo.mark_execution_reconciled(
+            cancelled["proposal_id"], cancelled["broker_order_id"], 1)
+        result = self.create_exit(terms(action="CLOSE", lots=2, limit_price="11.3"))
+        self.assertEqual(result["proposal_id"], cancelled["proposal_id"])
+        self.assertTrue(result["renewal_blocked"])
+        # A genuinely changed ledger revision yields a different root exit event.
+        new_position = self.create_exit(terms(event="new-ledger-revision", action="CLOSE", lots=2))
+        self.assertNotEqual(new_position["proposal_id"], cancelled["proposal_id"])
+        self.assertEqual(new_position["terms"]["exit_generation"], 0)
+
+    def test_exit_family_cannot_renew_a_blocked_row_with_prior_broker_send(self):
+        row = self.claim(self.decide(self.deliver(self.create_exit())))
+        self.change_raw(row["proposal_id"], "status=%s", ("BLOCKED",))
+        result = self.create_exit(terms(action="CLOSE", limit_price="11.3"))
+        self.assertEqual(result["proposal_id"], row["proposal_id"])
+        self.assertTrue(result["renewal_blocked"])
+        self.assertEqual(self.count(TABLE), 1)
+
+    def test_exit_family_metadata_and_identity_are_repository_owned(self):
+        self.code("EXIT_ACTION_REQUIRED", self.create_exit, terms(action="OPEN"))
+        self.code("EXIT_ACTION_REQUIRED", self.create_exit, terms(action="ADD"))
+        self.code("EXIT_FAMILY_METADATA_IS_REPOSITORY_OWNED", self.create_exit,
+                  terms(action="CLOSE", root_exit_event_id="fake"))
+        self.create_exit()
+        for changes in ({"bot_id": BOT + 1},
+                        {"owner_user_id": OWNER + 1, "private_chat_id": OWNER + 1}):
+            self.code("EXIT_FAMILY_IDENTITY_MISMATCH", self.create_exit, **changes)
+        self.code("EXIT_FAMILY_IDENTITY_MISMATCH", self.create_exit,
+                  terms(action="CLOSE", direction="SHORT"))
+        self.assertEqual(self.count(TABLE), 1)
+
+    def test_exit_family_rollback_keeps_generation_and_child_creation_atomic(self):
+        old = self.create_exit()
+        self.now += timedelta(seconds=121)
+        connect = self.connect
+        failing = TradeApprovals(
+            lambda: FaultingConnection(connect(), lambda sql, p:
+                                       f"UPDATE {EXIT_FAMILIES}" in sql),
+            KEY, clock=lambda: self.now)
+        with self.assertRaises(RuntimeError):
+            failing.create_exit_successor(
+                terms(action="CLOSE", limit_price="11.3"),
+                owner_user_id=OWNER, private_chat_id=OWNER, bot_id=BOT)
+        self.assertEqual(self.count(TABLE), 1)
+        with self.connect() as c:
+            family = c.execute(f"SELECT * FROM {EXIT_FAMILIES}").fetchone()
+        self.assertEqual(family["generation"], 0)
+        self.assertEqual(family["latest_proposal_id"], old["proposal_id"])
+        child = self.create_exit(terms(action="CLOSE", limit_price="11.3"))
+        self.assertEqual(child["terms"]["exit_generation"], 1)
+        self.assertEqual(self.count(TABLE), 2)
+
+    def test_exit_family_adopts_immutable_legacy_exit_without_rewriting_it(self):
+        legacy = self.create(terms(action="CLOSE"))
+        self.now += timedelta(seconds=121)
+        child = self.create_exit(terms(action="CLOSE", limit_price="11.3"))
+        self.assertEqual(child["terms"]["exit_generation"], 1)
+        self.assertEqual(child["terms"]["parent_proposal_id"], legacy["proposal_id"])
+        old = self.repo.get(legacy["proposal_id"])
+        self.assertEqual(old["terms"], legacy["terms"])
+        self.assertEqual(old["terms_hash"], legacy["terms_hash"])
+        self.assertEqual(old["callbacks"], legacy["callbacks"])
+        self.assertEqual(old["status"], "EXPIRED")
+
+
 @unittest.skipUnless(os.environ.get("VERITAS_TRADING_TEST_DSN"),
                      "explicit isolated PostgreSQL test DSN is not configured")
 class PostgresTradeApprovalTests(Helpers, unittest.TestCase):
@@ -656,7 +814,7 @@ class PostgresTradeApprovalTests(Helpers, unittest.TestCase):
         self.setup_repository()
         with self.connect() as c:
             with c.transaction():
-                for table in (CALLBACKS, AUDIT, TABLE, SCOPES):
+                for table in (EXIT_FAMILIES, CALLBACKS, AUDIT, TABLE, SCOPES):
                     c.execute("DELETE FROM " + table)
 
     test_parallel_creation_and_duplicate_callback = (
@@ -667,6 +825,13 @@ class PostgresTradeApprovalTests(Helpers, unittest.TestCase):
         TradeApprovalTests.test_owner_approval_and_audit_failure_roll_back_together)
     test_terminal_accounting_keeps_instrument_scope = (
         TradeApprovalTests.test_filled_stays_unsettled_until_actual_accounting_then_frees_scope)
+
+    test_exit_family_parallel_renewal = (
+        TradeApprovalTests.test_exit_family_concurrent_refresh_creates_one_successor)
+    test_exit_family_atomic_rollback = (
+        TradeApprovalTests.test_exit_family_rollback_keeps_generation_and_child_creation_atomic)
+    test_exit_family_legacy_adoption = (
+        TradeApprovalTests.test_exit_family_adopts_immutable_legacy_exit_without_rewriting_it)
 
     def test_skip_locked_proposal_returns_without_waiting(self):
         row = self.approved()

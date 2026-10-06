@@ -41,7 +41,7 @@ jobs:
         env:
           VERITAS_TRADING_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/ci_ephemeral_test_only
         run: |
-          python -m py_compile veritas_currency_trade_plan.py veritas_currency_trading.py veritas_trade_telegram.py veritas_trade_approvals.py veritas_tbank_trading.py veritas_currency_trade_ledger.py bot.py
+          python -m py_compile veritas_currency_trade_plan.py veritas_currency_trading.py veritas_trade_telegram.py veritas_trade_approvals.py veritas_tbank_trading.py veritas_currency_trade_ledger.py veritas_currency_trade_service.py bot.py
           python -m unittest -v test_veritas_tbank_trading.py test_veritas_trade_approvals.py test_veritas_currency_trading.py test_veritas_currency_trade_ledger.py test_veritas_trade_telegram.py
       - name: Execution quality and direct CNY regressions
         run: python -m unittest -v test_veritas_execution_quality.py
