@@ -678,7 +678,7 @@ class FinalRuntimeAuthorityR85Tests(unittest.TestCase):
     def test_portfolio_execution_is_bound_to_final_runtime_authority(self):
         import veritas_portfolio as VP
         import veritas_portfolio_runtime as VPR
-        self.assertEqual(VPR.FINAL_RUNTIME_AUTHORITY_VERSION,'CTC_V1_FINAL_AUTHORITY')
+        self.assertEqual(VPR.FINAL_RUNTIME_AUTHORITY_VERSION,'CTC_V2_CANONICAL_RUNTIME')
         self.assertIs(VP._signal_first_admission,VPR.FINAL_SIGNAL_FIRST_ADMISSION)
         self.assertIs(VP._open_or_add,VPR.FINAL_OPEN_OR_ADD)
         self.assertIs(VP._close_or_reduce,VPR.FINAL_CLOSE_OR_REDUCE)
