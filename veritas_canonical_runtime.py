@@ -188,7 +188,7 @@ def evaluate(row, policy, drawdown, now=None):
         return {"open":False,"fraction":0.0,"reason":"PAPER_EXPLICIT_DENIAL",
                 "hard_veto":True,"source_blockers":[],"canonical_stage":"DATA"}
     observed=(work.get("_execution_quote") or {}).get("observed_at") or work.get("market_observed_at") or work.get("observed_at")
-    qgate=VPG.quote_gate(observed,now=clock,execution=True,asset=asset)
+    qgate=VX.paper_quote_time_gate(dict(work,asset=asset,observed_at=observed),work.get("horizon"),now=clock)
     if not qgate.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":"EXECUTION_QUOTE_STALE","hard_veto":True,
                 "quote_time_gate":qgate,"canonical_stage":"DATA"}
