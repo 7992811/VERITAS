@@ -596,6 +596,27 @@ class TradeApprovalTests(Helpers, unittest.TestCase):
         self.assertEqual(self.repo.list_pending(owner_user_id=OWNER + 1), [])
 
 
+    def test_recent_updates_are_newest_and_scope_filtered_before_limit(self):
+        first = self.create(terms(event="first", execution_environment="sandbox"))
+        self.now += timedelta(seconds=1)
+        second = self.create(terms(event="second", execution_environment="sandbox"))
+        boundary = self.now
+        self.now += timedelta(seconds=1)
+        self.create(terms(event="foreign", account_id="foreign", execution_environment="sandbox"))
+        self.create(terms(event="production", execution_environment="production"))
+        newest = self.repo.list_recent(account_id="test-account", owner_user_id=OWNER,
+                                       execution_environment="sandbox", limit=1)
+        self.assertEqual([r["proposal_id"] for r in newest], [second["proposal_id"]])
+        self.now += timedelta(seconds=1)
+        self.repo.claim_delivery(first["proposal_id"], "worker")
+        updated = self.repo.list_recent(account_id="test-account", owner_user_id=OWNER,
+                                        execution_environment="sandbox",
+                                        updated_after=boundary, limit=1)
+        self.assertEqual([r["proposal_id"] for r in updated], [first["proposal_id"]])
+        self.code("INVALID_EXECUTION_ENVIRONMENT", self.repo.list_recent,
+                  execution_environment="anything")
+
+
 @unittest.skipUnless(os.environ.get("VERITAS_TRADING_TEST_DSN"),
                      "explicit isolated PostgreSQL test DSN is not configured")
 class PostgresTradeApprovalTests(Helpers, unittest.TestCase):
@@ -627,7 +648,7 @@ class PostgresTradeApprovalTests(Helpers, unittest.TestCase):
 
     def connect(self):
         return self.driver.connect(
-            self.dsn, autocommit=True, row_factory=self.dict_row,
+            self.dsn, autocommit=True, row_factory=type(self).dict_row,
             options=f"-c search_path={self.schema} -c statement_timeout=5000 -c lock_timeout=1500",
         )
 
