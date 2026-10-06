@@ -5319,6 +5319,16 @@ FINAL_STEP_ONE=_step_one
 FINAL_STEP_ALL=step_all
 FINAL_REPORT=report
 
+# The module-level public execution names also point at the canonical authority.
+# Historical implementations remain reachable only through explicitly captured
+# audit helpers such as _R85_POLICY_ADMISSION.
+_signal_first_admission=FINAL_SIGNAL_FIRST_ADMISSION
+_open_or_add=FINAL_OPEN_OR_ADD
+_close_or_reduce=FINAL_CLOSE_OR_REDUCE
+_step_one=FINAL_STEP_ONE
+step_all=FINAL_STEP_ALL
+report=FINAL_REPORT
+
 # Import-order-independent patch: direct import of veritas_portfolio_runtime
 # first loads the legacy base, then atomically replaces its execution authority here.
 _vp_base._signal_first_admission=FINAL_SIGNAL_FIRST_ADMISSION
