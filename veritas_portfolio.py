@@ -14,6 +14,7 @@ import veritas_currency_notifications as VCN
 import veritas_canonical_constitution as CTC
 import veritas_release as VR
 import veritas_strategy_quality as VSQ
+import veritas_learning_exports as VLE
 import veritas_learning_integrity as VLI
 import veritas_timeframe_management as VTM
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
@@ -2967,7 +2968,7 @@ def _v90j_load_closed(pg_connect,limit=2500):
     ensure_schema(pg_connect)
     with pg_connect() as c:
         try:
-            rows=c.execute("""SELECT t.*,
+            rows=c.execute("""SELECT t.*,"""+VLE.trade_hash_sql("t")+""" AS learning_evidence_hash,
                      oa.last_order_at,oa.last_order_reason,oa.entry_units,oa.exit_units,
                      oa.entry_notional_rub,oa.exit_notional_rub,
                      dd.payload AS decision_payload,
@@ -3010,7 +3011,7 @@ def _v90j_load_closed(pg_connect,limit=2500):
               ORDER BY COALESCE(t.closed_at,oa.last_order_at,t.opened_at) DESC
               LIMIT %s""",(limit,)).fetchall()
         except Exception:
-            rows=c.execute("""SELECT t.*,
+            rows=c.execute("""SELECT t.*,"""+VLE.trade_hash_sql("t")+""" AS learning_evidence_hash,
                        (SELECT MAX(o.created_at) FROM paper_orders o WHERE o.trade_id=t.trade_id) AS last_order_at,
                        (SELECT o.reason FROM paper_orders o WHERE o.trade_id=t.trade_id ORDER BY o.created_at DESC LIMIT 1) AS last_order_reason
                 FROM paper_trades t
@@ -3048,8 +3049,8 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['opening_fraction']=payload.get('opening_fraction')
         z['opening_fraction_pct']=(100.0*float(payload.get('opening_fraction'))) if payload.get('opening_fraction') is not None else None
         z['max_fraction_pct']=(100.0*float(z.get('max_fraction'))) if z.get('max_fraction') is not None else None
-        z['mfe_pct']=payload.get('mfe_pct')
-        z['mae_pct']=payload.get('mae_pct')
+        z['mfe_pct']=payload.get('r55_lifetime_mfe_pct') if payload.get('r55_lifetime_mfe_pct') is not None else payload.get('mfe_pct')
+        z['mae_pct']=payload.get('r55_lifetime_mae_pct') if payload.get('r55_lifetime_mae_pct') is not None else payload.get('mae_pct')
         entry=_v90j_float(z.get('avg_entry_price')); exitp=_v90j_float(z.get('avg_exit_price'))
         # Historical records created before V2 can be repaired only from exact stored telemetry.
         # Never synthesize MFE/MAE from unrelated horizon outcomes.
@@ -3102,6 +3103,7 @@ def _v90j_load_closed(pg_connect,limit=2500):
         _path_complete=(z.get('mfe_pct') is not None and z.get('mae_pct') is not None)
         z['learning_eligible']=bool(not recovered and _path_complete and z['telemetry_completeness']>=0.999)
         z['episode_key']=_v90j_episode_key(z,payload)
+        VLE.mark_trade(z,dict(r0))
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
         # The UI/learning layer uses flattened fields above. Do not retain duplicate
         # full decision/setup/trade JSON blobs for hundreds of rows in RAM.
@@ -3112,11 +3114,12 @@ def _v90j_load_closed(pg_connect,limit=2500):
 
 
 def _v90j_unique_learning(rows):
-    g={}
+    g={}; members={}
     for t in rows or []:
         key=str(t.get('episode_key') or t.get('trade_id') or '')
         if not key:
             continue
+        members.setdefault(key,[]).append(t)
         z=g.setdefault(key,{'episode_key':key,'asset':t.get('asset'),'direction':t.get('direction'),
                             'horizon':t.get('horizon'),'setup':t.get('setup'),
                             'setup_family':t.get('setup_family'),'regime':t.get('regime'),
@@ -3155,6 +3158,7 @@ def _v90j_unique_learning(rows):
              'last_closed_at':z['last_closed_at'],'today_msk':z['today_msk'],
              'telemetry_completeness':round(completeness,3),'learning_eligible':learning_eligible,
              'learning_weight':round(0.35*completeness,3) if learning_eligible else 0.0}
+        VLE.mark_group(row,members[key])
         row['learning_conclusion']=_v90j_learning_conclusion(label,row)
         out.append(_jsonable(row))
     out.sort(key=lambda x:str(x.get('last_closed_at') or ''),reverse=True)

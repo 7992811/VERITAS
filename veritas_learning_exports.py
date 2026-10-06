@@ -74,9 +74,14 @@ def invalidate_memory(namespace):
             fn._cache = None
 
 
-def memory_contract():
+def generation():
+    return LI.generation()
+
+
+def memory_contract(generation=None):
     return {"learning_evidence_version": LI.VERSION, "learning_export_version": VERSION,
-            "learning_scope": SCOPE, "unverified_shadow_influence": False}
+            "learning_scope": SCOPE, "unverified_shadow_influence": False,
+            "learning_integrity_generation": LI.generation() if generation is None else generation}
 
 
 def memory_current(board):
@@ -147,7 +152,7 @@ def decision_lessons(c, limit):
     rows = c.execute("""
       SELECT l.event_type,l.event_ts,l.asset,l.horizon,l.payload
       FROM ledger_events l
-      WHERE l.event_type='experience_lesson' AND l.entity_key LIKE 'paper_exec:%'
+      WHERE l.event_type='experience_lesson' AND l.entity_key LIKE %s
         AND l.payload->>'source'=%s AND l.payload->>'learning_evidence_version'=%s
         AND l.payload->>'learning_export_version'=%s AND l.payload->>'learning_scope'=%s
         AND l.payload->>'learning_eligible'='true'
@@ -158,7 +163,7 @@ def decision_lessons(c, limit):
             AND e.payload#>>'{learning_integrity,event_id}'=l.payload->>'learning_observed_event_id'
             AND (l.payload->'learning_trade_ids') ? e.trade_id)
       ORDER BY l.event_ts DESC LIMIT %s
-    """, (PAPER_SOURCE, LI.VERSION, VERSION, SCOPE, int(limit))).fetchall()
+    """, ("paper_exec:%", PAPER_SOURCE, LI.VERSION, VERSION, SCOPE, int(limit))).fetchall()
     rows = [dict(row) for row in rows if exportable(AUDIT.payload(row.get("payload")))]
     ids = sorted({key for row in rows for key in AUDIT.payload(row["payload"])["learning_trade_ids"]})
     trades = {}

@@ -8,6 +8,10 @@ import veritas_trade_audit as AUDIT
 VERSION = "LEARNING_SOURCE_EVIDENCE_V1"
 BATCH_SIZE = 128
 MAX_BATCH_SIZE = 256
+_GENERATION = 0
+
+def generation():
+    return _GENERATION
 
 def _alias(value):
     if value and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
@@ -110,6 +114,8 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
     """
     if type(batch_size) is not int or not 1 <= batch_size <= MAX_BATCH_SIZE:
         raise ValueError("invalid revalidation batch size")
+    global _GENERATION
+    _GENERATION += 1
     evidence = _evidence_sql("t")
     staged = c.execute("""
       WITH candidates AS (

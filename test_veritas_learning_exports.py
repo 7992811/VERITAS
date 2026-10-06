@@ -88,6 +88,16 @@ class LearningExportTests(unittest.TestCase):
         self.assertFalse(row["learning_eligible"])
         self.assertEqual(row["learning_exclusion_reason"], "INCOMPLETE_OBSERVED_PATH")
 
+    def test_original_lifetime_path_is_used_before_any_shadow_backfill(self):
+        raw = trade()
+        raw["payload"].pop("mfe_pct"); raw["payload"].pop("mae_pct")
+        raw["payload"].update(r55_lifetime_mfe_pct=2., r55_lifetime_mae_pct=-.5)
+        raw.update(shadow_high_price=150., shadow_low_price=50.)
+        row = flattened([raw])[0]
+        self.assertTrue(row["learning_eligible"])
+        self.assertEqual(row["mfe_pct"], 2.)
+        self.assertEqual(row["mae_pct"], -.5)
+
     def test_archive_does_not_resurrect_false_unknown_or_nonfinite_evidence(self):
         for kind in ("false", "source", "event", "accounting"):
             with self.subTest(kind=kind):
@@ -158,6 +168,17 @@ class LearningExportTests(unittest.TestCase):
         good = dict(E.memory_contract(), items=[])
         I.setup_memory_board._cache = (time.time(), good)
         self.assertIs(I.setup_memory_board(), good)
+
+    def test_failed_sanitizer_generation_revokes_cached_learning_immediately(self):
+        cached = dict(E.memory_contract(), items=["old verified statistics"])
+        I.setup_memory_board._cache = (time.time(), cached)
+        I._v842_memory_lookup._cache = ("old", {"unsafe": True})
+        cursor = Cursor()
+        with patch.object(cursor, "execute", side_effect=RuntimeError("database unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+                LI.revalidate_eligible(cursor)
+        self.assertEqual(I.setup_memory_board()["status"], "BACKGROUND_PENDING")
+        self.assertIsNone(I._v842_memory_lookup._cache)
 
     def test_source_unverified_shadow_losses_and_wins_cannot_veto_or_reinforce(self):
         for pnl in (-.01, .02):
