@@ -590,9 +590,17 @@ def _portfolio_admission_trace(candidates,policy,drawdown):
     for asset,row in sorted((candidates or {}).items()):
         sf=_signal_first_admission(row,policy,drawdown)
         plan=row.get('trade_plan') or {}
+        probability_source=sf.get('probability_source') or row.get('_pwin_source')
+        calibrated=bool(probability_source and (
+            'EMPIRICAL_CALIBRATION' in str(probability_source)
+            or 'CALIBRATED' in str(probability_source)
+        ))
         out.append({'asset':asset,'direction':row.get('research_decision'),'horizon':row.get('horizon'),
                     'canonical_setup_id':_portfolio_canonical_setup_id(row),
-                    'pwin':sf.get('probability'),'model_quality_score':sf.get('model_quality_score'),'signal_prior':row.get('_pwin'),'probability_source':sf.get('probability_source') or row.get('_pwin_source'),'quality_floor':sf.get('floor') or sf.get('quality_floor'),'rank':row.get('_rank'),
+                    'pwin':sf.get('probability') if calibrated else None,
+                    'model_quality_score':sf.get('model_quality_score') or (None if calibrated else row.get('_pwin')),
+                    'signal_prior':row.get('_pwin'),'probability_source':probability_source,
+                    'quality_floor':sf.get('floor') or sf.get('quality_floor'),'rank':row.get('_rank'),
                     'rr':plan.get('expected_to_stop_ratio'),
                     'hard_veto':not bool(sf.get('open')),
                     'target_fraction':sf.get('fraction'),'reason':sf.get('reason'),
