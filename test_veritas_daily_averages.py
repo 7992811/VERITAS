@@ -426,5 +426,59 @@ class DailyAveragesTests(unittest.TestCase):
         self.assertEqual(bars[-1]["completion_proof"], original)
 
 
+    def test_row_contract_cannot_use_a_matching_foreign_completion_proof(self):
+        for expected_contract, row_contract in ((None,"wrong"),("exact",None),("exact","wrong")):
+            with self.subTest(expected=expected_contract, actual=row_contract):
+                identity={**PF,"contract_id":expected_contract}
+                bars=fixture(identity=identity)
+                bars[-1]["source_identity"]["contract_id"]=row_contract
+                certify_profinance(bars[-1])
+                # Its proof agrees with the foreign row, but neither agrees
+                # with the exact source/contract selected for this decision.
+                self.assertTrue(DA._native(bars[-1]))
+                context=self.ctx(bars,identity=identity)
+                self.assertEqual(context["periods"]["50"]["status"],"INVALID_DAILY_WINDOW")
+                self.assertIsNone(context["sma50"])
+
+    def test_provenance_and_completion_proof_require_exact_optional_contract(self):
+        for contract in (None,"exact"):
+            with self.subTest(contract=contract):
+                identity={**PF,"contract_id":contract}
+                context=self.ctx(fixture(identity=identity),identity=identity)
+                provenance=context["provenance"]
+                self.assertTrue(DA.validate_provenance(provenance,identity,context["known_at"]))
+                other="wrong" if contract is None else None
+                changed=deepcopy(provenance)
+                changed["source_identity"]["contract_id"]=other
+                self.assertFalse(DA.validate_provenance(changed,identity,context["known_at"]))
+                changed=deepcopy(provenance)
+                changed["latest_completion_proof"]["source_identity"]["contract_id"]=other
+                self.assertFalse(DA.validate_provenance(changed,identity,context["known_at"]))
+                self.assertFalse(DA.validate_provenance(provenance,{**identity,"contract_id":other},
+                                                        context["known_at"]))
+
+    def test_foreign_contract_revision_cannot_block_exact_selected_history(self):
+        for selected, foreign_contract in ((None,"wrong"),("exact",None)):
+            with self.subTest(selected=selected, foreign=foreign_contract):
+                identity={**PF,"contract_id":selected}
+                bars=fixture(identity=identity)
+                foreign=deepcopy(bars[1])
+                foreign["source_identity"]["contract_id"]=foreign_contract
+                foreign["revision_observed_at"]=245*DAY
+                certify_profinance(foreign,245*DAY)
+                context=self.ctx(bars+[foreign],identity=identity)
+                self.assertEqual(context["status"],"OK")
+                self.assertNotIn("history_revision_watermark",context)
+
+    def test_absent_and_explicit_none_contract_are_the_same_normalized_identity(self):
+        bars=fixture()
+        for row in bars:
+            row["source_identity"].pop("contract_id")
+        context=self.ctx(bars)
+        self.assertEqual(context["status"],"OK")
+        self.assertTrue(DA.validate_provenance(context["provenance"],PF,context["known_at"]))
+        self.assertIsNone(context["provenance"]["source_identity"]["contract_id"])
+
+
 if __name__ == "__main__":
     unittest.main()

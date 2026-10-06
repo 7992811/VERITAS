@@ -9,7 +9,6 @@ from datetime import date
 import hashlib
 import json
 import math
-import veritas_price_source as VPS
 from veritas_timeframe_structure import timestamp
 
 VERSION = "NATIVE_DAILY_AVERAGES_V2"
@@ -32,6 +31,17 @@ def _source(identity):
         return None
     return {"key": str(identity["key"]),
             "contract_id": str(identity["contract_id"]) if identity.get("contract_id") else None}
+
+
+def _same_source(expected, actual):
+    """Daily evidence binds the exact normalized venue key and contract.
+
+    A missing contract is an identity value, never a wildcard for another
+    contract on the same source key.
+    """
+    expected = _source(expected)
+    return expected is not None and expected == _source(actual)
+
 
 
 def _sha256(value):
@@ -62,7 +72,7 @@ def _completion_proof_valid(proof, identity, *, label=None, ohlc_sha256=None, kn
     observed = timestamp(proof.get("observed_at"))
     return bool(identity is not None and period is not None and successor is not None
                 and successor > period and observed is not None
-                and VPS.same(identity, _source(proof.get("source_identity")))
+                and _same_source(identity, _source(proof.get("source_identity")))
                 and (label is None or proof.get("period_label") == label)
                 and _digest(proof.get("ohlc_sha256"))
                 and (ohlc_sha256 is None or proof["ohlc_sha256"] == ohlc_sha256)
@@ -97,7 +107,7 @@ def _revision_watermark(daily_bars, identity):
     if identity is None or not identity["key"].startswith("PROFINANCE:"):
         return None
     revisions = [timestamp(b.get("revision_observed_at")) for b in daily_bars or []
-                 if isinstance(b, dict) and VPS.same(identity, _source(b.get("source_identity")))]
+                 if isinstance(b, dict) and _same_source(identity, _source(b.get("source_identity")))]
     return max((at for at in revisions if at is not None), default=None)
 
 
@@ -110,7 +120,7 @@ def validate_provenance(provenance, expectedsource, known_at):
     """
     identity, known = _source(expectedsource), timestamp(known_at)
     if (not isinstance(provenance, dict) or identity is None or known is None
-            or not VPS.same(identity, _source(provenance.get("source_identity")))
+            or not _same_source(identity, _source(provenance.get("source_identity")))
             or provenance.get("native_timeframe") != "1d"
             or not _digest(provenance.get("sha256"))):
         return False
@@ -199,7 +209,7 @@ def validated_bars(daily_bars, now, *, source_identity):
             continue
         prices = {k: _number(item.get(k)) for k in ("open", "high", "low", "close")}
         valid = (str(item.get("timeframe", item.get("interval", ""))).lower() == "1d"
-                 and _native(item) and VPS.same(expected, _source(item.get("source_identity")))
+                 and _native(item) and _same_source(expected, _source(item.get("source_identity")))
                  and end is not None and available is not None
                  and start < end <= available <= asof and end-start <= DAY+3600
                  and (expected["key"].startswith("MOEX:") or end-start >= DAY-3600)
