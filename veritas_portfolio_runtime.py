@@ -4973,6 +4973,17 @@ def _signal_first_admission(row,policy,drawdown):
     if (policy or {}).get('mode')=='CURRENCY' and str(raw.get('asset') or '')!=VCP.ASSET:
         return {'open':False,'fraction':0.0,'hard_veto':True,
                 'reason':VCP.BLOCK_REASON,'allowed_assets':[VCP.ASSET]}
+    # DATA is always the first canonical gate. Never let a stale retained
+    # paper_eligible flag or signal reconstruction run before validating the
+    # current price/source/session.
+    raw_asset=str(raw.get('asset') or '')
+    if raw_asset in VX.PAPER_ASSETS:
+        raw_source=VX.paper_source_gate(raw_asset,raw)
+        if not raw_source.get('eligible') or raw.get('paper_eligible') is False:
+            return {'open':False,'fraction':0.0,'hard_veto':True,
+                    'reason':'R79_SOURCE_OR_SESSION_BLOCK',
+                    'source_blockers':raw_source.get('blockers') or [],
+                    'canonical_stage':'DATA'}
     # A fresh/rebased setup owns its current entry quality. Parent INVALIDATED
     # labels are audit history and cannot veto the new setup. Explicit current
     # hard invalidation remains authoritative.
@@ -4987,10 +4998,6 @@ def _signal_first_admission(row,policy,drawdown):
         return {'open':False,'fraction':0.0,'hard_veto':True,
                 'reason':'R55_ABSOLUTE_INVALIDATED_VETO','r55_invalidated':True,
                 'rebased_current_setup':rebased_current}
-    if (raw.get('source_gate_pass') is False or raw.get('paper_eligible') is False
-            or raw.get('market_open') is False):
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':'R79_SOURCE_OR_SESSION_BLOCK'}
     work,ev,direction,active=_v90r79_signal_state(raw,datetime.now(timezone.utc))
     if not active:
         return dict(_v90r79_base_admission(work,policy,drawdown) or {})
