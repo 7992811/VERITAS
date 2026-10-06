@@ -119,8 +119,8 @@ class RoleTests(unittest.TestCase):
         self.assertEqual(C.COST_POLICY['commission_rate_per_side'],.0004)
         self.assertEqual(C.COST_POLICY['slippage_rate_per_side'],.0004)
         self.assertEqual(C.COST_POLICY['cost_buffer_multiple'],1.1)
-        self.assertAlmostEqual(E.minimum_expected_move_pct(.0016),.0032)
-        self.assertAlmostEqual(E.minimum_expected_move_pct(.003),.006)
+        self.assertAlmostEqual(E.minimum_expected_move_pct(.0016),.0019)
+        self.assertAlmostEqual(E.minimum_expected_move_pct(.003),.0033)
         self.assertAlmostEqual(E.minimum_expected_move_pct(.0001),.0019)
 
     def test_strong_runner_and_no_legacy_profit_lock_disable(self):

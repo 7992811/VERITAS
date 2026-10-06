@@ -5032,6 +5032,13 @@ def _canonical_payload(z):
 
 
 def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    row=dict(row or {})
+    if row.get('_runtime_quote_refresh'):
+        ts=datetime.now(timezone.utc).isoformat()
+        row=VPG.refresh_execution_row(row,now=VPG.utc_datetime(ts))
+        price=VPS.positive(VPS.quote_from_row(row).get('price')) or price
+        # Freeze this selected quote/time through admission and accounting.
+        row['_runtime_quote_refresh']=False
     policy=dict(POLICIES.get(str(name)) or {})
     hwm=float((p or {}).get('high_water_nav_rub') or nav or 1.0)
     dd=max(0.0,1.0-float(nav)/max(hwm,1.0))
@@ -5091,7 +5098,7 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                   event_id=new_event)
             return 0.0
         actual=VX.entry_gate(row,float(price),direction,requested,existing,
-                            existing_target_price=VX.stored_position_target_price(existing))
+                            existing_target_price=VX.stored_position_target_price(existing),now=VPG.utc_datetime(ts))
         hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
         if hard:
             _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)

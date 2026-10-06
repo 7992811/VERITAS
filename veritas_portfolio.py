@@ -2194,7 +2194,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             return 0.0
         z=None
     final_gate=VX.entry_gate(row,price,direction,target_fraction,z,
-                            existing_target_price=VX.stored_position_target_price(z))
+                            existing_target_price=VX.stored_position_target_price(z),now=VPG.utc_datetime(ts))
     if not final_gate['eligible']:
         ev=VTE.context_of(row).get('event') or {}
         canonical=bool((row.get('_canonical_admission') or {}).get('open'))
@@ -6397,6 +6397,13 @@ def _signal_first_admission(row,policy,drawdown):
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     book={k:dict(v) for k,v in (candidates or {}).items()}
+    if str((policy or {}).get('mode') or '')=='CURRENCY' or any(
+            '_canonical_route_trace' in row or '_currency_route_trace' in row
+            for row in book.values()):
+        # This wrapper only selects candidates. Preserve canonical selection;
+        # subsequent lifecycle, protective exits and final admission still run.
+        return _v90r20_base_step_one(
+            c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary)
     routed=[]
     assets=set(str((r or {}).get('asset') or '') for r in (summary or []))
     for asset in assets:

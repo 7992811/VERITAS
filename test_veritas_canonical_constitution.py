@@ -30,6 +30,7 @@ class CanonicalConstitutionRegistryTests(unittest.TestCase):
         self.assertAlmostEqual(C.COST_POLICY["slippage_rate_per_side"], 0.0004)
         self.assertAlmostEqual(C.COST_POLICY["round_trip_base_cost_pct"], 0.0016)
         self.assertAlmostEqual(C.COST_POLICY["cost_buffer_multiple"], 1.1)
+        self.assertAlmostEqual(C.COST_POLICY["entry_cost_multiple"], 1.1)
         self.assertAlmostEqual(
             C.COST_POLICY["round_trip_base_cost_pct"] * C.COST_POLICY["cost_buffer_multiple"],
             0.00176,
@@ -52,7 +53,7 @@ class CanonicalConstitutionCurrentRuntimeAlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(VX.MIN_EXPECTED_MOVE_PCT, 0.0019)
         self.assertAlmostEqual(
             VX.minimum_expected_move_pct(VC.ROUND_TRIP_RATE),
-            max(0.0019, 2.0 * 0.0016),
+            max(0.0019, 1.1 * 0.0016),
         )
 
     def test_ctc_v2_runtime_authority_is_explicit(self):

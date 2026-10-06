@@ -56,10 +56,10 @@ print(json.dumps({
                 )
                 state = json.loads(result.stdout)
                 self.assertAlmostEqual(state["floor"], 0.0019)
-                self.assertAlmostEqual(state["multiple"], 2.0)
+                self.assertAlmostEqual(state["multiple"], 1.1)
                 self.assertAlmostEqual(state["accounting_buffer"], 1.1)
-                self.assertAlmostEqual(state["required"], max(.0019, 2*state["modeled_cost"]))
-                self.assertTrue(state["move_blocked"])
+                self.assertAlmostEqual(state["required"], max(.0019, 1.1*state["modeled_cost"]))
+                self.assertFalse(state["move_blocked"])
                 self.assertAlmostEqual(state["commission"], 0.0004)
 
     def test_low_cost_currency_signals_still_respect_absolute_move_floor(self):
@@ -67,20 +67,20 @@ print(json.dumps({
             for horizon in ("5m", "1h", "4h"):
                 with self.subTest(direction=direction, horizon=horizon):
                     below = VX.economics_gate("CNYRUBF", self.plan(direction, 0.00185, horizon=horizon))
-                    above = VX.economics_gate("CNYRUBF", self.plan(direction, 0.00330, horizon=horizon))
+                    above = VX.economics_gate("CNYRUBF", self.plan(direction, 0.00195, horizon=horizon))
                     self.assertIn("EXPECTED_MOVE_BELOW_COST_BUFFER", below["blockers"])
                     self.assertNotIn("EXPECTED_MOVE_BELOW_COST_BUFFER", above["blockers"])
                     self.assertAlmostEqual(above["minimum_expected_move_pct"],
-                                           max(.0019,2*above["modeled_round_trip_cost_pct"]))
+                                           max(.0019,1.1*above["modeled_round_trip_cost_pct"]))
                     self.assertEqual(VX.minimum_expected_move_pct(.0001),.0019)
 
-    def test_wider_currency_spread_requires_two_times_entry_cost(self):
+    def test_wider_currency_spread_requires_owner_buffer(self):
         for direction in ("LONG", "SHORT"):
             with self.subTest(direction=direction):
-                below = VX.economics_gate("CNYRUBF", self.plan(direction, 0.0059, spread_bps=30))
-                above = VX.economics_gate("CNYRUBF", self.plan(direction, 0.0061, spread_bps=30))
+                below = VX.economics_gate("CNYRUBF", self.plan(direction, 0.0032, spread_bps=30))
+                above = VX.economics_gate("CNYRUBF", self.plan(direction, 0.0034, spread_bps=30))
                 self.assertAlmostEqual(above["modeled_round_trip_cost_pct"], 0.003)
-                self.assertAlmostEqual(above["minimum_expected_move_pct"], 0.006)
+                self.assertAlmostEqual(above["minimum_expected_move_pct"], 0.0033)
                 self.assertIn("EXPECTED_MOVE_BELOW_COST_BUFFER", below["blockers"])
                 self.assertNotIn("EXPECTED_MOVE_BELOW_COST_BUFFER", above["blockers"])
 

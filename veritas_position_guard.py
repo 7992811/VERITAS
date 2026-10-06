@@ -98,14 +98,15 @@ def refresh_entry_quotes(summary):
             try:
                 q=job.result()
                 if (q.get('source_gate_pass') and not VX.is_proxy_price(asset,q)
-                        and VX.paper_quote_time_gate(dict(q,asset=asset))['eligible']):
+                        and VX.paper_quote_time_gate(dict(q,asset=asset),now=datetime.now(timezone.utc))['eligible']):
                     publish_quote(asset,q);quotes[asset]=q
             except Exception:
                 pass
 
+    now=datetime.now(timezone.utc)  # HTTP refresh may finish after the original decision clock.
     out=[]
     for original in rows:
-        row=dict(original);asset=row.get('asset');q=quotes.get(asset)
+        row=dict(original,_runtime_quote_refresh=True);asset=row.get('asset');q=quotes.get(asset)
         expected=VPS.identity(asset,row)
         if expected:
             q=quote_for_position({'asset':asset,'payload':{'price_source_lock':expected}},q,now)
@@ -185,6 +186,23 @@ def quote_for_position(position, candidate=None, now=None):
                 and (last is None or observed>=last)):
             valid.append(q)
     return dict(max(valid,key=lambda q:utc_datetime(q['observed_at']))) if valid else {}
+
+
+def refresh_execution_row(row, now=None):
+    """Select a fresh cached quote on the row's provider/contract without re-dating it."""
+    result=dict(row or {})
+    clock=utc_datetime(now) if now is not None else datetime.now(timezone.utc)
+    asset=result.get('asset')
+    identity=VPS.identity(asset,result)
+    if clock is None or not identity:
+        return result
+    quote=quote_for_position(
+        {'asset':asset,'payload':{'price_source_lock':identity}},
+        candidate=VPS.quote_from_row(result),now=clock)
+    if quote and VX.paper_quote_time_gate(
+            dict(quote,asset=asset),result.get('horizon'),now=clock)['eligible']:
+        result['_execution_quote']=dict(quote)
+    return result
 
 
 def position_mark_price(position, now=None):
