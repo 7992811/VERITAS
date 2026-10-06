@@ -2,6 +2,7 @@ import os
 import time
 import signal
 import hashlib
+import threading
 from collections import deque
 from datetime import datetime
 
@@ -10,7 +11,7 @@ from openai import OpenAI
 
 from prompts import VERITAS_MAX, SCANNER_PROMPT
 
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@axednewz").strip()
@@ -24,7 +25,7 @@ MAX_DRAFTS_PER_HOUR = max(1, int(os.getenv("MAX_DRAFTS_PER_HOUR", "6")))
 PUBLISH_MODE = os.getenv("PUBLISH_MODE", "approval").strip().lower()
 
 TG_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 http = httpx.Client(timeout=40)
 
 running = True
@@ -34,6 +35,7 @@ next_scan_at = 0.0
 seen_events = {}
 pending = {}
 draft_times = deque()
+currency_stop = threading.Event()
 
 
 def now_iso():
@@ -47,6 +49,7 @@ def log(msg):
 def stop_handler(signum, frame):
     global running
     running = False
+    currency_stop.set()
     log(f"Получен сигнал {signum}; завершаю цикл.")
 
 
@@ -252,6 +255,9 @@ def run_scan_once(force=False):
         return
 
     try:
+        if client is None:
+            log("Новостной скан: ключ модели не настроен.")
+            return
         event = scan_market()
         if not event:
             log("Значимого нового события не найдено.")
@@ -281,7 +287,8 @@ def run_scan_once(force=False):
             log("Черновик отправлен администратору.")
 
     except Exception as e:
-        log(f"Ошибка сканирования: {type(e).__name__}: {e}")
+        # API errors may echo part of a rejected key; log the type only.
+        log(f"Ошибка сканирования: {type(e).__name__}")
     finally:
         next_scan_at = time.time() + SCAN_INTERVAL_MINUTES * 60
 
@@ -441,6 +448,8 @@ def main():
     global next_scan_at
 
     log("Запуск VERITAS MAX.")
+    from veritas_currency_delivery import start_from_env
+    currency_worker = start_from_env(currency_stop, log)
     startup_check()
     next_scan_at = time.time() + 60
 
@@ -462,6 +471,9 @@ def main():
                 log(f"Ошибка основного цикла: {type(e).__name__}: {message}")
                 time.sleep(3)
 
+    currency_stop.set()
+    if currency_worker:
+        currency_worker.join(timeout=15)
     log("VERITAS MAX остановлен корректно.")
 
 

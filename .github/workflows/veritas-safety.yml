@@ -27,6 +27,8 @@ jobs:
         run: python -m unittest -v test_veritas_r82_cost_policy.py test_veritas_cost_audit_repairs.py
       - name: Currency portfolio regressions
         run: python -m unittest -v test_veritas_currency_portfolio.py
+      - name: Currency routing and Telegram event delivery
+        run: python -m unittest -v test_veritas_currency_rule_consistency.py test_veritas_currency_notifications.py test_veritas_currency_delivery.py test_veritas_currency_flip.py
       - name: T-Invest read-only connection tests
         run: python -m unittest -v test_veritas_tbank.py
       - name: Execution safety tests

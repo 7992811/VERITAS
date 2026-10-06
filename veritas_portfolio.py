@@ -10,6 +10,7 @@ import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
 import veritas_currency_portfolio as VCP
+import veritas_currency_notifications as VCN
 import veritas_canonical_constitution as CTC
 import veritas_release as VR
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
@@ -154,6 +155,7 @@ def ensure_schema(pg_connect):
           PRIMARY KEY(portfolio_name,observed_at)
         );
         ''')
+        VCN.ensure_schema(c)
         _v90_migrate_portfolio_data(c)
         for name,pol in POLICIES.items():
             initial_nav=float(pol.get('initial_nav_rub',INITIAL_NAV_RUB))
@@ -2123,7 +2125,14 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     c.execute('UPDATE paper_trades SET gross_pnl_rub=gross_pnl_rub+%s,fees_rub=fees_rub+%s WHERE trade_id=%s',(pnl,fee,z['active_trade_id']))
     remain=abs(float(z['units']))-close_units
     source_audit={'execution_model':fill,'price_source_identity':VPS.identity(z['asset'],quote),
-                  'market_observed_at':quote['observed_at'],'reference_price':price}
+                  'market_observed_at':quote['observed_at'],'reference_price':price,
+                  'stop_price':z.get('stop_price'),
+                  'target_price':_position_payload(z).get('target_price'),
+                  'runner_target_price':_position_payload(z).get('runner_target_price'),
+                  'execution_horizon':_position_payload(z).get('execution_horizon'),
+                  'setup_event_id':_position_payload(z).get('r66_event_id'),
+                  'realized_gross_pnl_rub':pnl,'closed_normalized_units':close_units,
+                  'basis_avg_entry_price':float(z['avg_entry_price'])}
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,z['active_trade_id'],ts,z['asset'],side,fill_price,executed_notional,fee,frac,reason,json.dumps(source_audit,ensure_ascii=False,default=str),cid))
     c.execute("UPDATE paper_trades SET payload=payload || %s::jsonb WHERE trade_id=%s",
               (json.dumps({'last_exit_source_identity':source_audit['price_source_identity'],
@@ -2138,6 +2147,7 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         c.execute('DELETE FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,z['asset']))
     else:
         c.execute('UPDATE paper_positions SET units=%s,last_price=%s,target_fraction=%s,updated_at=%s WHERE portfolio_name=%s AND asset=%s',(remain,price,target_fraction,ts,name,z['asset']))
+    VCN.enqueue_order(c,name,z['asset'],cid)
     return fee
 
 
@@ -2174,6 +2184,12 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED')
             return
         _close_or_reduce(c,p,name,z,price,0.0,nav,ts,'V84_CONFIRMED_DIRECTION_FLIP')
+        remaining=c.execute(
+            'SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',
+            (name,asset)).fetchone()
+        if remaining:
+            _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_CLOSE_NOT_CONFIRMED')
+            return 0.0
         z=None
     final_gate=VX.entry_gate(row,price,direction,target_fraction,z)
     if not final_gate['eligible']:
@@ -2276,9 +2292,15 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         c.execute('INSERT INTO paper_positions(portfolio_name,asset,direction,units,avg_entry_price,opened_at,updated_at,active_trade_id,stop_price,target_fraction,last_price,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,asset,direction,units,fill_price,ts,ts,trade_id,(row.get('trade_plan') or {}).get('stop_price'),target_fraction,price,json.dumps(payload,ensure_ascii=False,default=str)))
     order_payload={'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
                    'price_source_identity':source_lock,'market_observed_at':quote['observed_at'],
+                   'stop_price':z.get('stop_price') if z else (row.get('trade_plan') or {}).get('stop_price'),
+                   'target_price':_position_payload(z).get('target_price') if z else (row.get('trade_plan') or {}).get('target_price'),
+                   'runner_target_price':_position_payload(z).get('runner_target_price') if z else (row.get('trade_plan') or {}).get('runner_target_price'),
+                   'execution_horizon':(_position_payload(z).get('execution_horizon') if z else None) or row.get('horizon'),
+                   'setup_event_id':(VTE.context_of(row).get('event') or {}).get('event_id'),
                    'entry_timing':row.get('_r65_entry_timing'),
                    'execution_model':fill,'order_intent':intent.to_dict()}
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,trade_id,ts,asset,side,fill_price,add,fee,add/max(nav,1),reason,json.dumps(order_payload,ensure_ascii=False,default=str),intent.client_order_id))
+    VCN.enqueue_order(c,name,asset,intent.client_order_id)
     _record_entry_outcome(row,'EXECUTED','ORDER_RECORDED',fill_price=fill_price,order_id=intent.client_order_id)
 
 
