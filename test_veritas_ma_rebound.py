@@ -1,6 +1,7 @@
 """Semantic cases for daily MA50/200 rebounds and shared admission guards."""
 from copy import deepcopy
 from datetime import datetime, timezone
+from time import perf_counter
 import unittest
 from unittest.mock import patch
 
@@ -55,6 +56,16 @@ def example(period=50, short=False, timeframe="5m", daily=None):
 def build(rows, daily, now, period=50, timeframe="5m", **kwargs):
     return M.build_context(rows, timeframe, now, daily_bars=daily, asset="NQ",
                            source_identity=SOURCE, ma_config={"periods":(period,)}, **kwargs)
+
+
+def reference_daily_context_builder(daily_bars, **kwargs):
+    """Unindexed baseline: original full validation on each snapshot request."""
+    return lambda now: DA.build_context(daily_bars, now, **kwargs)
+
+
+def reference_build(*args, **kwargs):
+    with patch.object(DA, "context_builder", side_effect=reference_daily_context_builder):
+        return build(*args, **kwargs)
 
 
 class DailyMAReboundTests(unittest.TestCase):
@@ -316,11 +327,98 @@ class DailyMAReboundTests(unittest.TestCase):
 
     def test_daily_snapshots_are_cached_within_intraday_scan(self):
         rows,daily,now = example(timeframe="1m")
-        with patch.object(DA,"build_context",wraps=DA.build_context) as observed:
+        with patch.object(DA,"context_builder",wraps=DA.context_builder) as observed:
             r = build(rows,daily,now,timeframe="1m")
         self.assertIsNotNone(r["event"])
         self.assertEqual(observed.call_count,1)
         self.assertEqual(r["daily_snapshot_builds"],1)
+
+
+    def test_indexed_daily_snapshots_preserve_complete_context_on_every_timeframe(self):
+        for timeframe in ("1m","5m","1h","4h","1d"):
+            for period in (50,200):
+                for short in (False,True):
+                    with self.subTest(timeframe=timeframe,period=period,short=short):
+                        rows,daily,now = example(period,short,timeframe)
+                        if timeframe == "1d":
+                            daily += [dict(b,native_timeframe="1d",end_ts=b["available_at"])
+                                      for b in rows]
+                        optimized = build(rows,daily,now,period,timeframe)
+                        reference = reference_build(rows,daily,now,period,timeframe)
+                        self.assertEqual(optimized,reference)
+                        self.assertIsNotNone(optimized["event"])
+
+    def test_indexed_daily_snapshots_preserve_consumed_spent_and_independent_episodes(self):
+        rows,daily,now = example()
+        first = build(rows,daily,now)["event"]
+        # Repeated touch/recross stays the original episode.
+        for i in range(28,34):
+            rows.append(local_bar(i,o=100.8,h=102.15,l=100.2,c=102. if i%2 else 100.8))
+        repeated = build(rows,daily,rows[-1]["available_at"])
+        self.assertEqual(repeated,reference_build(rows,daily,rows[-1]["available_at"]))
+        self.assertEqual(repeated["event"]["event_id"],first["event_id"])
+        # A spent target stays spent after return to the trigger.
+        target = first["target_price"]
+        rows += [local_bar(34,o=102.,h=target+.1,l=101.5,c=target),
+                 local_bar(35,o=target,h=target+.1,l=100.5,c=101.9)]
+        spent = build(rows,daily,rows[-1]["available_at"])
+        self.assertEqual(spent,reference_build(rows,daily,rows[-1]["available_at"]))
+        self.assertTrue(spent["event"]["spent"])
+        self.assertEqual(spent["event"]["event_id"],first["event_id"])
+        # Only a new independent excursion can rearm.
+        rows += [local_bar(i) for i in range(36,39)]
+        rows += [local_bar(39,o=101.8,h=101.9,l=99.8,c=100.8),
+                 local_bar(40,o=100.8,h=102.15,l=100.6,c=102.)]
+        rearmed = build(rows,daily,rows[-1]["available_at"])
+        self.assertEqual(rearmed,reference_build(rows,daily,rows[-1]["available_at"]))
+        self.assertNotEqual(rearmed["event"]["event_id"],first["event_id"])
+
+    def test_five_hundred_bar_walk_does_not_forget_an_old_consumed_episode(self):
+        tail,_,first_now = example(timeframe="1d")
+        continued = [local_bar(i,"1d",o=100.8,h=102.15,l=99.8,c=100.8)
+                     for i in range(28,280)]
+        daily = daily_history(220) + [
+            dict(b,native_timeframe="1d",end_ts=b["available_at"])
+            for b in tail+continued]
+        rows = deepcopy(daily)
+        first = build(rows[:248],daily,first_now,timeframe="1d")["event"]
+        self.assertIsNotNone(first)
+        result = build(rows,daily,rows[-1]["available_at"],timeframe="1d")
+        self.assertEqual(result["bars"],500)
+        # Hundreds of touches after confirmation cannot erase the consumed
+        # episode or manufacture a newly timed confirmation.
+        self.assertEqual(result["event"],first)
+        self.assertEqual(TS.entry_gate(result,first["signal_price"],"LONG",
+                                      rows[-1]["available_at"])["reason"],
+                         "SAME_TF_EVENT_EXPIRED")
+
+    def test_five_hundred_daily_bars_keep_all_episodes_with_one_native_validation_pass(self):
+        tail,_,now = example(timeframe="1d")
+        daily = daily_history(472) + [
+            dict(b,native_timeframe="1d",end_ts=b["available_at"]) for b in tail]
+        # The local walk is deliberately all500 observations, not a truncated
+        # recent tail; history, event ID, proof and diagnostics must stay exact.
+        rows = deepcopy(daily)
+        with patch.object(DA,"_native",wraps=DA._native) as indexed_native:
+            begin = perf_counter()
+            optimized = build(rows,daily,now,timeframe="1d")
+            indexed_seconds = perf_counter()-begin
+        with patch.object(DA,"_native",wraps=DA._native) as reference_native:
+            begin = perf_counter()
+            reference = reference_build(rows,daily,now,timeframe="1d")
+            reference_seconds = perf_counter()-begin
+        self.assertEqual(optimized,reference)
+        self.assertEqual(optimized["bars"],500)
+        self.assertEqual(optimized["daily_snapshot_builds"],479)
+        self.assertIsNotNone(optimized["event"])
+        self.assertEqual(optimized["event"]["signal_at"],now)
+        self.assertLessEqual(indexed_native.call_count,len(daily))
+        self.assertGreater(reference_native.call_count,50*len(daily))
+        # Report CI timings as measurements, not a machine-dependent pass gate.
+        print("MA_D1_500_PERF instrumented_indexed_seconds=%.6f instrumented_reference_seconds=%.6f "
+              "indexed_native=%d reference_native=%d" %
+              (indexed_seconds,reference_seconds,indexed_native.call_count,
+               reference_native.call_count))
 
     def test_invalid_clock_and_unsupported_timeframe_fail_closed(self):
         rows,daily,now = example()

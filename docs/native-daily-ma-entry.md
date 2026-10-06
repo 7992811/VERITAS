@@ -106,3 +106,20 @@ Safety CI requires native-provider/source, causal MA, event lifetime,
 same-timeframe geometry, full canonical admission for all five portfolios,
 partial-hourly and existing accounting/risk regressions.
 No profitability conclusion follows from passing implementation tests.
+
+## Daily-context runtime validation
+
+A per-evaluation index parses and validates the native daily observations once.
+Each requested snapshot still selects only observations available at its exact
+historical time, including late arrivals and conflicting duplicates. The full
+local candle walk and consumed/rearmed episode state are retained.
+
+Regression tests compare complete indexed contexts with the original uncached
+calculation, including provenance digests, every supported execution timeframe,
+both directions and both MA periods. The 500-day case also verifies that an
+old consumed signal survives 252 subsequent touches without receiving a new
+identity or time. Operation counts are deterministic; elapsed test time is
+reported as a measurement, not a machine-dependent pass threshold.
+
+This optimization keeps the entry policy, source checks, cost limits, strategy
+epoch and immutable owner teaching snapshots unchanged.

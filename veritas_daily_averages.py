@@ -114,8 +114,8 @@ def _setting(config, key, default, maximum):
     return int(number)
 
 
-def build_context(daily_bars, now, *, asset, source_identity,
-                  periods=(18, 50, 200), config=None):
+def _build_context(daily_bars, now, *, asset, source_identity,
+                   periods=(18, 50, 200), config=None, _validated_snapshot=None):
     """Native SMA/ATR snapshot known before an event or touch.
 
     daily_asof is the final daily END, last_daily_open_at is its opening time.
@@ -141,7 +141,8 @@ def build_context(daily_bars, now, *, asset, source_identity,
     elif isinstance(source_identity, dict) and source_identity.get("asset") not in (None, "", str(asset)):
         result["status"] = "DAILY_ASSET_IDENTITY_MISMATCH"
         identity = None
-    rows, diagnostics = validated_bars(daily_bars, now, source_identity=identity)
+    rows, diagnostics = (validated_bars(daily_bars, now, source_identity=identity)
+                         if _validated_snapshot is None else _validated_snapshot)
     result["diagnostics"] = diagnostics
     crypto = (identity or {}).get("key", "").startswith("BINANCE:")
     max_age = _setting(config, "max_daily_age_days", 1 if crypto else 4, 14)*DAY
@@ -233,3 +234,119 @@ def build_context(daily_bars, now, *, asset, source_identity,
     elif result["status"] == "UNAVAILABLE" and rows:
         result["status"] = "INSUFFICIENT_OR_INVALID_DAILY_HISTORY"
     return result
+
+
+def build_context(daily_bars, now, *, asset, source_identity,
+                  periods=(18, 50, 200), config=None):
+    """Independent reference path: normalize and validate the supplied history."""
+    return _build_context(daily_bars, now, asset=asset, source_identity=source_identity,
+                          periods=periods, config=config)
+
+
+def context_builder(daily_bars, *, asset, source_identity,
+                    periods=(18, 50, 200), config=None):
+    """Prepare daily observation validity once, then expose causal snapshots.
+
+    Every input observation enters the index only at the same time at which
+    validated_bars would observe it. Later conflicting duplicate observations
+    taint the original day only when they become available. Unordered caller
+    clocks reset the cheap index, without repeating source/OHLC normalization.
+
+    Arithmetic, window checks and digest construction still use the reference
+    implementation and the same math.fsum windows. No prefix-sum approximation
+    or truncation of the local episode history is introduced.
+    """
+    from bisect import bisect_left, bisect_right, insort
+    bars = deepcopy(list(daily_bars or []))
+    identity = deepcopy(source_identity)
+    options = {"asset": asset, "source_identity": identity,
+               "periods": tuple(periods), "config": deepcopy(config)}
+    normalized_identity = _source(identity)
+    if (normalized_identity is None or (isinstance(identity, dict)
+            and identity.get("asset") not in (None, "", str(asset)))):
+        return lambda now: build_context(bars, now, **options)
+
+    observations, permanent_rejections = [], 0
+    for index, item in enumerate(bars):
+        if not isinstance(item, dict):
+            permanent_rejections += 1
+            continue
+        start = timestamp(item.get("ts", item.get("time")))
+        if start is None:
+            permanent_rejections += 1
+            continue
+        end = timestamp(item.get("end_ts")) if "end_ts" in item else start + DAY
+        available = timestamp(item.get("available_at")) if "available_at" in item else end
+        visible_at = max(v for v in (start, end, available) if v is not None)
+        # The start comparison is strict (start < now); end/availability are
+        # inclusive. A lexicographic key preserves this exactly at boundaries.
+        exclusive = int(visible_at == start)
+        probe = math.nextafter(visible_at, math.inf) if exclusive else visible_at
+        try:
+            valid, _ = validated_bars([item], probe, source_identity=normalized_identity)
+        except Exception:
+            # Malformed future metadata must not change when the reference
+            # would inspect/raise on that row. Retain the reference path for
+            # such an exceptional input instead of moving the failure earlier.
+            return lambda now: build_context(bars, now, **options)
+        row = valid[0] if valid else None
+        observations.append(((visible_at, exclusive), index, start, row))
+    observations.sort(key=lambda item: (item[0], item[1]))
+    boundaries = [item[0] for item in observations]
+    fields = ("open", "high", "low", "close", "end_ts", "available_at")
+    state = {}
+
+    def reset():
+        state.clear()
+        state.update(pointer=0, groups={}, rows={}, times=[], tainted=set(),
+                     rejected=permanent_rejections, duplicates=0, conflicts=0)
+
+    def admit(observation):
+        _, original_index, start, row = observation
+        group = state["groups"].setdefault(start, {"invalid": False, "valid": {}, "conflicts": 0})
+        if row is None:
+            state["rejected"] += 1
+            group["invalid"] = True
+        else:
+            valid = group["valid"]
+            if valid:
+                state["duplicates"] += 1
+            old_conflicts = group["conflicts"]
+            valid[original_index] = row
+            first = valid[min(valid)]
+            group["conflicts"] = sum(any(first[k] != other[k] for k in fields)
+                                     for other in valid.values())
+            state["conflicts"] += group["conflicts"] - old_conflicts
+        if group["invalid"] or group["conflicts"]:
+            state["tainted"].add(start)
+            if start in state["rows"]:
+                state["rows"].pop(start)
+                state["times"].pop(bisect_left(state["times"], start))
+        elif group["valid"]:
+            first = group["valid"][min(group["valid"])]
+            if start not in state["rows"]:
+                insort(state["times"], start)
+            state["rows"][start] = first
+
+    reset()
+
+    def snapshot(now):
+        asof = timestamp(now)
+        if asof is None:
+            return build_context(bars, now, **options)
+        count = bisect_right(boundaries, (asof, 0))
+        if count < state["pointer"]:
+            reset()
+        while state["pointer"] < count:
+            admit(observations[state["pointer"]])
+            state["pointer"] += 1
+        rows = [state["rows"][t] for t in state["times"][-MAX_BARS:]]
+        diagnostics = {"rejected_rows": state["rejected"],
+                       "excluded_future_or_partial": len(observations)-count,
+                       "conflicting_timestamps": state["conflicts"],
+                       "duplicate_rows": state["duplicates"],
+                       "tainted_timestamps": sorted(state["tainted"])}
+        return _build_context((), now, **options,
+                              _validated_snapshot=(rows, diagnostics))
+
+    return snapshot

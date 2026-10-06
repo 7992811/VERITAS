@@ -39,7 +39,7 @@ jobs:
       - name: Owner timeframe structure and provenance regressions
         run: python -m unittest -v test_veritas_timeframe_structure.py test_veritas_timeframe_policy.py test_veritas_timeframe_data.py test_veritas_timeframe_management.py test_veritas_profinance_history.py test_veritas_user_teaching.py test_veritas_repeat_add.py
       - name: Native daily averages, rebounds and stable Brent source
-        run: python -m unittest -v test_veritas_daily_averages.py test_veritas_native_daily.py test_veritas_ma_rebound.py test_veritas_brent_market.py test_veritas_entry_scenarios.py
+        run: python -m unittest -v test_veritas_daily_averages.py test_veritas_daily_average_index.py test_veritas_native_daily.py test_veritas_ma_rebound.py test_veritas_brent_market.py test_veritas_entry_scenarios.py
       - name: Canonical constitution regressions
         run: python -m unittest -v test_veritas_canonical_constitution.py
       - name: CTC v2 architecture regressions
