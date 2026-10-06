@@ -313,27 +313,50 @@ def currency_candidate_book(summary):
         return {}
     priority={"5m":5.0,"1h":4.0,"4h":3.0,"1m":2.0,"1d":1.5,"3d":1.0,"7d":0.5}
     prepared=[]
+    senior4=next((dict(r) for r in (summary or [])
+                  if str((r or {}).get("asset") or "")=="CNYRUBF"
+                  and str((r or {}).get("horizon") or "")=="4h"),None)
     for raw in rows:
         r=_prepare_candidate(raw,summary)
-        r["_currency_route_score"]=priority.get(str(r.get("horizon") or ""),0.0)+0.10*r["_rank"]+10.0*TFP.candidate_priority(r)
-        prepared.append(r)
-    chosen=max(prepared,key=lambda x:x["_currency_route_score"])
-    h=str(chosen.get("horizon") or "")
-    if h not in ("1m","5m","1h"):
-        senior4=next((dict(r) for r in (summary or [])
-                      if str((r or {}).get("asset") or "")=="CNYRUBF"
-                      and str((r or {}).get("horizon") or "")=="4h"),None)
-        if senior4:
+        # Native structure is a hard admission check below, not a second score
+        # that could reorder Currency's approved timeframe preference.
+        r["_currency_route_score"]=priority.get(str(r.get("horizon") or ""),0.0)+0.10*_rank(r)
+        h=str(r.get("horizon") or "")
+        if h not in ("1m","5m","1h") and senior4:
             hs=senior4.get("horizon_structure") or {}
             sdir=str(hs.get("direction") or senior4.get("horizon_structure_direction") or "NO_TRADE")
             state=str(hs.get("state") or senior4.get("horizon_structure_state") or "")
             score=_num(hs.get("score") or senior4.get("horizon_structure_score"),0.0)
-            chosen["_currency_mtf_context"]={"selected_horizon":h,"selected_direction":_direction(chosen),
-                                             "four_hour_direction":sdir,"four_hour_state":state,
-                                             "four_hour_score":score}
-            chosen["_currency_mtf_conflict"]=bool(
-                sdir in ("LONG","SHORT") and sdir!=_direction(chosen)
+            r["_currency_mtf_context"]={"selected_horizon":h,"selected_direction":_direction(r),
+                                        "four_hour_direction":sdir,"four_hour_state":state,
+                                        "four_hour_score":score}
+            r["_currency_mtf_conflict"]=bool(
+                sdir in ("LONG","SHORT") and sdir!=_direction(r)
                 and state in ("BUILDING_TREND","CONFIRMED_TREND") and score>=0.65)
+        prepared.append(r)
+
+    # Priority applies among executable setups. An inadmissible 5m signal must
+    # not hide an independently admissible 1h/4h setup for the same instrument.
+    # Each candidate passes the complete canonical gate, including its existing
+    # senior/local conflicts. Final execution still rechecks current drawdown,
+    # sizing, held-position source identity and refreshed quote economics.
+    prepared.sort(key=lambda x:x["_currency_route_score"],reverse=True)
+    chosen=prepared[0]
+    trace=[]
+    policy=CTC.runtime_portfolio_policy("Currency")
+    clock=datetime.now(timezone.utc)
+    for candidate in prepared:
+        admission=evaluate(candidate,policy,0.0,clock)
+        trace.append({"horizon":candidate.get("horizon"),"direction":_direction(candidate),
+                      "open":bool(admission.get("open")),"reason":admission.get("reason"),
+                      "hard_veto":bool(admission.get("hard_veto")),
+                      "canonical_stage":admission.get("canonical_stage")})
+        if admission.get("open"):
+            chosen=candidate
+            break
+    # If every setup is blocked, retain the highest-priority candidate so the
+    # portfolio/UI continues to report its actual blocker rather than NO_ROW.
+    chosen["_currency_route_trace"]=trace
     return {"CNYRUBF":chosen}
 
 def impulse_candidate_book(summary):
