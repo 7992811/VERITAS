@@ -103,13 +103,13 @@ class MarketCaseRegressionTests(unittest.TestCase):
                 # Even a retained True flag cannot override failed source checks.
                 out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
                 self.assertFalse(out['open'], out)
-                self.assertEqual(out['reason'], 'R42_PAPER_SOURCE_GATE')
+                self.assertEqual(out['reason'], 'R79_SOURCE_OR_SESSION_BLOCK')
 
     def test_moex_one_source_does_not_override_economics_or_explicit_denial(self):
         row = self._moex_single_source_row()
         row['paper_eligible'] = False
         self.assertEqual(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
-                         ['reason'], 'R42_PAPER_SOURCE_GATE')
+                         ['reason'], 'R79_SOURCE_OR_SESSION_BLOCK')
         row = self._moex_single_source_row()
         row['trade_plan']['target_price'] = 2220.0  # actual final levels must fail economics, not stale metadata
         row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
