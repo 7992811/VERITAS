@@ -5006,9 +5006,6 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
 # CANONICAL FINAL RUNTIME AUTHORITY — CTC v2
 # Historical Rxx functions remain replay/lifecycle compatibility only. Candidate
 # routing, admission, sizing and mutation authority are replaced below.
-LEGACY_R85_POLICY_ADMISSION=_signal_first_admission
-
-
 def _canonical_desired_fraction(row,policy,drawdown):
     out=VCR.evaluate(row,policy,drawdown)
     return float(out.get('fraction') or 0.0) if out.get('open') else 0.0
