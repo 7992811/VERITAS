@@ -16493,8 +16493,25 @@ def _v90r25_portfolios_fast():
         out=dict(cached); out['api_source']='memory_cache'; return out
     with lock:
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
-    if live and len(live.get('portfolios') or [])==len(V90_CANONICAL_PORTFOLIOS) and (any(p.get('positions') for p in live.get('portfolios') or []) or not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live.get('portfolios') or [])):
-        out=VP.VCP.decorate_report(VTV.enrich_positions(live,pg_connect)); out['api_source']='live_memory'
+    live_ports=list(live.get('portfolios') or [])
+    live_names={str(p.get('name') or '') for p in live_ports}
+    core_names={'Impulse','Aggressive','Champion','Challenger'}
+    core_complete=core_names.issubset(live_names)
+    exposure_without_rows=any(
+        abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002
+        and not p.get('positions') for p in live_ports
+    )
+    # The optional Currency book must not make an otherwise complete core snapshot
+    # look missing. If it is not present in live memory yet, append its safe
+    # non-executing state; non-zero exposure without position rows still forces SQL.
+    if live and core_complete and not exposure_without_rows:
+        out=VP.VCP.decorate_report(VTV.enrich_positions(live,pg_connect))
+        if 'Currency' in V90_CANONICAL_PORTFOLIOS and not any(
+                str(p.get('name') or '')=='Currency' for p in (out.get('portfolios') or [])):
+            out=dict(out)
+            out['portfolios']=list(out.get('portfolios') or [])+[VP.VCP.pending_state()]
+            out['portfolio_count']=len(out['portfolios'])
+        out['api_source']='live_memory'
         with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
     if not pg_enabled(): return {'status':'UNAVAILABLE','portfolios':[]}
