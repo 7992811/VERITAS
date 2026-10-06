@@ -21,6 +21,10 @@ class CurrencyPortfolioTests(TestCase):
         self.assertTrue(pol['weekend_carry_allowed'])
         self.assertTrue(pol['paper_trading_enabled'])
         self.assertFalse(pol['live_trading_enabled'])
+        self.assertEqual(pol['initial_normal'],.50)
+        self.assertEqual(pol['initial_super'],1.00)
+        self.assertEqual(pol['probe_normal'],.05)
+        self.assertEqual(pol['probe_super'],.10)
 
     def test_currency_rejects_every_non_cnyrubf_asset(self):
         for asset in ('GOLD','MOEX','NQ','BTC','ETH','BRENT'):
@@ -29,7 +33,7 @@ class CurrencyPortfolioTests(TestCase):
             self.assertEqual(out['reason'],C.BLOCK_REASON)
 
     def test_currency_uses_canonical_admission_not_setup_pending_block(self):
-        with patch.object(R,'_R85_POLICY_ADMISSION',
+        with patch.object(R.VCR,'evaluate',
                           return_value={'open':True,'fraction':.50,'reason':'TEST_PASS'}):
             out=P._signal_first_admission({'asset':'CNYRUBF'},P.POLICIES['Currency'],0)
         self.assertTrue(out['open'])

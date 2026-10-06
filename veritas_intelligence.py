@@ -21,7 +21,8 @@ try:
 except Exception:
     psycopg = None
     dict_row = None
-VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
+import veritas_release as VR
+VERSION = VR.PRODUCT_VERSION
 try:
     import veritas_signal_core as V70
 except Exception:
@@ -16690,7 +16691,7 @@ def _v90r23_trade_report_fast():
 
 
 def _v90r26_dashboard_bootstrap(signals_only=False):
-    """One fast UI payload: signals, four portfolios, open positions and recent closed trades."""
+    """One fast UI payload: signals, five portfolios, open positions and recent closed trades."""
     cyc=fresh_cycle_snapshot()
     signals=[dict(z) for z in (cyc.get('summary') or []) if str(z.get('asset') or '')!='NDX']
     if signals_only:
@@ -16698,7 +16699,7 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
         # Omit those sections (never send empty authoritative books on this path).
         return {
             'status':'OK','version':VERSION,'at':cyc.get('at'),
-            'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled())},
+            'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled()),'release':VR.snapshot()},
             'signals':signals,'signal_count':len(signals),
             'data_quality_summary':{
                 'cells':len(signals),'expected_cells':len(DISPLAY_ASSETS)*len(HORIZONS),
@@ -16727,7 +16728,7 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
     wins_total=sum(int(p.get('wins') or 0) for p in ps)
     return {
       'status':'OK','version':VERSION,'at':cyc.get('at'),
-      'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled())},
+      'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled()),'release':VR.snapshot()},
       'signals':signals,'signal_count':len(signals),
       'portfolios':ps,'portfolio_count':len(ps),
       'positions':positions,'open_position_count':len(positions),
@@ -16786,7 +16787,8 @@ class H(BaseHTTPRequestHandler):
                 self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,
                             'bootstrap_ready':bool(_BOOTSTRAP_READY),
                             'phase':'READY' if _BOOTSTRAP_READY else 'STARTING',
-                            'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1)})
+                            'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1),
+                            'release':VR.snapshot()})
             elif self.path.startswith('/api/v1/presence'):
                 tok=self.headers.get('X-Veritas-Visitor',''); record_presence(tok,self.path); self.reply({'version':VERSION,**user_metrics()})
             elif self.path.startswith('/api/v1/users'):
@@ -18740,7 +18742,7 @@ def maybe_schedule_heavy_learning(reason='scheduled',force=False):
 
 
 # VERITAS V90 CANONICAL PORTFOLIOS R24
-V90_CANONICAL_PORTFOLIOS=('Impulse','Aggressive','Champion','Challenger','Currency')
+V90_CANONICAL_PORTFOLIOS=tuple(VR.PORTFOLIOS)
 
 def _v90r24_ensure_canonical_portfolios():
     if VP is None or not pg_enabled():
@@ -18748,16 +18750,7 @@ def _v90r24_ensure_canonical_portfolios():
     try:
         if hasattr(VP,'ensure_schema'):
             VP.ensure_schema(pg_connect)
-        policies={
-          'Impulse': {'threshold':0.64,'strong_threshold':0.76,'min_independent':2,'mode':'IMPULSE_ONLY',
-                      'allowed_horizons':['1m','5m','1h','4h','1d'],'max_fraction':0.50,
-                      'provisional_cap':0.10,'accepted_cap':0.25,'confirmed_cap':0.50},
-          'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE',
-                         'max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
-          'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':2.0},
-          'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':2.0},
-          'Currency': VP.VCP.policy(),
-        }
+        policies={name:dict(VP.POLICIES[name]) for name in V90_CANONICAL_PORTFOLIOS}
         with pg_connect() as c:
             for name in V90_CANONICAL_PORTFOLIOS:
                 initial_nav=float(policies[name].get('initial_nav_rub',1000000))
@@ -18767,7 +18760,7 @@ def _v90r24_ensure_canonical_portfolios():
                   VALUES(%s,now(),now(),%s,0,0,0,%s,%s,%s::jsonb,%s)
                   ON CONFLICT(name) DO UPDATE SET
                     policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()""",
-                  (name,initial_nav,initial_nav,initial_nav,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION','veritas-portfolio-v9.0-four-portfolio-core')))
+                  (name,initial_nav,initial_nav,initial_nav,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION',VR.PORTFOLIO_VERSION)))
             rows=c.execute("""SELECT name FROM paper_portfolios
                               WHERE name=ANY(%s)
                               ORDER BY CASE name
@@ -19243,7 +19236,7 @@ if 'NDX' in DISPLAY_ASSETS or any((v[0]=='NDX') for v in ASSETS.values()):
     raise RuntimeError('ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES')
 
 # VERITAS 90 FINAL RUNTIME IDENTITY
-VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
+VERSION = VR.PRODUCT_VERSION
 
 
 from veritas_market_runtime import install_market_runtime_guard as _v90_install_market_guard; _v90_install_market_guard(globals())

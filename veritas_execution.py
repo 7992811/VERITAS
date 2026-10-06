@@ -5,11 +5,12 @@ import json
 import math
 import os
 import veritas_costs as VC
+import veritas_canonical_constitution as CTC
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
 
-VERSION = "veritas-execution-safety-v2"
+VERSION = "veritas-execution-safety-v3-ctc-v2"
 RESEARCH_PAPER_ASSETS = frozenset(("NQ", "BRENT", "GOLD", "MOEX", "CNYRUBF"))
 PAPER_ASSETS = RESEARCH_PAPER_ASSETS | frozenset(("BTC", "ETH"))
 PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
@@ -17,7 +18,9 @@ PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
 # Research/paper economics gate. This is deliberately independent from signal quality:
 # even a SUPER signal cannot bypass bad trade economics.
 MIN_REWARD_RISK = max(1.0, float(os.getenv("VERITAS_FINAL_MIN_RR", "1.15")))
-MIN_EXPECTED_MOVE_PCT = max(0.0019, float(os.getenv("VERITAS_FINAL_MIN_EXPECTED_MOVE", "0.0019")))
+MIN_EXPECTED_MOVE_PCT = max(float(CTC.COST_POLICY["minimum_expected_move_floor_pct"]),
+                            float(os.getenv("VERITAS_FINAL_MIN_EXPECTED_MOVE",
+                                            str(CTC.COST_POLICY["minimum_expected_move_floor_pct"]))))
 MIN_MOVE_COST_MULTIPLE = VC.COST_BUFFER_MULTIPLE
 MOVE_POLICY_VERSION = VC.VERSION
 ROUND_TRIP_COST_BPS = VC.ROUND_TRIP_RATE * 10000.0
@@ -26,17 +29,7 @@ ROUND_TRIP_COST_BPS = VC.ROUND_TRIP_RATE * 10000.0
 _DEFAULT_FILL_BPS = {asset: VC.SLIPPAGE_RATE * 10000.0 for asset in PAPER_ASSETS}
 
 
-LIVE_RISK_PROFILE = {
-    "max_stop_risk_nav": 0.005,
-    "max_total_open_stop_risk_nav": 0.025,
-    "max_correlated_stop_risk_nav": 0.0125,
-    "max_single_asset_fraction": 0.25,
-    "max_gross": 1.25,
-    "daily_loss_stop": 0.02,
-    "weekly_loss_stop": 0.05,
-    "hard_drawdown_stop": 0.10,
-    "allow_new_risk_without_durable_storage": False,
-}
+LIVE_RISK_PROFILE = dict(CTC.LIVE_RISK_POLICY)
 
 
 def _num(x: Any, default: Optional[float] = None) -> Optional[float]:

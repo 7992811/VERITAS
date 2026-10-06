@@ -11,27 +11,19 @@ import veritas_profit_protection as VPP
 import veritas_price_source as VPS
 import veritas_currency_portfolio as VCP
 import veritas_canonical_constitution as CTC
+import veritas_release as VR
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
-VERSION='veritas-portfolio-v9.0-four-portfolio-core'
+VERSION=VR.PORTFOLIO_VERSION
 INITIAL_NAV_RUB=1_000_000.0
 MAX_GROSS=2.0
 COMMISSION=VC.COMMISSION_RATE
 MEANINGFUL_WIN_NAV=0.001
-MAX_STOP_RISK_NAV=0.10
+MAX_STOP_RISK_NAV=float(CTC.PAPER_RISK_POLICY['per_idea_structural_stop_risk_cap_nav'])
 POSITION_STEP=0.05
 
-POLICIES={
- 'Impulse': {
-     'threshold':0.64,'strong_threshold':0.76,'min_independent':2,'mode':'IMPULSE_ONLY',
-     'allowed_horizons':('1m','5m','1h','4h','1d'),'max_fraction':0.50,'provisional_cap':0.10,
-     'accepted_cap':0.25,'confirmed_cap':0.50
- },
- 'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE','max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
- 'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':1.0},
- 'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':1.0},
- 'Currency': VCP.policy(),
-}
+POLICIES={name:CTC.runtime_portfolio_policy(name) for name in CTC.PORTFOLIO_ORDER}
+
 
 
 def _now(): return datetime.now(timezone.utc).isoformat()
@@ -57,7 +49,7 @@ def _execution_price_or_none(prices, asset):
 
 
 # VERITAS v90 portfolio migration
-V90_PORTFOLIOS = ('Impulse','Aggressive','Champion','Challenger','Currency')
+V90_PORTFOLIOS = tuple(CTC.PORTFOLIO_ORDER)
 
 
 def _v90_port_ident(x):
@@ -2185,38 +2177,25 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     final_gate=VX.entry_gate(row,price,direction,target_fraction,z)
     if not final_gate['eligible']:
         ev=VTE.context_of(row).get('event') or {}
-        r79=bool(ev.get('signal_authoritative') and str(ev.get('event_id') or '').startswith('R79_SIG_'))
+        canonical=bool((row.get('_canonical_admission') or {}).get('open'))
         blockers=set(str(x) for x in (final_gate.get('blockers') or []))
-        r79_soft={
-          'RR_BELOW_FINAL_FLOOR','NET_REWARD_RISK_BELOW_FLOOR',
-          'EXPECTED_MOVE_BELOW_COST_BUFFER','TARGET_NOT_PROFITABLE_AFTER_COSTS',
-          'R66_WAIT_RETEST','R66_CLOSED_CONTEXT_STALE','R69_WAIT_LOCAL_BREAKOUT',
-          'R74_EVENT_TARGET_REACHED','R66_SENIOR_BREAK_NOT_HELD',
-        }
-        hard=blockers-r79_soft
-        if r79 and not hard:
-            # R79 already validated source, execution quote, direction, stop
-            # geometry/reuse and stop-risk before entering the mutation layer.
-            # Do not let this legacy duplicate economics/timing gate turn an
-            # admitted current signal back into cash.
+        hard={x for x in blockers if CTC.veto_severity(x)=='HARD'}
+        if canonical and not hard:
+            # Canonical admission already passed all hard stages. The accounting
+            # boundary may accept only explicitly soft CTC blockers.
             final_gate=dict(final_gate)
             final_gate.update(
-              eligible=True,status='PASS_R79_SIGNAL_MUTATION',
-              r79_soft_override=True,
-              r79_overridden_blockers=sorted(blockers),
-              r79_hard_blockers=[],
+              eligible=True,status='PASS_CTC_V2_ACCOUNTING',
+              canonical_soft_override=True,
+              canonical_overridden_blockers=sorted(blockers),
+              canonical_hard_blockers=[],
             )
-            print(json.dumps({
-              'event':'R79_FINAL_MUTATION_OVERRIDE','portfolio':name,'asset':asset,
-              'direction':direction,'blockers':sorted(blockers),
-              'target_fraction':target_fraction,
-            },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
         else:
             _record_entry_outcome(row,'BLOCKED','FINAL_EXECUTION_ECONOMICS',
                                   blockers=sorted(blockers),hard_blockers=sorted(hard))
             print(json.dumps({'event':'PAPER_ENTRY_BLOCKED_FINAL','portfolio':name,
                               'asset':asset,'gate':final_gate,
-                              'r79_signal':r79,'hard_blockers':sorted(hard)},
+                              'canonical_admission':canonical,'hard_blockers':sorted(hard)},
                              default=str),flush=True)
             return
     row['_fill_economics_gate']=final_gate
@@ -2363,15 +2342,12 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     # Enforce portfolio gross cap by proportional scaling; keep 5% steps.
     total=sum(targets.values())
     mode=str(policy.get('mode') or 'CORE')
-    if mode=='AGGRESSIVE':
-        # 5x is a ceiling, not a target. Drawdown governor scales it down.
-        base_cap=float(policy.get('max_gross') or 5.0)
-        if rg.get('new_risk') is False:
-            cap=min(0.25,base_cap)
-        else:
-            cap=min(base_cap,base_cap*float(rg.get('multiplier') or 0.0))
+    # Every book owns its gross ceiling in CTC. Drawdown can only reduce it.
+    base_cap=float(policy.get('max_gross') or policy.get('max_fraction') or MAX_GROSS)
+    if rg.get('new_risk') is False:
+        cap=0.0
     else:
-        cap=min(MAX_GROSS,float(rg['max_gross']))
+        cap=min(base_cap,float(rg.get('max_gross') or base_cap))
     if total>cap and total>0:
         k=cap/total; targets={a:_round_step(v*k) for a,v in targets.items()}
         while sum(targets.values())>cap+1e-9:
@@ -2465,10 +2441,8 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                     quote_gate=VPG.quote_gate(observed,now=VPG.utc_datetime(ts),protective=True))
                 continue
             z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
-            rs=row.get('range_retest_breakout') or {}
-            if not z and rs.get('active') and str(rs.get('state') or '') in ('APPROACH_RESISTANCE','APPROACH_SUPPORT'):
-                _record_entry_outcome(row,'BLOCKED','WAIT_LEVEL_BREAK')
-                continue
+            # CTC v2 already classified timing/level state before sizing.
+            # No post-admission legacy timing veto is allowed here.
             if z and z['direction']!=row.get('research_decision'):
                 _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED',
                     held_direction=z['direction'],signal_direction=row.get('research_decision'))
@@ -2613,11 +2587,11 @@ def trade_report(pg_connect,limit=100):
     _v90_base_report=report
     def _v90_report_with_limits(pg_connect):
         d=_v90_base_report(pg_connect)
-        limits={'Impulse':0.50,'Aggressive':5.0,'Champion':2.0,'Challenger':2.0}
-        d['max_gross']=5.0
+        limits={n:float(POLICIES[n].get('max_gross') or POLICIES[n].get('max_fraction') or MAX_GROSS) for n in POLICIES}
+        d['max_gross']=max(limits.values())
         d['portfolio_max_gross']=limits
         for p in d.get('portfolios') or []:
-            p['max_gross_limit']=limits.get(p.get('name'),2.0)
+            p['max_gross_limit']=limits.get(p.get('name'))
         return d
     
     
@@ -2931,6 +2905,10 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         pass
     _v90j_cache['at']=0.0
     return result
+
+# Stable accounting-only boundary captured before later Rxx strategy layers.
+CANONICAL_ACCOUNTING_OPEN_OR_ADD=_open_or_add
+CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE=_close_or_reduce
 
 
 def _v90j_load_closed(pg_connect,limit=2500):
@@ -5252,7 +5230,7 @@ def _risk_governor(drawdown):
 
 # Risk on one new idea is capped at 2% NAV. Leverage is earned by evidence,
 # not by allowing a single bad stop to consume the whole drawdown budget.
-MAX_STOP_RISK_NAV=0.02
+MAX_STOP_RISK_NAV=float(CTC.PAPER_RISK_POLICY['per_idea_structural_stop_risk_cap_nav'])
 
 _v90r16_base_admission=_signal_first_admission
 
@@ -5322,7 +5300,7 @@ def _signal_first_admission(row,policy,drawdown):
     return base
 
 # VERITAS 90 FINAL RUNTIME IDENTITY
-VERSION='veritas-portfolio-v9.0-four-portfolio-core'
+VERSION=VR.PORTFOLIO_VERSION
 
 
 # VERITAS V90 RISK-NEUTRAL PYRAMIDING R17
@@ -5664,8 +5642,9 @@ def report(pg_connect):
       'aggressive_max_gross':5.0,
       'aggressive_leverage_rule':'5x ceiling, earned by evidence and protected risk; never automatic',
     }
-    d['max_gross']=5.0
-    d['portfolio_max_gross']={'Impulse':0.50,'Aggressive':5.0,'Champion':2.0,'Challenger':2.0}
+    _limits={n:float(POLICIES[n].get('max_gross') or POLICIES[n].get('max_fraction') or MAX_GROSS) for n in POLICIES}
+    d['max_gross']=max(_limits.values())
+    d['portfolio_max_gross']=_limits
     return _jsonable(d)
 
 
@@ -8311,54 +8290,7 @@ _v90r35_context_portfolio=None
 
 
 def _v90r35_profile(mode=None,portfolio=None):
-    mode=str(mode or '')
-    portfolio=str(portfolio or '')
-    currency=bool(mode=='CURRENCY' or portfolio==VCP.PORTFOLIO_KEY)
-    if currency:
-        return {
-          'name':'CURRENCY',
-          'hard_drawdown':VCP.HARD_DRAWDOWN,
-          'normal_until':0.20,
-          'caution_until':0.25,
-          'defense_1_until':0.30,
-          'normal_max_gross':VCP.MAX_GROSS,
-          'caution_max_gross':7.50,
-          'defense_1_max_gross':5.00,
-          'defense_2_max_gross':2.50,
-          'caution_multiplier':0.90,
-          'defense_1_multiplier':0.70,
-          'defense_2_multiplier':0.45,
-        }
-    aggressive=bool(mode=='AGGRESSIVE' or portfolio=='Aggressive')
-    if aggressive:
-        return {
-          'name':'AGGRESSIVE',
-          'hard_drawdown':0.20,
-          'normal_until':0.10,
-          'caution_until':0.14,
-          'defense_1_until':0.17,
-          'normal_max_gross':5.00,
-          'caution_max_gross':4.00,
-          'defense_1_max_gross':3.00,
-          'defense_2_max_gross':1.50,
-          'caution_multiplier':0.95,
-          'defense_1_multiplier':0.80,
-          'defense_2_multiplier':0.55,
-        }
-    return {
-      'name':'STANDARD',
-      'hard_drawdown':0.15,
-      'normal_until':0.08,
-      'caution_until':0.11,
-      'defense_1_until':0.135,
-      'normal_max_gross':2.00,
-      'caution_max_gross':1.75,
-      'defense_1_max_gross':1.25,
-      'defense_2_max_gross':0.75,
-      'caution_multiplier':0.90,
-      'defense_1_multiplier':0.70,
-      'defense_2_multiplier':0.45,
-    }
+    return CTC.drawdown_profile(portfolio=portfolio,mode=mode)
 
 
 def _v90r35_current_profile():
@@ -8448,13 +8380,7 @@ def _report_r39(pg_connect):
       'priority_order':list(CTC.OBJECTIVE_POLICY['priority_order']),
       'target_win_rate':CTC.OBJECTIVE_POLICY['target_win_rate'],
       'drawdown_priority':3,
-      'hard_drawdown_limits':{
-        'Impulse':0.15,
-        'Aggressive':0.20,
-        'Champion':0.15,
-        'Challenger':0.15,
-        'Currency':VCP.HARD_DRAWDOWN,
-      },
+      'hard_drawdown_limits':{n:float(CTC.PORTFOLIO_POLICIES[n]['hard_drawdown']) for n in CTC.PORTFOLIO_ORDER},
       'per_idea_structural_stop_risk_cap_nav':float(MAX_STOP_RISK_NAV),
       'aggressive_strategic_max_gross':5.0,
       'drawdown_changes_signal_quality_gate':False,

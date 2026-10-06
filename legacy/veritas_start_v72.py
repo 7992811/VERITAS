@@ -1,3 +1,7 @@
+"""ARCHIVED ONLY — historical v72.1 source-rewrite launcher.
+
+Not part of production startup. Kept solely for audit/replay.
+"""
 """
 VERITAS v72.1 startup wrapper.
 
