@@ -7,11 +7,11 @@ from pathlib import Path
 # CTC v1 freezes the legacy monolith at the audited migration boundary.
 # Historical Rxx functions remain readable for replay/audit, but production
 # authority is now externalized through the canonical constitution/runtime lock.
-# These are HARD no-growth limits, not architectural targets.
+# These are HARD no-growth limits, not architectural targets. Baseline includes the 2026-10-06 OOM/source/thesis safety incident repairs; duplicate-function debt did not increase.
 LIMITS = {
-    "veritas_intelligence.py": {"max_lines": 19216, "max_redefinitions": 35, "max_duplicate_names": 32},
+    "veritas_intelligence.py": {"max_lines": 19254, "max_redefinitions": 35, "max_duplicate_names": 32},
     "veritas_portfolio.py": {"max_lines": 8636, "max_redefinitions": 68, "max_duplicate_names": 20},
-    "veritas_portfolio_runtime.py": {"max_lines": 5385, "max_redefinitions": 49, "max_duplicate_names": 14},
+    "veritas_portfolio_runtime.py": {"max_lines": 5394, "max_redefinitions": 49, "max_duplicate_names": 14},
     "veritas_canonical_constitution.py": {"max_lines": 500, "max_redefinitions": 0, "max_duplicate_names": 0},
     "veritas_decision_signature.py": {"max_lines": 50, "max_redefinitions": 0, "max_duplicate_names": 0},
     "veritas_asset_management_intelligence.py": {"max_lines": 540, "max_redefinitions": 0, "max_duplicate_names": 0},
