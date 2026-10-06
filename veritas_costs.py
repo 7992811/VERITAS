@@ -5,15 +5,16 @@ of each position are free; funding then accrues at 16% on current notional.
 Previously booked costs are historical facts and are never recomputed here.
 """
 from datetime import datetime, timedelta, timezone
+import veritas_canonical_constitution as CTC
 
-VERSION = "CTC_V1_COST_POLICY"
-COMMISSION_RATE = 0.0004
-SLIPPAGE_RATE = 0.0004
-COST_BUFFER_MULTIPLE = 1.1
-FUNDING_ANNUAL_RATE = 0.16
-FUNDING_FREE_SECONDS = 86400.0
+VERSION = "CTC_V2_COST_POLICY"
+COMMISSION_RATE = float(CTC.COST_POLICY["commission_rate_per_side"])
+SLIPPAGE_RATE = float(CTC.COST_POLICY["slippage_rate_per_side"])
+COST_BUFFER_MULTIPLE = float(CTC.COST_POLICY["cost_buffer_multiple"])
+FUNDING_ANNUAL_RATE = float(CTC.COST_POLICY["funding_annual_rate"])
+FUNDING_FREE_SECONDS = float(CTC.COST_POLICY["funding_free_seconds"])
 YEAR_SECONDS = 365.25 * 86400.0
-ROUND_TRIP_RATE = 2 * (COMMISSION_RATE + SLIPPAGE_RATE)
+ROUND_TRIP_RATE = float(CTC.COST_POLICY["round_trip_base_cost_pct"])
 
 
 def utc_datetime(value):
