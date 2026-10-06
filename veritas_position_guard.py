@@ -430,7 +430,7 @@ def profit_lock_stop(z, quote, commission=VC.COMMISSION_RATE, fees_paid_rub=0.0,
     paid_cost=fees_paid+funding-realized
     current_required=paid_cost+exit_fee_now+slippage_now+min_net_rub
     required_activation_pct=100.0*current_required/max(entry_notional,1e-9)
-    activation_pct=max(100.0*float(CTC.LIFECYCLE_POLICY['profit_lock_activation_floor_pct']),required_activation_pct)
+    activation_pct=max(float(CTC.LIFECYCLE_POLICY['profit_lock_activation_floor_pct']),required_activation_pct)
     if current_pct<activation_pct or gross_current<current_required:
         return None
 
