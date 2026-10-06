@@ -67,17 +67,25 @@ def _daily_boundaries(bars):
             continue
         t = TS.timestamp(b.get("ts", b.get("time")))
         if t is not None:
-            out.append(max(t + 86400, TS.timestamp(b.get("end_ts")) or t + 86400,
-                           TS.timestamp(b.get("available_at")) or t + 86400))
+            daily_end = TS.timestamp(b.get("end_ts"))
+            daily_end = t + 86400 if daily_end is None else daily_end
+            available = TS.timestamp(b.get("available_at"))
+            out.append(max(daily_end, daily_end if available is None else available))
     return sorted(set(out))
 
 
-def _daily_level(snapshot, period, sign, policy):
+def _daily_level(snapshot, period, sign, policy, at):
     pe = (snapshot.get("periods") or {}).get(str(period)) or {}
     value, atr = TS._number(pe.get("value")), TS._number(snapshot.get("atr20"))
     slope, crosses = TS._number(pe.get("slope_atr_5d")), TS._number(pe.get("crossings_10d"))
-    if (snapshot.get("status") != "OK" or pe.get("status") != "OK"
-            or not value or not atr or min(value, atr) <= 0):
+    if pe.get("status") != "OK" or not value or not atr or min(value, atr) <= 0:
+        return None, "MA_DAILY_HISTORY_REQUIRED"
+    valid_until = TS.timestamp(snapshot.get("valid_until"))
+    if valid_until is None:
+        return None, "MA_DAILY_FRESHNESS_REQUIRED"
+    if at > valid_until:
+        return None, "MA_DAILY_CONTEXT_STALE"
+    if snapshot.get("status") != "OK":
         return None, "MA_DAILY_HISTORY_REQUIRED"
     if slope is None or crosses is None:
         return None, "MA_DAILY_REGIME_HISTORY_REQUIRED"
@@ -87,6 +95,7 @@ def _daily_level(snapshot, period, sign, policy):
         return None, "MA_FLAT_REPEATED_CROSSES"
     return {"value":value, "atr":atr, "period":period, "period_evidence":deepcopy(pe),
             "known_at":snapshot.get("known_at"), "daily_asof":snapshot.get("daily_asof"),
+            "valid_until":valid_until,
             "provenance":deepcopy(snapshot.get("provenance") or {})}, None
 
 
@@ -114,6 +123,7 @@ def _make_event(ep, bar, prior, atr, atr_known, timeframe, asset, source, risk_p
     proof = {
         "period":level["period"], "ma_value":level["value"], "daily_atr":level["atr"],
         "daily_known_at":level["known_at"], "daily_asof":level["daily_asof"],
+        "daily_valid_until":level["valid_until"],
         "daily_provenance":deepcopy(level["provenance"]),
         "period_evidence":deepcopy(level["period_evidence"]),
         "episode_start_at":touch["ts"], "touch_available_at":touch["available_at"],
@@ -121,7 +131,8 @@ def _make_event(ep, bar, prior, atr, atr_known, timeframe, asset, source, risk_p
         "bounce_level":touch["high" if sign == 1 else "low"],
         "approach_bars":deepcopy(ep["approach"]),
         "confirmation_close":bar["close"], "previous_close":ep["previous_close"],
-        "episode_bars":ep["bars"], "policy":deepcopy(ma_policy),
+        "episode_bars":ep["bars"], "episode_elapsed_seconds":bar["ts"]-touch["ts"],
+        "policy":deepcopy(ma_policy),
     }
     return {
         "version":TS.VERSION, "ma_rebound_version":VERSION,
@@ -180,13 +191,18 @@ def validate_event(event, source_identity=None):
         known, asof, touch, available = times
         if not asof <= known <= touch < available <= opening < signal <= confirmed:
             return fail
+        valid_until = TS.timestamp(proof.get("daily_valid_until"))
+        if valid_until is None or touch > valid_until:
+            return fail
         if signal != opening + TS.timeframe_seconds(tf):
             return fail
         if (available != e.get("level_available_at") or touch != e.get("trigger_pivot_at")
                 or TS.timestamp(dp.get("last_closed_at")) != asof
                 or TS.timestamp(pe.get("window_end")) is None or pe["window_end"] > asof):
             return fail
-        if not 1 <= proof["episode_bars"] <= p["max_episode_bars"]:
+        if (not 1 <= proof["episode_bars"] <= p["max_episode_bars"]
+                or not 0 < opening - touch <= p["max_episode_bars"] * TS.timeframe_seconds(tf)
+                or proof.get("episode_elapsed_seconds") != opening - touch):
             return fail
         if not (low <= ma + p["zone_atr_daily"] * daily_atr and high >= ma - p["zone_atr_daily"] * daily_atr):
             return fail
@@ -289,7 +305,8 @@ def build_context(local_bars, timeframe, now, *, daily_bars, asset, source_ident
             ep = state["episode"]
             if ep and not ep["consumed"]:
                 ep["bars"] += 1
-                if ep["bars"] > p["max_episode_bars"]:
+                if (ep["bars"] > p["max_episode_bars"]
+                        or bar["ts"] - ep["touch"]["ts"] > p["max_episode_bars"] * seconds):
                     ep["consumed"] = True
                     reasons.add("MA_EPISODE_EXPIRED")
                 else:
@@ -324,7 +341,7 @@ def build_context(local_bars, timeframe, now, *, daily_bars, asset, source_ident
                 if len(state["approach"]) >= p["rearm_bars"]:
                     state["episode"] = None
                 continue
-            level, reason = _daily_level(snapshot, n, 0, p)
+            level, reason = _daily_level(snapshot, n, 0, p, bar["ts"])
             if reason:
                 reasons.add(reason)
                 state["approach"] = []
@@ -341,7 +358,7 @@ def build_context(local_bars, timeframe, now, *, daily_bars, asset, source_ident
             touched = (bar["low"] <= level["value"] + p["zone_atr_daily"] * level["atr"]
                        and bar["high"] >= level["value"] - p["zone_atr_daily"] * level["atr"])
             if armed and touched:
-                _, reason = _daily_level(snapshot, n, sign, p)
+                _, reason = _daily_level(snapshot, n, sign, p, bar["ts"])
                 state["episode"] = {
                     "sign":sign, "touch":bar, "anchor":bar, "level":level,
                     "trigger":max(bar["high"], level["value"]) if sign == 1 else min(bar["low"], level["value"]),

@@ -42,6 +42,13 @@ def example(period=50, short=False, timeframe="5m", daily=None):
                      low=200-b["high"], close=200-b["close"])
         for k in ("open","high","low","close"):
             b[k] += center - 100.
+    # Native daily closes continue to arrive during a multi-day intraday walk.
+    # They are real timestamped D1 observations, not hourly blocks relabelled D1.
+    if timeframe in ("1h","4h"):
+        days = int((rows[-1]["available_at"]-START)//86400)
+        for day in range(days):
+            daily.append(dict(daily[-1],ts=START+day*86400,end_ts=START+(day+1)*86400,
+                              available_at=START+(day+1)*86400,open=100.,high=102.,low=98.,close=100.))
     return rows, daily, rows[-1]["available_at"]
 
 
@@ -94,7 +101,8 @@ class DailyMAReboundTests(unittest.TestCase):
                 self.assertIsNotNone(e)
                 self.assertEqual(e["timeframe"],timeframe)
                 self.assertEqual(e["signal_at"],now)
-                self.assertEqual(e["ma_proof"]["daily_asof"],START)
+                expected_daily = START+int((rows[-2]["ts"]-START)//86400)*86400
+                self.assertEqual(e["ma_proof"]["daily_asof"],expected_daily)
         rows,daily,now = example(timeframe="1m")
         self.assertLess(now,START+86400)
 
@@ -209,6 +217,15 @@ class DailyMAReboundTests(unittest.TestCase):
         self.assertIsNone(r["event"])
         self.assertIn("MA_EPISODE_EXPIRED",r["diagnostics"])
 
+    def test_gap_cannot_turn_an_old_touch_into_a_fresh_episode(self):
+        rows,daily,now = example()
+        confirming = dict(rows[-1])
+        confirming["ts"] += 86400
+        confirming["available_at"] += 86400
+        r = build(rows[:-1]+[confirming],daily,confirming["available_at"])
+        self.assertIsNone(r["event"])
+        self.assertIn("MA_EPISODE_EXPIRED",r["diagnostics"])
+
     def test_spent_target_remains_spent_when_price_returns(self):
         rows,daily,now = example()
         first = build(rows,daily,now)["event"]
@@ -235,6 +252,7 @@ class DailyMAReboundTests(unittest.TestCase):
         original = build(rows,daily,now)["event"]
         mutations = [
             lambda e:e["ma_proof"].update(daily_known_at=now),
+            lambda e:e["ma_proof"].update(daily_valid_until=START-1),
             lambda e:e["ma_proof"].update(ma_value=80.),
             lambda e:e["ma_proof"]["daily_provenance"].update(source_identity={"key":"OTHER"}),
             lambda e:e["ma_proof"]["period_evidence"].update(sample_count=49),
@@ -258,6 +276,33 @@ class DailyMAReboundTests(unittest.TestCase):
         self.assertFalse(e["volume_observed"])
         self.assertIsNone(e["relative_volume"])
         self.assertEqual((rows,daily),before)
+
+    def test_short_native_daily_session_changes_cache_at_actual_end(self):
+        daily = daily_history()
+        # Exchange daily bars open at09:00 and close atnext00:00 (15hours).
+        daily = [dict(b,ts=b["ts"]+9*3600) for b in daily]
+        rows,daily,now = example(daily=daily)
+        for b in rows:
+            b["ts"] += 22*3600
+            b["available_at"] += 22*3600
+        daily.append(dict(daily[-1],ts=START+9*3600,end_ts=START+86400,
+                          available_at=START+86400))
+        r = build(rows,daily,rows[-1]["available_at"])
+        self.assertIsNotNone(r["event"],r)
+        self.assertEqual(r["daily_snapshot_builds"],2)
+        self.assertEqual(r["event"]["ma_proof"]["daily_asof"],START+86400)
+
+    def test_cached_daily_snapshot_expires_before_new_touch_without_daily_sort(self):
+        rows,daily,now = example()
+        # Cache starts while the daily prefix is fresh; touch arrives five days
+        # later with exactly the same prefix. Cached OK must not remain eligible.
+        for b in rows[-2:]:
+            b["ts"] += 5*86400
+            b["available_at"] += 5*86400
+        r = build(rows,daily,rows[-1]["available_at"])
+        self.assertIsNone(r["event"])
+        self.assertIn("MA_DAILY_CONTEXT_STALE",r["diagnostics"])
+        self.assertEqual(r["daily_snapshot_builds"],1)
 
     def test_daily_snapshots_are_cached_within_intraday_scan(self):
         rows,daily,now = example(timeframe="1m")

@@ -340,7 +340,7 @@ CANONICAL_RULES = [
     _rule("CTC15","data","Mixed-source, contract-mismatch and corrupted-price episodes are excluded from learning without rewriting the accounting ledger."),
 
     _rule("CTC16","signal","Quality filtering occurs before publication of LONG/SHORT."),
-    _rule("CTC17","signal","A thesis opens risk only on a confirmed breakout of a previously known structural extreme on the chosen entry timeframe."),
+    _rule("CTC17","signal","A thesis opens risk on a confirmed structural breakout or native daily SMA50/200 rebound, confirmed on the chosen entry timeframe."),
     _rule("CTC18","signal","Refreshing a directional forecast never resets breakout time, restores a spent event, or creates a new current-price trigger."),
     _rule("CTC19","signal","Post-cost R/R below the canonical floor blocks new risk in every portfolio, including probes."),
     _rule("CTC20","signal","A cost-negative target or expected move below the canonical cost buffer is never eligible even as a probe."),
@@ -359,7 +359,7 @@ CANONICAL_RULES = [
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
     _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
-    _rule("CTC34","economics","Base modeled round trip is 0.16%; minimum move is max(0.19%, 1.1 x modeled round-trip cost)."),
+    _rule("CTC34","economics","Base modeled round trip is 0.16%; the later owner-approved entry threshold is max(0.19%, 2.0 x modeled round-trip cost)."),
     _rule("CTC35","economics","Funding is 16% ACT/365.25 on current notional after a free first 24 hours."),
     _rule("CTC36","economics","Target, stop and adverse modeled fills are recomputed at final entry after all setup/sizing mutations."),
     _rule("CTC37","economics","Adds must have their own remaining room and economics; the original target cannot justify a fresh add."),
@@ -397,7 +397,7 @@ RESOLVED_IMPLEMENTATION_GAPS = [
     {"id":"GAP03","resolution":"Currency: 10,000 RUB, CNYRUBF only, 10x, 35% hard DD, weekend carry."},
     {"id":"GAP04","resolution":"CanonicalAdmissionEngine v2 owns production admission; legacy admission is non-authoritative."},
     {"id":"GAP05","resolution":"Objective policy is canonical."},
-    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, 1.1x buffer."},
+    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, 1.1x base buffer and separately approved 2.0x entry threshold."},
     {"id":"GAP07","resolution":"Cost module reads CTC directly."},
     {"id":"GAP08","resolution":"External knowledge remains shadow-first and independently validated."},
     {"id":"GAP09","resolution":"Runtime binding is import-order independent."},
