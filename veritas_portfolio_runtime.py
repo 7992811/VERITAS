@@ -6,6 +6,7 @@ loaded only after the R41 base has finished initializing.
 import veritas_portfolio as _vp_base
 import veritas_trend_entry as VTE
 import veritas_launch_readiness as VLR
+import veritas_canonical_constitution as CTC
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -4928,6 +4929,10 @@ def _v90r79_signal_fraction(row,policy,drawdown):
     super_sig=tier in ('SUPER_LONG','SUPER_SHORT')
     if mode=='AGGRESSIVE':
         f=1.00 if super_sig else .50
+    elif mode=='CURRENCY':
+        # Currency follows the same staged signal participation as Aggressive,
+        # but its independent 10x ceiling is only capacity, never automatic size.
+        f=1.00 if super_sig else .50
     elif mode=='IMPULSE_ONLY':
         f=.40 if super_sig else .20
     elif mode=='CORE':
@@ -4964,8 +4969,10 @@ def _v90r79_hard_signal_veto(row):
 
 
 def _signal_first_admission(row,policy,drawdown):
-    if (policy or {}).get('mode')=='CURRENCY':
-        return {'open':False,'fraction':0.0,'hard_veto':True,'reason':VCP.BLOCK_REASON}
+    raw=dict(row or {})
+    if (policy or {}).get('mode')=='CURRENCY' and str(raw.get('asset') or '')!=VCP.ASSET:
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':VCP.BLOCK_REASON,'allowed_assets':[VCP.ASSET]}
     raw=dict(row or {})
     # New risk can never resurrect an invalidated setup. This is deliberately
     # stricter than HOLD logic for an already-open position.
@@ -5074,7 +5081,7 @@ def _signal_first_admission(row,policy,drawdown):
 
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
-    if name==VCP.PORTFOLIO_KEY:
+    if name==VCP.PORTFOLIO_KEY and str(asset)!=VCP.ASSET:
         _record_entry_outcome(row,'BLOCKED',VCP.BLOCK_REASON)
         return 0.0
     cycle_clock=_v90r55_dt(ts) or datetime.now(timezone.utc)
@@ -5112,7 +5119,9 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     if not chase.get('eligible'):
         _record_entry_outcome(work,'BLOCKED',chase.get('reason'),execution_timing=chase)
         return 0.0
-    r59=_v90r59_quality_gate(work,{'mode':'AGGRESSIVE' if name=='Aggressive' else 'CORE'})
+    r59_mode=('AGGRESSIVE' if name=='Aggressive' else
+               'CURRENCY' if name==VCP.PORTFOLIO_KEY else 'CORE')
+    r59=_v90r59_quality_gate(work,{'mode':r59_mode})
     conflict=next((b for b in (r59.get('blockers') or []) if b in (
         'R59_EXECUTION_TF_DIRECTION_CONFLICT','R59_5M_COUNTER_SENIOR_NOT_CONFIRMED'
     )),None)
@@ -5230,8 +5239,6 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
 
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
-    if name==VCP.PORTFOLIO_KEY:
-        return VCP.pending_state()
     rows=[dict(z) for z in c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s',(name,)).fetchall()]
     safe_prices=dict(prices or {}); safe_candidates=dict(candidates or {}); safe_summary=list(summary or [])
     for z in rows:
@@ -5271,20 +5278,61 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     return _r80_base_close_or_reduce(c,p,name,dict(z,_execution_quote=q),actual,target_fraction,nav,ts,reason)
 
 
-# R85 FINAL RUNTIME AUTHORITY LOCK
-# Historical R42-R84 functions stay importable for audit, but the portfolio
-# module binds execution only to these final callables.
-FINAL_RUNTIME_AUTHORITY_VERSION='R85_FINAL_AUTHORITY_LOCK'
-FINAL_SIGNAL_FIRST_ADMISSION=_signal_first_admission
+# CANONICAL FINAL RUNTIME AUTHORITY
+# Historical R42-R85 functions remain audit/migration implementation details.
+# Execution goes through one admission object and one frozen set of lifecycle callables.
+_R85_POLICY_ADMISSION=_signal_first_admission
+
+
+class CanonicalAdmissionEngine:
+    version=CTC.VERSION
+
+    def evaluate(self,row,policy,drawdown):
+        policy=dict(policy or {})
+        out=dict(_R85_POLICY_ADMISSION(row,policy,drawdown) or {})
+        out['canonical_policy_version']=self.version
+        out['canonical_stage_order']=list(CTC.STAGE_ORDER)
+        out['objective_hard_constraint']=CTC.OBJECTIVE_POLICY['hard_constraint']
+        out['objective_priority']=list(CTC.OBJECTIVE_POLICY['priority_order'])
+        # Portfolio capacity is a hard final sizing ceiling. This makes legacy
+        # internal wrappers unable to re-introduce 2x Champion/Challenger size.
+        if out.get('open'):
+            cap=float(policy.get('max_fraction') or 0.0)
+            if cap>0:
+                out['fraction']=min(float(out.get('fraction') or 0.0),cap)
+                out['open']=bool(out['fraction']>0)
+        return out
+
+
+CANONICAL_ADMISSION_ENGINE=CanonicalAdmissionEngine()
+
+
+def canonical_signal_first_admission(row,policy,drawdown):
+    return CANONICAL_ADMISSION_ENGINE.evaluate(row,policy,drawdown)
+
+
+FINAL_RUNTIME_AUTHORITY_VERSION='CTC_V1_FINAL_AUTHORITY'
+FINAL_SIGNAL_FIRST_ADMISSION=canonical_signal_first_admission
 FINAL_OPEN_OR_ADD=_open_or_add
 FINAL_CLOSE_OR_REDUCE=_close_or_reduce
 FINAL_STEP_ONE=_step_one
 FINAL_STEP_ALL=step_all
 FINAL_REPORT=report
 
+# Import-order-independent patch: direct import of veritas_portfolio_runtime
+# first loads the legacy base, then atomically replaces its execution authority here.
+_vp_base._signal_first_admission=FINAL_SIGNAL_FIRST_ADMISSION
+_vp_base._open_or_add=FINAL_OPEN_OR_ADD
+_vp_base._close_or_reduce=FINAL_CLOSE_OR_REDUCE
+_vp_base._step_one=FINAL_STEP_ONE
+_vp_base.step_all=FINAL_STEP_ALL
+_vp_base.report=FINAL_REPORT
+_vp_base._VERITAS_RUNTIME=__import__(__name__)
+
 def runtime_authority_snapshot():
     return {
       'version':FINAL_RUNTIME_AUTHORITY_VERSION,
+      'policy_version':CTC.VERSION,
       'signal_first_admission':FINAL_SIGNAL_FIRST_ADMISSION.__name__,
       'open_or_add':FINAL_OPEN_OR_ADD.__name__,
       'close_or_reduce':FINAL_CLOSE_OR_REDUCE.__name__,
