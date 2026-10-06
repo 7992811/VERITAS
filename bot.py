@@ -29,7 +29,7 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 http = httpx.Client(timeout=40)
 
 running = True
-paused = False
+paused = os.getenv("NEWS_SCAN_PAUSED", "false").strip().lower() in {"1", "true", "yes", "on"}
 update_offset = None
 next_scan_at = 0.0
 seen_events = {}
@@ -443,11 +443,12 @@ def main():
     from veritas_currency_delivery import start_from_env
     currency_worker = start_from_env(currency_stop, log)
     startup_check()
+    log("Новостной сканер: ПАУЗА." if paused else "Новостной сканер: АКТИВЕН.")
     next_scan_at = time.time() + 60
 
     while running:
         try:
-            if time.time() >= next_scan_at:
+            if not paused and time.time() >= next_scan_at:
                 run_scan_once()
             poll_updates()
         except httpx.TimeoutException:
