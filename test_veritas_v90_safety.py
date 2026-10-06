@@ -335,6 +335,24 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertTrue(paper["eligible"],paper)
         self.assertFalse(prod["eligible"],prod)
 
+    def test_delayed_research_quote_has_paper_only_freshness_window(self):
+        now=datetime(2026,10,6,15,0,tzinfo=timezone.utc)
+        delayed={
+            "asset":"CNYRUBF","observed_at":"2026-10-06T14:45:00+00:00",
+            "data_latency_class":"DELAYED_RESEARCH",
+            "source_gate_pass":True,"market_open":True,
+        }
+        paper=VX.paper_quote_time_gate(delayed,"1h",now=now)
+        self.assertTrue(paper["eligible"],paper)
+        self.assertEqual(paper["max_age_seconds"],3600.0)
+        direct=dict(delayed,data_latency_class="REALTIME")
+        self.assertFalse(VX.paper_quote_time_gate(direct,"1h",now=now)["eligible"])
+        stale=dict(delayed,observed_at="2026-10-06T13:00:00+00:00")
+        self.assertFalse(VX.paper_quote_time_gate(stale,"1h",now=now)["eligible"])
+        prod=VX.production_source_gate("CNYRUBF",dict(delayed,production_direct_feed=False))
+        self.assertFalse(prod["eligible"])
+        self.assertIn("PRODUCTION_DIRECT_FEED_NOT_CONFIGURED",prod["blockers"])
+
     def test_research_grade_paper_eligibility_survives_router_field_loss(self):
         import veritas_portfolio as vp
         row={
