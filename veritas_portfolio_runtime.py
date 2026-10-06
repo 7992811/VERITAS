@@ -5149,8 +5149,11 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
                else float(CTC.LIFECYCLE_POLICY['default_tp_runner_ratio']))
         desired=max(step,math.floor((peak*ratio)/step+1e-9)*step)
         # A 10%+ position must realize at least one 5% step and keep a runner.
-        if current>=2.0*step-1e-9:
-            desired=min(desired,current-step)
+        if peak>=2.0*step-1e-9 and current>step+0.0025:
+            # Position notional can drift slightly below its nominal fraction as
+            # price moves. Eligibility for a runner is based on the peak/entered
+            # size, while the reduction uses the current notional.
+            desired=min(desired,max(step,current-step))
             desired=max(step,desired)
             result=_vp_base.CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE(
                 c,p,name,dict(z,_execution_quote=q),actual,desired,nav,ts,
