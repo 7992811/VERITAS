@@ -4,38 +4,94 @@ on:
     branches: [feature/execution-quality-v3-integrated-20261006]
     paths: ['.github/workflows/eq3-sync-main.yml']
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: eq3-main-compatibility-feature-only
+  cancel-in-progress: false
 jobs:
-  inspect:
+  integrate:
+    if: github.ref == 'refs/heads/feature/execution-quality-v3-integrated-20261006'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_ephemeral_test_only
+          POSTGRES_DB: veritas_quality_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veritas_quality_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Inspect merge without updating any branch
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.3'
+      - name: Merge exact reviewed main and resolve only known cost-policy overlap
         run: |
-          git config user.name 'Review only'
-          git config user.email 'review@example.invalid'
+          set -euo pipefail
+          test "$(git branch --show-current)" = 'feature/execution-quality-v3-integrated-20261006'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git merge --no-commit --no-ff a15296389754d28103324dc5a51c30a9ddfd55a3 || true
           python - <<'PY'
-          import pathlib,re,subprocess,zipfile
-          files=subprocess.check_output(['git','diff','--name-only','--diff-filter=U']).decode().splitlines()
-          print('CONFLICT_FILES',files)
-          for name in files:
-              text=pathlib.Path(name).read_text()
-              for m in re.finditer(r'^<<<<<<<[^\n]*\n.*?^>>>>>>>[^\n]*(?:\n|$)',text,re.M|re.S):
-                  print('CONFLICT',name,'\n'+m.group())
-          with zipfile.ZipFile('/tmp/eq3-review-source.zip','w',zipfile.ZIP_DEFLATED) as z:
-              paths=subprocess.check_output(['git','ls-files','-z']).decode().split('\0')
-              for name in sorted(set(paths)):
-                  p=pathlib.Path(name)
-                  if p.is_file() and (p.suffix in ('.py','.cjs','.md','.yml','.yaml') or p.name.startswith('requirements') or name=='vendor/tbank/russian_trusted_root_ca.pem') and not any(s.startswith('.env') for s in p.parts):
-                      z.write(p,name)
+          import pathlib,re,subprocess
+          conflicts=subprocess.check_output(['git','diff','--name-only','--diff-filter=U']).decode().splitlines()
+          assert conflicts==['veritas_execution.py'],conflicts
+          p=pathlib.Path('veritas_execution.py');s=p.read_text()
+          matches=list(re.finditer(r'^<<<<<<<[^\n]*\n.*?^>>>>>>>[^\n]*(?:\n|$)',s,re.M|re.S))
+          assert len(matches)==1
+          block=matches[0].group()
+          assert 'MIN_EXPECTED_MOVE_PCT' in block and 'entry_cost_multiple' in block and 'VC.COST_BUFFER_MULTIPLE' in block
+          replacement='# CTC owns the move floor; stale environment overrides cannot change it.\nMIN_EXPECTED_MOVE_PCT = float(CTC.COST_POLICY["minimum_expected_move_floor_pct"])\nMIN_MOVE_COST_MULTIPLE = float(CTC.COST_POLICY["entry_cost_multiple"])\n'
+          s=s[:matches[0].start()]+replacement+s[matches[0].end():]
+          p.write_text(s)
+          p=pathlib.Path('test_veritas_currency_rule_consistency.py');s=p.read_text()
+          changes=[
+           ("    'required': g['minimum_expected_move_pct'],", "    'required': g['minimum_expected_move_pct'],\n    'modeled_cost': g['modeled_round_trip_cost_pct'],\n    'accounting_buffer': X.VC.COST_BUFFER_MULTIPLE,"),
+           ('self.assertAlmostEqual(state["multiple"], 1.1)','self.assertAlmostEqual(state["multiple"], 2.0)\n                self.assertAlmostEqual(state["accounting_buffer"], 1.1)'),
+           ('self.assertAlmostEqual(state["required"], 0.0019)','self.assertAlmostEqual(state["required"], max(.0019, 2*state["modeled_cost"]))'),
+           ('self.assertFalse(state["move_blocked"])','self.assertTrue(state["move_blocked"])'),
+           ('self.plan(direction, 0.00210, horizon=horizon)','self.plan(direction, 0.00330, horizon=horizon)'),
+           ('self.assertAlmostEqual(above["minimum_expected_move_pct"], 0.0019)','self.assertAlmostEqual(above["minimum_expected_move_pct"],\n                                           max(.0019,2*above["modeled_round_trip_cost_pct"]))\n                    self.assertEqual(VX.minimum_expected_move_pct(.0001),.0019)'),
+           ('test_wider_currency_spread_requires_exactly_one_point_one_times_cost','test_wider_currency_spread_requires_two_times_entry_cost'),
+           ('self.plan(direction, 0.0032, spread_bps=30)','self.plan(direction, 0.0059, spread_bps=30)'),
+           ('self.plan(direction, 0.0035, spread_bps=30)','self.plan(direction, 0.0061, spread_bps=30)'),
+           ('self.assertAlmostEqual(above["minimum_expected_move_pct"], 0.0033)','self.assertAlmostEqual(above["minimum_expected_move_pct"], 0.006)')]
+          for old,new in changes:
+              assert old in s,old
+              s=s.replace(old,new)
+          p.write_text(s)
+          workflow=pathlib.Path('.github/workflows/veritas-safety.yml').read_text()
+          assert 'test_veritas_currency_notifications.py' in workflow and 'test_veritas_strategy_quality_sql.py' in workflow
+          subprocess.run(['git','add','veritas_execution.py','test_veritas_currency_rule_consistency.py'],check=True)
+          assert not subprocess.check_output(['git','diff','--name-only','--diff-filter=U']).strip()
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: eq3-review-source
-          path: /tmp/eq3-review-source.zip
-          retention-days: 1
+          git diff --cached --check
+      - name: Install runtime dependencies
+        run: pip install -r requirements-intelligence.txt
+      - name: Run all permanent Safety CI commands including PostgreSQL
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: |
+          python - <<'PY'
+          import pathlib,subprocess
+          text=pathlib.Path('.github/workflows/veritas-safety.yml').read_text()
+          commands=[line.split('run: ',1)[1].strip() for line in text.splitlines() if line.strip().startswith('run: ')]
+          assert any('test_veritas_currency_notifications.py' in x for x in commands)
+          assert any('test_veritas_strategy_quality_sql.py' in x for x in commands)
+          for command in commands:
+              if command.startswith('pip install '):continue
+              print('VERIFIED SUITE:',command,flush=True)
+              subprocess.run(command,shell=True,check=True)
+          PY
+      - name: Commit tested merge only to feature branch
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = 'feature/execution-quality-v3-integrated-20261006'
+          git commit -m 'Preserve current Currency delivery and entry safeguards while integrating EQ3 cost and evidence policies'
+          git push origin HEAD:refs/heads/feature/execution-quality-v3-integrated-20261006
