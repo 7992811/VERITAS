@@ -14,6 +14,7 @@ import veritas_currency_notifications as VCN
 import veritas_canonical_constitution as CTC
 import veritas_release as VR
 import veritas_strategy_quality as VSQ
+import veritas_learning_integrity as VLI
 import veritas_timeframe_management as VTM
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
@@ -7752,7 +7753,7 @@ def _v90r29_refresh(pg_connect,force=False):
         dedup=_v90r60_sanitize_duplicate_learning(c)
         rows=c.execute("""
           SELECT * FROM v90_learning_episodes
-          WHERE learning_eligible=TRUE
+          WHERE """+VLI.readable_sql()+"""
             AND closed_at >= %s::timestamptz
           ORDER BY closed_at DESC
           LIMIT 1500
@@ -7760,7 +7761,7 @@ def _v90r29_refresh(pg_connect,force=False):
         counts=c.execute("""
           SELECT primary_attribution,COUNT(*) AS n
           FROM v90_learning_episodes
-          WHERE learning_eligible=TRUE
+          WHERE """+VLI.readable_sql()+"""
             AND closed_at >= %s::timestamptz
           GROUP BY primary_attribution
           ORDER BY n DESC
@@ -7936,7 +7937,7 @@ def _v90r33_refresh(pg_connect,force=False):
               SELECT movement_realization_ratio,capture_ratio,primary_attribution,
                      net_pnl_rub,closed_at
               FROM v90_learning_episodes
-              WHERE learning_eligible=TRUE
+              WHERE """+VLI.readable_sql()+"""
                 AND closed_at >= %s::timestamptz
               ORDER BY closed_at DESC
               LIMIT 100
