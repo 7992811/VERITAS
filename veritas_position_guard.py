@@ -49,7 +49,7 @@ def refresh_entry_quotes(summary):
         if asset not in assets or not r.get('source_gate_pass') or VX.is_proxy_price(asset,r):
             continue
         observed=r.get('market_observed_at') or r.get('observed_at')
-        gate=quote_gate(observed,now=now,execution=True,asset=asset)
+        gate=VX.paper_quote_time_gate(dict(r,asset=asset,observed_at=observed),r.get('horizon'),now=now)
         try:
             px=float(r.get('price') or 0.0)
         except Exception:
@@ -77,7 +77,7 @@ def refresh_entry_quotes(summary):
     for asset in assets:
         q=quotes.get(asset) or cached.get(asset) or {}
         if (q.get('source_gate_pass') and not VX.is_proxy_price(asset,q)
-                and quote_gate(q.get('observed_at'),now=now,execution=True,asset=asset)['eligible']):
+                and VX.paper_quote_time_gate(dict(q,asset=asset),now=now)['eligible']):
             quotes[asset]=q
         else:
             refresh.append(asset)
@@ -97,7 +97,7 @@ def refresh_entry_quotes(summary):
             try:
                 q=job.result()
                 if (q.get('source_gate_pass') and not VX.is_proxy_price(asset,q)
-                        and quote_gate(q.get('observed_at'),execution=True,asset=asset)['eligible']):
+                        and VX.paper_quote_time_gate(dict(q,asset=asset))['eligible']):
                     publish_quote(asset,q);quotes[asset]=q
             except Exception:
                 pass
@@ -173,7 +173,7 @@ def quote_for_position(position, candidate=None, now=None):
     for q in quotes:
         observed=utc_datetime(q.get('observed_at'))
         if (q.get('source_gate_pass') and VPS.matches(position,q) and VPS.positive(q.get('price'))
-                and quote_gate(q.get('observed_at'),now=now,protective=True)['eligible']
+                and VX.paper_quote_time_gate(dict(q,asset=position.get('asset')),now=now,protective=True)['eligible']
                 and (last is None or observed>=last)):
             valid.append(q)
     return dict(max(valid,key=lambda q:utc_datetime(q['observed_at']))) if valid else {}
