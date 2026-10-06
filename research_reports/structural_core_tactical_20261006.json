@@ -1,0 +1,123 @@
+{
+  "generated_at_utc": "2026-10-06T08:xx:00Z",
+  "research_branch": "research/structural-core-tactical-sleeve-20261006",
+  "base_ref": "research/full-arsenal-20261005",
+  "hypothesis": "Keep the frozen breadth/downside sleeve, but when both BTC and ETH 28d structural votes remain positive, never let shorter 7d/4h context reduce exposure below the exact 2/6 contribution of those two structural votes. No fitted threshold.",
+  "data": {
+    "binance_artifact_run": 37210798801,
+    "external_2020_2021_run": 37268494688,
+    "okx_independent_run": 37372257390
+  },
+  "costs": {
+    "base_one_way_turnover_cost": 0.00125,
+    "stress_one_way_turnover_cost": 0.0025
+  },
+  "base_cost": {
+    "binance_2022_2026": {
+      "baseline_return": 0.4610880108,
+      "candidate_return": 0.4729093755,
+      "baseline_sharpe": 1.1093229482,
+      "candidate_sharpe": 1.1200555791,
+      "baseline_max_drawdown": -0.0832790185,
+      "candidate_max_drawdown": -0.0850751823,
+      "baseline_turnover": 56.39161535,
+      "candidate_turnover": 53.79147217,
+      "baseline_win_rate": 0.3225806452,
+      "candidate_win_rate": 0.3240740741
+    },
+    "okx_2022_2026": {
+      "baseline_return": 0.4186196698,
+      "candidate_return": 0.4384082647,
+      "baseline_sharpe": 1.0073634839,
+      "candidate_sharpe": 1.0343711843,
+      "baseline_max_drawdown": -0.0831505423,
+      "candidate_max_drawdown": -0.0849887651,
+      "baseline_turnover": 58.89573317,
+      "candidate_turnover": 56.41814846,
+      "baseline_win_rate": 0.32,
+      "candidate_win_rate": 0.3090909091
+    },
+    "external_2020": {
+      "baseline_return": 0.278128641,
+      "candidate_return": 0.296934616
+    },
+    "external_2021": {
+      "baseline_return": 0.0661899119,
+      "candidate_return": 0.0775141723
+    },
+    "binance_2024": {
+      "baseline_return": 0.1307854101,
+      "candidate_return": 0.1172261567
+    },
+    "okx_2024": {
+      "baseline_return": 0.1313986286,
+      "candidate_return": 0.1178102925
+    },
+    "binance_2025": {
+      "baseline_return": 0.0438390819,
+      "candidate_return": 0.048564547
+    },
+    "okx_2025": {
+      "baseline_return": 0.0435845903,
+      "candidate_return": 0.0482590028
+    },
+    "binance_2026": {
+      "baseline_return": 0.0301957409,
+      "candidate_return": 0.0497482882
+    },
+    "okx_2026": {
+      "baseline_return": -0.0094313129,
+      "candidate_return": 0.0147007738
+    }
+  },
+  "stress_25bps": {
+    "binance_2022_2026": {
+      "baseline_return": 0.3616,
+      "candidate_return": 0.3771
+    },
+    "okx_2022_2026": {
+      "baseline_return": 0.3179,
+      "candidate_return": 0.3404
+    },
+    "binance_2024": {
+      "baseline_return": 0.1158,
+      "candidate_return": 0.1025
+    },
+    "okx_2024": {
+      "baseline_return": 0.1164,
+      "candidate_return": 0.1031
+    },
+    "binance_2025": {
+      "baseline_return": 0.0278,
+      "candidate_return": 0.0331
+    },
+    "okx_2025": {
+      "baseline_return": 0.0275,
+      "candidate_return": 0.0328
+    }
+  },
+  "negative_controls": {
+    "same_2_of_6_floor_using_7d_votes": {
+      "binance_2022_2026_return": 0.4459974703,
+      "okx_2022_2026_return": 0.4035073727
+    },
+    "same_2_of_6_floor_using_4h_votes": {
+      "binance_2022_2026_return": 0.4262721957,
+      "okx_2022_2026_return": 0.4225535594
+    },
+    "circular_shift_28d_floor": {
+      "binance_p_return_improvement": 0.1194379391,
+      "binance_p_sharpe_improvement": 0.0971896956,
+      "okx_p_return_improvement": 0.2299940723,
+      "okx_p_sharpe_improvement": 0.2062833432,
+      "external_p_return_improvement": 0.4144736842,
+      "external_p_sharpe_improvement": 0.3736842105
+    }
+  },
+  "conclusion": {
+    "status": "REJECT_INCREMENTAL_RULE",
+    "material_rejection": true,
+    "reason": "Aggregate return and turnover improve modestly, especially in 2025-2026, but 2024 degrades on both venues, campaign win rate does not improve consistently, and the incremental timing effect is not significant against circular-shift controls. The 28d floor is therefore not robust enough to hard-code.",
+    "production_action": "NONE"
+  }
+}
