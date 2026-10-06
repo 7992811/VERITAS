@@ -2441,10 +2441,8 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                     quote_gate=VPG.quote_gate(observed,now=VPG.utc_datetime(ts),protective=True))
                 continue
             z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
-            rs=row.get('range_retest_breakout') or {}
-            if not z and rs.get('active') and str(rs.get('state') or '') in ('APPROACH_RESISTANCE','APPROACH_SUPPORT'):
-                _record_entry_outcome(row,'BLOCKED','WAIT_LEVEL_BREAK')
-                continue
+            # CTC v2 already classified timing/level state before sizing.
+            # No post-admission legacy timing veto is allowed here.
             if z and z['direction']!=row.get('research_decision'):
                 _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED',
                     held_direction=z['direction'],signal_direction=row.get('research_decision'))
