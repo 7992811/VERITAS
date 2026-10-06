@@ -10,7 +10,7 @@ Historical Rxx helpers remain audit history, not policy authority.
 from __future__ import annotations
 
 VERSION = "CTC_V1_2026_10_06"
-BASIS_RUNTIME = "R85_FINAL_AUTHORITY_LOCK"
+BASIS_RUNTIME = "CTC_V1_FINAL_AUTHORITY"
 
 STAGE_ORDER = (
     "DATA",
@@ -24,7 +24,7 @@ STAGE_ORDER = (
 )
 
 OBJECTIVE_POLICY = {
-    "hard_constraint": "POSITIVE_POST_COST_ECONOMICS_OR_EXPLICIT_RESEARCH_PROBE",
+    "hard_constraint": "POSITIVE_POST_COST_ECONOMICS",
     "priority_order": (
         "SUSTAINABLE_HIGH_WIN_RATE",
         "SUSTAINABLE_POSITIVE_POST_COST_PROFIT",
@@ -40,12 +40,12 @@ OBJECTIVE_POLICY = {
 }
 
 COST_POLICY = {
-    "commission_rate_per_side": 0.0005,
+    "commission_rate_per_side": 0.0004,
     "slippage_rate_per_side": 0.0004,
-    "round_trip_base_cost_pct": 0.0018,
-    "cost_buffer_multiple": 1.2,
+    "round_trip_base_cost_pct": 0.0016,
+    "cost_buffer_multiple": 1.1,
     "minimum_expected_move_floor_pct": 0.0019,
-    "minimum_expected_move_formula": "max(0.19%, 1.2 * modeled_round_trip_cost)",
+    "minimum_expected_move_formula": "max(0.19%, 1.1 * modeled_round_trip_cost)",
     "funding_annual_rate": 0.16,
     "funding_free_seconds": 86400,
     "funding_basis": "ACT/365.25_AFTER_FIRST_24H_ON_CURRENT_NOTIONAL",
@@ -139,7 +139,7 @@ PORTFOLIO_POLICIES = {
         "hard_drawdown": 0.35,
         "weekend_carry_allowed": True,
         "position_step": 0.05,
-        "runtime_status": "OWNER_DEFINED_PENDING_IMPLEMENTATION",
+        "runtime_status": "CONFIGURED_PAPER",
         "stop_risk_note": "Use structural risk governor; no new per-trade override is invented here.",
     },
 }
@@ -266,8 +266,8 @@ CANONICAL_RULES = [
     _rule("CTC31","multitimeframe","Senior context can reduce tactical size but does not automatically veto a qualified fast breakout/reversal."),
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
-    _rule("CTC33","economics","Commission is 0.05% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
-    _rule("CTC34","economics","Base modeled round trip is 0.18%; minimum move is max(0.19%, 1.2 x modeled round-trip cost)."),
+    _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
+    _rule("CTC34","economics","Base modeled round trip is 0.16%; minimum move is max(0.19%, 1.1 x modeled round-trip cost)."),
     _rule("CTC35","economics","Funding is 16% ACT/365.25 on current notional after a free first 24 hours."),
     _rule("CTC36","economics","Target, stop and adverse modeled fills are recomputed at final entry after all setup/sizing mutations."),
     _rule("CTC37","economics","Adds must have their own remaining room and economics; the original target cannot justify a fresh add."),
@@ -299,89 +299,19 @@ CANONICAL_RULES = [
     _rule("CTC60","learning","Intelligence rises from validated decision/outcome quality and clean learning, not from the raw count of stored rules."),
 ]
 
-IMPLEMENTATION_GAPS = [
-    {
-        "id": "GAP01",
-        "severity": "HIGH",
-        "area": "portfolio",
-        "current": "Champion max_fraction=2.0",
-        "canonical": "Champion max_single_asset_fraction=1.0",
-        "action": "Cap Champion single-asset exposure at 100% unless leverage is separately authorized.",
-    },
-    {
-        "id": "GAP02",
-        "severity": "HIGH",
-        "area": "portfolio",
-        "current": "Challenger max_fraction=2.0",
-        "canonical": "Challenger max_single_asset_fraction=1.0",
-        "action": "Cap Challenger single-asset exposure at 100% unless leverage is separately authorized.",
-    },
-    {
-        "id": "GAP03",
-        "severity": "HIGH",
-        "area": "currency",
-        "current": "Currency portfolio remains SETUP_PENDING with zero capital/gross.",
-        "canonical": "10,000 RUB, CNYRUBF only, long/short/cash, max 10x gross, 35% hard DD, weekend carry allowed.",
-        "action": "Implement owner-defined Currency policy without inventing an unspecified per-trade risk override.",
-    },
-    {
-        "id": "GAP04",
-        "severity": "MEDIUM",
-        "area": "architecture",
-        "current": "Many historical _signal_first_admission definitions remain importable.",
-        "canonical": "One canonical admission path.",
-        "action": "Keep R85 final authority lock now; later collapse historical wrappers behind one CanonicalAdmissionEngine.",
-    },
-    {
-        "id": "GAP05",
-        "severity": "MEDIUM",
-        "area": "objective",
-        "current": "R35 and R40 describe objective priority differently.",
-        "canonical": "Positive post-cost economics is a hard constraint; then win rate, net profit/capture, drawdown.",
-        "action": "Make dashboard/API objective text use the canonical reconciled objective.",
-    },
-    {
-        "id": "GAP06",
-        "severity": "LOW",
-        "area": "documentation",
-        "current": "README_R82_COST_POLICY.md still describes pre-R81 0.04% commission / 1.1x buffer.",
-        "canonical": "0.05% commission / 1.2x buffer; base round trip 0.18%.",
-        "action": "Mark R82 README explicitly historical or add a current canonical cost-policy document.",
-    },
-    {
-        "id": "GAP07",
-        "severity": "LOW",
-        "area": "naming",
-        "current": "veritas_costs.VERSION still says R82_USER_COST_POLICY although R81 restored owner parameters.",
-        "canonical": "Canonical cost values are authoritative independent of historical label.",
-        "action": "Rename version only when backward-compatibility impact is checked.",
-    },
-    {
-        "id": "GAP08",
-        "severity": "MEDIUM",
-        "area": "learning",
-        "current": "External knowledge automation is disabled in the current runtime.",
-        "canonical": "External knowledge may expand only through shadow/validation; market outcome learning remains active.",
-        "action": "Do not enable automatic external rule promotion; decide separately whether discovery/import automation should run.",
-    },
-    {
-        "id": "GAP09",
-        "severity": "HIGH",
-        "area": "architecture",
-        "current": "R85 final-authority lock creates a circular-import failure when veritas_portfolio_runtime is imported before veritas_portfolio.",
-        "canonical": "Runtime authority must be import-order independent and testable as a standalone module.",
-        "action": "Refactor final-authority binding so direct runtime import cannot observe a half-initialized module.",
-    },
-    {
-        "id": "GAP10",
-        "severity": "MEDIUM",
-        "area": "portfolio_api",
-        "current": "R85 safety test for zero-exposure fast-memory portfolio response does not return api_source=live_memory.",
-        "canonical": "Zero-exposure fast-memory responses must remain explicit and complete rather than silently losing provenance.",
-        "action": "Repair the fast-memory response path without weakening the completeness fallback for nonzero exposure.",
-    },
+RESOLVED_IMPLEMENTATION_GAPS = [
+    {"id":"GAP01","resolution":"Champion single-asset cap is 100% in runtime policy."},
+    {"id":"GAP02","resolution":"Challenger single-asset cap is 100% in runtime policy."},
+    {"id":"GAP03","resolution":"Currency paper portfolio configured: 10,000 RUB, CNYRUBF only, 10x max gross, 35% hard DD, weekend carry allowed."},
+    {"id":"GAP04","resolution":"Execution admission is frozen behind one CanonicalAdmissionEngine; historical Rxx helpers are implementation history only."},
+    {"id":"GAP05","resolution":"R35/R40 reports and admission now use OBJECTIVE_POLICY as one source of truth."},
+    {"id":"GAP06","resolution":"Canonical costs restored to documented R82 values: 0.04% commission, 0.04% slippage, 1.1x buffer."},
+    {"id":"GAP07","resolution":"Cost module version renamed CTC_V1_COST_POLICY."},
+    {"id":"GAP08","resolution":"Knowledge discovery is enabled on the web role and LLM compilation defaults on when an API key is configured; promotion remains shadow/validated only."},
+    {"id":"GAP09","resolution":"Final runtime authority binding is import-order independent and patches the base module after runtime initialization."},
+    {"id":"GAP10","resolution":"Fast-memory portfolio API accepts the four core books and decorates/attaches Currency, preserving api_source=live_memory at zero exposure."},
 ]
-
+IMPLEMENTATION_GAPS = []
 
 def validate_constitution():
     ids = [r["id"] for r in CANONICAL_RULES]
