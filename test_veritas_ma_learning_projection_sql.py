@@ -154,6 +154,9 @@ class NativeMAProjectionSQLTests(unittest.TestCase):
             ("policy",lambda e:e["ma_proof"]["policy"].update(rearm_bars=4)),
             ("missing",lambda e:e.pop("ma_proof")),
             ("scalar",lambda e:e.update(ma_proof="UNOBSERVED")),
+            ("proofarray",lambda e:e.update(ma_proof=[{"bars":[1]*1000}]*10)),
+            ("arrayscalar",lambda e:e["ma_proof"].update(daily_atr=[1]*1000)),
+            ("bararray",lambda e:e["ma_proof"]["approach_bars"].__setitem__(0,[{"close":1}]*1000)),
             ("array",lambda e:e["ma_proof"].update(approach_bars="UNOBSERVED")),
             ("extra",lambda e:e["ma_proof"]["approach_bars"].append({"ts":0})),
             ("oversize",lambda e:e["ma_proof"].update(
@@ -168,6 +171,7 @@ class NativeMAProjectionSQLTests(unittest.TestCase):
                 with self.connect() as c:
                     projected = self.projected(c,key)
                 self.assertEqual(LI.trade_exclusion(projected),"UNVERIFIED_EVENT")
+                self.assertLess(len(json.dumps(projected["payload"])),12000)
                 if key=="oversize":
                     self.assertIsNone(projected["payload"]["entry_event_snapshot"]["ma_proof"]["approach_bars"])
         before = self.financials()  # Includes the deliberate proof correction above.

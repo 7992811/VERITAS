@@ -25,7 +25,7 @@ def closed_ma_trade(period=50, short=False):
             "payload":{"entry_event_snapshot":event,
                 "idea_event_id":event["event_id"], "r66_event_id":event["event_id"],
                 "idea_id_verified":True, "data_integrity_status":"OK",
-                "learning_eligible":True, "mfe_pct":1., "mae_pct":.3,
+                "learning_eligible":True, "mfe_pct":1., "mae_pct":-.3,
                 "price_source_lock":deepcopy(SOURCE),
                 "entry_execution_source_identity":deepcopy(SOURCE),
                 "last_exit_source_identity":deepcopy(SOURCE)}}

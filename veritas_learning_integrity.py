@@ -65,21 +65,29 @@ def _identity(expression):
             _object(expression, ("asset", "key", "contract_id", "primary_source", "legacy_fixed_adapter"))+
             " ELSE "+expression+" END")
 
+def _proof_scalar(expression):
+    return ("(CASE WHEN jsonb_typeof("+expression+") IN ('array','object') "
+            "THEN 'null'::jsonb ELSE "+expression+" END)")
+
 def _projected_object(expression, fields, extra=None):
-    """Keep only present proof fields, preserving absent/null and invalid scalars."""
-    values = [(key, expression+"->'"+key+"'") for key in fields]
+    """Keep required proof fields; malformed compound values never expand."""
+    values = [(key, _proof_scalar(expression+"->'"+key+"'")) for key in fields]
     values.extend((extra or {}).items())
     selected = ",".join("('"+key+"',"+value+")" for key, value in values)
     return ("(CASE WHEN jsonb_typeof("+expression+")='object' THEN "
             "(SELECT COALESCE(jsonb_object_agg(proof_key,proof_value),'{}'::jsonb) "
             "FROM (VALUES "+selected+") AS proof_fields(proof_key,proof_value) "
-            "WHERE "+expression+" ? proof_key) ELSE "+expression+" END)")
+            "WHERE "+expression+" ? proof_key) "
+            "WHEN "+expression+" IS NULL OR "+expression+"='null'::jsonb THEN "+expression+
+            " ELSE '\"INVALID_PROOF_SHAPE\"'::jsonb END)")
 
-def _bounded_array(expression, maximum):
-    # Never shorten a proof to a valid-looking prefix.
+def _bounded_array(expression, maximum, element_type):
+    # Never shorten a proof to a valid-looking prefix, or retain nested arrays.
     return ("(CASE WHEN jsonb_typeof("+expression+")='array' THEN "
-            "CASE WHEN jsonb_array_length("+expression+")<="+str(maximum)+
-            " THEN "+expression+" ELSE 'null'::jsonb END ELSE "+expression+" END)")
+            "CASE WHEN jsonb_array_length("+expression+")<="+str(maximum)+" THEN "
+            "CASE WHEN EXISTS (SELECT 1 FROM jsonb_array_elements("+expression+") AS item(value) "
+            "WHERE jsonb_typeof(item.value)<>'"+element_type+"') THEN 'null'::jsonb "
+            "ELSE "+expression+" END ELSE 'null'::jsonb END ELSE 'null'::jsonb END)")
 
 def _ma_proof_sql(expression):
     daily = "("+expression+"->'daily_provenance')"
@@ -92,13 +100,13 @@ def _ma_proof_sql(expression):
         "CASE WHEN jsonb_array_length("+approach+")<="+str(MAX_APPROACH_BARS)+" THEN "
         "(SELECT COALESCE(jsonb_agg("+bar+" ORDER BY approach_bar.ordinality),'[]'::jsonb) "
         "FROM jsonb_array_elements("+approach+") WITH ORDINALITY AS approach_bar(value,ordinality)) "
-        "ELSE 'null'::jsonb END ELSE "+approach+" END)")
+        "ELSE 'null'::jsonb END ELSE 'null'::jsonb END)")
     policy_sql = _projected_object(policy, (
         "zone_atr_daily", "max_episode_bars", "rearm_bars", "rearm_atr_daily",
         "slope_lookback_days", "max_adverse_slope_atr", "flat_slope_atr",
         "max_flat_crossings_10d"), {
-        "periods": _bounded_array(policy+"->'periods'", 2),
-        "supported_timeframes": _bounded_array(policy+"->'supported_timeframes'", 5)})
+        "periods": _bounded_array(policy+"->'periods'", 2, "number"),
+        "supported_timeframes": _bounded_array(policy+"->'supported_timeframes'", 5, "string")})
     return _projected_object(expression, (
         "period", "ma_value", "daily_atr", "daily_known_at", "daily_asof",
         "daily_valid_until", "episode_start_at", "touch_available_at", "touch_high",

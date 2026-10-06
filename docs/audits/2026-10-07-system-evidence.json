@@ -158,7 +158,15 @@
     "baseline_legacy_errors": 4,
     "baseline_legacy_continue_on_error": true,
     "integrated_ci_required": true,
-    "out_of_sample_profit_proven": false
+    "out_of_sample_profit_proven": false,
+    "integrated_candidate": {
+      "sha": "71b0ff4433e65f90d5ab4d2841a30bb40dcd6184",
+      "run_url": "https://github.com/7992811/VERITAS/actions/runs/37540866723",
+      "required_python_tests": 580,
+      "postgresql_step_tests": 31,
+      "legacy_failure_names_exactly_equal_baseline": true,
+      "ui_and_architecture": "passed"
+    }
   },
   "limitations": [
     "Closed cycles in different portfolios can share one market event.",
@@ -190,5 +198,31 @@
   ],
   "integration_pr": "https://github.com/7992811/VERITAS/pull/56",
   "audit_epoch": "EQ5_2026_10_07_AUDIT",
-  "financial_snapshot_scope": "All financial numbers here belong to 2026-10-06T21:40:45Z–21:40:52Z runtime reads; no claim of EQ5 performance."
+  "financial_snapshot_scope": "All financial numbers here belong to 2026-10-06T21:40:45Z–21:40:52Z runtime reads; no claim of EQ5 performance.",
+  "pre_audit_deploy_cycles": [
+    {
+      "at": "2026-10-06T22:26:51.146007768Z",
+      "elapsed_seconds": 69.243,
+      "rss_mb": 308.5,
+      "market_prefetch_wall_seconds": 60.003,
+      "heavy_learning_status": "DEFERRED_MEMORY",
+      "sha": "cef232e4ff94ab126529bd0324cfb55b2c934630"
+    },
+    {
+      "at": "2026-10-06T22:28:06.240869803Z",
+      "elapsed_seconds": 74.297,
+      "rss_mb": 315.4,
+      "market_prefetch_wall_seconds": 68.7529,
+      "heavy_learning_status": "DEFERRED_MEMORY",
+      "sha": "cef232e4ff94ab126529bd0324cfb55b2c934630"
+    },
+    {
+      "at": "2026-10-06T22:29:15.64493739Z",
+      "elapsed_seconds": 68.745,
+      "rss_mb": 317.6,
+      "market_prefetch_wall_seconds": 62.9979,
+      "heavy_learning_status": "DEFERRED_MEMORY",
+      "sha": "cef232e4ff94ab126529bd0324cfb55b2c934630"
+    }
+  ]
 }
