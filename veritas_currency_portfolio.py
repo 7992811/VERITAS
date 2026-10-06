@@ -81,6 +81,14 @@ def decorate_report(report):
             continue
         seen = True
         q = dict(p)
+        # Currency has an independent 10k RUB capital base. Repair any stale
+        # report produced by legacy code that divided this NAV by the 1m core base.
+        try:
+            nav = float(q.get('nav_rub'))
+            q['initial_nav_rub'] = INITIAL_NAV_RUB
+            q['total_return_pct'] = round(100.0 * (nav / INITIAL_NAV_RUB - 1.0), 4)
+        except (TypeError, ValueError):
+            pass
         q.update({
             'display_name': DISPLAY_NAME,
             'configuration_status': 'CONFIGURED',
