@@ -8,6 +8,12 @@ import veritas_trade_audit as AUDIT
 VERSION = "LEARNING_SOURCE_EVIDENCE_V1"
 BATCH_SIZE = 128
 MAX_BATCH_SIZE = 256
+MAX_APPROACH_BARS = 100  # MA policy hard limit; the canonical proof has three bars.
+_GENERATION = 0
+
+def generation():
+    """Process-local invalidation token for cached learning memory."""
+    return _GENERATION
 
 def _alias(value):
     if value and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
@@ -59,6 +65,62 @@ def _identity(expression):
             _object(expression, ("asset", "key", "contract_id", "primary_source", "legacy_fixed_adapter"))+
             " ELSE "+expression+" END")
 
+def _proof_scalar(expression):
+    return ("(CASE WHEN jsonb_typeof("+expression+") IN ('array','object') "
+            "THEN 'null'::jsonb ELSE "+expression+" END)")
+
+def _projected_object(expression, fields, extra=None):
+    """Keep required proof fields; malformed compound values never expand."""
+    values = [(key, _proof_scalar(expression+"->'"+key+"'")) for key in fields]
+    values.extend((extra or {}).items())
+    selected = ",".join("('"+key+"',"+value+")" for key, value in values)
+    return ("(CASE WHEN jsonb_typeof("+expression+")='object' THEN "
+            "(SELECT COALESCE(jsonb_object_agg(proof_key,proof_value),'{}'::jsonb) "
+            "FROM (VALUES "+selected+") AS proof_fields(proof_key,proof_value) "
+            "WHERE "+expression+" ? proof_key) "
+            "WHEN "+expression+" IS NULL OR "+expression+"='null'::jsonb THEN "+expression+
+            " ELSE '\"INVALID_PROOF_SHAPE\"'::jsonb END)")
+
+def _bounded_array(expression, maximum, element_type):
+    # Never shorten a proof to a valid-looking prefix, or retain nested arrays.
+    return ("(CASE WHEN jsonb_typeof("+expression+")='array' THEN "
+            "CASE WHEN jsonb_array_length("+expression+")<="+str(maximum)+" THEN "
+            "CASE WHEN EXISTS (SELECT 1 FROM jsonb_array_elements("+expression+") AS item(value) "
+            "WHERE jsonb_typeof(item.value)<>'"+element_type+"') THEN 'null'::jsonb "
+            "ELSE "+expression+" END ELSE 'null'::jsonb END ELSE 'null'::jsonb END)")
+
+def _ma_proof_sql(expression):
+    daily = "("+expression+"->'daily_provenance')"
+    period = "("+expression+"->'period_evidence')"
+    policy = "("+expression+"->'policy')"
+    approach = "("+expression+"->'approach_bars')"
+    bar = _projected_object("approach_bar.value", ("ts", "available_at", "high", "low"))
+    # SQL bounds the complete array before expanding its required scalar fields.
+    approach_sql = ("(CASE WHEN jsonb_typeof("+approach+")='array' THEN "
+        "CASE WHEN jsonb_array_length("+approach+")<="+str(MAX_APPROACH_BARS)+" THEN "
+        "(SELECT COALESCE(jsonb_agg("+bar+" ORDER BY approach_bar.ordinality),'[]'::jsonb) "
+        "FROM jsonb_array_elements("+approach+") WITH ORDINALITY AS approach_bar(value,ordinality)) "
+        "ELSE 'null'::jsonb END ELSE 'null'::jsonb END)")
+    policy_sql = _projected_object(policy, (
+        "zone_atr_daily", "max_episode_bars", "rearm_bars", "rearm_atr_daily",
+        "slope_lookback_days", "max_adverse_slope_atr", "flat_slope_atr",
+        "max_flat_crossings_10d"), {
+        "periods": _bounded_array(policy+"->'periods'", 2, "number"),
+        "supported_timeframes": _bounded_array(policy+"->'supported_timeframes'", 5, "string")})
+    return _projected_object(expression, (
+        "period", "ma_value", "daily_atr", "daily_known_at", "daily_asof",
+        "daily_valid_until", "episode_start_at", "touch_available_at", "touch_high",
+        "touch_low", "bounce_level", "confirmation_close", "previous_close",
+        "episode_bars", "episode_elapsed_seconds"), {
+        "daily_provenance": _projected_object(daily, (
+            "native_timeframe", "bar_count", "digest_bar_count", "first_bar_at",
+            "last_bar_at", "last_closed_at", "sha256"), {
+            "source_identity": _identity(daily+"->'source_identity'")}),
+        "period_evidence": _projected_object(period, (
+            "status", "sample_count", "required_count", "value", "window_start",
+            "window_end", "slope_atr_5d", "crossings_10d")),
+        "policy": policy_sql, "approach_bars": approach_sql})
+
 def payload_sql(alias="t"):
     p = _alias(alias)+"payload"
     pairs = []
@@ -76,8 +138,16 @@ def payload_sql(alias="t"):
     event_keys = ("event_id", "event_type", "asset", "direction", "timeframe", "confirmation",
                   "atr_timeframe", "stop_timeframe", "target_timeframe", "breakout_bar_at",
                   "signal_at", "confirmed_at", "level_available_at", "stop_level_available_at",
-                  "atr_observed_until")
-    event_sql = _object(event, event_keys)+" || jsonb_build_object('source_identity',"+_identity(event+"->'source_identity'")+")"
+                  "atr_observed_until", "version", "ma_rebound_version", "trigger_pivot_at",
+                  "stop_pivot_at", "trigger_level", "signal_price", "atr", "stop_anchor",
+                  "stop_price", "target_price")
+    policy = "("+event+"->'policy')"
+    policy_sql = _projected_object(policy, (
+        "atr_period", "pivot_left", "pivot_right", "stop_buffer_atr", "max_stop_atr",
+        "max_extension_atr", "max_signal_age_bars", "target_r_multiple", "min_target_atr"))
+    event_sql = (_object(event, event_keys)+" || jsonb_build_object('source_identity',"+
+        _identity(event+"->'source_identity'")+",'policy',"+policy_sql+
+        ",'ma_proof',"+_ma_proof_sql("("+event+"->'ma_proof')")+")")
     pairs.extend(("'entry_event_snapshot'", event_sql))
     return "jsonb_build_object("+",".join(pairs)+")"
 
@@ -110,6 +180,8 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
     """
     if type(batch_size) is not int or not 1 <= batch_size <= MAX_BATCH_SIZE:
         raise ValueError("invalid revalidation batch size")
+    global _GENERATION
+    _GENERATION += 1  # Invalidate cached memory even when subsequent SQL fails.
     evidence = _evidence_sql("t")
     staged = c.execute("""
       WITH candidates AS (
