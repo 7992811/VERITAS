@@ -5,13 +5,14 @@ permitted. Every period has independent availability; SMA200 needs 200 days.
 """
 from __future__ import annotations
 from copy import deepcopy
+from datetime import date
 import hashlib
 import json
 import math
 import veritas_price_source as VPS
 from veritas_timeframe_structure import timestamp
 
-VERSION = "NATIVE_DAILY_AVERAGES_V1"
+VERSION = "NATIVE_DAILY_AVERAGES_V2"
 DAY = 86400
 MAX_BARS = 500
 
@@ -33,20 +34,138 @@ def _source(identity):
             "contract_id": str(identity["contract_id"]) if identity.get("contract_id") else None}
 
 
+def _sha256(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                     allow_nan=False).encode()).hexdigest()
+
+
+def _digest(value):
+    return (isinstance(value, str) and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value))
+
+
+def _period_label(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+        return parsed if parsed.isoformat() == value else None
+    except ValueError:
+        return None
+
+
+def _completion_proof_valid(proof, identity, *, label=None, ohlc_sha256=None, known_at=None):
+    if not isinstance(proof, dict) or proof.get("kind") != "NEXT_NATIVE_DAILY_OBSERVED":
+        return False
+    period = _period_label(proof.get("period_label"))
+    successor = _period_label(proof.get("successor_label"))
+    observed = timestamp(proof.get("observed_at"))
+    return bool(identity is not None and period is not None and successor is not None
+                and successor > period and observed is not None
+                and VPS.same(identity, _source(proof.get("source_identity")))
+                and (label is None or proof.get("period_label") == label)
+                and _digest(proof.get("ohlc_sha256"))
+                and (ohlc_sha256 is None or proof["ohlc_sha256"] == ohlc_sha256)
+                and (known_at is None or observed <= known_at))
+
+
+def _profinance_native(row):
+    identity = _source(row.get("source_identity"))
+    if (row.get("native_timeframe") != "1d" or str(row.get("native_interval")) != "9"
+            or row.get("native_time_basis") != "PROVIDER_DATE_LABEL_ONLY"
+            or row.get("interval_boundary_verified") is not False
+            or _period_label(row.get("provider_period_label")) is None):
+        return False
+    values = [_number(row.get(k)) for k in ("open", "high", "low", "close")]
+    available = timestamp(row.get("available_at"))
+    if available is None or any(v is None for v in values):
+        return False
+    # The provider exposes only a date label. Its physical close time is not
+    # known; the next native record observed in a real response is the proof.
+    if not _completion_proof_valid(row.get("completion_proof"), identity,
+                                  label=row["provider_period_label"],
+                                  ohlc_sha256=_sha256(values), known_at=available):
+        return False
+    if "revision_observed_at" in row:
+        revised = timestamp(row["revision_observed_at"])
+        if revised is None or revised > timestamp(row["completion_proof"]["observed_at"]):
+            return False
+    return True
+
+
+def _revision_watermark(daily_bars, identity):
+    if identity is None or not identity["key"].startswith("PROFINANCE:"):
+        return None
+    revisions = [timestamp(b.get("revision_observed_at")) for b in daily_bars or []
+                 if isinstance(b, dict) and VPS.same(identity, _source(b.get("source_identity")))]
+    return max((at for at in revisions if at is not None), default=None)
+
+
+def validate_provenance(provenance, expectedsource, known_at):
+    """Validate a frozen certificate without claiming a physical PF close time.
+
+    The aggregate digests bind all source/OHLC/proof inputs used by the builder;
+    this compact certificate validates their shape, source and causal bounds
+    without expanding hundreds of daily observations into each local event.
+    """
+    identity, known = _source(expectedsource), timestamp(known_at)
+    if (not isinstance(provenance, dict) or identity is None or known is None
+            or not VPS.same(identity, _source(provenance.get("source_identity")))
+            or provenance.get("native_timeframe") != "1d"
+            or not _digest(provenance.get("sha256"))):
+        return False
+    if not identity["key"].startswith("PROFINANCE:"):
+        closed = timestamp(provenance.get("last_closed_at"))
+        return closed is not None and closed <= known
+    if (provenance.get("native_time_basis") != "PROVIDER_DATE_LABEL_ONLY"
+            or provenance.get("interval_boundary_verified") is not False
+            or "last_closed_at" not in provenance or provenance["last_closed_at"] is not None
+            or "verified_close_at" not in provenance or provenance["verified_close_at"] is not None):
+        return False
+    nominal_end = timestamp(provenance.get("nominal_last_period_end"))
+    first = timestamp(provenance.get("first_completion_observed_at"))
+    last = timestamp(provenance.get("last_completion_observed_at"))
+    count, used, total = (provenance.get(k) for k in
+                          ("completion_proof_count", "digest_bar_count", "bar_count"))
+    if (any(isinstance(n, bool) or not isinstance(n, int) for n in (count, used, total))
+            or not 1 <= count == used <= total <= MAX_BARS
+            or nominal_end is None or nominal_end > known
+            or first is None or last is None or not first <= last <= known
+            or not _digest(provenance.get("completion_proofs_sha256"))
+            or not _digest(provenance.get("last_daily_ohlc_sha256"))
+            or _period_label(provenance.get("last_period_label")) is None):
+        return False
+    proof = provenance.get("latest_completion_proof")
+    if not _completion_proof_valid(proof, identity, label=provenance["last_period_label"],
+                                  ohlc_sha256=provenance["last_daily_ohlc_sha256"], known_at=last):
+        return False
+    if timestamp(proof["observed_at"]) < first:
+        return False
+    if "history_revision_watermark" in provenance:
+        revised = timestamp(provenance["history_revision_watermark"])
+        if revised is None or revised > known:
+            return False
+    return True
+
+
+_DUPLICATE_FIELDS = ("open", "high", "low", "close", "end_ts", "available_at",
+                     "provider_period_label", "native_time_basis",
+                     "interval_boundary_verified", "completion_proof", "revision_observed_at")
+
+
 def _native(row):
+    if not isinstance(row, dict):
+        return False
     if (row.get("synthetic") or row.get("source_bar_count")
             or any(row.get(k) is False for k in
                    ("complete", "is_complete", "isComplete", "closed", "finalized"))):
         return False
     if str(row.get("aggregation") or "NATIVE").upper() not in ("NATIVE", "NATIVE_DAILY"):
         return False
-    if row.get("native_timeframe") == "1d" or str(row.get("native_interval")) in (
-            "1d", "24", "CANDLE_INTERVAL_DAY"):
-        return True
-    # Existing ProFinance protocol certifies native tt=9. Other provider rows
-    # require the explicit native-interval proof supplied by their adapter.
-    return bool(str((row.get("source_identity") or {}).get("key", "")).startswith("PROFINANCE:")
-                and row.get("chart_symbol") and row.get("price_type") == "Last")
+    if (_source(row.get("source_identity")) or {}).get("key", "").startswith("PROFINANCE:"):
+        return _profinance_native(row)
+    return row.get("native_timeframe") == "1d" or str(row.get("native_interval")) in (
+            "1d", "24", "CANDLE_INTERVAL_DAY")
 
 
 def validated_bars(daily_bars, now, *, source_identity):
@@ -96,9 +215,14 @@ def validated_bars(daily_bars, now, *, source_identity):
         row = {**prices, "ts": start, "end_ts": end, "available_at": available,
                "timeframe": "1d", "native_timeframe": "1d",
                "source_identity": dict(expected)}
+        if expected["key"].startswith("PROFINANCE:"):
+            for key in ("native_interval", "provider_period_label", "native_time_basis",
+                        "interval_boundary_verified", "completion_proof", "revision_observed_at"):
+                if key in item:
+                    row[key] = deepcopy(item[key])
         if start in rows:
             diagnostics["duplicate_rows"] += 1
-            if any(rows[start][k] != row[k] for k in (*prices, "end_ts", "available_at")):
+            if any(rows[start].get(k) != row.get(k) for k in _DUPLICATE_FIELDS):
                 taint.add(start)
                 diagnostics["conflicting_timestamps"] += 1
         else:
@@ -115,11 +239,13 @@ def _setting(config, key, default, maximum):
 
 
 def _build_context(daily_bars, now, *, asset, source_identity,
-                   periods=(18, 50, 200), config=None, _validated_snapshot=None):
+                   periods=(18, 50, 200), config=None, _validated_snapshot=None,
+                   _history_revision_watermark=None):
     """Native SMA/ATR snapshot known before an event or touch.
 
-    daily_asof is the final daily END, last_daily_open_at is its opening time.
-    known_at is the latest native availability time used, never retrieval time.
+    daily_asof is the native end (PF: a nominal date-label index only).
+    known_at is the latest actual availability used, including first-observed
+    completion proof for PF; nominal date labels never certify physical closes.
     slope/previous_value use one completed day by default; independent 5-day
     slopes and causal crossings_10d support flat/repeated-crossing diagnostics.
     """
@@ -144,6 +270,19 @@ def _build_context(daily_bars, now, *, asset, source_identity,
     rows, diagnostics = (validated_bars(daily_bars, now, source_identity=identity)
                          if _validated_snapshot is None else _validated_snapshot)
     result["diagnostics"] = diagnostics
+    profinance = (identity or {}).get("key", "").startswith("PROFINANCE:")
+    revision = (_revision_watermark(daily_bars, identity) if _history_revision_watermark is None
+                else _history_revision_watermark)
+    revision_blocked = bool(profinance and asof is not None and revision is not None and asof < revision)
+    if profinance:
+        result.update(daily_asof_basis="PROVIDER_DATE_LABEL_ONLY", verified_close_at=None)
+        if revision is not None:
+            result["history_revision_watermark"] = revision
+    if revision_blocked:
+        # A corrected closed day replaced its old version in the bounded cache.
+        # Earlier snapshots cannot drop it and silently substitute an older day.
+        result["status"] = "DAILY_REVISION_NOT_YET_KNOWN"
+        rows = []
     crypto = (identity or {}).get("key", "").startswith("BINANCE:")
     max_age = _setting(config, "max_daily_age_days", 1 if crypto else 4, 14)*DAY
     max_gap = _setting(config, "max_daily_gap_days", 1 if crypto else 14, 31)*DAY
@@ -168,7 +307,7 @@ def _build_context(daily_bars, now, *, asset, source_identity,
                   "sample_count": len(window), "required_count": period,
                   "window_start": window[0]["ts"] if window else None,
                   "window_end": window[-1]["end_ts"] if window else None}
-        if asof is None or identity is None:
+        if asof is None or identity is None or revision_blocked:
             record["status"] = result["status"]
         elif stale:
             record["status"] = "STALE_DAILY_HISTORY"
@@ -187,7 +326,8 @@ def _build_context(daily_bars, now, *, asset, source_identity,
     if rows:
         used = rows[-max(max(periods)+max(slope_count,10), atr_period+1):]
         result.update(daily_asof=rows[-1]["end_ts"], last_daily_open_at=rows[-1]["ts"],
-                      known_at=max(b["available_at"] for b in used),
+                      known_at=max([b["available_at"] for b in used]
+                                   + ([revision] if profinance and revision is not None else [])),
                       valid_until=rows[-1]["end_ts"]+max_age+60)
         atr_rows = rows[-atr_period-1:]
         if len(atr_rows) == atr_period+1 and not stale and not window_bad(atr_rows):
@@ -221,11 +361,31 @@ def _build_context(daily_bars, now, *, asset, source_identity,
                 record["crossings_10d"] = crosses
         proof = {"source_identity": identity, "timeframe": "1d",
                  "bars": [[b[k] for k in ("ts","end_ts","available_at","open","high","low","close")] for b in used]}
-        digest = hashlib.sha256(json.dumps(proof,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        completion_proofs = [deepcopy(b["completion_proof"]) for b in used] if profinance else []
+        if profinance:
+            proof.update(native_time_basis="PROVIDER_DATE_LABEL_ONLY",
+                         interval_boundary_verified=False, completion_proofs=completion_proofs)
+            if revision is not None:
+                proof["history_revision_watermark"] = revision
+        digest = _sha256(proof)
         result["provenance"] = {"source_identity":deepcopy(identity),"native_timeframe":"1d",
                                 "bar_count":len(rows),"digest_bar_count":len(used),
                                 "first_bar_at":used[0]["ts"],"last_bar_at":rows[-1]["ts"],
                                 "last_closed_at":rows[-1]["end_ts"],"sha256":digest}
+        if profinance:
+            result["provenance"].update(
+                native_time_basis="PROVIDER_DATE_LABEL_ONLY", interval_boundary_verified=False,
+                last_closed_at=None, verified_close_at=None,
+                nominal_last_period_end=rows[-1]["end_ts"],
+                last_period_label=rows[-1]["provider_period_label"],
+                latest_completion_proof=deepcopy(completion_proofs[-1]),
+                completion_proof_count=len(completion_proofs),
+                completion_proofs_sha256=_sha256(completion_proofs),
+                first_completion_observed_at=min(timestamp(p["observed_at"]) for p in completion_proofs),
+                last_completion_observed_at=max(timestamp(p["observed_at"]) for p in completion_proofs),
+                last_daily_ohlc_sha256=completion_proofs[-1]["ohlc_sha256"])
+            if revision is not None:
+                result["provenance"]["history_revision_watermark"] = revision
         result["digest"] = digest
     if any(p["status"] == "OK" for p in result["periods"].values()):
         result["status"] = "OK"
@@ -266,6 +426,7 @@ def context_builder(daily_bars, *, asset, source_identity,
             and identity.get("asset") not in (None, "", str(asset)))):
         return lambda now: build_context(bars, now, **options)
 
+    revision = _revision_watermark(bars, normalized_identity)
     observations, permanent_rejections = [], 0
     for index, item in enumerate(bars):
         if not isinstance(item, dict):
@@ -293,7 +454,7 @@ def context_builder(daily_bars, *, asset, source_identity,
         observations.append(((visible_at, exclusive), index, start, row))
     observations.sort(key=lambda item: (item[0], item[1]))
     boundaries = [item[0] for item in observations]
-    fields = ("open", "high", "low", "close", "end_ts", "available_at")
+    fields = _DUPLICATE_FIELDS
     state = {}
 
     def reset():
@@ -314,7 +475,7 @@ def context_builder(daily_bars, *, asset, source_identity,
             old_conflicts = group["conflicts"]
             valid[original_index] = row
             first = valid[min(valid)]
-            group["conflicts"] = sum(any(first[k] != other[k] for k in fields)
+            group["conflicts"] = sum(any(first.get(k) != other.get(k) for k in fields)
                                      for other in valid.values())
             state["conflicts"] += group["conflicts"] - old_conflicts
         if group["invalid"] or group["conflicts"]:
@@ -347,6 +508,7 @@ def context_builder(daily_bars, *, asset, source_identity,
                        "duplicate_rows": state["duplicates"],
                        "tainted_timestamps": sorted(state["tainted"])}
         return _build_context((), now, **options,
-                              _validated_snapshot=(rows, diagnostics))
+                              _validated_snapshot=(rows, diagnostics),
+                              _history_revision_watermark=revision)
 
     return snapshot

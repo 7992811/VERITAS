@@ -7,6 +7,7 @@ through veritas_position_guard; this module never changes positions.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import math
 
@@ -63,6 +64,22 @@ def _native_rows(history, clock):
         mapping[tf] = [{**native[row["ts"]], **row, "volume": None,
                         "volume_available": False} for row in valid]
     return mapping, None
+
+
+def _daily_evidence(history):
+    """Preserve observed D1 proof/revision times before historical cutoffs.
+
+    DA validates OHLC and completion evidence. Filtering available_at here
+    would hide a later revision and incorrectly substitute an older SMA day.
+    Called only after the complete bundle's source identity has passed.
+    """
+    expected = _identity()
+    return [deepcopy(row) for row in
+            ((history or {}).get("bars_by_timeframe") or {}).get("1d") or []
+            if isinstance(row, dict) and row.get("timeframe") == "1d"
+            and row.get("raw_label") == LABEL
+            and VPS.same(expected, row.get("source_identity"))
+            and not (row.get("source_identity") or {}).get("contract_id")]
 
 
 def _observed_partials(history, clock):
@@ -174,6 +191,7 @@ def build_market(quote, history, now=None):
         "structure_history_status": (history or {}).get("status_by_timeframe") or {},
         "structure_history_error": history_error,
         "native_source_history_attached": True,
+        "native_daily_evidence": [] if history_error else _daily_evidence(history),
         "structure_quote": {"price": direct_price, "observed_at": observed,
                             "direct": fresh, "paper_only": True},
         "reference_price_basis": "OBSERVED_QUOTE" if direct_price else "NATIVE_HISTORY_CONTEXT_ONLY",

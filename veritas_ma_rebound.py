@@ -95,6 +95,7 @@ def _daily_level(snapshot, period, sign, policy, at):
         return None, "MA_FLAT_REPEATED_CROSSES"
     return {"value":value, "atr":atr, "period":period, "period_evidence":deepcopy(pe),
             "known_at":snapshot.get("known_at"), "daily_asof":snapshot.get("daily_asof"),
+            "asof_basis":snapshot.get("daily_asof_basis", "NATIVE_INTERVAL_END"),
             "valid_until":valid_until,
             "provenance":deepcopy(snapshot.get("provenance") or {})}, None
 
@@ -123,6 +124,7 @@ def _make_event(ep, bar, prior, atr, atr_known, timeframe, asset, source, risk_p
     proof = {
         "period":level["period"], "ma_value":level["value"], "daily_atr":level["atr"],
         "daily_known_at":level["known_at"], "daily_asof":level["daily_asof"],
+        "daily_asof_basis":level["asof_basis"],
         "daily_valid_until":level["valid_until"],
         "daily_provenance":deepcopy(level["provenance"]),
         "period_evidence":deepcopy(level["period_evidence"]),
@@ -197,8 +199,19 @@ def validate_event(event, source_identity=None):
         if signal != opening + TS.timeframe_seconds(tf):
             return fail
         if (available != e.get("level_available_at") or touch != e.get("trigger_pivot_at")
-                or TS.timestamp(dp.get("last_closed_at")) != asof
                 or TS.timestamp(pe.get("window_end")) is None or pe["window_end"] > asof):
+            return fail
+        if str(source["key"]).startswith("PROFINANCE:"):
+            # A native date label is an index, not a verified session close.
+            # Daily proof was first observed before this episode's touch.
+            import veritas_daily_averages as DA
+            if (proof.get("daily_asof_basis") != "PROVIDER_DATE_LABEL_ONLY"
+                    or TS.timestamp(dp.get("nominal_last_period_end")) != asof
+                    or dp.get("last_closed_at") is not None
+                    or dp.get("verified_close_at") is not None
+                    or not DA.validate_provenance(dp, source, known)):
+                return fail
+        elif TS.timestamp(dp.get("last_closed_at")) != asof:
             return fail
         if (not 1 <= proof["episode_bars"] <= p["max_episode_bars"]
                 or not 0 < opening - touch <= p["max_episode_bars"] * TS.timeframe_seconds(tf)

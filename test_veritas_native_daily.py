@@ -6,7 +6,7 @@ import unittest
 import veritas_daily_averages as DA
 import veritas_native_daily as ND
 import veritas_price_source as VPS
-from test_veritas_daily_averages import fixture, DAY
+from test_veritas_daily_averages import fixture, DAY, certify_profinance
 
 RAW_BTC = {"asset":"BTC", "source_names":{"primary":"Binance spot"}}
 RAW_PF = {"asset":"NQ", "source_names":{"primary":"ProFinance NASD100_FUT"}}
@@ -121,7 +121,6 @@ class NativeDailyProviderTests(unittest.TestCase):
         identity=VPS.identity("NQ",raw)
         rows=fixture(identity=identity)
         for b in rows:
-            b.pop("native_timeframe")
             b.update(chart_symbol="NASD100_FUT",price_type="Last")
         raw["structure_bars_by_timeframe"]={"1d":rows}
         def forbidden(**kwargs):
@@ -233,6 +232,135 @@ class NativeDailyProviderTests(unittest.TestCase):
         first=cache.fetch(RAW_BTC,240*DAY+1)
         first["bars"][-1]["close"]=1.
         self.assertNotEqual(cache.fetch(RAW_BTC,240*DAY+1)["bars"][-1]["close"],1.)
+
+
+    def test_profinance_legacy_rows_without_successor_proof_are_unavailable(self):
+        raw=deepcopy(RAW_PF)
+        rows=fixture(identity=VPS.identity("NQ",raw))
+        for row in rows:
+            row.pop("completion_proof")
+        raw["native_source_history_attached"]=True
+        raw["structure_bars_by_timeframe"]={"1d":rows}
+        calls=[]
+        cache=ND.DailyHistoryCache(clock=lambda:240*DAY+1,profinance_fetch=lambda **k:calls.append(k))
+        result=cache.fetch(raw,240*DAY+1)
+        self.assertEqual(calls,[])
+        self.assertEqual(result["bars"],[])
+        self.assertNotEqual(result["status"],"READY")
+
+    def test_profinance_certified_future_proof_is_preserved_but_not_ready(self):
+        raw=deepcopy(RAW_PF)
+        rows=fixture(identity=VPS.identity("NQ",raw))
+        first=240*DAY+7200
+        for row in rows:
+            certify_profinance(row,first)
+        raw["native_source_history_attached"]=True
+        raw["structure_bars_by_timeframe"]={"1d":rows}
+        cache=ND.DailyHistoryCache(clock=lambda:first)
+        before=cache.fetch(raw,first-1)
+        self.assertNotEqual(before["status"],"READY")
+        self.assertEqual(before["bars"][-1]["completion_proof"]["observed_at"],first)
+        self.assertIsNone(before["known_at"])
+        after=cache.fetch(raw,first)
+        self.assertEqual(after["status"],"READY")
+        self.assertEqual(after["known_at"],first)
+        self.assertIsNone(after["last_closed_at"])
+        self.assertEqual(after["daily_asof"],240*DAY)
+        self.assertEqual(after["daily_asof_basis"],"PROVIDER_DATE_LABEL_ONLY")
+
+    def test_fresh_supplied_profinance_revision_bypasses_secondary_cache_ttl(self):
+        raw=deepcopy(RAW_PF)
+        rows=fixture(identity=VPS.identity("NQ",raw))
+        raw["native_source_history_attached"]=True
+        raw["structure_bars_by_timeframe"]={"1d":rows}
+        clock=[240*DAY+1]
+        calls=[]
+        cache=ND.DailyHistoryCache(clock=lambda:clock[0],profinance_fetch=lambda **k:calls.append(k))
+        first=cache.fetch(raw,clock[0])
+        self.assertEqual(first["status"],"READY")
+        # Within both TTL and retry cooldown, an already fetched source bundle
+        # contains a revised daily close and its actual observation watermark.
+        clock[0] += 10
+        changed=rows[-20]
+        changed["close"] += .2
+        changed["revision_observed_at"]=clock[0]
+        certify_profinance(changed,clock[0])
+        revised=cache.fetch(raw,clock[0])
+        self.assertEqual(calls,[])
+        self.assertEqual(revised["status"],"READY")
+        self.assertEqual(revised["known_at"],clock[0])
+        self.assertEqual(revised["bars"][-20]["close"],changed["close"])
+        historical=cache.fetch(raw,clock[0]-1)
+        self.assertEqual(historical["status"],"DAILY_REVISION_NOT_YET_KNOWN")
+        self.assertEqual(historical["bars"][-20]["revision_observed_at"],clock[0])
+
+    def test_profinance_changed_bundle_cannot_refresh_a_proof_implicitly(self):
+        raw=deepcopy(RAW_PF)
+        rows=fixture(identity=VPS.identity("NQ",raw))
+        raw["native_source_history_attached"]=True
+        raw["structure_bars_by_timeframe"]={"1d":rows}
+        clock=[240*DAY+1]
+        cache=ND.DailyHistoryCache(clock=lambda:clock[0])
+        first=cache.fetch(raw,clock[0])
+        clock[0] += 10
+        rows[-1]["close"] += .2
+        # No matching source/OHLC proof: the malformed latest row taints SMA50.
+        changed=cache.fetch(raw,clock[0])
+        self.assertNotEqual(changed["status"],"READY")
+        self.assertEqual(changed["bars"][-1]["completion_proof"],
+                         first["bars"][-1]["completion_proof"])
+
+
+    def test_explicit_daily_evidence_preserves_revision_filtered_out_of_structure(self):
+        raw=deepcopy(RAW_PF)
+        rows=fixture(identity=VPS.identity("NQ",raw))
+        raw["native_source_history_attached"]=True
+        raw["structure_bars_by_timeframe"]={"1d":deepcopy(rows)}
+        observed=240*DAY+7200
+        target=rows[-20]
+        target["close"] += .2
+        target["revision_observed_at"]=observed
+        certify_profinance(target,observed)
+        raw["native_daily_evidence"]=rows
+        calls=[]
+        cache=ND.DailyHistoryCache(clock=lambda:observed,profinance_fetch=lambda **k:calls.append(k))
+        historical=cache.fetch(raw,observed-1)
+        self.assertEqual(calls,[])
+        self.assertEqual(historical["status"],"DAILY_REVISION_NOT_YET_KNOWN")
+        self.assertEqual(historical["bars"][-20]["revision_observed_at"],observed)
+        current=cache.fetch(raw,observed)
+        self.assertEqual(current["status"],"READY")
+        self.assertEqual(current["known_at"],observed)
+
+    def test_explicit_empty_evidence_overrides_legacy_mapping_without_second_fetch(self):
+        raw=deepcopy(RAW_PF)
+        raw["native_source_history_attached"]=True
+        raw["native_daily_evidence"]=[]
+        raw["structure_bars_by_timeframe"]={"1d":fixture(identity=VPS.identity("NQ",raw))}
+        calls=[]
+        cache=ND.DailyHistoryCache(clock=lambda:240*DAY+1,profinance_fetch=lambda **k:calls.append(k))
+        result=cache.fetch(raw,240*DAY+1)
+        self.assertEqual(calls,[])
+        self.assertEqual(result["bars"],[])
+        self.assertEqual(result["reason"],"NATIVE_DAILY_NO_VALID_CLOSED_BARS")
+
+    def test_changed_explicit_evidence_is_ingested_inside_ttl(self):
+        raw=deepcopy(RAW_PF)
+        rows=fixture(identity=VPS.identity("NQ",raw))
+        raw["native_source_history_attached"]=True
+        raw["native_daily_evidence"]=rows
+        raw["structure_bars_by_timeframe"]={"1d":deepcopy(rows)}
+        clock=[240*DAY+1]
+        cache=ND.DailyHistoryCache(clock=lambda:clock[0])
+        self.assertEqual(cache.fetch(raw,clock[0])["status"],"READY")
+        clock[0] += 10
+        rows[-20]["close"] += .2
+        rows[-20]["revision_observed_at"]=clock[0]
+        certify_profinance(rows[-20],clock[0])
+        result=cache.fetch(raw,clock[0])
+        self.assertEqual(result["bars"][-20]["close"],rows[-20]["close"])
+        self.assertEqual(result["known_at"],clock[0])
+        self.assertEqual(cache.fetch(raw,clock[0]-1)["status"],"DAILY_REVISION_NOT_YET_KNOWN")
 
 
 if __name__ == "__main__":
