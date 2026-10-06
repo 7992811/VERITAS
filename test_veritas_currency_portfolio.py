@@ -46,6 +46,26 @@ class CurrencyPortfolioTests(TestCase):
         self.assertNotIn('EXPECTED_MOVE_BELOW_COST_BUFFER',R._R79_SOFT_ECON_BLOCKERS)
         self.assertNotIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',R._R79_SOFT_ECON_BLOCKERS)
 
+    def test_currency_router_prefers_execution_timeframe_over_daily_rank(self):
+        rows=[
+            {'asset':'CNYRUBF','horizon':'5m','research_decision':'LONG','confidence':.51,
+             'horizon_structure':{'state':'CONFIRMED_TREND','score':.60,'direction':'LONG'}},
+            {'asset':'CNYRUBF','horizon':'1d','research_decision':'LONG','confidence':.90,
+             'horizon_structure':{'state':'NEUTRAL','score':.30,'direction':'NO_TRADE'}},
+        ]
+        row=R.VCR.currency_candidate_book(rows)['CNYRUBF']
+        self.assertEqual(row['horizon'],'5m')
+
+    def test_currency_router_flags_senior_signal_against_confirmed_4h_structure(self):
+        rows=[
+            {'asset':'CNYRUBF','horizon':'1d','research_decision':'LONG','confidence':.90,
+             'horizon_structure':{'state':'NEUTRAL','score':.30,'direction':'NO_TRADE'}},
+            {'asset':'CNYRUBF','horizon':'4h','research_decision':'NO_TRADE','confidence':0,
+             'horizon_structure':{'state':'CONFIRMED_TREND','score':.75,'direction':'SHORT'}},
+        ]
+        row=R.VCR.currency_candidate_book(rows)['CNYRUBF']
+        self.assertTrue(row['_currency_mtf_conflict'])
+
     def test_currency_drawdown_profile_matches_owner_limit(self):
         p=P._v90r35_profile('CURRENCY','Currency')
         self.assertEqual(p['name'],'CURRENCY')
@@ -60,6 +80,17 @@ class CurrencyPortfolioTests(TestCase):
         self.assertEqual(cur['configuration_status'],'CONFIGURED')
         self.assertEqual(cur['max_gross_limit'],10.0)
         self.assertFalse(cur['live_trading_enabled'])
+
+    def test_reporting_filters_currency_trace_and_positions_to_cny_only(self):
+        original={'portfolios':[{'name':'Currency','nav_rub':10_000.0,
+            'positions':[{'asset':'CNYRUBF'},{'asset':'BTC'}],
+            'admission_trace':[{'asset':'BTC','reason':'X'},
+                               {'asset':'CNYRUBF','direction':'LONG','reason':'Y'}]}]}
+        cur=C.decorate_report(original)['portfolios'][0]
+        self.assertEqual([x['asset'] for x in cur['positions']],['CNYRUBF'])
+        self.assertEqual([x['asset'] for x in cur['admission_trace']],['CNYRUBF'])
+        self.assertEqual(cur['current_cny_admission']['reason'],'Y')
+        self.assertEqual(cur['portfolio_integrity_warning'],'NON_CNY_POSITION_QUARANTINED')
 
     def test_reporting_repairs_currency_return_base(self):
         original={'portfolios':[{'name':'Currency','nav_rub':10_000.0,
