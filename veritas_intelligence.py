@@ -18760,7 +18760,7 @@ def _v90r24_ensure_canonical_portfolios():
                   VALUES(%s,now(),now(),%s,0,0,0,%s,%s,%s::jsonb,%s)
                   ON CONFLICT(name) DO UPDATE SET
                     policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()""",
-                  (name,initial_nav,initial_nav,initial_nav,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION','veritas-portfolio-v9.0-four-portfolio-core')))
+                  (name,initial_nav,initial_nav,initial_nav,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION',VR.PORTFOLIO_VERSION)))
             rows=c.execute("""SELECT name FROM paper_portfolios
                               WHERE name=ANY(%s)
                               ORDER BY CASE name
@@ -19236,7 +19236,7 @@ if 'NDX' in DISPLAY_ASSETS or any((v[0]=='NDX') for v in ASSETS.values()):
     raise RuntimeError('ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES')
 
 # VERITAS 90 FINAL RUNTIME IDENTITY
-VERSION = 'veritas-max-product-v90.0-four-portfolio-core'
+VERSION = VR.PRODUCT_VERSION
 
 
 from veritas_market_runtime import install_market_runtime_guard as _v90_install_market_guard; _v90_install_market_guard(globals())
