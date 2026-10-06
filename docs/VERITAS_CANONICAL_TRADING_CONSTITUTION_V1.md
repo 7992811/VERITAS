@@ -87,16 +87,16 @@ VERITAS прошёл через много последовательных Rxx-
 
 | Параметр | Значение |
 |---|---:|
-| Комиссия | 0,05% за сторону |
+| Комиссия | 0,04% за сторону |
 | Модельное проскальзывание | 0,04% за сторону |
-| Базовый round trip | 0,18% |
-| Запас к расходам | 1,2× |
-| Минимальный потенциал | max(0,19%; 1,2 × моделируемые расходы) |
+| Базовый round trip | 0,16% |
+| Запас к расходам | 1,1× |
+| Минимальный потенциал | max(0,19%; 1,1 × моделируемые расходы) |
 | Фондирование | 16% годовых |
 | Первые 24 часа | без фондирования |
 | База | ACT/365.25 |
 
-При базовых 0,18% расходов формула даёт минимальный ход 0,216%. Поэтому 0,19% — абсолютный floor, а не итоговый threshold при любых расходах.
+При базовых 0,16% расходов формула даёт минимальный ход 0,19%. Поэтому 0,19% — абсолютный floor, а не итоговый threshold при любых расходах.
 
 Cost-negative probe запрещён.
 
@@ -181,7 +181,7 @@ Anti-chase считается по **фактической свежей цен�
 - перенос через выходные разрешён;
 - шаг размера 5%.
 
-Отдельный per-trade stop-risk override не придумывается: до специального решения используется структурный risk governor. В R85 этот портфель пока остаётся `SETUP_PENDING`.
+Отдельный per-trade stop-risk override не придумывается: используется структурный risk governor. Портфель настроен как paper-book: 10 000 ₽, CNYRUBF, до 10× gross, hard DD 35%; live-торговля остаётся отдельно fail-closed.
 
 ## 12. Риск
 
@@ -307,31 +307,27 @@ Management-dominated loss не должен автоматически сниж�
 - CTC46–55: lifecycle/add/stop/profit/exit;
 - CTC56–60: learning.
 
-## 20. Расхождения R85 с каноном
+## 20. Статус устранения расхождений
 
-| ID | Важность | Расхождение | Что сделать |
-|---|---|---|---|
-| GAP01 | высокая | Champion в runtime имеет max_fraction 2.0 | ограничить single asset 100% без отдельного leverage-разрешения |
-| GAP02 | высокая | Challenger имеет max_fraction 2.0 | то же |
-| GAP03 | высокая | Currency остаётся SETUP_PENDING | внедрить 10k / CNYRUBF / 10× / DD35% / weekend carry |
-| GAP04 | средняя | исторические admission wrappers физически остаются | после стабилизации свести к CanonicalAdmissionEngine; R85 lock пока сохранять |
-| GAP05 | средняя | R35/R40 по-разному описывают приоритет цели | унифицировать dashboard/API по разделу 2 |
-| GAP06 | низкая | README_R82 описывает старые 0,04%/1,1× | пометить historical / заменить ссылкой на canonical policy |
-| GAP07 | низкая | версия cost module называется R82 при фактических R81-параметрах | переименовать после проверки совместимости |
-| GAP08 | средняя | external knowledge automation выключен | решать отдельно; автоматическое продвижение правил не включать |
-| GAP09 | высокая | R85 final-authority даёт circular import при прямом импорте runtime до portfolio | убрать зависимость от порядка импортов, не ослабляя authority lock |
-| GAP10 | средняя | zero-exposure fast-memory portfolio API теряет `api_source=live_memory` | восстановить явное происхождение ответа, сохранив SQL fallback для ненулевой экспозиции |
+GAP01–GAP10 закрыты в интеграционной ветке:
+
+- Champion и Challenger: single-asset cap 100%.
+- Currency: CONFIGURED, 10 000 ₽, только CNYRUBF, 10× max gross, DD 35%, weekend carry.
+- Admission: единый CanonicalAdmissionEngine.
+- R35/R40: единая целевая функция из CTC.
+- Расходы: 0,04% комиссия + 0,04% slippage за сторону, 1,1× buffer.
+- Knowledge automation: discovery работает и на web-role; LLM-компиляция shadow-гипотез включается при наличии API key.
+- Circular import final-authority устранён.
+- Zero-exposure fast-memory API сохраняет `api_source=live_memory` и добавляет Currency к core books.
 
 ## 21. Что уже исправлено R81–R85 и не является открытым конфликтом
 
-- R81: комиссия восстановлена до 0,05%, cost buffer до 1,2×.
+- R81: комиссия восстановлена до 0,04%, cost buffer до 1,1×.
 - R81: cost-negative probe запрещён.
 - R81: soft INVALIDATED/NO_TRADE больше не является hard-exit открытой позиции.
 - R83: направление сигнала отделено от свежей execution quote; anti-chase считается по фактической цене.
 - R83: market closed отличается от broken source при защитном monitoring.
 - R85: финальная runtime authority закреплена явно; исторические определения не могут молча вернуть себе исполнение.
-
-При этом общий Safety CI самого `main@R85` уже содержит три существующих сбоя: два circular-import теста вокруг final-authority и один fast-memory portfolio API тест. Они зафиксированы как GAP09–GAP10 и не являются регрессией CTC v1.
 
 ## 22. Следующий этап внедрения
 
@@ -345,4 +341,4 @@ Management-dominated loss не должен автоматически сниж�
 5. запускать regression tests против этой конституции;
 6. после этого архивировать старые Rxx как implementation history.
 
-До этого момента R85 остаётся рабочей authority, а CTC v1 — единственным нормативным источником для новых изменений.
+После прохождения регрессий CTC v1 становится нормативным и исполнительным источником правил для paper runtime; live capital остаётся независимо fail-closed.
