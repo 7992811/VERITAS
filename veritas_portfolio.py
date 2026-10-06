@@ -2177,38 +2177,25 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     final_gate=VX.entry_gate(row,price,direction,target_fraction,z)
     if not final_gate['eligible']:
         ev=VTE.context_of(row).get('event') or {}
-        r79=bool(ev.get('signal_authoritative') and str(ev.get('event_id') or '').startswith('R79_SIG_'))
+        canonical=bool((row.get('_canonical_admission') or {}).get('open'))
         blockers=set(str(x) for x in (final_gate.get('blockers') or []))
-        r79_soft={
-          'RR_BELOW_FINAL_FLOOR','NET_REWARD_RISK_BELOW_FLOOR',
-          'EXPECTED_MOVE_BELOW_COST_BUFFER','TARGET_NOT_PROFITABLE_AFTER_COSTS',
-          'R66_WAIT_RETEST','R66_CLOSED_CONTEXT_STALE','R69_WAIT_LOCAL_BREAKOUT',
-          'R74_EVENT_TARGET_REACHED','R66_SENIOR_BREAK_NOT_HELD',
-        }
-        hard=blockers-r79_soft
-        if r79 and not hard:
-            # R79 already validated source, execution quote, direction, stop
-            # geometry/reuse and stop-risk before entering the mutation layer.
-            # Do not let this legacy duplicate economics/timing gate turn an
-            # admitted current signal back into cash.
+        hard={x for x in blockers if CTC.veto_severity(x)=='HARD'}
+        if canonical and not hard:
+            # Canonical admission already passed all hard stages. The accounting
+            # boundary may accept only explicitly soft CTC blockers.
             final_gate=dict(final_gate)
             final_gate.update(
-              eligible=True,status='PASS_R79_SIGNAL_MUTATION',
-              r79_soft_override=True,
-              r79_overridden_blockers=sorted(blockers),
-              r79_hard_blockers=[],
+              eligible=True,status='PASS_CTC_V2_ACCOUNTING',
+              canonical_soft_override=True,
+              canonical_overridden_blockers=sorted(blockers),
+              canonical_hard_blockers=[],
             )
-            print(json.dumps({
-              'event':'R79_FINAL_MUTATION_OVERRIDE','portfolio':name,'asset':asset,
-              'direction':direction,'blockers':sorted(blockers),
-              'target_fraction':target_fraction,
-            },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
         else:
             _record_entry_outcome(row,'BLOCKED','FINAL_EXECUTION_ECONOMICS',
                                   blockers=sorted(blockers),hard_blockers=sorted(hard))
             print(json.dumps({'event':'PAPER_ENTRY_BLOCKED_FINAL','portfolio':name,
                               'asset':asset,'gate':final_gate,
-                              'r79_signal':r79,'hard_blockers':sorted(hard)},
+                              'canonical_admission':canonical,'hard_blockers':sorted(hard)},
                              default=str),flush=True)
             return
     row['_fill_economics_gate']=final_gate
