@@ -18,9 +18,8 @@ PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
 # Research/paper economics gate. This is deliberately independent from signal quality:
 # even a SUPER signal cannot bypass bad trade economics.
 MIN_REWARD_RISK = max(CTC.STRUCTURAL_ENTRY_POLICY['minimum_net_reward_risk'], float(os.getenv("VERITAS_FINAL_MIN_RR", "1.15")))
-MIN_EXPECTED_MOVE_PCT = max(float(CTC.COST_POLICY["minimum_expected_move_floor_pct"]),
-                            float(os.getenv("VERITAS_FINAL_MIN_EXPECTED_MOVE",
-                                            str(CTC.COST_POLICY["minimum_expected_move_floor_pct"]))))
+# CTC owns the move floor; stale environment overrides cannot change it.
+MIN_EXPECTED_MOVE_PCT = float(CTC.COST_POLICY["minimum_expected_move_floor_pct"])
 MIN_MOVE_COST_MULTIPLE = float(CTC.COST_POLICY["entry_cost_multiple"])
 MOVE_POLICY_VERSION = VC.VERSION
 ROUND_TRIP_COST_BPS = VC.ROUND_TRIP_RATE * 10000.0
@@ -228,24 +227,70 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
     }
 
 
-def entry_gate(row, price, direction, fraction, position=None):
+def stored_position_target_price(position):
+    """Match the held executable TP; a mutable last-signal target is not evidence."""
+    payload = (position or {}).get('payload') or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get('r17_tp1_done'):
+        # The remaining runner no longer executes this already-harvested TP.
+        return None
+    target = _num(payload.get('take_price') or payload.get('target_price'))
+    return target if target is not None and target > 0 else None
+
+
+def entry_gate(row, price, direction, fraction, position=None, existing_target_price=None):
     """Last check after all setup/sizing mutations, immediately before any order."""
     from veritas_quote_time import quote_gate
     row = row or {}
     import veritas_trend_entry as VTE
+    import veritas_timeframe_policy as TFP
     row = VTE.prepare_row(row, price)
     plan = dict(row.get('trade_plan') or {})
     execution=row.get('_execution_quote') or {}
     if position:
-        payload = position.get('payload') or {}
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        plan['stop_price'] = position.get('stop_price')
-        # An add needs room from its own fill to the current nearest obstacle.
-        # The original position's target is not evidence for a fresh add.
-        plan['target_price'] = plan.get('target_price') or payload.get('take_price') or payload.get('target_price')
-    geometry=VTE.geometry(dict(row,trade_plan=plan),price,direction,
-                          position.get('stop_price') if position else None)
+        held_stop = _num(position.get('stop_price'))
+        held_target = stored_position_target_price(position)
+        add_blockers = []
+        if held_stop is None or held_stop <= 0:
+            add_blockers.append('ADD_STORED_STOP_REQUIRED')
+        if held_target is None:
+            add_blockers.append('ADD_STORED_TARGET_REQUIRED')
+        elif existing_target_price is not None and _num(existing_target_price) != held_target:
+            add_blockers.append('ADD_STORED_TARGET_MISMATCH')
+        px = _num(price)
+        sign = 1 if direction == 'LONG' else -1
+        if px and px > 0:
+            if held_stop and sign*(px-held_stop) <= 0:
+                add_blockers.append('STOP_DIRECTION_INVALID')
+            if held_target and sign*(held_target-px) <= 0:
+                add_blockers.append('TARGET_DIRECTION_INVALID')
+        if add_blockers:
+            return {'eligible':False, 'status':'BLOCK', 'blockers':add_blockers,
+                    'target_price':held_target,
+                    'add_geometry_basis':'STORED_POSITION_STOP_TARGET',
+                    'entry_geometry':{'eligible':False, 'reason':add_blockers[0],
+                                      'stop_price':held_stop, 'target_price':held_target}}
+        plan.update(stop_price=held_stop, target_price=held_target)
+    if position and TFP.applies(row):
+        geometry=TFP.geometry(dict(row,trade_plan=plan),price,direction,held_stop,
+                              existing_target_price=held_target)
+    else:
+        geometry=VTE.geometry(dict(row,trade_plan=plan),price,direction,
+                              position.get('stop_price') if position else None)
+        if position and geometry.get('eligible'):
+            # Historical event geometry must not restore a different target at
+            # this final accounting boundary either.
+            risk=sign*(float(price)-held_stop)/float(price)
+            room=sign*(held_target-float(price))/float(price)
+            geometry=dict(geometry, stop_price=held_stop, target_price=held_target,
+                          remaining_move_pct=room, stop_distance_pct=risk,
+                          reward_risk=room/risk, runner_target_price=held_target)
     if (geometry.get('eligible') or geometry.get('reason')=='R66_SENIOR_BREAK_NOT_HELD') and VTE.has_geometry_context(row):
         forecast=_num(plan.get('expected_move_pct'))
         expected=min(forecast,geometry['remaining_move_pct']) if forecast is not None and forecast>=0 else geometry['remaining_move_pct']
@@ -255,6 +300,8 @@ def entry_gate(row, price, direction, fraction, position=None):
                 horizon=row.get('horizon'), best_bid=execution.get('best_bid') or row.get('best_bid'),
                 best_ask=execution.get('best_ask') or row.get('best_ask'))
     gate = economics_gate(row.get('asset'), plan)
+    if position:
+        gate['add_geometry_basis']='STORED_POSITION_STOP_TARGET'
     timing = paper_quote_time_gate(
         dict(row, observed_at=(execution.get('observed_at') or row.get('market_observed_at')
                               or row.get('observed_at') or plan.get('market_observed_at')),
@@ -268,12 +315,10 @@ def entry_gate(row, price, direction, fraction, position=None):
     if is_proxy_price(row.get('asset'),execution or row):
         gate.update(eligible=False,status='BLOCK')
         gate['blockers'].append('R67_DIRECT_NQ_QUOTE_REQUIRED')
-    # Technical distance uses the actual refreshed quote for every setup.
-    # Modeled slippage is charged above in net economics, not added to the
-    # observed breakout extension as though it were an extra price movement.
-    import veritas_timeframe_policy as TFP
+    # Canonical same-timeframe entries and adds check extension at the modeled
+    # adverse fill. Historical paths retain their observed-quote timing check.
     timing_price=(gate.get('modeled_entry_fill') or price) if TFP.applies(row) else price
-    event=(VTE.context_gate(row,datetime.now(timezone.utc)) if position else
+    event=(VTE.context_gate(row,datetime.now(timezone.utc)) if position and not TFP.applies(row) else
            VTE.event_gate(row,timing_price,direction,datetime.now(timezone.utc)))
     gate['trend_event']=event
     if not event.get('eligible'):

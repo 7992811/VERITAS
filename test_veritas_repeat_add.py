@@ -1,16 +1,20 @@
 """A structural event funds one entry/add per portfolio, including after reload."""
 import copy
+import io
 import json
 import unittest
-from contextlib import ExitStack
-from datetime import datetime, timezone
+from contextlib import ExitStack, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import veritas_canonical_constitution as CTC
+import veritas_execution as VX
 import veritas_portfolio as VP
 import veritas_portfolio_runtime as VPR
 import veritas_price_source as VPS
+import veritas_timeframe_policy as TFP
 import veritas_user_teaching as UT
+from test_veritas_timeframe_policy import valid_row
 
 
 class Result:
@@ -186,6 +190,186 @@ class RepeatAddRegressionTests(unittest.TestCase):
         self.add("STF_SHARED")
         self.assertEqual(self.accounting.call_count, 1)
         self.assertEqual(len(self.db.orders), 2)
+
+
+class StoredAddGeometryRegressionTests(unittest.TestCase):
+    """Real canonical admission and accounting; only the database is in memory."""
+    def setUp(self):
+        self.clock = datetime.now(timezone.utc)
+        # Avoid leaving synthetic prices in the process-wide quote cache.
+        publisher = patch.object(VP.VPG, "publish_quote")
+        publisher.start(); self.addCleanup(publisher.stop)
+        output = redirect_stdout(io.StringIO())
+        output.__enter__(); self.addCleanup(output.__exit__, None, None, None)
+
+    def case(self, direction, near=False, held_room=None):
+        row = TFP.prepare_row(valid_row(horizon="4h", direction=direction, now=self.clock),
+                              now=self.clock)
+        event = row["timeframe_entry_context"]["event"]
+        sign = 1 if direction == "LONG" else -1
+        held_target = row["price"]+sign*.3 if near else event["target_price"]-sign*.2
+        if held_room is not None:
+            held_target = row["price"]+sign*held_room
+        original = copy.deepcopy(row["timeframe_entry_context"])
+        original["event"].update(event_id="STF_ORIGINAL_"+direction, target_price=held_target,
+                                 signal_at=(self.clock-timedelta(hours=8)).timestamp())
+        payload = {"execution_horizon":"4h", "target_price":held_target, "take_price":held_target,
+                   "initial_take_price":held_target, "initial_stop_price":event["stop_price"],
+                   "structural_policy_version":TFP.VERSION,
+                   "price_source_lock":row["timeframe_entry_context"]["source_identity"],
+                   "r66_event_id":original["event"]["event_id"],
+                   "pwin":.65, "pwin_source":"ORIGINAL_ENTRY",
+                   "timeframe_entry_context":original,
+                   "entry_event_snapshot":copy.deepcopy(original["event"]),
+                   "user_teaching_trace":UT.entry_trace(original, "Aggressive")}
+        position = {"portfolio_name":"Aggressive", "asset":"NQ", "direction":direction,
+                    "units":10., "avg_entry_price":100., "last_price":row["price"],
+                    "stop_price":event["stop_price"], "payload":payload,
+                    "opened_at":(self.clock-timedelta(hours=8)).isoformat(),
+                    "active_trade_id":"TEST_ORIGINAL_"+direction}
+        row["_execution_audit"] = {}
+        return row, AccountingDB(position), copy.deepcopy(payload)
+
+    def add(self, row, db):
+        return VPR.canonical_open_or_add(db, {"high_water_nav_rub":10000.}, "Aggressive", "NQ",
+            row["research_decision"], row["price"], .5, 10000., self.clock, row, "TEST_ADD_GEOMETRY")
+
+    def initial_admission(self, row):
+        admission = VPR.VCR.evaluate(row, CTC.runtime_portfolio_policy("Aggressive"), 0., self.clock)
+        self.assertTrue(admission["open"], admission)
+        return admission
+
+    def test_near_held_target_blocks_long_short_before_accounting(self):
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                row, db, original = self.case(direction, near=True)
+                self.initial_admission(row)  # The new event's own farther target passes.
+                with patch.object(VP, "CANONICAL_ACCOUNTING_OPEN_OR_ADD",
+                                  wraps=VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD) as accounting:
+                    self.assertEqual(self.add(row, db), 0.)
+                    accounting.assert_not_called()
+                self.assertIn("NET_REWARD_RISK_BELOW_FLOOR", row["_execution_audit"]["blockers"])
+                self.assertEqual(db.orders, [])
+                self.assertEqual(db.book_fees, 0.)
+                self.assertEqual(db.position["payload"], original)
+                gate = row["_execution_audit"]["canonical_add_gate"]
+                self.assertEqual(gate["target_price"], original["take_price"])
+                self.assertLess(gate["net_reward_risk"], VX.MIN_REWARD_RISK)
+
+    def test_valid_held_target_funds_add_and_keeps_original_and_new_traces(self):
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                row, db, original = self.case(direction)
+                new_event = copy.deepcopy(row["timeframe_entry_context"]["event"])
+                with patch.object(VP, "CANONICAL_ACCOUNTING_OPEN_OR_ADD",
+                                  wraps=VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD) as accounting:
+                    self.add(row, db)
+                    self.assertEqual(accounting.call_count, 1)
+                self.assertEqual(len(db.orders), 1)
+                self.assertGreater(db.book_fees, 0.)
+                order = db.orders[0]["payload"]
+                gate = order["fill_economics_gate"]
+                self.assertTrue(gate["eligible"], gate)
+                self.assertEqual(gate["add_geometry_basis"], "STORED_POSITION_STOP_TARGET")
+                self.assertEqual(order["target_price"], original["target_price"])
+                self.assertEqual(gate["target_price"], original["take_price"])
+                self.assertEqual(gate["entry_geometry"]["stop_price"], db.position["stop_price"])
+                self.assertGreaterEqual(gate["net_reward_risk"], VX.MIN_REWARD_RISK)
+                self.assertEqual(row["timeframe_entry_context"]["event"], new_event)
+                for stored in (db.position["payload"], db.trade_payload):
+                    for key in ("user_teaching_trace", "entry_event_snapshot", "timeframe_entry_context",
+                                "r66_event_id", "initial_stop_price", "target_price", "take_price",
+                                "execution_horizon", "price_source_lock", "pwin", "pwin_source"):
+                        self.assertEqual(stored[key], original[key], key)
+                    self.assertEqual(stored["last_add_event_id"], new_event["event_id"])
+                    self.assertTrue(UT.verify_entry_trace(stored["last_add_teaching_trace"]))
+                    self.assertEqual(stored["last_add_teaching_trace"]["timeframe_entry_context"]["event"], new_event)
+
+    def test_missing_or_invalid_stored_geometry_never_uses_the_new_event_as_fallback(self):
+        for direction in ("LONG", "SHORT"):
+            for field in ("stop", "target"):
+                for invalid in (None, 0., "invalid", float("nan")):
+                    with self.subTest(direction=direction, field=field, invalid=invalid):
+                        row, db, _ = self.case(direction)
+                        if field == "stop":
+                            db.position["stop_price"] = invalid
+                        else:
+                            db.position["payload"].update(take_price=invalid, target_price=invalid,
+                                last_target_price=row["timeframe_entry_context"]["event"]["target_price"])
+                        with patch.object(VP, "CANONICAL_ACCOUNTING_OPEN_OR_ADD",
+                                          wraps=VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD) as accounting:
+                            self.add(row, db)
+                            accounting.assert_not_called()
+                        self.assertIn("ADD_STORED_"+field.upper()+"_REQUIRED", row["_execution_audit"]["blockers"])
+                        self.assertEqual(db.orders, [])
+                        self.assertEqual(db.book_fees, 0.)
+
+    def test_executable_take_alias_has_priority_over_far_target_alias(self):
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                row, db, _ = self.case(direction, near=True)
+                db.position["payload"]["target_price"] = row["timeframe_entry_context"]["event"]["target_price"]
+                self.add(row, db)
+                self.assertEqual(db.orders, [])
+                self.assertIn("NET_REWARD_RISK_BELOW_FLOOR", row["_execution_audit"]["blockers"])
+
+    def test_harvested_target_cannot_fund_an_add_when_price_pulls_back_below_it(self):
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                row, db, _ = self.case(direction)
+                db.position["payload"]["r17_tp1_done"] = True
+                existing = copy.deepcopy(db.position)
+                self.initial_admission(row)
+                with patch.object(VP, "CANONICAL_ACCOUNTING_OPEN_OR_ADD",
+                                  wraps=VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD) as accounting:
+                    self.add(row, db)
+                    accounting.assert_not_called()
+                self.assertIn("ADD_STORED_TARGET_REQUIRED", row["_execution_audit"]["blockers"])
+                self.assertEqual(db.orders, [])
+                self.assertEqual(db.book_fees, 0.)
+                self.assertEqual(db.position, existing)
+
+    def test_explicit_target_argument_cannot_replace_the_actual_stored_target(self):
+        row, db, _ = self.case("LONG", near=True)
+        gate = VX.entry_gate(row, row["price"], "LONG", .5, db.position,
+                             existing_target_price=row["timeframe_entry_context"]["event"]["target_price"])
+        self.assertFalse(gate["eligible"])
+        self.assertIn("ADD_STORED_TARGET_MISMATCH", gate["blockers"])
+
+    def test_final_accounting_rechecks_near_target_despite_prior_canonical_admission(self):
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                row, db, original = self.case(direction, near=True)
+                row["_canonical_admission"] = self.initial_admission(row)
+                VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD(db, {}, "Aggressive", "NQ", direction,
+                    row["price"], .5, 10000., self.clock, row, "TEST_FINAL_ADD_BOUNDARY")
+                self.assertEqual(db.orders, [])
+                self.assertEqual(db.book_fees, 0.)
+                self.assertIn("NET_REWARD_RISK_BELOW_FLOOR", row["_execution_audit"]["hard_blockers"])
+                self.assertEqual(db.position["payload"]["take_price"], original["take_price"])
+                self.assertEqual(db.position["payload"]["user_teaching_trace"], original["user_teaching_trace"])
+
+    def test_refreshed_add_fill_cannot_chase_after_a_timely_initial_admission(self):
+        for direction in ("LONG", "SHORT"):
+            for extension_atr in (.49, .7):
+                with self.subTest(direction=direction, extension_atr=extension_atr):
+                    row, db, original = self.case(direction, held_room=8.)
+                    row["_canonical_admission"] = self.initial_admission(row)
+                    event = copy.deepcopy(row["timeframe_entry_context"]["event"])
+                    sign = 1 if direction == "LONG" else -1
+                    refreshed = event["trigger_level"]+sign*extension_atr*event["atr"]
+                    # .49 ATR is still inside the quote limit; the actual adverse
+                    # modeled fill crosses .5 ATR and must be checked as well.
+                    row["_execution_quote"] = {"asset":"NQ", "price":refreshed,
+                        "source_names":row["source_names"], "observed_at":self.clock.isoformat(),
+                        "source_gate_pass":True, "market_open":True}
+                    VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD(db, {}, "Aggressive", "NQ", direction,
+                        refreshed, .5, 10000., self.clock, row, "TEST_REFRESHED_ADD_FILL")
+                    self.assertEqual(db.orders, [])
+                    self.assertEqual(db.book_fees, 0.)
+                    self.assertEqual(row["_execution_audit"]["hard_blockers"], ["SAME_TF_ENTRY_EXTENDED"])
+                    self.assertEqual(row["timeframe_entry_context"]["event"], event)
+                    self.assertEqual(db.position["payload"]["user_teaching_trace"], original["user_teaching_trace"])
 
 
 if __name__ == "__main__":

@@ -5090,7 +5090,8 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
             _record_entry_outcome(row,'BLOCKED','CANONICAL_ADD_REQUIRES_NEW_CONFIRMATION',
                                   event_id=new_event)
             return 0.0
-        actual=VX.entry_gate(row,float(price),direction,requested,existing)
+        actual=VX.entry_gate(row,float(price),direction,requested,existing,
+                            existing_target_price=VX.stored_position_target_price(existing))
         hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
         if hard:
             _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
@@ -5133,7 +5134,8 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     current=abs(float(z.get('units') or 0.0)*actual)/max(float(nav),1.0)
     full=float(target_fraction or 0.0)<=0.0
     full_ok=reason.startswith((
-        'STOP','TAKE_PROFIT','HARD_THESIS','V842_CONFIRMED_DIRECTION_FLIP',
+        'STOP','TAKE_PROFIT','HARD_THESIS','V84_CONFIRMED_DIRECTION_FLIP',
+        'V842_CONFIRMED_DIRECTION_FLIP',
         'STRUCTURE_BREAK','STRUCTURE_EXHAUSTION','INSTRUMENT_REPLACED',
         'PORTFOLIO_HARD_STOP','RISK_HARD_STOP','PRODUCTION_CANDIDATE_REBASE',
         'LEGACY_KERNEL_REBASE','SOURCE_INCIDENT_QUARANTINE'))

@@ -18,7 +18,15 @@ def closed_minutes(minute_bars, now):
         op,hi,lo,cl=values
         if lo>min(op,cl) or hi<max(op,cl) or lo>hi:
             continue
-        minutes[t]=dict(b,ts=t,available_at=t+60)
+        # ProFinance Last candles do not report volume. Legacy minute consumers
+        # need a numeric baseline, but missing activity must stay unobserved.
+        # Normalize this copy only; native OHLC/provenance retains volume=None.
+        volume=number(b.get('volume'))
+        volume_available=bool(volume is not None and volume>=0
+                              and b.get('volume_available') is not False)
+        minutes[t]=dict(b,ts=t,available_at=t+60,
+                        volume=volume if volume_available else 0.0,
+                        volume_available=volume_available)
     return minutes
 
 
