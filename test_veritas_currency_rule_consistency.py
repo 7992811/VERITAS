@@ -40,6 +40,7 @@ g = X.economics_gate('CNYRUBF', {
 print(json.dumps({
     'floor': X.MIN_EXPECTED_MOVE_PCT,
     'multiple': X.MIN_MOVE_COST_MULTIPLE,
+    'currency_multiple': g['minimum_move_cost_multiple'],
     'required': g['minimum_expected_move_pct'],
     'modeled_cost': g['modeled_round_trip_cost_pct'],
     'accounting_buffer': X.VC.COST_BUFFER_MULTIPLE,
@@ -57,9 +58,10 @@ print(json.dumps({
                 state = json.loads(result.stdout)
                 self.assertAlmostEqual(state["floor"], 0.0019)
                 self.assertAlmostEqual(state["multiple"], 2.0)
+                self.assertAlmostEqual(state["currency_multiple"], 1.1)
                 self.assertAlmostEqual(state["accounting_buffer"], 1.1)
-                self.assertAlmostEqual(state["required"], max(.0019, 2*state["modeled_cost"]))
-                self.assertTrue(state["move_blocked"])
+                self.assertAlmostEqual(state["required"], max(.0019, 1.1*state["modeled_cost"]))
+                self.assertFalse(state["move_blocked"])
                 self.assertAlmostEqual(state["commission"], 0.0004)
 
     def test_low_cost_currency_signals_still_respect_absolute_move_floor(self):
@@ -67,22 +69,46 @@ print(json.dumps({
             for horizon in ("5m", "1h", "4h"):
                 with self.subTest(direction=direction, horizon=horizon):
                     below = VX.economics_gate("CNYRUBF", self.plan(direction, 0.00185, horizon=horizon))
-                    above = VX.economics_gate("CNYRUBF", self.plan(direction, 0.00330, horizon=horizon))
+                    above = VX.economics_gate("CNYRUBF", self.plan(direction, 0.00195, horizon=horizon))
                     self.assertIn("EXPECTED_MOVE_BELOW_COST_BUFFER", below["blockers"])
                     self.assertNotIn("EXPECTED_MOVE_BELOW_COST_BUFFER", above["blockers"])
                     self.assertAlmostEqual(above["minimum_expected_move_pct"],
-                                           max(.0019,2*above["modeled_round_trip_cost_pct"]))
-                    self.assertEqual(VX.minimum_expected_move_pct(.0001),.0019)
+                                           max(.0019,1.1*above["modeled_round_trip_cost_pct"]))
+                    self.assertEqual(VX.minimum_expected_move_pct(.0001,"CNYRUBF"),.0019)
 
-    def test_wider_currency_spread_requires_two_times_entry_cost(self):
+    def test_wider_currency_spread_requires_owner_one_point_one_entry_cost(self):
         for direction in ("LONG", "SHORT"):
             with self.subTest(direction=direction):
-                below = VX.economics_gate("CNYRUBF", self.plan(direction, 0.0059, spread_bps=30))
-                above = VX.economics_gate("CNYRUBF", self.plan(direction, 0.0061, spread_bps=30))
+                below = VX.economics_gate("CNYRUBF", self.plan(direction, 0.0032, spread_bps=30))
+                above = VX.economics_gate("CNYRUBF", self.plan(direction, 0.0034, spread_bps=30))
                 self.assertAlmostEqual(above["modeled_round_trip_cost_pct"], 0.003)
-                self.assertAlmostEqual(above["minimum_expected_move_pct"], 0.006)
+                self.assertAlmostEqual(above["minimum_expected_move_pct"], 0.0033)
                 self.assertIn("EXPECTED_MOVE_BELOW_COST_BUFFER", below["blockers"])
                 self.assertNotIn("EXPECTED_MOVE_BELOW_COST_BUFFER", above["blockers"])
+
+    def test_positive_currency_plan_passes_while_general_two_times_policy_blocks(self):
+        # The observed spread is a conservative cost floor; no bid/ask is
+        # supplied, so the existing adverse-reference fill model is exercised.
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                plan = self.plan(direction, .0044, spread_bps=30)
+                currency = VX.economics_gate("CNYRUBF", plan)
+                other = VX.economics_gate("NQ", plan)
+                self.assertTrue(currency["eligible"], currency)
+                self.assertGreaterEqual(currency["net_reward_risk"], VX.MIN_REWARD_RISK)
+                self.assertEqual(other["blockers"], ["EXPECTED_MOVE_BELOW_COST_BUFFER"])
+                self.assertAlmostEqual(currency["minimum_expected_move_pct"], .0033)
+                self.assertAlmostEqual(other["minimum_expected_move_pct"], .006)
+                self.assertEqual(currency["cost_policy"]["entry_cost_multiple"], 1.1)
+                self.assertEqual(other["cost_policy"]["entry_cost_multiple"], 2.0)
+                self.assertEqual(currency["cost_policy"]["commission_rate_per_side"], .0004)
+
+    def test_other_instruments_and_unspecified_asset_retain_general_entry_floor(self):
+        for asset in (None, "NQ", "GOLD", "BRENT", "BTC", "ETH", "MOEX"):
+            with self.subTest(asset=asset):
+                self.assertAlmostEqual(VX.minimum_expected_move_pct(.003, asset), .006)
+                self.assertEqual(VX.VC.policy(asset)["entry_cost_multiple"], 2.0)
+        self.assertAlmostEqual(VX.minimum_expected_move_pct(.003, "CNYRUBf"), .0033)
 
 
 class CurrencyRoutingConsistencyTests(unittest.TestCase):
@@ -99,6 +125,26 @@ class CurrencyRoutingConsistencyTests(unittest.TestCase):
                    independent_evidence_families=4, entry_quality="FRESH_BREAKOUT")
         row.update(overrides)
         return row
+
+    def test_canonical_route_and_final_fill_share_currency_cost_override(self):
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                row = self.row("5m", direction=direction, width=.3, spread_bps=70)
+                row["trade_plan"]["spread_bps"] = 70
+                chosen = VCR.currency_candidate_book([row])["CNYRUBF"]
+                self.assertTrue(chosen["_currency_route_trace"][0]["open"])
+                admission = VCR.evaluate(chosen, CTC.runtime_portfolio_policy("Currency"), 0.)
+                self.assertTrue(admission["open"], admission)
+                final = VX.entry_gate(dict(chosen, trade_plan=admission["prepared_plan"]),
+                                      chosen["price"], direction, admission["fraction"])
+                self.assertTrue(final["eligible"], final)
+                for economics in (admission["economics"], final):
+                    self.assertAlmostEqual(economics["minimum_expected_move_pct"], .0077)
+                    self.assertLess(economics["expected_move_pct"],
+                                    2 * economics["modeled_round_trip_cost_pct"])
+                    self.assertEqual(economics["minimum_move_cost_multiple"], 1.1)
+                self.assertEqual(admission["prepared_plan"]["entry_event_snapshot"],
+                                 row["timeframe_entry_context"]["event"])
 
     def test_currency_uses_one_hour_when_five_minute_quote_is_stale(self):
         five = self.row("5m", market_observed_at="2000-01-01T00:00:00+00:00")

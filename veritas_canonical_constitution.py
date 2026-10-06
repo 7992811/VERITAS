@@ -74,6 +74,8 @@ COST_POLICY = {
     "cost_buffer_multiple": 1.1,
     "minimum_expected_move_floor_pct": 0.0019,
     "entry_cost_multiple": 2.0,
+    # Explicit Currency instruction survives changes to the general entry floor.
+    "entry_cost_multiple_by_asset": {"CNYRUBF": 1.1},
     "minimum_expected_move_formula": "max(0.19%, 2.0 * modeled_round_trip_cost)",
     "funding_annual_rate": 0.16,
     "funding_free_seconds": 86400,
