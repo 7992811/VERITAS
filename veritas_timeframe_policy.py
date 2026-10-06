@@ -147,7 +147,10 @@ def prepare_row(row, price=None, now=None):
                 timeframe_entry_context=context, trend_entry_context=context,
                 structural_stop_enforced=True, expected_hold_seconds=SECONDS.get(tf))
     if event and event.get('direction') == direction:
-        plan.update(setup='SAME_TIMEFRAME_STRUCTURAL_BREAKOUT', setup_id=event['event_id'],
+        rebound = event.get('event_type') == 'DAILY_MA_REBOUND'
+        plan.update(setup=event['event_type'], setup_id=event['event_id'],
+                    user_teaching_id=(CTC.MA_REBOUND_POLICY if rebound else CTC.STRUCTURAL_ENTRY_POLICY)['teaching_id'],
+                    entry_scenario=event['event_type'],
                     entry_event_id=event['event_id'], canonical_setup_id=event['event_id'],
                     entry_plan_version=VERSION, entry_event_snapshot=dict(event),
                     trigger_level=event['trigger_level'], breakout_level=event['trigger_level'],
@@ -155,7 +158,7 @@ def prepare_row(row, price=None, now=None):
                     stop_price=event['stop_price'], target_price=event['target_price'],
                     tactical_target_price=event['target_price'], take_price=event['target_price'],
                     atr=event['atr'], atr_timeframe=tf, stop_timeframe=tf, target_timeframe=tf,
-                    stop_method='SAME_TF_PREVIOUS_SWING_ATR_BUFFER',
+                    stop_method='SAME_TF_REBOUND_SWING_ATR_BUFFER' if rebound else 'SAME_TF_PREVIOUS_SWING_ATR_BUFFER',
                     target_method='SAME_TF_IMMUTABLE_R_ATR_PROJECTION',
                     expected_move_method='structural_projection_unvalidated',
                     take_profit_1={'price':event['target_price'], 'timeframe':tf})
@@ -207,7 +210,8 @@ def final_plan(asset, direction, plan, now=None):
                 status='PASS' if not blockers else 'BLOCK', trend_event=timing,
                 context_freshness=context_gate(row, decision_time))
     p.update(final_economics_gate=econ, eligible=not blockers,
-             reason='SAME_TF_STRUCTURAL_ENTRY' if not blockers else 'final_economics_gate:'+','.join(blockers),
+             reason=('SAME_TF_MA_REBOUND_ENTRY' if (ctx.get('event') or {}).get('event_type')=='DAILY_MA_REBOUND'
+                     else 'SAME_TF_STRUCTURAL_ENTRY') if not blockers else 'final_economics_gate:'+','.join(blockers),
              execution_safety_version=VERSION)
     return p
 
