@@ -114,8 +114,13 @@ class MarketCaseRegressionTests(unittest.TestCase):
         row['trade_plan']['target_price'] = 2220.0  # actual final levels must fail economics, not stale metadata
         row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
         out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
-        self.assertFalse(out['open'])
-        self.assertEqual(out['reason'], 'R41_FINAL_ECONOMICS_GATE')
+        # Low fixed R/R is a soft veto when the target remains positive after
+        # modeled costs. Canonical admission starts only a bounded probe.
+        self.assertTrue(out['open'], out)
+        self.assertEqual(out['reason'], 'R79_SIGNAL_PROBE')
+        self.assertLessEqual(out['fraction'], 0.25)
+        self.assertNotIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',out.get('hard_economics_blockers',[]))
+        self.assertNotIn('EXPECTED_MOVE_BELOW_COST_BUFFER',out.get('hard_economics_blockers',[]))
 
     def _brent_bars(self):
         # Learned case: range -> downside break with volume -> lower lows.
