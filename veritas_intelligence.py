@@ -8,6 +8,7 @@ from urllib.parse import urlparse, parse_qs
 import httpx
 import veritas_execution as VX
 import veritas_position_guard as VPG
+import veritas_currency_notifications as VCN
 from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
 import veritas_asset_management_intelligence as VAMI
@@ -17125,10 +17126,16 @@ class H(BaseHTTPRequestHandler):
                 self.reply({'error': 'not found'}, 404)
         except Exception as e:
             self.reply({'error': f'{type(e).__name__}: {e}'}, 503)
-
     def do_POST(self):
         try:
-            if self.path.startswith('/knowledge/automation/run'):
+            if urlparse(self.path).path.startswith('/internal/currency-alerts/'):
+                n=int(self.headers.get('Content-Length','0') or 0)
+                if n<0 or n>8192:
+                    self.reply({'ok':False,'error':'INVALID_BODY_SIZE'},400); return
+                payload=json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
+                result,code=VCN.handle_request(urlparse(self.path).path,payload,self.headers,pg_connect)
+                self.reply(result,code)
+            elif self.path.startswith('/knowledge/automation/run'):
                 token = self.headers.get('X-Veritas-Token','')
                 if AUTOMATION_TOKEN and token != AUTOMATION_TOKEN:
                     self.reply({'error':'unauthorized'},403); return
