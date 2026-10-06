@@ -71,7 +71,7 @@ KNOWLEDGE_DISCOVERY_LIMIT = max(3, min(20, int(os.getenv('VERITAS_KNOWLEDGE_DISC
 AUTOMATION_TOKEN = os.getenv('VERITAS_AUTOMATION_TOKEN', '').strip()
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '').strip()
 OPENAI_MODEL = os.getenv('VERITAS_KNOWLEDGE_MODEL', os.getenv('OPENAI_MODEL', 'gpt-5.6-sol')).strip()
-KNOWLEDGE_LLM_ENABLED = os.getenv('VERITAS_KNOWLEDGE_LLM_ENABLED', '0').lower() in ('1','true','yes','on')
+KNOWLEDGE_LLM_ENABLED = os.getenv('VERITAS_KNOWLEDGE_LLM_ENABLED', '1').lower() in ('1','true','yes','on')
 KNOWLEDGE_COMPILE_LIMIT = max(6, min(40, int(os.getenv('VERITAS_KNOWLEDGE_COMPILE_LIMIT', '24'))))
 KNOWLEDGE_MAX_RETRIES = max(1, min(6, int(os.getenv('VERITAS_KNOWLEDGE_MAX_RETRIES','3'))))
 KNOWLEDGE_MIN_RELEVANCE = float(os.getenv('VERITAS_KNOWLEDGE_MIN_RELEVANCE', '2.5'))
@@ -16493,7 +16493,12 @@ def _v90r25_portfolios_fast():
         out=dict(cached); out['api_source']='memory_cache'; return out
     with lock:
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
-    if live and len(live.get('portfolios') or [])==len(V90_CANONICAL_PORTFOLIOS) and (any(p.get('positions') for p in live.get('portfolios') or []) or not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live.get('portfolios') or [])):
+    live_ports=list(live.get('portfolios') or [])
+    live_names={str(p.get('name') or '') for p in live_ports}
+    required_names=set(V90_CANONICAL_PORTFOLIOS)-{VP.VCP.PORTFOLIO_KEY}
+    live_complete=bool(required_names.issubset(live_names))
+    zero_exposure=not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live_ports)
+    if live and live_complete and (any(p.get('positions') for p in live_ports) or zero_exposure):
         out=VP.VCP.decorate_report(VTV.enrich_positions(live,pg_connect)); out['api_source']='live_memory'
         with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
@@ -19120,8 +19125,11 @@ def main():
     if pg_boot.get('ok'):
         threading.Thread(target=heavy_learning_maintenance_loop, daemon=True).start(); threading.Thread(target=VAMI.startup_snapshot,args=(pg_connect,learning_progress,os.getenv('VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-30T04:59:29.357862+00:00')),daemon=True,name='veritas-ami-snapshot').start()
     heavy_role = SERVICE_ROLE in ('learning','all')
-    if KNOWLEDGE_AUTOMATION and heavy_role:
-        threading.Thread(target=knowledge_discovery_loop, daemon=True).start()
+    # Knowledge discovery is lightweight, rate-limited and shadow-only; run it
+    # on the web role too. Heavy backtests/research remain isolated to heavy roles.
+    if KNOWLEDGE_AUTOMATION:
+        threading.Thread(target=knowledge_discovery_loop, daemon=True,
+                         name='veritas-knowledge-discovery').start()
     if BACKTEST_ENABLED and heavy_role:
         threading.Thread(target=backtest_boot_loop, daemon=True).start()
     if MACRO_ENABLED:
