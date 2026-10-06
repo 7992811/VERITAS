@@ -1,35 +1,21 @@
-"""Independent CNYRUBf portfolio with owner-approved capital and risk settings."""
+"""Independent CNYRUBf portfolio derived from the canonical CTC registry."""
+import veritas_canonical_constitution as CTC
+
 PORTFOLIO_KEY = 'Currency'
-DISPLAY_NAME = 'Валютный портфель'
-ASSET = 'CNYRUBF'
+_CANON = CTC.PORTFOLIO_POLICIES[PORTFOLIO_KEY]
+DISPLAY_NAME = _CANON['display_name']
+ASSET = _CANON['allowed_assets'][0]
 BLOCK_REASON = 'CURRENCY_PORTFOLIO_ASSET_MISMATCH'
 
-INITIAL_NAV_RUB = 10_000.0
-MAX_GROSS = 10.0
-LEVERAGE_LIMIT = 10.0
-HARD_DRAWDOWN = 0.35
-POSITION_STEP = 0.05
+INITIAL_NAV_RUB = float(_CANON['initial_nav_rub'])
+MAX_GROSS = float(_CANON['max_gross'])
+LEVERAGE_LIMIT = float(_CANON['leverage_limit'])
+HARD_DRAWDOWN = float(_CANON['hard_drawdown'])
+POSITION_STEP = float(_CANON['position_step'])
 
 
 def policy():
-    return {
-        'display_name': DISPLAY_NAME,
-        'mode': 'CURRENCY',
-        'allowed_assets': [ASSET],
-        'threshold': 0.62,
-        'strong_threshold': 0.74,
-        'min_independent': 2,
-        'initial_nav_rub': INITIAL_NAV_RUB,
-        'max_fraction': MAX_GROSS,
-        'max_gross': MAX_GROSS,
-        'leverage_limit': LEVERAGE_LIMIT,
-        'hard_drawdown': HARD_DRAWDOWN,
-        'weekend_carry_allowed': True,
-        'position_step': POSITION_STEP,
-        'paper_trading_enabled': True,
-        'live_trading_enabled': False,
-        'configuration_status': 'CONFIGURED',
-    }
+    return CTC.runtime_portfolio_policy(PORTFOLIO_KEY)
 
 
 def configured_state():
