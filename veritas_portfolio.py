@@ -2192,7 +2192,8 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_CLOSE_NOT_CONFIRMED')
             return 0.0
         z=None
-    final_gate=VX.entry_gate(row,price,direction,target_fraction,z)
+    final_gate=VX.entry_gate(row,price,direction,target_fraction,z,
+                            existing_target_price=VX.stored_position_target_price(z))
     if not final_gate['eligible']:
         ev=VTE.context_of(row).get('event') or {}
         canonical=bool((row.get('_canonical_admission') or {}).get('open'))

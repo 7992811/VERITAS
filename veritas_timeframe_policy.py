@@ -106,13 +106,16 @@ def entry_gate(row, price, direction, now=None):
     return out
 
 
-def geometry(row, price=None, direction=None, stop_override=None):
+def geometry(row, price=None, direction=None, stop_override=None, existing_target_price=None):
     r = row or {}
     event = context_of(r).get('event') or {}
     px = _number(price if price is not None else r.get('price'))
     direction = direction or r.get('research_decision') or r.get('decision')
     stop = _number(stop_override if stop_override is not None else event.get('stop_price'))
-    target = _number(event.get('target_price'))
+    # Adds retain the held trade's executable target. The new event remains
+    # immutable evidence of confirmation, not permission to replace that target.
+    target = _number(existing_target_price if existing_target_price is not None
+                     else event.get('target_price'))
     sign = 1 if direction == 'LONG' else -1
     out = {'version':VERSION, 'eligible':False, 'reason':'SAME_TF_INVALID_GEOMETRY'}
     if (direction not in ('LONG','SHORT') or event.get('direction') != direction
@@ -123,7 +126,9 @@ def geometry(row, price=None, direction=None, stop_override=None):
     return dict(out, eligible=True, reason='SAME_TF_GEOMETRY_OK', stop_price=stop,
                 target_price=target, remaining_move_pct=room, stop_distance_pct=risk,
                 reward_risk=room/risk, runner_target_price=target, event_id=event.get('event_id'),
-                atr=event.get('atr'), timeframe=event.get('timeframe'))
+                atr=event.get('atr'), timeframe=event.get('timeframe'),
+                geometry_basis='STORED_POSITION_STOP_TARGET' if existing_target_price is not None
+                               else 'STRUCTURAL_EVENT')
 
 
 def prepare_row(row, price=None, now=None):
