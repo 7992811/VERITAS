@@ -9636,12 +9636,14 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
             secondary=None; divergence=0.0
     else:
         price=delayed_price; observed=delayed_observed
-        mode='DELAYED_RESEARCH'; latency='DELAYED_RESEARCH'; ib=bars5
+        mode='PROFINANCE_PRIMARY_UNAVAILABLE' if asset=='GOLD' else 'DELAYED_RESEARCH'
+        latency='REFERENCE_ONLY' if asset=='GOLD' else 'DELAYED_RESEARCH'; ib=bars5
         secondary=None; divergence=0.0
 
     market_open=_futures_market_open_from_age(observed)
     age=_age_seconds(observed)
-    gate=bool(market_open and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
+    gold_pf_ok=bool(asset!='GOLD' or (direct and str(direct.get('source') or '').startswith('ProFinance')))
+    gate=bool(market_open and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS and gold_pf_ok)
     freshness=_v90r61_freshness_verification(asset,delayed_price,bars5,pr,proxy_symbol,pf)
     if direct:
         freshness={'eligible':True,
