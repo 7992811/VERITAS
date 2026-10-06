@@ -4907,304 +4907,8 @@ def _v90r83_actual_chase_gate(row,price=None):
     }
 
 
-def _v90r79_signal_state(row,now=None):
-    clock=now if now is not None else datetime.now(timezone.utc)
-    row=_v90r83_fresh_execution_row(row,clock)
-    q=row.get('_execution_quote') or {}
-    px=VTE.number(q.get('price'),VTE.number(row.get('price')))
-    work=VTE.prepare_row(row,px,clock)
-    ev=VTE.context_of(work).get('event') or {}
-    direction=VTE.displayed_signal_direction(work)
-    active=bool(direction in ('LONG','SHORT') and ev.get('signal_authoritative')
-                and ev.get('direction')==direction)
-    return work,ev,direction,active
-
-
-def _v90r79_signal_fraction(row,policy,drawdown):
-    mode=str((policy or {}).get('mode') or 'CORE')
-    tier=str((row or {}).get('signal_tier') or (row or {}).get('execution_signal_tier') or '').upper()
-    super_sig=tier in ('SUPER_LONG','SUPER_SHORT')
-    if mode=='AGGRESSIVE':
-        f=1.00 if super_sig else .50
-    elif mode=='CURRENCY':
-        # Currency follows the same staged signal participation as Aggressive,
-        # but its independent 10x ceiling is only capacity, never automatic size.
-        f=1.00 if super_sig else .50
-    elif mode=='IMPULSE_ONLY':
-        f=.40 if super_sig else .20
-    elif mode=='CORE':
-        f=.25 if super_sig else .10
-    else:
-        f=.25 if super_sig else .10
-    try:
-        cap=_v90r24_stop_risk_cap(row)
-        if cap is not None:
-            f=min(f,float(cap))
-    except Exception:
-        pass
-    rg=_risk_governor(drawdown)
-    if rg.get('new_risk') is False:
-        return 0.0
-    f*=float(rg.get('multiplier') or 0.0)
-    f=min(f,float((policy or {}).get('max_fraction') or 2.0))
-    return max(0.0,math.floor(f/.05+1e-9)*.05)
-
-
-def _v90r79_hard_signal_veto(row):
-    plan=(row or {}).get('trade_plan') or {}
-    integrity=plan.get('trade_integrity') or {}
-    history=plan.get('profitability_gate') or {}
-    blockers=[]
-    if integrity.get('hard_invalidation'):blockers.append('HARD_INVALIDATION')
-    if integrity.get('fast_tf_conflict'):blockers.append('FAST_TF_CONFLICT')
-    # A published current direction has already survived upstream arbitration.
-    # Stale rule-arbitration/reentry labels from the parent setup are audit data,
-    # not a second execution veto.
-    if history.get('status')=='NEGATIVE_EDGE':
-        blockers.append('NEGATIVE_VALIDATED_SETUP_EDGE')
-    return blockers
-
-
-def _signal_first_admission(row,policy,drawdown):
-    raw=dict(row or {})
-    if (policy or {}).get('mode')=='CURRENCY' and str(raw.get('asset') or '')!=VCP.ASSET:
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':VCP.BLOCK_REASON,'allowed_assets':[VCP.ASSET]}
-    # DATA is always the first canonical gate. Never let a stale retained
-    # paper_eligible flag or signal reconstruction run before validating the
-    # current price/source/session.
-    raw_asset=str(raw.get('asset') or '')
-    if raw_asset in VX.PAPER_ASSETS:
-        raw_source=VX.paper_source_gate(raw_asset,raw)
-        if not raw_source.get('eligible') or raw.get('paper_eligible') is False:
-            return {'open':False,'fraction':0.0,'hard_veto':True,
-                    'reason':'R79_SOURCE_OR_SESSION_BLOCK',
-                    'source_blockers':raw_source.get('blockers') or [],
-                    'canonical_stage':'DATA'}
-    # A fresh/rebased setup owns its current entry quality. Parent INVALIDATED
-    # labels are audit history and cannot veto the new setup. Explicit current
-    # hard invalidation remains authoritative.
-    plan=raw.get('trade_plan') or {}
-    rebased_current=bool(
-        plan.get('entry_quality_rebased_from_old_setup')
-        or plan.get('new_setup_identity')
-        or str(plan.get('entry_quality') or '')=='CURRENT_SIGNAL'
-    )
-    if ((_v90r55_invalidated(raw) and not rebased_current)
-            or raw.get('_r55_absolute_veto')):
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':'R55_ABSOLUTE_INVALIDATED_VETO','r55_invalidated':True,
-                'rebased_current_setup':rebased_current}
-    work,ev,direction,active=_v90r79_signal_state(raw,datetime.now(timezone.utc))
-    if not active:
-        return dict(_v90r79_base_admission(work,policy,drawdown) or {})
-
-    asset=str(work.get('asset') or '')
-    source=VX.paper_source_gate(asset,work) if asset in VX.PAPER_ASSETS else {
-        'eligible':bool(work.get('execution_eligible')),
-        'reason':work.get('execution_reason'),'blockers':[]
-    }
-    if not source.get('eligible') or work.get('paper_eligible') is False:
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':'R79_SOURCE_OR_SESSION_BLOCK',
-                'source_blockers':source.get('blockers') or []}
-
-    hard=_v90r79_hard_signal_veto(work)
-    if hard:
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':'R79_'+hard[0],'hard_blockers':hard}
-
-    # Keep the one execution-timeframe conflict veto that protects against
-    # entering directly against a confirmed local structure. Do not restore
-    # all historical score filters: a valid published signal may still probe.
-    r59=_v90r59_quality_gate(work,policy)
-    conflict=next((b for b in (r59.get('blockers') or []) if b in (
-        'R59_EXECUTION_TF_DIRECTION_CONFLICT','R59_5M_COUNTER_SENIOR_NOT_CONFIRMED'
-    )),None)
-    if conflict:
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':conflict,'r59_quality_gate':r59}
-
-    event=VTE.event_gate(work,work.get('price'),direction,datetime.now(timezone.utc))
-    if not event.get('eligible'):
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':event.get('reason') or 'R79_EVENT_NOT_READY','trend_event':event}
-
-    chase=_v90r83_actual_chase_gate(work,work.get('price'))
-    if not chase.get('eligible'):
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':chase.get('reason'),'trend_event':event,
-                'execution_timing':chase}
-
-    f=_v90r79_signal_fraction(work,policy,drawdown)
-    if f<=0:
-        return {'open':False,'fraction':0.0,'hard_veto':True,'reason':'R79_RISK_CAP_ZERO'}
-
-    economics=VX.entry_gate(work,work.get('price'),direction,f)
-    econ_blockers=set(str(x) for x in (economics.get('blockers') or []))
-    hard_econ=econ_blockers-_R79_SOFT_ECON_BLOCKERS
-    qgate=economics.get('quote_time_gate') or {}
-    try: net_reward=float(economics.get('net_reward_pct') or 0.0)
-    except Exception: net_reward=0.0
-
-    # Directional signal is authoritative for STARTING risk. Low fixed R/R or
-    # a small cost-buffer miss changes sizing/management; it no longer means
-    # "show LONG/SHORT but stay flat". Negative target economics still blocks.
-    soft_probe=bool(econ_blockers and not hard_econ and qgate.get('eligible',True))
-    # If the current signal survives every hard safety check but its current
-    # modeled target economics are weak, execute a SMALL probe rather than stay
-    # flat. A subsequent confirmation can add; a reversal/stop exits it.
-    if soft_probe:
-        mode=str((policy or {}).get('mode') or 'CORE')
-        tier=str(work.get('signal_tier') or work.get('execution_signal_tier') or '').upper()
-        super_sig=tier in ('SUPER_LONG','SUPER_SHORT')
-        probe_cap={
-          'AGGRESSIVE': .25 if super_sig else .10,
-          'IMPULSE_ONLY': .15 if super_sig else .10,
-          'CORE': .10 if super_sig else .05,
-          'CHALLENGER': .10 if super_sig else .05,
-        }.get(mode,.05)
-        f=min(float(f),float(probe_cap))
-        f=math.floor(f/.05+1e-9)*.05
-    ok=bool((economics.get('eligible') or soft_probe)
-            and f>0
-            and work.get('execution_eligible')
-            and work.get('source_gate_pass'))
-    if not ok:
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':'R79_HARD_EXECUTION_BLOCK',
-                'economics_blockers':list(econ_blockers),
-                'hard_economics_blockers':list(hard_econ),
-                'trend_event':event,'economics':economics,
-                'quote_time_gate':qgate}
-
-    return {
-      'open':True,'fraction':f,'hard_veto':False,
-      'reason':'R79_SIGNAL_PROBE' if soft_probe else 'R79_SIGNAL_ENTRY',
-      'signal_authoritative':True,'signal_tier':work.get('signal_tier'),
-      'trend_event':event,'economics':economics,
-      'economics_blockers':list(econ_blockers),
-      'quote_time_gate':qgate,
-      'net_reward_risk':economics.get('expected_to_stop_ratio'),
-      'probability':work.get('_pwin'),
-      'probability_source':work.get('_pwin_source') or 'DISPLAYED_SIGNAL',
-      'signal_score':work.get('confidence'),
-    }
-
-
-def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
-    if name==VCP.PORTFOLIO_KEY and str(asset)!=VCP.ASSET:
-        _record_entry_outcome(row,'BLOCKED',VCP.BLOCK_REASON)
-        return 0.0
-    cycle_clock=_v90r55_dt(ts) or datetime.now(timezone.utc)
-    work,ev,signal_direction,active=_v90r79_signal_state(dict(row or {},price=price),cycle_clock)
-    price=float(work.get('price') or price)
-    if not active or signal_direction!=direction:
-        return _v90r79_base_open_or_add(
-            c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason)
-
-    existing=c.execute(
-      "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
-      (name,asset)).fetchone()
-    if existing and str(existing.get('direction') or '')==str(direction):
-        # Existing position adds still require the normal confirmation/risk path.
-        return _v90r79_base_open_or_add(
-            c,p,name,asset,direction,price,target_fraction,nav,ts,work,reason)
-
-    source=VX.paper_source_gate(asset,work)
-    if not source.get('eligible'):
-        _record_entry_outcome(work,'BLOCKED','R79_SOURCE_OR_SESSION_BLOCK',
-                              source_blockers=source.get('blockers') or [])
-        return 0.0
-    quote=work.get('_execution_quote') or {}
-    fresh=VPG.quote_gate(quote.get('observed_at') or work.get('market_observed_at') or work.get('observed_at'),
-                         now=_v90r55_dt(ts),execution=True,asset=asset)
-    if not fresh.get('eligible'):
-        _record_entry_outcome(work,'BLOCKED','R79_EXECUTION_QUOTE_STALE',quote_gate=fresh)
-        return 0.0
-
-    event=VTE.event_gate(work,price,direction,ts)
-    if not event.get('eligible'):
-        _record_entry_outcome(work,'BLOCKED',event.get('reason') or 'R79_EVENT_NOT_READY',trend_event=event)
-        return 0.0
-    chase=_v90r83_actual_chase_gate(work,price)
-    if not chase.get('eligible'):
-        _record_entry_outcome(work,'BLOCKED',chase.get('reason'),execution_timing=chase)
-        return 0.0
-    r59_mode=('AGGRESSIVE' if name=='Aggressive' else
-               'CURRENCY' if name==VCP.PORTFOLIO_KEY else 'CORE')
-    r59=_v90r59_quality_gate(work,{'mode':r59_mode})
-    conflict=next((b for b in (r59.get('blockers') or []) if b in (
-        'R59_EXECUTION_TF_DIRECTION_CONFLICT','R59_5M_COUNTER_SENIOR_NOT_CONFIRMED'
-    )),None)
-    if conflict:
-        _record_entry_outcome(work,'BLOCKED',conflict,r59_quality_gate=r59)
-        return 0.0
-    reuse=_r72_event_reentry_gate(c,name,asset,direction,ev)
-    if not reuse.get('eligible'):
-        _record_entry_outcome(work,'BLOCKED',reuse.get('reason') or 'R79_EVENT_REUSE',event_reentry=reuse)
-        return 0.0
-
-    stop=VTE.number((work.get('trade_plan') or {}).get('stop_price'))
-    if not stop or stop<=0 or ((direction=='LONG' and stop>=price) or (direction=='SHORT' and stop<=price)):
-        _record_entry_outcome(work,'BLOCKED','R79_STOP_INVALID')
-        return 0.0
-    net_risk=abs(float(price)-stop)/float(price)+float(VX.round_trip_cost_pct(work.get('spread_bps')))
-    if net_risk<=0:
-        return 0.0
-    cap=float(MAX_STOP_RISK_NAV)/net_risk
-    target_fraction=min(float(target_fraction),float(cap))
-    target_fraction=math.floor(max(0.0,target_fraction)/.05+1e-9)*.05
-    if target_fraction<=0:
-        _record_entry_outcome(work,'BLOCKED','R79_STOP_RISK_LIMIT')
-        return 0.0
-
-    # R79 has already enforced source, fresh quote, current direction,
-    # stable event-id reuse, valid structural stop and stop-risk cap. Commit the
-    # admitted signal through the journal+raw accounting layer only; do not run
-    # the historical R8/R17/R21/R24/R51/R54 entry filters a second time.
-    # _v90pr_base_open_or_add is the journal wrapper captured before those layers
-    # and retains fills, fees, DB accounting and durable entry telemetry.
-    before=c.execute(
-      "SELECT direction,units,active_trade_id FROM paper_positions "
-      "WHERE portfolio_name=%s AND asset=%s",(name,asset)).fetchone()
-    result=_v90pr_base_open_or_add(
-        c,p,name,asset,direction,price,target_fraction,nav,ts,work,'R79_SIGNAL_ENTRY')
-    after=c.execute(
-      "SELECT direction,units,active_trade_id,stop_price FROM paper_positions "
-      "WHERE portfolio_name=%s AND asset=%s",(name,asset)).fetchone()
-    if after and (not before or abs(float(after.get('units') or 0.0))>
-                  abs(float((before or {}).get('units') or 0.0))+1e-12):
-        _record_entry_outcome(work,'EXECUTED','R79_ORDER_RECORDED',
-                              trade_id=after.get('active_trade_id'),
-                              stop_price=after.get('stop_price'))
-        print(json.dumps({
-          'event':'V90_R79_EXECUTED','portfolio':name,'asset':asset,
-          'direction':direction,'price':price,'target_fraction':target_fraction,
-          'trade_id':after.get('active_trade_id'),'stop_price':after.get('stop_price'),
-          'signal_tier':work.get('signal_tier'),'horizon':work.get('horizon'),
-        },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
-    return result
-
-
-def report(pg_connect):
-    d=dict(_v90r79_base_report(pg_connect) or {})
-    d['signal_authoritative_entry_r79']={
-      'status':'ACTIVE','started_at':V90_R79_STARTED_AT,'paper_only':True,
-      'policy':'published LONG/SHORT starts staged risk; stale parent-event timing is not a veto',
-      'aggressive_initial':{'normal':0.50,'super':1.00},
-      'impulse_initial':{'normal':0.20,'super':0.40},
-      'core_initial':{'normal':0.10,'super':0.25},
-      'challenger_initial':{'normal':0.10,'super':0.25},
-      'hard_vetoes_preserved':['source/session','fresh same-source execution quote',
-          'invalid stop','hard invalidation','fast-TF conflict','negative validated edge',
-          'execution-TF direction conflict','actual-price late-entry chase','stop-risk cap'],
-      'soft_vetoes_no_longer_flatten_signal':sorted(_R79_SOFT_ECON_BLOCKERS),
-      'r83_execution_price_policy':'signal chooses direction; fresh same-source quote chooses fill and economics',
-      'adds':'normal confirmation/risk path remains authoritative',
-    }
-    return _jsonable(VCP.decorate_report(d))
-
+# R79 strategy mutation chain retired from production by CTC v2.
+# R83 fresh-quote / anti-chase helpers above remain audit-compatible.
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),40)
 
 
@@ -5448,6 +5152,18 @@ def canonical_signal_first_admission(row,policy,drawdown):
     return CANONICAL_ADMISSION_ENGINE.evaluate(row,policy,drawdown)
 
 
+def canonical_report(pg_connect):
+    d=dict(report(pg_connect) or {})
+    d=VCP.decorate_report(d)
+    d['runtime_authority']={
+        'version':CTC.BASIS_RUNTIME,'policy_version':CTC.VERSION,
+        'legacy_admission_authoritative':False,
+        'legacy_candidate_routing_authoritative':False,
+    }
+    d['release']=VR.snapshot()
+    return _jsonable(d)
+
+
 # Patch strategy-routing globals used by historical lifecycle wrappers. This is
 # what prevents those wrappers from silently deleting/re-ranking current signals.
 _candidate_book_v84=VCR.candidate_book
@@ -5462,7 +5178,7 @@ FINAL_OPEN_OR_ADD=canonical_open_or_add
 FINAL_CLOSE_OR_REDUCE=canonical_close_or_reduce
 FINAL_STEP_ONE=_step_one
 FINAL_STEP_ALL=step_all
-FINAL_REPORT=report
+FINAL_REPORT=canonical_report
 
 # Import-order-independent binding. Legacy helpers stay inspectable but cannot
 # replace canonical candidate/admission/size/mutation authority.
