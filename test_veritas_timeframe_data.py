@@ -9,6 +9,26 @@ import veritas_timeframe_data as TFD
 from test_veritas_timeframe_structure import example
 
 
+def nullable_profinance_market(asset='NQ'):
+    """Use the actual public parser shape: Last OHLC, volume=None, unobserved."""
+    import veritas_profinance_history as H
+    from test_veritas_profinance_history import history_text, NOW
+    clock = datetime.fromtimestamp(NOW,timezone.utc)
+    identity = VPS.identity(asset, {'source':'ProFinance'})
+    bars = {tf:H.parse_history(history_text(tt,NOW,500),asset,tf,NOW)['bars']
+            for tf,tt in (('1m',1),('5m',3),('1h',6),('4h',8),('1d',9))}
+    raw = dict(asset=asset,source='ProFinance',source_names={'primary':'ProFinance'},
+               price=101.,closes=[101.]*600,highs=[102.]*600,lows=[99.]*600,
+               vols=[1.]*600,taker_buy=[.5]*600,returns=[0.]*599,
+               source_divergence=0.,observed_at=clock.isoformat(),
+               binance_close_time_ms=int(NOW*1000),source_gate_pass=True,market_open=True,
+               intraday_bars=bars['5m'],intraday_5m=bars['5m'])
+    with patch('veritas_profinance_history.fetch_history_bundle',return_value={
+            'source_identity':identity,'bars_by_timeframe':bars}):
+        attached=TFD.attach(raw,clock)
+    return attached, clock
+
+
 class NativeTimeframeDataTests(unittest.TestCase):
     def test_native_exchange_opens_and_timestamps_are_preserved(self):
         self.assertEqual(TFD.native_ohlc([[1700000000000, '101', '104', '99', '103', '7']]),
@@ -92,6 +112,61 @@ class NativeTimeframeDataTests(unittest.TestCase):
         self.assertEqual(compact['trade_plan']['entry_event_snapshot'],original)
         self.assertEqual(compact['trade_plan']['entry_event_id'],original['event_id'])
         self.assertEqual(compact['trade_plan']['timeframe_entry_context']['event'],original)
+
+    def test_nullable_volume_is_normalized_only_in_the_legacy_minute_copy(self):
+        from veritas_local_breakout import closed_minutes
+        raw, clock = nullable_profinance_market()
+        native=raw['structure_minute_bars']
+        original=deepcopy(native)
+        legacy=closed_minutes(native,clock)
+        self.assertEqual(len(legacy),len(native))
+        self.assertTrue(all(b['volume']==0. and b['volume_available'] is False for b in legacy.values()))
+        self.assertEqual(native,original)
+        self.assertTrue(all(b['volume'] is None and b['volume_available'] is False
+                            for b in raw['structure_bars_by_timeframe']['1m']))
+        observed=dict(native[-1],volume=150.,volume_available=True)
+        self.assertEqual(closed_minutes([observed],clock)[observed['ts']]['volume'],150.)
+        for value in (None,float('nan'),float('inf'),-1.):
+            with self.subTest(volume=value):
+                bar=dict(observed,volume=value)
+                safe=closed_minutes([bar],clock)[bar['ts']]
+                self.assertEqual(safe['volume'],0.)
+                self.assertFalse(safe['volume_available'])
+
+    def test_nullable_volume_reaches_both_minute_and_senior_legacy_consumers(self):
+        import veritas_minute_entry as M
+        import veritas_trend_entry as VTE
+        raw, clock = nullable_profinance_market()
+        features=M.minute_features({},raw,clock)
+        self.assertEqual(features['minute_data_status'],'OK')
+        self.assertEqual(features['volume_ratio'],0.)
+        context=VTE.build_context(raw['structure_intraday_bars'],clock,'NQ',
+                                  minute_bars=raw['structure_minute_bars'])
+        self.assertEqual(context['status'],'OK')
+        if context.get('event'):
+            self.assertEqual(context['event']['relative_volume'],0.)
+            self.assertFalse(context['event']['activity_confirmed'])
+        self.assertTrue(all(b['volume'] is None for b in raw['structure_minute_bars']))
+
+    def test_full_feature_entrypoint_accepts_nullable_native_volume(self):
+        import veritas_intelligence as VI
+        for asset in ('NQ','GOLD','BRENT'):
+            raw, clock = nullable_profinance_market(asset)
+            class Frozen(datetime):
+                @classmethod
+                def now(cls,tz=None):
+                    return clock
+            with patch.object(VI,'datetime',Frozen),patch.object(TFD,'datetime',Frozen):
+                for horizon in ('1m','5m','1h','4h','1d','3d','7d'):
+                    with self.subTest(asset=asset,horizon=horizon):
+                        features=VI.features(dict(raw),horizon)
+                        context=features['timeframe_entry_context']
+                        self.assertEqual(context['timeframe'],horizon)
+                        self.assertEqual(context['source_identity'],raw['structure_source_identity'])
+                        if horizon=='1m':
+                            self.assertEqual(features['minute_data_status'],'OK')
+                            self.assertEqual(features['volume_ratio'],0.)
+            self.assertTrue(all(b['volume'] is None for b in raw['structure_minute_bars']))
 
 
 if __name__=='__main__':
