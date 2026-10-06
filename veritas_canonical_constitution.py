@@ -132,7 +132,7 @@ PORTFOLIO_POLICIES = {
     },
 }
 
-DRAWdown_PROFILES = {
+DRAWDOWN_PROFILES = {
     "STANDARD":{"normal_until":0.08,"caution_until":0.11,"defense_1_until":0.135,
                 "caution_multiplier":0.90,"defense_1_multiplier":0.70,"defense_2_multiplier":0.45},
     "AGGRESSIVE":{"normal_until":0.10,"caution_until":0.14,"defense_1_until":0.17,
@@ -157,7 +157,7 @@ def drawdown_profile(portfolio=None, mode=None):
     if p is None:
         p=next((x for x in PORTFOLIO_POLICIES.values() if x.get("mode")==mode),PORTFOLIO_POLICIES["Champion"])
     kind="CURRENCY" if p.get("mode")=="CURRENCY" else "AGGRESSIVE" if p.get("mode")=="AGGRESSIVE" else "STANDARD"
-    cfg=DRAWdown_PROFILES[kind]
+    cfg=DRAWDOWN_PROFILES[kind]
     gross=float(p["max_gross"])
     step=float(p.get("position_step",0.05))
     snap=lambda x:max(step, round(max(step,x)/step)*step)
