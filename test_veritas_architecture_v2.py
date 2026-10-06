@@ -34,7 +34,7 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertEqual(p["probe_super"], .10)
         self.assertEqual(p["max_gross"], 10.0)
         self.assertEqual(CTC.PORTFOLIO_POLICIES["Aggressive"]["probe_normal"], .50)
-        self.assertEqual(CTC.PORTFOLIO_POLICIES["Aggressive"]["probe_super"], 1.00)
+        self.assertEqual(CTC.PORTFOLIO_POLICIES["Aggressive"]["probe_super"], .50)
 
     def test_release_identity_is_five_portfolio_ctc_v2(self):
         s=VR.snapshot()
