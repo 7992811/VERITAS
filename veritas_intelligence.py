@@ -9858,10 +9858,12 @@ def _fetch_asset_bundle(symbol,asset,cb_product):
     _v90r62_store_bundle(asset,out)
     return out
 
-# Keep outer asset fanout genuinely conservative on the 512 MiB web service.
-# Crypto assets already parallelize their provider calls internally, so forcing
-# five or six outer asset workers creates memory spikes without adding decision quality.
-FAST_LOOP_MARKET_WORKERS=max(2,min(3,FAST_LOOP_MARKET_WORKERS))
+# Keep normal-capacity deployments fast, but use a smaller fanout on the
+# 512 MiB web service. Low-memory mode also switches to streaming bundles below.
+if MEMORY_SOFT_LIMIT_MB<=320:
+    FAST_LOOP_MARKET_WORKERS=max(2,min(3,FAST_LOOP_MARKET_WORKERS))
+else:
+    FAST_LOOP_MARKET_WORKERS=max(5,min(6,FAST_LOOP_MARKET_WORKERS))
 
 
 def learning_index_v2():
