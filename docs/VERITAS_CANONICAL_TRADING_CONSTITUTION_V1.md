@@ -319,6 +319,8 @@ Management-dominated loss не должен автоматически сниж�
 | GAP06 | низкая | README_R82 описывает старые 0,04%/1,1× | пометить historical / заменить ссылкой на canonical policy |
 | GAP07 | низкая | версия cost module называется R82 при фактических R81-параметрах | переименовать после проверки совместимости |
 | GAP08 | средняя | external knowledge automation выключен | решать отдельно; автоматическое продвижение правил не включать |
+| GAP09 | высокая | R85 final-authority даёт circular import при прямом импорте runtime до portfolio | убрать зависимость от порядка импортов, не ослабляя authority lock |
+| GAP10 | средняя | zero-exposure fast-memory portfolio API теряет `api_source=live_memory` | восстановить явное происхождение ответа, сохранив SQL fallback для ненулевой экспозиции |
 
 ## 21. Что уже исправлено R81–R85 и не является открытым конфликтом
 
@@ -328,6 +330,8 @@ Management-dominated loss не должен автоматически сниж�
 - R83: направление сигнала отделено от свежей execution quote; anti-chase считается по фактической цене.
 - R83: market closed отличается от broken source при защитном monitoring.
 - R85: финальная runtime authority закреплена явно; исторические определения не могут молча вернуть себе исполнение.
+
+При этом общий Safety CI самого `main@R85` уже содержит три существующих сбоя: два circular-import теста вокруг final-authority и один fast-memory portfolio API тест. Они зафиксированы как GAP09–GAP10 и не являются регрессией CTC v1.
 
 ## 22. Следующий этап внедрения
 
