@@ -30,7 +30,26 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-VERSION = "veritas-signal-core-v9.0"
+try:
+    from veritas_knowledge_arbitration import (
+        arbitrate as _knowledge_arbitrate,
+        catalog_summary as _knowledge_catalog_summary,
+    )
+except Exception:
+    def _knowledge_arbitrate(payload):
+        return {
+            "version": "knowledge-arbitration-unavailable",
+            "status": "UNAVAILABLE",
+            "size_multiplier": 1.0,
+            "thesis_challenge": False,
+            "automatic_veto": False,
+            "matched_rules": [],
+            "anti_rules": [],
+        }
+    def _knowledge_catalog_summary():
+        return {"status": "UNAVAILABLE"}
+
+VERSION = "veritas-signal-core-v9.0-knowledge-v1"
 SCHEMA_VERSION = 3
 
 # ---------------------------------------------------------------------------
@@ -234,6 +253,7 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     """
     dec = str(payload.get("research_decision") or payload.get("decision") or "NO_TRADE").upper()
     sign = _direction_sign(dec)
+    knowledge = _knowledge_arbitrate(payload)
     if not sign:
         return {
             "status":"NO_DIRECTION","gate_class":"NO_DIRECTION","allow":False,"decision":"NO_TRADE",
@@ -242,6 +262,7 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
             "hard_reasons":["no_directional_signal"],"soft_reasons":[],
             "supporting_agents":[],"opposing_agents":[],"model_set_size":0,
             "setup_strength_proxy":0.0,"sizing_band":"NONE","mode":"v72_research_shadow",
+            "knowledge_arbitration":knowledge,
         }
 
     source_gate = bool(payload.get("source_gate", True))
@@ -350,6 +371,8 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         + 0.14*confidence_unc + 0.16*falsification
     )
 
+    if knowledge.get("thesis_challenge"):
+        soft.append("knowledge_multi_family_opposition")
     hard = data_hard + entry_hard + thesis_hard
     allow = not hard
 
@@ -357,6 +380,13 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         size_mult, sizing_band, setup_proxy = _sizing_from_setup(
             conf,cp,eff,max(structure_score,native_score),alignment,falsification,timing_multiplier
         )
+        # Evidence-weighted knowledge is advisory: it may modestly scale an
+        # already-admitted staged position but cannot create/reverse a trade.
+        try:
+            knowledge_mult = max(0.80, min(1.08, float(knowledge.get("size_multiplier") or 1.0)))
+        except Exception:
+            knowledge_mult = 1.0
+        size_mult = _clip(size_mult * knowledge_mult)
         # High uncertainty can reduce size, but does not create a false thesis veto.
         if uncertainty>=0.76:
             size_mult=min(size_mult,0.20)
@@ -416,6 +446,7 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         "supporting_agents":sorted(set(supporting_agents)),
         "opposing_agents":sorted(set(opposing_agents)),
         "model_set_size":len(set(supporting_agents+opposing_agents)),
+        "knowledge_arbitration":knowledge,
         "mode":"v72_research_shadow",
     }
 
@@ -765,7 +796,7 @@ def parameter_audit(signals: Sequence[Mapping[str,Any]]) -> Dict[str,Any]:
     keys=set().union(*(set(r.keys()) for r in signals if isinstance(r,Mapping))) if signals else set()
     if {"source_gate_pass","market_open"}&keys: fam.add("качество данных")
     if {"confidence","score","challenger_decision"}&keys: fam.add("комитет моделей")
-    if {"effective_evidence","knowledge_matches"}&keys: fam.add("знания")
+    if {"effective_evidence","knowledge_matches","knowledge_shadow_matches","knowledge_arbitration"}&keys: fam.add("знания")
     if "calibrated_probability" in keys: fam.add("калибровка")
     if {"trend_phase","trend_direction","intraday_structure","horizon_structure","trade_plan"}&keys: fam.add("структура рынка")
     if "regime" in keys: fam.add("режим")
@@ -831,6 +862,23 @@ def investor_asset_view(signals: Sequence[Mapping[str,Any]], model_agents: Optio
             "speed_definition":"FAST=1ч/4ч, MEDIUM=1д/3д, SLOW=7д."}
 
 
+def knowledge_arbitration_engine(context: Mapping[str,Any]) -> Dict[str,Any]:
+    signals=_safe_rows(context.get("signals"))
+    items=[]
+    for row in signals[:120]:
+        try:
+            items.append(_knowledge_arbitrate(row))
+        except Exception as ex:
+            items.append({"status":"ERROR","asset":row.get("asset"),"horizon":row.get("horizon"),
+                          "error":type(ex).__name__})
+    return {
+        "status":"ok" if items else "DATA_REQUIRED",
+        "catalog":_knowledge_catalog_summary(),
+        "items":items,
+        "principle":"Knowledge is evidence-weighted and advisory until outcome validation promotes a rule.",
+    }
+
+
 def operating_system(context: Mapping[str,Any], profile: Optional[Mapping[str,Any]]=None) -> Dict[str,Any]:
     signals=_safe_rows(context.get("signals"))
     return {
@@ -855,6 +903,7 @@ def operating_system(context: Mapping[str,Any], profile: Optional[Mapping[str,An
             "shock_classifier":shock_classifier(context),
             "adaptive_horizon":adaptive_horizon_engine(context),
             "information_value":information_value(context),
+            "knowledge_arbitration":knowledge_arbitration_engine(context),
         },
         "DECISION":{
             "thesis_decay":thesis_decay_engine(context),
