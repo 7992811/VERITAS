@@ -2921,6 +2921,10 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     _v90j_cache['at']=0.0
     return result
 
+# Stable accounting-only boundary captured before later Rxx strategy layers.
+CANONICAL_ACCOUNTING_OPEN_OR_ADD=_open_or_add
+CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE=_close_or_reduce
+
 
 def _v90j_load_closed(pg_connect,limit=2500):
     limit=max(50,min(5000,int(limit or 2500)))
