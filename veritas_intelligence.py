@@ -18873,14 +18873,17 @@ def final_execution_safety(asset,research_decision,plan):
         pass
 
     import veritas_trend_entry as VTE
-    if VTE.has_geometry_context({'trade_plan':plan}):
+    has_geometry=bool(VTE.has_geometry_context({'trade_plan':plan}))
+    if has_geometry:
         plan=VTE.prepare_row({'price':plan.get('entry_price'),'horizon':plan.get('horizon'),
             'research_decision':research_decision,'trade_plan':plan})['trade_plan']
     local_row={'asset':asset,'price':plan.get('entry_price'),'horizon':plan.get('horizon'),
                'research_decision':research_decision,'trade_plan':plan}
-    entry_timing=VTE.event_gate(local_row,plan.get('entry_price'),research_decision,datetime.now(timezone.utc))
+    entry_timing=(VTE.event_gate(local_row,plan.get('entry_price'),research_decision,datetime.now(timezone.utc))
+                  if has_geometry else
+                  {'eligible':True,'reason':'R40_GEOMETRY_NOT_APPLICABLE','status':'NOT_APPLICABLE'})
     plan['entry_timing_gate']=entry_timing
-    plan['execution_levels_ready']=bool(VTE.structural_event(local_row)
+    plan['execution_levels_ready']=bool(has_geometry and VTE.structural_event(local_row)
         and (plan.get('r66_geometry') or {}).get('eligible'))
     plan['execution_quote_gate']=quote_gate(plan.get('market_observed_at'),plan.get('horizon'),
                                             execution=True,asset=asset)
@@ -18911,13 +18914,15 @@ def final_execution_safety(asset,research_decision,plan):
     gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
         'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
     }
-    context=VTE.context_gate({'asset':asset,'trade_plan':plan},datetime.now(timezone.utc))
+    context=(VTE.context_gate({'asset':asset,'trade_plan':plan},datetime.now(timezone.utc))
+             if has_geometry else
+             {'eligible':True,'reason':'R40_GEOMETRY_NOT_APPLICABLE','status':'NOT_APPLICABLE'})
     gate['context_freshness']=context
     gate['trend_event']=entry_timing
-    if research_decision in ('LONG','SHORT') and not entry_timing['eligible']:
+    if has_geometry and research_decision in ('LONG','SHORT') and not entry_timing['eligible']:
         gate.update(status='BLOCK',eligible=False)
         gate['blockers'].append(entry_timing['reason'])
-    if research_decision in ('LONG','SHORT') and not context['eligible']:
+    if has_geometry and research_decision in ('LONG','SHORT') and not context['eligible']:
         gate.update(status='BLOCK',eligible=False)
         gate['blockers'].append(context['reason'])
     if geometry_reason in ('R66_SENIOR_BREAK_NOT_HELD','R74_EVENT_TARGET_REACHED','R66_INVALID_GEOMETRY'):
