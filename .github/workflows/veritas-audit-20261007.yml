@@ -13,34 +13,66 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 7
     steps:
-      - name: Read bounded public paper snapshots
+      - name: Verify deployed paper release and unchanged accounting
         shell: python
         run: |
-          import json, re, urllib.request, datetime, time
+          import json, re, urllib.request, datetime, time, math
           BASE = "https://veritas-intelligence-v1.onrender.com"
-          PATHS = ["/healthz", "/api/v1/dashboard-bootstrap", "/api/v1/cost-policy",
-                   "/api/v1/loss-audit", "/api/v1/strategy-quality", "/api/v1/heavy-learning",
-                   "/api/v1/protective-guard"]
+          EXPECTED_SHA = "c4b8fa5d25fca4c4cae1b6e3e3e0d73427975431"
+          PATHS = ["/healthz", "/api/v1/cost-policy", "/api/v1/strategy-quality",
+                   "/api/v1/loss-audit", "/api/v1/dashboard-bootstrap",
+                   "/api/v1/heavy-learning", "/api/v1/protective-guard"]
           DROP = re.compile(r"(token|secret|password|credential|authorization|database_url|dsn|account_id|chat_id)", re.I)
           def safe(x, depth=0):
-              if depth > 18: return "[DEPTH_LIMIT]"
-              if isinstance(x, dict):
-                  return {k:safe(v,depth+1) for k,v in x.items() if not DROP.search(str(k))}
+              if depth > 16: return "[DEPTH_LIMIT]"
+              if isinstance(x, dict): return {k:safe(v,depth+1) for k,v in x.items() if not DROP.search(str(k))}
               if isinstance(x, list): return [safe(v,depth+1) for v in x[:500]]
-              if isinstance(x, str) and (re.search(r"(?i)(bearer |postgres(?:ql)?://)",x)):
-                  return "[REDACTED]"
+              if isinstance(x, str) and re.search(r"(?i)(bearer |postgres(?:ql)?://)",x): return "[REDACTED]"
               return x
-          print("VERITAS_AUDIT_SCOPE " + json.dumps({"at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"method":"GET_ONLY","paper_data_only":True,"broker_accounts":False,"expected_code_sha":"af5358c6d4a8a6b2d256a1574b7402ce67d8da9a"}),flush=True)
+          def pick(data, keys):
+              return {k:data.get(k) for k in keys}
+          def slim(path, d):
+              if path == "/api/v1/dashboard-bootstrap":
+                  return {**pick(d, ["status","version","at","health","signal_count","portfolio_count","open_position_count","trade_count","learning_summary","data_quality_summary"]),
+                      "portfolios":[{**pick(p,["name","nav_rub","closed_trades","wins","closed_trade_pnl_rub","profit_factor","positions"]), "admission_trace":p.get("admission_trace",[])} for p in d.get("portfolios",[])],
+                      "signals":[{**pick(r,["asset","horizon","research_decision","decision","price","primary_source","market_observed_at","source_gate_pass","market_open","paper_eligible"]), "plan":pick(r.get("trade_plan") or {},["eligible","reason","blockers","entry_price","stop_price","target_price","expected_move_pct","minimum_expected_move_pct","structural_policy_version","user_teaching_id","entry_event_id","entry_quality"])} for r in d.get("signals",[])]}
+              if path == "/api/v1/loss-audit":
+                  return pick(d,["status","scope","all_trades","systemic","episode_independence_established","note"])
+              if path == "/api/v1/strategy-quality":
+                  return {**pick(d,["status","version","at","strategy_epoch","current_sha","automatic_parameter_promotion","real_orders_enabled","readiness","champion_challenger","snapshot_age_seconds","history_truncated","cny_feed"]), "portfolios":[{"name":p.get("name"),"cohorts":p.get("cohorts"),"open_positions":p.get("open_positions")} for p in d.get("portfolios",[])]}
+              return d
+          snapshots={}
+          errors=[]
+          print("VERITAS_POSTDEPLOY_SCOPE "+json.dumps({"at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"expected_sha":EXPECTED_SHA,"method":"GET_ONLY","paper_only":True}),flush=True)
           for path in PATHS:
               started=time.monotonic()
               try:
-                  req=urllib.request.Request(BASE+path,headers={"User-Agent":"VERITAS-read-only-audit/20261007","Accept":"application/json"})
+                  req=urllib.request.Request(BASE+path,headers={"Accept":"application/json","User-Agent":"VERITAS-authorized-read-only-audit"})
                   with urllib.request.urlopen(req,timeout=45) as response:
-                      body=response.read(8*1024*1024+1)
-                      if len(body)>8*1024*1024: raise ValueError("response size limit")
-                      data=json.loads(body)
-                  clean=safe(data)
-                  print("VERITAS_AUDIT_DATA " + json.dumps({"path":path,"seconds":round(time.monotonic()-started,3),"data":clean},ensure_ascii=False,allow_nan=False),flush=True)
+                      raw=response.read(8*1024*1024+1)
+                      if len(raw)>8*1024*1024: raise ValueError("snapshot exceeds bounded limit")
+                      data=json.loads(raw)
+                  snapshots[path]=data
+                  print("VERITAS_POSTDEPLOY_SNAPSHOT "+json.dumps({"path":path,"seconds":round(time.monotonic()-started,3),"data":safe(slim(path,data))},ensure_ascii=False,allow_nan=False),flush=True)
               except Exception as exc:
-                  print("VERITAS_AUDIT_ERROR " + json.dumps({"path":path,"error_type":type(exc).__name__,"seconds":round(time.monotonic()-started,3)}),flush=True)
+                  errors.append({"path":path,"type":type(exc).__name__})
+                  print("VERITAS_POSTDEPLOY_ERROR "+json.dumps(errors[-1]),flush=True)
+          h=snapshots.get("/healthz",{})
+          c=snapshots.get("/api/v1/cost-policy",{})
+          q=snapshots.get("/api/v1/strategy-quality",{})
+          a=snapshots.get("/api/v1/loss-audit",{}).get("all_trades",{})
+          checks={
+           "health_ready":h.get("ok") is True and h.get("bootstrap_ready") is True,
+           "deployed_sha":h.get("release",{}).get("deploy_sha")==EXPECTED_SHA,
+           "new_epoch":h.get("release",{}).get("strategy_epoch")=="EQ5_2026_10_07_AUDIT",
+           "cost_buffer":c.get("cost_buffer_multiple")==1.1 and c.get("entry_cost_multiple")==1.1,
+           "commission_and_slippage":c.get("commission_rate_per_side")==0.0004 and c.get("slippage_rate_per_side")==0.0004,
+           "quality_v2":q.get("version")=="STRATEGY_QUALITY_V2" and q.get("strategy_epoch")=="EQ5_2026_10_07_AUDIT",
+           "paper_only":q.get("real_orders_enabled") is False and q.get("automatic_parameter_promotion") is False,
+           "all_closed_cycles_retained":a.get("trades",0)>=646,
+           "financial_history_preserved_if_no_new_closes":a.get("trades")!=646 or abs(a.get("net_pnl_rub",0)-(-227053.64736408717))<0.000001,
+           "all_endpoints_read":not errors,
+          }
+          print("VERITAS_POSTDEPLOY_CHECKS "+json.dumps(checks),flush=True)
+          if not all(checks.values()): raise SystemExit(1)
           
