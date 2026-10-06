@@ -115,6 +115,34 @@ def minimum_expected_move_pct(modeled_cost: float) -> float:
     return max(MIN_EXPECTED_MOVE_PCT, MIN_MOVE_COST_MULTIPLE * max(0.0, _num(modeled_cost, 0.0)))
 
 
+def paper_quote_time_gate(raw: Optional[Dict[str, Any]], horizon=None, now=None, *, protective=False) -> Dict[str, Any]:
+    """Freshness gate for simulated paper execution.
+
+    Delayed research feeds are admissible only when their upstream source gate
+    has already certified the observation. Live/production does not use this
+    helper and remains fail-closed on delayed feeds.
+    """
+    from veritas_quote_time import quote_gate, utc_datetime
+    r=dict(raw or {})
+    observed=r.get("observed_at") or r.get("market_observed_at")
+    asset=str(r.get("asset") or "")
+    latency=str(r.get("data_latency_class") or "").upper()
+    if latency=="DELAYED_RESEARCH":
+        dt=utc_datetime(observed); clock=utc_datetime(now) or datetime.now(timezone.utc)
+        age=(clock-dt).total_seconds() if dt else None
+        limit=3600.0
+        ok=bool(r.get("source_gate_pass") and r.get("market_open") is not False
+                and age is not None and math.isfinite(age) and -5 <= age <= limit)
+        return {"eligible":ok,"observed_at":dt.isoformat() if dt else None,
+                "age_seconds":age,"max_age_seconds":limit,
+                "reason":None if ok else "QUOTE_TIME_MISSING" if dt is None else
+                "QUOTE_TIME_FUTURE" if age is not None and age < -5 else
+                "DELAYED_RESEARCH_QUOTE_STALE",
+                "paper_delayed_research":True}
+    return quote_gate(observed,horizon,now=now,protective=protective,
+                      execution=not protective,asset=asset)
+
+
 def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Validate the same target, stop, size and adverse fills used by paper execution."""
     p = dict(plan or {})
@@ -226,8 +254,15 @@ def entry_gate(row, price, direction, fraction, position=None):
                 horizon=row.get('horizon'), best_bid=execution.get('best_bid') or row.get('best_bid'),
                 best_ask=execution.get('best_ask') or row.get('best_ask'))
     gate = economics_gate(row.get('asset'), plan)
-    timing = quote_gate(execution.get('observed_at') or row.get('market_observed_at') or row.get('observed_at') or plan.get('market_observed_at'),
-                        row.get('horizon'),execution=True,asset=row.get('asset'))
+    timing = paper_quote_time_gate(
+        dict(row, observed_at=(execution.get('observed_at') or row.get('market_observed_at')
+                              or row.get('observed_at') or plan.get('market_observed_at')),
+             data_latency_class=(execution.get('data_latency_class') or row.get('data_latency_class')),
+             source_gate_pass=(execution.get('source_gate_pass')
+                               if execution.get('source_gate_pass') is not None else row.get('source_gate_pass')),
+             market_open=(execution.get('market_open')
+                          if execution.get('market_open') is not None else row.get('market_open'))),
+        row.get('horizon'))
     gate['entry_geometry']=geometry
     if is_proxy_price(row.get('asset'),execution or row):
         gate.update(eligible=False,status='BLOCK')
