@@ -275,4 +275,31 @@ class OwnerAuditAdmissionRegressionTests(unittest.TestCase):
         self.assertEqual(runtime.evaluate(chosen, policy, 0.0, clock)['reason'],
                          'HARD_INVALIDATION')
 
+
+    def test_legacy_super_router_cannot_replace_canonical_accepted_timeframe(self):
+        from test_veritas_timeframe_policy import structural_row
+        import veritas_canonical_runtime as runtime
+        clock = datetime.now(timezone.utc)
+        rows = [structural_row(clock, timeframe=tf) for tf in ('5m', '1h', '4h')]
+        for row in rows:
+            row['institutional_signal'] = {'evidence_independence': {'independent_count': 5}}
+            row['signal_tier'] = 'LONG'
+        rows[0].update(signal_tier='SUPER_LONG', paper_eligible=False)
+        legacy = P._v90r20_super_candidate(rows, 'NQ')
+        self.assertIsNotNone(legacy)
+        self.assertEqual(legacy['horizon'], '5m')
+        selected = runtime._prepare_candidate(rows[1], rows)
+        selected['_canonical_route_trace'] = [
+            {'horizon': '5m', 'open': False, 'reason': 'PAPER_EXPLICIT_DENIAL'},
+            {'horizon': '1h', 'open': True, 'reason': 'CANONICAL_SIGNAL_ENTRY'}]
+        policy = C.runtime_portfolio_policy('Aggressive')
+        with patch.object(P, '_v90r20_base_step_one',
+                          side_effect=lambda c,n,p,b,*args: b) as following:
+            kept = P._v90r21_base_step_one(
+                None, 'Aggressive', policy, {'NQ': selected}, {}, 16., 90.,
+                clock.isoformat(), .0004, rows)
+        following.assert_called_once()
+        self.assertEqual(kept['NQ']['horizon'], '1h')
+        self.assertEqual(kept['NQ']['_canonical_route_trace'], selected['_canonical_route_trace'])
+
 if __name__=='__main__':unittest.main()
