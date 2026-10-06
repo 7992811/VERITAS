@@ -3059,7 +3059,19 @@ def _v90r56_late_entry_gate(row,price=None):
     row=row or {}
     shared=VTE.event_gate(row,price if price is not None else row.get('price'),
                          _v90r56_direction(row),datetime.now(timezone.utc))
-    if shared.get('reason')!='R66_LEGACY_SIGNAL_PATH':
+    if shared.get('eligible'):
+        return shared
+    # R69 made closed-candle context mandatory for final execution, but candidate
+    # discovery still needs an EARLY timing estimate before that context exists.
+    # Fall back only for local trigger horizons with measurable price origin.
+    # Opposed/stale/invalid local events are never softened here; final R79 still
+    # re-checks source, session, event context and actual-fill economics.
+    _fallback_reasons={
+        'R66_LEGACY_SIGNAL_PATH','R69_LOCAL_CONTEXT_REQUIRED',
+        'R67_LOCAL_CONTEXT_REQUIRED','R69_WAIT_LOCAL_BREAKOUT',
+        'R68_LOCAL_CONTEXT_INCOMPLETE',
+    }
+    if shared.get('reason') not in _fallback_reasons:
         return shared
     h=str(row.get('horizon') or '')
     if h not in _R56_TRIGGER_HORIZONS:
@@ -4967,27 +4979,48 @@ def _signal_first_admission(row,policy,drawdown):
     if (policy or {}).get('mode')=='CURRENCY':
         return {'open':False,'fraction':0.0,'hard_veto':True,'reason':VCP.BLOCK_REASON}
     raw=dict(row or {})
-    # New risk can never resurrect an invalidated setup. This is deliberately
-    # stricter than HOLD logic for an already-open position.
-    if _v90r55_invalidated(raw) or raw.get('_r55_absolute_veto'):
+    asset=str(raw.get('asset') or '')
+
+    # Preserve the canonical research-paper source/session/fresh-price gate.
+    # One approved source is enough for paper trading, but a missing/invalid
+    # price, closed session, explicit denial, or failed source check is not.
+    source=VX.paper_source_gate(asset,raw) if asset in VX.PAPER_ASSETS else {
+        'eligible':bool(raw.get('execution_eligible')),
+        'reason':raw.get('execution_reason'),'blockers':[]
+    }
+    if (not source.get('eligible') or raw.get('paper_eligible') is False
+            or raw.get('source_gate_pass') is not True
+            or raw.get('market_open') is not True):
+        return {'open':False,'fraction':0.0,'hard_veto':True,
+                'reason':'R42_PAPER_SOURCE_GATE',
+                'source_blockers':source.get('blockers') or []}
+
+    plan=raw.get('trade_plan') or {}
+    rebased=bool(plan.get('entry_quality_rebased_from_old_setup')) and str(
+        plan.get('entry_quality') or '').upper()!='INVALIDATED'
+    hard_integrity=bool((plan.get('trade_integrity') or {}).get('hard_invalidation'))
+    # A newly validated setup may intentionally replace stale row-level
+    # INVALIDATED metadata. A genuine hard invalidation still vetoes it.
+    if hard_integrity or raw.get('_r55_absolute_veto') or (
+            not rebased and _v90r55_invalidated(raw)):
         return {'open':False,'fraction':0.0,'hard_veto':True,
                 'reason':'R55_ABSOLUTE_INVALIDATED_VETO','r55_invalidated':True}
-    if (raw.get('source_gate_pass') is False or raw.get('paper_eligible') is False
-            or raw.get('market_open') is False):
-        return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':'R79_SOURCE_OR_SESSION_BLOCK'}
+    if rebased and str(raw.get('entry_quality') or '').upper()=='INVALIDATED':
+        raw['entry_quality']=plan.get('entry_quality') or 'NEW_SETUP_PROVISIONAL'
+
     work,ev,direction,active=_v90r79_signal_state(raw,datetime.now(timezone.utc))
     if not active:
         return dict(_v90r79_base_admission(work,policy,drawdown) or {})
 
-    asset=str(work.get('asset') or '')
+    # Re-check after signal normalization because routers can drop optional
+    # paper flags. Safety may tighten, never loosen, during this handoff.
     source=VX.paper_source_gate(asset,work) if asset in VX.PAPER_ASSETS else {
         'eligible':bool(work.get('execution_eligible')),
         'reason':work.get('execution_reason'),'blockers':[]
     }
     if not source.get('eligible') or work.get('paper_eligible') is False:
         return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':'R79_SOURCE_OR_SESSION_BLOCK',
+                'reason':'R42_PAPER_SOURCE_GATE',
                 'source_blockers':source.get('blockers') or []}
 
     hard=_v90r79_hard_signal_veto(work)
@@ -5032,9 +5065,6 @@ def _signal_first_admission(row,policy,drawdown):
     # a small cost-buffer miss changes sizing/management; it no longer means
     # "show LONG/SHORT but stay flat". Negative target economics still blocks.
     soft_probe=bool(econ_blockers and not hard_econ and qgate.get('eligible',True))
-    # If the current signal survives every hard safety check but its current
-    # modeled target economics are weak, execute a SMALL probe rather than stay
-    # flat. A subsequent confirmation can add; a reversal/stop exits it.
     if soft_probe:
         mode=str((policy or {}).get('mode') or 'CORE')
         tier=str(work.get('signal_tier') or work.get('execution_signal_tier') or '').upper()
@@ -5053,12 +5083,15 @@ def _signal_first_admission(row,policy,drawdown):
             and work.get('source_gate_pass'))
     if not ok:
         return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':'R79_HARD_EXECUTION_BLOCK',
+                'reason':'R41_FINAL_ECONOMICS_GATE' if hard_econ else 'R79_HARD_EXECUTION_BLOCK',
                 'economics_blockers':list(econ_blockers),
                 'hard_economics_blockers':list(hard_econ),
                 'trend_event':event,'economics':economics,
                 'quote_time_gate':qgate}
 
+    probability_source=str(work.get('_pwin_source') or 'DISPLAYED_SIGNAL')
+    signal_prior=work.get('_pwin')
+    uncalibrated='UNCALIBRATED' in probability_source.upper()
     return {
       'open':True,'fraction':f,'hard_veto':False,
       'reason':'R79_SIGNAL_PROBE' if soft_probe else 'R79_SIGNAL_ENTRY',
@@ -5067,11 +5100,13 @@ def _signal_first_admission(row,policy,drawdown):
       'economics_blockers':list(econ_blockers),
       'quote_time_gate':qgate,
       'net_reward_risk':economics.get('expected_to_stop_ratio'),
-      'probability':work.get('_pwin'),
-      'probability_source':work.get('_pwin_source') or 'DISPLAYED_SIGNAL',
+      'probability':None if uncalibrated else signal_prior,
+      'model_quality_score':signal_prior if uncalibrated else work.get('model_quality_score'),
+      'probability_source':probability_source,
       'signal_score':work.get('confidence'),
+      'paper_source_quality':'PRODUCTION_GRADE' if work.get('production_eligible') else 'RESEARCH_GRADE',
+      'paper_is_live_fill_evidence':False,
     }
-
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     if name==VCP.PORTFOLIO_KEY:
@@ -5281,6 +5316,17 @@ FINAL_CLOSE_OR_REDUCE=_close_or_reduce
 FINAL_STEP_ONE=_step_one
 FINAL_STEP_ALL=step_all
 FINAL_REPORT=report
+
+# Complete the two-way binding when this runtime module itself was imported
+# first. veritas_portfolio deliberately defers dereferencing FINAL_* during the
+# circular import; once the runtime reaches this lock, make the same authority
+# explicit on the already-loaded base module.
+_vp_base._signal_first_admission=FINAL_SIGNAL_FIRST_ADMISSION
+_vp_base._open_or_add=FINAL_OPEN_OR_ADD
+_vp_base._close_or_reduce=FINAL_CLOSE_OR_REDUCE
+_vp_base._step_one=FINAL_STEP_ONE
+_vp_base.step_all=FINAL_STEP_ALL
+_vp_base.report=FINAL_REPORT
 
 def runtime_authority_snapshot():
     return {

@@ -16493,8 +16493,25 @@ def _v90r25_portfolios_fast():
         out=dict(cached); out['api_source']='memory_cache'; return out
     with lock:
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
-    if live and len(live.get('portfolios') or [])==len(V90_CANONICAL_PORTFOLIOS) and (any(p.get('positions') for p in live.get('portfolios') or []) or not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live.get('portfolios') or [])):
-        out=VP.VCP.decorate_report(VTV.enrich_positions(live,pg_connect)); out['api_source']='live_memory'
+    live_ports=list(live.get('portfolios') or [])
+    live_names={str(p.get('name') or '') for p in live_ports}
+    core_names={'Impulse','Aggressive','Champion','Challenger'}
+    core_complete=core_names.issubset(live_names)
+    exposure_without_rows=any(
+        abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002
+        and not p.get('positions') for p in live_ports
+    )
+    # The optional Currency book must not make an otherwise complete core snapshot
+    # look missing. If it is not present in live memory yet, append its safe
+    # non-executing state; non-zero exposure without position rows still forces SQL.
+    if live and core_complete and not exposure_without_rows:
+        out=VP.VCP.decorate_report(VTV.enrich_positions(live,pg_connect))
+        if 'Currency' in V90_CANONICAL_PORTFOLIOS and not any(
+                str(p.get('name') or '')=='Currency' for p in (out.get('portfolios') or [])):
+            out=dict(out)
+            out['portfolios']=list(out.get('portfolios') or [])+[VP.VCP.pending_state()]
+            out['portfolio_count']=len(out['portfolios'])
+        out['api_source']='live_memory'
         with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
     if not pg_enabled(): return {'status':'UNAVAILABLE','portfolios':[]}
@@ -18856,14 +18873,17 @@ def final_execution_safety(asset,research_decision,plan):
         pass
 
     import veritas_trend_entry as VTE
-    if VTE.has_geometry_context({'trade_plan':plan}):
+    has_geometry=bool(VTE.has_geometry_context({'trade_plan':plan}))
+    if has_geometry:
         plan=VTE.prepare_row({'price':plan.get('entry_price'),'horizon':plan.get('horizon'),
             'research_decision':research_decision,'trade_plan':plan})['trade_plan']
     local_row={'asset':asset,'price':plan.get('entry_price'),'horizon':plan.get('horizon'),
                'research_decision':research_decision,'trade_plan':plan}
-    entry_timing=VTE.event_gate(local_row,plan.get('entry_price'),research_decision,datetime.now(timezone.utc))
+    entry_timing=(VTE.event_gate(local_row,plan.get('entry_price'),research_decision,datetime.now(timezone.utc))
+                  if has_geometry else
+                  {'eligible':True,'reason':'R40_GEOMETRY_NOT_APPLICABLE','status':'NOT_APPLICABLE'})
     plan['entry_timing_gate']=entry_timing
-    plan['execution_levels_ready']=bool(VTE.structural_event(local_row)
+    plan['execution_levels_ready']=bool(has_geometry and VTE.structural_event(local_row)
         and (plan.get('r66_geometry') or {}).get('eligible'))
     plan['execution_quote_gate']=quote_gate(plan.get('market_observed_at'),plan.get('horizon'),
                                             execution=True,asset=asset)
@@ -18894,13 +18914,15 @@ def final_execution_safety(asset,research_decision,plan):
     gate=VX.economics_gate(asset,plan) if research_decision in ('LONG','SHORT') else {
         'status':'NOT_APPLICABLE','eligible':False,'blockers':['NO_DIRECTION']
     }
-    context=VTE.context_gate({'asset':asset,'trade_plan':plan},datetime.now(timezone.utc))
+    context=(VTE.context_gate({'asset':asset,'trade_plan':plan},datetime.now(timezone.utc))
+             if has_geometry else
+             {'eligible':True,'reason':'R40_GEOMETRY_NOT_APPLICABLE','status':'NOT_APPLICABLE'})
     gate['context_freshness']=context
     gate['trend_event']=entry_timing
-    if research_decision in ('LONG','SHORT') and not entry_timing['eligible']:
+    if has_geometry and research_decision in ('LONG','SHORT') and not entry_timing['eligible']:
         gate.update(status='BLOCK',eligible=False)
         gate['blockers'].append(entry_timing['reason'])
-    if research_decision in ('LONG','SHORT') and not context['eligible']:
+    if has_geometry and research_decision in ('LONG','SHORT') and not context['eligible']:
         gate.update(status='BLOCK',eligible=False)
         gate['blockers'].append(context['reason'])
     if geometry_reason in ('R66_SENIOR_BREAK_NOT_HELD','R74_EVENT_TARGET_REACHED','R66_INVALID_GEOMETRY'):

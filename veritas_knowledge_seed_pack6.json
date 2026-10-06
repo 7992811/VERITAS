@@ -1,0 +1,1051 @@
+{
+  "pack_id": "VERITAS_GLOBAL_INVESTMENT_KNOWLEDGE_PACK_6_2026-10-06",
+  "schema_version": 2,
+  "purpose": "Cross-school evidence layer: regimes, trend, value, quality, carry, risk, macro, execution, anti-rules and conflict arbitration.",
+  "sources": [
+    {
+      "source_id": "KP6_BERKSHIRE_1994_INTRINSIC",
+      "title": "Berkshire Hathaway 1994 Chairman's Letter",
+      "authors": "Warren E. Buffett",
+      "year": 1994,
+      "source_type": "primary_manager_letter",
+      "url": "https://www.berkshirehathaway.com/letters/1994.html",
+      "evidence_grade": "B",
+      "claim": "Intrinsic value is the discounted value of cash that can be taken out of a business over its remaining life; estimates are inherently subjective and change with cash-flow and rate assumptions."
+    },
+    {
+      "source_id": "KP6_OAKTREE_CYCLES",
+      "title": "Oaktree memos on cycles and risk",
+      "authors": "Howard Marks",
+      "year": 2026,
+      "source_type": "primary_manager_memos",
+      "url": "https://www.oaktreecapital.com/insights",
+      "evidence_grade": "B",
+      "claim": "Investors cannot reliably know the future but can assess where they are in a cycle and adjust aggressiveness and risk accordingly."
+    },
+    {
+      "source_id": "KP6_AQR_TREND_CENTURY",
+      "title": "A Century of Evidence on Trend-Following Investing",
+      "authors": "Brian Hurst; Yao Hua Ooi; Lasse Heje Pedersen",
+      "year": 2017,
+      "source_type": "peer_reviewed",
+      "url": "https://www.aqr.com/Insights/Research/Journal-Article/A-Century-of-Evidence-on-Trend-Following-Investing",
+      "evidence_grade": "A",
+      "claim": "Time-series trend following has broad long-run evidence across asset classes and macro regimes, with implementation costs explicitly relevant."
+    },
+    {
+      "source_id": "KP6_AQR_FACTOR_CENTURY",
+      "title": "How Do Factor Premia Vary Over Time? A Century of Evidence",
+      "authors": "Antti Ilmanen; Ronen Israel; Rachel Lee; Tobias Moskowitz; Ashwin Thapar",
+      "year": 2021,
+      "source_type": "peer_reviewed",
+      "url": "https://www.aqr.com/Insights/Research/Journal-Article/How-Do-Factor-Premia-Vary-Over-Time-A-Century-of-Evidence",
+      "evidence_grade": "A",
+      "claim": "Value, momentum, carry and defensive premia have broad out-of-sample evidence, while factor timing is much less reliable after lags and trading costs."
+    },
+    {
+      "source_id": "KP6_AQR_VALUE_MOMENTUM",
+      "title": "Value and Momentum Everywhere",
+      "authors": "Cliff Asness; Tobias Moskowitz; Lasse Heje Pedersen",
+      "year": 2013,
+      "source_type": "peer_reviewed",
+      "url": "https://www.aqr.com/Insights/Datasets/Value-and-Momentum-Everywhere-Factors-Monthly",
+      "evidence_grade": "A",
+      "claim": "Value and momentum premia appear across multiple markets and are negatively related enough to justify separate factor treatment rather than forced blending."
+    },
+    {
+      "source_id": "KP6_KOIJEN_CARRY",
+      "title": "Carry",
+      "authors": "Ralph S.J. Koijen; Tobias J. Moskowitz; Lasse Heje Pedersen; Evert B. Vrugt",
+      "year": 2018,
+      "source_type": "peer_reviewed",
+      "url": "https://www.aqr.com/Insights/Research/Journal-Article/Carry",
+      "evidence_grade": "A",
+      "claim": "Carry predicts returns across asset classes but comes with regime and crash exposures; it is not free yield."
+    },
+    {
+      "source_id": "KP6_LO_TECHNICAL",
+      "title": "Foundations of Technical Analysis",
+      "authors": "Andrew W. Lo; Harry Mamaysky; Jiang Wang",
+      "year": 2000,
+      "source_type": "peer_reviewed",
+      "url": "https://www.nber.org/papers/w7613",
+      "evidence_grade": "A",
+      "claim": "Some technical patterns can be formalized and may contain incremental information, but statistical validation is required."
+    },
+    {
+      "source_id": "KP6_NYFED_LIQUIDITY",
+      "title": "Commonality in Liquidity",
+      "authors": "Federal Reserve Bank of New York research",
+      "year": 2001,
+      "source_type": "institutional_research",
+      "url": "https://www.newyorkfed.org/research/staff_reports/sr133.html",
+      "evidence_grade": "A",
+      "claim": "Bid-ask spread, depth and price impact are more informative liquidity dimensions than raw trading volume alone."
+    },
+    {
+      "source_id": "KP6_ALMGREN_CHRISS",
+      "title": "Optimal Execution of Portfolio Transactions",
+      "authors": "Robert Almgren; Neil Chriss",
+      "year": 2000,
+      "source_type": "foundational_execution",
+      "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=53501",
+      "evidence_grade": "A",
+      "claim": "Execution must balance market impact against timing risk; urgency and order size should affect execution style."
+    },
+    {
+      "source_id": "KP6_BRIDGEWATER_ALL_WEATHER",
+      "title": "The All Weather Story",
+      "authors": "Bridgewater Associates",
+      "year": 2024,
+      "source_type": "institutional_research",
+      "url": "https://www.bridgewater.com/research-and-insights/the-all-weather-story",
+      "evidence_grade": "B",
+      "claim": "Growth and inflation relative to expectations define distinct macro environments with different asset sensitivities."
+    },
+    {
+      "source_id": "KP6_DAMODARAN_VALUATION",
+      "title": "Damodaran Online valuation framework",
+      "authors": "Aswath Damodaran",
+      "year": 2026,
+      "source_type": "academic_practitioner",
+      "url": "https://pages.stern.nyu.edu/~adamodar/",
+      "evidence_grade": "B",
+      "claim": "Valuation should expose sensitivity to growth, margins, discount rates and terminal assumptions rather than rely on a single precise point estimate."
+    },
+    {
+      "source_id": "KP6_MAUBOUSSIN_BASE_RATES",
+      "title": "Bayes and Base Rates",
+      "authors": "Michael Mauboussin",
+      "year": 2024,
+      "source_type": "institutional_research",
+      "url": "https://www.morganstanley.com/im/en-us/individual-investor/insights/consilient-observer/bayes-and-base-rates.html",
+      "evidence_grade": "B",
+      "claim": "Forecasts should start from relevant base rates and update with case-specific evidence rather than rely only on an inside-view narrative."
+    },
+    {
+      "source_id": "KP6_KELLY",
+      "title": "A New Interpretation of Information Rate",
+      "authors": "J. L. Kelly Jr.",
+      "year": 1956,
+      "source_type": "foundational_theory",
+      "url": "https://doi.org/10.1002/j.1538-7305.1956.tb03809.x",
+      "evidence_grade": "B",
+      "claim": "Growth-optimal sizing depends on edge and odds, but estimated probabilities justify fractional rather than full Kelly exposure."
+    },
+    {
+      "source_id": "KP6_TALEB_FAT_TAILS",
+      "title": "Statistical Consequences of Fat Tails",
+      "authors": "Nassim Nicholas Taleb",
+      "year": 2020,
+      "source_type": "open_monograph",
+      "url": "https://arxiv.org/abs/2001.10488",
+      "evidence_grade": "B",
+      "claim": "Heavy tails and model uncertainty make Gaussian risk intuition unreliable and require explicit ruin/tail constraints."
+    },
+    {
+      "source_id": "KP6_HLZ_MULTIPLE_TESTING",
+      "title": "... and the Cross-Section of Expected Returns",
+      "authors": "Campbell Harvey; Yan Liu; Heqing Zhu",
+      "year": 2016,
+      "source_type": "peer_reviewed",
+      "url": "https://www.nber.org/papers/w20592",
+      "evidence_grade": "A",
+      "claim": "Searching many factors requires a materially higher statistical hurdle than one-off conventional significance tests."
+    },
+    {
+      "source_id": "KP6_BAILEY_DSR",
+      "title": "Deflated Sharpe Ratio",
+      "authors": "David H. Bailey; Marcos Lopez de Prado",
+      "year": 2014,
+      "source_type": "peer_reviewed",
+      "url": "https://doi.org/10.3905/jpm.2014.40.5.094",
+      "evidence_grade": "A",
+      "claim": "Backtest Sharpe should be adjusted for multiple trials, selection bias and non-normality before promotion."
+    },
+    {
+      "source_id": "KP6_CFTC_COT",
+      "title": "Commitments of Traders",
+      "authors": "U.S. Commodity Futures Trading Commission",
+      "year": 2026,
+      "source_type": "regulator_dataset",
+      "url": "https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm",
+      "evidence_grade": "A",
+      "claim": "COT data provide aggregate positioning context and crowding information but are not a high-frequency entry signal."
+    },
+    {
+      "source_id": "KP6_CBOE_VOL",
+      "title": "VIX term structure and volatility indexes",
+      "authors": "Cboe Global Markets",
+      "year": 2026,
+      "source_type": "exchange_dataset",
+      "url": "https://www.cboe.com/tradable_products/vix/term_structure/",
+      "evidence_grade": "A",
+      "claim": "Volatility state should be assessed using term structure and implied/realized context rather than spot VIX alone."
+    }
+  ],
+  "rules": [
+    {
+      "rule_id": "KP6_TREND_NATIVE_CONTINUATION",
+      "source_id": "KP6_AQR_TREND_CENTURY",
+      "school": "TREND",
+      "factor_family": "MOMENTUM",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "trend_direction_norm",
+          "op": "==",
+          "value": "LONG"
+        },
+        {
+          "field": "trend_score_norm",
+          "op": ">=",
+          "value": 0.6
+        }
+      ],
+      "prior_weight": 0.45,
+      "hypothesis": "A strong native-horizon uptrend is continuation evidence; price strength alone is not a reason to block participation.",
+      "mechanism": "Time-series momentum persistence."
+    },
+    {
+      "rule_id": "KP6_TREND_NATIVE_CONTINUATION_SHORT",
+      "source_id": "KP6_AQR_TREND_CENTURY",
+      "school": "TREND",
+      "factor_family": "MOMENTUM",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "trend_direction_norm",
+          "op": "==",
+          "value": "SHORT"
+        },
+        {
+          "field": "trend_score_norm",
+          "op": ">=",
+          "value": 0.6
+        }
+      ],
+      "prior_weight": 0.45,
+      "hypothesis": "A strong native-horizon downtrend is continuation evidence; a completed prior impulse does not by itself invalidate a fresh short scenario.",
+      "mechanism": "Time-series momentum persistence."
+    },
+    {
+      "rule_id": "KP6_HIGH_VOL_DELEVER",
+      "source_id": "KP6_TALEB_FAT_TAILS",
+      "school": "TAIL_RISK",
+      "factor_family": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "DELEVER",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "rv",
+          "op": ">",
+          "value": 0.08
+        }
+      ],
+      "prior_weight": 0.3,
+      "hypothesis": "Extreme realized volatility raises model and gap risk; keep direction separate from position size.",
+      "mechanism": "Fat tails and volatility clustering."
+    },
+    {
+      "rule_id": "KP6_SOURCE_DIVERGENCE_DELEVER",
+      "source_id": "KP6_NYFED_LIQUIDITY",
+      "school": "MICROSTRUCTURE",
+      "factor_family": "LIQUIDITY",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d"
+      ],
+      "action": "DELEVER",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "source_divergence",
+          "op": ">",
+          "value": 0.002
+        }
+      ],
+      "prior_weight": 0.4,
+      "hypothesis": "Large source divergence raises executable-price uncertainty and should reduce size rather than create a directional view.",
+      "mechanism": "Liquidity/adverse-selection risk."
+    },
+    {
+      "rule_id": "KP6_WIDE_SPREAD_DELEVER",
+      "source_id": "KP6_NYFED_LIQUIDITY",
+      "school": "MICROSTRUCTURE",
+      "factor_family": "LIQUIDITY",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h"
+      ],
+      "action": "DELEVER",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "spread_bps",
+          "op": ">",
+          "value": 20
+        }
+      ],
+      "prior_weight": 0.35,
+      "hypothesis": "Wide executable spreads reduce net edge and warrant smaller size even when direction is unchanged.",
+      "mechanism": "Transaction-cost and adverse-selection drag."
+    },
+    {
+      "rule_id": "KP6_FLOW_CONFIRM_LONG",
+      "source_id": "KP6_NYFED_LIQUIDITY",
+      "school": "MICROSTRUCTURE",
+      "factor_family": "ORDER_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h"
+      ],
+      "action": "LONG",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "taker_buy_share",
+          "op": ">",
+          "value": 0.57
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.15
+        }
+      ],
+      "prior_weight": 0.22,
+      "hypothesis": "Aggressive buy imbalance under elevated activity can confirm short-horizon continuation; volume alone is insufficient.",
+      "mechanism": "Order-flow information aggregation."
+    },
+    {
+      "rule_id": "KP6_FLOW_CONFIRM_SHORT",
+      "source_id": "KP6_NYFED_LIQUIDITY",
+      "school": "MICROSTRUCTURE",
+      "factor_family": "ORDER_FLOW",
+      "asset_scope": [
+        "BTC",
+        "ETH"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h"
+      ],
+      "action": "SHORT",
+      "status": "shadow",
+      "conditions": [
+        {
+          "field": "taker_buy_share",
+          "op": "<",
+          "value": 0.43
+        },
+        {
+          "field": "volume_ratio",
+          "op": ">",
+          "value": 1.15
+        }
+      ],
+      "prior_weight": 0.22,
+      "hypothesis": "Aggressive sell imbalance under elevated activity can confirm short-horizon continuation; volume alone is insufficient.",
+      "mechanism": "Order-flow information aggregation."
+    },
+    {
+      "rule_id": "KP6_POST_COST_RR_GOV",
+      "source_id": "KP6_ALMGREN_CHRISS",
+      "school": "EXECUTION",
+      "factor_family": "EXECUTION",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Expected move, spread, commissions, slippage and impact must be evaluated together before capital is committed.",
+      "mechanism": "Implementation shortfall."
+    },
+    {
+      "rule_id": "KP6_VALUE_RANGE_GOV",
+      "source_id": "KP6_BERKSHIRE_1994_INTRINSIC",
+      "school": "VALUE",
+      "factor_family": "VALUE",
+      "asset_scope": [
+        "NQ",
+        "MOEX"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Intrinsic value is a range with sensitivity to cash flows and rates, not a precise point and not an intraday entry timer.",
+      "mechanism": "Discounted cash-flow economics."
+    },
+    {
+      "rule_id": "KP6_VALUE_MOMENTUM_SEPARATE_GOV",
+      "source_id": "KP6_AQR_VALUE_MOMENTUM",
+      "school": "FACTOR",
+      "factor_family": "GOVERNANCE",
+      "asset_scope": [
+        "NQ",
+        "MOEX",
+        "GOLD",
+        "BRENT",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Value and momentum must remain separate factor votes with their own horizons and invalidation logic rather than being collapsed into one score.",
+      "mechanism": "Diversifying factor premia."
+    },
+    {
+      "rule_id": "KP6_CARRY_SEPARATE_GOV",
+      "source_id": "KP6_KOIJEN_CARRY",
+      "school": "CARRY",
+      "factor_family": "CARRY",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "CNYRUBF",
+        "GOLD",
+        "BRENT"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Carry is an independent premium and must not be treated as free yield or as a direct momentum signal.",
+      "mechanism": "Carry premia with regime/crash exposure."
+    },
+    {
+      "rule_id": "KP6_FACTOR_TIMING_GOV",
+      "source_id": "KP6_AQR_FACTOR_CENTURY",
+      "school": "FACTOR",
+      "factor_family": "GOVERNANCE",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Do not promote factor-timing rules unless they survive realistic data lags and transaction costs; static diversified premia have stronger evidence.",
+      "mechanism": "Out-of-sample robustness."
+    },
+    {
+      "rule_id": "KP6_MACRO_REGIME_GOV",
+      "source_id": "KP6_BRIDGEWATER_ALL_WEATHER",
+      "school": "MACRO",
+      "factor_family": "MACRO",
+      "asset_scope": [
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Classify growth and inflation relative to expectations before applying macro sensitivities; absolute levels alone are insufficient.",
+      "mechanism": "Regime-dependent asset sensitivity."
+    },
+    {
+      "rule_id": "KP6_BASE_RATE_GOV",
+      "source_id": "KP6_MAUBOUSSIN_BASE_RATES",
+      "school": "DECISION_SCIENCE",
+      "factor_family": "BASE_RATES",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Start forecasts from comparable historical base rates and update with case evidence; narrative confidence alone cannot set probability.",
+      "mechanism": "Bayesian forecasting discipline."
+    },
+    {
+      "rule_id": "KP6_FRACTIONAL_KELLY_GOV",
+      "source_id": "KP6_KELLY",
+      "school": "POSITION_SIZING",
+      "factor_family": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Use calibrated edge and uncertainty for sizing; full Kelly is an upper mathematical bound, not a default live allocation.",
+      "mechanism": "Growth-optimal sizing under estimation error."
+    },
+    {
+      "rule_id": "KP6_MULTIPLE_TESTING_GOV",
+      "source_id": "KP6_HLZ_MULTIPLE_TESTING",
+      "school": "RESEARCH_GOVERNANCE",
+      "factor_family": "VALIDATION",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "The evidence threshold rises with the number of tried variants; a lucky best backtest is not a validated edge.",
+      "mechanism": "Multiple-testing control."
+    },
+    {
+      "rule_id": "KP6_DEFLATED_SHARPE_GOV",
+      "source_id": "KP6_BAILEY_DSR",
+      "school": "RESEARCH_GOVERNANCE",
+      "factor_family": "VALIDATION",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Model promotion must correct Sharpe for selection bias, multiple trials and non-normality.",
+      "mechanism": "Backtest-overfitting control."
+    },
+    {
+      "rule_id": "KP6_COT_CONTEXT_GOV",
+      "source_id": "KP6_CFTC_COT",
+      "school": "POSITIONING",
+      "factor_family": "POSITIONING",
+      "asset_scope": [
+        "NQ",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "COT is a crowding/regime feature, not a minute-level entry trigger.",
+      "mechanism": "Aggregate positioning context."
+    },
+    {
+      "rule_id": "KP6_VOL_TERM_STRUCTURE_GOV",
+      "source_id": "KP6_CBOE_VOL",
+      "school": "VOLATILITY",
+      "factor_family": "VOLATILITY",
+      "asset_scope": [
+        "NQ"
+      ],
+      "horizons": [
+        "1h",
+        "4h",
+        "1d",
+        "3d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Use volatility term structure, implied/realized spread and skew together; spot volatility alone is incomplete.",
+      "mechanism": "Forward volatility expectations."
+    },
+    {
+      "rule_id": "KP6_TECH_PATTERN_VALIDATION_GOV",
+      "source_id": "KP6_LO_TECHNICAL",
+      "school": "TECHNICAL",
+      "factor_family": "VALIDATION",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Named chart patterns and indicator crosses require explicit out-of-sample evidence before they can carry directional weight.",
+      "mechanism": "Statistical validation of technical features."
+    },
+    {
+      "rule_id": "KP6_CYCLE_AGGRESSIVENESS_GOV",
+      "source_id": "KP6_OAKTREE_CYCLES",
+      "school": "CYCLES",
+      "factor_family": "RISK_APPETITE",
+      "asset_scope": [
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Use cycle location to alter aggressiveness and error preference, not as a precise directional forecast.",
+      "mechanism": "Risk appetite and cyclical positioning."
+    },
+    {
+      "rule_id": "KP6_VALUATION_SENSITIVITY_GOV",
+      "source_id": "KP6_DAMODARAN_VALUATION",
+      "school": "VALUATION",
+      "factor_family": "VALUE",
+      "asset_scope": [
+        "NQ",
+        "MOEX"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "action": "VALIDATION_ONLY",
+      "status": "governance",
+      "conditions": [],
+      "prior_weight": 0,
+      "hypothesis": "Store bear/base/bull valuation bands and sensitivity to growth, margins and discount rates rather than one point estimate.",
+      "mechanism": "Scenario valuation."
+    }
+  ],
+  "anti_rules": [
+    {
+      "rule_id": "KP6_AR_OVERBOUGHT_NOT_SHORT",
+      "school": "MOMENTUM",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "conditions": [],
+      "statement": "Overbought or a new high is not by itself a SHORT signal.",
+      "policy": "Require reversal/failed-breakout evidence before counter-trend entry."
+    },
+    {
+      "rule_id": "KP6_AR_IMPULSE_PASSED_NOT_VETO",
+      "school": "TREND",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "conditions": [
+        {
+          "field": "decision_sign",
+          "op": "!=",
+          "value": 0
+        }
+      ],
+      "statement": "A prior impulse having already moved is not by itself a reason to block a fresh directional signal.",
+      "policy": "Recompute remaining expected move, structural stop and post-cost asymmetry from the current price."
+    },
+    {
+      "rule_id": "KP6_AR_ALL_TF_ALIGNMENT_NOT_REQUIRED",
+      "school": "MULTI_TIMEFRAME",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "conditions": [],
+      "statement": "Perfect agreement across every timeframe is not required and can create systematically late entries.",
+      "policy": "Use higher timeframe for context, medium timeframe for structure and lower timeframe for execution."
+    },
+    {
+      "rule_id": "KP6_AR_VOLUME_NOT_LIQUIDITY",
+      "school": "MICROSTRUCTURE",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d"
+      ],
+      "conditions": [],
+      "statement": "High trading volume is not equivalent to high executable liquidity.",
+      "policy": "Use spread, depth, price impact and order-flow imbalance."
+    },
+    {
+      "rule_id": "KP6_AR_CHEAP_NOT_ENTRY",
+      "school": "VALUE",
+      "asset_scope": [
+        "NQ",
+        "MOEX"
+      ],
+      "horizons": [
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "conditions": [],
+      "statement": "Cheap valuation does not determine entry timing.",
+      "policy": "Value sets potential/anchor; price, catalyst and liquidity determine timing."
+    },
+    {
+      "rule_id": "KP6_AR_HIGH_WINRATE_NOT_EDGE",
+      "school": "RISK",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "conditions": [],
+      "statement": "High win rate does not guarantee positive expectancy.",
+      "policy": "Optimize expectancy after costs under win-rate, drawdown and tail-risk constraints."
+    },
+    {
+      "rule_id": "KP6_AR_BACKTEST_NOT_REALITY",
+      "school": "RESEARCH_GOVERNANCE",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "conditions": [],
+      "statement": "A best backtest is not evidence of a live edge after a large search.",
+      "policy": "Require walk-forward, unseen data, realistic costs, PBO/DSR controls and shadow-live evidence."
+    },
+    {
+      "rule_id": "KP6_AR_PROFIT_NOT_GOOD_PROCESS",
+      "school": "LEARNING",
+      "asset_scope": [
+        "BTC",
+        "ETH",
+        "NQ",
+        "MOEX",
+        "BRENT",
+        "GOLD",
+        "CNYRUBF"
+      ],
+      "horizons": [
+        "1m",
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+        "3d",
+        "7d"
+      ],
+      "conditions": [],
+      "statement": "A profitable trade can still be a bad decision; an unprofitable trade can still be a good decision.",
+      "policy": "Score outcome quality and decision/process quality separately."
+    }
+  ],
+  "conflicts": [
+    {
+      "conflict_id": "VALUE_VS_TREND",
+      "side_a": "VALUE",
+      "side_b": "TREND",
+      "resolution": "Do not average blindly. Value defines valuation asymmetry; trend/price structure determines timing. Averaging down is forbidden for trend positions and requires thesis re-underwriting for value positions."
+    },
+    {
+      "conflict_id": "MEAN_REVERSION_VS_MOMENTUM",
+      "side_a": "MEAN_REVERSION",
+      "side_b": "MOMENTUM",
+      "resolution": "Classify regime first. Range/failed-breakout can activate mean reversion; confirmed trend activates continuation. Opposite-school signals reduce size/confidence rather than automatically cancel both."
+    },
+    {
+      "conflict_id": "CONCENTRATION_VS_DIVERSIFICATION",
+      "side_a": "CONCENTRATION",
+      "side_b": "DIVERSIFICATION",
+      "resolution": "Concentration requires high-quality edge, bounded downside and known correlation. Statistical low-edge signals require broader diversification."
+    },
+    {
+      "conflict_id": "TAKE_PROFIT_VS_LET_RUN",
+      "side_a": "MEAN_REVERSION",
+      "side_b": "TREND",
+      "resolution": "Mean-reversion exits near equilibrium; trend exits trail structure. A single universal take-profit rule is invalid."
+    },
+    {
+      "conflict_id": "DISCRETION_VS_SYSTEMATIC",
+      "side_a": "DISCRETION",
+      "side_b": "SYSTEMATIC",
+      "resolution": "Discretion may generate hypotheses/context; systematic validation, sizing, execution and audit remain mandatory."
+    }
+  ]
+}

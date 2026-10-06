@@ -18,7 +18,7 @@ jobs:
       - name: Install runtime dependencies
         run: pip install -r requirements-intelligence.txt
       - name: Compile canonical runtime
-        run: python -m py_compile veritas_quote_time.py veritas_profit_protection.py veritas_position_guard.py veritas_execution.py veritas_broker.py veritas_instruments.py veritas_promotion.py veritas_risk.py veritas_live.py veritas_storage_guard.py veritas_market_runtime.py veritas_signal_core.py veritas_decision_signature.py veritas_asset_management_intelligence.py veritas_portfolio.py veritas_portfolio_runtime.py veritas_intelligence.py veritas_learning_index.py veritas_v90_ui.py
+        run: python -m py_compile veritas_quote_time.py veritas_profit_protection.py veritas_position_guard.py veritas_execution.py veritas_broker.py veritas_instruments.py veritas_promotion.py veritas_risk.py veritas_live.py veritas_storage_guard.py veritas_market_runtime.py veritas_knowledge_arbitration.py veritas_signal_core.py veritas_decision_signature.py veritas_asset_management_intelligence.py veritas_portfolio.py veritas_portfolio_runtime.py veritas_intelligence.py veritas_learning_index.py veritas_v90_ui.py
       - name: T-Invest read-only connection tests
         run: python -m unittest -v test_veritas_tbank.py
       - name: Execution safety tests
@@ -31,6 +31,8 @@ jobs:
         run: python -m unittest -v test_veritas_learning_index.py
       - name: Asset-management intelligence regressions
         run: python -m unittest -v test_veritas_management_intelligence.py
+      - name: Knowledge arbitration regressions
+        run: python -m unittest -v test_veritas_knowledge_arbitration.py
       - name: Paper signal UI regressions
         run: node tools/test_paper_ui.cjs
       - name: Trade accounting view regressions
