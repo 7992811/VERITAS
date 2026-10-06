@@ -12,6 +12,7 @@ import veritas_price_source as VPS
 import veritas_currency_portfolio as VCP
 import veritas_canonical_constitution as CTC
 import veritas_release as VR
+import veritas_timeframe_management as VTM
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
 VERSION=VR.PORTFOLIO_VERSION
@@ -2164,7 +2165,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     VPG.publish_quote(asset,quote)
     target_notional=target_fraction*nav
     import veritas_trend_entry as VTE
-    row=VTE.prepare_row(row,price)
+    row=VTE.prepare_row(row,price,ts)
     z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
     if z and not VPS.matches(dict(z),quote):
         _record_entry_outcome(row,'BLOCKED','POSITION_SOURCE_MISMATCH')
@@ -2200,6 +2201,9 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                              default=str),flush=True)
             return
     row['_fill_economics_gate']=final_gate
+    import veritas_user_teaching as VUT
+    teaching_trace=VUT.entry_trace((row.get('trade_plan') or {}).get('timeframe_entry_context'),name) if (row.get('trade_plan') or {}).get('structural_policy_version') else None
+    entry_event_id=(VTE.context_of(row).get('event') or {}).get('event_id')
     current=abs(float(z['units'])*price) if z else 0.0
     add=max(0.0,target_notional-current)
     if add<=max(1.0,0.0025*nav):
@@ -2225,7 +2229,9 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         # Preserve the original structural stop/setup on adds. An add is not
         # permission to silently switch the active trade to another horizon's stop.
         old_payload=_position_payload(dict(z))
-        old_payload.update({'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+        add_patch={'last_add_pwin':row['_pwin'],'last_add_event_id':entry_event_id,
+                   'last_add_teaching_trace':teaching_trace,'last_add_canonical_admission':row.get('_canonical_admission')}
+        old_payload.update({**add_patch,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
                             'last_signal_horizon':row.get('horizon'),
                             'signal':(row.get('institutional_signal') or {}).get('investor_signal'),
                             'soft_invalidation_count':0,
@@ -2238,7 +2244,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                             'broker_quantity_source':None})
         c.execute('UPDATE paper_positions SET units=%s,avg_entry_price=%s,last_price=%s,target_fraction=%s,updated_at=%s,payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s',
                   (old_units+units,avg,price,target_fraction,ts,json.dumps(old_payload),name,asset))
-        c.execute('UPDATE paper_trades SET fees_rub=fees_rub+%s,max_fraction=GREATEST(max_fraction,%s),payload=payload || %s::jsonb WHERE trade_id=%s',(fee,target_fraction,json.dumps({'last_add_pwin':row['_pwin'],'last_entry_execution_model':fill,'last_client_order_id':intent.client_order_id},ensure_ascii=False,default=str),z['active_trade_id']))
+        c.execute('UPDATE paper_trades SET fees_rub=fees_rub+%s,max_fraction=GREATEST(max_fraction,%s),payload=COALESCE(payload,\'{}\'::jsonb) || %s::jsonb WHERE trade_id=%s',(fee,target_fraction,json.dumps({**add_patch,'last_entry_execution_model':fill,'last_client_order_id':intent.client_order_id},ensure_ascii=False,default=str),z['active_trade_id']))
         trade_id=z['active_trade_id']
     else:
         trade_id=f"{name}:{asset}:{int(time.time()*1000)}"
@@ -2249,6 +2255,20 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         payload={'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
                  'price_source_lock':source_lock,'price_source_status':'OK',
                  'entry_execution_source_identity':source_lock,
+                 'structural_policy_version':plan.get('structural_policy_version'),
+                 'user_teaching_id':plan.get('user_teaching_id'),'user_teaching_trace':teaching_trace,
+                 'entry_event_snapshot':plan.get('entry_event_snapshot'),
+                 'timeframe_entry_context':plan.get('timeframe_entry_context'),
+                 'entry_canonical_admission':row.get('_canonical_admission'),
+                 'fill_economics_gate':final_gate,
+                 'initial_stop_price':plan.get('stop_price'),'take_price':plan.get('target_price'),
+                 'target_price':plan.get('target_price'),'initial_take_price':plan.get('target_price'),
+                 'stop_timeframe':row.get('horizon'),'target_timeframe':row.get('horizon'),
+                 'atr_timeframe':row.get('horizon'),'entry_atr':plan.get('atr'),
+                 'entry_decision_snapshot':{'asset':asset,'horizon':row.get('horizon'),
+                     'research_decision':direction,'signal_tier':row.get('signal_tier'),
+                     'confidence':row.get('confidence'),'market_observed_at':quote['observed_at'],
+                     'trade_plan':dict(plan)},
                  'entry_primary_source':source_lock['primary_source'],
                  'entry_execution_observed_at':quote['observed_at'],
                  'source_locked_mark':{'identity':source_lock,'price':price,'observed_at':quote['observed_at']},
@@ -2275,8 +2295,11 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         c.execute('INSERT INTO paper_trades(trade_id,portfolio_name,asset,direction,opened_at,avg_entry_price,max_fraction,fees_rub,status,setup,horizon,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(trade_id,name,asset,direction,ts,fill_price,target_fraction,fee,'OPEN',setup,row.get('horizon'),json.dumps(payload,ensure_ascii=False,default=str)))
         c.execute('INSERT INTO paper_positions(portfolio_name,asset,direction,units,avg_entry_price,opened_at,updated_at,active_trade_id,stop_price,target_fraction,last_price,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)',(name,asset,direction,units,fill_price,ts,ts,trade_id,(row.get('trade_plan') or {}).get('stop_price'),target_fraction,price,json.dumps(payload,ensure_ascii=False,default=str)))
     order_payload={'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+                   'entry_event_id':entry_event_id,
                    'price_source_identity':source_lock,'market_observed_at':quote['observed_at'],
-                   'entry_timing':row.get('_r65_entry_timing'),
+                   'entry_timing':final_gate.get('trend_event'),
+                   'user_teaching_trace':teaching_trace,'canonical_admission':row.get('_canonical_admission'),
+                   'fill_economics_gate':final_gate,
                    'execution_model':fill,'order_intent':intent.to_dict()}
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,trade_id,ts,asset,side,fill_price,add,fee,add/max(nav,1),reason,json.dumps(order_payload,ensure_ascii=False,default=str),intent.client_order_id))
     _record_entry_outcome(row,'EXECUTED','ORDER_RECORDED',fill_price=fill_price,order_id=intent.client_order_id)
@@ -3739,11 +3762,12 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
     except Exception:
         pass
 
-    # Profit protection from observed MFE, applied before management decisions.
+    # Legacy MFE locks; tagged positions use confirmed same-timeframe swings.
     try:
         positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
         for z0 in positions:
             z=dict(z0); payload=_v90j_json(z.get('payload'))
+            if VTM.owns_position(z): continue
             if str(payload.get('data_integrity_status') or 'OK')!='OK':
                 continue
             mfe=float(payload.get('mfe_pct') or 0.0) / 100.0
@@ -5363,6 +5387,7 @@ def _v90tr_apply(c,name,candidates,prices,ts):
         return changes
     for z0 in positions or []:
         z=dict(z0)
+        if VTM.owns_position(z): continue
         asset=str(z.get('asset') or '')
         if asset not in (prices or {}):
             continue
