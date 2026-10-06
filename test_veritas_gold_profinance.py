@@ -59,11 +59,12 @@ class GoldProFinancePrimaryTests(unittest.TestCase):
            "payload":{"price_source_lock":{
                "version":"R80_SOURCE_LOCK","asset":"GOLD",
                "key":"PROXY:GLD PROXY BRIDGE",
-               "primary_source":"GLD proxy bridge","contract_id":None}}}
+               "primary_source":"GLD proxy bridge","contract_id":"GC=F:LEGACY"}}}
         q=VPG.fetch_guard_quote({"_yahoo_series":series},"GOLD",[z])
         self.assertTrue(q,q)
         self.assertEqual(q["source_names"]["primary"],"GLD proxy bridge")
         self.assertEqual(q["verification_mode"],"LEGACY_SAME_SOURCE_PROXY_PROTECTION_ONLY")
+        self.assertEqual(q["contract"]["secid"],"GC=F:LEGACY")
         self.assertAlmostEqual(q["price"],4110.0*(101.0/101.0))
 
 
