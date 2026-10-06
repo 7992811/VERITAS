@@ -5108,7 +5108,8 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     current=abs(float(z.get('units') or 0.0)*actual)/max(float(nav),1.0)
     full=float(target_fraction or 0.0)<=0.0
     full_ok=reason.startswith((
-        'STOP','HARD_THESIS','V842_CONFIRMED_DIRECTION_FLIP','STRUCTURE_BREAK',
+        'STOP','TAKE_PROFIT','HARD_THESIS','V842_CONFIRMED_DIRECTION_FLIP',
+        'STRUCTURE_BREAK','STRUCTURE_EXHAUSTION','INSTRUMENT_REPLACED',
         'PORTFOLIO_HARD_STOP','RISK_HARD_STOP','PRODUCTION_CANDIDATE_REBASE',
         'LEGACY_KERNEL_REBASE','SOURCE_INCIDENT_QUARANTINE'))
     partial_ok=(not full and (
