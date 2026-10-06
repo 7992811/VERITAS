@@ -150,6 +150,31 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.assertNotIn(SERVICE_KEY, json.dumps(response))
         self.assertNotIn(KEY.decode(), json.dumps(response))
 
+    def test_status_reports_live_admission_without_disabling_closes_or_touching_dependencies(self):
+        def checker(*args, **kwargs):
+            self.fail("Status must not invoke the live account admission checker")
+        self.coordinator.execution_enabled = True
+        cases = (
+            ("production", None, False, "LIVE_ACCOUNT_ADMISSION_REQUIRED"),
+            ("production", checker, True, None),
+            ("sandbox", None, False, None),
+        )
+        for environment, admission, configured, reason in cases:
+            with self.subTest(environment=environment, configured=configured):
+                self.coordinator.adapter.environment = environment
+                self.coordinator.live_admission = admission
+                application = self.application()
+                response, status = self.request("status", application=application)
+                self.assertEqual(status, 200)
+                self.assertTrue(response["execution_enabled"])
+                self.assertIs(response["live_account_admission_configured"], configured)
+                self.assertEqual(response["new_risk_block_reason"], reason)
+                self.assertFalse(application._ready)
+                self.assertEqual(self.connections, 0)
+                self.assertEqual(self.ledger.initializations, 0)
+                self.assertEqual(self.facts.calls, [])
+                self.assertEqual(self.coordinator.calls, [])
+
     def test_authentication_precedes_database_schema_and_broker_access(self):
         headers_cases = ({}, {"X-Veritas-Trade-Key": "wrong"},
                          {"x-veritas-trade-key": SERVICE_KEY, "X-Veritas-Trade-Key": SERVICE_KEY})
