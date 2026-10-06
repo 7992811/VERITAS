@@ -5123,6 +5123,51 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         return 0.0
     if reason=='STOP' and VPG.protective_reason(z,q,VPG.utc_datetime(ts))!='STOP':
         return 0.0
+
+    # CTC lifecycle: the first take-profit harvests part of a position and keeps
+    # a structural runner whenever the 5% position step permits it. Never take
+    # discretionary profit unless the whole-trade result is positive after costs.
+    if full and reason.startswith('TAKE_PROFIT'):
+        trade=(c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
+                         (z.get('active_trade_id'),)).fetchone()
+               if z.get('active_trade_id') else None)
+        assessment=VPG.profit_exit_assessment(
+            z,q,dict(trade or {}),nav,getattr(_vp_base,'COMMISSION',VC.COMMISSION_RATE))
+        if not assessment.get('eligible'):
+            print(json.dumps({'event':'CTC_V2_TP_SUPPRESSED','portfolio':name,
+                              'asset':z.get('asset'),'reason':assessment.get('reason'),
+                              'projected_net_pnl_rub':assessment.get('net_pnl_rub')},
+                             ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+            return 0.0
+        policy=dict(POLICIES.get(str(name)) or {})
+        step=float(policy.get('position_step') or CTC.LIFECYCLE_POLICY['minimum_position_step'])
+        payload=_canonical_payload(z)
+        peak=max(current,float(payload.get('peak_fraction') or 0.0),
+                 float((trade or {}).get('max_fraction') or 0.0))
+        ratio=(float(CTC.LIFECYCLE_POLICY['aggressive_tp_runner_ratio'])
+               if str(name)=='Aggressive'
+               else float(CTC.LIFECYCLE_POLICY['default_tp_runner_ratio']))
+        desired=max(step,math.floor((peak*ratio)/step+1e-9)*step)
+        # A 10%+ position must realize at least one 5% step and keep a runner.
+        if current>=2.0*step-1e-9:
+            desired=min(desired,current-step)
+            desired=max(step,desired)
+            result=_vp_base.CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE(
+                c,p,name,dict(z,_execution_quote=q),actual,desired,nav,ts,
+                'TAKE_PROFIT_PARTIAL_CTC_V2')
+            if result:
+                patch={'r17_tp1_done':True,'r17_tp1_at':str(ts),
+                       'r17_tp1_price':actual,'runner_floor_fraction':desired,
+                       'profit_exit_policy':'CTC_V2_PARTIAL_TP_THEN_STRUCTURAL_RUNNER',
+                       'profit_exit_assessment':assessment}
+                c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                          "WHERE active_trade_id=%s",
+                          (json.dumps(patch,ensure_ascii=False,default=str),z.get('active_trade_id')))
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                          "WHERE trade_id=%s",
+                          (json.dumps(patch,ensure_ascii=False,default=str),z.get('active_trade_id')))
+            return result
+
     return _vp_base.CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE(
         c,p,name,dict(z,_execution_quote=q),actual,target_fraction,nav,ts,reason)
 
