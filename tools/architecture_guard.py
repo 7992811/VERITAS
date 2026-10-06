@@ -62,6 +62,7 @@ def _canonical_static_contract():
         "out=dict(VCR.evaluate(",
         "FINAL_RUNTIME_AUTHORITY_VERSION=CTC.BASIS_RUNTIME",
         "_candidate_book_v84=VCR.candidate_book",
+        "_currency_candidate_book=VCR.currency_candidate_book",
         "_desired_fraction=_canonical_desired_fraction",
         "FINAL_OPEN_OR_ADD=canonical_open_or_add",
         "FINAL_CLOSE_OR_REDUCE=canonical_close_or_reduce",
@@ -86,6 +87,8 @@ def _canonical_static_contract():
         "_close_or_reduce=_VERITAS_RUNTIME.FINAL_CLOSE_OR_REDUCE",
         "CANONICAL_ACCOUNTING_OPEN_OR_ADD=_open_or_add",
         "CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE=_close_or_reduce",
+        "elif mode=='CURRENCY':",
+        "base_book=_currency_candidate_book(summary)",
     ):
         if marker not in portfolio:
             failures.append(f"missing portfolio canonical contract: {marker}")
@@ -102,6 +105,9 @@ def _canonical_static_contract():
 
     if "import veritas_portfolio" in canonical:
         failures.append("canonical runtime must not import legacy portfolio engine")
+    for marker in ("def currency_candidate_book(summary):","def local_confirmation_gate(row,event=None):"):
+        if marker not in canonical:
+            failures.append(f"canonical execution guard missing: {marker}")
     return failures
 
 def main():

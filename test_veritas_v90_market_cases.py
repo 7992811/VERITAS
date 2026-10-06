@@ -118,10 +118,11 @@ class MarketCaseRegressionTests(unittest.TestCase):
         row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
         out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
         # Low fixed R/R is a soft veto when the target remains positive after
-        # modeled costs. Canonical admission starts only a bounded probe.
+        # modeled costs. Owner policy keeps Aggressive participation at the 50%
+        # floor, but does not grant the 100% SUPER size until the soft veto clears.
         self.assertTrue(out['open'], out)
         self.assertEqual(out['reason'], 'CANONICAL_SIGNAL_PROBE')
-        self.assertLessEqual(out['fraction'], 0.25)
+        self.assertEqual(out['fraction'], 0.50)
         self.assertNotIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',out.get('hard_economics_blockers',[]))
         self.assertNotIn('EXPECTED_MOVE_BELOW_COST_BUFFER',out.get('hard_economics_blockers',[]))
 
