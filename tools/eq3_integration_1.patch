@@ -1,0 +1,269 @@
+diff --git a/test_veritas_architecture_v2.py b/test_veritas_architecture_v2.py
+index 69b5404..46486bf 100644
+--- a/test_veritas_architecture_v2.py
++++ b/test_veritas_architecture_v2.py
+@@ -44,3 +44,3 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
+         self.assertEqual(tuple(s["portfolios"]), CTC.PORTFOLIO_ORDER)
+-        self.assertIn("five-portfolio", s["product_version"])
++        self.assertIn("execution-quality-v3", s["product_version"])
+ 
+diff --git a/test_veritas_canonical_constitution.py b/test_veritas_canonical_constitution.py
+index a3e4936..e354ea8 100644
+--- a/test_veritas_canonical_constitution.py
++++ b/test_veritas_canonical_constitution.py
+@@ -48,3 +48,3 @@ class CanonicalConstitutionCurrentRuntimeAlignmentTests(unittest.TestCase):
+ 
+-    def test_minimum_move_formula_matches_r85_execution(self):
++    def test_minimum_move_formula_matches_execution_quality(self):
+         import veritas_costs as VC
+@@ -54,3 +54,3 @@ class CanonicalConstitutionCurrentRuntimeAlignmentTests(unittest.TestCase):
+             VX.minimum_expected_move_pct(VC.ROUND_TRIP_RATE),
+-            max(0.0019, 1.1 * 0.0016),
++            max(0.0019, 2.0 * 0.0016),
+         )
+diff --git a/test_veritas_currency_portfolio.py b/test_veritas_currency_portfolio.py
+index d6e3407..1a34512 100644
+--- a/test_veritas_currency_portfolio.py
++++ b/test_veritas_currency_portfolio.py
+@@ -89,3 +89,4 @@ class CurrencyPortfolioTests(TestCase):
+         cur=C.decorate_report(original)['portfolios'][0]
+-        self.assertEqual([x['asset'] for x in cur['positions']],['CNYRUBF'])
++        self.assertEqual([x['asset'] for x in cur['positions']],['CNYRUBF','BTC'])
++        self.assertEqual([x['asset'] for x in cur['quarantined_positions']],['BTC'])
+         self.assertEqual([x['asset'] for x in cur['admission_trace']],['CNYRUBF'])
+diff --git a/test_veritas_r82_cost_policy.py b/test_veritas_r82_cost_policy.py
+index bda90f2..f0eb99e 100644
+--- a/test_veritas_r82_cost_policy.py
++++ b/test_veritas_r82_cost_policy.py
+@@ -36,5 +36,5 @@ class CostPolicyTests(unittest.TestCase):
+         self.assertAlmostEqual(g['modeled_execution_cost_pct'], (.04+101*.0004)/100)
+-        self.assertEqual(g['minimum_expected_move_pct'], .0019)
++        self.assertEqual(g['minimum_expected_move_pct'], max(.0019, 2*g['modeled_round_trip_cost_pct']))
+         self.assertAlmostEqual(X.round_trip_cost_pct(), .0016)
+-        self.assertAlmostEqual(X.minimum_expected_move_pct(.003), .0033)
++        self.assertAlmostEqual(X.minimum_expected_move_pct(.003), .006)
+         self.assertTrue(g['eligible'])
+diff --git a/test_veritas_single_source.py b/test_veritas_single_source.py
+index bb05d09..b705590 100644
+--- a/test_veritas_single_source.py
++++ b/test_veritas_single_source.py
+@@ -24,2 +24,3 @@ class SingleSourceTests(unittest.TestCase):
+                     _alignment_count=3, entry_quality='CONFIRMED_TREND',
++                    _local_execution_context={'same_direction_count':1,'opposite_direction_count':0},
+                     horizon_structure=dict(direction='SHORT', score=.9, state='CONFIRMED_TREND'),
+diff --git a/test_veritas_tbank.py b/test_veritas_tbank.py
+index 038eefb..f9b096c 100644
+--- a/test_veritas_tbank.py
++++ b/test_veritas_tbank.py
+@@ -21,2 +21,4 @@ class FakeReader:
+         self.calls.append((name, kw))
++        if name == 'trading_status':
++            return {'trading_status':'SECURITY_TRADING_STATUS_NORMAL_TRADING','api_trade_available_flag':True}
+         if name == 'accounts':
+@@ -74,3 +76,3 @@ class ConnectionTests(unittest.TestCase):
+         self.assertEqual(candles['candles'][0]['volume_lots'],20)
+-        self.assertFalse(c.status()['paper_source_switch_enabled'])
++        self.assertTrue(c.status()['paper_source_switch_enabled'])
+ 
+@@ -246,3 +248,3 @@ class MultiAssetHistoryTests(unittest.TestCase):
+         calls=[kw for name,kw in c.reader.calls if name=='candles']
+-        self.assertEqual(len(calls),18)
++        self.assertEqual(len(calls),24)
+         self.assertEqual(sum(name=='accounts' for name,_ in c.reader.calls),1)
+@@ -254,3 +256,5 @@ class MultiAssetHistoryTests(unittest.TestCase):
+             end=datetime.fromisoformat(kw['to'].replace('Z','+00:00'))
+-            self.assertEqual((end-begin).days,config[1])
++            self.assertEqual((end-begin).days,min(7,config[1]) if kw['interval']=='CANDLE_INTERVAL_HOUR' else config[1])
++        hourly=[kw for kw in calls if kw['interval']=='CANDLE_INTERVAL_HOUR']
++        self.assertEqual(len(hourly),9)  # 3 instruments x 3 bounded 7-day chunks.
+ 
+diff --git a/test_veritas_timeframe_policy.py b/test_veritas_timeframe_policy.py
+index 008a9b3..9d595ed 100644
+--- a/test_veritas_timeframe_policy.py
++++ b/test_veritas_timeframe_policy.py
+@@ -62,2 +62,4 @@ def structural_row(clock, *, timeframe="5m", asset="NQ", direction="LONG",
+            "horizon_structure":{"direction":direction,"state":"CONFIRMED_TREND","score":.90},
++           "independent_evidence_families":5,
++           "_local_execution_context":{"same_direction_count":1,"opposite_direction_count":0},
+            "timeframe_entry_context":ctx,
+@@ -92,2 +94,3 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
+     def row_for(self, name, **kwargs):
++        kwargs.setdefault("timeframe","1h" if name=="Champion" else "5m")
+         return structural_row(self.clock, asset="CNYRUBF" if name == "Currency" else "NQ", **kwargs)
+@@ -129,5 +132,5 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
+             with self.subTest(portfolio=name):
+-                row = self.row_for(name, signal_age=650)
++                row = self.row_for(name, signal_age=2*TS.timeframe_seconds("1h" if name=="Champion" else "5m")+50)
+                 original = deepcopy(row["timeframe_entry_context"]["event"])
+-                self.assertLess(self.clock.timestamp()-row["timeframe_entry_context"]["closed_at"], 300)
++                self.assertLess(self.clock.timestamp()-row["timeframe_entry_context"]["closed_at"], TS.timeframe_seconds(row["horizon"]))
+                 row["trend_entry_context"] = {
+@@ -145,3 +148,3 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
+             with self.subTest(portfolio=name):
+-                row = self.row_for(name, timeframe="4h")
++                row = self.row_for(name, timeframe="1h" if name=="Impulse" else "4h")
+                 event = deepcopy(row["timeframe_entry_context"]["event"])
+@@ -159,3 +162,3 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
+                     self.assertEqual({plan[k] for k in ("horizon", "execution_timeframe", "management_horizon",
+-                                                       "atr_timeframe", "stop_timeframe", "target_timeframe")}, {"4h"})
++                                                       "atr_timeframe", "stop_timeframe", "target_timeframe")}, {row["horizon"]})
+                 self.assertEqual(result["economics"]["entry_geometry"]["stop_price"], event["stop_price"])
+@@ -203,3 +206,3 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
+     def test_fresh_quote_before_confirmation_cannot_execute_a_later_breakout(self):
+-        row = structural_row(self.clock)
++        row = structural_row(self.clock,timeframe="1h")
+         event = row["timeframe_entry_context"]["event"]
+diff --git a/test_veritas_v90_market_cases.py b/test_veritas_v90_market_cases.py
+index 7598fee..75a5085 100644
+--- a/test_veritas_v90_market_cases.py
++++ b/test_veritas_v90_market_cases.py
+@@ -45,2 +45,3 @@ class MarketCaseRegressionTests(unittest.TestCase):
+                     _alignment_count=3, entry_quality='CONFIRMED_TREND',
++                    _local_execution_context={'same_direction_count':1,'opposite_direction_count':0},
+                     horizon_structure=dict(direction='SHORT', score=.85, state='CONFIRMED_TREND'),
+diff --git a/tools/architecture_guard.py b/tools/architecture_guard.py
+index 7eaeafe..64df7f8 100644
+--- a/tools/architecture_guard.py
++++ b/tools/architecture_guard.py
+@@ -9,2 +9,5 @@ from pathlib import Path
+ LIMITS = {
++    "veritas_direct_cny.py": {"max_lines":250,"max_redefinitions":0,"max_duplicate_names":0},
++    "veritas_strategy_quality.py": {"max_lines":380,"max_redefinitions":0,"max_duplicate_names":0},
++    "veritas_strategy_roles.py": {"max_lines":120,"max_redefinitions":0,"max_duplicate_names":0},
+     "veritas_intelligence.py": {"max_lines": 19254, "max_redefinitions": 35, "max_duplicate_names": 32},
+diff --git a/veritas_canonical_constitution.py b/veritas_canonical_constitution.py
+index 263110e..1e012ef 100644
+--- a/veritas_canonical_constitution.py
++++ b/veritas_canonical_constitution.py
+@@ -14,2 +14,14 @@ BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
+ 
++STRATEGY_EPOCH = "EQ3_2026_10_06"
++STRATEGY_ROLE_POLICY = {
++    "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
++    "AGGRESSIVE": {"name":"CONFIRMED_TREND","horizons":("5m","1h","4h","1d"),
++                   "require_trend":True,"min_structure_score":0.65,"min_independent":3},
++    "CORE": {"name":"CHAMPION_CONTROL","horizons":("1h","4h","1d","3d"),
++             "require_trend":True,"min_structure_score":0.70,"min_independent":3},
++    "CHALLENGER": {"name":"CHALLENGER_LOCAL_TRIGGER","horizons":("5m","1h","4h"),
++                   "require_trend":True,"min_structure_score":0.70,"min_independent":4,
++                   "variant":"MATCHED_EVENT_PAPER_ONLY"},
++}
++
+ # Explicit owner correction, 2026-10-06. These are operational safeguards;
+@@ -63,3 +75,4 @@ COST_POLICY = {
+     "minimum_expected_move_floor_pct": 0.0019,
+-    "minimum_expected_move_formula": "max(0.19%, 1.1 * modeled_round_trip_cost)",
++    "entry_cost_multiple": 2.0,
++    "minimum_expected_move_formula": "max(0.19%, 2.0 * modeled_round_trip_cost)",
+     "funding_annual_rate": 0.16,
+@@ -250,2 +263,3 @@ LIFECYCLE_POLICY = {
+     "default_tp_runner_ratio": 0.50,
++    "strong_trend_runner_ratio": 0.70,
+     "aggressive_tp_runner_ratio": 0.60,
+diff --git a/veritas_canonical_runtime.py b/veritas_canonical_runtime.py
+index 93adb63..df6f933 100644
+--- a/veritas_canonical_runtime.py
++++ b/veritas_canonical_runtime.py
+@@ -13,2 +13,3 @@ import veritas_price_source as VPS
+ import veritas_trend_entry as VTE
++import veritas_strategy_roles as VROLE
+ import veritas_timeframe_policy as TFP
+@@ -227,2 +228,5 @@ def evaluate(row, policy, drawdown, now=None):
+ 
++    role=VROLE.gate(work,str(p.get("mode") or ""))
++    if not role.get("eligible"):
++        return {"open":False,"fraction":0.0,"reason":role["reason"],"hard_veto":True,"role_gate":role,"canonical_stage":"THESIS"}
+     fraction=full_fraction
+@@ -349,4 +353,2 @@ def aggressive_candidate_book(summary, candidates=None):
+ def transition_candidate_book(summary, base_book, mode=None):
+-    # Current published direction is already authoritative; do not synthesize a
+-    # second legacy direction here.
+-    return {k:dict(v) for k,v in (base_book or {}).items()}
++    return VROLE.route(summary,base_book,mode,_prepare_candidate)
+diff --git a/veritas_costs.py b/veritas_costs.py
+index 27a2151..16db4b7 100644
+--- a/veritas_costs.py
++++ b/veritas_costs.py
+@@ -43,2 +43,4 @@ def policy():
+                 cost_buffer_multiple=COST_BUFFER_MULTIPLE,
++                entry_cost_multiple=CTC.COST_POLICY["entry_cost_multiple"],
++                minimum_expected_move_formula=CTC.COST_POLICY["minimum_expected_move_formula"],
+                 funding_annual_rate=FUNDING_ANNUAL_RATE,
+diff --git a/veritas_currency_portfolio.py b/veritas_currency_portfolio.py
+index 8c61303..224b7b1 100644
+--- a/veritas_currency_portfolio.py
++++ b/veritas_currency_portfolio.py
+@@ -84,4 +84,3 @@ def decorate_report(report):
+         q['current_cny_admission']=trace[0] if trace else None
+-        q['positions']=[x for x in (q.get('positions') or [])
+-                        if str((x or {}).get('asset') or '')==ASSET]
++        q['positions']=list(q.get('positions') or [])  # Never hide an actual ledger position.
+         if bad_positions:
+@@ -89,2 +88,3 @@ def decorate_report(report):
+             q['quarantined_position_count']=len(bad_positions)
++            q['quarantined_positions']=bad_positions
+         q.update({
+diff --git a/veritas_execution.py b/veritas_execution.py
+index 428f78e..ab4d59e 100644
+--- a/veritas_execution.py
++++ b/veritas_execution.py
+@@ -23,3 +23,3 @@ MIN_EXPECTED_MOVE_PCT = max(float(CTC.COST_POLICY["minimum_expected_move_floor_p
+                                             str(CTC.COST_POLICY["minimum_expected_move_floor_pct"]))))
+-MIN_MOVE_COST_MULTIPLE = VC.COST_BUFFER_MULTIPLE
++MIN_MOVE_COST_MULTIPLE = float(CTC.COST_POLICY["entry_cost_multiple"])
+ MOVE_POLICY_VERSION = VC.VERSION
+diff --git a/veritas_intelligence.py b/veritas_intelligence.py
+index fe9fae4..235a049 100644
+--- a/veritas_intelligence.py
++++ b/veritas_intelligence.py
+@@ -15,2 +15,3 @@ import veritas_trade_view as VTV
+ import veritas_tbank as VTB
++import veritas_direct_cny as VCNY, veritas_strategy_quality as VSQ
+ from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
+@@ -16817,2 +16818,4 @@ class H(BaseHTTPRequestHandler):
+                     self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
++            elif urlparse(self.path).path == '/api/v1/strategy-quality':
++                self.reply({**VSQ.snapshot(),'cny_feed':VCNY.status()})
+             elif urlparse(self.path).path == '/integrations/tbank':
+@@ -17237,10 +17240,3 @@ def _v90_cny_5m_bars(force=False):
+ def _cnyrubf_market():
+-    raw=dict(_v90_base_cnyrubf_market())
+-    bars5=_v90_cny_5m_bars()
+-    raw['canonical_five_minute_bars']=bars5
+-    raw['intraday_bars']=bars5
+-    raw['intraday_5m']=bars5
+-    raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
+-    raw['direction_level_resolutions']=['5m','1h','4h','1d','3d','7d']
+-    return raw
++    return VCNY.market_or_fallback(_v90_base_cnyrubf_market,_moex_futures_current_quote)
+ 
+@@ -19117,3 +19113,3 @@ def main():
+                                'manager_corpus': manager_corpus_summary()})
+-    if pg_boot.get('ok') and VP is not None: VPG.start(globals())
++    if pg_boot.get('ok') and VP is not None: VPG.start(globals()); VSQ.start(pg_connect,emit)
+     threading.Thread(target=loop, daemon=True).start()
+diff --git a/veritas_portfolio.py b/veritas_portfolio.py
+index 2c8a5ca..92ce6eb 100644
+--- a/veritas_portfolio.py
++++ b/veritas_portfolio.py
+@@ -14,2 +14,3 @@ import veritas_canonical_constitution as CTC
+ import veritas_release as VR
++import veritas_strategy_quality as VSQ
+ import veritas_timeframe_management as VTM
+@@ -2254,3 +2255,3 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
+         canonical_setup_id=_portfolio_canonical_setup_id(row)
+-        payload={'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
++        payload={**VSQ.entry_metadata(dict(row,asset=asset),ts),'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+                  'price_source_lock':source_lock,'price_source_status':'OK',
+diff --git a/veritas_portfolio_runtime.py b/veritas_portfolio_runtime.py
+index d58891f..68535a4 100644
+--- a/veritas_portfolio_runtime.py
++++ b/veritas_portfolio_runtime.py
+@@ -5171,5 +5171,4 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
+                  float((trade or {}).get('max_fraction') or 0.0))
+-        ratio=(float(CTC.LIFECYCLE_POLICY['aggressive_tp_runner_ratio'])
+-               if str(name)=='Aggressive'
+-               else float(CTC.LIFECYCLE_POLICY['default_tp_runner_ratio']))
++        from veritas_strategy_roles import runner_ratio
++        ratio=runner_ratio(str(name),payload)
+         desired=max(step,math.floor((peak*ratio)/step+1e-9)*step)
