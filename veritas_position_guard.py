@@ -862,6 +862,24 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
                 q={'price':rows[-1]['close'],'observed_at':datetime.fromtimestamp(rows[-1]['ts'],timezone.utc).isoformat(),
                    'source_gate_pass':True,'market_open':True,'paper_only':True,
                    'source_names':{'primary':expected['primary_source']}}
+        elif key=='PROXY:GLD PROXY BRIDGE' and asset=='GOLD' and not expected.get('contract_id'):
+            # Legacy GOLD positions opened before ProFinance-only policy used the
+            # exact GC delayed-anchor × GLD relative-move bridge. Reconstruct only
+            # that same source identity for their protection; never use it for new entries.
+            gc,_=ns['_yahoo_series']('GC%3DF','5d','5m',True)
+            gld,_=ns['_yahoo_series']('GLD','5d','5m',True)
+            if gc and gld:
+                last=gc[-1]
+                base=min(gld,key=lambda x:abs(float(x.get('ts') or 0)-float(last.get('ts') or 0)))
+                bp=float(base.get('close') or 0.0); gp=float(gld[-1].get('close') or 0.0)
+                anchor=float(last.get('close') or 0.0)
+                if bp>0 and gp>0 and anchor>0:
+                    bridged=anchor*(gp/bp)
+                    obs=datetime.fromtimestamp(float(gld[-1]['ts']),timezone.utc).isoformat()
+                    q={'price':bridged,'observed_at':obs,'source_gate_pass':True,
+                       'market_open':True,'paper_only':True,
+                       'verification_mode':'LEGACY_SAME_SOURCE_PROXY_PROTECTION_ONLY',
+                       'source_names':{'primary':expected['primary_source']}}
         elif key.startswith('STOOQ:') and not expected.get('contract_id'):
             raw=ns['_v90_stooq_public_quote']({'NQ':'nq.f','GOLD':'gc.f','BRENT':'cb.f'}[asset]) or {}
             if raw.get('ok'):
