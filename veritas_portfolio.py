@@ -2492,6 +2492,8 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
                 base_book=impulse_candidates
             elif mode=='AGGRESSIVE':
                 base_book=_v90_aggressive_candidate_book(summary,candidates)
+            elif mode=='CURRENCY':
+                base_book=_currency_candidate_book(summary)
             else:
                 base_book=candidates
             book=_v90_trend_transition_candidate_book(summary,base_book,mode)
