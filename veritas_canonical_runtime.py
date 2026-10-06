@@ -159,7 +159,11 @@ def evaluate(row, policy, drawdown, now=None):
     if d not in ("LONG","SHORT"):
         return {"open":False,"fraction":0.0,"reason":"NO_DIRECTION","hard_veto":False,"canonical_stage":"THESIS"}
 
-    clock=VPG.utc_datetime(now) or datetime.now(timezone.utc)
+    clock=TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
+    if clock is None:
+        return {"open":False,"fraction":0.0,"reason":"SAME_TF_DECISION_TIME_REQUIRED","hard_veto":True,"canonical_stage":"DATA"}
+    if now is None or raw.get("_runtime_quote_refresh"):
+        raw=VPG.refresh_execution_row(raw,now=clock)
     work=_quote_row(raw)
     price=_num(work.get("price"))
     source=VX.paper_source_gate(asset,work)
@@ -217,7 +221,7 @@ def evaluate(row, policy, drawdown, now=None):
     if full_fraction<=0:
         return {"open":False,"fraction":0.0,"reason":"PORTFOLIO_HARD_DRAWDOWN_STOP","hard_veto":True,
                 "risk_governor":rg,"canonical_stage":"RISK"}
-    economics=VX.entry_gate(work,price,d,full_fraction)
+    economics=VX.entry_gate(work,price,d,full_fraction,now=clock)
     econ_blockers=list(dict.fromkeys(str(x) for x in (economics.get("blockers") or [])))
     hard_econ=[x for x in econ_blockers if CTC.veto_severity(x)=="HARD"]
     soft.extend(x for x in econ_blockers if CTC.veto_severity(x)=="SOFT")
@@ -374,4 +378,37 @@ def aggressive_candidate_book(summary, candidates=None):
     return dict(candidates or candidate_book(summary))
 
 def transition_candidate_book(summary, base_book, mode=None):
-    return VROLE.route(summary,base_book,mode,_prepare_candidate)
+    """Choose among fully admissible setups; retain real blockers if none pass."""
+    name=next((n for n in CTC.PORTFOLIO_ORDER
+               if CTC.PORTFOLIO_POLICIES[n].get("mode")==mode),None)
+    if mode=="CURRENCY" or name is None:
+        return VROLE.route(summary,base_book,mode,_prepare_candidate)
+    policy=CTC.runtime_portfolio_policy(name)
+    clock=datetime.now(timezone.utc)
+    grouped={}
+    for raw in summary or []:
+        if _direction(raw) not in ("LONG","SHORT") or not raw.get("asset"):
+            continue
+        row=_prepare_candidate(raw,summary)
+        role=VROLE.gate(row,mode)
+        row["_portfolio_role"]=role["role"]
+        row["_role_gate"]=role
+        grouped.setdefault(str(row["asset"]),[]).append(row)
+    routed={}
+    for asset,rows in grouped.items():
+        rows.sort(key=lambda r:(int(r["_role_gate"]["eligible"]),r["_rank"]),reverse=True)
+        chosen=rows[0]
+        trace=[]
+        for candidate in rows:
+            admission=evaluate(candidate,policy,0.0,clock)
+            trace.append({"horizon":candidate.get("horizon"),"direction":_direction(candidate),
+                          "open":bool(admission.get("open")),"reason":admission.get("reason"),
+                          "hard_veto":bool(admission.get("hard_veto")),
+                          "canonical_stage":admission.get("canonical_stage")})
+            if admission.get("open"):
+                chosen=candidate
+                break
+        # Actual execution rechecks drawdown, source lock, price and economics.
+        chosen["_canonical_route_trace"]=trace
+        routed[asset]=chosen
+    return routed

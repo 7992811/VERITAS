@@ -20,7 +20,7 @@ PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
 MIN_REWARD_RISK = max(CTC.STRUCTURAL_ENTRY_POLICY['minimum_net_reward_risk'], float(os.getenv("VERITAS_FINAL_MIN_RR", "1.15")))
 # CTC owns the move floor; stale environment overrides cannot change it.
 MIN_EXPECTED_MOVE_PCT = float(CTC.COST_POLICY["minimum_expected_move_floor_pct"])
-MIN_MOVE_COST_MULTIPLE = float(CTC.COST_POLICY["entry_cost_multiple"])
+MIN_MOVE_COST_MULTIPLE = float(CTC.COST_POLICY["cost_buffer_multiple"])
 MOVE_POLICY_VERSION = VC.VERSION
 ROUND_TRIP_COST_BPS = VC.ROUND_TRIP_RATE * 10000.0
 
@@ -244,13 +244,16 @@ def stored_position_target_price(position):
     return target if target is not None and target > 0 else None
 
 
-def entry_gate(row, price, direction, fraction, position=None, existing_target_price=None):
+def entry_gate(row, price, direction, fraction, position=None, existing_target_price=None, now=None):
     """Last check after all setup/sizing mutations, immediately before any order."""
     from veritas_quote_time import quote_gate
     row = row or {}
     import veritas_trend_entry as VTE
     import veritas_timeframe_policy as TFP
-    row = VTE.prepare_row(row, price)
+    clock = TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
+    if clock is None:
+        return {"eligible":False, "status":"BLOCK", "blockers":["SAME_TF_DECISION_TIME_REQUIRED"]}
+    row = VTE.prepare_row(row, price, clock)
     plan = dict(row.get('trade_plan') or {})
     execution=row.get('_execution_quote') or {}
     if position:
@@ -310,7 +313,7 @@ def entry_gate(row, price, direction, fraction, position=None, existing_target_p
                                if execution.get('source_gate_pass') is not None else row.get('source_gate_pass')),
              market_open=(execution.get('market_open')
                           if execution.get('market_open') is not None else row.get('market_open'))),
-        row.get('horizon'))
+        row.get('horizon'), now=clock)
     gate['entry_geometry']=geometry
     if is_proxy_price(row.get('asset'),execution or row):
         gate.update(eligible=False,status='BLOCK')
@@ -318,8 +321,8 @@ def entry_gate(row, price, direction, fraction, position=None, existing_target_p
     # Canonical same-timeframe entries and adds check extension at the modeled
     # adverse fill. Historical paths retain their observed-quote timing check.
     timing_price=(gate.get('modeled_entry_fill') or price) if TFP.applies(row) else price
-    event=(VTE.context_gate(row,datetime.now(timezone.utc)) if position and not TFP.applies(row) else
-           VTE.event_gate(row,timing_price,direction,datetime.now(timezone.utc)))
+    event=(VTE.context_gate(row,clock) if position and not TFP.applies(row) else
+           VTE.event_gate(row,timing_price,direction,clock))
     gate['trend_event']=event
     if not event.get('eligible'):
         gate.update(eligible=False,status='BLOCK')

@@ -83,7 +83,20 @@ class LearningEvidenceTests(unittest.TestCase):
         return dict(trade_id='t',asset='BTC',direction='LONG',horizon='1m',
             opened_at='2026-10-03T10:00:00+00:00',closed_at='2026-10-03T10:05:00+00:00',
             avg_entry_price=100,avg_exit_price=99,net_pnl_rub=-12,gross_pnl_rub=-10,
-            fees_rub=2,funding_rub=0,payload={'mfe_pct':0,'mae_pct':-1,'exit_reason':'STOP'})
+            fees_rub=2,funding_rub=0,payload={
+                'mfe_pct':0,'mae_pct':-1,'exit_reason':'STOP','data_integrity_status':'OK',
+                'price_source_lock':{'asset':'BTC','key':'BINANCE:BTCUSDT','primary_source':'Binance spot','contract_id':'BTCUSDT'},
+                'entry_execution_source_identity':{'asset':'BTC','key':'BINANCE:BTCUSDT','primary_source':'Binance spot','contract_id':'BTCUSDT'},
+                'last_exit_source_identity':{'asset':'BTC','key':'BINANCE:BTCUSDT','primary_source':'Binance spot','contract_id':'BTCUSDT'},
+                'r66_event_id':'STF_OBSERVED_FIXTURE',
+                'entry_event_snapshot':{
+                    'event_id':'STF_OBSERVED_FIXTURE','event_type':'SAME_TIMEFRAME_STRUCTURAL_BREAKOUT',
+                    'asset':'BTC','direction':'LONG','timeframe':'1m','confirmation':'CLOSED_1m_BAR',
+                    'atr_timeframe':'1m','stop_timeframe':'1m','target_timeframe':'1m',
+                    'source_identity':{'asset':'BTC','key':'BINANCE:BTCUSDT','primary_source':'Binance spot','contract_id':'BTCUSDT'},
+                    'breakout_bar_at':'2026-10-03T09:58:00+00:00','signal_at':'2026-10-03T09:59:00+00:00',
+                    'confirmed_at':'2026-10-03T09:59:00+00:00','level_available_at':'2026-10-03T09:57:00+00:00',
+                    'stop_level_available_at':'2026-10-03T09:57:00+00:00','atr_observed_until':'2026-10-03T09:57:00+00:00'}})
 
     def test_missing_path_is_not_zero_excursion_evidence(self):
         trade=self.trade()

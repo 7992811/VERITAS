@@ -12,7 +12,7 @@ from __future__ import annotations
 VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
-STRATEGY_EPOCH = "EQ4_2026_10_07_NATIVE_MA"
+STRATEGY_EPOCH = "EQ5_2026_10_07_AUDIT"
 STRATEGY_ROLE_POLICY = {
     "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
     "AGGRESSIVE": {"name":"CONFIRMED_TREND","horizons":("5m","1h","4h","1d"),
@@ -90,8 +90,8 @@ COST_POLICY = {
     "round_trip_base_cost_pct": 0.0016,
     "cost_buffer_multiple": 1.1,
     "minimum_expected_move_floor_pct": 0.0019,
-    "entry_cost_multiple": 2.0,
-    "minimum_expected_move_formula": "max(0.19%, 2.0 * modeled_round_trip_cost)",
+    "entry_cost_multiple": 1.1,
+    "minimum_expected_move_formula": "max(0.19%, 1.1 * modeled_round_trip_cost)",
     "funding_annual_rate": 0.16,
     "funding_free_seconds": 86400,
     "funding_basis": "ACT/365.25_AFTER_FIRST_24H_ON_CURRENT_NOTIONAL",
@@ -359,7 +359,7 @@ CANONICAL_RULES = [
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
     _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
-    _rule("CTC34","economics","Base modeled round trip is 0.16%; the later owner-approved entry threshold is max(0.19%, 2.0 x modeled round-trip cost)."),
+    _rule("CTC34","economics","Base modeled round trip is 0.16%; minimum move is max(0.19%, 1.1 x modeled round-trip cost)."),
     _rule("CTC35","economics","Funding is 16% ACT/365.25 on current notional after a free first 24 hours."),
     _rule("CTC36","economics","Target, stop and adverse modeled fills are recomputed at final entry after all setup/sizing mutations."),
     _rule("CTC37","economics","Adds must have their own remaining room and economics; the original target cannot justify a fresh add."),
@@ -397,7 +397,7 @@ RESOLVED_IMPLEMENTATION_GAPS = [
     {"id":"GAP03","resolution":"Currency: 10,000 RUB, CNYRUBF only, 10x, 35% hard DD, weekend carry."},
     {"id":"GAP04","resolution":"CanonicalAdmissionEngine v2 owns production admission; legacy admission is non-authoritative."},
     {"id":"GAP05","resolution":"Objective policy is canonical."},
-    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, 1.1x base buffer and separately approved 2.0x entry threshold."},
+    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, one 1.1x cost buffer."},
     {"id":"GAP07","resolution":"Cost module reads CTC directly."},
     {"id":"GAP08","resolution":"External knowledge remains shadow-first and independently validated."},
     {"id":"GAP09","resolution":"Runtime binding is import-order independent."},
@@ -427,6 +427,8 @@ def validate_constitution():
         COST_POLICY["commission_rate_per_side"] + COST_POLICY["slippage_rate_per_side"]
     ):
         raise ValueError("cost policy arithmetic mismatch")
+    if COST_POLICY["entry_cost_multiple"] != COST_POLICY["cost_buffer_multiple"]:
+        raise ValueError("entry cost buffer differs from the owner-approved canonical buffer")
     if len(CANONICAL_RULES) != 60:
         raise ValueError("expected 60 canonical rules")
     if tuple(PORTFOLIO_POLICIES) != PORTFOLIO_ORDER:

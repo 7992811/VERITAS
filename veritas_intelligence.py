@@ -1,6 +1,7 @@
 import csv, glob, hashlib, io, json, math, os, re, sqlite3, threading, time, traceback, uuid, gc, xml.etree.ElementTree as ET
 import html as _html
 import re
+import veritas_learning_exports as VLE
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8594,12 +8595,10 @@ def setup_memory_board(force=False):
         return cache[1]
     if not pg_enabled():
         return {'status':'POSTGRES_REQUIRED','items':[]}
+    learning_generation=VLE.generation()
     try:
         with pg_connect() as c:
-            rows=c.execute("""SELECT event_type,event_ts,asset,horizon,payload
-                              FROM ledger_events
-                              WHERE event_type IN ('experience_lesson','rejected_signal_lesson')
-                              ORDER BY event_ts DESC LIMIT %s""",(EXPERIENCE_MAX_EVENTS,)).fetchall()
+            rows=VLE.decision_lessons(c,EXPERIENCE_MAX_EVENTS)
     except Exception as ex:
         return {'status':'ERROR','items':[],'error':f'{type(ex).__name__}: {ex}'}
 
@@ -8669,6 +8668,7 @@ def setup_memory_board(force=False):
          'thresholds':{'size':EXPERIENCE_MIN_SIZE_N,'execution':EXPERIENCE_MIN_EXEC_N,'weight':EXPERIENCE_MIN_WEIGHT_N},
          'hierarchy':['EXACT','ASSET_FAMILY','REGIME_FAMILY','FAMILY'],
          'principle':'exact setup/regime experience dominates; broader pools only shrink small samples'}
+    out.update(VLE.memory_contract(learning_generation))
     setup_memory_board._cache=(time.time(),out)
     return out
 
@@ -9122,8 +9122,10 @@ _v842_original_setup_memory_board=setup_memory_board
 
 def setup_memory_board(force=False):
     cache=getattr(setup_memory_board,'_cache',None)
-    if cache and not force:
+    if cache and not force and time.time()-cache[0]<SETUP_MEMORY_CACHE_SECONDS and VLE.memory_current(cache[1]):
         return cache[1]
+    if cache and not force:
+        VLE.invalidate_memory(globals())
     if not force:
         return {'status':'BACKGROUND_PENDING','items':[],
                 'decision_influence':False,
@@ -10134,9 +10136,9 @@ def setup_profitability_profile(asset,horizon,direction,setup_name,regime=None,l
         weak=n>=12 and avg<0 and hit<=0.42 and pf<0.85
         degraded=n>=8 and avg<0 and post_hit<0.48
         status='POSITIVE_EDGE' if strong else 'NEGATIVE_EDGE' if weak else 'DEGRADED' if degraded else 'BUILDING'
-        return {'status':status,'n':n,'avg_pnl_fraction':avg,'hit_rate':hit,'posterior_hit_rate':post_hit,
-                'profit_factor':pf,'decision_influence':bool(measurable),
-                'setup':setup_name,'regime':regime}
+        return VLE.shadow_profile({'status':status,'n':n,'avg_pnl_fraction':avg,'hit_rate':hit,'posterior_hit_rate':post_hit,
+                'profit_factor':pf,'decision_influence':False,
+                'setup':setup_name,'regime':regime})
     except Exception as ex:
         return {'status':'ERROR','n':0,'decision_influence':False,'error':f'{type(ex).__name__}: {ex}'}
 
@@ -10152,7 +10154,7 @@ def profitability_gate(asset,horizon,direction,f,trade_plan):
         return {'status':'NOT_APPLICABLE','allow':bool(plan.get('eligible')),'size_multiplier':1.0,'profile':{}}
     setup_name=str(plan.get('setup') or plan.get('reason') or 'GENERIC')
     profile=setup_profitability_profile(asset,horizon,direction,setup_name,f.get('regime'))
-    status=profile.get('status')
+    status=profile.get('status') if profile.get('decision_influence') is True else 'DIAGNOSTIC_ONLY'
     mult=1.0; allow=True
     if status=='NEGATIVE_EDGE':
         mult=0.0; allow=False
@@ -10807,7 +10809,7 @@ def trade_path_profile(asset,horizon,direction,setup_name=None,limit=300):
         win_mfe=[z['mfe'] for z in wins]
         cap=[z['capture'] for z in wins if z['capture'] is not None]
         influence=n>=20 and len(wins)>=8
-        return {
+        return VLE.shadow_profile({
             'status':'MEASURABLE' if influence else 'BUILDING',
             'n':n,'wins':len(wins),'losses':len(losers),
             'hit_rate':len(wins)/n,
@@ -10819,8 +10821,8 @@ def trade_path_profile(asset,horizon,direction,setup_name=None,limit=300):
             'p25_capture_ratio':q(cap,0.25),
             'decision_influence':influence,
             'setup':setup_name,
-            'principle':'Learn the normal profitable path before tightening stops or taking profit.'
-        }
+            'principle':'Observed shadow path is diagnostic until source and net execution are verified.'
+        })
     except Exception as ex:
         return {'status':'ERROR','n':0,'decision_influence':False,'error':f'{type(ex).__name__}: {ex}'}
 
@@ -10893,7 +10895,7 @@ def _v77_recent_closed_trade(asset,horizon,direction):
                            WHERE status<>'ACTIVE' AND asset=%s AND horizon=%s AND direction=%s
                            ORDER BY closed_at DESC NULLS LAST LIMIT 1""",
                         (asset,horizon,direction)).fetchone()
-        out=dict(r) if r else None
+        out=dict(r,decision_influence=False,evidence_scope=VLE.SHADOW_SCOPE) if r else None
         _V77_RECENT_TRADE_CACHE[key]=(time.time(),out)
         return out
     except Exception:
@@ -11107,8 +11109,9 @@ def v77_decision_quality_stack(asset,horizon,f,trade_plan,research_dec):
 
     # --- Churn suppression / Re-entry intelligence ---
     recent=_v77_recent_closed_trade(asset,horizon,direction)
-    reentry={'checked':bool(recent),'allowed':True,'new_event_required':False}
-    if recent:
+    reentry={'checked':bool(recent),'allowed':True,'new_event_required':False,
+             'evidence_scope':(recent or {}).get('evidence_scope') or VLE.SHADOW_SCOPE}
+    if recent and recent.get('decision_influence') is True:
         payload=recent.get('payload')
         if not isinstance(payload,dict):
             try: payload=json.loads(payload or '{}')
@@ -18282,6 +18285,7 @@ _v90_base_refresh_experience_lessons = refresh_experience_lessons
 
 
 def _v90_publish_paper_execution_lessons(limit=2500):
+    VLE.invalidate_memory(globals())
     if not pg_enabled() or VP is None or not hasattr(VP,'learning_archive'):
         return {'status':'UNAVAILABLE','archived':0,'learning_fallback':0,'eligible':0}
     try:
@@ -18291,7 +18295,7 @@ def _v90_publish_paper_execution_lessons(limit=2500):
                 'error':f'{type(ex).__name__}: {ex}'}
     archived=0; learning_fallback=0; shadow_covered=0; eligible=0; errors=[]
     for x in rows or []:
-        if not x.get('learning_eligible'):
+        if not VLE.exportable(x):
             continue
         weight=float(x.get('learning_weight') or 0.0)
         if weight<=0:
@@ -18322,6 +18326,7 @@ def _v90_publish_paper_execution_lessons(limit=2500):
             'source':'PAPER_PORTFOLIO_UNIQUE_EXECUTION',
             'unique_market_episode':True,
             'portfolio_results_aggregated':True,
+            **VLE.export_metadata(x),
         }
         entity='paper_exec:'+episode
         try:
@@ -18338,15 +18343,7 @@ def _v90_publish_paper_execution_lessons(limit=2500):
                      x.get('asset'),x.get('horizon'),
                      json.dumps(payload,ensure_ascii=False,default=str),VERSION))
                 archived+=1
-                # If the canonical shadow lifecycle already learned this setup, do not
-                # count the paper portfolios as another directional sample.
-                covered=pc.execute("""SELECT 1 FROM ledger_events
-                    WHERE event_type='experience_lesson'
-                      AND payload->>'source'='CANONICAL_SHADOW_TRADE'
-                      AND payload->>'setup_id'=%s LIMIT 1""",(episode,)).fetchone()
-                if covered:
-                    shadow_covered+=1
-                    continue
+                # Unverified shadow returns cannot replace verified paper evidence.
                 fallback=dict(payload)
                 fallback['source']='PAPER_PORTFOLIO_UNIQUE_EXECUTION_FALLBACK'
                 fallback['learning_weight']=min(0.20,weight)
@@ -18371,7 +18368,7 @@ def _v90_publish_paper_execution_lessons(limit=2500):
     return {'status':'OK' if not errors else 'DEGRADED','archived':archived,
             'learning_fallback':learning_fallback,'shadow_covered':shadow_covered,
             'eligible':eligible,'unique_market_episodes':len(rows or []),'errors':errors[:10],
-            'principle':'one market episode once; portfolio duplicates aggregate; canonical shadow lesson has priority'}
+            'principle':'one verified paper episode once; all copies verified; unverified shadow is diagnostic only'}
 
 
 def refresh_experience_lessons(limit=400):

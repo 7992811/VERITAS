@@ -35,15 +35,18 @@ def _fresh(value, now, seconds):
     t = _at(value)
     return t is not None and -5 <= (now-t).total_seconds() <= seconds
 
-def _snapshot(connection):
+def _snapshot(connection, *, include_history=True):
+    """Copy one locked view; quote-only callers do not touch candle history."""
     with connection.lock:
-        return copy.deepcopy({
+        data = {
             'instrument': connection.instruments.get('CNYRUBF', {}),
             'quote': connection.quotes.get('CNYRUBF', {}),
             'book': connection.books.get('CNYRUBF', {}),
             'trading': getattr(connection,'trading_states',{}).get('CNYRUBF', {}),
-            'candles': {tf: connection.candles.get(('CNYRUBF', tf), {}) for tf in ('1m','5m','1h')},
-        })
+        }
+        if include_history:
+            data['candles'] = {tf: connection.candles.get(('CNYRUBF', tf), {}) for tf in ('1m','5m','1h')}
+        return copy.deepcopy(data)
 
 def _fail(reason):
     raise TB.TBankError(reason)
@@ -141,7 +144,7 @@ def validate_snapshot(data, now=None, require_history=True):
     return result
 
 def quote(connection=None, now=None):
-    return validate_snapshot(_snapshot(connection or TB.connection),now,require_history=False)
+    return validate_snapshot(_snapshot(connection or TB.connection,include_history=False),now,require_history=False)
 
 def _verify_async(fetch):
     if fetch is None:

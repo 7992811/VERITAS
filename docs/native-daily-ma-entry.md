@@ -11,7 +11,9 @@ trend/evidence and risk limits remain separate admission requirements.
 The original teaching ledger record is unchanged. The new instruction has the
 separate key `user_teaching:USER_DAILY_MA_REBOUND_2026_10_07`.
 This is an operational policy, not an ML training result or a validated edge.
-The strategy epoch is `EQ4_2026_10_07_NATIVE_MA` to keep evaluation evidence separate.
+The initial strategy epoch was `EQ4_2026_10_07_NATIVE_MA`. The subsequent
+integrated system audit uses `EQ5_2026_10_07_AUDIT` for new entries while retaining
+the native daily MA policy and preserving historical epoch stamps.
 
 ## Daily data
 
@@ -97,10 +99,12 @@ processing or manufacture missing returns.
 
 ## Costs and validation
 
-The later owner-approved entry threshold remains
-max(0.19%,2.0 * modeled round-trip costs). Commission and paper slippage remain
-0.04% per side each. The earlier1.1 base-buffer setting is not the final entry
-threshold. The policy text is synchronized with the actual2.0 threshold.
+The system audit reconciles the canonical entry threshold to
+max(0.19%,1.1 * modeled round-trip costs) in every paper portfolio. Commission
+and paper slippage remain 0.04% per side each. The separate net reward/risk
+floor remains 1.15. The previous 2.0 entry multiple conflicted with the recorded
+1.1 buffer; no separate explicit owner instruction for 2.0 was established in
+the reviewed history. See docs/audits/2026-10-07-system-audit.md.
 
 Safety CI requires native-provider/source, causal MA, event lifetime,
 same-timeframe geometry, full canonical admission for all five portfolios,
