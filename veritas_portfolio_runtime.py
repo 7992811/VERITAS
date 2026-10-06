@@ -4973,12 +4973,20 @@ def _signal_first_admission(row,policy,drawdown):
     if (policy or {}).get('mode')=='CURRENCY' and str(raw.get('asset') or '')!=VCP.ASSET:
         return {'open':False,'fraction':0.0,'hard_veto':True,
                 'reason':VCP.BLOCK_REASON,'allowed_assets':[VCP.ASSET]}
-    raw=dict(row or {})
-    # New risk can never resurrect an invalidated setup. This is deliberately
-    # stricter than HOLD logic for an already-open position.
-    if _v90r55_invalidated(raw) or raw.get('_r55_absolute_veto'):
+    # A fresh/rebased setup owns its current entry quality. Parent INVALIDATED
+    # labels are audit history and cannot veto the new setup. Explicit current
+    # hard invalidation remains authoritative.
+    plan=raw.get('trade_plan') or {}
+    rebased_current=bool(
+        plan.get('entry_quality_rebased_from_old_setup')
+        or plan.get('new_setup_identity')
+        or str(plan.get('entry_quality') or '')=='CURRENT_SIGNAL'
+    )
+    if ((_v90r55_invalidated(raw) and not rebased_current)
+            or raw.get('_r55_absolute_veto')):
         return {'open':False,'fraction':0.0,'hard_veto':True,
-                'reason':'R55_ABSOLUTE_INVALIDATED_VETO','r55_invalidated':True}
+                'reason':'R55_ABSOLUTE_INVALIDATED_VETO','r55_invalidated':True,
+                'rebased_current_setup':rebased_current}
     if (raw.get('source_gate_pass') is False or raw.get('paper_eligible') is False
             or raw.get('market_open') is False):
         return {'open':False,'fraction':0.0,'hard_veto':True,
@@ -5294,6 +5302,10 @@ class CanonicalAdmissionEngine:
         out['canonical_stage_order']=list(CTC.STAGE_ORDER)
         out['objective_hard_constraint']=CTC.OBJECTIVE_POLICY['hard_constraint']
         out['objective_priority']=list(CTC.OBJECTIVE_POLICY['priority_order'])
+        source_row=row or {}
+        out.setdefault('paper_source_quality',
+                       'PRODUCTION_GRADE' if source_row.get('production_eligible') else 'RESEARCH_GRADE')
+        out.setdefault('paper_is_live_fill_evidence',False)
         # Portfolio capacity is a hard final sizing ceiling. This makes legacy
         # internal wrappers unable to re-introduce 2x Champion/Challenger size.
         if out.get('open'):
