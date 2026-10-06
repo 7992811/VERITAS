@@ -141,13 +141,16 @@ class InternalTradeClient:
         try:
             response = self.client.post(self.url + PREFIX + operation, json=payload,
                                        headers={"X-Veritas-Trade-Key": self.key})
-            data = response.json()
         except Exception:
             raise TradeTelegramError("TRADE_SERVICE_UNAVAILABLE") from None
         if response.status_code >= 500 or 300 <= response.status_code < 400:
             raise TradeTelegramError("TRADE_SERVICE_UNAVAILABLE")
         if response.status_code >= 400:
             return {"ok": False, "error": "TRADE_REQUEST_REJECTED"}
+        try:
+            data = response.json()
+        except Exception:
+            raise TradeTelegramError("INVALID_TRADE_SERVICE_RESPONSE") from None
         if not isinstance(data, dict):
             raise TradeTelegramError("INVALID_TRADE_SERVICE_RESPONSE")
         return data
@@ -199,7 +202,8 @@ class TradeTelegramBridge:
                 claimed_response = self._request("claim-delivery",
                     {"proposal_id": proposal["proposal_id"], "worker_id": self.worker_id})
                 claimed = claimed_response.get("proposal")
-                if not claimed or not self._scope(claimed):
+                if (not claimed or not self._scope(claimed)
+                        or claimed.get("status") != "DELIVERY_SENDING" or not claimed.get("delivery_token")):
                     continue
                 proposal_id, lease = claimed["proposal_id"], claimed.get("delivery_token")
                 try:

@@ -69,7 +69,19 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, float):
         return text_number(decimal(value))
     if isinstance(value, Mapping):
-        return {str(k): json_safe(v) for k, v in value.items()}
+        native_times = {"signal_at", "confirmed_at", "breakout_bar_at",
+                        "level_available_at", "stop_level_available_at", "atr_observed_until",
+                        "closed_at", "pivot_at", "level_pivot_at", "trigger_pivot_at", "stop_pivot_at", "ts",
+                        "available_at", "spent_at"}
+        result = {}
+        for key, item in value.items():
+            if key in native_times and type(item) in (int, float, Decimal):
+                try:
+                    item = datetime.fromtimestamp(float(decimal(item)), timezone.utc).isoformat()
+                except (ValueError, OverflowError, OSError):
+                    raise TradePlanBlocked("INVALID_NATIVE_TIMESTAMP") from None
+            result[str(key)] = json_safe(item)
+        return result
     if isinstance(value, (list, tuple)):
         return [json_safe(v) for v in value]
     if value is None or isinstance(value, (str, int, bool)):
@@ -356,16 +368,17 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
     limit = decimal(terms.get("limit_price"), positive=True)
     if lots < 1 or side not in ("BUY", "SELL"):
         raise TradePlanBlocked("INVALID_APPROVED_ORDER")
-    if (side == "BUY" and not spec.buy_available) or (side == "SELL" and not spec.sell_available):
-        raise TradePlanBlocked("TRADE_DIRECTION_UNAVAILABLE")
-    if (side == "BUY" and decimal(quote.ask) > limit) or (side == "SELL" and decimal(quote.bid) < limit):
-        raise TradePlanBlocked("PRICE_OUTSIDE_APPROVED_LIMIT")
     if reducing:
         expected_side = "SELL" if account.signed_lots > 0 else "BUY"
         if (not terms.get("reduce_only") or side != expected_side
                 or lots > min(abs(account.signed_lots), abs(account.managed_signed_lots))
                 or account.signed_lots * account.managed_signed_lots <= 0):
             raise TradePlanBlocked("EXIT_WOULD_INCREASE_OR_REVERSE_POSITION")
+    if (side == "BUY" and not spec.buy_available) or (side == "SELL" and not spec.sell_available):
+        raise TradePlanBlocked("TRADE_DIRECTION_UNAVAILABLE")
+    if (side == "BUY" and decimal(quote.ask) > limit) or (side == "SELL" and decimal(quote.bid) < limit):
+        raise TradePlanBlocked("PRICE_OUTSIDE_APPROVED_LIMIT")
+    if reducing:
         return
     if canonical_event_valid is not True:
         raise TradePlanBlocked("CANONICAL_EVENT_NO_LONGER_VALID")
