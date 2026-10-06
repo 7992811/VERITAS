@@ -360,11 +360,22 @@ def _r63_soft_profit_stop_assessment(z, quote, trade, nav, commission=VC.COMMISS
     return {'soft_only':True,'suppress':suppress,**est}
 
 
+def is_discretionary_profit_exit(reason):
+    """Explicit profit intents only; stop and exposure/risk reductions are independent."""
+    return str(reason or '').startswith((
+        'TAKE_PROFIT', 'DYNAMIC_PARTIAL_PROFIT', 'PROFIT_HARVEST',
+        'R33_MFE_GIVEBACK_HARVEST', 'R46_MFE_GIVEBACK_HARVEST'))
+
+
 def profit_exit_assessment(z, quote, trade, nav, commission=VC.COMMISSION_RATE):
     """Profit-taking needs positive whole-trade net at an adverse exit fill.
 
     Applies only to discretionary profit harvests, never to a stop or risk exit.
     Unknown paid costs cannot be replaced by zero to approve a profit harvest.
+    For a partial, this remains a whole-cycle liquidation precondition: prior
+    realized gross plus residual gross, less all paid costs and residual exit
+    commission once. It is neither the partial's booked P&L nor runner protection.
+    Actual partial accounting charges only the units that are closed.
     """
     accounting=trade or {}
     values=[VPP.number(accounting.get(k)) for k in ('gross_pnl_rub','fees_rub','funding_rub')]

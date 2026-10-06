@@ -4426,7 +4426,8 @@ def _v90ph_apply(c,name,candidates,prices,ts):
         if remain_frac<0.05 and strength>=4: remain_frac=0.05
         if remain_frac>=current_frac-0.025: continue
 
-        _close_or_reduce(c,p,name,z,px,remain_frac,nav,ts,'DYNAMIC_PARTIAL_PROFIT')
+        if not _close_or_reduce(c,p,name,z,px,remain_frac,nav,ts,'DYNAMIC_PARTIAL_PROFIT'):
+            continue
         done=(done+[level_key])[-20:]
         event={'at':_v90j_iso(ts),'asset':asset,'direction':direction,
                'profit_pct':100.0*signed,'management_horizon':horizon,
@@ -8176,7 +8177,8 @@ def _v90r33_harvest(c,p,name,prices,nav,ts):
         if target>=current_frac-0.025:
             continue
 
-        _close_or_reduce(c,p,name,z,px,target,nav,ts,'R33_MFE_GIVEBACK_HARVEST')
+        if not _close_or_reduce(c,p,name,z,px,target,nav,ts,'R33_MFE_GIVEBACK_HARVEST'):
+            continue
 
         patch={
           'r33_mfe_harvest_done':True,

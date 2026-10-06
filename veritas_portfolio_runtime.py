@@ -1356,8 +1356,8 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
     except Exception:
         return changes
 
-    # Commission is 0.04% per leg. Require a positive post-cost floor rather
-    # than waiting for the trade to retrace back through zero.
+    # This percentage is only a price-move trigger. Canonical exit authority
+    # must independently verify whole-cycle net after all paid and exit costs.
     net_floor_pct=max(0.15,100.0*(2.0*float(COMMISSION)+0.0003))
 
     for z0 in rows or []:
@@ -1401,7 +1401,7 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
         if target>=current_frac-0.025:
             continue
 
-        result=_vp_base._v90r46_base_close_or_reduce(
+        result=canonical_close_or_reduce(
             c,p,name,z,px,target,nav,ts,'R46_MFE_GIVEBACK_HARVEST'
         )
         if not result:
@@ -5161,7 +5161,7 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     # CTC lifecycle: the first take-profit harvests part of a position and keeps
     # a structural runner whenever the 5% position step permits it. Never take
     # discretionary profit unless the whole-trade result is positive after costs.
-    if full and reason.startswith('TAKE_PROFIT'):
+    if VPG.is_discretionary_profit_exit(reason):
         trade=(c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
                          (z.get('active_trade_id'),)).fetchone()
                if z.get('active_trade_id') else None)
@@ -5170,9 +5170,11 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         if not assessment.get('eligible'):
             print(json.dumps({'event':'CTC_V2_TP_SUPPRESSED','portfolio':name,
                               'asset':z.get('asset'),'reason':assessment.get('reason'),
-                              'projected_net_pnl_rub':assessment.get('net_pnl_rub')},
+                              'projected_net_pnl_rub':assessment.get('net_pnl_rub'),
+                              'exit_reason':reason,'target_fraction':target_fraction},
                              ensure_ascii=False,default=str,separators=(',',':')),flush=True)
             return 0.0
+    if full and reason.startswith('TAKE_PROFIT'):
         policy=dict(POLICIES.get(str(name)) or {})
         step=float(policy.get('position_step') or CTC.LIFECYCLE_POLICY['minimum_position_step'])
         payload=_canonical_payload(z)
