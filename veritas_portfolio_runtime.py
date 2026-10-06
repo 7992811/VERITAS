@@ -3059,7 +3059,19 @@ def _v90r56_late_entry_gate(row,price=None):
     row=row or {}
     shared=VTE.event_gate(row,price if price is not None else row.get('price'),
                          _v90r56_direction(row),datetime.now(timezone.utc))
-    if shared.get('reason')!='R66_LEGACY_SIGNAL_PATH':
+    if shared.get('eligible'):
+        return shared
+    # R69 made closed-candle context mandatory for final execution, but candidate
+    # discovery still needs an EARLY timing estimate before that context exists.
+    # Fall back only for local trigger horizons with measurable price origin.
+    # Opposed/stale/invalid local events are never softened here; final R79 still
+    # re-checks source, session, event context and actual-fill economics.
+    _fallback_reasons={
+        'R66_LEGACY_SIGNAL_PATH','R69_LOCAL_CONTEXT_REQUIRED',
+        'R67_LOCAL_CONTEXT_REQUIRED','R69_WAIT_LOCAL_BREAKOUT',
+        'R68_LOCAL_CONTEXT_INCOMPLETE',
+    }
+    if shared.get('reason') not in _fallback_reasons:
         return shared
     h=str(row.get('horizon') or '')
     if h not in _R56_TRIGGER_HORIZONS:
