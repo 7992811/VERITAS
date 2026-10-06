@@ -66,7 +66,8 @@ class CanonicalConstitutionCurrentR85AlignmentTests(unittest.TestCase):
         self.assertIs(VP.step_all, VPR.FINAL_STEP_ALL)
 
     def test_cost_negative_blockers_are_hard_not_soft(self):
-        import veritas_portfolio_runtime as VPR
+        import veritas_portfolio as VP
+        VPR = VP._VERITAS_RUNTIME
         self.assertIn("RR_BELOW_FINAL_FLOOR", VPR._R79_SOFT_ECON_BLOCKERS)
         self.assertIn("NET_REWARD_RISK_BELOW_FLOOR", VPR._R79_SOFT_ECON_BLOCKERS)
         self.assertNotIn("EXPECTED_MOVE_BELOW_COST_BUFFER", VPR._R79_SOFT_ECON_BLOCKERS)
