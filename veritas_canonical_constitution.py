@@ -1,16 +1,16 @@
-"""VERITAS Canonical Trading Constitution v1.
+"""VERITAS Canonical Trading Constitution v2.
 
-This module is the machine-readable policy registry for the VERITAS trading
-system. It does not itself place orders. R85 remains the final runtime authority
-until a separately reviewed integration binds runtime decisions to this policy.
+This module is the machine-readable source of truth for paper/live policy.
+Production admission and sizing must read these values directly. Historical
+Rxx helpers may remain for replay, telemetry and lifecycle compatibility, but
+they have no authority to override canonical admission or portfolio limits.
 
 Principle: one trading decision -> one canonical policy path.
-Historical Rxx helpers remain audit history, not policy authority.
 """
 from __future__ import annotations
 
-VERSION = "CTC_V1_2026_10_06"
-BASIS_RUNTIME = "CTC_V1_FINAL_AUTHORITY"
+VERSION = "CTC_V2_2026_10_06"
+BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
 STAGE_ORDER = (
     "DATA",
@@ -52,97 +52,127 @@ COST_POLICY = {
 }
 
 HARD_VETOES = frozenset({
-    "UNSUPPORTED_ASSET_OR_SOURCE",
-    "PRIMARY_SOURCE_GATE_FAILED",
-    "MARKET_TIME_GATE_FAILED",
-    "EXECUTION_QUOTE_STALE",
-    "SOURCE_IDENTITY_MISMATCH",
-    "EXACT_CONTRACT_MISMATCH",
-    "R67_DIRECT_NQ_QUOTE_REQUIRED",
-    "PRIMARY_PRICE_INVALID",
-    "STOP_MISSING_OR_DIRECTION_INVALID",
-    "TARGET_MISSING_OR_DIRECTION_INVALID",
-    "HARD_THESIS_INVALIDATION",
-    "EXECUTION_TF_DIRECTION_CONFLICT",
-    "UNCONFIRMED_5M_COUNTER_SENIOR",
-    "ACTUAL_PRICE_LATE_ENTRY_CHASE",
-    "NEGATIVE_VALIDATED_SETUP_EDGE",
-    "TARGET_NOT_PROFITABLE_AFTER_COSTS",
-    "EXPECTED_MOVE_BELOW_COST_BUFFER",
-    "STOP_RISK_CAP_EXCEEDED",
-    "PORTFOLIO_HARD_DRAWDOWN_STOP",
-    "EVENT_REUSE_WITHOUT_NEW_CONFIRMATION",
+    "UNSUPPORTED_PAPER_ASSET","UNSUPPORTED_ASSET_OR_SOURCE",
+    "PRIMARY_SOURCE_GATE_FAILED","PRIMARY_SOURCE_MISSING","PRIMARY_TOP_OF_BOOK_MISSING",
+    "MARKET_TIME_GATE_FAILED","CLOCK_GATE_FAILED","DIRECT_QUOTE_DIVERGENCE_TOO_LARGE",
+    "EXECUTION_QUOTE_STALE","R66_EXECUTION_QUOTE_STALE","R79_SOURCE_OR_SESSION_BLOCK",
+    "SOURCE_IDENTITY_MISMATCH","ENTRY_SOURCE_MISMATCH","POSITION_SOURCE_MISMATCH",
+    "EXACT_CONTRACT_MISMATCH","R67_DIRECT_NQ_QUOTE_REQUIRED","PRIMARY_PRICE_INVALID",
+    "STOP_MISSING","STOP_DIRECTION_INVALID","STOP_MISSING_OR_DIRECTION_INVALID",
+    "TARGET_MISSING","TARGET_DIRECTION_INVALID","TARGET_MISSING_OR_DIRECTION_INVALID",
+    "HARD_INVALIDATION","HARD_THESIS_INVALIDATION","R55_ABSOLUTE_INVALIDATED_VETO",
+    "FAST_TF_CONFLICT","R59_EXECUTION_TF_DIRECTION_CONFLICT",
+    "R59_5M_COUNTER_SENIOR_NOT_CONFIRMED","EXECUTION_TF_DIRECTION_CONFLICT",
+    "UNCONFIRMED_5M_COUNTER_SENIOR","R83_WAIT_RETEST_LATE_EXECUTION",
+    "ACTUAL_PRICE_LATE_ENTRY_CHASE","NEGATIVE_VALIDATED_SETUP_EDGE",
+    "TARGET_NOT_PROFITABLE_AFTER_COSTS","EXPECTED_MOVE_BELOW_COST_BUFFER",
+    "STOP_RISK_CAP_EXCEEDED","R79_STOP_RISK_LIMIT","PORTFOLIO_HARD_DRAWDOWN_STOP",
+    "EVENT_REUSE_WITHOUT_NEW_CONFIRMATION","R72_EVENT_ALREADY_TRADED",
+    "R72_EVENT_ID_MISSING","R72_EVENT_HISTORY_UNAVAILABLE",
 })
 
 SOFT_VETOES = frozenset({
-    "RR_BELOW_FINAL_FLOOR_BUT_NET_POSITIVE",
-    "NET_REWARD_RISK_BELOW_FLOOR_BUT_NET_POSITIVE",
-    "OLD_PARENT_EVENT_STALE",
-    "OLD_PARENT_TARGET_REACHED",
-    "OLD_PARENT_WAIT_RETEST",
-    "OLD_PARENT_EXTENSION",
-    "INSUFFICIENT_LEARNING_SAMPLE",
-    "WEAK_CALIBRATION",
-    "SENIOR_CONTEXT_CAUTION",
-    "MARGINAL_SETUP_HISTORY",
-    "MANAGEMENT_DOMINATED_NEGATIVE_HISTORY",
-    "LOWER_TF_SOFT_INVALIDATION_OF_SENIOR_CORE",
+    "RR_BELOW_FINAL_FLOOR","NET_REWARD_RISK_BELOW_FLOOR",
+    "R69_WAIT_LOCAL_BREAKOUT","R69_BREAKOUT_ACTIVITY_REQUIRED",
+    "R66_WAIT_RETEST","R66_CLOSED_CONTEXT_STALE","R66_SENIOR_BREAK_NOT_HELD",
+    "R74_EVENT_TARGET_REACHED","R66_LEGACY_SIGNAL_PATH",
+    "OLD_PARENT_EVENT_STALE","OLD_PARENT_TARGET_REACHED","OLD_PARENT_WAIT_RETEST",
+    "OLD_PARENT_EXTENSION","INSUFFICIENT_LEARNING_SAMPLE","WEAK_CALIBRATION",
+    "SENIOR_CONTEXT_CAUTION","MARGINAL_SETUP_HISTORY",
+    "MANAGEMENT_DOMINATED_NEGATIVE_HISTORY","LOWER_TF_SOFT_INVALIDATION_OF_SENIOR_CORE",
 })
+
+def veto_severity(code):
+    code = str(code or "")
+    if code in SOFT_VETOES:
+        return "SOFT"
+    if code in HARD_VETOES:
+        return "HARD"
+    # Unknown execution blockers are fail-closed until explicitly classified.
+    return "HARD"
+
+PORTFOLIO_ORDER = ("Impulse","Aggressive","Champion","Challenger","Currency")
 
 PORTFOLIO_POLICIES = {
     "Impulse": {
-        "mode": "IMPULSE_ONLY",
-        "initial_normal": 0.20,
-        "initial_super": 0.40,
-        "max_single_asset_fraction": 0.50,
-        "max_gross": 0.50,
-        "hard_drawdown": 0.15,
-        "position_step": 0.05,
+        "mode":"IMPULSE_ONLY","threshold":0.64,"strong_threshold":0.76,"min_independent":2,
+        "allowed_horizons":("1m","5m","1h","4h","1d"),
+        "initial_normal":0.20,"initial_super":0.40,"probe_normal":0.10,"probe_super":0.15,
+        "max_single_asset_fraction":0.50,"max_gross":0.50,"hard_drawdown":0.15,
+        "position_step":0.05,"provisional_cap":0.10,"accepted_cap":0.25,"confirmed_cap":0.50,
     },
     "Aggressive": {
-        "mode": "AGGRESSIVE",
-        "initial_normal": 0.50,
-        "initial_super": 1.00,
-        "max_single_asset_fraction": 5.00,
-        "max_gross": 5.00,
-        "leverage_limit": 5.00,
-        "hard_drawdown": 0.20,
-        "position_step": 0.05,
-        "scale_ladder": (0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 3.00, 4.00, 5.00),
+        "mode":"AGGRESSIVE","threshold":0.62,"strong_threshold":0.74,"min_independent":2,
+        "initial_normal":0.50,"initial_super":1.00,"probe_normal":0.10,"probe_super":0.25,
+        "max_single_asset_fraction":5.00,"max_gross":5.00,"leverage_limit":5.00,
+        "hard_drawdown":0.20,"position_step":0.05,
+        "scale_ladder":(0.50,0.75,1.00,1.25,1.50,2.00,3.00,4.00,5.00),
     },
     "Champion": {
-        "mode": "CORE",
-        "initial_normal": 0.10,
-        "initial_super": 0.25,
-        "max_single_asset_fraction": 1.00,
-        "max_gross": 2.00,
-        "hard_drawdown": 0.15,
-        "position_step": 0.05,
+        "mode":"CORE","threshold":0.70,"strong_threshold":0.82,"min_independent":3,
+        "initial_normal":0.10,"initial_super":0.25,"probe_normal":0.05,"probe_super":0.10,
+        "max_single_asset_fraction":1.00,"max_gross":2.00,"hard_drawdown":0.15,
+        "position_step":0.05,
     },
     "Challenger": {
-        "mode": "CHALLENGER",
-        "initial_normal": 0.10,
-        "initial_super": 0.25,
-        "max_single_asset_fraction": 1.00,
-        "max_gross": 2.00,
-        "hard_drawdown": 0.15,
-        "position_step": 0.05,
+        "mode":"CHALLENGER","threshold":0.75,"strong_threshold":0.85,"min_independent":4,
+        "initial_normal":0.10,"initial_super":0.25,"probe_normal":0.05,"probe_super":0.10,
+        "max_single_asset_fraction":1.00,"max_gross":2.00,"hard_drawdown":0.15,
+        "position_step":0.05,
     },
     "Currency": {
-        "display_name": "Валютный портфель",
-        "mode": "CURRENCY",
-        "allowed_assets": ("CNYRUBF",),
-        "initial_nav_rub": 10_000.0,
-        "directions": ("LONG", "SHORT", "CASH"),
-        "max_gross": 10.00,
-        "leverage_limit": 10.00,
-        "hard_drawdown": 0.35,
-        "weekend_carry_allowed": True,
-        "position_step": 0.05,
-        "runtime_status": "CONFIGURED_PAPER",
-        "stop_risk_note": "Use structural risk governor; no new per-trade override is invented here.",
+        "display_name":"Валютный портфель","mode":"CURRENCY","threshold":0.62,
+        "strong_threshold":0.74,"min_independent":2,"allowed_assets":("CNYRUBF",),
+        "initial_nav_rub":10_000.0,"directions":("LONG","SHORT","CASH"),
+        "initial_normal":0.50,"initial_super":1.00,"probe_normal":0.05,"probe_super":0.10,
+        "max_single_asset_fraction":10.00,"max_gross":10.00,"leverage_limit":10.00,
+        "hard_drawdown":0.35,"weekend_carry_allowed":True,"position_step":0.05,
+        "paper_trading_enabled":True,"live_trading_enabled":False,
+        "configuration_status":"CONFIGURED","runtime_status":"CONFIGURED_PAPER",
     },
 }
+
+DRAWdown_PROFILES = {
+    "STANDARD":{"normal_until":0.08,"caution_until":0.11,"defense_1_until":0.135,
+                "caution_multiplier":0.90,"defense_1_multiplier":0.70,"defense_2_multiplier":0.45},
+    "AGGRESSIVE":{"normal_until":0.10,"caution_until":0.14,"defense_1_until":0.17,
+                  "caution_multiplier":0.90,"defense_1_multiplier":0.70,"defense_2_multiplier":0.45},
+    "CURRENCY":{"normal_until":0.20,"caution_until":0.25,"defense_1_until":0.30,
+                "caution_multiplier":0.90,"defense_1_multiplier":0.70,"defense_2_multiplier":0.45},
+}
+
+def runtime_portfolio_policy(name):
+    p=dict(PORTFOLIO_POLICIES[str(name)])
+    p["max_fraction"]=float(p["max_single_asset_fraction"])
+    if "allowed_assets" in p:
+        p["allowed_assets"]=list(p["allowed_assets"])
+    if "allowed_horizons" in p:
+        p["allowed_horizons"]=tuple(p["allowed_horizons"])
+    return p
+
+def drawdown_profile(portfolio=None, mode=None):
+    name=str(portfolio or "")
+    mode=str(mode or "")
+    p=PORTFOLIO_POLICIES.get(name)
+    if p is None:
+        p=next((x for x in PORTFOLIO_POLICIES.values() if x.get("mode")==mode),PORTFOLIO_POLICIES["Champion"])
+    kind="CURRENCY" if p.get("mode")=="CURRENCY" else "AGGRESSIVE" if p.get("mode")=="AGGRESSIVE" else "STANDARD"
+    cfg=DRAWdown_PROFILES[kind]
+    gross=float(p["max_gross"])
+    step=float(p.get("position_step",0.05))
+    snap=lambda x:max(step, round(max(step,x)/step)*step)
+    return {
+        "name":kind,"hard_drawdown":float(p["hard_drawdown"]),
+        "normal_until":float(cfg["normal_until"]),"caution_until":float(cfg["caution_until"]),
+        "defense_1_until":float(cfg["defense_1_until"]),
+        "normal_max_gross":gross,
+        "caution_max_gross":snap(gross*0.875 if kind=="STANDARD" else gross*0.80 if kind=="AGGRESSIVE" else gross*0.75),
+        "defense_1_max_gross":snap(gross*0.625 if kind=="STANDARD" else gross*0.60 if kind=="AGGRESSIVE" else gross*0.50),
+        "defense_2_max_gross":snap(gross*0.375 if kind=="STANDARD" else gross*0.30 if kind=="AGGRESSIVE" else gross*0.25),
+        "caution_multiplier":float(cfg["caution_multiplier"]),
+        "defense_1_multiplier":float(cfg["defense_1_multiplier"]),
+        "defense_2_multiplier":float(cfg["defense_2_multiplier"]),
+    }
 
 PAPER_RISK_POLICY = {
     "per_idea_structural_stop_risk_cap_nav": 0.02,
@@ -300,16 +330,24 @@ CANONICAL_RULES = [
 ]
 
 RESOLVED_IMPLEMENTATION_GAPS = [
-    {"id":"GAP01","resolution":"Champion single-asset cap is 100% in runtime policy."},
-    {"id":"GAP02","resolution":"Challenger single-asset cap is 100% in runtime policy."},
-    {"id":"GAP03","resolution":"Currency paper portfolio configured: 10,000 RUB, CNYRUBF only, 10x max gross, 35% hard DD, weekend carry allowed."},
-    {"id":"GAP04","resolution":"Execution admission is frozen behind one CanonicalAdmissionEngine; historical Rxx helpers are implementation history only."},
-    {"id":"GAP05","resolution":"R35/R40 reports and admission now use OBJECTIVE_POLICY as one source of truth."},
-    {"id":"GAP06","resolution":"Canonical costs restored to documented R82 values: 0.04% commission, 0.04% slippage, 1.1x buffer."},
-    {"id":"GAP07","resolution":"Cost module version renamed CTC_V1_COST_POLICY."},
-    {"id":"GAP08","resolution":"Knowledge discovery is enabled on the web role and LLM compilation defaults on when an API key is configured; promotion remains shadow/validated only."},
-    {"id":"GAP09","resolution":"Final runtime authority binding is import-order independent and patches the base module after runtime initialization."},
-    {"id":"GAP10","resolution":"Fast-memory portfolio API accepts the four core books and decorates/attaches Currency, preserving api_source=live_memory at zero exposure."},
+    {"id":"GAP01","resolution":"Champion single-asset cap is 100% in canonical/runtime policy."},
+    {"id":"GAP02","resolution":"Challenger single-asset cap is 100% in canonical/runtime policy."},
+    {"id":"GAP03","resolution":"Currency: 10,000 RUB, CNYRUBF only, 10x, 35% hard DD, weekend carry."},
+    {"id":"GAP04","resolution":"CanonicalAdmissionEngine v2 owns production admission; legacy admission is non-authoritative."},
+    {"id":"GAP05","resolution":"Objective policy is canonical."},
+    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, 1.1x buffer."},
+    {"id":"GAP07","resolution":"Cost module reads CTC directly."},
+    {"id":"GAP08","resolution":"External knowledge remains shadow-first and independently validated."},
+    {"id":"GAP09","resolution":"Runtime binding is import-order independent."},
+    {"id":"GAP10","resolution":"Five canonical portfolios are required by API/runtime."},
+    {"id":"GAP11","resolution":"Portfolio policies are generated from CTC instead of duplicated literals."},
+    {"id":"GAP12","resolution":"Hard/soft blocker severity is classified centrally by CTC and unknown blockers fail closed."},
+    {"id":"GAP13","resolution":"Impulse gross ceiling is canonical 0.50x instead of generic 2.00x."},
+    {"id":"GAP14","resolution":"Currency initial/probe sizing is explicit in CTC."},
+    {"id":"GAP15","resolution":"Legacy v72 source-rewrite launcher is archived outside production root."},
+    {"id":"GAP16","resolution":"Release identity exposes product/CTC/UI/DB/deploy SHA consistently."},
+    {"id":"GAP17","resolution":"Architecture guard rejects canonical authority that calls legacy admission fallbacks."},
+    {"id":"GAP18","resolution":"Production candidate routing is patched to canonical signal-first selectors."},
 ]
 IMPLEMENTATION_GAPS = []
 
@@ -329,6 +367,12 @@ def validate_constitution():
         raise ValueError("cost policy arithmetic mismatch")
     if len(CANONICAL_RULES) != 60:
         raise ValueError("expected 60 canonical rules")
+    if tuple(PORTFOLIO_POLICIES) != PORTFOLIO_ORDER:
+        raise ValueError("portfolio order/policy registry mismatch")
+    if PORTFOLIO_POLICIES["Impulse"]["max_gross"] != 0.50:
+        raise ValueError("Impulse max gross drift")
+    if PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"] != 0.02:
+        raise ValueError("paper stop-risk cap drift")
     return True
 
 
