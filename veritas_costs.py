@@ -1,4 +1,4 @@
-"""R82 user-approved paper cost policy, shared by planning and accounting.
+"""Canonical VERITAS paper cost policy, shared by planning and accounting.
 
 Commission and slippage are per execution side. The first 24 elapsed hours
 of each position are free; funding then accrues at 16% on current notional.
@@ -6,10 +6,10 @@ Previously booked costs are historical facts and are never recomputed here.
 """
 from datetime import datetime, timedelta, timezone
 
-VERSION = "R82_USER_COST_POLICY"
-COMMISSION_RATE = 0.0005
+VERSION = "CTC_V1_COST_POLICY"
+COMMISSION_RATE = 0.0004
 SLIPPAGE_RATE = 0.0004
-COST_BUFFER_MULTIPLE = 1.2
+COST_BUFFER_MULTIPLE = 1.1
 FUNDING_ANNUAL_RATE = 0.16
 FUNDING_FREE_SECONDS = 86400.0
 YEAR_SECONDS = 365.25 * 86400.0
