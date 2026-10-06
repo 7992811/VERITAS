@@ -3311,7 +3311,7 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
                 proxy_note=f'4-bar directional proxy: primary={r1:.3%}, proxy={r2:.3%}'
     except Exception as ex:
         proxy_note=f'proxy unavailable: {type(ex).__name__}'
-    gate=bool(market_open and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS)
+    gate=bool(market_open and age is not None and age<=DELAYED_FUTURES_MAX_AGE_SECONDS and (asset!='GOLD' or bool(direct and str(direct.get('source') or '').startswith('ProFinance'))))
     quality=[
       _source_row(source_name,f'{asset} futures','primary research delayed',observed,delay,
                   'DELAYED_CONTEXT' if gate else 'STALE_OR_CLOSED',
@@ -9608,7 +9608,7 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
                                                                and pd is not None and pd<=max_div)})
         except Exception:
             pass
-    usable_direct=[x for x in direct_candidates if x.get('ok')]
+    usable_direct=[x for x in direct_candidates if x.get('ok') and (asset!='GOLD' or str(x.get('source') or '').startswith('ProFinance'))]
     # Prefer the freshest direct futures quote; ProFinance wins ties.
     direct=min(usable_direct,key=lambda x:(float(x.get('age_seconds') or 9e9),
                                            0 if str(x.get('source')).startswith('ProFinance') else 1)) if usable_direct else None
@@ -9621,7 +9621,7 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
         live_ts=datetime.fromisoformat(str(observed).replace('Z','+00:00')).timestamp()
         ib=bars5 if asset=='NQ' else _v90_proxy_bridge_intraday(bars5,pr,price,live_ts)
         secondary=delayed_price; divergence=float(direct.get('divergence') or 0.0)
-    elif asset!='NQ' and proxy_fresh and delayed_usable and bars5 and pr:
+    elif asset not in ('NQ','GOLD') and proxy_fresh and delayed_usable and bars5 and pr:
         base=min(pr,key=lambda x:abs(float(x.get('ts') or 0)-float(last.get('ts') or 0)))
         bp=float(base.get('close') or 0.0); pp=float(pr[-1].get('close') or 0.0)
         if bp>0 and pp>0:
@@ -9632,7 +9632,7 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
             divergence=abs(price-delayed_price)/((price+delayed_price)/2.0)
         else:
             price=delayed_price; observed=delayed_observed
-            mode='DELAYED_RESEARCH'; latency='DELAYED_RESEARCH'; ib=bars5
+            mode='PROFINANCE_PRIMARY_UNAVAILABLE' if asset=='GOLD' else 'DELAYED_RESEARCH'; latency='REFERENCE_ONLY' if asset=='GOLD' else 'DELAYED_RESEARCH'; ib=bars5
             secondary=None; divergence=0.0
     else:
         price=delayed_price; observed=delayed_observed
@@ -9653,7 +9653,7 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
                    'policy':'DIRECT_NQ_ONLY' if asset=='NQ' else 'PREFER_FRESH_DIRECT_FUTURES_THEN_PROXY_BRIDGE',
                    'production_eligible':False}
     quality=[]
-    quality.append(_source_row('ProFinance',f'{asset} futures','fresh public verifier',
+    quality.append(_source_row('ProFinance',f'{asset} futures','primary paper quote' if asset=='GOLD' else 'fresh public verifier',
                   pf.get('observed_at') if pf else None,0,
                   'OK' if any(str(x.get('source')).startswith('ProFinance') and x.get('ok') for x in direct_candidates) else 'UNAVAILABLE_OR_STALE',
                   'paper-only public quote verification','ProFinance'))
@@ -9672,7 +9672,7 @@ def _yahoo_research_futures_market(asset,yahoo_symbol,proxy_symbol,policy_key,so
                        'OK' if proxy_fresh else 'NOT_FRESH',proxy_note,'Yahoo'))
     _set_source_quality(quality)
     primary_name=(direct.get('source') if direct else
-                  (f'{proxy_symbol} proxy bridge' if mode.startswith('PROXY') else source_name))
+                  ('Yahoo GOLD context only' if asset=='GOLD' else (f'{proxy_symbol} proxy bridge' if mode.startswith('PROXY') else source_name)))
     return {'asset':asset,'price':price,'secondary_price':secondary,'coinbase_price':None,
             'source_divergence':divergence,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
             'intraday_bars':ib,'intraday_5m':ib,'volume_intraday_bars':bars5 if asset=='NQ' else pr,
