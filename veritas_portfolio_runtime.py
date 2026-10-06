@@ -5338,15 +5338,9 @@ FINAL_STEP_ONE=_step_one
 FINAL_STEP_ALL=step_all
 FINAL_REPORT=report
 
-# The module-level public execution names also point at the canonical authority.
-# Historical implementations remain reachable only through explicitly captured
-# audit helpers such as _R85_POLICY_ADMISSION.
-_signal_first_admission=FINAL_SIGNAL_FIRST_ADMISSION
-_open_or_add=FINAL_OPEN_OR_ADD
-_close_or_reduce=FINAL_CLOSE_OR_REDUCE
-_step_one=FINAL_STEP_ONE
-step_all=FINAL_STEP_ALL
-report=FINAL_REPORT
+# Historical module-level helper names remain available for regression/audit.
+# Production execution never resolves them dynamically: veritas_portfolio is
+# patched below to the frozen FINAL_* callables.
 
 # Import-order-independent patch: direct import of veritas_portfolio_runtime
 # first loads the legacy base, then atomically replaces its execution authority here.
@@ -5357,6 +5351,17 @@ _vp_base._step_one=FINAL_STEP_ONE
 _vp_base.step_all=FINAL_STEP_ALL
 _vp_base.report=FINAL_REPORT
 _vp_base._VERITAS_RUNTIME=__import__(__name__)
+
+# Compatibility export for historical layer-specific regression tests and audit
+# tools. This deliberately excludes the six production execution entry points.
+_PRODUCTION_AUTHORITY_NAMES={
+    '_signal_first_admission','_open_or_add','_close_or_reduce',
+    '_step_one','step_all','report'
+}
+for _compat_name,_compat_value in list(globals().items()):
+    if (_compat_name.startswith(('_v90','_r'))
+            and _compat_name not in _PRODUCTION_AUTHORITY_NAMES):
+        setattr(_vp_base,_compat_name,_compat_value)
 
 def runtime_authority_snapshot():
     return {
