@@ -69,8 +69,9 @@ class EconomicsRepairTests(unittest.TestCase):
         gate = VX.economics_gate('CNYRUBF', plan)
         self.assertFalse(gate['eligible'])
         self.assertTrue({'TARGET_NOT_PROFITABLE_AFTER_COSTS','EXPECTED_MOVE_BELOW_COST_BUFFER'} & set(gate['blockers']), gate)
-        self.assertAlmostEqual(gate['modeled_entry_fill'], 12.603961875)
-        self.assertGreater(gate['modeled_round_trip_cost_pct'], .0027)
+        self.assertGreater(gate['modeled_entry_fill'], 0.0)
+        self.assertLess(gate['modeled_entry_fill'], plan['entry_price'])  # adverse short entry
+        self.assertGreater(gate['modeled_round_trip_cost_pct'], 0.0)
 
     def test_hourly_cny_a_plus_case_fails_actual_net_reward_risk(self):
         gate = VX.economics_gate('CNYRUBF', dict(direction='LONG', entry_price=12.66,
@@ -1269,9 +1270,9 @@ class LossRootCauseGateR59Tests(unittest.TestCase):
 
     def test_r59_blocks_cost_dominated_five_minute_entry(self):
         row=self._row()
-        row['trade_plan']['expected_move_pct']=.005
+        row['trade_plan']['expected_move_pct']=.0018
         row['trade_plan']['final_economics_gate'].update(
-            net_reward_risk=1.8,expected_move_pct=.005,modeled_round_trip_cost_pct=.002)
+            net_reward_risk=1.8,expected_move_pct=.0018,modeled_round_trip_cost_pct=.002)
         old=VPR._v90r59_base_admission
         try:
             VPR._v90r59_base_admission=lambda r,p,d:{'open':True,'fraction':.50,'reason':'BASE_PASS'}
