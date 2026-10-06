@@ -234,7 +234,7 @@ LIFECYCLE_POLICY = {
     "default_tp_runner_ratio": 0.50,
     "aggressive_tp_runner_ratio": 0.60,
     "minimum_position_step": 0.05,
-    "profit_lock_activation_floor_pct": 0.20,
+    "profit_lock_activation_floor_pct": 0.21,
     "principle": (
         "The first take-profit harvests part of a qualifying position and keeps a "
         "structural runner. A full close is reserved for a minimum-size position "
