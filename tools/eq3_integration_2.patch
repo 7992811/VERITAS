@@ -1,0 +1,155 @@
+diff --git a/veritas_position_guard.py b/veritas_position_guard.py
+index 9091490..6f6e0cb 100644
+--- a/veritas_position_guard.py
++++ b/veritas_position_guard.py
+@@ -168,2 +168,9 @@ def quote_for_position(position, candidate=None, now=None):
+     quotes.extend([candidate or {},position.get('_execution_quote') or {}])
++    identity=VPS.position_identity(position) or {}
++    if position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
++        try:
++            from veritas_direct_cny import quote as direct_quote
++            quotes.append(direct_quote(now=now))
++        except Exception:
++            pass  # Never replace a missing direct quote with a MOEX mark.
+     valid=[]
+@@ -638,4 +645,4 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
+             )
+-            if str(zp.get('r66_event_id','')).startswith('R69_'):
+-                lock=None # R69 uses confirmed structural pivots and whole-trade net checks.
++            # Legacy event prefixes cannot disable checked profit protection.
++            # New same-TF positions use confirmed structural trailing, not synthetic locks.
+             if lock:
+diff --git a/veritas_price_source.py b/veritas_price_source.py
+index fb0c57c..de71479 100644
+--- a/veritas_price_source.py
++++ b/veritas_price_source.py
+@@ -25,2 +25,7 @@ def identity(asset, row):
+         key='PROFINANCE:'+channel
++    elif upper.startswith('TBANK_GRPC'):
++        cid=contract.get('instrument_uid')
++        if not cid:
++            return None
++        key='TBANK_GRPC:'+str(asset)
+     elif 'PROXY' in upper or 'BRIDGE' in upper:
+diff --git a/veritas_release.py b/veritas_release.py
+index 7049d0d..ca9be84 100644
+--- a/veritas_release.py
++++ b/veritas_release.py
+@@ -5,5 +5,5 @@ import veritas_canonical_constitution as CTC
+ 
+-PRODUCT_VERSION="veritas-max-product-v91.0-ctc-v2-five-portfolio-core"
+-PORTFOLIO_VERSION="veritas-portfolio-v9.1-ctc-v2-five-portfolio-core"
+-UI_VERSION="veritas-ui-v9.1-ctc-v2-five-portfolio-core"
++PRODUCT_VERSION="veritas-max-product-v91.1-execution-quality-v3"
++PORTFOLIO_VERSION="veritas-portfolio-v9.1.1-execution-quality-v3"
++UI_VERSION="veritas-ui-v9.1.1-execution-quality-v3"
+ DB_SCHEMA_VERSION="9.0"
+@@ -24,2 +24,3 @@ def snapshot():
+         "ctc_version":CTC.VERSION,
++        "strategy_epoch":CTC.STRATEGY_EPOCH,
+         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
+diff --git a/veritas_tbank.py b/veritas_tbank.py
+index aae34ee..0c4c979 100644
+--- a/veritas_tbank.py
++++ b/veritas_tbank.py
+@@ -26,3 +26,3 @@ HISTORY = {
+     "5m": ("CANDLE_INTERVAL_5_MIN", 1, 60, 2400),
+-    "1h": ("CANDLE_INTERVAL_HOUR", 7, 300, 2400),
++    "1h": ("CANDLE_INTERVAL_HOUR", 21, 300, 2400),
+     "4h": ("CANDLE_INTERVAL_4_HOUR", 30, 900, 700),
+@@ -249,2 +249,3 @@ class TBankConnection:
+         self.stream_ids = ()
++        self.trading_states = {}
+ 
+@@ -275,3 +276,3 @@ class TBankConnection:
+                     "error_code": self.error, "stream_status": self.stream_state,
+-                    "orders_enabled": False, "paper_source_switch_enabled": False,
++                    "orders_enabled": False, "paper_source_switch_enabled": self.env.get("VERITAS_CNY_PRIMARY_SOURCE","TBANK").upper()=="TBANK",
+                     "instruments": {a: {"label": LABELS.get(a, a), "ticker": d.get("ticker"), "uid": d.get("uid"),
+@@ -379,2 +380,5 @@ class TBankConnection:
+                         self.books[asset] = {**book, "source": "TBANK_GRPC", "received_at": iso()}
++                trading=self.reader.call("trading_status",instrument_id=uid)
++                with self.lock:
++                    self.trading_states[asset]={**trading,"checked_at":iso(),"instrument_uid":uid}
+             except TBankError:
+@@ -394,3 +398,3 @@ class TBankConnection:
+         # Cold intervals first, so minute updates cannot starve daily/weekly history.
+-        jobs.sort(key=lambda job: not job[0])
++        jobs.sort(key=lambda job: (not (job[2]=='CNYRUBF' and job[3] in ('1m','5m','1h')),not job[0]))
+         started = time.monotonic()
+@@ -404,5 +408,8 @@ class TBankConnection:
+             try:
+-                reply = self.reader.call("candles", **{"instrument_id": uid, "interval": enum,
+-                    "from": iso(now - timedelta(days=days)), "to": iso(now)})
+-                bars = closed_candles(reply.get("candles", []), now)
++                start=now-timedelta(days=days); items=[]
++                while start<now:
++                    end=min(now,start+timedelta(days=7 if interval=='1h' else days))
++                    reply=self.reader.call("candles",**{"instrument_id":uid,"interval":enum,"from":iso(start),"to":iso(end)})
++                    items.extend(reply.get("candles",[]));start=end
++                bars = closed_candles(items, now)
+                 value = {"status": "OK" if bars else "NO_DATA", "source": "TBANK_GRPC",
+@@ -538,3 +545,3 @@ def status_page():
+ <p>Режим: только чтение · Python / gRPC</p><p>{next_step}</p>
+-<p>Получение данных подключено отдельно от расчёта сигналов и учебных портфелей. Торговые поручения выключены.</p></section>
++<p>CNYRUBf используется учебными портфелями только после проверки точного контракта, котировки, стакана и истории. Реальные торговые поручения выключены.</p></section>
+ {''.join(cards)}<p class="hint">3д — закрытые трёхдневные календарные интервалы из дневных свечей, границы по UTC. 7д — недельные свечи брокера. История относится к указанному контракту; котировки других контрактов не добавляются.</p>
+diff --git a/veritas_timeframe_data.py b/veritas_timeframe_data.py
+index 7e7622b..5072960 100644
+--- a/veritas_timeframe_data.py
++++ b/veritas_timeframe_data.py
+@@ -39,3 +39,3 @@ def attach(raw, now=None):
+         r['structure_intraday_bars'] = mapping.get('5m', [])
+-    elif identity['key'].startswith(('BINANCE:', 'MOEX:')):
++    elif identity['key'].startswith(('BINANCE:', 'MOEX:', 'TBANK_GRPC:')):
+         mapping = {'1m':r.get('structure_minute_bars') or [],
+diff --git a/veritas_v90_ui.py b/veritas_v90_ui.py
+index f4f7a6d..c05ee97 100644
+--- a/veritas_v90_ui.py
++++ b/veritas_v90_ui.py
+@@ -288,3 +288,3 @@ const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.strin
+ const initialPositionBook=loadPositionCache();
+-const st={signals:null,portfolios:null,positionBook:initialPositionBook,positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
++const st={strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,positionBook:initialPositionBook,positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
+ const $=id=>document.getElementById(id);
+@@ -436,2 +436,6 @@ const reasonRu=v=>{
+     LOCAL_EXECUTION_CONFIRMATION_REQUIRED:'Нет локального подтверждения входа',
++    ROLE_TIMEFRAME_NOT_ALLOWED:'Период не соответствует роли портфеля',
++    ROLE_TREND_CONFIRMATION_REQUIRED:'Для этого портфеля нужен подтверждённый тренд',
++    ROLE_INDEPENDENT_EVIDENCE_REQUIRED:'Недостаточно независимых подтверждений',
++    CHALLENGER_LOCAL_TRIGGER_REQUIRED:'Челленджер ожидает локальный вход',
+     LOCAL_EXECUTION_DIRECTION_CONFLICT:'Локальное направление против старшего сигнала',
+@@ -626,2 +630,22 @@ function portfolioView(p){
+ }
++function strategyQualityPanel(p){
++  const d=st.strategyQuality||{},q=(d.portfolios||[]).find(x=>x.name===p.name);
++  const options=(items,selected)=>items.map(([key,label])=>'<option value="'+key+'"'+(key===selected?' selected':'')+'>'+label+'</option>').join('');
++  const selectors='<div class="pf-heading"><h4>Качество правил</h4><div><select id="qualityScope" aria-label="Период статистики">'+options([['current','Текущие правила'],['since_73266d9','С версии 73266d9'],['all','Вся история']],st.qualityScope)+'</select> <select id="qualityWindow" aria-label="Размер выборки">'+options([['all','Все идеи'],['last20','Последние 20 идей'],['last50','Последние 50 идей']],st.qualityWindow)+'</select></div></div>';
++  const m=q&&q.cohorts&&q.cohorts[st.qualityScope]&&q.cohorts[st.qualityScope][st.qualityWindow];
++  const metric=(label,value)=>'<div class="pf-value"><span>'+label+'</span><b>'+value+'</b></div>';
++  let body=!m?'<p class="pf-foot">Статистика ещё не получена. Нулевые результаты не подставляются.</p>':'<div class="pf-quality">'+metric('Закрытых сделок / идей',n(m.closed_trades,0)+' / '+n(m.idea_count,0))+metric('Прибыльных',m.win_rate==null?'—':pct(100*m.win_rate))+metric('Коэффициент прибыли',m.profit_factor==null?(m.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(m.profit_factor,2))+metric('Средняя прибыль / убыток',rub(m.avg_win_rub)+' / '+rub(m.avg_loss_rub))+metric('Средняя сделка',rub(m.expectancy_rub))+metric('Чистый результат',rub(m.net_pnl_rub))+metric('Захвачено движения',m.capture_ratio_mean==null?'—':pct(100*m.capture_ratio_mean))+metric('Плюс съеден расходами',n(m.cost_erased_winners,0))+'</div><p class="pf-foot">Событий с проверенной группировкой: '+n(m.verified_event_count,0)+'. Замер захвата движения: '+n(m.capture_sample,0)+' сделок. Старых открытых позиций: '+n(q.inherited_open_positions,0)+'. '+(m.idea_count<50?'Выборка недостаточна для вывода об устойчивости.':'Результат требует отдельной проверки вне обучающей выборки.')+'</p>';
++  if(d.status==='STALE'||d.status==='PARTIAL_HISTORY')body='<p class="warn">'+(d.status==='STALE'?'Снимок статистики устарел.':'Показана неполная история.')+'</p>'+body;
++  let feed='';
++  if(p.name==='Currency'){
++    const f=d.cny_feed||{}, labels={DIRECT_READY:'Прямые данные готовы',RESEARCH_ONLY:'Исследовательские данные — вход запрещён',STALE:'Котировка устарела',NOT_CHECKED:'Проверяется источник'};
++    feed='<p class="pf-foot">CNYRUBf: '+esc(labels[f.status]||'Источник проверяется')+'. '+esc(f.reason||'Т-Инвестиции: цена, стакан и свечи одного контракта')+(f.quote_observed_at?' · '+dateRu(f.quote_observed_at):'')+'. Реальные поручения выключены.</p>';
++    if(p.portfolio_integrity_warning)feed+='<p class="warn">Обнаружены посторонние позиции в учёте: '+n(p.quarantined_position_count,0)+'. Они показаны и не исключены из баланса.</p>';
++  }
++  return '<section class="pf-section" style="margin-top:14px">'+selectors+body+feed+'<p class="pf-foot">Баланс и доходность выше включают всю историю. Этот блок оценивает только выбранные закрытые сделки. Разбор сделок не меняет торговые параметры автоматически.</p></section>';
++}
++async function loadStrategyQuality(){
++  const d=await get('strategy-quality','/api/v1/strategy-quality',8000);
++  if(d&&Array.isArray(d.portfolios)){st.strategyQuality=d;if(st.portfolios)renderPortfolios();}
++}
+ function renderPortfolioPanel(ps){
+@@ -647,2 +671,5 @@ function renderPortfolioPanel(ps){
+     '<div class="pf-section" style="margin-top:14px"><h4>Результат всех закрытых сделок</h4><div class="pf-quality pf-ledger">'+metric('Доход от цены',rub(p.closed_gross_pnl_rub),tone(p.closed_gross_pnl_rub))+metric('Комиссии',rub(p.closed_fees_rub))+metric('Фондирование',rub(p.closed_funding_rub))+metric('Итог',rub(v.pnl),tone(v.pnl))+'</div><div class="pf-foot">Коэффициент прибыли и средняя сделка рассчитаны после комиссий и фондирования по всей истории закрытых сделок. Просадка показана от достигнутого пика до текущего значения.</div></div></div>';
++  root.innerHTML+=strategyQualityPanel(p);
++  if($('qualityScope'))$('qualityScope').onchange=e=>{st.qualityScope=e.target.value;renderPortfolioPanel(ps);};
++  if($('qualityWindow'))$('qualityWindow').onchange=e=>{st.qualityWindow=e.target.value;renderPortfolioPanel(ps);};
+   document.querySelectorAll('#portfolios [data-portfolio]').forEach(el=>{el.onclick=()=>{st.selectedPortfolio=el.dataset.portfolio;renderPortfolioPanel(ps);};});
+@@ -1070,2 +1097,4 @@ function start(){
+   setTimeout(loadMacro,1000);
++  setTimeout(loadStrategyQuality,1500);
++  setInterval(loadStrategyQuality,60000);
+   setInterval(loadPortfolios,15000);
