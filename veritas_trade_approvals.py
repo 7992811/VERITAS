@@ -33,6 +33,7 @@ TABLE = "veritas_trade_approvals"
 SCOPES = "veritas_trade_approval_scopes"
 CALLBACKS = "veritas_trade_approval_callbacks"
 AUDIT = "veritas_trade_approval_audit"
+EXIT_FAMILIES = "veritas_trade_approval_exit_families"
 MAX_TTL_SECONDS = 300
 DEFAULT_TTL_SECONDS = 120
 SEND_TIMEOUT_SECONDS = 120
@@ -281,6 +282,16 @@ def ensure_schema(c):
             UNIQUE (account_id, canonical_event_id, action),
             CHECK (filled_lots IS NULL OR (filled_lots >= 0 AND filled_lots <= lots))
         )""",
+        f"""CREATE TABLE IF NOT EXISTS {EXIT_FAMILIES} (
+            account_id TEXT NOT NULL,
+            instrument_uid TEXT NOT NULL,
+            root_exit_event_id TEXT NOT NULL,
+            action TEXT NOT NULL CHECK (action IN ('REDUCE','CLOSE')),
+            generation INTEGER NOT NULL CHECK (generation >= 0),
+            latest_proposal_id TEXT NOT NULL REFERENCES {TABLE}(proposal_id),
+            updated_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (account_id, instrument_uid, root_exit_event_id, action)
+        )""",
         f"""CREATE UNIQUE INDEX IF NOT EXISTS veritas_trade_active_instrument
             ON {TABLE} (account_id, instrument_uid)
             WHERE status IN ('APPROVED','SENDING','UNKNOWN','ACKNOWLEDGED','PARTIALLY_FILLED')
@@ -468,8 +479,8 @@ class TradeApprovals:
                                     "SUBMISSION_TIMEOUT")
         return row
 
-    def create(self, terms, *, owner_user_id, private_chat_id, bot_id,
-               expires_at=None, economics_revision=1):
+    def _prepare_creation(self, terms, *, owner_user_id, private_chat_id, bot_id,
+                          expires_at=None, economics_revision=1):
         terms = canonical_terms(terms)
         owner_user_id, private_chat_id, bot_id = map(
             _positive_id, (owner_user_id, private_chat_id, bot_id))
@@ -494,28 +505,169 @@ class TradeApprovals:
             created_at=now, expires_at=expiry, updated_at=now, status="PENDING_DELIVERY",
         )
         row["terms_signature"] = self._signature("veritas-trade-terms-v1", self._envelope(row))
+        return row
+
+    def _insert_created(self, c, row):
+        """Insert within the caller's already-held scope transaction."""
+        columns = list(row)
+        values = [(_json(row[k]) if k == "terms_json" else row[k]) for k in columns]
+        placeholders = ["%s::jsonb" if k == "terms_json" else "%s" for k in columns]
+        inserted = c.execute(
+            f"INSERT INTO {TABLE} ({','.join(columns)}) VALUES ({','.join(placeholders)}) "
+            "ON CONFLICT (account_id,canonical_event_id,action) DO NOTHING RETURNING *",
+            tuple(values),
+        ).fetchone()
+        if inserted is None:
+            existing = self._verify(c.execute(
+                f"SELECT * FROM {TABLE} WHERE account_id=%s AND canonical_event_id=%s AND action=%s",
+                (row["account_id"], row["canonical_event_id"], row["action"]),
+            ).fetchone())
+            fields = ("terms_hash", "economics_revision", "owner_user_id", "private_chat_id", "bot_id")
+            if any(existing[k] != row[k] for k in fields):
+                raise ApprovalError("EVENT_TERMS_CONFLICT")
+            return self._view(existing, idempotent=True)
+        inserted = self._verify(inserted)
+        self._audit(c, inserted, "CREATED")
+        return self._view(inserted, idempotent=False)
+
+    def create(self, terms, *, owner_user_id, private_chat_id, bot_id,
+               expires_at=None, economics_revision=1):
+        row = self._prepare_creation(
+            terms, owner_user_id=owner_user_id, private_chat_id=private_chat_id,
+            bot_id=bot_id, expires_at=expires_at, economics_revision=economics_revision)
         with self._transaction() as c:
             self._scope(c, row["account_id"], row["instrument_uid"])
-            columns = list(row)
-            values = [(_json(row[k]) if k == "terms_json" else row[k]) for k in columns]
-            placeholders = ["%s::jsonb" if k == "terms_json" else "%s" for k in columns]
-            inserted = c.execute(
-                f"INSERT INTO {TABLE} ({','.join(columns)}) VALUES ({','.join(placeholders)}) "
-                "ON CONFLICT (account_id,canonical_event_id,action) DO NOTHING RETURNING *",
-                tuple(values),
-            ).fetchone()
-            if inserted is None:
-                existing = self._verify(c.execute(
-                    f"SELECT * FROM {TABLE} WHERE account_id=%s AND canonical_event_id=%s AND action=%s",
-                    (row["account_id"], row["canonical_event_id"], row["action"]),
-                ).fetchone())
-                fields = ("terms_hash", "economics_revision", "owner_user_id", "private_chat_id", "bot_id")
-                if any(existing[k] != row[k] for k in fields):
-                    raise ApprovalError("EVENT_TERMS_CONFLICT")
-                return self._view(existing, idempotent=True)
-            inserted = self._verify(inserted)
-            self._audit(c, inserted, "CREATED")
-            return self._view(inserted, idempotent=False)
+            return self._insert_created(c, row)
+
+    def _exit_event_id(self, family, generation):
+        if generation == 0:
+            return family["root_exit_event_id"]
+        identity = {k: family[k] for k in (
+            "account_id", "instrument_uid", "root_exit_event_id", "action")}
+        identity["generation"] = generation
+        return "EXIT-RENEW-" + hashlib.sha256(_json(identity).encode("utf-8")).hexdigest()
+
+    def _verify_exit_family(self, c, family, row):
+        generation = family["generation"]
+        terms = row["terms_json"]
+        if (type(generation) is not int or generation < 0
+                or row["account_id"] != family["account_id"]
+                or row["instrument_uid"] != family["instrument_uid"]
+                or row["action"] != family["action"]
+                or row["canonical_event_id"] != self._exit_event_id(family, generation)):
+            raise ApprovalError("EXIT_FAMILY_INTEGRITY_FAILED")
+        metadata = {"root_exit_event_id", "parent_proposal_id", "exit_generation"}
+        if generation == 0 and not metadata.intersection(terms):
+            return  # Adopt a legacy, immutable first proposal without editing it.
+        if (terms.get("root_exit_event_id") != family["root_exit_event_id"]
+                or type(terms.get("exit_generation")) is not int
+                or terms["exit_generation"] != generation):
+            raise ApprovalError("EXIT_FAMILY_INTEGRITY_FAILED")
+        if generation == 0:
+            if terms.get("parent_proposal_id") is not None:
+                raise ApprovalError("EXIT_FAMILY_INTEGRITY_FAILED")
+            return
+        previous = c.execute(f"""SELECT * FROM {TABLE}
+            WHERE account_id=%s AND canonical_event_id=%s AND action=%s""",
+            (family["account_id"], self._exit_event_id(family, generation - 1),
+             family["action"])).fetchone()
+        previous = self._verify(previous)
+        if (previous["instrument_uid"] != family["instrument_uid"]
+                or terms.get("parent_proposal_id") != previous["proposal_id"]):
+            raise ApprovalError("EXIT_FAMILY_INTEGRITY_FAILED")
+
+    def create_exit_successor(self, terms, *, owner_user_id, private_chat_id,
+                              bot_id, expires_at=None, economics_revision=1):
+        """Create/reuse an immutable protective-exit proposal family.
+
+        Call this for the first exit as well as refreshes. Input canonical_event_id
+        must be the stable root exit event (for example entry+ledger revision+exit
+        reason), without repository-owned family metadata. Current pending or
+        unsettled proposals are returned unchanged, including their price/TTL.
+
+        A successor is permitted only after EXPIRED/BLOCKED without any broker
+        send, or a reconciled CANCELLED/BROKER_REJECTED with exactly zero fills.
+        Owner rejection, UNKNOWN, active broker work and unaccounted terminal
+        results never create a successor. Each permitted generation requires a
+        fresh owner approval and has new signed terms, callback and request UUID.
+        """
+        candidate = self._prepare_creation(
+            terms, owner_user_id=owner_user_id, private_chat_id=private_chat_id,
+            bot_id=bot_id, expires_at=expires_at, economics_revision=economics_revision)
+        if candidate["action"] not in {"REDUCE", "CLOSE"}:
+            raise ApprovalError("EXIT_ACTION_REQUIRED", 400)
+        base_terms = candidate["terms_json"]
+        if {"root_exit_event_id", "parent_proposal_id", "exit_generation"}.intersection(base_terms):
+            raise ApprovalError("EXIT_FAMILY_METADATA_IS_REPOSITORY_OWNED", 400)
+        family = {k: candidate[k] for k in ("account_id", "instrument_uid", "action")}
+        family["root_exit_event_id"] = candidate["canonical_event_id"]
+        scope = tuple(family[k] for k in (
+            "account_id", "instrument_uid", "root_exit_event_id", "action"))
+        def generation_row(number, parent_id):
+            value = dict(
+                base_terms, canonical_event_id=self._exit_event_id(family, number),
+                root_exit_event_id=family["root_exit_event_id"],
+                parent_proposal_id=parent_id, exit_generation=number)
+            return self._prepare_creation(
+                value, owner_user_id=owner_user_id, private_chat_id=private_chat_id,
+                bot_id=bot_id, expires_at=candidate["expires_at"],
+                economics_revision=economics_revision)
+        with self._transaction() as c:
+            self._scope(c, candidate["account_id"], candidate["instrument_uid"])
+            stored = c.execute(f"""SELECT * FROM {EXIT_FAMILIES}
+                WHERE account_id=%s AND instrument_uid=%s AND root_exit_event_id=%s AND action=%s
+                FOR UPDATE""", scope).fetchone()
+            if stored is None:
+                legacy = c.execute(f"""SELECT * FROM {TABLE}
+                    WHERE account_id=%s AND canonical_event_id=%s AND action=%s FOR UPDATE""",
+                    (candidate["account_id"], family["root_exit_event_id"],
+                     candidate["action"])).fetchone()
+                if legacy is None:
+                    first = self._insert_created(c, generation_row(0, None))
+                    c.execute(f"""INSERT INTO {EXIT_FAMILIES}
+                        (account_id,instrument_uid,root_exit_event_id,action,generation,
+                         latest_proposal_id,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                        scope + (0, first["proposal_id"], self._now()))
+                    return first
+                current = self._verify(legacy)
+                if current["instrument_uid"] != candidate["instrument_uid"]:
+                    raise ApprovalError("EXIT_FAMILY_IDENTITY_MISMATCH")
+                stored = dict(family, generation=0, latest_proposal_id=current["proposal_id"])
+                c.execute(f"""INSERT INTO {EXIT_FAMILIES}
+                    (account_id,instrument_uid,root_exit_event_id,action,generation,
+                     latest_proposal_id,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    scope + (0, current["proposal_id"], self._now()))
+            else:
+                stored = dict(stored)
+                current = self._verify(self._row(c, stored["latest_proposal_id"], lock=True))
+            self._verify_exit_family(c, stored, current)
+            for key in ("account_id", "instrument_uid", "action", "direction",
+                        "owner_user_id", "private_chat_id", "bot_id"):
+                if current[key] != candidate[key]:
+                    raise ApprovalError("EXIT_FAMILY_IDENTITY_MISMATCH")
+            if current["terms_json"].get("execution_environment") != base_terms.get("execution_environment"):
+                raise ApprovalError("EXIT_FAMILY_IDENTITY_MISMATCH")
+            current = self._expire_row(c, current)
+            state = current["status"]
+            unsent = not current["claim_token"] and not current["send_started_at"]
+            renewable = (state in {"EXPIRED", "BLOCKED"} and unsent) or (
+                state in {"CANCELLED", "BROKER_REJECTED"}
+                and current["execution_reconciled"] and current["filled_lots"] == 0)
+            if not renewable:
+                return self._view(current, idempotent=True,
+                                  renewal_blocked=state not in PRE_SUBMISSION)
+            generation = stored["generation"] + 1
+            child = self._insert_created(c, generation_row(generation, current["proposal_id"]))
+            c.execute(f"""UPDATE {EXIT_FAMILIES}
+                SET generation=%s,latest_proposal_id=%s,updated_at=%s
+                WHERE account_id=%s AND instrument_uid=%s AND root_exit_event_id=%s AND action=%s""",
+                (generation, child["proposal_id"], self._now()) + scope)
+            self._audit(c, self._verify(self._row(c, child["proposal_id"])),
+                        "EXIT_SUCCESSOR_CREATED",
+                        details={"parent_proposal_id": current["proposal_id"],
+                                 "root_exit_event_id": family["root_exit_event_id"],
+                                 "exit_generation": generation})
+            return child
 
     def get(self, proposal_id):
         with self.connect() as c:
