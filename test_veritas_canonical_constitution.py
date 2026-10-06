@@ -26,13 +26,13 @@ class CanonicalConstitutionRegistryTests(unittest.TestCase):
         self.assertIn("POSITIVE_POST_COST", C.OBJECTIVE_POLICY["hard_constraint"])
 
     def test_cost_arithmetic(self):
-        self.assertAlmostEqual(C.COST_POLICY["commission_rate_per_side"], 0.0005)
+        self.assertAlmostEqual(C.COST_POLICY["commission_rate_per_side"], 0.0004)
         self.assertAlmostEqual(C.COST_POLICY["slippage_rate_per_side"], 0.0004)
-        self.assertAlmostEqual(C.COST_POLICY["round_trip_base_cost_pct"], 0.0018)
-        self.assertAlmostEqual(C.COST_POLICY["cost_buffer_multiple"], 1.2)
+        self.assertAlmostEqual(C.COST_POLICY["round_trip_base_cost_pct"], 0.0016)
+        self.assertAlmostEqual(C.COST_POLICY["cost_buffer_multiple"], 1.1)
         self.assertAlmostEqual(
             C.COST_POLICY["round_trip_base_cost_pct"] * C.COST_POLICY["cost_buffer_multiple"],
-            0.00216,
+            0.00176,
         )
 
 
@@ -52,7 +52,7 @@ class CanonicalConstitutionCurrentR85AlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(VX.MIN_EXPECTED_MOVE_PCT, 0.0019)
         self.assertAlmostEqual(
             VX.minimum_expected_move_pct(VC.ROUND_TRIP_RATE),
-            max(0.0019, 1.2 * 0.0018),
+            max(0.0019, 1.1 * 0.0016),
         )
 
     def test_r85_runtime_authority_is_explicit(self):
@@ -83,37 +83,26 @@ class CanonicalConstitutionCurrentR85AlignmentTests(unittest.TestCase):
 
 
 class CanonicalConstitutionDeclaredGapsTests(unittest.TestCase):
-    def _gap(self, gap_id):
-        return next(x for x in C.IMPLEMENTATION_GAPS if x["id"] == gap_id)
+    def test_resolved_gap_registry_is_closed(self):
+        self.assertEqual(C.IMPLEMENTATION_GAPS, [])
+        self.assertEqual({x["id"] for x in C.RESOLVED_IMPLEMENTATION_GAPS},
+                         {f"GAP{i:02d}" for i in range(1,11)})
 
-    def test_champion_runtime_gap_is_explicit(self):
+    def test_core_caps_match_canonical(self):
         import veritas_portfolio as VP
-        self.assertEqual(VP.POLICIES["Champion"]["max_fraction"], 2.0)
-        self.assertEqual(C.PORTFOLIO_POLICIES["Champion"]["max_single_asset_fraction"], 1.0)
-        self.assertEqual(self._gap("GAP01")["severity"], "HIGH")
+        self.assertEqual(VP.POLICIES["Champion"]["max_fraction"], 1.0)
+        self.assertEqual(VP.POLICIES["Challenger"]["max_fraction"], 1.0)
 
-    def test_challenger_runtime_gap_is_explicit(self):
-        import veritas_portfolio as VP
-        self.assertEqual(VP.POLICIES["Challenger"]["max_fraction"], 2.0)
-        self.assertEqual(C.PORTFOLIO_POLICIES["Challenger"]["max_single_asset_fraction"], 1.0)
-        self.assertEqual(self._gap("GAP02")["severity"], "HIGH")
-
-    def test_currency_owner_policy_is_recorded_but_runtime_still_pending(self):
+    def test_currency_owner_policy_is_active(self):
         import veritas_currency_portfolio as VCP
         runtime = VCP.policy()
         canonical = C.PORTFOLIO_POLICIES["Currency"]
-        self.assertEqual(runtime["configuration_status"], "SETUP_PENDING")
-        self.assertEqual(runtime["initial_nav_rub"], 0.0)
-        self.assertEqual(canonical["initial_nav_rub"], 10_000.0)
-        self.assertEqual(canonical["max_gross"], 10.0)
-        self.assertEqual(canonical["hard_drawdown"], 0.35)
-        self.assertTrue(canonical["weekend_carry_allowed"])
-        self.assertEqual(self._gap("GAP03")["severity"], "HIGH")
-
-    def test_current_documentation_gap_is_declared(self):
-        gap = self._gap("GAP06")
-        self.assertEqual(gap["area"], "documentation")
-        self.assertIn("README_R82", gap["current"])
+        self.assertEqual(runtime["configuration_status"], "CONFIGURED")
+        self.assertEqual(runtime["initial_nav_rub"], 10_000.0)
+        self.assertEqual(runtime["max_gross"], 10.0)
+        self.assertEqual(runtime["hard_drawdown"], 0.35)
+        self.assertTrue(runtime["weekend_carry_allowed"])
+        self.assertEqual(canonical["runtime_status"], "CONFIGURED_PAPER")
 
 
 if __name__ == "__main__":
