@@ -103,13 +103,16 @@ class MarketCaseRegressionTests(unittest.TestCase):
                 # Even a retained True flag cannot override failed source checks.
                 out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
                 self.assertFalse(out['open'], out)
-                self.assertEqual(out['reason'], 'R79_SOURCE_OR_SESSION_BLOCK')
+                expected = ('PRIMARY_SOURCE_GATE_FAILED' if 'source_gate_pass' in changes else
+                            'MARKET_TIME_GATE_FAILED' if 'market_open' in changes else
+                            'PRIMARY_PRICE_INVALID')
+                self.assertEqual(out['reason'], expected)
 
     def test_moex_one_source_does_not_override_economics_or_explicit_denial(self):
         row = self._moex_single_source_row()
         row['paper_eligible'] = False
         self.assertEqual(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
-                         ['reason'], 'R79_SOURCE_OR_SESSION_BLOCK')
+                         ['reason'], 'PAPER_EXPLICIT_DENIAL')
         row = self._moex_single_source_row()
         row['trade_plan']['target_price'] = 2220.0  # actual final levels must fail economics, not stale metadata
         row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
@@ -117,7 +120,7 @@ class MarketCaseRegressionTests(unittest.TestCase):
         # Low fixed R/R is a soft veto when the target remains positive after
         # modeled costs. Canonical admission starts only a bounded probe.
         self.assertTrue(out['open'], out)
-        self.assertEqual(out['reason'], 'R79_SIGNAL_PROBE')
+        self.assertEqual(out['reason'], 'CANONICAL_SIGNAL_PROBE')
         self.assertLessEqual(out['fraction'], 0.25)
         self.assertNotIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',out.get('hard_economics_blockers',[]))
         self.assertNotIn('EXPECTED_MOVE_BELOW_COST_BUFFER',out.get('hard_economics_blockers',[]))
