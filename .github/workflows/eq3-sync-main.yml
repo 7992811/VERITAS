@@ -1,0 +1,41 @@
+name: EQ3 Main Compatibility
+on:
+  push:
+    branches: [feature/execution-quality-v3-integrated-20261006]
+    paths: ['.github/workflows/eq3-sync-main.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Inspect merge without updating any branch
+        run: |
+          git config user.name 'Review only'
+          git config user.email 'review@example.invalid'
+          git merge --no-commit --no-ff a15296389754d28103324dc5a51c30a9ddfd55a3 || true
+          python - <<'PY'
+          import pathlib,re,subprocess,zipfile
+          files=subprocess.check_output(['git','diff','--name-only','--diff-filter=U']).decode().splitlines()
+          print('CONFLICT_FILES',files)
+          for name in files:
+              text=pathlib.Path(name).read_text()
+              for m in re.finditer(r'^<<<<<<<[^\n]*\n.*?^>>>>>>>[^\n]*(?:\n|$)',text,re.M|re.S):
+                  print('CONFLICT',name,'\n'+m.group())
+          with zipfile.ZipFile('/tmp/eq3-review-source.zip','w',zipfile.ZIP_DEFLATED) as z:
+              paths=subprocess.check_output(['git','ls-files','-z']).decode().split('\0')
+              for name in sorted(set(paths)):
+                  p=pathlib.Path(name)
+                  if p.is_file() and (p.suffix in ('.py','.cjs','.md','.yml','.yaml') or p.name.startswith('requirements') or name=='vendor/tbank/russian_trusted_root_ca.pem') and not any(s.startswith('.env') for s in p.parts):
+                      z.write(p,name)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eq3-review-source
+          path: /tmp/eq3-review-source.zip
+          retention-days: 1
