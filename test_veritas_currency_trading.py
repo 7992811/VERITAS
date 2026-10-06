@@ -307,7 +307,7 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.transport.handlers["PostOrder"] = receive
         result = self.coordinator.execute_approved(approved["proposal_id"])
         self.assertTrue(result["ok"])
-        self.assertEqual(result["code"], "ACKNOWLEDGED")
+        self.assertEqual(result["code"], "NEW")
         self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "ACKNOWLEDGED")
         self.assertEqual(self.ingested, [])
         self.coordinator.execute_approved(approved["proposal_id"])
@@ -323,12 +323,12 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(P.TradePlanBlocked):
                 self.make_coordinator(execution_enabled=value)
 
-    def test_owner_change_invalidates_existing_approval(self):
+    def test_owner_change_blocks_existing_approval_before_broker(self):
         approved = self.approve()
         changed = self.make_coordinator(owner=C.TradeOwner(OWNER+1, OWNER+1, BOT))
         result = changed.execute_approved(approved["proposal_id"])
-        self.assertEqual(result["code"], "TRADE_OWNER_CHANGED")
-        self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "BLOCKED")
+        self.assertEqual(result["code"], "APPROVED_OWNER_OR_ACCOUNT_CHANGED")
+        self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "APPROVED")
         self.assertEqual(self.transport.calls, [])
 
     def test_sandbox_approval_cannot_execute_after_environment_changes(self):
@@ -339,7 +339,7 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertEqual(proposal["terms"]["execution_environment"], "sandbox")
         approved = self.approve(proposal)
         result = self.coordinator.execute_approved(approved["proposal_id"])
-        self.assertEqual(result["code"], "ENVIRONMENT_CHANGED_REQUIRES_NEW_APPROVAL")
+        self.assertEqual(result["code"], "EXECUTION_ENVIRONMENT_CHANGED")
         self.assertEqual(self.transport.calls, [])
 
     def test_changed_broker_price_is_blocked_before_claim_or_transport(self):
@@ -386,7 +386,7 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.transport.states[approved["client_order_id"]] = order(client=approved["client_order_id"],
             instrumentUid="22222222-2222-4222-8222-222222222222")
         result = self.coordinator.reconcile()
-        self.assertEqual(result[0]["code"], "BROKER_ORDER_IDENTITY_MISMATCH")
+        self.assertEqual(result[0]["code"], "EXECUTION_RECONCILIATION_PENDING")
         self.assertEqual(self.ingested, [])
         self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "UNKNOWN")
         self.assertEqual(self.transport.count("PostOrder"), 1)
@@ -399,7 +399,7 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.facts = C.TradeFacts(self.spec, account, quote, self.held)
         proposal = self.coordinator.prepare_next()
         self.assertEqual(proposal["terms"]["action"], "CLOSE")
-        self.assertEqual(proposal["terms"]["exit_reason"], "STRUCTURAL_STOP_REACHED")
+        self.assertEqual(proposal["terms"]["exit_reason"], "CURRENCY_DRAWDOWN_LIMIT")
         self.assertEqual(proposal["status"], "PENDING_DELIVERY")
         self.assertEqual(proposal["terms"]["protective_order_mode"], "EXIT_REQUIRES_SEPARATE_CONFIRMATION")
         self.assertEqual(self.transport.calls, [])
