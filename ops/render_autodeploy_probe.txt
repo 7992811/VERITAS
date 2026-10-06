@@ -1,0 +1,4 @@
+VERITAS Render native auto-deploy probe
+2026-10-06
+Purpose: verify GitHub provider -> Render deployment events.
+No runtime behavior changes.
