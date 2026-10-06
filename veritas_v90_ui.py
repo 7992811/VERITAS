@@ -3,7 +3,7 @@
 Single-owner dashboard with full decision, portfolio, trade, learning and data-quality views.
 No legacy DOM patching or duplicate network loaders.
 """
-UI_VERSION = "veritas-ui-v9.0-currency-portfolio-setup"
+UI_VERSION = "veritas-ui-v9.0-currency-portfolio-runtime-fix"
 
 _CANONICAL_HTML = r'''<!doctype html>
 <html lang="ru">
@@ -607,6 +607,7 @@ function selectSignal(k,scroll=false){
 
 
 const portfolioName=name=>({Impulse:'Импульсный',Aggressive:'Агрессивный',Champion:'Чемпион',Challenger:'Челленджер',Currency:'Валютный портфель'}[name]||name||'—');
+const currencyFallback=()=>({name:'Currency',display_name:'Валютный портфель',configuration_status:'CONFIGURED',allowed_assets:['CNYRUBF'],paper_trading_enabled:true,live_trading_enabled:false,capital_configured:true,nav_rub:10000,initial_nav_rub:10000,total_return_pct:0,drawdown_pct:0,gross_leverage:0,net_exposure:0,cash_equivalent_fraction:1,max_gross_limit:10,leverage_limit:10,hard_drawdown_limit_pct:35,weekend_carry_allowed:true,positions:[],risk_governor:{state:'NORMAL',new_risk:true,max_gross:10,hard_drawdown_limit:.35,profile:'CURRENCY'}});
 const tone=value=>value==null?'':Number(value)>0?'ok':Number(value)<0?'bad':'';
 const signedPct=value=>value==null?'—':(Number(value)>0?'+':'')+pct(value);
 function portfolioView(p){
@@ -632,7 +633,7 @@ function renderPortfolioPanel(ps){
   const pf=knownNumber(p.profit_factor),pfText=pf==null?(p.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(pf,2);
   root.innerHTML='<div class="pf-caption">С начала учёта · выберите портфель для подробностей</div><div class="pf-compare"><div class="pf-row pf-colnames"><span>Портфель</span><span>Доходность</span><span>Просадка</span><span>Прибыльных</span></div>'+ps.map(q=>{const a=portfolioView(q);return'<button type="button" class="pf-row" data-portfolio="'+esc(q.name)+'" aria-pressed="'+(q.name===p.name)+'"><span><b>'+esc(portfolioName(q.name))+'</b><small>'+esc(q.name==='Currency'?'CNYRUBf':q.name)+'</small></span><b class="'+tone(a.ret)+'">'+signedPct(a.ret)+'</b><span>'+pct(a.dd)+'</span><span>'+(a.winRate==null?'—':n(a.winRate,1)+'%')+'</span></button>';}).join('')+'</div>'+
     '<div class="pf-detail"><div class="pf-heading"><div><h3>'+esc(portfolioName(p.name))+'</h3><div class="pf-amount">'+rub(v.balance)+'</div><div class="pf-secondary">'+(v.usd==null?'—':n(v.usd,0)+' $')+'</div></div><div class="pf-status '+(v.risk.new_risk===false?'warn':'')+'">'+status+'</div></div>'+
-    (p.name==='Currency'?'<div class="pf-foot">Только CNYRUBf. Капитал и ограничения риска ещё не заданы; сделки не выполняются.</div>':'')+
+    (p.name==='Currency'?'<div class="pf-foot">Только CNYRUBf · стартовый капитал 10 000 ₽ · плечо до 1:10 · максимальная просадка 35% · лонг / шорт / вне рынка.</div>':'')+
     '<div class="pf-performance">'+metric('Доходность',signedPct(v.ret),tone(v.ret),'С начала учёта')+metric('К RUONIA',signedPct(v.excess),tone(v.excess),'Относительно эталона')+metric('Закрытые сделки',rub(v.pnl),tone(v.pnl),'После всех расходов')+'</div>'+
     '<div class="pf-sections"><section class="pf-section"><h4>Риск и ограничения</h4>'+pair('Текущая просадка',pct(v.dd),v.dd>0?'warn':'')+meter(v.dd,v.ddLimit,true)+pair('Лимит просадки',pct(v.ddLimit))+pair('Загрузка / лимит',mult(v.gross)+' / '+mult(v.limit))+meter(v.gross,v.limit)+pair('Новые позиции',v.risk.new_risk===true?'Разрешены':v.risk.new_risk===false?'Заблокированы':'—')+'</section>'+
     '<section class="pf-section"><h4>Экспозиция</h4>'+pair('Длинные позиции',mult(v.long))+pair('Короткие позиции',mult(v.short))+pair('Чистая экспозиция',mult(v.net))+pair('Вне позиций',v.cash==null?'—':pct(100*v.cash))+'<div class="pf-foot">Объём позиций относительно размера портфеля. 1× = 100%. Показатель «Вне позиций» не учитывает требования к марже.</div></section>'+
@@ -651,7 +652,7 @@ function renderPortfolios(){
   });
   ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push(Object.assign({portfolio:p.name},z))));
   const exposureMismatch=positions.length===0&&portfolioExposureNonZero(ps);
-  $('pfCount').textContent=ps.length+'/4';$('openCount').textContent=exposureMismatch?'синхр.':positions.length;
+  $('pfCount').textContent=ps.length;$('openCount').textContent=exposureMismatch?'синхр.':positions.length;
   const rets=ps.map(p=>knownNumber(p.total_return_pct??(p.latest||{}).total_return_pct)).filter(v=>v!=null);
   const dds=ps.map(p=>Number(p.drawdown_pct!=null?p.drawdown_pct:(((p.latest||{}).drawdown!=null)?100*Number((p.latest||{}).drawdown):NaN))).filter(Number.isFinite);
   $('bestRet').textContent=rets.length?Math.max(...rets).toFixed(2)+'%':'—';$('maxDD').textContent=dds.length?Math.max(...dds).toFixed(2)+'%':'—';
@@ -1004,6 +1005,10 @@ async function loadBootstrap(){
 async function loadPortfolios(){
   if(st.busy['paper-portfolios'])return;
   const d=await get('paper-portfolios','/api/v1/paper-portfolios',30000);
+  if(d&&d.status==='OK'&&Array.isArray(d.portfolios)){
+    d.portfolios=d.portfolios.map(p=>p.name==='Currency'&&!Array.isArray(p.positions)?Object.assign({},p,{positions:[]}):p);
+    if(!d.portfolios.some(p=>p.name==='Currency'))d.portfolios.push(currencyFallback());
+  }
   const complete=d&&d.status==='OK'&&Array.isArray(d.portfolios)&&
     ['Impulse','Aggressive','Champion','Challenger','Currency'].every(name=>d.portfolios.some(p=>p.name===name&&Array.isArray(p.positions)));
   if(complete){
