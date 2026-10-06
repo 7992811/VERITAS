@@ -16,6 +16,9 @@ def install_market_runtime_guard(ns):
         return
     ns["_V90_MARKET_RUNTIME_GUARD_INSTALLED"] = True
 
+    import veritas_brent_market as BRM
+    ns["_v90_brent_market"] = lambda: BRM.fetch_market(quote_fetcher=ns["_v90r61_profinance_quote"])
+
     emit = ns.get("emit")
     market_cache = ns.get("market_cache", {})
     market_cache_lock = ns.get("market_cache_lock")

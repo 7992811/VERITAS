@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
 import veritas_canonical_constitution as CTC
+from veritas_entry_scenarios import daily_context, daily_features, select_context
 
 
 def native_ohlc(rows):
@@ -17,6 +18,7 @@ def attach(raw, now=None):
     asset = str(r.get('asset') or '')
     clock = datetime.now(timezone.utc) if now is None else now
     r.pop('_same_tf_context_cache', None)
+    attached_mapping = r.get('structure_bars_by_timeframe') or {}
     identity = VPS.identity(asset, r)
     r['structure_source_identity'] = identity
     r['structure_bars_by_timeframe'] = {}
@@ -25,7 +27,11 @@ def attach(raw, now=None):
     mapping = {}
     if identity['key'].startswith('PROFINANCE:'):
         from veritas_profinance_history import fetch_history_bundle
-        bundle = fetch_history_bundle(asset=asset, now=clock)
+        bundle = (dict(source_identity=r.get('structure_source_identity'),
+                       bars_by_timeframe=attached_mapping,
+                       status_by_timeframe=r.get('structure_history_status'))
+                  if r.get('native_source_history_attached')
+                  else fetch_history_bundle(asset=asset, now=clock))
         r['structure_history_status'] = bundle.get('status_by_timeframe') or {}
         if not VPS.same(identity, bundle.get('source_identity')):
             r['structure_history_error'] = 'SAME_TF_SOURCE_MISMATCH'
@@ -52,6 +58,15 @@ def attach(raw, now=None):
                         for b in rows[-500:]
                         if (not b.get('source_identity') or VPS.same(identity,b['source_identity']))
                         and (not b.get('timeframe') or b['timeframe']==tf)]
+    # Fetch once per source/contract, before any hourly aggregation. Only the
+    # native adapter can certify D1 as daily MA input.
+    r['structure_bars_by_timeframe'] = labelled
+    from veritas_native_daily import fetch_native_daily
+    daily = fetch_native_daily(r, clock)
+    r['native_daily_bars'] = daily.get('bars') or []
+    r['native_daily_history_status'] = {k:v for k,v in daily.items() if k != 'bars'}
+    if not labelled.get('1d') and r['native_daily_bars']:
+        labelled['1d'] = r['native_daily_bars']
     for source_tf, tf in (('1h','4h'), ('1h','1d'), ('1d','3d'), ('1d','7d')):
         if not labelled.get(tf) and labelled.get(source_tf):
             # Fixed calendar buckets. Weekly anchor is Monday 00:00 UTC;
@@ -75,5 +90,6 @@ def context(raw, horizon, now=None):
         result = TS.build_context(rows, horizon, clock,
                     asset=raw.get('asset') or '', source_identity=raw.get('structure_source_identity'),
                     config=CTC.STRUCTURAL_ENTRY_POLICY)
+        result = select_context(raw, horizon, clock, result)
         cache[horizon] = {'as_of':stamp, 'context':result}
     return cache[horizon]['context']

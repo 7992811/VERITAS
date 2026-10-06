@@ -12,7 +12,7 @@ from __future__ import annotations
 VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
-STRATEGY_EPOCH = "EQ3_2026_10_06"
+STRATEGY_EPOCH = "EQ4_2026_10_07_NATIVE_MA"
 STRATEGY_ROLE_POLICY = {
     "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
     "AGGRESSIVE": {"name":"CONFIRMED_TREND","horizons":("5m","1h","4h","1d"),
@@ -37,6 +37,23 @@ STRUCTURAL_ENTRY_POLICY = {
     "closed_bar_confirmation": True, "immutable_event_time": True,
     "same_source_candles_and_execution": True,
     "minimum_net_reward_risk": 1.15,
+    "parameter_validation_status": "UNVALIDATED_DEFAULTS",
+}
+
+# Daily context is native D1 from the execution instrument. The actual rebound
+# confirmation, swing stop, ATR and target remain on the selected entry TF.
+MA_REBOUND_POLICY = {
+    "version": "CTC_DAILY_MA_REBOUND_V1",
+    "teaching_id": "USER_DAILY_MA_REBOUND_2026_10_07",
+    "enabled": True, "periods": [50, 200],
+    "zone_atr_daily": 0.10, "max_episode_bars": 12,
+    "rearm_bars": 3, "rearm_atr_daily": 0.25,
+    "slope_lookback_days": 5, "max_adverse_slope_atr": 0.25,
+    "flat_slope_atr": 0.10, "max_flat_crossings_10d": 3,
+    "supported_timeframes": ["1m", "5m", "1h", "4h", "1d"],
+    "native_closed_daily_bars_required": True,
+    "daily_context_frozen_before_touch": True,
+    "independent_structural_breakout_remains_available": True,
     "parameter_validation_status": "UNVALIDATED_DEFAULTS",
 }
 
@@ -250,7 +267,7 @@ SIGNAL_POLICY = {
     "published_direction": ("LONG", "SHORT"),
     "principle": (
         "A directional thesis needs an independently confirmed same-timeframe "
-        "structural breakout. Publishing or refreshing LONG/SHORT cannot create "
+        "structural breakout or confirmed daily-MA rebound. Publishing or refreshing LONG/SHORT cannot create "
         "a new event, move its trigger, or reset its original confirmation time."
     ),
     "normal_signal_can_probe_below_rr_floor_if_net_positive": False,

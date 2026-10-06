@@ -16,6 +16,18 @@ TEACHING_ID = "USER_TF_STRUCTURE_2026_10_06"
 SOURCE_TIMESTAMP = "2026-10-06T19:56:32Z"
 EVENT_TYPE = "user_teaching"
 TRACE_VERSION = "USER_TEACHING_ENTRY_TRACE_V1"
+MA_TEACHING_ID = "USER_DAILY_MA_REBOUND_2026_10_07"
+MA_SOURCE_TIMESTAMP = "2026-10-06T21:26:00Z"
+MA_USER_CORRECTION_RU = (
+    "В правилах используется анализ скользящих средних? Если цена находится у "
+    "50 или 200 дневной средней это часто является уровнем поддержки или "
+    "сопротивления, где можно открываться позиции на отскок от уровня"
+)
+MA_USER_AUTHORIZATION_RU = (
+    "Давай внедрим эти изменения.\n"
+    "И проверь почему по нефти не открываются сделки, хотя сигналы есть, "
+    "и хорошая волатильность в течение дня, а вход постоянно заблокирован? Это ошибка"
+)
 USER_CORRECTION_RU = (
     "Тут ошибка в логике открытия сделок, на старшем таймфрейме лонг сформировался "
     "при пробитии предыдущего максимума, и также на меньших таймфреймах, а стоп "
@@ -77,7 +89,46 @@ def policy_snapshot():
     }
 
 
-def seed_user_teaching(pg_event, read_event=None):
+def ma_policy_snapshot():
+    """New owner instruction has its own immutable key; preserve the old record."""
+    policy = _copy(CTC.MA_REBOUND_POLICY)
+    return {
+        "teaching_id": MA_TEACHING_ID,
+        "source_type": "USER_AUTHORED_OPERATIONAL_POLICY",
+        "source_timestamp": MA_SOURCE_TIMESTAMP,
+        "source_timestamp_precision": "MINUTE",
+        "source_text_ru": MA_USER_CORRECTION_RU,
+        "authorization_text_ru": MA_USER_AUTHORIZATION_RU,
+        "status": "ACTIVE_OPERATIONAL_POLICY",
+        "parent_teaching_id": TEACHING_ID,
+        "ctc_version": CTC.VERSION,
+        "runtime_authority": CTC.BASIS_RUNTIME,
+        "portfolios": list(CTC.PORTFOLIO_ORDER),
+        "scope": "ALL_CONFIGURED_PAPER_PORTFOLIOS_WITH_EXISTING_ASSET_AND_RISK_LIMITS",
+        "execution_policy": policy,
+        "requirements": {
+            "context": "SMA50/SMA200 from completed native daily candles of the execution source and instrument.",
+            "entry": "Touch, hold/reclaim and a new closed-bar break of the local rebound high/low.",
+            "volatility": "Entry confirmation, stop, ATR and target use the selected execution timeframe.",
+            "causality": "Freeze the daily snapshot before the touch; retain the original event time and identity.",
+            "independence": "Missing daily history disables only the MA scenario, not structural breakouts.",
+        },
+        "parameter_validation": {
+            "status": "SHADOW_OOS_REQUIRED",
+            "runtime_defaults_status": policy["parameter_validation_status"],
+            "ml_training_performed": False, "validated_profitability": False,
+        },
+        "storage": {"table": "ledger_events", "event_type": EVENT_TYPE,
+                    "entity_key": MA_TEACHING_ID, "event_key": EVENT_TYPE + ":" + MA_TEACHING_ID},
+    }
+
+
+def seed_all_user_teachings(pg_event, read_event=None):
+    return [seed_user_teaching(pg_event, read_event, snapshot=payload)
+            for payload in (policy_snapshot(), ma_policy_snapshot())]
+
+
+def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):
     """Idempotently seed the existing ledger; never equate False with success.
 
     ``pg_event`` receives six positional arguments, matching the production
@@ -88,14 +139,15 @@ def seed_user_teaching(pg_event, read_event=None):
     readback neither True nor False establishes that evidence. No DB scan or
     new table is needed. Exceptions are reported by type only to avoid secrets.
     """
-    payload = policy_snapshot()
-    result = {"teaching_id": TEACHING_ID, "event_key": EVENT_TYPE + ":" + TEACHING_ID,
+    payload = policy_snapshot() if snapshot is None else _copy(snapshot)
+    teaching_id = payload["teaching_id"]
+    result = {"teaching_id": teaching_id, "event_key": EVENT_TYPE + ":" + teaching_id,
               "status": "UNVERIFIED", "durable": None, "inserted": False,
               "payload_sha256": _digest(payload)}
     try:
-        written = pg_event(EVENT_TYPE, TEACHING_ID, _copy(payload), None, None, SOURCE_TIMESTAMP)
+        written = pg_event(EVENT_TYPE, teaching_id, _copy(payload), None, None, payload["source_timestamp"])
         if read_event is not None:
-            stored = read_event(EVENT_TYPE, TEACHING_ID)
+            stored = read_event(EVENT_TYPE, teaching_id)
             if isinstance(stored, Mapping) and "payload" in stored:
                 stored = stored["payload"]
             if isinstance(stored, str):
@@ -120,7 +172,7 @@ def verify_entry_trace(trace):
         return False
     body = dict(trace)
     digest = body.pop("trace_sha256", None)
-    if body.get("trace_version") != TRACE_VERSION or body.get("teaching_id") != TEACHING_ID:
+    if body.get("trace_version") != TRACE_VERSION or body.get("teaching_id") not in (TEACHING_ID, MA_TEACHING_ID):
         return False
     try:
         return bool(digest and digest == _digest(body))
@@ -167,5 +219,9 @@ def entry_trace(context, portfolio=None, existing=None):
         "timeframe_entry_context": _copy(dict(context)),
         "parameter_validation_status": policy.get("parameter_validation_status", "UNVALIDATED_DEFAULTS"),
     }
+    if (context.get("event") or {}).get("event_type") == "DAILY_MA_REBOUND":
+        trace.update(teaching_id=MA_TEACHING_ID, teaching_source_timestamp=MA_SOURCE_TIMESTAMP,
+                     parent_teaching_id=TEACHING_ID,
+                     daily_ma_policy_snapshot=_copy(CTC.MA_REBOUND_POLICY))
     trace["trace_sha256"] = _digest(trace)
     return trace

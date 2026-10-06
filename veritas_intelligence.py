@@ -85,7 +85,7 @@ KNOWLEDGE_PROMOTION_N = max(20, int(os.getenv('VERITAS_KNOWLEDGE_PROMOTION_N', '
 KNOWLEDGE_GRAVEYARD_N = max(20, int(os.getenv('VERITAS_KNOWLEDGE_GRAVEYARD_N', '40')))
 KNOWLEDGE_PROMOTION_HIT = float(os.getenv('VERITAS_KNOWLEDGE_PROMOTION_HIT', '0.55'))
 KNOWLEDGE_GRAVEYARD_HIT = float(os.getenv('VERITAS_KNOWLEDGE_GRAVEYARD_HIT', '0.45'))
-SUPPORTED_RULE_FIELDS = {'ret_h','ret_4h','ret_24h','ret_72h','ret_168h','trend','momentum','rv','volume_ratio','taker_buy_share','source_divergence','funding','basis','oi_change_24h','taker_buy_sell_ratio','global_long_short_ratio','intraday_structure_score','relative_volume','near_ath','price_discovery','breakout_hold','session_efficiency','session_persistence','expected_move_pct','sma18','sma50','support_level','resistance_level','reversal_probability','cycle_return'}
+SUPPORTED_RULE_FIELDS = {'ret_h','ret_4h','ret_24h','ret_72h','ret_168h','trend','momentum','rv','volume_ratio','taker_buy_share','source_divergence','funding','basis','oi_change_24h','taker_buy_sell_ratio','global_long_short_ratio','intraday_structure_score','relative_volume','near_ath','price_discovery','breakout_hold','session_efficiency','session_persistence','expected_move_pct','sma18','sma50','sma200','support_level','resistance_level','reversal_probability','cycle_return'}
 SUPPORTED_RULE_OPS = {'>','>=','<','<=','=='}
 DISCOVERY_QUERIES = [
     'cryptocurrency momentum return predictability',
@@ -4244,23 +4244,19 @@ def horizon_structure_features(raw, horizon):
 
 
 def structural_levels_features(raw):
-    """Decision-grade support/resistance plus SMA18/SMA50 from point-in-time hourly bars.
-    Daily closes are derived from completed 1h-bar groups; no future bars are used.
-    """
-    asset=raw.get('asset'); c=[float(x) for x in raw.get('closes') or []]; h=[float(x) for x in raw.get('highs') or []]; l=[float(x) for x in raw.get('lows') or []]
-    p=float(raw.get('price') or (c[-1] if c else 0.0))
-    if len(c)<40 or p<=0: return {'status':'UNAVAILABLE'}
-    day=max(1,horizon_bars(asset,'1d'))
-    daily=[]
-    start=max(0,len(c)-day*70)
-    z=c[start:]
-    for i in range(0,len(z),day):
-        block=z[i:i+day]
-        if len(block)==day: daily.append(float(block[-1]))
-    sma18=(sum(daily[-18:])/18.0) if len(daily)>=18 else None
-    sma50=(sum(daily[-50:])/50.0) if len(daily)>=50 else None
-    sma18_prev=(sum(daily[-19:-1])/18.0) if len(daily)>=19 else None
-    sma50_prev=(sum(daily[-51:-1])/50.0) if len(daily)>=51 else None
+    """Native daily averages and source-matched completed-hourly price levels."""
+    clock=datetime.now(timezone.utc)
+    daily=TFD.daily_features(raw,clock)
+    identity=raw.get('structure_source_identity')
+    native=[x for x in (raw.get('structure_bars_by_timeframe') or {}).get('1h',[])
+            if TFD.TS._same_source(x.get('source_identity'),identity)]
+    rows=TFD.TS.closed_bars(native,'1h',clock)
+    c=[x['close'] for x in rows]; h=[x['high'] for x in rows]; l=[x['low'] for x in rows]
+    p=TFD.TS._number(raw.get('price'))
+    if len(c)<40 or not p or p<=0:
+        return dict(daily,support=None,resistance=None,support_strength=0.,resistance_strength=0.,
+                    family='PRICE_STRUCTURE')
+    day=max(1,horizon_bars(raw.get('asset'),'1d'))
     look=min(len(c),max(day*10,48)); highs=h[-look:]; lows=l[-look:]
     supports=[]; resistances=[]
     for i in range(2,look-2):
@@ -4273,30 +4269,19 @@ def structural_levels_features(raw):
     support=nearest(supports,True); resistance=nearest(resistances,False)
     if support is None and lows: support=min(lows[-min(len(lows),max(12,day*3)):])
     if resistance is None and highs: resistance=max(highs[-min(len(highs),max(12,day*3)):])
-    tol=max(p*0.0025,_bar_atr([{'high':h[i],'low':l[i],'close':c[i]} for i in range(max(0,len(c)-30),len(c))],14)*0.35)
+    tol=max(p*0.0025,_bar_atr(rows[-30:],14)*0.35)
     def strength(level,kind):
         if level is None: return 0.0
         seq=lows if kind=='support' else highs
         touches=sum(1 for x in seq if abs(x-level)<=tol)
         dist=abs(p-level)/p
         return round(clip(0.18*touches + 0.35*(1-min(1,dist/0.03)),0,1),4)
-    bias=0.0
-    if sma18 is not None: bias += 0.35 if p>sma18 else -0.35
-    if sma50 is not None: bias += 0.25 if p>sma50 else -0.25
-    if sma18 is not None and sma50 is not None: bias += 0.20 if sma18>sma50 else -0.20
-    if sma18 is not None and sma18_prev is not None: bias += 0.10 if sma18>sma18_prev else -0.10
-    if sma50 is not None and sma50_prev is not None: bias += 0.10 if sma50>sma50_prev else -0.10
-    return {'status':'OK','price':p,'sma18':sma18,'sma50':sma50,
-            'sma18_slope':None if sma18 is None or sma18_prev is None else sma18/sma18_prev-1,
-            'sma50_slope':None if sma50 is None or sma50_prev is None else sma50/sma50_prev-1,
-            'price_vs_sma18':None if sma18 is None else p/sma18-1,
-            'price_vs_sma50':None if sma50 is None else p/sma50-1,
-            'support':support,'support_strength':strength(support,'support'),
-            'resistance':resistance,'resistance_strength':strength(resistance,'resistance'),
-            'distance_to_support':None if support is None else (p-support)/p,
-            'distance_to_resistance':None if resistance is None else (resistance-p)/p,
-            'trend_bias':round(clip(bias,-1,1),4),'family':'PRICE_STRUCTURE'}
-
+    return dict(daily,status='OK',price=p,
+            support=support,support_strength=strength(support,'support'),
+            resistance=resistance,resistance_strength=strength(resistance,'resistance'),
+            distance_to_support=None if support is None else (p-support)/p,
+            distance_to_resistance=None if resistance is None else (resistance-p)/p,
+            family='PRICE_STRUCTURE')
 
 
 def impulse_genesis_setup(asset, raw, f, causal_score=0.0):
@@ -4786,35 +4771,8 @@ def regime_from(f):
 
 
 def features(raw, horizon, common_structure=None):
-    asset=raw.get('asset')
-    n = horizon_bars(asset,horizon)
-    c, v, tb, p = raw['closes'], raw['vols'], raw['taker_buy'], raw['price']
-    fast = max(4, min(n, 24))
-    slow = max(24, min(max(3*n, 72), min(168,len(c))))
-    prior = v[-slow:-fast]
-    denom = sum(v[-fast:])
-    taker_share = sum(tb[-fast:]) / denom if denom else 0.5
-    bar_4=4
-    bar_1d=horizon_bars(asset,'1d')
-    bar_3d=horizon_bars(asset,'3d')
-    bar_7d=horizon_bars(asset,'7d')
-    f = {
-        'asset':raw.get('asset'),'price': p,
-        'coinbase_price': raw.get('coinbase_price'),'secondary_price':raw.get('secondary_price',raw.get('coinbase_price')),
-        'source_divergence': raw['source_divergence'],
-        'ret_h': p / c[-1-n] - 1,
-        'ret_4h': p / c[-1-bar_4] - 1,
-        'ret_24h': p / c[-1-bar_1d] - 1,
-        'ret_72h': p / c[-1-bar_3d] - 1,
-        'ret_168h': p / c[-1-bar_7d] - 1,
-        'trend': p / (sum(c[-slow:]) / slow) - 1,
-        'momentum': p / c[-1-fast] - 1,
-        'rv': (sum(x*x for x in raw['returns'][-fast:]) / fast) ** 0.5 * (fast ** 0.5),
-        'volume_ratio': (sum(v[-fast:]) / fast) / (sum(prior) / len(prior)) if prior and sum(prior) else 1,
-        'taker_buy_share': taker_share,
-        'observed_at': raw['observed_at'],'binance_close_time_ms': raw['binance_close_time_ms'],
-        'source_gate_pass':raw.get('source_gate_pass',True),'market_open':raw.get('market_open',True),
-    }
+    from veritas_feature_history import base_features
+    f=base_features(raw,horizon,horizon_bars)
     if common_structure is not None:
         f['intraday_structure'] = common_structure.get('intraday_structure') or {}
         f['trend_impulse'] = dict(common_structure.get('trend_impulse') or {})
@@ -4847,7 +4805,7 @@ def features(raw, horizon, common_structure=None):
     f['entry_quality'] = f['trend_impulse'].get('entry_quality','UNKNOWN')
     f['structural_levels'] = ((common_structure or {}).get('structural_levels')
                               if common_structure is not None else None) or structural_levels_features(raw)
-    f['sma18']=(f['structural_levels'] or {}).get('sma18'); f['sma50']=(f['structural_levels'] or {}).get('sma50')
+    f['sma18']=(f['structural_levels'] or {}).get('sma18'); f['sma50']=(f['structural_levels'] or {}).get('sma50'); f['sma200']=(f['structural_levels'] or {}).get('sma200')
     f['support_level']=(f['structural_levels'] or {}).get('support'); f['resistance_level']=(f['structural_levels'] or {}).get('resistance')
     f['reversal_probability']=None; f['cycle_return']=0.0
     f['regime'] = regime_from(f)
@@ -5538,35 +5496,8 @@ def stats():
 
 
 def features(raw, horizon, common_structure=None):
-    asset=raw.get('asset')
-    n = horizon_bars(asset,horizon)
-    c, v, tb, p = raw['closes'], raw['vols'], raw['taker_buy'], raw['price']
-    fast = max(4, min(n, 24))
-    slow = max(24, min(max(3*n, 72), min(168,len(c))))
-    prior = v[-slow:-fast]
-    denom = sum(v[-fast:])
-    taker_share = sum(tb[-fast:]) / denom if denom else 0.5
-    bar_4=4
-    bar_1d=horizon_bars(asset,'1d')
-    bar_3d=horizon_bars(asset,'3d')
-    bar_7d=horizon_bars(asset,'7d')
-    f = {
-        'asset':raw.get('asset'),'price': p,
-        'coinbase_price': raw.get('coinbase_price'),'secondary_price':raw.get('secondary_price',raw.get('coinbase_price')),
-        'source_divergence': raw['source_divergence'],
-        'ret_h': p / c[-1-n] - 1,
-        'ret_4h': p / c[-1-bar_4] - 1,
-        'ret_24h': p / c[-1-bar_1d] - 1,
-        'ret_72h': p / c[-1-bar_3d] - 1,
-        'ret_168h': p / c[-1-bar_7d] - 1,
-        'trend': p / (sum(c[-slow:]) / slow) - 1,
-        'momentum': p / c[-1-fast] - 1,
-        'rv': (sum(x*x for x in raw['returns'][-fast:]) / fast) ** 0.5 * (fast ** 0.5),
-        'volume_ratio': (sum(v[-fast:]) / fast) / (sum(prior) / len(prior)) if prior and sum(prior) else 1,
-        'taker_buy_share': taker_share,
-        'observed_at': raw['observed_at'],'binance_close_time_ms': raw['binance_close_time_ms'],
-        'source_gate_pass':raw.get('source_gate_pass',True),'market_open':raw.get('market_open',True),
-    }
+    from veritas_feature_history import base_features
+    f=base_features(raw,horizon,horizon_bars)
     if common_structure is not None:
         f['intraday_structure'] = common_structure.get('intraday_structure') or {}
         f['trend_impulse'] = dict(common_structure.get('trend_impulse') or {})
@@ -5599,7 +5530,7 @@ def features(raw, horizon, common_structure=None):
     f['entry_quality'] = f['trend_impulse'].get('entry_quality','UNKNOWN')
     f['structural_levels'] = ((common_structure or {}).get('structural_levels')
                               if common_structure is not None else None) or structural_levels_features(raw)
-    f['sma18']=(f['structural_levels'] or {}).get('sma18'); f['sma50']=(f['structural_levels'] or {}).get('sma50')
+    f['sma18']=(f['structural_levels'] or {}).get('sma18'); f['sma50']=(f['structural_levels'] or {}).get('sma50'); f['sma200']=(f['structural_levels'] or {}).get('sma200')
     f['support_level']=(f['structural_levels'] or {}).get('support'); f['resistance_level']=(f['structural_levels'] or {}).get('resistance')
     f['reversal_probability']=None; f['cycle_return']=0.0
     f['regime'] = regime_from(f)
@@ -7040,10 +6971,10 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                     size=max(float(size or 0.0),0.10)
                     tactical_reversal={'active':False}
                     f['entry_quality']='FRESH_BREAKOUT'
-                    f['horizon_structure']=dict(f.get('horizon_structure') or {},horizon=horizon,
-                        resolution=horizon,direction=research_dec,state='BUILDING_TREND',score=conf)
+                    from veritas_entry_scenarios import confirmed_structure
+                    f['horizon_structure']=confirmed_structure(f,research_dec,conf,horizon)
                     f['horizon_structure_direction']=research_dec
-                    f['horizon_structure_state']='BUILDING_TREND'
+                    f['horizon_structure_state']=f['horizon_structure']['state']
                 elif horizon=='1m':
                     research_dec='NO_TRADE'; conf=0.0; size=0.0
 
@@ -7371,7 +7302,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'event_shadow_score':event_shadow.get('score',0.0),
                      'causal_score':causal_shadow.get('score'),'causal_label':causal_shadow.get('label'),
                      'tactical_reversal':tactical_reversal,'impulse_genesis':f.get('impulse_genesis') or {},'range_retest_breakout':f.get('range_retest_breakout') or {},'impulse_pivot_break':f.get('impulse_pivot_break') or {},'structure_breakout_grid':f.get('structure_breakout_grid') or {},'structural_levels':f.get('structural_levels') or {},
-                     'sma18':f.get('sma18'),'sma50':f.get('sma50'),'support_level':f.get('support_level'),'resistance_level':f.get('resistance_level')}
+                     'sma18':f.get('sma18'),'sma50':f.get('sma50'),'sma200':f.get('sma200'),
+                     'research_history_status':f.get('research_history_status'),'research_feature_availability':f.get('research_feature_availability'),'research_hourly_bar_count':f.get('research_hourly_bar_count'),'support_level':f.get('support_level'),'resistance_level':f.get('resistance_level')}
                 if horizon=='1m':
                     z.update(minute_data_status=f.get('minute_data_status'),
                              minute_closed_at=f.get('minute_closed_at'),minute_entry_gate=f.get('minute_entry_gate'))
@@ -9865,7 +9797,8 @@ def _fetch_asset_bundle(symbol,asset,cb_product):
     else:
         out=_v842_original_fetch_asset_bundle(symbol,asset,cb_product)
     from veritas_minute_entry import attach_minutes
-    out['raw']=TFD.attach(attach_minutes(out['raw'],symbol,globals()))
+    native=out['raw'].get('native_source_history_attached')
+    out['raw']=TFD.attach(out['raw'] if native else attach_minutes(out['raw'],symbol,globals()))
     _v90r62_store_bundle(asset,out)
     return out
 
@@ -15996,7 +15929,7 @@ def v708_decision_cards(summary=None,limit=6):
                       'quality':r['_quality'],'independent_confirmations':r['_indep'],'entry':r.get('price'),'stop':plan.get('stop_price') or tr.get('stop_price'),
                       'target':tr.get('target_price'),'reward_risk':r['_rr'],'eligible':bool(plan.get('eligible')),
                       'reason':' + '.join(reasons[:4]) if reasons else 'сигнал требует дополнительного подтверждения','invalidation':' · '.join(invalid[:3]) if invalid else None,
-                      'support':sl.get('support'),'resistance':sl.get('resistance'),'sma18':sl.get('sma18'),'sma50':sl.get('sma50')})
+                      'support':sl.get('support'),'resistance':sl.get('resistance'),'sma18':sl.get('sma18'),'sma50':sl.get('sma50'),'sma200':sl.get('sma200')})
     return {'status':'OK','cards':cards}
 
 
@@ -16105,7 +16038,7 @@ def v708_scenario_map(summary=None):
         if a in best: continue
         sl=r.get('structural_levels') or {}; p=float(r.get('price') or 0); plan=r.get('trade_plan') or {}
         if not p: continue
-        best[a]={'asset':a,'price':p,'support':sl.get('support'),'resistance':sl.get('resistance'),'sma18':sl.get('sma18'),'sma50':sl.get('sma50'),'direction':r['_direction'],'probability':r['_p'],'stop':plan.get('stop_price'),'state':r.get('regime_transition_state')}
+        best[a]={'asset':a,'price':p,'support':sl.get('support'),'resistance':sl.get('resistance'),'sma18':sl.get('sma18'),'sma50':sl.get('sma50'),'sma200':sl.get('sma200'),'direction':r['_direction'],'probability':r['_p'],'stop':plan.get('stop_price'),'state':r.get('regime_transition_state')}
     return {'status':'OK','items':list(best.values())}
 
 
@@ -16361,7 +16294,7 @@ document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.quer
 
 let PRODUCT_CACHE=null;
 function probText(p,src){return p==null?'—':(100*Number(p)).toFixed(1)+'%'+(src==='EMPIRICAL_CALIBRATION'?' калибр.':' модельн.')}function qlabel(q){return q&&q.label?q.label:'—'}
-async function loadProductExperience(){try{const r=await fetch('/api/v1/product-experience',{cache:'no-store'});if(!r.ok)throw new Error('product experience HTTP '+r.status);const d=await r.json();PRODUCT_CACHE=d;const cs=(d.decision_cards||{}).cards||[];document.getElementById('decisioncards').innerHTML=cs.map(c=>`<div class="decision-card"><div class="head"><span class="big">${c.asset} · ${c.direction} · ${c.horizon}</span><span class="badge">${qlabel(c.quality)}</span></div><div class="metric-grid"><div class="metric">Вероятность<b>${probText(c.probability,c.probability_source)}</b></div><div class="metric">Надёжность<b>${c.reliability||'—'}${c.sample_n?' · n='+c.sample_n:''}</b></div><div class="metric">R/R<b>${c.reward_risk==null?'—':Number(c.reward_risk).toFixed(2)}</b></div><div class="metric">Допуск<b class="${c.eligible?'ok':'warn'}">${c.eligible?'READY':'WATCH'}</b></div></div><div style="margin-top:8px">Вход ${fmtN(c.entry)} · стоп ${fmtN(c.stop)} · цель ${fmtN(c.target)} · подтверждений ${c.independent_confirmations}</div><div class="stamp">${c.reason}${c.invalidation?' · отмена: '+c.invalidation:''}</div></div>`).join('')||'нет готовых карточек';document.getElementById('trustmeter').innerHTML=cs.slice(0,6).map(c=>`${c.asset} ${c.horizon}: <b>${probText(c.probability,c.probability_source)}</b> · доверие ${c.reliability} · ${c.probability_source}`).join('<br>')||'выборка накапливается';const dr=(d.market_drivers||{}).items||[];document.getElementById('drivers2').innerHTML=dr.map((x,i)=>`${i+1}. <b>${x.asset}</b> · ${x.direction} · ${x.causal_label} · ${x.transition||x.regime||'—'}`).join('<br>')||'—';const pc=(d.portfolio_command||{}).portfolios||[];document.getElementById('pcmd').innerHTML=pc.map(p=>`<div class="decision-card"><div class="head"><b>${p.name}</b><span class="badge">MODEL</span></div><div class="metric-grid"><div class="metric">NAV<b>${rub(p.nav_rub)}</b></div><div class="metric">Gross<b>${Number(p.gross_leverage||0).toFixed(2)}×</b></div><div class="metric">Cash<b>${pct(p.cash_fraction)}</b></div><div class="metric">Позиций<b>${p.open_positions}</b></div></div><div class="stamp">Факторные экспозиции: ${Object.entries(p.factor_exposure||{}).map(([k,v])=>k+' '+rub(v)).join(' · ')||'нет'}</div></div>`).join('');const ab=d.abstention||{};document.getElementById('abstention2').innerHTML=`${Object.entries(ab.counts||{}).map(([k,v])=>`<span class="chip">${k}: ${v}</span>`).join('')}<br>${(ab.items||[]).slice(0,6).map(x=>`${x.asset} ${x.horizon} ${x.direction}: ${x.reason}`).join('<br>')||'нет отклонённых направленных сетапов'}`;const f=d.opportunity_funnel||{};document.getElementById('funnel2').innerHTML=`<div class="funnel"><span class="funnel-step">Ячеек <b>${f.total_cells??0}</b></span><span class="funnel-step">Направленных <b>${f.directional??0}</b></span><span class="funnel-step">3+ подтверждения <b>${f.independent_3plus??0}</b></span><span class="funnel-step">P≥70% <b>${f.probability_70plus??0}</b></span><span class="funnel-step">EV+ <b>${f.positive_ev_proxy??0}</b></span><span class="funnel-step">Допущено <b>${f.eligible??0}</b></span></div><div class="stamp">${Object.entries(f.rejection_reasons||{}).map(([k,v])=>k+': '+v).join(' · ')}</div>`;const m=d.missed_opportunities||{};document.getElementById('missed2').innerHTML=(m.items||[]).slice(0,8).map(x=>`${x.asset} ${x.horizon}: ${x.reason} · ${x.forward_return==null?'—':pct(x.forward_return)}`).join('<br>')||'подтверждённых пропусков пока нет';const l=d.learning_center||{};document.getElementById('learning2').innerHTML=`Verified <b>${l.verified_index==null?'ещё не опубликован':l.verified_index}</b> · Provisional <b>${l.provisional_index??'—'}</b> · confidence ${l.confidence||'—'}<br>matched n=${l.matched_n_each_side??0}/${l.publication_threshold??20}<br>24ч: зрелых исходов <b>${l.velocity?.matured_24h??0}</b> · сделок <b>${l.velocity?.paper_trades_24h??0}</b> · правил затронуто <b>${l.velocity?.rules_touched_24h??0}</b> · уроков <b>${l.velocity?.case_lessons_24h??0}</b><br><span class="stamp">${l.note||''}</span>`;const ci=(d.personal_cio||{}).profiles||[];document.getElementById('personalcio').innerHTML=ci.map(p=>`<div class="decision-card"><b>${p.profile}</b> · min P ${(100*p.min_probability).toFixed(0)}% · max single ${(100*p.max_single_asset).toFixed(0)}%<br>${(p.ideas||[]).map(x=>`${x.asset} ${x.direction} ${(100*x.fraction).toFixed(0)}%`).join(' · ')||'<span class="stamp">сейчас нет подходящих идей</span>'}</div>`).join('');const sa=(d.smart_alerts||{}).items||[];document.getElementById('smartalerts').innerHTML=sa.slice(0,8).map(x=>`${x.asset||'—'} ${x.horizon||''}: <b>${x.type}</b> · ${x.status}`).join('<br>')||'нет активных торговых алертов';const tg=(d.market_triggers||{}).items||[];document.getElementById('triggers2').innerHTML=tg.slice(0,10).map(x=>`${x.asset}: ${x.trigger} <b>${fmtN(x.level)}</b> · ${x.meaning}`).join('<br>')||'—';const sc=(d.scenario_map||{}).items||[];document.getElementById('scenarios2').innerHTML=sc.map(x=>`<div class="scenario-row"><b>${x.asset}</b><span>${x.direction} · P ${x.probability==null?'—':(100*x.probability).toFixed(0)+'%'}</span><span class="sm-hide">support ${fmtN(x.support)} · resistance ${fmtN(x.resistance)}</span><span class="sm-hide">SMA18 ${fmtN(x.sma18)} · SMA50 ${fmtN(x.sma50)}</span></div>`).join('')||'—';const br=d.briefs||{};document.getElementById('briefs2').innerHTML=`<b>Утро:</b> ${(br.morning?.focus||[]).join('<br>')}<br><br><b>В течение дня:</b> ${(br.intraday?.focus||[]).join('<br>')}<br><br><b>Вечер:</b> ${(br.evening?.focus||[]).join('<br>')}`;const rp=(d.decision_replay||{}).items||[];document.getElementById('replay2').innerHTML=rp.slice(0,7).map(x=>`${x.asset} ${x.horizon} ${x.decision}: ${x.benefit||'—'} · move ${x.forward_return==null?'—':pct(x.forward_return)}`).join('<br>')||'эпизоды накапливаются';const qb=d.quality_badges||[];document.getElementById('quality2').innerHTML=qb.map(x=>`<span class="chip">${x.asset} ${x.horizon}: ${x.badge.label} ${x.badge.total}/100 · signal ${x.badge.signal} · data ${x.badge.data} · exec ${x.badge.execution}</span>`).join('')||'—'}catch(e){['decisioncards','trustmeter','drivers2','pcmd','abstention2','funnel2','missed2','learning2'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML='<span class="warn">UPDATING</span>'});document.getElementById('stamp').textContent='Дополнительный слой временно обновляется: '+String(e)}}
+async function loadProductExperience(){try{const r=await fetch('/api/v1/product-experience',{cache:'no-store'});if(!r.ok)throw new Error('product experience HTTP '+r.status);const d=await r.json();PRODUCT_CACHE=d;const cs=(d.decision_cards||{}).cards||[];document.getElementById('decisioncards').innerHTML=cs.map(c=>`<div class="decision-card"><div class="head"><span class="big">${c.asset} · ${c.direction} · ${c.horizon}</span><span class="badge">${qlabel(c.quality)}</span></div><div class="metric-grid"><div class="metric">Вероятность<b>${probText(c.probability,c.probability_source)}</b></div><div class="metric">Надёжность<b>${c.reliability||'—'}${c.sample_n?' · n='+c.sample_n:''}</b></div><div class="metric">R/R<b>${c.reward_risk==null?'—':Number(c.reward_risk).toFixed(2)}</b></div><div class="metric">Допуск<b class="${c.eligible?'ok':'warn'}">${c.eligible?'READY':'WATCH'}</b></div></div><div style="margin-top:8px">Вход ${fmtN(c.entry)} · стоп ${fmtN(c.stop)} · цель ${fmtN(c.target)} · подтверждений ${c.independent_confirmations}</div><div class="stamp">${c.reason}${c.invalidation?' · отмена: '+c.invalidation:''}</div></div>`).join('')||'нет готовых карточек';document.getElementById('trustmeter').innerHTML=cs.slice(0,6).map(c=>`${c.asset} ${c.horizon}: <b>${probText(c.probability,c.probability_source)}</b> · доверие ${c.reliability} · ${c.probability_source}`).join('<br>')||'выборка накапливается';const dr=(d.market_drivers||{}).items||[];document.getElementById('drivers2').innerHTML=dr.map((x,i)=>`${i+1}. <b>${x.asset}</b> · ${x.direction} · ${x.causal_label} · ${x.transition||x.regime||'—'}`).join('<br>')||'—';const pc=(d.portfolio_command||{}).portfolios||[];document.getElementById('pcmd').innerHTML=pc.map(p=>`<div class="decision-card"><div class="head"><b>${p.name}</b><span class="badge">MODEL</span></div><div class="metric-grid"><div class="metric">NAV<b>${rub(p.nav_rub)}</b></div><div class="metric">Gross<b>${Number(p.gross_leverage||0).toFixed(2)}×</b></div><div class="metric">Cash<b>${pct(p.cash_fraction)}</b></div><div class="metric">Позиций<b>${p.open_positions}</b></div></div><div class="stamp">Факторные экспозиции: ${Object.entries(p.factor_exposure||{}).map(([k,v])=>k+' '+rub(v)).join(' · ')||'нет'}</div></div>`).join('');const ab=d.abstention||{};document.getElementById('abstention2').innerHTML=`${Object.entries(ab.counts||{}).map(([k,v])=>`<span class="chip">${k}: ${v}</span>`).join('')}<br>${(ab.items||[]).slice(0,6).map(x=>`${x.asset} ${x.horizon} ${x.direction}: ${x.reason}`).join('<br>')||'нет отклонённых направленных сетапов'}`;const f=d.opportunity_funnel||{};document.getElementById('funnel2').innerHTML=`<div class="funnel"><span class="funnel-step">Ячеек <b>${f.total_cells??0}</b></span><span class="funnel-step">Направленных <b>${f.directional??0}</b></span><span class="funnel-step">3+ подтверждения <b>${f.independent_3plus??0}</b></span><span class="funnel-step">P≥70% <b>${f.probability_70plus??0}</b></span><span class="funnel-step">EV+ <b>${f.positive_ev_proxy??0}</b></span><span class="funnel-step">Допущено <b>${f.eligible??0}</b></span></div><div class="stamp">${Object.entries(f.rejection_reasons||{}).map(([k,v])=>k+': '+v).join(' · ')}</div>`;const m=d.missed_opportunities||{};document.getElementById('missed2').innerHTML=(m.items||[]).slice(0,8).map(x=>`${x.asset} ${x.horizon}: ${x.reason} · ${x.forward_return==null?'—':pct(x.forward_return)}`).join('<br>')||'подтверждённых пропусков пока нет';const l=d.learning_center||{};document.getElementById('learning2').innerHTML=`Verified <b>${l.verified_index==null?'ещё не опубликован':l.verified_index}</b> · Provisional <b>${l.provisional_index??'—'}</b> · confidence ${l.confidence||'—'}<br>matched n=${l.matched_n_each_side??0}/${l.publication_threshold??20}<br>24ч: зрелых исходов <b>${l.velocity?.matured_24h??0}</b> · сделок <b>${l.velocity?.paper_trades_24h??0}</b> · правил затронуто <b>${l.velocity?.rules_touched_24h??0}</b> · уроков <b>${l.velocity?.case_lessons_24h??0}</b><br><span class="stamp">${l.note||''}</span>`;const ci=(d.personal_cio||{}).profiles||[];document.getElementById('personalcio').innerHTML=ci.map(p=>`<div class="decision-card"><b>${p.profile}</b> · min P ${(100*p.min_probability).toFixed(0)}% · max single ${(100*p.max_single_asset).toFixed(0)}%<br>${(p.ideas||[]).map(x=>`${x.asset} ${x.direction} ${(100*x.fraction).toFixed(0)}%`).join(' · ')||'<span class="stamp">сейчас нет подходящих идей</span>'}</div>`).join('');const sa=(d.smart_alerts||{}).items||[];document.getElementById('smartalerts').innerHTML=sa.slice(0,8).map(x=>`${x.asset||'—'} ${x.horizon||''}: <b>${x.type}</b> · ${x.status}`).join('<br>')||'нет активных торговых алертов';const tg=(d.market_triggers||{}).items||[];document.getElementById('triggers2').innerHTML=tg.slice(0,10).map(x=>`${x.asset}: ${x.trigger} <b>${fmtN(x.level)}</b> · ${x.meaning}`).join('<br>')||'—';const sc=(d.scenario_map||{}).items||[];document.getElementById('scenarios2').innerHTML=sc.map(x=>`<div class="scenario-row"><b>${x.asset}</b><span>${x.direction} · P ${x.probability==null?'—':(100*x.probability).toFixed(0)+'%'}</span><span class="sm-hide">support ${fmtN(x.support)} · resistance ${fmtN(x.resistance)}</span><span class="sm-hide">D1 SMA50 ${fmtN(x.sma50)} · SMA200 ${fmtN(x.sma200)}</span></div>`).join('')||'—';const br=d.briefs||{};document.getElementById('briefs2').innerHTML=`<b>Утро:</b> ${(br.morning?.focus||[]).join('<br>')}<br><br><b>В течение дня:</b> ${(br.intraday?.focus||[]).join('<br>')}<br><br><b>Вечер:</b> ${(br.evening?.focus||[]).join('<br>')}`;const rp=(d.decision_replay||{}).items||[];document.getElementById('replay2').innerHTML=rp.slice(0,7).map(x=>`${x.asset} ${x.horizon} ${x.decision}: ${x.benefit||'—'} · move ${x.forward_return==null?'—':pct(x.forward_return)}`).join('<br>')||'эпизоды накапливаются';const qb=d.quality_badges||[];document.getElementById('quality2').innerHTML=qb.map(x=>`<span class="chip">${x.asset} ${x.horizon}: ${x.badge.label} ${x.badge.total}/100 · signal ${x.badge.signal} · data ${x.badge.data} · exec ${x.badge.execution}</span>`).join('')||'—'}catch(e){['decisioncards','trustmeter','drivers2','pcmd','abstention2','funnel2','missed2','learning2'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML='<span class="warn">UPDATING</span>'});document.getElementById('stamp').textContent='Дополнительный слой временно обновляется: '+String(e)}}
 async function runWhatIf(){try{const a=document.getElementById('whatifasset').value||'BRENT',f=document.getElementById('whatiffraction').value||'0.10';const r=await fetch(`/api/v1/portfolio-what-if?asset=${encodeURIComponent(a)}&fraction=${encodeURIComponent(f)}`,{cache:'no-store'});const x=await r.json();document.getElementById('whatif2').innerHTML=`${x.asset} ${x.direction} ${(100*x.fraction).toFixed(0)}% · номинал ${rub(x.notional_rub)}<br>gross ${Number(x.before?.gross||0).toFixed(2)}× → <b>${Number(x.after?.gross||0).toFixed(2)}×</b> · лимит ${x.gross_limit}× · ${x.within_gross_limit?'<span class="ok">допустимо</span>':'<span class="bad">превышение</span>'}<br><span class="stamp">${x.note||''}</span>`}catch(e){document.getElementById('whatif2').textContent=String(e)}}
 async function askVeritas(){try{const q=document.getElementById('askq').value||'';const r=await fetch('/api/v1/ask-veritas?q='+encodeURIComponent(q),{cache:'no-store'});const x=await r.json();document.getElementById('askanswer').textContent=x.answer||'—'}catch(e){document.getElementById('askanswer').textContent=String(e)}}
 async function showDetail(asset,horizon){const el=document.getElementById('detail');el.textContent='загрузка…';try{const r=await fetch(`/api/v1/explain?asset=${asset}&horizon=${horizon}`,{cache:'no-store'});const d=(await r.json()).explanation||{};if(d.status!=='ok'){el.textContent='нет данных';return}const cp=(d.calibration||{}).probability_correct;const fmt=a=>(a||[]).map(x=>`<div>${x.agent}: ${x.direction||''}</div>`).join('')||'—';const ex=d.execution_eligibility||{},ti=d.trend_impulse||{},st=d.intraday_structure||{},tp=d.trade_plan||{};el.innerHTML=`<b>${d.asset} · ${d.horizon}</b> · ${tierText({decision:d.decision,research_decision:d.research_decision,signal_tier:d.signal_tier})}<br>Сила: ${pct(d.confidence)} · калиброванная вероятность: ${cp==null?'ещё недостаточно данных':pct(cp)} · режим: ${d.regime||'—'}<br>Тренд: <b>${ti.phase||'NONE'}</b> · onset ${pct(ti.onset_score)} · impulse ${pct(ti.impulse_score)} · вход ${ti.entry_quality||'—'}<br>Структура: ${st.lifecycle||'—'} · score ${pct(st.score)} · near ATH ${st.near_ath?'ДА':'НЕТ'} · удержание пробоя ${st.breakout_hold?'ДА':'НЕТ'} · rVol ${st.relative_volume==null?'—':Number(st.relative_volume).toFixed(2)}<br>План: ожидаемый ход ${tp.expected_move_pct==null?'—':pct(tp.expected_move_pct)} · стоп ${tp.stop_price==null?'—':Number(tp.stop_price).toFixed(2)}<br>Decision Edge: <b>${d.decision_stage||tp.decision_stage||'—'}</b> · P+ ${d.positive_trade_probability==null?(tp.positive_trade_probability==null?'накапливается':pct(tp.positive_trade_probability)):pct(d.positive_trade_probability)} · аналоги n≈${d.analog_effective_n??(tp.tradeability||{}).effective_n??'—'}<br>Торговый допуск: <b>${ex.eligible?'ДА':'НЕТ'}</b>${ex.reason?' · '+ex.reason:''}<div class="detail-grid"><div class="detail-col"><div class="detail-title">За</div>${fmt(d.pro)}</div><div class="detail-col"><div class="detail-title">Против</div>${fmt(d.con)}</div><div class="detail-col"><div class="detail-title">Риск</div>${fmt(d.risk)}</div></div><div style="margin-top:8px">Совпало правил знаний: ${(d.knowledge_matches||[]).length}</div>`}catch(e){el.textContent=String(e)}}
@@ -18510,7 +18443,7 @@ def _v90_compact_live_row(z):
         'min_expected_to_stop_ratio','initial_position_fraction','scaling_policy',
         'signal_tier','structure_lifecycle','fresh_breakout','breakout_level',
         'recent_swing_anchor','robot_eligible','execution_mode','target_price',
-        'tactical_target_price','target_method','setup','reversal_probability',
+        'tactical_target_price','target_method','setup','entry_scenario','reversal_probability',
         'decision_stage','positive_trade_probability','statistical_noise_buffer_p80',
         'spread_bps','execution_safety_version','horizon','market_observed_at','best_bid','best_ask',
         'entry_plan_version','entry_event_id','setup_id','expected_hold_seconds','execution_levels_ready'))
@@ -18537,8 +18470,8 @@ def _v90_compact_live_row(z):
         'weighted_avg_signed_return','p80_adverse_excursion'))
     sl=z.get('structural_levels') or {}
     sl2=_v90_small_dict(sl,(
-        'status','price','sma18','sma50','sma18_slope','sma50_slope',
-        'price_vs_sma18','price_vs_sma50','support','support_strength',
+        'status','price','sma18','sma50','sma200','sma18_slope','sma50_slope','sma200_slope',
+        'price_vs_sma18','price_vs_sma50','price_vs_sma200','daily_ma_context','daily_ma_status','ma_timeframe','ma_source_identity','ma_daily_asof','ma_native_daily','support','support_strength',
         'resistance','resistance_strength'))
     tr=_v90_small_dict(z.get('tactical_reversal'),(
         'active','direction','candidate_direction','setup','state','probability',
@@ -18574,8 +18507,8 @@ def _v90_compact_live_row(z):
         'entry_quality','positive_trade_probability','analog_effective_n',
         'expected_move_pct','signal_tier','execution_signal_tier',
         'event_shadow_score','causal_score','causal_label','decision_stage',
-        'sma18','sma50','support_level','resistance_level',
-        'minute_data_status','minute_closed_at','minute_entry_gate')
+        'sma18','sma50','sma200','support_level','resistance_level',
+        'minute_data_status','minute_closed_at','minute_entry_gate','research_history_status','research_feature_availability','research_hourly_bar_count')
     out=_v90_small_dict(z,keys)
     # R65.1: preserve executable crypto quote fields at row level for paper_source_gate.
     for _qk in ('best_bid','best_ask','spread_bps','market_observed_at'):
@@ -19043,7 +18976,9 @@ def main():
     pg_boot = pg_init()
     v90_migration = v90_migrate_core_data() if pg_boot.get('ok') else {'status':'POSTGRES_REQUIRED','schema':V90_DB_SCHEMA}
     emit('v90_database_ready', **v90_migration)
-    if pg_boot.get('ok'): emit('user_teaching_applied',**VUT.seed_user_teaching(pg_event,_read_user_teaching))
+    if pg_boot.get('ok'):
+        for receipt in VUT.seed_all_user_teachings(pg_event,_read_user_teaching):
+            emit('user_teaching_applied',**receipt)
     if pg_boot.get('ok'):
         try: _v90_storage_audit()
         except Exception as _sa_ex:
