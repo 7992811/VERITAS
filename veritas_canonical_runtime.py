@@ -11,6 +11,7 @@ import veritas_execution as VX
 import veritas_position_guard as VPG
 import veritas_price_source as VPS
 import veritas_trend_entry as VTE
+import veritas_timeframe_policy as TFP
 
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
@@ -41,59 +42,10 @@ def _quote_row(row):
             x["market_observed_at"]=q["observed_at"]
     return x
 
-def _trigger_level(row):
-    d=_direction(row)
-    px=_num((row or {}).get("price"))
-    for block in (
-        (row or {}).get("impulse_pivot_break") or {},
-        (row or {}).get("range_retest_breakout") or {},
-        (row or {}).get("tactical_reversal") or {},
-        (row or {}).get("impulse_genesis") or {},
-        (row or {}).get("trade_plan") or {},
-    ):
-        if block.get("active") is False:
-            continue
-        bd=block.get("direction")
-        if bd not in (None,"",d):
-            continue
-        for key in ("trigger_level","breakout_level","pre_impulse_swing","level"):
-            v=_num(block.get(key))
-            if v and v>0 and px:
-                if (d=="LONG" and v<=px) or (d=="SHORT" and v>=px):
-                    return v
-    return None
-
-def anti_chase_gate(row, price=None):
+def anti_chase_gate(row, price=None, now=None):
     row=row or {}
-    h=str(row.get("horizon") or "")
-    if h not in TRIGGER_HORIZONS:
-        return {"eligible":True,"reason":"CANONICAL_CHASE_NOT_APPLICABLE"}
-    d=_direction(row)
     px=_num(price if price is not None else row.get("price"))
-    reference=_num(row.get("_signal_reference_price"),_num(row.get("price")))
-    if d not in ("LONG","SHORT") or not px or not reference:
-        return {"eligible":True,"reason":"CANONICAL_CHASE_UNMEASURED"}
-    rv=abs(_num(row.get("realized_vol"),0.0) or 0.0)
-    trigger=_trigger_level(row)
-    if trigger:
-        consumed=((px/trigger)-1.0) if d=="LONG" else ((trigger/px)-1.0)
-        source="TRIGGER_LEVEL"
-    else:
-        hr=_num(row.get("horizon_return"))
-        if hr is None or hr<=-1:
-            return {"eligible":True,"reason":"CANONICAL_CHASE_UNMEASURED"}
-        hr=(1.0+hr)*px/reference-1.0
-        consumed=max(0.0,hr if d=="LONG" else -hr)
-        source="HORIZON_RETURN_REPRICED"
-    ratio=0.80 if h in ("5m","1h") else 1.00
-    floor={"1m":0.0030,"5m":0.0040,"1h":0.0060,"4h":0.0100}.get(h,0.0060)
-    limit=max(floor,ratio*max(rv,0.0025))
-    late=bool(consumed>limit)
-    return {"eligible":not late,
-            "reason":"R83_WAIT_RETEST_LATE_EXECUTION" if late else "CANONICAL_EXECUTION_TIMING_OK",
-            "consumed_move_pct":consumed,"late_entry_limit_pct":limit,
-            "realized_vol":rv,"measurement_source":source,"trigger_level":trigger,
-            "evaluated_price":px,"signal_reference_price":reference}
+    return TFP.entry_gate(row,px,_direction(row),now)
 
 def _strong_reversal(row):
     row=row or {}
@@ -131,6 +83,8 @@ def direction_conflict(row):
 def local_confirmation_gate(row,event=None):
     row=row or {}
     h=str(row.get("horizon") or "")
+    if TFP.applies(row) and (event or {}).get("eligible"):
+        return {"eligible":True,"reason":"SAME_TF_CONFIRMED_BREAKOUT"}
     if h in ("1m","5m"):
         return {"eligible":True,"reason":"LOCAL_EXECUTION_TIMEFRAME"}
     ctx=row.get("_local_execution_context") or {}
@@ -220,7 +174,7 @@ def evaluate(row, policy, drawdown, now=None):
         return {"open":False,"fraction":0.0,"reason":"EXECUTION_QUOTE_STALE","hard_veto":True,
                 "quote_time_gate":qgate,"canonical_stage":"DATA"}
 
-    work=VTE.prepare_row(work,price,clock)
+    work=TFP.prepare_row(work,price,clock)
     plan=work.get("trade_plan") or {}
     integrity=plan.get("trade_integrity") or {}
     hard=[]
@@ -238,7 +192,7 @@ def evaluate(row, policy, drawdown, now=None):
                 "hard_blockers":hard,"canonical_stage":"THESIS"}
 
     soft=[]
-    event=VTE.event_gate(work,price,d,clock)
+    event=TFP.entry_gate(work,price,d,clock)
     if not event.get("eligible"):
         reason=str(event.get("reason") or "EVENT_NOT_READY")
         if CTC.veto_severity(reason)=="HARD":
@@ -252,7 +206,7 @@ def evaluate(row, policy, drawdown, now=None):
     if work.get("_currency_mtf_conflict"):
         return {"open":False,"fraction":0.0,"reason":"CURRENCY_MTF_DIRECTION_CONFLICT","hard_veto":True,
                 "currency_mtf_context":work.get("_currency_mtf_context"),"canonical_stage":"TIMING"}
-    chase=anti_chase_gate(work,price)
+    chase=anti_chase_gate(work,price,clock)
     if not chase.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":chase["reason"],"hard_veto":True,
                 "execution_timing":chase,"trend_event":event,"canonical_stage":"TIMING"}
@@ -290,7 +244,8 @@ def evaluate(row, policy, drawdown, now=None):
     return {"open":True,"fraction":fraction,"reason":"CANONICAL_SIGNAL_PROBE" if soft else "CANONICAL_SIGNAL_ENTRY",
             "hard_veto":False,"soft_blockers":list(dict.fromkeys(soft)),"economics":economics,
             "risk_governor":rg,"trend_event":event,"execution_timing":chase,
-            "canonical_stage":"SIZE","canonical_policy_version":CTC.VERSION}
+            "canonical_stage":"SIZE","canonical_policy_version":CTC.VERSION,
+            "prepared_plan":dict(plan),"structural_policy_version":TFP.VERSION}
 
 def _rank(row):
     r=row or {}
@@ -331,7 +286,7 @@ def _prepare_candidate(row,summary):
           and _direction(x)==direction]
     r["_supporting_horizons"]=sorted({str(x.get("horizon") or "") for x in same if x.get("horizon")})
     r["_alignment_count"]=len(r["_supporting_horizons"])
-    r["_rank"]=_rank(r)
+    r["_rank"]=_rank(r)+10.0*TFP.candidate_priority(r)
     r["_local_execution_context"]=_local_execution_context(summary,asset,direction)
     cp=_num(r.get("calibrated_probability"))
     r["_pwin"]=cp if cp is not None else max(0.0,min(1.0,_num(r.get("confidence"),0.5)))
@@ -360,7 +315,7 @@ def currency_candidate_book(summary):
     prepared=[]
     for raw in rows:
         r=_prepare_candidate(raw,summary)
-        r["_currency_route_score"]=priority.get(str(r.get("horizon") or ""),0.0)+0.10*r["_rank"]
+        r["_currency_route_score"]=priority.get(str(r.get("horizon") or ""),0.0)+0.10*r["_rank"]+10.0*TFP.candidate_priority(r)
         prepared.append(r)
     chosen=max(prepared,key=lambda x:x["_currency_route_score"])
     h=str(chosen.get("horizon") or "")

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import veritas_execution as VX
 import veritas_intelligence as VI
 import veritas_portfolio as VP
+from tools.timeframe_test_fixtures import with_structural_breakout
 
 
 class SingleSourceTests(unittest.TestCase):
@@ -17,7 +18,7 @@ class SingleSourceTests(unittest.TestCase):
         context={} if asset!='NQ' else {'status':'OK','closed_at':datetime.now(timezone.utc).timestamp(),
             'event':{'direction':'SHORT','trigger_level':100.2,'atr':1.,'stop_price':101.,
                      'bars_since_signal':0,'signal_price':100.}}
-        return dict(raw, horizon='1h', market_observed_at=raw['observed_at'],trend_entry_context=context,
+        result = dict(raw, horizon='1h', market_observed_at=raw['observed_at'],trend_entry_context=context,
                     research_decision='SHORT', signal_tier='SUPER_SHORT', confidence=.9,
                     calibrated_probability=.9, _pwin=.9, _pwin_source='EMPIRICAL_CALIBRATION',
                     _alignment_count=3, entry_quality='CONFIRMED_TREND',
@@ -29,6 +30,7 @@ class SingleSourceTests(unittest.TestCase):
                         eligible=True, entry_price=100., stop_price=101., target_price=97.,
                         expected_to_stop_ratio=3., expected_move_pct=.03,
                         stop_distance_pct=.01, initial_position_fraction=.1)))
+        return with_structural_breakout(result)
 
     def test_all_assets_and_portfolios_accept_one_source_with_strict_flag_on(self):
         with patch.object(VI, 'STRICT_EXECUTION_SOURCE_GATE', True):
@@ -85,7 +87,9 @@ class SingleSourceTests(unittest.TestCase):
                     elif mode == 'bad_economics':
                         row['trade_plan']['expected_to_stop_ratio'] = .1
                         row['trade_plan']['expected_move_pct'] = .001
-                        row['trade_plan']['target_price'] = 99.9  # < canonical round-trip cost: hard block
+                        # The event owns target geometry; exercise the immutable event,
+                        # since changing legacy forecast fields can no longer change an order.
+                        row['timeframe_entry_context']['event']['target_price'] = 99.9
                     else:
                         row['paper_eligible'] = False
                     self.assertFalse(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.)['open'])

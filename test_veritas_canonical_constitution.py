@@ -68,8 +68,10 @@ class CanonicalConstitutionCurrentRuntimeAlignmentTests(unittest.TestCase):
     def test_cost_negative_blockers_are_hard_not_soft(self):
         import veritas_portfolio as VP
         VPR = VP._VERITAS_RUNTIME
-        self.assertIn("RR_BELOW_FINAL_FLOOR", VPR._R79_SOFT_ECON_BLOCKERS)
-        self.assertIn("NET_REWARD_RISK_BELOW_FLOOR", VPR._R79_SOFT_ECON_BLOCKERS)
+        self.assertNotIn("RR_BELOW_FINAL_FLOOR", VPR._R79_SOFT_ECON_BLOCKERS)
+        self.assertEqual(C.veto_severity("RR_BELOW_FINAL_FLOOR"), "HARD")
+        self.assertNotIn("NET_REWARD_RISK_BELOW_FLOOR", VPR._R79_SOFT_ECON_BLOCKERS)
+        self.assertEqual(C.veto_severity("NET_REWARD_RISK_BELOW_FLOOR"), "HARD")
         self.assertNotIn("EXPECTED_MOVE_BELOW_COST_BUFFER", VPR._R79_SOFT_ECON_BLOCKERS)
         self.assertNotIn("TARGET_NOT_PROFITABLE_AFTER_COSTS", VPR._R79_SOFT_ECON_BLOCKERS)
         self.assertIn("EXPECTED_MOVE_BELOW_COST_BUFFER", VPR._R79_HARD_COST_BLOCKERS)

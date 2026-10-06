@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import veritas_intelligence as VI
 import veritas_portfolio as VP
+from tools.timeframe_test_fixtures import with_structural_breakout
 
 
 class MarketCaseRegressionTests(unittest.TestCase):
@@ -36,7 +37,7 @@ class MarketCaseRegressionTests(unittest.TestCase):
         raw = dict(price=2229.78, source_gate_pass=True, market_open=True,
                    secondary_price=None,market_observed_at=datetime.now(timezone.utc).isoformat())
         gate = VI.execution_eligibility('MOEX', raw)
-        return dict(raw, asset='MOEX', horizon='1h', research_decision='SHORT',
+        result = dict(raw, asset='MOEX', horizon='1h', research_decision='SHORT',
                     signal_tier='SUPER_SHORT', confidence=.85,
                     execution_eligible=gate['eligible'], paper_eligible=gate['paper_eligible'],
                     production_eligible=gate['production_eligible'],
@@ -49,6 +50,7 @@ class MarketCaseRegressionTests(unittest.TestCase):
                         eligible=True, entry_price=2229.78, stop_price=2250.50, target_price=2170.0,
                         expected_to_stop_ratio=2.80, expected_move_pct=.027,
                         stop_distance_pct=.00929, initial_position_fraction=.1)))
+        return with_structural_breakout(result)
 
     def test_rebased_tactical_plan_overrides_stale_row_entry_invalidation(self):
         row = self._moex_single_source_row()
@@ -114,17 +116,12 @@ class MarketCaseRegressionTests(unittest.TestCase):
         self.assertEqual(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
                          ['reason'], 'PAPER_EXPLICIT_DENIAL')
         row = self._moex_single_source_row()
-        row['trade_plan']['target_price'] = 2220.0  # actual final levels must fail economics, not stale metadata
-        row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
+        row['timeframe_entry_context']['event']['target_price'] = 2220.0
         out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
-        # Low fixed R/R is a soft veto when the target remains positive after
-        # modeled costs. Owner policy keeps Aggressive participation at the 50%
-        # floor, but does not grant the 100% SUPER size until the soft veto clears.
-        self.assertTrue(out['open'], out)
-        self.assertEqual(out['reason'], 'CANONICAL_SIGNAL_PROBE')
-        self.assertEqual(out['fraction'], 0.50)
-        self.assertNotIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',out.get('hard_economics_blockers',[]))
-        self.assertNotIn('EXPECTED_MOVE_BELOW_COST_BUFFER',out.get('hard_economics_blockers',[]))
+        # Owner correction: a sub-floor net R/R cannot be converted into a probe.
+        self.assertFalse(out['open'], out)
+        self.assertTrue(out['hard_veto'])
+        self.assertIn('NET_REWARD_RISK_BELOW_FLOOR',out.get('hard_economics_blockers',[]))
 
     def _brent_bars(self):
         # Learned case: range -> downside break with volume -> lower lows.

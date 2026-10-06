@@ -12,6 +12,22 @@ from __future__ import annotations
 VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
+# Explicit owner correction, 2026-10-06. These are operational safeguards;
+# numeric defaults are not an empirically validated trading edge.
+STRUCTURAL_ENTRY_POLICY = {
+    "version": "CTC_SAME_TF_STRUCTURE_V1",
+    "teaching_id": "USER_TF_STRUCTURE_2026_10_06",
+    "required": True, "atr_period": 20, "pivot_left": 2, "pivot_right": 2,
+    "stop_buffer_atr": 0.15, "max_stop_atr": 3.0,
+    "max_extension_atr": 0.50, "max_signal_age_bars": 1.0,
+    "target_r_multiple": 2.0, "min_target_atr": 1.5,
+    "same_timeframe_for_trigger_stop_target_atr": True,
+    "closed_bar_confirmation": True, "immutable_event_time": True,
+    "same_source_candles_and_execution": True,
+    "minimum_net_reward_risk": 1.15,
+    "parameter_validation_status": "UNVALIDATED_DEFAULTS",
+}
+
 STAGE_ORDER = (
     "DATA",
     "THESIS",
@@ -71,10 +87,10 @@ HARD_VETOES = frozenset({
     "R72_EVENT_ID_MISSING","R72_EVENT_HISTORY_UNAVAILABLE",
     "LOCAL_EXECUTION_CONFIRMATION_REQUIRED","LOCAL_EXECUTION_DIRECTION_CONFLICT",
     "CURRENCY_MTF_DIRECTION_CONFLICT",
+    "RR_BELOW_FINAL_FLOOR", "NET_REWARD_RISK_BELOW_FLOOR",
 })
 
 SOFT_VETOES = frozenset({
-    "RR_BELOW_FINAL_FLOOR","NET_REWARD_RISK_BELOW_FLOOR",
     "R69_WAIT_LOCAL_BREAKOUT","R69_BREAKOUT_ACTIVITY_REQUIRED",
     "R66_WAIT_RETEST","R66_CLOSED_CONTEXT_STALE","R66_SENIOR_BREAK_NOT_HELD",
     "R74_EVENT_TARGET_REACHED","R66_LEGACY_SIGNAL_PATH",
@@ -217,14 +233,14 @@ SOURCE_POLICY = {
 }
 
 SIGNAL_POLICY = {
-    "published_direction_is_execution_authority": True,
+    "published_direction_is_execution_authority": False,
     "published_direction": ("LONG", "SHORT"),
     "principle": (
-        "Quality filtering happens before publishing a directional signal. Once "
-        "a current LONG/SHORT is published, start staged risk unless a canonical "
-        "hard veto is present."
+        "A directional thesis needs an independently confirmed same-timeframe "
+        "structural breakout. Publishing or refreshing LONG/SHORT cannot create "
+        "a new event, move its trigger, or reset its original confirmation time."
     ),
-    "normal_signal_can_probe_below_rr_floor_if_net_positive": True,
+    "normal_signal_can_probe_below_rr_floor_if_net_positive": False,
     "cost_negative_probe_allowed": False,
     "actual_price_anti_chase_remains_hard": True,
 }
@@ -293,9 +309,9 @@ CANONICAL_RULES = [
     _rule("CTC15","data","Mixed-source, contract-mismatch and corrupted-price episodes are excluded from learning without rewriting the accounting ledger."),
 
     _rule("CTC16","signal","Quality filtering occurs before publication of LONG/SHORT."),
-    _rule("CTC17","signal","A current published LONG/SHORT starts staged risk unless a canonical hard veto is present."),
-    _rule("CTC18","signal","Old parent WAIT_RETEST, event age, target reached or extension cannot flatten a freshly rebased current signal."),
-    _rule("CTC19","signal","Sub-floor R/R may reduce a net-positive current signal to a probe; it is not automatically a full block."),
+    _rule("CTC17","signal","A thesis opens risk only on a confirmed breakout of a previously known structural extreme on the chosen entry timeframe."),
+    _rule("CTC18","signal","Refreshing a directional forecast never resets breakout time, restores a spent event, or creates a new current-price trigger."),
+    _rule("CTC19","signal","Post-cost R/R below the canonical floor blocks new risk in every portfolio, including probes."),
     _rule("CTC20","signal","A cost-negative target or expected move below the canonical cost buffer is never eligible even as a probe."),
     _rule("CTC21","signal","A confirmed execution-timeframe direction conflict remains a hard veto for new risk."),
     _rule("CTC22","signal","A lower-timeframe soft conflict cannot by itself liquidate an intact senior-horizon core position."),
@@ -307,7 +323,7 @@ CANONICAL_RULES = [
     _rule("CTC27","structure","Breakout quality uses level break, acceptance, volume/activity, volatility expansion and subsequent structure."),
     _rule("CTC28","structure","RANGE_LOW_VOL requires stronger evidence because false-breakout risk is elevated."),
     _rule("CTC29","structure","Retest/hold after a break is an independent entry family and may define a fresh continuation event."),
-    _rule("CTC30","multitimeframe","1m/5m time execution; 1h/4h manage trade structure; 1d/3d/7d define senior context/core thesis."),
+    _rule("CTC30","multitimeframe","Every entry timeframe owns its confirmed breakout, opposite swing stop, ATR and target; other timeframes provide context without replacing these anchors."),
     _rule("CTC31","multitimeframe","Senior context can reduce tactical size but does not automatically veto a qualified fast breakout/reversal."),
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
@@ -329,7 +345,7 @@ CANONICAL_RULES = [
     _rule("CTC46","lifecycle","A position lifecycle is OPEN -> ADD -> PROTECT -> HARVEST -> RUNNER -> EXIT; only lifecycle authority changes open size."),
     _rule("CTC47","add","Add only after a distinct same-direction confirmation, favorable progress, sufficient remaining edge and stop-risk capacity."),
     _rule("CTC48","add","Never automatically average a losing position; pyramiding is earned by favorable movement and new evidence."),
-    _rule("CTC49","stop","LONG stop sits below confirmed local support/swing low; SHORT stop above confirmed local resistance/swing high with volatility-aware buffer."),
+    _rule("CTC49","stop","LONG stop sits below the previous confirmed swing low of the entry timeframe, SHORT above its swing high, with that same timeframe's ATR buffer."),
     _rule("CTC50","stop","Stops never widen after protection or reload; LONG protection ratchets upward, SHORT downward."),
     _rule("CTC51","profit","Breakeven is economic breakeven after paid/projected costs, not simply the entry price."),
     _rule("CTC52","profit","Partial profit is dynamic: stronger trend -> smaller harvest and larger runner; weakening/near obstacle -> larger harvest."),

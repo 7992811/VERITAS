@@ -22,6 +22,9 @@ except Exception:
     psycopg = None
     dict_row = None
 import veritas_release as VR
+import veritas_timeframe_data as TFD
+import veritas_timeframe_policy as TFP
+import veritas_user_teaching as VUT
 VERSION = VR.PRODUCT_VERSION
 try:
     import veritas_signal_core as V70
@@ -3496,7 +3499,8 @@ def _cnyrubf_market():
     quality=[_source_row('MOEX ISS CNYRUBF','CNY/RUB perpetual futures','primary research delayed',observed,900,
                          'DELAYED_CONTEXT' if gate else 'STALE_OR_CLOSED',DATA_SOURCE_POLICY['moex_forts_cnyrubf']['commercial_note'],'Moscow Exchange')]
     _set_source_quality(quality)
-    return {'asset':'CNYRUBF','price':price,'secondary_price':None,'coinbase_price':None,'source_divergence':0.0,
+    return {'canonical_hourly_bars':TFD.native_ohlc(hist),'canonical_five_minute_bars':TFD.native_ohlc(intr5),
+            'asset':'CNYRUBF','price':price,'secondary_price':None,'coinbase_price':None,'source_divergence':0.0,
             'closes':closes,'highs':highs,'lows':lows,'vols':vols,'taker_buy':taker,'returns':rets,
             'binance_close_time_ms':int(datetime.fromisoformat(observed.replace('Z','+00:00')).timestamp()*1000),
             'observed_at':observed,'source_gate_pass':gate,'market_open':market_open,'source_quality':quality,
@@ -3540,7 +3544,7 @@ def _moex_market():
                   'Best-effort secondary check; may be materially stale','Yahoo')
     ]
     _set_source_quality(quality)
-    return {'asset':'MOEX','price':price,'secondary_price':secondary,'coinbase_price':secondary,
+    return {'canonical_hourly_bars':TFD.native_ohlc(hist),'asset':'MOEX','price':price,'secondary_price':secondary,'coinbase_price':secondary,
             'secondary_observed_at':yobs,
             'source_divergence':(abs(price-secondary)/((price+secondary)/2) if secondary and (price+secondary) else 0.0),
             'closes':closes,'highs':highs,'lows':lows,'vols':vols,'taker_buy':taker,'returns':rets,
@@ -3634,6 +3638,7 @@ def market(symbol, coinbase_product):
         'secondary_bid':cb_bid,'secondary_ask':cb_ask,
         'source_divergence': divergence,'closes': closes, 'highs': highs, 'lows': lows, 'vols': vols,
         'taker_buy': taker_buy, 'returns': rets, 'binance_close_time_ms': close_time_ms,
+        'canonical_hourly_bars':TFD.native_ohlc(k),'canonical_five_minute_bars':TFD.native_ohlc(k5),
         'intraday_bars':[{'ts':int(x[0])//1000,'open':float(x[1]),'high':float(x[2]),'low':float(x[3]),
                           'close':float(x[4]),'volume':float(x[5])} for x in k5[-288:]],
         'intraday_5m':[{'ts':int(x[0])//1000,'open':float(x[1]),'high':float(x[2]),'low':float(x[3]),
@@ -6098,7 +6103,8 @@ def _v90_brent_market():
     ]
     _set_source_quality(quality)
     divergence=(abs(price-secondary)/((price+secondary)/2.0) if secondary and (price+secondary) else 0.0)
-    return {'asset':'BRENT','price':price,'secondary_price':secondary,'coinbase_price':secondary,
+    return {'canonical_hourly_bars':TFD.native_ohlc(hist),'canonical_five_minute_bars':intraday_5m,
+            'asset':'BRENT','price':price,'secondary_price':secondary,'coinbase_price':secondary,
             'source_divergence':divergence,'closes':closes,'highs':highs,'lows':lows,'vols':vols,
             'taker_buy':taker,'returns':rets,
             'binance_close_time_ms':int(datetime.fromisoformat(observed.replace('Z','+00:00')).timestamp()*1000),
@@ -6138,6 +6144,7 @@ def market(symbol, coinbase_product):
                for x in k5 if len(x)>=6]
     except Exception:
         bars5=[]
+    raw['canonical_five_minute_bars']=bars5
     raw['intraday_bars']=bars5
     raw['intraday_5m']=bars5
     raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
@@ -6201,6 +6208,8 @@ def _v90_aggregate_tf_bars(rows,group):
 def _v90_tf_bars(raw,timeframe):
     asset=str(raw.get('asset') or '')
     tf=str(timeframe)
+    if 'structure_bars_by_timeframe' in raw:
+        return TFD.TS.closed_bars((raw.get('structure_bars_by_timeframe') or {}).get(tf,[]),tf,datetime.now(timezone.utc))
     if tf=='5m':
         bars=list(raw.get('intraday_bars') or raw.get('intraday_5m') or [])
         return [dict(x) for x in bars[-500:] if isinstance(x,dict)]
@@ -6585,8 +6594,7 @@ def _moex_market():
                  detail=f'{type(ex).__name__}: {ex}')
     finally:
         pool.shutdown(wait=False,cancel_futures=True)
-    if not bars:
-        bars=list(raw.get('intraday_5m') or raw.get('intraday_bars') or [])
+    raw['canonical_five_minute_bars']=bars
     raw['intraday_5m']=bars
     raw['intraday_bars']=bars
     import veritas_market_history as MH
@@ -7022,23 +7030,20 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 if tactical_reversal.get('active') and horizon in ('5m','1h','4h','1d','3d','7d'):
                     research_dec=tactical_reversal.get('direction'); conf=max(float(conf or 0),float(tactical_reversal.get('probability') or 0))
                     size=min(max(float(size or 0),0.05),0.15)
-                if horizon=='1m':
-                    import veritas_trend_entry as VTE
-                    ev=(f.get('trend_entry_context') or {}).get('event') or {}
-                    candidate=ev.get('direction','NO_TRADE')
-                    minute_gate=VTE.event_gate({'asset':asset,'horizon':'1m',
-                        'trend_entry_context':f.get('trend_entry_context')},f.get('price'),candidate,datetime.now(timezone.utc))
-                    research_dec=candidate if minute_gate.get('eligible') and f.get('minute_data_status')=='OK' else 'NO_TRADE'
-                    conf=.70 if research_dec!='NO_TRADE' else 0.
-                    size=.10 if research_dec!='NO_TRADE' else 0.
+                structure_direction, structure_gate=TFP.signal_from_context(f,raw,horizon)
+                f['structural_entry_gate']=structure_gate
+                if structure_direction in ('LONG','SHORT'):
+                    research_dec=structure_direction
+                    conf=max(float(conf or 0.0),0.70)
+                    size=max(float(size or 0.0),0.10)
                     tactical_reversal={'active':False}
-                    f['minute_entry_gate']=minute_gate
-                    f['horizon_structure']=dict(f.get('horizon_structure') or {},horizon='1m',
-                        resolution='1m_NATIVE_TRIGGER_5m_STRUCTURE',direction=research_dec,
-                        state='BUILDING_TREND' if research_dec!='NO_TRADE' else 'WAIT',score=conf)
+                    f['entry_quality']='FRESH_BREAKOUT'
+                    f['horizon_structure']=dict(f.get('horizon_structure') or {},horizon=horizon,
+                        resolution=horizon,direction=research_dec,state='BUILDING_TREND',score=conf)
                     f['horizon_structure_direction']=research_dec
-                    f['horizon_structure_state']=f['horizon_structure']['state']
-                    f['entry_quality']='FRESH_BREAKOUT' if research_dec!='NO_TRADE' else 'WAIT_CONFIRMATION'
+                    f['horizon_structure_state']='BUILDING_TREND'
+                elif horizon=='1m':
+                    research_dec='NO_TRADE'; conf=0.0; size=0.0
 
                 calibration = calibrated_direction_probability(asset,horizon,conf,calibration_rows)
                 source_gate=bool(f.get('source_gate_pass',True))
@@ -7236,6 +7241,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 trade_plan['entry_price']=float(trade_plan.get('entry_price') or f.get('price') or 0.0); trade_plan['entry_quality']=trade_plan.get('entry_quality') or (f.get('trend_impulse') or {}).get('entry_quality') or f.get('entry_quality')
                 trade_plan['spread_bps']=f.get('spread_bps')
                 trade_plan.update(horizon=horizon,market_observed_at=raw.get('observed_at'),best_bid=raw.get('best_bid'),best_ask=raw.get('best_ask'))
+                trade_plan['timeframe_entry_context']=f.get('timeframe_entry_context') or {}
                 trade_plan=final_execution_safety(asset,research_dec,trade_plan)
                 trade_plan['experience_decision']=experience_decision
                 decision_stage=trade_decision_stage(research_dec,trade_plan,tradeability,f.get('intraday_structure') or {})
@@ -9857,7 +9863,7 @@ def _fetch_asset_bundle(symbol,asset,cb_product):
     else:
         out=_v842_original_fetch_asset_bundle(symbol,asset,cb_product)
     from veritas_minute_entry import attach_minutes
-    out['raw']=attach_minutes(out['raw'],symbol,globals())
+    out['raw']=TFD.attach(attach_minutes(out['raw'],symbol,globals()))
     _v90r62_store_bundle(asset,out)
     return out
 
@@ -16554,7 +16560,9 @@ def _v90r25_portfolios_fast():
                            FROM ledger_events le
                            WHERE le.event_type='decision'
                              AND le.asset=pp.asset
-                             AND le.event_ts<=pp.opened_at+INTERVAL '3 minutes'
+                             AND le.event_ts<=pp.opened_at AND le.event_ts>=pp.opened_at-INTERVAL '10 minutes'
+                             AND le.horizon=pt.horizon
+                             AND COALESCE(le.payload->'trade_plan'->>'entry_event_id','')=COALESCE(pt.payload->>'r66_event_id','')
                              AND COALESCE(le.payload->>'research_decision',le.payload->>'decision','')=pp.direction
                            ORDER BY ABS(EXTRACT(EPOCH FROM (le.event_ts-pp.opened_at))) ASC
                            LIMIT 1
@@ -16568,7 +16576,7 @@ def _v90r25_portfolios_fast():
             x=float(v); return x if math.isfinite(x) else d
         except Exception: return d
     for r0 in pos:
-        z=dict(r0); p=z.get('payload') if isinstance(z.get('payload'),dict) else {}; tp=z.get('trade_payload') if isinstance(z.get('trade_payload'),dict) else {}; q=dict(tp); q.update(p); entry_dec=z.get('entry_decision_payload') if isinstance(z.get('entry_decision_payload'),dict) else {}
+        z=dict(r0); p=z.get('payload') if isinstance(z.get('payload'),dict) else {}; tp=z.get('trade_payload') if isinstance(z.get('trade_payload'),dict) else {}; q=dict(tp); q.update(p); entry_dec=q.get('entry_decision_snapshot') or (z.get('entry_decision_payload') if isinstance(z.get('entry_decision_payload'),dict) else {})
         sign=1 if z.get('direction')=='LONG' else -1; px=_n(z.get('last_price'),0.0); ep=_n(z.get('avg_entry_price'),0.0); units=_n(z.get('units'),0.0)
         ret=(100*sign*(px/ep-1)) if ep else None; h=q.get('execution_timeframe') or q.get('last_signal_horizon') or z.get('trade_horizon') or entry_dec.get('horizon')
         cur=next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('horizon'))==str(h) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),None) or next((x for x in sigs if str(x.get('asset'))==str(z.get('asset')) and str(x.get('research_decision') or x.get('decision'))==str(z.get('direction'))),{})
@@ -17216,18 +17224,8 @@ def _v90_cny_5m_bars(force=False):
         # MOEX ISS does not reliably expose a native 5-minute FORTS interval.
         # Fetch official 1-minute candles and aggregate them locally to exact 5m buckets.
         rows=_moex_futures_candles_between('CNYRUBF',now_ts-2*86400,now_ts+3600,1)
-        buckets={}
-        for x in rows[-3000:]:
-            ts=int(x[0])/1000.0
-            key=int(ts//300)*300
-            op=float(x[1]); hi=float(x[2]); lo=float(x[3]); cl=float(x[4]); vol=float(x[5])
-            z=buckets.get(key)
-            if z is None:
-                buckets[key]={'ts':float(key),'open':op,'high':hi,'low':lo,'close':cl,'volume':vol}
-            else:
-                z['high']=max(float(z['high']),hi); z['low']=min(float(z['low']),lo)
-                z['close']=cl; z['volume']=float(z.get('volume') or 0.0)+vol
-        bars=[buckets[k] for k in sorted(buckets)][-500:]
+        minutes=TFD.native_ohlc(rows[-3000:])
+        bars=TFD.TS.aggregate_closed_bars(minutes,'1m','5m',now_ts,anchor=0)[-500:]
         if bars:
             _v90_cny5_cache['at']=now_ts
             _v90_cny5_cache['bars']=list(bars)
@@ -17239,6 +17237,7 @@ def _v90_cny_5m_bars(force=False):
 def _cnyrubf_market():
     raw=dict(_v90_base_cnyrubf_market())
     bars5=_v90_cny_5m_bars()
+    raw['canonical_five_minute_bars']=bars5
     raw['intraday_bars']=bars5
     raw['intraday_5m']=bars5
     raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
@@ -17827,6 +17826,9 @@ def _v90r37_compact_decision_payload(p):
         'expected_to_stop_ratio':plan.get('expected_to_stop_ratio'),
         'initial_position_fraction':plan.get('initial_position_fraction'),
         'final_economics_gate':plan.get('final_economics_gate') or {},
+        'timeframe_entry_context':plan.get('timeframe_entry_context'),
+        'entry_event_snapshot':plan.get('entry_event_snapshot'),'entry_event_id':plan.get('entry_event_id'),
+        'structural_policy_version':plan.get('structural_policy_version'),'user_teaching_id':plan.get('user_teaching_id'),
       },
       'tradeability':{
         'status':(p.get('tradeability') or {}).get('status'),
@@ -18509,7 +18511,7 @@ def _v90_compact_live_row(z):
         'decision_stage','positive_trade_probability','statistical_noise_buffer_p80',
         'spread_bps','execution_safety_version','horizon','market_observed_at','best_bid','best_ask',
         'entry_plan_version','entry_event_id','setup_id','expected_hold_seconds','execution_levels_ready'))
-    for key in ('trend_entry_context','r66_geometry','r66_runner_target_price','multi_tf_level_context',
+    for key in ('timeframe_entry_context','entry_event_snapshot','structural_policy_version','user_teaching_id','trend_entry_context','r66_geometry','r66_runner_target_price','multi_tf_level_context',
                 'profitability_gate','trade_integrity','rule_arbitration','reentry_intelligence',
                 'entry_timing_gate','execution_quote_gate'):
         if plan.get(key):plan2[key]=plan[key]
@@ -18519,7 +18521,7 @@ def _v90_compact_live_row(z):
         'expected_move_pct','minimum_expected_move_pct','modeled_round_trip_cost_pct',
         'cost_policy','modeled_commission_pct','modeled_execution_cost_pct','modeled_funding_pct',
         'observed_spread_bps','stop_distance_pct','target_price','target_distance_pct','modeled_entry_fill',
-        'modeled_target_fill','modeled_stop_fill','net_reward_pct','net_risk_pct','quote_time_gate',
+        'modeled_target_fill','modeled_stop_fill','net_reward_pct','net_risk_pct','net_reward_risk','quote_time_gate',
         'context_freshness','trend_event'))
     tp1=plan.get('take_profit_1')
     if isinstance(tp1,dict):
@@ -18619,6 +18621,8 @@ def _v90_compact_decision_log(z):
         'expected_move_pct':p.get('expected_move_pct'),
         'expected_to_stop_ratio':p.get('expected_to_stop_ratio'),
         'plan_eligible':p.get('eligible'),'plan_reason':p.get('reason'),
+        'structural_policy_version':p.get('structural_policy_version'),'entry_event_id':p.get('entry_event_id'),
+        'timeframe_entry_context':p.get('timeframe_entry_context'),
     }
 
 
@@ -18818,6 +18822,7 @@ def features(raw, horizon, common_structure=None):
             datetime.now(timezone.utc),raw.get('asset') or '',
             minute_bars=raw.get('structure_minute_bars'),quote=raw.get('structure_quote'))
     f['trend_entry_context']=raw['_r66_trend_context']
+    f['timeframe_entry_context']=TFD.context(raw,horizon)
     f['market_contract']=raw.get('contract')
     f['market_source_names']=raw.get('source_names')
     f['market_observed_at']=raw.get('observed_at')
@@ -18850,6 +18855,8 @@ def execution_eligibility(asset, raw, clock_info=None):
 
 def final_execution_safety(asset,research_decision,plan):
     plan=dict(plan or {}); plan['direction']=research_decision
+    if 'timeframe_entry_context' in plan:
+        return TFP.final_plan(asset,research_decision,plan)
 
     # Rebase stale parent-entry labels before any final safety gate. The new
     # tactical setup still must pass source, timing, geometry, economics and risk;
@@ -18983,75 +18990,8 @@ def final_execution_safety(asset,research_decision,plan):
     return plan
 
 def _v90r63_nq_trend_target_projection(asset,horizon,f,direction,plan):
-    plan=dict(plan or {})
-    if str(asset)!='NQ' or str(horizon) not in ('1h','4h') or direction not in ('LONG','SHORT'):
-        return plan
-    f=f or {}; ti=f.get('trend_impulse') or {}; hs=f.get('horizon_structure') or {}
-    st=f.get('intraday_structure') or {}
-    if str(plan.get('entry_quality') or '') in ('INVALIDATED','LATE_EXTENDED','EXTENDED_WAIT_PULLBACK'):
-        return plan
-    tdir=str(ti.get('direction') or 'NO_TRADE')
-    hdir=str(hs.get('direction') or 'NO_TRADE')
-    sdir=str(st.get('direction') or 'NO_TRADE')
-    phase=str(ti.get('phase') or 'NONE')
-    impulse=float(ti.get('impulse_score') or 0.0)
-    onset=float(ti.get('onset_score') or 0.0)
-    hscore=float(hs.get('score') or 0.0)
-    hstate=str(hs.get('state') or 'NEUTRAL')
-    sscore=float(st.get('score') or 0.0)
-    slife=str(st.get('lifecycle') or '')
-    strong=bool(
-        (tdir==direction and phase in ('TREND_DAY','IMPULSE_TREND') and impulse>=0.62) or
-        (hdir==direction and hstate in ('BUILDING_TREND','CONFIRMED_TREND') and hscore>=0.60
-         and tdir==direction and max(onset,impulse)>=0.55) or
-        (sdir==direction and slife in ('CONFIRMATION','EXTENSION') and sscore>=0.70
-         and bool(st.get('breakout_hold')))
-    )
-    if not strong:
-        return plan
-    try:
-        entry=float(plan.get('entry_price') or f.get('price') or 0.0)
-        stop=float(plan.get('stop_price') or 0.0)
-        if entry<=0 or stop<=0:
-            return plan
-        risk=abs(entry-stop)/entry
-        if risk<=0:
-            return plan
-        existing=max(0.0,float(plan.get('expected_move_pct') or 0.0))
-        sigma=max(0.0008,float(ti.get('sigma_1h') or 0.0))
-        r4=abs(float(ti.get('ret_4h') or 0.0))
-        rday=abs(float(ti.get('ret_day') or 0.0))
-        continuation=max(0.0,float(st.get('continuation_room_pct') or 0.0))
-        measured=max(0.0,float(st.get('breakout_measured_move_pct')
-                               or ti.get('breakout_measured_move_pct') or 0.0))
-        vol_mult=5.0 if str(horizon)=='1h' else 7.0
-        hard_cap=0.015 if str(horizon)=='1h' else 0.025
-        capacity=min(hard_cap,max(existing,measured,continuation,
-                                  sigma*vol_mult,0.65*r4,0.35*rday))
-        cost=VX.round_trip_cost_pct(f.get('spread_bps'))
-        required=max(0.004, VX.MIN_REWARD_RISK*risk + cost)
-        if capacity < required*1.02:
-            plan['r63_nq_trend_projection']={
-                'status':'INSUFFICIENT_CAPACITY','capacity_pct':capacity,
-                'required_pct':required,'risk_pct':risk}
-            return plan
-        projected=min(capacity,max(required*1.08,existing))
-        sign=1.0 if direction=='LONG' else -1.0
-        target=entry*(1.0+sign*projected)
-        plan.update(target_price=target,expected_move_pct=projected,
-                    expected_to_stop_ratio=projected/risk,
-                    target_method='R63_NQ_TREND_VOLATILITY_PROJECTION')
-        if str(plan.get('reason') or '')=='multi_tf_expected_move_too_small_vs_stop':
-            plan['eligible']=True
-            plan['reason']='ok'
-        plan['r63_nq_trend_projection']={
-            'status':'APPLIED','capacity_pct':capacity,'required_pct':required,
-            'projected_pct':projected,'risk_pct':risk,'sigma_1h':sigma,
-            'ret_4h':r4,'ret_day':rday,'continuation_room_pct':continuation,
-            'measured_move_pct':measured}
-    except Exception:
-        pass
-    return plan
+    """Historical API retained; canonical targets now belong to the TF event."""
+    return dict(plan or {})
 
 def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=None):
     plan=dict(_v90r40_base_technical_trade_plan(
@@ -19062,6 +19002,7 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
     plan=_v90r63_nq_trend_target_projection(asset,horizon,f,research_decision,plan)
     import veritas_trend_entry as VTE
     plan['trend_entry_context']=f.get('trend_entry_context') or {}
+    plan['timeframe_entry_context']=f.get('timeframe_entry_context') or {}
     if VTE.structural_event({'research_decision':research_decision,'trade_plan':plan}):
         plan.update(entry_price=float(f['price']),eligible=True,reason='R69_STRUCTURAL_EVENT',
                     execution_timeframe='5m',entry_quality='FRESH_BREAKOUT')
@@ -19072,6 +19013,12 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
         plan=work['trade_plan']
     # The same gate is applied again after setup-specific mutations in cycle().
     return final_execution_safety(asset,research_decision,plan)
+
+
+def _read_user_teaching(event_type, entity_key):
+    with pg_connect() as c:
+        return c.execute('SELECT payload FROM ledger_events WHERE event_key=%s',
+                         (event_type+':'+entity_key,)).fetchone()
 
 
 def main():
@@ -19093,6 +19040,7 @@ def main():
     pg_boot = pg_init()
     v90_migration = v90_migrate_core_data() if pg_boot.get('ok') else {'status':'POSTGRES_REQUIRED','schema':V90_DB_SCHEMA}
     emit('v90_database_ready', **v90_migration)
+    if pg_boot.get('ok'): emit('user_teaching_applied',**VUT.seed_user_teaching(pg_event,_read_user_teaching))
     if pg_boot.get('ok'):
         try: _v90_storage_audit()
         except Exception as _sa_ex:

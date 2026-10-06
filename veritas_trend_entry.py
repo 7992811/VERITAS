@@ -378,12 +378,18 @@ def _rebase_displayed_signal_setup(row,price=None,now=None):
 
 
 def has_geometry_context(row):
+    import veritas_timeframe_policy as TFP
+    if TFP.applies(row): return True
     plan=(row or {}).get('trade_plan') or {}
     return bool(context_of(row).get('status')=='OK' or
                 (plan.get('multi_tf_level_context') or {}).get('target_ladder') or plan.get('target_ladder'))
 
 
 def structural_event(row, direction=None):
+    import veritas_timeframe_policy as TFP
+    if TFP.applies(row):
+        event=TFP.context_of(row).get('event') or {}
+        return event if event.get('direction')==(direction or (row or {}).get('research_decision')) else {}
     event = context_of(row).get('event') or {}
     direction = direction or (row or {}).get('research_decision')
     origin, stop = number(event.get('signal_price')), number(event.get('stop_price'))
@@ -397,6 +403,8 @@ def structural_event(row, direction=None):
 
 def geometry(row, price=None, direction=None, stop_override=None):
     """First unpassed HTF barrier, not the first distant profitable target."""
+    import veritas_timeframe_policy as TFP
+    if TFP.applies(row): return TFP.geometry(row,price,direction,stop_override)
     row=row or {}; plan=dict(row.get('trade_plan') or {})
     px=number(price,number(row.get('price'))); direction=direction or row.get('research_decision')
     d=1 if direction=='LONG' else -1
@@ -463,6 +471,8 @@ def geometry(row, price=None, direction=None, stop_override=None):
 
 
 def prepare_row(row, price=None, now=None):
+    import veritas_timeframe_policy as TFP
+    if TFP.applies(row): return TFP.prepare_row(row,price,now)
     x=_rebase_catalyst_setup(row,price,now)
     x=_rebase_displayed_signal_setup(x,price,now)
     plan=dict(x.get('trade_plan') or {})
@@ -508,6 +518,8 @@ def prepare_row(row, price=None, now=None):
 
 def context_gate(row, now=None):
     """Check candle time even when there is no breakout event to inspect."""
+    import veritas_timeframe_policy as TFP
+    if TFP.applies(row): return TFP.context_gate(row,now)
     ctx=context_of(row)
     if not ctx:
         return {'eligible':False,'reason':'R69_LOCAL_CONTEXT_REQUIRED'}
@@ -542,6 +554,8 @@ def context_gate(row, now=None):
 
 
 def event_gate(row, price, direction, now=None):
+    import veritas_timeframe_policy as TFP
+    if TFP.applies(row): return TFP.entry_gate(row,price,direction,now)
     ctx=context_of(row); event=ctx.get('event') or {}
     required = True
     from veritas_execution import is_proxy_price

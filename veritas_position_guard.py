@@ -398,6 +398,8 @@ def profit_lock_stop(z, quote, commission=VC.COMMISSION_RATE, fees_paid_rub=0.0,
     - adverse execution / slippage allowance;
     - a small positive net-profit cushion.
     """
+    if payload_of(z).get('structural_policy_version'):
+        return None  # Same-TF confirmed swings own protection for these positions.
     if not quote or not quote.get('source_gate_pass') or not quote_matches_position(z,quote):
         return None
     p=payload_of(z)
