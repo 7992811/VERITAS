@@ -969,3 +969,32 @@ class TradeApprovals:
     def list_unsettled(self, **filters):
         return self.list_by_status(sorted(UNSETTLED_EXECUTION),
                                    include_unreconciled_terminal=True, **filters)
+
+    def list_recent(self, *, account_id=None, owner_user_id=None, limit=20,
+                    updated_after=None, instrument_uid=None, execution_environment=None):
+        """Newest records for status display; filter the scope before LIMIT."""
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ApprovalError("INVALID_LIST_LIMIT", 400)
+        where, params = [], []
+        for column, value in (("account_id", account_id), ("instrument_uid", instrument_uid)):
+            if value is not None:
+                where.append(column + "=%s")
+                params.append(_text(value, column.upper()))
+        if owner_user_id is not None:
+            where.append("owner_user_id=%s")
+            params.append(_positive_id(owner_user_id))
+        if updated_after is not None:
+            where.append("updated_at>%s")
+            params.append(_date(updated_after))
+        if execution_environment is not None:
+            if execution_environment not in {"sandbox", "production"}:
+                raise ApprovalError("INVALID_EXECUTION_ENVIRONMENT", 400)
+            where.append("terms_json->>'execution_environment'=%s")
+            params.append(execution_environment)
+        query = f"SELECT * FROM {TABLE}"
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY updated_at DESC,proposal_id DESC LIMIT %s"
+        params.append(limit)
+        with self.connect() as c:
+            return [self._view(row) for row in c.execute(query, tuple(params)).fetchall()]

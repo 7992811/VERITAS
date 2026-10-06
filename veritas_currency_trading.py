@@ -182,6 +182,14 @@ class CurrencyTradingCoordinator:
                 return {"ok": False, "code": "BROKER_RESULT_UNKNOWN"}
             status = result.status
             outcome = result.outcome if result.outcome in ("ACCEPTED", "REJECTED", "UNKNOWN") else "UNKNOWN"
+            identity_mismatch = ((result.client_order_id and result.client_order_id != claimed["client_order_id"])
+                or (result.instrument_uid and result.instrument_uid != terms["instrument_uid"])
+                or (result.side and result.side != terms["side"])
+                or (result.lots_requested is not None and result.lots_requested != integer(terms["lots"])))
+            if identity_mismatch:
+                self.repository.record_submission(proposal_id, claimed["claim_token"],
+                    outcome="UNKNOWN", filled_lots=None, client_order_id=claimed["client_order_id"])
+                return {"ok": False, "code": "BROKER_ORDER_IDENTITY_MISMATCH"}
             if outcome == "ACCEPTED" and result.lots_executed is None:
                 outcome, status = "UNKNOWN", "UNKNOWN"
             self.repository.record_submission(proposal_id, claimed["claim_token"],
@@ -215,6 +223,7 @@ class CurrencyTradingCoordinator:
                         continue
                     if (not result.broker_order_id
                             or (proposal.get("broker_order_id") and result.broker_order_id != proposal["broker_order_id"])
+                            or (not proposal.get("broker_order_id") and result.client_order_id != proposal["client_order_id"])
                             or (result.client_order_id and result.client_order_id != proposal["client_order_id"])
                             or result.instrument_uid != terms.get("instrument_uid")
                             or result.side != terms.get("side")
@@ -223,7 +232,7 @@ class CurrencyTradingCoordinator:
                     self.ingest_execution(proposal, result)
                     self.repository.update_execution(proposal_id, broker_order_id=result.broker_order_id,
                         broker_status=result.status, filled_lots=result.lots_executed,
-                        client_order_id=proposal["client_order_id"], observed_at=result.observed_at,
+                        client_order_id=result.client_order_id, observed_at=result.observed_at,
                         average_fill_price=result.average_fill_price)
                     if result.status in ("FILLED", "CANCELLED", "REJECTED", "BROKER_REJECTED"):
                         self.repository.mark_execution_reconciled(proposal_id, result.broker_order_id,
