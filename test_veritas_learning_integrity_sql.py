@@ -190,5 +190,20 @@ class PersistedLearningSQLTests(unittest.TestCase):
             changed=copy.deepcopy(row); changed["payload"][field]=None
             self.assertEqual(LI.trade_exclusion(changed),"INCOMPLETE_OBSERVED_PATH")
 
+    def test_duplicate_observed_event_does_not_restore_two_learning_samples(self):
+        self.add_trade("b_duplicate")
+        with self.connect() as c:
+            c.execute("""UPDATE paper_trades SET payload=(SELECT payload FROM paper_trades
+              WHERE trade_id='a_clean') WHERE trade_id='b_duplicate'""")
+        before=self.financials()
+        with self.connect() as c:
+            result=LI.revalidate_eligible(c,batch_size=32)
+        self.assertEqual(result["verified"],1)
+        rows=self.episodes()
+        self.assertFalse(rows["b_duplicate"]["learning_eligible"])
+        self.assertEqual(rows["b_duplicate"]["payload"]["learning_integrity"]["exclusion_reason"],
+                         "DUPLICATE_OBSERVED_EVENT")
+        self.assertEqual(self.financials(),before)
+
 if __name__ == "__main__":
     unittest.main()
