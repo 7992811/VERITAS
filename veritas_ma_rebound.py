@@ -287,6 +287,10 @@ def build_context(local_bars, timeframe, now, *, daily_bars, asset, source_ident
     import veritas_daily_averages as DA
     daily = list(daily_bars or [])
     boundaries, snapshots = _daily_boundaries(daily), {}
+    # Normalize native observations once. Keep the complete local episode walk;
+    # each cache miss still receives precisely the daily prefix known then.
+    daily_context = DA.context_builder(daily, asset=asset, source_identity=source_identity,
+                                       periods=p["periods"])
     ranges = [None] + [max(b["high"] - b["low"], abs(b["high"] - a["close"]),
                           abs(b["low"] - a["close"])) for a,b in zip(rows, rows[1:])]
     states = {n:{"approach":[], "episode":None} for n in p["periods"]}
@@ -298,8 +302,7 @@ def build_context(local_bars, timeframe, now, *, daily_bars, asset, source_ident
             continue
         cache_key = bisect_right(boundaries, bar["ts"])
         if cache_key not in snapshots:
-            snapshots[cache_key] = DA.build_context(daily, bar["ts"], asset=asset,
-                                                   source_identity=source_identity, periods=p["periods"])
+            snapshots[cache_key] = daily_context(bar["ts"])
         snapshot = snapshots[cache_key]
         for n, state in states.items():
             ep = state["episode"]
