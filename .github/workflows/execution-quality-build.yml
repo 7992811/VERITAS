@@ -1,0 +1,42 @@
+name: Execution Quality Workspace
+on:
+  push:
+    branches: [feature/execution-quality-v3-20261006]
+    paths: ['.github/workflows/execution-quality-build.yml', 'tools/apply_execution_quality.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect integration boundaries
+        run: |
+          python - <<'PY'
+          import ast, pathlib, zipfile, subprocess
+          path=pathlib.Path('veritas_intelligence.py')
+          text=path.read_text(); lines=text.splitlines(); tree=ast.parse(text)
+          names={'_cnyrubf_market','_v90_compact_live_row','_v90r25_portfolios_fast','_v90r37_compact_decision_payload'}
+          chosen={n.name:n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name in names}
+          for name,node in chosen.items():
+              print('\nBOUNDARY',name,node.lineno,node.end_lineno)
+              print('\n'.join(lines[node.lineno-1:min(node.end_lineno,node.lineno+140)]))
+          print('\nSTARTUP TAIL\n'+'\n'.join(lines[-90:]))
+          print('\nTBANK/API CALL SITES')
+          for i,line in enumerate(lines):
+              if 'VTB.' in line or 'tbank' in line.lower() or "'/api/v1/paper-portfolios'" in line:
+                  print(i+1,'\n'.join(lines[max(0,i-2):i+5]))
+          tracked=subprocess.check_output(['git','ls-files','-z']).decode().split('\0')
+          with zipfile.ZipFile('/tmp/veritas-source.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for name in tracked:
+                  p=pathlib.Path(name)
+                  if p.is_file() and (p.suffix in ('.py','.cjs','.yml','.yaml') or p.name.startswith('requirements')) and not any(x.startswith('.env') for x in p.parts):
+                      z.write(p,name)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veritas-source
+          path: /tmp/veritas-source.zip
+          retention-days: 1
