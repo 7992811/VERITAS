@@ -2495,7 +2495,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     c.execute('INSERT INTO paper_nav_history(portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT(portfolio_name,observed_at) DO NOTHING',(name,ts,nav,nav_usd,bench,gross,net,dd,ruonia,usdrub,json.dumps({'risk_governor':rg,'unrealized_pnl_rub':unreal,'targets':targets})))
     st=_stats(c,name)
     trace=_portfolio_admission_trace(candidates,policy,dd)
-    return {'name':name,'nav_rub':round(nav,2),'nav_usd':round(nav_usd,2) if nav_usd else None,'total_return_pct':round(100*(nav/INITIAL_NAV_RUB-1),4),'benchmark_nav_rub':round(bench,2),'excess_vs_ruonia_pct':round(100*(nav/bench-1),4),'drawdown_pct':round(100*dd,4),'gross_leverage':round(gross,4),'net_exposure':round(net,4),'cash_equivalent_fraction':round(max(0,1-gross),4),'risk_governor':rg,'ruonia':ruonia,'usdrub':usdrub,
+    return {'name':name,'nav_rub':round(nav,2),'nav_usd':round(nav_usd,2) if nav_usd else None,'initial_nav_rub':round(float(p['initial_nav_rub']),2),'total_return_pct':round(100*(nav/max(float(p['initial_nav_rub']),1.0)-1),4),'benchmark_nav_rub':round(bench,2),'excess_vs_ruonia_pct':round(100*(nav/bench-1),4),'drawdown_pct':round(100*dd,4),'gross_leverage':round(gross,4),'net_exposure':round(net,4),'cash_equivalent_fraction':round(max(0,1-gross),4),'risk_governor':rg,'ruonia':ruonia,'usdrub':usdrub,
             'admission_trace':trace,**st}
 
 
