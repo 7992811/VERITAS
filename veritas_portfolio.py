@@ -10,6 +10,7 @@ import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
 import veritas_currency_portfolio as VCP
+import veritas_canonical_constitution as CTC
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
 VERSION='veritas-portfolio-v9.0-four-portfolio-core'
@@ -27,8 +28,8 @@ POLICIES={
      'accepted_cap':0.25,'confirmed_cap':0.50
  },
  'Aggressive': {'threshold':0.62,'strong_threshold':0.74,'min_independent':2,'mode':'AGGRESSIVE','max_fraction':5.0,'max_gross':5.0,'leverage_limit':5.0},
- 'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':2.0},
- 'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':2.0},
+ 'Champion': {'threshold':0.70,'strong_threshold':0.82,'min_independent':3,'mode':'CORE','max_fraction':1.0},
+ 'Challenger': {'threshold':0.75,'strong_threshold':0.85,'min_independent':4,'mode':'CHALLENGER','max_fraction':1.0},
  'Currency': VCP.policy(),
 }
 
@@ -167,6 +168,15 @@ def ensure_schema(pg_connect):
             c.execute('''INSERT INTO paper_portfolios(name,created_at,updated_at,initial_nav_rub,benchmark_nav_rub,high_water_nav_rub,policy,model_version)
                          VALUES(%s,now(),now(),%s,%s,%s,%s::jsonb,%s)
                          ON CONFLICT(name) DO UPDATE SET policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()''',(name,initial_nav,initial_nav,initial_nav,json.dumps(pol),VERSION))
+        # Currency was originally created as a zero-capital placeholder. Rebase
+        # only an untouched placeholder row; never rewrite a portfolio with trades.
+        c.execute("""UPDATE paper_portfolios
+                     SET initial_nav_rub=%s,benchmark_nav_rub=%s,high_water_nav_rub=%s,
+                         updated_at=now(),policy=%s::jsonb,model_version=%s
+                     WHERE name=%s AND initial_nav_rub<=0
+                       AND NOT EXISTS (SELECT 1 FROM paper_trades WHERE portfolio_name=%s)""",
+                  (VCP.INITIAL_NAV_RUB,VCP.INITIAL_NAV_RUB,VCP.INITIAL_NAV_RUB,
+                   json.dumps(POLICIES['Currency']),VERSION,VCP.PORTFOLIO_KEY,VCP.PORTFOLIO_KEY))
 
 
 def _fetch_usdrub():
@@ -580,9 +590,18 @@ def _portfolio_admission_trace(candidates,policy,drawdown):
     for asset,row in sorted((candidates or {}).items()):
         sf=_signal_first_admission(row,policy,drawdown)
         plan=row.get('trade_plan') or {}
+        probability_source=sf.get('probability_source') or row.get('_pwin_source')
+        _ps=str(probability_source or '').upper()
+        calibrated=bool(
+            _ps=='EMPIRICAL_CALIBRATION'
+            or (_ps.startswith('CALIBRATED') and 'UNCALIBRATED' not in _ps)
+        )
         out.append({'asset':asset,'direction':row.get('research_decision'),'horizon':row.get('horizon'),
                     'canonical_setup_id':_portfolio_canonical_setup_id(row),
-                    'pwin':sf.get('probability'),'model_quality_score':sf.get('model_quality_score'),'signal_prior':row.get('_pwin'),'probability_source':sf.get('probability_source') or row.get('_pwin_source'),'quality_floor':sf.get('floor') or sf.get('quality_floor'),'rank':row.get('_rank'),
+                    'pwin':sf.get('probability') if calibrated else None,
+                    'model_quality_score':sf.get('model_quality_score') or (None if calibrated else row.get('_pwin')),
+                    'signal_prior':row.get('_pwin'),'probability_source':probability_source,
+                    'quality_floor':sf.get('floor') or sf.get('quality_floor'),'rank':row.get('_rank'),
                     'rr':plan.get('expected_to_stop_ratio'),
                     'hard_veto':not bool(sf.get('open')),
                     'target_fraction':sf.get('fraction'),'reason':sf.get('reason'),
@@ -8294,6 +8313,22 @@ _v90r35_context_portfolio=None
 def _v90r35_profile(mode=None,portfolio=None):
     mode=str(mode or '')
     portfolio=str(portfolio or '')
+    currency=bool(mode=='CURRENCY' or portfolio==VCP.PORTFOLIO_KEY)
+    if currency:
+        return {
+          'name':'CURRENCY',
+          'hard_drawdown':VCP.HARD_DRAWDOWN,
+          'normal_until':0.20,
+          'caution_until':0.25,
+          'defense_1_until':0.30,
+          'normal_max_gross':VCP.MAX_GROSS,
+          'caution_max_gross':7.50,
+          'defense_1_max_gross':5.00,
+          'defense_2_max_gross':2.50,
+          'caution_multiplier':0.90,
+          'defense_1_multiplier':0.70,
+          'defense_2_multiplier':0.45,
+        }
     aggressive=bool(mode=='AGGRESSIVE' or portfolio=='Aggressive')
     if aggressive:
         return {
@@ -8383,11 +8418,8 @@ def _signal_first_admission_r40(row,policy,drawdown):
     try:
         _v90r35_context_mode=str((policy or {}).get('mode') or '')
         out=dict(_v90r35_base_admission(row,policy,drawdown) or {})
-        out['objective_priority']=[
-          'SUSTAINABLE_HIGH_WIN_RATE',
-          'SUSTAINABLE_POSITIVE_POST_COST_PROFIT',
-          'DRAWDOWN_CONTROL'
-        ]
+        out['objective_priority']=list(CTC.OBJECTIVE_POLICY['priority_order'])
+        out['objective_hard_constraint']=CTC.OBJECTIVE_POLICY['hard_constraint']
         out['drawdown_policy_r35']=_risk_governor(drawdown)
         return out
     finally:
@@ -8412,18 +8444,16 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
 def _report_r39(pg_connect):
     d=dict(_v90r35_base_report(pg_connect) or {})
     d['objective_policy_r35']={
-      'priority_order':[
-        'sustainable_high_win_rate',
-        'sustainable_positive_post_cost_profitability',
-        'drawdown_control'
-      ],
-      'target_win_rate':0.65,
+      'hard_constraint':CTC.OBJECTIVE_POLICY['hard_constraint'],
+      'priority_order':list(CTC.OBJECTIVE_POLICY['priority_order']),
+      'target_win_rate':CTC.OBJECTIVE_POLICY['target_win_rate'],
       'drawdown_priority':3,
       'hard_drawdown_limits':{
         'Impulse':0.15,
         'Aggressive':0.20,
         'Champion':0.15,
         'Challenger':0.15,
+        'Currency':VCP.HARD_DRAWDOWN,
       },
       'per_idea_structural_stop_risk_cap_nav':float(MAX_STOP_RISK_NAV),
       'aggressive_strategic_max_gross':5.0,
@@ -8479,8 +8509,9 @@ def _report_r40(pg_connect):
       'final_economics_gate':True,
       'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
       'live_broker_execution_enabled':False,
-      'objective_priority':['positive_post_cost_expectancy','calibrated_edge_robustness','win_rate_target_65pct_kpi','drawdown_constraints'],
-      'principle':'research portfolios may stay aggressive; future live account is independently capped and fail-closed',
+      'objective_hard_constraint':CTC.OBJECTIVE_POLICY['hard_constraint'],
+      'objective_priority':list(CTC.OBJECTIVE_POLICY['priority_order']),
+      'principle':CTC.OBJECTIVE_POLICY['principle'],
     }
     return _jsonable(d)
 
@@ -8589,14 +8620,17 @@ def report(pg_connect):
     }
     return _jsonable(d)
 
-import veritas_portfolio_runtime as _VERITAS_RUNTIME
-from veritas_portfolio_runtime import *  # canonical final runtime
-
-# R85: explicit execution authority. Historical local definitions above remain
-# available as captured helpers, but cannot silently reclaim production control.
-_signal_first_admission=_VERITAS_RUNTIME.FINAL_SIGNAL_FIRST_ADMISSION
-_open_or_add=_VERITAS_RUNTIME.FINAL_OPEN_OR_ADD
-_close_or_reduce=_VERITAS_RUNTIME.FINAL_CLOSE_OR_REDUCE
-_step_one=_VERITAS_RUNTIME.FINAL_STEP_ONE
-step_all=_VERITAS_RUNTIME.FINAL_STEP_ALL
-report=_VERITAS_RUNTIME.FINAL_REPORT
+# Canonical runtime binding is import-order safe. When portfolio is imported
+# from inside veritas_portfolio_runtime, the runtime is only partially initialized;
+# it patches these bindings after its final authority objects are constructed.
+import sys as _sys
+_VERITAS_RUNTIME=_sys.modules.get('veritas_portfolio_runtime')
+if _VERITAS_RUNTIME is None:
+    import veritas_portfolio_runtime as _VERITAS_RUNTIME
+if hasattr(_VERITAS_RUNTIME,'FINAL_SIGNAL_FIRST_ADMISSION'):
+    _signal_first_admission=_VERITAS_RUNTIME.FINAL_SIGNAL_FIRST_ADMISSION
+    _open_or_add=_VERITAS_RUNTIME.FINAL_OPEN_OR_ADD
+    _close_or_reduce=_VERITAS_RUNTIME.FINAL_CLOSE_OR_REDUCE
+    _step_one=_VERITAS_RUNTIME.FINAL_STEP_ONE
+    step_all=_VERITAS_RUNTIME.FINAL_STEP_ALL
+    report=_VERITAS_RUNTIME.FINAL_REPORT

@@ -17,12 +17,12 @@ class ExecutionSafetyTests(unittest.TestCase):
     def test_profit_lock_waits_for_meaningful_profit(self):
         z={'direction':'LONG','avg_entry_price':100.0,'stop_price':99.0,'payload':{}}
         q={'price':100.20,'source_gate_pass':True}
-        self.assertIsNone(VPG.profit_lock_stop(z,q,.0005))
+        self.assertIsNone(VPG.profit_lock_stop(z,q,.0004))
 
     def test_profit_lock_long_covers_round_trip_costs(self):
         z={'direction':'LONG','avg_entry_price':100.0,'stop_price':99.0,'payload':{}}
         q={'price':100.30,'source_gate_pass':True}
-        out=VPG.profit_lock_stop(z,q,.0005)
+        out=VPG.profit_lock_stop(z,q,.0004)
         self.assertIsNotNone(out)
         self.assertGreater(out['stop_price'],100.10)
         self.assertLess(out['stop_price'],q['price'])
@@ -30,7 +30,7 @@ class ExecutionSafetyTests(unittest.TestCase):
     def test_profit_lock_short_covers_round_trip_costs(self):
         z={'direction':'SHORT','avg_entry_price':100.0,'stop_price':101.0,'payload':{}}
         q={'price':99.70,'source_gate_pass':True}
-        out=VPG.profit_lock_stop(z,q,.0005)
+        out=VPG.profit_lock_stop(z,q,.0004)
         self.assertIsNotNone(out)
         self.assertLess(out['stop_price'],99.90)
         self.assertGreater(out['stop_price'],q['price'])
@@ -39,7 +39,7 @@ class ExecutionSafetyTests(unittest.TestCase):
         z={'direction':'LONG','avg_entry_price':100.0,'stop_price':99.0,
            'payload':{'trailing_stop':100.20}}
         q={'price':100.40,'source_gate_pass':True}
-        self.assertIsNone(VPG.profit_lock_stop(z,q,.0005))
+        self.assertIsNone(VPG.profit_lock_stop(z,q,.0004))
 
     def test_bad_rr_is_blocked_even_for_setup(self):
         gate = VX.economics_gate("BTC", {
@@ -560,7 +560,7 @@ class NetProfitLockR55Tests(unittest.TestCase):
            'units':10000.0,'payload':{}}
         q={'price':100.40,'source_gate_pass':True}
         out=VPG.profit_lock_stop(
-            z,q,.0005,fees_paid_rub=500.0,slippage_pct=.0005,min_net_pct=.0005)
+            z,q,.0004,fees_paid_rub=500.0,slippage_pct=.0004,min_net_pct=.0005)
         self.assertIsNotNone(out)
         self.assertGreater(out['projected_net_profit_at_stop_rub'],0.0)
         self.assertGreater(out['stop_price'],100.15)
@@ -571,7 +571,7 @@ class NetProfitLockR55Tests(unittest.TestCase):
            'units':10000.0,'payload':{}}
         q={'price':99.90,'source_gate_pass':True}
         out=VPG.profit_lock_stop(
-            z,q,.0005,fees_paid_rub=800.0,slippage_pct=.0005,min_net_pct=.0005)
+            z,q,.0004,fees_paid_rub=800.0,slippage_pct=.0004,min_net_pct=.0005)
         self.assertIsNone(out)
 
 class LossConflictR81Tests(unittest.TestCase):
@@ -604,9 +604,9 @@ class LossConflictR81Tests(unittest.TestCase):
 
     def test_cost_policy_matches_fixed_veritas_parameters(self):
         import veritas_costs as VC
-        self.assertAlmostEqual(VC.COMMISSION_RATE,0.0005,places=9)
-        self.assertAlmostEqual(VC.COST_BUFFER_MULTIPLE,1.2,places=9)
-        self.assertAlmostEqual(VC.ROUND_TRIP_RATE,0.0018,places=9)
+        self.assertAlmostEqual(VC.COMMISSION_RATE,0.0004,places=9)
+        self.assertAlmostEqual(VC.COST_BUFFER_MULTIPLE,1.1,places=9)
+        self.assertAlmostEqual(VC.ROUND_TRIP_RATE,0.0016,places=9)
 
 class ExecutionInvariantR83Tests(unittest.TestCase):
     def test_fresh_same_source_quote_replaces_stale_signal_quote_for_execution(self):
@@ -678,7 +678,7 @@ class FinalRuntimeAuthorityR85Tests(unittest.TestCase):
     def test_portfolio_execution_is_bound_to_final_runtime_authority(self):
         import veritas_portfolio as VP
         import veritas_portfolio_runtime as VPR
-        self.assertEqual(VPR.FINAL_RUNTIME_AUTHORITY_VERSION,'R85_FINAL_AUTHORITY_LOCK')
+        self.assertEqual(VPR.FINAL_RUNTIME_AUTHORITY_VERSION,'CTC_V1_FINAL_AUTHORITY')
         self.assertIs(VP._signal_first_admission,VPR.FINAL_SIGNAL_FIRST_ADMISSION)
         self.assertIs(VP._open_or_add,VPR.FINAL_OPEN_OR_ADD)
         self.assertIs(VP._close_or_reduce,VPR.FINAL_CLOSE_OR_REDUCE)

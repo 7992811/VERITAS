@@ -41,7 +41,10 @@ class CostAwareExitTests(unittest.TestCase):
 
     def test_profit_gate_blocks_take_profit_but_never_protective_stops(self):
         c = MagicMock();c.execute.return_value.fetchone.return_value=self.trade
+        protective_quote=dict(self.quote,price=90,best_bid=89.99,best_ask=90.01,market_open=True)
         with patch.object(G,'profit_exit_assessment',return_value={'eligible':False}) as check, \
+             patch.object(G,'quote_for_position',return_value=protective_quote), \
+             patch.object(G,'protective_reason',return_value='STOP'), \
              patch.object(R,'_v90r59_base_close_or_reduce',return_value=7) as execution:
             for reason in ('TAKE_PROFIT','DYNAMIC_PARTIAL_PROFIT'):
                 self.assertEqual(R._close_or_reduce(c,{},'Champion',self.z,100.1,0,1e6,NOW,reason),0)

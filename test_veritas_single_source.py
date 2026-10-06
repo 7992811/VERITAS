@@ -34,6 +34,8 @@ class SingleSourceTests(unittest.TestCase):
         with patch.object(VI, 'STRICT_EXECUTION_SOURCE_GATE', True):
             for asset in VX.PAPER_ASSETS:
                 for name, policy in VP.POLICIES.items():
+                    if name == 'Currency' and asset != 'CNYRUBF':
+                        continue
                     for lost_flag in (False, True):
                         with self.subTest(asset=asset, portfolio=name, lost_flag=lost_flag):
                             row = self.row(asset)
@@ -81,8 +83,9 @@ class SingleSourceTests(unittest.TestCase):
                     if mode == 'stale':
                         row['market_observed_at'] = (datetime.now(timezone.utc)-timedelta(hours=2)).isoformat()
                     elif mode == 'bad_economics':
-                        row['trade_plan']['expected_to_stop_ratio'] = .5
-                        row['trade_plan']['target_price'] = 99.5  # bad actual geometry, even after recomputation
+                        row['trade_plan']['expected_to_stop_ratio'] = .1
+                        row['trade_plan']['expected_move_pct'] = .001
+                        row['trade_plan']['target_price'] = 99.9  # < canonical round-trip cost: hard block
                     else:
                         row['paper_eligible'] = False
                     self.assertFalse(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.)['open'])

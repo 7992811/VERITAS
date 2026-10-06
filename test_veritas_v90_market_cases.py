@@ -58,6 +58,8 @@ class MarketCaseRegressionTests(unittest.TestCase):
         row['trade_plan']['entry_quality'] = 'NEW_SETUP_PROVISIONAL'
         row['trade_plan']['entry_quality_rebased_from_old_setup'] = True
         for name, policy in VP.POLICIES.items():
+            if name == 'Currency':
+                continue  # Currency is deliberately CNYRUBF-only.
             with self.subTest(portfolio=name):
                 out = VP._signal_first_admission(dict(row), policy, 0.0)
                 self.assertTrue(out['open'], out)
@@ -77,6 +79,8 @@ class MarketCaseRegressionTests(unittest.TestCase):
     def test_moex_one_source_reaches_all_paper_portfolio_admissions(self):
         for lost_flag in (False, True):
             for name, policy in VP.POLICIES.items():
+                if name == 'Currency':
+                    continue  # Currency cannot trade MOEX by design.
                 with self.subTest(portfolio=name, router_lost_flag=lost_flag):
                     row = self._moex_single_source_row()
                     self.assertTrue(row['paper_eligible'])
@@ -99,19 +103,24 @@ class MarketCaseRegressionTests(unittest.TestCase):
                 # Even a retained True flag cannot override failed source checks.
                 out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
                 self.assertFalse(out['open'], out)
-                self.assertEqual(out['reason'], 'R42_PAPER_SOURCE_GATE')
+                self.assertEqual(out['reason'], 'R79_SOURCE_OR_SESSION_BLOCK')
 
     def test_moex_one_source_does_not_override_economics_or_explicit_denial(self):
         row = self._moex_single_source_row()
         row['paper_eligible'] = False
         self.assertEqual(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
-                         ['reason'], 'R42_PAPER_SOURCE_GATE')
+                         ['reason'], 'R79_SOURCE_OR_SESSION_BLOCK')
         row = self._moex_single_source_row()
         row['trade_plan']['target_price'] = 2220.0  # actual final levels must fail economics, not stale metadata
         row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
         out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
-        self.assertFalse(out['open'])
-        self.assertEqual(out['reason'], 'R41_FINAL_ECONOMICS_GATE')
+        # Low fixed R/R is a soft veto when the target remains positive after
+        # modeled costs. Canonical admission starts only a bounded probe.
+        self.assertTrue(out['open'], out)
+        self.assertEqual(out['reason'], 'R79_SIGNAL_PROBE')
+        self.assertLessEqual(out['fraction'], 0.25)
+        self.assertNotIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',out.get('hard_economics_blockers',[]))
+        self.assertNotIn('EXPECTED_MOVE_BELOW_COST_BUFFER',out.get('hard_economics_blockers',[]))
 
     def _brent_bars(self):
         # Learned case: range -> downside break with volume -> lower lows.
@@ -220,9 +229,12 @@ class MarketCaseRegressionTests(unittest.TestCase):
             "initial_position_fraction":0.10,
         }
         out=VI.final_execution_safety("BRENT","SHORT",plan)
-        self.assertTrue(out["eligible"])
+        # Rebase is semantic and must happen before final context/economics gates.
+        # This unit plan has no live local-candle context, so execution eligibility
+        # may still be false; the stale parent INVALIDATED label must not survive.
         self.assertEqual(out["entry_quality"],"NEW_SETUP_PROVISIONAL")
         self.assertTrue(out["entry_quality_rebased_from_old_setup"])
+        self.assertNotEqual(out.get("reason"),"invalidated")
 
         ordinary=dict(plan,setup="TREND")
         ordinary.pop("entry_quality_rebased_from_old_setup",None)
