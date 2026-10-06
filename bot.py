@@ -431,17 +431,9 @@ def startup_check():
 
     if ADMIN_USER_ID is None:
         log("ADMIN_USER_ID не задан. Напишите боту /start в личку.")
-    else:
-        try:
-            send_message(
-                ADMIN_USER_ID,
-                "VERITAS MAX запущен.\n"
-                f"Канал: {CHANNEL_ID}\n"
-                f"Режим: {PUBLISH_MODE}\n"
-                f"Скан: каждые {SCAN_INTERVAL_MINUTES} мин."
-            )
-        except Exception as e:
-            log(f"Не удалось написать ADMIN_USER_ID: {e}")
+
+    # Keep routine startup status in logs; deployments must not notify Telegram.
+    log("Служебное уведомление о запуске в Telegram отключено.")
 
 
 def main():
