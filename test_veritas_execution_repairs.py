@@ -1950,7 +1950,7 @@ class MarketSchedulerAndNQTargetR63CTests(unittest.TestCase):
         self.assertIn('"MOEX":0, "CNYRUBF":1, "NQ":2',src)
         self.assertIn('market_prefetch_timeout_cache_fallback',src)
 
-    def test_nq_strong_trend_extends_target_only_when_capacity_supports_it(self):
+    def test_legacy_nq_projection_preserves_target_even_with_strong_trend(self):
         f={'price':30800.0,'spread_bps':0.0,
            'trend_impulse':{'direction':'LONG','phase':'TREND_DAY','impulse_score':.76,
                             'onset_score':.72,'sigma_1h':.0012,'ret_4h':.012,'ret_day':.018},
@@ -1961,11 +1961,12 @@ class MarketSchedulerAndNQTargetR63CTests(unittest.TestCase):
               'expected_move_pct':.00227,'expected_to_stop_ratio':.87,
               'entry_quality':'CONFIRMED_TREND','reason':'multi_tf_expected_move_too_small_vs_stop',
               'eligible':False}
+        original=dict(plan)
         out=VI._v90r63_nq_trend_target_projection('NQ','1h',f,'LONG',plan)
-        self.assertEqual(out['r63_nq_trend_projection']['status'],'APPLIED')
-        self.assertGreaterEqual(out['expected_move_pct'],.004)
-        self.assertGreater(out['expected_to_stop_ratio'],1.15)
-        self.assertTrue(out['eligible'])
+        self.assertEqual(out,original)
+        self.assertEqual(plan,original)
+        self.assertIsNot(out,plan)
+        self.assertNotIn('r63_nq_trend_projection',out)
 
     def test_nq_target_not_invented_without_trend_capacity(self):
         f={'price':30800.0,'spread_bps':0.0,
