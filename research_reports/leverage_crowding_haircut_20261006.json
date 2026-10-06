@@ -1,0 +1,197 @@
+{
+  "generated_at": "2026-10-06T16:19:00Z",
+  "branch": "research/leverage-crowding-haircut-20261006",
+  "production_changed": false,
+  "data_artifacts": {
+    "binance_spot_manager": {
+      "run_id": 37210798801,
+      "artifact_id": 11306218324,
+      "sha256": "579e862dc5a9e1188bbb897ab805f62519afa52e6d0ede1c038731f3a650cab2"
+    },
+    "binance_positioning_btc": {
+      "run_id": 37268559122,
+      "artifact_id": 11328230213,
+      "sha256": "bce92095638c49f5cddd555f2ada3c9283bac1d0c783fbe7bca6fe253e32c0fd"
+    },
+    "binance_positioning_eth": {
+      "run_id": 37268559122,
+      "artifact_id": 11327417499,
+      "sha256": "57c82c350135079b6ec55b445fc98cf83fe9b81109ad03c856ba399a1c04ee60"
+    },
+    "okx_spot_control": {
+      "run_id": 37372257390,
+      "artifact_id": 11369718354,
+      "sha256": "8eeebb1c2a42b66d5d7b4bcbf0da81c9c81178dd87d604c3f29395d5222aefa5"
+    }
+  },
+  "preexisting_family_audit": {
+    "positioning_run": 37268559122,
+    "derivative_run": 37267616597,
+    "finding": "Both prior walk-forward routers rejected derivative/positioning states for BTC and ETH; the present test is economically distinct because it only scales the already-frozen directional sleeve and never creates entries."
+  },
+  "method": {
+    "baseline": "Frozen 50/50 BTC+ETH: completed 7d/28d direction votes + completed 4h SMA18/50 votes, positive breadth, 20% annualized vol cap, 28d downside-semivol cap, no leverage, next-hour exposure.",
+    "candidate": "Daily leverage-crowding haircut; preserves BTC/ETH 50/50 and can only reduce baseline exposure.",
+    "feature": "For each asset use causal Binance USD-M metrics. oi24 = log(OI[t]) - log(OI[t-24h]); crowd = log(top-trader position long/short ratio). Normalize each with prior 28 calendar days, requiring at least 20 days of 5m observations and shifting rolling moments by one observation.",
+    "score": "asset_score=max(z_oi24,0)*max(z_crowd,0); joint_score=(BTC_score+ETH_score)/2; multiplier=1/(1+joint_score). No fitted threshold or coefficient.",
+    "cadence": "Use completed daily state only. Missing/stale state is neutral multiplier=1. Candidate exposure is applied one hour later.",
+    "costs": {
+      "base_one_way_turnover_cost": 0.00125,
+      "stress_one_way_turnover_cost": 0.0025
+    },
+    "controls": [
+      "year-by-year walk-forward stability",
+      "independent OKX spot-price control using same Binance positioning signal",
+      "wrong-sign crowding control",
+      "circular daily timing shifts",
+      "double-cost stress",
+      "campaign win-rate"
+    ]
+  },
+  "results": {
+    "base_cost_2023_to_2026_10_03": {
+      "binance": {
+        "baseline": {
+          "return": 0.4524331178,
+          "sharpe": 1.291912945,
+          "max_drawdown": -0.08327901845,
+          "turnover": 50.12699283,
+          "avg_exposure": 0.09817207352,
+          "campaign_win_rate": 0.34
+        },
+        "candidate": {
+          "return": 0.3942590954,
+          "sharpe": 1.388327914,
+          "max_drawdown": -0.07498716413,
+          "turnover": 56.90390052,
+          "avg_exposure": 0.08302045734,
+          "campaign_win_rate": 0.33
+        }
+      },
+      "okx": {
+        "baseline": {
+          "return": 0.3943349391,
+          "sharpe": 1.110249144,
+          "max_drawdown": -0.08315054229,
+          "turnover": 53.01554783,
+          "avg_exposure": 0.0989446749,
+          "campaign_win_rate": 0.3301886792
+        },
+        "candidate": {
+          "return": 0.3389793487,
+          "sharpe": 1.166072094,
+          "max_drawdown": -0.0793122293,
+          "turnover": 59.72816946,
+          "avg_exposure": 0.08446670725,
+          "campaign_win_rate": 0.320754717
+        }
+      }
+    },
+    "yearly_binance": {
+      "2023": {
+        "base_return": 0.1944353371,
+        "candidate_return": 0.1560381014,
+        "base_sharpe": 1.763338447,
+        "candidate_sharpe": 1.765325016
+      },
+      "2024": {
+        "base_return": 0.1307854101,
+        "candidate_return": 0.1190394835,
+        "base_sharpe": 1.393904702,
+        "candidate_sharpe": 1.563250735
+      },
+      "2025": {
+        "base_return": 0.04383908195,
+        "candidate_return": 0.03365679425,
+        "base_sharpe": 0.750419852,
+        "candidate_sharpe": 0.69347131
+      },
+      "2026_to_10_03": {
+        "base_return": 0.03019574094,
+        "candidate_return": 0.04267644945,
+        "base_sharpe": 0.860719955,
+        "candidate_sharpe": 1.305176441
+      }
+    },
+    "yearly_okx": {
+      "2023": {
+        "base_return": 0.1936295638,
+        "candidate_return": 0.1554570444,
+        "base_sharpe": 1.752142387,
+        "candidate_sharpe": 1.755287306
+      },
+      "2024": {
+        "base_return": 0.1313986286,
+        "candidate_return": 0.1197913926,
+        "base_sharpe": 1.401928739,
+        "candidate_sharpe": 1.574133027
+      },
+      "2025": {
+        "base_return": 0.04358459035,
+        "candidate_return": 0.0335005158,
+        "base_sharpe": 0.746959254,
+        "candidate_sharpe": 0.690732775
+      },
+      "2026_to_10_03": {
+        "base_return": -0.01064025119,
+        "candidate_return": 0.00131852653,
+        "base_sharpe": -0.189310137,
+        "candidate_sharpe": 0.059044742
+      }
+    },
+    "complete_data_holdout_2026_04_to_10_03": {
+      "binance": {
+        "base_return": 0.03037636011,
+        "candidate_return": 0.0428592568,
+        "base_sharpe": 0.935023357,
+        "candidate_sharpe": 1.415650068
+      },
+      "okx": {
+        "base_return": 0.03037597366,
+        "candidate_return": 0.04283053051,
+        "base_sharpe": 0.93497677,
+        "candidate_sharpe": 1.414668615
+      }
+    },
+    "double_cost_2023_to_2026_10_03": {
+      "binance": {
+        "base_return": 0.3642096078,
+        "candidate_return": 0.2985156671,
+        "base_sharpe": 1.081702067,
+        "candidate_sharpe": 1.097716474
+      },
+      "okx": {
+        "base_return": 0.3049178133,
+        "candidate_return": 0.2426348617,
+        "base_sharpe": 0.896862982,
+        "candidate_sharpe": 0.875912155
+      }
+    },
+    "timing_control": {
+      "binance": {
+        "n_shifts": 1569,
+        "p_return_improvement": 0.4312101911,
+        "p_sharpe_improvement": 0.04267515924
+      },
+      "okx": {
+        "n_shifts": 1569,
+        "p_return_improvement": 0.4649681529,
+        "p_sharpe_improvement": 0.1076433121
+      }
+    },
+    "wrong_sign_control_2023_to_2026_10_03": {
+      "binance": {
+        "return": 0.3640693018,
+        "sharpe": 1.124791131
+      },
+      "okx": {
+        "return": 0.3097265779,
+        "sharpe": 0.9433925371
+      }
+    }
+  },
+  "conclusion": {
+    "material_rejection": true,
+    "interpretation": "Leverage/crowding contains some left-tail timing information (especially 2024 and Apr-Oct 2026), but the no-threshold sizing rule lowers total return and campaign win-rate, raises turnover, fails Sharpe timing significance on the independent OKX control, and loses OKX Sharpe under doubled costs. Do not productionize or tune thresholds around this family. Keep positioning/OI as shadow diagnostics only unless a genuinely new data source such as causal liquidation flow is available."
+  }
+}
