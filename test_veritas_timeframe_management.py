@@ -119,15 +119,51 @@ class SameTimeframeManagementTests(unittest.TestCase):
         self.assertEqual(result["reason"], "LEGACY_POSITION")
         self.assertFalse(db.writes)
 
-    def test_profit_stop_needs_positive_whole_trade_net_accounting(self):
+    def test_structural_trail_does_not_claim_profit_when_accounting_missing(self):
         for direction, anchor in (("LONG", 108.), ("SHORT", 92.)):
-            z, row, q = self.position(direction), self.row(direction, anchor=anchor), self.quote(direction)
-            missing = FakeDB(z, self.now, accounting=False)
-            denied = TM.apply_trailing(missing, "Aggressive", z, [row], q, self.now)
-            self.assertEqual(denied["reason"], "SAME_TF_NET_PROTECTION_NOT_CONFIRMED")
-            self.assertFalse(missing.writes)
-            present = FakeDB(z, self.now)
-            self.assertTrue(TM.apply_trailing(present, "Aggressive", z, [row], q, self.now)["eligible"])
+            with self.subTest(direction=direction):
+                z, row, q = self.position(direction), self.row(direction, anchor=anchor), self.quote(direction)
+                missing = FakeDB(z, self.now, accounting=False)
+                result = TM.apply_trailing(missing, "Aggressive", z, [row], q, self.now)
+                self.assertTrue(result["eligible"])
+                self.assertEqual(len(missing.writes), 2)
+                saved = json.loads(missing.writes[0][1][1])
+                self.assertFalse(saved["profit_protection_active"])
+                self.assertEqual(saved["net_profit_protection"]["state"], "UNAVAILABLE")
+                self.assertIsNone(saved["net_profit_protection"]["net_at_stop_rub"])
+                present = FakeDB(z, self.now)
+                self.assertTrue(TM.apply_trailing(present, "Aggressive", z, [row], q, self.now)["eligible"])
+                self.assertTrue(json.loads(present.writes[0][1][1])["profit_protection_active"])
+
+    def test_cost_uncovered_structural_stop_still_reduces_risk(self):
+        # The valid 4h swing reduces a large old stop to a small modeled loss
+        # after fees. Requiring a positive net result would retain avoidable risk.
+        for direction, anchor, expected in (("LONG", 100.62, 100.02), ("SHORT", 99.38, 99.98)):
+            with self.subTest(direction=direction):
+                z, q = self.position(direction), self.quote(direction)
+                db = FakeDB(z, self.now)
+                result = TM.apply_trailing(db, "Aggressive", z, [self.row(direction, anchor=anchor)], q, self.now)
+                self.assertTrue(result["eligible"])
+                self.assertAlmostEqual(result["stop_price"], expected)
+                saved = json.loads(db.writes[0][1][1])
+                self.assertFalse(saved["profit_protection_active"])
+                self.assertEqual(saved["net_profit_protection"]["state"], "COSTS_NOT_COVERED")
+                self.assertLess(saved["net_profit_protection"]["net_at_stop_rub"], 0)
+                self.assertEqual(saved["trailing_stage"], "RISK_REDUCTION_STRUCTURAL")
+                self.assertEqual(saved["trailing_reference_timeframe"], "4h")
+
+    def test_accounting_failure_does_not_retain_a_wider_structural_stop(self):
+        z = self.position()
+        z["payload"]["profit_protection_active"] = True
+        db = FakeDB(z, self.now)
+        with patch.object(TM.VPP, "assess", side_effect=RuntimeError("unavailable accounting")):
+            result = TM.apply_trailing(db, "Aggressive", z,
+                                       [self.row(anchor=108.)], self.quote(), self.now)
+        self.assertTrue(result["eligible"])
+        saved = json.loads(db.writes[0][1][1])
+        self.assertFalse(saved["profit_protection_active"])
+        self.assertEqual(saved["net_profit_protection"]["state"], "UNAVAILABLE")
+        self.assertEqual(saved["trailing_stage"], "PROTECTION_UNVERIFIED")
 
     def test_same_pivot_cannot_ratchet_again_just_because_atr_shrinks(self):
         z, row = self.position(), self.row()

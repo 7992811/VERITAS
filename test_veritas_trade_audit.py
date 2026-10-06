@@ -1,18 +1,42 @@
 import unittest
+import copy
+from datetime import datetime,timedelta,timezone
 from veritas_trade_audit import analyze, evidence_exclusion
+
+
+def observed_evidence(asset,direction,event_id,entered,timeframe='1m'):
+    identity={'asset':asset,'key':'TEST_NATIVE:'+asset,'primary_source':'TEST_NATIVE',
+              'contract_id':asset+'-EXACT','version':'R80_SOURCE_LOCK'}
+    seconds={'1m':60,'5m':300,'1h':3600}[timeframe]
+    opening=entered-timedelta(seconds=2*seconds)
+    known=opening-timedelta(seconds=seconds)
+    confirmed=opening+timedelta(seconds=seconds)
+    event={'event_id':event_id,'event_type':'SAME_TIMEFRAME_STRUCTURAL_BREAKOUT',
+           'asset':asset,'direction':direction,'timeframe':timeframe,
+           'confirmation':'CLOSED_'+timeframe+'_BAR',
+           'atr_timeframe':timeframe,'stop_timeframe':timeframe,'target_timeframe':timeframe,
+           'source_identity':copy.deepcopy(identity),
+           'breakout_bar_at':opening.isoformat(),'signal_at':confirmed.timestamp(),
+           'confirmed_at':confirmed.isoformat(),'level_available_at':known.isoformat(),
+           'stop_level_available_at':known.isoformat(),'atr_observed_until':known.isoformat()}
+    return {'data_integrity_status':'OK','price_source_lock':copy.deepcopy(identity),
+            'entry_execution_source_identity':copy.deepcopy(identity),
+            'last_exit_source_identity':copy.deepcopy(identity),
+            'r66_event_id':event_id,'entry_event_snapshot':event}
 
 
 class TradeAuditTests(unittest.TestCase):
     def row(self, net, **changes):
-        return dict(portfolio_name='Impulse',asset='BTC',direction='LONG',
+        return dict(portfolio_name='Impulse',asset='BTC',direction='LONG',horizon='1m',
             net_pnl_rub=net,gross_pnl_rub=net+10 if net is not None else None,fees_rub=10,funding_rub=0,
-            held_seconds=120,entry_notional_rub=1000,opened_at='2026-10-03',
+            held_seconds=120,entry_notional_rub=1000,opened_at='2026-10-03T00:00:00+00:00',
             closed_at='2026-10-03',payload={},**changes)
 
     def test_all_records_remain_in_accounting_and_cohorts_do_not_mix(self):
         rows=[self.row(-5),self.row(20),self.row(-30)]
-        rows[0]['payload']={'exit_reason':'STOP','r66_event_id':'R69_A','mfe_pct':2}
-        rows[1]['payload']={'r66_event_id':'R69_A'}
+        rows[0]['payload']={**observed_evidence('BTC','LONG','R69_A',datetime(2026,10,3,tzinfo=timezone.utc)),
+                            'exit_reason':'STOP','mfe_pct':2}
+        rows[1]['payload']=observed_evidence('BTC','LONG','R69_A',datetime(2026,10,3,tzinfo=timezone.utc))
         rows[1]['portfolio_name']='Champion'
         rows[2]['payload']={'exit_reason':'PRODUCTION_CANDIDATE_REBASE'}
         result=analyze(rows)

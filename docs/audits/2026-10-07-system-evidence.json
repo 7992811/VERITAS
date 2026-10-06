@@ -1,0 +1,171 @@
+{
+  "schema": "VERITAS_SYSTEM_AUDIT_EVIDENCE_V1",
+  "audit_date_msk": "2026-10-07",
+  "baseline_sha": "af5358c6d4a8a6b2d256a1574b7402ce67d8da9a",
+  "snapshot_window_utc": [
+    "2026-10-06T21:40:45Z",
+    "2026-10-06T21:40:52Z"
+  ],
+  "dashboard_at": "2026-10-06T21:40:12.994109+00:00",
+  "source_run_url": "https://github.com/7992811/VERITAS/actions/runs/37535559682",
+  "mode": "PAPER_ONLY",
+  "baseline_strategy_epoch": "EQ3_2026_10_06",
+  "next_strategy_epoch": "EQ4_2026_10_07",
+  "financial_all_history": {
+    "trades": 646,
+    "accounting_complete": 646,
+    "wins": 126,
+    "losses": 520,
+    "flat": 0,
+    "win_rate": 0.19504643962848298,
+    "net_pnl_rub": -227053.64736408717,
+    "gross_pnl_rub": -127467.61852964004,
+    "costs_rub": 99586.02883444713,
+    "profit_factor": 0.0946763484043374,
+    "avg_net_pnl_rub": -351.47623430973243,
+    "avg_win_rub": 188.4497520335565,
+    "avg_loss_rub": 482.3044540775294
+  },
+  "systemic": {
+    "losses": 520,
+    "total_costs_rub": 99586.02883444713,
+    "total_net_pnl_rub": -227053.64736408717,
+    "trades_with_adds": 27,
+    "losses_under_10m": 102,
+    "stop_losses": 170,
+    "losses_without_mfe_telemetry": 335,
+    "signal_exit_losses": 54,
+    "cost_dominated_losses": 103,
+    "trades_with_partial_exits": 82,
+    "losses_with_observed_mfe_above_booked_costs": 77
+  },
+  "portfolios": [
+    {
+      "name": "Impulse",
+      "initial_nav_rub": 1000000,
+      "nav_rub": 973055.14,
+      "total_return_pct": -2.6945,
+      "closed_trades": 123,
+      "wins": 29,
+      "closed_trade_pnl_rub": -26944.860974843556,
+      "profit_factor": 0.12437291879399813,
+      "closed_gross_pnl_rub": -15946.437221114662,
+      "closed_fees_rub": 10614.155514537153,
+      "closed_funding_rub": 384.2682391917294
+    },
+    {
+      "name": "Aggressive",
+      "initial_nav_rub": 1000000,
+      "nav_rub": 907237.24,
+      "total_return_pct": -9.2763,
+      "closed_trades": 99,
+      "wins": 16,
+      "closed_trade_pnl_rub": -92762.75959585518,
+      "profit_factor": 0.043144505580169246,
+      "closed_gross_pnl_rub": -46667.66586404137,
+      "closed_fees_rub": 45363.8505037724,
+      "closed_funding_rub": 731.2432280413649
+    },
+    {
+      "name": "Champion",
+      "initial_nav_rub": 1000000,
+      "nav_rub": 943435.27,
+      "total_return_pct": -5.6565,
+      "closed_trades": 222,
+      "wins": 43,
+      "closed_trade_pnl_rub": -56540.05615321232,
+      "profit_factor": 0.1264980477601376,
+      "closed_gross_pnl_rub": -33764.49295112895,
+      "closed_fees_rub": 22298.54640313949,
+      "closed_funding_rub": 477.0167989438755
+    },
+    {
+      "name": "Challenger",
+      "initial_nav_rub": 1000000,
+      "nav_rub": 949194.03,
+      "total_return_pct": -5.0806,
+      "closed_trades": 202,
+      "wins": 38,
+      "closed_trade_pnl_rub": -50805.97064017615,
+      "profit_factor": 0.12933099382917831,
+      "closed_gross_pnl_rub": -31089.022493355063,
+      "closed_fees_rub": 19316.52753684617,
+      "closed_funding_rub": 400.4206099748868
+    },
+    {
+      "name": "Currency",
+      "initial_nav_rub": 10000,
+      "nav_rub": 10000,
+      "total_return_pct": 0,
+      "closed_trades": 0,
+      "wins": 0,
+      "closed_trade_pnl_rub": 0,
+      "profit_factor": null,
+      "closed_gross_pnl_rub": 0,
+      "closed_fees_rub": 0,
+      "closed_funding_rub": 0
+    }
+  ],
+  "cost_policy_before": {
+    "version": "CTC_V2_COST_POLICY",
+    "commission_rate_per_side": 0.0004,
+    "slippage_rate_per_side": 0.0004,
+    "round_trip_base_cost_pct": 0.0016,
+    "cost_buffer_multiple": 1.1,
+    "entry_cost_multiple": 2,
+    "minimum_expected_move_formula": "max(0.19%, 2.0 * modeled_round_trip_cost)",
+    "funding_annual_rate": 0.16,
+    "funding_free_seconds": 86400,
+    "funding_basis": "ELAPSED_TIME_AFTER_FIRST_24_HOURS_CURRENT_NOTIONAL",
+    "calendar_basis": "ACT/365.25",
+    "applies_to": "PAPER_PORTFOLIOS",
+    "observed_spread_separate": true
+  },
+  "heavy_learning_after_restart": {
+    "version": "veritas-max-product-v91.1-execution-quality-v3",
+    "status": "DEFERRED_MEMORY",
+    "last_started_at": null,
+    "last_finished_at": null,
+    "last_duration_seconds": null,
+    "event_learning": {
+      "status": "background_pending",
+      "written": 0
+    },
+    "rule_learning": {
+      "status": "background_pending",
+      "rows": 0,
+      "status_changes": 0
+    },
+    "last_error": null,
+    "runs": 0,
+    "reason": "interval_due",
+    "rss_mb": 265.7,
+    "memory_start_limit_mb": 260
+  },
+  "observed_runtime_event": {
+    "type": "oomKilled",
+    "at_utc": "2026-10-06T21:33:26.246181Z",
+    "memory_limit_mib": 512,
+    "causal_allocator_unknown": true
+  },
+  "calculated": {
+    "breakeven_win_rate": 0.7190479756718117,
+    "expectancy_at_65pct_same_payoff_rub": -46.31422010532356
+  },
+  "validation": {
+    "baseline_legacy_tests": 156,
+    "baseline_legacy_failures": 26,
+    "baseline_legacy_errors": 4,
+    "baseline_legacy_continue_on_error": true,
+    "integrated_ci_required": true,
+    "out_of_sample_profit_proven": false
+  },
+  "limitations": [
+    "Closed cycles in different portfolios can share one market event.",
+    "Slippage is embedded in execution prices; do not subtract it twice.",
+    "Historical mutable stop/target fields are not immutable entry snapshots.",
+    "MFE does not prove an executable counterfactual exit.",
+    "Accounting keeps all losses; learning exclusions must not rewrite financial results.",
+    "Current epoch had zero closed cycles at baseline snapshot."
+  ]
+}
