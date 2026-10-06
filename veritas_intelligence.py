@@ -18468,7 +18468,9 @@ def _v90_compact_live_row(z):
     sl=z.get('structural_levels') or {}
     sl2=_v90_small_dict(sl,(
         'status','price','sma18','sma50','sma200','sma18_slope','sma50_slope','sma200_slope',
-        'price_vs_sma18','price_vs_sma50','price_vs_sma200','daily_ma_context','daily_ma_status','ma_timeframe','ma_source_identity','ma_daily_asof','ma_native_daily','support','support_strength',
+        'price_vs_sma18','price_vs_sma50','price_vs_sma200','daily_ma_context','daily_ma_status','ma_timeframe','ma_source_identity','ma_daily_asof','ma_native_daily',
+        'ma_daily_asof_basis','ma_daily_known_at','ma_daily_period_label','ma_daily_completion_observed_at',
+        'ma_daily_interval_boundary_verified','ma_daily_verified_close_at','support','support_strength',
         'resistance','resistance_strength'))
     tr=_v90_small_dict(z.get('tactical_reversal'),(
         'active','direction','candidate_direction','setup','state','probability',
