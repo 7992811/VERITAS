@@ -38,6 +38,22 @@ def data():
         out['candles'][tf]={'instrument_uid':uid,'status':'OK','candles':bars,'loaded_at':NOW.isoformat()}
     return out
 
+def observed_evidence(asset,direction,event_id,entered):
+    identity={'asset':asset,'key':'TEST_NATIVE:'+asset,'primary_source':'TEST_NATIVE',
+              'contract_id':asset+'-EXACT','version':'R80_SOURCE_LOCK'}
+    opening=entered-timedelta(minutes=2)
+    known=opening-timedelta(minutes=1)
+    confirmed=opening+timedelta(minutes=1)
+    event={'event_id':event_id,'event_type':'SAME_TIMEFRAME_STRUCTURAL_BREAKOUT',
+           'asset':asset,'direction':direction,'timeframe':'1m','confirmation':'CLOSED_1m_BAR',
+           'breakout_bar_at':opening.isoformat(),'signal_at':confirmed.timestamp(),
+           'confirmed_at':confirmed.isoformat(),'level_available_at':known.isoformat(),
+           'stop_level_available_at':known.isoformat(),'atr_observed_until':known.isoformat()}
+    return {'data_integrity_status':'OK','price_source_lock':copy.deepcopy(identity),
+            'entry_execution_source_identity':copy.deepcopy(identity),
+            'last_exit_source_identity':copy.deepcopy(identity),
+            'r66_event_id':event_id,'entry_event_snapshot':event}
+
 class DirectTests(unittest.TestCase):
     def test_consistent_broker_basis(self):
         out=D.validate_snapshot(data(),NOW)
@@ -139,7 +155,8 @@ class EvidenceTests(unittest.TestCase):
                 'opened_at':(NOW-timedelta(minutes=10+minute)).isoformat(),'closed_at':(NOW-timedelta(minutes=minute)).isoformat(),
                 'gross_pnl_rub':100,'fees_rub':60,'funding_rub':10,'net_pnl_rub':net,
                 'entry_notional_rub':10000,'entry_order_count':1,
-                'payload':{'mfe_pct':2,'mae_pct':-.5,'idea_id':key,'idea_id_verified':True,
+                'payload':{**observed_evidence('ETH','LONG','STF_'+key,NOW-timedelta(minutes=10+minute)),
+                           'mfe_pct':2,'mae_pct':-.5,'idea_id':key,'idea_id_verified':True,
                            'strategy_epoch':epoch or C.STRATEGY_EPOCH,'exit_reason':'TAKE_PROFIT',
                            'data_integrity_status':'OK'}}
 
@@ -193,7 +210,9 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(text.count('VSQ.entry_metadata('),1)
         fragment=text[text.index('VSQ.entry_metadata(')-400:text.index('VSQ.entry_metadata(')]
         self.assertIn('trade_id=f"{name}:{asset}:',fragment)
-        row={'asset':'ETH','research_decision':'SHORT','_canonical_admission':{'trend_event':{'event_id':'new-event'}}}
+        row={'asset':'ETH','research_decision':'SHORT',
+             'trade_plan':{'entry_event_snapshot':observed_evidence('ETH','SHORT','STF_new-event',NOW)['entry_event_snapshot']},
+             '_canonical_admission':{'trend_event':{'event_id':'STF_new-event'}}}
         stamp=Q.entry_metadata(row,NOW)
         self.assertTrue(stamp['idea_id_verified'])
         self.assertEqual(stamp['strategy_epoch'],C.STRATEGY_EPOCH)
@@ -245,6 +264,91 @@ class EvidenceTests(unittest.TestCase):
             new=Q.review(t)
         self.assertNotEqual(old['input_hash'],new['input_hash'])
         self.assertEqual(old['net_pnl_rub'],new['net_pnl_rub'])
+
+
+    def test_learning_sample_excludes_unknown_event_without_erasing_loss(self):
+        bad=self.trade(key='MIXED',net=-150)
+        bad['gross_pnl_rub']=-80
+        bad['payload'].pop('data_integrity_status')
+        same_event=self.trade(key='MIXED',minute=1)
+        known=self.trade(key='KNOWN')
+        stats=Q.statistics([bad,same_event,known])
+        self.assertEqual(stats['net_pnl_rub'],-90)
+        self.assertEqual(stats['closed_trades'],3)
+        self.assertEqual(stats['expectancy_rub'],-30)
+        evidence=stats['learning_evidence']
+        self.assertEqual(evidence['event_groups'],1)
+        self.assertEqual(evidence['trades'],1)
+        self.assertEqual(evidence['excluded_event_groups'],1)
+        self.assertEqual(evidence['excluded_trades'],2)
+        self.assertEqual(evidence['expectancy_rub_per_event'],30)
+        self.assertFalse(evidence['independence_established'])
+        self.assertFalse(evidence['automatic_promotion'])
+
+    def test_champion_challenger_comparison_requires_both_observed_paths(self):
+        champion=self.trade('Champion')
+        challenger=self.trade('Challenger')
+        ready=Q.build_report([champion,challenger])
+        self.assertEqual(ready['champion_challenger']['matched_events'],1)
+        challenger['payload'].pop('data_integrity_status')
+        unknown=Q.build_report([champion,challenger])
+        self.assertEqual(unknown['champion_challenger']['matched_events'],0)
+        self.assertIsNone(unknown['champion_challenger']['mean_return_delta_pp'])
+        self.assertFalse(unknown['champion_challenger']['automatic_promotion'])
+
+
+    def test_audit_proxy_sources_are_excluded_for_every_asset_without_erasing_losses(self):
+        rows=[]
+        for asset in ('GOLD','NQ','BRENT','CNYRUBF','BTC','ETH','MOEX'):
+            trade=self.trade(key=asset,net=-10);trade['asset']=asset
+            trade['gross_pnl_rub']=60
+            trade['payload']['price_source_lock']={
+                'asset':asset,'key':'PROXY:GLD PROXY BRIDGE','primary_source':'GLD proxy bridge'}
+            rows.append(trade)
+            with self.subTest(asset=asset):
+                self.assertEqual(Q.AUDIT.evidence_exclusion(trade),'PROXY_PRICE')
+                review=Q.review(trade)
+                self.assertEqual(review['evidence_status'],'INCOMPLETE_OR_SOURCE_UNVERIFIED')
+                self.assertEqual(review['evidence_exclusion'],'PROXY_PRICE')
+                self.assertIsNone(review['capture_ratio'])
+        audit=Q.AUDIT.analyze(rows)
+        self.assertEqual(audit['all_trades']['net_pnl_rub'],-70)
+        self.assertEqual(audit['all_trades']['trades'],7)
+        self.assertEqual(audit['independent_unflagged_episodes'],0)
+        self.assertEqual(Q.statistics(rows)['learning_evidence']['trades'],0)
+
+    def test_exact_contract_exit_mismatch_is_not_a_valid_learning_path(self):
+        trade=self.trade()
+        trade['payload']['last_exit_source_identity']['contract_id']='OTHER-CONTRACT'
+        out=Q.review(trade)
+        self.assertEqual(out['evidence_exclusion'],'DATA_INTEGRITY')
+        self.assertEqual(out['evidence_status'],'INCOMPLETE_OR_SOURCE_UNVERIFIED')
+        self.assertEqual(out['net_pnl_rub'],30)
+        self.assertIsNone(out['capture_ratio'])
+
+    def test_generated_signal_id_cannot_masquerade_as_verified_market_event(self):
+        trade=self.trade()
+        trade['payload']['r66_event_id']='R79_SIG_e5007c48f57ece74d1'
+        trade['payload']['entry_event_snapshot']['event_id']='R79_SIG_e5007c48f57ece74d1'
+        self.assertTrue(trade['payload']['idea_id_verified'])
+        self.assertFalse(Q.idea_key(trade)[1])
+        self.assertEqual(Q.review(trade)['evidence_exclusion'],'UNVERIFIED_EVENT')
+        self.assertEqual(Q.statistics([trade])['verified_event_count'],0)
+        row={'asset':'ETH','research_decision':'LONG',
+             '_canonical_admission':{'trend_event':{'event_id':'R79_SIG_e5007c48f57ece74d1'}}}
+        self.assertFalse(Q.entry_metadata(row,NOW)['idea_id_verified'])
+
+    def test_closed_event_evidence_must_be_causal_and_observed_before_entry(self):
+        for field in ('level_available_at','stop_level_available_at','atr_observed_until',
+                      'confirmed_at'):
+            with self.subTest(field=field):
+                trade=self.trade()
+                trade['payload']['entry_event_snapshot'][field]=NOW.isoformat()
+                self.assertFalse(Q.idea_key(trade)[1])
+                self.assertEqual(Q.review(trade)['evidence_exclusion'],'UNVERIFIED_EVENT')
+        trade=self.trade();trade['payload'].pop('entry_event_snapshot')
+        self.assertFalse(Q.idea_key(trade)[1])
+        self.assertEqual(Q.review(trade)['evidence_exclusion'],'UNVERIFIED_EVENT')
 
 
 class PromotionEvidenceIntegrityTests(unittest.TestCase):
