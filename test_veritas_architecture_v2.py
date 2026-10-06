@@ -33,6 +33,8 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertEqual(p["probe_normal"], .05)
         self.assertEqual(p["probe_super"], .10)
         self.assertEqual(p["max_gross"], 10.0)
+        self.assertEqual(CTC.PORTFOLIO_POLICIES["Aggressive"]["probe_normal"], .50)
+        self.assertEqual(CTC.PORTFOLIO_POLICIES["Aggressive"]["probe_super"], 1.00)
 
     def test_release_identity_is_five_portfolio_ctc_v2(self):
         s=VR.snapshot()
@@ -65,7 +67,7 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertEqual(book["CNYRUBF"]["_alignment_count"],2)
 
     def test_soft_timing_block_reduces_to_probe_not_cash(self):
-        row={"asset":"CNYRUBF","horizon":"1h","research_decision":"LONG","decision":"LONG",
+        row={"asset":"CNYRUBF","horizon":"5m","research_decision":"LONG","decision":"LONG",
              "signal_tier":"LONG","price":12.8,"source_gate_pass":True,"market_open":True,
              "paper_eligible":True,"market_observed_at":datetime.now(timezone.utc).isoformat(),
              "trade_plan":{"stop_price":12.7,"expected_move_pct":.01,"expected_to_stop_ratio":2.0}}
@@ -77,6 +79,25 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertTrue(out["open"],out)
         self.assertEqual(out["fraction"],.05)
         self.assertIn("R69_WAIT_LOCAL_BREAKOUT",out["soft_blockers"])
+
+    def test_weak_senior_signal_waits_for_local_confirmation(self):
+        row={"asset":"NQ","horizon":"4h","research_decision":"LONG",
+             "entry_quality":"NEW_SETUP_PROVISIONAL",
+             "horizon_structure":{"state":"WEAK","score":.46,"direction":"LONG"},
+             "independent_evidence_families":4,
+             "_local_execution_context":{"same_direction_count":0,"opposite_direction_count":0}}
+        gate=VCR.local_confirmation_gate(row,{"reason":"R69_WAIT_LOCAL_BREAKOUT"})
+        self.assertFalse(gate["eligible"])
+        self.assertEqual(gate["reason"],"LOCAL_EXECUTION_CONFIRMATION_REQUIRED")
+
+    def test_strong_senior_trend_can_trade_without_local_signal(self):
+        row={"asset":"NQ","horizon":"4h","research_decision":"LONG",
+             "entry_quality":"CONFIRMED_TREND",
+             "horizon_structure":{"state":"CONFIRMED_TREND","score":.80,"direction":"LONG"},
+             "independent_evidence_families":5,
+             "_local_execution_context":{"same_direction_count":0,"opposite_direction_count":0}}
+        gate=VCR.local_confirmation_gate(row,{"reason":"R69_WAIT_LOCAL_BREAKOUT"})
+        self.assertTrue(gate["eligible"],gate)
 
     def test_cost_negative_signal_remains_hard_block(self):
         row={"asset":"CNYRUBF","horizon":"1h","research_decision":"LONG","decision":"LONG",
