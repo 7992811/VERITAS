@@ -36,6 +36,7 @@ READ_METHODS = {
     "future": "InstrumentsService/FutureBy",
     "portfolio": "OperationsService/GetPortfolio",
     "positions": "OperationsService/GetPositions",
+    "withdraw_limits": "OperationsService/GetWithdrawLimits",
     "orders": "OrdersService/GetOrders",
     "order": "OrdersService/GetOrderState",
     "max_lots": "OrdersService/GetMaxLots",
@@ -51,6 +52,7 @@ WRITE_METHODS = {"submit": "OrdersService/PostOrder", "cancel": "OrdersService/C
 SANDBOX_METHODS = {
     "accounts": "GetSandboxAccounts", "portfolio": "GetSandboxPortfolio",
     "positions": "GetSandboxPositions", "orders": "GetSandboxOrders",
+    "withdraw_limits": "GetSandboxWithdrawLimits",
     "order": "GetSandboxOrderState", "max_lots": "GetSandboxMaxLots",
     "order_price": "GetSandboxOrderPrice", "stop_orders": "GetSandboxStopOrders",
     "submit": "PostSandboxOrder", "cancel": "CancelSandboxOrder",
@@ -499,6 +501,34 @@ class TBankTradingAdapter:
         for key in ("futures", "securities", "money", "blocked"):
             if not isinstance(result.get(key, []), list):
                 raise TradingError("INVALID_POSITIONS_RESPONSE")
+        return result
+
+    def get_withdraw_limits(self, account_id):
+        """Read reported cash/blocked/futures-guarantee buckets, never withdraw.
+
+        WithdrawLimitsResponse contains repeated MoneyValue arrays: money,
+        blocked, blockedGuarantee. Unlike GetPositions, it exposes funds tied
+        up as futures guarantee collateral. It has no required accountId echo;
+        the authenticated request provides its account scope. No allocation
+        or free-margin amount is fabricated from missing cash here.
+        """
+        account = _identifier(account_id, "INVALID_ACCOUNT_ID")
+        result = self._request("withdraw_limits", {"accountId": account})
+        if "accountId" in result and result["accountId"] != account:
+            raise TradingError("WITHDRAW_LIMITS_IDENTITY_MISMATCH")
+        for key in ("money", "blocked", "blockedGuarantee"):
+            rows = result.get(key, [])
+            if not isinstance(rows, list):
+                raise TradingError("INVALID_WITHDRAW_LIMITS_RESPONSE")
+            currencies = set()
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise TradingError("INVALID_WITHDRAW_LIMITS_RESPONSE")
+                amount, currency = _money(row)
+                if (currency in currencies
+                        or (key != "money" and amount < 0)):
+                    raise TradingError("INVALID_WITHDRAW_LIMITS_RESPONSE")
+                currencies.add(currency)
         return result
 
     def get_order_book(self, instrument_uid, depth=1):

@@ -406,6 +406,65 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(all(c["method"] == "POST" and not c["follow_redirects"] for c in self.transport.calls))
         self.assertTrue(all(c["url"].startswith(T.ROOTS["production"] + T.PACKAGE) for c in self.transport.calls))
 
+    def test_withdraw_limits_are_read_only_and_keep_separate_guarantee_buckets(self):
+        reported = {"money": [money("20000.25"), money("7", "usd")],
+                    "blocked": [money("300")], "blockedGuarantee": [money("12500.125")]}
+        for environment, rpc, service in (
+            ("production", "GetWithdrawLimits", "OperationsService"),
+            ("sandbox", "GetSandboxWithdrawLimits", "SandboxService"),
+        ):
+            with self.subTest(environment=environment):
+                transport = FakeTransport()
+                transport.handlers[rpc] = Response(reported)
+                adapter = T.TBankTradingAdapter(TOKEN, transport=transport,
+                    config=T.ExecutionConfig(environment=environment))
+                self.assertEqual(adapter.get_withdraw_limits(ACCOUNT), reported)
+                self.assertEqual(adapter.capabilities()["mode"], "READ_ONLY")
+                self.assertEqual(len(transport.calls), 1)
+                call = transport.calls[0]
+                self.assertEqual(call["url"], T.ROOTS[environment] + T.PACKAGE + service + "/" + rpc)
+                self.assertEqual(call["method"], "POST")
+                self.assertEqual(call["body"], {"accountId": ACCOUNT})
+                self.assertFalse(call["follow_redirects"])
+                self.assertEqual(T.quotation_to_decimal(reported["blockedGuarantee"][0]),
+                                 Decimal("12500.125"))
+
+    def test_withdraw_limits_accept_proto_empty_arrays_but_reject_wrong_account_echo(self):
+        for reported in ({}, {"money": [money("10000")]},
+                         {"money": [money("-50")], "accountId": ACCOUNT}):
+            with self.subTest(reported=reported):
+                self.transport.handlers["GetWithdrawLimits"] = Response(reported)
+                self.assertEqual(self.adapter.get_withdraw_limits(ACCOUNT), reported)
+        for invalid in ("another-account", "", None):
+            self.transport.handlers["GetWithdrawLimits"] = Response({"accountId": invalid})
+            with self.subTest(account=invalid), self.assertRaisesRegex(
+                    T.TradingError, "WITHDRAW_LIMITS_IDENTITY_MISMATCH"):
+                self.adapter.get_withdraw_limits(ACCOUNT)
+        self.assertTrue(all(c["name"] == "GetWithdrawLimits" for c in self.transport.calls))
+
+    def test_withdraw_limits_invalid_or_failed_facts_never_become_free_cash(self):
+        invalid = (
+            {"money": None}, {"blocked": {}}, {"blockedGuarantee": None},
+            {"money": [money("1"), money("2", "RUB")]},
+            {"blockedGuarantee": [money("-1")]},
+            {"blocked": [money("-0.001")]},
+            {"money": [{"units": "10000"}]},
+            {"money": [{"currency": "rub", "units": "1", "nano": -1}]},
+            {"money": [None]},
+        )
+        for payload in invalid:
+            self.transport.handlers["GetWithdrawLimits"] = Response(payload)
+            with self.subTest(payload=payload), self.assertRaises(T.TradingError):
+                self.adapter.get_withdraw_limits(ACCOUNT)
+        self.transport.calls.clear()
+        self.transport.handlers["GetWithdrawLimits"] = TimeoutError(TOKEN)
+        with self.assertRaises(T.TradingError) as caught:
+            self.adapter.get_withdraw_limits(ACCOUNT)
+        self.assertEqual(caught.exception.code, "TRANSPORT_ERROR")
+        self.assertFalse(caught.exception.ambiguous)
+        self.assertNotIn(TOKEN, str(caught.exception))
+        self.assertEqual(self.transport.count("GetWithdrawLimits"), 1)
+
     def test_positions_optional_account_id_is_accepted_but_present_mismatch_is_rejected(self):
         positions = {"futures": [{"instrumentUid": UID, "balance": "3", "blocked": "1"}],
                      "money": [money("10000")], "blocked": [], "securities": [],
