@@ -128,6 +128,33 @@ def direction_conflict(row):
         return "R59_5M_COUNTER_SENIOR_NOT_CONFIRMED"
     return None
 
+def local_confirmation_gate(row,event=None):
+    row=row or {}
+    h=str(row.get("horizon") or "")
+    if h in ("1m","5m"):
+        return {"eligible":True,"reason":"LOCAL_EXECUTION_TIMEFRAME"}
+    ctx=row.get("_local_execution_context") or {}
+    if int(ctx.get("opposite_direction_count") or 0)>0 and not _strong_reversal(row):
+        return {"eligible":False,"reason":"LOCAL_EXECUTION_DIRECTION_CONFLICT","context":ctx}
+    reason=str((event or {}).get("reason") or "")
+    if reason in ("R69_WAIT_LOCAL_BREAKOUT","R69_BREAKOUT_ACTIVITY_REQUIRED","R66_WAIT_RETEST"):
+        hs=row.get("horizon_structure") or {}
+        state=str(hs.get("state") or row.get("horizon_structure_state") or "")
+        score=_num(hs.get("score") or row.get("horizon_structure_score"),0.0)
+        quality=str(row.get("entry_quality") or (row.get("trade_plan") or {}).get("entry_quality") or "")
+        inst=row.get("institutional_signal") or {}
+        indep=int((inst.get("evidence_independence") or {}).get("independent_count")
+                  or row.get("independent_evidence_families") or 0)
+        strong=bool(state=="CONFIRMED_TREND" and score>=0.70
+                    and quality in ("FRESH_BREAKOUT","CONFIRMED_TREND")
+                    and indep>=4)
+        if int(ctx.get("same_direction_count") or 0)<=0 and not strong:
+            return {"eligible":False,"reason":"LOCAL_EXECUTION_CONFIRMATION_REQUIRED",
+                    "context":ctx,"senior_state":state,"senior_score":score,
+                    "entry_quality":quality,"independent":indep}
+    return {"eligible":True,"reason":"LOCAL_CONFIRMATION_OK","context":ctx}
+
+
 def paper_risk_governor(policy, drawdown):
     p=dict(policy or {})
     mode=str(p.get("mode") or "")
@@ -218,6 +245,13 @@ def evaluate(row, policy, drawdown, now=None):
             return {"open":False,"fraction":0.0,"reason":reason,"hard_veto":True,
                     "trend_event":event,"canonical_stage":"TIMING"}
         soft.append(reason)
+    local_gate=local_confirmation_gate(work,event)
+    if not local_gate.get("eligible"):
+        return {"open":False,"fraction":0.0,"reason":local_gate["reason"],"hard_veto":True,
+                "local_confirmation":local_gate,"trend_event":event,"canonical_stage":"TIMING"}
+    if work.get("_currency_mtf_conflict"):
+        return {"open":False,"fraction":0.0,"reason":"CURRENCY_MTF_DIRECTION_CONFLICT","hard_veto":True,
+                "currency_mtf_context":work.get("_currency_mtf_context"),"canonical_stage":"TIMING"}
     chase=anti_chase_gate(work,price)
     if not chase.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":chase["reason"],"hard_veto":True,
@@ -271,23 +305,81 @@ def _rank(row):
     tf_bonus={"5m":0.12,"1h":0.10,"4h":0.08,"1m":0.06,"1d":0.04,"3d":0.02,"7d":0.01}.get(str(r.get("horizon") or ""),0.0)
     return conf+0.20*hscore+super_bonus+tf_bonus
 
+def _local_execution_context(summary,asset,direction):
+    fast=[dict(r) for r in (summary or [])
+          if str((r or {}).get("asset") or "")==str(asset)
+          and str((r or {}).get("horizon") or "") in ("1m","5m")]
+    same=sum(1 for r in fast if _direction(r)==direction)
+    opp=sum(1 for r in fast if _direction(r) in ("LONG","SHORT") and _direction(r)!=direction)
+    return {
+        "same_direction_count":same,
+        "opposite_direction_count":opp,
+        "rows":[{"horizon":r.get("horizon"),"direction":_direction(r),
+                 "structure_direction":((r.get("horizon_structure") or {}).get("direction")
+                                        or r.get("horizon_structure_direction")),
+                 "structure_state":((r.get("horizon_structure") or {}).get("state")
+                                    or r.get("horizon_structure_state"))}
+                for r in fast],
+    }
+
+
+def _prepare_candidate(row,summary):
+    r=dict(row or {})
+    asset=str(r.get("asset") or "")
+    direction=_direction(r)
+    same=[x for x in (summary or []) if str((x or {}).get("asset") or "")==asset
+          and _direction(x)==direction]
+    r["_supporting_horizons"]=sorted({str(x.get("horizon") or "") for x in same if x.get("horizon")})
+    r["_alignment_count"]=len(r["_supporting_horizons"])
+    r["_rank"]=_rank(r)
+    r["_local_execution_context"]=_local_execution_context(summary,asset,direction)
+    cp=_num(r.get("calibrated_probability"))
+    r["_pwin"]=cp if cp is not None else max(0.0,min(1.0,_num(r.get("confidence"),0.5)))
+    r["_pwin_source"]="EMPIRICAL_CALIBRATION" if cp is not None else "MODEL_QUALITY_SCORE_UNCALIBRATED"
+    return r
+
+
 def candidate_book(summary):
     rows=[dict(r) for r in (summary or []) if _direction(r) in ("LONG","SHORT")]
     grouped={}
-    for r in rows:
+    for raw in rows:
+        r=_prepare_candidate(raw,summary)
         asset=str(r.get("asset") or "")
-        if not asset:
-            continue
-        same=[x for x in rows if str(x.get("asset") or "")==asset and _direction(x)==_direction(r)]
-        r["_supporting_horizons"]=sorted({str(x.get("horizon") or "") for x in same if x.get("horizon")})
-        r["_alignment_count"]=len(r["_supporting_horizons"])
-        r["_rank"]=_rank(r)
-        cp=_num(r.get("calibrated_probability"))
-        r["_pwin"]=cp if cp is not None else max(0.0,min(1.0,_num(r.get("confidence"),0.5)))
-        r["_pwin_source"]="EMPIRICAL_CALIBRATION" if cp is not None else "MODEL_QUALITY_SCORE_UNCALIBRATED"
-        if asset not in grouped or r["_rank"]>grouped[asset]["_rank"]:
+        if asset and (asset not in grouped or r["_rank"]>grouped[asset]["_rank"]):
             grouped[asset]=r
     return grouped
+
+
+def currency_candidate_book(summary):
+    rows=[dict(r) for r in (summary or [])
+          if str((r or {}).get("asset") or "")=="CNYRUBF"
+          and _direction(r) in ("LONG","SHORT")]
+    if not rows:
+        return {}
+    priority={"5m":5.0,"1h":4.0,"4h":3.0,"1m":2.0,"1d":1.5,"3d":1.0,"7d":0.5}
+    prepared=[]
+    for raw in rows:
+        r=_prepare_candidate(raw,summary)
+        r["_currency_route_score"]=priority.get(str(r.get("horizon") or ""),0.0)+0.10*r["_rank"]
+        prepared.append(r)
+    chosen=max(prepared,key=lambda x:x["_currency_route_score"])
+    h=str(chosen.get("horizon") or "")
+    if h not in ("1m","5m","1h"):
+        senior4=next((dict(r) for r in (summary or [])
+                      if str((r or {}).get("asset") or "")=="CNYRUBF"
+                      and str((r or {}).get("horizon") or "")=="4h"),None)
+        if senior4:
+            hs=senior4.get("horizon_structure") or {}
+            sdir=str(hs.get("direction") or senior4.get("horizon_structure_direction") or "NO_TRADE")
+            state=str(hs.get("state") or senior4.get("horizon_structure_state") or "")
+            score=_num(hs.get("score") or senior4.get("horizon_structure_score"),0.0)
+            chosen["_currency_mtf_context"]={"selected_horizon":h,"selected_direction":_direction(chosen),
+                                             "four_hour_direction":sdir,"four_hour_state":state,
+                                             "four_hour_score":score}
+            chosen["_currency_mtf_conflict"]=bool(
+                sdir in ("LONG","SHORT") and sdir!=_direction(chosen)
+                and state in ("BUILDING_TREND","CONFIRMED_TREND") and score>=0.65)
+    return {"CNYRUBF":chosen}
 
 def impulse_candidate_book(summary):
     out={}
