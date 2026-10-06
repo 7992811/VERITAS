@@ -4819,10 +4819,14 @@ _v90r79_base_open_or_add=_open_or_add
 _v90r79_base_report=report
 
 _R79_SOFT_ECON_BLOCKERS={
-    # A directional signal may start a small paper probe with sub-floor R/R
-    # only when the trade is still net-profitable after modeled execution cost.
+    # A directional signal may start a small paper probe with sub-floor R/R or
+    # while waiting for an extra local-breakout confirmation. These are timing
+    # and sizing constraints, not reasons to contradict a current published
+    # LONG/SHORT. Post-cost profitability remains a hard constraint below.
     'RR_BELOW_FINAL_FLOOR',
     'NET_REWARD_RISK_BELOW_FLOOR',
+    'R69_WAIT_LOCAL_BREAKOUT',
+    'R69_BREAKOUT_ACTIVITY_REQUIRED',
 }
 _R79_HARD_COST_BLOCKERS={
     'EXPECTED_MOVE_BELOW_COST_BUFFER',
