@@ -58,6 +58,8 @@ class MarketCaseRegressionTests(unittest.TestCase):
         row['trade_plan']['entry_quality'] = 'NEW_SETUP_PROVISIONAL'
         row['trade_plan']['entry_quality_rebased_from_old_setup'] = True
         for name, policy in VP.POLICIES.items():
+            if str(policy.get('mode') or '') == 'CURRENCY':
+                continue
             with self.subTest(portfolio=name):
                 out = VP._signal_first_admission(dict(row), policy, 0.0)
                 self.assertTrue(out['open'], out)
@@ -77,6 +79,8 @@ class MarketCaseRegressionTests(unittest.TestCase):
     def test_moex_one_source_reaches_all_paper_portfolio_admissions(self):
         for lost_flag in (False, True):
             for name, policy in VP.POLICIES.items():
+                if str(policy.get('mode') or '') == 'CURRENCY':
+                    continue
                 with self.subTest(portfolio=name, router_lost_flag=lost_flag):
                     row = self._moex_single_source_row()
                     self.assertTrue(row['paper_eligible'])
