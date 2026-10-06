@@ -38,14 +38,18 @@ def data():
         out['candles'][tf]={'instrument_uid':uid,'status':'OK','candles':bars,'loaded_at':NOW.isoformat()}
     return out
 
-def observed_evidence(asset,direction,event_id,entered):
+def observed_evidence(asset,direction,event_id,entered,timeframe='1m'):
     identity={'asset':asset,'key':'TEST_NATIVE:'+asset,'primary_source':'TEST_NATIVE',
               'contract_id':asset+'-EXACT','version':'R80_SOURCE_LOCK'}
-    opening=entered-timedelta(minutes=2)
-    known=opening-timedelta(minutes=1)
-    confirmed=opening+timedelta(minutes=1)
+    seconds={'1m':60,'5m':300,'1h':3600}[timeframe]
+    opening=entered-timedelta(seconds=2*seconds)
+    known=opening-timedelta(seconds=seconds)
+    confirmed=opening+timedelta(seconds=seconds)
     event={'event_id':event_id,'event_type':'SAME_TIMEFRAME_STRUCTURAL_BREAKOUT',
-           'asset':asset,'direction':direction,'timeframe':'1m','confirmation':'CLOSED_1m_BAR',
+           'asset':asset,'direction':direction,'timeframe':timeframe,
+           'confirmation':'CLOSED_'+timeframe+'_BAR',
+           'atr_timeframe':timeframe,'stop_timeframe':timeframe,'target_timeframe':timeframe,
+           'source_identity':copy.deepcopy(identity),
            'breakout_bar_at':opening.isoformat(),'signal_at':confirmed.timestamp(),
            'confirmed_at':confirmed.isoformat(),'level_available_at':known.isoformat(),
            'stop_level_available_at':known.isoformat(),'atr_observed_until':known.isoformat()}
@@ -151,7 +155,7 @@ class RoleTests(unittest.TestCase):
 
 class EvidenceTests(unittest.TestCase):
     def trade(self,name='Champion',key='EVENT1',net=30,epoch=None,minute=0):
-        return {'trade_id':name+key+str(minute),'portfolio_name':name,'asset':'ETH','direction':'LONG','status':'CLOSED',
+        return {'trade_id':name+key+str(minute),'portfolio_name':name,'asset':'ETH','direction':'LONG','status':'CLOSED','horizon':'1m',
                 'opened_at':(NOW-timedelta(minutes=10+minute)).isoformat(),'closed_at':(NOW-timedelta(minutes=minute)).isoformat(),
                 'gross_pnl_rub':100,'fees_rub':60,'funding_rub':10,'net_pnl_rub':net,
                 'entry_notional_rub':10000,'entry_order_count':1,
@@ -210,7 +214,8 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(text.count('VSQ.entry_metadata('),1)
         fragment=text[text.index('VSQ.entry_metadata(')-400:text.index('VSQ.entry_metadata(')]
         self.assertIn('trade_id=f"{name}:{asset}:',fragment)
-        row={'asset':'ETH','research_decision':'SHORT',
+        row={'asset':'ETH','research_decision':'SHORT','horizon':'1m',
+             'source_names':{'primary':'TEST_NATIVE'},'contract':{'symbol':'ETH-EXACT'},
              'trade_plan':{'entry_event_snapshot':observed_evidence('ETH','SHORT','STF_new-event',NOW)['entry_event_snapshot']},
              '_canonical_admission':{'trend_event':{'event_id':'STF_new-event'}}}
         stamp=Q.entry_metadata(row,NOW)
@@ -349,6 +354,32 @@ class EvidenceTests(unittest.TestCase):
         trade=self.trade();trade['payload'].pop('entry_event_snapshot')
         self.assertFalse(Q.idea_key(trade)[1])
         self.assertEqual(Q.review(trade)['evidence_exclusion'],'UNVERIFIED_EVENT')
+
+
+    def test_verified_event_requires_exact_timeframe_closed_bar_and_entry_source(self):
+        fields=[('timeframe','5m'),('confirmation','CLOSED_5m_BAR'),
+                ('confirmation','CLOSED_FAKE'),('atr_timeframe','5m'),
+                ('stop_timeframe','5m'),('target_timeframe','5m')]
+        for field,value in fields:
+            with self.subTest(field=field,value=value):
+                trade=self.trade();trade['payload']['entry_event_snapshot'][field]=value
+                self.assertFalse(Q.idea_key(trade)[1])
+                self.assertEqual(Q.review(trade)['evidence_exclusion'],'UNVERIFIED_EVENT')
+        trade=self.trade();trade['horizon']='5m'
+        self.assertFalse(Q.idea_key(trade)[1])
+        trade=self.trade();event=trade['payload']['entry_event_snapshot']
+        opening=datetime.fromisoformat(event['breakout_bar_at'])
+        event['signal_at']=(opening+timedelta(seconds=30)).timestamp()
+        event['confirmed_at']=(opening+timedelta(seconds=30)).isoformat()
+        self.assertFalse(Q.idea_key(trade)[1])
+        for mutate in ('different_contract','missing_source'):
+            trade=self.trade();event=trade['payload']['entry_event_snapshot']
+            if mutate=='different_contract':
+                event['source_identity']['contract_id']='OTHER-CONTRACT'
+            else:
+                event.pop('source_identity')
+            with self.subTest(mutate=mutate):
+                self.assertFalse(Q.idea_key(trade)[1])
 
 
 class PromotionEvidenceIntegrityTests(unittest.TestCase):

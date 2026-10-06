@@ -9,14 +9,18 @@ from contextlib import contextmanager
 import veritas_strategy_quality as Q
 import veritas_canonical_constitution as CTC
 
-def observed_evidence(asset,direction,event_id,entered):
+def observed_evidence(asset,direction,event_id,entered,timeframe='1m'):
     identity={'asset':asset,'key':'TEST_NATIVE:'+asset,'primary_source':'TEST_NATIVE',
               'contract_id':asset+'-EXACT','version':'R80_SOURCE_LOCK'}
-    opening=entered-timedelta(minutes=2)
-    known=opening-timedelta(minutes=1)
-    confirmed=opening+timedelta(minutes=1)
+    seconds={'1m':60,'5m':300,'1h':3600}[timeframe]
+    opening=entered-timedelta(seconds=2*seconds)
+    known=opening-timedelta(seconds=seconds)
+    confirmed=opening+timedelta(seconds=seconds)
     event={'event_id':event_id,'event_type':'SAME_TIMEFRAME_STRUCTURAL_BREAKOUT',
-           'asset':asset,'direction':direction,'timeframe':'1m','confirmation':'CLOSED_1m_BAR',
+           'asset':asset,'direction':direction,'timeframe':timeframe,
+           'confirmation':'CLOSED_'+timeframe+'_BAR',
+           'atr_timeframe':timeframe,'stop_timeframe':timeframe,'target_timeframe':timeframe,
+           'source_identity':copy.deepcopy(identity),
            'breakout_bar_at':opening.isoformat(),'signal_at':confirmed.timestamp(),
            'confirmed_at':confirmed.isoformat(),'level_available_at':known.isoformat(),
            'stop_level_available_at':known.isoformat(),'atr_observed_until':known.isoformat()}
@@ -49,7 +53,7 @@ class QualitySQLTests(unittest.TestCase):
             c.execute('''CREATE TABLE paper_orders (trade_id text,side text,notional_rub float8)''')
             for key,epoch,net in [('legacy',None,-150),('current',CTC.STRATEGY_EPOCH,30)]:
                 opened='2026-10-06T10:00:00Z' if not epoch else '2026-10-06T21:00:00Z'
-                p={**observed_evidence('ETH','LONG','STF_'+key,datetime.fromisoformat(opened.replace('Z','+00:00'))),
+                p={**observed_evidence('ETH','LONG','STF_'+key,datetime.fromisoformat(opened.replace('Z','+00:00')),'1h'),
                    'mfe_pct':2.,'mae_pct':-.5,'idea_id':key,'idea_id_verified':True}
                 if epoch:p.update(strategy_epoch=epoch,strategy_entry_sha='immutable-entry-sha')
                 c.execute('''INSERT INTO paper_trades VALUES

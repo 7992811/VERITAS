@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import veritas_canonical_constitution as CTC
 import veritas_release as RELEASE
 import veritas_trade_audit as AUDIT
+import veritas_price_source as VPS
 
 VERSION='STRATEGY_QUALITY_V2'
 BASELINE_SHA='73266d93a6a9165496ec0b9d2336ab8d04c051ed'
@@ -58,9 +59,11 @@ def entry_metadata(row,opened_at):
     observed=row.get('market_observed_at') or row.get('observed_at') or opened_at
     idea_fields={'asset':row.get('asset'),'direction':row.get('research_decision') or row.get('decision'),
                  'event':event_id}
+    source_lock=VPS.identity(row.get('asset'),VPS.quote_from_row(row))
     _,verified=AUDIT.observed_event({'asset':row.get('asset'),
         'direction':row.get('research_decision') or row.get('decision'),'opened_at':opened_at,
-        'payload':{'idea_event_id':event_id,'entry_event_snapshot':event}})
+        'horizon':row.get('horizon') or plan.get('horizon'),
+        'payload':{'idea_event_id':event_id,'entry_event_snapshot':event,'price_source_lock':source_lock}})
     if not verified:
         # Conservative grouping of simultaneous orders is an estimate, not a
         # claim that unrelated trades are statistically independent observations.

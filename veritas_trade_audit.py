@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import math
 import veritas_price_source as VPS
+from veritas_timeframe_structure import TIMEFRAMES
 
 
 def number(value):
@@ -52,10 +53,21 @@ def observed_event(trade):
         return event_id,False
     if declared and declared!=event_id:
         return event_id,False
+    timeframe=event.get('timeframe')
+    seconds=TIMEFRAMES.get(timeframe) if isinstance(timeframe,str) else None
     if (event.get('event_type')!='SAME_TIMEFRAME_STRUCTURAL_BREAKOUT'
-            or not str(event.get('confirmation') or '').startswith('CLOSED_')
+            or seconds is None or timeframe!=trade.get('horizon')
+            or event.get('confirmation')!='CLOSED_'+timeframe+'_BAR'
+            or any(event.get(field)!=timeframe for field in
+                   ('atr_timeframe','stop_timeframe','target_timeframe'))
             or event.get('asset')!=trade.get('asset')
             or event.get('direction')!=trade.get('direction')):
+        return event_id,False
+    expected=p.get('price_source_lock') or p.get('entry_execution_source_identity')
+    actual=event.get('source_identity')
+    if (not isinstance(expected,dict) or not isinstance(actual,dict)
+            or not expected.get('key') or expected.get('asset')!=trade.get('asset')
+            or actual.get('asset')!=trade.get('asset') or not VPS.same(expected,actual)):
         return event_id,False
     opening,signal,confirmed,entered=(_timestamp(value) for value in
         (event.get('breakout_bar_at'),event.get('signal_at'),event.get('confirmed_at'),trade.get('opened_at')))
@@ -63,7 +75,7 @@ def observed_event(trade):
            ('level_available_at','stop_level_available_at','atr_observed_until')]
     if any(value is None for value in (opening,signal,confirmed,entered,*known)):
         return event_id,False
-    return event_id,bool(opening<signal<=confirmed<=entered and all(value<=opening for value in known))
+    return event_id,bool(opening+seconds<=signal<=confirmed<=entered and all(value<=opening for value in known))
 
 
 def _source_exclusion(trade,p):

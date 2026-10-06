@@ -92,6 +92,8 @@ class LearningEvidenceTests(unittest.TestCase):
                 'entry_event_snapshot':{
                     'event_id':'STF_OBSERVED_FIXTURE','event_type':'SAME_TIMEFRAME_STRUCTURAL_BREAKOUT',
                     'asset':'BTC','direction':'LONG','timeframe':'1m','confirmation':'CLOSED_1m_BAR',
+                    'atr_timeframe':'1m','stop_timeframe':'1m','target_timeframe':'1m',
+                    'source_identity':{'asset':'BTC','key':'BINANCE:BTCUSDT','primary_source':'Binance spot','contract_id':'BTCUSDT'},
                     'breakout_bar_at':'2026-10-03T09:58:00+00:00','signal_at':'2026-10-03T09:59:00+00:00',
                     'confirmed_at':'2026-10-03T09:59:00+00:00','level_available_at':'2026-10-03T09:57:00+00:00',
                     'stop_level_available_at':'2026-10-03T09:57:00+00:00','atr_observed_until':'2026-10-03T09:57:00+00:00'}})
