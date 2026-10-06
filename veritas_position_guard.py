@@ -10,6 +10,7 @@ import time
 
 import httpx
 import veritas_costs as VC
+import veritas_canonical_constitution as CTC
 import veritas_execution as VX
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
@@ -429,7 +430,7 @@ def profit_lock_stop(z, quote, commission=VC.COMMISSION_RATE, fees_paid_rub=0.0,
     paid_cost=fees_paid+funding-realized
     current_required=paid_cost+exit_fee_now+slippage_now+min_net_rub
     required_activation_pct=100.0*current_required/max(entry_notional,1e-9)
-    activation_pct=max(0.25,required_activation_pct)
+    activation_pct=max(100.0*float(CTC.LIFECYCLE_POLICY['profit_lock_activation_floor_pct']),required_activation_pct)
     if current_pct<activation_pct or gross_current<current_required:
         return None
 
@@ -552,7 +553,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             # reject a stale quote for the final exit but still update path/profit
             # protection from it, and protective=True allowed observations up to
             # one hour old. Fail closed before touching the position.
-            q_quality = quote_gate((q or {}).get('observed_at'), now=now, protective=True)
+            q_quality = VX.paper_quote_time_gate(dict(q or {},asset=z.get('asset')),now=now,protective=True)
             if (not (q or {}).get('source_gate_pass') or not q_quality.get('eligible')
                     or VX.is_proxy_price(z['asset'],q) or not quote_matches_position(z,q)):
                 continue
