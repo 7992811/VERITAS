@@ -5167,6 +5167,7 @@ def canonical_report(pg_connect):
 _candidate_book_v84=VCR.candidate_book
 _best_impulse_by_asset=VCR.impulse_candidate_book
 _v90_aggressive_candidate_book=VCR.aggressive_candidate_book
+_currency_candidate_book=VCR.currency_candidate_book
 _v90_trend_transition_candidate_book=VCR.transition_candidate_book
 _desired_fraction=_canonical_desired_fraction
 
@@ -5183,6 +5184,7 @@ FINAL_REPORT=canonical_report
 _vp_base._candidate_book_v84=VCR.candidate_book
 _vp_base._best_impulse_by_asset=VCR.impulse_candidate_book
 _vp_base._v90_aggressive_candidate_book=VCR.aggressive_candidate_book
+_vp_base._currency_candidate_book=VCR.currency_candidate_book
 _vp_base._v90_trend_transition_candidate_book=VCR.transition_candidate_book
 _vp_base._desired_fraction=_canonical_desired_fraction
 _vp_base._signal_first_admission=FINAL_SIGNAL_FIRST_ADMISSION
@@ -5195,7 +5197,7 @@ _vp_base._VERITAS_RUNTIME=__import__(__name__)
 
 _PRODUCTION_AUTHORITY_NAMES={
     '_candidate_book_v84','_best_impulse_by_asset','_v90_aggressive_candidate_book',
-    '_v90_trend_transition_candidate_book','_desired_fraction',
+    '_currency_candidate_book','_v90_trend_transition_candidate_book','_desired_fraction',
     '_signal_first_admission','_open_or_add','_close_or_reduce','_step_one','step_all','report'
 }
 for _compat_name,_compat_value in list(globals().items()):
