@@ -105,7 +105,7 @@ PORTFOLIO_POLICIES = {
     },
     "Aggressive": {
         "mode":"AGGRESSIVE","threshold":0.62,"strong_threshold":0.74,"min_independent":2,
-        "initial_normal":0.50,"initial_super":1.00,"probe_normal":0.50,"probe_super":1.00,
+        "initial_normal":0.50,"initial_super":1.00,"probe_normal":0.50,"probe_super":0.50,
         "max_single_asset_fraction":5.00,"max_gross":5.00,"leverage_limit":5.00,
         "hard_drawdown":0.20,"position_step":0.05,
         "scale_ladder":(0.50,0.75,1.00,1.25,1.50,2.00,3.00,4.00,5.00),
