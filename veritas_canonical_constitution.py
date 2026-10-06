@@ -69,6 +69,8 @@ HARD_VETOES = frozenset({
     "STOP_RISK_CAP_EXCEEDED","R79_STOP_RISK_LIMIT","PORTFOLIO_HARD_DRAWDOWN_STOP",
     "EVENT_REUSE_WITHOUT_NEW_CONFIRMATION","R72_EVENT_ALREADY_TRADED",
     "R72_EVENT_ID_MISSING","R72_EVENT_HISTORY_UNAVAILABLE",
+    "LOCAL_EXECUTION_CONFIRMATION_REQUIRED","LOCAL_EXECUTION_DIRECTION_CONFLICT",
+    "CURRENCY_MTF_DIRECTION_CONFLICT",
 })
 
 SOFT_VETOES = frozenset({
@@ -103,7 +105,7 @@ PORTFOLIO_POLICIES = {
     },
     "Aggressive": {
         "mode":"AGGRESSIVE","threshold":0.62,"strong_threshold":0.74,"min_independent":2,
-        "initial_normal":0.50,"initial_super":1.00,"probe_normal":0.10,"probe_super":0.25,
+        "initial_normal":0.50,"initial_super":1.00,"probe_normal":0.50,"probe_super":1.00,
         "max_single_asset_fraction":5.00,"max_gross":5.00,"leverage_limit":5.00,
         "hard_drawdown":0.20,"position_step":0.05,
         "scale_ladder":(0.50,0.75,1.00,1.25,1.50,2.00,3.00,4.00,5.00),
@@ -225,6 +227,19 @@ SIGNAL_POLICY = {
     "normal_signal_can_probe_below_rr_floor_if_net_positive": True,
     "cost_negative_probe_allowed": False,
     "actual_price_anti_chase_remains_hard": True,
+}
+
+LIFECYCLE_POLICY = {
+    "take_profit_is_partial_when_position_allows": True,
+    "default_tp_runner_ratio": 0.50,
+    "aggressive_tp_runner_ratio": 0.60,
+    "minimum_position_step": 0.05,
+    "profit_lock_activation_floor_pct": 0.20,
+    "principle": (
+        "The first take-profit harvests part of a qualifying position and keeps a "
+        "structural runner. A full close is reserved for a minimum-size position "
+        "or an actual thesis/risk exit."
+    ),
 }
 
 SETUP_GRADES = {
