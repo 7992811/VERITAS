@@ -205,4 +205,74 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(r['evidence_status'],'INCOMPLETE_OR_SOURCE_UNVERIFIED')
         self.assertFalse(r['parameter_changes_applied'])
 
+
+class OwnerAuditAdmissionRegressionTests(unittest.TestCase):
+    """Current OHLC fixtures exercise complete gates; no admission mocks."""
+
+    def test_owner_cost_buffer_is_one_point_one_in_plans_and_fills(self):
+        self.assertAlmostEqual(E.minimum_expected_move_pct(.0016), .0019)
+        self.assertAlmostEqual(E.minimum_expected_move_pct(.003), .0033)
+        self.assertAlmostEqual(C.COST_POLICY['entry_cost_multiple'],
+                               C.COST_POLICY['cost_buffer_multiple'])
+
+    @staticmethod
+    def pair(name, blocker='HARD_INVALIDATION'):
+        from test_veritas_timeframe_policy import structural_row
+        clock = datetime.now(timezone.utc)
+        high_tf, low_tf = ('1h', '4h') if name == 'Champion' else ('5m', '1h')
+        high = structural_row(clock, timeframe=high_tf)
+        lower = structural_row(clock, timeframe=low_tf)
+        high.update(confidence=.99, signal_tier='SUPER_LONG')
+        lower.update(confidence=.62, signal_tier='LONG')
+        if blocker == 'HARD_INVALIDATION':
+            high['trade_plan']['trade_integrity'] = {
+                'hard_invalidation': True, 'hard_reasons': ['THESIS_INVALIDATION']}
+        elif blocker == 'PRIMARY_SOURCE_GATE_FAILED':
+            high['source_gate_pass'] = False
+        return clock, high, lower
+
+    def test_blocked_top_rank_cannot_hide_an_admissible_timeframe(self):
+        import veritas_canonical_runtime as runtime
+        for name in ('Impulse', 'Aggressive', 'Champion', 'Challenger'):
+            with self.subTest(portfolio=name):
+                clock, blocked, eligible = self.pair(name)
+                policy = C.runtime_portfolio_policy(name)
+                rows = [blocked, eligible]
+                rejected = runtime.evaluate(runtime._prepare_candidate(blocked, rows),
+                                            policy, 0.0, clock)
+                accepted = runtime.evaluate(runtime._prepare_candidate(eligible, rows),
+                                            policy, 0.0, clock)
+                self.assertEqual(rejected['reason'], 'HARD_INVALIDATION')
+                self.assertTrue(accepted['open'], accepted)
+                snapshots = copy.deepcopy(rows)
+                chosen = runtime.transition_candidate_book(
+                    rows, runtime.candidate_book(rows), policy['mode'])['NQ']
+                self.assertEqual(chosen['horizon'], eligible['horizon'])
+                trace = chosen['_canonical_route_trace']
+                self.assertEqual(trace[0]['reason'], 'HARD_INVALIDATION')
+                self.assertFalse(trace[0]['open'])
+                self.assertTrue(trace[-1]['open'])
+                self.assertEqual(rows, snapshots)
+
+    def test_source_failure_does_not_hide_independent_valid_setup(self):
+        import veritas_canonical_runtime as runtime
+        clock, blocked, eligible = self.pair('Aggressive', 'PRIMARY_SOURCE_GATE_FAILED')
+        policy = C.runtime_portfolio_policy('Aggressive')
+        chosen = runtime.transition_candidate_book(
+            [blocked, eligible], {}, policy['mode'])['NQ']
+        self.assertEqual(chosen['horizon'], eligible['horizon'])
+        self.assertFalse(chosen['_canonical_route_trace'][0]['open'])
+        self.assertTrue(runtime.evaluate(chosen, policy, 0.0, clock)['open'])
+
+    def test_all_blocked_candidates_keep_actual_failure_and_never_open(self):
+        import veritas_canonical_runtime as runtime
+        clock, high, lower = self.pair('Aggressive')
+        lower['paper_eligible'] = False
+        policy = C.runtime_portfolio_policy('Aggressive')
+        chosen = runtime.transition_candidate_book([high, lower], {}, policy['mode'])['NQ']
+        self.assertEqual(chosen['horizon'], high['horizon'])
+        self.assertFalse(any(item['open'] for item in chosen['_canonical_route_trace']))
+        self.assertEqual(runtime.evaluate(chosen, policy, 0.0, clock)['reason'],
+                         'HARD_INVALIDATION')
+
 if __name__=='__main__':unittest.main()
