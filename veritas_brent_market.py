@@ -65,6 +65,46 @@ def _native_rows(history, clock):
     return mapping, None
 
 
+def _observed_partials(history, clock):
+    """Keep provider-observed unfinished OHLC only as invalidation evidence."""
+    expected = _identity()
+    result = {}
+    end = clock.timestamp()
+    for tf in NATIVE_TIMEFRAMES:
+        by_time, conflicts = {}, set()
+        for row in ((history or {}).get("forming_bars_by_timeframe") or {}).get(tf) or []:
+            if not isinstance(row, dict):
+                continue
+            identity = row.get("source_identity")
+            if (row.get("timeframe") != tf or row.get("raw_label") != LABEL
+                    or not VPS.same(expected, identity) or identity.get("contract_id")
+                    or row.get("finalized") is not False or row.get("synthetic")
+                    or row.get("price_type") != "Last"):
+                continue
+            stamp = TS.timestamp(row.get("ts"))
+            observed = TS.timestamp(row.get("observed_at"))
+            until = TS.timestamp(row.get("end_ts"))
+            if (stamp is None or observed is None or until is None
+                    or until != stamp + TS.timeframe_seconds(tf)
+                    or not stamp <= observed <= end < until):
+                continue
+            values = {key: _price(row.get(key)) for key in ("open", "high", "low", "close")}
+            if (any(value is None for value in values.values())
+                    or values["low"] > min(values["open"], values["close"])
+                    or values["high"] < max(values["open"], values["close"])
+                    or values["low"] > values["high"]):
+                continue
+            current = {**row, **values, "ts":stamp, "observed_at":observed,
+                       "available_at":until, "end_ts":until, "volume":None,
+                       "volume_available":False, "finalized":False}
+            if stamp in by_time and any(by_time[stamp][key] != values[key] for key in values):
+                conflicts.add(stamp)
+            else:
+                by_time.setdefault(stamp, current)
+        result[tf] = [by_time[t] for t in sorted(by_time) if t not in conflicts][-1:]
+    return result
+
+
 def build_market(quote, history, now=None):
     """Build one source-locked raw bundle from observed data only.
 
@@ -75,6 +115,7 @@ def build_market(quote, history, now=None):
     q = dict(quote or {})
     expected = _identity()
     mapping, history_error = _native_rows(history, clock)
+    partials = {} if history_error else _observed_partials(history, clock)
     actual = VPS.identity(ASSET, q)
     same_quote = bool(q.get("raw_label") == LABEL and VPS.same(expected, actual)
                       and not (actual or {}).get("contract_id"))
@@ -129,6 +170,7 @@ def build_market(quote, history, now=None):
         "structure_intraday_bars": mapping.get("5m") or [],
         "structure_minute_bars": mapping.get("1m") or [],
         "structure_source_identity": expected, "structure_bars_by_timeframe": mapping,
+        "structure_forming_bars_by_timeframe": partials,
         "structure_history_status": (history or {}).get("status_by_timeframe") or {},
         "structure_history_error": history_error,
         "native_source_history_attached": True,

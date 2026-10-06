@@ -19,6 +19,7 @@ def attach(raw, now=None):
     clock = datetime.now(timezone.utc) if now is None else now
     r.pop('_same_tf_context_cache', None)
     attached_mapping = r.get('structure_bars_by_timeframe') or {}
+    attached_identity = r.get('structure_source_identity')
     identity = VPS.identity(asset, r)
     r['structure_source_identity'] = identity
     r['structure_bars_by_timeframe'] = {}
@@ -27,8 +28,9 @@ def attach(raw, now=None):
     mapping = {}
     if identity['key'].startswith('PROFINANCE:'):
         from veritas_profinance_history import fetch_history_bundle
-        bundle = (dict(source_identity=r.get('structure_source_identity'),
+        bundle = (dict(source_identity=attached_identity,
                        bars_by_timeframe=attached_mapping,
+                       forming_bars_by_timeframe=r.get('structure_forming_bars_by_timeframe') or {},
                        status_by_timeframe=r.get('structure_history_status'))
                   if r.get('native_source_history_attached')
                   else fetch_history_bundle(asset=asset, now=clock))

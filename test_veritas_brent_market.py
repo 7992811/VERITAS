@@ -174,6 +174,78 @@ class BrentNativeSourceTests(TestCase):
         self.assertFalse(r["paper_eligible"])
         self.assertEqual(r["source_names"]["primary"], "ProFinance")
 
+    def _breakout_with_observed_partial(self, hit):
+        h = history()
+        step = 300
+        signal_at = int(NOW.timestamp()//step)*step
+        begin = signal_at-33*step
+        rows = [candle("5m", begin+i*step, 100.) for i in range(32)]
+        for row in rows:
+            row.update(open=100., high=100.5, low=99.5, close=100.)
+        rows[24]["high"] = 101.
+        rows[27]["low"] = 99.
+        rows.append({**candle("5m", begin+32*step, 101.2),
+                     "open":100., "high":101.3, "low":100., "close":101.2})
+        h["bars_by_timeframe"]["5m"] = rows
+        context = TS.build_context(rows, "5m", NOW, asset="BRENT", source_identity=IDENTITY)
+        self.assertTrue(TS.entry_gate(context, 101.2, "LONG", NOW)["eligible"], context)
+        event = context["event"]
+        partial = {**candle("5m", signal_at, 101.2),
+                   "open":101.2, "low":101., "high":101.3,
+                   "finalized":False, "observed_at":NOW.timestamp()}
+        if hit == "STOP":
+            partial["low"] = event["stop_price"]-.05
+        else:
+            partial["high"] = event["target_price"]+.05
+        h["forming_bars_by_timeframe"] = {"5m":[partial]}
+        return h, event
+
+    def test_observed_partial_stop_or_target_spends_event_even_after_quote_returns(self):
+        import veritas_timeframe_data as TFD
+        for hit in ("STOP", "TARGET"):
+            with self.subTest(hit=hit):
+                h, original_event = self._breakout_with_observed_partial(hit)
+                before = deepcopy(h)
+                raw = B.build_market(quote(price=101.2), h, NOW)
+                self.assertEqual(h, before)
+                self.assertEqual(len(raw["structure_bars_by_timeframe"]["5m"]), 33)
+                self.assertEqual(len(raw["structure_forming_bars_by_timeframe"]["5m"]), 1)
+                with patch("veritas_native_daily.fetch_native_daily", return_value={"bars":[]}), \
+                     patch("veritas_profinance_history.fetch_history_bundle") as repeated_fetch:
+                    attached = TFD.attach(raw, NOW)
+                repeated_fetch.assert_not_called()
+                context = TS.build_context(attached["structure_bars_by_timeframe"]["5m"],
+                                           "5m", NOW, asset="BRENT", source_identity=IDENTITY)
+                self.assertEqual(context["bars"], 33)
+                self.assertEqual(context["event"]["event_id"], original_event["event_id"])
+                gate = TS.entry_gate(context, 101.2, "LONG", NOW)
+                self.assertFalse(gate["eligible"])
+                self.assertEqual(gate["reason"], "SAME_TF_"+hit+"_ALREADY_REACHED")
+
+    def test_invalid_or_unobserved_partials_cannot_supply_invalidation_evidence(self):
+        h, _ = self._breakout_with_observed_partial("STOP")
+        alterations = [
+            {"observed_at":None}, {"observed_at":NOW.timestamp()+1},
+            {"finalized":True}, {"synthetic":True}, {"raw_label":"WTI"},
+            {"timeframe":"1h"}, {"source_identity":{"key":"MOEX:BRENT"}},
+            {"high":99.}, {"low":float("nan")}, {"price_type":"Bid"},
+        ]
+        for alteration in alterations:
+            with self.subTest(alteration=alteration):
+                modified = deepcopy(h)
+                modified["forming_bars_by_timeframe"]["5m"][0].update(alteration)
+                raw = B.build_market(quote(price=101.2), modified, NOW)
+                self.assertEqual(raw["structure_forming_bars_by_timeframe"]["5m"], [])
+
+    def test_conflicting_partial_observations_are_excluded(self):
+        h, _ = self._breakout_with_observed_partial("TARGET")
+        duplicate = deepcopy(h["forming_bars_by_timeframe"]["5m"][0])
+        duplicate["high"] += .01
+        h["forming_bars_by_timeframe"]["5m"].append(duplicate)
+        raw = B.build_market(quote(price=101.2), h, NOW)
+        self.assertEqual(raw["structure_forming_bars_by_timeframe"]["5m"], [])
+
+
 
 class BrentHeldSourceTests(TestCase):
     def setUp(self):

@@ -18559,6 +18559,10 @@ def _v90_compact_decision_log(z):
         'plan_eligible':p.get('eligible'),'plan_reason':p.get('reason'),
         'structural_policy_version':p.get('structural_policy_version'),'entry_event_id':p.get('entry_event_id'),
         'timeframe_entry_context':p.get('timeframe_entry_context'),
+        'daily_ma':_v90_small_dict(r.get('structural_levels'),(
+            'daily_ma_status','sma18','sma50','sma200','ma_timeframe','ma_source_identity','ma_daily_asof')),
+        'daily_ma_periods':{k:_v90_small_dict(x,('status','sample_count','required_count'))
+            for k,x in (((r.get('structural_levels') or {}).get('daily_ma_context') or {}).get('periods') or {}).items()},
     }
 
 

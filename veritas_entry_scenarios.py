@@ -45,14 +45,21 @@ def daily_features(raw, now=None):
 def _assess(context, raw, horizon, clock):
     import veritas_timeframe_policy as TFP
     import veritas_execution as VX
+    import veritas_price_source as VPS
+    quote = VPS.quote_from_row(raw)
+    price = quote.get("price") if quote.get("price") is not None else raw.get("price")
     event = context.get("event") or {}
     direction = event.get("direction")
-    row = dict(raw, horizon=horizon, research_decision=direction,
+    row = dict(raw, price=price, horizon=horizon, research_decision=direction,
                timeframe_entry_context=context, trade_plan={})
-    timing = TFP.entry_gate(row, raw.get("price"), direction, clock)
+    timing = TFP.entry_gate(row, price, direction, clock)
     economics = {}
     if timing.get("eligible"):
-        plan = TFP.prepare_row(row, now=clock)["trade_plan"]
+        plan = TFP.prepare_row(row, price=price, now=clock)["trade_plan"]
+        for key in ("best_bid", "best_ask", "spread_bps"):
+            value = quote.get(key) if quote.get(key) is not None else raw.get(key)
+            if value is not None:
+                plan[key] = value
         economics = VX.economics_gate(raw.get("asset"), dict(plan, direction=direction))
         fill = economics.get("modeled_entry_fill")
         if fill:
@@ -72,7 +79,8 @@ def _assess(context, raw, horizon, clock):
                 "timing_eligible": bool(timing.get("eligible")),
                 "economics_blockers": list(economics.get("blockers") or []),
                 "economics_eligible": bool(economics.get("eligible")),
-                "net_reward_risk": economics.get("net_reward_risk")}
+                "net_reward_risk": economics.get("net_reward_risk"),
+                "modeled_round_trip_cost_pct": economics.get("modeled_round_trip_cost_pct")}
     return rank, evidence
 
 

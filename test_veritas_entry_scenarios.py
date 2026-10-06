@@ -86,6 +86,19 @@ class EntryScenarioIntegrationTests(unittest.TestCase):
         self.assertTrue(selected["entry_scenarios"][0]["timing_eligible"])
         self.assertEqual(selected["selected_scenario"],"SAME_TIMEFRAME_STRUCTURAL_BREAKOUT")
 
+    def test_scenario_selection_uses_observed_book_for_fill_and_costs(self):
+        row=structural_row(self.clock)
+        context=row["timeframe_entry_context"]
+        plain,_=S._assess(context,row,"5m",self.clock)
+        self.assertEqual(plain[0],1)
+        quote=dict(row,best_bid=100.8,best_ask=102.,spread_bps=118.)
+        rank,evidence=S._assess(context,quote,"5m",self.clock)
+        self.assertEqual(rank[0],0,evidence)
+        self.assertTrue(evidence["timing_eligible"])
+        self.assertFalse(evidence["economics_eligible"])
+        self.assertIn("SAME_TF_ENTRY_EXTENDED",evidence["economics_blockers"])
+        self.assertGreater(evidence["modeled_round_trip_cost_pct"],.0016)
+
     def test_native_rebound_reaches_all_five_canonical_portfolios_in_both_directions(self):
         for name in CTC.PORTFOLIO_ORDER:
             for direction in ("LONG","SHORT"):
@@ -108,6 +121,16 @@ class EntryScenarioIntegrationTests(unittest.TestCase):
                     self.assertEqual(decision["prepared_plan"]["stop_timeframe"],tf)
                     self.assertEqual(decision["prepared_plan"]["atr_timeframe"],tf)
                     self.assertTrue(UT.verify_entry_trace(UT.entry_trace(context,name)))
+
+    def test_attached_bundle_cannot_replace_its_original_source_identity(self):
+        raw=rebound_raw(self.clock)
+        raw.update(native_source_history_attached=True,
+                   structure_source_identity=VPS.identity("BRENT",{"source":"MOEX ISS BRX6","contract_id":"BRX6"}))
+        with patch("veritas_profinance_history.fetch_history_bundle") as remote:
+            attached=TFD.attach(raw,self.clock)
+        remote.assert_not_called()
+        self.assertEqual(attached["structure_history_error"],"SAME_TF_SOURCE_MISMATCH")
+        self.assertEqual(attached["structure_bars_by_timeframe"],{})
 
     def test_refresh_keeps_rebound_id_and_cannot_revive_expired_signal(self):
         raw=rebound_raw(self.clock)

@@ -278,19 +278,29 @@ class DailyMAReboundTests(unittest.TestCase):
         self.assertEqual((rows,daily),before)
 
     def test_short_native_daily_session_changes_cache_at_actual_end(self):
-        daily = daily_history()
-        # Exchange daily bars open at09:00 and close atnext00:00 (15hours).
-        daily = [dict(b,ts=b["ts"]+9*3600) for b in daily]
-        rows,daily,now = example(daily=daily)
+        source = {"key":"MOEX:CNYRUBF", "asset":"CNYRUBF", "contract_id":"CNYRUBF"}
+        # Native MOEX interval24 may cover a15-hour exchange session. The
+        # provider's inclusive23:59:59 end becomes next00:00 in closed bars.
+        daily = [dict(b, ts=b["ts"]+9*3600, native_interval=24,
+                      provider_end_ts=b["end_ts"]-1,
+                      source_identity=deepcopy(source)) for b in daily_history()]
+        rows,_,_ = example()
         for b in rows:
             b["ts"] += 22*3600
             b["available_at"] += 22*3600
-        daily.append(dict(daily[-1],ts=START+9*3600,end_ts=START+86400,
+            b["source_identity"] = deepcopy(source)
+        daily.append(dict(daily[-1], ts=START+9*3600, end_ts=START+86400,
+                          provider_end_ts=START+86400-1,
                           available_at=START+86400))
-        r = build(rows,daily,rows[-1]["available_at"])
+        r = M.build_context(rows, "5m", rows[-1]["available_at"],
+                            daily_bars=daily, asset="CNYRUBF", source_identity=source,
+                            ma_config={"periods":(50,)})
         self.assertIsNotNone(r["event"],r)
         self.assertEqual(r["daily_snapshot_builds"],2)
-        self.assertEqual(r["event"]["ma_proof"]["daily_asof"],START+86400)
+        proof = r["event"]["ma_proof"]
+        self.assertEqual(proof["daily_asof"],START+86400)
+        self.assertLessEqual(proof["daily_known_at"],proof["episode_start_at"])
+        self.assertTrue(M.validate_event(r["event"],source)["eligible"])
 
     def test_cached_daily_snapshot_expires_before_new_touch_without_daily_sort(self):
         rows,daily,now = example()
