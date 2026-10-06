@@ -124,16 +124,18 @@ def apply_trailing(c, name, position, summary, quote, now):
     candidate = trailing_candidate(position, summary, quote, now)
     if not candidate.get("eligible"):
         return candidate
-    sign = 1 if position.get("direction") == "LONG" else -1
     try:
         protection = VPP.assess(c, position, stop=candidate["stop_price"],
                                 price=candidate["price"], now=now)
     except Exception:
-        protection = {}
-    if sign * (candidate["stop_price"] - candidate["entry_price"]) >= 0:
-        net = VPP.number((protection.get("net_profit_protection") or {}).get("net_at_stop_rub"))
-        if net is None or net <= 0:
-            return dict(candidate, eligible=False, reason="SAME_TF_NET_PROTECTION_NOT_CONFIRMED")
+        # Geometry, source, freshness and no-widening already passed. Missing
+        # accounting must not retain a larger structural loss, and must never
+        # leave a previous claim of protected net profit active.
+        protection = VPP.evaluate(position, None, stop=candidate["stop_price"],
+                                  price=candidate["price"], now=now)
+    # Structural risk reduction is valid even if this tighter stop still exits
+    # at a small net loss after costs. VPP alone labels verified profit; crossing
+    # the entry price is not a condition for moving a confirmed same-TF stop.
     event = dict(candidate, at=utc_datetime(now).isoformat())
     history = list(payload(position).get("same_tf_trailing_history") or [])
     patch = {**protection, "trailing_stop": candidate["stop_price"],
