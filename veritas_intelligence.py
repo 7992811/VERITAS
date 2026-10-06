@@ -18820,6 +18820,25 @@ def execution_eligibility(asset, raw, clock_info=None):
 def final_execution_safety(asset,research_decision,plan):
     plan=dict(plan or {}); plan['direction']=research_decision
 
+    # Rebase stale parent-entry labels before any final safety gate. The new
+    # tactical setup still must pass source, timing, geometry, economics and risk;
+    # this only prevents the obsolete INVALIDATED label from poisoning it.
+    _special_setup=(
+        str(plan.get('setup') or '') in (
+            'IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL',
+            'BRENT_REVERSAL_CAPTURE','REVERSAL_ADMISSION_BRIDGE','RANGE_RETEST_BREAKOUT'
+        )
+        or str(plan.get('reason') or '') in (
+            'tactical_reversal','impulse_genesis','brent_reversal_capture',
+            'range_retest_breakout','reversal_admission_bridge'
+        )
+        or bool(plan.get('new_setup_identity'))
+    )
+    if (plan.get('eligible') and str(plan.get('entry_quality') or '')=='INVALIDATED'
+            and _special_setup):
+        plan['entry_quality']='NEW_SETUP_PROVISIONAL'
+        plan['entry_quality_rebased_from_old_setup']=True
+
     # R43 final-level invariant: setup-specific mutations must leave one canonical
     # target. Recompute gross move/RR from the FINAL entry, stop and target before
     # the post-cost economics gate. This prevents stale core target/RR fields from
@@ -18927,7 +18946,6 @@ def final_execution_safety(asset,research_decision,plan):
         plan['pre_final_gate_reason']=prior_reason
         plan['reason']='final_economics_gate:' + ','.join(gate.get('blockers') or ['BLOCK'])
         plan['initial_position_fraction']=0.0
-    if plan.get('eligible') and str(plan.get('entry_quality') or '')=='INVALIDATED' and (str(plan.get('setup') or '') in ('IMPULSE_GENESIS','IMPULSE_PIVOT_BREAK','TACTICAL_REVERSAL','BRENT_REVERSAL_CAPTURE','REVERSAL_ADMISSION_BRIDGE','RANGE_RETEST_BREAKOUT') or bool(plan.get('new_setup_identity'))): plan['entry_quality']='NEW_SETUP_PROVISIONAL'; plan['entry_quality_rebased_from_old_setup']=True
     plan['execution_safety_version']=VX.VERSION
     return plan
 
