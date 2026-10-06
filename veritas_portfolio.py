@@ -2156,8 +2156,9 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     if signal_source and not VPS.same(signal_source,source_lock):
         _record_entry_outcome(row,'BLOCKED','ENTRY_SOURCE_MISMATCH')
         return 0.0
-    if not VPG.quote_gate(quote.get('observed_at'),now=VPG.utc_datetime(ts),execution=True,asset=asset)['eligible']:
-        _record_entry_outcome(row,'BLOCKED','PINNED_SOURCE_QUOTE_UNAVAILABLE')
+    paper_time=VX.paper_quote_time_gate(dict(quote,asset=asset),row.get('horizon'),now=VPG.utc_datetime(ts))
+    if not paper_time['eligible']:
+        _record_entry_outcome(row,'BLOCKED','PINNED_SOURCE_QUOTE_UNAVAILABLE',quote_time_gate=paper_time)
         return 0.0
     price=float(quote['price'])
     VPG.publish_quote(asset,quote)
