@@ -40,6 +40,12 @@ class DashboardLoadingTests(unittest.TestCase):
         self.assertIn('positions', out)
         self.assertIn('trades', out)
 
+    def test_currency_portfolio_is_rendered_as_fifth_configured_book(self):
+        self.assertIn("Currency:'Валютный портфель'", _CANONICAL_HTML)
+        self.assertIn('const currencyFallback=', _CANONICAL_HTML)
+        self.assertNotIn("ps.length+'/4'", _CANONICAL_HTML)
+        self.assertNotIn('Капитал и ограничения риска ещё не заданы', _CANONICAL_HTML)
+
     @unittest.skipUnless(shutil.which('node'), 'Node required for JavaScript loader regression')
     def test_async_ui_loading(self):
         result = subprocess.run(['node', 'tests/dashboard_loading.cjs'],
