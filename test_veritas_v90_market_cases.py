@@ -105,16 +105,30 @@ class MarketCaseRegressionTests(unittest.TestCase):
                 self.assertFalse(out['open'], out)
                 self.assertEqual(out['reason'], 'R42_PAPER_SOURCE_GATE')
 
-    def test_moex_one_source_does_not_override_economics_or_explicit_denial(self):
+    def test_moex_one_source_does_not_override_negative_economics_or_explicit_denial(self):
         row = self._moex_single_source_row()
         row['paper_eligible'] = False
         self.assertEqual(VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
                          ['reason'], 'R42_PAPER_SOURCE_GATE')
+
+        # User-approved R79 policy: a directional signal may start a SMALL probe
+        # when R/R is below the fixed floor but the remaining move is still
+        # positive after costs and above the 0.19%/cost-buffer floor.
         row = self._moex_single_source_row()
-        row['trade_plan']['target_price'] = 2220.0  # actual final levels must fail economics, not stale metadata
+        row['trade_plan']['target_price'] = 2220.0
         row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
         out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
-        self.assertFalse(out['open'])
+        self.assertTrue(out['open'], out)
+        self.assertEqual(out['reason'], 'R79_SIGNAL_PROBE')
+        self.assertLessEqual(out['fraction'], 0.10)
+
+        # But a target whose remaining move is below the final 0.19%/cost
+        # threshold remains an absolute economics block even for a strong signal.
+        row = self._moex_single_source_row()
+        row['trade_plan']['target_price'] = 2228.50
+        row['trade_plan'] = VI.final_execution_safety('MOEX', 'SHORT', row['trade_plan'])
+        out = VP._signal_first_admission(row, VP.POLICIES['Aggressive'], 0.0)
+        self.assertFalse(out['open'], out)
         self.assertEqual(out['reason'], 'R41_FINAL_ECONOMICS_GATE')
 
     def _brent_bars(self):
