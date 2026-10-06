@@ -66,6 +66,8 @@ jobs:
         run: node tools/test_paper_ui.cjs
       - name: Trade accounting view regressions
         run: python -m unittest -v test_veritas_trade_view.py
+      - name: Discretionary profit exit authority
+        run: python -m unittest -v test_veritas_profit_exit_authority.py
       - name: Net profit protection regressions
         run: python -m unittest -v test_veritas_profit_protection.py
       - name: Legacy Rxx execution audit
