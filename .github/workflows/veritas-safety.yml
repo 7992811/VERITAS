@@ -30,6 +30,19 @@ jobs:
         run: pip install -r requirements-intelligence.txt
       - name: Compile canonical runtime
         run: python -m py_compile veritas_direct_cny.py veritas_strategy_quality.py veritas_strategy_roles.py veritas_canonical_constitution.py veritas_canonical_runtime.py veritas_release.py veritas_quote_time.py veritas_profit_protection.py veritas_position_guard.py veritas_execution.py veritas_broker.py veritas_instruments.py veritas_promotion.py veritas_risk.py veritas_live.py veritas_storage_guard.py veritas_market_runtime.py veritas_signal_core.py veritas_decision_signature.py veritas_asset_management_intelligence.py veritas_portfolio.py veritas_portfolio_runtime.py veritas_intelligence.py veritas_learning_index.py veritas_v90_ui.py
+      - name: Create isolated Currency trading test database
+        run: |
+          python - <<'PY'
+          import psycopg
+          with psycopg.connect("postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test", autocommit=True) as conn:
+              conn.execute("CREATE DATABASE ci_ephemeral_test_only")
+          PY
+      - name: Currency broker and approval regressions (fake broker only)
+        env:
+          VERITAS_TRADING_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/ci_ephemeral_test_only
+        run: |
+          python -m py_compile veritas_currency_trade_plan.py veritas_currency_trading.py veritas_trade_telegram.py veritas_trade_approvals.py veritas_tbank_trading.py veritas_currency_trade_ledger.py bot.py
+          python -m unittest -v test_veritas_tbank_trading.py test_veritas_trade_approvals.py test_veritas_currency_trading.py test_veritas_currency_trade_ledger.py
       - name: Execution quality and direct CNY regressions
         run: python -m unittest -v test_veritas_execution_quality.py
       - name: Strategy evidence PostgreSQL integration

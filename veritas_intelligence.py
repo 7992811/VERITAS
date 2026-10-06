@@ -16757,6 +16757,13 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
     }
 
 
+def _currency_trade_summary():
+    """Snapshot canonical research without reading or mutating paper positions."""
+    from copy import deepcopy
+    with lock:
+        return deepcopy(last_cycle.get('summary') or [])
+
+
 class H(BaseHTTPRequestHandler):
     def reply(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode()
@@ -17131,7 +17138,22 @@ class H(BaseHTTPRequestHandler):
             self.reply({'error': f'{type(e).__name__}: {e}'}, 503)
     def do_POST(self):
         try:
-            if urlparse(self.path).path.startswith('/internal/currency-alerts/'):
+            if urlparse(self.path).path.startswith('/internal/currency-trading/'):
+                try:
+                    n = int(self.headers.get('Content-Length', '0') or 0)
+                    if n < 0 or n > 8192:
+                        self.reply({'ok': False, 'error': 'INVALID_BODY_SIZE'}, 400); return
+                    payload = json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
+                except (ValueError, UnicodeError):
+                    self.reply({'ok': False, 'error': 'INVALID_JSON_BODY'}, 400); return
+                try:
+                    import veritas_currency_trade_service as VCTS
+                    result, code = VCTS.handle_request(urlparse(self.path).path, payload,
+                                                       self.headers, pg_connect, _currency_trade_summary)
+                except Exception:
+                    result, code = {'ok': False, 'error': 'TRADE_SERVICE_UNAVAILABLE'}, 503
+                self.reply(result, code)
+            elif urlparse(self.path).path.startswith('/internal/currency-alerts/'):
                 n=int(self.headers.get('Content-Length','0') or 0)
                 if n<0 or n>8192:
                     self.reply({'ok':False,'error':'INVALID_BODY_SIZE'},400); return

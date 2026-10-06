@@ -36,6 +36,7 @@ seen_events = {}
 pending = {}
 draft_times = deque()
 currency_stop = threading.Event()
+trade_bridge = None
 
 
 def now_iso():
@@ -358,6 +359,13 @@ def handle_callback(query):
     data = query.get("data") or ""
     message = query.get("message") or {}
 
+    if data.startswith("ta:"):
+        if trade_bridge is None:
+            answer_callback(callback_id, "Подтверждение сделок отключено.")
+        else:
+            trade_bridge.handle_callback(query)
+        return
+
     user_id = sender.get("id")
     if not is_admin(user_id):
         answer_callback(callback_id, "Нет доступа")
@@ -405,12 +413,12 @@ def poll_updates():
     updates = tg_call("getUpdates", data) or []
 
     for upd in updates:
-        update_offset = upd["update_id"] + 1
-
         if "message" in upd:
             handle_message(upd["message"])
         elif "callback_query" in upd:
             handle_callback(upd["callback_query"])
+        # Record a trade decision durably before acknowledging this update.
+        update_offset = upd["update_id"] + 1
 
 
 def startup_check():
@@ -437,11 +445,14 @@ def startup_check():
 
 
 def main():
-    global next_scan_at
+    global next_scan_at, trade_bridge
 
     log("Запуск VERITAS MAX.")
     from veritas_currency_delivery import start_from_env
     currency_worker = start_from_env(currency_stop, log)
+    from veritas_trade_telegram import build_from_env, start_worker
+    trade_bridge = build_from_env(tg_call, log)
+    trade_worker = start_worker(trade_bridge, currency_stop, log)
     startup_check()
     log("Новостной сканер: ПАУЗА." if paused else "Новостной сканер: АКТИВЕН.")
     next_scan_at = time.time() + 60
@@ -467,6 +478,8 @@ def main():
     currency_stop.set()
     if currency_worker:
         currency_worker.join(timeout=15)
+    if trade_worker:
+        trade_worker.join(timeout=15)
     log("VERITAS MAX остановлен корректно.")
 
 
