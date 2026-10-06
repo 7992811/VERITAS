@@ -5090,7 +5090,8 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
             _record_entry_outcome(row,'BLOCKED','CANONICAL_ADD_REQUIRES_NEW_CONFIRMATION',
                                   event_id=new_event)
             return 0.0
-        actual=VX.entry_gate(row,float(price),direction,requested,existing)
+        actual=VX.entry_gate(row,float(price),direction,requested,existing,
+                            existing_target_price=VX.stored_position_target_price(existing))
         hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
         if hard:
             _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
