@@ -181,9 +181,12 @@ def evaluate(row, policy, drawdown, now=None):
     work=_quote_row(raw)
     price=_num(work.get("price"))
     source=VX.paper_source_gate(asset,work)
-    if not source.get("eligible") or work.get("paper_eligible") is False:
+    if not source.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":(source.get("blockers") or ["PRIMARY_SOURCE_GATE_FAILED"])[0],
                 "hard_veto":True,"source_blockers":source.get("blockers") or [],"canonical_stage":"DATA"}
+    if work.get("paper_eligible") is False:
+        return {"open":False,"fraction":0.0,"reason":"PAPER_EXPLICIT_DENIAL",
+                "hard_veto":True,"source_blockers":[],"canonical_stage":"DATA"}
     observed=(work.get("_execution_quote") or {}).get("observed_at") or work.get("market_observed_at") or work.get("observed_at")
     qgate=VPG.quote_gate(observed,now=clock,execution=True,asset=asset)
     if not qgate.get("eligible"):
