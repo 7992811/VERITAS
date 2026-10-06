@@ -44,6 +44,15 @@ class CurrencyMAApprovalTests(unittest.TestCase):
 
     def fixture(self, period=50, short=False):
         local, daily, stamp = example(period=period, short=short, timeframe="5m")
+        # Economics also consults the wall clock. Shift the entire observed
+        # history before rebuilding the proof, never refresh an existing event.
+        current_close = float(int(datetime.now(timezone.utc).timestamp()) - 1)
+        offset = current_close - stamp
+        for bar in local + daily:
+            for field in ("ts", "end_ts", "available_at"):
+                if field in bar:
+                    bar[field] += offset
+        stamp = current_close
         self.now = datetime.fromtimestamp(stamp, timezone.utc)
         source = VPS.identity("CNYRUBF", {
             "source": "MOEX ISS CNYRUBF", "contract_id": "CNYRUBF"})
