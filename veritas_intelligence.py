@@ -6845,11 +6845,18 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     event_learning=heavy_learning.get('event_learning') or {'status':'background_pending','written':0}
     rule_learning=heavy_learning.get('rule_learning') or {'status':'background_pending','rows':0,'status_changes':0}
     phase_seconds['event_learning']=0.0; phase_seconds['rule_learning']=0.0
-    _market_pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='veritas-market-pipeline')
-    _market_future=_market_pool.submit(prefetch_market_bundles)
-    _warm_pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='veritas-cycle-warm')
-    _warm_knowledge=_warm_pool.submit(all_knowledge)
-    _warm_memory=_warm_pool.submit(_decision_memory_vectors)
+    _low_memory_streaming=bool(MEMORY_SOFT_LIMIT_MB<=320)
+    if _low_memory_streaming:
+        # Do not retain all seven market bundles while processing one asset,
+        # and do not warm historical/knowledge caches concurrently with cold market fetches.
+        _market_pool=None; _market_future=None
+        _warm_pool=None; _warm_knowledge=None; _warm_memory=None
+    else:
+        _market_pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='veritas-market-pipeline')
+        _market_future=_market_pool.submit(prefetch_market_bundles)
+        _warm_pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='veritas-cycle-warm')
+        _warm_knowledge=_warm_pool.submit(all_knowledge)
+        _warm_memory=_warm_pool.submit(_decision_memory_vectors)
     phase_t0=time.time(); perf = _v90r22_agent_perf_safe(); phase_seconds['agent_learning']=time.time()-phase_t0
     phase_t0=time.time(); calibration_rows = _v90r61_calibration_rows(); phase_seconds['calibration']=time.time()-phase_t0
     phase_t0=time.time(); clock_info = _v90r61_clock_info(); phase_seconds['clock_gate']=time.time()-phase_t0
@@ -6869,8 +6876,14 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     _v90_pg_batch_begin()
     decision_phase_t0=time.time()
     cycle_source_quality=[]
-    market_bundles,prefetch_stats=_market_future.result()
-    _market_pool.shutdown(wait=False)
+    if _low_memory_streaming:
+        market_bundles={}
+        prefetch_stats={'wall_seconds':0.0,'sum_asset_seconds':0.0,
+                        'parallel_wait_saved_estimate_seconds':0.0,'workers':1}
+        _stream_fetch_started=time.time()
+    else:
+        market_bundles,prefetch_stats=_market_future.result()
+        _market_pool.shutdown(wait=False)
     # R63e: cold start begins fail-closed while the clock verifier warms in the
     # background. Market prefetch normally gives it enough time to finish. Re-read
     # the already-cached result here so the whole cycle does not keep a stale
@@ -6886,11 +6899,12 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                  new_ok=bool(clock_info.get('ok')),
                  old_errors=_old_clock.get('errors') or [],
                  new_errors=clock_info.get('errors') or [])
-    try: _warm_knowledge.result(timeout=0.05)
-    except Exception: pass
-    try: _warm_memory.result(timeout=0.05)
-    except Exception: pass
-    _warm_pool.shutdown(wait=False)
+    if _warm_pool is not None:
+        try: _warm_knowledge.result(timeout=0.05)
+        except Exception: pass
+        try: _warm_memory.result(timeout=0.05)
+        except Exception: pass
+        _warm_pool.shutdown(wait=False)
     with lock:
         _prev_summary=list(last_cycle.get('summary') or [])
     _v90_set_prev_signal_cache(_prev_summary)
@@ -6903,7 +6917,18 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     for symbol, (asset, cb_product) in ASSETS.items():
         asset_timings[asset]={'market_fetch':0.0,'context':0.0,'common_features':0.0,'horizons':0.0,'total':0.0}
         try:
-            bundle=market_bundles.get(asset) or {}
+            if _low_memory_streaming:
+                _fetch_started=time.time()
+                try:
+                    bundle=_fetch_asset_bundle(symbol,asset,cb_product)
+                except Exception as ex:
+                    bundle={'symbol':symbol,'asset':asset,'cb_product':cb_product,
+                            'raw':None,'deriv':None,'elapsed_seconds':time.time()-_fetch_started,
+                            'error':f'{type(ex).__name__}: {ex}'}
+                prefetch_stats['sum_asset_seconds']+=float(bundle.get('elapsed_seconds') or 0.0)
+                prefetch_stats['wall_seconds']=time.time()-_stream_fetch_started
+            else:
+                bundle=market_bundles.get(asset) or {}
             if bundle.get('error') or bundle.get('raw') is None:
                 raise RuntimeError(f"MARKET_PREFETCH_FAIL {asset}: {bundle.get('error') or 'missing bundle'}")
             raw=bundle['raw']; deriv=bundle['deriv']
@@ -9813,10 +9838,17 @@ def _fetch_asset_bundle(symbol,asset,cb_product):
         return cached
     if asset in CRYPTO_ASSETS:
         t0=time.time()
-        with ThreadPoolExecutor(max_workers=2,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
-            fr=pool.submit(market,symbol,cb_product)
-            fd=pool.submit(derivatives,symbol)
-            raw=fr.result(); deriv=fd.result()
+        if MEMORY_SOFT_LIMIT_MB<=320:
+            # On the 512 MiB service, nested crypto provider threads overlap
+            # large response/history buffers with the outer market pipeline.
+            # Sequential provider calls trade a little latency for a much lower RSS peak.
+            raw=market(symbol,cb_product)
+            deriv=derivatives(symbol)
+        else:
+            with ThreadPoolExecutor(max_workers=2,thread_name_prefix=f'veritas-{asset.lower()}') as pool:
+                fr=pool.submit(market,symbol,cb_product)
+                fd=pool.submit(derivatives,symbol)
+                raw=fr.result(); deriv=fd.result()
         out={'symbol':symbol,'asset':asset,'cb_product':cb_product,'raw':raw,'deriv':deriv,
              'elapsed_seconds':time.time()-t0,'error':None}
     else:
