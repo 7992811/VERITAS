@@ -591,10 +591,11 @@ def _portfolio_admission_trace(candidates,policy,drawdown):
         sf=_signal_first_admission(row,policy,drawdown)
         plan=row.get('trade_plan') or {}
         probability_source=sf.get('probability_source') or row.get('_pwin_source')
-        calibrated=bool(probability_source and (
-            'EMPIRICAL_CALIBRATION' in str(probability_source)
-            or 'CALIBRATED' in str(probability_source)
-        ))
+        _ps=str(probability_source or '').upper()
+        calibrated=bool(
+            _ps=='EMPIRICAL_CALIBRATION'
+            or (_ps.startswith('CALIBRATED') and 'UNCALIBRATED' not in _ps)
+        )
         out.append({'asset':asset,'direction':row.get('research_decision'),'horizon':row.get('horizon'),
                     'canonical_setup_id':_portfolio_canonical_setup_id(row),
                     'pwin':sf.get('probability') if calibrated else None,
