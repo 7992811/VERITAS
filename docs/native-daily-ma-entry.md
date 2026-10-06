@@ -97,10 +97,13 @@ processing or manufacture missing returns.
 
 ## Costs and validation
 
-The later owner-approved entry threshold remains
-max(0.19%,2.0 * modeled round-trip costs). Commission and paper slippage remain
-0.04% per side each. The earlier1.1 base-buffer setting is not the final entry
-threshold. The policy text is synchronized with the actual2.0 threshold.
+The owner-approved default entry threshold remains
+max(0.19%, 2.0 * modeled round-trip costs). CNYRUBF retains the explicitly
+requested exception: max(0.19%, 1.1 * modeled round-trip costs). Both structural
+breakout and daily-MA rebound entries use the asset-specific canonical cost
+threshold. Commission and paper slippage remain 0.04% per side each; the
+minimum expected-move floor remains 0.19%. The base-buffer setting remains
+1.1, while the final entry multiple is 1.1 for CNYRUBF and 2.0 for other assets.
 
 Safety CI requires native-provider/source, causal MA, event lifetime,
 same-timeframe geometry, full canonical admission for all five portfolios,

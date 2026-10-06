@@ -91,7 +91,9 @@ COST_POLICY = {
     "cost_buffer_multiple": 1.1,
     "minimum_expected_move_floor_pct": 0.0019,
     "entry_cost_multiple": 2.0,
-    "minimum_expected_move_formula": "max(0.19%, 2.0 * modeled_round_trip_cost)",
+    # Explicit owner instruction: CNYRUBf retains 1.1x; other assets keep 2.0x.
+    "entry_cost_multiple_by_asset": {"CNYRUBF": 1.1},
+    "minimum_expected_move_formula": "CNYRUBF: max(0.19%, 1.1 * modeled_round_trip_cost); default: max(0.19%, 2.0 * modeled_round_trip_cost)",
     "funding_annual_rate": 0.16,
     "funding_free_seconds": 86400,
     "funding_basis": "ACT/365.25_AFTER_FIRST_24H_ON_CURRENT_NOTIONAL",
@@ -359,7 +361,7 @@ CANONICAL_RULES = [
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
     _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
-    _rule("CTC34","economics","Base modeled round trip is 0.16%; the later owner-approved entry threshold is max(0.19%, 2.0 x modeled round-trip cost)."),
+    _rule("CTC34","economics","Base modeled round trip is 0.16%; entry requires max(0.19%, 1.1 x modeled round-trip cost) for CNYRUBF and max(0.19%, 2.0 x modeled round-trip cost) for other assets."),
     _rule("CTC35","economics","Funding is 16% ACT/365.25 on current notional after a free first 24 hours."),
     _rule("CTC36","economics","Target, stop and adverse modeled fills are recomputed at final entry after all setup/sizing mutations."),
     _rule("CTC37","economics","Adds must have their own remaining room and economics; the original target cannot justify a fresh add."),
@@ -397,7 +399,7 @@ RESOLVED_IMPLEMENTATION_GAPS = [
     {"id":"GAP03","resolution":"Currency: 10,000 RUB, CNYRUBF only, 10x, 35% hard DD, weekend carry."},
     {"id":"GAP04","resolution":"CanonicalAdmissionEngine v2 owns production admission; legacy admission is non-authoritative."},
     {"id":"GAP05","resolution":"Objective policy is canonical."},
-    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, 1.1x base buffer and separately approved 2.0x entry threshold."},
+    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, 1.1x base buffer, CNYRUBF entry multiple 1.1x and default 2.0x for other assets; the 0.19% floor remains."},
     {"id":"GAP07","resolution":"Cost module reads CTC directly."},
     {"id":"GAP08","resolution":"External knowledge remains shadow-first and independently validated."},
     {"id":"GAP09","resolution":"Runtime binding is import-order independent."},
