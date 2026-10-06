@@ -24,7 +24,7 @@ TIMEFRAMES = ("1m", "5m", "1h", "4h", "1d", "3d", "7d")
 HISTORY = {
     "1m": ("CANDLE_INTERVAL_1_MIN", 1, 20, 2400),
     "5m": ("CANDLE_INTERVAL_5_MIN", 1, 60, 2400),
-    "1h": ("CANDLE_INTERVAL_HOUR", 7, 300, 2400),
+    "1h": ("CANDLE_INTERVAL_HOUR", 21, 300, 2400),
     "4h": ("CANDLE_INTERVAL_4_HOUR", 30, 900, 700),
     "1d": ("CANDLE_INTERVAL_DAY", 365, 3600, 2400),
     "7d": ("CANDLE_INTERVAL_WEEK", 2 * 365, 3600, 300),
@@ -247,6 +247,7 @@ class TBankConnection:
         self.history_attempts = {}
         self.accounts_checked = self.resolve_checked = None
         self.stream_ids = ()
+        self.trading_states = {}
 
     def _token(self):
         return self.env.get(TOKEN_ENV, "").strip()
@@ -273,7 +274,7 @@ class TBankConnection:
                     "token_configured": bool(self._token()), "token_variable": TOKEN_ENV,
                     "checked_at": self.checked_at, "connected_at": self.connected_at,
                     "error_code": self.error, "stream_status": self.stream_state,
-                    "orders_enabled": False, "paper_source_switch_enabled": False,
+                    "orders_enabled": False, "paper_source_switch_enabled": self.env.get("VERITAS_CNY_PRIMARY_SOURCE","TBANK").upper()=="TBANK",
                     "instruments": {a: {"label": LABELS.get(a, a), "ticker": d.get("ticker"), "uid": d.get("uid"),
                         "name": d.get("name"), "exchange": d.get("exchange"), "real_exchange": d.get("real_exchange"),
                         "expiration_date": d.get("expiration_date"), "perpetual": d.get("perpetual", False),
@@ -377,6 +378,9 @@ class TBankConnection:
                 if book.get("instrument_uid") == uid:
                     with self.lock:
                         self.books[asset] = {**book, "source": "TBANK_GRPC", "received_at": iso()}
+                trading=self.reader.call("trading_status",instrument_id=uid)
+                with self.lock:
+                    self.trading_states[asset]={**trading,"checked_at":iso(),"instrument_uid":uid}
             except TBankError:
                 pass  # Existing book keeps its original timestamp and becomes stale.
         self._read_history(by_uid)
@@ -392,7 +396,7 @@ class TBankConnection:
                 if age is None or age >= ttl:
                     jobs.append((key not in self.history_attempts, uid, asset, interval))
         # Cold intervals first, so minute updates cannot starve daily/weekly history.
-        jobs.sort(key=lambda job: not job[0])
+        jobs.sort(key=lambda job: (not (job[2]=='CNYRUBF' and job[3] in ('1m','5m','1h')),not job[0]))
         started = time.monotonic()
         for _, uid, asset, interval in jobs[:12]:
             if time.monotonic() - started >= 30:
@@ -402,9 +406,12 @@ class TBankConnection:
             now = utcnow()
             self.history_attempts[key] = iso(now)
             try:
-                reply = self.reader.call("candles", **{"instrument_id": uid, "interval": enum,
-                    "from": iso(now - timedelta(days=days)), "to": iso(now)})
-                bars = closed_candles(reply.get("candles", []), now)
+                start=now-timedelta(days=days); items=[]
+                while start<now:
+                    end=min(now,start+timedelta(days=7 if interval=='1h' else days))
+                    reply=self.reader.call("candles",**{"instrument_id":uid,"interval":enum,"from":iso(start),"to":iso(end)})
+                    items.extend(reply.get("candles",[]));start=end
+                bars = closed_candles(items, now)
                 value = {"status": "OK" if bars else "NO_DATA", "source": "TBANK_GRPC",
                     "instrument_uid": uid, "interval": interval, "loaded_at": iso(), "aggregation": "NATIVE",
                     "price_unit": "BROKER_NATIVE", "candle_source": "BROKER_DEFAULT_DEALER_BARS_EXCLUDED", "candles": bars[-limit:]}
@@ -536,6 +543,6 @@ def status_page():
 <style>body{{margin:0;padding:18px;background:#0b1118;color:#e7edf4;font:15px/1.5 system-ui}}main{{max-width:720px;margin:auto}}h1{{font-size:25px}}h2{{font-size:19px;margin:0}}h2 span{{float:right;color:#9fb0c0;font:14px/1.8 monospace}}a{{color:#93c5fd}}section{{padding:16px 12px;border:1px solid #35404c;border-radius:10px;margin:16px 0}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}}p{{overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse;table-layout:fixed;text-align:center;font-size:12px}}th{{color:#9fb0c0;padding:8px 0;border-bottom:1px solid #35404c}}td{{padding:10px 0}}td b{{font:600 15px monospace}}small{{display:block;font-size:9px}}.ready{{color:#52dfa4}}.waiting{{color:#ffc45b}}.hint{{font-size:12px;color:#9fb0c0}}</style>
 <main><a href="/app">VERITAS</a><h1>Т-Инвестиции</h1><section><h2>{heading}</h2>
 <p>Режим: только чтение · Python / gRPC</p><p>{next_step}</p>
-<p>Получение данных подключено отдельно от расчёта сигналов и учебных портфелей. Торговые поручения выключены.</p></section>
+<p>CNYRUBf используется учебными портфелями только после проверки точного контракта, котировки, стакана и истории. Реальные торговые поручения выключены.</p></section>
 {''.join(cards)}<p class="hint">3д — закрытые трёхдневные календарные интервалы из дневных свечей, границы по UTC. 7д — недельные свечи брокера. История относится к указанному контракту; котировки других контрактов не добавляются.</p>
 <details><summary>Диагностика</summary><pre>{diagnostics}</pre></details></main></html>'''

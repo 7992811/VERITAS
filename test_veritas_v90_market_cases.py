@@ -43,6 +43,7 @@ class MarketCaseRegressionTests(unittest.TestCase):
                     production_eligible=gate['production_eligible'],
                     calibrated_probability=.85, _pwin=.85, _pwin_source='EMPIRICAL_CALIBRATION',
                     _alignment_count=3, entry_quality='CONFIRMED_TREND',
+                    _local_execution_context={'same_direction_count':1,'opposite_direction_count':0},
                     horizon_structure=dict(direction='SHORT', score=.85, state='CONFIRMED_TREND'),
                     institutional_signal=dict(evidence_independence=dict(independent_count=5),
                                               action='ENTER_CANDIDATE'),

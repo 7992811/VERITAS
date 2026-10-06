@@ -166,6 +166,13 @@ def quote_for_position(position, candidate=None, now=None):
         quotes=[dict(q) for key,q in _source_quotes.items() if key[0]==position.get('asset')]
         quotes.append(dict(_quotes.get(position.get('asset')) or {}))
     quotes.extend([candidate or {},position.get('_execution_quote') or {}])
+    identity=VPS.position_identity(position) or {}
+    if position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
+        try:
+            from veritas_direct_cny import quote as direct_quote
+            quotes.append(direct_quote(now=now))
+        except Exception:
+            pass  # Never replace a missing direct quote with a MOEX mark.
     valid=[]
     p=VPS.payload(position)
     last=utc_datetime((p.get('source_locked_mark') or {}).get('observed_at'))
@@ -636,8 +643,8 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                 funding_rub=_lock_trade.get('funding_rub',0.0),
                 realized_gross_rub=_lock_trade.get('gross_pnl_rub',0.0)
             )
-            if str(zp.get('r66_event_id','')).startswith('R69_'):
-                lock=None # R69 uses confirmed structural pivots and whole-trade net checks.
+            # Legacy event prefixes cannot disable checked profit protection.
+            # New same-TF positions use confirmed structural trailing, not synthetic locks.
             if lock:
                 pl_patch = {
                     'trailing_stop': lock['stop_price'],

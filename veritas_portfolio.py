@@ -13,6 +13,7 @@ import veritas_currency_portfolio as VCP
 import veritas_currency_notifications as VCN
 import veritas_canonical_constitution as CTC
 import veritas_release as VR
+import veritas_strategy_quality as VSQ
 import veritas_timeframe_management as VTM
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
@@ -2269,7 +2270,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         setup=((row.get('institutional_signal') or {}).get('breakout_quality') or {}).get('state') or (row.get('institutional_signal') or {}).get('investor_signal')
         plan=row.get('trade_plan') or {}
         canonical_setup_id=_portfolio_canonical_setup_id(row)
-        payload={'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+        payload={**VSQ.entry_metadata(dict(row,asset=asset),ts),'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
                  'price_source_lock':source_lock,'price_source_status':'OK',
                  'entry_execution_source_identity':source_lock,
                  'structural_policy_version':plan.get('structural_policy_version'),

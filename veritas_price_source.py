@@ -23,6 +23,11 @@ def identity(asset, row):
         if not channel or row.get('raw_label',channel)!=channel:
             return None
         key='PROFINANCE:'+channel
+    elif upper.startswith('TBANK_GRPC'):
+        cid=contract.get('instrument_uid')
+        if not cid:
+            return None
+        key='TBANK_GRPC:'+str(asset)
     elif 'PROXY' in upper or 'BRIDGE' in upper:
         key='PROXY:'+upper
     elif upper.startswith('YAHOO'):

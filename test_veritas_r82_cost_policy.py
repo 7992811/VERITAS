@@ -34,9 +34,9 @@ class CostPolicyTests(unittest.TestCase):
         self.assertEqual(g['modeled_funding_pct'], 0)
         self.assertAlmostEqual(g['modeled_commission_pct'], .0004*(100.04+101*.9996)/100)
         self.assertAlmostEqual(g['modeled_execution_cost_pct'], (.04+101*.0004)/100)
-        self.assertEqual(g['minimum_expected_move_pct'], .0019)
+        self.assertEqual(g['minimum_expected_move_pct'], max(.0019, 2*g['modeled_round_trip_cost_pct']))
         self.assertAlmostEqual(X.round_trip_cost_pct(), .0016)
-        self.assertAlmostEqual(X.minimum_expected_move_pct(.003), .0033)
+        self.assertAlmostEqual(X.minimum_expected_move_pct(.003), .006)
         self.assertTrue(g['eligible'])
 
     def test_funding_boundary_and_no_retroactive_first_day(self):

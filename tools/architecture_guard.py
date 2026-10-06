@@ -7,6 +7,9 @@ from pathlib import Path
 # Legacy files are frozen ceilings, not targets. New canonical code belongs in
 # small zero-duplication modules rather than another Rxx layer.
 LIMITS = {
+    "veritas_direct_cny.py": {"max_lines":250,"max_redefinitions":0,"max_duplicate_names":0},
+    "veritas_strategy_quality.py": {"max_lines":380,"max_redefinitions":0,"max_duplicate_names":0},
+    "veritas_strategy_roles.py": {"max_lines":120,"max_redefinitions":0,"max_duplicate_names":0},
     "veritas_intelligence.py": {"max_lines": 19254, "max_redefinitions": 35, "max_duplicate_names": 32},
     "veritas_portfolio.py": {"max_lines": 8636, "max_redefinitions": 68, "max_duplicate_names": 20},
     "veritas_portfolio_runtime.py": {"max_lines": 5394, "max_redefinitions": 49, "max_duplicate_names": 14},

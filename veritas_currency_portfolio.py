@@ -82,11 +82,11 @@ def decorate_report(report):
                        if str((x or {}).get('asset') or '')!=ASSET]
         q['admission_trace']=trace
         q['current_cny_admission']=trace[0] if trace else None
-        q['positions']=[x for x in (q.get('positions') or [])
-                        if str((x or {}).get('asset') or '')==ASSET]
+        q['positions']=list(q.get('positions') or [])  # Never hide an actual ledger position.
         if bad_positions:
             q['portfolio_integrity_warning']='NON_CNY_POSITION_QUARANTINED'
             q['quarantined_position_count']=len(bad_positions)
+            q['quarantined_positions']=bad_positions
         q.update({
             'display_name': DISPLAY_NAME,
             'configuration_status': 'CONFIGURED',

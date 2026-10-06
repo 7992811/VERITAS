@@ -46,13 +46,13 @@ class CanonicalConstitutionCurrentRuntimeAlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(VC.FUNDING_ANNUAL_RATE, C.COST_POLICY["funding_annual_rate"])
         self.assertEqual(VC.FUNDING_FREE_SECONDS, C.COST_POLICY["funding_free_seconds"])
 
-    def test_minimum_move_formula_matches_r85_execution(self):
+    def test_minimum_move_formula_matches_execution_quality(self):
         import veritas_costs as VC
         import veritas_execution as VX
         self.assertAlmostEqual(VX.MIN_EXPECTED_MOVE_PCT, 0.0019)
         self.assertAlmostEqual(
             VX.minimum_expected_move_pct(VC.ROUND_TRIP_RATE),
-            max(0.0019, 1.1 * 0.0016),
+            max(0.0019, 2.0 * 0.0016),
         )
 
     def test_ctc_v2_runtime_authority_is_explicit(self):

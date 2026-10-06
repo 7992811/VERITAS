@@ -18,10 +18,9 @@ PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
 # Research/paper economics gate. This is deliberately independent from signal quality:
 # even a SUPER signal cannot bypass bad trade economics.
 MIN_REWARD_RISK = max(CTC.STRUCTURAL_ENTRY_POLICY['minimum_net_reward_risk'], float(os.getenv("VERITAS_FINAL_MIN_RR", "1.15")))
-# CTC owns the complete move floor. Historical environment values must not
-# silently reinstate an older, stricter entry threshold after a restart.
+# CTC owns the move floor; stale environment overrides cannot change it.
 MIN_EXPECTED_MOVE_PCT = float(CTC.COST_POLICY["minimum_expected_move_floor_pct"])
-MIN_MOVE_COST_MULTIPLE = VC.COST_BUFFER_MULTIPLE
+MIN_MOVE_COST_MULTIPLE = float(CTC.COST_POLICY["entry_cost_multiple"])
 MOVE_POLICY_VERSION = VC.VERSION
 ROUND_TRIP_COST_BPS = VC.ROUND_TRIP_RATE * 10000.0
 

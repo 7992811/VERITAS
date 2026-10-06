@@ -10,6 +10,17 @@ jobs:
   safety:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      quality-postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_ephemeral_test_only
+          POSTGRES_DB: veritas_quality_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veritas_quality_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,7 +29,13 @@ jobs:
       - name: Install runtime dependencies
         run: pip install -r requirements-intelligence.txt
       - name: Compile canonical runtime
-        run: python -m py_compile veritas_canonical_constitution.py veritas_canonical_runtime.py veritas_release.py veritas_quote_time.py veritas_profit_protection.py veritas_position_guard.py veritas_execution.py veritas_broker.py veritas_instruments.py veritas_promotion.py veritas_risk.py veritas_live.py veritas_storage_guard.py veritas_market_runtime.py veritas_signal_core.py veritas_decision_signature.py veritas_asset_management_intelligence.py veritas_portfolio.py veritas_portfolio_runtime.py veritas_intelligence.py veritas_learning_index.py veritas_v90_ui.py
+        run: python -m py_compile veritas_direct_cny.py veritas_strategy_quality.py veritas_strategy_roles.py veritas_canonical_constitution.py veritas_canonical_runtime.py veritas_release.py veritas_quote_time.py veritas_profit_protection.py veritas_position_guard.py veritas_execution.py veritas_broker.py veritas_instruments.py veritas_promotion.py veritas_risk.py veritas_live.py veritas_storage_guard.py veritas_market_runtime.py veritas_signal_core.py veritas_decision_signature.py veritas_asset_management_intelligence.py veritas_portfolio.py veritas_portfolio_runtime.py veritas_intelligence.py veritas_learning_index.py veritas_v90_ui.py
+      - name: Execution quality and direct CNY regressions
+        run: python -m unittest -v test_veritas_execution_quality.py
+      - name: Strategy evidence PostgreSQL integration
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: python -m unittest -v test_veritas_strategy_quality_sql.py
       - name: Owner timeframe structure and provenance regressions
         run: python -m unittest -v test_veritas_timeframe_structure.py test_veritas_timeframe_policy.py test_veritas_timeframe_data.py test_veritas_timeframe_management.py test_veritas_profinance_history.py test_veritas_user_teaching.py test_veritas_repeat_add.py
       - name: Canonical constitution regressions

@@ -11,6 +11,7 @@ import veritas_execution as VX
 import veritas_position_guard as VPG
 import veritas_price_source as VPS
 import veritas_trend_entry as VTE
+import veritas_strategy_roles as VROLE
 import veritas_timeframe_policy as TFP
 
 VERSION=CTC.BASIS_RUNTIME
@@ -225,6 +226,9 @@ def evaluate(row, policy, drawdown, now=None):
                 "economics_blockers":econ_blockers,"hard_economics_blockers":hard_econ,
                 "economics":economics,"risk_governor":rg,"canonical_stage":"ECONOMICS"}
 
+    role=VROLE.gate(work,str(p.get("mode") or ""))
+    if not role.get("eligible"):
+        return {"open":False,"fraction":0.0,"reason":role["reason"],"hard_veto":True,"role_gate":role,"canonical_stage":"THESIS"}
     fraction=full_fraction
     if soft:
         fraction,rg=_fraction(p,drawdown,soft=True)
@@ -370,6 +374,4 @@ def aggressive_candidate_book(summary, candidates=None):
     return dict(candidates or candidate_book(summary))
 
 def transition_candidate_book(summary, base_book, mode=None):
-    # Current published direction is already authoritative; do not synthesize a
-    # second legacy direction here.
-    return {k:dict(v) for k,v in (base_book or {}).items()}
+    return VROLE.route(summary,base_book,mode,_prepare_candidate)

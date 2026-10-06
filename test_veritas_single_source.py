@@ -22,6 +22,7 @@ class SingleSourceTests(unittest.TestCase):
                     research_decision='SHORT', signal_tier='SUPER_SHORT', confidence=.9,
                     calibrated_probability=.9, _pwin=.9, _pwin_source='EMPIRICAL_CALIBRATION',
                     _alignment_count=3, entry_quality='CONFIRMED_TREND',
+                    _local_execution_context={'same_direction_count':1,'opposite_direction_count':0},
                     horizon_structure=dict(direction='SHORT', score=.9, state='CONFIRMED_TREND'),
                     institutional_signal=dict(evidence_independence=dict(independent_count=5), action='ENTER_CANDIDATE'),
                     execution_eligible=gate['eligible'], paper_eligible=gate['paper_eligible'],

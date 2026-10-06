@@ -286,7 +286,7 @@ const POS_CACHE_KEY='veritas_v90_position_book_r35';
 const loadPositionCache=()=>{try{const x=JSON.parse(localStorage.getItem(POS_CACHE_KEY)||'null');if(x&&x.book&&Date.now()-Number(x.at||0)<86400000)return x.book}catch(e){}return {}};
 const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.stringify({at:Date.now(),book}))}catch(e){}};
 const initialPositionBook=loadPositionCache();
-const st={signals:null,portfolios:null,positionBook:initialPositionBook,positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
+const st={strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,positionBook:initialPositionBook,positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
@@ -434,6 +434,10 @@ const reasonRu=v=>{
     R69_WAIT_LOCAL_BREAKOUT:'Ждём новый пробой уровня',
     R69_BREAKOUT_ACTIVITY_REQUIRED:'Пробой не подтверждён активностью',
     LOCAL_EXECUTION_CONFIRMATION_REQUIRED:'Нет локального подтверждения входа',
+    ROLE_TIMEFRAME_NOT_ALLOWED:'Период не соответствует роли портфеля',
+    ROLE_TREND_CONFIRMATION_REQUIRED:'Для этого портфеля нужен подтверждённый тренд',
+    ROLE_INDEPENDENT_EVIDENCE_REQUIRED:'Недостаточно независимых подтверждений',
+    CHALLENGER_LOCAL_TRIGGER_REQUIRED:'Челленджер ожидает локальный вход',
     LOCAL_EXECUTION_DIRECTION_CONFLICT:'Локальное направление против старшего сигнала',
     CURRENCY_MTF_DIRECTION_CONFLICT:'4-часовая структура против выбранного валютного сигнала',
     R69_MINUTE_DATA_STALE:'Минутные свечи устарели или недоступны',
@@ -624,6 +628,26 @@ function portfolioView(p){
     cash:value('cash_equivalent_fraction'),closed,wins:knownNumber(p.wins),winRate:p.win_rate==null?null:100*Number(p.win_rate),pnl,
     avg:knownNumber(p.avg_closed_trade_pnl_rub)??(closed>0&&pnl!=null?pnl/closed:null),excess:value('excess_vs_ruonia_pct')};
 }
+function strategyQualityPanel(p){
+  const d=st.strategyQuality||{},q=(d.portfolios||[]).find(x=>x.name===p.name);
+  const options=(items,selected)=>items.map(([key,label])=>'<option value="'+key+'"'+(key===selected?' selected':'')+'>'+label+'</option>').join('');
+  const selectors='<div class="pf-heading"><h4>Качество правил</h4><div><select id="qualityScope" aria-label="Период статистики">'+options([['current','Текущие правила'],['since_73266d9','С версии 73266d9'],['all','Вся история']],st.qualityScope)+'</select> <select id="qualityWindow" aria-label="Размер выборки">'+options([['all','Все идеи'],['last20','Последние 20 идей'],['last50','Последние 50 идей']],st.qualityWindow)+'</select></div></div>';
+  const m=q&&q.cohorts&&q.cohorts[st.qualityScope]&&q.cohorts[st.qualityScope][st.qualityWindow];
+  const metric=(label,value)=>'<div class="pf-value"><span>'+label+'</span><b>'+value+'</b></div>';
+  let body=!m?'<p class="pf-foot">Статистика ещё не получена. Нулевые результаты не подставляются.</p>':'<div class="pf-quality">'+metric('Закрытых сделок / идей',n(m.closed_trades,0)+' / '+n(m.idea_count,0))+metric('Прибыльных',m.win_rate==null?'—':pct(100*m.win_rate))+metric('Коэффициент прибыли',m.profit_factor==null?(m.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(m.profit_factor,2))+metric('Средняя прибыль / убыток',rub(m.avg_win_rub)+' / '+rub(m.avg_loss_rub))+metric('Средняя сделка',rub(m.expectancy_rub))+metric('Чистый результат',rub(m.net_pnl_rub))+metric('Захвачено движения',m.capture_ratio_mean==null?'—':pct(100*m.capture_ratio_mean))+metric('Плюс съеден расходами',n(m.cost_erased_winners,0))+'</div><p class="pf-foot">Событий с проверенной группировкой: '+n(m.verified_event_count,0)+'. Замер захвата движения: '+n(m.capture_sample,0)+' сделок. Старых открытых позиций: '+n(q.inherited_open_positions,0)+'. '+(m.idea_count<50?'Выборка недостаточна для вывода об устойчивости.':'Результат требует отдельной проверки вне обучающей выборки.')+'</p>';
+  if(d.status==='STALE'||d.status==='PARTIAL_HISTORY')body='<p class="warn">'+(d.status==='STALE'?'Снимок статистики устарел.':'Показана неполная история.')+'</p>'+body;
+  let feed='';
+  if(p.name==='Currency'){
+    const f=d.cny_feed||{}, labels={DIRECT_READY:'Прямые данные готовы',RESEARCH_ONLY:'Исследовательские данные — вход запрещён',STALE:'Котировка устарела',NOT_CHECKED:'Проверяется источник'};
+    feed='<p class="pf-foot">CNYRUBf: '+esc(labels[f.status]||'Источник проверяется')+'. '+esc(f.reason||'Т-Инвестиции: цена, стакан и свечи одного контракта')+(f.quote_observed_at?' · '+dateRu(f.quote_observed_at):'')+'. Реальные поручения выключены.</p>';
+    if(p.portfolio_integrity_warning)feed+='<p class="warn">Обнаружены посторонние позиции в учёте: '+n(p.quarantined_position_count,0)+'. Они показаны и не исключены из баланса.</p>';
+  }
+  return '<section class="pf-section" style="margin-top:14px">'+selectors+body+feed+'<p class="pf-foot">Баланс и доходность выше включают всю историю. Этот блок оценивает только выбранные закрытые сделки. Разбор сделок не меняет торговые параметры автоматически.</p></section>';
+}
+async function loadStrategyQuality(){
+  const d=await get('strategy-quality','/api/v1/strategy-quality',8000);
+  if(d&&Array.isArray(d.portfolios)){st.strategyQuality=d;if(st.portfolios)renderPortfolios();}
+}
 function renderPortfolioPanel(ps){
   const root=$('portfolios');root.className='pf-panel';
   if(!ps.length){root.innerHTML='<div class="msg warn">Портфели пока не получены.</div>';return;}
@@ -645,6 +669,9 @@ function renderPortfolioPanel(ps){
     '<section class="pf-section"><h4>Экспозиция</h4>'+pair('Длинные позиции',mult(v.long))+pair('Короткие позиции',mult(v.short))+pair('Чистая экспозиция',mult(v.net))+pair('Вне позиций',v.cash==null?'—':pct(100*v.cash))+'<div class="pf-foot">Объём позиций относительно размера портфеля. 1× = 100%. Показатель «Вне позиций» не учитывает требования к марже.</div></section>'+
     '<section class="pf-section"><h4>Качество сделок</h4><div class="pf-quality">'+metric('Прибыльных',v.winRate==null?'—':n(v.winRate,1)+'%','',v.closed==null?'Нет статистики':(v.wins??'—')+' из '+v.closed)+metric('Коэф. прибыли',pfText,pf==null?'':pf>=1?'ok':'bad','Прибыли / убытки')+metric('Средняя сделка',rub(v.avg),tone(v.avg))+metric('Прибыль / убыток',p.payoff_ratio==null?'—':n(p.payoff_ratio,2),'','Средние значения')+'</div></section></div>'+
     '<div class="pf-section" style="margin-top:14px"><h4>Результат всех закрытых сделок</h4><div class="pf-quality pf-ledger">'+metric('Доход от цены',rub(p.closed_gross_pnl_rub),tone(p.closed_gross_pnl_rub))+metric('Комиссии',rub(p.closed_fees_rub))+metric('Фондирование',rub(p.closed_funding_rub))+metric('Итог',rub(v.pnl),tone(v.pnl))+'</div><div class="pf-foot">Коэффициент прибыли и средняя сделка рассчитаны после комиссий и фондирования по всей истории закрытых сделок. Просадка показана от достигнутого пика до текущего значения.</div></div></div>';
+  root.innerHTML+=strategyQualityPanel(p);
+  if($('qualityScope'))$('qualityScope').onchange=e=>{st.qualityScope=e.target.value;renderPortfolioPanel(ps);};
+  if($('qualityWindow'))$('qualityWindow').onchange=e=>{st.qualityWindow=e.target.value;renderPortfolioPanel(ps);};
   document.querySelectorAll('#portfolios [data-portfolio]').forEach(el=>{el.onclick=()=>{st.selectedPortfolio=el.dataset.portfolio;renderPortfolioPanel(ps);};});
 }
 
@@ -1068,6 +1095,8 @@ function start(){
   refreshLiveState();
   setTimeout(loadIntelligence,500);
   setTimeout(loadMacro,1000);
+  setTimeout(loadStrategyQuality,1500);
+  setInterval(loadStrategyQuality,60000);
   setInterval(loadPortfolios,15000);
   setInterval(loadTrades,15000);
   setInterval(loadBootstrap,30000);

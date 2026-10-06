@@ -87,7 +87,8 @@ class CurrencyPortfolioTests(TestCase):
             'admission_trace':[{'asset':'BTC','reason':'X'},
                                {'asset':'CNYRUBF','direction':'LONG','reason':'Y'}]}]}
         cur=C.decorate_report(original)['portfolios'][0]
-        self.assertEqual([x['asset'] for x in cur['positions']],['CNYRUBF'])
+        self.assertEqual([x['asset'] for x in cur['positions']],['CNYRUBF','BTC'])
+        self.assertEqual([x['asset'] for x in cur['quarantined_positions']],['BTC'])
         self.assertEqual([x['asset'] for x in cur['admission_trace']],['CNYRUBF'])
         self.assertEqual(cur['current_cny_admission']['reason'],'Y')
         self.assertEqual(cur['portfolio_integrity_warning'],'NON_CNY_POSITION_QUARANTINED')

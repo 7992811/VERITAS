@@ -19,6 +19,8 @@ class FakeReader:
 
     def call(self, name, **kw):
         self.calls.append((name, kw))
+        if name == 'trading_status':
+            return {'trading_status':'SECURITY_TRADING_STATUS_NORMAL_TRADING','api_trade_available_flag':True}
         if name == 'accounts':
             return {'accounts': [{'id':'private-account', 'name':'Private name',
                 'status':'ACCOUNT_STATUS_OPEN','access_level':'ACCOUNT_ACCESS_LEVEL_READ_ONLY'}]}
@@ -72,7 +74,7 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual(len(candles['candles']),1)
         self.assertEqual(candles['candles'][0]['close'],12)
         self.assertEqual(candles['candles'][0]['volume_lots'],20)
-        self.assertFalse(c.status()['paper_source_switch_enabled'])
+        self.assertTrue(c.status()['paper_source_switch_enabled'])
 
     def test_public_status_and_quotes_do_not_leak_account_or_secret(self):
         c = T.TBankConnection({'TBANK_API_TOKEN':'test-secret'})
@@ -244,7 +246,7 @@ class MultiAssetHistoryTests(unittest.TestCase):
     def test_compatible_request_windows_no_optional_filters_and_no_redundant_downloads(self):
         c=self.connection();c.refresh();c.refresh();c.refresh()
         calls=[kw for name,kw in c.reader.calls if name=='candles']
-        self.assertEqual(len(calls),18)
+        self.assertEqual(len(calls),24)
         self.assertEqual(sum(name=='accounts' for name,_ in c.reader.calls),1)
         for kw in calls:
             config=next(v for v in T.HISTORY.values() if v[0]==kw['interval'])
@@ -252,7 +254,9 @@ class MultiAssetHistoryTests(unittest.TestCase):
             self.assertNotIn('candle_source_type',kw)
             begin=datetime.fromisoformat(kw['from'].replace('Z','+00:00'))
             end=datetime.fromisoformat(kw['to'].replace('Z','+00:00'))
-            self.assertEqual((end-begin).days,config[1])
+            self.assertEqual((end-begin).days,min(7,config[1]) if kw['interval']=='CANDLE_INTERVAL_HOUR' else config[1])
+        hourly=[kw for kw in calls if kw['interval']=='CANDLE_INTERVAL_HOUR']
+        self.assertEqual(len(hourly),9)  # 3 instruments x 3 bounded 7-day chunks.
 
     def test_one_failed_interval_does_not_block_other_contracts_or_fabricate_history(self):
         c=self.connection();original=c.reader.call
