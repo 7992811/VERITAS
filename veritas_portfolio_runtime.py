@@ -5254,6 +5254,7 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
 
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
+    import veritas_thesis_guard as VTG
     rows=[dict(z) for z in c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s',(name,)).fetchall()]
     safe_prices=dict(prices or {}); safe_candidates=dict(candidates or {}); safe_summary=list(summary or [])
     for z in rows:
@@ -5280,6 +5281,14 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         if candidate and not usable(candidate):
             safe_candidates.pop(asset,None)
         safe_summary=[r for r in safe_summary if r.get('asset')!=asset or usable(r)]
+        safe_candidates,safe_summary,guard=VTG.guard_open_position(c,z,safe_candidates,safe_summary)
+        if guard.get('active'):
+            patch={'ctc_senior_thesis_guard':guard}
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                      (json.dumps(patch),name,asset))
+            if z.get('active_trade_id'):
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                          (json.dumps(patch),z['active_trade_id']))
     return _r80_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,safe_summary)
 
 
