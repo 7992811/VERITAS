@@ -49,6 +49,7 @@ def configured_state():
             'profile': 'CURRENCY',
         },
         'admission_trace': [],
+        'current_cny_admission': None,
     }
 
 
@@ -75,6 +76,17 @@ def decorate_report(report):
             q['total_return_pct'] = round(100.0 * (nav / INITIAL_NAV_RUB - 1.0), 4)
         except (TypeError, ValueError):
             pass
+        trace=[dict(x) for x in (q.get('admission_trace') or [])
+               if str((x or {}).get('asset') or '')==ASSET]
+        bad_positions=[dict(x) for x in (q.get('positions') or [])
+                       if str((x or {}).get('asset') or '')!=ASSET]
+        q['admission_trace']=trace
+        q['current_cny_admission']=trace[0] if trace else None
+        q['positions']=[x for x in (q.get('positions') or [])
+                        if str((x or {}).get('asset') or '')==ASSET]
+        if bad_positions:
+            q['portfolio_integrity_warning']='NON_CNY_POSITION_QUARANTINED'
+            q['quarantined_position_count']=len(bad_positions)
         q.update({
             'display_name': DISPLAY_NAME,
             'configuration_status': 'CONFIGURED',
