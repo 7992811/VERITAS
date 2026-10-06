@@ -5282,6 +5282,17 @@ FINAL_STEP_ONE=_step_one
 FINAL_STEP_ALL=step_all
 FINAL_REPORT=report
 
+# Complete the two-way binding when this runtime module itself was imported
+# first. veritas_portfolio deliberately defers dereferencing FINAL_* during the
+# circular import; once the runtime reaches this lock, make the same authority
+# explicit on the already-loaded base module.
+_vp_base._signal_first_admission=FINAL_SIGNAL_FIRST_ADMISSION
+_vp_base._open_or_add=FINAL_OPEN_OR_ADD
+_vp_base._close_or_reduce=FINAL_CLOSE_OR_REDUCE
+_vp_base._step_one=FINAL_STEP_ONE
+_vp_base.step_all=FINAL_STEP_ALL
+_vp_base.report=FINAL_REPORT
+
 def runtime_authority_snapshot():
     return {
       'version':FINAL_RUNTIME_AUTHORITY_VERSION,
