@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 
 import veritas_currency_notifications as N
+import veritas_user_teaching as UT
 
 
 NOW = datetime(2026, 10, 6, 20, 15, tzinfo=timezone.utc)
@@ -174,6 +175,63 @@ class OutboxFixture(unittest.TestCase):
 
 
 class OutboxTests(OutboxFixture):
+    def test_order_entry_event_precedes_legacy_setup_and_position_events(self):
+        row = order_row("ADD")
+        row["payload"].update(entry_event_id="new-add", setup_event_id="legacy-order")
+        row["position_payload"]["r66_event_id"] = "original-open"
+        row["trade_payload"]["r66_event_id"] = "original-trade"
+        self.assertEqual(N.build_snapshot(row)["setup_event_id"], "new-add")
+        row["payload"].pop("entry_event_id")
+        self.assertEqual(N.build_snapshot(row)["setup_event_id"], "legacy-order")
+        row["payload"].pop("setup_event_id")
+        self.assertEqual(N.build_snapshot(row)["setup_event_id"], "original-open")
+
+    def test_structural_trace_preserves_epoch_and_historical_policy(self):
+        row = order_row()
+        signal = NOW.timestamp() - 3600.25
+        trace = UT.entry_trace({"event": {"event_id": "structure-1", "signal_at": signal}}, "Currency")
+        row["payload"].update(entry_event_id="structure-1", user_teaching_trace=trace)
+        # A later runtime version and clock cannot rewrite the entry provenance.
+        with patch.object(N.CTC, "VERSION", "LATER_POLICY"), patch.object(N, "_now", side_effect=AssertionError("no clock lookup")):
+            snapshot = N.build_snapshot(row)
+        self.assertEqual(snapshot["structural_signal_at"], signal)
+        self.assertEqual(snapshot["structural_signal_at_utc"], datetime.fromtimestamp(signal, timezone.utc).isoformat())
+        self.assertEqual(snapshot["structural_policy_version"], trace["structural_policy_version"])
+        self.assertEqual(snapshot["entry_ctc_version"], trace["ctc_version"])
+        self.assertEqual(snapshot["user_teaching_trace_sha256"], trace["trace_sha256"])
+        self.assertEqual(snapshot["policy_version"], "LATER_POLICY")
+
+    def test_add_never_inherits_original_event_timestamp_or_invalid_trace(self):
+        row = order_row("ADD")
+        original = UT.entry_trace({"event": {"event_id": "original-open", "signal_at": NOW.timestamp() - 7200}}, "Currency")
+        row["payload"]["entry_event_id"] = "new-add"
+        row["position_payload"]["user_teaching_trace"] = original
+        snapshot = N.build_snapshot(row)
+        self.assertIsNone(snapshot["structural_signal_at"])
+        self.assertIsNone(snapshot["entry_ctc_version"])
+        original["timeframe_entry_context"]["event"]["event_id"] = "new-add"
+        row["payload"]["user_teaching_trace"] = original
+        self.assertIsNone(N.build_snapshot(row)["structural_signal_at"])
+
+    def test_close_retains_matching_original_trace_without_current_position(self):
+        row = order_row("CLOSE")
+        signal = NOW.timestamp() - 7200
+        trace = UT.entry_trace({"event": {"event_id": "original-open", "signal_at": signal}}, "Currency")
+        row["payload"]["setup_event_id"] = "original-open"
+        row["trade_payload"]["user_teaching_trace"] = trace
+        self.assertEqual(N.build_snapshot(row)["structural_signal_at"], signal)
+
+    def test_missing_invalid_or_millisecond_signal_time_is_never_replaced(self):
+        row = order_row()
+        row["payload"]["entry_event_id"] = "structure-1"
+        for raw in (None, True, "invalid", NOW.timestamp() * 1000):
+            with self.subTest(raw=raw):
+                row["payload"]["user_teaching_trace"] = UT.entry_trace(
+                    {"event": {"event_id": "structure-1", "signal_at": raw}}, "Currency")
+                snapshot = N.build_snapshot(row)
+                self.assertIsNone(snapshot["structural_signal_at"])
+                self.assertIsNone(snapshot["structural_signal_at_utc"])
+
     def test_real_snapshot_preserves_source_clock_quantity_and_model_label(self):
         row = order_row()
         text = N.format_message(N.build_snapshot(row))

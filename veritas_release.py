@@ -22,6 +22,8 @@ def snapshot():
         "product_version":PRODUCT_VERSION,
         "portfolio_version":PORTFOLIO_VERSION,
         "ctc_version":CTC.VERSION,
+        "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
+        "active_user_teaching_id":CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"],
         "runtime_authority":CTC.BASIS_RUNTIME,
         "ui_version":UI_VERSION,
         "db_schema_version":DB_SCHEMA_VERSION,

@@ -22,6 +22,7 @@ import re
 import uuid
 
 import veritas_canonical_constitution as CTC
+from veritas_user_teaching import verify_entry_trace
 
 
 TABLE = "veritas_currency_notification_outbox"
@@ -170,6 +171,41 @@ SELECT o.*, t.direction AS trade_direction, t.opened_at AS trade_opened_at,
 """
 
 
+def _structural_provenance(order, position, trade, event_id):
+    """Keep entry provenance only when its immutable trace names this event."""
+    result = {"structural_signal_at": None, "structural_signal_at_utc": None,
+              "structural_policy_version": None, "entry_ctc_version": None,
+              "user_teaching_id": None, "user_teaching_trace_sha256": None}
+    if not event_id:
+        return result
+    for payload in (order, position, trade):
+        for key in ("user_teaching_trace", "last_add_teaching_trace"):
+            trace = _object(payload.get(key))
+            context = _object(trace.get("timeframe_entry_context"))
+            event = _object(context.get("event")) or context
+            if (_first(event.get("event_id"), event.get("entry_event_id")) != event_id
+                    or not verify_entry_trace(trace)):
+                continue
+            # signal_at is epoch seconds. Never parse it as a relative date,
+            # guess milliseconds, or replace an absent value with today's clock.
+            raw = event.get("signal_at")
+            signal = _number(raw) if not isinstance(raw, bool) else None
+            observed = None
+            if signal is not None and signal >= 0:
+                try:
+                    observed = datetime.fromtimestamp(signal, timezone.utc).isoformat()
+                except (OverflowError, OSError, ValueError):
+                    pass
+            result.update(structural_signal_at=signal if observed else None,
+                          structural_signal_at_utc=observed,
+                          structural_policy_version=trace.get("structural_policy_version"),
+                          entry_ctc_version=trace.get("ctc_version"),
+                          user_teaching_id=trace.get("teaching_id"),
+                          user_teaching_trace_sha256=trace.get("trace_sha256"))
+            return result
+    return result
+
+
 def build_snapshot(row):
     """Freeze accounting/quote facts; no future price or current rules lookup."""
     r = dict(row)
@@ -210,6 +246,8 @@ def build_snapshot(row):
         net = gross - fees - funding
     entry_notional = _number(r.get("entry_notional_rub"))
     opened, occurred = _datetime(r.get("trade_opened_at")), _datetime(r.get("created_at"))
+    setup_event_id = _first(op.get("entry_event_id"), op.get("setup_event_id"),
+                            pp.get("r66_event_id"), tp.get("r66_event_id"))
     return {
         "version": 1, "accounting_mode": "PAPER", "kind": kind,
         "client_order_id": str(r["client_order_id"]), "order_id": r["order_id"],
@@ -221,7 +259,8 @@ def build_snapshot(row):
         "source": source.get("primary_source"), "source_identity": source,
         "contract_id": source.get("contract_id"),
         "execution_horizon": _first(op.get("execution_horizon"), pp.get("execution_horizon"), tp.get("execution_horizon"), r.get("trade_horizon")),
-        "setup_event_id": _first(op.get("setup_event_id"), pp.get("r66_event_id"), tp.get("r66_event_id")),
+        "setup_event_id": setup_event_id,
+        **_structural_provenance(op, pp, tp, setup_event_id),
         "price": price, "reference_price": reference_price,
         "average_entry_price": _first(position_avg, _number(op.get("basis_avg_entry_price")), _number(r.get("trade_avg_entry_price"))),
         "order_notional_rub": notional, "order_fraction_nav": fraction,

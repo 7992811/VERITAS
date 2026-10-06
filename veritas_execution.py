@@ -17,7 +17,7 @@ PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
 
 # Research/paper economics gate. This is deliberately independent from signal quality:
 # even a SUPER signal cannot bypass bad trade economics.
-MIN_REWARD_RISK = max(1.0, float(os.getenv("VERITAS_FINAL_MIN_RR", "1.15")))
+MIN_REWARD_RISK = max(CTC.STRUCTURAL_ENTRY_POLICY['minimum_net_reward_risk'], float(os.getenv("VERITAS_FINAL_MIN_RR", "1.15")))
 # CTC owns the complete move floor. Historical environment values must not
 # silently reinstate an older, stricter entry threshold after a restart.
 MIN_EXPECTED_MOVE_PCT = float(CTC.COST_POLICY["minimum_expected_move_floor_pct"])
@@ -223,6 +223,7 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
         "target_price": target, "target_distance_pct": target_move,
         "modeled_entry_fill": entry_fill, "modeled_target_fill": target_fill,
         "modeled_stop_fill": stop_fill, "net_reward_pct": reward, "net_risk_pct": risk,
+        "net_reward_risk": net_rr,
         "principle": "Actual target/stop economics after adverse fills, commission and funding.",
     }
 
@@ -270,7 +271,8 @@ def entry_gate(row, price, direction, fraction, position=None):
     # Technical distance uses the actual refreshed quote for every setup.
     # Modeled slippage is charged above in net economics, not added to the
     # observed breakout extension as though it were an extra price movement.
-    timing_price=price
+    import veritas_timeframe_policy as TFP
+    timing_price=(gate.get('modeled_entry_fill') or price) if TFP.applies(row) else price
     event=(VTE.context_gate(row,datetime.now(timezone.utc)) if position else
            VTE.event_gate(row,timing_price,direction,datetime.now(timezone.utc)))
     gate['trend_event']=event

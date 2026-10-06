@@ -8,6 +8,7 @@ import veritas_trend_entry as VTE
 import veritas_launch_readiness as VLR
 import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
+import veritas_timeframe_policy as TFP
 import veritas_release as VR
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
@@ -2556,6 +2557,7 @@ def _v90r55_invalidated(row):
     )
 
 def _v90r54_apply_structural_stop(row):
+    if VTM.owns_row(row): return dict(row or {}),None
     if _v90r55_invalidated(row):
         x=dict(row or {})
         x['_r55_absolute_veto']='INVALIDATED_SETUP'
@@ -3284,6 +3286,7 @@ def _v90r56_trailing_activation(z,row):
 
 def _v90r54_tighten_position_stop(c,name,z,row,price,ts):
     z=dict(z or {}); row=dict(row or {})
+    if VTM.owns_position(z): return None
     row['price']=price
     if VTE.context_of(row).get('status')=='OK':
         stop=VTE.trailing_stop(z,row,price,float(VX.round_trip_cost_pct(row.get('spread_bps'))))
@@ -3306,6 +3309,7 @@ def _v90r54_tighten_position_stop(c,name,z,row,price,ts):
 
 def _v90r56_migrate_legacy_senior_position(c,name,z,row,price,nav,ts):
     z=dict(z or {}); row=dict(row or {})
+    if VTM.owns_position(z): return None
     if str(name)!='Aggressive': return None
     p=_v90j_json(z.get('payload'))
     if p.get('r56_trade_frame_migrated'): return None
@@ -3393,6 +3397,7 @@ def _v90r56_migrate_legacy_senior_position(c,name,z,row,price,nav,ts):
 
 def _v90r56_backfill_missing_tp(c,name,z,row,price,ts):
     z=dict(z or {}); p=_v90j_json(z.get('payload'))
+    if VTM.owns_position(z): return None
     if str(name)!='Aggressive' or not p.get('r56_trade_frame_migrated'):
         return None
     if _v90r51_num(p.get('r56_tp1_price')):
@@ -4759,6 +4764,8 @@ def _v90tr_apply(c,name,candidates,prices,ts):
         positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
         for z0 in positions or []:
             z=dict(z0); asset=str(z.get('asset') or '')
+            if VTM.owns_position(z):
+                work.pop(asset,None); continue
             if asset in work and asset in (prices or {}) and VTE.context_of(work[asset]).get('status')=='OK':
                 z['payload']=_v90j_json(z.get('payload'))
                 _v90r54_tighten_position_stop(c,name,z,work[asset],prices[asset],ts)
@@ -4982,6 +4989,9 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         if candidate and not usable(candidate):
             safe_candidates.pop(asset,None)
         safe_summary=[r for r in safe_summary if r.get('asset')!=asset or usable(r)]
+        if VTM.owns_position(z):
+            VTM.apply_trailing(c,name,z,safe_summary,q,ts)
+            safe_candidates,safe_summary=VTM.filter_lower_context(z,safe_candidates,safe_summary)
         safe_candidates,safe_summary,guard=VTG.guard_open_position(c,z,safe_candidates,safe_summary)
         if guard.get('active'):
             patch={'ctc_senior_thesis_guard':guard}
@@ -5025,7 +5035,8 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     policy=dict(POLICIES.get(str(name)) or {})
     hwm=float((p or {}).get('high_water_nav_rub') or nav or 1.0)
     dd=max(0.0,1.0-float(nav)/max(hwm,1.0))
-    admission=VCR.evaluate(dict(row or {},research_decision=direction),policy,dd,ts)
+    row=TFP.prepare_row(dict(row or {},research_decision=direction),price,ts)
+    admission=VCR.evaluate(row,policy,dd,ts)
     if not admission.get('open'):
         _record_entry_outcome(row,'BLOCKED',admission.get('reason') or 'CANONICAL_ADMISSION_BLOCK',
                               canonical_admission=admission)
@@ -5034,10 +5045,18 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
         "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
         (name,asset)).fetchone()
     requested=max(0.0,float(target_fraction or 0.0))
+    event=(admission.get('trend_event') or VTE.context_of(row or {}).get('event') or {})
+    event_id=event.get('event_id')
+    if event_id and c.execute("""SELECT 1 AS ok FROM paper_orders
+        WHERE portfolio_name=%s AND asset=%s AND side=%s
+          AND COALESCE(payload->>'entry_event_id',
+                       payload#>>'{user_teaching_trace,timeframe_entry_context,event,event_id}',
+                       payload#>>'{entry_timing,event_id}')=%s LIMIT 1""",
+        (name,asset,'BUY' if direction=='LONG' else 'SELL_SHORT',str(event_id))).fetchone():
+        _record_entry_outcome(row,'BLOCKED','EVENT_REUSE_WITHOUT_NEW_CONFIRMATION',event_id=event_id)
+        return 0.0
     if not existing:
         requested=min(requested or float(admission['fraction']),float(admission['fraction']))
-        event=(admission.get('trend_event') or VTE.context_of(row or {}).get('event') or {})
-        event_id=event.get('event_id')
         if event_id:
             prior=c.execute("""SELECT 1 AS ok FROM paper_trades
                 WHERE portfolio_name=%s AND asset=%s AND direction=%s
@@ -5060,9 +5079,14 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                   current_fraction=current,favorable_progress=favorable)
             return 0.0
         payload=_canonical_payload(existing)
-        old_event=payload.get('r66_event_id')
-        new_event=(admission.get('trend_event') or VTE.context_of(row or {}).get('event') or {}).get('event_id')
-        if old_event and new_event and str(old_event)==str(new_event):
+        if str(payload.get('execution_horizon') or '')!=str(row.get('horizon') or ''):
+            _record_entry_outcome(row,'BLOCKED','SAME_TF_ADD_HORIZON_MISMATCH')
+            return 0.0
+        last_trace=(payload.get('last_add_teaching_trace') or {}).get('timeframe_entry_context') or {}
+        used={str(x) for x in (payload.get('r66_event_id'),payload.get('last_add_event_id'),
+                               (last_trace.get('event') or {}).get('event_id')) if x}
+        new_event=event_id
+        if new_event and str(new_event) in used:
             _record_entry_outcome(row,'BLOCKED','CANONICAL_ADD_REQUIRES_NEW_CONFIRMATION',
                                   event_id=new_event)
             return 0.0
@@ -5091,7 +5115,8 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
         _record_entry_outcome(row,'BLOCKED','STOP_RISK_CAP_EXCEEDED')
         return 0.0
     work=dict(row or {})
-    work['_canonical_admission']=admission
+    work['trade_plan']=dict(admission.get('prepared_plan') or work.get('trade_plan') or {})
+    work['_canonical_admission']={k:v for k,v in admission.items() if k!='prepared_plan'}
     work.setdefault('_pwin',admission.get('probability') or work.get('confidence') or .5)
     work.setdefault('_pwin_source',admission.get('probability_source') or 'CTC_V2_CANONICAL')
     return _vp_base.CANONICAL_ACCOUNTING_OPEN_OR_ADD(

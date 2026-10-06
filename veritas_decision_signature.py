@@ -14,6 +14,8 @@ def decision_signature(event_type, payload):
           'signal_tier':p.get('signal_tier'),'decision_stage':p.get('decision_stage'),
           'regime':p.get('regime'),'eligible':plan.get('eligible'),
           'plan_reason':plan.get('reason'),'entry_quality':plan.get('entry_quality'),
+          'entry_event_id':plan.get('entry_event_id'),
+          'structural_policy_version':plan.get('structural_policy_version'),
           'breakout_state':bq.get('state'),
           'paper_eligible':(p.get('execution_eligibility') or {}).get('paper_eligible'),
           'source_gate':(p.get('gates') or {}).get('source'),

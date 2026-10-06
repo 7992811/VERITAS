@@ -288,19 +288,9 @@ def install_market_runtime_guard(ns):
             except Exception as ex:
                 _emit("moex_live_index_history_error", provider=base, error=f"{type(ex).__name__}: {ex}")
 
-        try:
-            rows, _ = yahoo_series("IMOEX.ME", "3mo", "1h", False)
-            out = []
-            for x in rows:
-                ts = float(x["ts"])
-                if ts < start_ts or ts > end_ts:
-                    continue
-                vol = float(x.get("volume") or 0)
-                out.append([int(ts*1000),str(x["open"]),str(x["high"]),str(x["low"]),str(x["close"]),str(vol),
-                            int((ts+3600)*1000)-1,"0","0",str(vol*0.5),"0","0"])
-            return out
-        except Exception:
-            return []
+        # Canonical structural history must retain the official MOEX source.
+        # A Yahoo fallback cannot be labelled as the execution source.
+        return []
 
     ns["_moex_candles_between"] = moex_index_candles
 

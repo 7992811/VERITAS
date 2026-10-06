@@ -66,7 +66,7 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertEqual(book["CNYRUBF"]["research_decision"],"LONG")
         self.assertEqual(book["CNYRUBF"]["_alignment_count"],2)
 
-    def test_soft_timing_block_reduces_to_probe_not_cash(self):
+    def test_owner_correction_blocks_published_signal_without_same_tf_context(self):
         row={"asset":"CNYRUBF","horizon":"5m","research_decision":"LONG","decision":"LONG",
              "signal_tier":"LONG","price":12.8,"source_gate_pass":True,"market_open":True,
              "paper_eligible":True,"market_observed_at":datetime.now(timezone.utc).isoformat(),
@@ -76,9 +76,10 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
                  "eligible":False,"blockers":["RR_BELOW_FINAL_FLOOR","R69_WAIT_LOCAL_BREAKOUT"],
                  "net_risk_pct":.01,"net_reward_pct":.002}):
             out=VCR.evaluate(row,policy,0.0)
-        self.assertTrue(out["open"],out)
-        self.assertEqual(out["fraction"],.05)
-        self.assertIn("R69_WAIT_LOCAL_BREAKOUT",out["soft_blockers"])
+        self.assertFalse(out["open"],out)
+        self.assertEqual(out["fraction"],0.0)
+        self.assertTrue(out["hard_veto"])
+        self.assertEqual(out["reason"],"SAME_TF_CONTEXT_REQUIRED")
 
     def test_weak_senior_signal_waits_for_local_confirmation(self):
         row={"asset":"NQ","horizon":"4h","research_decision":"LONG",
@@ -134,7 +135,7 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
              "paper_eligible":True,"market_observed_at":datetime.now(timezone.utc).isoformat(),
              "trade_plan":{"stop_price":12.7}}
         policy=CTC.runtime_portfolio_policy("Currency")
-        with patch.object(VCR.VX,"paper_source_gate",return_value={"eligible":True,"blockers":[]}),              patch.object(VCR.VPG,"quote_gate",return_value={"eligible":True}),              patch.object(VCR.VTE,"prepare_row",side_effect=lambda x,*a,**k:x),              patch.object(VCR.VTE,"event_gate",return_value={"eligible":True,"reason":"OK"}),              patch.object(VCR,"anti_chase_gate",return_value={"eligible":True,"reason":"OK"}),              patch.object(VCR.VX,"entry_gate",return_value={
+        with patch.object(VCR.VX,"paper_source_gate",return_value={"eligible":True,"blockers":[]}),              patch.object(VCR.VPG,"quote_gate",return_value={"eligible":True}),              patch.object(VCR.TFP,"prepare_row",side_effect=lambda x,*a,**k:x),              patch.object(VCR.TFP,"entry_gate",return_value={"eligible":True,"reason":"OK"}),              patch.object(VCR,"anti_chase_gate",return_value={"eligible":True,"reason":"OK"}),              patch.object(VCR.VX,"entry_gate",return_value={
                  "eligible":False,"blockers":["EXPECTED_MOVE_BELOW_COST_BUFFER"],
                  "net_risk_pct":.01,"net_reward_pct":-.001}):
             out=VCR.evaluate(row,policy,0.0)

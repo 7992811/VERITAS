@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import veritas_canonical_runtime as VCR
 import veritas_canonical_constitution as CTC
 import veritas_execution as VX
+from test_veritas_timeframe_policy import structural_row
 
 
 class CurrencyCostConsistencyTests(unittest.TestCase):
@@ -84,28 +85,13 @@ class CurrencyRoutingConsistencyTests(unittest.TestCase):
     def row(horizon, direction="LONG", **overrides):
         clock = datetime.now(timezone.utc)
         sign = 1 if direction == "LONG" else -1
-        row = {
-            "asset": "CNYRUBF", "horizon": horizon,
-            "research_decision": direction, "decision": direction,
-            "signal_tier": direction, "confidence": 0.80,
-            "source_gate_pass": True, "market_open": True, "paper_eligible": True,
-            "source_names": {"primary": "MOEX ISS CNYRUBF"},
-            "market_observed_at": clock.isoformat(), "price": 100.0,
-            "realized_vol": 0.002, "horizon_return": sign * 0.001,
-            "horizon_structure": {"state": "CONFIRMED_TREND", "score": 0.8,
-                                  "direction": direction},
-            "independent_evidence_families": 4,
-            "entry_quality": "CONFIRMED_TREND",
-            "trade_plan": {
-                "entry_price": 100.0, "stop_price": 100.0 - sign * 0.5,
-                "target_price": 100.0 + sign * 1.0,
-                "expected_move_pct": 0.01, "expected_to_stop_ratio": 2.0,
-            },
-            "trend_entry_context": {
-                "status": "OK", "closed_at": clock.timestamp(), "atr": 0.20,
-                "local_support": 99.5, "local_resistance": 100.5, "levels": [],
-            },
-        }
+        # Exercise the owner's real native-timeframe breakout detector using
+        # causal OHLC, rather than manufacturing a current displayed signal.
+        row = structural_row(clock, timeframe=horizon, asset="CNYRUBF",
+                             direction=direction, width=overrides.pop("width", 1.0))
+        row.update(signal_tier=direction, confidence=0.80,
+                   realized_vol=0.002, horizon_return=sign * 0.001,
+                   independent_evidence_families=4, entry_quality="FRESH_BREAKOUT")
         row.update(overrides)
         return row
 
@@ -120,18 +106,14 @@ class CurrencyRoutingConsistencyTests(unittest.TestCase):
         self.assertTrue(attempts[-1]["open"])
 
     def test_currency_uses_four_hours_when_faster_setups_fail_cost_gate(self):
-        five, hour, four = self.row("5m"), self.row("1h"), self.row("4h")
-        for row in (five, hour):
-            # Same direction, but these setups have only 0.15% target room,
-            # below the canonical 0.19% minimum.
-            row["trade_plan"]["stop_price"] = 99.925
-            row["trade_plan"]["target_price"] = 100.15
-            row["trade_plan"]["expected_move_pct"] = 0.0015
-            row["trend_entry_context"]["local_support"] = 99.925
+        # The faster OHLC structures have too little native target room to
+        # cover costs. The wider 4h structure retains its own anchors and ATR.
+        five, hour, four = self.row("5m", width=.025), self.row("1h", width=.025), self.row("4h")
         chosen = VCR.currency_candidate_book([five, hour, four])["CNYRUBF"]
         self.assertEqual(chosen["horizon"], "4h")
         self.assertEqual([x["horizon"] for x in chosen["_currency_route_trace"]], ["5m", "1h", "4h"])
         self.assertTrue(all(not x["open"] for x in chosen["_currency_route_trace"][:2]))
+        self.assertTrue(all(x["canonical_stage"] == "ECONOMICS" for x in chosen["_currency_route_trace"][:2]))
         self.assertTrue(chosen["_currency_route_trace"][-1]["open"])
 
     def test_currency_keeps_five_minute_priority_when_multiple_setups_pass(self):

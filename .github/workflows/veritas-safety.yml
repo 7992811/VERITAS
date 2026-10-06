@@ -19,6 +19,8 @@ jobs:
         run: pip install -r requirements-intelligence.txt
       - name: Compile canonical runtime
         run: python -m py_compile veritas_canonical_constitution.py veritas_canonical_runtime.py veritas_release.py veritas_quote_time.py veritas_profit_protection.py veritas_position_guard.py veritas_execution.py veritas_broker.py veritas_instruments.py veritas_promotion.py veritas_risk.py veritas_live.py veritas_storage_guard.py veritas_market_runtime.py veritas_signal_core.py veritas_decision_signature.py veritas_asset_management_intelligence.py veritas_portfolio.py veritas_portfolio_runtime.py veritas_intelligence.py veritas_learning_index.py veritas_v90_ui.py
+      - name: Owner timeframe structure and provenance regressions
+        run: python -m unittest -v test_veritas_timeframe_structure.py test_veritas_timeframe_policy.py test_veritas_timeframe_data.py test_veritas_timeframe_management.py test_veritas_profinance_history.py test_veritas_user_teaching.py test_veritas_repeat_add.py
       - name: Canonical constitution regressions
         run: python -m unittest -v test_veritas_canonical_constitution.py
       - name: CTC v2 architecture regressions

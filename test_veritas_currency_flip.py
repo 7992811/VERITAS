@@ -2,13 +2,15 @@
 
 The local SQLite adapter executes the actual ledger and outbox SQL, translating
 PostgreSQL types, parameters and JSON concatenation. It does not test PG locks.
-Market admission and quotes are deterministic; no external account is used.
+Observed-bar fixtures supply the quote and its native timeframe. Production
+structural, admission, freshness, sizing and fill-cost gates remain unchanged.
 """
 from contextlib import ExitStack
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -17,9 +19,7 @@ import veritas_currency_notifications as N
 import veritas_portfolio as VP
 import veritas_portfolio_runtime as R
 from test_veritas_currency_notifications import Connection as OutboxConnection
-
-
-NOW = datetime(2026, 10, 6, 20, 15, tzinfo=timezone.utc)
+from test_veritas_timeframe_policy import valid_row
 
 
 class JsonCursor:
@@ -48,6 +48,8 @@ class LedgerConnection(OutboxConnection):
         if self.fail_new_position and sql.startswith("INSERT INTO paper_positions"):
             raise RuntimeError("injected reverse entry failure")
         sql = sql.replace("payload=payload || %s::jsonb", "payload=json_patch(payload,%s)")
+        sql = re.sub(r"payload#>>'\{([^}]+)\}'",
+                     lambda m: "json_extract(payload,'$." + m.group(1).replace(',', '.') + "')", sql)
         return JsonCursor(super().execute(sql, params))
 
 
@@ -55,17 +57,17 @@ class CurrencyFlipTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = str(Path(self.tmp.name) / "currency-flip.sqlite")
-        self.quote = {"price": 12.75, "observed_at": NOW.isoformat(),
+        self.now = datetime.now(timezone.utc)
+        self.quote = {"price": 12.75, "observed_at": self.now.isoformat(),
                       "source_gate_pass": True, "market_open": True,
                       "source_names": {"primary": "MOEX ISS"},
                       "contract": {"secid": "CNYRUBF"}}
         self.source = VP.VPS.identity("CNYRUBF", self.quote)
         self.initial_fee = 5000 * VP.COMMISSION
         self.nav = 10000 + 100 - self.initial_fee
-        self.row = {"asset": "CNYRUBF", "horizon": "5m", "research_decision": "SHORT",
-                    "decision": "SHORT", "price": 12.75, "_execution_quote": self.quote,
-                    "_flip_confirmed": True, "_execution_audit": {},
-                    "trade_plan": {"stop_price": 12.9, "target_price": 12.4}}
+        self.row = valid_row("CNYRUBF", "5m", "SHORT", price=12.75, now=self.now,
+                             source="MOEX ISS", contract_id="CNYRUBF")
+        self.row.update(_execution_quote=self.quote, _flip_confirmed=True, _execution_audit={})
         payload = {"entry_nav_rub": 10000, "price_source_lock": self.source,
                    "execution_horizon": "5m", "stop_price": 12.4, "target_price": 12.9,
                    "pwin": .75, "pwin_source": "MODEL_QUALITY_SCORE_UNCALIBRATED"}
@@ -93,20 +95,20 @@ class CurrencyFlipTests(unittest.TestCase):
             """)
             N.ensure_schema(c)
             c.execute("INSERT INTO paper_portfolios VALUES ('Currency',10000,0,%s,0,%s)",
-                      (self.initial_fee, NOW))
+                      (self.initial_fee, self.now))
             c.execute("""INSERT INTO paper_trades
                 (trade_id,portfolio_name,asset,direction,opened_at,avg_entry_price,
                  max_fraction,fees_rub,status,horizon,payload)
                 VALUES ('existing','Currency','CNYRUBF','LONG',%s,12.5,.5,%s,'OPEN','5m',%s)""",
-                (NOW, self.initial_fee, json.dumps(payload)))
+                (self.now, self.initial_fee, json.dumps(payload)))
             c.execute("""INSERT INTO paper_positions VALUES
                 ('Currency','CNYRUBF','LONG',400,12.5,%s,%s,'existing',12.4,.5,12.75,%s)""",
-                (NOW, NOW, json.dumps(payload)))
+                (self.now, self.now, json.dumps(payload)))
             c.execute("""INSERT INTO paper_orders
                 (client_order_id,trade_id,portfolio_name,asset,created_at,side,price,
                  notional_rub,fee_rub,fraction_nav,reason,payload)
                 VALUES ('old-entry','existing','Currency','CNYRUBF',%s,'BUY',12.5,5000,%s,.5,'ENTRY','{}')""",
-                (NOW, self.initial_fee))
+                (self.now, self.initial_fee))
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -121,17 +123,7 @@ class CurrencyFlipTests(unittest.TestCase):
             "VERITAS_CURRENCY_NOTIFICATIONS_CHAT_ID": "@veritas_test",
             "VERITAS_CURRENCY_NOTIFICATIONS_KEY": "local-test-key",
         }))
-        stack.enter_context(patch.object(R.VCR, "evaluate", return_value={
-            "open": True, "fraction": .5, "probability": .75,
-            "probability_source": "MODEL_QUALITY_SCORE_UNCALIBRATED"}))
-        stack.enter_context(patch.object(R.VTE, "prepare_row", side_effect=lambda row, *a, **k: row))
-        stack.enter_context(patch.object(VP.VX, "paper_quote_time_gate", return_value={"eligible": True}))
-        stack.enter_context(patch.object(VP.VX, "entry_gate", return_value={"eligible": True, "blockers": []}))
-        stack.enter_context(patch.object(VP.VX, "simulated_fill", return_value={
-            "fill_price": 12.75, "reference_price": 12.75}))
         stack.enter_context(patch.object(VP.VPG, "quote_for_position", return_value=self.quote))
-        stack.enter_context(patch.object(VP.VPG, "exit_fill", return_value={
-            "fill_price": 12.75, "reference_price": 12.75}))
         stack.enter_context(patch.object(VP.VPG, "publish_quote"))
         return stack
 
@@ -139,7 +131,7 @@ class CurrencyFlipTests(unittest.TestCase):
         self.assertIs(VP._open_or_add, R.FINAL_OPEN_OR_ADD)
         self.assertIs(VP._close_or_reduce, R.FINAL_CLOSE_OR_REDUCE)
         return VP._open_or_add(c, {"high_water_nav_rub": self.nav}, "Currency", "CNYRUBF",
-                              "SHORT", 12.75, .5, self.nav, NOW.isoformat(), self.row, "ENTRY")
+                              "SHORT", 12.75, .5, self.nav, self.now.isoformat(), self.row, "ENTRY")
 
     def test_confirmed_flip_commits_close_then_open_and_exact_event_snapshots(self):
         with self.market_context(), self.connect() as c, c.transaction():
@@ -147,11 +139,13 @@ class CurrencyFlipTests(unittest.TestCase):
         with self.connect() as c:
             position = c.execute("SELECT * FROM paper_positions").fetchone()
             old = c.execute("SELECT * FROM paper_trades WHERE trade_id='existing'").fetchone()
-            orders = c.execute("SELECT side FROM paper_orders ORDER BY order_id").fetchall()
+            orders = c.execute("SELECT * FROM paper_orders ORDER BY order_id").fetchall()
             events = c.execute(f"SELECT * FROM {N.TABLE} ORDER BY event_id").fetchall()
         self.assertEqual(position["direction"], "SHORT")
         self.assertEqual(old["status"], "CLOSED")
-        self.assertAlmostEqual(old["net_pnl_rub"], 100 - self.initial_fee - 5100 * VP.COMMISSION)
+        exit_order = orders[1]
+        expected_net = 400 * (exit_order["price"] - 12.5) - self.initial_fee - exit_order["fee_rub"]
+        self.assertAlmostEqual(old["net_pnl_rub"], expected_net)
         self.assertEqual([row["side"] for row in orders], ["BUY", "SELL", "SELL_SHORT"])
         self.assertEqual([row["kind"] for row in events], ["CLOSE", "OPEN"])
         closed, opened = [json.loads(row["snapshot"]) for row in events]
@@ -162,7 +156,10 @@ class CurrencyFlipTests(unittest.TestCase):
         self.assertEqual(opened["target_price"], position["payload"]["target_price"])
         self.assertEqual(opened["execution_horizon"], "5m")
         self.assertEqual(opened["source_identity"], self.source)
-        self.assertEqual(opened["quote_observed_at"], NOW.isoformat())
+        self.assertEqual(opened["quote_observed_at"], self.now.isoformat())
+        event = self.row["timeframe_entry_context"]["event"]
+        self.assertEqual(opened["setup_event_id"], event["event_id"])
+        self.assertEqual(position["payload"]["entry_event_snapshot"], event)
 
     def test_unconfirmed_close_retains_old_side_and_does_not_enqueue_reverse(self):
         with self.market_context(), patch.object(VP.VPG, "quote_for_position", return_value=None):
@@ -191,7 +188,7 @@ class CurrencyFlipTests(unittest.TestCase):
             with self.subTest(reason=reason), self.market_context(), patch.object(
                     VP, "CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE", return_value=1.0) as close:
                 result = VP._close_or_reduce(None, {}, "Currency", position, 12.75, 0,
-                                             self.nav, NOW.isoformat(), reason)
+                                             self.nav, self.now.isoformat(), reason)
                 self.assertEqual(result, 1.0)
                 close.assert_called_once()
 
