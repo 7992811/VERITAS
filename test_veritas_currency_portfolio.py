@@ -36,6 +36,12 @@ class CurrencyPortfolioTests(TestCase):
         self.assertEqual(out['fraction'],.50)
         self.assertEqual(out['canonical_policy_version'],R.CTC.VERSION)
 
+    def test_currency_timing_blocks_are_soft_but_cost_blocks_stay_hard(self):
+        self.assertIn('R69_WAIT_LOCAL_BREAKOUT',R._R79_SOFT_ECON_BLOCKERS)
+        self.assertIn('R69_BREAKOUT_ACTIVITY_REQUIRED',R._R79_SOFT_ECON_BLOCKERS)
+        self.assertNotIn('EXPECTED_MOVE_BELOW_COST_BUFFER',R._R79_SOFT_ECON_BLOCKERS)
+        self.assertNotIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',R._R79_SOFT_ECON_BLOCKERS)
+
     def test_currency_drawdown_profile_matches_owner_limit(self):
         p=P._v90r35_profile('CURRENCY','Currency')
         self.assertEqual(p['name'],'CURRENCY')
@@ -50,6 +56,13 @@ class CurrencyPortfolioTests(TestCase):
         self.assertEqual(cur['configuration_status'],'CONFIGURED')
         self.assertEqual(cur['max_gross_limit'],10.0)
         self.assertFalse(cur['live_trading_enabled'])
+
+    def test_reporting_repairs_currency_return_base(self):
+        original={'portfolios':[{'name':'Currency','nav_rub':10_000.0,
+                                 'total_return_pct':-99.0,'positions':[]}]}
+        cur=C.decorate_report(original)['portfolios'][0]
+        self.assertEqual(cur['initial_nav_rub'],10_000.0)
+        self.assertEqual(cur['total_return_pct'],0.0)
 
 
 if __name__ == '__main__':
