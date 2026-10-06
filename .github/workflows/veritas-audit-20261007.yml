@@ -1,0 +1,46 @@
+name: VERITAS read-only runtime audit 20261007
+
+on:
+  push:
+    branches: [ "audit/20261007-runtime-evidence" ]
+    paths: [ ".github/workflows/veritas-audit-20261007.yml" ]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Read bounded public paper snapshots
+        shell: python
+        run: |
+          import json, re, urllib.request, datetime, time
+          BASE = "https://veritas-intelligence-v1.onrender.com"
+          PATHS = ["/healthz", "/api/v1/dashboard-bootstrap", "/api/v1/cost-policy",
+                   "/api/v1/loss-audit", "/api/v1/strategy-quality", "/api/v1/heavy-learning",
+                   "/api/v1/protective-guard"]
+          DROP = re.compile(r"(token|secret|password|credential|authorization|database_url|dsn|account_id|chat_id)", re.I)
+          def safe(x, depth=0):
+              if depth > 18: return "[DEPTH_LIMIT]"
+              if isinstance(x, dict):
+                  return {k:safe(v,depth+1) for k,v in x.items() if not DROP.search(str(k))}
+              if isinstance(x, list): return [safe(v,depth+1) for v in x[:500]]
+              if isinstance(x, str) and (re.search(r"(?i)(bearer |postgres(?:ql)?://)",x)):
+                  return "[REDACTED]"
+              return x
+          print("VERITAS_AUDIT_SCOPE " + json.dumps({"at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"method":"GET_ONLY","paper_data_only":True,"broker_accounts":False,"expected_code_sha":"af5358c6d4a8a6b2d256a1574b7402ce67d8da9a"}),flush=True)
+          for path in PATHS:
+              started=time.monotonic()
+              try:
+                  req=urllib.request.Request(BASE+path,headers={"User-Agent":"VERITAS-read-only-audit/20261007","Accept":"application/json"})
+                  with urllib.request.urlopen(req,timeout=45) as response:
+                      body=response.read(8*1024*1024+1)
+                      if len(body)>8*1024*1024: raise ValueError("response size limit")
+                      data=json.loads(body)
+                  clean=safe(data)
+                  print("VERITAS_AUDIT_DATA " + json.dumps({"path":path,"seconds":round(time.monotonic()-started,3),"data":clean},ensure_ascii=False,allow_nan=False),flush=True)
+              except Exception as exc:
+                  print("VERITAS_AUDIT_ERROR " + json.dumps({"path":path,"error_type":type(exc).__name__,"seconds":round(time.monotonic()-started,3)}),flush=True)
+          
