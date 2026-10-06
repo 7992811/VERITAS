@@ -111,6 +111,7 @@ class QualitySQLTests(unittest.TestCase):
         self.assertNotIn('strategy_epoch',stored)
         review=stored['posttrade_review']
         self.assertEqual(review['source_integrity_status'],'UNKNOWN')
+        self.assertEqual(review['evidence_exclusion'],'SOURCE_UNVERIFIED')
         self.assertEqual(review['evidence_status'],'INCOMPLETE_OR_SOURCE_UNVERIFIED')
         self.assertEqual(review['component'],'UNVERIFIED')
         self.assertIsNone(review['capture_ratio'])

@@ -114,12 +114,13 @@ def evidence_exclusion(trade):
     if 'REBASE' in reason.upper():
         return 'ADMINISTRATIVE_EXIT'
     integrity = str(p.get('data_integrity_status') or '').strip().upper()
-    if (integrity and integrity not in ('OK', 'VALID', 'CLEAN')) or 'DATA_DISCONTINUITY' in reason.upper():
+    unknown_integrity=integrity in ('','UNKNOWN','UNVERIFIED','MISSING')
+    if (not unknown_integrity and integrity not in ('OK', 'VALID', 'CLEAN')) or 'DATA_DISCONTINUITY' in reason.upper():
         return 'DATA_INTEGRITY'
     source_problem=_source_exclusion(trade,p)
     if source_problem:
         return source_problem
-    if not integrity:
+    if unknown_integrity:
         return 'SOURCE_UNVERIFIED'
     if p.get('recovered') or p.get('learning_eligible') is False:
         return 'INCOMPLETE_EVIDENCE'
