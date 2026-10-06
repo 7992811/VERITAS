@@ -99,6 +99,35 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         gate=VCR.local_confirmation_gate(row,{"reason":"R69_WAIT_LOCAL_BREAKOUT"})
         self.assertTrue(gate["eligible"],gate)
 
+    def test_currency_route_is_bound_to_production_portfolio(self):
+        self.assertIs(VP._currency_candidate_book,VCR.currency_candidate_book)
+
+    def test_canonical_take_profit_keeps_structural_runner(self):
+        now=datetime.now(timezone.utc).isoformat()
+        z={"asset":"ETH","direction":"SHORT","units":1000.0,"avg_entry_price":100.0,
+           "active_trade_id":"T","stop_price":102.0,"payload":{}}
+        trade={"trade_id":"T","max_fraction":.10,"gross_pnl_rub":150.0,
+               "fees_rub":20.0,"funding_rub":0.0}
+        class Result:
+            def __init__(self,row=None): self.row=row
+            def fetchone(self): return self.row
+        class Conn:
+            def execute(self,sql,args=None):
+                if sql.startswith("SELECT * FROM paper_trades"):
+                    return Result(trade)
+                return Result()
+        quote={"price":99.5,"observed_at":now,"source_gate_pass":True}
+        assessment={"eligible":True,"net_pnl_rub":100.0,"reason":"R72_NET_PROFIT_CONFIRMED"}
+        with patch.object(VPR.VPG,"quote_for_position",return_value=quote), \
+             patch.object(VPR.VPG,"profit_exit_assessment",return_value=assessment), \
+             patch.object(VPR._vp_base,"CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE",return_value=1.0) as close:
+            out=VPR.canonical_close_or_reduce(
+                Conn(),{"high_water_nav_rub":1_000_000},"Aggressive",z,99.5,0.0,
+                1_000_000.0,now,"TAKE_PROFIT")
+        self.assertEqual(out,1.0)
+        self.assertAlmostEqual(close.call_args.args[5],.05)
+        self.assertEqual(close.call_args.args[8],"TAKE_PROFIT_PARTIAL_CTC_V2")
+
     def test_cost_negative_signal_remains_hard_block(self):
         row={"asset":"CNYRUBF","horizon":"1h","research_decision":"LONG","decision":"LONG",
              "signal_tier":"LONG","price":12.8,"source_gate_pass":True,"market_open":True,
