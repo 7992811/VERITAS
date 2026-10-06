@@ -364,6 +364,22 @@ IMPLEMENTATION_GAPS = [
         "canonical": "External knowledge may expand only through shadow/validation; market outcome learning remains active.",
         "action": "Do not enable automatic external rule promotion; decide separately whether discovery/import automation should run.",
     },
+    {
+        "id": "GAP09",
+        "severity": "HIGH",
+        "area": "architecture",
+        "current": "R85 final-authority lock creates a circular-import failure when veritas_portfolio_runtime is imported before veritas_portfolio.",
+        "canonical": "Runtime authority must be import-order independent and testable as a standalone module.",
+        "action": "Refactor final-authority binding so direct runtime import cannot observe a half-initialized module.",
+    },
+    {
+        "id": "GAP10",
+        "severity": "MEDIUM",
+        "area": "portfolio_api",
+        "current": "R85 safety test for zero-exposure fast-memory portfolio response does not return api_source=live_memory.",
+        "canonical": "Zero-exposure fast-memory responses must remain explicit and complete rather than silently losing provenance.",
+        "action": "Repair the fast-memory response path without weakening the completeness fallback for nonzero exposure.",
+    },
 ]
 
 
