@@ -37,7 +37,7 @@ def attach(raw, now=None):
         # old feature names. Forecast history elsewhere remains research only.
         r['structure_minute_bars'] = mapping.get('1m', [])
         r['structure_intraday_bars'] = mapping.get('5m', [])
-    elif identity['key'].startswith(('BINANCE:', 'MOEX:')):
+    elif identity['key'].startswith(('BINANCE:', 'MOEX:', 'TBANK_GRPC:')):
         mapping = {'1m':r.get('structure_minute_bars') or [],
                    '5m':r.get('canonical_five_minute_bars') or [],
                    '1h':r.get('canonical_hourly_bars') or [],

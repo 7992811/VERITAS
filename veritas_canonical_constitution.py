@@ -12,6 +12,18 @@ from __future__ import annotations
 VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
+STRATEGY_EPOCH = "EQ3_2026_10_06"
+STRATEGY_ROLE_POLICY = {
+    "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
+    "AGGRESSIVE": {"name":"CONFIRMED_TREND","horizons":("5m","1h","4h","1d"),
+                   "require_trend":True,"min_structure_score":0.65,"min_independent":3},
+    "CORE": {"name":"CHAMPION_CONTROL","horizons":("1h","4h","1d","3d"),
+             "require_trend":True,"min_structure_score":0.70,"min_independent":3},
+    "CHALLENGER": {"name":"CHALLENGER_LOCAL_TRIGGER","horizons":("5m","1h","4h"),
+                   "require_trend":True,"min_structure_score":0.70,"min_independent":4,
+                   "variant":"MATCHED_EVENT_PAPER_ONLY"},
+}
+
 # Explicit owner correction, 2026-10-06. These are operational safeguards;
 # numeric defaults are not an empirically validated trading edge.
 STRUCTURAL_ENTRY_POLICY = {
@@ -61,7 +73,8 @@ COST_POLICY = {
     "round_trip_base_cost_pct": 0.0016,
     "cost_buffer_multiple": 1.1,
     "minimum_expected_move_floor_pct": 0.0019,
-    "minimum_expected_move_formula": "max(0.19%, 1.1 * modeled_round_trip_cost)",
+    "entry_cost_multiple": 2.0,
+    "minimum_expected_move_formula": "max(0.19%, 2.0 * modeled_round_trip_cost)",
     "funding_annual_rate": 0.16,
     "funding_free_seconds": 86400,
     "funding_basis": "ACT/365.25_AFTER_FIRST_24H_ON_CURRENT_NOTIONAL",
@@ -248,6 +261,7 @@ SIGNAL_POLICY = {
 LIFECYCLE_POLICY = {
     "take_profit_is_partial_when_position_allows": True,
     "default_tp_runner_ratio": 0.50,
+    "strong_trend_runner_ratio": 0.70,
     "aggressive_tp_runner_ratio": 0.60,
     "minimum_position_step": 0.05,
     "profit_lock_activation_floor_pct": 0.21,

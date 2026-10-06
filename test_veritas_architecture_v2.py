@@ -42,7 +42,7 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertEqual(s["runtime_authority"], CTC.BASIS_RUNTIME)
         self.assertEqual(s["portfolio_count"], 5)
         self.assertEqual(tuple(s["portfolios"]), CTC.PORTFOLIO_ORDER)
-        self.assertIn("five-portfolio", s["product_version"])
+        self.assertIn("execution-quality-v3", s["product_version"])
 
     def test_final_runtime_binds_canonical_routing_and_admission(self):
         snap=VPR.runtime_authority_snapshot()

@@ -60,6 +60,8 @@ def structural_row(clock, *, timeframe="5m", asset="NQ", direction="LONG",
            "source_gate_pass":True, "market_open":True, "direct_sources":1,
            "market_observed_at":quote_at, "paper_eligible":True,
            "horizon_structure":{"direction":direction,"state":"CONFIRMED_TREND","score":.90},
+           "independent_evidence_families":5,
+           "_local_execution_context":{"same_direction_count":1,"opposite_direction_count":0},
            "timeframe_entry_context":ctx,
            "trade_plan":{"horizon":timeframe, "market_observed_at":quote_at,
                          "entry_price":price, "stop_price":price*(.999 if direction == "LONG" else 1.001),
@@ -90,6 +92,7 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
         self.clock = datetime.now(timezone.utc).replace(microsecond=0)
 
     def row_for(self, name, **kwargs):
+        kwargs.setdefault("timeframe","1h" if name=="Champion" else "5m")
         return structural_row(self.clock, asset="CNYRUBF" if name == "Currency" else "NQ", **kwargs)
 
     def admit(self, row, name):
@@ -127,9 +130,9 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
     def test_fresh_quote_and_r79_label_cannot_refresh_an_expired_breakout(self):
         for name in CTC.PORTFOLIO_ORDER:
             with self.subTest(portfolio=name):
-                row = self.row_for(name, signal_age=650)
+                row = self.row_for(name, signal_age=2*TS.timeframe_seconds("1h" if name=="Champion" else "5m")+50)
                 original = deepcopy(row["timeframe_entry_context"]["event"])
-                self.assertLess(self.clock.timestamp()-row["timeframe_entry_context"]["closed_at"], 300)
+                self.assertLess(self.clock.timestamp()-row["timeframe_entry_context"]["closed_at"], TS.timeframe_seconds(row["horizon"]))
                 row["trend_entry_context"] = {
                     "status":"OK", "closed_at":self.clock.timestamp(),
                     "event":{"event_id":"R79_SIG_NOW", "signal_at":self.clock.timestamp(),
@@ -143,7 +146,7 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
     def test_structural_stop_and_target_survive_conflicting_legacy_plan_geometry(self):
         for name in CTC.PORTFOLIO_ORDER:
             with self.subTest(portfolio=name):
-                row = self.row_for(name, timeframe="4h")
+                row = self.row_for(name, timeframe="1h" if name=="Impulse" else "4h")
                 event = deepcopy(row["timeframe_entry_context"]["event"])
                 row["trade_plan"].update(management_horizon="1m", execution_timeframe="1m",
                     stop_timeframe="1m", target_timeframe="7d", atr_timeframe="1m",
@@ -157,7 +160,7 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
                     self.assertEqual(plan["signal_at"], event["signal_at"])
                     self.assertEqual(plan["entry_event_snapshot"], event)
                     self.assertEqual({plan[k] for k in ("horizon", "execution_timeframe", "management_horizon",
-                                                       "atr_timeframe", "stop_timeframe", "target_timeframe")}, {"4h"})
+                                                       "atr_timeframe", "stop_timeframe", "target_timeframe")}, {row["horizon"]})
                 self.assertEqual(result["economics"]["entry_geometry"]["stop_price"], event["stop_price"])
                 self.assertEqual(result["economics"]["target_price"], event["target_price"])
 
@@ -201,7 +204,7 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
         self.assertEqual(self.admit(pinned, "Aggressive")["reason"], "SAME_TF_SOURCE_MISMATCH")
 
     def test_fresh_quote_before_confirmation_cannot_execute_a_later_breakout(self):
-        row = structural_row(self.clock)
+        row = structural_row(self.clock,timeframe="1h")
         event = row["timeframe_entry_context"]["event"]
         row["market_observed_at"] = datetime.fromtimestamp(event["signal_at"]-1, timezone.utc).isoformat()
         result = self.admit(row, "Champion")

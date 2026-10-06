@@ -5169,9 +5169,8 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         payload=_canonical_payload(z)
         peak=max(current,float(payload.get('peak_fraction') or 0.0),
                  float((trade or {}).get('max_fraction') or 0.0))
-        ratio=(float(CTC.LIFECYCLE_POLICY['aggressive_tp_runner_ratio'])
-               if str(name)=='Aggressive'
-               else float(CTC.LIFECYCLE_POLICY['default_tp_runner_ratio']))
+        from veritas_strategy_roles import runner_ratio
+        ratio=runner_ratio(str(name),payload)
         desired=max(step,math.floor((peak*ratio)/step+1e-9)*step)
         # A 10%+ position must realize at least one 5% step and keep a runner.
         if peak>=2.0*step-1e-9 and current>step+0.0025:

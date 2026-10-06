@@ -13,6 +13,7 @@ import veritas_learning_index as VLI
 import veritas_asset_management_intelligence as VAMI
 import veritas_trade_view as VTV
 import veritas_tbank as VTB
+import veritas_direct_cny as VCNY, veritas_strategy_quality as VSQ
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
@@ -16815,6 +16816,8 @@ class H(BaseHTTPRequestHandler):
                     self.reply(_v90r26_dashboard_bootstrap(signals_only=(q.get('view')==['signals'])))
                 except Exception as ex:
                     self.reply({'status':'ERROR','error':f'{type(ex).__name__}: {ex}'},500)
+            elif urlparse(self.path).path == '/api/v1/strategy-quality':
+                self.reply({**VSQ.snapshot(),'cny_feed':VCNY.status()})
             elif urlparse(self.path).path == '/integrations/tbank':
                 self.reply_html(VTB.status_page())
             elif urlparse(self.path).path.startswith('/api/v1/integrations/tbank'):
@@ -17235,14 +17238,7 @@ def _v90_cny_5m_bars(force=False):
 
 
 def _cnyrubf_market():
-    raw=dict(_v90_base_cnyrubf_market())
-    bars5=_v90_cny_5m_bars()
-    raw['canonical_five_minute_bars']=bars5
-    raw['intraday_bars']=bars5
-    raw['intraday_5m']=bars5
-    raw['entry_timing_resolution']='5m' if bars5 else '1h_fallback'
-    raw['direction_level_resolutions']=['5m','1h','4h','1d','3d','7d']
-    return raw
+    return VCNY.market_or_fallback(_v90_base_cnyrubf_market,_moex_futures_current_quote)
 
 
 def _v90_tf_group(asset, timeframe):
@@ -19115,7 +19111,7 @@ def main():
                                'min_relevance':KNOWLEDGE_MIN_RELEVANCE,
                                'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY),
                                'manager_corpus': manager_corpus_summary()})
-    if pg_boot.get('ok') and VP is not None: VPG.start(globals())
+    if pg_boot.get('ok') and VP is not None: VPG.start(globals()); VSQ.start(pg_connect,emit)
     threading.Thread(target=loop, daemon=True).start()
     # R38 always runs: it exits immediately after a healthy write test, but if
     # Postgres is temporarily unavailable/full it waits for the Resume window.

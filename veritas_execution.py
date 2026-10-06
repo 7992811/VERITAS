@@ -21,7 +21,7 @@ MIN_REWARD_RISK = max(CTC.STRUCTURAL_ENTRY_POLICY['minimum_net_reward_risk'], fl
 MIN_EXPECTED_MOVE_PCT = max(float(CTC.COST_POLICY["minimum_expected_move_floor_pct"]),
                             float(os.getenv("VERITAS_FINAL_MIN_EXPECTED_MOVE",
                                             str(CTC.COST_POLICY["minimum_expected_move_floor_pct"]))))
-MIN_MOVE_COST_MULTIPLE = VC.COST_BUFFER_MULTIPLE
+MIN_MOVE_COST_MULTIPLE = float(CTC.COST_POLICY["entry_cost_multiple"])
 MOVE_POLICY_VERSION = VC.VERSION
 ROUND_TRIP_COST_BPS = VC.ROUND_TRIP_RATE * 10000.0
 
