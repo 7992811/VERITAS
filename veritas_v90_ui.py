@@ -433,6 +433,9 @@ const reasonRu=v=>{
     R69_LOCAL_CONTEXT_REQUIRED:'Нет локальной структуры для входа',
     R69_WAIT_LOCAL_BREAKOUT:'Ждём новый пробой уровня',
     R69_BREAKOUT_ACTIVITY_REQUIRED:'Пробой не подтверждён активностью',
+    LOCAL_EXECUTION_CONFIRMATION_REQUIRED:'Нет локального подтверждения входа',
+    LOCAL_EXECUTION_DIRECTION_CONFLICT:'Локальное направление против старшего сигнала',
+    CURRENCY_MTF_DIRECTION_CONFLICT:'4-часовая структура против выбранного валютного сигнала',
     R69_MINUTE_DATA_STALE:'Минутные свечи устарели или недоступны',
     R69_SOURCE_RISK_OR_ECONOMICS:'Вход не прошёл проверку данных, риска или расходов',
     R74_EVENT_TARGET_REACHED:'Исходная цель импульса уже пройдена: нужен новый сценарий',
@@ -632,9 +635,11 @@ function renderPortfolioPanel(ps){
   const mult=x=>x==null?'—':n(x,2)+'×';
   const status=p.configuration_status==='SETUP_PENDING'?'Настройка':v.risk.new_risk===false?'Новый риск запрещён':open>0?open+' поз. открыто':v.gross==null?'Данные обновляются':v.gross>.002?'Позиции синхронизируются':'Вне рынка';
   const pf=knownNumber(p.profit_factor),pfText=pf==null?(p.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(pf,2);
+  const cny=p.name==='Currency'?(p.current_cny_admission||(p.admission_trace||[]).find(x=>x.asset==='CNYRUBF')):null;
+  const currencyNow=!cny?'Сейчас: вне рынка':('Сейчас: '+dirRu(cny.direction)+' · '+tfShort(cny.horizon)+' · '+(cny.target_fraction>0?('цель '+pct(100*Number(cny.target_fraction))):reasonRu(cny.reason)));
   root.innerHTML='<div class="pf-caption">С начала учёта · выберите портфель для подробностей</div><div class="pf-compare"><div class="pf-row pf-colnames"><span>Портфель</span><span>Доходность</span><span>Просадка</span><span>Прибыльных</span></div>'+ps.map(q=>{const a=portfolioView(q);return'<button type="button" class="pf-row" data-portfolio="'+esc(q.name)+'" aria-pressed="'+(q.name===p.name)+'"><span><b>'+esc(portfolioName(q.name))+'</b><small>'+esc(q.name==='Currency'?'CNYRUBf':q.name)+'</small></span><b class="'+tone(a.ret)+'">'+signedPct(a.ret)+'</b><span>'+pct(a.dd)+'</span><span>'+(a.winRate==null?'—':n(a.winRate,1)+'%')+'</span></button>';}).join('')+'</div>'+
     '<div class="pf-detail"><div class="pf-heading"><div><h3>'+esc(portfolioName(p.name))+'</h3><div class="pf-amount">'+rub(v.balance)+'</div><div class="pf-secondary">'+(v.usd==null?'—':n(v.usd,0)+' $')+'</div></div><div class="pf-status '+(v.risk.new_risk===false?'warn':'')+'">'+status+'</div></div>'+
-    (p.name==='Currency'?'<div class="pf-foot">Только CNYRUBf · стартовый капитал 10 000 ₽ · плечо до 1:10 · максимальная просадка 35% · лонг / шорт / вне рынка.</div>':'')+
+    (p.name==='Currency'?'<div class="pf-foot"><b>'+esc(currencyNow)+'</b><br>Только CNYRUBf · стартовый капитал 10 000 ₽ · плечо до 1:10 · максимальная просадка 35% · лонг / шорт / вне рынка.</div>':'')+
     '<div class="pf-performance">'+metric('Доходность',signedPct(v.ret),tone(v.ret),'С начала учёта')+metric('К RUONIA',signedPct(v.excess),tone(v.excess),'Относительно эталона')+metric('Закрытые сделки',rub(v.pnl),tone(v.pnl),'После всех расходов')+'</div>'+
     '<div class="pf-sections"><section class="pf-section"><h4>Риск и ограничения</h4>'+pair('Текущая просадка',pct(v.dd),v.dd>0?'warn':'')+meter(v.dd,v.ddLimit,true)+pair('Лимит просадки',pct(v.ddLimit))+pair('Загрузка / лимит',mult(v.gross)+' / '+mult(v.limit))+meter(v.gross,v.limit)+pair('Новые позиции',v.risk.new_risk===true?'Разрешены':v.risk.new_risk===false?'Заблокированы':'—')+'</section>'+
     '<section class="pf-section"><h4>Экспозиция</h4>'+pair('Длинные позиции',mult(v.long))+pair('Короткие позиции',mult(v.short))+pair('Чистая экспозиция',mult(v.net))+pair('Вне позиций',v.cash==null?'—':pct(100*v.cash))+'<div class="pf-foot">Объём позиций относительно размера портфеля. 1× = 100%. Показатель «Вне позиций» не учитывает требования к марже.</div></section>'+
