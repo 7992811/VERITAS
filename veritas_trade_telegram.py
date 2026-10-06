@@ -109,6 +109,8 @@ def execution_text(proposal):
         "BLOCKED": "Условия изменились; заявка заблокирована.",
     }
     text = labels.get(status, "Статус предложения обновлён.")
+    if status == "BLOCKED" and proposal.get("reason_code") == "LIVE_ACCOUNT_ADMISSION_REQUIRED":
+        text = "Заявка заблокирована: нет независимого риск-допуска реального счёта."
     filled = proposal.get("filled_lots")
     if filled is not None:
         text += f"\nИсполнено: {filled} из {proposal.get('terms', {}).get('lots', '?')} контракт(ов)."

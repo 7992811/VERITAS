@@ -646,7 +646,11 @@ class TradeHttpApplication:
                 return {"ok": True, "enabled": True, "version": VERSION,
                         "execution_enabled": self.execution_enabled,
                         "account_id": self.account_id, "instrument_uid": self.instrument_uid,
-                        "execution_environment": self.environment}, 200
+                        "execution_environment": self.environment,
+                        "live_account_admission_configured": callable(getattr(self.coordinator, "live_admission", None)),
+                        "new_risk_block_reason": ("LIVE_ACCOUNT_ADMISSION_REQUIRED"
+                            if self.environment == "production" and not callable(getattr(self.coordinator, "live_admission", None))
+                            else None)}, 200
             with self._lock:
                 self._initialize()
                 if operation == "bind":
@@ -745,6 +749,9 @@ def create_application(connect, summary_provider):
         repository=repository, adapter=adapter, account_id=account, owner=owner,
         facts=facts, summary=summary_provider, ingest_execution=facts.ingest,
         execution_enabled=enabled and armed,
+        # Whole-account risk/promotion/calibration evidence is not wired yet.
+        # Flags and owner approval cannot replace the existing live authority.
+        live_admission=None,
     )
     return TradeHttpApplication(
         repository=repository, coordinator=coordinator, facts=facts,

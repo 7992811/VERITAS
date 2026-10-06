@@ -5,6 +5,8 @@ this coordinator AND the broker adapter's independent gates permit submission.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import threading
@@ -45,7 +47,7 @@ class TradeFacts:
 class CurrencyTradingCoordinator:
     def __init__(self, *, repository, adapter, account_id, owner, facts, summary,
                  ingest_execution, execution_enabled=False, approval_ttl_seconds=120,
-                 clock=None):
+                 clock=None, live_admission=None):
         if type(execution_enabled) is not bool:
             raise TradePlanBlocked("BOOLEAN_EXECUTION_GATE_REQUIRED")
         if not isinstance(account_id, str) or not account_id.strip():
@@ -54,6 +56,9 @@ class CurrencyTradingCoordinator:
             raise TradePlanBlocked("EXPLICIT_TRADE_OWNER_REQUIRED")
         if type(approval_ttl_seconds) is not int or not 15 <= approval_ttl_seconds <= 300:
             raise TradePlanBlocked("INVALID_APPROVAL_TTL")
+        if live_admission is not None and not callable(live_admission):
+            raise TradePlanBlocked("INVALID_LIVE_ADMISSION_CHECKER")
+        self.live_admission = live_admission
         self.repository, self.adapter = repository, adapter
         self.account_id, self.owner = account_id, owner
         self.facts, self.summary, self.ingest_execution = facts, summary, ingest_execution
@@ -169,6 +174,22 @@ class CurrencyTradingCoordinator:
         except (TradePlanBlocked, KeyError, TypeError, ValueError):
             return False
 
+    def _require_live_admission(self, terms, facts, now):
+        if self.adapter.environment != "production" or terms.get("action") not in ("OPEN", "ADD"):
+            return False
+        if self.live_admission is None:
+            raise TradePlanBlocked("LIVE_ACCOUNT_ADMISSION_REQUIRED")
+        try:
+            verdict = self.live_admission(terms=deepcopy(terms), facts=facts, now=now)
+            admitted = (isinstance(verdict, Mapping) and verdict.get("eligible") is True
+                        and type(verdict.get("blockers")) in (list, tuple)
+                        and len(verdict["blockers"]) == 0)
+        except Exception:
+            raise TradePlanBlocked("LIVE_ACCOUNT_ADMISSION_REQUIRED") from None
+        if not admitted:
+            raise TradePlanBlocked("LIVE_ACCOUNT_ADMISSION_REQUIRED")
+        return True
+
     def execute_approved(self, proposal_id):
         with self._lock:
             proposal = self.repository.get(proposal_id)
@@ -187,6 +208,12 @@ class CurrencyTradingCoordinator:
                 now = utc(self.clock())
                 revalidate(terms, facts.spec, facts.account, facts.quote, now=now,
                            canonical_event_valid=self._event_still_valid(terms, facts, now))
+                if self._require_live_admission(terms, facts, now):
+                    # The whole-account authority may perform I/O. Its duration
+                    # cannot extend the approved quote or native event lifetime.
+                    now = utc(self.clock())
+                    revalidate(terms, facts.spec, facts.account, facts.quote, now=now,
+                               canonical_event_valid=self._event_still_valid(terms, facts, now))
             except TradePlanBlocked as exc:
                 self.repository.block(proposal_id, str(exc))
                 return {"ok": False, "code": str(exc)}

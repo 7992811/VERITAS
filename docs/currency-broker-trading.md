@@ -10,7 +10,8 @@ The Currency research policy prepares an immutable proposal for the exact
 CNYRUBF instrument. A private message from @AxednewsI_bot carries signed approve
 and reject buttons. A persisted, authorized approval can be claimed once. Before
 submission the coordinator checks current broker facts and the same canonical
-event again. Actual broker execution stages, rather than acknowledgement of an
+event again. Production OPEN/ADD also require a separate, explicitly affirmative
+whole-account live admission verdict. Actual broker execution stages, rather than acknowledgement of an
 order, change the independent Currency ledger.
 
 The existing @axednewz / Axed News notification outbox remains a paper-event
@@ -86,6 +87,31 @@ local reduce-only check is not a broker-enforced atomic position condition:
 manual or external CNY orders racing between the final read and submission can
 change the holding. Exclusive management of this instrument is an operating
 assumption; a detected mismatch freezes new risk.
+
+## Existing live authority remains mandatory
+
+Currency allocation limits and the whole-account live risk policy use different
+capital scopes. The Currency 10x / 35% policy and its 2% structural idea-risk cap
+do not replace CTC.LIVE_RISK_POLICY or the existing production admission checks.
+
+A production OPEN or ADD must obtain an affirmative verdict from the injected
+live_admission authority after fresh Currency validation and before the durable
+submission claim. The callback receives a copy of the exact approved terms,
+fresh facts and the current time. It must return a mapping with eligible exactly
+True and an explicit empty blockers list/tuple. Missing authority, an exception,
+malformed output or a negative verdict blocks with LIVE_ACCOUNT_ADMISSION_REQUIRED.
+The coordinator checks Currency freshness again after this callback.
+
+The current service factory intentionally does not supply this authority: it
+does not yet have the required whole-account risk, promotion and calibration
+evidence. Therefore production new-risk submission remains blocked even if
+execution flags are changed. No environment variable skips this admission
+check. The authenticated status endpoint reports live_account_admission_configured
+and new_risk_block_reason separately from the global execution flag. Integration
+with the existing production authority remains a prerequisite
+for production OPEN/ADD, separate from credentials and owner approval.
+Sandbox transport and verified production CLOSE/REDUCE do not invoke this
+new-risk admission callback. Existing policy limits are not changed.
 
 ## Approval identity and durability
 

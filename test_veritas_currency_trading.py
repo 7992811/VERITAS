@@ -275,7 +275,11 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         values = dict(repository=self.repo, adapter=self.adapter, account_id=ACCOUNT,
                       owner=C.TradeOwner(OWNER, OWNER, BOT), facts=lambda: self.facts, summary=lambda: [self.row],
                       ingest_execution=lambda proposal, result: self.ingested.append((proposal, result)),
-                      execution_enabled=True, clock=lambda: self.now)
+                      execution_enabled=True, clock=lambda: self.now,
+                      # Explicit offline authority for unrelated positive lifecycle tests.
+                      # Production service supplies no authority until whole-account
+                      # admission facts are available.
+                      live_admission=lambda **kwargs: {"eligible": True, "blockers": []})
         values.update(changes)
         return C.CurrencyTradingCoordinator(**values)
 
@@ -540,6 +544,115 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(self.transport.count("PostOrder"), 1)
         self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "ACKNOWLEDGED")
+
+
+    def test_production_entry_requires_explicit_whole_account_live_admission_before_claim(self):
+        def unavailable(**kwargs):
+            raise RuntimeError("synthetic admission unavailable")
+        cases = (
+            ("missing", None),
+            ("denied", lambda **kwargs: {"eligible": False, "blockers": ["WHOLE_ACCOUNT_LIMIT"]}),
+            ("exception", unavailable),
+            ("not_mapping", lambda **kwargs: True),
+            ("truthy_integer", lambda **kwargs: {"eligible": 1, "blockers": []}),
+            ("truthy_string", lambda **kwargs: {"eligible": "true", "blockers": []}),
+            ("missing_blockers", lambda **kwargs: {"eligible": True}),
+            ("null_blockers", lambda **kwargs: {"eligible": True, "blockers": None}),
+            ("string_blockers", lambda **kwargs: {"eligible": True, "blockers": ""}),
+            ("mapping_blockers", lambda **kwargs: {"eligible": True, "blockers": {}}),
+            ("nonempty_blockers", lambda **kwargs: {"eligible": True, "blockers": ["STALE_RISK_FACTS"]}),
+        )
+        for index, (label, authority) in enumerate(cases):
+            with self.subTest(authority=label):
+                # Each denial gets its own real native event and durable approval,
+                # so a previously BLOCKED record cannot make this check pass.
+                self.row = structural_row(self.now, asset="CNYRUBF", price=12.345,
+                                          width=.26, signal_age=10 + index)
+                self.admission = P.VCR.evaluate(
+                    self.row, CTC.runtime_portfolio_policy("Currency"), 0., self.now)
+                self.assertTrue(self.admission["open"], self.admission)
+                self.admission = deepcopy(self.admission)
+                self.admission["fraction"] = 3
+                coordinator = self.make_coordinator(live_admission=authority)
+                approved = self.approve(coordinator.prepare())
+                with patch.object(self.repo, "claim_approved", wraps=self.repo.claim_approved) as claim:
+                    result = coordinator.execute_approved(approved["proposal_id"])
+                self.assertEqual(result["code"], "LIVE_ACCOUNT_ADMISSION_REQUIRED")
+                self.assertFalse(result["ok"])
+                claim.assert_not_called()
+                self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "BLOCKED")
+                self.assertEqual(self.transport.calls, [])
+
+    def test_live_admission_receives_exact_copied_terms_and_fresh_broker_facts(self):
+        approved = self.approve()
+        self.now += timedelta(seconds=1)
+        self.facts = C.TradeFacts(
+            replace(self.spec, observed_at=self.now),
+            replace(self.account, observed_at=self.now),
+            replace(self.quote, observed_at=self.now))
+        observed = []
+        def authority(*, terms, facts, now):
+            self.assertEqual(terms, approved["terms"])
+            self.assertIs(facts, self.facts)
+            self.assertEqual(now, self.now)
+            observed.append(True)
+            # The trusted checker receives a deep copy. Its incidental mutation
+            # cannot modify the signed terms or the broker invocation.
+            terms["lots"] = 99
+            terms["entry_context"]["event"]["stop_price"] = "1"
+            return {"eligible": True, "blockers": ()}
+        coordinator = self.make_coordinator(live_admission=authority)
+        result = coordinator.execute_approved(approved["proposal_id"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(observed, [True])
+        sent = next(call for call in self.transport.calls if call["name"] == "PostOrder")
+        self.assertEqual(sent["body"]["quantity"], "2")
+        self.assertEqual(sent["body"]["price"], T.decimal_to_quotation(D(approved["terms"]["limit_price"])))
+        self.assertEqual(self.repo.get(approved["proposal_id"])["terms"], approved["terms"])
+
+    def test_production_protective_close_does_not_require_live_admission(self):
+        self.facts = C.TradeFacts(
+            self.spec, replace(self.account, signed_lots=2, managed_signed_lots=2,
+                               costs_reconciled=False, available_margin_rub=D("0")),
+            self.quote, self.held)
+        coordinator = self.make_coordinator(live_admission=None)
+        proposal = coordinator.prepare(requested_exit={
+            "event_id": "synthetic-owner-confirmed-exit", "reason": "STRUCTURAL_STOP_REACHED"})
+        approved = self.approve(proposal)
+        result = coordinator.execute_approved(approved["proposal_id"])
+        self.assertTrue(result["ok"], result)
+        sent = next(call for call in self.transport.calls if call["name"] == "PostOrder")
+        self.assertEqual(sent["body"]["direction"], "ORDER_DIRECTION_SELL")
+        self.assertEqual(sent["body"]["quantity"], "2")
+
+    def test_sandbox_entry_does_not_require_production_live_admission(self):
+        adapter = T.TBankTradingAdapter(
+            "synthetic-token-only", transport=self.transport,
+            config=replace(self.config, environment="sandbox"))
+        coordinator = self.make_coordinator(adapter=adapter, live_admission=None)
+        approved = self.approve(coordinator.prepare())
+        result = coordinator.execute_approved(approved["proposal_id"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.transport.count("PostSandboxOrder"), 1)
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+
+
+    def test_slow_live_admission_cannot_extend_broker_quote_lifetime(self):
+        approved = self.approve()
+        observed = []
+        def slow_authority(**kwargs):
+            observed.append(True)
+            self.now += timedelta(seconds=16)
+            return {"eligible": True, "blockers": []}
+        coordinator = self.make_coordinator(live_admission=slow_authority)
+        with patch.object(self.repo, "claim_approved", wraps=self.repo.claim_approved) as claim:
+            result = coordinator.execute_approved(approved["proposal_id"])
+        self.assertEqual(observed, [True])
+        self.assertEqual(result["code"], "BROKER_QUOTE_STALE")
+        self.assertFalse(result["ok"])
+        claim.assert_not_called()
+        self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "BLOCKED")
+        self.assertEqual(self.transport.calls, [])
 
 
 if __name__ == "__main__":
