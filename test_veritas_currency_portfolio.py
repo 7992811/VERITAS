@@ -24,14 +24,14 @@ class CurrencyPortfolioTests(TestCase):
 
     def test_currency_rejects_every_non_cnyrubf_asset(self):
         for asset in ('GOLD','MOEX','NQ','BTC','ETH','BRENT'):
-            out=R._signal_first_admission({'asset':asset},P.POLICIES['Currency'],0)
+            out=P._signal_first_admission({'asset':asset},P.POLICIES['Currency'],0)
             self.assertFalse(out['open'])
             self.assertEqual(out['reason'],C.BLOCK_REASON)
 
     def test_currency_uses_canonical_admission_not_setup_pending_block(self):
         with patch.object(R,'_R85_POLICY_ADMISSION',
                           return_value={'open':True,'fraction':.50,'reason':'TEST_PASS'}):
-            out=R._signal_first_admission({'asset':'CNYRUBF'},P.POLICIES['Currency'],0)
+            out=P._signal_first_admission({'asset':'CNYRUBF'},P.POLICIES['Currency'],0)
         self.assertTrue(out['open'])
         self.assertEqual(out['fraction'],.50)
         self.assertEqual(out['canonical_policy_version'],R.CTC.VERSION)
