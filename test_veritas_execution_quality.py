@@ -311,10 +311,11 @@ class RuntimeQuoteClockRegressionTests(unittest.TestCase):
         clock = datetime.now(timezone.utc)
         row = structural_row(clock, timeframe='1h', asset='ETH', direction='SHORT',
                              source='Binance spot', signal_age=60)
+        row.update(best_bid=row['price']-.001, best_ask=row['price']+.001)
         row['market_observed_at'] = (clock-timedelta(seconds=30.858728)).isoformat()
         quote = {'price':row['price'], 'observed_at':(clock-timedelta(seconds=quote_age)).isoformat(),
                  'source_names':{'primary':source}, 'source_gate_pass':True,
-                 'market_open':True}
+                 'best_bid':row['price']-.001, 'best_ask':row['price']+.001, 'market_open':True}
         return clock, row, quote
 
     def cached(self, guard, quote):
@@ -366,6 +367,7 @@ class RuntimeQuoteClockRegressionTests(unittest.TestCase):
         historical = datetime(2020,1,6,12,tzinfo=timezone.utc)
         row = structural_row(historical, timeframe='1h', asset='ETH', direction='SHORT',
                              source='Binance spot')
+        row.update(best_bid=row['price']-.001, best_ask=row['price']+.001)
         _, _, live_quote = self.row_and_quote()
         with patch.dict(guard._quotes, {}, clear=True), self.cached(guard, live_quote):
             result = runtime.evaluate(row, C.runtime_portfolio_policy('Champion'), 0., historical)
@@ -392,5 +394,32 @@ class RuntimeQuoteClockRegressionTests(unittest.TestCase):
         self.assertGreaterEqual(final_clock, clock)
         self.assertEqual(args[9]['_execution_quote']['observed_at'], quote['observed_at'])
         self.assertEqual(args[5], quote['price'])
+
+
+    def test_http_refresh_quote_is_compared_with_clock_after_request(self):
+        from test_veritas_timeframe_policy import structural_row
+        import veritas_position_guard as guard
+        start = datetime.now(timezone.utc)
+        clock = {'now': start}
+        class AdvancingClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock['now']
+        row = structural_row(start, timeframe='5m')
+        row['market_observed_at'] = (start-timedelta(seconds=500)).isoformat()
+        quote = {'price':row['price'], 'source_names':{'primary':'ProFinance NASD100_FUT'},
+                 'source_gate_pass':True, 'market_open':True,
+                 'observed_at':(start+timedelta(seconds=8)).isoformat()}
+        def fetch(*args, **kwargs):
+            clock['now'] = start+timedelta(seconds=8)
+            return quote
+        with patch.object(guard, 'datetime', AdvancingClock), \
+             patch.object(guard, '_entry_namespace', {}), \
+             patch.dict(guard._quotes, {}, clear=True), \
+             patch.dict(guard._source_quotes, {}, clear=True), \
+             patch.object(guard, 'fetch_guard_quote', side_effect=fetch):
+            refreshed = guard.refresh_entry_quotes([row])[0]
+        self.assertEqual(refreshed['_execution_quote']['observed_at'], quote['observed_at'])
+        self.assertTrue(refreshed['_runtime_quote_refresh'])
 
 if __name__=='__main__':unittest.main()
