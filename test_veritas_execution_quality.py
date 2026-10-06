@@ -302,4 +302,95 @@ class OwnerAuditAdmissionRegressionTests(unittest.TestCase):
         self.assertEqual(kept['NQ']['horizon'], '1h')
         self.assertEqual(kept['NQ']['_canonical_route_trace'], selected['_canonical_route_trace'])
 
+
+class RuntimeQuoteClockRegressionTests(unittest.TestCase):
+    """Execution ages use market timestamps; historical clocks stay injectable."""
+
+    def row_and_quote(self, *, quote_age=1.0, source='Binance spot'):
+        from test_veritas_timeframe_policy import structural_row
+        clock = datetime.now(timezone.utc)
+        row = structural_row(clock, timeframe='1h', asset='ETH', direction='SHORT',
+                             source='Binance spot', signal_age=60)
+        row['market_observed_at'] = (clock-timedelta(seconds=30.858728)).isoformat()
+        quote = {'price':row['price'], 'observed_at':(clock-timedelta(seconds=quote_age)).isoformat(),
+                 'source_names':{'primary':source}, 'source_gate_pass':True,
+                 'market_open':True}
+        return clock, row, quote
+
+    def cached(self, guard, quote):
+        identity = S.identity('ETH', quote)
+        return patch.dict(guard._source_quotes,
+                          {('ETH',identity['key'],identity['contract_id']):quote}, clear=True)
+
+    def test_runtime_rechecks_fresh_pinned_quote_after_slow_analysis_cycle(self):
+        import veritas_position_guard as guard
+        import veritas_canonical_runtime as runtime
+        clock, row, quote = self.row_and_quote()
+        policy = C.runtime_portfolio_policy('Champion')
+        with patch.dict(guard._quotes, {}, clear=True), self.cached(guard, quote):
+            replay = runtime.evaluate(row, policy, 0.0, clock)
+            self.assertEqual(replay['reason'], 'EXECUTION_QUOTE_STALE')
+            current = runtime.evaluate(dict(row, _runtime_quote_refresh=True), policy, 0.0, clock)
+        self.assertTrue(current['open'], current)
+        self.assertAlmostEqual(current['economics']['quote_time_gate']['age_seconds'], 1.0)
+        self.assertEqual(current['economics']['quote_time_gate']['max_age_seconds'], 30)
+        self.assertNotIn('_execution_quote', row)
+
+    def test_foreign_or_future_cache_does_not_rescue_stale_execution(self):
+        import veritas_position_guard as guard
+        import veritas_canonical_runtime as runtime
+        for source, age in (('Coinbase spot',1.), ('Binance spot',-6.)):
+            with self.subTest(source=source, age=age):
+                clock, row, quote = self.row_and_quote(source=source, quote_age=age)
+                with patch.dict(guard._quotes, {}, clear=True), self.cached(guard, quote):
+                    result = runtime.evaluate(dict(row, _runtime_quote_refresh=True),
+                                              C.runtime_portfolio_policy('Champion'), 0., clock)
+                self.assertFalse(result['open'], result)
+                self.assertEqual(result['reason'], 'EXECUTION_QUOTE_STALE')
+
+    def test_fresh_quote_rechecks_target_instead_of_refreshing_only_time(self):
+        import veritas_position_guard as guard
+        import veritas_canonical_runtime as runtime
+        clock, row, quote = self.row_and_quote()
+        quote['price'] = row['timeframe_entry_context']['event']['target_price'] - .1
+        with patch.dict(guard._quotes, {}, clear=True), self.cached(guard, quote):
+            result = runtime.evaluate(dict(row, _runtime_quote_refresh=True),
+                                      C.runtime_portfolio_policy('Champion'), 0., clock)
+        self.assertFalse(result['open'], result)
+        self.assertEqual(result['reason'], 'SAME_TF_TARGET_ALREADY_REACHED')
+
+    def test_historical_clock_reaches_final_fill_and_does_not_use_live_cache(self):
+        from test_veritas_timeframe_policy import structural_row
+        import veritas_position_guard as guard
+        import veritas_canonical_runtime as runtime
+        historical = datetime(2020,1,6,12,tzinfo=timezone.utc)
+        row = structural_row(historical, timeframe='1h', asset='ETH', direction='SHORT',
+                             source='Binance spot')
+        _, _, live_quote = self.row_and_quote()
+        with patch.dict(guard._quotes, {}, clear=True), self.cached(guard, live_quote):
+            result = runtime.evaluate(row, C.runtime_portfolio_policy('Champion'), 0., historical)
+        self.assertTrue(result['open'], result)
+        self.assertAlmostEqual(result['economics']['quote_time_gate']['age_seconds'], 0.)
+
+    def test_live_entry_uses_final_clock_quote_and_same_clock_for_accounting(self):
+        import veritas_position_guard as guard
+        from unittest.mock import MagicMock
+        clock, row, quote = self.row_and_quote()
+        row['_runtime_quote_refresh'] = True
+        cursor = MagicMock()
+        cursor.execute.return_value.fetchone.return_value = None
+        old_cycle = (clock-timedelta(seconds=37)).isoformat()
+        with patch.dict(guard._quotes, {}, clear=True), self.cached(guard, quote), \
+             patch.object(P, 'CANONICAL_ACCOUNTING_OPEN_OR_ADD', return_value=.4) as mutate:
+            result = PR.canonical_open_or_add(
+                cursor, {'high_water_nav_rub':1e6}, 'Champion', 'ETH', 'SHORT',
+                row['price'], .1, 1e6, old_cycle, row, 'ADMISSION_OR_ADD')
+        self.assertEqual(result, .4)
+        mutate.assert_called_once()
+        args = mutate.call_args.args
+        final_clock = datetime.fromisoformat(args[8])
+        self.assertGreaterEqual(final_clock, clock)
+        self.assertEqual(args[9]['_execution_quote']['observed_at'], quote['observed_at'])
+        self.assertEqual(args[5], quote['price'])
+
 if __name__=='__main__':unittest.main()
