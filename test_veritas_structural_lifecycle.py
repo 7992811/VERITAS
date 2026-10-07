@@ -630,6 +630,106 @@ class StructuralLifecycleAccountingTests(unittest.TestCase):
         self.assertEqual(trace['execution']['checked_at'],late.isoformat())
         self.assertEqual(self.db.orders,[])
 
+    def cached_entry_quote(self,row,price,observed,uid=None):
+        quote=VPS.quote_from_row(row)
+        quote.update(price=price,best_bid=price-.0005,best_ask=price+.0005,
+                     observed_at=observed.isoformat(),orderbook_observed_at=observed.isoformat())
+        if uid:
+            quote['contract']['instrument_uid']=uid
+        VPG.publish_quote(row['asset'],quote)
+        return quote
+
+    def test_runtime_fresh_cached_quote_replaces_stale_observer_without_redating_original_event(self):
+        _,row,_,_=observed_rows('5m')
+        original=deepcopy(row)
+        late=self.clock+timedelta(seconds=130)
+        quote=self.cached_entry_quote(row,12.737,late-timedelta(seconds=1))
+        self.assertFalse(VPR.VX.paper_quote_time_gate(VPS.quote_from_row(row),'5m',now=late)['eligible'])
+        with patch.object(VSL,'_wall_clock',return_value=late), \
+                patch.object(VPG,'fetch_guard_quote',side_effect=AssertionError('No provider fetch under book lock')):
+            result=VSL.fast_entry_pass(self.ns,[row],self.clock,runtime=True)
+        trace=result['portfolios'][0]['admission_trace'][0]
+        self.assertEqual(trace['execution']['status'],'EXECUTED',trace['execution'])
+        self.assertEqual(trace['execution']['checked_at'],late.isoformat())
+        order=self.db.orders[-1]
+        fill=order['payload']['execution_model']
+        self.assertEqual(fill['reference_price'],quote['price'])
+        self.assertEqual((fill['bid'],fill['ask']),(quote['best_bid'],quote['best_ask']))
+        self.assertAlmostEqual(order['price'],quote['best_ask']*1.0004)
+        self.assertEqual(order['created_at'],late.isoformat())
+        self.assertEqual(order['payload']['market_observed_at'],quote['observed_at'])
+        self.assertEqual(order['payload']['price_source_identity'],VPS.identity(row['asset'],quote))
+        event=original['timeframe_entry_context']['event']
+        self.assertEqual(self.db.position()['payload']['entry_event_snapshot'],event)
+        self.assertEqual(order['payload']['entry_event_id'],event['event_id'])
+        self.assertEqual(row,original)
+
+    def test_runtime_cached_quote_from_other_contract_cannot_replace_stale_observer(self):
+        _,row,_,_=observed_rows('5m')
+        original=deepcopy(row)
+        late=self.clock+timedelta(seconds=130)
+        self.cached_entry_quote(row,12.737,late-timedelta(seconds=1),uid='different-broker-contract')
+        with patch.object(VSL,'_wall_clock',return_value=late):
+            result=VSL.fast_entry_pass(self.ns,[row],self.clock,runtime=True)
+        trace=result['portfolios'][0]['admission_trace'][0]
+        self.assertEqual(trace['execution']['status'],'BLOCKED')
+        self.assertEqual(trace['execution']['reason'],'EXECUTION_QUOTE_STALE')
+        self.assertEqual(self.db.orders,[])
+        self.assertEqual(row,original)
+
+    def test_runtime_refreshes_complete_cached_book_again_immediately_before_entry(self):
+        _,row,_,_=observed_rows('5m')
+        original=deepcopy(row['timeframe_entry_context']['event'])
+        initial=self.clock; late=initial+timedelta(seconds=130)
+        ready_seen=False; selected={}
+        evaluate=VCR.evaluate
+        def admission(*args,**kwargs):
+            nonlocal ready_seen,selected
+            result=evaluate(*args,**kwargs)
+            if result.get('open') and not ready_seen:
+                ready_seen=True
+                selected=self.cached_entry_quote(row,12.738,late-timedelta(seconds=1))
+            return result
+        with patch.object(VCR,'evaluate',side_effect=admission), \
+                patch.object(VSL,'_wall_clock',side_effect=lambda:late if ready_seen else initial):
+            result=VSL.fast_entry_pass(self.ns,[row],initial,runtime=True)
+        self.assertTrue(ready_seen)
+        trace=result['portfolios'][0]['admission_trace'][0]
+        self.assertEqual(trace['execution']['status'],'EXECUTED',trace['execution'])
+        self.assertEqual(trace['execution']['checked_at'],late.isoformat())
+        order=self.db.orders[-1]; fill=order['payload']['execution_model']
+        self.assertEqual(fill['reference_price'],selected['price'])
+        self.assertEqual((fill['bid'],fill['ask']),(selected['best_bid'],selected['best_ask']))
+        self.assertAlmostEqual(order['price'],selected['best_ask']*1.0004)
+        self.assertEqual(order['payload']['market_observed_at'],selected['observed_at'])
+        self.assertEqual(self.db.position()['payload']['entry_event_snapshot'],original)
+
+    def test_runtime_new_cached_quote_at_old_target_blocks_add_without_erasing_ladder(self):
+        opened=self.open()
+        row=synthetic_higher_break(12.79)
+        initial=VPG.utc_datetime(row['observed_at']); late=initial+timedelta(seconds=20)
+        self.assertLess(row['price'],VSL.active_target_price(opened))
+        ready_seen=False
+        evaluate=VCR.evaluate
+        def admission(*args,**kwargs):
+            nonlocal ready_seen
+            result=evaluate(*args,**kwargs)
+            if result.get('open') and not ready_seen:
+                ready_seen=True
+                self.cached_entry_quote(row,12.813,late-timedelta(seconds=1))
+            return result
+        with patch.object(VCR,'evaluate',side_effect=admission), \
+                patch.object(VSL,'_wall_clock',side_effect=lambda:late if ready_seen else initial):
+            result=VSL.fast_entry_pass(self.ns,[row],initial,runtime=True)
+        self.assertTrue(ready_seen)
+        audit=result['portfolios'][0]['admission_trace'][0]['execution']
+        self.assertEqual(audit['status'],'HELD',audit)
+        self.assertEqual(audit['reason'],'STRUCTURAL_PROTECTIVE_EXIT_PENDING')
+        self.assertEqual(len(self.db.orders),1)
+        self.assertEqual(self.db.position()['units'],opened['units'])
+        self.assertEqual(self.db.position()['payload']['active_target_ladder'],opened['payload']['active_target_ladder'])
+        self.assertEqual(self.db.position()['payload']['entry_event_snapshot'],opened['payload']['entry_event_snapshot'])
+
     def test_unavailable_entry_does_not_reread_unchanged_portfolio_positions(self):
         result=self.run_fast(self.expired)
         self.assertEqual(result['portfolios'][0]['admission_trace'][0]['execution']['status'],'BLOCKED')

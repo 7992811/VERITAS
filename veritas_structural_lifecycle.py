@@ -234,6 +234,8 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
                     if runtime:
                         clock=_wall_clock()
                     row=deepcopy(candidate)
+                    if runtime:
+                        row=VPS.execution_row(VPG.refresh_execution_row(row,now=clock))
                     row['_runtime_quote_refresh']=False
                     VAT.begin_cycle(row,clock.isoformat())
                     admission=VCR.evaluate(row,policy,dd,clock)
@@ -316,10 +318,13 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
                         audit.update(status='HELD',reason='HELD_PROTECTED_STRUCTURE_REQUIRES_EXIT',execution_action='HOLD')
                     else:
                         if runtime:
-                            # The quote keeps its provider timestamp. The
-                            # canonical boundary checks it again at the actual
-                            # mutation time, even if earlier SQL was slow.
+                            # Cache-only selection keeps the provider/contract,
+                            # complete book and original observation time. The
+                            # canonical gates recheck this quote at mutation,
+                            # while the immutable structural event keeps its age.
                             clock=_wall_clock()
+                            row=VPS.execution_row(VPG.refresh_execution_row(row,now=clock))
+                            price=float(VPS.quote_from_row(row)['price'])
                         VPR.canonical_open_or_add(c,portfolio,name,asset,direction,price,requested,nav,
                                                   clock.isoformat(),row,'VERIFIED_QUOTE_BREAKOUT')
                         entry_changed=audit.get('status')=='EXECUTED'
