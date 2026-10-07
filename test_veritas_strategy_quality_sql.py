@@ -21,6 +21,8 @@ DSN=os.getenv('VERITAS_QUALITY_TEST_DSN','')
 
 # Frozen pre-record query. LI's default SQL is fingerprinted below so both
 # sides cannot silently adopt a changed proof/presence projection together.
+# The source-pin revision adds three optional identity fields; absent legacy
+# fields remain absent. Proof/presence rules and query-equivalence checks stay.
 LEGACY_SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t.status,t.horizon,
  t.opened_at,t.closed_at,t.avg_entry_price,t.avg_exit_price,t.max_fraction,
  t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.net_pnl_rub,
@@ -39,11 +41,11 @@ LEGACY_SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t
 
 
 class QualityProjectionContractTests(unittest.TestCase):
-    def test_default_evidence_and_legacy_query_are_unchanged(self):
+    def test_default_evidence_and_legacy_query_match_frozen_contract(self):
         self.assertEqual(hashlib.sha256(Q.LI.payload_sql().encode()).hexdigest(),
-                         'ba6ef3f93d247c975f573f02f6e5669615985c034648de36bebcc91fbe19197d')
+                         'dc4e604647ba96ccd1b659a467781e8d5beb097bf651f3f8bfe39d17591579f2')
         self.assertEqual(hashlib.sha256(LEGACY_SELECT_TRADES.encode()).hexdigest(),
-                         '53e8376117767316b9f26fae2b80bea40ecba970aaa281c2ceb67cac1de38575')
+                         '4f9792f9d363315dff04f66d521ddd2fc1ab3a76e227c6ceb70c17e4d6bfb503')
         self.assertEqual(Q.SELECT_TRADES.count('t.payload'),2)
         self.assertEqual(Q.SELECT_TRADES.count('jsonb_to_record('),1)
         self.assertIn('CROSS JOIN LATERAL jsonb_to_record(',Q.SELECT_TRADES)

@@ -16,14 +16,14 @@ import veritas_timeframe_structure as TS
 from veritas_quote_time import quote_gate
 
 
-VERSION = "CTC_BRENT_PROFINANCE_V1"
+VERSION = "CTC_BRENT_PROFINANCE_V2"
 ASSET = "BRENT"
 LABEL = "Brent oil"
 NATIVE_TIMEFRAMES = ("1m", "5m", "1h", "4h", "1d")
 
 
 def _identity():
-    return VPS.identity(ASSET, {"source": "ProFinance", "raw_label": LABEL})
+    return VPS.brent_feed_pin_identity()
 
 
 def _clock(now):
@@ -47,9 +47,11 @@ def _price(value):
 def _native_rows(history, clock):
     expected = _identity()
     actual = (history or {}).get("source_identity")
-    if (not VPS.same(expected, actual) or actual.get("contract_id")
+    if (not VPS.is_pinned_brent_identity(actual) or not VPS.same(expected, actual) or actual.get("contract_id")
             or (history or {}).get("asset") != ASSET
-            or (history or {}).get("raw_label") != LABEL):
+            or (history or {}).get("raw_label") != LABEL
+            or (history or {}).get("raw_ticker") != expected["provider_ticker"]
+            or (history or {}).get("provider_chart_identity_verified") is not True):
         return {}, "BRENT_HISTORY_SOURCE_MISMATCH"
     mapping = {}
     for tf in NATIVE_TIMEFRAMES:
@@ -57,6 +59,7 @@ def _native_rows(history, clock):
         labelled = [row for row in rows if isinstance(row, dict)
                     and row.get("timeframe") == tf
                     and row.get("raw_label") == LABEL
+                    and VPS.is_pinned_brent_identity(row.get("source_identity"))
                     and VPS.same(expected, row.get("source_identity"))
                     and not (row.get("source_identity") or {}).get("contract_id")]
         native = {TS.timestamp(row.get("ts")): row for row in labelled}
@@ -78,6 +81,7 @@ def _daily_evidence(history):
             ((history or {}).get("bars_by_timeframe") or {}).get("1d") or []
             if isinstance(row, dict) and row.get("timeframe") == "1d"
             and row.get("raw_label") == LABEL
+            and VPS.is_pinned_brent_identity(row.get("source_identity"))
             and VPS.same(expected, row.get("source_identity"))
             and not (row.get("source_identity") or {}).get("contract_id")]
 
@@ -94,6 +98,7 @@ def _observed_partials(history, clock):
                 continue
             identity = row.get("source_identity")
             if (row.get("timeframe") != tf or row.get("raw_label") != LABEL
+                    or not VPS.is_pinned_brent_identity(identity)
                     or not VPS.same(expected, identity) or identity.get("contract_id")
                     or row.get("finalized") is not False or row.get("synthetic")
                     or row.get("price_type") != "Last"):
@@ -134,13 +139,14 @@ def build_market(quote, history, now=None):
     mapping, history_error = _native_rows(history, clock)
     partials = {} if history_error else _observed_partials(history, clock)
     actual = VPS.identity(ASSET, q)
-    same_quote = bool(q.get("raw_label") == LABEL and VPS.same(expected, actual)
+    same_quote = bool(VPS.brent_quote_verified(q) and VPS.same(expected, actual)
                       and not (actual or {}).get("contract_id"))
     direct_price = _price(q.get("price")) if same_quote else None
     observed = q.get("observed_at") if direct_price else None
     freshness = quote_gate(observed, now=clock, execution=True, asset=ASSET)
     fresh = bool(direct_price and freshness.get("eligible"))
     reason = ("BRENT_PROFINANCE_QUOTE_READY" if fresh else
+              "BRENT_PROFINANCE_IDENTITY_UNVERIFIED" if q and not same_quote else
               "BRENT_PROFINANCE_QUOTE_UNAVAILABLE" if not direct_price else
               "EXECUTION_QUOTE_STALE")
 
@@ -171,7 +177,11 @@ def build_market(quote, history, now=None):
         "raw_label": LABEL, "source_divergence": 0.0, "source_gate_pass": fresh,
         "raw_ticker": q.get("raw_ticker") if same_quote else None,
         "instrument_id": q.get("instrument_id") if same_quote else None,
+        "price_field": q.get("price_field") if same_quote else None,
         "provider_ticker_verified": bool(same_quote and q.get("provider_ticker_verified")),
+        "provider_series_verified": same_quote,
+        "source_pin_version": expected["source_pin_version"] if same_quote else None,
+        "source_pin_status": "PINNED_PROVIDER_FEED" if same_quote else "AWAITING_PROVIDER_VERIFICATION",
         "contract_identity_status": "UNVERIFIED_PROVIDER_SERIES",
         "price_series_type": "UNVERIFIED",
         "paper_eligible": fresh, "execution_eligible": fresh, "production_eligible": False,

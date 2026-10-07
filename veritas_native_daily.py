@@ -322,7 +322,7 @@ class DailyHistoryCache:
                 # DA controls when that observation can contribute to an SMA.
                 valid,diagnostics=DA.validated_bars(bars,asof,source_identity=identity)
                 certified_future=profinance and any(
-                    isinstance(b,dict) and VPS.same(identity,DA._source(b.get("source_identity")))
+                    isinstance(b,dict) and VPS.same(identity,b.get("source_identity"))
                     and DA._native(b) for b in bars)
                 if not valid and not certified_future:
                     raise ValueError("NATIVE_DAILY_NO_VALID_CLOSED_BARS")

@@ -18,7 +18,8 @@ SCALAR_FIELDS = (
     'price_source_status', 'data_integrity_status',
 )
 IDENTITY_FIELDS = ('version', 'asset', 'key', 'primary_source', 'contract_id',
-                   'legacy_fixed_adapter')
+                   'legacy_fixed_adapter', 'source_pin_version',
+                   'provider_ticker', 'provider_instrument_id')
 CONTRACT_FIELDS = ('secid', 'symbol', 'instrument_uid', 'ticker', 'figi', 'lot',
                    'price_tick', 'tick_value_rub', 'price_unit',
                    'broker_price_unit', 'normalization_factor', 'continuous')
@@ -27,7 +28,7 @@ VALUATION_FIELDS = (
     'contract_identity_status', 'provider_label', 'provider_ticker',
     'provider_instrument_id', 'provider_ticker_verified', 'price_field',
     'quote_observed_at', 'exact_contract_verified', 'price_series_type',
-    'valuation_mode',
+    'valuation_mode', 'source_pin_status', 'source_pin_version', 'provider_series_verified',
 )
 
 

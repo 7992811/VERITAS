@@ -2,10 +2,10 @@
 from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
-
-PRODUCT_VERSION="veritas-max-product-v91.7.11-structural-breakout"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.11-structural-breakout"
-UI_VERSION="veritas-ui-v9.1.7.11-structural-breakout"
+import veritas_price_source as VPS
+PRODUCT_VERSION="veritas-max-product-v91.7.12-structural-breakout"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.12-structural-breakout"
+UI_VERSION="veritas-ui-v9.1.7.12-structural-breakout"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -47,8 +47,8 @@ def snapshot():
             "structural_signal_execution_projection_is_bounded":True,
         },
         "valuation_source_policy":{
-            "version":"VALUATION_SOURCE_BASIS_V1",
-            "provider_ticker_checked_when_present":True,
+            "version":"VALUATION_SOURCE_BASIS_V2", "provider_ticker_checked_when_present":True,
+            "brent_source_pin":VPS.brent_feed_pin_identity(), "brent_single_source_required":True,
             "held_brent_contract_from_canonical_identity":True,
             "unqualified_provider_month_not_inferred":True,
         },

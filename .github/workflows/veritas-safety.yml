@@ -55,8 +55,10 @@ jobs:
       - name: Native daily averages, rebounds and stable Brent source
         run: python -m unittest -v test_veritas_daily_averages.py test_veritas_daily_average_index.py test_veritas_native_daily.py test_veritas_ma_rebound.py test_veritas_brent_market.py test_veritas_entry_scenarios.py test_veritas_profinance_daily_integration.py
       - name: Brent valuation identity and exact held contract
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
         run: |
-          python -m unittest -v test_veritas_brent_valuation.py test_veritas_brent_contract_guard.py test_veritas_profinance_protocol.py
+          python -m unittest -v test_veritas_brent_valuation.py test_veritas_brent_contract_guard.py test_veritas_profinance_protocol.py test_veritas_brent_source_pin.py test_veritas_brent_runtime_pin.py test_veritas_brent_persistence.py
           node tools/test_brent_valuation_ui.cjs
       - name: Canonical constitution regressions
         run: python -m unittest -v test_veritas_canonical_constitution.py
