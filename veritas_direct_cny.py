@@ -187,7 +187,7 @@ def market_or_fallback(fallback, verifier=None, connection=None):
     try:
         raw=market_snapshot(connection)
         _verify_async(verifier)
-        raw['feed_status']=status()
+        raw['feed_status']=_recorded_status()
         return raw
     except Exception as exc:
         reason=str(exc) if isinstance(exc,TB.TBankError) else 'CNY_DIRECT_DATA_UNAVAILABLE'
@@ -197,14 +197,52 @@ def market_or_fallback(fallback, verifier=None, connection=None):
         # on delayed MOEX data when the selected execution source is T-Invest.
         raw.update(source_gate_pass=False,paper_eligible=False,execution_eligible=False,
                    production_eligible=False,production_direct_feed=False,
-                   paper_execution_reason=reason,feed_status=status())
+                   paper_execution_reason=reason,feed_status=_recorded_status())
         return raw
 
-def status():
+def _status_payload(current):
+    with _LOCK:
+        return {**current,'version':VERSION,'enabled':enabled(),
+                'verifier':{k:v for k,v in _VERIFY.items() if k not in ('at','running')},
+                'orders_enabled':False,'requires_same_quote_and_history_source':True}
+
+def _recorded_status():
+    """Describe the market snapshot already checked, without validating twice."""
     with _LOCK:
         current=copy.deepcopy(_STATE)
         if current.get('status')=='DIRECT_READY' and not _fresh(current.get('quote_observed_at'),datetime.now(timezone.utc),120):
             current.update(status='STALE',reason='CNY_DIRECT_QUOTE_STALE')
-        return {**current,'version':VERSION,'enabled':enabled(),
-                'verifier':{k:v for k,v in _VERIFY.items() if k not in ('at','running')},
-                'orders_enabled':False,'requires_same_quote_and_history_source':True}
+    return _status_payload(current)
+
+def status(connection=None, now=None):
+    """Check full reader memory without RPC; never called by the quote fast path."""
+    now=now or datetime.now(timezone.utc)
+    with _LOCK:
+        previous_check=_STATE.get('checked_at')
+    current={'status':'NOT_CHECKED','reason':'CNY_DIRECT_SOURCE_DISABLED',
+             'checked_at':TB.iso(now),'last_market_check_at':previous_check,
+             'validation_basis':'CURRENT_READER_MEMORY','source':'TBANK_GRPC',
+             'instrument_uid':None,'quote_observed_at':None,'history_source':None,
+             'connection_status':None,'connection_error_code':None}
+    if not enabled():
+        return _status_payload(current)
+    try:
+        connection=connection or TB.connection
+        with connection.lock:
+            current.update(connection_status=getattr(connection,'state',None),
+                           connection_error_code=getattr(connection,'error',None))
+        # Reject bad quotes/books/sessions before copying history. Recheck them
+        # in the full atomic snapshot too: the reader may advance between copies.
+        for include_history in (False, True):
+            data=_snapshot(connection,include_history=include_history)
+            current.update(instrument_uid=(data.get('instrument') or {}).get('uid'),
+                           quote_observed_at=(data.get('quote') or {}).get('observed_at'),
+                           book_observed_at=(data.get('book') or {}).get('orderbook_ts') or (data.get('book') or {}).get('time'),
+                           session_checked_at=(data.get('trading') or {}).get('checked_at'))
+            validate_snapshot(data,now,require_history=include_history)
+        current.update(status='DIRECT_READY',reason=None,history_source='TBANK_GRPC',
+                       history_last_candle_at={tf:snap['candles'][-1]['time'] for tf,snap in data['candles'].items()})
+    except Exception as exc:
+        reason=str(exc) if isinstance(exc,TB.TBankError) else 'CNY_DIRECT_DATA_UNAVAILABLE'
+        current.update(status='STALE' if reason=='CNY_DIRECT_QUOTE_STALE' else 'RESEARCH_ONLY',reason=reason)
+    return _status_payload(current)

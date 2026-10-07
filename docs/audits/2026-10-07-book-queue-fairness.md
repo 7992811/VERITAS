@@ -80,3 +80,5 @@ and duration, so an overall before/after duration is not a controlled estimate
 of this fairness change alone. The operational check is that an aged ordinary
 waiter receives the next available nonprotective turn while protection retains
 priority.
+
+The final integration also preserves main `107564e7447d9219a1bf14c62624f38df9c3c195`: Currency reader validation, observation of every queued barrier before reserving, learning exclusions, and projected NAV/mark reads. That parallel release used 91.8.2; the queue fairness release is therefore 91.8.3.
