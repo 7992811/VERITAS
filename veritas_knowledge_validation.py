@@ -733,17 +733,36 @@ def _put_trial(c, candidate, clock):
          candidate["epoch"], STORE._json(candidate, 60000), clock))
 
 
-def run_batch(pg_connect, observations=(), *, now=None, context=None):
+def run_batch(pg_connect, observations=(), *, now=None, context=None, trial_window=None):
     """Consume <=32 sealed rows atomically; caller acknowledges only on success.
 
     Receipt deduplication, immutable candidate transitions and the compact
     checkpoint share a transaction. Retrying after commit cannot inflate counts.
+    A trial_window=(i,i+1) processes one original stamp from exactly one row.
+    Validate all original stamps before selecting; never rewrite sealed evidence.
+    Empty/missing stamp lists have no valid window and must be skipped by callers.
     """
     clock = _clock(now)
     integrity_token = EXPORTS.memory_contract()
     rows = list(islice(observations, MAX_BATCH+1))
     if len(rows) > MAX_BATCH:
         raise ValueError("knowledge batch exceeds 32 observations")
+    window_stamps = None
+    if trial_window is not None:
+        if len(rows) != 1 or not isinstance(rows[0], dict):
+            raise ValueError("knowledge trial window requires exactly one observation")
+        stamps = rows[0].get("knowledge_trials")
+        if not isinstance(stamps, list) or not 1 <= len(stamps) <= MAX_TRIALS:
+            raise ValueError("knowledge trial window requires one to eight original stamps")
+        for stamp in stamps:
+            if not isinstance(stamp, dict):
+                raise ValueError("knowledge trial window requires original stamp objects")
+            STORE._json(stamp, 2048)
+        if (not isinstance(trial_window, (tuple, list)) or len(trial_window) != 2
+                or any(type(index) is not int for index in trial_window)
+                or not 0 <= trial_window[0] < len(stamps) or trial_window[1] != trial_window[0]+1):
+            raise ValueError("knowledge trial window must select one in-range original stamp")
+        window_stamps = stamps[trial_window[0]:trial_window[1]]
     rows.sort(key=lambda r: str(r.get("decision_at") or ""))
     with _transaction(pg_connect, context) as c:
         prior = STORE.load_snapshot_in_transaction(c, SNAPSHOT_NAME, VERSION, for_update=True)
@@ -751,7 +770,7 @@ def run_batch(pg_connect, observations=(), *, now=None, context=None):
         family = c.execute("SELECT registered FROM knowledge_validation_family WHERE singleton=TRUE FOR UPDATE").fetchone()["registered"]
         for raw in rows:
             _check(context)
-            stamps = raw.get("knowledge_trials") or []
+            stamps = window_stamps if window_stamps is not None else raw.get("knowledge_trials") or []
             if not isinstance(stamps, list) or len(stamps) > MAX_TRIALS:
                 raise ValueError("knowledge trial count exceeds eight")
             for stamp in stamps:

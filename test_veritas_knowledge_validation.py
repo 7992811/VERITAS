@@ -1,4 +1,5 @@
 """Prospective knowledge contract and isolated PostgreSQL commit tests."""
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -6,7 +7,8 @@ import inspect
 import json
 import os
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import veritas_knowledge_validation as K
 import veritas_learning_state as STORE
@@ -236,6 +238,51 @@ class KnowledgeContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             K._definition(dict(RULE, hypothesis="x"*9000))
 
+    def test_trial_window_rejects_invalid_shape_or_unselected_stamp_before_sql(self):
+        candidate = fresh_candidate()
+        row, _ = observation(candidate, "window", T0+timedelta(minutes=10))
+        valid = deepcopy(row["knowledge_trials"][0])
+        connect = Mock(side_effect=AssertionError("invalid window reached SQL"))
+        for window in ((-1, 0), (0, 0), (0, 2), (1, 2), (True, 1), (0, True),
+                       (0., 1), ("0", 1), (0,), (0, 1, 2), "01", iter([0, 1])):
+            with self.subTest(window=str(window)), self.assertRaises(ValueError):
+                K.run_batch(connect, [row], now=row["observed_at"], trial_window=window)
+        for rows in ([], [row, row], [None]):
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                K.run_batch(connect, rows, now=row["observed_at"], trial_window=(0, 1))
+        for stamps in (None, [], {}, "", (valid,), [valid]*9, [valid, None], [valid, []],
+                       [valid, {"oversized": "x"*2049}], [valid, {"invalid": float("nan")}],
+                       [valid, {"invalid": object()}]):
+            with self.subTest(stamps=str(stamps)[:80]), self.assertRaises(ValueError):
+                K.run_batch(connect, [dict(row, knowledge_trials=stamps)],
+                            now=row["observed_at"], trial_window=(0, 1))
+        connect.assert_not_called()
+
+    def test_trial_window_passes_original_raw_and_stamp_to_unchanged_evaluator(self):
+        entry = registration()
+        candidate = fresh_candidate()
+        row, stamp = observation(candidate, "window", T0+timedelta(minutes=10))
+        row["knowledge_trials"] = [deepcopy(stamp), stamp, deepcopy(stamp)]
+        original = deepcopy(row)
+        class Connection:
+            def execute(self, sql, args=None):
+                record = None
+                if "SELECT registered" in sql:
+                    record = {"registered": 0}
+                elif "SELECT payload,active,checked_at" in sql:
+                    record = {"payload": entry, "active": True, "checked_at": T0}
+                return SimpleNamespace(fetchone=lambda: record, fetchall=lambda: [])
+        with patch.object(K, "_transaction", return_value=nullcontext(Connection())), \
+             patch.object(STORE, "load_snapshot_in_transaction", return_value=None), \
+             patch.object(STORE, "publish_snapshot_in_transaction", return_value=True), \
+             patch.object(K, "evaluate", wraps=K.evaluate) as evaluate:
+            result = K.run_batch(None, [row], now=row["observed_at"], trial_window=(1, 2))
+        evaluate.assert_called_once()
+        self.assertIs(evaluate.call_args.args[1], row)
+        self.assertIs(evaluate.call_args.args[2], stamp)
+        self.assertEqual(row, original)
+        self.assertEqual(result["counts"]["direction"], 1)
+
     def test_rule_page_uses_audit_pk_join_without_archive_hash_scan(self):
         source = inspect.getsource(K._catalog_rules)
         self.assertNotIn("knowledge_candidates", source)
@@ -339,6 +386,104 @@ class KnowledgeValidationSQLTests(unittest.TestCase):
         match = K.capture(self.rule, now=T0)
         self.assertIsNotNone(match)
         return K._new_trial(K._template(match, scope()))
+
+    def _consumed_state(self):
+        with self.connect() as c:
+            return {
+                "trials": c.execute("SELECT * FROM knowledge_validation_trials ORDER BY trial_id").fetchall(),
+                "seen": c.execute("SELECT * FROM knowledge_validation_seen ORDER BY idea_key").fetchall(),
+                "streams": c.execute("SELECT * FROM knowledge_validation_streams ORDER BY stream_key").fetchall(),
+                "family": c.execute("SELECT registered FROM knowledge_validation_family").fetchone(),
+                "board": c.execute("SELECT payload FROM veritas_learning_snapshots WHERE name=%s", (K.SNAPSHOT_NAME,)).fetchone(),
+            }
+
+    def _clear_consumed_state(self):
+        # The inherited DSN guard and unique schema confine this reset to this
+        # test's database fixture; audited source/rule registrations stay fixed.
+        with self.connect() as c:
+            c.execute("TRUNCATE knowledge_validation_trials,knowledge_validation_seen,knowledge_validation_streams")
+            c.execute("UPDATE knowledge_validation_family SET registered=0")
+            c.execute("DELETE FROM veritas_learning_snapshots WHERE name=%s", (K.SNAPSHOT_NAME,))
+        K._TRIALS.clear(); K._BOARD = {}
+
+    def test_sql_all_eight_trials_equal_sequential_windows_and_replays(self):
+        rules = [self.rule]
+        with self.connect() as c:
+            for i in range(1, K.MAX_TRIALS):
+                rule = dict(self.rule, rule_id="AUTO_RULE_"+str(i), action="SHORT" if i % 2 else "LONG")
+                rules.append(rule)
+                c.execute("""INSERT INTO knowledge_rules
+                    SELECT %s,source_id,agent,asset_scope,horizons,%s,status,conditions,prior_weight,
+                        hypothesis,mechanism,formalization_note FROM knowledge_rules WHERE rule_id=%s""",
+                    (rule["rule_id"], rule["action"], self.rule["rule_id"]))
+        K.refresh_catalog(self.connect, now=T0)
+        self.assertEqual(K.refresh_catalog(self.connect, now=T0)["audited"], K.MAX_TRIALS)
+        candidates = [K._new_trial(K._template(K.capture(rule, now=T0), scope())) for rule in rules]
+        decision = T0+timedelta(minutes=10)
+        row, _ = observation(candidates[0], "all-eight-original", decision)
+        row["knowledge_trials"] = [stamp_for(candidate, decision) for candidate in candidates]
+        immutable = deepcopy(row)
+        whole = K.run_batch(self.connect, [row], now=row["observed_at"])
+        expected = self._consumed_state()
+        self.assertEqual(whole["counts"]["direction"], K.MAX_TRIALS)
+        self.assertEqual(expected["family"]["registered"], K.MAX_TRIALS)
+        self._clear_consumed_state()
+        for i in range(K.MAX_TRIALS):
+            answer = K.run_batch(self.connect, [row], now=row["observed_at"], trial_window=(i, i+1))
+            self.assertEqual(answer["counts"]["direction"], i+1)
+        self.assertEqual(answer, whole)
+        self.assertEqual(self._consumed_state(), expected)
+        # A lost caller checkpoint can repeat any committed window, or even
+        # replay the old whole-row API, without inflating family or evidence.
+        for i in reversed(range(K.MAX_TRIALS)):
+            K.run_batch(self.connect, [row], now=row["observed_at"], trial_window=(i, i+1))
+        K.run_batch(self.connect, [row], now=row["observed_at"])
+        self.assertEqual(self._consumed_state(), expected)
+        self.assertEqual(row, immutable)
+        self.assertTrue(all(r["evidence_hash"] == row["evidence_hash"] for r in expected["seen"]))
+
+    def test_sql_window_failure_rolls_back_and_unselected_bad_stamp_cannot_commit(self):
+        candidate = self._ready()
+        row, stamp = observation(candidate, "window-rollback", T0+timedelta(minutes=10))
+        row["knowledge_trials"] = [stamp, deepcopy(stamp)]
+        before = self._consumed_state()
+        for bad in (None, {"too_big": "x"*2049}):
+            malformed = dict(row, knowledge_trials=[stamp, bad])
+            with self.assertRaises(ValueError):
+                K.run_batch(self.connect, [malformed], now=row["observed_at"], trial_window=(0, 1))
+            self.assertEqual(self._consumed_state(), before)
+        with patch.object(STORE, "publish_snapshot_in_transaction", side_effect=RuntimeError("commit blocked")):
+            with self.assertRaisesRegex(RuntimeError, "commit blocked"):
+                K.run_batch(self.connect, [row], now=row["observed_at"], trial_window=(0, 1))
+        self.assertEqual(self._consumed_state(), before)
+        retried = K.run_batch(self.connect, [row], now=row["observed_at"], trial_window=(0, 1))
+        self.assertEqual(retried["counts"]["direction"], 1)
+        self.assertEqual(len(self._consumed_state()["seen"]), 1)
+
+    def test_sql_window_keeps_clock_source_and_net_proof_exclusions(self):
+        candidate = self._ready()
+        decision = T0+timedelta(minutes=10)
+        direction, _ = observation(candidate, "gated-direction", decision)
+        trade, _ = observation(candidate, "gated-net", decision, trade=True)
+        cases = [
+            (dict(direction, known_at=(decision+timedelta(seconds=1)).isoformat()),
+             "NONPROSPECTIVE_OR_INCOMPLETE_TIMES"),
+            (dict(direction, source_verified=False), "UNVERIFIED_OUTCOME"),
+            (dict(trade, costs_verified=False), "UNVERIFIED_NET_COST_OR_RISK"),
+            (dict(trade, knowledge_cashflows=dict(trade["knowledge_cashflows"], source_evidence_hash="relabelled")),
+             "UNVERIFIED_NET_COST_OR_RISK"),
+        ]
+        for row, reason in cases:
+            with self.subTest(reason=reason):
+                self._clear_consumed_state()
+                whole = K.run_batch(self.connect, [row], now=row["observed_at"])
+                expected = self._consumed_state()
+                self._clear_consumed_state()
+                windowed = K.run_batch(self.connect, [row], now=row["observed_at"], trial_window=(0, 1))
+                self.assertEqual(windowed, whole)
+                self.assertEqual(self._consumed_state(), expected)
+                self.assertEqual(windowed["reasons"][reason], 1)
+                self.assertEqual(windowed["counts"], {})
 
     def test_sql_catalog_immutable_audit_restore_and_revocation(self):
         candidate = self._ready()

@@ -23,6 +23,7 @@ class Lane:
     def __init__(self):
         self.callbacks = {}
         self.options = {}
+        self.requests = []
         self.deadline = time.monotonic()+6
     def register_periodic(self, name, callback, **options):
         self.callbacks[name] = callback
@@ -36,6 +37,9 @@ class Lane:
         self.deadline = time.monotonic()+6
     def snapshot(self):
         return {"periodic": {}}
+    def request(self, name):
+        self.requests.append(name)
+        return True
 
 
 def namespace(connect):
@@ -390,6 +394,13 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
             c.execute("INSERT INTO ledger_events(entity_key,event_type,asset,horizon,payload) VALUES(%s,'decision','BTC','1m',%s::jsonb)",
                       (entity, json.dumps({"learning_provenance": record["provenance"]})))
 
+    def consume_candidate(self, cursor=None):
+        for _ in range(16):
+            result, cursor = self.call(self.app.candidates, cursor)
+            if result.get("stage") == "ACK":
+                return result, cursor
+        self.fail("candidate did not reach ACK")
+
     def test_registered_trade_job_resumes_only_inner_durable_cursor(self):
         self.app.lane.reset()
         first = self.app.lane.callbacks["learning_trade_evidence"]()
@@ -427,12 +438,12 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
             result, _ = self.call(self.app.outcomes)
         self.assertEqual(result["resolved"], 1)
         with patch.object(AUTO, "_clock", wraps=AUTO._clock):
-            result, _ = self.call(self.app.candidates)
+            result, _ = self.consume_candidate()
         self.assertEqual(result["counts"]["direction"], 1)
         # Simulate acknowledgement loss after the learner already committed.
         with self.connect() as c:
             c.execute("UPDATE learning_forecasts SET status='READY',learned_at=NULL")
-        replay, _ = self.call(self.app.candidates)
+        replay, _ = self.consume_candidate()
         self.assertEqual(replay["counts"]["direction"], 1)
         restored_ns = namespace(self.connect)
         restored_ns["VP"] = self.ns["VP"]
