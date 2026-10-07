@@ -18,6 +18,8 @@ from test_veritas_timeframe_policy import structural_row
 class Result:
     def __init__(self, row=None): self.row = deepcopy(row)
     def fetchone(self): return self.row
+    def fetchall(self):
+        return deepcopy(self.row if isinstance(self.row,list) else [] if self.row is None else [self.row])
 
 
 class AccountingTables:
@@ -287,7 +289,8 @@ class CanonicalObservationRuntimeTests(unittest.TestCase):
             row['payload'].pop('observation_path')
         clock = self.clock+timedelta(minutes=5)
         row = structural_row(clock,timeframe='5m',price=self.row['price']+.2)
-        self.open(row,fraction=.15,clock=clock)
+        # Marked exposure drift requires room for one full incremental .05 step.
+        self.open(row,fraction=.20,clock=clock)
         self.assertEqual(len(self.tables.orders),2)
         payload = self.tables.trade['payload']
         for field in ('entry_execution_model','initial_stop_price','entry_atr','entry_event_snapshot'):

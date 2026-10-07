@@ -1,6 +1,15 @@
 """Immutable price-source identities for normalized paper positions."""
 import json
 import math
+from copy import deepcopy
+
+QUOTE_FIELDS = ('price', 'best_bid', 'best_ask', 'bid', 'ask', 'market_open',
+                'source_gate_pass', 'data_latency_class', 'source_names', 'source',
+                'primary_source', 'market_source_names', 'verification_mode',
+                'contract', 'contract_id', 'raw_label', 'direct_sources',
+                'secondary_price', 'coinbase_price', 'source_divergence',
+                'spread_bps', 'orderbook_observed_at', 'book_observed_at',
+                'orderbook_ts', 'quote_observed_at')
 
 
 def payload(position):
@@ -78,17 +87,34 @@ def matches(position, quote):
 
 
 def quote_from_row(row):
-    execution=(row or {}).get('_execution_quote')
-    if execution:
-        return dict(execution)
+    if '_execution_quote' in (row or {}):
+        execution=row.get('_execution_quote')
+        return deepcopy(execution) if isinstance(execution,dict) else {}
     return {**(row or {}),'observed_at':(row or {}).get('market_observed_at') or (row or {}).get('observed_at')}
+
+
+def execution_row(row):
+    """Replace every quote field together; never splice an old book into a new quote."""
+    result=dict(row or {})
+    if '_execution_quote' not in result:
+        return result
+    result.setdefault('_signal_reference_price',result.get('price'))
+    quote=quote_from_row(result)
+    for key in QUOTE_FIELDS:
+        result.pop(key,None)
+        if key in quote:
+            result[key]=deepcopy(quote[key])
+    result['observed_at']=quote.get('observed_at')
+    result['market_observed_at']=quote.get('observed_at')
+    result['_execution_quote']=quote
+    return result
 
 
 def positive(value):
     try:
         value=float(value)
         return value if math.isfinite(value) and value>0 else None
-    except (TypeError,ValueError):
+    except (TypeError,ValueError,OverflowError):
         return None
 
 

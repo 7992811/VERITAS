@@ -1254,20 +1254,8 @@ _v90r46_base_close_or_reduce=_close_or_reduce
 _v90r46_base_report=report
 
 def _v842_hard_thesis_exit(row):
-    """Immediate full exit is reserved for explicit hard thesis invalidation.
-
-    Entry-quality INVALIDATED / NO_TRADE states are admission and refresh
-    telemetry. They can block new risk, but they are not by themselves proof
-    that an already-open thesis has failed. Promoting them to a hard exit was
-    crystallising fee-negative closes while the execution horizon could still
-    be BUILDING_TREND. Held positions remain protected by the real stop,
-    confirmed direction-flip, structure-exhaustion and portfolio risk lanes.
-    """
-    if not row:
-        return False
-    plan=row.get('trade_plan') or {}
-    ti=plan.get('trade_integrity') or {}
-    return bool(ti.get('hard_invalidation'))
+    """Admission vetoes never substitute for a bound held-position break."""
+    return VPT.hard_thesis_exit(row)
 
 def _v90r46_hold_context(name,z,row):
     row=row or {}
@@ -5004,7 +4992,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         if VTM.owns_position(z):
             VTM.apply_trailing(c,name,z,safe_summary,q,ts)
             safe_candidates,safe_summary=VTM.filter_lower_context(z,safe_candidates,safe_summary)
-        safe_candidates,safe_summary,guard=VTG.guard_open_position(c,z,safe_candidates,safe_summary)
+        safe_candidates,safe_summary,guard=VTG.guard_open_position(c,z,safe_candidates,safe_summary,now=ts)
         if guard.get('active'):
             patch={'ctc_senior_thesis_guard':guard}
             c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
@@ -5016,13 +5004,13 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
 
 
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
-    q=VPG.quote_for_position(dict(z),now=ts)
+    q=VPG.exit_execution_quote(dict(z),now=ts)
     if not q:
         return 0.0
     actual=float(q['price'])
     if str(reason)=='STOP' and VPG.protective_reason(dict(z),q,VPG.utc_datetime(ts))!='STOP':
         return 0.0
-    return _r80_base_close_or_reduce(c,p,name,dict(z,_execution_quote=q),actual,target_fraction,nav,ts,reason)
+    return _r80_base_close_or_reduce(c,p,name,dict(z,_execution_quote=q,_execution_quote_frozen=True),actual,target_fraction,nav,ts,reason)
 
 
 # CANONICAL FINAL RUNTIME AUTHORITY — CTC v2
@@ -5044,6 +5032,8 @@ def _canonical_payload(z):
 
 
 def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    row={} if row is None else row
+    row.setdefault('_execution_audit',{})
     row=dict(row or {})
     if row.get('_runtime_quote_refresh'):
         ts=datetime.now(timezone.utc).isoformat()
@@ -5051,6 +5041,9 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
         price=VPS.positive(VPS.quote_from_row(row).get('price')) or price
         # Freeze this selected quote/time through admission and accounting.
         row['_runtime_quote_refresh']=False
+    quote=VPS.quote_from_row(row)
+    price=VPS.positive(quote.get('price')) or price
+    row=VPS.execution_row(dict(row,_execution_quote=quote))
     policy=dict(POLICIES.get(str(name)) or {})
     hwm=float((p or {}).get('high_water_nav_rub') or nav or 1.0)
     dd=max(0.0,1.0-float(nav)/max(hwm,1.0))
@@ -5110,16 +5103,12 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                   event_id=new_event)
             return 0.0
         actual=VX.entry_gate(row,float(price),direction,requested,existing,
-                            existing_target_price=VX.stored_position_target_price(existing),now=VPG.utc_datetime(ts))
+                            existing_target_price=VX.stored_position_target_price(existing),now=VPG.utc_datetime(ts),
+                            execution_fraction=max(0.0,requested-current))
         hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
         if hard:
             _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
             return 0.0
-        stop=float(existing.get('stop_price') or 0.0)
-        if stop>0:
-            net_risk=abs(float(price)-stop)/max(float(price),1e-12)+float(VX.round_trip_cost_pct((row or {}).get('spread_bps')))
-            if net_risk>0:
-                requested=min(requested,float(CTC.PAPER_RISK_POLICY['per_idea_structural_stop_risk_cap_nav'])/net_risk)
     else:
         if not bool((row or {}).get('_flip_confirmed')):
             _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED')
@@ -5130,7 +5119,8 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     if cap>0:
         requested=min(requested,cap)
     step=float(policy.get('position_step') or .05)
-    requested=max(0.0,math.floor(requested/step+1e-9)*step)
+    if not existing or str(existing.get('direction'))!=str(direction):
+        requested=max(0.0,math.floor(requested/step+1e-9)*step)
     if requested<=0:
         _record_entry_outcome(row,'BLOCKED','STOP_RISK_CAP_EXCEEDED')
         return 0.0
@@ -5171,7 +5161,7 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
 
 def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     z=dict(z or {})
-    q=VPG.quote_for_position(z,now=ts)
+    q=VPG.exit_execution_quote(z,now=ts)
     if not q:
         return 0.0
     z.update(_execution_quote=q,_execution_quote_frozen=True)

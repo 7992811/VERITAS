@@ -343,7 +343,9 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
         self.assertFalse(VPR._v842_hard_thesis_exit(weak))
         hard = copy.deepcopy(base)
         hard['trade_plan']['trade_integrity']['hard_invalidation'] = True
-        self.assertTrue(VPR._v842_hard_thesis_exit(hard))
+        # A candidate-level hard veto still needs held-position structural proof.
+        self.assertFalse(VPR._v842_hard_thesis_exit(hard))
+        self.assertTrue(hard['trade_plan']['trade_integrity']['hard_invalidation'])
 
 
     def test_small_learning_sample_is_shrunk_toward_neutral_prior(self):

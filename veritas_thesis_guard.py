@@ -7,6 +7,7 @@ decisively confirm the opposite direction. Protective stops and portfolio
 hard-risk remain independent and immediate.
 """
 import json
+import veritas_position_thesis as VPT
 
 ORDER={"1m":0,"5m":1,"1h":2,"4h":3,"1d":4,"3d":5,"7d":6}
 WEIGHT={"1h":1.0,"4h":1.25,"1d":1.5,"3d":1.75,"7d":2.0}
@@ -24,6 +25,13 @@ def _payload(z):
 
 
 def _trade_horizon(c,z):
+    # An immutable entry event/position field outranks a later signal or query.
+    try:
+        h=VPT.position_scope(z).get("execution_timeframe")
+        if h in ORDER:
+            return h
+    except Exception:
+        pass
     tid=(z or {}).get("active_trade_id")
     if tid:
         try:
@@ -89,6 +97,13 @@ def _explicit_thesis_break(row):
     return bool(ti.get("hard_invalidation") and "THESIS_INVALIDATION" in reasons)
 
 
+def _annotate(row,meta):
+    x=dict(row or {}); plan=dict(x.get("trade_plan") or {})
+    plan["ctc_open_position_thesis_guard"]=meta
+    x["trade_plan"]=plan
+    return x
+
+
 def _soften(row,meta):
     x=dict(row or {})
     plan=dict(x.get("trade_plan") or {})
@@ -114,7 +129,7 @@ def _soften(row,meta):
     return x
 
 
-def guard_open_position(c,z,candidates,summary):
+def guard_open_position(c,z,candidates,summary,now=None):
     z=dict(z or {})
     asset=str(z.get("asset") or "")
     direction=str(z.get("direction") or "")
@@ -124,7 +139,7 @@ def guard_open_position(c,z,candidates,summary):
 
     info=_support(summary,asset,direction,h)
     exact=info.get("exact_row")
-    exact_break=_explicit_thesis_break(exact)
+    exact_break=bool(VPT.evaluate_exit(z,exact,now).get("structure_confirmed") or _explicit_thesis_break(exact))
     allow_hard=bool(exact_break and info.get("decisive_opposite"))
     meta={k:v for k,v in info.items() if k!="exact_row"}
     meta.update({"active":not allow_hard,"held_horizon":h,"held_direction":direction,
@@ -133,7 +148,9 @@ def guard_open_position(c,z,candidates,summary):
                  "policy":"OWN_HORIZON_BREAK_PLUS_DECISIVE_SENIOR_CONFIRMATION"})
 
     if allow_hard:
-        return dict(candidates or {}),list(summary or []),meta
+        book={a:_annotate(r,meta) if a==asset else r for a,r in (candidates or {}).items()}
+        rows=[_annotate(r,meta) if str(r.get("asset") or "")==asset else r for r in summary or []]
+        return book,rows,meta
 
     rows=[]
     for row in summary or []:

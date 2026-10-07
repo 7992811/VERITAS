@@ -12,7 +12,7 @@ import veritas_profit_protection as VPP
 import veritas_timeframe_structure as TFS
 from veritas_quote_time import quote_gate, utc_datetime
 
-VERSION = "CTC_SAME_TF_MANAGEMENT_V1"
+VERSION = "CTC_SAME_TF_MANAGEMENT_V2"
 
 
 def payload(position):
@@ -60,12 +60,18 @@ def trailing_candidate(position, summary, quote, now):
     direction = position.get("direction")
     clock, opened = utc_datetime(now), TFS.timestamp(position.get("opened_at"))
     identity = VPS.position_identity(position)
+    entry_event = p.get("entry_event_snapshot") or {}
     quote = quote or {}
     out.update(reason="SAME_TF_TRAIL_CONTEXT_REQUIRED", timeframe=horizon)
     if (horizon not in TFS.TIMEFRAMES or direction not in ("LONG", "SHORT") or clock is None
             or opened is None or not quote.get("source_gate_pass") or not VPS.matches(position, quote)
             or not quote_gate(quote.get("observed_at"), now=clock, execution=True, asset=asset)["eligible"]):
         return out
+    if entry_event.get("timeframe") and entry_event["timeframe"] != horizon:
+        return dict(out, reason="SAME_TF_POSITION_HORIZON_CHANGED")
+    entry_source = entry_event.get("source_identity")
+    if entry_source and not (VPS.same(identity, entry_source) and VPS.same(entry_source, identity)):
+        return dict(out, reason="SAME_TF_POSITION_SOURCE_CHANGED")
     px, entry = VPS.positive(quote.get("price")), VPS.positive(position.get("avg_entry_price"))
     old = VPP.effective_stop(position)
     if not px or not entry or not old:
@@ -95,19 +101,26 @@ def trailing_candidate(position, summary, quote, now):
     atr = VPS.positive(ctx.get("atr"))
     if not atr:
         return dict(out, reason="SAME_TF_TRAIL_ATR_MISSING")
+    seconds = TFS.TIMEFRAMES[horizon]
+    right = int(CTC.STRUCTURAL_ENTRY_POLICY["pivot_right"])
     kind = "support" if sign == 1 else "resistance"
     levels = []
     for level in ctx.get("levels") or []:
         available, pivot = TFS.timestamp(level.get("available_at")), TFS.timestamp(level.get("pivot_at"))
         anchor = VPS.positive(level.get("price"))
         if (level.get("kind") == kind and level.get("timeframe") == horizon and anchor
-                and available is not None and pivot is not None and pivot < available <= closed
-                and available > opened and sign * (px - anchor) > 0):
+                and available is not None and pivot is not None and pivot >= opened
+                # A pivot timestamp denotes the opening of its candle. Its
+                # own close plus all right-hand closes must be observed. A
+                # newly reported pre-entry extreme is not a new held-trade swing.
+                and pivot + (right + 1) * seconds <= available <= closed
+                and sign * (px - anchor) > 0):
             levels.append((pivot, available, anchor))
     if not levels:
         return dict(out, reason="SAME_TF_NEW_CONFIRMED_SWING_REQUIRED")
     pivot, available, anchor = max(levels)
-    stop = anchor - sign * float(CTC.STRUCTURAL_ENTRY_POLICY["stop_buffer_atr"]) * atr
+    buffer_atr = float(CTC.STRUCTURAL_ENTRY_POLICY["stop_buffer_atr"])
+    stop = anchor - sign * buffer_atr * atr
     if stop <= 0 or sign * (px - stop) <= 0 or sign * (stop - old) <= 0:
         return dict(out, reason="SAME_TF_TRAIL_DOES_NOT_IMPROVE_STOP")
     previous = p.get("same_tf_trailing") or {}
@@ -116,6 +129,10 @@ def trailing_candidate(position, summary, quote, now):
     return dict(out, eligible=True, reason="SAME_TF_CONFIRMED_SWING_TRAIL",
                 old_stop=old, stop_price=stop, price=px, entry_price=entry, atr=atr,
                 reference_level=anchor, reference_pivot_at=pivot, level_available_at=available,
+                pivot_right_required=right, stop_buffer_atr=buffer_atr,
+                price_to_stop_atr=sign * (px - stop) / atr,
+                entry_to_stop_atr=sign * (entry - stop) / atr,
+                distance_validation="DIAGNOSTIC_ONLY_NO_NEW_ATR_THRESHOLD",
                 closed_at=closed, source_identity=deepcopy(identity),
                 structural_policy_version=p["structural_policy_version"])
 
@@ -143,9 +160,21 @@ def apply_trailing(c, name, position, summary, quote, now):
              "same_tf_trailing": event, "same_tf_trailing_history": (history + [event])[-32:],
              "r48_profit_lock_active": False, "r55_net_profit_lock_active": False}
     encoded = json.dumps(patch, ensure_ascii=False, allow_nan=False)
-    c.execute("UPDATE paper_positions SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-              "WHERE portfolio_name=%s AND asset=%s AND active_trade_id=%s",
-              (candidate["stop_price"], encoded, name, position.get("asset"), position.get("active_trade_id")))
+    # Another manager can tighten the stop or resize the remainder after the
+    # caller reads its snapshot. Atomically match that snapshot before writing;
+    # otherwise an apparently tighter candidate could widen the persisted stop
+    # or publish net-profit accounting for a different quantity/entry price.
+    changed = c.execute(
+        "UPDATE paper_positions SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+        "WHERE portfolio_name=%s AND asset=%s AND active_trade_id=%s AND direction=%s "
+        "AND stop_price IS NOT DISTINCT FROM %s AND units IS NOT DISTINCT FROM %s "
+        "AND avg_entry_price IS NOT DISTINCT FROM %s "
+        "AND COALESCE(payload->'trailing_stop','null'::jsonb)=%s::jsonb RETURNING active_trade_id",
+        (candidate["stop_price"], encoded, name, position.get("asset"), position.get("active_trade_id"),
+         position.get("direction"), position.get("stop_price"), position.get("units"),
+         position.get("avg_entry_price"), json.dumps(payload(position).get("trailing_stop")))).fetchone()
+    if not changed:
+        return dict(candidate, eligible=False, reason="SAME_TF_POSITION_CHANGED")
     if position.get("active_trade_id"):
         c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
                   (encoded, position["active_trade_id"]))

@@ -13,6 +13,7 @@ import veritas_price_source as VPS
 import veritas_trend_entry as VTE
 import veritas_strategy_roles as VROLE
 import veritas_timeframe_policy as TFP
+import veritas_stop_risk as VSR
 
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
@@ -31,17 +32,7 @@ def _tier(row):
     return str((row or {}).get("signal_tier") or (row or {}).get("execution_signal_tier") or "").upper()
 
 def _quote_row(row):
-    x=dict(row or {})
-    q=dict(x.get("_execution_quote") or {})
-    if q:
-        x["_signal_reference_price"]=_num(x.get("price"))
-        for key in ("price","best_bid","best_ask","bid","ask","market_open","source_gate_pass",
-                    "data_latency_class","source_names","verification_mode","contract"):
-            if q.get(key) is not None:
-                x[key]=q.get(key)
-        if q.get("observed_at"):
-            x["market_observed_at"]=q["observed_at"]
-    return x
+    return VPS.execution_row(row)
 
 def anti_chase_gate(row, price=None, now=None):
     row=row or {}
@@ -236,22 +227,16 @@ def evaluate(row, policy, drawdown, now=None):
     fraction=full_fraction
     if soft:
         fraction,rg=_fraction(p,drawdown,soft=True)
-    net_risk=_num(economics.get("net_risk_pct"))
-    if not net_risk:
-        stop=_num((work.get("trade_plan") or {}).get("stop_price"))
-        if stop and price:
-            net_risk=abs(price-stop)/price+VX.round_trip_cost_pct(work.get("spread_bps"))
-    risk_cap=float(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"])
-    if net_risk and net_risk>0:
-        fraction=min(fraction,risk_cap/net_risk)
-    step=float(p.get("position_step") or 0.05)
-    fraction=max(0.0,math.floor(fraction/step+1e-9)*step)
-    if fraction<=0:
-        return {"open":False,"fraction":0.0,"reason":"STOP_RISK_CAP_EXCEEDED","hard_veto":True,
-                "economics":economics,"risk_governor":rg,"canonical_stage":"RISK"}
+    stop_budget=VSR.cap_fraction_from_economics(economics,fraction,p)
+    fraction=float(stop_budget.get("fraction") or 0.0)
+    if not stop_budget.get("eligible"):
+        return {"open":False,"fraction":0.0,"reason":stop_budget["reason"],"hard_veto":True,
+                "economics":economics,"risk_governor":rg,"stop_risk_budget":stop_budget,
+                "canonical_stage":"RISK"}
     return {"open":True,"fraction":fraction,"reason":"CANONICAL_SIGNAL_PROBE" if soft else "CANONICAL_SIGNAL_ENTRY",
             "hard_veto":False,"soft_blockers":list(dict.fromkeys(soft)),"economics":economics,
-            "risk_governor":rg,"trend_event":event,"execution_timing":chase,
+            "risk_governor":rg,"stop_risk_budget":stop_budget,
+            "trend_event":event,"execution_timing":chase,
             "canonical_stage":"SIZE","canonical_policy_version":CTC.VERSION,
             "prepared_plan":dict(plan),"structural_policy_version":TFP.VERSION}
 

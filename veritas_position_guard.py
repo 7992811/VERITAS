@@ -1,6 +1,7 @@
 """Independent protective exits for the normalized paper book; no broker orders."""
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import json
@@ -47,6 +48,7 @@ def refresh_entry_quotes(summary):
     # including a NO_TRADE 1m/5m row. Execution freshness belongs to the market,
     # not to the age of the slow signal that selected the direction.
     for r in rows:
+        r=VPS.execution_row(r)
         asset=r.get('asset')
         if asset not in assets or not r.get('source_gate_pass') or VX.is_proxy_price(asset,r):
             continue
@@ -58,15 +60,9 @@ def refresh_entry_quotes(summary):
             px=0.0
         if not gate.get('eligible') or not math.isfinite(px) or px<=0:
             continue
-        q={
-          'price':px,'best_bid':r.get('best_bid'),'best_ask':r.get('best_ask'),
-          'bid':r.get('bid'),'ask':r.get('ask'),'observed_at':observed,
-          'contract':r.get('contract'),'source_gate_pass':True,
-          'market_open':r.get('market_open',True),
-          'data_latency_class':r.get('data_latency_class'),
-          'source_names':r.get('source_names') or r.get('market_source_names'),
-          'verification_mode':r.get('verification_mode'),
-        }
+        q={key:deepcopy(r[key]) for key in VPS.QUOTE_FIELDS if key in r}
+        q.update(price=px,observed_at=observed,source_gate_pass=True,
+                 market_open=r.get('market_open',True))
         prev=quotes.get(asset)
         obs_dt=utc_datetime(observed)
         prev_dt=utc_datetime((prev or {}).get('observed_at'))
@@ -134,6 +130,7 @@ def book_transaction(c):
 def publish_quote(asset, raw):
     if not raw or not raw.get('observed_at'):
         return
+    raw=deepcopy(raw)
     with _quotes_lock:
         old_state=_market_state.get(asset) or {}
         dt,prev=utc_datetime(raw.get('observed_at')),utc_datetime(old_state.get('observed_at'))
@@ -156,9 +153,7 @@ def publish_quote(asset, raw):
         old = _quotes.get(asset) or {}
         dt, prev = utc_datetime(raw['observed_at']), utc_datetime(old.get('observed_at'))
         if dt and (prev is None or dt >= prev):
-            _quotes[asset] = {k: raw.get(k) for k in ('price', 'best_bid', 'best_ask', 'bid', 'ask',
-                             'observed_at', 'contract', 'source_gate_pass', 'market_open',
-                             'data_latency_class','source_names','verification_mode')}
+            _quotes[asset] = {key:raw[key] for key in (*VPS.QUOTE_FIELDS,'asset','observed_at') if key in raw}
 
 
 def quote_for_position(position, candidate=None, now=None):
@@ -170,7 +165,7 @@ def quote_for_position(position, candidate=None, now=None):
         # it again below, but do not replace its price/time/bid/ask midway through
         # the evidence, profit check and fill calculation with a newer cache row.
         selected=position.get('_execution_quote')
-        quotes=[dict(selected)] if isinstance(selected,dict) else []
+        quotes=[deepcopy(selected)] if isinstance(selected,dict) else []
     else:
         with _quotes_lock:
             quotes=[dict(q) for key,q in _source_quotes.items() if key[0]==position.get('asset')]
@@ -194,7 +189,7 @@ def quote_for_position(position, candidate=None, now=None):
                 and VX.paper_quote_time_gate(dict(q,asset=position.get('asset')),now=now,protective=True)['eligible']
                 and (last is None or observed>=last)):
             valid.append(q)
-    return dict(max(valid,key=lambda q:utc_datetime(q['observed_at']))) if valid else {}
+    return deepcopy(max(valid,key=lambda q:utc_datetime(q['observed_at']))) if valid else {}
 
 
 def refresh_execution_row(row, now=None):
@@ -296,18 +291,31 @@ def quote_matches_position(z, quote):
 def exit_execution_quote(z,now=None):
     """One fresh quote contract for protection assessment and the actual fill."""
     now=utc_datetime(now) or datetime.now(timezone.utc)
-    quote=quote_for_position(z,now=now)
+    # Once an exit assessment selects a quote, accounting must consume that
+    # same book. A refreshed cache is considered by the next decision cycle.
+    quote=(VPS.quote_from_row(z) if '_execution_quote' in z else quote_for_position(z,now=now))
     if (not quote or not quote.get('source_gate_pass') or VX.is_proxy_price(z.get('asset'),quote)
+            or not VPS.positive(quote.get('price')) or not VPS.matches(z,quote)
             or not quote_matches_position(z,quote)):
         return {}
     if not quote_gate(quote.get('observed_at'),now=now,protective=True)['eligible']:
+        return {}
+    if not VX.paper_quote_time_gate(dict(quote,asset=z.get('asset')),now=now,protective=True)['eligible']:
+        return {}
+    p=payload_of(z)
+    floor=max((utc_datetime(value) for value in (
+        (p.get('source_locked_mark') or {}).get('observed_at'),p.get('entry_execution_observed_at'),
+        p.get('entry_market_observed_at')) if utc_datetime(value)),default=None)
+    if floor is not None and utc_datetime(quote.get('observed_at'))<floor:
         return {}
     return quote
 
 def exit_fill(z,price,fraction,ts):
     quote=exit_execution_quote(z,ts)
+    if not quote:
+        raise ValueError('EXIT_EXECUTION_QUOTE_REQUIRED')
     return VX.simulated_fill(z.get('asset'),
-        'SELL' if z.get('direction')=='LONG' else 'BUY_TO_COVER',price,fraction,
+        'SELL' if z.get('direction')=='LONG' else 'BUY_TO_COVER',float(quote['price']),fraction,
         bid=quote.get('best_bid',quote.get('bid')),
         ask=quote.get('best_ask',quote.get('ask')))
 
@@ -344,6 +352,10 @@ def _r63_projected_exit_net(z, quote, trade, nav, commission=VC.COMMISSION_RATE)
         net=prior_gross+gross_open-prior_fees-exit_fee-funding
         return {'valid':True,'net_pnl_rub':net,'fill_price':fill_px,
                 'exit_fee_rub':exit_fee,'signed_mid_rub':units*signed_mid,
+                'whole_cycle_net_pnl_rub':net,'remaining_gross_pnl_rub':gross_open,
+                'remaining_net_before_paid_cycle_costs_rub':gross_open-exit_fee,
+                'booked_cycle_net_pnl_rub':prior_gross-prior_fees-funding,
+                'market_observed_at':quote.get('observed_at'),
                 'adverse_fill_bps':fill.get('adverse_fill_bps'),
                 'fraction_nav':fraction}
     except Exception:
@@ -593,17 +605,13 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
         positions = c.execute('SELECT * FROM paper_positions ORDER BY portfolio_name,asset FOR UPDATE').fetchall()
         for item in positions:
             z = dict(item)
-            q = quote_for_position(z,quotes.get(z['asset']),now)
-
-            # R58: every protective-side mutation (MFE/MAE, profit lock, STOP/TP)
-            # requires the same fresh protective quote. Previously the guard could
-            # reject a stale quote for the final exit but still update path/profit
-            # protection from it, and protective=True allowed observations up to
-            # one hour old. Fail closed before touching the position.
-            q_quality = VX.paper_quote_time_gate(dict(q or {},asset=z.get('asset')),now=now,protective=True)
-            if (not (q or {}).get('source_gate_pass') or not q_quality.get('eligible')
-                    or VX.is_proxy_price(z['asset'],q) or not quote_matches_position(z,q)):
+            selected = quote_for_position(z,quotes.get(z['asset']),now)
+            # Validate the same strict exit tuple before path/protection writes;
+            # a delayed research allowance cannot authorize protective mutation.
+            q = exit_execution_quote(dict(z,_execution_quote=selected),now=now)
+            if not q:
                 continue
+            z.update(_execution_quote=q,_execution_quote_frozen=True)
 
             # R55: persist lifetime excursion from the independent fresh
             # quote before any partial reduction / exit mutates the position.

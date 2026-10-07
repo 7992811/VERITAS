@@ -20,6 +20,7 @@ from test_veritas_timeframe_policy import valid_row
 class Result:
     def __init__(self, row=None): self.row = copy.deepcopy(row)
     def fetchone(self): return self.row
+    def fetchall(self): return [copy.deepcopy(self.row)] if self.row is not None else []
 
 
 class AccountingDB:
@@ -84,44 +85,46 @@ class RepeatAddRegressionTests(unittest.TestCase):
         self.identity = VPS.identity("NQ", self.source)
         self.original_context = self.context("STF_ORIGINAL")
         self.original_trace = UT.entry_trace(self.original_context, "Aggressive")
+        original_event = self.original_context["event"]
         p = {"r66_event_id": "STF_ORIGINAL", "execution_horizon": "4h",
              "pwin": .65, "pwin_source": "ORIGINAL_ENTRY",
              "structural_policy_version": CTC.STRUCTURAL_ENTRY_POLICY["version"],
              "price_source_lock": self.identity, "user_teaching_trace": self.original_trace,
              "timeframe_entry_context": self.original_context,
              "entry_event_snapshot": copy.deepcopy(self.original_context["event"]),
-             "initial_stop_price": 99., "target_price": 110., "take_price": 110.}
+             "initial_stop_price": original_event["stop_price"],
+             "target_price": original_event["target_price"], "take_price": original_event["target_price"]}
         self.db = AccountingDB({"portfolio_name": "Aggressive", "asset": "NQ", "direction": "LONG",
                                 "units": 10., "avg_entry_price": 100., "last_price": 101.,
-                                "stop_price": 99., "opened_at": "2026-10-06T12:00:00Z",
+                                "stop_price": original_event["stop_price"], "opened_at": "2026-10-06T12:00:00Z",
                                 "active_trade_id": "Aggressive:NQ:original", "payload": p})
         self.original_payload = copy.deepcopy(p)
         self.stack = ExitStack(); self.addCleanup(self.stack.close)
-        self.stack.enter_context(patch.object(VPR.TFP, "prepare_row", side_effect=lambda row, *a, **k: dict(row)))
-        self.stack.enter_context(patch.object(VPR.VTE, "prepare_row", side_effect=lambda row, *a, **k: dict(row)))
+        # Isolate event deduplication and immutable journal fields from candidate
+        # selection. Structural preparation, fill economics, costs and snapshot
+        # validation below all run through their real implementations.
         self.stack.enter_context(patch.object(VPR.VCR, "evaluate", side_effect=self.admission))
-        self.stack.enter_context(patch.object(VP.VX, "entry_gate", return_value={"eligible": True, "blockers": []}))
-        self.stack.enter_context(patch.object(VP.VX, "paper_quote_time_gate", return_value={"eligible": True}))
         self.stack.enter_context(patch.object(VP.VPG, "publish_quote"))
         self.stack.enter_context(patch.object(VP, "_v90j_entry_patch", return_value={"wrapper_checked": True}))
         self.accounting = self.stack.enter_context(patch.object(
             VP, "CANONICAL_ACCOUNTING_OPEN_OR_ADD", wraps=VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD))
 
     def context(self, event_id):
-        return {"timeframe": "4h", "source_identity": self.identity,
-                "event": {"event_id": event_id, "direction": "LONG", "timeframe": "4h",
-                          "signal_at": self.clock.timestamp(), "stop_price": 99., "target_price": 110.}}
+        clock = self.clock-timedelta(hours=8) if event_id == "STF_ORIGINAL" else self.clock
+        context = valid_row(asset="NQ", horizon="4h", price=101., now=clock)["timeframe_entry_context"]
+        # Named identities make reuse assertions readable; the builder supplies
+        # the causal candles, source, ATR, stop, target and confirmation times.
+        context["event"]["event_id"] = event_id
+        return context
 
     def row(self, event_id):
         ctx = self.context(event_id)
         quote = {**self.source, "asset": "NQ", "price": 101., "source_gate_pass": True,
                  "market_open": True, "observed_at": self.clock.isoformat()}
-        return {**quote, "horizon": "4h", "research_decision": "LONG", "_execution_quote": quote,
-                "_pwin": .8, "_pwin_source": "TEST", "trend_entry_context": ctx,
-                "timeframe_entry_context": ctx,
-                "trade_plan": {"horizon": "4h", "stop_price": 99., "target_price": 110.,
-                               "structural_policy_version": CTC.STRUCTURAL_ENTRY_POLICY["version"],
-                               "timeframe_entry_context": ctx, "trend_entry_context": ctx}}
+        row = valid_row(asset="NQ", horizon="4h", price=101., now=self.clock)
+        row.update(**quote, _execution_quote=quote, _pwin=.8, _pwin_source="TEST",
+                   trend_entry_context=ctx, timeframe_entry_context=ctx)
+        return TFP.prepare_row(row, 101., self.clock)
 
     def admission(self, row, *args):
         return {"open": True, "fraction": 1., "trend_event": row["timeframe_entry_context"]["event"],

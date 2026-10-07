@@ -7,16 +7,19 @@ import veritas_portfolio as P
 import veritas_portfolio_runtime as R
 import veritas_execution as X
 import veritas_quote_time as QT
+import veritas_price_source as VPS
 from test_veritas_minute_entry import row, NOW, Frozen
 
 
 class CostAwareExitTests(unittest.TestCase):
     def setUp(self):
-        self.z = dict(asset='BTC',direction='LONG',units=1000,avg_entry_price=100,
-            active_trade_id='trade-1',payload={})
-        self.trade = dict(gross_pnl_rub=0,fees_rub=50,funding_rub=20)
-        self.quote = dict(price=100.10,observed_at=NOW.isoformat(),source_gate_pass=True,
+        self.quote = dict(asset='BTC',price=100.10,observed_at=NOW.isoformat(),
+            source_gate_pass=True,market_open=True,source_names={'primary':'Binance spot'},
             best_bid=100.09,best_ask=100.11)
+        self.z = dict(asset='BTC',direction='LONG',units=1000,avg_entry_price=100,
+            active_trade_id='trade-1',
+            payload={'price_source_lock':VPS.identity('BTC',self.quote)})
+        self.trade = dict(gross_pnl_rub=0,fees_rub=50,funding_rub=20)
 
     def test_positive_price_move_cannot_harvest_a_net_loss(self):
         result = G.profit_exit_assessment(self.z,self.quote,self.trade,1e6)

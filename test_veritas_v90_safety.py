@@ -603,7 +603,7 @@ class LossConflictR81Tests(unittest.TestCase):
         }
         self.assertFalse(VRT._v842_hard_thesis_exit(row))
 
-    def test_explicit_hard_invalidation_still_forces_exit(self):
+    def test_unbound_candidate_hard_invalidation_does_not_force_position_exit(self):
         import veritas_portfolio_runtime as VRT
         row={
             'entry_quality':'INVALIDATED',
@@ -611,7 +611,8 @@ class LossConflictR81Tests(unittest.TestCase):
             'horizon_structure_state':'WEAK',
             'trade_plan':{'trade_integrity':{'hard_invalidation':True}},
         }
-        self.assertTrue(VRT._v842_hard_thesis_exit(row))
+        self.assertFalse(VRT._v842_hard_thesis_exit(row))
+        self.assertTrue(row['trade_plan']['trade_integrity']['hard_invalidation'])
 
     def test_cost_negative_economics_cannot_be_soft_probed(self):
         import veritas_portfolio_runtime as VRT
