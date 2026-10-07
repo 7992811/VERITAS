@@ -322,7 +322,12 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
                 new_updates = sum(q.startswith('UPDATE') for q in new[4].statements)
                 self.assertEqual(old_updates, 46)
                 self.assertLessEqual(new_updates, 4)
-                self.assertLessEqual(new[4].nested_transactions, 3)
+                # Keep the original outer+observation transaction budget and
+                # account separately for exactly one checked compression probe.
+                compression_probes = new[4].statements.count(' '.join(G.BS.METADATA_SQL.split()))
+                self.assertEqual(compression_probes, 1)
+                self.assertEqual(new[4].statements.count(G.BS.SET_LZ4_SQL), 1)
+                self.assertLessEqual(new[4].nested_transactions - compression_probes, 3)
                 self.assertLess(new[4].position_reads[0], old[4].position_reads[0]/4)
                 print('protective I/O fixture '+json.dumps({'direction': direction,
                     'legacy_updates': old_updates, 'batch_updates': new_updates,

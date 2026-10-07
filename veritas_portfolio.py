@@ -6111,7 +6111,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     # Mark an opposite candidate as executable only when the old structure has
     # broken and the new side is independently confirmed.
     try:
-        _,positions=_portfolio_rows(c,name)
+        _,positions=_portfolio_rows(c,name) if book else (None,[])
         for z0 in positions or []:
             z=dict(z0)
             asset=str(z.get('asset') or '')
