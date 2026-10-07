@@ -115,7 +115,7 @@ def refresh_daily(ns, pg_connect, learning_progress, *, context=None):
     import veritas_learning_index as index
 
     lp = dict(learning_progress or {})
-    if (lp.get("index_version") != index.INDEX_VERSION or not lp.get("mode")
+    if (lp.get("index_version") != index.INDEX_VERSION or not index.audit_identity_ready(lp)
             or str(lp.get("status", "")).upper() not in ("MEASURABLE", "BUILDING")):
         return {"status": "DEFERRED_LEARNING_UNAVAILABLE"}
     local = datetime.now(ZoneInfo("Europe/Moscow"))

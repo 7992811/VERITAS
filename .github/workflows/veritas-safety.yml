@@ -75,7 +75,7 @@ jobs:
       - name: Strategy evidence PostgreSQL integration
         env:
           VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
-        run: python -m unittest -v test_veritas_strategy_quality_sql.py test_veritas_portfolio_cycle_sql.py test_veritas_legacy_position_reads.py test_veritas_book_read_elision.py test_veritas_book_storage_sql.py test_veritas_toast_compression_sql.py test_veritas_excursion_projection_sql.py test_veritas_profit_protection_projection_sql.py test_veritas_guard_accounting_projection_sql.py test_veritas_guard_observation_batch_sql.py test_veritas_quote_projection_sql.py test_veritas_protection_runtime_sql.py test_veritas_book_marking_sql.py test_veritas_learning_integrity_sql.py test_veritas_learning_exports.py test_veritas_ma_learning_projection_sql.py test_veritas_observation_sql.py test_veritas_memory_projection.py test_veritas_trend_memory_sql.py test_veritas_snapshot_memory_sql.py test_veritas_timeframe_management_sql.py test_veritas_calibration_memory_sql.py test_veritas_portfolio_schema.py test_veritas_startup_guard.py test_veritas_trade_journal_read_model.py
+        run: python -m unittest -v test_veritas_strategy_quality_sql.py test_veritas_portfolio_cycle_sql.py test_veritas_legacy_position_reads.py test_veritas_book_read_elision.py test_veritas_book_storage_sql.py test_veritas_toast_compression_sql.py test_veritas_excursion_projection_sql.py test_veritas_profit_protection_projection_sql.py test_veritas_guard_accounting_projection_sql.py test_veritas_guard_observation_batch_sql.py test_veritas_quote_projection_sql.py test_veritas_protection_runtime_sql.py test_veritas_book_marking_sql.py test_veritas_learning_integrity_sql.py test_veritas_learning_index_sql.py test_veritas_learning_exports.py test_veritas_ma_learning_projection_sql.py test_veritas_observation_sql.py test_veritas_memory_projection.py test_veritas_trend_memory_sql.py test_veritas_snapshot_memory_sql.py test_veritas_timeframe_management_sql.py test_veritas_calibration_memory_sql.py test_veritas_portfolio_schema.py test_veritas_startup_guard.py test_veritas_trade_journal_read_model.py
       - name: Owner timeframe structure and provenance regressions
         run: python -m unittest -v test_veritas_timeframe_structure.py test_veritas_timeframe_policy.py test_veritas_timeframe_data.py test_veritas_timeframe_management.py test_veritas_profinance_history.py test_veritas_user_teaching.py test_veritas_repeat_add.py
       - name: Signal readiness, original admission evidence and candle refresh
@@ -133,3 +133,30 @@ jobs:
         run: python -m unittest -v test_veritas_execution_repairs.py test_veritas_trend_entry.py
       - name: Architecture debt guard
         run: python tools/architecture_guard.py
+
+  learning-sql:
+    name: Learning SQL runtime regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    services:
+      learning-postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_ephemeral_test_only
+          POSTGRES_DB: veritas_quality_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veritas_quality_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - name: Install runtime dependencies
+        run: pip install -r requirements-intelligence.txt
+      - name: Native learning proof and startup history regressions
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: python -m unittest -v test_veritas_learning_integrity_sql.py test_veritas_learning_index_sql.py

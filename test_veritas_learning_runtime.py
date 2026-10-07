@@ -1,12 +1,13 @@
 """Learning integration contracts without starting a production service."""
 import ast
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import threading
 import time
 import unittest
 from unittest.mock import Mock
+from zoneinfo import ZoneInfo
 
 import veritas_learning_bridge as BRIDGE
 import veritas_learning_index as INDEX
@@ -21,6 +22,23 @@ def functions(*names, scope=None):
 
 
 class LearningRuntimeTests(unittest.TestCase):
+    def test_bootstrap_progress_cannot_create_daily_baseline_or_score_history(self):
+        connect = Mock(side_effect=AssertionError('uncomputed progress opened a database'))
+        namespace = functions('learning_progress', '_v90_daily_intelligence_metrics', scope={
+            'time': time, 'datetime': datetime, 'timedelta': timedelta, 'timezone': timezone,
+            'ZoneInfo': ZoneInfo, 'ANALYTICS_CACHE_SECONDS': 60, 'VLI': INDEX,
+            'pg_enabled': lambda: True, 'pg_connect': connect,
+            '_learning_progress_state': {'status': 'NOT_STARTED'},
+            '_v90_daily_intelligence_cache': {'at': 0., 'value': None}})
+        progress = namespace['learning_progress']()
+        self.assertEqual(progress['status'], 'BUILDING')
+        self.assertEqual(progress['index_version'], INDEX.INDEX_VERSION)
+        self.assertNotIn('mode', progress)
+        self.assertEqual(namespace['_v90_daily_intelligence_metrics'](),
+                         {'status': 'LEARNING_UNAVAILABLE', 'trend': 'BUILDING'})
+        connect.assert_not_called()
+        self.assertIsNone(namespace['_v90_daily_intelligence_cache']['value'])
+
     def test_truncated_compiler_reply_has_an_explicit_reason_and_cannot_parse_as_success(self):
         namespace=functions('_response_text',scope={})
         for reason in ('max_output_tokens','max_tokens'):

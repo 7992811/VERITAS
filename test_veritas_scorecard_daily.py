@@ -165,10 +165,21 @@ class DailyDeliveryTests(unittest.TestCase):
 
     def test_incompatible_or_missing_learning_input_defers_without_database_work(self):
         forbidden = Mock(side_effect=AssertionError('unavailable LP reached SQL'))
-        result = DELIVERY.refresh_daily(self.ns,forbidden,{'status':'BUILDING'},context=self.context)
-        self.assertEqual(result['status'],'DEFERRED_LEARNING_UNAVAILABLE')
+        cases = [{'status':'BUILDING'}, dict(self.lp,index_version='incompatible'),
+                 dict(self.lp,status='ERROR')]
+        cases.extend(dict(self.lp,mode=mode) for mode in
+                     (None, '', ' ', False, True, 0, 1, 1.5, [], ['mode'], {}, {'mode':'mode'}))
+        for completed_cache in (False, True):
+            if completed_cache:
+                self.refresh()
+            previous = deepcopy(self.ns['_v90_daily_intelligence_cache'])
+            for lp in cases:
+                with self.subTest(completed_cache=completed_cache, mode=lp.get('mode'),
+                                  version=lp.get('index_version'), status=lp.get('status')):
+                    result = DELIVERY.refresh_daily(self.ns,forbidden,lp,context=self.context)
+                    self.assertEqual(result['status'],'DEFERRED_LEARNING_UNAVAILABLE')
+                    self.assertEqual(self.ns['_v90_daily_intelligence_cache'],previous)
         forbidden.assert_not_called()
-        self.assertIsNone(self.value())
 
     def test_previous_day_future_naive_or_missing_clock_cannot_create_today_baseline(self):
         forbidden = Mock(side_effect=AssertionError('invalid learning clock reached SQL'))

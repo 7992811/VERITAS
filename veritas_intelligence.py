@@ -9959,7 +9959,7 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
     start_utc=start_local.astimezone(timezone.utc)
     end_utc=end_local.astimezone(timezone.utc)
     lp=lp or learning_progress()
-    if lp.get('index_version')!=VLI.INDEX_VERSION:
+    if lp.get('index_version')!=VLI.INDEX_VERSION or not VLI.audit_identity_ready(lp):
         return {'status':'LEARNING_UNAVAILABLE','trend':'BUILDING'}
     current_index=lp.get('index_vs_start')
     try:
