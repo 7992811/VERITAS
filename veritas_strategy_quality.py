@@ -236,15 +236,24 @@ def statistics(trades,window=None):
 SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t.status,t.horizon,
  t.opened_at,t.closed_at,t.avg_entry_price,t.avg_exit_price,t.max_fraction,
  t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.net_pnl_rub,
- ('''+LI.payload_sql('t')+''' || jsonb_build_object(
- 'strategy_epoch',t.payload->'strategy_epoch','strategy_entry_sha',t.payload->'strategy_entry_sha',
- 'strategy_policy_hash',t.payload->'strategy_policy_hash',
- 'strategy_policy_hash_version',t.payload->'strategy_policy_hash_version',
- 'strategy_role',t.payload->'strategy_role','idea_id',t.payload->'idea_id',
- 'idea_id_verified',t.payload->'idea_id_verified',
- 'posttrade_review',jsonb_build_object('input_hash',t.payload#>'{posttrade_review,input_hash}'))) AS payload,
+ ('''+LI.payload_sql('t',root_field=lambda key:'quality_payload.'+key)+''' || jsonb_build_object(
+ 'strategy_epoch',quality_payload.strategy_epoch,'strategy_entry_sha',quality_payload.strategy_entry_sha,
+ 'strategy_policy_hash',quality_payload.strategy_policy_hash,
+ 'strategy_policy_hash_version',quality_payload.strategy_policy_hash_version,
+ 'strategy_role',quality_payload.strategy_role,'idea_id',quality_payload.idea_id,
+ 'idea_id_verified',quality_payload.idea_id_verified,
+ 'posttrade_review',jsonb_build_object('input_hash',quality_payload.posttrade_review->'input_hash'))) AS payload,
  o.entry_notional_rub,o.entry_order_count
- FROM paper_trades t LEFT JOIN (
+ FROM paper_trades t CROSS JOIN LATERAL jsonb_to_record(
+ CASE WHEN jsonb_typeof(t.payload)='object' THEN t.payload ELSE '{}'::jsonb END) AS quality_payload(
+ data_integrity_status jsonb,entry_primary_source jsonb,entry_data_latency_class jsonb,recovered jsonb,learning_eligible jsonb,
+ exit_reason jsonb,close_reason jsonb,idea_event_id jsonb,r66_event_id jsonb,mfe_pct jsonb,mae_pct jsonb,
+ r55_lifetime_mfe_pct jsonb,r55_lifetime_mae_pct jsonb,initial_stop_price jsonb,entry_atr jsonb,execution_timeframe jsonb,
+ execution_horizon jsonb,atr_timeframe jsonb,stop_timeframe jsonb,target_timeframe jsonb,price_source_lock jsonb,
+ entry_execution_source_identity jsonb,last_exit_source_identity jsonb,contract_identity jsonb,entry_source_names jsonb,
+ source_locked_mark jsonb,entry_event_snapshot jsonb,entry_execution_model jsonb,last_exit_execution_model jsonb,
+ observation_path jsonb,strategy_epoch jsonb,strategy_entry_sha jsonb,strategy_policy_hash jsonb,
+ strategy_policy_hash_version jsonb,strategy_role jsonb,idea_id jsonb,idea_id_verified jsonb,posttrade_review jsonb) LEFT JOIN (
  SELECT trade_id,SUM(notional_rub) AS entry_notional_rub,COUNT(*) AS entry_order_count
  FROM paper_orders WHERE side IN ('BUY','SELL_SHORT') GROUP BY trade_id
  ) o ON o.trade_id=t.trade_id'''
@@ -308,13 +317,14 @@ def build_report(trades,positions=()):
 
 def refresh(pg_connect,emit=None):
     with pg_connect() as c:
-        c.execute("SET LOCAL statement_timeout = '4000ms'")
-        rows=[dict(t) for t in c.execute(SELECT_TRADES+" WHERE t.status='CLOSED' ORDER BY t.closed_at DESC LIMIT 5001").fetchall()]
-        positions=[dict(z) for z in c.execute("""SELECT portfolio_name,
-            jsonb_build_object('strategy_epoch',payload->'strategy_epoch',
-              'strategy_entry_sha',payload->'strategy_entry_sha',
-              'strategy_policy_hash',payload->'strategy_policy_hash') AS payload
-            FROM paper_positions""").fetchall()]
+        with c.transaction():
+            c.execute("SET LOCAL statement_timeout = '4000ms'")
+            rows=[dict(t) for t in c.execute(SELECT_TRADES+" WHERE t.status='CLOSED' ORDER BY t.closed_at DESC LIMIT 5001").fetchall()]
+            positions=[dict(z) for z in c.execute("""SELECT portfolio_name,
+                jsonb_build_object('strategy_epoch',payload->'strategy_epoch',
+                  'strategy_entry_sha',payload->'strategy_entry_sha',
+                  'strategy_policy_hash',payload->'strategy_policy_hash') AS payload
+                FROM paper_positions""").fetchall()]
     result=build_report(rows[:5000],positions)
     result['history_truncated']=len(rows)>5000
     if result['history_truncated']:

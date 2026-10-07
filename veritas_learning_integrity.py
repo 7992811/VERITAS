@@ -121,8 +121,10 @@ def _ma_proof_sql(expression):
             "window_end", "slope_atr_5d", "crossings_10d")),
         "policy": policy_sql, "approach_bars": approach_sql})
 
-def payload_sql(alias="t"):
+def payload_sql(alias="t", *, root_field=None):
+    """Project evidence; callers may reuse fields extracted by a record scan."""
     p = _alias(alias)+"payload"
+    field = root_field if root_field is not None else lambda key: p+"->'"+key+"'"
     pairs = []
     simple = ("data_integrity_status", "entry_primary_source", "entry_data_latency_class",
               "recovered", "learning_eligible", "exit_reason", "close_reason",
@@ -131,12 +133,14 @@ def payload_sql(alias="t"):
               "execution_timeframe", "execution_horizon", "atr_timeframe", "stop_timeframe",
               "target_timeframe")
     for key in simple:
-        pairs.extend(("'"+key+"'", _proof_scalar(p+"->'"+key+"'")))
+        pairs.extend(("'"+key+"'", _proof_scalar(field(key))))
     for key in ("price_source_lock", "entry_execution_source_identity", "last_exit_source_identity", "contract_identity"):
-        pairs.extend(("'"+key+"'", _identity(p+"->'"+key+"'")))
-    pairs.extend(("'entry_source_names'", _object("("+p+"->'entry_source_names')", ("primary",)),
-                  "'source_locked_mark'", "jsonb_build_object('identity',"+_identity(p+"#>'{source_locked_mark,identity}'")+")"))
-    event = "("+p+"->'entry_event_snapshot')"
+        pairs.extend(("'"+key+"'", _identity(field(key))))
+    mark_identity = (p+"#>'{source_locked_mark,identity}'" if root_field is None
+                     else "("+field("source_locked_mark")+")->'identity'")
+    pairs.extend(("'entry_source_names'", _object("("+field("entry_source_names")+")", ("primary",)),
+                  "'source_locked_mark'", "jsonb_build_object('identity',"+_identity(mark_identity)+")"))
+    event = "("+field("entry_event_snapshot")+")"
     event_keys = ("event_id", "event_type", "asset", "direction", "timeframe", "confirmation",
                   "atr_timeframe", "stop_timeframe", "target_timeframe", "breakout_bar_at",
                   "signal_at", "confirmed_at", "level_available_at", "stop_level_available_at",
@@ -152,9 +156,9 @@ def payload_sql(alias="t"):
         "policy": policy_sql, "ma_proof": _ma_proof_sql("("+event+"->'ma_proof')")})
     pairs.extend(("'entry_event_snapshot'", event_sql))
     for key in ("entry_execution_model", "last_exit_execution_model"):
-        pairs.extend(("'"+key+"'", _projected_object("("+p+"->'"+key+"')",
+        pairs.extend(("'"+key+"'", _projected_object("("+field(key)+")",
                                                   ("fill_price", "asset", "side"))))
-    witness = "("+p+"->'observation_path')"
+    witness = "("+field("observation_path")+")"
     pairs.extend(("'observation_path'", _projected_object(witness, OBSERVATION.SCALAR_FIELDS, {
         "source_identity": _identity(witness+"->'source_identity'")})))
     return "jsonb_build_object("+",".join(pairs)+")"

@@ -26,6 +26,8 @@ _source_quotes = {}
 _market_state = {}
 _state = {'status': 'NOT_STARTED', 'paper_only': True}
 _entry_namespace = None
+_QUOTE_SNAPSHOT_FIELDS = (*VPS.QUOTE_FIELDS, 'asset', 'observed_at', 'market_observed_at',
+                          'paper_eligible', 'production_eligible', 'orders_enabled')
 
 
 def refresh_entry_quotes(summary):
@@ -141,10 +143,16 @@ def book_transaction(c, *, blocking=True):
         _mutex.release()
 
 
+def _detached_quote(quote):
+    # Source caches and selected quotes need execution fields, not the full
+    # signal/market graph. Project before copying; keep explicit permission flags.
+    return deepcopy({key:quote[key] for key in _QUOTE_SNAPSHOT_FIELDS if key in quote})
+
+
 def publish_quote(asset, raw):
     if not raw or not raw.get('observed_at'):
         return
-    raw=deepcopy(raw)
+    raw=_detached_quote(raw)
     with _quotes_lock:
         old_state=_market_state.get(asset) or {}
         dt,prev=utc_datetime(raw.get('observed_at')),utc_datetime(old_state.get('observed_at'))
@@ -179,7 +187,7 @@ def quote_for_position(position, candidate=None, now=None):
         # it again below, but do not replace its price/time/bid/ask midway through
         # the evidence, profit check and fill calculation with a newer cache row.
         selected=position.get('_execution_quote')
-        quotes=[deepcopy(selected)] if isinstance(selected,dict) else []
+        quotes=[_detached_quote(selected)] if isinstance(selected,dict) else []
     else:
         with _quotes_lock:
             quotes=[dict(q) for key,q in _source_quotes.items() if key[0]==position.get('asset')]
@@ -208,7 +216,7 @@ def quote_for_position(position, candidate=None, now=None):
                 and VX.paper_quote_time_gate(dict(q,asset=position.get('asset')),now=now,protective=True)['eligible']
                 and (last is None or observed>=last)):
             valid.append(q)
-    return deepcopy(max(valid,key=lambda q:utc_datetime(q['observed_at']))) if valid else {}
+    return _detached_quote(max(valid,key=lambda q:utc_datetime(q['observed_at']))) if valid else {}
 
 
 def refresh_execution_row(row, now=None):

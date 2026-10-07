@@ -1,6 +1,8 @@
 """Integration test against an isolated, explicitly named CI database only."""
 import json
 import copy
+import hashlib
+import re
 from datetime import datetime,timedelta
 import os
 import unittest
@@ -16,6 +18,37 @@ def observed_evidence(asset,direction,event_id,entered,timeframe='1m'):
     return structural_evidence(asset,direction,event_id,entered,timeframe)
 
 DSN=os.getenv('VERITAS_QUALITY_TEST_DSN','')
+
+# Frozen pre-record query. LI's default SQL is fingerprinted below so both
+# sides cannot silently adopt a changed proof/presence projection together.
+LEGACY_SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t.status,t.horizon,
+ t.opened_at,t.closed_at,t.avg_entry_price,t.avg_exit_price,t.max_fraction,
+ t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.net_pnl_rub,
+ ('''+Q.LI.payload_sql('t')+''' || jsonb_build_object(
+ 'strategy_epoch',t.payload->'strategy_epoch','strategy_entry_sha',t.payload->'strategy_entry_sha',
+ 'strategy_policy_hash',t.payload->'strategy_policy_hash',
+ 'strategy_policy_hash_version',t.payload->'strategy_policy_hash_version',
+ 'strategy_role',t.payload->'strategy_role','idea_id',t.payload->'idea_id',
+ 'idea_id_verified',t.payload->'idea_id_verified',
+ 'posttrade_review',jsonb_build_object('input_hash',t.payload#>'{posttrade_review,input_hash}'))) AS payload,
+ o.entry_notional_rub,o.entry_order_count
+ FROM paper_trades t LEFT JOIN (
+ SELECT trade_id,SUM(notional_rub) AS entry_notional_rub,COUNT(*) AS entry_order_count
+ FROM paper_orders WHERE side IN ('BUY','SELL_SHORT') GROUP BY trade_id
+ ) o ON o.trade_id=t.trade_id'''
+
+
+class QualityProjectionContractTests(unittest.TestCase):
+    def test_default_evidence_and_legacy_query_are_unchanged(self):
+        self.assertEqual(hashlib.sha256(Q.LI.payload_sql().encode()).hexdigest(),
+                         'ba6ef3f93d247c975f573f02f6e5669615985c034648de36bebcc91fbe19197d')
+        self.assertEqual(hashlib.sha256(LEGACY_SELECT_TRADES.encode()).hexdigest(),
+                         '53e8376117767316b9f26fae2b80bea40ecba970aaa281c2ceb67cac1de38575')
+        self.assertEqual(Q.SELECT_TRADES.count('t.payload'),2)
+        self.assertEqual(Q.SELECT_TRADES.count('jsonb_to_record('),1)
+        self.assertIn('CROSS JOIN LATERAL jsonb_to_record(',Q.SELECT_TRADES)
+        self.assertNotIn("t.payload->",Q.SELECT_TRADES)
+        self.assertNotIn("t.payload#>",Q.SELECT_TRADES)
 
 
 class EntryVersionTests(unittest.TestCase):
@@ -308,5 +341,142 @@ class QualitySQLTests(unittest.TestCase):
         self.assertEqual(projected['observation_path']['version'],'OBSERVED_EXECUTION_PATH_V1')
         self.assertEqual(Q.review(dict(rows[0]))['evidence_status'],'OBSERVED_PAPER_PATH')
         self.assertLess(len(json.dumps(projected)),15000)
+
+    def assert_projection_parity(self,c):
+        suffix=" WHERE t.status='CLOSED' ORDER BY t.closed_at DESC,t.trade_id LIMIT 5001"
+        old=[dict(row) for row in c.execute(LEGACY_SELECT_TRADES+suffix).fetchall()]
+        new=[dict(row) for row in c.execute(Q.SELECT_TRADES+suffix).fetchall()]
+        self.assertEqual(new,old)
+        for before,after in zip(old,new):
+            self.assertEqual(Q.review(after),Q.review(before))
+            self.assertEqual(Q.LI.trade_exclusion(after),Q.LI.trade_exclusion(before))
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls,tz=None):
+                return datetime.fromisoformat('2026-10-07T14:00:00+00:00')
+        with patch.object(Q,'datetime',FixedDateTime):
+            self.assertEqual(Q.build_report(new),Q.build_report(old))
+        return next(row for row in new if row['trade_id']=='current')
+
+    def test_record_projection_exact_parity_for_large_null_missing_and_malformed_payloads(self):
+        with self.connect() as c:
+            original=c.execute("SELECT payload FROM paper_trades WHERE trade_id='current'").fetchone()['payload']
+            root_fields=set(re.findall(r"t\.payload->'([^']+)'",LEGACY_SELECT_TRADES))
+            root_fields.update(('source_locked_mark','posttrade_review'))
+            large=copy.deepcopy(original)
+            graph=[{'unused':hashlib.sha256(str(i).encode()).hexdigest()} for i in range(1500)]
+            large['unused_history']=graph
+            large['entry_event_snapshot']['debug_history']=graph
+            large['observation_path']['debug_history']=graph
+            large['posttrade_review']={'input_hash':'recorded-hash','unused_history':graph}
+            cases=[('large',large),('missing',{}),('all_null',{key:None for key in root_fields})]
+            cases.extend(('nonobject_'+str(i),value) for i,value in enumerate((None,[],[{}],'bad',False,0)))
+            for value in (None,[],False,'bad'):
+                malformed=copy.deepcopy(original)
+                for key in ('entry_event_snapshot','observation_path','entry_execution_model',
+                            'last_exit_execution_model','price_source_lock','entry_source_names',
+                            'source_locked_mark','posttrade_review'):
+                    malformed[key]=value
+                cases.append(('shape_'+str(value),malformed))
+            scalars=copy.deepcopy(original)
+            scalars.update(mfe_pct={'bad':1},mae_pct=[1],entry_atr=False,
+                           recovered=False,learning_eligible=False,idea_id_verified=False)
+            cases.append(('compound_scalars',scalars))
+            for name,value in cases:
+                with self.subTest(case=name):
+                    c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='current'",
+                              (json.dumps(value),))
+                    projected=self.assert_projection_parity(c)
+                    if name=='large':
+                        self.assertEqual(Q.review(projected)['evidence_status'],'OBSERVED_PAPER_PATH')
+                        self.assertLess(len(json.dumps(projected['payload'])),15000)
+                        self.assertEqual(projected['payload']['posttrade_review']['input_hash'],'recorded-hash')
+                        plan=c.execute('EXPLAIN (ANALYZE,FORMAT JSON) '+Q.SELECT_TRADES+
+                                       " WHERE t.trade_id='current'").fetchone()['QUERY PLAN'][0]['Plan']
+                        pending=[plan];record_scans=[]
+                        while pending:
+                            node=pending.pop();pending.extend(node.get('Plans',[]))
+                            if (node.get('Node Type')=='Function Scan' and
+                                    node.get('Function Name')=='jsonb_to_record'):
+                                record_scans.append(node)
+                        self.assertEqual(len(record_scans),1)
+                        self.assertEqual(record_scans[0]['Actual Loops'],1)
+                        self.assertEqual(record_scans[0]['Actual Rows'],1)
+            # Missing optional proof and recorded JSON null remain distinct
+            # within the extracted event, including their review fingerprints.
+            hashes=[]
+            for present in (False,True):
+                value=copy.deepcopy(original)
+                value['entry_event_snapshot'].pop('ma_proof',None)
+                if present:value['entry_event_snapshot']['ma_proof']=None
+                c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='current'",
+                          (json.dumps(value),))
+                projected=self.assert_projection_parity(c)
+                self.assertEqual('ma_proof' in projected['payload']['entry_event_snapshot'],present)
+                self.assertIsNone(Q.LI.trade_exclusion(projected))
+                hashes.append(Q.review(projected)['input_hash'])
+            self.assertNotEqual(*hashes)
+
+    def test_record_projection_exact_parity_for_native_ma50_ma200_long_and_short(self):
+        from test_veritas_ma_learning_projection_sql import NativeMAProjectionSQLTests
+        fixture=NativeMAProjectionSQLTests().fixture
+        fields=('asset','direction','horizon','opened_at','closed_at',
+                'gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub')
+        with self.connect() as c:
+            for period in (50,200):
+                for short in (False,True):
+                    with self.subTest(period=period,short=short):
+                        row=fixture('current',period,short)
+                        proof=row['payload']['entry_event_snapshot']['ma_proof']
+                        proof['daily_bars']=[{'unused':i} for i in range(1000)]
+                        proof['daily_provenance']['bars']=[{'unused':i} for i in range(1000)]
+                        c.execute('UPDATE paper_trades SET '+','.join(key+'=%s' for key in fields)+
+                                  ",payload=%s::jsonb WHERE trade_id='current'",
+                                  tuple(row[key] for key in fields)+(json.dumps(row['payload']),))
+                        projected=self.assert_projection_parity(c)
+                        self.assertIsNone(Q.LI.trade_exclusion(projected))
+                        self.assertEqual(Q.review(projected)['evidence_status'],'OBSERVED_PAPER_PATH')
+                        saved=projected['payload']['entry_event_snapshot']['ma_proof']
+                        self.assertEqual(saved['daily_provenance']['sha256'],proof['daily_provenance']['sha256'])
+                        self.assertNotIn('daily_bars',saved)
+                        self.assertNotIn('bars',saved['daily_provenance'])
+
+    def test_autocommit_refresh_scopes_timeout_and_closes_transaction_after_cancel(self):
+        # Pre-review so the following successful refresh has no pending writes.
+        Q.refresh(self.connect)
+        before=self.financials();states=[];timeouts=[];connections=[]
+        owner=self
+        @contextmanager
+        def autocommit_connect():
+            with owner.driver.connect(DSN,row_factory=owner.row_factory,autocommit=True) as c:
+                connections.append(c)
+                c.execute(f'SET search_path TO {owner.schema}')
+                c.execute("SET statement_timeout = '15s'")
+                class ObservedConnection:
+                    def transaction(self):return c.transaction()
+                    def execute(self,sql,*args):
+                        if sql.startswith('SELECT'):
+                            timeouts.append(c.execute('SHOW statement_timeout').fetchone()['statement_timeout'])
+                        return c.execute(sql,*args)
+                try:
+                    yield ObservedConnection()
+                finally:
+                    states.append(c.info.transaction_status)
+                    states.append(c.execute('SHOW statement_timeout').fetchone()['statement_timeout'])
+        Q.refresh(autocommit_connect)
+        self.assertEqual(timeouts,['4s','4s'])
+        self.assertEqual(states,[self.driver.pq.TransactionStatus.IDLE,'15s'])
+        self.assertTrue(all(c.closed for c in connections))
+        cached=copy.deepcopy(Q._CACHE['value']);cache_at=Q._CACHE['at']
+        timeouts.clear();states.clear()
+        with patch.object(Q,'SELECT_TRADES','SELECT pg_sleep(10) FROM paper_trades t'):
+            with self.assertRaises(self.driver.errors.QueryCanceled):
+                Q.refresh(autocommit_connect)
+        self.assertEqual(timeouts,['4s'])
+        self.assertEqual(states,[self.driver.pq.TransactionStatus.IDLE,'15s'])
+        self.assertTrue(all(c.closed for c in connections))
+        self.assertEqual(Q._CACHE['value'],cached)
+        self.assertEqual(Q._CACHE['at'],cache_at)
+        self.assertEqual(self.financials(),before)
 
 if __name__=='__main__':unittest.main()
