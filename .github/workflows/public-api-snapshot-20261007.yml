@@ -115,4 +115,4 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-# Snapshot refresh: 2026-10-07 20:27 MSK after v91.7.11 FULL-cycle acceptance.
+# Snapshot refresh: 2026-10-07 21:17 MSK after v91.7.12 FULL-cycle acceptance.
