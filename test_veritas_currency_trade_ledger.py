@@ -130,12 +130,23 @@ class CurrencyLedgerProjectionTests(unittest.TestCase):
 
     def test_high_water_persists_loss_and_dd_uses_currency_allocation(self):
         result = L.project([fill("a","BUY",10,"12.00")], [], [], SPEC)
-        peak = L.valuation(state(result), D("12.50"), SPEC)
+        peak = L.valuation(state(result), D("12.50"), SPEC, funding_reconciled=True)
         loss = L.valuation(state(result, high_water_rub=peak["high_water_rub"]), D("11.80"), SPEC)
         self.assertEqual(peak["high_water_rub"], D("15000"))
         self.assertEqual(loss["currency_nav_rub"], D("8000"))
         self.assertEqual(loss["high_water_rub"], D("15000"))
         self.assertGreater(loss["drawdown"], D("0.35"))
+
+    def test_unknown_or_expired_funding_cannot_establish_a_high_water_mark(self):
+        result = L.project([fill("a", "BUY", 10, "12.00")], [], [], SPEC)
+        for known in (None, False):
+            with self.subTest(funding_reconciled=known):
+                marked = L.valuation(state(result), D("12.50"), SPEC,
+                                     funding_reconciled=known)
+                self.assertEqual(marked["currency_nav_rub"], D("15000"))
+                self.assertEqual(marked["high_water_rub"], D("10000"))
+        with self.assertRaisesRegex(L.LedgerError, "EXPLICIT_FUNDING"):
+            L.valuation(state(result), D("12.50"), SPEC, funding_reconciled="true")
 
     def test_exchange_tick_value_is_multiplied_by_contracts_per_lot(self):
         spec = L.InstrumentValuation("test-cny-uid",D("0.01"),D("10"),2)

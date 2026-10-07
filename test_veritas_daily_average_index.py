@@ -5,7 +5,7 @@ import unittest
 from unittest import mock
 
 import veritas_daily_averages as DA
-from test_veritas_daily_averages import DAY, PF, BTC, fixture
+from test_veritas_daily_averages import DAY, PF, BTC, fixture, certify_profinance
 
 
 class DailyAverageIndexTests(unittest.TestCase):
@@ -28,6 +28,7 @@ class DailyAverageIndexTests(unittest.TestCase):
         # This row appears first in input order but becomes observable later.
         first=deepcopy(bars[210])
         first.update(close=first["close"]+.2,available_at=241*DAY+7)
+        certify_profinance(first,first["available_at"])
         later=deepcopy(bars[210])
         later["available_at"]=242*DAY+11
         # Same source/price but a different available_at is a conflict too.
@@ -104,6 +105,45 @@ class DailyAverageIndexTests(unittest.TestCase):
         bars=fixture(240)
         bars[-1]["finalized"]=False
         self.assert_parity(bars,[239*DAY,240*DAY-1,240*DAY,241*DAY])
+
+
+    def test_first_observed_completion_snapshot_boundaries_match_reference(self):
+        bars=fixture(240)
+        observed=240*DAY+7200
+        for row in bars:
+            certify_profinance(row,observed)
+        indexed=self.assert_parity(bars,[239*DAY,240*DAY,observed-1,observed,
+                                        observed+1,244*DAY+61,observed-1])
+        self.assertIsNone(indexed(observed-1)["sma50"])
+        self.assertEqual(indexed(observed)["known_at"],observed)
+        self.assertEqual(indexed(observed)["provenance"]["latest_completion_proof"],
+                         bars[-1]["completion_proof"])
+
+    def test_revision_watermark_and_old_day_revision_are_indexed_exactly(self):
+        for position in (10,210,239):
+            with self.subTest(position=position):
+                bars=fixture(240)
+                observed=240*DAY+7200
+                bars[position]["close"] += .2
+                bars[position]["revision_observed_at"]=observed
+                certify_profinance(bars[position],observed)
+                indexed=self.assert_parity(bars,[210*DAY,240*DAY,observed-1,observed,
+                                                observed+1,239*DAY,observed])
+                self.assertEqual(indexed(observed-1)["status"],"DAILY_REVISION_NOT_YET_KNOWN")
+                self.assertEqual(indexed(observed)["status"],"OK")
+                self.assertEqual(indexed(observed)["known_at"],observed)
+                self.assertTrue(DA.validate_provenance(indexed(observed)["provenance"],PF,observed))
+
+    def test_conflicting_proof_metadata_and_invalid_proofs_keep_index_parity(self):
+        bars=fixture(240)
+        bars[-1]["available_at"] += 60
+        duplicate=deepcopy(bars[-1])
+        duplicate["completion_proof"]["observed_at"] += 1
+        invalid=deepcopy(bars[210])
+        invalid["completion_proof"]["ohlc_sha256"]="f"*64
+        invalid["available_at"]=241*DAY+7
+        self.assert_parity(bars+[duplicate,invalid],[239*DAY,240*DAY,240*DAY+59,
+                                                   240*DAY+60,241*DAY+6,241*DAY+7])
 
 
 if __name__=="__main__":

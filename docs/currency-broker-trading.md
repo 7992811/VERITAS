@@ -28,6 +28,8 @@ trading decisions.
 | veritas_tbank_trading.py | Scoped broker RPC transport, order identifiers, acknowledgements and actual executions |
 | veritas_currency_trading.py | Revalidation, claim before broker I/O and reconciliation |
 | veritas_currency_trade_ledger.py | Independent allocation, actual fills, commissions, funding records and held strategy terms |
+| veritas_currency_trade_funding.py | Bounded operation snapshots, signed statement review, correction deltas and settlement freshness |
+| veritas_currency_live_admission.py | Signed evidence import, entire-account reconciliation and the existing production authority |
 | veritas_currency_trade_service.py | Explicit account binding, authoritative broker facts and protected internal HTTP operations |
 | veritas_trade_telegram.py | Private Telegram delivery and forwarding of authenticated callbacks |
 | bot.py | Existing single getUpdates consumer, with durable trade callback handling before update acknowledgement |
@@ -35,7 +37,9 @@ trading decisions.
 The service endpoint is /internal/currency-trading/. It uses a separate
 X-Veritas-Trade-Key and bounded request body. The callback endpoint records an
 owner decision; the polling coordinator performs any later approved execution.
-No GET route enables trading.
+No GET route enables trading. Authenticated status reads cached metadata only;
+it does not initialize storage, read the broker, poll proposals or execute an
+approved proposal.
 
 ## Canonical policy and contract arithmetic
 
@@ -44,6 +48,10 @@ expected move is max(0.0019, 1.1 * modeled round-trip execution cost). Commissio
 remains 0.0004 per side. Other instruments retain their canonical cost multiple.
 The native structural or confirmed DAILY_MA_REBOUND event, current entry geometry,
 source identity, local confirmation and final execution economics remain required.
+The current CAUSAL_QUOTE_STRUCTURE_V1 event uses the canonical timeframe-policy
+dispatcher. Its broker quote is rebound only from the verified T-Invest UID and
+actual order-book timestamp. An equal timestamp with a changed reference price
+is rejected; the clock is never advanced to make the event appear fresh.
 The daily-average policy and strategy epoch from the current canonical runtime
 are preserved.
 
@@ -78,6 +86,15 @@ OPEN and ADD preserve the canonical event, timeframe and structural geometry.
 ADD uses the held position's approved stop, target and source. It cannot silently
 replace those levels.
 
+Broker economics explicitly use LIVE single-target evaluation, including the
+existing hard reward/risk floor. The PAPER weighted target ladder and its
+diagnostic-only reward/risk treatment do not authorize broker entries. Native
+event proof is checked separately before the exact limit, rounded reference
+stop/target and current spread enter this LIVE calculation. The same function,
+holding duration and decision clock are used when revalidating the approval.
+The terms state LIVE and SINGLE_TARGET_SEPARATE_CONFIRMATION explicitly; old
+approvals without that execution policy require a new proposal.
+
 REDUCE and CLOSE use a separate reduction path. New-entry potential, entry
 margin and drawdown admission cannot veto a verified reduction. Quantity may
 not exceed either the actual broker holding or the managed Currency holding,
@@ -102,14 +119,41 @@ True and an explicit empty blockers list/tuple. Missing authority, an exception,
 malformed output or a negative verdict blocks with LIVE_ACCOUNT_ADMISSION_REQUIRED.
 The coordinator checks Currency freshness again after this callback.
 
-The current service factory intentionally does not supply this authority: it
-does not yet have the required whole-account risk, promotion and calibration
-evidence. Therefore production new-risk submission remains blocked even if
-execution flags are changed. No environment variable skips this admission
-check. The authenticated status endpoint reports live_account_admission_configured
-and new_risk_block_reason separately from the global execution flag. Integration
-with the existing production authority remains a prerequisite
-for production OPEN/ADD, separate from credentials and owner approval.
+The service factory supplies CurrencyLiveAdmission. It reads the entire
+GetPortfolio/GetPositions/GetOrders account, uses the authoritative RUB account
+valuation, and calls the unchanged veritas_live.authorize_candidate authority.
+The Currency 10,000 RUB ledger is never substituted for whole-account NAV.
+Held CNY and the proposed addition are counted once each, and the combined asset
+limit is checked before admission. Full CNY stop risk includes modeled execution
+costs; those costs also enter the aggregate and correlated-risk checks.
+
+Two independently signed evidence records are required for the exact approved
+terms: ACCOUNT_CONTROLS and MODEL_ADMISSION. Both bind account, instrument,
+environment, timeframe, source, model, policy and entry-code identity. Controls
+bind the actual entire-account snapshot, high-water NAV, complete daily/weekly
+UTC windows, position stops, correlations and kill-switch state. Model evidence
+contains calibrated probability and the existing promotion metrics, with
+separate references to OOS, vault, calibration, high-cost, shadow, CI and data
+parity artifacts. Research confidence or a raw eligible/PASS flag is not accepted.
+
+The issuer is a separate trusted evaluation process. The import endpoint
+verifies its signature, validates every field, and appends an immutable record;
+readback checks the signature again. It never generates successful evidence.
+Controls expire within 30 seconds and model evidence within 900 seconds. A
+newer invalid/expired record cannot fall back to an older positive record.
+Missing issuer configuration or actual evidence remains a specific blocker;
+connecting the provider is not itself proof of trading readiness.
+
+The first version supports the exact managed CNY future and reconciled RUB
+shares/ETFs. Other futures, bonds, options, foreign cash, virtual positions,
+blocked balances, working orders, unknown stops and incomplete correlations
+block new risk until their valuation/reconciliation is supported. They are not
+silently omitted from the portfolio. Existing price-to-stop risk semantics
+remain in force for supported non-CNY positions.
+
+No environment variable skips this authority. Authenticated status reports
+provider configuration, cached evidence diagnostics and the new-risk blocker
+separately from the global execution flag.
 Sandbox transport and verified production CLOSE/REDUCE do not invoke this
 new-risk admission callback. Existing policy limits are not changed.
 
@@ -151,6 +195,26 @@ The bot advances getUpdates offset only after the decision handler returns.
 Temporary service or database failure leaves that update available for replay;
 a definitive invalid callback can be acknowledged and discarded.
 
+News collection runs in one bounded worker without a backlog. The main bot
+loop remains the sole getUpdates consumer, so a slow news/LLM request cannot
+hold that loop before it reads a trade confirmation. News pause and disabled
+startup notification behavior are preserved.
+
+### Private owner commands
+
+- `/currency_status` reports configured environment, masked account, cached
+  binding state, last completed poll and its blocker, pending approvals and
+  unsettled executions. Missing/old observations are explicitly marked unknown
+  or stale. The command never calls poll.
+- `/currency_bind` describes the selected account and issues a one-time code
+  valid for 120 seconds. Repeating the command with that code rechecks the full
+  account/instrument/environment scope before requesting ledger binding. A
+  changed scope, restart, invalid code or expiry requires a fresh challenge.
+  Binding does not transfer cash, change execution flags or create orders.
+
+Only the configured numeric trading owner in that owner's private chat can use
+these commands. A news administrator does not acquire trading authority.
+
 ## Orders and accounting
 
 Prepared orders are LIMIT with PRICE_TYPE_POINT and
@@ -175,14 +239,55 @@ its own confirmation and can be delayed by the owner, the market, stale data,
 an unavailable broker or an unresolved working order. The drawdown threshold
 therefore does not guarantee a maximum realized loss.
 
-The ledger supports explicit funding charge/credit records. Automated completeness
-of perpetual-contract funding is a separate data requirement; fill commissions
-alone do not prove that every funding charge has been reconciled. The service
-therefore marks costs incomplete after the first actual fill and blocks later
-OPEN/ADD proposals until a settlement-completeness integration is implemented.
-CLOSE/REDUCE can still be proposed and confirmed. Recording an individual
-funding item does not bypass this data-completeness barrier. No elapsed-hour
-heuristic or empty API response is treated as proof of final settlement.
+FundingReconciler walks all pages for an explicit half-open window [from,to),
+without filtering out operation types, commissions, trades or overnight rows.
+Funding is operation type 70, with a cost equal to minus the actual RUB payment.
+Parent/child attribution must reconcile exactly. Variation margin and already
+observed fill commissions are retained for audit and are not posted a second time.
+Mutable operation IDs are used only to detect inconsistent duplicates within a
+read; accepted ledger adjustments identify a versioned window total.
+
+Completing API pagination proves only that the fetch completed. A separate
+owner-reviewed broker statement and applicable settlement-calendar attestation
+must name the exact snapshot, fill digest, period, allocation, amount, report
+hashes, settled-through boundary and next settlement due time. The owner signs
+that receipt with the independent statement key after reviewing those records.
+This is an explicit owner attestation; the code does not authenticate the
+underlying report or claim that the cursor API certifies final settlement.
+
+Windows must be contiguous from allocation binding and cannot overlap. The
+service refreshes known windows before reading fresh trade facts. A changed
+payment, cancellation, pending operation, late fill, failed/stale history read,
+invalid signature or reached settlement boundary blocks new risk. A refreshed
+identical economic snapshot retains its attestation; a corrected total requires
+new review and posts only its delta. Receipt and delta commit atomically.
+The 60-second history freshness bound is not a settlement-lag assumption.
+
+Unknown funding prevents high-water NAV increases after actual fills, including
+after a profitable close. CLOSE/REDUCE retain their separate reduction path.
+An empty API result, one manually recorded funding item, elapsed time or an
+unsigned settled=true flag never makes an allocation reconciled.
+
+### Evidence operations
+
+All three internal POST operations require the service key, configured bot,
+private-owner identity and exact account/environment scope. They do not approve
+or execute a trade.
+
+| Operation | Request and effect |
+|---|---|
+| `/settlement-observe` | `window_start`, `window_end`; stores a bounded broker-history snapshot and returns a reviewable `receipt_template` |
+| `/settlement-attest` | `receipt`, `signature`; verifies independent statement review and atomically records any funding delta |
+| `/admission-evidence` | `payload`, `signature`; validates and appends one ACCOUNT_CONTROLS or MODEL_ADMISSION record |
+
+The settlement issuer uses `sign_statement_receipt` after reviewing the external
+statement/calendar. The risk/model issuer uses `evidence_scope(approved_terms)`,
+`broker_snapshot`, `snapshot_digest` and `canonical_json`; the signature is
+HMAC-SHA256 over canonical JSON. Evidence is generated from verified source
+artifacts outside this service. No example PASS metrics are production data.
+The admission endpoint accepts at most 64 KiB; other trade endpoints retain
+their 8 KiB bound. The repository further limits evidence depth, list sizes and
+payload size.
 
 ## Configuration contract
 
@@ -197,6 +302,8 @@ No credentials or real account identifiers are stored in this branch.
 | VERITAS_CURRENCY_TRADE_BOT_ID | Explicit numeric ID of @AxednewsI_bot |
 | VERITAS_CURRENCY_TRADE_SERVICE_KEY | Separate internal service authentication secret, at least 32 bytes |
 | VERITAS_CURRENCY_TRADE_APPROVAL_KEY | Separate stable signing secret, at least 32 bytes and different from the service key |
+| VERITAS_CURRENCY_TRADE_STATEMENT_KEY | Independent statement-attestation key, at least 32 bytes; missing key blocks post-fill settlement admission |
+| VERITAS_CURRENCY_LIVE_EVIDENCE_KEY | Independent risk/model evidence issuer key, at least 32 bytes; missing key blocks production OPEN/ADD |
 | VERITAS_CURRENCY_TRADE_SERVICE_URL | Pinned HTTPS service origin used by the Telegram bridge |
 | VERITAS_CURRENCY_TRADE_ENVIRONMENT | production or sandbox; bound into every proposal |
 | TBANK_API_TOKEN | Existing production broker token, read only from the service environment |
@@ -214,6 +321,29 @@ private-account binding or change token permissions.
 
 Configuration is an operator handoff, not an activation performed by this branch.
 Sandbox and production must never share an account-ledger namespace.
+All four service/approval/statement/evidence keys must differ. Constructors and
+status remain inert when either evidence key has not yet been configured.
+
+## Architecture audit and remaining operating prerequisites
+
+| Boundary | Resolution or explicit prerequisite |
+|---|---|
+| CNY potential versus old startup settings | Canonical 1.1× and 0.19% floor win; stale environment values cannot raise the threshold |
+| New quote event versus legacy timeframe validator | Canonical event dispatch and actual broker quote rebinding support the current event format |
+| PAPER weighted economics versus LIVE execution | Explicit LIVE single-target economics and hard RR checks at both preparation and revalidation |
+| Currency limits versus account limits | Both capital scopes are enforced; 10×/35% Currency limits never replace whole-account controls |
+| Owner click versus broker acknowledgement/fill | Signed decision, durable one-time claim, broker state and unique execution stages remain separate |
+| Funding pages versus settled accounts | Signed external statement review and continuous window refresh supply completeness; pagination alone cannot |
+| Status versus execution | Read-only cached status; only the coordinator execution path can claim an approval |
+| News scan versus confirmation latency | One bounded background news worker, one getUpdates consumer |
+| Whole lots versus a small allocation | A proposal below one contract is blocked; neither allocation nor admitted fraction is enlarged automatically |
+| Stop/target reference versus broker protection | Closing requires a separate confirmation; an OPEN does not install an automatic protective order |
+
+Operating prerequisites still include explicit numeric owner/bot/account identity,
+independent issuer keys, real verified model/risk evidence, reviewed settlement
+records, supported complete account valuation and fresh runtime signals. They
+cannot be replaced by passing unit tests. Activation and management of an actual
+account are not performed by this development branch.
 
 ## Validation
 
@@ -229,6 +359,9 @@ environment changes, signed terms, concurrent claims, transaction rollback,
 ambiguous submission, repeated callbacks, exit generations, partial fills,
 execution identity, margin facts and ledger reconciliation. The HTTP and Telegram
 integration uses the actual signed proposal repository with fake network transports.
+Further cases cover signed evidence import/readback, full-account risk, late
+funding corrections, changed receipts, blocked high-water updates, explicit owner
+binding, slow news processing and current quote-event compatibility.
 
 See the draft pull request checks for the validation result on its current commit.
 The repository also retains a separate nonblocking legacy execution audit; its

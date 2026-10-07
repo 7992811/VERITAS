@@ -10,6 +10,7 @@ import httpx
 from openai import OpenAI
 
 from prompts import VERITAS_MAX, SCANNER_PROMPT
+from veritas_trade_telegram import handle_operator_message
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -37,6 +38,53 @@ pending = {}
 draft_times = deque()
 currency_stop = threading.Event()
 trade_bridge = None
+news_worker = None
+news_state_lock = threading.RLock()
+
+
+class NewsScanWorker:
+    """At most one news scan, with no queued backlog or Telegram update polling."""
+
+    def __init__(self, scan, stop_event, logger):
+        self.scan, self.stop_event, self.logger = scan, stop_event, logger
+        self._lock, self._wake = threading.Lock(), threading.Event()
+        self._request = None
+        self._active = False
+        self.thread = threading.Thread(target=self._run, name="veritas-news-scan", daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def submit(self, *, force=False):
+        with self._lock:
+            if self.stop_event.is_set() or self._active or self._request is not None:
+                return False
+            self._request = bool(force)
+            self._wake.set()
+            return True
+
+    def _run(self):
+        while not self.stop_event.is_set():
+            self._wake.wait(0.5)
+            with self._lock:
+                self._wake.clear()
+                if self.stop_event.is_set():
+                    return
+                force, self._request = self._request, None
+                if force is None:
+                    continue
+                self._active = True
+            try:
+                self.scan(force=force)
+            except Exception as exc:
+                self.logger("News scan worker: " + type(exc).__name__)
+            finally:
+                with self._lock:
+                    self._active = False
+
+    def join(self, timeout=2):
+        self._wake.set()
+        self.thread.join(timeout=timeout)
 
 
 def now_iso():
@@ -138,16 +186,17 @@ def openai_with_web(model, prompt, effort="high"):
 
 def prune_state():
     now = time.time()
-    for fp, ts in list(seen_events.items()):
-        if now - ts > 24 * 3600:
-            seen_events.pop(fp, None)
+    with news_state_lock:
+        for fp, ts in list(seen_events.items()):
+            if now - ts > 24 * 3600:
+                seen_events.pop(fp, None)
 
-    for key, item in list(pending.items()):
-        if now - item["created_at"] > 6 * 3600:
-            pending.pop(key, None)
+        for key, item in list(pending.items()):
+            if now - item["created_at"] > 6 * 3600:
+                pending.pop(key, None)
 
-    while draft_times and now - draft_times[0] > 3600:
-        draft_times.popleft()
+        while draft_times and now - draft_times[0] > 3600:
+            draft_times.popleft()
 
 
 def event_fingerprint(text):
@@ -213,8 +262,9 @@ DO_NOT_PUBLISH
 
 
 def draft_allowed():
-    prune_state()
-    return len(draft_times) < MAX_DRAFTS_PER_HOUR
+    with news_state_lock:
+        prune_state()
+        return len(draft_times) < MAX_DRAFTS_PER_HOUR
 
 
 def submit_draft(public, audit, event_fp):
@@ -226,13 +276,14 @@ def submit_draft(public, audit, event_fp):
         f"{time.time()}:{event_fp}:{public}".encode()
     ).hexdigest()[:10]
 
-    pending[draft_id] = {
-        "public": public,
-        "audit": audit,
-        "event_fp": event_fp,
-        "created_at": time.time(),
-    }
-    draft_times.append(time.time())
+    with news_state_lock:
+        pending[draft_id] = {
+            "public": public,
+            "audit": audit,
+            "event_fp": event_fp,
+            "created_at": time.time(),
+        }
+        draft_times.append(time.time())
 
     keyboard = {
         "inline_keyboard": [[
@@ -306,7 +357,16 @@ def handle_message(message):
     if not text:
         return
 
+    if handle_operator_message(message, trade_bridge, tg_call):
+        return
+
     if text.startswith("/start"):
+        if trade_bridge is not None and trade_bridge._private_owner(message):
+            send_message(chat_id, "Валютный портфель: /currency_status.\n"
+                         "Первоначальная привязка учёта: /currency_bind.\n"
+                         "Каждая сделка требует отдельного подтверждения условий.")
+            if not is_admin(user_id):
+                return
         if ADMIN_USER_ID is None:
             send_message(
                 chat_id,
@@ -322,7 +382,8 @@ def handle_message(message):
                 "/status — состояние\n"
                 "/scan — внеочередной скан\n"
                 "/pause — пауза\n"
-                "/resume — продолжить"
+                "/resume — продолжить\n"
+                "/currency_status — валютный портфель (только назначенному владельцу в личном чате)"
             )
         else:
             send_message(chat_id, "Доступ к управлению не разрешён.")
@@ -349,8 +410,9 @@ def handle_message(message):
         next_scan_at = 0
         send_message(chat_id, "Сканирование возобновлено.")
     elif text.startswith("/scan"):
-        send_message(chat_id, "Запускаю внеочередную проверку рынка.")
-        run_scan_once(force=True)
+        accepted = news_worker is not None and news_worker.submit(force=True)
+        send_message(chat_id, "Внеочередная проверка рынка принята. Бот продолжает принимать решения."
+                     if accepted else "Проверка рынка уже выполняется или сканер остановлен.")
 
 
 def handle_callback(query):
@@ -376,7 +438,8 @@ def handle_callback(query):
         return
 
     action, draft_id = data.split(":", 1)
-    item = pending.get(draft_id)
+    with news_state_lock:
+        item = pending.get(draft_id)
 
     if not item:
         answer_callback(callback_id, "Черновик уже обработан или устарел")
@@ -385,7 +448,8 @@ def handle_callback(query):
     if action == "pub":
         try:
             send_message(CHANNEL_ID, item["public"])
-            pending.pop(draft_id, None)
+            with news_state_lock:
+                pending.pop(draft_id, None)
             answer_callback(callback_id, "Опубликовано")
             edit_reply_markup(message["chat"]["id"], message["message_id"])
             log(f"Черновик {draft_id} опубликован.")
@@ -394,7 +458,8 @@ def handle_callback(query):
             log(f"Ошибка публикации {draft_id}: {e}")
 
     elif action == "rej":
-        pending.pop(draft_id, None)
+        with news_state_lock:
+            pending.pop(draft_id, None)
         answer_callback(callback_id, "Отклонено")
         edit_reply_markup(message["chat"]["id"], message["message_id"])
         log(f"Черновик {draft_id} отклонён.")
@@ -445,7 +510,7 @@ def startup_check():
 
 
 def main():
-    global next_scan_at, trade_bridge
+    global next_scan_at, trade_bridge, news_worker
 
     log("Запуск VERITAS MAX.")
     from veritas_currency_delivery import start_from_env
@@ -454,13 +519,15 @@ def main():
     trade_bridge = build_from_env(tg_call, log)
     trade_worker = start_worker(trade_bridge, currency_stop, log)
     startup_check()
+    news_worker = NewsScanWorker(run_scan_once, currency_stop, log)
+    news_worker.start()
     log("Новостной сканер: ПАУЗА." if paused else "Новостной сканер: АКТИВЕН.")
     next_scan_at = time.time() + 60
 
     while running:
         try:
             if not paused and time.time() >= next_scan_at:
-                run_scan_once()
+                news_worker.submit()
             poll_updates()
         except httpx.TimeoutException:
             pass
@@ -480,6 +547,8 @@ def main():
         currency_worker.join(timeout=15)
     if trade_worker:
         trade_worker.join(timeout=15)
+    if news_worker:
+        news_worker.join(timeout=2)
     log("VERITAS MAX остановлен корректно.")
 
 

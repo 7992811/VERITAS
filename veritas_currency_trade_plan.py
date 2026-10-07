@@ -12,6 +12,8 @@ import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_execution as VX
 import veritas_timeframe_structure as TS
+import veritas_timeframe_policy as TFP
+import veritas_structural_breakout as SB
 
 VERSION = "currency-broker-plan-v1"
 ASSET = "CNYRUBF"
@@ -244,9 +246,52 @@ def select_entry(summary, account, now):
 
 
 def _structural(context, price, direction, now):
-    gate = TS.entry_gate(context, float(price), direction, now, config=CTC.STRUCTURAL_ENTRY_POLICY)
+    gate = TFP.event_gate(context, float(price), direction, now)
     if not gate.get("eligible"):
         raise TradePlanBlocked(str(gate.get("reason") or "BROKER_PRICE_STRUCTURAL_GATE_FAILED"))
+
+
+def _broker_context(context, spec, quote, direction, now):
+    if not SB.applies(context):
+        return context
+    # Rebind only the execution quote. The causal event, signal time, native
+    # bars, source contract and proof are preserved by the canonical engine.
+    # Source identity comes from the verified broker UID, never from a copied
+    # label belonging to an unrelated signal feed.
+    current = SB.rebind_quote(context, {
+        "asset": ASSET, "source": "TBANK_GRPC " + ASSET,
+        "contract": {"instrument_uid": spec.instrument_uid},
+        "price": float(quote.ask if direction == "LONG" else quote.bid),
+        "best_bid": float(quote.bid), "best_ask": float(quote.ask),
+        "observed_at": utc(quote.observed_at).isoformat(),
+        "source_gate_pass": spec.api_trade_available is True,
+        "market_open": quote.limit_orders_available is True,
+    }, now)
+    if current.get("status") != "OK":
+        raise TradePlanBlocked(str(current.get("reason") or "BROKER_SIGNAL_CONTEXT_INVALID"))
+    return current
+
+
+def live_economics_plan(direction, price, stop, target, quote, horizon, *, fraction=0.1,
+                        expected_hold_seconds=None):
+    """Explicit single-target LIVE economics, after separate native proof checks.
+
+    A paper target ladder is not a broker execution schedule. No PAPER policy
+    claims or diagnostic-RR exemption enter this plan. The immutable native
+    event remains in signed entry_context and is validated independently.
+    """
+    spread_bps = (decimal(quote.ask) - decimal(quote.bid)) / price * Decimal("10000")
+    plan = {
+        "direction": direction, "entry_price": float(price), "stop_price": float(stop),
+        "target_price": float(target), "horizon": horizon,
+        "expected_move_pct": float(abs(target - price) / price),
+        "expected_to_stop_ratio": float(abs(target - price) / abs(price - stop)),
+        "spread_bps": float(spread_bps), "best_bid": float(quote.bid), "best_ask": float(quote.ask),
+        "initial_position_fraction": float(fraction),
+    }
+    if expected_hold_seconds is not None:
+        plan["expected_hold_seconds"] = float(decimal(expected_hold_seconds, positive=True))
+    return plan
 
 
 def _base(spec, account, quote, now, action, direction, event_id, limit_price):
@@ -295,6 +340,9 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
         raise TradePlanBlocked("POSITION_ACTION_MISMATCH")
     limit = decimal(quote.ask if sign > 0 else quote.bid, positive=True)
     terms = _base(spec, account, quote, now, required_action, direction, str(event_id), limit)
+    context = _broker_context(context, spec, quote, direction, now)
+    if context.get("timeframe") != row.get("horizon"):
+        raise TradePlanBlocked("BROKER_SIGNAL_TIMEFRAME_MISMATCH")
     _structural(context, terms["limit_price"], direction, now)
     limits = currency_limits()
     if account.drawdown >= limits["hard_drawdown"]:
@@ -322,12 +370,9 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
     price = terms["limit_price"]
     if sign * (price - stop) <= 0 or sign * (target - price) <= 0:
         raise TradePlanBlocked("STRUCTURAL_GEOMETRY_INVALID_AT_BROKER_PRICE")
-    spread_bps = (decimal(quote.ask) - decimal(quote.bid)) / price * Decimal("10000")
-    exact_plan = dict(plan, direction=direction, entry_price=float(price), stop_price=float(stop),
-                      target_price=float(target), expected_move_pct=float(abs(target-price)/price),
-                      expected_to_stop_ratio=float(abs(target-price)/abs(price-stop)), spread_bps=float(spread_bps),
-                      best_bid=float(quote.bid), best_ask=float(quote.ask))
-    economics = VX.economics_gate(ASSET, exact_plan)
+    exact_plan = live_economics_plan(direction, price, stop, target, quote, row.get("horizon"),
+                                    fraction=fraction, expected_hold_seconds=plan.get("expected_hold_seconds"))
+    economics = VX.economics_gate(ASSET, exact_plan, execution_mode="LIVE", now=now)
     if not economics.get("eligible"):
         raise TradePlanBlocked("BROKER_PRICE_ECONOMICS:" + ",".join(economics.get("blockers") or []))
     margin_per_lot = decimal(spec.margin_buy_rub if sign > 0 else spec.margin_sell_rub, positive=True) * spec.lot_size
@@ -351,6 +396,8 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
                  total_stop_risk_rub=stop_risk, cost_multiple=decimal(economics["minimum_expected_move_pct"]) /
                  decimal(economics["modeled_round_trip_cost_pct"], positive=True),
                  canonical_cost_multiple=decimal(VX.VC.policy(ASSET)["entry_cost_multiple"]), economics=economics,
+                 economics_mode="LIVE", target_execution_policy="SINGLE_TARGET_SEPARATE_CONFIRMATION",
+                 expected_hold_seconds=economics["expected_hold_seconds"],
                  entry_context=context, entry_context_json=native_context_json(context), model_version=str(row.get("model_version") or CTC.VERSION),
                  source_identity=source, broker_execution_source="TINVEST_EXACT_INSTRUMENT", reduce_only=False)
     return json_safe(terms)
@@ -413,7 +460,10 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
         return
     if canonical_event_valid is not True:
         raise TradePlanBlocked("CANONICAL_EVENT_NO_LONGER_VALID")
-    _structural(approved_entry_context(terms), limit, terms["direction"], now)
+    context = _broker_context(approved_entry_context(terms), spec, quote, terms["direction"], now)
+    if context.get("timeframe") != terms.get("horizon"):
+        raise TradePlanBlocked("BROKER_SIGNAL_TIMEFRAME_MISMATCH")
+    _structural(context, limit, terms["direction"], now)
     if account.drawdown >= currency_limits()["hard_drawdown"]:
         raise TradePlanBlocked("CURRENCY_DRAWDOWN_STOP")
     margin = decimal(spec.margin_buy_rub if side == "BUY" else spec.margin_sell_rub, positive=True) * spec.lot_size * lots
@@ -431,12 +481,12 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
     sign = 1 if side == "BUY" else -1
     if sign * (limit-stop) <= 0 or sign * (target-limit) <= 0:
         raise TradePlanBlocked("APPROVED_GEOMETRY_INVALID")
-    spread = (decimal(quote.ask)-decimal(quote.bid))/limit*Decimal("10000")
-    economics = VX.economics_gate(ASSET, {"direction":terms["direction"], "entry_price":float(limit),
-        "stop_price":float(stop), "target_price":float(target), "horizon":terms.get("horizon"),
-        "expected_move_pct":float(abs(target-limit)/limit),
-        "expected_to_stop_ratio":float(abs(target-limit)/abs(limit-stop)), "spread_bps":float(spread),
-        "best_bid":float(quote.bid), "best_ask":float(quote.ask)})
+    if terms.get("economics_mode") != "LIVE" or terms.get("target_execution_policy") != "SINGLE_TARGET_SEPARATE_CONFIRMATION":
+        raise TradePlanBlocked("EXPLICIT_LIVE_ECONOMICS_APPROVAL_REQUIRED")
+    exact_plan = live_economics_plan(terms["direction"], limit, stop, target, quote, terms.get("horizon"),
+                                    fraction=exposure / decimal(account.currency_nav_rub, positive=True),
+                                    expected_hold_seconds=terms.get("expected_hold_seconds"))
+    economics = VX.economics_gate(ASSET, exact_plan, execution_mode="LIVE", now=now)
     if not economics.get("eligible"):
         raise TradePlanBlocked("ECONOMICS_CHANGED_AFTER_APPROVAL")
     stop_risk = (abs(limit-stop)/limit + decimal(economics["modeled_round_trip_cost_pct"])) * exposure

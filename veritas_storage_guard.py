@@ -112,11 +112,11 @@ def install_storage_guard(ns: Dict[str, Any]) -> None:
 
     base_snapshot = ns.get("save_product_snapshot")
 
-    def guarded_snapshot() -> Any:
+    def guarded_snapshot(*args: Any, **kwargs: Any) -> Any:
         st = storage_guard()
         if st.get("tier") in ("AMBER", "RED"):
-            return None
-        return base_snapshot()
+            return {"status": "DEFERRED_STORAGE_QUOTA", "tier": st.get("tier")}
+        return base_snapshot(*args, **kwargs)
 
     if callable(base_snapshot):
         ns["save_product_snapshot"] = guarded_snapshot
@@ -133,11 +133,13 @@ def install_storage_guard(ns: Dict[str, Any]) -> None:
                     "tier": st.get("tier"),
                     "database_bytes": st.get("bytes"),
                 }
-            retention_state["last_at"] = now_ts
             maintenance_state = ns.get("_v90r37_maintenance_state")
             if isinstance(maintenance_state, dict):
                 maintenance_state["last"] = 0.0
-        return base_retention()
+        result = base_retention()
+        if isinstance(result, dict) and result.get("status") == "OK":
+            retention_state["last_at"] = now_ts
+        return result
 
     if callable(base_retention):
         ns["_v90r37_storage_retention"] = guarded_retention

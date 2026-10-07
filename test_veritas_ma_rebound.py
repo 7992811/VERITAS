@@ -2,6 +2,8 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 from time import perf_counter
+import hashlib
+import json
 import unittest
 from unittest.mock import patch
 
@@ -66,6 +68,45 @@ def reference_daily_context_builder(daily_bars, **kwargs):
 def reference_build(*args, **kwargs):
     with patch.object(DA, "context_builder", side_effect=reference_daily_context_builder):
         return build(*args, **kwargs)
+
+
+PF_SOURCE = {"key":"PROFINANCE:NASD100_FUT", "asset":"NQ", "contract_id":"NASD100_FUT"}
+
+
+def pf_example(proof_at=None, period=50):
+    """Native PF date labels acquire completion evidence only when observed."""
+    rows,daily,now = example(period=period)
+    proof_at = START+20*300 if proof_at is None else proof_at
+    daily = deepcopy(daily)
+    for b in rows:
+        b["source_identity"] = deepcopy(PF_SOURCE)
+    for b in daily:
+        period_label = datetime.fromtimestamp(b["ts"],timezone.utc).date().isoformat()
+        successor_label = datetime.fromtimestamp(b["end_ts"],timezone.utc).date().isoformat()
+        digest = hashlib.sha256(json.dumps(
+            [float(b[k]) for k in ("open","high","low","close")],
+            separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        b["ts"] -= 3*3600
+        b["end_ts"] -= 3*3600
+        b.update(source_identity=deepcopy(PF_SOURCE),native_interval=9,
+                 chart_symbol="NASD100_FUT",price_type="Last",
+                 provider_period_label=period_label,
+                 native_time_basis="PROVIDER_DATE_LABEL_ONLY",
+                 interval_boundary_verified=False,
+                 available_at=max(b["end_ts"],proof_at),observed_at=proof_at,
+                 completion_proof={
+                     "kind":"NEXT_NATIVE_DAILY_OBSERVED",
+                     "period_label":period_label,"successor_label":successor_label,
+                     "observed_at":proof_at,
+                     "source_identity":{"key":PF_SOURCE["key"],
+                                        "contract_id":PF_SOURCE["contract_id"]},
+                     "ohlc_sha256":digest})
+    return rows,daily,now
+
+
+def pf_build(rows, daily, now, period=50):
+    return M.build_context(rows,"5m",now,daily_bars=daily,asset="NQ",
+                           source_identity=PF_SOURCE,ma_config={"periods":(period,)})
 
 
 class DailyMAReboundTests(unittest.TestCase):
@@ -288,6 +329,33 @@ class DailyMAReboundTests(unittest.TestCase):
         self.assertIsNone(e["relative_volume"])
         self.assertEqual((rows,daily),before)
 
+    def test_malformed_proof_containers_are_rejected_without_exceptions_or_mutation(self):
+        rows,daily,now = example()
+        original = build(rows,daily,now)["event"]
+        self.assertTrue(M.validate_event(original,SOURCE)["eligible"])
+        changes = (
+            lambda e:e.update(ma_proof="INVALID_PROOF_SHAPE"),
+            lambda e:e.update(ma_proof=[{}]),
+            lambda e:e["ma_proof"].update(daily_provenance="INVALID_PROOF_SHAPE"),
+            lambda e:e["ma_proof"].update(period_evidence=[]),
+            lambda e:e["ma_proof"].update(policy="INVALID_PROOF_SHAPE"),
+            lambda e:e.update(policy=[{}]),
+            lambda e:e["ma_proof"].update(approach_bars="abc"),
+            lambda e:e["ma_proof"].update(approach_bars={"a":{},"b":{},"c":{}}),
+            lambda e:e["ma_proof"]["approach_bars"].__setitem__(0,"INVALID_PROOF_SHAPE"),
+            lambda e:e["ma_proof"]["approach_bars"].__setitem__(0,[{}]),
+            lambda e:e["ma_proof"].update(approach_bars=None),
+            lambda e:e["ma_proof"].update(approach_bars=e["ma_proof"]["approach_bars"]*101),
+        )
+        for i,change in enumerate(changes):
+            with self.subTest(case=i):
+                event = deepcopy(original)
+                change(event)
+                before = deepcopy(event)
+                self.assertEqual(M.validate_event(event,SOURCE),
+                    {"eligible":False,"reason":"MA_REBOUND_PROVENANCE_INVALID"})
+                self.assertEqual(event,before)
+
     def test_short_native_daily_session_changes_cache_at_actual_end(self):
         source = {"key":"MOEX:CNYRUBF", "asset":"CNYRUBF", "contract_id":"CNYRUBF"}
         # Native MOEX interval24 may cover a15-hour exchange session. The
@@ -419,6 +487,79 @@ class DailyMAReboundTests(unittest.TestCase):
               "indexed_native=%d reference_native=%d" %
               (indexed_seconds,reference_seconds,indexed_native.call_count,
                reference_native.call_count))
+
+    def test_pf_first_observed_completion_cannot_authorize_an_earlier_touch(self):
+        proof_at = START+27*300
+        rows,daily,now = pf_example(proof_at)
+        earlier = pf_build(rows,daily,now)
+        self.assertIsNone(earlier["event"])
+        self.assertIn("MA_DAILY_HISTORY_REQUIRED",earlier["diagnostics"])
+        # Once the daily proof exists, a NEW clear approach/touch/closed
+        # confirmation can enter; the earlier touch is never backdated.
+        added = [local_bar(i) for i in range(28,31)]
+        added += [local_bar(31,o=101.8,h=101.9,l=99.8,c=100.8),
+                  local_bar(32,o=100.8,h=102.15,l=100.6,c=102.)]
+        rows += [dict(b,source_identity=deepcopy(PF_SOURCE)) for b in added]
+        result = pf_build(rows,daily,rows[-1]["available_at"])
+        e = result["event"]
+        self.assertIsNotNone(e,result)
+        self.assertEqual(e["ma_proof"]["episode_start_at"],rows[-2]["ts"])
+        self.assertEqual(e["ma_proof"]["daily_known_at"],proof_at)
+        self.assertLessEqual(proof_at,e["ma_proof"]["episode_start_at"])
+        self.assertTrue(M.validate_event(e,PF_SOURCE)["eligible"])
+
+    def test_pf_event_keeps_date_label_and_completion_proof_without_claiming_close_time(self):
+        for period in (50,200):
+            with self.subTest(period=period):
+                rows,daily,now = pf_example(period=period)
+                result = pf_build(rows,daily,now,period)
+                e = result["event"]
+                self.assertIsNotNone(e,result)
+                proof = e["ma_proof"]
+                dp = proof["daily_provenance"]
+                self.assertEqual(proof["daily_asof_basis"],"PROVIDER_DATE_LABEL_ONLY")
+                self.assertEqual(dp["native_time_basis"],"PROVIDER_DATE_LABEL_ONLY")
+                self.assertIs(dp["interval_boundary_verified"],False)
+                self.assertIsNone(dp["last_closed_at"])
+                self.assertIsNone(dp["verified_close_at"])
+                self.assertEqual(dp["nominal_last_period_end"],proof["daily_asof"])
+                self.assertEqual(dp["last_period_label"],daily[-1]["provider_period_label"])
+                self.assertEqual(dp["latest_completion_proof"],daily[-1]["completion_proof"])
+                self.assertGreater(dp["completion_proof_count"],0)
+                self.assertEqual(len(dp["completion_proofs_sha256"]),64)
+                self.assertTrue(M.validate_event(e,PF_SOURCE)["eligible"])
+
+    def test_pf_rereading_unchanged_proof_does_not_refresh_event(self):
+        rows,daily,now = pf_example()
+        original = pf_build(rows,daily,now)["event"]
+        self.assertIsNotNone(original)
+        # HTTP observation may advance. The first completion proof and actual
+        # candle availability stay pinned for unchanged OHLC.
+        reread = [dict(b,observed_at=now+600,fetched_at=now+600) for b in daily]
+        refreshed = pf_build(rows,reread,now+600)["event"]
+        self.assertEqual(refreshed,original)
+        self.assertEqual(refreshed["event_id"],original["event_id"])
+        self.assertEqual(refreshed["signal_at"],original["signal_at"])
+
+    def test_pf_event_rejects_forged_completion_source_time_or_session_boundary(self):
+        rows,daily,now = pf_example()
+        original = pf_build(rows,daily,now)["event"]
+        self.assertIsNotNone(original)
+        mutations = [
+            lambda e:e["ma_proof"].update(daily_asof_basis="VERIFIED_SESSION_CLOSE"),
+            lambda e:e["ma_proof"]["daily_provenance"].update(last_closed_at=START),
+            lambda e:e["ma_proof"]["daily_provenance"].update(verified_close_at=START),
+            lambda e:e["ma_proof"]["daily_provenance"].update(interval_boundary_verified=True),
+            lambda e:e["ma_proof"]["daily_provenance"].update(nominal_last_period_end=START+86400),
+            lambda e:e["ma_proof"]["daily_provenance"].update(completion_proofs_sha256=""),
+            lambda e:e["ma_proof"]["daily_provenance"]["latest_completion_proof"].update(observed_at=now),
+            lambda e:e["ma_proof"]["daily_provenance"]["latest_completion_proof"].update(
+                source_identity={"key":"PROFINANCE:FOREIGN","contract_id":"OTHER"}),
+        ]
+        for mutation in mutations:
+            changed = deepcopy(original)
+            mutation(changed)
+            self.assertFalse(M.validate_event(changed,PF_SOURCE)["eligible"])
 
     def test_invalid_clock_and_unsupported_timeframe_fail_closed(self):
         rows,daily,now = example()

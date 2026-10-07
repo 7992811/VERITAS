@@ -1,5 +1,5 @@
 import copy
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from pathlib import Path
@@ -204,7 +204,21 @@ class ProtectiveExitTests(unittest.TestCase):
         positions = [self.position()]
         conn = MagicMock()
         conn.__enter__.return_value = conn
+        active_depth = 0
+        outer_commits = []
+        @contextmanager
+        def transaction():
+            nonlocal active_depth
+            active_depth += 1
+            try:
+                yield
+                if active_depth == 1:
+                    outer_commits.append(True)
+            finally:
+                active_depth -= 1
+        conn.transaction.side_effect = transaction
         def execute(sql, args=None):
+            self.assertGreater(active_depth, 0, 'guard SQL must be inside the book transaction')
             cur = MagicMock()
             cur.fetchall.return_value = copy.deepcopy(positions) if sql.startswith('SELECT * FROM paper_positions') else []
             return cur
@@ -212,6 +226,7 @@ class ProtectiveExitTests(unittest.TestCase):
         book = dict(name='Aggressive', high_water_nav_rub=1e6, benchmark_nav_rub=1e6,
                     last_usdrub=84.4, last_ruonia=14.1)
         def close(*args):
+            self.assertGreater(active_depth, 0, 'protective close must be transactional')
             positions.clear()
             return 72
         vp = SimpleNamespace(_portfolio_rows=lambda c, n: (book, positions),
@@ -222,7 +237,10 @@ class ProtectiveExitTests(unittest.TestCase):
         self.assertEqual(len(PG.run_protective_pass(vp, lambda: conn, quotes, NOW)), 1)
         self.assertEqual(PG.run_protective_pass(vp, lambda: conn, quotes, NOW), [])
         vp._close_or_reduce.assert_called_once()
-        self.assertEqual(conn.transaction.call_count, 2)
+        # Optional observation savepoints must not change the book invariant:
+        # one completed outer transaction per pass, and no duplicate close.
+        self.assertEqual(outer_commits, [True, True])
+        self.assertEqual(active_depth, 0)
         sql = [x.args[0] for x in conn.execute.call_args_list]
         self.assertTrue(any('pg_advisory_xact_lock' in x for x in sql))
         self.assertTrue(any('FOR UPDATE' in x for x in sql))
@@ -325,7 +343,9 @@ class ProfitabilityAdmissionRepairTests(unittest.TestCase):
         self.assertFalse(VPR._v842_hard_thesis_exit(weak))
         hard = copy.deepcopy(base)
         hard['trade_plan']['trade_integrity']['hard_invalidation'] = True
-        self.assertTrue(VPR._v842_hard_thesis_exit(hard))
+        # A candidate-level hard veto still needs held-position structural proof.
+        self.assertFalse(VPR._v842_hard_thesis_exit(hard))
+        self.assertTrue(hard['trade_plan']['trade_integrity']['hard_invalidation'])
 
 
     def test_small_learning_sample_is_shrunk_toward_neutral_prior(self):

@@ -15,7 +15,17 @@ import veritas_price_source as VPS
 from test_veritas_timeframe_policy import structural_row
 
 
-def native_days(clock, identity, value=100., count=220):
+def native_days(clock, identity, value=100., count=220, known_before=None):
+    if str(identity.get("key", "")).startswith("PROFINANCE:"):
+        import veritas_profinance_history as PF
+        proof_clock = known_before or clock
+        end = int(proof_clock.timestamp())//86400*86400
+        lines = ["0;Open;High;Low;Close;Date"]
+        for i in range(count+1):
+            label = datetime.fromtimestamp(end-(count-i)*86400, timezone.utc).strftime("%d.%m.%Y")
+            lines.append("%s;%s;%s;%s;%s;%s" % (i, value, value+1.5, value-1.5, value, label))
+        return PF.parse_history("\n".join(lines), identity["asset"], "1d",
+                                now=proof_clock, observed_at=proof_clock)["bars"]
     end = int(clock.timestamp())//86400*86400
     return [dict(ts=end-(count-i)*86400, end_ts=end-(count-i-1)*86400,
                  open=value, high=value+1.5, low=value-1.5, close=value,
@@ -44,7 +54,7 @@ def rebound_raw(clock, timeframe="5m", asset="NQ", direction="LONG"):
     return dict(asset=asset, price=rows[-1]["close"], source=provider,
         source_names={"primary":provider}, structure_source_identity=identity,
         structure_bars_by_timeframe={timeframe:rows},
-        native_daily_bars=native_days(clock,identity),
+        native_daily_bars=native_days(clock,identity,known_before=clock-timedelta(seconds=40*step)),
         observed_at=clock.isoformat(), market_observed_at=clock.isoformat(),
         source_gate_pass=True, market_open=True, paper_eligible=True,
         direct_sources=1, source_divergence=0.,
@@ -150,7 +160,7 @@ class EntryScenarioIntegrationTests(unittest.TestCase):
         self.assertEqual(S.confirmed_structure(old,"SHORT",.70,"1h")["state"],"BUILDING_TREND")
         self.assertEqual(old["horizon_structure"]["direction"],"LONG")
 
-    def test_two_owner_records_are_idempotent_and_keep_original_snapshot_hash(self):
+    def test_owner_records_are_idempotent_and_keep_original_snapshot_hash(self):
         ledger={}
         def write(kind,key,payload,*args):
             created=key not in ledger
@@ -160,12 +170,13 @@ class EntryScenarioIntegrationTests(unittest.TestCase):
             return {"payload":ledger.get(key)}
         first=UT.seed_all_user_teachings(write,read)
         second=UT.seed_all_user_teachings(write,read)
-        self.assertEqual(len(ledger),2)
+        self.assertEqual(set(ledger),{UT.TEACHING_ID,UT.MA_TEACHING_ID,UT.BREAKOUT_TEACHING_ID})
         self.assertTrue(all(r["durable"] for r in first+second))
         self.assertEqual({r["status"] for r in second},{"ALREADY_PRESENT"})
         self.assertEqual(UT._digest(UT.policy_snapshot()),"613b4f153f7878891c9fcab5014b01be1b10148391978f13ea397d53ec72b29b")
         self.assertEqual(ledger[UT.MA_TEACHING_ID]["portfolios"],list(CTC.PORTFOLIO_ORDER))
         self.assertFalse(ledger[UT.MA_TEACHING_ID]["parameter_validation"]["ml_training_performed"])
+        self.assertEqual(ledger[UT.BREAKOUT_TEACHING_ID]['teaching_id'],UT.BREAKOUT_TEACHING_ID)
 
     def test_ma_trace_freezes_original_daily_snapshot_and_geometry(self):
         raw=rebound_raw(self.clock)

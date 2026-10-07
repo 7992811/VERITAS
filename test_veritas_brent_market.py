@@ -11,12 +11,13 @@ import veritas_timeframe_structure as TS
 
 
 NOW = datetime(2026, 10, 6, 12, 0, 20, tzinfo=timezone.utc)
-IDENTITY = VPS.identity("BRENT", {"source": "ProFinance", "raw_label": "Brent oil"})
+IDENTITY = VPS.brent_feed_pin_identity()
 
 
 def quote(**overrides):
     return {"price": 101.03, "observed_at": NOW.isoformat(), "source": "ProFinance",
-            "raw_label": "Brent oil", **overrides}
+            "raw_label": "Brent oil", "raw_ticker": "brent", "instrument_id": "27",
+            "provider_ticker_verified": True, **overrides}
 
 
 def candle(tf, stamp, close=100.):
@@ -37,6 +38,7 @@ def history(count=60):
         mapping[tf] = [candle(tf, end - (count-i)*seconds, 100. + .001*i)
                        for i in range(count)]
     return {"asset": "BRENT", "raw_label": "Brent oil", "source_identity": deepcopy(IDENTITY),
+            "raw_ticker": "brent", "provider_chart_identity_verified": True,
             "bars_by_timeframe": mapping, "status_by_timeframe": {}}
 
 
@@ -125,6 +127,16 @@ class BrentNativeSourceTests(TestCase):
         self.assertEqual(len(r["structure_bars_by_timeframe"]["5m"]), 58)
         self.assertEqual(len(r["structure_bars_by_timeframe"]["1h"]), 60)
 
+    def test_history_requires_complete_pin_even_when_legacy_source_name_matches(self):
+        old = VPS.identity("BRENT", {"source": "ProFinance", "raw_label": "Brent oil"})
+        h = history()
+        h["source_identity"] = old
+        self.assertFalse(B.build_market(quote(), h, NOW)["paper_eligible"])
+        h = history()
+        h["bars_by_timeframe"]["5m"][0]["source_identity"] = old
+        result = B.build_market(quote(), h, NOW)
+        self.assertEqual(len(result["structure_bars_by_timeframe"]["5m"]), 59)
+
     def test_incomplete_and_conflicting_duplicate_bars_are_excluded(self):
         h = history()
         rows = h["bars_by_timeframe"]["1m"]
@@ -135,6 +147,27 @@ class BrentNativeSourceTests(TestCase):
         r = B.build_market(quote(), h, NOW)
         self.assertEqual(len(r["structure_bars_by_timeframe"]["1m"]), 59)
         self.assertTrue(all(b["end_ts"] <= NOW.timestamp() for b in r["structure_minute_bars"]))
+
+
+    def test_daily_evidence_preserves_future_revision_but_not_foreign_source(self):
+        h = history()
+        future = h["bars_by_timeframe"]["1d"][-1]
+        future.update(available_at=NOW.timestamp()+10, revision_observed_at=NOW.timestamp()+10)
+        h["bars_by_timeframe"]["1d"][0]["source_identity"] = {"key":"YAHOO:BZ=F"}
+        before = deepcopy(h)
+        r = B.build_market(quote(), h, NOW)
+        self.assertEqual(len(r["native_daily_evidence"]),59)
+        self.assertEqual(len(r["structure_bars_by_timeframe"]["1d"]),58)
+        self.assertEqual(r["native_daily_evidence"][-1]["revision_observed_at"],NOW.timestamp()+10)
+        self.assertEqual(h,before)
+        r["native_daily_evidence"][-1]["close"] = 999
+        self.assertEqual(h,before)
+
+    def test_rejected_history_does_not_forward_daily_evidence(self):
+        h = history()
+        h["source_identity"] = {"key":"YAHOO:BZ=F"}
+        r = B.build_market(quote(),h,NOW)
+        self.assertEqual(r["native_daily_evidence"],[])
 
     def test_no_data_is_explicit_unavailability(self):
         h = history(count=0)

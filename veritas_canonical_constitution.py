@@ -12,7 +12,7 @@ from __future__ import annotations
 VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
-STRATEGY_EPOCH = "EQ4_2026_10_07_NATIVE_MA"
+STRATEGY_EPOCH = "EQ7_2026_10_07_INTRABAR_STRUCTURE"
 STRATEGY_ROLE_POLICY = {
     "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
     "AGGRESSIVE": {"name":"CONFIRMED_TREND","horizons":("5m","1h","4h","1d"),
@@ -38,6 +38,33 @@ STRUCTURAL_ENTRY_POLICY = {
     "same_source_candles_and_execution": True,
     "minimum_net_reward_risk": 1.15,
     "parameter_validation_status": "UNVALIDATED_DEFAULTS",
+}
+
+# The owner's 7 October correction explicitly refines the previous closed-bar
+# rule. Keep that earlier policy and its immutable teaching record intact.
+BREAKOUT_LIFECYCLE_POLICY = {
+    "version": "CTC_INTRABAR_STRUCTURE_V1",
+    "teaching_id": "USER_INTRABAR_STRUCTURE_2026_10_07",
+    "enabled": True, "scope": "PAPER_PORTFOLIOS",
+    "parent_timeframe": "1h", "atr_period": 20,
+    "pivot_left": 2, "pivot_right": 2, "stop_buffer_atr": 0.15,
+    "max_stop_atr": 6.0, "max_signal_age_bars": 2.0,
+    "minimum_entry_window_seconds": 120.0,
+    "target_cluster_atr": 0.25, "min_target_atr": 1.5,
+    "target_zone_min_touches": 3, "target_consolidation_gap_bars": 1.0,
+    "protected_swing_min_prominence_atr": 1.0, "target_one_fraction": 0.5,
+    "trigger_on_fresh_quote": True, "closed_bar_confirmation": False,
+    "protected_parent_stop": True, "total_position_stop_risk_required": True,
+    "target_basis": "PREVIOUSLY_OBSERVED_LARGER_CONSOLIDATION_ZONES",
+    "target_fractions": [0.5, 0.5], "max_target_progress": 0.60,
+    "single_observed_target_fraction": 1.0,
+    "net_rr_role": "DIAGNOSTIC_WITH_POSITIVE_WEIGHTED_TARGET_ECONOMICS",
+    "minimum_net_reward_risk": 0.0,
+    "retain_cost_buffer_multiple": 1.1,
+    "quote_poll_seconds": 5.0,
+    "same_source_candles_and_execution": True,
+    "immutable_event_time": True, "one_allocation_per_level_event": True,
+    "parameter_validation_status": "OWNER_RULE_WITH_UNVALIDATED_NUMERIC_DEFAULTS",
 }
 
 # Daily context is native D1 from the execution instrument. The actual rebound
@@ -90,10 +117,9 @@ COST_POLICY = {
     "round_trip_base_cost_pct": 0.0016,
     "cost_buffer_multiple": 1.1,
     "minimum_expected_move_floor_pct": 0.0019,
-    "entry_cost_multiple": 2.0,
-    # Explicit owner instruction: CNYRUBf retains 1.1x; other assets keep 2.0x.
+    "entry_cost_multiple": 1.1,
     "entry_cost_multiple_by_asset": {"CNYRUBF": 1.1},
-    "minimum_expected_move_formula": "CNYRUBF: max(0.19%, 1.1 * modeled_round_trip_cost); default: max(0.19%, 2.0 * modeled_round_trip_cost)",
+    "minimum_expected_move_formula": "max(0.19%, 1.1 * modeled_round_trip_cost)",
     "funding_annual_rate": 0.16,
     "funding_free_seconds": 86400,
     "funding_basis": "ACT/365.25_AFTER_FIRST_24H_ON_CURRENT_NOTIONAL",
@@ -104,6 +130,9 @@ HARD_VETOES = frozenset({
     "PRIMARY_SOURCE_GATE_FAILED","PRIMARY_SOURCE_MISSING","PRIMARY_TOP_OF_BOOK_MISSING",
     "MARKET_TIME_GATE_FAILED","CLOCK_GATE_FAILED","DIRECT_QUOTE_DIVERGENCE_TOO_LARGE",
     "EXECUTION_QUOTE_STALE","R66_EXECUTION_QUOTE_STALE","R79_SOURCE_OR_SESSION_BLOCK","PAPER_EXPLICIT_DENIAL",
+    "EXECUTION_ORDERBOOK_STALE","EXECUTION_QUOTE_ASSET_MISMATCH",
+    "EXECUTION_SNAPSHOT_INVALID","EXECUTION_SNAPSHOT_MISMATCH","ENTRY_SIZE_RECHECK_REQUIRED",
+    "NET_STOP_RISK_FILL_REQUIRED","NET_STOP_RISK_COSTS_INCOMPLETE","EXISTING_FUNDING_AGE_REQUIRED",
     "SOURCE_IDENTITY_MISMATCH","ENTRY_SOURCE_MISMATCH","POSITION_SOURCE_MISMATCH",
     "EXACT_CONTRACT_MISMATCH","R67_DIRECT_NQ_QUOTE_REQUIRED","PRIMARY_PRICE_INVALID",
     "STOP_MISSING","STOP_DIRECTION_INVALID","STOP_MISSING_OR_DIRECTION_INVALID",
@@ -268,8 +297,8 @@ SIGNAL_POLICY = {
     "published_direction_is_execution_authority": False,
     "published_direction": ("LONG", "SHORT"),
     "principle": (
-        "A directional thesis needs an independently confirmed same-timeframe "
-        "structural breakout or confirmed daily-MA rebound. Publishing or refreshing LONG/SHORT cannot create "
+        "A directional thesis needs a verified quote crossing a previously known structural level, "
+        "a close-confirmed structural breakout, or confirmed daily-MA rebound. Publishing or refreshing LONG/SHORT cannot create "
         "a new event, move its trigger, or reset its original confirmation time."
     ),
     "normal_signal_can_probe_below_rr_floor_if_net_positive": False,
@@ -344,7 +373,7 @@ CANONICAL_RULES = [
     _rule("CTC16","signal","Quality filtering occurs before publication of LONG/SHORT."),
     _rule("CTC17","signal","A thesis opens risk on a confirmed structural breakout or native daily SMA50/200 rebound, confirmed on the chosen entry timeframe."),
     _rule("CTC18","signal","Refreshing a directional forecast never resets breakout time, restores a spent event, or creates a new current-price trigger."),
-    _rule("CTC19","signal","Post-cost R/R below the canonical floor blocks new risk in every portfolio, including probes."),
+    _rule("CTC19","signal","Legacy setups and live orders retain the post-cost R/R floor. Owner-taught causal quote PAPER breakouts use positive weighted historical-target economics and the cost buffer; net R/R is diagnostic."),
     _rule("CTC20","signal","A cost-negative target or expected move below the canonical cost buffer is never eligible even as a probe."),
     _rule("CTC21","signal","A confirmed execution-timeframe direction conflict remains a hard veto for new risk."),
     _rule("CTC22","signal","A lower-timeframe soft conflict cannot by itself liquidate an intact senior-horizon core position."),
@@ -356,12 +385,12 @@ CANONICAL_RULES = [
     _rule("CTC27","structure","Breakout quality uses level break, acceptance, volume/activity, volatility expansion and subsequent structure."),
     _rule("CTC28","structure","RANGE_LOW_VOL requires stronger evidence because false-breakout risk is elevated."),
     _rule("CTC29","structure","Retest/hold after a break is an independent entry family and may define a fresh continuation event."),
-    _rule("CTC30","multitimeframe","Every entry timeframe owns its confirmed breakout, opposite swing stop, ATR and target; other timeframes provide context without replacing these anchors."),
+    _rule("CTC30","multitimeframe","Quote breakouts explicitly record trigger, structural-stop, ATR and historical-target timeframes. Fast entries protect the certified parent swing; legacy close-confirmed entries retain their same-timeframe anchors."),
     _rule("CTC31","multitimeframe","Senior context can reduce tactical size but does not automatically veto a qualified fast breakout/reversal."),
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
     _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
-    _rule("CTC34","economics","Base modeled round trip is 0.16%; entry requires max(0.19%, 1.1 x modeled round-trip cost) for CNYRUBF and max(0.19%, 2.0 x modeled round-trip cost) for other assets."),
+    _rule("CTC34","economics","Base modeled round trip is 0.16%; minimum move is max(0.19%, 1.1 x modeled round-trip cost)."),
     _rule("CTC35","economics","Funding is 16% ACT/365.25 on current notional after a free first 24 hours."),
     _rule("CTC36","economics","Target, stop and adverse modeled fills are recomputed at final entry after all setup/sizing mutations."),
     _rule("CTC37","economics","Adds must have their own remaining room and economics; the original target cannot justify a fresh add."),
@@ -371,7 +400,7 @@ CANONICAL_RULES = [
     _rule("CTC40","risk","Drawdown changes size/gross limits; it does not rewrite signal quality."),
     _rule("CTC41","risk","Standard books hard-stop new risk at 15% drawdown; Aggressive at 20%; Currency owner limit is 35%."),
     _rule("CTC42","risk","Live capital is independently fail-closed with stricter 0.5% per-idea and portfolio risk limits."),
-    _rule("CTC43","sizing","Position fractions move in 5% increments."),
+    _rule("CTC43","sizing","New allocations use 5% increments. Historical-target partial exits reduce actual units by the recorded target fractions."),
     _rule("CTC44","sizing","Aggressive starts about 50% on normal signal and 100% on SUPER, then earns leverage only through stronger structure/evidence and protected risk."),
     _rule("CTC45","sizing","Champion/Challenger have no implicit leverage: canonical single-asset fraction is capped at 100% unless separately authorized."),
 
@@ -399,7 +428,7 @@ RESOLVED_IMPLEMENTATION_GAPS = [
     {"id":"GAP03","resolution":"Currency: 10,000 RUB, CNYRUBF only, 10x, 35% hard DD, weekend carry."},
     {"id":"GAP04","resolution":"CanonicalAdmissionEngine v2 owns production admission; legacy admission is non-authoritative."},
     {"id":"GAP05","resolution":"Objective policy is canonical."},
-    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, 1.1x base buffer, CNYRUBF entry multiple 1.1x and default 2.0x for other assets; the 0.19% floor remains."},
+    {"id":"GAP06","resolution":"Costs are canonical: 0.04% commission, 0.04% slippage, one 1.1x cost buffer."},
     {"id":"GAP07","resolution":"Cost module reads CTC directly."},
     {"id":"GAP08","resolution":"External knowledge remains shadow-first and independently validated."},
     {"id":"GAP09","resolution":"Runtime binding is import-order independent."},
@@ -429,6 +458,8 @@ def validate_constitution():
         COST_POLICY["commission_rate_per_side"] + COST_POLICY["slippage_rate_per_side"]
     ):
         raise ValueError("cost policy arithmetic mismatch")
+    if COST_POLICY["entry_cost_multiple"] != COST_POLICY["cost_buffer_multiple"]:
+        raise ValueError("entry cost buffer differs from the owner-approved canonical buffer")
     if len(CANONICAL_RULES) != 60:
         raise ValueError("expected 60 canonical rules")
     if tuple(PORTFOLIO_POLICIES) != PORTFOLIO_ORDER:

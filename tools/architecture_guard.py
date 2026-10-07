@@ -98,8 +98,15 @@ def _canonical_static_contract():
 
     if "V90_CANONICAL_PORTFOLIOS=tuple(VR.PORTFOLIOS)" not in intelligence:
         failures.append("main service does not consume canonical release portfolio registry")
-    if "policies={name:dict(VP.POLICIES[name]) for name in V90_CANONICAL_PORTFOLIOS}" not in intelligence:
-        failures.append("main service still duplicates portfolio policies")
+    initializer = next((node for node in ast.parse(intelligence).body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_v90r24_ensure_canonical_portfolios"), None)
+    initializer_source = ast.get_source_segment(intelligence, initializer) if initializer else ""
+    if "VP.ensure_schema(pg_connect)" not in initializer_source:
+        failures.append("main service bypasses canonical portfolio policy initialization")
+    if any(statement in initializer_source.upper() for statement in
+           ("INSERT INTO PAPER_PORTFOLIOS", "UPDATE PAPER_PORTFOLIOS")):
+        failures.append("main service duplicates canonical portfolio policy writes")
 
     if Path("veritas_start.py").exists():
         failures.append("legacy v72 source-rewrite launcher remains in production root")

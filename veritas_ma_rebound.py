@@ -95,6 +95,7 @@ def _daily_level(snapshot, period, sign, policy, at):
         return None, "MA_FLAT_REPEATED_CROSSES"
     return {"value":value, "atr":atr, "period":period, "period_evidence":deepcopy(pe),
             "known_at":snapshot.get("known_at"), "daily_asof":snapshot.get("daily_asof"),
+            "asof_basis":snapshot.get("daily_asof_basis", "NATIVE_INTERVAL_END"),
             "valid_until":valid_until,
             "provenance":deepcopy(snapshot.get("provenance") or {})}, None
 
@@ -123,6 +124,7 @@ def _make_event(ep, bar, prior, atr, atr_known, timeframe, asset, source, risk_p
     proof = {
         "period":level["period"], "ma_value":level["value"], "daily_atr":level["atr"],
         "daily_known_at":level["known_at"], "daily_asof":level["daily_asof"],
+        "daily_asof_basis":level["asof_basis"],
         "daily_valid_until":level["valid_until"],
         "daily_provenance":deepcopy(level["provenance"]),
         "period_evidence":deepcopy(level["period_evidence"]),
@@ -161,6 +163,8 @@ def validate_event(event, source_identity=None):
     if not isinstance(event, dict):
         return fail
     e, proof = event, event.get("ma_proof") or {}
+    if not isinstance(proof, dict):
+        return fail
     try:
         p, risk = _policy(proof.get("policy")), TS._policy(e.get("policy"))
         tf = e["timeframe"]
@@ -176,6 +180,8 @@ def validate_event(event, source_identity=None):
         if source_identity is not None and not TS._same_source(source_identity, source):
             return fail
         dp, pe = proof["daily_provenance"], proof["period_evidence"]
+        if not isinstance(dp, dict) or not isinstance(pe, dict):
+            return fail
         if (not TS._same_source(source, dp.get("source_identity")) or not dp.get("sha256")
                 or proof["period"] not in p["periods"] or pe.get("status") != "OK"
                 or pe.get("sample_count") != proof["period"] or pe.get("value") != proof["ma_value"]):
@@ -197,8 +203,19 @@ def validate_event(event, source_identity=None):
         if signal != opening + TS.timeframe_seconds(tf):
             return fail
         if (available != e.get("level_available_at") or touch != e.get("trigger_pivot_at")
-                or TS.timestamp(dp.get("last_closed_at")) != asof
                 or TS.timestamp(pe.get("window_end")) is None or pe["window_end"] > asof):
+            return fail
+        if str(source["key"]).startswith("PROFINANCE:"):
+            # A native date label is an index, not a verified session close.
+            # Daily proof was first observed before this episode's touch.
+            import veritas_daily_averages as DA
+            if (proof.get("daily_asof_basis") != "PROVIDER_DATE_LABEL_ONLY"
+                    or TS.timestamp(dp.get("nominal_last_period_end")) != asof
+                    or dp.get("last_closed_at") is not None
+                    or dp.get("verified_close_at") is not None
+                    or not DA.validate_provenance(dp, source, known)):
+                return fail
+        elif TS.timestamp(dp.get("last_closed_at")) != asof:
             return fail
         if (not 1 <= proof["episode_bars"] <= p["max_episode_bars"]
                 or not 0 < opening - touch <= p["max_episode_bars"] * TS.timeframe_seconds(tf)
@@ -219,7 +236,8 @@ def validate_event(event, source_identity=None):
         if abs(slope) <= p["flat_slope_atr"] and crosses >= p["max_flat_crossings_10d"]:
             return fail
         approach = proof["approach_bars"]
-        if len(approach) != p["rearm_bars"]:
+        if (not isinstance(approach, (list, tuple)) or len(approach) != p["rearm_bars"]
+                or any(not isinstance(bar, dict) for bar in approach)):
             return fail
         ats = [TS.timestamp(b.get("ts")) for b in approach]
         if any(t is None for t in ats) or ats != sorted(set(ats)):
@@ -244,7 +262,7 @@ def validate_event(event, source_identity=None):
             return fail
         if e.get("event_id") != _event_id(e["asset"], tf, source, proof["period"], sign, touch, signal):
             return fail
-    except (KeyError, ValueError, TypeError, OverflowError):
+    except (AttributeError, KeyError, ValueError, TypeError, OverflowError):
         return fail
     return {"eligible":True, "reason":"MA_REBOUND_PROVENANCE_READY"}
 

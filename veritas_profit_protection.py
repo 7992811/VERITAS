@@ -96,11 +96,13 @@ def evaluate(z, accounting, *, stop=None, price=None, nav=None, now=None, commis
     return finish()
 
 
-def load_accounts(c, ids, include_entry_notional=False):
+def load_accounts(c, ids, include_entry_notional=False, *, include_payload=True):
+    """Keep display evidence by default; cost checks can request only accounts."""
     notional_sql = ''' , (SELECT SUM(o.notional_rub) FROM paper_orders o
                          WHERE o.trade_id=t.trade_id AND o.side IN ('BUY','SELL_SHORT'))
                          AS entry_notional_rub''' if include_entry_notional else ''
-    rows = c.execute('''SELECT t.trade_id,t.status,t.opened_at,t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.payload,
+    payload_sql = ',t.payload' if include_payload else ''
+    rows = c.execute('''SELECT t.trade_id,t.status,t.opened_at,t.gross_pnl_rub,t.fees_rub,t.funding_rub''' + payload_sql + ''',
                p.last_mark_at,p.last_ruonia,
                p.initial_nav_rub+p.realized_pnl_rub-p.fees_rub-p.funding_rub+
                COALESCE((SELECT SUM((CASE WHEN z.direction='LONG' THEN 1 ELSE -1 END)*
@@ -113,7 +115,7 @@ def load_accounts(c, ids, include_entry_notional=False):
 
 def assess(c, z, **kwargs):
     tid = z.get('active_trade_id')
-    a = load_accounts(c, [tid]).get(tid) if tid else None
+    a = load_accounts(c, [tid], include_payload=False).get(tid) if tid else None
     if a and kwargs.get('nav') is None and kwargs.get('price') is not None:
         values = [number(x) for x in (a.get('portfolio_nav_rub'), z.get('units'), z.get('last_price'), kwargs['price'])]
         if all(x is not None for x in values):
@@ -128,7 +130,7 @@ def refresh(c, name=None, now=None, commission=VC.COMMISSION_RATE):
                      (name,) if name else ()).fetchall()
     if not rows:
         return
-    accounts = load_accounts(c, [z['active_trade_id'] for z in rows])
+    accounts = load_accounts(c, [z['active_trade_id'] for z in rows], include_payload=False)
     for item in rows:
         z = dict(item)
         patch = evaluate(z, accounts.get(z['active_trade_id']), now=now, commission=commission)

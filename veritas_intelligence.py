@@ -1,13 +1,21 @@
 import csv, glob, hashlib, io, json, math, os, re, sqlite3, threading, time, traceback, uuid, gc, xml.etree.ElementTree as ET
 import html as _html
 import re
+import veritas_learning_exports as VLE
 from datetime import datetime, timezone, timedelta
+from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 import httpx
 import veritas_execution as VX
+_V90_QUOTE_IDENTITY_FIELDS = (
+    'source','primary_source','contract_id','raw_label','raw_ticker','instrument_id',
+    'provider_ticker_verified','provider_series_verified','source_pin_version',
+    'provider_ticker','provider_instrument_id','source_pin_status','contract_identity_status',
+    'exact_contract_verified','price_field','price_series_type','verification_mode')
 import veritas_position_guard as VPG
+import veritas_position_thesis as VPT
 import veritas_currency_notifications as VCN
 from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
@@ -26,6 +34,8 @@ except Exception:
 import veritas_release as VR
 import veritas_timeframe_data as TFD
 import veritas_timeframe_policy as TFP
+import veritas_cycle_schedule as VCS
+import veritas_history_diagnostics as VHD
 import veritas_user_teaching as VUT
 VERSION = VR.PRODUCT_VERSION
 try:
@@ -487,6 +497,7 @@ experience_cache = {'at':0.0,'value':None}
 experience_cache_lock = threading.Lock()
 trend_case_cache = {'at':0.0,'value':None}
 trend_case_cache_lock = threading.Lock()
+trend_case_refresh_lock = threading.Lock()
 structure_analog_cache = {'at':0.0,'limit':0,'value':None}
 structure_analog_cache_lock = threading.Lock()
 cycle_telemetry_history = []
@@ -939,12 +950,19 @@ def memory_guard(phase='runtime'):
     return ok
 
 
+@contextmanager
 def db():
     c = sqlite3.connect(DB_PATH, timeout=30)
-    c.row_factory = sqlite3.Row
-    c.execute('PRAGMA journal_mode=WAL')
-    c.execute('PRAGMA synchronous=NORMAL')
-    return c
+    try:
+        c.row_factory = sqlite3.Row
+        c.execute('PRAGMA journal_mode=WAL')
+        c.execute('PRAGMA synchronous=NORMAL')
+        # sqlite3.Connection's own context commits/rolls back, but does not
+        # close the connection or release its page cache and native resources.
+        with c:
+            yield c
+    finally:
+        c.close()
 
 
 def _v90_pg_configured():
@@ -2192,60 +2210,91 @@ def trend_case_learning_board(limit=500):
         z=trend_case_cache.get('value')
         if z and time.time()-float(trend_case_cache.get('at') or 0)<ANALYTICS_CACHE_SECONDS:
             return z
-    with pg_connect() as c:
-        rows=c.execute("""
-          SELECT d.entity_key,d.asset,d.horizon,d.event_ts,d.payload AS dp,o.payload AS outcome_payload
-          FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-          WHERE d.event_type='decision'
-          ORDER BY d.asset,d.horizon,d.event_ts ASC
-        """).fetchall()
-    now_dt=datetime.now(timezone.utc); groups={}; episodes=[]; last_selected={}
-    gap_s={'5m':300,'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
-    for r in rows:
-        dp=r['dp'] if isinstance(r['dp'],dict) else json.loads(r['dp']); ti=dp.get('trend_impulse') or (dp.get('features') or {}).get('trend_impulse') or {}
-        phase=str(ti.get('phase') or 'NONE'); direction=str(ti.get('direction') or 'NO_TRADE')
-        if phase=='NONE' or direction not in ('LONG','SHORT'): continue
-        ts=r['event_ts']
-        if isinstance(ts,str): ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
-        if ts.tzinfo is None: ts=ts.replace(tzinfo=timezone.utc)
-        k=(r['asset'],r['horizon'],phase,direction)
-        prev=last_selected.get(k)
-        if prev is not None and (ts-prev).total_seconds()<=gap_s.get(r['horizon'],86400):
-            continue
-        last_selected[k]=ts
-        op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload']); fr=op.get('forward_return')
-        if fr is None: continue
-        fr=float(fr); sr=fr if direction=='LONG' else -fr
-        age=max(0.0,(now_dt-ts).total_seconds()/86400.0); w=math.exp(-math.log(2.0)*age/TREND_CASE_HALF_LIFE_DAYS)
-        b=groups.setdefault(k,{'n':0,'w':0.0,'wh':0.0,'wr':0.0,'missed':0,'mfe':[],'mae':[]})
-        b['n']+=1; b['w']+=w; b['wh']+=w*(1.0 if sr>0 else 0.0); b['wr']+=w*sr
-        research_dec=str(dp.get('research_decision') or dp.get('decision') or 'NO_TRADE')
-        if research_dec=='NO_TRADE' and sr>0: b['missed']+=1
-        if op.get('mfe') is not None: b['mfe'].append(float(op['mfe']))
-        if op.get('mae') is not None: b['mae'].append(float(op['mae']))
-        if len(episodes)<40:
-            episodes.append({'asset':r['asset'],'horizon':r['horizon'],'phase':phase,'direction':direction,'decision':research_dec,
-                             'signed_return':sr,'entry_quality':ti.get('entry_quality'),'onset_score':ti.get('onset_score'),'impulse_score':ti.get('impulse_score')})
-    items=[]
-    for (asset,h,phase,direction),b in groups.items():
-        eff=b['w']; post=(b['wh']+5.0)/(eff+10.0) if eff>=0 else 0.5; avg=b['wr']/eff if eff else None
-        state='BUILDING' if b['n']<TREND_CASE_MIN_N else 'SUPPORTED' if post>=0.54 and (avg or 0)>0 else 'WEAK' if post>=0.49 else 'DEGRADED'
-        items.append({'asset':asset,'horizon':h,'phase':phase,'direction':direction,'n':b['n'],'effective_n':eff,
-                      'posterior_continuation_rate':post,'decayed_avg_signed_return':avg,'missed_by_champion':b['missed'],
-                      'avg_mfe':sum(b['mfe'])/len(b['mfe']) if b['mfe'] else None,
-                      'avg_mae':sum(b['mae'])/len(b['mae']) if b['mae'] else None,
-                      'learning_state':state,'automatic_weight_change':False if b['n']<TREND_CASE_MIN_N else True})
-    items.sort(key=lambda x:(x['learning_state']!='SUPPORTED',-x['n']))
-    out={'status':'ok','items':items,'recent_episodes':episodes[-40:],'bootstrap_lessons':BOOTSTRAP_CASE_LESSONS,
-         'bootstrap_direct_weight':0.0,'min_n_for_statistical_learning':TREND_CASE_MIN_N,
-         'policy':'current case changes architecture immediately; statistical confidence changes only after independent repeated phase episodes'}
-    with trend_case_cache_lock:
-        trend_case_cache['at']=time.time(); trend_case_cache['value']=out
-    return out
+    # The cycle and API can request the same expired history simultaneously.
+    # Keep cache reads independent while allowing only one refresh to build.
+    with trend_case_refresh_lock:
+        with trend_case_cache_lock:
+            z=trend_case_cache.get('value')
+            if z and time.time()-float(trend_case_cache.get('at') or 0)<ANALYTICS_CACHE_SECONDS:
+                return z
+        from veritas_learning_memory import JsonbProjection
+        projection=JsonbProjection()
+        d=projection.fields('d.payload',('research_decision','decision','trend_impulse','features'))
+        o=projection.fields('o.payload',('forward_return','mfe','mae'))
+        features=projection.fields(d['features'],('trend_impulse',))
+        def impulse(expr):
+            return _v90_jsonb_project_object(expr,projection.fields(expr,
+                ('phase','direction','entry_quality','onset_score','impulse_score')))
+        dp_sql=_v90_jsonb_project_object('d.payload',{
+            'research_decision':d['research_decision'],'decision':d['decision'],
+            'trend_impulse':impulse(d['trend_impulse']),
+            'features':_v90_jsonb_project_object(d['features'],{
+                'trend_impulse':impulse(features['trend_impulse'])})})
+        op_sql=_v90_jsonb_project_object('o.payload',o)
+        # Preserve the complete ordered history. A server cursor bounds both
+        # decoded Python rows and libpq results; autocommit needs a transaction.
+        with pg_connect() as c:
+            with c.transaction():
+                with c.cursor(name='veritas_trend_cases') as rows:
+                    rows.itersize=64
+                    rows.execute(f"""
+                      SELECT d.entity_key,d.asset,d.horizon,d.event_ts,{dp_sql} AS dp,{op_sql} AS outcome_payload
+                      FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                      {projection.joins_sql}
+                      WHERE d.event_type='decision'
+                      ORDER BY d.asset,d.horizon,d.event_ts ASC
+                    """)
+                    now_dt=datetime.now(timezone.utc); groups={}; episodes=[]; last_selected={}
+                    gap_s={'5m':300,'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
+                    for r in rows:
+                        dp=r['dp'] if isinstance(r['dp'],dict) else json.loads(r['dp']); ti=dp.get('trend_impulse') or (dp.get('features') or {}).get('trend_impulse') or {}
+                        phase=str(ti.get('phase') or 'NONE'); direction=str(ti.get('direction') or 'NO_TRADE')
+                        if phase=='NONE' or direction not in ('LONG','SHORT'): continue
+                        ts=r['event_ts']
+                        if isinstance(ts,str): ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
+                        if ts.tzinfo is None: ts=ts.replace(tzinfo=timezone.utc)
+                        k=(r['asset'],r['horizon'],phase,direction)
+                        prev=last_selected.get(k)
+                        if prev is not None and (ts-prev).total_seconds()<=gap_s.get(r['horizon'],86400):
+                            continue
+                        last_selected[k]=ts
+                        op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload']); fr=op.get('forward_return')
+                        if fr is None: continue
+                        fr=float(fr); sr=fr if direction=='LONG' else -fr
+                        age=max(0.0,(now_dt-ts).total_seconds()/86400.0); w=math.exp(-math.log(2.0)*age/TREND_CASE_HALF_LIFE_DAYS)
+                        b=groups.setdefault(k,{'n':0,'w':0.0,'wh':0.0,'wr':0.0,'missed':0,'mfe':[],'mae':[]})
+                        b['n']+=1; b['w']+=w; b['wh']+=w*(1.0 if sr>0 else 0.0); b['wr']+=w*sr
+                        research_dec=str(dp.get('research_decision') or dp.get('decision') or 'NO_TRADE')
+                        if research_dec=='NO_TRADE' and sr>0: b['missed']+=1
+                        if op.get('mfe') is not None: b['mfe'].append(float(op['mfe']))
+                        if op.get('mae') is not None: b['mae'].append(float(op['mae']))
+                        if len(episodes)<40:
+                            episodes.append({'asset':r['asset'],'horizon':r['horizon'],'phase':phase,'direction':direction,'decision':research_dec,
+                                             'signed_return':sr,'entry_quality':ti.get('entry_quality'),'onset_score':ti.get('onset_score'),'impulse_score':ti.get('impulse_score')})
+        items=[]
+        for (asset,h,phase,direction),b in groups.items():
+            eff=b['w']; post=(b['wh']+5.0)/(eff+10.0) if eff>=0 else 0.5; avg=b['wr']/eff if eff else None
+            state='BUILDING' if b['n']<TREND_CASE_MIN_N else 'SUPPORTED' if post>=0.54 and (avg or 0)>0 else 'WEAK' if post>=0.49 else 'DEGRADED'
+            items.append({'asset':asset,'horizon':h,'phase':phase,'direction':direction,'n':b['n'],'effective_n':eff,
+                          'posterior_continuation_rate':post,'decayed_avg_signed_return':avg,'missed_by_champion':b['missed'],
+                          'avg_mfe':sum(b['mfe'])/len(b['mfe']) if b['mfe'] else None,
+                          'avg_mae':sum(b['mae'])/len(b['mae']) if b['mae'] else None,
+                          'learning_state':state,'automatic_weight_change':False if b['n']<TREND_CASE_MIN_N else True})
+        items.sort(key=lambda x:(x['learning_state']!='SUPPORTED',-x['n']))
+        out={'status':'ok','items':items,'recent_episodes':episodes[-40:],'bootstrap_lessons':BOOTSTRAP_CASE_LESSONS,
+             'bootstrap_direct_weight':0.0,'min_n_for_statistical_learning':TREND_CASE_MIN_N,
+             'policy':'current case changes architecture immediately; statistical confidence changes only after independent repeated phase episodes'}
+        with trend_case_cache_lock:
+            trend_case_cache['at']=time.time(); trend_case_cache['value']=out
+        return out
 
 def trend_case_multiplier(asset,horizon,phase,direction,board=None):
     if phase=='NONE' or direction not in ('LONG','SHORT'): return 1.0
-    b=board or trend_case_learning_board(500)
+    # Full-history aggregation must never run on the market-decision thread.
+    # Retain the last completed statistical penalty while one refresh runs.
+    # A missing cold-start sample has the same neutral prior as no matching row.
+    b=board if board is not None else _v90r63_context_cached_or_background(
+        'trend_cases',ANALYTICS_CACHE_SECONDS,{'status':'background_pending','items':[]})
     row=next((x for x in b.get('items',[]) if x.get('asset')==asset and x.get('horizon')==horizon and x.get('phase')==phase and x.get('direction')==direction),None)
     if not row or int(row.get('n') or 0)<TREND_CASE_MIN_N: return 1.0
     p=float(row.get('posterior_continuation_rate') or 0.5); ar=float(row.get('decayed_avg_signed_return') or 0.0)
@@ -4838,53 +4887,44 @@ def pg_agent_performance():
     """Durable agent learning with regime conditioning and exponential time decay."""
     if not pg_enabled():
         return performance_rows()
-    with pg_connect() as c:
-        rows=c.execute("""WITH recent_decisions AS (
-                            SELECT entity_key,event_ts,asset,horizon,payload
-                            FROM ledger_events WHERE event_type='decision'
-                            ORDER BY event_ts DESC LIMIT %s
-                          )
-                          SELECT d.asset,d.horizon,d.event_ts AS decision_ts,
-                                 d.payload AS decision_payload,o.event_ts AS outcome_ts,o.payload AS outcome_payload
-                          FROM recent_decisions d
-                          JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-                          ORDER BY d.event_ts ASC""",(LIVE_LEARNING_MAX_EPISODES,)).fetchall()
+    from veritas_learning_memory import agent_performance_rows
     buckets={}
-    now_dt=datetime.now(timezone.utc)
-    half=max(1.0,AGENT_DECAY_HALF_LIFE_DAYS)
-    for r in rows:
-        dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload'])
-        op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
-        fr=op.get('forward_return')
-        if fr is None:
-            continue
-        ts=r.get('outcome_ts') or r.get('decision_ts')
-        if isinstance(ts,str):
-            ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
-        if ts is None:
-            ts=now_dt
-        if ts.tzinfo is None:
-            ts=ts.replace(tzinfo=timezone.utc)
-        age_days=max(0.0,(now_dt-ts).total_seconds()/86400.0)
-        w=math.exp(-math.log(2.0)*age_days/half)
-        fr=float(fr); regime=dp.get('regime') or '*'
-        for av in dp.get('agents') or []:
-            direction=av.get('direction')
-            if direction not in ('LONG','SHORT'):
+    with agent_performance_rows(pg_connect,LIVE_LEARNING_MAX_EPISODES) as rows:
+        now_dt=datetime.now(timezone.utc)
+        half=max(1.0,AGENT_DECAY_HALF_LIFE_DAYS)
+        for r in rows:
+            dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload'])
+            op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
+            fr=op.get('forward_return')
+            if fr is None:
                 continue
-            sr=fr if direction=='LONG' else -fr
-            hit=1.0 if sr>0 else 0.0
-            for rg in (regime,'*'):
-                key=(av.get('agent'),r['asset'],r['horizon'],rg)
-                b=buckets.setdefault(key,{'n':0,'hits':0,'signed':[],'w':0.0,'wh':0.0,'wr':0.0,
-                                          'recent_n':0,'recent_hits':0,'recent_ret':0.0,
-                                          'prior_n':0,'prior_hits':0,'prior_ret':0.0})
-                b['n']+=1; b['hits']+=int(hit); b['signed'].append(sr)
-                b['w']+=w; b['wh']+=w*hit; b['wr']+=w*sr
-                if age_days<=30:
-                    b['recent_n']+=1; b['recent_hits']+=int(hit); b['recent_ret']+=sr
-                else:
-                    b['prior_n']+=1; b['prior_hits']+=int(hit); b['prior_ret']+=sr
+            ts=r.get('outcome_ts') or r.get('decision_ts')
+            if isinstance(ts,str):
+                ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
+            if ts is None:
+                ts=now_dt
+            if ts.tzinfo is None:
+                ts=ts.replace(tzinfo=timezone.utc)
+            age_days=max(0.0,(now_dt-ts).total_seconds()/86400.0)
+            w=math.exp(-math.log(2.0)*age_days/half)
+            fr=float(fr); regime=dp.get('regime') or '*'
+            for av in dp.get('agents') or []:
+                direction=av.get('direction')
+                if direction not in ('LONG','SHORT'):
+                    continue
+                sr=fr if direction=='LONG' else -fr
+                hit=1.0 if sr>0 else 0.0
+                for rg in (regime,'*'):
+                    key=(av.get('agent'),r['asset'],r['horizon'],rg)
+                    b=buckets.setdefault(key,{'n':0,'hits':0,'signed':[],'w':0.0,'wh':0.0,'wr':0.0,
+                                              'recent_n':0,'recent_hits':0,'recent_ret':0.0,
+                                              'prior_n':0,'prior_hits':0,'prior_ret':0.0})
+                    b['n']+=1; b['hits']+=int(hit); b['signed'].append(sr)
+                    b['w']+=w; b['wh']+=w*hit; b['wr']+=w*sr
+                    if age_days<=30:
+                        b['recent_n']+=1; b['recent_hits']+=int(hit); b['recent_ret']+=sr
+                    else:
+                        b['prior_n']+=1; b['prior_hits']+=int(hit); b['prior_ret']+=sr
     out=[]
     for (a,asset,h,rg),b in sorted(buckets.items()):
         n=b['n']; hr=b['hits']/n if n else None
@@ -4937,28 +4977,21 @@ def pg_calibration_map():
     """Empirical calibration with Bayesian shrinkage and Wilson uncertainty bands."""
     if not pg_enabled():
         return []
-    with pg_connect() as c:
-        rows=c.execute("""WITH recent_decisions AS (
-                            SELECT entity_key,event_ts,asset,horizon,payload
-                            FROM ledger_events WHERE event_type='decision'
-                            ORDER BY event_ts DESC LIMIT %s
-                          )
-                          SELECT d.asset,d.horizon,d.payload AS decision_payload,o.payload AS outcome_payload
-                          FROM recent_decisions d
-                          JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'""",(LIVE_LEARNING_MAX_EPISODES,)).fetchall()
+    from veritas_learning_memory import calibration_rows
     b={}
-    for r in rows:
-        dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload'])
-        op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
-        dec=dp.get('decision'); fr=op.get('forward_return'); conf=dp.get('confidence')
-        if dec not in ('LONG','SHORT') or fr is None or conf is None:
-            continue
-        bucket=min(9,max(0,int(float(conf)*10)))
-        key=(r['asset'],r['horizon'],bucket)
-        x=b.setdefault(key,{'n':0,'hits':0,'brier':[],'rawp':[]})
-        hit=1 if (float(fr)>0 if dec=='LONG' else float(fr)<0) else 0
-        rawp=min(0.95,max(0.50,0.50+float(conf)))
-        x['n']+=1; x['hits']+=hit; x['brier'].append((rawp-hit)**2); x['rawp'].append(rawp)
+    with calibration_rows(pg_connect,LIVE_LEARNING_MAX_EPISODES) as rows:
+        for r in rows:
+            dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload'])
+            op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
+            dec=dp.get('decision'); fr=op.get('forward_return'); conf=dp.get('confidence')
+            if dec not in ('LONG','SHORT') or fr is None or conf is None:
+                continue
+            bucket=min(9,max(0,int(float(conf)*10)))
+            key=(r['asset'],r['horizon'],bucket)
+            x=b.setdefault(key,{'n':0,'hits':0,'brier':[],'rawp':[]})
+            hit=1 if (float(fr)>0 if dec=='LONG' else float(fr)<0) else 0
+            rawp=min(0.95,max(0.50,0.50+float(conf)))
+            x['n']+=1; x['hits']+=hit; x['brier'].append((rawp-hit)**2); x['rawp'].append(rawp)
     out=[]
     z=1.96
     for (asset,h,bucket),x in sorted(b.items()):
@@ -5061,7 +5094,15 @@ def research_activation_gate():
     if not storage.get('ok'):
         reasons.append('durable_storage_not_ok')
     try:
-        bt=backtest_status().get('latest_run') or {}
+        # The gate needs only the latest run's status and method. Loading two
+        # historical ranking boards here used to block every active macro vote.
+        bt={}
+        if pg_enabled():
+            with pg_connect() as c:
+                latest=c.execute("""SELECT status,jsonb_build_object(
+                    'method_version',details->'method_version') AS details
+                    FROM backtest_runs ORDER BY started_at DESC LIMIT 1""").fetchone()
+                bt=dict(latest or {})
         details=bt.get('details') if isinstance(bt.get('details'),dict) else {}
         if bt.get('status')!='ok':
             reasons.append('backtest_not_ok')
@@ -6636,17 +6677,21 @@ def _v90r61_calibration_rows():
     return cached
 
 _v90r63_context_refresh_lock=threading.Lock()
-_v90r63_context_refresh_inflight={'clock':False,'analogs':False}
+_v90r63_context_refresh_inflight={'clock':False,'analogs':False,'trend_cases':False}
 
 def _v90r63_context_refresh(key):
+    started=time.monotonic()
     try:
         if key=='clock':
             val=source_clock_gate()
+        elif key=='trend_cases':
+            val=trend_case_learning_board(500)
         else:
             val=structure_analog_board(1200)
         with _v90r61_predecision_lock:
             _v90r61_predecision_cache[key]=(time.time(),val)
-        emit('r63_context_refresh',context=key,status='OK')
+        emit('r63_context_refresh',context=key,status='OK',
+             duration_seconds=round(time.monotonic()-started,3))
     except Exception as ex:
         emit('r63_context_refresh',context=key,status='ERROR',
              detail=f'{type(ex).__name__}: {ex}')
@@ -6768,7 +6813,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     processing_horizons=selected_horizons
     _reuse_fast5m_decisions=bool(cycle_mode=='FULL' and '5m' in selected_horizons
         and _v90_last_fast5m_monotonic>0
-        and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
+        and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS
+        and VCS.can_reuse_fast(last_cycle.get('summary'),[a for a,_ in ASSETS.values()],time.time()))
     if _reuse_fast5m_decisions:
         _slow=tuple(h for h in selected_horizons if h not in ('1m','5m'))
         if _slow:
@@ -6887,7 +6933,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                  execution_eligible=asset_execution_gate.get('eligible'),
                  paper_execution_reason=asset_execution_gate.get('paper_execution_reason'),
                  paper_source_policy=asset_execution_gate.get('source_policy'),minimum_sources=1)
+            _v90_memory_checkpoint('market_ready',asset)
             asset_phase_t0=time.time(); causal_shadow=asset_causal_shadow(asset); event_shadow=event_shadow_score(asset); asset_timings[asset]['context']=time.time()-asset_phase_t0
+            _v90_memory_checkpoint('context_ready',asset)
             common_structure=None
             asset_phase_t0=time.time()
             try:
@@ -6900,10 +6948,13 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             except Exception as ex:
                 emit('common_structure_cache_error',asset=asset,error=f'{type(ex).__name__}: {ex}')
             asset_timings[asset]['common_features']=time.time()-asset_phase_t0
+            _v90_memory_checkpoint('structure_ready',asset)
             for horizon in processing_horizons:
                 horizon_wall_t0=time.time()
                 created_at = now()
                 f = features(raw, horizon, common_structure)
+                if horizon==processing_horizons[0]:
+                    _v90_memory_checkpoint('features_ready',asset,horizon)
                 if common_structure is not None: common_feature_reuses += 1
                 kmatches = match_knowledge(asset, horizon, f, deriv)
                 knowledge_arbitration = arbitrate_knowledge_conflicts(kmatches,asset,horizon)
@@ -6912,6 +6963,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 orth_evidence = orthogonal_knowledge_summary(kmatches)
                 knowledge_adjustment = dict(validated_knowledge_adjustment(kmatches,asset,horizon,f['regime']))
                 experience_prior=experience_direction_prior(asset,horizon,f)
+                if horizon==processing_horizons[0]:
+                    _v90_memory_checkpoint('knowledge_ready',asset,horizon)
                 base_knowledge_score=float(knowledge_adjustment.get('score',0.0) or 0.0)
                 experience_prior_score=float(experience_prior.get('score_adjustment') or 0.0)
                 combined_adjustment=clip(base_knowledge_score+experience_prior_score,-0.05,0.05)
@@ -6919,6 +6972,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 knowledge_adjustment['experience_prior']=experience_prior
                 knowledge_adjustment['score_with_experience']=combined_adjustment
                 agents = agent_views(f, horizon, deriv, asset)
+                if horizon==processing_horizons[0]:
+                    _v90_memory_checkpoint('agents_ready',asset,horizon)
                 research_dec, conf, size, score, used_weights, impulse_overlay = committee(
                     agents, asset, horizon, perf, f['regime'], combined_adjustment)
                 research_challenger=challenger_committee(
@@ -7208,6 +7263,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 except Exception as ex:
                     emit('counterfactual_lab_error',asset=asset,horizon=horizon,error=f'{type(ex).__name__}: {ex}')
                 entity_key = f'{cycle_id}:{asset}:{horizon}'
+                if horizon==processing_horizons[0]:
+                    _v90_memory_checkpoint('decision_ready',asset,horizon)
                 with db() as c:
                     cur = c.execute('INSERT INTO market_states(ts,asset,horizon,features,source_times) VALUES(?,?,?,?,?)',
                                     (created_at, asset, horizon, json.dumps(f,default=str), json.dumps({
@@ -7257,7 +7314,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                         errors.append(err)
                         emit('persistence_error', **err)
                 made += 1
-                z = {'asset': asset, 'horizon': horizon, 'decision': dec,
+                z = {**{key:raw[key] for key in _V90_QUOTE_IDENTITY_FIELDS if key in raw},'asset': asset, 'horizon': horizon, 'decision': dec,
                      'research_decision':research_dec,'confidence': round(conf, 4),'price':float(f.get('price') or 0.0),
                      'score': round(score, 4), 'regime': f['regime'], 'horizon_return':round(float(f.get('ret_h') or 0.0),6),
                      'realized_vol':round(float(f.get('rv') or 0.0),6),'knowledge_matches': len(kmatches),
@@ -7295,6 +7352,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'trend_onset_score':round(float((f.get('trend_impulse') or {}).get('onset_score') or 0),4),
                      'impulse_score':round(float((f.get('trend_impulse') or {}).get('impulse_score') or 0),4),
                      'entry_quality':trade_plan.get('entry_quality') or (f.get('trend_impulse') or {}).get('entry_quality'),'impulse_overlay':impulse_overlay,
+                     'structure_history_status':VHD.summary(raw,horizon,f.get('timeframe_entry_context')),
                      'intraday_structure':f.get('intraday_structure') or {},'trade_plan':trade_plan,'tradeability':tradeability,'decision_stage':decision_stage,
                      'positive_trade_probability':tradeability.get('positive_trade_probability'),'analog_effective_n':tradeability.get('effective_n'),
                      'expected_move_pct':round(float(trade_plan.get('expected_move_pct') or 0.0),6),
@@ -7316,6 +7374,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 h_elapsed=time.time()-horizon_wall_t0
                 horizon_timings[horizon]=horizon_timings.get(horizon,0.0)+h_elapsed
                 asset_timings[asset]['horizons']+=h_elapsed
+                f=v84_row=z=trade_plan=cur=dcur=None
+                _v90_trim_memory('horizon_'+str(asset)+'_'+str(horizon),force=True,preserve_active_cycle=True)
             asset_timings[asset]['total']=(asset_timings[asset]['market_fetch']+asset_timings[asset]['context']+
                                                 asset_timings[asset]['common_features']+asset_timings[asset]['horizons'])
         except Exception as e:
@@ -7329,6 +7389,11 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 market_bundles.pop(asset,None)
             except Exception:
                 pass
+            # Drop local ownership BEFORE GC/malloc_trim. The next provider
+            # fetch must not overlap the previous asset's full history graph.
+            # Assignment preserves objects still owned by decisions or caches.
+            bundle=raw=deriv=common_structure=f=v84_row=z=trade_plan=None
+            cur=dcur=None
             _v90_trim_memory('asset_'+str(asset),force=False)
 
     # R18 continuity: every lane begins from the last valid matrix.
@@ -7346,14 +7411,16 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     for _k,_x in list(_merged.items()):
         if _k not in _fresh_keys:
             _x=dict(_x)
-            _reuse_fast5m=bool(cycle_mode=='FULL' and _k[1] in ('1m','5m') and _v90_last_fast5m_monotonic>0
-                               and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
+            _reuse_fast5m=bool(_reuse_fast5m_decisions and _k[1] in ('1m','5m')
+                               and VCS.can_reuse_fast(_carry,[_k[0]],time.time()))
             _x['snapshot_stale']=not _reuse_fast5m
             if _reuse_fast5m:
                 _x['snapshot_reused_from_fast5m']=True
             _merged[_k]=_x
     summary=[_merged[k] for k in sorted(_merged,key=lambda z:(DISPLAY_ASSETS.index(z[0]) if z[0] in DISPLAY_ASSETS else 999,
                                                             ('1m','5m','1h','4h','1d','3d','7d').index(z[1]) if z[1] in ('1m','5m','1h','4h','1d','3d','7d') else 999))]
+    import veritas_breakout_runtime as VBR
+    summary=VBR.publish_summary(summary)
     storage = pg_storage_status()
     expected = len(ASSETS)*len(processing_horizons)
     if made == expected and (not pg_enabled() or storage.get('ok')):
@@ -7375,16 +7442,17 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     meta_cio=live_meta_cio_board(summary) if SERVICE_ROLE=='web' else meta_cio_board_from_summary(summary)
     meta_alerts=maybe_create_meta_alerts(meta_cio)
     meta_seconds=time.time()-meta_phase_t0
-    portfolio_autopilot={'status':'UNAVAILABLE','reason':'portfolio_module_not_loaded'}
+    portfolio_autopilot={'status':'UNAVAILABLE','reason':'portfolio_module_not_loaded'}; portfolio_phase_t0=time.monotonic()
     if VP is not None and pg_enabled():
         try:
             portfolio_autopilot=VP.step_all(
                 summary=summary, pg_connect=pg_connect, model_version=VERSION,
                 observed_at=now(), commission_rate=VX.VC.COMMISSION_RATE,
-                emit=lambda event, **kw: emit(event, **kw))
+                emit=_v90_emit_portfolio)
         except Exception as ex:
             portfolio_autopilot={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
             emit('portfolio_autopilot_error',error=portfolio_autopilot['error'],trace=traceback.format_exc(limit=12))
+    phase_seconds['portfolio_total']=time.monotonic()-portfolio_phase_t0
     if pg_enabled():
         for mx in meta_cio.get('items',[]):
             try:
@@ -7425,6 +7493,11 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
              'institutional_portfolio':institutional_portfolio_board(summary),
              'telemetry':telemetry,'knowledge': knowledge_summary(),'portfolio_autopilot':portfolio_autopilot}
     with lock:
+        state['summary']=VBR.publish_summary(state['summary'])
+        import veritas_structural_lifecycle as VSL
+        state['portfolio_autopilot']=VSL.merge_reports(state['portfolio_autopilot'],last_cycle.get('portfolio_autopilot'))
+        state['breakout_runtime']=VBR.snapshot()
+        _maintenance_request=_v90_background_maintenance.prepare(state) if cycle_mode=='FULL' else None
         last_cycle.clear(); last_cycle.update(state)
     if cycle_mode=='FAST_5M' and status in ('ok','degraded') and made:
         _v90_last_fast5m_monotonic=time.monotonic()
@@ -7433,26 +7506,15 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         market_bundles.clear()
     except Exception:
         pass
+    fresh_summary=_carry=_merged=_prev_summary=_x=portfolio_autopilot=state=None
+    perf=calibration_rows=analog_board=_market_future=_warm_knowledge=_warm_memory=None
+    v70_pretrade=institutional_signal=experience_decision=setup_memory=tradeability=knowledge_arbitration=knowledge_adjustment=kmatches=orth_evidence=None
     _v90_trim_memory('cycle_end',force=True)
     emit('cycle_complete', decisions_written=made, outcomes_written=outcomes, status=status,
          durable_storage=storage.get('ok', False),**telemetry)
-    # R37: overview snapshots are archival, not minute-level telemetry.
-    # Persist them only on the FULL cycle.
-    if pg_enabled() and cycle_mode=='FULL':
-        save_product_snapshot()
-    # Historical outcome downloads run after the decision snapshot and never delay 5m entries.
+    # Only the frozen scalar FULL matrix crosses into the bounded history lane.
     if cycle_mode=='FULL':
-        _v90_schedule_outcome_refresh('full_cycle_complete')
-        try:
-            _v90_daily_intelligence_metrics()
-        except Exception as _daily_intel_ex:
-            emit('v90_daily_intelligence_checkpoint_error',
-                 error=f'{type(_daily_intel_ex).__name__}: {_daily_intel_ex}')
-        try:
-            _v90r37_storage_retention()
-        except Exception as _ret_ex:
-            emit('v90_r37_storage_retention_error',
-                 error=f'{type(_ret_ex).__name__}: {_ret_ex}')
+        _v90_background_maintenance.submit(_maintenance_request)
         # Deep rule/event learning remains off the fast lane.
         if heavy_learning_due():
             maybe_schedule_heavy_learning('interval_due')
@@ -7461,44 +7523,8 @@ V90_FAST_5M_INTERVAL_SECONDS=max(20,int(os.getenv('VERITAS_FAST_1M_INTERVAL_SECO
 V90_FULL_CYCLE_INTERVAL_SECONDS=max(240,int(os.getenv('VERITAS_FULL_CYCLE_INTERVAL_SECONDS',str(INTERVAL))))
 
 def loop():
-    _start=time.monotonic()
-    next_fast=_start
-    next_full=_start+5.0
-    while True:
-        now_m=time.monotonic()
-        mode='IDLE'
-        try:
-            if now_m>=next_full:
-                mode='FULL'
-                _reuse=bool(_v90_last_fast5m_monotonic>0 and
-                            now_m-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
-                _full_horizons=tuple(h for h in HORIZONS if h not in ('1m','5m')) if _reuse else None
-                cycle(_full_horizons,'FULL')
-                base=now_m
-                next_full=base+V90_FULL_CYCLE_INTERVAL_SECONDS
-                if next_fast<=base:
-                    next_fast=base+V90_FAST_5M_INTERVAL_SECONDS
-            elif now_m>=next_fast:
-                mode='FAST_5M'
-                cycle(('1m','5m'),'FAST_5M')
-                while next_fast<=now_m:
-                    next_fast+=V90_FAST_5M_INTERVAL_SECONDS
-            else:
-                time.sleep(max(0.5,min(5.0,min(next_fast,next_full)-now_m)))
-                continue
-        except Exception as e:
-            err={'status':'error','at':now(),'version':VERSION,'cycle_mode':mode,
-                 'error':f'{type(e).__name__}: {e}'}
-            with lock:
-                if last_cycle.get('summary'):
-                    last_cycle['last_cycle_error']=err
-                else:
-                    last_cycle.clear(); last_cycle.update(err)
-            emit('cycle_error',cycle_mode=mode,error=err['error'],trace=traceback.format_exc(limit=3))
-            if mode=='FULL':
-                next_full=time.monotonic()+30
-            elif mode=='FAST_5M':
-                next_fast=time.monotonic()+15
+    VCS.run(globals())
+
 def _historical_rules():
     _, rules = all_knowledge()
     out = []
@@ -7844,15 +7870,16 @@ def run_bootstrap_backtest(reason='manual'):
     finally:
         backtest_lock.release()
 
-def backtest_status():
+def backtest_status(include_leaderboards=True):
     out=dict(backtest_state); out.update({'enabled':BACKTEST_ENABLED,'days':BACKTEST_DAYS,'sample_step_hours':BACKTEST_SAMPLE_STEP_HOURS,'auto_refresh_hours':BACKTEST_REFRESH_HOURS,'promotion_from_backtest':False})
     if pg_enabled():
         try:
             with pg_connect() as c:
                 lr=c.execute("SELECT run_id,started_at,finished_at,status,days,sample_step_hours,rules_tested,observations,details FROM backtest_runs ORDER BY started_at DESC LIMIT 1").fetchone()
                 out['latest_run']=dict(lr) if lr else None
-                out['top']=[dict(r) for r in c.execute("SELECT rule_id,asset,horizon,action,method,n,hit_rate,avg_signed_return,avg_mfe,avg_mae,period_start,period_end FROM knowledge_backtest_stats WHERE n>=20 ORDER BY n DESC,hit_rate DESC NULLS LAST LIMIT 40").fetchall()]
-                out['oos_top']=[dict(r) for r in c.execute("SELECT rule_id,asset,horizon,action,sample,n,hit_rate,avg_signed_return,avg_mfe,avg_mae,std_signed_return,t_stat,profit_factor,p_value,p_bonferroni,period_start,period_end FROM knowledge_backtest_oos_stats WHERE sample='OOS' AND n>=20 ORDER BY p_bonferroni ASC NULLS LAST,n DESC LIMIT 60").fetchall()]
+                if include_leaderboards:
+                    out['top']=[dict(r) for r in c.execute("SELECT rule_id,asset,horizon,action,method,n,hit_rate,avg_signed_return,avg_mfe,avg_mae,period_start,period_end FROM knowledge_backtest_stats WHERE n>=20 ORDER BY n DESC,hit_rate DESC NULLS LAST LIMIT 40").fetchall()]
+                    out['oos_top']=[dict(r) for r in c.execute("SELECT rule_id,asset,horizon,action,sample,n,hit_rate,avg_signed_return,avg_mfe,avg_mae,std_signed_return,t_stat,profit_factor,p_value,p_bonferroni,period_start,period_end FROM knowledge_backtest_oos_stats WHERE sample='OOS' AND n>=20 ORDER BY p_bonferroni ASC NULLS LAST,n DESC LIMIT 60").fetchall()]
         except Exception as ex: out['db_error']=f'{type(ex).__name__}: {ex}'
     return out
 
@@ -8008,6 +8035,20 @@ def get_macro_context():
         return dict(macro_state)
 
 
+def _v90_jsonb_project_object(expr, fields):
+    """Project trusted SQL expressions without changing JSON object truthiness.
+
+    Empty objects and non-objects keep their original value. A nonempty object
+    remains nonempty even when its relevant fields are absent, preserving the
+    existing Python ``top_level or nested`` fallback. Expressions and keys are
+    internal constants, never request parameters.
+    """
+    pairs=','.join("'"+key.replace("'","''")+"',"+value
+                   for key,value in fields.items())
+    return (f"CASE WHEN jsonb_typeof({expr})='object' AND {expr}<>'{{}}'::jsonb "
+            f"THEN jsonb_build_object({pairs}) ELSE {expr} END")
+
+
 def structure_analog_board(limit=1200, force_refresh=False):
     """Durable analog memory for actual forward outcomes of structure states.
     Cached because the underlying decision/outcome join is identical for all 30 signal cells
@@ -8020,10 +8061,33 @@ def structure_analog_board(limit=1200, force_refresh=False):
             cached=structure_analog_cache.get('value')
             if cached is not None and int(structure_analog_cache.get('limit') or 0)>=lim and time.time()-float(structure_analog_cache.get('at') or 0)<ANALYTICS_CACHE_SECONDS:
                 return cached
+    # Keep the same observations and reduction, but do not transfer/decode
+    # complete archived decisions and histories for a few structure labels.
+    from veritas_learning_memory import JsonbProjection
+    projection=JsonbProjection()
+    d=projection.fields('sample.decision_payload',('research_decision','trend_impulse','features'))
+    features=projection.fields(d['features'],('trend_impulse','intraday_structure'))
+    def structure(expr):
+        return _v90_jsonb_project_object(expr,projection.fields(expr,('lifecycle','entry_quality')))
+    def impulse(expr):
+        fields=projection.fields(expr,('direction','entry_quality','intraday_structure'))
+        return _v90_jsonb_project_object(expr,{
+            'direction':fields['direction'],'entry_quality':fields['entry_quality'],
+            'intraday_structure':structure(fields['intraday_structure'])})
+    dp=_v90_jsonb_project_object('sample.decision_payload',{
+        'research_decision':d['research_decision'],'trend_impulse':impulse(d['trend_impulse']),
+        'features':_v90_jsonb_project_object(d['features'],{
+            'trend_impulse':impulse(features['trend_impulse']),
+            'intraday_structure':structure(features['intraday_structure'])})})
+    op=_v90_jsonb_project_object('sample.outcome_payload',{'forward_return':"sample.outcome_payload->'forward_return'"})
     with pg_connect() as c:
-        rows=c.execute("""SELECT d.asset,d.horizon,d.payload dp,o.payload op
-                          FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-                          WHERE d.event_type='decision' ORDER BY d.event_ts DESC LIMIT %s""",(lim,)).fetchall()
+        rows=c.execute(f"""SELECT sample.asset,sample.horizon,{dp} dp,{op} op
+                          FROM (SELECT d.asset,d.horizon,d.event_ts,
+                                d.payload AS decision_payload,o.payload AS outcome_payload
+                                FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                                WHERE d.event_type='decision' ORDER BY d.event_ts DESC LIMIT %s) sample
+                          {projection.joins_sql}
+                          ORDER BY sample.event_ts DESC""",(lim,)).fetchall()
     b={}
     for r in rows:
         dp=r['dp'] if isinstance(r['dp'],dict) else json.loads(r['dp']); op=r['op'] if isinstance(r['op'],dict) else json.loads(r['op'])
@@ -8078,34 +8142,31 @@ def _decision_memory_rows(force=False):
     cache=getattr(_decision_memory_rows,'_cache',None)
     if cache and not force and time.time()-cache[0] < DECISION_MEMORY_CACHE_SECONDS:
         return cache[1]
-    sql="""WITH recent_decisions AS (
+    from veritas_learning_memory import JsonbProjection
+    projection=JsonbProjection()
+    d=projection.fields('d.payload',('research_decision','decision','confidence','features'))
+    feature_names=('ret_4h','ret_24h','trend','momentum','rv','relative_volume',
+        'session_efficiency','session_persistence','intraday_structure_score',
+        'trend_onset_score','impulse_score','near_ath','breakout_hold','expected_move_pct')
+    features=projection.fields(d['features'],(*feature_names,'regime'))
+    o=projection.fields('o.payload',('forward_return','mfe','mae'))
+    as_text=lambda expr:f"({expr})#>>'{{}}'"
+    as_number=lambda expr:f"NULLIF({as_text(expr)},'')::double precision"
+    aliases={'intraday_structure_score':'structure_score','trend_onset_score':'onset_score'}
+    columns=[f"COALESCE({as_text(d['research_decision'])},{as_text(d['decision'])},'NO_TRADE') research_decision",
+             f"{as_number(d['confidence'])} confidence"]
+    columns.extend(f"{as_number(features[key])} {aliases.get(key,key)}" for key in feature_names)
+    columns.append(f"{as_text(features['regime'])} regime")
+    columns.extend(f"{as_number(o[key])} {key}" for key in ('forward_return','mfe','mae'))
+    sql=f"""WITH recent_decisions AS (
       SELECT entity_key,event_ts,asset,horizon,payload
       FROM ledger_events WHERE event_type='decision'
       ORDER BY event_ts DESC LIMIT %s
     )
-    SELECT d.entity_key,d.event_ts,d.asset,d.horizon,
-      COALESCE(d.payload->>'research_decision',d.payload->>'decision','NO_TRADE') research_decision,
-      NULLIF(d.payload->>'confidence','')::double precision confidence,
-      NULLIF(d.payload#>>'{features,ret_4h}','')::double precision ret_4h,
-      NULLIF(d.payload#>>'{features,ret_24h}','')::double precision ret_24h,
-      NULLIF(d.payload#>>'{features,trend}','')::double precision trend,
-      NULLIF(d.payload#>>'{features,momentum}','')::double precision momentum,
-      NULLIF(d.payload#>>'{features,rv}','')::double precision rv,
-      NULLIF(d.payload#>>'{features,relative_volume}','')::double precision relative_volume,
-      NULLIF(d.payload#>>'{features,session_efficiency}','')::double precision session_efficiency,
-      NULLIF(d.payload#>>'{features,session_persistence}','')::double precision session_persistence,
-      NULLIF(d.payload#>>'{features,intraday_structure_score}','')::double precision structure_score,
-      NULLIF(d.payload#>>'{features,trend_onset_score}','')::double precision onset_score,
-      NULLIF(d.payload#>>'{features,impulse_score}','')::double precision impulse_score,
-      NULLIF(d.payload#>>'{features,near_ath}','')::double precision near_ath,
-      NULLIF(d.payload#>>'{features,breakout_hold}','')::double precision breakout_hold,
-      NULLIF(d.payload#>>'{features,expected_move_pct}','')::double precision expected_move_pct,
-      d.payload#>>'{features,regime}' regime,
-      NULLIF(o.payload->>'forward_return','')::double precision forward_return,
-      NULLIF(o.payload->>'mfe','')::double precision mfe,
-      NULLIF(o.payload->>'mae','')::double precision mae
+    SELECT d.entity_key,d.event_ts,d.asset,d.horizon,{','.join(columns)}
     FROM recent_decisions d
     JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+    {projection.joins_sql}
     WHERE o.payload ? 'forward_return'
     ORDER BY d.event_ts DESC"""
     try:
@@ -8594,12 +8655,10 @@ def setup_memory_board(force=False):
         return cache[1]
     if not pg_enabled():
         return {'status':'POSTGRES_REQUIRED','items':[]}
+    learning_generation=VLE.generation()
     try:
         with pg_connect() as c:
-            rows=c.execute("""SELECT event_type,event_ts,asset,horizon,payload
-                              FROM ledger_events
-                              WHERE event_type IN ('experience_lesson','rejected_signal_lesson')
-                              ORDER BY event_ts DESC LIMIT %s""",(EXPERIENCE_MAX_EVENTS,)).fetchall()
+            rows=VLE.decision_lessons(c,EXPERIENCE_MAX_EVENTS)
     except Exception as ex:
         return {'status':'ERROR','items':[],'error':f'{type(ex).__name__}: {ex}'}
 
@@ -8669,6 +8728,7 @@ def setup_memory_board(force=False):
          'thresholds':{'size':EXPERIENCE_MIN_SIZE_N,'execution':EXPERIENCE_MIN_EXEC_N,'weight':EXPERIENCE_MIN_WEIGHT_N},
          'hierarchy':['EXACT','ASSET_FAMILY','REGIME_FAMILY','FAMILY'],
          'principle':'exact setup/regime experience dominates; broader pools only shrink small samples'}
+    out.update(VLE.memory_contract(learning_generation))
     setup_memory_board._cache=(time.time(),out)
     return out
 
@@ -9122,8 +9182,10 @@ _v842_original_setup_memory_board=setup_memory_board
 
 def setup_memory_board(force=False):
     cache=getattr(setup_memory_board,'_cache',None)
-    if cache and not force:
+    if cache and not force and time.time()-cache[0]<SETUP_MEMORY_CACHE_SECONDS and VLE.memory_current(cache[1]):
         return cache[1]
+    if cache and not force:
+        VLE.invalidate_memory(globals())
     if not force:
         return {'status':'BACKGROUND_PENDING','items':[],
                 'decision_influence':False,
@@ -9752,6 +9814,17 @@ _v90r62_active_cycle_mode='FULL'
 V90R62_FULL_REUSE_SECONDS=max(60.0,float(os.getenv('VERITAS_FULL_BUNDLE_REUSE_SECONDS','150')))
 
 def _v90r62_cached_bundle(asset):
+    # A complete bundle contains the attached minute/hour/day histories and can
+    # retain tens of MiB per asset.  On the 512 MiB web runtime the seven-asset
+    # cache lifts the post-cycle RSS high enough that the next BTC refresh is
+    # OOM-killed before the existing per-asset GC can run.  Low-memory cycles
+    # already stream one asset at a time, so retaining whole bundles defeats
+    # that protection.  Re-fetching is slower but preserves source/freshness
+    # checks and is safer than reusing a large stale in-process object graph.
+    if MEMORY_SOFT_LIMIT_MB<=320:
+        with _v90r62_bundle_cache_lock:
+            _v90r62_bundle_cache.clear()
+        return None
     if str(globals().get('_v90r62_active_cycle_mode') or '').upper()!='FULL':
         return None
     with _v90r62_bundle_cache_lock:
@@ -9770,6 +9843,14 @@ def _v90r62_cached_bundle(asset):
     return out
 
 def _v90r62_store_bundle(asset,bundle):
+    if MEMORY_SOFT_LIMIT_MB<=320:
+        # Do not retain full history graphs between cycles on the constrained
+        # web service.  Durable decisions and the compact live snapshot remain
+        # unchanged; provider-specific bounded history caches still supply
+        # their normal causal inputs.
+        with _v90r62_bundle_cache_lock:
+            _v90r62_bundle_cache.clear()
+        return
     if not bundle or bundle.get('raw') is None or bundle.get('error'):
         return
     with _v90r62_bundle_cache_lock:
@@ -10097,8 +10178,11 @@ def setup_profitability_profile(asset,horizon,direction,setup_name,regime=None,l
     if not pg_enabled() or direction not in ('LONG','SHORT'):
         return {'status':'BUILDING','n':0,'decision_influence':False}
     try:
+        payload_sql=_v90_jsonb_project_object('payload',{
+            key:"payload->'"+key+"'" for key in
+            ('setup','trade_plan_setup','entry_setup','regime')})
         with pg_connect() as c:
-            rows=c.execute("""SELECT asset,horizon,direction,total_pnl_fraction,payload
+            rows=c.execute(f"""SELECT asset,horizon,direction,total_pnl_fraction,{payload_sql} payload
                               FROM shadow_trades
                               WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
                                 AND asset=%s AND horizon=%s AND direction=%s
@@ -10134,9 +10218,9 @@ def setup_profitability_profile(asset,horizon,direction,setup_name,regime=None,l
         weak=n>=12 and avg<0 and hit<=0.42 and pf<0.85
         degraded=n>=8 and avg<0 and post_hit<0.48
         status='POSITIVE_EDGE' if strong else 'NEGATIVE_EDGE' if weak else 'DEGRADED' if degraded else 'BUILDING'
-        return {'status':status,'n':n,'avg_pnl_fraction':avg,'hit_rate':hit,'posterior_hit_rate':post_hit,
-                'profit_factor':pf,'decision_influence':bool(measurable),
-                'setup':setup_name,'regime':regime}
+        return VLE.shadow_profile({'status':status,'n':n,'avg_pnl_fraction':avg,'hit_rate':hit,'posterior_hit_rate':post_hit,
+                'profit_factor':pf,'decision_influence':False,
+                'setup':setup_name,'regime':regime})
     except Exception as ex:
         return {'status':'ERROR','n':0,'decision_influence':False,'error':f'{type(ex).__name__}: {ex}'}
 
@@ -10152,7 +10236,7 @@ def profitability_gate(asset,horizon,direction,f,trade_plan):
         return {'status':'NOT_APPLICABLE','allow':bool(plan.get('eligible')),'size_multiplier':1.0,'profile':{}}
     setup_name=str(plan.get('setup') or plan.get('reason') or 'GENERIC')
     profile=setup_profitability_profile(asset,horizon,direction,setup_name,f.get('regime'))
-    status=profile.get('status')
+    status=profile.get('status') if profile.get('decision_influence') is True else 'DIAGNOSTIC_ONLY'
     mult=1.0; allow=True
     if status=='NEGATIVE_EDGE':
         mult=0.0; allow=False
@@ -10763,8 +10847,11 @@ def trade_path_profile(asset,horizon,direction,setup_name=None,limit=300):
     if not pg_enabled() or direction not in ('LONG','SHORT'):
         return {'status':'BUILDING','n':0,'decision_influence':False}
     try:
+        payload_sql=_v90_jsonb_project_object('payload',{
+            key:"payload->'"+key+"'" for key in
+            ('setup','trade_plan_setup','entry_setup')})
         with pg_connect() as c:
-            rows=c.execute("""SELECT direction,entry_price,high_price,low_price,total_pnl_fraction,payload
+            rows=c.execute(f"""SELECT direction,entry_price,high_price,low_price,total_pnl_fraction,{payload_sql} payload
                               FROM shadow_trades
                               WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
                                 AND asset=%s AND horizon=%s AND direction=%s
@@ -10807,7 +10894,7 @@ def trade_path_profile(asset,horizon,direction,setup_name=None,limit=300):
         win_mfe=[z['mfe'] for z in wins]
         cap=[z['capture'] for z in wins if z['capture'] is not None]
         influence=n>=20 and len(wins)>=8
-        return {
+        return VLE.shadow_profile({
             'status':'MEASURABLE' if influence else 'BUILDING',
             'n':n,'wins':len(wins),'losses':len(losers),
             'hit_rate':len(wins)/n,
@@ -10819,8 +10906,8 @@ def trade_path_profile(asset,horizon,direction,setup_name=None,limit=300):
             'p25_capture_ratio':q(cap,0.25),
             'decision_influence':influence,
             'setup':setup_name,
-            'principle':'Learn the normal profitable path before tightening stops or taking profit.'
-        }
+            'principle':'Observed shadow path is diagnostic until source and net execution are verified.'
+        })
     except Exception as ex:
         return {'status':'ERROR','n':0,'decision_influence':False,'error':f'{type(ex).__name__}: {ex}'}
 
@@ -10893,7 +10980,7 @@ def _v77_recent_closed_trade(asset,horizon,direction):
                            WHERE status<>'ACTIVE' AND asset=%s AND horizon=%s AND direction=%s
                            ORDER BY closed_at DESC NULLS LAST LIMIT 1""",
                         (asset,horizon,direction)).fetchone()
-        out=dict(r) if r else None
+        out=dict(r,decision_influence=False,evidence_scope=VLE.SHADOW_SCOPE) if r else None
         _V77_RECENT_TRADE_CACHE[key]=(time.time(),out)
         return out
     except Exception:
@@ -11107,8 +11194,9 @@ def v77_decision_quality_stack(asset,horizon,f,trade_plan,research_dec):
 
     # --- Churn suppression / Re-entry intelligence ---
     recent=_v77_recent_closed_trade(asset,horizon,direction)
-    reentry={'checked':bool(recent),'allowed':True,'new_event_required':False}
-    if recent:
+    reentry={'checked':bool(recent),'allowed':True,'new_event_required':False,
+             'evidence_scope':(recent or {}).get('evidence_scope') or VLE.SHADOW_SCOPE}
+    if recent and recent.get('decision_influence') is True:
         payload=recent.get('payload')
         if not isinstance(payload,dict):
             try: payload=json.loads(payload or '{}')
@@ -11500,11 +11588,9 @@ def system_rule_arbitration(asset,horizon,f,plan,research_dec):
 # ---------------- v79.0 Trade Integrity / Win-Rate Layer ----------------
 
 def trade_integrity_layer(asset,horizon,f,trade_plan,research_dec):
-    """Final trade-state separation for win-rate quality.
-
-    Directional thesis and permission to enter are different states.
-    A temporary timing deterioration does not erase a valid thesis, but it
-    can block a fresh entry until the fast conflict resolves.
+    """Admission diagnostics for the candidate's direction and timeframe.
+    Entry vetoes cannot authorize an exit from an existing position; exits
+    require the held position's structural evidence or a protective rule.
     """
     plan=dict(trade_plan or {})
     direction=str(research_dec or plan.get('direction') or 'NO_TRADE')
@@ -11569,7 +11655,8 @@ def trade_integrity_layer(asset,horizon,f,trade_plan,research_dec):
         'fast_tf_conflict':fast_conflict,
         'setup_id':plan.get('setup_id'),
         'execution_horizon':horizon,
-        'principle':'Direction != entry permission. Soft timing deterioration requires confirmation before exit; hard structural/thesis invalidation exits immediately.'
+        **VPT.entry_integrity_scope(direction,horizon,hard_reasons),
+        'principle':'Entry vetoes block new risk. An open position exits on its own source/timeframe structural evidence or independent protective rules.'
     }
     return plan
 
@@ -12711,27 +12798,23 @@ def pg_signal_history(limit=None):
 def pg_live_performance():
     if not pg_enabled():
         return []
-    with pg_connect() as c:
-        rows=c.execute("""
-          SELECT d.asset,d.horizon,d.payload decision,o.payload outcome
-          FROM ledger_events d JOIN ledger_events o
-            ON o.entity_key=d.entity_key AND o.event_type='outcome'
-          WHERE d.event_type='decision'
-        """).fetchall()
+    from array import array
+    from veritas_learning_memory import live_performance_rows
     b={}
-    for r in rows:
-        d=r['decision'] if isinstance(r['decision'],dict) else json.loads(r['decision'])
-        o=r['outcome'] if isinstance(r['outcome'],dict) else json.loads(r['outcome'])
-        dec=d.get('decision'); fr=o.get('forward_return')
-        if fr is None: continue
-        key=(r['asset'],r['horizon'],dec)
-        z=b.setdefault(key,{'n':0,'hits':0,'signed':[],'raw':[],'mfe':[],'mae':[]})
-        fr=float(fr); z['n']+=1; z['raw'].append(fr)
-        if o.get('mfe') is not None: z['mfe'].append(float(o['mfe']))
-        if o.get('mae') is not None: z['mae'].append(float(o['mae']))
-        if dec in ('LONG','SHORT'):
-            sr=fr if dec=='LONG' else -fr
-            z['signed'].append(sr); z['hits'] += 1 if sr>0 else 0
+    with live_performance_rows(pg_connect) as rows:
+        for r in rows:
+            d=r['decision'] if isinstance(r['decision'],dict) else json.loads(r['decision'])
+            o=r['outcome'] if isinstance(r['outcome'],dict) else json.loads(r['outcome'])
+            dec=d.get('decision'); fr=o.get('forward_return')
+            if fr is None: continue
+            key=(r['asset'],r['horizon'],dec)
+            z=b.setdefault(key,{'n':0,'hits':0,'signed':array('d'),'raw':array('d'),'mfe':array('d'),'mae':array('d')})
+            fr=float(fr); z['n']+=1; z['raw'].append(fr)
+            if o.get('mfe') is not None: z['mfe'].append(float(o['mfe']))
+            if o.get('mae') is not None: z['mae'].append(float(o['mae']))
+            if dec in ('LONG','SHORT'):
+                sr=fr if dec=='LONG' else -fr
+                z['signed'].append(sr); z['hits'] += 1 if sr>0 else 0
     out=[]
     for (asset,horizon,dec),z in sorted(b.items()):
         dn=len(z['signed'])
@@ -12761,66 +12844,67 @@ def ruleboard():
 
 def product_health():
     import veritas_trend_entry as VTE
-    with lock: cyc=dict(last_cycle)
+    with lock:
+        cyc={key:last_cycle.get(key) for key in ('at','status')}
+        selected={}
+        for row in last_cycle.get('summary') or []:
+            asset=row.get('asset')
+            if asset and (row.get('horizon')=='5m' or asset not in selected):
+                selected[asset]=row
     age=None
     try:
         if cyc.get('at'):
             t=datetime.fromisoformat(str(cyc['at']).replace('Z','+00:00'))
             age=(datetime.now(timezone.utc)-t).total_seconds()/60
     except Exception: pass
+    market_data={}
+    for asset,row in selected.items():
+        market_data[asset]=VTE.context_gate(row,datetime.now(timezone.utc))
+    selected=row=None
     storage=pg_storage_status()
     status='ok' if cyc.get('status')=='ok' and storage.get('ok') and (age is None or age<=PRODUCT_STALE_MINUTES) else 'degraded'
-    market_data={}
-    for row in cyc.get('summary') or []:
-        asset=row.get('asset')
-        if asset and (row.get('horizon')=='5m' or asset not in market_data):
-            market_data[asset]=VTE.context_gate(row,datetime.now(timezone.utc))
     return {'status':status,'version':VERSION,'execution_revision':VTE.VERSION,'cycle_age_min':age,'cycle_status':cyc.get('status'),
             'entry_context_by_asset':market_data,
-            'storage':storage,'stale_after_min':PRODUCT_STALE_MINUTES,'backtest':backtest_status().get('latest_run')}
+            'storage':storage,'stale_after_min':PRODUCT_STALE_MINUTES,'backtest':backtest_status(include_leaderboards=False).get('latest_run')}
 
 
 _v90r39_snapshot_state={'last_at':0.0}
 
-def save_product_snapshot():
-    if not pg_enabled(): return
+def save_product_snapshot(cycle_snapshot=None, admission=None):
+    from veritas_maintenance import compact_cycle, MaintenanceDeferred
+    if not pg_enabled(): return {'status':'DEFERRED_STORAGE'}
     # R39: product snapshots are archival only; the live UI reads current memory
     # and canonical paper_* tables. Persist at most once per hour to prevent
     # repeated large JSON/TOAST churn without changing visualization.
     now_ts=time.time()
     if now_ts-float(_v90r39_snapshot_state.get('last_at') or 0.0)<3600:
-        return
+        return {'status':'NOT_DUE'}
+    saved=False
+    result={'status':'ERROR'}
     try:
+        if cycle_snapshot is None:
+            with lock:
+                compact_cycle_value=compact_cycle(last_cycle)
+        else:
+            compact_cycle_value=compact_cycle(cycle_snapshot)
+        cycle_snapshot=None
+        if admission: admission('snapshot_drift')
+        _v90_memory_checkpoint('snapshot_start',None)
         drift=model_drift_status()
-        with lock:
-            cyc=dict(last_cycle)
-        compact_summary=[]
-        for z in (cyc.get('summary') or []):
-            if not isinstance(z,dict):
-                continue
-            compact_summary.append({
-              'asset':z.get('asset'),'horizon':z.get('horizon'),
-              'decision':z.get('decision'),'research_decision':z.get('research_decision'),
-              'confidence':z.get('confidence'),'price':z.get('price'),
-              'regime':z.get('regime'),'signal_tier':z.get('signal_tier'),
-              'execution_eligible':z.get('execution_eligible'),
-              'decision_stage':z.get('decision_stage'),
-              'horizon_structure_state':z.get('horizon_structure_state'),
-              'horizon_structure_score':z.get('horizon_structure_score'),
-              'entry_quality':z.get('entry_quality'),
-              'stop_price':z.get('stop_price'),'target_price':z.get('target_price'),
-              'expected_move_pct':z.get('expected_move_pct'),
-              'expected_to_stop_ratio':z.get('expected_to_stop_ratio'),
-            })
-        compact_cycle={
-          'status':cyc.get('status'),'at':cyc.get('at'),'version':cyc.get('version'),
-          'cycle_mode':cyc.get('cycle_mode'),'signal_cells':cyc.get('signal_cells'),
-          'decisions_written':cyc.get('decisions_written'),
-          'outcomes_written':cyc.get('outcomes_written'),
-          'summary':compact_summary,
-        }
-        payload={'cycle':compact_cycle,'performance':pg_live_performance(),
-                 'health':product_health(),'drift':drift}
+        _v90_trim_memory('snapshot_drift_done',force=True,preserve_active_cycle=True)
+        if admission: admission('snapshot_performance')
+        performance=pg_live_performance()
+        _v90_trim_memory('snapshot_performance_done',force=True,preserve_active_cycle=True)
+        if admission: admission('snapshot_health')
+        health_observed_at=now()
+        health=product_health()
+        _v90_trim_memory('snapshot_health_done',force=True,preserve_active_cycle=True)
+        if admission: admission('snapshot_persist')
+        payload={'cycle':compact_cycle_value,'performance':performance,'health':health,'drift':drift}
+        if admission:
+            payload['capture']={'requested_cycle_at':compact_cycle_value.get('at'),
+                'health_observed_at':health_observed_at,'statistics_finished_at':now(),
+                'basis':'FROZEN_FULL_CYCLE_WITH_SEPARATELY_MEASURED_STATISTICS'}
         with pg_connect() as c:
             c.execute("INSERT INTO product_snapshots(created_at,snapshot_type,payload) VALUES(%s,%s,%s::jsonb)",
                       (now(),'overview',json.dumps(payload,ensure_ascii=False,default=str)))
@@ -12837,8 +12921,19 @@ def save_product_snapshot():
                            ORDER BY created_at DESC LIMIT 48
                          )""")
         _v90r39_snapshot_state['last_at']=now_ts
+        saved=True
+        result={'status':'SAVED'}
+    except MaintenanceDeferred as ex:
+        result=ex.result()
     except Exception as ex:
         emit('snapshot_error',error=f'{type(ex).__name__}: {ex}')
+        result={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'[:512]}
+    finally:
+        drift=compact_cycle_value=cycle_snapshot=performance=health=payload=c=None
+        _v90_trim_memory('snapshot_end',force=True,preserve_active_cycle=True)
+    if saved:
+        _v90_memory_checkpoint('snapshot_ready',None)
+    return result
 
 def oos_validation_board(limit=100):
     if not pg_enabled(): return {'items':[],'method':'unavailable'}
@@ -13009,29 +13104,26 @@ def update_runtime_settings(payload, updated_by='admin_api'):
 def model_drift_status():
     if not pg_enabled():
         return {'rules':[],'agents':[],'status':'unavailable'}
-    rules=[]
-    with pg_connect() as c:
-        rr=c.execute("""SELECT rule_id,asset,horizon,n,ew_hit_rate,ew_avg_signed_return,
-                               recent_n,recent_hit_rate,recent_avg_signed_return,
-                               prior_n,prior_hit_rate,prior_avg_signed_return,decay_ratio
-                        FROM knowledge_rule_decay_stats
-                        WHERE sample='OOS' AND n>=20
-                        ORDER BY recent_n DESC""").fetchall()
-    for r in rr:
-        x=dict(r); rn=int(x.get('recent_n') or 0); pn=int(x.get('prior_n') or 0)
-        state='INSUFFICIENT'
-        if rn>=20 and pn>=20:
-            rar=float(x.get('recent_avg_signed_return') or 0); par=float(x.get('prior_avg_signed_return') or 0)
-            rhr=float(x.get('recent_hit_rate') or 0.5); phr=float(x.get('prior_hit_rate') or 0.5)
-            if rar<0 and par>0:
-                state='DECAYING'
-            elif rhr<phr-0.08 or rar<par-0.01:
-                state='WEAKENING'
-            elif rar>0 and rhr>=phr-0.03:
-                state='STABLE'
-            else:
-                state='MIXED'
-        x['drift_state']=state; rules.append(x)
+    from veritas_learning_memory import drift_rule_rows
+    rules=[]; bad=0
+    with drift_rule_rows(pg_connect) as rr:
+        for r in rr:
+            x=dict(r); rn=int(x.get('recent_n') or 0); pn=int(x.get('prior_n') or 0)
+            state='INSUFFICIENT'
+            if rn>=20 and pn>=20:
+                rar=float(x.get('recent_avg_signed_return') or 0); par=float(x.get('prior_avg_signed_return') or 0)
+                rhr=float(x.get('recent_hit_rate') or 0.5); phr=float(x.get('prior_hit_rate') or 0.5)
+                if rar<0 and par>0:
+                    state='DECAYING'
+                elif rhr<phr-0.08 or rar<par-0.01:
+                    state='WEAKENING'
+                elif rar>0 and rhr>=phr-0.03:
+                    state='STABLE'
+                else:
+                    state='MIXED'
+            bad+=int(state in ('DECAYING','WEAKENING'))
+            x['drift_state']=state
+            if len(rules)<100: rules.append(x)
     agents=[]
     for x in pg_agent_performance():
         rn=int(x.get('recent_n') or 0); pn=int(x.get('prior_n') or 0)
@@ -13045,7 +13137,6 @@ def model_drift_status():
             elif rar>0 and rhr>=phr-0.03: state='STABLE'
             else: state='MIXED'
         y=dict(x); y['drift_state']=state; agents.append(y)
-    bad=sum(1 for x in rules if x['drift_state'] in ('DECAYING','WEAKENING'))
     return {'status':'WARN' if bad else 'OK','rule_drift_count':bad,'rules':rules[:100],'agents':agents[:100]}
 
 
@@ -15098,10 +15189,10 @@ def _shadow_trade_learning_windows():
     if not pg_enabled(): return {'status':'postgres_required'}
     lim=LEARNING_PROGRESS_WINDOW
     with pg_connect() as c:
-        e=[dict(r) for r in c.execute("""SELECT asset,horizon,direction,status,total_pnl_fraction,payload,closed_at
+        e=[dict(r) for r in c.execute("""SELECT asset,horizon,direction,status,total_pnl_fraction,closed_at
                                         FROM shadow_trades WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
                                         ORDER BY closed_at ASC LIMIT %s""",(lim,)).fetchall()]
-        r=[dict(x) for x in c.execute("""SELECT asset,horizon,direction,status,total_pnl_fraction,payload,closed_at
+        r=[dict(x) for x in c.execute("""SELECT asset,horizon,direction,status,total_pnl_fraction,closed_at
                                         FROM shadow_trades WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
                                         ORDER BY closed_at DESC LIMIT %s""",(lim,)).fetchall()]
     def met(a):
@@ -15845,6 +15936,7 @@ def architecture_efficiency_status():
             'market_prefetch_workers':t.get('market_prefetch_workers'),'market_prefetch_wall_seconds':t.get('market_prefetch_wall_seconds'),
             'market_parallel_saved_estimate_seconds':t.get('market_parallel_saved_estimate_seconds'),
             'heavy_learning':heavy_learning_snapshot(),
+            'maintenance':_v90_background_maintenance.snapshot(),
             'history_n':len(vals),'cycle_p50_seconds':q(0.50),'cycle_p95_seconds':q(0.95),
             'target_cycle_seconds':FAST_LOOP_TARGET_SECONDS,
             'target_status':'ON_TARGET' if elapsed is not None and float(elapsed)<=FAST_LOOP_TARGET_SECONDS else 'IMPROVING' if elapsed is not None else 'BUILDING',
@@ -16467,24 +16559,29 @@ _v90r25_pf_cache={'at':0.0,'value':None}
 _v90r25_pf_lock=threading.Lock()
 
 def _v90r25_portfolios_fast():
+    import veritas_portfolio_read_model as VPRM
+    return VPRM.portfolio_snapshot_read(_v90r25_portfolios_refresh,_v90r25_pf_cache,_v90r25_pf_lock)
+
+def _v90r25_portfolios_refresh():
+    import veritas_portfolio_read_model as VPRM
     with _v90r25_pf_lock:
         cached=_v90r25_pf_cache.get('value'); at=float(_v90r25_pf_cache.get('at') or 0.0)
-    if cached is not None and time.time()-at<15:
+        cache_revision=_v90r25_pf_cache.get('revision',0)
+    if cached is not None and time.time()-at<15 and VPRM.snapshot_fresh(cached):
         out=dict(cached); out['api_source']='memory_cache'; return out
     with lock:
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
-    live_ports=list(live.get('portfolios') or [])
-    live_names={str(p.get('name') or '') for p in live_ports}
-    required_names=set(V90_CANONICAL_PORTFOLIOS)-{VP.VCP.PORTFOLIO_KEY}
-    live_complete=bool(required_names.issubset(live_names))
-    zero_exposure=not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live_ports)
-    if live and live_complete and (any(p.get('positions') for p in live_ports) or zero_exposure):
-        out=VP.VCP.decorate_report(VTV.enrich_positions(live,pg_connect)); out['api_source']='live_memory'
-        with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+    if VPRM.memory_complete(live,V90_CANONICAL_PORTFOLIOS):
+        out=VP.VCP.decorate_report(VPRM.revalue_report(VTV.enrich_positions(live,pg_connect),required_names=V90_CANONICAL_PORTFOLIOS)); out['api_source']='live_memory'
+        out=VPRM.display_report(out)
+        with _v90r25_pf_lock:
+            if _v90r25_pf_cache.get('revision',0)==cache_revision: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
     if not pg_enabled(): return {'status':'UNAVAILABLE','portfolios':[]}
     names=list(V90_CANONICAL_PORTFOLIOS)
-    with pg_connect() as c:
+    with pg_connect() as c, c.transaction():
+        VPRM.begin_read_snapshot(c)
+        snapshot_at=datetime.now(timezone.utc).isoformat()
         base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
         nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
         pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,ed.payload AS entry_decision_payload
@@ -16505,6 +16602,8 @@ def _v90r25_portfolios_fast():
                          WHERE pp.portfolio_name=ANY(%s)
                          ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
         stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl, """ + CLOSED_METRICS_SQL + """ FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
+        ids=list({z['active_trade_id'] for z in pos if z.get('active_trade_id')})
+        accounts=VTV.VPP.load_accounts(c,ids,include_entry_notional=True) if ids else {}
     bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
     def _n(v,d=None):
         try:
@@ -16536,31 +16635,32 @@ def _v90r25_portfolios_fast():
     outp=[]
     live_by_name={p.get('name'):p for p in live.get('portfolios') or []}
     for name in names:
-        b=bm.get(name,{}); latest=nm.get(name,{}); st=sm.get(name,{}); closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0); nav_rub=latest.get('nav_rub'); initial=float(b.get('initial_nav_rub') or 1000000)
-        outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),'nav_rub':nav_rub,'nav_usd':latest.get('nav_usd'),'total_return_pct':(100*(float(nav_rub)/initial-1)) if nav_rub is not None else None,'drawdown_pct':100*float(latest.get('drawdown') or 0),'gross_leverage':latest.get('gross_leverage'),'net_exposure':latest.get('net_exposure'),'cash_equivalent_fraction':max(0,1-float(latest.get('gross_leverage') or 0)),'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
+        latest=nm.get(name,{}); st=sm.get(name,{}); closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0)
+        outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
         # SQL enriches positions; the current execution decisions come from
         # the same completed market cycle, without recomputing admission here.
         outp[-1]['admission_trace']=live_by_name.get(name,{}).get('admission_trace',[])
         outp[-1].update(closed_trade_metrics(st,closed))
         outp[-1]['avg_closed_trade_pnl_rub']=float(st.get('closed_pnl') or 0)/closed if closed else None
         outp[-1]['risk_governor']=live_by_name.get(name,{}).get('risk_governor') or (latest.get('payload') or {}).get('risk_governor') or {}
-        benchmark=latest.get('benchmark_nav_rub') or b.get('benchmark_nav_rub')
-        outp[-1]['excess_vs_ruonia_pct']=100*(float(nav_rub)/float(benchmark)-1) if nav_rub is not None and benchmark and float(benchmark)>0 else None
     out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':VX.VC.COMMISSION_RATE,'api_source':'fast_sql_enriched'}
-    out=VP.VCP.decorate_report(VTV.enrich_positions(out,pg_connect))
-    with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+    out=VP.VCP.decorate_report(VPRM.revalue_report(VTV.enrich_positions(out,pg_connect,preloaded_accounts=accounts),bases=bm,checked_at=snapshot_at,required_names=names))
+    out=VPRM.display_report(out)
+    with _v90r25_pf_lock:
+        if _v90r25_pf_cache.get('revision',0)==cache_revision: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
     return out
 
 def _v90r25_trades_fast(limit=80):
+    from veritas_trade_journal_read_model import JOURNAL_PAYLOAD_SQL
     limit=max(20,min(200,int(limit or 80)))
     if not pg_enabled():
         return {'status':'UNAVAILABLE','trades':[]}
     try:
         with pg_connect() as c:
-            rows=c.execute("""WITH recent AS (SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
+            rows=c.execute(f"""WITH recent AS (SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
                                      avg_entry_price,avg_exit_price,gross_pnl_rub,fees_rub,
                                      funding_rub,net_pnl_rub,return_on_entry_nav,profitable,
-                                     meaningful_win,status,setup,horizon,payload
+                                     meaningful_win,status,setup,horizon,{JOURNAL_PAYLOAD_SQL} AS payload
                               FROM paper_trades
                               WHERE closed_at IS NOT NULL OR status='CLOSED'
                               ORDER BY COALESCE(closed_at,opened_at) DESC
@@ -16690,11 +16790,8 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
     }
 
 
-def _currency_trade_summary():
-    """Snapshot canonical research without reading or mutating paper positions."""
-    from copy import deepcopy
-    with lock:
-        return deepcopy(last_cycle.get('summary') or [])
+import veritas_currency_trade_service as VCTS
+_currency_trade_summary = VCTS.make_summary_provider(lambda: last_cycle.get('summary') or [], lock)
 
 
 class H(BaseHTTPRequestHandler):
@@ -16722,6 +16819,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            if not _BOOTSTRAP_READY and self.path.startswith('/api/v1/'):
+                from veritas_portfolio_read_model import starting_response
+                self.reply(starting_response(VERSION),503); return
             if self.path.startswith('/internal/v90/database-lease'):
                 import hmac
                 expected=os.getenv('VERITAS_V90_BRIDGE_TOKEN','').strip()
@@ -17071,28 +17171,8 @@ class H(BaseHTTPRequestHandler):
             self.reply({'error': f'{type(e).__name__}: {e}'}, 503)
     def do_POST(self):
         try:
-            if urlparse(self.path).path.startswith('/internal/currency-trading/'):
-                try:
-                    n = int(self.headers.get('Content-Length', '0') or 0)
-                    if n < 0 or n > 8192:
-                        self.reply({'ok': False, 'error': 'INVALID_BODY_SIZE'}, 400); return
-                    payload = json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
-                except (ValueError, UnicodeError):
-                    self.reply({'ok': False, 'error': 'INVALID_JSON_BODY'}, 400); return
-                try:
-                    import veritas_currency_trade_service as VCTS
-                    result, code = VCTS.handle_request(urlparse(self.path).path, payload,
-                                                       self.headers, pg_connect, _currency_trade_summary)
-                except Exception:
-                    result, code = {'ok': False, 'error': 'TRADE_SERVICE_UNAVAILABLE'}, 503
-                self.reply(result, code)
-            elif urlparse(self.path).path.startswith('/internal/currency-alerts/'):
-                n=int(self.headers.get('Content-Length','0') or 0)
-                if n<0 or n>8192:
-                    self.reply({'ok':False,'error':'INVALID_BODY_SIZE'},400); return
-                payload=json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
-                result,code=VCN.handle_request(urlparse(self.path).path,payload,self.headers,pg_connect)
-                self.reply(result,code)
+            if urlparse(self.path).path.startswith(('/internal/currency-trading/', '/internal/currency-alerts/')):
+                VCTS.reply_http(self, pg_connect, _currency_trade_summary, alert_handler=VCN.handle_request)
             elif self.path.startswith('/knowledge/automation/run'):
                 token = self.headers.get('X-Veritas-Token','')
                 if AUTOMATION_TOKEN and token != AUTOMATION_TOKEN:
@@ -17855,7 +17935,6 @@ def _v90r37_storage_retention():
     now_ts=time.time()
     if now_ts-float(_v90r37_maintenance_state.get('last') or 0.0)<7200:
         return {'status':'NOT_DUE'}
-    _v90r37_maintenance_state['last']=now_ts
     try:
         with pg_connect() as c:
             deletes={}
@@ -17905,13 +17984,15 @@ def _v90r37_storage_retention():
             c.execute("DELETE FROM product_alerts WHERE created_at<NOW()-INTERVAL '24 hours'")
             c.execute("DELETE FROM paper_nav_history WHERE observed_at<NOW()-INTERVAL '7 days'")
         try:
-            cc=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5)
-            cc.execute('SET search_path TO veritas_v90')
-            cc.execute('VACUUM (ANALYZE) ledger_events')
-            cc.close()
-        except Exception:
-            pass
+            with psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5) as cc:
+                cc.execute('SET search_path TO veritas_v90')
+                cc.execute("SET statement_timeout='60000ms'")
+                cc.execute('VACUUM (ANALYZE) ledger_events')
+        except Exception as ex:
+            emit('v90_r37_storage_retention_error',stage='vacuum',error=f'{type(ex).__name__}: {ex}')
+            return {'status':'ERROR','error':f'vacuum: {type(ex).__name__}: {ex}'}
         emit('v90_r37_storage_retention',deleted=deletes)
+        _v90r37_maintenance_state['last']=now_ts
         return {'status':'OK','deleted':deletes}
     except Exception as ex:
         emit('v90_r37_storage_retention_error',error=f'{type(ex).__name__}: {ex}')
@@ -18304,6 +18385,7 @@ _v90_base_refresh_experience_lessons = refresh_experience_lessons
 
 
 def _v90_publish_paper_execution_lessons(limit=2500):
+    VLE.invalidate_memory(globals())
     if not pg_enabled() or VP is None or not hasattr(VP,'learning_archive'):
         return {'status':'UNAVAILABLE','archived':0,'learning_fallback':0,'eligible':0}
     try:
@@ -18313,7 +18395,7 @@ def _v90_publish_paper_execution_lessons(limit=2500):
                 'error':f'{type(ex).__name__}: {ex}'}
     archived=0; learning_fallback=0; shadow_covered=0; eligible=0; errors=[]
     for x in rows or []:
-        if not x.get('learning_eligible'):
+        if not VLE.exportable(x):
             continue
         weight=float(x.get('learning_weight') or 0.0)
         if weight<=0:
@@ -18344,6 +18426,7 @@ def _v90_publish_paper_execution_lessons(limit=2500):
             'source':'PAPER_PORTFOLIO_UNIQUE_EXECUTION',
             'unique_market_episode':True,
             'portfolio_results_aggregated':True,
+            **VLE.export_metadata(x),
         }
         entity='paper_exec:'+episode
         try:
@@ -18360,15 +18443,7 @@ def _v90_publish_paper_execution_lessons(limit=2500):
                      x.get('asset'),x.get('horizon'),
                      json.dumps(payload,ensure_ascii=False,default=str),VERSION))
                 archived+=1
-                # If the canonical shadow lifecycle already learned this setup, do not
-                # count the paper portfolios as another directional sample.
-                covered=pc.execute("""SELECT 1 FROM ledger_events
-                    WHERE event_type='experience_lesson'
-                      AND payload->>'source'='CANONICAL_SHADOW_TRADE'
-                      AND payload->>'setup_id'=%s LIMIT 1""",(episode,)).fetchone()
-                if covered:
-                    shadow_covered+=1
-                    continue
+                # Unverified shadow returns cannot replace verified paper evidence.
                 fallback=dict(payload)
                 fallback['source']='PAPER_PORTFOLIO_UNIQUE_EXECUTION_FALLBACK'
                 fallback['learning_weight']=min(0.20,weight)
@@ -18393,7 +18468,7 @@ def _v90_publish_paper_execution_lessons(limit=2500):
     return {'status':'OK' if not errors else 'DEGRADED','archived':archived,
             'learning_fallback':learning_fallback,'shadow_covered':shadow_covered,
             'eligible':eligible,'unique_market_episodes':len(rows or []),'errors':errors[:10],
-            'principle':'one market episode once; portfolio duplicates aggregate; canonical shadow lesson has priority'}
+            'principle':'one verified paper episode once; all copies verified; unverified shadow is diagnostic only'}
 
 
 def refresh_experience_lessons(limit=400):
@@ -18493,7 +18568,9 @@ def _v90_compact_live_row(z):
     sl=z.get('structural_levels') or {}
     sl2=_v90_small_dict(sl,(
         'status','price','sma18','sma50','sma200','sma18_slope','sma50_slope','sma200_slope',
-        'price_vs_sma18','price_vs_sma50','price_vs_sma200','daily_ma_context','daily_ma_status','ma_timeframe','ma_source_identity','ma_daily_asof','ma_native_daily','support','support_strength',
+        'price_vs_sma18','price_vs_sma50','price_vs_sma200','daily_ma_context','daily_ma_status','ma_timeframe','ma_source_identity','ma_daily_asof','ma_native_daily',
+        'ma_daily_asof_basis','ma_daily_known_at','ma_daily_period_label','ma_daily_completion_observed_at',
+        'ma_daily_interval_boundary_verified','ma_daily_verified_close_at','support','support_strength',
         'resistance','resistance_strength'))
     tr=_v90_small_dict(z.get('tactical_reversal'),(
         'active','direction','candidate_direction','setup','state','probability',
@@ -18512,7 +18589,7 @@ def _v90_compact_live_row(z):
     io=_v90_small_dict(z.get('impulse_overlay'),(
         'active','phase','direction','confidence','base_score',
         'active_directional_score','blend','entry_quality'))
-    keys=(
+    keys=(*_V90_QUOTE_IDENTITY_FIELDS,
         'asset','horizon','decision','research_decision','confidence','price','score',
         'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
         'source_gate_pass','market_open','execution_eligible','paper_eligible','production_eligible',
@@ -18530,7 +18607,7 @@ def _v90_compact_live_row(z):
         'expected_move_pct','signal_tier','execution_signal_tier',
         'event_shadow_score','causal_score','causal_label','decision_stage',
         'sma18','sma50','sma200','support_level','resistance_level',
-        'minute_data_status','minute_closed_at','minute_entry_gate','research_history_status','research_feature_availability','research_hourly_bar_count')
+        'minute_data_status','minute_closed_at','minute_entry_gate','research_history_status','research_feature_availability','research_hourly_bar_count','structure_history_status')
     out=_v90_small_dict(z,keys)
     # R65.1: preserve executable crypto quote fields at row level for paper_source_gate.
     for _qk in ('best_bid','best_ask','spread_bps','market_observed_at'):
@@ -18549,10 +18626,13 @@ def _v90_compact_live_row(z):
     out['range_retest_breakout']=rs
     out['impulse_pivot_break']=pb
     out['impulse_overlay']=io
+    from veritas_signal_readiness import readiness_fields
+    out.update(readiness_fields(z))
     return out
 
 
 def _v90_compact_decision_log(z):
+    from veritas_execution_logging import context_summary
     r=_v90_compact_live_row(z)
     p=r.get('trade_plan') or {}
     hs=r.get('horizon_structure') or {}
@@ -18564,6 +18644,8 @@ def _v90_compact_decision_log(z):
         'signal_tier':r.get('signal_tier'),'execution_eligible':r.get('execution_eligible'),
         'paper_eligible':r.get('paper_eligible'),'production_eligible':r.get('production_eligible'),
         'execution_reason':r.get('execution_reason'),'paper_execution_reason':r.get('paper_execution_reason'),
+        'structure_history_status':r.get('structure_history_status'),
+        'trade_entry_eligible':r.get('trade_entry_eligible'),'trade_entry_reason':r.get('trade_entry_reason'),'trade_entry_checked_at':r.get('trade_entry_checked_at'),
         'spread_bps':r.get('spread_bps'),
         'final_gate_status':(p.get('final_economics_gate') or {}).get('status'),
         'final_gate_blockers':(p.get('final_economics_gate') or {}).get('blockers'),
@@ -18580,9 +18662,11 @@ def _v90_compact_decision_log(z):
         'expected_to_stop_ratio':p.get('expected_to_stop_ratio'),
         'plan_eligible':p.get('eligible'),'plan_reason':p.get('reason'),
         'structural_policy_version':p.get('structural_policy_version'),'entry_event_id':p.get('entry_event_id'),
-        'timeframe_entry_context':p.get('timeframe_entry_context'),
+        'timeframe_entry_context':context_summary(p.get('timeframe_entry_context')),
         'daily_ma':_v90_small_dict(r.get('structural_levels'),(
-            'daily_ma_status','sma18','sma50','sma200','ma_timeframe','ma_source_identity','ma_daily_asof')),
+            'daily_ma_status','sma18','sma50','sma200','ma_timeframe','ma_source_identity','ma_daily_asof',
+            'ma_daily_asof_basis','ma_daily_known_at','ma_daily_period_label',
+            'ma_daily_completion_observed_at','ma_daily_interval_boundary_verified','ma_daily_verified_close_at')),
         'daily_ma_periods':{k:_v90_small_dict(x,('status','sample_count','required_count'))
             for k,x in (((r.get('structural_levels') or {}).get('daily_ma_context') or {}).get('periods') or {}).items()},
     }
@@ -18615,7 +18699,7 @@ def _v90_prune_low_priority_caches(level_mb=None,preserve_active_cycle=False):
                     overview_cache['value']=None; overview_cache['at']=0.0; cleared+=1
         except Exception:
             pass
-    for fn_name in ('_decision_memory_rows','_decision_memory_vectors',
+    for fn_name in ('_decision_memory_rows','_decision_memory_vectors','_v842_vectors_by_horizon',
                     'v701_learning_bundle','v70_quality_board','learning_progress'):
         try:
             fn=globals().get(fn_name)
@@ -18638,13 +18722,19 @@ def _v90_prune_low_priority_caches(level_mb=None,preserve_active_cycle=False):
     return cleared
 
 
-def _v90_trim_memory(phase='unknown',force=False):
+def _v90_memory_checkpoint(phase,asset,horizon=None):
+    if MEMORY_SOFT_LIMIT_MB<=320:
+        emit('asset_memory',phase=phase,asset=asset,horizon=horizon,
+             rss_mb=rss_mb(),cycle_mode=_v90r62_active_cycle_mode)
+
+
+def _v90_trim_memory(phase='unknown',force=False,*,preserve_active_cycle=False):
     before=rss_mb()
     if not force and before is not None and float(before)<V90_MEMORY_CAUTION_MB:
         return {'phase':phase,'before_mb':before,'after_mb':before,'trimmed':False}
     # R65: per-asset GC may release objects, but must not evict the warm
     # market/feature caches needed by the remaining assets in the SAME cycle.
-    preserve_active_cycle=str(phase or '').startswith('asset_')
+    preserve_active_cycle=bool(preserve_active_cycle or str(phase or '').startswith('asset_'))
     cleared=_v90_prune_low_priority_caches(before,preserve_active_cycle=preserve_active_cycle)
     try:
         gc.collect()
@@ -18662,6 +18752,15 @@ def _v90_trim_memory(phase='unknown',force=False):
              released_mb=None if before is None or after is None else round(float(before)-float(after),1),
              caches_cleared=cleared)
     return {'phase':phase,'before_mb':before,'after_mb':after,'trimmed':True,'caches_cleared':cleared}
+
+
+def _v90_emit_portfolio(event,**kw):
+    cleanup_started=time.monotonic()
+    if event=='paper_portfolio_phase' and kw.get('phase') in (
+            'calibration_r33_done','calibration_r29_done','book_done','book_failed','book_uncertain'):
+        _v90_trim_memory('portfolio_'+str(kw.get('phase') or 'unknown'),force=True,preserve_active_cycle=True)
+        kw=dict(kw,cleanup_seconds=round(time.monotonic()-cleanup_started,4))
+    return emit(event,**dict(kw,rss_mb=rss_mb()))
 
 
 _v90_base_run_heavy_learning_maintenance=run_heavy_learning_maintenance
@@ -18690,7 +18789,7 @@ def run_heavy_learning_maintenance(reason='scheduled'):
                              'rejected_lessons','abstention_lessons') if x.get(q) is not None}
         except Exception:
             pass
-        _v90_trim_memory('heavy_learning_end',force=True)
+        _v90_trim_memory('heavy_learning_end',force=True,preserve_active_cycle=True)
 
 
 def maybe_schedule_heavy_learning(reason='scheduled',force=False):
@@ -18716,17 +18815,9 @@ def _v90r24_ensure_canonical_portfolios():
     try:
         if hasattr(VP,'ensure_schema'):
             VP.ensure_schema(pg_connect)
-        policies={name:dict(VP.POLICIES[name]) for name in V90_CANONICAL_PORTFOLIOS}
-        with pg_connect() as c:
-            for name in V90_CANONICAL_PORTFOLIOS:
-                initial_nav=float(policies[name].get('initial_nav_rub',1000000))
-                c.execute("""INSERT INTO paper_portfolios
-                  (name,created_at,updated_at,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,
-                   benchmark_nav_rub,high_water_nav_rub,policy,model_version)
-                  VALUES(%s,now(),now(),%s,0,0,0,%s,%s,%s::jsonb,%s)
-                  ON CONFLICT(name) DO UPDATE SET
-                    policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()""",
-                  (name,initial_nav,initial_nav,initial_nav,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION',VR.PORTFOLIO_VERSION)))
+        import veritas_portfolio_read_model as VPRM
+        with pg_connect() as c, c.transaction():
+            VPRM.begin_read_snapshot(c)
             rows=c.execute("""SELECT name FROM paper_portfolios
                               WHERE name=ANY(%s)
                               ORDER BY CASE name
@@ -18785,6 +18876,9 @@ def features(raw, horizon, common_structure=None):
             minute_bars=raw.get('structure_minute_bars'),quote=raw.get('structure_quote'))
     f['trend_entry_context']=raw['_r66_trend_context']
     f['timeframe_entry_context']=TFD.context(raw,horizon)
+    for key in _V90_QUOTE_IDENTITY_FIELDS:
+        f.pop(key,None)
+        if key in raw:f[key]=raw[key]
     f['market_contract']=raw.get('contract')
     f['market_source_names']=raw.get('source_names')
     f['market_observed_at']=raw.get('observed_at')
@@ -18970,8 +19064,14 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
                     execution_timeframe='5m',entry_quality='FRESH_BREAKOUT')
 
     if research_decision in ('LONG','SHORT') and horizon in ('1m','5m','1h','4h'):
-        work=VTE.prepare_row({'price':f.get('price'),'horizon':horizon,
-            'research_decision':research_decision,'trade_plan':plan})
+        import veritas_price_source as VPS
+        # Rebind to the actual feature quote, including its broker UID. A
+        # price-only row loses source identity and invalidates a valid event.
+        quote={key:f[key] for key in VPS.QUOTE_FIELDS if key in f}
+        quote.update(asset=asset,price=f.get('price'),observed_at=f.get('market_observed_at'),
+                     source_names=f.get('market_source_names'),contract=f.get('market_contract'))
+        work=VTE.prepare_row(dict(quote,horizon=horizon,market_observed_at=quote['observed_at'],
+            research_decision=research_decision,trade_plan=plan,_execution_quote=quote))
         plan=work['trade_plan']
     # The same gate is applied again after setup-specific mutations in cycle().
     return final_execution_safety(asset,research_decision,plan)
@@ -18993,6 +19093,8 @@ def main():
     server_thread.start()
     emit('http_bound_early', port=int(os.getenv('PORT','10000')),
          bootstrap_ready=False, startup_mode='TWO_PHASE_READINESS')
+    import veritas_startup_guard as VSG
+    VSG.start_watchdog(lambda: _BOOTSTRAP_READY, emit, delay_seconds=60)
     # R83: optional read-only broker connection; no token means no thread or RPC.
     VTB.connection.start()
 
@@ -19014,8 +19116,8 @@ def main():
     # generated on demand / in background maintenance.
     if pg_boot.get('ok') and VP is not None:
         try:
-            _v90r24_ensure_canonical_portfolios()
-            emit('v90_live_state_ready',status='OK',
+            canonical_state=_v90r24_ensure_canonical_portfolios()
+            emit('v90_live_state_ready',status=canonical_state.get('status','DEGRADED'),
                  historical_reports='DEFERRED',
                  historical_audits='BACKGROUND',
                  portfolio_snapshot='FAST_API_ON_DEMAND',
@@ -19033,25 +19135,8 @@ def main():
     expert_principles = {'status':'background','seeded':0}
     pg_knowledge = {'durable': bool(pg_boot.get('ok')), 'status':'background'}
     # Publish the last durable matrix, including the minute lane, on startup.
-    try:
-        _cold=latest_signal_summary_pg() if pg_enabled() else []
-        if _cold:
-            _cold_map={(x.get('asset'),x.get('horizon')):dict(x) for x in _cold if x.get('asset') and x.get('horizon')}
-            _cold_rows=[]
-            for _a in DISPLAY_ASSETS:
-                for _h in ('1m','5m','1h','4h','1d','3d','7d'):
-                    _x=_cold_map.get((_a,_h))
-                    if _x:
-                        _x['snapshot_stale']=True
-                        _cold_rows.append(_x)
-            with lock:
-                last_cycle.update({'status':'warming','at':now(),'version':VERSION,
-                                   'summary':_cold_rows,'summary_source':'postgres_cold_start',
-                                   'signal_cells':len(_cold_rows),'cycle_mode':'COLD_START'})
-            emit('v90_cold_start_snapshot',signal_cells=len(_cold_rows),status='READY')
-    except Exception as _cold_ex:
-        emit('v90_cold_start_snapshot',signal_cells=0,status='ERROR',
-             error=f'{type(_cold_ex).__name__}: {_cold_ex}')
+    import veritas_breakout_runtime as VBR
+    VBR.restore_snapshot(globals())
     _BOOTSTRAP_READY = True
     try:
         _boot_ui=_v90r26_dashboard_bootstrap()
@@ -19067,6 +19152,8 @@ def main():
     except Exception as _ui_test_ex:
         emit('v90_dashboard_bootstrap_selftest',status='ERROR',
              error=f'{type(_ui_test_ex).__name__}: {_ui_test_ex}')
+    finally:
+        _boot_ui=None
 
     # Knowledge/case corpora are already durable in PostgreSQL. Do not reseed on
     # every web-service restart: it competes with the live cycle for DB connections.
@@ -19079,7 +19166,11 @@ def main():
                                'min_relevance':KNOWLEDGE_MIN_RELEVANCE,
                                'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY),
                                'manager_corpus': manager_corpus_summary()})
-    if pg_boot.get('ok') and VP is not None: VPG.start(globals()); VSQ.start(pg_connect,emit)
+    if pg_boot.get('ok') and VP is not None:
+        VPG.start(globals()); VSQ.start(pg_connect,emit,resource_guard=_v90_background_maintenance.permit)
+        import veritas_breakout_runtime as VBR
+        import veritas_structural_lifecycle as VSL
+        VBR.start(globals(),entry_pass=lambda rows,clock:VSL.fast_entry_pass(globals(),rows,clock,runtime=True))
     threading.Thread(target=loop, daemon=True).start()
     # R38 always runs: it exits immediately after a healthy write test, but if
     # Postgres is temporarily unavailable/full it waits for the Resume window.
@@ -19154,6 +19245,8 @@ VERSION = VR.PRODUCT_VERSION
 from veritas_market_runtime import install_market_runtime_guard as _v90_install_market_guard; _v90_install_market_guard(globals())
 from veritas_storage_guard import install_storage_guard as _v90_install_storage_guard
 _v90_install_storage_guard(globals())
+from veritas_maintenance import install as _install_maintenance
+_install_maintenance(globals())
 
 if __name__ == '__main__':
     main()

@@ -14,6 +14,8 @@ class SingleSourceTests(unittest.TestCase):
         raw = dict(asset=asset, price=100., source_gate_pass=True, market_open=True,
                    observed_at=datetime.now(timezone.utc).isoformat(), direct_sources=1,
                    best_bid=99.99, best_ask=100.01, secondary_price=None)
+        if asset == 'BRENT':
+            raw.update(source='ProFinance', raw_label='Brent oil', raw_ticker='brent', instrument_id='27')
         gate = VI.execution_eligibility(asset, raw, {'ok': True})
         context={} if asset!='NQ' else {'status':'OK','closed_at':datetime.now(timezone.utc).timestamp(),
             'event':{'direction':'SHORT','trigger_level':100.2,'atr':1.,'stop_price':101.,

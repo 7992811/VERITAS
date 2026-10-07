@@ -459,40 +459,7 @@ def _desired_fraction(row, policy, drawdown):
     return float(admission.get('fraction') or 0.0)
 
 def _portfolio_admission_trace(candidates, policy, drawdown):
-    out = []
-    for asset, row in sorted((candidates or {}).items()):
-        sf = _signal_first_admission(row, policy, drawdown)
-        plan = row.get('trade_plan') or {}
-        out.append({
-            'asset':asset,
-            'direction':row.get('research_decision'),
-            'horizon':row.get('horizon'),
-            'canonical_setup_id':_portfolio_canonical_setup_id(row),
-            'pwin':sf.get('probability'),
-            'model_quality_score':sf.get('model_quality_score'),
-            'signal_prior':row.get('_pwin'),
-            'probability_source':sf.get('probability_source') or row.get('_pwin_source'),
-            'rank':row.get('_rank'),
-            'rr':plan.get('expected_to_stop_ratio'),
-            'hard_veto':not bool(sf.get('open')),
-            'target_fraction':sf.get('fraction'),
-            'reason':sf.get('reason'),
-            'trend_event':sf.get('trend_event'),
-            'execution':dict(row.get('_execution_audit') or {}),
-            'signal_observed_at':row.get('market_observed_at') or row.get('observed_at'),
-            'economics_blockers':sf.get('economics_blockers'),
-            'profitability_blockers':sf.get('profitability_blockers'),
-            'profitability_gate':sf.get('profitability_gate'),
-            'source_blockers':sf.get('source_blockers'),
-            'quote_time_gate':sf.get('quote_time_gate'),
-            'modeled_round_trip_cost_pct':sf.get('modeled_round_trip_cost_pct'),
-            'net_reward_risk':sf.get('net_reward_risk'),
-            'supporting_horizons':row.get('_supporting_horizons'),
-            'direction_support':row.get('_direction_support'),
-            'flip_confirmed':row.get('_flip_confirmed'),
-            'experience_decision':sf.get('experience_decision') or plan.get('execution_policy'),
-        })
-    return out
+    return VAT.build(candidates, _portfolio_canonical_setup_id)
 
 _v90_candidate_base_step_one=_step_one
 
@@ -624,6 +591,7 @@ def production_candidate_readiness(pg_connect):
           'positive_avg_trade':float(m.get('avg_net_pnl_rub') or 0.0)>0,
           'drawdown':m.get('max_drawdown') is not None and float(m['max_drawdown'])<=thresholds['max_drawdown'],
           'history_coverage':bool(m.get('history_complete')),
+          'rule_evidence':bool(m.get('rule_evidence_complete')),
           'accounting':bool(m.get('accounting_complete')),
           'exit_telemetry':int(m.get('unknown_exits') or 0)<=thresholds['unknown_exit_tolerance'],
         }
@@ -1044,6 +1012,7 @@ def _v90r29_episode_from_trade(t):
     return e
 
 def _v90r44_sanitize_learning(pg_connect,force=False):
+    import veritas_learning_integrity as VLI
     now=time.time()
     if (not force
             and now-float(_v90r44_sanitize_state.get('at') or 0.0)<50.0):
@@ -1052,9 +1021,15 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
     changed=0
     total=0
     err=None
+    evidence_revalidation=None
     try:
-        with pg_connect() as c:
+        # Production connections use autocommit. Keep staging, row locks and
+        # relabelling in one transaction; SET LOCAL then bounds the actual work.
+        with pg_connect() as c, c.transaction():
+            c.execute("SET LOCAL statement_timeout = '4000ms'")
             _v90r29_ensure(c)
+            evidence_revalidation=VLI.revalidate_eligible(c)
+            changed=evidence_revalidation['staged']+evidence_revalidation['processed']
             cur=c.execute("""
               UPDATE v90_learning_episodes
               SET learning_eligible=FALSE,
@@ -1070,7 +1045,7 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
               WHERE learning_eligible=TRUE
                 AND UPPER(COALESCE(payload->>'exit_reason','')) LIKE '%REBASE%'
             """)
-            changed=max(0,int(getattr(cur,'rowcount',0) or 0))
+            changed+=max(0,int(getattr(cur,'rowcount',0) or 0))
             cur=c.execute("""
           UPDATE v90_learning_episodes e SET learning_eligible=FALSE,
             learning_action='EXCLUDE_FROM_LEARNING',
@@ -1083,8 +1058,6 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
           FROM paper_trades t
           WHERE e.trade_id=t.trade_id AND e.learning_eligible=TRUE AND (
             UPPER(COALESCE(t.payload->>'data_integrity_status','OK')) NOT IN ('','OK','VALID','CLEAN')
-            OR COALESCE(t.payload->>'r55_lifetime_mfe_pct',t.payload->>'mfe_pct') IS NULL
-            OR COALESCE(t.payload->>'r55_lifetime_mae_pct',t.payload->>'mae_pct') IS NULL
             OR (t.asset IN ('NQ','NDX') AND UPPER(CONCAT_WS(' ',
                 t.payload->>'entry_primary_source',t.payload->>'entry_data_latency_class',
                 t.payload->'contract_identity'->>'primary_source')) ~ '(PROXY|QQQ)')
@@ -1099,6 +1072,8 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
             """).fetchone()
             total=int((row or {}).get('n') or 0)
     except Exception as ex:
+        changed=0  # Transaction rolled back; stale readers still require verified evidence.
+        evidence_revalidation=None
         err=f'{type(ex).__name__}: {ex}'[:240]
 
     _v90r44_sanitize_state.update({
@@ -1106,12 +1081,16 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
       'last_changed':changed,
       'total_admin_excluded':total,
       'last_error':err,
+      'evidence_revalidation':evidence_revalidation,
     })
 
+    if changed or err:
+        # A failed read must not leave a previously learned profile in force.
+        _v90r29_cache.update(at=0.0,profiles={},summary={'status':'EVIDENCE_REVALIDATION_REQUIRED'})
+        _v90r33_cache.update(at=0.0,n=0,median_realization=1.0,avg_realization=1.0,
+                            avg_capture=None,overforecast_rate=0.0,entry_error_rate=0.0,
+                            exit_capture_error_rate=0.0,edge_haircut=1.0)
     if changed:
-        # Both learning caches must be rebuilt from the sanitized episode set.
-        _v90r29_cache['at']=0.0
-        _v90r33_cache['at']=0.0
         print(json.dumps({
           'event':'V90_R44_LEARNING_SANITIZED',
           'changed':changed,
@@ -1242,20 +1221,8 @@ _v90r46_base_close_or_reduce=_close_or_reduce
 _v90r46_base_report=report
 
 def _v842_hard_thesis_exit(row):
-    """Immediate full exit is reserved for explicit hard thesis invalidation.
-
-    Entry-quality INVALIDATED / NO_TRADE states are admission and refresh
-    telemetry. They can block new risk, but they are not by themselves proof
-    that an already-open thesis has failed. Promoting them to a hard exit was
-    crystallising fee-negative closes while the execution horizon could still
-    be BUILDING_TREND. Held positions remain protected by the real stop,
-    confirmed direction-flip, structure-exhaustion and portfolio risk lanes.
-    """
-    if not row:
-        return False
-    plan=row.get('trade_plan') or {}
-    ti=plan.get('trade_integrity') or {}
-    return bool(ti.get('hard_invalidation'))
+    """Admission vetoes never substitute for a bound held-position break."""
+    return VPT.hard_thesis_exit(row)
 
 def _v90r46_hold_context(name,z,row):
     row=row or {}
@@ -1347,17 +1314,17 @@ def _v90r46_mark_trend_hold(c,name,candidates,summary,ts):
         marked.append({'asset':asset,**ctx})
     return marked
 
-def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
+def _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=None):
     changes=[]
     try:
-        rows=c.execute(
+        rows=positions if positions is not None else c.execute(
             "SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)
         ).fetchall()
     except Exception:
         return changes
 
-    # Commission is 0.04% per leg. Require a positive post-cost floor rather
-    # than waiting for the trade to retrace back through zero.
+    # This percentage is only a price-move trigger. Canonical exit authority
+    # must independently verify whole-cycle net after all paid and exit costs.
     net_floor_pct=max(0.15,100.0*(2.0*float(COMMISSION)+0.0003))
 
     for z0 in rows or []:
@@ -1401,7 +1368,7 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
         if target>=current_frac-0.025:
             continue
 
-        result=_vp_base._v90r46_base_close_or_reduce(
+        result=canonical_close_or_reduce(
             c,p,name,z,px,target,nav,ts,'R46_MFE_GIVEBACK_HARVEST'
         )
         if not result:
@@ -1498,10 +1465,11 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     try:
         p,pos=_portfolio_rows(c,name)
         nav,_,_,_=_mark_nav(p,pos,prices)
-        _v90r46_giveback_harvest(c,p,name,prices,nav,ts)
+        _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=pos)
     except Exception:
         pass
 
+    p = pos = None
     return _v90r46_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
     )
@@ -2325,6 +2293,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         print(json.dumps({'event':'V90_R54_STRUCTURAL_STOP_RATCHET',
                           'portfolio':name,'changes':stop_changes},
                          ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    p = pos = posmap = z = None
     return _v90r54_base_step_one(
         c,name,policy,work,prices,ruonia,usdrub,ts,commission_rate,summary
     )
@@ -3469,6 +3438,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         except Exception as ex:
             print(json.dumps({'event':'V90_R56_MIGRATION_ERROR','error':f'{type(ex).__name__}: {ex}'},
                              ensure_ascii=False,separators=(',',':')),flush=True)
+    p = pos = z0 = z = zfresh = None
     return _v90r56_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
     )
@@ -4955,9 +4925,10 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
         VPG.publish_quote(row.get('asset'),VPS.quote_from_row(row))
     _r80_quarantine_source_incident(pg_connect)
     with pg_connect() as c:
-        positions=[dict(z) for z in c.execute('SELECT * FROM paper_positions').fetchall()]
+        positions=[dict(z) for z in c.execute(VPG.QUOTE_POSITION_SQL).fetchall()]
     if VPG._entry_namespace is not None:
         VPG.refresh_position_quotes(VPG._entry_namespace,positions)
+    positions = None
     return _r80_base_step_all(summary,pg_connect,model_version,observed_at,commission_rate,emit)
 
 
@@ -4992,7 +4963,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         if VTM.owns_position(z):
             VTM.apply_trailing(c,name,z,safe_summary,q,ts)
             safe_candidates,safe_summary=VTM.filter_lower_context(z,safe_candidates,safe_summary)
-        safe_candidates,safe_summary,guard=VTG.guard_open_position(c,z,safe_candidates,safe_summary)
+        safe_candidates,safe_summary,guard=VTG.guard_open_position(c,z,safe_candidates,safe_summary,now=ts)
         if guard.get('active'):
             patch={'ctc_senior_thesis_guard':guard}
             c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
@@ -5000,17 +4971,18 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             if z.get('active_trade_id'):
                 c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
                           (json.dumps(patch),z['active_trade_id']))
+    rows = z = None
     return _r80_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,safe_summary)
 
 
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
-    q=VPG.quote_for_position(dict(z),now=ts)
+    q=VPG.exit_execution_quote(dict(z),now=ts)
     if not q:
         return 0.0
     actual=float(q['price'])
     if str(reason)=='STOP' and VPG.protective_reason(dict(z),q,VPG.utc_datetime(ts))!='STOP':
         return 0.0
-    return _r80_base_close_or_reduce(c,p,name,dict(z,_execution_quote=q),actual,target_fraction,nav,ts,reason)
+    return _r80_base_close_or_reduce(c,p,name,dict(z,_execution_quote=q,_execution_quote_frozen=True),actual,target_fraction,nav,ts,reason)
 
 
 # CANONICAL FINAL RUNTIME AUTHORITY — CTC v2
@@ -5018,6 +4990,7 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
 # routing, admission, sizing and mutation authority are replaced below.
 def _canonical_desired_fraction(row,policy,drawdown):
     out=VCR.evaluate(row,policy,drawdown)
+    if isinstance(row,dict): VAT.record(row,out,out.get('checked_at'),'ALLOCATION')
     return float(out.get('fraction') or 0.0) if out.get('open') else 0.0
 
 
@@ -5032,11 +5005,26 @@ def _canonical_payload(z):
 
 
 def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    row={} if row is None else row
+    row.setdefault('_execution_audit',{})
+    row.setdefault('_admission_audit',{}).pop('FILL',None)
+    row=dict(row or {})
+    if row.get('_runtime_quote_refresh'):
+        ts=datetime.now(timezone.utc).isoformat()
+        row=VPG.refresh_execution_row(row,now=VPG.utc_datetime(ts))
+        price=VPS.positive(VPS.quote_from_row(row).get('price')) or price
+        # Freeze this selected quote/time through admission and accounting.
+        row['_runtime_quote_refresh']=False
+    quote=VPS.quote_from_row(row)
+    price=VPS.positive(quote.get('price')) or price
+    row=VPS.execution_row(dict(row,_execution_quote=quote))
     policy=dict(POLICIES.get(str(name)) or {})
     hwm=float((p or {}).get('high_water_nav_rub') or nav or 1.0)
     dd=max(0.0,1.0-float(nav)/max(hwm,1.0))
     row=TFP.prepare_row(dict(row or {},research_decision=direction),price,ts)
     admission=VCR.evaluate(row,policy,dd,ts)
+    VAT.record(row,admission,ts,'EXECUTION')
+    row['_execution_audit']['checked_at']=str(ts)
     if not admission.get('open'):
         _record_entry_outcome(row,'BLOCKED',admission.get('reason') or 'CANONICAL_ADMISSION_BLOCK',
                               canonical_admission=admission)
@@ -5068,6 +5056,13 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                       canonical_admission=admission,event_id=event_id)
                 return 0.0
     elif str(existing.get('direction') or '')==str(direction):
+        import veritas_structural_lifecycle as VSL
+        pending = (VPG.protective_reason(existing,quote,VPG.utc_datetime(ts))
+                   if VSL.owns_position(existing) else None)
+        if pending:
+            _record_entry_outcome(row,'HELD','STRUCTURAL_PROTECTIVE_EXIT_PENDING',
+                                  pending_protective_reason=pending)
+            return 0.0
         current=abs(float(existing.get('units') or 0.0)*float(price))/max(float(nav),1.0)
         if requested<=current+0.0025:
             _record_entry_outcome(row,'HELD','TARGET_ALREADY_REACHED',current_fraction=current)
@@ -5079,7 +5074,13 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                   current_fraction=current,favorable_progress=favorable)
             return 0.0
         payload=_canonical_payload(existing)
-        if str(payload.get('execution_horizon') or '')!=str(row.get('horizon') or ''):
+        import veritas_structural_lifecycle as VSL
+        structural_add=TFP.structural_quote_rule(row)
+        binding=VSL.add_binding(existing,row) if structural_add else None
+        if structural_add and not binding.get('eligible'):
+            _record_entry_outcome(row,'BLOCKED',binding['reason'])
+            return 0.0
+        if not structural_add and str(payload.get('execution_horizon') or '')!=str(row.get('horizon') or ''):
             _record_entry_outcome(row,'BLOCKED','SAME_TF_ADD_HORIZON_MISMATCH')
             return 0.0
         last_trace=(payload.get('last_add_teaching_trace') or {}).get('timeframe_entry_context') or {}
@@ -5091,16 +5092,12 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                   event_id=new_event)
             return 0.0
         actual=VX.entry_gate(row,float(price),direction,requested,existing,
-                            existing_target_price=VX.stored_position_target_price(existing))
+                            existing_target_price=VX.stored_position_target_price(existing),now=VPG.utc_datetime(ts),
+                            execution_fraction=max(0.0,requested-current))
         hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
         if hard:
             _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
             return 0.0
-        stop=float(existing.get('stop_price') or 0.0)
-        if stop>0:
-            net_risk=abs(float(price)-stop)/max(float(price),1e-12)+float(VX.round_trip_cost_pct((row or {}).get('spread_bps')))
-            if net_risk>0:
-                requested=min(requested,float(CTC.PAPER_RISK_POLICY['per_idea_structural_stop_risk_cap_nav'])/net_risk)
     else:
         if not bool((row or {}).get('_flip_confirmed')):
             _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED')
@@ -5111,7 +5108,8 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     if cap>0:
         requested=min(requested,cap)
     step=float(policy.get('position_step') or .05)
-    requested=max(0.0,math.floor(requested/step+1e-9)*step)
+    if not existing or str(existing.get('direction'))!=str(direction):
+        requested=max(0.0,math.floor(requested/step+1e-9)*step)
     if requested<=0:
         _record_entry_outcome(row,'BLOCKED','STOP_RISK_CAP_EXCEEDED')
         return 0.0
@@ -5120,15 +5118,42 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     work['_canonical_admission']={k:v for k,v in admission.items() if k!='prepared_plan'}
     work.setdefault('_pwin',admission.get('probability') or work.get('confidence') or .5)
     work.setdefault('_pwin_source',admission.get('probability_source') or 'CTC_V2_CANONICAL')
-    return _vp_base.CANONICAL_ACCOUNTING_OPEN_OR_ADD(
+    # The accounting function intentionally returns None after a successful
+    # entry. Its shared audit is the confirmation, never the fee return value.
+    # Reset it so an earlier execution on a reused candidate cannot certify one.
+    if not isinstance(work.get('_execution_audit'),dict):
+        work['_execution_audit']={}
+    work['_execution_audit'].update(status='NOT_EXECUTED',reason='ACCOUNTING_PENDING')
+    result = _vp_base.CANONICAL_ACCOUNTING_OPEN_OR_ADD(
         c,p,name,asset,direction,float(price),requested,nav,ts,work,'CTC_V2_'+str(reason or 'ENTRY'))
+    if work['_execution_audit'].get('status')=='EXECUTED':
+        # Observe the exact selected entry quote only after accounting confirms
+        # a fill.  A carried/add position never receives a fabricated prefix.
+        import veritas_observation_path as VOP
+        from contextlib import nullcontext
+        try:
+            transaction=getattr(c,'transaction',None)
+            with transaction() if callable(transaction) else nullcontext():
+                opened = c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',
+                                   (name,asset)).fetchone()
+                if (opened and opened.get('asset')==asset and opened.get('direction')==direction
+                        and opened.get('active_trade_id')):
+                    is_new = not existing or opened.get('active_trade_id') != existing.get('active_trade_id')
+                    VOP.record(c,dict(opened),VPS.quote_from_row(work),ts,
+                               at_entry=is_new,lane='CANONICAL_ENTRY' if is_new else 'CANONICAL_ADD')
+        except Exception:
+            # A missing entry witness stays unverified; an optional evidence
+            # read/write must not roll back the already accounted paper fill.
+            pass
+    return result
 
 
 def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     z=dict(z or {})
-    q=VPG.quote_for_position(z,now=ts)
+    q=VPG.exit_execution_quote(z,now=ts)
     if not q:
         return 0.0
+    z.update(_execution_quote=q,_execution_quote_frozen=True)
     actual=float(q['price'])
     reason=str(reason or '')
     current=abs(float(z.get('units') or 0.0)*actual)/max(float(nav),1.0)
@@ -5154,7 +5179,7 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     # CTC lifecycle: the first take-profit harvests part of a position and keeps
     # a structural runner whenever the 5% position step permits it. Never take
     # discretionary profit unless the whole-trade result is positive after costs.
-    if full and reason.startswith('TAKE_PROFIT'):
+    if VPG.is_discretionary_profit_exit(reason):
         trade=(c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
                          (z.get('active_trade_id'),)).fetchone()
                if z.get('active_trade_id') else None)
@@ -5163,9 +5188,30 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         if not assessment.get('eligible'):
             print(json.dumps({'event':'CTC_V2_TP_SUPPRESSED','portfolio':name,
                               'asset':z.get('asset'),'reason':assessment.get('reason'),
-                              'projected_net_pnl_rub':assessment.get('net_pnl_rub')},
+                              'projected_net_pnl_rub':assessment.get('net_pnl_rub'),
+                              'exit_reason':reason,'target_fraction':target_fraction},
                              ensure_ascii=False,default=str,separators=(',',':')),flush=True)
             return 0.0
+    # Every actual close/reduction records the same quote used by accounting.
+    # Evidence-only metadata does not alter stop, target, size or execution price.
+    import veritas_observation_path as VOP
+    z = VOP.record(c,z,q,ts,lane='CANONICAL_EXIT')
+    import veritas_structural_lifecycle as VSL
+    if full and reason.startswith('TAKE_PROFIT') and VSL.owns_position(z):
+        reduction=VSL.target_reduction(z,actual,nav,ts)
+        if not reduction.get('eligible'):
+            return 0.0
+        result=_vp_base.CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE(
+            c,p,name,dict(z,_execution_quote=q),actual,reduction['target_fraction'],nav,ts,reduction['reason'])
+        if result:
+            patch=dict(reduction['patch'],profit_exit_assessment=assessment)
+            encoded=json.dumps(patch,ensure_ascii=False,default=str)
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                      "WHERE active_trade_id=%s",(encoded,z.get('active_trade_id')))
+            c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                      "WHERE trade_id=%s",(encoded,z.get('active_trade_id')))
+        return result
+    if full and reason.startswith('TAKE_PROFIT'):
         policy=dict(POLICIES.get(str(name)) or {})
         step=float(policy.get('position_step') or CTC.LIFECYCLE_POLICY['minimum_position_step'])
         payload=_canonical_payload(z)
@@ -5221,7 +5267,9 @@ CANONICAL_ADMISSION_ENGINE=CanonicalAdmissionEngine()
 
 
 def canonical_signal_first_admission(row,policy,drawdown):
-    return CANONICAL_ADMISSION_ENGINE.evaluate(row,policy,drawdown)
+    out=CANONICAL_ADMISSION_ENGINE.evaluate(row,policy,drawdown)
+    if isinstance(row,dict): VAT.record(row,out,out.get('checked_at'),'PROJECTION')
+    return out
 
 
 def canonical_report(pg_connect):

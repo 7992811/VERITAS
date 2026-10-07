@@ -1,8 +1,11 @@
 """Complete-ledger diagnostics. No orders, balance rewrites or fitted thresholds."""
 from collections import defaultdict
+from contextlib import closing
 from datetime import datetime
 import json
 import math
+import veritas_price_source as VPS
+from veritas_timeframe_structure import TIMEFRAMES
 
 
 def number(value):
@@ -23,21 +26,132 @@ def payload(value):
         return {}
 
 
+def _timestamp(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return float(value) if math.isfinite(value) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+    try:
+        moment=value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace('Z','+00:00'))
+        return moment.timestamp() if moment.tzinfo else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def observed_event(trade):
+    """An event ID or a true flag alone does not prove a closed structural event."""
+    p=payload(trade.get('payload'))
+    event=p.get('entry_event_snapshot')
+    event=event if isinstance(event,dict) else {}
+    declared=p.get('idea_event_id') or p.get('r66_event_id')
+    event_id=event.get('event_id') or declared
+    if not isinstance(event_id,str) or not event_id:
+        return None,False
+    if event_id.startswith('R79_SIG_') or str(declared or '').startswith('R79_SIG_'):
+        return event_id,False
+    if declared and declared!=event_id:
+        return event_id,False
+    timeframe=event.get('timeframe')
+    seconds=TIMEFRAMES.get(timeframe) if isinstance(timeframe,str) else None
+    ma_event=event.get('event_type')=='DAILY_MA_REBOUND'
+    if ((event_id.startswith('MAR_') or event.get('ma_proof') or event.get('ma_rebound_version'))
+            and not ma_event):
+        return event_id,False
+    if (event.get('event_type') not in ('SAME_TIMEFRAME_STRUCTURAL_BREAKOUT','DAILY_MA_REBOUND')
+            or seconds is None or timeframe!=trade.get('horizon')
+            or event.get('confirmation')!='CLOSED_'+timeframe+'_BAR'
+            or any(event.get(field)!=timeframe for field in
+                   ('atr_timeframe','stop_timeframe','target_timeframe'))
+            or event.get('asset')!=trade.get('asset')
+            or event.get('direction')!=trade.get('direction')):
+        return event_id,False
+    expected=p.get('price_source_lock') or p.get('entry_execution_source_identity')
+    actual=event.get('source_identity')
+    if (not isinstance(expected,dict) or not isinstance(actual,dict)
+            or not expected.get('key') or expected.get('asset')!=trade.get('asset')
+            or actual.get('asset')!=trade.get('asset') or not VPS.same(expected,actual)):
+        return event_id,False
+    if ma_event:
+        try:
+            from veritas_ma_rebound import validate_event
+            proof=event.get('ma_proof') or {}
+            if ((proof.get('daily_provenance') or {}).get('native_timeframe')!='1d'
+                    or not validate_event(event,source_identity=expected).get('eligible')):
+                return event_id,False
+        except (ImportError,AttributeError,KeyError,TypeError,ValueError,OverflowError):
+            return event_id,False
+    opening,signal,confirmed,entered=(_timestamp(value) for value in
+        (event.get('breakout_bar_at'),event.get('signal_at'),event.get('confirmed_at'),trade.get('opened_at')))
+    known=[_timestamp(event.get(key)) for key in
+           ('level_available_at','stop_level_available_at','atr_observed_until')]
+    if any(value is None for value in (opening,signal,confirmed,entered,*known)):
+        return event_id,False
+    return event_id,bool(opening+seconds<=signal<=confirmed<=entered and all(value<=opening for value in known))
+
+
+def _source_exclusion(trade,p):
+    """Use immutable entry identities; never infer a clean historical provider."""
+    mark=p.get('source_locked_mark') or {}
+    mark=mark if isinstance(mark,dict) else {}
+    locks=[p.get(key) for key in ('price_source_lock','entry_execution_source_identity',
+                                  'last_exit_source_identity','contract_identity')]
+    locks.append(mark.get('identity'))
+    names=p.get('entry_source_names') or {}
+    names=names if isinstance(names,dict) else {}
+    source_parts=[p.get('entry_primary_source'),p.get('entry_data_latency_class'),names.get('primary')]
+    for lock in locks:
+        if isinstance(lock,dict):
+            source_parts.extend(lock.get(key) for key in ('key','primary_source','contract_id'))
+        elif lock:
+            source_parts.append(str(lock))
+    source=' '.join(str(value or '') for value in source_parts).upper()
+    if any(token in source for token in ('PROXY','BRIDGE','QQQ','GLD')):
+        return 'PROXY_PRICE'
+    try:
+        expected=VPS.position_identity(trade)
+    except (TypeError,ValueError,KeyError):
+        return 'SOURCE_UNVERIFIED'
+    if (not expected or expected.get('legacy_fixed_adapter')
+            or not expected.get('key') or expected.get('asset')!=trade.get('asset')):
+        return 'SOURCE_UNVERIFIED'
+    if str(expected.get('key')).startswith('TBANK_GRPC:') and not expected.get('contract_id'):
+        return 'SOURCE_UNVERIFIED'
+    observations=[p.get('last_exit_source_identity'),mark.get('identity')]
+    observations=[value for value in observations if value]
+    if not observations:
+        return 'SOURCE_UNVERIFIED'
+    entry=p.get('entry_execution_source_identity')
+    if entry:
+        observations.append(entry)
+    for actual in observations:
+        if not isinstance(actual,dict) or not actual.get('key'):
+            return 'SOURCE_UNVERIFIED'
+        if actual.get('asset')!=trade.get('asset') or not VPS.same(expected,actual):
+            return 'DATA_INTEGRITY'
+    return None
+
+
 def evidence_exclusion(trade):
     p = payload(trade.get('payload'))
     reason = str(trade.get('exit_reason') or p.get('exit_reason') or p.get('close_reason') or '')
     if 'REBASE' in reason.upper():
         return 'ADMINISTRATIVE_EXIT'
-    integrity = str(p.get('data_integrity_status') or '').upper()
-    if integrity not in ('', 'OK', 'VALID', 'CLEAN') or 'DATA_DISCONTINUITY' in reason.upper():
+    integrity = str(p.get('data_integrity_status') or '').strip().upper()
+    unknown_integrity=integrity in ('','UNKNOWN','UNVERIFIED','MISSING')
+    if (not unknown_integrity and integrity not in ('OK', 'VALID', 'CLEAN')) or 'DATA_DISCONTINUITY' in reason.upper():
         return 'DATA_INTEGRITY'
-    identity = p.get('contract_identity') or {}
-    source = ' '.join(str(x or '') for x in (p.get('entry_primary_source'),
-        p.get('entry_data_latency_class'), identity.get('primary_source'))).upper()
-    if trade.get('asset') in ('NQ', 'NDX') and ('PROXY' in source or 'QQQ' in source):
-        return 'PROXY_PRICE'
+    source_problem=_source_exclusion(trade,p)
+    if source_problem:
+        return source_problem
+    if unknown_integrity:
+        return 'SOURCE_UNVERIFIED'
     if p.get('recovered') or p.get('learning_eligible') is False:
         return 'INCOMPLETE_EVIDENCE'
+    if not observed_event(trade)[1]:
+        return 'UNVERIFIED_EVENT'
     return None
 
 
@@ -71,13 +185,21 @@ def summarize(rows):
         avg_loss_rub=loss/len(losses) if losses else None)
 
 
+_REPORT_FIELDS = ('trade_id','portfolio_name','asset','direction','horizon','setup','opened_at','closed_at',
+    'gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub','entry_notional_rub','entry_fill_count',
+    'exit_fill_count','held_seconds','exit_reason','cohort','evidence_exclusion')
+_EXAMPLE_PAYLOAD_FIELDS = ('r55_lifetime_mfe_pct','mfe_pct','entry_quality',
+    'entry_primary_source','expected_move_pct','last_management_reason')
+
+
 def analyze(rows):
-    rows = [dict(r) for r in rows]
+    source_rows, rows = rows, []
     buckets = {k: defaultdict(list) for k in ('portfolio', 'asset', 'horizon', 'exit_reason', 'cohort', 'entry_day', 'evidence')}
     patterns = defaultdict(list)
     diagnostics = defaultdict(int)
     episodes = set()
-    for r in rows:
+    for raw in source_rows:
+        r = dict(raw)
         p = payload(r.get('payload'))
         reason = str(p.get('exit_reason') or p.get('close_reason') or r.get('last_exit_reason') or 'UNKNOWN')
         r['exit_reason'] = reason
@@ -109,6 +231,12 @@ def analyze(rows):
             # Cross-portfolio copies of the same market event are not independent tests.
             episodes.add((r.get('asset'),r.get('direction'),
                 p.get('r66_event_id') or p.get('canonical_setup_id') or str(r.get('opened_at'))))
+        # All source/event/MA proofs and diagnostics have consumed the full row.
+        # Buckets share this private dict; retain only their report inputs.
+        compact = {k:r[k] for k in _REPORT_FIELDS if k in r}
+        compact['payload'] = {k:p[k] for k in _EXAMPLE_PAYLOAD_FIELDS if k in p}
+        r.clear(); r.update(compact); rows.append(r)
+        del raw, p, compact
     total = summarize(rows)
     grouped = {kind: [dict(key=k, **summarize(v)) for k,v in sorted(groups.items())]
                for kind,groups in buckets.items()}
@@ -123,9 +251,7 @@ def analyze(rows):
     loss_patterns.sort(key=lambda r:r['net_pnl_rub'])
     def example(r):
         p = payload(r.get('payload'))
-        fields = ('trade_id','portfolio_name','asset','direction','horizon','setup','opened_at','closed_at',
-            'gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub','entry_notional_rub','entry_fill_count',
-            'exit_fill_count','held_seconds','exit_reason','cohort','evidence_exclusion')
+        fields = _REPORT_FIELDS
         result = {k: (r[k].isoformat() if isinstance(r.get(k),datetime) else r.get(k)) for k in fields}
         result.update(mfe_pct=p.get('r55_lifetime_mfe_pct',p.get('mfe_pct')),
             entry_quality=p.get('entry_quality'),entry_source=p.get('entry_primary_source'),
@@ -137,12 +263,17 @@ def analyze(rows):
         systemic=dict(losses=total['losses'],total_costs_rub=total['costs_rub'],
             total_net_pnl_rub=total['net_pnl_rub'],**diagnostics),
         groups=grouped,patterns=loss_patterns[:30],independent_unflagged_episodes=len(episodes),
+        episode_independence_established=False,
         worst_losses=[example(r) for r in losses[:12]],recent_trades=[example(r) for r in latest[:30]],
-        note='Accounting includes every closed trade. Administrative and data-integrity cases are excluded only from strategy evidence. MFE is not a guaranteed realizable profit.')
+        note='Accounting includes every closed trade. Administrative, proxy, source-unverified and event-unverified cases are excluded only from strategy evidence. MFE is not a guaranteed realizable profit.')
 
 
 def audit_closed_trades(conn):
-    rows = conn.execute('''SELECT t.*,
+    with conn.transaction():
+      with conn.cursor() as cursor:
+        # Keep ordinary SELECT planning and its delivery order; DECLARE changes
+        # cursor costing even when the SQL has no explicit ORDER BY.
+        with closing(cursor.stream('''SELECT t.*,
         EXTRACT(EPOCH FROM (t.closed_at-t.opened_at)) AS held_seconds,
         o.entry_notional_rub,o.entry_fill_count,o.exit_fill_count,o.last_exit_reason
         FROM paper_trades t LEFT JOIN (
@@ -153,5 +284,5 @@ def audit_closed_trades(conn):
             (ARRAY_AGG(reason ORDER BY created_at DESC) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_reason
           FROM paper_orders GROUP BY trade_id
         ) o ON o.trade_id=t.trade_id
-        WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')''').fetchall()
-    return analyze(rows)
+        WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')''',size=8)) as rows:
+            return analyze(rows)
