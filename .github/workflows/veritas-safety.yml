@@ -117,7 +117,7 @@ jobs:
       - name: Asset-management intelligence regressions
         env:
           VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
-        run: python -m unittest -v test_veritas_management_intelligence.py test_veritas_scorecard_delivery.py test_veritas_scorecard_daily.py
+        run: python -m unittest -v test_veritas_management_intelligence.py test_veritas_scorecard_delivery.py test_veritas_scorecard_daily.py test_veritas_ami_staged_sql.py test_veritas_scorecard_stages.py test_veritas_ami_staged_pipeline_sql.py
       - name: Paper signal UI regressions
         run: |
           node tools/test_paper_ui.cjs

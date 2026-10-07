@@ -1,17 +1,19 @@
 """Prospective producer contracts and isolated PostgreSQL pipeline recovery."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import timedelta
 import json
 import os
 import time
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import veritas_autonomous_learning as AUTO
 import veritas_continuous_learning as C
 import veritas_learning_bridge as BRIDGE
 import veritas_learning_state as STORE
+import veritas_trade_learning as TRADE
 from test_veritas_autonomous_learning import NOW, observation
 from test_veritas_learning_bridge import receiver
 import test_veritas_learning_state as state_tests
@@ -20,9 +22,11 @@ import test_veritas_learning_state as state_tests
 class Lane:
     def __init__(self):
         self.callbacks = {}
+        self.options = {}
         self.deadline = time.monotonic()+6
     def register_periodic(self, name, callback, **options):
         self.callbacks[name] = callback
+        self.options[name] = options
     def current_budget(self):
         return {"sql_timeout_ms": 2000}
     def check_budget(self):
@@ -167,14 +171,139 @@ class ProducerContracts(unittest.TestCase):
             self.assertEqual(result['status'], 'RETRY')
             self.assertEqual(cursor, {})
             daily.assert_not_called()
-            score.return_value = {'status': 'OK'}
+            self.assertIsNone(score.call_args.kwargs['cursor'])
+            pending = {'cycle_id': 'frozen-sample', 'stage': 'decisions', 'offset': 64}
+            score.return_value = {'status': 'PROGRESS', 'cursor': pending}
             _, cursor = app.intelligence(context, cursor)
+            self.assertEqual(cursor['scorecard_work'], pending)
+            daily.assert_not_called()
+            completed = dict(pending, stage='complete', offset=2200, next_refresh_at=5000.)
+            score.return_value = {'status': 'OK', 'cursor': completed}
+            _, cursor = app.intelligence(context, cursor)
+            self.assertEqual(score.call_args.kwargs['cursor'], pending)
             self.assertEqual(cursor['phase'], 'daily')
+            self.assertEqual(cursor['scorecard_work'], completed)
+            _, cursor = app.intelligence(context, cursor)
+            self.assertEqual(cursor['phase'], 'scorecard')
+            self.assertEqual(cursor['scorecard_work'], completed)
+            self.assertEqual(daily.call_count, 1)
+            self.assertIs(daily.call_args.args[0], app.ns)
+            self.assertEqual(score.call_count, 3)
+            score.return_value = {'status': 'NO_WORK', 'reason': 'SCORECARD_REFRESH_NOT_DUE', 'cursor': completed}
             _, cursor = app.intelligence(context, cursor)
             self.assertEqual(cursor['phase'], 'scorecard')
             self.assertEqual(daily.call_count, 1)
-            self.assertIs(daily.call_args.args[0], app.ns)
-            self.assertEqual(score.call_count, 2)
+            self.assertEqual(app.lane.options['learning_intelligence'],
+                             {'interval_seconds': 15, 'lightweight': True, 'estimated_peak_mb': 16, 'max_seconds': 6})
+
+    def test_failed_daily_audit_keeps_completed_scorecard_cursor_for_retry(self):
+        app = C.ContinuousLearning(namespace(lambda: None))
+        cursor = {'phase': 'daily', 'scorecard_work': {'stage': 'complete', 'next_refresh_at': 5000.}}
+        original = deepcopy(cursor)
+        with patch.object(C.INTELLIGENCE, 'refresh_snapshot') as score, \
+             patch.object(C.SCORECARD, 'refresh_daily', return_value={'status': 'DEFERRED_LEARNING_UNAVAILABLE'}) as daily:
+            result, resumed = app.intelligence(C.Budget(app.lane), cursor)
+            self.assertEqual(result['status'], 'DEFERRED_LEARNING_UNAVAILABLE')
+            self.assertEqual(resumed, original)
+            score.assert_not_called()
+            daily.side_effect = RuntimeError('commit failed')
+            with self.assertRaisesRegex(RuntimeError, 'commit failed'):
+                app.intelligence(C.Budget(app.lane), cursor)
+            self.assertEqual(cursor, original)
+
+
+class TradeCallbackContracts(unittest.TestCase):
+    def setUp(self):
+        self.ns = namespace(Mock())
+        self.ns.update(VP=SimpleNamespace(_v90r29_upsert_episode=Mock()), emit=Mock())
+        self.app = C.ContinuousLearning(self.ns)
+        self.app.ready = True
+        self.app.trade = TRADE.TradeLearning(self.ns)
+        self.connection = Mock()
+        self.connection.execute.return_value.fetchall.return_value = []
+        transaction = patch.object(self.app.trade, "_transaction", return_value=nullcontext(self.connection))
+        transaction.start(); self.addCleanup(transaction.stop)
+        verification = patch.object(C.KNOWLEDGE, "update_integrity_verification")
+        verification.start(); self.addCleanup(verification.stop)
+        self.run_job = self.app.lane.callbacks["learning_trade_evidence"]
+
+    def test_only_inner_lease_commits_phase_with_existing_limits(self):
+        lease = {"cursor": {"phase": "materialize", "after": ["immutable-close", "trade-id"]}}
+        with patch.object(STORE, "claim_job", return_value=lease) as claim, \
+             patch.object(STORE, "checkpoint_job", return_value=True) as checkpoint:
+            result = self.run_job()
+        claim.assert_called_once_with(self.ns["pg_connect"], TRADE.JOB_NAME, TRADE.VERSION, lease_seconds=60)
+        checkpoint.assert_called_once()
+        self.assertEqual(checkpoint.call_args.kwargs["cursor"],
+                         {"phase": "revalidate", "after": ["immutable-close", "trade-id"]})
+        self.assertEqual(lease["cursor"]["phase"], "materialize")
+        self.assertEqual(result["stage"], "materialize")
+        self.assertEqual(result["materialized"], 0)
+        self.assertEqual(result["batch_limit"], 4)
+        self.assertIsNotNone(self.app._stats["last_success_at"])
+        self.assertEqual(self.app.lane.options["learning_trade_evidence"],
+                         {"interval_seconds": 30, "lightweight": True, "estimated_peak_mb": 16, "max_seconds": 6})
+        self.assertEqual(self.ns["emit"].call_args.kwargs,
+                         {"stage": "materialize", "status": "OK", "next_stage": "revalidate", "materialized": 0})
+
+    def test_bootstrap_and_busy_lease_never_record_completion(self):
+        with patch.object(STORE, "claim_job", return_value=None) as claim, \
+             patch.object(STORE, "checkpoint_job") as checkpoint:
+            self.app.ready = False
+            self.assertEqual(self.run_job()["reason"], "LEARNING_BOOTSTRAP_PENDING")
+            claim.assert_not_called()
+            self.app.ready = True
+            self.assertEqual(self.run_job()["status"], "DEFERRED_BUSY")
+            claim.assert_called_once()
+            checkpoint.assert_not_called()
+        self.assertIsNone(self.app._stats["last_success_at"])
+
+    def test_rejected_inner_checkpoint_does_not_advance_or_mark_success(self):
+        lease = {"cursor": {"phase": "materialize"}}
+        with patch.object(STORE, "claim_job", return_value=lease) as claim, \
+             patch.object(STORE, "checkpoint_job", side_effect=[False, True]) as checkpoint:
+            with self.assertRaisesRegex(RuntimeError, "lease expired"):
+                self.run_job()
+        claim.assert_called_once()
+        self.assertEqual(checkpoint.call_count, 2)
+        self.assertEqual(checkpoint.call_args.kwargs["status"], "ERROR")
+        self.assertNotIn("cursor", checkpoint.call_args.kwargs)
+        self.assertEqual(checkpoint.call_args.kwargs["retry_after_seconds"], 15)
+        self.assertEqual(lease["cursor"], {"phase": "materialize"})
+        self.assertIsNone(self.app._stats["last_success_at"])
+        self.assertEqual(self.ns["emit"].call_args.kwargs,
+                         {"stage": "materialize", "status": "ERROR", "error_type": "RuntimeError"})
+
+    def test_sql_failure_keeps_inner_retry_and_no_outer_error_checkpoint(self):
+        self.connection.execute.side_effect = RuntimeError("query failed")
+        with patch.object(STORE, "claim_job", return_value={"cursor": {}}) as claim, \
+             patch.object(STORE, "checkpoint_job", return_value=True) as checkpoint:
+            with self.assertRaisesRegex(RuntimeError, "query failed"):
+                self.run_job()
+        claim.assert_called_once(); checkpoint.assert_called_once()
+        self.assertEqual(checkpoint.call_args.kwargs["status"], "ERROR")
+        self.assertNotIn("cursor", checkpoint.call_args.kwargs)
+        self.assertIsNone(self.app._stats["last_success_at"])
+        self.assertIn("query failed", self.app._stats["last_error"])
+
+    def test_deadline_after_inner_commit_preserves_progress_but_reports_failure(self):
+        def checkpoint(*args, **kwargs):
+            self.app.lane.deadline = time.monotonic()-1
+            return True
+        with patch.object(STORE, "claim_job", return_value={"cursor": {}}), \
+             patch.object(STORE, "checkpoint_job", side_effect=checkpoint) as saved:
+            with self.assertRaises(TimeoutError):
+                self.run_job()
+        saved.assert_called_once()
+        self.assertEqual(saved.call_args.kwargs["cursor"]["phase"], "revalidate")
+        self.assertIsNone(self.app._stats["last_success_at"])
+
+    def test_diagnostic_failure_cannot_rollback_a_successful_phase(self):
+        self.ns["emit"].side_effect = RuntimeError("logging unavailable")
+        with patch.object(STORE, "claim_job", return_value={"cursor": {}}), \
+             patch.object(STORE, "checkpoint_job", return_value=True) as checkpoint:
+            self.assertEqual(self.run_job()["status"], "OK")
+        checkpoint.assert_called_once()
 
 
 @unittest.skipUnless(os.getenv("VERITAS_QUALITY_TEST_DSN"), "isolated PostgreSQL test database not configured")
@@ -224,6 +353,32 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
         with self.connect() as c:
             c.execute("INSERT INTO ledger_events(entity_key,event_type,asset,horizon,payload) VALUES(%s,'decision','BTC','1m',%s::jsonb)",
                       (entity, json.dumps({"learning_provenance": record["provenance"]})))
+
+    def test_registered_trade_job_resumes_only_inner_durable_cursor(self):
+        self.app.lane.reset()
+        first = self.app.lane.callbacks["learning_trade_evidence"]()
+        self.assertEqual(first["stage"], "materialize")
+        with self.connect() as c:
+            rows = c.execute("SELECT name,cursor,fence FROM veritas_learning_jobs").fetchall()
+        self.assertEqual([r["name"] for r in rows], [TRADE.JOB_NAME])
+        self.assertEqual(rows[0]["cursor"]["phase"], "revalidate")
+        first_fence = rows[0]["fence"]
+        # A recreated process resumes the sole authoritative phase without an
+        # outer learning_trade_evidence job or a cursor copied into RAM.
+        restored_ns = namespace(self.connect)
+        restored_ns["VP"] = self.ns["VP"]
+        restored = C.ContinuousLearning(restored_ns)
+        restored.trade = TRADE.TradeLearning(restored_ns)
+        restored.ready = True
+        restored.lane.reset()
+        second = restored.lane.callbacks["learning_trade_evidence"]()
+        self.assertEqual(second["stage"], "revalidate")
+        with self.connect() as c:
+            rows = c.execute("SELECT name,cursor,fence,status FROM veritas_learning_jobs").fetchall()
+        self.assertEqual([r["name"] for r in rows], [TRADE.JOB_NAME])
+        self.assertEqual(rows[0]["cursor"]["phase"], "export")
+        self.assertEqual(rows[0]["fence"], first_fence+1)
+        self.assertEqual(rows[0]["status"], "OK")
 
     def test_frozen_ledger_quote_outcome_dedup_and_process_recreation(self):
         # Establish the new protocol's starting cursor before a new decision.
