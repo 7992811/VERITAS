@@ -14,7 +14,7 @@ import veritas_timeframe_structure as STRUCTURE
 import veritas_trade_audit as AUDIT
 
 
-VERSION = "SAME_TF_TRADE_DIAGNOSTICS_V1"
+VERSION = "STRUCTURAL_TRADE_DIAGNOSTICS_V2"
 _NUMERIC_POLICY = tuple(STRUCTURE.DEFAULT_POLICY)
 
 
@@ -61,6 +61,21 @@ def _event_evidence(trade, p):
             or actual.get("asset") != trade.get("asset")
             or not SOURCE.same(source, actual)):
         return None, "UNVERIFIED_EVENT_SOURCE"
+    if event.get("event_type") == "VERIFIED_QUOTE_STRUCTURAL_BREAKOUT":
+        import veritas_structural_breakout as SB
+        if not AUDIT.quote_event_evidence(trade, event):
+            return None, "UNVERIFIED_QUOTE_BREAKOUT_PROOF"
+        values = {key: _positive(event.get(key)) for key in
+                  ("trigger_level", "signal_price", "stop_anchor", "stop_price", "target_price", "atr")}
+        if any(value is None for value in values.values()):
+            return None, "MISSING_EVENT_GEOMETRY"
+        times = {key: AUDIT._timestamp(event.get(key)) for key in ("signal_at", "confirmed_at")}
+        if any(value is None for value in times.values()):
+            return None, "MISSING_EVENT_TIME_EVIDENCE"
+        return dict(event=event, source=source, timeframe=event["timeframe"],
+                    risk_timeframe=event["structural_timeframe"], quote_breakout=True,
+                    policy=SB._policy(event["policy"]), times=times, values=values,
+                    sign=1 if event["direction"] == "LONG" else -1), None
     timeframe = event.get("timeframe")
     if (event.get("version") != STRUCTURE.VERSION
             or event.get("event_type") not in ("SAME_TIMEFRAME_STRUCTURAL_BREAKOUT", "DAILY_MA_REBOUND")
@@ -145,6 +160,10 @@ def diagnose(trade, *, additional_exclusion=None):
         return result
     e, values, policy = evidence["event"], evidence["values"], evidence["policy"]
     timeframe, sign = evidence["timeframe"], evidence["sign"]
+    quote_breakout = evidence.get("quote_breakout") is True
+    risk_timeframe = evidence.get("risk_timeframe", timeframe)
+    if quote_breakout:
+        result["rule_scope"] = "RECORDED_QUOTE_BREAKOUT_PROTECTED_PARENT_AND_HISTORICAL_TARGETS"
     entered = AUDIT._timestamp(t.get("opened_at"))
     fill = _object(p.get("entry_execution_model"))
     entry, initial_stop = _positive(fill.get("fill_price")), _positive(p.get("initial_stop_price"))
@@ -173,30 +192,31 @@ def diagnose(trade, *, additional_exclusion=None):
     elif t.get("horizon") != timeframe:
         violation("ENTRY_TIMEFRAME_MISMATCH", t["horizon"], timeframe)
     for field in ("atr_timeframe", "stop_timeframe", "target_timeframe"):
-        if e[field] != timeframe:
-            violation(field.upper() + "_MISMATCH", e[field], timeframe)
+        expected_timeframe = ("HISTORICAL_ZONES" if field == "target_timeframe" else risk_timeframe) if quote_breakout else timeframe
+        if e[field] != expected_timeframe:
+            violation(field.upper() + "_MISMATCH", e[field], expected_timeframe)
         declared = p.get(field)
-        if declared is not None and declared != timeframe:
-            violation("RECORDED_" + field.upper() + "_MISMATCH", declared, timeframe)
+        if declared is not None and declared != expected_timeframe:
+            violation("RECORDED_" + field.upper() + "_MISMATCH", declared, expected_timeframe)
     for field in ("execution_timeframe", "execution_horizon"):
         if p.get(field) is not None and p[field] != timeframe:
             violation("RECORDED_ENTRY_TIMEFRAME_MISMATCH", p[field], timeframe)
     if policy["atr_period"] != 20:
         missing.append("ENTRY_ATR20_UNVERIFIED")
-    atr_consistent = e["atr_timeframe"] == timeframe and policy["atr_period"] == 20
+    atr_consistent = e["atr_timeframe"] == risk_timeframe and policy["atr_period"] == 20
     recorded_atr = _positive(p.get("entry_atr"))
     if recorded_atr is None:
         missing.append("MISSING_IMMUTABLE_ENTRY_ATR")
     elif atr_consistent and not _same_number(recorded_atr, values["atr"]):
         violation("RECORDED_ENTRY_ATR_MISMATCH", recorded_atr, values["atr"])
     expected_stop = None
-    if atr_consistent and e["stop_timeframe"] == timeframe:
+    if atr_consistent and e["stop_timeframe"] == risk_timeframe:
         expected_stop = values["stop_anchor"] - sign * policy["stop_buffer_atr"] * values["atr"]
         if not _same_number(values["stop_price"], expected_stop):
             violation("EVENT_STOP_OUTSIDE_RECORDED_RULE", values["stop_price"], expected_stop)
         if initial_stop is not None and not _same_number(initial_stop, expected_stop):
             violation("INITIAL_STOP_OUTSIDE_RECORDED_RULE", initial_stop, expected_stop)
-        if e["target_timeframe"] == timeframe:
+        if not quote_breakout and e["target_timeframe"] == timeframe:
             expected_target = values["trigger_level"] + sign * max(
                 policy["target_r_multiple"] * sign * (values["trigger_level"] - expected_stop),
                 policy["min_target_atr"] * values["atr"])
@@ -206,9 +226,12 @@ def diagnose(trade, *, additional_exclusion=None):
         confirmed, signal = evidence["times"]["confirmed_at"], evidence["times"]["signal_at"]
         if entered < confirmed:
             violation("ENTRY_BEFORE_EVENT_CONFIRMATION", entered, confirmed)
-        elif entered - signal > policy["max_signal_age_bars"] * STRUCTURE.TIMEFRAMES[timeframe]:
-            violation("ENTRY_AFTER_EVENT_EXPIRY", entered - signal,
-                      policy["max_signal_age_bars"] * STRUCTURE.TIMEFRAMES[timeframe])
+        else:
+            max_age = policy["max_signal_age_bars"] * STRUCTURE.TIMEFRAMES[timeframe]
+            if quote_breakout:
+                max_age = max(max_age, policy["minimum_entry_window_seconds"])
+            if entered - signal > max_age:
+                violation("ENTRY_AFTER_EVENT_EXPIRY", entered - signal, max_age)
         spent_at = AUDIT._timestamp(e.get("spent_at"))
         if (e.get("spent") is True and spent_at is not None
                 and confirmed <= spent_at <= entered):
@@ -222,6 +245,9 @@ def diagnose(trade, *, additional_exclusion=None):
                     mfe_atr=None, mae_atr=None, final_exit_r=None, final_exit_atr=None,
                     monetary_net_r=None, monetary_net_r_status="REQUIRES_ACTUAL_ORIGINAL_UNITS",
                     path_status="UNVERIFIED")
+    if quote_breakout:
+        geometry.update(trigger_timeframe=e["trigger_timeframe"], structural_timeframe=risk_timeframe,
+                        atr_timeframe=e["atr_timeframe"], target_timeframe=e["target_timeframe"])
     result["normalization"] = geometry
     if entered is not None:
         times = evidence["times"]
@@ -249,6 +275,11 @@ def diagnose(trade, *, additional_exclusion=None):
         geometry["entry_extension_atr"] = extension
         if extension < 0:
             violation("ENTRY_LEVEL_NOT_HELD", extension, 0.)
+        elif quote_breakout:
+            progress = sign * (entry-values["trigger_level"]) / (sign*(values["target_price"]-values["trigger_level"]))
+            geometry["target_progress"] = progress
+            if progress > policy["max_target_progress"]:
+                violation("ENTRY_EXCEEDS_TARGET_PROGRESS", progress, policy["max_target_progress"])
         elif extension > policy["max_extension_atr"]:
             violation("ENTRY_EXCEEDS_EVENT_EXTENSION", extension, policy["max_extension_atr"])
         if risk is not None and risk / values["atr"] > policy["max_stop_atr"]:

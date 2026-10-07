@@ -14,7 +14,11 @@ import math
 import threading
 import time
 from veritas_learning_memory import ami_decision_rows
-VERSION = "ami-v1.0"
+from veritas_learning_measurement import (
+    finite_number as _number, self_learning_component as _self_learning_component,
+    component_measurement, baseline_is_comparable, score_stage as _stage,
+)
+VERSION = "ami-v1.1"
 _CACHE = {"at": 0.0, "epoch": None, "value": None}
 _BUILD_LOCK = threading.Lock()
 MOVE_THRESHOLDS = {
@@ -231,15 +235,17 @@ def _query_learning(c):
     realization = _mean([r.get("movement_realization_ratio") for r in z])
     giveback = _mean([r.get("giveback_pct") for r in z])
     def rate(name):
-        return sum(1 for r in z if name in set(r.get("attributions") or [])) / n if n else 0.0
+        return sum(1 for r in z if name in set(r.get("attributions") or [])) / n if n else None
     half = max(1, n // 2)
-    early, recent = z[:half], z[-half:]
+    # A single episode cannot be its own before/after comparison.
+    early, recent = (z[:half], z[-half:]) if n >= 2 else ([], [])
     def bad_rate(a):
         return sum(1 for r in a if set(r.get("attributions") or []) & BAD_LEARNING_ATTRS) / len(a) if a else None
     def avg_real(a):
         return _mean([r.get("movement_realization_ratio") for r in a])
     return {
-        "n": n, "avg_capture_ratio": capture,
+        "n": n, "status": "MEASURED" if n >= 2 else "BUILDING",
+        "early_n": len(early), "recent_n": len(recent), "avg_capture_ratio": capture,
         "avg_movement_realization_ratio": realization,
         "avg_giveback_pct": giveback,
         "entry_error_rate": rate("ENTRY_DIRECTION_ERROR"),
@@ -292,19 +298,7 @@ def _query_knowledge(c, episodes):
     }
 
 
-def _stage(score):
-    if score >= 85:
-        return "ВЫСОКО ПОДТВЕРЖДЁННЫЙ"
-    if score >= 70:
-        return "ПРОДВИНУТЫЙ"
-    if score >= 55:
-        return "РАБОЧИЙ"
-    if score >= 40:
-        return "РАЗВИВАЮЩИЙСЯ"
-    return "НАЧАЛЬНЫЙ"
-
-
-def _baseline(c, score, components):
+def _baseline(c, score, components, component_status):
     key = "asset_management_intelligence_v1_rollout"
     try:
         row = c.execute(
@@ -313,6 +307,8 @@ def _baseline(c, score, components):
         if not row:
             payload = {
                 "version": VERSION, "score": score, "components": components,
+                "observed_maximums": {key: value["observed_max_points"]
+                                      for key, value in component_status.items()},
                 "captured_at": datetime.now(timezone.utc).isoformat(),
             }
             c.execute("""
@@ -325,10 +321,12 @@ def _baseline(c, score, components):
         p = _j((row or {}).get("payload"))
         return {
             "score": p.get("score"), "components": p.get("components") or {},
+            "version": p.get("version"),
+            "observed_maximums": p.get("observed_maximums") or {},
             "captured_at": p.get("captured_at") or str((row or {}).get("created_at") or ""),
         }
     except Exception:
-        return {"score": None, "components": {}, "captured_at": None}
+        return {"score": None, "components": {}, "captured_at": None, "version": None}
 
 
 def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, cache_seconds=55):
@@ -376,9 +374,9 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
         movement_score = (
             6.0 * _scale(learning.get("avg_capture_ratio"), 0.15, 0.60)
             + 3.0 * _scale(learning.get("avg_movement_realization_ratio"), 0.15, 0.60)
-            + 2.0 * (1.0 - _clip(learning.get("stop_error_rate")))
-            + 2.0 * (1.0 - _clip(learning.get("exit_capture_error_rate")))
-            + 2.0 * (1.0 - _clip(learning.get("cost_drag_rate")))
+            + (2.0 * (1.0 - _clip(learning["stop_error_rate"])) if learning.get("stop_error_rate") is not None else 0.)
+            + (2.0 * (1.0 - _clip(learning["exit_capture_error_rate"])) if learning.get("exit_capture_error_rate") is not None else 0.)
+            + (2.0 * (1.0 - _clip(learning["cost_drag_rate"])) if learning.get("cost_drag_rate") is not None else 0.)
         )
 
         # 4) Knowledge: breadth is deliberately only 2/15; validation/application dominate.
@@ -407,35 +405,26 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
         )
 
         # 6) Self-learning effectiveness: 15.
-        li = (learning_progress or {}).get("index_vs_start")
-        bad_improvement = None
-        if learning.get("early_bad_rate") is not None and learning.get("recent_bad_rate") is not None:
-            bad_improvement = learning["early_bad_rate"] - learning["recent_bad_rate"]
-        real_improvement = None
-        if learning.get("early_realization") is not None and learning.get("recent_realization") is not None:
-            real_improvement = learning["recent_realization"] - learning["early_realization"]
-        self_learning_score = (
-            5.0 * _scale(li, 80.0, 120.0)
-            + 5.0 * _scale(bad_improvement, -0.15, 0.20)
-            + 3.0 * _scale(real_improvement, -0.15, 0.20)
-            + 2.0 * min(1.0, learning["n"] / 50.0)
-        )
+        self_learning_score, self_learning_status = _self_learning_component(learning, learning_progress)
 
         components = {
-            "decision_intelligence": round(decision_score, 2),
-            "portfolio_outcome_quality": round(outcome_score, 2),
-            "movement_risk_management": round(movement_score, 2),
+            "decision_intelligence": round(decision_score, 2) if episodes else None,
+            "portfolio_outcome_quality": round(outcome_score, 2) if n else None,
+            "movement_risk_management": round(movement_score, 2) if learning["n"] else None,
             "knowledge_application": round(knowledge_score, 2),
-            "experience_depth": round(experience_score, 2),
-            "self_learning_effectiveness": round(self_learning_score, 2),
+            "experience_depth": round(experience_score, 2) if episodes or learning["n"] else None,
+            "self_learning_effectiveness": self_learning_score,
         }
         maximums = {
             "decision_intelligence": 20, "portfolio_outcome_quality": 25,
             "movement_risk_management": 15, "knowledge_application": 15,
             "experience_depth": 10, "self_learning_effectiveness": 15,
         }
-        score = round(sum(components.values()), 1)
-        baseline = _baseline(c, score, components)
+        component_status, coverage = component_measurement(
+            components, maximums, veritas, learning, knowledge, self_learning_status)
+        # Preserve the original weights; missing evidence never inflates the scale.
+        score = round(sum(value for value in components.values() if value is not None), 1)
+        baseline = _baseline(c, score, components, component_status)
 
     generic_status = "MEASURABLE" if generic.get("n", 0) >= 30 else "BUILDING"
     hit_delta = None
@@ -449,9 +438,12 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
         utility_delta = veritas["avg_normalized_utility"] - generic["avg_normalized_utility"]
 
     rollout_delta = None
-    if baseline.get("score") is not None:
+    baseline_comparable = baseline_is_comparable(baseline, VERSION, components, component_status)
+    if baseline.get("score") is not None and baseline_comparable:
         rollout_delta = score - float(baseline["score"])
-    start_index = (learning_progress or {}).get("index_vs_start")
+    start_index = _number((learning_progress or {}).get("index_vs_start"))
+    if str((learning_progress or {}).get("status") or "").upper() in {"BUILDING", "ERROR", "UNAVAILABLE"}:
+        start_index = None
     confidence = (
         "HIGH" if len(episodes) >= 200 and portfolio["n"] >= 50 and generic.get("n", 0) >= 100
         else "MEDIUM" if len(episodes) >= 80 and portfolio["n"] >= 20
@@ -459,9 +451,11 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
     )
     value = {
         "status": "OK", "version": VERSION, "score": score, "max_score": 100,
+        "score_status": "MEASURED" if coverage["status"] == "COMPLETE" else "PARTIAL_EVIDENCE",
         "stage": _stage(score), "confidence": confidence,
         "interpretation": "evidence_weighted_asset_management_capability_not_IQ",
         "components": components, "component_maximums": maximums,
+        "component_status": component_status, "coverage": coverage,
         "benchmarks": {
             "initial_veritas_decision_learning": {
                 "baseline": 100.0, "current": start_index,
@@ -473,6 +467,8 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
                 "current_score": score,
                 "delta_points": None if rollout_delta is None else round(rollout_delta, 2),
                 "captured_at": baseline.get("captured_at"),
+                "comparison_status": "MEASURABLE" if rollout_delta is not None else "NOT_COMPARABLE",
+                "comparison_reason": None if rollout_delta is not None else "VERSION_OR_EVIDENCE_COVERAGE_CHANGED",
             },
             "stateless_ai": {
                 "status": generic_status, "sample_n": generic.get("n", 0),
@@ -495,6 +491,7 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
             "A losing trade after positive MFE receives zero movement-capture credit through the learning episode model.",
             "Experience is independent episodes and regime/asset/horizon diversity, not duplicate portfolio executions.",
             "The stateless AI benchmark is a measured reference on the same completed episodes, not a claimed generic-model IQ.",
+            "Missing measurements are null; the fixed 100-point scale is not renormalized.",
         ],
     }
     _CACHE.update({"at": now, "epoch": production_epoch, "value": value})
@@ -523,6 +520,8 @@ def startup_snapshot(pg_connect, learning_progress, production_epoch, delay_seco
             "stage": value.get("stage"),
             "confidence": value.get("confidence"),
             "components": value.get("components"),
+            "component_status": value.get("component_status"),
+            "coverage": value.get("coverage"),
             "initial_veritas": b.get("initial_veritas_decision_learning"),
             "stateless_ai": {
                 "status": stateless.get("status"),

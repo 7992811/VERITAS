@@ -1025,7 +1025,7 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
     try:
         # Production connections use autocommit. Keep staging, row locks and
         # relabelling in one transaction; SET LOCAL then bounds the actual work.
-        with pg_connect() as c, c.transaction():
+        with pg_connect() as c, VLI.revalidation_transaction(c):
             c.execute("SET LOCAL statement_timeout = '4000ms'")
             _v90r29_ensure(c)
             evidence_revalidation=VLI.revalidate_eligible(c)
@@ -1045,7 +1045,10 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
               WHERE learning_eligible=TRUE
                 AND UPPER(COALESCE(payload->>'exit_reason','')) LIKE '%REBASE%'
             """)
-            changed+=max(0,int(getattr(cur,'rowcount',0) or 0))
+            administrative_changed=max(0,int(getattr(cur,'rowcount',0) or 0))
+            changed+=administrative_changed
+            if administrative_changed:
+                VLI.invalidate('sanitizer_administrative_changed')
             cur=c.execute("""
           UPDATE v90_learning_episodes e SET learning_eligible=FALSE,
             learning_action='EXCLUDE_FROM_LEARNING',
@@ -1063,7 +1066,10 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
                 t.payload->'contract_identity'->>'primary_source')) ~ '(PROXY|QQQ)')
           )
             """)
-            changed+=max(0,int(getattr(cur,'rowcount',0) or 0))
+            source_changed=max(0,int(getattr(cur,'rowcount',0) or 0))
+            changed+=source_changed
+            if source_changed:
+                VLI.invalidate('sanitizer_source_changed')
             row=c.execute("""
               SELECT COUNT(*) AS n
               FROM v90_learning_episodes
@@ -5116,6 +5122,9 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     work=dict(row or {})
     work['trade_plan']=dict(admission.get('prepared_plan') or work.get('trade_plan') or {})
     work['_canonical_admission']={k:v for k,v in admission.items() if k!='prepared_plan'}
+    if admission.get('probability_source')=='PROSPECTIVELY_VALIDATED_CALIBRATION':
+        work['_pwin']=admission['probability']
+        work['_pwin_source']=admission['probability_source']
     work.setdefault('_pwin',admission.get('probability') or work.get('confidence') or .5)
     work.setdefault('_pwin_source',admission.get('probability_source') or 'CTC_V2_CANONICAL')
     # The accounting function intentionally returns None after a successful

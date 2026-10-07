@@ -39,7 +39,13 @@ jobs:
       - name: Bounded background maintenance and execution logging
         run: |
           python -m py_compile veritas_maintenance.py veritas_execution_logging.py
-          python -m unittest -v test_veritas_maintenance.py test_veritas_maintenance_integration.py test_veritas_execution_logging.py
+          python -m unittest -v test_veritas_maintenance.py test_veritas_maintenance_integration.py test_veritas_maintenance_periodic.py test_veritas_execution_logging.py
+      - name: Autonomous learning and durable restart integration
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: |
+          python -m py_compile veritas_learning_state.py veritas_autonomous_learning.py veritas_learning_bridge.py veritas_continuous_learning.py veritas_trade_learning.py veritas_learning_measurement.py veritas_knowledge_discovery.py
+          python -m unittest -v test_veritas_learning_state.py test_veritas_autonomous_learning.py test_veritas_learning_bridge.py test_veritas_continuous_learning.py test_veritas_learning_runtime.py test_veritas_quote_learning.py test_veritas_trade_learning.py test_veritas_knowledge_discovery.py
       - name: Execution quality and direct CNY regressions
         run: python -m unittest -v test_veritas_execution_quality.py test_veritas_trade_audit.py test_veritas_direct_cny_snapshot.py test_veritas_profit_exit_authority.py test_veritas_ma_learning_evidence.py
       - name: Independent portfolio accounting and protective handoff
@@ -96,6 +102,7 @@ jobs:
         run: |
           node tools/test_paper_ui.cjs
           node tools/test_paper_action_status.cjs
+          node tools/test_learning_ui.cjs
       - name: Forecast versus actual entry UI regressions
         run: node tools/test_signal_readiness_ui.cjs
       - name: Trade accounting view regressions

@@ -3,19 +3,129 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
+import uuid
+from contextlib import contextmanager
 import veritas_trade_audit as AUDIT
 import veritas_observation_path as OBSERVATION
 import veritas_trade_diagnostics as DIAGNOSTICS
 
-VERSION = "LEARNING_TF_PATH_EVIDENCE_V2"
+VERSION = "LEARNING_STRUCTURAL_PATH_EVIDENCE_V3"
 BATCH_SIZE = 128
 MAX_BATCH_SIZE = 256
 MAX_APPROACH_BARS = 100  # MA policy hard limit; the canonical proof has three bars.
 _GENERATION = 0
+_REVOCATION_GENERATION = 0
+_PROCESS_EPOCH = uuid.uuid4().hex
+_STATE_LOCK = threading.RLock()
+_REVALIDATION_LOCK = threading.RLock()
+_LOCAL = threading.local()
+_ACTIVE_CHECKS = 0
+_UNCONFIRMED = False
+
 
 def generation():
-    """Process-local invalidation token for cached learning memory."""
-    return _GENERATION
+    """Token changes on evidence mutations/errors, never a successful no-op."""
+    with _STATE_LOCK:
+        return _GENERATION
+
+
+def memory_state():
+    """A process token prevents persisted profiles masquerading as revalidated."""
+    with _STATE_LOCK:
+        return {"generation": _GENERATION, "revocation_generation": _REVOCATION_GENERATION,
+                "process_epoch": _PROCESS_EPOCH,
+                "ready": not _ACTIVE_CHECKS and not _UNCONFIRMED}
+
+
+def expire_legacy_views(namespace):
+    """Discard sample-dependent legacy views at the mutation boundary."""
+    for name in ("_v90r29_cache", "_v90r33_cache"):
+        cache = namespace.get(name)
+        if isinstance(cache, dict):
+            cache["at"] = 0.0
+
+
+def invalidate(reason=None, *, new_evidence_only=False):
+    """Revoke caches immediately; only a committed validation restores readiness."""
+    global _GENERATION, _REVOCATION_GENERATION, _UNCONFIRMED
+    with _STATE_LOCK:
+        _GENERATION += 1
+        if not new_evidence_only:
+            _REVOCATION_GENERATION += 1
+        _UNCONFIRMED = True
+        if getattr(_LOCAL, "guarded", False):
+            _LOCAL.changed = True
+
+
+@contextmanager
+def revalidation_transaction(c):
+    """Own the real commit boundary, blocking profile use through rollback/commit.
+
+    Use instead of ``c.transaction()`` at the outermost caller boundary. Nested
+    transactions may validate rows but cannot certify their outer commit; memory
+    stays unavailable until a successful outermost validation.
+    """
+    global _ACTIVE_CHECKS, _UNCONFIRMED, _GENERATION
+    with _REVALIDATION_LOCK:
+        status = getattr(getattr(c, "info", None), "transaction_status", None)
+        outermost = status is None or int(status) == 0
+        if not outermost:
+            invalidate("unconfirmed_outer_transaction")
+        with _STATE_LOCK:
+            _ACTIVE_CHECKS += 1
+        _LOCAL.guarded = True
+        _LOCAL.validated = False
+        _LOCAL.changed = False
+        try:
+            with c.transaction():
+                yield c
+            with _STATE_LOCK:
+                if _LOCAL.validated and outermost:
+                    # Builders started during validation must not publish a
+                    # pre-commit database view under the post-commit token.
+                    if _LOCAL.changed:
+                        _GENERATION += 1
+                    _UNCONFIRMED = False
+        except BaseException:
+            invalidate("validation_transaction_failed")
+            raise
+        finally:
+            _LOCAL.guarded = False
+            with _STATE_LOCK:
+                _ACTIVE_CHECKS -= 1
+
+
+def revalidate_eligible(c, batch_size=BATCH_SIZE):
+    """Validate a bounded batch, revoking memory on every uncertain outcome.
+
+    Production callers use revalidation_transaction. Direct legacy calls still
+    invalidate on changes/errors, but cannot certify their later commit.
+    """
+    global _ACTIVE_CHECKS
+    guarded = bool(getattr(_LOCAL, "guarded", False))
+    if not guarded:
+        with _STATE_LOCK:
+            _ACTIVE_CHECKS += 1
+    try:
+        result = _revalidate_eligible(c, batch_size)
+        changed = bool(result["staged"] or result["processed"])
+        if changed:
+            # New labels cannot invalidate a receipt already checked against
+            # its original source. A changed formerly VERIFIED label can.
+            # Missing classification is deliberately treated as revocation.
+            invalidate("evidence_changed", new_evidence_only=result.get("revoked") == 0)
+        if guarded:
+            _LOCAL.validated = True
+            _LOCAL.changed = _LOCAL.changed or changed
+        return result
+    except BaseException:
+        invalidate("validation_failed")
+        raise
+    finally:
+        if not guarded:
+            with _STATE_LOCK:
+                _ACTIVE_CHECKS -= 1
 
 def _alias(value):
     if value and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
@@ -135,7 +245,7 @@ def payload_sql(alias="t", *, root_field=None):
               "idea_event_id", "r66_event_id", "mfe_pct", "mae_pct",
               "r55_lifetime_mfe_pct", "r55_lifetime_mae_pct", "initial_stop_price", "entry_atr",
               "execution_timeframe", "execution_horizon", "atr_timeframe", "stop_timeframe",
-              "target_timeframe")
+              "target_timeframe", "structural_timeframe", "trigger_timeframe")
     for key in simple:
         pairs.extend(("'"+key+"'", _proof_scalar(field(key))))
     for key in ("price_source_lock", "entry_execution_source_identity", "last_exit_source_identity", "contract_identity"):
@@ -158,6 +268,14 @@ def payload_sql(alias="t", *, root_field=None):
     event_sql = _projected_object(event, event_keys, {
         "source_identity": _identity(event+"->'source_identity'"),
         "policy": policy_sql, "ma_proof": _ma_proof_sql("("+event+"->'ma_proof')")})
+    # A quote-breakout content digest seals nested bars, levels and zones. Keep
+    # its native proof byte-for-byte in JSON, under a strict per-event bound;
+    # dropping nested fields would falsely reject every otherwise valid event.
+    quote_event = ("CASE WHEN jsonb_typeof("+event+")='object' "
+        "AND octet_length(("+event+")::text)<=131072 THEN "+event+
+        " ELSE '\"OVERSIZED_QUOTE_EVENT_PROOF\"'::jsonb END")
+    event_sql = ("CASE WHEN "+event+"->>'event_type'='VERIFIED_QUOTE_STRUCTURAL_BREAKOUT' THEN "+
+                 quote_event+" ELSE "+event_sql+" END")
     pairs.extend(("'entry_event_snapshot'", event_sql))
     for key in ("entry_execution_model", "last_exit_execution_model"):
         pairs.extend(("'"+key+"'", _projected_object("("+field(key)+")",
@@ -187,7 +305,7 @@ def readable_sql(alias="v90_learning_episodes"):
             "integrity_trade.trade_id="+p+"trade_id AND "+
             p+"payload#>>'{learning_integrity,evidence_hash}'="+evidence_hash_sql("integrity_trade")+")")
 
-def revalidate_eligible(c, batch_size=BATCH_SIZE):
+def _revalidate_eligible(c, batch_size=BATCH_SIZE):
     """Quarantine every stale eligible label; validate one small batch.
 
     Caller owns the transaction. Readers require the current VERIFIED marker,
@@ -196,15 +314,14 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
     """
     if type(batch_size) is not int or not 1 <= batch_size <= MAX_BATCH_SIZE:
         raise ValueError("invalid revalidation batch size")
-    global _GENERATION
-    _GENERATION += 1  # Invalidate cached memory even when subsequent SQL fails.
     evidence = _evidence_sql("t")
     staged = c.execute("""
       WITH candidates AS (
-        SELECT e.trade_id,md5(("""+evidence+""")::text) AS evidence_hash
+        SELECT e.trade_id,md5(("""+evidence+""")::text) AS evidence_hash,
+          (e.payload#>>'{learning_integrity,status}'='VERIFIED') AS prior_verified
         FROM v90_learning_episodes e LEFT JOIN paper_trades t ON t.trade_id=e.trade_id
         WHERE e.learning_eligible=TRUE
-      )
+      ), staged AS (
       UPDATE v90_learning_episodes e SET
         learning_eligible=FALSE,learning_action='AWAIT_SOURCE_EVIDENCE_REVALIDATION',
         primary_attribution='DATA_EVIDENCE_PENDING',
@@ -218,8 +335,42 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
         e.payload#>>'{learning_integrity,version}' IS DISTINCT FROM %s
         OR e.payload#>>'{learning_integrity,status}' IS DISTINCT FROM 'VERIFIED'
         OR e.payload#>>'{learning_integrity,evidence_hash}' IS DISTINCT FROM q.evidence_hash)
-    """, (VERSION, VERSION))
-    staged_n = max(0, int(staged.rowcount))
+      RETURNING q.prior_verified
+      ) SELECT count(*) AS n,count(*) FILTER (WHERE prior_verified) AS revoked FROM staged
+    """, (VERSION, VERSION)).fetchone()
+    staged_n = int(staged["n"])
+    revoked_n = int(staged["revoked"])
+    # Only obsolete native quote-event diagnoses are retryable. Deliberate
+    # exclusions, missing paths and accounting failures never enter this lane.
+    # Previous-version PENDING rows were already quarantined, not rejected.
+    retried = c.execute("""
+      WITH retry AS (
+        SELECT e.trade_id FROM v90_learning_episodes e
+        JOIN paper_trades t ON t.trade_id=e.trade_id
+        WHERE e.learning_eligible=FALSE AND (
+          (e.payload#>>'{learning_integrity,status}'='PENDING'
+           AND e.payload#>>'{learning_integrity,version}' IS DISTINCT FROM %s)
+          OR (e.primary_attribution='UNVERIFIED_TRADE_EVIDENCE'
+            AND e.learning_action='REVIEW_ORIGINAL_EVIDENCE'
+            AND e.payload->>'diagnostics_version'='SAME_TF_TRADE_DIAGNOSTICS_V1'
+            AND COALESCE(e.payload#>>'{learning_integrity,exclusion_reason}',
+                         e.payload->>'learning_exclusion_reason') IN
+                ('UNVERIFIED_EVENT','UNVERIFIED_EVENT_PROVENANCE')
+            AND t.payload#>>'{entry_event_snapshot,event_type}'='VERIFIED_QUOTE_STRUCTURAL_BREAKOUT'))
+        ORDER BY e.closed_at,e.trade_id LIMIT %s FOR UPDATE OF e SKIP LOCKED
+      )
+      UPDATE v90_learning_episodes e SET
+        learning_action='AWAIT_SOURCE_EVIDENCE_REVALIDATION',
+        payload=COALESCE(e.payload,'{}'::jsonb)||jsonb_build_object('learning_integrity',
+          COALESCE(e.payload->'learning_integrity','{}'::jsonb)||jsonb_build_object(
+            'version',%s::text,'status','PENDING','requested_at',now(),
+            'prior_primary_attribution',COALESCE(e.payload#>>'{learning_integrity,prior_primary_attribution}',e.primary_attribution),
+            'prior_attributions',COALESCE(e.payload#>'{learning_integrity,prior_attributions}',e.attributions),
+            'prior_learning_action',COALESCE(e.payload#>>'{learning_integrity,prior_learning_action}',e.learning_action)))
+      FROM retry r WHERE e.trade_id=r.trade_id
+    """, (VERSION,batch_size,VERSION))
+    retry_staged = max(0,int(retried.rowcount))
+    staged_n += retry_staged
     rows = c.execute("""
       SELECT e.trade_id AS episode_trade_id,e.payload->'learning_integrity' AS prior,
              """+evidence+""" AS trade,md5(("""+evidence+""")::text) AS evidence_hash
@@ -254,7 +405,7 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
                      "prior_attributions": prior.get("prior_attributions"),
                      "prior_learning_action": prior.get("prior_learning_action")}
         patch = {"learning_integrity": integrity, "trade_diagnostics": diagnosis,
-                 "learning_exclusion_reason": reason}
+                 "diagnostics_version": DIAGNOSTICS.VERSION, "learning_exclusion_reason": reason}
         cur = c.execute("""
           UPDATE v90_learning_episodes e SET learning_eligible=%s,
             primary_attribution=%s,attributions=%s::jsonb,learning_action=%s,
@@ -275,6 +426,7 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
       WHERE payload#>>'{learning_integrity,version}'=%s
         AND payload#>>'{learning_integrity,status}'='PENDING'
     """, (VERSION,)).fetchone()
-    return {"version": VERSION, "staged": staged_n, "processed": changed,
+    return {"version": VERSION, "staged": staged_n, "retry_staged": retry_staged, "processed": changed,
+            "revoked": revoked_n,
             "verified": verified, "excluded": excluded, "pending": int(pending["n"]),
             "financial_columns_changed": False, "automatic_promotion": False}

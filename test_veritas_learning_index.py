@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sqlite3
 import unittest
+from unittest.mock import MagicMock
 
 import veritas_learning_index as LI
 
@@ -104,8 +105,11 @@ class LearningIndexTests(unittest.TestCase):
         tree = ast.parse(Path("veritas_intelligence.py").read_text())
         function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_learning_progress_v2_compute")
         matched, trades = sample()
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.execute.return_value.fetchone.return_value = {'current_sources': 3, 'current_rules': 4}
         scope = dict(VLI=LI, pg_enabled=lambda: True, _matched_strata_learning=lambda: matched,
-                     _shadow_trade_learning_windows=lambda: trades, learning_progress_v1=lambda: {})
+                     _shadow_trade_learning_windows=lambda: trades, pg_connect=lambda: connection)
         exec(compile(ast.Module(body=[function], type_ignores=[]), "runtime", "exec"), scope)
         self.assertEqual(scope[function.name]()["index_vs_start"], 100)
 

@@ -140,6 +140,8 @@ _CANONICAL_HTML = r'''<!doctype html>
 .intel-daily-stat b{display:block;font-size:10px;margin-top:1px;white-space:nowrap}
 .intel-daily-stat em{display:block;font-size:6.9px;font-style:normal;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .intel-foot{grid-column:1/-1;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:5px}.intel-stat{font-size:8.5px;color:var(--muted);border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.intel-stat b{display:block;color:#dce5ec;font-size:10px;margin-top:1px}
+.intel-metric small{display:block;font-size:7.5px;color:var(--muted);margin-top:3px}.intel-bar.unmeasured{background:repeating-linear-gradient(90deg,#26323c 0 5px,transparent 5px 9px)}
+.auto-learning{margin-top:8px;padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--card2)}.auto-learning-head{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px}.auto-learning-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:7px;margin-top:7px}.auto-learning-stat span{display:block;font-size:9px;color:var(--muted)}.auto-learning-stat b{display:block;font-size:12px;margin-top:2px}.auto-learning-note{font-size:9px;line-height:1.4;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}
 .insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.insight{border:1px solid var(--line);border-radius:8px;padding:7px;min-width:0}.insight h4{margin:0 0 5px;font-size:9px;color:var(--muted);font-weight:500;text-transform:uppercase}.insight div{font-size:9px;line-height:1.6}
 .scroll{max-height:450px;overflow:auto;padding-right:2px}
 @media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-compare{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(5,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
@@ -943,7 +945,7 @@ function deepNum(obj,names){
     if(typeof v!=='object')return null;
     if(seen.has(v))return null;seen.add(v);
     for(const [k,val] of Object.entries(v)){
-      if(wanted.has(String(k).toLowerCase())){
+      if(wanted.has(String(k).toLowerCase())&&val!=null&&val!==''&&typeof val!=='boolean'){
         const n=Number(val);if(Number.isFinite(n))return n;
       }
     }
@@ -953,6 +955,50 @@ function deepNum(obj,names){
     return null;
   }
   return walk(obj,0);
+}
+function learningWaitText(a){
+  const jobs=Object.values(a.jobs||{}).filter(x=>x&&typeof x==='object');
+  const blocked=jobs.find(x=>/^(DEFERRED|ERROR|UNAVAILABLE|RETRY|FAILED)/.test(String(x.status||x.last_result?.status||'').toUpperCase()))||{};
+  const error=a.last_error||blocked.error_code||blocked.last_error||blocked.error;
+  const errorText=error&&typeof error==='object'?(error.code||error.error_code||error.type||error.status||'ERROR'):error;
+  const code=[a.wait_reason,a.reason,blocked.reason,blocked.last_result?.reason,blocked.last_result?.error_code,blocked.status,errorText].filter(Boolean).join(' ').toUpperCase();
+  if(code.includes('MEMORY'))return'Ожидается безопасный запас памяти; работа продолжится автоматически.';
+  if(code.includes('BUSY')||code.includes('LEASE'))return'Завершается другая фоновая задача; очередь сохранена.';
+  if(code.includes('QUERYCANCELED')||code.includes('TIMEOUT')||code.includes('TIME_BUDGET'))return'Обновление базы заняло больше отведённого времени; повтор запланирован.';
+  if(code.includes('BOOTSTRAP')||a.continuous?.ready===false)return'Восстанавливаются сохранённые опыт и очередь учебных задач.';
+  if(code.includes('STORAGE')||code.includes('POSTGRES')||code.includes('UNAVAILABLE')||code.includes('ERROR'))return'Хранилище опыта временно недоступно; показан последний сохранённый результат.';
+  const candidates=Array.isArray(a.candidates)?a.candidates:[];
+  const active=candidates.find(x=>x&&['candidate','collecting','evaluating'].includes(String(x.state||'').toLowerCase()));
+  const reason=String(active?.reasons?.[0]||'');
+  if(reason==='INSUFFICIENT_TEMPORAL_COVERAGE')return'Проверка продолжается: наблюдения должны охватывать больше разных дней.';
+  if(reason.includes('VERIFIED_PROFITABILITY')||reason.includes('COSTS_AND_RISK'))return'Для этой поправки ещё нужны проверенные результаты с учётом расходов и риска.';
+  if(reason==='IMPROVEMENT_NOT_ESTABLISHED')return'Улучшение пока не установлено; поправка остаётся на проверке.';
+  if(active)return'Накапливаются новые независимые исходы после создания поправки.';
+  if(jobs.some(x=>String(x.status||'').toUpperCase()==='RUNNING'))return'Выполняется очередная небольшая проверка опыта.';
+  if(String(a.status||'').toLowerCase()==='unavailable')return'Состояние обучения временно недоступно.';
+  return'Накапливаются проверенные независимые исходы для следующей поправки.';
+}
+function autonomousLearningHtml(a){
+  if(!a||typeof a!=='object')return'<div class="auto-learning"><b>Автономное обучение</b><div class="auto-learning-note">Ожидается состояние учебного цикла.</div></div>';
+  const counts=a.counts||{},candidates=Array.isArray(a.candidates)?a.candidates:null,profiles=Array.isArray(a.profiles)?a.profiles:null;
+  const count=v=>v==null||v===''||typeof v==='boolean'?null:(Number.isFinite(Number(v))?Number(v):null);
+  const stampValue=v=>{if(v==null||v==='')return null;const t=typeof v==='number'?(v<1e12?v*1000:v):Date.parse(v);return Number.isFinite(t)?t:null};
+  const direction=count(counts.direction),trade=count(counts.trade);
+  const processed=count(counts.processed)??((direction!=null||trade!=null)?(direction??0)+(trade??0):null);
+  const confirmed=profiles?profiles.filter(x=>x&&String(x.state||'').toLowerCase()==='promoted'&&x.evidence_valid===true&&stampValue(x.valid_until)>Date.now()).length:null;
+  const status=String(a.status||'collecting').toLowerCase(),labels={collecting:'Накапливает опыт',evaluating:'Проверяет поправки',running:'Учебный цикл',ok:'Работает',ready:'Работает',unavailable:'Обновление задержано',error:'Обновление задержано'};
+  const jobs=Object.values(a.jobs||{}).filter(x=>x&&typeof x==='object');
+  const completed=jobs.map(x=>stampValue(x.last_success_at)).filter(x=>x!=null);
+  const stamp=stampValue(a.last_cycle_at||a.continuous?.last_success_at)||completed.sort((x,y)=>y-x)[0]||stampValue(a.updated_at);
+  const stampText=stamp!=null?new Date(stamp).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+' МСК':'ещё не завершён';
+  const knowledge=a.knowledge||{},knowledgeText=knowledge.automation_enabled===false?' · поиск знаний выключен':knowledge.status?' · поиск знаний: '+({'OK':'работает','ok':'работает','DEFERRED_MEMORY':'ожидает ресурсы','unavailable':'ожидает обновление','ERROR':'повтор запланирован'}[knowledge.status]||'состояние обновляется'):'';
+  return '<section class="auto-learning" aria-label="Автономное обучение"><div class="auto-learning-head"><b>Автономное обучение</b><span class="'+(a.last_error||/error|unavailable/.test(status)?'warn':'ok')+'">'+esc(labels[status]||'Обновляется')+'</span></div><div class="auto-learning-grid">'+
+    '<div class="auto-learning-stat"><span>Обработанный опыт</span><b>'+esc(processed??'—')+' наблюдений</b></div>'+
+    '<div class="auto-learning-stat"><span>Кандидаты поправок</span><b>'+esc(candidates?candidates.length:'—')+'</b></div>'+
+    '<div class="auto-learning-stat"><span>Подтверждённые поправки</span><b>'+esc(confirmed??'—')+'</b></div>'+
+    '<div class="auto-learning-stat"><span>Последний учебный цикл</span><b>'+esc(stampText)+'</b></div></div>'+
+    '<div class="auto-learning-note"><b>Сейчас:</b> '+esc(learningWaitText(a))+esc(knowledgeText)+'</div>'+
+    '<div class="auto-learning-note">Поправки проверяются на последующих исходах. Улучшение оценки вероятностей само по себе не доказывает рост доходности.</div></section>';
 }
 function intelligenceRoot(raw){
   if(!raw||typeof raw!=='object')return {};
@@ -982,26 +1028,30 @@ function buildFallbackIntelligence(raw,progress,library){
 }
 function normalizeIntelligence(raw,progress,library){
   const ami=raw&&raw.asset_management_intelligence;
-  if(ami&&ami.status==='OK'&&ami.score!=null){
+  const autonomous=raw&&raw.autonomous_learning;
+  if(ami&&typeof ami==='object'){
     return {
-      score:Number(ami.score),stage:String(ami.stage||''),confidence:String(ami.confidence||''),
+      score:ami.status==='OK'&&ami.score!=null&&Number.isFinite(Number(ami.score))?Number(ami.score):null,
+      stage:String(ami.stage||''),confidence:String(ami.confidence||''),score_status:ami.score_status||ami.status,
       components:ami.components||{},component_maximums:ami.component_maximums||{},
+      component_status:ami.component_status||{},coverage:ami.coverage||{},autonomous_learning:autonomous,
       benchmarks:ami.benchmarks||{},evidence:ami.evidence||{},
       daily_progress:(raw&&raw.daily_progress)||{},core_learning_index:deepNum(raw,['learning_index','index_vs_start']),
       derived_fallback:false,real_asset_management_index:true,version:ami.version
     };
   }
+  if(!raw)return{score:null,autonomous_learning:autonomous};
   const root=intelligenceRoot(raw),c=root.components||root.component_scores||root.scores||{},k=root.knowledge||root.knowledge_base||{},e=root.evidence||root.experience||root.statistics||{};
   const score=deepNum(root,['score','intelligence_score','overall_score','maturity_score','maturity_index','intelligence_index']);
-  if(score==null)return buildFallbackIntelligence(raw,progress,library);
+  if(score==null)return{score:null,autonomous_learning:autonomous};
   return {
     score:Number(score),confidence:String(root.confidence||root.confidence_level||''),
     components:{
-      knowledge_breadth:deepNum(c,['knowledge_breadth','knowledge_score'])??0,
-      evidence_maturity:deepNum(c,['evidence_maturity','experience_score','experience_maturity'])??0,
-      outcome_quality:deepNum(c,['outcome_quality','result_quality','performance_quality'])??0,
-      execution_capture_quality:deepNum(c,['execution_capture_quality','capture_quality','movement_capture'])??0,
-      learning_telemetry_coverage:deepNum(c,['learning_telemetry_coverage','telemetry_coverage','learning_quality'])??0
+      knowledge_breadth:deepNum(c,['knowledge_breadth','knowledge_score']),
+      evidence_maturity:deepNum(c,['evidence_maturity','experience_score','experience_maturity']),
+      outcome_quality:deepNum(c,['outcome_quality','result_quality','performance_quality']),
+      execution_capture_quality:deepNum(c,['execution_capture_quality','capture_quality','movement_capture']),
+      learning_telemetry_coverage:deepNum(c,['learning_telemetry_coverage','telemetry_coverage','learning_quality'])
     },
     knowledge:{
       expert_principles:deepNum(k,['expert_principles','principles_count'])??deepNum(library,['expert_principles','principles_count']),
@@ -1016,29 +1066,31 @@ function normalizeIntelligence(raw,progress,library){
       telemetry_coverage:deepNum(e,['telemetry_coverage','learning_telemetry_coverage'])
     },
     core_learning_index:deepNum(raw,['learning_index','index_vs_start'])??deepNum(progress,['index_vs_start']),
-    daily_progress:(raw&&raw.daily_progress)||{},derived_fallback:false,real_asset_management_index:false
+    daily_progress:(raw&&raw.daily_progress)||{},derived_fallback:false,real_asset_management_index:false,
+    autonomous_learning:autonomous
   };
 }
 function renderIntelligence(){
   const i=st.intelligence||{},c=i.components||{};
-  if(i.score==null){$('intelligence').innerHTML='<div class="msg warn">Данные интеллекта временно не получены. Торговая система продолжает работать; повторная загрузка выполняется автоматически.</div>';return}
+  if(i.score==null){$('intelligence').innerHTML='<div class="msg warn">Оценка интеллекта пока недоступна. Обновление выполняется автоматически.</div>'+autonomousLearningHtml(i.autonomous_learning);return}
   const score=Number(i.score||0),conf={LOW:'низкая',MEDIUM:'средняя',HIGH:'высокая'}[String(i.confidence||'').toUpperCase()]||'формируется';
+  const numOrNull=v=>v==null||v===''||typeof v==='boolean'?null:(Number.isFinite(Number(v))?Number(v):null);
   const real=!!i.real_asset_management_index;
   const comp=real?[
-    ['Решения рынка',Number(c.decision_intelligence||0),20],
-    ['Результат портфелей',Number(c.portfolio_outcome_quality||0),25],
-    ['Движение и риск',Number(c.movement_risk_management||0),15],
-    ['Знания на практике',Number(c.knowledge_application||0),15],
-    ['Независимый опыт',Number(c.experience_depth||0),10],
-    ['Самообучение',Number(c.self_learning_effectiveness||0),15]
+    ['Решения рынка',numOrNull(c.decision_intelligence),20,'decision_intelligence'],
+    ['Результат портфелей',numOrNull(c.portfolio_outcome_quality),25,'portfolio_outcome_quality'],
+    ['Движение и риск',numOrNull(c.movement_risk_management),15,'movement_risk_management'],
+    ['Знания на практике',numOrNull(c.knowledge_application),15,'knowledge_application'],
+    ['Независимый опыт',numOrNull(c.experience_depth),10,'experience_depth'],
+    ['Самообучение',numOrNull(c.self_learning_effectiveness),15,'self_learning_effectiveness']
   ]:[
-    ['Знания',Number(c.knowledge_breadth||0),20],
-    ['Накопленный опыт',Number(c.evidence_maturity||0),20],
-    ['Качество результата',Number(c.outcome_quality||0),25],
-    ['Захват движения',Number(c.execution_capture_quality||0),20],
-    ['Качество обучения',Number(c.learning_telemetry_coverage||0),15]
+    ['Знания',numOrNull(c.knowledge_breadth),20],
+    ['Накопленный опыт',numOrNull(c.evidence_maturity),20],
+    ['Качество результата',numOrNull(c.outcome_quality),25],
+    ['Захват движения',numOrNull(c.execution_capture_quality),20],
+    ['Качество обучения',numOrNull(c.learning_telemetry_coverage),15]
   ];
-  const d=i.daily_progress||{},numOrNull=v=>v==null||v===''?null:(Number.isFinite(Number(v))?Number(v):null);
+  const d=i.daily_progress||{};
   const di=numOrNull(d.intelligence_delta_today??d.learning_index_delta_today);
   const trend=String(d.trend||'BUILDING'),trendText=trend==='UP'?'↑ качество растёт':trend==='DOWN'?'↓ качество снизилось':trend==='FLAT'?'→ без изменения':'накапливается';
   const trendClass=trend==='UP'?'ok':trend==='DOWN'?'bad':'warn',deltaText=di==null?'—':(di>0?'+':'')+di.toFixed(2)+' п.';
@@ -1050,7 +1102,7 @@ function renderIntelligence(){
     const ivDelta=iv.delta_points==null?'—':(Number(iv.delta_points)>=0?'+':'')+Number(iv.delta_points).toFixed(1)+' п.';
     const aiHit=sa.hit_rate_delta_pp==null?'—':(Number(sa.hit_rate_delta_pp)>=0?'+':'')+Number(sa.hit_rate_delta_pp).toFixed(1)+' п.п.';
     const aiCap=sa.large_move_capture_delta_pp==null?'—':(Number(sa.large_move_capture_delta_pp)>=0?'+':'')+Number(sa.large_move_capture_delta_pp).toFixed(1)+' п.п.';
-    const roll=rb.delta_points==null?'0.0':(Number(rb.delta_points)>=0?'+':'')+Number(rb.delta_points).toFixed(1);
+    const roll=rb.delta_points==null?'—':(Number(rb.delta_points)>=0?'+':'')+Number(rb.delta_points).toFixed(1);
     const le=(i.evidence||{}).learning_episodes||{},badEarly=numOrNull(le.early_bad_rate),badRecent=numOrNull(le.recent_bad_rate),rEarly=numOrNull(le.early_realization),rRecent=numOrNull(le.recent_realization);
     const learnText=(badEarly!=null&&badRecent!=null)?(100*badEarly).toFixed(0)+'% → '+(100*badRecent).toFixed(0)+'% ошибок':'выборка формируется';
     const realText=(rEarly!=null&&rRecent!=null)?(100*rEarly).toFixed(0)+'% → '+(100*rRecent).toFixed(0)+'% реализации':'—';
@@ -1064,8 +1116,8 @@ function renderIntelligence(){
     '<div class="intel-daily-stat"><span>Эффективность сегодня</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>не объём знаний, а изменение качества решений</em></div>'+
     '<div class="intel-daily-stat"><span>Обучающих эпизодов</span><b>'+esc(episodes)+'</b><em>новых завершённых сделок</em></div>'+
     '<div class="intel-daily-stat"><span>Проверенных исходов</span><b>'+esc(outcomes)+'</b><em>решений с известным результатом</em></div>'+
-    '<div class="intel-daily-stat"><span>Новых правил</span><b>+'+esc(rulesToday)+'</b><em>информативно, сами по себе балл почти не дают</em></div>'+
-    '<div class="intel-daily-stat"><span>Новых источников</span><b>+'+esc(sourcesToday)+'</b><em>информативно, без доказанной пользы не повышают интеллект</em></div>'+
+    '<div class="intel-daily-stat"><span>Новых правил</span><b>'+(rulesToday==='—'?'—':'+'+esc(rulesToday))+'</b><em>информативно, сами по себе балл почти не дают</em></div>'+
+    '<div class="intel-daily-stat"><span>Новых источников</span><b>'+(sourcesToday==='—'?'—':'+'+esc(sourcesToday))+'</b><em>информативно, без доказанной пользы не повышают интеллект</em></div>'+
   '</div>';
   let foot='';
   if(real){
@@ -1076,15 +1128,22 @@ function renderIntelligence(){
       '<div class="intel-stat">OOS-подтверждённых правил<b>'+esc(k.validated_oos_rules??0)+'</b></div>'+
       '<div class="intel-stat">Знания применены<b>'+((Number(k.application_rate)||0)*100).toFixed(1)+'%</b></div>'+
       '<div class="intel-stat">Эпизодов самообучения<b>'+esc(l.n??0)+'</b></div>'+
-      '<div class="intel-stat">Средний захват движения<b>'+((Number(l.avg_capture_ratio)||0)*100).toFixed(1)+'%</b></div>'+
+      '<div class="intel-stat">Средний захват движения<b>'+(numOrNull(l.avg_capture_ratio)==null?'—':(100*Number(l.avg_capture_ratio)).toFixed(1)+'%')+'</b></div>'+
     '</div>';
   }else{
     const k=i.knowledge||{},e=i.evidence||{},wr=e.win_rate==null?'—':(100*Number(e.win_rate)).toFixed(1)+'%',capture=e.avg_capture_ratio==null?'—':(100*Number(e.avg_capture_ratio)).toFixed(1)+'%';
     foot='<div class="intel-foot"><div class="intel-stat">Источники знаний<b>'+esc(k.sources??'—')+'</b></div><div class="intel-stat">Правила / принципы<b>'+esc(k.rules??k.expert_principles??'—')+'</b></div><div class="intel-stat">Завершённых эпизодов<b>'+esc(e.clean_post_r2_closed_trades??'—')+'</b></div><div class="intel-stat">Win-rate выборки<b>'+wr+'</b></div><div class="intel-stat">Средний захват движения<b>'+capture+'</b></div></div>';
   }
   const title=real?'Прикладной интеллект управления активами':'Индекс зрелости системы';
-  const explanation=real?'Не IQ: измеренная способность анализировать рынок, применять знания, управлять риском и улучшать решения на фактических исходах.':'Рост индекса отражает знания, опыт, качество решений и полноту обратной связи.';
-  $('intelligence').innerHTML='<div class="intel-wrap"><div class="intel-score"><div><div class="label">'+title+'</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · уровень: '+esc(i.stage||'—')+' · доказательность: '+conf+'</div></div><div class="sub">'+explanation+'</div></div><div><div class="intel-main">'+comp.map(x=>'<div class="intel-metric"><span>'+x[0]+'</span><b>'+x[1].toFixed(1)+' / '+x[2]+'</b><div class="intel-bar"><div class="intel-fill" style="width:'+Math.max(0,Math.min(100,100*x[1]/x[2]))+'%"></div></div></div>').join('')+'</div>'+compare+daily+foot+'</div></div>';
+  const explanation=real?'Оценка решений, знаний и управления риском по доступным исходам.':'Оценка знаний, опыта, качества решений и полноты обратной связи.';
+  const coverage=i.coverage||{},observed=numOrNull(coverage.observed_max_points),total=numOrNull(coverage.total_max_points);
+  const coverageText=real&&observed!=null&&total>0?'<div class="sub">Измерения: '+esc(coverage.available_components??'—')+' из '+esc(coverage.total_components??6)+' разделов · покрытие '+(100*observed/total).toFixed(0)+'%. Шкала остаётся 100; недостающие измерения не перераспределяют баллы.</div>':'';
+  const metrics=comp.map(x=>{const meta=(i.component_status||{})[x[3]]||{},missing=x[1]==null;
+    const label=missing?(meta.status==='UNAVAILABLE'?'Обновление задержано':'Накапливается'):x[1].toFixed(1)+' / '+x[2];
+    const note=missing?(meta.status==='UNAVAILABLE'?'Измерение временно недоступно':'Недостаточно измеримых исходов'):meta.status==='PARTIAL'?'Часть измерений доступна':'';
+    return '<div class="intel-metric"'+(x[3]?' data-component="'+x[3]+'"':'')+'><span>'+x[0]+'</span><b>'+label+'</b>'+(note?'<small>'+note+'</small>':'')+'<div class="intel-bar'+(missing?' unmeasured':'')+'"><div class="intel-fill" style="width:'+(missing?0:Math.max(0,Math.min(100,100*x[1]/x[2])))+'%"></div></div></div>'}).join('');
+  const delayed=i.refresh_delayed?'<div class="msg warn">Обновление оценки задержано. Показан последний полученный результат.</div>':'';
+  $('intelligence').innerHTML=delayed+'<div class="intel-wrap"><div class="intel-score"><div><div class="label">'+title+'</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · уровень: '+esc(i.stage||'—')+' · доказательность: '+conf+'</div></div><div class="sub">'+explanation+'</div>'+coverageText+'</div><div><div class="intel-main">'+metrics+'</div>'+compare+daily+foot+autonomousLearningHtml(i.autonomous_learning)+'</div></div>';
 }
 function renderInsights(){
   const l=st.learning||{}, q=st.quality||{}, h=st.horizon||{}, m=st.macro||{}, ep=(st.portfolios||{}).episode_learning_r29||{};
@@ -1328,7 +1387,7 @@ async function loadIntelligence(){
     get('learning-progress','/api/v1/learning-progress',9000),
     get('library-summary','/api/v1/library-summary',9000)
   ]);
-  st.intelligence=normalizeIntelligence(scorecard,progress,library);
+  st.intelligence=!scorecard&&st.intelligence?{...st.intelligence,refresh_delayed:true}:normalizeIntelligence(scorecard,progress,library);
   renderIntelligence();
 }
 function refreshLiveState(){
