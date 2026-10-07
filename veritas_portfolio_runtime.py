@@ -1314,10 +1314,10 @@ def _v90r46_mark_trend_hold(c,name,candidates,summary,ts):
         marked.append({'asset':asset,**ctx})
     return marked
 
-def _v90r46_giveback_harvest(c,p,name,prices,nav,ts):
+def _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=None):
     changes=[]
     try:
-        rows=c.execute(
+        rows=positions if positions is not None else c.execute(
             "SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)
         ).fetchall()
     except Exception:
@@ -1465,7 +1465,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     try:
         p,pos=_portfolio_rows(c,name)
         nav,_,_,_=_mark_nav(p,pos,prices)
-        _v90r46_giveback_harvest(c,p,name,prices,nav,ts)
+        _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=pos)
     except Exception:
         pass
 

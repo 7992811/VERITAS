@@ -172,7 +172,7 @@ class PrepassFixture:
             '_v90r33_harvest': lambda c, p, name, prices, nav, ts: self.note('r33_harvest', name, nav),
             '_v90j_update_excursions': lambda c, name, prices, ts: self.note('excursions', name),
             '_v90r46_mark_trend_hold': lambda c, name, candidates, summary, ts: self.note('trend_hold', name),
-            '_v90r46_giveback_harvest': lambda c, p, name, prices, nav, ts: self.note('r46_harvest', name, nav),
+            '_v90r46_giveback_harvest': lambda c, p, name, prices, nav, ts, positions=None: self.note('r46_harvest', name, nav),
             '_v90r54_apply_structural_stop': lambda row: (dict(row, prepared_stop=98.0), {}),
             '_v90r54_dynamic_fraction': lambda row, current: (0.05, {'stage': 'REDUCE'}),
             '_v90r54_initial_fraction': lambda row: (0.10, {'stage': 'OPEN'}),

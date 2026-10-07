@@ -2848,7 +2848,23 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
 
 def _v90j_update_excursions(c,name,prices,ts):
     try:
-        rows=c.execute("""SELECT * FROM paper_positions WHERE portfolio_name=%s""",(name,)).fetchall()
+        # Ordinary objects transfer only quote authority and extrema; unusual
+        # JSON shapes retain the legacy parser/replacement path below.
+        rows=c.execute("""SELECT asset,direction,avg_entry_price,active_trade_id,
+            jsonb_typeof(p.payload)='object' AS _excursion_object,
+            CASE WHEN jsonb_typeof(p.payload)='object' THEN jsonb_build_object(
+                'price_source_lock',e.price_source_lock,'contract_identity',e.contract_identity,
+                'entry_primary_source',e.entry_primary_source,'entry_contract_secid',e.entry_contract_secid,
+                'source_locked_mark',e.source_locked_mark,
+                'entry_execution_observed_at',e.entry_execution_observed_at,
+                'entry_market_observed_at',e.entry_market_observed_at,
+                'mfe_pct',e.mfe_pct,'mae_pct',e.mae_pct) ELSE p.payload END AS payload
+            FROM paper_positions p CROSS JOIN LATERAL jsonb_to_record(
+                CASE WHEN jsonb_typeof(p.payload)='object' THEN p.payload ELSE '{}'::jsonb END
+            ) AS e(price_source_lock jsonb,contract_identity jsonb,entry_primary_source jsonb,
+                   entry_contract_secid jsonb,source_locked_mark jsonb,entry_execution_observed_at jsonb,
+                   entry_market_observed_at jsonb,mfe_pct jsonb,mae_pct jsonb)
+            WHERE portfolio_name=%s""",(name,)).fetchall()
         for z0 in rows:
             z=dict(z0); asset=z.get('asset'); quote=VPG.quote_for_position(z,now=ts)
             if not quote: continue
@@ -2866,12 +2882,14 @@ def _v90j_update_excursions(c,name,prices,ts):
             payload['last_mark_price']=px
             payload['last_mark_at']=_v90j_iso(ts)
             tid=z.get('active_trade_id')
-            c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
-                      (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
+            delta=json.dumps({'mfe_pct':payload['mfe_pct'],'mae_pct':payload['mae_pct'],
+                              'last_mark_price':px,'last_mark_at':_v90j_iso(ts)},ensure_ascii=False,default=str)
+            value=delta if z.get('_excursion_object') else json.dumps(payload,ensure_ascii=False,default=str)
+            assignment='payload || %s::jsonb' if z.get('_excursion_object') else '%s::jsonb'
+            c.execute("UPDATE paper_positions SET payload="+assignment+" WHERE portfolio_name=%s AND asset=%s",
+                      (value,name,asset))
             c.execute("UPDATE paper_trades SET payload=payload || %s::jsonb WHERE trade_id=%s",
-                      (json.dumps({'mfe_pct':payload['mfe_pct'],'mae_pct':payload['mae_pct'],
-                                   'last_mark_price':px,'last_mark_at':_v90j_iso(ts)},
-                                  ensure_ascii=False,default=str),tid))
+                      (delta,tid))
     except Exception:
         pass
 
