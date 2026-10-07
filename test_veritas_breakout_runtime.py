@@ -62,6 +62,17 @@ class FastQuoteRuntimeTests(unittest.TestCase):
             BR._latest_rows.clear()
             BR._latest_rows.update(self.previous_rows)
 
+    def test_runtime_never_deepcopies_the_complete_market_cache(self):
+        real_deepcopy = deepcopy
+
+        def bounded_copy(value, memo=None):
+            self.assertIsNot(value, BR._markets)
+            return real_deepcopy(value) if memo is None else real_deepcopy(value, memo)
+
+        with patch.object(BR, "deepcopy", side_effect=bounded_copy):
+            self.runtime.run_once(NOW, quotes={"CNYRUBF": quote()})
+        self.assertEqual(len(self.built), 1)
+
     def test_duplicate_quote_does_not_recompute_or_reexecute(self):
         self.runtime.run_once(NOW, quotes={"CNYRUBF": quote()})
         self.runtime.run_once(NOW+timedelta(seconds=5), quotes={"CNYRUBF": quote()})
