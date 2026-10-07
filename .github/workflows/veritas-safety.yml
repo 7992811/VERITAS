@@ -72,6 +72,10 @@ jobs:
         run: python -m unittest -v test_veritas_r82_cost_policy.py test_veritas_cost_audit_repairs.py
       - name: Currency portfolio regressions
         run: python -m unittest -v test_veritas_currency_portfolio.py test_veritas_currency_dashboard_loading.py test_veritas_partial_portfolio_refresh.py test_veritas_portfolio_read_model.py
+      - name: Bounded portfolio delivery and matching accounting snapshot
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: python -m unittest -v test_veritas_portfolio_snapshot_refresh.py test_veritas_guard_cache_revision.py test_veritas_portfolio_api_projection.py
       - name: Currency routing and Telegram event delivery
         run: python -m unittest -v test_veritas_currency_rule_consistency.py test_veritas_currency_notifications.py test_veritas_currency_delivery.py test_veritas_currency_flip.py
       - name: T-Invest read-only connection tests

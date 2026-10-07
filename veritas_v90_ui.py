@@ -1269,10 +1269,12 @@ async function loadPortfolios(){
   if(portfolioReadComplete(d)){
     d.portfolios.forEach(p=>{const at=readTime(p.positions_checked_at??d.positions_checked_at);if(at!=null)st.positionBookCheckedAt[p.name]=at});
     const ingested=ingestExtractedPositions(d,{allowClear:true});
-    st.portfolioLoadStatus='COMPLETE';
+    st.portfolioLoadStatus=d.snapshot_stale?'STALE':'COMPLETE';
     const confirmed=Object.assign({},d,{portfolios:d.portfolios.map(p=>Object.assign({},p,{positions_status:'COMPLETE'}))});
     st.portfolios=mergePortfolioSets(confirmed,st.portfolios,true);
-    $('positionSync').textContent=ingested?'':'Позиции синхронизируются. Сохранены последние полученные данные.';
+    $('positionSync').textContent=d.snapshot_stale
+      ?'Обновление задержано. Показан полный состав портфелей на время последнего чтения.'
+      :(ingested?'':'Позиции синхронизируются. Сохранены последние полученные данные.');
     const closed=d.portfolios.reduce((n,p)=>n+Number(p.closed_trades||0),0),wins=d.portfolios.reduce((n,p)=>n+Number(p.wins||0),0);
     st.learning={closed_trades:closed,wins,win_rate:closed?wins/closed:null,experience_storage:'ACTIVE'};
     renderPortfolios();

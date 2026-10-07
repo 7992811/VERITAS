@@ -188,6 +188,34 @@ class PartialPortfolioRefreshTests(unittest.TestCase):
   assert.equal(reopened.ui.st.portfolioLoadStatus,'COMPLETE');
   assert.equal(reopened.ui.st.portfolios.accounting_complete,true);
   console.log('PASS: only a complete current read restores a confirmed accounting state');
+
+  // A completed background SQL read can arrive after its freshness window.
+  // It still proves the entire book at its original time, not at delivery.
+  const delayed=harness();
+  await load(delayed,{data:report(30,true)});
+  const delayedClose={...report(31),snapshot_stale:true,
+    api_source:'completed_snapshot',refresh_status:'UPDATING',cache_age_seconds:11};
+  await load(delayed,{data:delayedClose});
+  assert.equal(count(delayed),0);
+  assert.equal(delayed.ui.st.portfolioLoadStatus,'STALE');
+  assert.equal(delayed.ui.st.portfolios.positions_complete,true);
+  assert.equal(delayed.ui.st.portfolios.accounting_complete,true);
+  assert.equal(delayed.ui.st.positionBookCheckedAt.Currency,Date.parse(at(31)));
+  assert.match(delayed.node('positionSync').textContent,/полный состав портфелей на время последнего чтения/);
+  const obsoleteOpen={...report(30,true),snapshot_stale:true,
+    api_source:'completed_snapshot',refresh_status:'UPDATING',cache_age_seconds:1};
+  await load(delayed,{data:obsoleteOpen});
+  assert.equal(count(delayed),0);
+  assert.equal(delayed.ui.st.positionBookCheckedAt.Currency,Date.parse(at(31)));
+  const delayedReload=harness(delayed.savedCache());
+  await load(delayedReload,{data:obsoleteOpen});
+  assert.equal(count(delayedReload),0);
+  await load(delayedReload,{data:report(32,true)});
+  const obsoleteClose={...report(31),snapshot_stale:true,api_source:'completed_snapshot'};
+  await load(delayedReload,{data:obsoleteClose});
+  assert.equal(count(delayedReload),1);
+  assert.equal(delayedReload.ui.st.positionBookCheckedAt.Currency,Date.parse(at(32)));
+  console.log('PASS: completed delayed books clear at their original time, stay marked stale, and never overwrite newer closes or opens');
 })().catch(e=>{console.error(e);process.exitCode=1});
 '''
         result = subprocess.run(['node', '-e', harness + scenario], input=html,
