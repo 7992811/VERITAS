@@ -303,5 +303,98 @@ class PortfolioPrepassLifetimeTests(unittest.TestCase):
                 self.assertIn((CASES[layer][0], actual_node(layer).lineno), seen)
 
 
+class CalibrationBoundaryTests(unittest.TestCase):
+    def node(self, layer):
+        alias = f'_v90{layer}_base_step_all'
+        matches = [node for node in TREES[VP].body if isinstance(node, ast.FunctionDef)
+                   and any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                           and call.func.id == alias for call in ast.walk(node))]
+        self.assertEqual(len(matches), 1)
+        return matches[0]
+
+    def exercise(self, layer, *, emit_enabled=True, refresh_error=None, base_error=None):
+        events, calls, refs, logs = [], [], [], []
+        result, connection = object(), object()
+        summary = [{'asset': 'CNYRUBF', 'decision': 'NO_TRADE'}]
+        cache = {'profiles': {'fixture': [1, 2, 3]}}
+        def refresh(pg_connect):
+            self.assertIs(pg_connect, connection)
+            events.append('refresh')
+            if refresh_error is not None:
+                raise refresh_error
+            snapshot = WatchedDict(rows=[{'payload': {'proof': 'fixture'}}])
+            refs.append(weakref.ref(snapshot))
+            return snapshot
+        def emit(event, **fields):
+            self.assertTrue(all(ref() is None for ref in refs), 'refresh return must not survive to boundary')
+            events.append('emit')
+            calls.append((event, fields))
+        callback = emit if emit_enabled else None
+        arguments = (summary, connection, 'fixture-model', '2026-10-07T12:50:00Z', 0.0004, callback)
+        def base(*args):
+            self.assertEqual(args, arguments)
+            self.assertTrue(all(a is b for a, b in zip(args, arguments)))
+            self.assertTrue(all(ref() is None for ref in refs))
+            events.append('base')
+            if base_error is not None:
+                raise base_error
+            return result
+        namespace = {'COMMISSION': 0.0004, 'json': json,
+                     'print': lambda *args, **kwargs: logs.append(args),
+                     f'_v90{layer}_refresh': refresh, f'_v90{layer}_base_step_all': base,
+                     f'_v90{layer}_cache': cache}
+        module = ast.fix_missing_locations(ast.Module(body=[deepcopy(self.node(layer))], type_ignores=[]))
+        exec(compile(module, VP, 'exec'), namespace)
+        propagated = base_error or (refresh_error if not isinstance(refresh_error, Exception) else None)
+        if propagated is not None:
+            with self.assertRaises(type(propagated)) as caught:
+                namespace['step_all'](*arguments)
+            self.assertIs(caught.exception, propagated)
+        else:
+            self.assertIs(namespace['step_all'](*arguments), result)
+        self.assertIs(namespace[f'_v90{layer}_cache'], cache)
+        self.assertEqual(cache, {'profiles': {'fixture': [1, 2, 3]}})
+        self.assertEqual(summary, [{'asset': 'CNYRUBF', 'decision': 'NO_TRADE'}])
+        return events, calls, logs
+
+    def test_refresh_boundaries_are_scalar_and_precede_base(self):
+        for layer in ('r33', 'r29'):
+            with self.subTest(layer=layer):
+                events, calls, logs = self.exercise(layer)
+                self.assertEqual(events, ['refresh', 'emit', 'base'])
+                self.assertEqual(calls, [('paper_portfolio_phase', {'phase': f'calibration_{layer}_done'})])
+                self.assertEqual(logs, [])
+
+    def test_caught_refresh_failures_keep_existing_logs_and_still_reach_boundary(self):
+        for layer in ('r33', 'r29'):
+            with self.subTest(layer=layer):
+                events, calls, logs = self.exercise(layer, refresh_error=RuntimeError('fixture refresh failed'))
+                self.assertEqual(events, ['refresh', 'emit', 'base'])
+                self.assertEqual(calls, [('paper_portfolio_phase', {'phase': f'calibration_{layer}_done'})])
+                if layer == 'r29':
+                    self.assertEqual(json.loads(logs[0][0]),
+                                     {'event': 'V90_R29_REFRESH_ERROR', 'error': 'fixture refresh failed'})
+                else:
+                    self.assertEqual(logs, [])
+
+    def test_optional_emitter_does_not_change_success_or_caught_failure(self):
+        for layer in ('r33', 'r29'):
+            for failure in (None, RuntimeError('fixture refresh failed')):
+                with self.subTest(layer=layer, failure=type(failure).__name__):
+                    events, calls, _ = self.exercise(layer, emit_enabled=False, refresh_error=failure)
+                    self.assertEqual(events, ['refresh', 'base'])
+                    self.assertEqual(calls, [])
+
+    def test_uncaught_refresh_and_base_exceptions_keep_their_identity(self):
+        for layer in ('r33', 'r29'):
+            with self.subTest(layer=layer):
+                events, calls, _ = self.exercise(layer, refresh_error=KeyboardInterrupt('fixture interruption'))
+                self.assertEqual(events, ['refresh'])
+                self.assertEqual(calls, [])
+                events, calls, _ = self.exercise(layer, base_error=RuntimeError('fixture base failed'))
+                self.assertEqual(events, ['refresh', 'emit', 'base'])
+                self.assertEqual(len(calls), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

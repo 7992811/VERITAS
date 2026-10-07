@@ -7839,6 +7839,7 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
     except Exception as e:
         print(json.dumps({'event':'V90_R29_REFRESH_ERROR','error':str(e)[:180]},
                          ensure_ascii=False,separators=(',',':')),flush=True)
+    if emit: emit('paper_portfolio_phase',phase='calibration_r29_done')
     return _v90r29_base_step_all(
         summary,pg_connect,model_version,observed_at,commission_rate,emit
     )
@@ -8276,6 +8277,7 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
         _v90r33_refresh(pg_connect)
     except Exception:
         pass
+    if emit: emit('paper_portfolio_phase',phase='calibration_r33_done')
     return _v90r33_base_step_all(
         summary,pg_connect,model_version,observed_at,commission_rate,emit
     )
