@@ -18,6 +18,15 @@ EVENT_TYPE = "user_teaching"
 TRACE_VERSION = "USER_TEACHING_ENTRY_TRACE_V1"
 MA_TEACHING_ID = "USER_DAILY_MA_REBOUND_2026_10_07"
 MA_SOURCE_TIMESTAMP = "2026-10-06T21:26:00Z"
+CONTINUATION_TEACHING_ID = "USER_CAUSAL_BREAKOUT_CONTINUATION_2026_10_07"
+CONTINUATION_SOURCE_TIMESTAMP = "2026-10-07T08:18:42Z"
+CONTINUATION_USER_CORRECTION_RU = (
+    "По CNYRUBF: импульс открытия в 07:00 пробил предыдущий локальный максимум "
+    "12.727 — LONG со стопом ниже 12.693. В 10:14 пробой 12.75 должен сразу "
+    "открывать или увеличивать LONG; стоп и проверка полного объёма ниже 12.693, "
+    "фиксации на 12.805 и 12.84. При пробое 12.84 — ещё один LONG по той же "
+    "логике. Исправить, записать как обучение и применять ко всем инструментам."
+)
 MA_USER_CORRECTION_RU = (
     "В правилах используется анализ скользящих средних? Если цена находится у "
     "50 или 200 дневной средней это часто является уровнем поддержки или "
@@ -123,9 +132,47 @@ def ma_policy_snapshot():
     }
 
 
+def continuation_policy_snapshot():
+    """Record the new campaign-continuation rule without claiming an edge."""
+    policy = _copy(CTC.CONTINUATION_ADD_POLICY)
+    if policy.get("teaching_id") != CONTINUATION_TEACHING_ID:
+        raise ValueError("CTC continuation identity differs from owner instruction")
+    return {
+        "teaching_id": CONTINUATION_TEACHING_ID,
+        "source_type": "USER_AUTHORED_OPERATIONAL_POLICY",
+        "source_timestamp": CONTINUATION_SOURCE_TIMESTAMP,
+        "source_text_ru": CONTINUATION_USER_CORRECTION_RU,
+        "status": "ACTIVE_OPERATIONAL_POLICY",
+        "parent_teaching_id": TEACHING_ID,
+        "ctc_version": CTC.VERSION,
+        "runtime_authority": CTC.BASIS_RUNTIME,
+        "portfolios": list(CTC.PORTFOLIO_ORDER),
+        "scope": "ALL_CONFIGURED_PAPER_PORTFOLIOS_AND_ASSETS_WITH_EXISTING_RISK_LIMITS",
+        "execution_policy": policy,
+        "requirements": {
+            "fresh_event": "A unique closed-bar structural breakout is required for every add.",
+            "target_ladder": "Keep original TP1 immutable; the new event may add only a farther directional target.",
+            "stop": "Evaluate the full position against the active campaign stop and never widen it.",
+            "identity": "Direction, source and exact instrument remain locked to the held campaign.",
+            "economics": "The add must pass post-cost economics from current fill to the farther target against full-stop risk.",
+            "anti_reuse": "The entry event and last continuation event cannot be reused after reload.",
+        },
+        "parameter_validation": {
+            "status": "SHADOW_OOS_REQUIRED",
+            "runtime_defaults_status": policy["parameter_validation_status"],
+            "ml_training_performed": False,
+            "validated_profitability": False,
+            "note": "This implements the owner's causal safety invariant; profitability remains unproven.",
+        },
+        "storage": {"table": "ledger_events", "event_type": EVENT_TYPE,
+                    "entity_key": CONTINUATION_TEACHING_ID,
+                    "event_key": EVENT_TYPE + ":" + CONTINUATION_TEACHING_ID},
+    }
+
+
 def seed_all_user_teachings(pg_event, read_event=None):
     return [seed_user_teaching(pg_event, read_event, snapshot=payload)
-            for payload in (policy_snapshot(), ma_policy_snapshot())]
+            for payload in (policy_snapshot(), ma_policy_snapshot(), continuation_policy_snapshot())]
 
 
 def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):

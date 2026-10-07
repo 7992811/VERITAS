@@ -2226,10 +2226,19 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         # Preserve the original structural stop/setup on adds. An add is not
         # permission to silently switch the active trade to another horizon's stop.
         old_payload=_position_payload(dict(z))
+        continuation=dict(final_gate.get('continuation_add') or {})
         add_patch={'last_add_pwin':row['_pwin'],'last_add_event_id':entry_event_id,
                    'last_add_execution_snapshot':final_gate.get('execution_snapshot'),
                    'last_add_stop_risk_budget':prepared['stop_risk_budget'],
                    'last_add_teaching_trace':teaching_trace,'last_add_canonical_admission':row.get('_canonical_admission')}
+        if continuation:
+            add_patch.update(
+                runner_target_price=continuation['target_price'],
+                continuation_target_ladder=continuation['target_ladder'],
+                last_continuation_event_id=continuation['event_id'],
+                continuation_teaching_id=continuation.get('teaching_id'),
+                continuation_stop_mode=continuation['stop_mode'],
+                continuation_economics_basis=continuation['economics_basis'])
         old_payload.update({**add_patch,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
                             'last_signal_horizon':row.get('horizon'),
                             'signal':(row.get('institutional_signal') or {}).get('investor_signal'),
@@ -2263,8 +2272,8 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                    'entry_event_id':entry_event_id,
                    'price_source_identity':source_lock,'market_observed_at':quote['observed_at'],
                    'stop_price':z.get('stop_price') if z else (row.get('trade_plan') or {}).get('stop_price'),
-                   'target_price':_position_payload(z).get('target_price') if z else (row.get('trade_plan') or {}).get('target_price'),
-                   'runner_target_price':_position_payload(z).get('runner_target_price') if z else (row.get('trade_plan') or {}).get('runner_target_price'),
+                   'target_price':((_position_payload(z).get('take_price') or _position_payload(z).get('target_price')) if z else (row.get('trade_plan') or {}).get('target_price')),
+                   'runner_target_price':((final_gate.get('continuation_add') or {}).get('target_price') or _position_payload(z).get('runner_target_price')) if z else (row.get('trade_plan') or {}).get('runner_target_price'),
                    'execution_horizon':(_position_payload(z).get('execution_horizon') if z else None) or row.get('horizon'),
                    'setup_event_id':entry_event_id,
                    'entry_timing':final_gate.get('trend_event'),

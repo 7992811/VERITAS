@@ -46,7 +46,11 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertIn("signal-readiness", s["product_version"])
         self.assertTrue(s['execution_integrity_policy']['one_quote_and_fill_for_admission_and_accounting'])
         self.assertEqual(s["daily_ma_rebound_policy"], CTC.MA_REBOUND_POLICY)
-        self.assertEqual(s["active_user_teaching_ids"], [CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"]])
+        self.assertEqual(s["continuation_add_policy"], CTC.CONTINUATION_ADD_POLICY)
+        self.assertEqual(s["active_user_teaching_ids"],
+                         [CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"],
+                          CTC.MA_REBOUND_POLICY["teaching_id"],
+                          CTC.CONTINUATION_ADD_POLICY["teaching_id"]])
 
     def test_final_runtime_binds_canonical_routing_and_admission(self):
         snap=VPR.runtime_authority_snapshot()

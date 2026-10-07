@@ -93,6 +93,30 @@ class OwnerTeachingProvenanceTests(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(outcome))
 
 
+    def test_continuation_policy_records_owner_levels_without_profitability_claim(self):
+        snapshot = UT.continuation_policy_snapshot()
+        self.assertEqual(snapshot["teaching_id"],
+                         "USER_CAUSAL_BREAKOUT_CONTINUATION_2026_10_07")
+        self.assertEqual(snapshot["execution_policy"], CTC.CONTINUATION_ADD_POLICY)
+        self.assertIn("12.727", snapshot["source_text_ru"])
+        self.assertIn("12.805", snapshot["source_text_ru"])
+        self.assertIn("12.84", snapshot["source_text_ru"])
+        self.assertEqual(snapshot["requirements"]["stop"],
+                         "Evaluate the full position against the active campaign stop and never widen it.")
+        self.assertFalse(snapshot["parameter_validation"]["validated_profitability"])
+
+    def test_seed_all_includes_structural_ma_and_continuation_teachings(self):
+        events = []
+        def write(kind, key, payload, asset=None, horizon=None, event_ts=None):
+            events.append((kind, key, event_ts))
+            return True
+        outcomes = UT.seed_all_user_teachings(write)
+        self.assertEqual([item["teaching_id"] for item in outcomes],
+                         [UT.TEACHING_ID, UT.MA_TEACHING_ID, UT.CONTINUATION_TEACHING_ID])
+        self.assertEqual([key for _, key, _ in events],
+                         [UT.TEACHING_ID, UT.MA_TEACHING_ID, UT.CONTINUATION_TEACHING_ID])
+
+
 class OwnerTeachingEntryTraceTests(unittest.TestCase):
     def context(self):
         return {"event_id": "NQ:4h:closed-2026-10-06T16:00:00Z:LONG",

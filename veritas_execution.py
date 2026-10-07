@@ -261,6 +261,72 @@ def stored_position_target_price(position):
     return target if target is not None and target > 0 else None
 
 
+def _position_payload(position):
+    payload = (position or {}).get("payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def continuation_add_target(row, position, price, direction):
+    """Select a farther target only for a fresh causal breakout continuation.
+
+    The existing campaign stop remains authoritative for the whole position.
+    This owner-authorized exception deliberately does not transplant the new
+    event's lower-timeframe stop onto already-held units.
+    """
+    policy = getattr(CTC, "CONTINUATION_ADD_POLICY", {})
+    if not policy.get("enabled"):
+        return None
+    payload = _position_payload(position)
+    context = ((row.get("trade_plan") or {}).get("timeframe_entry_context")
+               or row.get("timeframe_entry_context") or {})
+    event = context.get("event") or {}
+    event_id = event.get("event_id") or event.get("entry_event_id")
+    event_direction = event.get("direction") or context.get("direction")
+    target = _num(event.get("target_price"))
+    px = _num(price)
+    sign = 1 if direction == "LONG" else -1
+    original_target = _num(payload.get("take_price") or payload.get("target_price"))
+    active_runner = _num(payload.get("runner_target_price"))
+    baseline = active_runner or original_target
+    held_source = payload.get("price_source_lock")
+    event_source = context.get("source_identity") or event.get("source_identity")
+    seen = {payload.get("r66_event_id"), payload.get("last_add_event_id"),
+            payload.get("last_continuation_event_id")}
+    if position.get("direction") != direction or event_direction != direction:
+        return None
+    if not event_id or event_id in seen:
+        return None
+    if original_target is None or original_target <= 0:
+        return None
+    if target is None or px is None or target <= 0 or px <= 0:
+        return None
+    if sign * (target - px) <= 0 or (baseline is not None and sign * (target - baseline) <= 0):
+        return None
+    if held_source is None or event_source is None or not VPS.same(held_source, event_source):
+        return None
+    ladder = []
+    for level in (original_target, active_runner, target):
+        if level is not None and level > 0 and level not in ladder:
+            ladder.append(level)
+    return {
+        "eligible": True,
+        "teaching_id": policy.get("teaching_id"),
+        "event_id": event_id,
+        "event_timeframe": context.get("timeframe") or row.get("horizon"),
+        "original_target_price": original_target,
+        "previous_runner_target_price": active_runner,
+        "target_price": target,
+        "target_ladder": ladder,
+        "stop_mode": "PRESERVE_ACTIVE_POSITION_STOP_NO_WIDENING",
+        "economics_basis": "FULL_POSITION_STOP_TO_FRESH_CONTINUATION_TARGET",
+    }
+
+
 def entry_gate(row, price, direction, fraction, position=None, existing_target_price=None, now=None,
                *, execution_fraction=None):
     """Last check after all setup/sizing mutations, immediately before any order."""
@@ -279,33 +345,40 @@ def entry_gate(row, price, direction, fraction, position=None, existing_target_p
         return {'eligible':False,'status':'BLOCK','blockers':['ENTRY_PRICE_INVALID']}
     row = VTE.prepare_row(row, price, clock)
     plan = dict(row.get('trade_plan') or {})
+    continuation = None
+    held_stop = held_target = selected_target = None
     if position:
         held_stop = _num(position.get('stop_price'))
         held_target = stored_position_target_price(position)
+        continuation = continuation_add_target(row, position, price, direction)
+        selected_target = (continuation or {}).get('target_price') or held_target
         add_blockers = []
         if held_stop is None or held_stop <= 0:
             add_blockers.append('ADD_STORED_STOP_REQUIRED')
-        if held_target is None:
+        if selected_target is None:
             add_blockers.append('ADD_STORED_TARGET_REQUIRED')
-        elif existing_target_price is not None and _num(existing_target_price) != held_target:
+        if (existing_target_price is not None and held_target is not None
+                and _num(existing_target_price) != held_target):
             add_blockers.append('ADD_STORED_TARGET_MISMATCH')
         px = _num(price)
         sign = 1 if direction == 'LONG' else -1
         if px and px > 0:
             if held_stop and sign*(px-held_stop) <= 0:
                 add_blockers.append('STOP_DIRECTION_INVALID')
-            if held_target and sign*(held_target-px) <= 0:
+            if selected_target and sign*(selected_target-px) <= 0:
                 add_blockers.append('TARGET_DIRECTION_INVALID')
         if add_blockers:
             return {'eligible':False, 'status':'BLOCK', 'blockers':add_blockers,
-                    'target_price':held_target,
-                    'add_geometry_basis':'STORED_POSITION_STOP_TARGET',
+                    'target_price':selected_target,
+                    'continuation_add':continuation,
+                    'add_geometry_basis':'STORED_POSITION_STOP_FRESH_CONTINUATION_TARGET'
+                                         if continuation else 'STORED_POSITION_STOP_TARGET',
                     'entry_geometry':{'eligible':False, 'reason':add_blockers[0],
-                                      'stop_price':held_stop, 'target_price':held_target}}
-        plan.update(stop_price=held_stop, target_price=held_target)
+                                      'stop_price':held_stop, 'target_price':selected_target}}
+        plan.update(stop_price=held_stop, target_price=selected_target)
     if position and TFP.applies(row):
         geometry=TFP.geometry(dict(row,trade_plan=plan),price,direction,held_stop,
-                              existing_target_price=held_target)
+                              existing_target_price=selected_target)
     else:
         geometry=VTE.geometry(dict(row,trade_plan=plan),price,direction,
                               position.get('stop_price') if position else None)
@@ -313,10 +386,10 @@ def entry_gate(row, price, direction, fraction, position=None, existing_target_p
             # Historical event geometry must not restore a different target at
             # this final accounting boundary either.
             risk=sign*(float(price)-held_stop)/float(price)
-            room=sign*(held_target-float(price))/float(price)
-            geometry=dict(geometry, stop_price=held_stop, target_price=held_target,
+            room=sign*(selected_target-float(price))/float(price)
+            geometry=dict(geometry, stop_price=held_stop, target_price=selected_target,
                           remaining_move_pct=room, stop_distance_pct=risk,
-                          reward_risk=room/risk, runner_target_price=held_target)
+                          reward_risk=room/risk, runner_target_price=selected_target)
     if (geometry.get('eligible') or geometry.get('reason')=='R66_SENIOR_BREAK_NOT_HELD') and VTE.has_geometry_context(row):
         forecast=_num(plan.get('expected_move_pct'))
         expected=min(forecast,geometry['remaining_move_pct']) if forecast is not None and forecast>=0 else geometry['remaining_move_pct']
@@ -334,7 +407,10 @@ def entry_gate(row, price, direction, fraction, position=None, existing_target_p
             plan['position_age_seconds']=(clock-opened).total_seconds()
     gate = economics_gate(row.get('asset'), plan)
     if position:
-        gate['add_geometry_basis']='STORED_POSITION_STOP_TARGET'
+        gate['add_geometry_basis'] = ('STORED_POSITION_STOP_FRESH_CONTINUATION_TARGET'
+                                      if continuation else 'STORED_POSITION_STOP_TARGET')
+        if continuation:
+            gate['continuation_add'] = continuation
     timing = paper_quote_time_gate(
         dict(execution,asset=row.get('asset')),
         row.get('horizon'), now=clock)
