@@ -4,7 +4,7 @@ No historical forecast may manufacture an execution event. The pure structural
 engine supplies immutable anchors; this adapter supplies source and cost checks.
 """
 from datetime import datetime, timezone
-from copy import deepcopy
+from veritas_data_copy import deepcopy
 import math
 
 import veritas_canonical_constitution as CTC

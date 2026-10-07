@@ -4,7 +4,7 @@ Admission and accounting remain in the canonical engine. This adapter chooses
 one allocation per newly observed level and manages an explicitly recorded
 target ladder. It never calls a broker or changes the initial entry evidence.
 """
-from copy import deepcopy
+from veritas_data_copy import deepcopy
 from datetime import datetime, timezone
 import json
 import math
@@ -273,8 +273,10 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
                 # already-waiting portfolio loop. Reserve only for a currently
                 # valid structural entry; never extend the event/quote lifetime.
                 clock = _wall_clock()  # Context preparation may have outlived the entry window.
-                pending = any(SB.entry_gate(TFP.context_of(row),
-                    VPS.quote_from_row(row).get('price'), row.get('research_decision'), clock).get('eligible')
+                # Preserve event age, but renew with the latest verified cached quote.
+                # prepare_row also records observed spent barriers in their state owner.
+                pending = any((TFP.prepare_row(VPG.refresh_execution_row(row, now=clock),
+                    now=clock)['trade_plan'].get('entry_timing_gate') or {}).get('eligible')
                     for candidates in grouped.values() for row in candidates)
                 if pending:
                     VPG._mutex.reserve_entry_turn()

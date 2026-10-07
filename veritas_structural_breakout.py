@@ -6,7 +6,7 @@ explicit, serializable state transition; callers carry it between observations.
 Targets are previously observed price zones, never a price invented to meet RR.
 Numerical defaults are engineering controls, not fitted profitability evidence.
 """
-from copy import deepcopy
+from veritas_data_copy import deepcopy
 from collections import OrderedDict
 from datetime import datetime, timezone
 import hashlib
@@ -20,6 +20,7 @@ from threading import RLock
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
 from veritas_quote_time import quote_gate
+import veritas_structural_validation_cache as SVC
 
 
 VERSION = "CAUSAL_QUOTE_STRUCTURE_V1"
@@ -685,7 +686,7 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
     if leg:
         retained.add(leg["protected_swing"]["level_id"])
     next_state.update(last_quote=deepcopy(quote), seen_level_ids=sorted(seen & retained),
-                      active_event=deepcopy(event), protected_leg=deepcopy(leg))
+                      active_event=event, protected_leg=leg)
     out.update(event=deepcopy(event), quote_state=next_state,
                protected_leg=deepcopy(leg), target_zones=deepcopy((event or {}).get("target_zones") or []))
     if event:
@@ -696,6 +697,13 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
 
 
 def validate_event(event, source_identity=None):
+    # Static evidence only. Current quote/time, spent barriers, entry expiry and
+    # full portfolio risk remain independently checked on every decision.
+    return SVC.verify(event, source_identity, version=VERSION,
+                      defaults=DEFAULT_POLICY, validator=_validate_event_uncached)
+
+
+def _validate_event_uncached(event, source_identity=None):
     """Check the frozen causal evidence, source, geometry and content digest."""
     event = event or {}
     fail = {"eligible": False, "reason": "STRUCTURAL_EVENT_PROOF_INVALID"}
