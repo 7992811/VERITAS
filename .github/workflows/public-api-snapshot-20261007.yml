@@ -114,3 +114,5 @@ jobs:
           path: public-api-snapshot
           retention-days: 1
           if-no-files-found: error
+
+# Snapshot refresh: 2026-10-07 18:41 MSK after v91.7.10 deploy.
