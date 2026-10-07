@@ -218,9 +218,9 @@ def loss_audit_fixture():
 
 
 class AuditMemoryCursor:
-    def __init__(self, connection, name):
-        self.connection, self.name = connection, name
-        self.itersize, self.closed = None, False
+    def __init__(self, connection):
+        self.connection = connection
+        self.chunk_size, self.closed = None, False
 
     def __enter__(self):
         if not self.connection.active:
@@ -231,13 +231,16 @@ class AuditMemoryCursor:
         self.closed = True
         self.connection.events.append('cursor_closed')
 
-    def execute(self, sql):
+    def stream(self, sql, *, size):
         self.connection.sql = sql
-        if self.connection.fail_execute:
-            raise RuntimeError('execute failed')
-
-    def __iter__(self):
-        return iter(self.connection.rows)
+        self.chunk_size = size
+        self.connection.events.append('stream_started')
+        try:
+            if self.connection.fail_execute:
+                raise RuntimeError('execute failed')
+            yield from self.connection.rows
+        finally:
+            self.connection.events.append('stream_closed')
 
     def fetchall(self):
         raise AssertionError('full loss audit must stream')
@@ -261,9 +264,9 @@ class AuditMemoryConnection:
                 self.events.append('transaction_ended')
         return transaction()
 
-    def cursor(self, *, name):
-        self.server_cursor = AuditMemoryCursor(self, name)
-        return self.server_cursor
+    def cursor(self):
+        self.stream_cursor = AuditMemoryCursor(self)
+        return self.stream_cursor
 
 
 class StreamingTradeAuditTests(unittest.TestCase):
@@ -319,15 +322,14 @@ class StreamingTradeAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'previous full proof retained'):
             legacy_analyze(Factory())
 
-    def test_named_cursor_preserves_exact_sql_and_closes_on_success_and_failures(self):
+    def test_plain_stream_preserves_exact_sql_and_closes_on_success_and_failures(self):
         from unittest.mock import patch
         rows = loss_audit_fixture()[:2]
         c = AuditMemoryConnection(rows)
         self.assertEqual(AUDIT.audit_closed_trades(c), legacy_analyze(rows))
         self.assertEqual(c.sql, LEGACY_AUDIT_SQL)
-        self.assertEqual(c.server_cursor.name, 'veritas_loss_audit')
-        self.assertEqual(c.server_cursor.itersize, 8)
-        self.assertEqual(c.events, ['transaction_started','cursor_closed','transaction_ended'])
+        self.assertEqual(c.stream_cursor.chunk_size, 8)
+        self.assertEqual(c.events, ['transaction_started','stream_started','stream_closed','cursor_closed','transaction_ended'])
         self.assertFalse(c.active)
         def broken_rows():
             yield rows[0]
@@ -339,9 +341,9 @@ class StreamingTradeAuditTests(unittest.TestCase):
                 with patch.object(AUDIT, 'cohort', side_effect=RuntimeError('classification failed')) if failure == 'classification' else patch.object(AUDIT, 'cohort', wraps=AUDIT.cohort):
                     with self.assertRaisesRegex(RuntimeError, failure):
                         AUDIT.audit_closed_trades(c)
-                self.assertTrue(c.server_cursor.closed)
+                self.assertTrue(c.stream_cursor.closed)
                 self.assertFalse(c.active)
-                self.assertEqual(c.events[-2:], ['cursor_closed','transaction_ended'])
+                self.assertEqual(c.events[-3:], ['stream_closed','cursor_closed','transaction_ended'])
 
 if __name__=='__main__':
     unittest.main()

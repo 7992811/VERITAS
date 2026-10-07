@@ -1,5 +1,6 @@
 """Complete-ledger diagnostics. No orders, balance rewrites or fitted thresholds."""
 from collections import defaultdict
+from contextlib import closing
 from datetime import datetime
 import json
 import math
@@ -269,9 +270,10 @@ def analyze(rows):
 
 def audit_closed_trades(conn):
     with conn.transaction():
-      with conn.cursor(name='veritas_loss_audit') as rows:
-        rows.itersize = 8
-        rows.execute('''SELECT t.*,
+      with conn.cursor() as cursor:
+        # Keep ordinary SELECT planning and its delivery order; DECLARE changes
+        # cursor costing even when the SQL has no explicit ORDER BY.
+        with closing(cursor.stream('''SELECT t.*,
         EXTRACT(EPOCH FROM (t.closed_at-t.opened_at)) AS held_seconds,
         o.entry_notional_rub,o.entry_fill_count,o.exit_fill_count,o.last_exit_reason
         FROM paper_trades t LEFT JOIN (
@@ -282,5 +284,5 @@ def audit_closed_trades(conn):
             (ARRAY_AGG(reason ORDER BY created_at DESC) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_reason
           FROM paper_orders GROUP BY trade_id
         ) o ON o.trade_id=t.trade_id
-        WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')''')
-        return analyze(rows)
+        WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')''',size=8)) as rows:
+            return analyze(rows)

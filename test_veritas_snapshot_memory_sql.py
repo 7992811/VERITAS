@@ -933,6 +933,22 @@ class AgentSnapshotMemorySQLTests(_LedgerSQLFixture):
 
 
 class LossAuditTracedCursor(TracedCursor):
+    def __init__(self, cursor, trace):
+        super().__init__(cursor,trace)
+        trace.cursors.append(self)
+
+    def stream(self, sql, parameters=None, *, size=1):
+        from contextlib import closing
+        self.chunk_size = size
+        self.record = {'sql':sql,'parameters':parameters,'server':False,'stream':True,
+                       'rows':0,'bytes':0,'keys':[],'heavy':False}
+        self.trace.queries.append(self.record)
+        with closing(self.cursor.stream(sql,parameters,size=size)) as rows:
+            for row in rows:
+                if self.trace.fail_after is not None and self.record['rows'] == self.trace.fail_after:
+                    raise RuntimeError('injected interrupted memory stream')
+                yield self.observe(row)
+
     def observe(self, row):
         result = super().observe(row)
         self.record['keys'][-1] = row['trade_id']
@@ -941,7 +957,9 @@ class LossAuditTracedCursor(TracedCursor):
 
 class LossAuditTracedConnection(TracedConnection):
     def cursor(self, *args, **kwargs):
-        return LossAuditTracedCursor(self.connection.cursor(*args, **kwargs), self.trace, server=True)
+        if args or kwargs:
+            raise AssertionError('loss audit must keep the ordinary unnamed SELECT cursor')
+        return LossAuditTracedCursor(self.connection.cursor(), self.trace)
 
 
 class LossAuditReadTrace(ReadTrace):
@@ -953,6 +971,51 @@ class LossAuditReadTrace(ReadTrace):
 
 
 class LossAuditMemorySQLTests(_LedgerSQLFixture):
+    def report_diagnostic(self, actual, expected, original, delivered):
+        from test_veritas_trade_audit import LEGACY_AUDIT_SQL, legacy_analyze
+        expected_ids = [row['trade_id'] for row in original]
+        same_population = sorted(delivered) == sorted(expected_ids)
+        same_stream_report = False
+        if same_population:
+            by_id = {row['trade_id']:row for row in original}
+            same_stream_report = actual == legacy_analyze([by_id[key] for key in delivered])
+        if actual == expected and delivered == expected_ids:
+            self.assertTrue(same_stream_report)
+            return
+        differences = []
+        def compare(a, b, path='$'):
+            if len(differences) >= 12:
+                return
+            if isinstance(a,dict) and isinstance(b,dict):
+                for key in sorted(set(a) | set(b)):
+                    if key not in a or key not in b:
+                        differences.append({'path':path+'.'+key,'missing':'actual' if key not in a else 'expected'})
+                    else:
+                        compare(a[key],b[key],path+'.'+key)
+            elif isinstance(a,list) and isinstance(b,list):
+                if len(a) != len(b):
+                    differences.append({'path':path+'.length','actual':len(a),'expected':len(b)})
+                for i,(left,right) in enumerate(zip(a,b)):
+                    compare(left,right,path+'['+str(i)+']')
+            elif a != b:
+                differences.append({'path':path,'actual':repr(a)[:100],'expected':repr(b)[:100]})
+        compare(actual,expected)
+        named_ids = []
+        with self.connect() as c:
+            with c.transaction():
+                with c.cursor(name='loss_order_diagnostic') as rows:
+                    rows.itersize = 8
+                    rows.execute(LEGACY_AUDIT_SQL)
+                    for row in rows:
+                        named_ids.append(row['trade_id'])
+                        if len(named_ids) == 8:
+                            break
+        print('LOSS_AUDIT_PARITY '+json.dumps({
+            'same_population':same_population,'same_delivery':delivered==expected_ids,
+            'matches_frozen_reducer_in_stream_order':same_stream_report,
+            'expected_first_ids':expected_ids[:8],'actual_first_ids':delivered[:8],
+            'named_cursor_first_ids':named_ids,'first_differences':differences[:12]},default=str),flush=True)
+
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -1010,6 +1073,7 @@ class LossAuditMemorySQLTests(_LedgerSQLFixture):
         trace = LossAuditReadTrace(self.connect)
         with trace.connect() as c:
             actual = audit.audit_closed_trades(c)
+        self.report_diagnostic(actual,expected,original,trace.queries[0]['keys'])
         self.assertEqual(actual,expected)
         digest = lambda result: hashlib.sha256(json.dumps(result,sort_keys=True,default=str).encode()).hexdigest()
         self.assertEqual(digest(actual),digest(expected))
@@ -1018,7 +1082,9 @@ class LossAuditMemorySQLTests(_LedgerSQLFixture):
         self.assertEqual(query['keys'],[row['trade_id'] for row in original])
         self.assertGreater(len(original),659)
         self.assertEqual(query['rows'],len(original))
-        self.assertEqual(trace.cursors[0].itersize,8)
+        self.assertEqual(trace.cursors[0].chunk_size,8)
+        self.assertTrue(query['stream'])
+        self.assertFalse(query['server'])
         self.assertTrue(query['heavy'])  # full proof reaches classification
         self.assertNotIn('UNUSED_HEAVY_FIELD',json.dumps(actual,default=str))
         self.assert_closed(trace)
@@ -1037,8 +1103,11 @@ class LossAuditMemorySQLTests(_LedgerSQLFixture):
         with trace.connect() as c:
             actual = audit.audit_closed_trades(c)
         with self.connect() as c:
-            expected = legacy_analyze(c.execute(LEGACY_AUDIT_SQL).fetchall())
+            original = c.execute(LEGACY_AUDIT_SQL).fetchall()
+        expected = legacy_analyze(original)
+        self.report_diagnostic(actual,expected,original,trace.queries[-1]['keys'])
         self.assertEqual(actual,expected)
+        self.assertEqual(trace.queries[-1]['keys'],[row['trade_id'] for row in original])
         self.assert_closed(trace)
 
 
