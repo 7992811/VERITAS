@@ -1144,10 +1144,15 @@ def start(ns):
                 phases.update({k:v for k,v in transaction_timing.items() if k.endswith('_seconds')})
                 phase, phase_started = 'cache_invalidation', time.monotonic()
                 if changes:
-                    with ns['_v90r25_pf_lock']:
-                        ns['_v90r25_pf_cache'].update(at=0.0, value=None)
                     with ns['lock']:
                         ns['last_cycle']['portfolio_autopilot'] = {}
+                        # Retire the live book before publishing a new cache
+                        # revision. A read started before this protective fill
+                        # must not republish its older quantity snapshot.
+                        with ns['_v90r25_pf_lock']:
+                            cache=ns['_v90r25_pf_cache']
+                            cache.update(at=0.0, value=None,
+                                         revision=int(cache.get('revision') or 0)+1)
                     with ns['_v90r23_trade_lock']:
                         ns['_v90r23_trade_cache'].update(at=0.0, value=None)
                 phases['cache_invalidation_seconds']=time.monotonic()-phase_started

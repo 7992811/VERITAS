@@ -16564,6 +16564,7 @@ def _v90r25_portfolios_fast():
 
 def _v90r25_portfolios_refresh():
     import veritas_portfolio_read_model as VPRM
+    from veritas_portfolio_api_projection import ENTRY_DECISION_PAYLOAD_SQL, load_position_accounts
     with _v90r25_pf_lock:
         cached=_v90r25_pf_cache.get('value'); at=float(_v90r25_pf_cache.get('at') or 0.0)
         cache_revision=_v90r25_pf_cache.get('revision',0)
@@ -16584,7 +16585,7 @@ def _v90r25_portfolios_refresh():
         snapshot_at=datetime.now(timezone.utc).isoformat()
         base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
         nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
-        pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,ed.payload AS entry_decision_payload
+        pos=c.execute(f"""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,{ENTRY_DECISION_PAYLOAD_SQL} AS entry_decision_payload
                          FROM paper_positions pp
                          LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id
                          LEFT JOIN LATERAL (
@@ -16602,8 +16603,7 @@ def _v90r25_portfolios_refresh():
                          WHERE pp.portfolio_name=ANY(%s)
                          ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
         stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl, """ + CLOSED_METRICS_SQL + """ FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
-        ids=list({z['active_trade_id'] for z in pos if z.get('active_trade_id')})
-        accounts=VTV.VPP.load_accounts(c,ids,include_entry_notional=True) if ids else {}
+        accounts=load_position_accounts(c,pos,VTV.VPP.load_accounts)
     bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
     def _n(v,d=None):
         try:

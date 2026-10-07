@@ -505,7 +505,7 @@ class ProtectiveLoopLifetimeTests(unittest.TestCase):
                 else:
                     self.assertEqual(new['passes'],[])
                 if changed:
-                    self.assertEqual(new['portfolio_cache'],{'at':0.0,'value':None,'revision':7})
+                    self.assertEqual(new['portfolio_cache'],{'at':0.0,'value':None,'revision':8})
                     self.assertEqual(new['trade_cache'],{'at':0.0,'value':None})
                     self.assertEqual(new['last_cycle'],{'portfolio_autopilot':{},'other':'keep'})
                     self.assertEqual(new['state']['last_changes'][0]['reason'],'existing-protective-result')
