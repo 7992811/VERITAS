@@ -138,7 +138,7 @@ def agent_performance_rows(pg_connect, limit):
                 yield rows
 
 
-def ami_decision_rows(c):
+def _ami_projection_sql():
     # A scorecard consumes labels and votes, not full candle/decision graphs.
     # Preserve agent order: the confidence vote uses ordered floating-point sums.
     projection = JsonbProjection()
@@ -165,6 +165,11 @@ def ami_decision_rows(c):
         "agents": agents, "knowledge_cio_adjustment": adjustment,
         "knowledge_shadow_matches": matches})
     op = project_object("sample.outcome_payload", {"forward_return": "sample.outcome_payload->'forward_return'"})
+    return dp, op, projection.joins_sql
+
+
+def ami_decision_rows(c):
+    dp, op, joins = _ami_projection_sql()
     # Sort and limit the original rows before expanding their JSON records.
     # The ordered sample retains TOAST pointers rather than decoded histories.
     rows = c.execute(f"""
@@ -178,7 +183,71 @@ def ami_decision_rows(c):
         ORDER BY d.event_ts DESC
         LIMIT 2200
       ) AS sample
-      {projection.joins_sql}
+      {joins}
       ORDER BY sample.event_ts DESC
     """).fetchall()
+    return rows
+
+
+def ami_decision_sample(c):
+    """Freeze the unchanged 2200 joined-row sample without decoding decisions.
+
+    Ties keep the order returned by the original descending timestamp sample;
+    no new tie-breaker, distinct operation or decision-before-join cap is added.
+    The caller can stable-sort these metadata rows before storing compact pairs.
+    """
+    return c.execute("""
+      SELECT d.id AS decision_id,o.id AS outcome_id,d.event_ts
+      FROM ledger_events d
+      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+      WHERE d.event_type='decision' AND o.payload ? 'forward_return'
+      ORDER BY d.event_ts DESC
+      LIMIT 2200
+    """).fetchall()
+
+
+def ami_decision_chunk(c, pairs):
+    """Decode at most 64 frozen pairs using the legacy projection and order.
+
+    Pairs may be sample dictionaries or compact [decision_id, outcome_id]
+    sequences. A missing/incompatible frozen row fails explicitly so the caller
+    can retain its previous completed scorecard instead of publishing a subset.
+    The caller owns the transaction, statement timeout and durable checkpoint.
+    """
+    if not isinstance(pairs, (list, tuple)) or len(pairs) > 64:
+        raise ValueError("AMI decision chunk requires at most 64 frozen pairs")
+    decision_ids, outcome_ids = [], []
+    for pair in pairs:
+        if isinstance(pair, dict):
+            values = (pair.get("decision_id"), pair.get("outcome_id"))
+        elif isinstance(pair, (list, tuple)) and len(pair) == 2:
+            values = pair
+        else:
+            raise ValueError("AMI frozen pair requires decision_id and outcome_id")
+        if any(type(value) is not int or not 0 < value < 2**63 for value in values):
+            raise ValueError("AMI frozen pair IDs must be positive bigint integers")
+        decision_ids.append(values[0])
+        outcome_ids.append(values[1])
+    if not decision_ids:
+        return []
+    dp, op, joins = _ami_projection_sql()
+    rows = c.execute(f"""
+      WITH pairs AS MATERIALIZED (
+        SELECT decision_id,outcome_id,ordinality
+        FROM unnest(%s::bigint[],%s::bigint[]) WITH ORDINALITY
+          AS p(decision_id,outcome_id,ordinality)
+      )
+      SELECT sample.event_ts,sample.asset,sample.horizon,{dp} AS dp,{op} AS op
+      FROM (
+        SELECT p.ordinality,d.event_ts,d.asset,d.horizon,
+               d.payload AS decision_payload,o.payload AS outcome_payload
+        FROM pairs p
+        JOIN ledger_events d ON d.id=p.decision_id AND d.event_type='decision'
+        JOIN ledger_events o ON o.id=p.outcome_id AND o.entity_key=d.entity_key AND o.event_type='outcome'
+      ) AS sample
+      {joins}
+      ORDER BY sample.ordinality
+    """, (decision_ids, outcome_ids)).fetchall()
+    if len(rows) != len(decision_ids):
+        raise RuntimeError("AMI frozen sample row missing or incompatible")
     return rows

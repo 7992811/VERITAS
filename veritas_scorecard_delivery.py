@@ -29,19 +29,70 @@ def cached_scorecard(ns, production_epoch, max_age_seconds=120):
     value.update(calculated_at=observed, cache_age_seconds=age,
                  stale=age is None or age > max_age_seconds,
                  background_refresh=age is None or age > max_age_seconds or refresh["status"] == "RUNNING",
-                 refresh_status=refresh["status"], last_refresh_error=refresh.get("last_error"))
+                 refresh_status=refresh["status"], last_refresh_error=refresh.get("last_error"),
+                 refresh_stage=refresh.get("stage"), refresh_processed=refresh.get("processed"),
+                 refresh_sample_n=refresh.get("sample_n"))
     return value
 
 
-def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, context=None):
-    """One scheduled refresh; failed SQL/commit never replaces the last good result."""
+WORK_VERSION = "AMI_STAGED_INPUTS_V1"
+WORK_SLOT = "intelligence_scorecard_work"
+WORK_BYTES = 196608
+DECISION_CHUNK = 64
+
+
+def _knowledge_applied(ns, episode):
+    payload = episode.get("payload") or {}
+    adjustment = payload.get("knowledge_cio_adjustment") or {}
+    try:
+        score = float(adjustment.get("score_with_experience")
+                      if adjustment.get("score_with_experience") is not None
+                      else adjustment.get("score") or 0.0)
+    except Exception:
+        score = 0.0
+    return bool(payload.get("knowledge_shadow_matches") and abs(score) > 1e-9)
+
+
+def _consume_decision_chunk(ns, work, rows):
+    """Continue the original ordered reducer, retaining only its last 360 rows."""
+    previous = {}
+    for asset, horizon, decision, regime, stamp in work.get("previous", []):
+        previous[(asset, horizon)] = {"decision": decision, "regime": regime,
+            "ts": datetime.fromisoformat(stamp) if stamp is not None else None}
+    selected = ns["_independent_episodes"](rows, 360, previous=previous)
+    episodes = work.setdefault("episodes", [])
+    for episode in selected:
+        episodes.append({key: episode[key] for key in
+                         ("asset", "horizon", "regime", "decision", "forward_return", "reference_decision")}
+                        | {"knowledge_applied": _knowledge_applied(ns, episode)})
+    work["episodes"] = episodes[-360:]
+    work["previous"] = [[asset, horizon, value["decision"], value["regime"],
+                         value["ts"].isoformat() if value["ts"] is not None else None]
+                        for (asset, horizon), value in previous.items()]
+
+
+def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, context=None, cursor=None):
+    """One durable microstep; incomplete inputs never replace the public score.
+
+    Frozen ID pairs retain the original 2,200-row sample and tie ordering.
+    Only projected chunks, reducer state and the selected 360 compact episodes
+    cross steps. Existing scoring formulas run once all inputs are complete.
+    """
     from contextlib import contextmanager
+    import uuid
     import veritas_learning_state as store
+    from veritas_learning_memory import ami_decision_sample, ami_decision_chunk
     if not ns["_BUILD_LOCK"].acquire(blocking=False):
-        return {"status": "NO_WORK", "reason": "SCORECARD_REFRESH_IN_PROGRESS"}
+        return {"status": "NO_WORK", "reason": "SCORECARD_REFRESH_IN_PROGRESS", "cursor": cursor or {}}
+    started = time.monotonic()
     def check():
         if context is not None:
             context.check()
+    def remaining():
+        lane = getattr(context, "lane", None)
+        if lane is not None:
+            return float(lane.current_budget().get("remaining_seconds", 0))
+        return max(0., 6.-(time.monotonic()-started))
     @contextmanager
     def bounded_connect():
         check()
@@ -66,37 +117,136 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
             if failed:
                 raise failed[0]
             check()
+    value = restored = work = None
+    deferred = False
     try:
+        now = time.time()
+        if (cursor or {}).get("next_refresh_at", 0) > now and ns["_SNAPSHOT"] is not None and ns["_SNAPSHOT"][0] == production_epoch:
+            return {"status": "NO_WORK", "reason": "SCORECARD_REFRESH_NOT_DUE", "cursor": cursor}
         ns["_REFRESH_STATE"] = {"status": "RUNNING", "last_error": None}
         if ns["_RESTORED_EPOCH"] != production_epoch:
             with bounded_connect() as c:
                 saved = store.load_snapshot_in_transaction(c, "intelligence_scorecard", ns["VERSION"])
             if saved and saved["payload"].get("production_epoch") == production_epoch:
-                restored = saved["payload"].get("scorecard") or {}
-                if restored.get("status") == "OK" and restored.get("version") == ns["VERSION"]:
+                candidate = saved["payload"].get("scorecard") or {}
+                if candidate.get("status") == "OK" and candidate.get("version") == ns["VERSION"]:
                     observed = saved["observed_at"]
                     observed = datetime.fromisoformat(observed.replace("Z", "+00:00")) if isinstance(observed, str) else observed
+                    restored = candidate
                     publish_cache(ns, restored, production_epoch, observed.timestamp())
             ns["_RESTORED_EPOCH"] = production_epoch
-            if saved and ns["_SNAPSHOT"] is not None and ns["_SNAPSHOT"][0] == production_epoch:
-                ns["_REFRESH_STATE"] = {"status": "RESTORED", "last_error": None}
-                return {"status": "OK", "reason": "RESTORED_COMPLETED_SCORECARD"}
-        check()
-        value = ns["_build_scorecard_unlocked"](bounded_connect, learning_progress, production_epoch,
-                                          cache_seconds=0, publish=False)
-        check()
-        observed = datetime.now(timezone.utc)
-        payload = {"status": "OK", "production_epoch": production_epoch, "scorecard": value}
+            ns["_REFRESH_STATE"] = {"status": "RESTORED" if restored else "COLLECTING", "last_error": None, "stage": "sample"}
+            # Restore is deliberately its own small step, even when empty.
+            return {"status": "OK" if restored else "PROGRESS",
+                    "reason": "RESTORED_COMPLETED_SCORECARD" if restored else "SCORECARD_RESTORE_CHECKED",
+                    "cursor": {"next_refresh_at": observed.timestamp()+120} if restored else {"stage": "sample"}}
         with bounded_connect() as c:
-            if not store.publish_snapshot_in_transaction(c, "intelligence_scorecard", ns["VERSION"],
-                                                          payload, observed_at=observed):
-                raise RuntimeError("SCORECARD_SNAPSHOT_PUBLICATION_REJECTED")
-        publish_cache(ns, value, production_epoch, observed.timestamp())
-        ns["_REFRESH_STATE"] = {"status": "OK", "last_error": None}
-        return {"status": "OK", "refreshed_at": observed.isoformat()}
+            saved = store.load_snapshot_in_transaction(c, WORK_SLOT, WORK_VERSION, for_update=True)
+            work = saved["payload"] if saved else None
+            if (not work or work.get("epoch") != production_epoch or work.get("ami_version") != ns["VERSION"]
+                    or (work.get("stage") == "complete" and work.get("next_refresh_at", 0) <= now)
+                    or now-float(work.get("started_at", 0)) > 1800):
+                sample = ami_decision_sample(c)
+                # The original reducer does this stable sort; ties retain their
+                # original selected order, even when they span chunk boundaries.
+                sample.sort(key=lambda row: str(row.get("event_ts") or ""))
+                work = {"status": "BUILDING", "epoch": production_epoch, "ami_version": ns["VERSION"],
+                        "cycle_id": uuid.uuid4().hex, "started_at": now, "stage": "decisions", "offset": 0,
+                        "pairs": [[row["decision_id"], row["outcome_id"]] for row in sample],
+                        "episodes": [], "previous": [], "learning_progress": {
+                            key: (learning_progress or {}).get(key) for key in
+                            ("status", "index_vs_start", "calculated_at", "index_version", "mode")}}
+            elif work["stage"] == "complete":
+                # Recover the publication/outer-checkpoint gap without
+                # repeating the sample or losing the completed RAM value.
+                completed = store.load_snapshot_in_transaction(c, "intelligence_scorecard", ns["VERSION"])
+                if not completed or completed["payload"].get("production_epoch") != production_epoch:
+                    raise RuntimeError("COMPLETED_SCORECARD_SNAPSHOT_MISSING")
+                value = completed["payload"]["scorecard"]
+                observed = completed["observed_at"]
+                if isinstance(observed, str):
+                    observed = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+            elif work["stage"] == "decisions":
+                phase_started, chunks = time.monotonic(), 0
+                query_timeout = max(1, min(2000, int(getattr(context, "sql_timeout_ms", 2000))))
+                while work["offset"] < len(work["pairs"]) and chunks < 8:
+                    # Leave time for this durable write and the caller's fenced
+                    # job checkpoint. Short remaining slices can still make
+                    # progress with a smaller query timeout, never a larger cap.
+                    allowance = remaining()-2.2
+                    if allowance < .2 or (chunks and time.monotonic()-phase_started >= 1.5):
+                        break
+                    timeout = max(1, min(query_timeout, int(allowance*1000)))
+                    if timeout < query_timeout:
+                        c.execute("SET LOCAL statement_timeout = '"+str(timeout)+"ms'")
+                        query_timeout = timeout
+                        if remaining() <= 2.2:
+                            break
+                    pairs = work["pairs"][work["offset"]:work["offset"]+DECISION_CHUNK]
+                    rows = ami_decision_chunk(c, pairs)
+                    if len(rows) != len(pairs):
+                        raise RuntimeError("SCORECARD_FROZEN_SAMPLE_CHANGED")
+                    _consume_decision_chunk(ns, work, rows)
+                    work["offset"] += len(rows)
+                    chunks += 1
+                    rows = None
+                    check()
+                deferred = chunks == 0 and work["offset"] < len(work["pairs"])
+                if work["offset"] == len(work["pairs"]):
+                    work["sample_n"] = len(work.pop("pairs"))
+                    work.pop("previous", None)
+                    work["stage"] = "portfolio"
+            elif work["stage"] == "portfolio":
+                work["portfolio"] = ns["_query_fresh_portfolio"](c, production_epoch)
+                work["stage"] = "learning"
+            elif work["stage"] == "learning":
+                work["learning"] = ns["_query_learning"](c)
+                work["stage"] = "knowledge"
+            elif work["stage"] == "knowledge":
+                knowledge = ns["_query_knowledge"](c, [])
+                applied = [e for e in work["episodes"] if e["knowledge_applied"]]
+                metrics = ns["_decision_metrics"](applied) if applied else {}
+                knowledge.update(application_n=len(applied),
+                    application_rate=len(applied)/len(work["episodes"]) if work["episodes"] else 0.,
+                    applied_hit_rate=metrics.get("hit_rate"), applied_utility=metrics.get("avg_normalized_utility"))
+                work["knowledge"] = knowledge
+                work["stage"] = "publish"
+            elif work["stage"] == "publish":
+                @contextmanager
+                def ready_connection():
+                    yield c
+                value = ns["_build_scorecard_unlocked"](ready_connection, work["learning_progress"], production_epoch,
+                    cache_seconds=0, publish=False, inputs=work)
+                check()
+                observed = datetime.now(timezone.utc)
+                payload = {"status": "OK", "production_epoch": production_epoch, "scorecard": value}
+                if not store.publish_snapshot_in_transaction(c, "intelligence_scorecard", ns["VERSION"],
+                                                              payload, observed_at=observed):
+                    raise RuntimeError("SCORECARD_SNAPSHOT_PUBLICATION_REJECTED")
+                work = {"status": "COMPLETE", "epoch": production_epoch, "ami_version": ns["VERSION"],
+                        "stage": "complete", "cycle_id": work["cycle_id"], "offset": work["offset"],
+                        "sample_n": work["sample_n"], "started_at": work["started_at"],
+                        "next_refresh_at": observed.timestamp()+120}
+            else:
+                raise RuntimeError("UNKNOWN_SCORECARD_WORK_STAGE")
+            check()
+            store._json(work, WORK_BYTES)
+            if not deferred and not store.publish_snapshot_in_transaction(c, WORK_SLOT, WORK_VERSION, work,
+                                                                           observed_at=datetime.now(timezone.utc)):
+                raise RuntimeError("SCORECARD_WORK_PUBLICATION_REJECTED")
+        check()
+        if value is not None:
+            publish_cache(ns, value, production_epoch, observed.timestamp())
+        ns["_REFRESH_STATE"] = {"status": "DEFERRED" if deferred else "OK" if value is not None else "COLLECTING", "last_error": None,
+                                "stage": work["stage"], "processed": work["offset"],
+                                "sample_n": work.get("sample_n", len(work.get("pairs", [])))}
+        return {"status": "DEFERRED_SCORECARD_BUDGET" if deferred else "OK" if value is not None else "PROGRESS", "stage": work["stage"],
+                "reason": "CHECKPOINT_TIME_RESERVED" if deferred else None,
+                "processed": work["offset"], "sample_n": ns["_REFRESH_STATE"]["sample_n"],
+                "cursor": {key: work[key] for key in ("cycle_id", "stage", "offset", "next_refresh_at") if key in work}}
     except Exception as exc:
-        # Avoid leaking connection strings or database values through HTTP.
-        ns["_REFRESH_STATE"] = {"status": "ERROR", "last_error": type(exc).__name__}
+        ns["_REFRESH_STATE"] = {"status": "ERROR", "last_error": type(exc).__name__,
+                                "stage": work.get("stage") if work else "restore"}
         raise
     finally:
         ns["_BUILD_LOCK"].release()

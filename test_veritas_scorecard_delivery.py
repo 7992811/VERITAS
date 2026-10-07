@@ -14,6 +14,8 @@ from unittest.mock import Mock, patch
 
 import veritas_asset_management_intelligence as AMI
 import veritas_learning_state as STORE
+import veritas_learning_memory as MEMORY
+import veritas_scorecard_delivery as DELIVERY
 from test_veritas_management_intelligence import _FakeConn, _Result
 
 EPOCH = '2026-09-30T04:59:29.357862+00:00'
@@ -31,6 +33,7 @@ class Connection(_FakeConn):
         self.fail_commit = False
         self.fail_query = None
         self.calls = []
+        self.on_commit = lambda: None
 
     @contextmanager
     def transaction(self):
@@ -39,6 +42,7 @@ class Connection(_FakeConn):
             yield
             if self.fail_commit:
                 raise OSError('commit failed with private connection details')
+            self.on_commit()
             self.committed = True
         except BaseException:
             self.rolled_back = True
@@ -72,20 +76,49 @@ class ScorecardDeliveryTests(unittest.TestCase):
             self.addCleanup(item.stop)
         self.connections = []
         self.query_failure = None
+        self.durable = {}
+        self.rows = _FakeConn().decisions
         self.context = SimpleNamespace(sql_timeout_ms=350, check=Mock())
-        self.load = patch.object(STORE, 'load_snapshot_in_transaction', return_value=None).start()
-        self.publish = patch.object(STORE, 'publish_snapshot_in_transaction', return_value=True).start()
+        self.load = patch.object(STORE, 'load_snapshot_in_transaction', side_effect=self.load_saved).start()
+        self.publish = patch.object(STORE, 'publish_snapshot_in_transaction', side_effect=self.save).start()
+        self.sample = patch.object(MEMORY, 'ami_decision_sample', side_effect=self.sample_rows).start()
+        self.chunk = patch.object(MEMORY, 'ami_decision_chunk', side_effect=self.chunk_rows).start()
         self.addCleanup(patch.stopall)
+
+    def load_saved(self, connection, name, version, **kwargs):
+        return deepcopy(self.durable.get(name))
+
+    def save(self, connection, name, version, payload, *, observed_at=None, **kwargs):
+        STORE._json(payload, STORE.MAX_SNAPSHOT_BYTES)
+        self.connections[-1].pending[name] = deepcopy(dict(payload=payload,observed_at=observed_at,version=version))
+        return True
+
+    def sample_rows(self, connection):
+        return [{'decision_id':i+1,'outcome_id':100000+i,'event_ts':r['event_ts']}
+                for i,r in sorted(enumerate(self.rows),key=lambda pair:pair[1]['event_ts'],reverse=True)]
+
+    def chunk_rows(self, connection, pairs):
+        self.assertLessEqual(len(pairs),64)
+        return [deepcopy(self.rows[pair[0]-1]) for pair in pairs]
 
     def connect(self):
         conn = Connection()
         conn.fail_query = self.query_failure
+        conn.pending = {}
+        conn.on_commit = lambda:self.durable.update(conn.pending)
         self.connections.append(conn)
         return conn
 
-    def refresh(self):
+    def step(self, cursor=None):
         return AMI.refresh_snapshot(self.connect, {'status': 'MEASURABLE', 'index_vs_start': 110},
-                                    EPOCH, context=self.context)
+                                    EPOCH, context=self.context,cursor=cursor)
+
+    def refresh(self):
+        for _ in range(100):
+            result = self.step()
+            if result['status'] in ('OK','NO_WORK'):
+                return result
+        self.fail('staged scorecard did not finish')
 
     def completed(self):
         value = {'status': 'OK', 'version': AMI.VERSION, 'score': 22.3,
@@ -116,13 +149,13 @@ class ScorecardDeliveryTests(unittest.TestCase):
     def test_refresh_uses_real_readers_bounded_transactions_and_publishes_after_commit(self):
         result = self.refresh()
         self.assertEqual(result['status'], 'OK')
-        self.assertEqual(len(self.connections), 3)
+        self.assertEqual(len(self.connections), 7)
         self.assertTrue(all(c.closed and c.committed and not c.depth for c in self.connections))
         for conn in self.connections:
             self.assertIn(("SET LOCAL statement_timeout = '350ms'", None), conn.calls)
             self.assertIn(("SET LOCAL lock_timeout = '250ms'", None), conn.calls)
             self.assertEqual(sum('statement_timeout' in sql for sql, args in conn.calls), 1)
-        stored = self.publish.call_args.args[3]
+        stored = self.durable['intelligence_scorecard']['payload']
         actual = AMI.cached_scorecard(EPOCH)
         self.assertEqual(actual['score'], stored['scorecard']['score'])
         self.assertEqual(actual['evidence'], stored['scorecard']['evidence'])
@@ -137,7 +170,7 @@ class ScorecardDeliveryTests(unittest.TestCase):
         self.query_failure = 'FROM knowledge_backtest_oos_stats'
         with self.assertRaises(QueryCanceled):
             self.refresh()
-        self.publish.assert_not_called()
+        self.assertNotIn('intelligence_scorecard',self.durable)
         self.assertTrue(self.connections[-1].rolled_back)
         current = AMI.cached_scorecard(EPOCH)
         self.assertEqual(current['score'], original['score'])
@@ -149,14 +182,15 @@ class ScorecardDeliveryTests(unittest.TestCase):
     def test_snapshot_commit_failure_keeps_last_good_and_allows_retry(self):
         original = self.completed()
         def fail_commit(*args, **kwargs):
-            self.connections[-1].fail_commit = True
-            return True
+            if args[1] == 'intelligence_scorecard':
+                self.connections[-1].fail_commit = True
+            return self.save(*args,**kwargs)
         self.publish.side_effect = fail_commit
         with self.assertRaises(OSError):
             self.refresh()
         self.assertEqual(AMI.cached_scorecard(EPOCH)['score'], original['score'])
         self.assertTrue(self.connections[-1].rolled_back)
-        self.publish.side_effect = None
+        self.publish.side_effect = self.save
         self.assertEqual(self.refresh()['status'], 'OK')
         self.assertEqual(AMI.cached_scorecard(EPOCH)['refresh_status'], 'OK')
 
@@ -164,6 +198,7 @@ class ScorecardDeliveryTests(unittest.TestCase):
         original = self.completed()
         AMI._SNAPSHOT = None
         observed = datetime.now(timezone.utc)-timedelta(hours=1)
+        self.load.side_effect = None
         self.load.return_value = {'payload': {'production_epoch': EPOCH, 'scorecard': original},
                                   'observed_at': observed}
         with patch.object(AMI, '_query_decision_episodes', side_effect=AssertionError('restore ran history')):
@@ -182,7 +217,7 @@ class ScorecardDeliveryTests(unittest.TestCase):
             result = self.refresh()
         finally:
             AMI._BUILD_LOCK.release()
-        self.assertEqual(result, {'status': 'NO_WORK', 'reason': 'SCORECARD_REFRESH_IN_PROGRESS'})
+        self.assertEqual(result, {'status': 'NO_WORK', 'reason': 'SCORECARD_REFRESH_IN_PROGRESS','cursor':{}})
         self.assertEqual(self.connections, [])
 
     def test_http_envelope_uses_only_completed_ram_views_and_preserves_metrics(self):

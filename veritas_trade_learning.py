@@ -217,6 +217,13 @@ class TradeLearning:
         self._verified_epoch=None
     def _check(self,context):
         if context is not None:context.check()
+    def _emit_phase(self,phase,status,**fields):
+        emit=self.ns.get('emit')
+        if emit is not None:
+            try:
+                emit('closed_trade_learning_phase',stage=str(phase)[:32],status=status,**fields)
+            except Exception:
+                pass  # Diagnostic logging cannot change a committed phase.
     @contextmanager
     def _transaction(self,context, *, revalidate=False):
         self._check(context)
@@ -260,8 +267,9 @@ class TradeLearning:
         lease=STORE.claim_job(pg,JOB_NAME,VERSION,lease_seconds=60)
         if not lease:return {'status':'DEFERRED_BUSY','job':JOB_NAME}
         cursor=dict(lease.get('cursor') or {});phase=cursor.get('phase','materialize')
-        result={'status':'OK','phase':phase,'batch_limit':BATCH_SIZE}
+        result={'status':'OK','phase':phase,'stage':phase,'batch_limit':BATCH_SIZE}
         published_snapshot=None
+        self._emit_phase(phase,'RUNNING')
         try:
             if phase=='materialize':
                 with self._transaction(context) as c:
@@ -383,9 +391,12 @@ class TradeLearning:
                 raise RuntimeError('learning job lease expired before progress commit')
             if published_snapshot is not None:
                 result['snapshot']=dict(published_snapshot,**self.validation_status())
+            self._emit_phase(phase,'OK',next_stage=cursor['phase'],**{
+                key:result[key] for key in ('materialized','scanned','submitted','checked','revoked') if key in result})
             return result
         except Exception as ex:
             # Report the type without leaking a connection string/query payload.
+            self._emit_phase(phase,'ERROR',error_type=type(ex).__name__)
             STORE.checkpoint_job(pg,lease,status='ERROR',result={'error_type':type(ex).__name__},retry_after_seconds=15)
             raise
 
