@@ -287,6 +287,49 @@ class PortfolioSchemaSQLTests(unittest.TestCase):
         P.ensure_schema(connect_target)
         self.assertEqual(self.financials(connect_target), copied)
 
+    def test_cost_accounts_omit_unused_evidence_without_changing_protection_or_book(self):
+        from datetime import datetime, timezone
+        import veritas_profit_protection as PP
+        P.ensure_schema(self.connect)
+        self.seed_active_book()
+        observed = datetime(2026, 10, 7, 10, 5, tzinfo=timezone.utc)
+        evidence = {'unused_historical_evidence': 'original-proof;' * 40000,
+                    'r17_tp1_done': True, 'r17_tp1_at': '2026-10-07T09:55:00Z'}
+        with self.connect() as c:
+            c.execute("UPDATE paper_trades SET gross_pnl_rub=150,fees_rub=5,funding_rub=2,payload=%s::jsonb WHERE trade_id='original-trade'",
+                      (json.dumps(evidence),))
+            z = c.execute("SELECT * FROM paper_positions WHERE active_trade_id='original-trade'").fetchone()
+            full = PP.load_accounts(c, ['original-trade'], include_entry_notional=True)['original-trade']
+            compact = PP.load_accounts(c, ['original-trade'], include_entry_notional=True,
+                                       include_payload=False)['original-trade']
+            self.assertEqual(full['payload'], evidence)
+            self.assertGreater(len(json.dumps(full['payload'])), 500000)
+            self.assertNotIn('payload', compact)
+            self.assertEqual(compact, {k: v for k, v in full.items() if k != 'payload'})
+            self.assertEqual(compact['entry_notional_rub'], 9999.4)
+            self.assertEqual(PP.evaluate(z, full, now=observed), PP.evaluate(z, compact, now=observed))
+            self.assertTrue(PP.evaluate(z, compact, now=observed)['profit_protection_active'])
+            load = PP.load_accounts
+            def legacy_accounts(conn, ids, include_entry_notional=False, **kwargs):
+                return load(conn, ids, include_entry_notional, include_payload=True)
+            with patch.object(PP, 'load_accounts', side_effect=legacy_accounts):
+                legacy_assess = PP.assess(c, z, now=observed, price=12.735)
+                PP.refresh(c, now=observed)
+            legacy_flags = c.execute("SELECT payload->'net_profit_protection' AS flags FROM paper_positions WHERE active_trade_id='original-trade'").fetchone()['flags']
+            with patch.object(PP, 'load_accounts', wraps=load) as reader:
+                current_assess = PP.assess(c, z, now=observed, price=12.735)
+                PP.refresh(c, now=observed)
+            self.assertEqual(reader.call_count, 2)
+            self.assertTrue(all(call.kwargs.get('include_payload') is False for call in reader.call_args_list))
+            self.assertEqual(current_assess, legacy_assess)
+            current = c.execute("SELECT * FROM paper_positions WHERE active_trade_id='original-trade'").fetchone()
+            self.assertEqual(current['payload']['net_profit_protection'], legacy_flags)
+            self.assertEqual({k: v for k, v in current.items() if k != 'payload'},
+                             {k: v for k, v in z.items() if k != 'payload'})
+            after = load(c, ['original-trade'], include_entry_notional=True)['original-trade']
+            self.assertEqual({k: v for k, v in after.items() if k != 'payload'}, compact)
+            self.assertEqual({k: after['payload'][k] for k in evidence}, evidence)
+
 
 if __name__ == '__main__':
     unittest.main()

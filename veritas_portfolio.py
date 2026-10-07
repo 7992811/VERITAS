@@ -2547,8 +2547,12 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
             else:
                 base_book=candidates
             book=_v90_trend_transition_candidate_book(summary,base_book,mode)
+            if emit: emit('paper_portfolio_phase',phase='book_start',portfolio=name)
             results.append(_step_one(c,name,pol,book,prices,ruonia,usdrub,ts,commission_rate,summary))
+            if emit: emit('paper_portfolio_phase',phase='book_done',portfolio=name)
+        if emit: emit('paper_portfolio_phase',phase='protection_start')
         VPP.refresh(c,commission=commission_rate)
+        if emit: emit('paper_portfolio_phase',phase='protection_done')
     out={'status':'OK','version':VERSION,'portfolios':results,'market_candidates':len(candidates),'impulse_candidates':len(impulse_candidates),
          'signal_first_policy':True,'signal_first_probe_fraction_core':0.10,'signal_first_probe_fraction_impulse':0.05,'ruonia_source':rusrc,'usdrub_source':fxsrc,'objective_order':['WIN_RATE','TOTAL_RETURN','DRAWDOWN'],'meaningful_win_threshold_nav':MEANINGFUL_WIN_NAV,'admission_probability_floor':{'Impulse':0.64,'Aggressive':0.62,'Champion':0.70,'Challenger':0.75},'probability_note':'EMPIRICAL_CALIBRATION when available; otherwise MODEL_PRIOR_UNCALIBRATED. Prior is never reported as observed hit probability.','live_capital':False}
     if emit: emit('paper_portfolio_cycle',portfolios=results,market_candidates=len(candidates),
@@ -3836,6 +3840,8 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
     except Exception:
         pass
 
+    # The completed prepass must not retain another full book during execution.
+    positions = z0 = z = payload = None
     return _v90pi_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,summary)
 
 _step_one=_v90pi_step_one
@@ -4269,6 +4275,7 @@ def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
     except Exception:
         pass
 
+    positions = z0 = z = payload = None
     return _v90ci_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,summary)
 
 _step_one=_v90ci_step_one
@@ -6127,6 +6134,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                           'portfolio':name,'error':str(e)[:180]},
                          ensure_ascii=False,separators=(',',':')),flush=True)
 
+    _ = positions = z0 = z = management_book = mgmt = None
     return _v90r19_base_step_one(
         c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary
     )
@@ -6898,6 +6906,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         if target is not None:
             _v90r22_edge_caps[(name,asset)]=float(target)
 
+    p = pos = z0 = z = mgmt = None
     try:
         return _v90r22_base_step_one(
             c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary
@@ -8240,6 +8249,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     p,pos=_portfolio_rows(c,name)
     nav,_,_,_=_mark_nav(p,pos,prices)
     _v90r33_harvest(c,p,name,prices,nav,ts)
+    p = pos = None
     return _v90r33_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
     )

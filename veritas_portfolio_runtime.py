@@ -1469,6 +1469,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     except Exception:
         pass
 
+    p = pos = None
     return _v90r46_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
     )
@@ -2292,6 +2293,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         print(json.dumps({'event':'V90_R54_STRUCTURAL_STOP_RATCHET',
                           'portfolio':name,'changes':stop_changes},
                          ensure_ascii=False,default=str,separators=(',',':')),flush=True)
+    p = pos = posmap = z = None
     return _v90r54_base_step_one(
         c,name,policy,work,prices,ruonia,usdrub,ts,commission_rate,summary
     )
@@ -3436,6 +3438,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         except Exception as ex:
             print(json.dumps({'event':'V90_R56_MIGRATION_ERROR','error':f'{type(ex).__name__}: {ex}'},
                              ensure_ascii=False,separators=(',',':')),flush=True)
+    p = pos = z0 = z = zfresh = None
     return _v90r56_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
     )
@@ -4925,6 +4928,7 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
         positions=[dict(z) for z in c.execute('SELECT * FROM paper_positions').fetchall()]
     if VPG._entry_namespace is not None:
         VPG.refresh_position_quotes(VPG._entry_namespace,positions)
+    positions = None
     return _r80_base_step_all(summary,pg_connect,model_version,observed_at,commission_rate,emit)
 
 
@@ -4967,6 +4971,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             if z.get('active_trade_id'):
                 c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
                           (json.dumps(patch),z['active_trade_id']))
+    rows = z = None
     return _r80_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,safe_summary)
 
 
