@@ -7,6 +7,7 @@ commit or roll back together. No broker operations or trading policies live here
 from datetime import datetime, timezone
 import time
 
+import veritas_accounting_io as AIO
 import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
 
@@ -50,11 +51,18 @@ def run_books(*, pg_connect, policies, make_book, step_one, prices, ruonia,
                     emit_diagnostic(emit, 'paper_portfolio_phase', phase='book_start',
                             portfolio=name, execution_observed_at=ts)
                     work_started = time.monotonic()
-                    result = step_one(connection, name, policy, book, prices,
-                                      ruonia, usdrub, ts, commission_rate, summary)
-                    if not isinstance(result, dict) or result.get('name') != name:
-                        raise ValueError('PORTFOLIO_RESULT_REQUIRED')
-                    timing['accounting_seconds'] = time.monotonic() - work_started
+                    cpu_started = time.thread_time()
+                    measured_connection = AIO.AccountingConnection(connection)
+                    try:
+                        result = step_one(measured_connection, name, policy, book, prices,
+                                          ruonia, usdrub, ts, commission_rate, summary)
+                        if not isinstance(result, dict) or result.get('name') != name:
+                            raise ValueError('PORTFOLIO_RESULT_REQUIRED')
+                    finally:
+                        timing['accounting_seconds'] = time.monotonic() - work_started
+                        timing['accounting_cpu_seconds'] = time.thread_time() - cpu_started
+                        timing['accounting_io'] = measured_connection.snapshot()
+                        measured_connection = None
                     stage = 'protection'
                     emit_diagnostic(emit, 'paper_portfolio_phase', phase='protection_start',
                             portfolio=name)

@@ -16,6 +16,13 @@ from veritas_quote_time import quote_gate, utc_datetime
 
 VERSION = "CTC_SAME_TF_MANAGEMENT_V2"
 
+# Legacy-only readers may omit this proven subset of owns_position before
+# transferring full position evidence. Other JSON shapes and non-string tags
+# still reach the existing Python ownership/validation path unchanged.
+LEGACY_POSITION_SQL_PREDICATE = """NOT COALESCE(jsonb_path_exists(payload,
+    'strict $.structural_policy_version ? (@.type() == "string" && @ != "")',
+    '{}'::jsonb, true), false)"""
+
 
 def payload(position):
     value = (position or {}).get("payload") or {}
