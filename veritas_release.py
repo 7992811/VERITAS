@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 
-PRODUCT_VERSION="veritas-max-product-v91.5-verified-execution"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.5-verified-execution"
-UI_VERSION="veritas-ui-v9.1.5-verified-execution"
+PRODUCT_VERSION="veritas-max-product-v91.6-signal-readiness"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.6-signal-readiness"
+UI_VERSION="veritas-ui-v9.1.6-signal-readiness"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -31,6 +31,13 @@ def snapshot():
             "incremental_add_funding_from_original_open":True,
             "trailing_requires_post_entry_confirmed_pivot":True,
             "initial_stop_and_target_immutable":True,
+        },
+        "signal_delivery_policy":{
+            "version":"CANONICAL_SIGNAL_READINESS_V1",
+            "source_eligibility_separate_from_entry":True,
+            "admission_trace_preserves_original_decision":True,
+            "closed_bar_boundary_refresh":True,
+            "aggregation_preserves_proven_source":True,
         },
         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
         "daily_ma_rebound_policy":dict(CTC.MA_REBOUND_POLICY),

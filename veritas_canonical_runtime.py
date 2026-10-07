@@ -14,6 +14,7 @@ import veritas_trend_entry as VTE
 import veritas_strategy_roles as VROLE
 import veritas_timeframe_policy as TFP
 import veritas_stop_risk as VSR
+import veritas_admission_trace as VAT
 
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
@@ -138,6 +139,14 @@ def _fraction(policy, drawdown, soft=False):
     return max(0.0,math.floor(f/step+1e-9)*step),rg
 
 def evaluate(row, policy, drawdown, now=None):
+    # Preserve the exact gate clock, including time spent refreshing the quote.
+    # The original optional now still controls refresh inside the decision body.
+    clock=TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
+    out=_evaluate(row,policy,drawdown,now,clock=clock)
+    return dict(out,checked_at=clock.isoformat() if clock is not None else None)
+
+
+def _evaluate(row, policy, drawdown, now=None, *, clock):
     raw=dict(row or {})
     p=dict(policy or {})
     if not raw:
@@ -150,7 +159,6 @@ def evaluate(row, policy, drawdown, now=None):
     if d not in ("LONG","SHORT"):
         return {"open":False,"fraction":0.0,"reason":"NO_DIRECTION","hard_veto":False,"canonical_stage":"THESIS"}
 
-    clock=TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
     if clock is None:
         return {"open":False,"fraction":0.0,"reason":"SAME_TF_DECISION_TIME_REQUIRED","hard_veto":True,"canonical_stage":"DATA"}
     if now is None or raw.get("_runtime_quote_refresh"):
@@ -273,6 +281,7 @@ def _local_execution_context(summary,asset,direction):
 
 def _prepare_candidate(row,summary):
     r=dict(row or {})
+    r["_admission_audit"]={}
     asset=str(r.get("asset") or "")
     direction=_direction(r)
     same=[x for x in (summary or []) if str((x or {}).get("asset") or "")==asset
@@ -340,10 +349,7 @@ def currency_candidate_book(summary):
     clock=datetime.now(timezone.utc)
     for candidate in prepared:
         admission=evaluate(candidate,policy,0.0,clock)
-        trace.append({"horizon":candidate.get("horizon"),"direction":_direction(candidate),
-                      "open":bool(admission.get("open")),"reason":admission.get("reason"),
-                      "hard_veto":bool(admission.get("hard_veto")),
-                      "canonical_stage":admission.get("canonical_stage")})
+        trace.append(VAT.route_item(candidate,admission,clock))
         if admission.get("open"):
             chosen=candidate
             break
@@ -386,10 +392,7 @@ def transition_candidate_book(summary, base_book, mode=None):
         trace=[]
         for candidate in rows:
             admission=evaluate(candidate,policy,0.0,clock)
-            trace.append({"horizon":candidate.get("horizon"),"direction":_direction(candidate),
-                          "open":bool(admission.get("open")),"reason":admission.get("reason"),
-                          "hard_veto":bool(admission.get("hard_veto")),
-                          "canonical_stage":admission.get("canonical_stage")})
+            trace.append(VAT.route_item(candidate,admission,clock))
             if admission.get("open"):
                 chosen=candidate
                 break

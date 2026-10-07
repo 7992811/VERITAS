@@ -43,7 +43,7 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertEqual(s["runtime_authority"], CTC.BASIS_RUNTIME)
         self.assertEqual(s["portfolio_count"], 5)
         self.assertEqual(tuple(s["portfolios"]), CTC.PORTFOLIO_ORDER)
-        self.assertIn("verified-execution", s["product_version"])
+        self.assertIn("signal-readiness", s["product_version"])
         self.assertTrue(s['execution_integrity_policy']['one_quote_and_fill_for_admission_and_accounting'])
         self.assertEqual(s["daily_ma_rebound_policy"], CTC.MA_REBOUND_POLICY)
         self.assertEqual(s["active_user_teaching_ids"], [CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"]])

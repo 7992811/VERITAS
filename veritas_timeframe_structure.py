@@ -143,6 +143,19 @@ def closed_bars(bars, timeframe, now):
     return [by_time[t] for t in sorted(by_time) if t not in conflicts]
 
 
+def _shared_source_identity(identities):
+    """Certify only one explicitly labelled series, including its contract."""
+    if not identities:
+        return None
+    first = identities[0]
+    if not isinstance(first, dict) or not isinstance(first.get("key"), str) or not first["key"].strip():
+        return None
+    if any(not isinstance(source, dict) or _source_token(source) != _source_token(first)
+           or source.get("asset") != first.get("asset") for source in identities):
+        return None
+    return deepcopy(first)
+
+
 def aggregate_closed_bars(bars, source_timeframe, timeframe, now, anchor=None):
     """Aggregate only full observed buckets with an explicit alignment anchor.
 
@@ -152,7 +165,16 @@ def aggregate_closed_bars(bars, source_timeframe, timeframe, now, anchor=None):
     """
     source_timeframe, timeframe = str(source_timeframe).lower(), str(timeframe).lower()
     base, target = timeframe_seconds(source_timeframe), timeframe_seconds(timeframe)
-    rows = closed_bars(bars, source_timeframe, now)
+    original = list(bars or [])
+    rows = closed_bars(original, source_timeframe, now)
+    sources = {}
+    for raw in original:
+        if isinstance(raw, dict):
+            sources.setdefault(timestamp(raw.get("ts", raw.get("time"))), []).append(raw.get("source_identity"))
+    for row in rows:
+        source = _shared_source_identity(sources.get(row["ts"]) or [])
+        if source is not None:
+            row["source_identity"] = source
     if source_timeframe == timeframe:
         return rows
     if target <= base or target % base:
@@ -170,11 +192,15 @@ def aggregate_closed_bars(bars, source_timeframe, timeframe, now, anchor=None):
         if (len(group) != count or start + target > end
                 or any(abs(b["ts"] - (start + i * base)) > 1e-6 for i, b in enumerate(group))):
             continue
-        result.append({"ts": start, "available_at": max(start + target, max(b["available_at"] for b in group)),
+        combined = {"ts": start, "available_at": max(start + target, max(b["available_at"] for b in group)),
                        "open": group[0]["open"], "high": max(b["high"] for b in group),
                        "low": min(b["low"] for b in group), "close": group[-1]["close"],
                        "volume": sum(b["volume"] for b in group), "timeframe": timeframe,
-                       "aggregation": "COMPLETE_OBSERVED_BUCKET", "aggregation_anchor": offset})
+                       "aggregation": "COMPLETE_OBSERVED_BUCKET", "aggregation_anchor": offset}
+        source = _shared_source_identity([b.get("source_identity") for b in group])
+        if source is not None:
+            combined["source_identity"] = source
+        result.append(combined)
     return result
 
 
