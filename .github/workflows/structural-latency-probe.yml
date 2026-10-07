@@ -1,0 +1,43 @@
+name: Structural latency probe
+on:
+  push:
+    branches: [fix/structural-latency-book-20261007]
+    paths: [.github/workflows/structural-latency-probe.yml]
+permissions:
+  contents: write
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.3'
+      - run: pip install -r requirements-intelligence.txt
+      - name: Profile deterministic test workload; no broker or portfolio writes
+        run: |
+          python - <<'PY'
+          import ast, cProfile, io, json, pstats, unittest
+          from pathlib import Path
+          target=Path('diagnostics');target.mkdir(exist_ok=True)
+          suite=unittest.defaultTestLoader.loadTestsFromNames(['test_veritas_structural_cny_episodes','test_veritas_structural_lifecycle','test_veritas_structural_facts_cache'])
+          profile=cProfile.Profile();profile.enable()
+          result=unittest.TextTestRunner(verbosity=0).run(suite)
+          profile.disable()
+          out=io.StringIO();pstats.Stats(profile,stream=out).strip_dirs().sort_stats('cumulative').print_stats(65)
+          target.joinpath('latency-profile-before.txt').write_text(out.getvalue())
+          index=[]
+          for name in ['veritas_portfolio_runtime.py','veritas_portfolio.py','veritas_canonical_runtime.py','veritas_structural_lifecycle.py','veritas_timeframe_data.py']:
+            tree=ast.parse(Path(name).read_text());index.append(name)
+            index.extend(str((n.name,n.lineno,n.end_lineno)) for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)))
+          target.joinpath('latency-source-index.txt').write_text('\n'.join(index))
+          if not result.wasSuccessful():raise SystemExit('baseline regression failed')
+          PY
+      - name: Publish synthetic profile to repair branch only
+        run: |
+          git config user.name 'VERITAS diagnostic'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add diagnostics/latency-profile-before.txt diagnostics/latency-source-index.txt
+          git commit -m 'Record synthetic latency profile and source index'
+          git push origin HEAD:fix/structural-latency-book-20261007
