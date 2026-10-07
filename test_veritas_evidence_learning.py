@@ -1,6 +1,7 @@
 """Recovery, audit atomicity and actual admission boundaries for learning jobs."""
 from contextlib import contextmanager
 from copy import deepcopy
+from datetime import datetime
 import os
 import threading
 import types
@@ -51,14 +52,14 @@ def namespace():
 
 class DurableLearningTests(unittest.TestCase):
     def setUp(self):
-        self.ns, self.ledger, self.now = namespace(), MemoryLedger(), 1000.
+        self.ns, self.ledger, self.now = namespace(), MemoryLedger(), moscow("2026-10-08T07:55:00")
         self.loop = E.LearningLoop(self.ns, self.ledger, lambda: self.now)
         self.calls = []
         self.loop._stage = lambda name: self.calls.append(name) or {'status': 'OK'}
 
     def due(self):
         self.loop.tick()
-        self.now += 300
+        self.now = self.ledger.state['next_due_at']
 
     def test_restart_keeps_due_time_and_does_not_repeat_completed_stage(self):
         self.due()
@@ -245,6 +246,137 @@ class DurableLearningTests(unittest.TestCase):
         self.assertFalse(self.ns['maybe_schedule_heavy_learning'](force=True))
         self.assertTrue(one.wake.is_set())
         self.assertEqual(self.ns['heavy_learning_snapshot']()['status'], 'RESTORING')
+
+
+def moscow(value):
+    return datetime.fromisoformat(value).replace(tzinfo=E.MOSCOW).timestamp()
+
+
+class MoscowScheduleTests(unittest.TestCase):
+    def setUp(self):
+        self.ns, self.ledger = namespace(), MemoryLedger()
+        self.now = moscow('2026-10-08T00:39:00')
+        self.loop = E.LearningLoop(self.ns, self.ledger, lambda: self.now)
+        self.loop._stage = Mock(return_value={'status': 'OK'})
+
+    def test_all_seventeen_daily_slots_and_night_boundaries(self):
+        for hour in range(7, 24):
+            at = moscow(f'2026-10-08T{hour:02}:00:00')
+            self.assertEqual(E.next_hourly_slot(at), at)
+        for before, after in (
+            ('2026-10-08T00:00:00', '2026-10-08T07:00:00'),
+            ('2026-10-08T06:59:59', '2026-10-08T07:00:00'),
+            ('2026-10-08T07:00:01', '2026-10-08T08:00:00'),
+            ('2026-10-08T22:59:59', '2026-10-08T23:00:00'),
+            ('2026-10-08T23:00:01', '2026-10-09T07:00:00'),
+            ('2026-10-08T23:50:00', '2026-10-09T07:00:00'),
+            ('2026-12-31T23:59:59', '2027-01-01T07:00:00'),
+            ('2026-10-09T23:59:59', '2026-10-10T07:00:00'),
+        ):
+            with self.subTest(before=before):
+                self.assertEqual(E.next_hourly_slot(moscow(before)), moscow(after))
+
+    def test_window_is_moscow_time_and_closes_at_2350(self):
+        self.assertEqual(moscow('2026-10-08T07:00:00'),
+                         datetime.fromisoformat('2026-10-08T04:00:00+00:00').timestamp())
+        for value, opened in (('06:59:59', False), ('07:00:00', True),
+                              ('23:49:59', True), ('23:50:00', False)):
+            self.now = moscow('2026-10-08T'+value)
+            self.assertEqual(self.loop.snapshot()['schedule']['window_open'], opened)
+
+    def test_night_start_and_restart_keep_0700_without_running(self):
+        self.loop.tick()
+        due = self.ledger.state['next_due_at']
+        self.assertEqual(due, moscow('2026-10-08T07:00:00'))
+        self.now = moscow('2026-10-08T06:59:59')
+        restarted = E.LearningLoop(self.ns, self.ledger, lambda: self.now)
+        restarted._stage = self.loop._stage
+        self.assertFalse(restarted.tick())
+        self.assertEqual(self.ledger.state['next_due_at'], due)
+        self.loop._stage.assert_not_called()
+        self.now = due
+        restarted.tick()
+        self.loop._stage.assert_called_once_with(E.STAGES[0])
+
+    def test_completion_keeps_whole_hour_cadence_without_drift(self):
+        self.loop.tick()
+        self.now = moscow('2026-10-08T07:00:00')
+        for index in range(len(E.STAGES)):
+            self.loop.tick()
+            self.now += 17
+        self.assertEqual(self.ledger.state['status'], 'OK')
+        self.assertEqual(self.ledger.state['next_due_at'], moscow('2026-10-08T08:00:00'))
+
+    def test_missed_slots_coalesce_without_replaying_night_or_hour_backlog(self):
+        self.loop.tick()
+        self.now = moscow('2026-10-09T10:25:00')
+        for _ in E.STAGES:
+            self.loop.tick()
+        self.assertEqual(self.ledger.state['runs'], 1)
+        self.assertEqual(self.loop._stage.call_count, len(E.STAGES))
+        self.assertEqual(self.ledger.state['next_due_at'], moscow('2026-10-09T11:00:00'))
+        self.assertFalse(self.loop.tick())
+
+    def test_cutoff_preserves_cursor_and_attempts_then_resumes_at_0700(self):
+        self.loop.tick()
+        self.now = moscow('2026-10-08T23:49:59')
+        self.loop.tick()
+        before = deepcopy(self.ledger.state)
+        self.now = moscow('2026-10-08T23:50:00')
+        self.assertFalse(self.loop.tick())
+        self.assertEqual(self.ledger.state['status'], 'WAITING_WINDOW')
+        self.assertEqual(self.ledger.state['next_stage'], E.STAGES[1])
+        self.assertEqual(self.ledger.state['attempts'], before['attempts'])
+        self.assertEqual(self.ledger.state['stages'], before['stages'])
+        self.now = moscow('2026-10-09T07:00:00')
+        self.loop.tick()
+        self.assertEqual(self.loop._stage.call_args_list[-1].args, (E.STAGES[1],))
+
+    def test_stage_crossing_cutoff_checkpoints_before_waiting(self):
+        self.loop.tick()
+        self.now = moscow('2026-10-08T23:49:59')
+        def stage(name):
+            self.now += 2
+            return {'status': 'OK'}
+        self.loop._stage = Mock(side_effect=stage)
+        self.loop.tick()
+        self.assertEqual(self.ledger.state['stages'][E.STAGES[0]]['status'], 'OK')
+        self.assertEqual(self.ledger.state['next_due_at'], moscow('2026-10-09T07:00:00'))
+        self.assertFalse(self.loop.tick())
+
+    def test_retry_near_cutoff_moves_to_morning_without_spending_attempts(self):
+        self.loop.tick()
+        self.now = moscow('2026-10-08T23:49:30')
+        self.loop._stage.return_value = {'status': 'ERROR'}
+        self.loop.tick()
+        self.assertEqual(self.ledger.state['attempts'][E.STAGES[0]], 1)
+        self.assertEqual(self.ledger.state['next_due_at'], moscow('2026-10-09T07:00:00'))
+        self.now += 60
+        self.assertFalse(self.loop.tick())
+        self.assertEqual(self.ledger.state['attempts'][E.STAGES[0]], 1)
+
+    def test_interrupted_stage_stays_disclosed_across_night(self):
+        self.loop.tick()
+        self.now = moscow('2026-10-08T23:49:59')
+        self.ledger.fail_result = True
+        self.loop.tick()
+        self.ledger.fail_result = False
+        self.now += 2
+        self.loop.tick()
+        self.assertTrue(self.ledger.state['interrupted_stage_pending'])
+        self.now = self.ledger.state['next_due_at']
+        self.loop.tick()
+        self.assertEqual(self.ledger.state['interrupted_stage_replays'], 1)
+
+    def test_previous_protocol_migrates_to_moscow_schedule(self):
+        self.loop.tick()
+        self.ledger.state.update(protocol_version='EVIDENCE_LEARNING_LOOP_V1',
+                                 next_due_at=moscow('2026-10-08T00:43:00'))
+        self.loop.tick()
+        self.assertEqual(self.ledger.state['protocol_version'], E.VERSION)
+        self.assertEqual(self.ledger.state['schedule'], E.SCHEDULE)
+        self.assertEqual(self.ledger.state['next_due_at'], moscow('2026-10-08T07:00:00'))
+        self.loop._stage.assert_not_called()
 
 
 @unittest.skipUnless(os.getenv('VERITAS_QUALITY_TEST_DSN'), 'isolated PostgreSQL required')
