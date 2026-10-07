@@ -206,11 +206,44 @@ class NativeMAProjectionSQLTests(unittest.TestCase):
             self.add_trade(trade)
             with self.connect() as c:
                 projected = self.projected(c,trade["trade_id"])
-            self.assertIsNone(projected["payload"]["entry_event_snapshot"]["ma_proof"])
+            saved_event=projected["payload"]["entry_event_snapshot"]
+            # Projection preserves original JSON shape. An absent field is not
+            # manufactured as null; a recorded null remains explicitly present.
+            if explicit_null:
+                self.assertIn("ma_proof",saved_event)
+                self.assertIsNone(saved_event["ma_proof"])
+            else:
+                self.assertNotIn("ma_proof",saved_event)
+            self.assertNotIn("ma_rebound_version",saved_event)
+            self.assertEqual(saved_event["event_type"],"SAME_TIMEFRAME_STRUCTURAL_BREAKOUT")
             self.assertIsNone(LI.trade_exclusion(projected))
         before = self.financials()
         with self.connect() as c:
             self.assertEqual(LI.revalidate_eligible(c)["verified"],2)
+            # Only the optional field's presence changes: trade/event identity,
+            # geometry and all booked amounts remain identical. The fingerprint
+            # must still revoke the prior certificate immediately.
+            key="structural_False"
+            original_hash=self.projected(c,key)["evidence_hash"]
+            self.assertTrue(c.execute("SELECT "+LI.readable_sql()+
+                " AS ok FROM v90_learning_episodes WHERE trade_id=%s",(key,)).fetchone()["ok"])
+            c.execute("""UPDATE paper_trades SET payload=jsonb_set(
+                      payload,'{entry_event_snapshot,ma_proof}','null'::jsonb,TRUE)
+                      WHERE trade_id=%s""",(key,))
+            changed=self.projected(c,key)
+            self.assertIn("ma_proof",changed["payload"]["entry_event_snapshot"])
+            self.assertIsNone(changed["payload"]["entry_event_snapshot"]["ma_proof"])
+            self.assertNotEqual(changed["evidence_hash"],original_hash)
+            self.assertIsNone(LI.trade_exclusion(changed))
+            self.assertFalse(c.execute("SELECT "+LI.readable_sql()+
+                " AS ok FROM v90_learning_episodes WHERE trade_id=%s",(key,)).fetchone()["ok"])
+            c.execute("""UPDATE paper_trades SET payload=payload#-'{entry_event_snapshot,ma_proof}'
+                      WHERE trade_id=%s""",(key,))
+            restored=self.projected(c,key)
+            self.assertNotIn("ma_proof",restored["payload"]["entry_event_snapshot"])
+            self.assertEqual(restored["evidence_hash"],original_hash)
+            self.assertTrue(c.execute("SELECT "+LI.readable_sql()+
+                " AS ok FROM v90_learning_episodes WHERE trade_id=%s",(key,)).fetchone()["ok"])
         self.assertEqual(self.financials(),before)
 
     def test_changed_daily_proof_invalidates_hash_and_malformed_or_oversize_proof_stays_excluded(self):

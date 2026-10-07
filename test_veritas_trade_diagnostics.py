@@ -254,6 +254,60 @@ class TradeDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(result["normalization"]["monetary_net_r"])
 
 
+class MADiagnosticsIntegrationTests(unittest.TestCase):
+    def test_malformed_native_ma_proof_is_unverified_even_when_stop_numbers_disagree(self):
+        import veritas_ma_rebound as MA
+        from test_veritas_ma_rebound import example as ma_example
+        rows, daily, now = ma_example()
+        for bar in rows + daily:
+            bar["source_identity"] = deepcopy(IDENTITY)
+        event = MA.build_context(rows,"5m",now,daily_bars=daily,asset="NQ",
+                                 source_identity=IDENTITY,ma_config={"periods":(50,)})["event"]
+        self.assertIsNotNone(event)
+        original = closed_trade()
+        stamp = lambda at:datetime.fromtimestamp(at,timezone.utc).isoformat()
+        entry, stop = event["signal_price"], event["stop_price"]
+        original.update(opened_at=stamp(now+10),closed_at=stamp(now+40),
+                        avg_entry_price=entry,avg_exit_price=stop)
+        p = original["payload"]
+        p.update(entry_event_snapshot=event,idea_event_id=event["event_id"],
+                 r66_event_id=event["event_id"],canonical_setup_id=event["event_id"],
+                 initial_stop_price=stop,entry_atr=event["atr"],
+                 entry_execution_model={"fill_price":entry,"asset":"NQ","side":"BUY"},
+                 last_exit_execution_model={"fill_price":stop})
+        p.pop("observation_path")
+        for index, (at, price) in enumerate(((now+10,entry),(now+25,entry),(now+40,stop))):
+            quote = dict(FEED,price=price,observed_at=stamp(at))
+            p["observation_path"] = PATH.observe(original,quote,stamp(at),at_entry=index==0)
+        baseline = DIAG.diagnose(original)
+        self.assertTrue(baseline["learning_eligible"],baseline)
+        self.assertEqual(baseline["status"],"VERIFIED_RULE_OUTCOME")
+        changes = (
+            lambda e:e.update(ma_proof="INVALID_PROOF_SHAPE"),
+            lambda e:e["ma_proof"].update(daily_provenance="INVALID_PROOF_SHAPE"),
+            lambda e:e["ma_proof"].update(period_evidence=[{}]),
+            lambda e:e["ma_proof"].update(policy="INVALID_PROOF_SHAPE"),
+            lambda e:e["ma_proof"].update(approach_bars="abc"),
+            lambda e:e["ma_proof"]["approach_bars"].__setitem__(0,"INVALID_PROOF_SHAPE"),
+            lambda e:e["ma_proof"]["approach_bars"].__setitem__(0,[{}]),
+            lambda e:e["ma_proof"].update(approach_bars=None),
+            lambda e:e["ma_proof"].update(approach_bars=e["ma_proof"]["approach_bars"]*101),
+        )
+        for i, change in enumerate(changes):
+            with self.subTest(case=i):
+                trade = deepcopy(original)
+                change(trade["payload"]["entry_event_snapshot"])
+                trade["payload"]["initial_stop_price"] += 1.
+                before = deepcopy(trade)
+                result = DIAG.diagnose(trade)
+                self.assertEqual(result["status"],"UNVERIFIED")
+                self.assertEqual(result["exclusion_reason"],"UNVERIFIED_DAILY_MA_PROOF")
+                self.assertFalse(result["learning_eligible"])
+                self.assertFalse(result["rule_evidence_eligible"])
+                self.assertEqual(result["violations"],[])
+                self.assertEqual(trade,before)
+
+
 class PortfolioDiagnosticsIntegrationTests(unittest.TestCase):
     def test_real_episode_wrapper_preserves_losses_and_does_not_penalize_direction(self):
         import veritas_portfolio as PORTFOLIO

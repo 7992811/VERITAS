@@ -329,6 +329,33 @@ class DailyMAReboundTests(unittest.TestCase):
         self.assertIsNone(e["relative_volume"])
         self.assertEqual((rows,daily),before)
 
+    def test_malformed_proof_containers_are_rejected_without_exceptions_or_mutation(self):
+        rows,daily,now = example()
+        original = build(rows,daily,now)["event"]
+        self.assertTrue(M.validate_event(original,SOURCE)["eligible"])
+        changes = (
+            lambda e:e.update(ma_proof="INVALID_PROOF_SHAPE"),
+            lambda e:e.update(ma_proof=[{}]),
+            lambda e:e["ma_proof"].update(daily_provenance="INVALID_PROOF_SHAPE"),
+            lambda e:e["ma_proof"].update(period_evidence=[]),
+            lambda e:e["ma_proof"].update(policy="INVALID_PROOF_SHAPE"),
+            lambda e:e.update(policy=[{}]),
+            lambda e:e["ma_proof"].update(approach_bars="abc"),
+            lambda e:e["ma_proof"].update(approach_bars={"a":{},"b":{},"c":{}}),
+            lambda e:e["ma_proof"]["approach_bars"].__setitem__(0,"INVALID_PROOF_SHAPE"),
+            lambda e:e["ma_proof"]["approach_bars"].__setitem__(0,[{}]),
+            lambda e:e["ma_proof"].update(approach_bars=None),
+            lambda e:e["ma_proof"].update(approach_bars=e["ma_proof"]["approach_bars"]*101),
+        )
+        for i,change in enumerate(changes):
+            with self.subTest(case=i):
+                event = deepcopy(original)
+                change(event)
+                before = deepcopy(event)
+                self.assertEqual(M.validate_event(event,SOURCE),
+                    {"eligible":False,"reason":"MA_REBOUND_PROVENANCE_INVALID"})
+                self.assertEqual(event,before)
+
     def test_short_native_daily_session_changes_cache_at_actual_end(self):
         source = {"key":"MOEX:CNYRUBF", "asset":"CNYRUBF", "contract_id":"CNYRUBF"}
         # Native MOEX interval24 may cover a15-hour exchange session. The
