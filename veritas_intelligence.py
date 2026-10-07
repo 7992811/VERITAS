@@ -17,6 +17,7 @@ _V90_QUOTE_IDENTITY_FIELDS = (
 import veritas_position_guard as VPG
 import veritas_position_thesis as VPT
 import veritas_currency_notifications as VCN
+import veritas_currency_trade_console as VCTC
 from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
 import veritas_asset_management_intelligence as VAMI
@@ -16788,8 +16789,6 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
       },
       'horizon_summary':horizon_counts
     }
-
-
 class H(BaseHTTPRequestHandler):
     def reply(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode()
@@ -16814,6 +16813,7 @@ class H(BaseHTTPRequestHandler):
             return
 
     def do_GET(self):
+        if VCTC.dispatch(self, pg_connect, (lock, last_cycle)): return
         try:
             if not _BOOTSTRAP_READY and self.path.startswith('/api/v1/'):
                 from veritas_portfolio_read_model import starting_response
@@ -17166,6 +17166,7 @@ class H(BaseHTTPRequestHandler):
         except Exception as e:
             self.reply({'error': f'{type(e).__name__}: {e}'}, 503)
     def do_POST(self):
+        if VCTC.dispatch(self, pg_connect, (lock, last_cycle)): return
         try:
             if urlparse(self.path).path.startswith('/internal/currency-alerts/'):
                 n=int(self.headers.get('Content-Length','0') or 0)

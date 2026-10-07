@@ -40,6 +40,7 @@ g = X.economics_gate('CNYRUBF', {
 print(json.dumps({
     'floor': X.MIN_EXPECTED_MOVE_PCT,
     'multiple': X.MIN_MOVE_COST_MULTIPLE,
+    'currency_multiple': X.VC.entry_cost_multiple('CNYRUBF'),
     'required': g['minimum_expected_move_pct'],
     'modeled_cost': g['modeled_round_trip_cost_pct'],
     'accounting_buffer': X.VC.COST_BUFFER_MULTIPLE,
@@ -57,6 +58,7 @@ print(json.dumps({
                 state = json.loads(result.stdout)
                 self.assertAlmostEqual(state["floor"], 0.0019)
                 self.assertAlmostEqual(state["multiple"], 1.1)
+                self.assertAlmostEqual(state["currency_multiple"], 1.1)
                 self.assertAlmostEqual(state["accounting_buffer"], 1.1)
                 self.assertAlmostEqual(state["required"], max(.0019, 1.1*state["modeled_cost"]))
                 self.assertFalse(state["move_blocked"])
@@ -72,9 +74,9 @@ print(json.dumps({
                     self.assertNotIn("EXPECTED_MOVE_BELOW_COST_BUFFER", above["blockers"])
                     self.assertAlmostEqual(above["minimum_expected_move_pct"],
                                            max(.0019,1.1*above["modeled_round_trip_cost_pct"]))
-                    self.assertEqual(VX.minimum_expected_move_pct(.0001),.0019)
+                    self.assertEqual(VX.minimum_expected_move_pct(.0001,"CNYRUBF"),.0019)
 
-    def test_wider_currency_spread_requires_owner_buffer(self):
+    def test_wider_currency_spread_requires_owner_one_point_one_entry_cost(self):
         for direction in ("LONG", "SHORT"):
             with self.subTest(direction=direction):
                 below = VX.economics_gate("CNYRUBF", self.plan(direction, 0.0032, spread_bps=30))
@@ -83,6 +85,30 @@ print(json.dumps({
                 self.assertAlmostEqual(above["minimum_expected_move_pct"], 0.0033)
                 self.assertIn("EXPECTED_MOVE_BELOW_COST_BUFFER", below["blockers"])
                 self.assertNotIn("EXPECTED_MOVE_BELOW_COST_BUFFER", above["blockers"])
+
+    def test_positive_currency_plan_and_current_general_policy_share_one_point_one(self):
+        # The observed spread is a conservative cost floor; no bid/ask is
+        # supplied, so the existing adverse-reference fill model is exercised.
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                plan = self.plan(direction, .0044, spread_bps=30)
+                currency = VX.economics_gate("CNYRUBF", plan)
+                other = VX.economics_gate("NQ", plan)
+                self.assertTrue(currency["eligible"], currency)
+                self.assertGreaterEqual(currency["net_reward_risk"], VX.MIN_REWARD_RISK)
+                self.assertTrue(other["eligible"], other)
+                self.assertAlmostEqual(currency["minimum_expected_move_pct"], .0033)
+                self.assertAlmostEqual(other["minimum_expected_move_pct"], .0033)
+                self.assertEqual(currency["cost_policy"]["entry_cost_multiple"], 1.1)
+                self.assertEqual(other["cost_policy"]["entry_cost_multiple"], 1.1)
+                self.assertEqual(currency["cost_policy"]["commission_rate_per_side"], .0004)
+
+    def test_other_instruments_and_unspecified_asset_retain_general_entry_floor(self):
+        for asset in (None, "NQ", "GOLD", "BRENT", "BTC", "ETH", "MOEX"):
+            with self.subTest(asset=asset):
+                self.assertAlmostEqual(VX.minimum_expected_move_pct(.003, asset), .0033)
+                self.assertEqual(VX.VC.policy(asset)["entry_cost_multiple"], 1.1)
+        self.assertAlmostEqual(VX.minimum_expected_move_pct(.003, "CNYRUBf"), .0033)
 
 
 class CurrencyRoutingConsistencyTests(unittest.TestCase):

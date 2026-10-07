@@ -277,15 +277,19 @@ class StartupHTTPTests(unittest.TestCase):
     def request(self,path,ready=False):
         overview=Mock(return_value={'status':'OK','ready':True})
         portfolios=Mock(return_value={'status':'OK','portfolios':[]})
+        broker_connect=Mock(side_effect=AssertionError('Unrelated route reached broker database'))
         ns=dict(BaseHTTPRequestHandler=object,_BOOTSTRAP_READY=ready,VERSION='test',
                 SERVICE_ROLE='web',SERVICE_STARTED_AT=time.time()-1,time=time,rss_mb=lambda:123.,
                 VR=SimpleNamespace(snapshot=lambda:{'product_version':'test'}),
                 DASHBOARD_HTML='<html>dashboard</html>',urlparse=urlparse,
-                product_overview=overview,_v90r25_portfolios_fast=portfolios)
+                product_overview=overview,_v90r25_portfolios_fast=portfolios,
+                VCTC=__import__('veritas_currency_trade_console'),pg_connect=broker_connect,
+                lock=threading.Lock(),last_cycle={})
         exec(self.handler_code,ns)
         handler=ns['H'].__new__(ns['H'])
         handler.path=path; handler.reply=Mock(); handler.reply_html=Mock()
         handler.do_GET()
+        broker_connect.assert_not_called()
         return handler,overview,portfolios
 
     def test_starting_api_never_reaches_database_backed_routes(self):
