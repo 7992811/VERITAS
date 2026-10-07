@@ -16548,6 +16548,10 @@ _v90r25_pf_lock=threading.Lock()
 
 def _v90r25_portfolios_fast():
     import veritas_portfolio_read_model as VPRM
+    return VPRM.portfolio_snapshot_read(_v90r25_portfolios_refresh,_v90r25_pf_cache,_v90r25_pf_lock)
+
+def _v90r25_portfolios_refresh():
+    import veritas_portfolio_read_model as VPRM
     with _v90r25_pf_lock:
         cached=_v90r25_pf_cache.get('value'); at=float(_v90r25_pf_cache.get('at') or 0.0)
         cache_revision=_v90r25_pf_cache.get('revision',0)
@@ -16563,7 +16567,7 @@ def _v90r25_portfolios_fast():
     if not pg_enabled(): return {'status':'UNAVAILABLE','portfolios':[]}
     names=list(V90_CANONICAL_PORTFOLIOS)
     with pg_connect() as c, c.transaction():
-        c.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+        VPRM.begin_read_snapshot(c)
         snapshot_at=datetime.now(timezone.utc).isoformat()
         base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
         nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
@@ -16633,15 +16637,16 @@ def _v90r25_portfolios_fast():
     return out
 
 def _v90r25_trades_fast(limit=80):
+    from veritas_trade_journal_read_model import JOURNAL_PAYLOAD_SQL
     limit=max(20,min(200,int(limit or 80)))
     if not pg_enabled():
         return {'status':'UNAVAILABLE','trades':[]}
     try:
         with pg_connect() as c:
-            rows=c.execute("""WITH recent AS (SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
+            rows=c.execute(f"""WITH recent AS (SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
                                      avg_entry_price,avg_exit_price,gross_pnl_rub,fees_rub,
                                      funding_rub,net_pnl_rub,return_on_entry_nav,profitable,
-                                     meaningful_win,status,setup,horizon,payload
+                                     meaningful_win,status,setup,horizon,{JOURNAL_PAYLOAD_SQL} AS payload
                               FROM paper_trades
                               WHERE closed_at IS NOT NULL OR status='CLOSED'
                               ORDER BY COALESCE(closed_at,opened_at) DESC
@@ -16796,6 +16801,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            if not _BOOTSTRAP_READY and self.path.startswith('/api/v1/'):
+                from veritas_portfolio_read_model import starting_response
+                self.reply(starting_response(VERSION),503); return
             if self.path.startswith('/internal/v90/database-lease'):
                 import hmac
                 expected=os.getenv('VERITAS_V90_BRIDGE_TOKEN','').strip()
@@ -18783,17 +18791,9 @@ def _v90r24_ensure_canonical_portfolios():
     try:
         if hasattr(VP,'ensure_schema'):
             VP.ensure_schema(pg_connect)
-        policies={name:dict(VP.POLICIES[name]) for name in V90_CANONICAL_PORTFOLIOS}
-        with pg_connect() as c:
-            for name in V90_CANONICAL_PORTFOLIOS:
-                initial_nav=float(policies[name].get('initial_nav_rub',1000000))
-                c.execute("""INSERT INTO paper_portfolios
-                  (name,created_at,updated_at,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,
-                   benchmark_nav_rub,high_water_nav_rub,policy,model_version)
-                  VALUES(%s,now(),now(),%s,0,0,0,%s,%s,%s::jsonb,%s)
-                  ON CONFLICT(name) DO UPDATE SET
-                    policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()""",
-                  (name,initial_nav,initial_nav,initial_nav,json.dumps(policies[name],ensure_ascii=False),getattr(VP,'VERSION',VR.PORTFOLIO_VERSION)))
+        import veritas_portfolio_read_model as VPRM
+        with pg_connect() as c, c.transaction():
+            VPRM.begin_read_snapshot(c)
             rows=c.execute("""SELECT name FROM paper_portfolios
                               WHERE name=ANY(%s)
                               ORDER BY CASE name
@@ -19066,6 +19066,8 @@ def main():
     server_thread.start()
     emit('http_bound_early', port=int(os.getenv('PORT','10000')),
          bootstrap_ready=False, startup_mode='TWO_PHASE_READINESS')
+    import veritas_startup_guard as VSG
+    VSG.start_watchdog(lambda: _BOOTSTRAP_READY, emit, delay_seconds=60)
     # R83: optional read-only broker connection; no token means no thread or RPC.
     VTB.connection.start()
 
@@ -19087,8 +19089,8 @@ def main():
     # generated on demand / in background maintenance.
     if pg_boot.get('ok') and VP is not None:
         try:
-            _v90r24_ensure_canonical_portfolios()
-            emit('v90_live_state_ready',status='OK',
+            canonical_state=_v90r24_ensure_canonical_portfolios()
+            emit('v90_live_state_ready',status=canonical_state.get('status','DEGRADED'),
                  historical_reports='DEFERRED',
                  historical_audits='BACKGROUND',
                  portfolio_snapshot='FAST_API_ON_DEMAND',

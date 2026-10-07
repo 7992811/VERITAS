@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 
-PRODUCT_VERSION="veritas-max-product-v91.7.4-structural-breakout"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.4-structural-breakout"
-UI_VERSION="veritas-ui-v9.1.7.4-structural-breakout"
+PRODUCT_VERSION="veritas-max-product-v91.7.5-structural-breakout"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.5-structural-breakout"
+UI_VERSION="veritas-ui-v9.1.7.5-structural-breakout"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -51,6 +51,15 @@ def snapshot():
             "provider_ticker_checked_when_present":True,
             "held_brent_contract_from_canonical_identity":True,
             "unqualified_provider_month_not_inferred":True,
+        },
+        "runtime_read_policy":{
+            "version":"BOUNDED_RUNTIME_READS_V1",
+            "startup_api_waits_for_bootstrap":True,
+            "single_portfolio_snapshot_refresh":True,
+            "snapshot_and_schema_sql_waits_bounded":True,
+            "current_portfolio_schema_avoids_ddl":True,
+            "closed_journal_payload_projected":True,
+            "structural_runtime_copies_one_asset":True,
         },
         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
         "breakout_lifecycle_policy":dict(CTC.BREAKOUT_LIFECYCLE_POLICY),

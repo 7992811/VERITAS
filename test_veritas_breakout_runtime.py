@@ -65,6 +65,59 @@ class FastQuoteRuntimeTests(unittest.TestCase):
             BR._latest_rows.clear()
             BR._latest_rows.update(self.previous_rows)
 
+    def test_runtime_never_deepcopies_the_complete_market_cache(self):
+        real_deepcopy = deepcopy
+
+        def bounded_copy(value, memo=None):
+            self.assertIsNot(value, BR._markets)
+            return real_deepcopy(value) if memo is None else real_deepcopy(value, memo)
+
+        with patch.object(BR, "deepcopy", side_effect=bounded_copy):
+            self.runtime.run_once(NOW, quotes={"CNYRUBF": quote()})
+        self.assertEqual(len(self.built), 1)
+
+    def test_missing_or_stale_quote_does_not_copy_native_history(self):
+        class HistoryMustStayInCache:
+            def __deepcopy__(self, memo):
+                raise AssertionError("history was copied without a fresh verified quote")
+        BR._markets['CNYRUBF']['structure_bars_by_timeframe']['1h'][0]['evidence'] = HistoryMustStayInCache()
+        for quotes in ({}, {'CNYRUBF': quote(NOW-timedelta(hours=1))}):
+            with self.subTest(quotes=quotes):
+                result = self.runtime.run_once(NOW, quotes=quotes)
+                self.assertEqual(result['status'], 'OK')
+        self.assertEqual(self.built, [])
+        self.assertEqual(self.executed, [])
+
+    def test_source_rollover_between_quote_collection_and_copy_cannot_build_an_event(self):
+        def rollover(descriptors, supplied):
+            self.assertNotIn('structure_bars_by_timeframe', descriptors['CNYRUBF'])
+            replacement = market()
+            replacement.update(quote(uid='new-contract'))
+            identity = VPS.identity('CNYRUBF', replacement)
+            replacement['structure_source_identity'] = identity
+            for bar in replacement['structure_bars_by_timeframe']['1h']:
+                bar['source_identity'] = identity
+            self.assertTrue(BR.publish_market(replacement))
+            return {'CNYRUBF': quote()}
+        with patch.object(self.runtime, '_quotes', side_effect=rollover):
+            result = self.runtime.run_once(NOW)
+        self.assertEqual(result['status'], 'OK')
+        self.assertEqual(self.built, [])
+        self.assertEqual(self.executed, [])
+        self.assertEqual(BR._markets['CNYRUBF']['structure_source_identity']['contract_id'], 'new-contract')
+
+    def test_per_asset_history_snapshot_is_isolated_from_the_canonical_cache(self):
+        before = deepcopy(BR._markets['CNYRUBF'])
+        def build(raw, horizon, now):
+            self.assertEqual(raw['structure_bars_by_timeframe'], before['structure_bars_by_timeframe'])
+            raw['structure_bars_by_timeframe'][horizon][-1]['close'] = -999
+            return {'status': 'OK', 'timeframe': horizon, 'event': None}
+        with patch.object(self.runtime, 'context_builder', side_effect=build) as builder:
+            result = self.runtime.run_once(NOW, quotes={'CNYRUBF': quote()})
+        self.assertEqual(result['status'], 'OK')
+        builder.assert_called_once()
+        self.assertEqual(BR._markets['CNYRUBF'], before)
+
     def test_duplicate_quote_does_not_recompute_or_reexecute(self):
         self.runtime.run_once(NOW, quotes={"CNYRUBF": quote()})
         self.runtime.run_once(NOW+timedelta(seconds=5), quotes={"CNYRUBF": quote()})

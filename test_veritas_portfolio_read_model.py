@@ -1,5 +1,6 @@
 """Regression checks for current quantities, ledger balances and read-only API."""
 import ast
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ import threading
 import time
 import unittest
 from unittest.mock import Mock
+from urllib.parse import urlparse
 
 import veritas_currency_portfolio as Currency
 import veritas_portfolio_read_model as RM
@@ -132,7 +134,7 @@ class ReadSnapshotDB:
     def execute(self,sql,args=()):
         self.queries.append(' '.join(sql.split()))
         if not self.transactions: raise AssertionError('Read outside snapshot transaction')
-        if sql.startswith('SET TRANSACTION'): return QueryResult()
+        if sql.startswith(('SET TRANSACTION', 'SET LOCAL')): return QueryResult()
         if sql.startswith('SELECT name,initial_nav'): return QueryResult(self.bases)
         if sql.startswith('SELECT DISTINCT ON'):
             return QueryResult([dict(portfolio_name='Currency',observed_at=NOW-timedelta(hours=2),
@@ -148,7 +150,9 @@ class ReadSnapshotDB:
 class FastPortfolioAPITests(unittest.TestCase):
     def exercise_api(self, invalidate_during_read=False):
         tree=ast.parse(Path(__file__).with_name('veritas_intelligence.py').read_text())
-        fn=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='_v90r25_portfolios_fast')
+        functions=[node for node in tree.body if isinstance(node,ast.FunctionDef)
+                   and node.name in ('_v90r25_portfolios_fast','_v90r25_portfolios_refresh')]
+        self.assertEqual(len(functions),2)
         db=ReadSnapshotDB()
         def enrich(report,connection,*,preloaded_accounts=None):
             self.assertEqual(preloaded_accounts,db.accounts)
@@ -164,12 +168,15 @@ class FastPortfolioAPITests(unittest.TestCase):
                 pg_connect=db.connect,VTV=view,VP=SimpleNamespace(VCP=Currency,POLICIES={}),
                 VX=SimpleNamespace(VC=SimpleNamespace(COMMISSION_RATE=.0004)),
                 CLOSED_METRICS_SQL='0 AS diagnostic',closed_trade_metrics=lambda *_:{})
-        exec(compile(ast.Module(body=[fn],type_ignores=[]),'<read-only-portfolio-api>','exec'),ns)
+        exec(compile(ast.Module(body=functions,type_ignores=[]),'<read-only-portfolio-api>','exec'),ns)
         out=ns['_v90r25_portfolios_fast']()
         cur=next(p for p in out['portfolios'] if p['name']=='Currency')
         self.assertEqual(db.connections,1)
-        self.assertEqual(db.queries[0],'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
-        self.assertTrue(all(q.startswith(('SELECT','SET TRANSACTION')) for q in db.queries))
+        self.assertEqual(db.queries[:3],[
+            'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY',
+            "SET LOCAL lock_timeout = '1500ms'",
+            "SET LOCAL statement_timeout = '10000ms'"])
+        self.assertTrue(all(q.startswith(('SELECT','SET TRANSACTION','SET LOCAL')) for q in db.queries))
         self.assertEqual(len(cur['positions']),1)
         self.assertGreater(cur['gross_leverage'],0.)
         self.assertLess(cur['net_exposure'],0.)
@@ -188,6 +195,138 @@ class FastPortfolioAPITests(unittest.TestCase):
         ns,_=self.exercise_api(invalidate_during_read=True)
         self.assertIsNone(ns['_v90r25_pf_cache']['value'])
         self.assertEqual(ns['_v90r25_pf_cache']['revision'],1)
+
+
+class SnapshotConcurrencyTests(unittest.TestCase):
+    def test_concurrent_readers_return_without_second_refresh_or_rejuvenating_cache(self):
+        old_snapshot=dict(status='OK',positions_complete=True,accounting_complete=True,
+                          positions_checked_at=NOW.isoformat(),portfolios=[
+                              dict(name='Currency',positions=[short_position()],
+                                   positions_checked_at=NOW.isoformat())])
+        for previous in (None,old_snapshot):
+            with self.subTest(cached=previous is not None):
+                entered=threading.Event(); release=threading.Event()
+                cache=dict(at=123.,value=deepcopy(previous),revision=3)
+                original=deepcopy(cache); cache_lock=threading.Lock(); calls=[]
+                def refresh():
+                    calls.append('read')
+                    entered.set()
+                    if not release.wait(3):
+                        raise AssertionError('Blocked refresh was not released')
+                    return {'status':'OK','owner':True}
+                def read():
+                    return RM.portfolio_snapshot_read(refresh,cache,cache_lock)
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    owner=pool.submit(read)
+                    try:
+                        self.assertTrue(entered.wait(1))
+                        readers=[pool.submit(read) for _ in range(5)]
+                        replies=[reader.result(timeout=1) for reader in readers]
+                        self.assertEqual(calls,['read'])
+                        self.assertFalse(owner.done())
+                        self.assertEqual(cache,original)
+                        for reply in replies:
+                            self.assertEqual(reply['refresh_status'],'UPDATING')
+                            self.assertFalse(reply['positions_complete'])
+                            self.assertFalse(reply['accounting_complete'])
+                            if previous is None:
+                                self.assertEqual(reply['status'],'UPDATING')
+                                self.assertEqual(reply['api_source'],'refresh_in_progress')
+                            else:
+                                self.assertEqual(reply['status'],'PARTIAL')
+                                self.assertEqual(reply['api_source'],'stale_cache')
+                                self.assertEqual(reply['positions_checked_at'],NOW.isoformat())
+                                self.assertEqual(reply['portfolios'],previous['portfolios'])
+                    finally:
+                        release.set()
+                    self.assertEqual(owner.result(timeout=1),{'status':'OK','owner':True})
+
+    def test_failed_refresh_releases_singleflight_for_next_request(self):
+        cache={'at':0.,'value':None}; cache_lock=threading.Lock()
+        failed=Mock(side_effect=TimeoutError('snapshot query canceled'))
+        with self.assertRaises(TimeoutError):
+            RM.portfolio_snapshot_read(failed,cache,cache_lock)
+        retry=Mock(return_value={'status':'OK'})
+        self.assertEqual(RM.portfolio_snapshot_read(retry,cache,cache_lock),{'status':'OK'})
+        retry.assert_called_once_with()
+        self.assertEqual(cache,{'at':0.,'value':None})
+
+
+class StartupHTTPTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        tree=ast.parse(Path(__file__).with_name('veritas_intelligence.py').read_text())
+        handler=next(node for node in tree.body if isinstance(node,ast.ClassDef) and node.name=='H')
+        cls.handler_code=compile(ast.Module(body=[handler],type_ignores=[]),'<startup-http>','exec')
+
+    def request(self,path,ready=False):
+        overview=Mock(return_value={'status':'OK','ready':True})
+        portfolios=Mock(return_value={'status':'OK','portfolios':[]})
+        ns=dict(BaseHTTPRequestHandler=object,_BOOTSTRAP_READY=ready,VERSION='test',
+                SERVICE_ROLE='web',SERVICE_STARTED_AT=time.time()-1,time=time,rss_mb=lambda:123.,
+                VR=SimpleNamespace(snapshot=lambda:{'product_version':'test'}),
+                DASHBOARD_HTML='<html>dashboard</html>',urlparse=urlparse,
+                product_overview=overview,_v90r25_portfolios_fast=portfolios)
+        exec(self.handler_code,ns)
+        handler=ns['H'].__new__(ns['H'])
+        handler.path=path; handler.reply=Mock(); handler.reply_html=Mock()
+        handler.do_GET()
+        return handler,overview,portfolios
+
+    def test_starting_api_never_reaches_database_backed_routes(self):
+        for path in ('/api/v1/paper-portfolios','/api/v1/dashboard-bootstrap?view=signals',
+                     '/api/v1/overview','/api/v1/portfolio-trades','/api/v1/history'):
+            with self.subTest(path=path):
+                handler,overview,portfolios=self.request(path)
+                handler.reply.assert_called_once()
+                body,code=handler.reply.call_args.args
+                self.assertEqual(code,503)
+                self.assertEqual(body['status'],'STARTING')
+                self.assertFalse(body['bootstrap_ready'])
+                self.assertFalse(body['positions_complete'])
+                self.assertFalse(body['accounting_complete'])
+                self.assertNotIn('portfolios',body)
+                overview.assert_not_called(); portfolios.assert_not_called()
+
+    def test_healthz_and_dashboard_remain_available_during_startup(self):
+        handler,_,_=self.request('/healthz')
+        handler.reply.assert_called_once()
+        body=handler.reply.call_args.args[0]
+        self.assertTrue(body['ok'])
+        self.assertEqual(body['phase'],'STARTING')
+        self.assertFalse(body['bootstrap_ready'])
+        for path in ('/app','/app?tab=portfolios','/'):
+            with self.subTest(path=path):
+                handler,_,_=self.request(path)
+                handler.reply_html.assert_called_once_with('<html>dashboard</html>')
+                handler.reply.assert_not_called()
+
+    def test_finished_bootstrap_resumes_normal_api_even_without_assuming_database_health(self):
+        handler,overview,portfolios=self.request('/api/v1/overview',ready=True)
+        overview.assert_called_once_with(); portfolios.assert_not_called()
+        handler.reply.assert_called_once_with({'status':'OK','ready':True})
+        handler,overview,portfolios=self.request('/api/v1/paper-portfolios',ready=True)
+        portfolios.assert_called_once_with(); overview.assert_not_called()
+        handler.reply.assert_called_once_with({'status':'OK','portfolios':[]})
+
+
+class StartupStateEventTests(unittest.TestCase):
+    def test_canonical_init_failure_is_not_reported_as_success(self):
+        tree=ast.parse(Path(__file__).with_name('veritas_intelligence.py').read_text())
+        main=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='main')
+        block=next(node for node in ast.walk(main) if isinstance(node,ast.Try)
+                   and any(isinstance(child,ast.Assign)
+                           and any(isinstance(target,ast.Name) and target.id=='canonical_state'
+                                   for target in child.targets) for child in node.body))
+        code=compile(ast.Module(body=[block],type_ignores=[]),'<canonical-startup-event>','exec')
+        for status in ('OK','ERROR','UNAVAILABLE','DEGRADED'):
+            with self.subTest(status=status):
+                emit=Mock(); ensure=Mock(return_value={'status':status,'count':5 if status=='OK' else 0})
+                exec(code,dict(emit=emit,_v90r24_ensure_canonical_portfolios=ensure))
+                ensure.assert_called_once_with()
+                emit.assert_called_once()
+                self.assertEqual(emit.call_args.args,('v90_live_state_ready',))
+                self.assertEqual(emit.call_args.kwargs['status'],status)
 
 
 if __name__=='__main__':
