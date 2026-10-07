@@ -86,9 +86,10 @@ disk allocation and memory admission limits are unchanged.
 
 ## Release and acceptance
 
-The candidate is based on main SHA `be798bc1f09f45688002b796798251946f69506d`,
+The candidate is based on main SHA `a91234326e9c55687a82ad94174dc2f2267afa5c`,
 including the parallel evidence-learning, structural latency and private-console
-login repairs. The combined release is v91.7.25.
+login repairs, plus the continuous autonomous-learning release. The combined
+release is v91.8.1.
 Exact final-head CI results are recorded in the pull request before release.
 All mandatory workflows and native SQL cases must pass without hidden skips.
 

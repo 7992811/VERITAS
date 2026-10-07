@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from veritas_data_copy import deepcopy
 from datetime import datetime, timezone
+import json
 import math
 import threading
 import time
@@ -55,6 +56,37 @@ def _clean_quote(raw):
     fields = (*VPS.QUOTE_FIELDS, "asset", "observed_at", "paper_eligible",
               "production_eligible", "orders_enabled", "book_observed_at")
     return {key: deepcopy(q[key]) for key in fields if key in q}
+
+
+def _recent_knowledge_context(template, clock):
+    """Carry sealed analytical context without relabelling it as a tick match."""
+    original = template.get("knowledge_context_at") or template.get("created_at")
+    try:
+        observed = (original if isinstance(original, datetime) else
+                    datetime.fromisoformat(original.replace("Z", "+00:00")) if isinstance(original, str) else None)
+        if (observed is None or observed.tzinfo is None or observed.utcoffset() is None
+                or clock.tzinfo is None or not 0 <= (clock-observed).total_seconds() <= 120):
+            return [], None
+        matches = template.get("knowledge_learning_matches", template.get("knowledge_shadow_matches"))
+        if not isinstance(matches, list):
+            return [], None
+        selected = matches[:8]
+        # Producer contracts are flat JSON objects containing immutable rule
+        # and audit hashes. Refuse nested graphs, malformed rows and oversized
+        # context instead of truncating a value and invalidating its identity.
+        for match in selected:
+            if (not isinstance(match, dict) or len(match) > 32
+                    or not isinstance(match.get("rule_id"), str) or not match["rule_id"].strip()
+                    or any(not isinstance(key, str) or len(key) > 128 for key in match)
+                    or any(type(value) not in (str, int, float, bool, type(None))
+                           or isinstance(value, str) and len(value) > 8192 for value in match.values())):
+                return [], None
+        encoded = json.dumps(selected, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > 8192:
+            return [], None
+        return deepcopy(selected), original if selected else None
+    except (TypeError, ValueError, OverflowError):
+        return [], None
 
 
 def publish_market(raw):
@@ -408,6 +440,7 @@ class BreakoutRuntime:
         # A recovered source starts with its own evidence, including analytics.
         if not _same_source(market["structure_source_identity"], VPS.identity(market["asset"], template)):
             template = {}
+        knowledge_matches, knowledge_at = _recent_knowledge_context(template, clock)
         same_direction = (template.get("research_decision") or template.get("decision")) == direction
         # Keep observed analytics, but never copy the previous event's trade
         # plan, hard vetoes, reverse setup, arbitrary confidence or permission.
@@ -423,6 +456,7 @@ class BreakoutRuntime:
                 if key in template:
                     row[key] = deepcopy(template[key])
         row.update(asset=market["asset"], horizon=tf, decision=direction, research_decision=direction,
+                   knowledge_shadow_matches=knowledge_matches, knowledge_context_at=knowledge_at,
                    signal_tier=direction, execution_signal_tier=direction,
                    confidence=row.get("confidence"), pwin=None,
                    probability_source="STRUCTURAL_EVENT_UNCALIBRATED",

@@ -40,6 +40,7 @@ def geometry_audit(row, fill, gate):
 
 def entry_payload(row, asset, direction, nav, ts, source_lock, quote, fill, final_gate,
                   intent, teaching_trace, canonical_setup_id, cohort, model_version, units):
+    import veritas_learning_bridge as LEARNING
     plan=row.get('trade_plan') or {}
     price=float(quote['price'])
     stop=(final_gate.get('execution_snapshot') or {}).get('stop_price')
@@ -62,7 +63,7 @@ def entry_payload(row, asset, direction, nav, ts, source_lock, quote, fill, fina
                  'user_teaching_id':plan.get('user_teaching_id'),'user_teaching_trace':teaching_trace,
                  'entry_event_snapshot':plan.get('entry_event_snapshot'),
                  'timeframe_entry_context':plan.get('timeframe_entry_context'),
-                 'entry_canonical_admission':row.get('_canonical_admission'),
+                 'entry_canonical_admission':LEARNING.execution_receipt(row.get('_canonical_admission'),units,fill.get('fill_price'),nav),
                  'fill_economics_gate':final_gate,
                  'initial_stop_price':stop,'take_price':target,
                  'target_price':target,'initial_take_price':target,

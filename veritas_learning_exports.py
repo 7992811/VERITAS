@@ -79,13 +79,22 @@ def generation():
 
 
 def memory_contract(generation=None):
+    state = LI.memory_state()
     return {"learning_evidence_version": LI.VERSION, "learning_export_version": VERSION,
             "learning_scope": SCOPE, "unverified_shadow_influence": False,
-            "learning_integrity_generation": LI.generation() if generation is None else generation}
+            "learning_integrity_process_epoch": state["process_epoch"],
+            "learning_integrity_verified_at_build": state["ready"],
+            "learning_integrity_generation": state["generation"] if generation is None else generation}
 
 
 def memory_current(board):
-    return isinstance(board, dict) and all(board.get(k) == v for k, v in memory_contract().items())
+    # Check readiness both sides of comparison; a concurrent revocation must
+    # never be hidden by a token captured before the check started.
+    before = LI.memory_state()
+    if not before["ready"] or not isinstance(board, dict):
+        return False
+    matched = all(board.get(k) == v for k, v in memory_contract().items())
+    return matched and LI.memory_state() == before
 
 
 def shadow_profile(profile):

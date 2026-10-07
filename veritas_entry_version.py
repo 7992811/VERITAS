@@ -10,7 +10,7 @@ import veritas_canonical_constitution as CTC
 import veritas_release as RELEASE
 from veritas_trade_audit import payload
 
-POLICY_HASH_VERSION='ENTRY_POLICIES_V2'
+POLICY_HASH_VERSION='ENTRY_POLICIES_V3'
 
 
 def digest(value):
@@ -23,7 +23,8 @@ def policy_hash():
                    'roles':CTC.STRATEGY_ROLE_POLICY,'portfolios':CTC.PORTFOLIO_POLICIES,
                    'lifecycle':CTC.LIFECYCLE_POLICY,
                    'structural_entry':CTC.STRUCTURAL_ENTRY_POLICY,
-                   'daily_ma_rebound':CTC.MA_REBOUND_POLICY})
+                   'daily_ma_rebound':CTC.MA_REBOUND_POLICY,
+                   'quote_breakout_lifecycle':CTC.BREAKOUT_LIFECYCLE_POLICY})
 
 
 def _stamp(value):

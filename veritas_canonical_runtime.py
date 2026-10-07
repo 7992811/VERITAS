@@ -143,6 +143,8 @@ def evaluate(row, policy, drawdown, now=None):
     # The original optional now still controls refresh inside the decision body.
     clock=TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
     out=_evaluate(row,policy,drawdown,now,clock=clock)
+    import veritas_learning_bridge as LEARNING
+    out=LEARNING.apply_admission(row,out,policy,now=clock)
     return dict(out,checked_at=clock.isoformat() if clock is not None else None)
 
 

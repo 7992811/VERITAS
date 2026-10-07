@@ -1849,6 +1849,13 @@ class ActiveCycleCacheR65Tests(unittest.TestCase):
 
 
 class R601LearningCacheInvalidationTests(unittest.TestCase):
+    def setUp(self):
+        self.integrity=(VP.VLI._GENERATION,VP.VLI._REVOCATION_GENERATION,VP.VLI._UNCONFIRMED)
+        self.state=dict(VP._v90r60_dedup_state)
+    def tearDown(self):
+        VP.VLI._GENERATION,VP.VLI._REVOCATION_GENERATION,VP.VLI._UNCONFIRMED=self.integrity
+        VP._v90r60_dedup_state.clear();VP._v90r60_dedup_state.update(self.state)
+
     def test_dedup_immediately_invalidates_r29_and_r33_caches(self):
         class Cur:
             def __init__(self,rowcount=0): self.rowcount=rowcount
@@ -1877,6 +1884,28 @@ class R601LearningCacheInvalidationTests(unittest.TestCase):
             VP._v90r60_dedup_state.clear()
             VP._v90r60_dedup_state.update(oldstate)
 
+    def test_duplicate_removal_and_sql_failure_revoke_autonomous_memory_but_key_backfill_does_not(self):
+        for counts,fail_at in (((3,0),None),((0,1),None),((0,0),1),((3,0),2)):
+            with self.subTest(counts=counts,fail_at=fail_at):
+                VP.VLI._UNCONFIRMED=False
+                before=VP.VLI.memory_state()
+                class Conn:
+                    calls=0
+                    def execute(self,sql,args=None):
+                        self.calls+=1
+                        if self.calls==fail_at:raise RuntimeError('simulated SQL failure')
+                        return SimpleNamespace(rowcount=counts[self.calls-1])
+                with patch.dict(VP._v90r29_cache),patch.dict(VP._v90r33_cache):
+                    out=VP._v90r60_sanitize_duplicate_learning(Conn(),force=True)
+                after=VP.VLI.memory_state()
+                revoked=bool(counts[1] or fail_at)
+                if revoked:
+                    self.assertGreater(after['revocation_generation'],before['revocation_generation'])
+                    self.assertFalse(after['ready'])
+                else:
+                    self.assertEqual(after,before)
+                self.assertEqual(bool(out['last_error']),bool(fail_at))
+
 
 class LearningFastPathR593Tests(unittest.TestCase):
     def test_learning_progress_is_nonblocking_on_cold_cache(self):
@@ -1885,11 +1914,12 @@ class LearningFastPathR593Tests(unittest.TestCase):
         try:
             if hasattr(vi.learning_progress,'_cache'):
                 delattr(vi.learning_progress,'_cache')
-            with patch.object(vi.threading,'Thread') as th:
+            with patch.object(vi.threading,'Thread') as th, patch.object(vi._v90_background_maintenance,'request') as queued:
                 out=vi.learning_progress()
             self.assertEqual(out.get('status'),'BUILDING')
             self.assertTrue(out.get('background_refresh'))
-            th.assert_called_once()
+            th.assert_not_called()
+            queued.assert_called_once_with('learning_progress')
         finally:
             if old is not None:
                 vi.learning_progress._cache=old

@@ -272,6 +272,96 @@ class FastQuoteRuntimeTests(unittest.TestCase):
         self.assertIsNone(row["pwin"])
         self.assertFalse(row["production_eligible"])
 
+    def knowledge_template(self, at=None):
+        return dict(quote(), created_at=(NOW-timedelta(seconds=30)).isoformat() if at is None else at,
+                    knowledge_shadow_matches=[{
+                        "version": "KNOWLEDGE_PROSPECTIVE_V1", "rule_key": "immutable-rule-key",
+                        "rule_id": "RULE_1", "source_id": "SOURCE_1", "definition_hash": "d"*64,
+                        "audit_hash": "a"*64, "registered_at": (NOW-timedelta(days=1)).isoformat(),
+                        "action": "LONG", "contract_hash": "c"*64}])
+
+    def knowledge_row(self, template, clock=NOW):
+        context = {"status": "OK", "event": {"direction": "LONG", "event_id": "new-event"}}
+        with patch.object(BR.TFP, "prepare_row", side_effect=lambda row, **kw: row), \
+             patch.object(BR.TFP, "final_plan", side_effect=lambda asset, direction, plan, **kw: plan):
+            return self.runtime._row(BR._markets["CNYRUBF"], quote(clock), "1h", context, template, clock)
+
+    def test_recent_same_source_knowledge_preserves_every_frozen_hash_and_origin(self):
+        template = self.knowledge_template()
+        before = deepcopy(template)
+        row = self.knowledge_row(template)
+        self.assertEqual(row["knowledge_shadow_matches"], template["knowledge_shadow_matches"])
+        self.assertEqual(row["knowledge_context_at"], template["created_at"])
+        self.assertEqual(template, before)
+        row["knowledge_shadow_matches"][0]["definition_hash"] = "changed"
+        self.assertEqual(template, before)
+
+    def test_knowledge_context_reuse_never_refreshes_the_original_analytical_time(self):
+        template = self.knowledge_template(NOW.isoformat())
+        first = self.knowledge_row(template)
+        second = self.knowledge_row(first, NOW+timedelta(seconds=30))
+        self.assertEqual(second["knowledge_context_at"], NOW.isoformat())
+        self.assertEqual(second["knowledge_shadow_matches"], template["knowledge_shadow_matches"])
+        exact = self.knowledge_row(second, NOW+timedelta(seconds=120))
+        self.assertEqual(exact["knowledge_context_at"], NOW.isoformat())
+        self.assertEqual(exact["knowledge_shadow_matches"], template["knowledge_shadow_matches"])
+        stale = self.knowledge_row(exact, NOW+timedelta(seconds=121))
+        self.assertEqual(stale["knowledge_shadow_matches"], [])
+        self.assertIsNone(stale["knowledge_context_at"])
+
+    def test_stale_future_missing_and_naive_knowledge_time_cannot_be_borrowed(self):
+        for value in ((NOW-timedelta(seconds=121)).isoformat(), (NOW+timedelta(seconds=1)).isoformat(),
+                      NOW.replace(tzinfo=None), NOW.replace(tzinfo=None).isoformat(), "", "bad", NOW.timestamp()):
+            with self.subTest(time=value):
+                template = self.knowledge_template(value)
+                row = self.knowledge_row(template)
+                self.assertEqual(row["knowledge_shadow_matches"], [])
+                self.assertIsNone(row["knowledge_context_at"])
+        template = self.knowledge_template(); template.pop("created_at")
+        self.assertEqual(self.knowledge_row(template)["knowledge_shadow_matches"], [])
+        # A future display timestamp cannot refresh an old analytical origin.
+        template = self.knowledge_template(NOW.isoformat())
+        template["knowledge_context_at"] = (NOW-timedelta(seconds=121)).isoformat()
+        self.assertEqual(self.knowledge_row(template)["knowledge_shadow_matches"], [])
+
+    def test_other_provider_or_contract_cannot_supply_knowledge_context(self):
+        for mutate in (lambda row: row.update(source_names={"primary": "MOEX"}),
+                       lambda row: row.update(contract={"instrument_uid": "other"}),
+                       lambda row: row.pop("source_names")):
+            template = self.knowledge_template(); mutate(template)
+            row = self.knowledge_row(template)
+            self.assertEqual(row["knowledge_shadow_matches"], [])
+
+    def test_knowledge_carry_does_not_borrow_probability_permission_or_old_plan(self):
+        template = self.knowledge_template()
+        template.update(research_decision="SHORT", confidence=.99, pwin=.98,
+                        calibration={"probability_correct": .97}, production_eligible=True,
+                        orders_enabled=True, hard_veto=True, knowledge_rule_active=True,
+                        gates={"source": False}, trade_plan={"old_permission": True})
+        row = self.knowledge_row(template)
+        self.assertEqual(len(row["knowledge_shadow_matches"]), 1)
+        self.assertIsNone(row["pwin"])
+        self.assertIsNone(row["confidence"])
+        self.assertEqual(row["probability_source"], "STRUCTURAL_EVENT_UNCALIBRATED")
+        self.assertFalse(row["production_eligible"])
+        for key in ("calibration", "orders_enabled", "hard_veto", "knowledge_rule_active", "gates"):
+            self.assertNotIn(key, row)
+        self.assertNotIn("old_permission", row["trade_plan"])
+
+    def test_knowledge_objects_are_bounded_and_malformed_context_is_refused(self):
+        template = self.knowledge_template()
+        match = template["knowledge_shadow_matches"][0]
+        template["knowledge_shadow_matches"] = [dict(match, rule_id="RULE_"+str(i)) for i in range(20)]
+        row = self.knowledge_row(template)
+        self.assertEqual(row["knowledge_shadow_matches"], template["knowledge_shadow_matches"][:8])
+        self.assertLessEqual(len(json.dumps(row["knowledge_shadow_matches"]).encode()), 8192)
+        for bad in ("bad", [None], [{"rule_id": ""}], [dict(match, weight=float("nan"))],
+                    [dict(match, data={"not": "a frozen scalar"})], [dict(match, extra="x"*8193)],
+                    [dict(match, extra="x"*5000), dict(match, extra="x"*5000)]):
+            with self.subTest(shape=str(type(bad))):
+                template["knowledge_shadow_matches"] = bad
+                self.assertEqual(self.knowledge_row(template)["knowledge_shadow_matches"], [])
+
     def test_fast_context_requests_only_display_limit_from_shared_state_owner(self):
         with patch.object(BR.TFD, "structural_context", return_value={"status": "OK"}) as owner:
             result = BR._bounded_context({"asset": "ETH"}, "5m", NOW)
