@@ -18,6 +18,7 @@ import veritas_canonical_constitution as CTC
 import veritas_execution as VX
 import veritas_position_guard as VPG
 import veritas_price_source as VPS
+import veritas_signal_publication as VSP
 import veritas_timeframe_data as TFD
 import veritas_timeframe_policy as TFP
 import veritas_timeframe_structure as TS
@@ -100,6 +101,35 @@ def publish_market(raw):
     return True
 
 
+def _merge_cached_rows(summary, cached, *, current_cny=None, **options):
+    """Keep source pins, including recovery of the selected CNY broker feed."""
+    current = {(row.get("asset"), row.get("horizon")): row
+               for row in summary or () if isinstance(row, dict)}
+    compatible = []
+    for row in cached:
+        previous = current.get((row.get("asset"), row.get("horizon")))
+        if previous is None:
+            compatible.append(row)
+            continue
+        old_quote, new_quote = VPS.quote_from_row(previous), VPS.quote_from_row(row)
+        old_source = VPS.identity(previous.get("asset"), old_quote)
+        new_source = VPS.identity(row.get("asset"), new_quote)
+        source_current = _same_source(old_source, new_source)
+        if (not source_current and row.get("asset") == "CNYRUBF"
+                and (old_source or {}).get("key") == "MOEX:CNYRUBF"
+                and (new_source or {}).get("key") == "TBANK_GRPC:CNYRUBF"
+                and _same_source(current_cny, new_source)):
+            # Only the currently pinned broker may recover an older research
+            # fallback. The caller holds the cache lock throughout this merge.
+            import veritas_direct_cny as CNY
+            old_at, new_at = TS.timestamp(old_quote.get("observed_at")), TS.timestamp(new_quote.get("observed_at"))
+            source_current = bool(CNY.enabled() and new_at is not None
+                                  and (old_at is None or new_at > old_at))
+        if source_current:
+            compatible.append(row)
+    return VSP.merge_rows(summary, compatible, **options)
+
+
 def publish_summary(summary):
     """Merge newer fast observations into a finishing slow scan atomically.
 
@@ -107,30 +137,9 @@ def publish_summary(summary):
     trigger from immediately overwriting that trigger's actual execution audit.
     """
     with _cache_lock:
-        fast = {key: deepcopy(row) for key, row in _latest_rows.items()}
-        current_cny = deepcopy((_markets.get("CNYRUBF") or {}).get("structure_source_identity"))
-    out = []
-    for original in summary or []:
-        row = dict(original)
-        newer = fast.pop((row.get("asset"), row.get("horizon")), None)
-        if newer:
-            old_at = TS.timestamp(row.get("market_observed_at") or row.get("observed_at"))
-            new_at = TS.timestamp(newer.get("market_observed_at") or newer.get("observed_at"))
-            identity = VPS.identity(row.get("asset"), row)
-            new_identity = VPS.identity(newer.get("asset"), newer)
-            source_current = _same_source(identity, new_identity)
-            if (row.get("asset") == "CNYRUBF" and (new_identity or {}).get("key") == "TBANK_GRPC:CNYRUBF"
-                    and _same_source(current_cny, new_identity)):
-                # A slow MOEX fallback begun before broker recovery is not
-                # authority to overwrite the selected source's newer result.
-                import veritas_direct_cny as CNY
-                source_current = source_current or CNY.enabled()
-            if (new_at is not None and (old_at is None or new_at > old_at)
-                    and source_current):
-                row = newer
-        out.append(row)
-    out.extend(fast.values())
-    return out
+        fast = [deepcopy(row) for row in _latest_rows.values()]
+        current_cny = (_markets.get("CNYRUBF") or {}).get("structure_source_identity")
+        return _merge_cached_rows(summary, fast, current_cny=current_cny)
 
 
 def _namespace_summary(ns):
@@ -205,13 +214,18 @@ def _default_quote_fetch(ns, asset, identity):
     return VPG.quote_for_position({"asset": asset, "payload": {"price_source_lock": identity}})
 
 
+def _bounded_context(raw, horizon, clock):
+    """Keep all structural calculations; copy only the displayed level tail."""
+    return TFD.structural_context(raw, horizon, clock, level_limit=40)
+
+
 class BreakoutRuntime:
     def __init__(self, ns, entry_pass, *, quote_fetcher=None, context_builder=None):
         if not callable(entry_pass):
             raise ValueError("a canonical paper entry callback is required")
         self.ns, self.entry_pass = ns, entry_pass
         self.quote_fetcher = quote_fetcher or _default_quote_fetch
-        self.context_builder = context_builder or TFD.structural_context
+        self.context_builder = context_builder or _bounded_context
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="veritas-breakout-quote")
         self._pending, self._observations = {}, {}
         self._history_versions = {}
@@ -410,8 +424,11 @@ class BreakoutRuntime:
                    _breakout_checked_at=clock.isoformat(), _breakout_runtime=VERSION,
                    snapshot_stale=False, trade_plan={})
         row.update({key: deepcopy(quote[key]) for key in VPS.QUOTE_FIELDS if key in quote})
-        public_context = {key: deepcopy(value) for key, value in context.items() if key != "quote_state"}
-        public_context["levels"] = public_context.get("levels", [])[-40:]
+        # A custom builder can still return every historical level. Slice before
+        # copying; copying hundreds of levels to discard them immediately made
+        # quote work contend with the full scan on the small shared CPU.
+        public_context = {key: deepcopy(value[-40:] if key == "levels" else value)
+                          for key, value in context.items() if key != "quote_state"}
         row["timeframe_entry_context"] = public_context
         row["trend_entry_context"] = public_context
         row = TFP.prepare_row(row, price=quote["price"], now=clock)
@@ -432,22 +449,40 @@ class BreakoutRuntime:
             result = dict(summary, portfolios=[matching[name] for name in CTC.PORTFOLIO_ORDER if name in matching])
             row["_execution_audit"] = {"lane": VERSION, "checked_at": clock.isoformat(),
                                        "paper_only": True, "result": result}
-        with _cache_lock:
-            for row in rows:
-                _latest_rows[(row["asset"], row["horizon"])] = deepcopy(row)
         with self.ns.get("lock", nullcontext()):
             last = self.ns.setdefault("last_cycle", {})
-            summary = list(last.get("summary") or [])
-            updated = {(r["asset"], r["horizon"]): r for r in rows}
-            merged = []
-            for old in summary:
-                key = (old.get("asset"), old.get("horizon"))
-                new = updated.pop(key, None)
-                old_at = TS.timestamp(old.get("market_observed_at") or old.get("observed_at"))
-                new_at = TS.timestamp((new or {}).get("market_observed_at"))
-                merged.append(new if new and (old_at is None or new_at >= old_at) else old)
-            merged.extend(updated.values())
-            last["summary"] = merged
+            # The same order is used by the final ordinary-cycle publisher:
+            # namespace lock, then fast-cache lock. A delayed quote pass must
+            # not publish an older permission over a later checked refusal.
+            with _cache_lock:
+                options = {"assets": self.ns.get("DISPLAY_ASSETS", VSP.ASSETS),
+                           "horizons": self.ns.get("HORIZONS", VSP.HORIZONS)}
+                before = {(r.get("asset"), r.get("horizon")):r for r in last.get("summary") or []}
+                prior = _merge_cached_rows(last.get("summary"), _latest_rows.values(),
+                    current_cny=(_markets.get("CNYRUBF") or {}).get("structure_source_identity"), **options)
+                merged = VSP.merge_rows(prior, rows, **options)
+                retained = set(_latest_rows) | {(r["asset"], r["horizon"]) for r in rows}
+                selected = {}
+                changed = False
+                for index, row in enumerate(merged):
+                    key = (row["asset"], row["horizon"])
+                    current = before.get(key)
+                    if current is not None and (row is current or row == current):
+                        row = merged[index] = current
+                    else:
+                        changed = True
+                    if key in retained:
+                        # Preserve cache isolation only for a changed winner;
+                        # unrelated histories and unchanged proofs are reused.
+                        cached = _latest_rows.get(key)
+                        selected[key] = (cached if cached is not None and (row is cached or row == cached)
+                                         else deepcopy(row))
+                _latest_rows.clear()
+                _latest_rows.update(selected)
+                last["summary"] = merged
+                if changed:
+                    last["signals_updated_at"] = (self.ns["now"]() if callable(self.ns.get("now"))
+                        else datetime.now(timezone.utc).isoformat())
             last["breakout_runtime"] = self.snapshot()
 
     def run_once(self, now=None, *, quotes=None):
@@ -487,7 +522,10 @@ class BreakoutRuntime:
                 clock = _clock()
             context_started = time.monotonic()
             rows = []
+            context_builds, context_asset_seconds = 0, {}
             for asset, descriptor in markets.items():
+                if now is None:
+                    clock = _clock()
                 identity = descriptor["structure_source_identity"]
                 quote = self._fresh_quote(asset, identity, observed_quotes.get(asset) or {}, clock)
                 if not quote:
@@ -503,21 +541,30 @@ class BreakoutRuntime:
                     market = deepcopy(current)
                 market = self._native_broker_history(market)
                 raw = dict(market, **quote, _execution_quote=quote)
+                asset_started = time.monotonic()
                 for tf in HORIZONS:
                     if not market["structure_bars_by_timeframe"].get(tf):
                         continue
                     # The ordinary and fast loops share TFD's single state
                     # owner; two private quote-state caches would diverge.
+                    if now is None:
+                        clock = _clock()
                     context = self.context_builder(raw, tf, clock)
+                    context_builds += 1
+                    if now is None:
+                        clock = _clock()
                     row = self._row(market, quote, tf, context, templates.get((asset, tf), {}), clock)
                     if row:
                         rows.append(row)
+                context_asset_seconds[asset] = time.monotonic()-asset_started
             context_seconds = time.monotonic()-context_started
             execution = {"status": "NO_STRUCTURAL_EVENTS", "paper_only": True}
             entry_seconds, publish_seconds = 0.0, 0.0
             if rows:
                 # The callback owns the shared RLock + PostgreSQL advisory
                 # transaction and every existing canonical admission/risk gate.
+                if now is None:
+                    clock = _clock()
                 entry_started = time.monotonic()
                 execution = self.entry_pass(rows, clock)
                 entry_seconds = time.monotonic()-entry_started
@@ -534,6 +581,7 @@ class BreakoutRuntime:
             self.state.update(status="OK", checked_at=clock.isoformat(), cycles=self.state["cycles"]+1,
                               rows=len(rows), assets=len(markets), pending_quote_fetches=len(self._pending),
                               context_seconds=context_seconds, entry_seconds=entry_seconds,
+                              context_builds=context_builds, context_asset_seconds=context_asset_seconds,
                               publish_seconds=publish_seconds, execution_status=execution.get("status"),
                               execution_reason=execution.get("reason"),
                               duration_seconds=time.monotonic()-started)
