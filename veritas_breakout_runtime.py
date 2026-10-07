@@ -588,7 +588,6 @@ class BreakoutRuntime:
                 publish_seconds = time.monotonic()-publish_started
             self.state.update(status="WAITING_FOR_BOOK" if execution.get("status") == "BUSY" else "OK",
                               pending_entry_rows=len(self._pending_entry_rows),
-                              execution_reason=execution.get("reason"),
                               checked_at=clock.isoformat(), cycles=self.state["cycles"]+1,
                               rows=len(rows), assets=len(markets), pending_quote_fetches=len(self._pending),
                               context_seconds=context_seconds, entry_seconds=entry_seconds,
