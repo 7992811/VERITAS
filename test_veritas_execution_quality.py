@@ -17,6 +17,7 @@ import veritas_price_source as S
 import veritas_portfolio as P
 import veritas_portfolio_runtime as PR
 import veritas_tbank as T
+from test_veritas_readiness_fixtures import add_observed_path, structural_evidence
 
 NOW=datetime(2026,10,6,19,30,tzinfo=timezone.utc)
 
@@ -39,24 +40,7 @@ def data():
     return out
 
 def observed_evidence(asset,direction,event_id,entered,timeframe='1m'):
-    identity={'asset':asset,'key':'TEST_NATIVE:'+asset,'primary_source':'TEST_NATIVE',
-              'contract_id':asset+'-EXACT','version':'R80_SOURCE_LOCK'}
-    seconds={'1m':60,'5m':300,'1h':3600}[timeframe]
-    opening=entered-timedelta(seconds=2*seconds)
-    known=opening-timedelta(seconds=seconds)
-    confirmed=opening+timedelta(seconds=seconds)
-    event={'event_id':event_id,'event_type':'SAME_TIMEFRAME_STRUCTURAL_BREAKOUT',
-           'asset':asset,'direction':direction,'timeframe':timeframe,
-           'confirmation':'CLOSED_'+timeframe+'_BAR',
-           'atr_timeframe':timeframe,'stop_timeframe':timeframe,'target_timeframe':timeframe,
-           'source_identity':copy.deepcopy(identity),
-           'breakout_bar_at':opening.isoformat(),'signal_at':confirmed.timestamp(),
-           'confirmed_at':confirmed.isoformat(),'level_available_at':known.isoformat(),
-           'stop_level_available_at':known.isoformat(),'atr_observed_until':known.isoformat()}
-    return {'data_integrity_status':'OK','price_source_lock':copy.deepcopy(identity),
-            'entry_execution_source_identity':copy.deepcopy(identity),
-            'last_exit_source_identity':copy.deepcopy(identity),
-            'r66_event_id':event_id,'entry_event_snapshot':event}
+    return structural_evidence(asset,direction,event_id,entered,timeframe)
 
 class DirectTests(unittest.TestCase):
     def test_consistent_broker_basis(self):
@@ -154,15 +138,21 @@ class RoleTests(unittest.TestCase):
         self.assertNotIn("lock=None # R69",inspect.getsource(guard.run_protective_pass))
 
 class EvidenceTests(unittest.TestCase):
+    def setUp(self):
+        stamp=patch.object(Q.RELEASE,'deployment_sha',return_value='a'*40)
+        stamp.start();self.addCleanup(stamp.stop)
+
     def trade(self,name='Champion',key='EVENT1',net=30,epoch=None,minute=0):
-        return {'trade_id':name+key+str(minute),'portfolio_name':name,'asset':'ETH','direction':'LONG','status':'CLOSED','horizon':'1m',
+        trade={'trade_id':name+key+str(minute),'portfolio_name':name,'asset':'ETH','direction':'LONG','status':'CLOSED','horizon':'1m',
                 'opened_at':(NOW-timedelta(minutes=10+minute)).isoformat(),'closed_at':(NOW-timedelta(minutes=minute)).isoformat(),
                 'gross_pnl_rub':100,'fees_rub':60,'funding_rub':10,'net_pnl_rub':net,
                 'entry_notional_rub':10000,'entry_order_count':1,
                 'payload':{**observed_evidence('ETH','LONG','STF_'+key,NOW-timedelta(minutes=10+minute)),
                            'mfe_pct':2,'mae_pct':-.5,'idea_id':key,'idea_id_verified':True,
+                           'strategy_entry_sha':'a'*40,'strategy_policy_hash':Q.policy_hash(),
                            'strategy_epoch':epoch or C.STRATEGY_EPOCH,'exit_reason':'TAKE_PROFIT',
                            'data_integrity_status':'OK'}}
+        return add_observed_path(trade)
 
     def test_profit_is_not_subtracted_twice_and_capture_is_not_nav(self):
         report=Q.review(self.trade())
@@ -173,7 +163,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(report['parameter_changes_applied'])
 
     def test_absent_path_and_multiple_entry_basis_not_fake_zero(self):
-        trade=self.trade();trade['payload'].pop('mfe_pct')
+        trade=self.trade();trade['payload'].pop('observation_path')
         self.assertIsNone(Q.review(trade)['capture_ratio'])
         self.assertEqual(Q.review(trade)['evidence_status'],'INCOMPLETE_OR_SOURCE_UNVERIFIED')
         trade=self.trade();trade['entry_order_count']=2
@@ -206,14 +196,26 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(p['inherited_open_positions'],1)
 
     def test_new_provenance_only_in_new_trade_insert_branch(self):
-        source=inspect.getsource(P.CANONICAL_ACCOUNTING_OPEN_OR_ADD)
+        import ast
         # Alias may be journal wrapper. The source file has exactly one metadata
         # call, in the new-trade accounting branch, not in any add/restart patch.
         from pathlib import Path
         text=Path(P.__file__).read_text()
-        self.assertEqual(text.count('VSQ.entry_metadata('),1)
-        fragment=text[text.index('VSQ.entry_metadata(')-400:text.index('VSQ.entry_metadata(')]
-        self.assertIn('trade_id=f"{name}:{asset}:',fragment)
+        tree=ast.parse(text)
+        calls=[n for n in ast.walk(tree) if isinstance(n,ast.Call)
+               and isinstance(n.func,ast.Attribute) and n.func.attr=='entry_metadata'
+               and isinstance(n.func.value,ast.Name) and n.func.value.id=='VSQ']
+        self.assertEqual(len(calls),1)
+        branches=[n for n in ast.walk(tree) if isinstance(n,ast.If)
+                  and isinstance(n.test,ast.Name) and n.test.id=='z'
+                  and any(calls[0] in ast.walk(part) for part in n.orelse)]
+        self.assertEqual(len(branches),1)
+        new_branch=branches[0].orelse
+        self.assertTrue(any(isinstance(n,ast.Assign) and isinstance(n.value,ast.JoinedStr)
+                            and any(isinstance(target,ast.Name) and target.id=='trade_id'
+                                    for target in n.targets)
+                            for part in new_branch for n in ast.walk(part)))
+        self.assertFalse(any(calls[0] in ast.walk(part) for part in branches[0].body))
         row={'asset':'ETH','research_decision':'SHORT','horizon':'1m',
              'source_names':{'primary':'TEST_NATIVE'},'contract':{'symbol':'ETH-EXACT'},
              'trade_plan':{'entry_event_snapshot':observed_evidence('ETH','SHORT','STF_new-event',NOW)['entry_event_snapshot']},

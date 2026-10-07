@@ -13,6 +13,9 @@ import veritas_portfolio as P
 import veritas_learning_exports as E
 import veritas_learning_integrity as LI
 from test_veritas_strategy_quality_sql import observed_evidence
+from test_veritas_readiness_fixtures import add_observed_path
+from test_veritas_trade_diagnostics import closed_trade
+import veritas_trade_diagnostics as DIAGNOSTICS
 
 NOW = datetime(2026, 10, 6, 19, tzinfo=timezone.utc)
 DSN = os.getenv("VERITAS_QUALITY_TEST_DSN", "")
@@ -24,12 +27,12 @@ def trade(key="A", net=30., event="STF_SHARED"):
              mfe_pct=1.5, mae_pct=-.8, telemetry_completeness=1.,
              stop_price=98., take_price=104., exit_reason="TAKE_PROFIT",
              learning_eligible=True)
-    return dict(trade_id=key, portfolio_name="Champion", asset="ETH", horizon="1h",
+    return add_observed_path(dict(trade_id=key, portfolio_name="Champion", asset="ETH", horizon="1h",
                 direction="LONG", status="CLOSED", opened_at=NOW, closed_at=NOW+timedelta(hours=1),
                 setup="TREND", avg_entry_price=100., avg_exit_price=101.,
                 return_on_entry_nav=net/1_000_000., gross_pnl_rub=net+10.,
                 fees_rub=8., funding_rub=2., net_pnl_rub=net, payload=p,
-                learning_evidence_hash="hash:"+key)
+                learning_evidence_hash="hash:"+key))
 
 
 class Cursor:
@@ -65,7 +68,7 @@ def lesson(group, at=None):
                     "setup_id": group["episode_key"], "setup_family": "TREND", "regime_bucket": "TREND",
                     "entry_state": "NORMAL", "direction": group["direction"],
                     "learning_weight": .20, "actual_pnl_fraction": group["avg_return_pct"]/100,
-                    "profitable": group["avg_return_pct"] > 0, "label": "GOOD_EXECUTION"})
+                    "profitable": group["avg_return_pct"] > 0, "label": group["learning_label"]})
 
 
 class LearningExportTests(unittest.TestCase):
@@ -81,12 +84,13 @@ class LearningExportTests(unittest.TestCase):
     def test_archive_checks_original_path_before_shadow_telemetry_recovery(self):
         raw = trade()
         raw["payload"].pop("mfe_pct"); raw["payload"].pop("mae_pct")
+        raw["payload"].pop("observation_path")
         raw.update(shadow_high_price=110., shadow_low_price=90.)
         row = flattened([raw])[0]
         self.assertTrue(row["telemetry_recovered_from_shadow"])
         self.assertIsNotNone(row["mfe_pct"])
         self.assertFalse(row["learning_eligible"])
-        self.assertEqual(row["learning_exclusion_reason"], "INCOMPLETE_OBSERVED_PATH")
+        self.assertEqual(row["learning_exclusion_reason"], "MISSING_OBSERVATION_PATH")
 
     def test_original_lifetime_path_is_used_before_any_shadow_backfill(self):
         raw = trade()
@@ -97,15 +101,38 @@ class LearningExportTests(unittest.TestCase):
         self.assertTrue(row["learning_eligible"])
         self.assertEqual(row["mfe_pct"], 2.)
         self.assertEqual(row["mae_pct"], -.5)
+        # Legacy display statistics do not replace the witnessed normalization
+        # used to decide whether the original rules were actually satisfied.
+        self.assertAlmostEqual(row["trade_diagnostics"]["normalization"]["mfe_pct"],1.5)
+        self.assertAlmostEqual(row["trade_diagnostics"]["normalization"]["mae_pct"],-.8)
+
+    def test_old_stop_error_is_not_reexported_and_financial_loss_is_preserved(self):
+        raw=closed_trade(favorable_r=1.2)
+        raw.update(learning_evidence_hash="hash:original",return_on_entry_nav=-.000105)
+        raw["payload"].update(learning_label="RIGHT_DIRECTION_STOP_ERROR",
+                              learning_conclusion="OLD_WIDEN_STOP")
+        before=copy.deepcopy(raw)
+        row=flattened([raw])[0]
+        self.assertEqual(row["learning_label"],"VALID_STRUCTURAL_STOP_LOSS")
+        self.assertTrue(row["learning_eligible"])
+        self.assertEqual(row["net_pnl_rub"],-105.)
+        group=P._v90j_unique_learning([row])[0]
+        self.assertEqual(lesson(group)["payload"]["label"],"VALID_STRUCTURAL_STOP_LOSS")
+        self.assertEqual(group["total_net_pnl_rub"],-105.)
+        self.assertEqual(raw,before)
 
     def test_archive_does_not_resurrect_false_unknown_or_nonfinite_evidence(self):
-        for kind in ("false", "source", "event", "accounting"):
+        for kind in ("false", "source", "event", "accounting", "path", "fill", "stop", "atr"):
             with self.subTest(kind=kind):
                 raw = trade()
                 if kind == "false": raw["payload"]["learning_eligible"] = False
                 elif kind == "source": raw["payload"]["data_integrity_status"] = "UNKNOWN"
                 elif kind == "event": raw["payload"]["entry_event_snapshot"]["confirmed_at"] = None
-                else: raw["fees_rub"] = float("nan")
+                elif kind == "accounting": raw["fees_rub"] = float("nan")
+                elif kind == "path": raw["payload"].pop("observation_path")
+                elif kind == "fill": raw["payload"]["entry_execution_model"].pop("fill_price")
+                elif kind == "stop": raw["payload"].pop("initial_stop_price")
+                else: raw["payload"].pop("entry_atr")
                 self.assertFalse(flattened([raw])[0]["learning_eligible"])
 
     def test_invalid_losing_copy_excludes_whole_group_without_removing_its_loss(self):
@@ -285,10 +312,12 @@ class LearningExportSQLTests(unittest.TestCase):
             rows = [dict(row) for row in c.execute(
                 "SELECT "+LI.trade_projection_sql()+","+LI.evidence_hash_sql()+" AS learning_evidence_hash FROM paper_trades t").fetchall()]
         for row in rows:
+            diagnosis=DIAGNOSTICS.diagnose(row)
             row.update(episode_key="STF_SHARED", setup="TREND", setup_family="TREND", regime="TREND",
                        entry_state="NORMAL", horizon_state="UNKNOWN", return_pct=100*row["net_pnl_rub"]/1_000_000.,
                        mfe_pct=row["payload"]["mfe_pct"], mae_pct=row["payload"]["mae_pct"],
-                       telemetry_completeness=1., learning_label="GOOD_EXECUTION", learning_eligible=True)
+                       telemetry_completeness=1., learning_label=diagnosis["primary_attribution"],
+                       learning_eligible=diagnosis["learning_eligible"])
             E.mark_trade(row, row)
         return P._v90j_unique_learning(rows)[0]
 
@@ -337,6 +366,59 @@ class LearningExportSQLTests(unittest.TestCase):
             LI.revalidate_eligible(c)
         # Revalidating the trade must not silently approve the old exported result.
         self.assertEqual(self.board()["items"], [])
+
+    def test_revalidated_legacy_stop_error_exports_fresh_loss_label_without_cash_changes(self):
+        raw=closed_trade(favorable_r=1.2)
+        raw["trade_id"]="A"
+        raw["payload"].update(learning_label="RIGHT_DIRECTION_STOP_ERROR")
+        self.add_trade(raw)
+        with self.connect() as c:
+            c.execute("""UPDATE v90_learning_episodes SET primary_attribution='RIGHT_DIRECTION_STOP_ERROR',
+                      attributions='["RIGHT_DIRECTION_STOP_ERROR"]' WHERE trade_id='A'""")
+            before=dict(c.execute("SELECT * FROM paper_trades WHERE trade_id='A'").fetchone())
+            self.assertEqual(LI.revalidate_eligible(c)["verified"],1)
+            saved=dict(c.execute("SELECT * FROM v90_learning_episodes WHERE trade_id='A'").fetchone())
+        self.assertEqual(saved["primary_attribution"],"VALID_STRUCTURAL_STOP_LOSS")
+        self.assertNotIn("RIGHT_DIRECTION_STOP_ERROR",saved["attributions"])
+        item=lesson(self.group())
+        self.assertEqual(item["payload"]["label"],"VALID_STRUCTURAL_STOP_LOSS")
+        self.assertFalse(item["payload"]["profitable"])
+        self.put_lesson(item)
+        with self.connect() as c:
+            exported=E.decision_lessons(c,10)
+            after=dict(c.execute("SELECT * FROM paper_trades WHERE trade_id='A'").fetchone())
+        self.assertEqual(len(exported),1)
+        self.assertEqual(exported[0]["payload"]["label"],"VALID_STRUCTURAL_STOP_LOSS")
+        self.assertEqual(after,before)
+        self.assertEqual(after["net_pnl_rub"],-105.)
+
+    def test_export_reader_revokes_original_fill_stop_atr_path_or_timeframe_corrections(self):
+        self.add_trade(trade())
+        with self.connect() as c:
+            self.assertEqual(LI.revalidate_eligible(c)["verified"],1)
+        self.put_lesson(lesson(self.group()))
+        with self.connect() as c:
+            before=dict(c.execute("SELECT * FROM paper_trades WHERE trade_id='A'").fetchone())
+            self.assertEqual(len(E.decision_lessons(c,10)),1)
+            changes=(
+                ("fill",lambda p:p["entry_execution_model"].update(fill_price=101.)),
+                ("stop",lambda p:p.update(initial_stop_price=p["initial_stop_price"]-.1)),
+                ("atr",lambda p:p.update(entry_atr=p["entry_atr"]+.1)),
+                ("path",lambda p:p["observation_path"].update(max_gap_seconds=120.,gap_count=1)),
+                ("timeframe",lambda p:p.update(execution_timeframe="5m")),
+            )
+            for key,change in changes:
+                with self.subTest(field=key):
+                    p=copy.deepcopy(before["payload"]);change(p)
+                    c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='A'",(json.dumps(p),))
+                    self.assertEqual(E.decision_lessons(c,10),[])
+                    c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='A'",
+                              (json.dumps(before["payload"]),))
+            c.execute("UPDATE paper_trades SET horizon='5m' WHERE trade_id='A'")
+            self.assertEqual(E.decision_lessons(c,10),[])
+            c.execute("UPDATE paper_trades SET horizon=%s WHERE trade_id='A'",(before["horizon"],))
+            self.assertEqual(len(E.decision_lessons(c,10)),1)
+            self.assertEqual(dict(c.execute("SELECT * FROM paper_trades WHERE trade_id='A'").fetchone()),before)
 
     def test_valid_duplicate_copies_are_one_lesson_but_invalid_member_revokes_it(self):
         self.add_trade(trade("A", 100.)); self.add_trade(trade("B", -20.))

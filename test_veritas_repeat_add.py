@@ -60,9 +60,15 @@ class AccountingDB:
         elif q.startswith("UPDATE paper_trades SET fees_rub="):
             self.trade_payload.update(json.loads(args[2]))
         elif q.startswith("UPDATE paper_trades SET payload="):
-            self.trade_payload = json.loads(args[0]); self.payload_replacements += 1
+            if '||' in q:
+                self.trade_payload.update(json.loads(args[0]))
+            else:
+                self.trade_payload = json.loads(args[0]); self.payload_replacements += 1
         elif q.startswith("UPDATE paper_positions SET payload="):
-            self.position["payload"] = json.loads(args[0]); self.payload_replacements += 1
+            if '||' in q:
+                self.position['payload'].update(json.loads(args[0]))
+            else:
+                self.position["payload"] = json.loads(args[0]); self.payload_replacements += 1
         elif q.startswith("INSERT INTO paper_orders"):
             self.orders.append({"portfolio_name": args[0], "asset": args[3], "side": args[4],
                                 "payload": json.loads(args[10]), "client_order_id": args[11]})

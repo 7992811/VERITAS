@@ -9,7 +9,11 @@ import uuid
 import veritas_learning_integrity as LI
 import veritas_ma_rebound as MA
 import veritas_trade_audit as AUDIT
+import veritas_price_source as SOURCE
+import veritas_trade_diagnostics as DIAGNOSTICS
 from test_veritas_ma_learning_evidence import closed_ma_trade
+from test_veritas_ma_rebound import example as ma_example
+from test_veritas_readiness_fixtures import add_observed_path
 
 DSN = os.getenv("VERITAS_QUALITY_TEST_DSN", "")
 
@@ -48,11 +52,28 @@ class NativeMAProjectionSQLTests(unittest.TestCase):
     def fixture(self, key, period=50, short=False):
         trade = closed_ma_trade(period=period, short=short)
         trade["trade_id"] = key
+        # Rebuild the native daily/local proof under an identity produced by
+        # the real quote adapter, so the observation witness can verify it.
+        # Merely adding a fake coverage flag to the old test lock is invalid.
+        identity=SOURCE.identity("NQ",{"primary_source":"TEST_NATIVE","contract_id":"NQZ6"})
+        rows,daily,now=ma_example(period=period,short=short)
+        for bar in rows+daily:
+            bar["source_identity"]=deepcopy(identity)
+        event=MA.build_context(rows,"5m",now,daily_bars=daily,asset="NQ",
+                               source_identity=identity,ma_config={"periods":(period,)})["event"]
+        if event is None:
+            raise AssertionError("native MA fixture did not generate an event")
+        p=trade["payload"]
+        p.update(entry_event_snapshot=event,idea_event_id=event["event_id"],r66_event_id=event["event_id"],
+                 exit_reason="TAKE_PROFIT",execution_timeframe="5m",execution_horizon="5m",
+                 atr_timeframe="5m",stop_timeframe="5m",target_timeframe="5m")
+        for field in ("price_source_lock","entry_execution_source_identity","last_exit_source_identity"):
+            p[field]=deepcopy(identity)
         # The runtime stores adverse excursion as min(0, previous, signed return).
         trade["payload"]["mae_pct"] = -.3
         trade["payload"].update(strategy_epoch="ORIGINAL_MA_EPOCH",
                                 strategy_entry_sha="immutable-ma-entry")
-        return trade
+        return add_observed_path(trade)
 
     def add_trade(self, trade):
         with self.connect() as c:
@@ -97,6 +118,14 @@ class NativeMAProjectionSQLTests(unittest.TestCase):
                                  proof["daily_provenance"]["sha256"])
                 self.assertEqual(saved["ma_proof"]["daily_provenance"]["native_timeframe"],"1d")
                 self.assertEqual(len(saved["ma_proof"]["approach_bars"]),3)
+                self.assertEqual(projected["payload"]["entry_execution_model"]["fill_price"],
+                                 trade["payload"]["entry_execution_model"]["fill_price"])
+                self.assertEqual(projected["payload"]["initial_stop_price"],event["stop_price"])
+                self.assertEqual(projected["payload"]["entry_atr"],event["atr"])
+                self.assertEqual(projected["payload"]["observation_path"]["source_identity"]["key"],
+                                 trade["payload"]["price_source_lock"]["key"])
+                self.assertEqual(DIAGNOSTICS.diagnose(projected)["primary_attribution"],
+                                 "VALID_PROFITABLE_TRADE")
                 self.assertNotIn("daily_bars",saved["ma_proof"])
                 self.assertNotIn("bars",saved["ma_proof"]["daily_provenance"])
                 self.assertNotIn("diagnostic_bars",saved["ma_proof"]["approach_bars"][0])
@@ -110,6 +139,57 @@ class NativeMAProjectionSQLTests(unittest.TestCase):
         self.assertEqual(result["excluded"],0)
         self.assertEqual(readable,4)
         self.assertEqual(self.financials(),before)
+
+    def test_complete_daily_proof_cannot_replace_missing_original_fill_stop_atr_or_path(self):
+        changes=(
+            ("first_fill",lambda p:p["entry_execution_model"].pop("fill_price")),
+            ("initial_stop",lambda p:p.pop("initial_stop_price")),
+            ("entry_atr",lambda p:p.pop("entry_atr")),
+            ("path",lambda p:p.pop("observation_path")),
+            ("path_gap",lambda p:p["observation_path"].update(max_gap_seconds=120.,gap_count=1)),
+        )
+        for key,change in changes:
+            raw=self.fixture("missing_"+key)
+            change(raw["payload"])
+            self.assertTrue(MA.validate_event(raw["payload"]["entry_event_snapshot"],
+                                             raw["payload"]["price_source_lock"])["eligible"])
+            self.assertIsNotNone(LI.trade_exclusion(raw))
+            self.add_trade(raw)
+        before=self.financials()
+        with self.connect() as c:
+            result=LI.revalidate_eligible(c)
+            rows=c.execute("SELECT primary_attribution,learning_eligible,payload FROM v90_learning_episodes").fetchall()
+        self.assertEqual(result["verified"],0)
+        self.assertEqual(result["excluded"],len(changes))
+        for row in rows:
+            self.assertFalse(row["learning_eligible"])
+            self.assertNotEqual(row["primary_attribution"],"GOOD_EXECUTION")
+            self.assertEqual(row["payload"]["learning_integrity"]["status"],"EXCLUDED")
+        self.assertEqual(self.financials(),before)
+
+    def test_ma_original_geometry_and_observed_path_corrections_revoke_current_hash(self):
+        self.add_trade(self.fixture("geometry"))
+        with self.connect() as c:
+            self.assertEqual(LI.revalidate_eligible(c)["verified"],1)
+            before=dict(c.execute("SELECT * FROM paper_trades WHERE trade_id='geometry'").fetchone())
+            original_hash=self.projected(c,"geometry")["evidence_hash"]
+            changes=(
+                ("first_fill",lambda p:p["entry_execution_model"].update(fill_price=103.)),
+                ("initial_stop",lambda p:p.update(initial_stop_price=p["initial_stop_price"]-.1)),
+                ("entry_atr",lambda p:p.update(entry_atr=p["entry_atr"]+.1)),
+                ("path",lambda p:p["observation_path"].update(max_price=104.)),
+                ("timeframe",lambda p:p.update(atr_timeframe="1d")),
+            )
+            for key,change in changes:
+                with self.subTest(field=key):
+                    payload=deepcopy(before["payload"]);change(payload)
+                    c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='geometry'",(json.dumps(payload),))
+                    self.assertNotEqual(self.projected(c,"geometry")["evidence_hash"],original_hash)
+                    self.assertFalse(c.execute("SELECT "+LI.readable_sql()+
+                        " AS ok FROM v90_learning_episodes WHERE trade_id='geometry'").fetchone()["ok"])
+                    c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='geometry'",
+                              (json.dumps(before["payload"]),))
+            self.assertEqual(dict(c.execute("SELECT * FROM paper_trades WHERE trade_id='geometry'").fetchone()),before)
 
     def test_absent_and_null_ma_proof_do_not_reclassify_structural_events(self):
         for explicit_null in (False,True):
@@ -126,11 +206,44 @@ class NativeMAProjectionSQLTests(unittest.TestCase):
             self.add_trade(trade)
             with self.connect() as c:
                 projected = self.projected(c,trade["trade_id"])
-            self.assertIsNone(projected["payload"]["entry_event_snapshot"]["ma_proof"])
+            saved_event=projected["payload"]["entry_event_snapshot"]
+            # Projection preserves original JSON shape. An absent field is not
+            # manufactured as null; a recorded null remains explicitly present.
+            if explicit_null:
+                self.assertIn("ma_proof",saved_event)
+                self.assertIsNone(saved_event["ma_proof"])
+            else:
+                self.assertNotIn("ma_proof",saved_event)
+            self.assertNotIn("ma_rebound_version",saved_event)
+            self.assertEqual(saved_event["event_type"],"SAME_TIMEFRAME_STRUCTURAL_BREAKOUT")
             self.assertIsNone(LI.trade_exclusion(projected))
         before = self.financials()
         with self.connect() as c:
             self.assertEqual(LI.revalidate_eligible(c)["verified"],2)
+            # Only the optional field's presence changes: trade/event identity,
+            # geometry and all booked amounts remain identical. The fingerprint
+            # must still revoke the prior certificate immediately.
+            key="structural_False"
+            original_hash=self.projected(c,key)["evidence_hash"]
+            self.assertTrue(c.execute("SELECT "+LI.readable_sql()+
+                " AS ok FROM v90_learning_episodes WHERE trade_id=%s",(key,)).fetchone()["ok"])
+            c.execute("""UPDATE paper_trades SET payload=jsonb_set(
+                      payload,'{entry_event_snapshot,ma_proof}','null'::jsonb,TRUE)
+                      WHERE trade_id=%s""",(key,))
+            changed=self.projected(c,key)
+            self.assertIn("ma_proof",changed["payload"]["entry_event_snapshot"])
+            self.assertIsNone(changed["payload"]["entry_event_snapshot"]["ma_proof"])
+            self.assertNotEqual(changed["evidence_hash"],original_hash)
+            self.assertIsNone(LI.trade_exclusion(changed))
+            self.assertFalse(c.execute("SELECT "+LI.readable_sql()+
+                " AS ok FROM v90_learning_episodes WHERE trade_id=%s",(key,)).fetchone()["ok"])
+            c.execute("""UPDATE paper_trades SET payload=payload#-'{entry_event_snapshot,ma_proof}'
+                      WHERE trade_id=%s""",(key,))
+            restored=self.projected(c,key)
+            self.assertNotIn("ma_proof",restored["payload"]["entry_event_snapshot"])
+            self.assertEqual(restored["evidence_hash"],original_hash)
+            self.assertTrue(c.execute("SELECT "+LI.readable_sql()+
+                " AS ok FROM v90_learning_episodes WHERE trade_id=%s",(key,)).fetchone()["ok"])
         self.assertEqual(self.financials(),before)
 
     def test_changed_daily_proof_invalidates_hash_and_malformed_or_oversize_proof_stays_excluded(self):

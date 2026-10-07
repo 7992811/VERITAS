@@ -2279,7 +2279,11 @@ def trend_case_learning_board(limit=500):
 
 def trend_case_multiplier(asset,horizon,phase,direction,board=None):
     if phase=='NONE' or direction not in ('LONG','SHORT'): return 1.0
-    b=board or trend_case_learning_board(500)
+    # Full-history aggregation must never run on the market-decision thread.
+    # Retain the last completed statistical penalty while one refresh runs.
+    # A missing cold-start sample has the same neutral prior as no matching row.
+    b=board if board is not None else _v90r63_context_cached_or_background(
+        'trend_cases',ANALYTICS_CACHE_SECONDS,{'status':'background_pending','items':[]})
     row=next((x for x in b.get('items',[]) if x.get('asset')==asset and x.get('horizon')==horizon and x.get('phase')==phase and x.get('direction')==direction),None)
     if not row or int(row.get('n') or 0)<TREND_CASE_MIN_N: return 1.0
     p=float(row.get('posterior_continuation_rate') or 0.5); ar=float(row.get('decayed_avg_signed_return') or 0.0)
@@ -5086,7 +5090,15 @@ def research_activation_gate():
     if not storage.get('ok'):
         reasons.append('durable_storage_not_ok')
     try:
-        bt=backtest_status().get('latest_run') or {}
+        # The gate needs only the latest run's status and method. Loading two
+        # historical ranking boards here used to block every active macro vote.
+        bt={}
+        if pg_enabled():
+            with pg_connect() as c:
+                latest=c.execute("""SELECT status,jsonb_build_object(
+                    'method_version',details->'method_version') AS details
+                    FROM backtest_runs ORDER BY started_at DESC LIMIT 1""").fetchone()
+                bt=dict(latest or {})
         details=bt.get('details') if isinstance(bt.get('details'),dict) else {}
         if bt.get('status')!='ok':
             reasons.append('backtest_not_ok')
@@ -6661,17 +6673,21 @@ def _v90r61_calibration_rows():
     return cached
 
 _v90r63_context_refresh_lock=threading.Lock()
-_v90r63_context_refresh_inflight={'clock':False,'analogs':False}
+_v90r63_context_refresh_inflight={'clock':False,'analogs':False,'trend_cases':False}
 
 def _v90r63_context_refresh(key):
+    started=time.monotonic()
     try:
         if key=='clock':
             val=source_clock_gate()
+        elif key=='trend_cases':
+            val=trend_case_learning_board(500)
         else:
             val=structure_analog_board(1200)
         with _v90r61_predecision_lock:
             _v90r61_predecision_cache[key]=(time.time(),val)
-        emit('r63_context_refresh',context=key,status='OK')
+        emit('r63_context_refresh',context=key,status='OK',
+             duration_seconds=round(time.monotonic()-started,3))
     except Exception as ex:
         emit('r63_context_refresh',context=key,status='ERROR',
              detail=f'{type(ex).__name__}: {ex}')

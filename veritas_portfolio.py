@@ -16,6 +16,7 @@ import veritas_release as VR
 import veritas_strategy_quality as VSQ
 import veritas_learning_exports as VLE
 import veritas_learning_integrity as VLI
+import veritas_trade_diagnostics as VTD
 import veritas_timeframe_management as VTM
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
@@ -2108,7 +2109,7 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         return 0.0
     if str(reason)=='STOP' and VPG.protective_reason(dict(z),quote,VPG.utc_datetime(ts))!='STOP':
         return 0.0
-    price=float(quote['price']); z=dict(z,_execution_quote=quote)
+    price=float(quote['price']); z=dict(z,_execution_quote=quote,_execution_quote_frozen=True)
     current_notional=abs(float(z['units'])*price); target_notional=max(0.0,target_fraction*nav)
     close_notional=max(0.0,current_notional-target_notional)
     if close_notional<=0 or (target_fraction>0 and close_notional<=max(1.0,0.0025*nav)): return 0.0
@@ -2138,10 +2139,27 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
                   'realized_gross_pnl_rub':pnl,'closed_normalized_units':close_units,
                   'basis_avg_entry_price':float(z['avg_entry_price'])}
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,z['active_trade_id'],ts,z['asset'],side,fill_price,executed_notional,fee,frac,reason,json.dumps(source_audit,ensure_ascii=False,default=str),cid))
+    completed=remain<=1e-10 or target_fraction<=0
+    exit_patch={'last_exit_source_identity':source_audit['price_source_identity'],
+                'last_exit_market_observed_at':quote['observed_at']}
+    if completed:
+        exit_patch.update(exit_reason=str(reason),close_reason=str(reason))
+    else:
+        exit_patch.update(last_reduce_reason=str(reason),last_reduce_at=str(ts))
+    # Carry the latest witness through the actual accounting writes, including
+    # an INCOMPLETE marker when the separate telemetry savepoint failed. Never
+    # let a failed final observation leave an older apparently complete path.
+    try:
+        import veritas_observation_path as VOP
+        witness=VOP.bounded_witness(z)
+    except Exception:
+        witness={'version':'OBSERVED_EXECUTION_PATH_V1','coverage_status':'INCOMPLETE',
+                 'invalid_observation_count':1}
+    if witness is not None:
+        exit_patch['observation_path']=witness
     c.execute("UPDATE paper_trades SET payload=payload || %s::jsonb WHERE trade_id=%s",
-              (json.dumps({'last_exit_source_identity':source_audit['price_source_identity'],
-                           'last_exit_market_observed_at':quote['observed_at']},default=str),z['active_trade_id']))
-    if remain<=1e-10 or target_fraction<=0:
+              (json.dumps(exit_patch,default=str),z['active_trade_id']))
+    if completed:
         # close trade; net pnl after fees/funding accumulated on trade
         tr=c.execute('SELECT * FROM paper_trades WHERE trade_id=%s',(z['active_trade_id'],)).fetchone()
         gross=float(tr['gross_pnl_rub']) if tr else pnl; fees=float(tr['fees_rub']) if tr else fee; fund=float(tr['funding_rub']) if tr else 0.0
@@ -2150,7 +2168,9 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         c.execute('UPDATE paper_trades SET closed_at=%s,avg_exit_price=%s,net_pnl_rub=%s,return_on_entry_nav=%s,profitable=%s,meaningful_win=%s,status=%s,payload=payload || %s::jsonb WHERE trade_id=%s',(ts,fill_price,net,ret,prof,mw,'CLOSED',json.dumps({'last_exit_execution_model':fill},ensure_ascii=False,default=str),z['active_trade_id']))
         c.execute('DELETE FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,z['asset']))
     else:
-        c.execute('UPDATE paper_positions SET units=%s,last_price=%s,target_fraction=%s,updated_at=%s WHERE portfolio_name=%s AND asset=%s',(remain,price,target_fraction,ts,name,z['asset']))
+        c.execute("UPDATE paper_positions SET units=%s,last_price=%s,target_fraction=%s,updated_at=%s,"
+                  "payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                  (remain,price,target_fraction,ts,json.dumps(exit_patch,default=str),name,z['asset']))
     VCN.enqueue_order(c,name,z['asset'],cid)
     return fee
 
@@ -2239,7 +2259,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         return
     fill=VX.simulated_fill(
         asset,side,price,add/max(nav,1.0),
-        bid=row.get('best_bid'),ask=row.get('best_ask')
+        bid=quote.get('best_bid',quote.get('bid')),ask=quote.get('best_ask',quote.get('ask'))
     )
     fill_price=float(fill['fill_price'])
     fee=add*COMMISSION; units=add/fill_price
@@ -2272,8 +2292,12 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         setup=((row.get('institutional_signal') or {}).get('breakout_quality') or {}).get('state') or (row.get('institutional_signal') or {}).get('investor_signal')
         plan=row.get('trade_plan') or {}
         canonical_setup_id=_portfolio_canonical_setup_id(row)
+        entry_integrity=row.get('data_integrity_status')
+        if entry_integrity is None or (isinstance(entry_integrity,str) and not entry_integrity.strip()):
+            entry_integrity='OK'
         payload={**VSQ.entry_metadata(dict(row,asset=asset),ts),'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
                  'price_source_lock':source_lock,'price_source_status':'OK',
+                 'data_integrity_status':entry_integrity,
                  'entry_execution_source_identity':source_lock,
                  'structural_policy_version':plan.get('structural_policy_version'),
                  'user_teaching_id':plan.get('user_teaching_id'),'user_teaching_trace':teaching_trace,
@@ -2716,28 +2740,26 @@ def _v90j_episode_key(z,payload):
 
 
 def _v90j_learning_label(net,price_return,mfe,mae,giveback,exit_reason,recovered=False):
+    # This compatibility helper has no immutable rule/path proof. It can name
+    # the financial outcome, but cannot certify good execution or a wrong stop.
     if recovered:
         return 'RECOVERED_HISTORICAL_NO_LEARNING'
-    net=float(net or 0.0)
-    pr=float(price_return or 0.0)
-    reason=str(exit_reason or '')
-    if net>0:
-        if mfe is not None and float(mfe)>0:
-            capture=max(0.0,pr)/max(float(mfe),1e-9)
-            if capture>=0.65:
-                return 'RIGHT_DIRECTION_HIGH_CAPTURE'
-            return 'RIGHT_DIRECTION_LOW_CAPTURE'
-        return 'GOOD_EXECUTION'
-    if mfe is not None and float(mfe)>=0.20:
-        if 'STOP' in reason:
-            return 'RIGHT_DIRECTION_STOP_ERROR'
-        return 'FAVORABLE_PATH_NOT_MONETIZED'
-    if reason in ('V842_CONFIRMED_DIRECTION_FLIP','DIRECTION_FLIP','SOFT_SIZE_REDUCTION'):
-        return 'RIGHT_DIRECTION_PREMATURE_EXIT' if pr>0 else 'MIXED_EXECUTION'
-    return 'DIRECTION_OR_ENTRY_FAILED_ON_OBSERVED_PATH'
+    net=_v90j_float(net)
+    if net is None:
+        return 'UNVERIFIED_TRADE_EVIDENCE'
+    return ('PROFIT_OBSERVED_RULES_UNVERIFIED' if net>0 else
+            'LOSS_OBSERVED_RULES_UNVERIFIED' if net<0 else 'FLAT_OBSERVED_RULES_UNVERIFIED')
 
 
 def _v90j_learning_conclusion(label,z):
+    if label in ('UNVERIFIED_TRADE_EVIDENCE','PROFIT_OBSERVED_RULES_UNVERIFIED',
+                 'LOSS_OBSERVED_RULES_UNVERIFIED','FLAT_OBSERVED_RULES_UNVERIFIED'):
+        return VTD.conclusion({'status':'UNVERIFIED'})
+    if label in ('VALID_STRUCTURAL_STOP_LOSS','VALID_LOSING_TRADE','VALID_PROFITABLE_TRADE','VALID_FLAT_TRADE'):
+        return VTD.conclusion({'status':'VERIFIED_RULE_OUTCOME',
+                              'outcome':'LOSS' if label in ('VALID_STRUCTURAL_STOP_LOSS','VALID_LOSING_TRADE') else 'PROFIT'})
+    if label in ('PROVEN_ENTRY_RULE_VIOLATION','PROVEN_STOP_OR_ATR_RULE_VIOLATION'):
+        return VTD.conclusion({'status':'RULE_VIOLATION'})
     mfe=z.get('mfe_pct'); mae=z.get('mae_pct'); give=z.get('giveback_pct')
     setup=str(z.get('setup') or 'setup'); regime=str(z.get('regime') or 'regime')
     if label=='RIGHT_DIRECTION_HIGH_CAPTURE':
@@ -3095,13 +3117,13 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['telemetry_completeness']=round(float(payload.get('telemetry_completeness') or comp),3)
         recovered=bool(payload.get('recovered')) or z['telemetry_completeness']<0.34
         z['recovered']=recovered
-        label=payload.get('learning_label') or _v90j_learning_label(
-            z.get('net_pnl_rub'),price_ret,z.get('mfe_pct'),z.get('mae_pct'),give,z.get('exit_reason'),recovered)
-        z['learning_label']=label
-        z['learning_conclusion']=payload.get('learning_conclusion') or _v90j_learning_conclusion(label,z)
-        _stored_eligible=payload.get('learning_eligible')
-        _path_complete=(z.get('mfe_pct') is not None and z.get('mae_pct') is not None)
-        z['learning_eligible']=bool(not recovered and _path_complete and z['telemetry_completeness']>=0.999)
+        # Re-evaluate original proof, before flattened/recovered display fields
+        # can make a legacy outcome label appear like a proved execution error.
+        diagnosis=VTD.diagnose(dict(r0))
+        z['learning_label']=diagnosis['primary_attribution']
+        z['learning_conclusion']=VTD.conclusion(diagnosis)
+        z['trade_diagnostics']=diagnosis
+        z['learning_eligible']=bool(diagnosis.get('learning_eligible'))
         z['episode_key']=_v90j_episode_key(z,payload)
         VLE.mark_trade(z,dict(r0))
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
@@ -5726,7 +5748,7 @@ def _v90r18_emit_latest_closed(c):
         if sig==_v90r18_last_closed_marker:
             return
         _v90r18_last_closed_marker=sig
-        rows=c.execute("""SELECT trade_id,portfolio_name,asset,direction,horizon,setup,
+        rows=c.execute("""SELECT trade_id,portfolio_name,asset,direction,horizon,setup,status,
                                  opened_at,closed_at,avg_entry_price,avg_exit_price,
                                  max_fraction,gross_pnl_rub,fees_rub,funding_rub,
                                  net_pnl_rub,return_on_entry_nav,payload
@@ -5737,6 +5759,7 @@ def _v90r18_emit_latest_closed(c):
         out=[]
         for r0 in rows or []:
             r=dict(r0); p=_v90j_json(r.get('payload'))
+            diagnosis=VTD.diagnose(r)
             out.append({
               'trade_id':r.get('trade_id'),
               'portfolio':r.get('portfolio_name'),
@@ -5769,8 +5792,13 @@ def _v90r18_emit_latest_closed(c):
               'trailing_rule':p.get('trailing_rule'),
               'trailing_stage':p.get('trailing_stage'),
               'profit_protection_active':p.get('profit_protection_active'),
-              'learning_label':p.get('learning_label'),
-              'learning_conclusion':p.get('learning_conclusion'),
+              'learning_label':diagnosis['primary_attribution'],
+              'learning_conclusion':VTD.conclusion(diagnosis),
+              'diagnostics_version':VTD.VERSION,
+              'diagnostic_status':diagnosis['status'],
+              'diagnostic_exclusion_reason':diagnosis.get('exclusion_reason'),
+              'rule_violations':diagnosis.get('violations'),
+              'risk_normalization':diagnosis.get('normalization'),
               'data_integrity_status':p.get('data_integrity_status'),
             })
         print(json.dumps({'event':'V90_LATEST_CLOSED_TRADE_DIAGNOSTICS',
@@ -7441,6 +7469,8 @@ def _v90r60_sanitize_duplicate_learning(c,force=False):
 def _v90r29_episode_from_trade(t):
     t=dict(t or {})
     p=_v90j_json(t.get('payload'))
+    diagnosis=VTD.diagnose(t)
+    normalization=diagnosis.get('normalization') or {}
     entry=_v90r29_num(t.get('avg_entry_price'))
     exitp=_v90r29_num(t.get('avg_exit_price'))
     direction=str(t.get('direction') or '')
@@ -7453,16 +7483,19 @@ def _v90r29_episode_from_trade(t):
     exp_pct=(100.0*abs(exp)) if exp is not None else None
     raw_mfe=_v90r29_num(p.get('r55_lifetime_mfe_pct',p.get('mfe_pct')))
     raw_mae=_v90r29_num(p.get('r55_lifetime_mae_pct',p.get('mae_pct')))
-    mfe=max(0.0,raw_mfe or 0.0)
-    mae=min(0.0,raw_mae or 0.0)
+    if normalization.get('path_status')=='OBSERVED_FIRST_ENTRY_BASIS':
+        raw_mfe=_v90r29_num(normalization.get('mfe_pct'))
+        raw_mae=_v90r29_num(normalization.get('mae_pct'))
+    mfe=max(0.0,raw_mfe) if raw_mfe is not None else None
+    mae=min(0.0,raw_mae) if raw_mae is not None else None
     give=_v90r29_num(p.get('giveback_pct'))
-    if give is None and price_ret is not None:
+    if give is None and price_ret is not None and mfe is not None:
         give=max(0.0,mfe-max(0.0,price_ret))
 
     capture=None
-    if mfe>1e-9 and price_ret is not None:
+    if mfe is not None and mfe>1e-9 and price_ret is not None:
         capture=max(0.0,min(1.5,max(0.0,price_ret)/mfe))
-    realization=(mfe/exp_pct) if exp_pct and exp_pct>1e-9 else None
+    realization=(mfe/exp_pct) if mfe is not None and exp_pct and exp_pct>1e-9 else None
 
     gross=_v90r29_num(t.get('gross_pnl_rub'),0.0)
     fees=abs(_v90r29_num(t.get('fees_rub'),0.0))
@@ -7480,58 +7513,15 @@ def _v90r29_episode_from_trade(t):
     cost_to_edge=((fees+funding)/expected_edge) if expected_edge else None
 
     exit_reason=str(p.get('exit_reason') or p.get('close_reason') or '')
-    integrity=str(p.get('data_integrity_status') or 'OK')
-    recovered=bool(p.get('recovered'))
     completeness=_v90r29_num(p.get('telemetry_completeness'),0.0)
-    from veritas_trade_audit import evidence_exclusion
-    exclusion=evidence_exclusion(t)
+    exclusion=diagnosis.get('exclusion_reason')
     learning_eligible=bool(
-        not recovered
-        and integrity.upper() in ('','OK','VALID','CLEAN')
-        and raw_mfe is not None and raw_mae is not None and exclusion is None
+        diagnosis.get('learning_eligible')
         and str(t.get('opened_at') or '')>=str(V90_Q2_STARTED_AT)
     )
-
-    issues=[]
-    entry_error=bool(mfe<0.10 and mae<=-0.15)
-    cost_drag=bool((gross>0 and net<=0) or (cost_to_edge is not None and cost_to_edge>=0.35))
-    exit_capture=bool(mfe>=0.20 and ((capture is not None and capture<0.45) or (give is not None and give>=0.25)))
-    overforecast=bool(exp_pct is not None and exp_pct>=0.40 and realization is not None and realization<0.45)
-    stop_error=bool('STOP' in exit_reason.upper() and mfe>=0.20)
-    good=bool(net>0 and (capture is None or capture>=0.55)
-              and (cost_to_edge is None or cost_to_edge<0.30))
-
-    if entry_error: issues.append('ENTRY_DIRECTION_ERROR')
-    if cost_drag: issues.append('COST_DRAG')
-    if exit_capture: issues.append('EXIT_CAPTURE_ERROR')
-    if overforecast: issues.append('EDGE_OVERFORECAST')
-    if stop_error: issues.append('STOP_STRUCTURE_ERROR')
-    if good: issues.append('GOOD_EXECUTION')
-    if not issues: issues=['MIXED_EXECUTION']
-
-    # Priority matters: entry failure and cost drag affect admission; exit/stop
-    # errors are management lessons and do not punish the directional model.
-    if entry_error:
-        primary='ENTRY_DIRECTION_ERROR'
-        action='REDUCE_ENTRY_SIZE_FOR_CONTEXT'
-    elif cost_drag:
-        primary='COST_DRAG'
-        action='DEMAND_MORE_EDGE_OR_REDUCE_TURNOVER'
-    elif exit_capture:
-        primary='EXIT_CAPTURE_ERROR'
-        action='IMPROVE_PROFIT_PROTECTION_NOT_DIRECTION'
-    elif overforecast:
-        primary='EDGE_OVERFORECAST'
-        action='CALIBRATE_EXPECTED_MOVE_DOWN'
-    elif stop_error:
-        primary='STOP_STRUCTURE_ERROR'
-        action='REVIEW_STRUCTURAL_STOP_NOT_DIRECTION'
-    elif good:
-        primary='GOOD_EXECUTION'
-        action='MODEST_REINFORCEMENT_AFTER_SAMPLE'
-    else:
-        primary='MIXED_EXECUTION'
-        action='OBSERVE_MORE_EPISODES'
+    issues=list(diagnosis['attributions'])
+    primary=diagnosis['primary_attribution']
+    action=diagnosis['learning_action']
 
     return {
       'trade_id':str(t.get('trade_id') or ''),
@@ -7559,13 +7549,15 @@ def _v90r29_episode_from_trade(t):
       'payload':{
         'exit_reason':exit_reason,
         'telemetry_completeness':completeness,
-        'learning_label':p.get('learning_label'),
-        'learning_conclusion':p.get('learning_conclusion'),
+        'learning_label':primary,
+        'learning_conclusion':VTD.conclusion(diagnosis),
+        'trade_diagnostics':diagnosis,
+        'diagnostics_version':VTD.VERSION,
         'model_version':p.get('model_version'),
         'canonical_setup_id':p.get('canonical_setup_id') or p.get('setup_id'),
         'independent_episode_key':_v90r60_independent_episode_key(t,p),
         'independent_episode_policy':'R60_CANONICAL_SETUP_TIME_BUCKET',
-        'learning_exclusion_reason':exclusion or ('MISSING_PATH_TELEMETRY' if raw_mfe is None or raw_mae is None else None),
+        'learning_exclusion_reason':exclusion,
       }
     }
 
@@ -7677,7 +7669,8 @@ def _v90r29_build_profiles(rows):
         z=buckets.setdefault(key,{
           'n':0,'wins':0,'net':0.0,'capture':[],'realization':[],
           'entry_error':0,'cost_drag':0,'exit_capture':0,'overforecast':0,
-          'stop_error':0,'good':0,'last_closed_at':None
+          'stop_error':0,'good':0,'valid_losses':0,'valid_stop_losses':0,
+          'capture_hypotheses':0,'last_closed_at':None
         })
         z['n']+=1
         z['wins']+=1 if float(r.get('net_pnl_rub') or 0.0)>0 else 0
@@ -7691,6 +7684,9 @@ def _v90r29_build_profiles(rows):
         z['overforecast']+=1 if 'EDGE_OVERFORECAST' in attrs else 0
         z['stop_error']+=1 if 'STOP_STRUCTURE_ERROR' in attrs else 0
         z['good']+=1 if 'GOOD_EXECUTION' in attrs else 0
+        z['valid_losses']+=1 if attrs & {'VALID_LOSING_TRADE','VALID_STRUCTURAL_STOP_LOSS'} else 0
+        z['valid_stop_losses']+=1 if 'VALID_STRUCTURAL_STOP_LOSS' in attrs else 0
+        z['capture_hypotheses']+=1 if 'PROFIT_CAPTURE_HYPOTHESIS' in attrs else 0
         cl=r.get('closed_at')
         if z['last_closed_at'] is None or str(cl)>str(z['last_closed_at']):
             z['last_closed_at']=cl
@@ -7727,6 +7723,10 @@ def _v90r29_build_profiles(rows):
           'overforecast_rate':z['overforecast']/n,
           'stop_error_rate':z['stop_error']/n,
           'good_execution_rate':z['good']/n,
+          'valid_loss_rate':z['valid_losses']/n,
+          'valid_structural_stop_loss_rate':z['valid_stop_losses']/n,
+          'profit_capture_hypothesis_rate':z['capture_hypotheses']/n,
+          'diagnostics_version':VTD.VERSION,
           'last_closed_at':z['last_closed_at'],
         }
         mult=1.0

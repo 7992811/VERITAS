@@ -163,6 +163,8 @@ def validate_event(event, source_identity=None):
     if not isinstance(event, dict):
         return fail
     e, proof = event, event.get("ma_proof") or {}
+    if not isinstance(proof, dict):
+        return fail
     try:
         p, risk = _policy(proof.get("policy")), TS._policy(e.get("policy"))
         tf = e["timeframe"]
@@ -178,6 +180,8 @@ def validate_event(event, source_identity=None):
         if source_identity is not None and not TS._same_source(source_identity, source):
             return fail
         dp, pe = proof["daily_provenance"], proof["period_evidence"]
+        if not isinstance(dp, dict) or not isinstance(pe, dict):
+            return fail
         if (not TS._same_source(source, dp.get("source_identity")) or not dp.get("sha256")
                 or proof["period"] not in p["periods"] or pe.get("status") != "OK"
                 or pe.get("sample_count") != proof["period"] or pe.get("value") != proof["ma_value"]):
@@ -232,7 +236,8 @@ def validate_event(event, source_identity=None):
         if abs(slope) <= p["flat_slope_atr"] and crosses >= p["max_flat_crossings_10d"]:
             return fail
         approach = proof["approach_bars"]
-        if len(approach) != p["rearm_bars"]:
+        if (not isinstance(approach, (list, tuple)) or len(approach) != p["rearm_bars"]
+                or any(not isinstance(bar, dict) for bar in approach)):
             return fail
         ats = [TS.timestamp(b.get("ts")) for b in approach]
         if any(t is None for t in ats) or ats != sorted(set(ats)):
@@ -257,7 +262,7 @@ def validate_event(event, source_identity=None):
             return fail
         if e.get("event_id") != _event_id(e["asset"], tf, source, proof["period"], sign, touch, signal):
             return fail
-    except (KeyError, ValueError, TypeError, OverflowError):
+    except (AttributeError, KeyError, ValueError, TypeError, OverflowError):
         return fail
     return {"eligible":True, "reason":"MA_REBOUND_PROVENANCE_READY"}
 

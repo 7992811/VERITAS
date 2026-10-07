@@ -1,0 +1,849 @@
+{
+  "version": "PAIRED_STRUCTURAL_ENTRY_RESEARCH_V1",
+  "experiment_id": "SAME_TF_BREAKOUT_FIRST_RETEST_20261007_V1",
+  "manifest_sha256": "9c4131e9602be7d38e89922f37f8bd34122165ff63959ebb8c926b51604d136f",
+  "started_at": "2026-10-07T06:38:34.150145Z",
+  "policy_sha256": "07d04f9bcbb7b313480dac25bc7b1ffa8a27df1bf41bb6af9fc7c592451832dd",
+  "module_sha256": "584b708678a97637a07eea505f123ecbd64a15465bb8a67e9c8fb56e6cbe3619",
+  "structural_module_sha256": "9dfe3fd8a9e0a2bf3d21ced3335262e696082f4518fe888f3430bf5878e2328f",
+  "driver_sha256": "b947546742303c674797ae1f8545c6d49d1cb4de048d1e49226bdc5eab1b2c4f",
+  "completed_at": "2026-10-07T06:38:34.347421Z",
+  "manifest": "breakout_retest_manifest_20261007.json",
+  "status": "COMPLETED_DESCRIPTIVE_RESEARCH_NO_PROMOTION",
+  "datasets": [
+    {
+      "asset": "BTC",
+      "timeframe": "5m",
+      "source_identity": {
+        "key": "COINBASE:SPOT:BTC-USD",
+        "contract_id": "BTC-USD"
+      },
+      "observed_bars": 4320,
+      "gap_count": 0,
+      "data_sha256": "d8e6e88f9e1fd5bb872a20e0fd578e9b04e1c1f60dcb4fdd70e6f0641709de80",
+      "first_bar_at": 1790035200.0,
+      "last_closed_at": 1791331200.0,
+      "purged_boundary_opportunities": 5,
+      "expected_bars_in_declared_data_window": 4320,
+      "complete_declared_data_window": true,
+      "primary_requests": [
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-09-22T00%3A00%3A00Z&end=2026-09-23T00%3A55%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:00.040863Z",
+          "http_status": 200,
+          "raw_sha256": "4c8dd8e94214ee8df10aa8efc7797d816e56198dbb9dfe25048284d8bd6b496b",
+          "raw_bytes": 17877,
+          "raw_file": "BTC-USD/000.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-22T00:00:00Z",
+          "requested_end_exclusive": "2026-09-23T00:55:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-09-23T00%3A55%3A00Z&end=2026-09-24T01%3A50%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:03.094318Z",
+          "http_status": 200,
+          "raw_sha256": "db65b87b6ea240d206c4004b7f2ef8ece63baebc707295dc2d7e31a2699dfc7d",
+          "raw_bytes": 17818,
+          "raw_file": "BTC-USD/001.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-23T00:55:00Z",
+          "requested_end_exclusive": "2026-09-24T01:50:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-09-24T01%3A50%3A00Z&end=2026-09-25T02%3A45%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:05.920955Z",
+          "http_status": 200,
+          "raw_sha256": "e68f4a3ae38d228e350ca904372b3696f34f1dcc4f4ac861b2cb35fa220749dd",
+          "raw_bytes": 17945,
+          "raw_file": "BTC-USD/002.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-24T01:50:00Z",
+          "requested_end_exclusive": "2026-09-25T02:45:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-09-25T02%3A45%3A00Z&end=2026-09-26T03%3A40%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:09.546985Z",
+          "http_status": 200,
+          "raw_sha256": "936002324bcb69ca4e9a8c9c9aaef0870ad17ebce6f1207188a6cded601221e0",
+          "raw_bytes": 17883,
+          "raw_file": "BTC-USD/003.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-25T02:45:00Z",
+          "requested_end_exclusive": "2026-09-26T03:40:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-09-26T03%3A40%3A00Z&end=2026-09-27T04%3A35%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:11.757574Z",
+          "http_status": 200,
+          "raw_sha256": "6b4195f9712841a69073cd4871500d0935b76e17abb818500c23a50bc6d26d2b",
+          "raw_bytes": 17752,
+          "raw_file": "BTC-USD/004.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-26T03:40:00Z",
+          "requested_end_exclusive": "2026-09-27T04:35:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-09-27T04%3A35%3A00Z&end=2026-09-28T05%3A30%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:13.893078Z",
+          "http_status": 200,
+          "raw_sha256": "dc48d9323151e3655bc087a5343a4318de8722cf36f85c426580c73444f368e7",
+          "raw_bytes": 17834,
+          "raw_file": "BTC-USD/005.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-27T04:35:00Z",
+          "requested_end_exclusive": "2026-09-28T05:30:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-09-28T05%3A30%3A00Z&end=2026-09-29T06%3A25%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:16.114415Z",
+          "http_status": 200,
+          "raw_sha256": "7f04d794f1bf84b235ddff9ebc4e6639d114421fc48a5a38756d17fd82bd88d5",
+          "raw_bytes": 17907,
+          "raw_file": "BTC-USD/006.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-28T05:30:00Z",
+          "requested_end_exclusive": "2026-09-29T06:25:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-09-29T06%3A25%3A00Z&end=2026-09-30T07%3A20%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:18.376882Z",
+          "http_status": 200,
+          "raw_sha256": "f992a7164e0a45ace0442da79e5032273c5bb7214dd23697100b91b1d17a10a1",
+          "raw_bytes": 17776,
+          "raw_file": "BTC-USD/007.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-29T06:25:00Z",
+          "requested_end_exclusive": "2026-09-30T07:20:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-09-30T07%3A20%3A00Z&end=2026-10-01T08%3A15%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:20.887983Z",
+          "http_status": 200,
+          "raw_sha256": "d876c42196f3bdf08372fbc6398872eba17e76ab6b8edca3a6a4f4cce6badad0",
+          "raw_bytes": 17865,
+          "raw_file": "BTC-USD/008.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-30T07:20:00Z",
+          "requested_end_exclusive": "2026-10-01T08:15:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-10-01T08%3A15%3A00Z&end=2026-10-02T09%3A10%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:23.311547Z",
+          "http_status": 200,
+          "raw_sha256": "faf4ba3c87993481f85e4e581f7db655b3a312dcdbef580959ec9a6fee07905a",
+          "raw_bytes": 17941,
+          "raw_file": "BTC-USD/009.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-01T08:15:00Z",
+          "requested_end_exclusive": "2026-10-02T09:10:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-10-02T09%3A10%3A00Z&end=2026-10-03T10%3A05%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:25.859827Z",
+          "http_status": 200,
+          "raw_sha256": "c1d6a50887ae59e896de732388872732d1c12b99cfca1ad72a86e95e1e8de595",
+          "raw_bytes": 17755,
+          "raw_file": "BTC-USD/010.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-02T09:10:00Z",
+          "requested_end_exclusive": "2026-10-03T10:05:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-10-03T10%3A05%3A00Z&end=2026-10-04T11%3A00%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:28.423918Z",
+          "http_status": 200,
+          "raw_sha256": "a06d38392bfd7652f9ef82845095edea8ea5d1d5b2c9320e4365644e3ce91687",
+          "raw_bytes": 17647,
+          "raw_file": "BTC-USD/011.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-03T10:05:00Z",
+          "requested_end_exclusive": "2026-10-04T11:00:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-10-04T11%3A00%3A00Z&end=2026-10-05T11%3A55%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:30.667290Z",
+          "http_status": 200,
+          "raw_sha256": "bb66fe9f38392237e9bde0add6ced6de118e4a613e9fc2c0d57578efb6d958d6",
+          "raw_bytes": 17675,
+          "raw_file": "BTC-USD/012.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-04T11:00:00Z",
+          "requested_end_exclusive": "2026-10-05T11:55:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-10-05T11%3A55%3A00Z&end=2026-10-06T12%3A50%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:33.142141Z",
+          "http_status": 200,
+          "raw_sha256": "2e6697beb97e945a43a1a870cdce61e046e4b5594fd5cc12208f0b5eff769bc5",
+          "raw_bytes": 17896,
+          "raw_file": "BTC-USD/013.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-05T11:55:00Z",
+          "requested_end_exclusive": "2026-10-06T12:50:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=2026-10-06T12%3A50%3A00Z&end=2026-10-07T00%3A00%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:36.023845Z",
+          "http_status": 200,
+          "raw_sha256": "745130a711325394d9fb72d241018edebcdfdac2f1f74d2635bb13be47d32f00",
+          "raw_bytes": 8041,
+          "raw_file": "BTC-USD/014.json",
+          "response_rows": 135,
+          "accepted_rows": 134,
+          "requested_start": "2026-10-06T12:50:00Z",
+          "requested_end_exclusive": "2026-10-07T00:00:00Z"
+        }
+      ],
+      "availability_assumption": "HISTORICAL_CANDLE_AVAILABLE_AT_INTERVAL_END_NOT_MEASURED_FEED_LATENCY",
+      "periods": {
+        "development": {
+          "opportunities": 213,
+          "complete_pairs": 213,
+          "pending_or_censored_pairs": 0,
+          "variants": {
+            "CONFIRMED_BREAKOUT": {
+              "status_counts_all": {
+                "NO_ENTRY": 205,
+                "CLOSED": 8
+              },
+              "no_entry_reasons_all": {
+                "STOP_TOO_DISTANT": 26,
+                "ENTRY_EXTENDED": 143,
+                "NET_REWARD_RISK_BELOW_FLOOR": 29,
+                "TARGET_ALREADY_REACHED": 2,
+                "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 5
+              },
+              "paired_closed_trades": 8,
+              "paired_wins": 1,
+              "paired_win_rate": 0.125,
+              "paired_net_r_sum": -2.7224590010625827,
+              "paired_mean_trade_r": -0.34030737513282283,
+              "mean_opportunity_r": -0.012781497657570811,
+              "stress_net_r_sum_same_trades": -3.429893047053442,
+              "stress_mean_opportunity_r_same_trades": -0.016102784258466864,
+              "profit_factor_r": 0.3196202973436467,
+              "commission_r_sum": 0.7074340459908225,
+              "funding_r_sum": 0.0,
+              "ambiguous_barrier_trades": 0
+            },
+            "FIRST_CONFIRMED_RETEST": {
+              "status_counts_all": {
+                "NO_ENTRY": 212,
+                "CLOSED": 1
+              },
+              "no_entry_reasons_all": {
+                "RETEST_CLOSE_INVALIDATED": 94,
+                "NO_CONFIRMED_RETEST_IN_WINDOW": 66,
+                "TARGET_BEFORE_RETEST": 19,
+                "STOP_TOO_DISTANT": 6,
+                "NET_REWARD_RISK_BELOW_FLOOR": 3,
+                "ENTRY_EXTENDED": 15,
+                "STOP_BEFORE_RETEST": 4,
+                "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 5
+              },
+              "paired_closed_trades": 1,
+              "paired_wins": 0,
+              "paired_win_rate": 0.0,
+              "paired_net_r_sum": -1.0,
+              "paired_mean_trade_r": -1.0,
+              "mean_opportunity_r": -0.004694835680751174,
+              "stress_net_r_sum_same_trades": -1.0727676876487586,
+              "stress_mean_opportunity_r_same_trades": -0.005036468017130322,
+              "profit_factor_r": 0.0,
+              "commission_r_sum": 0.07276768764875688,
+              "funding_r_sum": 0.0,
+              "ambiguous_barrier_trades": 0
+            }
+          },
+          "paired_retest_minus_breakout": {
+            "mean_opportunity_r_difference": 0.008086661976819636,
+            "utc_day_clusters": 8,
+            "descriptive_cluster_bootstrap_95pct": [
+              -0.009604756137515736,
+              0.0245662230164821
+            ],
+            "status": "DESCRIPTIVE_ONLY_NO_EDGE_OR_PROMOTION_CLAIM"
+          }
+        },
+        "holdout": {
+          "opportunities": 185,
+          "complete_pairs": 185,
+          "pending_or_censored_pairs": 0,
+          "variants": {
+            "CONFIRMED_BREAKOUT": {
+              "status_counts_all": {
+                "NO_ENTRY": 178,
+                "CLOSED": 7
+              },
+              "no_entry_reasons_all": {
+                "ENTRY_EXTENDED": 135,
+                "NET_REWARD_RISK_BELOW_FLOOR": 26,
+                "STOP_TOO_DISTANT": 7,
+                "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 6,
+                "TARGET_ALREADY_REACHED": 4
+              },
+              "paired_closed_trades": 7,
+              "paired_wins": 4,
+              "paired_win_rate": 0.5714285714285714,
+              "paired_net_r_sum": 1.7183069585402466,
+              "paired_mean_trade_r": 0.24547242264860666,
+              "mean_opportunity_r": 0.009288145721839171,
+              "stress_net_r_sum_same_trades": 0.9881737005049704,
+              "stress_mean_opportunity_r_same_trades": 0.00534147946218903,
+              "profit_factor_r": 1.7864964377271977,
+              "commission_r_sum": 0.7301332580352214,
+              "funding_r_sum": 0.0,
+              "ambiguous_barrier_trades": 0
+            },
+            "FIRST_CONFIRMED_RETEST": {
+              "status_counts_all": {
+                "NO_ENTRY": 183,
+                "CLOSED": 2
+              },
+              "no_entry_reasons_all": {
+                "NO_CONFIRMED_RETEST_IN_WINDOW": 44,
+                "RETEST_CLOSE_INVALIDATED": 86,
+                "TARGET_BEFORE_RETEST": 16,
+                "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 6,
+                "ENTRY_EXTENDED": 25,
+                "STOP_TOO_DISTANT": 2,
+                "STOP_BEFORE_RETEST": 3,
+                "NET_REWARD_RISK_BELOW_FLOOR": 1
+              },
+              "paired_closed_trades": 2,
+              "paired_wins": 2,
+              "paired_win_rate": 1.0,
+              "paired_net_r_sum": 1.8182901203399915,
+              "paired_mean_trade_r": 0.9091450601699957,
+              "mean_opportunity_r": 0.009828595245081034,
+              "stress_net_r_sum_same_trades": 1.6402541547671583,
+              "stress_mean_opportunity_r_same_trades": 0.008866238674417071,
+              "profit_factor_r": null,
+              "commission_r_sum": 0.17803596557281964,
+              "funding_r_sum": 0.0,
+              "ambiguous_barrier_trades": 0
+            }
+          },
+          "paired_retest_minus_breakout": {
+            "mean_opportunity_r_difference": 0.0005404495232418641,
+            "utc_day_clusters": 6,
+            "descriptive_cluster_bootstrap_95pct": [
+              -0.019870332787719266,
+              0.016544900191671125
+            ],
+            "status": "DESCRIPTIVE_ONLY_NO_EDGE_OR_PROMOTION_CLAIM"
+          }
+        }
+      }
+    },
+    {
+      "asset": "ETH",
+      "timeframe": "5m",
+      "source_identity": {
+        "key": "COINBASE:SPOT:ETH-USD",
+        "contract_id": "ETH-USD"
+      },
+      "observed_bars": 4320,
+      "gap_count": 0,
+      "data_sha256": "f407088e970c9c8eed8ad1fa57f541f4584ac19b16e857642c2c2dd7050eb099",
+      "first_bar_at": 1790035200.0,
+      "last_closed_at": 1791331200.0,
+      "purged_boundary_opportunities": 5,
+      "expected_bars_in_declared_data_window": 4320,
+      "complete_declared_data_window": true,
+      "primary_requests": [
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-09-22T00%3A00%3A00Z&end=2026-09-23T00%3A55%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:00.041518Z",
+          "http_status": 200,
+          "raw_sha256": "0222aeab4c9525c11aab9af2b1bdef8d3088dec5bc6888243190ad2dd2c091a4",
+          "raw_bytes": 17047,
+          "raw_file": "ETH-USD/000.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-22T00:00:00Z",
+          "requested_end_exclusive": "2026-09-23T00:55:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-09-23T00%3A55%3A00Z&end=2026-09-24T01%3A50%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:03.030538Z",
+          "http_status": 200,
+          "raw_sha256": "e852113c21935e5bcb0d7f695267215865d2e261b68836d522945a04d8a23a11",
+          "raw_bytes": 17069,
+          "raw_file": "ETH-USD/001.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-23T00:55:00Z",
+          "requested_end_exclusive": "2026-09-24T01:50:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-09-24T01%3A50%3A00Z&end=2026-09-25T02%3A45%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:05.882722Z",
+          "http_status": 200,
+          "raw_sha256": "802fbec5e352f9940a3c2e7076609abeedb70ecf4eb959d2f3fcb847424a5450",
+          "raw_bytes": 17121,
+          "raw_file": "ETH-USD/002.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-24T01:50:00Z",
+          "requested_end_exclusive": "2026-09-25T02:45:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-09-25T02%3A45%3A00Z&end=2026-09-26T03%3A40%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:09.499609Z",
+          "http_status": 200,
+          "raw_sha256": "0429096dc03fd9ae1de3e79aecf06d9e5fe0495d35bf439ce1a9a2ee210c0753",
+          "raw_bytes": 17135,
+          "raw_file": "ETH-USD/003.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-25T02:45:00Z",
+          "requested_end_exclusive": "2026-09-26T03:40:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-09-26T03%3A40%3A00Z&end=2026-09-27T04%3A35%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:11.775107Z",
+          "http_status": 200,
+          "raw_sha256": "7a89da47e5cf8286dd8cf168f02dd86352555e6709611ec590e72128a4962b7c",
+          "raw_bytes": 16982,
+          "raw_file": "ETH-USD/004.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-26T03:40:00Z",
+          "requested_end_exclusive": "2026-09-27T04:35:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-09-27T04%3A35%3A00Z&end=2026-09-28T05%3A30%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:13.933689Z",
+          "http_status": 200,
+          "raw_sha256": "91883c90c25657f0c1aead279b9036883db79c9805f40a0718ed862e76c7a624",
+          "raw_bytes": 16992,
+          "raw_file": "ETH-USD/005.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-27T04:35:00Z",
+          "requested_end_exclusive": "2026-09-28T05:30:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-09-28T05%3A30%3A00Z&end=2026-09-29T06%3A25%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:16.121502Z",
+          "http_status": 200,
+          "raw_sha256": "d24133be032cd0d472fa77a734ee3170654e759cbe2b72af590d81887bacfb55",
+          "raw_bytes": 17157,
+          "raw_file": "ETH-USD/006.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-28T05:30:00Z",
+          "requested_end_exclusive": "2026-09-29T06:25:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-09-29T06%3A25%3A00Z&end=2026-09-30T07%3A20%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:18.424049Z",
+          "http_status": 200,
+          "raw_sha256": "350a5ddc0f127484df0f7f0d2d23bd4d37cf626b307b82b35fbf69fe5dc288f2",
+          "raw_bytes": 17166,
+          "raw_file": "ETH-USD/007.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-29T06:25:00Z",
+          "requested_end_exclusive": "2026-09-30T07:20:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-09-30T07%3A20%3A00Z&end=2026-10-01T08%3A15%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:20.938632Z",
+          "http_status": 200,
+          "raw_sha256": "fa5e995de3fbb6432ef3fb88246b9e673b97b57efc9dd1fa5d3c5b52827e91e7",
+          "raw_bytes": 17145,
+          "raw_file": "ETH-USD/008.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-09-30T07:20:00Z",
+          "requested_end_exclusive": "2026-10-01T08:15:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-10-01T08%3A15%3A00Z&end=2026-10-02T09%3A10%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:23.368901Z",
+          "http_status": 200,
+          "raw_sha256": "9c510630279902fb34f011fdb1cbb90ebcf64d57acd984613460b9f5c7aa643a",
+          "raw_bytes": 17127,
+          "raw_file": "ETH-USD/009.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-01T08:15:00Z",
+          "requested_end_exclusive": "2026-10-02T09:10:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-10-02T09%3A10%3A00Z&end=2026-10-03T10%3A05%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:25.937867Z",
+          "http_status": 200,
+          "raw_sha256": "43a483707944ae2a40ac84643f11b22a6e14afdc1ceb0dd9ebf0ca1c357746f5",
+          "raw_bytes": 17013,
+          "raw_file": "ETH-USD/010.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-02T09:10:00Z",
+          "requested_end_exclusive": "2026-10-03T10:05:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-10-03T10%3A05%3A00Z&end=2026-10-04T11%3A00%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:28.488397Z",
+          "http_status": 200,
+          "raw_sha256": "1cbf130810419de4e87149a674685826accd157e893a66038c7208068714f50f",
+          "raw_bytes": 16888,
+          "raw_file": "ETH-USD/011.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-03T10:05:00Z",
+          "requested_end_exclusive": "2026-10-04T11:00:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-10-04T11%3A00%3A00Z&end=2026-10-05T11%3A55%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:30.826266Z",
+          "http_status": 200,
+          "raw_sha256": "2017b336066b3d27d64fdce755803cc0b4de9149f0f5f34b1b0edff91b0a1d5c",
+          "raw_bytes": 16991,
+          "raw_file": "ETH-USD/012.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-04T11:00:00Z",
+          "requested_end_exclusive": "2026-10-05T11:55:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-10-05T11%3A55%3A00Z&end=2026-10-06T12%3A50%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:33.092035Z",
+          "http_status": 200,
+          "raw_sha256": "696c4cb9334c975d24c8ffaff62e4ed742b4ce73f392adffccc93851d6b082a2",
+          "raw_bytes": 17059,
+          "raw_file": "ETH-USD/013.json",
+          "response_rows": 300,
+          "accepted_rows": 299,
+          "requested_start": "2026-10-05T11:55:00Z",
+          "requested_end_exclusive": "2026-10-06T12:50:00Z"
+        },
+        {
+          "url": "https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=300&start=2026-10-06T12%3A50%3A00Z&end=2026-10-07T00%3A00%3A00Z",
+          "retrieved_at": "2026-10-07T06:34:35.979171Z",
+          "http_status": 200,
+          "raw_sha256": "bfd9b8966108bda3e9791eea6c229340646a50a911413fee78db5bba1499d7bd",
+          "raw_bytes": 7641,
+          "raw_file": "ETH-USD/014.json",
+          "response_rows": 135,
+          "accepted_rows": 134,
+          "requested_start": "2026-10-06T12:50:00Z",
+          "requested_end_exclusive": "2026-10-07T00:00:00Z"
+        }
+      ],
+      "availability_assumption": "HISTORICAL_CANDLE_AVAILABLE_AT_INTERVAL_END_NOT_MEASURED_FEED_LATENCY",
+      "periods": {
+        "development": {
+          "opportunities": 219,
+          "complete_pairs": 219,
+          "pending_or_censored_pairs": 0,
+          "variants": {
+            "CONFIRMED_BREAKOUT": {
+              "status_counts_all": {
+                "NO_ENTRY": 205,
+                "CLOSED": 14
+              },
+              "no_entry_reasons_all": {
+                "NET_REWARD_RISK_BELOW_FLOOR": 40,
+                "ENTRY_EXTENDED": 136,
+                "STOP_TOO_DISTANT": 26,
+                "TARGET_ALREADY_REACHED": 1,
+                "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 2
+              },
+              "paired_closed_trades": 14,
+              "paired_wins": 3,
+              "paired_win_rate": 0.21428571428571427,
+              "paired_net_r_sum": -5.918316651399213,
+              "paired_mean_trade_r": -0.42273690367137234,
+              "mean_opportunity_r": -0.02702427694702837,
+              "stress_net_r_sum_same_trades": -7.281308550257436,
+              "stress_mean_opportunity_r_same_trades": -0.03324798424775085,
+              "profit_factor_r": 0.30208091898919026,
+              "commission_r_sum": 1.3629918988581742,
+              "funding_r_sum": 0.0,
+              "ambiguous_barrier_trades": 0
+            },
+            "FIRST_CONFIRMED_RETEST": {
+              "status_counts_all": {
+                "NO_ENTRY": 219
+              },
+              "no_entry_reasons_all": {
+                "NO_CONFIRMED_RETEST_IN_WINDOW": 56,
+                "RETEST_CLOSE_INVALIDATED": 97,
+                "TARGET_BEFORE_RETEST": 16,
+                "ENTRY_EXTENDED": 31,
+                "NET_REWARD_RISK_BELOW_FLOOR": 9,
+                "STOP_BEFORE_RETEST": 5,
+                "STOP_TOO_DISTANT": 3,
+                "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 2
+              },
+              "paired_closed_trades": 0,
+              "paired_wins": 0,
+              "paired_win_rate": null,
+              "paired_net_r_sum": 0,
+              "paired_mean_trade_r": null,
+              "mean_opportunity_r": 0.0,
+              "stress_net_r_sum_same_trades": 0,
+              "stress_mean_opportunity_r_same_trades": 0.0,
+              "profit_factor_r": null,
+              "commission_r_sum": 0,
+              "funding_r_sum": 0,
+              "ambiguous_barrier_trades": 0
+            }
+          },
+          "paired_retest_minus_breakout": {
+            "mean_opportunity_r_difference": 0.02702427694702837,
+            "utc_day_clusters": 8,
+            "descriptive_cluster_bootstrap_95pct": [
+              -0.0027946421332325833,
+              0.05471469036189461
+            ],
+            "status": "DESCRIPTIVE_ONLY_NO_EDGE_OR_PROMOTION_CLAIM"
+          }
+        },
+        "holdout": {
+          "opportunities": 176,
+          "complete_pairs": 176,
+          "pending_or_censored_pairs": 0,
+          "variants": {
+            "CONFIRMED_BREAKOUT": {
+              "status_counts_all": {
+                "NO_ENTRY": 169,
+                "CLOSED": 7
+              },
+              "no_entry_reasons_all": {
+                "NET_REWARD_RISK_BELOW_FLOOR": 27,
+                "ENTRY_EXTENDED": 120,
+                "STOP_TOO_DISTANT": 16,
+                "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 3,
+                "SAME_TF_TARGET_ALREADY_REACHED": 2,
+                "SAME_TF_BOTH_BARRIERS_REACHED": 1
+              },
+              "paired_closed_trades": 7,
+              "paired_wins": 6,
+              "paired_win_rate": 0.8571428571428571,
+              "paired_net_r_sum": 4.520500559283944,
+              "paired_mean_trade_r": 0.6457857941834205,
+              "mean_opportunity_r": 0.025684662268658773,
+              "stress_net_r_sum_same_trades": 3.8114942865121577,
+              "stress_mean_opportunity_r_same_trades": 0.021656217537000897,
+              "profit_factor_r": 5.520500559283944,
+              "commission_r_sum": 0.7090062727717482,
+              "funding_r_sum": 0.0,
+              "ambiguous_barrier_trades": 0
+            },
+            "FIRST_CONFIRMED_RETEST": {
+              "status_counts_all": {
+                "NO_ENTRY": 175,
+                "CLOSED": 1
+              },
+              "no_entry_reasons_all": {
+                "NO_CONFIRMED_RETEST_IN_WINDOW": 36,
+                "RETEST_CLOSE_INVALIDATED": 96,
+                "TARGET_BEFORE_RETEST": 10,
+                "NET_REWARD_RISK_BELOW_FLOOR": 4,
+                "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 3,
+                "ENTRY_EXTENDED": 18,
+                "STOP_BEFORE_RETEST": 3,
+                "SAME_TF_TARGET_ALREADY_REACHED": 2,
+                "SAME_TF_BOTH_BARRIERS_REACHED": 1,
+                "STOP_TOO_DISTANT": 2
+              },
+              "paired_closed_trades": 1,
+              "paired_wins": 0,
+              "paired_win_rate": 0.0,
+              "paired_net_r_sum": -1.0,
+              "paired_mean_trade_r": -1.0,
+              "mean_opportunity_r": -0.005681818181818182,
+              "stress_net_r_sum_same_trades": -1.0868533299013834,
+              "stress_mean_opportunity_r_same_trades": -0.006175303010803315,
+              "profit_factor_r": 0.0,
+              "commission_r_sum": 0.08685332990138474,
+              "funding_r_sum": 0.0,
+              "ambiguous_barrier_trades": 0
+            }
+          },
+          "paired_retest_minus_breakout": {
+            "mean_opportunity_r_difference": -0.031366480450476956,
+            "utc_day_clusters": 6,
+            "descriptive_cluster_bootstrap_95pct": [
+              -0.07752299188169576,
+              0.0
+            ],
+            "status": "DESCRIPTIVE_ONLY_NO_EDGE_OR_PROMOTION_CLAIM"
+          }
+        }
+      }
+    }
+  ],
+  "paired_outcomes_sha256": "a984e219239b2cb5f1f6820ef37fd347f0f3ce378f9de99a5e7360eda8be517e",
+  "combined_periods": {
+    "development": {
+      "opportunities": 432,
+      "complete_pairs": 432,
+      "pending_or_censored_pairs": 0,
+      "variants": {
+        "CONFIRMED_BREAKOUT": {
+          "status_counts_all": {
+            "NO_ENTRY": 410,
+            "CLOSED": 22
+          },
+          "no_entry_reasons_all": {
+            "STOP_TOO_DISTANT": 52,
+            "ENTRY_EXTENDED": 279,
+            "NET_REWARD_RISK_BELOW_FLOOR": 69,
+            "TARGET_ALREADY_REACHED": 3,
+            "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 7
+          },
+          "paired_closed_trades": 22,
+          "paired_wins": 4,
+          "paired_win_rate": 0.18181818181818182,
+          "paired_net_r_sum": -8.640775652461794,
+          "paired_mean_trade_r": -0.3927625296573543,
+          "mean_opportunity_r": -0.02000179549180971,
+          "stress_net_r_sum_same_trades": -10.711201597310877,
+          "stress_mean_opportunity_r_same_trades": -0.024794448141923327,
+          "profit_factor_r": 0.30770385806268097,
+          "commission_r_sum": 2.0704259448489966,
+          "funding_r_sum": 0.0,
+          "ambiguous_barrier_trades": 0
+        },
+        "FIRST_CONFIRMED_RETEST": {
+          "status_counts_all": {
+            "NO_ENTRY": 431,
+            "CLOSED": 1
+          },
+          "no_entry_reasons_all": {
+            "RETEST_CLOSE_INVALIDATED": 191,
+            "NO_CONFIRMED_RETEST_IN_WINDOW": 122,
+            "TARGET_BEFORE_RETEST": 35,
+            "STOP_TOO_DISTANT": 9,
+            "NET_REWARD_RISK_BELOW_FLOOR": 12,
+            "ENTRY_EXTENDED": 46,
+            "STOP_BEFORE_RETEST": 9,
+            "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 7
+          },
+          "paired_closed_trades": 1,
+          "paired_wins": 0,
+          "paired_win_rate": 0.0,
+          "paired_net_r_sum": -1.0,
+          "paired_mean_trade_r": -1.0,
+          "mean_opportunity_r": -0.0023148148148148147,
+          "stress_net_r_sum_same_trades": -1.0727676876487586,
+          "stress_mean_opportunity_r_same_trades": -0.0024832585362239783,
+          "profit_factor_r": 0.0,
+          "commission_r_sum": 0.07276768764875688,
+          "funding_r_sum": 0.0,
+          "ambiguous_barrier_trades": 0
+        }
+      },
+      "paired_retest_minus_breakout": {
+        "mean_opportunity_r_difference": 0.017686980676994896,
+        "utc_day_clusters": 8,
+        "descriptive_cluster_bootstrap_95pct": [
+          0.0005879793216448684,
+          0.03533114636405897
+        ],
+        "status": "DESCRIPTIVE_ONLY_NO_EDGE_OR_PROMOTION_CLAIM"
+      }
+    },
+    "holdout": {
+      "opportunities": 361,
+      "complete_pairs": 361,
+      "pending_or_censored_pairs": 0,
+      "variants": {
+        "CONFIRMED_BREAKOUT": {
+          "status_counts_all": {
+            "NO_ENTRY": 347,
+            "CLOSED": 14
+          },
+          "no_entry_reasons_all": {
+            "ENTRY_EXTENDED": 255,
+            "NET_REWARD_RISK_BELOW_FLOOR": 53,
+            "STOP_TOO_DISTANT": 23,
+            "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 9,
+            "TARGET_ALREADY_REACHED": 4,
+            "SAME_TF_TARGET_ALREADY_REACHED": 2,
+            "SAME_TF_BOTH_BARRIERS_REACHED": 1
+          },
+          "paired_closed_trades": 14,
+          "paired_wins": 10,
+          "paired_win_rate": 0.7142857142857143,
+          "paired_net_r_sum": 6.238807517824191,
+          "paired_mean_trade_r": 0.44562910841601366,
+          "mean_opportunity_r": 0.017282015284831555,
+          "stress_net_r_sum_same_trades": 4.799667987017128,
+          "stress_mean_opportunity_r_same_trades": 0.013295479188413097,
+          "profit_factor_r": 2.95895609840928,
+          "commission_r_sum": 1.4391395308069697,
+          "funding_r_sum": 0.0,
+          "ambiguous_barrier_trades": 0
+        },
+        "FIRST_CONFIRMED_RETEST": {
+          "status_counts_all": {
+            "NO_ENTRY": 358,
+            "CLOSED": 3
+          },
+          "no_entry_reasons_all": {
+            "NO_CONFIRMED_RETEST_IN_WINDOW": 80,
+            "RETEST_CLOSE_INVALIDATED": 182,
+            "TARGET_BEFORE_RETEST": 26,
+            "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": 9,
+            "ENTRY_EXTENDED": 43,
+            "STOP_TOO_DISTANT": 4,
+            "STOP_BEFORE_RETEST": 6,
+            "NET_REWARD_RISK_BELOW_FLOOR": 5,
+            "SAME_TF_TARGET_ALREADY_REACHED": 2,
+            "SAME_TF_BOTH_BARRIERS_REACHED": 1
+          },
+          "paired_closed_trades": 3,
+          "paired_wins": 2,
+          "paired_win_rate": 0.6666666666666666,
+          "paired_net_r_sum": 0.8182901203399915,
+          "paired_mean_trade_r": 0.27276337344666385,
+          "mean_opportunity_r": 0.0022667316352908353,
+          "stress_net_r_sum_same_trades": 0.5534008248657749,
+          "stress_mean_opportunity_r_same_trades": 0.0015329662738664126,
+          "profit_factor_r": 1.8182901203399915,
+          "commission_r_sum": 0.26488929547420437,
+          "funding_r_sum": 0.0,
+          "ambiguous_barrier_trades": 0
+        }
+      },
+      "paired_retest_minus_breakout": {
+        "mean_opportunity_r_difference": -0.015015283649540719,
+        "utc_day_clusters": 6,
+        "descriptive_cluster_bootstrap_95pct": [
+          -0.046354314662037516,
+          0.005391199825162087
+        ],
+        "status": "DESCRIPTIVE_ONLY_NO_EDGE_OR_PROMOTION_CLAIM"
+      }
+    }
+  },
+  "limitations": [
+    "Coinbase spot research prices are not Binance execution prices and are not futures.",
+    "Historical OHLC does not identify bid/ask, queue position, exact intrabar ordering or source delivery latency.",
+    "The modeled costs are the owner-approved paper assumptions, not a claim about Coinbase account fees or achievable live fills.",
+    "This compares isolated entries and fixed exits; it does not replay all current portfolio filters, allocation, partial exits or protective runtime behavior.",
+    "The data endpoint documents that historical intervals can be incomplete; strict continuity checks are mandatory.",
+    "No profitability conclusion may be drawn from synthetic unit tests or from a zero-trade result."
+  ],
+  "promotion": false
+}
