@@ -22,6 +22,7 @@ import veritas_learning_exports as VLE
 import veritas_learning_integrity as VLI
 import veritas_trade_diagnostics as VTD
 import veritas_timeframe_management as VTM
+import veritas_startup_guard as VSG
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
 VERSION=VR.PORTFOLIO_VERSION
@@ -60,6 +61,32 @@ def _execution_price_or_none(prices, asset):
 
 # VERITAS v90 portfolio migration
 V90_PORTFOLIOS = tuple(CTC.PORTFOLIO_ORDER)
+PORTFOLIO_MIGRATION_MARKER = 'v90_four_portfolios_20260925'
+SCHEMA_LOCK_TIMEOUT_MS = 2000
+SCHEMA_STATEMENT_TIMEOUT_MS = 8000
+# Match every column consumed by the schema below, including the delivery outbox.
+PORTFOLIO_SCHEMA_COLUMNS = {name: set(columns.split()) for name, columns in {
+    'paper_portfolios': '''name created_at updated_at initial_nav_rub realized_pnl_rub fees_rub
+        funding_rub benchmark_nav_rub high_water_nav_rub last_ruonia last_usdrub last_mark_at policy model_version''',
+    'paper_positions': '''portfolio_name asset direction units avg_entry_price opened_at updated_at
+        active_trade_id stop_price target_fraction last_price payload''',
+    'paper_trades': '''trade_id portfolio_name asset direction opened_at closed_at avg_entry_price avg_exit_price
+        max_fraction gross_pnl_rub fees_rub funding_rub net_pnl_rub return_on_entry_nav profitable
+        meaningful_win status setup horizon payload''',
+    'paper_orders': '''order_id portfolio_name trade_id created_at asset side price notional_rub fee_rub
+        fraction_nav reason payload client_order_id''',
+    'paper_nav_history': '''portfolio_name observed_at nav_rub nav_usd benchmark_nav_rub gross_leverage
+        net_exposure drawdown ruonia usdrub payload''',
+    'v90_migration_state': 'key migrated_at details',
+    VCN.TABLE: '''event_id client_order_id order_id trade_id portfolio_name asset kind occurred_at created_at
+        updated_at destination_ref telegram_chat_id snapshot text_snapshot status attempt_count next_attempt_at
+        claim_token worker_id lease_until send_started_at sent_at telegram_message_id last_error_code''',
+}.items()}
+PORTFOLIO_SCHEMA_INDEXES = {
+    'paper_trades': {'idx_paper_trades_portfolio_closed'},
+    'paper_orders': {'idx_paper_orders_client_order_id', 'idx_paper_orders_portfolio_ts'},
+    VCN.TABLE: {'idx_currency_alerts_delivery'},
+}
 
 
 def _v90_port_ident(x):
@@ -102,7 +129,7 @@ def _v90_copy_portfolio_table(c, table, name_column):
 def _v90_migrate_portfolio_data(c):
     c.execute("""CREATE TABLE IF NOT EXISTS v90_migration_state(
                    key TEXT PRIMARY KEY, migrated_at TIMESTAMPTZ NOT NULL, details JSONB NOT NULL)""")
-    marker='v90_four_portfolios_20260925'
+    marker=PORTFOLIO_MIGRATION_MARKER
     if c.execute("SELECT 1 AS ok FROM v90_migration_state WHERE key=%s",(marker,)).fetchone():
         return
     copied={}
@@ -116,7 +143,40 @@ def _v90_migrate_portfolio_data(c):
               (marker,json.dumps({'copied':copied,'portfolios':list(V90_PORTFOLIOS)})))
 
 def ensure_schema(pg_connect):
-    with pg_connect() as c:
+    # The runtime connector is autocommit=True: SET LOCAL needs an explicit
+    # transaction. Failures roll back this attempt and remain visible to rescue.
+    with pg_connect() as c, c.transaction():
+        c.execute("SELECT set_config('lock_timeout',%s,true),set_config('statement_timeout',%s,true)",
+                  (str(SCHEMA_LOCK_TIMEOUT_MS)+'ms',str(SCHEMA_STATEMENT_TIMEOUT_MS)+'ms'))
+        current=VSG.schema_matches(c,PORTFOLIO_SCHEMA_COLUMNS,PORTFOLIO_SCHEMA_INDEXES)
+        if not current:
+            _create_portfolio_schema(c)
+            if not VSG.schema_matches(c,PORTFOLIO_SCHEMA_COLUMNS,PORTFOLIO_SCHEMA_INDEXES):
+                raise RuntimeError('PORTFOLIO_SCHEMA_INCOMPLETE')
+        elif not c.execute("SELECT 1 AS ok FROM v90_migration_state WHERE key=%s",(PORTFOLIO_MIGRATION_MARKER,)).fetchone():
+            _v90_migrate_portfolio_data(c)
+        for name,pol in POLICIES.items():
+            initial_nav=float(pol.get('initial_nav_rub',INITIAL_NAV_RUB))
+            c.execute('''INSERT INTO paper_portfolios(name,created_at,updated_at,initial_nav_rub,benchmark_nav_rub,high_water_nav_rub,policy,model_version)
+                         VALUES(%s,now(),now(),%s,%s,%s,%s::jsonb,%s)
+                         ON CONFLICT(name) DO UPDATE SET policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()
+                         WHERE paper_portfolios.policy IS DISTINCT FROM EXCLUDED.policy
+                            OR paper_portfolios.model_version IS DISTINCT FROM EXCLUDED.model_version''',(name,initial_nav,initial_nav,initial_nav,json.dumps(pol),VERSION))
+        # Repair only untouched zero-capital placeholders, never an active book.
+        c.execute("""UPDATE paper_portfolios
+                     SET initial_nav_rub=%s,benchmark_nav_rub=%s,high_water_nav_rub=%s,
+                         updated_at=now(),policy=%s::jsonb,model_version=%s
+                     WHERE name=%s AND initial_nav_rub<=0
+                       AND realized_pnl_rub=0 AND fees_rub=0 AND funding_rub=0
+                       AND NOT EXISTS (SELECT 1 FROM paper_positions WHERE portfolio_name=%s)
+                       AND NOT EXISTS (SELECT 1 FROM paper_orders WHERE portfolio_name=%s)
+                       AND NOT EXISTS (SELECT 1 FROM paper_trades WHERE portfolio_name=%s)""",
+                  (VCP.INITIAL_NAV_RUB,VCP.INITIAL_NAV_RUB,VCP.INITIAL_NAV_RUB,
+                   json.dumps(POLICIES['Currency']),VERSION,VCP.PORTFOLIO_KEY,
+                   VCP.PORTFOLIO_KEY,VCP.PORTFOLIO_KEY,VCP.PORTFOLIO_KEY))
+
+
+def _create_portfolio_schema(c):
         c.execute('''
         CREATE TABLE IF NOT EXISTS paper_portfolios(
           name TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
@@ -166,20 +226,6 @@ def ensure_schema(pg_connect):
         ''')
         VCN.ensure_schema(c)
         _v90_migrate_portfolio_data(c)
-        for name,pol in POLICIES.items():
-            initial_nav=float(pol.get('initial_nav_rub',INITIAL_NAV_RUB))
-            c.execute('''INSERT INTO paper_portfolios(name,created_at,updated_at,initial_nav_rub,benchmark_nav_rub,high_water_nav_rub,policy,model_version)
-                         VALUES(%s,now(),now(),%s,%s,%s,%s::jsonb,%s)
-                         ON CONFLICT(name) DO UPDATE SET policy=EXCLUDED.policy,model_version=EXCLUDED.model_version,updated_at=now()''',(name,initial_nav,initial_nav,initial_nav,json.dumps(pol),VERSION))
-        # Currency was originally created as a zero-capital placeholder. Rebase
-        # only an untouched placeholder row; never rewrite a portfolio with trades.
-        c.execute("""UPDATE paper_portfolios
-                     SET initial_nav_rub=%s,benchmark_nav_rub=%s,high_water_nav_rub=%s,
-                         updated_at=now(),policy=%s::jsonb,model_version=%s
-                     WHERE name=%s AND initial_nav_rub<=0
-                       AND NOT EXISTS (SELECT 1 FROM paper_trades WHERE portfolio_name=%s)""",
-                  (VCP.INITIAL_NAV_RUB,VCP.INITIAL_NAV_RUB,VCP.INITIAL_NAV_RUB,
-                   json.dumps(POLICIES['Currency']),VERSION,VCP.PORTFOLIO_KEY,VCP.PORTFOLIO_KEY))
 
 
 def _fetch_usdrub():

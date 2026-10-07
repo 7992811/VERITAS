@@ -1,10 +1,12 @@
-"""Pure portfolio display accounting from a complete canonical ledger read.
+"""Portfolio display accounting and bounded canonical snapshot access.
 
-No provider calls, database access, admission checks or book mutations. Historical
-NAV observations stay historical; current balances use the current ledger and
-the already selected, entry-source-pinned position marks.
+No provider calls, admission checks or book mutations. Historical NAV observations
+stay historical; current balances use the current ledger and the already selected,
+entry-source-pinned position marks.
 """
 import math
+import threading
+import time
 from datetime import datetime, timezone
 
 
@@ -13,6 +15,46 @@ BALANCE_FIELDS = ('initial_nav_rub', 'realized_pnl_rub', 'fees_rub', 'funding_ru
 CURRENT_FIELDS = ('nav_rub', 'nav_usd', 'total_return_pct', 'drawdown_pct',
                   'gross_leverage', 'net_exposure', 'cash_equivalent_fraction',
                   'excess_vs_ruonia_pct', 'unrealized_pnl_rub')
+_snapshot_refresh_lock = threading.Lock()
+
+
+def starting_response(version):
+    """A bound HTTP socket does not make initialization-dependent APIs ready."""
+    return dict(status='STARTING', phase='STARTING', version=version,
+                bootstrap_ready=False, positions_complete=False,
+                accounting_complete=False, retry_after_seconds=5,
+                reason='BOOTSTRAP_IN_PROGRESS',
+                message='Сервис запускается. Данные портфелей ещё не проверены.')
+
+
+def portfolio_snapshot_read(refresh, cache, cache_lock):
+    """One refresh owns I/O; concurrent readers never queue another DB read."""
+    if not _snapshot_refresh_lock.acquire(blocking=False):
+        with cache_lock:
+            cached = cache.get('value')
+            cached_at = cache.get('at')
+        # Keep all observation times and quantities from the original snapshot.
+        # Explicit incompleteness makes the UI retain its last validated book.
+        out = dict(cached) if isinstance(cached, dict) else {'portfolios': []}
+        out.update(status='PARTIAL' if cached is not None else 'UPDATING',
+                   refresh_status='UPDATING', positions_complete=False,
+                   accounting_complete=False, snapshot_stale=True,
+                   api_source='stale_cache' if cached is not None else 'refresh_in_progress',
+                   reason='PORTFOLIO_SNAPSHOT_REFRESH_IN_PROGRESS', retry_after_seconds=2)
+        if cached is not None and isinstance(cached_at, (int, float)):
+            out['cache_age_seconds'] = max(0., time.time() - cached_at)
+        return out
+    try:
+        return refresh()
+    finally:
+        _snapshot_refresh_lock.release()
+
+
+def begin_read_snapshot(connection):
+    """Bound lock waits and each query inside the caller's read-only transaction."""
+    connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+    connection.execute("SET LOCAL lock_timeout = '1500ms'")
+    connection.execute("SET LOCAL statement_timeout = '10000ms'")
 
 
 def number(value):

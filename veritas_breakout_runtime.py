@@ -404,8 +404,20 @@ class BreakoutRuntime:
             clock = _clock(now)
             if clock is None:
                 return {"status": "INVALID_CLOCK", "paper_only": True}
+            # Copy only the lightweight quote/source descriptors up front.
+            # Full native histories are copied one asset at a time below, so the
+            # fast lane cannot retain a second complete multi-asset market graph
+            # while the ordinary cycle is building its own current asset.
             with _cache_lock:
-                markets = deepcopy(_markets)
+                markets = {
+                    asset: {
+                        "asset": market["asset"],
+                        "structure_source_identity": deepcopy(
+                            market["structure_source_identity"]),
+                        "quote": deepcopy(market.get("quote") or {}),
+                    }
+                    for asset, market in _markets.items()
+                }
             summary = _namespace_summary(self.ns)
             templates = {(row.get("asset"), row.get("horizon")): row for row in summary}
             observed_quotes = self._quotes(markets, quotes)
@@ -415,11 +427,20 @@ class BreakoutRuntime:
                 clock = _clock()
             context_started = time.monotonic()
             rows = []
-            for asset, market in markets.items():
-                identity = market["structure_source_identity"]
+            for asset, descriptor in markets.items():
+                identity = descriptor["structure_source_identity"]
                 quote = self._fresh_quote(asset, identity, observed_quotes.get(asset) or {}, clock)
                 if not quote:
                     continue
+                # Take an isolated snapshot only for the asset being evaluated.
+                # Revalidate identity because publish_market may replace this
+                # asset between quote collection and the per-asset snapshot.
+                with _cache_lock:
+                    current = _markets.get(asset)
+                    if (not current or not _same_source(
+                            identity, current["structure_source_identity"])):
+                        continue
+                    market = deepcopy(current)
                 market = self._native_broker_history(market)
                 raw = dict(market, **quote, _execution_quote=quote)
                 for tf in HORIZONS:
