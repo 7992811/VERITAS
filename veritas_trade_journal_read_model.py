@@ -37,15 +37,17 @@ def _scalar(expression):
             "THEN 'null'::jsonb ELSE " + expression + " END")
 
 
-def _object(expression, fields=(), extra=None):
-    values = [(key, _scalar(expression + "->'" + key + "'")) for key in fields]
+def _object(expression, fields=(), extra=None, *, field=None, present=None):
+    field = field if field is not None else lambda key: expression + "->'" + key + "'"
+    values = [(key, _scalar(field(key))) for key in fields]
     values.extend((extra or {}).items())
     selected = ','.join("('" + key + "'," + value + ")" for key, value in values)
     # Keep absence distinct from a recorded JSON null, notably unpinned Brent.
     return ("(CASE WHEN jsonb_typeof(" + expression + ")='object' THEN "
             "(SELECT COALESCE(jsonb_object_agg(journal_key,journal_value),'{}'::jsonb) "
             "FROM (VALUES " + selected + ") AS journal_fields(journal_key,journal_value) "
-            "WHERE " + expression + " ? journal_key) ELSE 'null'::jsonb END)")
+            "WHERE " + (present if present is not None else expression + " ? journal_key")
+            + ") ELSE 'null'::jsonb END)")
 
 
 def _ladder(expression):
@@ -59,23 +61,38 @@ def _ladder(expression):
 
 
 def _payload_sql():
-    nested = {key: _object("(payload->'" + key + "')", IDENTITY_FIELDS)
+    field = lambda key: 'journal_root."' + key + '"'
+    nested = {key: _object(field(key), IDENTITY_FIELDS)
               for key in ('price_source_lock', 'entry_execution_source_identity',
                           'last_exit_source_identity')}
-    nested['contract_identity'] = _object("(payload->'contract_identity')", (
+    nested['contract_identity'] = _object(field('contract_identity'), (
         'asset', 'contract_id', 'price_unit', 'primary_source',
         'verification_mode', 'continuous_series'))
-    nested['entry_contract'] = _object("(payload->'entry_contract')", CONTRACT_FIELDS)
-    nested['entry_source_names'] = _object("(payload->'entry_source_names')", ('primary', 'secondary'))
-    nested['entry_valuation_basis'] = _object("(payload->'entry_valuation_basis')", VALUATION_FIELDS)
-    nested['source_locked_mark'] = _object("(payload->'source_locked_mark')", ('price', 'observed_at'), {
-        'identity': _object("(payload#>'{source_locked_mark,identity}')", IDENTITY_FIELDS)})
+    nested['entry_contract'] = _object(field('entry_contract'), CONTRACT_FIELDS)
+    nested['entry_source_names'] = _object(field('entry_source_names'), ('primary', 'secondary'))
+    nested['entry_valuation_basis'] = _object(field('entry_valuation_basis'), VALUATION_FIELDS)
+    nested['source_locked_mark'] = _object(field('source_locked_mark'), ('price', 'observed_at'), {
+        'identity': _object("(" + field('source_locked_mark') + "->'identity')", IDENTITY_FIELDS)})
     for key in ('active_target_ladder', 'initial_target_ladder'):
-        nested[key] = _ladder("(payload->'" + key + "')")
+        nested[key] = _ladder(field(key))
     for key in ('active_target_event_snapshot', 'entry_event_snapshot'):
-        nested[key] = _object("(payload->'" + key + "')", extra={
-            'target_ladder': _ladder("(payload#>'{" + key + ",target_ladder}')")})
-    return _object('payload', SCALAR_FIELDS, nested)
+        nested[key] = _object(field(key), extra={
+            'target_ladder': _ladder("(" + field(key) + "->'target_ladder')")})
+    names = (*SCALAR_FIELDS, *nested)
+    columns = ','.join('"' + key + '" jsonb' for key in names)
+    requested = ','.join("'" + key + "'" for key in names)
+    guarded = "CASE WHEN jsonb_typeof(payload)='object' THEN payload ELSE '{}'::jsonb END"
+    projected = _object('payload', SCALAR_FIELDS, nested, field=field,
+                        present='journal_key = ANY(journal_presence.keys)')
+    # A record maps absent keys and JSON null to SQL NULL. Extract presence
+    # separately once, retaining only requested key names, to preserve both.
+    # Keep the record and key array inside this scalar subquery: no expanded
+    # evidence columns escape into the outer journal's ordered trade page.
+    return ("(SELECT " + projected + " FROM jsonb_to_record(" + guarded + ") AS journal_root("
+            + columns + ") CROSS JOIN LATERAL (SELECT ARRAY(SELECT journal_present.key "
+            "FROM jsonb_object_keys(" + guarded + ") AS journal_present(key) "
+            "WHERE journal_present.key = ANY(ARRAY[" + requested + "]::text[])) AS keys "
+            "OFFSET 0) AS journal_presence)")
 
 
 JOURNAL_PAYLOAD_SQL = _payload_sql()

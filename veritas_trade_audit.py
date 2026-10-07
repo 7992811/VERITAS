@@ -184,13 +184,21 @@ def summarize(rows):
         avg_loss_rub=loss/len(losses) if losses else None)
 
 
+_REPORT_FIELDS = ('trade_id','portfolio_name','asset','direction','horizon','setup','opened_at','closed_at',
+    'gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub','entry_notional_rub','entry_fill_count',
+    'exit_fill_count','held_seconds','exit_reason','cohort','evidence_exclusion')
+_EXAMPLE_PAYLOAD_FIELDS = ('r55_lifetime_mfe_pct','mfe_pct','entry_quality',
+    'entry_primary_source','expected_move_pct','last_management_reason')
+
+
 def analyze(rows):
-    rows = [dict(r) for r in rows]
+    source_rows, rows = rows, []
     buckets = {k: defaultdict(list) for k in ('portfolio', 'asset', 'horizon', 'exit_reason', 'cohort', 'entry_day', 'evidence')}
     patterns = defaultdict(list)
     diagnostics = defaultdict(int)
     episodes = set()
-    for r in rows:
+    for raw in source_rows:
+        r = dict(raw)
         p = payload(r.get('payload'))
         reason = str(p.get('exit_reason') or p.get('close_reason') or r.get('last_exit_reason') or 'UNKNOWN')
         r['exit_reason'] = reason
@@ -222,6 +230,12 @@ def analyze(rows):
             # Cross-portfolio copies of the same market event are not independent tests.
             episodes.add((r.get('asset'),r.get('direction'),
                 p.get('r66_event_id') or p.get('canonical_setup_id') or str(r.get('opened_at'))))
+        # All source/event/MA proofs and diagnostics have consumed the full row.
+        # Buckets share this private dict; retain only their report inputs.
+        compact = {k:r[k] for k in _REPORT_FIELDS if k in r}
+        compact['payload'] = {k:p[k] for k in _EXAMPLE_PAYLOAD_FIELDS if k in p}
+        r.clear(); r.update(compact); rows.append(r)
+        del raw, p, compact
     total = summarize(rows)
     grouped = {kind: [dict(key=k, **summarize(v)) for k,v in sorted(groups.items())]
                for kind,groups in buckets.items()}
@@ -236,9 +250,7 @@ def analyze(rows):
     loss_patterns.sort(key=lambda r:r['net_pnl_rub'])
     def example(r):
         p = payload(r.get('payload'))
-        fields = ('trade_id','portfolio_name','asset','direction','horizon','setup','opened_at','closed_at',
-            'gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub','entry_notional_rub','entry_fill_count',
-            'exit_fill_count','held_seconds','exit_reason','cohort','evidence_exclusion')
+        fields = _REPORT_FIELDS
         result = {k: (r[k].isoformat() if isinstance(r.get(k),datetime) else r.get(k)) for k in fields}
         result.update(mfe_pct=p.get('r55_lifetime_mfe_pct',p.get('mfe_pct')),
             entry_quality=p.get('entry_quality'),entry_source=p.get('entry_primary_source'),
@@ -256,7 +268,10 @@ def analyze(rows):
 
 
 def audit_closed_trades(conn):
-    rows = conn.execute('''SELECT t.*,
+    with conn.transaction():
+      with conn.cursor(name='veritas_loss_audit') as rows:
+        rows.itersize = 8
+        rows.execute('''SELECT t.*,
         EXTRACT(EPOCH FROM (t.closed_at-t.opened_at)) AS held_seconds,
         o.entry_notional_rub,o.entry_fill_count,o.exit_fill_count,o.last_exit_reason
         FROM paper_trades t LEFT JOIN (
@@ -267,5 +282,5 @@ def audit_closed_trades(conn):
             (ARRAY_AGG(reason ORDER BY created_at DESC) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_reason
           FROM paper_orders GROUP BY trade_id
         ) o ON o.trade_id=t.trade_id
-        WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')''').fetchall()
-    return analyze(rows)
+        WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')''')
+        return analyze(rows)

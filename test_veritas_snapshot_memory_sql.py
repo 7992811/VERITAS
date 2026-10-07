@@ -931,5 +931,117 @@ class AgentSnapshotMemorySQLTests(_LedgerSQLFixture):
         self.assert_closed(trace)
 
 
+
+class LossAuditTracedCursor(TracedCursor):
+    def observe(self, row):
+        result = super().observe(row)
+        self.record['keys'][-1] = row['trade_id']
+        return result
+
+
+class LossAuditTracedConnection(TracedConnection):
+    def cursor(self, *args, **kwargs):
+        return LossAuditTracedCursor(self.connection.cursor(*args, **kwargs), self.trace, server=True)
+
+
+class LossAuditReadTrace(ReadTrace):
+    @contextmanager
+    def connect(self):
+        with self.raw_connect() as c:
+            self.connections.append(c)
+            yield LossAuditTracedConnection(c, self)
+
+
+class LossAuditMemorySQLTests(_LedgerSQLFixture):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        with cls.driver.connect(DSN) as c:
+            c.execute(f"SET search_path TO {cls.schema}")
+            c.execute("""CREATE TABLE paper_trades(
+                trade_id text PRIMARY KEY,portfolio_name text,asset text,direction text,
+                horizon text,setup text,opened_at timestamptz,closed_at timestamptz,
+                gross_pnl_rub double precision,fees_rub double precision,
+                funding_rub double precision,net_pnl_rub double precision,status text,payload jsonb);
+              CREATE TABLE paper_orders(trade_id text,created_at timestamptz,
+                side text,notional_rub double precision,reason text)""")
+
+    def setUp(self):
+        super().setUp()
+        with self.connect() as c:
+            c.execute("TRUNCATE paper_trades,paper_orders")
+        from test_veritas_trade_audit import loss_audit_fixture
+        fixtures = loss_audit_fixture()
+        trades, orders = [], []
+        for i in range(728):
+            row = deepcopy(fixtures[i % len(fixtures)])
+            key = 'LOSS_'+str(i)
+            status = {0:'OPEN',1:'CLOSE',2:'EXITED',3:'OPEN'}.get(i % 11,'CLOSED')
+            closed = None if i % 11 in (0,1,2) else row.get('closed_at')
+            p = row.get('payload')
+            if i < 9 and isinstance(p,dict):
+                p['unused_full_history'] = 'UNUSED_HEAVY_FIELD:'*60000
+            trades.append((key,row.get('portfolio_name'),row.get('asset'),row.get('direction'),
+                row.get('horizon'),row.get('setup'),row.get('opened_at'),closed,
+                *(None if row.get(k) is None else float(row[k]) for k in
+                  ('gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub')),
+                status,json.dumps(p,default=str)))
+            if i % 7:
+                at = row['opened_at']
+                orders.append((key,at,'BUY',1000.,'ENTRY'))
+                orders.append((key,at+timedelta(seconds=60),'SELL',500.,'STOP'))
+                if i % 3 == 0:
+                    orders.append((key,at+timedelta(seconds=30),'SELL_SHORT',2000.,'ADD'))
+                if i % 2 == 0:
+                    orders.append((key,at+timedelta(seconds=120),'BUY_TO_COVER',1000.,'SIGNAL_FLIP'))
+        with self.connect() as c:
+            with c.transaction():
+                with c.cursor() as cursor:
+                    cursor.executemany("INSERT INTO paper_trades VALUES("+','.join(['%s']*13)+",%s::jsonb)",trades)
+                    cursor.executemany("INSERT INTO paper_orders VALUES(%s,%s,%s,%s,%s)",orders)
+
+    def test_all_closed_rows_full_proof_join_delivery_and_report_equal_frozen_query(self):
+        import hashlib
+        import veritas_trade_audit as audit
+        from test_veritas_trade_audit import LEGACY_AUDIT_SQL, legacy_analyze
+        with self.connect() as c:
+            original = c.execute(LEGACY_AUDIT_SQL).fetchall()
+        expected = legacy_analyze(original)
+        trace = LossAuditReadTrace(self.connect)
+        with trace.connect() as c:
+            actual = audit.audit_closed_trades(c)
+        self.assertEqual(actual,expected)
+        digest = lambda result: hashlib.sha256(json.dumps(result,sort_keys=True,default=str).encode()).hexdigest()
+        self.assertEqual(digest(actual),digest(expected))
+        query = trace.queries[0]
+        self.assertEqual(query['sql'],LEGACY_AUDIT_SQL)
+        self.assertEqual(query['keys'],[row['trade_id'] for row in original])
+        self.assertGreater(len(original),659)
+        self.assertEqual(query['rows'],len(original))
+        self.assertEqual(trace.cursors[0].itersize,8)
+        self.assertTrue(query['heavy'])  # full proof reaches classification
+        self.assertNotIn('UNUSED_HEAVY_FIELD',json.dumps(actual,default=str))
+        self.assert_closed(trace)
+
+    def test_real_cursor_interruption_rolls_back_closes_and_allows_complete_retry(self):
+        import veritas_trade_audit as audit
+        from test_veritas_trade_audit import LEGACY_AUDIT_SQL, legacy_analyze
+        trace = LossAuditReadTrace(self.connect)
+        trace.fail_after = 9
+        with self.assertRaisesRegex(RuntimeError,'interrupted memory stream'):
+            with trace.connect() as c:
+                audit.audit_closed_trades(c)
+        self.assertEqual(trace.queries[0]['rows'],9)
+        self.assert_closed(trace)
+        trace.fail_after = None
+        with trace.connect() as c:
+            actual = audit.audit_closed_trades(c)
+        with self.connect() as c:
+            expected = legacy_analyze(c.execute(LEGACY_AUDIT_SQL).fetchall())
+        self.assertEqual(actual,expected)
+        self.assert_closed(trace)
+
+
+
 if __name__ == "__main__":
     unittest.main()

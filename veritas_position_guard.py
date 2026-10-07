@@ -1054,6 +1054,7 @@ def start(ns):
             try:
                 with ns['pg_connect']() as c:
                     positions = [dict(z) for z in c.execute('SELECT * FROM paper_positions').fetchall()]
+                position_count = len(positions)
                 refresh_position_quotes(ns,positions)
                 quotes, errors, paused = {}, {}, {}
                 for z in positions:
@@ -1068,7 +1069,9 @@ def start(ns):
                             paused[key]='MARKET_CLOSED'
                         else:
                             errors[key]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
-                changes = run_protective_pass(ns['VP'], ns['pg_connect'], quotes) if positions else []
+                # Quote preparation is complete; the locked pass reads its own book.
+                positions = z = None
+                changes = run_protective_pass(ns['VP'], ns['pg_connect'], quotes) if position_count else []
                 if changes:
                     with ns['_v90r25_pf_lock']:
                         ns['_v90r25_pf_cache'].update(at=0.0, value=None)
@@ -1077,9 +1080,9 @@ def start(ns):
                     with ns['_v90r23_trade_lock']:
                         ns['_v90r23_trade_cache'].update(at=0.0, value=None)
                 status=('DEGRADED' if errors else
-                        'PAUSED_MARKET_CLOSED' if paused and positions else 'OK')
+                        'PAUSED_MARKET_CLOSED' if paused and position_count else 'OK')
                 _state.update(status=status, checked_at=datetime.now(timezone.utc).isoformat(),
-                              open_positions=len(positions), quotes=len(quotes), errors=errors,
+                              open_positions=position_count, quotes=len(quotes), errors=errors,
                               paused=paused,
                               last_changes=changes or _state.get('last_changes', []),
                               duration_seconds=round(time.monotonic()-started, 3))
@@ -1089,5 +1092,7 @@ def start(ns):
             except Exception as exc:
                 _state.update(status='ERROR', checked_at=datetime.now(timezone.utc).isoformat(), error=f'{type(exc).__name__}: {exc}')
                 ns['emit']('paper_protective_guard_error', **snapshot())
+            finally:
+                positions = z = c = q = None
             time.sleep(max(1.0, 15-(time.monotonic()-started)))
     threading.Thread(target=loop, daemon=True, name='veritas-paper-protection').start()

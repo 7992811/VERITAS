@@ -122,5 +122,125 @@ class ShadowWindowProjectionTests(unittest.TestCase):
         self.assertEqual(result['current'], {'n': 1, 'positive_rate': 0., 'avg_pnl': -.2})
 
 
+CYCLE_RELEASES = {
+    'fresh_summary','_carry','_merged','_prev_summary','_x','portfolio_autopilot','state',
+    'perf','calibration_rows','analog_board','_market_future','_warm_knowledge','_warm_memory',
+    'v70_pretrade','institutional_signal','experience_decision','setup_memory','tradeability',
+    'knowledge_arbitration','knowledge_adjustment','kmatches','orth_evidence',
+}
+
+
+class CycleSnapshotLifetimeTests(unittest.TestCase):
+    def tail(self):
+        cycle = function('cycle')
+        boundary = next(i for i,n in enumerate(cycle.body)
+                        if isinstance(n,ast.Expr) and isinstance(n.value,ast.Call)
+                        and isinstance(n.value.func,ast.Name) and n.value.func.id=='_v90_trim_memory'
+                        and n.value.args and isinstance(n.value.args[0],ast.Constant)
+                        and n.value.args[0].value=='cycle_end')
+        releases = cycle.body[boundary-3:boundary]
+        self.assertTrue(all(isinstance(n,ast.Assign) and isinstance(n.value,ast.Constant)
+                            and n.value.value is None for n in releases))
+        names = {target.id for n in releases for target in n.targets if isinstance(target,ast.Name)}
+        self.assertEqual(names,CYCLE_RELEASES)
+        later_reads = {n.id for b in cycle.body[boundary:] for n in ast.walk(b)
+                       if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Load)}
+        self.assertFalse(names & later_reads,'A released local is still a downstream consumer input')
+        cycle.body = cycle.body[boundary-3:]
+        return cycle
+
+    def replay(self, *, release=True, mode='FULL', failure=None):
+        cycle = self.tail()
+        if not release:
+            # Replay the exact old lifetime, keeping every real downstream call.
+            cycle.body = cycle.body[3:]
+        names = sorted(CYCLE_RELEASES)
+        # Only the running frame owns these previous graphs. A shared published
+        # branch is also present in each owner, so destructive clears are caught.
+        setup = ast.parse(','.join(names)+' = make_owners()').body
+        cycle.body = setup + cycle.body + ast.parse('yield None').body
+        published = TrackedSnapshot(status='OK',summary=[{'asset':'CNYRUBF','horizon':'5m'}],
+            portfolio_autopilot={'status':'OK','portfolios':[{'name':'Currency','positions':[
+                {'asset':'CNYRUBF','direction':'SHORT','units':588.632,'payload':{'source':'pinned'}}]}]})
+        cache = {'value':published['portfolio_autopilot']}
+        frozen = deepcopy(published)
+        published_positions = published['portfolio_autopilot']['portfolios'][0]['positions']
+        refs = {}; observations = []; events = []; emitted = []
+        def make_owners():
+            owners = []
+            for name in names:
+                graph = TrackedSnapshot(previous_proof=name)
+                refs[name] = weakref.ref(graph)
+                owners.append(TrackedSnapshot(previous=graph,current=published_positions))
+            return tuple(owners)
+        def observe(event):
+            observations.append((event,sum(ref() is not None for ref in refs.values())))
+            self.assertEqual(published,frozen)
+            self.assertIs(published['portfolio_autopilot'],cache['value'])
+            self.assertIs(published['portfolio_autopilot']['portfolios'][0]['positions'],published_positions)
+        def trim(phase,force=False):
+            observe('trim')
+            events.append(('trim',phase,force))
+        def archive():
+            observe('archive')
+            events.append(('archive',))
+        def note(event,*args):
+            events.append((event,*args))
+            if failure==event:
+                raise RuntimeError('fixture '+event)
+        def emit(event,**values):
+            emitted.append((event,deepcopy(values)))
+        namespace={'make_owners':make_owners,'_v90_trim_memory':trim,'emit':emit,
+            'pg_enabled':lambda:True,'save_product_snapshot':archive,
+            '_v90_schedule_outcome_refresh':lambda reason:note('outcomes',reason),
+            '_v90_daily_intelligence_metrics':lambda:note('daily'),
+            '_v90r37_storage_retention':lambda:note('retention'),
+            'heavy_learning_due':lambda:True,
+            'maybe_schedule_heavy_learning':lambda reason:note('learning',reason),
+            'made':49,'outcomes':3,'status':'ok','storage':{'ok':True},
+            'telemetry':{'elapsed_seconds':200.0},'last_cycle':published}
+        run = compile_function(cycle,namespace)
+        frame = run(cycle_mode=mode)
+        try:
+            next(frame)
+            self.assertIsNotNone(frame.gi_frame,'The cycle frame must still be alive')
+            self.assertEqual(published,frozen)
+            self.assertEqual(sum(ref() is not None for ref in refs.values()),
+                             0 if release else len(names))
+            self.assertIs(namespace['last_cycle'],published)
+        finally:
+            frame.close()
+        return observations,events,emitted
+
+    def test_completed_cycle_graphs_are_released_before_trim_and_archive_with_live_frame(self):
+        old = self.replay(release=False)
+        new = self.replay()
+        self.assertEqual(old[0],[('trim',len(CYCLE_RELEASES)),('archive',len(CYCLE_RELEASES))])
+        self.assertEqual(new[0],[('trim',0),('archive',0)])
+        self.assertEqual(new[1:],old[1:])
+        self.assertEqual(new[1],[('trim','cycle_end',True),('archive',),
+            ('outcomes','full_cycle_complete'),('daily',),('retention',),('learning','interval_due')])
+        self.assertEqual(new[2][0],('cycle_complete',{'decisions_written':49,'outcomes_written':3,
+            'status':'ok','durable_storage':True,'elapsed_seconds':200.0}))
+
+    def test_fast_lane_releases_owners_without_adding_archive_or_maintenance(self):
+        old = self.replay(release=False,mode='FAST_5M')
+        new = self.replay(mode='FAST_5M')
+        self.assertEqual(new[0],[('trim',0)])
+        self.assertEqual(new[1],[('trim','cycle_end',True)])
+        self.assertEqual(new[1:],old[1:])
+
+    def test_downstream_maintenance_failures_keep_original_error_and_continuation(self):
+        for failure in ('daily','retention'):
+            with self.subTest(failure=failure):
+                old = self.replay(release=False,failure=failure)
+                new = self.replay(failure=failure)
+                self.assertEqual(new[1:],old[1:])
+                self.assertEqual(new[0],[('trim',0),('archive',0)])
+                self.assertEqual(len(new[2]),2)
+                self.assertIn('fixture '+failure,new[2][1][1]['error'])
+                self.assertEqual(new[1][-1],('learning','interval_due'))
+
+
 if __name__ == '__main__':
     unittest.main()

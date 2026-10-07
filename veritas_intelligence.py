@@ -7499,6 +7499,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         market_bundles.clear()
     except Exception:
         pass
+    fresh_summary=_carry=_merged=_prev_summary=_x=portfolio_autopilot=state=None
+    perf=calibration_rows=analog_board=_market_future=_warm_knowledge=_warm_memory=None
+    v70_pretrade=institutional_signal=experience_decision=setup_memory=tradeability=knowledge_arbitration=knowledge_adjustment=kmatches=orth_evidence=None
     _v90_trim_memory('cycle_end',force=True)
     emit('cycle_complete', decisions_written=made, outcomes_written=outcomes, status=status,
          durable_storage=storage.get('ok', False),**telemetry)
