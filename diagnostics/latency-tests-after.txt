@@ -2,7 +2,7 @@ test_expired_pending_does_not_extend_signal_or_quote_time (test_veritas_structur
 test_lock_diagnostics_do_not_change_priority_reentry_or_ownership (test_veritas_structural_latency.BoundedRetryTests.test_lock_diagnostics_do_not_change_priority_reentry_or_ownership) ... ok
 test_nonreserved_and_failed_callbacks_cannot_publish_execution_success (test_veritas_structural_latency.BoundedRetryTests.test_nonreserved_and_failed_callbacks_cannot_publish_execution_success) ... ok
 test_pending_retry_bypasses_context_and_preserves_original_event (test_veritas_structural_latency.BoundedRetryTests.test_pending_retry_bypasses_context_and_preserves_original_event) ... ok
-test_repeated_busy_keeps_one_batch_and_reports_wait_not_success (test_veritas_structural_latency.BoundedRetryTests.test_repeated_busy_keeps_one_batch_and_reports_wait_not_success) ... FAIL
+test_repeated_busy_keeps_one_batch_and_reports_wait_not_success (test_veritas_structural_latency.BoundedRetryTests.test_repeated_busy_keeps_one_batch_and_reports_wait_not_success) ... ok
 test_index_equals_original_scan_at_every_clock_including_delayed_bars (test_veritas_structural_latency.CausalConsumptionIndexTests.test_index_equals_original_scan_at_every_clock_including_delayed_bars) ... ok
 test_native_input_and_levels_are_not_mutated (test_veritas_structural_latency.CausalConsumptionIndexTests.test_native_input_and_levels_are_not_mutated) ... ok
 test_all_nested_mutations_and_supplied_contract_revalidate (test_veritas_structural_latency.ProofMemoTests.test_all_nested_mutations_and_supplied_contract_revalidate) ... ok
@@ -10,6 +10,20 @@ test_cache_is_bounded_and_retains_no_event_graph (test_veritas_structural_latenc
 test_changed_defaults_and_event_spending_do_not_reuse_an_old_key (test_veritas_structural_latency.ProofMemoTests.test_changed_defaults_and_event_spending_do_not_reuse_an_old_key) ... ok
 test_identical_static_proof_reuses_success_not_admission (test_veritas_structural_latency.ProofMemoTests.test_identical_static_proof_reuses_success_not_admission) ... ok
 test_result_is_detached_and_failures_are_not_promoted (test_veritas_structural_latency.ProofMemoTests.test_result_is_detached_and_failures_are_not_promoted) ... ok
+test_expired_pending_does_not_extend_signal_or_quote_time (test_veritas_structural_latency.BoundedRetryTests.test_expired_pending_does_not_extend_signal_or_quote_time) ... ok
+test_lock_diagnostics_do_not_change_priority_reentry_or_ownership (test_veritas_structural_latency.BoundedRetryTests.test_lock_diagnostics_do_not_change_priority_reentry_or_ownership) ... ok
+test_nonreserved_and_failed_callbacks_cannot_publish_execution_success (test_veritas_structural_latency.BoundedRetryTests.test_nonreserved_and_failed_callbacks_cannot_publish_execution_success) ... ok
+test_pending_retry_bypasses_context_and_preserves_original_event (test_veritas_structural_latency.BoundedRetryTests.test_pending_retry_bypasses_context_and_preserves_original_event) ... ok
+test_repeated_busy_keeps_one_batch_and_reports_wait_not_success (test_veritas_structural_latency.BoundedRetryTests.test_repeated_busy_keeps_one_batch_and_reports_wait_not_success) ... ok
+test_expired_pending_does_not_extend_signal_or_quote_time (test_veritas_retry_freshness.RetryOrderingTests.test_expired_pending_does_not_extend_signal_or_quote_time) ... ok
+test_lock_diagnostics_do_not_change_priority_reentry_or_ownership (test_veritas_retry_freshness.RetryOrderingTests.test_lock_diagnostics_do_not_change_priority_reentry_or_ownership) ... ok
+test_nonreserved_and_failed_callbacks_cannot_publish_execution_success (test_veritas_retry_freshness.RetryOrderingTests.test_nonreserved_and_failed_callbacks_cannot_publish_execution_success) ... ok
+test_pending_retry_bypasses_context_and_preserves_original_event (test_veritas_retry_freshness.RetryOrderingTests.test_pending_retry_bypasses_context_and_preserves_original_event) ... ok
+test_removed_market_discards_queue_without_callback (test_veritas_retry_freshness.RetryOrderingTests.test_removed_market_discards_queue_without_callback) ... ok
+test_repeated_busy_keeps_one_batch_and_reports_wait_not_success (test_veritas_retry_freshness.RetryOrderingTests.test_repeated_busy_keeps_one_batch_and_reports_wait_not_success) ... ok
+test_retry_quote_is_published_but_not_marked_structurally_consumed (test_veritas_retry_freshness.RetryOrderingTests.test_retry_quote_is_published_but_not_marked_structurally_consumed) ... ok
+test_source_rollover_discards_queue_without_callback (test_veritas_retry_freshness.RetryOrderingTests.test_source_rollover_discards_queue_without_callback) ... ok
+test_input_mutation_during_validation_is_not_cached (test_veritas_retry_freshness.StaticMemoRaceTests.test_input_mutation_during_validation_is_not_cached) ... ok
 test_deeply_late_first_quote_does_not_move_target_farther_to_allow_entry (test_veritas_structural_breakout.CausalQuoteBreakoutTests.test_deeply_late_first_quote_does_not_move_target_farther_to_allow_entry) ... ok
 test_execution_rebinding_can_spend_target_but_cannot_reopen_it (test_veritas_structural_breakout.CausalQuoteBreakoutTests.test_execution_rebinding_can_spend_target_but_cannot_reopen_it) ... ok
 test_execution_rebinding_changes_current_quote_not_frozen_event_or_tracker (test_veritas_structural_breakout.CausalQuoteBreakoutTests.test_execution_rebinding_changes_current_quote_not_frozen_event_or_tracker) ... ok
@@ -191,19 +205,7 @@ test_near_held_target_blocks_long_short_before_accounting (test_veritas_repeat_a
 test_refreshed_add_fill_cannot_chase_after_a_timely_initial_admission (test_veritas_repeat_add.StoredAddGeometryRegressionTests.test_refreshed_add_fill_cannot_chase_after_a_timely_initial_admission) ... ok
 test_valid_held_target_funds_add_and_keeps_original_and_new_traces (test_veritas_repeat_add.StoredAddGeometryRegressionTests.test_valid_held_target_funds_add_and_keeps_original_and_new_traces) ... ok
 
-======================================================================
-FAIL: test_repeated_busy_keeps_one_batch_and_reports_wait_not_success (test_veritas_structural_latency.BoundedRetryTests.test_repeated_busy_keeps_one_batch_and_reports_wait_not_success)
 ----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/home/runner/work/VERITAS/VERITAS/test_veritas_structural_latency.py", line 154, in test_repeated_busy_keeps_one_batch_and_reports_wait_not_success
-    self.assertEqual(result['status'],'WAITING_FOR_BOOK')
-    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: 'ERROR' != 'WAITING_FOR_BOOK'
-- ERROR
-+ WAITING_FOR_BOOK
+Ran 206 tests in 13.048s
 
-
-----------------------------------------------------------------------
-Ran 192 tests in 13.075s
-
-FAILED (failures=1)
+OK

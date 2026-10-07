@@ -1,0 +1,48 @@
+         84891519 function calls (39250806 primitive calls) in 34.804 seconds
+
+   Ordered by: cumulative time
+   List reduced from 925 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000   34.836   34.836 runner.py:241(run)
+      7/1    0.000    0.000   34.836   34.836 suite.py:83(__call__)
+      7/1    0.000    0.000   34.836   34.836 suite.py:102(run)
+       43    0.000    0.000   34.835    0.810 case.py:724(__call__)
+       43    0.001    0.000   34.835    0.810 case.py:634(run)
+       43    0.017    0.000   28.605    0.665 case.py:614(_callTestMethod)
+39627310/47255    9.549    0.000   24.908    0.001 copy.py:110(deepcopy)
+2609949/92842    9.940    0.000   24.595    0.000 copy.py:198(_deepcopy_dict)
+274121/72529    1.033    0.000   22.152    0.000 copy.py:172(_deepcopy_list)
+       41    0.029    0.001   19.650    0.479 veritas_structural_lifecycle.py:250(fast_entry_pass)
+       30    0.011    0.000   17.174    0.572 test_veritas_structural_lifecycle.py:303(run_fast)
+       34    0.055    0.002   14.068    0.414 veritas_portfolio_runtime.py:5007(canonical_open_or_add)
+       17    0.004    0.000    9.671    0.569 test_veritas_structural_lifecycle.py:308(open)
+      204    0.053    0.000    7.630    0.037 veritas_structural_breakout.py:486(build_context)
+      122    0.030    0.000    6.949    0.057 test_veritas_structural_lifecycle.py:63(data)
+  249/154    0.002    0.000    6.920    0.045 copy.py:181(_deepcopy_tuple)
+       31    0.024    0.001    6.866    0.221 test_veritas_structural_lifecycle.py:219(observed_rows)
+3744/3655    0.109    0.000    6.741    0.002 {built-in method builtins.next}
+     1260    0.014    0.000    6.707    0.005 test_veritas_structural_lifecycle.py:93(execute)
+  389/344    0.000    0.000    6.623    0.019 contextlib.py:136(__enter__)
+      228    0.002    0.000    6.620    0.029 test_veritas_structural_lifecycle.py:66(transaction)
+       30    0.029    0.001    6.414    0.214 veritas_portfolio.py:2814(_open_or_add)
+      204    0.124    0.001    6.409    0.031 veritas_structural_breakout.py:233(_native_facts)
+       43    0.000    0.000    6.222    0.145 case.py:611(_callSetUp)
+       28    0.002    0.000    6.221    0.222 test_veritas_structural_lifecycle.py:269(setUp)
+     1259    0.019    0.000    5.840    0.005 test_veritas_structural_lifecycle.py:34(__init__)
+      530    0.011    0.000    3.696    0.007 test_veritas_structural_lifecycle.py:37(fetchone)
+        1    0.004    0.004    3.565    3.565 test_veritas_structural_lifecycle.py:403(test_guard_tp1_reduces_half_actual_units_then_tp2_closes_only_the_remainder)
+      249    0.018    0.000    3.548    0.014 veritas_portfolio.py:2106(_portfolio_rows)
+       37    0.001    0.000    2.836    0.077 veritas_observation_path.py:315(record)
+135221/5392    0.195    0.000    2.800    0.001 {built-in method builtins.sum}
+2014692/165    1.201    0.000    2.791    0.017 veritas_structural_breakout.py:195(_facts_size)
+110375/495    0.039    0.000    2.790    0.006 veritas_structural_breakout.py:204(<genexpr>)
+1080818/660    0.550    0.000    2.788    0.004 veritas_structural_breakout.py:202(<genexpr>)
+        3    0.008    0.003    2.627    0.876 veritas_position_guard.py:674(run_protective_pass)
+       30    0.007    0.000    2.424    0.081 veritas_portfolio.py:2208(_open_or_add)
+      416    0.014    0.000    2.232    0.005 veritas_timeframe_policy.py:168(prepare_row)
+      285    0.007    0.000    2.145    0.008 test_veritas_structural_lifecycle.py:40(fetchall)
+  2884221    1.356    0.000    2.123    0.000 copy.py:212(_keep_alive)
+        1    0.000    0.000    2.082    2.082 test_veritas_structural_lifecycle.py:531(test_observed_profit_peak_is_saved_before_admission_and_survives_quote_retreat)
+
+
