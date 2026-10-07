@@ -1,0 +1,45 @@
+name: Verify pending quote lease correction
+on:
+  push:
+    branches: [fix/structural-latency-book-20261007]
+    paths: [.github/workflows/pending-quote-once.yml]
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.3'
+      - run: pip install -r requirements-intelligence.txt
+      - name: Apply exact reviewed correction and mandatory tests
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p=Path('veritas_structural_lifecycle.py');b=p.read_bytes()
+          assert hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()=='749fd3b1a709cbbb2c58ebb79b09eb84d6acc4e7'
+          s=b.decode();a="""                pending = any(SB.entry_gate(TFP.context_of(row),
+              VPS.quote_from_row(row).get('price'), row.get('research_decision'), clock).get('eligible')
+              for candidates in grouped.values() for row in candidates)
+          """
+          # Match indentation literally; the two continuation lines use twenty spaces.
+          a="                pending = any(SB.entry_gate(TFP.context_of(row),\n                    VPS.quote_from_row(row).get('price'), row.get('research_decision'), clock).get('eligible')\n                    for candidates in grouped.values() for row in candidates)\n"
+          replacement="                # Preserve event age, but renew with the latest verified cached quote.\n                # prepare_row also records observed spent barriers in their state owner.\n                pending = any((TFP.prepare_row(VPG.refresh_execution_row(row, now=clock),\n                    now=clock)['trade_plan'].get('entry_timing_gate') or {}).get('eligible')\n                    for candidates in grouped.values() for row in candidates)\n"
+          assert s.count(a)==1;p.write_text(s.replace(a,replacement))
+          p=Path('test_veritas_retry_freshness.py');s=p.read_text();anchor='class StaticMemoRaceTests(unittest.TestCase):'
+          assert s.count(anchor)==1
+          p.write_text(s.replace(anchor,'from test_veritas_pending_quote import PendingQuoteTests\n\n\n'+anchor))
+          PY
+          python -m py_compile veritas_structural_lifecycle.py test_veritas_pending_quote.py test_veritas_retry_freshness.py
+          python -m unittest -q test_veritas_retry_freshness.py test_veritas_structural_latency.py test_veritas_currency_feed_recovery.py test_veritas_structural_lifecycle.py
+          git diff --check
+          python tools/architecture_guard.py
+          git config user.name 'VERITAS latency integration'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add veritas_structural_lifecycle.py test_veritas_retry_freshness.py
+          git commit -m 'Renew pending entry turn from current verified quote without renewing event age'
+          git push origin HEAD:fix/structural-latency-book-20261007
