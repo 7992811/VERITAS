@@ -1,4 +1,5 @@
 """Reentrant local book ownership with a handoff to waiting protection."""
+import math
 import threading
 import time
 
@@ -17,6 +18,7 @@ class PriorityRLock:
         self._depth = 0
         self._priority_waiters = 0
         self._ordinary_waiters = 0
+        self._entry_turns = {}
 
     def acquire(self, blocking=True, timeout=-1, *, priority=False):
         if not blocking and timeout != -1:
@@ -33,18 +35,43 @@ class PriorityRLock:
             setattr(self, counter, getattr(self, counter) + 1)
             self._condition.notify_all()
             try:
-                while self._owner is not None or (not priority and self._priority_waiters):
+                while True:
+                    now = time.monotonic()
+                    self._entry_turns = {owner: until for owner, until in self._entry_turns.items() if until > now}
+                    reserved_elsewhere = bool(self._entry_turns) and ident not in self._entry_turns
+                    blocked = self._owner is not None or (not priority and (self._priority_waiters or reserved_elsewhere))
+                    if not blocked:
+                        break
                     if not blocking:
                         return False
                     remaining = None if deadline is None else deadline - time.monotonic()
                     if remaining is not None and remaining <= 0:
                         return False
+                    # A stopped entry worker cannot strand ordinary accounting.
+                    # Wake at the lease boundary even without another notify.
+                    if not priority and reserved_elsewhere:
+                        lease = max(0., min(self._entry_turns.values()) - now)
+                        remaining = lease if remaining is None else min(remaining, lease)
                     self._condition.wait(remaining)
+                self._entry_turns.pop(ident, None)
                 self._owner, self._depth = ident, 1
                 return True
             finally:
                 setattr(self, counter, getattr(self, counter) - 1)
                 self._condition.notify_all()
+
+    def reserve_entry_turn(self, seconds=20.):
+        """A bounded retry handoff; never outrank a queued protective exit."""
+        if not math.isfinite(seconds) or not 0 < seconds <= 30:
+            raise ValueError('entry handoff must be within 30 seconds')
+        with self._condition:
+            self._entry_turns[threading.get_ident()] = time.monotonic() + seconds
+            self._condition.notify_all()
+
+    def cancel_entry_turn(self):
+        with self._condition:
+            self._entry_turns.pop(threading.get_ident(), None)
+            self._condition.notify_all()
 
     def release(self):
         with self._condition:

@@ -269,7 +269,18 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
             # owner is busy. This reservation is reentrant for the transaction
             # helper, and is released on every early return/exception.
             if not VPG._mutex.acquire(blocking=False):
-                return {'status':'BUSY','reason':'LOCAL_PAPER_BOOK_BUSY','paper_only':True}
+                # A polling caller otherwise loses every free turn to the
+                # already-waiting portfolio loop. Reserve only for a currently
+                # valid structural entry; never extend the event/quote lifetime.
+                pending = any(SB.entry_gate(TFP.context_of(row),
+                    VPS.quote_from_row(row).get('price'), row.get('research_decision'), clock).get('eligible')
+                    for candidates in grouped.values() for row in candidates)
+                if pending:
+                    VPG._mutex.reserve_entry_turn()
+                else:
+                    VPG._mutex.cancel_entry_turn()
+                return {'status':'BUSY','reason':'LOCAL_PAPER_BOOK_BUSY','paper_only':True,
+                        'entry_turn_reserved':pending}
             stack.callback(VPG._mutex.release)
         c=stack.enter_context(ns['pg_connect']())
         acquired=stack.enter_context(VPG.book_transaction(c,blocking=not runtime))

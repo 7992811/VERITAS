@@ -62,6 +62,12 @@ def publish_market(raw):
     identity = raw.get("structure_source_identity")
     if not asset or not identity or not _same_source(identity, VPS.identity(asset, raw)):
         return False
+    if asset == "CNYRUBF":
+        import veritas_direct_cny as CNY
+        if CNY.enabled() and not str(identity.get("key", "")).startswith("TBANK_GRPC:"):
+            # Research fallback remains available to analytics, but cannot evict
+            # the selected broker context and strand the direct recovery lane.
+            return False
     mapping = {}
     for tf, values in (raw.get("structure_bars_by_timeframe") or {}).items():
         if tf not in TS.TIMEFRAMES:
@@ -206,6 +212,38 @@ class BreakoutRuntime:
                       "interval_seconds": INTERVAL_SECONDS, "cycles": 0,
                       "fresh_quotes": 0, "duplicate_quotes": 0,
                       "source_rejections": 0, "stale_quotes": 0}
+
+    def _recover_direct_cny(self, clock):
+        """Bootstrap the selected source from verified reader memory, not a scan."""
+        import veritas_direct_cny as CNY
+        connection = getattr(self.ns.get("VTB"), "connection", None)
+        if connection is None or not CNY.enabled():
+            return
+        with _cache_lock:
+            old = _markets.get("CNYRUBF")
+            if old and str(old["structure_source_identity"].get("key", "")).startswith("TBANK_GRPC:"):
+                return
+        try:
+            raw = CNY.validate_snapshot(CNY._snapshot(connection), now=clock)
+            identity = VPS.identity("CNYRUBF", raw)
+            mapping = {}
+            for tf, field in (("1m", "structure_minute_bars"),
+                              ("5m", "canonical_five_minute_bars"),
+                              ("1h", "canonical_hourly_bars")):
+                mapping[tf] = [dict(bar, timeframe=tf, source_identity=deepcopy(identity))
+                               for bar in raw[field][-MAX_BARS_PER_TIMEFRAME:]]
+            raw.update(structure_source_identity=identity, structure_bars_by_timeframe=mapping)
+            if publish_market(raw):
+                self.state["direct_cny_recoveries"] = self.state.get("direct_cny_recoveries", 0)+1
+                self.state["direct_cny_recovery_reason"] = None
+                CNY._record_state(status='DIRECT_READY', reason=None,
+                    checked_at=clock.isoformat(), instrument_uid=raw['broker_instrument_uid'],
+                    source='TBANK_GRPC', quote_observed_at=raw['observed_at'], history_source='TBANK_GRPC')
+        except Exception as error:
+            # No freshness promotion, source substitution or forged candle on
+            # failure. The same exact quote/book/session/history gates still apply.
+            self.state["direct_cny_recovery_reason"] = (
+                str(error) if isinstance(error, CNY.TB.TBankError) else "CNY_RECOVERY_UNAVAILABLE")
 
     def _native_broker_history(self, market):
         """Refresh from the existing broker reader's memory, never its network."""
@@ -404,6 +442,7 @@ class BreakoutRuntime:
             clock = _clock(now)
             if clock is None:
                 return {"status": "INVALID_CLOCK", "paper_only": True}
+            self._recover_direct_cny(clock)
             # Copy only the lightweight quote/source descriptors up front.
             # Full native histories are copied one asset at a time below, so the
             # fast lane cannot retain a second complete multi-asset market graph
