@@ -1,0 +1,32 @@
+name: Materialize reviewed merge with complete pinned sources
+on:
+  push:
+    branches: [fix/structural-latency-book-20261007]
+    paths: [.github/workflows/materialize-reviewed-merge-once.yml]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Materialize only exact locally-tested source blobs
+        run: |
+          git fetch --depth=1 origin 5bf732c4404c777e6f9c0e3cf5d6376b037ef5bc 869b2895fa18f3ff16a6e71a875fc6a79e3e656e
+          git checkout 5bf732c4404c777e6f9c0e3cf5d6376b037ef5bc -- veritas_breakout_runtime.py veritas_structural_breakout.py veritas_timeframe_data.py
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap,subprocess,sys
+          text=Path('.github/workflows/resolve-current-latency-once.yml').read_text()
+          script=text.split("python - <<'PY'\n",1)[1].split('\n          PY\n',1)[0]
+          script='\n'.join(line for line in textwrap.dedent(script).splitlines() if not line.startswith('encoded='))
+          subprocess.run([sys.executable,'-c',script],check=True)
+          PY
+          python -m py_compile veritas_breakout_runtime.py veritas_structural_breakout.py veritas_timeframe_data.py test_veritas_structural_latency.py
+          git diff --check
+          git config user.name 'VERITAS verified integration'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add veritas_breakout_runtime.py veritas_structural_breakout.py veritas_timeframe_data.py test_veritas_structural_latency.py
+          git commit -m 'Materialize exact 238-test locally-verified merge source blobs'
+          git push origin HEAD:fix/structural-latency-book-20261007
