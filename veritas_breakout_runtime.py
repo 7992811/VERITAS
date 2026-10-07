@@ -354,6 +354,7 @@ class BreakoutRuntime:
             # time. Never evaluate a quote with a clock from before retrieval.
             if now is None:
                 clock = _clock()
+            context_started = time.monotonic()
             rows = []
             for asset, market in markets.items():
                 identity = market["structure_source_identity"]
@@ -371,14 +372,29 @@ class BreakoutRuntime:
                     row = self._row(market, quote, tf, context, templates.get((asset, tf), {}), clock)
                     if row:
                         rows.append(row)
+            context_seconds = time.monotonic()-context_started
             execution = {"status": "NO_STRUCTURAL_EVENTS", "paper_only": True}
+            entry_seconds, publish_seconds = 0.0, 0.0
             if rows:
                 # The callback owns the shared RLock + PostgreSQL advisory
                 # transaction and every existing canonical admission/risk gate.
+                entry_started = time.monotonic()
                 execution = self.entry_pass(rows, clock)
+                entry_seconds = time.monotonic()-entry_started
+                if execution.get("status") == "BUSY":
+                    # Book contention does not consume an otherwise fresh
+                    # observation. Retry this exact quote on the next pass;
+                    # the structural owner preserves the original event time.
+                    for asset in {row["asset"] for row in rows}:
+                        identity = markets[asset]["structure_source_identity"]
+                        self._observations.pop((asset, *_source_key(identity)), None)
+                publish_started = time.monotonic()
                 self._publish_rows(rows, execution, clock)
+                publish_seconds = time.monotonic()-publish_started
             self.state.update(status="OK", checked_at=clock.isoformat(), cycles=self.state["cycles"]+1,
                               rows=len(rows), assets=len(markets), pending_quote_fetches=len(self._pending),
+                              context_seconds=context_seconds, entry_seconds=entry_seconds,
+                              publish_seconds=publish_seconds, execution_status=execution.get("status"),
                               duration_seconds=time.monotonic()-started)
             return {**self.snapshot(), "execution": execution}
         except Exception as error:

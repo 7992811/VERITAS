@@ -12,6 +12,7 @@ import io
 import json
 import re
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -57,6 +58,7 @@ class PaperBook:
         self.queries, self.unsupported = [], []
         self.depth, self.book_locks, self.commits = 0, 0, 0
         self.fail_order_insert = False
+        self.try_lock_granted = True
 
     def data(self):
         return deepcopy((self.portfolios, self.positions, self.trades, self.orders, self.nav_history))
@@ -98,6 +100,10 @@ class PaperBook:
             assert self.depth > 0 and args == (VPG.BOOK_LOCK_ID,)
             self.book_locks += 1
             return Result()
+        if q.startswith("SELECT pg_try_advisory_xact_lock"):
+            assert self.depth > 0 and args == (VPG.BOOK_LOCK_ID,)
+            self.book_locks += int(self.try_lock_granted)
+            return Result([{'acquired':self.try_lock_granted}])
         if q.startswith("SELECT 1 AS ok FROM paper_orders"):
             if "client_order_id=%s" in q:
                 found = any(order["client_order_id"] == args[0] for order in self.orders)
@@ -557,6 +563,82 @@ class StructuralLifecycleAccountingTests(unittest.TestCase):
         self.assertEqual(self.db.data(), before)
         self.assertEqual(self.ns["last_cycle"], prior_report)
         self.assertEqual(self.db.commits, 0)
+
+    def test_runtime_locally_busy_book_returns_without_connecting_or_waiting(self):
+        acquired,release=threading.Event(),threading.Event()
+        def hold():
+            with VPG._mutex:
+                acquired.set()
+                release.wait(5.)
+        owner=threading.Thread(target=hold)
+        owner.start()
+        self.assertTrue(acquired.wait(1.))
+        try:
+            with patch.dict(self.ns,pg_connect=lambda: self.fail('Busy local book must not open a connection')):
+                started=time.monotonic()
+                result=VSL.fast_entry_pass(self.ns,[self.first],self.clock,runtime=True)
+                elapsed=time.monotonic()-started
+            self.assertEqual(result['status'],'BUSY')
+            self.assertEqual(result['reason'],'LOCAL_PAPER_BOOK_BUSY')
+            self.assertLess(elapsed,.5)
+            self.assertEqual(self.db.queries,[])
+            self.assertEqual(self.ns['last_cycle'],{})
+        finally:
+            release.set(); owner.join(1.)
+
+    def test_runtime_database_try_lock_failure_is_busy_without_accounting_or_success_trace(self):
+        self.db.try_lock_granted=False
+        before=self.db.data()
+        result=VSL.fast_entry_pass(self.ns,[self.first],self.clock,runtime=True)
+        self.assertEqual(result['status'],'BUSY')
+        self.assertEqual(result['reason'],'DATABASE_PAPER_BOOK_BUSY')
+        self.assertEqual(self.db.data(),before)
+        self.assertEqual(self.ns['last_cycle'],{})
+        self.assertEqual(len(self.db.queries),2)
+        self.assertTrue(any('pg_try_advisory_xact_lock' in q for q,_ in self.db.queries))
+
+    def test_runtime_uses_actual_clock_after_book_acquisition_and_refuses_old_quote(self):
+        late=self.clock+timedelta(seconds=130)
+        original_quote=deepcopy(self.first['_execution_quote'])
+        with patch.object(VSL,'_wall_clock',return_value=late):
+            result=VSL.fast_entry_pass(self.ns,[self.first],self.clock,runtime=True)
+        trace=result['portfolios'][0]['admission_trace'][0]
+        self.assertEqual(trace['execution']['status'],'BLOCKED')
+        self.assertEqual(trace['execution']['reason'],'EXECUTION_QUOTE_STALE')
+        self.assertEqual(trace['execution']['checked_at'],late.isoformat())
+        self.assertEqual(self.db.orders,[])
+        self.assertEqual(self.first['_execution_quote'],original_quote)
+
+    def test_runtime_rechecks_actual_clock_at_mutation_after_a_ready_admission(self):
+        initial=self.clock
+        late=initial+timedelta(seconds=130)
+        ready_seen=False
+        evaluate=VCR.evaluate
+        def admission(*args,**kwargs):
+            nonlocal ready_seen
+            result=evaluate(*args,**kwargs)
+            if result.get('open'):
+                ready_seen=True
+            return result
+        with patch.object(VCR,'evaluate',side_effect=admission), \
+                patch.object(VSL,'_wall_clock',side_effect=lambda:late if ready_seen else initial):
+            result=VSL.fast_entry_pass(self.ns,[self.first],initial,runtime=True)
+        self.assertTrue(ready_seen)
+        trace=result['portfolios'][0]['admission_trace'][0]
+        self.assertEqual(trace['execution']['status'],'BLOCKED')
+        self.assertEqual(trace['execution']['reason'],'EXECUTION_QUOTE_STALE')
+        self.assertEqual(trace['execution']['checked_at'],late.isoformat())
+        self.assertEqual(self.db.orders,[])
+
+    def test_unavailable_entry_does_not_reread_unchanged_portfolio_positions(self):
+        result=self.run_fast(self.expired)
+        self.assertEqual(result['portfolios'][0]['admission_trace'][0]['execution']['status'],'BLOCKED')
+        positions=[q for q,_ in self.db.queries if q.startswith('SELECT * FROM paper_positions')]
+        portfolios=[q for q,_ in self.db.queries if q.startswith('SELECT * FROM paper_portfolios')]
+        # Each configured name is looked up once. Absent books have one empty
+        # positions read; the existing Currency book needs no second read.
+        self.assertEqual(len(positions),len(CTC.PORTFOLIO_ORDER))
+        self.assertEqual(len(portfolios),len(CTC.PORTFOLIO_ORDER))
 
     def test_invalid_target_stage_or_execution_numbers_cannot_produce_reduction(self):
         position = self.open()

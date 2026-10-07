@@ -7,11 +7,15 @@ Targets are previously observed price zones, never a price invented to meet RR.
 Numerical defaults are engineering controls, not fitted profitability evidence.
 """
 from copy import deepcopy
+from collections import OrderedDict
 from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import pickle
+import sys
 from statistics import median
+from threading import RLock
 
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
@@ -20,6 +24,13 @@ from veritas_quote_time import quote_gate
 
 VERSION = "CAUSAL_QUOTE_STRUCTURE_V1"
 EVENT_TYPE = "VERIFIED_QUOTE_STRUCTURAL_BREAKOUT"
+# Private, bounded native facts only. Quotes, events and allocation state are
+# evaluated on every call. No returned context shares these mutable objects.
+_FACTS_CACHE = OrderedDict()
+_FACTS_LOCK = RLock()
+_FACTS_CACHE_BYTES = 0
+_FACTS_CACHE_MAX_BYTES = 8 * 1024 * 1024
+_FACTS_CACHE_MAX_BUNDLES = 3
 DEFAULT_POLICY = {
     "version": "CTC_INTRABAR_STRUCTURE_V1",
     "teaching_id": "USER_INTRABAR_STRUCTURE_2026_10_07",
@@ -177,6 +188,91 @@ def _levels(rows, source, policy):
                 **{key: pivot[key] for key in ("timeframe", "kind", "price", "pivot_at", "available_at")}})[:24]
             levels.append(pivot)
     return levels
+
+
+def _facts_size(value, seen=None):
+    seen = set() if seen is None else seen
+    if id(value) in seen:
+        return 0
+    seen.add(id(value))
+    size = sys.getsizeof(value)
+    if isinstance(value, dict):
+        size += sum(_facts_size(k, seen) + _facts_size(v, seen) for k, v in value.items())
+    elif isinstance(value, (list, tuple)):
+        size += sum(_facts_size(v, seen) for v in value)
+    return size
+
+
+def _clear_native_facts_cache():
+    global _FACTS_CACHE_BYTES
+    with _FACTS_LOCK:
+        _FACTS_CACHE.clear()
+        _FACTS_CACHE_BYTES = 0
+
+
+def _native_facts(raw, as_of, source, policy):
+    """Memoize an exact history snapshot within its causal availability window.
+
+    The fingerprint covers all input fields, including historical corrections,
+    completion flags, source labels and supplied availability times. The time
+    window ends at the next possible native-bar availability, including delayed
+    availability of an older candle. An earlier as-of always rebuilds.
+    """
+    global _FACTS_CACHE_BYTES
+    mapping = raw.get("structure_bars_by_timeframe") or {}
+    try:
+        # Pickle is used only to hash in-memory input; it is never deserialized.
+        # This keeps exact float/datetime values and is cheaper than reparsing
+        # every OHLC field seven times for the seven execution horizons.
+        key = hashlib.sha256(pickle.dumps((raw.get("asset"), source, policy, mapping), protocol=5)).digest()
+    except (TypeError, ValueError, OverflowError, AttributeError, RecursionError, pickle.PickleError):
+        key = None  # Unsupported metadata bypasses memoization, not validation.
+    if key is not None:
+        with _FACTS_LOCK:
+            cached = _FACTS_CACHE.get(key)
+            if cached and cached["valid_from"] <= as_of < cached["valid_until"]:
+                _FACTS_CACHE.move_to_end(key)
+                return cached["facts"], None
+    rows_by_tf, levels, atr_by_tf = {}, [], {}
+    next_available = math.inf
+    for tf, supplied in mapping.items():
+        if tf not in TS.TIMEFRAMES:
+            continue
+        rows, issue = _native_rows(raw, tf, as_of, source)
+        if issue:
+            return None, issue
+        if rows:
+            rows_by_tf[tf] = rows
+            levels.extend(_levels(rows, source, policy))
+            atr_by_tf[tf] = _atr(rows, policy["atr_period"])
+        seconds = TS.timeframe_seconds(tf)
+        for bar in supplied or []:
+            if not isinstance(bar, dict):
+                continue
+            opening = TS.timestamp(bar.get("ts", bar.get("time")))
+            if opening is None:
+                continue
+            supplied_at = TS.timestamp(bar.get("available_at"))
+            available = max(opening + seconds, supplied_at if supplied_at is not None else -math.inf)
+            if available > as_of:
+                next_available = min(next_available, available)
+    facts = {"rows_by_tf": rows_by_tf, "levels": levels, "atr_by_tf": atr_by_tf}
+    if key is not None:
+        entry = {"facts": facts, "valid_from": as_of, "valid_until": next_available}
+        size = _facts_size((key, entry))
+        if size <= _FACTS_CACHE_MAX_BYTES:
+            with _FACTS_LOCK:
+                previous = _FACTS_CACHE.pop(key, None)
+                if previous:
+                    _FACTS_CACHE_BYTES -= previous["bytes"]
+                while _FACTS_CACHE and (len(_FACTS_CACHE) >= _FACTS_CACHE_MAX_BUNDLES
+                                       or _FACTS_CACHE_BYTES + size > _FACTS_CACHE_MAX_BYTES):
+                    _, removed = _FACTS_CACHE.popitem(last=False)
+                    _FACTS_CACHE_BYTES -= removed["bytes"]
+                entry["bytes"] = size
+                _FACTS_CACHE[key] = entry
+                _FACTS_CACHE_BYTES += size
+    return facts, None
 
 
 def _same_observed_swing(first, second):
@@ -429,28 +525,21 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
     if last_quote and (last_quote["observed_at"] > as_of or
                        (last_quote["observed_at"] == as_of and last_quote["price"] != quote["price"])):
         return dict(out, reason="STRUCTURAL_QUOTE_OUT_OF_ORDER")
-    mapping = raw.get("structure_bars_by_timeframe") or {}
-    rows_by_tf, levels = {}, []
-    for tf in mapping:
-        if tf not in TS.TIMEFRAMES:
-            continue
-        rows, issue = _native_rows(raw, tf, as_of, source)
-        if issue:
-            return dict(out, reason=issue)
-        if rows:
-            rows_by_tf[tf] = rows
-            levels.extend(_levels(rows, source, policy))
+    facts, issue = _native_facts(raw, as_of, source, policy)
+    if issue:
+        return dict(out, reason=issue)
+    rows_by_tf, levels, atr_by_tf = facts["rows_by_tf"], facts["levels"], facts["atr_by_tf"]
     trigger_rows = rows_by_tf.get(horizon) or []
     parent_tf = str(policy["parent_timeframe"])
     structural_tf = (parent_tf if seconds < TS.timeframe_seconds(parent_tf)
-                     and _atr(rows_by_tf.get(parent_tf) or [], policy["atr_period"]) else horizon)
+                     and atr_by_tf.get(parent_tf) else horizon)
     held_leg = previous.get("protected_leg") or {}
     if held_leg and not held_leg.get("invalidated"):
         # Additional newly loaded history cannot silently change the risk TF
         # of an already protected leg.
         structural_tf = held_leg["structural_timeframe"]
     structural_rows = rows_by_tf.get(structural_tf) or []
-    atr = _atr(structural_rows, policy["atr_period"])
+    atr = atr_by_tf.get(structural_tf)
     out.update(as_of=as_of, quote_observed_at=as_of, quote=deepcopy(quote),
                bars=len(trigger_rows), closed_at=trigger_rows[-1]["available_at"] if trigger_rows else None,
                structural_timeframe=structural_tf, atr_timeframe=structural_tf,
