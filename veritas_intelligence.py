@@ -3,6 +3,7 @@ import html as _html
 import re
 import veritas_learning_exports as VLE
 from datetime import datetime, timezone, timedelta
+from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -940,12 +941,19 @@ def memory_guard(phase='runtime'):
     return ok
 
 
+@contextmanager
 def db():
     c = sqlite3.connect(DB_PATH, timeout=30)
-    c.row_factory = sqlite3.Row
-    c.execute('PRAGMA journal_mode=WAL')
-    c.execute('PRAGMA synchronous=NORMAL')
-    return c
+    try:
+        c.row_factory = sqlite3.Row
+        c.execute('PRAGMA journal_mode=WAL')
+        c.execute('PRAGMA synchronous=NORMAL')
+        # sqlite3.Connection's own context commits/rolls back, but does not
+        # close the connection or release its page cache and native resources.
+        with c:
+            yield c
+    finally:
+        c.close()
 
 
 def _v90_pg_configured():
@@ -6888,7 +6896,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                  execution_eligible=asset_execution_gate.get('eligible'),
                  paper_execution_reason=asset_execution_gate.get('paper_execution_reason'),
                  paper_source_policy=asset_execution_gate.get('source_policy'),minimum_sources=1)
+            _v90_memory_checkpoint('market_ready',asset)
             asset_phase_t0=time.time(); causal_shadow=asset_causal_shadow(asset); event_shadow=event_shadow_score(asset); asset_timings[asset]['context']=time.time()-asset_phase_t0
+            _v90_memory_checkpoint('context_ready',asset)
             common_structure=None
             asset_phase_t0=time.time()
             try:
@@ -6901,10 +6911,13 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             except Exception as ex:
                 emit('common_structure_cache_error',asset=asset,error=f'{type(ex).__name__}: {ex}')
             asset_timings[asset]['common_features']=time.time()-asset_phase_t0
+            _v90_memory_checkpoint('structure_ready',asset)
             for horizon in processing_horizons:
                 horizon_wall_t0=time.time()
                 created_at = now()
                 f = features(raw, horizon, common_structure)
+                if horizon==processing_horizons[0]:
+                    _v90_memory_checkpoint('features_ready',asset,horizon)
                 if common_structure is not None: common_feature_reuses += 1
                 kmatches = match_knowledge(asset, horizon, f, deriv)
                 knowledge_arbitration = arbitrate_knowledge_conflicts(kmatches,asset,horizon)
@@ -6913,6 +6926,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 orth_evidence = orthogonal_knowledge_summary(kmatches)
                 knowledge_adjustment = dict(validated_knowledge_adjustment(kmatches,asset,horizon,f['regime']))
                 experience_prior=experience_direction_prior(asset,horizon,f)
+                if horizon==processing_horizons[0]:
+                    _v90_memory_checkpoint('knowledge_ready',asset,horizon)
                 base_knowledge_score=float(knowledge_adjustment.get('score',0.0) or 0.0)
                 experience_prior_score=float(experience_prior.get('score_adjustment') or 0.0)
                 combined_adjustment=clip(base_knowledge_score+experience_prior_score,-0.05,0.05)
@@ -7209,6 +7224,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 except Exception as ex:
                     emit('counterfactual_lab_error',asset=asset,horizon=horizon,error=f'{type(ex).__name__}: {ex}')
                 entity_key = f'{cycle_id}:{asset}:{horizon}'
+                if horizon==processing_horizons[0]:
+                    _v90_memory_checkpoint('decision_ready',asset,horizon)
                 with db() as c:
                     cur = c.execute('INSERT INTO market_states(ts,asset,horizon,features,source_times) VALUES(?,?,?,?,?)',
                                     (created_at, asset, horizon, json.dumps(f,default=str), json.dumps({
@@ -7330,6 +7347,11 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 market_bundles.pop(asset,None)
             except Exception:
                 pass
+            # Drop local ownership BEFORE GC/malloc_trim. The next provider
+            # fetch must not overlap the previous asset's full history graph.
+            # Assignment preserves objects still owned by decisions or caches.
+            bundle=raw=deriv=common_structure=f=v84_row=z=trade_plan=None
+            cur=dcur=None
             _v90_trim_memory('asset_'+str(asset),force=False)
 
     # R18 continuity: every lane begins from the last valid matrix.
@@ -8009,6 +8031,20 @@ def get_macro_context():
         return dict(macro_state)
 
 
+def _v90_jsonb_project_object(expr, fields):
+    """Project trusted SQL expressions without changing JSON object truthiness.
+
+    Empty objects and non-objects keep their original value. A nonempty object
+    remains nonempty even when its relevant fields are absent, preserving the
+    existing Python ``top_level or nested`` fallback. Expressions and keys are
+    internal constants, never request parameters.
+    """
+    pairs=','.join("'"+key.replace("'","''")+"',"+value
+                   for key,value in fields.items())
+    return (f"CASE WHEN jsonb_typeof({expr})='object' AND {expr}<>'{{}}'::jsonb "
+            f"THEN jsonb_build_object({pairs}) ELSE {expr} END")
+
+
 def structure_analog_board(limit=1200, force_refresh=False):
     """Durable analog memory for actual forward outcomes of structure states.
     Cached because the underlying decision/outcome join is identical for all 30 signal cells
@@ -8021,8 +8057,26 @@ def structure_analog_board(limit=1200, force_refresh=False):
             cached=structure_analog_cache.get('value')
             if cached is not None and int(structure_analog_cache.get('limit') or 0)>=lim and time.time()-float(structure_analog_cache.get('at') or 0)<ANALYTICS_CACHE_SECONDS:
                 return cached
+    # Keep the same observations and reduction, but do not transfer/decode
+    # complete archived decisions and histories for a few structure labels.
+    def structure(expr):
+        return _v90_jsonb_project_object(expr,{
+            'lifecycle':f"({expr})->'lifecycle'",
+            'entry_quality':f"({expr})->'entry_quality'"})
+    def impulse(expr):
+        return _v90_jsonb_project_object(expr,{
+            'direction':f"({expr})->'direction'",
+            'entry_quality':f"({expr})->'entry_quality'",
+            'intraday_structure':structure(f"({expr})->'intraday_structure'")})
+    dp=_v90_jsonb_project_object('d.payload',{
+        'research_decision':"d.payload->'research_decision'",
+        'trend_impulse':impulse("d.payload->'trend_impulse'"),
+        'features':_v90_jsonb_project_object("d.payload->'features'",{
+            'trend_impulse':impulse("d.payload#>'{features,trend_impulse}'"),
+            'intraday_structure':structure("d.payload#>'{features,intraday_structure}'")})})
+    op=_v90_jsonb_project_object('o.payload',{'forward_return':"o.payload->'forward_return'"})
     with pg_connect() as c:
-        rows=c.execute("""SELECT d.asset,d.horizon,d.payload dp,o.payload op
+        rows=c.execute(f"""SELECT d.asset,d.horizon,{dp} dp,{op} op
                           FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
                           WHERE d.event_type='decision' ORDER BY d.event_ts DESC LIMIT %s""",(lim,)).fetchall()
     b={}
@@ -10118,8 +10172,11 @@ def setup_profitability_profile(asset,horizon,direction,setup_name,regime=None,l
     if not pg_enabled() or direction not in ('LONG','SHORT'):
         return {'status':'BUILDING','n':0,'decision_influence':False}
     try:
+        payload_sql=_v90_jsonb_project_object('payload',{
+            key:"payload->'"+key+"'" for key in
+            ('setup','trade_plan_setup','entry_setup','regime')})
         with pg_connect() as c:
-            rows=c.execute("""SELECT asset,horizon,direction,total_pnl_fraction,payload
+            rows=c.execute(f"""SELECT asset,horizon,direction,total_pnl_fraction,{payload_sql} payload
                               FROM shadow_trades
                               WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
                                 AND asset=%s AND horizon=%s AND direction=%s
@@ -10784,8 +10841,11 @@ def trade_path_profile(asset,horizon,direction,setup_name=None,limit=300):
     if not pg_enabled() or direction not in ('LONG','SHORT'):
         return {'status':'BUILDING','n':0,'decision_influence':False}
     try:
+        payload_sql=_v90_jsonb_project_object('payload',{
+            key:"payload->'"+key+"'" for key in
+            ('setup','trade_plan_setup','entry_setup')})
         with pg_connect() as c:
-            rows=c.execute("""SELECT direction,entry_price,high_price,low_price,total_pnl_fraction,payload
+            rows=c.execute(f"""SELECT direction,entry_price,high_price,low_price,total_pnl_fraction,{payload_sql} payload
                               FROM shadow_trades
                               WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
                                 AND asset=%s AND horizon=%s AND direction=%s
@@ -18613,7 +18673,7 @@ def _v90_prune_low_priority_caches(level_mb=None,preserve_active_cycle=False):
                     overview_cache['value']=None; overview_cache['at']=0.0; cleared+=1
         except Exception:
             pass
-    for fn_name in ('_decision_memory_rows','_decision_memory_vectors',
+    for fn_name in ('_decision_memory_rows','_decision_memory_vectors','_v842_vectors_by_horizon',
                     'v701_learning_bundle','v70_quality_board','learning_progress'):
         try:
             fn=globals().get(fn_name)
@@ -18634,6 +18694,12 @@ def _v90_prune_low_priority_caches(level_mb=None,preserve_active_cycle=False):
         except Exception:
             pass
     return cleared
+
+
+def _v90_memory_checkpoint(phase,asset,horizon=None):
+    if MEMORY_SOFT_LIMIT_MB<=320:
+        emit('asset_memory',phase=phase,asset=asset,horizon=horizon,
+             rss_mb=rss_mb(),cycle_mode=_v90r62_active_cycle_mode)
 
 
 def _v90_trim_memory(phase='unknown',force=False):
