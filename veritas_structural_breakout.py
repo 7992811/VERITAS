@@ -211,6 +211,30 @@ def _clear_native_facts_cache():
         _FACTS_CACHE_BYTES = 0
 
 
+def _level_crossing_times(rows_by_tf, levels):
+    """First available native-bar proof of each historical level crossing.
+
+    Quotes still own new crossing events. This is only the historical fact
+    that prevents a previously consumed level from becoming a new signal.
+    Availability can be delayed and need not be ordered with opening times;
+    the minimum observed availability is therefore required, not the first
+    matching row. The enclosing exact-history cache supplies the time bounds.
+    """
+    crossed_at = {}
+    for level in levels:
+        earliest = None
+        high = level["kind"] == "resistance"
+        for bar in rows_by_tf.get(level["timeframe"], ()):
+            if bar["ts"] < level["available_at"]:
+                continue
+            if (bar["high"] > level["price"] if high else bar["low"] < level["price"]):
+                at = bar["available_at"]
+                earliest = at if earliest is None else min(earliest, at)
+        if earliest is not None:
+            crossed_at[level["level_id"]] = earliest
+    return crossed_at
+
+
 def _native_facts(raw, as_of, source, policy):
     """Memoize an exact history snapshot within its causal availability window.
 
@@ -257,7 +281,8 @@ def _native_facts(raw, as_of, source, policy):
             available = max(opening + seconds, supplied_at if supplied_at is not None else -math.inf)
             if available > as_of:
                 next_available = min(next_available, available)
-    facts = {"rows_by_tf": rows_by_tf, "levels": levels, "atr_by_tf": atr_by_tf}
+    facts = {"rows_by_tf": rows_by_tf, "levels": levels, "atr_by_tf": atr_by_tf,
+             "crossed_at_by_level": _level_crossing_times(rows_by_tf, levels)}
     if key is not None:
         entry = {"facts": facts, "valid_from": as_of, "valid_until": next_available}
         size = _facts_size((key, entry))
@@ -463,11 +488,14 @@ def _spend(event, quote, rows_by_tf):
                      "STRUCTURAL_STOP_ALREADY_REACHED" if stop_hit else "STRUCTURAL_TARGET_ALREADY_REACHED")
 
 
-def build_context(raw, horizon, now=None, base_context=None, *, state=None, config=None):
+def build_context(raw, horizon, now=None, base_context=None, *, state=None, config=None,
+                  level_limit=None):
     """Observe a quote against levels that were known at its exchange timestamp.
 
     Pass the returned ``quote_state`` into the next call for this exact source,
     contract, asset and horizon. Input state and raw data are never mutated.
+    ``level_limit`` bounds only copied display levels. All native levels still
+    participate in event, target-zone, parent-risk and state calculations.
     """
     raw = raw or {}
     end = TS.timestamp(datetime.now(timezone.utc) if now is None else now)
@@ -493,7 +521,9 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
     if not quote:
         return dict(out, reason=quote_check["reason"])
     as_of = quote["observed_at"]
-    previous = deepcopy(state or {})
+    # The result already owns an isolated copy. Copying the same sealed event
+    # and ATR proof again on every quote adds no isolation or validation.
+    previous = out["quote_state"] or {}
     if previous and (previous.get("version") != VERSION or previous.get("asset") != asset
                      or previous.get("timeframe") != horizon
                      or not _same_source(previous.get("source_identity"), source)):
@@ -540,11 +570,14 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
         structural_tf = held_leg["structural_timeframe"]
     structural_rows = rows_by_tf.get(structural_tf) or []
     atr = atr_by_tf.get(structural_tf)
+    display_levels = levels
+    if level_limit is not None:
+        display_levels = levels[-level_limit:] if level_limit > 0 else []
     out.update(as_of=as_of, quote_observed_at=as_of, quote=deepcopy(quote),
                bars=len(trigger_rows), closed_at=trigger_rows[-1]["available_at"] if trigger_rows else None,
                structural_timeframe=structural_tf, atr_timeframe=structural_tf,
                structure_closed_at=structural_rows[-1]["available_at"] if structural_rows else None,
-               levels=deepcopy(levels))
+               levels=deepcopy(display_levels))
     if not trigger_rows or not atr:
         return dict(out, status="INSUFFICIENT", reason="STRUCTURAL_HISTORY_INSUFFICIENT")
     out.update(status="OK", reason="STRUCTURAL_WAIT_VERIFIED_CROSS", atr=atr["value"],
@@ -562,15 +595,8 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
     # A persisted observation from hours ago cannot make an already observed
     # intervening bar break fresh again. Session-open gaps remain possible when
     # no native bars traded through the level during the absence of quotes.
-    for level in levels:
-        for bar in rows_by_tf.get(level["timeframe"], []):
-            if bar["ts"] < level["available_at"] or bar["available_at"] > known_before:
-                continue
-            crossed = (bar["high"] > level["price"] if level["kind"] == "resistance"
-                       else bar["low"] < level["price"])
-            if crossed:
-                seen.add(level["level_id"])
-                break
+    seen.update(level_id for level_id, crossed_at in facts["crossed_at_by_level"].items()
+                if crossed_at <= known_before)
     event = deepcopy(next_state.get("active_event"))
     leg = deepcopy(next_state.get("protected_leg"))
     _spend(event, quote, rows_by_tf)

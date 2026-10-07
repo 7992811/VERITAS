@@ -33,7 +33,7 @@ def snapshot():
             "initial_stop_and_target_immutable":True,
         },
         "signal_delivery_policy":{
-            "version":"CANONICAL_SIGNAL_READINESS_V1",
+            "version":"CANONICAL_SIGNAL_READINESS_V2",
             "source_eligibility_separate_from_entry":True,
             "admission_trace_preserves_original_decision":True,
             "closed_bar_boundary_refresh":True,
