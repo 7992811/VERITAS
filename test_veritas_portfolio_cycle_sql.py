@@ -157,6 +157,119 @@ class PortfolioCycleSQLTests(unittest.TestCase):
             self.assertEqual([row['nav_rub'] for row in c.execute(
                 'SELECT nav_rub FROM paper_nav_history ORDER BY portfolio_name').fetchall()], [1002., 1002.])
 
+    def test_accounting_io_preserves_native_savepoints_outer_rollback_and_all_financial_tables(self):
+        # Both runs use production run_books/book_transaction/VPP.refresh. The
+        # baseline calls the original connection from its bound transaction
+        # method; only the measured run sends accounting SQL through the proxy.
+        table_order = {
+            'paper_portfolios': ('name',),
+            'paper_positions': ('portfolio_name', 'asset'),
+            'paper_trades': ('trade_id',),
+            'paper_orders': ('client_order_id',),
+            'paper_nav_history': ('portfolio_name', 'observed_at'),
+        }
+
+        def all_financial_tables():
+            with self.connect() as c:
+                return {table: [dict(row) for row in c.execute(
+                    self.sql.SQL('SELECT * FROM {} ORDER BY {}').format(
+                        self.sql.Identifier(table),
+                        self.sql.SQL(',').join(map(self.sql.Identifier, columns)))).fetchall()]
+                    for table, columns in table_order.items()}
+
+        names = ('Champion', 'Aggressive')
+        outcomes = []
+        for measured in (False, True):
+            with self.subTest(measured=measured):
+                with self.connect() as c:
+                    c.execute(self.sql.SQL('TRUNCATE {}').format(
+                        self.sql.SQL(',').join(map(self.sql.Identifier, table_order))))
+                self.seed(names)
+                before = all_financial_tables()
+                recovered = []
+
+                def step(wrapped, name, *args):
+                    self.assertIsInstance(wrapped, PC.AIO.AccountingConnection)
+                    raw = wrapped.transaction.__self__
+                    self.assertIsInstance(raw, self.driver.Connection)
+                    self.assertIs(raw.row_factory, self.row_factory)
+                    c = wrapped if measured else raw
+                    result = self.write_book(c, name, *args)
+                    try:
+                        # A real driver exception occurs after two writes in a
+                        # native nested transaction. Its rollback must leave the
+                        # outer transaction usable and both tables unchanged.
+                        with c.transaction():
+                            c.execute('''UPDATE paper_positions SET units=99,
+                                payload=payload || '{"discarded_savepoint":true}'::jsonb
+                                WHERE portfolio_name=%s''', (name,))
+                            c.execute('UPDATE paper_trades SET fees_rub=999 WHERE portfolio_name=%s', (name,))
+                            c.execute("INSERT INTO paper_orders VALUES (%s,%s,%s,'DUPLICATE_FIXTURE',0)",
+                                      (name+'-order', name, name+'-trade'))
+                    except self.driver.errors.UniqueViolation:
+                        recovered.append(name)
+                    else:
+                        self.fail('native duplicate order did not fail the savepoint')
+
+                    with c.cursor() as cursor:
+                        self.assertIs(cursor.connection, raw)
+                        cursor.execute('SELECT units,payload FROM paper_positions WHERE portfolio_name=%s', (name,))
+                        positions = list(cursor)
+                    self.assertEqual(len(positions), 1)
+                    self.assertEqual(positions[0]['units'], 1.)
+                    self.assertNotIn('discarded_savepoint', positions[0]['payload'])
+                    self.assertEqual(c.execute(
+                        'SELECT fees_rub FROM paper_trades WHERE portfolio_name=%s', (name,))
+                        .fetchone()['fees_rub'], 2.)
+
+                    # Commit a second native savepoint after the caught error;
+                    # the next failure will roll this and the full book back.
+                    with c.transaction():
+                        c.execute('UPDATE paper_portfolios SET fees_rub=fees_rub+.5 WHERE name=%s', (name,))
+                        c.execute('UPDATE paper_trades SET fees_rub=fees_rub+.5 WHERE portfolio_name=%s', (name,))
+                        c.execute("INSERT INTO paper_orders VALUES (%s,%s,%s,'RECOVERY_FIXTURE',0)",
+                                  (name+'-recovered', name, name+'-trade'))
+                    portfolio, positions = VP._portfolio_rows(c, name)
+                    nav = VP._mark_nav(portfolio, positions, {})[0]
+                    c.execute('UPDATE paper_nav_history SET nav_rub=%s WHERE portfolio_name=%s', (nav, name))
+                    result['nav_rub'] = nav
+                    if name == 'Aggressive':
+                        raise ValueError('fixture outer accounting failure')
+                    return result
+
+                result = self.run_books(names, step)
+                after = all_financial_tables()
+                self.assertEqual(recovered, list(names))
+                self.assertEqual(result['status'], 'PARTIAL')
+                self.assertEqual(result['committed_portfolios'], ['Champion'])
+                self.assertEqual(result['uncertain_portfolios'], [])
+                self.assertEqual(result['errors']['Aggressive']['stage'], 'accounting')
+                self.assertIs(result['errors']['Aggressive']['accounting_committed'], False)
+                self.assertEqual(result['portfolios'][0]['nav_rub'], 1001.5)
+                failed_before = next(row for row in before['paper_portfolios'] if row['name'] == 'Aggressive')
+                failed_after = next(row for row in after['paper_portfolios'] if row['name'] == 'Aggressive')
+                self.assertEqual(failed_after, failed_before)
+                for table in ('paper_positions', 'paper_trades', 'paper_orders', 'paper_nav_history'):
+                    self.assertTrue(after[table], table)
+                    self.assertTrue(all(row['portfolio_name'] == 'Champion' for row in after[table]), table)
+                self.assertEqual(after['paper_trades'][0]['fees_rub'], 2.5)
+                self.assertIn('net_profit_protection', after['paper_positions'][0]['payload'])
+                self.assertIn('net_profit_protection', after['paper_trades'][0]['payload'])
+                for timing in result['timing']['portfolios']:
+                    io = timing['accounting_io']
+                    if measured:
+                        self.assertGreater(io['execute_calls'], 0)
+                        self.assertGreater(io['rows_returned'], 0)
+                        self.assertEqual(io['execute_errors'], 1)
+                        self.assertEqual(io['fetch_errors'], 0)
+                    else:
+                        self.assertEqual(io['execute_calls'], 0)
+                        self.assertEqual(io['fetch_calls'], 0)
+                outcomes.append(({key: value for key, value in result.items() if key != 'timing'}, after))
+        # Compare every column and complete JSON payload, including VPP output,
+        # without deleting timestamps, amounts, evidence or accounting fields.
+        self.assertEqual(outcomes[1], outcomes[0])
+
     def test_waiting_protection_commits_during_cleanup_and_next_book_reads_new_nav_clock(self):
         names = ('Impulse', 'Champion')
         self.seed(names)

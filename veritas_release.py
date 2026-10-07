@@ -53,7 +53,7 @@ def snapshot():
             "unqualified_provider_month_not_inferred":True,
         },
         "runtime_read_policy":{
-            "version":"BOUNDED_RUNTIME_READS_V11","historical_fields_use_record_projection":True,
+            "version":"BOUNDED_RUNTIME_READS_V12","historical_fields_use_record_projection":True,"legacy_noop_reads_omit_structural_string_owners":True,"book_accounting_io_measured":True,
             "startup_api_waits_for_bootstrap":True,"single_portfolio_snapshot_refresh":True,
             "snapshot_and_schema_sql_waits_bounded":True,"profit_refresh_positions_projected":True,"post_funding_stop_cost_read_projected":True,"portfolio_http_wait_seconds":1.0,"completed_portfolio_reads_keep_observation_time":True,"protective_fills_advance_snapshot_revision":True,"position_account_payload_reused":True,"entry_decision_display_projected":True,
             "current_portfolio_schema_avoids_ddl":True,"unchanged_portfolio_metadata_avoids_row_locks":True,

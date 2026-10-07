@@ -3827,7 +3827,7 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
 
     # Legacy MFE locks; tagged positions use confirmed same-timeframe swings.
     try:
-        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s AND "+VTM.LEGACY_POSITION_SQL_PREDICATE,(name,)).fetchall()
         for z0 in positions:
             z=dict(z0); payload=_v90j_json(z.get('payload'))
             if VTM.owns_position(z): continue
@@ -5449,7 +5449,7 @@ def _v90tr_apply(c,name,candidates,prices,ts):
     """
     changes=[]
     try:
-        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s AND "+VTM.LEGACY_POSITION_SQL_PREDICATE,(name,)).fetchall()
     except Exception:
         return changes
     for z0 in positions or []:

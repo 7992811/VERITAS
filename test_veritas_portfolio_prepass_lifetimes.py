@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import unittest
 import weakref
 
+from veritas_timeframe_management import LEGACY_POSITION_SQL_PREDICATE
+
 
 ROOT = Path(__file__).parent
 VP, RT = 'veritas_portfolio.py', 'veritas_portfolio_runtime.py'
@@ -159,7 +161,8 @@ class PrepassFixture:
             '_v90j_json': lambda value: value if isinstance(value, dict) else {},
             '_v90j_iso': lambda value: value,
             '_v90pi_jump_limit': lambda asset: 0.04,
-            'VTM': SimpleNamespace(owns_position=lambda z: True),
+            'VTM': SimpleNamespace(owns_position=lambda z: True,
+                                   LEGACY_POSITION_SQL_PREDICATE=LEGACY_POSITION_SQL_PREDICATE),
             '_v90ci_same_contract': lambda payload, row: False,
             '_v90ci_cross_source_disagreement': lambda row: None,
             '_v842_management_row': management,
