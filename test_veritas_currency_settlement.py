@@ -154,6 +154,34 @@ class SettlementEvidenceTests(unittest.TestCase):
         self.assertEqual(projected["funding_rub"],D("5"))
         self.assertFalse(assess(observation,fills,now,legacy_funding=True)["funding_reconciled"])
 
+    def test_margin_and_other_fees_require_full_cash_coverage_without_becoming_funding(self):
+        for kind in (14, 66, "OPERATION_TYPE_MARGIN_FEE", "OPERATION_TYPE_OTHER_FEE"):
+            for child_allocation in (False, True):
+                with self.subTest(kind=kind, child_allocation=child_allocation):
+                    fills, observation, now=fixture()
+                    row={"id":"separate-cost", "brokerAccountId":ACCOUNT, "instrumentUid":UID,
+                         "date":observation["operations"]["to"], "state":"OPERATION_STATE_EXECUTED",
+                         "type":kind, "payment":TT.money("-2")}
+                    if child_allocation:
+                        row.update(instrumentUid="",payment=TT.money("0"),childOperations=[
+                            {"instrumentUid":UID,"payment":TT.money("-2")},
+                            {"instrumentUid":"foreign","payment":TT.money("2")}])
+                    observation["operations"]["operations"].append(row)
+                    uncovered=assess(observation,fills,now)
+                    self.assertFalse(uncovered["funding_reconciled"])
+                    observation["statement"]["cash_operation_ids"].append("separate-cost")
+                    observation["statement"]["cash_operation_ids"].sort()
+                    observation["statement"].update(other_fees_rub="2",fee_cash_rub="4")
+                    covered=assess(observation,fills,now)
+                    self.assertTrue(covered["funding_reconciled"], covered["reasons"])
+                    projected=L.project(fills,[],[],SPEC,settlement=covered)
+                    self.assertEqual(projected["fees_rub"],D("4"))
+                    self.assertEqual(projected["funding_rub"],D("5"))
+                    row["state"]="OPERATION_STATE_PROGRESS"
+                    pending=assess(observation,fills,now)
+                    self.assertFalse(pending["funding_reconciled"])
+                    self.assertIn("BROKER_COST_OPERATION_PENDING",pending["reasons"])
+
     def test_historical_final_flat_report_is_reusable_only_with_fresh_full_cash_match(self):
         fills=[LT.fill("one","BUY",1,"12.00",fee="2"),
                LT.fill("close","SELL",1,"12.10",fee="2",offset=1,metadata=LT.terms("CLOSE"))]

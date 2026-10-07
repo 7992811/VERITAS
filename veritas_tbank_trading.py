@@ -40,6 +40,7 @@ READ_METHODS = {
     "withdraw_limits": "OperationsService/GetWithdrawLimits",
     "operations": "OperationsService/GetOperationsByCursor",
     "broker_report": "OperationsService/GetBrokerReport",
+    "operations_cursor": "OperationsService/GetOperationsByCursor",
     "orders": "OrdersService/GetOrders",
     "order": "OrdersService/GetOrderState",
     "max_lots": "OrdersService/GetMaxLots",
@@ -57,6 +58,7 @@ SANDBOX_METHODS = {
     "positions": "GetSandboxPositions", "orders": "GetSandboxOrders",
     "withdraw_limits": "GetSandboxWithdrawLimits",
     "operations": "GetSandboxOperationsByCursor",
+    "operations_cursor": "GetSandboxOperationsByCursor",
     "order": "GetSandboxOrderState", "max_lots": "GetSandboxMaxLots",
     "order_price": "GetSandboxOrderPrice", "stop_orders": "GetSandboxStopOrders",
     "submit": "PostSandboxOrder", "cancel": "CancelSandboxOrder",
@@ -518,6 +520,44 @@ class TBankTradingAdapter:
             if not isinstance(result.get(key, []), list):
                 raise TradingError("INVALID_POSITIONS_RESPONSE")
         return result
+
+    def get_operations_by_cursor(self, account_id, *, from_time, to_time,
+                                 cursor="", limit=1000):
+        """One bounded, unfiltered account page; no settlement-finality claim.
+
+        Callers must walk hasNext/nextCursor and examine all operation states,
+        including corrections and child operations. IDs are not immutable.
+        """
+        account = _identifier(account_id, "INVALID_ACCOUNT_ID")
+        start = _timestamp(from_time.isoformat() if isinstance(from_time, datetime) else from_time)
+        end = _timestamp(to_time.isoformat() if isinstance(to_time, datetime) else to_time)
+        if datetime.fromisoformat(start) >= datetime.fromisoformat(end):
+            raise TradingError("INVALID_OPERATIONS_WINDOW")
+        if (not isinstance(cursor, str) or len(cursor) > 4096
+                or any(ord(c) < 32 or ord(c) == 127 for c in cursor)):
+            raise TradingError("INVALID_OPERATIONS_CURSOR")
+        if type(limit) is not int or not 3 <= limit <= 1000:
+            raise TradingError("INVALID_OPERATIONS_LIMIT")
+        result = self._request("operations_cursor", {
+            "accountId": account, "from": start, "to": end, "cursor": cursor,
+            "limit": limit, "state": "OPERATION_STATE_UNSPECIFIED",
+            "withoutCommissions": False, "withoutTrades": False, "withoutOvernights": False,
+        })
+        if "accountId" in result and result["accountId"] != account:
+            raise TradingError("OPERATIONS_IDENTITY_MISMATCH")
+        rows = result.get("items", [])
+        has_next = result.get("hasNext", False)
+        next_cursor = result.get("nextCursor", "")
+        if (not isinstance(rows, list) or len(rows) > limit
+                or any(not isinstance(row, dict) for row in rows)
+                or type(has_next) is not bool or not isinstance(next_cursor, str)
+                or len(next_cursor) > 4096
+                or any(ord(c) < 32 or ord(c) == 127 for c in next_cursor)
+                or (has_next and (not next_cursor or next_cursor == cursor or not rows))):
+            raise TradingError("INVALID_OPERATIONS_PAGE")
+        if any(row.get("brokerAccountId", account) != account for row in rows):
+            raise TradingError("OPERATIONS_IDENTITY_MISMATCH")
+        return copy.deepcopy(result)
 
     def get_withdraw_limits(self, account_id):
         """Read reported cash/blocked/futures-guarantee buckets, never withdraw.

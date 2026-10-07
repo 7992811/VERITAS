@@ -272,6 +272,7 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
                 # A polling caller otherwise loses every free turn to the
                 # already-waiting portfolio loop. Reserve only for a currently
                 # valid structural entry; never extend the event/quote lifetime.
+                clock = _wall_clock()  # Context preparation may have outlived the entry window.
                 pending = any(SB.entry_gate(TFP.context_of(row),
                     VPS.quote_from_row(row).get('price'), row.get('research_decision'), clock).get('eligible')
                     for candidates in grouped.values() for row in candidates)

@@ -193,6 +193,55 @@ class AdapterTests(unittest.TestCase):
                 self.submit(adapter)
         self.assertEqual(self.transport.calls, [])
 
+    def test_operation_history_is_bounded_unfiltered_and_read_only_in_both_environments(self):
+        for environment, name, route in (
+            ("production", "GetOperationsByCursor", "OperationsService"),
+            ("sandbox", "GetSandboxOperationsByCursor", "SandboxService"),
+        ):
+            with self.subTest(environment=environment):
+                transport = FakeTransport()
+                page = {"items": [{"brokerAccountId": ACCOUNT, "id": "mutable-id"}],
+                        "hasNext": True, "nextCursor": "next:page=="}
+                transport.handlers[name] = Response(page)
+                adapter = T.TBankTradingAdapter(TOKEN, transport=transport,
+                    config=T.ExecutionConfig(environment=environment))
+                result = adapter.get_operations_by_cursor(
+                    ACCOUNT, from_time=STAMP, to_time="2026-10-08T00:00:00Z", limit=100)
+                self.assertEqual(result, page)
+                self.assertEqual(len(transport.calls), 1)
+                call = transport.calls[0]
+                self.assertIn(route + "/" + name, call["url"])
+                self.assertEqual(call["body"]["accountId"], ACCOUNT)
+                self.assertEqual(call["body"]["state"], "OPERATION_STATE_UNSPECIFIED")
+                self.assertNotIn("instrumentId", call["body"])
+                self.assertNotIn("operationTypes", call["body"])
+                for flag in ("withoutCommissions", "withoutTrades", "withoutOvernights"):
+                    self.assertIs(call["body"][flag], False)
+                self.assertFalse(adapter.capabilities()["execution_enabled"])
+
+    def test_invalid_operation_window_and_cursor_fail_before_network(self):
+        base = dict(from_time=STAMP, to_time="2026-10-08T00:00:00Z")
+        for change in ({"to_time": STAMP}, {"from_time": "2026-10-07"},
+                       {"cursor": "bad\nvalue"}, {"limit": 1}, {"limit": 2},
+                       {"limit": 1001}, {"limit": True}):
+            with self.subTest(change=change), self.assertRaises(T.TradingError):
+                self.adapter.get_operations_by_cursor(ACCOUNT, **(base | change))
+        self.assertEqual(self.transport.calls, [])
+
+    def test_malformed_and_cross_account_operation_pages_are_rejected(self):
+        pages = (
+            {"items": [{"brokerAccountId": "another"}]},
+            {"items": [], "hasNext": True, "nextCursor": "next"},
+            {"items": [{}], "hasNext": True, "nextCursor": ""},
+            {"items": [{}], "hasNext": "false"},
+            {"items": [{}], "nextCursor": "bad\nvalue"},
+        )
+        for page in pages:
+            with self.subTest(page=page), self.assertRaises(T.TradingError):
+                self.transport.handlers["GetOperationsByCursor"] = Response(page)
+                self.adapter.get_operations_by_cursor(ACCOUNT, from_time=STAMP,
+                                                     to_time="2026-10-08T00:00:00Z")
+
     def test_independent_configuration_gates_all_write_methods_before_transport(self):
         for changes, code in (({"enabled": False}, "EXECUTION_DISABLED"),
                               ({"armed": False}, "EXECUTION_NOT_ARMED"),

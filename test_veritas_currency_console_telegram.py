@@ -141,6 +141,41 @@ class ConsoleTelegramTests(unittest.TestCase):
         self.assertTrue(unbound.handle_callback({"id": "unknown-callback"}))
         self.assertEqual(telegram.calls[-1][0], "answerCallbackQuery")
 
+    def test_operator_commands_use_the_same_persisted_owner_and_bot_binding(self):
+        bridge, telegram, requests = self.harness({"ok": True, "owner_user_id": OWNER, "bot_id": BOT})
+        delegated = Mock()
+        delegated.handle_message.return_value = True
+        delegated._private_owner.return_value = True
+        with patch.object(B, "TradeTelegramBridge", return_value=delegated) as constructor:
+            for text in ("/currency_status", "/currency_bind review-code"):
+                message = self.message(text)
+                self.assertTrue(bridge.handle_message(message))
+                delegated.handle_message.assert_called_with(message)
+            self.assertTrue(bridge._private_owner(self.message("/start")))
+        constructor.assert_called_once()
+        self.assertEqual(constructor.call_args.args[2], OWNER)
+        self.assertTrue(all(path == B.PREFIX + "binding" for path, _ in requests))
+        self.assertEqual(telegram.sent(), [])
+
+    def test_operator_commands_never_resolve_binding_from_forwarded_or_group_messages(self):
+        for text in ("/currency_status", "/currency_bind"):
+            for change in ({"forward_origin": {"type": "user"}},
+                           {"chat": {"id": OWNER, "type": "group"}},
+                           {"from": {"id": OWNER, "is_bot": True}}):
+                bridge, telegram, requests = self.harness()
+                self.assertTrue(bridge.handle_message(self.message(text, **change)))
+                self.assertFalse(bridge._private_owner(self.message("/start", **change)))
+                self.assertEqual(requests, [])
+                self.assertEqual(telegram.calls, [])
+
+    def test_unbound_operator_command_explains_setup_without_creating_a_legacy_owner(self):
+        bridge, telegram, requests = self.harness({"ok": True, "owner_user_id": None})
+        with patch.object(B, "TradeTelegramBridge") as constructor:
+            self.assertTrue(bridge.handle_message(self.message("/currency_bind")))
+        constructor.assert_not_called()
+        self.assertEqual([path for path, _ in requests], [B.PREFIX + "binding"])
+        self.assertIn("первоначальную привязку", telegram.sent()[0]["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

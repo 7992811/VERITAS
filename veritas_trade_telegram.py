@@ -9,7 +9,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import json
 import os
+import re
 import threading
+import time
 import uuid
 from urllib.parse import urlparse
 
@@ -18,6 +20,106 @@ import httpx
 EXPECTED_BOT_USERNAME = "axednewsi_bot"
 PREFIX = "/internal/currency-trading/"
 MSK = ZoneInfo("Europe/Moscow")
+OPERATOR_COMMANDS = frozenset(("/currency_status", "/currency_bind"))
+REASONS = {
+    "DISABLED": "Предложения сделок отключены в конфигурации.",
+    "CURRENCY_ACCOUNT_NOT_BOUND": "Счёт ещё не привязан к учёту валютного портфеля.",
+    "EXECUTION_DISABLED": "Отправка заявок брокеру отключена; подтверждения только сохраняются.",
+    "CURRENCY_TRADE_EXECUTION_DISABLED": "Отправка заявок брокеру отключена; подтверждения только сохраняются.",
+    "LIVE_ACCOUNT_ADMISSION_REQUIRED": "Не настроен независимый риск-допуск реального счёта.",
+    "RECONCILIATION_PENDING": "Ожидается сверка заявки, исполнений и комиссий с брокером.",
+    "EXECUTION_RECONCILIATION_PENDING": "Ожидается сверка заявки, исполнений и комиссий с брокером.",
+    "NO_CANONICAL_EVENT": "Сейчас нет нового подтверждённого сигнала.",
+    "VERIFIED_FLAT_BROKER_ACCOUNT_REQUIRED": "Для первой привязки нужны нулевая позиция CNYRUBf и отсутствие активных заявок.",
+    "CURRENCY_BIND_REQUIRES_FLAT_ACCOUNT": "Для первой привязки нужны нулевая позиция CNYRUBf и отсутствие активных заявок.",
+    "TRADE_BOT_BINDING_MISMATCH": "Идентификатор бота не совпадает с настройкой торгового сервиса.",
+    "TRADE_REQUEST_SCOPE_MISMATCH": "Настройка счёта или окружения изменилась; запросите состояние заново.",
+    "PRIVATE_TRADE_OWNER_REQUIRED": "Владелец личного чата не совпадает с настройкой торгового сервиса.",
+    "TRADE_REQUEST_REJECTED": "Сервис отклонил запрос; проверьте конфигурацию доступа.",
+    "TRADE_SERVICE_UNAVAILABLE": "Торговый сервис временно недоступен; состояние не подтверждено.",
+    "TRADE_SERVICE_AUTH_REQUIRED": "Ключ доступа бота не совпадает с ключом торгового сервиса.",
+    "TRADE_SERVICE_KEY_NOT_CONFIGURED": "В торговом сервисе не настроен отдельный ключ доступа.",
+    "EXPLICIT_TRADE_OWNER_CONFIGURATION_REQUIRED": "В сервисе не завершена настройка владельца, личного чата или бота.",
+    "DISTINCT_TRADE_SERVICE_AND_APPROVAL_KEYS_REQUIRED": "Для сервиса и подписи подтверждений нужны разные настроенные ключи.",
+    "EXACT_OPEN_FULL_ACCESS_ACCOUNT_REQUIRED": "Выбранный брокерский счёт должен быть открыт и доступен этому токену с правом торговли.",
+    "FLAT_UNENCUMBERED_10000_RUB_REQUIRED": "Для первой привязки нужны свободные 10 000 ₽, нулевая позиция CNYRUBf и отсутствие активных заявок.",
+    "BROKER_LIMITS_NOT_READY": "Брокер ещё не подтвердил текущие лимиты; повторите проверку позже.",
+    "BROKER_POSITION_MISMATCH": "Позиция брокера отличается от отдельного учёта Currency; требуется сверка.",
+    "WORKING_ORDER_RECONCILIATION_REQUIRED": "Есть активная заявка; сначала нужна сверка её исполнения.",
+    "FUNDING_COMPLETENESS_UNVERIFIED": "Полнота учёта фондирования ещё не подтверждена; новые входы блокируются.",
+    "BROKER_COST_RECONCILIATION_REQUIRED": "Не завершена сверка фактических комиссий и фондирования.",
+    "BROKER_FACTS_UNAVAILABLE": "Свежие брокерские данные недоступны; готовность не подтверждена.",
+    "TRADE_SERVICE_TEMPORARILY_UNAVAILABLE": "Торговый сервис временно недоступен; состояние не подтверждено.",
+    "LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED": "Не настроен источник подтверждённых данных для риск-допуска реального счёта.",
+    "LIVE_ACCOUNT_ADMISSION_NOT_CHECKED": "Риск-допуск реального счёта ещё не проверен; новые входы недоступны.",
+    "LIVE_ACCOUNT_ADMISSION_STALE": "Данные риск-допуска реального счёта устарели; требуется свежая проверка.",
+    "LIVE_ACCOUNT_CONTROLS_EVIDENCE_REQUIRED": "Не подтверждены текущие ограничения и риск-показатели всего брокерского счёта.",
+    "LIVE_MODEL_ADMISSION_EVIDENCE_REQUIRED": "Не подтверждён допуск модели к реальным сделкам.",
+    "FUNDING_HISTORY_REFRESH_REQUIRED": "Нужно обновить историю фактического фондирования перед новым входом.",
+    "FUNDING_HISTORY_INCOMPLETE": "История фактического фондирования неполна; новые входы заблокированы до сверки.",
+    "STATEMENT_ATTESTATION_NOT_CONFIGURED": "Не настроен источник подтверждения полноты брокерского отчёта.",
+    "FUNDING_STATEMENT_ATTESTATION_REQUIRED": "Нужно подтверждение полноты брокерского отчёта по фондированию.",
+    "SETTLEMENT_HISTORY_CORRECTED": "Брокер исправил историю расчётов; перед новым входом требуется повторная сверка учёта.",
+    "SETTLEMENT_CHECKPOINT_DUE": "Наступил срок очередной сверки брокерских расчётов.",
+    "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT": "Плановый объём уже набран либо допустимого размера недостаточно для одного целого контракта.",
+}
+
+
+def operator_command(text):
+    parts = str(text or "").strip().split()
+    if not parts:
+        return None
+    command, _, suffix = parts[0].partition("@")
+    if suffix and suffix.lower() != EXPECTED_BOT_USERNAME:
+        return None
+    return command.lower() if command.lower() in OPERATOR_COMMANDS else None
+
+
+def _reason(code):
+    # Never put arbitrary HTTP bodies, account details or exception text in chat.
+    if isinstance(code, str) and code in REASONS:
+        return REASONS[code]
+    if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", code):
+        return "Ограничение: " + code + "."
+    return "Состояние ещё не подтверждено."
+
+
+def readiness_text(status):
+    """Describe metadata only; a status request never polls or executes a trade."""
+    lines = ["Валютный портфель · состояние"]
+    if status.get("ok") is not True:
+        return "\n".join(lines + [_reason(status.get("code") or status.get("error"))])
+    if status.get("enabled") is not True:
+        return "\n".join(lines + [REASONS["DISABLED"], "Привязка и отправка заявок этой командой не включаются."])
+    environment = status.get("execution_environment")
+    lines.append("Окружение: " + {"production": "реальный счёт", "sandbox": "песочница"}.get(environment, "не определено"))
+    account = str(status.get("account_id") or "")
+    lines.append("Счёт: …" + account[-4:] if account else "Счёт: не определён")
+    lines.append("Отправка брокеру: " + ("разрешена конфигурацией; только после отдельного подтверждения"
+                 if status.get("execution_enabled") is True else "отключена"))
+    binding = status.get("binding_state", "unchecked")
+    lines.append("Привязка учёта: " + {"bound": "подтверждена", "unbound": "не выполнена",
+                 "unchecked": "ещё не проверена"}.get(binding, "ещё не проверена"))
+    if status.get("new_risk_block_reason"):
+        lines.append("Новые входы: " + _reason(status["new_risk_block_reason"]))
+    if status.get("last_poll_at"):
+        lines.append("Последняя проверка: " + _stamp(status["last_poll_at"]))
+        if status.get("status_stale") is True:
+            lines.append("Данные проверки устарели; текущая готовность не подтверждена.")
+        if status.get("last_poll_succeeded") is False:
+            lines.append("Последняя проверка завершилась ошибкой.")
+        if status.get("last_poll_block_reason"):
+            lines.append(_reason(status["last_poll_block_reason"]))
+        for key, label in (("pending_approval_count", "Ожидают решения/доставки"),
+                           ("unsettled_count", "Ожидают сверки исполнения")):
+            value = status.get(key)
+            if type(value) is int and value >= 0:
+                lines.append(f"{label}: {value}")
+        lines.append("Это результат последней проверки, а не новая проверка брокерского счёта.")
+    else:
+        lines.append("Проверка сигналов и брокерского состояния ещё не завершалась; готовность не подтверждена.")
+    lines.append("/currency_bind — явная первоначальная привязка учёта. Торговые флаги не изменяет.")
+    return "\n".join(lines)
 
 
 class TradeTelegramError(RuntimeError):
@@ -120,7 +222,7 @@ def execution_text(proposal):
 
 
 class InternalTradeClient:
-    OPERATIONS = frozenset(("status", "poll", "decision", "claim-delivery",
+    OPERATIONS = frozenset(("status", "bind", "poll", "decision", "claim-delivery",
                             "delivered", "delivery-unknown", "updates"))
 
     def __init__(self, url, key, client=None):
@@ -145,10 +247,19 @@ class InternalTradeClient:
                                        headers={"X-Veritas-Trade-Key": self.key})
         except Exception:
             raise TradeTelegramError("TRADE_SERVICE_UNAVAILABLE") from None
-        if response.status_code >= 500 or 300 <= response.status_code < 400:
+        if 300 <= response.status_code < 400:
             raise TradeTelegramError("TRADE_SERVICE_UNAVAILABLE")
         if response.status_code >= 400:
-            return {"ok": False, "error": "TRADE_REQUEST_REJECTED"}
+            try:
+                refusal = response.json()
+                code = refusal.get("code") if isinstance(refusal, dict) else None
+            except Exception:
+                code = None
+            safe_code = code if isinstance(code, str) and code in REASONS else None
+            if response.status_code >= 500:
+                raise TradeTelegramError(safe_code or "TRADE_SERVICE_UNAVAILABLE")
+            return {"ok": False, "error": "TRADE_REQUEST_REJECTED",
+                    "code": safe_code or "TRADE_REQUEST_REJECTED"}
         try:
             data = response.json()
         except Exception:
@@ -159,7 +270,7 @@ class InternalTradeClient:
 
 
 class TradeTelegramBridge:
-    def __init__(self, service, telegram, owner_user_id, logger=None):
+    def __init__(self, service, telegram, owner_user_id, logger=None, clock=None):
         self.service, self.telegram = service, telegram
         self.owner_user_id = _positive(owner_user_id)
         self.logger = logger or (lambda message: None)
@@ -167,6 +278,78 @@ class TradeTelegramBridge:
         self.worker_id = "telegram-" + uuid.uuid4().hex
         self._identity_lock, self._poll_lock = threading.RLock(), threading.Lock()
         self._updated = {}
+        self._clock = clock or time.monotonic
+        self._bind_challenge = None
+
+    def _private_owner(self, message):
+        sender, chat = message.get("from") or {}, message.get("chat") or {}
+        return (type(sender.get("id")) is int and sender["id"] == self.owner_user_id
+                and sender.get("is_bot") is not True and chat.get("type") == "private"
+                and type(chat.get("id")) is int and chat["id"] == self.owner_user_id
+                and not message.get("forward_origin") and not message.get("forward_date")
+                and not message.get("is_automatic_forward"))
+
+    def _operator_reply(self, text):
+        self.telegram("sendMessage", {"chat_id": str(self.owner_user_id), "text": text[:4096],
+                                      "disable_web_page_preview": "true"})
+
+    def handle_message(self, message):
+        command = operator_command(message.get("text"))
+        if command is None:
+            return False
+        # Suppress these commands outside the exact private owner conversation.
+        # News moderators and channel administrators do not inherit this role.
+        if not self._private_owner(message):
+            return True
+        self._identity()
+        try:
+            status = self._request("status")
+        except TradeTelegramError as exc:
+            self._operator_reply(_reason(str(exc) if str(exc) in REASONS else "TRADE_SERVICE_UNAVAILABLE"))
+            return True
+        if command == "/currency_status" or status.get("ok") is not True or status.get("enabled") is not True:
+            self._operator_reply(readiness_text(status))
+            return True
+        scope = {key: status.get(key) for key in ("account_id", "instrument_uid", "execution_environment")}
+        if (not all(isinstance(value, str) and value for value in scope.values())
+                or scope["execution_environment"] not in ("production", "sandbox")):
+            self._operator_reply("Сервис не подтвердил точный счёт и окружение. Привязка недоступна.")
+            return True
+        arguments = str(message.get("text") or "").strip().split()[1:]
+        if not arguments:
+            nonce = uuid.uuid4().hex[:20]
+            self._bind_challenge = {"nonce": nonce, "scope": scope, "expires": self._clock() + 120}
+            mode = "РЕАЛЬНЫЙ СЧЁТ" if scope["execution_environment"] == "production" else "ПЕСОЧНИЦА"
+            self._operator_reply(
+                f"Первоначальная привязка · {mode} · счёт …{scope['account_id'][-4:]}\n"
+                "Создаст отдельный учёт Currency с расчётной долей 10 000 ₽. "
+                "Деньги не переводятся, заявки брокеру не отправляются, разрешения на торговлю не меняются.\n"
+                "Сервис проверит точный счёт, доступные средства, нулевую позицию CNYRUBf и отсутствие активных заявок. "
+                "Повторная привязка не обнуляет существующий учёт.\n"
+                f"Если это выбранный вами счёт, подтвердите в течение 120 секунд:\n/currency_bind {nonce}")
+            return True
+        challenge = self._bind_challenge
+        if (len(arguments) != 1 or not challenge or arguments[0] != challenge["nonce"]
+                or self._clock() >= challenge["expires"] or scope != challenge["scope"]):
+            self._bind_challenge = None
+            self._operator_reply("Подтверждение привязки устарело или счёт изменился. Начните заново: /currency_bind")
+            return True
+        try:
+            result = self._request("bind", dict(scope, sender_user_id=self.owner_user_id,
+                private_chat_id=self.owner_user_id, chat_type="private"))
+        except TradeTelegramError:
+            # A lost response must not be described as a failed binding. Repeating
+            # this exact request is safe: the ledger never resets an existing bind.
+            self._operator_reply("Ответ на привязку не получен. Результат пока не подтверждён. "
+                                 "Повторите ту же команду в пределах срока или проверьте /currency_status.")
+            return True
+        self._bind_challenge = None
+        if result.get("ok") is True and (result.get("binding") or {}).get("status") == "BOUND":
+            self._operator_reply("Учёт Currency привязан к выбранному счёту. Деньги не переведены, заявки не отправлены. "
+                                 "Разрешения на торговлю не менялись. Состояние: /currency_status")
+        else:
+            self._operator_reply(_reason(result.get("code") or result.get("error")))
+        return True
 
     def _identity(self):
         with self._identity_lock:
@@ -300,6 +483,19 @@ def build_from_env(telegram, logger=None):
         return build(service, telegram, logger)
     return TradeTelegramBridge(service, telegram,
         _positive(os.getenv("VERITAS_CURRENCY_TRADE_OWNER_USER_ID")), logger)
+
+
+def handle_operator_message(message, bridge, telegram):
+    """Called by the one existing update consumer, including feature-off mode."""
+    if operator_command(message.get("text")) is None:
+        return False
+    if bridge is None:
+        try:
+            owner = _positive(os.getenv("VERITAS_CURRENCY_TRADE_OWNER_USER_ID"))
+        except TradeTelegramError:
+            return True
+        bridge = TradeTelegramBridge(lambda *_: {"ok": True, "enabled": False}, telegram, owner)
+    return bridge.handle_message(message)
 
 
 def start_worker(bridge, stop_event, logger=None):

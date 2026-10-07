@@ -2,8 +2,9 @@
 
 The factory always installs a PostgreSQL evidence loader.  Its absence/failure,
 an unaudited model, or incomplete account history is a blocker, not a paper-mode
-permission.  ``publish_audited_artifact`` is an internal, append-only ingestion
-API for independently reviewed artifacts; it is deliberately not an HTTP route.
+permission. ``publish_audited_artifact`` archives independently reviewed bytes.
+Production additionally requires the independent issuer's signed v2 envelope,
+verified at protected import and again at runtime for these exact order terms.
 See docs/currency-live-authority.md for the evidence trust boundary and schema.
 """
 from __future__ import annotations
@@ -12,11 +13,14 @@ from copy import deepcopy
 from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import base64
 import hashlib
+import hmac
 import json
 import math
 import re
 import threading
+import uuid
 from typing import Mapping
 from zoneinfo import ZoneInfo
 
@@ -35,6 +39,10 @@ EVIDENCE_SCHEMA = "VERITAS_AUDITED_LIVE_EVIDENCE_V1"
 EVIDENCE_TABLE = "public.veritas_currency_live_evidence_v1"
 OBSERVATION_TABLE = "public.veritas_currency_live_account_observations_v1"
 ARTIFACT_TABLE = "public.veritas_currency_live_artifact_blobs_v1"
+TABLE = "currency_live_admission_evidence"
+SIGNED_EVIDENCE_SCHEMA = "currency-live-admission-v2"
+MAX_BYTES = 60 * 1024
+MAX_SIGNED_MODEL_AGE = timedelta(seconds=900)
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_ACCOUNT_ROWS = 128
 MAX_MODEL_AGE = timedelta(days=7)
@@ -49,9 +57,14 @@ _UTC = timezone.utc
 
 
 class AdmissionBlocked(ValueError):
-    def __init__(self, code):
-        self.code = code
+    def __init__(self, code, status_code=409):
+        self.code, self.status_code = code, status_code
         super().__init__(code)
+
+
+# The independently authenticated HTTP intake keeps its published exception
+# interface; the production authority uses the same fail-closed codes.
+LiveAdmissionError = AdmissionBlocked
 
 
 def _require(condition, code):
@@ -165,6 +178,75 @@ def model_binding(terms, environment="production"):
     return binding
 
 
+def canonical_json(value):
+    """Stable, bounded issuer HMAC representation; document JSON stays a string.
+
+    The inner audited document may contain finite native numerical metrics. Its
+    exact JSON string survives JSONB readback without changing the signed bytes.
+    The outer transport has only strings, integers, booleans, lists and objects.
+    """
+    def visit(item, depth=0):
+        _require(depth <= 20, "EVIDENCE_TOO_DEEP")
+        if isinstance(item, dict):
+            _require(all(isinstance(k, str) for k in item), "INVALID_EVIDENCE_KEY")
+            for child in item.values():
+                visit(child, depth + 1)
+        elif isinstance(item, list):
+            _require(len(item) <= 500, "EVIDENCE_LIST_TOO_LARGE")
+            for child in item:
+                visit(child, depth + 1)
+        else:
+            _require(item is None or type(item) in (str, int, bool), "INVALID_EVIDENCE_JSON_TYPE")
+    visit(value)
+    raw = _json(value)
+    _require(len(raw.encode()) <= MAX_BYTES, "EVIDENCE_TOO_LARGE")
+    return raw
+
+
+def evidence_scope(terms):
+    """Bind an independent issuer's attestation to exact immutable order terms."""
+    binding = model_binding(terms)
+    environment = terms.get("execution_environment", "production")
+    _require(environment == "production", "LIVE_PRODUCTION_BROKER_REQUIRED")
+    return {"account_id": binding["account_id"], "instrument_uid": binding["instrument_uid"],
+            "execution_environment": environment, "asset": binding["asset"],
+            "model_version": binding["model_version"], "policy_version": binding["policy_version"],
+            "horizon": binding["horizon"], "source_hash": binding["source_identity_sha256"],
+            "terms_hash": P.fingerprint(terms), "model_binding": binding}
+
+
+def audited_evidence_payload(terms, document, artifact_bytes, review, *, issuer_id=None, evidence_id=None):
+    """Package reviewed originals for an independent issuer; never sign or approve.
+
+    The issuer signs canonical_json(result) with its separate HMAC-SHA256 key.
+    Original artifacts are base64 bytes, or null references to already staged
+    originals that are read and verified again at both import and admission.
+    This v2 envelope intentionally cannot promote the old data-only v1 reports.
+    """
+    doc, review = _payload(document), _payload(review)
+    _require(artifact_bytes is None or isinstance(artifact_bytes, Mapping), "LIVE_ARTIFACT_BYTES_REQUIRED")
+    if artifact_bytes is None:
+        _require(isinstance(doc.get("artifacts"), dict), "LIVE_EVIDENCE_MANIFEST_REQUIRED")
+        artifact_bytes = {entry.get("sha256"): None for entry in doc["artifacts"].values() if isinstance(entry, dict)}
+    blobs = {}
+    for digest, raw in artifact_bytes.items():
+        _require(isinstance(digest, str) and _HEX.fullmatch(digest)
+                 and (raw is None or isinstance(raw, bytes) and raw), "LIVE_ARTIFACT_BYTES_REQUIRED")
+        blobs[digest] = base64.b64encode(raw).decode("ascii") if raw is not None else None
+    observed = _date(review.get("reviewed_at"))
+    maximum = MAX_SIGNED_MODEL_AGE if doc.get("kind") == "MODEL" else MAX_ACCOUNT_AGE
+    result = {"version": SIGNED_EVIDENCE_SCHEMA, "kind": {"MODEL": "MODEL_ADMISSION",
+        "ACCOUNT_HISTORY": "ACCOUNT_CONTROLS"}.get(doc.get("kind")),
+        "issuer_id": _text(issuer_id or review.get("reviewer"), "LIVE_EVIDENCE_ISSUER_REQUIRED"),
+        "observed_at": observed.isoformat(),
+        "valid_until": min(_date(doc.get("valid_until")), observed+maximum).isoformat(),
+        "scope": evidence_scope(terms), "document_json": _json(doc), "review_json": _json(review),
+        "artifact_bytes": blobs}
+    result["evidence_id"] = evidence_id or str(uuid.uuid5(uuid.NAMESPACE_URL, _hash(result)))
+    canonical_json(result)
+    return result
+
+
 def _validate_document(document, now, *, kind=None, binding=None, allow_revoked=False):
     doc = _payload(document)
     _require(len(_json(doc).encode()) <= MAX_ARTIFACT_BYTES, "LIVE_ARTIFACT_TOO_LARGE")
@@ -192,6 +274,8 @@ def _validate_document(document, now, *, kind=None, binding=None, allow_revoked=
         _require(isinstance(item, dict) and item.get("origin") == origin
                  and isinstance(item.get("sha256"), str) and _HEX.fullmatch(item["sha256"]),
                  "LIVE_INDEPENDENT_ARTIFACT_REQUIRED:" + domain)
+    _require(len({manifest[domain]["sha256"] for domain in domains}) == len(domains),
+             "LIVE_DISTINCT_INDEPENDENT_ARTIFACTS_REQUIRED")
     return doc
 
 
@@ -340,6 +424,197 @@ class EvidenceStore:
                 (_hash(observation), _hash(snapshot["binding"]), observed_at, _hash(snapshot), _json(observation)))
 
 
+class LiveAdmissionEvidenceRepository:
+    """Authenticated issuer intake plus the original immutable artifact store.
+
+    Operator/service access alone cannot create accepted evidence. Every runtime
+    load rechecks the independent issuer's MAC, exact terms scope, current
+    document/baseline, and every original artifact byte. Unsigned audit imports
+    are retained for review but are never enough for production admission.
+    """
+    def __init__(self, connect, issuer_key=None, *, clock=None):
+        _require(issuer_key is None or isinstance(issuer_key, bytes) and len(issuer_key) >= 32,
+                 "INVALID_LIVE_EVIDENCE_KEY")
+        self.connect, self._key = connect, issuer_key
+        self.clock = clock or (lambda: datetime.now(_UTC))
+        self._store = EvidenceStore(connect)
+        self._lock = threading.Lock()
+        self._state = {"configured": issuer_key is not None, "initialized": False,
+            "state": "AWAITING_VERIFIED_EVIDENCE" if issuer_key else "NOT_CONFIGURED",
+            "last_import_at": None, "last_evidence_kind": None,
+            "schema": SIGNED_EVIDENCE_SCHEMA, "original_artifacts_required": True}
+
+    def status(self):
+        with self._lock:
+            return {**deepcopy(self._state), "configured": self._key is not None}
+
+    def initialize(self):
+        with self._lock:
+            if self._state["initialized"]:
+                return
+            try:
+                self._store._schema()
+                with self.connect() as c, c.transaction():
+                    c.execute(f"""CREATE TABLE IF NOT EXISTS {TABLE} (
+                        evidence_id TEXT PRIMARY KEY, kind TEXT NOT NULL, scope_hash TEXT NOT NULL,
+                        observed_at TIMESTAMPTZ NOT NULL, imported_at TIMESTAMPTZ NOT NULL,
+                        valid_until TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL,
+                        payload_hash TEXT NOT NULL, signature TEXT NOT NULL)""")
+                    c.execute(f"CREATE INDEX IF NOT EXISTS currency_live_evidence_scope ON {TABLE}(scope_hash,kind,observed_at DESC)")
+                self._state["initialized"] = True
+            except Exception:
+                raise AdmissionBlocked("LIVE_EVIDENCE_STORAGE_UNAVAILABLE", 503) from None
+
+    def _verify(self, payload, signature, now, *, allow_revoked=False):
+        _require(self._key is not None, "LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED")
+        raw = canonical_json(payload)
+        if not (isinstance(signature, str) and _HEX.fullmatch(signature)
+                and hmac.compare_digest(signature, hmac.new(self._key, raw.encode(), hashlib.sha256).hexdigest())):
+            raise AdmissionBlocked("LIVE_EVIDENCE_SIGNATURE_INVALID", 403)
+        _require(isinstance(payload, dict) and payload.get("version") == SIGNED_EVIDENCE_SCHEMA,
+                 "LIVE_AUDITED_ARTIFACT_SCHEMA_REQUIRED")
+        _require(set(payload) == {"version", "evidence_id", "kind", "issuer_id", "observed_at", "valid_until",
+            "scope", "document_json", "review_json", "artifact_bytes"}, "INVALID_EVIDENCE_FIELDS")
+        try:
+            _require(str(uuid.UUID(payload["evidence_id"])) == payload["evidence_id"], "INVALID_EVIDENCE_ID")
+        except (ValueError, TypeError, AttributeError):
+            raise AdmissionBlocked("INVALID_EVIDENCE_ID") from None
+        _text(payload["issuer_id"], "LIVE_EVIDENCE_ISSUER_REQUIRED")
+        scope = payload["scope"]
+        required = {"account_id", "instrument_uid", "execution_environment", "asset", "model_version",
+                    "policy_version", "horizon", "source_hash", "terms_hash", "model_binding"}
+        _require(isinstance(scope, dict) and set(scope) == required, "INVALID_EVIDENCE_SCOPE")
+        for key in required - {"model_binding"}:
+            _text(scope[key], "INVALID_EVIDENCE_SCOPE")
+        _require(scope["execution_environment"] == "production" and scope["asset"] == "CNYRUBF"
+                 and _HEX.fullmatch(scope["source_hash"]) and _HEX.fullmatch(scope["terms_hash"]),
+                 "INVALID_EVIDENCE_SCOPE")
+        binding = scope["model_binding"]
+        _require(isinstance(binding, dict), "INVALID_EVIDENCE_SCOPE")
+        for key in ("account_id", "instrument_uid", "asset", "model_version", "policy_version", "horizon"):
+            _require(binding.get(key) == scope[key], "LIVE_EVIDENCE_BINDING_MISMATCH")
+        _require(binding.get("environment") == "production" and
+                 binding.get("source_identity_sha256") == scope["source_hash"], "LIVE_EVIDENCE_BINDING_MISMATCH")
+        for key in ("document_json", "review_json"):
+            _require(isinstance(payload[key], str), "LIVE_AUDITED_ARTIFACT_SCHEMA_REQUIRED")
+        doc = _validate_document(payload["document_json"], now, allow_revoked=allow_revoked)
+        review = _payload(payload["review_json"])
+        _require(payload["document_json"] == _json(doc) and payload["review_json"] == _json(review),
+                 "LIVE_EVIDENCE_NONCANONICAL_DOCUMENT")
+        kind = {"MODEL": "MODEL_ADMISSION", "ACCOUNT_HISTORY": "ACCOUNT_CONTROLS"}[doc["kind"]]
+        _require(payload["kind"] == kind, "LIVE_EVIDENCE_KIND_MISMATCH")
+        expected = binding if doc["kind"] == "MODEL" else {"account_id": scope["account_id"], "environment": "production"}
+        _require(doc["binding"] == expected, "LIVE_EVIDENCE_BINDING_MISMATCH")
+        for key in ("reviewer", "audit_id"):
+            _text(review.get(key), "LIVE_AUDIT_REVIEW_REQUIRED:" + key)
+        _require(review.get("decision") == "ACCEPT_EVIDENCE", "LIVE_AUDIT_REVIEW_REQUIRED")
+        observed, expires = _date(payload["observed_at"]), _date(payload["valid_until"])
+        maximum = MAX_SIGNED_MODEL_AGE if doc["kind"] == "MODEL" else MAX_ACCOUNT_AGE
+        _require(observed == _date(review.get("reviewed_at")) and
+                 _date(doc["observed_at"]) <= observed <= now+timedelta(seconds=2), "LIVE_AUDIT_REVIEW_TIMESTAMP_INVALID")
+        _require(observed < expires <= min(_date(doc["valid_until"]), observed+maximum), "INVALID_EVIDENCE_VALIDITY")
+        _require(now < expires, "LIVE_" + doc["kind"] + "_EVIDENCE_STALE")
+        if doc["kind"] == "MODEL":
+            _model_evidence(doc)
+        else:
+            _account_history(doc, None, now)
+        blobs = payload["artifact_bytes"]
+        digests = {entry["sha256"] for entry in doc["artifacts"].values()}
+        _require(isinstance(blobs, dict) and set(blobs) == digests and len(blobs) <= 12,
+                 "LIVE_ARTIFACT_BYTES_REQUIRED")
+        staged = {}
+        references = [digest for digest, encoded in blobs.items() if encoded is None]
+        if references:
+            try:
+                with self.connect() as c:
+                    placeholders = ",".join("%s" for _ in references)
+                    stored = c.execute(f"SELECT sha256,payload FROM {ARTIFACT_TABLE} WHERE sha256 IN ({placeholders})",
+                                       tuple(references)).fetchall()
+                staged = {row["sha256"]: row["payload"] for row in stored}
+            except Exception:
+                raise AdmissionBlocked("LIVE_EVIDENCE_STORAGE_UNAVAILABLE", 503) from None
+            _require(set(staged) == set(references), "LIVE_ARTIFACT_BYTES_REQUIRED")
+        artifacts = {}
+        total = len(payload["document_json"].encode()) + len(payload["review_json"].encode())
+        for digest, encoded in blobs.items():
+            if encoded is None:
+                _require(isinstance(staged[digest], (bytes, memoryview)), "LIVE_ARTIFACT_BYTES_REQUIRED")
+                content = bytes(staged[digest])
+            else:
+                try:
+                    _require(isinstance(encoded, str), "LIVE_ARTIFACT_BYTES_REQUIRED")
+                    content = base64.b64decode(encoded, validate=True)
+                except (ValueError, TypeError):
+                    raise AdmissionBlocked("LIVE_ARTIFACT_BYTES_REQUIRED") from None
+                _require(base64.b64encode(content).decode("ascii") == encoded, "LIVE_ARTIFACT_BYTES_REQUIRED")
+            total += len(content)
+            _require(content and total <= MAX_ARTIFACT_BYTES, "LIVE_ARTIFACT_TOO_LARGE")
+            _require(hashlib.sha256(content).hexdigest() == digest, "LIVE_ARTIFACT_DIGEST_MISMATCH")
+            artifacts[digest] = content
+        return doc, review, artifacts
+
+    def publish(self, payload, signature, *, now=None):
+        stamp = _date(now or self.clock())
+        doc, review, artifacts = self._verify(payload, signature, stamp, allow_revoked=True)
+        record = deepcopy(payload)
+        digest = _hash(record)
+        self.initialize()
+        try:
+            with self.connect() as c:
+                prior = c.execute(f"SELECT payload_hash FROM {TABLE} WHERE evidence_id=%s",
+                                  (record["evidence_id"],)).fetchone()
+            _require(prior is None or prior["payload_hash"] == digest, "LIVE_EVIDENCE_ID_REUSED")
+            receipt = publish_audited_artifact(self.connect, doc, artifacts, review, now=stamp)
+            with self.connect() as c, c.transaction():
+                c.execute(f"""INSERT INTO {TABLE}
+                    (evidence_id,kind,scope_hash,observed_at,imported_at,valid_until,payload,payload_hash,signature)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s) ON CONFLICT(evidence_id) DO NOTHING""",
+                    (record["evidence_id"], record["kind"], _hash(record["scope"]), record["observed_at"],
+                     stamp, record["valid_until"], canonical_json(record), digest, signature))
+                saved = c.execute(f"SELECT payload_hash FROM {TABLE} WHERE evidence_id=%s",
+                                  (record["evidence_id"],)).fetchone()
+                _require(saved and saved["payload_hash"] == digest, "LIVE_EVIDENCE_ID_REUSED")
+        except AdmissionBlocked:
+            raise
+        except Exception:
+            raise AdmissionBlocked("LIVE_EVIDENCE_STORAGE_UNAVAILABLE", 503) from None
+        with self._lock:
+            self._state.update(state="EVIDENCE_IMPORTED", last_import_at=stamp.isoformat(),
+                               last_evidence_kind=record["kind"])
+        return {**receipt, "ok": True, "evidence_id": record["evidence_id"], "scope_hash": _hash(record["scope"]),
+                "valid_until": record["valid_until"], "payload_hash": digest}
+
+    def load(self, kind, binding, now, *, terms):
+        _require(self._key is not None, "LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED")
+        self.initialize()
+        scope = evidence_scope(terms)
+        signed_kind = {"MODEL": "MODEL_ADMISSION", "ACCOUNT_HISTORY": "ACCOUNT_CONTROLS"}[kind]
+        with self.connect() as c:
+            rows = c.execute(f"""SELECT payload,payload_hash,signature,observed_at FROM {TABLE}
+                WHERE kind=%s AND scope_hash=%s ORDER BY observed_at DESC,imported_at DESC,evidence_id DESC LIMIT 2""",
+                (signed_kind, _hash(scope))).fetchall()
+        _require(rows, "LIVE_" + kind + "_EVIDENCE_REQUIRED")
+        record = _payload(rows[0]["payload"])
+        _require(_hash(record) == rows[0]["payload_hash"], "LIVE_EVIDENCE_STORAGE_INTEGRITY")
+        doc, review, _ = self._verify(record, rows[0]["signature"], now)
+        _require(record["scope"] == scope and doc["binding"] == binding
+                 and record["kind"] == signed_kind, "LIVE_EVIDENCE_SCOPE_MISMATCH")
+        if len(rows) > 1 and _date(rows[0]["observed_at"]) == _date(rows[1]["observed_at"]):
+            previous = _payload(rows[1]["payload"])
+            _require((record["document_json"], record["review_json"]) ==
+                     (previous.get("document_json"), previous.get("review_json")), "LIVE_" + kind + "_EVIDENCE_AMBIGUOUS")
+        # The latest audited report still wins globally for this model/account
+        # binding, including a later failure or revocation for another proposal.
+        # The original archive also rechecks the actual persisted artifact bytes.
+        latest = self._store.load(kind, binding, now)
+        _require(latest == doc, "LIVE_" + kind + "_ISSUER_REATTESTATION_REQUIRED")
+        doc["issuer_valid_until"] = record["valid_until"]
+        return doc
+
+    def record_snapshot(self, snapshot, observed_at):
+        return self._store.record_snapshot(snapshot, observed_at)
+
+
 def _model_evidence(doc):
     data = doc["payload"]
     raw = data.get("promotion")
@@ -461,17 +736,19 @@ def _correlations(doc, assets):
 
 
 class WholeAccountLiveAdmission:
-    def __init__(self, connect, adapter, account_id, clock=None):
+    def __init__(self, connect, adapter, account_id, clock=None, *, evidence=None):
         self.adapter = adapter
         self.account_id = _text(account_id, "LIVE_EXPLICIT_ACCOUNT_REQUIRED")
         self.clock = clock or (lambda: datetime.now(_UTC))
         _require(callable(self.clock), "LIVE_CLOCK_REQUIRED")
-        self.store = EvidenceStore(connect)
+        self.store = evidence if evidence is not None else LiveAdmissionEvidenceRepository(connect, clock=self.clock)
+        _require(isinstance(self.store, LiveAdmissionEvidenceRepository), "LIVE_AUTHENTICATED_EVIDENCE_LOADER_REQUIRED")
         self._status_lock = threading.Lock()
         self._last = {"eligible": False, "status": "NOT_EVALUATED", "version": VERSION,
                       "blockers": ["LIVE_MODEL_EVIDENCE_NOT_CHECKED", "LIVE_ACCOUNT_HISTORY_EVIDENCE_NOT_CHECKED"],
                       "scope": "WHOLE_BROKER_ACCOUNT", "evidence_loader_configured": True,
-                      "required_checks": ["CURRENT_MODEL_OOS_VAULT_COSTS_CALIBRATION_SHADOW_CI_PARITY",
+                      "required_checks": ["INDEPENDENT_ISSUER_SIGNATURE_AND_EXACT_TERMS",
+                          "CURRENT_MODEL_OOS_VAULT_COSTS_CALIBRATION_SHADOW_CI_PARITY",
                           "EXACT_BROKER_CONTRACT_AND_FRESH_QUOTE", "WHOLE_ACCOUNT_EQUITY_POSITIONS_WORKING_ORDERS",
                           "CASHFLOW_ADJUSTED_DAILY_WEEKLY_HIGH_WATER_NAV", "DURABLE_ACCOUNT_OBSERVATION",
                           "LIVE_ECONOMICS_AND_PORTFOLIO_RISK", "LIVE_ENABLED_AND_ARMED"]}
@@ -481,6 +758,9 @@ class WholeAccountLiveAdmission:
         with self._status_lock:
             result = deepcopy(self._last)
         result["admission_cached_only"] = True
+        result["evidence"] = self.store.status()
+        if not result["evidence"]["configured"]:
+            result["blockers"].append("LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED")
         arm = LIVE._armed()
         result["live_switch"] = arm
         if not arm["enabled"]:
@@ -623,6 +903,13 @@ class WholeAccountLiveAdmission:
                      and _integer(terms.get("managed_before_lots"), "LIVE_POSITION_BASELINE_REQUIRED") == facts.account.managed_signed_lots,
                      "LIVE_CANDIDATE_POSITION_MISMATCH")
             binding = model_binding(terms)
+            # The protected prepare flow may expose this immutable review input
+            # before any proposal/owner request exists. It is never a permission.
+            requested_scope = evidence_scope(terms)
+            result["evidence_request"] = {"schema": SIGNED_EVIDENCE_SCHEMA, "terms": deepcopy(terms),
+                "scope": requested_scope, "scope_hash": _hash(requested_scope), "evaluated_at": started.isoformat(),
+                "trade_permission": False}
+            _require(self.store.status()["configured"], "LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED")
             snapshot, current, costs, other_gross, other_snapshots = self._snapshot(terms, facts, started)
             completed = max(started, _date(self.clock()))
             _require(completed-started <= MAX_ACCOUNT_AGE, "LIVE_ACCOUNT_SNAPSHOT_STALE")
@@ -632,6 +919,7 @@ class WholeAccountLiveAdmission:
             result["observed_at"] = started.isoformat()
             result["account_equity_rub"] = snapshot["equity_rub"]
             result["account_snapshot_sha256"] = _hash(snapshot)
+            result["evidence_request"]["account_snapshot_sha256"] = result["account_snapshot_sha256"]
             result["broker_positions"] = len(snapshot["positions"])
             result["broker_working_orders"] = 0
             # A real, durable broker observation is a prerequisite and an intake
@@ -645,7 +933,7 @@ class WholeAccountLiveAdmission:
             documents = {}
             for kind, scope in (("MODEL", binding), ("ACCOUNT_HISTORY", snapshot["binding"])):
                 try:
-                    documents[kind] = self.store.load(kind, scope, completed)
+                    documents[kind] = self.store.load(kind, scope, completed, terms=terms)
                 except AdmissionBlocked as error:
                     result["blockers"].append(error.code)
                 except Exception:
@@ -683,21 +971,21 @@ class WholeAccountLiveAdmission:
             equity = _decimal(snapshot["equity_rub"], "LIVE_ACCOUNT_EQUITY_REQUIRED", positive=True)
             exposure = (abs(signed)+lots) * price * facts.spec.rub_per_price_unit_per_lot
             fraction = exposure / equity
-            context = P.approved_entry_context(terms)
-            plan = {"direction": direction, "entry_price": float(price), "stop_price": float(stop), "target_price": float(target),
-                    "horizon": terms["horizon"], "expected_move_pct": float(abs(target-price)/price),
-                    "expected_to_stop_ratio": float(abs(target-price)/abs(price-stop)),
-                    "spread_bps": float((facts.quote.ask-facts.quote.bid)/price*10000),
-                    "best_bid": float(facts.quote.bid), "best_ask": float(facts.quote.ask),
-                    "initial_position_fraction": float(fraction), "timeframe_entry_context": context}
+            _require(terms.get("economics_mode") == "LIVE" and
+                     terms.get("target_execution_policy") == "SINGLE_TARGET_SEPARATE_CONFIRMATION",
+                     "EXPLICIT_LIVE_ECONOMICS_APPROVAL_REQUIRED")
+            context = P._broker_context(P.approved_entry_context(terms), facts.spec, facts.quote, direction, completed)
+            _require(context.get("timeframe") == terms["horizon"], "BROKER_SIGNAL_TIMEFRAME_MISMATCH")
+            # Native proof is checked against both actual execution and the
+            # owner's cap. Its paper ladder is not an approved broker schedule.
+            P._structural(context, facts.quote.ask if side == "BUY" else facts.quote.bid, direction, completed)
+            P._structural(context, price, direction, completed)
+            plan = P.live_economics_plan(direction, price, stop, target, facts.quote, terms["horizon"],
+                fraction=fraction, expected_hold_seconds=terms.get("expected_hold_seconds"))
             if signed:
                 # ADD retains the actual first-fill age; it cannot restart the
                 # canonical free-funding interval for an existing position.
                 plan["position_age_seconds"] = (completed-opened_at).total_seconds()
-            event = context.get("event") or {}
-            for field in ("target_ladder", "runner_target_price"):
-                if field in event:
-                    plan[field] = deepcopy(event[field])
             source_gate = VX.production_source_gate("CNYRUBF", {"source_gate_pass": True,
                 "market_open": facts.quote.limit_orders_available, "production_direct_feed": True,
                 "instrument_uid": facts.spec.instrument_uid, "quote_observed_at": facts.quote.observed_at.isoformat()})
@@ -733,7 +1021,8 @@ class WholeAccountLiveAdmission:
             for position in current:
                 if abs(position.fraction_nav) > CTC.LIVE_RISK_POLICY["max_single_asset_fraction"]:
                     result["blockers"].append("LIVE_ACCOUNT_SINGLE_ASSET_LIMIT:" + position.asset)
-            result["valid_until"] = min(_date(documents[k]["valid_until"]) for k in documents).isoformat()
+            result["valid_until"] = min(min(_date(documents[k]["valid_until"]),
+                _date(documents[k]["issuer_valid_until"])) for k in documents).isoformat()
             result["valid_until"] = min(_date(result["valid_until"]),
                 _date(facts.quote.observed_at)+timedelta(seconds=15), started+MAX_ACCOUNT_AGE).isoformat()
             for position in other_snapshots:
@@ -760,6 +1049,22 @@ class WholeAccountLiveAdmission:
         return result
 
 
-def create_live_admission(connect, adapter, account_id, clock=None):
+def create_live_admission(connect, adapter, account_id, clock=None, *, evidence=None):
     """Operational factory: no optional evidence callback and no readiness default."""
-    return WholeAccountLiveAdmission(connect, adapter, account_id, clock)
+    return WholeAccountLiveAdmission(connect, adapter, account_id, clock, evidence=evidence)
+
+
+class CurrencyLiveAdmission(WholeAccountLiveAdmission):
+    """Retained integration constructor, using the same strict whole-account authority."""
+    def __init__(self, *, adapter, evidence, account_id, instrument_uid, environment, clock=None):
+        _require(environment in {"production", "sandbox"}, "INVALID_EXECUTION_ENVIRONMENT")
+        self.instrument_uid = _text(instrument_uid, "LIVE_EXPLICIT_INSTRUMENT_REQUIRED")
+        self.environment = environment
+        super().__init__(evidence.connect, adapter, account_id, clock, evidence=evidence)
+
+    def __call__(self, *, terms, facts, now):
+        if (not isinstance(terms, dict) or terms.get("instrument_uid") != self.instrument_uid
+                or terms.get("execution_environment", "production") != self.environment):
+            return self._finish({"eligible": False, "status": "BLOCK", "version": VERSION,
+                "blockers": ["LIVE_ACCOUNT_SCOPE_MISMATCH"], "scope": "WHOLE_BROKER_ACCOUNT"})
+        return super().__call__(terms=terms, facts=facts, now=now)

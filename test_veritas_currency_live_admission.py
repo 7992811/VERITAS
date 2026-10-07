@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import timedelta, timezone
 from decimal import Decimal as D
 import hashlib
+import hmac
 import json
 from pathlib import Path
 import tempfile
@@ -24,6 +25,7 @@ from test_veritas_currency_trading import Fixtures, ACCOUNT, UID
 
 
 OTHER = "22222222-2222-4222-8222-222222222222"
+ISSUER_KEY = b"offline-independent-live-evidence-issuer-key"
 
 
 def money(value, currency=None):
@@ -56,11 +58,11 @@ class Broker:
 
     def get_accounts(self):
         self.reads.append("accounts")
-        return [{"id": ACCOUNT, "status": "ACCOUNT_STATUS_OPEN", "accessLevel": "ACCOUNT_ACCESS_LEVEL_FULL_ACCESS"}]
+        return [{"id": self.account.account_id, "status": "ACCOUNT_STATUS_OPEN", "accessLevel": "ACCOUNT_ACCESS_LEVEL_FULL_ACCESS"}]
 
     def get_future(self, uid):
         self.reads.append(("future", uid))
-        if uid == UID:
+        if uid == self.spec.instrument_uid:
             return {"uid": uid, "ticker": "CNYRUBf", "currency": "rub", "realExchange": "REAL_EXCHANGE_MOEX",
                     "lot": self.spec.lot_size, "minPriceIncrement": money(self.spec.tick_size),
                     "minPriceIncrementAmount": money(self.spec.tick_value_rub), "apiTradeAvailableFlag": True,
@@ -112,7 +114,9 @@ class AuthorityTests(Fixtures, unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = str(Path(self.tmp.name)/"live.sqlite")
         self.connect = lambda: Connection(self.path)
-        self.authority = A.create_live_admission(self.connect, self.broker, ACCOUNT, lambda: self.now)
+        self.evidence = A.LiveAdmissionEvidenceRepository(self.connect, ISSUER_KEY, clock=lambda: self.now)
+        self.authority = A.create_live_admission(self.connect, self.broker, ACCOUNT, lambda: self.now,
+                                                evidence=self.evidence)
 
     def manifest(self, domains):
         manifest, artifacts = {}, {}
@@ -159,7 +163,13 @@ class AuthorityTests(Fixtures, unittest.TestCase):
     def publish(self, doc, artifacts):
         review = {"reviewer": "offline-independent-reviewer", "audit_id": "synthetic-test-audit",
                   "reviewed_at": self.now.isoformat(), "decision": "ACCEPT_EVIDENCE"}
-        return A.publish_audited_artifact(self.connect, doc, artifacts, review, now=self.now)
+        payload = A.audited_evidence_payload(self.terms, doc, artifacts, review)
+        if doc["kind"] == "MODEL":
+            # A real previous-deployment certificate can be archived; its full
+            # binding still differs from today's issuer lookup and cannot pass.
+            payload["scope"]["model_binding"] = deepcopy(doc["binding"])
+        signature = hmac.new(ISSUER_KEY, A.canonical_json(payload).encode(), hashlib.sha256).hexdigest()
+        return self.evidence.publish(payload, signature, now=self.now)
 
     def ready(self, *, model_change=None, account_change=None):
         doc, artifacts = self.model_document()
@@ -211,7 +221,8 @@ class AuthorityTests(Fixtures, unittest.TestCase):
     def test_durable_store_failure_is_not_converted_to_permission(self):
         def offline():
             raise RuntimeError("do not expose database secret")
-        self.authority = A.create_live_admission(offline, self.broker, ACCOUNT, lambda: self.now)
+        evidence = A.LiveAdmissionEvidenceRepository(offline, ISSUER_KEY, clock=lambda: self.now)
+        self.authority = A.create_live_admission(offline, self.broker, ACCOUNT, lambda: self.now, evidence=evidence)
         result = self.authorize()
         self.assertEqual(result["blockers"], ["LIVE_EVIDENCE_STORE_UNAVAILABLE"])
         self.assertNotIn("secret", json.dumps(result))
@@ -446,6 +457,206 @@ class AuthorityTests(Fixtures, unittest.TestCase):
             "decision": "ACCEPT_EVIDENCE"}, now=self.now)
         self.assertFalse(receipt["trade_permission"])
         self.assertEqual(receipt["kind"], "MODEL")
+
+    def signed_payload(self, kind="MODEL"):
+        doc, artifacts = self.model_document() if kind == "MODEL" else self.account_document()
+        review = {"reviewer": "offline-independent-reviewer", "audit_id": "synthetic-signed-audit",
+                  "reviewed_at": self.now.isoformat(), "decision": "ACCEPT_EVIDENCE"}
+        return A.audited_evidence_payload(self.terms, doc, artifacts, review)
+
+    def sign(self, payload, key=ISSUER_KEY):
+        return hmac.new(key, A.canonical_json(payload).encode(), hashlib.sha256).hexdigest()
+
+    def test_operator_import_requires_independent_issuer_signature_before_any_storage(self):
+        payload = self.signed_payload()
+        for signature in (None, "0"*64, self.sign(payload, b"different-independent-key"*2)):
+            with self.subTest(signature=str(signature)[:8]):
+                with self.assertRaisesRegex(A.LiveAdmissionError, "LIVE_EVIDENCE_SIGNATURE_INVALID"):
+                    self.evidence.publish(payload, signature)
+        self.assertFalse(Path(self.path).exists())
+        self.assertFalse(self.evidence.status()["initialized"])
+
+    def test_missing_issuer_is_an_explicit_inert_configuration_blocker(self):
+        self.authority = A.create_live_admission(self.connect, self.broker, ACCOUNT, lambda: self.now)
+        self.assertFalse(self.authority.status()["evidence"]["configured"])
+        result = self.authorize()
+        self.assertEqual(result["blockers"], ["LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED"])
+        self.assertFalse(result["evidence_request"]["trade_permission"])
+        self.assertEqual(result["evidence_request"]["terms"], self.terms)
+        self.assertEqual(self.broker.reads, [])
+        self.assertFalse(Path(self.path).exists())
+
+    def test_unsigned_internal_audit_archives_cannot_bypass_issuer_intake(self):
+        for make in (self.model_document, self.account_document):
+            doc, artifacts = make()
+            A.publish_audited_artifact(self.connect, doc, artifacts, {
+                "reviewer": "offline-reviewer", "audit_id": "unsigned-archive",
+                "reviewed_at": self.now.isoformat(), "decision": "ACCEPT_EVIDENCE"}, now=self.now)
+        self.assertEqual(self.authorize()["blockers"],
+                         ["LIVE_MODEL_EVIDENCE_REQUIRED", "LIVE_ACCOUNT_HISTORY_EVIDENCE_REQUIRED"])
+
+    def test_signed_import_idempotency_does_not_allow_id_reuse_for_different_metrics(self):
+        payload = self.signed_payload()
+        receipt = self.evidence.publish(payload, self.sign(payload))
+        self.assertEqual(receipt, self.evidence.publish(deepcopy(payload), self.sign(payload)))
+        doc = json.loads(payload["document_json"])
+        doc["payload"]["calibration"]["successes"] = 90
+        payload["document_json"] = A._json(doc)
+        with self.assertRaisesRegex(A.AdmissionBlocked, "LIVE_EVIDENCE_ID_REUSED"):
+            self.evidence.publish(payload, self.sign(payload))
+        with self.connect() as c:
+            self.assertEqual(c.execute(f"SELECT count(*) AS n FROM {A.TABLE}").fetchone()["n"], 1)
+
+    def test_database_edit_and_recomputed_hash_cannot_forge_issuer_proof(self):
+        self.ready()
+        with self.connect() as c:
+            row = c.execute(f"SELECT evidence_id,payload FROM {A.TABLE} WHERE kind=%s", ("MODEL_ADMISSION",)).fetchone()
+            payload = json.loads(row["payload"])
+            doc = json.loads(payload["document_json"])
+            doc["payload"]["calibration"]["successes"] = 99
+            payload["document_json"] = A._json(doc)
+            c.execute(f"UPDATE {A.TABLE} SET payload=%s,payload_hash=%s WHERE evidence_id=%s",
+                      (A.canonical_json(payload), A._hash(payload), row["evidence_id"]))
+        self.assertIn("LIVE_EVIDENCE_SIGNATURE_INVALID", self.authorize()["blockers"])
+
+    def test_rotating_issuer_key_invalidates_old_stored_certificates(self):
+        self.ready()
+        self.evidence._key = b"a-new-independent-issuer-key-value"*2
+        result = self.authorize()
+        self.assertFalse(result["eligible"])
+        self.assertIn("LIVE_EVIDENCE_SIGNATURE_INVALID", result["blockers"])
+
+    def test_exact_order_quantity_and_source_and_version_cannot_reuse_signed_scope(self):
+        self.ready()
+        original = deepcopy(self.terms)
+        for field, value in (("lots", 1), ("model_version", "other-model"), ("horizon", "1h"),
+                             ("prepared_at", (self.now+timedelta(microseconds=1)).isoformat())):
+            with self.subTest(field=field):
+                self.terms = dict(original, **{field: value})
+                self.assertIn("LIVE_MODEL_EVIDENCE_REQUIRED", self.authorize()["blockers"])
+        self.terms = original
+        self.assertTrue(self.authorize()["eligible"])
+        self.terms = dict(original, source_identity={"source": "wrong-unverified-feed"})
+        self.assertIn("LIVE_SIGNAL_SOURCE_IDENTITY_REQUIRED", self.authorize()["blockers"])
+
+    def test_signed_deadline_bounds_real_verdict_and_cannot_be_extended_by_document_expiry(self):
+        payload = self.signed_payload()
+        deadline = self.now+timedelta(seconds=1)
+        payload["valid_until"] = deadline.isoformat()
+        self.evidence.publish(payload, self.sign(payload))
+        self.publish(*self.account_document())
+        result = self.authorize()
+        self.assertTrue(result["eligible"], result)
+        self.assertEqual(result["valid_until"], deadline.isoformat())
+        self.now += timedelta(seconds=2)
+        self.assertIn("LIVE_MODEL_EVIDENCE_STALE", self.authorize()["blockers"])
+
+    def test_prior_data_only_signature_does_not_invent_artifact_bytes_or_nav_baselines(self):
+        # The concurrently implemented v1 issuer format authenticated assertions
+        # but did not contain original artifacts, cohort counts or unit NAV.
+        payload = {"version": "currency-live-admission-v1", "kind": "MODEL_ADMISSION",
+                   "data": {"calibrated_probability": "0.99", "daily_pnl_pct": "0"}}
+        with self.assertRaisesRegex(A.AdmissionBlocked, "LIVE_AUDITED_ARTIFACT_SCHEMA_REQUIRED"):
+            self.evidence.publish(payload, self.sign(payload))
+        self.assertFalse(Path(self.path).exists())
+
+    def test_same_artifact_cannot_be_claimed_as_all_independent_evidence_domains(self):
+        payload = self.signed_payload()
+        doc = json.loads(payload["document_json"])
+        digest = next(iter(payload["artifact_bytes"]))
+        for entry in doc["artifacts"].values():
+            entry["sha256"] = digest
+        payload["document_json"] = A._json(doc)
+        payload["artifact_bytes"] = {digest: payload["artifact_bytes"][digest]}
+        with self.assertRaisesRegex(A.AdmissionBlocked, "LIVE_DISTINCT_INDEPENDENT_ARTIFACTS_REQUIRED"):
+            self.evidence.publish(payload, self.sign(payload))
+
+    def test_signed_staged_large_originals_fit_transport_and_are_rechecked_at_runtime(self):
+        doc, artifacts = self.model_document()
+        large_original = b"OFFLINE SYNTHETIC ORIGINAL AUDIT RECORD\n" * 4000
+        original_digest = doc["artifacts"]["oos"]["sha256"]
+        digest = hashlib.sha256(large_original).hexdigest()
+        doc["artifacts"]["oos"]["sha256"] = digest
+        artifacts.pop(original_digest)
+        artifacts[digest] = large_original
+        review = {"reviewer": "offline-independent-reviewer", "audit_id": "staged-original-review",
+                  "reviewed_at": self.now.isoformat(), "decision": "ACCEPT_EVIDENCE"}
+        with self.assertRaisesRegex(A.AdmissionBlocked, "EVIDENCE_TOO_LARGE"):
+            A.audited_evidence_payload(self.terms, doc, artifacts, review)
+        A.publish_audited_artifact(self.connect, doc, artifacts, review, now=self.now)
+        payload = A.audited_evidence_payload(self.terms, doc, None, review)
+        self.assertTrue(all(value is None for value in payload["artifact_bytes"].values()))
+        self.evidence.publish(payload, self.sign(payload))
+        self.publish(*self.account_document())
+        self.assertTrue(self.authorize()["eligible"])
+        with self.connect() as c:
+            c.execute(f"UPDATE {A.ARTIFACT_TABLE} SET payload=%s WHERE sha256=%s", (b"forged blob", digest))
+        self.assertIn("LIVE_ARTIFACT_DIGEST_MISMATCH", self.authorize()["blockers"])
+
+    def test_signed_references_without_actual_staged_bytes_cannot_import(self):
+        self.evidence.initialize()
+        payload = self.signed_payload()
+        payload["artifact_bytes"] = dict.fromkeys(payload["artifact_bytes"])
+        with self.assertRaisesRegex(A.AdmissionBlocked, "LIVE_ARTIFACT_BYTES_REQUIRED"):
+            self.evidence.publish(payload, self.sign(payload))
+        with self.connect() as c:
+            self.assertEqual(c.execute(f"SELECT count(*) AS n FROM {A.TABLE}").fetchone()["n"], 0)
+
+    def test_signed_document_transport_is_bounded_and_finite_metrics_stay_exact(self):
+        payload = self.signed_payload()
+        self.assertIsInstance(payload["document_json"], str)
+        self.assertEqual(json.loads(payload["document_json"])["payload"]["promotion"]["oos_expectancy"], .25)
+        for changed in (dict(payload, unexpected=1.5), dict(payload, issuer_id="x"*(A.MAX_BYTES+1))):
+            with self.assertRaises(A.AdmissionBlocked):
+                A.canonical_json(changed)
+        doc = json.loads(payload["document_json"])
+        doc["payload"].pop("calibration")
+        payload["document_json"] = A._json(doc)
+        with self.assertRaisesRegex(A.AdmissionBlocked, "LIVE_CALIBRATION_MODEL_REQUIRED"):
+            self.evidence.publish(payload, self.sign(payload))
+
+    def test_retained_incoming_constructor_uses_full_strict_authority(self):
+        self.ready()
+        authority = A.CurrencyLiveAdmission(adapter=self.broker, evidence=self.evidence, account_id=ACCOUNT,
+                                            instrument_uid=UID, environment="production", clock=lambda: self.now)
+        result = authority(terms=self.terms, facts=self.facts, now=self.now)
+        self.assertTrue(result["eligible"], result)
+        self.assertEqual(result["account_equity_rub"], "1000000")
+        self.assertTrue(authority.status()["evidence"]["configured"])
+        wrong = dict(self.terms, instrument_uid=OTHER)
+        self.assertEqual(authority(terms=wrong, facts=self.facts, now=self.now)["blockers"], ["LIVE_ACCOUNT_SCOPE_MISMATCH"])
+
+    def test_later_failed_review_for_another_scope_cannot_resurrect_prior_passing_review(self):
+        self.ready()
+        original = deepcopy(self.terms)
+        self.now += timedelta(seconds=1)
+        self.terms["lots"] = 1
+        doc, artifacts = self.model_document()
+        doc["payload"]["promotion"]["data_parity_pass"] = False
+        self.publish(doc, artifacts)
+        self.terms = original
+        self.assertIn("LIVE_MODEL_ISSUER_REATTESTATION_REQUIRED", self.authorize()["blockers"])
+
+    def test_current_structural_proof_keeps_paper_ladder_out_of_actual_live_economics(self):
+        from test_veritas_currency_structural_trading import native_fixture
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                row, admission, self.spec, account, self.quote, self.now = native_fixture(direction=direction)
+                self.account = replace(account, account_id=ACCOUNT)
+                self.terms = P.prepare_entry(row, admission, self.spec, self.account, self.quote, now=self.now)
+                self.facts = TRADING.TradeFacts(self.spec, self.account, self.quote)
+                self.broker = Broker(self.spec, self.quote, self.account)
+                self.authority = A.create_live_admission(self.connect, self.broker, ACCOUNT, lambda: self.now,
+                                                        evidence=self.evidence)
+                self.assertEqual(len(P.approved_entry_context(self.terms)["event"]["target_ladder"]), 2)
+                self.ready()
+                result = self.authorize()
+                self.assertTrue(result["eligible"], result)
+                economics = result["live_authorization"]["order_gate"]["economics"]
+                self.assertEqual(economics["target_ladder"], [])
+                self.assertGreater(economics["minimum_reward_risk"], 0)
+                self.assertEqual(economics["economics_policy"]["execution_mode"], "LIVE")
+                self.assertEqual(economics["cost_policy"]["entry_cost_multiple"], 1.1)
 
 
 if __name__ == "__main__":

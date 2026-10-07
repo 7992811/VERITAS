@@ -278,7 +278,9 @@ def project(fills, fee_observations, funding_adjustments, spec, *, settlement=No
             "held_terms":held_terms, "metadata_reconciled":metadata_ok}
 
 
-def valuation(state, mark_price, spec):
+def valuation(state, mark_price, spec, *, funding_reconciled=None):
+    if funding_reconciled is not None and type(funding_reconciled) is not bool:
+        raise LedgerError("EXPLICIT_FUNDING_RECONCILIATION_REQUIRED")
     price = exact(mark_price, positive=True)
     signed = lots(state["signed_lots"])
     average = exact(state["average_entry_price"], positive=True) if signed else None
@@ -288,8 +290,12 @@ def valuation(state, mark_price, spec):
         nav = (exact(state["allocation_rub"], positive=True) + exact(state["realized_pnl_rub"])
                - exact(state["fees_rub"], nonnegative=True) - exact(state["funding_rub"]) + unrealized)
         old_hwm = exact(state["high_water_rub"], positive=True)
-        # Missing actual commissions cannot establish an inflated high-water NAV.
-        hwm = max(old_hwm, nav) if state["costs_reconciled"] else old_hwm
+        # A profitable mark/close cannot establish a peak before both actual
+        # commissions and settlement completeness have been verified.
+        funding_known = (funding_reconciled is True or
+                         (funding_reconciled is None and state.get("last_execution_at") is None
+                          and exact(state["funding_rub"]) == ZERO))
+        hwm = max(old_hwm, nav) if state["costs_reconciled"] and funding_known else old_hwm
         drawdown = max(ZERO, 1-nav/hwm)
     return {"currency_nav_rub":nav, "high_water_rub":hwm,
             "unrealized_pnl_rub":unrealized, "drawdown":drawdown}
@@ -493,6 +499,8 @@ class CurrencyTradeLedger:
         row.update(projection)
         row["ledger_revision"] += 1
         row["reconciled_revision"] = None
+        # A closed allocation establishes a cash peak only after the durable
+        # numeric settlement covers these exact fills and remains fresh.
         if not row["signed_lots"] and row["costs_reconciled"] and self._funding_ready(row):
             with localcontext() as ctx:
                 ctx.prec = 64
@@ -620,7 +628,7 @@ class CurrencyTradeLedger:
         return self._run(self.snapshot_on, account_id, instrument_uid, **kwargs)
 
     def snapshot_on(self, c, account_id, instrument_uid, *, mark_price, mark_observed_at, spec,
-                    allow_high_water_update=True):
+                    allow_high_water_update=True, funding_reconciled=None):
         if not self.enabled:
             return {"status":"DISABLED", "entries_allowed":False}
         row = self._load(c, account_id, instrument_uid)
@@ -631,9 +639,13 @@ class CurrencyTradeLedger:
             raise LedgerError("MARK_PREDATES_EXECUTION")
         if row["last_mark_observed_at"] and observed < row["last_mark_observed_at"]:
             raise LedgerError("MARK_OUT_OF_ORDER")
-        valuation_state = dict(row, costs_reconciled=row["costs_reconciled"] and self._funding_ready(row)
-                               and allow_high_water_update is True)
-        result = valuation(valuation_state, mark_price, spec)
+        if funding_reconciled is not None and type(funding_reconciled) is not bool:
+            raise LedgerError("EXPLICIT_FUNDING_RECONCILIATION_REQUIRED")
+        # Compatibility callers may withhold readiness, but a caller-supplied
+        # True never substitutes for the account's durable settlement evidence.
+        funding_ready = (self._funding_ready(row) and allow_high_water_update is True
+                         and funding_reconciled is not False)
+        result = valuation(row, mark_price, spec, funding_reconciled=funding_ready)
         c.execute(f"UPDATE {ACCOUNTS} SET high_water_rub=%s,last_mark_price=%s,last_mark_observed_at=%s WHERE account_id=%s",
                   (result["high_water_rub"],exact(mark_price, positive=True),observed,row["account_id"]))
         row.update(high_water_rub=result["high_water_rub"],last_mark_price=exact(mark_price),last_mark_observed_at=observed)
@@ -641,7 +653,7 @@ class CurrencyTradeLedger:
 
     def _funding_ready(self, row):
         if row.get("last_execution_at") is None:
-            return True
+            return exact(row.get("funding_rub", ZERO)) == ZERO
         if row.get("costs_reconciled") is not True:
             return False
         evidence = row.get("settlement") or {}

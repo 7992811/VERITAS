@@ -10,9 +10,12 @@ The operational application constructs the authority with the same authenticated
 adapter, explicit account and PostgreSQL connection factory as the coordinator:
 
 ```python
-from veritas_currency_live_admission import create_live_admission
+from veritas_currency_live_admission import (
+    LiveAdmissionEvidenceRepository, create_live_admission,
+)
 
-authority = create_live_admission(connect, adapter, account_id, clock=clock)
+evidence = LiveAdmissionEvidenceRepository(ledger_connect, issuer_key, clock=clock)
+authority = create_live_admission(connect, adapter, account_id, clock=clock, evidence=evidence)
 coordinator = CurrencyTradingCoordinator(
     # Existing repository, owner, facts and execution dependencies...
     live_admission=authority,
@@ -33,12 +36,20 @@ the list of required domains. It also reads the current LIVE enabled/armed
 switches and reports their blockers immediately. A cached pass expires at the
 earliest quote, account-snapshot or evidence deadline and is explicitly labelled
 `admission_cached_only`. Never authorize an order from this display response.
+`status().evidence` reports issuer configuration and cached import status. A
+missing issuer key adds `LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED`; no broker or
+database is probed to pretend that required evidence is available.
 
 The production factory enables `preflight_live`: it calls the authority with
 the concrete prepared candidate and fresh `TradeFacts` before creating a
 proposal for delivery. A known blocked candidate does not ask the owner to
 approve. That call reads the broker and stores a real account observation; it
 sends no order. The final execution path calls the authority again.
+On a blocked prepared candidate, `evidence_request` exposes the exact canonical
+terms, issuer scope/hash and, when observed, the account snapshot digest. These
+are immutable review inputs, with `trade_permission=false`. The protected
+`prepare-reviewed` flow below retries those exact terms after evidence import;
+it does not regenerate a different `prepared_at` or quote timestamp.
 
 The console's `execution_guard` holds the same configuration-row lock used by
 pause/disable across the final checks, durable claim, single submit and receipt.
@@ -93,6 +104,12 @@ probability, economics, risk, reconciliation, durable storage and arming. The
 same LIVE caps also include modeled costs in the new authority's net stop-risk
 check. The canonical entry cost multiple remains 1.1. The module does not
 change strategy rules, PAPER permissions, promotion thresholds or LIVE caps.
+Native causal proof is checked separately at both the current executable quote
+and the owner's limit. Broker economics use `live_economics_plan()` with the
+explicit single-target execution policy in the approved terms. A native PAPER
+target ladder remains in the signed signal proof; it does not become a broker
+exit schedule or a LIVE reward/risk exemption. ADD retains its actual first-fill
+age when modeling funding costs.
 
 ## Existing research cannot currently be silently promoted
 
@@ -117,7 +134,7 @@ unset callback and no unconditional `eligible=true` escape hatch.
 
 ## Concrete evidence intake and trust boundary
 
-The internal API is:
+The internal artifact archive API is:
 
 ```python
 publish_audited_artifact(connect, document, artifact_bytes, review, now=None)
@@ -133,11 +150,25 @@ rejected with `LIVE_VALIDATION_ARTIFACT_EXPORT_REQUIRED`.
 `artifact_bytes` maps each SHA-256 in the manifest to the actual nonempty bytes
 reviewed. The total document, review and referenced blobs is bounded at 2 MiB.
 Ingestion verifies those hashes and preserves both the original bytes and the
-typed document. The loader checks them again. SHA-256 proves artifact identity;
-the authorized independent reviewer remains responsible for experimental
-independence, metric correctness and broker-ledger completeness. An arbitrary
-HTTP client has no review/publish endpoint. Database-authorized operator access
-is the trust boundary.
+typed document. Archive publication alone cannot grant LIVE admission.
+
+Production consumption additionally requires the independent issuer's signed
+envelope, imported with `LiveAdmissionEvidenceRepository.publish(payload,
+signature)`. The protected internal owner endpoint
+`POST /internal/currency-trading/admission-evidence` invokes this same method.
+Both the service/owner checks and the independent HMAC must pass. Its issuer key
+is `VERITAS_CURRENCY_LIVE_EVIDENCE_KEY`, at least 32 bytes and distinct from the
+service, approval and settlement-statement keys. Possession of service/operator
+credentials alone is insufficient. Import never enables execution, requests
+owner approval or sends an order.
+
+Every admission verifies the issuer HMAC again, the current exact order scope,
+the document and original blob bytes. Changing a database payload and computing
+a new unkeyed hash cannot create an issuer signature. Key rotation invalidates
+certificates signed by the old key; new evidence is required. SHA-256 proves
+artifact identity, and HMAC authenticates the issuer; independent experimental
+design, correct metrics and complete broker history still require the real
+auditor's work. Neither mechanism proves those facts from an arbitrary string.
 
 The review object requires nonempty `reviewer` and `audit_id`, a timezone-aware
 `reviewed_at`, and `decision="ACCEPT_EVIDENCE"`. Review must follow observation
@@ -147,17 +178,65 @@ idempotent. Newer adverse evidence takes precedence; the loader never searches
 back for an older passing report. Different records with an identical latest
 review timestamp are ambiguous and block. A newer reviewed document with
 `revoked=true` revokes that binding. Direct database-admin tampering is outside
-the API boundary; content/blob hashes detect inconsistent edits on load.
+the API boundary. The issuer signature detects unsigned payload changes, while
+content/blob hashes check original-byte integrity. Direct deletion or rollback
+of the entire evidence history requires database governance and backups; the
+HMAC is not an external append-only ledger.
 
-The lazy schema consists of these new, explicitly public tables:
+The lazy schema consists of these tables:
 
 | Table | Contents |
 | --- | --- |
 | `veritas_currency_live_evidence_v1` | Immutable document/review digest, kind, exact binding digest, review timestamp and original JSON |
 | `veritas_currency_live_artifact_blobs_v1` | Content-addressed reviewed artifact bytes |
 | `veritas_currency_live_account_observations_v1` | Actual account snapshots observed by this authority, observed time and snapshot digest |
+| `currency_live_admission_evidence` | Issuer envelope, HMAC, exact scope, immutable evidence ID and observation/import/expiry times in the configured ledger schema |
 
-The two evidence kinds share this envelope:
+The first three tables are explicitly in `public`; the issuer table retains the
+application's configured ledger search path. A signed evidence ID is idempotent
+for exactly the same payload and cannot be reused for changed metrics. An old
+data-only `currency-live-admission-v1` envelope lacks required cohort counts,
+unit-NAV baselines and original bytes, so it is rejected with
+`LIVE_AUDITED_ARTIFACT_SCHEMA_REQUIRED`. Its free-form probability or daily/weekly
+return assertions are never converted to proof.
+
+### Signed transport envelope
+
+`audited_evidence_payload(exact_terms, document, artifact_bytes, review)` builds
+the public `currency-live-admission-v2` envelope. It packages existing evidence;
+it does not sign, review or create successful metrics. Its fields are:
+
+| Field | Meaning |
+| --- | --- |
+| `version` | `currency-live-admission-v2` |
+| `evidence_id`, `issuer_id` | Immutable UUID and independent issuer identity |
+| `kind` | `MODEL_ADMISSION` or `ACCOUNT_CONTROLS` |
+| `observed_at`, `valid_until` | Issuer review time and bounded expiry |
+| `scope` | `evidence_scope(exact_terms)`, including exact canonical terms hash and full model/deployment/policy binding |
+| `document_json`, `review_json` | Exact canonical JSON strings for the audited document and review, preserving native finite metric types through JSONB |
+| `artifact_bytes` | Manifest digest mapped to canonical base64 original bytes, or `null` for an already staged original that will be loaded and hash-checked |
+
+The HMAC input is UTF-8 `canonical_json(payload)` with SHA-256. The outer
+transport rejects floats/unknown objects, excessive nesting, large lists and
+payloads above 60 KiB; the internal HTTP body including owner fields is at most
+64 KiB. The audited inner document retains finite native numerical metrics in
+its exact JSON string. Required independent domains use distinct artifact
+digests. Multiple different hashes alone still do not prove experimental
+independence.
+
+For large genuine reports, first stage the actual document/review and original
+bytes through `publish_audited_artifact`; then build the signed envelope with
+`artifact_bytes=None`. This does not waive original-byte verification: missing,
+tampered or oversized staged data blocks both import and later admission. It
+preserves the 2 MiB archive capacity without enlarging the protected HTTP body.
+
+Issuer model attestations last at most 900 seconds; account attestations at
+most 30 seconds and never beyond their underlying document's expiry. A model
+document may cover up to seven days, but its current exact-terms attestation
+still requires the shorter issuer window. Runtime admission remains bounded by
+the earliest current quote, account observation, document or issuer expiry.
+
+The two inner audited document kinds share this envelope:
 
 ```json
 {
@@ -257,35 +336,85 @@ blocker is real. A new first observation cannot manufacture a prior week or
 erase historical drawdown. An audited historical import is the supported
 bootstrap; independently accumulated verified history is the ongoing source.
 
-## Operator ingestion example
+## Operator and independent-issuer workflow
 
-The following is intended for an authorized operator in a controlled process
-with an already configured database connection. It neither reads a broker token
-nor communicates with the broker. The operator first prepares reviewed
-`document.json`, `review.json` and a directory of exact blobs named by digest.
-Use genuine reviewed documents; the test suite's synthetic fixtures are not
-production evidence.
+The workflow separates preparation, independent evidence, owner consent and
+execution. Service/operator access does not substitute for the issuer key or
+for the owner's later per-order decision.
+
+1. The existing protected poll/prepare path constructs a concrete candidate.
+   Missing LIVE evidence blocks proposal creation. Read its cached
+   `live_admission.evidence_request` from protected status: retain the exact
+   canonical `terms`, `scope` and `scope_hash`. No approval request exists yet.
+2. The independent verifier checks current model/source/version evidence and
+   the real whole-account snapshot. The normalized snapshot is durably stored
+   in the observation table; `account_snapshot_sha256` identifies it. The
+   independent unit-NAV process must reconcile genuine broker operations and
+   opening/day/week/high-water baselines. Missing history remains a blocker.
+3. Package one MODEL and one ACCOUNT_HISTORY document with their reviews and
+   actual original bytes, using the exact terms retained in step 1. The issuer
+   signs each v2 envelope using its independent key. The service operator may
+   relay the signed envelopes, but cannot generate that signature from a
+   service or approval key.
+4. Send each envelope and signature to the protected owner-scoped
+   `POST /internal/currency-trading/admission-evidence`. A receipt only records
+   evidence. For large reports, stage their actual bytes internally first and
+   use signed `null` references as described above.
+5. Call protected owner-scoped
+   `POST /internal/currency-trading/prepare-reviewed` with `terms` equal to the
+   exact canonical preview. The coordinator rereads current facts, revalidates
+   the current canonical event, account, policy, terms and economics, then calls
+   the real signed authority. Only a pass creates a proposal for normal private
+   owner delivery. A normal new prepare would change `prepared_at` and therefore
+   the exact terms hash; it is not a retry of the signed preview.
+6. The owner separately decides on that concrete delivered proposal. Before
+   any submission, the existing execution flow rereads broker facts and runs
+   the whole-account authority again under its existing final gates. New
+   account evidence for the same immutable terms may be needed if the earlier
+   30-second account certificate expired or the account snapshot changed.
+
+The account evidence window is at most 30 seconds, and actual quotes expire
+after at most 15 seconds. Those are validation deadlines, not an invitation to
+approve hurriedly. A machine verifier can refresh genuine account evidence for
+the same immutable order while it remains canonically valid. Expired/changed
+signals, specifications or account baselines require a fresh preview and fresh
+evidence; timestamps and proof are never restamped to extend eligibility.
+
+The following packaging example runs inside the independent review process.
+It neither loads a broker token nor communicates with the broker. Inputs are
+genuine reviewed documents and the exact canonical preview. Synthetic fixtures
+from the test suite are never production evidence.
 
 ```python
 import json
+import hashlib
+import hmac
 from pathlib import Path
-from veritas_currency_live_admission import publish_audited_artifact
+from veritas_currency_live_admission import audited_evidence_payload, canonical_json
 
 root = Path("/controlled/audited-evidence-bundle")
 document = json.loads((root / "document.json").read_text())
 review = json.loads((root / "review.json").read_text())
+terms = json.loads((root / "exact-preview-terms.json").read_text())
 blobs = {item["sha256"]: (root / "blobs" / item["sha256"]).read_bytes()
          for item in document["artifacts"].values()}
-# connect is the application's established PostgreSQL connection factory.
-receipt = publish_audited_artifact(connect, document, blobs, review)
-assert receipt["trade_permission"] is False
+payload = audited_evidence_payload(terms, document, blobs, review)
+# issuer_key is supplied by the independent issuer's established key management.
+# Do not substitute the broker token, service key, approval key or statement key.
+signature = hmac.new(issuer_key, canonical_json(payload).encode("utf-8"),
+                     hashlib.sha256).hexdigest()
+# Relay {"payload": payload, "signature": signature} through the protected
+# owner-scoped endpoint, or use evidence.publish(payload, signature) internally.
+# No example here posts a request, requests owner approval or submits an order.
 ```
 
-For a compatible existing validation snapshot, replace the final call with
-`publish_validation_snapshot(connect, snapshot_id, blobs, review)`. The API
-rechecks timestamp windows, metric types, independent domain manifests, exact
-bindings and all bytes before inserting. No command here should be interpreted
-as approval to enable, arm or submit a real order.
+For a compatible existing validation snapshot,
+`publish_validation_snapshot(connect, snapshot_id, blobs, review)` stages its
+exact audited export; it does not generate an issuer signature. Then package
+the same document and review with `artifact_bytes=None`, independently sign it,
+and import it through the authenticated repository. Every path rechecks
+timestamp windows, typed metrics, independent domain manifests, exact bindings
+and original bytes. Import never changes the execution switches.
 
 ## Verification and protocol references
 
@@ -296,6 +425,11 @@ paper-prior non-bypass, whole-equity sizing, ADD concentration, loss/drawdown/ki
 limits, other-account exposures/orders, protective-stop quantities, complete
 correlation evidence, I/O staleness and cached-status expiry. They prove boundary
 behavior, not live profitability or a successful real broker fill.
+The merged suite additionally covers invalid issuer signatures, payload/hash
+tampering, key rotation, exact-quantity/source/preparation-time scope, unsigned
+archive non-bypass, signature deadlines, staged original-byte verification,
+data-only v1 refusal, and real current structural LONG/SHORT proof with explicit
+single-target LIVE economics.
 
 Primary broker documentation inspected for the mapping:
 

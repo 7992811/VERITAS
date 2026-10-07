@@ -10,16 +10,16 @@ The dedicated 10,000 RUB allocation never uses paper NAV or total account NAV.
 A broker ACK is not an execution. Only complete, uniquely identified POINT
 stages plus actual RUB commissions are ingested into the allocation ledger.
 
-Funding completeness is deliberately unresolved after the first actual fill:
-an Operations pagination cursor is not a clearing-finality guarantee. New risk
-then waits for a future durable settlement reconciler. CLOSE/REDUCE bypass the
-entry-only costs gate. No elapsed-time assumption or environment override marks
-unknown funding as paid or reconciled.
+Funding completeness comes from bounded operation snapshots and a separately
+signed settlement statement attestation. An Operations pagination cursor alone
+is not a clearing-finality guarantee. CLOSE/REDUCE bypass entry-only costs and
+model-promotion gates; they retain their own holding and execution validation.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -30,6 +30,7 @@ import os
 import re
 import threading
 import uuid
+from urllib.parse import urlparse
 
 from veritas_currency_trade_ledger import (
     CurrencyTradeLedger, InstrumentValuation, LedgerError, ACCOUNTS, FILLS, FEES,
@@ -41,6 +42,10 @@ from veritas_currency_trade_plan import (
 from veritas_currency_trading import CurrencyTradingCoordinator, TradeFacts, TradeOwner
 from veritas_tbank_trading import TBankTradingAdapter, ExecutionConfig, TradingError, quotation_to_decimal
 from veritas_trade_approvals import TradeApprovals, ApprovalError, PRE_SUBMISSION
+from veritas_currency_trade_funding import FundingReconciler, FundingError
+from veritas_currency_live_admission import (
+    CurrencyLiveAdmission, LiveAdmissionEvidenceRepository, LiveAdmissionError,
+)
 
 PREFIX = "/internal/currency-trading/"
 CNY_UID = "c300543d-aa18-4249-b110-615409dde036"
@@ -152,7 +157,7 @@ class _BrokerCycle:
 class BrokerFactsProvider:
     def __init__(self, adapter, ledger, account_id, instrument_uid=CNY_UID,
                  owner_user_id=None, connect=None, clock=None, *, read_connect=None,
-                 settlement=None, statement_provider=None):
+                 settlement=None, statement_provider=None, funding=None):
         self.adapter, self.ledger = adapter, ledger
         self.account_id = _text(account_id, "EXPLICIT_ACCOUNT_REQUIRED")
         if instrument_uid != CNY_UID:
@@ -166,11 +171,14 @@ class BrokerFactsProvider:
         if not callable(self.read_connect):
             raise ServiceError("EXPLICIT_LEDGER_CONNECTION_REQUIRED")
         self.clock = clock or _now
+        self.funding = funding
         self.environment = adapter.environment
         if self.environment not in _SCHEMAS:
             raise ServiceError("INVALID_EXECUTION_ENVIRONMENT")
         self.block_reason = None
         from veritas_currency_settlement import CurrencySettlementReconciler
+        if statement_provider is None and funding is not None:
+            statement_provider = getattr(funding, "statement_provider", None)
         self.settlement = settlement if settlement is not None else CurrencySettlementReconciler(
             ledger, adapter, statement_provider=statement_provider, clock=self.clock)
         self.ledger_state = None
@@ -602,11 +610,11 @@ def _authenticate(headers, key):
 
 
 def _error(exc):
-    if isinstance(exc, (ServiceError, ApprovalError)):
+    if isinstance(exc, (ServiceError, ApprovalError, LiveAdmissionError)):
         code = _diagnostic(exc, "TRADE_REQUEST_REJECTED")
         status = getattr(exc, "status_code", 409)
         return {"ok": False, "code": code}, status if status in (400, 401, 403, 404, 409, 410, 429, 503) else 409
-    if isinstance(exc, (TradePlanBlocked, LedgerError)):
+    if isinstance(exc, (TradePlanBlocked, LedgerError, FundingError)):
         return {"ok": False, "code": _diagnostic(exc)}, 409
     if isinstance(exc, TradingError):
         return {"ok": False, "code": "BROKER_FACTS_UNAVAILABLE"}, 503
@@ -614,19 +622,29 @@ def _error(exc):
 
 
 class TradeHttpApplication:
-    def __init__(self, *, repository, coordinator, facts, owner, service_key, ledger=None):
+    def __init__(self, *, repository, coordinator, facts, owner, service_key, ledger=None,
+                 clock=None, funding=None, evidence=None):
         if not isinstance(owner, TradeOwner):
             raise ServiceError("EXPLICIT_TRADE_OWNER_REQUIRED")
         self.repository, self.coordinator, self.facts = repository, coordinator, facts
         self.owner, self.ledger = owner, ledger if ledger is not None else facts.ledger
+        self.funding = funding if funding is not None else getattr(facts, "funding", None)
+        self.evidence = evidence
         self.account_id = _text(coordinator.account_id, "EXPLICIT_ACCOUNT_REQUIRED")
         self.instrument_uid = CNY_UID
         self.environment = coordinator.adapter.environment
         if self.environment not in _SCHEMAS:
             raise ServiceError("INVALID_EXECUTION_ENVIRONMENT")
         self._key = _key_bytes(service_key)
+        self.clock = clock or _now
         self._ready = False
         self._lock = threading.RLock()
+        # Status is a cached observation, never an implicit poll/execute call.
+        self._poll_state = {
+            "binding_state": "unchecked", "last_poll_at": None,
+            "last_poll_block_reason": None, "pending_approval_count": None,
+            "unsettled_count": None, "last_poll_succeeded": None,
+        }
 
     @property
     def execution_enabled(self):
@@ -636,6 +654,10 @@ class TradeHttpApplication:
         if not self._ready:
             self.repository.ensure_schema()
             self.ledger.ensure_schema()
+            if self.funding is not None:
+                self.funding.ensure_schema()
+            if self.evidence is not None:
+                self.evidence.initialize()
             self._ready = True
 
     def _body(self, body):
@@ -702,13 +724,61 @@ class TradeHttpApplication:
         return self._scoped(self.repository.list_unsettled(
             account_id=self.account_id, owner_user_id=self.owner.user_id, limit=1000))
 
+    def _remember_poll(self, reason, *, binding_state=None, pending=None, unsettled=None,
+                       succeeded=True):
+        self._poll_state.update(
+            last_poll_at=utc(self.clock()).isoformat(), last_poll_block_reason=reason,
+            pending_approval_count=pending, unsettled_count=unsettled,
+            last_poll_succeeded=succeeded,
+        )
+        if binding_state is not None:
+            self._poll_state["binding_state"] = binding_state
+
+    def _status(self):
+        with self._lock:
+            cached = dict(self._poll_state)
+        checked = cached["last_poll_at"]
+        age = (utc(self.clock()) - utc(checked)).total_seconds() if checked else None
+        configured = callable(getattr(self.coordinator, "live_admission", None))
+        admission = getattr(self.coordinator, "live_admission", None)
+        admission_status = admission.status() if callable(getattr(admission, "status", None)) else None
+        new_risk_reason = None
+        if self.environment == "production":
+            if not configured:
+                new_risk_reason = "LIVE_ACCOUNT_ADMISSION_REQUIRED"
+            elif isinstance(admission_status, Mapping):
+                if (admission_status.get("evidence") or {}).get("configured") is False:
+                    new_risk_reason = "LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED"
+                elif admission_status.get("eligible") is not True:
+                    blockers = admission_status.get("blockers") or ["LIVE_ACCOUNT_ADMISSION_NOT_CHECKED"]
+                    new_risk_reason = str(blockers[0])
+                elif admission_status.get("valid_until"):
+                    if utc(self.clock()) >= utc(admission_status["valid_until"]):
+                        new_risk_reason = "LIVE_ACCOUNT_ADMISSION_STALE"
+                elif not admission_status.get("last_checked_at") or (
+                        utc(self.clock()) - utc(admission_status["last_checked_at"])).total_seconds() > 15:
+                    new_risk_reason = "LIVE_ACCOUNT_ADMISSION_STALE"
+        return {"ok": True, "enabled": True, "version": VERSION,
+                "execution_enabled": self.execution_enabled,
+                "account_id": self.account_id, "instrument_uid": self.instrument_uid,
+                "execution_environment": self.environment,
+                "live_account_admission_configured": configured,
+                "live_account_admission": json_safe(admission_status),
+                "settlement_reconciler_configured": getattr(self.facts, "settlement", None) is not None,
+                "settlement_receipt_provider_configured": self.funding is not None,
+                "new_risk_block_reason": new_risk_reason,
+                "status_stale": age is None or not -2 <= age <= 30,
+                **cached}
+
     def _poll(self):
         self.repository.expire()
         if not self.facts.is_bound():
+            self._remember_poll("CURRENCY_ACCOUNT_NOT_BOUND", binding_state="unbound")
             return {"ok": True, "enabled": True, "items": [],
                     "execution_enabled": self.execution_enabled, "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
         self.coordinator.reconcile()
         if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
+            self._remember_poll("PROPOSALS_PAUSED", binding_state="bound")
             return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
                     "block_reason": "PROPOSALS_PAUSED"}
         reason = None
@@ -718,7 +788,10 @@ class TradeHttpApplication:
             if self.execution_enabled:
                 # The coordinator revalidates facts and atomically claims before
                 # I/O. A second worker cannot send the same approval.
-                self.coordinator.execute_approved(approved[0]["proposal_id"])
+                result = self.coordinator.execute_approved(approved[0]["proposal_id"])
+                if isinstance(result, Mapping) and result.get("ok") is not True:
+                    code = result.get("code")
+                    reason = code if isinstance(code, str) and _SAFE_CODE.fullmatch(code) else "APPROVED_EXECUTION_BLOCKED"
             else:
                 reason = "CURRENCY_TRADE_EXECUTION_DISABLED"
         unsettled, pending = self._unsettled(), self._pending()
@@ -733,6 +806,8 @@ class TradeHttpApplication:
                     reason = self.facts.block_reason or reason
             pending = self._pending()
         items = [self._public(p) for p in pending if p.get("status") == "PENDING_DELIVERY"][:1]
+        self._remember_poll(reason, binding_state="bound", pending=len(pending),
+                            unsettled=len(unsettled))
         return {"ok": True, "enabled": True, "items": items,
                 "execution_enabled": self.execution_enabled, "block_reason": reason}
 
@@ -805,34 +880,65 @@ class TradeHttpApplication:
         return json_safe(result)
 
     def handle(self, path, body, headers):
+        operation = None
+        polling = False
         try:
             _authenticate(headers, self._key)
             if not isinstance(path, str) or not path.startswith(PREFIX):
                 raise ServiceError("TRADE_ENDPOINT_NOT_FOUND", 404)
             operation = path[len(PREFIX):]
             if operation not in {"status", "bind", "decision", "claim-delivery",
-                                 "delivered", "delivery-unknown", "updates", "poll"}:
+                                 "delivered", "delivery-unknown", "updates", "poll",
+                                 "settlement-observe", "settlement-attest", "admission-evidence",
+                                 "prepare-reviewed"}:
                 raise ServiceError("TRADE_ENDPOINT_NOT_FOUND", 404)
             self._body(body)
-            if operation in {"bind", "decision"}:
+            if operation in {"bind", "decision", "settlement-observe", "settlement-attest",
+                             "admission-evidence", "prepare-reviewed"}:
                 self._private_owner(body)
             if operation == "delivered":
                 if _positive_id(body.get("private_chat_id")) != self.owner.private_chat_id:
                     raise ServiceError("PRIVATE_TRADE_OWNER_REQUIRED", 403)
             if operation == "status":
-                return {"ok": True, "enabled": True, "version": VERSION,
-                        "execution_enabled": self.execution_enabled,
-                        "account_id": self.account_id, "instrument_uid": self.instrument_uid,
-                        "execution_environment": self.environment,
-                        "live_account_admission_configured": callable(getattr(self.coordinator, "live_admission", None)),
-                        "new_risk_block_reason": ("LIVE_ACCOUNT_ADMISSION_REQUIRED"
-                            if self.environment == "production" and not callable(getattr(self.coordinator, "live_admission", None))
-                            else None)}, 200
+                return self._status(), 200
             with self._lock:
                 self._initialize()
+                if operation == "prepare-reviewed":
+                    if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
+                        raise ServiceError("PROPOSALS_PAUSED")
+                    proposal = self.coordinator.prepare_reviewed_entry(body.get("terms"))
+                    return {"ok": True, "proposal": self._public(proposal)}, 200
+                if operation == "admission-evidence":
+                    if self.evidence is None:
+                        raise ServiceError("LIVE_ADMISSION_EVIDENCE_NOT_CONFIGURED", 503)
+                    payload = body.get("payload")
+                    scope = payload.get("scope") if isinstance(payload, Mapping) else None
+                    if (not isinstance(payload, Mapping)
+                            or not isinstance(scope, Mapping)
+                            or scope.get("account_id") != self.account_id
+                            or scope.get("instrument_uid") != self.instrument_uid
+                            or scope.get("execution_environment") != self.environment):
+                        raise ServiceError("ADMISSION_EVIDENCE_SCOPE_MISMATCH", 403)
+                    result = self.evidence.publish(payload, body.get("signature"))
+                    return {"ok": True, "evidence": json_safe(result)}, 200
+                if operation in {"settlement-observe", "settlement-attest"}:
+                    if self.funding is None:
+                        raise ServiceError("FUNDING_RECONCILER_NOT_CONFIGURED", 503)
+                    if operation == "settlement-observe":
+                        result = self.funding.observe(
+                            self.account_id, self.instrument_uid,
+                            window_start=body.get("window_start"), window_end=body.get("window_end"))
+                    else:
+                        result = self.funding.attest(
+                            self.account_id, self.instrument_uid,
+                            receipt=body.get("receipt"), signature=body.get("signature"))
+                    return {"ok": True, "settlement": json_safe(result)}, 200
                 if operation == "bind":
-                    return {"ok": True, "binding": json_safe(self.facts.bind())}, 200
+                    binding = self.facts.bind()
+                    self._poll_state["binding_state"] = "bound"
+                    return {"ok": True, "binding": json_safe(binding)}, 200
                 if operation == "poll":
+                    polling = True
                     return self._poll(), 200
                 if operation == "updates":
                     limit = _integer(body.get("limit", 20), positive=True)
@@ -874,6 +980,9 @@ class TradeHttpApplication:
                 self.repository.record_delivery_unknown(proposal_id, token)
                 return {"ok": True}, 200
         except Exception as exc:
+            if polling:
+                with self._lock:
+                    self._remember_poll(_error(exc)[0]["code"], succeeded=False)
             return _error(exc)
 
 
@@ -906,6 +1015,16 @@ def _configuration(connect):
     return values, binding
 
 
+def _optional_evidence_key(name):
+    value = os.environ.get(name, "")
+    if not value:
+        return None
+    value = value.encode("utf-8")
+    if len(value) < 32:
+        raise ServiceError("EVIDENCE_SIGNING_KEY_TOO_SHORT", 503)
+    return value
+
+
 def create_application(connect, summary_provider, *, configuration=None):
     """Construct only; the authenticated application initializes lazily."""
     if not _enabled("VERITAS_CURRENCY_TRADE_PROPOSALS_ENABLED"):
@@ -914,6 +1033,11 @@ def create_application(connect, summary_provider, *, configuration=None):
     approval_key = _key_bytes(os.environ.get("VERITAS_CURRENCY_TRADE_APPROVAL_KEY", ""))
     if hmac.compare_digest(service_key, approval_key):
         raise ServiceError("DISTINCT_TRADE_SERVICE_AND_APPROVAL_KEYS_REQUIRED", 503)
+    statement_key = _optional_evidence_key("VERITAS_CURRENCY_TRADE_STATEMENT_KEY")
+    evidence_key = _optional_evidence_key("VERITAS_CURRENCY_LIVE_EVIDENCE_KEY")
+    keys = [key for key in (service_key, approval_key, statement_key, evidence_key) if key is not None]
+    if any(hmac.compare_digest(left, right) for index, left in enumerate(keys) for right in keys[index + 1:]):
+        raise ServiceError("DISTINCT_TRADE_EVIDENCE_KEYS_REQUIRED", 503)
     values, binding = configuration if configuration is not None else _configuration(connect)
     def configured_id(name):
         raw = values.get(name, "")
@@ -944,19 +1068,26 @@ def create_application(connect, summary_provider, *, configuration=None):
     ledger_connect = _environment_connect(connect, environment)
     ledger = CurrencyTradeLedger(ledger_connect, enabled=True)
     repository = TradeApprovals(connect, approval_key)
+    funding = FundingReconciler(
+        ledger_connect, ledger,
+        lambda account_id, **kwargs: adapter.get_operations_by_cursor(account_id, **kwargs),
+        environment=environment, owner_user_id=owner.user_id, statement_key=statement_key,
+        enabled=True,
+    )
+    evidence = LiveAdmissionEvidenceRepository(ledger_connect, evidence_key)
     facts = BrokerFactsProvider(adapter, ledger, account, CNY_UID, owner.user_id, ledger_connect,
-        read_connect=_environment_connect(connect, environment, create_schema=False))
-    from veritas_currency_live_admission import create_live_admission
+        read_connect=_environment_connect(connect, environment, create_schema=False), funding=funding)
     coordinator = CurrencyTradingCoordinator(
         repository=repository, adapter=adapter, account_id=account, owner=owner,
         facts=facts, summary=summary_provider, ingest_execution=facts.ingest,
         execution_enabled=enabled and armed,
-        live_admission=create_live_admission(connect=connect, adapter=adapter, account_id=account),
+        live_admission=CurrencyLiveAdmission(adapter=adapter, evidence=evidence, account_id=account,
+            instrument_uid=CNY_UID, environment=environment),
         preflight_live=environment == "production",
     )
     application = TradeHttpApplication(
         repository=repository, coordinator=coordinator, facts=facts,
-        owner=owner, service_key=service_key, ledger=ledger,
+        owner=owner, service_key=service_key, ledger=ledger, funding=funding, evidence=evidence,
     )
     if _enabled("VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED"):
         from veritas_currency_trade_console import load_binding, store_for
@@ -981,9 +1112,43 @@ _CONFIG_NAMES = (
     "VERITAS_LIVE_EXECUTION_ENABLED", "VERITAS_LIVE_EXECUTION_ARMED",
     "VERITAS_CURRENCY_TRADE_MARGIN_ALLOWED",
     "VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED",
+    "VERITAS_CURRENCY_TRADE_STATEMENT_KEY", "VERITAS_CURRENCY_LIVE_EVIDENCE_KEY",
 )
 _CACHE = {}
 _CACHE_LOCK = threading.RLock()
+
+
+def make_summary_provider(read_summary, lock):
+    """Stable callable identity with a fresh isolated canonical summary per call."""
+    def snapshot():
+        with lock:
+            return deepcopy(read_summary())
+    return snapshot
+
+
+def reply_http(handler, connect, summary_provider, *, alert_handler):
+    """Bounded internal Currency HTTP parsing outside the legacy monolith."""
+    path = urlparse(handler.path).path
+    limit = 65536 if path in (PREFIX + "admission-evidence", PREFIX + "prepare-reviewed") else 8192
+    try:
+        length = int(handler.headers.get("Content-Length", "0") or 0)
+        if length < 0 or length > limit:
+            handler.reply({"ok": False, "error": "INVALID_BODY_SIZE"}, 400)
+            return
+        payload = json.loads(handler.rfile.read(length).decode("utf-8")) if length else {}
+    except (ValueError, UnicodeError):
+        handler.reply({"ok": False, "error": "INVALID_JSON_BODY"}, 400)
+        return
+    try:
+        if path.startswith(PREFIX):
+            result, code = handle_request(path, payload, handler.headers, connect, summary_provider)
+        elif path.startswith("/internal/currency-alerts/"):
+            result, code = alert_handler(path, payload, handler.headers, connect)
+        else:
+            result, code = {"ok": False, "code": "TRADE_ENDPOINT_NOT_FOUND"}, 404
+    except Exception:
+        result, code = {"ok": False, "code": "CURRENCY_SERVICE_TEMPORARILY_UNAVAILABLE"}, 503
+    handler.reply(result, code)
 
 
 def get_application(connect, summary_provider):

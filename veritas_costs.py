@@ -36,13 +36,24 @@ def funding_between(notional, opened_at, last_mark_at, now):
     return abs(float(notional)) * FUNDING_ANNUAL_RATE * max(0.0, (end-start).total_seconds()) / YEAR_SECONDS
 
 
+def entry_cost_multiple(asset=None):
+    """Resolve CTC's instrument policy; browser/environment inputs never override it."""
+    overrides = CTC.COST_POLICY.get("entry_cost_multiple_by_asset") or {}
+    return float(overrides.get(str(asset or "").strip().upper(),
+                               CTC.COST_POLICY["entry_cost_multiple"]))
+
+
 def policy(asset=None):
+    multiple = entry_cost_multiple(asset)
+    floor = float(CTC.COST_POLICY["minimum_expected_move_floor_pct"])
     return dict(version=VERSION, commission_rate_per_side=COMMISSION_RATE,
                 slippage_rate_per_side=SLIPPAGE_RATE,
                 round_trip_base_cost_pct=ROUND_TRIP_RATE,
                 cost_buffer_multiple=COST_BUFFER_MULTIPLE,
-                entry_cost_multiple=CTC.COST_POLICY["entry_cost_multiple"],
-                minimum_expected_move_formula=CTC.COST_POLICY["minimum_expected_move_formula"],
+                entry_cost_multiple=multiple,
+                entry_cost_multiple_by_asset=dict(CTC.COST_POLICY.get("entry_cost_multiple_by_asset") or {}),
+                minimum_expected_move_floor_pct=floor,
+                minimum_expected_move_formula=f"max({100*floor:.2f}%, {multiple:.1f} * modeled_round_trip_cost)",
                 funding_annual_rate=FUNDING_ANNUAL_RATE,
                 funding_free_seconds=FUNDING_FREE_SECONDS,
                 funding_basis="ELAPSED_TIME_AFTER_FIRST_24_HOURS_CURRENT_NOTIONAL",

@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 import json
 import threading
-from veritas_trade_telegram import InternalTradeClient, TradeTelegramBridge, TradeTelegramError, EXPECTED_BOT_USERNAME
+from veritas_trade_telegram import InternalTradeClient, TradeTelegramBridge, TradeTelegramError, EXPECTED_BOT_USERNAME, operator_command
 
 PREFIX = "/internal/currency-console/"
 PAIR = re.compile(r"^/start(?:@AxednewsI_bot)?\s+vt_([A-Za-z0-9_-]{32,96})$", re.I)
@@ -64,17 +64,40 @@ class ConsoleTradeBridge:
                 self._identity = identity
             return self._bridge
 
+    @staticmethod
+    def _private_message(message):
+        if not isinstance(message, dict):
+            return False
+        sender, chat = message.get("from") or {}, message.get("chat") or {}
+        uid = sender.get("id")
+        return (type(uid) is int and uid > 0 and sender.get("is_bot") is False
+                and chat.get("type") == "private" and chat.get("id") == uid
+                and not message.get("forward_origin") and not message.get("forward_date")
+                and not message.get("is_automatic_forward"))
+
+    def _private_owner(self, message):
+        if not self._private_message(message):
+            return False
+        bridge = self._bound()
+        return bridge is not None and bridge._private_owner(message)
+
     def handle_message(self, message):
         text = message.get("text") if isinstance(message, dict) else None
         match = PAIR.fullmatch(text or "")
         login = LOGIN.fullmatch(text or "")
-        if match is None and login is None:
+        operator = operator_command(text)
+        if match is None and login is None and operator is None:
             return False
-        sender, chat = message.get("from") or {}, message.get("chat") or {}
-        uid = sender.get("id")
-        if (type(uid) is not int or uid <= 0 or sender.get("is_bot") is not False
-                or chat.get("type") != "private" or chat.get("id") != uid
-                or message.get("forward_origin") or message.get("forward_date") or message.get("is_automatic_forward")):
+        if not self._private_message(message):
+            return True
+        sender = message["from"]
+        uid = sender["id"]
+        if operator is not None:
+            bridge = self._bound()
+            if bridge is not None:
+                return bridge.handle_message(message)
+            self.telegram("sendMessage", {"chat_id": uid,
+                "text": "Сначала завершите первоначальную привязку вашего Telegram и счёта в кабинете VERITAS."})
             return True
         name = " ".join(str(sender.get(k) or "").strip() for k in ("first_name", "last_name")).strip()
         if login is not None:

@@ -1,3 +1,8 @@
+"""Execution regressions, including retained Rxx lifecycle compatibility.
+
+Updated entry cases follow the current canonical authority with causal native
+bars. Historical labels cannot waive source, timeframe, fee or stop-risk gates.
+"""
 import copy
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
@@ -12,10 +17,41 @@ import veritas_portfolio as VP
 import veritas_portfolio_runtime as VPR
 import veritas_position_guard as VPG
 import veritas_position_guard as PG
+import veritas_canonical_runtime as VCR
+import veritas_costs as VC
+import veritas_cycle_schedule as VCS
+import veritas_timeframe_policy as TFP
+import veritas_admission_trace as VAT
 from veritas_quote_time import moex_observed_at, quote_gate
+from test_veritas_timeframe_policy import structural_row
 
 
 NOW = datetime(2026, 9, 29, 9, 34, tzinfo=timezone.utc)
+
+
+def canonical_row(asset='BTC', horizon='5m', direction='LONG', *, clock=None,
+                  width=.7, price=100.0, signal_age=10):
+    """Synthetic causal bars for current source, timeframe and sizing contracts.
+
+    Old Rxx labels and a displayed direction are not executable evidence. This
+    fixture runs the real native-timeframe detector and keeps the source, quote
+    clock, stop and target on the same basis. No entry gate is patched to pass.
+    """
+    source = {'BTC':'Binance spot', 'ETH':'Binance spot',
+              'CNYRUBF':'MOEX ISS CNYRUBF', 'NQ':'ProFinance NASD100_FUT'}[asset]
+    row = structural_row(clock or datetime.now(timezone.utc), asset=asset,
+        timeframe=horizon, direction=direction, width=width, price=price,
+        signal_age=signal_age, source=source)
+    if asset in ('BTC', 'ETH'):
+        row.update(best_bid=price*.99995, best_ask=price*1.00005)
+    return row
+
+
+def protective_quote(asset, price, clock=NOW, **overrides):
+    source = {'BTC':'Binance spot', 'ETH':'Binance spot',
+              'CNYRUBF':'MOEX ISS CNYRUBF'}[asset]
+    return dict(price=price, observed_at=clock.isoformat(), source_gate_pass=True,
+                market_open=True, source_names={'primary':source}, **overrides)
 
 
 class QuoteTimeTests(unittest.TestCase):
@@ -62,15 +98,17 @@ class QuoteTimeTests(unittest.TestCase):
 
 
 class EconomicsRepairTests(unittest.TestCase):
-    def test_cny_case_high_forecast_cannot_hide_tiny_actual_target(self):
-        plan = dict(direction='SHORT', entry_price=12.615, stop_price=12.6445822,
-                    target_price=12.591, expected_move_pct=.0081490289338,
-                    expected_to_stop_ratio=3.8043076, initial_position_fraction=.35, horizon='5m')
+    def test_high_forecast_cannot_hide_target_net_loss_at_current_currency_costs(self):
+        plan = dict(direction='SHORT', entry_price=100, stop_price=100.2,
+                    target_price=99.95, expected_move_pct=.008,
+                    expected_to_stop_ratio=4, initial_position_fraction=.35, horizon='5m')
         gate = VX.economics_gate('CNYRUBF', plan)
         self.assertFalse(gate['eligible'])
         self.assertIn('TARGET_NOT_PROFITABLE_AFTER_COSTS', gate['blockers'])
-        self.assertAlmostEqual(gate['modeled_entry_fill'], 12.603961875)
-        self.assertGreater(gate['modeled_round_trip_cost_pct'], .0027)
+        self.assertLess(gate['net_reward_pct'], 0)
+        self.assertAlmostEqual(gate['modeled_entry_fill'], 100*(1-VC.SLIPPAGE_RATE))
+        self.assertAlmostEqual(gate['cost_policy']['commission_rate_per_side'], .0004)
+        self.assertAlmostEqual(VX.MIN_MOVE_COST_MULTIPLE, 1.1)
 
     def test_hourly_cny_a_plus_case_fails_actual_net_reward_risk(self):
         gate = VX.economics_gate('CNYRUBF', dict(direction='LONG', entry_price=12.66,
@@ -87,11 +125,12 @@ class EconomicsRepairTests(unittest.TestCase):
         self.assertIn('STOP_DIRECTION_INVALID', VX.economics_gate('BTC', dict(good, stop_price=101))['blockers'])
 
     def test_final_fill_rechecks_price_after_signal_plan(self):
-        row = dict(asset='BTC', horizon='5m', market_observed_at=datetime.now(timezone.utc).isoformat(),
-                   trade_plan=dict(entry_price=100, stop_price=99, target_price=103,
-                                   expected_move_pct=.03, expected_to_stop_ratio=3))
-        self.assertTrue(VX.entry_gate(row, 100, 'LONG', .1)['eligible'])
-        self.assertFalse(VX.entry_gate(row, 102.9, 'LONG', .1)['eligible'])
+        row = canonical_row(clock=NOW)
+        self.assertTrue(VX.entry_gate(row, 100, 'LONG', .1, now=NOW)['eligible'])
+        late = dict(row, price=101., best_bid=100.995, best_ask=101.005)
+        gate = VX.entry_gate(late, 101., 'LONG', .1, now=NOW)
+        self.assertFalse(gate['eligible'])
+        self.assertIn('SAME_TF_ENTRY_EXTENDED', gate['blockers'])
 
     def test_expired_quote_blocks_even_when_economics_are_good(self):
         row = dict(asset='BTC', horizon='5m', market_observed_at=(datetime.now(timezone.utc)-timedelta(minutes=6)).isoformat(),
@@ -136,14 +175,14 @@ class ProtectiveExitTests(unittest.TestCase):
     def test_stop_does_not_depend_on_entry_signal_or_tp_flag(self):
         z = self.position()
         z['payload']['r17_tp1_done'] = True
-        q = dict(price=12.612, observed_at=NOW.isoformat(), source_gate_pass=True)
+        q = protective_quote('CNYRUBF', 12.612)
         self.assertEqual(PG.protective_reason(z, q, NOW), 'STOP')
         self.assertIsNone(PG.protective_reason(z, dict(q, price=12.586), NOW))
 
     def test_large_fresh_gap_still_executes_stop(self):
         z = self.position()
         z.update(direction='LONG', last_price=100.0, stop_price=99.0)
-        q = dict(price=90.0, observed_at=NOW.isoformat(), source_gate_pass=True)
+        q = protective_quote('CNYRUBF', 90.0)
         self.assertEqual(PG.protective_reason(z, q, NOW), 'STOP')
 
     def test_missing_take_profit_recovers_from_expected_move(self):
@@ -154,12 +193,12 @@ class ProtectiveExitTests(unittest.TestCase):
         z['payload'].pop('take_price', None)
         z['payload'].pop('target_price', None)
         z['payload']['expected_move_pct'] = .02
-        q = dict(price=102.1, observed_at=NOW.isoformat(), source_gate_pass=True)
+        q = protective_quote('CNYRUBF', 102.1)
         self.assertEqual(PG.protective_reason(z, q, NOW), 'TAKE_PROFIT')
 
     def test_old_quote_or_wrong_contract_cannot_trigger_exit(self):
         z = self.position()
-        q = dict(price=12.612, observed_at=(NOW-timedelta(hours=2)).isoformat(), source_gate_pass=True)
+        q = protective_quote('CNYRUBF', 12.612, NOW-timedelta(hours=2))
         self.assertIsNone(PG.protective_reason(z, q, NOW))
         z['payload']['entry_contract_secid'] = 'CNYRUBF'
         q.update(observed_at=NOW.isoformat(), contract={'secid': 'OTHER'})
@@ -168,7 +207,7 @@ class ProtectiveExitTests(unittest.TestCase):
     def test_btc_logged_price_already_breaches_original_stop(self):
         z = dict(asset='BTC', direction='LONG', last_price=84919.62,
                  stop_price=84513.869, payload={})
-        q = dict(price=84132.48, observed_at=NOW.isoformat(), source_gate_pass=True)
+        q = protective_quote('BTC', 84132.48)
         self.assertEqual(PG.protective_reason(z, q, NOW), 'STOP')
 
     def test_main_cycle_prioritizes_trailing_stop_after_partial_tp(self):
@@ -176,7 +215,8 @@ class ProtectiveExitTests(unittest.TestCase):
         z.update(direction='LONG', units=1000, avg_entry_price=100, last_price=102,
                  stop_price=102)
         z['payload'].update(take_price=101, r17_tp1_done=True)
-        book = dict(high_water_nav_rub=1e6, benchmark_nav_rub=1e6, last_mark_at=None)
+        book = dict(initial_nav_rub=1e6, high_water_nav_rub=1e6,
+                    benchmark_nav_rub=1e6, last_mark_at=None)
         with ExitStack() as stack:
             for name, value in {'_portfolio_rows': (book, [z]), '_mark_nav': (1e6, 0, .102, .102),
                     '_apply_funding': 0, '_risk_governor': {'new_risk': True, 'max_gross': 1},
@@ -185,7 +225,7 @@ class ProtectiveExitTests(unittest.TestCase):
                 stack.enter_context(patch.object(VP, name, return_value=value))
             close = stack.enter_context(patch.object(VP, '_close_or_reduce', return_value=50))
             VP._v90j_base_step_one(MagicMock(), 'Aggressive', {}, {}, {'CNYRUBF': 102},
-                                   14.1, 84.4, NOW.isoformat(), .0005, [])
+                                   14.1, 84.4, NOW.isoformat(), VC.COMMISSION_RATE, [])
             self.assertEqual(close.call_args.args[-1], 'STOP')
 
     def test_full_exit_is_not_blocked_by_small_rebalance_threshold(self):
@@ -220,7 +260,7 @@ class ProtectiveExitTests(unittest.TestCase):
         def execute(sql, args=None):
             self.assertGreater(active_depth, 0, 'guard SQL must be inside the book transaction')
             cur = MagicMock()
-            cur.fetchall.return_value = copy.deepcopy(positions) if sql.startswith('SELECT * FROM paper_positions') else []
+            cur.fetchall.return_value = copy.deepcopy(positions) if sql.startswith(PG.PR.PROTECTION_SQL) else []
             return cur
         conn.execute.side_effect = execute
         book = dict(name='Aggressive', high_water_nav_rub=1e6, benchmark_nav_rub=1e6,
@@ -271,15 +311,17 @@ class TrendHoldR46Tests(unittest.TestCase):
         base.assert_not_called()
 
     def test_hard_stop_still_overrides_trend_hold(self):
-        z = dict(asset='BRENT', direction='SHORT', active_trade_id='t-r46',
-                 units=100, payload={'r46_trend_hold_active': True,
+        z = dict(asset='BTC', direction='SHORT', active_trade_id='synthetic-trend-stop',
+                 units=100, stop_price=103, payload={'r46_trend_hold_active': True,
                                     'r46_trend_strength_score': 8,
-                                    'r46_horizon_state': 'CONFIRMED_TREND'})
-        with patch.object(VP, '_v90r46_base_close_or_reduce', return_value=55) as base:
+                                    'r46_horizon_state': 'CONFIRMED_TREND'},
+                 _execution_quote=protective_quote('BTC', 104.0))
+        with patch.object(VP, 'CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE', return_value=55) as base:
             out = VP._close_or_reduce(MagicMock(), {}, 'Aggressive', z, 104.0, 0.0,
                                       1e6, NOW.isoformat(), 'STOP')
         self.assertEqual(out, 55)
         base.assert_called_once()
+        self.assertEqual(base.call_args.args[-1], 'STOP')
 
 
 
@@ -853,15 +895,16 @@ class ExecutionDisciplineR55Tests(unittest.TestCase):
             },
         }
 
-    def test_invalidated_setup_is_absolute_veto_even_if_wrapped_admission_would_open(self):
-        row=self._row('4h')
-        row['entry_quality']='INVALIDATED'
-        row['decision_stage']='INVALIDATED'
+    def test_hard_invalidated_setup_is_vetoed_despite_legacy_admission(self):
+        row=canonical_row(horizon='4h')
+        row['trade_plan']['trade_integrity']={'hard_invalidation':True}
         with patch.object(VPR,'_v90r55_base_admission',
-                          return_value={'open':True,'fraction':1.0,'reason':'legacy'}):
-            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+                          return_value={'open':True,'fraction':1.0,'reason':'legacy'}) as legacy:
+            out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
         self.assertFalse(out['open'])
-        self.assertEqual(out['reason'],'R55_ABSOLUTE_INVALIDATED_VETO')
+        self.assertTrue(out['hard_veto'])
+        self.assertEqual(out['reason'],'HARD_INVALIDATION')
+        legacy.assert_not_called()
 
     def test_structural_stop_cannot_resurrect_invalidated_setup(self):
         row=self._row('4h')
@@ -871,29 +914,30 @@ class ExecutionDisciplineR55Tests(unittest.TestCase):
         self.assertIsNone(meta)
         self.assertEqual(out['_r55_absolute_veto'],'INVALIDATED_SETUP')
 
-    def test_aggressive_5m_initial_size_is_50_without_1h(self):
-        row=self._row('5m')
-        with patch.object(VPR,'_v90r55_base_admission',
-                          return_value={'open':True,'fraction':1.0}):
-            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+    def test_aggressive_normal_native_setup_starts_at_fifty_percent(self):
+        row=canonical_row()
+        row.update(signal_tier='LONG', _supporting_horizons=['5m'])
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out['open'],out)
         self.assertAlmostEqual(out['fraction'],.50)
 
-    def test_aggressive_5m_initial_size_is_75_with_1h(self):
-        row=self._row('5m')
-        row['_supporting_horizons']=['5m','1h']
-        with patch.object(VPR,'_v90r55_base_admission',
-                          return_value={'open':True,'fraction':1.0}):
-            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
-        self.assertAlmostEqual(out['fraction'],.75)
+    def test_extra_horizon_label_cannot_override_canonical_initial_size(self):
+        # The retired R55 layer assigned 75% from a label count. CTC now owns
+        # 50% normal / 100% strong sizing, subject to actual stop-risk limits.
+        row=canonical_row()
+        row.update(signal_tier='LONG', _supporting_horizons=['5m','1h'])
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out['open'],out)
+        self.assertAlmostEqual(out['fraction'],.50)
 
-    def test_aggressive_5m_initial_size_is_100_with_1h_and_4h_super(self):
-        row=self._row('5m')
+    def test_aggressive_strong_native_setup_can_start_at_one_hundred_percent(self):
+        row=canonical_row()
         row['_supporting_horizons']=['5m','1h','4h']
         row['_alignment_count']=3
-        with patch.object(VPR,'_v90r55_base_admission',
-                          return_value={'open':True,'fraction':1.0}):
-            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out['open'],out)
         self.assertAlmostEqual(out['fraction'],1.0)
+        self.assertTrue(out['stop_risk_budget']['eligible'])
 
     def test_recent_stop_blocks_same_setup_reentry_without_new_price_event(self):
         row=self._row('4h')
@@ -975,42 +1019,41 @@ class MultiTimeframeTradeFramingR56Tests(unittest.TestCase):
             '_rank':1.0,
         }
 
-    def test_senior_only_aggressive_candidate_is_replaced_by_lower_tf_trigger(self):
-        senior=self._row('3d'); senior['_rank']=2.0
-        trigger=self._row('4h'); trigger['_rank']=1.0
+    def test_senior_forecast_is_replaced_by_verified_lower_tf_setup(self):
+        senior=canonical_row('CNYRUBF','3d','SHORT')
+        senior.pop('timeframe_entry_context')
+        trigger=canonical_row('CNYRUBF','4h','SHORT')
         summary=[trigger,senior]
-        with patch.object(VPR,'_v90r56_base_aggressive_book',
-                          return_value={'CNYRUBF':senior}):
-            out=VPR._v90_aggressive_candidate_book(summary,{'CNYRUBF':senior})
+        out=VPR._v90_trend_transition_candidate_book(summary,{'CNYRUBF':senior},'AGGRESSIVE')
         self.assertEqual(out['CNYRUBF']['horizon'],'4h')
-        self.assertTrue(out['CNYRUBF']['_r56_trigger_selected'])
-        self.assertEqual(out['CNYRUBF']['_r56_thesis_horizon'],'3d')
+        self.assertTrue(out['CNYRUBF']['_canonical_route_trace'][-1]['open'])
+        self.assertEqual(out['CNYRUBF']['timeframe_entry_context'],trigger['timeframe_entry_context'])
+        self.assertIn('3d',out['CNYRUBF']['_supporting_horizons'])
 
-    def test_senior_only_aggressive_candidate_without_trigger_is_blocked(self):
-        senior=self._row('3d')
-        with patch.object(VPR,'_v90r56_base_aggressive_book',
-                          return_value={'CNYRUBF':senior}):
-            book=VPR._v90_aggressive_candidate_book([senior],{'CNYRUBF':senior})
-        self.assertTrue(book['CNYRUBF']['_r56_missing_execution_trigger'])
-        out=VPR._signal_first_admission(
+    def test_senior_forecast_without_native_entry_context_is_blocked(self):
+        senior=canonical_row('CNYRUBF','3d','SHORT')
+        senior.pop('timeframe_entry_context')
+        book=VPR._v90_trend_transition_candidate_book([senior],{'CNYRUBF':senior},'AGGRESSIVE')
+        out=VP._signal_first_admission(
             book['CNYRUBF'],VP.POLICIES['Aggressive'],0.0)
         self.assertFalse(out['open'])
-        self.assertEqual(out['reason'],'R56_SENIOR_BIAS_REQUIRES_ENTRY_TRIGGER')
+        self.assertEqual(out['reason'],'SAME_TF_CONTEXT_REQUIRED')
+        self.assertTrue(out['hard_veto'])
 
-    def test_late_entry_after_consuming_volatility_budget_waits_for_retest(self):
-        row=self._row('1h',price=100.0)
-        row['horizon_return']=-.012
-        row['realized_vol']=.010
-        out=VPR._v90r56_late_entry_gate(row)
+    def test_late_entry_uses_native_atr_and_original_trigger(self):
+        row=canonical_row('CNYRUBF','1h','SHORT',clock=NOW)
+        out=TFP.entry_gate(row,98.0,'SHORT',NOW)
         self.assertFalse(out['eligible'])
-        self.assertEqual(out['reason'],'R56_WAIT_RETEST_LATE_ENTRY')
+        self.assertEqual(out['reason'],'SAME_TF_ENTRY_EXTENDED')
+        self.assertGreater(out['extension_atr'],out['max_extension_atr'])
+        self.assertEqual(out['trigger_level'],row['timeframe_entry_context']['event']['trigger_level'])
 
     def test_fresh_entry_inside_volatility_budget_is_allowed(self):
-        row=self._row('1h',price=100.0)
-        row['horizon_return']=-.004
-        row['realized_vol']=.010
-        out=VPR._v90r56_late_entry_gate(row)
+        row=canonical_row('CNYRUBF','1h','SHORT',clock=NOW)
+        out=TFP.entry_gate(row,100.0,'SHORT',NOW)
         self.assertTrue(out['eligible'])
+        self.assertEqual(out['reason'],'SAME_TF_ENTRY_READY')
+        self.assertLessEqual(out['extension_atr'],out['max_extension_atr'])
 
     def test_entry_stop_has_management_timeframe_noise_floor(self):
         row=self._row('4h',price=100.0)
@@ -1202,19 +1245,17 @@ class TacticalTriggerPriorityR57Tests(unittest.TestCase):
         }
 
     def test_valid_one_hour_short_beats_conflicting_senior_long_bias(self):
-        short1=self._nq('1h','SHORT','PASS')
-        stale5=self._nq('5m','SHORT','BLOCK')
-        long4=self._nq('4h','LONG','PASS')
-        long1d=self._nq('1d','LONG','BLOCK')
-        long3d=self._nq('3d','LONG','BLOCK')
+        short1=canonical_row('NQ','1h','SHORT')
+        stale5=canonical_row('NQ','5m','SHORT',signal_age=601)
+        long4=canonical_row('NQ','4h','LONG',signal_age=28801)
+        long1d=canonical_row('NQ','1d','LONG'); long1d.pop('timeframe_entry_context')
+        long3d=canonical_row('NQ','3d','LONG'); long3d.pop('timeframe_entry_context')
         summary=[stale5,short1,long4,long1d,long3d]
-        with patch.object(VPR,'_v90r57_base_aggressive_book',
-                          return_value={'NQ':long4}):
-            out=VPR._v90_aggressive_candidate_book(summary,{'NQ':long4})
+        out=VPR._v90_trend_transition_candidate_book(summary,{'NQ':long4},'AGGRESSIVE')
         self.assertEqual(out['NQ']['research_decision'],'SHORT')
         self.assertEqual(out['NQ']['horizon'],'1h')
-        self.assertTrue(out['NQ']['_r57_senior_conflict'])
-        self.assertAlmostEqual(out['NQ']['_r57_initial_size_cap'],.50)
+        self.assertTrue(out['NQ']['_canonical_route_trace'][-1]['open'])
+        self.assertEqual(out['NQ']['timeframe_entry_context'],short1['timeframe_entry_context'])
 
     def test_counter_senior_valid_one_hour_short_opens_fifty_percent(self):
         row=self._nq('1h','SHORT','PASS')
@@ -1283,42 +1324,28 @@ class LossRootCauseGateR59Tests(unittest.TestCase):
         row.update(overrides)
         return row
 
-    def test_r59_blocks_cost_dominated_five_minute_entry(self):
-        row=self._row()
-        row['trade_plan']['expected_move_pct']=.005
-        row['trade_plan']['final_economics_gate'].update(
-            net_reward_risk=1.8,expected_move_pct=.005,modeled_round_trip_cost_pct=.002)
-        old=VPR._v90r59_base_admission
-        try:
-            VPR._v90r59_base_admission=lambda r,p,d:{'open':True,'fraction':.50,'reason':'BASE_PASS'}
-            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
-        finally:
-            VPR._v90r59_base_admission=old
+    def test_current_gate_blocks_cost_dominated_native_five_minute_entry(self):
+        row=canonical_row(width=.025)
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
         self.assertFalse(out['open'])
-        self.assertEqual(out['reason'],'R59_POST_COST_MOVE_MARGIN_TOO_LOW')
+        self.assertIn('TARGET_NOT_PROFITABLE_AFTER_COSTS',out['economics_blockers'])
+        self.assertLess(out['economics']['net_reward_pct'],0)
 
-    def test_r59_keeps_qualified_aggressive_signal_at_fifty_or_more(self):
-        row=self._row()
-        old=VPR._v90r59_base_admission
-        try:
-            VPR._v90r59_base_admission=lambda r,p,d:{'open':True,'fraction':.50,'reason':'BASE_PASS'}
-            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
-        finally:
-            VPR._v90r59_base_admission=old
-        self.assertTrue(out['open'])
+    def test_current_gate_keeps_qualified_aggressive_signal_at_fifty_or_more(self):
+        row=canonical_row()
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out['open'],out)
         self.assertGreaterEqual(out['fraction'],.50)
+        self.assertTrue(out['stop_risk_budget']['eligible'])
 
-    def test_r59_blocks_counter_structure_without_strong_reversal(self):
-        row=self._row(horizon_structure={'state':'CONFIRMED_TREND','score':.80,'direction':'SHORT'})
-        row['institutional_signal']['evidence_independence']['independent_count']=3
-        old=VPR._v90r59_base_admission
-        try:
-            VPR._v90r59_base_admission=lambda r,p,d:{'open':True,'fraction':.50,'reason':'BASE_PASS'}
-            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
-        finally:
-            VPR._v90r59_base_admission=old
+    def test_current_gate_blocks_counter_structure_without_strong_reversal(self):
+        row=canonical_row()
+        row['horizon_structure']={'state':'CONFIRMED_TREND','score':.80,'direction':'SHORT'}
+        row['institutional_signal']={'evidence_independence':{'independent_count':3}}
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
         self.assertFalse(out['open'])
         self.assertEqual(out['reason'],'R59_EXECUTION_TF_DIRECTION_CONFLICT')
+        self.assertTrue(out['hard_veto'])
 
     def test_r59_friction_sets_stop_noise_floor(self):
         row=self._row()
@@ -1455,19 +1482,13 @@ class NQFreshDataAndMigrationR61Tests(unittest.TestCase):
 
 class AggressiveInitialSizingR61Tests(unittest.TestCase):
     def test_fresh_high_quality_signal_starts_at_least_seventy_five_percent(self):
-        row={'confidence':0.79,'signal_tier':'SHORT','decision_stage':'EARLY_PROBE',
-             'entry_quality':'FRESH_BREAKOUT','research_decision':'SHORT',
-             '_supporting_horizons':['5m','1h','4h','1d'],
-             '_alignment_count':4,
-             'institutional_signal':{'evidence_independence':{'independent_count':5}},
-             'horizon_structure':{'state':'BUILDING_TREND','score':0.74},
-             'trade_plan':{'expected_to_stop_ratio':1.65,'stop_distance_pct':0.005}}
-        policy={'mode':'AGGRESSIVE','max_fraction':5.0}
-        base={'open':True,'fraction':0.10,'reason':'BASE'}
-        with patch.object(VPR,'_v90r61_base_admission',return_value=base), \
-             patch.object(VPR,'_v90r24_stop_risk_cap',return_value=5.0):
-            out=VPR._signal_first_admission(row,policy,0.0)
+        row=canonical_row(direction='SHORT')
+        row.update(_supporting_horizons=['5m','1h','4h','1d'],_alignment_count=4)
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertTrue(out['open'],out)
         self.assertGreaterEqual(out['fraction'],0.75)
+        self.assertLessEqual(out['fraction'],1.0)
+        self.assertTrue(out['stop_risk_budget']['eligible'])
 
 
 class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
@@ -1480,12 +1501,17 @@ class R62FreshSourceAndFullCycleReuseTests(unittest.TestCase):
             VI._v90r62_bundle_cache.clear()
             VI._v90r62_bundle_cache['NQ']={'at':VI.time.time(),'bundle':bundle}
             VI._v90r62_active_cycle_mode='FULL'
-            out=VI._v90r62_cached_bundle('NQ')
+            with patch.object(VI,'MEMORY_SOFT_LIMIT_MB',400):
+                out=VI._v90r62_cached_bundle('NQ')
             self.assertIsNotNone(out)
             self.assertTrue(out['reused_market_bundle'])
             self.assertEqual(out['elapsed_seconds'],0.0)
             VI._v90r62_active_cycle_mode='FAST_5M'
             self.assertIsNone(VI._v90r62_cached_bundle('NQ'))
+            VI._v90r62_active_cycle_mode='FULL'
+            with patch.object(VI,'MEMORY_SOFT_LIMIT_MB',320):
+                self.assertIsNone(VI._v90r62_cached_bundle('NQ'))
+                self.assertEqual(VI._v90r62_bundle_cache,{})
         finally:
             VI._v90r62_active_cycle_mode=old_mode
             VI._v90r62_bundle_cache.clear()
@@ -1739,47 +1765,60 @@ class CryptoEarlyCaptureR65Tests(unittest.TestCase):
               'expected_to_stop_ratio':rr,'expected_move_pct':move}},
         }
 
-    def test_strong_fresh_crypto_breakout_is_genesis_candidate(self):
-        m=VPR._v90r65_genesis_metrics(self._row())
-        self.assertTrue(m['eligible'],m)
+    def test_strong_fresh_crypto_breakout_is_executable_candidate(self):
+        row=canonical_row()
+        selected=VPR._v90_trend_transition_candidate_book([row],{},'AGGRESSIVE')['BTC']
+        self.assertTrue(selected['_canonical_route_trace'][-1]['open'])
+        self.assertEqual(selected['timeframe_entry_context'],row['timeframe_entry_context'])
 
-    def test_lone_net_rr_blocker_can_be_bounded_genesis_probe(self):
-        m=VPR._v90r65_genesis_metrics(
-            self._row(rr=1.47,move=.0062,hscore=.61,conf=.79,
-                      blockers=['NET_REWARD_RISK_BELOW_FLOOR']))
-        self.assertTrue(m['eligible'],m)
-        self.assertTrue(m['marginal_economics'])
+    def test_crypto_genesis_label_cannot_waive_native_net_rr_floor(self):
+        # CTC retired the R65 exception for below-floor probes. The real
+        # positive-net native target still has to pay for its actual stop risk.
+        row=canonical_row(width=.2)
+        row['_r65_crypto_genesis']={'eligible':True,'marginal_economics':True}
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertFalse(out['open'])
+        self.assertTrue(out['hard_veto'])
+        self.assertEqual(out['reason'],'NET_REWARD_RISK_BELOW_FLOOR')
+        self.assertGreater(out['economics']['net_reward_pct'],0)
 
     def test_stale_or_target_unprofitable_is_never_softened(self):
-        for blocker in ('QUOTE_TOO_OLD_FOR_HORIZON','TARGET_NOT_PROFITABLE_AFTER_COSTS'):
+        stale=canonical_row(); stale['market_observed_at']=(datetime.now(timezone.utc)-timedelta(minutes=6)).isoformat()
+        costly=canonical_row(width=.025)
+        for row,blocker in ((stale,'EXECUTION_QUOTE_STALE'),(costly,'TARGET_NOT_PROFITABLE_AFTER_COSTS')):
             with self.subTest(blocker=blocker):
-                m=VPR._v90r65_genesis_metrics(self._row(blockers=[blocker]))
-                self.assertFalse(m['eligible'])
+                row['_r65_crypto_genesis']={'eligible':True}
+                out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+                self.assertFalse(out['open'])
+                self.assertTrue(out['hard_veto'])
+                self.assertEqual(out['reason'],blocker)
 
     def test_late_crypto_entry_is_rejected_even_when_signal_is_strong(self):
-        row=self._row(price=102.0)
-        row['impulse_pivot_break']['breakout_level']=100.0
-        row['realized_vol']=.005
-        m=VPR._v90r65_genesis_metrics(row)
-        self.assertFalse(m['eligible'])
-        self.assertEqual(m['timing']['reason'],'R56_WAIT_RETEST_LATE_ENTRY')
+        row=canonical_row()
+        row.update(price=102.0,best_bid=101.995,best_ask=102.005)
+        row['_r65_crypto_genesis']={'eligible':True}
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+        self.assertFalse(out['open'])
+        self.assertEqual(out['reason'],'SAME_TF_ENTRY_EXTENDED')
+        self.assertTrue(out['hard_veto'])
 
-    def test_genesis_candidate_carries_order_probability_contract(self):
-        row=self._row()
-        got=VPR._v90r65_best_crypto_genesis([row],'BTC')
-        self.assertIsNotNone(got)
+    def test_crypto_candidate_distinguishes_model_score_and_calibrated_probability(self):
+        row=canonical_row()
+        got=VPR._v90_trend_transition_candidate_book([row],{},'AGGRESSIVE')['BTC']
         self.assertIn('_pwin',got)
-        self.assertIn('_pwin_source',got)
-        self.assertGreaterEqual(got['_pwin'],0.0)
+        self.assertEqual(got['_pwin_source'],'MODEL_QUALITY_SCORE_UNCALIBRATED')
+        self.assertEqual(got['_pwin'],row['confidence'])
+        row['calibrated_probability']=.72
+        got=VPR._v90_trend_transition_candidate_book([row],{},'AGGRESSIVE')['BTC']
+        self.assertEqual(got['_pwin'],.72)
+        self.assertEqual(got['_pwin_source'],'EMPIRICAL_CALIBRATION')
 
-    def test_aggressive_genesis_starts_at_least_fifty_percent(self):
-        row=self._row()
-        row['_r65_crypto_genesis']=VPR._v90r65_genesis_metrics(row)
-        with patch.object(VPR,'_v90r65_base_admission',
-                          return_value={'open':False,'fraction':0.0,'reason':'PROFITABILITY_GATE'}):
-            out=VPR._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
+    def test_aggressive_native_crypto_setup_starts_at_least_fifty_percent(self):
+        row=canonical_row()
+        out=VP._signal_first_admission(row,VP.POLICIES['Aggressive'],0.0)
         self.assertTrue(out['open'],out)
         self.assertGreaterEqual(out['fraction'],.50)
+        self.assertTrue(out['stop_risk_budget']['eligible'])
 
     def test_crypto_structural_trailing_waits_until_meaningful_profit(self):
         self.assertFalse(VPR._v90r65_crypto_trailing_activation('BTC',.0028)['active'])
@@ -1790,9 +1829,8 @@ class CryptoNetProfitLockR65Tests(unittest.TestCase):
     def test_crypto_27bp_move_can_lock_positive_net_after_paid_fee(self):
         z={'asset':'BTC','direction':'LONG','avg_entry_price':100.0,'units':1000.0,
            'stop_price':99.0,'payload':{}}
-        q={'price':100.27,'source_gate_pass':True}
-        lock=VPG.profit_lock_stop(z,q,.0005,fees_paid_rub=50.0,
-                                  slippage_pct=.00025,min_net_pct=.00025)
+        q=protective_quote('BTC',100.27)
+        lock=VPG.profit_lock_stop(z,q,fees_paid_rub=40.0,min_net_pct=.00025)
         self.assertIsNotNone(lock)
         self.assertGreater(lock['projected_net_profit_at_stop_rub'],0)
         self.assertGreater(lock['stop_price'],100.0)
@@ -1913,9 +1951,9 @@ class ExecutionAndProfitProtectionR63Tests(unittest.TestCase):
         z={'asset':'ETH','direction':'SHORT','avg_entry_price':2686.302632,'units':18.6,
            'stop_price':2707.8,
            'payload':{'trailing_stop':2684.8,'r55_net_profit_lock_active':True}}
-        q={'price':2685.0,'best_bid':2684.9,'best_ask':2685.1,'source_gate_pass':True}
+        q=protective_quote('ETH',2685.0,best_bid=2684.9,best_ask=2685.1)
         tr={'gross_pnl_rub':0.0,'fees_rub':25.0,'funding_rub':0.25}
-        out=VPG._r63_soft_profit_stop_assessment(z,q,tr,1_000_000,.0005)
+        out=VPG._r63_soft_profit_stop_assessment(z,q,tr,1_000_000)
         self.assertTrue(out['soft_only'])
         self.assertTrue(out['suppress'])
         self.assertLessEqual(out['net_pnl_rub'],0)
@@ -1924,8 +1962,8 @@ class ExecutionAndProfitProtectionR63Tests(unittest.TestCase):
         z={'asset':'ETH','direction':'SHORT','avg_entry_price':2686.3,'units':18.6,
            'stop_price':2684.0,
            'payload':{'trailing_stop':2683.0,'r55_net_profit_lock_active':True}}
-        q={'price':2685.0,'best_bid':2684.9,'best_ask':2685.1,'source_gate_pass':True}
-        out=VPG._r63_soft_profit_stop_assessment(z,q,{'fees_rub':25},1_000_000,.0005)
+        q=protective_quote('ETH',2685.0,best_bid=2684.9,best_ask=2685.1)
+        out=VPG._r63_soft_profit_stop_assessment(z,q,{'fees_rub':25},1_000_000)
         self.assertFalse(out['suppress'])
         self.assertFalse(out['soft_only'])
 
@@ -2003,9 +2041,22 @@ class MarketSchedulerAndNQTargetR63CTests(unittest.TestCase):
         self.assertFalse(out['eligible'])
 
     def test_cold_start_runs_fast_lane_before_full(self):
-        src=Path('veritas_intelligence.py').read_text(encoding='utf-8')
-        self.assertIn('next_full=_start+5.0',src)
-        self.assertIn('next_fast=_start',src)
+        class Clock:
+            current=NOW.timestamp()
+            def time(self): return self.current
+            def monotonic(self): return self.current
+            def sleep(self,seconds): self.current+=seconds
+        clock=Clock(); calls=[]
+        def cycle(selected,mode):
+            calls.append((selected,mode,clock.current))
+            if len(calls)==2:
+                raise KeyboardInterrupt('deterministic scheduler finished')
+        with self.assertRaises(KeyboardInterrupt):
+            VCS.run({'time':clock,'cycle':cycle,'HORIZONS':('1m','5m','1h','4h'),
+                     'V90_FULL_CYCLE_INTERVAL_SECONDS':240,'V90_FAST_5M_INTERVAL_SECONDS':30})
+        self.assertEqual(calls[0][:2],(('1m','5m'),'FAST_5M'))
+        self.assertEqual(calls[1][:2],(None,'FULL'))
+        self.assertAlmostEqual(calls[1][2]-calls[0][2],5.)
 
 
 class ColdFastLaneAndMOEXR63DTests(unittest.TestCase):
@@ -2066,13 +2117,16 @@ class CryptoEntryPathRegressionTests(unittest.TestCase):
         return row
 
     def test_compaction_preserves_origin_and_rejects_late_live_fill(self):
-        row=self.row()
-        row['price']=102.0; row['realized_vol']=.005
+        row=TFP.prepare_row(canonical_row(clock=NOW),now=NOW)
+        self.assertTrue(TFP.entry_gate(row,100.,'LONG',NOW)['eligible'])
+        event=copy.deepcopy(row['timeframe_entry_context']['event'])
+        row['price']=102.0
         row['horizon_return']=.001  # last bar alone hides the earlier impulse
-        row['impulse_pivot_break']['breakout_level']=100.0
         compact=VI._v90_compact_live_row(row)
-        self.assertEqual(compact['impulse_pivot_break']['breakout_level'],100.0)
-        self.assertFalse(VPR._v90r56_late_entry_gate(compact)['eligible'])
+        self.assertEqual(TFP.context_of(compact)['event'],event)
+        gate=TFP.entry_gate(compact,102.,'LONG',NOW)
+        self.assertFalse(gate['eligible'])
+        self.assertEqual(gate['reason'],'SAME_TF_ENTRY_EXTENDED')
 
     def test_genesis_and_tactical_origin_survive_compaction(self):
         row=self.row()
@@ -2083,22 +2137,31 @@ class CryptoEntryPathRegressionTests(unittest.TestCase):
         for name in ('impulse_genesis','tactical_reversal'):
             self.assertEqual(compact[name]['trigger_level'],99.7)
 
-    def test_actual_fill_reprices_original_return_when_trigger_missing(self):
-        row=self.row(); row['impulse_pivot_break']={}; row['realized_vol']=.005
-        self.assertTrue(VPR._v90r56_late_entry_gate(row)['eligible'])
-        self.assertFalse(VPR._v90r56_late_entry_gate(row,102.0)['eligible'])
-        row.update(research_decision='SHORT',horizon_return=-.002)
-        self.assertFalse(VPR._v90r56_late_entry_gate(row,98.0)['eligible'])
+    def test_actual_fill_uses_native_origin_when_legacy_trigger_hint_is_missing(self):
+        for direction,late_price in (('LONG',102.),('SHORT',98.)):
+            row=canonical_row(direction=direction,clock=NOW)
+            row['impulse_pivot_break']={}
+            self.assertTrue(TFP.entry_gate(row,100.,direction,NOW)['eligible'])
+            late=TFP.entry_gate(row,late_price,direction,NOW)
+            self.assertFalse(late['eligible'])
+            self.assertEqual(late['reason'],'SAME_TF_ENTRY_EXTENDED')
+            self.assertEqual(late['trigger_level'],row['timeframe_entry_context']['event']['trigger_level'])
 
     def test_inactive_or_opposite_trigger_cannot_reset_move_origin(self):
-        row=self.row(); row.update(price=102.0,horizon_return=.02,realized_vol=.005)
+        row=canonical_row(clock=NOW); row.update(price=102.0,horizon_return=.02,realized_vol=.005)
         for update in ({'active':False},{'active':True,'direction':'SHORT'}):
             row['impulse_pivot_break']={'breakout_level':101.9,**update}
-            self.assertFalse(VPR._v90r56_late_entry_gate(row)['eligible'])
+            gate=TFP.entry_gate(row,102.,'LONG',NOW)
+            self.assertFalse(gate['eligible'])
+            self.assertEqual(gate['reason'],'SAME_TF_ENTRY_EXTENDED')
+            self.assertEqual(gate['trigger_level'],row['timeframe_entry_context']['event']['trigger_level'])
 
     def test_missing_origin_fails_closed(self):
-        row=self.row(); row['impulse_pivot_break']={}; row.pop('horizon_return')
-        self.assertFalse(VPR._v90r56_late_entry_gate(row)['eligible'])
+        row=canonical_row(clock=NOW); row.pop('timeframe_entry_context')
+        out=VCR.evaluate(row,VP.POLICIES['Aggressive'],0,NOW)
+        self.assertFalse(out['open'])
+        self.assertEqual(out['reason'],'SAME_TF_CONTEXT_REQUIRED')
+        self.assertTrue(out['hard_veto'])
 
     def test_early_pivot_fallback_covers_both_crypto_assets_and_directions(self):
         # A local range, a bounce, then a volume-backed break. The universal
@@ -2121,45 +2184,52 @@ class CryptoEntryPathRegressionTests(unittest.TestCase):
                 self.assertEqual(out['direction'],direction)
                 self.assertIsNotNone(out['trigger_level'])
 
-    def test_hourly_trend_cannot_override_local_exit_reversal(self):
-        row=self.row(horizon='1h'); local=self.row()
-        local['horizon_structure']={'state':'EXIT_REVERSAL','direction':'NO_TRADE'}
-        row['_r65_tactical_context']=local
-        out=VPR._v90r65_execution_timing(row,100.0,'LONG',NOW)
-        self.assertEqual(out['reason'],'R65_WAIT_LOCAL_REVERSAL')
-        # Neutral NO_TRADE alone is not a reversal veto.
-        local['horizon_structure']={'state':'NEUTRAL','direction':'NO_TRADE'}
-        self.assertTrue(VPR._v90r65_execution_timing(row,100.0,'LONG',NOW)['eligible'])
+    def test_hourly_bias_cannot_override_owner_timeframe_hard_invalidation(self):
+        row=canonical_row(clock=NOW)
+        row['_r65_tactical_context']=canonical_row(horizon='1h',clock=NOW)
+        row['trade_plan']['trade_integrity']={'hard_invalidation':True}
+        out=VCR.evaluate(row,VP.POLICIES['Aggressive'],0,NOW)
+        self.assertFalse(out['open'])
+        self.assertEqual(out['reason'],'HARD_INVALIDATION')
+        # The absence of an invalidation is not itself a reason to exit/veto.
+        row['trade_plan'].pop('trade_integrity')
+        self.assertTrue(VCR.evaluate(row,VP.POLICIES['Aggressive'],0,NOW)['open'])
 
     def test_all_portfolios_block_senior_only_entries_and_late_adds(self):
         for name in VP.POLICIES:
             for existing in (None,{'direction':'LONG','units':1000.0}):
                 c=MagicMock(); c.execute.return_value.fetchone.return_value=existing
-                row=self.row(horizon='1d' if existing is None else '5m')
-                row.update(best_bid=102.0,best_ask=102.01,realized_vol=.005)
-                with patch.object(VPR,'_v90r65_base_open_or_add') as base:
-                    result=VPR._open_or_add(c,{},name,'BTC','LONG',102.0,.50,
+                asset='CNYRUBF' if name=='Currency' else 'BTC'
+                row=canonical_row(asset,horizon='1d' if existing is None else '5m',clock=NOW)
+                row.update(price=102.0,best_bid=102.0,best_ask=102.01)
+                if existing is None:
+                    row.pop('timeframe_entry_context')
+                with patch.object(VP,'CANONICAL_ACCOUNTING_OPEN_OR_ADD') as base:
+                    result=VP._open_or_add(c,{},name,asset,'LONG',102.0,.50,
                                            1e6,NOW.isoformat(),row,'test')
                 self.assertEqual(result,0.0)
                 base.assert_not_called()
+                self.assertEqual(row['_execution_audit']['reason'],
+                    'SAME_TF_CONTEXT_REQUIRED' if existing is None else 'SAME_TF_ENTRY_EXTENDED')
 
-    def test_senior_crypto_candidate_routes_to_trigger_with_probability(self):
+    def test_senior_crypto_forecast_routes_to_own_native_trigger_and_score(self):
         for asset in ('BTC','ETH'):
-            for policy in VP.POLICIES.values():
-                senior=self.row(asset,horizon='1d')
-                trigger=self.row(asset,horizon='1h')
-                local=self.row(asset)
+            for name in ('Impulse','Aggressive','Champion','Challenger'):
+                policy=VP.POLICIES[name]
+                senior=canonical_row(asset,horizon='1d'); senior.pop('timeframe_entry_context')
+                trigger=canonical_row(asset,horizon='1h')
+                local=canonical_row(asset)
                 summary=[senior,trigger,local]
-                with patch.object(VPR,'_v90r65_base_transition_book',return_value={asset:senior}), \
-                     patch.object(VPR,'_v90r65_best_crypto_genesis',return_value=None):
-                    out=VPR._v90_trend_transition_candidate_book(summary,{asset:senior},policy['mode'])
+                out=VPR._v90_trend_transition_candidate_book(summary,{asset:senior},policy['mode'])
                 selected=out[asset]
                 self.assertIn(selected['horizon'],('5m','1h'))
-                self.assertEqual(selected['_r56_thesis_horizon'],'1d')
-                probability,source=VPR._signal_probability(selected)
-                self.assertEqual(selected['_pwin'],probability)
-                self.assertEqual(selected['_pwin_source'],source)
-                self.assertEqual(selected['_r65_tactical_context'],local)
+                self.assertIn('1d',selected['_supporting_horizons'])
+                self.assertEqual(selected['_pwin'],selected['confidence'])
+                self.assertEqual(selected['_pwin_source'],'MODEL_QUALITY_SCORE_UNCALIBRATED')
+                self.assertEqual(selected['_local_execution_context']['same_direction_count'],1)
+                self.assertTrue(selected['_canonical_route_trace'][-1]['open'])
+            # Currency's instrument scope must not inherit a crypto candidate.
+            self.assertEqual(VPR._v90_trend_transition_candidate_book(summary,{asset:senior},'CURRENCY'),{})
 
     def test_cancelled_high_rank_candidate_cannot_mask_valid_local_trigger(self):
         for asset in ('BTC','ETH','BRENT'):
@@ -2173,41 +2243,52 @@ class CryptoEntryPathRegressionTests(unittest.TestCase):
                 self.assertEqual(out[asset]['horizon'],'1h')
                 self.assertFalse(VPR._v90r55_invalidated(out[asset]))
 
-    def test_cancelled_candidate_never_switches_to_opposite_trigger(self):
-        stale=self.row(horizon='4h');stale['entry_quality']='INVALIDATED'
-        trigger=self.row(horizon='1h');trigger['research_decision']='SHORT'
-        with patch.object(VPR,'_v90r65_base_transition_book',return_value={'BTC':stale}), \
-             patch.object(VPR,'_v90r65_best_crypto_genesis',return_value=None):
-            out=VPR._v90_trend_transition_candidate_book([stale,trigger],{'BTC':stale},'CORE')
-        self.assertTrue(VPR._v90r55_invalidated(out['BTC']))
+    def test_independent_opposite_trigger_cannot_flip_held_position_without_confirmation(self):
+        row=canonical_row(horizon='1h',direction='SHORT',clock=NOW)
+        held={'asset':'BTC','direction':'LONG','units':1000,'avg_entry_price':100,'payload':{}}
+        def execute(sql,*args):
+            return SimpleNamespace(fetchone=lambda:held if sql.startswith('SELECT * FROM paper_positions') else None)
+        with patch.object(VP,'CANONICAL_ACCOUNTING_OPEN_OR_ADD') as account:
+            out=VP._open_or_add(SimpleNamespace(execute=execute),{},'Champion','BTC','SHORT',
+                                100.,.1,1e6,NOW.isoformat(),row,'TEST')
+        self.assertEqual(out,0.)
+        self.assertEqual(row['_execution_audit']['reason'],'DIRECTION_FLIP_NOT_CONFIRMED')
+        account.assert_not_called()
 
     def test_actual_timing_rejection_reaches_admission_trace(self):
-        row=self.row();row['_execution_audit']={'checked_at':NOW.isoformat()}
+        row=canonical_row(horizon='1h',clock=NOW)
         c=MagicMock();c.execute.return_value.fetchone.return_value=None
-        row.update(best_bid=102.0,best_ask=102.01,realized_vol=.005)
-        VPR._open_or_add(c,{},'Champion','BTC','LONG',102.0,.10,1e6,NOW.isoformat(),row,'test')
-        with patch.object(VPR,'_signal_first_admission',return_value={'open':True,'fraction':.10}):
-            trace=VPR._portfolio_admission_trace({'BTC':row},VP.POLICIES['Champion'],0)[0]
-        self.assertFalse(trace['hard_veto'])
+        row.update(price=102.0,best_bid=102.0,best_ask=102.01)
+        VP._open_or_add(c,{},'Champion','BTC','LONG',102.0,.10,1e6,NOW.isoformat(),row,'test')
+        with patch.object(VCR,'evaluate',side_effect=AssertionError('report must not recompute gates')):
+            trace=VP._portfolio_admission_trace({'BTC':row},VP.POLICIES['Champion'],0)[0]
+        self.assertTrue(trace['hard_veto'])
         self.assertEqual(trace['execution']['status'],'BLOCKED')
-        self.assertEqual(trace['execution']['reason'],'R56_WAIT_RETEST_LATE_ENTRY')
+        self.assertEqual(trace['execution']['reason'],'SAME_TF_ENTRY_EXTENDED')
+        self.assertEqual(trace['admission']['reason'],'SAME_TF_ENTRY_EXTENDED')
 
     def test_plan_admitted_but_stale_execution_quote_is_reported(self):
-        row=self.row('BRENT','1h')
-        row['market_observed_at']=(NOW-timedelta(minutes=16)).isoformat()
-        book=dict(high_water_nav_rub=1e6,benchmark_nav_rub=1e6,last_mark_at=None)
+        row=canonical_row('NQ','1h',clock=NOW)
+        admitted=VCR.evaluate(row,VP.POLICIES['Champion'],0,NOW)
+        self.assertTrue(admitted['open'],admitted)
+        execution_at=NOW+timedelta(minutes=16)
+        def previous_allocation(candidate,policy,drawdown):
+            VAT.record(candidate,admitted,NOW,'ALLOCATION')
+            return admitted['fraction']
+        book=dict(initial_nav_rub=1e6,high_water_nav_rub=1e6,benchmark_nav_rub=1e6,last_mark_at=None)
         with ExitStack() as stack:
             for name,value in {'_portfolio_rows':(book,[]),'_mark_nav':(1e6,0,0,0),
                     '_apply_funding':0,'_risk_governor':{'new_risk':True,'max_gross':2},
-                    '_desired_fraction':.10,'_stats':{}}.items():
+                    '_stats':{}}.items():
                 stack.enter_context(patch.object(VP,name,return_value=value))
-            stack.enter_context(patch.object(VPR,'_signal_first_admission',return_value={'open':True,'fraction':.10}))
+            stack.enter_context(patch.object(VP,'_desired_fraction',side_effect=previous_allocation))
             entry=stack.enter_context(patch.object(VP,'_open_or_add'))
             out=VP._v90j_base_step_one(MagicMock(),'Champion',VP.POLICIES['Champion'],
-                {'BRENT':row},{},14.1,84.4,NOW.isoformat(),.0005,[row])
+                {'NQ':row},{},14.1,84.4,execution_at.isoformat(),VC.COMMISSION_RATE,[row])
         entry.assert_not_called()
         trace=out['admission_trace'][0]
-        self.assertFalse(trace['hard_veto'])
+        self.assertTrue(trace['admission']['open'])
+        self.assertTrue(trace['hard_veto'])
         self.assertEqual(trace['execution']['reason'],'EXECUTION_QUOTE_UNAVAILABLE')
         self.assertEqual(trace['execution']['quote_gate']['age_seconds'],960)
 
@@ -2227,7 +2308,36 @@ class CryptoEntryPathRegressionTests(unittest.TestCase):
 
 
 class CryptoProtectiveFillRegressionTests(unittest.TestCase):
+    def _empty_cycle_with_legacy_commission(self):
+        book=dict(initial_nav_rub=1e6,high_water_nav_rub=1e6,
+                  benchmark_nav_rub=1e6,last_mark_at=None)
+        with ExitStack() as stack:
+            for name,value in {'_portfolio_rows':(book,[]),'_mark_nav':(1e6,0,0,0),
+                    '_apply_funding':0,'_risk_governor':{'new_risk':True,'max_gross':2},
+                    '_stats':{}}.items():
+                stack.enter_context(patch.object(VP,name,return_value=value))
+            # A historical caller used 0.05%; it cannot alter current 0.04%
+            # accounting or pollute the fee used by the next portfolio/exit.
+            VP._v90j_base_step_one(MagicMock(),'Champion',VP.POLICIES['Champion'],
+                {},{},14.1,84.4,NOW.isoformat(),.0005,[])
+
+    def test_legacy_commission_argument_cannot_mutate_canonical_accounting_rate(self):
+        self._empty_cycle_with_legacy_commission()
+        self.assertEqual(VP.COMMISSION,.0004)
+        self.assertEqual(VP.COMMISSION,VC.COMMISSION_RATE)
+        c=MagicMock(); c.execute.return_value.fetchall.return_value=[]
+        with patch.object(VPR,'_r80_base_step_one',return_value={}) as inner:
+            VPR.FINAL_STEP_ONE(c,'Champion',VP.POLICIES['Champion'],{}, {},
+                              14.1,84.4,NOW.isoformat(),.0005,[])
+        self.assertEqual(inner.call_args.args[8],VC.COMMISSION_RATE)
+        with patch.object(VPR,'_r80_base_step_all',return_value={}) as batch, \
+             patch.object(VPR,'_r80_quarantine_source_incident'), \
+             patch.object(VPG,'_entry_namespace',None):
+            VPR.FINAL_STEP_ALL([],MagicMock(),'SYNTHETIC',NOW.isoformat(),.0005)
+        self.assertEqual(batch.call_args.args[4],VC.COMMISSION_RATE)
+
     def test_projected_and_booked_exit_match_for_both_directions(self):
+        self._empty_cycle_with_legacy_commission()
         for direction in ('LONG','SHORT'):
             px=100.2 if direction=='LONG' else 99.8
             quote=dict(price=px,best_bid=px-.005,best_ask=px+.005,
@@ -2256,22 +2366,25 @@ class CryptoProtectiveFillRegressionTests(unittest.TestCase):
                                    expected['net_pnl_rub'])
             self.assertIn('BID_ASK_ADVERSE_PAPER_FILL_V2',orders[0][10])
 
-    def test_old_book_is_not_reused_and_hard_exit_still_has_fallback(self):
-        quote=dict(best_bid=110,best_ask=111,source_gate_pass=True,
-                   observed_at=(NOW-timedelta(minutes=6)).isoformat())
-        z=dict(asset='ETH',direction='LONG',_execution_quote=quote)
+    def test_old_book_cannot_execute_until_fresh_same_source_quote_arrives(self):
+        quote=protective_quote('ETH',110.5,NOW-timedelta(minutes=6),best_bid=110,best_ask=111)
+        z=dict(asset='ETH',direction='LONG',_execution_quote=quote,
+               payload={'price_source_lock':VP.VPS.identity('ETH',quote)})
+        with self.assertRaisesRegex(ValueError,'EXIT_EXECUTION_QUOTE_REQUIRED'):
+            VPG.exit_fill(z,100,.1,NOW)
+        z['_execution_quote']=protective_quote('ETH',100,best_bid=99.99,best_ask=100.01)
         fill=VPG.exit_fill(z,100,.1,NOW)
-        self.assertFalse(fill['quote_valid'])
-        self.assertLess(fill['fill_price'],100)
+        self.assertTrue(fill['quote_valid'])
+        self.assertLess(fill['fill_price'],99.99)
 
     def test_profit_lock_counts_realized_result_fees_and_funding(self):
         z=dict(asset='BTC',direction='LONG',units=500,avg_entry_price=100,payload={})
-        q=dict(price=101,source_gate_pass=True)
+        q=protective_quote('BTC',101)
         lock=VPG.profit_lock_stop(z,q,fees_paid_rub=75,funding_rub=9,
                                  realized_gross_rub=30,slippage_pct=.0005,min_net_pct=.00025)
         self.assertIsNotNone(lock)
         stop=lock['stop_price']
-        net=30+500*(stop-100)-75-9-500*stop*(.0005+.0005)
+        net=30+500*(stop-100)-75-9-500*stop*(VC.COMMISSION_RATE+.0005)
         self.assertAlmostEqual(net,lock['projected_net_profit_at_stop_rub'])
         self.assertGreater(net,0)
 

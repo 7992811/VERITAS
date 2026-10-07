@@ -146,6 +146,14 @@ def validate_snapshot(data, now=None, require_history=True):
 def quote(connection=None, now=None):
     return validate_snapshot(_snapshot(connection or TB.connection,include_history=False),now,require_history=False)
 
+def market_snapshot(connection=None, now=None):
+    """Validate the existing broker cache; no fallback, refresh or network IO."""
+    raw=validate_snapshot(_snapshot(connection or TB.connection),now)
+    _record_state(status='DIRECT_READY',reason=None,checked_at=TB.iso(now),
+                  instrument_uid=raw['broker_instrument_uid'],source='TBANK_GRPC',
+                  quote_observed_at=raw['observed_at'],history_source='TBANK_GRPC')
+    return raw
+
 def _verify_async(fetch):
     if fetch is None:
         return
@@ -177,10 +185,7 @@ def market_or_fallback(fallback, verifier=None, connection=None):
     if not enabled():
         return fallback()
     try:
-        raw=validate_snapshot(_snapshot(connection or TB.connection))
-        _record_state(status='DIRECT_READY',reason=None,checked_at=TB.iso(),
-                      instrument_uid=raw['broker_instrument_uid'],source='TBANK_GRPC',
-                      quote_observed_at=raw['observed_at'],history_source='TBANK_GRPC')
+        raw=market_snapshot(connection)
         _verify_async(verifier)
         raw['feed_status']=status()
         return raw

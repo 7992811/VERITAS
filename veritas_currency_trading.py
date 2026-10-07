@@ -8,7 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 from collections.abc import Mapping
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import threading
 import re
@@ -18,10 +18,11 @@ import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
 from veritas_tbank_trading import PreSubmissionBlocked
+from veritas_trade_approvals import ApprovalError, canonical_terms
 from veritas_currency_trade_plan import (
     AccountSnapshot, BrokerQuote, ContractSpec, TradePlanBlocked, currency_limits,
-    decimal, fingerprint, integer, json_safe, prepare_entry, prepare_exit,
-    revalidate, select_entry, utc,
+    _broker_context, approved_entry_context, decimal, fingerprint, fresh, integer,
+    json_safe, prepare_entry, prepare_exit, revalidate, select_entry, utc,
 )
 
 
@@ -106,6 +107,9 @@ class CurrencyTradingCoordinator:
             terms["held_entry_event_id"] = (facts.held_terms or {}).get("canonical_event_id")
         terms["protective_order_mode"] = "EXIT_REQUIRES_SEPARATE_CONFIRMATION"
         terms["execution_environment"] = self.adapter.environment
+        # The authority and durable proposal must bind the same immutable bytes,
+        # including canonical decimal strings used by the approval repository.
+        terms = canonical_terms(terms)
         if self.preflight_live and self._require_live_admission(terms, facts, now):
             now = utc(self.clock())
             revalidate(terms, facts.spec, facts.account, facts.quote, now=now,
@@ -120,6 +124,71 @@ class CurrencyTradingCoordinator:
         with self._lock:
             facts = self._checked_facts()
             return self._create(facts, utc(self.clock()), requested_exit)
+
+    def _validate_reviewed_entry(self, terms, facts, now):
+        """Admit only an unchanged canonical order, using new observed facts.
+
+        Quote/account timestamps can advance while independently signed evidence
+        is prepared. Any economic, sizing, provenance or execution-term change
+        needs another review, even when it would be favorable to the account.
+        """
+        if (self.adapter.environment != "production"
+                or terms.get("execution_environment") != "production"
+                or terms.get("action") not in ("OPEN", "ADD")):
+            raise TradePlanBlocked("REVIEWED_PRODUCTION_ENTRY_REQUIRED")
+        row, admission = select_entry(self.summary(), facts.account, now)
+        current = prepare_entry(row, admission, facts.spec, facts.account, facts.quote,
+                                now=now, held_terms=facts.held_terms)
+        current.update(protective_order_mode="EXIT_REQUIRES_SEPARATE_CONFIRMATION",
+                       execution_environment="production")
+        current = canonical_terms(current)
+        changing = {"prepared_at", "quote_observed_at", "account_observed_at",
+                    "entry_context", "entry_context_json"}
+        if (terms.keys() != current.keys()
+                or fingerprint({k: v for k, v in terms.items() if k not in changing})
+                != fingerprint({k: v for k, v in current.items() if k not in changing})):
+            raise TradePlanBlocked("REVIEWED_CANONICAL_TERMS_CHANGED")
+        prepared = utc(terms["prepared_at"])
+        if (prepared > now or utc(terms["quote_observed_at"]) > utc(facts.quote.observed_at)
+                or utc(terms["account_observed_at"]) > utc(facts.account.observed_at)):
+            raise TradePlanBlocked("REVIEWED_OBSERVATION_FROM_FUTURE")
+        fresh(terms["quote_observed_at"], prepared, 15, "REVIEWED_ORIGINAL_QUOTE_STALE")
+        fresh(terms["account_observed_at"], prepared, 30, "REVIEWED_ORIGINAL_ACCOUNT_STALE")
+        native = approved_entry_context(terms)
+        old_quote = replace(facts.quote, observed_at=utc(terms["quote_observed_at"]))
+        original = _broker_context(native, facts.spec, old_quote, terms["direction"], prepared)
+        rebound = _broker_context(native, facts.spec, facts.quote, terms["direction"], now)
+        if (fingerprint(original) != fingerprint(native)
+                or fingerprint(rebound) != fingerprint(approved_entry_context(current))):
+            raise TradePlanBlocked("REVIEWED_CANONICAL_CONTEXT_CHANGED")
+        revalidate(terms, facts.spec, facts.account, facts.quote, now=now,
+                   canonical_event_valid=True)
+
+    def prepare_reviewed_entry(self, terms):
+        """Retry an immutable LIVE preview; still requires private owner approval."""
+        with self._lock:
+            try:
+                reviewed = canonical_terms(terms)
+                if type(terms) is not dict or fingerprint(reviewed) != fingerprint(terms):
+                    raise TradePlanBlocked("REVIEWED_CANONICAL_TERMS_REQUIRED")
+            except ApprovalError:
+                raise TradePlanBlocked("REVIEWED_TERMS_INVALID") from None
+            facts, now = self._checked_facts(), utc(self.clock())
+            self._validate_reviewed_entry(reviewed, facts, now)
+            # This path always requires the real production authority, including
+            # when ordinary proposal preflight was not enabled by configuration.
+            verdict = self._require_live_admission(reviewed, facts, now)
+            if not verdict:
+                raise TradePlanBlocked("LIVE_ACCOUNT_ADMISSION_REQUIRED")
+            facts, now = self._checked_facts(), utc(self.clock())
+            self._validate_reviewed_entry(reviewed, facts, now)
+            now = utc(self.clock())
+            if verdict.get("valid_until") is not None and utc(verdict["valid_until"]) <= now:
+                raise TradePlanBlocked("LIVE_ADMISSION_EXPIRED")
+            return self.repository.create(reviewed, owner_user_id=self.owner.user_id,
+                private_chat_id=self.owner.private_chat_id, bot_id=self.owner.bot_id,
+                expires_at=now + timedelta(seconds=self.approval_ttl_seconds),
+                economics_revision=1)
 
     def prepare_next(self):
         with self._lock:
@@ -172,8 +241,8 @@ class CurrencyTradingCoordinator:
             return False
         try:
             row, admission = select_entry(self.summary(), facts.account, now)
-            current = prepare_entry(row, admission, facts.spec, facts.account,
-                                    facts.quote, now=now, held_terms=facts.held_terms)
+            current = canonical_terms(prepare_entry(row, admission, facts.spec, facts.account,
+                                    facts.quote, now=now, held_terms=facts.held_terms))
             fixed = ("canonical_event_id", "direction", "horizon", "source_identity",
                      "stop_price", "target_price", "action")
             if any(current.get(k) != terms.get(k) for k in fixed):
@@ -181,7 +250,7 @@ class CurrencyTradingCoordinator:
             old_event = (terms.get("entry_context") or {}).get("event")
             new_event = (current.get("entry_context") or {}).get("event")
             return fingerprint(old_event) == fingerprint(new_event) and integer(terms["lots"]) <= integer(current["lots"])
-        except (TradePlanBlocked, KeyError, TypeError, ValueError):
+        except (ApprovalError, TradePlanBlocked, KeyError, TypeError, ValueError):
             return False
 
     def _require_live_admission(self, terms, facts, now):

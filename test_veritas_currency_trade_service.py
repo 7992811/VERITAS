@@ -1,8 +1,10 @@
 """Isolated HTTP service tests with actual approvals and fake external systems."""
 from datetime import timedelta
+from io import BytesIO
 import json
 import os
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -30,6 +32,55 @@ class FakeLedger:
 
     def ensure_schema(self):
         self.initializations += 1
+
+
+class CurrencyHttpBoundaryTests(unittest.TestCase):
+    def handler(self, path, body, *, length=None):
+        responses = []
+        return SimpleNamespace(path=path, headers={"Content-Length": str(len(body) if length is None else length)},
+                               rfile=BytesIO(body), reply=lambda payload, status: responses.append((payload, status)),
+                               responses=responses)
+
+    def test_body_limit_is_larger_only_for_signed_admission_evidence(self):
+        payload = json.dumps({"padding": "x" * 9000}).encode()
+        for operation, expected in (("status", 400), ("settlement-attest", 400),
+                                    ("admission-evidence", 200), ("prepare-reviewed", 200)):
+            handler = self.handler(service.PREFIX + operation, payload)
+            with patch.object(service, "handle_request", return_value=({"ok": True}, 200)) as dispatch:
+                service.reply_http(handler, None, None, alert_handler=None)
+                self.assertEqual(handler.responses[0][1], expected)
+                self.assertEqual(dispatch.call_count, int(expected == 200))
+        handler = self.handler(service.PREFIX + "admission-evidence", b"", length=65537)
+        service.reply_http(handler, None, None, alert_handler=None)
+        self.assertEqual(handler.responses[0][1], 400)
+
+    def test_alerts_keep_their_own_dispatch_and_cannot_reach_trading(self):
+        path = "/internal/currency-alerts/poll"
+        handler = self.handler(path, b"{}")
+        calls = []
+        def alerts(*args):
+            calls.append(args)
+            return {"ok": True, "stream": "paper"}, 200
+        with patch.object(service, "handle_request", side_effect=AssertionError("Wrong authority")):
+            service.reply_http(handler, None, None, alert_handler=alerts)
+        self.assertEqual(calls[0][0], path)
+        self.assertEqual(handler.responses, [({"ok": True, "stream": "paper"}, 200)])
+
+    def test_malformed_body_fails_without_dispatch_or_private_exception_text(self):
+        for body in (b"{", b"\xff"):
+            handler = self.handler(service.PREFIX + "poll", body)
+            with patch.object(service, "handle_request", side_effect=AssertionError("No dispatch")):
+                service.reply_http(handler, None, None, alert_handler=None)
+            self.assertEqual(handler.responses[0], ({"ok": False, "error": "INVALID_JSON_BODY"}, 400))
+
+    def test_summary_provider_tracks_replaced_state_and_returns_an_isolated_copy(self):
+        current = {"summary": [{"nested": [1]}]}
+        provider = service.make_summary_provider(lambda: current["summary"], threading.RLock())
+        copy = provider()
+        copy[0]["nested"].append(2)
+        self.assertEqual(current["summary"], [{"nested": [1]}])
+        current = {"summary": [{"nested": [3]}]}
+        self.assertEqual(provider(), [{"nested": [3]}])
 
 
 class FakeFacts:
@@ -98,7 +149,8 @@ class TradeHttpRepositoryTests(unittest.TestCase):
     def application(self, repository=None):
         return service.TradeHttpApplication(
             repository=repository or self.repo, coordinator=self.coordinator,
-            facts=self.facts, owner=self.owner, service_key=SERVICE_KEY, ledger=self.ledger)
+            facts=self.facts, owner=self.owner, service_key=SERVICE_KEY, ledger=self.ledger,
+            clock=lambda: self.now)
 
     def request(self, operation, body=None, headers=None, application=None):
         payload = {"bot_id": BOT}
@@ -147,8 +199,39 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.assertEqual(self.ledger.initializations, 0)
         self.assertEqual(self.facts.calls, [])
         self.assertEqual(self.coordinator.calls, [])
+        self.assertEqual(response["binding_state"], "unchecked")
+        self.assertTrue(response["status_stale"])
+        self.assertIsNone(response["pending_approval_count"])
         self.assertNotIn(SERVICE_KEY, json.dumps(response))
         self.assertNotIn(KEY.decode(), json.dumps(response))
+
+    def test_status_observes_last_completed_poll_without_repeating_it(self):
+        self.facts.bound = False
+        self.assertEqual(self.request("poll")[1], 200)
+        connections, calls = self.connections, list(self.facts.calls)
+        response, status = self.request("status")
+        self.assertEqual(status, 200)
+        self.assertEqual(response["binding_state"], "unbound")
+        self.assertEqual(response["last_poll_block_reason"], "CURRENCY_ACCOUNT_NOT_BOUND")
+        self.assertTrue(response["last_poll_succeeded"])
+        self.assertFalse(response["status_stale"])
+        self.now += timedelta(seconds=31)
+        self.assertTrue(self.request("status")[0]["status_stale"])
+        self.assertEqual(self.connections, connections)
+        self.assertEqual(self.facts.calls, calls)
+        self.assertEqual(self.coordinator.calls, [])
+
+    def test_status_preserves_poll_failure_and_rejects_unauthorized_cache_changes(self):
+        self.request("poll")
+        with patch.object(self.facts, "is_bound", side_effect=RuntimeError("private detail")):
+            response, status = self.request("poll")
+        self.assertEqual(status, 503)
+        observed = self.request("status")[0]
+        self.assertFalse(observed["last_poll_succeeded"])
+        self.assertEqual(observed["last_poll_block_reason"], "TRADE_SERVICE_TEMPORARILY_UNAVAILABLE")
+        self.assertNotIn("private detail", json.dumps(observed))
+        self.assertEqual(self.request("poll", {"bot_id": BOT + 1})[1], 403)
+        self.assertEqual(self.request("status")[0], observed)
 
     def test_status_reports_live_admission_without_disabling_closes_or_touching_dependencies(self):
         def checker(*args, **kwargs):
@@ -201,7 +284,8 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.assertEqual(self.coordinator.calls, [])
 
     def test_private_owner_validation_precedes_database_for_bind_and_decision(self):
-        for operation in ("bind", "decision"):
+        for operation in ("bind", "decision", "settlement-observe", "settlement-attest", "admission-evidence",
+                          "prepare-reviewed"):
             for body in ({"sender_user_id": OWNER + 1}, {"private_chat_id": OWNER + 1},
                          {"chat_type": "group"}):
                 candidate = {"sender_user_id": OWNER, "private_chat_id": OWNER, "chat_type": "private"}
@@ -535,6 +619,25 @@ class TradeHttpEnvironmentTests(unittest.TestCase):
                     self.assertFalse(application._ready)
                     self.assertEqual(captured[0].allowed_account_ids, frozenset({ACCOUNT}))
                     self.assertEqual(captured[0].allowed_instrument_uids, frozenset({service.CNY_UID}))
+                    self.assertIsInstance(application.coordinator.live_admission, service.CurrencyLiveAdmission)
+                    self.assertIs(application.funding, application.facts.funding)
+                    self.assertTrue(response["settlement_reconciler_configured"])
+                    self.assertEqual(response["live_account_admission"]["evidence"]["state"], "NOT_CONFIGURED")
+
+    def test_independent_evidence_keys_cannot_reuse_trade_keys_or_each_other(self):
+        statement = "VERITAS_CURRENCY_TRADE_STATEMENT_KEY"
+        evidence = "VERITAS_CURRENCY_LIVE_EVIDENCE_KEY"
+        for changes in ({statement: SERVICE_KEY}, {evidence: KEY.decode()},
+                        {statement: "same-evidence-key-for-test-is-invalid", evidence: "same-evidence-key-for-test-is-invalid"},
+                        {statement: "short"}):
+            env = self.configured() | changes
+            with self.subTest(names=sorted(changes)), patch.dict(os.environ, env, clear=True):
+                with patch.object(service, "TBankTradingAdapter", side_effect=self.forbidden) as adapter:
+                    response, status = service.handle_request(service.PREFIX + "status", {"bot_id": BOT},
+                                                              HEADERS, self.forbidden, self.forbidden)
+                self.assertEqual(status, 503)
+                self.assertFalse(response["ok"])
+                adapter.assert_not_called()
 
     def test_cache_rotates_on_secrets_identity_flags_and_dependency_changes(self):
         env = self.configured()

@@ -572,7 +572,9 @@ def dispatch(handler, connect, summary):
             _reply(handler, render_trading_ui(), 200, html=True)
             return True
         length = int(handler.headers.get("Content-Length", "0"))
-        if length < 0 or length > 8192:
+        limit = 65536 if path in ("/internal/currency-trading/admission-evidence",
+                                 "/internal/currency-trading/prepare-reviewed") else 8192
+        if length < 0 or length > limit:
             raise ConsoleError("INVALID_BODY_SIZE", 400)
         body = json.loads(handler.rfile.read(length).decode()) if length else {}
         if path.startswith("/internal/currency-trading/"):

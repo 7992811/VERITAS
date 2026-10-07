@@ -116,8 +116,9 @@ def round_trip_cost_pct(spread_bps: Optional[float] = None) -> float:
 
 
 def minimum_expected_move_pct(modeled_cost: float, asset: Optional[str] = None) -> float:
-    """One move floor for planning and final fills; net profit/RR remain separate gates."""
-    return max(MIN_EXPECTED_MOVE_PCT, MIN_MOVE_COST_MULTIPLE * max(0.0, _num(modeled_cost, 0.0)))
+    """Canonical move floor; native proof and net profit/RR remain separate gates."""
+    multiple = VC.entry_cost_multiple(asset) if asset is not None else MIN_MOVE_COST_MULTIPLE
+    return max(MIN_EXPECTED_MOVE_PCT, multiple * max(0.0, _num(modeled_cost, 0.0)))
 
 
 def paper_quote_time_gate(raw: Optional[Dict[str, Any]], horizon=None, now=None, *, protective=False) -> Dict[str, Any]:
@@ -322,7 +323,7 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]], *,
             if not fill_check.get('eligible'):
                 blockers.append(fill_check.get('reason') or 'STRUCTURAL_FILL_TIMING_INVALID')
 
-    min_move = minimum_expected_move_pct(modeled_cost)
+    min_move = minimum_expected_move_pct(modeled_cost, asset)
     available_move = weighted_move if weighted else target_move
     effective_move = min(abs(forecast_move), available_move) if forecast_move is not None and available_move is not None else None
     if effective_move is None or effective_move < min_move:
@@ -330,7 +331,7 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]], *,
     return {
         "status": "BLOCK" if blockers else "PASS", "eligible": not blockers,
         "asset": str(asset or ""), "blockers": blockers,
-        "cost_policy": VC.policy(),
+        "cost_policy": VC.policy(asset),
         "modeled_commission_pct": fees / entry if fees is not None else None,
         "modeled_execution_cost_pct": slippage,
         "modeled_funding_pct": funding / entry if funding is not None else None,
@@ -339,6 +340,7 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]], *,
         "minimum_reward_risk": rr_floor,
         "expected_move_pct": effective_move, "forecast_move_pct": forecast_move,
         "minimum_expected_move_pct": min_move,
+        "minimum_move_cost_multiple": VC.entry_cost_multiple(asset),
         "modeled_round_trip_cost_pct": modeled_cost,
         "observed_spread_bps": spread_bps, "stop_distance_pct": stop_distance,
         "target_price": target, "target_distance_pct": target_move,
