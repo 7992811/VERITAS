@@ -15,20 +15,20 @@ jobs:
         with:
           python-version: '3.14.3'
       - run: pip install -r requirements-intelligence.txt
-      - name: Apply pinned source patch
+      - name: Refine pinned source patch
         run: |
-          python tools/apply_structural_latency_repair.py
-          python -m py_compile veritas_structural_validation_cache.py veritas_structural_breakout.py veritas_breakout_runtime.py veritas_book_lock.py test_veritas_structural_latency.py
+          python tools/refine_structural_retry.py
+          python -m py_compile veritas_structural_validation_cache.py veritas_structural_breakout.py veritas_breakout_runtime.py veritas_book_lock.py test_veritas_structural_latency.py test_veritas_retry_freshness.py
           git diff --check
           git config user.name 'VERITAS latency repair'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add veritas_structural_breakout.py veritas_breakout_runtime.py veritas_book_lock.py
-          git commit -m 'Retry the reserved book before recomputing history; memoize exact static proofs'
+          git add veritas_breakout_runtime.py test_veritas_structural_latency.py
+          git commit -m 'Preserve new quote observations across book retries and reject rolled contracts'
           git push origin HEAD:fix/structural-latency-book-20261007
       - name: Verify structural, risk, source and concurrency rules
         run: |
           set -o pipefail
-          python -m unittest -v test_veritas_structural_latency.py test_veritas_structural_breakout.py test_veritas_structural_facts_cache.py test_veritas_structural_cny_episodes.py test_veritas_breakout_runtime.py test_veritas_currency_feed_recovery.py test_veritas_weighted_structural_economics.py test_veritas_structural_lifecycle.py test_veritas_structural_management.py test_veritas_book_lock.py test_veritas_portfolio_cycle.py test_veritas_source_identity_roundtrip.py test_veritas_repeat_add.py 2>&1 | tee diagnostics/latency-tests-after.txt
+          python -m unittest -v test_veritas_structural_latency.py test_veritas_retry_freshness.py test_veritas_structural_breakout.py test_veritas_structural_facts_cache.py test_veritas_structural_cny_episodes.py test_veritas_breakout_runtime.py test_veritas_currency_feed_recovery.py test_veritas_weighted_structural_economics.py test_veritas_structural_lifecycle.py test_veritas_structural_management.py test_veritas_book_lock.py test_veritas_portfolio_cycle.py test_veritas_source_identity_roundtrip.py test_veritas_repeat_add.py 2>&1 | tee diagnostics/latency-tests-after.txt
       - name: Architecture guard
         run: python tools/architecture_guard.py
       - name: Record synthetic profile after repair
@@ -49,5 +49,5 @@ jobs:
         if: always()
         run: |
           git add diagnostics/
-          git diff --cached --quiet || git commit -m 'Record latency regression results on isolated branch'
+          git diff --cached --quiet || git commit -m 'Record corrected latency regression results on isolated branch'
           git push origin HEAD:fix/structural-latency-book-20261007
