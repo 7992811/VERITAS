@@ -16941,7 +16941,7 @@ class H(BaseHTTPRequestHandler):
                 self.reply(v27_quality_board())
             elif self.path.startswith('/api/v1/architecture-efficiency'):
                 self.reply({'version':VERSION,**architecture_efficiency_status()})
-            elif self.path.startswith('/api/v1/heavy-learning'):
+            elif self.path.startswith(('/api/v1/heavy-learning','/api/v1/evidence-learning')):
                 self.reply({'version':VERSION,**heavy_learning_snapshot()})
             elif self.path.startswith('/api/v1/v70-effectiveness'):
                 self.reply({'version':VERSION,**v701_learning_bundle().get('effectiveness',{})})
@@ -19227,9 +19227,6 @@ def main():
          startup_mode='TWO_PHASE_READINESS')
     # Keep the process alive on the already-serving HTTP thread.
     server_thread.join()
-
-
-
 # VERITAS 9.0 NQ FUTURES INVARIANT
 if 'NDX' in DISPLAY_ASSETS or any((v[0]=='NDX') for v in ASSETS.values()):
     raise RuntimeError('ACTIVE_NDX_FORBIDDEN_USE_NQ_FUTURES')
@@ -19243,6 +19240,8 @@ from veritas_storage_guard import install_storage_guard as _v90_install_storage_
 _v90_install_storage_guard(globals())
 from veritas_maintenance import install as _install_maintenance
 _install_maintenance(globals())
+from veritas_evidence_learning import install as _install_evidence_learning
+_install_evidence_learning(globals())
 
 if __name__ == '__main__':
     main()
