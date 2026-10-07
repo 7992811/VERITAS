@@ -1,0 +1,57 @@
+name: Warmed read-only structural acceptance
+on:
+  push:
+    branches: [audit/structural-latency-acceptance-20261007]
+    paths: [.github/workflows/read-only-warm-acceptance.yml]
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Two bounded public read snapshots
+        run: |
+          python - <<'PY'
+          import json,time
+          from datetime import datetime,timezone
+          from urllib.request import Request,urlopen
+          base='https://veritas-intelligence-v1.onrender.com'
+          def scalars(obj,keys):
+              if not isinstance(obj,dict):return {}
+              return {k:obj[k] for k in keys if k in obj and (obj[k] is None or isinstance(obj[k],(str,int,float,bool)))}
+          def project(path,d):
+              if path=='/healthz':return scalars(d,('ok','version','bootstrap_ready','phase','rss_mb','uptime_s'))
+              if path.endswith('paper-portfolios'):
+                  result={**scalars(d,('status','api_source')),'portfolios':[]}
+                  for p in d.get('portfolios') or []:
+                      item={**scalars(p,('name','positions_status','positions_checked_at','nav_rub','gross_leverage')),'position_count':len(p.get('positions') or [])}
+                      if p.get('name')=='Currency':
+                          item['positions']=[scalars(z,('asset','direction','opened_at','avg_entry_price','last_price','stop_price','take_price','second_take_price','horizon','execution_timeframe','unrealized_pnl_rub','units')) for z in p.get('positions') or []]
+                      result['portfolios'].append(item)
+                  return result
+              rows=d.get('signals') or []
+              result={**scalars(d,('status','version','at','signals_updated_at','signal_count','cycle_in_progress')),'active':[]}
+              for row in rows:
+                  if row.get('asset') not in ('BTC','ETH'):continue
+                  audit=row.get('_execution_audit') or {}
+                  record={**scalars(row,('asset','horizon','decision','research_decision','market_observed_at','trade_entry_eligible','trade_entry_reason','trade_entry_checked_at','snapshot_stale'))}
+                  record['execution']=scalars(audit,('status','reason','checked_at','lane','execution_action'))
+                  outcome=audit.get('result') or {}
+                  record['result']=scalars(outcome,('status','reason','checked_at','paper_only'))
+                  record['portfolios']=[scalars(z,('name','status','reason','execution_action','checked_at')) for z in outcome.get('portfolios') or []]
+                  result['active'].append(record)
+              return result
+          for n in range(2):
+              for path in ('/healthz','/api/v1/dashboard-bootstrap?view=signals','/api/v1/paper-portfolios'):
+                  t=time.monotonic();record={'sample':n,'at':datetime.now(timezone.utc).isoformat(),'path':path}
+                  try:
+                      with urlopen(Request(base+path,headers={'Accept':'application/json','User-Agent':'VERITAS-warm-readonly-check/1.0'}),timeout=20) as r:
+                          b=r.read(4*1024*1024+1);record['http_status']=r.status
+                      if len(b)>4*1024*1024:raise ValueError('size bound')
+                      record['data']=project(path,json.loads(b))
+                  except Exception as e:record['error_type']=type(e).__name__
+                  record['http_seconds']=round(time.monotonic()-t,4)
+                  print(json.dumps(record,ensure_ascii=False,allow_nan=False),flush=True)
+              if n==0:time.sleep(20)
+          PY
