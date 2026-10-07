@@ -9,7 +9,9 @@ QUOTE_FIELDS = ('price', 'best_bid', 'best_ask', 'bid', 'ask', 'market_open',
                 'contract', 'contract_id', 'raw_label', 'direct_sources',
                 'secondary_price', 'coinbase_price', 'source_divergence',
                 'spread_bps', 'orderbook_observed_at', 'book_observed_at',
-                'orderbook_ts', 'quote_observed_at')
+                'orderbook_ts', 'quote_observed_at', 'instrument_id', 'raw_ticker',
+                'provider_ticker_verified', 'exact_contract_verified',
+                'contract_identity_status', 'price_series_type', 'price_field')
 
 
 def payload(position):
@@ -30,6 +32,9 @@ def identity(asset, row):
     if upper.startswith('PROFINANCE'):
         channel={'GOLD':'Gold','NQ':'NASD100_FUT','BRENT':'Brent oil'}.get(asset)
         if not channel or row.get('raw_label',channel)!=channel:
+            return None
+        ticker={'GOLD':'gold','NQ':'NASD100_FUT','BRENT':'brent'}[asset]
+        if row.get('raw_ticker') is not None and row['raw_ticker']!=ticker:
             return None
         key='PROFINANCE:'+channel
     elif upper.startswith('TBANK_GRPC'):
@@ -112,6 +117,31 @@ def quote_identity_fields(source_identity):
 
 def matches(position, quote):
     return same(position_identity(position),identity(position.get('asset'),quote))
+
+
+def valuation_basis(position, quote=None):
+    """Describe the held price basis without guessing a contract or rebasing P&L.
+
+    A public provider channel is not proof of an exchange delivery month.
+    Current quote metadata is included only when it belongs to the held source.
+    """
+    expected=position_identity(position) or {}
+    q=quote if quote and matches(position,quote) else {}
+    cid=expected.get('contract_id')
+    key=str(expected.get('key') or '')
+    status=('PINNED_CONTRACT' if cid else 'UNVERIFIED_PROVIDER_SERIES'
+            if key.startswith(('PROFINANCE:','YAHOO:','STOOQ:')) else 'UNRESOLVED')
+    return {'version':'VALUATION_SOURCE_BASIS_V1','asset':position.get('asset'),
+            'primary_source':expected.get('primary_source'),'source_key':key or None,
+            'contract_id':cid,'contract_identity_status':status,
+            'provider_label':key.split(':',1)[1] if key.startswith('PROFINANCE:') else None,
+            'provider_ticker':q.get('raw_ticker'),'provider_instrument_id':q.get('instrument_id'),
+            'provider_ticker_verified':q.get('provider_ticker_verified') is True,
+            'price_field':q.get('price_field'),
+            'quote_observed_at':q.get('observed_at'),
+            'exact_contract_verified':bool(cid and q and q.get('exact_contract_verified') is True),
+            'price_series_type':'UNVERIFIED' if status=='UNVERIFIED_PROVIDER_SERIES' else None,
+            'valuation_mode':'NORMALIZED_PAPER'}
 
 
 def quote_from_row(row):

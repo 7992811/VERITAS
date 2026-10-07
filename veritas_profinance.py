@@ -6,6 +6,7 @@ import re
 import httpx
 
 SYMBOLS={'NQ':'NASD100_FUT','GOLD':'Gold','BRENT':'Brent oil'}
+TICKERS={'NQ':'NASD100_FUT','GOLD':'gold','BRENT':'brent'}
 BASE='https://jq.profinance.ru/html/htmlquotes/'
 
 
@@ -18,6 +19,10 @@ def parse_quotes(text,now=None):
         symbol=fields.get('S')
         asset=next((a for a,s in SYMBOLS.items() if s==symbol),None)
         if not asset:continue
+        ticker=fields.get('TICK')
+        # A label alone cannot authorize a different provider instrument. The
+        # provider's row ID is useful evidence, but is not a delivery month.
+        if ticker is not None and ticker!=TICKERS[asset]:continue
         try:
             # The public widget hides one leading LP sign before displaying
             # price (q_show.js: setValueToTdById(..., hide_sign=true)). It is
@@ -35,6 +40,9 @@ def parse_quotes(text,now=None):
         out[asset]={'price':price,'observed_at':observed.astimezone(timezone.utc).isoformat(),
                     'source':'ProFinance','source_role':'public_freshness_verification',
                     'raw_label':symbol,'instrument_id':fields.get('I'),
+                    'raw_ticker':ticker,'provider_ticker_verified':ticker==TICKERS[asset],
+                    'contract_identity_status':'UNVERIFIED_PROVIDER_SERIES',
+                    'price_series_type':'UNVERIFIED',
                     'raw_price':raw_price,'quote_direction_sign':raw_price[:1] if raw_price[:1] in ('+','-') else None,
                     'time_basis':'Europe/Moscow quote clock; date inferred',
                     'date_verified':False,'exact_contract_verified':False,

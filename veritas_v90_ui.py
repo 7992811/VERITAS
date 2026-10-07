@@ -843,6 +843,14 @@ function renderPortfolioPanel(ps){
   document.querySelectorAll('#portfolios [data-portfolio]').forEach(el=>{el.onclick=()=>{st.selectedPortfolio=el.dataset.portfolio;renderPortfolioPanel(ps);};});
 }
 
+function positionSourceText(z){
+  const identity=z.price_source_lock||z.payload?.price_source_lock||{},source=identity.primary_source||'не установлен';
+  if(z.asset!=='BRENT')return esc(source);
+  if(identity.contract_id)return esc(source)+' · контракт '+esc(identity.contract_id);
+  const key=String(identity.key||''),pf=key.startsWith('PROFINANCE:')||String(source).toUpperCase().startsWith('PROFINANCE');
+  return esc(source)+(pf?' · лента Brent oil':'')+' · <span class="warn">месяц контракта не подтверждён</span>';
+}
+
 function renderPortfolios(){
   const d=st.portfolios||{},raw=Array.isArray(d.portfolios)?d.portfolios:[],positions=[];
   const ps=raw.map(p=>{
@@ -876,7 +884,7 @@ function renderPortfolios(){
       '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' <span class="trade-direction '+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Результат всей сделки после расходов / сумма фактических входов и доборов. Частичные закрытия не уменьшают базу процента.">'+signedPct(ret)+'<small>'+rub(pnl)+'</small></div></div>'+
       '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+assetPrice(z.asset,z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+assetPrice(z.asset,z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+assetPrice(z.asset,stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+assetPrice(z.asset,tp1)+'</b></div>'+(!ladder||ladder.length>1?'<div class="position-level"><span>TP2</span><b>'+assetPrice(z.asset,tp2)+'</b></div>':'')+'</div>'+
       '<div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · в позиции '+holdRu(held)+' · объём '+rub(z.notional_rub)+'</div>'+
-      '<div class="position-meta">Источник: '+esc(z.price_source_lock?.primary_source||z.payload?.price_source_lock?.primary_source||'не установлен')+' · '+(z.price_source_status==='OK'?'котировка '+dateRu(z.last_mark_at):'<span class="warn">ожидаем котировку источника входа · сохранена последняя подтверждённая цена</span>')+'</div>'+
+      '<div class="position-meta">Источник: '+positionSourceText(z)+' · '+(z.price_source_status==='OK'?'котировка '+dateRu(z.last_mark_at):'<span class="warn">ожидаем котировку источника входа · сохранена последняя подтверждённая цена</span>')+'</div>'+
       tpNotice(z,true)+
       '<div class="position-accounting"><span>Зафиксировано<b>'+rub(z.realized_gross_pnl_rub)+'</b></span><span>Переоценка<b>'+rub(z.unrealized_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(z.trade_fees_rub)+'</b></span><span>Фондирование<b>'+rub(z.trade_funding_rub)+'</b></span><span>От максимума<b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span></div>'+
       '<div class="position-learning">'+

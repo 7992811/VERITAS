@@ -89,6 +89,7 @@ def enrich_positions(report, pg_connect, *, preloaded_accounts=None):
                         price_source_status='OK' if quote else 'PINNED_SOURCE_QUOTE_UNAVAILABLE',
                         last_mark_at=quote.get('observed_at') or mark.get('observed_at'),
                         mark_source='PINNED_ENTRY_SOURCE' if quote else 'LAST_PINNED_SOURCE_PRICE')
+        position['valuation_basis']=VPS.valuation_basis(position,quote)
         entry=_number(position.get('avg_entry_price'));units=_number(position.get('units'))
         if entry and units is not None:
             sign=1 if position.get('direction')=='LONG' else -1
