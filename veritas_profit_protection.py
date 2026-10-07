@@ -5,6 +5,7 @@ import math
 
 import veritas_costs as VC
 import veritas_execution as VX
+import veritas_protective_io as PIO
 from veritas_quote_time import utc_datetime
 
 VERSION = 'NET_STOP_AFTER_COSTS_V1'
@@ -146,14 +147,12 @@ def refresh(c, name=None, now=None, commission=VC.COMMISSION_RATE):
     if not rows:
         return
     accounts = load_accounts(c, [z['active_trade_id'] for z in rows], include_payload=False)
+    patches = []
     for item in rows:
         z = dict(item)
         patch = evaluate(z, accounts.get(z['active_trade_id']), now=now, commission=commission)
-        serialized = json.dumps(patch)
-        c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE active_trade_id=%s",
-                  (serialized, z['active_trade_id']))
-        c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
-                  (serialized, z['active_trade_id']))
+        patches.append((z['active_trade_id'], patch))
+    PIO.write_patches(c, patches)
 
 
 def is_protected(z):
