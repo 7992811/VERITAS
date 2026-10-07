@@ -1,0 +1,55 @@
+name: Currency deployment acceptance probe
+on:
+  push:
+    branches: [diagnostic/currency-repair-source-20261007]
+    paths: [.github/workflows/currency-live-probe.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Read public status without credentials or mutations
+        run: |
+          mkdir -p /tmp/currency-probe
+          python - <<'PY'
+          import json,time,urllib.request,pathlib,concurrent.futures,datetime
+          root='https://veritas-intelligence-v1.onrender.com'
+          paths=['/healthz','/api/v1/integrations/tbank','/api/v1/integrations/tbank/market-data','/api/v1/paper-portfolios','/api/v1/protective-guard']
+          def project(path,d):
+              if isinstance(d,dict) and isinstance(d.get('data'),dict):d=d['data']
+              if path.endswith('paper-portfolios'):
+                  result={k:d.get(k) for k in ('status','positions_complete','accounting_complete','positions_checked_at')}
+                  books=[]
+                  for p in d.get('portfolios',[]):
+                      if p.get('name')!='Currency':continue
+                      book={k:p.get(k) for k in ('name','nav_rub','initial_nav_rub','positions_status','accounting_status','positions_checked_at','gross_leverage','net_exposure','closed_trades','risk_governor')}
+                      book['positions']=[{k:z.get(k) for k in ('asset','direction','units','avg_entry_price','last_price','notional_rub','opened_at','last_mark_at','price_source_status','price_source_lock','active_trade_id','stop_price','target_price','total_trade_pnl_rub')} for z in p.get('positions',[])]
+                      book['admission_trace']=[{k:z.get(k) for k in ('asset','direction','horizon','reason','checked_at','target_fraction','hard_veto')} for z in p.get('admission_trace',[])]
+                      books.append(book)
+                  result['portfolios']=books
+                  return result
+              if path.endswith('/market-data'):
+                  return {'status':d.get('status'),'quote':d.get('quotes',{}).get('CNYRUBF'),'book':d.get('order_books',{}).get('CNYRUBF')}
+              if path.endswith('/tbank'):
+                  return {k:d.get(k) for k in ('status','mode','orders_enabled','checked_at','error_code','stream_status','instruments','timeframes','instrument_errors')}
+              return d
+          def get(path):
+              start=time.monotonic();at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+              try:
+                  req=urllib.request.Request(root+path,headers={'User-Agent':'VERITAS-read-only-acceptance','Cache-Control':'no-cache'})
+                  with urllib.request.urlopen(req,timeout=35) as r:
+                      data=json.loads(r.read(16000000))
+                      return path,{'read_at':at,'http_status':r.status,'seconds':time.monotonic()-start,'data':project(path,data)}
+              except Exception as e:return path,{'read_at':at,'seconds':time.monotonic()-start,'error':type(e).__name__}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+              results=dict(pool.map(get,paths))
+          pathlib.Path('/tmp/currency-probe/status.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))
+          for path,item in results.items():print(path,item.get('http_status'),item.get('error'),round(item['seconds'],2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: currency-deployment-probe
+          path: /tmp/currency-probe
+          retention-days: 1
