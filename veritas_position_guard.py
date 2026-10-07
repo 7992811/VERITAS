@@ -835,7 +835,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             p, pos = vp._portfolio_rows(c, name)
             nav, _, _, _ = vp._mark_nav(p, pos, prices)
             if reason=='STOP' and z.get('active_trade_id'):
-                _tr_full=c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
+                _tr_full=c.execute("SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades WHERE trade_id=%s",
                                    (z.get('active_trade_id'),)).fetchone()
                 _soft=_r63_soft_profit_stop_assessment(
                     z,q,_tr_full,nav,getattr(vp,'COMMISSION',VC.COMMISSION_RATE))

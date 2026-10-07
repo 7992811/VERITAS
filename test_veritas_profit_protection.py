@@ -133,7 +133,7 @@ class NetProtectionTests(unittest.TestCase):
         c = MagicMock()
         def execute(sql, args=None):
             cursor = MagicMock()
-            cursor.fetchall.return_value = [self.z] if sql.startswith('SELECT * FROM paper_positions') else [self.a]
+            cursor.fetchall.return_value = [self.z] if sql.startswith(PP.REFRESH_POSITIONS_SQL) else [self.a]
             return cursor
         c.execute.side_effect = execute
         PP.refresh(c, now=self.now)
