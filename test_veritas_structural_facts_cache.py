@@ -27,15 +27,68 @@ class StructuralFactsMemoTests(unittest.TestCase):
     def test_one_exact_native_bundle_serves_all_seven_execution_timeframes(self):
         raw = self.sample()
         with patch.object(SB, "_native_rows", wraps=SB._native_rows) as native, \
-                patch.object(SB, "_levels", wraps=SB._levels) as levels:
+                patch.object(SB, "_levels", wraps=SB._levels) as levels, \
+                patch.object(SB, "_level_crossing_times", wraps=SB._level_crossing_times) as crossings:
             contexts = [self.build(raw, tf) for tf in TS.TIMEFRAMES]
             self.assertEqual(native.call_count, 7)
             self.assertEqual(levels.call_count, 7)
             later = dict(raw, observed_at="2026-10-07T07:15:05Z")
             self.build(later)
             self.assertEqual(native.call_count, 7)
+            self.assertEqual(crossings.call_count, 1)
         self.assertEqual(len({len(c["levels"]) for c in contexts}), 1)
         self.assertEqual(len(SB._FACTS_CACHE), 1)
+
+    def test_crossing_index_matches_historical_bar_rule_at_each_observation_cutoff(self):
+        # The first matching bar opens earlier but arrives later. Looking only
+        # at that row would miss an already observed crossing from the next bar.
+        bars = [{"ts": 100, "available_at": 900, "high": 110, "low": 90},
+                {"ts": 200, "available_at": 260, "high": 111, "low": 89},
+                {"ts": 300, "available_at": 360, "high": 105, "low": 95},
+                {"ts": 400, "available_at": 460, "high": 120, "low": 80}]
+        levels = [{"timeframe": "1m", "level_id": "high", "kind": "resistance",
+                   "price": 105, "available_at": 100},
+                  {"timeframe": "1m", "level_id": "low", "kind": "support",
+                   "price": 95, "available_at": 100},
+                  {"timeframe": "1m", "level_id": "later-high", "kind": "resistance",
+                   "price": 105, "available_at": 300},
+                  {"timeframe": "1m", "level_id": "equal", "kind": "resistance",
+                   "price": 120, "available_at": 100}]
+        index = SB._level_crossing_times({"1m": bars}, levels)
+        for cutoff in (99, 259, 260, 359, 360, 459, 460, 899, 900):
+            with self.subTest(cutoff=cutoff):
+                legacy = set()
+                for level in levels:
+                    for bar in bars:
+                        if bar["ts"] < level["available_at"] or bar["available_at"] > cutoff:
+                            continue
+                        crossed = (bar["high"] > level["price"] if level["kind"] == "resistance"
+                                   else bar["low"] < level["price"])
+                        if crossed:
+                            legacy.add(level["level_id"])
+                            break
+                self.assertEqual({key for key, at in index.items() if at <= cutoff}, legacy)
+        self.assertEqual(index["high"], 260)
+        self.assertEqual(index["later-high"], 460)
+        self.assertNotIn("equal", index)
+
+    def test_display_level_limit_preserves_events_targets_parent_proof_and_state(self):
+        raw = self.sample()
+        full = SB.build_context(raw, "5m", raw["observed_at"])
+        self.assertGreater(len(full["levels"]), 40)
+        for limit in (0, 1, 40):
+            with self.subTest(limit=limit):
+                bounded = SB.build_context(raw, "5m", raw["observed_at"], level_limit=limit)
+                self.assertEqual(bounded["levels"], full["levels"][-limit:] if limit else [])
+                self.assertEqual({k:v for k,v in bounded.items() if k != "levels"},
+                                 {k:v for k,v in full.items() if k != "levels"})
+                self.assertTrue(SB.validate_event(bounded["event"], bounded["source_identity"])["eligible"])
+                later = dict(raw, observed_at="2026-10-07T07:15:05Z", price=12.767)
+                continued = SB.build_context(later, "5m", later["observed_at"],
+                                              state=bounded["quote_state"])
+                expected = SB.build_context(later, "5m", later["observed_at"],
+                                             state=full["quote_state"])
+                self.assertEqual(continued, expected)
 
     def test_exact_0700_pivot_boundary_and_earlier_asof_never_reuse_future_levels(self):
         raw = episode_raw(0, "2026-10-07T04:00:00.100000Z", 12.728)

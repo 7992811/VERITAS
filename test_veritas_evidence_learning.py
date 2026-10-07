@@ -193,6 +193,16 @@ class DurableLearningTests(unittest.TestCase):
         self.loop.tick()
         self.assertEqual(self.ledger.state['interrupted_stage_replays'], 1)
 
+    def test_changed_commit_supersedes_even_with_same_product_label(self):
+        self.due()
+        self.loop.tick()
+        old_id = self.ledger.state['run_id']
+        self.ns['VR'].deployment_sha = lambda: 'changed-sha'
+        self.loop.tick()
+        self.assertNotEqual(self.ledger.state['run_id'], old_id)
+        self.assertEqual(self.ledger.state['deploy_sha'], 'changed-sha')
+        self.assertEqual(self.ledger.state['stages'], {})
+
     def test_exceptions_do_not_publish_credentials_or_advance_as_success(self):
         self.due()
         self.loop._stage = Mock(side_effect=RuntimeError('postgres://private:password@host'))

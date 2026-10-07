@@ -83,6 +83,7 @@ def run(ns):
                 else:
                     ns["last_cycle"].clear()
                     ns["last_cycle"].update(error)
+                ns["last_cycle"]["cycle_in_progress"] = False
             ns["emit"]("cycle_error", cycle_mode=mode, error=error["error"],
                        trace=traceback.format_exc(limit=3))
             if mode == "FULL":

@@ -208,7 +208,8 @@ class LearningLoop:
                     self.ledger.save(c, state, "scheduled")
                     self.publish(state)
                     return True
-                if state.get("protocol_version") != VERSION or state.get("model_version") != self.ns["VERSION"]:
+                if (state.get("protocol_version") != VERSION or state.get("model_version") != self.ns["VERSION"]
+                        or state.get("deploy_sha") != self.ns["VR"].deployment_sha()):
                     if state.get("runtime_started_at", 0) > self.started_at:
                         # A draining old deployment must not replace the newer
                         # version's checkpoint. A deliberate rollback starts later.
