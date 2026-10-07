@@ -24,10 +24,11 @@ def row(direction='LONG'):
                           'expected_move_pct':.05,'expected_to_stop_ratio':5},
             'trend_entry_context':{'status':'OK','closed_at':NOW.timestamp(),'atr':.25,
                 'last_two_closes':[100,100], 'levels':[],'event':{
-                'direction':direction,'trigger_level':99.8 if direction=='LONG' else 100.2,
+                'direction':direction,'trigger_level':99.9 if direction=='LONG' else 100.1,
                 'signal_price':100,'signal_at':NOW.timestamp()-300,'atr':.25,
                 'stop_price':99 if direction=='LONG' else 101,'bars_since_signal':1,
                 'event_id':'same-origin','confirmed_at':NOW.timestamp(),
+                'confirmation':'5m_CLOSE','activity_confirmed':True,
                 'continuation_confirmed':True,'held_bars':1}}}
 
 
@@ -56,12 +57,14 @@ class ClosedEventTests(unittest.TestCase):
     def test_trigger_is_not_rebased_to_latest_price(self):
         r=row();self.assertTrue(T.event_gate(r,100,'LONG',NOW)['eligible'])
         self.assertFalse(T.event_gate(r,101,'LONG',NOW)['eligible'])
-        self.assertEqual(r['trend_entry_context']['event']['trigger_level'],99.8)
+        self.assertEqual(r['trend_entry_context']['event']['trigger_level'],99.9)
 
     def test_old_and_opposite_events_cannot_start_risk(self):
-        r=row();r['trend_entry_context']['event']['bars_since_signal']=6
+        r=row();r['trend_entry_context']['event'].update(bars_since_signal=6,signal_at=NOW.timestamp()-1800)
         self.assertFalse(T.event_gate(r,100,'LONG',NOW)['eligible'])
         self.assertFalse(T.event_gate(row(),100,'SHORT',NOW)['eligible'])
+        unverified=row();unverified['trend_entry_context']['event']['activity_confirmed']=False
+        self.assertEqual(T.event_gate(unverified,100,'LONG',NOW)['reason'],'R69_BREAKOUT_ACTIVITY_REQUIRED')
 
     def test_wide_price_range_is_not_volume_confirmation(self):
         bars=self.bars()[:80]
@@ -130,8 +133,12 @@ class CatalystContinuationTests(unittest.TestCase):
         self.assertTrue(fresh['eligible'],fresh)
         self.assertEqual(fresh['reason'],'R78_CATALYST_CONTEXT_GRACE')
         late=self.NOW+timedelta(hours=8)
-        ordinary=T.prepare_row(r,12.69,late)
+        # Age this catalyst setup; resubmitting the raw displayed SUPER_LONG
+        # would independently request a new SIGNAL_CONTINUATION setup.
+        ordinary=T.prepare_row(prepared,12.69,late)
+        self.assertEqual(T.context_of(ordinary)['event'],T.context_of(prepared)['event'])
         self.assertFalse(T.context_gate(ordinary,late)['eligible'])
+        self.assertFalse(X.paper_quote_time_gate(r,now=late)['eligible'])
 
 
 class GeometryTests(unittest.TestCase):
@@ -197,19 +204,23 @@ class ScaleAndStopTests(unittest.TestCase):
 
 
 class ExecutionIntegrationTests(unittest.TestCase):
-    def test_raw_tactical_trigger_restores_order_probability_at_execution_boundary(self):
+    def test_canonical_candidate_keeps_probability_and_repairs_missing_metadata(self):
         trigger=row();trigger['confidence']=.71
-        with patch.object(R,'_v90r57_base_aggressive_book',return_value={}),\
-             patch.object(R,'_v90r57_best_trigger',return_value=trigger),\
-             patch.object(R,'_v90r56_senior_bias',return_value={}),\
-             patch.object(R,'_v90r57_direction_confirmation',return_value={}):
-            selected=R._v90_aggressive_candidate_book([trigger],{})['BTC']
+        selected=R._v90_aggressive_candidate_book([trigger],{})['BTC']
+        expected=(.71,'MODEL_QUALITY_SCORE_UNCALIBRATED')
+        self.assertEqual((selected['_pwin'],selected['_pwin_source']),expected)
+        unranked={k:v for k,v in selected.items() if k not in ('_rank','_execution_rank')}
         for rank_fields in ({},{'_rank':2.0},{'_execution_rank':3.0}):
             with self.subTest(rank_fields=rank_fields):
-                candidate=P._v90_execution_candidate_rank(dict(selected,**rank_fields))
-                p,source=P._signal_probability(trigger)
-                self.assertEqual((candidate['_pwin'],candidate['_pwin_source']),(p,source))
+                candidate=P._v90_execution_candidate_rank(dict(unranked,**rank_fields))
+                self.assertEqual((candidate['_pwin'],candidate['_pwin_source']),expected)
                 self.assertGreater(candidate['_rank'],0)
+                missing={k:v for k,v in dict(unranked,**rank_fields).items()
+                         if k not in ('_pwin','_pwin_source')}
+                repaired=P._v90_execution_candidate_rank(missing)
+                self.assertEqual((repaired['_pwin'],repaired['_pwin_source']),P._signal_probability(missing))
+                self.assertEqual(repaired['_probability_fallback'],'R66_EXECUTION_BOUNDARY_RECOMPUTE')
+                self.assertGreater(repaired['_rank'],0)
 
     def test_execution_boundary_keeps_calibrated_probability_and_repairs_invalid_metadata(self):
         r=dict(row(),_rank=2.,_pwin=.63,_pwin_source='VALIDATED_CALIBRATION')
@@ -220,12 +231,15 @@ class ExecutionIntegrationTests(unittest.TestCase):
             self.assertEqual((candidate['_pwin'],candidate['_pwin_source']),P._signal_probability(r))
 
     def test_profinance_exact_futures_label_and_quote_time(self):
-        text='1;I=1;S=NASD100;LP=31000;T=15:00:00\n1;I=57;S=NASD100_FUT;LP=31084.5;T=14:59:57\n1;I=27;S=Brent oil;LP=99.56;T=14:59:54'
+        text='1;I=1;S=NASD100;LP=31000;T=15:00:00\n1;I=57;S=NASD100_FUT;LP=31084.5;T=14:59:57\n1;I=27;S=Brent oil;TICK=brent;LP=99.56;T=14:59:54'
         q=PF.parse_quotes(text,NOW)
         self.assertEqual(q['NQ']['price'],31084.5)
         self.assertEqual(q['NQ']['observed_at'],'2026-10-02T11:59:57+00:00')
         self.assertFalse(q['NQ']['execution_eligible'])
         self.assertEqual(q['BRENT']['price'],99.56)
+        self.assertTrue(q['BRENT']['provider_series_verified'])
+        self.assertFalse(q['BRENT']['execution_eligible'])
+        self.assertNotIn('BRENT',PF.parse_quotes(text.replace(';TICK=brent',''),NOW))
         self.assertEqual(PF.parse_quotes(text,NOW+timedelta(minutes=4)),{})
 
     def test_quote_age_is_execution_specific(self):
@@ -245,7 +259,9 @@ class ExecutionIntegrationTests(unittest.TestCase):
         r=row();r['_rank']=1
         position={'asset':'BTC','direction':'SHORT','units':1000.,'last_price':100.,'avg_entry_price':100.,
                   'stop_price':110.,'payload':{},'opened_at':NOW.isoformat()}
-        book={'high_water_nav_rub':1e6,'benchmark_nav_rub':1e6,'last_mark_at':None}
+        book={'name':'Champion','initial_nav_rub':1e6,'realized_pnl_rub':0.,
+              'fees_rub':0.,'funding_rub':0.,'high_water_nav_rub':1e6,
+              'benchmark_nav_rub':1e6,'last_mark_at':None}
         c=MagicMock();c.execute.return_value.fetchone.return_value=position
         with ExitStack() as s:
             for key,value in {'_portfolio_rows':(book,[position]),'_mark_nav':(1e6,0,.1,-.1),

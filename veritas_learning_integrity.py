@@ -199,8 +199,11 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
     global _GENERATION
     _GENERATION += 1  # Invalidate cached memory even when subsequent SQL fails.
     evidence = _evidence_sql("t")
+    # Keep the proof/hash out of the outer UPDATE's repeated expressions. The
+    # materialized rows contain only IDs and hashes; quarantine still covers
+    # every eligible episode before the bounded verification below.
     staged = c.execute("""
-      WITH candidates AS (
+      WITH candidates AS MATERIALIZED (
         SELECT e.trade_id,md5(("""+evidence+""")::text) AS evidence_hash
         FROM v90_learning_episodes e LEFT JOIN paper_trades t ON t.trade_id=e.trade_id
         WHERE e.learning_eligible=TRUE
@@ -214,21 +217,29 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
             'required_hash',q.evidence_hash,'prior_primary_attribution',e.primary_attribution,
             'prior_attributions',e.attributions,'prior_learning_action',e.learning_action,
             'requested_at',now()))
-      FROM candidates q WHERE e.trade_id=q.trade_id AND (
+      FROM candidates q WHERE e.trade_id=q.trade_id AND e.learning_eligible=TRUE AND (
         e.payload#>>'{learning_integrity,version}' IS DISTINCT FROM %s
         OR e.payload#>>'{learning_integrity,status}' IS DISTINCT FROM 'VERIFIED'
         OR e.payload#>>'{learning_integrity,evidence_hash}' IS DISTINCT FROM q.evidence_hash)
     """, (VERSION, VERSION))
     staged_n = max(0, int(staged.rowcount))
+    # Lock the original ordered batch first, then build each proof once. Its
+    # exact JSONB value feeds both the validator and the unchanged hash format.
     rows = c.execute("""
-      SELECT e.trade_id AS episode_trade_id,e.payload->'learning_integrity' AS prior,
-             """+evidence+""" AS trade,md5(("""+evidence+""")::text) AS evidence_hash
-      FROM v90_learning_episodes e LEFT JOIN paper_trades t ON t.trade_id=e.trade_id
-      WHERE e.learning_eligible=FALSE
-        AND e.payload#>>'{learning_integrity,version}'=%s
-        AND e.payload#>>'{learning_integrity,status}'='PENDING'
-      ORDER BY e.payload#>>'{learning_integrity,requested_at}',e.trade_id
-      LIMIT %s FOR UPDATE OF e SKIP LOCKED
+      WITH pending AS MATERIALIZED (
+        SELECT e.trade_id AS episode_trade_id,e.payload->'learning_integrity' AS prior
+        FROM v90_learning_episodes e
+        WHERE e.learning_eligible=FALSE
+          AND e.payload#>>'{learning_integrity,version}'=%s
+          AND e.payload#>>'{learning_integrity,status}'='PENDING'
+        ORDER BY e.payload#>>'{learning_integrity,requested_at}',e.trade_id
+        LIMIT %s FOR UPDATE OF e SKIP LOCKED
+      ), evidence AS MATERIALIZED (
+        SELECT p.episode_trade_id,p.prior,"""+evidence+""" AS trade
+        FROM pending p LEFT JOIN paper_trades t ON t.trade_id=p.episode_trade_id
+      )
+      SELECT episode_trade_id,prior,trade,md5(trade::text) AS evidence_hash
+      FROM evidence ORDER BY prior->>'requested_at',episode_trade_id
     """, (VERSION, batch_size)).fetchall()
     verified = excluded = changed = 0
     for record in rows:

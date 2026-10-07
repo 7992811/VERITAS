@@ -2,10 +2,13 @@
 import copy
 import json
 import os
+import time
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from queue import Queue
 from unittest.mock import patch
 
 import veritas_portfolio as P
@@ -110,6 +113,138 @@ class PersistedLearningSQLTests(unittest.TestCase):
     def sanitize(self):
         with patch.object(R, "_v90r29_ensure"):
             return R._v90r44_sanitize_learning(self.connect, force=True)
+
+    def revalidation_queries(self, c, batch_size=2):
+        class RecordingConnection:
+            def __init__(self): self.calls = []
+            def execute(self, sql, args=()):
+                self.calls.append((sql, args))
+                return c.execute(sql, args)
+        recording = RecordingConnection()
+        c.execute("SAVEPOINT capture_revalidation")
+        try:
+            LI.revalidate_eligible(recording, batch_size=batch_size)
+        finally:
+            c.execute("ROLLBACK TO SAVEPOINT capture_revalidation")
+            c.execute("RELEASE SAVEPOINT capture_revalidation")
+        return recording.calls[:2]
+
+    def plan_nodes(self, plan):
+        yield plan
+        for child in plan.get("Plans", []):
+            yield from self.plan_nodes(child)
+
+    def previous_pending_query(self):
+        # Production v91.7.19 reference: the same evidence expression was
+        # independently expanded for the returned trade and its hash.
+        evidence = LI._evidence_sql("t")
+        return """SELECT e.trade_id AS episode_trade_id,
+          e.payload->'learning_integrity' AS prior,
+          """+evidence+""" AS trade,md5(("""+evidence+""")::text) AS evidence_hash
+          FROM v90_learning_episodes e LEFT JOIN paper_trades t ON t.trade_id=e.trade_id
+          WHERE e.learning_eligible=FALSE
+            AND e.payload#>>'{learning_integrity,version}'=%s
+            AND e.payload#>>'{learning_integrity,status}'='PENDING'
+          ORDER BY e.payload#>>'{learning_integrity,requested_at}',e.trade_id
+          LIMIT %s FOR UPDATE OF e SKIP LOCKED"""
+
+    def test_materialized_staging_matches_prior_hashes_and_preserves_all_quarantine_rows(self):
+        with self.connect() as c:
+            original = dict(c.execute("SELECT * FROM paper_trades WHERE trade_id='a_clean'").fetchone())
+        for index, payload in enumerate((None, [], "malformed", 7, {}, {"entry_event_snapshot": None})):
+            raw = dict(original, trade_id="shape_"+str(index), payload=payload)
+            self.add_raw_trade(raw)
+        with self.connect() as c:
+            c.execute("UPDATE paper_trades SET payload=NULL WHERE trade_id='shape_0'")
+            count = c.execute("SELECT count(*) AS n FROM v90_learning_episodes WHERE learning_eligible=TRUE").fetchone()["n"]
+            (query, args), unused = self.revalidation_queries(c)
+            previous = query.replace("WITH candidates AS MATERIALIZED (", "WITH candidates AS (", 1)
+            previous = previous.replace("e.trade_id=q.trade_id AND e.learning_eligible=TRUE", "e.trade_id=q.trade_id", 1)
+            c.execute("SAVEPOINT compare_staging")
+            old_plan = c.execute("EXPLAIN (ANALYZE, FORMAT JSON, TIMING FALSE) "+previous, args).fetchone()["QUERY PLAN"][0]
+            old_rows = c.execute("SELECT * FROM v90_learning_episodes ORDER BY trade_id").fetchall()
+            c.execute("ROLLBACK TO SAVEPOINT compare_staging")
+            new_plan = c.execute("EXPLAIN (ANALYZE, FORMAT JSON, TIMING FALSE) "+query, args).fetchone()["QUERY PLAN"][0]
+            new_rows = c.execute("SELECT * FROM v90_learning_episodes ORDER BY trade_id").fetchall()
+            self.assertEqual(new_rows, old_rows)
+            candidates = [p for p in self.plan_nodes(new_plan["Plan"]) if p.get("Subplan Name")=="CTE candidates"]
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0]["Actual Rows"], count)
+            self.assertTrue(all(not row["learning_eligible"] for row in new_rows))
+            manual = next(row for row in new_rows if row["trade_id"]=="z_manual")
+            self.assertNotIn("learning_integrity", manual["payload"])
+            print(json.dumps({"event":"synthetic_sanitizer_plan_comparison","phase":"staging",
+                "old_planning_ms":old_plan["Planning Time"],"new_planning_ms":new_plan["Planning Time"],
+                "old_execution_ms":old_plan["Execution Time"],"new_execution_ms":new_plan["Execution Time"]}))
+
+    def test_pending_proof_is_bounded_before_projection_and_exactly_matches_previous_hash(self):
+        with self.connect() as c:
+            staging, (query, args) = self.revalidation_queries(c)
+            c.execute(*staging)
+            previous = self.previous_pending_query()
+            old_rows = c.execute(previous, args).fetchall()
+            new_rows = c.execute(query, args).fetchall()
+            self.assertEqual(new_rows, old_rows)
+            self.assertEqual(len(new_rows), 2)
+            old_plan = c.execute("EXPLAIN (ANALYZE, FORMAT JSON, TIMING FALSE) "+previous, args).fetchone()["QUERY PLAN"][0]
+            new_plan = c.execute("EXPLAIN (ANALYZE, FORMAT JSON, TIMING FALSE) "+query, args).fetchone()["QUERY PLAN"][0]
+            nodes = list(self.plan_nodes(new_plan["Plan"]))
+            for name in ("CTE pending", "CTE evidence"):
+                matched = [p for p in nodes if p.get("Subplan Name")==name]
+                self.assertEqual(len(matched), 1, name)
+                self.assertEqual(matched[0]["Actual Rows"], 2, name)
+            self.assertEqual(new_plan["Plan"]["Actual Rows"], 2)
+            self.assertLess(len(query), len(previous)*.60)
+            print(json.dumps({"event":"synthetic_sanitizer_plan_comparison","phase":"pending",
+                "old_planning_ms":old_plan["Planning Time"],"new_planning_ms":new_plan["Planning Time"],
+                "old_execution_ms":old_plan["Execution Time"],"new_execution_ms":new_plan["Execution Time"]}))
+
+    def test_materialized_pending_batch_keeps_skip_locked_and_original_priority(self):
+        with self.connect() as c:
+            staging, (query, args) = self.revalidation_queries(c)
+            c.execute(*staging)
+        with self.connect() as holder:
+            holder.execute("SELECT trade_id FROM v90_learning_episodes WHERE trade_id='a_clean' FOR UPDATE")
+            with self.connect() as worker:
+                actual = worker.execute(query, args).fetchall()
+                expected = worker.execute(self.previous_pending_query(), args).fetchall()
+                self.assertEqual(actual, expected)
+                self.assertEqual([row["episode_trade_id"] for row in actual], ["b_gold", "c_unknown"])
+
+    def test_materialized_candidate_cannot_restage_a_concurrent_intentional_exclusion(self):
+        ready = Queue()
+        def revalidate():
+            with self.connect() as worker:
+                ready.put(worker.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"])
+                return LI.revalidate_eligible(worker)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with self.connect() as holder:
+                holder_pid = holder.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"]
+                holder.execute("""UPDATE v90_learning_episodes
+                    SET learning_eligible=FALSE,primary_attribution='MANUAL_EXCLUDED',
+                        learning_action='EXCLUDE_FROM_LEARNING',
+                        attributions='["MANUAL_EXCLUDED"]'::jsonb,
+                        payload=payload||'{"manual_exclusion":"retained"}'::jsonb
+                    WHERE trade_id='a_clean'""")
+                future = pool.submit(revalidate)
+                worker_pid = ready.get(timeout=5)
+                deadline = time.monotonic()+5
+                while time.monotonic()<deadline:
+                    blockers = holder.execute("SELECT pg_blocking_pids(%s) AS pids", (worker_pid,)).fetchone()["pids"]
+                    if holder_pid in blockers:
+                        break
+                    time.sleep(.01)
+                else:
+                    self.fail("revalidation never waited on the intentionally excluded candidate")
+                # The candidate snapshot still saw the old eligible row. Commit
+                # the explicit exclusion only after its UPDATE is really waiting.
+            result = future.result(timeout=10)
+        row = self.episodes()["a_clean"]
+        self.assertFalse(row["learning_eligible"])
+        self.assertEqual(row["primary_attribution"], "MANUAL_EXCLUDED")
+        self.assertEqual(row["payload"]["manual_exclusion"], "retained")
+        self.assertNotIn("learning_integrity", row["payload"])
+        self.assertEqual(result["verified"], 0)
 
     def test_saved_proxy_unknown_and_synthetic_labels_are_revalidated_without_financial_edits(self):
         before = self.financials()

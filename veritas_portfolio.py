@@ -13,6 +13,7 @@ import veritas_paper_entry as VPE
 import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
+import veritas_book_marking as VBM
 import veritas_position_thesis as VPT
 import veritas_currency_portfolio as VCP
 import veritas_currency_notifications as VCN
@@ -2103,9 +2104,9 @@ def _v90q2_quality_gate(row,policy,drawdown):
 
 _signal_first_admission = _v90q2_quality_gate
 
-def _portfolio_rows(c,name):
+def _portfolio_rows(c,name,*,mark_only=False):
     p=c.execute('SELECT * FROM paper_portfolios WHERE name=%s',(name,)).fetchone()
-    pos=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s',(name,)).fetchall()
+    pos=c.execute((VBM.MARK_SQL if mark_only else 'SELECT * FROM paper_positions')+' WHERE portfolio_name=%s',(name,)).fetchall()
     return p,pos
 
 
@@ -2485,7 +2486,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         if target<current_frac-0.025:
             reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STOP' if stop_hit else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STRUCTURE_BREAK_EXIT_TO_CASH' if confirmed_flip and row and row.get('_v90_exit_only_flip') else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'
             _close_or_reduce(c,p,name,VPT.journal_position(z,mgmt,reason,ts),px,target,nav,ts,reason)
-    p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices)
+    p,pos=_portfolio_rows(c,name,mark_only=True); nav,unreal,gross,net=_mark_nav(p,pos,prices)
     # Add/increase only when risk governor allows new risk.
     if rg['new_risk']:
         for asset,row in sorted(candidates.items(),key=lambda kv:float(kv[1].get('_rank') or 0.0),reverse=True):
@@ -2516,7 +2517,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     else:
         for row in candidates.values():
             _record_entry_outcome(row,'BLOCKED','PORTFOLIO_RISK_LIMIT')
-    p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices); hwm=max(float(p['high_water_nav_rub']),nav); dd=max(0.0,1-nav/max(hwm,1.0))
+    p,pos=_portfolio_rows(c,name,mark_only=True); nav,unreal,gross,net=_mark_nav(p,pos,prices); hwm=max(float(p['high_water_nav_rub']),nav); dd=max(0.0,1-nav/max(hwm,1.0))
     # benchmark accrual since last mark
     bench=float(p['benchmark_nav_rub']); last=p['last_mark_at']
     if last is not None and ruonia is not None:
@@ -2897,35 +2898,8 @@ def _v90j_update_excursions(c,name,prices,ts):
 
 
 def _v90j_mark_open_positions(c,name,prices,ts):
-    # Mark every open position on every portfolio cycle, even if no add/reduce occurs.
-    # Previously last_price moved only on execution events, which froze unrealized P/L.
-    rows=c.execute("""SELECT asset,payload FROM paper_positions WHERE portfolio_name=%s""",(name,)).fetchall()
-    marked=0
-    for r0 in rows:
-        r=dict(r0); asset=str(r.get('asset') or '')
-        if asset not in (prices or {}):
-            continue
-        try:
-            quote=VPG.quote_for_position(r,now=ts)
-            if not quote: continue
-            px=float(quote['price'])
-            if not math.isfinite(px) or px<=0:
-                continue
-        except Exception:
-            continue
-        payload=_v90j_json(r.get('payload'))
-        payload['last_mark_price']=px
-        payload['last_mark_at']=_v90j_iso(ts)
-        payload['price_source_lock']=VPS.position_identity(r)
-        payload['price_source_status']='OK'
-        payload['source_locked_mark']={'identity':VPS.identity(asset,quote),
-                                       'price':px,'observed_at':quote['observed_at']}
-        c.execute("""UPDATE paper_positions
-                     SET last_price=%s,updated_at=%s,payload=%s::jsonb
-                     WHERE portfolio_name=%s AND asset=%s""",
-                  (px,ts,json.dumps(payload,ensure_ascii=False,default=str),name,asset))
-        marked+=1
-    return marked
+    return VBM.mark_open_positions(c,name,prices,ts,quote_for_position=VPG.quote_for_position,
+                                  decode_payload=_v90j_json,iso=_v90j_iso)
 
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
