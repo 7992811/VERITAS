@@ -79,17 +79,47 @@ class PeriodicMaintenanceTests(unittest.TestCase):
     def test_repeated_archive_deferral_does_not_starve_periodic_or_grow_full_queue(self):
         ns, lane, rss = self.lane(418.9)
         ticks = []
-        lane.register_periodic("learning", lambda: ticks.append(1) or {"status": "OK"},
+        entered, release = threading.Event(), threading.Event()
+        completed, resume = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        self.addCleanup(resume.set)
+        def learning():
+            if not ticks:
+                # The worker has dequeued A before its first periodic turn.
+                entered.set()
+                if not release.wait(2.):
+                    raise AssertionError("test did not release the first periodic turn")
+            ticks.append(1)
+            return {"status": "OK"}
+        emit = ns["emit"]
+        def after_completion(event, **values):
+            emit(event, **values)
+            if (event == "maintenance_periodic_complete" and len(ticks) >= 3
+                    and len(lane.snapshot()["stages"]) == 4 and not completed.is_set()):
+                # Completion counters are committed before this notification;
+                # hold the worker so another callback cannot race assertions.
+                completed.set()
+                resume.wait(2.)
+        ns["emit"] = after_completion
+        lane.register_periodic("learning", learning,
                                interval_seconds=.01, lightweight=True)
-        lane.submit(full("A"))
+        self.assertTrue(lane.submit(full("A")))
+        self.assertTrue(entered.wait(1.))
         for index in range(20):
-            lane.submit(full("B" + str(index)))
-        self.wait_for(lambda: len(ticks) >= 3 and len(lane.snapshot()["stages"]) == 4)
+            self.assertTrue(lane.submit(full("B" + str(index))))
+        release.set()
+        self.assertTrue(completed.wait(2.))
         state = lane.snapshot()
+        self.assertEqual(state["active_cycle_at"], "A")
+        self.assertEqual(state["pending_cycle_at"], "B19")
         self.assertEqual(state["pending"], 1)
         self.assertEqual(state["pending_limit"], 1)
+        self.assertEqual(state["coalesced"], 19)
+        self.assertEqual(state["runs"], 0)
+        self.assertGreaterEqual(len(ticks), 3)
         self.assertEqual(state["periodic"]["learning"]["completions"], len(ticks))
         self.assertTrue(all(s["status"] == "DEFERRED_MEMORY" for s in state["stages"].values()))
+        resume.set()
 
     def test_always_requested_microjob_cannot_starve_full_stages(self):
         ns, lane, rss = self.lane()

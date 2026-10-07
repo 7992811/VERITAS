@@ -120,6 +120,37 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(stamps[0]["base_probability"], .55)
         self.assertEqual(stamps[0]["candidate_decision_at"], NOW.isoformat())
 
+    def test_native_uncalibrated_entry_freezes_net_economics_without_confidence_fallback(self):
+        row = receiver(); row.pop("calibration"); row.update(confidence=.99, pwin=None)
+        normalized = BRIDGE.advice_row(row)
+        candidate = AL.register_candidate(AL.scope_for(normalized), {"n":32,"evidence_hash":"prior"},
+                                          "SIZE_DOWN_UNCALIBRATED", CREATED)
+        BRIDGE.update({"profiles":[],"candidates":[candidate]})
+        result = BRIDGE.apply_admission(row, {"open":True,"fraction":.5,"economics":{"net_reward_risk":1.2}},
+                                        {"position_step":.05,"max_fraction":.5}, now=NOW)
+        stamp = result["autonomous_learning"]
+        self.assertIsNone(stamp["base_probability"])
+        self.assertEqual(stamp["net_reward_risk"],1.2)
+        self.assertEqual(stamp["prospective_candidates"][0]["kind"],"SIZE_DOWN_UNCALIBRATED")
+        self.assertAlmostEqual(stamp["prospective_candidates"][0]["size_multiplier"],.9)
+        self.assertEqual(result["fraction"],.5)
+        self.assertNotIn("probability",result)
+
+    def test_two_verified_reductions_take_minimum_instead_of_multiplying(self):
+        self.experiment("SIZE_DOWN_WEAK_SIGNAL")
+        with patch.object(BRIDGE,"knowledge_advice",return_value={"size_multiplier":.9,"trials":[],"applied_trial_ids":["rule"]}):
+            result = BRIDGE.apply_admission(receiver(), {"open":True,"fraction":.5},
+                                            {"position_step":.05,"max_fraction":.5}, now=NOW)
+        self.assertAlmostEqual(result["fraction"],.45)
+        self.assertEqual(result["autonomous_learning"]["knowledge_applied_trial_ids"],["rule"])
+
+    def test_unchanged_multiplier_keeps_a_non_grid_baseline(self):
+        self.experiment("SIZE_DOWN_WEAK_SIGNAL")
+        row=receiver();row["calibration"]["probability_correct"]=.8
+        result=BRIDGE.apply_admission(row,{"open":True,"fraction":.56},
+                                     {"position_step":.05,"max_fraction":.8},now=NOW)
+        self.assertEqual(result["fraction"],.56)
+
     def test_update_detaches_profiles_from_the_callers_mutation(self):
         c = self.experiment()
         c["proposal"]["probability_delta"] = -.05

@@ -176,7 +176,7 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
                 status text,opened_at timestamptz,closed_at timestamptz,gross_pnl_rub float8,fees_rub float8,
                 funding_rub float8,net_pnl_rub float8,portfolio_name text,setup text,max_fraction float8,
                 avg_entry_price float8,avg_exit_price float8,payload jsonb)""")
-        for _ in range(4):
+        for _ in range(5):
             self.ns["_v90_background_maintenance"].reset()
             self.app.bootstrap()
         self.assertTrue(self.app.ready)
@@ -216,7 +216,7 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
         restored_ns = namespace(self.connect)
         restored_ns["VP"] = self.ns["VP"]
         restored = C.ContinuousLearning(restored_ns)
-        for _ in range(4):
+        for _ in range(5):
             restored.ns["_v90_background_maintenance"].reset()
             restored.bootstrap()
         self.assertTrue(restored.ready)
@@ -233,6 +233,23 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
         self.assertGreater(cursor["last_id"], 0)
         again, _ = self.call(self.app.ingest, cursor)
         self.assertEqual(again["excluded_missing_provenance"], 0)
+
+    def test_repeated_unresolved_scope_preserves_first_seal_and_leaves_queue_capacity(self):
+        _,cursor=self.call(self.app.ingest)
+        self.insert_decision('first')
+        first,cursor=self.call(self.app.ingest,cursor)
+        self.assertEqual(first['imported'],1)
+        self.insert_decision('second')
+        duplicate,cursor=self.call(self.app.ingest,cursor)
+        self.assertEqual(duplicate['imported'],0);self.assertEqual(duplicate['coalesced'],1)
+        with self.connect() as c:
+            rows=c.execute('SELECT entity_key,evidence FROM learning_forecasts').fetchall()
+            self.assertEqual([r['entity_key'] for r in rows],['first'])
+            self.assertEqual(rows[0]['evidence'],captured('first')['provenance'])
+            c.execute("UPDATE learning_forecasts SET status='EXCLUDED',learned_at=now()")
+        self.insert_decision('new-window')
+        result,_=self.call(self.app.ingest,cursor)
+        self.assertEqual(result['imported'],1)
 
     def test_small_progress_snapshot_can_be_persisted_without_full_payload_reads(self):
         value = self.app.compute_progress(self.context)

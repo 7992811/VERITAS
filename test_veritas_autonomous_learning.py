@@ -45,6 +45,22 @@ def paired(index, c, *, weak=None):
     return row
 
 
+def uncalibrated_pair(index, c=None, *, training=False, rr=None, fraction=.50):
+    rr = (1.20 if index % 4 == 0 else 2.) if rr is None else rr
+    row = observation(index, training=training, probability=None, correct=rr >= 1.5)
+    net = -1. if rr < 1.5 else 2.
+    execution = AL.size_execution(None, fraction=fraction, step=.05, cap=.50,
+                                  kind='SIZE_DOWN_UNCALIBRATED', net_reward_risk=rr)
+    factor = execution['effective_multiplier']
+    row.update(proof_kind='SIMULATED_SIZE_ON_OBSERVED_PATH', net_reward_risk=rr,
+               candidate_id=c['candidate_id'] if c else None,
+               candidate_decision_at=row['decision_at'] if c else None,
+               baseline_net_r=net, candidate_net_r=net*factor,
+               baseline_risk_r=1., candidate_risk_r=factor, risk_cap_r=1.,
+               costs_verified=True, risk_verified=True, size_execution=execution)
+    return row
+
+
 class PureLearningTests(unittest.TestCase):
     def test_observed_direction_learning_does_not_claim_profitability(self):
         result = AL.evaluate(candidate(), [observation(i) for i in range(64)], now=NOW)
@@ -201,9 +217,11 @@ class PureLearningTests(unittest.TestCase):
             state["scopes"][str(i)] = {"scope": {"asset": "BTC", "horizon": "1h", "regime": "TREND",
                 "policy_hash": "a"*64, "source_key": "b"*64}, "n": 12345, "correct": 123,
                 "probability_n": 123, "residual_sum": 12.345678901, "evidence_hash": "c"*64,
-                "registered_at_n": {"CALIBRATION": 12000, "SIZE_DOWN_WEAK_SIGNAL": 12000}}
+                "uncalibrated_n": 12345, "uncalibrated_evidence_hash": "d"*64,
+                "registered_at_n": {"CALIBRATION": 12000, "SIZE_DOWN_WEAK_SIGNAL": 12000,
+                                    "SIZE_DOWN_UNCALIBRATED": 12000}}
         for i in range(AL.MAX_CANDIDATES):
-            c = candidate()
+            c = candidate(AL.KINDS[i % len(AL.KINDS)])
             for stats in (c["stats"], c["monitor"]):
                 for day in range(AL.MAX_DAYS):
                     AL._add(stats, f"2026-01-{day+1:02}", .612345678901, .512345678901, .100000000001, True)
@@ -211,7 +229,7 @@ class PureLearningTests(unittest.TestCase):
             c["monitor_evidence"] = AL._summary(c["monitor"])
             state["candidates"][str(i)] = c
         encoded = store._json(state, store.MAX_SNAPSHOT_BYTES)
-        self.assertLess(len(encoded.encode()), 230000)
+        self.assertLess(len(encoded.encode()), store.MAX_SNAPSHOT_BYTES)
 
     def test_repeated_trials_spend_a_frozen_global_error_budget(self):
         first = candidate()
@@ -220,6 +238,75 @@ class PureLearningTests(unittest.TestCase):
         self.assertLess(later["criteria"]["per_look_alpha"], first["criteria"]["per_look_alpha"])
         self.assertGreater(later["criteria"]["block_interval_multiplier"], first["criteria"]["block_interval_multiplier"])
         self.assertNotEqual(later["contract_hash"], first["contract_hash"])
+
+    def test_uncalibrated_size_uses_frozen_rr_without_inventing_probability(self):
+        c = candidate('SIZE_DOWN_UNCALIBRATED')
+        result = AL.evaluate(c, [uncalibrated_pair(i, c) for i in range(64)], now=NOW)
+        self.assertEqual(result['state'], 'promoted')
+        self.assertTrue(result['profitability_proven'])
+        self.assertEqual(result['evidence']['n'], 64)
+        self.assertEqual(result['evidence']['days'], 16)
+        self.assertAlmostEqual(result['evidence']['mean_delta'], .025)
+        self.assertAlmostEqual(result['evidence']['mean_candidate'], 1.275)
+        low = dict(observation(0, probability=None), net_reward_risk=1.20, confidence=.99)
+        advice = AL.apply_advice([result], low, now=NOW)
+        self.assertEqual(advice['size_multiplier'], .9)
+        self.assertIsNone(advice['calibrated_probability'])
+        self.assertEqual(advice['probability_delta'], 0.)
+        for rr in (1.50, 2.):
+            self.assertEqual(AL.apply_advice([result], dict(low, net_reward_risk=rr), now=NOW)['size_multiplier'], 1.)
+        for changes in ({'predicted_probability': .55}, {'net_reward_risk': None},
+                        {'net_reward_risk': -1.}, {'predicted_probability': float('nan')}):
+            self.assertEqual(AL.apply_advice([result], dict(low, **changes), now=NOW)['status'], 'neutral')
+
+    def test_uncalibrated_trial_keeps_prospective_cashflow_and_quantization_guards(self):
+        c = candidate('SIZE_DOWN_UNCALIBRATED')
+        row = uncalibrated_pair(0, c, fraction=.10)
+        result = AL.evaluate(c, [row], now=NOW)
+        self.assertEqual(result['stats']['n'], 1)
+        self.assertEqual(result['stats']['sum_delta'], 0.)
+        for field, value in (('predicted_probability', .55), ('net_reward_risk', None),
+                             ('costs_verified', False), ('risk_verified', False),
+                             ('candidate_decision_at', CREATED.isoformat()),
+                             ('candidate_net_r', 0.), ('risk_cap_r', .5), ('size_execution', None)):
+            with self.subTest(field=field):
+                self.assertEqual(AL.evaluate(c, [dict(row, **{field:value})], now=NOW)['stats']['n'], 0)
+        self.assertEqual(AL.evaluate(candidate(), [row], now=NOW)['stats']['n'], 0)
+        self.assertEqual(AL.evaluate(candidate('SIZE_DOWN_WEAK_SIGNAL'), [row], now=NOW)['stats']['n'], 0)
+        losing = AL.evaluate(c, [uncalibrated_pair(i, c, rr=1.2) for i in range(64)], now=NOW)
+        self.assertEqual(losing['state'], 'evaluating')
+        self.assertEqual(losing['reasons'], ['PROFITABILITY_OR_DRAWDOWN_GATE_FAILED'])
+
+    def test_uncalibrated_stamp_has_original_rr_and_executable_size_with_no_probability(self):
+        candidates = [candidate(kind) for kind in AL.KINDS]
+        row = dict(observation(0, probability=None), net_reward_risk=1.2,
+                   fraction=.10, position_step=.05, max_fraction=.50, confidence=.95)
+        stamps = AL.freeze_candidates({'candidates':candidates}, row, now=CREATED+timedelta(hours=1))
+        self.assertEqual(len(stamps), 1)
+        self.assertEqual(stamps[0]['kind'], 'SIZE_DOWN_UNCALIBRATED')
+        self.assertIsNone(stamps[0]['base_probability'])
+        self.assertEqual(stamps[0]['net_reward_risk'], 1.2)
+        self.assertEqual(stamps[0]['size_multiplier'], 1.)
+        self.assertEqual(stamps[0]['size_execution']['fraction_after'], .10)
+        row['fraction'] = .50
+        stamp = AL.freeze_candidates({'candidates':candidates}, row, now=CREATED+timedelta(hours=1))[0]
+        self.assertAlmostEqual(stamp['size_multiplier'], .9)
+        self.assertAlmostEqual(stamp['size_execution']['fraction_after'], .45)
+        self.assertEqual(AL.freeze_candidates({'candidates':candidates}, dict(row, net_reward_risk=None), now=NOW), [])
+        old = AL.freeze_candidates({'candidates':candidates}, dict(row, predicted_probability=.55), now=CREATED+timedelta(hours=1))
+        self.assertEqual({s['kind'] for s in old}, {'CALIBRATION','SIZE_DOWN_WEAK_SIGNAL'})
+
+    def test_unchanged_opportunity_never_rounds_an_off_grid_original_allocation(self):
+        for probability, kwargs in ((.80, {}), (None, {'kind':'SIZE_DOWN_UNCALIBRATED','net_reward_risk':2.})):
+            with self.subTest(probability=probability):
+                execution=AL.size_execution(probability,fraction=.56,step=.05,cap=.80,**kwargs)
+                self.assertEqual(execution['fraction_after'],.56)
+                self.assertEqual(execution['effective_multiplier'],1.)
+                self.assertIsNone(AL.size_execution(probability,fraction=.56,step=.05,cap=.50,**kwargs))
+        reduced=AL.size_execution(None,fraction=.50,step=.05,cap=.80,
+                                   kind='SIZE_DOWN_UNCALIBRATED',net_reward_risk=1.20)
+        self.assertAlmostEqual(reduced['fraction_after'],.45)
+        self.assertAlmostEqual(reduced['effective_multiplier'],.90)
 
 
 class LedgerDB:
@@ -294,6 +381,44 @@ class DurableLearningTests(unittest.TestCase):
         self.assertFalse(any(c["state"] == "degraded" for c in replay["candidates"]))
         self.assertEqual({c["candidate_id"] for c in first["candidates"]},
                          {c["candidate_id"] for c in replay["candidates"]})
+
+    def test_uncalibrated_trade_only_training_is_durable_independent_and_revocable(self):
+        rows = [uncalibrated_pair(i, training=True) for i in range(32)]
+        early = self.run_rows(rows[:31])
+        self.assertEqual(early['candidates'], [])
+        first = self.run_rows(rows[31:])
+        self.assertEqual({c['kind'] for c in first['candidates']}, {'SIZE_DOWN_UNCALIBRATED'})
+        self.assertEqual(first['candidates'][0]['training_n'], 32)
+        self.assertEqual(first['lessons'][0]['probability_observations'], 0)
+        self.assertEqual(first['lessons'][0]['uncalibrated_risk_observations'], 32)
+        replay = self.run_rows(rows)
+        self.assertEqual(replay['counts']['trade'], 32)
+        self.assertEqual(replay['candidates'], json.loads(json.dumps(first['candidates'])))
+        c = first['candidates'][0]
+        result = self.run_rows([uncalibrated_pair(i, c) for i in range(64)], NOW)
+        self.assertEqual(result['profiles'][0]['kind'], 'SIZE_DOWN_UNCALIBRATED')
+        revoked = self.run_rows([dict(rows[0], evidence_valid=False)], NOW)
+        self.assertEqual(revoked['profiles'], [])
+        self.assertTrue(revoked['lessons'][0]['quarantined'])
+
+    def test_uncalibrated_training_requires_rr_costs_and_cross_channel_independence(self):
+        pairs = []
+        for i in range(16):
+            direction = dict(observation(i, training=True, probability=None), net_reward_risk=1.2)
+            pairs.extend([direction, uncalibrated_pair(i, training=True)])
+        result = self.run_rows(pairs)
+        self.assertEqual(result['lessons'][0]['uncalibrated_risk_observations'], 16)
+        self.assertEqual(result['candidates'], [])
+        result = self.run_rows([dict(uncalibrated_pair(16, training=True), net_reward_risk=None),
+                                dict(uncalibrated_pair(17, training=True), costs_verified=False)])
+        self.assertEqual(result['lessons'][0]['uncalibrated_risk_observations'], 16)
+        self.assertEqual(result['candidates'], [])
+        # Confidence is deliberately ignored; it cannot move a native event
+        # into either of the probability-based experimental cohorts.
+        result = self.run_rows([dict(uncalibrated_pair(i, training=True), confidence=.95) for i in range(18,34)])
+        self.assertEqual(result['lessons'][0]['uncalibrated_risk_observations'], 32)
+        self.assertEqual({c['kind'] for c in result['candidates']}, {'SIZE_DOWN_UNCALIBRATED'})
+        self.assertLessEqual(len(result['candidates']), AL.MAX_CANDIDATES)
 
     def test_invalidated_historical_proof_revokes_derived_profiles(self):
         train = [observation(i, training=True) for i in range(32)]

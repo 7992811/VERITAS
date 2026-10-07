@@ -44,8 +44,8 @@ jobs:
         env:
           VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
         run: |
-          python -m py_compile veritas_learning_state.py veritas_autonomous_learning.py veritas_learning_bridge.py veritas_continuous_learning.py veritas_trade_learning.py veritas_learning_measurement.py veritas_knowledge_discovery.py
-          python -m unittest -v test_veritas_learning_state.py test_veritas_autonomous_learning.py test_veritas_learning_bridge.py test_veritas_continuous_learning.py test_veritas_learning_runtime.py test_veritas_quote_learning.py test_veritas_trade_learning.py test_veritas_knowledge_discovery.py
+          python -m py_compile veritas_learning_state.py veritas_autonomous_learning.py veritas_learning_bridge.py veritas_continuous_learning.py veritas_trade_learning.py veritas_learning_measurement.py veritas_knowledge_discovery.py veritas_knowledge_validation.py
+          python -m unittest -v test_veritas_learning_state.py test_veritas_autonomous_learning.py test_veritas_learning_bridge.py test_veritas_continuous_learning.py test_veritas_learning_runtime.py test_veritas_quote_learning.py test_veritas_trade_learning.py test_veritas_knowledge_discovery.py test_veritas_knowledge_validation.py
       - name: Create isolated Currency trading test database
         run: |
           python - <<'PY'
@@ -75,7 +75,7 @@ jobs:
       - name: Owner timeframe structure and provenance regressions
         run: python -m unittest -v test_veritas_timeframe_structure.py test_veritas_timeframe_policy.py test_veritas_timeframe_data.py test_veritas_timeframe_management.py test_veritas_profinance_history.py test_veritas_user_teaching.py test_veritas_repeat_add.py
       - name: Signal readiness, original admission evidence and candle refresh
-        run: python -m unittest -v test_veritas_admission_trace.py test_veritas_cycle_schedule.py test_veritas_history_recovery.py test_veritas_signal_readiness.py test_veritas_timeframe_source_aggregation.py
+        run: python -m unittest -v test_veritas_admission_trace.py test_veritas_cycle_schedule.py test_veritas_history_recovery.py test_veritas_signal_readiness.py test_veritas_signal_publication.py test_veritas_timeframe_source_aggregation.py
       - name: Native daily averages, rebounds and stable Brent source
         run: python -m unittest -v test_veritas_daily_averages.py test_veritas_daily_average_index.py test_veritas_native_daily.py test_veritas_ma_rebound.py test_veritas_brent_market.py test_veritas_entry_scenarios.py test_veritas_profinance_daily_integration.py
       - name: Brent valuation identity and exact held contract
@@ -101,7 +101,7 @@ jobs:
       - name: T-Invest read-only connection tests
         run: python -m unittest -v test_veritas_tbank.py
       - name: Execution safety tests
-        run: python -m unittest -v test_veritas_v90_safety.py test_veritas_memory_runtime.py test_veritas_r80_snapshot_lifetimes.py test_veritas_portfolio_prepass_lifetimes.py test_veritas_dashboard_snapshot_lifetimes.py
+        run: python -m unittest -v test_veritas_v90_safety.py test_veritas_memory_runtime.py test_veritas_memory_reclaim.py test_veritas_r80_snapshot_lifetimes.py test_veritas_portfolio_prepass_lifetimes.py test_veritas_dashboard_snapshot_lifetimes.py
       - name: Market case regressions
         run: python -m unittest -v test_veritas_v90_market_cases.py
       - name: GOLD source and senior-thesis regressions

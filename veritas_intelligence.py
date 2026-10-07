@@ -38,6 +38,7 @@ import veritas_timeframe_data as TFD
 import veritas_timeframe_policy as TFP
 import veritas_cycle_schedule as VCS
 import veritas_history_diagnostics as VHD
+import veritas_signal_publication as VSP
 import veritas_user_teaching as VUT
 VERSION = VR.PRODUCT_VERSION
 try:
@@ -1980,7 +1981,7 @@ def match_knowledge(asset, horizon, f, deriv):
             continue
         if all(_condition_ok(ctx,c) for c in r['conditions']):
             out.append({'rule_id':r['rule_id'],'action':r['action'],'shadow_score':r['prior_weight'],
-                        'agent':r['agent'],'source_id':r['source_id']})
+                        'agent':r['agent'],'source_id':r['source_id'], **(VLB.capture_rule(r) or {})})
     return out
 
 
@@ -6900,6 +6901,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                     _v90_memory_checkpoint('features_ready',asset,horizon)
                 if common_structure is not None: common_feature_reuses += 1
                 kmatches = match_knowledge(asset, horizon, f, deriv)
+                knowledge_learning_matches = VLB.learning_rule_matches(kmatches, asset, horizon, at=created_at)
                 knowledge_arbitration = arbitrate_knowledge_conflicts(kmatches,asset,horizon)
                 kmatches = knowledge_arbitration.get('selected_rules') or []
                 f['knowledge_rule_arbitration']=knowledge_arbitration
@@ -7247,7 +7249,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                             'features': f, '_execution_quote': VLB.compact_quote(raw), 'derivatives': deriv,'event_shadow':event_shadow,'v70_pretrade':v70_pretrade,'institutional_signal':institutional_signal,
                             'causal_shadow':causal_shadow,
                             'agents': [{'agent':a,'direction':d,'confidence':cf,'rationale':r} for a,d,cf,r in agents],
-                            'knowledge_shadow_matches': kmatches,'orthogonal_evidence':orth_evidence,
+                            'knowledge_shadow_matches': kmatches,'knowledge_learning_matches':knowledge_learning_matches,'orthogonal_evidence':orth_evidence,
                             'source_times': {'primary': f['observed_at'], 'secondary': f['observed_at'], 'clock': clock_info},
                             'gates': {'scope': True, 'metric': True, 'source': source_gate, 'time': time_gate,
                                       'execution':bool(execution_gate.get('eligible'))}
@@ -7258,6 +7260,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                         emit('persistence_error', **err)
                 made += 1
                 z = {**{key:raw[key] for key in _V90_QUOTE_IDENTITY_FIELDS if key in raw},'asset': asset, 'horizon': horizon, 'decision': dec,
+                     'created_at':created_at,'knowledge_context_at':created_at,'knowledge_learning_matches':knowledge_learning_matches,
                      'research_decision':research_dec,'confidence': round(conf, 4),'price':float(f.get('price') or 0.0),
                      'score': round(score, 4), 'regime': f['regime'], 'horizon_return':round(float(f.get('ret_h') or 0.0),6),
                      'realized_vol':round(float(f.get('rv') or 0.0),6),'knowledge_matches': len(kmatches),
@@ -7309,6 +7312,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                     z.update(minute_data_status=f.get('minute_data_status'),
                              minute_closed_at=f.get('minute_closed_at'),minute_entry_gate=f.get('minute_entry_gate'))
                 summary.append(_v90_compact_live_row(z))
+                VSP.publish_completed(globals(),summary[-1:],cycle_id,cycle_mode)
                 try:
                     maybe_create_alert(entity_key, asset, horizon, dec, conf, score, f['regime'], kmatches)
                 except Exception as ae:
@@ -7439,6 +7443,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
              'institutional_portfolio':institutional_portfolio_board(summary),
              'telemetry':telemetry,'knowledge': knowledge_summary(),'portfolio_autopilot':portfolio_autopilot}
     with lock:
+        VSP.finish_summary(state,last_cycle)
         state['summary']=VBR.publish_summary(state['summary'])
         import veritas_structural_lifecycle as VSL
         state['portfolio_autopilot']=VSL.merge_reports(state['portfolio_autopilot'],last_cycle.get('portfolio_autopilot'))
@@ -15821,21 +15826,17 @@ def latest_signal_summary_pg():
 
 def fresh_cycle_snapshot():
     """Serve the last valid in-memory matrix first; PostgreSQL is cold-start fallback only."""
+    from veritas_signal_readiness import project_matrix
     with lock:
         cyc=dict(last_cycle)
         mem_summary=[dict(x) for x in ((last_cycle or {}).get('summary') or [])]
     merged={(x.get('asset'),x.get('horizon')):x for x in mem_summary if x.get('asset') and x.get('horizon')}
     expected=len(DISPLAY_ASSETS)*len(HORIZONS)
-    # Avoid DB contention on normal UI refreshes. Query durable history only when
-    # memory is genuinely insufficient (cold start / first cycle).
+    # Query durable history only when memory is insufficient (cold start).
     if len(merged)<max(7,expected//2):
         for x in latest_signal_summary_pg():
-            merged.setdefault((x.get('asset'),x.get('horizon')),x)
-    ordered=[]
-    for asset in DISPLAY_ASSETS:
-        for h in HORIZONS:
-            x=merged.get((asset,h))
-            if x: ordered.append(x)
+            merged.setdefault((x.get('asset'),x.get('horizon')),{**x,'snapshot_stale':True})
+    ordered=project_matrix(merged,DISPLAY_ASSETS,HORIZONS,now=now())
     cyc['summary']=ordered
     cyc['summary_source']='live_memory' if len(mem_summary)>=max(7,expected//2) else 'live_memory+postgres_cold_fallback'
     cyc['summary_count']=len(ordered)
@@ -16668,12 +16669,13 @@ def _v90r23_trade_report_fast():
 def _v90r26_dashboard_bootstrap(signals_only=False):
     """One fast UI payload: signals, five portfolios, open positions and recent closed trades."""
     cyc=fresh_cycle_snapshot()
+    publication={'signals_updated_at':cyc.get('signals_updated_at'),'cycle_in_progress':cyc.get('cycle_in_progress',False)}
     signals=[dict(z) for z in (cyc.get('summary') or []) if str(z.get('asset') or '')!='NDX']
     if signals_only:
         # The matrix must not wait for portfolio enrichment or trade history.
         # Omit those sections (never send empty authoritative books on this path).
         return {
-            'status':'OK','version':VERSION,'at':cyc.get('at'),
+            'status':'OK','version':VERSION,'at':cyc.get('at'),**publication,
             'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled()),'release':VR.snapshot()},
             'signals':signals,'signal_count':len(signals),
             'data_quality_summary':{
@@ -16702,7 +16704,7 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
     closed_total=sum(int(p.get('closed_trades') or 0) for p in ps)
     wins_total=sum(int(p.get('wins') or 0) for p in ps)
     return {
-      'status':'OK','version':VERSION,'at':cyc.get('at'),
+      'status':'OK','version':VERSION,'at':cyc.get('at'),**publication,
       'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled()),'release':VR.snapshot()},
       'signals':signals,'signal_count':len(signals),
       'portfolios':ps,'portfolio_count':len(ps),
@@ -16819,6 +16821,7 @@ class H(BaseHTTPRequestHandler):
                 self.reply({'version':VERSION,'signals':_signals,
                             'summary_count':len(_signals),
                             'summary_source':x.get('summary_source'),
+                            'signals_updated_at':x.get('signals_updated_at'),'cycle_in_progress':x.get('cycle_in_progress',False),
                             'at':x.get('at'),'status':x.get('status')})
             elif self.path.startswith('/api/v1/backtests'):
                 self.reply({'version':VERSION,'backtest':backtest_status()})
@@ -17779,6 +17782,7 @@ def _v90r37_compact_decision_payload(p):
       'created_at':p.get('created_at'),'symbol':p.get('symbol'),
       'learning_provenance':VLB.capture_decision(p),
       'knowledge_shadow_matches':VLB.compact_rule_matches(p.get('knowledge_shadow_matches')),
+      'knowledge_learning_matches':VLB.compact_rule_matches(p.get('knowledge_learning_matches'))[:8],
       'asset':p.get('asset'),'horizon':p.get('horizon'),
       'decision':p.get('decision'),'research_decision':p.get('research_decision'),
       'confidence':p.get('confidence'),'sizing':p.get('sizing'),
@@ -18480,7 +18484,8 @@ def _v90_compact_live_row(z):
         'tactical_target_price','target_method','setup','entry_scenario','reversal_probability',
         'decision_stage','positive_trade_probability','statistical_noise_buffer_p80',
         'spread_bps','execution_safety_version','horizon','market_observed_at','best_bid','best_ask',
-        'entry_plan_version','entry_event_id','setup_id','expected_hold_seconds','execution_levels_ready'))
+        'entry_plan_version','entry_event_id','setup_id','expected_hold_seconds','execution_levels_ready',
+        'trade_entry_checked_at'))
     for key in ('timeframe_entry_context','entry_event_snapshot','structural_policy_version','user_teaching_id','trend_entry_context','r66_geometry','r66_runner_target_price','multi_tf_level_context',
                 'profitability_gate','trade_integrity','rule_arbitration','reentry_intelligence',
                 'entry_timing_gate','execution_quote_gate'):
@@ -18492,7 +18497,7 @@ def _v90_compact_live_row(z):
         'cost_policy','modeled_commission_pct','modeled_execution_cost_pct','modeled_funding_pct',
         'observed_spread_bps','stop_distance_pct','target_price','target_distance_pct','modeled_entry_fill',
         'modeled_target_fill','modeled_stop_fill','net_reward_pct','net_risk_pct','net_reward_risk','quote_time_gate',
-        'context_freshness','trend_event'))
+        'context_freshness','trend_event','checked_at'))
     tp1=plan.get('take_profit_1')
     if isinstance(tp1,dict):
         plan2['take_profit_1']=_v90_small_dict(tp1,('timeframe','price','distance_pct'))
@@ -18527,7 +18532,7 @@ def _v90_compact_live_row(z):
         'active','phase','direction','confidence','base_score',
         'active_directional_score','blend','entry_quality'))
     keys=(*_V90_QUOTE_IDENTITY_FIELDS,
-        'asset','horizon','decision','research_decision','confidence','price','score',
+        'asset','horizon','decision','research_decision','confidence','price','score','created_at','knowledge_context_at','knowledge_learning_matches',
         'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
         'source_gate_pass','market_open','execution_eligible','paper_eligible','production_eligible',
         'execution_reason','paper_execution_reason','data_latency_class','market_observed_at','contract','source_names',
@@ -18541,7 +18546,7 @@ def _v90_compact_live_row(z):
         'horizon_structure_direction','horizon_structure_score','horizon_structure_state',
         'trend_phase','trend_direction','trend_onset_score','impulse_score',
         'entry_quality','positive_trade_probability','analog_effective_n',
-        'expected_move_pct','signal_tier','execution_signal_tier',
+        'expected_move_pct','signal_tier','execution_signal_tier','snapshot_stale',
         'event_shadow_score','causal_score','causal_label','decision_stage',
         'sma18','sma50','sma200','support_level','resistance_level',
         'minute_data_status','minute_closed_at','minute_entry_gate','research_history_status','research_feature_availability','research_hourly_bar_count','structure_history_status')
@@ -18666,6 +18671,7 @@ def _v90_memory_checkpoint(phase,asset,horizon=None):
 
 
 def _v90_trim_memory(phase='unknown',force=False,*,preserve_active_cycle=False):
+    from veritas_memory_reclaim import reclaim
     before=rss_mb()
     if not force and before is not None and float(before)<V90_MEMORY_CAUTION_MB:
         return {'phase':phase,'before_mb':before,'after_mb':before,'trimmed':False}
@@ -18673,22 +18679,13 @@ def _v90_trim_memory(phase='unknown',force=False,*,preserve_active_cycle=False):
     # market/feature caches needed by the remaining assets in the SAME cycle.
     preserve_active_cycle=bool(preserve_active_cycle or str(phase or '').startswith('asset_'))
     cleared=_v90_prune_low_priority_caches(before,preserve_active_cycle=preserve_active_cycle)
-    try:
-        gc.collect()
-    except Exception:
-        pass
-    try:
-        import ctypes
-        libc=ctypes.CDLL('libc.so.6')
-        libc.malloc_trim(0)
-    except Exception:
-        pass
-    after=rss_mb()
+    result=reclaim(globals(),phase=phase,before=before,caches_cleared=cleared)
+    after=result.get('after_mb')
     if force or (before is not None and after is not None and float(before)-float(after)>=8.0):
         emit('memory_trim',phase=phase,before_mb=before,after_mb=after,
              released_mb=None if before is None or after is None else round(float(before)-float(after),1),
-             caches_cleared=cleared)
-    return {'phase':phase,'before_mb':before,'after_mb':after,'trimmed':True,'caches_cleared':cleared}
+             caches_cleared=cleared,**{k:v for k,v in result.items() if k.startswith(('gc_','allocator_'))})
+    return {'phase':phase,'caches_cleared':cleared,**result}
 
 
 def _v90_emit_portfolio(event,**kw):

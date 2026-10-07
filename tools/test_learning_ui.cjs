@@ -57,6 +57,7 @@ assert.match(html,/07\.10, 16:04 МСК/);
 assert.match(html,/больше разных дней/);
 assert.match(html,/само по себе не доказывает рост доходности/);
 assert.doesNotMatch(html,/NaN|undefined|\+—/);
+assert.match(ui.autonomousLearningHtml({...autonomous,knowledge_validation:{version:'KNOWLEDGE_PROSPECTIVE_V1',catalog_audited_rules:3,counts:{direction:8,net:2},profiles:[]}}),/правил с аудитом 3 · проверенных исходов 8 · результатов после расходов 2 · действующих поправок 0/);
 assert.equal(ui.deepNum({index_vs_start:null},['index_vs_start']),null);
 assert.equal(ui.deepNum({index_vs_start:0},['index_vs_start']),0);
 

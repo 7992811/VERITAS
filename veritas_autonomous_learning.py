@@ -27,7 +27,9 @@ MIN_DAYS = 14
 MAX_DAYS = 32
 VALID_DAYS = 7
 TERMINAL = frozenset(("rejected", "degraded"))
-KINDS = ("CALIBRATION", "SIZE_DOWN_WEAK_SIGNAL")
+SIZE_KINDS = ("SIZE_DOWN_WEAK_SIGNAL", "SIZE_DOWN_UNCALIBRATED")
+KINDS = ("CALIBRATION", *SIZE_KINDS)
+UNCALIBRATED_RR_THRESHOLD = 1.50
 CONTRACT_FIELDS = ("version", "scope", "kind", "proposal", "created_at", "train_cutoff",
                    "training_n", "training_evidence_hash", "training_epoch", "criteria")
 CRITERIA = {"training_ideas": MIN_TRAIN, "prospective_looks": LOOKS,
@@ -126,6 +128,8 @@ def normalize_observation(row, now=None):
         reason = "LOOKAHEAD_OR_INCOMPLETE_OUTCOME"
     elif not row.get("asset") or not row.get("horizon") or row.get("direction") not in ("LONG", "SHORT"):
         reason = "INVALID_DIRECTION_SCOPE"
+    elif row.get("predicted_probability") is not None and _probability(row["predicted_probability"]) is None:
+        reason = "INVALID_FROZEN_PROBABILITY"
     forward = _number(row.get("forward_return"))
     if reason is None and forward is None and not row.get("proof_kind"):
         reason = "MISSING_DIRECTION_OUTCOME"
@@ -141,6 +145,7 @@ def normalize_observation(row, now=None):
                   decision_at=decision.isoformat(), outcome_at=outcome.isoformat(),
                   observed_at=observed.isoformat(), known_at=known.isoformat(),
                   predicted_probability=_probability(row.get("predicted_probability")),
+                  net_reward_risk=_number(row.get("net_reward_risk")),
                   forward_return=forward, channel="trade" if row.get("proof_kind") else "direction")
     result["direction_correct"] = (float((forward if row["direction"] == "LONG" else -forward) > 0)
                                    if forward is not None else None)
@@ -219,6 +224,11 @@ def register_candidate(scope, training, kind, now=None, *, trial_index=1):
                 if kind == "CALIBRATION" else
                 {"probability_delta": 0., "size_multiplier": .9,
                  "condition": {"field": "base_probability", "operator": "lt", "value": .60}})
+    if kind == "SIZE_DOWN_UNCALIBRATED":
+        proposal = {"probability_delta": 0., "size_multiplier": .9,
+                    "probability_protocol": "ABSENT_FROZEN_PROBABILITY",
+                    "condition": {"field": "net_reward_risk", "operator": "lt",
+                                  "value": UNCALIBRATED_RR_THRESHOLD}}
     frozen = {"version": VERSION, "scope": dict(scope), "kind": kind, "proposal": proposal,
               "created_at": clock.isoformat(), "train_cutoff": clock.isoformat(),
               "training_n": training["n"], "training_evidence_hash": training.get("evidence_hash"),
@@ -234,9 +244,15 @@ def register_candidate(scope, training, kind, now=None, *, trial_index=1):
 
 def _candidate_values(candidate, row):
     p = row["predicted_probability"]
-    if p is None:
+    kind = candidate["kind"]
+    if kind == "SIZE_DOWN_UNCALIBRATED":
+        if p is not None:
+            return None, "UNCALIBRATED_COHORT_REQUIRES_ABSENT_PROBABILITY"
+        if _size_multiplier(kind, p, row.get("net_reward_risk")) is None:
+            return None, "MISSING_FROZEN_NET_REWARD_RISK"
+    elif p is None:
         return None, "MISSING_FROZEN_PROBABILITY"
-    if candidate["kind"] == "CALIBRATION":
+    if kind == "CALIBRATION":
         y = row["direction_correct"]
         if y is None or row["channel"] != "direction":
             return None, "DIRECTION_OUTCOME_REQUIRED"
@@ -254,13 +270,16 @@ def _candidate_values(candidate, row):
     if any(value is None for value in values) or row.get("costs_verified") is not True or row.get("risk_verified") is not True:
         return None, "WAIT_VERIFIED_COSTS_AND_RISK"
     base, result, base_risk, risk, cap = values
-    factor = .9 if p < .60 else 1.
+    factor = _size_multiplier(kind, p, row.get("net_reward_risk"))
     quantized = row.get("size_execution")
+    if kind == "SIZE_DOWN_UNCALIBRATED" and quantized is None:
+        return None, "MISSING_SIZE_EXECUTION_PROOF"
     if quantized is not None:
         if not isinstance(quantized, dict):
             return None, "INVALID_SIZE_EXECUTION_PROOF"
         expected = size_execution(p, fraction=quantized.get("fraction_before"),
-                                  step=quantized.get("position_step"), cap=quantized.get("max_fraction"))
+                                  step=quantized.get("position_step"), cap=quantized.get("max_fraction"),
+                                  kind=kind, net_reward_risk=row.get("net_reward_risk"))
         if expected is None or quantized != expected:
             return None, "INVALID_SIZE_EXECUTION_PROOF"
         factor = expected["effective_multiplier"]
@@ -417,6 +436,23 @@ def _consume(state, row, clock):
             scope["probability_n"] += 1
             scope["residual_sum"] += row["direction_correct"]-row["predicted_probability"]
         scope["evidence_hash"] = _digest([scope["evidence_hash"], row["evidence_hash"]])
+    rr = row.get("net_reward_risk")
+    baseline_risk, risk_cap = _number(row.get("baseline_risk_r")), _number(row.get("risk_cap_r"))
+    cashflow_verified = bool(row.get("proof_kind") in ("SIMULATED_SIZE_ON_OBSERVED_PATH", "PAIRED_OBSERVED_PAPER_PATH")
+                             and row.get("costs_verified") is True and row.get("risk_verified") is True
+                             and _number(row.get("baseline_net_r")) is not None
+                             and baseline_risk is not None and risk_cap is not None
+                             and 0 < baseline_risk <= risk_cap)
+    if (row["predicted_probability"] is None and rr is not None and rr > 0
+            and (row["channel"] == "direction" or cashflow_verified)):
+        # A directional report and a paper close of the same opportunity are
+        # separate evidence channels, not two independent training ideas.
+        training_stream = row["scope"]["asset"]+":uncalibrated_training"
+        previous = state["streams"].get(training_stream)
+        if previous is None or _time(row["decision_at"]) >= _time(previous):
+            scope["uncalibrated_n"] = scope.get("uncalibrated_n", 0)+1
+            scope["uncalibrated_evidence_hash"] = _digest([scope.get("uncalibrated_evidence_hash"), row["evidence_hash"]])
+            state["streams"][training_stream] = row["outcome_at"]
     for cid, candidate in list(state["candidates"].items()):
         if candidate["scope"] == row["scope"]:
             result = evaluate(candidate, [row], now=clock)
@@ -432,20 +468,25 @@ def _register(state, clock):
     ordered = sorted(state["scopes"].items(), key=lambda item: (
         item[1].get("registration_count", len(item[1].get("registered_at_n", {}))), item[0]))
     for key, training in ordered:
-        if (training["probability_n"] < MIN_TRAIN or training.get("quarantined")
-                or not training["scope"]["policy_hash"]):
+        if training.get("quarantined") or not training["scope"]["policy_hash"]:
             continue
         for kind in KINDS:
             if (key, kind) in existing or len(state["candidates"]) >= MAX_CANDIDATES:
                 continue
+            uncalibrated = kind == "SIZE_DOWN_UNCALIBRATED"
+            if (training.get("uncalibrated_n", 0) if uncalibrated else training["probability_n"]) < MIN_TRAIN:
+                continue
+            n = training.get("uncalibrated_n", 0) if uncalibrated else training["n"]
             last = (training.get("registered_at_n") or {}).get(kind, 0)
-            if training["n"]-last < MIN_TRAIN:
+            if n-last < MIN_TRAIN:
                 continue
             trial_index = state["counts"].get("registered_trials", 0)+1
-            candidate = register_candidate(training["scope"], training, kind, clock, trial_index=trial_index)
+            selected = (dict(training, n=n, evidence_hash=training["uncalibrated_evidence_hash"])
+                        if uncalibrated else training)
+            candidate = register_candidate(training["scope"], selected, kind, clock, trial_index=trial_index)
             state["candidates"][candidate["candidate_id"]] = candidate
             state["counts"]["registered_trials"] = trial_index
-            training.setdefault("registered_at_n", {})[kind] = training["n"]
+            training.setdefault("registered_at_n", {})[kind] = n
             training["registration_count"] = training.get("registration_count", 0)+1
             _event(state, "REGISTERED", clock.isoformat(), candidate_id=candidate["candidate_id"], kind=kind)
 
@@ -597,6 +638,7 @@ def public_snapshot(state, *, now=None):
     lessons = [{"scope": s["scope"], "independent_ideas": s["n"],
                 "direction_hit_rate": s["correct"]/s["n"] if s["n"] else None,
                 "probability_observations": s["probability_n"],
+                "uncalibrated_risk_observations": s.get("uncalibrated_n", 0),
                 "mean_probability_error": s["residual_sum"]/s["probability_n"] if s["probability_n"] else None,
                 "quarantined": s.get("quarantined", False), "epoch": s.get("epoch", 0),
                 "prior_epoch_ideas": s.get("prior_n", 0), "profitability_proven": False}
@@ -625,11 +667,12 @@ def apply_advice(profiles, row, *, policy_hash=None, now=None):
     clock = _clock(now)
     records = profiles.get("profiles", []) if isinstance(profiles, dict) else profiles
     target = scope_for(dict(row, policy_hash=policy_hash if policy_hash is not None else row.get("policy_hash")))
-    p = _probability(row.get("predicted_probability", row.get("base_probability")))
+    raw_probability = row.get("predicted_probability", row.get("base_probability"))
+    p = _probability(raw_probability)
     out = {"status": "neutral", "size_multiplier": 1., "probability_delta": 0.,
            "calibrated_probability": p, "candidate_ids": [], "reasons": [],
            "profitability_proven": False, "version": VERSION, "policy_hash": target["policy_hash"]}
-    if not target["policy_hash"] or not target["source_key"] or p is None:
+    if not target["policy_hash"] or not target["source_key"] or (raw_probability is not None and p is None):
         out["reasons"] = ["MISSING_POLICY_SOURCE_OR_PROBABILITY"]
         return out
     used = set()
@@ -643,15 +686,22 @@ def apply_advice(profiles, row, *, policy_hash=None, now=None):
             continue
         proposal = candidate.get("proposal") or {}
         if kind == "CALIBRATION":
+            if p is None:
+                continue
             delta = _number(proposal.get("probability_delta"))
             if delta not in (-.05, .05):
                 continue
             out["calibrated_probability"] = min(1., max(0., p+delta))
             out["probability_delta"] = out["calibrated_probability"]-p
         elif candidate.get("profitability_proven") is True:
-            if proposal.get("condition") != {"field": "base_probability", "operator": "lt", "value": .60} or proposal.get("size_multiplier") != .9:
+            uncalibrated = kind == "SIZE_DOWN_UNCALIBRATED"
+            condition = ({"field": "net_reward_risk", "operator": "lt", "value": UNCALIBRATED_RR_THRESHOLD}
+                         if uncalibrated else {"field": "base_probability", "operator": "lt", "value": .60})
+            multiplier = _size_multiplier(kind, p, row.get("net_reward_risk"))
+            if (proposal.get("condition") != condition or proposal.get("size_multiplier") != .9
+                    or multiplier is None or (uncalibrated and proposal.get("probability_protocol") != "ABSENT_FROZEN_PROBABILITY")):
                 continue
-            out["size_multiplier"] = .9 if p < .60 else 1.
+            out["size_multiplier"] = multiplier
             out["profitability_proven"] = True
         else:
             continue
@@ -667,15 +717,29 @@ def apply_advice(profiles, row, *, policy_hash=None, now=None):
 status = snapshot
 
 
-def size_execution(probability, *, fraction, step, cap):
+def _size_multiplier(kind, probability, net_reward_risk=None):
+    if kind == "SIZE_DOWN_WEAK_SIGNAL":
+        return None if probability is None else (.9 if probability < .60 else 1.)
+    if kind == "SIZE_DOWN_UNCALIBRATED":
+        rr = _number(net_reward_risk)
+        if probability is not None or rr is None or rr <= 0:
+            return None
+        return .9 if rr < UNCALIBRATED_RR_THRESHOLD else 1.
+    return None
+
+
+def size_execution(probability, *, fraction, step, cap, kind="SIZE_DOWN_WEAK_SIGNAL", net_reward_risk=None):
     """Freeze exactly the existing 10%-bounded position-step calculation."""
     p, before, tick, maximum = (_probability(probability), _number(fraction),
                                 _number(step), _number(cap))
-    if p is None or any(x is None or x <= 0 for x in (before, tick, maximum)) or before > maximum:
+    requested = _size_multiplier(kind, p, net_reward_risk)
+    if ((probability is not None and p is None) or requested is None
+            or any(x is None or x <= 0 for x in (before, tick, maximum)) or before > maximum):
         return None
-    requested = .9 if p < .60 else 1.
-    proposed = math.floor(before*requested/tick+1e-9)*tick
-    after = proposed if .9*before-1e-10 <= proposed <= min(1.1*before, maximum)+1e-10 else before
+    after = before
+    if requested != 1.:
+        proposed = math.floor(before*requested/tick+1e-9)*tick
+        after = proposed if .9*before-1e-10 <= proposed <= min(1.1*before, maximum)+1e-10 else before
     return {"fraction_before": before, "fraction_after": after, "position_step": tick,
             "max_fraction": maximum, "effective_multiplier": after/before}
 
@@ -684,9 +748,10 @@ def freeze_candidates(snapshot_value, row, *, now=None):
     """Bounded prospective experiment stamps; this never grants admission."""
     clock = _clock(now)
     scope = scope_for(row)
-    probability = _probability(row.get("predicted_probability", row.get("base_probability")))
+    raw_probability = row.get("predicted_probability", row.get("base_probability"))
+    probability = _probability(raw_probability)
     result = []
-    if probability is None:
+    if raw_probability is not None and probability is None:
         return result
     for candidate in (snapshot_value or {}).get("candidates", [])[:MAX_CANDIDATES]:
         if (candidate.get("scope") != scope or candidate.get("state") not in ("collecting", "evaluating", "promoted")
@@ -699,15 +764,23 @@ def freeze_candidates(snapshot_value, row, *, now=None):
         kind = candidate.get("kind")
         if kind not in KINDS:
             continue
+        multiplier = 1. if kind == "CALIBRATION" and probability is not None else _size_multiplier(kind, probability, row.get("net_reward_risk"))
+        if multiplier is None:
+            continue
         stamp = {"candidate_id": candidate["candidate_id"], "created_at": candidate["created_at"],
                        "candidate_decision_at": clock.isoformat(), "scope": deepcopy(scope), "kind": kind,
                        "proposal": deepcopy(candidate["proposal"]), "contract_hash": candidate["contract_hash"],
                        "base_probability": probability,
-                       "size_multiplier": .9 if kind == "SIZE_DOWN_WEAK_SIGNAL" and probability < .60 else 1.}
-        if kind == "SIZE_DOWN_WEAK_SIGNAL":
+                       "size_multiplier": multiplier}
+        if kind == "SIZE_DOWN_UNCALIBRATED":
+            stamp["net_reward_risk"] = _number(row.get("net_reward_risk"))
+        if kind in SIZE_KINDS:
             execution = size_execution(probability, fraction=row.get("fraction"),
-                                       step=row.get("position_step"), cap=row.get("max_fraction"))
+                                       step=row.get("position_step"), cap=row.get("max_fraction"),
+                                       kind=kind, net_reward_risk=row.get("net_reward_risk"))
             if execution:
                 stamp.update(size_execution=execution, size_multiplier=execution["effective_multiplier"])
+            elif kind == "SIZE_DOWN_UNCALIBRATED":
+                continue
         result.append(stamp)
     return result

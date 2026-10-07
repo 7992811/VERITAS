@@ -61,10 +61,45 @@ def compact_rule_matches(matches):
     for match in matches[:128]:
         if not isinstance(match, dict) or not isinstance(match.get("rule_id"), str):
             continue
-        result.append({k: v for k, v in match.items() if k in (
-            "rule_id", "source_id", "action", "status", "shadow_score", "weight")
-                       and isinstance(v, (str, int, float, bool, type(None)))})
+        clean = {k: v for k, v in match.items() if k in (
+            "rule_id", "source_id", "action", "status", "shadow_score", "weight", "agent",
+            "version", "rule_key", "definition_hash", "audit_hash", "registered_at", "contract_hash")
+                 and type(v) in (str, int, float, bool, type(None))
+                 and not (isinstance(v, str) and len(v) > 256)
+                 and not (isinstance(v, float) and not math.isfinite(v))}
+        if clean.get("rule_id"):
+            result.append(clean)
     return result
+
+
+def capture_rule(rule):
+    import veritas_knowledge_validation as KNOWLEDGE
+    return KNOWLEDGE.capture(rule)
+
+
+def learning_rule_matches(matches, asset, horizon, *, at=None):
+    """Reserve room for active rules; rotate other trials before outcomes exist."""
+    import veritas_knowledge_validation as KNOWLEDGE
+    now = timestamp(at) or datetime.now(timezone.utc)
+    profiles = KNOWLEDGE.snapshot(now=now).get("profiles") or []
+    active = {p.get("rule_id") for p in profiles
+              if (p.get("scope") or {}).get("asset") == asset
+              and (p.get("scope") or {}).get("horizon") == horizon}
+    candidates = [m for m in compact_rule_matches(matches) if m.get("version") == KNOWLEDGE.VERSION]
+    slot = int(now.timestamp())//60
+    candidates.sort(key=lambda m: (m["rule_id"] not in active,
+                                   digest([m.get("rule_key"), asset, horizon, slot])))
+    return candidates[:8]
+
+
+def knowledge_advice(row, normalized, *, now=None):
+    import veritas_knowledge_validation as KNOWLEDGE
+    return KNOWLEDGE.adjust(row.get("knowledge_learning_matches", row.get("knowledge_shadow_matches")) or [],
+        asset=normalized["asset"], horizon=normalized["horizon"], regime=normalized["regime"],
+        policy_hash=normalized["policy_hash"], source_identity=normalized["source_identity"],
+        base_direction=row.get("research_decision") or row.get("decision"),
+        fraction=normalized.get("fraction"), position_step=normalized.get("position_step"),
+        max_fraction=normalized.get("max_fraction"), now=timestamp(now) or datetime.now(timezone.utc))
 
 
 def quote_evidence(row, asset=None):
@@ -108,11 +143,17 @@ def advice_row(row):
     if probability is None:
         probability = number(row.get("calibrated_probability"))
     if probability is not None and not 0 <= probability <= 1:
-        probability = None
+        probability = -1.  # Invalid data is distinct from an absent probability.
+    net_rr = number(applied.get("net_reward_risk"))
+    if net_rr is None:
+        net_rr = number(row.get("_learning_net_reward_risk"))
+    if net_rr is None:
+        net_rr = number(((row.get("trade_plan") or {}).get("final_economics_gate") or {}).get("net_reward_risk"))
     return {"asset": row.get("asset"), "horizon": row.get("horizon"),
             "regime": row.get("regime") or "UNKNOWN", "policy_hash": ENTRY.policy_hash(),
             "source_identity": quote["source_identity"] if quote else None,
-            "predicted_probability": probability, "base_probability": probability}
+            "predicted_probability": probability, "base_probability": probability,
+            "net_reward_risk": net_rr if net_rr is not None and net_rr > 0 else None}
 
 
 def capture_decision(payload, *, asset=None, horizon=None, at=None):
@@ -143,8 +184,10 @@ def capture_decision(payload, *, asset=None, horizon=None, at=None):
         "policy_hash": ENTRY.policy_hash(), "entry_sha": ENTRY.version_identity().get("strategy_entry_sha"),
         "idea_id": event_id, "independence_basis": "OBSERVED_STRUCTURAL_EVENT" if event_id else "NONOVERLAPPING_FORECAST_WINDOW",
         "base_probability": probability,
+        "net_reward_risk": normalized["net_reward_risk"],
         "applied_learning": p.get("autonomous_learning") or {},
         "prospective_candidates": prospective(normalized, now=decided),
+        "knowledge_trials": knowledge_advice(p, normalized, now=decided)["trials"] if eligible else [],
     }
     evidence["evidence_hash"] = digest(evidence)
     return evidence
@@ -228,21 +271,33 @@ def apply_admission(row, decision, policy, *, now=None):
     out = dict(decision)
     if not out.get("open"):
         return out
+    integrity_before = INTEGRITY.memory_state()
+    row = dict(row, _learning_net_reward_risk=number((out.get("economics") or {}).get("net_reward_risk")))
     result = advice(row, now=now)
     normalized = advice_row(row)
     before = number(out.get("fraction"))
     normalized.update(fraction=before, position_step=number((policy or {}).get("position_step")) or .05,
                       max_fraction=number((policy or {}).get("max_fraction")) or before)
-    multiplier = number(result.get("size_multiplier"))
+    knowledge = knowledge_advice(row, normalized, now=now)
+    application = runtime_status()
+    knowledge_proven = bool(knowledge.get("applied_trial_ids") and application["profiles_current"]
+                            and application["trade_evidence_ready"])
+    auto_multiplier = number(result.get("size_multiplier")) if result.get("profitability_proven") is True else 1.
+    knowledge_multiplier = number(knowledge.get("size_multiplier")) if knowledge_proven else 1.
+    multiplier = min(auto_multiplier or 1., knowledge_multiplier or 1.)
+    profitability_proven = bool(result.get("profitability_proven") or knowledge_proven)
     after = before
-    if (result.get("profitability_proven") is True and before is not None and before > 0
-            and multiplier is not None and .9 <= multiplier <= 1.):
+    if (profitability_proven and before is not None and before > 0
+            and .9 <= multiplier < 1.):
         step = number((policy or {}).get("position_step")) or .05
         target = before * multiplier
         proposed = math.floor(target / step + 1e-9) * step
         cap = number((policy or {}).get("max_fraction")) or before
         if .9 * before - 1e-10 <= proposed <= min(1.1 * before, cap) + 1e-10:
             after = proposed
+    if INTEGRITY.memory_state() != integrity_before:
+        after, profitability_proven, knowledge_proven = before, False, False
+        result = dict(status="EVIDENCE_REVALIDATION_PENDING", candidate_ids=[], probability_delta=0.)
     applied = before is not None and after is not None and not math.isclose(before, after, abs_tol=1e-10)
     out["fraction"] = after if after is not None else out.get("fraction")
     out["autonomous_learning"] = {
@@ -250,15 +305,20 @@ def apply_admission(row, decision, policy, *, now=None):
         "candidate_ids": list(result.get("candidate_ids") or [])[:8],
         "fraction_before": before, "fraction_after": after, "applied": applied,
         "proposed_multiplier": multiplier, "probability_delta": result.get("probability_delta"),
-        "profitability_proven": bool(result.get("profitability_proven")),
+        "profitability_proven": profitability_proven,
         "base_probability": normalized["base_probability"],
+        "net_reward_risk": normalized["net_reward_risk"],
         "calibrated_probability": result.get("calibrated_probability"),
         "source_identity": normalized["source_identity"],
         "policy_hash": normalized["policy_hash"],
         "regime": normalized["regime"],
         "decision_at": (timestamp(now) or datetime.now(timezone.utc)).isoformat(),
         "prospective_candidates": prospective(normalized, now=now),
+        "knowledge_trials": knowledge["trials"],
+        "knowledge_applied_trial_ids": list(knowledge.get("applied_trial_ids") or []) if knowledge_proven else [],
+        "knowledge_context_at": row.get("knowledge_context_at"),
         "position_step": number((policy or {}).get("position_step")) or .05,
+        "max_fraction": normalized["max_fraction"],
         "reason": "APPLIED_WITHIN_EXISTING_POLICY" if applied else "NEUTRAL_OR_POSITION_STEP",
     }
     if (result.get("candidate_ids") and number(result.get("probability_delta")) not in (None, 0.)

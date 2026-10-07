@@ -18,6 +18,7 @@ import veritas_learning_bridge as BRIDGE
 import veritas_learning_index as INDEX
 import veritas_learning_state as STORE
 import veritas_price_source as SOURCE
+import veritas_knowledge_validation as KNOWLEDGE
 
 VERSION = "CONTINUOUS_LEARNING_V1"
 OUTCOME_VERSION = "FIRST_VERIFIED_QUOTE_AFTER_HORIZON_V1"
@@ -122,6 +123,8 @@ def resolve_forecast(forecast, quote, *, now=None):
               "outcome_at": observed.isoformat(), "observed_at": now.isoformat(),
               "forward_return": price/float(entry["price"])-1.,
               "predicted_probability": frozen.get("base_probability"),
+              "net_reward_risk": frozen.get("net_reward_risk"),
+              "knowledge_trials": deepcopy(frozen.get("knowledge_trials") or []),
               "source_identity": identity, "source_verified": True, "evidence_valid": True,
               "independence_verified": True, "independence_basis": frozen["independence_basis"],
               "evidence_version": OUTCOME_VERSION, "policy_hash": frozen["policy_hash"],
@@ -174,6 +177,7 @@ class ContinuousLearning:
                 ("learning_ingest", self.ingest, 15, 6),
                 ("learning_outcomes", self.outcomes, 15, 6),
                 ("learning_candidates", self.candidates, 30, 6),
+                ("learning_knowledge_catalog", self.knowledge_catalog, 60, 6),
                 ("learning_trade_evidence", self.trades, 30, 6),
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_memory", self.memory, 300, 6))
@@ -236,6 +240,7 @@ class ContinuousLearning:
                     learned_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     CHECK(octet_length(evidence::text)<=32768))""")
                 c.execute("CREATE INDEX IF NOT EXISTS learning_forecasts_pending ON learning_forecasts(due_at,id) WHERE status='PENDING'")
+                c.execute("CREATE INDEX IF NOT EXISTS learning_forecasts_pending_scope ON learning_forecasts(asset,horizon,source_key) WHERE status='PENDING'")
                 c.execute("CREATE INDEX IF NOT EXISTS learning_forecasts_ready ON learning_forecasts(decision_at,id) WHERE status='READY'")
                 c.execute("CREATE INDEX IF NOT EXISTS learning_forecasts_learned ON learning_forecasts(learned_at) WHERE learned_at IS NOT NULL")
             self.boot_phase = 2
@@ -247,6 +252,11 @@ class ContinuousLearning:
                 self.trade.ensure_schema(context)
             self.boot_phase = 3
             return {"status": "PROGRESS", "stage": "TRADE_SCHEMA"}
+        if self.boot_phase == 3:
+            KNOWLEDGE.ensure_schema(self.connect, context=context)
+            KNOWLEDGE.restore(self.connect, context=context)
+            self.boot_phase = 4
+            return {"status": "PROGRESS", "stage": "KNOWLEDGE_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
         progress = STORE.load_snapshot(self.connect, "learning_progress", PROGRESS_VERSION)
         with self._lock:
@@ -261,7 +271,7 @@ class ContinuousLearning:
 
     def ingest(self, context, cursor):
         last_id = int(cursor.get("last_id") or 0)
-        inserted = missing = 0
+        inserted = missing = coalesced = 0
         with transaction(self.connect, context) as c:
             if "last_id" not in cursor:
                 # A newly installed evidence protocol starts at its first
@@ -285,18 +295,25 @@ class ContinuousLearning:
                 if forecast:
                     got = c.execute("""INSERT INTO learning_forecasts
                         (entity_key,decision_at,due_at,expires_at,asset,horizon,source_key,evidence)
-                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                        SELECT %s,%s,%s,%s,%s,%s,%s,%s::jsonb
+                        WHERE NOT EXISTS (SELECT 1 FROM learning_forecasts
+                          WHERE status='PENDING' AND asset=%s AND horizon=%s AND source_key=%s
+                            AND evidence->>'regime'=%s AND evidence->>'policy_hash'=%s)
                         ON CONFLICT(entity_key) DO NOTHING RETURNING id""",
-                        tuple(forecast[k] for k in ("entity_key", "decision_at", "due_at", "expires_at", "asset", "horizon", "source_key"))+(_json(forecast["evidence"]),)).fetchone()
+                        tuple(forecast[k] for k in ("entity_key", "decision_at", "due_at", "expires_at", "asset", "horizon", "source_key"))+
+                        (_json(forecast["evidence"]),forecast["asset"],forecast["horizon"],forecast["source_key"],
+                         forecast["evidence"]["regime"],forecast["evidence"]["policy_hash"])).fetchone()
                     inserted += bool(got)
+                    coalesced += not bool(got)
                 else:
                     missing += 1
                 last_id = row["id"]
         cursor = dict(cursor, last_id=last_id, imported=int(cursor.get("imported") or 0)+inserted,
+                      coalesced=int(cursor.get("coalesced") or 0)+coalesced,
                       missing_provenance=int(cursor.get("missing_provenance") or 0)+missing)
         with self._lock:
             self._stats["processed_decisions"] = cursor["imported"]
-        return {"status": "OK", "imported": inserted, "excluded_missing_provenance": missing,
+        return {"status": "OK", "imported": inserted, "coalesced": coalesced, "excluded_missing_provenance": missing,
                 "pending_before": pending, "cursor": last_id}, cursor
 
     def _quote(self, forecast, now):
@@ -331,6 +348,9 @@ class ContinuousLearning:
             rows = c.execute("SELECT id,outcome FROM learning_forecasts WHERE status='READY' ORDER BY decision_at,id LIMIT %s", (BATCH,)).fetchall()
         observations = [r["outcome"] for r in rows if r["outcome"].get("direction") in ("LONG", "SHORT")]
         snapshot = AUTO.run_batch(self.connect, observations, context=context)
+        knowledge_rows = [r["outcome"] for r in rows if r["outcome"].get("knowledge_trials")]
+        if knowledge_rows:
+            KNOWLEDGE.run_batch(self.connect, knowledge_rows, context=context)
         context.check()
         # Deduplication and the model snapshot committed first. A crash before
         # this acknowledgement replays the same immutable IDs without inflation.
@@ -351,11 +371,15 @@ class ContinuousLearning:
 
     def trades(self, context, cursor):
         result = self.trade.process(context)
+        KNOWLEDGE.update_integrity_verification(self.trade.validation_status())
         if result.get("snapshot"):
             with self._lock:
                 self._snapshot = result["snapshot"]
             BRIDGE.update(result["snapshot"])
         return {k: v for k, v in result.items() if k != "snapshot"}, cursor
+
+    def knowledge_catalog(self, context, cursor):
+        return KNOWLEDGE.refresh_catalog(self.connect, context=context), cursor
 
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
@@ -437,6 +461,7 @@ class ContinuousLearning:
         result["knowledge"] = dict(self.ns.get("knowledge_automation_state") or {})
         result["knowledge"].update(automation_enabled=bool(self.ns.get("KNOWLEDGE_AUTOMATION")),
                                     compiler_configured=bool(self.ns.get("KNOWLEDGE_LLM_ENABLED") and self.ns.get("OPENAI_API_KEY")))
+        result["knowledge_validation"] = KNOWLEDGE.snapshot()
         result["outcome_protocol"] = OUTCOME_VERSION
         result["last_error"] = result["continuous"]["last_error"]
         result["active_profile_count"] = len(result.get("profiles") or [])

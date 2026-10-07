@@ -21,6 +21,13 @@ def functions(*names, scope=None):
 
 
 class LearningRuntimeTests(unittest.TestCase):
+    def test_truncated_compiler_reply_has_an_explicit_reason_and_cannot_parse_as_success(self):
+        namespace=functions('_response_text',scope={})
+        for reason in ('max_output_tokens','max_tokens'):
+            with self.assertRaisesRegex(ValueError,'COMPILER_OUTPUT_LIMIT'):
+                namespace['_response_text']({'status':'incomplete','incomplete_details':{'reason':reason},
+                                             'output':[{'content':[{'type':'output_text','text':'{}'}]}]})
+
     def test_read_marks_existing_queue_without_starting_thread(self):
         lane = Mock()
         namespace = functions('learning_progress', scope={

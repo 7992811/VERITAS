@@ -19,6 +19,7 @@ import veritas_learning_state as STORE
 import veritas_trade_audit as AUDIT
 import veritas_autonomous_learning as AUTO
 import veritas_price_source as SOURCE
+import veritas_knowledge_validation as KNOWLEDGE
 
 VERSION = "CLOSED_TRADE_MICROBATCH_V1"
 JOB_NAME = "closed_trade_learning"
@@ -87,7 +88,9 @@ def observation(trade, *, now=None):
         proof_kind='SIMULATED_SIZE_ON_OBSERVED_PATH',
         known_at=known.isoformat() if known else None,decision_at=decision.isoformat() if decision else None,
         outcome_at=closed.isoformat() if closed else None,observed_at=clock.isoformat() if clock else None,
-        predicted_probability=_number(stamp.get('base_probability')))
+        predicted_probability=_number(stamp.get('base_probability')),
+        net_reward_risk=_number(stamp.get('net_reward_risk')),
+        knowledge_trials=stamp.get('knowledge_trials') or [])
     problem=LI.trade_exclusion(t)
     verified=bool(t.get('episode_eligible') is True and integrity.get('version')==LI.VERSION
                   and integrity.get('status')=='VERIFIED'
@@ -138,12 +141,17 @@ def observation(trade, *, now=None):
     if risk_cap_r<1.-1e-8:
         return None,'BASELINE_EXCEEDS_FROZEN_RISK_CAP'
     probability=common['predicted_probability']
-    if probability is None or not 0<=probability<=1:
-        return None,'MISSING_FROZEN_PROBABILITY'
+    if stamp.get('base_probability') is not None and (probability is None or not 0<=probability<=1):
+        return None,'INVALID_FROZEN_PROBABILITY'
+    if (probability is None and (common['net_reward_risk'] is None or common['net_reward_risk']<=0)
+            and not common['knowledge_trials']):
+        return None,'MISSING_FROZEN_PROBABILITY_OR_NET_REWARD_RISK'
+    if not isinstance(common['knowledge_trials'],list) or len(common['knowledge_trials'])>8:
+        return None,'INVALID_KNOWLEDGE_TRIALS'
     candidates=stamp.get('prospective_candidates') or []
     if not isinstance(candidates,list) or len(candidates)>8:
         return None,'INVALID_PROSPECTIVE_CANDIDATES'
-    candidates=[x for x in candidates if isinstance(x,dict) and x.get('kind')=='SIZE_DOWN_WEAK_SIGNAL']
+    candidates=[x for x in candidates if isinstance(x,dict) and x.get('kind') in AUTO.SIZE_KINDS]
     if len(candidates)>1:
         return None,'AMBIGUOUS_PROSPECTIVE_SIZE_TRIAL'
     candidate=candidates[0] if candidates else {}
@@ -153,10 +161,13 @@ def observation(trade, *, now=None):
         created,stamped=_time(candidate.get('created_at')),_time(candidate.get('candidate_decision_at'))
         if (not created or not stamped or not created<stamped<=decision
                 or candidate.get('scope')!=AUTO.scope_for(common)
-                or candidate.get('base_probability')!=probability):
+                or candidate.get('base_probability')!=probability
+                or (candidate.get('kind')=='SIZE_DOWN_UNCALIBRATED'
+                    and candidate.get('net_reward_risk')!=common['net_reward_risk'])):
             return None,'PROSPECTIVE_CANDIDATE_SCOPE_MISMATCH'
         expected=AUTO.size_execution(probability,fraction=before,step=stamp.get('position_step'),
-                                     cap=execution.get('max_fraction') if isinstance(execution,dict) else None)
+                                     cap=execution.get('max_fraction') if isinstance(execution,dict) else None,
+                                     kind=candidate.get('kind'),net_reward_risk=common['net_reward_risk'])
         if expected is None or execution!=expected:
             return None,'INVALID_FROZEN_SIZE_EXECUTION'
         factor=execution['effective_multiplier']
@@ -165,6 +176,10 @@ def observation(trade, *, now=None):
         baseline_risk_r=1.,candidate_risk_r=factor,risk_cap_r=risk_cap_r,
         net_r=baseline_net_r,candidate_id=candidate.get('candidate_id'),
         candidate_decision_at=candidate.get('candidate_decision_at'))
+    if common['knowledge_trials']:
+        result['knowledge_cashflows']=dict(proof_kind=KNOWLEDGE.PROOF_KIND,cashflows_verified=True,
+            source_evidence_hash=evidence_hash,baseline_net_r=baseline_net_r,baseline_risk_r=1.,risk_cap_r=risk_cap_r,
+            fraction_before=before,position_step=stamp.get('position_step'),max_fraction=stamp.get('max_fraction'))
     if execution is not None: result['size_execution']=execution
     return result,None
 
@@ -278,6 +293,8 @@ class TradeLearning:
                     if reason:exclusions[reason]+=1
                 if observations:
                     published_snapshot=AUTO.run_batch(pg,observations,now=clock,context=context)
+                    knowledge_rows=[r for r in observations if r.get('knowledge_trials')]
+                    if knowledge_rows: KNOWLEDGE.run_batch(pg,knowledge_rows,now=clock,context=context)
                     result['autonomous']=published_snapshot
                     # Only bounded progress belongs in the job row; the full
                     # candidate snapshot already has its own durable slot.
@@ -318,6 +335,8 @@ class TradeLearning:
                         # even when the LI diagnostic projection is unchanged.
                         LI.invalidate('consumed_trade_evidence_changed')
                         published_snapshot=AUTO.run_batch(pg,revoked,now=clock,context=context)
+                        knowledge_rows=[r for r in revoked if r.get('knowledge_trials')]
+                        if knowledge_rows: KNOWLEDGE.run_batch(pg,knowledge_rows,now=clock,context=context)
                         with self._transaction(context) as c:
                             c.execute('UPDATE learning_trade_receipts SET valid=FALSE,updated_at=now() WHERE trade_id=ANY(%s)',(ids,))
                     current=LI.memory_state()

@@ -17,6 +17,7 @@ import weakref
 
 import veritas_maintenance as VM
 import veritas_storage_guard as VSG
+import veritas_signal_publication as VSP
 
 
 RUNTIME = Path(__file__).with_name("veritas_intelligence.py")
@@ -109,7 +110,7 @@ class CyclePublicationIntegrationTests(unittest.TestCase):
             trace.append("submit")
             return lane.submit(request)
 
-        ns.update(make_state=make_state, lock=lock, last_cycle=last,
+        ns.update(make_state=make_state, lock=lock, last_cycle=last, VSP=VSP,
                   VBR=SimpleNamespace(publish_summary=lambda rows: list(rows), snapshot=lambda: {}),
                   _v90_background_maintenance=SimpleNamespace(prepare=prepare, submit=submit),
                   _v90_trim_memory=trim, made=1, outcomes=0, status="ok", storage={"ok": True},

@@ -19,6 +19,8 @@ import unittest
 from unittest.mock import patch
 import weakref
 
+import veritas_signal_publication as VSP
+
 
 RUNTIME = Path(__file__).with_name("veritas_intelligence.py")
 
@@ -187,7 +189,7 @@ class ActiveCycleAllocatorBoundaryTests(unittest.TestCase):
 
         self.namespace.update(rss_mb=lambda: self.rss, emit=emit,
                               time=__import__('time'),
-                              gc=SimpleNamespace(collect=lambda: self.trace.append("gc")))
+                              gc=SimpleNamespace(collect=lambda generation=2: self.trace.append("gc")))
         libc = SimpleNamespace(malloc_trim=malloc_trim)
         self.ctypes_patch = patch.dict("sys.modules", {
             "ctypes": SimpleNamespace(CDLL=lambda name: libc)})
@@ -281,6 +283,8 @@ class ActiveCycleAllocatorBoundaryTests(unittest.TestCase):
                   ("bundle", "raw", "deriv", "common_structure")}
         ns.update(active)
         ns.update(summary=[], entity_key="CNYRUBF:1h", asset="CNYRUBF", horizon="1h",
+                  VSP=VSP, cycle_id="fixture", cycle_mode="FAST_5M",
+                  lock=threading.RLock(),
                   dec="SELL", conf=0.7, score=-0.5, kmatches=[], horizon_wall_t0=10.0,
                   time=SimpleNamespace(time=lambda: 12.0), horizon_timings={},
                   asset_timings={"CNYRUBF": {"horizons": 0.0}},
@@ -290,7 +294,7 @@ class ActiveCycleAllocatorBoundaryTests(unittest.TestCase):
                   _v90_compact_decision_log=lambda row: {"price": row["price"]})
         observed = []
 
-        def collect():
+        def collect(generation=2):
             observed.append({name: ref() is None for name, ref in released.items()})
             self.trace.append("gc")
 
@@ -304,6 +308,12 @@ class ActiveCycleAllocatorBoundaryTests(unittest.TestCase):
 
         ns["gc"] = SimpleNamespace(collect=collect)
         ns["features"] = features
+        # Publication adds UI progress to the existing object. The financial
+        # values and all cache identities still have their unchanged assertions.
+        publication = {"summary": [], "cycle_in_progress": {
+            "cycle_id": "fixture", "cycle_mode": "FAST_5M"}}
+        self.warm_values["last_cycle"].update(deepcopy(publication))
+        self.financial.update(deepcopy(publication))
         exec(compile(ast.Module(body=horizon.body[start:], type_ignores=[]), str(RUNTIME), "exec"), ns)
         self.assertEqual(observed, [{name: True for name in released}])
         self.assertEqual(ns["summary"], [{"price": 12.74}])

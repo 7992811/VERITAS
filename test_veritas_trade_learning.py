@@ -43,6 +43,23 @@ def stamped_trade(*,after=.10,step=.01,net=30.):
 
 
 class TradeObservationTests(unittest.TestCase):
+    def test_native_trade_without_probability_trains_and_preserves_its_rr_trial(self):
+        t,_=stamped_trade();stamp=t['payload']['entry_canonical_admission']['autonomous_learning']
+        stamp.update(base_probability=None,net_reward_risk=1.2,max_fraction=.5,prospective_candidates=[])
+        initial,reason=T.observation(t,now=t['closed_at']+timedelta(seconds=1))
+        self.assertIsNone(reason);self.assertIsNone(initial['predicted_probability'])
+        candidate=A.register_candidate(A.scope_for(initial),{'n':32,'evidence_hash':'prior'},
+                                       'SIZE_DOWN_UNCALIBRATED',now=t['opened_at']-timedelta(seconds=2))
+        context=dict(initial,base_probability=None,fraction=.10,position_step=.01,max_fraction=.50)
+        stamp['prospective_candidates']=A.freeze_candidates({'candidates':[candidate]},context,now=t['opened_at'])
+        row,reason=T.observation(t,now=t['closed_at']+timedelta(seconds=1))
+        self.assertIsNone(reason);self.assertEqual(row['candidate_id'],candidate['candidate_id'])
+        normalized,reason=A.normalize_observation(row,t['closed_at']+timedelta(seconds=1))
+        self.assertIsNone(reason);self.assertIsNone(A._candidate_values(candidate,normalized)[1])
+        stamp['net_reward_risk']=2.0
+        self.assertEqual(T.observation(t,now=t['closed_at']+timedelta(seconds=1))[1],
+                         'PROSPECTIVE_CANDIDATE_SCOPE_MISMATCH')
+
     def test_net_cashflows_use_common_original_risk_and_prospective_size(self):
         t,candidate=stamped_trade();before=deepcopy(t)
         row,error=T.observation(t,now=t['closed_at']+timedelta(seconds=1))
