@@ -155,7 +155,14 @@ def ensure_schema(pg_connect):
                 raise RuntimeError('PORTFOLIO_SCHEMA_INCOMPLETE')
         elif not c.execute("SELECT 1 AS ok FROM v90_migration_state WHERE key=%s",(PORTFOLIO_MIGRATION_MARKER,)).fetchone():
             _v90_migrate_portfolio_data(c)
+        # ON CONFLICT locks an existing row even when its UPDATE WHERE is false.
+        # Use MVCC/jsonb equality to avoid locking books whose metadata is current.
+        current_policies={r['name'] for r in c.execute("""SELECT name FROM paper_portfolios
+            WHERE name=ANY(%s) AND policy=(%s::jsonb -> name) AND model_version=%s""",
+            (list(POLICIES),json.dumps(POLICIES),VERSION)).fetchall()}
         for name,pol in POLICIES.items():
+            if name in current_policies:
+                continue
             initial_nav=float(pol.get('initial_nav_rub',INITIAL_NAV_RUB))
             c.execute('''INSERT INTO paper_portfolios(name,created_at,updated_at,initial_nav_rub,benchmark_nav_rub,high_water_nav_rub,policy,model_version)
                          VALUES(%s,now(),now(),%s,%s,%s,%s::jsonb,%s)

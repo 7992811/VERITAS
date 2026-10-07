@@ -7,8 +7,11 @@ import ast
 from contextlib import contextmanager
 from copy import deepcopy
 import gc
+import json
 from pathlib import Path
 import sqlite3
+import struct
+import sys
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -300,6 +303,258 @@ class ActiveCycleAllocatorBoundaryTests(unittest.TestCase):
         exec(compile(ast.Module(body=[feature_assignment], type_ignores=[]), str(RUNTIME), "exec"), ns)
         self.assertEqual(self.trace, ["alert", "decision", "gc", "malloc_trim", "memory_trim", "features"])
         self.assert_warm_state()
+
+
+class SnapshotArchiveLifetimeTests(unittest.TestCase):
+    """Exercise the real archive coordinator with disposable reader graphs."""
+    def setUp(self):
+        enabled = gc.isenabled()
+        gc.disable()
+        self.addCleanup(lambda: gc.enable() if enabled else None)
+        self.addCleanup(gc.collect)
+        self.ns = cache_namespace()
+        self.trace, self.queries, self.events, self.refs = [], [], [], {}
+        self.failure = None
+        self.now_ts = 7200.0
+        self.expected_drift = {"status": "WARN", "rule_drift_count": 120,
+                               "rules": [{"rule": "retained"}], "agents": [{"agent": "macro"}]}
+        self.expected_performance = [{"asset": "CNYRUBF", "horizon": "1h", "n": 50001,
+                                     "avg_signed_return": -.00125, "avg_mae": 0.0}]
+        self.expected_health = {"status": "ok", "entry_context_by_asset": {"CNYRUBF": {"eligible": True}},
+                                "backtest": {"finished": True}}
+        self.ns["market_cache"]["CNYRUBF"] = {"native": [12.75, 12.74]}
+        self.ns["analytics_cache"]["warm"] = {"quality": .7}
+        self.warm_values = deepcopy({k: self.ns[k] for k in ("market_cache", "analytics_cache")})
+        self.replacement = {"status": "ok", "summary": [], "current_quote": 12.74}
+        fields = {"asset": "CNYRUBF", "horizon": "1h", "decision": "SHORT",
+                  "research_decision": "SHORT", "confidence": .7, "price": 12.74,
+                  "regime": "TREND", "signal_tier": "SHORT", "execution_eligible": True,
+                  "decision_stage": "READY", "horizon_structure_state": "CONFIRMED_TREND",
+                  "horizon_structure_score": .8, "entry_quality": "FRESH_BREAKOUT",
+                  "stop_price": 12.9, "target_price": 12.5, "expected_move_pct": .02,
+                  "expected_to_stop_ratio": 1.5}
+        ns, replacement = self.ns, self.replacement
+
+        class ReplacedRow(WeakRow):
+            def get(row, key, default=None):
+                value = super().get(key, default)
+                if key == "expected_to_stop_ratio":
+                    # A fast-lane publisher may replace last_cycle while the
+                    # archive still owns the old shallow snapshot.
+                    ns["last_cycle"] = replacement
+                return value
+
+        row = ReplacedRow(fields, native_history="unused proof" * 20000)
+        self.refs["old_row"] = weakref.ref(row)
+        cycle = {"status": "ok", "at": "2026-10-07T13:25:24Z", "version": "TEST",
+                 "cycle_mode": "FULL", "signal_cells": 49, "decisions_written": 49,
+                 "outcomes_written": 0}
+        self.expected_cycle = dict(cycle, summary=[fields])
+        self.ns.update(last_cycle=dict(cycle, summary=[None, row]), lock=threading.Lock(),
+                       pg_enabled=lambda: True, pg_connect=self.connect,
+                       model_drift_status=lambda: self.reader("drift"),
+                       pg_live_performance=lambda: self.reader("performance"),
+                       product_health=lambda: self.reader("health"),
+                       time=SimpleNamespace(time=lambda: self.now_ts),
+                       now=lambda: "2026-10-07T13:25:24Z", json=json,
+                       _v90r39_snapshot_state={"last_at": 0.0},
+                       rss_mb=lambda: 500.0, gc=gc,
+                       emit=lambda event, **kw: self.events.append((event, kw)),
+                       _v90_memory_checkpoint=self.checkpoint)
+        libc = SimpleNamespace(malloc_trim=lambda _: self.trace.append("malloc_trim"))
+        self.ctypes = patch.dict(sys.modules, {"ctypes": SimpleNamespace(CDLL=lambda _: libc)})
+        self.ctypes.start()
+        self.addCleanup(self.ctypes.stop)
+        isolated_helper("_v90_prune_low_priority_caches", self.ns)
+        actual_trim = isolated_helper("_v90_trim_memory", self.ns)
+
+        def trim(phase, **kw):
+            self.trace.append(phase)
+            result = actual_trim(phase, **kw)
+            self.assertEqual(result["caches_cleared"], 0)
+            if phase == "snapshot_end":
+                self.assert_transients_released()
+            return result
+
+        self.ns["_v90_trim_memory"] = trim
+        self.save = isolated_helper("save_product_snapshot", self.ns)
+
+    def reader(self, name):
+        self.trace.append(name)
+        if name != "drift":
+            previous = "drift" if name == "performance" else "performance"
+            self.assertIsNone(self.refs[previous + "_scratch"]())
+            self.assertIsNone(self.refs["old_row"]())
+        scratch = WeakRow(proof="temporary reader state")
+        scratch["cycle"] = scratch
+        self.refs[name + "_scratch"] = weakref.ref(scratch)
+        if self.failure == name:
+            raise ValueError(name + " failed")
+        value = deepcopy(getattr(self, "expected_" + name))
+        result = WeakRow(value) if isinstance(value, dict) else WeakList(value)
+        self.refs[name + "_result"] = weakref.ref(result)
+        return result
+
+    @contextmanager
+    def connect(self):
+        self.trace.append("db_open")
+        self.assertIsNone(self.refs["health_scratch"]())
+        owner = self
+
+        class Connection:
+            def execute(connection, sql, params=None):
+                text = " ".join(sql.split())
+                owner.queries.append((text, params))
+                for name in ("drift", "performance", "health"):
+                    owner.assertIsNotNone(owner.refs[name + "_result"]())
+                if owner.failure == "persist":
+                    raise RuntimeError("archive write failed")
+
+        connection = Connection()
+        self.refs["connection"] = weakref.ref(connection)
+        try:
+            yield connection
+        finally:
+            self.trace.append("db_close")
+
+    def assert_transients_released(self):
+        for name, ref in self.refs.items():
+            if name != "old_row":
+                self.assertIsNone(ref(), name + " outlived final cleanup")
+
+    def checkpoint(self, phase, asset):
+        self.trace.append(phase)
+        if phase == "snapshot_ready":
+            self.assert_transients_released()
+            self.assertLess(self.trace.index("snapshot_end"), self.trace.index("snapshot_ready"))
+
+    def test_archive_fields_sql_retention_and_reader_lifetimes_are_preserved(self):
+        self.save()
+        self.assertEqual(self.ns["_v90r39_snapshot_state"]["last_at"], self.now_ts)
+        self.assertEqual([x for x in self.trace if x != "malloc_trim"], [
+            "snapshot_start", "drift", "snapshot_drift_done", "performance",
+            "snapshot_performance_done", "health", "snapshot_health_done",
+            "db_open", "db_close", "snapshot_end", "snapshot_ready"])
+        self.assertEqual([q for q, _ in self.queries], [
+            "INSERT INTO product_snapshots(created_at,snapshot_type,payload) VALUES(%s,%s,%s::jsonb)",
+            "INSERT INTO model_drift_snapshots(created_at,payload) VALUES(%s,%s::jsonb)",
+            "DELETE FROM product_snapshots WHERE snapshot_id NOT IN ( SELECT snapshot_id FROM product_snapshots ORDER BY created_at DESC LIMIT 24 )",
+            "DELETE FROM model_drift_snapshots WHERE snapshot_id NOT IN ( SELECT snapshot_id FROM model_drift_snapshots ORDER BY created_at DESC LIMIT 48 )"])
+        first, second = self.queries[0][1], self.queries[1][1]
+        self.assertEqual(first[:2], ("2026-10-07T13:25:24Z", "overview"))
+        self.assertEqual(json.loads(first[2]), {"cycle": self.expected_cycle,
+            "performance": self.expected_performance, "health": self.expected_health,
+            "drift": self.expected_drift})
+        self.assertEqual(json.loads(second[1]), self.expected_drift)
+        self.assertIsNone(self.refs["old_row"]())
+        self.assertIs(self.ns["last_cycle"], self.replacement)
+        for name, value in self.warm_values.items():
+            self.assertEqual(self.ns[name], value)
+        self.assertFalse(any(e == "snapshot_error" for e, _ in self.events))
+
+    def test_archive_failure_cleans_completed_stages_and_preserves_retry(self):
+        for failure in ("drift", "performance", "health", "persist"):
+            with self.subTest(failure=failure):
+                case = SnapshotArchiveLifetimeTests("runTest")
+                case.setUp()
+                try:
+                    case.failure = failure
+                    case.save()
+                    case.assert_transients_released()
+                    self.assertEqual(case.ns["_v90r39_snapshot_state"]["last_at"], 0.0)
+                    self.assertNotIn("snapshot_ready", case.trace)
+                    self.assertEqual(case.trace[-2:], ["snapshot_end", "malloc_trim"])
+                    self.assertEqual(sum(e == "snapshot_error" for e, _ in case.events), 1)
+                    if failure == "persist":
+                        self.assertIn("db_close", case.trace)
+                finally:
+                    case.doCleanups()
+
+    def test_archive_throttle_and_disabled_database_do_not_run_readers_or_gc(self):
+        self.ns["_v90r39_snapshot_state"]["last_at"] = self.now_ts - 3599
+        self.save()
+        self.ns["_v90r39_snapshot_state"]["last_at"] = 0.0
+        self.ns["pg_enabled"] = lambda: False
+        self.save()
+        self.assertEqual(self.trace, [])
+        self.assertEqual(self.queries, [])
+        self.assertEqual(self.events, [])
+
+
+class WeakList(list):
+    __slots__ = ("__weakref__",)
+
+
+class SnapshotPerformanceDenseBufferTests(unittest.TestCase):
+    def test_binary64_buffers_preserve_legacy_aggregate_bits(self):
+        from test_veritas_snapshot_memory_sql import load_reader, MemoryConnection
+
+        def bits(value):
+            if isinstance(value, float):
+                return ("binary64", struct.pack("!d", value))
+            if isinstance(value, dict):
+                return {key: bits(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [bits(item) for item in value]
+            return value
+
+        cases = {"cancel": [1e16, 1.0, -1e16, 3.25, -8.5, 5e-324, -5e-324],
+                 "negative_zero": [-0.0, "-0.0", 0.0],
+                 "nan": [float("nan"), -0.0, 1.0],
+                 "infinity": [float("inf"), 1.0],
+                 "negative_infinity": [float("-inf"), -1.0],
+                 "opposite_infinities": [float("inf"), float("-inf")]}
+        for case, values in cases.items():
+            with self.subTest(case=case):
+                rows = [{"asset": "CNYRUBF", "horizon": "1h",
+                         "decision": {"decision": direction},
+                         "outcome": {"forward_return": value,
+                                     "mfe": None if i % 3 else value,
+                                     "mae": value if i % 2 else -0.0}}
+                        for direction in ("LONG", "SHORT", "NO_TRADE")
+                        for i, value in enumerate(values)]
+                rows.append({"asset": "CNYRUBF", "horizon": "1h",
+                             "decision": {"decision": "LONG"}, "outcome": {"forward_return": None}})
+                old, current = MemoryConnection(rows), MemoryConnection(rows)
+                self.assertEqual(bits(load_reader(current.connect)()),
+                                 bits(load_reader(old.connect, legacy=True)()))
+
+    def test_reader_retains_compact_double_buffers_for_all_observations(self):
+        from array import array
+        import veritas_learning_memory as memory
+        refs, observed = [], {}
+        count = 4096
+
+        def buffer(typecode):
+            self.assertEqual(typecode, "d")
+            value = array(typecode)
+            refs.append(weakref.ref(value))
+            return value
+
+        def rows():
+            for i in range(count):
+                yield {"asset": "CNYRUBF", "horizon": "1h", "decision": {"decision": "SHORT"},
+                       "outcome": {"forward_return": -.1/(i+1), "mfe": .3/(i+1), "mae": -.2/(i+1)}}
+
+        @contextmanager
+        def stream(_):
+            yield rows()
+            buffers = [ref() for ref in refs if ref() is not None]
+            observed.update(values=sum(map(len, buffers)),
+                            bytes=sum(sys.getsizeof(value) for value in buffers))
+
+        reader = isolated_helper("pg_live_performance", {
+            "pg_enabled": lambda: True, "pg_connect": lambda: None, "json": json})
+        with patch("array.array", side_effect=buffer), \
+                patch.object(memory, "live_performance_rows", stream):
+            result = reader()
+        self.assertEqual(result[0]["n"], count)
+        self.assertEqual(result[0]["directional_n"], count)
+        self.assertEqual(observed["values"], count*4)
+        # Includes allocated array capacity and object headers; Python float
+        # objects plus list references would require at least 32 bytes/value.
+        self.assertLess(observed["bytes"], observed["values"]*12)
+        self.assertTrue(all(ref() is None for ref in refs))
 
 
 if __name__ == "__main__":
