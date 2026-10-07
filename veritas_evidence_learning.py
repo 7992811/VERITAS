@@ -116,6 +116,7 @@ class Ledger:
 class LearningLoop:
     def __init__(self, ns, ledger=None, clock=time.time):
         self.ns, self.clock = ns, clock
+        self.started_at = clock()
         self.ledger = ledger or Ledger(ns["pg_connect"], ns["VERSION"])
         self.lock, self.state_lock = threading.Lock(), threading.Lock()
         self.wake, self.stop = threading.Event(), threading.Event()
@@ -149,6 +150,7 @@ class LearningLoop:
         previous = previous or {}
         cache = getattr(self.ns.get("learning_progress"), "_cache", None)
         return {"protocol_version": VERSION, "run_id": uuid.uuid4().hex,
+                "runtime_started_at": self.started_at,
                 "model_version": self.ns["VERSION"], "deploy_sha": self.ns["VR"].deployment_sha(),
                 "status": "SCHEDULED", "durable": True, "created_at": timestamp(now),
                 "next_due_at": now + self.ns["HEAVY_LEARNING_START_DELAY_SECONDS"],
@@ -207,6 +209,11 @@ class LearningLoop:
                     self.publish(state)
                     return True
                 if state.get("protocol_version") != VERSION or state.get("model_version") != self.ns["VERSION"]:
+                    if state.get("runtime_started_at", 0) > self.started_at:
+                        # A draining old deployment must not replace the newer
+                        # version's checkpoint. A deliberate rollback starts later.
+                        self.publish(dict(state, superseded_worker=True))
+                        return False
                     # Do not combine checkpoints from different implementations.
                     old = dict(state, status="SUPERSEDED", superseded_at=timestamp(now))
                     self.ledger.save(c, old, "superseded")
@@ -220,10 +227,12 @@ class LearningLoop:
                     state["next_due_at"] = now
                     self.ledger.save(c, state, "scheduled")
                 name = state["next_stage"]
+                if state["status"] == "RUNNING":
+                    state["interrupted_stage_pending"] = True
                 try:
                     with self.ns["_v90_background_maintenance"].permit(
                             "evidence_learning:"+name, self.ns["V90_HEAVY_LEARNING_MAX_START_MB"]):
-                        replay = state["status"] == "RUNNING"
+                        replay = state.pop("interrupted_stage_pending", False)
                         state.update(status="RUNNING", reason=reason, last_started_at=timestamp(now),
                                      stage_started_at=timestamp(now))
                         state["attempts"][name] = state["attempts"].get(name, 0) + 1

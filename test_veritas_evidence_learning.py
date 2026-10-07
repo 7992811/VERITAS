@@ -169,6 +169,30 @@ class DurableLearningTests(unittest.TestCase):
         self.assertNotEqual(self.ledger.state['run_id'], old_id)
         self.assertEqual(self.ledger.state['stages'], {})
 
+    def test_old_deploy_cannot_supersede_newer_version_during_drain(self):
+        self.due()
+        newer_ns = namespace()
+        newer_ns['VERSION'] = 'new-release'
+        newer = E.LearningLoop(newer_ns, self.ledger, lambda: self.now)
+        newer.tick()
+        checkpoint = deepcopy(self.ledger.state)
+        self.loop.tick()
+        self.assertEqual(self.ledger.state, checkpoint)
+        self.assertTrue(self.loop.snapshot()['superseded_worker'])
+        self.assertEqual(self.calls, [])
+
+    def test_interruption_remains_visible_after_resource_deferral(self):
+        self.due()
+        self.ledger.fail_result = True
+        self.loop.tick()
+        self.ledger.fail_result = False
+        self.ns['rss_mb'] = lambda: 290
+        self.loop.tick()
+        self.assertTrue(self.ledger.state['interrupted_stage_pending'])
+        self.ns['rss_mb'] = lambda: 240
+        self.loop.tick()
+        self.assertEqual(self.ledger.state['interrupted_stage_replays'], 1)
+
     def test_exceptions_do_not_publish_credentials_or_advance_as_success(self):
         self.due()
         self.loop._stage = Mock(side_effect=RuntimeError('postgres://private:password@host'))
