@@ -423,6 +423,9 @@ class _LedgerSQLFixture(unittest.TestCase):
             c.execute("""CREATE TABLE ledger_events(
                 event_key text PRIMARY KEY,entity_key text,event_type text,
                 asset text,horizon text,payload jsonb,event_ts timestamptz)""")
+            c.execute("CREATE INDEX idx_ledger_type_ts ON ledger_events(event_type,event_ts DESC)")
+            c.execute("CREATE INDEX idx_ledger_entity ON ledger_events(entity_key,event_type)")
+            c.execute("CREATE INDEX idx_ledger_entity_type_ts ON ledger_events(entity_key,event_type,event_ts DESC)")
 
     @classmethod
     def drop_schema(cls):

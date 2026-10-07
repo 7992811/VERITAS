@@ -20,6 +20,7 @@ import veritas_trade_audit as AUDIT
 import veritas_autonomous_learning as AUTO
 import veritas_price_source as SOURCE
 import veritas_knowledge_validation as KNOWLEDGE
+from veritas_maintenance import MaintenanceDeferred
 
 VERSION = "CLOSED_TRADE_MICROBATCH_V1"
 JOB_NAME = "closed_trade_learning"
@@ -228,11 +229,14 @@ class TradeLearning:
     def _transaction(self,context, *, revalidate=False):
         self._check(context)
         with self.ns['pg_connect']() as c:
+            self._check(context)  # Connection checkout may consume the remaining budget.
             boundary=LI.revalidation_transaction(c) if revalidate else c.transaction()
             with boundary:
+                self._check(context)  # BEGIN/savepoint completion is another blocking boundary.
                 timeout=max(1,min(2000,int(getattr(context,'sql_timeout_ms',2000))))
                 c.execute("SET LOCAL statement_timeout = '"+str(timeout)+"ms'")
                 c.execute("SET LOCAL lock_timeout = '250ms'")
+                self._check(context)  # Timeout configuration also performs database round trips.
                 yield c
                 self._check(context)
     def _projection(self):
@@ -394,6 +398,11 @@ class TradeLearning:
             self._emit_phase(phase,'OK',next_stage=cursor['phase'],**{
                 key:result[key] for key in ('materialized','scanned','submitted','checked','revoked') if key in result})
             return result
+        except MaintenanceDeferred as ex:
+            # Preserve the committed cursor/last-good result when the lane's
+            # budget expires; a deferred job has not failed its SQL contract.
+            STORE.checkpoint_job(pg,lease,status='RETRY',result=ex.result(),retry_after_seconds=15)
+            raise
         except Exception as ex:
             # Report the type without leaking a connection string/query payload.
             self._emit_phase(phase,'ERROR',error_type=type(ex).__name__)

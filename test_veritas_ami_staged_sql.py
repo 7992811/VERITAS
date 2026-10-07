@@ -28,7 +28,15 @@ class AMIStagedContractTests(unittest.TestCase):
         c = Capture()
         self.assertEqual(M.ami_decision_sample(c), [])
         query = c.calls[0][0]
-        self.assertEqual(tail(query), tail(LEGACY_AMI_QUERY))
+        # Normalize only this exact, unbounded entity probe. Any changed key,
+        # eligibility, OFFSET or per-entity LIMIT must fail the legacy contract.
+        probe = ("CROSS JOIN LATERAL ( SELECT o.id FROM ledger_events o "
+                 "WHERE o.entity_key=d.entity_key AND o.event_type='outcome' "
+                 "AND o.payload ? 'forward_return' OFFSET 0 ) AS o WHERE d.event_type='decision'")
+        original = ("JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome' "
+                    "WHERE d.event_type='decision' AND o.payload ? 'forward_return'")
+        self.assertIn(probe, tail(query))
+        self.assertEqual(tail(query).replace(probe, original), tail(LEGACY_AMI_QUERY))
         self.assertNotIn("d.payload", query)
         self.assertNotIn("DISTINCT", query)
         self.assertIn("d.id AS decision_id,o.id AS outcome_id,d.event_ts", query)

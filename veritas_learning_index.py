@@ -86,6 +86,12 @@ def snapshot(lp):
     return {key: lp.get(key) for key in keys}
 
 
+def audit_identity_ready(lp):
+    """A bootstrap placeholder has no computed formula/sample-mode identity."""
+    return all(isinstance(lp.get(key), str) and bool(lp[key].strip())
+               for key in ("index_version", "mode"))
+
+
 def payload(row):
     value = (row or {}).get("payload") or {}
     return value if isinstance(value, dict) else json.loads(value)
@@ -113,6 +119,8 @@ def component_changes(lp, base):
 
 def daily_audit(connection, lp, day, maturity, sources, rules, eligible):
     """Never compare formulas/modes or rewrite an earlier daily baseline."""
+    if not audit_identity_ready(lp):
+        raise ValueError("LEARNING_AUDIT_IDENTITY_REQUIRED")
     key = baseline_key(day, lp)
     select = "SELECT created_at,payload FROM learning_baselines WHERE baseline_key=%s"
     base = connection.execute(select, (key,)).fetchone()

@@ -298,6 +298,42 @@ class TradeCallbackContracts(unittest.TestCase):
         self.assertEqual(saved.call_args.kwargs["cursor"]["phase"], "revalidate")
         self.assertIsNone(self.app._stats["last_success_at"])
 
+    def test_cooperative_inner_deferral_keeps_one_retry_and_previous_diagnostics(self):
+        deferred = C.MaintenanceDeferred("DEFERRED_TIME_BUDGET", reason="synthetic_deadline")
+        self.connection.execute.side_effect = deferred
+        self.app._stats.update(last_error="previous diagnostic", last_success_at="previous success")
+        lease = {"cursor": {"phase": "materialize"}}
+        with patch.object(STORE, "claim_job", return_value=lease) as claim, \
+             patch.object(STORE, "checkpoint_job", return_value=True) as checkpoint:
+            with self.assertRaises(C.MaintenanceDeferred) as raised:
+                self.run_job()
+        self.assertIs(raised.exception, deferred)
+        claim.assert_called_once(); checkpoint.assert_called_once()
+        self.assertEqual(checkpoint.call_args.kwargs["status"], "RETRY")
+        self.assertEqual(checkpoint.call_args.kwargs["result"], deferred.result())
+        self.assertNotIn("cursor", checkpoint.call_args.kwargs)
+        self.assertEqual(lease["cursor"], {"phase": "materialize"})
+        self.assertEqual(self.app._stats["last_error"], "previous diagnostic")
+        self.assertEqual(self.app._stats["last_success_at"], "previous success")
+        self.assertFalse(any(call.kwargs.get("status") == "ERROR" for call in self.ns["emit"].call_args_list))
+
+    def test_cooperative_deferral_after_inner_commit_keeps_progress_without_outer_error(self):
+        deferred = C.MaintenanceDeferred("DEFERRED_TIME_BUDGET", reason="synthetic_after_commit")
+        def committed(*args, **kwargs):
+            self.app.lane.check_budget = Mock(side_effect=deferred)
+            return True
+        with patch.object(STORE, "claim_job", return_value={"cursor": {}}) as claim, \
+             patch.object(STORE, "checkpoint_job", side_effect=committed) as checkpoint:
+            with self.assertRaises(C.MaintenanceDeferred) as raised:
+                self.run_job()
+        self.assertIs(raised.exception, deferred)
+        claim.assert_called_once(); checkpoint.assert_called_once()
+        self.assertEqual(checkpoint.call_args.kwargs["status"], "OK")
+        self.assertEqual(checkpoint.call_args.kwargs["cursor"]["phase"], "revalidate")
+        self.assertIsNone(self.app._stats["last_success_at"])
+        self.assertIsNone(self.app._stats["last_error"])
+        self.assertEqual(self.ns["emit"].call_args.kwargs["status"], "OK")
+
     def test_diagnostic_failure_cannot_rollback_a_successful_phase(self):
         self.ns["emit"].side_effect = RuntimeError("logging unavailable")
         with patch.object(STORE, "claim_job", return_value={"cursor": {}}), \

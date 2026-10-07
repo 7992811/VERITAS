@@ -1,5 +1,6 @@
 """Persisted-label regressions against an explicitly isolated PostgreSQL schema."""
 import copy
+import hashlib
 import json
 import os
 import time
@@ -222,6 +223,144 @@ class PersistedLearningSQLTests(unittest.TestCase):
                 expected = worker.execute(self.previous_pending_query(), args).fetchall()
                 self.assertEqual(actual, expected)
                 self.assertEqual([row["episode_trade_id"] for row in actual], ["b_gold", "c_unknown"])
+
+    def test_record_projection_preserves_exact_proof_and_hash_for_all_root_shapes(self):
+        projected = LI._evidence_sql("t", root_field=lambda key: "evidence_payload."+key)
+        record_join = LI.payload_record_sql("t")
+        original = LI._evidence_sql("t")
+        fields = []
+        LI.payload_sql(root_field=lambda key: fields.append(key) or "unused")
+        with self.connect() as c:
+            valid = c.execute("SELECT payload FROM paper_trades WHERE trade_id='a_clean'").fetchone()["payload"]
+            shapes = [None, [], ["object-like"], "scalar", 7, False, {}, valid]
+            shapes += [{key: value for key in fields} for value in (None, [], {}, "bad", 7)]
+            for lock in ({"asset": "ETH"}, {"asset": "ETH", "source_pin_version": None},
+                         {"asset": "ETH", "provider_ticker": []}):
+                shapes.append(dict(valid, price_source_lock=lock,
+                                   source_locked_mark={"identity": lock}))
+            oversized = dict(valid, entry_event_snapshot={
+                "event_type": "VERIFIED_QUOTE_STRUCTURAL_BREAKOUT",
+                "synthetic_oversized_proof": "oversized"*20000})
+            shapes.append(oversized)
+            # None is a SQL NULL parameter only in the first case; json.dumps
+            # supplies explicit JSON null in the second case.
+            for index, encoded in enumerate([None]+[json.dumps(p) for p in shapes]):
+                with self.subTest(shape=index):
+                    c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='a_clean'", (encoded,))
+                    comparison = c.execute("""WITH proofs AS MATERIALIZED (
+                      SELECT """+original+""" AS original,"""+projected+""" AS projected
+                      FROM paper_trades t """+record_join+""" WHERE t.trade_id='a_clean')
+                      SELECT original=projected AS same_json,
+                        original::text=projected::text AS same_text,
+                        md5(original::text)=md5(projected::text) AS same_hash
+                      FROM proofs""").fetchone()
+                    self.assertEqual(dict(comparison), dict(same_json=True, same_text=True, same_hash=True))
+            # Missing LEFT JOIN trades must still produce one null-filled proof.
+            missing = c.execute("""SELECT """+original+""" AS original,"""+projected+""" AS projected
+              FROM (VALUES ('missing')) p(trade_id)
+              LEFT JOIN paper_trades t ON t.trade_id=p.trade_id """+record_join).fetchall()
+            self.assertEqual(len(missing), 1)
+            self.assertEqual(missing[0]["original"], missing[0]["projected"])
+
+    def test_bounded_pending_reads_large_toasted_roots_once_under_production_timeout(self):
+        with self.connect() as c:
+            unused, (query, args) = self.revalidation_queries(c, batch_size=LI.BATCH_SIZE)
+            projected = LI._evidence_sql("t", root_field=lambda key: "evidence_payload."+key)
+            record_join = LI.payload_record_sql("t")
+            self.assertEqual(query.count(projected), 1)
+            previous = query.replace(projected, LI._evidence_sql("t"), 1).replace(record_join, "", 1)
+            # High-entropy fabricated history is physically toasted, not a tiny
+            # repeated-string fixture. It is not part of the learning proof.
+            history = [{"bar": i, "close": 100+i/97,
+                        "synthetic_hash": hashlib.sha256(("synthetic-bar-"+str(i)).encode()).hexdigest(),
+                        "note": "fabricated historical telemetry"} for i in range(1800)]
+            extra = json.dumps({"synthetic_unrelated_history": history})
+            self.assertGreater(len(extra), 200000)
+            c.execute("""INSERT INTO paper_trades
+              SELECT 'synthetic_toast_'||lpad(n::text,3,'0'),t.asset,t.direction,t.horizon,t.status,
+                t.opened_at,t.closed_at,t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.net_pnl_rub,
+                t.payload||%s::jsonb||jsonb_build_object('synthetic_row',n)
+              FROM paper_trades t CROSS JOIN generate_series(1,%s) AS n
+              WHERE t.trade_id='a_clean'""", (extra, LI.BATCH_SIZE))
+            c.execute("""INSERT INTO v90_learning_episodes
+              SELECT t.trade_id,t.asset,t.direction,t.horizon,t.closed_at,'BREAKOUT','TREND',
+                t.net_pnl_rub,1.0,.7,'DATA_EVIDENCE_PENDING','["DATA_EVIDENCE_PENDING"]'::jsonb,
+                'AWAIT_SOURCE_EVIDENCE_REVALIDATION',FALSE,
+                jsonb_build_object('learning_integrity',jsonb_build_object(
+                  'version',%s::text,'status','PENDING','requested_at','2042-01-01T00:00:00Z'))
+              FROM paper_trades t WHERE t.trade_id LIKE 'synthetic_toast_%%'""", (LI.VERSION,))
+            size = c.execute("""SELECT min(octet_length(payload::text)) AS source_bytes,
+              min(pg_column_size(payload)) AS stored_bytes FROM paper_trades
+              WHERE trade_id LIKE 'synthetic_toast_%'""").fetchone()
+            self.assertGreater(size["source_bytes"], 200000)
+            self.assertGreater(size["stored_bytes"], 8192)
+            self.assertLess(size["stored_bytes"], size["source_bytes"])
+            c.execute("SET LOCAL statement_timeout = '4000ms'")
+            plan = c.execute("EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON, TIMING FALSE) "+query, args).fetchone()["QUERY PLAN"][0]
+            scans = [node for node in self.plan_nodes(plan["Plan"])
+                     if node.get("Node Type")=="Function Scan" and node.get("Alias")=="evidence_payload"]
+            self.assertEqual(len(scans), 1)
+            self.assertEqual(scans[0]["Actual Loops"], LI.BATCH_SIZE)
+            self.assertEqual(plan["Plan"]["Actual Rows"], LI.BATCH_SIZE)
+            self.assertEqual(query.count("t.payload"), 2)  # Shape guard + one record scan.
+            actual = c.execute(query, args).fetchall()
+            self.assertEqual(len(actual), LI.BATCH_SIZE)
+            self.assertNotIn("synthetic_unrelated_history", actual[0]["trade"]["payload"])
+            for row in (actual[0], actual[-1]):
+                expected = c.execute("SELECT "+LI.evidence_hash_sql("t")+" AS hash FROM paper_trades t WHERE trade_id=%s",
+                                     (row["episode_trade_id"],)).fetchone()["hash"]
+                self.assertEqual(row["evidence_hash"], expected)
+            old_plan, old_timed_out = None, False
+            try:
+                with c.transaction():
+                    old_plan = c.execute("EXPLAIN (ANALYZE, FORMAT JSON, TIMING FALSE) "+previous, args).fetchone()["QUERY PLAN"][0]
+            except self.driver.errors.QueryCanceled:
+                old_timed_out = True
+            self.assertEqual(c.execute("SELECT 1 AS alive").fetchone()["alive"], 1)
+            print(json.dumps({"event":"synthetic_sanitizer_root_projection", "rows":LI.BATCH_SIZE,
+                "source_bytes_per_row":size["source_bytes"], "stored_bytes_per_row":size["stored_bytes"],
+                "old_root_references":previous.count("t.payload"), "new_root_references":query.count("t.payload"),
+                "old_timed_out_4000ms":old_timed_out,
+                "old_execution_ms":old_plan["Execution Time"] if old_plan else None,
+                "new_planning_ms":plan["Planning Time"], "new_execution_ms":plan["Execution Time"],
+                "jit":plan.get("JIT"), "statement_timeout_ms":4000}))
+
+    def test_controlled_jit_projection_reports_cost_without_changing_proof(self):
+        with self.connect() as c:
+            staging, (query, args) = self.revalidation_queries(c)
+            c.execute(*staging)
+            projected = LI._evidence_sql("t", root_field=lambda key: "evidence_payload."+key)
+            record_join = LI.payload_record_sql("t")
+            previous = query.replace(projected, LI._evidence_sql("t"), 1).replace(record_join, "", 1)
+            self.assertTrue(c.execute("SELECT pg_jit_available() AS available").fetchone()["available"],
+                            "Native JIT diagnostic requires PostgreSQL LLVM support")
+            c.execute("SET LOCAL statement_timeout = '4000ms'")
+            c.execute("SET LOCAL jit = off")
+            expected = c.execute(previous, args).fetchall()
+            self.assertEqual(c.execute(query, args).fetchall(), expected)
+            off = c.execute("EXPLAIN (ANALYZE, FORMAT JSON) "+query, args).fetchone()["QUERY PLAN"][0]
+            self.assertNotIn("JIT", off)
+            c.execute("SET LOCAL jit = on")
+            c.execute("SET LOCAL jit_above_cost = 0")
+            c.execute("SET LOCAL jit_inline_above_cost = 0")
+            c.execute("SET LOCAL jit_optimize_above_cost = 0")
+            reports = {}
+            for name, sql in (("repeated_root", previous), ("record_root", query)):
+                try:
+                    with c.transaction():
+                        plan = c.execute("EXPLAIN (ANALYZE, FORMAT JSON) "+sql, args).fetchone()["QUERY PLAN"][0]
+                        self.assertEqual(plan["Plan"]["Actual Rows"], len(expected))
+                        self.assertIn("JIT", plan)
+                        reports[name] = {"execution_ms":plan["Execution Time"], "jit":plan["JIT"]}
+                except self.driver.errors.QueryCanceled:
+                    # Deliberately forcing every LLVM optimization is diagnostic;
+                    # the default-settings large-TOAST test must still finish.
+                    reports[name] = {"timed_out_4000ms":True}
+            c.execute("SET LOCAL jit = off")
+            self.assertEqual(c.execute(query, args).fetchall(), expected)
+            print(json.dumps({"event":"synthetic_sanitizer_jit_comparison",
+                "forced_thresholds":0, "statement_timeout_ms":4000,
+                "record_jit_off_execution_ms":off["Execution Time"], "forced_jit":reports}))
 
     def test_materialized_candidate_cannot_restage_a_concurrent_intentional_exclusion(self):
         ready = Queue()

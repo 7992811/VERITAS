@@ -22,6 +22,7 @@ import veritas_price_source as SOURCE
 import veritas_knowledge_validation as KNOWLEDGE
 import veritas_asset_management_intelligence as INTELLIGENCE
 import veritas_scorecard_delivery as SCORECARD
+from veritas_maintenance import MaintenanceDeferred
 
 VERSION = "CONTINUOUS_LEARNING_V1"
 OUTCOME_VERSION = "FIRST_VERIFIED_QUOTE_AFTER_HORIZON_V1"
@@ -58,11 +59,17 @@ class Budget:
 @contextmanager
 def transaction(connect, context):
     context.check()
-    with connect() as c, c.transaction():
-        c.execute("SELECT set_config('statement_timeout',%s,true)", (str(context.sql_timeout_ms),))
-        c.execute("SET LOCAL lock_timeout = '250ms'")
-        yield c
+    with connect() as c:
+        # Checkout and BEGIN may each outlive the remaining cooperative budget.
+        # Never turn an already expired turn into a sequence of 1ms SQL calls.
         context.check()
+        with c.transaction():
+            context.check()
+            c.execute("SELECT set_config('statement_timeout',%s,true)", (str(context.sql_timeout_ms),))
+            c.execute("SET LOCAL lock_timeout = '250ms'")
+            context.check()
+            yield c
+            context.check()
 
 
 def forecast_from_ledger(row):
@@ -174,6 +181,7 @@ class ContinuousLearning:
         self.ready, self.boot_phase = False, 0
         self._lock = threading.RLock()
         self._snapshot = AUTO.snapshot()
+        self._pending_candidate_ack = None
         self._stats = {"status": "collecting", "processed_decisions": 0, "resolved_forecasts": 0,
                        "abstention_observations": 0, "excluded_forecasts": 0,
                        "last_success_at": None, "last_error": None}
@@ -228,6 +236,15 @@ class ContinuousLearning:
                 with self._lock:
                     self._stats.update(last_success_at=clock().isoformat(), last_error=None)
                 return result
+            except MaintenanceDeferred as deferred:
+                # Exhausted work remains retryable with its original cursor;
+                # it is not a failed SQL query or a completed learning batch.
+                try:
+                    STORE.checkpoint_job(self.connect, lease, status="RETRY", result=deferred.result(),
+                                         retry_after_seconds=10)
+                except Exception:
+                    pass  # A lost checkpoint is recovered by the fenced lease.
+                raise
             except Exception as error:
                 message = (type(error).__name__+": "+str(error))[:300]
                 with self._lock:
@@ -260,6 +277,10 @@ class ContinuousLearning:
             with self._lock:
                 self._stats.update(last_success_at=clock().isoformat(), last_error=None)
             return result
+        except MaintenanceDeferred:
+            # The sole trade lease already retains its retry/cursor state.
+            # A cooperative budget deferral is not a new SQL/runtime error.
+            raise
         except Exception as error:
             with self._lock:
                 self._stats["last_error"] = (type(error).__name__+": "+str(error))[:300]
@@ -429,29 +450,64 @@ class ContinuousLearning:
         return {"status": "OK", "resolved": resolved, "excluded": excluded}, cursor
 
     def candidates(self, context, cursor):
-        with transaction(self.connect, context) as c:
-            rows = c.execute("SELECT id,outcome FROM learning_forecasts WHERE status='READY' ORDER BY decision_at,id LIMIT %s", (BATCH,)).fetchall()
-        observations = [r["outcome"] for r in rows if r["outcome"].get("direction") in ("LONG", "SHORT")]
-        snapshot = AUTO.run_batch(self.connect, observations, context=context)
-        knowledge_rows = [r["outcome"] for r in rows if r["outcome"].get("knowledge_trials")]
-        if knowledge_rows:
-            KNOWLEDGE.run_batch(self.connect, knowledge_rows, context=context)
+        with self._lock:
+            pending = self._pending_candidate_ack
+        retrying_ack = pending is not None
+        if pending is None:
+            with transaction(self.connect, context) as c:
+                rows = c.execute("SELECT id,outcome FROM learning_forecasts WHERE status='READY' ORDER BY decision_at,id LIMIT %s", (BATCH,)).fetchall()
+            observations = [r["outcome"] for r in rows if r["outcome"].get("direction") in ("LONG", "SHORT")]
+            snapshot = AUTO.run_batch(self.connect, observations, context=context)
+            knowledge_rows = [r["outcome"] for r in rows if r["outcome"].get("knowledge_trials")]
+            if knowledge_rows:
+                KNOWLEDGE.run_batch(self.connect, knowledge_rows, context=context)
+            # Both learners committed. If checkout/cleanup exhausts this turn,
+            # retry only its acknowledgement, not the already completed work.
+            # At most BATCH IDs and one detached bounded snapshot survive; a
+            # process restart uses the learners' existing durable deduplication.
+            pending = {"ids": tuple(r["id"] for r in rows),
+                       "snapshot": deepcopy(snapshot), "observations": len(observations),
+                       "abstentions": len(rows)-len(observations)}
+            with self._lock:
+                self._pending_candidate_ack = pending
         context.check()
         # Deduplication and the model snapshot committed first. A crash before
         # this acknowledgement replays the same immutable IDs without inflation.
+        snapshot = deepcopy(pending["snapshot"])
         with transaction(self.connect, context) as c:
-            if rows:
-                c.execute("UPDATE learning_forecasts SET status='LEARNED',learned_at=now(),updated_at=now() WHERE id=ANY(%s) AND status='READY'", ([r["id"] for r in rows],))
+            if pending["ids"]:
+                c.execute("UPDATE learning_forecasts SET status='LEARNED',learned_at=now(),updated_at=now() WHERE id=ANY(%s) AND status='READY'", (list(pending["ids"]),))
             # Raw examples are bounded; learned sufficient statistics and trial
             # audit remain durable. Never delete pending or unconsumed evidence.
             c.execute("DELETE FROM learning_forecasts WHERE id IN (SELECT id FROM learning_forecasts WHERE learned_at<now()-interval '30 days' ORDER BY learned_at LIMIT 64)")
-        abstentions = len(rows)-len(observations)
+            if retrying_ack:
+                # Another process can advance the same bounded durable model.
+                # Reuse this connection; do not repeat the learner to refresh it.
+                saved = STORE.load_snapshot_in_transaction(c, AUTO.SNAPSHOT_NAME, AUTO.VERSION)
+                if saved:
+                    latest_at = BRIDGE.timestamp(saved["payload"].get("updated_at"))
+                    pending_at = BRIDGE.timestamp(snapshot.get("updated_at"))
+                    if latest_at is not None and (pending_at is None or latest_at >= pending_at):
+                        snapshot = AUTO.public_snapshot(saved["payload"])
+        abstentions = pending["abstentions"]
         cursor = dict(cursor, abstentions=int(cursor.get("abstentions") or 0)+abstentions)
         with self._lock:
-            self._snapshot = snapshot
+            self._pending_candidate_ack = None
+            current_at = BRIDGE.timestamp(self._snapshot.get("updated_at"))
+            pending_at = BRIDGE.timestamp(snapshot.get("updated_at"))
+            newer = current_at is not None and (pending_at is None or current_at >= pending_at)
+            if newer:
+                # Another learning job may have published while this ack waited.
+                # A delayed acknowledgement must never reinstall older advice.
+                snapshot = deepcopy(self._snapshot)
+            else:
+                self._snapshot = snapshot
+                with BRIDGE._lock:
+                    bridge_at = BRIDGE.timestamp(BRIDGE._state.get("updated_at"))
+                    if bridge_at is None or (pending_at is not None and pending_at >= bridge_at):
+                        BRIDGE.update(snapshot)
             self._stats["abstention_observations"] = cursor["abstentions"]
-        BRIDGE.update(snapshot)
-        return {"status": "OK", "observations": len(observations), "abstentions": abstentions,
+        return {"status": "OK", "observations": pending["observations"], "abstentions": abstentions,
                 "counts": snapshot.get("counts"), "profiles": len(snapshot.get("profiles") or [])}, cursor
 
     def trades(self, context, cursor):

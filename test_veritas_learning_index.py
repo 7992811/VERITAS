@@ -27,7 +27,8 @@ class AuditDB:
         self.db.row_factory = lambda cursor, row: dict(zip([c[0] for c in cursor.description], row))
         self.db.executescript("""
             CREATE TABLE learning_baselines(baseline_key TEXT PRIMARY KEY, created_at TEXT, payload TEXT);
-            CREATE TABLE intelligence_score_history(bucket_at TEXT, index_version TEXT, mode TEXT, payload TEXT,
+            CREATE TABLE intelligence_score_history(bucket_at TEXT NOT NULL, index_version TEXT NOT NULL,
+                mode TEXT NOT NULL, payload TEXT NOT NULL,
                 PRIMARY KEY(bucket_at,index_version,mode));
         """)
 
@@ -176,6 +177,36 @@ class DailyAuditTests(unittest.TestCase):
         self.assertEqual(audit["history_status"], "ERROR")
         self.assertEqual(baseline["learning_index"], 100)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM learning_baselines").fetchone()["n"], 1)
+
+    def test_incomplete_identity_cannot_read_or_write_any_audit_state(self):
+        for field in ("index_version", "mode"):
+            for value in (None, "", " ", False, 1, []):
+                with self.subTest(field=field, value=value):
+                    incomplete = dict(self.lp, **{field: value})
+                    connection = MagicMock()
+                    with self.assertRaisesRegex(ValueError, "LEARNING_AUDIT_IDENTITY_REQUIRED"):
+                        LI.daily_audit(connection, incomplete, self.day, 50, 279, 264, 15)
+                    connection.execute.assert_not_called()
+                    connection.transaction.assert_not_called()
+
+    def test_calculated_building_and_nonoverlap_modes_keep_their_meaning(self):
+        for measurable in (False, True):
+            for n in (19, 20):
+                for suffix in ("", "_NONOVERLAP_V1"):
+                    with self.subTest(measurable=measurable, n=n, suffix=suffix):
+                        db = AuditDB()
+                        lp = LI.calculate(*sample(measurable=measurable, n=n))
+                        lp["mode"] += suffix
+                        original = json.dumps(lp, sort_keys=True)
+                        _, baseline, created, audit = LI.daily_audit(db, lp, self.day, 50, 279, 264, 15)
+                        saved = db.execute("SELECT index_version,mode,payload FROM intelligence_score_history").fetchone()
+                        self.assertTrue(created)
+                        self.assertEqual(audit["history_status"], "OK")
+                        self.assertEqual(saved["mode"], lp["mode"])
+                        self.assertEqual(baseline["mode"], lp["mode"])
+                        self.assertEqual(json.loads(saved["payload"]), LI.snapshot(lp))
+                        self.assertEqual(json.loads(saved["payload"])["status"], "BUILDING" if n == 19 else "MEASURABLE")
+                        self.assertEqual(json.dumps(lp, sort_keys=True), original)
 
 
 if __name__ == "__main__":

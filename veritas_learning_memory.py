@@ -170,16 +170,24 @@ def _ami_projection_sql():
 
 def ami_decision_rows(c):
     dp, op, joins = _ami_projection_sql()
-    # Sort and limit the original rows before expanding their JSON records.
-    # The ordered sample retains TOAST pointers rather than decoded histories.
+    # Read decisions in index order and probe their outcomes by entity. OFFSET 0
+    # keeps the correlated lookup from flattening into a global outcome scan
+    # that detoasts old payloads before the sample limit. No per-entity limit:
+    # duplicate outcomes and explicit null returns still count in the original
+    # 2200 joined-row population. Expand JSON only after that same sample.
     rows = c.execute(f"""
       SELECT sample.event_ts,sample.asset,sample.horizon,{dp} AS dp,{op} AS op
       FROM (
         SELECT d.event_ts,d.asset,d.horizon,
                d.payload AS decision_payload,o.payload AS outcome_payload
         FROM ledger_events d
-        JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-        WHERE d.event_type='decision' AND o.payload ? 'forward_return'
+        CROSS JOIN LATERAL (
+          SELECT o.payload FROM ledger_events o
+          WHERE o.entity_key=d.entity_key AND o.event_type='outcome'
+            AND o.payload ? 'forward_return'
+          OFFSET 0
+        ) AS o
+        WHERE d.event_type='decision'
         ORDER BY d.event_ts DESC
         LIMIT 2200
       ) AS sample
@@ -195,12 +203,19 @@ def ami_decision_sample(c):
     Ties keep the order returned by the original descending timestamp sample;
     no new tie-breaker, distinct operation or decision-before-join cap is added.
     The caller can stable-sort these metadata rows before storing compact pairs.
+    The same unbounded indexed outcome probe as the full reader avoids scanning
+    historical orphan outcomes before freezing the original joined population.
     """
     return c.execute("""
       SELECT d.id AS decision_id,o.id AS outcome_id,d.event_ts
       FROM ledger_events d
-      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-      WHERE d.event_type='decision' AND o.payload ? 'forward_return'
+      CROSS JOIN LATERAL (
+        SELECT o.id FROM ledger_events o
+        WHERE o.entity_key=d.entity_key AND o.event_type='outcome'
+          AND o.payload ? 'forward_return'
+        OFFSET 0
+      ) AS o
+      WHERE d.event_type='decision'
       ORDER BY d.event_ts DESC
       LIMIT 2200
     """).fetchall()

@@ -177,7 +177,16 @@ def sampled_ami_tail(sql):
         without_projection_joins(sql), re.I | re.S)
     if sampled is None:
         raise AssertionError("AMI lost its raw-row sample or final descending order")
-    return " ".join(sampled.group("inner").split())
+    inner = " ".join(sampled.group("inner").split())
+    # Normalize only the exact correlated, unbounded outcome probe. A changed
+    # key, type, existence predicate or per-entity offset/limit cannot match.
+    inner = inner.replace(
+        "CROSS JOIN LATERAL ( SELECT o.payload FROM ledger_events o "
+        "WHERE o.entity_key=d.entity_key AND o.event_type='outcome' "
+        "AND o.payload ? 'forward_return' OFFSET 0 ) AS o WHERE d.event_type='decision'",
+        "JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome' "
+        "WHERE d.event_type='decision' AND o.payload ? 'forward_return'")
+    return inner
 
 
 class ProjectionJoinContractTests(unittest.TestCase):
@@ -200,6 +209,11 @@ class ProjectionJoinContractTests(unittest.TestCase):
         self.assertTrue(all(join.start() > sample_end for join in joins))
         self.assertNotEqual(sampled_ami_tail(query.replace("LIMIT 2200", "LIMIT 2000")),
                             tail(LEGACY_AMI_QUERY))
+        self.assertIn("OFFSET 0", query)
+        for before, after in (("OFFSET 0", "OFFSET 1"),
+                              ("o.entity_key=d.entity_key", "o.entity_key<>d.entity_key"),
+                              ("OFFSET 0", "LIMIT 1 OFFSET 0")):
+            self.assertNotEqual(sampled_ami_tail(query.replace(before, after)), tail(LEGACY_AMI_QUERY))
         with self.assertRaisesRegex(AssertionError, "final descending order"):
             sampled_ami_tail(query.replace("ORDER BY sample.event_ts DESC", "ORDER BY sample.event_ts ASC"))
 
@@ -342,6 +356,9 @@ class TrendMemorySQLTests(unittest.TestCase):
             c.execute("""CREATE TABLE ledger_events(
                 event_key text PRIMARY KEY,entity_key text,event_type text,event_ts timestamptz,
                 asset text,horizon text,payload jsonb)""")
+            c.execute("CREATE INDEX idx_ledger_type_ts ON ledger_events(event_type,event_ts DESC)")
+            c.execute("CREATE INDEX idx_ledger_entity ON ledger_events(entity_key,event_type)")
+            c.execute("CREATE INDEX idx_ledger_entity_type_ts ON ledger_events(entity_key,event_type,event_ts DESC)")
             c.execute("CREATE TABLE knowledge_sources(source_id text)")
             c.execute("CREATE TABLE knowledge_rules(rule_id text)")
             c.execute("""CREATE TABLE knowledge_backtest_oos_stats(
