@@ -188,7 +188,11 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
         hard.append("FAST_TF_CONFLICT")
     if (plan.get("profitability_gate") or {}).get("status")=="NEGATIVE_EDGE":
         hard.append("NEGATIVE_VALIDATED_SETUP_EDGE")
-    conflict=direction_conflict(work)
+    # This independently proved quote event owns its structural thesis. The
+    # previous forecast direction is still displayed, but cannot postpone its
+    # trigger until the slower feature cycle catches up.
+    quote_structure=TFP.structural_quote_rule(work)
+    conflict=None if quote_structure else direction_conflict(work)
     if conflict:
         hard.append(conflict)
     if hard:
@@ -207,7 +211,7 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
     if not local_gate.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":local_gate["reason"],"hard_veto":True,
                 "local_confirmation":local_gate,"trend_event":event,"canonical_stage":"TIMING"}
-    if work.get("_currency_mtf_conflict"):
+    if work.get("_currency_mtf_conflict") and not quote_structure:
         return {"open":False,"fraction":0.0,"reason":"CURRENCY_MTF_DIRECTION_CONFLICT","hard_veto":True,
                 "currency_mtf_context":work.get("_currency_mtf_context"),"canonical_stage":"TIMING"}
     chase=anti_chase_gate(work,price,clock)
@@ -246,7 +250,7 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
             "risk_governor":rg,"stop_risk_budget":stop_budget,
             "trend_event":event,"execution_timing":chase,
             "canonical_stage":"SIZE","canonical_policy_version":CTC.VERSION,
-            "prepared_plan":dict(plan),"structural_policy_version":TFP.VERSION}
+            "prepared_plan":dict(plan),"structural_policy_version":plan.get('structural_policy_version')}
 
 def _rank(row):
     r=row or {}

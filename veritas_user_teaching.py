@@ -18,6 +18,17 @@ EVENT_TYPE = "user_teaching"
 TRACE_VERSION = "USER_TEACHING_ENTRY_TRACE_V1"
 MA_TEACHING_ID = "USER_DAILY_MA_REBOUND_2026_10_07"
 MA_SOURCE_TIMESTAMP = "2026-10-06T21:26:00Z"
+BREAKOUT_TEACHING_ID = "USER_INTRABAR_STRUCTURE_2026_10_07"
+BREAKOUT_SOURCE_TIMESTAMP = "2026-10-07T08:23:55Z"
+BREAKOUT_USER_CORRECTION_RU = (
+    "Сигнал в лонг должен появляться или подтверждать удержание при пробое "
+    "предыдущей локальной вершины, включая открытие рынка. Пример CNYRUBf: "
+    "07:00, пробой 12,727, стоп ниже 12,693. Затем пробой 12,75 около 10:14: "
+    "сразу открыть или увеличить Long, проверить объём и стоп всей позиции "
+    "ниже защищённого минимума 12,693. Тейки на предыдущих более крупных "
+    "зонах проторговки 12,805 и 12,84. Новый пробой следующего уровня — новое "
+    "подтверждение Long с той же логикой стопов и целей. Применить ко всем инструментам."
+)
 MA_USER_CORRECTION_RU = (
     "В правилах используется анализ скользящих средних? Если цена находится у "
     "50 или 200 дневной средней это часто является уровнем поддержки или "
@@ -123,9 +134,49 @@ def ma_policy_snapshot():
     }
 
 
+def breakout_policy_snapshot():
+    """A new, separately addressed owner instruction; examples are not prices in code."""
+    policy = _copy(CTC.BREAKOUT_LIFECYCLE_POLICY)
+    return {
+        "teaching_id": BREAKOUT_TEACHING_ID,
+        "source_type": "USER_AUTHORED_OPERATIONAL_POLICY",
+        "source_timestamp": BREAKOUT_SOURCE_TIMESTAMP,
+        "source_text_ru": BREAKOUT_USER_CORRECTION_RU,
+        "status": "ACTIVE_OPERATIONAL_POLICY",
+        "parent_teaching_id": TEACHING_ID,
+        "refines": ["CLOSED_BAR_ONLY_CONFIRMATION", "TRIGGER_AND_STOP_MUST_HAVE_IDENTICAL_TIMEFRAME",
+                    "FIXED_GROSS_R_TARGET", "UNIVERSAL_NET_RR_1_15_FOR_STRUCTURAL_BREAKOUTS"],
+        "ctc_version": CTC.VERSION, "runtime_authority": CTC.BASIS_RUNTIME,
+        "scope": "ALL_CONFIGURED_PAPER_PORTFOLIOS_WITH_EXISTING_ASSET_AND_RISK_LIMITS",
+        "portfolios": list(CTC.PORTFOLIO_ORDER), "execution_policy": policy,
+        "requirements": {
+            "entry": "A fresh same-source quote crosses a previously available structural level; do not wait for the trigger candle to close.",
+            "continuation": "A distinct later level break confirms HOLD or earns one ADD; polling cannot duplicate an allocation.",
+            "stop": "Protect the parent structural swing. Record trigger, structural, stop and ATR timeframes separately.",
+            "size": "Recheck full held-position plus incremental stop risk, costs, gross exposure and drawdown before every add.",
+            "targets": "Use previously observed larger consolidation zones, partial TP1 then TP2, with weighted post-cost economics.",
+            "short": "Mirror levels, stop, targets, sizing and causality for SHORT.",
+            "causality": "No future candles, retrospective tick timestamps, source substitution or new event time from a refresh.",
+        },
+        "examples": {
+            "asset": "CNYRUBF", "date": "2026-10-07", "timezone": "Europe/Moscow",
+            "opening": {"user_time": "07:00", "trigger": 12.727, "protected_low": 12.693},
+            "continuation": {"user_time": "10:14", "user_trigger": 12.75,
+                "protected_low": 12.693, "user_targets": [12.805, 12.84]},
+            "evidence": "tests/fixtures/cny_structural_20261007.json",
+            "verification_note": "Native minute bars recross 12.750 at 10:13 after an earlier 10:00 crossing; 10:14 crosses previously known 12.756/12.760 highs. OHLC cannot prove the exact intraminute execution price.",
+            "runtime_price_hardcodes": False,
+        },
+        "parameter_validation": {"status": "OWNER_POLICY_CASE_REPLAY_REQUIRED",
+            "ml_training_performed": False, "validated_profitability": False},
+        "storage": {"table": "ledger_events", "event_type": EVENT_TYPE,
+            "entity_key": BREAKOUT_TEACHING_ID, "event_key": EVENT_TYPE + ":" + BREAKOUT_TEACHING_ID},
+    }
+
+
 def seed_all_user_teachings(pg_event, read_event=None):
     return [seed_user_teaching(pg_event, read_event, snapshot=payload)
-            for payload in (policy_snapshot(), ma_policy_snapshot())]
+            for payload in (policy_snapshot(), ma_policy_snapshot(), breakout_policy_snapshot())]
 
 
 def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):
@@ -172,7 +223,7 @@ def verify_entry_trace(trace):
         return False
     body = dict(trace)
     digest = body.pop("trace_sha256", None)
-    if body.get("trace_version") != TRACE_VERSION or body.get("teaching_id") not in (TEACHING_ID, MA_TEACHING_ID):
+    if body.get("trace_version") != TRACE_VERSION or body.get("teaching_id") not in (TEACHING_ID, MA_TEACHING_ID, BREAKOUT_TEACHING_ID):
         return False
     try:
         return bool(digest and digest == _digest(body))
@@ -223,5 +274,13 @@ def entry_trace(context, portfolio=None, existing=None):
         trace.update(teaching_id=MA_TEACHING_ID, teaching_source_timestamp=MA_SOURCE_TIMESTAMP,
                      parent_teaching_id=TEACHING_ID,
                      daily_ma_policy_snapshot=_copy(CTC.MA_REBOUND_POLICY))
+    import veritas_structural_breakout as SB
+    if SB.applies(context):
+        trace.update(teaching_id=BREAKOUT_TEACHING_ID,
+            teaching_source_timestamp=BREAKOUT_SOURCE_TIMESTAMP,
+            parent_teaching_id=TEACHING_ID,
+            structural_policy_version=CTC.BREAKOUT_LIFECYCLE_POLICY["version"],
+            parameter_validation_status=CTC.BREAKOUT_LIFECYCLE_POLICY['parameter_validation_status'],
+            breakout_lifecycle_policy_snapshot=_copy(CTC.BREAKOUT_LIFECYCLE_POLICY))
     trace["trace_sha256"] = _digest(trace)
     return trace

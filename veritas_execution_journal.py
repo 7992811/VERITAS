@@ -26,6 +26,11 @@ def geometry_audit(row, fill, gate):
             'stop_distance_atr':divide(risk,atr),'gross_reward_risk':divide(reward,risk),
             'net_reward_risk':gate.get('net_reward_risk'),
             'net_risk_pct':gate.get('net_risk_pct'),'net_reward_pct':gate.get('net_reward_pct'),
+            'target_ladder':gate.get('target_ladder'),
+            'target_fill_basis':gate.get('target_fill_basis'),
+            'modeled_weighted_target_fill':gate.get('modeled_weighted_target_fill'),
+            'trigger_timeframe':plan.get('trigger_timeframe'),
+            'structural_timeframe':plan.get('structural_timeframe'),
             'signal_at':event.get('signal_at'),'entry_timing':timing,
             'quote_time_gate':gate.get('quote_time_gate'),
             'stop_anchor_price':event.get('stop_anchor'),
@@ -41,7 +46,9 @@ def entry_payload(row, asset, direction, nav, ts, source_lock, quote, fill, fina
     entry_integrity=row.get('data_integrity_status')
     if entry_integrity is None or (isinstance(entry_integrity,str) and not entry_integrity.strip()):
         entry_integrity='OK'
+    import veritas_structural_lifecycle as VSL
     return {'entry_nav_rub':nav,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
+                 **VSL.entry_metadata(row,units),
                  'price_source_lock':source_lock,'price_source_status':'OK',
                  'data_integrity_status':entry_integrity,
                  'entry_execution_source_identity':source_lock,
@@ -56,8 +63,9 @@ def entry_payload(row, asset, direction, nav, ts, source_lock, quote, fill, fina
                  'fill_economics_gate':final_gate,
                  'initial_stop_price':stop,'take_price':target,
                  'target_price':target,'initial_take_price':target,
-                 'stop_timeframe':row.get('horizon'),'target_timeframe':row.get('horizon'),
-                 'atr_timeframe':row.get('horizon'),'entry_atr':plan.get('atr'),
+                 'stop_timeframe':plan.get('stop_timeframe',row.get('horizon')),
+                 'target_timeframe':plan.get('target_timeframe',row.get('horizon')),
+                 'atr_timeframe':plan.get('atr_timeframe',row.get('horizon')),'entry_atr':plan.get('atr'),
                  'entry_decision_snapshot':{'asset':asset,'horizon':row.get('horizon'),
                      'research_decision':direction,'signal_tier':row.get('signal_tier'),
                      'confidence':row.get('confidence'),'market_observed_at':quote['observed_at'],

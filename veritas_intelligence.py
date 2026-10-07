@@ -7416,6 +7416,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             _merged[_k]=_x
     summary=[_merged[k] for k in sorted(_merged,key=lambda z:(DISPLAY_ASSETS.index(z[0]) if z[0] in DISPLAY_ASSETS else 999,
                                                             ('1m','5m','1h','4h','1d','3d','7d').index(z[1]) if z[1] in ('1m','5m','1h','4h','1d','3d','7d') else 999))]
+    import veritas_breakout_runtime as VBR
+    summary=VBR.publish_summary(summary)
     storage = pg_storage_status()
     expected = len(ASSETS)*len(processing_horizons)
     if made == expected and (not pg_enabled() or storage.get('ok')):
@@ -7487,6 +7489,10 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
              'institutional_portfolio':institutional_portfolio_board(summary),
              'telemetry':telemetry,'knowledge': knowledge_summary(),'portfolio_autopilot':portfolio_autopilot}
     with lock:
+        state['summary']=VBR.publish_summary(state['summary'])
+        import veritas_structural_lifecycle as VSL
+        state['portfolio_autopilot']=VSL.merge_reports(state['portfolio_autopilot'],last_cycle.get('portfolio_autopilot'))
+        state['breakout_runtime']=VBR.snapshot()
         last_cycle.clear(); last_cycle.update(state)
     if cycle_mode=='FAST_5M' and status in ('ok','degraded') and made:
         _v90_last_fast5m_monotonic=time.monotonic()
@@ -19037,8 +19043,14 @@ def technical_trade_plan(asset,horizon,f,research_decision,signal_tier,analog=No
                     execution_timeframe='5m',entry_quality='FRESH_BREAKOUT')
 
     if research_decision in ('LONG','SHORT') and horizon in ('1m','5m','1h','4h'):
-        work=VTE.prepare_row({'price':f.get('price'),'horizon':horizon,
-            'research_decision':research_decision,'trade_plan':plan})
+        import veritas_price_source as VPS
+        # Rebind to the actual feature quote, including its broker UID. A
+        # price-only row loses source identity and invalidates a valid event.
+        quote={key:f[key] for key in VPS.QUOTE_FIELDS if key in f}
+        quote.update(asset=asset,price=f.get('price'),observed_at=f.get('market_observed_at'),
+                     source_names=f.get('market_source_names'),contract=f.get('market_contract'))
+        work=VTE.prepare_row(dict(quote,horizon=horizon,market_observed_at=quote['observed_at'],
+            research_decision=research_decision,trade_plan=plan,_execution_quote=quote))
         plan=work['trade_plan']
     # The same gate is applied again after setup-specific mutations in cycle().
     return final_execution_safety(asset,research_decision,plan)
@@ -19100,25 +19112,8 @@ def main():
     expert_principles = {'status':'background','seeded':0}
     pg_knowledge = {'durable': bool(pg_boot.get('ok')), 'status':'background'}
     # Publish the last durable matrix, including the minute lane, on startup.
-    try:
-        _cold=latest_signal_summary_pg() if pg_enabled() else []
-        if _cold:
-            _cold_map={(x.get('asset'),x.get('horizon')):dict(x) for x in _cold if x.get('asset') and x.get('horizon')}
-            _cold_rows=[]
-            for _a in DISPLAY_ASSETS:
-                for _h in ('1m','5m','1h','4h','1d','3d','7d'):
-                    _x=_cold_map.get((_a,_h))
-                    if _x:
-                        _x['snapshot_stale']=True
-                        _cold_rows.append(_x)
-            with lock:
-                last_cycle.update({'status':'warming','at':now(),'version':VERSION,
-                                   'summary':_cold_rows,'summary_source':'postgres_cold_start',
-                                   'signal_cells':len(_cold_rows),'cycle_mode':'COLD_START'})
-            emit('v90_cold_start_snapshot',signal_cells=len(_cold_rows),status='READY')
-    except Exception as _cold_ex:
-        emit('v90_cold_start_snapshot',signal_cells=0,status='ERROR',
-             error=f'{type(_cold_ex).__name__}: {_cold_ex}')
+    import veritas_breakout_runtime as VBR
+    VBR.restore_snapshot(globals())
     _BOOTSTRAP_READY = True
     try:
         _boot_ui=_v90r26_dashboard_bootstrap()
@@ -19146,7 +19141,11 @@ def main():
                                'min_relevance':KNOWLEDGE_MIN_RELEVANCE,
                                'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY),
                                'manager_corpus': manager_corpus_summary()})
-    if pg_boot.get('ok') and VP is not None: VPG.start(globals()); VSQ.start(pg_connect,emit)
+    if pg_boot.get('ok') and VP is not None:
+        VPG.start(globals()); VSQ.start(pg_connect,emit)
+        import veritas_breakout_runtime as VBR
+        import veritas_structural_lifecycle as VSL
+        VBR.start(globals(),entry_pass=lambda rows,clock:VSL.fast_entry_pass(globals(),rows,clock))
     threading.Thread(target=loop, daemon=True).start()
     # R38 always runs: it exits immediately after a healthy write test, but if
     # Postgres is temporarily unavailable/full it waits for the Resume window.

@@ -2230,6 +2230,10 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                    'last_add_execution_snapshot':final_gate.get('execution_snapshot'),
                    'last_add_stop_risk_budget':prepared['stop_risk_budget'],
                    'last_add_teaching_trace':teaching_trace,'last_add_canonical_admission':row.get('_canonical_admission')}
+        import veritas_structural_lifecycle as VSL
+        import veritas_timeframe_policy as TFP
+        if VSL.owns_position(z) and TFP.structural_quote_rule(row):
+            add_patch.update(VSL.add_metadata(z,row,old_units+units,ts))
         old_payload.update({**add_patch,'pwin':row['_pwin'],'pwin_source':row['_pwin_source'],
                             'last_signal_horizon':row.get('horizon'),
                             'signal':(row.get('institutional_signal') or {}).get('investor_signal'),
@@ -2273,7 +2277,8 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                    'execution_model':fill,'order_intent':intent.to_dict()}
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,trade_id,ts,asset,side,fill_price,add,fee,add/max(nav,1),reason,json.dumps(order_payload,ensure_ascii=False,default=str),intent.client_order_id))
     VCN.enqueue_order(c,name,asset,intent.client_order_id)
-    _record_entry_outcome(row,'EXECUTED','ORDER_RECORDED',fill_price=fill_price,order_id=intent.client_order_id)
+    _record_entry_outcome(row,'EXECUTED','ORDER_RECORDED',fill_price=fill_price,order_id=intent.client_order_id,
+                          execution_action='ADD' if z else 'OPEN')
 
 
 def _apply_funding(c,p,pos,prices,ruonia,ts):
@@ -2368,6 +2373,9 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         entry=float(z.get('avg_entry_price') or 0.0)
         stored_tp=(pos_payload.get('take_price') or pos_payload.get('target_price')
                    or pos_payload.get('initial_take_price') or pos_payload.get('last_target_price'))
+        import veritas_structural_lifecycle as VSL
+        if VSL.owns_position(z):
+            stored_tp=VSL.active_target_price(z)
         if stored_tp is None and str(pos_payload.get('canonical_setup_id') or '')=='UTS_fcc6b7cbd267bd850803':
             stored_tp=12.589
         try:
@@ -2402,7 +2410,9 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             if risk>0:
                 tp=entry+1.5*risk if z['direction']=='LONG' else entry-1.5*risk
                 tp_source='R_MULTIPLE'
-        tp_hit=bool(not pos_payload.get('r17_tp1_done') and tp is not None and ((z['direction']=='LONG' and px>=float(tp)) or (z['direction']=='SHORT' and px<=float(tp))))
+        if VSL.owns_position(z):
+            tp=VSL.active_target_price(z)
+        tp_hit=bool((VSL.owns_position(z) or not pos_payload.get('r17_tp1_done')) and tp is not None and ((z['direction']=='LONG' and px>=float(tp)) or (z['direction']=='SHORT' and px<=float(tp))))
         structure_exit=bool(hard_exit and _v90_structure_exit_signal(mgmt,z))
         if opposite and not confirmed_flip and not hard_exit and not stop_hit and not tp_hit and not structure_exit:
             target=current_frac; targets[z['asset']]=current_frac

@@ -160,7 +160,7 @@ class EntryScenarioIntegrationTests(unittest.TestCase):
         self.assertEqual(S.confirmed_structure(old,"SHORT",.70,"1h")["state"],"BUILDING_TREND")
         self.assertEqual(old["horizon_structure"]["direction"],"LONG")
 
-    def test_two_owner_records_are_idempotent_and_keep_original_snapshot_hash(self):
+    def test_owner_records_are_idempotent_and_keep_original_snapshot_hash(self):
         ledger={}
         def write(kind,key,payload,*args):
             created=key not in ledger
@@ -170,12 +170,13 @@ class EntryScenarioIntegrationTests(unittest.TestCase):
             return {"payload":ledger.get(key)}
         first=UT.seed_all_user_teachings(write,read)
         second=UT.seed_all_user_teachings(write,read)
-        self.assertEqual(len(ledger),2)
+        self.assertEqual(set(ledger),{UT.TEACHING_ID,UT.MA_TEACHING_ID,UT.BREAKOUT_TEACHING_ID})
         self.assertTrue(all(r["durable"] for r in first+second))
         self.assertEqual({r["status"] for r in second},{"ALREADY_PRESENT"})
         self.assertEqual(UT._digest(UT.policy_snapshot()),"613b4f153f7878891c9fcab5014b01be1b10148391978f13ea397d53ec72b29b")
         self.assertEqual(ledger[UT.MA_TEACHING_ID]["portfolios"],list(CTC.PORTFOLIO_ORDER))
         self.assertFalse(ledger[UT.MA_TEACHING_ID]["parameter_validation"]["ml_training_performed"])
+        self.assertEqual(ledger[UT.BREAKOUT_TEACHING_ID]['teaching_id'],UT.BREAKOUT_TEACHING_ID)
 
     def test_ma_trace_freezes_original_daily_snapshot_and_geometry(self):
         raw=rebound_raw(self.clock)

@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import Mock
 
 from veritas_v90_ui import _CANONICAL_HTML
+import veritas_release as VR
 
 
 class DashboardLoadingTests(unittest.TestCase):
@@ -15,7 +16,7 @@ class DashboardLoadingTests(unittest.TestCase):
                   and n.name == '_v90r26_dashboard_bootstrap')
         signal = {'asset': 'GOLD', 'horizon': '1h', 'source_gate_pass': True}
         ns = dict(fresh_cycle_snapshot=lambda: {'summary': [signal], 'at': 'now'},
-                  VERSION='test', _BOOTSTRAP_READY=True, pg_enabled=lambda: True,
+                  VERSION='test', VR=VR, _BOOTSTRAP_READY=True, pg_enabled=lambda: True,
                   DISPLAY_ASSETS=['GOLD'], HORIZONS=['1h'],
                   _v90r25_portfolios_fast=Mock(return_value={'portfolios': []}),
                   _v90r25_trades_fast=Mock(return_value={'trades': []}))

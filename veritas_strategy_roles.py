@@ -23,6 +23,21 @@ def gate(row, mode):
     rule=CTC.STRATEGY_ROLE_POLICY.get(mode)
     if not rule:
         return {'eligible':True,'role':'UNKNOWN_COMPATIBILITY'}
+    import veritas_structural_breakout as SB
+    context=row.get('timeframe_entry_context') or (row.get('trade_plan') or {}).get('timeframe_entry_context') or {}
+    if SB.applies(context):
+        event=context.get('event') or {}
+        proof=SB.validate_event(event,context.get('source_identity'))
+        # Admission separately checks current quote, costs and portfolio risk.
+        # Roles retain their timeframe scope and allocation caps; confirmed
+        # native structure supplies the requested setup without invented scores.
+        horizon=(row.get('horizon') if mode=='IMPULSE_ONLY' else event.get('structural_timeframe'))
+        allowed=bool(proof.get('eligible') and horizon in rule['horizons'])
+        return {'eligible':allowed,'role':rule['name'],
+                'reason':'ROLE_VERIFIED_STRUCTURAL_EVENT' if allowed else 'ROLE_STRUCTURAL_PROOF_OR_TIMEFRAME_REQUIRED',
+                'candidate_variant':rule.get('variant','CONTROL'),
+                'structure_basis':'VERIFIED_QUOTE_BREAK_WITH_PROTECTED_PARENT',
+                'allocation_policy_unchanged':True}
     direction, structure, state, score, independent=_features(row)
     local=row.get('_local_execution_context') or {}
     if str(row.get('horizon') or '') not in rule['horizons']:

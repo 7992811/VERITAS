@@ -28,6 +28,23 @@ def _blocked(reason, **details):
                 blockers=[reason], **details)
 
 
+def effective_stop_price(position):
+    """Use the actual protective stop, including an already tightened trailer."""
+    position = position or {}
+    payload = position.get('payload') or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            payload = {}
+    payload = payload if isinstance(payload, dict) else {}
+    stops = [_number(x) for x in (position.get('stop_price'), payload.get('trailing_stop'))]
+    stops = [x for x in stops if x is not None and x > 0]
+    if not stops or position.get('direction') not in ('LONG', 'SHORT'):
+        return None
+    return max(stops) if position['direction'] == 'LONG' else min(stops)
+
+
 def _funding_fraction(expected_hold_seconds, position_age_seconds=0.0):
     hold, age = _number(expected_hold_seconds), _number(position_age_seconds)
     if hold is None or age is None or hold < 0 or age < 0 or not math.isfinite(age + hold):
@@ -85,7 +102,7 @@ drawdown basis, not an entry-to-exit or whole-cycle P&L projection.
     position = position or {}
     units = _number(position.get("units"))
     mark, fill, capital = map(_number, (mark_price, modeled_stop_fill, nav))
-    stop = _number(position.get("stop_price"))
+    stop = effective_stop_price(position)
     direction = position.get("direction")
     if direction not in ("LONG", "SHORT"):
         return _blocked("STOP_RISK_DIRECTION_INVALID")
@@ -174,6 +191,11 @@ The incremental fraction is floored to the portfolio's configured step.
         return denied("TARGET_NOT_PROFITABLE_AFTER_COSTS")
     floor = max(float(CTC.STRUCTURAL_ENTRY_POLICY["minimum_net_reward_risk"]),
                 _number(gate.get("minimum_reward_risk")) or 0.0)
+    if (gate.get('economics_policy') or {}).get('version') == 'PAPER_STRUCTURAL_WEIGHTED_ECONOMICS_V1':
+        from veritas_execution import paper_structural_economics_validated
+        if not paper_structural_economics_validated(gate):
+            return denied('STRUCTURAL_ECONOMICS_PROOF_INVALID')
+        floor = 0.0
     actual_rr = reward / risk
     if rr is None or min(rr, actual_rr) < floor:
         return denied("NET_REWARD_RISK_BELOW_FLOOR")

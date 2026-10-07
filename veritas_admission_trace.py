@@ -116,7 +116,7 @@ def route_item(row, decision, checked_at):
 
 def execution_snapshot(row):
     raw = _dict(row.get('_execution_audit'))
-    out = fields(raw, ('status','reason','checked_at','blockers','hard_blockers',
+    out = fields(raw, ('status','reason','checked_at','execution_action','blockers','hard_blockers',
         'fill_price','order_id','event_id','current_fraction','requested_fraction',
         'held_direction','signal_direction','favorable_progress'))
     out.setdefault('status','UNKNOWN')

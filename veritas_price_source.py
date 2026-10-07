@@ -82,6 +82,34 @@ def same(expected, actual):
     return not cid or cid==actual.get('contract_id')
 
 
+def quote_identity_fields(source_identity):
+    """Rehydrate a stored canonical identity without relaxing feed validation.
+
+    TBANK quote identity requires the broker instrument UID in ``contract``.
+    Passing its flattened canonical ``contract_id`` through a plan used to lose
+    that provenance and reject the same instrument at the final boundary. Only
+    complete identities that round-trip to their original key are reconstructed;
+    this helper supplies no quote price, timestamp, or permission to execute.
+    """
+    expected = source_identity if isinstance(source_identity, dict) else {}
+    asset, source = expected.get('asset'), expected.get('primary_source')
+    if (not isinstance(asset, str) or not asset or not isinstance(source, str)
+            or not source or not isinstance(expected.get('key'), str) or not expected['key']):
+        return {}
+    fields = {'source': source}
+    cid = expected.get('contract_id')
+    if cid:
+        fields['contract_id'] = str(cid)
+    if str(source).strip().upper().startswith('TBANK_GRPC'):
+        if not cid:
+            return {}
+        fields['contract'] = {'instrument_uid': str(cid)}
+    rebuilt = identity(asset, fields)
+    if not same(expected, rebuilt):
+        return {}
+    return fields
+
+
 def matches(position, quote):
     return same(position_identity(position),identity(position.get('asset'),quote))
 

@@ -6,7 +6,15 @@ import math
 
 import veritas_price_source as VPS
 
-VERSION = 'CTC_VERIFIED_EXECUTION_SNAPSHOT_V1'
+VERSION = 'CTC_VERIFIED_EXECUTION_SNAPSHOT_V2'
+ECONOMICS_FIELDS = ('economics_policy', 'target_ladder', 'target_execution_models',
+                    'runner_target_price', 'weighted_target_price', 'weighted_target_distance_pct',
+                    'modeled_weighted_target_fill', 'modeled_commission_pct',
+                    'modeled_execution_cost_pct', 'modeled_funding_pct',
+                    'modeled_round_trip_cost_pct', 'minimum_reward_risk',
+                    'expected_hold_seconds', 'position_age_seconds', 'entry_reference_price',
+                    'evaluated_fraction_nav', 'expected_move_pct', 'minimum_expected_move_pct',
+                    'observed_spread_bps')
 
 
 def _digest(value):
@@ -41,6 +49,9 @@ def capture(row, quote, direction, fraction, clock, gate):
             'modeled_target_fill':gate.get('modeled_target_fill'),
             'net_reward_pct':gate.get('net_reward_pct'),'net_risk_pct':gate.get('net_risk_pct'),
             'net_reward_risk':gate.get('net_reward_risk'),
+            **{key:deepcopy(gate.get(key)) for key in ECONOMICS_FIELDS},
+            'structural_economics_context_id':_digest(gate['structural_economics_context'])
+                    if isinstance(gate.get('structural_economics_context'),dict) else None,
         }
         snapshot['snapshot_id']=_digest(snapshot)
         return snapshot
@@ -75,9 +86,13 @@ def checked_fill(gate, quote, asset, direction, price, fraction):
         if snapshot.get('stop_price')!=(gate.get('entry_geometry') or {}).get('stop_price'):
             return None
         for field in ('target_price','modeled_stop_fill','modeled_target_fill',
-                      'net_reward_pct','net_risk_pct','net_reward_risk'):
+                      'net_reward_pct','net_risk_pct','net_reward_risk',*ECONOMICS_FIELDS):
             if snapshot.get(field)!=gate.get(field):
                 return None
+        context_id = (_digest(gate['structural_economics_context'])
+                      if isinstance(gate.get('structural_economics_context'),dict) else None)
+        if snapshot.get('structural_economics_context_id') != context_id:
+            return None
         return deepcopy(fill)
     except (KeyError,TypeError,ValueError,OverflowError):
         return None

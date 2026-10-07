@@ -12,7 +12,7 @@ from __future__ import annotations
 VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
-STRATEGY_EPOCH = "EQ6_2026_10_07_VERIFIED_EXECUTION"
+STRATEGY_EPOCH = "EQ7_2026_10_07_INTRABAR_STRUCTURE"
 STRATEGY_ROLE_POLICY = {
     "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
     "AGGRESSIVE": {"name":"CONFIRMED_TREND","horizons":("5m","1h","4h","1d"),
@@ -38,6 +38,33 @@ STRUCTURAL_ENTRY_POLICY = {
     "same_source_candles_and_execution": True,
     "minimum_net_reward_risk": 1.15,
     "parameter_validation_status": "UNVALIDATED_DEFAULTS",
+}
+
+# The owner's 7 October correction explicitly refines the previous closed-bar
+# rule. Keep that earlier policy and its immutable teaching record intact.
+BREAKOUT_LIFECYCLE_POLICY = {
+    "version": "CTC_INTRABAR_STRUCTURE_V1",
+    "teaching_id": "USER_INTRABAR_STRUCTURE_2026_10_07",
+    "enabled": True, "scope": "PAPER_PORTFOLIOS",
+    "parent_timeframe": "1h", "atr_period": 20,
+    "pivot_left": 2, "pivot_right": 2, "stop_buffer_atr": 0.15,
+    "max_stop_atr": 6.0, "max_signal_age_bars": 2.0,
+    "minimum_entry_window_seconds": 120.0,
+    "target_cluster_atr": 0.25, "min_target_atr": 1.5,
+    "target_zone_min_touches": 3, "target_consolidation_gap_bars": 1.0,
+    "protected_swing_min_prominence_atr": 1.0, "target_one_fraction": 0.5,
+    "trigger_on_fresh_quote": True, "closed_bar_confirmation": False,
+    "protected_parent_stop": True, "total_position_stop_risk_required": True,
+    "target_basis": "PREVIOUSLY_OBSERVED_LARGER_CONSOLIDATION_ZONES",
+    "target_fractions": [0.5, 0.5], "max_target_progress": 0.60,
+    "single_observed_target_fraction": 1.0,
+    "net_rr_role": "DIAGNOSTIC_WITH_POSITIVE_WEIGHTED_TARGET_ECONOMICS",
+    "minimum_net_reward_risk": 0.0,
+    "retain_cost_buffer_multiple": 1.1,
+    "quote_poll_seconds": 5.0,
+    "same_source_candles_and_execution": True,
+    "immutable_event_time": True, "one_allocation_per_level_event": True,
+    "parameter_validation_status": "OWNER_RULE_WITH_UNVALIDATED_NUMERIC_DEFAULTS",
 }
 
 # Daily context is native D1 from the execution instrument. The actual rebound
@@ -269,8 +296,8 @@ SIGNAL_POLICY = {
     "published_direction_is_execution_authority": False,
     "published_direction": ("LONG", "SHORT"),
     "principle": (
-        "A directional thesis needs an independently confirmed same-timeframe "
-        "structural breakout or confirmed daily-MA rebound. Publishing or refreshing LONG/SHORT cannot create "
+        "A directional thesis needs a verified quote crossing a previously known structural level, "
+        "a close-confirmed structural breakout, or confirmed daily-MA rebound. Publishing or refreshing LONG/SHORT cannot create "
         "a new event, move its trigger, or reset its original confirmation time."
     ),
     "normal_signal_can_probe_below_rr_floor_if_net_positive": False,
@@ -345,7 +372,7 @@ CANONICAL_RULES = [
     _rule("CTC16","signal","Quality filtering occurs before publication of LONG/SHORT."),
     _rule("CTC17","signal","A thesis opens risk on a confirmed structural breakout or native daily SMA50/200 rebound, confirmed on the chosen entry timeframe."),
     _rule("CTC18","signal","Refreshing a directional forecast never resets breakout time, restores a spent event, or creates a new current-price trigger."),
-    _rule("CTC19","signal","Post-cost R/R below the canonical floor blocks new risk in every portfolio, including probes."),
+    _rule("CTC19","signal","Legacy setups and live orders retain the post-cost R/R floor. Owner-taught causal quote PAPER breakouts use positive weighted historical-target economics and the cost buffer; net R/R is diagnostic."),
     _rule("CTC20","signal","A cost-negative target or expected move below the canonical cost buffer is never eligible even as a probe."),
     _rule("CTC21","signal","A confirmed execution-timeframe direction conflict remains a hard veto for new risk."),
     _rule("CTC22","signal","A lower-timeframe soft conflict cannot by itself liquidate an intact senior-horizon core position."),
@@ -357,7 +384,7 @@ CANONICAL_RULES = [
     _rule("CTC27","structure","Breakout quality uses level break, acceptance, volume/activity, volatility expansion and subsequent structure."),
     _rule("CTC28","structure","RANGE_LOW_VOL requires stronger evidence because false-breakout risk is elevated."),
     _rule("CTC29","structure","Retest/hold after a break is an independent entry family and may define a fresh continuation event."),
-    _rule("CTC30","multitimeframe","Every entry timeframe owns its confirmed breakout, opposite swing stop, ATR and target; other timeframes provide context without replacing these anchors."),
+    _rule("CTC30","multitimeframe","Quote breakouts explicitly record trigger, structural-stop, ATR and historical-target timeframes. Fast entries protect the certified parent swing; legacy close-confirmed entries retain their same-timeframe anchors."),
     _rule("CTC31","multitimeframe","Senior context can reduce tactical size but does not automatically veto a qualified fast breakout/reversal."),
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
@@ -372,7 +399,7 @@ CANONICAL_RULES = [
     _rule("CTC40","risk","Drawdown changes size/gross limits; it does not rewrite signal quality."),
     _rule("CTC41","risk","Standard books hard-stop new risk at 15% drawdown; Aggressive at 20%; Currency owner limit is 35%."),
     _rule("CTC42","risk","Live capital is independently fail-closed with stricter 0.5% per-idea and portfolio risk limits."),
-    _rule("CTC43","sizing","Position fractions move in 5% increments."),
+    _rule("CTC43","sizing","New allocations use 5% increments. Historical-target partial exits reduce actual units by the recorded target fractions."),
     _rule("CTC44","sizing","Aggressive starts about 50% on normal signal and 100% on SUPER, then earns leverage only through stronger structure/evidence and protected risk."),
     _rule("CTC45","sizing","Champion/Challenger have no implicit leverage: canonical single-asset fraction is capped at 100% unless separately authorized."),
 
