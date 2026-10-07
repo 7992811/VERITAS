@@ -32,6 +32,25 @@ def market():
     return dict(q, structure_source_identity=source, structure_bars_by_timeframe={"1h": bars})
 
 
+def signal_row(*, observed=NOW, checked=NOW, eligible=True, event_id="race-event", uid=UID):
+    context = {"status": "OK", "timeframe": "1h",
+               "event": {"event_id": event_id, "direction": "LONG"}}
+    return dict(quote(observed, uid=uid), horizon="1h", research_decision="LONG",
+                market_observed_at=observed.isoformat(), snapshot_stale=False,
+                trade_entry_checked_at=checked.isoformat(), timeframe_entry_context=context,
+                trade_plan={"eligible": eligible, "entry_event_id": event_id,
+                            "timeframe_entry_context": context})
+
+
+def filled_report(row, checked):
+    return {"status": "OK", "checked_at": checked.isoformat(),
+            "portfolios": [{"name": "Currency", "admission_trace": [{
+                "asset": row["asset"], "horizon": row["horizon"],
+                "event_id": row["trade_plan"]["entry_event_id"],
+                "execution": {"status": "EXECUTED", "checked_at": checked.isoformat(),
+                              "order_id": "actual-order", "fill_price": 12.736}}]}]}
+
+
 class FastQuoteRuntimeTests(unittest.TestCase):
     def setUp(self):
         with BR._cache_lock:
@@ -253,6 +272,59 @@ class FastQuoteRuntimeTests(unittest.TestCase):
         self.assertIsNone(row["pwin"])
         self.assertFalse(row["production_eligible"])
 
+    def test_fast_context_requests_only_display_limit_from_shared_state_owner(self):
+        with patch.object(BR.TFD, "structural_context", return_value={"status": "OK"}) as owner:
+            result = BR._bounded_context({"asset": "ETH"}, "5m", NOW)
+        owner.assert_called_once_with({"asset": "ETH"}, "5m", NOW, level_limit=40)
+        self.assertEqual(result, {"status": "OK"})
+
+    def test_row_does_not_copy_discarded_display_levels(self):
+        class DiscardedDisplayLevel:
+            def __deepcopy__(self, memo):
+                raise AssertionError("discarded display history was copied")
+        retained = [{"level_id": str(i), "price": 12.7} for i in range(40)]
+        context = {"status": "OK", "event": {"direction": "LONG", "event_id": "new-event"},
+                   "levels": [DiscardedDisplayLevel(), *retained]}
+        with patch.object(BR.TFP, "prepare_row", side_effect=lambda row, **kwargs: dict(row, trade_plan={})), \
+                patch.object(BR.TFP, "final_plan", side_effect=lambda asset, direction, plan, now: plan):
+            row = self.runtime._row(BR._markets["CNYRUBF"], quote(), "1h", context, {}, NOW)
+        self.assertEqual(row["timeframe_entry_context"]["levels"], retained)
+        retained[-1]["price"] = -1
+        self.assertEqual(row["timeframe_entry_context"]["levels"][-1]["price"], 12.7)
+
+    def test_context_and_callback_use_elapsed_wall_time_without_redating_quote(self):
+        wall = [NOW]
+        context_times, row_times, callbacks = [], [], []
+
+        def build(raw, horizon, clock):
+            context_times.append(clock)
+            wall[0] += timedelta(seconds=121)
+            return {"status": "OK", "timeframe": horizon,
+                    "event": {"direction": "LONG", "signal_at": NOW.timestamp()}}
+
+        def prepare(market, q, horizon, context, template, clock):
+            row_times.append(clock)
+            return dict(q, horizon=horizon, timeframe_entry_context=context)
+
+        def execute(rows, clock):
+            callbacks.append((clock, deepcopy(rows)))
+            # The real canonical callback has the same independent clock gate.
+            allowed = BR.VX.paper_quote_time_gate(rows[0], now=clock)["eligible"]
+            return {"status": "OK" if allowed else "BLOCKED", "paper_only": True}
+
+        self.runtime.context_builder = build
+        self.runtime.entry_pass = execute
+        with patch.object(BR, "_clock", side_effect=lambda value=None: wall[0] if value is None else value), \
+                patch.object(self.runtime, "_row", side_effect=prepare):
+            result = self.runtime.run_once(quotes={"CNYRUBF": quote()})
+        self.assertEqual(context_times, [NOW])
+        self.assertEqual(row_times, [NOW+timedelta(seconds=121)])
+        self.assertEqual(callbacks[0][0], NOW+timedelta(seconds=121))
+        self.assertEqual(callbacks[0][1][0]["observed_at"], NOW.isoformat())
+        self.assertEqual(callbacks[0][1][0]["timeframe_entry_context"]["event"]["signal_at"], NOW.timestamp())
+        self.assertEqual(result["execution"]["status"], "BLOCKED")
+        self.assertEqual(result["context_builds"], 1)
+
     def test_actual_callback_result_is_published_without_removing_other_assets(self):
         self.ns["last_cycle"]["summary"] = [{"asset": "BTC", "horizon": "1h", "price": 80000}]
         row = dict(quote(), horizon="1h", research_decision="LONG",
@@ -269,6 +341,97 @@ class FastQuoteRuntimeTests(unittest.TestCase):
         merged = BR.publish_summary([slow])
         self.assertEqual(merged[0]["market_observed_at"], NOW.isoformat())
         self.assertIn("_execution_audit", merged[0])
+
+    def test_delayed_fast_permission_cannot_replace_later_full_refusal_or_redate_publication(self):
+        denied = signal_row(checked=NOW+timedelta(seconds=5), eligible=False)
+        denied["trade_plan"]["reason"] = "STRUCTURAL_EVENT_EXPIRED"
+        previous_publication = (NOW-timedelta(seconds=1)).isoformat()
+        self.ns["last_cycle"].update(summary=[denied], at=previous_publication,
+                                     signals_updated_at=previous_publication)
+        self.ns["now"] = lambda: self.fail("a discarded plan must not redate publication")
+        for observed in (NOW, NOW-timedelta(seconds=1)):
+            with self.subTest(observed=observed):
+                ready = dict(signal_row(observed=observed), _breakout_runtime=BR.VERSION)
+                self.runtime._publish_rows([ready], {"status": "BUSY"}, NOW)
+                self.assertIs(self.ns["last_cycle"]["summary"][0], denied)
+                self.assertEqual(BR._latest_rows[("CNYRUBF", "1h")], denied)
+                self.assertEqual(BR.publish_summary([ready])[0], denied)
+                self.assertEqual(self.ns["last_cycle"]["signals_updated_at"], previous_publication)
+                self.assertEqual(self.ns["last_cycle"]["at"], previous_publication)
+
+    def test_late_exact_fill_keeps_newer_refusal_and_updates_only_publication_clock(self):
+        denied = signal_row(checked=NOW+timedelta(seconds=5), eligible=False)
+        ready = dict(signal_row(), _breakout_runtime=BR.VERSION)
+        completed_at = (NOW-timedelta(minutes=1)).isoformat()
+        published_at = (NOW+timedelta(seconds=10)).isoformat()
+        fill_at = NOW+timedelta(seconds=1)
+        self.ns["last_cycle"].update(summary=[denied], at=completed_at)
+        self.ns["now"] = lambda: published_at
+        self.runtime._publish_rows([ready], filled_report(ready, fill_at), fill_at)
+        current = self.ns["last_cycle"]["summary"][0]
+        self.assertFalse(current["trade_plan"]["eligible"])
+        self.assertEqual(current["trade_entry_checked_at"], denied["trade_entry_checked_at"])
+        self.assertEqual(current["market_observed_at"], NOW.isoformat())
+        self.assertEqual(current["_execution_audit"]["checked_at"], fill_at.isoformat())
+        receipt = current["_execution_audit"]["result"]["portfolios"][0]
+        self.assertEqual(receipt["order_id"], "actual-order")
+        self.assertEqual(receipt["checked_at"], fill_at.isoformat())
+        self.assertEqual(self.ns["last_cycle"]["signals_updated_at"], published_at)
+        self.assertEqual(self.ns["last_cycle"]["at"], completed_at)
+        self.assertEqual(BR._latest_rows[("CNYRUBF", "1h")], current)
+        self.assertEqual(BR.publish_summary([ready])[0], current)
+        self.ns["now"] = lambda: self.fail("a duplicate fill is not a new publication")
+        self.runtime._publish_rows([ready], filled_report(ready, fill_at), fill_at)
+        self.assertIs(self.ns["last_cycle"]["summary"][0], current)
+
+    def test_fast_only_new_cell_updates_publication_without_touching_completed_cycle(self):
+        ready = dict(signal_row(), _breakout_runtime=BR.VERSION)
+        completed_at = (NOW-timedelta(minutes=1)).isoformat()
+        published_at = (NOW+timedelta(seconds=10)).isoformat()
+        self.ns["last_cycle"].update(at=completed_at, cycle_in_progress={"cycle_id": "in-flight"})
+        self.ns["now"] = lambda: published_at
+        self.runtime._publish_rows([ready], {"status": "BUSY"}, NOW)
+        last = self.ns["last_cycle"]
+        self.assertEqual(last["signals_updated_at"], published_at)
+        self.assertEqual(last["at"], completed_at)
+        self.assertEqual(last["cycle_in_progress"], {"cycle_id": "in-flight"})
+        self.assertEqual(last["summary"][0]["market_observed_at"], NOW.isoformat())
+        self.assertEqual(last["summary"][0]["trade_entry_checked_at"], NOW.isoformat())
+        self.ns["now"] = lambda: self.fail("an identical fast row is not a new publication")
+        self.runtime._publish_rows([deepcopy(ready)], {"status": "BUSY"}, NOW)
+        self.assertEqual(last["signals_updated_at"], published_at)
+
+    def test_cached_overlay_cannot_switch_canonical_source_or_contract(self):
+        canonical = signal_row(eligible=False)
+        foreign_contract = dict(signal_row(observed=NOW+timedelta(seconds=10), uid="other-contract"),
+                                _breakout_runtime=BR.VERSION)
+        foreign_source = dict(signal_row(observed=NOW+timedelta(seconds=10)),
+                              _breakout_runtime=BR.VERSION, source_names={"primary": "MOEX ISS"})
+        for cached in (foreign_contract, foreign_source):
+            with self.subTest(cached=cached):
+                BR._latest_rows[("CNYRUBF", "1h")] = deepcopy(cached)
+                self.assertEqual(BR.publish_summary([canonical]), [canonical])
+                self.ns["last_cycle"]["summary"] = [canonical]
+                self.ns["now"] = lambda: self.fail("a foreign cached plan was published")
+                self.runtime._publish_rows([], {"status": "OK"}, NOW)
+                self.assertIs(self.ns["last_cycle"]["summary"][0], canonical)
+                self.assertEqual(BR._latest_rows[("CNYRUBF", "1h")], canonical)
+
+    def test_fast_full_fast_interleaving_cannot_restore_old_permission(self):
+        ready = dict(signal_row(), _breakout_runtime=BR.VERSION)
+        fill_at = NOW+timedelta(seconds=1)
+        self.ns["now"] = lambda: (NOW+timedelta(seconds=10)).isoformat()
+        self.runtime._publish_rows([ready], filled_report(ready, fill_at), fill_at)
+        denied = signal_row(checked=NOW+timedelta(seconds=5), eligible=False)
+        BR.VSP.publish_completed(self.ns, [denied], "later-full", "FULL")
+        current = self.ns["last_cycle"]["summary"][0]
+        self.assertFalse(current["trade_plan"]["eligible"])
+        self.ns["now"] = lambda: self.fail("old fast work changed the later full refusal")
+        self.runtime._publish_rows([ready], {"status": "BUSY"}, NOW)
+        self.assertIs(self.ns["last_cycle"]["summary"][0], current)
+        self.assertEqual(BR._latest_rows[("CNYRUBF", "1h")], current)
+        self.assertEqual(BR.publish_summary([ready])[0], current)
+        self.assertEqual(current["_execution_audit"]["result"]["portfolios"][0]["order_id"], "actual-order")
 
     def test_signal_report_ignores_large_book_graphs_and_unselected_events(self):
         class ArchivedProof:

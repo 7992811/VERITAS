@@ -13,16 +13,32 @@ const context = vm.createContext({
 });
 vm.runInContext(script.replace(/\}\)\(\);\s*$/, 'globalThis.ui={planStatus,paperStatus,renderSignals,renderPortfolios,renderTrades,normalizePosition,st};})();'), context);
 const ui = context.ui;
+const checkedAt = new Date(Date.now()-30000).toISOString();
 const signal = {
   asset: 'MOEX', horizon: '1h', research_decision: 'SHORT', signal_tier: 'SUPER_SHORT',
   price: 2229.78, confidence: .80, source_gate_pass: true, market_open: true,
   execution_eligible: false, paper_eligible: true, production_eligible: false,
+  trade_entry_valid_until: new Date(Date.now()+90000).toISOString(),
+  trade_entry_expiry_reason: 'EXECUTION_QUOTE_STALE',
   trade_plan: {eligible: true, expected_to_stop_ratio: 1.74,
-    final_economics_gate: {status: 'PASS', blockers: []}},
+    final_economics_gate: {eligible: true, status: 'PASS', blockers: [], checked_at: checkedAt}},
 };
 assert.equal(ui.planStatus(signal).ready, true);
+assert.equal(ui.planStatus(signal).checked_at, checkedAt);
 assert.equal(ui.paperStatus(signal).ready, false);
 assert.equal(ui.paperStatus(signal).short, 'проверка');
+// The legacy row shape still requires the actual final decision and its clock.
+// A source quote or a PASS label alone cannot supply missing admission evidence.
+const missingEligibility={...signal,trade_plan:{...signal.trade_plan,
+  final_economics_gate:{...signal.trade_plan.final_economics_gate,eligible:undefined}}};
+assert.equal(ui.planStatus(missingEligibility).ready,false);
+assert.equal(ui.paperStatus(missingEligibility).short,'план');
+const missingCheckTime={...signal,market_observed_at:new Date().toISOString(),
+  trade_plan:{...signal.trade_plan,final_economics_gate:{
+    ...signal.trade_plan.final_economics_gate,checked_at:undefined}}};
+assert.equal(ui.planStatus(missingCheckTime).ready,false);
+assert.equal(ui.planStatus(missingCheckTime).checked_at,undefined);
+assert.match(ui.paperStatus(missingCheckTime).reason,/Нет времени проверки плана/);
 for (const [patch, reason] of [
   [{paper_eligible: false}, 'данные'],
   [{trade_plan:{eligible:false,final_economics_gate:{status:'BLOCK',blockers:['QUOTE_TOO_OLD_FOR_HORIZON']}}}, 'цена'],
