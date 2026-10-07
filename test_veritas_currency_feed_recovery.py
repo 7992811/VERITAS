@@ -1,6 +1,7 @@
 """Synthetic recovery, non-starvation and read-only boundaries; no broker access."""
 from copy import deepcopy
 from datetime import timedelta
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -10,9 +11,13 @@ from unittest.mock import Mock, patch
 import veritas_breakout_runtime as BR
 import veritas_direct_cny as CNY
 import veritas_tbank as TB
+import veritas_position_guard as G
+import veritas_structural_breakout as SB
+import veritas_structural_lifecycle as SL
 from veritas_book_lock import PriorityRLock
 from test_veritas_direct_cny_snapshot import connection, NOW, UID
 from test_veritas_tbank import FakeReader
+from test_veritas_structural_breakout import POLICY, advance, raw_at
 
 
 class IndependentBrokerHistoryTests(unittest.TestCase):
@@ -209,6 +214,45 @@ class EntryHandoffTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lock.reserve_entry_turn(value)
         self.assertEqual(lock._entry_turns, {})
+
+
+class EntryLeaseFreshnessTests(unittest.TestCase):
+    def check_busy_lease(self, delay, expected):
+        # Entirely synthetic event. Its quote is refreshed at age 119s, so the
+        # 121s case isolates event expiry rather than an old provider quote.
+        raw, first_clock = raw_at()
+        first = SB.build_context(raw, '1m', first_clock, config=POLICY)
+        raw, caller_clock = advance(raw, first_clock, raw['price'], 119)
+        context = SB.build_context(raw, '1m', caller_clock,
+                                   state=first['quote_state'], config=POLICY)
+        direction = context['event']['direction']
+        self.assertTrue(SB.entry_gate(context, raw['price'], direction, caller_clock)['eligible'])
+        wall_clock = caller_clock+timedelta(seconds=delay)
+        wall_gate = SB.entry_gate(context, raw['price'], direction, wall_clock)
+        self.assertEqual(wall_gate['eligible'], expected)
+        if not expected:
+            self.assertEqual(wall_gate['reason'], 'STRUCTURAL_EVENT_EXPIRED')
+        row = dict(raw, horizon='1m', research_decision=direction, timeframe_entry_context=context)
+        mutex = SimpleNamespace(acquire=Mock(return_value=False),
+                                reserve_entry_turn=Mock(), cancel_entry_turn=Mock())
+        connect = Mock(side_effect=AssertionError('BUSY must not open a database'))
+        # The BUSY branch never uses the portfolio monolith; do not import it
+        # merely to exercise the production lease decision.
+        with patch.dict(sys.modules, {'veritas_portfolio_runtime': SimpleNamespace()}), \
+             patch.object(G, '_mutex', mutex), patch.object(SL, '_wall_clock', return_value=wall_clock) as clock:
+            result = SL.fast_entry_pass({'pg_connect': connect}, [row], caller_clock, runtime=True)
+        clock.assert_called_once_with()
+        connect.assert_not_called()
+        self.assertEqual(result['status'], 'BUSY')
+        self.assertEqual(result['entry_turn_reserved'], expected)
+        self.assertEqual(mutex.reserve_entry_turn.call_count, int(expected))
+        self.assertEqual(mutex.cancel_entry_turn.call_count, int(not expected))
+
+    def test_expired_event_after_context_preparation_cancels_lease_without_db(self):
+        self.check_busy_lease(2, False)
+
+    def test_still_fresh_event_reserves_retry_without_db(self):
+        self.check_busy_lease(0, True)
 
 
 if __name__ == '__main__':

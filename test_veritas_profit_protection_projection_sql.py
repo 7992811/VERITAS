@@ -8,6 +8,7 @@ import unittest
 import uuid
 
 import veritas_profit_protection as PP
+import veritas_protection_read_model as PR
 
 
 DSN = os.getenv('VERITAS_QUALITY_TEST_DSN', '')
@@ -181,7 +182,7 @@ class ProfitProtectionProjectionSQLTests(unittest.TestCase):
                 old, new = self.assert_parity(rows, name=name)
                 selected = 0 if name == 'missing' else 1 if name == 'LONG' else 2
                 self.assertIsNone(new[2])
-                self.assertEqual(len(new[3].updates), 2 if selected else 0)
+                self.assertEqual(len(new[3].updates), 2*((selected+PR.BATCH_SIZE-1)//PR.BATCH_SIZE))
                 for table in ('paper_positions', 'paper_trades'):
                     for row in new[1][table]:
                         self.assertEqual(row['payload']['entry_event_snapshot'], proof)

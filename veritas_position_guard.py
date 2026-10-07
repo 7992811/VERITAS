@@ -728,6 +728,7 @@ def _observation_has_no_action(vp, c, z, q, ts, path, now):
 def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
     measured=timing if timing is not None else {}
     changes, pending_paths = [], []
+    explicit_clock = now
     measured['observation_write_seconds']=0.0
     measured['no_action_preflight_seconds']=0.0
     measured['legacy_profit_lock_seconds']=0.0
@@ -752,6 +753,8 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             measured['positions_query_seconds']=time.monotonic()-query_started
         protection_started=time.monotonic()
         for item in positions:
+            now = explicit_clock or datetime.now(timezone.utc)
+            ts = now.isoformat()
             z = dict(item)
             selected = quote_for_position(z,quotes.get(z['asset']),now)
             # Validate the same strict exit tuple before path/protection writes;
@@ -874,6 +877,10 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             reason = protective_reason(z, q, now)
             if not reason:
                 continue
+            # Persist earlier observations before accounting reads another
+            # position's source-locked mark. Failed optional telemetry remains
+            # isolated from the protective exit by a savepoint.
+            flush_paths(c)
             name, tid, px = z['portfolio_name'], z['active_trade_id'], float(q['price'])
             p, pos = vp._portfolio_rows(c, name)
             # A projected payload is never passed to canonical accounting. The
@@ -893,8 +900,10 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             p, pos = vp._portfolio_rows(c, name)
             nav, _, _, _ = vp._mark_nav(p, pos, prices)
             if reason=='STOP' and z.get('active_trade_id'):
-                _tr_full=c.execute("SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades WHERE trade_id=%s",
-                                   (z.get('active_trade_id'),)).fetchone()
+                _tr_full=None
+                if payload_of(z).get('r55_net_profit_lock_active') and not _r63_hard_stop_breached(z, px):
+                    _tr_full=c.execute("SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades WHERE trade_id=%s",
+                                       (z.get('active_trade_id'),)).fetchone()
                 _soft=_r63_soft_profit_stop_assessment(
                     z,q,_tr_full,nav,getattr(vp,'COMMISSION',VC.COMMISSION_RATE))
                 if _soft.get('suppress'):

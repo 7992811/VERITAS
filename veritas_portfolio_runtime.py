@@ -4929,7 +4929,7 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
     if VPG._entry_namespace is not None:
         VPG.refresh_position_quotes(VPG._entry_namespace,positions)
     positions = None
-    return _r80_base_step_all(summary,pg_connect,model_version,observed_at,commission_rate,emit)
+    return _r80_base_step_all(summary,pg_connect,model_version,observed_at,VC.COMMISSION_RATE,emit)
 
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
@@ -4972,7 +4972,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                 c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
                           (json.dumps(patch),z['active_trade_id']))
     rows = z = None
-    return _r80_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,safe_summary)
+    return _r80_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,VC.COMMISSION_RATE,safe_summary)
 
 
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):

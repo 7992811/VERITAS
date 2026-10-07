@@ -42,13 +42,17 @@ QUOTE_POSITIONS_SQL = """SELECT z.asset,z.active_trade_id,jsonb_build_object(
 # Filtering existing members preserves absent keys versus explicit JSON null.
 # Non-object payloads keep their former parser and failure behavior. Neither
 # frozen event is truncated or replaced with an unverified cached digest.
-PROTECTION_POSITIONS_SQL = (
-    'SELECT '+','.join(POSITION_COLUMNS)+
-    ",CASE WHEN jsonb_typeof(payload)='object' THEN "
-    "(SELECT COALESCE(jsonb_object_agg(item.key,item.value),'{}'::jsonb) "
-    "FROM jsonb_each(payload) AS item WHERE item.key IN ("+
-    ','.join("'%s'" % key for key in PROTECTION_FIELDS)+
-    ")) ELSE payload END AS payload FROM paper_positions")
+def position_sql(fields):
+    return (
+        'SELECT '+','.join(POSITION_COLUMNS)+
+        ",CASE WHEN jsonb_typeof(payload)='object' THEN "
+        "(SELECT COALESCE(jsonb_object_agg(item.key,item.value),'{}'::jsonb) "
+        "FROM jsonb_each(payload) AS item WHERE item.key IN ("+
+        ','.join("'%s'" % key for key in fields)+
+        ")) ELSE payload END AS payload FROM paper_positions")
+
+
+PROTECTION_POSITIONS_SQL = position_sql(PROTECTION_FIELDS)
 
 
 def _write_chunk(c, rows):

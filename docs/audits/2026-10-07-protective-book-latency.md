@@ -12,9 +12,13 @@ application durations, not isolated database benchmarks. The service has
 0.15 CPU and a 512 MiB memory limit. The 15-second protection objective
 requires a new production measurement after deployment.
 
-This repair builds on main `0226606`, preserving PR95's fresh post-funding
+This repair integrates main `b684c27`, preserving PR95's fresh post-funding
 cost reads, PR96's structural stop correction, PR97's entry retry priority,
-and PR98's snapshot revision and bounded portfolio response changes.
+PR98's snapshot revision and bounded portfolio response changes, and PR101's
+source recovery, current-clock validation, canonical commission, execution
+audit and cycle timing corrections. The execution regression audit remains
+a required CI gate. The protective writer has one implementation shared by
+the compatibility read-model module and the current guard.
 
 ## Changes
 
@@ -37,6 +41,9 @@ and PR98's snapshot revision and bounded portfolio response changes.
   second-table failure propagates and rolls back the outer accounting
   transaction. Fees, funding, fills, target stages, source eligibility and
   canonical accounting formulas remain under the established locks.
+- Preserve the current wall-clock check for each live position; explicit
+  historical/replay times remain deterministic. Do not revive a quote that
+  expired while processing an earlier position.
 - Measure observation writes, no-action preflight, legacy profit locking and
   profit refresh separately so remaining production delay can be attributed.
 

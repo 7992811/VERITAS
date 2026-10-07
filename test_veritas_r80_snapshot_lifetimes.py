@@ -18,6 +18,7 @@ import weakref
 import veritas_price_source as VPS
 import veritas_position_guard as VPG
 import veritas_thesis_guard as VTG
+import veritas_costs as VC
 
 
 RUNTIME = Path(__file__).with_name('veritas_portfolio_runtime.py')
@@ -37,7 +38,7 @@ def load_r80(name, namespace, *, legacy=False):
             isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
             and n.value.value is None and
             {t.id for t in n.targets if isinstance(t, ast.Name)} == released)]
-    ns = {'COMMISSION': .0004, 'VPS': VPS, 'json': json, **namespace}
+    ns = {'COMMISSION': .0004, 'VC': VC, 'VPS': VPS, 'json': json, **namespace}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(RUNTIME), 'exec'), ns)
     return ns[name]
 
