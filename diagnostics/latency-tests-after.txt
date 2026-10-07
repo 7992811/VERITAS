@@ -1,3 +1,12 @@
+test_atomic_identity_signed_zero_nan_and_large_integers (test_veritas_data_copy.DataCopyTests.test_atomic_identity_signed_zero_nan_and_large_integers) ... ok
+test_custom_copy_protocol_shares_the_same_memo (test_veritas_data_copy.DataCopyTests.test_custom_copy_protocol_shares_the_same_memo) ... ok
+test_custom_key_and_value_copy_order_matches_standard (test_veritas_data_copy.DataCopyTests.test_custom_key_and_value_copy_order_matches_standard) ... ok
+test_cycles_and_tuple_bridge_match_standard (test_veritas_data_copy.DataCopyTests.test_cycles_and_tuple_bridge_match_standard) ... ok
+test_explicit_memo_and_preseeded_container_replacement (test_veritas_data_copy.DataCopyTests.test_explicit_memo_and_preseeded_container_replacement) ... ok
+test_immutable_tuple_identity_is_delegated_unchanged (test_veritas_data_copy.DataCopyTests.test_immutable_tuple_identity_is_delegated_unchanged) ... ok
+test_native_values_and_aliases_match_standard (test_veritas_data_copy.DataCopyTests.test_native_values_and_aliases_match_standard) ... ok
+test_random_native_graphs_match_standard_without_type_coercion (test_veritas_data_copy.DataCopyTests.test_random_native_graphs_match_standard_without_type_coercion) ... ok
+test_subclasses_datetime_decimal_and_bytearray_keep_types (test_veritas_data_copy.DataCopyTests.test_subclasses_datetime_decimal_and_bytearray_keep_types) ... ok
 test_expired_pending_does_not_extend_signal_or_quote_time (test_veritas_structural_latency.BoundedRetryTests.test_expired_pending_does_not_extend_signal_or_quote_time) ... ok
 test_lock_diagnostics_do_not_change_priority_reentry_or_ownership (test_veritas_structural_latency.BoundedRetryTests.test_lock_diagnostics_do_not_change_priority_reentry_or_ownership) ... ok
 test_nonreserved_and_failed_callbacks_cannot_publish_execution_success (test_veritas_structural_latency.BoundedRetryTests.test_nonreserved_and_failed_callbacks_cannot_publish_execution_success) ... ok
@@ -206,6 +215,6 @@ test_refreshed_add_fill_cannot_chase_after_a_timely_initial_admission (test_veri
 test_valid_held_target_funds_add_and_keeps_original_and_new_traces (test_veritas_repeat_add.StoredAddGeometryRegressionTests.test_valid_held_target_funds_add_and_keeps_original_and_new_traces) ... ok
 
 ----------------------------------------------------------------------
-Ran 206 tests in 13.048s
+Ran 215 tests in 7.141s
 
 OK

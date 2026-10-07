@@ -1,0 +1,27 @@
+{
+  "scope": "ISOLATED_PREFIX_EQUIVALENCE_AND_CPU_BENCHMARK_NOT_PRODUCTION_LATENCY",
+  "full_outputs_checked": 77,
+  "reference_sha": "f848e869361fae0356e8aac66671e291290ece6f",
+  "context_seconds": {
+    "before": [
+      0.08674960400000487,
+      0.08879682599999228,
+      0.08837993699998492
+    ],
+    "after": [
+      0.05165188099999796,
+      0.05245378299997583,
+      0.05407030500001042
+    ]
+  },
+  "context_median_seconds": {
+    "before": 0.08837993699998492,
+    "after": 0.05245378299997583
+  },
+  "context_speed_ratio": 1.6849106383809467,
+  "copy_seconds_40x3500_bars": {
+    "standard": 0.1636478650000015,
+    "native": 0.10943639699999608
+  },
+  "copy_speed_ratio": 1.4953696346564422
+}
