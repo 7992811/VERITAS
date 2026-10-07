@@ -131,6 +131,14 @@ class PaperBook:
         if q.startswith("SELECT") and " FROM paper_trades" in q:
             row = self.trades.get(args[0])
             return Result([row] if row else [])
+        if q.startswith(('UPDATE paper_positions AS target', 'UPDATE paper_trades AS target')) and 'jsonb_to_recordset' in q:
+            rows = self.positions.values() if q.startswith('UPDATE paper_positions') else self.trades.values()
+            key = 'active_trade_id' if q.startswith('UPDATE paper_positions') else 'trade_id'
+            deltas = {item['trade_id']: item['patch'] for item in json.loads(args[0])}
+            for row in rows:
+                if row.get(key) in deltas:
+                    row['payload'] = dict(row.get('payload') or {}, **deltas[row[key]])
+            return Result()
         if q.startswith("INSERT INTO paper_nav_history"):
             self.nav_history.append(deepcopy(args))
             return Result()

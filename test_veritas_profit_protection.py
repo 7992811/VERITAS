@@ -140,7 +140,9 @@ class NetProtectionTests(unittest.TestCase):
         updates = [x for x in c.execute.call_args_list if x.args[0].startswith('UPDATE')]
         self.assertEqual(len(updates), 2)
         for update in updates:
-            self.assertTrue(json.loads(update.args[1][0])['profit_protection_active'])
+            delta = json.loads(update.args[1][0])
+            self.assertEqual([row['trade_id'] for row in delta], ['t1'])
+            self.assertTrue(delta[0]['patch']['profit_protection_active'])
             self.assertNotIn('SET stop_price', update.args[0])
 
     def test_structural_trailing_persists_net_assessment_without_tightening_for_costs(self):

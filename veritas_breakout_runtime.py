@@ -108,6 +108,7 @@ def publish_summary(summary):
     """
     with _cache_lock:
         fast = {key: deepcopy(row) for key, row in _latest_rows.items()}
+        current_cny = deepcopy((_markets.get("CNYRUBF") or {}).get("structure_source_identity"))
     out = []
     for original in summary or []:
         row = dict(original)
@@ -116,8 +117,16 @@ def publish_summary(summary):
             old_at = TS.timestamp(row.get("market_observed_at") or row.get("observed_at"))
             new_at = TS.timestamp(newer.get("market_observed_at") or newer.get("observed_at"))
             identity = VPS.identity(row.get("asset"), row)
+            new_identity = VPS.identity(newer.get("asset"), newer)
+            source_current = _same_source(identity, new_identity)
+            if (row.get("asset") == "CNYRUBF" and (new_identity or {}).get("key") == "TBANK_GRPC:CNYRUBF"
+                    and _same_source(current_cny, new_identity)):
+                # A slow MOEX fallback begun before broker recovery is not
+                # authority to overwrite the selected source's newer result.
+                import veritas_direct_cny as CNY
+                source_current = source_current or CNY.enabled()
             if (new_at is not None and (old_at is None or new_at > old_at)
-                    and _same_source(identity, VPS.identity(newer.get("asset"), newer))):
+                    and source_current):
                 row = newer
         out.append(row)
     out.extend(fast.values())
@@ -214,17 +223,22 @@ class BreakoutRuntime:
                       "source_rejections": 0, "stale_quotes": 0}
 
     def _recover_direct_cny(self, clock):
-        """Bootstrap the selected source from verified reader memory, not a scan."""
+        """A transient broker failure must not pin execution to MOEX research."""
         import veritas_direct_cny as CNY
-        connection = getattr(self.ns.get("VTB"), "connection", None)
-        if connection is None or not CNY.enabled():
-            return
+        if not CNY.enabled():
+            return True
         with _cache_lock:
-            old = _markets.get("CNYRUBF")
-            if old and str(old["structure_source_identity"].get("key", "")).startswith("TBANK_GRPC:"):
-                return
+            current = _markets.get("CNYRUBF") or {}
+            if current.get("structure_source_identity", {}).get("key") == "TBANK_GRPC:CNYRUBF":
+                return True
+        connection = getattr(self.ns.get("VTB"), "connection", None)
+        if connection is None:
+            return False
         try:
-            raw = CNY.validate_snapshot(CNY._snapshot(connection), now=clock)
+            # Avoid copying all candle history on each tick while the quote,
+            # book or session is still invalid. The full snapshot rechecks it.
+            CNY.quote(connection, now=clock)
+            raw = CNY.market_snapshot(connection, now=clock)
             identity = VPS.identity("CNYRUBF", raw)
             mapping = {}
             for tf, field in (("1m", "structure_minute_bars"),
@@ -233,17 +247,17 @@ class BreakoutRuntime:
                 mapping[tf] = [dict(bar, timeframe=tf, source_identity=deepcopy(identity))
                                for bar in raw[field][-MAX_BARS_PER_TIMEFRAME:]]
             raw.update(structure_source_identity=identity, structure_bars_by_timeframe=mapping)
-            if publish_market(raw):
+            ready = publish_market(raw)
+            if ready:
                 self.state["direct_cny_recoveries"] = self.state.get("direct_cny_recoveries", 0)+1
                 self.state["direct_cny_recovery_reason"] = None
-                CNY._record_state(status='DIRECT_READY', reason=None,
-                    checked_at=clock.isoformat(), instrument_uid=raw['broker_instrument_uid'],
-                    source='TBANK_GRPC', quote_observed_at=raw['observed_at'], history_source='TBANK_GRPC')
+            return ready
         except Exception as error:
             # No freshness promotion, source substitution or forged candle on
             # failure. The same exact quote/book/session/history gates still apply.
             self.state["direct_cny_recovery_reason"] = (
                 str(error) if isinstance(error, CNY.TB.TBankError) else "CNY_RECOVERY_UNAVAILABLE")
+            return False
 
     def _native_broker_history(self, market):
         """Refresh from the existing broker reader's memory, never its network."""
@@ -368,6 +382,9 @@ class BreakoutRuntime:
         direction = event.get("direction")
         if direction not in ("LONG", "SHORT"):
             return None
+        # A recovered source starts with its own evidence, including analytics.
+        if not _same_source(market["structure_source_identity"], VPS.identity(market["asset"], template)):
+            template = {}
         same_direction = (template.get("research_decision") or template.get("decision")) == direction
         # Keep observed analytics, but never copy the previous event's trade
         # plan, hard vetoes, reverse setup, arbitrary confidence or permission.
@@ -442,7 +459,9 @@ class BreakoutRuntime:
             clock = _clock(now)
             if clock is None:
                 return {"status": "INVALID_CLOCK", "paper_only": True}
-            self._recover_direct_cny(clock)
+            import veritas_direct_cny as CNY
+            cny_source = "TBANK_GRPC:CNYRUBF" if CNY.enabled() else None
+            cny_ready = self._recover_direct_cny(clock)
             # Copy only the lightweight quote/source descriptors up front.
             # Full native histories are copied one asset at a time below, so the
             # fast lane cannot retain a second complete multi-asset market graph
@@ -456,6 +475,8 @@ class BreakoutRuntime:
                         "quote": deepcopy(market.get("quote") or {}),
                     }
                     for asset, market in _markets.items()
+                    if asset != "CNYRUBF" or cny_ready and (cny_source is None or
+                        market["structure_source_identity"].get("key") == cny_source)
                 }
             summary = _namespace_summary(self.ns)
             templates = {(row.get("asset"), row.get("horizon")): row for row in summary}
@@ -514,6 +535,7 @@ class BreakoutRuntime:
                               rows=len(rows), assets=len(markets), pending_quote_fetches=len(self._pending),
                               context_seconds=context_seconds, entry_seconds=entry_seconds,
                               publish_seconds=publish_seconds, execution_status=execution.get("status"),
+                              execution_reason=execution.get("reason"),
                               duration_seconds=time.monotonic()-started)
             return {**self.snapshot(), "execution": execution}
         except Exception as error:

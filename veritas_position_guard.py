@@ -16,6 +16,7 @@ import veritas_execution as VX
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
 import veritas_observation_path as VOP
+import veritas_protection_read_model as PR
 from veritas_quote_time import quote_gate, utc_datetime
 from veritas_book_lock import PriorityRLock
 
@@ -671,9 +672,59 @@ def protective_reason(z, quote, now=None):
     return None
 
 
+def _legacy_profit_lock(vp, c, z, q, ts):
+    # The structural branch of profit_lock_stop returns None unconditionally.
+    # Do not load legacy trade fees or simulate crypto fills just to reach it.
+    zp = payload_of(z)
+    if zp.get('structural_policy_version'):
+        return None
+    fees_paid=0.0
+    _lock_trade={}
+    if z.get('active_trade_id'):
+        try:
+            _tr=c.execute("SELECT fees_rub,funding_rub,gross_pnl_rub FROM paper_trades WHERE trade_id=%s",
+                          (z.get('active_trade_id'),)).fetchone()
+            _lock_trade=dict(_tr or {})
+            fees_paid=float((_tr or {}).get('fees_rub') or 0.0)
+        except Exception:
+            fees_paid=0.0
+
+    # R63: leave real execution room around the soft profit lock.
+    _rearm_after=float(zp.get('r63_profit_lock_rearm_after_pct') or 0.0)
+    try:
+        _entry_lock=float(z.get('avg_entry_price') or zp.get('entry_price') or 0.0)
+        _px_lock=float((q or {}).get('price') or 0.0)
+        _cur_lock_pct=100.0*((_px_lock/_entry_lock-1.0) if z.get('direction')=='LONG'
+                             else (_entry_lock/_px_lock-1.0)) if _entry_lock>0 and _px_lock>0 else 0.0
+    except Exception:
+        _cur_lock_pct=0.0
+    # R65: BTC/ETH protective fills use a live top-of-book execution model.
+    # A 10bp synthetic slippage + 10bp profit cushion delayed protection
+    # until ~30bp and allowed 26-28bp MFE to round-trip into fee losses.
+    # Keep the universal 25bp activation floor, but use a realistic 2.5bp
+    # slippage allowance and 2.5bp positive-net cushion for crypto.
+    _crypto_lock=str(z.get('asset') or '') in ('BTC','ETH')
+    _lock_slippage=VC.SLIPPAGE_RATE
+    _lock_min_net=.00025 if _crypto_lock else .0010
+    if _crypto_lock:
+        _nav=max(float(zp.get('entry_nav_rub') or 1_000_000.0),1.0)
+        _fraction=abs(float(z.get('units') or 0.0)*float(q.get('price') or 0.0))/_nav
+        _fill=exit_fill({**z,'_execution_quote':q},float(q['price']),_fraction,ts)
+        # Includes actual spread, residual slippage and size impact.
+        _lock_slippage=max(_lock_slippage,float(_fill['adverse_fill_bps'])/10000.0)
+    lock = None if (_rearm_after and _cur_lock_pct<_rearm_after) else profit_lock_stop(
+        z,q,getattr(vp,'COMMISSION',VC.COMMISSION_RATE),fees_paid_rub=fees_paid,
+        slippage_pct=_lock_slippage,min_net_pct=_lock_min_net,
+        funding_rub=_lock_trade.get('funding_rub',0.0),
+        realized_gross_rub=_lock_trade.get('gross_pnl_rub',0.0)
+    )
+    return lock
+
+
 def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
     measured=timing if timing is not None else {}
-    changes = []
+    changes, pending_paths = [], []
+    explicit_clock = now
     with pg_connect() as c, book_transaction(c,lane='PROTECTIVE',timing=measured):
         # A queued pass must not validate an old quote against its pre-wait
         # clock. Explicit historical/replay clocks remain deterministic.
@@ -681,11 +732,13 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
         ts = now.isoformat()
         query_started=time.monotonic()
         try:
-            positions = c.execute('SELECT * FROM paper_positions ORDER BY portfolio_name,asset FOR UPDATE').fetchall()
+            positions = c.execute(PR.PROTECTION_SQL+' ORDER BY portfolio_name,asset FOR UPDATE').fetchall()
         finally:
             measured['positions_query_seconds']=time.monotonic()-query_started
         protection_started=time.monotonic()
         for item in positions:
+            now = explicit_clock or datetime.now(timezone.utc)
+            ts = now.isoformat()
             z = dict(item)
             selected = quote_for_position(z,quotes.get(z['asset']),now)
             # Validate the same strict exit tuple before path/protection writes;
@@ -719,62 +772,11 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                       'r55_last_path_mark_at':ts,
                       'r55_last_path_mark_price':_px,
                     }
-                    # Optional telemetry must not poison the book transaction
-                    # and suppress a protective exit if metadata cannot be saved.
-                    with c.transaction():
-                        c.execute(
-                            "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                            "WHERE active_trade_id=%s",(json.dumps(_path,allow_nan=False),z.get('active_trade_id'))
-                        )
-                        if z.get('active_trade_id'):
-                            c.execute(
-                                "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                                "WHERE trade_id=%s",(json.dumps(_path,allow_nan=False),z.get('active_trade_id'))
-                            )
-                    zp.update(_path); z['payload']=zp
+                    pending_paths.append((z.get('active_trade_id'), _path))
             except Exception:
                 pass
 
-            fees_paid=0.0
-            _lock_trade={}
-            if z.get('active_trade_id'):
-                try:
-                    _tr=c.execute("SELECT fees_rub,funding_rub,gross_pnl_rub FROM paper_trades WHERE trade_id=%s",
-                                  (z.get('active_trade_id'),)).fetchone()
-                    _lock_trade=dict(_tr or {})
-                    fees_paid=float((_tr or {}).get('fees_rub') or 0.0)
-                except Exception:
-                    fees_paid=0.0
-
-            # R63: leave real execution room around the soft profit lock.
-            _rearm_after=float(zp.get('r63_profit_lock_rearm_after_pct') or 0.0)
-            try:
-                _entry_lock=float(z.get('avg_entry_price') or zp.get('entry_price') or 0.0)
-                _px_lock=float((q or {}).get('price') or 0.0)
-                _cur_lock_pct=100.0*((_px_lock/_entry_lock-1.0) if z.get('direction')=='LONG'
-                                     else (_entry_lock/_px_lock-1.0)) if _entry_lock>0 and _px_lock>0 else 0.0
-            except Exception:
-                _cur_lock_pct=0.0
-            # R65: BTC/ETH protective fills use a live top-of-book execution model.
-            # A 10bp synthetic slippage + 10bp profit cushion delayed protection
-            # until ~30bp and allowed 26-28bp MFE to round-trip into fee losses.
-            # Keep the universal 25bp activation floor, but use a realistic 2.5bp
-            # slippage allowance and 2.5bp positive-net cushion for crypto.
-            _crypto_lock=str(z.get('asset') or '') in ('BTC','ETH')
-            _lock_slippage=VC.SLIPPAGE_RATE
-            _lock_min_net=.00025 if _crypto_lock else .0010
-            if _crypto_lock:
-                _nav=max(float(zp.get('entry_nav_rub') or 1_000_000.0),1.0)
-                _fraction=abs(float(z.get('units') or 0.0)*float(q.get('price') or 0.0))/_nav
-                _fill=exit_fill({**z,'_execution_quote':q},float(q['price']),_fraction,ts)
-                # Includes actual spread, residual slippage and size impact.
-                _lock_slippage=max(_lock_slippage,float(_fill['adverse_fill_bps'])/10000.0)
-            lock = None if (_rearm_after and _cur_lock_pct<_rearm_after) else profit_lock_stop(
-                z,q,getattr(vp,'COMMISSION',VC.COMMISSION_RATE),fees_paid_rub=fees_paid,
-                slippage_pct=_lock_slippage,min_net_pct=_lock_min_net,
-                funding_rub=_lock_trade.get('funding_rub',0.0),
-                realized_gross_rub=_lock_trade.get('gross_pnl_rub',0.0)
-            )
+            lock = _legacy_profit_lock(vp, c, z, q, ts)
             # Legacy event prefixes cannot disable checked profit protection.
             # New same-TF positions use confirmed structural trailing, not synthetic locks.
             if lock:
@@ -825,8 +827,20 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             reason = protective_reason(z, q, now)
             if not reason:
                 continue
+            # Persist earlier observations before accounting reads another
+            # position's source-locked mark. Failed optional telemetry remains
+            # isolated from the protective exit by a savepoint.
+            PR.write_patches(c, pending_paths, optional=True)
+            pending_paths.clear()
             name, tid, px = z['portfolio_name'], z['active_trade_id'], float(q['price'])
             p, pos = vp._portfolio_rows(c, name)
+            # Canonical accounting must consume all saved lifecycle evidence,
+            # never the protective read projection. The same owner still holds
+            # both locks, so this is the current row for exactly this trade.
+            full = next((row for row in pos if row.get('active_trade_id') == tid), None)
+            if full is None:
+                continue
+            z = dict(full, _execution_quote=q, _execution_quote_frozen=True)
             # Accrue funding up to this exit exactly once under the same book lock.
             prices = {x['asset']: float(x['last_price']) for x in pos}
             prices[z['asset']] = px
@@ -835,8 +849,10 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             p, pos = vp._portfolio_rows(c, name)
             nav, _, _, _ = vp._mark_nav(p, pos, prices)
             if reason=='STOP' and z.get('active_trade_id'):
-                _tr_full=c.execute("SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades WHERE trade_id=%s",
-                                   (z.get('active_trade_id'),)).fetchone()
+                _tr_full=None
+                if payload_of(z).get('r55_net_profit_lock_active') and not _r63_hard_stop_breached(z, px):
+                    _tr_full=c.execute("SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades WHERE trade_id=%s",
+                                       (z.get('active_trade_id'),)).fetchone()
                 _soft=_r63_soft_profit_stop_assessment(
                     z,q,_tr_full,nav,getattr(vp,'COMMISSION',VC.COMMISSION_RATE))
                 if _soft.get('suppress'):
@@ -890,6 +906,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                        p.get('last_usdrub'), json.dumps({'unrealized_pnl_rub': unreal, 'protective_guard': True})))
             changes.append({'portfolio': name, 'asset': z['asset'], 'trade_id': tid,
                             'reason': reason, 'price': px, 'market_observed_at': q['observed_at']})
+        PR.write_patches(c, pending_paths, optional=True)
         if changes:
             VPP.refresh(c, commission=getattr(vp, 'COMMISSION', VC.COMMISSION_RATE))
         measured['protection_seconds']=time.monotonic()-protection_started
