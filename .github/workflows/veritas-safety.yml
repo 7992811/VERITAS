@@ -46,6 +46,20 @@ jobs:
         run: |
           python -m py_compile veritas_learning_state.py veritas_autonomous_learning.py veritas_learning_bridge.py veritas_continuous_learning.py veritas_trade_learning.py veritas_learning_measurement.py veritas_knowledge_discovery.py
           python -m unittest -v test_veritas_learning_state.py test_veritas_autonomous_learning.py test_veritas_learning_bridge.py test_veritas_continuous_learning.py test_veritas_learning_runtime.py test_veritas_quote_learning.py test_veritas_trade_learning.py test_veritas_knowledge_discovery.py
+      - name: Create isolated Currency trading test database
+        run: |
+          python - <<'PY'
+          import psycopg
+          with psycopg.connect("postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test", autocommit=True) as conn:
+              conn.execute("CREATE DATABASE ci_ephemeral_test_only")
+          PY
+      - name: Currency broker and approval regressions (fake broker only)
+        env:
+          VERITAS_TRADING_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/ci_ephemeral_test_only
+        run: |
+          python -m py_compile veritas_currency_trade_plan.py veritas_currency_trading.py veritas_trade_telegram.py veritas_trade_approvals.py veritas_tbank_trading.py veritas_currency_trade_ledger.py veritas_currency_trade_funding.py veritas_currency_trade_service.py veritas_currency_trade_console.py veritas_currency_console_telegram.py veritas_currency_trade_ui.py veritas_currency_live_admission.py veritas_currency_settlement.py bot.py
+          python -m unittest -v test_veritas_tbank_trading.py test_veritas_trade_approvals.py test_veritas_currency_trading.py test_veritas_currency_trade_ledger.py test_veritas_trade_telegram.py test_veritas_currency_trade_facts.py test_veritas_currency_trade_service.py test_veritas_currency_ma_trading.py test_veritas_currency_structural_trading.py test_veritas_currency_reviewed_entry.py test_veritas_currency_live_admission.py test_veritas_currency_trade_funding.py test_veritas_currency_settlement.py test_veritas_currency_execution_guard.py test_veritas_currency_trade_console.py test_veritas_currency_console_telegram.py test_veritas_currency_trade_ui.py
+          node tools/test_currency_trade_ui.cjs
       - name: Execution quality and direct CNY regressions
         run: python -m unittest -v test_veritas_execution_quality.py test_veritas_trade_audit.py test_veritas_direct_cny_snapshot.py test_veritas_profit_exit_authority.py test_veritas_ma_learning_evidence.py
       - name: Independent portfolio accounting and protective handoff
