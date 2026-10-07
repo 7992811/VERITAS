@@ -20,6 +20,7 @@ from threading import RLock
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
 from veritas_quote_time import quote_gate
+import veritas_structural_validation_cache as SVC
 
 
 VERSION = "CAUSAL_QUOTE_STRUCTURE_V1"
@@ -211,6 +212,24 @@ def _clear_native_facts_cache():
         _FACTS_CACHE_BYTES = 0
 
 
+def _first_cross_times(rows_by_tf, levels):
+    """Earliest available historical crossing, preserving delayed bar times."""
+    result = {}
+    for level in levels:
+        crossed_at = None
+        for bar in rows_by_tf.get(level['timeframe'], ()):
+            if bar['ts'] < level['available_at']:
+                continue
+            crossed = (bar['high'] > level['price'] if level['kind'] == 'resistance'
+                       else bar['low'] < level['price'])
+            if crossed:
+                available = bar['available_at']
+                crossed_at = available if crossed_at is None else min(crossed_at, available)
+        if crossed_at is not None:
+            result[level['level_id']] = crossed_at
+    return result
+
+
 def _native_facts(raw, as_of, source, policy):
     """Memoize an exact history snapshot within its causal availability window.
 
@@ -257,7 +276,8 @@ def _native_facts(raw, as_of, source, policy):
             available = max(opening + seconds, supplied_at if supplied_at is not None else -math.inf)
             if available > as_of:
                 next_available = min(next_available, available)
-    facts = {"rows_by_tf": rows_by_tf, "levels": levels, "atr_by_tf": atr_by_tf}
+    facts = {"rows_by_tf": rows_by_tf, "levels": levels, "atr_by_tf": atr_by_tf,
+             "first_cross_at": _first_cross_times(rows_by_tf, levels)}
     if key is not None:
         entry = {"facts": facts, "valid_from": as_of, "valid_until": next_available}
         size = _facts_size((key, entry))
@@ -562,15 +582,11 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
     # A persisted observation from hours ago cannot make an already observed
     # intervening bar break fresh again. Session-open gaps remain possible when
     # no native bars traded through the level during the absence of quotes.
-    for level in levels:
-        for bar in rows_by_tf.get(level["timeframe"], []):
-            if bar["ts"] < level["available_at"] or bar["available_at"] > known_before:
-                continue
-            crossed = (bar["high"] > level["price"] if level["kind"] == "resistance"
-                       else bar["low"] < level["price"])
-            if crossed:
-                seen.add(level["level_id"])
-                break
+    # One historical scan per exact native bundle, not seven scans for seven
+    # execution horizons. Compare its original availability to this lane's
+    # known-before clock; a later bar never consumes a fresh quote crossing.
+    seen.update(level_id for level_id, available in facts['first_cross_at'].items()
+                if available <= known_before)
     event = deepcopy(next_state.get("active_event"))
     leg = deepcopy(next_state.get("protected_leg"))
     _spend(event, quote, rows_by_tf)
@@ -670,6 +686,13 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
 
 
 def validate_event(event, source_identity=None):
+    # Static evidence only. Current quote/time, spent barriers, entry expiry and
+    # full portfolio risk remain independently checked on every decision.
+    return SVC.verify(event, source_identity, version=VERSION,
+                      defaults=DEFAULT_POLICY, validator=_validate_event_uncached)
+
+
+def _validate_event_uncached(event, source_identity=None):
     """Check the frozen causal evidence, source, geometry and content digest."""
     event = event or {}
     fail = {"eligible": False, "reason": "STRUCTURAL_EVENT_PROOF_INVALID"}

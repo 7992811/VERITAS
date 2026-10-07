@@ -25,6 +25,7 @@ import veritas_timeframe_structure as TS
 
 VERSION = "STRUCTURAL_QUOTE_RUNTIME_V1"
 INTERVAL_SECONDS = 5.0
+BOOK_RETRY_SECONDS = 0.5
 HORIZONS = tuple(TS.TIMEFRAMES)
 MAX_BARS_PER_TIMEFRAME = 500
 _cache_lock = threading.RLock()
@@ -205,6 +206,7 @@ class BreakoutRuntime:
         self.context_builder = context_builder or TFD.structural_context
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="veritas-breakout-quote")
         self._pending, self._observations = {}, {}
+        self._pending_entry_rows = []
         self._history_versions = {}
         self._run_lock = threading.Lock()
         self._stop = threading.Event()
@@ -393,8 +395,11 @@ class BreakoutRuntime:
                    _breakout_checked_at=clock.isoformat(), _breakout_runtime=VERSION,
                    snapshot_stale=False, trade_plan={})
         row.update({key: deepcopy(quote[key]) for key in VPS.QUOTE_FIELDS if key in quote})
-        public_context = {key: deepcopy(value) for key, value in context.items() if key != "quote_state"}
-        public_context["levels"] = public_context.get("levels", [])[-40:]
+        # Project before copying. The previous code cloned every historical
+        # level and immediately discarded all but forty of them.
+        public_context = {key: deepcopy(value[-40:] if key == "levels" else value)
+                          for key, value in context.items() if key != "quote_state"}
+        public_context.setdefault("levels", [])
         row["timeframe_entry_context"] = public_context
         row["trend_entry_context"] = public_context
         row = TFP.prepare_row(row, price=quote["price"], now=clock)
@@ -433,6 +438,34 @@ class BreakoutRuntime:
             last["summary"] = merged
             last["breakout_runtime"] = self.snapshot()
 
+    def _retry_entry(self, markets, quotes, clock, started):
+        """Retry original events before history work can exhaust their queue lease.
+
+        The callback remains the sole admission/accounting authority and obtains
+        a current same-source quote at mutation. No event timestamp is renewed.
+        Quote collection continues for every asset while the book is occupied.
+        """
+        pending, self._pending_entry_rows = self._pending_entry_rows, []
+        for asset, market in markets.items():
+            self._fresh_quote(asset, market['structure_source_identity'],
+                              quotes.get(asset) or {}, clock)
+        entry_started = time.monotonic()
+        execution = self.entry_pass(pending, clock)
+        entry_seconds = time.monotonic()-entry_started
+        if execution.get('status') == 'BUSY' and execution.get('entry_turn_reserved') is not False:
+            self._pending_entry_rows = pending
+        self._publish_rows(pending, execution, clock)
+        self.state.update(status='WAITING_FOR_BOOK' if execution.get('status') == 'BUSY' else 'OK',
+                          checked_at=clock.isoformat(), cycles=self.state['cycles']+1,
+                          rows=len(pending), assets=len(markets),
+                          context_seconds=0.0, entry_seconds=entry_seconds,
+                          retry_passes=self.state.get('retry_passes',0)+1,
+                          pending_entry_rows=len(self._pending_entry_rows),
+                          execution_status=execution.get('status'),
+                          execution_reason=execution.get('reason'),
+                          duration_seconds=time.monotonic()-started)
+        return {**self.snapshot(), 'execution':execution}
+
     def run_once(self, now=None, *, quotes=None):
         """Observe one bounded pass; supplied quotes make deterministic tests."""
         if not self._run_lock.acquire(blocking=False):
@@ -464,6 +497,8 @@ class BreakoutRuntime:
             # time. Never evaluate a quote with a clock from before retrieval.
             if now is None:
                 clock = _clock()
+            if self._pending_entry_rows:
+                return self._retry_entry(markets, observed_quotes, clock, started)
             context_started = time.monotonic()
             rows = []
             for asset, descriptor in markets.items():
@@ -500,17 +535,17 @@ class BreakoutRuntime:
                 entry_started = time.monotonic()
                 execution = self.entry_pass(rows, clock)
                 entry_seconds = time.monotonic()-entry_started
-                if execution.get("status") == "BUSY":
-                    # Book contention does not consume an otherwise fresh
-                    # observation. Retry this exact quote on the next pass;
-                    # the structural owner preserves the original event time.
-                    for asset in {row["asset"] for row in rows}:
-                        identity = markets[asset]["structure_source_identity"]
-                        self._observations.pop((asset, *_source_key(identity)), None)
+                if execution.get("status") == "BUSY" and execution.get("entry_turn_reserved") is not False:
+                    # Reuse this bounded batch, rather than rebuilding all
+                    # seven assets before trying the reserved book turn.
+                    self._pending_entry_rows = rows
                 publish_started = time.monotonic()
                 self._publish_rows(rows, execution, clock)
                 publish_seconds = time.monotonic()-publish_started
-            self.state.update(status="OK", checked_at=clock.isoformat(), cycles=self.state["cycles"]+1,
+            self.state.update(status="WAITING_FOR_BOOK" if execution.get("status") == "BUSY" else "OK",
+                              pending_entry_rows=len(self._pending_entry_rows),
+                              execution_reason=execution.get("reason"),
+                              checked_at=clock.isoformat(), cycles=self.state["cycles"]+1,
                               rows=len(rows), assets=len(markets), pending_quote_fetches=len(self._pending),
                               context_seconds=context_seconds, entry_seconds=entry_seconds,
                               publish_seconds=publish_seconds, execution_status=execution.get("status"),
@@ -527,7 +562,12 @@ class BreakoutRuntime:
             self._run_lock.release()
 
     def snapshot(self):
-        return dict(self.state)
+        out = dict(self.state)
+        describe = getattr(VPG._mutex, 'snapshot', None)
+        if callable(describe):
+            out['book_lock'] = describe()
+        out['proof_cache'] = TFP.SB.SVC.snapshot()
+        return out
 
     def close(self):
         self._stop.set()
@@ -542,7 +582,8 @@ class BreakoutRuntime:
             if callable(emit) and time.monotonic()-last_log >= 60:
                 emit("structural_quote_runtime", **self.snapshot())
                 last_log = time.monotonic()
-            self._stop.wait(max(0.05, INTERVAL_SECONDS-(time.monotonic()-started)))
+            interval = BOOK_RETRY_SECONDS if self._pending_entry_rows else INTERVAL_SECONDS
+            self._stop.wait(max(0.05, interval-(time.monotonic()-started)))
 
 
 def start(ns, entry_pass):

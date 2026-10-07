@@ -19,6 +19,9 @@ class PriorityRLock:
         self._priority_waiters = 0
         self._ordinary_waiters = 0
         self._entry_turns = {}
+        self._owner_name = None
+        self._acquired_at = None
+        self._last_hold_seconds = 0.0
 
     def acquire(self, blocking=True, timeout=-1, *, priority=False):
         if not blocking and timeout != -1:
@@ -55,6 +58,8 @@ class PriorityRLock:
                     self._condition.wait(remaining)
                 self._entry_turns.pop(ident, None)
                 self._owner, self._depth = ident, 1
+                self._owner_name = threading.current_thread().name[:96]
+                self._acquired_at = time.monotonic()
                 return True
             finally:
                 setattr(self, counter, getattr(self, counter) - 1)
@@ -79,8 +84,20 @@ class PriorityRLock:
                 raise RuntimeError('cannot release un-acquired lock')
             self._depth -= 1
             if not self._depth:
-                self._owner = None
+                self._last_hold_seconds = max(0.0, time.monotonic()-self._acquired_at)
+                self._owner = self._owner_name = self._acquired_at = None
                 self._condition.notify_all()
+
+    def snapshot(self):
+        """Bounded diagnostics only: no frames, local variables or account data."""
+        with self._condition:
+            now = time.monotonic()
+            return {'owner':self._owner_name, 'depth':self._depth,
+                    'held_seconds':max(0.0, now-self._acquired_at) if self._acquired_at is not None else 0.0,
+                    'last_hold_seconds':self._last_hold_seconds,
+                    'protection_waiters':self._priority_waiters,
+                    'ordinary_waiters':self._ordinary_waiters,
+                    'entry_reservations':sum(until > now for until in self._entry_turns.values())}
 
     def __enter__(self):
         self.acquire()
