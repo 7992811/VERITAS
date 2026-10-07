@@ -185,9 +185,19 @@ def final_plan(asset, direction, plan, now=None):
     p = dict(plan or {})
     ctx = p.get('timeframe_entry_context') or {}
     source = ctx.get('source_identity') or {}
+    source_name = source.get('primary_source')
+    contract_id = source.get('contract_id')
+    # This is an internal reconstruction of the already source-locked plan, not
+    # an external quote parser. TBANK identities require the exact UID in their
+    # native nested shape; keeping it only in the legacy top-level field made
+    # this final wrapper reject its own unchanged exact-contract context.
+    contract = ({'instrument_uid':contract_id}
+                if str(source_name or '').upper().startswith('TBANK_GRPC') and contract_id
+                else {})
     row = {'asset':asset, 'horizon':p.get('horizon'), 'research_decision':direction,
-           'price':p.get('entry_price'), 'trade_plan':p, 'source':source.get('primary_source'),
-           'contract_id':source.get('contract_id'), 'market_observed_at':p.get('market_observed_at')}
+           'price':p.get('entry_price'), 'trade_plan':p, 'source':source_name,
+           'contract_id':contract_id, 'contract':contract,
+           'market_observed_at':p.get('market_observed_at')}
     p = prepare_row(row, now=decision_time)['trade_plan']
     p['direction'] = direction
     econ = VX.economics_gate(asset, p)

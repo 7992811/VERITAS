@@ -203,6 +203,53 @@ class CanonicalSameTimeframeTests(unittest.TestCase):
             "contract_id":"NQH7", "observed_at":self.clock.isoformat(), "source_gate_pass":True,"market_open":True}
         self.assertEqual(self.admit(pinned, "Aggressive")["reason"], "SAME_TF_SOURCE_MISMATCH")
 
+    def _tbank_row(self, *, signal_age=10):
+        uid = "c300543d-aa18-4249-b110-615409dde036"
+        row = structural_row(self.clock, asset="CNYRUBF", source="TBANK_GRPC CNYRUBF",
+                             signal_age=signal_age)
+        source = VPS.identity("CNYRUBF", {
+            "source":"TBANK_GRPC CNYRUBF",
+            "contract":{"instrument_uid":uid},
+        })
+        row.update(contract={"instrument_uid":uid}, contract_id=uid)
+        row["timeframe_entry_context"]["source_identity"] = source
+        row["timeframe_entry_context"]["event"]["source_identity"] = source
+        return row
+
+    def test_tbank_execution_quote_still_requires_native_exact_contract_uid(self):
+        row = self._tbank_row()
+        self.assertTrue(TFP.entry_gate(row, row["price"], "LONG", self.clock)["eligible"])
+
+        top_level_only = deepcopy(row)
+        top_level_only.pop("contract")
+        gate = TFP.entry_gate(top_level_only, row["price"], "LONG", self.clock)
+        self.assertFalse(gate["eligible"])
+        self.assertEqual(gate["reason"], "SAME_TF_SOURCE_MISMATCH")
+
+        wrong = deepcopy(row)
+        wrong["contract"] = {"instrument_uid":"different-contract"}
+        gate = TFP.entry_gate(wrong, row["price"], "LONG", self.clock)
+        self.assertFalse(gate["eligible"])
+        self.assertEqual(gate["reason"], "SAME_TF_SOURCE_MISMATCH")
+
+    def test_final_plan_preserves_tbank_uid_and_canonical_expiry_reason(self):
+        row = self._tbank_row(signal_age=2*TS.timeframe_seconds("5m")+50)
+        plan = TFP.prepare_row(row, now=self.clock)["trade_plan"]
+        self.assertEqual(plan["entry_timing_gate"]["reason"], "SAME_TF_EVENT_EXPIRED")
+
+        final = TFP.final_plan("CNYRUBF", "LONG", plan, now=self.clock)
+        self.assertNotIn("SAME_TF_SOURCE_MISMATCH",
+                         final["final_economics_gate"]["blockers"])
+        self.assertIn("SAME_TF_EVENT_EXPIRED",
+                      final["final_economics_gate"]["blockers"])
+
+        missing_uid = deepcopy(plan)
+        missing_uid["timeframe_entry_context"]["source_identity"]["contract_id"] = None
+        missing_uid["timeframe_entry_context"]["event"]["source_identity"]["contract_id"] = None
+        blocked = TFP.final_plan("CNYRUBF", "LONG", missing_uid, now=self.clock)
+        self.assertIn("SAME_TF_SOURCE_MISMATCH",
+                      blocked["final_economics_gate"]["blockers"])
+
     def test_fresh_quote_before_confirmation_cannot_execute_a_later_breakout(self):
         row = structural_row(self.clock,timeframe="1h")
         event = row["timeframe_entry_context"]["event"]
