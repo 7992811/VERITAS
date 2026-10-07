@@ -1,0 +1,33 @@
+name: Currency repair source inspection
+on:
+  push:
+    branches: [diagnostic/currency-repair-source-20261007]
+    paths: [.github/workflows/currency-repair-source.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Bundle tracked source and tests without credentials or runtime data
+        run: |
+          mkdir -p /tmp/currency-repair
+          python - <<'PY'
+          import pathlib, subprocess, zipfile
+          files = subprocess.check_output(['git','ls-files','-z']).decode().split('\0')
+          with zipfile.ZipFile('/tmp/currency-repair/source.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for name in files:
+                  p=pathlib.Path(name)
+                  if p.is_file() and (p.suffix in {'.py','.cjs','.js','.yml','.yaml'} or p.name.startswith('requirements')):
+                      z.write(p,name)
+          pathlib.Path('/tmp/currency-repair/commit.txt').write_text(subprocess.check_output(['git','rev-parse','HEAD']).decode())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: currency-repair-source
+          path: /tmp/currency-repair
+          retention-days: 1
