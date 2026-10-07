@@ -7442,7 +7442,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     meta_cio=live_meta_cio_board(summary) if SERVICE_ROLE=='web' else meta_cio_board_from_summary(summary)
     meta_alerts=maybe_create_meta_alerts(meta_cio)
     meta_seconds=time.time()-meta_phase_t0
-    portfolio_autopilot={'status':'UNAVAILABLE','reason':'portfolio_module_not_loaded'}
+    portfolio_autopilot={'status':'UNAVAILABLE','reason':'portfolio_module_not_loaded'}; portfolio_phase_t0=time.monotonic()
     if VP is not None and pg_enabled():
         try:
             portfolio_autopilot=VP.step_all(
@@ -7452,6 +7452,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         except Exception as ex:
             portfolio_autopilot={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
             emit('portfolio_autopilot_error',error=portfolio_autopilot['error'],trace=traceback.format_exc(limit=12))
+    phase_seconds['portfolio_total']=time.monotonic()-portfolio_phase_t0
     if pg_enabled():
         for mx in meta_cio.get('items',[]):
             try:
@@ -18755,8 +18756,11 @@ def _v90_trim_memory(phase='unknown',force=False,*,preserve_active_cycle=False):
 
 
 def _v90_emit_portfolio(event,**kw):
-    if event=='paper_portfolio_phase':
+    cleanup_started=time.monotonic()
+    if event=='paper_portfolio_phase' and kw.get('phase') in (
+            'calibration_r33_done','calibration_r29_done','book_done','book_failed','book_uncertain'):
         _v90_trim_memory('portfolio_'+str(kw.get('phase') or 'unknown'),force=True,preserve_active_cycle=True)
+        kw=dict(kw,cleanup_seconds=round(time.monotonic()-cleanup_started,4))
     return emit(event,**dict(kw,rss_mb=rss_mb()))
 
 
@@ -19164,7 +19168,7 @@ def main():
                                'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY),
                                'manager_corpus': manager_corpus_summary()})
     if pg_boot.get('ok') and VP is not None:
-        VPG.start(globals()); VSQ.start(pg_connect,emit)
+        VPG.start(globals()); VSQ.start(pg_connect,emit,resource_guard=_v90_background_maintenance.permit)
         import veritas_breakout_runtime as VBR
         import veritas_structural_lifecycle as VSL
         VBR.start(globals(),entry_pass=lambda rows,clock:VSL.fast_entry_pass(globals(),rows,clock,runtime=True))

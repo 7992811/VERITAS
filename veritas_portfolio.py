@@ -2531,39 +2531,43 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             'admission_trace':trace,**st}
 
 
+def _portfolio_cycle_book(summary,candidates,impulse_candidates,mode):
+    if mode=='IMPULSE_ONLY':
+        base_book=impulse_candidates
+    elif mode=='AGGRESSIVE':
+        base_book=_v90_aggressive_candidate_book(summary,candidates)
+    elif mode=='CURRENCY':
+        base_book=_currency_candidate_book(summary)
+    else:
+        base_book=candidates
+    return _v90_trend_transition_candidate_book(summary,base_book,mode)
+
+
 def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
+    from veritas_portfolio_cycle import run_books, emit_diagnostic
     ensure_schema(pg_connect); ts=observed_at or _now()
     candidates=_candidate_book_v84(summary)
     impulse_candidates=_best_impulse_by_asset(summary)
     prices=VPG.latest_prices(summary)
     usdrub,fxsrc=_fetch_usdrub(); ruonia,rusrc=_fetch_ruonia()
-    with pg_connect() as c, VPG.book_transaction(c):
-        # retain last good official values if network temporarily unavailable
+    with pg_connect() as c:
         last=c.execute("SELECT last_ruonia,last_usdrub FROM paper_portfolios WHERE name='Champion'").fetchone()
-        if ruonia is None and last: ruonia=last['last_ruonia']
-        if usdrub is None and last: usdrub=last['last_usdrub']
-        results=[]
-        for name,pol in POLICIES.items():
-            mode=str(pol.get('mode') or '')
-            if mode=='IMPULSE_ONLY':
-                base_book=impulse_candidates
-            elif mode=='AGGRESSIVE':
-                base_book=_v90_aggressive_candidate_book(summary,candidates)
-            elif mode=='CURRENCY':
-                base_book=_currency_candidate_book(summary)
-            else:
-                base_book=candidates
-            book=_v90_trend_transition_candidate_book(summary,base_book,mode)
-            if emit: emit('paper_portfolio_phase',phase='book_start',portfolio=name)
-            results.append(_step_one(c,name,pol,book,prices,ruonia,usdrub,ts,commission_rate,summary))
-            if emit: emit('paper_portfolio_phase',phase='book_done',portfolio=name)
-        if emit: emit('paper_portfolio_phase',phase='protection_start')
-        VPP.refresh(c,commission=commission_rate)
-        if emit: emit('paper_portfolio_phase',phase='protection_done')
-    out={'status':'OK','version':VERSION,'portfolios':results,'market_candidates':len(candidates),'impulse_candidates':len(impulse_candidates),
+    if ruonia is None and last: ruonia=last['last_ruonia']
+    if usdrub is None and last: usdrub=last['last_usdrub']
+    batch=run_books(pg_connect=pg_connect,policies=POLICIES,
+        make_book=lambda name,pol:_portfolio_cycle_book(summary,candidates,impulse_candidates,str(pol.get('mode') or '')),
+        step_one=_step_one,prices=prices,ruonia=ruonia,usdrub=usdrub,observed_at=ts,
+        commission_rate=commission_rate,summary=summary,emit=emit,
+        execution_clock=_now if VPG._entry_namespace is not None else None)
+    results=batch['portfolios']
+    out={'status':batch['status'],'version':VERSION,'portfolios':results,'market_candidates':len(candidates),'impulse_candidates':len(impulse_candidates),
+         'committed_portfolios':batch['committed_portfolios'],'errors':batch['errors'],
+         'uncertain_portfolios':batch['uncertain_portfolios'],
+         'accounting_snapshot_basis':batch['accounting_snapshot_basis'],'portfolio_timing':batch['timing'],
          'signal_first_policy':True,'signal_first_probe_fraction_core':0.10,'signal_first_probe_fraction_impulse':0.05,'ruonia_source':rusrc,'usdrub_source':fxsrc,'objective_order':['WIN_RATE','TOTAL_RETURN','DRAWDOWN'],'meaningful_win_threshold_nav':MEANINGFUL_WIN_NAV,'admission_probability_floor':{'Impulse':0.64,'Aggressive':0.62,'Champion':0.70,'Challenger':0.75},'probability_note':'EMPIRICAL_CALIBRATION when available; otherwise MODEL_PRIOR_UNCALIBRATED. Prior is never reported as observed hit probability.','live_capital':False}
-    if emit: emit('paper_portfolio_cycle',portfolios=results,market_candidates=len(candidates),
+    emit_diagnostic(emit,'paper_portfolio_cycle',portfolios=results,market_candidates=len(candidates),
                            impulse_candidates=len(impulse_candidates),ruonia=ruonia,usdrub=usdrub,
+                           status=batch['status'],portfolio_timing=batch['timing'],
                            unified_execution=True,experience_weighted=True,adaptive_regime=True,v84_execution=True,v842_audited=True,profit_harvest_v843=True)
     return out
 

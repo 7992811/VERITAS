@@ -18,6 +18,7 @@ import veritas_price_source as VPS
 import veritas_learning_integrity as LI
 import veritas_observation_path as VOP
 import veritas_trade_diagnostics as DIAG
+from veritas_quality_history import SELECT_TRADES, history_query, AnalysisContext, ReviewCollector, guarded_refresh, emit_review
 from veritas_entry_version import (POLICY_HASH_VERSION,digest,policy_hash,
                                   version_identity,matches_current_version,partition_versions)
 
@@ -169,10 +170,11 @@ def _wilson(wins,n):
     half=z*math.sqrt(p*(1-p)/n+z*z/(4*n*n))/den
     return [max(0.,mid-half),min(1.,mid+half)]
 
-def statistics(trades,window=None):
+def statistics(trades,window=None,*,analysis=None):
+    analysis=analysis or AnalysisContext(review,idea_key)
     grouped=defaultdict(list)
     for trade in trades:
-        grouped[idea_key(trade)[0]].append(trade)
+        grouped[analysis.idea(trade)[0]].append(trade)
     ids=sorted(grouped,key=lambda key:max(at(t.get('closed_at')) or datetime.min.replace(tzinfo=timezone.utc)
                                           for t in grouped[key]))
     if window:
@@ -183,8 +185,8 @@ def statistics(trades,window=None):
     pnl=sum(known); pos=[x for x in known if x>0]; neg=[x for x in known if x<0]
     idea_values=[sum(num(t.get('net_pnl_rub')) or 0 for t in grouped[key]) for key in ids
                  if all(num(t.get('net_pnl_rub')) is not None for t in grouped[key])]
-    verified=sum(all(idea_key(t)[1] for t in grouped[key]) for key in ids)
-    reviewed=[review(t) for t in rows]
+    verified=sum(all(analysis.idea(t)[1] for t in grouped[key]) for key in ids)
+    reviewed=[analysis.review(t) for t in rows]
     captures=[r['capture_ratio'] for r in reviewed if r['capture_ratio'] is not None]
     gross_values=[num(t.get('gross_pnl_rub')) for t in rows]
     fees_values=[num(t.get('fees_rub')) for t in rows]
@@ -195,7 +197,7 @@ def statistics(trades,window=None):
     path_status={id(t):r['evidence_status'] for t,r in zip(rows,reviewed)}
     learning_groups=[
         group for key,group in ((key,grouped[key]) for key in ids)
-        if all(idea_key(t)[1] and path_status[id(t)]=='OBSERVED_PAPER_PATH'
+        if all(analysis.idea(t)[1] and path_status[id(t)]=='OBSERVED_PAPER_PATH'
                for t in group)
     ]
     learning_values=[sum(num(t.get('net_pnl_rub')) for t in group) for group in learning_groups]
@@ -233,32 +235,8 @@ def statistics(trades,window=None):
             'readiness':'NOT_PROVEN' if len(learning_groups)<50 else 'REQUIRES_OUT_OF_SAMPLE_VALIDATION',
             'window_requested':window,'results_are_paper_only':True}
 
-SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t.status,t.horizon,
- t.opened_at,t.closed_at,t.avg_entry_price,t.avg_exit_price,t.max_fraction,
- t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.net_pnl_rub,
- ('''+LI.payload_sql('t',root_field=lambda key:'quality_payload.'+key)+''' || jsonb_build_object(
- 'strategy_epoch',quality_payload.strategy_epoch,'strategy_entry_sha',quality_payload.strategy_entry_sha,
- 'strategy_policy_hash',quality_payload.strategy_policy_hash,
- 'strategy_policy_hash_version',quality_payload.strategy_policy_hash_version,
- 'strategy_role',quality_payload.strategy_role,'idea_id',quality_payload.idea_id,
- 'idea_id_verified',quality_payload.idea_id_verified,
- 'posttrade_review',jsonb_build_object('input_hash',quality_payload.posttrade_review->'input_hash'))) AS payload,
- o.entry_notional_rub,o.entry_order_count
- FROM paper_trades t CROSS JOIN LATERAL jsonb_to_record(
- CASE WHEN jsonb_typeof(t.payload)='object' THEN t.payload ELSE '{}'::jsonb END) AS quality_payload(
- data_integrity_status jsonb,entry_primary_source jsonb,entry_data_latency_class jsonb,recovered jsonb,learning_eligible jsonb,
- exit_reason jsonb,close_reason jsonb,idea_event_id jsonb,r66_event_id jsonb,mfe_pct jsonb,mae_pct jsonb,
- r55_lifetime_mfe_pct jsonb,r55_lifetime_mae_pct jsonb,initial_stop_price jsonb,entry_atr jsonb,execution_timeframe jsonb,
- execution_horizon jsonb,atr_timeframe jsonb,stop_timeframe jsonb,target_timeframe jsonb,price_source_lock jsonb,
- entry_execution_source_identity jsonb,last_exit_source_identity jsonb,contract_identity jsonb,entry_source_names jsonb,
- source_locked_mark jsonb,entry_event_snapshot jsonb,entry_execution_model jsonb,last_exit_execution_model jsonb,
- observation_path jsonb,strategy_epoch jsonb,strategy_entry_sha jsonb,strategy_policy_hash jsonb,
- strategy_policy_hash_version jsonb,strategy_role jsonb,idea_id jsonb,idea_id_verified jsonb,posttrade_review jsonb) LEFT JOIN (
- SELECT trade_id,SUM(notional_rub) AS entry_notional_rub,COUNT(*) AS entry_order_count
- FROM paper_orders WHERE side IN ('BUY','SELL_SHORT') GROUP BY trade_id
- ) o ON o.trade_id=t.trade_id'''
 
-def build_report(trades,positions=()):
+def build_report(trades,positions=(),*,review_sink=None):
     baseline=at(BASELINE_AT); now=datetime.now(timezone.utc).isoformat()
     current=version_identity()
     result={'status':'OK','version':VERSION,'at':now,'strategy_epoch':CTC.STRATEGY_EPOCH,
@@ -269,7 +247,15 @@ def build_report(trades,positions=()):
             'automatic_parameter_promotion':False,'portfolios':[],
             'all_portfolio_independent_ideas':len({idea_key(t)[0] for t in trades}),
             'readiness':'NOT_PROVEN','real_orders_enabled':False}
+    paired_evidence={}
+    def inspect(trade):
+        record=review(trade)
+        if trade.get('portfolio_name') in ('Champion','Challenger'):
+            paired_evidence[id(trade)]=(record['evidence_status'],record['net_return_on_entry_notional_pct'])
+        if review_sink is not None: review_sink(trade,record)
+        return record
     for name in CTC.PORTFOLIO_ORDER:
+        analysis=AnalysisContext(inspect,idea_key)
         rows=[t for t in trades if t.get('portfolio_name')==name and t.get('status')=='CLOSED']
         cohorts={'all':rows,
                  'since_73266d9':[t for t in rows if at(t.get('opened_at')) and at(t['opened_at'])>=baseline],
@@ -277,10 +263,10 @@ def build_report(trades,positions=()):
                  'current_epoch':[t for t in rows if payload(t.get('payload')).get('strategy_epoch')==CTC.STRATEGY_EPOCH]}
         version_groups,version_count,omitted=partition_versions(rows,current,MAX_VERSION_GROUPS)
         for group in version_groups:
-            group['metrics']=statistics(group.pop('trades'))
+            group['metrics']=statistics(group.pop('trades'),analysis=analysis)
         opened=[z for z in positions if z.get('portfolio_name')==name]
         result['portfolios'].append({'name':name,
-            'cohorts':{key:{'all':statistics(group),'last20':statistics(group,20),'last50':statistics(group,50)}
+            'cohorts':{key:{'all':statistics(group,analysis=analysis),'last20':statistics(group,20,analysis=analysis),'last50':statistics(group,50,analysis=analysis)}
                        for key,group in cohorts.items()},
             'cohort_definitions':{'current':'EXACT_ENTRY_SHA_POLICY_AND_EPOCH',
                                   'current_epoch':'EPOCH_ONLY_INCLUDES_OTHER_CODE_AND_POLICY_VERSIONS',
@@ -293,7 +279,8 @@ def build_report(trades,positions=()):
                                              not matches_current_version(t,current) for t in rows),
             'open_positions':len(opened),
             'inherited_open_positions':sum(not matches_current_version(z,current) for z in opened),
-            'recent_reviews':[review(t) for t in sorted(rows,key=lambda t:str(t.get('closed_at')))[-5:][::-1]]})
+            'recent_reviews':[analysis.review(t) for t in sorted(rows,key=lambda t:str(t.get('closed_at')))[-5:][::-1]]})
+    analysis=None  # Release the last portfolio memo before matched-pair review.
     # Pair by explicit shared market event only. No claim that two different
     # market windows form a randomized A/B experiment.
     pairs=defaultdict(dict)
@@ -305,9 +292,9 @@ def build_report(trades,positions=()):
     paired=[]
     for key,values in pairs.items():
         if set(values)=={'Champion','Challenger'}:
-            reviews={k:review(v) for k,v in values.items()}
-            returns={k:r['net_return_on_entry_notional_pct'] for k,r in reviews.items()}
-            if (all(r['evidence_status']=='OBSERVED_PAPER_PATH' for r in reviews.values())
+            reviews={k:paired_evidence[id(v)] for k,v in values.items()}
+            returns={k:r[1] for k,r in reviews.items()}
+            if (all(r[0]=='OBSERVED_PAPER_PATH' for r in reviews.values())
                     and all(v is not None for v in returns.values())):
                 paired.append(returns['Challenger']-returns['Champion'])
     result['champion_challenger']={'matched_events':len(paired),
@@ -319,59 +306,57 @@ def refresh(pg_connect,emit=None):
     with pg_connect() as c:
         with c.transaction():
             c.execute("SET LOCAL statement_timeout = '4000ms'")
-            rows=[dict(t) for t in c.execute(SELECT_TRADES+" WHERE t.status='CLOSED' ORDER BY t.closed_at DESC LIMIT 5001").fetchall()]
+            rows=[dict(t) for t in c.execute(history_query(SELECT_TRADES)).fetchall()]
             positions=[dict(z) for z in c.execute("""SELECT portfolio_name,
                 jsonb_build_object('strategy_epoch',payload->'strategy_epoch',
                   'strategy_entry_sha',payload->'strategy_entry_sha',
                   'strategy_policy_hash',payload->'strategy_policy_hash') AS payload
                 FROM paper_positions""").fetchall()]
-    result=build_report(rows[:5000],positions)
+    collector=ReviewCollector(rows[:5000],review,payload)
+    result=build_report(rows[:5000],positions,review_sink=collector.accept)
     result['history_truncated']=len(rows)>5000
     if result['history_truncated']:
         result['status']='PARTIAL_HISTORY'
     changed=0
     # Review only a bounded batch per pass and commit separately from trading.
-    pending=[t for t in rows[:5000] if (payload(t.get('payload')).get('posttrade_review') or {}).get('input_hash')!=review(t)['input_hash']]
+    pending=collector.pending(rows[:5000])
     if pending:
-        with pg_connect() as c:
+        with pg_connect() as c, c.transaction():
             c.execute("SET LOCAL statement_timeout = '3000ms'")
-            for t in pending[:10]:
-                record=review(t)
+            for t,record in pending:
                 c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s AND status='CLOSED'",
                           (json.dumps({'posttrade_review':record},default=str),t['trade_id']))
                 changed+=1
     with _LOCK:
         _CACHE.update(at=time.monotonic(),value=result,last_error=None)
-    if emit:
-        emit('strategy_quality_review',reviewed=changed,closed_rows=len(rows),epoch=CTC.STRATEGY_EPOCH,
-             shadow_only=True,financial_columns_changed=False)
+    emit_review(emit,'strategy_quality_review',reviewed=changed,closed_rows=len(rows),epoch=CTC.STRATEGY_EPOCH,
+                shadow_only=True,financial_columns_changed=False)
     return result
 
 def snapshot():
     with _LOCK:
         result=copy.deepcopy(_CACHE['value'])
         error=_CACHE['last_error']; age=time.monotonic()-_CACHE['at']
+        refresh_state=dict(_CACHE.get('refresh_state') or {})
+    refresh_state['age_seconds']=max(0.,time.monotonic()-refresh_state.pop('attempted_at_monotonic',time.monotonic()))
+    refresh_state.pop('finished_at_monotonic',None)
+    details={'refresh_status':refresh_state.get('status','NOT_STARTED'),'refresh':refresh_state,'last_refresh_error_code':error}
     if result is None:
         return {'status':'UNAVAILABLE' if error else 'WARMING_UP','version':VERSION,
-                'error_code':error,'portfolios':[],'real_orders_enabled':False}
+                'error_code':error,'portfolios':[],'real_orders_enabled':False,**details}
+    result.update(details)
     result['snapshot_age_seconds']=round(age,1)
     if age>180:
         result['status']='STALE'
     return result
 
-def start(pg_connect,emit=None):
+def start(pg_connect,emit=None,resource_guard=None):
     with _LOCK:
         if _CACHE['worker'] and _CACHE['worker'].is_alive():
             return
         def run():
             while True:
-                try:
-                    refresh(pg_connect,emit)
-                except Exception as exc:
-                    with _LOCK:
-                        _CACHE['last_error']=type(exc).__name__
-                    if emit:
-                        emit('strategy_quality_review_error',error_code=type(exc).__name__,shadow_only=True)
+                guarded_refresh(_CACHE,_LOCK,lambda:refresh(pg_connect,emit),emit,resource_guard)
                 time.sleep(60)
         worker=threading.Thread(target=run,daemon=True,name='veritas-strategy-quality')
         _CACHE['worker']=worker

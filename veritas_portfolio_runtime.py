@@ -4925,7 +4925,7 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
         VPG.publish_quote(row.get('asset'),VPS.quote_from_row(row))
     _r80_quarantine_source_incident(pg_connect)
     with pg_connect() as c:
-        positions=[dict(z) for z in c.execute('SELECT * FROM paper_positions').fetchall()]
+        positions=[dict(z) for z in c.execute(VPG.QUOTE_POSITION_SQL).fetchall()]
     if VPG._entry_namespace is not None:
         VPG.refresh_position_quotes(VPG._entry_namespace,positions)
     positions = None

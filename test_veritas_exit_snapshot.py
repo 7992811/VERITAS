@@ -443,7 +443,7 @@ class ProtectiveLoopLifetimeTests(unittest.TestCase):
             return copy.deepcopy(selected) if position['asset']=='ETH' else {}
         book=object()
         changes=[{'portfolio':'Champion','asset':'ETH','reason':'existing-protective-result'}]
-        def protective(vp,pg_connect,quotes):
+        def protective(vp,pg_connect,quotes,*,timing=None):
             self.assertIs(vp,book)
             self.assertIs(pg_connect,connect)
             passes.append(alive())
@@ -469,6 +469,7 @@ class ProtectiveLoopLifetimeTests(unittest.TestCase):
         environment={'ns':ns,'_state':state,'snapshot':lambda:dict(state),
             'time':SimpleNamespace(monotonic=lambda:100.0,sleep=sleep),
             'datetime':Clock,'timezone':timezone,'refresh_position_quotes':refresh,
+            'QUOTE_POSITION_SQL':G.QUOTE_POSITION_SQL,
             'quote_for_position':quote,'run_protective_pass':protective,
             'market_state':lambda asset:{'market_open':asset!='BTC'},
             'expected_exchange_session_open':lambda asset,now:asset!='GOLD'}
