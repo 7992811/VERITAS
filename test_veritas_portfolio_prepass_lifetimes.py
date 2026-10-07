@@ -161,7 +161,7 @@ class PrepassFixture:
             '_v90j_json': lambda value: value if isinstance(value, dict) else {},
             '_v90j_iso': lambda value: value,
             '_v90pi_jump_limit': lambda asset: 0.04,
-            'VTM': SimpleNamespace(owns_position=lambda z: True,
+            'VTM': SimpleNamespace(owns_position=lambda z: self.layer != 'R56',
                                    LEGACY_POSITION_SQL_PREDICATE=LEGACY_POSITION_SQL_PREDICATE),
             '_v90ci_same_contract': lambda payload, row: False,
             '_v90ci_cross_source_disagreement': lambda row: None,

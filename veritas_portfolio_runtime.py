@@ -3427,6 +3427,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                     row=next((r for r in same if str(r.get('horizon'))=='4h'),None)                         or next((r for r in same if str(r.get('horizon'))=='1h'),None)                         or next((r for r in same if str(r.get('horizon'))=='5m'),None)
                 if row is not None:
                     _v90r56_migrate_legacy_senior_position(c,name,z,row,px,nav,ts)
+                    if VTM.owns_position(z): continue
                     # Re-read after migration because the first R56 live cycle may
                     # have migrated the stop before a TP could be framed.
                     zfresh=c.execute(
