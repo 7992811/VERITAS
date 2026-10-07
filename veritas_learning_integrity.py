@@ -357,7 +357,7 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
                          e.payload->>'learning_exclusion_reason') IN
                 ('UNVERIFIED_EVENT','UNVERIFIED_EVENT_PROVENANCE')
             AND t.payload#>>'{entry_event_snapshot,event_type}'='VERIFIED_QUOTE_STRUCTURAL_BREAKOUT'))
-        ORDER BY e.closed_at,e.trade_id LIMIT %s FOR UPDATE OF e SKIP LOCKED
+        ORDER BY t.closed_at,e.trade_id LIMIT %s FOR UPDATE OF e SKIP LOCKED
       )
       UPDATE v90_learning_episodes e SET
         learning_action='AWAIT_SOURCE_EVIDENCE_REVALIDATION',
