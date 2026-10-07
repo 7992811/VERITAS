@@ -8,6 +8,7 @@ import unittest
 import uuid
 
 import veritas_profit_protection as PP
+import veritas_protection_read_model as PR
 
 
 DSN = os.getenv('VERITAS_QUALITY_TEST_DSN', '')
@@ -29,6 +30,19 @@ def legacy_refresh(c, name=None, now=None, commission=PP.VC.COMMISSION_RATE):
                   (serialized, z['active_trade_id']))
         c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
                   (serialized, z['active_trade_id']))
+
+
+def update_deltas(updates):
+    """Compare exact per-trade payload deltas across sequential/batched SQL."""
+    deltas = []
+    for query, params in updates:
+        table = query.split()[1]
+        if table not in ('paper_positions', 'paper_trades'):
+            raise AssertionError('Unexpected metadata table: '+table)
+        rows = (json.loads(params[0]) if 'jsonb_to_recordset' in query else
+                [{'trade_id': params[1], 'patch': json.loads(params[0])}])
+        deltas.extend((table, row['trade_id'], row['patch']) for row in rows)
+    return sorted(deltas, key=lambda value: (value[0], value[1]))
 
 
 class ReadTrace:
@@ -154,7 +168,7 @@ class ProfitProtectionProjectionSQLTests(unittest.TestCase):
         old = self.run_refresh(legacy_refresh, rows, name)
         new = self.run_refresh(PP.refresh, rows, name)
         self.assertEqual(new[:3], old[:3])
-        self.assertEqual(new[3].updates, old[3].updates)
+        self.assertEqual(update_deltas(new[3].updates), update_deltas(old[3].updates))
         self.assertEqual(len(new[3].reads), len(old[3].reads))
         return old, new
 
@@ -169,7 +183,7 @@ class ProfitProtectionProjectionSQLTests(unittest.TestCase):
                 old, new = self.assert_parity(rows, name=name)
                 selected = 0 if name == 'missing' else 1 if name == 'LONG' else 2
                 self.assertIsNone(new[2])
-                self.assertEqual(len(new[3].updates), 2*selected)
+                self.assertEqual(len(new[3].updates), 2*((selected+PR.BATCH_SIZE-1)//PR.BATCH_SIZE))
                 for table in ('paper_positions', 'paper_trades'):
                     for row in new[1][table]:
                         self.assertEqual(row['payload']['entry_event_snapshot'], proof)
