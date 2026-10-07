@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import os
 import threading
+import time
 import unittest
 import uuid
 from unittest.mock import patch
@@ -210,3 +211,197 @@ class DurableStateSQLTests(unittest.TestCase):
                 S.publish_snapshot(self.connect,"second","V1",{"n":2})
             self.assertTrue(S.publish_snapshot(self.connect,"first","V1",{"n":3}))
         self.assertEqual(S.load_snapshot(self.connect,"first","V1")["payload"],{"n":3})
+
+
+    def _thread_call(self, operation):
+        values, errors = [], []
+        def run():
+            try:
+                values.append(operation())
+            except BaseException as error:
+                errors.append(error)
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread, values, errors
+
+    def test_existing_job_claim_and_checkpoint_ignore_snapshot_global_holder(self):
+        old = S.claim_job(self.connect, "existing", "V1", owner="old-worker")
+        self.assertTrue(S.checkpoint_job(self.connect, old, status="OK",
+            cursor={"after": 7}, result={"status": "OK", "n": 7}))
+        self.assertTrue(S.publish_snapshot(self.connect, "model", "V1", {"n": 7}))
+        original_model = S.load_snapshot(self.connect, "model", "V1")
+        with self.connect() as holder, holder.transaction():
+            holder.execute("SELECT pg_advisory_xact_lock(%s)", (S._LOCK,))
+            # Another real connection must progress while the snapshot lock is
+            # held. The old implementation raises LockNotAvailable here.
+            lease = S.claim_job(self.connect, "existing", "V1", owner="new-worker")
+            self.assertIsNotNone(lease)
+            self.assertGreater(lease["fence"], old["fence"])
+            self.assertEqual(lease["cursor"], {"after": 7})
+            self.assertEqual(lease["last_good"], {"status": "OK", "n": 7})
+            self.assertTrue(S.checkpoint_job(self.connect, lease, status="OK",
+                cursor={"after": 8}, result={"status": "OK", "n": 8}, release=False))
+            before = S.job_state(self.connect, "existing", "V1")
+            self.assertIsNone(S.claim_job(self.connect, "existing", "V1"))
+            self.assertFalse(S.checkpoint_job(self.connect, old, status="OK",
+                cursor={"after": 999}, result={"status": "OK", "n": 999}))
+            self.assertEqual(S.job_state(self.connect, "existing", "V1"), before)
+        # Snapshot publication retains its global and row/fence checks.
+        self.assertFalse(S.publish_snapshot(self.connect, "model", "V1", {"n": 999}, lease=old))
+        self.assertEqual(S.load_snapshot(self.connect, "model", "V1"), original_model)
+        self.assertTrue(S.publish_snapshot(self.connect, "model", "V1", {"n": 8}, lease=lease))
+        self.assertEqual(S.load_snapshot(self.connect, "model", "V1")["payload"], {"n": 8})
+
+    def test_creation_rechecks_existing_job_after_last_capacity_slot_race(self):
+        selected, resume = threading.Event(), threading.Event()
+        @contextmanager
+        def paused_connect():
+            with self.connect() as raw:
+                class Gate:
+                    paused = False
+                    def transaction(self):
+                        return raw.transaction()
+                    def execute(self, sql, parameters=None):
+                        result = raw.execute(sql, parameters) if parameters is not None else raw.execute(sql)
+                        # Pause after the genuine initial missing-name SELECT,
+                        # before this claimant can acquire the creation lock.
+                        if (not self.paused and sql.lstrip().upper().startswith("SELECT")
+                                and "veritas_learning_jobs" in sql):
+                            self.paused = True
+                            selected.set()
+                            if not resume.wait(5):
+                                raise RuntimeError("test creation barrier timed out")
+                        return result
+                yield Gate()
+        with patch.object(S, "MAX_JOBS", 1):
+            thread, values, errors = self._thread_call(
+                lambda: S.claim_job(paused_connect, "last-slot", "V1", owner="later-worker"))
+            try:
+                self.assertTrue(selected.wait(3))
+                winner = S.claim_job(self.connect, "last-slot", "V1", owner="first-worker")
+                self.assertIsNotNone(winner)
+                self.assertTrue(S.checkpoint_job(self.connect, winner, status="OK",
+                    cursor={"after": 11}, result={"status": "OK", "n": 11}))
+            finally:
+                resume.set()
+                thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(values), 1)
+            recovered = values[0]
+            self.assertIsNotNone(recovered)
+            self.assertGreater(recovered["fence"], winner["fence"])
+            self.assertEqual(recovered["cursor"], {"after": 11})
+            self.assertEqual(recovered["last_good"], {"status": "OK", "n": 11})
+            before = S.job_state(self.connect, "last-slot", "V1")
+            with self.assertRaises(ValueError):
+                S.claim_job(self.connect, "overflow", "V1")
+            self.assertEqual(S.job_state(self.connect, "last-slot", "V1"), before)
+            with self.connect() as c:
+                self.assertEqual(c.execute("SELECT count(*) n FROM veritas_learning_jobs").fetchone()["n"], 1)
+            self.assertFalse(S.checkpoint_job(self.connect, winner, status="OK",
+                cursor={"after": 999}, result={"n": 999}))
+            self.assertTrue(S.checkpoint_job(self.connect, recovered, status="OK",
+                cursor={"after": 12}, result={"status": "OK", "n": 12}))
+
+    def _attempt_behind_expiring_job_row(self, lease, operation):
+        with self.connect() as c:
+            expires = c.execute("""UPDATE veritas_learning_jobs
+                SET lease_until=clock_timestamp()+interval '3 seconds'
+                WHERE name=%s RETURNING lease_until""", (lease["name"],)).fetchone()["lease_until"]
+        before = S.job_state(self.connect, lease["name"], lease["version"])
+        backend = []
+        @contextmanager
+        def tracked_connect():
+            with self.connect() as c:
+                backend.append(c.execute("SELECT pg_backend_pid() pid").fetchone()["pid"])
+                yield c
+        @contextmanager
+        def long_test_transaction(connect):
+            # Test-only allowance avoids a fragile sub-250ms scheduling race.
+            with connect() as c, c.transaction():
+                c.execute("SET LOCAL statement_timeout='10s'")
+                c.execute("SET LOCAL lock_timeout='10s'")
+                yield c
+        thread = None
+        with patch.object(S, "_transaction", long_test_transaction):
+            try:
+                with self.connect() as holder, holder.transaction():
+                    # Expiry was committed above. This holder never changes the
+                    # tuple, so release cannot induce an EPQ expiry recheck.
+                    holder.execute("SELECT name FROM veritas_learning_jobs WHERE name=%s FOR UPDATE", (lease["name"],))
+                    thread, values, errors = self._thread_call(lambda: operation(tracked_connect))
+                    blocked = False
+                    deadline = time.monotonic()+2
+                    with self.connect() as observer:
+                        while time.monotonic() < deadline:
+                            if backend:
+                                state = observer.execute("SELECT wait_event_type,wait_event FROM pg_stat_activity WHERE pid=%s", (backend[0],)).fetchone()
+                                if state and state["wait_event_type"] == "Lock" and state["wait_event"] in ("transactionid", "tuple"):
+                                    blocked = True
+                                    break
+                            time.sleep(.01)
+                    self.assertTrue(blocked, "operation never waited on the real job row")
+                    self.assertTrue(holder.execute("SELECT clock_timestamp()<%s alive", (expires,)).fetchone()["alive"])
+                    holder.execute("SELECT pg_sleep(GREATEST(0,EXTRACT(epoch FROM (%s-clock_timestamp())))+.05)", (expires,))
+            finally:
+                # Holder contexts have exited before join, also on assertions.
+                if thread is not None:
+                    thread.join(5)
+        self.assertFalse(thread.is_alive())
+        return before, values, errors
+
+    def test_checkpoint_cannot_advance_lease_expiring_behind_unchanged_row_lock(self):
+        first = S.claim_job(self.connect, "expiry", "V1")
+        self.assertTrue(S.checkpoint_job(self.connect, first, status="OK",
+            cursor={"after": 3}, result={"status": "OK", "n": 3}))
+        lease = S.claim_job(self.connect, "expiry", "V1")
+        before, values, errors = self._attempt_behind_expiring_job_row(lease,
+            lambda connect: S.checkpoint_job(connect, lease, status="OK",
+                cursor={"after": 999}, result={"status": "OK", "n": 999}))
+        self.assertEqual(errors, [])
+        self.assertEqual(values, [False])
+        self.assertEqual(S.job_state(self.connect, "expiry", "V1"), before)
+        recovered = S.claim_job(self.connect, "expiry", "V1", owner="recovery-worker")
+        self.assertIsNotNone(recovered)
+        self.assertGreater(recovered["fence"], lease["fence"])
+        self.assertEqual(recovered["cursor"], {"after": 3})
+        self.assertEqual(recovered["last_good"], {"status": "OK", "n": 3})
+        self.assertTrue(S.checkpoint_job(self.connect, recovered, status="OK",
+            cursor={"after": 4}, result={"status": "OK", "n": 4}))
+
+    def test_expired_waiting_publisher_rolls_back_evidence_and_preserves_model(self):
+        first = S.claim_job(self.connect, "publisher", "V1")
+        self.assertTrue(S.checkpoint_job(self.connect, first, status="OK",
+            cursor={"after": 3}, result={"status": "OK", "n": 3}))
+        lease = S.claim_job(self.connect, "publisher", "V1")
+        self.assertTrue(S.publish_snapshot(self.connect, "expiry-model", "V1", {"n": 3}))
+        original = S.load_snapshot(self.connect, "expiry-model", "V1")
+        with self.connect() as c:
+            c.execute("CREATE TABLE expiry_seen (id text PRIMARY KEY)")
+        def attempt(connect):
+            with S._transaction(connect) as c:
+                c.execute("INSERT INTO expiry_seen VALUES ('synthetic-evidence')")
+                if not S.publish_snapshot_in_transaction(c, "expiry-model", "V1", {"n": 999}, lease=lease):
+                    raise RuntimeError("EXPECTED_EXPIRED_LEASE_REJECTION")
+            return True
+        before, values, errors = self._attempt_behind_expiring_job_row(lease, attempt)
+        self.assertEqual(values, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], RuntimeError)
+        self.assertEqual(str(errors[0]), "EXPECTED_EXPIRED_LEASE_REJECTION")
+        self.assertEqual(S.job_state(self.connect, "publisher", "V1"), before)
+        self.assertEqual(S.load_snapshot(self.connect, "expiry-model", "V1"), original)
+        with self.connect() as c:
+            self.assertEqual(c.execute("SELECT count(*) n FROM expiry_seen").fetchone()["n"], 0)
+        recovered = S.claim_job(self.connect, "publisher", "V1", owner="recovery-worker")
+        self.assertIsNotNone(recovered)
+        self.assertGreater(recovered["fence"], lease["fence"])
+        self.assertEqual(recovered["cursor"], {"after": 3})
+        self.assertEqual(recovered["last_good"], {"status": "OK", "n": 3})
+        with S._transaction(self.connect) as c:
+            c.execute("INSERT INTO expiry_seen VALUES ('synthetic-evidence')")
+            self.assertTrue(S.publish_snapshot_in_transaction(c, "expiry-model", "V1", {"n": 4}, lease=recovered))
+        self.assertEqual(S.load_snapshot(self.connect, "expiry-model", "V1")["payload"], {"n": 4})
+        with self.connect() as c:
+            self.assertEqual(c.execute("SELECT count(*) n FROM expiry_seen").fetchone()["n"], 1)

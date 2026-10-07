@@ -144,9 +144,13 @@ def load_snapshot(pg_connect, name, version, max_age_seconds=None):
 def _lease_valid(c, lease):
     if not isinstance(lease, dict):
         raise ValueError("missing learning job lease")
-    return c.execute("""SELECT 1 AS ok FROM veritas_learning_jobs
+    # Recheck expiry after the materialized row-lock boundary. An unchanged
+    # tuple can qualify before waiting and arrive after its lease has expired.
+    return c.execute("""WITH held AS MATERIALIZED (
+        SELECT lease_until FROM veritas_learning_jobs
         WHERE name=%s AND version=%s AND owner=%s AND fence=%s
-          AND lease_until>clock_timestamp() FOR UPDATE""",
+          AND lease_until>clock_timestamp() FOR UPDATE
+        ) SELECT 1 AS ok FROM held WHERE lease_until>clock_timestamp()""",
         (_name(lease["name"]), _name(lease["version"]), lease["owner"], int(lease["fence"]))).fetchone() is not None
 
 
@@ -199,10 +203,16 @@ def claim_job(pg_connect, name, version, *, lease_seconds=60, owner=None):
         raise ValueError("lease must last at least one second")
     owner = _name(owner or uuid.uuid4().hex)
     with _transaction(pg_connect) as c:
-        c.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK,))
-        old = c.execute("SELECT name FROM veritas_learning_jobs WHERE name=%s", (name,)).fetchone()
-        if not old and c.execute("SELECT count(*) AS n FROM veritas_learning_jobs").fetchone()["n"] >= MAX_JOBS:
-            raise ValueError("learning job capacity reached; no jobs evicted")
+        # Existing jobs only contend with their own fenced row. Keep the row
+        # locked through UPSERT so concurrent deletion cannot create a new slot
+        # outside the serialized capacity check.
+        old = c.execute("SELECT name FROM veritas_learning_jobs WHERE name=%s FOR UPDATE", (name,)).fetchone()
+        if not old:
+            c.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK,))
+            # Another creator may have installed this name while we waited.
+            old = c.execute("SELECT name FROM veritas_learning_jobs WHERE name=%s", (name,)).fetchone()
+            if not old and c.execute("SELECT count(*) AS n FROM veritas_learning_jobs").fetchone()["n"] >= MAX_JOBS:
+                raise ValueError("learning job capacity reached; no jobs evicted")
         row = c.execute("""INSERT INTO veritas_learning_jobs
             (name,version,status,owner,fence,lease_until) VALUES(%s,%s,'RUNNING',%s,1,clock_timestamp()+%s*interval '1 second')
             ON CONFLICT(name) DO UPDATE SET version=EXCLUDED.version,status='RUNNING',owner=EXCLUDED.owner,
@@ -225,7 +235,8 @@ def checkpoint_job(pg_connect, lease, *, status, cursor=None, result=None, retry
     if good and result is not None:
         _good(result)
     with _transaction(pg_connect) as c:
-        c.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK,))
+        # This updates an existing row and consumes no global capacity slot.
+        # _lease_valid holds its row lock until this transaction finishes.
         if not _lease_valid(c, lease):
             return False
         row = c.execute("""UPDATE veritas_learning_jobs SET status=%s,cursor=COALESCE(%s::jsonb,cursor),result=%s::jsonb,
@@ -233,7 +244,8 @@ def checkpoint_job(pg_connect, lease, *, status, cursor=None, result=None, retry
             next_run_at=clock_timestamp()+%s*interval '1 second',updated_at=clock_timestamp(),
             owner=CASE WHEN %s THEN NULL ELSE owner END,
             lease_until=CASE WHEN %s THEN NULL ELSE lease_until END
-            WHERE name=%s AND version=%s AND owner=%s AND fence=%s RETURNING name""",
+            WHERE name=%s AND version=%s AND owner=%s AND fence=%s
+              AND lease_until>clock_timestamp() RETURNING name""",
             (status,cur,res,good and result is not None,res,delay,release,release,
              lease["name"],lease["version"],lease["owner"],lease["fence"])).fetchone()
     return bool(row)
