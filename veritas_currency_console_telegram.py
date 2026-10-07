@@ -12,6 +12,14 @@ from veritas_trade_telegram import InternalTradeClient, TradeTelegramBridge, Tra
 PREFIX = "/internal/currency-console/"
 PAIR = re.compile(r"^/start(?:@AxednewsI_bot)?\s+vt_([A-Za-z0-9_-]{32,96})$", re.I)
 LOGIN = re.compile(r"^/veritas(?:@AxednewsI_bot)?$", re.I)
+FIRST_SETUP_GUIDANCE = (
+    "Сначала завершите первоначальную привязку Telegram. Для первого входа используйте "
+    "персональную ссылку настройки или код из неё. Команда /veritas выдаёт новые ссылки после привязки.\n\n"
+    "В кабинете: «Получить код привязки» → «Привязать мой Telegram». Нажмите «Старт» в боте, "
+    "вернитесь в ту же вкладку кабинета и нажмите «Обновить данные» → «Подтвердить мой Telegram».\n\n"
+    "Если кабинет уже открывался, вернитесь в тот же браузер: "
+    "https://veritas-intelligence-v1.onrender.com/integrations/trading"
+)
 
 
 class ConsoleTradeBridge:
@@ -97,7 +105,7 @@ class ConsoleTradeBridge:
             if bridge is not None:
                 return bridge.handle_message(message)
             self.telegram("sendMessage", {"chat_id": uid,
-                "text": "Сначала завершите первоначальную привязку вашего Telegram и счёта в кабинете VERITAS."})
+                "text": FIRST_SETUP_GUIDANCE})
             return True
         name = " ".join(str(sender.get(k) or "").strip() for k in ("first_name", "last_name")).strip()
         if login is not None:
@@ -111,12 +119,13 @@ class ConsoleTradeBridge:
                     "disable_web_page_preview": "true",
                     "reply_markup": json.dumps({"inline_keyboard": [[{"text": "Открыть кабинет", "url": url}]]}, ensure_ascii=False)})
             else:
-                self.telegram("sendMessage", {"chat_id": uid, "text": "Для входа сначала завершите первоначальную привязку вашего Telegram в кабинете VERITAS."})
+                self.telegram("sendMessage", {"chat_id": uid, "text": FIRST_SETUP_GUIDANCE})
             return True
         result = self._console("pair-owner", {"pairing_code": match.group(1), "user_id": uid,
             "private_chat_id": uid, "chat_type": "private", "is_bot": False, "user_name": name[:160]})
-        answer = ("Ваш Telegram определён. Вернитесь в защищённый кабинет VERITAS и подтвердите "
-                  "своё имя и номер. Эта привязка не подтверждает никаких сделок."
+        answer = ("Ваш Telegram определён. Вернитесь в ту же вкладку кабинета VERITAS и нажмите "
+                  "«Обновить данные». Проверьте своё имя и ID, затем нажмите «Подтвердить мой Telegram». "
+                  "Эта привязка не подтверждает никаких сделок."
                   if result.get("ok") is True else "Ссылка привязки истекла или уже использована. Создайте новую в кабинете VERITAS.")
         self.telegram("sendMessage", {"chat_id": uid, "text": answer})
         return True

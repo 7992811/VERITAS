@@ -70,6 +70,11 @@ function xssTests(){
   assert.doesNotMatch(html,/<a href="https:\/\/t.me/);
   const pairing={...sample(),setup:{required:true,pairing_url:'https://t.me/AxednewsI_bot?start=vt_ABCDEF0123456789',pairing_expires_at:'2026-10-07T18:05:00Z'}};
   assert.match(renderDashboard(pairing),/href="https:\/\/t.me\/AxednewsI_bot\?start=vt_ABCDEF0123456789"/);
+  const instructions=renderDashboard({...pairing,setup:{...pairing.setup,can_pair_owner:true}});
+  assert.match(instructions,/эту же вкладку кабинета/);
+  assert.match(instructions,/«Обновить данные».*«Подтвердить мой Telegram»/);
+  assert.match(source,/Код для первого входа передан в вашей персональной ссылке настройки/);
+  assert.match(source,/До привязки бот код доступа не присылает/);
   for(const url of ['https://t.me.evil.test/bot?start=vt_ABCDEF012345','//t.me/bot?start=vt_ABCDEF012345','https://t.me/bot?start=vt_ABCDEF012345&leak=x','https://evil.test/'])assert.doesNotMatch(renderDashboard({...pairing,setup:{...pairing.setup,pairing_url:url}}),/<a href="https:/);
 }
 
@@ -103,7 +108,7 @@ async function controllerTests(){
   const api={clear(){calls.push(['clear']);},async dashboard(){calls.push(['dashboard']);return clone(d);},async login(code){calls.push(['login',code]);return {authenticated:true};},async setup(body){calls.push(['setup',clone(body)]);return {setup:{pairing_url:'https://t.me/AxednewsI_bot?start=vt_ABCDEF0123456789'}};},async action(key){calls.push(['action',key]);return {ok:true};}};
   const doc=fakeDom(),history=[];
   const ui=mount(doc,{location:{hash:'#setup=single-use-code',pathname:'/integrations/trading'},history:{replaceState(...args){history.push(args);}}},api);
-  await tick();assert.deepEqual(calls.slice(0,2),[['login','single-use-code'],['dashboard']]);assert.equal(history[0][2],'/integrations/trading');assert.equal(doc.getElementById('login').hidden,true);
+  await tick();assert.deepEqual(calls,[['dashboard']]);assert.equal(history[0][2],'/integrations/trading');assert.equal(doc.getElementById('login').hidden,true);
   // Rendering a fresh response while locked must preserve the server's disabled capabilities.
   assert.equal(doc.buttons.find(b=>b.dataset.action==='prepare').disabled,true);
   await ui.action('prepare');await ui.action('approve');await ui.action('execute');assert.equal(calls.filter(c=>c[0]==='action').length,0);
@@ -125,5 +130,87 @@ async function controllerTests(){
   api.dashboard=async()=>clone(d);await ui.refresh();api.dashboard=async()=>{throw {code:'NETWORK_ERROR'};};await ui.refresh();assert.match(doc.getElementById('dashboard').innerHTML,/account-exact-42/);assert.match(doc.getElementById('feedback').textContent,/устаревшими/);
 }
 
+async function loginRecoveryTests(){
+  const code='private-one-time-setup',json=(status,data)=>({ok:status>=200&&status<300,status,json:async()=>clone(data)});
+  const dashboard=()=>json(200,{...sample(),csrf_token:'csrf-from-current-session'});
+  function scenario(handler,hash='#setup='+code){
+    const requests=[],history=[],doc=fakeDom();
+    const client=createClient(async(url,options)=>{const request={operation:url.split('/').at(-1),url,options};requests.push(request);return handler(request,requests);});
+    const ui=mount(doc,{location:{hash,pathname:'/integrations/trading'},history:{replaceState(...args){history.push(args);}}},client);
+    return {requests,history,doc,ui,operations:()=>requests.map(r=>r.operation),retry:async()=>{doc.getElementById('retry-login').listeners.click();await tick();}};
+  }
+  // An already-consumed link must keep a valid browser session and its real CSRF token.
+  const existing=scenario(({operation,options})=>{
+    if(operation==='dashboard')return dashboard();
+    assert.equal(operation,'action');assert.equal(options.headers['X-CSRF-Token'],'csrf-from-current-session');return json(200,{ok:true});
+  });
+  await tick();assert.deepEqual(existing.operations(),['dashboard']);assert.equal(existing.doc.getElementById('login').hidden,true);
+  assert.equal(existing.history[0][2],'/integrations/trading');assert.equal(existing.doc.getElementById('setup-code').value,'');
+  assert.doesNotMatch(existing.doc.getElementById('dashboard').innerHTML+existing.doc.getElementById('feedback').textContent,new RegExp(code));
+  await existing.ui.action('reconcile');assert.deepEqual(existing.operations(),['dashboard','action','dashboard']);
+
+  // Fresh and expired sessions both require a server-confirmed 401 before exactly one code POST.
+  for(const missing of ['AUTHENTICATION_REQUIRED','SESSION_EXPIRED']){
+    let authenticated=false;
+    const fresh=scenario(({operation,options})=>{
+      if(operation==='dashboard')return authenticated?dashboard():json(401,{code:missing});
+      assert.equal(operation,'session');assert.equal(options.method,'POST');assert.deepEqual(JSON.parse(options.body),{setup_code:code});
+      authenticated=true;return json(200,{authenticated:true,csrf_token:'new-session-csrf'});
+    });
+    await tick();assert.deepEqual(fresh.operations(),['dashboard','session','dashboard']);assert.equal(fresh.doc.getElementById('login').hidden,true);
+    assert.equal(fresh.doc.getElementById('retry-login').hidden,true);
+  }
+
+  // A network outage before checking the cookie cannot consume the code. An explicit retry keeps it in this tab.
+  let offline=true,authenticated=false;
+  const before=scenario(({operation,options})=>{
+    if(offline)throw new Error('offline');
+    if(operation==='dashboard')return authenticated?dashboard():json(401,{code:'AUTHENTICATION_REQUIRED'});
+    assert.equal(operation,'session');assert.deepEqual(JSON.parse(options.body),{setup_code:code});authenticated=true;return json(200,{authenticated:true});
+  });
+  await tick();assert.deepEqual(before.operations(),['dashboard']);assert.equal(before.doc.getElementById('retry-login').hidden,false);
+  assert.match(before.doc.getElementById('feedback').textContent,/Код повторно вводить не нужно/);assert.equal(before.doc.getElementById('setup-code').value,'');
+  offline=false;await before.retry();assert.deepEqual(before.operations(),['dashboard','dashboard','session','dashboard']);assert.equal(before.doc.getElementById('login').hidden,true);
+
+  // If a login response is lost, retry checks the cookie: it only resends the code when the server still reports no session.
+  for(const cookieInstalled of [false,true]){
+    let authenticated=false,attempts=0;
+    const lost=scenario(({operation,options})=>{
+      if(operation==='dashboard')return authenticated?dashboard():json(401,{code:'AUTHENTICATION_REQUIRED'});
+      assert.equal(operation,'session');assert.deepEqual(JSON.parse(options.body),{setup_code:code});attempts++;
+      if(attempts===1){authenticated=cookieInstalled;throw new Error('response lost');}
+      authenticated=true;return json(200,{authenticated:true});
+    });
+    await tick();assert.equal(lost.doc.getElementById('retry-login').hidden,false);assert.equal(attempts,1);
+    await lost.retry();assert.equal(lost.doc.getElementById('login').hidden,true);assert.equal(attempts,cookieInstalled?1:2);
+    assert.deepEqual(lost.operations(),cookieInstalled?['dashboard','session','dashboard']:['dashboard','session','dashboard','session','dashboard']);
+  }
+
+  // Once POST succeeds, a dashboard outage never causes the already-consumed code to be sent again.
+  for(const cookieSurvives of [true,false]){
+    let loginSucceeded=false,firstRead=true;
+    const after=scenario(({operation})=>{
+      if(operation==='session'){loginSucceeded=true;return json(200,{authenticated:true});}
+      assert.equal(operation,'dashboard');
+      if(!loginSucceeded)return json(401,{code:'AUTHENTICATION_REQUIRED'});
+      if(firstRead){firstRead=false;return json(503,{code:'CONSOLE_TEMPORARILY_UNAVAILABLE'});}
+      return cookieSurvives?dashboard():json(401,{code:'SESSION_EXPIRED'});
+    });
+    await tick();assert.equal(after.doc.getElementById('retry-login').hidden,false);
+    await after.retry();assert.deepEqual(after.operations(),['dashboard','session','dashboard','dashboard']);
+    assert.equal(after.doc.getElementById('login').hidden,cookieSurvives);
+  }
+
+  // Permission failures, unrelated 401s and malformed success payloads are not proof that a session is missing.
+  for(const [status,payload] of [[403,{code:'ACCESS_FORBIDDEN'}],[401,{code:'UNKNOWN_AUTH_ERROR'}],[200,{ok:true}],[200,null],[401,null],[200,[]]]){
+    const blocked=scenario(()=>json(status,payload));await tick();assert.deepEqual(blocked.operations(),['dashboard']);
+    assert.equal(blocked.doc.getElementById('login').hidden,false);
+    assert.doesNotMatch(blocked.doc.getElementById('feedback').textContent,new RegExp(code));
+    if(payload===null||Array.isArray(payload)||status===200){assert.equal(blocked.doc.getElementById('retry-login').hidden,false);assert.match(blocked.doc.getElementById('feedback').textContent,/Код повторно вводить не нужно/);}
+  }
+  // None of the recovery requests puts the code into a URL or refers it to another origin.
+  for(const r of [...existing.requests,...before.requests]){assert.equal(r.options.credentials,'same-origin');assert.equal(r.options.referrerPolicy,'no-referrer');assert.doesNotMatch(r.url,/setup=|\?/);}
+}
+
 module.exports={sample};
-if(require.main===module)(async()=>{rendererTests();xssTests();await clientTests();await controllerTests();console.log('PASS: Currency console states, exact binding, escaping, session transport, capabilities, and duplicate-tap handling');})().catch(error=>{console.error(error);process.exitCode=1;});
+if(require.main===module)(async()=>{rendererTests();xssTests();await clientTests();await controllerTests();await loginRecoveryTests();console.log('PASS: Currency console states, exact binding, escaping, session transport, capabilities, duplicate-tap handling, and one-time login recovery');})().catch(error=>{console.error(error);process.exitCode=1;});
