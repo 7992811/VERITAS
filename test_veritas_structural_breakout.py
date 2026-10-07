@@ -80,15 +80,21 @@ class CausalQuoteBreakoutTests(unittest.TestCase):
         before = self.build(too_early, early)
         self.assertFalse(before.get("event") and before["event"]["trigger"]["level_id"] == context["event"]["trigger"]["level_id"])
 
-    def test_one_parent_break_is_one_event_across_fast_and_slow_lanes(self):
+    def test_owner_entry_timeframe_owns_trigger_stop_atr_and_target_geometry(self):
         raw, at = raw_at()
-        contexts = [self.build(raw, at, horizon=tf) for tf in ("1m", "5m", "1h")]
-        self.assertEqual(len({x["event"]["event_id"] for x in contexts}), 1)
-        for context in contexts:
-            event = context["event"]
-            self.assertEqual(event["trigger_timeframe"], "1h")
-            self.assertEqual(event["stop_timeframe"], "1h")
-            self.assertEqual(event["atr_timeframe"], "1h")
+        for tf in ("1m", "5m", "1h"):
+            with self.subTest(timeframe=tf):
+                context = self.build(raw, at, horizon=tf)
+                event = context["event"]
+                self.assertIsNotNone(event, context)
+                self.assertEqual(event["timeframe"], tf)
+                self.assertEqual(event["trigger_timeframe"], tf)
+                self.assertEqual(event["structural_timeframe"], tf)
+                self.assertEqual(event["stop_timeframe"], tf)
+                self.assertEqual(event["atr_timeframe"], tf)
+                self.assertEqual(event["target_timeframe"], tf)
+                self.assertEqual(event["protected_swing"]["timeframe"], tf)
+                self.assertTrue(all(tf in step["timeframes"] for step in event["target_ladder"]))
 
     def test_real_cny_restart_cannot_allocate_again_at_the_same_continuation_level(self):
         from test_veritas_structural_cny_episodes import episode_raw
