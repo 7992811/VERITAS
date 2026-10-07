@@ -58,14 +58,14 @@ jobs:
         run: python -m unittest -v test_veritas_execution_quality.py test_veritas_trade_audit.py test_veritas_direct_cny_snapshot.py test_veritas_profit_exit_authority.py test_veritas_ma_learning_evidence.py
       - name: Independent portfolio accounting and protective handoff
         run: |
-          python -m py_compile veritas_book_lock.py veritas_portfolio_cycle.py veritas_quality_history.py veritas_protection_read_model.py
-          python -m unittest -v test_veritas_book_lock.py test_veritas_portfolio_cycle.py test_veritas_quality_runtime.py test_veritas_r46_snapshot_borrowing.py test_veritas_protection_runtime.py
+          python -m py_compile veritas_book_lock.py veritas_portfolio_cycle.py veritas_accounting_io.py veritas_quality_history.py veritas_protection_read_model.py
+          python -m unittest -v test_veritas_book_lock.py test_veritas_portfolio_cycle.py test_veritas_accounting_io.py test_veritas_quality_runtime.py test_veritas_r46_snapshot_borrowing.py test_veritas_protection_runtime.py
       - name: Verified fills, source locks, position thesis and complete stop risk
         run: python -m unittest -v test_veritas_execution_snapshot.py test_veritas_exit_snapshot.py test_veritas_price_source_lock.py test_veritas_position_thesis.py test_veritas_net_stop_risk.py
       - name: Strategy evidence PostgreSQL integration
         env:
           VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
-        run: python -m unittest -v test_veritas_strategy_quality_sql.py test_veritas_portfolio_cycle_sql.py test_veritas_excursion_projection_sql.py test_veritas_profit_protection_projection_sql.py test_veritas_guard_accounting_projection_sql.py test_veritas_guard_observation_batch_sql.py test_veritas_quote_projection_sql.py test_veritas_protection_runtime_sql.py test_veritas_learning_integrity_sql.py test_veritas_learning_exports.py test_veritas_ma_learning_projection_sql.py test_veritas_observation_sql.py test_veritas_memory_projection.py test_veritas_trend_memory_sql.py test_veritas_snapshot_memory_sql.py test_veritas_timeframe_management_sql.py test_veritas_calibration_memory_sql.py test_veritas_portfolio_schema.py test_veritas_startup_guard.py test_veritas_trade_journal_read_model.py
+        run: python -m unittest -v test_veritas_strategy_quality_sql.py test_veritas_portfolio_cycle_sql.py test_veritas_legacy_position_reads.py test_veritas_excursion_projection_sql.py test_veritas_profit_protection_projection_sql.py test_veritas_guard_accounting_projection_sql.py test_veritas_guard_observation_batch_sql.py test_veritas_quote_projection_sql.py test_veritas_protection_runtime_sql.py test_veritas_learning_integrity_sql.py test_veritas_learning_exports.py test_veritas_ma_learning_projection_sql.py test_veritas_observation_sql.py test_veritas_memory_projection.py test_veritas_trend_memory_sql.py test_veritas_snapshot_memory_sql.py test_veritas_timeframe_management_sql.py test_veritas_calibration_memory_sql.py test_veritas_portfolio_schema.py test_veritas_startup_guard.py test_veritas_trade_journal_read_model.py
       - name: Owner timeframe structure and provenance regressions
         run: python -m unittest -v test_veritas_timeframe_structure.py test_veritas_timeframe_policy.py test_veritas_timeframe_data.py test_veritas_timeframe_management.py test_veritas_profinance_history.py test_veritas_user_teaching.py test_veritas_repeat_add.py
       - name: Signal readiness, original admission evidence and candle refresh
