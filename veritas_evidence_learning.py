@@ -6,7 +6,7 @@ This coordinator has no execution, broker or strategy-promotion authority.
 """
 from contextlib import contextmanager
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
@@ -16,7 +16,12 @@ import uuid
 
 from veritas_maintenance import MaintenanceDeferred
 
-VERSION = "EVIDENCE_LEARNING_LOOP_V1"
+VERSION = "EVIDENCE_LEARNING_LOOP_V2_MOSCOW_HOURS"
+MOSCOW = timezone(timedelta(hours=3), "Europe/Moscow")
+SCHEDULE = {"kind": "HOURLY_MOSCOW_WINDOW", "timezone": "Europe/Moscow",
+            "days": "DAILY", "first_start": "07:00", "last_start": "23:00",
+            "stage_cutoff": "23:50", "interval_seconds": 3600,
+            "missed_slots": "COALESCE_SINGLE_RUN"}
 STATE_KEY = "evidence_learning_state:canonical"
 LOCK_ID = 1736210907
 STAGES = ("decision_episodes", "event_outcomes", "rule_statistics", "experience_lessons",
@@ -28,6 +33,27 @@ EVIDENCE_LIMIT = 64
 
 def timestamp(value):
     return datetime.fromtimestamp(value, timezone.utc).isoformat()
+
+
+def window_due(value):
+    """Keep a due stage in today's window, otherwise resume at 07:00 MSK."""
+    local = datetime.fromtimestamp(value, MOSCOW)
+    opening = local.replace(hour=7, minute=0, second=0, microsecond=0)
+    closing = local.replace(hour=23, minute=50, second=0, microsecond=0)
+    if local < opening:
+        return opening.timestamp()
+    if local >= closing:
+        return (opening + timedelta(days=1)).timestamp()
+    return value
+
+
+def next_hourly_slot(value):
+    """First whole-hour start at/after value, restricted to 07:00..23:00."""
+    local = datetime.fromtimestamp(value, MOSCOW)
+    slot = local.replace(minute=0, second=0, microsecond=0)
+    if slot < local:
+        slot += timedelta(hours=1)
+    return window_due(slot.timestamp())
 
 
 def compact(result):
@@ -135,8 +161,10 @@ class LearningLoop:
     def snapshot(self):
         with self.state_lock:
             state = deepcopy(self.state)
+        now = self.clock()
         state.update(scheduler_alive=bool(self.thread and self.thread.is_alive()),
-                     interval_seconds=self.ns["HEAVY_LEARNING_INTERVAL_SECONDS"],
+                     interval_seconds=SCHEDULE["interval_seconds"],
+                     schedule=dict(SCHEDULE, window_open=window_due(now) == now),
                      memory_start_limit_mb=self.ns["V90_HEAVY_LEARNING_MAX_START_MB"],
                      always_on_confirmed=bool(self.ns.get("PRODUCTION_ALWAYS_ON")),
                      learning_kind="VERIFIED_PAPER_MEMORY_AND_RULE_STATISTICS",
@@ -153,7 +181,8 @@ class LearningLoop:
                 "runtime_started_at": self.started_at,
                 "model_version": self.ns["VERSION"], "deploy_sha": self.ns["VR"].deployment_sha(),
                 "status": "SCHEDULED", "durable": True, "created_at": timestamp(now),
-                "next_due_at": now + self.ns["HEAVY_LEARNING_START_DELAY_SECONDS"],
+                "next_due_at": next_hourly_slot(now + self.ns["HEAVY_LEARNING_START_DELAY_SECONDS"]),
+                "schedule": dict(SCHEDULE),
                 "next_stage": STAGES[0], "stages": {}, "attempts": {},
                 "runs": int(previous.get("runs", 0)), "last_finished_at": previous.get("last_finished_at"),
                 "baseline": quality_snapshot(cache[1]) if cache and isinstance(cache[1], dict) else None,
@@ -223,13 +252,19 @@ class LearningLoop:
                 if now < state["next_due_at"]:
                     self.publish(state)
                     return False
+                if state["status"] == "RUNNING":
+                    state["interrupted_stage_pending"] = True
+                allowed = window_due(now)
+                if allowed > now:
+                    state.update(status="WAITING_WINDOW", next_due_at=allowed)
+                    self.ledger.save(c, state, "window:"+timestamp(allowed))
+                    self.publish(state)
+                    return False
                 if state["next_stage"] is None:
                     state = self._fresh(now, state)
                     state["next_due_at"] = now
                     self.ledger.save(c, state, "scheduled")
                 name = state["next_stage"]
-                if state["status"] == "RUNNING":
-                    state["interrupted_stage_pending"] = True
                 try:
                     with self.ns["_v90_background_maintenance"].permit(
                             "evidence_learning:"+name, self.ns["V90_HEAVY_LEARNING_MAX_START_MB"]):
@@ -260,15 +295,15 @@ class LearningLoop:
                 state["stages"][name] = result
                 finished = self.clock()
                 if result["status"] not in SUCCESS and state["attempts"][name] < MAX_ATTEMPTS:
-                    state.update(status="RETRY", next_due_at=finished+60)
+                    state.update(status="RETRY", next_due_at=window_due(finished+60))
                 else:
                     index = STAGES.index(name)+1
                     state.update(status="PENDING", next_stage=STAGES[index] if index < len(STAGES) else None,
-                                 next_due_at=finished)
+                                 next_due_at=window_due(finished))
                     if state["next_stage"] is None:
                         status = "OK" if all(x["status"] in SUCCESS for x in state["stages"].values()) else "DEGRADED"
                         state.update(status=status, last_finished_at=timestamp(finished), runs=state["runs"]+1,
-                                     next_due_at=finished+self.ns["HEAVY_LEARNING_INTERVAL_SECONDS"])
+                                     next_due_at=next_hourly_slot(finished+1))
                 event = "complete" if state["next_stage"] is None else name+":result:"+str(state["attempts"][name])
                 self.ledger.save(c, state, event)
                 self.publish(state)
