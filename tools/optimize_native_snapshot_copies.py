@@ -27,11 +27,9 @@ def _build_context_impl(raw, horizon, now=None, base_context=None, *, state=None
 '''
 edit(name,old,new)
 edit(name,'"quote_state": deepcopy(state)}','"quote_state": None}')
-edit(name,'    event = deepcopy(next_state.get("active_event"))\n    leg = deepcopy(next_state.get("protected_leg"))\n',
-'''    # next_state is already a private deep copy of the caller's state.
-    event = next_state.get("active_event")
-    leg = next_state.get("protected_leg")
-''')
+# The local event and leg are already independently detached. Moving those
+# private objects into the returned state is enough; public projections below
+# still receive their own independent copies.
 edit(name,'                      active_event=deepcopy(event), protected_leg=deepcopy(leg))\n',
 '                      active_event=event, protected_leg=leg)\n')
 name='veritas_timeframe_data.py'
