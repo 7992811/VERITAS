@@ -16,6 +16,7 @@ from unittest.mock import patch
 import weakref
 
 import veritas_price_source as VPS
+import veritas_position_guard as VPG
 import veritas_thesis_guard as VTG
 
 
@@ -91,6 +92,17 @@ class FactoryDatabase:
         return rows
 
     def execute(self, sql, parameters=()):
+        if sql == VPG.QUOTE_POSITION_SQL:
+            def quote_rows():
+                result = []
+                for index, asset in enumerate(self.assets):
+                    payload = Evidence(price_source_lock=VPS.identity(asset, quote(asset)),
+                                       source_locked_mark={'observed_at': CLOCK})
+                    self.references.append(weakref.ref(payload))
+                    result.append({'asset': asset, 'active_trade_id': asset + '-' + str(index),
+                                   'payload': payload})
+                return result
+            return SimpleNamespace(fetchall=quote_rows)
         if sql.startswith('SELECT * FROM paper_positions'):
             # The cursor stores a factory, never the list returned by fetchall.
             return SimpleNamespace(fetchall=self.rows)
@@ -130,7 +142,9 @@ class R80SnapshotLifetimeTests(unittest.TestCase):
                         self.assertEqual(len(positions), 18)
                         self.assertEqual(alive(db.references), 18)
                         for row in positions:
-                            self.assert_full_evidence(row)
+                            self.assertEqual(row['payload']['price_source_lock'],
+                                             VPS.identity(row['asset'], quote(row['asset'])))
+                            self.assertNotIn('entry_event_snapshot', row['payload'])
                         refreshed.append(len(positions))
 
                     def base(*args):
@@ -149,6 +163,7 @@ class R80SnapshotLifetimeTests(unittest.TestCase):
                         return {'status': 'CORE', 'positions_read': len(core_rows)}
 
                     vpg = SimpleNamespace(_entry_namespace=entry_ns,
+                        QUOTE_POSITION_SQL=VPG.QUOTE_POSITION_SQL,
                         publish_quote=lambda asset, q: published.append((asset, q['price'])),
                         refresh_position_quotes=refresh)
                     run = load_r80('step_all', {'VPG': vpg, '_r80_base_step_all': base,

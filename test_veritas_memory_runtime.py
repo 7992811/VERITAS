@@ -186,6 +186,7 @@ class ActiveCycleAllocatorBoundaryTests(unittest.TestCase):
             return 1
 
         self.namespace.update(rss_mb=lambda: self.rss, emit=emit,
+                              time=__import__('time'),
                               gc=SimpleNamespace(collect=lambda: self.trace.append("gc")))
         libc = SimpleNamespace(malloc_trim=malloc_trim)
         self.ctypes_patch = patch.dict("sys.modules", {
@@ -224,8 +225,8 @@ class ActiveCycleAllocatorBoundaryTests(unittest.TestCase):
         self.assert_warm_state()
 
     def test_portfolio_phase_trims_before_emission_with_current_rss_and_original_kwargs(self):
-        for phase in ("calibration_r33_done", "calibration_r29_done", "book_start",
-                      "book_done", "future_phase"):
+        for phase in ("calibration_r33_done", "calibration_r29_done", "book_done",
+                      "book_failed", "book_uncertain"):
             with self.subTest(phase=phase):
                 self.trace.clear()
                 self.rss = 500.0
@@ -237,14 +238,25 @@ class ActiveCycleAllocatorBoundaryTests(unittest.TestCase):
                                               "paper_portfolio_phase"])
                 self.assertEqual(result, "emitted")
                 self.assertEqual(self.events[-2][1]["phase"], "portfolio_" + phase)
-                self.assertEqual(self.events[-1], ("paper_portfolio_phase", {
-                    "phase": phase, "portfolio": "Currency", "detail": detail, "rss_mb": 410.0}))
+                self.assertGreaterEqual(self.events[-1][1]['cleanup_seconds'], 0)
+                self.assertEqual({k: v for k, v in self.events[-1][1].items()
+                                  if k != 'cleanup_seconds'}, {
+                    "phase": phase, "portfolio": "Currency", "detail": detail, "rss_mb": 410.0})
                 self.assertIs(self.events[-1][1]["detail"], detail)
                 self.assert_warm_state()
         self.trace.clear()
         self.namespace["_v90_emit_portfolio"]("paper_order", qty=-391.98)
         self.assertEqual(self.trace, ["paper_order"])
         self.assertEqual(self.events[-1], ("paper_order", {"qty": -391.98, "rss_mb": 410.0}))
+
+    def test_active_accounting_phases_do_not_collect_while_the_book_is_locked(self):
+        for phase in ('book_start', 'protection_start', 'protection_done', 'future_phase'):
+            with self.subTest(phase=phase):
+                self.trace.clear()
+                self.namespace['_v90_emit_portfolio']('paper_portfolio_phase', phase=phase)
+                self.assertEqual(self.trace, ['paper_portfolio_phase'])
+                self.assertEqual(self.events[-1][1], {'phase': phase, 'rss_mb': 500.0})
+                self.assert_warm_state()
 
     def test_completed_horizon_releases_dead_locals_before_trim_and_next_features(self):
         tree = ast.parse(RUNTIME.read_text(encoding="utf-8"), filename=str(RUNTIME))

@@ -8,6 +8,7 @@ import os
 import unittest
 import uuid
 from contextlib import contextmanager
+from itertools import groupby
 from unittest.mock import patch
 import veritas_strategy_quality as Q
 import veritas_canonical_constitution as CTC
@@ -349,6 +350,8 @@ class QualitySQLTests(unittest.TestCase):
         old=[dict(row) for row in c.execute(LEGACY_SELECT_TRADES+suffix).fetchall()]
         new=[dict(row) for row in c.execute(Q.SELECT_TRADES+suffix).fetchall()]
         self.assertEqual(new,old)
+        bounded=[dict(row) for row in c.execute(Q.history_query(Q.SELECT_TRADES)).fetchall()]
+        self.assertEqual(self.history_peers(bounded),self.history_peers(new))
         for before,after in zip(old,new):
             self.assertEqual(Q.review(after),Q.review(before))
             self.assertEqual(Q.LI.trade_exclusion(after),Q.LI.trade_exclusion(before))
@@ -404,6 +407,11 @@ class QualitySQLTests(unittest.TestCase):
                         self.assertEqual(len(record_scans),1)
                         self.assertEqual(record_scans[0]['Actual Loops'],1)
                         self.assertEqual(record_scans[0]['Actual Rows'],1)
+            # SQL NULL is distinct from the JSON null cases above. Read-only
+            # projection must retain the same unknown-evidence classification.
+            c.execute('ALTER TABLE paper_trades ALTER COLUMN payload DROP NOT NULL')
+            c.execute("UPDATE paper_trades SET payload=NULL WHERE trade_id='current'")
+            self.assert_projection_parity(c)
             # Missing optional proof and recorded JSON null remain distinct
             # within the extracted event, including their review fingerprints.
             hashes=[]
@@ -443,10 +451,121 @@ class QualitySQLTests(unittest.TestCase):
                         self.assertNotIn('daily_bars',saved)
                         self.assertNotIn('bars',saved['daily_provenance'])
 
+    @staticmethod
+    def history_peers(rows):
+        # Original ORDER BY closed_at DESC does not define ordering among ties.
+        # Normalize only each adjacent peer group, not the surrounding sequence.
+        return [(clock,sorted(group,key=lambda row:row['trade_id']))
+                for clock,group in groupby(rows,key=lambda row:row['closed_at'])]
+
+    def seed_bounded_history(self,c,count=5003,*,null_clocks=False):
+        c.execute('TRUNCATE paper_trades,paper_orders,paper_positions,paper_nav_history')
+        c.execute('''INSERT INTO paper_trades
+            (trade_id,portfolio_name,asset,direction,status,horizon,opened_at,closed_at,
+             avg_entry_price,avg_exit_price,max_fraction,gross_pnl_rub,fees_rub,funding_rub,net_pnl_rub,payload)
+            SELECT 'history-'||n,'Champion','ETH','LONG','CLOSED','1h',
+                '2020-01-01T00:00:00Z'::timestamptz,
+                '2026-10-06T00:00:00Z'::timestamptz+n*interval '1 second',
+                100,101,.1,3,1,1,1,jsonb_build_object('idea_id','history-'||n)
+            FROM generate_series(1,%s) AS n''',(count,))
+        if null_clocks:
+            c.execute('''INSERT INTO paper_trades
+                (trade_id,portfolio_name,asset,direction,status,horizon,opened_at,closed_at,payload)
+                VALUES ('null-a','Champion','ETH','LONG','CLOSED','1h','2020-01-01',NULL,'null'),
+                       ('null-b','Champion','ETH','LONG','CLOSED','1h','2020-01-01',NULL,'[]')''')
+        c.execute('''INSERT INTO paper_trades
+            (trade_id,portfolio_name,asset,direction,status,horizon,opened_at,closed_at,payload)
+            VALUES ('open-future','Champion','ETH','LONG','OPEN','1h','2020-01-01',
+                    '2030-01-01','{}')''')
+
+    def test_bounded_history_keeps_original_cohort_all_entry_adds_and_limits_projection(self):
+        with self.connect() as c:
+            self.seed_bounded_history(c,null_clocks=True)
+            c.execute('ALTER TABLE paper_orders ADD COLUMN created_at timestamptz')
+            c.execute('''INSERT INTO paper_orders VALUES
+                ('history-5003','BUY',100,'2019-01-01'),
+                ('history-5003','BUY',50,'2020-01-01'),
+                ('history-5003','SELL_SHORT',25,'2026-01-01'),
+                ('history-5003','BUY',NULL,'2026-10-06'),
+                ('history-5003','SELL',99000,'2026-10-06'),
+                ('history-5003','BUY_TO_COVER',88000,'2026-10-06'),
+                ('history-5001','BUY',NULL,'2019-01-01'),
+                ('history-5001','SELL_SHORT',NULL,'2026-10-06')''')
+            c.execute('''INSERT INTO paper_orders(trade_id,side,notional_rub,created_at)
+                SELECT CASE WHEN n%3=0 THEN 'history-1' WHEN n%3=1 THEN 'open-future'
+                       ELSE 'unrelated-order-only' END,'BUY',99999,'2018-01-01'::timestamptz
+                FROM generate_series(1,12000) AS n''')
+            suffix=" WHERE t.status='CLOSED' ORDER BY t.closed_at DESC LIMIT 5001"
+            baseline=[dict(row) for row in c.execute(Q.SELECT_TRADES+suffix).fetchall()]
+            legacy=[dict(row) for row in c.execute(LEGACY_SELECT_TRADES+suffix).fetchall()]
+            bounded=[dict(row) for row in c.execute(Q.history_query(Q.SELECT_TRADES)).fetchall()]
+            self.assertEqual(self.history_peers(bounded),self.history_peers(baseline))
+            self.assertEqual(self.history_peers(bounded),self.history_peers(legacy))
+            self.assertEqual(len(bounded),5001)
+            self.assertEqual({row['trade_id'] for row in bounded[:2]},{'null-a','null-b'})
+            self.assertTrue(all(row['closed_at'] is None for row in bounded[:2]))
+            self.assertEqual([row['trade_id'] for row in bounded[2:]],
+                             ['history-'+str(n) for n in range(5003,4,-1)])
+            by_id={row['trade_id']:row for row in bounded}
+            self.assertEqual((by_id['history-5003']['entry_notional_rub'],
+                              by_id['history-5003']['entry_order_count']),(175.,4))
+            self.assertEqual((by_id['history-5001']['entry_notional_rub'],
+                              by_id['history-5001']['entry_order_count']),(None,2))
+            self.assertEqual((by_id['history-5002']['entry_notional_rub'],
+                              by_id['history-5002']['entry_order_count']),(None,None))
+            plan=c.execute('EXPLAIN (ANALYZE,FORMAT JSON) '+Q.history_query(Q.SELECT_TRADES))\
+                  .fetchone()['QUERY PLAN'][0]['Plan']
+            pending=[plan];selected=[];record_scans=[]
+            while pending:
+                node=pending.pop();pending.extend(node.get('Plans',[]))
+                if node.get('Subplan Name')=='CTE quality_selected':selected.append(node)
+                if node.get('Node Type')=='Function Scan' and node.get('Function Name')=='jsonb_to_record':
+                    record_scans.append(node)
+            self.assertEqual(len(selected),1)
+            self.assertEqual(selected[0]['Node Type'],'Limit')
+            self.assertEqual(selected[0]['Actual Rows'],5001)
+            self.assertEqual(selected[0]['Actual Loops'],1)
+            self.assertEqual(len(record_scans),1)
+            # PostgreSQL may memoize identical jsonb_to_record inputs. Measure
+            # executed projection cardinality, without asserting wall time.
+            scans=record_scans[0]
+            self.assertGreater(scans['Actual Loops'],0)
+            self.assertLessEqual(scans['Actual Loops']*scans['Actual Rows'],5001)
+
+    def test_refresh_5001_sentinel_marks_partial_but_never_enters_5000_trade_report(self):
+        with self.connect() as c:
+            self.seed_bounded_history(c,count=5000)
+        events=[]
+        emit=lambda event,**values:events.append((event,values))
+        with patch.object(Q,'build_report',wraps=Q.build_report) as build:
+            complete=Q.refresh(self.connect,emit)
+            self.assertEqual(len(build.call_args.args[0]),5000)
+        self.assertEqual(complete['status'],'OK')
+        self.assertIs(complete['history_truncated'],False)
+        self.assertEqual(events[-1][1]['closed_rows'],5000)
+        with self.connect() as c:
+            c.execute('''INSERT INTO paper_trades
+                SELECT 'history-5001',portfolio_name,asset,direction,status,horizon,opened_at,
+                       closed_at+interval '1 second',avg_entry_price,avg_exit_price,max_fraction,
+                       gross_pnl_rub,fees_rub,funding_rub,net_pnl_rub,payload-'posttrade_review'
+                FROM paper_trades WHERE trade_id='history-5000' ''')
+            selected=[row['trade_id'] for row in c.execute(Q.history_query(Q.SELECT_TRADES)).fetchall()]
+        before=self.financials()
+        with patch.object(Q,'build_report',wraps=Q.build_report) as build:
+            partial=Q.refresh(self.connect,emit)
+            reported=[row['trade_id'] for row in build.call_args.args[0]]
+        self.assertEqual(partial['status'],'PARTIAL_HISTORY')
+        self.assertIs(partial['history_truncated'],True)
+        self.assertEqual(events[-1][1]['closed_rows'],5001)
+        self.assertEqual(selected,['history-'+str(n) for n in range(5001,0,-1)])
+        self.assertEqual(reported,selected[:5000])
+        self.assertNotIn('history-1',reported)
+        champion=next(item for item in partial['portfolios'] if item['name']=='Champion')
+        self.assertEqual(champion['cohorts']['all']['all']['closed_trades'],5000)
+        self.assertEqual(self.financials(),before)
+
     def test_autocommit_refresh_scopes_timeout_and_closes_transaction_after_cancel(self):
-        # Pre-review so the following successful refresh has no pending writes.
-        Q.refresh(self.connect)
-        before=self.financials();states=[];timeouts=[];connections=[]
+        before=self.financials();states=[];timeouts=[];write_timeouts=[];connections=[]
         owner=self
         @contextmanager
         def autocommit_connect():
@@ -457,8 +576,10 @@ class QualitySQLTests(unittest.TestCase):
                 class ObservedConnection:
                     def transaction(self):return c.transaction()
                     def execute(self,sql,*args):
-                        if sql.startswith('SELECT'):
+                        if sql.lstrip().startswith(('SELECT','WITH')):
                             timeouts.append(c.execute('SHOW statement_timeout').fetchone()['statement_timeout'])
+                        elif sql.lstrip().startswith('UPDATE'):
+                            write_timeouts.append(c.execute('SHOW statement_timeout').fetchone()['statement_timeout'])
                         return c.execute(sql,*args)
                 try:
                     yield ObservedConnection()
@@ -467,6 +588,14 @@ class QualitySQLTests(unittest.TestCase):
                     states.append(c.execute('SHOW statement_timeout').fetchone()['statement_timeout'])
         Q.refresh(autocommit_connect)
         self.assertEqual(timeouts,['4s','4s'])
+        self.assertEqual(write_timeouts,['3s','3s'])
+        self.assertEqual(states,[self.driver.pq.TransactionStatus.IDLE,'15s']*2)
+        self.assertTrue(all(c.closed for c in connections))
+        timeouts.clear();write_timeouts.clear();states.clear()
+        # The already reviewed second pass has no write transaction.
+        Q.refresh(autocommit_connect)
+        self.assertEqual(timeouts,['4s','4s'])
+        self.assertEqual(write_timeouts,[])
         self.assertEqual(states,[self.driver.pq.TransactionStatus.IDLE,'15s'])
         self.assertTrue(all(c.closed for c in connections))
         cached=copy.deepcopy(Q._CACHE['value']);cache_at=Q._CACHE['at']

@@ -17,9 +17,10 @@ import veritas_profit_protection as VPP
 import veritas_price_source as VPS
 import veritas_observation_path as VOP
 from veritas_quote_time import quote_gate, utc_datetime
+from veritas_book_lock import PriorityRLock
 
 BOOK_LOCK_ID = 90390929
-_mutex = threading.RLock()
+_mutex = PriorityRLock()
 _quotes_lock = threading.Lock()
 _quotes = {}
 _source_quotes = {}
@@ -28,6 +29,17 @@ _state = {'status': 'NOT_STARTED', 'paper_only': True}
 _entry_namespace = None
 _QUOTE_SNAPSHOT_FIELDS = (*VPS.QUOTE_FIELDS, 'asset', 'observed_at', 'market_observed_at',
                           'paper_eligible', 'production_eligible', 'orders_enabled')
+# Quote preparation needs identity and observation ordering, never the retained
+# decision/history proof. The mutation pass still reads complete locked rows.
+QUOTE_POSITION_SQL = """SELECT asset,active_trade_id,jsonb_build_object(
+    'price_source_lock',payload->'price_source_lock',
+    'contract_identity',payload->'contract_identity',
+    'entry_primary_source',payload->'entry_primary_source',
+    'entry_contract_secid',payload->'entry_contract_secid',
+    'source_locked_mark',jsonb_build_object('observed_at',payload->'source_locked_mark'->'observed_at'),
+    'entry_execution_observed_at',payload->'entry_execution_observed_at',
+    'entry_market_observed_at',payload->'entry_market_observed_at') AS payload
+    FROM paper_positions"""
 
 
 def refresh_entry_quotes(summary):
@@ -120,26 +132,48 @@ def refresh_entry_quotes(summary):
 
 
 @contextmanager
-def book_transaction(c, *, blocking=True):
+def book_transaction(c, *, blocking=True, lane='OTHER', timing=None):
     # pg_connect is autocommit. Explicit transactions make accounting, positions,
     # orders and protective-exit audit events commit or roll back together.
-    acquired=_mutex.acquire(blocking=blocking)
+    measured=timing if timing is not None else {}
+    measured.update(python_lock_wait_seconds=0.0,db_lock_wait_seconds=0.0,
+                    lock_hold_seconds=0.0,status='BUSY')
+    wait_started=time.monotonic()
+    acquired=_mutex.acquire(blocking=blocking,priority=lane=='PROTECTIVE')
+    measured['python_lock_wait_seconds']=time.monotonic()-wait_started
     if not acquired:
         yield False
         return
+    held_started=time.monotonic()
+    measured['status']='ROLLED_BACK'
+    body_finished=False
     try:
         with c.transaction():
             c.execute("SET LOCAL lock_timeout = '5s'")
-            if blocking:
-                c.execute('SELECT pg_advisory_xact_lock(%s)', (BOOK_LOCK_ID,))
-            else:
-                result=c.execute('SELECT pg_try_advisory_xact_lock(%s) AS acquired',
-                                 (BOOK_LOCK_ID,)).fetchone()
-                if not result or result.get('acquired') is not True:
-                    yield False
-                    return
+            db_started=time.monotonic()
+            try:
+                if blocking:
+                    c.execute('SELECT pg_advisory_xact_lock(%s)', (BOOK_LOCK_ID,))
+                else:
+                    result=c.execute('SELECT pg_try_advisory_xact_lock(%s) AS acquired',
+                                     (BOOK_LOCK_ID,)).fetchone()
+            finally:
+                measured['db_lock_wait_seconds']=time.monotonic()-db_started
+            if not blocking and (not result or result.get('acquired') is not True):
+                measured['status']='BUSY'
+                yield False
+                body_finished=True
+                return
             yield None if blocking else True
+            body_finished=True
+        measured['status']='COMMITTED'
+    except BaseException:
+        # Once a normal body reaches COMMIT, a lost acknowledgement cannot
+        # prove rollback: the database may already have made it durable.
+        measured['status']='COMMIT_UNKNOWN' if body_finished else 'ROLLED_BACK'
+        raise
     finally:
+        measured['lock_hold_seconds']=time.monotonic()-held_started
         _mutex.release()
 
 
@@ -637,12 +671,20 @@ def protective_reason(z, quote, now=None):
     return None
 
 
-def run_protective_pass(vp, pg_connect, quotes, now=None):
-    now = now or datetime.now(timezone.utc)
-    ts = now.isoformat()
+def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
+    measured=timing if timing is not None else {}
     changes = []
-    with pg_connect() as c, book_transaction(c):
-        positions = c.execute('SELECT * FROM paper_positions ORDER BY portfolio_name,asset FOR UPDATE').fetchall()
+    with pg_connect() as c, book_transaction(c,lane='PROTECTIVE',timing=measured):
+        # A queued pass must not validate an old quote against its pre-wait
+        # clock. Explicit historical/replay clocks remain deterministic.
+        now = now or datetime.now(timezone.utc)
+        ts = now.isoformat()
+        query_started=time.monotonic()
+        try:
+            positions = c.execute('SELECT * FROM paper_positions ORDER BY portfolio_name,asset FOR UPDATE').fetchall()
+        finally:
+            measured['positions_query_seconds']=time.monotonic()-query_started
+        protection_started=time.monotonic()
         for item in positions:
             z = dict(item)
             selected = quote_for_position(z,quotes.get(z['asset']),now)
@@ -850,6 +892,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                             'reason': reason, 'price': px, 'market_observed_at': q['observed_at']})
         if changes:
             VPP.refresh(c, commission=getattr(vp, 'COMMISSION', VC.COMMISSION_RATE))
+        measured['protection_seconds']=time.monotonic()-protection_started
     return changes
 
 
@@ -1067,11 +1110,17 @@ def start(ns):
         last_log = 0
         while True:
             started = time.monotonic()
+            phases, transaction_timing = {}, {}
+            phase, phase_started = 'position_read', started
             try:
                 with ns['pg_connect']() as c:
-                    positions = [dict(z) for z in c.execute('SELECT * FROM paper_positions').fetchall()]
+                    positions = [dict(z) for z in c.execute(QUOTE_POSITION_SQL).fetchall()]
+                phases['position_read_seconds']=time.monotonic()-phase_started
                 position_count = len(positions)
+                phase, phase_started = 'quote_refresh', time.monotonic()
                 refresh_position_quotes(ns,positions)
+                phases['quote_refresh_seconds']=time.monotonic()-phase_started
+                phase, phase_started = 'quote_select', time.monotonic()
                 quotes, errors, paused = {}, {}, {}
                 for z in positions:
                     q=quote_for_position(z)
@@ -1085,9 +1134,15 @@ def start(ns):
                             paused[key]='MARKET_CLOSED'
                         else:
                             errors[key]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
+                phases['quote_select_seconds']=time.monotonic()-phase_started
                 # Quote preparation is complete; the locked pass reads its own book.
                 positions = z = None
-                changes = run_protective_pass(ns['VP'], ns['pg_connect'], quotes) if position_count else []
+                phase, phase_started = 'protective_pass', time.monotonic()
+                changes = run_protective_pass(ns['VP'], ns['pg_connect'], quotes,
+                    timing=transaction_timing) if position_count else []
+                phases['protective_pass_seconds']=time.monotonic()-phase_started
+                phases.update({k:v for k,v in transaction_timing.items() if k.endswith('_seconds')})
+                phase, phase_started = 'cache_invalidation', time.monotonic()
                 if changes:
                     with ns['_v90r25_pf_lock']:
                         ns['_v90r25_pf_cache'].update(at=0.0, value=None)
@@ -1095,18 +1150,27 @@ def start(ns):
                         ns['last_cycle']['portfolio_autopilot'] = {}
                     with ns['_v90r23_trade_lock']:
                         ns['_v90r23_trade_cache'].update(at=0.0, value=None)
+                phases['cache_invalidation_seconds']=time.monotonic()-phase_started
                 status=('DEGRADED' if errors else
                         'PAUSED_MARKET_CLOSED' if paused and position_count else 'OK')
                 _state.update(status=status, checked_at=datetime.now(timezone.utc).isoformat(),
                               open_positions=position_count, quotes=len(quotes), errors=errors,
                               paused=paused,
                               last_changes=changes or _state.get('last_changes', []),
+                              phase_seconds={k:round(v,3) for k,v in phases.items()},
+                              book_transaction_status=transaction_timing.get('status','NOT_NEEDED'),
                               duration_seconds=round(time.monotonic()-started, 3))
                 if changes or errors or time.monotonic()-last_log >= 60:
                     ns['emit']('paper_protective_guard', **snapshot())
                     last_log = time.monotonic()
             except Exception as exc:
-                _state.update(status='ERROR', checked_at=datetime.now(timezone.utc).isoformat(), error=f'{type(exc).__name__}: {exc}')
+                phases[phase+'_seconds']=time.monotonic()-phase_started
+                phases.update({k:v for k,v in transaction_timing.items() if k.endswith('_seconds')})
+                _state.update(status='ERROR', checked_at=datetime.now(timezone.utc).isoformat(),
+                              error=f'{type(exc).__name__}: {exc}',
+                              phase_seconds={k:round(v,3) for k,v in phases.items()},
+                              book_transaction_status=transaction_timing.get('status','NOT_STARTED'),
+                              duration_seconds=round(time.monotonic()-started,3))
                 ns['emit']('paper_protective_guard_error', **snapshot())
             finally:
                 positions = z = c = q = None
