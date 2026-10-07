@@ -16790,6 +16790,10 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
     }
 
 
+import veritas_currency_trade_service as VCTS
+_currency_trade_summary = VCTS.make_summary_provider(lambda: last_cycle.get('summary') or [], lock)
+
+
 class H(BaseHTTPRequestHandler):
     def reply(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode()
@@ -17167,13 +17171,8 @@ class H(BaseHTTPRequestHandler):
             self.reply({'error': f'{type(e).__name__}: {e}'}, 503)
     def do_POST(self):
         try:
-            if urlparse(self.path).path.startswith('/internal/currency-alerts/'):
-                n=int(self.headers.get('Content-Length','0') or 0)
-                if n<0 or n>8192:
-                    self.reply({'ok':False,'error':'INVALID_BODY_SIZE'},400); return
-                payload=json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
-                result,code=VCN.handle_request(urlparse(self.path).path,payload,self.headers,pg_connect)
-                self.reply(result,code)
+            if urlparse(self.path).path.startswith(('/internal/currency-trading/', '/internal/currency-alerts/', '/internal/currency-broker-alerts/')):
+                VCTS.reply_http(self, pg_connect, _currency_trade_summary, alert_handler=VCN.handle_request)
             elif self.path.startswith('/knowledge/automation/run'):
                 token = self.headers.get('X-Veritas-Token','')
                 if AUTOMATION_TOKEN and token != AUTOMATION_TOKEN:
