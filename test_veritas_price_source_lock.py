@@ -158,13 +158,15 @@ class SourceLockTests(TestCase):
             self.assertIn('payload=',sql)
 
     def test_entry_persists_source_and_actual_quote_time(self):
-        row=dict(self.quote(),asset='GOLD',research_decision='SHORT',horizon='1h',
-                 _pwin=.7,_pwin_source='MODEL_QUALITY_SCORE_UNCALIBRATED',
-                 trade_plan={'stop_price':4182.3,'target_price':4074.})
+        from test_veritas_timeframe_policy import valid_row
+        quote=dict(self.quote(),asset='GOLD')
+        row=valid_row(asset='GOLD',horizon='1h',direction='SHORT',price=quote['price'],
+                      now=self.now,source='ProFinance')
+        row.update(**quote,_execution_quote=dict(quote),_pwin=.7,
+                   _pwin_source='MODEL_QUALITY_SCORE_UNCALIBRATED')
         c=MagicMock();c.execute.return_value.fetchone.return_value=None
-        with patch.object(P.VX,'entry_gate',return_value={'eligible':True}),\
-             patch('veritas_trend_entry.prepare_row',side_effect=lambda row,*args:row),\
-             patch.object(P,'_portfolio_canonical_setup_id',return_value='test-source-entry'):
+        c.execute.return_value.fetchall.return_value=[]
+        with patch.object(P,'_portfolio_canonical_setup_id',return_value='test-source-entry'):
             P._v90j_base_open_or_add(c,{},'Impulse','GOLD','SHORT',4158.88,.2,1e6,self.now.isoformat(),row,'TEST')
         call=next(c for c in c.execute.call_args_list if c.args[0].startswith('INSERT INTO paper_positions'))
         payload=json.loads(call.args[1][-1])

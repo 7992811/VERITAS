@@ -1,6 +1,7 @@
 """Independent protective exits for the normalized paper book; no broker orders."""
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import json
@@ -14,16 +15,31 @@ import veritas_canonical_constitution as CTC
 import veritas_execution as VX
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
+import veritas_observation_path as VOP
 from veritas_quote_time import quote_gate, utc_datetime
+from veritas_book_lock import PriorityRLock
 
 BOOK_LOCK_ID = 90390929
-_mutex = threading.RLock()
+_mutex = PriorityRLock()
 _quotes_lock = threading.Lock()
 _quotes = {}
 _source_quotes = {}
 _market_state = {}
 _state = {'status': 'NOT_STARTED', 'paper_only': True}
 _entry_namespace = None
+_QUOTE_SNAPSHOT_FIELDS = (*VPS.QUOTE_FIELDS, 'asset', 'observed_at', 'market_observed_at',
+                          'paper_eligible', 'production_eligible', 'orders_enabled')
+# Quote preparation needs identity and observation ordering, never the retained
+# decision/history proof. The mutation pass still reads complete locked rows.
+QUOTE_POSITION_SQL = """SELECT asset,active_trade_id,jsonb_build_object(
+    'price_source_lock',payload->'price_source_lock',
+    'contract_identity',payload->'contract_identity',
+    'entry_primary_source',payload->'entry_primary_source',
+    'entry_contract_secid',payload->'entry_contract_secid',
+    'source_locked_mark',jsonb_build_object('observed_at',payload->'source_locked_mark'->'observed_at'),
+    'entry_execution_observed_at',payload->'entry_execution_observed_at',
+    'entry_market_observed_at',payload->'entry_market_observed_at') AS payload
+    FROM paper_positions"""
 
 
 def refresh_entry_quotes(summary):
@@ -46,6 +62,7 @@ def refresh_entry_quotes(summary):
     # including a NO_TRADE 1m/5m row. Execution freshness belongs to the market,
     # not to the age of the slow signal that selected the direction.
     for r in rows:
+        r=VPS.execution_row(r)
         asset=r.get('asset')
         if asset not in assets or not r.get('source_gate_pass') or VX.is_proxy_price(asset,r):
             continue
@@ -57,15 +74,9 @@ def refresh_entry_quotes(summary):
             px=0.0
         if not gate.get('eligible') or not math.isfinite(px) or px<=0:
             continue
-        q={
-          'price':px,'best_bid':r.get('best_bid'),'best_ask':r.get('best_ask'),
-          'bid':r.get('bid'),'ask':r.get('ask'),'observed_at':observed,
-          'contract':r.get('contract'),'source_gate_pass':True,
-          'market_open':r.get('market_open',True),
-          'data_latency_class':r.get('data_latency_class'),
-          'source_names':r.get('source_names') or r.get('market_source_names'),
-          'verification_mode':r.get('verification_mode'),
-        }
+        q={key:deepcopy(r[key]) for key in VPS.QUOTE_FIELDS if key in r}
+        q.update(price=px,observed_at=observed,source_gate_pass=True,
+                 market_open=r.get('market_open',True))
         prev=quotes.get(asset)
         obs_dt=utc_datetime(observed)
         prev_dt=utc_datetime((prev or {}).get('observed_at'))
@@ -98,14 +109,15 @@ def refresh_entry_quotes(summary):
             try:
                 q=job.result()
                 if (q.get('source_gate_pass') and not VX.is_proxy_price(asset,q)
-                        and VX.paper_quote_time_gate(dict(q,asset=asset))['eligible']):
+                        and VX.paper_quote_time_gate(dict(q,asset=asset),now=datetime.now(timezone.utc))['eligible']):
                     publish_quote(asset,q);quotes[asset]=q
             except Exception:
                 pass
 
+    now=datetime.now(timezone.utc)  # HTTP refresh may finish after the original decision clock.
     out=[]
     for original in rows:
-        row=dict(original);asset=row.get('asset');q=quotes.get(asset)
+        row=dict(original,_runtime_quote_refresh=True);asset=row.get('asset');q=quotes.get(asset)
         expected=VPS.identity(asset,row)
         if expected:
             q=quote_for_position({'asset':asset,'payload':{'price_source_lock':expected}},q,now)
@@ -120,18 +132,61 @@ def refresh_entry_quotes(summary):
 
 
 @contextmanager
-def book_transaction(c):
+def book_transaction(c, *, blocking=True, lane='OTHER', timing=None):
     # pg_connect is autocommit. Explicit transactions make accounting, positions,
     # orders and protective-exit audit events commit or roll back together.
-    with _mutex, c.transaction():
-        c.execute("SET LOCAL lock_timeout = '5s'")
-        c.execute('SELECT pg_advisory_xact_lock(%s)', (BOOK_LOCK_ID,))
-        yield
+    measured=timing if timing is not None else {}
+    measured.update(python_lock_wait_seconds=0.0,db_lock_wait_seconds=0.0,
+                    lock_hold_seconds=0.0,status='BUSY')
+    wait_started=time.monotonic()
+    acquired=_mutex.acquire(blocking=blocking,priority=lane=='PROTECTIVE')
+    measured['python_lock_wait_seconds']=time.monotonic()-wait_started
+    if not acquired:
+        yield False
+        return
+    held_started=time.monotonic()
+    measured['status']='ROLLED_BACK'
+    body_finished=False
+    try:
+        with c.transaction():
+            c.execute("SET LOCAL lock_timeout = '5s'")
+            db_started=time.monotonic()
+            try:
+                if blocking:
+                    c.execute('SELECT pg_advisory_xact_lock(%s)', (BOOK_LOCK_ID,))
+                else:
+                    result=c.execute('SELECT pg_try_advisory_xact_lock(%s) AS acquired',
+                                     (BOOK_LOCK_ID,)).fetchone()
+            finally:
+                measured['db_lock_wait_seconds']=time.monotonic()-db_started
+            if not blocking and (not result or result.get('acquired') is not True):
+                measured['status']='BUSY'
+                yield False
+                body_finished=True
+                return
+            yield None if blocking else True
+            body_finished=True
+        measured['status']='COMMITTED'
+    except BaseException:
+        # Once a normal body reaches COMMIT, a lost acknowledgement cannot
+        # prove rollback: the database may already have made it durable.
+        measured['status']='COMMIT_UNKNOWN' if body_finished else 'ROLLED_BACK'
+        raise
+    finally:
+        measured['lock_hold_seconds']=time.monotonic()-held_started
+        _mutex.release()
+
+
+def _detached_quote(quote):
+    # Source caches and selected quotes need execution fields, not the full
+    # signal/market graph. Project before copying; keep explicit permission flags.
+    return deepcopy({key:quote[key] for key in _QUOTE_SNAPSHOT_FIELDS if key in quote})
 
 
 def publish_quote(asset, raw):
     if not raw or not raw.get('observed_at'):
         return
+    raw=_detached_quote(raw)
     with _quotes_lock:
         old_state=_market_state.get(asset) or {}
         dt,prev=utc_datetime(raw.get('observed_at')),utc_datetime(old_state.get('observed_at'))
@@ -154,20 +209,31 @@ def publish_quote(asset, raw):
         old = _quotes.get(asset) or {}
         dt, prev = utc_datetime(raw['observed_at']), utc_datetime(old.get('observed_at'))
         if dt and (prev is None or dt >= prev):
-            _quotes[asset] = {k: raw.get(k) for k in ('price', 'best_bid', 'best_ask', 'bid', 'ask',
-                             'observed_at', 'contract', 'source_gate_pass', 'market_open',
-                             'data_latency_class','source_names','verification_mode')}
+            _quotes[asset] = {key:raw[key] for key in (*VPS.QUOTE_FIELDS,'asset','observed_at') if key in raw}
 
 
 def quote_for_position(position, candidate=None, now=None):
     """Resolve a fresh quote without crossing the entry provider or contract."""
     now=utc_datetime(now) or datetime.now(timezone.utc)
-    with _quotes_lock:
-        quotes=[dict(q) for key,q in _source_quotes.items() if key[0]==position.get('asset')]
-        quotes.append(dict(_quotes.get(position.get('asset')) or {}))
-    quotes.extend([candidate or {},position.get('_execution_quote') or {}])
+    frozen=position.get('_execution_quote_frozen') is True
+    if frozen:
+        # Canonical accounting has already selected this observation. Validate
+        # it again below, but do not replace its price/time/bid/ask midway through
+        # the evidence, profit check and fill calculation with a newer cache row.
+        selected=position.get('_execution_quote')
+        quotes=[_detached_quote(selected)] if isinstance(selected,dict) else []
+    else:
+        with _quotes_lock:
+            quotes=[dict(q) for key,q in _source_quotes.items() if key[0]==position.get('asset')]
+            quotes.append(dict(_quotes.get(position.get('asset')) or {}))
+        quotes.extend([candidate or {},position.get('_execution_quote') or {}])
     identity=VPS.position_identity(position) or {}
-    if position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
+    if (position.get('asset')=='BRENT' and identity.get('key')=='MOEX:BRENT'
+            and not identity.get('contract_id')):
+        # A venue without a saved expiry cannot identify the held oil future.
+        # Never let the asset-wide cache fill in a missing position contract.
+        return {}
+    if not frozen and position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
         try:
             from veritas_direct_cny import quote as direct_quote
             quotes.append(direct_quote(now=now))
@@ -184,7 +250,24 @@ def quote_for_position(position, candidate=None, now=None):
                 and VX.paper_quote_time_gate(dict(q,asset=position.get('asset')),now=now,protective=True)['eligible']
                 and (last is None or observed>=last)):
             valid.append(q)
-    return dict(max(valid,key=lambda q:utc_datetime(q['observed_at']))) if valid else {}
+    return _detached_quote(max(valid,key=lambda q:utc_datetime(q['observed_at']))) if valid else {}
+
+
+def refresh_execution_row(row, now=None):
+    """Select a fresh cached quote on the row's provider/contract without re-dating it."""
+    result=dict(row or {})
+    clock=utc_datetime(now) if now is not None else datetime.now(timezone.utc)
+    asset=result.get('asset')
+    identity=VPS.identity(asset,result)
+    if clock is None or not identity:
+        return result
+    quote=quote_for_position(
+        {'asset':asset,'payload':{'price_source_lock':identity}},
+        candidate=VPS.quote_from_row(result),now=clock)
+    if quote and VX.paper_quote_time_gate(
+            dict(quote,asset=asset),result.get('horizon'),now=clock)['eligible']:
+        result['_execution_quote']=dict(quote)
+    return result
 
 
 def position_mark_price(position, now=None):
@@ -246,6 +329,14 @@ def quote_matches_position(z, quote):
     ProFinance's unqualified Gold label has no verified GC contract identity.
     Price proximity alone cannot make it interchangeable with Yahoo GC=F.
     """
+    source_identity=VPS.position_identity(z)
+    if source_identity and not VPS.matches(z,quote):
+        return False
+    if source_identity and z.get('asset')=='BRENT':
+        if source_identity.get('key')=='MOEX:BRENT' and not source_identity.get('contract_id'):
+            return False
+        # The canonical entry identity supersedes obsolete contract aliases.
+        return True
     p=payload_of(z)
     identity=p.get('contract_identity') or {}
     expected=p.get('entry_contract_secid') or identity.get('contract_id')
@@ -269,18 +360,31 @@ def quote_matches_position(z, quote):
 def exit_execution_quote(z,now=None):
     """One fresh quote contract for protection assessment and the actual fill."""
     now=utc_datetime(now) or datetime.now(timezone.utc)
-    quote=quote_for_position(z,now=now)
+    # Once an exit assessment selects a quote, accounting must consume that
+    # same book. A refreshed cache is considered by the next decision cycle.
+    quote=(VPS.quote_from_row(z) if '_execution_quote' in z else quote_for_position(z,now=now))
     if (not quote or not quote.get('source_gate_pass') or VX.is_proxy_price(z.get('asset'),quote)
+            or not VPS.positive(quote.get('price')) or not VPS.matches(z,quote)
             or not quote_matches_position(z,quote)):
         return {}
     if not quote_gate(quote.get('observed_at'),now=now,protective=True)['eligible']:
+        return {}
+    if not VX.paper_quote_time_gate(dict(quote,asset=z.get('asset')),now=now,protective=True)['eligible']:
+        return {}
+    p=payload_of(z)
+    floor=max((utc_datetime(value) for value in (
+        (p.get('source_locked_mark') or {}).get('observed_at'),p.get('entry_execution_observed_at'),
+        p.get('entry_market_observed_at')) if utc_datetime(value)),default=None)
+    if floor is not None and utc_datetime(quote.get('observed_at'))<floor:
         return {}
     return quote
 
 def exit_fill(z,price,fraction,ts):
     quote=exit_execution_quote(z,ts)
+    if not quote:
+        raise ValueError('EXIT_EXECUTION_QUOTE_REQUIRED')
     return VX.simulated_fill(z.get('asset'),
-        'SELL' if z.get('direction')=='LONG' else 'BUY_TO_COVER',price,fraction,
+        'SELL' if z.get('direction')=='LONG' else 'BUY_TO_COVER',float(quote['price']),fraction,
         bid=quote.get('best_bid',quote.get('bid')),
         ask=quote.get('best_ask',quote.get('ask')))
 
@@ -317,6 +421,10 @@ def _r63_projected_exit_net(z, quote, trade, nav, commission=VC.COMMISSION_RATE)
         net=prior_gross+gross_open-prior_fees-exit_fee-funding
         return {'valid':True,'net_pnl_rub':net,'fill_price':fill_px,
                 'exit_fee_rub':exit_fee,'signed_mid_rub':units*signed_mid,
+                'whole_cycle_net_pnl_rub':net,'remaining_gross_pnl_rub':gross_open,
+                'remaining_net_before_paid_cycle_costs_rub':gross_open-exit_fee,
+                'booked_cycle_net_pnl_rub':prior_gross-prior_fees-funding,
+                'market_observed_at':quote.get('observed_at'),
                 'adverse_fill_bps':fill.get('adverse_fill_bps'),
                 'fraction_nav':fraction}
     except Exception:
@@ -342,11 +450,22 @@ def _r63_soft_profit_stop_assessment(z, quote, trade, nav, commission=VC.COMMISS
     return {'soft_only':True,'suppress':suppress,**est}
 
 
+def is_discretionary_profit_exit(reason):
+    """Explicit profit intents only; stop and exposure/risk reductions are independent."""
+    return str(reason or '').startswith((
+        'TAKE_PROFIT', 'DYNAMIC_PARTIAL_PROFIT', 'PROFIT_HARVEST',
+        'R33_MFE_GIVEBACK_HARVEST', 'R46_MFE_GIVEBACK_HARVEST'))
+
+
 def profit_exit_assessment(z, quote, trade, nav, commission=VC.COMMISSION_RATE):
     """Profit-taking needs positive whole-trade net at an adverse exit fill.
 
     Applies only to discretionary profit harvests, never to a stop or risk exit.
     Unknown paid costs cannot be replaced by zero to approve a profit harvest.
+    For a partial, this remains a whole-cycle liquidation precondition: prior
+    realized gross plus residual gross, less all paid costs and residual exit
+    commission once. It is neither the partial's booked P&L nor runner protection.
+    Actual partial accounting charges only the units that are closed.
     """
     accounting=trade or {}
     values=[VPP.number(accounting.get(k)) for k in ('gross_pnl_rub','fees_rub','funding_rub')]
@@ -514,6 +633,8 @@ def protective_reason(z, quote, now=None):
     except (TypeError, ValueError, KeyError):
         return None
     expected_contract = p.get('entry_contract_secid') or (p.get('contract_identity') or {}).get('contract_id')
+    if z.get('asset')=='BRENT':
+        expected_contract=(VPS.position_identity(z) or {}).get('contract_id')
     current_contract = (quote.get('contract') or {}).get('secid')
     if expected_contract and current_contract and expected_contract != current_contract:
         return None
@@ -533,8 +654,11 @@ def protective_reason(z, quote, now=None):
     if old > 0 and abs(px / old - 1) > jump:
         return None
 
-    target = p.get('take_price') or p.get('target_price') or p.get('last_target_price')
-    if not target:
+    import veritas_structural_lifecycle as VSL
+    structural=VSL.owns_position(z)
+    target = (VSL.active_target_price(z) if structural else
+              p.get('take_price') or p.get('target_price') or p.get('last_target_price'))
+    if not target and not structural:
         try:
             entry = float(z.get('avg_entry_price') or p.get('entry_price') or 0.0)
             expected = abs(float(p.get('expected_move_pct') or 0.0))
@@ -542,30 +666,34 @@ def protective_reason(z, quote, now=None):
                 target = entry * (1.0 + expected if long else 1.0 - expected)
         except (TypeError, ValueError):
             target = None
-    if target and not p.get('r17_tp1_done') and ((long and px >= float(target)) or (not long and px <= float(target))):
+    if target and (structural or not p.get('r17_tp1_done')) and ((long and px >= float(target)) or (not long and px <= float(target))):
         return 'TAKE_PROFIT'
     return None
 
 
-def run_protective_pass(vp, pg_connect, quotes, now=None):
-    now = now or datetime.now(timezone.utc)
-    ts = now.isoformat()
+def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
+    measured=timing if timing is not None else {}
     changes = []
-    with pg_connect() as c, book_transaction(c):
-        positions = c.execute('SELECT * FROM paper_positions ORDER BY portfolio_name,asset FOR UPDATE').fetchall()
+    with pg_connect() as c, book_transaction(c,lane='PROTECTIVE',timing=measured):
+        # A queued pass must not validate an old quote against its pre-wait
+        # clock. Explicit historical/replay clocks remain deterministic.
+        now = now or datetime.now(timezone.utc)
+        ts = now.isoformat()
+        query_started=time.monotonic()
+        try:
+            positions = c.execute('SELECT * FROM paper_positions ORDER BY portfolio_name,asset FOR UPDATE').fetchall()
+        finally:
+            measured['positions_query_seconds']=time.monotonic()-query_started
+        protection_started=time.monotonic()
         for item in positions:
             z = dict(item)
-            q = quote_for_position(z,quotes.get(z['asset']),now)
-
-            # R58: every protective-side mutation (MFE/MAE, profit lock, STOP/TP)
-            # requires the same fresh protective quote. Previously the guard could
-            # reject a stale quote for the final exit but still update path/profit
-            # protection from it, and protective=True allowed observations up to
-            # one hour old. Fail closed before touching the position.
-            q_quality = VX.paper_quote_time_gate(dict(q or {},asset=z.get('asset')),now=now,protective=True)
-            if (not (q or {}).get('source_gate_pass') or not q_quality.get('eligible')
-                    or VX.is_proxy_price(z['asset'],q) or not quote_matches_position(z,q)):
+            selected = quote_for_position(z,quotes.get(z['asset']),now)
+            # Validate the same strict exit tuple before path/protection writes;
+            # a delayed research allowance cannot authorize protective mutation.
+            q = exit_execution_quote(dict(z,_execution_quote=selected),now=now)
+            if not q:
                 continue
+            z.update(_execution_quote=q,_execution_quote_frozen=True)
 
             # R55: persist lifetime excursion from the independent fresh
             # quote before any partial reduction / exit mutates the position.
@@ -577,6 +705,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                     _signed=100.0*((_px/_entry-1.0) if z.get('direction')=='LONG'
                                     else (_entry/_px-1.0))
                     _path={
+                      'observation_path':VOP.observe(z,q,ts,lane='PROTECTIVE_GUARD'),
                       'price_source_lock':VPS.position_identity(z),
                       'price_source_status':'OK',
                       'source_locked_mark':{'identity':VPS.identity(z['asset'],q),
@@ -590,15 +719,18 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                       'r55_last_path_mark_at':ts,
                       'r55_last_path_mark_price':_px,
                     }
-                    c.execute(
-                        "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                        "WHERE active_trade_id=%s",(json.dumps(_path),z.get('active_trade_id'))
-                    )
-                    if z.get('active_trade_id'):
+                    # Optional telemetry must not poison the book transaction
+                    # and suppress a protective exit if metadata cannot be saved.
+                    with c.transaction():
                         c.execute(
-                            "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                            "WHERE trade_id=%s",(json.dumps(_path),z.get('active_trade_id'))
+                            "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                            "WHERE active_trade_id=%s",(json.dumps(_path,allow_nan=False),z.get('active_trade_id'))
                         )
+                        if z.get('active_trade_id'):
+                            c.execute(
+                                "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                                "WHERE trade_id=%s",(json.dumps(_path,allow_nan=False),z.get('active_trade_id'))
+                            )
                     zp.update(_path); z['payload']=zp
             except Exception:
                 pass
@@ -703,7 +835,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
             p, pos = vp._portfolio_rows(c, name)
             nav, _, _, _ = vp._mark_nav(p, pos, prices)
             if reason=='STOP' and z.get('active_trade_id'):
-                _tr_full=c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
+                _tr_full=c.execute("SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades WHERE trade_id=%s",
                                    (z.get('active_trade_id'),)).fetchone()
                 _soft=_r63_soft_profit_stop_assessment(
                     z,q,_tr_full,nav,getattr(vp,'COMMISSION',VC.COMMISSION_RATE))
@@ -760,6 +892,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                             'reason': reason, 'price': px, 'market_observed_at': q['observed_at']})
         if changes:
             VPP.refresh(c, commission=getattr(vp, 'COMMISSION', VC.COMMISSION_RATE))
+        measured['protection_seconds']=time.monotonic()-protection_started
     return changes
 
 
@@ -814,11 +947,22 @@ def _fetch_guard_quote_unlocked(ns, asset, positions, candidate_contract=None):
                 'source_gate_pass': True, 'market_open': True,
                 'source_names':{'primary':'Binance spot'}}
     if asset == 'BRENT':
-        contracts = {payload_of(z).get('entry_contract_secid') for z in positions}
-        contracts.discard(None)
-        contract = next(iter(contracts)) if len(contracts) == 1 else (cached.get('contract') or {}).get('secid')
+        if positions:
+            identities=[VPS.position_identity(z) or {} for z in positions]
+            if any(i.get('key')!='MOEX:BRENT' or not i.get('contract_id') for i in identities):
+                return {}
+            contracts={str(i['contract_id']) for i in identities}
+            if len(contracts)!=1:
+                return {}
+            contract=next(iter(contracts))
+        else:
+            contract=str(candidate_contract) if candidate_contract else None
         if contract:
-            return dict(ns['_moex_futures_current_quote'](contract), source_gate_pass=True,
+            raw=ns['_moex_futures_current_quote'](contract) or {}
+            returned=(raw.get('row') or {}).get('SECID')
+            if returned is not None and str(returned)!=contract:
+                return {}
+            return dict(raw, source_gate_pass=True,
                         contract={'secid': contract},source_names={'primary':'MOEX ISS '+contract})
     if asset in ('NQ', 'GOLD'):
         # Match the main paper adapter. A Gold entry from ProFinance cannot be
@@ -854,6 +998,12 @@ def _fetch_guard_quote_unlocked(ns, asset, positions, candidate_contract=None):
 
 def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
     """Fetch the pinned source; another provider is never its fallback."""
+    new_brent=asset=='BRENT' and not positions
+    if new_brent:
+        # A new oil entry has one configured feed. Old contract hints and the
+        # asset-wide cache cannot select a different source for that entry.
+        positions=[{'asset':'BRENT','payload':{
+            'price_source_lock':VPS.brent_feed_pin_identity()}}]
     identities=[VPS.position_identity(z) for z in positions or []]
     if not identities:
         return _fetch_guard_quote_unlocked(ns,asset,positions,candidate_contract)
@@ -863,8 +1013,14 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
     try:
         if key.startswith('PROFINANCE:') and not expected.get('contract_id'):
             raw=ns['_v90r61_profinance_quote'](asset) or {}
-            q=dict(raw,source_gate_pass=True,market_open=True,paper_only=True,
-                   source_names={'primary':expected['primary_source']})
+            # Verify the observed response before adding adapter labels. A
+            # different provider or a label-only oil row cannot inherit proof
+            # from the requested identity or the position's saved pin.
+            if asset!='BRENT' or (VPS.brent_quote_verified(raw)
+                    and raw.get('source_gate_pass') is not False
+                    and raw.get('market_open') is not False):
+                q=dict(raw,source_gate_pass=True,market_open=True,paper_only=True,
+                       source_names={'primary':expected['primary_source']})
         elif key.startswith('YAHOO:') and asset in ('NQ','GOLD','BRENT') and not expected.get('contract_id'):
             symbol={'NQ':'NQ%3DF','GOLD':'GC%3DF','BRENT':'BZ%3DF'}[asset]
             rows,_=ns['_yahoo_series'](symbol,'1d','1m',True)
@@ -904,7 +1060,11 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
         pass
     if q and VPS.matches(positions[0],q):
         publish_quote(asset,q)
-    return quote_for_position(positions[0],q)
+    selected=quote_for_position(positions[0],q)
+    if new_brent and not quote_gate(selected.get('observed_at'),
+                                   execution=True,asset='BRENT')['eligible']:
+        return {}
+    return selected
 
 
 def market_state(asset):
@@ -950,10 +1110,17 @@ def start(ns):
         last_log = 0
         while True:
             started = time.monotonic()
+            phases, transaction_timing = {}, {}
+            phase, phase_started = 'position_read', started
             try:
                 with ns['pg_connect']() as c:
-                    positions = [dict(z) for z in c.execute('SELECT * FROM paper_positions').fetchall()]
+                    positions = [dict(z) for z in c.execute(QUOTE_POSITION_SQL).fetchall()]
+                phases['position_read_seconds']=time.monotonic()-phase_started
+                position_count = len(positions)
+                phase, phase_started = 'quote_refresh', time.monotonic()
                 refresh_position_quotes(ns,positions)
+                phases['quote_refresh_seconds']=time.monotonic()-phase_started
+                phase, phase_started = 'quote_select', time.monotonic()
                 quotes, errors, paused = {}, {}, {}
                 for z in positions:
                     q=quote_for_position(z)
@@ -967,26 +1134,50 @@ def start(ns):
                             paused[key]='MARKET_CLOSED'
                         else:
                             errors[key]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
-                changes = run_protective_pass(ns['VP'], ns['pg_connect'], quotes) if positions else []
+                phases['quote_select_seconds']=time.monotonic()-phase_started
+                # Quote preparation is complete; the locked pass reads its own book.
+                positions = z = None
+                phase, phase_started = 'protective_pass', time.monotonic()
+                changes = run_protective_pass(ns['VP'], ns['pg_connect'], quotes,
+                    timing=transaction_timing) if position_count else []
+                phases['protective_pass_seconds']=time.monotonic()-phase_started
+                phases.update({k:v for k,v in transaction_timing.items() if k.endswith('_seconds')})
+                phase, phase_started = 'cache_invalidation', time.monotonic()
                 if changes:
-                    with ns['_v90r25_pf_lock']:
-                        ns['_v90r25_pf_cache'].update(at=0.0, value=None)
                     with ns['lock']:
                         ns['last_cycle']['portfolio_autopilot'] = {}
+                        # Retire the live book before publishing a new cache
+                        # revision. A read started before this protective fill
+                        # must not republish its older quantity snapshot.
+                        with ns['_v90r25_pf_lock']:
+                            cache=ns['_v90r25_pf_cache']
+                            cache.update(at=0.0, value=None,
+                                         revision=int(cache.get('revision') or 0)+1)
                     with ns['_v90r23_trade_lock']:
                         ns['_v90r23_trade_cache'].update(at=0.0, value=None)
+                phases['cache_invalidation_seconds']=time.monotonic()-phase_started
                 status=('DEGRADED' if errors else
-                        'PAUSED_MARKET_CLOSED' if paused and positions else 'OK')
+                        'PAUSED_MARKET_CLOSED' if paused and position_count else 'OK')
                 _state.update(status=status, checked_at=datetime.now(timezone.utc).isoformat(),
-                              open_positions=len(positions), quotes=len(quotes), errors=errors,
+                              open_positions=position_count, quotes=len(quotes), errors=errors,
                               paused=paused,
                               last_changes=changes or _state.get('last_changes', []),
+                              phase_seconds={k:round(v,3) for k,v in phases.items()},
+                              book_transaction_status=transaction_timing.get('status','NOT_NEEDED'),
                               duration_seconds=round(time.monotonic()-started, 3))
                 if changes or errors or time.monotonic()-last_log >= 60:
                     ns['emit']('paper_protective_guard', **snapshot())
                     last_log = time.monotonic()
             except Exception as exc:
-                _state.update(status='ERROR', checked_at=datetime.now(timezone.utc).isoformat(), error=f'{type(exc).__name__}: {exc}')
+                phases[phase+'_seconds']=time.monotonic()-phase_started
+                phases.update({k:v for k,v in transaction_timing.items() if k.endswith('_seconds')})
+                _state.update(status='ERROR', checked_at=datetime.now(timezone.utc).isoformat(),
+                              error=f'{type(exc).__name__}: {exc}',
+                              phase_seconds={k:round(v,3) for k,v in phases.items()},
+                              book_transaction_status=transaction_timing.get('status','NOT_STARTED'),
+                              duration_seconds=round(time.monotonic()-started,3))
                 ns['emit']('paper_protective_guard_error', **snapshot())
+            finally:
+                positions = z = c = q = None
             time.sleep(max(1.0, 15-(time.monotonic()-started)))
     threading.Thread(target=loop, daemon=True, name='veritas-paper-protection').start()

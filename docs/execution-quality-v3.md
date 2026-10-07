@@ -18,16 +18,33 @@ The final feed state is exposed by `/api/v1/strategy-quality` and existing
 
 ## Economics and portfolio roles
 
-Minimum move is `max(0.19%, 2 * modeled round-trip costs)`. Commission and modeled
-slippage remain 0.04% per side; the historical accounting buffer remains 1.1x.
-The new entry multiple is not a second fee. No SUPER exception bypasses negative
-net economics. Portfolio capital, gross, drawdown and stop-risk limits remain.
+Minimum move is `max(0.19%, 1.1 * modeled round-trip costs)` in every paper portfolio,
+including Currency. Commission and modeled slippage are 0.04% per side. The entry
+multiple is a compatibility alias for the same owner-approved 1.1x buffer; the
+constitution rejects drift between these values. The cost buffer does not replace
+the separate net reward/risk check. No SUPER exception bypasses negative net
+economics. Portfolio capital, gross, drawdown and stop-risk limits remain.
 
 Impulse selects early 1m/5m/1h setups. Aggressive requires building/confirmed trend
 structure. Champion is the confirmed-trend control. Challenger adds a local
 trigger and is compared only on matching explicit market events. Currency has
 its own exact-instrument route. These are proposed paper policy distinctions,
 not demonstrated trading edges.
+
+Within each role, candidates are tried in their existing priority order through
+complete canonical admission. A blocked high-ranked timeframe cannot hide an
+independently admissible lower-ranked timeframe. If all candidates fail, the
+highest-priority candidate and actual rejection trace remain visible. Final
+admission rechecks the current quote, drawdown and held-position constraints.
+Legacy R20 SUPER selection cannot replace a canonically routed book.
+
+Before runtime admission, a newer cached quote may replace an aged observation
+only on the same provider and pinned contract. Its original exchange timestamp
+is preserved, and price geometry plus the 30-second crypto execution limit are
+checked again. Actual entry uses one final clock through admission and accounting.
+Explicit historical clocks remain deterministic unless a runtime row explicitly
+requests quote refresh. HTTP refresh results are checked at the clock after the
+request returns; slow analysis is not permission to relax quote-age limits.
 
 TP remains partial where the 5% position step permits a runner. A confirmed
 strong trend may retain up to 70%. Source, net-profit and structural stop checks

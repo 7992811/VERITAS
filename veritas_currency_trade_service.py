@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
+import json
 import os
 import re
 import threading
@@ -116,7 +117,7 @@ def _diagnostic(exc, fallback="CANONICAL_ENTRY_BLOCKED"):
     return value if isinstance(value, str) and _SAFE_CODE.fullmatch(value) else fallback
 
 
-def _environment_connect(connect, environment):
+def _environment_connect(connect, environment, *, create_schema=True):
     """Lazy schema isolation, including ledger DDL; no public fallback."""
     if not callable(connect) or environment not in _SCHEMAS:
         raise ServiceError("INVALID_LEDGER_ENVIRONMENT")
@@ -127,7 +128,8 @@ def _environment_connect(connect, environment):
         with connect() as connection:
             with connection.transaction():
                 # Both identifiers are constants chosen from the closed map.
-                connection.execute("CREATE SCHEMA IF NOT EXISTS " + schema)
+                if create_schema:
+                    connection.execute("CREATE SCHEMA IF NOT EXISTS " + schema)
                 connection.execute("SET LOCAL search_path TO " + schema)
                 yield connection
     return scoped
@@ -149,7 +151,8 @@ class _BrokerCycle:
 
 class BrokerFactsProvider:
     def __init__(self, adapter, ledger, account_id, instrument_uid=CNY_UID,
-                 owner_user_id=None, connect=None, clock=None):
+                 owner_user_id=None, connect=None, clock=None, *, read_connect=None,
+                 settlement=None, statement_provider=None):
         self.adapter, self.ledger = adapter, ledger
         self.account_id = _text(account_id, "EXPLICIT_ACCOUNT_REQUIRED")
         if instrument_uid != CNY_UID:
@@ -159,11 +162,19 @@ class BrokerFactsProvider:
         self.connect = connect if connect is not None else ledger.connect
         if not callable(self.connect):
             raise ServiceError("EXPLICIT_LEDGER_CONNECTION_REQUIRED")
+        self.read_connect = read_connect if read_connect is not None else self.connect
+        if not callable(self.read_connect):
+            raise ServiceError("EXPLICIT_LEDGER_CONNECTION_REQUIRED")
         self.clock = clock or _now
         self.environment = adapter.environment
         if self.environment not in _SCHEMAS:
             raise ServiceError("INVALID_EXECUTION_ENVIRONMENT")
         self.block_reason = None
+        from veritas_currency_settlement import CurrencySettlementReconciler
+        self.settlement = settlement if settlement is not None else CurrencySettlementReconciler(
+            ledger, adapter, statement_provider=statement_provider, clock=self.clock)
+        self.ledger_state = None
+        self.settlement_result = None
 
     def _assert_owner(self, row):
         if (row is None or row.get("account_id") != self.account_id
@@ -350,44 +361,34 @@ class BrokerFactsProvider:
             allocation_rub=ALLOCATION_RUB,
         )
 
-    def __call__(self):
-        self.block_reason = None
-        facts = self._read()
-        if facts.blocked_lots:
-            # The broker labels balance as unblocked holdings. Do not mistake
-            # a reservation for an external position change and latch a freeze.
-            self.block_reason = "WORKING_ORDER_RECONCILIATION_REQUIRED"
-            raise ServiceError(self.block_reason)
-        valuation = InstrumentValuation.from_contract(facts.spec)
-        with self.connect() as c:
-            with c.transaction():
-                owner = c.execute(
-                    f"SELECT account_id,instrument_uid,owner_user_id FROM {ACCOUNTS} "
-                    "WHERE account_id=%s FOR UPDATE", (self.account_id,)).fetchone()
-                if owner is None:
-                    raise ServiceError("CURRENCY_ACCOUNT_NOT_BOUND")
-                self._assert_owner(owner)
-                state = self.ledger.reconcile_broker_positions_on(
-                    c, self.account_id, self.instrument_uid, broker_signed_lots=facts.signed_lots,
-                    broker_snapshot_id=facts.snapshot_id, observed_at=facts.observed_at,
-                    verified=True, broker_open_order_count=facts.active_order_count,
-                )
-                mark = facts.quote.ask if state["signed_lots"] < 0 else facts.quote.bid
-                state = self.ledger.snapshot_on(
-                    c, self.account_id, self.instrument_uid, mark_price=mark,
-                    mark_observed_at=facts.quote.observed_at, spec=valuation,
-                )
-                prior_fill = c.execute(
-                    f"SELECT trade_id FROM {FILLS} WHERE account_id=%s AND instrument_uid=%s LIMIT 1",
-                    (self.account_id, self.instrument_uid)).fetchone()
-        funding_reconciled = prior_fill is None
+    def _cache(self, state):
+        # Financial display state only. Account/token/order identifiers and raw
+        # broker statements are not part of the dashboard cache.
+        fields = ("allocation_rub", "currency_nav_rub", "realized_pnl_rub", "unrealized_pnl_rub",
+                  "fees_rub", "funding_rub", "high_water_rub", "drawdown_pct", "signed_lots",
+                  "managed_signed_lots", "average_entry_price", "ledger_revision", "spec_revision",
+                  "costs_reconciled", "funding_reconciled", "reconciled", "entries_allowed",
+                  "entries_frozen", "freeze_reason", "settlement_observed_as_of", "settlement_through",
+                  "settlement_reasons", "broker_observed_at", "mark_observed_at")
+        self.ledger_state = {key:state.get(key) for key in fields}
+
+    def _pack(self, facts, state, settlement_error=None):
+        state = dict(state)
+        if settlement_error:
+            state.update(funding_reconciled=False, entries_allowed=False,
+                         settlement_reasons=[settlement_error])
+        funding_reconciled = state.get("funding_reconciled") is True
         costs = state.get("costs_reconciled") is True and funding_reconciled
         if state.get("entries_frozen"):
             self.block_reason = "BROKER_POSITION_MISMATCH"
+        elif settlement_error:
+            self.block_reason = settlement_error
         elif not funding_reconciled:
-            self.block_reason = "FUNDING_COMPLETENESS_UNVERIFIED"
+            reasons = state.get("settlement_reasons") or []
+            self.block_reason = reasons[0] if reasons else "FUNDING_COMPLETENESS_UNVERIFIED"
         elif not state.get("costs_reconciled"):
             self.block_reason = "BROKER_COST_RECONCILIATION_REQUIRED"
+        self._cache(state)
         account = AccountSnapshot(
             account_id=self.account_id, access_level=FULL_ACCESS,
             currency_nav_rub=_number(state["currency_nav_rub"]),
@@ -401,6 +402,89 @@ class BrokerFactsProvider:
             costs_reconciled=costs,
         )
         return TradeFacts(facts.spec, account, facts.quote, state.get("held_terms"))
+
+    def _collect_settlement(self):
+        try:
+            return self.settlement.collect(self.account_id, self.instrument_uid), None
+        except Exception:
+            # An unavailable cost report blocks new risk. It does not turn an
+            # independently verified CLOSE/REDUCE into a failed broker read.
+            return None, "BROKER_SETTLEMENT_READ_UNAVAILABLE"
+
+    def __call__(self):
+        self.block_reason = None
+        observation, settlement_error = self._collect_settlement()
+        # Take the bounded quote/position cycle AFTER potentially slow history
+        # pagination. Costs unavailable must not make the exit quote stale.
+        facts = self._read()
+        if facts.blocked_lots:
+            self.block_reason = "WORKING_ORDER_RECONCILIATION_REQUIRED"
+            raise ServiceError(self.block_reason)
+        valuation = InstrumentValuation.from_contract(facts.spec)
+        with self.connect() as c:
+            with c.transaction():
+                owner = c.execute(
+                    f"SELECT account_id,instrument_uid,owner_user_id FROM {ACCOUNTS} "
+                    "WHERE account_id=%s FOR UPDATE", (self.account_id,)).fetchone()
+                if owner is None:
+                    raise ServiceError("CURRENCY_ACCOUNT_NOT_BOUND")
+                self._assert_owner(owner)
+                if settlement_error is None:
+                    try:
+                        # A malformed statement or database ingestion error is
+                        # isolated from the independently required exit facts.
+                        with c.transaction():
+                            self.settlement_result = self.settlement.reconcile_on(
+                                c, self.account_id, self.instrument_uid, observation=observation)
+                    except Exception:
+                        settlement_error = "BROKER_SETTLEMENT_RECONCILIATION_UNAVAILABLE"
+                state = self.ledger.reconcile_broker_positions_on(
+                    c, self.account_id, self.instrument_uid, broker_signed_lots=facts.signed_lots,
+                    broker_snapshot_id=facts.snapshot_id, observed_at=facts.observed_at,
+                    verified=True, broker_open_order_count=facts.active_order_count,
+                )
+                mark = facts.quote.ask if state["signed_lots"] < 0 else facts.quote.bid
+                state = self.ledger.snapshot_on(
+                    c, self.account_id, self.instrument_uid, mark_price=mark,
+                    mark_observed_at=facts.quote.observed_at, spec=valuation,
+                    allow_high_water_update=settlement_error is None,
+                )
+        return self._pack(facts, state, settlement_error)
+
+    def peek(self):
+        """Read-only dashboard facts: SELECT and pure valuation; never reconcile.
+
+        The factory supplies a connector that does not create schemas on GET.
+        Broker mismatch is shown without latching an entry freeze. The persisted
+        high-water mark is displayed unchanged, even if the current mark rises.
+        """
+        from veritas_currency_trade_ledger import valuation as value_position
+        self.block_reason = None
+        self.ledger_state = None
+        with self.read_connect() as c:
+            row = c.execute(f"SELECT * FROM {ACCOUNTS} WHERE account_id=%s",
+                            (self.account_id,)).fetchone()
+        if row is None:
+            raise ServiceError("CURRENCY_ACCOUNT_NOT_BOUND")
+        self._assert_owner(row)
+        row = dict(row)
+        facts = self._read()
+        spec = InstrumentValuation.from_contract(facts.spec)
+        self.ledger._spec(row, spec)
+        state = self.ledger._view(row, status="READ_ONLY")
+        mark = facts.quote.ask if row["signed_lots"] < 0 else facts.quote.bid
+        # costs_reconciled=False here changes only the pure function's HWM
+        # update policy. Readiness comes from the real persisted state below.
+        values = value_position(dict(row, costs_reconciled=False), mark, spec)
+        state.update(values, mark_observed_at=facts.quote.observed_at)
+        if (facts.signed_lots != row["signed_lots"] or facts.blocked_lots or facts.active_order_count):
+            state.update(reconciled=False, entries_allowed=False)
+        packed = self._pack(facts, state)
+        if facts.signed_lots != row["signed_lots"]:
+            self.block_reason = "BROKER_POSITION_MISMATCH"
+        elif facts.blocked_lots or facts.active_order_count:
+            self.block_reason = "WORKING_ORDER_RECONCILIATION_REQUIRED"
+        return packed
 
     def ingest(self, proposal, result):
         terms = proposal.get("terms") or {}
@@ -476,6 +560,26 @@ class BrokerFactsProvider:
                     cumulative_fee_rub=commission, filled_lots=total,
                     observed_at=previous["observed_at"] if previous else observed, currency="RUB",
                 )
+        # Actual fills and their fee receipt are committed before the independent
+        # operations read. Settlement failure never rolls back a real execution.
+        observation, settlement_error = self._collect_settlement()
+        if settlement_error is None:
+            try:
+                with self.connect() as c:
+                    with c.transaction():
+                        owner = c.execute(f"SELECT account_id,instrument_uid,owner_user_id FROM {ACCOUNTS} "
+                            "WHERE account_id=%s FOR UPDATE", (self.account_id,)).fetchone()
+                        self._assert_owner(owner)
+                        self.settlement_result = self.settlement.reconcile_on(
+                            c, self.account_id, self.instrument_uid, observation=observation)
+                        current = self.ledger._load(c, self.account_id, self.instrument_uid)
+                        state.update(self.ledger._view(current, status=state["status"]))
+            except Exception:
+                settlement_error = "BROKER_SETTLEMENT_RECONCILIATION_UNAVAILABLE"
+        if settlement_error:
+            self.block_reason = settlement_error
+            state.update(funding_reconciled=False, entries_allowed=False, settlement_reasons=[settlement_error])
+        self._cache(state)
         return state
 
 
@@ -575,7 +679,7 @@ class TradeHttpApplication:
             raise ServiceError("TRADE_PROPOSAL_SCOPE_MISMATCH", 403)
         return proposal
 
-    def _public(self, proposal, *, delivery=False):
+    def _public(self, proposal, *, delivery=False, console=False):
         if proposal is None:
             return None
         if not self._belongs(proposal):
@@ -583,6 +687,8 @@ class TradeHttpApplication:
         hidden = {"claim_token", "worker_id", "terms_signature", "callback_nonce", "terms_json"}
         if not delivery:
             hidden.add("delivery_token")
+        if console:
+            hidden.add("callbacks")
         return json_safe({k: v for k, v in proposal.items() if k not in hidden})
 
     def _scoped(self, records):
@@ -602,6 +708,9 @@ class TradeHttpApplication:
             return {"ok": True, "enabled": True, "items": [],
                     "execution_enabled": self.execution_enabled, "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
         self.coordinator.reconcile()
+        if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
+            return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
+                    "block_reason": "PROPOSALS_PAUSED"}
         reason = None
         approved = self._scoped(self.repository.list_approved(
             account_id=self.account_id, owner_user_id=self.owner.user_id, limit=1000))
@@ -626,6 +735,74 @@ class TradeHttpApplication:
         items = [self._public(p) for p in pending if p.get("status") == "PENDING_DELIVERY"][:1]
         return {"ok": True, "enabled": True, "items": items,
                 "execution_enabled": self.execution_enabled, "block_reason": reason}
+
+    def console_snapshot(self):
+        """Bounded private read model; never approves, polls or submits an order."""
+        result = {"connection": {"status": "ACCOUNT_SELECTED", "account_id": self.account_id},
+                  "readiness": {"status": "BLOCKED", "blockers": []}, "positions": [],
+                  "orders": [], "fills": [], "costs": {}, "actions": {"reconcile": True},
+                  "positions_observed": False, "orders_observed": False, "fills_observed": False,
+                  "execution_enabled": self.execution_enabled}
+        try:
+            facts = self.facts.peek()
+            state = self.facts.ledger_state or {}
+            result["connection"].update(status="CONNECTED", broker_status="RECONCILED" if facts.account.reconciled else "RECONCILIATION_REQUIRED",
+                                        observed_at=facts.account.observed_at.isoformat())
+            result["allocation"] = {"allocation_rub": "10000", "currency_nav_rub": str(facts.account.currency_nav_rub),
+                "available_margin_rub": str(facts.account.available_margin_rub), "max_leverage": 10,
+                "instrument_uid": self.instrument_uid, "reconciled": facts.account.reconciled,
+                "costs_reconciled": facts.account.costs_reconciled,
+                "high_water_rub": str(facts.account.high_water_rub), "drawdown": str(facts.account.drawdown)}
+            result["positions_observed"] = True
+            if facts.account.signed_lots:
+                held = facts.held_terms or {}
+                result["positions"] = [{"asset": "CNYRUBF", "instrument_uid": self.instrument_uid, "account_id": self.account_id,
+                    "direction": "LONG" if facts.account.signed_lots > 0 else "SHORT", "lots": abs(facts.account.signed_lots),
+                    "broker_signed_lots": facts.account.signed_lots, "managed_signed_lots": facts.account.managed_signed_lots,
+                    "status": "RECONCILED" if facts.account.reconciled else "RECONCILIATION_REQUIRED",
+                    "stop_price": held.get("stop_price"), "target_price": held.get("target_price"),
+                    "average_entry_price": state.get("average_entry_price"),
+                    "price": str(facts.quote.bid if facts.account.signed_lots > 0 else facts.quote.ask),
+                    "observed_at": facts.quote.observed_at.isoformat()}]
+            result["costs"] = {"reconciled": facts.account.costs_reconciled,
+                "fees_rub": state.get("fees_rub"), "funding_rub": state.get("funding_rub"),
+                "funding_reconciled": state.get("funding_reconciled"),
+                "settlement_through": state.get("settlement_through"), "block_reason": self.facts.block_reason}
+            result["readiness"].update(source="Т-Инвестиции · точный CNYRUBf", observed_at=facts.quote.observed_at.isoformat())
+            if not facts.account.reconciled:
+                result["readiness"]["blockers"].append("BROKER_POSITION_RECONCILIATION_REQUIRED")
+            if not facts.account.costs_reconciled:
+                result["readiness"]["blockers"].append(self.facts.block_reason or "BROKER_COST_RECONCILIATION_REQUIRED")
+            authority = getattr(self.coordinator, "live_admission", None)
+            if callable(getattr(authority, "status", None)):
+                authority_status = authority.status()
+                result["readiness"]["live_authority"] = authority_status
+                result["readiness"]["blockers"].extend(authority_status.get("blockers") or [])
+            # A cached account view does not certify a fresh canonical proposal.
+            result["readiness"]["blockers"].append("CURRENT_PROPOSAL_NOT_EVALUATED")
+            result["actions"]["prepare"] = True
+        except Exception as exc:
+            result["readiness"]["blockers"].append(_diagnostic(exc, "BROKER_FACTS_UNAVAILABLE"))
+        try:
+            rows = self.repository.list_recent(account_id=self.account_id, owner_user_id=self.owner.user_id,
+                instrument_uid=self.instrument_uid, execution_environment=self.environment, limit=30)
+            result["orders"] = [self._public(row, console=True) for row in self._scoped(rows)]
+            result["orders_observed"] = True
+        except Exception:
+            result["readiness"]["blockers"].append("ORDER_HISTORY_UNAVAILABLE")
+        try:
+            with self.facts.read_connect() as c:
+                with c.transaction():
+                    c.execute("SET LOCAL statement_timeout='2500ms'")
+                    result["fills"] = [dict(row) for row in c.execute(
+                        f"SELECT trade_id,client_order_id,side,lots,price,executed_at FROM {FILLS} "
+                        "WHERE account_id=%s AND instrument_uid=%s ORDER BY executed_at DESC LIMIT 30",
+                        (self.account_id, self.instrument_uid)).fetchall()]
+            result["fills_observed"] = True
+        except Exception:
+            result["readiness"]["blockers"].append("FILL_HISTORY_UNAVAILABLE")
+        result["readiness"]["blockers"] = sorted(set(result["readiness"]["blockers"]))
+        return json_safe(result)
 
     def handle(self, path, body, headers):
         try:
@@ -711,7 +888,25 @@ def _configured_id(name):
     return _positive_id(int(raw))
 
 
-def create_application(connect, summary_provider):
+def _configuration(connect):
+    values = {name: os.environ.get(name, "") for name in _CONFIG_NAMES}
+    binding = {}
+    if _enabled("VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED"):
+        from veritas_currency_trade_console import load_binding
+        binding = load_binding(connect)
+        for key, field in (("TBANK_ACCOUNT_ID", "account_id"),
+                           ("VERITAS_CURRENCY_TRADE_OWNER_USER_ID", "owner_user_id"),
+                           ("VERITAS_CURRENCY_TRADE_OWNER_CHAT_ID", "owner_chat_id"),
+                           ("VERITAS_CURRENCY_TRADE_BOT_ID", "bot_id")):
+            observed = binding.get(field)
+            if observed is not None:
+                if values.get(key) and values[key] != str(observed):
+                    raise ServiceError("CONSOLE_CONFIGURATION_SCOPE_MISMATCH", 503)
+                values[key] = str(observed)
+    return values, binding
+
+
+def create_application(connect, summary_provider, *, configuration=None):
     """Construct only; the authenticated application initializes lazily."""
     if not _enabled("VERITAS_CURRENCY_TRADE_PROPOSALS_ENABLED"):
         return None
@@ -719,12 +914,15 @@ def create_application(connect, summary_provider):
     approval_key = _key_bytes(os.environ.get("VERITAS_CURRENCY_TRADE_APPROVAL_KEY", ""))
     if hmac.compare_digest(service_key, approval_key):
         raise ServiceError("DISTINCT_TRADE_SERVICE_AND_APPROVAL_KEYS_REQUIRED", 503)
-    owner = TradeOwner(
-        _configured_id("VERITAS_CURRENCY_TRADE_OWNER_USER_ID"),
-        _configured_id("VERITAS_CURRENCY_TRADE_OWNER_CHAT_ID"),
-        _configured_id("VERITAS_CURRENCY_TRADE_BOT_ID"),
-    )
-    account = _text(os.environ.get("TBANK_ACCOUNT_ID", ""), "EXPLICIT_ACCOUNT_REQUIRED")
+    values, binding = configuration if configuration is not None else _configuration(connect)
+    def configured_id(name):
+        raw = values.get(name, "")
+        if not re.fullmatch(r"[1-9][0-9]{0,18}", raw):
+            raise ServiceError("EXPLICIT_TRADE_OWNER_CONFIGURATION_REQUIRED", 503)
+        return _positive_id(int(raw))
+    owner = TradeOwner(configured_id("VERITAS_CURRENCY_TRADE_OWNER_USER_ID"),
+        configured_id("VERITAS_CURRENCY_TRADE_OWNER_CHAT_ID"), configured_id("VERITAS_CURRENCY_TRADE_BOT_ID"))
+    account = _text(values.get("TBANK_ACCOUNT_ID", ""), "EXPLICIT_ACCOUNT_REQUIRED")
     environment = os.environ.get("VERITAS_CURRENCY_TRADE_ENVIRONMENT", "production")
     if environment not in _SCHEMAS:
         raise ServiceError("INVALID_EXECUTION_ENVIRONMENT", 503)
@@ -733,6 +931,8 @@ def create_application(connect, summary_provider):
     enabled = (_enabled("VERITAS_CURRENCY_TRADE_EXECUTION_ENABLED")
                and _enabled("VERITAS_LIVE_EXECUTION_ENABLED"))
     armed = _enabled("VERITAS_LIVE_EXECUTION_ARMED")
+    if _enabled("VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED"):
+        armed = armed and binding.get("execution_requested") is True and binding.get("paused") is False
     if not callable(connect) or not callable(summary_provider):
         raise ServiceError("EXPLICIT_SERVICE_DEPENDENCIES_REQUIRED", 503)
     adapter = TBankTradingAdapter(token, config=ExecutionConfig(
@@ -744,19 +944,32 @@ def create_application(connect, summary_provider):
     ledger_connect = _environment_connect(connect, environment)
     ledger = CurrencyTradeLedger(ledger_connect, enabled=True)
     repository = TradeApprovals(connect, approval_key)
-    facts = BrokerFactsProvider(adapter, ledger, account, CNY_UID, owner.user_id, ledger_connect)
+    facts = BrokerFactsProvider(adapter, ledger, account, CNY_UID, owner.user_id, ledger_connect,
+        read_connect=_environment_connect(connect, environment, create_schema=False))
+    from veritas_currency_live_admission import create_live_admission
     coordinator = CurrencyTradingCoordinator(
         repository=repository, adapter=adapter, account_id=account, owner=owner,
         facts=facts, summary=summary_provider, ingest_execution=facts.ingest,
         execution_enabled=enabled and armed,
-        # Whole-account risk/promotion/calibration evidence is not wired yet.
-        # Flags and owner approval cannot replace the existing live authority.
-        live_admission=None,
+        live_admission=create_live_admission(connect=connect, adapter=adapter, account_id=account),
+        preflight_live=environment == "production",
     )
-    return TradeHttpApplication(
+    application = TradeHttpApplication(
         repository=repository, coordinator=coordinator, facts=facts,
         owner=owner, service_key=service_key, ledger=ledger,
     )
+    if _enabled("VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED"):
+        from veritas_currency_trade_console import load_binding, store_for
+        application.console_binding = lambda: load_binding(connect)
+        def permitted():
+            current = load_binding(connect)
+            return (current.get("account_id") == account and current.get("owner_user_id") == owner.user_id
+                    and current.get("bot_id") == owner.bot_id and current.get("execution_requested") is True
+                    and current.get("paused") is False)
+        coordinator.execution_permission = permitted
+        coordinator.execution_guard = lambda: store_for(connect).execution_guard(
+            account, owner.user_id, owner.private_chat_id, owner.bot_id)
+    return application
 
 
 _CONFIG_NAMES = (
@@ -767,9 +980,26 @@ _CONFIG_NAMES = (
     "TBANK_API_TOKEN", "TBANK_SANDBOX_TOKEN", "VERITAS_CURRENCY_TRADE_EXECUTION_ENABLED",
     "VERITAS_LIVE_EXECUTION_ENABLED", "VERITAS_LIVE_EXECUTION_ARMED",
     "VERITAS_CURRENCY_TRADE_MARGIN_ALLOWED",
+    "VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED",
 )
 _CACHE = {}
 _CACHE_LOCK = threading.RLock()
+
+
+def get_application(connect, summary_provider):
+    if not _enabled("VERITAS_CURRENCY_TRADE_PROPOSALS_ENABLED"):
+        return None
+    configuration = _configuration(connect)
+    values, binding = configuration
+    config_hash = hashlib.sha256(json.dumps([values, binding], sort_keys=True, default=str).encode()).digest()
+    cache_key = (id(connect), id(summary_provider), config_hash)
+    with _CACHE_LOCK:
+        application = _CACHE.get(cache_key)
+        if application is None:
+            application = create_application(connect, summary_provider, configuration=configuration)
+            _CACHE.clear()
+            _CACHE[cache_key] = application
+    return application
 
 
 def handle_request(path, body, headers, connect, summary_provider):
@@ -782,20 +1012,7 @@ def handle_request(path, body, headers, connect, summary_provider):
                     "execution_enabled": False, "block_reason": "CURRENCY_TRADE_PROPOSALS_DISABLED"}, 200
         key = _key_bytes(os.environ.get("VERITAS_CURRENCY_TRADE_SERVICE_KEY", ""))
         _authenticate(headers, key)
-        # A secret/configuration change creates a new inert instance. The digest
-        # is local only; credentials and fingerprints never appear in responses.
-        config_hash = hashlib.sha256(
-            "\0".join(os.environ.get(name, "") for name in _CONFIG_NAMES).encode("utf-8")).digest()
-        cache_key = (id(connect), id(summary_provider), config_hash)
-        with _CACHE_LOCK:
-            application = _CACHE.get(cache_key)
-            if application is None:
-                application = create_application(connect, summary_provider)
-                if application is None:
-                    return {"ok": True, "enabled": False, "items": [],
-                            "execution_enabled": False, "block_reason": "CURRENCY_TRADE_PROPOSALS_DISABLED"}, 200
-                _CACHE.clear()
-                _CACHE[cache_key] = application
+        application = get_application(connect, summary_provider)
         return application.handle(path, body, headers)
     except Exception as exc:
         return _error(exc)

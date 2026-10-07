@@ -14,7 +14,7 @@ import veritas_profinance_history as H
 HEADER = ";Open;High;Low;Close;Время\n"
 NOW = datetime(2026, 10, 6, 19, 28, 2, tzinfo=timezone.utc).timestamp()
 REFRESH = (
-    "1;publicSession\ns;name\nt;{ticker}\nn;Last;2\nn;Bid;0\nn;Ask;1\n"
+    "1;publicSession\ns;{label}\nt;{ticker}\nn;Last;2\nn;Bid;0\nn;Ask;1\n"
     "6;1Min;1;bar\n6;5Min;3;bar\n6;1Hour;6;bar\n6;4Hour;8;bar\n6;1Day;9;bar\n"
 )
 
@@ -34,8 +34,8 @@ def history_text(tt, now, count=80):
     end = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() if tt == 9 else int(now)//seconds*seconds
     fmt = "%d.%m.%Y" if tt == 9 else "%d.%m.%Y %H:%M" if tt in (1, 3) else "%d.%m.%Y %H"
     return HEADER + "\n".join(
-        ";100.0;102.0;99.0;101.0;" + datetime.fromtimestamp(end-(i+1)*seconds, H.MOSCOW).strftime(fmt)
-        for i in range(count))
+        ";100.0;102.0;99.0;101.0;" + datetime.fromtimestamp(end-(i if tt == 9 else i+1)*seconds, H.MOSCOW).strftime(fmt)
+        for i in range(count+(1 if tt == 9 else 0)))
 
 
 class NativeParserTests(unittest.TestCase):
@@ -75,11 +75,87 @@ class NativeParserTests(unittest.TestCase):
         future = H.parse_history(text, "NQ", "4h", NOW, observed_at=NOW+60)
         self.assertEqual(future["forming_bars"], [])
 
-    def test_daily_candle_keeps_provider_calendar_date_and_excludes_current_day(self):
+    def test_daily_completion_requires_observed_successor_not_calendar_arithmetic(self):
         text = HEADER + ";100;102;99;101;06.10.2026\n;100;102;99;101;05.10.2026\n"
-        bars = H.parse_history(text, "NQ", "1d", NOW)["bars"]
+        self.assertEqual(H.parse_history(text, "NQ", "1d", NOW)["bars"], [])
+        bars = H.parse_history(text, "NQ", "1d", NOW, observed_at=NOW)["bars"]
         self.assertEqual(len(bars), 1)
-        self.assertEqual(bars[0]["end_ts"], datetime(2026, 10, 5, 21, tzinfo=timezone.utc).timestamp())
+        bar = bars[0]
+        self.assertEqual(bar["end_ts"], datetime(2026, 10, 5, 21, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(bar["provider_period_label"], "2026-10-05")
+        self.assertEqual(bar["available_at"], NOW)
+        self.assertFalse(bar["interval_boundary_verified"])
+        self.assertEqual(bar["native_time_basis"], "PROVIDER_DATE_LABEL_ONLY")
+        self.assertEqual(bar["native_interval"], 9)
+        proof = bar["completion_proof"]
+        self.assertEqual(proof["kind"], "NEXT_NATIVE_DAILY_OBSERVED")
+        self.assertEqual(proof["period_label"], "2026-10-05")
+        self.assertEqual(proof["successor_label"], "2026-10-06")
+        self.assertEqual(proof["observed_at"], NOW)
+        self.assertEqual(proof["ohlc_sha256"], H._daily_ohlc_sha256(bar))
+        self.assertEqual(proof["source_identity"], {"key":"PROFINANCE:NASD100_FUT", "contract_id":None})
+
+    def test_daily_latest_close_changes_after_moscow_midnight_without_entering_sma(self):
+        import veritas_daily_averages as DA
+        now = datetime(2026, 10, 6, 22, 10, tzinfo=timezone.utc).timestamp()
+        first = history_text(9, now-3*3600, count=205)
+        # The latest date remains 6 October even though the local date is 7th.
+        self.assertEqual(first.splitlines()[1].split(";")[-1], "06.10.2026")
+        revised = first.replace(";100.0;102.0;99.0;101.0;06.10.2026",
+                                ";100.0;104.0;99.0;103.0;06.10.2026")
+        identity = VPS.identity("NQ", {"source":"ProFinance", "raw_label":"NASD100_FUT"})
+        results = []
+        for raw, observed in ((first, now), (revised, now+60)):
+            parsed = H.parse_history(raw, "NQ", "1d", observed, observed_at=observed)
+            self.assertEqual(len(parsed["bars"]), 205)
+            self.assertTrue(all(bar["provider_period_label"] != "2026-10-06"
+                                for bar in parsed["bars"]))
+            context = DA.build_context(parsed["bars"], observed, asset="NQ", source_identity=identity)
+            self.assertEqual(context["status"], "OK")
+            results.append((context["sma50"], context["sma200"]))
+        self.assertEqual(results, [(101.,101.), (101.,101.)])
+
+    def test_daily_new_successor_makes_prior_available_only_at_actual_observation(self):
+        import veritas_daily_averages as DA
+        now = datetime(2026, 10, 7, 0, 15, tzinfo=timezone.utc).timestamp()
+        text = HEADER + ";100;102;99;101;07.10.2026\n;100;102;99;101;06.10.2026\n"
+        parsed = H.parse_history(text, "NQ", "1d", now, observed_at=now)
+        self.assertEqual(len(parsed["bars"]), 1)
+        bar = parsed["bars"][0]
+        self.assertEqual(bar["provider_period_label"], "2026-10-06")
+        self.assertEqual(bar["available_at"], now)
+        identity = bar["source_identity"]
+        earlier, _ = DA.validated_bars(parsed["bars"], now-.001, source_identity=identity)
+        current, _ = DA.validated_bars(parsed["bars"], now, source_identity=identity)
+        self.assertEqual(earlier, [])
+        self.assertEqual(len(current), 1)
+
+    def test_daily_absent_future_bool_or_noncausal_observation_never_certifies_completion(self):
+        text = HEADER + ";100;102;99;101;06.10.2026\n;100;102;99;101;05.10.2026\n"
+        for observed in (None, True, False, NOW+1, 0):
+            with self.subTest(observed=observed):
+                parsed = H.parse_history(text, "NQ", "1d", NOW, observed_at=observed)
+                self.assertEqual(parsed["bars"], [])
+        future_dates = HEADER + ";100;102;99;101;08.10.2026\n;100;102;99;101;05.10.2026\n"
+        self.assertEqual(H.parse_history(future_dates, "NQ", "1d", NOW, observed_at=NOW)["bars"], [])
+
+    def test_malformed_or_conflicting_daily_successor_and_gaps_fail_closed(self):
+        prior = ";100;102;99;101;05.10.2026\n"
+        bad = [
+            ";100;102;99;nan;06.10.2026\n",
+            ";100;98;99;101;06.10.2026\n",
+            ";100;102;99;101;06.10.2026\n;100;103;99;102;06.10.2026\n",
+            # A bad day between valid dates cannot be silently replaced by an
+            # older observation in an SMA window.
+            ";100;102;99;nan;04.10.2026\n;100;102;99;101;06.10.2026\n",
+        ]
+        for body in bad:
+            with self.subTest(body=body):
+                result = H.parse_history(HEADER+body+prior, "NQ", "1d", NOW, observed_at=NOW)
+                self.assertEqual(result["bars"], [])
+        # A repeated equal date is not a successor either.
+        repeated = H.parse_history(HEADER+prior+prior, "NQ", "1d", NOW, observed_at=NOW)
+        self.assertEqual(repeated["bars"], [])
 
     def test_conflicting_duplicates_and_malformed_ohlc_never_become_levels(self):
         text = HEADER + (
@@ -104,12 +180,12 @@ class NativeParserTests(unittest.TestCase):
 
     def test_exact_chart_aliases_and_last_price_are_verified_before_history(self):
         for asset, ticker in (("NQ", "NASD100_FUT"), ("GOLD", "gold"), ("BRENT", "brent")):
-            session = H.parse_refresh(REFRESH.format(ticker=ticker), asset)
+            session = H.parse_refresh(REFRESH.format(ticker=ticker, label=H.SYMBOLS[asset]), asset)
             self.assertEqual(session["ba"], 2)
             with self.assertRaisesRegex(ValueError, "INSTRUMENT_MISMATCH"):
-                H.parse_refresh(REFRESH.format(ticker="NASD100"), asset)
+                H.parse_refresh(REFRESH.format(ticker="NASD100", label=H.SYMBOLS[asset]), asset)
             with self.assertRaisesRegex(ValueError, "PROTOCOL_MISMATCH"):
-                H.parse_refresh(REFRESH.format(ticker=ticker).replace("n;Last;2", "n;Last;0"), asset)
+                H.parse_refresh(REFRESH.format(ticker=ticker, label=H.SYMBOLS[asset]).replace("n;Last;2", "n;Last;0"), asset)
 
 
 class CacheTests(unittest.TestCase):
@@ -125,7 +201,7 @@ class CacheTests(unittest.TestCase):
         self.clock.advance(self.cost)
         if url.endswith("refresh"):
             ticker = {"NASD100_FUT": "NASD100_FUT", "Gold": "gold", "Brent oil": "brent"}[params["s"]]
-            return REFRESH.format(ticker=ticker)
+            return REFRESH.format(ticker=ticker, label=params["s"])
         if self.failure:
             raise self.failure
         self.assertEqual(params["ba"], 2)
@@ -157,6 +233,137 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(out["source_key"], "PROFINANCE:NASD100_FUT")
         self.assertIn("TimeoutError", out["status_by_timeframe"]["1m"]["fetch_error"])
 
+    def test_daily_unchanged_refresh_keeps_first_proof_and_ignores_invented_midnight_boundary(self):
+        self.clock.now = datetime(2026, 10, 6, 20, 59, 50, tzinfo=timezone.utc).timestamp()
+        first = self.cache.fetch_bundle("NQ", ("1d",))
+        period = first["bars_by_timeframe"]["1d"][-1]["provider_period_label"]
+        proof = first["bars_by_timeframe"]["1d"][-1]["completion_proof"]
+        count = len(self.calls)
+        self.clock.advance(20)  # A nominal Moscow date change is not closure proof.
+        reused = self.cache.fetch_bundle("NQ", ("1d",))
+        self.assertEqual(len(self.calls), count)
+        self.assertTrue(reused["status_by_timeframe"]["1d"]["cache_reused"])
+        self.assertIsNone(reused["status_by_timeframe"]["1d"]["expected_last_closed_at"])
+        self.clock.advance(900)
+        refreshed = self.cache.fetch_bundle("NQ", ("1d",))
+        same = next(bar for bar in refreshed["bars_by_timeframe"]["1d"]
+                    if bar["provider_period_label"] == period)
+        self.assertFalse(refreshed["status_by_timeframe"]["1d"]["cache_reused"])
+        self.assertEqual(same["completion_proof"], proof)
+        self.assertEqual(same["available_at"], proof["observed_at"])
+        self.assertNotIn("revision_observed_at", same)
+
+    def test_closed_daily_revision_gets_new_proof_and_replay_watermark_without_reaging_others(self):
+        import veritas_daily_averages as DA
+        revision = [False]
+        def fetch(url, params, remaining):
+            body = self.fetch(url, params, remaining)
+            if url.endswith("history") and params["tt"] == 9 and revision[0]:
+                lines = body.splitlines()
+                values = lines[2].split(";")  # already certified previous date
+                values[4] = "101.5"
+                lines[2] = ";".join(values)
+                body = "\n".join(lines)
+            return body
+        cache = H.HistoryCache(fetch, lambda:self.clock.now, lambda:self.clock.elapsed)
+        first = cache.fetch_bundle("NQ", ("1d",))
+        original = first["bars_by_timeframe"]["1d"][-1]
+        other = first["bars_by_timeframe"]["1d"][-2]
+        revision[0] = True
+        self.clock.advance(901)
+        second = cache.fetch_bundle("NQ", ("1d",))
+        revised = second["bars_by_timeframe"]["1d"][-1]
+        self.assertEqual(revised["provider_period_label"], original["provider_period_label"])
+        self.assertEqual(revised["close"], 101.5)
+        self.assertGreater(revised["available_at"], original["available_at"])
+        self.assertEqual(revised["revision_observed_at"], self.clock.now)
+        self.assertEqual(revised["completion_proof"]["observed_at"], self.clock.now)
+        self.assertNotEqual(revised["completion_proof"]["ohlc_sha256"],
+                            original["completion_proof"]["ohlc_sha256"])
+        self.assertEqual(second["bars_by_timeframe"]["1d"][-2]["completion_proof"],
+                         other["completion_proof"])
+        # Replays retain the revision metadata. DA must refuse a pre-revision
+        # snapshot rather than replace the unavailable revised day with an older one.
+        before_revision = original["available_at"]+1
+        replay = cache.fetch_bundle("NQ", ("1d",), now=before_revision)
+        self.assertTrue(any(bar.get("revision_observed_at") == revised["revision_observed_at"]
+                            for bar in replay["bars_by_timeframe"]["1d"]))
+        blocked = DA.build_context(replay["bars_by_timeframe"]["1d"], before_revision,
+                                   asset="NQ", source_identity=replay["source_identity"])
+        self.assertIsNone(blocked["sma50"])
+        self.assertNotEqual(blocked["status"], "OK")
+        admitted = DA.build_context(second["bars_by_timeframe"]["1d"], self.clock.now,
+                                    asset="NQ", source_identity=second["source_identity"])
+        self.assertEqual(admitted["status"], "OK")
+        self.assertAlmostEqual(admitted["sma50"], 101.+.5/50)
+        self.clock.advance(901)
+        third = cache.fetch_bundle("NQ", ("1d",))
+        self.assertEqual(third["bars_by_timeframe"]["1d"][-1]["completion_proof"],
+                         revised["completion_proof"])
+        self.assertEqual(third["bars_by_timeframe"]["1d"][-1]["revision_observed_at"],
+                         revised["revision_observed_at"])
+
+    def test_omitted_known_daily_period_preserves_proof_until_revision_is_observed(self):
+        import veritas_daily_averages as DA
+        for omitted_line in (2, 10):  # last certified date, then an interior date
+            with self.subTest(omitted_line=omitted_line):
+                self.clock.now, self.clock.elapsed = NOW, 0.
+                mode = {"drop":False, "revise":False}
+                def fetch(url, params, remaining):
+                    body = self.fetch(url, params, remaining)
+                    if url.endswith("history") and params["tt"] == 9:
+                        lines = body.splitlines()
+                        if mode["drop"]:
+                            lines.pop(omitted_line)
+                        elif mode["revise"]:
+                            fields = lines[omitted_line].split(";")
+                            fields[4] = "101.5"
+                            lines[omitted_line] = ";".join(fields)
+                        body = "\n".join(lines)
+                    return body
+                cache = H.HistoryCache(fetch, lambda:self.clock.now, lambda:self.clock.elapsed)
+                first = cache.fetch_bundle("NQ", ("1d",))
+                expected_date = datetime.strptime(
+                    history_text(9, NOW).splitlines()[omitted_line].split(";")[-1],
+                    "%d.%m.%Y").date().isoformat()
+                original = next(bar for bar in first["bars_by_timeframe"]["1d"]
+                                if bar["provider_period_label"] == expected_date)
+                fetched = first["status_by_timeframe"]["1d"]["fetched_at"]
+                mode["drop"] = True
+                self.clock.advance(901)
+                missing = cache.fetch_bundle("NQ", ("1d",))
+                self.assertEqual(missing["bars_by_timeframe"]["1d"], first["bars_by_timeframe"]["1d"])
+                self.assertEqual(missing["status_by_timeframe"]["1d"]["fetched_at"], fetched)
+                self.assertTrue(missing["status_by_timeframe"]["1d"]["cache_reused"])
+                self.assertIn("PROFINANCE_DAILY_", missing["status_by_timeframe"]["1d"]["fetch_error"])
+                mode.update(drop=False, revise=True)
+                self.clock.advance(6)
+                recovered = cache.fetch_bundle("NQ", ("1d",))
+                revised = next(bar for bar in recovered["bars_by_timeframe"]["1d"]
+                               if bar["provider_period_label"] == expected_date)
+                self.assertEqual(revised["close"], 101.5)
+                self.assertEqual(revised["revision_observed_at"], self.clock.now)
+                self.assertGreater(revised["available_at"], original["available_at"])
+                past = DA.build_context(recovered["bars_by_timeframe"]["1d"],
+                                        original["available_at"]+1, asset="NQ",
+                                        source_identity=recovered["source_identity"])
+                self.assertIsNone(past["sma50"])
+                self.assertNotEqual(past["status"], "OK")
+
+    def test_daily_restart_cannot_claim_a_proof_that_was_never_observed_in_that_process(self):
+        import veritas_daily_averages as DA
+        first = self.cache.fetch_bundle("NQ", ("1d",))
+        known = first["bars_by_timeframe"]["1d"][-1]["available_at"]
+        self.clock.advance(901)
+        restarted = H.HistoryCache(self.fetch, lambda:self.clock.now, lambda:self.clock.elapsed)
+        fresh = restarted.fetch_bundle("NQ", ("1d",))
+        self.assertTrue(all(bar["available_at"] == self.clock.now
+                            for bar in fresh["bars_by_timeframe"]["1d"]))
+        context = DA.build_context(fresh["bars_by_timeframe"]["1d"], known+1,
+                                   asset="NQ", source_identity=fresh["source_identity"])
+        self.assertIsNone(context["sma50"])
+        self.assertNotEqual(context["status"], "OK")
+
     def test_caller_cannot_mutate_cached_prices_or_nested_identity(self):
         first = self.cache.fetch_bundle("GOLD", ("1h",))
         first["bars_by_timeframe"]["1h"][-1]["high"] = 99999
@@ -185,7 +392,7 @@ class CacheTests(unittest.TestCase):
         self.calls.append((url, dict(params)))
         if url.endswith("refresh"):
             self.clock.advance(.1)
-            return REFRESH.format(ticker="brent")
+            return REFRESH.format(ticker="brent", label="Brent oil")
         if params["tt"] == 9:
             self.clock.advance(remaining)
             raise TimeoutError("daily history exceeded the shared budget")
@@ -248,7 +455,7 @@ class ConcurrencyTests(unittest.TestCase):
             if url.endswith("refresh"):
                 entered.set()
                 self.assertTrue(release.wait(2))
-                return REFRESH.format(ticker="NASD100_FUT")
+                return REFRESH.format(ticker="NASD100_FUT", label="NASD100_FUT")
             return history_text(params["tt"], NOW)
         cache = H.HistoryCache(fetch, lambda: NOW)
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -271,7 +478,7 @@ class ConcurrencyTests(unittest.TestCase):
                 time.sleep(.02)
                 if url.endswith("refresh"):
                     ticker = {"NASD100_FUT": "NASD100_FUT", "Gold": "gold", "Brent oil": "brent"}[params["s"]]
-                    return REFRESH.format(ticker=ticker)
+                    return REFRESH.format(ticker=ticker, label=params["s"])
                 return history_text(params["tt"], NOW)
             finally:
                 with lock:

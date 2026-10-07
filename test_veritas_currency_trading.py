@@ -92,7 +92,7 @@ class ContractSizingTests(Fixtures, unittest.TestCase):
         self.assertEqual(D(terms["order_notional_rub"]), D("24690"))
         self.assertEqual(D(terms["required_margin_rub"]), D("2000"))
         self.assertEqual(D(terms["canonical_cost_multiple"]), D("1.1"))
-        self.assertEqual(D(terms["economics"]["minimum_move_cost_multiple"]), D("1.1"))
+        self.assertEqual(D(terms["economics"]["cost_policy"]["entry_cost_multiple"]), D("1.1"))
         self.assertGreaterEqual(D(terms["cost_multiple"]), D("1.1"))
         self.assertLessEqual(D(terms["total_stop_risk_rub"]), D("200"))
         self.assertEqual(terms["time_in_force"], "TIME_IN_FORCE_FILL_AND_KILL")

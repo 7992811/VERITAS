@@ -89,7 +89,7 @@ def proposal_text(proposal, *, execution_enabled=False):
         mode = "песочницу брокера" if t.get("execution_environment") == "sandbox" else "реальный брокерский счёт"
         lines.append(f"Кнопка подтверждает только указанные условия и отправку в {mode}.")
     else:
-        lines.append("Отправка брокеру отключена. Подтверждение будет только сохранено.")
+        lines.append("Отправка брокеру отключена. Подтверждение разрешит эту заявку только до указанного срока, после включения исполнения и повторной проверки условий.")
     return "\n".join(lines)[:3900]
 
 
@@ -295,6 +295,9 @@ def build_from_env(telegram, logger=None):
     service = InternalTradeClient(
         os.getenv("VERITAS_CURRENCY_TRADE_SERVICE_URL", "https://veritas-intelligence-v1.onrender.com"),
         os.getenv("VERITAS_CURRENCY_TRADE_SERVICE_KEY", ""))
+    if os.getenv("VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+        from veritas_currency_console_telegram import build
+        return build(service, telegram, logger)
     return TradeTelegramBridge(service, telegram,
         _positive(os.getenv("VERITAS_CURRENCY_TRADE_OWNER_USER_ID")), logger)
 

@@ -1,8 +1,41 @@
 # Currency broker proposals and execution module
 
-Status: development draft. Broker execution and proposal delivery default to
-disabled. This branch does not change running service configuration, attach a
-real account, submit an order, or install a protective order.
+The operator console is `/integrations/trading`. Its static login page is public;
+account, position, order and fill data require a scoped private session. The
+execution service remains default-off in code, and the console starts paused
+with execution permission off. Deployment alone does not select an account,
+bind an approving owner, submit an order, or install a protective broker order.
+
+## Private setup and everyday access
+
+1. Open the expiring, single-use setup invitation. Its secret is carried in the
+   URL fragment, removed immediately, and exchanged for a 12-hour HttpOnly,
+   Secure, SameSite=Strict cookie. Neither broker tokens nor permanent service
+   or signing keys are sent to the browser.
+2. Select one exact open FULL_ACCESS broker account. The service never picks
+   the first account automatically and cannot replace an existing binding.
+3. Create the Telegram pairing link, open the private chat with @AxednewsI_bot,
+   then return to the same authenticated console and confirm the observed user
+   identity. The bot's getMe ID/username and the sender's private identity must
+   match; forwarded messages and group messages do not establish ownership.
+4. Complete the 10,000 RUB allocation binding against actual broker facts. The
+   selected CNY instrument must be flat and free of working orders. If the
+   initial bind fails, the explicit **reconcile** action retries the same saved
+   account/owner binding after the condition is resolved.
+5. Resume proposals and, separately, allow execution of confirmed proposals.
+   Every opening, addition, reduction and closing still requires its own signed,
+   unexpired Telegram confirmation and final validation.
+
+For later login the bound owner sends `/veritas` to the same private bot. The
+bot returns a one-use 10-minute login link scoped to the saved environment and
+owner/bot tuple. A new request revokes older unused login links. Session renewal
+does not change trading permissions. Every browser mutation requires exact
+same-origin and session CSRF proof; there is no browser approve/execute endpoint.
+
+The dashboard reads current broker facts and the durable ledger without applying
+fills, reconciliation freezes or high-water updates. Actual reconciliation runs
+on explicit POST or the existing worker. Missing observations remain unknown,
+instead of displaying empty positions or zero costs as confirmed facts.
 
 ## Requested workflow
 
@@ -29,6 +62,11 @@ trading decisions.
 | veritas_currency_trading.py | Revalidation, claim before broker I/O and reconciliation |
 | veritas_currency_trade_ledger.py | Independent allocation, actual fills, commissions, funding records and held strategy terms |
 | veritas_currency_trade_service.py | Explicit account binding, authoritative broker facts and protected internal HTTP operations |
+| veritas_currency_trade_console.py | Private sessions, exact account selection, two-channel owner pairing and serialized execution permission |
+| veritas_currency_trade_ui.py | Mobile Russian console with observed positions, proposals, fills and admission blockers |
+| veritas_currency_console_telegram.py | Private owner pairing and renewable owner login through the existing bot consumer |
+| veritas_currency_live_admission.py | Unchanged LIVE authority fed by exact whole-account broker facts and audited evidence |
+| veritas_currency_settlement.py | Actual funding observations, corrections and a numerically checked broker settlement bridge |
 | veritas_trade_telegram.py | Private Telegram delivery and forwarding of authenticated callbacks |
 | bot.py | Existing single getUpdates consumer, with durable trade callback handling before update acknowledgement |
 
@@ -39,7 +77,7 @@ No GET route enables trading.
 
 ## Canonical policy and contract arithmetic
 
-CNYRUBF has an asset-specific entry cost multiple of 1.1. The effective minimum
+CNYRUBF uses the current canonical entry cost multiple of 1.1. The effective minimum
 expected move is max(0.0019, 1.1 * modeled round-trip execution cost). Commission
 remains 0.0004 per side. Other instruments retain their canonical cost multiple.
 The native structural or confirmed DAILY_MA_REBOUND event, current entry geometry,
@@ -102,14 +140,17 @@ True and an explicit empty blockers list/tuple. Missing authority, an exception,
 malformed output or a negative verdict blocks with LIVE_ACCOUNT_ADMISSION_REQUIRED.
 The coordinator checks Currency freshness again after this callback.
 
-The current service factory intentionally does not supply this authority: it
-does not yet have the required whole-account risk, promotion and calibration
-evidence. Therefore production new-risk submission remains blocked even if
-execution flags are changed. No environment variable skips this admission
-check. The authenticated status endpoint reports live_account_admission_configured
-and new_risk_block_reason separately from the global execution flag. Integration
-with the existing production authority remains a prerequisite
-for production OPEN/ADD, separate from credentials and owner approval.
+The factory now supplies the concrete `WholeAccountLiveAdmission` authority.
+It reads actual total broker account equity, holdings, working orders and stops,
+then invokes the existing LIVE promotion, calibration, risk and kill gates. A
+production preflight happens before a proposal is delivered, and the same gates
+are evaluated again before submission. Missing verified model validation or
+cash-flow-adjusted account history remains an explicit blocker; a legacy paper
+backtest, configured token, global flag or owner approval cannot synthesize it.
+See [currency-live-authority.md](currency-live-authority.md) for the audited intake
+format, inspected current research producers, exact support and dependencies.
+The dashboard displays cached admission diagnostics separately from execution
+permission; a cached pass is never submission authority.
 Sandbox transport and verified production CLOSE/REDUCE do not invoke this
 new-risk admission callback. Existing policy limits are not changed.
 
@@ -138,6 +179,13 @@ A repeated button, callback replay, concurrent worker or process restart cannot
 create a second claim. An ambiguous broker response remains UNKNOWN and locks
 the account/instrument scope pending broker reconciliation. It is never
 interpreted as rejection and automatically retried with a new UUID.
+
+Console pause/disable and the final send boundary share a PostgreSQL lock on
+the exact environment configuration row. A successful pause cannot race a
+later submission using a stale cached permission. An already transmitted order
+may still execute; pausing is not cancellation. Final quote and evidence
+lifetimes are checked after claim and immediately before broker mutation,
+including after slow adapter preflight reads.
 
 Protective exits have durable proposal generations. A fresh price and deadline
 require a newly signed confirmation after an expired or blocked pre-submission
@@ -175,14 +223,18 @@ its own confirmation and can be delayed by the owner, the market, stale data,
 an unavailable broker or an unresolved working order. The drawdown threshold
 therefore does not guarantee a maximum realized loss.
 
-The ledger supports explicit funding charge/credit records. Automated completeness
-of perpetual-contract funding is a separate data requirement; fill commissions
-alone do not prove that every funding charge has been reconciled. The service
-therefore marks costs incomplete after the first actual fill and blocks later
-OPEN/ADD proposals until a settlement-completeness integration is implemented.
-CLOSE/REDUCE can still be proposed and confirmed. Recording an individual
-funding item does not bypass this data-completeness barrier. No elapsed-hour
-heuristic or empty API response is treated as proof of final settlement.
+The settlement reconciler automatically ingests actual FUNDING=70 charges,
+credits and cumulative corrections. It retains immutable observed evidence and
+can apply authoritative downward fee corrections. The ledger never adds cash
+variation margin twice on top of price P&L. Completing a cursor does not prove
+final settlement: GetBrokerReport supplies trade commissions but not a complete
+perpetual funding/variation-margin cash section. The trusted statement-provider
+interface numerically checks that bridge against exact executions and cash
+operations. Until a real final statement adapter supplies that evidence, later
+OPEN/ADD remains blocked with the precise missing-settlement reason. CLOSE and
+REDUCE remain available when their own broker/position conditions are valid.
+Missing settlement data cannot advance the high-water mark or be replaced with
+an elapsed-hour heuristic, environment override or fabricated report.
 
 ## Configuration contract
 
@@ -205,19 +257,24 @@ No credentials or real account identifiers are stored in this branch.
 | VERITAS_LIVE_EXECUTION_ENABLED | Independent global execution gate; default off |
 | VERITAS_LIVE_EXECUTION_ARMED | Independent arming gate; default off |
 | VERITAS_CURRENCY_TRADE_MARGIN_ALLOWED | Explicit margin permissions; default off |
+| VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED | Enables authenticated operator setup and persisted identity/permission |
+| VERITAS_CURRENCY_TRADE_SETUP_HASH | SHA-256 of the single-use initial invitation; raw code is never persisted |
+| VERITAS_CURRENCY_TRADE_SETUP_EXPIRES_AT | Aware ISO expiry of the initial invitation |
+| VERITAS_CURRENCY_TRADE_SESSION_KEY | Separate stable CSRF signing secret, at least 32 bytes |
 
 An existing market-data connection or a configured token does not establish that
 the selected account is open and FULL_ACCESS. Actual binding verifies the exact
 account and a flat position without active CNY orders, and allocates only the
 independent Currency capital. This development task does not perform that
-private-account binding or change token permissions.
+private-account binding or change broker token permissions automatically.
 
-Configuration is an operator handoff, not an activation performed by this branch.
-Sandbox and production must never share an account-ledger namespace.
+The console persists explicit account/owner selection; configured environment
+identities, when present, must match it. Sandbox and production never share an
+account-ledger namespace or a valid browser session.
 
 ## Validation
 
-The draft CI uses fake broker and Telegram transports and isolated PostgreSQL.
+CI uses fake broker and Telegram transports and isolated PostgreSQL.
 It does not receive production broker, Telegram or database credentials.
 PostgreSQL trading tests require the explicit database name
 ci_ephemeral_test_only and use temporary test schemas. Existing strategy-quality
@@ -230,7 +287,7 @@ ambiguous submission, repeated callbacks, exit generations, partial fills,
 execution identity, margin facts and ledger reconciliation. The HTTP and Telegram
 integration uses the actual signed proposal repository with fake network transports.
 
-See the draft pull request checks for the validation result on its current commit.
+See the pull request checks for the validation result on its current commit.
 The repository also retains a separate nonblocking legacy execution audit; its
 status must not be presented as part of an unqualified all-tests-passed claim.
 

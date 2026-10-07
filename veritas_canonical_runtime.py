@@ -13,6 +13,8 @@ import veritas_price_source as VPS
 import veritas_trend_entry as VTE
 import veritas_strategy_roles as VROLE
 import veritas_timeframe_policy as TFP
+import veritas_stop_risk as VSR
+import veritas_admission_trace as VAT
 
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
@@ -31,17 +33,7 @@ def _tier(row):
     return str((row or {}).get("signal_tier") or (row or {}).get("execution_signal_tier") or "").upper()
 
 def _quote_row(row):
-    x=dict(row or {})
-    q=dict(x.get("_execution_quote") or {})
-    if q:
-        x["_signal_reference_price"]=_num(x.get("price"))
-        for key in ("price","best_bid","best_ask","bid","ask","market_open","source_gate_pass",
-                    "data_latency_class","source_names","verification_mode","contract"):
-            if q.get(key) is not None:
-                x[key]=q.get(key)
-        if q.get("observed_at"):
-            x["market_observed_at"]=q["observed_at"]
-    return x
+    return VPS.execution_row(row)
 
 def anti_chase_gate(row, price=None, now=None):
     row=row or {}
@@ -147,6 +139,14 @@ def _fraction(policy, drawdown, soft=False):
     return max(0.0,math.floor(f/step+1e-9)*step),rg
 
 def evaluate(row, policy, drawdown, now=None):
+    # Preserve the exact gate clock, including time spent refreshing the quote.
+    # The original optional now still controls refresh inside the decision body.
+    clock=TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
+    out=_evaluate(row,policy,drawdown,now,clock=clock)
+    return dict(out,checked_at=clock.isoformat() if clock is not None else None)
+
+
+def _evaluate(row, policy, drawdown, now=None, *, clock):
     raw=dict(row or {})
     p=dict(policy or {})
     if not raw:
@@ -159,7 +159,10 @@ def evaluate(row, policy, drawdown, now=None):
     if d not in ("LONG","SHORT"):
         return {"open":False,"fraction":0.0,"reason":"NO_DIRECTION","hard_veto":False,"canonical_stage":"THESIS"}
 
-    clock=VPG.utc_datetime(now) or datetime.now(timezone.utc)
+    if clock is None:
+        return {"open":False,"fraction":0.0,"reason":"SAME_TF_DECISION_TIME_REQUIRED","hard_veto":True,"canonical_stage":"DATA"}
+    if now is None or raw.get("_runtime_quote_refresh"):
+        raw=VPG.refresh_execution_row(raw,now=clock)
     work=_quote_row(raw)
     price=_num(work.get("price"))
     source=VX.paper_source_gate(asset,work)
@@ -185,7 +188,11 @@ def evaluate(row, policy, drawdown, now=None):
         hard.append("FAST_TF_CONFLICT")
     if (plan.get("profitability_gate") or {}).get("status")=="NEGATIVE_EDGE":
         hard.append("NEGATIVE_VALIDATED_SETUP_EDGE")
-    conflict=direction_conflict(work)
+    # This independently proved quote event owns its structural thesis. The
+    # previous forecast direction is still displayed, but cannot postpone its
+    # trigger until the slower feature cycle catches up.
+    quote_structure=TFP.structural_quote_rule(work)
+    conflict=None if quote_structure else direction_conflict(work)
     if conflict:
         hard.append(conflict)
     if hard:
@@ -204,7 +211,7 @@ def evaluate(row, policy, drawdown, now=None):
     if not local_gate.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":local_gate["reason"],"hard_veto":True,
                 "local_confirmation":local_gate,"trend_event":event,"canonical_stage":"TIMING"}
-    if work.get("_currency_mtf_conflict"):
+    if work.get("_currency_mtf_conflict") and not quote_structure:
         return {"open":False,"fraction":0.0,"reason":"CURRENCY_MTF_DIRECTION_CONFLICT","hard_veto":True,
                 "currency_mtf_context":work.get("_currency_mtf_context"),"canonical_stage":"TIMING"}
     chase=anti_chase_gate(work,price,clock)
@@ -217,7 +224,7 @@ def evaluate(row, policy, drawdown, now=None):
     if full_fraction<=0:
         return {"open":False,"fraction":0.0,"reason":"PORTFOLIO_HARD_DRAWDOWN_STOP","hard_veto":True,
                 "risk_governor":rg,"canonical_stage":"RISK"}
-    economics=VX.entry_gate(work,price,d,full_fraction)
+    economics=VX.entry_gate(work,price,d,full_fraction,now=clock)
     econ_blockers=list(dict.fromkeys(str(x) for x in (economics.get("blockers") or [])))
     hard_econ=[x for x in econ_blockers if CTC.veto_severity(x)=="HARD"]
     soft.extend(x for x in econ_blockers if CTC.veto_severity(x)=="SOFT")
@@ -232,24 +239,18 @@ def evaluate(row, policy, drawdown, now=None):
     fraction=full_fraction
     if soft:
         fraction,rg=_fraction(p,drawdown,soft=True)
-    net_risk=_num(economics.get("net_risk_pct"))
-    if not net_risk:
-        stop=_num((work.get("trade_plan") or {}).get("stop_price"))
-        if stop and price:
-            net_risk=abs(price-stop)/price+VX.round_trip_cost_pct(work.get("spread_bps"))
-    risk_cap=float(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"])
-    if net_risk and net_risk>0:
-        fraction=min(fraction,risk_cap/net_risk)
-    step=float(p.get("position_step") or 0.05)
-    fraction=max(0.0,math.floor(fraction/step+1e-9)*step)
-    if fraction<=0:
-        return {"open":False,"fraction":0.0,"reason":"STOP_RISK_CAP_EXCEEDED","hard_veto":True,
-                "economics":economics,"risk_governor":rg,"canonical_stage":"RISK"}
+    stop_budget=VSR.cap_fraction_from_economics(economics,fraction,p)
+    fraction=float(stop_budget.get("fraction") or 0.0)
+    if not stop_budget.get("eligible"):
+        return {"open":False,"fraction":0.0,"reason":stop_budget["reason"],"hard_veto":True,
+                "economics":economics,"risk_governor":rg,"stop_risk_budget":stop_budget,
+                "canonical_stage":"RISK"}
     return {"open":True,"fraction":fraction,"reason":"CANONICAL_SIGNAL_PROBE" if soft else "CANONICAL_SIGNAL_ENTRY",
             "hard_veto":False,"soft_blockers":list(dict.fromkeys(soft)),"economics":economics,
-            "risk_governor":rg,"trend_event":event,"execution_timing":chase,
+            "risk_governor":rg,"stop_risk_budget":stop_budget,
+            "trend_event":event,"execution_timing":chase,
             "canonical_stage":"SIZE","canonical_policy_version":CTC.VERSION,
-            "prepared_plan":dict(plan),"structural_policy_version":TFP.VERSION}
+            "prepared_plan":dict(plan),"structural_policy_version":plan.get('structural_policy_version')}
 
 def _rank(row):
     r=row or {}
@@ -284,6 +285,7 @@ def _local_execution_context(summary,asset,direction):
 
 def _prepare_candidate(row,summary):
     r=dict(row or {})
+    r["_admission_audit"]={}
     asset=str(r.get("asset") or "")
     direction=_direction(r)
     same=[x for x in (summary or []) if str((x or {}).get("asset") or "")==asset
@@ -351,10 +353,7 @@ def currency_candidate_book(summary):
     clock=datetime.now(timezone.utc)
     for candidate in prepared:
         admission=evaluate(candidate,policy,0.0,clock)
-        trace.append({"horizon":candidate.get("horizon"),"direction":_direction(candidate),
-                      "open":bool(admission.get("open")),"reason":admission.get("reason"),
-                      "hard_veto":bool(admission.get("hard_veto")),
-                      "canonical_stage":admission.get("canonical_stage")})
+        trace.append(VAT.route_item(candidate,admission,clock))
         if admission.get("open"):
             chosen=candidate
             break
@@ -374,4 +373,34 @@ def aggressive_candidate_book(summary, candidates=None):
     return dict(candidates or candidate_book(summary))
 
 def transition_candidate_book(summary, base_book, mode=None):
-    return VROLE.route(summary,base_book,mode,_prepare_candidate)
+    """Choose among fully admissible setups; retain real blockers if none pass."""
+    name=next((n for n in CTC.PORTFOLIO_ORDER
+               if CTC.PORTFOLIO_POLICIES[n].get("mode")==mode),None)
+    if mode=="CURRENCY" or name is None:
+        return VROLE.route(summary,base_book,mode,_prepare_candidate)
+    policy=CTC.runtime_portfolio_policy(name)
+    clock=datetime.now(timezone.utc)
+    grouped={}
+    for raw in summary or []:
+        if _direction(raw) not in ("LONG","SHORT") or not raw.get("asset"):
+            continue
+        row=_prepare_candidate(raw,summary)
+        role=VROLE.gate(row,mode)
+        row["_portfolio_role"]=role["role"]
+        row["_role_gate"]=role
+        grouped.setdefault(str(row["asset"]),[]).append(row)
+    routed={}
+    for asset,rows in grouped.items():
+        rows.sort(key=lambda r:(int(r["_role_gate"]["eligible"]),r["_rank"]),reverse=True)
+        chosen=rows[0]
+        trace=[]
+        for candidate in rows:
+            admission=evaluate(candidate,policy,0.0,clock)
+            trace.append(VAT.route_item(candidate,admission,clock))
+            if admission.get("open"):
+                chosen=candidate
+                break
+        # Actual execution rechecks drawdown, source lock, price and economics.
+        chosen["_canonical_route_trace"]=trace
+        routed[asset]=chosen
+    return routed

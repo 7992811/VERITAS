@@ -295,6 +295,8 @@ def run_scan_once(force=False):
 
 
 def handle_message(message):
+    if trade_bridge is not None and callable(getattr(trade_bridge, "handle_message", None)):
+        if trade_bridge.handle_message(message): return
     global paused, next_scan_at
 
     chat = message.get("chat", {})

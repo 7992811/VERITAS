@@ -3,7 +3,7 @@ const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('nod
 const html=fs.readFileSync(0,'utf8');
 let script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
 script=script.replace("if(document.readyState==='loading')", "globalThis.testUI={st,start,loadBootstrap,loadPortfolios,loadTrades,applyBootstrap};if(document.readyState==='loading')");
-const names=['Impulse','Aggressive','Champion','Challenger'];
+const names=['Impulse','Aggressive','Champion','Challenger','Currency'];
 const position={asset:'GOLD',direction:'SHORT',active_trade_id:'gold-1',avg_entry_price:4136,last_price:4129,target_fraction:.1,payload:{price_source_lock:{primary_source:'ProFinance GOLD'}}};
 const portfolio=(open=true)=>({status:'OK',portfolios:names.map((name,i)=>({name,positions:open&&i===0?[position]:[],gross_leverage:open&&i===0?.1:0,closed_trades:2,wins:1}))});
 const trades={status:'OK',trades:[{trade_id:'closed-1',portfolio_name:'Impulse',asset:'GOLD',direction:'LONG',status:'CLOSED',avg_entry_price:4000,avg_exit_price:4020,net_pnl_rub:10}]};

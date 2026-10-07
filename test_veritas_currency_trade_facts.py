@@ -362,6 +362,137 @@ class BrokerFactsBoundaryTests(unittest.TestCase):
 TEST_DSN = os.environ.get("VERITAS_TRADING_TEST_DSN", "")
 
 
+class BrokerFactsSettlementAndPeekTests(unittest.TestCase):
+    """Exercise real valuation/scope logic with a SELECT-only in-memory cursor."""
+    def setUp(self):
+        self.broker=SyntheticBroker()
+        self.broker.positions["futures"]=[{"instrumentUid":UID,"balance":"2","blocked":"0"}]
+        spec=L.InstrumentValuation(UID,D("0.01"),D("10"),1)
+        fill={"trade_id":"broker-trade-1","client_order_id":CLIENT,"broker_order_id":BROKER,
+              "side":"BUY","lots":2,"price":D("12.00"),"fee_rub":D("5"),
+              "executed_at":NOW,"metadata":proposal()["terms"]}
+        projected=L.project([fill],[],[],spec)
+        self.row={"account_id":ACCOUNT,"instrument_uid":UID,"owner_user_id":OWNER,
+            "allocation_rub":D("10000"),"tick_size":spec.tick_size,"tick_value_rub":spec.tick_value_rub,
+            "lot_size":1,"spec_revision":spec.revision,"high_water_rub":D("10000"),
+            "ledger_revision":1,"reconciled_revision":1,"broker_observed_at":NOW,"broker_signed_lots":2,
+            "broker_snapshot_id":"prior-broker-observation","broker_open_order_count":0,"entries_frozen":False,
+            "freeze_reason":None,"last_mark_price":D("12.00"),"last_mark_observed_at":NOW,
+            "bound_at":NOW,"settlement":None,"fill_fingerprint":L.fills_fingerprint([fill]),**projected}
+        self.statements=[]
+        self.connection=Mock()
+        self.connection.__enter__=Mock(return_value=self.connection)
+        self.connection.__exit__=Mock(return_value=False)
+        self.connection.transaction.return_value=nullcontext()
+        def execute(sql,args=None):
+            self.statements.append(sql)
+            if not sql.startswith("SELECT "):
+                raise AssertionError("Read-only query expected")
+            cursor=Mock()
+            cursor.fetchone.return_value=None if f"FROM {L.FEES}" in sql else copy.deepcopy(self.row)
+            return cursor
+        self.connection.execute.side_effect=execute
+        self.read_connect=Mock(return_value=self.connection)
+        self.write_connect=Mock(side_effect=AssertionError("peek must not connect for writes"))
+        self.ledger=L.CurrencyTradeLedger(self.write_connect,enabled=True,clock=lambda:NOW)
+        self.settlement=Mock()
+        self.facts=S.BrokerFactsProvider(self.broker,self.ledger,ACCOUNT,UID,OWNER,self.write_connect,
+            clock=lambda:NOW,read_connect=self.read_connect,settlement=self.settlement)
+
+    def test_peek_marks_position_without_reconciliation_hwm_or_freeze_write(self):
+        before=copy.deepcopy(self.row)
+        facts=self.facts.peek()
+        self.assertEqual(facts.account.currency_nav_rub,D("10195"))
+        self.assertEqual(facts.account.high_water_rub,D("10000"))
+        self.assertEqual(self.facts.ledger_state["unrealized_pnl_rub"],D("200"))
+        self.assertEqual(self.row,before)
+        self.assertEqual(len(self.statements),1)
+        self.assertNotIn("FOR UPDATE",self.statements[0])
+        self.write_connect.assert_not_called()
+        self.connection.transaction.assert_not_called()
+        self.settlement.collect.assert_not_called()
+        self.settlement.reconcile_on.assert_not_called()
+        self.assertNotIn("account_id",self.facts.ledger_state)
+        self.assertNotIn("broker_snapshot_id",self.facts.ledger_state)
+        self.broker.positions["futures"][0]["balance"]="3"
+        mismatch=self.facts.peek()
+        self.assertFalse(mismatch.account.reconciled)
+        self.assertEqual(self.facts.block_reason,"BROKER_POSITION_MISMATCH")
+        self.assertFalse(self.facts.ledger_state["entries_frozen"])
+        self.assertEqual(self.row,before)
+
+    def test_peek_validates_bound_owner_before_broker_reads(self):
+        self.row["owner_user_id"]=OWNER+1
+        self.broker.get_accounts=Mock(wraps=self.broker.get_accounts)
+        with self.assertRaisesRegex(S.ServiceError,"BINDING_MISMATCH"):
+            self.facts.peek()
+        self.broker.get_accounts.assert_not_called()
+        self.write_connect.assert_not_called()
+
+    def _write_facts(self):
+        self.facts.connect=self.read_connect
+        state=dict(self.ledger._view(self.row,status="SNAPSHOT"),
+                   **L.valuation(dict(self.row,costs_reconciled=False),D("12.10"),self.ledger._spec(self.row)))
+        self.mock_ledger=Mock()
+        self.mock_ledger.reconcile_broker_positions_on.return_value=state
+        self.mock_ledger.snapshot_on.side_effect=lambda *args,**kwargs:dict(state)
+        self.facts.ledger=self.mock_ledger
+        return state
+
+    def test_settlement_reads_precede_position_cycle_and_apply_before_snapshot(self):
+        state=self._write_facts()
+        sequence=[]
+        self.settlement.collect.side_effect=lambda *args:(sequence.append("collect") or {"bounded":"observation"})
+        read=self.facts._read
+        self.facts._read=lambda:(sequence.append("market") or read())
+        def reconcile(*args,**kwargs):
+            sequence.append("settlement")
+            state.update(funding_reconciled=True,entries_allowed=True)
+            return {"funding_reconciled":True,"costs_reconciled":True,"reasons":[]}
+        self.settlement.reconcile_on.side_effect=reconcile
+        self.mock_ledger.snapshot_on.side_effect=lambda *args,**kwargs:(sequence.append("snapshot") or dict(state))
+        facts=self.facts()
+        self.assertEqual(sequence,["collect","market","settlement","snapshot"])
+        self.assertTrue(facts.account.costs_reconciled)
+        self.assertIsNone(self.facts.block_reason)
+        self.assertTrue(self.facts.ledger_state["funding_reconciled"])
+        self.assertFalse(any("SELECT trade_id" in sql for sql in self.statements))
+
+    def test_settlement_read_failure_overrides_previous_ready_flag_but_allows_exact_exit(self):
+        state=self._write_facts()
+        state.update(funding_reconciled=True,entries_allowed=True)
+        self.settlement.collect.side_effect=TradingError("TEST_OPERATIONS_UNAVAILABLE")
+        facts=self.facts()
+        self.assertTrue(facts.account.reconciled)
+        self.assertFalse(facts.account.costs_reconciled)
+        self.assertFalse(self.facts.ledger_state["funding_reconciled"])
+        self.assertEqual(self.facts.block_reason,"BROKER_SETTLEMENT_READ_UNAVAILABLE")
+        self.assertIs(self.mock_ledger.snapshot_on.call_args.kwargs["allow_high_water_update"],False)
+        self.settlement.reconcile_on.assert_not_called()
+        closed=prepare_exit(facts.spec,facts.account,facts.quote,now=NOW,event_id="synthetic-exit",
+            reason="STOP_REACHED",horizon=facts.held_terms["horizon"],source_identity=facts.held_terms["source_identity"],
+            stop_price=facts.held_terms["stop_price"],target_price=facts.held_terms["target_price"])
+        self.assertEqual((closed["action"],closed["side"],closed["lots"]),("CLOSE","SELL",2))
+
+    def test_after_fill_settlement_failure_keeps_committed_execution_result(self):
+        state=self._write_facts()
+        state.update(status="RECORDED",fee_delta_rub=D("5"))
+        self.mock_ledger.record_order_fee_on.return_value=state
+        exited=[]
+        self.connection.__exit__.side_effect=lambda *args:exited.append("committed") or False
+        def unavailable(*args):
+            self.assertIn("committed",exited)
+            raise TradingError("TEST_OPERATIONS_UNAVAILABLE")
+        self.settlement.collect.side_effect=unavailable
+        result=self.facts.ingest(proposal(),receipt())
+        self.mock_ledger.record_fill_on.assert_called_once()
+        self.mock_ledger.record_order_fee_on.assert_called_once()
+        self.assertEqual(result["status"],"RECORDED")
+        self.assertEqual(result["fee_delta_rub"],D("5"))
+        self.assertFalse(result["funding_reconciled"])
+        self.assertEqual(self.facts.block_reason,"BROKER_SETTLEMENT_READ_UNAVAILABLE")
+
+
 @unittest.skipUnless(TEST_DSN, "explicit ephemeral PostgreSQL DSN not configured")
 class BrokerFactsPostgresTests(unittest.TestCase):
     def setUp(self):
@@ -468,7 +599,7 @@ class BrokerFactsPostgresTests(unittest.TestCase):
         facts = self.current(2)
         self.assertEqual(facts.account.available_margin_rub, D("0"))
         self.assertFalse(facts.account.costs_reconciled)
-        self.assertEqual(self.facts.block_reason, "FUNDING_COMPLETENESS_UNVERIFIED")
+        self.assertEqual(self.facts.block_reason, "BROKER_SETTLEMENT_READ_UNAVAILABLE")
         with self.assertRaisesRegex(TradePlanBlocked, "BROKER_COST_RECONCILIATION_REQUIRED"):
             facts.account.validate(self.now, reducing=False)
         closed = prepare_exit(

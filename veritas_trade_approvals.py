@@ -890,6 +890,31 @@ class TradeApprovals:
             }, "SUBMISSION_CLAIMED")
             return self._view(row)
 
+    def abort_unsubmitted_claim(self, proposal_id, claim_token, reason_code):
+        """Finish a claimed order only when its coordinator never called the adapter.
+
+        This internal transition must not be used after any submission attempt,
+        transport ambiguity or broker acknowledgement. It does not manufacture a
+        broker rejection or a fill. The immutable request UUID remains consumed.
+        """
+        reason_code = _reason(reason_code)
+        with self._transaction() as c:
+            row = self._locked(c, proposal_id)
+            if (not isinstance(claim_token, str) or not row["claim_token"]
+                    or not hmac.compare_digest(claim_token, row["claim_token"])):
+                raise ApprovalError("CLAIM_TOKEN_MISMATCH", 403)
+            if (row["status"] == "BLOCKED" and row["reason_code"] == reason_code
+                    and row["execution_reconciled"] and row["broker_order_id"] is None
+                    and row["filled_lots"] == 0):
+                return self._view(row, idempotent=True, aborted_without_submission=True)
+            if (row["status"] != "SENDING" or row["broker_order_id"] is not None
+                    or row["filled_lots"] not in (None, 0) or row["execution_reconciled"]):
+                raise ApprovalError("SUBMITTED_EXECUTION_CANNOT_BE_ABORTED")
+            row = self._change(c, row, {"status": "BLOCKED", "reason_code": reason_code,
+                "filled_lots": 0, "execution_reconciled": True}, "SUBMISSION_ABORTED_BEFORE_BROKER_IO",
+                {"broker_io_attempted": False, "reason_code": reason_code})
+            return self._view(row, aborted_without_submission=True)
+
     def _broker_state(self, value):
         aliases = {
             "NEW": "ACKNOWLEDGED", "ACKNOWLEDGED": "ACKNOWLEDGED",

@@ -236,7 +236,9 @@ class TBankConnection:
         self.factory = factory
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
-        self.worker = self.stream_worker = None
+        self.worker = self.stream_worker = self.history_worker = None
+        self.history_lock = threading.Lock()
+        self.history_error = None
         self.reader = None
         self.state = "WAITING_TOKEN"
         self.error = None
@@ -365,7 +367,7 @@ class TBankConnection:
             self.accounts, self.portfolio = accounts, portfolio
             self.accounts_checked = iso()
 
-    def _read_market(self):
+    def _read_market(self, *, include_history=True):
         by_uid = {data["uid"]: asset for asset, data in self.instruments.items()}
         if not by_uid:
             return
@@ -383,9 +385,19 @@ class TBankConnection:
                     self.trading_states[asset]={**trading,"checked_at":iso(),"instrument_uid":uid}
             except TBankError:
                 pass  # Existing book keeps its original timestamp and becomes stale.
-        self._read_history(by_uid)
+        if include_history:
+            self._read_history(by_uid)
 
     def _read_history(self, by_uid):
+        # Only one history owner; synchronous diagnostics may overlap the worker.
+        if not self.history_lock.acquire(blocking=False):
+            return
+        try:
+            self._read_history_locked(by_uid)
+        finally:
+            self.history_lock.release()
+
+    def _read_history_locked(self, by_uid):
         jobs = []
         for interval, config in HISTORY.items():
             for uid, asset in by_uid.items():
@@ -476,16 +488,46 @@ class TBankConnection:
                     self.stream_state = "RECONNECTING"
             self.stop_event.wait(5)
 
-    def refresh(self):
+    def refresh(self, *, include_history=True):
         if self.accounts_checked is None or (age_seconds(self.accounts_checked) or 0) >= 60:
             self._read_accounts()
         if self.resolve_checked is None or (self.instrument_errors and (age_seconds(self.resolve_checked) or 0) >= 300):
             self._resolve()
-        self._read_market()
+        self._read_market(include_history=include_history)
         with self.lock:
             self.checked_at = iso()
             self.connected_at = self.connected_at or self.checked_at
             self.state, self.error = "CONNECTED", None
+
+    def _ensure_market_workers(self):
+        # Price streaming and book/session polling must not wait for a history
+        # download. One bounded history worker uses the same read-only channel.
+        with self.lock:
+            if not self.instruments or self.stop_event.is_set():
+                return
+            for field, target, name in (
+                    ('stream_worker', self._stream_loop, 'veritas-tbank-prices'),
+                    ('history_worker', self._history_loop, 'veritas-tbank-history')):
+                worker = getattr(self, field)
+                if worker is None or not worker.is_alive():
+                    worker = threading.Thread(target=target, name=name, daemon=True)
+                    setattr(self, field, worker)
+                    worker.start()
+
+    def _history_loop(self):
+        while not self.stop_event.is_set():
+            with self.lock:
+                by_uid = {data['uid']: asset for asset, data in self.instruments.items()}
+            try:
+                if by_uid and self.reader is not None:
+                    self._read_history(by_uid)
+                with self.lock:
+                    self.history_error = None
+            except Exception as exc:
+                # Never disclose RPC metadata, tokens or account information.
+                with self.lock:
+                    self.history_error = str(exc) if isinstance(exc, TBankError) else 'HISTORY_ERROR'
+            self.stop_event.wait(5)
 
     def _loop(self):
         delay = 15
@@ -493,10 +535,8 @@ class TBankConnection:
             try:
                 if self.reader is None:
                     self.reader = self.factory(self._token())
-                self.refresh()
-                if self.stream_worker is None and self.instruments:
-                    self.stream_worker = threading.Thread(target=self._stream_loop, name="veritas-tbank-prices", daemon=True)
-                    self.stream_worker.start()
+                self.refresh(include_history=False)
+                self._ensure_market_workers()
                 delay = 15
                 self.stop_event.wait(20)
             except Exception as exc:

@@ -6,7 +6,7 @@ from decimal import Decimal
 import json
 import traceback
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import veritas_tbank_trading as T
 
@@ -128,6 +128,61 @@ class AdapterTests(unittest.TestCase):
                       stop_price=Decimal("12.100"), limit_price=Decimal("12.090"), client_order_id=CLIENT)
         values.update(kwargs)
         return (adapter or self.adapter).submit_stop_limit(**values)
+
+    def test_pure_pre_send_check_catches_expiry_during_broker_preflight(self):
+        expired = [False]
+        def delayed_lookup(body):
+            expired[0] = True
+            return Response({"code":5,"message":"synthetic not found"},404)
+        self.transport.handlers["GetOrderState"] = delayed_lookup
+        check = Mock(side_effect=lambda: not expired[0])
+        with self.assertRaises(T.PreSubmissionBlocked) as caught:
+            self.submit(pre_send_check=check)
+        self.assertTrue(caught.exception.definitely_not_sent)
+        self.assertFalse(caught.exception.ambiguous)
+        check.assert_called_once_with()
+        self.assertEqual(self.transport.count("PostOrder"),0)
+        self.assertIsNone(self.adapter.journal.get(self.adapter._key(ACCOUNT,CLIENT)))
+
+    def test_pre_send_check_runs_again_after_slow_durable_journal_reservation(self):
+        expired = [False]
+        reserve = self.adapter.journal.reserve
+        def delayed_reserve(*args):
+            result = reserve(*args)
+            expired[0] = True
+            return result
+        check = Mock(side_effect=lambda: not expired[0])
+        with patch.object(self.adapter.journal,"reserve",side_effect=delayed_reserve):
+            with self.assertRaises(T.PreSubmissionBlocked):
+                self.submit(pre_send_check=check)
+        self.assertEqual(check.call_count,2)
+        self.assertEqual(self.transport.count("PostOrder"),0)
+        # This UUID stays reserved. Even omitting the hook on a retry can only
+        # reconcile the old attempt; it cannot issue the order for the first time.
+        result = self.submit()
+        self.assertEqual(result.outcome,"UNKNOWN")
+        self.assertEqual(self.transport.count("PostOrder"),0)
+
+    def test_pre_send_requires_exact_true_and_sanitizes_callback_exception(self):
+        for callback in (lambda:1, lambda:None, Mock(side_effect=RuntimeError("synthetic private detail"))):
+            with self.subTest(callback=type(callback).__name__), self.assertRaises(T.PreSubmissionBlocked) as caught:
+                self.submit(pre_send_check=callback)
+            self.assertNotIn("synthetic private detail",str(caught.exception))
+        self.assertEqual(self.transport.count("PostOrder"),0)
+        from veritas_currency_trade_plan import TradePlanBlocked
+        with self.assertRaises(T.PreSubmissionBlocked) as caught:
+            self.submit(pre_send_check=Mock(side_effect=TradePlanBlocked("BROKER_QUOTE_STALE")))
+        self.assertEqual(caught.exception.code,"BROKER_QUOTE_STALE")
+        self.assertEqual(self.transport.count("PostOrder"),0)
+
+    def test_transport_uncertainty_after_pre_send_success_never_claims_not_sent(self):
+        self.transport.handlers["PostOrder"] = TimeoutError("synthetic timeout")
+        check = Mock(return_value=True)
+        result = self.submit(pre_send_check=check)
+        self.assertEqual(result.outcome,"UNKNOWN")
+        self.assertEqual(self.transport.count("PostOrder"),1)
+        self.assertEqual(check.call_count,2)
+        self.assertFalse(getattr(result,"definitely_not_sent",False))
 
     def test_default_construction_and_read_only_mode_do_not_open_connection(self):
         with patch("httpx.Client", side_effect=AssertionError("No network allowed")):

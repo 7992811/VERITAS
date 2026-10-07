@@ -338,7 +338,7 @@ class HttpPrivacyTests(unittest.TestCase):
         c=T.TBankConnection({'TBANK_API_TOKEN':'test-secret'})
         c.reader=FakeReader()
         c.refresh()
-        with patch.object(T,'connection',c), patch.dict('os.environ',{
+        with patch.object(app,'_BOOTSTRAP_READY',True), patch.object(T,'connection',c), patch.dict('os.environ',{
             'VERITAS_APP_AUTH_TOKEN':'app-secret','VERITAS_AUTOMATION_TOKEN':''}):
             server=ThreadingHTTPServer(('127.0.0.1',0),app.H)
             thread=threading.Thread(target=server.serve_forever,daemon=True)
@@ -360,6 +360,43 @@ class HttpPrivacyTests(unittest.TestCase):
                     self.assertEqual(page.status_code,200)
                     self.assertIn('Соединение установлено',page.text)
                     self.assertNotIn('test-secret',page.text)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_starting_public_and_private_routes_do_not_expose_accounts_or_secrets(self):
+        import httpx
+        import veritas_intelligence as app
+        c=T.TBankConnection({'TBANK_API_TOKEN':'test-secret'})
+        c.reader=FakeReader()
+        c.refresh()
+        calls_before=list(c.reader.calls)
+        with patch.object(app,'_BOOTSTRAP_READY',False), patch.object(T,'connection',c), \
+             patch.object(c,'private_snapshot',wraps=c.private_snapshot) as private, \
+             patch.dict('os.environ',{'VERITAS_APP_AUTH_TOKEN':'app-secret','VERITAS_AUTOMATION_TOKEN':''}):
+            server=ThreadingHTTPServer(('127.0.0.1',0),app.H)
+            thread=threading.Thread(target=server.serve_forever,daemon=True)
+            thread.start()
+            base='http://127.0.0.1:'+str(server.server_port)
+            try:
+                with httpx.Client(base_url=base,trust_env=False) as client:
+                    for suffix in ('','/market-data','/candles','/accounts','/portfolio'):
+                        path='/api/v1/integrations/tbank'+suffix
+                        for token in (None,'test-secret','app-secret'):
+                            with self.subTest(path=path,auth='none' if token is None else 'app' if token=='app-secret' else 'broker'):
+                                headers={} if token is None else {'X-Veritas-Token':token}
+                                response=client.get(path,headers=headers)
+                                self.assertEqual(response.status_code,503)
+                                body=response.json()
+                                self.assertEqual(body['status'],'STARTING')
+                                self.assertFalse(body['bootstrap_ready'])
+                                self.assertFalse(body['positions_complete'])
+                                self.assertFalse(body['accounting_complete'])
+                                for value in ('private-account','Private name','1000000','test-secret','app-secret'):
+                                    self.assertNotIn(value,response.text)
+                private.assert_not_called()
+                self.assertEqual(c.reader.calls,calls_before)
             finally:
                 server.shutdown()
                 server.server_close()

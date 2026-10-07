@@ -357,6 +357,7 @@ class ExecutionSafetyTests(unittest.TestCase):
         import veritas_portfolio as vp
         row={
             "asset":"BRENT","price":100.0,"research_decision":"SHORT","execution_eligible":False,
+            "source":"ProFinance","raw_label":"Brent oil","raw_ticker":"brent","instrument_id":"27",
             "production_eligible":False,"source_gate_pass":True,"market_open":True,
             "market_observed_at":datetime.now(timezone.utc).isoformat(),"horizon":"1h",
             "trade_plan":{"eligible":True,"entry_price":100,"stop_price":101,"target_price":98,
@@ -552,9 +553,11 @@ class PortfolioApiCompletenessTests(unittest.TestCase):
             vi._v90r25_pf_cache.clear()
             vi._v90r25_pf_cache.update(old_cache)
 
-    def test_zero_exposure_can_use_fast_memory_without_positions(self):
+    def test_zero_exposure_without_position_rows_uses_sql_fallback(self):
         import veritas_intelligence as vi
         old_cycle=vi.last_cycle
+        old_enabled=vi.pg_enabled
+        old_connect=vi.pg_connect
         old_cache=dict(vi._v90r25_pf_cache)
         try:
             vi.last_cycle={'portfolio_autopilot':{'portfolios':[
@@ -564,10 +567,16 @@ class PortfolioApiCompletenessTests(unittest.TestCase):
                 {'name':'Challenger','gross_leverage':0.0},
             ]}}
             vi._v90r25_pf_cache.update({'at':0.0,'value':None})
-            out=vi._v90r25_portfolios_fast()
-            self.assertEqual(out.get('api_source'),'live_memory')
+            vi.pg_enabled=lambda: True
+            def sql_fallback_reached():
+                raise RuntimeError('SQL_FALLBACK_REACHED')
+            vi.pg_connect=sql_fallback_reached
+            with self.assertRaisesRegex(RuntimeError,'SQL_FALLBACK_REACHED'):
+                vi._v90r25_portfolios_fast()
         finally:
             vi.last_cycle=old_cycle
+            vi.pg_enabled=old_enabled
+            vi.pg_connect=old_connect
             vi._v90r25_pf_cache.clear()
             vi._v90r25_pf_cache.update(old_cache)
 
@@ -603,7 +612,7 @@ class LossConflictR81Tests(unittest.TestCase):
         }
         self.assertFalse(VRT._v842_hard_thesis_exit(row))
 
-    def test_explicit_hard_invalidation_still_forces_exit(self):
+    def test_unbound_candidate_hard_invalidation_does_not_force_position_exit(self):
         import veritas_portfolio_runtime as VRT
         row={
             'entry_quality':'INVALIDATED',
@@ -611,7 +620,8 @@ class LossConflictR81Tests(unittest.TestCase):
             'horizon_structure_state':'WEAK',
             'trade_plan':{'trade_integrity':{'hard_invalidation':True}},
         }
-        self.assertTrue(VRT._v842_hard_thesis_exit(row))
+        self.assertFalse(VRT._v842_hard_thesis_exit(row))
+        self.assertTrue(row['trade_plan']['trade_integrity']['hard_invalidation'])
 
     def test_cost_negative_economics_cannot_be_soft_probed(self):
         import veritas_portfolio_runtime as VRT
@@ -703,3 +713,30 @@ class FinalRuntimeAuthorityR85Tests(unittest.TestCase):
         self.assertIs(VP._step_one,VPR.FINAL_STEP_ONE)
         self.assertIs(VP.step_all,VPR.FINAL_STEP_ALL)
 
+
+class LowMemoryBundleCacheR914Tests(unittest.TestCase):
+    def test_low_memory_runtime_does_not_retain_complete_market_bundles(self):
+        import veritas_intelligence as VINT
+        old_limit=VINT.MEMORY_SOFT_LIMIT_MB
+        old_mode=VINT._v90r62_active_cycle_mode
+        try:
+            VINT.MEMORY_SOFT_LIMIT_MB=320
+            VINT._v90r62_active_cycle_mode='FULL'
+            VINT._v90r62_bundle_cache.clear()
+            bundle={'raw':{'asset':'BTC','large_history':[1]*1000},
+                    'deriv':{'ok':True},'error':None}
+            VINT._v90r62_store_bundle('BTC',bundle)
+            self.assertEqual(VINT._v90r62_bundle_cache,{})
+
+            # Also purge an object retained before a configuration/reload
+            # boundary instead of allowing a FULL cycle to reuse it.
+            VINT._v90r62_bundle_cache['BTC']={
+                'at':datetime(2026,10,7,tzinfo=timezone.utc).timestamp(),
+                'bundle':bundle,
+            }
+            self.assertIsNone(VINT._v90r62_cached_bundle('BTC'))
+            self.assertEqual(VINT._v90r62_bundle_cache,{})
+        finally:
+            VINT.MEMORY_SOFT_LIMIT_MB=old_limit
+            VINT._v90r62_active_cycle_mode=old_mode
+            VINT._v90r62_bundle_cache.clear()

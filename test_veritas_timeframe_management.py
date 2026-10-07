@@ -19,6 +19,7 @@ class Result:
 class FakeDB:
     def __init__(self, position, now, accounting=True):
         self.writes = []
+        self.position = copy.deepcopy(position)
         self.rows = [{"trade_id": position["active_trade_id"], "status": "OPEN",
                       "opened_at": position["opened_at"], "gross_pnl_rub": 0.,
                       "fees_rub": .4, "funding_rub": 0., "portfolio_nav_rub": 10000.,
@@ -26,13 +27,15 @@ class FakeDB:
     def execute(self, sql, args=()):
         if sql.lstrip().startswith("UPDATE"):
             self.writes.append((sql, args))
+            if "RETURNING active_trade_id" in sql:
+                return Result([{"active_trade_id": self.position["active_trade_id"]}])
             return Result([])
         return Result(self.rows)
 
 
 class SameTimeframeManagementTests(unittest.TestCase):
     def setUp(self):
-        self.now = datetime(2026, 10, 6, 20, 5, tzinfo=timezone.utc)
+        self.now = datetime(2026, 10, 7, 0, 5, tzinfo=timezone.utc)
         self.source = {"source_names": {"primary": "ProFinance NASD100_FUT"}}
         self.identity = VPS.identity("NQ", self.source)
 
@@ -55,7 +58,9 @@ class SameTimeframeManagementTests(unittest.TestCase):
 
     def row(self, direction="LONG", horizon="4h", anchor=None):
         pivot = datetime(2026, 10, 6, 12, tzinfo=timezone.utc).timestamp()
-        closed = datetime(2026, 10, 6, 20, tzinfo=timezone.utc).timestamp()
+        # 12:00 pivot's own 4h close plus two right-hand closes are first
+        # available at 00:00. Earlier fixtures certified it one candle too soon.
+        closed = datetime(2026, 10, 7, 0, tzinfo=timezone.utc).timestamp()
         if anchor is None: anchor = 96. if direction == "LONG" else 104.
         ctx = {"version": TFS.VERSION, "status": "OK", "timeframe": horizon,
                "atr_timeframe": horizon, "source_identity": copy.deepcopy(self.identity),
@@ -101,6 +106,99 @@ class SameTimeframeManagementTests(unittest.TestCase):
             self.assertFalse(result["eligible"])
             self.assertFalse(db.writes)
 
+    def test_pivot_requires_its_own_close_and_all_right_hand_closed_bars(self):
+        for horizon in ("5m", "1h", "4h"):
+            for observed_closes in (1, 2):
+                with self.subTest(horizon=horizon, observed_closes=observed_closes):
+                    z, row = self.position(), self.row(horizon=horizon)
+                    z["payload"]["execution_horizon"] = horizon
+                    ctx = row["timeframe_entry_context"]
+                    seconds = TFS.TIMEFRAMES[horizon]
+                    pivot = ctx["closed_at"] - 3 * seconds
+                    ctx["levels"][0].update(pivot_at=pivot,
+                                           available_at=pivot + observed_closes * seconds)
+                    db = FakeDB(z, self.now)
+                    out = TM.apply_trailing(db, "Aggressive", z, [row], self.quote(), self.now)
+                    self.assertFalse(out["eligible"])
+                    self.assertEqual(out["reason"], "SAME_TF_NEW_CONFIRMED_SWING_REQUIRED")
+                    self.assertFalse(db.writes)
+
+    def test_late_confirmation_of_preentry_pivot_is_not_a_new_held_swing(self):
+        z, row = self.position(), self.row()
+        # The 08:00 pivot candle spans an 08:05 fill. Its low could precede the
+        # fill, even though its right-hand confirmation arrives at 20:00.
+        row["timeframe_entry_context"]["levels"][0].update(
+            pivot_at=datetime(2026, 10, 6, 8, tzinfo=timezone.utc).timestamp(),
+            available_at=datetime(2026, 10, 6, 20, tzinfo=timezone.utc).timestamp())
+        db = FakeDB(z, self.now)
+        out = TM.apply_trailing(db, "Aggressive", z, [row], self.quote(), self.now)
+        self.assertFalse(out["eligible"])
+        self.assertEqual(out["reason"], "SAME_TF_NEW_CONFIRMED_SWING_REQUIRED")
+        self.assertFalse(db.writes)
+
+    def test_entry_timeframe_and_source_cannot_be_relabelled_for_trailing(self):
+        for mismatch, reason in (("timeframe", "SAME_TF_POSITION_HORIZON_CHANGED"),
+                                 ("source", "SAME_TF_POSITION_SOURCE_CHANGED")):
+            with self.subTest(mismatch=mismatch):
+                z = self.position()
+                event = z["payload"]["entry_event_snapshot"]
+                event.update(timeframe="4h", source_identity=copy.deepcopy(self.identity))
+                if mismatch == "timeframe":
+                    event["timeframe"] = "1h"
+                else:
+                    event["source_identity"]["key"] = "YAHOO:NQ=F"
+                out = TM.trailing_candidate(z, [self.row()], self.quote(), self.now)
+                self.assertFalse(out["eligible"])
+                self.assertEqual(out["reason"], reason)
+
+    def test_available_distance_is_measured_on_own_timeframe_without_new_tuning(self):
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                z, row, q = self.position(direction), self.row(direction), self.quote(direction)
+                out = TM.trailing_candidate(z, [row], q, self.now)
+                sign = 1 if direction == "LONG" else -1
+                self.assertTrue(out["eligible"])
+                self.assertEqual(out["timeframe"], "4h")
+                self.assertEqual(out["pivot_right_required"], 2)
+                self.assertAlmostEqual(out["price_to_stop_atr"], sign * (q["price"]-out["stop_price"]) / 4.)
+                self.assertAlmostEqual(out["entry_to_stop_atr"], sign * (100.-out["stop_price"]) / 4.)
+                self.assertAlmostEqual(sign * (out["reference_level"]-out["stop_price"]) / 4.,
+                                       CTC.STRUCTURAL_ENTRY_POLICY["stop_buffer_atr"])
+                self.assertEqual(out["distance_validation"], "DIAGNOSTIC_ONLY_NO_NEW_ATR_THRESHOLD")
+
+    def test_price_profit_without_a_new_confirmed_swing_cannot_force_breakeven(self):
+        for direction in ("LONG", "SHORT"):
+            z, row = self.position(direction), self.row(direction)
+            z["payload"].update(mfe_pct=10., profit_protection_active=False)
+            row["timeframe_entry_context"]["levels"] = []
+            db = FakeDB(z, self.now)
+            out = TM.apply_trailing(db, "Aggressive", z, [row], self.quote(direction), self.now)
+            self.assertFalse(out["eligible"])
+            self.assertFalse(db.writes)
+
+    def test_concurrent_stop_or_quantity_change_cannot_write_stale_trailing_event(self):
+        class ChangedPositionDB(FakeDB):
+            def execute(self, sql, args=()):
+                if "RETURNING active_trade_id" in sql:
+                    self.writes.append((sql, args))
+                    return Result([])
+                return super().execute(sql, args)
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                z = self.position(direction)
+                db = ChangedPositionDB(z, self.now)
+                out = TM.apply_trailing(db, "Aggressive", z, [self.row(direction)],
+                                        self.quote(direction), self.now)
+                self.assertFalse(out["eligible"])
+                self.assertEqual(out["reason"], "SAME_TF_POSITION_CHANGED")
+                self.assertEqual(len(db.writes), 1)
+                sql, args = db.writes[0]
+                self.assertIn("stop_price IS NOT DISTINCT FROM %s", sql)
+                self.assertIn("units IS NOT DISTINCT FROM %s", sql)
+                self.assertIn("avg_entry_price IS NOT DISTINCT FROM %s", sql)
+                self.assertIn("payload->'trailing_stop'", sql)
+                self.assertEqual(args[6:9], (z["stop_price"], z["units"], z["avg_entry_price"]))
+
     def test_stop_is_never_widened_and_a_breached_stop_remains_immediate(self):
         for direction, tighter in (("LONG", 97.), ("SHORT", 103.)):
             z = self.position(direction)
@@ -119,15 +217,51 @@ class SameTimeframeManagementTests(unittest.TestCase):
         self.assertEqual(result["reason"], "LEGACY_POSITION")
         self.assertFalse(db.writes)
 
-    def test_profit_stop_needs_positive_whole_trade_net_accounting(self):
+    def test_structural_trail_does_not_claim_profit_when_accounting_missing(self):
         for direction, anchor in (("LONG", 108.), ("SHORT", 92.)):
-            z, row, q = self.position(direction), self.row(direction, anchor=anchor), self.quote(direction)
-            missing = FakeDB(z, self.now, accounting=False)
-            denied = TM.apply_trailing(missing, "Aggressive", z, [row], q, self.now)
-            self.assertEqual(denied["reason"], "SAME_TF_NET_PROTECTION_NOT_CONFIRMED")
-            self.assertFalse(missing.writes)
-            present = FakeDB(z, self.now)
-            self.assertTrue(TM.apply_trailing(present, "Aggressive", z, [row], q, self.now)["eligible"])
+            with self.subTest(direction=direction):
+                z, row, q = self.position(direction), self.row(direction, anchor=anchor), self.quote(direction)
+                missing = FakeDB(z, self.now, accounting=False)
+                result = TM.apply_trailing(missing, "Aggressive", z, [row], q, self.now)
+                self.assertTrue(result["eligible"])
+                self.assertEqual(len(missing.writes), 2)
+                saved = json.loads(missing.writes[0][1][1])
+                self.assertFalse(saved["profit_protection_active"])
+                self.assertEqual(saved["net_profit_protection"]["state"], "UNAVAILABLE")
+                self.assertIsNone(saved["net_profit_protection"]["net_at_stop_rub"])
+                present = FakeDB(z, self.now)
+                self.assertTrue(TM.apply_trailing(present, "Aggressive", z, [row], q, self.now)["eligible"])
+                self.assertTrue(json.loads(present.writes[0][1][1])["profit_protection_active"])
+
+    def test_cost_uncovered_structural_stop_still_reduces_risk(self):
+        # The valid 4h swing reduces a large old stop to a small modeled loss
+        # after fees. Requiring a positive net result would retain avoidable risk.
+        for direction, anchor, expected in (("LONG", 100.62, 100.02), ("SHORT", 99.38, 99.98)):
+            with self.subTest(direction=direction):
+                z, q = self.position(direction), self.quote(direction)
+                db = FakeDB(z, self.now)
+                result = TM.apply_trailing(db, "Aggressive", z, [self.row(direction, anchor=anchor)], q, self.now)
+                self.assertTrue(result["eligible"])
+                self.assertAlmostEqual(result["stop_price"], expected)
+                saved = json.loads(db.writes[0][1][1])
+                self.assertFalse(saved["profit_protection_active"])
+                self.assertEqual(saved["net_profit_protection"]["state"], "COSTS_NOT_COVERED")
+                self.assertLess(saved["net_profit_protection"]["net_at_stop_rub"], 0)
+                self.assertEqual(saved["trailing_stage"], "RISK_REDUCTION_STRUCTURAL")
+                self.assertEqual(saved["trailing_reference_timeframe"], "4h")
+
+    def test_accounting_failure_does_not_retain_a_wider_structural_stop(self):
+        z = self.position()
+        z["payload"]["profit_protection_active"] = True
+        db = FakeDB(z, self.now)
+        with patch.object(TM.VPP, "assess", side_effect=RuntimeError("unavailable accounting")):
+            result = TM.apply_trailing(db, "Aggressive", z,
+                                       [self.row(anchor=108.)], self.quote(), self.now)
+        self.assertTrue(result["eligible"])
+        saved = json.loads(db.writes[0][1][1])
+        self.assertFalse(saved["profit_protection_active"])
+        self.assertEqual(saved["net_profit_protection"]["state"], "UNAVAILABLE")
+        self.assertEqual(saved["trailing_stage"], "PROTECTION_UNVERIFIED")
 
     def test_same_pivot_cannot_ratchet_again_just_because_atr_shrinks(self):
         z, row = self.position(), self.row()

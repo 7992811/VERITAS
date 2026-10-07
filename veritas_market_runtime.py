@@ -187,17 +187,24 @@ def install_market_runtime_guard(ns):
         if not rows:
             raise RuntimeError(f"MOEX_FORTS_NO_MARKETDATA {secid}")
         row = rows[0]
+        if str(secid).startswith("BR") and (len(rows) != 1 or str(row.get("SECID") or "") != str(secid)):
+            # A Brent position owns one exact expiry. Do not relabel a missing
+            # or foreign marketdata identity as the requested oil contract.
+            raise RuntimeError(f"MOEX_FORTS_CONTRACT_MISMATCH {secid}")
         price = None
+        price_field = None
         for key in ("LAST", "MARKETPRICE", "SETTLEPRICE"):
             if row.get(key) not in (None, ""):
                 try:
                     price = float(row[key])
+                    price_field = key
                     break
                 except Exception:
                     pass
         if price is None:
             raise RuntimeError(f"MOEX_FORTS_NO_PRICE {secid}")
-        return {"price": price, "observed_at": moex_observed_at(row), "row": row}
+        return {"price": price, "price_field": price_field,
+                "observed_at": moex_observed_at(row), "row": row}
 
     ns["_moex_futures_current_quote"] = current_quote
 

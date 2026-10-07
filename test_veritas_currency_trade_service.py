@@ -539,7 +539,7 @@ class TradeHttpEnvironmentTests(unittest.TestCase):
     def test_cache_rotates_on_secrets_identity_flags_and_dependency_changes(self):
         env = self.configured()
         created, handled = [], []
-        def factory(connect, summary):
+        def factory(connect, summary, *, configuration=None):
             number = len(created) + 1
             enabled = os.environ.get("VERITAS_CURRENCY_TRADE_EXECUTION_ENABLED") == "true"
             class Application:

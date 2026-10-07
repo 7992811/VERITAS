@@ -8,6 +8,7 @@ An uncertain mutation is never retried. Reconciliation only calls read methods.
 Official schemas checked 2026-10-07:
 https://developer.tbank.ru/invest/services/orders/methods
 https://developer.tbank.ru/invest/services/stop-orders/stoporders
+https://developer.tbank.ru/invest/services/operations/methods
 https://developer.tbank.ru/invest/intro/developer/protocols/
 """
 from __future__ import annotations
@@ -37,6 +38,8 @@ READ_METHODS = {
     "portfolio": "OperationsService/GetPortfolio",
     "positions": "OperationsService/GetPositions",
     "withdraw_limits": "OperationsService/GetWithdrawLimits",
+    "operations": "OperationsService/GetOperationsByCursor",
+    "broker_report": "OperationsService/GetBrokerReport",
     "orders": "OrdersService/GetOrders",
     "order": "OrdersService/GetOrderState",
     "max_lots": "OrdersService/GetMaxLots",
@@ -53,6 +56,7 @@ SANDBOX_METHODS = {
     "accounts": "GetSandboxAccounts", "portfolio": "GetSandboxPortfolio",
     "positions": "GetSandboxPositions", "orders": "GetSandboxOrders",
     "withdraw_limits": "GetSandboxWithdrawLimits",
+    "operations": "GetSandboxOperationsByCursor",
     "order": "GetSandboxOrderState", "max_lots": "GetSandboxMaxLots",
     "order_price": "GetSandboxOrderPrice", "stop_orders": "GetSandboxStopOrders",
     "submit": "PostSandboxOrder", "cancel": "CancelSandboxOrder",
@@ -86,6 +90,18 @@ class TradingError(Exception):
         self.ambiguous = bool(ambiguous)
         self.http_status = http_status
         self.not_found = bool(not_found)
+
+
+class PreSubmissionBlocked(TradingError):
+    """A pure last-moment check failed before this adapter attempted PostOrder.
+
+    This type is only raised by the pre-send hook. Transport uncertainty and
+    failures after an HTTP attempt never carry the definitely-not-sent marker.
+    """
+    definitely_not_sent = True
+
+    def __init__(self, code="PRE_SEND_CHECK_REJECTED"):
+        super().__init__(code, ambiguous=False)
 
 
 def _identifier(value, code="INVALID_IDENTIFIER"):
@@ -531,6 +547,121 @@ class TBankTradingAdapter:
                 currencies.add(currency)
         return result
 
+    def get_operations(self, account_id, instrument_uid, *, from_time, to_time,
+                       page_size=100, max_pages=100):
+        """Read a complete, bounded ACCOUNT history, including unallocated costs.
+
+        Filtering by instrument would hide account-level commissions and parent
+        variation-margin operations. The caller receives all account rows and
+        must attribute them; unrelated instruments are never silently assigned
+        to the managed allocation. A finished cursor is retrieval evidence only:
+        this API has no settlement-finality or published-through watermark.
+        """
+        account = _identifier(account_id, "INVALID_ACCOUNT_ID")
+        uid = _uuid(instrument_uid, "INVALID_INSTRUMENT_UID")
+        if account not in self.config.allowed_account_ids:
+            raise TradingError("ACCOUNT_OUTSIDE_EXECUTION_SCOPE")
+        if uid not in self.config.allowed_instrument_uids:
+            raise TradingError("INSTRUMENT_OUTSIDE_EXECUTION_SCOPE")
+        start, end = _timestamp(from_time), _timestamp(to_time)
+        if datetime.fromisoformat(start) >= datetime.fromisoformat(end):
+            raise TradingError("INVALID_OPERATIONS_INTERVAL")
+        if type(page_size) is not int or not 3 <= page_size <= 1000:
+            raise TradingError("INVALID_OPERATIONS_PAGE_SIZE")
+        if type(max_pages) is not int or not 1 <= max_pages <= 1000:
+            raise TradingError("INVALID_OPERATIONS_PAGE_LIMIT")
+        begun, cursor, seen_cursors, rows = _now(), "", set(), {}
+        for page in range(1, max_pages + 1):
+            body = {"accountId":account, "from":start, "to":end,
+                    "limit":page_size, "state":"OPERATION_STATE_UNSPECIFIED",
+                    "withoutCommissions":False, "withoutTrades":False,
+                    "withoutOvernights":False}
+            if cursor:
+                body["cursor"] = cursor
+            reply = self._request("operations", body)
+            items = reply.get("items", [])
+            has_next = reply.get("hasNext", False)  # omitted proto bool = false
+            if not isinstance(items, list) or type(has_next) is not bool or len(items) > page_size:
+                raise TradingError("INVALID_OPERATIONS_RESPONSE")
+            for item in items:
+                if not isinstance(item, dict) or item.get("brokerAccountId") != account:
+                    raise TradingError("OPERATIONS_ACCOUNT_MISMATCH")
+                oid = _identifier(item.get("id"), "INVALID_OPERATION_ID")
+                # A repeated boundary item may be identical. Any changed item
+                # within one cursor walk makes this observation inconsistent.
+                identity = {k:v for k,v in item.items() if k != "cursor"}
+                if oid in rows and rows[oid] != identity:
+                    raise TradingError("OPERATIONS_CHANGED_DURING_PAGINATION")
+                rows[oid] = copy.deepcopy(identity)
+            if not has_next:
+                return {"source":"TBANK_OPERATIONS_BY_CURSOR", "account_id":account,
+                        "instrument_uid":uid, "from":start, "to":end,
+                        "request_started_at":begun, "received_at":_now(),
+                        "retrieval_complete":True, "finality_proven":False,
+                        "pages":page, "operations":list(rows.values())}
+            following = reply.get("nextCursor")
+            if (not items or not isinstance(following, str) or not following
+                    or len(following) > 4096 or following == cursor or following in seen_cursors):
+                raise TradingError("OPERATIONS_PAGINATION_STALLED")
+            seen_cursors.add(following)
+            cursor = following
+        raise TradingError("OPERATIONS_PAGINATION_INCOMPLETE")
+
+    def get_broker_report(self, account_id, instrument_uid, *, from_time, to_time, max_pages=100):
+        """Generate/read the dated trade report; it is not a funding statement.
+
+        BrokerReport contains trade IDs and separate broker/exchange/clearing
+        commissions. It has no variation-margin/funding settlement breakdown.
+        Report generation is a read-side task, never an order. If not ready,
+        propagate the broker error; no blocking retry or invented empty report.
+        """
+        account = _identifier(account_id, "INVALID_ACCOUNT_ID")
+        uid = _uuid(instrument_uid, "INVALID_INSTRUMENT_UID")
+        if account not in self.config.allowed_account_ids:
+            raise TradingError("ACCOUNT_OUTSIDE_EXECUTION_SCOPE")
+        if uid not in self.config.allowed_instrument_uids:
+            raise TradingError("INSTRUMENT_OUTSIDE_EXECUTION_SCOPE")
+        if self.config.environment != "production":
+            raise TradingError("BROKER_REPORT_UNAVAILABLE_IN_SANDBOX")
+        start, end = _timestamp(from_time), _timestamp(to_time)
+        if datetime.fromisoformat(start) >= datetime.fromisoformat(end):
+            raise TradingError("INVALID_REPORT_INTERVAL")
+        if type(max_pages) is not int or not 1 <= max_pages <= 1000:
+            raise TradingError("INVALID_REPORT_PAGE_LIMIT")
+        generated = self._request("broker_report", {"generateBrokerReportRequest":{
+            "accountId":account, "from":start, "to":end}})
+        task = (generated.get("generateBrokerReportResponse") or {}).get("taskId")
+        task = _identifier(task, "INVALID_REPORT_TASK_ID")
+        items, count, pages = [], None, None
+        for page in range(max_pages):
+            raw = self._request("broker_report", {"getBrokerReportRequest":{"taskId":task, "page":page}})
+            data = raw.get("getBrokerReportResponse")
+            if not isinstance(data, dict) or data.get("taskId", task) != task:
+                raise TradingError("BROKER_REPORT_IDENTITY_MISMATCH")
+            n, p = data.get("itemsCount", 0), data.get("pagesCount", 0)
+            current, batch = data.get("page", 0), data.get("brokerReport", [])
+            if (type(n) is not int or type(p) is not int or type(current) is not int
+                    or n < 0 or p < 0 or current != page or not isinstance(batch, list)
+                    or any(not isinstance(x, dict) for x in batch)):
+                raise TradingError("INVALID_BROKER_REPORT_RESPONSE")
+            if count is not None and (n != count or p != pages):
+                raise TradingError("BROKER_REPORT_CHANGED_DURING_PAGINATION")
+            count, pages = n, p
+            items.extend(copy.deepcopy(batch))
+            if len(items) > count:
+                raise TradingError("BROKER_REPORT_COUNT_MISMATCH")
+            if len(items) == count:
+                if len({x.get("tradeId") for x in items}) != len(items) or any(not x.get("tradeId") for x in items):
+                    raise TradingError("BROKER_REPORT_DUPLICATE_TRADE")
+                return {"source":"TBANK_BROKER_TRADE_REPORT", "account_id":account,
+                        "instrument_uid":uid, "from":start, "to":end,
+                        "received_at":_now(), "task_id":task, "pages":page+1,
+                        "retrieval_complete":True, "finality_proven":False,
+                        "trades":items}
+            if not batch or page + 1 >= max(1, pages):
+                raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
+        raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
+
     def get_order_book(self, instrument_uid, depth=1):
         uid = _uuid(instrument_uid, "INVALID_INSTRUMENT_UID")
         if type(depth) is not int or depth not in (1, 10, 20, 30, 40, 50):
@@ -756,8 +887,32 @@ class TBankTradingAdapter:
         except TradingError as exc:
             return self._unknown(body, "ORDER_NOT_FOUND_UNRESOLVED" if exc.not_found else exc.code)
 
-    def submit_limit(self, account_id, instrument_uid, side, lots, limit_price, client_order_id, *, time_in_force="DAY"):
-        """Exactly one PostOrder after durable caller claim; no market fallback."""
+    def _check_before_send(self, check):
+        if check is None:
+            return
+        try:
+            allowed = check()
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if (code is None and type(exc).__module__ == "veritas_currency_trade_plan"
+                    and type(exc).__name__ == "TradePlanBlocked"):
+                code = str(exc)
+            if not isinstance(code, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", code):
+                code = "PRE_SEND_CHECK_FAILED"
+            raise PreSubmissionBlocked(code) from None
+        if allowed is not True:
+            raise PreSubmissionBlocked("PRE_SEND_CHECK_REJECTED")
+
+    def submit_limit(self, account_id, instrument_uid, side, lots, limit_price, client_order_id, *,
+                     time_in_force="DAY", pre_send_check=None):
+        """Exactly one PostOrder after durable caller claim; no market fallback.
+
+        pre_send_check must be pure/repeatable and return exactly True. It runs
+        after all broker reads, before journal reservation, and again immediately
+        before HTTP to catch expiry during a slow durable journal write. An abort
+        after reservation keeps that UUID reserved; callers must terminally abort
+        their claim and create a fresh approval/UUID, never reuse it.
+        """
         body = self._intent(account_id, instrument_uid, side, lots, limit_price, _uuid(client_order_id), time_in_force)
         key, fingerprint = self._key(body["accountId"], body["orderId"]), self._fingerprint("LIMIT", body)
         with self._lock:
@@ -783,11 +938,13 @@ class TBankTradingAdapter:
                     raise TradingError("IDEMPOTENCY_CONFLICT")
                 self._journal("finish", key, existing)
                 return existing
+            self._check_before_send(pre_send_check)
             created, record = self._journal("reserve", key, fingerprint, body)
             if not created:
                 if record["fingerprint"] != fingerprint:
                     raise TradingError("IDEMPOTENCY_CONFLICT")
                 return record.get("result") or self._unknown(body, "SUBMISSION_IN_PROGRESS")
+            self._check_before_send(pre_send_check)
             try:
                 raw = self._request("submit", body)
                 try:

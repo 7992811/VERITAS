@@ -10,8 +10,10 @@ The allocation is 10,000 RUB per explicitly bound account. A binding owns exactl
 one instrument UID; contract migration and clearing-basis resets are deliberately
 not inferred. Futures P&L uses exchange point value, never margin as notional.
 Variation margin is not a second cash credit on top of this mark-to-market P&L.
-Funding requires distinct, actual broker charge/credit IDs. Fee observations are
-cumulative per order and never added twice to individual execution commissions.
+Funding requires actual broker charge/credit evidence. The settlement reconciler
+can retain a complete observation as an authoritative replacement, so a broker
+correction is not a second fictional event. Fee observations are cumulative per
+order and never added twice to individual execution commissions.
 
 No imports initialize a database, inspect environment/credentials, contact a
 broker, or enable execution. Callers supply verified broker snapshots; this
@@ -36,6 +38,7 @@ FILLS = "veritas_currency_live_fills"
 FEES = "veritas_currency_live_fees"
 FUNDING = "veritas_currency_live_funding"
 RECONCILIATIONS = "veritas_currency_live_reconciliations"
+SETTLEMENTS = "veritas_currency_live_settlements"
 ZERO = Decimal("0")
 
 
@@ -173,7 +176,13 @@ class InstrumentValuation:
         return result
 
 
-def project(fills, fee_observations, funding_adjustments, spec):
+def fills_fingerprint(fills):
+    """Stable economic ownership; late fills invalidate settlement coverage."""
+    keys = ("trade_id", "client_order_id", "broker_order_id", "side", "lots", "price", "executed_at")
+    return fingerprint([{k:f[k] for k in keys} for f in sorted(fills, key=lambda f:str(f["trade_id"]))])
+
+
+def project(fills, fee_observations, funding_adjustments, spec, *, settlement=None):
     """Replay immutable executions; late-arriving trades retain broker chronology.
 
     Individual fees may be unknown (None). A cumulative order commission is known
@@ -237,11 +246,32 @@ def project(fills, fee_observations, funding_adjustments, spec):
             covered = lots(observed["filled_lots"], nonnegative=True)
             order["cumulative_fee"] = max(order.get("cumulative_fee", ZERO), amount)
             order["fee_covered_lots"] = max(order.get("fee_covered_lots", 0), covered)
-        fees = sum((max(o["known_fees"], o.get("cumulative_fee", ZERO)) for o in orders.values()), ZERO)
+        for observed in (settlement or {}).get("order_fees", []):
+            order = orders.get(identifier(observed["client_order_id"]))
+            if order is None:
+                raise LedgerError("FEE_ORDER_HAS_NO_EXECUTIONS")
+            # Only a complete, independently attributed report can supersede a
+            # prior fee, including a downward correction. A partial observation
+            # must not erase fees on other fills of the same order.
+            if (observed.get("authoritative") is True
+                    and lots(observed["filled_lots"], nonnegative=True) == order["lots"]):
+                order["authoritative_fee"] = exact(observed["fee_rub"], nonnegative=True)
+                order["all_known"] = True
+                order["fee_covered_lots"] = order["lots"]
+        fees = sum((o.get("authoritative_fee", max(o["known_fees"], o.get("cumulative_fee", ZERO)))
+                    for o in orders.values()), ZERO)
+        fees += exact((settlement or {}).get("other_fees_rub", ZERO), nonnegative=True)
         costs_known = all(o.get("fee_covered_lots", -1) <= o["lots"]
                           and (o["all_known"] or o.get("fee_covered_lots", -1) == o["lots"])
                           for o in orders.values())
         funding = sum((exact(a["cost_rub"]) for a in funding_adjustments), ZERO)
+        if settlement is not None and settlement.get("funding_rub") is not None:
+            if funding_adjustments:
+                # A legacy manual record cannot be silently added to or replace
+                # the same cash flow observed by a second authority.
+                costs_known = False
+            else:
+                funding = exact(settlement["funding_rub"])
     return {"signed_lots":signed, "average_entry_price":average, "realized_pnl_rub":realized,
             "fees_rub":fees, "funding_rub":funding, "costs_reconciled":costs_known,
             "last_execution_at":utc(ordered[-1]["executed_at"]) if ordered else None,
@@ -353,6 +383,16 @@ class CurrencyTradeLedger:
           PRIMARY KEY(account_id,instrument_uid,snapshot_id),
           FOREIGN KEY(account_id,instrument_uid) REFERENCES {ACCOUNTS}(account_id,instrument_uid)
         );
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS settlement JSONB;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS fill_fingerprint TEXT;
+        CREATE TABLE IF NOT EXISTS {SETTLEMENTS}(
+          account_id TEXT NOT NULL, instrument_uid TEXT NOT NULL, observation_id TEXT NOT NULL,
+          observed_at TIMESTAMPTZ NOT NULL, requested_through TIMESTAMPTZ NOT NULL,
+          statement_id TEXT, statement_revision BIGINT,
+          evidence JSONB NOT NULL, assessment JSONB NOT NULL, fingerprint TEXT NOT NULL,
+          PRIMARY KEY(account_id,instrument_uid,observation_id),
+          FOREIGN KEY(account_id,instrument_uid) REFERENCES {ACCOUNTS}(account_id,instrument_uid)
+        );
         """)
         return {"status":"READY", "version":VERSION}
 
@@ -441,7 +481,10 @@ class CurrencyTradeLedger:
     def _rebuild(self, c, row):
         params = (row["account_id"], row["instrument_uid"])
         all_rows = lambda table: c.execute(f"SELECT * FROM {table} WHERE account_id=%s AND instrument_uid=%s", params).fetchall()
-        projection = project(all_rows(FILLS), all_rows(FEES), all_rows(FUNDING), self._spec(row))
+        fills = all_rows(FILLS)
+        projection = project(fills, all_rows(FEES), all_rows(FUNDING), self._spec(row),
+                             settlement=row.get("settlement"))
+        projection["fill_fingerprint"] = fills_fingerprint(fills)
         # Polling may repeat the same cumulative fee with a new observation ID.
         # Preserve the financial revision and reconciliation when facts did not
         # change, so an unchanged broker poll cannot invalidate every approval.
@@ -450,13 +493,13 @@ class CurrencyTradeLedger:
         row.update(projection)
         row["ledger_revision"] += 1
         row["reconciled_revision"] = None
-        if not row["signed_lots"] and row["costs_reconciled"]:
+        if not row["signed_lots"] and row["costs_reconciled"] and self._funding_ready(row):
             with localcontext() as ctx:
                 ctx.prec = 64
                 cash_nav = row["allocation_rub"] + row["realized_pnl_rub"] - row["fees_rub"] - row["funding_rub"]
                 row["high_water_rub"] = max(row["high_water_rub"], cash_nav)
         fields = ("signed_lots", "average_entry_price", "realized_pnl_rub", "fees_rub", "funding_rub",
-                  "costs_reconciled", "metadata_reconciled", "last_execution_at", "ledger_revision", "reconciled_revision", "high_water_rub")
+                  "costs_reconciled", "metadata_reconciled", "last_execution_at", "ledger_revision", "reconciled_revision", "high_water_rub", "fill_fingerprint")
         c.execute(f"UPDATE {ACCOUNTS} SET {','.join(k+'=%s' for k in fields)} WHERE account_id=%s",
                   tuple(row[k] for k in fields)+(row["account_id"],))
         c.execute(f"UPDATE {ACCOUNTS} SET held_terms=%s::jsonb WHERE account_id=%s",
@@ -576,7 +619,8 @@ class CurrencyTradeLedger:
     def snapshot(self, account_id, instrument_uid, **kwargs):
         return self._run(self.snapshot_on, account_id, instrument_uid, **kwargs)
 
-    def snapshot_on(self, c, account_id, instrument_uid, *, mark_price, mark_observed_at, spec):
+    def snapshot_on(self, c, account_id, instrument_uid, *, mark_price, mark_observed_at, spec,
+                    allow_high_water_update=True):
         if not self.enabled:
             return {"status":"DISABLED", "entries_allowed":False}
         row = self._load(c, account_id, instrument_uid)
@@ -587,11 +631,33 @@ class CurrencyTradeLedger:
             raise LedgerError("MARK_PREDATES_EXECUTION")
         if row["last_mark_observed_at"] and observed < row["last_mark_observed_at"]:
             raise LedgerError("MARK_OUT_OF_ORDER")
-        result = valuation(row, mark_price, spec)
+        valuation_state = dict(row, costs_reconciled=row["costs_reconciled"] and self._funding_ready(row)
+                               and allow_high_water_update is True)
+        result = valuation(valuation_state, mark_price, spec)
         c.execute(f"UPDATE {ACCOUNTS} SET high_water_rub=%s,last_mark_price=%s,last_mark_observed_at=%s WHERE account_id=%s",
                   (result["high_water_rub"],exact(mark_price, positive=True),observed,row["account_id"]))
         row.update(high_water_rub=result["high_water_rub"],last_mark_price=exact(mark_price),last_mark_observed_at=observed)
         return dict(self._view(row, status="FROZEN" if row["entries_frozen"] else "SNAPSHOT"), **result)
+
+    def _funding_ready(self, row):
+        if row.get("last_execution_at") is None:
+            return True
+        if row.get("costs_reconciled") is not True:
+            return False
+        evidence = row.get("settlement") or {}
+        if (evidence.get("funding_reconciled") is not True
+                or evidence.get("costs_reconciled") is not True
+                or evidence.get("fill_fingerprint") != row.get("fill_fingerprint")):
+            return False
+        try:
+            for key in ("observed_as_of", "requested_through"):
+                _fresh(evidence[key], self.clock(), 30, "SETTLEMENT_OBSERVATION_STALE")
+            through = utc(evidence["settlement_through"])
+            return (through >= utc(evidence["requested_through"])
+                    or (evidence.get("flat_after_settlement") is True and row["signed_lots"] == 0
+                        and utc(row["last_execution_at"]) <= through))
+        except (KeyError, LedgerError):
+            return False
 
     def _view(self, row, *, status):
         matched = row["reconciled_revision"] == row["ledger_revision"]
@@ -601,6 +667,8 @@ class CurrencyTradeLedger:
             fresh = -2 <= age <= 30
         reconciled = bool(matched and fresh and row["metadata_reconciled"]
                           and not row["entries_frozen"] and not row["broker_open_order_count"])
+        funding_ready = self._funding_ready(row)
+        settlement = row.get("settlement") or {}
         return {"status":status, "version":VERSION, "account_id":row["account_id"],
                 "instrument_uid":row["instrument_uid"], "allocation_rub":row["allocation_rub"],
                 "signed_lots":row["signed_lots"], "managed_signed_lots":row["signed_lots"],
@@ -609,7 +677,11 @@ class CurrencyTradeLedger:
                 "high_water_rub":row["high_water_rub"], "ledger_revision":row["ledger_revision"],
                 "spec_revision":row["spec_revision"], "costs_reconciled":row["costs_reconciled"],
                 "metadata_reconciled":row["metadata_reconciled"], "held_terms":row["held_terms"],
-                "reconciled":reconciled, "entries_allowed":reconciled and row["costs_reconciled"],
+                "reconciled":reconciled, "entries_allowed":reconciled and row["costs_reconciled"] and funding_ready,
+                "funding_reconciled":funding_ready,
+                "settlement_observed_as_of":settlement.get("observed_as_of"),
+                "settlement_through":settlement.get("settlement_through"),
+                "settlement_reasons":settlement.get("reasons", []),
                 "entries_frozen":row["entries_frozen"], "freeze_reason":row["freeze_reason"],
                 "broker_signed_lots":row["broker_signed_lots"], "broker_snapshot_id":row["broker_snapshot_id"],
                 "broker_observed_at":row["broker_observed_at"], "mark_observed_at":row["last_mark_observed_at"]}
