@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.7.22-structural-breakout-real-account-console"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.22-structural-breakout-real-account-console"
-UI_VERSION="veritas-ui-v9.1.7.22-structural-breakout-real-account-console"
+PRODUCT_VERSION="veritas-max-product-v91.7.23-structural-breakout-real-account-console"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.23-structural-breakout-real-account-console"
+UI_VERSION="veritas-ui-v9.1.7.23-structural-breakout-real-account-console"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -53,7 +53,7 @@ def snapshot():
             "unqualified_provider_month_not_inferred":True,
         },
         "runtime_read_policy":{
-            "version":"BOUNDED_RUNTIME_READS_V11","historical_fields_use_record_projection":True,
+            "version":"BOUNDED_RUNTIME_READS_V12","historical_fields_use_record_projection":True,"legacy_noop_reads_omit_structural_string_owners":True,"book_accounting_io_measured":True,
             "startup_api_waits_for_bootstrap":True,"single_portfolio_snapshot_refresh":True,
             "snapshot_and_schema_sql_waits_bounded":True,"profit_refresh_positions_projected":True,"post_funding_stop_cost_read_projected":True,"portfolio_http_wait_seconds":1.0,"completed_portfolio_reads_keep_observation_time":True,"protective_fills_advance_snapshot_revision":True,"position_account_payload_reused":True,"entry_decision_display_projected":True,
             "current_portfolio_schema_avoids_ddl":True,"unchanged_portfolio_metadata_avoids_row_locks":True,
