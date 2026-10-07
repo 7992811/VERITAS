@@ -188,19 +188,27 @@ def _bounded_object(expression, maximum=32768):
     return "CASE WHEN jsonb_typeof("+expression+")='object' AND octet_length(("+expression+")::text)<="+str(maximum)+" THEN "+expression+" ELSE NULL END"
 
 
-def payload_projection(alias='t'):
-    # Keep original evidence intact through the shared LI projection. Only a
-    # small explicit set of scalar economics and prospective stamps is added.
+EXTRA_SCALARS=('expected_move_pct','expected_to_stop_ratio','opening_fraction','entry_nav_rub',
+    'entry_probability','pwin','setup_family','regime','entry_regime','entry_signal_tier',
+    'setup_grade','canonical_setup_id','setup_id','normalized_units','normalized_paper_notional',
+    'quantity_semantics','last_add_event_id')
+EXTRA_OBJECTS=('entry_canonical_admission','entry_stop_risk_budget','last_add_stop_risk_budget','last_add_canonical_admission')
+
+
+def _extra_payload_sql(alias='t', *, root_field=None):
     LI._alias(alias)
     root=alias+'.payload'
-    scalars=('expected_move_pct','expected_to_stop_ratio','opening_fraction','entry_nav_rub',
-        'entry_probability','pwin','setup_family','regime','entry_regime','entry_signal_tier',
-        'setup_grade','canonical_setup_id','setup_id','normalized_units','normalized_paper_notional',
-        'quantity_semantics','last_add_event_id')
-    extra=["'"+k+"',"+LI._proof_scalar(root+"->'"+k+"'") for k in scalars]
-    for key in ('entry_canonical_admission','entry_stop_risk_budget','last_add_stop_risk_budget','last_add_canonical_admission'):
-        extra.append("'"+key+"',"+_bounded_object(root+"->'"+key+"'"))
-    return LI.payload_sql(alias)+'||jsonb_build_object('+','.join(extra)+')'
+    field=root_field if root_field is not None else lambda key:root+"->'"+key+"'"
+    extra=["'"+k+"',"+LI._proof_scalar(field(k)) for k in EXTRA_SCALARS]
+    for key in EXTRA_OBJECTS:
+        extra.append("'"+key+"',"+_bounded_object(field(key)))
+    return 'jsonb_build_object('+','.join(extra)+')'
+
+
+def payload_projection(alias='t', *, root_field=None):
+    # Keep original evidence intact through the shared LI projection. Only a
+    # small explicit set of scalar economics and prospective stamps is added.
+    return LI.payload_sql(alias,root_field=root_field)+'||'+_extra_payload_sql(alias,root_field=root_field)
 
 
 class TradeLearning:
@@ -223,6 +231,21 @@ class TradeLearning:
     def _projection(self):
         fields=','.join('t.'+key for key in LI.TRADE_FIELDS)
         return fields+',t.portfolio_name,t.setup,t.max_fraction,t.avg_entry_price,t.avg_exit_price,'+payload_projection()+' AS payload'
+    def _rows_sql(self, selected, source, *, extra_columns=(), evidence_hash=False, order='closed_at,trade_id'):
+        # Select/lock only scalar IDs first. Reuse compact evidence for its
+        # hash; root extraction never walks the original JSON per proof field.
+        fields=LI.TRADE_FIELDS+('portfolio_name','setup','max_fraction','avg_entry_price','avg_exit_price')
+        root_field=lambda key:'trade_payload.'+key
+        record=LI.payload_record_sql('t',record_alias='trade_payload',extra_fields=EXTRA_SCALARS+EXTRA_OBJECTS)
+        extras=''.join(','+expression+' AS '+name for expression,name in extra_columns)
+        projection=(','.join('t.'+key for key in fields)+','+
+            LI._evidence_sql('t',root_field=root_field)+' AS source_evidence,'+
+            _extra_payload_sql(root_field=root_field)+' AS learning_payload'+extras)
+        output=','.join(fields)+",(source_evidence->'payload'||learning_payload) AS payload"
+        output+=''.join(','+name for _,name in extra_columns)
+        if evidence_hash:output+=',md5(source_evidence::text) AS learning_evidence_hash'
+        return ('WITH selected AS MATERIALIZED ('+selected+'),projected AS MATERIALIZED (SELECT '+
+                projection+' '+source+record+') SELECT '+output+' FROM projected ORDER BY '+order)
     def ensure_schema(self,context=None):
         with self._transaction(context) as c:
             getattr(self.ns['VP'],'_v90r29_ensure')(c)
@@ -242,11 +265,12 @@ class TradeLearning:
         try:
             if phase=='materialize':
                 with self._transaction(context) as c:
-                    rows=c.execute('SELECT '+self._projection()+''' FROM paper_trades t
+                    selected='''SELECT t.trade_id FROM paper_trades t
                         LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
                         WHERE e.trade_id IS NULL AND t.closed_at IS NOT NULL
                           AND t.status IN ('CLOSED','CLOSE','EXITED') AND t.opened_at>=%s::timestamptz
-                        ORDER BY t.closed_at,t.trade_id LIMIT %s FOR UPDATE OF t SKIP LOCKED''',
+                        ORDER BY t.closed_at,t.trade_id LIMIT %s FOR UPDATE OF t SKIP LOCKED'''
+                    rows=c.execute(self._rows_sql(selected,'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id'),
                         (EPOCH,BATCH_SIZE)).fetchall()
                     upsert=getattr(self.ns['VP'],'_v90r29_upsert_episode')
                     for row in rows:
@@ -262,15 +286,17 @@ class TradeLearning:
             elif phase=='export':
                 after=cursor.get('after') or [EPOCH,'']
                 with self._transaction(context) as c:
-                    rows=c.execute('SELECT '+self._projection()+''',e.learning_eligible AS episode_eligible,
-                        e.payload->'learning_integrity' AS learning_integrity,
-                        e.payload->>'learning_exclusion_reason' AS learning_exclusion_reason,'''+
-                        LI.evidence_hash_sql('t')+''' AS learning_evidence_hash
-                        FROM paper_trades t LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
+                    selected='''SELECT t.trade_id FROM paper_trades t
                         WHERE t.closed_at IS NOT NULL AND t.status IN ('CLOSED','CLOSE','EXITED')
                           AND t.opened_at>=%s::timestamptz
                           AND (t.closed_at,t.trade_id)>(%s::timestamptz,%s)
-                        ORDER BY t.closed_at,t.trade_id LIMIT %s''',(EPOCH,*after,BATCH_SIZE)).fetchall()
+                        ORDER BY t.closed_at,t.trade_id LIMIT %s'''
+                    rows=c.execute(self._rows_sql(selected,
+                        'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id',
+                        extra_columns=(('e.learning_eligible','episode_eligible'),
+                            ("e.payload->'learning_integrity'",'learning_integrity'),
+                            ("e.payload->>'learning_exclusion_reason'",'learning_exclusion_reason')),evidence_hash=True),
+                        (EPOCH,*after,BATCH_SIZE)).fetchall()
                 observations=[];exclusions=Counter()
                 clock=datetime.now(timezone.utc)
                 for raw in rows:
@@ -311,15 +337,16 @@ class TradeLearning:
                     if cursor.get('recheck_epoch')!=epoch:
                         cursor['recheck_epoch']=epoch;cursor['recheck_after']=''
                     with self._transaction(context) as c:
-                        rows=c.execute('SELECT '+self._projection()+''',e.learning_eligible AS episode_eligible,
-                            e.payload->'learning_integrity' AS learning_integrity,
-                            e.payload->>'learning_exclusion_reason' AS learning_exclusion_reason,'''+
-                            LI.evidence_hash_sql('t')+''' AS learning_evidence_hash,
-                            r.trade_id AS receipt_trade_id,r.observation AS original_observation,
-                            r.evidence_hash AS original_evidence_hash
-                            FROM learning_trade_receipts r LEFT JOIN paper_trades t ON t.trade_id=r.trade_id
-                            LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
-                            WHERE r.valid=TRUE AND r.trade_id>%s ORDER BY r.trade_id LIMIT %s''',
+                        selected='''SELECT r.trade_id FROM learning_trade_receipts r
+                            WHERE r.valid=TRUE AND r.trade_id>%s ORDER BY r.trade_id LIMIT %s'''
+                        rows=c.execute(self._rows_sql(selected,
+                            'FROM selected JOIN learning_trade_receipts r ON r.trade_id=selected.trade_id LEFT JOIN paper_trades t ON t.trade_id=r.trade_id LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id',
+                            extra_columns=(('e.learning_eligible','episode_eligible'),
+                                ("e.payload->'learning_integrity'",'learning_integrity'),
+                                ("e.payload->>'learning_exclusion_reason'",'learning_exclusion_reason'),
+                                ('r.trade_id','receipt_trade_id'),('r.observation','original_observation'),
+                                ('r.evidence_hash','original_evidence_hash')),
+                            evidence_hash=True,order='receipt_trade_id'),
                             (cursor.get('recheck_after',''),BATCH_SIZE)).fetchall()
                     revoked=[];ids=[];clock=datetime.now(timezone.utc)
                     for raw in rows:

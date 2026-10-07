@@ -21,6 +21,9 @@ from veritas_learning_measurement import (
 VERSION = "ami-v1.1"
 _CACHE = {"at": 0.0, "epoch": None, "value": None}
 _BUILD_LOCK = threading.Lock()
+_SNAPSHOT = None
+_REFRESH_STATE = {"status": "NOT_STARTED", "last_error": None}
+_RESTORED_EPOCH = None
 MOVE_THRESHOLDS = {
     "5m": 0.0015,
     "1h": 0.012,
@@ -329,17 +332,15 @@ def _baseline(c, score, components, component_status):
         return {"score": None, "components": {}, "captured_at": None, "version": None}
 
 
-def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, cache_seconds=55):
+def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, cache_seconds=55, publish=True):
     now = time.time()
     if (_CACHE.get("value") is not None and _CACHE.get("epoch") == production_epoch
             and now - float(_CACHE.get("at") or 0.0) < cache_seconds):
         return dict(_CACHE["value"])
 
     with pg_connect() as c:
-        try:
-            c.execute("SET LOCAL statement_timeout TO '7s'")
-        except Exception:
-            pass
+        # refresh_snapshot owns the explicit transaction and query deadline.
+        # SET LOCAL on the production autocommit connection alone has no effect.
         episodes = _query_decision_episodes(c)
         veritas = _decision_metrics(episodes)
         generic = _decision_metrics(episodes, "reference_decision")
@@ -494,8 +495,24 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
             "Missing measurements are null; the fixed 100-point scale is not renormalized.",
         ],
     }
-    _CACHE.update({"at": now, "epoch": production_epoch, "value": value})
+    if publish:
+        _publish_cache(value, production_epoch, time.time())
     return dict(value)
+
+
+def _publish_cache(value, epoch, observed_at):
+    from veritas_scorecard_delivery import publish_cache
+    return publish_cache(globals(), value, epoch, observed_at)
+
+
+def cached_scorecard(production_epoch, max_age_seconds=120):
+    from veritas_scorecard_delivery import cached_scorecard
+    return cached_scorecard(globals(), production_epoch, max_age_seconds)
+
+
+def refresh_snapshot(pg_connect, learning_progress, production_epoch, *, context=None):
+    from veritas_scorecard_delivery import refresh_snapshot
+    return refresh_snapshot(globals(), pg_connect, learning_progress, production_epoch, context=context)
 
 
 def build_scorecard(pg_connect, learning_progress, production_epoch, cache_seconds=55):
@@ -507,33 +524,5 @@ def build_scorecard(pg_connect, learning_progress, production_epoch, cache_secon
 
 
 def startup_snapshot(pg_connect, learning_progress, production_epoch, delay_seconds=12):
-    """Emit one bounded diagnostic snapshot after service startup."""
-    try:
-        time.sleep(max(0.0, float(delay_seconds or 0.0)))
-        value = build_scorecard(pg_connect, learning_progress(), production_epoch, cache_seconds=0)
-        b = value.get("benchmarks") or {}
-        stateless = b.get("stateless_ai") or {}
-        print(json.dumps({
-            "event": "V90_ASSET_MANAGEMENT_INTELLIGENCE",
-            "version": value.get("version"),
-            "score": value.get("score"),
-            "stage": value.get("stage"),
-            "confidence": value.get("confidence"),
-            "components": value.get("components"),
-            "component_status": value.get("component_status"),
-            "coverage": value.get("coverage"),
-            "initial_veritas": b.get("initial_veritas_decision_learning"),
-            "stateless_ai": {
-                "status": stateless.get("status"),
-                "sample_n": stateless.get("sample_n"),
-                "hit_rate_delta_pp": stateless.get("hit_rate_delta_pp"),
-                "large_move_capture_delta_pp": stateless.get("large_move_capture_delta_pp"),
-                "normalized_utility_delta": stateless.get("normalized_utility_delta"),
-            },
-            "fresh_candidate_trades": ((value.get("evidence") or {}).get("fresh_candidate_trades") or {}).get("n"),
-        }, ensure_ascii=False, default=str, separators=(",", ":")), flush=True)
-    except Exception as ex:
-        print(json.dumps({
-            "event": "V90_ASSET_MANAGEMENT_INTELLIGENCE_ERROR",
-            "error": f"{type(ex).__name__}: {ex}"[:300],
-        }, ensure_ascii=False, separators=(",", ":")), flush=True)
+    from veritas_scorecard_delivery import startup_snapshot
+    return startup_snapshot(globals(), production_epoch, delay_seconds)

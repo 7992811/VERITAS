@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import timedelta
 import json
 import os
+import re
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -135,6 +136,57 @@ class TradeObservationTests(unittest.TestCase):
         self.assertEqual(exact['stop_error_rate'],0.)
 
 
+class TradeProjectionContractTests(unittest.TestCase):
+    def test_generated_record_declares_all_proof_and_admission_fields_once(self):
+        worker=T.TradeLearning({})
+        query=worker._rows_sql('SELECT trade_id FROM paper_trades ORDER BY closed_at,trade_id LIMIT 4',
+            'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id',evidence_hash=True)
+        self.assertEqual(query.count('jsonb_to_record('),1)
+        self.assertEqual(query.count('t.payload'),2)
+        self.assertNotIn('t.payload->',query)
+        self.assertIn('md5(source_evidence::text)',query)
+        self.assertIn('selected AS MATERIALIZED',query)
+        self.assertIn('projected AS MATERIALIZED',query)
+        names=set(re.findall(r'\btrade_payload\.([A-Za-z_]\w*)',query))
+        declaration=query.split('AS trade_payload(',1)[1].split(')',1)[0]
+        declared=set(re.findall(r'([A-Za-z_]\w*) jsonb',declaration))
+        self.assertEqual(names,declared)
+        self.assertTrue(set(T.EXTRA_SCALARS+T.EXTRA_OBJECTS).issubset(declared))
+
+    def test_validation_keeps_full_quarantine_and_conditional_source_hash_after_bounded_read(self):
+        queries=[]
+        class Connection:
+            def execute(self,sql,args=()):
+                queries.append(sql)
+                if 'AS revoked FROM staged' in sql:
+                    return SimpleNamespace(fetchone=lambda:{'n':0,'revoked':0})
+                if 'WITH retry AS' in sql:
+                    return SimpleNamespace(rowcount=0)
+                if 'WITH selected AS MATERIALIZED' in sql:
+                    return SimpleNamespace(fetchall=lambda:[dict(episode_trade_id='trade',prior={},
+                        trade={'asset':'ETH','direction':'LONG'},evidence_hash='immutable')])
+                if 'SELECT 1 FROM v90_learning_episodes' in sql:
+                    return SimpleNamespace(fetchone=lambda:None)
+                if 'UPDATE v90_learning_episodes e SET learning_eligible=' in sql:
+                    return SimpleNamespace(rowcount=1)
+                if 'SELECT count(*) AS n FROM v90_learning_episodes' in sql:
+                    return SimpleNamespace(fetchone=lambda:{'n':0})
+                raise AssertionError(sql[:100])
+        diagnosis=dict(learning_eligible=True,primary_attribution='GOOD_EXECUTION',
+                       attributions=['GOOD_EXECUTION'],learning_action='RETAIN_RULE')
+        with patch.object(LI,'trade_exclusion',return_value=None), \
+                patch.object(LI.AUDIT,'observed_event',return_value=('event',None)), \
+                patch.object(LI.DIAGNOSTICS,'diagnose',return_value=diagnosis):
+            self.assertEqual(LI._revalidate_eligible(Connection(),batch_size=4)['verified'],1)
+        self.assertNotIn('LIMIT',queries[0])
+        for query in (queries[0],queries[2],queries[4]):
+            self.assertEqual(query.count('jsonb_to_record('),1)
+            self.assertEqual(query.count('t.payload'),2)
+        self.assertIn('FOR UPDATE OF e SKIP LOCKED',queries[2])
+        self.assertIn('md5(trade::text)',queries[2])
+        self.assertIn('AND (NOT %s OR EXISTS',queries[4])
+
+
 class ReceiptSweepTests(unittest.TestCase):
     def setUp(self):
         self.saved=(LI._GENERATION,LI._REVOCATION_GENERATION,LI._UNCONFIRMED)
@@ -207,6 +259,57 @@ class TradeLearningSQLTests(unittest.TestCase):
         with self.connect() as c:
             c.execute('INSERT INTO paper_trades('+','.join(fields)+',payload) VALUES ('+
                       ','.join(['%s']*len(fields))+',%s::jsonb)',tuple(t[k] for k in fields)+(json.dumps(t['payload']),))
+
+    def test_record_and_reused_evidence_equal_original_hash_for_native_malformed_and_large_payloads(self):
+        self.create_trade_tables();trade,_=stamped_trade();self.insert(trade)
+        original=deepcopy(trade['payload'])
+        oversized=deepcopy(original);oversized['entry_event_snapshot']['unused']='x'*140000
+        malformed=deepcopy(original)
+        malformed.update(entry_event_snapshot=[],entry_canonical_admission=False,
+                         normalized_units={'bad':1},price_source_lock='invalid')
+        bulky=deepcopy(original);bulky['unused_history']=['x'*8192]*64
+        variants=[('native',original),('bulky',bulky),('oversized',oversized),('malformed',malformed),
+                  ('empty',{}),('json_null',None),('false',False),('array',[]),('string','legacy'),('sql_null',None)]
+        selected='SELECT trade_id FROM paper_trades WHERE trade_id=%s'
+        query=self.worker._rows_sql(selected,'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id',evidence_hash=True)
+        with self.connect() as c:
+            for name,payload in variants:
+                with self.subTest(shape=name):
+                    c.execute('UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id=%s',
+                              (None if name=='sql_null' else json.dumps(payload),trade['trade_id']))
+                    before=dict(c.execute('SELECT '+self.worker._projection()+','+LI.evidence_hash_sql()+
+                        ' AS learning_evidence_hash FROM paper_trades t WHERE trade_id=%s',(trade['trade_id'],)).fetchone())
+                    after=dict(c.execute(query,(trade['trade_id'],)).fetchone())
+                    self.assertEqual(after,before)
+                    record=LI.payload_record_sql()
+                    row=c.execute('SELECT '+LI.evidence_hash_sql()+ ' AS original,'+
+                        LI.evidence_hash_sql(root_field=lambda key:'evidence_payload.'+key)+
+                        ' AS projected FROM paper_trades t '+record+' WHERE trade_id=%s',(trade['trade_id'],)).fetchone()
+                    self.assertEqual(row['projected'],row['original'])
+                    if name in ('native','bulky'):
+                        self.assertEqual(after['payload']['entry_event_snapshot'],original['entry_event_snapshot'])
+                        self.assertEqual(after['payload']['entry_canonical_admission'],original['entry_canonical_admission'])
+                        self.assertNotIn('unused_history',after['payload'])
+
+    def test_selected_order_and_missing_trade_receipt_survive_record_projection(self):
+        self.create_trade_tables();trade,_=stamped_trade()
+        for index in (3,1,2):
+            row=deepcopy(trade);row['trade_id']=str(index);row['closed_at']+=timedelta(minutes=index)
+            self.insert(row)
+        with self.connect() as c:
+            query=self.worker._rows_sql('SELECT trade_id FROM paper_trades ORDER BY closed_at,trade_id LIMIT 2',
+                'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id',evidence_hash=True)
+            self.assertEqual([r['trade_id'] for r in c.execute(query).fetchall()],['1','2'])
+            c.execute("INSERT INTO learning_trade_receipts VALUES('missing','ETH','event','hash','{}'::jsonb,TRUE,now())")
+            source='FROM selected JOIN learning_trade_receipts r ON r.trade_id=selected.trade_id LEFT JOIN paper_trades t ON t.trade_id=r.trade_id'
+            optimized=self.worker._rows_sql('SELECT trade_id FROM learning_trade_receipts',source,
+                extra_columns=(('r.trade_id','receipt_trade_id'),),evidence_hash=True,order='receipt_trade_id')
+            after=dict(c.execute(optimized).fetchone())
+            before=dict(c.execute('SELECT '+self.worker._projection()+',r.trade_id AS receipt_trade_id,'+
+                LI.evidence_hash_sql()+' AS learning_evidence_hash FROM learning_trade_receipts r '+
+                'LEFT JOIN paper_trades t ON t.trade_id=r.trade_id').fetchone())
+            self.assertEqual(after,before)
+            self.assertIsNone(after['trade_id']);self.assertEqual(after['receipt_trade_id'],'missing')
 
     def test_all_phases_replay_without_duplicate_learning_and_revoke_removed_event(self):
         self.create_trade_tables();t,candidate=stamped_trade();self.insert(t)

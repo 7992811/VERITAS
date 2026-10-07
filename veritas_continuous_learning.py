@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import threading
 import time
 
@@ -19,6 +20,8 @@ import veritas_learning_index as INDEX
 import veritas_learning_state as STORE
 import veritas_price_source as SOURCE
 import veritas_knowledge_validation as KNOWLEDGE
+import veritas_asset_management_intelligence as INTELLIGENCE
+import veritas_scorecard_delivery as SCORECARD
 
 VERSION = "CONTINUOUS_LEARNING_V1"
 OUTCOME_VERSION = "FIRST_VERIFIED_QUOTE_AFTER_HORIZON_V1"
@@ -26,6 +29,8 @@ PROGRESS_VERSION = "NONOVERLAPPING_LEARNING_PROGRESS_V1"
 HORIZON_SECONDS = {"1m": 60, "5m": 300, "1h": 3600, "4h": 14400,
                    "1d": 86400, "3d": 259200, "7d": 604800}
 BATCH = 32
+INGEST_BATCH = 8
+INITIAL_LOOKBACK = 2000
 MAX_PENDING = 4096
 MAX_PROVENANCE_BYTES = 16384
 
@@ -180,6 +185,7 @@ class ContinuousLearning:
                 ("learning_knowledge_catalog", self.knowledge_catalog, 60, 6),
                 ("learning_trade_evidence", self.trades, 30, 6),
                 ("learning_progress", self.progress, 120, 6),
+                ("learning_intelligence", self.intelligence, 60, 6),
                 ("learning_memory", self.memory, 300, 6))
         for name, fn, interval, seconds in jobs:
             callback = fn if name == "learning_bootstrap" else self._callback(name, fn)
@@ -201,7 +207,16 @@ class ContinuousLearning:
             try:
                 result, cursor = operation(context, cursor)
                 context.check()
-                if str(result.get("status", "")).upper() not in ("OK", "NO_WORK", "PROGRESS"):
+                status = str(result.get("status", "")).upper()
+                if status == "RETRY" or status.startswith("DEFERRED"):
+                    # Waiting for a shared lease is not a failed experiment.
+                    # It must neither advance the source cursor nor replace the
+                    # last successful result with a misleading completion.
+                    if not STORE.checkpoint_job(self.connect, lease, status="RETRY", result=result,
+                                                retry_after_seconds=10):
+                        raise RuntimeError("learning lease expired before retry checkpoint")
+                    return result
+                if status not in ("OK", "NO_WORK", "PROGRESS"):
                     raise RuntimeError("incomplete learning job: "+str(result.get("status")))
                 if not STORE.checkpoint_job(self.connect, lease, status="OK", cursor=cursor, result=result):
                     raise RuntimeError("learning lease expired before checkpoint")
@@ -274,25 +289,55 @@ class ContinuousLearning:
         inserted = missing = coalesced = 0
         with transaction(self.connect, context) as c:
             if "last_id" not in cursor:
-                # A newly installed evidence protocol starts at its first
-                # captured row, without spending hours replaying legacy JSON.
-                tail = c.execute("SELECT id,payload ? 'learning_provenance' AS captured FROM ledger_events WHERE event_type='decision' ORDER BY event_ts DESC LIMIT 2000").fetchall()
-                captured = [r["id"] for r in tail if r["captured"]]
-                last_id = min(captured)-1 if captured else max((r["id"] for r in tail), default=0)
-                cursor = dict(cursor, initial_watermark=last_id)
+                # Discover the replay boundary using only indexed metadata.
+                # Looking for one JSON key in 2,000 legacy payloads repeatedly
+                # decompressed their full TOAST values and timed out in prod.
+                tail = c.execute("SELECT id FROM ledger_events WHERE event_type='decision' ORDER BY id DESC LIMIT %s",
+                                 (INITIAL_LOOKBACK,)).fetchall()
+                ids = [r["id"] for r in tail]
+                last_id = max(ids, default=0)
+                cursor = dict(cursor, initial_watermark=last_id,
+                              backfill_last_id=min(ids)-1 if ids else 0,
+                              backfill_until_id=last_id)
                 context.check()
             pending = c.execute("SELECT COUNT(*) n FROM (SELECT id FROM learning_forecasts WHERE status='PENDING' LIMIT %s) q", (MAX_PENDING,)).fetchone()["n"]
             if pending >= MAX_PENDING:
                 raise RuntimeError("PENDING_FORECAST_CAPACITY_REACHED")
-            rows = c.execute("""SELECT id,entity_key,asset,horizon,
-                CASE WHEN octet_length((payload->'learning_provenance')::text)<=%s
-                     THEN payload->'learning_provenance' END provenance
-                FROM ledger_events WHERE id>%s AND event_type='decision' ORDER BY id LIMIT %s""",
-                             (MAX_PROVENANCE_BYTES, last_id, BATCH)).fetchall()
+            def read(after, limit, until=None):
+                if limit <= 0:
+                    return []
+                upper = " AND id<=%s" if until is not None else ""
+                args = (after, until, limit, MAX_PROVENANCE_BYTES) if until is not None else (after, limit, MAX_PROVENANCE_BYTES)
+                return c.execute("""WITH ids AS MATERIALIZED (
+                    SELECT id,entity_key,asset,horizon FROM ledger_events
+                    WHERE id>%s AND event_type='decision'"""+upper+""" ORDER BY id LIMIT %s
+                ), extracted AS MATERIALIZED (
+                    SELECT i.*,e.payload->'learning_provenance' AS provenance
+                    FROM ids i JOIN ledger_events e ON e.id=i.id
+                ) SELECT id,entity_key,asset,horizon,
+                    CASE WHEN octet_length(provenance::text)<=%s THEN provenance END provenance
+                  FROM extracted ORDER BY id""", args).fetchall()
+            # New decisions retain priority while the bounded legacy tail is
+            # replayed. Otherwise a large old tail can make every short-horizon
+            # observation expire before the reader ever reaches current data.
+            live = read(last_id, INGEST_BATCH)
+            backfill_id = int(cursor.get("backfill_last_id") or 0)
+            backfill_until = int(cursor.get("backfill_until_id") or 0)
+            backfill = read(backfill_id, INGEST_BATCH-len(live), backfill_until) if backfill_id < backfill_until else []
+            rows = live+backfill
+            existing = {r["entity_key"]: r["evidence_hash"] for r in c.execute(
+                "SELECT entity_key,evidence->>'evidence_hash' evidence_hash FROM learning_forecasts WHERE entity_key=ANY(%s)",
+                ([r["entity_key"] for r in rows],)).fetchall()} if rows else {}
             for row in rows:
                 context.check()
                 forecast, reason = forecast_from_ledger(row)
                 if forecast:
+                    if existing.get(row["entity_key"]) == forecast["evidence"]["evidence_hash"]:
+                        # A previous transaction may have committed the seal
+                        # before its separate job checkpoint was interrupted.
+                        # The immutable row counts once when that cursor retries.
+                        inserted += 1
+                        continue
                     got = c.execute("""INSERT INTO learning_forecasts
                         (entity_key,decision_at,due_at,expires_at,asset,horizon,source_key,evidence)
                         SELECT %s,%s,%s,%s,%s,%s,%s,%s::jsonb
@@ -307,13 +352,24 @@ class ContinuousLearning:
                     coalesced += not bool(got)
                 else:
                     missing += 1
-                last_id = row["id"]
+            if live:
+                last_id = live[-1]["id"]
+            if backfill:
+                backfill_id = backfill[-1]["id"]
+            elif len(live) < INGEST_BATCH:
+                backfill_id = backfill_until
         cursor = dict(cursor, last_id=last_id, imported=int(cursor.get("imported") or 0)+inserted,
+                      backfill_last_id=backfill_id,
+                      scanned=int(cursor.get("scanned") or 0)+len(rows),
                       coalesced=int(cursor.get("coalesced") or 0)+coalesced,
                       missing_provenance=int(cursor.get("missing_provenance") or 0)+missing)
         with self._lock:
             self._stats["processed_decisions"] = cursor["imported"]
+            self._stats["scanned_decisions"] = cursor["scanned"]
+            self._stats["excluded_missing_provenance"] = cursor["missing_provenance"]
+            self._stats["backfill_pending"] = backfill_id < backfill_until
         return {"status": "OK", "imported": inserted, "coalesced": coalesced, "excluded_missing_provenance": missing,
+                "scanned": len(rows), "backfill_pending": backfill_id < backfill_until,
                 "pending_before": pending, "cursor": last_id}, cursor
 
     def _quote(self, forecast, now):
@@ -379,10 +435,23 @@ class ContinuousLearning:
         return {k: v for k, v in result.items() if k != "snapshot"}, cursor
 
     def knowledge_catalog(self, context, cursor):
-        return KNOWLEDGE.refresh_catalog(self.connect, context=context), cursor
+        result = KNOWLEDGE.refresh_catalog(self.connect, context=context, cursor=cursor)
+        return result, result.get("cursor", cursor)
 
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
+
+    def intelligence(self, context, cursor):
+        if cursor.get("phase") == "daily":
+            result = SCORECARD.refresh_daily(self.ns, self.connect, self.ns["learning_progress"](), context=context)
+            if result.get("status") in ("OK", "NO_WORK"):
+                cursor = dict(cursor, phase="scorecard")
+            return result, cursor
+        epoch = os.getenv("VERITAS_PRODUCTION_CANDIDATE_EPOCH", "2026-09-30T04:59:29.357862+00:00")
+        result = INTELLIGENCE.refresh_snapshot(self.connect, self.ns["learning_progress"](), epoch, context=context)
+        if result.get("status") == "OK":
+            cursor = dict(cursor, phase="daily")
+        return result, cursor
 
     def progress(self, context, cursor):
         value = self.compute_progress(context)

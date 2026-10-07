@@ -146,6 +146,36 @@ class ProducerContracts(unittest.TestCase):
                 app._callback("test", lambda context, cursor: ({"status": "OK"}, {"last_id": 4}))()
         self.assertIsNone(app._stats["last_success_at"])
 
+    def test_deferred_operation_preserves_cursor_and_last_good_result(self):
+        app = C.ContinuousLearning(namespace(lambda: None)); app.ready = True
+        with patch.object(STORE, "claim_job", return_value={"cursor": {"last_id": 7}}), \
+             patch.object(STORE, "checkpoint_job", return_value=True) as checkpoint:
+            result = app._callback("test", lambda context, cursor: (
+                {"status": "RETRY", "reason": "SHARED_WORKER_BUSY"}, {"last_id": 999}))()
+        self.assertEqual(result["status"], "RETRY")
+        self.assertEqual(checkpoint.call_args.kwargs["status"], "RETRY")
+        self.assertNotIn("cursor", checkpoint.call_args.kwargs)
+        self.assertIsNone(app._stats["last_success_at"])
+        self.assertIsNone(app._stats["last_error"])
+
+    def test_scorecard_and_daily_progress_both_receive_background_turns(self):
+        app = C.ContinuousLearning(namespace(lambda: None))
+        context = C.Budget(app.lane)
+        with patch.object(C.INTELLIGENCE, 'refresh_snapshot', return_value={'status': 'RETRY'}) as score, \
+             patch.object(C.SCORECARD, 'refresh_daily', return_value={'status': 'OK'}, create=True) as daily:
+            result, cursor = app.intelligence(context, {})
+            self.assertEqual(result['status'], 'RETRY')
+            self.assertEqual(cursor, {})
+            daily.assert_not_called()
+            score.return_value = {'status': 'OK'}
+            _, cursor = app.intelligence(context, cursor)
+            self.assertEqual(cursor['phase'], 'daily')
+            _, cursor = app.intelligence(context, cursor)
+            self.assertEqual(cursor['phase'], 'scorecard')
+            self.assertEqual(daily.call_count, 1)
+            self.assertIs(daily.call_args.args[0], app.ns)
+            self.assertEqual(score.call_count, 2)
+
 
 @unittest.skipUnless(os.getenv("VERITAS_QUALITY_TEST_DSN"), "isolated PostgreSQL test database not configured")
 class ContinuousPipelineSQLTests(unittest.TestCase):
@@ -233,6 +263,72 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
         self.assertGreater(cursor["last_id"], 0)
         again, _ = self.call(self.app.ingest, cursor)
         self.assertEqual(again["excluded_missing_provenance"], 0)
+
+    def test_initial_replay_is_bounded_and_new_decisions_have_priority(self):
+        # A large legacy tail cannot consume the current quote's entire
+        # observation window. Keep separate durable live/replay watermarks.
+        with self.connect() as c:
+            c.execute("""INSERT INTO ledger_events(entity_key,event_type,asset,horizon,payload)
+                SELECT 'legacy-'||n,'decision','BTC','1m','{}'::jsonb
+                FROM generate_series(1,%s) n""", (C.INGEST_BATCH*3,))
+        first, cursor = self.call(self.app.ingest)
+        self.assertEqual(first["scanned"], C.INGEST_BATCH)
+        self.assertTrue(first["backfill_pending"])
+        initial_live = cursor["last_id"]
+        self.insert_decision("fresh-during-replay")
+        current, cursor = self.call(self.app.ingest, cursor)
+        self.assertEqual(current["imported"], 1)
+        self.assertEqual(current["scanned"], C.INGEST_BATCH)
+        self.assertGreater(cursor["last_id"], initial_live)
+        for _ in range(4):
+            result, cursor = self.call(self.app.ingest, cursor)
+        self.assertFalse(result["backfill_pending"])
+        self.assertEqual(cursor["scanned"], C.INGEST_BATCH*3+1)
+        self.assertEqual(cursor["missing_provenance"], C.INGEST_BATCH*3)
+        self.assertEqual(cursor["imported"], 1)
+        with self.connect() as c:
+            self.assertEqual(c.execute("SELECT count(*) n FROM learning_forecasts").fetchone()["n"], 1)
+
+    def test_legacy_forward_cursor_resumes_without_replaying_old_records(self):
+        self.insert_decision("already-scanned")
+        with self.connect() as c:
+            previous = c.execute("SELECT max(id) n FROM ledger_events").fetchone()["n"]
+        self.insert_decision("new-after-upgrade")
+        result, cursor = self.call(self.app.ingest, {"last_id": previous, "imported": 5})
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(cursor["imported"], 6)
+        self.assertFalse(result["backfill_pending"])
+        with self.connect() as c:
+            rows = c.execute("SELECT entity_key FROM learning_forecasts").fetchall()
+            self.assertEqual([r["entity_key"] for r in rows], ["new-after-upgrade"])
+
+    def test_replay_limit_uses_insert_order_when_event_clocks_differ(self):
+        with self.connect() as c:
+            c.execute("""INSERT INTO ledger_events(entity_key,event_type,asset,horizon,payload,event_ts)
+                VALUES ('old-id-future-clock','decision','BTC','1m','{}','2030-01-01'),
+                       ('middle-1','decision','BTC','1m','{}','2020-01-01'),
+                       ('middle-2','decision','BTC','1m','{}','2021-01-01'),
+                       ('newest-id','decision','BTC','1m','{}','2029-01-01')""")
+        with patch.object(C, 'INITIAL_LOOKBACK', 2):
+            result, cursor = self.call(self.app.ingest)
+        self.assertEqual(result['scanned'], 2)
+        self.assertEqual(cursor['missing_provenance'], 2)
+        self.assertFalse(cursor['backfill_last_id'] < cursor['backfill_until_id'])
+
+    def test_committed_seal_before_lost_checkpoint_is_counted_once_on_retry(self):
+        _, cursor = self.call(self.app.ingest)
+        self.insert_decision("committed-before-checkpoint")
+        original = deepcopy(cursor)
+        first, advanced = self.call(self.app.ingest, original)
+        self.assertEqual(first["imported"], 1)
+        # Recreate exactly the original durable job cursor after a process
+        # interruption between forecast commit and job checkpoint commit.
+        replay, recovered = self.call(self.app.ingest, cursor)
+        self.assertEqual(replay["imported"], 1)
+        self.assertEqual(recovered["imported"], advanced["imported"])
+        self.assertEqual(recovered["last_id"], advanced["last_id"])
+        with self.connect() as c:
+            self.assertEqual(c.execute("SELECT count(*) n FROM learning_forecasts").fetchone()["n"], 1)
 
     def test_repeated_unresolved_scope_preserves_first_seal_and_leaves_queue_capacity(self):
         _,cursor=self.call(self.app.ingest)

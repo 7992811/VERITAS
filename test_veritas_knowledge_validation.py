@@ -2,6 +2,7 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import inspect
 import json
 import os
 import unittest
@@ -235,6 +236,21 @@ class KnowledgeContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             K._definition(dict(RULE, hypothesis="x"*9000))
 
+    def test_rule_page_uses_audit_pk_join_without_archive_hash_scan(self):
+        source = inspect.getsource(K._catalog_rules)
+        self.assertNotIn("knowledge_candidates", source)
+        self.assertNotIn("sha256", source)
+        self.assertIn("a.source_id=p.source_id", source)
+        self.assertEqual(K.CATALOG_RULE_BATCH, 8)
+        self.assertLessEqual(K.CATALOG_AUDIT_BATCH, 32)
+
+    def test_withdrawn_then_restored_identical_audit_requires_new_proof_identity(self):
+        one = K._registration(RULE, ACADEMIC, AUDIT, T0, audit_revision=1)
+        three = K._registration(RULE, ACADEMIC, AUDIT, T0, audit_revision=3)
+        self.assertEqual(one["audit_hash"], three["audit_hash"])
+        self.assertNotEqual(one["rule_key"], three["rule_key"])
+        self.assertTrue(K._rule_valid(three, T0))
+
     def test_proven_advice_is_minimum_size_only_and_expiry_is_immediate(self):
         candidate, at = proven()
         entry = registration(); entry["checked_at"] = at.isoformat()
@@ -317,6 +333,8 @@ class KnowledgeValidationSQLTests(unittest.TestCase):
 
     def _ready(self):
         result = K.refresh_catalog(self.connect, now=T0)
+        self.assertEqual(result["phase"], "audit_index")
+        result = K.refresh_catalog(self.connect, now=T0)
         self.assertEqual(result["audited"], 1)
         match = K.capture(self.rule, now=T0)
         self.assertIsNotNone(match)
@@ -333,6 +351,7 @@ class KnowledgeValidationSQLTests(unittest.TestCase):
         self.assertEqual(K.capture(self.rule, now=T0+timedelta(minutes=2)), first)
         with self.connect() as c:
             c.execute("UPDATE knowledge_candidates SET metadata=%s::jsonb", (json.dumps(dict(llm_audit=dict(AUDIT, decision="REJECT"))),))
+        K.refresh_catalog(self.connect, now=T0+timedelta(minutes=3))
         K.refresh_catalog(self.connect, now=T0+timedelta(minutes=3))
         self.assertIsNone(K.capture(self.rule, now=T0+timedelta(minutes=3)))
         self.assertEqual(candidate["definition_hash"], first["definition_hash"])
@@ -377,23 +396,92 @@ class KnowledgeValidationSQLTests(unittest.TestCase):
 
     def test_sql_catalog_advances_bounded_pages_and_preserves_registration(self):
         with self.connect() as c:
+            # Seed rules have no original compiler audit and must not consume
+            # the scarce eight-rule publication page on the 60-second lane.
+            c.execute("""INSERT INTO knowledge_rules SELECT 'A_SEED_'||i,'SEED',agent,asset_scope,horizons,action,status,
+                conditions,prior_weight,hypothesis,mechanism,formalization_note
+                FROM knowledge_rules CROSS JOIN generate_series(1,100) AS i WHERE rule_id=%s""", (self.rule["rule_id"],))
             for i in range(34):
                 c.execute("""INSERT INTO knowledge_rules SELECT %s,source_id,agent,asset_scope,horizons,action,status,
                     conditions,prior_weight,hypothesis,mechanism,formalization_note FROM knowledge_rules WHERE rule_id=%s""",
                     ("RULE_"+str(i).zfill(3), self.rule["rule_id"]))
-        first = K.refresh_catalog(self.connect, now=T0)
-        second = K.refresh_catalog(self.connect, now=T0+timedelta(minutes=1))
-        self.assertEqual(first["processed"], 32)
-        self.assertEqual(second["processed"], 3)
-        self.assertEqual(second["cursor"], "")
+        cursor = {}; pages = []
+        for i in range(10):
+            result = K.refresh_catalog(self.connect, now=T0+timedelta(seconds=i), cursor=cursor)
+            cursor = result["cursor"]
+            if result["phase"] == "rules":
+                pages.append(result["processed"])
+        self.assertEqual(pages, [8, 8, 8, 8, 3])
+        self.assertEqual(cursor["rule_after"], "")
         with self.connect() as c:
             self.assertEqual(c.execute("SELECT count(*) n FROM knowledge_validation_rules").fetchone()["n"], 35)
+
+    def test_sql_previously_registered_rule_with_removed_auto_source_is_invalidated(self):
+        self._ready()
+        with self.connect() as c:
+            c.execute("UPDATE knowledge_rules SET source_id='SEED'")
+        K.refresh_catalog(self.connect, now=T0+timedelta(minutes=1))
+        result = K.refresh_catalog(self.connect, now=T0+timedelta(minutes=1))
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["audited"], 0)
+        self.assertIsNone(K.capture(self.rule, now=T0+timedelta(minutes=1)))
+
+    def test_sql_external_cursor_has_no_nested_lease_and_failed_page_replays(self):
+        cursor = {}
+        with patch.object(STORE, "claim_job", side_effect=AssertionError("nested lease")), \
+             patch.object(STORE, "checkpoint_job", side_effect=AssertionError("nested checkpoint")):
+            result = K.refresh_catalog(self.connect, now=T0, cursor=cursor)
+            self.assertEqual(cursor, {})
+            cursor = result["cursor"]
+            saved = deepcopy(cursor)
+            with patch.object(K, "_catalog_rules", side_effect=RuntimeError("cancelled")):
+                with self.assertRaises(RuntimeError):
+                    K.refresh_catalog(self.connect, now=T0, cursor=cursor)
+            self.assertEqual(cursor, saved)
+            result = K.refresh_catalog(self.connect, now=T0, cursor=cursor)
+            self.assertEqual(result["audited"], 1)
+
+    def test_sql_newest_original_audit_revokes_before_rule_page_and_cannot_resurrect_identity(self):
+        self._ready()
+        original = K.capture(self.rule, now=T0)
+        with self.connect() as c:
+            c.execute("""INSERT INTO knowledge_candidates VALUES(%s,%s,%s::jsonb,now()+interval '1 day')""",
+                ("z-latest", self.candidate_id, json.dumps(dict(llm_audit=dict(AUDIT, decision="REJECT")))))
+        result = K.refresh_catalog(self.connect, now=T0+timedelta(minutes=1))
+        self.assertEqual(result["phase"], "audit_index")
+        self.assertEqual(result["invalidated_sources"], 1)
+        self.assertIsNone(K.capture(self.rule, now=T0+timedelta(minutes=1)))
+        with self.connect() as c:
+            c.execute("UPDATE knowledge_candidates SET metadata=%s::jsonb WHERE candidate_id='z-latest'", (json.dumps(dict(llm_audit=AUDIT)),))
+        for _ in range(3):
+            K.refresh_catalog(self.connect, now=T0+timedelta(minutes=2))
+        restored = K.capture(self.rule, now=T0+timedelta(minutes=2))
+        self.assertIsNotNone(restored)
+        self.assertEqual(original["audit_hash"], restored["audit_hash"])
+        self.assertNotEqual(original["rule_key"], restored["rule_key"])
+
+    def test_sql_initial_metadata_scan_finishes_before_rule_publication(self):
+        with self.connect() as c:
+            for i in range(K.CATALOG_AUDIT_BATCH):
+                c.execute("INSERT INTO knowledge_candidates VALUES(%s,NULL,%s::jsonb,now())",
+                          ("a-"+str(i).zfill(3), json.dumps(dict(unrelated="x"*100000))))
+        first = K.refresh_catalog(self.connect, now=T0, cursor={})
+        self.assertEqual(first["processed"], K.CATALOG_AUDIT_BATCH)
+        self.assertEqual(first["status"], "PROGRESS")
+        self.assertFalse(first["cursor"]["audits_complete"])
+        self.assertIsNone(K.capture(self.rule, now=T0))
+        second = K.refresh_catalog(self.connect, now=T0, cursor=first["cursor"])
+        self.assertTrue(second["cursor"]["audits_complete"])
+        self.assertEqual(second["processed"], 1)
+        third = K.refresh_catalog(self.connect, now=T0, cursor=second["cursor"])
+        self.assertEqual(third["audited"], 1)
 
     def test_sql_future_pipeline_promotes_and_cold_reload_restores_oos_stamp(self):
         candidate = self._ready()
         training = [observation(candidate, i, T0+timedelta(minutes=10+10*i))[0] for i in range(80)]
         for offset in range(0, 80, 32):
             batch = training[offset:offset+32]; at = K._time(batch[-1]["observed_at"])
+            K.refresh_catalog(self.connect, now=at)
             K.refresh_catalog(self.connect, now=at)
             K.run_batch(self.connect, batch, now=at)
         with self.connect() as c:
@@ -407,6 +495,7 @@ class KnowledgeValidationSQLTests(unittest.TestCase):
         old_stamp_candidate = dict(candidate, evaluation_id=None, state="TRAINING")
         cold, _ = observation(old_stamp_candidate, "cold", start, phase="TRAIN")
         K.refresh_catalog(self.connect, now=cold["observed_at"])
+        K.refresh_catalog(self.connect, now=cold["observed_at"])
         answer = K.run_batch(self.connect, [cold], now=cold["observed_at"])
         self.assertEqual(answer["reasons"]["OOS_NOT_PREREGISTERED_BEFORE_DECISION"], 1)
         self.assertEqual(K._TRIALS[K._base_key(candidate["rule_key"], candidate["scope"])]["evaluation_id"], candidate["evaluation_id"])
@@ -418,6 +507,7 @@ class KnowledgeValidationSQLTests(unittest.TestCase):
                 outcomes.append(row)
         for offset in range(0, len(outcomes), 32):
             batch = outcomes[offset:offset+32]; at = K._time(batch[-1]["observed_at"])
+            K.refresh_catalog(self.connect, now=at)
             K.refresh_catalog(self.connect, now=at)
             answer = K.run_batch(self.connect, batch, now=at)
         with self.connect() as c:

@@ -194,6 +194,7 @@ class WorkerTests(unittest.TestCase):
         self.engine = K.KnowledgeDiscovery(self.ns, clock=lambda: self.stamp)
         self.engine._screen = Mock(return_value={"status": "EMPTY", "reason": "NO_PENDING_SCREENING"})
         self.engine._request = Mock(return_value=([], 0))
+        self.engine._compiler_pending = Mock(return_value=True)
     def tick(self):
         out = self.engine.tick()
         self.stamp += 60
@@ -251,6 +252,60 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(out["status"], "ERROR")
         self.assertEqual(out["reason"], "COMPILER_RATE_LIMIT")
         self.assertNotIn("secret-api-key", json.dumps(out))
+
+    def test_empty_queue_never_reserves_quota_and_new_work_is_immediately_due(self):
+        self.engine._compiler_pending.return_value = False
+        self.tick();self.tick();empty = self.tick()
+        self.assertEqual(empty["reason"], "NO_PENDING_COMPILATION")
+        self.assertEqual(empty["status"], "EMPTY")
+        self.assertNotIn("attempts", empty["compiler"])
+        self.assertNotIn("last_attempt_epoch", empty["compiler"])
+        self.assertNotIn("RUNNING", self.store.statuses)
+        self.ns["compile_pending_candidates"].assert_not_called()
+        last_result = empty["compiler"]["last_result"]
+        self.assertFalse(last_result["attempted"])
+        self.engine._compiler_pending.return_value = True
+        self.ns["compile_pending_candidates"].return_value = (1, [], {"compiled": 1})
+        discovery = self.tick()
+        self.assertEqual(discovery["compiler"]["last_result"], last_result)
+        self.tick();ready = self.tick()
+        self.assertEqual(ready["status"], "OK")
+        self.assertEqual(ready["compiler"]["attempts"], 1)
+        self.assertEqual(self.ns["compile_pending_candidates"].call_count, 1)
+
+    def test_legacy_empty_without_no_call_proof_keeps_its_reservation(self):
+        self.engine._ready = True
+        self.engine._state = {"stage_index": 2, "compiler": {
+            "attempts": 1, "last_attempt_epoch": self.stamp-10,
+            "budget_next_at": self.stamp+2690, "next_run_at": self.stamp+2690},
+            "summary": {"status": "EMPTY", "stage": "compilation",
+                        "last_batch": {"reason": "NO_PENDING_COMPILATION", "audited": 0, "compiled": 0}}}
+        self.engine._compiler_pending.return_value = False
+        result = self.tick()
+        self.assertEqual(result["reason"], "COMPILER_BUDGET_SPACING")
+        self.assertEqual(result["compiler"]["attempts"], 1)
+        self.assertEqual(result["compiler"]["next_run_at"], self.stamp-60+2690)
+        self.engine._compiler_pending.assert_not_called()
+        self.ns["compile_pending_candidates"].assert_not_called()
+
+    def test_pending_sql_failure_is_error_without_charging_or_calling_compiler(self):
+        self.engine._compiler_pending.side_effect = TimeoutError("private SQL")
+        self.tick();self.tick();failed = self.tick()
+        self.assertEqual((failed["status"], failed["reason"]), ("ERROR", "TIMEOUTERROR"))
+        self.assertNotIn("attempts", failed["compiler"])
+        self.assertNotIn("RUNNING", self.store.statuses)
+        self.ns["compile_pending_candidates"].assert_not_called()
+        self.assertNotIn("private SQL", json.dumps(failed))
+
+    def test_queue_disappearing_after_reservation_cannot_refund_the_attempt(self):
+        self.engine._compiler_pending.return_value = True
+        self.tick();self.tick();empty = self.tick()
+        self.assertEqual(empty["reason"], "NO_PENDING_COMPILATION")
+        self.assertEqual(empty["compiler"]["attempts"], 1)
+        self.assertEqual(empty["compiler"]["budget_next_at"], self.stamp-60+900)
+        self.tick();self.tick();blocked = self.tick()
+        self.assertEqual(blocked["reason"], "COMPILER_BUDGET_SPACING")
+        self.assertEqual(self.ns["compile_pending_candidates"].call_count, 1)
 
     def test_transient_compiler_retry_has_persisted_backoff_and_validated_identity(self):
         candidate = "OA_"+"a"*24
@@ -414,6 +469,35 @@ class DiscoverySQLTests(unittest.TestCase):
         with self.connect() as c:
             self.assertEqual(c.execute("SELECT status FROM knowledge_candidates").fetchone()["status"], "llm_rejected")
 
+    def test_pending_probe_matches_compiler_status_and_empty_does_not_reserve(self):
+        stamp = [10000.]
+        self.engine = K.KnowledgeDiscovery(self.ns, clock=lambda: stamp[0])
+        self.engine._ready = True
+        self.engine._state = {"stage_index": 2}
+        item = self.item()
+        self.engine._store([item])
+        for status in ("ready_for_compilation", "screened_out", "llm_rejected", "quarantined", "compiled_shadow"):
+            with self.connect() as c:
+                c.execute("UPDATE knowledge_candidates SET status=%s", (status,))
+            self.assertFalse(self.engine._compiler_pending(), status)
+        result = self.engine.tick()
+        self.assertEqual(result["reason"], "NO_PENDING_COMPILATION")
+        saved = K.STORE.job_state(self.connect, K.JOB, K.VERSION)
+        self.assertNotIn("attempts", saved["cursor"]["compiler"])
+        self.ns["compile_pending_candidates"].assert_not_called()
+        with self.connect() as c:
+            c.execute("UPDATE knowledge_candidates SET status='screened_in'")
+            c.execute("""UPDATE veritas_learning_jobs SET next_run_at=clock_timestamp()-interval '1 second',
+                cursor=jsonb_set(cursor,'{stage_index}','2'::jsonb) WHERE name=%s""", (K.JOB,))
+        self.assertTrue(self.engine._compiler_pending())
+        stamp[0] += 60
+        self.ns["compile_pending_candidates"].return_value = (1, [], {"compiled": 1})
+        replacement = K.KnowledgeDiscovery(self.ns, clock=lambda: stamp[0])
+        success = replacement.tick()
+        self.assertEqual(success["status"], "OK")
+        self.assertEqual(success["compiler"]["attempts"], 1)
+        self.assertEqual(self.ns["compile_pending_candidates"].call_count, 1)
+
     def test_paid_attempt_reservation_survives_process_loss_on_real_postgres(self):
         class ProcessLost(BaseException):
             pass
@@ -421,6 +505,9 @@ class DiscoverySQLTests(unittest.TestCase):
         self.engine = K.KnowledgeDiscovery(self.ns, clock=lambda: stamp[0])
         self.engine._ready = True
         self.engine._state = {"stage_index": 2}
+        self.engine._store([self.item()])
+        with self.connect() as c:
+            c.execute("UPDATE knowledge_candidates SET status='screened_in'")
         def paid_call(**kwargs):
             # This connection observes the committed reservation BEFORE the
             # simulated external call returns or its worker can checkpoint.

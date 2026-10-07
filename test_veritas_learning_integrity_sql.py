@@ -135,7 +135,7 @@ class PersistedLearningSQLTests(unittest.TestCase):
             c.execute("ROLLBACK TO SAVEPOINT capture_revalidation")
             c.execute("RELEASE SAVEPOINT capture_revalidation")
         selected = []
-        for marker in ("WITH candidates AS MATERIALIZED", "WITH pending AS MATERIALIZED"):
+        for marker in ("WITH candidates AS MATERIALIZED", "WITH selected AS MATERIALIZED"):
             matches = [call for call in recording.calls if marker in call[0]]
             self.assertEqual(len(matches), 1, marker)
             selected.append(matches[0])
@@ -201,7 +201,7 @@ class PersistedLearningSQLTests(unittest.TestCase):
             old_plan = c.execute("EXPLAIN (ANALYZE, FORMAT JSON, TIMING FALSE) "+previous, args).fetchone()["QUERY PLAN"][0]
             new_plan = c.execute("EXPLAIN (ANALYZE, FORMAT JSON, TIMING FALSE) "+query, args).fetchone()["QUERY PLAN"][0]
             nodes = list(self.plan_nodes(new_plan["Plan"]))
-            for name in ("CTE pending", "CTE evidence"):
+            for name in ("CTE selected", "CTE projected"):
                 matched = [p for p in nodes if p.get("Subplan Name")==name]
                 self.assertEqual(len(matched), 1, name)
                 self.assertEqual(matched[0]["Actual Rows"], 2, name)
@@ -314,7 +314,7 @@ class PersistedLearningSQLTests(unittest.TestCase):
                     def __getattr__(self, name): return getattr(c, name)
                     def execute(self, sql, args=()):
                         cursor = c.execute(sql, args)
-                        if "WITH pending AS MATERIALIZED" not in sql:
+                        if "WITH selected AS MATERIALIZED" not in sql:
                             return cursor
                         class SelectedRows:
                             def fetchall(self):

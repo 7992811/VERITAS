@@ -61,6 +61,18 @@ assert.match(ui.autonomousLearningHtml({...autonomous,knowledge_validation:{vers
 assert.equal(ui.deepNum({index_vs_start:null},['index_vs_start']),null);
 assert.equal(ui.deepNum({index_vs_start:0},['index_vs_start']),0);
 
+const stale=structuredClone(raw);
+stale.asset_management_intelligence.stale=true;
+stale.asset_management_intelligence.calculated_at='2026-10-07T13:04:00Z';
+stale.asset_management_intelligence.cache_age_seconds=301;
+html=render(stale);
+assert.match(html,/Показан последний полученный результат/);
+assert.match(html,/Расчёт: 07\.10, 16:04 МСК/);
+assert.equal(ui.st.intelligence.cache_age_seconds,301);
+assert.equal(ui.st.intelligence.score,42.5);
+const envelopeDelayed=structuredClone(raw);envelopeDelayed.refresh_delayed=true;
+assert.match(render(envelopeDelayed),/Обновление оценки задержано/);
+
 const measured=structuredClone(raw);
 measured.asset_management_intelligence.components.self_learning_effectiveness=0;
 measured.asset_management_intelligence.component_status.self_learning_effectiveness={status:'PARTIAL'};

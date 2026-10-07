@@ -25,6 +25,9 @@ PROTOCOL = "REDUCE_WHEN_RULE_OPPOSES_BASE_V1"
 PROOF_KIND = "SIMULATED_RULE_REDUCTION_ON_OBSERVED_PATH"
 SNAPSHOT_NAME = "knowledge_validation"
 CATALOG_JOB = "knowledge_validation_catalog"
+CATALOG_VERSION = "KNOWLEDGE_CATALOG_METADATA_V2"
+CATALOG_RULE_BATCH = 8
+CATALOG_AUDIT_BATCH = 32
 MAX_BATCH = 32
 MAX_TRIALS = 8
 MAX_RULES = 128
@@ -144,7 +147,7 @@ def _definition(rule):
     return result
 
 
-def _registration(rule, source, audit, clock):
+def _registration(rule, source, audit, clock, *, audit_revision=None):
     definition = _definition(rule)
     if (not isinstance(audit, dict) or audit.get("decision") != "USE"
             or audit.get("evidence_strength") not in ("HIGH", "MEDIUM", "LOW")
@@ -159,11 +162,16 @@ def _registration(rule, source, audit, clock):
     if source["source_id"] != definition["source_id"] or not source.get("url") or not source.get("title"):
         raise ValueError("original source identity required")
     dh, ah = _hash(definition), _hash(dict(audit=audit, source=source))
-    result = dict(version=VERSION, rule_key=_hash([VERSION, dh, ah]), rule_id=definition["rule_id"],
+    if audit_revision is not None and (type(audit_revision) is not int or audit_revision < 1):
+        raise ValueError("invalid source audit revision")
+    key_parts = [VERSION, dh, ah]+([audit_revision] if audit_revision is not None else [])
+    result = dict(version=VERSION, rule_key=_hash(key_parts), rule_id=definition["rule_id"],
                   source_id=source["source_id"], definition_hash=dh, audit_hash=ah,
                   registered_at=clock.isoformat(), action=definition["action"],
                   definition=definition, source=source, audit=deepcopy(audit), active=True,
                   checked_at=clock.isoformat())
+    if audit_revision is not None:
+        result["audit_revision"] = audit_revision
     result["contract_hash"] = _hash({k: result[k] for k in _MATCH_FIELDS if k != "contract_hash"})
     return result
 
@@ -176,6 +184,8 @@ def _rule_valid(rule, clock):
                 and timedelta(0) <= clock-checked <= timedelta(seconds=CATALOG_TTL)
                 and rule.get("definition_hash") == _hash(rule["definition"])
                 and rule.get("audit_hash") == _hash(dict(audit=rule["audit"], source=rule["source"]))
+                and rule.get("rule_key") == _hash([VERSION, rule["definition_hash"], rule["audit_hash"]]
+                    +([rule["audit_revision"]] if "audit_revision" in rule else []))
                 and rule.get("contract_hash") == _hash({k: rule[k] for k in _MATCH_FIELDS if k != "contract_hash"}))
     except (KeyError, ValueError, TypeError):
         return False
@@ -511,6 +521,11 @@ def ensure_schema(pg_connect, *, context=None):
             payload jsonb NOT NULL,active boolean NOT NULL,checked_at timestamptz NOT NULL,
             CHECK(octet_length(payload::text)<=24576))""")
         c.execute("CREATE INDEX IF NOT EXISTS knowledge_validation_rule_id ON knowledge_validation_rules(rule_id)")
+        c.execute("""CREATE TABLE IF NOT EXISTS knowledge_validation_source_audits (
+            source_id text PRIMARY KEY,candidate_id text NOT NULL,audit jsonb,audit_hash text NOT NULL,
+            revision bigint NOT NULL DEFAULT 1,
+            processed_at timestamptz,checked_at timestamptz NOT NULL,
+            CHECK(audit IS NULL OR octet_length(audit::text)<=8192))""")
         c.execute("""CREATE TABLE IF NOT EXISTS knowledge_validation_trials (
             trial_id text PRIMARY KEY,rule_key text NOT NULL,base_key text NOT NULL,epoch integer NOT NULL,
             payload jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now(),
@@ -526,73 +541,159 @@ def ensure_schema(pg_connect, *, context=None):
     return {"status": "OK"}
 
 
-def refresh_catalog(pg_connect, *, context=None, now=None):
-    """One durable keyset page, 32 rules; original audit projection only."""
+def _catalog_cursor(value):
+    if not isinstance(value, dict) or value.get("version") != CATALOG_VERSION:
+        return dict(version=CATALOG_VERSION, phase="audits", candidate_after="", rule_after="", audits_complete=False)
+    result = deepcopy(value)
+    if result.get("phase") not in ("audits", "rules"):
+        raise ValueError("invalid knowledge catalog phase")
+    STORE._json(result, 4096)
+    return result
+
+
+def _index_audits(c, cursor, clock, context):
+    # Metadata-only PK page first. Full candidate metadata is decoded only for
+    # these <=32 IDs, never scanned/hash-joined separately for every rule.
+    rows = c.execute("""WITH page AS MATERIALIZED (
+        SELECT candidate_id,doi,processed_at FROM knowledge_candidates
+        WHERE candidate_id>%s ORDER BY candidate_id LIMIT %s)
+        SELECT p.candidate_id,p.doi,p.processed_at,
+          CASE WHEN octet_length(a.llm_audit::text)<=4096 THEN a.llm_audit ELSE NULL END audit
+        FROM page p JOIN knowledge_candidates k USING(candidate_id)
+        CROSS JOIN LATERAL jsonb_to_record(CASE WHEN jsonb_typeof(k.metadata)='object'
+          THEN k.metadata ELSE '{}'::jsonb END) AS a(llm_audit jsonb)
+        ORDER BY p.candidate_id""", (cursor["candidate_after"], CATALOG_AUDIT_BATCH)).fetchall()
+    selected = {}
+    for row in rows:
+        _check(context)
+        sid = "AUTO_"+hashlib.sha256((row["doi"] or row["candidate_id"]).encode()).hexdigest()[:20].upper()
+        stamp = _time(row["processed_at"])
+        item = dict(source_id=sid, candidate_id=row["candidate_id"], audit=row["audit"],
+                    audit_hash=_hash(row["audit"]), processed_at=stamp.isoformat() if stamp else None,
+                    checked_at=clock.isoformat())
+        old = selected.get(sid)
+        # Match the prior processed_at DESC NULLS LAST, candidate_id ASC rule.
+        current_key = item["processed_at"] or ""
+        old_key = (old.get("processed_at") or "") if old else ""
+        if not old or current_key > old_key or (current_key == old_key and item["candidate_id"] < old["candidate_id"]):
+            selected[sid] = item
+    changed = []
+    if selected:
+        old = c.execute("SELECT source_id,audit_hash FROM knowledge_validation_source_audits WHERE source_id=ANY(%s)", (list(selected),)).fetchall()
+        hashes = {x["source_id"]: x["audit_hash"] for x in old}
+        updates = c.execute("""INSERT INTO knowledge_validation_source_audits
+            (source_id,candidate_id,audit,audit_hash,processed_at,checked_at)
+            SELECT source_id,candidate_id,audit,audit_hash,processed_at,checked_at
+            FROM jsonb_to_recordset(%s::jsonb) AS x(source_id text,candidate_id text,audit jsonb,
+                audit_hash text,processed_at timestamptz,checked_at timestamptz)
+            ON CONFLICT(source_id) DO UPDATE SET candidate_id=EXCLUDED.candidate_id,audit=EXCLUDED.audit,
+                audit_hash=EXCLUDED.audit_hash,processed_at=EXCLUDED.processed_at,checked_at=EXCLUDED.checked_at
+                ,revision=knowledge_validation_source_audits.revision+
+                    CASE WHEN knowledge_validation_source_audits.audit_hash IS DISTINCT FROM EXCLUDED.audit_hash THEN 1 ELSE 0 END
+            WHERE knowledge_validation_source_audits.candidate_id=EXCLUDED.candidate_id
+               OR COALESCE(EXCLUDED.processed_at,'-infinity'::timestamptz)>COALESCE(knowledge_validation_source_audits.processed_at,'-infinity'::timestamptz)
+               OR (EXCLUDED.processed_at IS NOT DISTINCT FROM knowledge_validation_source_audits.processed_at
+                   AND EXCLUDED.candidate_id<knowledge_validation_source_audits.candidate_id)
+            RETURNING source_id,audit_hash""", (STORE._json(list(selected.values()), 196608),)).fetchall()
+        changed = [x["source_id"] for x in updates if hashes.get(x["source_id"]) != x["audit_hash"]]
+        if changed:
+            c.execute("UPDATE knowledge_validation_rules SET active=FALSE,checked_at=%s WHERE source_id=ANY(%s) AND active=TRUE", (clock, changed))
+    more = len(rows) == CATALOG_AUDIT_BATCH
+    cursor["candidate_after"] = rows[-1]["candidate_id"] if more else ""
+    if not more:
+        cursor["audits_complete"] = True
+    cursor["phase"] = "rules" if cursor["audits_complete"] else "audits"
+    return dict(status="OK" if cursor["audits_complete"] else "PROGRESS", phase="audit_index",
+                processed=len(rows), indexed=len(selected), invalidated_sources=len(changed),
+                audits_complete=cursor["audits_complete"]), [], [], changed
+
+
+def _catalog_rules(c, cursor, clock, context):
+    rows = c.execute("""WITH page AS MATERIALIZED (
+        SELECT rule_id,source_id,agent,asset_scope,horizons,action,status,
+          CASE WHEN octet_length(conditions::text)<=4096 THEN conditions ELSE NULL END conditions,
+          prior_weight,CASE WHEN octet_length(hypothesis)<=2048 THEN hypothesis ELSE NULL END hypothesis,
+          CASE WHEN octet_length(mechanism)<=2048 THEN mechanism ELSE NULL END mechanism,
+          CASE WHEN octet_length(formalization_note)<=2048 THEN formalization_note ELSE NULL END formalization_note
+        FROM knowledge_rules WHERE rule_id>%s AND (left(source_id,5)='AUTO_'
+          OR EXISTS (SELECT 1 FROM knowledge_validation_rules known
+            WHERE known.rule_id=knowledge_rules.rule_id AND known.active))
+        ORDER BY rule_id LIMIT %s)
+        SELECT p.*,jsonb_build_object('source_id',s.source_id,'title',left(s.title,512),
+          'authors',left(s.authors,512),'year',s.year,'source_type',s.source_type,'url',left(s.url,1024),
+          'claim',left(s.claim,1024),'evidence_grade',s.evidence_grade) AS source,
+          a.audit,a.checked_at audit_checked_at,a.revision audit_revision
+        FROM page p LEFT JOIN knowledge_sources s ON s.source_id=p.source_id
+        LEFT JOIN knowledge_validation_source_audits a ON a.source_id=p.source_id
+        ORDER BY p.rule_id""", (cursor["rule_after"], CATALOG_RULE_BATCH)).fetchall()
+    active, rejected = [], []
+    for raw in rows:
+        _check(context)
+        raw = dict(raw)
+        try:
+            checked = _time(raw.get("audit_checked_at"))
+            if (raw.get("status") not in ("shadow", "validated_candidate") or not checked
+                    or not timedelta(0) <= clock-checked <= timedelta(seconds=CATALOG_TTL)):
+                raise ValueError("inactive or stale source audit")
+            entry = _registration(raw, raw.get("source") or {}, raw.get("audit"), clock, audit_revision=raw.get("audit_revision"))
+            active.append(entry)
+        except (ValueError, TypeError, KeyError):
+            rejected.append(raw["rule_id"])
+    if active:
+        prior = c.execute("SELECT rule_key,payload FROM knowledge_validation_rules WHERE rule_key=ANY(%s)", ([e["rule_key"] for e in active],)).fetchall()
+        originals = {r["rule_key"]: r["payload"] for r in prior}
+        active = [dict(originals.get(e["rule_key"], e), active=True, checked_at=clock.isoformat()) for e in active]
+    ids = [r["rule_id"] for r in rows]
+    if ids:
+        c.execute("UPDATE knowledge_validation_rules SET active=FALSE,checked_at=%s WHERE rule_id=ANY(%s) AND active=TRUE", (clock, ids))
+    if active:
+        batch = [dict(rule_key=e["rule_key"], rule_id=e["rule_id"], source_id=e["source_id"], version=VERSION,
+                      payload=e, checked_at=clock.isoformat()) for e in active]
+        c.execute("""INSERT INTO knowledge_validation_rules(rule_key,rule_id,source_id,version,payload,active,checked_at)
+            SELECT rule_key,rule_id,source_id,version,payload,TRUE,checked_at
+            FROM jsonb_to_recordset(%s::jsonb) AS x(rule_key text,rule_id text,source_id text,version text,payload jsonb,checked_at timestamptz)
+            ON CONFLICT(rule_key) DO UPDATE SET active=TRUE,checked_at=EXCLUDED.checked_at,payload=EXCLUDED.payload""",
+            (STORE._json(batch, 196608),))
+    cursor["rule_after"] = rows[-1]["rule_id"] if len(rows) == CATALOG_RULE_BATCH else ""
+    cursor["phase"] = "audits"
+    return dict(status="OK", phase="rules", processed=len(rows), audited=len(active), excluded=len(rejected)), active, ids, []
+
+
+def refresh_catalog(pg_connect, *, context=None, now=None, cursor=None):
+    """One <=32-audit or <=8-rule microstage, with four bulk SQL statements.
+
+    Supplying a cursor delegates fencing/checkpointing to the calling durable
+    job. Return `result['cursor']` to that caller only after success. Without a
+    cursor this function owns one fenced job for standalone compatibility.
+    """
     clock = _clock(now)
-    lease = STORE.claim_job(pg_connect, CATALOG_JOB, VERSION, lease_seconds=60)
-    if not lease:
-        raise RuntimeError("KNOWLEDGE_CATALOG_BUSY")
-    cursor = dict(lease.get("cursor") or {})
-    active, rejected, changed = [], [], []
+    lease = None
+    if cursor is None:
+        lease = STORE.claim_job(pg_connect, CATALOG_JOB, CATALOG_VERSION, lease_seconds=60)
+        if not lease:
+            raise RuntimeError("KNOWLEDGE_CATALOG_BUSY")
+        cursor = lease.get("cursor")
+    progress = _catalog_cursor(cursor)
     try:
         with _transaction(pg_connect, context) as c:
-            # Page rules BEFORE the audit join. PostgreSQL's built-in sha256
-            # reproduces import_compiled_candidate's AUTO source ID exactly.
-            rows = c.execute("""WITH page AS MATERIALIZED (
-                SELECT rule_id,source_id,agent,asset_scope,horizons,action,status,
-                  CASE WHEN octet_length(conditions::text)<=4096 THEN conditions ELSE NULL END AS conditions,
-                  prior_weight,CASE WHEN octet_length(hypothesis)<=2048 THEN hypothesis ELSE NULL END hypothesis,
-                  CASE WHEN octet_length(mechanism)<=2048 THEN mechanism ELSE NULL END mechanism,
-                  CASE WHEN octet_length(formalization_note)<=2048 THEN formalization_note ELSE NULL END formalization_note
-                FROM knowledge_rules WHERE rule_id>%s ORDER BY rule_id LIMIT 32)
-                SELECT p.*,jsonb_build_object('source_id',s.source_id,'title',left(s.title,512),
-                  'authors',left(s.authors,512),'year',s.year,'source_type',s.source_type,'url',left(s.url,1024),
-                  'claim',left(s.claim,1024),'evidence_grade',s.evidence_grade) AS source,
-                  a.audit
-                FROM page p LEFT JOIN knowledge_sources s ON s.source_id=p.source_id
-                LEFT JOIN LATERAL (SELECT CASE WHEN octet_length((k.metadata->'llm_audit')::text)<=4096
-                     THEN k.metadata->'llm_audit' ELSE NULL END AS audit
-                  FROM knowledge_candidates k
-                  WHERE 'AUTO_'||upper(substr(encode(sha256(convert_to(COALESCE(NULLIF(k.doi,''),k.candidate_id),'UTF8')),'hex'),1,20))=p.source_id
-                  ORDER BY k.processed_at DESC NULLS LAST,k.candidate_id LIMIT 1) a ON TRUE
-                ORDER BY p.rule_id""", (str(cursor.get("after") or ""),)).fetchall()
-            for raw in rows:
-                _check(context)
-                raw = dict(raw)
-                try:
-                    if raw.get("status") not in ("shadow", "validated_candidate"):
-                        raise ValueError("inactive source rule")
-                    entry = _registration(raw, raw.get("source") or {}, raw.get("audit"), clock)
-                except (ValueError, TypeError, KeyError):
-                    c.execute("UPDATE knowledge_validation_rules SET active=FALSE,checked_at=%s WHERE rule_id=%s", (clock, raw["rule_id"]))
-                    rejected.append(raw["rule_id"])
-                    continue
-                old = c.execute("SELECT payload FROM knowledge_validation_rules WHERE rule_key=%s", (entry["rule_key"],)).fetchone()
-                if old:
-                    entry = dict(old["payload"], active=True, checked_at=clock.isoformat())
-                c.execute("UPDATE knowledge_validation_rules SET active=FALSE,checked_at=%s WHERE rule_id=%s AND rule_key<>%s", (clock, entry["rule_id"], entry["rule_key"]))
-                c.execute("""INSERT INTO knowledge_validation_rules(rule_key,rule_id,source_id,version,payload,active,checked_at)
-                    VALUES(%s,%s,%s,%s,%s::jsonb,TRUE,%s) ON CONFLICT(rule_key) DO UPDATE SET
-                    active=TRUE,checked_at=EXCLUDED.checked_at,payload=EXCLUDED.payload""",
-                    (entry["rule_key"], entry["rule_id"], entry["source_id"], VERSION, STORE._json(entry, 24576), clock))
-                active.append(entry); changed.append(entry["rule_id"])
-            cursor["after"] = rows[-1]["rule_id"] if len(rows) == MAX_BATCH else ""
-        result = dict(status="OK", processed=len(rows), audited=len(active), excluded=len(rejected),
-                      cursor=cursor["after"], updated_at=clock.isoformat())
-        if not STORE.checkpoint_job(pg_connect, lease, status="OK", cursor=cursor, result=result):
-            raise RuntimeError("knowledge catalog checkpoint rejected")
+            operation = _catalog_rules if progress["phase"] == "rules" and progress["audits_complete"] else _index_audits
+            result, active, ids, sources = operation(c, progress, clock, context)
+        result.update(cursor=progress, updated_at=clock.isoformat())
         with _LOCK:
-            for key in [k for k, v in _RULES.items() if v["rule_id"] in set(rejected+changed)]:
+            for key in [k for k, v in _RULES.items() if v["rule_id"] in ids or v["source_id"] in sources]:
                 del _RULES[key]
             for entry in active:
                 _remember(_RULES, entry["rule_key"], entry, MAX_RULES)
+        if lease and not STORE.checkpoint_job(pg_connect, lease, status="OK", cursor=progress, result=result):
+            raise RuntimeError("knowledge catalog checkpoint rejected")
         return result
     except Exception as exc:
-        try:
-            STORE.checkpoint_job(pg_connect, lease, status="ERROR", cursor=lease.get("cursor"),
-                                 result={"status": "ERROR", "error": type(exc).__name__}, retry_after_seconds=30)
-        except Exception:
-            pass
+        if lease:
+            try:
+                STORE.checkpoint_job(pg_connect, lease, status="ERROR", cursor=lease.get("cursor"),
+                                     result={"status": "ERROR", "error": type(exc).__name__}, retry_after_seconds=30)
+            except Exception:
+                pass
         raise
 
 

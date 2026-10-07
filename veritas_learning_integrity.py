@@ -292,6 +292,23 @@ def payload_sql(alias="t", *, root_field=None):
         "source_identity": _identity(witness+"->'source_identity'")})))
     return "jsonb_build_object("+",".join(pairs)+")"
 
+def payload_record_sql(alias="t", *, record_alias="evidence_payload", extra_fields=()):
+    """Extract each original root field once, including future proof fields."""
+    root = _alias(alias)+"payload"
+    prefix = _alias(record_alias)
+    fields = []
+    def field(key):
+        _alias(key)
+        if key not in fields:
+            fields.append(key)
+        return prefix+key
+    payload_sql(alias, root_field=field)
+    for key in extra_fields:
+        field(key)
+    return (" CROSS JOIN LATERAL jsonb_to_record(CASE WHEN jsonb_typeof("+root+")='object' "
+            "THEN "+root+" ELSE '{}'::jsonb END) AS "+record_alias+"("+
+            ",".join(key+" jsonb" for key in fields)+") ")
+
 TRADE_FIELDS = ("trade_id", "asset", "direction", "horizon", "status", "opened_at", "closed_at",
                 "gross_pnl_rub", "fees_rub", "funding_rub", "net_pnl_rub")
 
@@ -299,18 +316,20 @@ def trade_projection_sql(alias="t"):
     p = _alias(alias)
     return ",".join(p+key for key in TRADE_FIELDS)+","+payload_sql(alias)+" AS payload"
 
-def _evidence_sql(alias="t"):
+def _evidence_sql(alias="t", *, root_field=None):
     p = _alias(alias)
-    return "jsonb_build_object("+",".join("'"+key+"',"+p+key for key in TRADE_FIELDS)+",'payload',"+payload_sql(alias)+")"
+    return "jsonb_build_object("+",".join("'"+key+"',"+p+key for key in TRADE_FIELDS)+",'payload',"+payload_sql(alias,root_field=root_field)+")"
 
-def evidence_hash_sql(alias="t"):
-    return "md5(("+_evidence_sql(alias)+")::text)"
+def evidence_hash_sql(alias="t", *, root_field=None):
+    return "md5(("+_evidence_sql(alias,root_field=root_field)+")::text)"
 
 def readable_sql(alias="v90_learning_episodes"):
     p = _alias(alias)
-    return (eligible_sql(alias)+" AND EXISTS (SELECT 1 FROM paper_trades integrity_trade WHERE "+
+    return (eligible_sql(alias)+" AND EXISTS (SELECT 1 FROM paper_trades integrity_trade "+
+            payload_record_sql("integrity_trade",record_alias="integrity_payload")+" WHERE "+
             "integrity_trade.trade_id="+p+"trade_id AND "+
-            p+"payload#>>'{learning_integrity,evidence_hash}'="+evidence_hash_sql("integrity_trade")+")")
+            p+"payload#>>'{learning_integrity,evidence_hash}'="+
+            evidence_hash_sql("integrity_trade",root_field=lambda key:"integrity_payload."+key)+")")
 
 def _revalidate_eligible(c, batch_size=BATCH_SIZE):
     """Quarantine every stale eligible label; validate one small batch.
@@ -321,15 +340,14 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
     """
     if type(batch_size) is not int or not 1 <= batch_size <= MAX_BATCH_SIZE:
         raise ValueError("invalid revalidation batch size")
-    evidence = _evidence_sql("t")
-    # Keep the proof/hash out of the outer UPDATE's repeated expressions. The
-    # materialized rows contain only IDs, hashes and the revocation flag;
-    # quarantine covers every eligible episode before bounded verification.
+    evidence = _evidence_sql("t",root_field=lambda key:"evidence_payload."+key)
+    record_sql = payload_record_sql("t")
     staged = c.execute("""
       WITH candidates AS MATERIALIZED (
         SELECT e.trade_id,md5(("""+evidence+""")::text) AS evidence_hash,
           (e.payload#>>'{learning_integrity,status}'='VERIFIED') AS prior_verified
         FROM v90_learning_episodes e LEFT JOIN paper_trades t ON t.trade_id=e.trade_id
+        """+record_sql+"""
         WHERE e.learning_eligible=TRUE
       ), staged AS (
       UPDATE v90_learning_episodes e SET
@@ -382,11 +400,10 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
     """, (VERSION,batch_size,VERSION))
     retry_staged = max(0,int(retried.rowcount))
     staged_n += retry_staged
-    # Lock the original ordered batch first, then build each proof once. Its
-    # exact JSONB value feeds both the validator and the unchanged hash format.
     rows = c.execute("""
-      WITH pending AS MATERIALIZED (
-        SELECT e.trade_id AS episode_trade_id,e.payload->'learning_integrity' AS prior
+      WITH selected AS MATERIALIZED (
+        SELECT e.trade_id AS episode_trade_id,e.payload->'learning_integrity' AS prior,
+               e.payload#>>'{learning_integrity,requested_at}' AS requested_at
         FROM v90_learning_episodes e
         WHERE e.learning_eligible=FALSE
           AND """+_pending_action_sql("e")+"""
@@ -394,12 +411,12 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
           AND e.payload#>>'{learning_integrity,status}'='PENDING'
         ORDER BY e.payload#>>'{learning_integrity,requested_at}',e.trade_id
         LIMIT %s FOR UPDATE OF e SKIP LOCKED
-      ), evidence AS MATERIALIZED (
-        SELECT p.episode_trade_id,p.prior,"""+evidence+""" AS trade
-        FROM pending p LEFT JOIN paper_trades t ON t.trade_id=p.episode_trade_id
-      )
-      SELECT episode_trade_id,prior,trade,md5(trade::text) AS evidence_hash
-      FROM evidence ORDER BY prior->>'requested_at',episode_trade_id
+      ), projected AS MATERIALIZED (
+        SELECT selected.*,"""+evidence+""" AS trade
+        FROM selected LEFT JOIN paper_trades t ON t.trade_id=selected.episode_trade_id
+        """+record_sql+"""
+      ) SELECT episode_trade_id,prior,trade,md5(trade::text) AS evidence_hash
+        FROM projected ORDER BY requested_at,episode_trade_id
     """, (VERSION, batch_size)).fetchall()
     verified = excluded = changed = 0
     for record in rows:
@@ -434,7 +451,7 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
             AND e.payload#>>'{learning_integrity,status}'='PENDING'
             AND """+_pending_action_sql("e")+"""
             AND (NOT %s OR EXISTS (
-              SELECT 1 FROM paper_trades t WHERE t.trade_id=e.trade_id
+              SELECT 1 FROM paper_trades t """+record_sql+""" WHERE t.trade_id=e.trade_id
                 AND md5(("""+evidence+""")::text)=%s))
         """, (ok, diagnosis["primary_attribution"],
               json.dumps(diagnosis["attributions"], allow_nan=False),
