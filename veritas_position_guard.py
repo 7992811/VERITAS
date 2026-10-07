@@ -118,13 +118,27 @@ def refresh_entry_quotes(summary):
 
 
 @contextmanager
-def book_transaction(c):
+def book_transaction(c, *, blocking=True):
     # pg_connect is autocommit. Explicit transactions make accounting, positions,
     # orders and protective-exit audit events commit or roll back together.
-    with _mutex, c.transaction():
-        c.execute("SET LOCAL lock_timeout = '5s'")
-        c.execute('SELECT pg_advisory_xact_lock(%s)', (BOOK_LOCK_ID,))
-        yield
+    acquired=_mutex.acquire(blocking=blocking)
+    if not acquired:
+        yield False
+        return
+    try:
+        with c.transaction():
+            c.execute("SET LOCAL lock_timeout = '5s'")
+            if blocking:
+                c.execute('SELECT pg_advisory_xact_lock(%s)', (BOOK_LOCK_ID,))
+            else:
+                result=c.execute('SELECT pg_try_advisory_xact_lock(%s) AS acquired',
+                                 (BOOK_LOCK_ID,)).fetchone()
+                if not result or result.get('acquired') is not True:
+                    yield False
+                    return
+            yield None if blocking else True
+    finally:
+        _mutex.release()
 
 
 def publish_quote(asset, raw):

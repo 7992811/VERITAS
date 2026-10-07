@@ -70,6 +70,43 @@ class FastQuoteRuntimeTests(unittest.TestCase):
         self.assertEqual(self.executed, [])
         self.assertEqual(self.built[0][0]["observed_at"], NOW.isoformat())
 
+    def test_busy_book_retries_same_fresh_quote_without_redating_real_event(self):
+        import veritas_timeframe_data as TFD
+        from test_veritas_structural_cny_episodes import episode_raw
+        with TFD._STRUCTURAL_LOCK:
+            previous = deepcopy(TFD._STRUCTURAL_STATE)
+            TFD._STRUCTURAL_STATE.clear()
+        with BR._cache_lock:
+            BR._markets.clear()
+        attempts = []
+        def execute(rows, now):
+            attempts.append({row['horizon']:(row['timeframe_entry_context']['event']['event_id'],
+                                            row['timeframe_entry_context']['event']['signal_at'])
+                             for row in rows})
+            return {'status':'BUSY' if len(attempts)==1 else 'OK','paper_only':True}
+        try:
+            self.runtime.context_builder = TFD.structural_context
+            first = episode_raw(0,'2026-10-07T04:00:00Z',12.722)
+            BR.publish_market(first)
+            self.runtime.run_once(NOW-timedelta(minutes=1),quotes={'CNYRUBF':first})
+            self.runtime.entry_pass = execute
+            crossed = episode_raw(0,NOW.isoformat(),12.736)
+            BR.publish_market(crossed)
+            first_try = self.runtime.run_once(NOW,quotes={'CNYRUBF':crossed})
+            second_try = self.runtime.run_once(NOW+timedelta(seconds=5),quotes={'CNYRUBF':crossed})
+            self.assertEqual(first_try['execution']['status'],'BUSY')
+            self.assertEqual(second_try['execution']['status'],'OK')
+            self.assertEqual(len(attempts),2)
+            self.assertIn('1m',attempts[0])
+            self.assertEqual(attempts[0],attempts[1])
+            self.assertEqual(attempts[0]['1m'][1],NOW.timestamp())
+            self.runtime.run_once(NOW+timedelta(seconds=10),quotes={'CNYRUBF':crossed})
+            self.assertEqual(len(attempts),2)
+        finally:
+            with TFD._STRUCTURAL_LOCK:
+                TFD._STRUCTURAL_STATE.clear()
+                TFD._STRUCTURAL_STATE.update(previous)
+
     def test_new_provider_observation_can_retry_same_event_without_redating_old_quote(self):
         self.runtime.run_once(NOW, quotes={"CNYRUBF": quote()})
         newer = NOW+timedelta(seconds=5)

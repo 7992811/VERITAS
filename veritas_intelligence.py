@@ -19145,7 +19145,7 @@ def main():
         VPG.start(globals()); VSQ.start(pg_connect,emit)
         import veritas_breakout_runtime as VBR
         import veritas_structural_lifecycle as VSL
-        VBR.start(globals(),entry_pass=lambda rows,clock:VSL.fast_entry_pass(globals(),rows,clock))
+        VBR.start(globals(),entry_pass=lambda rows,clock:VSL.fast_entry_pass(globals(),rows,clock,runtime=True))
     threading.Thread(target=loop, daemon=True).start()
     # R38 always runs: it exits immediately after a healthy write test, but if
     # Postgres is temporarily unavailable/full it waits for the Resume window.

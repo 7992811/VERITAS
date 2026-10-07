@@ -184,12 +184,17 @@ def _save_high_water(c,name,portfolio,nav,ts):
     return dict(portfolio,high_water_nav_rub=high_water),high_water
 
 
-def fast_entry_pass(ns,rows,now):
+def _wall_clock():
+    return datetime.now(timezone.utc)
+
+
+def fast_entry_pass(ns,rows,now,*,runtime=False):
     """Atomic paper protection and entries, without the heavy portfolio cycle."""
     import veritas_canonical_runtime as VCR
     import veritas_portfolio_runtime as VPR
     import veritas_position_guard as VPG
     import veritas_admission_trace as VAT
+    from contextlib import ExitStack
     clock=TFP._decision_clock(now)
     if clock is None or not callable(ns.get('pg_connect')):
         return {'status':'UNAVAILABLE','reason':'PAPER_BOOK_OR_CLOCK_UNAVAILABLE','paper_only':True}
@@ -198,7 +203,20 @@ def fast_entry_pass(ns,rows,now):
         if SB.applies(TFP.context_of(row)) and row.get('asset'):
             grouped.setdefault(row['asset'],[]).append(row)
     results=[]
-    with ns['pg_connect']() as c,VPG.book_transaction(c):
+    with ExitStack() as stack:
+        if runtime:
+            # Avoid even opening a DB connection when another local book
+            # owner is busy. This reservation is reentrant for the transaction
+            # helper, and is released on every early return/exception.
+            if not VPG._mutex.acquire(blocking=False):
+                return {'status':'BUSY','reason':'LOCAL_PAPER_BOOK_BUSY','paper_only':True}
+            stack.callback(VPG._mutex.release)
+        c=stack.enter_context(ns['pg_connect']())
+        acquired=stack.enter_context(VPG.book_transaction(c,blocking=not runtime))
+        if acquired is False:
+            return {'status':'BUSY','reason':'DATABASE_PAPER_BOOK_BUSY','paper_only':True}
+        if runtime:
+            clock=_wall_clock()
         for name in CTC.PORTFOLIO_ORDER:
             policy=CTC.runtime_portfolio_policy(name)
             portfolio,positions=VPR._portfolio_rows(c,name)
@@ -213,6 +231,8 @@ def fast_entry_pass(ns,rows,now):
                     continue
                 prepared=[]
                 for candidate in candidates:
+                    if runtime:
+                        clock=_wall_clock()
                     row=deepcopy(candidate)
                     row['_runtime_quote_refresh']=False
                     VAT.begin_cycle(row,clock.isoformat())
@@ -223,14 +243,18 @@ def fast_entry_pass(ns,rows,now):
                           {'5m':7,'1m':6,'1h':5,'4h':4,'1d':3,'3d':2,'7d':1}.get(row.get('horizon'),0))
                     prepared.append((rank,row,admission))
                 _,row,admission=max(prepared,key=lambda x:x[0])
-                existing=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',
-                                   (name,asset)).fetchone()
+                # This book snapshot remains current while the transaction
+                # owns both locks; mutations below explicitly reload it.
+                existing=next((item for item in positions if item['asset']==asset),None)
                 direction=row.get('research_decision')
                 quote=VPS.quote_from_row(row)
                 price=float(quote['price'])
                 audit=row['_execution_audit']
                 protection=None
+                entry_changed=False
                 if existing and owns_position(existing):
+                    if runtime:
+                        clock=_wall_clock()
                     frozen=dict(existing,_execution_quote=deepcopy(quote),_execution_quote_frozen=True)
                     checked_quote=VPG.exit_execution_quote(frozen,now=clock)
                     due=VPG.protective_reason(frozen,checked_quote,clock)
@@ -251,6 +275,8 @@ def fast_entry_pass(ns,rows,now):
                                       (clock.isoformat(),name))
                             portfolio,positions=VPR._portfolio_rows(c,name)
                             nav,_,gross,_=VPR._mark_nav(portfolio,positions,{})
+                        if runtime:
+                            clock=_wall_clock()
                         VPR.canonical_close_or_reduce(c,portfolio,name,frozen,price,0.,nav,
                                                        clock.isoformat(),due)
                         existing=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',
@@ -289,8 +315,14 @@ def fast_entry_pass(ns,rows,now):
                     elif existing and existing.get('direction')!=direction:
                         audit.update(status='HELD',reason='HELD_PROTECTED_STRUCTURE_REQUIRES_EXIT',execution_action='HOLD')
                     else:
+                        if runtime:
+                            # The quote keeps its provider timestamp. The
+                            # canonical boundary checks it again at the actual
+                            # mutation time, even if earlier SQL was slow.
+                            clock=_wall_clock()
                         VPR.canonical_open_or_add(c,portfolio,name,asset,direction,price,requested,nav,
                                                   clock.isoformat(),row,'VERIFIED_QUOTE_BREAKOUT')
+                        entry_changed=audit.get('status')=='EXECUTED'
                 # Render the saved allocation/fill decisions and the actual
                 # canonical outcome. Reporting must not run admission again.
                 selected_trace=VAT.build({asset:row},lambda selected:
@@ -301,8 +333,9 @@ def fast_entry_pass(ns,rows,now):
                 traces.extend(selected_trace)
                 # Each next allocation sees accounting changes committed inside
                 # this same transaction, including the fees of the prior fill.
-                portfolio,positions=VPR._portfolio_rows(c,name)
-                nav,_,gross,_=VPR._mark_nav(portfolio,positions,{})
+                if entry_changed:
+                    portfolio,positions=VPR._portfolio_rows(c,name)
+                    nav,_,gross,_=VPR._mark_nav(portfolio,positions,{})
                 portfolio,hwm=_save_high_water(c,name,portfolio,nav,clock.isoformat())
                 dd=max(0.,1.-nav/max(hwm,1.))
             results.append({'name':name,'nav_rub':nav,'gross_leverage':gross,
