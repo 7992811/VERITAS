@@ -15,6 +15,7 @@ from veritas_maintenance import MaintenanceDeferred
 import test_veritas_continuous_learning as PIPELINE
 from test_veritas_continuous_learning import NOW, fresh_quote, namespace
 from test_veritas_autonomous_learning import observation
+from test_veritas_learning_backlog import QueueDB, outcome
 
 
 class Deadline:
@@ -68,74 +69,66 @@ class ForecastBudgetTests(unittest.TestCase):
                 self.assertEqual(len(connection.calls), 2 if phase == "settings" else 0)
                 self.assertFalse(any(args == ("1",) for _, args in connection.calls))
 
-    def test_both_learners_must_commit_before_ack_can_be_retained(self):
-        app = C.ContinuousLearning(namespace(lambda: None))
-        rows = [{"id": 9, "outcome": {"direction": "LONG", "knowledge_trials": ["synthetic"]}}]
-        connection = Mock()
-        connection.execute.return_value.fetchall.return_value = rows
-        @contextmanager
-        def transaction(*unused):
-            yield connection
-        with patch.object(C, "transaction", transaction), \
-             patch.object(AUTO, "run_batch", return_value={"counts": {"direction": 1}, "profiles": []}), \
-             patch.object(C.KNOWLEDGE, "run_batch", side_effect=RuntimeError("synthetic rollback")):
-            with self.assertRaisesRegex(RuntimeError, "synthetic rollback"):
-                app.candidates(Deadline(), {})
-        self.assertIsNone(app._pending_candidate_ack)
-        self.assertEqual(connection.execute.call_count, 1)
+    def staged_app(self, stamps=()):
+        raw = outcome(stamps=stamps)
+        db = QueueDB([dict(id=9, entity_key=raw["episode_key"], status="READY", outcome=raw)])
+        return C.ContinuousLearning(namespace(db.connect)), db
 
-    def test_next_turn_acknowledges_completed_batch_without_repeating_exhausting_work(self):
-        app = C.ContinuousLearning(namespace(lambda: None))
-        original = deepcopy(app._snapshot)
-        rows = [{"id": 9, "outcome": {"direction": "LONG", "knowledge_trials": ["synthetic"]}}]
-        connection = Mock()
-        connection.execute.return_value.fetchall.return_value = rows
-        @contextmanager
-        def transaction(*unused):
-            yield connection
-        budget = Deadline()
+    def test_both_learners_must_commit_before_ack_stage_is_reached(self):
+        app, db = self.staged_app([{"trial_id": "synthetic"}])
+        with patch.object(AUTO, "run_batch", return_value={"counts": {"direction": 1}, "profiles": []}), \
+             patch.object(C.BRIDGE, "update"), \
+             patch.object(C.KNOWLEDGE, "run_batch", side_effect=RuntimeError("synthetic rollback")):
+            _, cursor = app.candidates(Deadline(), {})
+            _, cursor = app.candidates(Deadline(), cursor)
+            original = deepcopy(cursor)
+            with self.assertRaisesRegex(RuntimeError, "synthetic rollback"):
+                app.candidates(Deadline(), cursor)
+        self.assertEqual(cursor, original)
+        self.assertEqual(cursor["candidate_work"]["phase"], "KV")
+        self.assertEqual(db.rows[9]["status"], "READY")
+        self.assertFalse(any(sql.startswith("UPDATE") for sql, _ in db.calls))
+
+    def test_next_turn_acknowledges_completed_stages_without_repeating_exhausting_work(self):
+        app, db = self.staged_app([{"trial_id": "synthetic"}])
         completed = {"counts": {"direction": 1}, "profiles": []}
-        def knowledge(*args, **kwargs):
-            budget.expired = True  # Both learner commits used this entire turn.
-        cursor = {"abstentions": 4}
-        with patch.object(C, "transaction", transaction), \
-             patch.object(AUTO, "run_batch", return_value=completed) as learn, \
-             patch.object(C.KNOWLEDGE, "run_batch", side_effect=knowledge) as validate, \
+        with patch.object(AUTO, "run_batch", return_value=completed) as learn, \
+             patch.object(C.KNOWLEDGE, "run_batch", return_value={}) as validate, \
              patch.object(C.STORE, "load_snapshot_in_transaction", return_value=None), \
-             patch.object(C.BRIDGE, "update") as publish:
+             patch.object(C.BRIDGE, "update"):
+            _, cursor = app.candidates(Deadline(), {"abstentions": 4})
+            _, cursor = app.candidates(Deadline(), cursor)
+            _, cursor = app.candidates(Deadline(), cursor)
+            original = deepcopy(cursor)
+            budget = Deadline(); budget.expired = True
             with self.assertRaises(MaintenanceDeferred):
                 app.candidates(budget, cursor)
-            self.assertEqual(app._snapshot, original)
-            self.assertEqual(app._pending_candidate_ack["ids"], (9,))
-            publish.assert_not_called()
+            self.assertEqual(cursor, original)
+            self.assertEqual(db.rows[9]["status"], "READY")
             completed["counts"]["direction"] = 999
             result, advanced = app.candidates(Deadline(), cursor)
             self.assertEqual(result["counts"], {"direction": 1})
-            self.assertEqual(advanced, cursor)
+            self.assertEqual(advanced["abstentions"], 4)
             self.assertEqual(learn.call_count, 1)
             self.assertEqual(validate.call_count, 1)
-            publish.assert_called_once()
-        self.assertIsNone(app._pending_candidate_ack)
-        self.assertEqual(connection.execute.call_count, 3)  # One read, acknowledgement, cleanup.
+        self.assertEqual(db.rows[9]["status"], "LEARNED")
 
     def test_delayed_ack_does_not_republish_a_model_older_than_another_job(self):
-        app = C.ContinuousLearning(namespace(lambda: None))
-        app._pending_candidate_ack = {"ids": (9,), "snapshot": {
-            "updated_at": "2040-01-01T00:00:00+00:00", "counts": {"direction": 1}, "profiles": []},
-            "observations": 1, "abstentions": 0}
+        app, db = self.staged_app()
+        old = {"updated_at": "2040-01-01T00:00:00+00:00", "counts": {"direction": 1}, "profiles": []}
         newer = {"updated_at": "2040-01-01T00:01:00+00:00", "counts": {"direction": 2}, "profiles": []}
+        with patch.object(AUTO, "run_batch", return_value=old), patch.object(C.BRIDGE, "update"):
+            _, cursor = app.candidates(Deadline(), {})
+            _, cursor = app.candidates(Deadline(), cursor)
         app._snapshot = deepcopy(newer)
-        @contextmanager
-        def transaction(*unused):
-            yield Mock()
-        with patch.object(C, "transaction", transaction), patch.object(C.BRIDGE, "update") as publish, \
-             patch.object(C.STORE, "load_snapshot_in_transaction", return_value=None), \
+        with patch.object(C.BRIDGE, "update") as publish, \
+             patch.object(C.STORE, "load_snapshot_in_transaction", return_value={"payload": old}), \
+             patch.object(AUTO, "public_snapshot", return_value=old), \
              patch.object(AUTO, "run_batch", side_effect=AssertionError("learner repeated")):
-            result, _ = app.candidates(Deadline(), {})
+            result, _ = app.candidates(Deadline(), cursor)
         self.assertEqual(result["counts"], newer["counts"])
         self.assertEqual(app._snapshot, newer)
-        self.assertIsNone(app._pending_candidate_ack)
-        publish.assert_not_called()  # Leave the other job's already-published bridge intact.
+        publish.assert_not_called()
 
     def test_budget_deferral_checkpoints_retry_without_advancing_cursor(self):
         app = C.ContinuousLearning(namespace(lambda: None))
@@ -188,12 +181,22 @@ class ForecastCleanupSQLTests(unittest.TestCase):
                    now()-interval '30 days'-n*interval '1 day'
             FROM generate_series(1,%s) n""", (n,))
 
+    def prepare_ack(self, cursor=None):
+        for _ in range(12):
+            result, cursor = self.call(self.app.candidates, cursor)
+            if cursor.get("candidate_work", {}).get("phase") == "ACK":
+                return cursor
+        self.fail("forecast did not reach ACK stage")
+
     def expire_ack_checkout(self, budget):
         original = self.app.connect
+        opened = 0
         @contextmanager
         def delayed_connect():
+            nonlocal opened
             with original() as c:
-                if self.app._pending_candidate_ack is not None:
+                opened += 1
+                if opened == 2:  # Initial sealed-row read succeeds, ACK checkout expires.
                     budget.expired = True
                 yield c
         self.app.connect = delayed_connect
@@ -225,65 +228,70 @@ class ForecastCleanupSQLTests(unittest.TestCase):
 
     def test_expired_ack_retry_skips_learners_and_keeps_completed_snapshot_detached(self):
         self.ready_forecast()
-        before = self.forecasts()
-        original_snapshot = deepcopy(self.app._snapshot)
-        budget = Deadline()
-        original_connect = self.expire_ack_checkout(budget)
         returned = []
         actual_run = AUTO.run_batch
         def learn(*args, **kwargs):
             result = actual_run(*args, **kwargs)
             returned.append(result)
             return result
-        cursor = {"abstentions": 7}
         with patch.object(AUTO, "run_batch", side_effect=learn):
+            cursor = self.prepare_ack({"abstentions": 7})
+        before = self.forecasts()
+        original = deepcopy(cursor)
+        budget = Deadline()
+        original_connect = self.expire_ack_checkout(budget)
+        with patch.object(AUTO, "run_batch", side_effect=AssertionError("learner repeated")), \
+             patch.object(C.KNOWLEDGE, "run_batch", side_effect=AssertionError("knowledge repeated")):
             with self.assertRaises(MaintenanceDeferred):
                 self.app.candidates(budget, cursor)
         self.assertEqual(self.forecasts(), before)
-        self.assertEqual(self.app._snapshot, original_snapshot)
-        self.assertEqual(cursor, {"abstentions": 7})
-        self.assertLessEqual(len(self.app._pending_candidate_ack["ids"]), C.BATCH)
+        self.assertEqual(cursor, original)
         self.assertEqual(AUTO.snapshot(self.connect)["counts"]["direction"], 1)
         returned[0]["counts"]["direction"] = 999
-        self.assertEqual(self.app._pending_candidate_ack["snapshot"]["counts"]["direction"], 1)
+        self.assertEqual(self.app._snapshot["counts"]["direction"], 1)
         self.app.connect = original_connect
         with patch.object(AUTO, "run_batch", side_effect=AssertionError("learner repeated")), \
              patch.object(C.KNOWLEDGE, "run_batch", side_effect=AssertionError("knowledge repeated")):
             result, advanced = self.app.candidates(Deadline(), cursor)
         self.assertEqual(result["counts"]["direction"], 1)
         self.assertEqual(advanced["abstentions"], 7)
-        self.assertIsNone(self.app._pending_candidate_ack)
         self.assertEqual(self.forecasts()[0]["status"], "LEARNED")
 
-    def test_failed_cleanup_rolls_back_ack_and_preserves_pending_for_retry(self):
+    def test_failed_cleanup_rolls_back_only_retention_and_preserves_stage_for_retry(self):
         self.ready_forecast()
+        cursor = self.prepare_ack()
+        _, cursor = self.call(self.app.candidates, cursor)
+        self.assertEqual(cursor["candidate_work"]["phase"], "retention")
         with self.connect() as c:
             self.old_rows(c, 1)
             c.execute("""CREATE FUNCTION refuse_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$
                 BEGIN RAISE EXCEPTION 'synthetic cleanup failure'; END $$""")
             c.execute("CREATE TRIGGER refuse_cleanup BEFORE DELETE ON learning_forecasts FOR EACH ROW EXECUTE FUNCTION refuse_cleanup()")
-        before = self.forecasts()
+        before, original = self.forecasts(), deepcopy(cursor)
         with self.assertRaisesRegex(Exception, "synthetic cleanup failure"):
-            self.app.candidates(Deadline(), {})
+            self.call(self.app.candidates, cursor)
         self.assertEqual(self.forecasts(), before)
-        self.assertIsNotNone(self.app._pending_candidate_ack)
+        self.assertEqual(cursor, original)
         self.assertEqual(AUTO.snapshot(self.connect)["counts"]["direction"], 1)
         with self.connect() as c:
             c.execute("DROP TRIGGER refuse_cleanup ON learning_forecasts")
         with patch.object(AUTO, "run_batch", side_effect=AssertionError("learner repeated")):
-            self.app.candidates(Deadline(), {})
+            _, advanced = self.call(self.app.candidates, cursor)
+        self.assertNotIn("candidate_work", advanced)
         self.assertEqual(len(self.forecasts()), 1)
         self.assertEqual(self.forecasts()[0]["status"], "LEARNED")
 
     def test_process_restart_replays_durable_dedup_before_ack_without_inflation(self):
         self.ready_forecast()
-        budget = Deadline()
-        self.expire_ack_checkout(budget)
-        with self.assertRaises(MaintenanceDeferred):
-            self.app.candidates(budget, {})
+        _, pinned = self.call(self.app.candidates)
+        _, committed = self.call(self.app.candidates, pinned)
+        self.assertEqual(committed["candidate_work"]["phase"], "ACK")
+        # Lost outer checkpoint after AUTO commit: restart resumes its pinned
+        # AUTO phase, which must deduplicate before reaching ACK again.
         recreated = C.ContinuousLearning(namespace(self.connect))
-        self.assertIsNone(recreated._pending_candidate_ack)
-        result, _ = recreated.candidates(Deadline(), {})
+        result, resumed = recreated.candidates(Deadline(), pinned)
+        self.assertEqual(result["counts"]["direction"], 1)
+        result, _ = recreated.candidates(Deadline(), resumed)
         self.assertEqual(result["counts"]["direction"], 1)
         self.assertEqual(AUTO.snapshot(self.connect)["counts"]["direction"], 1)
         self.assertEqual(self.forecasts()[0]["status"], "LEARNED")
@@ -292,19 +300,18 @@ class ForecastCleanupSQLTests(unittest.TestCase):
 
     def test_external_committed_model_between_ack_attempts_is_read_without_relearning(self):
         self.ready_forecast()
+        cursor = self.prepare_ack()
         budget = Deadline()
         original_connect = self.expire_ack_checkout(budget)
         with self.assertRaises(MaintenanceDeferred):
-            self.app.candidates(budget, {})
-        earlier = C.BRIDGE.timestamp(self.app._pending_candidate_ack["snapshot"]["updated_at"])
+            self.app.candidates(budget, cursor)
+        earlier = C.BRIDGE.timestamp(self.app._snapshot["updated_at"])
         newer = AUTO.run_batch(self.connect, [observation(99)], now=earlier+timedelta(seconds=1))
         self.assertEqual(newer["counts"]["direction"], 2)
-        # Simulate a different process: this instance's snapshot/bridge has not
-        # received the newer model. The retry must consult its committed row.
         self.assertNotEqual(self.app._snapshot.get("updated_at"), newer["updated_at"])
         self.app.connect = original_connect
         with patch.object(AUTO, "run_batch", side_effect=AssertionError("learner repeated")):
-            result, _ = self.app.candidates(Deadline(), {})
+            result, _ = self.app.candidates(Deadline(), cursor)
         self.assertEqual(result["counts"]["direction"], 2)
         self.assertEqual(self.app._snapshot, newer)
         self.assertEqual(C.BRIDGE._state["updated_at"], newer["updated_at"])
@@ -314,3 +321,4 @@ class ForecastCleanupSQLTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

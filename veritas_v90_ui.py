@@ -1138,7 +1138,7 @@ function renderIntelligence(){
     compare='<div class="intel-compare">'+
       '<div class="intel-compare-card"><span>К стартовому VERITAS</span><b class="'+(Number(iv.delta_points||0)>=0?'ok':'bad')+'">'+ivDelta+'</b><em>индекс решений: '+esc(iv.current??'—')+' при базе 100</em></div>'+
       '<div class="intel-compare-card"><span>К AI без памяти</span><b class="'+(Number(sa.hit_rate_delta_pp||0)>=0?'ok':'bad')+'">'+aiHit+' точность</b><em>'+aiCap+' захват · n='+esc(sa.sample_n??0)+' · '+esc(sa.status||'BUILDING')+'</em></div>'+
-      '<div class="intel-compare-card"><span>Самообучение</span><b>'+learnText+'</b><em>реализация ожидаемого хода: '+realText+' · от запуска индекса '+roll+' п.</em></div>'+
+      '<div class="intel-compare-card"><span>Самообучение на сделках</span><b>'+learnText+'</b><em>реализация ожидаемого хода: '+realText+' · от запуска индекса '+roll+' п.</em></div>'+
     '</div>';
   }
   const daily='<div class="intel-daily">'+
@@ -1156,7 +1156,7 @@ function renderIntelligence(){
       '<div class="intel-stat">Новая чистая эпоха<b>'+esc(p.n??0)+' сделок</b></div>'+
       '<div class="intel-stat">OOS-подтверждённых правил<b>'+esc(k.validated_oos_rules??0)+'</b></div>'+
       '<div class="intel-stat">Знания применены<b>'+((Number(k.application_rate)||0)*100).toFixed(1)+'%</b></div>'+
-      '<div class="intel-stat">Эпизодов самообучения<b>'+esc(l.n??0)+'</b></div>'+
+      '<div class="intel-stat" title="Завершённые сделки, допущенные к разбору. Опыт прогнозов показан отдельно в автономном обучении.">Торговых эпизодов для обучения<b>'+esc(l.n??0)+'</b></div>'+
       '<div class="intel-stat">Средний захват движения<b>'+(numOrNull(l.avg_capture_ratio)==null?'—':(100*Number(l.avg_capture_ratio)).toFixed(1)+'%')+'</b></div>'+
     '</div>';
   }else{
