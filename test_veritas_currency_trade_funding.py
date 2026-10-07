@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import os
+from threading import Event, Lock
 import unittest
 from unittest.mock import Mock
 import uuid
@@ -76,6 +77,34 @@ class FundingSnapshotTests(unittest.TestCase):
         b=collect([operation("new",parentOperationId="new-parent",cursor="different")])
         self.assertEqual(a["snapshot_digest"],b["snapshot_digest"])
         self.assertNotEqual(a["audit"],b["audit"])
+
+    def test_broker_commission19_remains_audit_only_without_double_posting(self):
+        result=collect([operation(),operation("commission","-9",type="OPERATION_TYPE_BROKER_FEE")])
+        self.assertEqual(result["funding_cost_rub"],D("5.25"))
+        self.assertEqual(result["audit"][-1]["classification"],"COMMISSION_NOT_POSTED")
+
+    def test_actual_or_pending_margin_and_other_costs_block_instead_of_becoming_funding(self):
+        for kind in (14,66,"OPERATION_TYPE_MARGIN_FEE","OPERATION_TYPE_OTHER_FEE"):
+            for state in ("OPERATION_STATE_EXECUTED","OPERATION_STATE_PROGRESS"):
+                for changes in ({},{"instrumentUid":""},
+                                {"instrumentUid":"","childOperations":[{"instrumentUid":UID,"payment":money("-1")}]}):
+                    with self.subTest(kind=kind,state=state,changes=changes),self.assertRaisesRegex(
+                            F.FundingError,"NON_FUNDING_ALLOCATION_COST_RECONCILIATION_REQUIRED"):
+                        collect([operation("other-cost","-1",type=kind,state=state,**changes)])
+
+    def test_foreign_cancelled_and_zero_other_costs_can_be_excluded(self):
+        for kind in (14,66):
+            result=collect([operation(),operation("foreign","-99",type=kind,instrumentUid="foreign"),
+                            operation("cancelled","-99",type=kind,state="OPERATION_STATE_CANCELED"),
+                            operation("zero","0",type=kind)])
+            self.assertEqual(result["funding_cost_rub"],D("5.25"))
+
+    def test_zero_parent_does_not_hide_nonzero_cny_other_fee_child(self):
+        row=operation("fee","0",type=66,instrumentUid="",childOperations=[
+            {"instrumentUid":UID,"payment":money("-2")},
+            {"instrumentUid":"foreign","payment":money("2")}])
+        with self.assertRaisesRegex(F.FundingError,"NON_FUNDING_ALLOCATION_COST"):
+            collect([row])
 
     def test_same_id_duplicate_across_pages_is_counted_once(self):
         a=operation()
@@ -341,6 +370,8 @@ class FundingPostgresTests(unittest.TestCase):
         self.reader.return_value={}
         observed=self.observe()
         self.assertFalse(observed["reconciliation"]["reconciled"])
+        self.assertEqual(observed["reconciliation"]["bound_at"],START.isoformat())
+        self.assertEqual(observed["reconciliation"]["observed_window_end"],END.isoformat())
         self.assertTrue(self.accept(observed)["reconciliation"]["reconciled"])
         self.now=NEXT
         self.funding.refresh(ACCOUNT,UID)
@@ -442,6 +473,65 @@ class FundingPostgresTests(unittest.TestCase):
         self.assertEqual(self.funding.status(ACCOUNT,UID)["block_reason"],"STATEMENT_ATTESTATION_NOT_CONFIGURED")
         observed=self.observe()
         self.assertEqual(observed["reconciliation"]["block_reason"],"STATEMENT_ATTESTATION_NOT_CONFIGURED")
+
+    def test_separate_margin_cost_invalidates_admission_without_false_funding_post(self):
+        self.fill()
+        self.accept()
+        self.reader.return_value={"items":[operation(),operation("margin-fee","-2",type=14)]}
+        with self.assertRaisesRegex(F.FundingError,"NON_FUNDING_ALLOCATION_COST"):
+            self.funding.refresh(ACCOUNT,UID)
+        self.assertEqual(self.funding.status(ACCOUNT,UID)["block_reason"],
+                         "NON_FUNDING_ALLOCATION_COST_RECONCILIATION_REQUIRED")
+        with self.connect() as c:
+            state=c.execute(f"SELECT funding_rub,fees_rub FROM {L.ACCOUNTS}").fetchone()
+            self.assertEqual(state["funding_rub"],D("5.25"))
+            self.assertEqual(state["fees_rub"],D("2"))
+
+    def _race_refreshes(self, *, old_has_fee, newer_has_fee):
+        self.fill()
+        self.accept()
+        started, release, counter_lock = Event(), Event(), Lock()
+        calls = 0
+        def reader(*args, **kwargs):
+            nonlocal calls
+            with counter_lock:
+                calls += 1
+                first = calls == 1
+            if first:
+                started.set()
+                if not release.wait(timeout=10):
+                    raise AssertionError("test did not release the first reader")
+            rows = [operation()]
+            if (old_has_fee if first else newer_has_fee):
+                rows.append(operation("separate-margin-fee","-2",type=14))
+            return {"items": rows}
+        self.reader.side_effect = reader
+        # Both readers intentionally use the same clock timestamp: attempt
+        # identity, not timestamp granularity or scheduling delay, must decide.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            older = pool.submit(self.funding.refresh, ACCOUNT, UID)
+            try:
+                self.assertTrue(started.wait(timeout=10), "first fetch started")
+                if newer_has_fee:
+                    with self.assertRaisesRegex(F.FundingError,"NON_FUNDING_ALLOCATION_COST"):
+                        self.funding.refresh(ACCOUNT,UID)
+                else:
+                    self.assertTrue(self.funding.refresh(ACCOUNT,UID)["reconciled"])
+            finally:
+                release.set()
+            expected = "NON_FUNDING_ALLOCATION_COST" if old_has_fee else "OBSERVATION_SUPERSEDED"
+            with self.assertRaisesRegex(F.FundingError,expected):
+                older.result(timeout=10)
+
+    def test_older_clean_read_cannot_erase_newer_known_cost_failure(self):
+        self._race_refreshes(old_has_fee=False,newer_has_fee=True)
+        state=self.funding.status(ACCOUNT,UID)
+        self.assertFalse(state["reconciled"])
+        self.assertEqual(state["block_reason"],"NON_FUNDING_ALLOCATION_COST_RECONCILIATION_REQUIRED")
+
+    def test_older_failed_read_cannot_poison_newer_successful_refresh(self):
+        self._race_refreshes(old_has_fee=True,newer_has_fee=False)
+        self.assertTrue(self.funding.status(ACCOUNT,UID)["reconciled"])
 
 
 if __name__ == "__main__":

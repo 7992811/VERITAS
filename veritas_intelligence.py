@@ -17171,7 +17171,7 @@ class H(BaseHTTPRequestHandler):
             self.reply({'error': f'{type(e).__name__}: {e}'}, 503)
     def do_POST(self):
         try:
-            if urlparse(self.path).path.startswith(('/internal/currency-trading/', '/internal/currency-alerts/')):
+            if urlparse(self.path).path.startswith(('/internal/currency-trading/', '/internal/currency-alerts/', '/internal/currency-broker-alerts/')):
                 VCTS.reply_http(self, pg_connect, _currency_trade_summary, alert_handler=VCN.handle_request)
             elif self.path.startswith('/knowledge/automation/run'):
                 token = self.headers.get('X-Veritas-Token','')

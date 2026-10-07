@@ -65,6 +65,17 @@ class CurrencyHttpBoundaryTests(unittest.TestCase):
         self.assertEqual(calls[0][0], path)
         self.assertEqual(handler.responses, [({"ok": True, "stream": "paper"}, 200)])
 
+    def test_broker_notices_have_separate_dispatch_without_trade_or_paper_authority(self):
+        path = service.BROKER_ALERT_PREFIX + "claim"
+        handler = self.handler(path, b"{}")
+        with patch.object(service, "handle_request", side_effect=AssertionError("No trading")):
+            with patch.object(service, "handle_broker_alerts_request",
+                              return_value=({"ok": True, "stream": "broker"}, 200)) as dispatch:
+                service.reply_http(handler, None, None,
+                                   alert_handler=lambda *args: self.fail("No paper dispatch"))
+        self.assertEqual(dispatch.call_args.args[0], path)
+        self.assertEqual(handler.responses, [({"ok": True, "stream": "broker"}, 200)])
+
     def test_malformed_body_fails_without_dispatch_or_private_exception_text(self):
         for body in (b"{", b"\xff"):
             handler = self.handler(service.PREFIX + "poll", body)
@@ -283,7 +294,7 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.assertEqual(self.coordinator.calls, [])
 
     def test_private_owner_validation_precedes_database_for_bind_and_decision(self):
-        for operation in ("bind", "decision", "settlement-observe", "settlement-attest", "admission-evidence"):
+        for operation in ("bind", "decision", "settlement-status", "settlement-observe", "settlement-attest", "admission-evidence"):
             for body in ({"sender_user_id": OWNER + 1}, {"private_chat_id": OWNER + 1},
                          {"chat_type": "group"}):
                 candidate = {"sender_user_id": OWNER, "private_chat_id": OWNER, "chat_type": "private"}
@@ -510,9 +521,11 @@ class TracedEnvironment(dict):
 class TradeHttpEnvironmentTests(unittest.TestCase):
     def setUp(self):
         service._CACHE.clear()
+        service._BROKER_ALERT_CACHE.clear()
 
     def tearDown(self):
         service._CACHE.clear()
+        service._BROKER_ALERT_CACHE.clear()
 
     @staticmethod
     def forbidden(*args, **kwargs):
@@ -546,6 +559,62 @@ class TradeHttpEnvironmentTests(unittest.TestCase):
             with patch.object(service, "TBankTradingAdapter", side_effect=self.forbidden) as adapter:
                 self.assertIsNone(service.create_application(self.forbidden, self.forbidden))
                 adapter.assert_not_called()
+
+    def test_disabled_broker_notifications_do_not_initialize_or_read_secrets(self):
+        environment = TracedEnvironment({})
+        with patch.object(service.os, "environ", environment):
+            response, status = service.handle_broker_alerts_request(
+                service.BROKER_ALERT_PREFIX + "claim", {}, {}, self.forbidden)
+        self.assertEqual(status, 200)
+        self.assertIs(response["configured"], False)
+        self.assertIsNone(response["event"])
+        self.assertEqual(environment.reads, ["VERITAS_CURRENCY_BROKER_NOTIFICATIONS_ENABLED"])
+
+    def test_broker_notice_auth_precedes_account_reads_and_schema_creation(self):
+        environment = TracedEnvironment({
+            "VERITAS_CURRENCY_BROKER_NOTIFICATIONS_ENABLED": "true",
+            "VERITAS_CURRENCY_TRADE_SERVICE_KEY": SERVICE_KEY,
+        })
+        with patch.object(service.os, "environ", environment):
+            with patch.object(service, "BrokerNotificationOutbox", side_effect=self.forbidden):
+                response, status = service.handle_broker_alerts_request(
+                    service.BROKER_ALERT_PREFIX + "claim", {}, {}, self.forbidden)
+        self.assertEqual(status, 401)
+        self.assertEqual(response["code"], "TRADE_SERVICE_AUTH_REQUIRED")
+        self.assertNotIn("TBANK_ACCOUNT_ID", environment.reads)
+
+    def test_committed_broker_notices_drain_without_broker_credentials_or_proposals(self):
+        environment = TracedEnvironment({
+            "VERITAS_CURRENCY_BROKER_NOTIFICATIONS_ENABLED": "true",
+            "VERITAS_CURRENCY_TRADE_SERVICE_KEY": SERVICE_KEY,
+            "VERITAS_CURRENCY_TRADE_OWNER_USER_ID": str(OWNER),
+            "VERITAS_CURRENCY_TRADE_ENVIRONMENT": "sandbox",
+            "TBANK_ACCOUNT_ID": ACCOUNT,
+        })
+        calls = []
+        class FakeOutbox:
+            def __init__(self, **kwargs):
+                calls.append(("construct", kwargs))
+            def ensure_schema(self):
+                calls.append(("schema", None))
+            def handle(self, path, body):
+                calls.append(("handle", path))
+                return {"ok": True, "event": None}, 200
+        with patch.object(service.os, "environ", environment):
+            with patch.object(service, "BrokerNotificationOutbox", FakeOutbox):
+                with patch.object(service, "create_application", side_effect=self.forbidden):
+                    for _ in range(2):
+                        result, status = service.handle_broker_alerts_request(
+                            service.BROKER_ALERT_PREFIX + "claim", {}, HEADERS, self.forbidden)
+                        self.assertEqual(status, 200)
+                        self.assertTrue(result["ok"])
+        self.assertEqual([x[0] for x in calls], ["construct", "schema", "handle", "handle"])
+        self.assertEqual(calls[0][1]["account_id"], ACCOUNT)
+        self.assertEqual(calls[0][1]["owner_user_id"], OWNER)
+        self.assertEqual(calls[0][1]["execution_environment"], "sandbox")
+        for name in ("TBANK_API_TOKEN", "TBANK_SANDBOX_TOKEN",
+                     "VERITAS_CURRENCY_TRADE_PROPOSALS_ENABLED", "VERITAS_CURRENCY_TRADE_APPROVAL_KEY"):
+            self.assertNotIn(name, environment.reads)
 
     def test_enabled_wrong_auth_precedes_factory_and_secret_config_reads(self):
         environment = TracedEnvironment(self.configured())

@@ -41,8 +41,8 @@ jobs:
         env:
           VERITAS_TRADING_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/ci_ephemeral_test_only
         run: |
-          python -m py_compile veritas_currency_trade_plan.py veritas_currency_trading.py veritas_trade_telegram.py veritas_trade_approvals.py veritas_tbank_trading.py veritas_currency_trade_ledger.py veritas_currency_trade_funding.py veritas_currency_live_admission.py veritas_currency_trade_service.py bot.py
-          python -m unittest -v test_veritas_tbank_trading.py test_veritas_trade_approvals.py test_veritas_currency_trading.py test_veritas_currency_trade_ledger.py test_veritas_trade_telegram.py test_veritas_currency_trade_facts.py test_veritas_currency_trade_service.py test_veritas_currency_ma_trading.py test_veritas_currency_structural_trading.py test_veritas_currency_live_admission.py test_veritas_currency_trade_funding.py
+          python -m py_compile veritas_currency_trade_plan.py veritas_currency_trading.py veritas_trade_telegram.py veritas_trade_approvals.py veritas_tbank_trading.py veritas_currency_trade_ledger.py veritas_currency_trade_funding.py veritas_currency_live_admission.py veritas_currency_trade_service.py veritas_currency_broker_notifications.py veritas_currency_broker_delivery.py bot.py
+          python -m unittest -v test_veritas_tbank_trading.py test_veritas_trade_approvals.py test_veritas_currency_trading.py test_veritas_currency_trade_ledger.py test_veritas_trade_telegram.py test_veritas_currency_trade_facts.py test_veritas_currency_trade_service.py test_veritas_currency_ma_trading.py test_veritas_currency_structural_trading.py test_veritas_currency_live_admission.py test_veritas_currency_trade_funding.py test_veritas_currency_broker_notifications.py
       - name: Compile immutable version provenance and execution boundaries
         run: python -m py_compile veritas_entry_version.py veritas_execution_snapshot.py veritas_execution_journal.py veritas_paper_entry.py veritas_position_thesis.py veritas_stop_risk.py veritas_timeframe_management.py
       - name: Quote breakout lifecycle and actual CNY episode regressions

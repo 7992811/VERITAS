@@ -520,7 +520,7 @@ class TBankTradingAdapter:
         if (not isinstance(cursor, str) or len(cursor) > 4096
                 or any(ord(c) < 32 or ord(c) == 127 for c in cursor)):
             raise TradingError("INVALID_OPERATIONS_CURSOR")
-        if type(limit) is not int or not 1 <= limit <= 1000:
+        if type(limit) is not int or not 3 <= limit <= 1000:
             raise TradingError("INVALID_OPERATIONS_LIMIT")
         result = self._request("operations_cursor", {
             "accountId": account, "from": start, "to": end, "cursor": cursor,

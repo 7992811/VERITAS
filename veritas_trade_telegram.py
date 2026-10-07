@@ -48,6 +48,7 @@ REASONS = {
     "WORKING_ORDER_RECONCILIATION_REQUIRED": "Есть активная заявка; сначала нужна сверка её исполнения.",
     "FUNDING_COMPLETENESS_UNVERIFIED": "Полнота учёта фондирования ещё не подтверждена; новые входы блокируются.",
     "BROKER_COST_RECONCILIATION_REQUIRED": "Не завершена сверка фактических комиссий и фондирования.",
+    "NON_FUNDING_ALLOCATION_COST_RECONCILIATION_REQUIRED": "Обнаружены дополнительные расходы счёта; требуется сверить их отнесение к валютному портфелю.",
     "BROKER_FACTS_UNAVAILABLE": "Свежие брокерские данные недоступны; готовность не подтверждена.",
     "TRADE_SERVICE_TEMPORARILY_UNAVAILABLE": "Торговый сервис временно недоступен; состояние не подтверждено.",
     "LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED": "Не настроен источник подтверждённых данных для риск-допуска реального счёта.",

@@ -250,7 +250,10 @@ class CurrencyLedgerPostgresTests(unittest.TestCase):
         self.assertEqual(result["signed_lots"],2)
         self.assertEqual(result["currency_nav_rub"],D("10196"))
         self.assertFalse(result["reconciled"])
-        self.assertTrue(self.reconcile(2)["entries_allowed"])
+        reconciled = self.reconcile(2)
+        self.assertTrue(reconciled["reconciled"])
+        self.assertFalse(reconciled["entries_allowed"])
+        self.assertFalse(reconciled["funding_reconciled"])
 
     def test_changed_execution_or_order_terms_are_rejected_without_second_fill(self):
         self.record()
@@ -298,7 +301,11 @@ class CurrencyLedgerPostgresTests(unittest.TestCase):
                      **dict(args,observation_id="fee-older",cumulative_fee_rub=D("2"),filled_lots=1))
         self.assertEqual(older["fee_delta_rub"],D("0"))
         self.assertEqual(older["fees_rub"],D("5"))
-        self.assertTrue(self.reconcile(2)["entries_allowed"])
+        reconciled=self.reconcile(2)
+        self.assertTrue(reconciled["reconciled"])
+        self.assertTrue(reconciled["costs_reconciled"])
+        self.assertFalse(reconciled["funding_reconciled"])
+        self.assertFalse(reconciled["entries_allowed"])
 
     def test_repeated_commission_poll_keeps_approved_financial_revision(self):
         self.record(count=2,fee=None)
@@ -312,7 +319,9 @@ class CurrencyLedgerPostgresTests(unittest.TestCase):
         self.assertEqual(after["fee_delta_rub"],D("0"))
         self.assertEqual(after["ledger_revision"],before["ledger_revision"])
         self.assertTrue(after["reconciled"])
-        self.assertTrue(after["entries_allowed"])
+        self.assertTrue(after["costs_reconciled"])
+        self.assertFalse(after["funding_reconciled"])
+        self.assertFalse(after["entries_allowed"])
 
     def test_funding_unique_ids_and_variation_margin_double_count_are_guarded(self):
         args=dict(adjustment_id="actual-funding",cost_rub=D("3.25"),occurred_at=self.now)

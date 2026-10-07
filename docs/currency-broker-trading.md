@@ -14,10 +14,11 @@ event again. Production OPEN/ADD also require a separate, explicitly affirmative
 whole-account live admission verdict. Actual broker execution stages, rather than acknowledgement of an
 order, change the independent Currency ledger.
 
-The existing @axednewz / Axed News notification outbox remains a paper-event
-notification stream. Its OPEN/ADD/REDUCE/CLOSE records are not instructions for
-the broker. News ADMIN_USER_ID and news publication approval do not authorize
-trading decisions.
+The existing paper-event notification stream retains its explicit paper labels.
+A separate, default-off broker outbox mirrors verified actual fills to
+@axednewz (numeric channel -1002967459105), with production/sandbox labels.
+Neither channel stream authorizes a broker order. News ADMIN_USER_ID and news
+publication approval do not authorize trading decisions.
 
 ## Modules
 
@@ -32,6 +33,8 @@ trading decisions.
 | veritas_currency_live_admission.py | Signed evidence import, entire-account reconciliation and the existing production authority |
 | veritas_currency_trade_service.py | Explicit account binding, authoritative broker facts and protected internal HTTP operations |
 | veritas_trade_telegram.py | Private Telegram delivery and forwarding of authenticated callbacks |
+| veritas_currency_broker_notifications.py | Transactional, scoped outbox of verified broker execution facts |
+| veritas_currency_broker_delivery.py | Default-off channel delivery with pinned bot/channel identity and ambiguous-send barriers |
 | bot.py | Existing single getUpdates consumer, with durable trade callback handling before update acknowledgement |
 
 The service endpoint is /internal/currency-trading/. It uses a separate
@@ -215,6 +218,39 @@ startup notification behavior are preserved.
 Only the configured numeric trading owner in that owner's private chat can use
 these commands. A news administrator does not acquire trading authority.
 
+### Actual broker execution notices in @axednewz
+
+`VERITAS_CURRENCY_BROKER_NOTIFICATIONS_ENABLED` independently enables an
+informational channel mirror. Each newly recorded execution stage enqueues its
+notice in the same PostgreSQL transaction as the fill and its cumulative fee
+observation. Account, instrument, environment and broker trade ID deduplicate
+the event. An ACK with no fills never creates a notice. The order-level fee is
+not copied into every partial fill; the message states when a per-fill allocation
+is unavailable. Position changes use broker execution chronology. An anomalous
+or incomplete transition is labeled as requiring reconciliation and cannot
+discard the actual broker fill.
+
+The message names the broker environment, actual side, quantity, price and
+execution time, and distinguishes a partial fill from the originally approved
+OPEN/ADD/REDUCE/CLOSE. Delayed actual facts remain deliverable with a delay label;
+the entry-proposal expiry does not erase an already executed trade. Records
+created while delivery is disabled stay SKIPPED_UNCONFIGURED and are not
+silently backfilled on later enablement.
+
+The separate `/internal/currency-broker-alerts/{claim,begin,complete,status}`
+operations use X-Veritas-Trade-Key and a scoped isolated ledger schema. They
+cannot prepare or execute orders. Draining already committed facts requires no
+broker token and does not depend on the proposal/execution switches. The sender
+checks the actual numeric bot ID and @AxednewsI_bot username, plus channel ID
+-1002967459105 and @axednewz username, before claiming delivery. It adds no
+getUpdates consumer and places no approval buttons in channel messages.
+
+A committed SENDING barrier precedes Telegram I/O. If sendMessage may have
+succeeded but the reply was lost, the event becomes UNKNOWN and is not blindly
+resent. Explicit 429 rejection can be retried; an acknowledgement retry cannot
+send a second message. UNKNOWN requires operator reconciliation while later
+execution facts remain deliverable.
+
 ## Orders and accounting
 
 Prepared orders are LIMIT with PRICE_TYPE_POINT and
@@ -244,6 +280,12 @@ without filtering out operation types, commissions, trades or overnight rows.
 Funding is operation type 70, with a cost equal to minus the actual RUB payment.
 Parent/child attribution must reconcile exactly. Variation margin and already
 observed fill commissions are retained for audit and are not posted a second time.
+Broker fee type 19 is audit-only because actual order fees already enter the
+ledger. Nonzero executed/pending margin fees (14) or other fees (66) attributed
+to CNY, or lacking sufficient attribution, block new risk with
+NON_FUNDING_ALLOCATION_COST_RECONCILIATION_REQUIRED. They are not mislabeled as
+funding or silently omitted from a reconciled allocation. Explicitly canceled,
+zero and exactly foreign-instrument costs do not produce that blocker.
 Mutable operation IDs are used only to detect inconsistent duplicates within a
 read; accepted ledger adjustments identify a versioned window total.
 
@@ -261,6 +303,8 @@ payment, cancellation, pending operation, late fill, failed/stale history read,
 invalid signature or reached settlement boundary blocks new risk. A refreshed
 identical economic snapshot retains its attestation; a corrected total requires
 new review and posts only its delta. Receipt and delta commit atomically.
+Concurrent history attempts use a per-window token: an older response cannot
+clear a newer cost blocker or overwrite a newer completed observation.
 The 60-second history freshness bound is not a settlement-lag assumption.
 
 Unknown funding prevents high-water NAV increases after actual fills, including
@@ -270,12 +314,13 @@ unsigned settled=true flag never makes an allocation reconciled.
 
 ### Evidence operations
 
-All three internal POST operations require the service key, configured bot,
+All four internal POST operations require the service key, configured bot,
 private-owner identity and exact account/environment scope. They do not approve
 or execute a trade.
 
 | Operation | Request and effect |
 |---|---|
+| `/settlement-status` | Reads settlement storage and returns `bound_at`, `observed_window_end` and the current reconciliation blocker; no broker call or execution |
 | `/settlement-observe` | `window_start`, `window_end`; stores a bounded broker-history snapshot and returns a reviewable `receipt_template` |
 | `/settlement-attest` | `receipt`, `signature`; verifies independent statement review and atomically records any funding delta |
 | `/admission-evidence` | `payload`, `signature`; validates and appends one ACCOUNT_CONTROLS or MODEL_ADMISSION record |
@@ -288,6 +333,8 @@ artifacts outside this service. No example PASS metrics are production data.
 The admission endpoint accepts at most 64 KiB; other trade endpoints retain
 their 8 KiB bound. The repository further limits evidence depth, list sizes and
 payload size.
+Use the exact `bound_at` as the first window's start; later windows start at
+`observed_window_end`. The ordinary `/status` remains a cached metadata read.
 
 ## Configuration contract
 
@@ -312,6 +359,7 @@ No credentials or real account identifiers are stored in this branch.
 | VERITAS_LIVE_EXECUTION_ENABLED | Independent global execution gate; default off |
 | VERITAS_LIVE_EXECUTION_ARMED | Independent arming gate; default off |
 | VERITAS_CURRENCY_TRADE_MARGIN_ALLOWED | Explicit margin permissions; default off |
+| VERITAS_CURRENCY_BROKER_NOTIFICATIONS_ENABLED | Separate verified broker-fill channel mirror; default off in both service and bot |
 
 An existing market-data connection or a configured token does not establish that
 the selected account is open and FULL_ACCESS. Actual binding verifies the exact
@@ -336,6 +384,8 @@ status remain inert when either evidence key has not yet been configured.
 | Funding pages versus settled accounts | Signed external statement review and continuous window refresh supply completeness; pagination alone cannot |
 | Status versus execution | Read-only cached status; only the coordinator execution path can claim an approval |
 | News scan versus confirmation latency | One bounded background news worker, one getUpdates consumer |
+| Paper signals versus actual broker fills | Separate event tables, explicit environment labels, and a transactional broker-fill channel mirror |
+| Late cost response versus newer failure | A per-window refresh token prevents stale responses from replacing newer reconciliation state |
 | Whole lots versus a small allocation | A proposal below one contract is blocked; neither allocation nor admitted fraction is enlarged automatically |
 | Stop/target reference versus broker protection | Closing requires a separate confirmation; an OPEN does not install an automatic protective order |
 
@@ -361,7 +411,10 @@ execution identity, margin facts and ledger reconciliation. The HTTP and Telegra
 integration uses the actual signed proposal repository with fake network transports.
 Further cases cover signed evidence import/readback, full-account risk, late
 funding corrections, changed receipts, blocked high-water updates, explicit owner
-binding, slow news processing and current quote-event compatibility.
+binding, slow news processing and current quote-event compatibility. Actual-fill
+notification tests cover atomic commit/rollback with the ledger, late fills,
+duplicates, cross-environment isolation, pinned Telegram identity, concurrent
+claims, and ambiguous sends without automatic duplication.
 
 See the draft pull request checks for the validation result on its current commit.
 The repository also retains a separate nonblocking legacy execution audit; its
@@ -371,6 +424,7 @@ status must not be presented as part of an unqualified all-tests-passed claim.
 
 - https://www.moex.com/a8141
 - https://developer.tbank.ru/invest/services/operations/methods
+- https://developer.tbank.ru/invest/services/operations/operations_problems
 - https://developer.tbank.ru/invest/services/orders/methods
 - https://developer.tbank.ru/invest/intro/intro/token
 - https://developer.tbank.ru/invest/services/accounts/users

@@ -167,7 +167,8 @@ class AdapterTests(unittest.TestCase):
     def test_invalid_operation_window_and_cursor_fail_before_network(self):
         base = dict(from_time=STAMP, to_time="2026-10-08T00:00:00Z")
         for change in ({"to_time": STAMP}, {"from_time": "2026-10-07"},
-                       {"cursor": "bad\nvalue"}, {"limit": 1001}, {"limit": True}):
+                       {"cursor": "bad\nvalue"}, {"limit": 1}, {"limit": 2},
+                       {"limit": 1001}, {"limit": True}):
             with self.subTest(change=change), self.assertRaises(T.TradingError):
                 self.adapter.get_operations_by_cursor(ACCOUNT, **(base | change))
         self.assertEqual(self.transport.calls, [])

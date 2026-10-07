@@ -515,6 +515,8 @@ def main():
     log("Запуск VERITAS MAX.")
     from veritas_currency_delivery import start_from_env
     currency_worker = start_from_env(currency_stop, log)
+    from veritas_currency_broker_delivery import start_from_env as start_broker_notices
+    broker_notice_worker = start_broker_notices(currency_stop, log)
     from veritas_trade_telegram import build_from_env, start_worker
     trade_bridge = build_from_env(tg_call, log)
     trade_worker = start_worker(trade_bridge, currency_stop, log)
@@ -547,6 +549,8 @@ def main():
         currency_worker.join(timeout=15)
     if trade_worker:
         trade_worker.join(timeout=15)
+    if broker_notice_worker:
+        broker_notice_worker.join(timeout=15)
     if news_worker:
         news_worker.join(timeout=2)
     log("VERITAS MAX остановлен корректно.")

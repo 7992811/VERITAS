@@ -263,7 +263,8 @@ def valuation(state, mark_price, spec, *, funding_reconciled=None):
         # A profitable mark/close cannot establish a peak before both actual
         # commissions and settlement completeness have been verified.
         funding_known = (funding_reconciled is True or
-                         (funding_reconciled is None and state.get("last_execution_at") is None))
+                         (funding_reconciled is None and state.get("last_execution_at") is None
+                          and exact(state["funding_rub"]) == ZERO))
         hwm = max(old_hwm, nav) if state["costs_reconciled"] and funding_known else old_hwm
         drawdown = max(ZERO, 1-nav/hwm)
     return {"currency_nav_rub":nav, "high_water_rub":hwm,
@@ -457,7 +458,8 @@ class CurrencyTradeLedger:
         row["reconciled_revision"] = None
         # Rebuilding a fill/fee/funding amount alone provides no evidence that
         # settlement is complete. The confirmed mark path establishes HWM.
-        if not row["signed_lots"] and row["costs_reconciled"] and row["last_execution_at"] is None:
+        if (not row["signed_lots"] and row["costs_reconciled"] and row["last_execution_at"] is None
+                and row["funding_rub"] == ZERO):
             with localcontext() as ctx:
                 ctx.prec = 64
                 cash_nav = row["allocation_rub"] + row["realized_pnl_rub"] - row["fees_rub"] - row["funding_rub"]
@@ -599,9 +601,10 @@ class CurrencyTradeLedger:
         c.execute(f"UPDATE {ACCOUNTS} SET high_water_rub=%s,last_mark_price=%s,last_mark_observed_at=%s WHERE account_id=%s",
                   (result["high_water_rub"],exact(mark_price, positive=True),observed,row["account_id"]))
         row.update(high_water_rub=result["high_water_rub"],last_mark_price=exact(mark_price),last_mark_observed_at=observed)
-        return dict(self._view(row, status="FROZEN" if row["entries_frozen"] else "SNAPSHOT"), **result)
+        return dict(self._view(row, status="FROZEN" if row["entries_frozen"] else "SNAPSHOT",
+                               funding_reconciled=funding_reconciled), **result)
 
-    def _view(self, row, *, status):
+    def _view(self, row, *, status, funding_reconciled=None):
         matched = row["reconciled_revision"] == row["ledger_revision"]
         fresh = False
         if row.get("broker_observed_at"):
@@ -609,15 +612,20 @@ class CurrencyTradeLedger:
             fresh = -2 <= age <= 30
         reconciled = bool(matched and fresh and row["metadata_reconciled"]
                           and not row["entries_frozen"] and not row["broker_open_order_count"])
+        funding_known = (funding_reconciled is True or
+                         (funding_reconciled is None and row["last_execution_at"] is None
+                          and row["funding_rub"] == ZERO))
         return {"status":status, "version":VERSION, "account_id":row["account_id"],
                 "instrument_uid":row["instrument_uid"], "allocation_rub":row["allocation_rub"],
+                "bound_at":row["bound_at"],
                 "signed_lots":row["signed_lots"], "managed_signed_lots":row["signed_lots"],
                 "average_entry_price":row["average_entry_price"], "realized_pnl_rub":row["realized_pnl_rub"],
                 "fees_rub":row["fees_rub"], "funding_rub":row["funding_rub"],
                 "high_water_rub":row["high_water_rub"], "ledger_revision":row["ledger_revision"],
                 "spec_revision":row["spec_revision"], "costs_reconciled":row["costs_reconciled"],
                 "metadata_reconciled":row["metadata_reconciled"], "held_terms":row["held_terms"],
-                "reconciled":reconciled, "entries_allowed":reconciled and row["costs_reconciled"],
+                "reconciled":reconciled, "funding_reconciled":funding_known,
+                "entries_allowed":reconciled and row["costs_reconciled"] and funding_known,
                 "entries_frozen":row["entries_frozen"], "freeze_reason":row["freeze_reason"],
                 "broker_signed_lots":row["broker_signed_lots"], "broker_snapshot_id":row["broker_snapshot_id"],
                 "broker_observed_at":row["broker_observed_at"], "mark_observed_at":row["last_mark_observed_at"]}

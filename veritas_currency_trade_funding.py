@@ -43,6 +43,7 @@ ZERO = Decimal("0")
 TYPE_FUNDING = 70
 TYPE_VM = {26, 27}
 TYPE_COMMISSION = {14, 19, 66}
+UNSUPPORTED_ALLOCATION_COST = {14, 66}
 TYPES = {"OPERATION_TYPE_FUNDING": 70,
          "OPERATION_TYPE_ACCRUING_VARMARGIN": 26,
          "OPERATION_TYPE_WRITING_OFF_VARMARGIN": 27,
@@ -154,6 +155,39 @@ def _funding_payment(item, instrument_uid):
     raise FundingError("FUNDING_ATTRIBUTION_UNRESOLVED")
 
 
+def _check_other_allocation_cost(item, instrument_uid):
+    """Order commissions do not prove separately charged margin/other fees paid.
+
+    A known foreign instrument or explicitly cancelled operation is irrelevant.
+    An unattributed nonzero expense can belong to this allocation and therefore
+    cannot be silently omitted from a claim that its actual costs reconcile.
+    """
+    code = "NON_FUNDING_ALLOCATION_COST_RECONCILIATION_REQUIRED"
+    uid = item.get("instrumentUid") or ""
+    children = item.get("childOperations", [])
+    if not isinstance(children, list):
+        raise FundingError(code)
+    child_is_target = any(isinstance(child, Mapping) and child.get("instrumentUid") == instrument_uid
+                          for child in children)
+    if uid and uid != instrument_uid and not child_is_target:
+        return
+    try:
+        state = _enum(item.get("state"), STATES)
+        if state == 2:
+            return
+        if state not in (1, 3):
+            raise FundingError(code)
+        payment = _money(item.get("payment"))
+        # A net-zero parent can contain a real allocation debit offset by a
+        # credit to another child instrument; inspect relevant child amounts.
+        child_payments = [_money(child.get("payment")) for child in children
+                          if isinstance(child, Mapping) and child.get("instrumentUid") == instrument_uid]
+        if payment or any(child_payments):
+            raise FundingError(code)
+    except (FundingError, LedgerError):
+        raise FundingError(code) from None
+
+
 def collect_snapshot(operations_reader, account_id, instrument_uid, *, window_start,
                      window_end, max_pages=100, page_size=1000, max_items=50000):
     """Collect one bounded history read. `complete_fetch` is NOT finality.
@@ -199,6 +233,8 @@ def collect_snapshot(operations_reader, account_id, instrument_uid, *, window_st
             if not start <= occurred < end:
                 continue
             op_type = _enum(item.get("type"), TYPES)
+            if op_type in UNSUPPORTED_ALLOCATION_COST:
+                _check_other_allocation_cost(item, instrument_uid)
             if op_type != TYPE_FUNDING:
                 if item.get("instrumentUid") == instrument_uid and op_type in TYPE_VM | TYPE_COMMISSION:
                     audit.append({"id": oid, "type": op_type, "date": occurred,
@@ -339,11 +375,12 @@ class FundingReconciler:
           environment TEXT NOT NULL CHECK(environment IN ('production','sandbox')),
           window_start TIMESTAMPTZ NOT NULL, window_end TIMESTAMPTZ NOT NULL,
           current_snapshot_id TEXT, accepted_receipt_id TEXT, accepted_cost_rub NUMERIC NOT NULL DEFAULT 0,
-          refresh_failure TEXT,
+          refresh_failure TEXT, read_attempt_token TEXT,
           UNIQUE(account_id,instrument_uid,window_start,window_end), CHECK(window_start<window_end),
           FOREIGN KEY(account_id,instrument_uid) REFERENCES {ACCOUNTS}(account_id,instrument_uid)
         );
         ALTER TABLE {WINDOWS} ADD COLUMN IF NOT EXISTS refresh_failure TEXT;
+        ALTER TABLE {WINDOWS} ADD COLUMN IF NOT EXISTS read_attempt_token TEXT;
         CREATE TABLE IF NOT EXISTS {SNAPSHOTS}(
           snapshot_id TEXT PRIMARY KEY, window_id TEXT NOT NULL REFERENCES {WINDOWS}(window_id),
           snapshot_digest TEXT NOT NULL, fill_digest TEXT NOT NULL, funding_cost_rub NUMERIC NOT NULL,
@@ -412,21 +449,35 @@ class FundingReconciler:
             return self._disabled()
         start, end = utc(window_start), utc(window_end)
         started = utc(self.clock())
+        attempt_token = uuid.uuid4().hex
         with self.connect() as c, c.transaction():
             row = self._binding(c, account_id, instrument_uid)
             # Validate/create before network I/O. A failed read leaves an
             # unaccepted window and therefore cannot accidentally grant admission.
             window = self._window(c, row, start, end)
-            c.execute(f"UPDATE {WINDOWS} SET refresh_failure=%s WHERE window_id=%s",
-                      ("FUNDING_HISTORY_REFRESH_INCOMPLETE", window["window_id"]))
-        snapshot = collect_snapshot(self.operations_reader, account_id, instrument_uid,
-                                    window_start=start, window_end=end, **self.bounds)
+            c.execute(f"UPDATE {WINDOWS} SET refresh_failure=%s,read_attempt_token=%s WHERE window_id=%s",
+                      ("FUNDING_HISTORY_REFRESH_INCOMPLETE",attempt_token,window["window_id"]))
+        try:
+            snapshot = collect_snapshot(self.operations_reader, account_id, instrument_uid,
+                                        window_start=start, window_end=end, **self.bounds)
+        except FundingError as error:
+            if str(error) == "NON_FUNDING_ALLOCATION_COST_RECONCILIATION_REQUIRED":
+                with self.connect() as c, c.transaction():
+                    self._binding(c, account_id, instrument_uid)
+                    c.execute(f"UPDATE {WINDOWS} SET refresh_failure=%s WHERE window_id=%s AND read_attempt_token=%s",
+                              (str(error),window["window_id"],attempt_token))
+            raise
         observed = utc(self.clock())
         if observed < started:
             raise FundingError("OBSERVATION_CLOCK_REVERSED")
         with self.connect() as c, c.transaction():
             row = self._binding(c, account_id, instrument_uid)
             window = self._window(c, row, start, end)
+            # Account lock serializes attempt ownership, including failed reads.
+            # Timestamps alone cannot order two attempts at the same clock tick,
+            # and a newer failure need not have produced any snapshot at all.
+            if window.get("read_attempt_token") != attempt_token:
+                raise FundingError("OBSERVATION_SUPERSEDED")
             if window["current_snapshot_id"]:
                 prior = c.execute(f"SELECT read_started_at FROM {SNAPSHOTS} WHERE snapshot_id=%s",
                                   (window["current_snapshot_id"],)).fetchone()
@@ -438,8 +489,9 @@ class FundingReconciler:
                       "pending_funding_count,read_started_at,observed_at,payload) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
                       (snapshot_id,window["window_id"],snapshot["snapshot_digest"],fill_digest,snapshot["funding_cost_rub"],
                        snapshot["pending_funding_count"],started,observed,_json(snapshot)))
-            c.execute(f"UPDATE {WINDOWS} SET current_snapshot_id=%s,refresh_failure=NULL WHERE window_id=%s",
-                      (snapshot_id,window["window_id"]))
+            c.execute(f"UPDATE {WINDOWS} SET current_snapshot_id=%s,refresh_failure=NULL "
+                      "WHERE window_id=%s AND read_attempt_token=%s",
+                      (snapshot_id,window["window_id"],attempt_token))
             expected = {**self._scope(row), "window_start": start.isoformat(), "window_end": end.isoformat(),
                         "snapshot_id": snapshot_id, "snapshot_digest": snapshot["snapshot_digest"],
                         "fill_digest": fill_digest, "funding_cost_rub": _canonical(snapshot["funding_cost_rub"])}
@@ -539,9 +591,12 @@ class FundingReconciler:
             return self._disabled()
         row = self._binding(c, account_id, instrument_uid)
         now = utc(self.clock() if now is None else now)
+        observed_window_end = row["bound_at"]
         def result(code, ok=False, **fields):
             return {"status": "RECONCILED_BY_OWNER_ATTESTATION" if ok else "UNRECONCILED",
-                    "reconciled": ok, "block_reason": None if ok else code, "broker_finality": False, **fields}
+                    "reconciled": ok, "block_reason": None if ok else code, "broker_finality": False,
+                    "bound_at": row["bound_at"].isoformat(),
+                    "observed_window_end": observed_window_end.isoformat(), **fields}
         windows = c.execute(f"SELECT w.*,s.snapshot_digest,s.fill_digest,s.pending_funding_count,s.read_started_at,s.payload,"
                             "s.funding_cost_rub AS observed_cost_rub,r.snapshot_id AS accepted_snapshot_id,"
                             "r.funding_cost_rub AS receipt_cost_rub,r.settled_through AS accepted_through,"
@@ -550,6 +605,8 @@ class FundingReconciler:
                             " s ON s.snapshot_id=w.current_snapshot_id LEFT JOIN "+RECEIPTS+
                             " r ON r.receipt_id=w.accepted_receipt_id WHERE w.account_id=%s AND w.instrument_uid=%s "
                             "ORDER BY w.window_start", (account_id,instrument_uid)).fetchall()
+        if windows:
+            observed_window_end = windows[-1]["window_end"]
         has_fills = c.execute(f"SELECT trade_id FROM {FILLS} WHERE account_id=%s AND instrument_uid=%s LIMIT 1",
                              (account_id,instrument_uid)).fetchone() is not None
         if not windows:
@@ -567,7 +624,9 @@ class FundingReconciler:
             if window["window_start"] != frontier:
                 return result("SETTLEMENT_WINDOW_GAP")
             if window["refresh_failure"]:
-                return result("FUNDING_HISTORY_REFRESH_INCOMPLETE")
+                reason = window["refresh_failure"]
+                return result(reason if reason == "NON_FUNDING_ALLOCATION_COST_RECONCILIATION_REQUIRED"
+                              else "FUNDING_HISTORY_REFRESH_INCOMPLETE")
             if window["read_started_at"] is None or not 0 <= (now-window["read_started_at"]).total_seconds() <= self.max_observation_age_seconds:
                 return result("FUNDING_HISTORY_REFRESH_REQUIRED")
             if not window["accepted_receipt_id"]:
