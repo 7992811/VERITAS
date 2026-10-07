@@ -7366,6 +7366,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 h_elapsed=time.time()-horizon_wall_t0
                 horizon_timings[horizon]=horizon_timings.get(horizon,0.0)+h_elapsed
                 asset_timings[asset]['horizons']+=h_elapsed
+                f=v84_row=z=trade_plan=cur=dcur=None
+                _v90_trim_memory('horizon_'+str(asset)+'_'+str(horizon),force=True,preserve_active_cycle=True)
             asset_timings[asset]['total']=(asset_timings[asset]['market_fetch']+asset_timings[asset]['context']+
                                                 asset_timings[asset]['common_features']+asset_timings[asset]['horizons'])
         except Exception as e:
@@ -7438,7 +7440,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             portfolio_autopilot=VP.step_all(
                 summary=summary, pg_connect=pg_connect, model_version=VERSION,
                 observed_at=now(), commission_rate=VX.VC.COMMISSION_RATE,
-                emit=lambda event, **kw: emit(event, **dict(kw,rss_mb=rss_mb())))
+                emit=_v90_emit_portfolio)
         except Exception as ex:
             portfolio_autopilot={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
             emit('portfolio_autopilot_error',error=portfolio_autopilot['error'],trace=traceback.format_exc(limit=12))
@@ -18713,13 +18715,13 @@ def _v90_memory_checkpoint(phase,asset,horizon=None):
              rss_mb=rss_mb(),cycle_mode=_v90r62_active_cycle_mode)
 
 
-def _v90_trim_memory(phase='unknown',force=False):
+def _v90_trim_memory(phase='unknown',force=False,*,preserve_active_cycle=False):
     before=rss_mb()
     if not force and before is not None and float(before)<V90_MEMORY_CAUTION_MB:
         return {'phase':phase,'before_mb':before,'after_mb':before,'trimmed':False}
     # R65: per-asset GC may release objects, but must not evict the warm
     # market/feature caches needed by the remaining assets in the SAME cycle.
-    preserve_active_cycle=str(phase or '').startswith('asset_')
+    preserve_active_cycle=bool(preserve_active_cycle or str(phase or '').startswith('asset_'))
     cleared=_v90_prune_low_priority_caches(before,preserve_active_cycle=preserve_active_cycle)
     try:
         gc.collect()
@@ -18737,6 +18739,12 @@ def _v90_trim_memory(phase='unknown',force=False):
              released_mb=None if before is None or after is None else round(float(before)-float(after),1),
              caches_cleared=cleared)
     return {'phase':phase,'before_mb':before,'after_mb':after,'trimmed':True,'caches_cleared':cleared}
+
+
+def _v90_emit_portfolio(event,**kw):
+    if event=='paper_portfolio_phase':
+        _v90_trim_memory('portfolio_'+str(kw.get('phase') or 'unknown'),force=True,preserve_active_cycle=True)
+    return emit(event,**dict(kw,rss_mb=rss_mb()))
 
 
 _v90_base_run_heavy_learning_maintenance=run_heavy_learning_maintenance
