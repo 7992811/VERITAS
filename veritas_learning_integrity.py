@@ -4,8 +4,10 @@ import json
 import math
 import re
 import veritas_trade_audit as AUDIT
+import veritas_observation_path as OBSERVATION
+import veritas_trade_diagnostics as DIAGNOSTICS
 
-VERSION = "LEARNING_SOURCE_EVIDENCE_V1"
+VERSION = "LEARNING_TF_PATH_EVIDENCE_V2"
 BATCH_SIZE = 128
 MAX_BATCH_SIZE = 256
 MAX_APPROACH_BARS = 100  # MA policy hard limit; the canonical proof has three bars.
@@ -49,11 +51,9 @@ def trade_exclusion(trade):
     if any(_number(trade.get(k)) is None for k in
            ("gross_pnl_rub", "fees_rub", "funding_rub", "net_pnl_rub")):
         return "INCOMPLETE_ACCOUNTING"
-    p = AUDIT.payload(trade.get("payload"))
-    mfe = _number(p.get("r55_lifetime_mfe_pct") if p.get("r55_lifetime_mfe_pct") is not None else p.get("mfe_pct"))
-    mae = _number(p.get("r55_lifetime_mae_pct") if p.get("r55_lifetime_mae_pct") is not None else p.get("mae_pct"))
-    if mfe is None or mae is None or mfe < 0 or mae > 0:
-        return "INCOMPLETE_OBSERVED_PATH"
+    diagnosis = DIAGNOSTICS.diagnose(trade)
+    if not diagnosis.get("learning_eligible"):
+        return diagnosis.get("exclusion_reason") or "UNVERIFIED_TRADE_EVIDENCE"
     return None
 
 def _object(expression, fields):
@@ -127,9 +127,11 @@ def payload_sql(alias="t"):
     simple = ("data_integrity_status", "entry_primary_source", "entry_data_latency_class",
               "recovered", "learning_eligible", "exit_reason", "close_reason",
               "idea_event_id", "r66_event_id", "mfe_pct", "mae_pct",
-              "r55_lifetime_mfe_pct", "r55_lifetime_mae_pct")
+              "r55_lifetime_mfe_pct", "r55_lifetime_mae_pct", "initial_stop_price", "entry_atr",
+              "execution_timeframe", "execution_horizon", "atr_timeframe", "stop_timeframe",
+              "target_timeframe")
     for key in simple:
-        pairs.extend(("'"+key+"'", p+"->'"+key+"'"))
+        pairs.extend(("'"+key+"'", _proof_scalar(p+"->'"+key+"'")))
     for key in ("price_source_lock", "entry_execution_source_identity", "last_exit_source_identity", "contract_identity"):
         pairs.extend(("'"+key+"'", _identity(p+"->'"+key+"'")))
     pairs.extend(("'entry_source_names'", _object("("+p+"->'entry_source_names')", ("primary",)),
@@ -140,15 +142,21 @@ def payload_sql(alias="t"):
                   "signal_at", "confirmed_at", "level_available_at", "stop_level_available_at",
                   "atr_observed_until", "version", "ma_rebound_version", "trigger_pivot_at",
                   "stop_pivot_at", "trigger_level", "signal_price", "atr", "stop_anchor",
-                  "stop_price", "target_price")
+                  "stop_price", "target_price", "spent", "spent_at", "spent_reason")
     policy = "("+event+"->'policy')"
     policy_sql = _projected_object(policy, (
         "atr_period", "pivot_left", "pivot_right", "stop_buffer_atr", "max_stop_atr",
         "max_extension_atr", "max_signal_age_bars", "target_r_multiple", "min_target_atr"))
-    event_sql = (_object(event, event_keys)+" || jsonb_build_object('source_identity',"+
-        _identity(event+"->'source_identity'")+",'policy',"+policy_sql+
-        ",'ma_proof',"+_ma_proof_sql("("+event+"->'ma_proof')")+")")
+    event_sql = _projected_object(event, event_keys, {
+        "source_identity": _identity(event+"->'source_identity'"),
+        "policy": policy_sql, "ma_proof": _ma_proof_sql("("+event+"->'ma_proof')")})
     pairs.extend(("'entry_event_snapshot'", event_sql))
+    for key in ("entry_execution_model", "last_exit_execution_model"):
+        pairs.extend(("'"+key+"'", _projected_object("("+p+"->'"+key+"')",
+                                                  ("fill_price", "asset", "side"))))
+    witness = "("+p+"->'observation_path')"
+    pairs.extend(("'observation_path'", _projected_object(witness, OBSERVATION.SCALAR_FIELDS, {
+        "source_identity": _identity(witness+"->'source_identity'")})))
     return "jsonb_build_object("+",".join(pairs)+")"
 
 TRADE_FIELDS = ("trade_id", "asset", "direction", "horizon", "status", "opened_at", "closed_at",
@@ -228,16 +236,17 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
             """, (row["episode_trade_id"], trade.get("asset"), trade.get("direction"), event_id)).fetchone()
             if duplicate:
                 reason = "DUPLICATE_OBSERVED_EVENT"
-        ok = reason is None
+        diagnosis = DIAGNOSTICS.diagnose(trade, additional_exclusion=reason)
+        ok = reason is None and diagnosis.get("learning_eligible") is True
+        reason = reason or diagnosis.get("exclusion_reason")
         integrity = {"version": VERSION, "status": "VERIFIED" if ok else "EXCLUDED",
                      "evidence_hash": row["evidence_hash"], "event_id": event_id,
                      "exclusion_reason": reason,
                      "prior_primary_attribution": prior.get("prior_primary_attribution"),
                      "prior_attributions": prior.get("prior_attributions"),
                      "prior_learning_action": prior.get("prior_learning_action")}
-        patch = {"learning_integrity": integrity}
-        if not ok:
-            patch["learning_exclusion_reason"] = reason
+        patch = {"learning_integrity": integrity, "trade_diagnostics": diagnosis,
+                 "learning_exclusion_reason": reason}
         cur = c.execute("""
           UPDATE v90_learning_episodes e SET learning_eligible=%s,
             primary_attribution=%s,attributions=%s::jsonb,learning_action=%s,
@@ -247,10 +256,10 @@ def revalidate_eligible(c, batch_size=BATCH_SIZE):
             AND (NOT %s OR EXISTS (
               SELECT 1 FROM paper_trades t WHERE t.trade_id=e.trade_id
                 AND md5(("""+evidence+""")::text)=%s))
-        """, (ok, prior.get("prior_primary_attribution") if ok else "DATA_EVIDENCE_EXCLUDED",
-              json.dumps(prior.get("prior_attributions") if ok else ["DATA_EVIDENCE_EXCLUDED"]),
-              prior.get("prior_learning_action") if ok else "EXCLUDE_FROM_LEARNING",
-              json.dumps(patch), row["episode_trade_id"], ok, row["evidence_hash"]))
+        """, (ok, diagnosis["primary_attribution"],
+              json.dumps(diagnosis["attributions"], allow_nan=False),
+              diagnosis["learning_action"],
+              json.dumps(patch, allow_nan=False), row["episode_trade_id"], ok, row["evidence_hash"]))
         n = max(0, int(cur.rowcount)); changed += n
         verified += n if ok else 0; excluded += 0 if ok else n
     pending = c.execute("""

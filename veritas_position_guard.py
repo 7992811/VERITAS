@@ -14,6 +14,7 @@ import veritas_canonical_constitution as CTC
 import veritas_execution as VX
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
+import veritas_observation_path as VOP
 from veritas_quote_time import quote_gate, utc_datetime
 
 BOOK_LOCK_ID = 90390929
@@ -163,12 +164,20 @@ def publish_quote(asset, raw):
 def quote_for_position(position, candidate=None, now=None):
     """Resolve a fresh quote without crossing the entry provider or contract."""
     now=utc_datetime(now) or datetime.now(timezone.utc)
-    with _quotes_lock:
-        quotes=[dict(q) for key,q in _source_quotes.items() if key[0]==position.get('asset')]
-        quotes.append(dict(_quotes.get(position.get('asset')) or {}))
-    quotes.extend([candidate or {},position.get('_execution_quote') or {}])
+    frozen=position.get('_execution_quote_frozen') is True
+    if frozen:
+        # Canonical accounting has already selected this observation. Validate
+        # it again below, but do not replace its price/time/bid/ask midway through
+        # the evidence, profit check and fill calculation with a newer cache row.
+        selected=position.get('_execution_quote')
+        quotes=[dict(selected)] if isinstance(selected,dict) else []
+    else:
+        with _quotes_lock:
+            quotes=[dict(q) for key,q in _source_quotes.items() if key[0]==position.get('asset')]
+            quotes.append(dict(_quotes.get(position.get('asset')) or {}))
+        quotes.extend([candidate or {},position.get('_execution_quote') or {}])
     identity=VPS.position_identity(position) or {}
-    if position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
+    if not frozen and position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
         try:
             from veritas_direct_cny import quote as direct_quote
             quotes.append(direct_quote(now=now))
@@ -606,6 +615,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                     _signed=100.0*((_px/_entry-1.0) if z.get('direction')=='LONG'
                                     else (_entry/_px-1.0))
                     _path={
+                      'observation_path':VOP.observe(z,q,ts,lane='PROTECTIVE_GUARD'),
                       'price_source_lock':VPS.position_identity(z),
                       'price_source_status':'OK',
                       'source_locked_mark':{'identity':VPS.identity(z['asset'],q),
@@ -619,15 +629,18 @@ def run_protective_pass(vp, pg_connect, quotes, now=None):
                       'r55_last_path_mark_at':ts,
                       'r55_last_path_mark_price':_px,
                     }
-                    c.execute(
-                        "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                        "WHERE active_trade_id=%s",(json.dumps(_path),z.get('active_trade_id'))
-                    )
-                    if z.get('active_trade_id'):
+                    # Optional telemetry must not poison the book transaction
+                    # and suppress a protective exit if metadata cannot be saved.
+                    with c.transaction():
                         c.execute(
-                            "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                            "WHERE trade_id=%s",(json.dumps(_path),z.get('active_trade_id'))
+                            "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                            "WHERE active_trade_id=%s",(json.dumps(_path,allow_nan=False),z.get('active_trade_id'))
                         )
+                        if z.get('active_trade_id'):
+                            c.execute(
+                                "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                                "WHERE trade_id=%s",(json.dumps(_path,allow_nan=False),z.get('active_trade_id'))
+                            )
                     zp.update(_path); z['payload']=zp
             except Exception:
                 pass

@@ -1,0 +1,61 @@
+{
+  "experiment_id": "SAME_TF_BREAKOUT_FIRST_RETEST_20261007_V1",
+  "declared_at": "2026-10-07T06:28:42Z",
+  "declaration_status": "FROZEN_BEFORE_DATA_DOWNLOAD_AND_EVALUATION",
+  "base_commit": "90bc40a0b4a0d7347ed42e6c2ef83eacc0c5f2e7",
+  "purpose": "Paired research comparison of two entry rules; no runtime rule promotion or broker orders.",
+  "timeframe": "5m",
+  "datasets": [
+    {"asset": "BTC", "product_id": "BTC-USD", "source_identity": {"key": "COINBASE:SPOT:BTC-USD", "contract_id": "BTC-USD"}},
+    {"asset": "ETH", "product_id": "ETH-USD", "source_identity": {"key": "COINBASE:SPOT:ETH-USD", "contract_id": "ETH-USD"}}
+  ],
+  "data_start": "2026-09-22T00:00:00Z",
+  "evaluation_start": "2026-09-23T00:00:00Z",
+  "holdout_start": "2026-10-01T00:00:00Z",
+  "data_end_exclusive": "2026-10-07T00:00:00Z",
+  "variants": ["CONFIRMED_BREAKOUT", "FIRST_CONFIRMED_RETEST"],
+  "structural_policy": {
+    "atr_period": 20, "pivot_left": 2, "pivot_right": 2,
+    "stop_buffer_atr": 0.15, "max_stop_atr": 3.0,
+    "max_extension_atr": 0.5, "max_signal_age_bars": 1.0,
+    "target_r_multiple": 2.0, "min_target_atr": 1.5
+  },
+  "research_policy": {
+    "retest_window_bars": 6,
+    "retest_touch_zone_atr": 0.1,
+    "retest_confirm_extension_atr": 0.05,
+    "retest_invalid_close_atr": 0.15,
+    "max_hold_bars": 48,
+    "minimum_net_reward_risk": 1.15,
+    "commission_per_side": 0.0004,
+    "slippage_per_side": 0.0004,
+    "stress_slippage_per_side": 0.0008,
+    "minimum_move": 0.0019,
+    "cost_multiple": 1.1,
+    "funding_annual_rate": 0.16,
+    "funding_free_seconds": 86400,
+    "funding_year_days": 365.25,
+    "bootstrap_seed": 20261007,
+    "bootstrap_replicates": 2000
+  },
+  "entry_model": "Only next contiguous observed candle open after a completed confirmation, with adverse slippage. No execution on the signal candle.",
+  "stop_target_policy": "Both variants retain the original same-timeframe breakout stop and target. No widening, rebasing, partial exits, additions or trailing in this isolated entry comparison.",
+  "exit_model": "Identical fixed barriers; stop before target if both touched; adverse stop gap at candle open; target fill capped at target; after 48 observed entry-timeframe bars exit at next open. Intrabar exit time is bounded by its candle; use candle close for conservative funding.",
+  "gap_policy": "Missing candles censor pending opportunities and held positions; never interpolate. Structural warmup restarts after gaps. A normal price gap with contiguous candles uses adverse stop execution.",
+  "stress_model": "Double modeled slippage on the same admitted trades, entry/exit times and quantities; do not filter the sample again under stress.",
+  "statistics_unit": "One initial breakout event shared by both variants. No-entry contributes zero only after its observation window resolves. Pending/censored paired outcomes are excluded and counted. Overlapping events and BTC/ETH are not independent portfolio observations.",
+  "risk_unit": "One unit of modeled initial net stop risk per admitted trade; stress uses the same base-risk quantity. Returns are opportunity-level R, not account returns.",
+  "boundary_policy": "Purge development opportunities whose maximum retest plus hold window could cross holdout_start. Do not train or tune on the subsequent holdout.",
+  "uncertainty": "Descriptive paired mean difference plus deterministic UTC-day cluster bootstrap over both assets. Few days and serial dependence prevent evidence of a deployable edge.",
+  "daily_ma_context": "Not evaluated without a separately authenticated native completed D1 series; SMA50/SMA200 runtime rules remain unchanged.",
+  "promotion_policy": "NONE; user review and independent validation are required before changing any portfolio strategy.",
+  "limitations": [
+    "Coinbase spot research prices are not Binance execution prices and are not futures.",
+    "Historical OHLC does not identify bid/ask, queue position, exact intrabar ordering or source delivery latency.",
+    "The modeled costs are the owner-approved paper assumptions, not a claim about Coinbase account fees or achievable live fills.",
+    "This compares isolated entries and fixed exits; it does not replay all current portfolio filters, allocation, partial exits or protective runtime behavior.",
+    "The data endpoint documents that historical intervals can be incomplete; strict continuity checks are mandatory.",
+    "No profitability conclusion may be drawn from synthetic unit tests or from a zero-trade result."
+  ],
+  "primary_source_documentation": "https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-candles"
+}

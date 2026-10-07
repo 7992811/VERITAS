@@ -250,12 +250,13 @@ def entry_gate(row, price, direction, fraction, position=None, existing_target_p
     row = row or {}
     import veritas_trend_entry as VTE
     import veritas_timeframe_policy as TFP
+    from veritas_price_source import quote_from_row
     clock = TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
     if clock is None:
         return {"eligible":False, "status":"BLOCK", "blockers":["SAME_TF_DECISION_TIME_REQUIRED"]}
     row = VTE.prepare_row(row, price, clock)
     plan = dict(row.get('trade_plan') or {})
-    execution=row.get('_execution_quote') or {}
+    execution=quote_from_row(row)
     if position:
         held_stop = _num(position.get('stop_price'))
         held_target = stored_position_target_price(position)
@@ -300,19 +301,13 @@ def entry_gate(row, price, direction, fraction, position=None, existing_target_p
         plan.update(stop_price=geometry['stop_price'],target_price=geometry['target_price'],
                     expected_move_pct=expected,expected_to_stop_ratio=geometry['reward_risk'])
     plan.update(entry_price=price, direction=direction, initial_position_fraction=fraction,
-                horizon=row.get('horizon'), best_bid=execution.get('best_bid') or row.get('best_bid'),
-                best_ask=execution.get('best_ask') or row.get('best_ask'))
+                horizon=row.get('horizon'), best_bid=execution.get('best_bid',execution.get('bid')),
+                best_ask=execution.get('best_ask',execution.get('ask')))
     gate = economics_gate(row.get('asset'), plan)
     if position:
         gate['add_geometry_basis']='STORED_POSITION_STOP_TARGET'
     timing = paper_quote_time_gate(
-        dict(row, observed_at=(execution.get('observed_at') or row.get('market_observed_at')
-                              or row.get('observed_at') or plan.get('market_observed_at')),
-             data_latency_class=(execution.get('data_latency_class') or row.get('data_latency_class')),
-             source_gate_pass=(execution.get('source_gate_pass')
-                               if execution.get('source_gate_pass') is not None else row.get('source_gate_pass')),
-             market_open=(execution.get('market_open')
-                          if execution.get('market_open') is not None else row.get('market_open'))),
+        dict(execution,asset=row.get('asset')),
         row.get('horizon'), now=clock)
     gate['entry_geometry']=geometry
     if is_proxy_price(row.get('asset'),execution or row):

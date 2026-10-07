@@ -624,6 +624,7 @@ def production_candidate_readiness(pg_connect):
           'positive_avg_trade':float(m.get('avg_net_pnl_rub') or 0.0)>0,
           'drawdown':m.get('max_drawdown') is not None and float(m['max_drawdown'])<=thresholds['max_drawdown'],
           'history_coverage':bool(m.get('history_complete')),
+          'rule_evidence':bool(m.get('rule_evidence_complete')),
           'accounting':bool(m.get('accounting_complete')),
           'exit_telemetry':int(m.get('unknown_exits') or 0)<=thresholds['unknown_exit_tolerance'],
         }
@@ -1055,7 +1056,9 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
     err=None
     evidence_revalidation=None
     try:
-        with pg_connect() as c:
+        # Production connections use autocommit. Keep staging, row locks and
+        # relabelling in one transaction; SET LOCAL then bounds the actual work.
+        with pg_connect() as c, c.transaction():
             c.execute("SET LOCAL statement_timeout = '4000ms'")
             _v90r29_ensure(c)
             evidence_revalidation=VLI.revalidate_eligible(c)
@@ -1088,8 +1091,6 @@ def _v90r44_sanitize_learning(pg_connect,force=False):
           FROM paper_trades t
           WHERE e.trade_id=t.trade_id AND e.learning_eligible=TRUE AND (
             UPPER(COALESCE(t.payload->>'data_integrity_status','OK')) NOT IN ('','OK','VALID','CLEAN')
-            OR COALESCE(t.payload->>'r55_lifetime_mfe_pct',t.payload->>'mfe_pct') IS NULL
-            OR COALESCE(t.payload->>'r55_lifetime_mae_pct',t.payload->>'mae_pct') IS NULL
             OR (t.asset IN ('NQ','NDX') AND UPPER(CONCAT_WS(' ',
                 t.payload->>'entry_primary_source',t.payload->>'entry_data_latency_class',
                 t.payload->'contract_identity'->>'primary_source')) ~ '(PROXY|QQQ)')
@@ -5138,8 +5139,34 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     work['_canonical_admission']={k:v for k,v in admission.items() if k!='prepared_plan'}
     work.setdefault('_pwin',admission.get('probability') or work.get('confidence') or .5)
     work.setdefault('_pwin_source',admission.get('probability_source') or 'CTC_V2_CANONICAL')
-    return _vp_base.CANONICAL_ACCOUNTING_OPEN_OR_ADD(
+    # The accounting function intentionally returns None after a successful
+    # entry. Its shared audit is the confirmation, never the fee return value.
+    # Reset it so an earlier execution on a reused candidate cannot certify one.
+    if not isinstance(work.get('_execution_audit'),dict):
+        work['_execution_audit']={}
+    work['_execution_audit'].update(status='NOT_EXECUTED',reason='ACCOUNTING_PENDING')
+    result = _vp_base.CANONICAL_ACCOUNTING_OPEN_OR_ADD(
         c,p,name,asset,direction,float(price),requested,nav,ts,work,'CTC_V2_'+str(reason or 'ENTRY'))
+    if work['_execution_audit'].get('status')=='EXECUTED':
+        # Observe the exact selected entry quote only after accounting confirms
+        # a fill.  A carried/add position never receives a fabricated prefix.
+        import veritas_observation_path as VOP
+        from contextlib import nullcontext
+        try:
+            transaction=getattr(c,'transaction',None)
+            with transaction() if callable(transaction) else nullcontext():
+                opened = c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',
+                                   (name,asset)).fetchone()
+                if (opened and opened.get('asset')==asset and opened.get('direction')==direction
+                        and opened.get('active_trade_id')):
+                    is_new = not existing or opened.get('active_trade_id') != existing.get('active_trade_id')
+                    VOP.record(c,dict(opened),VPS.quote_from_row(work),ts,
+                               at_entry=is_new,lane='CANONICAL_ENTRY' if is_new else 'CANONICAL_ADD')
+        except Exception:
+            # A missing entry witness stays unverified; an optional evidence
+            # read/write must not roll back the already accounted paper fill.
+            pass
+    return result
 
 
 def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
@@ -5147,6 +5174,7 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     q=VPG.quote_for_position(z,now=ts)
     if not q:
         return 0.0
+    z.update(_execution_quote=q,_execution_quote_frozen=True)
     actual=float(q['price'])
     reason=str(reason or '')
     current=abs(float(z.get('units') or 0.0)*actual)/max(float(nav),1.0)
@@ -5185,6 +5213,10 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
                               'exit_reason':reason,'target_fraction':target_fraction},
                              ensure_ascii=False,default=str,separators=(',',':')),flush=True)
             return 0.0
+    # Every actual close/reduction records the same quote used by accounting.
+    # Evidence-only metadata does not alter stop, target, size or execution price.
+    import veritas_observation_path as VOP
+    z = VOP.record(c,z,q,ts,lane='CANONICAL_EXIT')
     if full and reason.startswith('TAKE_PROFIT'):
         policy=dict(POLICIES.get(str(name)) or {})
         step=float(policy.get('position_step') or CTC.LIFECYCLE_POLICY['minimum_position_step'])

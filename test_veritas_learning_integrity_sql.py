@@ -12,6 +12,9 @@ import veritas_portfolio as P
 import veritas_portfolio_runtime as R
 import veritas_learning_integrity as LI
 from test_veritas_strategy_quality_sql import observed_evidence
+from test_veritas_readiness_fixtures import add_observed_path
+from test_veritas_trade_diagnostics import closed_trade
+import veritas_trade_diagnostics as DIAGNOSTICS
 
 DSN = os.getenv("VERITAS_QUALITY_TEST_DSN", "")
 
@@ -49,6 +52,13 @@ class PersistedLearningSQLTests(unittest.TestCase):
             c.execute(f"SET search_path TO {self.schema}")
             yield c
 
+    @contextmanager
+    def autocommit_connect(self):
+        # Match the production connection factory, not the default test driver.
+        with self.driver.connect(DSN, autocommit=True, row_factory=self.row_factory) as c:
+            c.execute(f"SET search_path TO {self.schema}")
+            yield c
+
     def tearDown(self):
         for target, saved in ((R._v90r29_cache, self.saved29), (R._v90r33_cache, self.saved33),
                               (R._v90r44_sanitize_state, self.saved_state)):
@@ -61,7 +71,11 @@ class PersistedLearningSQLTests(unittest.TestCase):
         asset = "GOLD" if kind=="proxy" else "ETH"
         p = observed_evidence(asset, "LONG", "STF_"+key, opened, "1h")
         p.update(mfe_pct=1.5, mae_pct=-.8, strategy_epoch="IMMUTABLE_OLD_EPOCH",
-                 strategy_entry_sha="original-entry-sha", telemetry_completeness=1.0)
+                 strategy_entry_sha="original-entry-sha", telemetry_completeness=1.0,
+                 exit_reason="TAKE_PROFIT" if net > 0 else "MODEL_CLOSE")
+        raw = add_observed_path(dict(trade_id=key,asset=asset,direction="LONG",horizon="1h",
+                                    status="CLOSED",opened_at=opened,closed_at=opened+timedelta(hours=1),
+                                    gross_pnl_rub=net+10,fees_rub=8,funding_rub=2,net_pnl_rub=net,payload=p))
         if kind=="proxy":
             for field in ("price_source_lock", "entry_execution_source_identity", "last_exit_source_identity"):
                 p[field].update(key="PROXY:GLD", primary_source="PROXY BRIDGE")
@@ -72,15 +86,17 @@ class PersistedLearningSQLTests(unittest.TestCase):
             p["r66_event_id"] = "R79_SIG_"+key
             p["entry_event_snapshot"]["event_id"] = p["r66_event_id"]
             p["idea_id_verified"] = True
+        self.add_raw_trade(raw,eligible=kind!="manual")
+
+    def add_raw_trade(self, raw, *, eligible=True, attribution="GOOD_EXECUTION"):
         with self.connect() as c:
-            c.execute("""INSERT INTO paper_trades VALUES
-              (%s,%s,'LONG','1h','CLOSED',%s,%s,%s,8,2,%s,%s::jsonb)""",
-              (key,asset,opened,opened+timedelta(hours=1),net+10,net,json.dumps(p)))
+            c.execute("INSERT INTO paper_trades VALUES ("+",".join(["%s"]*len(LI.TRADE_FIELDS))+",%s::jsonb)",
+                      tuple(raw[k] for k in LI.TRADE_FIELDS)+(json.dumps(raw["payload"]),))
             c.execute("""INSERT INTO v90_learning_episodes VALUES
-              (%s,%s,'LONG','1h',%s,'BREAKOUT','TREND',%s,1.0,.7,
-               'GOOD_EXECUTION','["GOOD_EXECUTION"]','RETAIN_RULE',%s,%s::jsonb)""",
-              (key,asset,opened+timedelta(hours=1),net,kind!="manual",
-               json.dumps({"independent_episode_key":key,"original_note":"preserve"})))
+              (%s,%s,%s,%s,%s,'BREAKOUT','TREND',%s,1.0,.7,%s,%s::jsonb,'RETAIN_RULE',%s,%s::jsonb)""",
+              tuple(raw[k] for k in ("trade_id","asset","direction","horizon","closed_at","net_pnl_rub"))+
+              (attribution,json.dumps([attribution]),eligible,
+               json.dumps({"independent_episode_key":raw["trade_id"],"original_note":"preserve"})))
 
     def financials(self):
         with self.connect() as c:
@@ -106,7 +122,8 @@ class PersistedLearningSQLTests(unittest.TestCase):
         self.assertEqual(rows["b_gold"]["payload"]["learning_integrity"]["exclusion_reason"], "PROXY_PRICE")
         self.assertEqual(rows["c_unknown"]["payload"]["learning_integrity"]["exclusion_reason"], "SOURCE_UNVERIFIED")
         self.assertEqual(rows["d_synthetic"]["payload"]["learning_integrity"]["exclusion_reason"], "UNVERIFIED_EVENT")
-        self.assertEqual(rows["a_clean"]["primary_attribution"], "GOOD_EXECUTION")
+        self.assertEqual(rows["a_clean"]["primary_attribution"], "VALID_PROFITABLE_TRADE")
+        self.assertEqual(rows["a_clean"]["payload"]["trade_diagnostics"]["version"], DIAGNOSTICS.VERSION)
         self.assertEqual(rows["a_clean"]["payload"]["original_note"], "preserve")
         self.assertNotIn("learning_integrity", rows["z_manual"]["payload"])
         self.assertEqual(self.financials(), before)
@@ -160,6 +177,26 @@ class PersistedLearningSQLTests(unittest.TestCase):
         self.assertEqual(readable,0)
         self.assertEqual(self.financials(),before)
 
+    def test_production_autocommit_rolls_back_the_whole_failed_revalidation(self):
+        before,episodes = self.financials(),self.episodes()
+        revalidate = LI.revalidate_eligible
+        def fail_after_updates(connection):
+            setting=connection.execute("SHOW statement_timeout").fetchone()['statement_timeout']
+            self.assertEqual(setting,'4s')
+            result=revalidate(connection)
+            self.assertGreater(result['processed'],0)
+            raise RuntimeError('test failure after reclassification')
+        with patch.object(R,'_v90r29_ensure'),patch.object(LI,'revalidate_eligible',side_effect=fail_after_updates):
+            result=R._v90r44_sanitize_learning(self.autocommit_connect,force=True)
+        self.assertIn('test failure after reclassification',result['last_error'])
+        self.assertEqual(self.episodes(),episodes)
+        self.assertEqual(self.financials(),before)
+        with patch.object(R,'_v90r29_ensure'):
+            result=R._v90r44_sanitize_learning(self.autocommit_connect,force=True)
+        self.assertIsNone(result['last_error'],result)
+        self.assertTrue(self.episodes()['a_clean']['learning_eligible'])
+        self.assertEqual(self.financials(),before)
+
     def test_projection_omits_bar_arrays_and_changed_proof_is_immediately_unreadable(self):
         with self.connect() as c:
             c.execute("""UPDATE paper_trades SET payload=payload||%s::jsonb WHERE trade_id='a_clean'""",
@@ -178,7 +215,7 @@ class PersistedLearningSQLTests(unittest.TestCase):
         self.assertIsNone(result["last_error"],result)
         self.assertFalse(self.episodes()["a_clean"]["learning_eligible"])
 
-    def test_numerically_missing_path_and_accounting_are_never_recovered(self):
+    def test_missing_accounting_or_observation_witness_cannot_be_recovered_from_old_metrics(self):
         with self.connect() as c:
             row = dict(c.execute("SELECT "+LI.trade_projection_sql()+" FROM paper_trades t WHERE trade_id='a_clean'").fetchone())
         self.assertIsNone(LI.trade_exclusion(row))
@@ -188,7 +225,95 @@ class PersistedLearningSQLTests(unittest.TestCase):
                 self.assertEqual(LI.trade_exclusion(changed),"INCOMPLETE_ACCOUNTING")
         for field in ("mfe_pct","mae_pct"):
             changed=copy.deepcopy(row); changed["payload"][field]=None
-            self.assertEqual(LI.trade_exclusion(changed),"INCOMPLETE_OBSERVED_PATH")
+            # Mutable percentages are not the recorded original quote witness.
+            self.assertIsNone(LI.trade_exclusion(changed))
+        changed=copy.deepcopy(row); changed["payload"].pop("observation_path")
+        self.assertEqual(LI.trade_exclusion(changed),"MISSING_OBSERVATION_PATH")
+
+    def test_prior_stop_error_is_recomputed_as_valid_loss_and_never_restored(self):
+        raw = closed_trade(favorable_r=1.2)
+        raw["trade_id"] = "loss_with_valid_initial_stop"
+        raw["payload"].update(learning_label="RIGHT_DIRECTION_STOP_ERROR",
+                              learning_conclusion="LEGACY_WIDEN_STOP_VERDICT")
+        self.add_raw_trade(raw,attribution="RIGHT_DIRECTION_STOP_ERROR")
+        before = self.financials()
+        result = self.sanitize()
+        self.assertIsNone(result["last_error"],result)
+        saved = self.episodes()[raw["trade_id"]]
+        self.assertTrue(saved["learning_eligible"])
+        self.assertEqual(saved["primary_attribution"],"VALID_STRUCTURAL_STOP_LOSS")
+        self.assertEqual(saved["learning_action"],"COUNT_STRATEGY_OUTCOME")
+        self.assertNotIn("RIGHT_DIRECTION_STOP_ERROR",saved["attributions"])
+        diagnosis=saved["payload"]["trade_diagnostics"]
+        self.assertEqual(diagnosis["violations"],[])
+        self.assertFalse(diagnosis["directional_error"])
+        self.assertAlmostEqual(diagnosis["normalization"]["mfe_r"],1.2)
+        self.assertAlmostEqual(diagnosis["normalization"]["mae_r"],-1.)
+        # The obsolete verdict survives only as prior audit history, never as
+        # the current learning attribution or an instruction to widen a stop.
+        self.assertEqual(saved["payload"]["learning_integrity"]["prior_primary_attribution"],
+                         "RIGHT_DIRECTION_STOP_ERROR")
+        self.assertIsNone(self.sanitize()["last_error"])
+        self.assertEqual(self.episodes()[raw["trade_id"]],saved)
+        self.assertEqual(self.financials(),before)
+
+    def test_missing_original_geometry_or_path_never_promotes_stale_positive_flags(self):
+        cases = (
+            ("first_fill",lambda p:p["entry_execution_model"].pop("fill_price")),
+            ("initial_stop",lambda p:p.pop("initial_stop_price")),
+            ("entry_atr",lambda p:p.pop("entry_atr")),
+            ("observation_path",lambda p:p.pop("observation_path")),
+            ("path_gap",lambda p:p["observation_path"].update(max_gap_seconds=120.,gap_count=1)),
+            ("event_geometry",lambda p:p["entry_event_snapshot"].pop("stop_anchor")),
+        )
+        for key, mutate in cases:
+            raw=closed_trade()
+            raw["trade_id"]="missing_"+key
+            mutate(raw["payload"])
+            self.assertIsNotNone(LI.trade_exclusion(raw))
+            self.add_raw_trade(raw,attribution="GOOD_EXECUTION")
+        before=self.financials()
+        self.assertIsNone(self.sanitize()["last_error"])
+        saved=self.episodes()
+        for key,_ in cases:
+            row=saved["missing_"+key]
+            self.assertFalse(row["learning_eligible"],key)
+            self.assertEqual(row["payload"]["learning_integrity"]["status"],"EXCLUDED")
+            self.assertNotEqual(row["primary_attribution"],"GOOD_EXECUTION")
+        self.assertIsNone(self.sanitize()["last_error"])
+        self.assertEqual(self.episodes(),saved)
+        self.assertEqual(self.financials(),before)
+
+    def test_first_fill_stop_atr_path_and_timeframe_are_bound_to_readable_hash(self):
+        self.assertIsNone(self.sanitize()["last_error"])
+        with self.connect() as c:
+            original=dict(c.execute("SELECT * FROM paper_trades WHERE trade_id='a_clean'").fetchone())
+            original_hash=c.execute("SELECT "+LI.evidence_hash_sql()+
+                                    " AS h FROM paper_trades t WHERE trade_id='a_clean'").fetchone()["h"]
+            mutations=(
+                ("fill",lambda p:p["entry_execution_model"].update(fill_price=101.)),
+                ("stop",lambda p:p.update(initial_stop_price=p["initial_stop_price"]-.1)),
+                ("atr",lambda p:p.update(entry_atr=p["entry_atr"]+.1)),
+                ("path",lambda p:p["observation_path"].update(max_price=102.)),
+                ("tf",lambda p:p.update(execution_timeframe="5m")),
+            )
+            for key,mutate in mutations:
+                with self.subTest(field=key):
+                    p=copy.deepcopy(original["payload"]);mutate(p)
+                    c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='a_clean'",(json.dumps(p),))
+                    changed_hash=c.execute("SELECT "+LI.evidence_hash_sql()+
+                                           " AS h FROM paper_trades t WHERE trade_id='a_clean'").fetchone()["h"]
+                    self.assertNotEqual(changed_hash,original_hash)
+                    self.assertFalse(c.execute("SELECT "+LI.readable_sql()+
+                        " AS ok FROM v90_learning_episodes WHERE trade_id='a_clean'").fetchone()["ok"])
+                    c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='a_clean'",
+                              (json.dumps(original["payload"]),))
+            c.execute("UPDATE paper_trades SET horizon='5m' WHERE trade_id='a_clean'")
+            self.assertFalse(c.execute("SELECT "+LI.readable_sql()+
+                " AS ok FROM v90_learning_episodes WHERE trade_id='a_clean'").fetchone()["ok"])
+            c.execute("UPDATE paper_trades SET horizon=%s WHERE trade_id='a_clean'",(original["horizon"],))
+            restored=dict(c.execute("SELECT * FROM paper_trades WHERE trade_id='a_clean'").fetchone())
+            self.assertEqual(restored,original)
 
     def test_duplicate_observed_event_does_not_restore_two_learning_samples(self):
         self.add_trade("b_duplicate")

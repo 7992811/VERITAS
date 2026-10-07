@@ -5,7 +5,6 @@ modifies financial columns. Missing evidence remains missing, not zero.
 """
 from __future__ import annotations
 import copy
-import hashlib
 import json
 import math
 import threading
@@ -16,8 +15,14 @@ import veritas_canonical_constitution as CTC
 import veritas_release as RELEASE
 import veritas_trade_audit as AUDIT
 import veritas_price_source as VPS
+import veritas_learning_integrity as LI
+import veritas_observation_path as VOP
+import veritas_trade_diagnostics as DIAG
+from veritas_entry_version import (POLICY_HASH_VERSION,digest,policy_hash,
+                                  version_identity,matches_current_version,partition_versions)
 
-VERSION='STRATEGY_QUALITY_V2'
+VERSION='STRATEGY_QUALITY_V3'
+MAX_VERSION_GROUPS=50
 BASELINE_SHA='73266d93a6a9165496ec0b9d2336ab8d04c051ed'
 BASELINE_AT='2026-10-06T19:16:36.463729+00:00'
 _LOCK=threading.RLock()
@@ -46,9 +51,6 @@ def at(value):
     except (TypeError,ValueError):
         return None
 
-def digest(value):
-    return hashlib.sha256(json.dumps(value,sort_keys=True,default=str,separators=(',',':')).encode()).hexdigest()[:24]
-
 def entry_metadata(row,opened_at):
     """Called ONLY when a new trade row is created, never on an add or restart."""
     row=row or {}; plan=row.get('trade_plan') or {}
@@ -71,8 +73,7 @@ def entry_metadata(row,opened_at):
         idea_fields['observed_minute']=int(t.timestamp()//60) if t else str(observed)
     hs=row.get('horizon_structure') or {}
     return {'strategy_epoch':CTC.STRATEGY_EPOCH,'strategy_entry_sha':RELEASE.deployment_sha(),
-            'strategy_policy_hash':digest({'costs':CTC.COST_POLICY,'roles':CTC.STRATEGY_ROLE_POLICY,
-                                          'portfolios':CTC.PORTFOLIO_POLICIES,'lifecycle':CTC.LIFECYCLE_POLICY}),
+            'strategy_policy_hash':policy_hash(),'strategy_policy_hash_version':POLICY_HASH_VERSION,
             'strategy_entry_at':str(opened_at),'strategy_role':row.get('_portfolio_role'),
             'idea_id':'IDEA_'+digest(idea_fields),'idea_id_verified':verified,'idea_event_id':event_id,
             'idea_cluster_method':'EXPLICIT_MARKET_EVENT' if verified else 'SAME_ASSET_DIRECTION_MINUTE_ESTIMATE',
@@ -102,23 +103,35 @@ def review(trade):
     integrity=integrity.strip().upper() if isinstance(integrity,str) and integrity.strip() else 'UNKNOWN'
     exclusion=AUDIT.evidence_exclusion(trade)
     data_ok=exclusion is None
+    path=VOP.assessment(trade)
+    diagnosis=DIAG.diagnose(trade)
     idea_id,idea_verified=idea_key(trade)
-    if trade.get('direction')=='SHORT' and mfe is not None and mfe>=0:
+    if diagnosis.get('strategy_quality_eligible'):
+        normalization=diagnosis['normalization']
+        mfe,mae=normalization.get('mfe_pct'),normalization.get('mae_pct')
+    elif trade.get('direction')=='SHORT' and mfe is not None and mfe>=0:
         # Existing telemetry uses entry/price-1 for shorts. Convert to the same
         # linear return basis used by the normalized accounting ledger.
         mfe=100*mfe/(100+mfe)
     result={'version':VERSION,'trade_id':trade.get('trade_id'),
             'strategy_epoch':p.get('strategy_epoch') or 'LEGACY_UNSTAMPED',
+            'entry_version':version_identity(trade),
             'idea_id':idea_id,'idea_id_verified':idea_verified,
             'net_pnl_rub':net,'gross_pnl_rub':gross,'fees_rub':fees,'funding_rub':funding,
             'mfe_pct':mfe,'mae_pct':mae,'capture_ratio':None,'net_capture_ratio':None,
+            'excursion_basis':'IMMUTABLE_FIRST_FILL_OBSERVED_PATH' if diagnosis.get('strategy_quality_eligible') else 'LEGACY_UNVERIFIED_TELEMETRY',
             'net_return_on_entry_notional_pct':100*net/basis if net is not None and basis and basis>0 else None,
             'component':'UNVERIFIED','recommendation':'COLLECT_MATCHED_PATH_AND_COSTS',
             'promotion_mode':'SHADOW_ONLY','parameter_changes_applied':False,
-            'source_integrity_status':integrity,'evidence_exclusion':exclusion}
+            'source_integrity_status':integrity,'evidence_exclusion':exclusion,
+            'path_coverage':path,'rule_diagnosis':diagnosis,
+            'directional_error':False}
     complete=all(v is not None for v in (gross,fees,funding,net))
-    if not complete or not data_ok or mfe is None or mae is None:
+    if (not complete or not data_ok or not path['eligible']
+            or not diagnosis.get('strategy_quality_eligible')):
         result['evidence_status']='INCOMPLETE_OR_SOURCE_UNVERIFIED'
+        if diagnosis.get('rule_evidence_eligible'):
+            result.update(component='PROVEN_RULE_VIOLATION',recommendation='REPAIR_RECORDED_RULE_DISCREPANCY')
     else:
         result['evidence_status']='OBSERVED_PAPER_PATH'
         if basis and basis>0 and int(trade.get('entry_order_count') or 0)==1 and mfe>0:
@@ -129,10 +142,8 @@ def review(trade):
             result['capture_status']='UNAVAILABLE_NO_MFE_OR_MULTIPLE_ENTRY_BASIS'
         if gross>0 and net<=0:
             result.update(component='COSTS',recommendation='COMPARE_NET_EDGE_WITH_ACTUAL_COSTS')
-        elif net<0 and mfe<=0:
-            result.update(component='ENTRY',recommendation='REPLAY_DIRECTION_AND_TRIGGER_WITHOUT_FUTURE_BARS')
-        elif net<0 and mfe>0:
-            result.update(component='EXIT_OR_ENTRY',recommendation='COMPARE_CAPTURE_AND_STRUCTURAL_STOP_REPLAY')
+        elif net<0:
+            result.update(component='VALID_RULE_LOSS',recommendation='COUNT_LOSS_IN_SCENARIO_EXPECTANCY')
         elif net>0 and result['capture_ratio'] is not None and result['capture_ratio']<.35:
             result.update(component='EXIT',recommendation='SHADOW_COMPARE_PARTIAL_TP_AND_STRUCTURAL_RUNNER')
         elif net>0:
@@ -141,6 +152,9 @@ def review(trade):
                                      'net_pnl_rub','entry_notional_rub','entry_order_count')}
     inputs.update(review_version=VERSION,mfe=p.get('mfe_pct'),mae=p.get('mae_pct'),integrity=integrity,
                   evidence_exclusion=exclusion,idea_id_verified=idea_verified,
+                  entry_version=version_identity(trade),path_coverage=path,
+                  rule_diagnosis=diagnosis,
+                  observation_path=p.get('observation_path'),entry_execution_model=p.get('entry_execution_model'),
                   entry_event_snapshot=p.get('entry_event_snapshot'),
                   source_identities={key:p.get(key) for key in
                     ('price_source_lock','entry_execution_source_identity','last_exit_source_identity','source_locked_mark')})
@@ -189,7 +203,7 @@ def statistics(trades,window=None):
     learning_gains=sum(value for value in learning_values if value>0)
     learning_losses=-sum(value for value in learning_values if value<0)
     learning_evidence={
-        'requirements':'EXPLICIT_EVENT_AND_OBSERVED_SOURCE_MATCHED_PATH',
+        'requirements':'EXPLICIT_EVENT_AND_OBSERVED_SOURCE_MATCHED_COVERED_PATH',
         'event_groups':len(learning_groups),'trades':learning_trades,
         'excluded_event_groups':len(ids)-len(learning_groups),
         'excluded_trades':len(rows)-learning_trades,
@@ -222,22 +236,13 @@ def statistics(trades,window=None):
 SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t.status,t.horizon,
  t.opened_at,t.closed_at,t.avg_entry_price,t.avg_exit_price,t.max_fraction,
  t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.net_pnl_rub,
- jsonb_build_object('strategy_epoch',t.payload->'strategy_epoch',
- 'strategy_entry_sha',t.payload->'strategy_entry_sha','strategy_role',t.payload->'strategy_role',
- 'idea_id',t.payload->'idea_id','idea_id_verified',t.payload->'idea_id_verified',
- 'r66_event_id',t.payload->'r66_event_id','idea_event_id',t.payload->'idea_event_id',
- 'entry_event_snapshot',t.payload->'entry_event_snapshot',
- 'price_source_lock',t.payload->'price_source_lock',
- 'entry_execution_source_identity',t.payload->'entry_execution_source_identity',
- 'last_exit_source_identity',t.payload->'last_exit_source_identity',
- 'source_locked_mark',t.payload->'source_locked_mark','contract_identity',t.payload->'contract_identity',
- 'entry_primary_source',t.payload->'entry_primary_source','entry_source_names',t.payload->'entry_source_names',
- 'entry_data_latency_class',t.payload->'entry_data_latency_class',
- 'recovered',t.payload->'recovered','learning_eligible',t.payload->'learning_eligible',
- 'mfe_pct',t.payload->'mfe_pct','mae_pct',t.payload->'mae_pct',
- 'data_integrity_status',COALESCE(t.payload->'data_integrity_status','"UNKNOWN"'::jsonb),
- 'exit_reason',COALESCE(t.payload->'exit_reason',t.payload->'close_reason'),
- 'posttrade_review',t.payload->'posttrade_review') AS payload,
+ ('''+LI.payload_sql('t')+''' || jsonb_build_object(
+ 'strategy_epoch',t.payload->'strategy_epoch','strategy_entry_sha',t.payload->'strategy_entry_sha',
+ 'strategy_policy_hash',t.payload->'strategy_policy_hash',
+ 'strategy_policy_hash_version',t.payload->'strategy_policy_hash_version',
+ 'strategy_role',t.payload->'strategy_role','idea_id',t.payload->'idea_id',
+ 'idea_id_verified',t.payload->'idea_id_verified',
+ 'posttrade_review',jsonb_build_object('input_hash',t.payload#>'{posttrade_review,input_hash}'))) AS payload,
  o.entry_notional_rub,o.entry_order_count
  FROM paper_trades t LEFT JOIN (
  SELECT trade_id,SUM(notional_rub) AS entry_notional_rub,COUNT(*) AS entry_order_count
@@ -246,8 +251,11 @@ SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t.status
 
 def build_report(trades,positions=()):
     baseline=at(BASELINE_AT); now=datetime.now(timezone.utc).isoformat()
+    current=version_identity()
     result={'status':'OK','version':VERSION,'at':now,'strategy_epoch':CTC.STRATEGY_EPOCH,
             'current_sha':RELEASE.deployment_sha(),'baseline_sha':BASELINE_SHA,'baseline_at':BASELINE_AT,
+            'current_entry_version':current,'policy_hash_version':POLICY_HASH_VERSION,
+            'current_cohort_assignment':'EXACT_IMMUTABLE_ENTRY_SHA_POLICY_AND_EPOCH',
             'baseline_assignment':'OPENED_AT_AFTER_VERIFIED_DEPLOY_WITHOUT_RELABELING_OLD_TRADES',
             'automatic_parameter_promotion':False,'portfolios':[],
             'all_portfolio_independent_ideas':len({idea_key(t)[0] for t in trades}),
@@ -256,20 +264,34 @@ def build_report(trades,positions=()):
         rows=[t for t in trades if t.get('portfolio_name')==name and t.get('status')=='CLOSED']
         cohorts={'all':rows,
                  'since_73266d9':[t for t in rows if at(t.get('opened_at')) and at(t['opened_at'])>=baseline],
-                 'current':[t for t in rows if payload(t.get('payload')).get('strategy_epoch')==CTC.STRATEGY_EPOCH]}
+                 'current':[t for t in rows if matches_current_version(t,current)],
+                 'current_epoch':[t for t in rows if payload(t.get('payload')).get('strategy_epoch')==CTC.STRATEGY_EPOCH]}
+        version_groups,version_count,omitted=partition_versions(rows,current,MAX_VERSION_GROUPS)
+        for group in version_groups:
+            group['metrics']=statistics(group.pop('trades'))
         opened=[z for z in positions if z.get('portfolio_name')==name]
         result['portfolios'].append({'name':name,
             'cohorts':{key:{'all':statistics(group),'last20':statistics(group,20),'last50':statistics(group,50)}
                        for key,group in cohorts.items()},
+            'cohort_definitions':{'current':'EXACT_ENTRY_SHA_POLICY_AND_EPOCH',
+                                  'current_epoch':'EPOCH_ONLY_INCLUDES_OTHER_CODE_AND_POLICY_VERSIONS',
+                                  'since_73266d9':'ENTRY_TIME_ONLY_NOT_A_VERSION_PROOF','all':'LEDGER_HISTORY'},
+            'version_groups':version_groups,'version_group_count':version_count,
+            'version_groups_truncated':version_count>MAX_VERSION_GROUPS,
+            'version_groups_omitted_trades':omitted,
+            'missing_version_closed_trades':sum(not version_identity(t)['complete'] for t in rows),
+            'prior_version_closed_trades':sum(version_identity(t)['complete'] and
+                                             not matches_current_version(t,current) for t in rows),
             'open_positions':len(opened),
-            'inherited_open_positions':sum(payload(z.get('payload')).get('strategy_epoch')!=CTC.STRATEGY_EPOCH for z in opened),
+            'inherited_open_positions':sum(not matches_current_version(z,current) for z in opened),
             'recent_reviews':[review(t) for t in sorted(rows,key=lambda t:str(t.get('closed_at')))[-5:][::-1]]})
     # Pair by explicit shared market event only. No claim that two different
     # market windows form a randomized A/B experiment.
     pairs=defaultdict(dict)
     for t in trades:
         p=payload(t.get('payload')); key,verified=idea_key(t)
-        if t.get('portfolio_name') in ('Champion','Challenger') and verified and p.get('strategy_epoch')==CTC.STRATEGY_EPOCH:
+        if (t.get('portfolio_name') in ('Champion','Challenger') and verified
+                and matches_current_version(t,current) and t.get('status')=='CLOSED'):
             pairs[key][t['portfolio_name']]=t
     paired=[]
     for key,values in pairs.items():
@@ -288,7 +310,11 @@ def refresh(pg_connect,emit=None):
     with pg_connect() as c:
         c.execute("SET LOCAL statement_timeout = '4000ms'")
         rows=[dict(t) for t in c.execute(SELECT_TRADES+" WHERE t.status='CLOSED' ORDER BY t.closed_at DESC LIMIT 5001").fetchall()]
-        positions=[dict(z) for z in c.execute('SELECT portfolio_name,payload FROM paper_positions').fetchall()]
+        positions=[dict(z) for z in c.execute("""SELECT portfolio_name,
+            jsonb_build_object('strategy_epoch',payload->'strategy_epoch',
+              'strategy_entry_sha',payload->'strategy_entry_sha',
+              'strategy_policy_hash',payload->'strategy_policy_hash') AS payload
+            FROM paper_positions""").fetchall()]
     result=build_report(rows[:5000],positions)
     result['history_truncated']=len(rows)>5000
     if result['history_truncated']:
