@@ -2,6 +2,7 @@
 from copy import deepcopy
 from contextlib import contextmanager
 from datetime import timedelta
+import hashlib
 import json
 import os
 import re
@@ -235,6 +236,83 @@ class ReceiptSweepTests(unittest.TestCase):
             self.assertTrue(worker.validation_status()['evidence_revalidation_pending'])
 
 
+class TransactionBudgetTests(unittest.TestCase):
+    def test_budget_deferral_retries_without_cursor_progress_but_sql_errors_remain_errors(self):
+        from psycopg.errors import QueryCanceled
+        from veritas_maintenance import MaintenanceDeferred
+        for failure,expected_status in ((MaintenanceDeferred('DEFERRED_TIME_BUDGET',stage='synthetic_connect'),'RETRY'),
+                                        (QueryCanceled('synthetic statement timeout'),'ERROR')):
+            with self.subTest(status=expected_status):
+                state={'expired':False}
+                lease={'cursor':{'phase':'export','after':['2026-01-01T00:00:00+00:00','committed-trade']},
+                       'last_good':{'scanned':4,'submitted':1},'fence':7}
+                saved=deepcopy(lease)
+                class Context:
+                    sql_timeout_ms=2000
+                    def check(self):
+                        if state['expired']: raise failure
+                class Connection:
+                    @contextmanager
+                    def transaction(self): yield self
+                    def execute(self,sql,*args): raise failure
+                @contextmanager
+                def connect():
+                    state['expired']=expected_status=='RETRY'
+                    yield Connection()
+                worker=T.TradeLearning({'pg_connect':connect})
+                with patch.object(S,'claim_job',return_value=lease), \
+                        patch.object(S,'checkpoint_job',return_value=True) as checkpoint:
+                    with self.assertRaises(type(failure)) as raised:
+                        worker.process(Context())
+                self.assertIs(raised.exception,failure)
+                checkpoint.assert_called_once()
+                self.assertEqual(checkpoint.call_args.kwargs['status'],expected_status)
+                self.assertEqual(checkpoint.call_args.kwargs['retry_after_seconds'],15)
+                self.assertNotIn('cursor',checkpoint.call_args.kwargs)
+                self.assertEqual(lease,saved)
+                expected_result=failure.result() if expected_status=='RETRY' else {'error_type':'QueryCanceled'}
+                self.assertEqual(checkpoint.call_args.kwargs['result'],expected_result)
+
+    def test_expired_blocking_boundary_never_starts_the_learning_query(self):
+        for expires_at in ('checkout','begin','statement_timeout','lock_timeout'):
+            for revalidate in (False,True):
+                with self.subTest(expires_at=expires_at,revalidate=revalidate):
+                    state={'expired':False};events=[]
+                    class Context:
+                        @property
+                        def sql_timeout_ms(self): return 1 if state['expired'] else 2000
+                        def check(self):
+                            if state['expired']: raise RuntimeError('synthetic budget expired')
+                    class Connection:
+                        @contextmanager
+                        def transaction(self):
+                            events.append('begin')
+                            state['expired']=expires_at=='begin'
+                            try: yield self
+                            except BaseException:
+                                events.append('rollback');raise
+                        def execute(self,sql,*args):
+                            events.append(sql)
+                            if expires_at in ('statement_timeout','lock_timeout') and expires_at in sql:
+                                state['expired']=True
+                    @contextmanager
+                    def connect():
+                        state['expired']=expires_at=='checkout'
+                        try: yield Connection()
+                        finally: events.append('closed')
+                    worker=T.TradeLearning({'pg_connect':connect})
+                    with patch.object(LI,'_GENERATION',LI._GENERATION), \
+                            patch.object(LI,'_REVOCATION_GENERATION',LI._REVOCATION_GENERATION), \
+                            patch.object(LI,'_UNCONFIRMED',LI._UNCONFIRMED):
+                        with self.assertRaisesRegex(RuntimeError,'synthetic budget expired'):
+                            with worker._transaction(Context(),revalidate=revalidate):
+                                self.fail('expired transaction yielded to the learning query')
+                    expected=['closed'] if expires_at=='checkout' else ['begin','rollback','closed']
+                    if expires_at in ('statement_timeout','lock_timeout'):
+                        expected[1:1]=["SET LOCAL statement_timeout = '2000ms'","SET LOCAL lock_timeout = '250ms'"]
+                    self.assertEqual(events,expected)
+
+
 @unittest.skipUnless(os.getenv('VERITAS_QUALITY_TEST_DSN'),'isolated PostgreSQL test database not configured')
 class TradeLearningSQLTests(unittest.TestCase):
     setUp=fixtures.DurableStateSQLTests.setUp
@@ -290,6 +368,89 @@ class TradeLearningSQLTests(unittest.TestCase):
                         self.assertEqual(after['payload']['entry_event_snapshot'],original['entry_event_snapshot'])
                         self.assertEqual(after['payload']['entry_canonical_admission'],original['entry_canonical_admission'])
                         self.assertNotIn('unused_history',after['payload'])
+
+    def test_actual_export_large_payload_keeps_two_second_budget_and_reports_jit_cost(self):
+        self.create_trade_tables();trade,_=stamped_trade()
+        history=[{'bar':i,'close':100+i/97,
+                  'synthetic_hash':hashlib.sha256(('export-synthetic-'+str(i)).encode()).hexdigest(),
+                  'note':'fabricated closed-trade history'} for i in range(1800)]
+        for index in range(T.BATCH_SIZE+1):
+            row=deepcopy(trade);row['trade_id']='synthetic_export_'+str(index)
+            row['closed_at']+=timedelta(minutes=index)
+            row['payload']['synthetic_unrelated_history']=history
+            self.insert(row)
+        with self.connect() as c:
+            before=c.execute('SELECT * FROM paper_trades ORDER BY trade_id').fetchall()
+            size=c.execute('SELECT min(octet_length(payload::text)) AS source_bytes,'+
+                           'min(pg_column_size(payload)) AS stored_bytes FROM paper_trades').fetchone()
+        self.assertGreater(size['source_bytes'],200000)
+        self.assertGreater(size['stored_bytes'],8192)
+        self.assertLess(size['stored_bytes'],size['source_bytes'])
+        calls=[]
+        class Trace:
+            def __init__(self,c): self.c=c
+            def __getattr__(self,key): return getattr(self.c,key)
+            def execute(self,sql,args=()):
+                if 'WITH selected AS MATERIALIZED' in sql and 'AS source_evidence' in sql:
+                    calls.append((sql,args))
+                return self.c.execute(sql,args)
+        @contextmanager
+        def traced_connect():
+            with self.connect() as c: yield Trace(c)
+        lease=S.claim_job(self.connect,T.JOB_NAME,T.VERSION)
+        self.assertTrue(S.checkpoint_job(self.connect,lease,status='OK',cursor={'phase':'export'}))
+        with patch.object(T,'EPOCH','2025-01-01T00:00:00+00:00'), \
+                patch.dict(self.worker.ns,pg_connect=traced_connect):
+            result=self.worker.process(self.context)
+        self.assertEqual(result['scanned'],T.BATCH_SIZE)
+        self.assertEqual(result['submitted'],0)  # Missing verified episodes stay rejected.
+        self.assertEqual(len(calls),1)
+        query,args=calls[0]
+        self.assertEqual(args[-1],4)
+        reports={}
+        with self.connect() as c:
+            original_jit=c.execute('SHOW jit').fetchone()['jit']
+            with c.transaction():
+                c.execute("SET LOCAL statement_timeout = '2000ms'")
+                expected=c.execute(query,args).fetchall()
+                default=c.execute('EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON) '+query,args).fetchone()['QUERY PLAN'][0]
+                self.assertEqual(default['Plan']['Actual Rows'],4)
+                selected=[p for p in self._plan_nodes(default['Plan']) if p.get('Subplan Name')=='CTE selected']
+                self.assertEqual(len(selected),1);self.assertEqual(selected[0]['Actual Rows'],4)
+                for item in expected:
+                    self.assertEqual(item['payload']['entry_event_snapshot'],trade['payload']['entry_event_snapshot'])
+                    self.assertEqual(item['payload']['entry_canonical_admission'],trade['payload']['entry_canonical_admission'])
+                    self.assertNotIn('synthetic_unrelated_history',item['payload'])
+                    self.assertIsNone(item['episode_eligible'])
+                    frozen=c.execute('SELECT '+LI.evidence_hash_sql()+
+                        ' AS hash FROM paper_trades t WHERE trade_id=%s',(item['trade_id'],)).fetchone()['hash']
+                    self.assertEqual(item['learning_evidence_hash'],frozen)
+                self.assertTrue(c.execute('SELECT pg_jit_available() AS available').fetchone()['available'])
+                for setting in ('jit = on','jit_above_cost = 0','jit_inline_above_cost = 0','jit_optimize_above_cost = 0'):
+                    c.execute('SET LOCAL '+setting)
+                try:
+                    with c.transaction():
+                        forced=c.execute('EXPLAIN (ANALYZE, FORMAT JSON) '+query,args).fetchone()['QUERY PLAN'][0]
+                        self.assertEqual(forced['Plan']['Actual Rows'],4)
+                        self.assertIn('JIT',forced)
+                        reports['forced_jit']={'execution_ms':forced['Execution Time'],'jit':forced['JIT']}
+                except self.driver.errors.QueryCanceled:
+                    reports['forced_jit']={'timed_out_2000ms':True}
+                c.execute('SET LOCAL jit = off')
+                self.assertEqual(c.execute(query,args).fetchall(),expected)
+                off=c.execute('EXPLAIN (ANALYZE, FORMAT JSON) '+query,args).fetchone()['QUERY PLAN'][0]
+                self.assertNotIn('JIT',off)
+                reports.update(default_execution_ms=default['Execution Time'],default_jit=default.get('JIT'),
+                               default_total_cost=default['Plan']['Total Cost'],jit_off_execution_ms=off['Execution Time'])
+            self.assertEqual(c.execute('SHOW jit').fetchone()['jit'],original_jit)
+            self.assertEqual(c.execute('SELECT * FROM paper_trades ORDER BY trade_id').fetchall(),before)
+            self.assertEqual(c.execute('SELECT count(*) AS n FROM learning_trade_receipts').fetchone()['n'],0)
+        print(json.dumps(dict(event='synthetic_trade_export_plan',rows=4,sql_bytes=len(query),
+                              statement_timeout_ms=2000,**dict(size),**reports)))
+
+    def _plan_nodes(self,plan):
+        yield plan
+        for child in plan.get('Plans',[]): yield from self._plan_nodes(child)
 
     def test_selected_order_and_missing_trade_receipt_survive_record_projection(self):
         self.create_trade_tables();trade,_=stamped_trade()

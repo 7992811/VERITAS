@@ -165,16 +165,24 @@ def ami_decision_rows(c):
         "agents": agents, "knowledge_cio_adjustment": adjustment,
         "knowledge_shadow_matches": matches})
     op = project_object("sample.outcome_payload", {"forward_return": "sample.outcome_payload->'forward_return'"})
-    # Sort and limit the original rows before expanding their JSON records.
-    # The ordered sample retains TOAST pointers rather than decoded histories.
+    # Read decisions in index order and probe their outcomes by entity. OFFSET 0
+    # keeps the correlated lookup from flattening into a global outcome scan
+    # that detoasts old payloads before the sample limit. No per-entity limit:
+    # duplicate outcomes and explicit null returns still count in the original
+    # 2200 joined-row population. Expand JSON only after that same sample.
     rows = c.execute(f"""
       SELECT sample.event_ts,sample.asset,sample.horizon,{dp} AS dp,{op} AS op
       FROM (
         SELECT d.event_ts,d.asset,d.horizon,
                d.payload AS decision_payload,o.payload AS outcome_payload
         FROM ledger_events d
-        JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-        WHERE d.event_type='decision' AND o.payload ? 'forward_return'
+        CROSS JOIN LATERAL (
+          SELECT o.payload FROM ledger_events o
+          WHERE o.entity_key=d.entity_key AND o.event_type='outcome'
+            AND o.payload ? 'forward_return'
+          OFFSET 0
+        ) AS o
+        WHERE d.event_type='decision'
         ORDER BY d.event_ts DESC
         LIMIT 2200
       ) AS sample
