@@ -9,7 +9,7 @@ Principle: one trading decision -> one canonical policy path.
 """
 from __future__ import annotations
 
-VERSION = "CTC_V2_2026_10_07_CONTINUATION_DRAFT"
+VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
 STRATEGY_EPOCH = "EQ6_2026_10_07_VERIFIED_EXECUTION"
