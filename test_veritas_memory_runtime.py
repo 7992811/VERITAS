@@ -381,6 +381,8 @@ class SnapshotArchiveLifetimeTests(unittest.TestCase):
 
     def reader(self, name):
         self.trace.append(name)
+        self.assertIsNone(self.refs["old_row"](),
+                          "the archive must freeze and release live rows before historical reads")
         if name != "drift":
             previous = "drift" if name == "performance" else "performance"
             self.assertIsNone(self.refs[previous + "_scratch"]())
@@ -429,7 +431,7 @@ class SnapshotArchiveLifetimeTests(unittest.TestCase):
             self.assertLess(self.trace.index("snapshot_end"), self.trace.index("snapshot_ready"))
 
     def test_archive_fields_sql_retention_and_reader_lifetimes_are_preserved(self):
-        self.save()
+        self.assertEqual(self.save(), {"status": "SAVED"})
         self.assertEqual(self.ns["_v90r39_snapshot_state"]["last_at"], self.now_ts)
         self.assertEqual([x for x in self.trace if x != "malloc_trim"], [
             "snapshot_start", "drift", "snapshot_drift_done", "performance",
@@ -459,7 +461,10 @@ class SnapshotArchiveLifetimeTests(unittest.TestCase):
                 case.setUp()
                 try:
                     case.failure = failure
-                    case.save()
+                    result = case.save()
+                    self.assertEqual(result["status"], "ERROR")
+                    self.assertIn("archive write failed" if failure == "persist" else failure,
+                                  result["error"])
                     case.assert_transients_released()
                     self.assertEqual(case.ns["_v90r39_snapshot_state"]["last_at"], 0.0)
                     self.assertNotIn("snapshot_ready", case.trace)
@@ -472,13 +477,64 @@ class SnapshotArchiveLifetimeTests(unittest.TestCase):
 
     def test_archive_throttle_and_disabled_database_do_not_run_readers_or_gc(self):
         self.ns["_v90r39_snapshot_state"]["last_at"] = self.now_ts - 3599
-        self.save()
+        self.assertEqual(self.save(), {"status": "NOT_DUE"})
         self.ns["_v90r39_snapshot_state"]["last_at"] = 0.0
         self.ns["pg_enabled"] = lambda: False
-        self.save()
+        self.assertEqual(self.save(), {"status": "DEFERRED_STORAGE"})
         self.assertEqual(self.trace, [])
         self.assertEqual(self.queries, [])
         self.assertEqual(self.events, [])
+
+    def test_supplied_full_projection_keeps_original_cycle_and_stamps_later_statistics(self):
+        frozen = deepcopy(self.expected_cycle)
+        self.ns["last_cycle"] = dict(self.replacement, cycle_mode="FAST_5M",
+                                     at="2026-10-07T13:30:00Z")
+        observed_at = "2026-10-07T13:30:31Z"
+        self.ns["now"] = lambda: observed_at
+        admitted = []
+
+        result = self.save(cycle_snapshot=frozen, admission=admitted.append)
+
+        self.assertEqual(result, {"status": "SAVED"})
+        self.assertEqual(frozen, self.expected_cycle)
+        payload = json.loads(self.queries[0][1][2])
+        self.assertEqual(payload["cycle"], self.expected_cycle)
+        self.assertEqual(payload["capture"], {
+            "requested_cycle_at": self.expected_cycle["at"],
+            "health_observed_at": observed_at,
+            "statistics_finished_at": observed_at,
+            "basis": "FROZEN_FULL_CYCLE_WITH_SEPARATELY_MEASURED_STATISTICS"})
+        self.assertEqual(admitted, ["snapshot_drift", "snapshot_performance",
+                                    "snapshot_health", "snapshot_persist"])
+        self.assertEqual(self.ns["last_cycle"]["cycle_mode"], "FAST_5M")
+        self.assert_transients_released()
+
+    def test_memory_deferral_releases_partial_reports_and_preserves_hourly_retry(self):
+        from veritas_maintenance import MaintenanceDeferred
+
+        for stage in ("snapshot_drift", "snapshot_performance", "snapshot_health", "snapshot_persist"):
+            with self.subTest(stage=stage):
+                case = SnapshotArchiveLifetimeTests("runTest")
+                case.setUp()
+                try:
+                    def admission(current):
+                        if current == stage:
+                            raise MaintenanceDeferred("DEFERRED_MEMORY", stage=current,
+                                                      rss_mb=301., memory_start_limit_mb=280.)
+
+                    result = case.save(admission=admission)
+                    self.assertEqual(result, {"status": "DEFERRED_MEMORY", "stage": stage,
+                                              "rss_mb": 301., "memory_start_limit_mb": 280.})
+                    self.assertEqual(case.ns["_v90r39_snapshot_state"]["last_at"], 0.)
+                    self.assertEqual(case.queries, [])
+                    self.assertNotIn("snapshot_ready", case.trace)
+                    self.assertFalse(any(event == "snapshot_error" for event, _ in case.events))
+                    case.assert_transients_released()
+                    self.assertEqual(case.save(cycle_snapshot=case.expected_cycle,
+                                               admission=lambda current: None), {"status": "SAVED"})
+                    self.assertEqual(case.ns["_v90r39_snapshot_state"]["last_at"], case.now_ts)
+                finally:
+                    case.doCleanups()
 
 
 class WeakList(list):

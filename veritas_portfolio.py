@@ -6,6 +6,7 @@ from xml.etree import ElementTree as ET
 import httpx
 import veritas_costs as VC
 import veritas_execution as VX
+import veritas_execution_logging as VEL
 import veritas_execution_journal as VEJ
 import veritas_admission_trace as VAT
 import veritas_paper_entry as VPE
@@ -2249,8 +2250,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         _record_entry_outcome(row,prepared['status'],prepared['reason'],
             blockers=prepared.get('blockers'),hard_blockers=prepared.get('hard_blockers'),
             fill_economics_gate=prepared.get('gate'),stop_risk_budget=prepared.get('stop_risk_budget'))
-        print(json.dumps({'event':'PAPER_ENTRY_BLOCKED_FINAL','portfolio':name,'asset':asset,
-                          'decision':prepared},default=str),flush=True)
+        print(json.dumps(VEL.blocked_entry_event(name,asset,prepared)),flush=True)
         return 0.0
     final_gate=prepared['gate']; target_fraction=prepared['target_fraction']
     row['_fill_economics_gate']=final_gate; row['_stop_risk_budget']=prepared['stop_risk_budget']

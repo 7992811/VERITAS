@@ -36,6 +36,10 @@ jobs:
         run: python -m unittest -v test_veritas_structural_breakout.py test_veritas_structural_facts_cache.py test_veritas_structural_cny_episodes.py test_veritas_breakout_runtime.py test_veritas_weighted_structural_economics.py test_veritas_structural_lifecycle.py test_veritas_structural_management.py test_veritas_source_identity_roundtrip.py test_veritas_monolith_structural_quote.py
       - name: Timeframe diagnosis, path evidence and signal latency
         run: python -m unittest -v test_veritas_trade_diagnostics.py test_veritas_observation_path.py test_veritas_observation_runtime.py test_veritas_launch_readiness.py test_veritas_signal_latency.py test_veritas_entry_comparison.py
+      - name: Bounded background maintenance and execution logging
+        run: |
+          python -m py_compile veritas_maintenance.py veritas_execution_logging.py
+          python -m unittest -v test_veritas_maintenance.py test_veritas_maintenance_integration.py test_veritas_execution_logging.py
       - name: Execution quality and direct CNY regressions
         run: python -m unittest -v test_veritas_execution_quality.py test_veritas_trade_audit.py test_veritas_direct_cny_snapshot.py test_veritas_profit_exit_authority.py test_veritas_ma_learning_evidence.py
       - name: Verified fills, source locks, position thesis and complete stop risk

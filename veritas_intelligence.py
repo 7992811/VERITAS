@@ -7491,6 +7491,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         import veritas_structural_lifecycle as VSL
         state['portfolio_autopilot']=VSL.merge_reports(state['portfolio_autopilot'],last_cycle.get('portfolio_autopilot'))
         state['breakout_runtime']=VBR.snapshot()
+        _maintenance_request=_v90_background_maintenance.prepare(state) if cycle_mode=='FULL' else None
         last_cycle.clear(); last_cycle.update(state)
     if cycle_mode=='FAST_5M' and status in ('ok','degraded') and made:
         _v90_last_fast5m_monotonic=time.monotonic()
@@ -7505,23 +7506,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     _v90_trim_memory('cycle_end',force=True)
     emit('cycle_complete', decisions_written=made, outcomes_written=outcomes, status=status,
          durable_storage=storage.get('ok', False),**telemetry)
-    # R37: overview snapshots are archival, not minute-level telemetry.
-    # Persist them only on the FULL cycle.
-    if pg_enabled() and cycle_mode=='FULL':
-        save_product_snapshot()
-    # Historical outcome downloads run after the decision snapshot and never delay 5m entries.
+    # Only the frozen scalar FULL matrix crosses into the bounded history lane.
     if cycle_mode=='FULL':
-        _v90_schedule_outcome_refresh('full_cycle_complete')
-        try:
-            _v90_daily_intelligence_metrics()
-        except Exception as _daily_intel_ex:
-            emit('v90_daily_intelligence_checkpoint_error',
-                 error=f'{type(_daily_intel_ex).__name__}: {_daily_intel_ex}')
-        try:
-            _v90r37_storage_retention()
-        except Exception as _ret_ex:
-            emit('v90_r37_storage_retention_error',
-                 error=f'{type(_ret_ex).__name__}: {_ret_ex}')
+        _v90_background_maintenance.submit(_maintenance_request)
         # Deep rule/event learning remains off the fast lane.
         if heavy_learning_due():
             maybe_schedule_heavy_learning('interval_due')
@@ -7877,15 +7864,16 @@ def run_bootstrap_backtest(reason='manual'):
     finally:
         backtest_lock.release()
 
-def backtest_status():
+def backtest_status(include_leaderboards=True):
     out=dict(backtest_state); out.update({'enabled':BACKTEST_ENABLED,'days':BACKTEST_DAYS,'sample_step_hours':BACKTEST_SAMPLE_STEP_HOURS,'auto_refresh_hours':BACKTEST_REFRESH_HOURS,'promotion_from_backtest':False})
     if pg_enabled():
         try:
             with pg_connect() as c:
                 lr=c.execute("SELECT run_id,started_at,finished_at,status,days,sample_step_hours,rules_tested,observations,details FROM backtest_runs ORDER BY started_at DESC LIMIT 1").fetchone()
                 out['latest_run']=dict(lr) if lr else None
-                out['top']=[dict(r) for r in c.execute("SELECT rule_id,asset,horizon,action,method,n,hit_rate,avg_signed_return,avg_mfe,avg_mae,period_start,period_end FROM knowledge_backtest_stats WHERE n>=20 ORDER BY n DESC,hit_rate DESC NULLS LAST LIMIT 40").fetchall()]
-                out['oos_top']=[dict(r) for r in c.execute("SELECT rule_id,asset,horizon,action,sample,n,hit_rate,avg_signed_return,avg_mfe,avg_mae,std_signed_return,t_stat,profit_factor,p_value,p_bonferroni,period_start,period_end FROM knowledge_backtest_oos_stats WHERE sample='OOS' AND n>=20 ORDER BY p_bonferroni ASC NULLS LAST,n DESC LIMIT 60").fetchall()]
+                if include_leaderboards:
+                    out['top']=[dict(r) for r in c.execute("SELECT rule_id,asset,horizon,action,method,n,hit_rate,avg_signed_return,avg_mfe,avg_mae,period_start,period_end FROM knowledge_backtest_stats WHERE n>=20 ORDER BY n DESC,hit_rate DESC NULLS LAST LIMIT 40").fetchall()]
+                    out['oos_top']=[dict(r) for r in c.execute("SELECT rule_id,asset,horizon,action,sample,n,hit_rate,avg_signed_return,avg_mfe,avg_mae,std_signed_return,t_stat,profit_factor,p_value,p_bonferroni,period_start,period_end FROM knowledge_backtest_oos_stats WHERE sample='OOS' AND n>=20 ORDER BY p_bonferroni ASC NULLS LAST,n DESC LIMIT 60").fetchall()]
         except Exception as ex: out['db_error']=f'{type(ex).__name__}: {ex}'
     return out
 
@@ -12850,73 +12838,67 @@ def ruleboard():
 
 def product_health():
     import veritas_trend_entry as VTE
-    with lock: cyc=dict(last_cycle)
+    with lock:
+        cyc={key:last_cycle.get(key) for key in ('at','status')}
+        selected={}
+        for row in last_cycle.get('summary') or []:
+            asset=row.get('asset')
+            if asset and (row.get('horizon')=='5m' or asset not in selected):
+                selected[asset]=row
     age=None
     try:
         if cyc.get('at'):
             t=datetime.fromisoformat(str(cyc['at']).replace('Z','+00:00'))
             age=(datetime.now(timezone.utc)-t).total_seconds()/60
     except Exception: pass
+    market_data={}
+    for asset,row in selected.items():
+        market_data[asset]=VTE.context_gate(row,datetime.now(timezone.utc))
+    selected=row=None
     storage=pg_storage_status()
     status='ok' if cyc.get('status')=='ok' and storage.get('ok') and (age is None or age<=PRODUCT_STALE_MINUTES) else 'degraded'
-    market_data={}
-    for row in cyc.get('summary') or []:
-        asset=row.get('asset')
-        if asset and (row.get('horizon')=='5m' or asset not in market_data):
-            market_data[asset]=VTE.context_gate(row,datetime.now(timezone.utc))
     return {'status':status,'version':VERSION,'execution_revision':VTE.VERSION,'cycle_age_min':age,'cycle_status':cyc.get('status'),
             'entry_context_by_asset':market_data,
-            'storage':storage,'stale_after_min':PRODUCT_STALE_MINUTES,'backtest':backtest_status().get('latest_run')}
+            'storage':storage,'stale_after_min':PRODUCT_STALE_MINUTES,'backtest':backtest_status(include_leaderboards=False).get('latest_run')}
 
 
 _v90r39_snapshot_state={'last_at':0.0}
 
-def save_product_snapshot():
-    if not pg_enabled(): return
+def save_product_snapshot(cycle_snapshot=None, admission=None):
+    from veritas_maintenance import compact_cycle, MaintenanceDeferred
+    if not pg_enabled(): return {'status':'DEFERRED_STORAGE'}
     # R39: product snapshots are archival only; the live UI reads current memory
     # and canonical paper_* tables. Persist at most once per hour to prevent
     # repeated large JSON/TOAST churn without changing visualization.
     now_ts=time.time()
     if now_ts-float(_v90r39_snapshot_state.get('last_at') or 0.0)<3600:
-        return
+        return {'status':'NOT_DUE'}
     saved=False
+    result={'status':'ERROR'}
     try:
+        if cycle_snapshot is None:
+            with lock:
+                compact_cycle_value=compact_cycle(last_cycle)
+        else:
+            compact_cycle_value=compact_cycle(cycle_snapshot)
+        cycle_snapshot=None
+        if admission: admission('snapshot_drift')
         _v90_memory_checkpoint('snapshot_start',None)
         drift=model_drift_status()
-        with lock:
-            cyc=dict(last_cycle)
-        compact_summary=[]
-        for z in (cyc.get('summary') or []):
-            if not isinstance(z,dict):
-                continue
-            compact_summary.append({
-              'asset':z.get('asset'),'horizon':z.get('horizon'),
-              'decision':z.get('decision'),'research_decision':z.get('research_decision'),
-              'confidence':z.get('confidence'),'price':z.get('price'),
-              'regime':z.get('regime'),'signal_tier':z.get('signal_tier'),
-              'execution_eligible':z.get('execution_eligible'),
-              'decision_stage':z.get('decision_stage'),
-              'horizon_structure_state':z.get('horizon_structure_state'),
-              'horizon_structure_score':z.get('horizon_structure_score'),
-              'entry_quality':z.get('entry_quality'),
-              'stop_price':z.get('stop_price'),'target_price':z.get('target_price'),
-              'expected_move_pct':z.get('expected_move_pct'),
-              'expected_to_stop_ratio':z.get('expected_to_stop_ratio'),
-            })
-        compact_cycle={
-          'status':cyc.get('status'),'at':cyc.get('at'),'version':cyc.get('version'),
-          'cycle_mode':cyc.get('cycle_mode'),'signal_cells':cyc.get('signal_cells'),
-          'decisions_written':cyc.get('decisions_written'),
-          'outcomes_written':cyc.get('outcomes_written'),
-          'summary':compact_summary,
-        }
-        cyc=z=None
         _v90_trim_memory('snapshot_drift_done',force=True,preserve_active_cycle=True)
+        if admission: admission('snapshot_performance')
         performance=pg_live_performance()
         _v90_trim_memory('snapshot_performance_done',force=True,preserve_active_cycle=True)
+        if admission: admission('snapshot_health')
+        health_observed_at=now()
         health=product_health()
         _v90_trim_memory('snapshot_health_done',force=True,preserve_active_cycle=True)
-        payload={'cycle':compact_cycle,'performance':performance,'health':health,'drift':drift}
+        if admission: admission('snapshot_persist')
+        payload={'cycle':compact_cycle_value,'performance':performance,'health':health,'drift':drift}
+        if admission:
+            payload['capture']={'requested_cycle_at':compact_cycle_value.get('at'),
+                'health_observed_at':health_observed_at,'statistics_finished_at':now(),
+                'basis':'FROZEN_FULL_CYCLE_WITH_SEPARATELY_MEASURED_STATISTICS'}
         with pg_connect() as c:
             c.execute("INSERT INTO product_snapshots(created_at,snapshot_type,payload) VALUES(%s,%s,%s::jsonb)",
                       (now(),'overview',json.dumps(payload,ensure_ascii=False,default=str)))
@@ -12934,13 +12916,18 @@ def save_product_snapshot():
                          )""")
         _v90r39_snapshot_state['last_at']=now_ts
         saved=True
+        result={'status':'SAVED'}
+    except MaintenanceDeferred as ex:
+        result=ex.result()
     except Exception as ex:
         emit('snapshot_error',error=f'{type(ex).__name__}: {ex}')
+        result={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'[:512]}
     finally:
-        drift=cyc=z=compact_cycle=compact_summary=performance=health=payload=c=None
+        drift=compact_cycle_value=cycle_snapshot=performance=health=payload=c=None
         _v90_trim_memory('snapshot_end',force=True,preserve_active_cycle=True)
     if saved:
         _v90_memory_checkpoint('snapshot_ready',None)
+    return result
 
 def oos_validation_board(limit=100):
     if not pg_enabled(): return {'items':[],'method':'unavailable'}
@@ -15943,6 +15930,7 @@ def architecture_efficiency_status():
             'market_prefetch_workers':t.get('market_prefetch_workers'),'market_prefetch_wall_seconds':t.get('market_prefetch_wall_seconds'),
             'market_parallel_saved_estimate_seconds':t.get('market_parallel_saved_estimate_seconds'),
             'heavy_learning':heavy_learning_snapshot(),
+            'maintenance':_v90_background_maintenance.snapshot(),
             'history_n':len(vals),'cycle_p50_seconds':q(0.50),'cycle_p95_seconds':q(0.95),
             'target_cycle_seconds':FAST_LOOP_TARGET_SECONDS,
             'target_status':'ON_TARGET' if elapsed is not None and float(elapsed)<=FAST_LOOP_TARGET_SECONDS else 'IMPROVING' if elapsed is not None else 'BUILDING',
@@ -17942,7 +17930,6 @@ def _v90r37_storage_retention():
     now_ts=time.time()
     if now_ts-float(_v90r37_maintenance_state.get('last') or 0.0)<7200:
         return {'status':'NOT_DUE'}
-    _v90r37_maintenance_state['last']=now_ts
     try:
         with pg_connect() as c:
             deletes={}
@@ -17992,13 +17979,15 @@ def _v90r37_storage_retention():
             c.execute("DELETE FROM product_alerts WHERE created_at<NOW()-INTERVAL '24 hours'")
             c.execute("DELETE FROM paper_nav_history WHERE observed_at<NOW()-INTERVAL '7 days'")
         try:
-            cc=psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5)
-            cc.execute('SET search_path TO veritas_v90')
-            cc.execute('VACUUM (ANALYZE) ledger_events')
-            cc.close()
-        except Exception:
-            pass
+            with psycopg.connect(DATABASE_URL,autocommit=True,row_factory=dict_row,connect_timeout=5) as cc:
+                cc.execute('SET search_path TO veritas_v90')
+                cc.execute("SET statement_timeout='60000ms'")
+                cc.execute('VACUUM (ANALYZE) ledger_events')
+        except Exception as ex:
+            emit('v90_r37_storage_retention_error',stage='vacuum',error=f'{type(ex).__name__}: {ex}')
+            return {'status':'ERROR','error':f'vacuum: {type(ex).__name__}: {ex}'}
         emit('v90_r37_storage_retention',deleted=deletes)
+        _v90r37_maintenance_state['last']=now_ts
         return {'status':'OK','deleted':deletes}
     except Exception as ex:
         emit('v90_r37_storage_retention_error',error=f'{type(ex).__name__}: {ex}')
@@ -18638,6 +18627,7 @@ def _v90_compact_live_row(z):
 
 
 def _v90_compact_decision_log(z):
+    from veritas_execution_logging import context_summary
     r=_v90_compact_live_row(z)
     p=r.get('trade_plan') or {}
     hs=r.get('horizon_structure') or {}
@@ -18667,7 +18657,7 @@ def _v90_compact_decision_log(z):
         'expected_to_stop_ratio':p.get('expected_to_stop_ratio'),
         'plan_eligible':p.get('eligible'),'plan_reason':p.get('reason'),
         'structural_policy_version':p.get('structural_policy_version'),'entry_event_id':p.get('entry_event_id'),
-        'timeframe_entry_context':p.get('timeframe_entry_context'),
+        'timeframe_entry_context':context_summary(p.get('timeframe_entry_context')),
         'daily_ma':_v90_small_dict(r.get('structural_levels'),(
             'daily_ma_status','sma18','sma50','sma200','ma_timeframe','ma_source_identity','ma_daily_asof',
             'ma_daily_asof_basis','ma_daily_known_at','ma_daily_period_label',
@@ -18791,7 +18781,7 @@ def run_heavy_learning_maintenance(reason='scheduled'):
                              'rejected_lessons','abstention_lessons') if x.get(q) is not None}
         except Exception:
             pass
-        _v90_trim_memory('heavy_learning_end',force=True)
+        _v90_trim_memory('heavy_learning_end',force=True,preserve_active_cycle=True)
 
 
 def maybe_schedule_heavy_learning(reason='scheduled',force=False):
@@ -19244,6 +19234,8 @@ VERSION = VR.PRODUCT_VERSION
 from veritas_market_runtime import install_market_runtime_guard as _v90_install_market_guard; _v90_install_market_guard(globals())
 from veritas_storage_guard import install_storage_guard as _v90_install_storage_guard
 _v90_install_storage_guard(globals())
+from veritas_maintenance import install as _install_maintenance
+_install_maintenance(globals())
 
 if __name__ == '__main__':
     main()
