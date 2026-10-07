@@ -193,10 +193,15 @@ class ContinuousLearning:
                 ("learning_knowledge_catalog", self.knowledge_catalog, 60, 6),
                 ("learning_trade_evidence", self.trades, 30, 6),
                 ("learning_progress", self.progress, 120, 6),
-                ("learning_intelligence", self.intelligence, 60, 6),
+                ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6))
         for name, fn, interval, seconds in jobs:
-            callback = fn if name == "learning_bootstrap" else self._callback(name, fn)
+            if name == "learning_bootstrap":
+                callback = fn
+            elif name == "learning_trade_evidence":
+                callback = self._trade_callback
+            else:
+                callback = self._callback(name, fn)
             self.lane.register_periodic(name, callback, interval_seconds=interval,
                                         lightweight=True, estimated_peak_mb=16, max_seconds=seconds)
 
@@ -252,6 +257,34 @@ class ContinuousLearning:
                     pass  # Fenced lease expiry permits recovery after a DB outage.
                 raise
         return run
+
+    def _trade_callback(self):
+        # TradeLearning owns the durable closed_trade_learning lease, phase
+        # cursor and retry. A second lease adds two database transactions to
+        # every bounded stage without protecting any additional progress.
+        if not self.ready:
+            return {"status": "RETRY", "reason": "LEARNING_BOOTSTRAP_PENDING"}
+        context = Budget(self.lane)
+        try:
+            context.check()
+            result, _ = self.trades(context, {})
+            context.check()
+            status = str(result.get("status", "")).upper()
+            if status == "RETRY" or status.startswith("DEFERRED"):
+                return result
+            if status not in ("OK", "NO_WORK", "PROGRESS"):
+                raise RuntimeError("incomplete learning job: "+str(result.get("status")))
+            with self._lock:
+                self._stats.update(last_success_at=clock().isoformat(), last_error=None)
+            return result
+        except MaintenanceDeferred:
+            # The sole trade lease already retains its retry/cursor state.
+            # A cooperative budget deferral is not a new SQL/runtime error.
+            raise
+        except Exception as error:
+            with self._lock:
+                self._stats["last_error"] = (type(error).__name__+": "+str(error))[:300]
+            raise
 
     def bootstrap(self):
         if self.ready:
@@ -500,7 +533,10 @@ class ContinuousLearning:
                 cursor = dict(cursor, phase="scorecard")
             return result, cursor
         epoch = os.getenv("VERITAS_PRODUCTION_CANDIDATE_EPOCH", "2026-09-30T04:59:29.357862+00:00")
-        result = INTELLIGENCE.refresh_snapshot(self.connect, self.ns["learning_progress"](), epoch, context=context)
+        result = INTELLIGENCE.refresh_snapshot(self.connect, self.ns["learning_progress"](), epoch,
+                                               context=context, cursor=cursor.get("scorecard_work"))
+        if result.get("status") in ("OK", "PROGRESS", "NO_WORK") and "cursor" in result:
+            cursor = dict(cursor, scorecard_work=result["cursor"])
         if result.get("status") == "OK":
             cursor = dict(cursor, phase="daily")
         return result, cursor

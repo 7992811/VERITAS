@@ -8,11 +8,11 @@ import json
 import unittest
 
 import veritas_learning_memory as LM
-from test_veritas_snapshot_memory_sql import _LedgerSQLFixture, _V9_AMI_PROJECTED_SQL
+from test_veritas_snapshot_memory_sql import DSN, _LedgerSQLFixture, _V9_AMI_PROJECTED_SQL
 from test_veritas_trend_memory_sql import load_ami
 
 
-def query():
+def query(reader=LM.ami_decision_rows):
     class Capture:
         def execute(self, sql):
             self.sql = sql
@@ -20,7 +20,7 @@ def query():
         def fetchall(self):
             return []
     captured = Capture()
-    LM.ami_decision_rows(captured)
+    reader(captured)
     return captured.sql
 
 
@@ -36,17 +36,31 @@ def visits(node):
 
 
 class AMIIndexedSampleSQLTests(_LedgerSQLFixture):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # The shared legacy fixture predates the native frozen-pair reader.
+        with cls.driver.connect(DSN) as c:
+            c.execute(f'SET search_path TO {cls.schema}')
+            c.execute('ALTER TABLE ledger_events ADD COLUMN id BIGSERIAL UNIQUE')
+
+    @staticmethod
+    def staged_rows(c):
+        pairs = LM.ami_decision_sample(c)
+        return [row for offset in range(0, len(pairs), 64)
+                for row in LM.ami_decision_chunk(c, pairs[offset:offset+64])]
+
     def test_large_older_outcomes_are_not_expanded_before_the_joined_limit(self):
         with self.connect() as c:
             # Historical outcomes can outlive matching decision rows. They
             # qualify for the JSON predicate but not the entity join.
-            c.execute("""INSERT INTO ledger_events
+            c.execute("""INSERT INTO ledger_events(event_key,entity_key,event_type,asset,horizon,payload,event_ts)
                 SELECT 'archive-outcome-'||n,'archive-'||n,'outcome','ARCHIVE','1h',
                     jsonb_build_object('forward_return',0.125,
                         'unused_history',repeat(md5('synthetic historical evidence'),1024)),
                     '2020-01-01'::timestamptz + n*interval '1 second'
                 FROM generate_series(1,8000) n""")
-            c.execute("""INSERT INTO ledger_events
+            c.execute("""INSERT INTO ledger_events(event_key,entity_key,event_type,asset,horizon,payload,event_ts)
                 SELECT 'decision-'||n,'sample-'||n,'decision','ASSET-'||n,'1h',
                     jsonb_build_object('decision',CASE WHEN n%2=0 THEN 'LONG' ELSE 'SHORT' END,
                         'regime','SYNTHETIC','agents',jsonb_build_array(
@@ -56,7 +70,7 @@ class AMIIndexedSampleSQLTests(_LedgerSQLFixture):
                         'knowledge_shadow_matches',jsonb_build_array('synthetic-rule')),
                     '2026-10-07'::timestamptz + n*interval '1 second'
                 FROM generate_series(1,2680) n""")
-            c.execute("""INSERT INTO ledger_events
+            c.execute("""INSERT INTO ledger_events(event_key,entity_key,event_type,asset,horizon,payload,event_ts)
                 SELECT 'outcome-'||n,'sample-'||n,'outcome','ASSET-'||n,'1h',
                     CASE WHEN n%13=0 THEN '{"missing_return":true}'::jsonb
                          ELSE jsonb_build_object('forward_return',CASE WHEN n%17=0 THEN NULL
@@ -65,7 +79,7 @@ class AMIIndexedSampleSQLTests(_LedgerSQLFixture):
                 FROM generate_series(1,2600) n""")
             # One qualifying null outcome is duplicated. Both count toward
             # 2200, even though the later score reducer ignores their nulls.
-            c.execute("""INSERT INTO ledger_events
+            c.execute("""INSERT INTO ledger_events(event_key,entity_key,event_type,asset,horizon,payload,event_ts)
                 SELECT 'duplicate-outcome',entity_key,event_type,asset,horizon,payload,event_ts
                 FROM ledger_events WHERE event_key='outcome-2550'""")
             c.execute("""UPDATE ledger_events SET event_ts='2026-10-07'::timestamptz+interval '2500 seconds'
@@ -78,8 +92,10 @@ class AMIIndexedSampleSQLTests(_LedgerSQLFixture):
             self.assertLess(size['stored'], size['expanded']/4)
             before = c.execute(_V9_AMI_PROJECTED_SQL).fetchall()
             after = LM.ami_decision_rows(c)
+            staged = self.staged_rows(c)
             key = lambda row: json.dumps(row, sort_keys=True, default=str)
             self.assertEqual(Counter(map(key, after)), Counter(map(key, before)))
+            self.assertEqual(Counter(map(key, staged)), Counter(map(key, before)))
             self.assertEqual(len(after), 2200)
             self.assertEqual(sum(r['asset']=='ASSET-2550' for r in after), 2)
             self.assertTrue(all(r['op']['forward_return'] is None for r in after if r['asset']=='ASSET-2550'))
@@ -94,7 +110,13 @@ class AMIIndexedSampleSQLTests(_LedgerSQLFixture):
                 self.assertEqual(measurement['_decision_metrics'](new_episodes, decision_key),
                                  measurement['_decision_metrics'](old_episodes, decision_key))
             old = c.execute('EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) '+_V9_AMI_PROJECTED_SQL).fetchone()['QUERY PLAN'][0]
-            new = c.execute('EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) '+query()).fetchone()['QUERY PLAN'][0]
+            plans = [(name, c.execute('EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) '+query(reader)).fetchone()['QUERY PLAN'][0])
+                     for name, reader in (('full', LM.ami_decision_rows), ('metadata', LM.ami_decision_sample))]
+        for name, plan in plans:
+            with self.subTest(reader=name):
+                self.assert_indexed_probes(old, plan, name)
+
+    def assert_indexed_probes(self, old, new, name):
         all_nodes = list(nodes(new['Plan']))
         decisions = [n for n in all_nodes if n.get('Relation Name')=='ledger_events' and n.get('Alias')=='d']
         outcomes = [n for n in all_nodes if n.get('Relation Name')=='ledger_events' and n.get('Alias')=='o']
@@ -115,6 +137,7 @@ class AMIIndexedSampleSQLTests(_LedgerSQLFixture):
         old_outcomes = [n for n in nodes(old['Plan'])
                         if n.get('Relation Name')=='ledger_events' and n.get('Alias')=='o']
         print('AMI_SYNTHETIC_PLAN '+json.dumps({
+            'reader':name,
             'visit_count_basis':'EXPLAIN rounded per-loop rows multiplied by loops',
             'old_outcome_visits':sum(map(visits, old_outcomes)),
             'new_outcome_visits':sum(map(visits, outcomes)),
@@ -126,7 +149,7 @@ class AMIIndexedSampleSQLTests(_LedgerSQLFixture):
 
     def test_timestamp_tie_at_limit_keeps_exact_population_contract(self):
         with self.connect() as c:
-            c.execute("""INSERT INTO ledger_events
+            c.execute("""INSERT INTO ledger_events(event_key,entity_key,event_type,asset,horizon,payload,event_ts)
                 SELECT kind||'-'||n,'boundary-'||n,kind,'ASSET-'||n,'1h',
                     CASE WHEN kind='decision' THEN '{"decision":"LONG"}'::jsonb
                          ELSE '{"forward_return":0.125}'::jsonb END,
@@ -136,9 +159,10 @@ class AMIIndexedSampleSQLTests(_LedgerSQLFixture):
             c.execute('ANALYZE ledger_events')
             old = c.execute(_V9_AMI_PROJECTED_SQL).fetchall()
             new = LM.ami_decision_rows(c)
+            staged = self.staged_rows(c)
         # The existing ORDER BY has no tie-breaker. Either reader may choose
         # any one of the ten boundary peers; changing that would be new policy.
-        for rows in (old, new):
+        for rows in (old, new, staged):
             self.assertEqual(len(rows), 2200)
             selected = {int(row['asset'].split('-')[1]) for row in rows}
             self.assertTrue(set(range(1,2200)).issubset(selected))

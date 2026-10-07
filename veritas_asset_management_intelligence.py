@@ -91,9 +91,9 @@ def _static_ai_decision(payload):
         return "SHORT"
     return "NO_TRADE"
 
-def _independent_episodes(rows, limit=360):
+def _independent_episodes(rows, limit=360, previous=None):
     ordered = sorted(rows, key=lambda r: str(r.get("event_ts") or ""))
-    last = {}
+    last = {} if previous is None else previous
     out = []
     for raw in ordered:
         r = dict(raw)
@@ -332,7 +332,7 @@ def _baseline(c, score, components, component_status):
         return {"score": None, "components": {}, "captured_at": None, "version": None}
 
 
-def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, cache_seconds=55, publish=True):
+def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, cache_seconds=55, publish=True, inputs=None):
     now = time.time()
     if (_CACHE.get("value") is not None and _CACHE.get("epoch") == production_epoch
             and now - float(_CACHE.get("at") or 0.0) < cache_seconds):
@@ -341,12 +341,12 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
     with pg_connect() as c:
         # refresh_snapshot owns the explicit transaction and query deadline.
         # SET LOCAL on the production autocommit connection alone has no effect.
-        episodes = _query_decision_episodes(c)
+        episodes = inputs["episodes"] if inputs is not None else _query_decision_episodes(c)
         veritas = _decision_metrics(episodes)
         generic = _decision_metrics(episodes, "reference_decision")
-        portfolio = _query_fresh_portfolio(c, production_epoch)
-        learning = _query_learning(c)
-        knowledge = _query_knowledge(c, episodes)
+        portfolio = inputs["portfolio"] if inputs is not None else _query_fresh_portfolio(c, production_epoch)
+        learning = inputs["learning"] if inputs is not None else _query_learning(c)
+        knowledge = inputs["knowledge"] if inputs is not None else _query_knowledge(c, episodes)
 
         # 1) Market decision intelligence: 20.
         hit = veritas.get("hit_rate")
@@ -510,9 +510,9 @@ def cached_scorecard(production_epoch, max_age_seconds=120):
     return cached_scorecard(globals(), production_epoch, max_age_seconds)
 
 
-def refresh_snapshot(pg_connect, learning_progress, production_epoch, *, context=None):
+def refresh_snapshot(pg_connect, learning_progress, production_epoch, *, context=None, cursor=None):
     from veritas_scorecard_delivery import refresh_snapshot
-    return refresh_snapshot(globals(), pg_connect, learning_progress, production_epoch, context=context)
+    return refresh_snapshot(globals(), pg_connect, learning_progress, production_epoch, context=context, cursor=cursor)
 
 
 def build_scorecard(pg_connect, learning_progress, production_epoch, cache_seconds=55):
