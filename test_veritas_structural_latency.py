@@ -103,7 +103,7 @@ class CausalConsumptionIndexTests(unittest.TestCase):
         levels=[{'level_id':str(i),'timeframe':'1m','available_at':i*35.,
                  'price':10.2 if i%2 else 9.2,
                  'kind':'resistance' if i%2 else 'support'} for i in range(40)]
-        indexed=SB._first_cross_times(rows,levels)
+        indexed=SB._level_crossing_times(rows,levels)
         for before in range(0,4000,23):
             original=set()
             for level in levels:
@@ -118,7 +118,7 @@ class CausalConsumptionIndexTests(unittest.TestCase):
         facts,issue=SB._native_facts(row,clock.timestamp(),row['structure_source_identity'],SB._policy(POLICY))
         self.assertIsNone(issue)
         original=deepcopy((facts['rows_by_tf'],facts['levels']))
-        SB._first_cross_times(facts['rows_by_tf'],facts['levels'])
+        SB._level_crossing_times(facts['rows_by_tf'],facts['levels'])
         self.assertEqual((facts['rows_by_tf'],facts['levels']),original)
 
 
