@@ -17,12 +17,30 @@ from types import SimpleNamespace
 import unittest
 import uuid
 
+import veritas_learning_memory as LM
 from test_veritas_trend_memory_sql import (
-    FrozenDatetime, NOW, ReadTrace, TracedConnection, TracedCursor, tail,
+    FrozenDatetime, NOW, ReadTrace, TracedConnection, TracedCursor, tail as _legacy_tail,
 )
 
 DSN = os.getenv("VERITAS_QUALITY_TEST_DSN", "")
 RUNTIME = Path(__file__).with_name("veritas_intelligence.py")
+
+# Frozen v9 projected SQL: independent of JsonbProjection and current builders.
+_V9_AMI_PROJECTED_SQL = r'''
+      SELECT d.event_ts,d.asset,d.horizon,CASE WHEN jsonb_typeof(d.payload)='object' AND d.payload<>'{}'::jsonb THEN jsonb_build_object('research_decision',d.payload->'research_decision','decision',d.payload->'decision','regime',d.payload->'regime','agents',CASE WHEN jsonb_typeof(d.payload->'agents')='array' THEN
+      (SELECT COALESCE(jsonb_agg(
+         CASE WHEN jsonb_typeof(a.value)='object' THEN
+           jsonb_build_object('direction',a.value->'direction','confidence',a.value->'confidence')
+         ELSE a.value END ORDER BY a.ordinality),'[]'::jsonb)
+       FROM jsonb_array_elements(d.payload->'agents') WITH ORDINALITY AS a(value,ordinality))
+      ELSE d.payload->'agents' END,'knowledge_cio_adjustment',CASE WHEN jsonb_typeof(d.payload->'knowledge_cio_adjustment')='object' AND d.payload->'knowledge_cio_adjustment'<>'{}'::jsonb THEN jsonb_build_object('score_with_experience',d.payload->'knowledge_cio_adjustment'->'score_with_experience','score',d.payload->'knowledge_cio_adjustment'->'score') ELSE d.payload->'knowledge_cio_adjustment' END,'knowledge_shadow_matches',(d.payload->'knowledge_shadow_matches') NOT IN
+      ('null'::jsonb,'false'::jsonb,'0'::jsonb,'""'::jsonb,'[]'::jsonb,'{}'::jsonb)) ELSE d.payload END AS dp,CASE WHEN jsonb_typeof(o.payload)='object' AND o.payload<>'{}'::jsonb THEN jsonb_build_object('forward_return',o.payload->'forward_return') ELSE o.payload END AS op
+      FROM ledger_events d
+      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+      WHERE d.event_type='decision' AND o.payload ? 'forward_return'
+      ORDER BY d.event_ts DESC
+      LIMIT 2200
+    '''
 
 _LEGACY_SOURCE = r'''def pg_live_performance():
     if not pg_enabled():
@@ -229,12 +247,50 @@ def load_agent_reader(connect, *, legacy=False, limit=5000):
     return namespace["pg_agent_performance"]
 
 
+_RECORD_JOIN = re.compile(
+    r'''(?m)^[ \t]*CROSS JOIN LATERAL jsonb_to_record\(CASE WHEN jsonb_typeof\((?P<expr>[^\r\n]+?)\)='object' '''
+    r'''THEN (?P=expr) ELSE '\{\}'::jsonb END\) AS "memory_json_\d+"\('''
+    r'''"(?:[^"]|"")+" jsonb(?:,"(?:[^"]|"")+" jsonb)*\)[ \t]*\n?''')
+
+
+def without_projection_joins(sql):
+    # Ignore only complete generated record scans. Original relations, JOIN
+    # predicates, sampling windows, WHERE, ORDER BY and LIMIT still compare.
+    return _RECORD_JOIN.sub('', sql)
+
+
+def tail(sql):
+    return _legacy_tail(without_projection_joins(sql))
+
+
 def agent_query_contract(sql):
+    sql = without_projection_joins(sql)
     cte = re.search(r"WITH\s+recent_decisions\s+AS\s*\((.*?)\)\s*SELECT", sql, re.I|re.S)
     joined = re.search(r"\bFROM\s+recent_decisions\b.*", sql, re.I|re.S)
     if cte is None or joined is None:
         raise AssertionError("Agent reader lost its pre-JOIN decision window")
     return " ".join(cte.group(1).split()), " ".join(joined.group(0).split())
+
+
+def assert_record_plan(test, connection, sql, parameters, count, maximum_loops):
+    plan = connection.execute('EXPLAIN (ANALYZE,VERBOSE,FORMAT JSON) '+sql, parameters).fetchone()['QUERY PLAN'][0]['Plan']
+    pending, scans, retained = [plan], [], []
+    while pending:
+        node = pending.pop()
+        pending.extend(node.get('Plans', []))
+        if node.get('Node Type') == 'Function Scan' and node.get('Function Name') == 'jsonb_to_record':
+            scans.append(node)
+        if node.get('Node Type') in ('Sort', 'Incremental Sort'):
+            for output in node.get('Output', []):
+                match = re.fullmatch(r'"?(memory_json_\d+)"?\."?(agents|knowledge_cio_adjustment|knowledge_shadow_matches|features|trend_impulse|intraday_structure)"?',output.strip())
+                if match:
+                    retained.append('.'.join(match.groups()))
+    test.assertFalse(retained, 'Sort retains expanded JSON record columns: '+', '.join(sorted(set(retained))))
+    test.assertEqual(len(scans), count)
+    for node in scans:
+        test.assertEqual(node['Actual Rows'], 1)
+        test.assertGreater(node['Actual Loops'], 0)
+        test.assertLessEqual(node['Actual Loops'], maximum_loops)
 
 
 class AgentTracedCursor(TracedCursor):
@@ -525,6 +581,83 @@ class DriftRuleMemorySQLTests(_LedgerSQLFixture):
         self.assertEqual(trace.queries[1]["rows"], 150)
         self.assertEqual(calls, ["agents"])
         self.assert_closed(trace)
+
+
+class ProjectedHelperRecordSQLTests(_LedgerSQLFixture):
+    def test_ami_exact_v9_projection_preserves_null_presence_and_nested_shapes(self):
+        missing = object()
+        matches = [missing, None, False, 0, '', [], {}, True, 'rule', {'rule':1}]
+        adjustments = [None, {}, False, 0, '', [], {'unrelated':1},
+                       {'score':0}, {'score':None}, {'score_with_experience':.125}]
+        for i, match in enumerate(matches):
+            dp = {'decision':'LONG', 'research_decision':'', 'regime':None,
+                  'agents':[{'direction':'LONG','confidence':0.,'unrelated':[1,2]}, None],
+                  'knowledge_cio_adjustment':adjustments[i]}
+            if match is not missing:
+                dp['knowledge_shadow_matches'] = match
+            self.episode(i, dp, {'forward_return':None if i%2 else 0.},
+                         asset='CASE_'+str(i), decision_ts=NOW+timedelta(seconds=i))
+        for i, dp in enumerate((None, False, [], 'encoded legacy payload', {}), start=20):
+            self.episode(i, dp, {'forward_return':.125},
+                         asset='CASE_'+str(i), decision_ts=NOW+timedelta(seconds=i))
+        # An explicit null forward return participates, an absent key does not.
+        self.episode('absent-outcome', {'decision':'LONG'}, {},
+                     decision_ts=NOW+timedelta(seconds=30))
+        self.save()
+        with self.connect() as c:
+            old = c.execute(_V9_AMI_PROJECTED_SQL).fetchall()
+            actual = LM.ami_decision_rows(c)
+        self.assertEqual(actual, old)
+        self.assertEqual(len(actual), 15)
+        by_asset = {row['asset']:row['dp'] for row in actual}
+        self.assertIsNone(by_asset['CASE_0']['knowledge_shadow_matches'])
+        self.assertIs(by_asset['CASE_1']['knowledge_shadow_matches'], False)
+        for i in range(2,7):
+            self.assertIs(by_asset['CASE_'+str(i)]['knowledge_shadow_matches'], False)
+        for i in range(7,10):
+            self.assertIs(by_asset['CASE_'+str(i)]['knowledge_shadow_matches'], True)
+
+    def test_toasted_histories_use_bounded_record_scans_without_changing_metrics(self):
+        heavy = 'UNUSED_HEAVY_FIELD:'*60000
+        for i in range(3):
+            dp = {'decision':'LONG' if i%2 else 'SHORT', 'regime':'REGIME_'+str(i),
+                  'confidence':.625, 'knowledge_shadow_matches':None,
+                  'knowledge_cio_adjustment':{'score':i/16, 'history':heavy},
+                  'agents':[{'agent':'A', 'direction':'LONG', 'confidence':.75,
+                             'history':heavy}], 'history':heavy}
+            op = {'forward_return':(i-1)/16, 'mfe':i/8, 'mae':-i/16, 'history':heavy}
+            self.episode(i, dp, op, decision_ts=NOW+timedelta(seconds=i))
+        self.save()
+        with self.connect() as c:
+            sizes = c.execute("""SELECT pg_column_size(payload) AS stored,
+                octet_length(payload::text) AS expanded FROM ledger_events""").fetchall()
+        self.assertTrue(all(r['expanded']>1_000_000 for r in sizes))
+        self.assertTrue(all(r['stored']<r['expanded']/8 for r in sizes))
+        for name, reader in (('live',load_reader), ('agent',load_agent_reader)):
+            with self.subTest(reader=name):
+                old_trace, trace = ReadTrace(self.connect), ReadTrace(self.connect)
+                old = reader(old_trace.connect, legacy=True)()
+                actual = reader(trace.connect)()
+                self.assertEqual(actual, old)
+                query = trace.queries[0]
+                self.assertEqual(query['rows'], 3)
+                self.assertFalse(query['heavy'])
+                self.assertLessEqual(query['sql'].count('d.payload'), 5)
+                self.assertLessEqual(query['sql'].count('o.payload'), 5)
+                self.assert_closed(trace)
+                with self.connect() as c:
+                    assert_record_plan(self,c,query['sql'],query['parameters'],1,3)
+        trace = ReadTrace(self.connect)
+        with trace.connect() as c:
+            actual = LM.ami_decision_rows(c)
+        query = trace.queries[0]
+        with self.connect() as c:
+            self.assertEqual(actual, c.execute(_V9_AMI_PROJECTED_SQL).fetchall())
+            assert_record_plan(self,c,query['sql'],query['parameters'],2,3)
+        self.assertFalse(query['heavy'])
+        self.assertEqual(query['rows'], 3)
+        self.assertLessEqual(query['sql'].count('d.payload'), 6)
+        self.assertLessEqual(query['sql'].count('o.payload'), 5)
 
 
 class SnapshotMemorySQLTests(_LedgerSQLFixture):

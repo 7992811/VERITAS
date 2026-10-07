@@ -15,7 +15,7 @@ from pathlib import Path
 import unittest
 import uuid
 
-from test_veritas_snapshot_memory_sql import MemoryConnection, agent_query_contract
+from test_veritas_snapshot_memory_sql import MemoryConnection, agent_query_contract, assert_record_plan
 from test_veritas_trend_memory_sql import ReadTrace
 
 
@@ -75,9 +75,11 @@ class CalibrationStreamTests(unittest.TestCase):
         self.assertTrue(streamed.server_cursor.closed)
         self.assertTrue(streamed.closed)
         self.assertFalse(streamed.in_transaction)
-        self.assertIn("d.payload->'decision'", streamed.sql)
-        self.assertIn("d.payload->'confidence'", streamed.sql)
+        self.assertEqual(streamed.sql.count('jsonb_to_record('), 1)
+        self.assertIn('"decision" jsonb,"confidence" jsonb', streamed.sql)
         self.assertIn("o.payload->'forward_return'", streamed.sql)
+        self.assertLessEqual(streamed.sql.count('d.payload'), 5)
+        self.assertLessEqual(streamed.sql.count('o.payload'), 5)
         self.assertNotIn("d.payload AS decision_payload", streamed.sql)
 
     def test_reducer_error_releases_stream_and_does_not_return_partial_learning(self):
@@ -188,6 +190,26 @@ class CalibrationProjectionSQLTests(unittest.TestCase):
         expected, _ = self.run_reader(legacy=True)
         retry, _ = self.run_reader()
         self.assertEqual(retry, expected)
+
+    def test_large_toasted_decision_uses_one_record_scan_and_preserves_calibration(self):
+        with self.connect() as c:
+            c.execute("""UPDATE ledger_events SET payload=payload||jsonb_build_object(
+                'UNUSED_HEAVY_FIELD',repeat('sealed-candle-proof:',80000))
+                WHERE entity_key='178' AND event_type='decision'""")
+            size = c.execute("""SELECT pg_column_size(payload) AS stored,
+                octet_length(payload::text) AS expanded FROM ledger_events
+                WHERE entity_key='178' AND event_type='decision'""").fetchone()
+        self.assertGreater(size['expanded'],1_000_000)
+        self.assertLess(size['stored'],size['expanded']/8)
+        old, old_trace = self.run_reader(legacy=True)
+        actual, trace = self.run_reader()
+        self.assertEqual(actual,old)
+        query = trace.queries[0]
+        self.assertEqual(query['rows'],old_trace.queries[0]['rows'])
+        self.assertEqual(agent_query_contract(query['sql']),agent_query_contract(LEGACY_SQL))
+        self.assertFalse(query['heavy'])
+        with self.connect() as c:
+            assert_record_plan(self,c,query['sql'],query['parameters'],1,180)
 
 
 if __name__ == "__main__":
