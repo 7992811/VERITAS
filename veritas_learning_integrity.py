@@ -61,8 +61,12 @@ def _object(expression, fields):
 
 def _identity(expression):
     # Preserve malformed scalar locks for the audit's explicit rejection.
+    # Optional pin keys must remain absent for legacy identities. Adding null
+    # keys would turn absent evidence into explicitly invalid pin metadata.
+    pin=_projected_object(expression,('source_pin_version','provider_ticker','provider_instrument_id'))
     return ("CASE WHEN jsonb_typeof("+expression+")='object' THEN "+
             _object(expression, ("asset", "key", "contract_id", "primary_source", "legacy_fixed_adapter"))+
+            "||"+pin+
             " ELSE "+expression+" END")
 
 def _proof_scalar(expression):

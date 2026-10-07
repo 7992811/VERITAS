@@ -63,7 +63,8 @@ def _payload(row):
 def _clean_identity(value):
     if not isinstance(value,dict):
         return None
-    keys=('version','asset','key','primary_source','contract_id','legacy_fixed_adapter')
+    keys=('version','asset','key','primary_source','contract_id','legacy_fixed_adapter',
+          *VPS.BRENT_PIN_FIELDS)
     result={key:value[key] for key in keys if key in value}
     if (any(isinstance(v,(dict,list,tuple)) or (isinstance(v,str) and len(v)>512)
             for v in result.values()) or not isinstance(result.get('key'),str)

@@ -76,7 +76,10 @@ def paper_source_gate(asset, raw, clock_info=None):
         blockers.append("UNSUPPORTED_PAPER_ASSET")
     if is_proxy_price(asset,r):
         blockers.append("R67_DIRECT_NQ_QUOTE_REQUIRED")
-    if not r.get("source_gate_pass"):
+    # New oil risk requires the configured observed provider feed. A generic
+    # source_gate_pass flag cannot admit another future or a label-only quote.
+    # Existing positions retain their own protective source in position_guard.
+    if not r.get("source_gate_pass") or (asset=='BRENT' and not VPS.brent_quote_verified(r)):
         blockers.append("PRIMARY_SOURCE_GATE_FAILED")
     if not r.get("market_open"):
         blockers.append("MARKET_TIME_GATE_FAILED")

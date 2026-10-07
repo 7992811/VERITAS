@@ -2209,7 +2209,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     row.setdefault('_execution_audit',{})
     quote=VPS.quote_from_row(row); source_lock=VPS.identity(asset,quote)
     if (not source_lock or not VPS.positive(quote.get('price')) or not quote.get('source_gate_pass')
-            or quote.get('market_open') is False):
+            or quote.get('market_open') is False or (asset=='BRENT' and not VPS.brent_quote_verified(quote))):
         _record_entry_outcome(row,'BLOCKED','SOURCE_IDENTITY_MISSING')
         return 0.0
     signal_source=VPS.identity(asset,row)

@@ -14,7 +14,7 @@ import veritas_profinance_history as H
 HEADER = ";Open;High;Low;Close;Время\n"
 NOW = datetime(2026, 10, 6, 19, 28, 2, tzinfo=timezone.utc).timestamp()
 REFRESH = (
-    "1;publicSession\ns;name\nt;{ticker}\nn;Last;2\nn;Bid;0\nn;Ask;1\n"
+    "1;publicSession\ns;{label}\nt;{ticker}\nn;Last;2\nn;Bid;0\nn;Ask;1\n"
     "6;1Min;1;bar\n6;5Min;3;bar\n6;1Hour;6;bar\n6;4Hour;8;bar\n6;1Day;9;bar\n"
 )
 
@@ -180,12 +180,12 @@ class NativeParserTests(unittest.TestCase):
 
     def test_exact_chart_aliases_and_last_price_are_verified_before_history(self):
         for asset, ticker in (("NQ", "NASD100_FUT"), ("GOLD", "gold"), ("BRENT", "brent")):
-            session = H.parse_refresh(REFRESH.format(ticker=ticker), asset)
+            session = H.parse_refresh(REFRESH.format(ticker=ticker, label=H.SYMBOLS[asset]), asset)
             self.assertEqual(session["ba"], 2)
             with self.assertRaisesRegex(ValueError, "INSTRUMENT_MISMATCH"):
-                H.parse_refresh(REFRESH.format(ticker="NASD100"), asset)
+                H.parse_refresh(REFRESH.format(ticker="NASD100", label=H.SYMBOLS[asset]), asset)
             with self.assertRaisesRegex(ValueError, "PROTOCOL_MISMATCH"):
-                H.parse_refresh(REFRESH.format(ticker=ticker).replace("n;Last;2", "n;Last;0"), asset)
+                H.parse_refresh(REFRESH.format(ticker=ticker, label=H.SYMBOLS[asset]).replace("n;Last;2", "n;Last;0"), asset)
 
 
 class CacheTests(unittest.TestCase):
@@ -201,7 +201,7 @@ class CacheTests(unittest.TestCase):
         self.clock.advance(self.cost)
         if url.endswith("refresh"):
             ticker = {"NASD100_FUT": "NASD100_FUT", "Gold": "gold", "Brent oil": "brent"}[params["s"]]
-            return REFRESH.format(ticker=ticker)
+            return REFRESH.format(ticker=ticker, label=params["s"])
         if self.failure:
             raise self.failure
         self.assertEqual(params["ba"], 2)
@@ -392,7 +392,7 @@ class CacheTests(unittest.TestCase):
         self.calls.append((url, dict(params)))
         if url.endswith("refresh"):
             self.clock.advance(.1)
-            return REFRESH.format(ticker="brent")
+            return REFRESH.format(ticker="brent", label="Brent oil")
         if params["tt"] == 9:
             self.clock.advance(remaining)
             raise TimeoutError("daily history exceeded the shared budget")
@@ -455,7 +455,7 @@ class ConcurrencyTests(unittest.TestCase):
             if url.endswith("refresh"):
                 entered.set()
                 self.assertTrue(release.wait(2))
-                return REFRESH.format(ticker="NASD100_FUT")
+                return REFRESH.format(ticker="NASD100_FUT", label="NASD100_FUT")
             return history_text(params["tt"], NOW)
         cache = H.HistoryCache(fetch, lambda: NOW)
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -478,7 +478,7 @@ class ConcurrencyTests(unittest.TestCase):
                 time.sleep(.02)
                 if url.endswith("refresh"):
                     ticker = {"NASD100_FUT": "NASD100_FUT", "Gold": "gold", "Brent oil": "brent"}[params["s"]]
-                    return REFRESH.format(ticker=ticker)
+                    return REFRESH.format(ticker=ticker, label=params["s"])
                 return history_text(params["tt"], NOW)
             finally:
                 with lock:

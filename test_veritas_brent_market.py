@@ -11,12 +11,13 @@ import veritas_timeframe_structure as TS
 
 
 NOW = datetime(2026, 10, 6, 12, 0, 20, tzinfo=timezone.utc)
-IDENTITY = VPS.identity("BRENT", {"source": "ProFinance", "raw_label": "Brent oil"})
+IDENTITY = VPS.brent_feed_pin_identity()
 
 
 def quote(**overrides):
     return {"price": 101.03, "observed_at": NOW.isoformat(), "source": "ProFinance",
-            "raw_label": "Brent oil", **overrides}
+            "raw_label": "Brent oil", "raw_ticker": "brent", "instrument_id": "27",
+            "provider_ticker_verified": True, **overrides}
 
 
 def candle(tf, stamp, close=100.):
@@ -37,6 +38,7 @@ def history(count=60):
         mapping[tf] = [candle(tf, end - (count-i)*seconds, 100. + .001*i)
                        for i in range(count)]
     return {"asset": "BRENT", "raw_label": "Brent oil", "source_identity": deepcopy(IDENTITY),
+            "raw_ticker": "brent", "provider_chart_identity_verified": True,
             "bars_by_timeframe": mapping, "status_by_timeframe": {}}
 
 
@@ -124,6 +126,16 @@ class BrentNativeSourceTests(TestCase):
         r = B.build_market(quote(), h, NOW)
         self.assertEqual(len(r["structure_bars_by_timeframe"]["5m"]), 58)
         self.assertEqual(len(r["structure_bars_by_timeframe"]["1h"]), 60)
+
+    def test_history_requires_complete_pin_even_when_legacy_source_name_matches(self):
+        old = VPS.identity("BRENT", {"source": "ProFinance", "raw_label": "Brent oil"})
+        h = history()
+        h["source_identity"] = old
+        self.assertFalse(B.build_market(quote(), h, NOW)["paper_eligible"])
+        h = history()
+        h["bars_by_timeframe"]["5m"][0]["source_identity"] = old
+        result = B.build_market(quote(), h, NOW)
+        self.assertEqual(len(result["structure_bars_by_timeframe"]["5m"]), 59)
 
     def test_incomplete_and_conflicting_duplicate_bars_are_excluded(self):
         h = history()

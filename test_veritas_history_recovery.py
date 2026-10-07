@@ -21,7 +21,7 @@ class HistorySessionRecoveryTests(unittest.TestCase):
             raise self.failure
         if url.endswith('refresh'):
             self.sessions += 1
-            return REFRESH.format(ticker='NASD100_FUT').replace('publicSession', f'session{self.sessions}')
+            return REFRESH.format(ticker='NASD100_FUT', label='NASD100_FUT').replace('publicSession', f'session{self.sessions}')
         # The first session returns valid OHLC but an obsolete window. This is
         # a deterministic provider fault model, not a claim about a live SID.
         end = self.clock.now - 1200 if self.sessions == 1 else self.clock.now

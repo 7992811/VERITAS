@@ -29,6 +29,9 @@ class BrentValuationBasisTests(TestCase):
         self.assertEqual(basis['provider_instrument_id'], '27')
         self.assertEqual(basis['provider_ticker'], 'brent')
         self.assertTrue(basis['provider_ticker_verified'])
+        self.assertEqual(basis['source_pin_status'], 'PINNED_PROVIDER_FEED')
+        self.assertTrue(basis['provider_series_verified'])
+        self.assertEqual(basis['price_field'], 'LP')
         self.assertIsNone(basis['contract_id'])
         self.assertFalse(basis['exact_contract_verified'])
         self.assertEqual(basis['contract_identity_status'], 'UNVERIFIED_PROVIDER_SERIES')
@@ -41,11 +44,14 @@ class BrentValuationBasisTests(TestCase):
         self.assertIsNone(S.identity('BRENT', quote))
         self.assertFalse(S.matches(position(), quote))
 
-    def test_legacy_label_only_quote_does_not_invent_ticker_verification(self):
-        quote = PF.parse_quotes(OBSERVED.replace(';TICK=brent', ''), NOW)['BRENT']
-        self.assertFalse(quote['provider_ticker_verified'])
-        self.assertFalse(quote['exact_contract_verified'])
-        self.assertIsNone(S.valuation_basis(position(), quote)['contract_id'])
+    def test_legacy_label_only_quote_cannot_verify_or_value_the_held_feed(self):
+        self.assertNotIn('BRENT', PF.parse_quotes(OBSERVED.replace(';TICK=brent', ''), NOW))
+        quote = {'source': 'ProFinance', 'raw_label': 'Brent oil', 'price': 102.08}
+        basis = S.valuation_basis(position(), quote)
+        self.assertFalse(S.matches(position(), quote))
+        self.assertFalse(basis['provider_series_verified'])
+        self.assertEqual(basis['source_pin_status'], 'AWAITING_PROVIDER_VERIFICATION')
+        self.assertIsNone(basis['contract_id'])
 
     def test_market_preserves_provider_identity_but_cannot_infer_month(self):
         quote = PF.parse_quotes(OBSERVED, NOW)['BRENT']
@@ -54,6 +60,8 @@ class BrentValuationBasisTests(TestCase):
         self.assertTrue(market['paper_eligible'])
         self.assertEqual(market['instrument_id'], '27')
         self.assertEqual(market['raw_ticker'], 'brent')
+        self.assertEqual(market['source_pin_status'], 'PINNED_PROVIDER_FEED')
+        self.assertEqual(S.identity('BRENT', market), S.brent_feed_pin_identity())
         self.assertFalse(market['exact_contract_verified'])
         self.assertIsNone(S.identity('BRENT', market)['contract_id'])
         quote['raw_ticker'] = 'WTI'

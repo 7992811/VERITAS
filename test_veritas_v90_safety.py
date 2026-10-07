@@ -357,6 +357,7 @@ class ExecutionSafetyTests(unittest.TestCase):
         import veritas_portfolio as vp
         row={
             "asset":"BRENT","price":100.0,"research_decision":"SHORT","execution_eligible":False,
+            "source":"ProFinance","raw_label":"Brent oil","raw_ticker":"brent","instrument_id":"27",
             "production_eligible":False,"source_gate_pass":True,"market_open":True,
             "market_observed_at":datetime.now(timezone.utc).isoformat(),"horizon":"1h",
             "trade_plan":{"eligible":True,"entry_price":100,"stop_price":101,"target_price":98,

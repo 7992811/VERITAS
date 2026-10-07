@@ -847,8 +847,11 @@ function positionSourceText(z){
   const identity=z.price_source_lock||z.payload?.price_source_lock||{},source=identity.primary_source||'не установлен';
   if(z.asset!=='BRENT')return esc(source);
   if(identity.contract_id)return esc(source)+' · контракт '+esc(identity.contract_id);
-  const key=String(identity.key||''),pf=key.startsWith('PROFINANCE:')||String(source).toUpperCase().startsWith('PROFINANCE');
-  return esc(source)+(pf?' · лента Brent oil':'')+' · <span class="warn">месяц контракта не подтверждён</span>';
+  const basis=z.valuation_basis||{},key=String(identity.key||''),pf=key==='PROFINANCE:Brent oil';
+  const saved=identity.source_pin_version==='PROFINANCE_BRENT_PIN_V1'&&identity.provider_ticker==='brent'&&identity.provider_instrument_id==='27';
+  const verified=basis.source_key===key&&basis.source_pin_status==='PINNED_PROVIDER_FEED'&&basis.provider_ticker==='brent'&&basis.provider_instrument_id==='27';
+  if(pf&&(saved||verified))return esc(source)+' · Brent (brent) · источник закреплён';
+  return esc(source)+(pf?' · Brent oil':'')+' · <span class="warn">ожидается проверка ленты</span>';
 }
 
 function renderPortfolios(){

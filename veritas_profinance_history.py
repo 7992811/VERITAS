@@ -61,6 +61,8 @@ def _epoch(value):
 
 
 def _identity(asset):
+    if asset=='BRENT':
+        return VPS.brent_feed_pin_identity()
     return VPS.identity(asset, {"source": "ProFinance", "raw_label": SYMBOLS[asset]})
 
 
@@ -76,6 +78,7 @@ def _boundary(now, timeframe):
 def parse_refresh(text, asset):
     """Accept only the requested instrument and the observed Last/TF mapping."""
     sid = ticker = None
+    labels, tickers = set(), set()
     last = False
     periods = {}
     for line in text.splitlines():
@@ -86,6 +89,9 @@ def parse_refresh(text, asset):
             sid = fields[1]
         elif fields[0] == "t":
             ticker = fields[1]
+            tickers.add(ticker)
+        elif fields[0] == "s":
+            labels.add(fields[1])
         elif len(fields) >= 3 and fields[:3] == ["n", "Last", "2"]:
             last = True
         elif len(fields) >= 4 and fields[0] == "6" and fields[3] == "bar":
@@ -93,9 +99,16 @@ def parse_refresh(text, asset):
     expected = {"1Min": "1", "5Min": "3", "1Hour": "6", "4Hour": "8", "1Day": "9"}
     if ticker != CHART_SYMBOLS[asset]:
         raise ValueError("PROFINANCE_HISTORY_INSTRUMENT_MISMATCH")
+    if asset=='BRENT' and (labels!={SYMBOLS[asset]} or tickers!={CHART_SYMBOLS[asset]}):
+        raise ValueError("PROFINANCE_HISTORY_INSTRUMENT_MISMATCH")
     if not sid or not last or any(periods.get(k) != v for k, v in expected.items()):
         raise ValueError("PROFINANCE_HISTORY_PROTOCOL_MISMATCH")
-    return {"sid": sid, "ticker": ticker, "price_type": "Last", "ba": 2}
+    result={"sid": sid, "ticker": ticker, "price_type": "Last", "ba": 2}
+    if asset=='BRENT':
+        result.update(raw_label=SYMBOLS[asset],raw_ticker=ticker,
+                      provider_chart_identity_verified=True,
+                      source_pin_version=VPS.BRENT_FEED_PIN_VERSION)
+    return result
 
 
 def _daily_ohlc_sha256(row):
@@ -359,6 +372,16 @@ class HistoryCache:
                             "z": 1, "ba": 2, "left": 0, "T": int(self._clock() * 1000)}, deadline)
                         received_at = self._clock()
                         parsed = parse_history(text, asset, tf, now=received_at, observed_at=received_at)
+                        if asset=='BRENT':
+                            # The chart proves its label/ticker mapping. Its
+                            # endpoint does not expose the quote-table I field;
+                            # that separate observed proof belongs to /q.
+                            chart_proof={"raw_ticker":session["ticker"],
+                                "provider_chart_identity_verified":session.get("provider_chart_identity_verified") is True,
+                                "source_pin_version":session.get("source_pin_version")}
+                            parsed.update(chart_proof)
+                            for row in parsed["bars"]+parsed["forming_bars"]:
+                                row.update(chart_proof)
                         if tf == "1d":
                             parsed = _retain_daily_proofs(parsed, cached)
                         if not parsed["bars"]:
@@ -430,7 +453,7 @@ class HistoryCache:
                 "rejected_rows": (cached or {}).get("rejected_rows", 0),
                 "conflicting_timestamps": (cached or {}).get("conflicting_timestamps", 0),
                 "volume_available": False}
-        return {"version": VERSION, "asset": asset, "source": "ProFinance",
+        result={"version": VERSION, "asset": asset, "source": "ProFinance",
             "source_key": identity["key"], "source_identity": identity,
             "raw_label": SYMBOLS[asset], "chart_symbol": CHART_SYMBOLS[asset],
             "price_type": "Last", "same_source": True, "paper_only": True,
@@ -439,6 +462,17 @@ class HistoryCache:
             "forming_bars_by_timeframe": forming_by_tf,
             "source_url": BASE + "history", "protocol_source": PROTOCOL_SOURCE,
             "time_basis": "Europe/Moscow intraday labels; D1 provider date labels require observed successor proof"}
+        if asset=='BRENT':
+            available=[entry for entry in snapshot.values() if entry and entry.get('bars')]
+            chart_verified=bool(available) and all(
+                entry.get('provider_chart_identity_verified') is True
+                and entry.get('raw_ticker')==CHART_SYMBOLS[asset]
+                and entry.get('source_pin_version')==VPS.BRENT_FEED_PIN_VERSION
+                for entry in available)
+            result.update(raw_ticker=CHART_SYMBOLS[asset] if chart_verified else None,
+                          provider_chart_identity_verified=chart_verified,
+                          source_pin_version=VPS.BRENT_FEED_PIN_VERSION)
+        return result
 
 
 _HISTORY = HistoryCache()

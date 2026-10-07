@@ -1,6 +1,6 @@
 """An oil position's saved expiry owns both its quote request and protection."""
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import TestCase
 from unittest.mock import MagicMock, Mock, patch
 
@@ -23,6 +23,12 @@ class BrentContractGuardTests(TestCase):
     def quote(self, contract, price=101.28):
         return {'price': price, 'observed_at': self.now.isoformat(),
                 'price_field': 'LAST', 'row': {'SECID': contract}}
+
+    def profinance_quote(self, **fields):
+        return {'price': 102.03, 'observed_at': self.now.isoformat(),
+                'source': 'ProFinance', 'raw_label': 'Brent oil',
+                'raw_ticker': 'brent', 'instrument_id': '27',
+                'provider_ticker_verified': True, 'price_field': 'LP', **fields}
 
     def position(self, contract='BRX6'):
         identity = S.identity('BRENT', {'source': 'MOEX ISS '+str(contract or ''),
@@ -101,23 +107,90 @@ class BrentContractGuardTests(TestCase):
         self.assertEqual(result, {})
         self.moex.assert_not_called()
 
-    def test_explicit_unheld_candidate_is_used_instead_of_cache_contract(self):
-        G._quotes['BRENT'] = {'contract': {'secid': 'BRZ6'}}
+    def test_unheld_candidate_fetches_pinned_profinance_ignoring_old_contracts(self):
+        G.publish_quote('BRENT', dict(self.quote('BRZ6'), source_gate_pass=True,
+            contract={'secid': 'BRZ6'}, source_names={'primary': 'MOEX ISS BRZ6'}))
+        self.pf.return_value = self.profinance_quote()
         result = G.fetch_guard_quote(self.ns, 'BRENT', [], candidate_contract='BRX6')
-        self.moex.assert_called_once_with('BRX6')
-        self.assertEqual(result['contract']['secid'], 'BRX6')
+        self.moex.assert_not_called()
+        self.pf.assert_called_once_with('BRENT')
+        self.assertTrue(S.is_pinned_brent_identity(S.identity('BRENT', result)))
+        self.assertEqual(result['price'], 102.03)
+        self.assertEqual(result['raw_ticker'], 'brent')
+        self.assertEqual(result['instrument_id'], '27')
+        self.assertEqual(result['price_field'], 'LP')
+        self.assertNotIn('contract', result)
+
+    def test_unheld_candidate_refreshes_profinance_without_any_prior_quote(self):
+        self.pf.return_value = self.profinance_quote()
+        result = G.fetch_guard_quote(self.ns, 'BRENT', [])
+        self.moex.assert_not_called()
+        self.pf.assert_called_once_with('BRENT')
+        self.assertTrue(S.brent_quote_verified(result))
+
+    def test_invalid_provider_response_never_inherits_requested_pin(self):
+        variants = [dict(raw_ticker=None), dict(raw_ticker='wti'),
+                    dict(instrument_id=None), dict(instrument_id='28'),
+                    dict(raw_label=None), dict(raw_label='Gold'),
+                    dict(source='Yahoo Brent'), dict(contract_id='BRX6'),
+                    dict(source_gate_pass=False), dict(market_open=False)]
+        for fields in variants:
+            with self.subTest(fields=fields):
+                self.pf.return_value = self.profinance_quote(**fields)
+                result = G.fetch_guard_quote(self.ns, 'BRENT', [], candidate_contract='BRX6')
+                self.assertEqual(result, {})
+                self.assertEqual(G._quotes, {})
+                self.assertEqual(G._source_quotes, {})
+        self.moex.assert_not_called()
+
+    def test_transient_refresh_failure_uses_only_fresh_verified_pinned_cache(self):
+        cached = self.profinance_quote(source_gate_pass=True, market_open=True,
+            observed_at=(self.now-timedelta(seconds=20)).isoformat())
+        G.publish_quote('BRENT', cached)
+        # The most recent asset-wide quote belongs to the held legacy contract.
+        G.publish_quote('BRENT', dict(self.quote('BRZ6'), source_gate_pass=True,
+            contract={'secid': 'BRZ6'}, source_names={'primary': 'MOEX ISS BRZ6'}))
+        self.pf.side_effect = TimeoutError('provider unavailable')
+        result = G.fetch_guard_quote(self.ns, 'BRENT', [], candidate_contract='BRX6')
+        self.assertEqual(result['price'], cached['price'])
+        self.assertEqual(result['observed_at'], cached['observed_at'])
+        self.assertTrue(S.brent_quote_verified(result))
+        self.moex.assert_not_called()
+
+    def test_new_entry_never_uses_protective_only_age_or_unverified_cache(self):
+        self.pf.side_effect = TimeoutError('provider unavailable')
+        variants = [self.profinance_quote(source_gate_pass=True, market_open=True,
+                       observed_at=(self.now-timedelta(seconds=150)).isoformat()),
+                    self.profinance_quote(source_gate_pass=True, market_open=True,
+                       instrument_id=None),
+                    dict(self.quote('BRX6'), source_gate_pass=True,
+                       contract={'secid': 'BRX6'}, source_names={'primary':'MOEX ISS BRX6'})]
+        for cached in variants:
+            with self.subTest(cached=cached):
+                with patch.dict(G._quotes, {}, clear=True), patch.dict(G._source_quotes, {}, clear=True):
+                    G.publish_quote('BRENT', cached)
+                    self.assertEqual(G.fetch_guard_quote(self.ns, 'BRENT', []), {})
+        self.moex.assert_not_called()
 
     def test_profinance_position_keeps_its_existing_provider(self):
         position = self.position()
         position['payload'] = {'price_source_lock': S.identity('BRENT', {
             'source': 'ProFinance', 'raw_label': 'Brent oil'})}
-        self.pf.return_value = {'price': 102.03, 'observed_at': self.now.isoformat(),
-                               'source': 'ProFinance', 'raw_label': 'Brent oil'}
+        self.pf.return_value = self.profinance_quote()
         result = G.fetch_guard_quote(self.ns, 'BRENT', [position])
         self.moex.assert_not_called()
         self.pf.assert_called_once_with('BRENT')
         self.assertEqual(S.identity('BRENT', result)['key'], 'PROFINANCE:Brent oil')
         self.assertIsNone(S.identity('BRENT', result)['contract_id'])
+        self.assertTrue(S.brent_quote_verified(result))
+
+    def test_held_profinance_position_does_not_relabel_foreign_source_response(self):
+        position = self.position()
+        position['payload'] = {'price_source_lock': S.brent_feed_pin_identity()}
+        self.pf.return_value = self.profinance_quote(source='Yahoo Brent')
+        self.assertEqual(G.fetch_guard_quote(self.ns, 'BRENT', [position]), {})
+        self.assertEqual(G._source_quotes, {})
+        self.moex.assert_not_called()
 
 
 class BrentExchangeResponseTests(TestCase):

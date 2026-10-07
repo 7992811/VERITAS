@@ -955,6 +955,12 @@ def _fetch_guard_quote_unlocked(ns, asset, positions, candidate_contract=None):
 
 def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
     """Fetch the pinned source; another provider is never its fallback."""
+    new_brent=asset=='BRENT' and not positions
+    if new_brent:
+        # A new oil entry has one configured feed. Old contract hints and the
+        # asset-wide cache cannot select a different source for that entry.
+        positions=[{'asset':'BRENT','payload':{
+            'price_source_lock':VPS.brent_feed_pin_identity()}}]
     identities=[VPS.position_identity(z) for z in positions or []]
     if not identities:
         return _fetch_guard_quote_unlocked(ns,asset,positions,candidate_contract)
@@ -964,8 +970,14 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
     try:
         if key.startswith('PROFINANCE:') and not expected.get('contract_id'):
             raw=ns['_v90r61_profinance_quote'](asset) or {}
-            q=dict(raw,source_gate_pass=True,market_open=True,paper_only=True,
-                   source_names={'primary':expected['primary_source']})
+            # Verify the observed response before adding adapter labels. A
+            # different provider or a label-only oil row cannot inherit proof
+            # from the requested identity or the position's saved pin.
+            if asset!='BRENT' or (VPS.brent_quote_verified(raw)
+                    and raw.get('source_gate_pass') is not False
+                    and raw.get('market_open') is not False):
+                q=dict(raw,source_gate_pass=True,market_open=True,paper_only=True,
+                       source_names={'primary':expected['primary_source']})
         elif key.startswith('YAHOO:') and asset in ('NQ','GOLD','BRENT') and not expected.get('contract_id'):
             symbol={'NQ':'NQ%3DF','GOLD':'GC%3DF','BRENT':'BZ%3DF'}[asset]
             rows,_=ns['_yahoo_series'](symbol,'1d','1m',True)
@@ -1005,7 +1017,11 @@ def fetch_guard_quote(ns, asset, positions, candidate_contract=None):
         pass
     if q and VPS.matches(positions[0],q):
         publish_quote(asset,q)
-    return quote_for_position(positions[0],q)
+    selected=quote_for_position(positions[0],q)
+    if new_brent and not quote_gate(selected.get('observed_at'),
+                                   execution=True,asset='BRENT')['eligible']:
+        return {}
+    return selected
 
 
 def market_state(asset):

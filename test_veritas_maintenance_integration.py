@@ -463,7 +463,10 @@ class DecisionLogProjectionIntegrationTests(unittest.TestCase):
         raw, clock, plan = structural_plan()
         row = dict(raw, horizon="1h", research_decision="LONG", trade_plan=plan)
         original = deepcopy(row)
-        ns = {}
+        identity_fields=next(node.value for node in ast.parse(RUNTIME.read_text()).body
+                             if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name)
+                             and target.id=='_V90_QUOTE_IDENTITY_FIELDS' for target in node.targets))
+        ns = {'_V90_QUOTE_IDENTITY_FIELDS':ast.literal_eval(identity_fields)}
         for name in ("_v90_small_dict", "_v90_compact_live_row", "_v90_compact_decision_log"):
             compile_function(definition(name), ns)
         live = ns["_v90_compact_live_row"](row)

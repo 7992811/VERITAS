@@ -9,6 +9,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 import httpx
 import veritas_execution as VX
+_V90_QUOTE_IDENTITY_FIELDS = (
+    'source','primary_source','contract_id','raw_label','raw_ticker','instrument_id',
+    'provider_ticker_verified','provider_series_verified','source_pin_version',
+    'provider_ticker','provider_instrument_id','source_pin_status','contract_identity_status',
+    'exact_contract_verified','price_field','price_series_type','verification_mode')
 import veritas_position_guard as VPG
 import veritas_position_thesis as VPT
 import veritas_currency_notifications as VCN
@@ -7309,7 +7314,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                         errors.append(err)
                         emit('persistence_error', **err)
                 made += 1
-                z = {'asset': asset, 'horizon': horizon, 'decision': dec,
+                z = {**{key:raw[key] for key in _V90_QUOTE_IDENTITY_FIELDS if key in raw},'asset': asset, 'horizon': horizon, 'decision': dec,
                      'research_decision':research_dec,'confidence': round(conf, 4),'price':float(f.get('price') or 0.0),
                      'score': round(score, 4), 'regime': f['regime'], 'horizon_return':round(float(f.get('ret_h') or 0.0),6),
                      'realized_vol':round(float(f.get('rv') or 0.0),6),'knowledge_matches': len(kmatches),
@@ -18584,7 +18589,7 @@ def _v90_compact_live_row(z):
     io=_v90_small_dict(z.get('impulse_overlay'),(
         'active','phase','direction','confidence','base_score',
         'active_directional_score','blend','entry_quality'))
-    keys=(
+    keys=(*_V90_QUOTE_IDENTITY_FIELDS,
         'asset','horizon','decision','research_decision','confidence','price','score',
         'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
         'source_gate_pass','market_open','execution_eligible','paper_eligible','production_eligible',
@@ -18868,6 +18873,9 @@ def features(raw, horizon, common_structure=None):
             minute_bars=raw.get('structure_minute_bars'),quote=raw.get('structure_quote'))
     f['trend_entry_context']=raw['_r66_trend_context']
     f['timeframe_entry_context']=TFD.context(raw,horizon)
+    for key in _V90_QUOTE_IDENTITY_FIELDS:
+        f.pop(key,None)
+        if key in raw:f[key]=raw[key]
     f['market_contract']=raw.get('contract')
     f['market_source_names']=raw.get('source_names')
     f['market_observed_at']=raw.get('observed_at')

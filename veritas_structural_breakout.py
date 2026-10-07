@@ -125,7 +125,8 @@ def _quote(raw, now, source):
     if (not identity or not _same_source(source, identity)
             or quote.get("asset") not in (None, asset)):
         return dict(out, reason="SAME_TF_SOURCE_MISMATCH"), None
-    if quote.get("source_gate_pass") is not True or quote.get("market_open") is not True:
+    if (quote.get("source_gate_pass") is not True or quote.get("market_open") is not True
+            or (asset == "BRENT" and not VPS.brent_quote_verified(quote))):
         return dict(out, reason="STRUCTURAL_VERIFIED_QUOTE_REQUIRED"), None
     if observed is None or end is None or price is None or price <= 0:
         return out, None
