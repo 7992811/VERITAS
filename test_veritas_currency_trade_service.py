@@ -41,9 +41,9 @@ class CurrencyHttpBoundaryTests(unittest.TestCase):
                                rfile=BytesIO(body), reply=lambda payload, status: responses.append((payload, status)),
                                responses=responses)
 
-    def test_body_limit_is_larger_only_for_signed_admission_evidence(self):
+    def test_body_limit_is_larger_only_for_signed_evidence_and_reviewed_terms(self):
         payload = json.dumps({"padding": "x" * 9000}).encode()
-        for operation, expected in (("status", 400), ("settlement-attest", 400),
+        for operation, expected in (("status", 400), ("settlement-attest", 200),
                                     ("admission-evidence", 200), ("prepare-reviewed", 200)):
             handler = self.handler(service.PREFIX + operation, payload)
             with patch.object(service, "handle_request", return_value=({"ok": True}, 200)) as dispatch:
