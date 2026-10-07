@@ -76,7 +76,10 @@ class CurrencyPortfolioTests(TestCase):
         original={'portfolios':[{'name':'Champion','positions':[],'gross_leverage':0.0}]}
         out=C.decorate_report(original)
         cur=next(p for p in out['portfolios'] if p['name']=='Currency')
-        self.assertEqual(cur['nav_rub'],10_000.0)
+        self.assertIsNone(cur['nav_rub'])
+        self.assertEqual(cur['initial_nav_rub'],10_000.0)
+        self.assertEqual(cur['positions_status'],'UNAVAILABLE')
+        self.assertFalse(out['positions_complete'])
         self.assertEqual(cur['configuration_status'],'CONFIGURED')
         self.assertEqual(cur['max_gross_limit'],10.0)
         self.assertFalse(cur['live_trading_enabled'])

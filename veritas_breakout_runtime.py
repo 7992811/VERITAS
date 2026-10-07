@@ -10,9 +10,11 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime, timezone
+import math
 import threading
 import time
 
+import veritas_canonical_constitution as CTC
 import veritas_execution as VX
 import veritas_position_guard as VPG
 import veritas_price_source as VPS
@@ -119,6 +121,59 @@ def publish_summary(summary):
 def _namespace_summary(ns):
     with ns.get("lock", nullcontext()):
         return [dict(row) for row in (ns.get("last_cycle", {}).get("summary") or [])]
+
+
+def _report_scalars(raw, fields):
+    """Copy a bounded display projection, never an archived execution graph."""
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    for key in fields:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if value is None or isinstance(value, (bool, int)):
+            out[key] = value
+        elif isinstance(value, float) and math.isfinite(value):
+            out[key] = value
+        elif isinstance(value, str):
+            out[key] = value[:400]
+        elif isinstance(value, datetime):
+            out[key] = value.isoformat()
+    return out
+
+
+def _row_event_key(row):
+    return (row.get("asset"), row.get("horizon"),
+            (TFP.context_of(row).get("event") or {}).get("event_id"))
+
+
+def _execution_report_index(rows, execution):
+    """Match actual selected outcomes; other horizons did not receive that fill.
+
+    The canonical portfolio report owns complete admission and book evidence.
+    Duplicating its whole graph into each of up to 49 signals multiplies both
+    retained memory and every serialized dashboard snapshot. Only scalar facts
+    for this exact asset, horizon and immutable event belong on a signal row.
+    """
+    wanted = {_row_event_key(row) for row in rows}
+    indexed = {}
+    for portfolio in execution.get("portfolios") or []:
+        if not isinstance(portfolio, dict) or portfolio.get("name") not in CTC.PORTFOLIO_ORDER:
+            continue
+        for trace in portfolio.get("admission_trace") or []:
+            if not isinstance(trace, dict):
+                continue
+            key = (trace.get("asset"), trace.get("horizon"), trace.get("event_id"))
+            if key not in wanted or not key[2]:
+                continue
+            item = _report_scalars(trace, ("asset", "horizon", "event_id", "reason",
+                                           "checked_at", "target_fraction"))
+            item.update(_report_scalars(trace.get("execution"), (
+                "status", "reason", "checked_at", "execution_action", "fill_price",
+                "order_id", "current_fraction", "requested_fraction")))
+            item["name"] = portfolio["name"]
+            indexed.setdefault(key, {})[portfolio["name"]] = item
+    return indexed
 
 
 def _default_quote_fetch(ns, asset, identity):
@@ -315,9 +370,13 @@ class BreakoutRuntime:
         return row
 
     def _publish_rows(self, rows, execution, clock):
+        summary = _report_scalars(execution, ("status", "reason", "version", "checked_at", "paper_only"))
+        indexed = _execution_report_index(rows, execution)
         for row in rows:
+            matching = indexed.get(_row_event_key(row), {})
+            result = dict(summary, portfolios=[matching[name] for name in CTC.PORTFOLIO_ORDER if name in matching])
             row["_execution_audit"] = {"lane": VERSION, "checked_at": clock.isoformat(),
-                                       "paper_only": True, "result": deepcopy(execution)}
+                                       "paper_only": True, "result": result}
         with _cache_lock:
             for row in rows:
                 _latest_rows[(row["asset"], row["horizon"])] = deepcopy(row)

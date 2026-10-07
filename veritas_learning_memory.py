@@ -13,6 +13,32 @@ def project_object(expr, fields):
 
 
 @contextmanager
+def calibration_rows(pg_connect, limit):
+    """Stream the original calibration sample without unused execution proofs.
+
+    Limit recent decisions before joining their observed outcomes, exactly as
+    the calibration reader always did. Its reducer only consumes these three
+    JSON fields; event/ATR/target evidence stays in the durable ledger.
+    """
+    decision = project_object("d.payload", {
+        key: "d.payload->'" + key + "'" for key in ("decision", "confidence")})
+    outcome = project_object("o.payload", {"forward_return": "o.payload->'forward_return'"})
+    with pg_connect() as c:
+        with c.transaction():
+            with c.cursor(name="veritas_calibration") as rows:
+                rows.itersize = 64
+                rows.execute(f"""WITH recent_decisions AS (
+                            SELECT entity_key,event_ts,asset,horizon,payload
+                            FROM ledger_events WHERE event_type='decision'
+                            ORDER BY event_ts DESC LIMIT %s
+                          )
+                          SELECT d.asset,d.horizon,{decision} AS decision_payload,{outcome} AS outcome_payload
+                          FROM recent_decisions d
+                          JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'""", (limit,))
+                yield rows
+
+
+@contextmanager
 def live_performance_rows(pg_connect):
     """Stream all performance observations without archived feature graphs."""
     decision = project_object("d.payload", {"decision": "d.payload->'decision'"})

@@ -2,6 +2,7 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+import json
 import threading
 import unittest
 from unittest.mock import patch
@@ -46,7 +47,9 @@ class FastQuoteRuntimeTests(unittest.TestCase):
 
         def execute(rows, now):
             self.executed.append((deepcopy(rows), now))
-            return {"status": "OK", "results": [{"portfolio": "Currency", "reason": "TEST_CALLBACK"}]}
+            return {"status": "OK", "portfolios": [{"name": "Currency", "admission_trace": [
+                {"asset": "CNYRUBF", "horizon": "1h", "event_id": "test-event",
+                 "execution": {"status": "BLOCKED", "reason": "TEST_CALLBACK"}}]}]}
 
         self.runtime = BR.BreakoutRuntime(self.ns, execute, context_builder=build)
         self.publish_patch = patch.object(BR.VPG, "publish_quote")
@@ -200,18 +203,73 @@ class FastQuoteRuntimeTests(unittest.TestCase):
     def test_actual_callback_result_is_published_without_removing_other_assets(self):
         self.ns["last_cycle"]["summary"] = [{"asset": "BTC", "horizon": "1h", "price": 80000}]
         row = dict(quote(), horizon="1h", research_decision="LONG",
-                   market_observed_at=NOW.isoformat(), trade_plan={"eligible": False})
+                   market_observed_at=NOW.isoformat(), trade_plan={"eligible": False},
+                   timeframe_entry_context={"event": {"event_id": "test-event"}})
         with patch.object(self.runtime, "_row", return_value=row):
             self.runtime.run_once(NOW, quotes={"CNYRUBF": quote()})
         self.assertEqual(len(self.executed), 1)
         summary = self.ns["last_cycle"]["summary"]
         self.assertEqual({r["asset"] for r in summary}, {"BTC", "CNYRUBF"})
         cny = next(r for r in summary if r["asset"] == "CNYRUBF")
-        self.assertEqual(cny["_execution_audit"]["result"]["results"][0]["reason"], "TEST_CALLBACK")
+        self.assertEqual(cny["_execution_audit"]["result"]["portfolios"][0]["reason"], "TEST_CALLBACK")
         slow = dict(row, market_observed_at=(NOW-timedelta(seconds=20)).isoformat())
         merged = BR.publish_summary([slow])
         self.assertEqual(merged[0]["market_observed_at"], NOW.isoformat())
         self.assertIn("_execution_audit", merged[0])
+
+    def test_signal_report_ignores_large_book_graphs_and_unselected_events(self):
+        class ArchivedProof:
+            def __deepcopy__(self, memo):
+                raise AssertionError("an unrelated archived proof must never be copied onto a signal")
+
+        row = dict(quote(), horizon="5m", market_observed_at=NOW.isoformat(),
+                   timeframe_entry_context={"event": {"event_id": "selected-event"}})
+        selected = {"asset": "CNYRUBF", "horizon": "5m", "event_id": "selected-event",
+                    "execution": {"status": "BLOCKED", "reason": "RECORDED_SOURCE_CHECK"},
+                    "admission": {"prepared_plan": ArchivedProof()}}
+        execution = {"status": "OK", "paper_only": True, "positions": ArchivedProof(),
+                     "portfolios": [{"name": "Currency", "positions": ArchivedProof(),
+                                     "admission_trace": [selected,
+                                         dict(selected, horizon="1m"),
+                                         dict(selected, event_id="previous-event"),
+                                         dict(selected, asset="BTC")]}]}
+        self.runtime._publish_rows([row], execution, NOW)
+        report = row["_execution_audit"]["result"]
+        self.assertEqual(len(report["portfolios"]), 1)
+        self.assertEqual(report["portfolios"][0]["name"], "Currency")
+        self.assertEqual(report["portfolios"][0]["event_id"], "selected-event")
+        self.assertLess(len(json.dumps(report)), 1000)
+        self.assertNotIn("positions", json.dumps(report))
+        selected["execution"]["reason"] = "LATER_MUTATION"
+        self.assertEqual(report["portfolios"][0]["reason"], "RECORDED_SOURCE_CHECK")
+        before = deepcopy(report)
+        execution["portfolios"][0]["admission_trace"].extend(
+            dict(selected, asset="UNRELATED_" + str(i)) for i in range(1000))
+        selected["execution"]["reason"] = "RECORDED_SOURCE_CHECK"
+        self.runtime._publish_rows([row], execution, NOW)
+        self.assertEqual(row["_execution_audit"]["result"], before)
+
+    def test_display_projection_keeps_complete_sealed_signal_evidence(self):
+        import veritas_structural_breakout as SB
+        from test_veritas_structural_cny_episodes import episode_raw
+        raw = episode_raw(1, "2026-10-07T07:15:00Z", 12.766)
+        clock = datetime.fromisoformat(raw["observed_at"].replace("Z", "+00:00"))
+        context = SB.build_context(raw, "5m", clock)
+        row = self.runtime._row(raw, BR._clean_quote(raw), "5m", context, {}, clock)
+        expected = deepcopy(row)
+        event = context["event"]
+        execution = {"status": "OK", "portfolios": [{"name": "Currency", "admission_trace": [
+            {"asset": "CNYRUBF", "horizon": "5m", "event_id": event["event_id"],
+             "execution": {"status": "BLOCKED", "reason": "REPORT_ONLY"}}]}]}
+        self.runtime._publish_rows([row], execution, clock)
+        cached = BR._latest_rows[("CNYRUBF", "5m")]
+        for field in ("timeframe_entry_context", "trend_entry_context", "trade_plan", "_execution_quote"):
+            self.assertEqual(row[field], expected[field], field)
+            self.assertEqual(cached[field], expected[field], field)
+        self.assertTrue(SB.validate_event(cached["trade_plan"]["entry_event_snapshot"],
+                                        context["source_identity"])["eligible"])
+        row["trade_plan"]["entry_event_snapshot"]["atr_proof"]["bars"][0]["close"] = -1.
+        self.assertEqual(cached["trade_plan"], expected["trade_plan"])
 
 
 if __name__ == "__main__":

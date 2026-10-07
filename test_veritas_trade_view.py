@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from veritas_trade_view import enrich_positions, trade_result
 
@@ -69,3 +69,53 @@ class TradeResultTests(unittest.TestCase):
         result = enrich_positions(report, unavailable)
         self.assertEqual(len(result['portfolios'][0]['positions']), 1)
         self.assertIsNone(result['portfolios'][0]['positions'][0]['total_trade_pnl_rub'])
+
+    def test_preloaded_accounts_do_not_mix_old_quantity_with_later_full_close(self):
+        report = {'portfolios': [{'name': 'Currency', 'positions': [
+            {'active_trade_id': 'same-trade', 'asset': 'CNYRUBF', 'direction': 'LONG',
+             'units': 1, 'avg_entry_price': 100, 'last_price': 101, 'payload': {}}]}]}
+        at_position_read = {'same-trade': dict(trade_id='same-trade', status='OPEN',
+            gross_pnl_rub=0, fees_rub=.1, funding_rub=.05, entry_notional_rub=100,
+            payload={})}
+        # The same trade closes after the quantity snapshot, before enrichment.
+        connection = MagicMock()
+        connection.__enter__.return_value.execute.return_value.fetchall.return_value = [
+            dict(trade_id='same-trade', status='CLOSED', gross_pnl_rub=1,
+                 fees_rub=.2, funding_rub=.05, entry_notional_rub=100, payload={})]
+        pg_connect = MagicMock(return_value=connection)
+        with patch('veritas_trade_view.VPG.quote_for_position', return_value={
+                'price': 101, 'observed_at': '2026-10-07T11:00:00Z'}):
+            result = enrich_positions(report, pg_connect, preloaded_accounts=at_position_read)
+        position = result['portfolios'][0]['positions'][0]
+        self.assertEqual(position['units'], 1)
+        self.assertEqual(position['unrealized_pnl_rub'], 1)
+        self.assertEqual(position['realized_gross_pnl_rub'], 0)
+        self.assertAlmostEqual(position['total_trade_pnl_rub'], .85)
+        self.assertAlmostEqual(position['total_trade_return_pct'], .85)
+        pg_connect.assert_not_called()
+        connection.__enter__.return_value.execute.assert_not_called()
+        self.assertNotIn('total_trade_pnl_rub', report['portfolios'][0]['positions'][0])
+
+    def test_explicit_empty_accounting_snapshot_never_triggers_new_lookup(self):
+        report = {'portfolios': [{'name': 'Currency', 'positions': [
+            {'active_trade_id': 'same-trade', 'unrealized_pnl_rub': 10}]}]}
+        pg_connect = MagicMock()
+        result = enrich_positions(report, pg_connect, preloaded_accounts={})
+        position = result['portfolios'][0]['positions'][0]
+        self.assertEqual(position['active_trade_id'], 'same-trade')
+        self.assertIsNone(position['total_trade_pnl_rub'])
+        self.assertEqual(position['trade_result_status'], 'INCOMPLETE')
+        pg_connect.assert_not_called()
+
+    def test_explicit_none_preserves_legacy_accounting_lookup(self):
+        report = {'portfolios': [{'name': 'Currency', 'positions': [
+            {'active_trade_id': 'same-trade', 'unrealized_pnl_rub': 10}]}]}
+        connection = MagicMock()
+        connection.__enter__.return_value.execute.return_value.fetchall.return_value = [
+            dict(trade_id='same-trade', gross_pnl_rub=2, fees_rub=1, funding_rub=.5,
+                 entry_notional_rub=100, payload={})]
+        pg_connect = MagicMock(return_value=connection)
+        result = enrich_positions(report, pg_connect, preloaded_accounts=None)
+        self.assertEqual(result['portfolios'][0]['positions'][0]['total_trade_pnl_rub'], 10.5)
+        pg_connect.assert_called_once_with()
+        self.assertEqual(connection.__enter__.return_value.execute.call_count, 1)
