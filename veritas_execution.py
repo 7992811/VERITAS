@@ -6,11 +6,13 @@ import math
 import os
 import veritas_costs as VC
 import veritas_canonical_constitution as CTC
+import veritas_price_source as VPS
+import veritas_execution_snapshot as VES
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
 
-VERSION = "veritas-execution-safety-v3-ctc-v2"
+VERSION = "veritas-execution-safety-v4-verified-fill"
 RESEARCH_PAPER_ASSETS = frozenset(("NQ", "BRENT", "GOLD", "MOEX", "CNYRUBF"))
 PAPER_ASSETS = RESEARCH_PAPER_ASSETS | frozenset(("BTC", "ETH"))
 PAPER_SOURCE_POLICY = "ONE_VALID_PRIMARY_SOURCE"
@@ -126,20 +128,31 @@ def paper_quote_time_gate(raw: Optional[Dict[str, Any]], horizon=None, now=None,
     observed=r.get("observed_at") or r.get("market_observed_at")
     asset=str(r.get("asset") or "")
     latency=str(r.get("data_latency_class") or "").upper()
+    clock=utc_datetime(now) or datetime.now(timezone.utc)
+    def book_checked(result):
+        book_at=next((r[key] for key in ('orderbook_observed_at','book_observed_at','orderbook_ts')
+                      if r.get(key) is not None),None)
+        if book_at is not None:
+            book=quote_gate(book_at,horizon,now=clock,protective=protective,
+                            execution=not protective,asset=asset)
+            result=dict(result,orderbook_time_gate=book)
+            if not book['eligible']:
+                result.update(eligible=False,reason='EXECUTION_ORDERBOOK_STALE')
+        return result
     if latency=="DELAYED_RESEARCH":
         dt=utc_datetime(observed); clock=utc_datetime(now) or datetime.now(timezone.utc)
         age=(clock-dt).total_seconds() if dt else None
         limit=3600.0
         ok=bool(r.get("source_gate_pass") and r.get("market_open") is not False
                 and age is not None and math.isfinite(age) and -5 <= age <= limit)
-        return {"eligible":ok,"observed_at":dt.isoformat() if dt else None,
+        return book_checked({"eligible":ok,"observed_at":dt.isoformat() if dt else None,
                 "age_seconds":age,"max_age_seconds":limit,
                 "reason":None if ok else "QUOTE_TIME_MISSING" if dt is None else
                 "QUOTE_TIME_FUTURE" if age is not None and age < -5 else
                 "DELAYED_RESEARCH_QUOTE_STALE",
-                "paper_delayed_research":True}
-    return quote_gate(observed,horizon,now=now,protective=protective,
-                      execution=not protective,asset=asset)
+                "paper_delayed_research":True})
+    return book_checked(quote_gate(observed,horizon,now=clock,protective=protective,
+                      execution=not protective,asset=asset))
 
 
 def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -172,13 +185,14 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
     modeled_cost = round_trip_cost_pct(spread_bps)
     stop_distance = abs(entry - stop) / entry if valid_entry and stop else None
     reward = risk = net_rr = target_move = entry_fill = target_fill = stop_fill = None
-    fees = funding = slippage = None
+    fees = funding = slippage = entry_model = hold = age = None
     if valid_entry and stop and stop > 0 and target and target > 0:
         fraction = max(0.0, _num(p.get("initial_position_fraction"), 0.10))
         commission = VC.COMMISSION_RATE
         buy = direction == "LONG"
-        entry_fill = simulated_fill(asset, "BUY" if buy else "SELL_SHORT", entry,
-                                    fraction, bid=p.get("best_bid"), ask=p.get("best_ask"))["fill_price"]
+        entry_model = simulated_fill(asset, "BUY" if buy else "SELL_SHORT", entry,
+                                     fraction, bid=p.get("best_bid"), ask=p.get("best_ask"))
+        entry_fill = entry_model["fill_price"]
         # The current exit engine uses an adverse reference-price fill; use that
         # same model here, including size impact and both commission legs.
         target_fill = simulated_fill(asset, "SELL" if buy else "BUY_TO_COVER", target,
@@ -188,7 +202,8 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
         hold = max(0.0, _num(p.get("expected_hold_seconds"),
                    {"5m": 300, "1h": 3600, "4h": 14400, "1d": 86400,
                     "3d": 259200, "7d": 604800}.get(p.get("horizon"), 3600)))
-        funding = entry_fill * VC.funding_fraction(hold)
+        age = max(0.0, _num(p.get('position_age_seconds'),0.0))
+        funding = entry_fill * (VC.funding_fraction(age+hold)-VC.funding_fraction(age))
         fees = commission * (entry_fill + target_fill)
         slippage = (abs(entry_fill-entry) + abs(target_fill-target)) / entry
         modeled_cost = max(modeled_cost, slippage + (fees + funding) / entry)
@@ -213,6 +228,7 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
         "modeled_commission_pct": fees / entry if fees is not None else None,
         "modeled_execution_cost_pct": slippage,
         "modeled_funding_pct": funding / entry if funding is not None else None,
+        "expected_hold_seconds":hold,"position_age_seconds":age,
         "expected_to_stop_ratio": net_rr, "forecast_reward_risk": forecast_rr,
         "minimum_reward_risk": MIN_REWARD_RISK,
         "expected_move_pct": effective_move, "forecast_move_pct": forecast_move,
@@ -221,6 +237,7 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]
         "observed_spread_bps": spread_bps, "stop_distance_pct": stop_distance,
         "target_price": target, "target_distance_pct": target_move,
         "modeled_entry_fill": entry_fill, "modeled_target_fill": target_fill,
+        "entry_execution_model": entry_model,
         "modeled_stop_fill": stop_fill, "net_reward_pct": reward, "net_risk_pct": risk,
         "net_reward_risk": net_rr,
         "principle": "Actual target/stop economics after adverse fills, commission and funding.",
@@ -244,19 +261,24 @@ def stored_position_target_price(position):
     return target if target is not None and target > 0 else None
 
 
-def entry_gate(row, price, direction, fraction, position=None, existing_target_price=None, now=None):
+def entry_gate(row, price, direction, fraction, position=None, existing_target_price=None, now=None,
+               *, execution_fraction=None):
     """Last check after all setup/sizing mutations, immediately before any order."""
     from veritas_quote_time import quote_gate
-    row = row or {}
+    row = VPS.execution_row(row)
     import veritas_trend_entry as VTE
     import veritas_timeframe_policy as TFP
-    from veritas_price_source import quote_from_row
     clock = TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
     if clock is None:
         return {"eligible":False, "status":"BLOCK", "blockers":["SAME_TF_DECISION_TIME_REQUIRED"]}
+    execution=VPS.quote_from_row(row)
+    if '_execution_quote' in row:
+        price=_num(execution.get('price'))
+    price=_num(price)
+    if price is None or price<=0:
+        return {'eligible':False,'status':'BLOCK','blockers':['ENTRY_PRICE_INVALID']}
     row = VTE.prepare_row(row, price, clock)
     plan = dict(row.get('trade_plan') or {})
-    execution=quote_from_row(row)
     if position:
         held_stop = _num(position.get('stop_price'))
         held_target = stored_position_target_price(position)
@@ -300,9 +322,16 @@ def entry_gate(row, price, direction, fraction, position=None, existing_target_p
         expected=min(forecast,geometry['remaining_move_pct']) if forecast is not None and forecast>=0 else geometry['remaining_move_pct']
         plan.update(stop_price=geometry['stop_price'],target_price=geometry['target_price'],
                     expected_move_pct=expected,expected_to_stop_ratio=geometry['reward_risk'])
-    plan.update(entry_price=price, direction=direction, initial_position_fraction=fraction,
+    fill_fraction=fraction if execution_fraction is None else execution_fraction
+    plan.update(entry_price=price, direction=direction, initial_position_fraction=fill_fraction,
                 horizon=row.get('horizon'), best_bid=execution.get('best_bid',execution.get('bid')),
-                best_ask=execution.get('best_ask',execution.get('ask')))
+                best_ask=execution.get('best_ask',execution.get('ask')),spread_bps=execution.get('spread_bps'))
+    funding_age_valid=True
+    if position:
+        opened=TFP._utc_time(position.get('opened_at'))
+        funding_age_valid=opened is not None and opened<=clock
+        if funding_age_valid:
+            plan['position_age_seconds']=(clock-opened).total_seconds()
     gate = economics_gate(row.get('asset'), plan)
     if position:
         gate['add_geometry_basis']='STORED_POSITION_STOP_TARGET'
@@ -329,6 +358,22 @@ def entry_gate(row, price, direction, fraction, position=None, existing_target_p
         gate['eligible'] = False
         gate['status'] = 'BLOCK'
         gate['blockers'].append(timing['reason'])
+    source=paper_source_gate(row.get('asset'),execution)
+    gate['source_gate']=source
+    if not source.get('eligible'):
+        gate.update(eligible=False,status='BLOCK')
+        gate['blockers'].extend(source.get('blockers') or [])
+    if execution.get('asset') not in (None,row.get('asset')):
+        gate.update(eligible=False,status='BLOCK')
+        gate['blockers'].append('EXECUTION_QUOTE_ASSET_MISMATCH')
+    gate['blockers']=list(dict.fromkeys(gate['blockers']))
+    if not funding_age_valid:
+        gate.update(eligible=False,status='BLOCK')
+        gate['blockers'].append('EXISTING_FUNDING_AGE_REQUIRED')
+    gate['execution_snapshot']=VES.capture(row,execution,direction,fill_fraction,clock,gate)
+    if gate['execution_snapshot'] is None:
+        gate.update(eligible=False,status='BLOCK')
+        gate['blockers'].append('EXECUTION_SNAPSHOT_INVALID')
     return gate
 
 

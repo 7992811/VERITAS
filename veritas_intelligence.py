@@ -10,6 +10,7 @@ from urllib.parse import urlparse, parse_qs
 import httpx
 import veritas_execution as VX
 import veritas_position_guard as VPG
+import veritas_position_thesis as VPT
 import veritas_currency_notifications as VCN
 from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
@@ -11616,11 +11617,9 @@ def system_rule_arbitration(asset,horizon,f,plan,research_dec):
 # ---------------- v79.0 Trade Integrity / Win-Rate Layer ----------------
 
 def trade_integrity_layer(asset,horizon,f,trade_plan,research_dec):
-    """Final trade-state separation for win-rate quality.
-
-    Directional thesis and permission to enter are different states.
-    A temporary timing deterioration does not erase a valid thesis, but it
-    can block a fresh entry until the fast conflict resolves.
+    """Admission diagnostics for the candidate's direction and timeframe.
+    Entry vetoes cannot authorize an exit from an existing position; exits
+    require the held position's structural evidence or a protective rule.
     """
     plan=dict(trade_plan or {})
     direction=str(research_dec or plan.get('direction') or 'NO_TRADE')
@@ -11685,7 +11684,8 @@ def trade_integrity_layer(asset,horizon,f,trade_plan,research_dec):
         'fast_tf_conflict':fast_conflict,
         'setup_id':plan.get('setup_id'),
         'execution_horizon':horizon,
-        'principle':'Direction != entry permission. Soft timing deterioration requires confirmation before exit; hard structural/thesis invalidation exits immediately.'
+        **VPT.entry_integrity_scope(direction,horizon,hard_reasons),
+        'principle':'Entry vetoes block new risk. An open position exits on its own source/timeframe structural evidence or independent protective rules.'
     }
     return plan
 

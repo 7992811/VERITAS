@@ -9,6 +9,7 @@ import veritas_execution as VX
 import veritas_portfolio as VP
 import veritas_portfolio_runtime as VPR
 import veritas_release as VR
+import veritas_price_source as VPS
 
 
 class CanonicalArchitectureV2Tests(unittest.TestCase):
@@ -42,7 +43,8 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertEqual(s["runtime_authority"], CTC.BASIS_RUNTIME)
         self.assertEqual(s["portfolio_count"], 5)
         self.assertEqual(tuple(s["portfolios"]), CTC.PORTFOLIO_ORDER)
-        self.assertIn("native-daily-ma", s["product_version"])
+        self.assertIn("verified-execution", s["product_version"])
+        self.assertTrue(s['execution_integrity_policy']['one_quote_and_fill_for_admission_and_accounting'])
         self.assertEqual(s["daily_ma_rebound_policy"], CTC.MA_REBOUND_POLICY)
         self.assertEqual(s["active_user_teaching_ids"], [CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"]])
 
@@ -107,8 +109,12 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
 
     def test_canonical_take_profit_keeps_structural_runner(self):
         now=datetime.now(timezone.utc).isoformat()
+        quote={"asset":"ETH","price":99.5,"observed_at":now,"source_gate_pass":True,
+               "market_open":True,"source_names":{"primary":"Binance spot"},
+               "best_bid":99.49,"best_ask":99.51}
         z={"asset":"ETH","direction":"SHORT","units":1000.0,"avg_entry_price":100.0,
-           "active_trade_id":"T","stop_price":102.0,"payload":{}}
+           "active_trade_id":"T","stop_price":102.0,
+           "payload":{"price_source_lock":VPS.identity('ETH',quote)}}
         trade={"trade_id":"T","max_fraction":.10,"gross_pnl_rub":150.0,
                "fees_rub":20.0,"funding_rub":0.0}
         class Result:
@@ -119,7 +125,6 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
                 if sql.startswith("SELECT * FROM paper_trades"):
                     return Result(trade)
                 return Result()
-        quote={"price":99.5,"observed_at":now,"source_gate_pass":True}
         assessment={"eligible":True,"net_pnl_rub":100.0,"reason":"R72_NET_PROFIT_CONFIRMED"}
         with patch.object(VPR.VPG,"quote_for_position",return_value=quote), \
              patch.object(VPR.VPG,"profit_exit_assessment",return_value=assessment), \
