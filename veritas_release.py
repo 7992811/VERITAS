@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 
-PRODUCT_VERSION="veritas-max-product-v91.7.1-structural-breakout"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.1-structural-breakout"
-UI_VERSION="veritas-ui-v9.1.7.1-structural-breakout"
+PRODUCT_VERSION="veritas-max-product-v91.7.2-structural-breakout"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.2-structural-breakout"
+UI_VERSION="veritas-ui-v9.1.7.2-structural-breakout"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -40,6 +40,7 @@ def snapshot():
             "aggregation_preserves_proven_source":True,
             "structural_book_contention_nonblocking":True,
             "structural_execution_revalidated_at_wall_clock":True,
+            "structural_execution_selects_current_same_source_cached_quote":True,
         },
         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
         "breakout_lifecycle_policy":dict(CTC.BREAKOUT_LIFECYCLE_POLICY),
