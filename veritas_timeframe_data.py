@@ -81,7 +81,7 @@ def restore_context_state(row):
     return False
 
 
-def structural_context(raw, horizon, now=None, base_context=None):
+def structural_context(raw, horizon, now=None, base_context=None, *, level_limit=None):
     """One state owner for analytic cycles and the fresh-quote execution lane."""
     import veritas_structural_breakout as SB
     identity = raw.get('structure_source_identity') or {}
@@ -98,7 +98,7 @@ def structural_context(raw, horizon, now=None, base_context=None):
                  > (state.get('last_quote') or {}).get('observed_at',0))):
             state = candidate
         result = SB.build_context(raw,horizon,now,base_context=base_context,state=state,
-                                  config=CTC.BREAKOUT_LIFECYCLE_POLICY)
+                                  config=CTC.BREAKOUT_LIFECYCLE_POLICY,level_limit=level_limit)
         if result.get('status') == 'OK' and result.get('quote_state'):
             _STRUCTURAL_STATE[key] = deepcopy(result['quote_state'])
             if len(_STRUCTURAL_STATE) > 256:
@@ -216,7 +216,18 @@ def attach(raw, now=None):
     # native adapter can certify D1 as daily MA input.
     r['structure_bars_by_timeframe'] = labelled
     from veritas_native_daily import fetch_native_daily
-    daily = fetch_native_daily(r, clock)
+    daily_raw = r
+    if profinance:
+        # An empty D1 in the source bundle already consumed this cycle's
+        # provider budget. Hand it off explicitly so the daily adapter cannot
+        # start a second request. Keep this flag local: the next structural
+        # attach must still refresh its own bundle.
+        evidence = (r.get('native_daily_evidence')
+                    if r.get('native_source_history_attached') and 'native_daily_evidence' in r
+                    else mapping.get('1d'))
+        daily_raw = dict(r, native_source_history_attached=True,
+                         native_daily_evidence=evidence or [])
+    daily = fetch_native_daily(daily_raw, clock)
     r['native_daily_bars'] = daily.get('bars') or []
     r['native_daily_history_status'] = {k:v for k,v in daily.items() if k != 'bars'}
     if profinance:

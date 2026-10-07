@@ -393,6 +393,14 @@ class HistoryCache:
                             # around access-denial/rate-limit backoff.
                             stale_session = True
                             skipped[tf] = "STALE_HISTORY_SESSION_RETIRED"
+                        if (tf != "1d" and cached and cached.get("bars")
+                                and parsed["bars"][-1]["end_ts"] < cached["bars"][-1]["end_ts"]):
+                            # A stale provider window must not erase candles
+                            # already observed from this exact same source.
+                            # Keep their original fetch/close times. Normal
+                            # retry and access backoff still govern the next poll.
+                            skipped[tf] = "REGRESSED_HISTORY_REJECTED"
+                            raise ValueError("PROFINANCE_HISTORY_PERIOD_REGRESSION")
                         parsed["fetched_at"] = self._clock()
                         with self._lock:
                             self._cache[key] = parsed

@@ -71,6 +71,33 @@ class NativeTimeframeDataTests(unittest.TestCase):
             self.assertEqual(status['reason'],'NATIVE_DAILY_INTERVAL_UNVERIFIED')
             self.assertFalse(status['interval_boundary_verified'])
 
+    def test_empty_shared_daily_result_does_not_start_a_second_provider_budget(self):
+        import veritas_native_daily as ND
+        from test_veritas_profinance_history import Clock
+        for asset in ('NQ', 'GOLD'):
+            for mapping in ({'1d': []}, {}):
+                with self.subTest(asset=asset, mapping=mapping):
+                    clock = Clock()
+                    raw = {'asset': asset, 'source': 'ProFinance'}
+                    identity = VPS.identity(asset, raw)
+                    daily = ND.DailyHistoryCache(clock=lambda: clock.now,
+                                                monotonic=lambda: clock.elapsed)
+                    bundle = {'source_identity': identity, 'bars_by_timeframe': mapping,
+                              'status_by_timeframe': {'1d': {'status': 'UNAVAILABLE',
+                                                            'reason': 'BUDGET_EXHAUSTED'}}}
+                    with patch.object(ND, '_HISTORY', daily), \
+                         patch('veritas_profinance_history.fetch_history_bundle', return_value=bundle) as provider:
+                        attached = TFD.attach(raw, clock.now)
+                        provider.assert_called_once_with(asset=asset, now=clock.now)
+                        self.assertEqual(attached['native_daily_bars'], [])
+                        self.assertEqual(attached['native_daily_history_status']['status'], 'UNAVAILABLE')
+                        # The handoff is local to D1: a later structural attach
+                        # must still poll its own current same-source bundle.
+                        self.assertNotIn('native_source_history_attached', attached)
+                        clock.advance(61)
+                        TFD.attach(attached, clock.now)
+                        self.assertEqual(provider.call_count, 2)
+
     def test_context_is_recomputed_when_a_candle_closes_without_retrieval(self):
         rows, now = example()
         identity = VPS.identity('BTC', {'source':'Binance'})
