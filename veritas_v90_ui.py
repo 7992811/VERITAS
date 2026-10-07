@@ -1063,6 +1063,8 @@ function normalizeIntelligence(raw,progress,library){
       components:ami.components||{},component_maximums:ami.component_maximums||{},
       component_status:ami.component_status||{},coverage:ami.coverage||{},autonomous_learning:autonomous,
       benchmarks:ami.benchmarks||{},evidence:ami.evidence||{},
+      refresh_delayed:!!raw.refresh_delayed||!!ami.stale,
+      calculated_at:ami.calculated_at||raw.calculated_at||null,cache_age_seconds:ami.cache_age_seconds??null,
       daily_progress:(raw&&raw.daily_progress)||{},core_learning_index:deepNum(raw,['learning_index','index_vs_start']),
       derived_fallback:false,real_asset_management_index:true,version:ami.version
     };
@@ -1169,7 +1171,8 @@ function renderIntelligence(){
     const label=missing?(meta.status==='UNAVAILABLE'?'Обновление задержано':'Накапливается'):x[1].toFixed(1)+' / '+x[2];
     const note=missing?(meta.status==='UNAVAILABLE'?'Измерение временно недоступно':'Недостаточно измеримых исходов'):meta.status==='PARTIAL'?'Часть измерений доступна':'';
     return '<div class="intel-metric"'+(x[3]?' data-component="'+x[3]+'"':'')+'><span>'+x[0]+'</span><b>'+label+'</b>'+(note?'<small>'+note+'</small>':'')+'<div class="intel-bar'+(missing?' unmeasured':'')+'"><div class="intel-fill" style="width:'+(missing?0:Math.max(0,Math.min(100,100*x[1]/x[2])))+'%"></div></div></div>'}).join('');
-  const delayed=i.refresh_delayed?'<div class="msg warn">Обновление оценки задержано. Показан последний полученный результат.</div>':'';
+  const stamp=readTime(i.calculated_at),stampText=stamp==null?'':' Расчёт: '+new Date(stamp).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+' МСК.';
+  const delayed=i.refresh_delayed?'<div class="msg warn">Обновление оценки задержано. Показан последний полученный результат.'+esc(stampText)+'</div>':'';
   $('intelligence').innerHTML=delayed+'<div class="intel-wrap"><div class="intel-score"><div><div class="label">'+title+'</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · уровень: '+esc(i.stage||'—')+' · доказательность: '+conf+'</div></div><div class="sub">'+explanation+'</div>'+coverageText+'</div><div><div class="intel-main">'+metrics+'</div>'+compare+daily+foot+autonomousLearningHtml(i.autonomous_learning)+'</div></div>';
 }
 function renderInsights(){

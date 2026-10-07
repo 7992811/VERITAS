@@ -81,4 +81,4 @@ of this fairness change alone. The operational check is that an aged ordinary
 waiter receives the next available nonprotective turn while protection retains
 priority.
 
-The final integration also preserves main `107564e7447d9219a1bf14c62624f38df9c3c195`: Currency reader validation, observation of every queued barrier before reserving, learning exclusions, and projected NAV/mark reads. That parallel release used 91.8.2; the queue fairness release is therefore 91.8.3.
+The final integration preserves main `9b15f5582897d746444f93470fed74413afca956`, including the continuous-learning and scorecard delivery repair, and the earlier `107564e7447d9219a1bf14c62624f38df9c3c195` Currency reader validation, observation of every queued barrier before reserving, learning exclusions, and projected NAV/mark reads. The latest parallel release used 91.8.3; the integrated queue fairness release is therefore 91.8.4. The lock and focused fairness tests are unchanged by this integration.
