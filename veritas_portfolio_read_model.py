@@ -8,6 +8,7 @@ import math
 import threading
 import time
 from datetime import datetime, timezone
+from veritas_trade_journal_read_model import CONTRACT_FIELDS, IDENTITY_FIELDS, VALUATION_FIELDS
 
 
 BALANCE_FIELDS = ('initial_nav_rub', 'realized_pnl_rub', 'fees_rub', 'funding_rub',
@@ -16,6 +17,97 @@ CURRENT_FIELDS = ('nav_rub', 'nav_usd', 'total_return_pct', 'drawdown_pct',
                   'gross_leverage', 'net_exposure', 'cash_equivalent_fraction',
                   'excess_vs_ruonia_pct', 'unrealized_pnl_rub')
 _snapshot_refresh_lock = threading.Lock()
+
+# This is a post-accounting display projection. Trading/valuation readers still
+# receive the full database records before this boundary; their inputs are not
+# replaced by this view. Fixed source fields match the closed journal's audit.
+_DISPLAY_PAYLOAD_FIELDS = (
+    'portfolio_name', 'portfolio', 'asset', 'symbol', 'direction', 'side',
+    'execution_timeframe', 'execution_horizon', 'last_signal_horizon',
+    'management_horizon', 'entry_time', 'entry_price', 'stop_price',
+    'initial_stop_price', 'trailing_stop', 'take_price', 'target_price',
+    'last_target_price', 'initial_take_price', 'runner_target_price',
+    'tp2', 'tp2_price', 'second_target_price', 'target_fraction', 'opening_fraction',
+    'pwin', 'pwin_source', 'entry_probability', 'probability_source',
+    'entry_signal_tier', 'signal_tier', 'setup_grade', 'setup_grade_score',
+    'entry_quality', 'decision_stage', 'expected_move_pct', 'expected_to_stop_ratio',
+    'mfe_pct', 'mae_pct', 'profit_protection_active', 'r17_tp1_done', 'r17_tp1_at',
+    'last_target_kind', 'active_target_stage', 'data_integrity_status', 'exit_reason',
+    'entry_primary_source', 'entry_secondary_source', 'entry_contract_secid',
+    'entry_contract_unit', 'entry_verification_mode', 'entry_data_latency_class',
+    'entry_source_divergence', 'entry_execution_observed_at',
+    'entry_market_observed_at', 'price_source_status',
+)
+
+
+def _display_object(value, fields=(), nested=None):
+    if not isinstance(value, dict):
+        return {} if isinstance(value, list) else value
+    out = {key:value[key] for key in fields if key in value
+           and (value[key] is None or isinstance(value[key], (str, int, float, bool)))}
+    for key, project in (nested or {}).items():
+        if key in value:
+            out[key] = project(value[key])
+    return out
+
+
+def _display_ladder(value):
+    if not isinstance(value, list):
+        # A malformed object is truthy in JavaScript. Keep that property so
+        # tpNotice cannot fall through to a different historical target ladder.
+        return {} if isinstance(value, dict) else value
+    # The deployed UI reads [0]/[1], stage>0 and length>1. Keep empty arrays too:
+    # unlike Python they are truthy and intentionally stop its fallback chain.
+    return [_display_object(step, ('price', 'fraction', 'kind', 'timeframe'))
+            for step in value[:2]]
+
+
+def _display_position(position):
+    if not isinstance(position, dict):
+        return position
+    out = dict(position)
+    # Consumed by enrichment already; no displayed field reads this raw graph.
+    out.pop('entry_decision_payload', None)
+    if 'payload' in position:
+        identity = lambda value: _display_object(value, IDENTITY_FIELDS)
+        nested = {key:identity for key in ('price_source_lock',
+                   'entry_execution_source_identity', 'last_exit_source_identity')}
+        nested.update(
+            source_locked_mark=lambda value: _display_object(value, ('price', 'observed_at'), {'identity':identity}),
+            entry_contract=lambda value: _display_object(value, CONTRACT_FIELDS),
+            contract_identity=lambda value: _display_object(value, ('asset', 'contract_id',
+                'price_unit', 'primary_source', 'verification_mode', 'continuous_series')),
+            entry_source_names=lambda value: _display_object(value, ('primary', 'secondary')),
+            entry_valuation_basis=lambda value: _display_object(value, VALUATION_FIELDS),
+            active_target_ladder=_display_ladder, initial_target_ladder=_display_ladder,
+            active_target_event_snapshot=lambda value: _display_object(value, nested={'target_ladder':_display_ladder}),
+            entry_event_snapshot=lambda value: _display_object(value, nested={'target_ladder':_display_ladder}),
+        )
+        out['payload'] = _display_object(position['payload'], _DISPLAY_PAYLOAD_FIELDS, nested)
+    return out
+
+
+def display_report(report):
+    """Release historical proof graphs from a completed API/cache response.
+
+    Preserve all computed top-level amounts, timestamps, admission/protection
+    reports and completeness flags. Missing/unknown position lists remain so;
+    this helper cannot authorize clearing the browser's last confirmed book.
+    """
+    out = dict(report)
+    if not isinstance(report.get('portfolios'), list):
+        return out
+    out['portfolios'] = []
+    for original in report['portfolios']:
+        if not isinstance(original, dict):
+            out['portfolios'].append(original)
+            continue
+        portfolio = dict(original)
+        for key in ('positions', 'quarantined_positions'):
+            if isinstance(original.get(key), list):
+                portfolio[key] = [_display_position(position) for position in original[key]]
+        out['portfolios'].append(portfolio)
+    return out
 
 
 def starting_response(version):

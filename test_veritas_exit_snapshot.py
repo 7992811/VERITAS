@@ -2,6 +2,8 @@
 import copy
 import json
 import unittest
+import weakref
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +12,7 @@ import veritas_portfolio as P
 import veritas_portfolio_runtime as R
 import veritas_position_guard as G
 import veritas_price_source as S
+import veritas_execution_snapshot as ES
 
 
 class Result:
@@ -164,6 +167,7 @@ class ExitSnapshotTests(unittest.TestCase):
         expected=copy.deepcopy(quote)
         G.publish_quote('ETH',quote)
         self.assertNotIn('history',G._quotes['ETH'])
+        self.assertNotIn('history',next(iter(G._source_quotes.values())))
         quote['source_names']['primary']='Coinbase spot'
         quote['best_bid']=1.
         quote['orderbook_observed_at']=(self.now-timedelta(hours=1)).isoformat()
@@ -175,6 +179,112 @@ class ExitSnapshotTests(unittest.TestCase):
         again=G.quote_for_position(self.position(),now=self.now)
         self.assertEqual(again['source_names'],expected['source_names'])
         self.assertEqual(again['best_bid'],expected['best_bid'])
+
+    def test_publish_projects_before_copying_and_does_not_retain_unused_signal_graphs(self):
+        class UnusedSignalGraph:
+            def __deepcopy__(self, memo):
+                raise AssertionError('A quote copied the complete signal/market graph')
+        proof=UnusedSignalGraph(); retained=weakref.ref(proof)
+        quote=self.quote(2700.)
+        quote.update(features=proof,history=proof,trade_plan=proof,timeframe_entry_context=proof,
+                     paper_eligible=False,production_eligible=False,orders_enabled=False,
+                     market_observed_at=self.now.isoformat(),orderbook_observed_at=self.now.isoformat())
+        expected=ES.quote_snapshot(quote)
+        G.publish_quote('ETH',quote)
+        selected=G.quote_for_position(self.position(),now=self.now)
+        self.assertEqual(ES.quote_snapshot(selected),expected)
+        for key in ('paper_eligible','production_eligible','orders_enabled'):
+            self.assertIs(selected[key],False)
+            self.assertIs(next(iter(G._source_quotes.values()))[key],False)
+        self.assertEqual(selected['market_observed_at'],quote['market_observed_at'])
+        self.assertIs(quote['features'],proof, 'Publication must not modify its caller')
+        for copied in (selected,G._quotes['ETH'],*G._source_quotes.values()):
+            self.assertFalse({'features','history','trade_plan','timeframe_entry_context'} & set(copied))
+        del quote,proof
+        self.assertIsNone(retained(), 'Quote caches retained an unused evidence graph')
+
+    def test_candidate_and_frozen_quotes_are_projected_before_return_copy(self):
+        class UnusedSignalGraph:
+            def __deepcopy__(self, memo):
+                raise AssertionError('Selected quote copied unused evidence')
+        for frozen in (False,True):
+            with self.subTest(frozen=frozen):
+                quote=self.quote(102.)
+                quote.update(features=UnusedSignalGraph(),paper_eligible=False,
+                             production_eligible=False,orders_enabled=False)
+                position=self.position()
+                if frozen:
+                    position.update(_execution_quote=quote,_execution_quote_frozen=True)
+                selected=G.quote_for_position(position,None if frozen else quote,self.now)
+                self.assertEqual(ES.quote_snapshot(selected),ES.quote_snapshot(quote))
+                self.assertNotIn('features',selected)
+                self.assertIs(selected['paper_eligible'],False)
+                selected['source_names']['primary']='MUTATED'
+                self.assertEqual(quote['source_names']['primary'],'Binance spot')
+
+    def test_tbank_quotes_keep_both_pinned_instrument_uids_when_asset_quote_rolls(self):
+        position=dict(self.position(),asset='CNYRUBF')
+        old=dict(self.quote(12.75),asset='CNYRUBF',contract={'instrument_uid':'held-uid'},
+                 source_names={'primary':'TBANK_GRPC CNYRUBF'},paper_eligible=False)
+        new=dict(old,price=12.99,contract={'instrument_uid':'other-uid'},
+                 observed_at=(self.now+timedelta(seconds=1)).isoformat())
+        position['payload']['price_source_lock']=S.identity('CNYRUBF',old)
+        G.publish_quote('CNYRUBF',old)
+        G.publish_quote('CNYRUBF',new)
+        self.assertEqual(set(G._source_quotes),
+            {('CNYRUBF','TBANK_GRPC:CNYRUBF','held-uid'),('CNYRUBF','TBANK_GRPC:CNYRUBF','other-uid')})
+        with patch('veritas_direct_cny.quote',return_value={}):
+            held=G.quote_for_position(position,now=self.now+timedelta(seconds=1))
+            other=copy.deepcopy(position)
+            other['payload']['price_source_lock']=S.identity('CNYRUBF',new)
+            rolled=G.quote_for_position(other,now=self.now+timedelta(seconds=1))
+        self.assertEqual(held['price'],12.75)
+        self.assertEqual(rolled['price'],12.99)
+        self.assertIs(held['paper_eligible'],False)
+        self.assertEqual(S.identity('CNYRUBF',held),S.position_identity(position))
+
+    def test_ineligible_market_state_still_updates_without_copying_evidence_or_replacing_quote(self):
+        class UnusedSignalGraph:
+            def __deepcopy__(self, memo):
+                raise AssertionError('Rejected market observation copied unused evidence')
+        original=self.quote(102.)
+        G.publish_quote('ETH',original)
+        rejected=dict(self.quote(500.,at=self.now+timedelta(seconds=1)),
+                      source_gate_pass=False,market_open=False,features=UnusedSignalGraph())
+        G.publish_quote('ETH',rejected)
+        self.assertEqual(G.market_state('ETH'),
+                         {'observed_at':rejected['observed_at'],'market_open':False,'source_gate_pass':False})
+        self.assertEqual(G.quote_for_position(self.position(),now=self.now)['price'],102.)
+        self.assertEqual(len(G._source_quotes),1)
+
+    def test_projection_preserves_real_exit_assessment_fill_fees_and_recorded_quote_hash(self):
+        for direction,price in (('LONG',101.),('SHORT',99.)):
+            with self.subTest(direction=direction):
+                quote=self.quote(price)
+                quote.update(history=[{'close':1.}]*100,
+                             features={'unused':'complete signal proof'},
+                             orderbook_observed_at=self.now.isoformat())
+                position=self.position(direction,units=1000)
+                trade=self.trade(position,gross_pnl_rub=-125.,fees_rub=80.,funding_rub=15.,max_fraction=.1)
+                runs=[]
+                for legacy in (True,False):
+                    for cache in (G._quotes,G._source_quotes,G._market_state):
+                        cache.clear()
+                    # The original cache/selector deep-copied the whole input.
+                    # Freeze that behavior while running the same real math.
+                    with (patch.object(G,'_detached_quote',side_effect=copy.deepcopy) if legacy else nullcontext()):
+                        G.publish_quote('ETH',quote)
+                        selected=G.quote_for_position(position,now=self.now)
+                        assessment=G.profit_exit_assessment(position,selected,trade,1e6)
+                        fill=G.exit_fill(dict(position,_execution_quote=selected),price,.05,self.now)
+                        db=ExitAccountingDB(position,trade)
+                        result=R.canonical_close_or_reduce(db,{},'Champion',position,price,.05,1e6,
+                                                          self.now,'DYNAMIC_PARTIAL_PROFIT')
+                        runs.append((assessment,fill,result,db.orders,db.trade,db.position,
+                                     ES._digest(ES.quote_snapshot(selected))))
+                self.assertTrue(runs[0][0]['eligible'])
+                self.assertEqual(len(runs[0][3]),1)
+                self.assertEqual(runs[1],runs[0])
 
     def test_summary_harvest_keeps_book_clock_for_later_entry_and_exit_checks(self):
         from test_veritas_timeframe_policy import valid_row

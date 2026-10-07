@@ -16571,6 +16571,7 @@ def _v90r25_portfolios_refresh():
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
     if VPRM.memory_complete(live,V90_CANONICAL_PORTFOLIOS):
         out=VP.VCP.decorate_report(VPRM.revalue_report(VTV.enrich_positions(live,pg_connect),required_names=V90_CANONICAL_PORTFOLIOS)); out['api_source']='live_memory'
+        out=VPRM.display_report(out)
         with _v90r25_pf_lock:
             if _v90r25_pf_cache.get('revision',0)==cache_revision: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
@@ -16642,6 +16643,7 @@ def _v90r25_portfolios_refresh():
         outp[-1]['risk_governor']=live_by_name.get(name,{}).get('risk_governor') or (latest.get('payload') or {}).get('risk_governor') or {}
     out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':VX.VC.COMMISSION_RATE,'api_source':'fast_sql_enriched'}
     out=VP.VCP.decorate_report(VPRM.revalue_report(VTV.enrich_positions(out,pg_connect,preloaded_accounts=accounts),bases=bm,checked_at=snapshot_at,required_names=names))
+    out=VPRM.display_report(out)
     with _v90r25_pf_lock:
         if _v90r25_pf_cache.get('revision',0)==cache_revision: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
     return out
