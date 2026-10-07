@@ -1,0 +1,16 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const source=fs.readFileSync('veritas_v90_ui.py','utf8');
+const script=source.split('<script>')[1].split('</script>')[0];
+const context=vm.createContext({document:{readyState:'loading',addEventListener(){}}});
+vm.runInContext(script.replace(/\}\)\(\);\s*$/, 'globalThis.sourceText=positionSourceText;})();'),context);
+const label=context.sourceText;
+const pf={asset:'BRENT',price_source_lock:{key:'PROFINANCE:Brent oil',primary_source:'ProFinance',contract_id:null}};
+assert.match(label(pf),/ProFinance.*лента Brent oil.*месяц контракта не подтверждён/);
+assert.doesNotMatch(label(pf),/BRX6|BRZ6|непрерывн/);
+const pinned={asset:'BRENT',price_source_lock:{key:'MOEX:BRENT',primary_source:'MOEX ISS BRX6',contract_id:'BRX6'}};
+assert.match(label(pinned),/контракт BRX6/);
+assert.doesNotMatch(label(pinned),/не подтверждён/);
+assert.match(label({asset:'BRENT',payload:{price_source_lock:pf.price_source_lock}}),/месяц контракта не подтверждён/);
+assert.equal(label({asset:'GOLD',price_source_lock:pf.price_source_lock}),'ProFinance');
+assert.doesNotMatch(label({...pinned,price_source_lock:{primary_source:'<script>',contract_id:'<img>'}}),/<script>|<img>/);
+console.log('PASS: Brent source labels disclose missing month, preserve pinned contracts, and escape provider text');

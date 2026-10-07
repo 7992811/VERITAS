@@ -186,6 +186,11 @@ def quote_for_position(position, candidate=None, now=None):
             quotes.append(dict(_quotes.get(position.get('asset')) or {}))
         quotes.extend([candidate or {},position.get('_execution_quote') or {}])
     identity=VPS.position_identity(position) or {}
+    if (position.get('asset')=='BRENT' and identity.get('key')=='MOEX:BRENT'
+            and not identity.get('contract_id')):
+        # A venue without a saved expiry cannot identify the held oil future.
+        # Never let the asset-wide cache fill in a missing position contract.
+        return {}
     if not frozen and position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
         try:
             from veritas_direct_cny import quote as direct_quote
@@ -282,8 +287,14 @@ def quote_matches_position(z, quote):
     ProFinance's unqualified Gold label has no verified GC contract identity.
     Price proximity alone cannot make it interchangeable with Yahoo GC=F.
     """
-    if VPS.position_identity(z) and not VPS.matches(z,quote):
+    source_identity=VPS.position_identity(z)
+    if source_identity and not VPS.matches(z,quote):
         return False
+    if source_identity and z.get('asset')=='BRENT':
+        if source_identity.get('key')=='MOEX:BRENT' and not source_identity.get('contract_id'):
+            return False
+        # The canonical entry identity supersedes obsolete contract aliases.
+        return True
     p=payload_of(z)
     identity=p.get('contract_identity') or {}
     expected=p.get('entry_contract_secid') or identity.get('contract_id')
@@ -580,6 +591,8 @@ def protective_reason(z, quote, now=None):
     except (TypeError, ValueError, KeyError):
         return None
     expected_contract = p.get('entry_contract_secid') or (p.get('contract_identity') or {}).get('contract_id')
+    if z.get('asset')=='BRENT':
+        expected_contract=(VPS.position_identity(z) or {}).get('contract_id')
     current_contract = (quote.get('contract') or {}).get('secid')
     if expected_contract and current_contract and expected_contract != current_contract:
         return None
@@ -883,11 +896,22 @@ def _fetch_guard_quote_unlocked(ns, asset, positions, candidate_contract=None):
                 'source_gate_pass': True, 'market_open': True,
                 'source_names':{'primary':'Binance spot'}}
     if asset == 'BRENT':
-        contracts = {payload_of(z).get('entry_contract_secid') for z in positions}
-        contracts.discard(None)
-        contract = next(iter(contracts)) if len(contracts) == 1 else (cached.get('contract') or {}).get('secid')
+        if positions:
+            identities=[VPS.position_identity(z) or {} for z in positions]
+            if any(i.get('key')!='MOEX:BRENT' or not i.get('contract_id') for i in identities):
+                return {}
+            contracts={str(i['contract_id']) for i in identities}
+            if len(contracts)!=1:
+                return {}
+            contract=next(iter(contracts))
+        else:
+            contract=str(candidate_contract) if candidate_contract else None
         if contract:
-            return dict(ns['_moex_futures_current_quote'](contract), source_gate_pass=True,
+            raw=ns['_moex_futures_current_quote'](contract) or {}
+            returned=(raw.get('row') or {}).get('SECID')
+            if returned is not None and str(returned)!=contract:
+                return {}
+            return dict(raw, source_gate_pass=True,
                         contract={'secid': contract},source_names={'primary':'MOEX ISS '+contract})
     if asset in ('NQ', 'GOLD'):
         # Match the main paper adapter. A Gold entry from ProFinance cannot be

@@ -50,6 +50,10 @@ jobs:
         run: python -m unittest -v test_veritas_admission_trace.py test_veritas_cycle_schedule.py test_veritas_history_recovery.py test_veritas_signal_readiness.py test_veritas_timeframe_source_aggregation.py
       - name: Native daily averages, rebounds and stable Brent source
         run: python -m unittest -v test_veritas_daily_averages.py test_veritas_daily_average_index.py test_veritas_native_daily.py test_veritas_ma_rebound.py test_veritas_brent_market.py test_veritas_entry_scenarios.py test_veritas_profinance_daily_integration.py
+      - name: Brent valuation identity and exact held contract
+        run: |
+          python -m unittest -v test_veritas_brent_valuation.py test_veritas_brent_contract_guard.py test_veritas_profinance_protocol.py
+          node tools/test_brent_valuation_ui.cjs
       - name: Canonical constitution regressions
         run: python -m unittest -v test_veritas_canonical_constitution.py
       - name: CTC v2 architecture regressions

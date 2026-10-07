@@ -1,6 +1,7 @@
 """Immutable execution evidence shared by the trade, position and order journals."""
 import math
 import veritas_trend_entry as VTE
+import veritas_price_source as VPS
 
 
 def geometry_audit(row, fill, gate):
@@ -52,6 +53,8 @@ def entry_payload(row, asset, direction, nav, ts, source_lock, quote, fill, fina
                  'price_source_lock':source_lock,'price_source_status':'OK',
                  'data_integrity_status':entry_integrity,
                  'entry_execution_source_identity':source_lock,
+                 'entry_valuation_basis':VPS.valuation_basis(
+                     {'asset':asset,'payload':{'price_source_lock':source_lock}},quote),
                  'structural_policy_version':plan.get('structural_policy_version'),
                  'execution_snapshot':final_gate.get('execution_snapshot'),
                  'entry_stop_risk_budget':row.get('_stop_risk_budget'),
