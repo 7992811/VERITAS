@@ -129,6 +129,84 @@ _LEGACY_AGENT_SOURCE = r'''def pg_agent_performance():
     return out'''
 
 
+_LEGACY_DRIFT_SOURCE = r'''def model_drift_status():
+    if not pg_enabled():
+        return {'rules':[],'agents':[],'status':'unavailable'}
+    rules=[]
+    with pg_connect() as c:
+        rr=c.execute("""SELECT rule_id,asset,horizon,n,ew_hit_rate,ew_avg_signed_return,
+                               recent_n,recent_hit_rate,recent_avg_signed_return,
+                               prior_n,prior_hit_rate,prior_avg_signed_return,decay_ratio
+                        FROM knowledge_rule_decay_stats
+                        WHERE sample='OOS' AND n>=20
+                        ORDER BY recent_n DESC""").fetchall()
+    for r in rr:
+        x=dict(r); rn=int(x.get('recent_n') or 0); pn=int(x.get('prior_n') or 0)
+        state='INSUFFICIENT'
+        if rn>=20 and pn>=20:
+            rar=float(x.get('recent_avg_signed_return') or 0); par=float(x.get('prior_avg_signed_return') or 0)
+            rhr=float(x.get('recent_hit_rate') or 0.5); phr=float(x.get('prior_hit_rate') or 0.5)
+            if rar<0 and par>0:
+                state='DECAYING'
+            elif rhr<phr-0.08 or rar<par-0.01:
+                state='WEAKENING'
+            elif rar>0 and rhr>=phr-0.03:
+                state='STABLE'
+            else:
+                state='MIXED'
+        x['drift_state']=state; rules.append(x)
+    agents=[]
+    for x in pg_agent_performance():
+        rn=int(x.get('recent_n') or 0); pn=int(x.get('prior_n') or 0)
+        if x.get('regime')!='*': continue
+        state='INSUFFICIENT'
+        if rn>=DRIFT_MIN_N and pn>=DRIFT_MIN_N:
+            rar=float(x.get('recent_avg_signed_return') or 0); par=float(x.get('prior_avg_signed_return') or 0)
+            rhr=float(x.get('recent_hit_rate') or 0.5); phr=float(x.get('prior_hit_rate') or 0.5)
+            if rar<0 and par>0: state='DECAYING'
+            elif rhr<phr-0.08 or rar<par-0.01: state='WEAKENING'
+            elif rar>0 and rhr>=phr-0.03: state='STABLE'
+            else: state='MIXED'
+        y=dict(x); y['drift_state']=state; agents.append(y)
+    bad=sum(1 for x in rules if x['drift_state'] in ('DECAYING','WEAKENING'))
+    return {'status':'WARN' if bad else 'OK','rule_drift_count':bad,'rules':rules[:100],'agents':agents[:100]}'''
+
+
+def load_drift_reader(connect, *, legacy=False, agents=lambda: [], enabled=True):
+    tree = ast.parse(_LEGACY_DRIFT_SOURCE if legacy else RUNTIME.read_text(encoding="utf-8"))
+    node = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "model_drift_status")
+    namespace = {"pg_enabled":lambda:enabled, "pg_connect":connect,
+                 "pg_agent_performance":agents, "DRIFT_MIN_N":20}
+    exec(compile(ast.Module(body=[deepcopy(node)], type_ignores=[]), str(RUNTIME), "exec"), namespace)
+    return namespace["model_drift_status"]
+
+
+def drift_rule_fixture():
+    # All bad rules sort beyond the 100-row display cap. Distinct recent_n
+    # values make comparison independent of unspecified PostgreSQL tie order.
+    rows = []
+    for i in range(150):
+        rows.append(dict(rule_id=f"rule-{i:03d}", asset="CNYRUBF", horizon="1h", n=600,
+            ew_hit_rate=.625, ew_avg_signed_return=.0125, recent_n=500-i,
+            recent_hit_rate=.625 if i<100 or i%2==0 else .4,
+            recent_avg_signed_return=.0125 if i<100 or i%2 else -.0125,
+            prior_n=100, prior_hit_rate=.625, prior_avg_signed_return=.0125, decay_ratio=1.))
+    # Retain falsey/null conversion and insufficient/mixed classifications.
+    rows[0].update(prior_n=None, recent_hit_rate=0.)
+    rows[1].update(recent_hit_rate=0., prior_hit_rate=0.)
+    rows[2].update(recent_avg_signed_return=None, prior_avg_signed_return=None)
+    return rows
+
+
+def drift_agent_fixture():
+    return [dict(agent=f"agent-{i:03d}", asset="ETH", horizon="1h",
+                 regime="TREND" if i%7==0 else "*", recent_n=30, prior_n=30,
+                 recent_hit_rate=.625, prior_hit_rate=.625,
+                 recent_avg_signed_return=-.125 if i%3==0 else .125,
+                 prior_avg_signed_return=.125) for i in range(125)]
+
+
 def load_reader(connect, *, legacy=False, enabled=True):
     tree = ast.parse(_LEGACY_SOURCE if legacy else RUNTIME.read_text(encoding="utf-8"))
     node = next(n for n in tree.body
@@ -335,6 +413,118 @@ class _LedgerSQLFixture(unittest.TestCase):
         self.assertTrue(all(c.cursor.closed for c in trace.cursors))
         self.assertTrue(all(c.closed for c in trace.connections))
         self.assertEqual(trace.transactions, 0)
+
+
+class DriftRuleReaderSmokeTests(unittest.TestCase):
+    def test_full_count_beyond_display_cap_and_resources_closed_before_agents(self):
+        rows = drift_rule_fixture()
+        old, current = MemoryConnection(rows), MemoryConnection(rows)
+        agents = drift_agent_fixture()
+        calls = []
+
+        def after_rules():
+            self.assertTrue(current.server_cursor.closed)
+            self.assertTrue(current.closed)
+            self.assertFalse(current.in_transaction)
+            calls.append("agents")
+            return agents
+
+        expected = load_drift_reader(old.connect, legacy=True, agents=lambda: agents)()
+        actual = load_drift_reader(current.connect, agents=after_rules)()
+        self.assertEqual(actual, expected)
+        self.assertEqual((actual["status"],actual["rule_drift_count"]), ("WARN",50))
+        self.assertEqual((len(actual["rules"]),len(actual["agents"])), (100,100))
+        self.assertFalse(any(r["drift_state"] in ("DECAYING","WEAKENING") for r in actual["rules"]))
+        self.assertEqual(" ".join(current.sql.split()), " ".join(old.sql.split()))
+        self.assertEqual(current.server_cursor.name, "veritas_rule_drift")
+        self.assertEqual(current.server_cursor.itersize, 64)
+        self.assertEqual(calls, ["agents"])
+
+    def test_invalid_row_after_display_cap_still_raises_and_closes_resources(self):
+        rows = drift_rule_fixture()
+        rows[130]["prior_n"] = "invalid"
+        old, current = MemoryConnection(rows), MemoryConnection(rows)
+        calls = []
+        with self.assertRaises(ValueError) as expected:
+            load_drift_reader(old.connect, legacy=True)()
+        with self.assertRaises(ValueError) as actual:
+            load_drift_reader(current.connect, agents=lambda: calls.append("agents"))()
+        self.assertEqual(str(actual.exception), str(expected.exception))
+        self.assertTrue(current.server_cursor.closed)
+        self.assertTrue(current.closed)
+        self.assertFalse(current.in_transaction)
+        self.assertEqual(calls, [])
+
+
+class DriftRuleMemorySQLTests(_LedgerSQLFixture):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        with cls.driver.connect(DSN) as c:
+            c.execute(f"SET search_path TO {cls.schema}")
+            c.execute("""CREATE TABLE knowledge_rule_decay_stats(
+                rule_id text PRIMARY KEY,asset text,horizon text,n integer,
+                ew_hit_rate float8,ew_avg_signed_return float8,recent_n integer,
+                recent_hit_rate float8,recent_avg_signed_return float8,prior_n integer,
+                prior_hit_rate float8,prior_avg_signed_return float8,decay_ratio float8,sample text)""")
+
+    def clear(self):
+        with self.connect() as c:
+            c.execute("TRUNCATE knowledge_rule_decay_stats")
+
+    def seed_rules(self):
+        rows = drift_rule_fixture()
+        values = [tuple(row.values())+("OOS",) for row in reversed(rows)]
+        # Both rows outrank every admitted row but must remain filtered out.
+        excluded = dict(rows[0],rule_id="excluded-is",recent_n=1000)
+        values.append(tuple(excluded.values())+("IS",))
+        excluded.update(rule_id="excluded-small",n=19)
+        values.append(tuple(excluded.values())+("OOS",))
+        with self.connect() as c, c.transaction(), c.cursor() as cursor:
+            cursor.executemany("INSERT INTO knowledge_rule_decay_stats VALUES("+
+                               ",".join(["%s"]*14)+")", values)
+
+    def test_real_postgres_full_population_order_and_output_parity(self):
+        self.seed_rules()
+        old_trace, trace = ReadTrace(self.connect), ReadTrace(self.connect)
+        agents = drift_agent_fixture()
+        calls = []
+
+        def after_rules():
+            self.assert_closed(trace)
+            calls.append("agents")
+            return agents
+
+        expected = load_drift_reader(old_trace.connect, legacy=True, agents=lambda: agents)()
+        actual = load_drift_reader(trace.connect, agents=after_rules)()
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual["rule_drift_count"], 50)
+        self.assertEqual(actual["rules"][-1]["rule_id"], "rule-099")
+        self.assertEqual(trace.queries[0]["rows"], 150)
+        self.assertEqual(trace.queries[0]["rows"], old_trace.queries[0]["rows"])
+        self.assertEqual(" ".join(trace.queries[0]["sql"].split()),
+                         " ".join(old_trace.queries[0]["sql"].split()))
+        self.assertEqual(trace.cursors[0].cursor.name, "veritas_rule_drift")
+        self.assertEqual(trace.cursors[0].itersize, 64)
+        self.assertEqual(calls, ["agents"])
+
+    def test_real_postgres_interrupted_second_batch_closes_and_retry_reads_every_row(self):
+        self.seed_rules()
+        trace = ReadTrace(self.connect)
+        trace.fail_after = 65
+        calls = []
+        reader = load_drift_reader(trace.connect, agents=lambda: calls.append("agents") or [])
+        with self.assertRaisesRegex(RuntimeError, "interrupted memory stream"):
+            reader()
+        self.assertEqual(trace.queries[0]["rows"], 65)
+        self.assertEqual(calls, [])
+        self.assert_closed(trace)
+        trace.fail_after = None
+        result = reader()
+        self.assertEqual(result["rule_drift_count"], 50)
+        self.assertEqual(trace.queries[1]["rows"], 150)
+        self.assertEqual(calls, ["agents"])
+        self.assert_closed(trace)
 
 
 class SnapshotMemorySQLTests(_LedgerSQLFixture):

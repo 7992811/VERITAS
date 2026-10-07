@@ -26,7 +26,7 @@ def catalog_rows():
 
 
 class PortfolioSchemaContractTests(unittest.TestCase):
-    def connection(self, rows=None, marker=True):
+    def connection(self, rows=None, marker=True, matched_names=None):
         c = MagicMock()
         c.__enter__.return_value = c
         def execute(sql, params=None):
@@ -35,6 +35,9 @@ class PortfolioSchemaContractTests(unittest.TestCase):
                 cur.fetchall.return_value = catalog_rows() if rows is None else rows
             elif 'SELECT 1 AS ok FROM v90_migration_state' in sql:
                 cur.fetchone.return_value = {'ok': 1} if marker else None
+            elif 'policy=(%s::jsonb -> name)' in sql:
+                cur.fetchall.return_value = [{'name': name} for name in
+                    (P.POLICIES if matched_names is None else matched_names)]
             return cur
         c.execute.side_effect = execute
         return c
@@ -51,8 +54,19 @@ class PortfolioSchemaContractTests(unittest.TestCase):
         self.assertEqual(c.execute.call_args_list[0].args[1], ('2000ms', '8000ms'))
         self.assertFalse(any('CREATE ' in q or 'ALTER ' in q for q in sql))
         policy_queries = [q for q in sql if 'INSERT INTO paper_portfolios' in q]
-        self.assertEqual(len(policy_queries), 5)
-        self.assertTrue(all('IS DISTINCT FROM' in q for q in policy_queries))
+        self.assertEqual(policy_queries, [])
+        preflight = next(call for call in c.execute.call_args_list if 'policy=(%s::jsonb -> name)' in call.args[0])
+        self.assertEqual(preflight.args[1], (list(P.POLICIES), json.dumps(P.POLICIES), P.VERSION))
+
+    def test_only_missing_or_different_metadata_uses_the_original_conflict_safe_upsert(self):
+        changed = {'Impulse', 'Currency'}
+        c = self.connection(matched_names=set(P.POLICIES)-changed)
+        P.ensure_schema(lambda: c)
+        writes = [call for call in c.execute.call_args_list if 'INSERT INTO paper_portfolios' in call.args[0]]
+        self.assertEqual({call.args[1][0] for call in writes}, changed)
+        self.assertTrue(all('ON CONFLICT(name) DO UPDATE' in call.args[0]
+                            and 'IS DISTINCT FROM' in call.args[0] for call in writes))
+        self.assertTrue(any('AND initial_nav_rub<=0' in call.args[0] for call in c.execute.call_args_list))
 
     def test_missing_column_table_or_valid_index_cannot_be_declared_current(self):
         original = catalog_rows()
@@ -209,6 +223,98 @@ class PortfolioSchemaSQLTests(unittest.TestCase):
         self.assertEqual(self.financials(), before)
         with self.connect() as c:
             self.assertTrue(G.schema_matches(c, P.PORTFOLIO_SCHEMA_COLUMNS, P.PORTFOLIO_SCHEMA_INDEXES))
+
+    def test_unchanged_jsonb_metadata_skips_upserts_while_all_book_rows_are_locked(self):
+        P.ensure_schema(self.connect)
+        self.seed_active_book()
+        P.ensure_schema(self.connect)
+        before = self.financials()
+        with self.connect() as c:
+            metadata = c.execute('SELECT name,updated_at,policy,model_version FROM paper_portfolios ORDER BY name').fetchall()
+        self.assertIsInstance(P.POLICIES['Impulse']['allowed_horizons'], tuple)
+        self.assertIsInstance(next(b for b in metadata if b['name'] == 'Impulse')['policy']['allowed_horizons'], list)
+        with self.connect() as owner, owner.transaction():
+            owner.execute('SELECT name FROM paper_portfolios FOR UPDATE').fetchall()
+            self.queries.clear()
+            with patch.object(P, 'SCHEMA_LOCK_TIMEOUT_MS', 150), \
+                    patch.object(P, 'SCHEMA_STATEMENT_TIMEOUT_MS', 1000):
+                P.ensure_schema(self.connect)
+            self.assertFalse(any('INSERT INTO paper_portfolios' in q for q in self.queries))
+            self.assertEqual(owner.execute('SELECT 1 AS alive').fetchone()['alive'], 1)
+        self.assertEqual(self.financials(), before)
+        with self.connect() as c:
+            self.assertEqual(c.execute('SELECT name,updated_at,policy,model_version FROM paper_portfolios ORDER BY name').fetchall(), metadata)
+
+    def test_missing_policy_changed_and_version_changed_books_still_update_without_financial_changes(self):
+        P.ensure_schema(self.connect)
+        self.seed_active_book()
+        before = self.financials()
+        with self.connect() as c:
+            c.execute("DELETE FROM paper_portfolios WHERE name='Impulse'")
+            c.execute("UPDATE paper_portfolios SET policy='{}' WHERE name='Champion'")
+            c.execute("UPDATE paper_portfolios SET model_version='OLD' WHERE name='Challenger'")
+        P.ensure_schema(self.connect)
+        self.assertEqual(self.financials(), before)
+        with self.connect() as c:
+            rows = c.execute('SELECT name,policy,model_version FROM paper_portfolios').fetchall()
+        self.assertEqual({row['name'] for row in rows}, set(P.POLICIES))
+        for row in rows:
+            self.assertEqual(row['policy'], json.loads(json.dumps(P.POLICIES[row['name']])))
+            self.assertEqual(row['model_version'], P.VERSION)
+
+    def test_changed_metadata_still_times_out_and_rolls_back_when_its_row_is_busy(self):
+        P.ensure_schema(self.connect)
+        self.seed_active_book()
+        before = self.financials()
+        with self.connect() as owner, owner.transaction():
+            owner.execute("SELECT name FROM paper_portfolios WHERE name='Currency' FOR UPDATE").fetchall()
+            with patch.object(P, 'SCHEMA_LOCK_TIMEOUT_MS', 150), \
+                    patch.object(P, 'SCHEMA_STATEMENT_TIMEOUT_MS', 1000):
+                with self.assertRaises(self.driver.errors.LockNotAvailable):
+                    P.ensure_schema(self.connect)
+            self.assertEqual(owner.execute("SELECT model_version FROM paper_portfolios WHERE name='Currency'").fetchone()['model_version'], 'OLD')
+            self.assertEqual(owner.execute('SELECT 1 AS alive').fetchone()['alive'], 1)
+        self.assertEqual(self.financials(), before)
+        P.ensure_schema(self.connect)
+        with self.connect() as c:
+            self.assertEqual(c.execute("SELECT model_version FROM paper_portfolios WHERE name='Currency'").fetchone()['model_version'], P.VERSION)
+        self.assertEqual(self.financials(), before)
+
+    def test_concurrent_insert_after_preflight_keeps_original_upsert_and_preserves_new_financials(self):
+        P.ensure_schema(self.connect)
+        with self.connect() as c:
+            c.execute("DELETE FROM paper_portfolios WHERE name='Impulse'")
+        raced = []
+        fixture = self
+        class ConcurrentInsert:
+            def __init__(self, connection):
+                self.connection = connection
+            def transaction(self):
+                return self.connection.transaction()
+            def execute(self, sql, params=None):
+                cursor = self.connection.execute(sql, params)
+                if 'policy=(%s::jsonb -> name)' in sql and not raced:
+                    raced.append(True)
+                    # A second initializer commits the previously absent row
+                    # after this reader's metadata snapshot, before its upsert.
+                    P.ensure_schema(fixture.connect)
+                    with fixture.connect() as other:
+                        other.execute("""UPDATE paper_portfolios SET initial_nav_rub=23456,
+                            realized_pnl_rub=17,fees_rub=3,funding_rub=2,policy='{}',model_version='CONCURRENT'
+                            WHERE name='Impulse'""")
+                    raced.append(fixture.financials())
+                return cursor
+        @contextmanager
+        def connect_with_race():
+            with self.connect() as c:
+                yield ConcurrentInsert(c)
+        P.ensure_schema(connect_with_race)
+        self.assertEqual(len(raced), 2)
+        self.assertEqual(self.financials(), raced[1])
+        with self.connect() as c:
+            row = c.execute("SELECT policy,model_version FROM paper_portfolios WHERE name='Impulse'").fetchone()
+        self.assertEqual(row['policy'], json.loads(json.dumps(P.POLICIES['Impulse'])))
+        self.assertEqual(row['model_version'], P.VERSION)
 
     def test_busy_migration_times_out_rolls_back_and_does_not_cancel_the_reader(self):
         P.ensure_schema(self.connect)

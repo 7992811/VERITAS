@@ -12796,6 +12796,7 @@ def pg_signal_history(limit=None):
 def pg_live_performance():
     if not pg_enabled():
         return []
+    from array import array
     from veritas_learning_memory import live_performance_rows
     b={}
     with live_performance_rows(pg_connect) as rows:
@@ -12805,7 +12806,7 @@ def pg_live_performance():
             dec=d.get('decision'); fr=o.get('forward_return')
             if fr is None: continue
             key=(r['asset'],r['horizon'],dec)
-            z=b.setdefault(key,{'n':0,'hits':0,'signed':[],'raw':[],'mfe':[],'mae':[]})
+            z=b.setdefault(key,{'n':0,'hits':0,'signed':array('d'),'raw':array('d'),'mfe':array('d'),'mae':array('d')})
             fr=float(fr); z['n']+=1; z['raw'].append(fr)
             if o.get('mfe') is not None: z['mfe'].append(float(o['mfe']))
             if o.get('mae') is not None: z['mae'].append(float(o['mae']))
@@ -12870,6 +12871,7 @@ def save_product_snapshot():
     now_ts=time.time()
     if now_ts-float(_v90r39_snapshot_state.get('last_at') or 0.0)<3600:
         return
+    saved=False
     try:
         _v90_memory_checkpoint('snapshot_start',None)
         drift=model_drift_status()
@@ -12900,8 +12902,13 @@ def save_product_snapshot():
           'outcomes_written':cyc.get('outcomes_written'),
           'summary':compact_summary,
         }
-        payload={'cycle':compact_cycle,'performance':pg_live_performance(),
-                 'health':product_health(),'drift':drift}
+        cyc=z=None
+        _v90_trim_memory('snapshot_drift_done',force=True,preserve_active_cycle=True)
+        performance=pg_live_performance()
+        _v90_trim_memory('snapshot_performance_done',force=True,preserve_active_cycle=True)
+        health=product_health()
+        _v90_trim_memory('snapshot_health_done',force=True,preserve_active_cycle=True)
+        payload={'cycle':compact_cycle,'performance':performance,'health':health,'drift':drift}
         with pg_connect() as c:
             c.execute("INSERT INTO product_snapshots(created_at,snapshot_type,payload) VALUES(%s,%s,%s::jsonb)",
                       (now(),'overview',json.dumps(payload,ensure_ascii=False,default=str)))
@@ -12918,9 +12925,14 @@ def save_product_snapshot():
                            ORDER BY created_at DESC LIMIT 48
                          )""")
         _v90r39_snapshot_state['last_at']=now_ts
-        _v90_memory_checkpoint('snapshot_ready',None)
+        saved=True
     except Exception as ex:
         emit('snapshot_error',error=f'{type(ex).__name__}: {ex}')
+    finally:
+        drift=cyc=z=compact_cycle=compact_summary=performance=health=payload=c=None
+        _v90_trim_memory('snapshot_end',force=True,preserve_active_cycle=True)
+    if saved:
+        _v90_memory_checkpoint('snapshot_ready',None)
 
 def oos_validation_board(limit=100):
     if not pg_enabled(): return {'items':[],'method':'unavailable'}
@@ -13091,29 +13103,26 @@ def update_runtime_settings(payload, updated_by='admin_api'):
 def model_drift_status():
     if not pg_enabled():
         return {'rules':[],'agents':[],'status':'unavailable'}
-    rules=[]
-    with pg_connect() as c:
-        rr=c.execute("""SELECT rule_id,asset,horizon,n,ew_hit_rate,ew_avg_signed_return,
-                               recent_n,recent_hit_rate,recent_avg_signed_return,
-                               prior_n,prior_hit_rate,prior_avg_signed_return,decay_ratio
-                        FROM knowledge_rule_decay_stats
-                        WHERE sample='OOS' AND n>=20
-                        ORDER BY recent_n DESC""").fetchall()
-    for r in rr:
-        x=dict(r); rn=int(x.get('recent_n') or 0); pn=int(x.get('prior_n') or 0)
-        state='INSUFFICIENT'
-        if rn>=20 and pn>=20:
-            rar=float(x.get('recent_avg_signed_return') or 0); par=float(x.get('prior_avg_signed_return') or 0)
-            rhr=float(x.get('recent_hit_rate') or 0.5); phr=float(x.get('prior_hit_rate') or 0.5)
-            if rar<0 and par>0:
-                state='DECAYING'
-            elif rhr<phr-0.08 or rar<par-0.01:
-                state='WEAKENING'
-            elif rar>0 and rhr>=phr-0.03:
-                state='STABLE'
-            else:
-                state='MIXED'
-        x['drift_state']=state; rules.append(x)
+    from veritas_learning_memory import drift_rule_rows
+    rules=[]; bad=0
+    with drift_rule_rows(pg_connect) as rr:
+        for r in rr:
+            x=dict(r); rn=int(x.get('recent_n') or 0); pn=int(x.get('prior_n') or 0)
+            state='INSUFFICIENT'
+            if rn>=20 and pn>=20:
+                rar=float(x.get('recent_avg_signed_return') or 0); par=float(x.get('prior_avg_signed_return') or 0)
+                rhr=float(x.get('recent_hit_rate') or 0.5); phr=float(x.get('prior_hit_rate') or 0.5)
+                if rar<0 and par>0:
+                    state='DECAYING'
+                elif rhr<phr-0.08 or rar<par-0.01:
+                    state='WEAKENING'
+                elif rar>0 and rhr>=phr-0.03:
+                    state='STABLE'
+                else:
+                    state='MIXED'
+            bad+=int(state in ('DECAYING','WEAKENING'))
+            x['drift_state']=state
+            if len(rules)<100: rules.append(x)
     agents=[]
     for x in pg_agent_performance():
         rn=int(x.get('recent_n') or 0); pn=int(x.get('prior_n') or 0)
@@ -13127,7 +13136,6 @@ def model_drift_status():
             elif rar>0 and rhr>=phr-0.03: state='STABLE'
             else: state='MIXED'
         y=dict(x); y['drift_state']=state; agents.append(y)
-    bad=sum(1 for x in rules if x['drift_state'] in ('DECAYING','WEAKENING'))
     return {'status':'WARN' if bad else 'OK','rule_drift_count':bad,'rules':rules[:100],'agents':agents[:100]}
 
 

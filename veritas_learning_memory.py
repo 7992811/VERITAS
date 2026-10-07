@@ -60,6 +60,22 @@ def live_performance_rows(pg_connect):
 
 
 @contextmanager
+def drift_rule_rows(pg_connect):
+    """Stream every legacy drift row; the report cap must not limit its count."""
+    with pg_connect() as c:
+        with c.transaction():
+            with c.cursor(name="veritas_rule_drift") as rows:
+                rows.itersize = 64
+                rows.execute("""SELECT rule_id,asset,horizon,n,ew_hit_rate,ew_avg_signed_return,
+                               recent_n,recent_hit_rate,recent_avg_signed_return,
+                               prior_n,prior_hit_rate,prior_avg_signed_return,decay_ratio
+                        FROM knowledge_rule_decay_stats
+                        WHERE sample='OOS' AND n>=20
+                        ORDER BY recent_n DESC""")
+                yield rows
+
+
+@contextmanager
 def agent_performance_rows(pg_connect, limit):
     """Stream the unchanged recent-decision window and ordered agent votes."""
     agents = """CASE WHEN jsonb_typeof(d.payload->'agents')='array' THEN

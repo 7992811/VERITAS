@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 
-PRODUCT_VERSION="veritas-max-product-v91.7.7-structural-breakout"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.7-structural-breakout"
-UI_VERSION="veritas-ui-v9.1.7.7-structural-breakout"
+PRODUCT_VERSION="veritas-max-product-v91.7.8-structural-breakout"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.8-structural-breakout"
+UI_VERSION="veritas-ui-v9.1.7.8-structural-breakout"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -53,16 +53,16 @@ def snapshot():
             "unqualified_provider_month_not_inferred":True,
         },
         "runtime_read_policy":{
-            "version":"BOUNDED_RUNTIME_READS_V3",
-            "startup_api_waits_for_bootstrap":True,
-            "single_portfolio_snapshot_refresh":True,
+            "version":"BOUNDED_RUNTIME_READS_V4",
+            "startup_api_waits_for_bootstrap":True,"single_portfolio_snapshot_refresh":True,
             "snapshot_and_schema_sql_waits_bounded":True,
-            "current_portfolio_schema_avoids_ddl":True,
+            "current_portfolio_schema_avoids_ddl":True,"unchanged_portfolio_metadata_avoids_row_locks":True,
             "closed_journal_payload_projected":True,
             "structural_runtime_copies_one_asset":True,
             "completed_prepasses_release_snapshots":True,
             "cost_checks_omit_unused_trade_payload":True,
-            "active_cycle_allocator_trims_preserve_caches":True,
+            "active_cycle_allocator_trims_preserve_caches":True,"archival_snapshot_stages_release_memory":True,
+            "archival_drift_statistics_stream_all_rows":True,"archival_performance_uses_packed_float_buffers":True,
         },
         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
         "breakout_lifecycle_policy":dict(CTC.BREAKOUT_LIFECYCLE_POLICY),
