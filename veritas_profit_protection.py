@@ -124,9 +124,24 @@ def assess(c, z, **kwargs):
     return evaluate(z, a, **kwargs)
 
 
+REFRESH_POSITIONS_SQL = '''SELECT z.asset,z.direction,z.units,z.avg_entry_price,z.last_price,
+    z.stop_price,z.opened_at,z.active_trade_id,
+    CASE WHEN jsonb_typeof(z.payload)='object' THEN
+        jsonb_build_object('trailing_stop',p.trailing_stop,'entry_time',p.entry_time) ||
+        CASE WHEN z.payload ? 'data_integrity_status' THEN
+            jsonb_build_object('data_integrity_status',p.data_integrity_status)
+            ELSE '{}'::jsonb END
+        ELSE z.payload END AS payload
+    FROM paper_positions z CROSS JOIN LATERAL jsonb_to_record(
+        CASE WHEN jsonb_typeof(z.payload)='object' THEN z.payload ELSE '{}'::jsonb END
+    ) AS p(trailing_stop jsonb,entry_time jsonb,data_integrity_status jsonb)'''
+
+
 def refresh(c, name=None, now=None, commission=VC.COMMISSION_RATE):
     """Refresh persisted flags after fills/funding, without changing any stop."""
-    rows = c.execute('SELECT * FROM paper_positions' + (' WHERE portfolio_name=%s' if name else ''),
+    # The integrity default accepts an absent key, but not explicit JSON null.
+    # Non-object JSON retains the original parser and exception behavior.
+    rows = c.execute(REFRESH_POSITIONS_SQL + (' WHERE portfolio_name=%s' if name else ''),
                      (name,) if name else ()).fetchall()
     if not rows:
         return
