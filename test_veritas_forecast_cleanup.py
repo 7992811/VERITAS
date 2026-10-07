@@ -184,7 +184,7 @@ class ForecastCleanupSQLTests(unittest.TestCase):
             (entity_key,decision_at,due_at,expires_at,asset,horizon,source_key,evidence,status,learned_at)
             SELECT 'expired-'||n,now(),now(),now(),'SYNTHETIC','1m','synthetic-source',
                    jsonb_build_object('synthetic_proof',n),
-                   CASE WHEN n%2=0 THEN 'LEARNED' ELSE 'EXCLUDED' END,
+                   CASE WHEN mod(n,2)=0 THEN 'LEARNED' ELSE 'EXCLUDED' END,
                    now()-interval '30 days'-n*interval '1 day'
             FROM generate_series(1,%s) n""", (n,))
 
