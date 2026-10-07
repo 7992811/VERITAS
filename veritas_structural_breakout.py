@@ -426,12 +426,11 @@ def _leg_for(direction, trigger, structural_tf, levels, atr, previous_leg, quote
         return leg
     if not candidates:
         return None
+    # A confirmed pullback may form AFTER the high/low being broken.
+    # For a new leg use the latest opposite swing available at the quote,
+    # not an older swing preceding the trigger's own pivot. Existing
+    # protected legs retain the no-widening path above.
     anchor = candidates[0]
-    # A pivot must protect this structural leg, not be an unrelated extremum
-    # from after the trigger's own pivot when initiating a new thesis.
-    preceding = [p for p in candidates if p["pivot_at"] <= trigger["pivot_at"]]
-    if preceding:
-        anchor = preceding[0]
     leg_id = "QLEG_" + _digest({"source": _identity_token(quote["source_identity"]),
                                "direction": direction, "structural_tf": structural_tf,
                                "anchor": anchor["level_id"], "first_trigger": trigger["level_id"]})[:24]

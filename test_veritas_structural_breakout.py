@@ -51,6 +51,9 @@ def advance(raw, at, price, seconds):
     return result, clock
 
 
+from test_veritas_last_confirmed_swing import LastConfirmedSwingTests
+
+
 class CausalQuoteBreakoutTests(unittest.TestCase):
     def build(self, raw=None, at=None, *, horizon="1h", state=None, config=None):
         if raw is None:
