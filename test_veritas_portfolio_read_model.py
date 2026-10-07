@@ -125,7 +125,9 @@ class ReadSnapshotDB:
         self.bases=[base(name) for name in NAMES]
         self.bases[-1]['fees_rub']=4.0002
         self.position=short_position()
-        self.accounts={self.position['active_trade_id']:{'status':'OPEN','fees_rub':4.0002}}
+        self.position['trade_payload']={'test_trade_marker':'same-snapshot'}
+        self.accounts={self.position['active_trade_id']:{'status':'OPEN','fees_rub':4.0002,
+                       'payload':deepcopy(self.position['trade_payload'])}}
     @contextmanager
     def connect(self):
         self.connections+=1
@@ -146,9 +148,12 @@ class ReadSnapshotDB:
         if sql.startswith('SELECT pp.portfolio_name'): return QueryResult([self.position])
         if sql.startswith('SELECT portfolio_name,COUNT'): return QueryResult()
         raise AssertionError('Unexpected or non-read-only SQL: '+sql[:100])
-    def load_accounts(self,conn,ids,include_entry_notional=False):
+    def load_accounts(self,conn,ids,include_entry_notional=False,include_payload=True):
         if conn is not self or not self.transactions: raise AssertionError('Accounts outside quantity snapshot')
-        return deepcopy(self.accounts)
+        out=deepcopy(self.accounts)
+        if not include_payload:
+            for account in out.values(): account.pop('payload',None)
+        return out
 
 
 class FastPortfolioAPITests(unittest.TestCase):
@@ -174,13 +179,19 @@ class FastPortfolioAPITests(unittest.TestCase):
                 CLOSED_METRICS_SQL='0 AS diagnostic',closed_trade_metrics=lambda *_:{})
         exec(compile(ast.Module(body=functions,type_ignores=[]),'<read-only-portfolio-api>','exec'),ns)
         out=ns['_v90r25_portfolios_fast']()
-        cur=next(p for p in out['portfolios'] if p['name']=='Currency')
         self.assertEqual(db.connections,1)
         self.assertEqual(db.queries[:3],[
             'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY',
             "SET LOCAL lock_timeout = '1500ms'",
             "SET LOCAL statement_timeout = '10000ms'"])
         self.assertTrue(all(q.startswith(('SELECT','SET TRANSACTION','SET LOCAL')) for q in db.queries))
+        if invalidate_during_read:
+            self.assertFalse(out['positions_complete'])
+            self.assertFalse(out['accounting_complete'])
+            self.assertEqual(out['portfolios'],[])
+            self.assertEqual(out['reason'],'PORTFOLIO_SNAPSHOT_CHANGED_DURING_REFRESH')
+            return ns,out
+        cur=next(p for p in out['portfolios'] if p['name']=='Currency')
         self.assertEqual(len(cur['positions']),1)
         self.assertGreater(cur['gross_leverage'],0.)
         self.assertLess(cur['net_exposure'],0.)
@@ -266,15 +277,19 @@ class StartupHTTPTests(unittest.TestCase):
     def request(self,path,ready=False):
         overview=Mock(return_value={'status':'OK','ready':True})
         portfolios=Mock(return_value={'status':'OK','portfolios':[]})
+        broker_connect=Mock(side_effect=AssertionError('Unrelated route reached broker database'))
         ns=dict(BaseHTTPRequestHandler=object,_BOOTSTRAP_READY=ready,VERSION='test',
                 SERVICE_ROLE='web',SERVICE_STARTED_AT=time.time()-1,time=time,rss_mb=lambda:123.,
                 VR=SimpleNamespace(snapshot=lambda:{'product_version':'test'}),
                 DASHBOARD_HTML='<html>dashboard</html>',urlparse=urlparse,
-                product_overview=overview,_v90r25_portfolios_fast=portfolios)
+                product_overview=overview,_v90r25_portfolios_fast=portfolios,
+                VCTC=__import__('veritas_currency_trade_console'),pg_connect=broker_connect,
+                lock=threading.Lock(),last_cycle={})
         exec(self.handler_code,ns)
         handler=ns['H'].__new__(ns['H'])
         handler.path=path; handler.reply=Mock(); handler.reply_html=Mock()
         handler.do_GET()
+        broker_connect.assert_not_called()
         return handler,overview,portfolios
 
     def test_starting_api_never_reaches_database_backed_routes(self):

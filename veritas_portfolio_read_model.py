@@ -4,6 +4,7 @@ No provider calls, admission checks or book mutations. Historical NAV observatio
 stay historical; current balances use the current ledger and the already selected,
 entry-source-pinned position marks.
 """
+import logging
 import math
 import threading
 import time
@@ -119,27 +120,117 @@ def starting_response(version):
                 message='Сервис запускается. Данные портфелей ещё не проверены.')
 
 
-def portfolio_snapshot_read(refresh, cache, cache_lock):
-    """One refresh owns I/O; concurrent readers never queue another DB read."""
+def _pending_snapshot(cache, cache_lock, reason='PORTFOLIO_SNAPSHOT_REFRESH_IN_PROGRESS'):
+    with cache_lock:
+        cached = cache.get('value')
+        cached_at = cache.get('at')
+    # Keep the actual book observation time. A delayed read must neither make
+    # old quantities current nor authorize clearing a newer book in the UI.
+    out = dict(cached) if isinstance(cached, dict) else {'portfolios': []}
+    out.update(status='PARTIAL' if cached is not None else 'UPDATING',
+               refresh_status='UPDATING', positions_complete=False,
+               accounting_complete=False, snapshot_stale=True,
+               api_source='stale_cache' if cached is not None else 'refresh_in_progress',
+               reason=reason, retry_after_seconds=2)
+    if cached is not None and isinstance(cached_at, (int, float)):
+        out['cache_age_seconds'] = max(0., time.time() - cached_at)
+    return out
+
+
+def _completed_snapshot_reply(snapshot, revision, cache, cache_lock):
+    with cache_lock:
+        if cache.get('revision', 0) == revision and cache.get('value') is not None:
+            return snapshot
+    return _pending_snapshot(cache, cache_lock,
+                             'PORTFOLIO_SNAPSHOT_CHANGED_DURING_REFRESH')
+
+
+def portfolio_snapshot_read(refresh, cache, cache_lock, *, wait_seconds=1.):
+    """Share one background read and bound even its first HTTP caller's wait.
+
+    The worker keeps ownership until all I/O and enrichment finish; timing out
+    an HTTP wait never starts another database reader. The refresh callback
+    still owns repeatable-read accounting and revision-checked publication.
+    """
+    completed_snapshot = None
+    with cache_lock:
+        cached = cache.get('value')
+        cached_at = cache.get('at')
+        completed_revision = cache.get('revision', 0)
+        if (isinstance(cached, dict) and isinstance(cached_at, (int, float))
+                and 0 <= time.time() - cached_at < 15
+                and cached.get('positions_complete') is not False
+                and snapshot_fresh(cached)):
+            return dict(cached, api_source='memory_cache')
+        if (isinstance(cached, dict) and isinstance(cached_at, (int, float))
+                and cached.get('positions_complete') is True
+                and cached.get('accounting_complete') is True
+                and cache.get('completed_read_revision') == cache.get('revision', 0)
+                and cache.get('completed_read_at') == cached_at
+                and 0 <= time.time() - cached_at < 30):
+            # Deliver a completed database observation even when the UI's next
+            # 15-second poll missed its freshness window. Completeness is about
+            # all positions at the original timestamp, not a new observation.
+            # Refresh it below; never label that historical book fresh.
+            completed_snapshot = dict(cached, api_source='completed_snapshot',
+                                      snapshot_stale=True, refresh_status='UPDATING',
+                                      cache_age_seconds=max(0., time.time()-cached_at))
     if not _snapshot_refresh_lock.acquire(blocking=False):
-        with cache_lock:
-            cached = cache.get('value')
-            cached_at = cache.get('at')
-        # Keep all observation times and quantities from the original snapshot.
-        # Explicit incompleteness makes the UI retain its last validated book.
-        out = dict(cached) if isinstance(cached, dict) else {'portfolios': []}
-        out.update(status='PARTIAL' if cached is not None else 'UPDATING',
-                   refresh_status='UPDATING', positions_complete=False,
-                   accounting_complete=False, snapshot_stale=True,
-                   api_source='stale_cache' if cached is not None else 'refresh_in_progress',
-                   reason='PORTFOLIO_SNAPSHOT_REFRESH_IN_PROGRESS', retry_after_seconds=2)
-        if cached is not None and isinstance(cached_at, (int, float)):
-            out['cache_age_seconds'] = max(0., time.time() - cached_at)
-        return out
+        if completed_snapshot is not None:
+            return _completed_snapshot_reply(completed_snapshot, completed_revision, cache, cache_lock)
+        return _pending_snapshot(cache, cache_lock)
+    with cache_lock:
+        revision = cache.get('revision', 0)
+    completed = threading.Event()
+    result = {}
+
+    def run_refresh():
+        try:
+            result['value'] = refresh()
+            value = result['value']
+            with cache_lock:
+                published = cache.get('value')
+                if (isinstance(value, dict) and isinstance(published, dict)
+                        and value.get('positions_complete') is True
+                        and value.get('accounting_complete') is True
+                        and value.get('positions_checked_at')
+                        and published.get('positions_checked_at') == value['positions_checked_at']
+                        and cache.get('revision', 0) == revision):
+                    cache['completed_read_revision'] = revision
+                    cache['completed_read_at'] = cache.get('at')
+        except Exception as error:
+            # A worker may finish after its HTTP caller has returned. Keep a
+            # bounded diagnostic without logging database URLs or payloads.
+            logging.getLogger(__name__).warning('Portfolio snapshot refresh failed: %s',
+                                                type(error).__name__)
+            error.__traceback__ = None
+            error.__context__ = None
+            error.__cause__ = None
+            result['error'] = error
+        finally:
+            _snapshot_refresh_lock.release()
+            completed.set()
+
     try:
-        return refresh()
-    finally:
+        threading.Thread(target=run_refresh, daemon=True,
+                         name='veritas-portfolio-snapshot').start()
+    except Exception:
         _snapshot_refresh_lock.release()
+        raise
+    if completed_snapshot is not None:
+        return _completed_snapshot_reply(completed_snapshot, completed_revision, cache, cache_lock)
+    if not completed.wait(max(0., float(wait_seconds))):
+        return _pending_snapshot(cache, cache_lock)
+    if 'error' in result:
+        raise result['error']
+    with cache_lock:
+        invalidated = cache.get('revision', 0) != revision
+    if invalidated:
+        # A fill may commit while the SQL snapshot is being enriched. The
+        # callback rejects its cache publication; reject the HTTP result too.
+        return _pending_snapshot(cache, cache_lock,
+                                 'PORTFOLIO_SNAPSHOT_CHANGED_DURING_REFRESH')
+    return result['value']
 
 
 def begin_read_snapshot(connection):

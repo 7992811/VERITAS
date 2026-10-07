@@ -17,6 +17,7 @@ _V90_QUOTE_IDENTITY_FIELDS = (
 import veritas_position_guard as VPG
 import veritas_position_thesis as VPT
 import veritas_currency_notifications as VCN
+import veritas_currency_trade_console as VCTC
 from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
 import veritas_asset_management_intelligence as VAMI
@@ -6868,7 +6869,6 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         market_bundles={}
         prefetch_stats={'wall_seconds':0.0,'sum_asset_seconds':0.0,
                         'parallel_wait_saved_estimate_seconds':0.0,'workers':1}
-        _stream_fetch_started=time.time()
     else:
         market_bundles,prefetch_stats=_market_future.result()
         _market_pool.shutdown(wait=False)
@@ -6899,22 +6899,20 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     _prev_prices={}
     for _x in _prev_summary:
         if _x.get('asset') and _x.get('price') not in (None,0): _prev_prices.setdefault(str(_x['asset']),float(_x['price']))
-    phase_seconds['market_prefetch_wall']=prefetch_stats.get('wall_seconds',0.0)
-    phase_seconds['market_fetch_sum']=prefetch_stats.get('sum_asset_seconds',0.0)
-    phase_seconds['market_parallel_saved_estimate']=prefetch_stats.get('parallel_wait_saved_estimate_seconds',0.0)
     for symbol, (asset, cb_product) in ASSETS.items():
         asset_timings[asset]={'market_fetch':0.0,'context':0.0,'common_features':0.0,'horizons':0.0,'total':0.0}
         try:
             if _low_memory_streaming:
-                _fetch_started=time.time()
+                _fetch_started=time.monotonic()
                 try:
                     bundle=_fetch_asset_bundle(symbol,asset,cb_product)
                 except Exception as ex:
                     bundle={'symbol':symbol,'asset':asset,'cb_product':cb_product,
-                            'raw':None,'deriv':None,'elapsed_seconds':time.time()-_fetch_started,
+                            'raw':None,'deriv':None,'elapsed_seconds':time.monotonic()-_fetch_started,
                             'error':f'{type(ex).__name__}: {ex}'}
+                bundle=dict(bundle,elapsed_seconds=time.monotonic()-_fetch_started)
                 prefetch_stats['sum_asset_seconds']+=float(bundle.get('elapsed_seconds') or 0.0)
-                prefetch_stats['wall_seconds']=time.time()-_stream_fetch_started
+                prefetch_stats['wall_seconds']+=float(bundle.get('elapsed_seconds') or 0.0)
             else:
                 bundle=market_bundles.get(asset) or {}
             if bundle.get('error') or bundle.get('raw') is None:
@@ -7396,6 +7394,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             cur=dcur=None
             _v90_trim_memory('asset_'+str(asset),force=False)
 
+    phase_seconds['market_prefetch_wall']=prefetch_stats.get('wall_seconds',0.0)
+    phase_seconds['market_fetch_sum']=prefetch_stats.get('sum_asset_seconds',0.0)
+    phase_seconds['market_parallel_saved_estimate']=prefetch_stats.get('parallel_wait_saved_estimate_seconds',0.0)
     # R18 continuity: every lane begins from the last valid matrix.
     # Fresh cells overwrite old cells; failed/missing cells retain the latest valid value.
     fresh_summary=list(summary)
@@ -7463,7 +7464,6 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     _v90_pg_batch_written=_v90_pg_batch_flush()
     elapsed_seconds=time.time()-cycle_wall_t0
     phase_seconds['decision_total']=decision_seconds; phase_seconds['trade_alerts']=trade_alert_seconds; phase_seconds['meta_cio']=meta_seconds
-    phase_seconds['pg_batch_events']=float(_v90_pg_batch_written)
     slowest_assets=sorted(({'asset':a,**{k:round(float(v),4) for k,v in t.items()}} for a,t in asset_timings.items()),key=lambda x:x.get('total',0),reverse=True)[:6]
     telemetry={'elapsed_seconds':round(elapsed_seconds,3),'pre_decision_seconds':round(pre_decision_seconds,3),
                'decision_seconds':round(decision_seconds,3),'trade_alert_seconds':round(trade_alert_seconds,3),
@@ -7476,6 +7476,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                'market_prefetch_workers':prefetch_stats.get('workers'),
                'market_prefetch_wall_seconds':round(float(prefetch_stats.get('wall_seconds') or 0),4),
                'market_parallel_saved_estimate_seconds':round(float(prefetch_stats.get('parallel_wait_saved_estimate_seconds') or 0),4),
+               'pg_batch_events_written':_v90_pg_batch_written,
                'heavy_learning_status':heavy_learning.get('status'),'heavy_learning_last_finished_at':heavy_learning.get('last_finished_at'),
                'fast_loop_target_seconds':FAST_LOOP_TARGET_SECONDS,
                'fast_loop_on_target':bool(elapsed_seconds<=FAST_LOOP_TARGET_SECONDS)}
@@ -15924,7 +15925,7 @@ def architecture_efficiency_status():
         idx=max(0,min(len(vals)-1,int(round((len(vals)-1)*p))))
         return round(vals[idx],3)
     phases=t.get('phase_seconds') or {}
-    slow_stage=max(phases.items(),key=lambda kv:kv[1],default=(None,None))
+    slow_stage=max(((k,v) for k,v in phases.items() if k not in ('pg_batch_events','market_fetch_sum','market_parallel_saved_estimate','outcomes_background_last_seconds')),key=lambda kv:kv[1],default=(None,None))
     return {'status':'ok' if elapsed is not None else 'BUILDING',
             'cycle_seconds':elapsed,'decision_seconds':t.get('decision_seconds'),
             'pre_decision_seconds':t.get('pre_decision_seconds'),'rss_mb':t.get('rss_mb'),
@@ -15939,8 +15940,8 @@ def architecture_efficiency_status():
             'maintenance':_v90_background_maintenance.snapshot(),
             'history_n':len(vals),'cycle_p50_seconds':q(0.50),'cycle_p95_seconds':q(0.95),
             'target_cycle_seconds':FAST_LOOP_TARGET_SECONDS,
-            'target_status':'ON_TARGET' if elapsed is not None and float(elapsed)<=FAST_LOOP_TARGET_SECONDS else 'IMPROVING' if elapsed is not None else 'BUILDING',
-            'principle':'Рыночный цикл отделён от тяжёлого обучения. Независимые источники загружаются параллельно; решения остаются детерминированно синтезированными по активам и горизонтам.'}
+            'target_status':'ON_TARGET' if elapsed is not None and float(elapsed)<=FAST_LOOP_TARGET_SECONDS else 'DELAYED' if elapsed is not None else 'BUILDING',
+            'principle':'Рыночный цикл отделён от тяжёлого обучения. Загрузка источников учитывает ограничение памяти; время загрузки отделено от времени расчёта решений.'}
 
 
 
@@ -16564,6 +16565,7 @@ def _v90r25_portfolios_fast():
 
 def _v90r25_portfolios_refresh():
     import veritas_portfolio_read_model as VPRM
+    from veritas_portfolio_api_projection import ENTRY_DECISION_PAYLOAD_SQL, load_position_accounts
     with _v90r25_pf_lock:
         cached=_v90r25_pf_cache.get('value'); at=float(_v90r25_pf_cache.get('at') or 0.0)
         cache_revision=_v90r25_pf_cache.get('revision',0)
@@ -16584,7 +16586,7 @@ def _v90r25_portfolios_refresh():
         snapshot_at=datetime.now(timezone.utc).isoformat()
         base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
         nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
-        pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,ed.payload AS entry_decision_payload
+        pos=c.execute(f"""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,{ENTRY_DECISION_PAYLOAD_SQL} AS entry_decision_payload
                          FROM paper_positions pp
                          LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id
                          LEFT JOIN LATERAL (
@@ -16602,8 +16604,7 @@ def _v90r25_portfolios_refresh():
                          WHERE pp.portfolio_name=ANY(%s)
                          ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
         stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl, """ + CLOSED_METRICS_SQL + """ FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
-        ids=list({z['active_trade_id'] for z in pos if z.get('active_trade_id')})
-        accounts=VTV.VPP.load_accounts(c,ids,include_entry_notional=True) if ids else {}
+        accounts=load_position_accounts(c,pos,VTV.VPP.load_accounts)
     bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
     def _n(v,d=None):
         try:
@@ -16788,8 +16789,6 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
       },
       'horizon_summary':horizon_counts
     }
-
-
 class H(BaseHTTPRequestHandler):
     def reply(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode()
@@ -16814,6 +16813,7 @@ class H(BaseHTTPRequestHandler):
             return
 
     def do_GET(self):
+        if VCTC.dispatch(self, pg_connect, (lock, last_cycle)): return
         try:
             if not _BOOTSTRAP_READY and self.path.startswith('/api/v1/'):
                 from veritas_portfolio_read_model import starting_response
@@ -17166,6 +17166,7 @@ class H(BaseHTTPRequestHandler):
         except Exception as e:
             self.reply({'error': f'{type(e).__name__}: {e}'}, 503)
     def do_POST(self):
+        if VCTC.dispatch(self, pg_connect, (lock, last_cycle)): return
         try:
             if urlparse(self.path).path.startswith('/internal/currency-alerts/'):
                 n=int(self.headers.get('Content-Length','0') or 0)

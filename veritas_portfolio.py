@@ -2357,7 +2357,9 @@ def _stats(c,name):
 
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
-    global COMMISSION; COMMISSION=float(commission_rate)
+    # Kept in the call signature for historical callers; CTC owns the rate.
+    # A legacy cycle argument cannot change accounting or later exit fees.
+    global COMMISSION; COMMISSION=VC.COMMISSION_RATE
     for row in candidates.values():
         VAT.begin_cycle(row,ts)
     p,pos=_portfolio_rows(c,name)

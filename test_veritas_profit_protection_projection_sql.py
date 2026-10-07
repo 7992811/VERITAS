@@ -8,6 +8,7 @@ import unittest
 import uuid
 
 import veritas_profit_protection as PP
+import veritas_protection_read_model as PR
 
 
 DSN = os.getenv('VERITAS_QUALITY_TEST_DSN', '')
@@ -57,6 +58,18 @@ class ReadTrace:
         if query.startswith('UPDATE'):
             self.updates.append((query, params))
         return cursor
+
+    def logical_updates(self):
+        """Compare every saved delta independently of SQL batching/order."""
+        out = []
+        for query, params in self.updates:
+            table = query.split()[1]
+            if 'jsonb_to_recordset' in query:
+                out.extend((table, row['trade_id'], row['patch'])
+                           for row in json.loads(params[0]))
+            else:
+                out.append((table, params[1], json.loads(params[0])))
+        return sorted(out, key=lambda row: (row[0], row[1]))
 
 
 @unittest.skipUnless(DSN, 'isolated PostgreSQL test database not configured')
@@ -154,7 +167,7 @@ class ProfitProtectionProjectionSQLTests(unittest.TestCase):
         old = self.run_refresh(legacy_refresh, rows, name)
         new = self.run_refresh(PP.refresh, rows, name)
         self.assertEqual(new[:3], old[:3])
-        self.assertEqual(new[3].updates, old[3].updates)
+        self.assertEqual(new[3].logical_updates(), old[3].logical_updates())
         self.assertEqual(len(new[3].reads), len(old[3].reads))
         return old, new
 
@@ -169,7 +182,7 @@ class ProfitProtectionProjectionSQLTests(unittest.TestCase):
                 old, new = self.assert_parity(rows, name=name)
                 selected = 0 if name == 'missing' else 1 if name == 'LONG' else 2
                 self.assertIsNone(new[2])
-                self.assertEqual(len(new[3].updates), 2*selected)
+                self.assertEqual(len(new[3].updates), 2*((selected+PR.BATCH_SIZE-1)//PR.BATCH_SIZE))
                 for table in ('paper_positions', 'paper_trades'):
                     for row in new[1][table]:
                         self.assertEqual(row['payload']['entry_event_snapshot'], proof)
