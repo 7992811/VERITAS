@@ -10103,23 +10103,45 @@ def _v90_daily_intelligence_metrics(lp=None,force=False):
     return dict(value)
 
 def intelligence_scorecard():
-    lp=learning_progress(); lm=large_move_capture_board(); tl=trade_lifecycle_board(60)
-    overall=lm.get('overall') or {}; capture=overall.get('capture_rate')
-    daily=_v90_daily_intelligence_metrics(lp)
+    # HTTP reads only completed RAM views. Cold/stale components never trigger
+    # database probes, history scans or a wait behind the scorecard builder.
+    lp=learning_progress()
+    memory=getattr(_decision_memory_rows,'_cache',None)
+    overall={'large_moves':None,'capture_rate':None,'miss_rate':None,'wrong_side_rate':None}
+    if memory:
+        large=captured=missed=wrong=0
+        for row in memory[1][:int(LARGE_MOVE_CAPTURE_LIMIT)]:
+            forward,horizon=row.get('forward_return'),row.get('horizon')
+            if forward is None or horizon not in HORIZONS: continue
+            forward=float(forward)
+            if abs(forward)<_no_trade_miss_threshold(horizon): continue
+            large+=1
+            decision=str(row.get('research_decision') or 'NO_TRADE')
+            if decision==('LONG' if forward>0 else 'SHORT'): captured+=1
+            elif decision=='NO_TRADE': missed+=1
+            else: wrong+=1
+        overall.update(large_moves=large,capture_rate=captured/large if large else None,
+                       miss_rate=missed/large if large else None,wrong_side_rate=wrong/large if large else None)
+    lifecycle=getattr(trade_lifecycle_board,'_cache',None)
+    tl=lifecycle[1] if lifecycle else {}
+    daily=dict(_v90_daily_intelligence_cache.get('value') or {'status':'BUILDING','trend':'BUILDING'})
+    if _v90_daily_intelligence_cache.get('value') is not None:
+        daily['cache_age_seconds']=max(0.,time.time()-float(_v90_daily_intelligence_cache.get('at') or 0))
+        daily['stale']=daily['cache_age_seconds']>=55
+    epoch=os.getenv('VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-30T04:59:29.357862+00:00')
+    ami=VAMI.cached_scorecard(epoch)
     base={'version':VERSION,'learning_index':lp.get('index_vs_start'),'learning_index_version':lp.get('index_version'),'learning_mode':lp.get('mode'),
           'learning_status':lp.get('status'),'learning_confidence':lp.get('confidence'),'hit_rate_delta_pp':lp.get('hit_rate_delta_pp'),
-          'large_move_capture_rate':capture,'large_moves_observed':overall.get('large_moves'),'large_move_miss_rate':overall.get('miss_rate'),
+          'large_move_capture_rate':overall.get('capture_rate'),'large_moves_observed':overall.get('large_moves'),'large_move_miss_rate':overall.get('miss_rate'),
           'large_move_wrong_side_rate':overall.get('wrong_side_rate'),'shadow_trades_closed':tl.get('closed_n'),
           'shadow_trade_positive_rate':tl.get('positive_trade_rate'),'shadow_trade_avg_pnl':tl.get('avg_total_pnl_fraction'),
           'knowledge_growth':lp.get('knowledge_growth'),'daily_progress':daily,
+          'asset_management_intelligence':ami,'refresh_delayed':ami.get('stale',True),
+          'diagnostic_cache_age_seconds':{'large_moves':None if not memory else max(0.,time.time()-memory[0]),
+                                          'shadow_trades':None if not lifecycle else max(0.,time.time()-lifecycle[0])},
           'principle':'System intelligence is measured by demonstrated asset-management capability, not data volume or a claimed IQ.'}
     continuous=globals().get('_continuous_learning')
     base['autonomous_learning']=continuous.snapshot() if continuous else {'status':'INITIALIZING'}
-    try:
-        epoch=os.getenv('VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-30T04:59:29.357862+00:00')
-        base['asset_management_intelligence']=VAMI.build_scorecard(pg_connect,lp,epoch)
-    except Exception as ex:
-        base['asset_management_intelligence']={'status':'ERROR','version':VAMI.VERSION,'error':f'{type(ex).__name__}: {ex}'}
     return base
 
 def setup_profitability_profile(asset,horizon,direction,setup_name,regime=None,limit=240):

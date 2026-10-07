@@ -410,6 +410,14 @@ class KnowledgeDiscovery:
                 AND COALESCE(metadata->>'last_compile_error','') ~* '(429|50[0234]|timeout|timed out|connecterror|connectionerror)'""",
                 (json.dumps({"compile_attempts": 0, "transient_recovery_version": VERSION}), ids[:1]))
 
+    def _compiler_pending(self):
+        # Match the legacy compiler's eligibility without loading abstracts or
+        # sorting the queue. The discovery lease serializes compiler workers;
+        # no transaction is kept open across the reservation or external call.
+        with transaction(self.connect) as c:
+            return c.execute("""SELECT 1 FROM knowledge_candidates
+                WHERE status='screened_in' LIMIT 1""").fetchone() is not None
+
     def _compile(self, state, lease):
         if not (self.ns.get("KNOWLEDGE_LLM_ENABLED") and self.ns.get("OPENAI_API_KEY")):
             return {"status": "DEFERRED_COMPILER", "reason": "COMPILER_NOT_CONFIGURED"}
@@ -433,10 +441,16 @@ class KnowledgeDiscovery:
             reason = "COMPILER_COOLDOWN" if compiler.get("status") == "ERROR" else "COMPILER_BUDGET_SPACING"
             return {"status": "DEFERRED_COMPILER", "reason": reason,
                     "retry_at": _iso(due), "attempt_spacing_seconds": spacing}
+        # Recovery and an empty queue are local work, not paid attempts. Keep
+        # them under the same fenced job lease, before charging the quota.
+        self._recover_compiler_candidates(compiler.get("retry_ids") or [])
+        if not self._compiler_pending():
+            return {"status": "EMPTY", "reason": "NO_PENDING_COMPILATION",
+                    "attempted": False, "imported": 0, "audited": 0, "rejected": 0, "compiled": 0}
         compiler.update(attempts=_integer(compiler.get("attempts"))+1,
                         last_attempt_at=_iso(stamp), last_attempt_epoch=stamp,
                         budget_next_at=stamp+spacing, next_run_at=stamp+spacing)
-        # The attempt consumes quota BEFORE any compiler/recovery I/O. Keep
+        # The attempt consumes quota BEFORE any compiler I/O. Keep
         # the existing fenced lease; a crash or failed final checkpoint cannot
         # refund the reservation or let another process repeat the paid call.
         if not STORE.checkpoint_job(self.connect, lease, status="RUNNING", cursor=state,
@@ -444,7 +458,6 @@ class KnowledgeDiscovery:
                                             "next_run_at": compiler["next_run_at"]}, release=False):
             raise RuntimeError("COMPILER_BUDGET_RESERVATION_FAILED")
         try:
-            self._recover_compiler_candidates(compiler.get("retry_ids") or [])
             imported, errors, audited = self.ns["compile_pending_candidates"](limit=1)
         except Exception as error:
             # Do not expose message text, which can contain credentials/body.
@@ -469,7 +482,7 @@ class KnowledgeDiscovery:
                             last_success_at=_iso(self.clock()))
         return {"status": "ERROR" if errors else "OK" if completed else "EMPTY",
                 "reason": code or (None if completed else "NO_PENDING_COMPILATION"),
-                "imported": int(imported), "audited": int(audited.get("audited", 0)),
+                "attempted": True, "imported": int(imported), "audited": int(audited.get("audited", 0)),
                 "rejected": int(audited.get("rejected", 0)), "compiled": int(audited.get("compiled", 0))}
 
     def _summary(self, state, result, stage):
@@ -524,6 +537,12 @@ class KnowledgeDiscovery:
                 result = self._discover(state) if stage == "discovery" else self._screen() if stage == "screening" else self._compile(state, lease)
             except Exception as error:
                 result = {"status": "ERROR", "reason": type(error).__name__.upper()}
+            if stage == "compilation":
+                # Provider/screening summaries must not erase the last compiler
+                # result. Legacy reservations stay charged: EMPTY alone is
+                # not proof that a compiler call never began.
+                state.setdefault("compiler", {})["last_result"] = {
+                    **result, "finished_at": _iso(self.clock())}
             summary = self._summary(state, result, stage)
             status = result["status"]
             if not STORE.checkpoint_job(self.connect, lease, status=status, cursor=state, result=summary,
