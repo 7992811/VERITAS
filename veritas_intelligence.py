@@ -4872,53 +4872,44 @@ def pg_agent_performance():
     """Durable agent learning with regime conditioning and exponential time decay."""
     if not pg_enabled():
         return performance_rows()
-    with pg_connect() as c:
-        rows=c.execute("""WITH recent_decisions AS (
-                            SELECT entity_key,event_ts,asset,horizon,payload
-                            FROM ledger_events WHERE event_type='decision'
-                            ORDER BY event_ts DESC LIMIT %s
-                          )
-                          SELECT d.asset,d.horizon,d.event_ts AS decision_ts,
-                                 d.payload AS decision_payload,o.event_ts AS outcome_ts,o.payload AS outcome_payload
-                          FROM recent_decisions d
-                          JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-                          ORDER BY d.event_ts ASC""",(LIVE_LEARNING_MAX_EPISODES,)).fetchall()
+    from veritas_learning_memory import agent_performance_rows
     buckets={}
-    now_dt=datetime.now(timezone.utc)
-    half=max(1.0,AGENT_DECAY_HALF_LIFE_DAYS)
-    for r in rows:
-        dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload'])
-        op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
-        fr=op.get('forward_return')
-        if fr is None:
-            continue
-        ts=r.get('outcome_ts') or r.get('decision_ts')
-        if isinstance(ts,str):
-            ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
-        if ts is None:
-            ts=now_dt
-        if ts.tzinfo is None:
-            ts=ts.replace(tzinfo=timezone.utc)
-        age_days=max(0.0,(now_dt-ts).total_seconds()/86400.0)
-        w=math.exp(-math.log(2.0)*age_days/half)
-        fr=float(fr); regime=dp.get('regime') or '*'
-        for av in dp.get('agents') or []:
-            direction=av.get('direction')
-            if direction not in ('LONG','SHORT'):
+    with agent_performance_rows(pg_connect,LIVE_LEARNING_MAX_EPISODES) as rows:
+        now_dt=datetime.now(timezone.utc)
+        half=max(1.0,AGENT_DECAY_HALF_LIFE_DAYS)
+        for r in rows:
+            dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload'])
+            op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
+            fr=op.get('forward_return')
+            if fr is None:
                 continue
-            sr=fr if direction=='LONG' else -fr
-            hit=1.0 if sr>0 else 0.0
-            for rg in (regime,'*'):
-                key=(av.get('agent'),r['asset'],r['horizon'],rg)
-                b=buckets.setdefault(key,{'n':0,'hits':0,'signed':[],'w':0.0,'wh':0.0,'wr':0.0,
-                                          'recent_n':0,'recent_hits':0,'recent_ret':0.0,
-                                          'prior_n':0,'prior_hits':0,'prior_ret':0.0})
-                b['n']+=1; b['hits']+=int(hit); b['signed'].append(sr)
-                b['w']+=w; b['wh']+=w*hit; b['wr']+=w*sr
-                if age_days<=30:
-                    b['recent_n']+=1; b['recent_hits']+=int(hit); b['recent_ret']+=sr
-                else:
-                    b['prior_n']+=1; b['prior_hits']+=int(hit); b['prior_ret']+=sr
+            ts=r.get('outcome_ts') or r.get('decision_ts')
+            if isinstance(ts,str):
+                ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
+            if ts is None:
+                ts=now_dt
+            if ts.tzinfo is None:
+                ts=ts.replace(tzinfo=timezone.utc)
+            age_days=max(0.0,(now_dt-ts).total_seconds()/86400.0)
+            w=math.exp(-math.log(2.0)*age_days/half)
+            fr=float(fr); regime=dp.get('regime') or '*'
+            for av in dp.get('agents') or []:
+                direction=av.get('direction')
+                if direction not in ('LONG','SHORT'):
+                    continue
+                sr=fr if direction=='LONG' else -fr
+                hit=1.0 if sr>0 else 0.0
+                for rg in (regime,'*'):
+                    key=(av.get('agent'),r['asset'],r['horizon'],rg)
+                    b=buckets.setdefault(key,{'n':0,'hits':0,'signed':[],'w':0.0,'wh':0.0,'wr':0.0,
+                                              'recent_n':0,'recent_hits':0,'recent_ret':0.0,
+                                              'prior_n':0,'prior_hits':0,'prior_ret':0.0})
+                    b['n']+=1; b['hits']+=int(hit); b['signed'].append(sr)
+                    b['w']+=w; b['wh']+=w*hit; b['wr']+=w*sr
+                    if age_days<=30:
+                        b['recent_n']+=1; b['recent_hits']+=int(hit); b['recent_ret']+=sr
+                    else:
+                        b['prior_n']+=1; b['prior_hits']+=int(hit); b['prior_ret']+=sr
     out=[]
     for (a,asset,h,rg),b in sorted(buckets.items()):
         n=b['n']; hr=b['hits']/n if n else None
@@ -12820,27 +12811,22 @@ def pg_signal_history(limit=None):
 def pg_live_performance():
     if not pg_enabled():
         return []
-    with pg_connect() as c:
-        rows=c.execute("""
-          SELECT d.asset,d.horizon,d.payload decision,o.payload outcome
-          FROM ledger_events d JOIN ledger_events o
-            ON o.entity_key=d.entity_key AND o.event_type='outcome'
-          WHERE d.event_type='decision'
-        """).fetchall()
+    from veritas_learning_memory import live_performance_rows
     b={}
-    for r in rows:
-        d=r['decision'] if isinstance(r['decision'],dict) else json.loads(r['decision'])
-        o=r['outcome'] if isinstance(r['outcome'],dict) else json.loads(r['outcome'])
-        dec=d.get('decision'); fr=o.get('forward_return')
-        if fr is None: continue
-        key=(r['asset'],r['horizon'],dec)
-        z=b.setdefault(key,{'n':0,'hits':0,'signed':[],'raw':[],'mfe':[],'mae':[]})
-        fr=float(fr); z['n']+=1; z['raw'].append(fr)
-        if o.get('mfe') is not None: z['mfe'].append(float(o['mfe']))
-        if o.get('mae') is not None: z['mae'].append(float(o['mae']))
-        if dec in ('LONG','SHORT'):
-            sr=fr if dec=='LONG' else -fr
-            z['signed'].append(sr); z['hits'] += 1 if sr>0 else 0
+    with live_performance_rows(pg_connect) as rows:
+        for r in rows:
+            d=r['decision'] if isinstance(r['decision'],dict) else json.loads(r['decision'])
+            o=r['outcome'] if isinstance(r['outcome'],dict) else json.loads(r['outcome'])
+            dec=d.get('decision'); fr=o.get('forward_return')
+            if fr is None: continue
+            key=(r['asset'],r['horizon'],dec)
+            z=b.setdefault(key,{'n':0,'hits':0,'signed':[],'raw':[],'mfe':[],'mae':[]})
+            fr=float(fr); z['n']+=1; z['raw'].append(fr)
+            if o.get('mfe') is not None: z['mfe'].append(float(o['mfe']))
+            if o.get('mae') is not None: z['mae'].append(float(o['mae']))
+            if dec in ('LONG','SHORT'):
+                sr=fr if dec=='LONG' else -fr
+                z['signed'].append(sr); z['hits'] += 1 if sr>0 else 0
     out=[]
     for (asset,horizon,dec),z in sorted(b.items()):
         dn=len(z['signed'])
@@ -12900,6 +12886,7 @@ def save_product_snapshot():
     if now_ts-float(_v90r39_snapshot_state.get('last_at') or 0.0)<3600:
         return
     try:
+        _v90_memory_checkpoint('snapshot_start',None)
         drift=model_drift_status()
         with lock:
             cyc=dict(last_cycle)
@@ -12946,6 +12933,7 @@ def save_product_snapshot():
                            ORDER BY created_at DESC LIMIT 48
                          )""")
         _v90r39_snapshot_state['last_at']=now_ts
+        _v90_memory_checkpoint('snapshot_ready',None)
     except Exception as ex:
         emit('snapshot_error',error=f'{type(ex).__name__}: {ex}')
 

@@ -2,6 +2,7 @@
 
 SQL expressions and projection keys below are internal constants only.
 """
+from contextlib import contextmanager
 
 def project_object(expr, fields):
     """Retain legacy empty/non-object fallbacks while dropping unused fields."""
@@ -9,6 +10,57 @@ def project_object(expr, fields):
                      for key, value in fields.items())
     return (f"CASE WHEN jsonb_typeof({expr})='object' AND {expr}<>'{{}}'::jsonb "
             f"THEN jsonb_build_object({pairs}) ELSE {expr} END")
+
+
+@contextmanager
+def live_performance_rows(pg_connect):
+    """Stream all performance observations without archived feature graphs."""
+    decision = project_object("d.payload", {"decision": "d.payload->'decision'"})
+    outcome = project_object("o.payload", {
+        key: "o.payload->'" + key + "'" for key in ("forward_return", "mfe", "mae")})
+    # The production connection uses autocommit. An explicit transaction owns
+    # the server cursor and closes it even if the consumer's reducer raises.
+    with pg_connect() as c:
+        with c.transaction():
+            with c.cursor(name="veritas_live_performance") as rows:
+                rows.itersize = 64
+                rows.execute(f"""
+                  SELECT d.asset,d.horizon,{decision} decision,{outcome} outcome
+                  FROM ledger_events d JOIN ledger_events o
+                    ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                  WHERE d.event_type='decision'
+                """)
+                yield rows
+
+
+@contextmanager
+def agent_performance_rows(pg_connect, limit):
+    """Stream the unchanged recent-decision window and ordered agent votes."""
+    agents = """CASE WHEN jsonb_typeof(d.payload->'agents')='array' THEN
+      (SELECT COALESCE(jsonb_agg(
+         CASE WHEN jsonb_typeof(a.value)='object' THEN
+           jsonb_build_object('agent',a.value->'agent','direction',a.value->'direction')
+         ELSE a.value END ORDER BY a.ordinality),'[]'::jsonb)
+       FROM jsonb_array_elements(d.payload->'agents') WITH ORDINALITY AS a(value,ordinality))
+      ELSE d.payload->'agents' END"""
+    decision = project_object("d.payload", {
+        "regime": "d.payload->'regime'", "agents": agents})
+    outcome = project_object("o.payload", {"forward_return": "o.payload->'forward_return'"})
+    with pg_connect() as c:
+        with c.transaction():
+            with c.cursor(name="veritas_agent_performance") as rows:
+                rows.itersize = 64
+                rows.execute(f"""WITH recent_decisions AS (
+                            SELECT entity_key,event_ts,asset,horizon,payload
+                            FROM ledger_events WHERE event_type='decision'
+                            ORDER BY event_ts DESC LIMIT %s
+                          )
+                          SELECT d.asset,d.horizon,d.event_ts AS decision_ts,
+                                 {decision} AS decision_payload,o.event_ts AS outcome_ts,{outcome} AS outcome_payload
+                          FROM recent_decisions d
+                          JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                          ORDER BY d.event_ts ASC""", (limit,))
+                yield rows
 
 
 def ami_decision_rows(c):
