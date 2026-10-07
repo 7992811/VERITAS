@@ -346,6 +346,7 @@ class StoredAddGeometryRegressionTests(unittest.TestCase):
             with self.subTest(direction=direction):
                 row, db, original = self.case(direction)
                 db.position["payload"]["r17_tp1_done"] = True
+                db.trade_payload["r17_tp1_done"] = True
                 new_event = copy.deepcopy(row["timeframe_entry_context"]["event"])
                 original_stop = db.position["stop_price"]
                 self.initial_admission(row)
@@ -374,6 +375,7 @@ class StoredAddGeometryRegressionTests(unittest.TestCase):
                 row, db, original = self.case(direction, near=True)
                 original_stop = db.position["stop_price"]
                 row["_canonical_admission"] = self.initial_admission(row)
+                row.update(_pwin=.65, _pwin_source="TEST_FINAL_BOUNDARY")
                 VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD(db, {}, "Aggressive", "NQ", direction,
                     row["price"], .5, 10000., self.clock, row, "TEST_FINAL_ADD_BOUNDARY")
                 self.assertEqual(len(db.orders), 1)
