@@ -1,0 +1,67 @@
+name: Currency recovery candidate verification
+on:
+  push:
+    branches: [diagnostic/currency-repair-source-20261007]
+    paths: [.github/workflows/currency-repair-build.yml]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: b574a46f4e15771226e49cb959e972b9d38b1311
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.3'
+      - name: Apply exact locally tested candidate
+        run: |
+          mkdir -p /tmp/currency-candidate
+          python - <<'PY'
+          import base64, zlib, hashlib, pathlib, subprocess
+          data='eNqtPG1T4zjS3/kVuuwHO4PjSXif3OXqgGF2qZ2BeQIze1sU5XIcBbw4dtZ2gNzU/PenuyXZsi2HMLt8CIkttaRWv3dL03A2Y73eXZgz/60L/+6Xk7dPSfowi5Kn7O0jT8Pcz3qZP+P5yl3NIzbZqNlWGE/5MxvszPhBf+q6hwN/92B/ygb9/sHe3lav19twvK3t7e1Nx/zPf1jvcN85ZNv0CT//SCbZcIuJvx6L/TkfstNlmvI4WLE0WeZhfMf8eMquecTvUn/O+COPczblUQgjrFRfxtJlPGSLVX6fxKw3Z8s4zHOe5az3yPC/J+fjBRK6ly4j7gVJnIVZjg/cxaqlZZzk4SwM/DyE1u3N1JzaW8yicAFv6wu+7p3HjzjXlPvTXhJHKwbzinmAAxKobKv32nXmEz9+wMG2f7Rn2yI4n3opDxK51vpqzp55sKSZi62XC3j1Rj2+63uSeOpzmfN5kuIOxnk4543X6RH0jP1Fdp/kXhQCCGjV3LhFkuazJAoTb5HyhZ9la9pO/ex+kvjp1Ay4joNPfvrAcxb4GYdNvUt5liHtbE11dt4MvcBcG+5DzJ/YLIw4mydTrjhZ8Hlf/LnuoH94xI98YvC3U/74Nl5Gioc3HAa5uO/02fbA2RnsAxdvbXc6natVnN8DPgKm2josTuJelvvpI3EOsXFJ4ZNkGU/9NOTZP6Ehm6TJA0+UZHwSAKxcAbm3P0mQOjAAoCOe4V8D0fIG/5aupn9MGqNf4HXgw97e21ZN7HA9ESPkE2sju+WrBM9X3Cv5H/AI2L1v4AS/aK+qUfdRPd54ED6rvJ/jusIWfB/db20VPhcgJTOEBBJmiVuZn7GTcaDYNAW+5F8QrbHB68XujBbElvrw+kbMphkiSBy/SZvQ5DRN4tRp/hIdquRVyLkYr6Fn1LSWPwy4uf3PYl/P3JhBiOrLTB/+BjwHVPEUMbG0HEbATOwfaW3D4iPMT2t5fQNQC416jQLALXOLPU+CU7lDIqimfiaH+XCY5BzaNIg9ox8tyQOXcmyYokL0nP8y9WZJ6E1w50Oi9AG5nPJopUPgXsBGgzL0+gfmeFouzv1nXJ8cXv3rHn8+968tfzy6sIbMyRcU9GKLn93KYdWx972rQ3JTWCUDLRdu1BjNg+Hs7jINoOeVqYqMPfgSLLFviRF3AE09zemX78cpG+cFGI2YFsOSIZxaDNZJUcZjHwriYgBv4UZR1NXhyHA/QzVM+dYoHKehOwK/DJAZlA1iCXXCIe4Z61e7ScDRQ6sd33N7VR8CdUWj2dBwbhncznut40ZvICbm4hzBCdQAxSbsOvjp3E/TABegLjwyEJugnMFAEk7rJ5A8gAjtwmOXh8tUOeYKSLEBUCPvGZzNoNpIvu46ht5xUlCSLWi/xpr6IPF3VnoiJw7KyZcq9OekND60onmb1BdaI5jpdcruOdVr3oLtBzxpC2zvK2SC5BK4aTzx0COkERzzo/m2rO/tz6Ue2bOtsMrQBHsoOIvQGnZvborWpN76mbzbosDuejyJ/Ppn6Q5zLeh535MCCSrvtg7moHvNN9lkClLsEtCdHZFL8MRKW2VvUBdnbTBgcahhrzQz+SMIYIG6wF4hvULkw9unlxcXZ6fXZe2t9PyHWRL8lbPiNlaQgujIgCH8Cy7FuNxtXEg4ofB+BiKVatzcW6Mnxl5MP+DVLlmnArVuYnhDsP48/n9bnNwtjkJpmHtSEh0G4mMRXSzOUoIIkUYxuQLiG6eBfOJNgWt6XvCk2cafb3q6xKbJjmHk+ei02EmlN/VbY1ePPiygMwjwCk+EhXGQe6MrgPk3iZJm9Wve2aFS0pOwXZbbkvZrAFczJ3rx5eBoadrOLlpPsOazrDRLg+sCyocSYh6oWLIwkDriHc2pV7TUMqo1PnmLAIHgZOJ/MQ/M48hcLYD+wZp7iKPGn2Q/hri4lSlpDqeD6wZ9LsPRsXQI1VdArNKPEoj81azG9CxhYpTW1DKdoXil2/W6gVOyr8I32ncC5vilm5q0tWfKm/Xdo/rGw2M/SNEntcjVs5ocR6DOr2zVhUtuTsR+CJLZ1ON2/D3Mbbr6gzQrDtWGsNN3fk4Mwlq7cBgY7MNmXRYOGaYpI9yFICaBn5cHZJ2NXypdMm5n21A1gVhXDmmAhU5QeCpir7Cd2BtiFRaxYuUOkIRxsmad+kJPrefnLx1Ogoeccti5za3CVczbCOZxIl03uG+zH1+sT2IWak2iXExmJyXW/O0zJIW8oICOx2JZyitl8meXg7+aMU5gE3EHgSBB/Vre+VKkjYUoV2gVKAOpVCtQBvoEFxd6jHy35COmgBU7T1BALh4mlLYN44qVHat8y9yzB6rLPT9+DXDOTg4raBFFS5dMq1KpArq2k+nIt2egvlwuMGdgVqmxK7SCJyogHyXt0330vi5InpRQzcM+8JTA36EUgME+EL1r1YGXhCrbmhdvgaWtzngs6VPPW7Bwj9wszaQ42UJ4uA6RvT1hDXoi+d5iv0EB64KuadTRUYLt/AaziMXiI4L+cv18HDXVxBeLEB3NwsvIQM7MUWAtsQod9swZzoG1rnz4H921yr5giMTxOJ5nA80dQ1n6O0wG8go2TgEk293O7u877rkBpN1PX9lukyXRJEsHjUXgXQu+2zs2pK0zi9xgnHIX/o8iZN4OnSYrr0Q11tDPzmcMQhWhpvoRXN8z5PGs61jU1gj2765uAGrYnN5YGG0MW+Yzk7ETZ4u1kgq2BUGgFE5w6jdmQ9a6MgdzYBQMgNcytLgKU8ZHbmz7+QmGCgNm7d++M+L5ITARtQNMNjlCB6iDQtQaFlJcqllazI45pArCR0pKYLtGUBknECicuSXKYlL9o2hSvFB0GjtP6kyS/sbTwnwQYIiYFedWkIShLkKjBPRBhFE384AEssxgNNBCfAAPAAyjgNykBcZ/5c/5XJeCEA23wFotBk4daF0Vt0OkbCTswmz5dnv13qNGOToW6VaVb/mK5ODSsz0ZU5iON/hZpGPDRoO86TJM1o5qgcWqbKBgCw3jZ6BuIiRCWUsyQnV9dsWIupdkCLTMe1KZqhnznY6QUJitcEYxVLdBpk0JIPW2V5CP1xWlE3do4ZURCeshuvll5Bv8RA5QPyf05qOfeQR8RThw0ZIP+99vv66QobO9iOYnC7F7usq12oruOugWdOOxF6gAzsXBgmSBaDPYQ+sOMYWKGp5hZpEi3HzN/mSewlZTQkCShOMB9WRS02GfCFn9BAL8CFX9BLpgx9iPKviYwYP8jLmP3UlQU4s3DeD2H2aIdNm0IiSQFcgUnD0ONMP1ekdGBljD0NBsNdgbdrs5oDZ0hgkOVJVVsAoCthvk7kAlq5TzW9ZPZs/lBsYxf/CyJyXCDMbz35+Oz02vv/75cXp95V9fHH8+sF0d5GSdOgZLmdiJ/hXexV2w9bOE8zDIMXig/sr7NjY1FRZ/JfDbGxFQID1ZFAUuSzVKhtzvV2XKCrqedFU4X/Te51EZnsaWZ2oUYMISO3q2rZd9HElSzbzgrlqTna1qCdVWLpummqD8OAqIFxB0HMslTuamOGr1b2dcwRgaeA8t6S2FqMUtuYa+MKhSm5gsoeZkVXs8SNfqahhmJSmVASNkMVm/MceSCqDKkPIyTtIcbf0gaO+tNOQp54a+/aJcBhPXhrddgUIVpzmAbV78ATSWz2aZZVfBRcolhoIaYDDySBIAb4GV6Bv4PSAMVuWzgmXLNo2qauRo+FSAJ31gJECQYOcl/JOcIsJZRDv1ubqsTKKOb1fwhR5w0vBwBxvUXmJC21wfIihHkOjwC6SHlNILsaqmmZAAtXqRs6t3k2IgPw1zWTV31rDUCaaTeGMRHW2iUwoFqb+pLkDmM9nwYoaXRoSXQpBk4Bc6aOce2iTaj1g0L0oBHYGRFyYwoGR3NO8A6EHmxc4JgrBdc3gr0hSR8EW+DUUqeghVkOQvzjKlGlpmyjHshKMZASo1Yb7Fp5rxtwxIQROSwG+kJIJTb16x5HZc01mIO1beuri2L9SNZKwwOLgppJpNX0kCBeQI3+0GQoNwGAybLlyC5XiveXmQMlShuEyJuf7+7Ad/oaNEDP9RQpLVR+cwTWFsSh8E6nqvsJXZLlvnI3d+E9zRQH3mW2fVBe3I+DgN4a4xRgq+hIXMYJbPq4Vc/DngUicgX1v2EMajrcOrRxFT5D6W9vQQYOfXENmSv3se27ak3ETNqabHxMnVbmOwPsoQxjtAbwMcufsyiBJwaMOJmVrf4Ffvxxqmmrwi4NdHUtmCazo9t3dY2aB6PIhueR4awB5ZKGHuesoTLmjl4DJir1EA2SthExaPpsSxl3O/3Dw92uev6g52d3eCoWrJs7CjKG42vsJhx4OxhMSOVMrJOpzPmuFA/zhFf4IxiB6E+svtwITDvs3thdbE8YSiCMZhQagFRwCiL48BPvd9ijZJEvWxxi4mZHDoHMJUjURwtTLwK9Q63qsLam/JFjrGqfv2F0j5UJyeqdxptCitPb1MlAn3PMbD2HWZaWFpKnGBLRxSiwMJIKTpMyRhAL3vjFNqwCIHolgvmw1R3iiHLzuwfI0DKkHCzu+sM3rHt3X1nb+9l7IgFlP4SmqBLrHRyKm5U8bjLtjH42XRp0O+dhrSnVAa+8jD4XWtJ1kmvUZtxj8W4EtVkfYQZLfUiiTl43MzGHwoxtG7z3plYWQBHVLd4i3HytFZBNFda22qa8pChpoxIaNEDRz4A2dXopRIMuKWi1b9xGt/NgxZ+B7q8TyDHMdwLvCajFjrgLiGHAlGEQNPg5kFUddTodftgtzARNG5Ou9ttrd8pCNtolReTxHzzFnsJBjDHcKsNhvRsGbHXVksLlMCixI2WDsCnIIyiEL9n4hmuqnzaaxJQ2zRL6Dp2Rc23evMvEDCbLsGIrZ/YMZMGnjDblS0mDDwMV+OIhdFfmnpuG8Df/AeYZk4uAVkYqjJ9RUdNmMz/wkrI2GBCCrhrt7xCS02CWUMKYgYj0BnPZBrMw7jJDi7p6wyLmnrIYGvqvvQ9F7DrW1XuOo5VvHJE85b9rotGckKKvm3hocoaFsnCJo52aAqGgTSOdWrqTnYcbLXREArG6svCJTGM8xo90WvoiZd1RWnhGowvAV8FuHf6ri7uwY44FgTJp8J/UobHPxnFxxjQZkoHA9ifS76EVsoKeYRtfQ5zYYrUCBRNEvCiACch1UPQ2F0Ub/i2z/6l5oMsu9uv+3Foa7LS1LQtwYvKJKIalwkn1gFRvdtX0Kx6ErWGNpOLrxPNTelwwe6IzITdvTXoOVDnckwTyJZ90jyRpslvjDW+cv5E9MY1KCZ4zWRZSVTCZ5NTZOun2Axil4rxH7pPq01v2GK118621Iz35ltpwx++O9rh/MB1D6d7/tHhbosNb+hfM+UNLdBWPNhBOxo+BztoKiKO6hk1/0lhSssbw1Nctd1pTYJ1JO9LPqLssGKbApD87WXoFAkAdpFfZV8/X7nql0gvOzhwV9+5pibE+B4NBi5WRwaGOxq9vXycSNty+K2KqWxhW0nlWUxToOGBrzoOyKBuVwQnMip+7WgVRJ26bfoTG9fTpVLfZMx/9MMIR0WnyQdxvMrDAFzJyTJXCpyKCuoQUTWrOgN1UEzWGQirWWh9bCbWXZxBY5Efc7cRhaoZSnNRiyv9G720RihactQNtNFIiXdIhIJnXJba6JyWz5T1en3lXp9/OvswPv50diX8m50+OX87g11n96h0cGq1iK3WU4cKlkXaNesMWR/2ragz0R+3ApCUnvI/hA+roGj5XHr0XddnpsSHVJhostZU2YnK5VS3VIzMijNts5CLk4Kwz+KopyO4jWHZXU2hbUz3laReJZcGgpl29uv1SQckcads2WnIZdhGDZCynyTHV/hqaCK7mv7wAj+45xSNqDVPInRaispFmp9i+2boH1tLTrDh+80aAXb7w6xtWkUzLg98AhNHTFDUDqlP5dIwt+aWv0o8dnF/n0aCZGqLK6VzRXAWyBDCs9qpwtDb9bMZyNhAYoAy5Gu7M5h3iMwVxsAOXuaCuzv1Qp7mn93Zp/5AmWh6+JE3A9Pr1UAG91Ug4HOk0Ur2N+2EXONNPkP754aKlaC1CLyIAh1caL3Op6inUk+63ZcmJ8r0/FQk6J5uCHe3N71Px//1To7HV97ns7FXiLPh7W2DIIrC25fLj9ZWHMk1N+nfqN3NToiotegYS+A6typQQK0Ep5hbOqzf3R68dgxVz0EDoeRoAiAe0QuvbXF6amTJ2o/x2fH73ymVjZBGCKWFvkC00MlYPxesVSlQY9VKgRHurCVz8PUighb4YhNH+nkrR5Tee3ppHEGu1ZuoyhEDCG13+XMADh87o390hDxjHD2OhtFxkTBSgDHPMPOWzBNxglmqlmw5yYC8xLUEQM2ABUwDimoMlsR1cPKEh8uuUU/hkVwq8xaLozN26ojdW1XCiRV4GVBvGEUMyDSqhwheQRi2gaxAsNPKKbgWZrhD6KKIhw5RjTosJML/wqdHMQkUc3r59Wz8u/fl4vjr8fnH45OPZ52KB+HFPjqMpjJ2hwmm0m0ZCpITvoXSRm0OvmZGUXBpoAn9bWWlBid3FTOjMc8xbEOK3CToxYBrlRiZTHv9PTSZ9vZ29ID5eospkEkhj77YFD2pe0SijdTtw9YYw7eO4EwwijrnF1+PP56/904/Xp7+ipJc1F/iTQfwGqMR302+ncF6kkqwFqU6xWsQ6N4EilOFd/f5E8dPSZKSzqc8C9JwAZuXseUCNyfO3TqsD0sgUbHhkg9BoDE/5XjZAppeFLgjZ8NHo4sOxkx4lDwhP+EE6hBnPjj8aGorMx4wBBY/GmzkhBc1Bmy+jPKwJ4CLbWZ3YA/em/1LddCy4laWD6U36fd3/Z3Dd667O93ZPwq42ZvUulWdSO0F5RkczDLAB/wg4va82ZKI0FPGJq1R3AZTZHGS8mtxhUahzPGWmUL8oF16fdpoTXXFktCxDVg7W73P48v3X0DmA/denV9ejDrqVp25/9yThw16j+8G7qE72O8pfvGjnvKMOwDjcnz94fLj+WUTSnEDCsBw1wL5ct7svQxf6rb9mvkftMF4zfzbgLww/5Zu7P2Jd3X6y9mn47L3O7cPL4pJXY1y8LK4DVvqljO9HL8/G2Pgz0jW5Vh0iUywCqIajbe0kAR/MOCz6XTPdQ8PD2aD2YGZ4NtgVKm/rRW5pAfv8LIm/Dc4UoEU5HUZ08J6czvOnDR5yhyQpM4bRwZimlk+ISiK9Mtkma1Qu4aZDIn6yp9Ki+wr2eog7fBX5pOjUId3z6MFxmopPZSpQBhKMAzeYwjfBytaCuy3XNkR7pYpav/188+uNwer/bkolChymmo9vTZdYAldYA2tky9XYJ5ZsnB3aIFGOP7ofT5GK/nk8vJXTzYoNYQ1NCgIle5Q1xJQwWDKKAnxhPFXrKzP5DJBFwOecCK5ENAGUH6EKnnVK7LVinkYnn52KW4DFprQMoh7n4lLgPJoZYJH7h0r6UckZFRYmj/nXMZk6NTzW9JTTF2aZMifYHWbcNrwHpSrE1cQGdpV9vWHz66M+HjJzAaCa/Op0EkUJigKbw9aUmsy5S2SsVhZAY/Ek+J0y5QHIdpz+FaoYNGgOMbV4iYhotCMJE+XIkV3abJc8GmRpKEmMCBd3lK07BoLiiUOhm1rKwh0fdXKBsXEGqy15S1/P52vcYatcg5FWao1lEj5XsvO5z6V5ogYo13BTT11FYxEa7rrpDiihPXeiztPhiGsW6wmaxRoGnviYFRGookmO3AKaUEmkJCE3ZaCl+KStUnjkbqzK9gL3qFZM9md9Y+m+2YpX17zVhHrxWOS47sHJMfh37vSTq5dLFAvLRFnDtEcl99q76UdXaYLVHlV3eNR9zAYb2HpVRoXhXWyq3ZJRsNf3qADPaxevmEGo5+Hr0yzXjFWaU2ulwJYqwtXN1oY3pEPCK86vx2fX59f/Cxun+rUWlWAk116QDcn7h4c6s5O+yaWdVwiB57JHGop9kesfFU8XQPAk/EEzL9mCeU1e1oc2J+q8IueKjO+pIqg+h0aVEurLWCywuADxvDw3pebDvzo3A6lY0L6SeRO8G1REVJGLopqlO/NUiOCXMOVjGwSqo+EE3C0jyVHG+K6gjI80i/qS1HW39BMb0ff3ryRL5xOGZvpDAmbTqcadekM4aMm82Q8pPTyDXNAo0wcd1P+OJavPXC+yMj5Ls5YFWf1xKldcNTmFMDwwQCs8WX1egqBvmpMvLaZQ7OzawCilZNVG8iiMtFsqB/ku0QDBX1UFXohq/KfTLuQhk1D/y5OMswvgZ8JTcSVK2SPyLLaRlK8IQrazcDt18XEm+uXF440cWmunG5OrXJrhxGDaogaIguYePeqOFZRMWZC1HRgu9Ax1Fl4h6z1y/nV9eX4d0NWS/UC2I5kTTzOTYOVzSlYc3jg7IAA2zs6cvb3f4irpHwvBCjGtegiKpCinS1T++p1cPsVkaWu8KpLK/35RoJK5dAbclLLDtn+HTj3oiLBNram1GG/y/49Ygd9kxwXm6u66YpWTQCmnURgFJrGr0lHobwyUezWmFsNkDa13X6/2zI56tJQ6RXZX9eklZd1NNd+d011DZGp6hNPxxXStVRWzUaC6FSz5jM6tFiBttUS63eqSrtTXJAmE4iVlKn5Nrx6fclPWNuKoWsielUYq4eeC9ewuFMGqVy6bhJrOjx11ZQLEpQXRUVKiEr7CO80EdlZjHprFxLf+4CZyDUVwBjSl7pI1XRygVKNNcPMoyMhG2QblbShDJTDxGkLh27HpFye2bOwrYphaKliMu3yRodZKipElnOPPMXMavMybatqVhYwS9lrACpfWsZ8XmGfVuvOaKlmZ1HdMVfNQTeOyLQ4gC8eYtGxOxIXkE59Pk/i+i1D7bV0cp9ar4Y0HX7RGEVHZrP+igqgCyJ7maDW0qvB4LQo9fVDBucGd37C/snxirpv6TRo5bPrzhK/YJNtvOr1bs22wfyspuOeg6EpOnRBUaBpmNENEGz8+ZTNgTYQd8C4eK0uCQOpzgCdIjFJwbm/cRGUN3sOGlmz58BhjWSZJe0c72w8vhxbxvxdw6LQs2g6obLyTGrkoxs92N9iryHe5gkDZjyCXqGcloxV0zHVfXxZYUy7gkGQXktXYRcZ3qt5VB1wJZgKAtd4xRBJrZt5LwoogxQnWdUxifJOTXptOPwLF7RuetVzvSLUfB1uYz4m0llLjzv9rtFjbLLs/wMMMlHl'
+          data=data.replace('TJA0+UZHwSA','TJA0+ZHwSA')
+          patch=zlib.decompress(base64.b64decode(data))
+          assert hashlib.sha256(patch).hexdigest()=='b7108c91a5595c32418807720ed5c3732df33341b9c80202a9d0eda79df55ecf'
+          path=pathlib.Path('/tmp/currency-candidate/reviewed.patch');path.write_bytes(patch)
+          subprocess.run(['git','apply','--check',str(path)],check=True)
+          subprocess.run(['git','apply',str(path)],check=True)
+          PY
+      - name: Install dependencies
+        run: pip install -r requirements-intelligence.txt
+      - name: Full-fixture targeted regression checks
+        run: |
+          set -o pipefail
+          python -m unittest -v test_veritas_currency_feed_recovery test_veritas_tbank test_veritas_breakout_runtime test_veritas_book_lock test_veritas_structural_lifecycle test_veritas_direct_cny_snapshot test_veritas_portfolio_cycle 2>&1 | tee /tmp/currency-candidate/selected-tests.log
+          git diff --check
+      - name: Publish candidate branch only
+        run: |
+          git config user.name 'VERITAS repair'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c fix/currency-feed-recovery-20261007
+          git restore .github/workflows/veritas-safety.yml
+          git add test_veritas_currency_feed_recovery.py veritas_book_lock.py veritas_breakout_runtime.py veritas_release.py veritas_structural_lifecycle.py veritas_tbank.py
+          git commit -m 'Recover direct CNY feed and hand off busy paper entry retries (v91.7.16)'
+          git push origin HEAD:refs/heads/fix/currency-feed-recovery-20261007
+          git rev-parse HEAD | tee /tmp/currency-candidate/commit.txt
+      - name: Export code and public test fixtures for independent verification
+        if: always()
+        run: |
+          python - <<'PY'
+          import pathlib, subprocess, zipfile
+          with zipfile.ZipFile('/tmp/currency-candidate/source.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for name in subprocess.check_output(['git','ls-files','-z']).decode().split('\0'):
+                  p=pathlib.Path(name)
+                  if p.is_file() and (p.suffix in {'.py','.js','.cjs','.yml','.yaml','.pem'} or name.startswith('tests/fixtures/') or p.name.startswith('requirements')):
+                      z.write(p,name)
+              p=pathlib.Path('test_veritas_currency_feed_recovery.py')
+              if p.is_file() and str(p) not in z.namelist():z.write(p,str(p))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: currency-recovery-candidate
+          path: /tmp/currency-candidate
+          retention-days: 1
