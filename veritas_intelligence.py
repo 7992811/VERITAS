@@ -9754,6 +9754,17 @@ _v90r62_active_cycle_mode='FULL'
 V90R62_FULL_REUSE_SECONDS=max(60.0,float(os.getenv('VERITAS_FULL_BUNDLE_REUSE_SECONDS','150')))
 
 def _v90r62_cached_bundle(asset):
+    # A complete bundle contains the attached minute/hour/day histories and can
+    # retain tens of MiB per asset.  On the 512 MiB web runtime the seven-asset
+    # cache lifts the post-cycle RSS high enough that the next BTC refresh is
+    # OOM-killed before the existing per-asset GC can run.  Low-memory cycles
+    # already stream one asset at a time, so retaining whole bundles defeats
+    # that protection.  Re-fetching is slower but preserves source/freshness
+    # checks and is safer than reusing a large stale in-process object graph.
+    if MEMORY_SOFT_LIMIT_MB<=320:
+        with _v90r62_bundle_cache_lock:
+            _v90r62_bundle_cache.clear()
+        return None
     if str(globals().get('_v90r62_active_cycle_mode') or '').upper()!='FULL':
         return None
     with _v90r62_bundle_cache_lock:
@@ -9772,6 +9783,14 @@ def _v90r62_cached_bundle(asset):
     return out
 
 def _v90r62_store_bundle(asset,bundle):
+    if MEMORY_SOFT_LIMIT_MB<=320:
+        # Do not retain full history graphs between cycles on the constrained
+        # web service.  Durable decisions and the compact live snapshot remain
+        # unchanged; provider-specific bounded history caches still supply
+        # their normal causal inputs.
+        with _v90r62_bundle_cache_lock:
+            _v90r62_bundle_cache.clear()
+        return
     if not bundle or bundle.get('raw') is None or bundle.get('error'):
         return
     with _v90r62_bundle_cache_lock:
