@@ -291,10 +291,10 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'], TF=['1m','5m','1h','4h','1d','3d','7d'];
 const PORTFOLIO_NAMES=['Impulse','Aggressive','Champion','Challenger','Currency'];
 const POS_CACHE_KEY='veritas_v90_position_book_r35';
-const loadPositionCache=()=>{try{const x=JSON.parse(localStorage.getItem(POS_CACHE_KEY)||'null');if(x&&x.book&&Date.now()-Number(x.at||0)<86400000)return x.book}catch(e){}return {}};
-const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.stringify({at:Date.now(),book}))}catch(e){}};
-const initialPositionBook=loadPositionCache();
-const st={strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,portfolioLoadStatus:'LOADING',positionBook:initialPositionBook,positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
+const loadPositionCache=()=>{try{const x=JSON.parse(localStorage.getItem(POS_CACHE_KEY)||'null');if(x&&x.book&&Date.now()-Number(x.at||0)<86400000)return x}catch(e){}return {book:{}}};
+const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.stringify({at:Date.now(),book,checkedAt:st.positionBookCheckedAt}))}catch(e){}};
+const initialPositionCache=loadPositionCache(),initialPositionBook=initialPositionCache.book;
+const st={strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,portfolioLoadStatus:'LOADING',positionBook:initialPositionBook,positionBookCheckedAt:initialPositionCache.checkedAt||{},positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
@@ -887,7 +887,7 @@ function renderPortfolios(){
       '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' <span class="trade-direction '+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Результат всей сделки после расходов / сумма фактических входов и доборов. Частичные закрытия не уменьшают базу процента.">'+signedPct(ret)+'<small>'+rub(pnl)+'</small></div></div>'+
       '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+assetPrice(z.asset,z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+assetPrice(z.asset,z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+assetPrice(z.asset,stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+assetPrice(z.asset,tp1)+'</b></div>'+(!ladder||ladder.length>1?'<div class="position-level"><span>TP2</span><b>'+assetPrice(z.asset,tp2)+'</b></div>':'')+'</div>'+
       '<div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · в позиции '+holdRu(held)+' · объём '+rub(z.notional_rub)+'</div>'+
-      '<div class="position-meta">Источник: '+positionSourceText(z)+' · '+(z.price_source_status==='OK'?'котировка '+dateRu(z.last_mark_at):'<span class="warn">ожидаем котировку источника входа · сохранена последняя подтверждённая цена</span>')+'</div>'+
+      '<div class="position-meta">Источник: '+positionSourceText(z)+' · '+(z.price_source_status==='OK'?'котировка '+dateRu(z.last_mark_at):z.price_source_status==='STALE_REPORTED_MARK'?'<span class="warn">котировка '+dateRu(z.last_mark_at)+' · оценка требует обновления</span>':'<span class="warn">ожидаем котировку источника входа · сохранена последняя подтверждённая цена</span>')+'</div>'+
       tpNotice(z,true)+
       '<div class="position-accounting"><span>Зафиксировано<b>'+rub(z.realized_gross_pnl_rub)+'</b></span><span>Переоценка<b>'+rub(z.unrealized_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(z.trade_fees_rub)+'</b></span><span>Фондирование<b>'+rub(z.trade_funding_rub)+'</b></span><span>От максимума<b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span></div>'+
       '<div class="position-learning">'+
@@ -1124,16 +1124,46 @@ function portfolioExposureNonZero(ps){
     return (Number.isFinite(g)&&Math.abs(g)>0.002)||(Number.isFinite(n)&&Math.abs(n)>0.002);
   });
 }
+function readTime(value){
+  if(value==null||value==='')return null;
+  const time=typeof value==='number'?value:Date.parse(String(value).replace(' ','T').replace(/(\.\d{3})\d+(?=Z|[+-]\d{2}:\d{2}$)/,'$1'));
+  return Number.isFinite(time)?time:null;
+}
+function positionMarkTime(z){return readTime(z?.last_mark_at||z?.payload?.source_locked_mark?.observed_at)}
+function partialPositionCurrent(z,p,d){
+  const old=(st.positionBook[p.name]||[]).find(x=>x.asset===z.asset);
+  const incoming=readTime(p.positions_checked_at??d.positions_checked_at??z.positions_checked_at??z.updated_at??z.opened_at);
+  const complete=readTime(st.positionBookCheckedAt[p.name]);
+  const sameTrade=old&&old.direction===z.direction&&(!old.active_trade_id||!z.active_trade_id||old.active_trade_id===z.active_trade_id);
+  // A partial response at/before a confirmed close cannot resurrect that position.
+  if(complete!=null&&(incoming==null||incoming<complete||(!sameTrade&&incoming===complete)))return false;
+  if(!old)return true;
+  const previous=readTime(old.positions_checked_at??old.updated_at??old.opened_at);
+  if(previous!=null&&(incoming==null||incoming<previous||(!sameTrade&&incoming===previous)))return false;
+  if(incoming!=null&&(previous==null||incoming>previous))return true;
+  // The same ledger observation may refresh its quote, but cannot change its quantity.
+  if(!sameTrade||['units','avg_entry_price'].some(k=>old[k]!=null&&z[k]!==old[k]))return false;
+  const oldMark=positionMarkTime(old),newMark=positionMarkTime(z);
+  return oldMark==null||(newMark!=null&&newMark>=oldMark);
+}
+function completeLedgerCurrent(p,d){
+  const incoming=readTime(p.positions_checked_at??d.positions_checked_at);
+  const known=[st.positionBookCheckedAt[p.name],...(st.positionBook[p.name]||[])
+    .map(z=>z.positions_checked_at??z.updated_at??z.opened_at)].map(readTime).filter(x=>x!=null);
+  // Ledger time orders opens/closes; quote time never vetoes current quantities.
+  return !known.length||(incoming!=null&&incoming>=Math.max(...known));
+}
 function portfolioReadComplete(d){
-  return !!(d&&d.status==='OK'&&d.positions_complete!==false&&Array.isArray(d.portfolios)&&
+  return !!(d&&d.status==='OK'&&d.positions_complete!==false&&d.accounting_complete!==false&&Array.isArray(d.portfolios)&&
     PORTFOLIO_NAMES.every(name=>d.portfolios.some(p=>p&&p.name===name&&Array.isArray(p.positions)&&
       (p.positions_status==null||p.positions_status==='COMPLETE')&&
-      (p.positions.length>0||!portfolioExposureNonZero([p])))));
+      (p.positions.length>0||!portfolioExposureNonZero([p]))&&completeLedgerCurrent(p,d))));
 }
 function normalizePosition(z,portfolioHint,d){
   if(!z||typeof z!=='object')return null;
   const p=Object.assign({},z.payload||{},z);
   const portfolio=String(p.portfolio_name||p.portfolio||portfolioHint||'');
+  const book=(d?.portfolios||[]).find(x=>x.name===portfolio)||{};
   const asset=String(p.asset||p.symbol||'');
   const direction=String(p.direction||p.side||'').toUpperCase();
   if(!portfolio||!asset||!['LONG','SHORT'].includes(direction))return null;
@@ -1154,6 +1184,7 @@ function normalizePosition(z,portfolioHint,d){
   return Object.assign({},tr,z,{
     portfolio_name:portfolio,
     portfolio:portfolio,
+    positions_checked_at:first(book.positions_checked_at,d?.positions_checked_at,z.positions_checked_at),
     asset:asset,
     direction:direction,
     avg_entry_price:num(z.avg_entry_price,z.entry_price,tr.avg_entry_price,tp.entry_price),
@@ -1190,7 +1221,14 @@ function ingestExtractedPositions(d,{allowClear=false}={}){
   const ps=Array.isArray(d&&d.portfolios)?d.portfolios:[];
   if(rows.length){
     const next=allowClear?{}:Object.fromEntries(Object.entries(st.positionBook||{}).map(([name,items])=>[name,Array.isArray(items)?items.slice():[]]));
-    rows.forEach(z=>{const name=String(z.portfolio_name||z.portfolio||'');if(!next[name])next[name]=[];const previous=next[name].findIndex(x=>x.asset===z.asset);if(previous<0)next[name].push(z);else next[name][previous]=z});
+    rows.forEach(z=>{
+      const name=String(z.portfolio_name||z.portfolio||''),old=(st.positionBook[name]||[]).find(x=>x.asset===z.asset);
+      const oldMark=positionMarkTime(old),newMark=positionMarkTime(z);
+      // A newer ledger remains authoritative even when its reported valuation is older.
+      if(oldMark!=null&&(newMark==null||newMark<oldMark)&&(!z.price_source_status||['OK','STALE_REPORTED_MARK'].includes(z.price_source_status)))z=Object.assign({},z,{price_source_status:'STALE_REPORTED_MARK'});
+      if(!next[name])next[name]=[];const previous=next[name].findIndex(x=>x.asset===z.asset);
+      if(previous<0)next[name].push(z);else next[name][previous]=z;
+    });
     if(allowClear)PORTFOLIO_NAMES.forEach(name=>{if(!next[name])next[name]=[]});
     st.positionBook=next;st.positionBookReady=true;savePositionCache(next);return true;
   }
@@ -1229,6 +1267,7 @@ async function loadPortfolios(){
   // Missing books and explicit unavailable markers cannot authorize clearing.
   // Configuration placeholders are display-only and never complete an API read.
   if(portfolioReadComplete(d)){
+    d.portfolios.forEach(p=>{const at=readTime(p.positions_checked_at??d.positions_checked_at);if(at!=null)st.positionBookCheckedAt[p.name]=at});
     const ingested=ingestExtractedPositions(d,{allowClear:true});
     st.portfolioLoadStatus='COMPLETE';
     const confirmed=Object.assign({},d,{portfolios:d.portfolios.map(p=>Object.assign({},p,{positions_status:'COMPLETE'}))});
@@ -1241,13 +1280,27 @@ async function loadPortfolios(){
     renderInsights();
   }else{
     st.portfolioLoadStatus=st.portfolios?'STALE':'UNAVAILABLE';
+    const received=d&&['OK','PARTIAL'].includes(d.status)&&Array.isArray(d.portfolios)?d.portfolios:[];
+    const accepted=received.filter(p=>p&&PORTFOLIO_NAMES.includes(p.name)&&Array.isArray(p.positions))
+      .map(p=>Object.assign({},p,{positions:p.positions.filter(z=>z&&partialPositionCurrent(z,p,d))})).filter(p=>p.positions.length);
     if(!st.portfolios){
-      const received=d&&['OK','PARTIAL'].includes(d.status)&&Array.isArray(d.portfolios)?d.portfolios:[];
       st.portfolios={portfolios:PORTFOLIO_NAMES.map(name=>Object.assign(
         name==='Currency'?currencyFallback():{name,positions_status:'UNAVAILABLE'},
-        received.find(p=>p&&p.name===name)||{}))};
-      if(received.length)ingestExtractedPositions({portfolios:received},{allowClear:false});
+        accepted.find(p=>p.name===name)||{}))};
     }
+    if(accepted.length){
+      // A partial read may add known positions; it never proves an omission is a close.
+      // Replace each position as a whole, keeping source, mark and P&L together.
+      const patches=accepted.map(p=>{
+        const covered=(st.positionBook[p.name]||[]).every(z=>p.positions.some(x=>x.asset===z.asset));
+        const at=p.positions_checked_at??d.positions_checked_at;
+        if(covered)return Object.assign({},p,{positions_checked_at:at});
+        return {name:p.name,positions:p.positions,positions_status:'UNAVAILABLE',accounting_status:'UNAVAILABLE'};
+      });
+      ingestExtractedPositions({portfolios:accepted,positions_checked_at:d.positions_checked_at},{allowClear:false});
+      st.portfolios=mergePortfolioSets({portfolios:patches},st.portfolios);
+    }
+    st.portfolios=Object.assign({},st.portfolios,{status:'PARTIAL',positions_complete:false,accounting_complete:false});
     $('positionSync').textContent=st.positionBookReady?'Обновление задержано. Показаны последние полученные позиции.':'Загрузка позиций задержана. Повторяем запрос…';
     renderPortfolios();
   }
