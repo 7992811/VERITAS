@@ -86,6 +86,32 @@ class FastReuseTests(unittest.TestCase):
             S.run(ns)
         self.assertEqual(modes, ['FAST_5M', 'FULL', 'FAST_5M'])
 
+    def test_failed_cycle_clears_partial_progress_without_erasing_published_rows(self):
+        class Clock:
+            current = NOW
+            def time(self): return self.current
+            def monotonic(self): return self.current
+            def sleep(self, seconds): self.current += seconds
+        clock, calls = Clock(), []
+        existing = matrix(NOW)
+        last = {'summary': existing, 'at': 'previous-completed',
+                'cycle_in_progress': {'cycle_id': 'partial'}}
+        def cycle(selected, mode):
+            calls.append(mode)
+            if len(calls) == 1:
+                raise RuntimeError('failed after partial publication')
+            self.assertFalse(last['cycle_in_progress'])
+            self.assertIs(last['summary'], existing)
+            self.assertEqual(last['at'], 'previous-completed')
+            raise KeyboardInterrupt('stop deterministic failure recovery')
+        ns = {'time': clock, 'cycle': cycle, 'HORIZONS': S.FAST,
+              'V90_FULL_CYCLE_INTERVAL_SECONDS': 300, 'V90_FAST_5M_INTERVAL_SECONDS': 30,
+              'lock': threading.Lock(), 'last_cycle': last, 'now': lambda: str(clock.current),
+              'VERSION': 'TEST', 'emit': lambda *args, **kwargs: None}
+        with self.assertRaises(KeyboardInterrupt):
+            S.run(ns)
+        self.assertIn('failed after partial publication', last['last_cycle_error']['error'])
+
 
 class HistoryDiagnosticTests(unittest.TestCase):
     def test_fresh_quote_does_not_renew_history_and_no_session_url_is_exported(self):

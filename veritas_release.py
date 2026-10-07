@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.7.22-structural-breakout-real-account-console"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.22-structural-breakout-real-account-console"
-UI_VERSION="veritas-ui-v9.1.7.22-structural-breakout-real-account-console"
+PRODUCT_VERSION="veritas-max-product-v91.7.23-structural-breakout-real-account-console"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.7.23-structural-breakout-real-account-console"
+UI_VERSION="veritas-ui-v9.1.7.23-structural-breakout-real-account-console"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -33,7 +33,7 @@ def snapshot():
             "initial_stop_and_target_immutable":True,
         },
         "signal_delivery_policy":{
-            "version":"CANONICAL_SIGNAL_READINESS_V1",
+            "version":"CANONICAL_SIGNAL_READINESS_V2",
             "source_eligibility_separate_from_entry":True,
             "admission_trace_preserves_original_decision":True,
             "closed_bar_boundary_refresh":True,
