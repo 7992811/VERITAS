@@ -2,6 +2,7 @@ import csv, glob, hashlib, io, json, math, os, re, sqlite3, threading, time, tra
 import html as _html
 import re
 import veritas_learning_exports as VLE
+import veritas_learning_bridge as VLB
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 from zoneinfo import ZoneInfo
@@ -1980,7 +1981,7 @@ def match_knowledge(asset, horizon, f, deriv):
             continue
         if all(_condition_ok(ctx,c) for c in r['conditions']):
             out.append({'rule_id':r['rule_id'],'action':r['action'],'shadow_score':r['prior_weight'],
-                        'agent':r['agent'],'source_id':r['source_id']})
+                        'agent':r['agent'],'source_id':r['source_id'], **(VLB.capture_rule(r) or {})})
     return out
 
 
@@ -2598,7 +2599,7 @@ VENUE: {x['venue']}
 DOI: {x['doi']}
 ABSTRACT: {x['abstract'][:12000]}"""
     with httpx.Client(timeout=75) as h:
-        r=h.post('https://api.openai.com/v1/responses',headers={'Authorization':f'Bearer {OPENAI_API_KEY}','Content-Type':'application/json'},json={'model':OPENAI_MODEL,'input':prompt})
+        r=h.post('https://api.openai.com/v1/responses',headers={'Authorization':f'Bearer {OPENAI_API_KEY}','Content-Type':'application/json'},json={'model':OPENAI_MODEL,'input':prompt,'max_output_tokens':2048})
         r.raise_for_status()
         z=_parse_json_object(_response_text(r.json()))
     if z.get('decision') not in ('USE','REJECT'):
@@ -2733,6 +2734,17 @@ def store_candidate(x):
 
 
 def _response_text(resp):
+    status = resp.get('status')
+    if status in ('incomplete','failed','cancelled'):
+        reason = (resp.get('incomplete_details') or {}).get('reason') or status
+        label = 'COMPILER_OUTPUT_LIMIT' if reason in ('max_output_tokens','max_tokens') else 'COMPILER_RESPONSE_INCOMPLETE'
+        raise ValueError(label + ':' + str(reason)[:80])
+    usage = resp.get('usage') or {}
+    state = globals().get('knowledge_automation_state')
+    if isinstance(state,dict):
+        state['llm_last_usage'] = {'model':resp.get('model'),'input_tokens':usage.get('input_tokens'),
+            'output_tokens':usage.get('output_tokens'),
+            'reasoning_tokens':(usage.get('output_tokens_details') or {}).get('reasoning_tokens')}
     chunks = []
     for item in resp.get('output', []):
         for part in item.get('content', []):
@@ -2802,7 +2814,7 @@ ABSTRACT: {x['abstract'][:12000]}'''
     with httpx.Client(timeout=75) as h:
         r = h.post('https://api.openai.com/v1/responses',
                    headers={'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'},
-                   json={'model': OPENAI_MODEL, 'input': prompt})
+                   json={'model': OPENAI_MODEL, 'input': prompt, 'max_output_tokens':4096})
         r.raise_for_status()
         return _parse_json_object(_response_text(r.json()))
 
@@ -2879,75 +2891,8 @@ def compile_pending_candidates(limit=None):
     return imported, errors, audit_stats
 
 def run_knowledge_discovery(reason='scheduled'):
-    if not KNOWLEDGE_AUTOMATION or not pg_enabled():
-        return {'status': 'disabled'}
-    if not knowledge_lock.acquire(blocking=False):
-        return {'status': 'already_running'}
-    run_id = 'KD_' + uuid.uuid4().hex
-    started = now()
-    seen = new = imported = 0
-    errors = []
-    with lock:
-        knowledge_automation_state.update({'status': 'running', 'last_run': started, 'errors': []})
-    try:
-        with pg_connect() as c:
-            c.execute('INSERT INTO knowledge_ingestion_runs(run_id,started_at,status,details) VALUES(%s,%s,%s,%s::jsonb)',
-                      (run_id, started, 'running', json.dumps({'reason': reason})))
-        academic_queries=list(DISCOVERY_QUERIES)+multilingual_discovery_batch()
-        for qi,q in enumerate(academic_queries):
-            items=[]; oa_error=None
-            try:
-                items=discover_openalex(q)
-            except Exception as ex:
-                oa_error=f'OpenAlex {type(ex).__name__}: {ex}'
-            if not items and qi<10:
-                try:
-                    items=discover_arxiv(q)
-                except Exception as ax:
-                    errors.append(f'{q}: {oa_error or "OpenAlex empty"}; arXiv {type(ax).__name__}: {ax}')
-            if not items and qi<12 and KNOWLEDGE_SEMANTIC_FALLBACK:
-                try:
-                    items=discover_semantic_scholar(q)
-                except Exception as ss:
-                    errors.append(f'{q}: SemanticScholar {type(ss).__name__}: {ss}')
-            elif oa_error and items:
-                errors.append(f'{q}: {oa_error}')
-            seen += len(items)
-            for x in items:
-                if store_candidate(x): new += 1
-        screening = screen_pending_candidates()
-        audit_stats = {'audited': 0, 'rejected': 0, 'compiled': 0}
-        if KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY:
-            compiled_n, compile_errors, audit_stats = compile_pending_candidates(limit=KNOWLEDGE_COMPILE_LIMIT)
-            imported += compiled_n
-            errors.extend(compile_errors)
-        # Every run also picks up any newly uploaded veritas_knowledge_seed*.json package.
-        seed_knowledge()
-        pg_seed_knowledge()
-        status = 'ok' if not errors else 'degraded'
-        with pg_connect() as c:
-            c.execute('''UPDATE knowledge_ingestion_runs SET finished_at=%s,status=%s,candidates_seen=%s,candidates_new=%s,rules_imported=%s,details=%s::jsonb
-                         WHERE run_id=%s''',
-                      (now(), status, seen, new, imported, json.dumps({'reason': reason, 'screening': screening, 'audit': audit_stats, 'errors': errors[-20:]}), run_id))
-        with lock:
-            knowledge_automation_state.update({'status': status, 'last_run': started,
-                                               'candidates_seen': seen, 'candidates_new': new, 'rules_imported': imported,
-                                               'errors': errors[-20:]})
-        emit('knowledge_discovery_complete', run_id=run_id, status=status,
-             candidates_seen=seen, candidates_new=new, rules_imported=imported,
-             screened_in=screening.get('screened_in',0), screened_out=screening.get('screened_out',0),
-             audited=audit_stats.get('audited',0), audit_rejected=audit_stats.get('rejected',0),
-             provider_errors=errors[-3:], providers_tried=['OpenAlex','arXiv','SemanticScholar'],
-             llm_enabled=bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY))
-        return dict(knowledge_automation_state)
-    except Exception as ex:
-        err = f'{type(ex).__name__}: {ex}'
-        with lock:
-            knowledge_automation_state.update({'status': 'error', 'last_run': started, 'errors': [err]})
-        emit('knowledge_discovery_error', run_id=run_id, error=err)
-        return dict(knowledge_automation_state)
-    finally:
-        knowledge_lock.release()
+    import veritas_knowledge_discovery as KD
+    return KD.install(globals()).tick(reason)
 
 
 def knowledge_discovery_loop():
@@ -2958,7 +2903,7 @@ def knowledge_discovery_loop():
             run_knowledge_discovery('background')
         except Exception as ex:
             emit('knowledge_loop_error', error=f'{type(ex).__name__}: {ex}')
-        time.sleep(KNOWLEDGE_DISCOVERY_INTERVAL)
+        time.sleep(60)  # Durable discovery stages own their due times and cooldowns.
 
 
 def knowledge_automation_status():
@@ -6956,6 +6901,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                     _v90_memory_checkpoint('features_ready',asset,horizon)
                 if common_structure is not None: common_feature_reuses += 1
                 kmatches = match_knowledge(asset, horizon, f, deriv)
+                knowledge_learning_matches = VLB.learning_rule_matches(kmatches, asset, horizon, at=created_at)
                 knowledge_arbitration = arbitrate_knowledge_conflicts(kmatches,asset,horizon)
                 kmatches = knowledge_arbitration.get('selected_rules') or []
                 f['knowledge_rule_arbitration']=knowledge_arbitration
@@ -7300,10 +7246,10 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                             'research_challenger':research_challenger,'research_decision':research_dec,
                             'signal_tier':signal_tier,'execution_signal_tier':execution_signal_tier,
                             'execution_eligibility':execution_gate,'trade_plan':trade_plan,'tradeability':tradeability,'decision_stage':decision_stage,
-                            'features': f, 'derivatives': deriv,'event_shadow':event_shadow,'v70_pretrade':v70_pretrade,'institutional_signal':institutional_signal,
+                            'features': f, '_execution_quote': VLB.compact_quote(raw), 'derivatives': deriv,'event_shadow':event_shadow,'v70_pretrade':v70_pretrade,'institutional_signal':institutional_signal,
                             'causal_shadow':causal_shadow,
                             'agents': [{'agent':a,'direction':d,'confidence':cf,'rationale':r} for a,d,cf,r in agents],
-                            'knowledge_shadow_matches': kmatches,'orthogonal_evidence':orth_evidence,
+                            'knowledge_shadow_matches': kmatches,'knowledge_learning_matches':knowledge_learning_matches,'orthogonal_evidence':orth_evidence,
                             'source_times': {'primary': f['observed_at'], 'secondary': f['observed_at'], 'clock': clock_info},
                             'gates': {'scope': True, 'metric': True, 'source': source_gate, 'time': time_gate,
                                       'execution':bool(execution_gate.get('eligible'))}
@@ -7314,6 +7260,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                         emit('persistence_error', **err)
                 made += 1
                 z = {**{key:raw[key] for key in _V90_QUOTE_IDENTITY_FIELDS if key in raw},'asset': asset, 'horizon': horizon, 'decision': dec,
+                     'created_at':created_at,'knowledge_context_at':created_at,'knowledge_learning_matches':knowledge_learning_matches,
                      'research_decision':research_dec,'confidence': round(conf, 4),'price':float(f.get('price') or 0.0),
                      'score': round(score, 4), 'regime': f['regime'], 'horizon_return':round(float(f.get('ret_h') or 0.0),6),
                      'realized_vol':round(float(f.get('rv') or 0.0),6),'knowledge_matches': len(kmatches),
@@ -10166,6 +10113,8 @@ def intelligence_scorecard():
           'shadow_trade_positive_rate':tl.get('positive_trade_rate'),'shadow_trade_avg_pnl':tl.get('avg_total_pnl_fraction'),
           'knowledge_growth':lp.get('knowledge_growth'),'daily_progress':daily,
           'principle':'System intelligence is measured by demonstrated asset-management capability, not data volume or a claimed IQ.'}
+    continuous=globals().get('_continuous_learning')
+    base['autonomous_learning']=continuous.snapshot() if continuous else {'status':'INITIALIZING'}
     try:
         epoch=os.getenv('VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-30T04:59:29.357862+00:00')
         base['asset_management_intelligence']=VAMI.build_scorecard(pg_connect,lp,epoch)
@@ -15157,36 +15106,6 @@ def _learning_metrics_extended(rows):
             'capture_rate':cap/large if large else None,'wrong_side_rate':wrong/large if large else None}
 
 
-def _matched_strata_learning():
-    if not pg_enabled(): return {'status':'postgres_required'}
-    fetch=max(400,LEARNING_PROGRESS_WINDOW*15)
-    q=_episode_cte_sql()+"""
-      SELECT f.event_ts,f.asset,f.horizon,f.regime,f.research_decision AS decision,
-             (o.payload->>'forward_return')::double precision AS forward_return
-      FROM episode_first f JOIN ledger_events o ON o.entity_key=f.entity_key AND o.event_type='outcome'
-      WHERE o.payload ? 'forward_return' ORDER BY f.event_ts {order} LIMIT %s"""
-    with pg_connect() as c:
-        early=[dict(r) for r in c.execute(q.format(order='ASC'),(fetch,)).fetchall()]
-        recent=[dict(r) for r in c.execute(q.format(order='DESC'),(fetch,)).fetchall()]
-    eg={}; rg={}
-    for r in early: eg.setdefault((r['asset'],r['horizon'],str(r.get('regime') or 'UNKNOWN')),[]).append(r)
-    for r in recent: rg.setdefault((r['asset'],r['horizon'],str(r.get('regime') or 'UNKNOWN')),[]).append(r)
-    pairs=[]
-    for k in sorted(set(eg)&set(rg)):
-        n=min(len(eg[k]),len(rg[k]),LEARNING_INDEX_MAX_PER_STRATUM)
-        if n<LEARNING_INDEX_STRATA_MIN_N: continue
-        e=_learning_metrics_extended(eg[k][:n]); r=_learning_metrics_extended(rg[k][:n]); pairs.append((k,n,e,r))
-    def avg(field,which):
-        vals=[]
-        for k,n,e,r in pairs:
-            v=(e if which=='e' else r).get(field)
-            if v is not None: vals.append(float(v))
-        return sum(vals)/len(vals) if vals else None
-    em={x:avg(x,'e') for x in ('hit_rate','avg_signed_return','no_trade_miss_rate','capture_rate','wrong_side_rate')}
-    rm={x:avg(x,'r') for x in ('hit_rate','avg_signed_return','no_trade_miss_rate','capture_rate','wrong_side_rate')}
-    em['n']=sum(n for _,n,_,_ in pairs); rm['n']=em['n']
-    return {'status':'ok' if pairs else 'BUILDING','baseline':em,'current':rm,'matched_strata':len(pairs),'matched_observations_each_side':em['n'],
-            'strata':[{'asset':k[0],'horizon':k[1],'regime':k[2],'n_each':n} for k,n,_,_ in pairs[:80]]}
 
 
 def _shadow_trade_learning_windows():
@@ -15260,7 +15179,7 @@ def _bounded_completed_episode_rows(order='DESC', raw_limit=6000, episode_limit=
              raw_limit=requested_raw_limit,query_limit=query_limit,
              include_knowledge=bool(include_knowledge),
              error=f'{type(last_error).__name__}: {last_error}' if last_error else 'unknown')
-        return []
+        raise RuntimeError('COMPACT_LEARNING_QUERY_FAILED') from last_error
 
     # Preserve the original independent-episode semantics in Python. The DB path
     # is now a compact durable table, so NO_TRADE and missed-move learning remain
@@ -15444,10 +15363,15 @@ def _learning_progress_v2_compute():
     """Matched learning quality with identity-preserving normalisation and audit."""
     if not pg_enabled(): return {'status':'postgres_required'}
     try:
+        continuous=globals().get('_continuous_learning')
+        if continuous is not None and continuous.ready:
+            from veritas_continuous_learning import Budget
+            return continuous.compute_progress(Budget(_v90_background_maintenance))
         out=VLI.calculate(_matched_strata_learning(),_shadow_trade_learning_windows())
-        old=learning_progress_v1()
-        out['knowledge_growth']=old.get('knowledge_growth') or {}
-        out['legacy_index_v1']=old.get('index_vs_start')
+        with pg_connect() as c, c.transaction():
+            c.execute("SET LOCAL statement_timeout = '2000ms'")
+            out['knowledge_growth']=dict(c.execute("SELECT (SELECT COUNT(*) FROM knowledge_sources) current_sources, (SELECT COUNT(*) FROM knowledge_rules) current_rules").fetchone())
+        out['legacy_index_v1']=None
         return out
     except Exception as ex:
         return {'status':'error','error':f'{type(ex).__name__}: {ex}'}
@@ -15465,6 +15389,14 @@ def _learning_progress_refresh_sync(reason='background'):
     try:
         _learning_progress_state.update(status='RUNNING',last_started_at=now(),last_error=None)
         out=_learning_progress_v2_compute()
+        if str(out.get('status') or '').upper() not in ('MEASURABLE','BUILDING','INSUFFICIENT_DATA'):
+            raise RuntimeError(out.get('error') or out.get('status') or 'INCOMPLETE_LEARNING_RESULT')
+        continuous=globals().get('_continuous_learning')
+        if continuous is not None and continuous.ready:
+            import veritas_learning_state as VLS
+            from veritas_continuous_learning import PROGRESS_VERSION
+            if not VLS.publish_snapshot(pg_connect,'learning_progress',PROGRESS_VERSION,out):
+                raise RuntimeError('LEARNING_SNAPSHOT_PUBLICATION_REJECTED')
         learning_progress._cache=(time.time(),out)
         _learning_progress_state.update(status='OK',last_finished_at=now(),last_error=None)
         return out
@@ -15473,7 +15405,7 @@ def _learning_progress_refresh_sync(reason='background'):
         _learning_progress_state.update(status='ERROR',last_finished_at=now(),last_error=err)
         emit('learning_progress_background_error',reason=reason,error=err)
         cache=getattr(learning_progress,'_cache',None)
-        return cache[1] if cache else {'status':'BUILDING','background_refresh':True,'last_error':err}
+        return dict(cache[1],refresh_status='ERROR',last_error=err) if cache else {'status':'ERROR','index_vs_start':None,'background_refresh':True,'last_error':err}
     finally:
         _learning_progress_refresh_lock.release()
 
@@ -15485,9 +15417,9 @@ def learning_progress():
     ttl=max(60,ANALYTICS_CACHE_SECONDS)
     if cache and time.time()-cache[0] < ttl:
         return cache[1]
-    if not _learning_progress_refresh_lock.locked():
-        threading.Thread(target=_learning_progress_refresh_worker,args=('nonblocking_read',),
-                         daemon=True,name='veritas-learning-progress').start()
+    maintenance=globals().get('_v90_background_maintenance')
+    if maintenance is not None:
+        maintenance.request('learning_progress')
     if cache:
         out=dict(cache[1]); out['background_refresh']=True
         out['cache_age_seconds']=round(max(0.0,time.time()-cache[0]),2)
@@ -15495,6 +15427,7 @@ def learning_progress():
     return {
       'status':'BUILDING','index_vs_start':None,'baseline_index':100,
       'confidence':'LOW','background_refresh':True,
+      'index_version':VLI.INDEX_VERSION,'refresh_status':_learning_progress_state.get('status'),
       'sampling':'compact_decision_episode_cache',
       'knowledge_growth':{},
       'definition':'Decision/outcome learning refreshes outside the latency-sensitive market/UI path.'
@@ -16841,6 +16774,8 @@ class H(BaseHTTPRequestHandler):
                 self.reply({'version':VERSION,**user_metrics()})
             elif self.path.startswith('/api/v1/learning-progress'):
                 self.reply({'version':VERSION,**learning_progress()})
+            elif self.path.startswith('/api/v1/autonomous-learning'):
+                self.reply({'release_version':VERSION,**_continuous_learning.snapshot()})
             elif self.path.startswith('/api/v1/signal-capacity'):
                 self.reply({'version':VERSION,**signal_capacity_status()})
             elif self.path == '/app' or self.path.startswith('/app?'):
@@ -17845,6 +17780,9 @@ def _v90r37_compact_decision_payload(p):
     ev=inst.get('evidence_independence') or {}
     return {
       'created_at':p.get('created_at'),'symbol':p.get('symbol'),
+      'learning_provenance':VLB.capture_decision(p),
+      'knowledge_shadow_matches':VLB.compact_rule_matches(p.get('knowledge_shadow_matches')),
+      'knowledge_learning_matches':VLB.compact_rule_matches(p.get('knowledge_learning_matches'))[:8],
       'asset':p.get('asset'),'horizon':p.get('horizon'),
       'decision':p.get('decision'),'research_decision':p.get('research_decision'),
       'confidence':p.get('confidence'),'sizing':p.get('sizing'),
@@ -18594,7 +18532,7 @@ def _v90_compact_live_row(z):
         'active','phase','direction','confidence','base_score',
         'active_directional_score','blend','entry_quality'))
     keys=(*_V90_QUOTE_IDENTITY_FIELDS,
-        'asset','horizon','decision','research_decision','confidence','price','score',
+        'asset','horizon','decision','research_decision','confidence','price','score','created_at','knowledge_context_at','knowledge_learning_matches',
         'regime','horizon_return','realized_vol','knowledge_matches','effective_evidence',
         'source_gate_pass','market_open','execution_eligible','paper_eligible','production_eligible',
         'execution_reason','paper_execution_reason','data_latency_class','market_observed_at','contract','source_names',
@@ -18704,7 +18642,7 @@ def _v90_prune_low_priority_caches(level_mb=None,preserve_active_cycle=False):
         except Exception:
             pass
     for fn_name in ('_decision_memory_rows','_decision_memory_vectors','_v842_vectors_by_horizon',
-                    'v701_learning_bundle','v70_quality_board','learning_progress'):
+                    'v701_learning_bundle','v70_quality_board'):
         try:
             fn=globals().get(fn_name)
             if fn is not None and getattr(fn,'_cache',None) is not None:
@@ -19162,6 +19100,9 @@ def main():
                                'min_relevance':KNOWLEDGE_MIN_RELEVANCE,
                                'llm_configured':bool(OPENAI_API_KEY),'llm_enabled':bool(KNOWLEDGE_LLM_ENABLED and OPENAI_API_KEY),
                                'manager_corpus': manager_corpus_summary()})
+    # The scheduler retries bootstrap after temporary database outages too.
+    # Its jobs perform no work until their durable state schema is available.
+    _continuous_learning.start()
     if pg_boot.get('ok') and VP is not None:
         VPG.start(globals()); VSQ.start(pg_connect,emit,resource_guard=_v90_background_maintenance.permit)
         import veritas_breakout_runtime as VBR
@@ -19242,6 +19183,8 @@ from veritas_maintenance import install as _install_maintenance
 _install_maintenance(globals())
 from veritas_evidence_learning import install as _install_evidence_learning
 _install_evidence_learning(globals())
+from veritas_continuous_learning import install as _install_continuous_learning
+_install_continuous_learning(globals())
 
 if __name__ == '__main__':
     main()

@@ -41,6 +41,30 @@ def _timestamp(value):
         return None
 
 
+def quote_event_evidence(trade, event):
+    """Validate the native intrabar proof, never disguise it as a closed bar."""
+    import veritas_structural_breakout as SB
+    p = payload(trade.get('payload'))
+    source = p.get('price_source_lock') or p.get('entry_execution_source_identity')
+    if (not isinstance(event, dict) or not isinstance(source, dict)
+            or source.get('asset') != trade.get('asset') or not source.get('key')
+            or event.get('asset') != trade.get('asset')
+            or event.get('timeframe') not in TIMEFRAMES
+            or event.get('confirmation') != 'VERIFIED_QUOTE_CROSS'
+            or event.get('target_timeframe') != 'HISTORICAL_ZONES'
+            or event.get('structural_timeframe') not in TIMEFRAMES
+            or event.get('trigger_timeframe') not in TIMEFRAMES):
+        return False
+    declared = p.get('idea_event_id') or p.get('r66_event_id')
+    if declared and declared != event.get('event_id'):
+        return False
+    quote = event.get('trigger_quote') or {}
+    if (not isinstance(quote, dict) or quote.get('source_gate_pass') is not True
+            or quote.get('market_open') is not True):
+        return False
+    return bool(SB.validate_event(event, source).get('eligible'))
+
+
 def observed_event(trade):
     """An event ID or a true flag alone does not prove a closed structural event."""
     p=payload(trade.get('payload'))
@@ -54,6 +78,12 @@ def observed_event(trade):
         return event_id,False
     if declared and declared!=event_id:
         return event_id,False
+    if event.get('event_type') == 'VERIFIED_QUOTE_STRUCTURAL_BREAKOUT':
+        proof = quote_event_evidence(trade, event)
+        entered, confirmed = _timestamp(trade.get('opened_at')), _timestamp(event.get('confirmed_at'))
+        return event_id, bool(proof and event.get('direction') == trade.get('direction')
+                              and event.get('timeframe') == trade.get('horizon')
+                              and entered is not None and confirmed is not None and confirmed <= entered)
     timeframe=event.get('timeframe')
     seconds=TIMEFRAMES.get(timeframe) if isinstance(timeframe,str) else None
     ma_event=event.get('event_type')=='DAILY_MA_REBOUND'
