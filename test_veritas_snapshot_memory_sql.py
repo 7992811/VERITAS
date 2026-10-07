@@ -656,8 +656,8 @@ class ProjectedHelperRecordSQLTests(_LedgerSQLFixture):
             assert_record_plan(self,c,query['sql'],query['parameters'],2,3)
         self.assertFalse(query['heavy'])
         self.assertEqual(query['rows'], 3)
-        self.assertLessEqual(query['sql'].count('d.payload'), 6)
-        self.assertLessEqual(query['sql'].count('o.payload'), 5)
+        self.assertLessEqual(query['sql'].count('sample.decision_payload'), 6)
+        self.assertLessEqual(query['sql'].count('sample.outcome_payload'), 4)
 
 
 class SnapshotMemorySQLTests(_LedgerSQLFixture):

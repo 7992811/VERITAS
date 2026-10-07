@@ -164,7 +164,43 @@ def tail(sql):
     return " ".join(sql[match.start():].split())
 
 
+def sampled_ami_tail(sql):
+    # Only the original raw-row sample may move below the record scans. Keep
+    # every join/filter/window clause and require explicit final row ordering.
+    sampled = re.search(
+        r"\bFROM\s*\(\s*SELECT\s+d\.event_ts\s*,\s*d\.asset\s*,\s*d\.horizon\s*,"
+        r"\s*d\.payload\s+AS\s+decision_payload\s*,\s*o\.payload\s+AS\s+outcome_payload\s*"
+        r"(?P<inner>FROM\s+ledger_events\b.*?)\)\s+AS\s+sample\s+"
+        r"ORDER\s+BY\s+sample\.event_ts\s+DESC\s*$",
+        without_projection_joins(sql), re.I | re.S)
+    if sampled is None:
+        raise AssertionError("AMI lost its raw-row sample or final descending order")
+    return " ".join(sampled.group("inner").split())
+
+
 class ProjectionJoinContractTests(unittest.TestCase):
+    def test_ami_samples_original_joined_rows_before_record_projection(self):
+        class Capture:
+            def execute(self, sql):
+                self.sql = sql
+                return self
+
+            def fetchall(self):
+                return []
+
+        capture = Capture()
+        self.assertEqual(ami_decision_rows(capture), [])
+        query = capture.sql
+        self.assertEqual(sampled_ami_tail(query), tail(LEGACY_AMI_QUERY))
+        sample_end = query.index(") AS sample")
+        joins = list(_RECORD_JOIN.finditer(query))
+        self.assertEqual(len(joins), 2)
+        self.assertTrue(all(join.start() > sample_end for join in joins))
+        self.assertNotEqual(sampled_ami_tail(query.replace("LIMIT 2200", "LIMIT 2000")),
+                            tail(LEGACY_AMI_QUERY))
+        with self.assertRaisesRegex(AssertionError, "final descending order"):
+            sampled_ami_tail(query.replace("ORDER BY sample.event_ts DESC", "ORDER BY sample.event_ts ASC"))
+
     def test_tail_removes_only_the_complete_guarded_record_joins(self):
         from veritas_learning_memory import JsonbProjection
         projection = JsonbProjection()
@@ -609,7 +645,7 @@ class TrendMemorySQLTests(unittest.TestCase):
         self.assertEqual(len(projected), 360)
         self.assertEqual(new_trace.queries[0]["rows"], 2200)
         self.assertEqual(new_trace.queries[0]["keys"], old_trace.queries[0]["keys"])
-        self.assertEqual(tail(new_trace.queries[0]["sql"]), tail(LEGACY_AMI_QUERY))
+        self.assertEqual(sampled_ami_tail(new_trace.queries[0]["sql"]), tail(LEGACY_AMI_QUERY))
         self.assertFalse(new_trace.queries[0]["heavy"])
         self.assertLess(new_trace.queries[0]["bytes"], old_trace.queries[0]["bytes"]*.20)
         for old_episode, new_episode in zip(old, projected):

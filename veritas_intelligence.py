@@ -8068,7 +8068,7 @@ def structure_analog_board(limit=1200, force_refresh=False):
     # complete archived decisions and histories for a few structure labels.
     from veritas_learning_memory import JsonbProjection
     projection=JsonbProjection()
-    d=projection.fields('d.payload',('research_decision','trend_impulse','features'))
+    d=projection.fields('sample.decision_payload',('research_decision','trend_impulse','features'))
     features=projection.fields(d['features'],('trend_impulse','intraday_structure'))
     def structure(expr):
         return _v90_jsonb_project_object(expr,projection.fields(expr,('lifecycle','entry_quality')))
@@ -8077,17 +8077,20 @@ def structure_analog_board(limit=1200, force_refresh=False):
         return _v90_jsonb_project_object(expr,{
             'direction':fields['direction'],'entry_quality':fields['entry_quality'],
             'intraday_structure':structure(fields['intraday_structure'])})
-    dp=_v90_jsonb_project_object('d.payload',{
+    dp=_v90_jsonb_project_object('sample.decision_payload',{
         'research_decision':d['research_decision'],'trend_impulse':impulse(d['trend_impulse']),
         'features':_v90_jsonb_project_object(d['features'],{
             'trend_impulse':impulse(features['trend_impulse']),
             'intraday_structure':structure(features['intraday_structure'])})})
-    op=_v90_jsonb_project_object('o.payload',{'forward_return':"o.payload->'forward_return'"})
+    op=_v90_jsonb_project_object('sample.outcome_payload',{'forward_return':"sample.outcome_payload->'forward_return'"})
     with pg_connect() as c:
-        rows=c.execute(f"""SELECT d.asset,d.horizon,{dp} dp,{op} op
-                          FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+        rows=c.execute(f"""SELECT sample.asset,sample.horizon,{dp} dp,{op} op
+                          FROM (SELECT d.asset,d.horizon,d.event_ts,
+                                d.payload AS decision_payload,o.payload AS outcome_payload
+                                FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                                WHERE d.event_type='decision' ORDER BY d.event_ts DESC LIMIT %s) sample
                           {projection.joins_sql}
-                          WHERE d.event_type='decision' ORDER BY d.event_ts DESC LIMIT %s""",(lim,)).fetchall()
+                          ORDER BY sample.event_ts DESC""",(lim,)).fetchall()
     b={}
     for r in rows:
         dp=r['dp'] if isinstance(r['dp'],dict) else json.loads(r['dp']); op=r['op'] if isinstance(r['op'],dict) else json.loads(r['op'])

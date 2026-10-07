@@ -142,7 +142,7 @@ def ami_decision_rows(c):
     # A scorecard consumes labels and votes, not full candle/decision graphs.
     # Preserve agent order: the confidence vote uses ordered floating-point sums.
     projection = JsonbProjection()
-    values = projection.fields("d.payload", ("research_decision", "decision", "regime",
+    values = projection.fields("sample.decision_payload", ("research_decision", "decision", "regime",
         "agents", "knowledge_cio_adjustment", "knowledge_shadow_matches"))
     agents = f"""CASE WHEN jsonb_typeof({values['agents']})='array' THEN
       (SELECT COALESCE(jsonb_agg(
@@ -154,24 +154,31 @@ def ami_decision_rows(c):
     # Only Python truthiness of matches is used by _query_knowledge. Every
     # possible falsey JSON value is preserved as false, including numeric zero.
     matches = f"""CASE WHEN {values['knowledge_shadow_matches']} IS NULL
-      AND d.payload ? 'knowledge_shadow_matches' THEN false
+      AND sample.decision_payload ? 'knowledge_shadow_matches' THEN false
       ELSE ({values['knowledge_shadow_matches']}) NOT IN
       ('null'::jsonb,'false'::jsonb,'0'::jsonb,'\"\"'::jsonb,'[]'::jsonb,'{{}}'::jsonb) END"""
     adjustment = project_object(values['knowledge_cio_adjustment'], projection.fields(
         values['knowledge_cio_adjustment'], ("score_with_experience", "score")))
-    dp = project_object("d.payload", {
+    dp = project_object("sample.decision_payload", {
         "research_decision": values['research_decision'],
         "decision": values['decision'], "regime": values['regime'],
         "agents": agents, "knowledge_cio_adjustment": adjustment,
         "knowledge_shadow_matches": matches})
-    op = project_object("o.payload", {"forward_return": "o.payload->'forward_return'"})
+    op = project_object("sample.outcome_payload", {"forward_return": "sample.outcome_payload->'forward_return'"})
+    # Sort and limit the original rows before expanding their JSON records.
+    # The ordered sample retains TOAST pointers rather than decoded histories.
     rows = c.execute(f"""
-      SELECT d.event_ts,d.asset,d.horizon,{dp} AS dp,{op} AS op
-      FROM ledger_events d
-      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+      SELECT sample.event_ts,sample.asset,sample.horizon,{dp} AS dp,{op} AS op
+      FROM (
+        SELECT d.event_ts,d.asset,d.horizon,
+               d.payload AS decision_payload,o.payload AS outcome_payload
+        FROM ledger_events d
+        JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+        WHERE d.event_type='decision' AND o.payload ? 'forward_return'
+        ORDER BY d.event_ts DESC
+        LIMIT 2200
+      ) AS sample
       {projection.joins_sql}
-      WHERE d.event_type='decision' AND o.payload ? 'forward_return'
-      ORDER BY d.event_ts DESC
-      LIMIT 2200
+      ORDER BY sample.event_ts DESC
     """).fetchall()
     return rows

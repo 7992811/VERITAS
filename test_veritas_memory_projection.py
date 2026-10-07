@@ -103,7 +103,45 @@ BASELINE_SQL = {
 }
 
 BASELINE_SQL_SHA256 = {'structure_analog_board': '1d23b5f41609ea7942baa596a187c6bf4dcf41cd240977eab5e312f0bc300010', '_decision_memory_rows': '0247c73a3f6fedbe50f9296bbe68da27e8e79bfa742144ef7a84b479ae1a07ba'}
-BASELINE_REDUCER_SHA256 = {'structure_analog_board': 'aa985e3a9c6e3b1f277ad6a1301b56a52ac1de6b27205d2aba7afdec45506c15', '_decision_memory_rows': 'aaa534776970d35bb254ffff8cc27dacd93f1198ffb47d2edaf73f5bbbb0e0c0'}
+# Exact reducer source from deployed v9 abe3a4ce, independently frozen from git.
+# Hash text, then compare both ASTs under the running Python version (3.12/3.14).
+BASELINE_REDUCER_SOURCE = {
+    "structure_analog_board": """b={}
+for r in rows:
+    dp=r['dp'] if isinstance(r['dp'],dict) else json.loads(r['dp']); op=r['op'] if isinstance(r['op'],dict) else json.loads(r['op'])
+    ti=dp.get('trend_impulse') or (dp.get('features') or {}).get('trend_impulse') or {}; st=ti.get('intraday_structure') or (dp.get('features') or {}).get('intraday_structure') or {}
+    life=str(st.get('lifecycle') or 'NONE'); eq=str(st.get('entry_quality') or ti.get('entry_quality') or 'UNKNOWN'); direction=str(ti.get('direction') or dp.get('research_decision') or 'NO_TRADE')
+    fr=op.get('forward_return')
+    if life=='NONE' or direction not in ('LONG','SHORT') or fr is None: continue
+    sr=float(fr) if direction=='LONG' else -float(fr)
+    key=(r['asset'],r['horizon'],life,eq,direction); z=b.setdefault(key,[]); z.append(sr)
+items=[]
+for (asset,h,life,eq,direction),vals in b.items():
+    vals=sorted(vals); n=len(vals); mean=sum(vals)/n; med=vals[n//2]
+    p_hit=sum(1 for x in vals if x>0)/n
+    items.append({'asset':asset,'horizon':h,'lifecycle':life,'entry_quality':eq,'direction':direction,'n':n,
+                  'hit_rate':p_hit,'mean_signed_return':mean,'median_signed_return':med,
+                  'status':'MEASURABLE' if n>=ANALOG_MIN_N else 'BUILDING'})
+items.sort(key=lambda x:(x['status']!='MEASURABLE',-x['n']))
+out={'status':'ok','min_n':ANALOG_MIN_N,'items':items}
+with structure_analog_cache_lock:
+    structure_analog_cache['at']=time.time(); structure_analog_cache['limit']=lim; structure_analog_cache['value']=out
+return out
+""",
+    "_decision_memory_rows": """try:
+    with pg_connect() as c:
+        rows=[dict(r) for r in c.execute(sql,(DECISION_MEMORY_MAX_EPISODES,)).fetchall()]
+except Exception as ex:
+    emit('decision_memory_error',error=f'{type(ex).__name__}: {ex}')
+    rows=[]
+_decision_memory_rows._cache=(time.time(),rows)
+return rows
+""",
+}
+BASELINE_REDUCER_SOURCE_SHA256 = {
+    "structure_analog_board": "774543b66dc6603cf828c215b04561f3ae680ab6b3e0259e2e89ded2a96f87f2",
+    "_decision_memory_rows": "c492dd949cc716eba070bfdcdb41097dfe68b16629992937294ab98e560839a3",
+}
 
 
 def load_reader(name, connect, *, legacy=False, baseline=False, max_episodes=1600):
@@ -153,6 +191,19 @@ def without_projection_joins(sql):
 def query_tail(sql):
     """The SELECT projection may change; joins/filters/order/limit may not."""
     sql = without_projection_joins(sql)
+    if re.search(r'\bFROM\s*\(\s*SELECT\b', sql, re.I):
+        # The analog reader selects its original joined/ordered/limited sample
+        # first. Permit exactly that wrapper and its repeated descending order;
+        # a different sample, extra outer condition or residual JOIN is invalid.
+        compact = ' '.join(sql.split())
+        wrapped = re.fullmatch(
+            r'SELECT sample\.asset,sample\.horizon,.*? FROM \(SELECT '
+            r'd\.asset,d\.horizon,d\.event_ts, d\.payload AS decision_payload,'
+            r'o\.payload AS outcome_payload (?P<tail>FROM ledger_events d JOIN ledger_events o .*)'
+            r'\) sample ORDER BY sample\.event_ts DESC', compact)
+        if wrapped is None:
+            raise AssertionError('Unexpected analog sample boundary, columns or outer order')
+        return wrapped.group('tail')
     if re.search(r'\bFROM\s+recent_decisions\b', sql, re.I):
         cte = re.search(r'WITH\s+recent_decisions\s+AS\s*\((.*?)\)\s*SELECT', sql, re.I | re.S)
         joined = re.search(r'\bFROM\s+recent_decisions\b.*', sql, re.I | re.S)
@@ -194,8 +245,11 @@ class RecordProjectionContractTests(unittest.TestCase):
                 start = next(i for i,n in enumerate(node.body) if (
                     isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'b' for t in n.targets)
                     if name == 'structure_analog_board' else isinstance(n, ast.Try)))
+                frozen = BASELINE_REDUCER_SOURCE[name]
+                self.assertEqual(hashlib.sha256(frozen.encode()).hexdigest(),
+                                 BASELINE_REDUCER_SOURCE_SHA256[name])
                 tail = ast.dump(ast.Module(body=node.body[start:], type_ignores=[]), include_attributes=False)
-                self.assertEqual(hashlib.sha256(tail.encode()).hexdigest(), BASELINE_REDUCER_SHA256[name])
+                self.assertEqual(tail, ast.dump(ast.parse(frozen), include_attributes=False))
 
     def test_active_queries_preserve_every_nonprojection_join_filter_order_and_window(self):
         for name, count in (('structure_analog_board', 7), ('_decision_memory_rows', 3)):
@@ -213,6 +267,21 @@ class RecordProjectionContractTests(unittest.TestCase):
                 changed = sql.replace('ORDER BY event_ts DESC LIMIT', 'ORDER BY event_ts ASC LIMIT')
                 if name == '_decision_memory_rows':
                     self.assertNotEqual(query_tail(changed), query_tail(BASELINE_SQL[name]))
+                else:
+                    for old, new in (("d.event_type='decision'", "d.event_type='pending'"),
+                            ('LIMIT %s', 'LIMIT 1'),
+                            ('ORDER BY d.event_ts DESC', 'ORDER BY d.event_ts ASC'),
+                            ('ORDER BY sample.event_ts DESC', 'ORDER BY sample.event_ts ASC'),
+                            ('d.payload AS decision_payload', 'o.payload AS decision_payload'),
+                            ("THEN sample.decision_payload ELSE", "THEN sample.outcome_payload ELSE")):
+                        with self.subTest(mutation=old):
+                            changed = sql.replace(old, new)
+                            self.assertNotEqual(changed, sql)
+                            try:
+                                observed = query_tail(changed)
+                            except AssertionError:
+                                continue
+                            self.assertNotEqual(observed, query_tail(BASELINE_SQL[name]))
 
 
 class RecordedCursor:
