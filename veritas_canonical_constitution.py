@@ -40,6 +40,24 @@ STRUCTURAL_ENTRY_POLICY = {
     "parameter_validation_status": "UNVALIDATED_DEFAULTS",
 }
 
+
+# Explicit owner correction, 2026-10-07. A fresh structural breakout may
+# extend a same-direction campaign without rewriting the original TP1 or
+# widening the active stop for any already-held units.
+CONTINUATION_ADD_POLICY = {
+    "version": "CTC_CAUSAL_BREAKOUT_CONTINUATION_V1",
+    "teaching_id": "USER_CAUSAL_BREAKOUT_CONTINUATION_2026_10_07",
+    "enabled": True,
+    "all_configured_assets_and_portfolios": True,
+    "fresh_unique_closed_breakout_required": True,
+    "same_direction_source_and_instrument_required": True,
+    "first_target_immutable": True,
+    "farther_target_only": True,
+    "active_stop_mode": "PRESERVE_ACTIVE_POSITION_STOP_NO_WIDENING",
+    "economics_basis": "FULL_POSITION_STOP_TO_FRESH_CONTINUATION_TARGET",
+    "parameter_validation_status": "OWNER_AUTHORED_SAFETY_RULE_SHADOW_OOS_REQUIRED",
+}
+
 # Daily context is native D1 from the execution instrument. The actual rebound
 # confirmation, swing stop, ATR and target remain on the selected entry TF.
 MA_REBOUND_POLICY = {

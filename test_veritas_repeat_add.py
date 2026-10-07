@@ -248,28 +248,40 @@ class StoredAddGeometryRegressionTests(unittest.TestCase):
         self.assertTrue(admission["open"], admission)
         return admission
 
-    def test_near_held_target_blocks_long_short_before_accounting(self):
+    def test_fresh_farther_target_funds_add_near_tp1_without_widening_stop(self):
         for direction in ("LONG", "SHORT"):
             with self.subTest(direction=direction):
                 row, db, original = self.case(direction, near=True)
-                self.initial_admission(row)  # The new event's own farther target passes.
+                new_event = copy.deepcopy(row["timeframe_entry_context"]["event"])
+                original_stop = db.position["stop_price"]
+                self.initial_admission(row)
                 with patch.object(VP, "CANONICAL_ACCOUNTING_OPEN_OR_ADD",
                                   wraps=VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD) as accounting:
-                    self.assertEqual(self.add(row, db), 0.)
-                    accounting.assert_not_called()
-                self.assertIn("NET_REWARD_RISK_BELOW_FLOOR", row["_execution_audit"]["blockers"])
-                self.assertEqual(db.orders, [])
-                self.assertEqual(db.book_fees, 0.)
-                self.assertEqual(db.position["payload"], original)
-                gate = row["_execution_audit"]["canonical_add_gate"]
-                self.assertEqual(gate["target_price"], original["take_price"])
-                self.assertLess(gate["net_reward_risk"], VX.MIN_REWARD_RISK)
+                    self.add(row, db)
+                    self.assertEqual(accounting.call_count, 1)
+                self.assertEqual(len(db.orders), 1)
+                gate = db.orders[0]["payload"]["fill_economics_gate"]
+                self.assertTrue(gate["eligible"], gate)
+                self.assertEqual(gate["add_geometry_basis"],
+                                 "STORED_POSITION_STOP_FRESH_CONTINUATION_TARGET")
+                self.assertEqual(gate["target_price"], new_event["target_price"])
+                self.assertEqual(gate["entry_geometry"]["stop_price"], original_stop)
+                self.assertEqual(db.position["stop_price"], original_stop)
+                self.assertEqual(db.position["payload"]["take_price"], original["take_price"])
+                self.assertEqual(db.position["payload"]["target_price"], original["target_price"])
+                self.assertEqual(db.position["payload"]["runner_target_price"],
+                                 new_event["target_price"])
+                self.assertEqual(db.position["payload"]["continuation_target_ladder"][0],
+                                 original["take_price"])
+                self.assertEqual(db.position["payload"]["continuation_target_ladder"][-1],
+                                 new_event["target_price"])
 
     def test_valid_held_target_funds_add_and_keeps_original_and_new_traces(self):
         for direction in ("LONG", "SHORT"):
             with self.subTest(direction=direction):
                 row, db, original = self.case(direction)
                 new_event = copy.deepcopy(row["timeframe_entry_context"]["event"])
+                original_stop = db.position["stop_price"]
                 with patch.object(VP, "CANONICAL_ACCOUNTING_OPEN_OR_ADD",
                                   wraps=VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD) as accounting:
                     self.add(row, db)
@@ -279,10 +291,12 @@ class StoredAddGeometryRegressionTests(unittest.TestCase):
                 order = db.orders[0]["payload"]
                 gate = order["fill_economics_gate"]
                 self.assertTrue(gate["eligible"], gate)
-                self.assertEqual(gate["add_geometry_basis"], "STORED_POSITION_STOP_TARGET")
-                self.assertEqual(order["target_price"], original["target_price"])
-                self.assertEqual(gate["target_price"], original["take_price"])
-                self.assertEqual(gate["entry_geometry"]["stop_price"], db.position["stop_price"])
+                self.assertEqual(gate["add_geometry_basis"],
+                                 "STORED_POSITION_STOP_FRESH_CONTINUATION_TARGET")
+                self.assertEqual(order["target_price"], original["take_price"])
+                self.assertEqual(order["runner_target_price"], new_event["target_price"])
+                self.assertEqual(gate["target_price"], new_event["target_price"])
+                self.assertEqual(gate["entry_geometry"]["stop_price"], original_stop)
                 self.assertGreaterEqual(gate["net_reward_risk"], VX.MIN_REWARD_RISK)
                 self.assertEqual(row["timeframe_entry_context"]["event"], new_event)
                 for stored in (db.position["payload"], db.trade_payload):
@@ -291,6 +305,8 @@ class StoredAddGeometryRegressionTests(unittest.TestCase):
                                 "execution_horizon", "price_source_lock", "pwin", "pwin_source"):
                         self.assertEqual(stored[key], original[key], key)
                     self.assertEqual(stored["last_add_event_id"], new_event["event_id"])
+                    self.assertEqual(stored["last_continuation_event_id"], new_event["event_id"])
+                    self.assertEqual(stored["runner_target_price"], new_event["target_price"])
                     self.assertTrue(UT.verify_entry_trace(stored["last_add_teaching_trace"]))
                     self.assertEqual(stored["last_add_teaching_trace"]["timeframe_entry_context"]["event"], new_event)
 
@@ -313,30 +329,38 @@ class StoredAddGeometryRegressionTests(unittest.TestCase):
                         self.assertEqual(db.orders, [])
                         self.assertEqual(db.book_fees, 0.)
 
-    def test_executable_take_alias_has_priority_over_far_target_alias(self):
+    def test_executable_take_alias_remains_immutable_tp1_while_fresh_event_sets_runner(self):
         for direction in ("LONG", "SHORT"):
             with self.subTest(direction=direction):
-                row, db, _ = self.case(direction, near=True)
+                row, db, original = self.case(direction, near=True)
                 db.position["payload"]["target_price"] = row["timeframe_entry_context"]["event"]["target_price"]
                 self.add(row, db)
-                self.assertEqual(db.orders, [])
-                self.assertIn("NET_REWARD_RISK_BELOW_FLOOR", row["_execution_audit"]["blockers"])
+                self.assertEqual(len(db.orders), 1)
+                self.assertEqual(db.orders[0]["payload"]["target_price"], original["take_price"])
+                self.assertEqual(db.position["payload"]["take_price"], original["take_price"])
+                self.assertEqual(db.position["payload"]["runner_target_price"],
+                                 row["timeframe_entry_context"]["event"]["target_price"])
 
-    def test_harvested_target_cannot_fund_an_add_when_price_pulls_back_below_it(self):
+    def test_harvested_tp1_allows_only_a_fresh_farther_breakout_continuation(self):
         for direction in ("LONG", "SHORT"):
             with self.subTest(direction=direction):
-                row, db, _ = self.case(direction)
+                row, db, original = self.case(direction)
                 db.position["payload"]["r17_tp1_done"] = True
-                existing = copy.deepcopy(db.position)
+                db.trade_payload["r17_tp1_done"] = True
+                new_event = copy.deepcopy(row["timeframe_entry_context"]["event"])
+                original_stop = db.position["stop_price"]
                 self.initial_admission(row)
                 with patch.object(VP, "CANONICAL_ACCOUNTING_OPEN_OR_ADD",
                                   wraps=VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD) as accounting:
                     self.add(row, db)
-                    accounting.assert_not_called()
-                self.assertIn("ADD_STORED_TARGET_REQUIRED", row["_execution_audit"]["blockers"])
-                self.assertEqual(db.orders, [])
-                self.assertEqual(db.book_fees, 0.)
-                self.assertEqual(db.position, existing)
+                    self.assertEqual(accounting.call_count, 1)
+                self.assertEqual(len(db.orders), 1)
+                self.assertGreater(db.book_fees, 0.)
+                self.assertTrue(db.position["payload"]["r17_tp1_done"])
+                self.assertEqual(db.position["payload"]["take_price"], original["take_price"])
+                self.assertEqual(db.position["payload"]["runner_target_price"],
+                                 new_event["target_price"])
+                self.assertEqual(db.position["stop_price"], original_stop)
 
     def test_explicit_target_argument_cannot_replace_the_actual_stored_target(self):
         row, db, _ = self.case("LONG", near=True)
@@ -345,18 +369,23 @@ class StoredAddGeometryRegressionTests(unittest.TestCase):
         self.assertFalse(gate["eligible"])
         self.assertIn("ADD_STORED_TARGET_MISMATCH", gate["blockers"])
 
-    def test_final_accounting_rechecks_near_target_despite_prior_canonical_admission(self):
+    def test_final_accounting_accepts_fresh_continuation_and_preserves_original_plan(self):
         for direction in ("LONG", "SHORT"):
             with self.subTest(direction=direction):
                 row, db, original = self.case(direction, near=True)
+                original_stop = db.position["stop_price"]
                 row["_canonical_admission"] = self.initial_admission(row)
+                row.update(_pwin=.65, _pwin_source="TEST_FINAL_BOUNDARY")
                 VP.CANONICAL_ACCOUNTING_OPEN_OR_ADD(db, {}, "Aggressive", "NQ", direction,
                     row["price"], .5, 10000., self.clock, row, "TEST_FINAL_ADD_BOUNDARY")
-                self.assertEqual(db.orders, [])
-                self.assertEqual(db.book_fees, 0.)
-                self.assertIn("NET_REWARD_RISK_BELOW_FLOOR", row["_execution_audit"]["hard_blockers"])
+                self.assertEqual(len(db.orders), 1)
+                self.assertGreater(db.book_fees, 0.)
+                self.assertEqual(db.position["stop_price"], original_stop)
                 self.assertEqual(db.position["payload"]["take_price"], original["take_price"])
-                self.assertEqual(db.position["payload"]["user_teaching_trace"], original["user_teaching_trace"])
+                self.assertEqual(db.position["payload"]["user_teaching_trace"],
+                                 original["user_teaching_trace"])
+                self.assertEqual(db.position["payload"]["runner_target_price"],
+                                 row["timeframe_entry_context"]["event"]["target_price"])
 
     def test_refreshed_add_fill_cannot_chase_after_a_timely_initial_admission(self):
         for direction in ("LONG", "SHORT"):
