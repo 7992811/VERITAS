@@ -1,9 +1,11 @@
 """Market fanout must not leave the last asset waiting behind slow feeds."""
+import gc
 import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
+import weakref
 
 from veritas_market_runtime import install_market_runtime_guard
 
@@ -74,6 +76,66 @@ class MarketPrefetchTests(unittest.TestCase):
         self.assertIsNone(bundles['ETH']['raw'])
         self.assertEqual(bundles['ETH']['error'], 'MARKET_PREFETCH_TIMEOUT_25S')
         self.assertEqual(stats['timed_out_assets'], ['ETH'])
+
+
+class WeakRows(dict):
+    __slots__ = ('__weakref__',)
+
+
+class CompletedAssetProviderCacheTests(unittest.TestCase):
+    def namespace(self, rss=400.0, soft_limit=320):
+        events, trims = [], []
+        market_cache = {}
+        ns = {
+            '_moex_block': lambda *_: [],
+            '_moex_parse_dt': lambda *_: None,
+            '_fetch_asset_bundle': lambda *_: {},
+            'ASSETS': {},
+            'market_cache': market_cache,
+            'market_cache_lock': threading.Lock(),
+            'MEMORY_SOFT_LIMIT_MB': soft_limit,
+            'V90_MEMORY_PROTECT_MB': 340.0,
+            'rss_mb': lambda: rss,
+            'emit': lambda event, **kw: events.append((event, kw)),
+            '_v90_trim_memory': lambda phase='unknown', force=False,
+                preserve_active_cycle=False: trims.append((phase, force, preserve_active_cycle)) or {
+                    'phase': phase, 'caches_cleared': 0},
+        }
+        install_market_runtime_guard(ns)
+        return ns, market_cache, events, trims
+
+    def test_pressure_releases_only_provider_rows_after_completed_asset(self):
+        ns, cache, events, trims = self.namespace()
+        rows = WeakRows(asset='NQ', bars=[float(i) for i in range(4096)])
+        retained = weakref.ref(rows)
+        cache[('NQ=F', '30d', '1h', False)] = {'rows': rows}
+        active_decision = {'asset': 'NQ', 'source': 'PROFINANCE:NASD100_FUT'}
+        ns['active_decision'] = active_decision
+        del rows
+
+        result = ns['_v90_trim_memory']('asset_NQ', force=False)
+        gc.collect()
+
+        self.assertIsNone(retained())
+        self.assertEqual(cache, {})
+        self.assertIs(ns['active_decision'], active_decision)
+        self.assertEqual(trims, [('asset_NQ', False, False)])
+        self.assertEqual(result['completed_asset_provider_cache_released'], 1)
+        self.assertEqual(events, [('completed_asset_provider_cache_released', {
+            'asset': 'NQ', 'entries': 1, 'rss_mb': 400.0})])
+
+    def test_other_phases_low_pressure_and_larger_runtimes_keep_provider_rows(self):
+        for phase, rss, soft_limit in (
+                ('horizon_NQ_1m', 400.0, 320),
+                ('asset_NQ', 300.0, 320),
+                ('asset_NQ', 400.0, 400)):
+            with self.subTest(phase=phase, rss=rss, soft_limit=soft_limit):
+                ns, cache, events, _ = self.namespace(rss, soft_limit)
+                cache['rows'] = [1, 2, 3]
+                result = ns['_v90_trim_memory'](phase)
+                self.assertEqual(cache, {'rows': [1, 2, 3]})
+                self.assertNotIn('completed_asset_provider_cache_released', result)
+                self.assertEqual(events, [])
 
 
 if __name__ == '__main__':
