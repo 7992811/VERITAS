@@ -393,5 +393,43 @@ def install_market_runtime_guard(ns):
                      "timed_out_assets":timed_out,"timeout_cache_fallback_assets":cache_fallback,
                      "priority_order":[x[1] for x in items]}
 
+    original_trim = ns.get("_v90_trim_memory")
+    if callable(original_trim):
+        def trim_memory(phase="unknown", force=False, *, preserve_active_cycle=False):
+            # The low-memory loop fetches one asset at a time. Once that asset
+            # has been compacted, provider rows cannot be reused by the next
+            # asset and retaining NQ/BRENT rows has exhausted the 512 MiB
+            # process while GOLD was being evaluated. Keep all decision,
+            # structural-fact and portfolio caches intact.
+            released = 0
+            memory_soft_limit = int(ns.get("MEMORY_SOFT_LIMIT_MB") or 400)
+            protect_mb = float(ns.get("V90_MEMORY_PROTECT_MB") or 340.0)
+            rss = ns.get("rss_mb")
+            level = rss() if callable(rss) else None
+            if (memory_soft_limit <= 320 and str(phase).startswith("asset_")
+                    and level is not None and float(level) >= protect_mb):
+                try:
+                    if market_cache_lock is not None:
+                        with market_cache_lock:
+                            released = len(market_cache)
+                            market_cache.clear()
+                    else:
+                        released = len(market_cache)
+                        market_cache.clear()
+                except Exception:
+                    released = 0
+                if released:
+                    _emit("completed_asset_provider_cache_released",
+                          asset=str(phase)[len("asset_"):], entries=released,
+                          rss_mb=float(level))
+            result = original_trim(phase, force=force,
+                                   preserve_active_cycle=preserve_active_cycle)
+            if released and isinstance(result, dict):
+                result = dict(result)
+                result["completed_asset_provider_cache_released"] = released
+            return result
+
+        ns["_v90_trim_memory"] = trim_memory
+
     ns["prefetch_market_bundles"] = prefetch_market_bundles
     ns["MARKET_RUNTIME_GUARD_VERSION"] = VERSION
