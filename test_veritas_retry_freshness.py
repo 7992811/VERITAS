@@ -39,6 +39,9 @@ class RetryOrderingTests(BoundedRetryTests):
         self.assertEqual(result['execution']['status'],'BLOCKED')
 
 
+from test_veritas_pending_quote import PendingQuoteTests
+
+
 class StaticMemoRaceTests(unittest.TestCase):
     def test_input_mutation_during_validation_is_not_cached(self):
         SVC.clear()
