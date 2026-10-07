@@ -17,6 +17,7 @@ import veritas_profit_protection as VPP
 import veritas_price_source as VPS
 import veritas_observation_path as VOP
 import veritas_protective_io as PIO
+import veritas_book_storage as BS
 from veritas_quote_time import quote_gate, utc_datetime
 from veritas_book_lock import PriorityRLock
 
@@ -157,6 +158,11 @@ def book_transaction(c, *, blocking=True, lane='OTHER', timing=None):
                 yield False
                 body_finished=True
                 return
+            if lane in ('PORTFOLIO', 'PROTECTIVE'):
+                storage = BS.configure(c)
+                if storage is not None:
+                    measured['payload_compression'] = storage
+                    measured['storage_setup_seconds'] = storage['elapsed_seconds']
             yield None if blocking else True
             body_finished=True
         measured['status']='COMMITTED'
@@ -1236,6 +1242,7 @@ def start(ns):
                               last_changes=changes or _state.get('last_changes', []),
                               phase_seconds={k:round(v,3) for k,v in phases.items()},
                               book_transaction_status=transaction_timing.get('status','NOT_NEEDED'),
+                              payload_compression=transaction_timing.get('payload_compression'),
                               duration_seconds=round(time.monotonic()-started, 3))
                 if changes or errors or time.monotonic()-last_log >= 60:
                     ns['emit']('paper_protective_guard', **snapshot())
@@ -1247,6 +1254,7 @@ def start(ns):
                               error=f'{type(exc).__name__}: {exc}',
                               phase_seconds={k:round(v,3) for k,v in phases.items()},
                               book_transaction_status=transaction_timing.get('status','NOT_STARTED'),
+                              payload_compression=transaction_timing.get('payload_compression'),
                               duration_seconds=round(time.monotonic()-started,3))
                 ns['emit']('paper_protective_guard_error', **snapshot())
             finally:
