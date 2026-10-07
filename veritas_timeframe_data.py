@@ -1,9 +1,111 @@
 """Source-labelled native OHLC for the canonical timeframe entry rule."""
 from datetime import datetime, timezone
+from copy import deepcopy
+from threading import RLock
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
 import veritas_canonical_constitution as CTC
 from veritas_entry_scenarios import daily_context, daily_features, select_context
+
+_STRUCTURAL_STATE = {}
+_STRUCTURAL_LOCK = RLock()
+
+
+def observe_execution_barrier(context):
+    """Keep a verified execution read's barrier sticky in the quote observer.
+
+    Repricing is not a full observation pass: it cannot advance last_quote,
+    consume another trigger, revise the protected swing or refresh signal time.
+    The returned facts also prevent an older plan snapshot from forgetting a
+    barrier that the shared owner has already observed.
+    """
+    import veritas_structural_breakout as SB
+    context = context or {}
+    event, quote = context.get('event') or {}, context.get('quote') or {}
+    identity = context.get('source_identity') or {}
+    observed = TS.timestamp(quote.get('observed_at'))
+    out = {'observed': False, 'spent': False}
+    if (observed is None or not SB.applies(context)
+            or not SB.context_gate(context, observed).get('eligible')
+            or not SB.validate_event(event, identity).get('eligible')):
+        return out
+    key = (str(context.get('asset') or ''), identity.get('key'),
+           identity.get('contract_id'), str(context.get('timeframe') or ''))
+    with _STRUCTURAL_LOCK:
+        state = _STRUCTURAL_STATE.get(key)
+        active = (state or {}).get('active_event') or {}
+        if (not state or active.get('event_id') != event.get('event_id')
+                or active.get('proof_hash') != event.get('proof_hash')
+                or not (VPS.same(identity, state.get('source_identity'))
+                        and VPS.same(state.get('source_identity'), identity))
+                or not SB.validate_event(active, identity).get('eligible')):
+            return out
+        # Derive the new fact from the verified quote against the owner's
+        # immutable geometry. The caller's mutable spent flag is not evidence.
+        witness = deepcopy(active)
+        witness.update(spent=False, spent_reason=None, spent_at=None)
+        SB._spend(witness, quote, {})
+        if witness.get('spent'):
+            if not active.get('spent'):
+                for field in ('spent', 'spent_reason', 'spent_at'):
+                    active[field] = witness[field]
+                out['observed'] = True
+            if witness.get('spent_reason') in ('STRUCTURAL_STOP_ALREADY_REACHED',
+                                                'STRUCTURAL_BOTH_BARRIERS_OBSERVED'):
+                leg = state.get('protected_leg') or {}
+                if leg.get('leg_id') == active.get('leg_id') and not leg.get('invalidated'):
+                    leg['invalidated'] = True
+                    out['observed'] = True
+        if active.get('spent'):
+            out.update({field: deepcopy(active.get(field))
+                        for field in ('spent', 'spent_reason', 'spent_at')})
+        return out
+
+
+def restore_context_state(row):
+    import veritas_structural_breakout as SB
+    context=row.get('timeframe_entry_context') or (row.get('trade_plan') or {}).get('timeframe_entry_context') or {}
+    state=context.get('quote_state') or {}
+    identity=context.get('source_identity') or {}
+    if (not SB.applies(context) or not state or
+            not SB.validate_event(context.get('event'),identity).get('eligible')):
+        return False
+    key=(str(row.get('asset') or ''),identity.get('key'),identity.get('contract_id'),context.get('timeframe'))
+    with _STRUCTURAL_LOCK:
+        current=_STRUCTURAL_STATE.get(key) or {}
+        old=TS.timestamp((current.get('last_quote') or {}).get('observed_at')) or 0
+        candidate=TS.timestamp((state.get('last_quote') or {}).get('observed_at')) or 0
+        if candidate>old:
+            _STRUCTURAL_STATE[key]=deepcopy(state)
+            return True
+    return False
+
+
+def structural_context(raw, horizon, now=None, base_context=None):
+    """One state owner for analytic cycles and the fresh-quote execution lane."""
+    import veritas_structural_breakout as SB
+    identity = raw.get('structure_source_identity') or {}
+    key = (str(raw.get('asset') or ''), identity.get('key'),
+           identity.get('contract_id'), str(horizon))
+    with _STRUCTURAL_LOCK:
+        state = _STRUCTURAL_STATE.get(key)
+        restored = raw.get('timeframe_entry_context') or {}
+        candidate = restored.get('quote_state') if SB.applies(restored) else None
+        # Durable summaries may restore state, but an older cycle must never
+        # roll the live quote observer backwards.
+        if (candidate and candidate.get('timeframe') == horizon and
+                (not state or (candidate.get('last_quote') or {}).get('observed_at',0)
+                 > (state.get('last_quote') or {}).get('observed_at',0))):
+            state = candidate
+        result = SB.build_context(raw,horizon,now,base_context=base_context,state=state,
+                                  config=CTC.BREAKOUT_LIFECYCLE_POLICY)
+        if result.get('status') == 'OK' and result.get('quote_state'):
+            _STRUCTURAL_STATE[key] = deepcopy(result['quote_state'])
+            if len(_STRUCTURAL_STATE) > 256:
+                oldest = min(_STRUCTURAL_STATE,
+                    key=lambda k:(_STRUCTURAL_STATE[k].get('last_quote') or {}).get('observed_at',0))
+                _STRUCTURAL_STATE.pop(oldest,None)
+        return result
 
 
 def native_ohlc(rows):
@@ -148,6 +250,8 @@ def attach(raw, now=None):
                 interval_boundary_verified=bool(rows))
         r['structure_history_status'] = statuses
     r['structure_bars_by_timeframe'] = labelled
+    import veritas_breakout_runtime as VBR
+    VBR.publish_market(r)
     return r
 
 
@@ -170,6 +274,7 @@ def context(raw, horizon, now=None):
         if daily_clock_missing:
             result['input_issue'] = 'NATIVE_DAILY_INTERVAL_UNVERIFIED'
         else:
-            result = select_context(raw, horizon, clock, result)
+            intrabar = structural_context(raw,horizon,clock,result)
+            result = select_context(raw, horizon, clock, result, intrabar=intrabar)
         cache[horizon] = {'as_of':stamp, 'context':result}
     return cache[horizon]['context']

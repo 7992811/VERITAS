@@ -29,6 +29,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .row b{font-size:11px}.row span{font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .action{display:block;min-width:0;padding:8px 0}
 .action-head{display:flex;flex-wrap:wrap;align-items:center;gap:5px 10px;min-width:0}
+.admission-label{display:inline-block;border:1px solid var(--line);border-radius:5px;padding:2px 5px;font-size:9px!important;line-height:1.2;color:#cad4dd!important;white-space:nowrap}
 .action .action-reason,.action .action-meta{display:block;min-width:0;max-width:100%;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
 .action .action-reason{margin-top:4px;font-size:10px;line-height:1.45;color:#d6dfe6}
 .action .action-meta{margin-top:3px;font-size:9px;line-height:1.4}
@@ -39,6 +40,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .asset-main{min-width:0;display:flex;align-items:center;gap:8px}.asset-main b{display:inline-block}
 .asset-price{display:block!important;font-size:10px!important;color:#d2dbe3!important;font-variant-numeric:tabular-nums;text-align:left;padding-right:0}
 .asset-bias{text-align:left;white-space:nowrap}
+.asset-action{display:block;margin-top:3px;font-size:8px;font-weight:400;line-height:1.1;color:var(--muted)}
 .asset-tfline{min-width:0;display:grid!important;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px;overflow:hidden!important;white-space:normal!important;text-overflow:clip!important}
 .asset-tfitem{display:block!important;min-width:0;padding:3px 1px;border:1px solid rgba(255,255,255,.04);border-radius:5px;background:rgba(255,255,255,.01);font-size:7.5px!important;color:#aeb9c3!important;text-align:center;white-space:nowrap!important;overflow:hidden;text-overflow:clip}
 .tfs{display:grid;grid-template-columns:repeat(7,minmax(33px,1fr));gap:3px}.tf{font-size:7px;text-align:center;padding:3px 2px;border:1px solid var(--line);border-radius:5px;color:var(--muted)}
@@ -73,11 +75,13 @@ _CANONICAL_HTML = r'''<!doctype html>
 .matrix .asset-label{font-size:13px;font-weight:650;color:var(--text)}
 .matrix .asset-logo{box-shadow:none}
 .matrix tbody th,.matrix td{border-top:1px solid rgba(255,255,255,.045)}
-.matrix .cell{min-height:52px;padding:8px 0;border:0;background:transparent;border-radius:7px}
+.matrix .cell{min-height:64px;padding:10px 0 6px;border:0;background:transparent;border-radius:7px}
+.matrix .cell-action{display:block;margin-top:10px;font-size:8.5px;line-height:1.1;color:#aab6c1;white-space:nowrap}
 .matrix .cell:hover{background:rgba(255,255,255,.045)}
 .matrix .cell.sel{outline:1px solid rgba(164,196,220,.62);outline-offset:-3px;background:rgba(102,159,203,.055)}
 .matrix .cell:focus-visible{outline:2px solid #87b9d9;outline-offset:-3px}
 .matrix .cell .entry-state{font-size:8px;line-height:1.15;max-width:100%;white-space:normal;overflow-wrap:anywhere;margin-top:9px;color:var(--muted)}
+.matrix .cell-action + .entry-state{margin-top:2px}
 /* R90: matte instrument markers with restrained edge definition. */
 .matrix-panel .sig-dot{--signal-color:#ffd037;--signal-edge:inset 0 1px 0 rgba(255,255,255,.12),inset 0 -1px 0 rgba(0,0,0,.16);width:24px;height:24px;flex:0 0 auto;background:var(--signal-color);border:0;color:var(--signal-color);box-shadow:var(--signal-edge)}
 .matrix-panel .sig-dot.long{--signal-color:#00ed95}
@@ -164,7 +168,8 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
   .matrix .asset-label{font-size:12px;gap:4px;letter-spacing:-.2px}
   .matrix .asset-logo{width:18px;height:18px;flex-basis:18px;font-size:8px}
   .matrix .asset-logo svg{width:13px;height:13px}
-  .matrix .cell{min-height:44px;padding:7px 0}
+  .matrix .cell{min-height:56px;padding:9px 0 5px}
+  .matrix .cell-action{font-size:7px;margin-top:9px;letter-spacing:-.15px}
   .matrix .sig-dot{width:22px;height:22px}
   .matrix .sig-dot.super{width:16px;height:16px}
   .matrix .sig-dot.super::after{inset:-6px;border-width:2px}
@@ -312,6 +317,7 @@ const cls=d=>d==='LONG'?'ok':d==='SHORT'?'bad':'warn', ar=d=>d==='LONG'?'↑':d=
 const directionLabel=(d,t)=>String(t||'')==='SUPER_LONG'?'Strong Long':String(t||'')==='SUPER_SHORT'?'Strong Short':String(d||'')==='LONG'?'Long':String(d||'')==='SHORT'?'Short':'Нет позиции';
 const n=(v,d=2)=>{if(v==null||v==='')return'—';v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{maximumFractionDigits:d}):'—'};
 const p2=v=>{if(v==null||v==='')return'—';v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2}):'—'};
+const assetPrice=(asset,value)=>asset==='CNYRUBF'?n(value,4):p2(value);
 const probPct=v=>{v=Number(v);if(!Number.isFinite(v))return null;return v<=1.5?100*v:v};
 const probSourceRu=v=>String(v||'').includes('EMPIRICAL')?'эмпир.':String(v||'').includes('CURRENT')?'тек.':'модельн.';
 const focusRu=v=>({ЗАЩИТА_ПРИБЫЛИ:'защита прибыли',УДЕРЖАНИЕ_ДВИЖЕНИЯ:'удержание движения',КАЧЕСТВО_ВХОДА:'качество входа'}[String(v||'')]||'наблюдение');
@@ -322,11 +328,14 @@ const planOf=x=>(x&&x.trade_plan)||{};
 const knownNumber=v=>v==null||v===''?null:(Number.isFinite(Number(v))?Number(v):null);
 const tradeTotal=z=>knownNumber(z.total_trade_pnl_rub??(z.status==='CLOSED'?z.net_pnl_rub:null));
 const tradeReturn=z=>z.trade_return_basis==='ENTRY_NOTIONAL'?knownNumber(z.total_trade_return_pct):null;
-const tpDone=z=>z.tp1_done??Boolean((z.payload||{}).r17_tp1_done||String(z.exit_reason||(z.payload||{}).exit_reason||'').startsWith('TAKE_PROFIT'));
+const tpFinal=z=>String((z.payload||{}).last_target_kind||'').toUpperCase()==='FINAL';
+const tpDone=z=>tpFinal(z)||(z.tp1_done??Boolean((z.payload||{}).r17_tp1_done||String(z.exit_reason||(z.payload||{}).exit_reason||'').startsWith('TAKE_PROFIT')));
 const tpNotice=(z,open=false)=>{
   if(!tpDone(z))return '';
-  const p=z.payload||{},at=z.tp1_at||p.r17_tp1_at||z.closed_at,partial=z.tp1_partial??Boolean(p.r17_tp1_done);
-  return '<div class="tp-status ok">'+(partial?'TP1 · частично исполнен':'Тейк · исполнен')+(at?' · '+dateRu(at):'')+(open?' · остаток сопровождается стопом':'')+'</div>';
+  const p=z.payload||{},final=tpFinal(z),at=final?(z.closed_at||p.r17_tp1_at||z.tp1_at):(z.tp1_at||p.r17_tp1_at||z.closed_at),partial=z.tp1_partial??Boolean(p.r17_tp1_done);
+  const ladder=p.active_target_ladder||p.initial_target_ladder||p.active_target_event_snapshot?.target_ladder||p.entry_event_snapshot?.target_ladder||[];
+  const finalLabel=Array.isArray(ladder)&&ladder.length>1?'TP2':'Тейк';
+  return '<div class="tp-status ok">'+(final?finalLabel+' · исполнен полностью':partial?'TP1 · частично исполнен':'Тейк · исполнен')+(at?' · '+dateRu(at):'')+(open&&!final?' · остаток сопровождается стопом':'')+'</div>';
 };
 const localHistoryDetail=g=>{
   if(g?.reason!=='R68_LOCAL_CONTEXT_INCOMPLETE')return '';
@@ -338,43 +347,48 @@ const planStatus=x=>{
   const p=planOf(x),econ=p.final_economics_gate||{},blocked=(short,reason)=>({ready:false,short,reason,checked_at:x.trade_entry_checked_at});
   if(!['LONG','SHORT'].includes(dir(x)))return blocked('','Направление не подтверждено');
   if(x.market_open===false)return blocked('сессия','Торговая сессия закрыта');
-  if(x.source_gate_pass===false)return blocked('данные','Цена устарела или источник не прошёл проверку');
-  if((x.paper_eligible??x.execution_eligible)!==true)return blocked('данные','Нет допуска данных для модельной сделки');
-  if(typeof x.trade_entry_eligible==='boolean'){
-    const codes=[...new Set([x.trade_entry_reason,...(x.trade_entry_blockers||[])].filter(Boolean))];
-    if(!x.trade_entry_eligible)return blocked(blockerShort(codes[0]),codes.map(reasonRu).join('; '));
-    return{ready:true,short:'допущен',reason:'Торговый план проверен; размер и открытие определяет портфель',checked_at:x.trade_entry_checked_at};
-  }
   const timing=p.entry_timing_gate||{},quote=p.execution_quote_gate||{};
-  const blockers=[...new Set([...(econ.blockers||x.final_gate_blockers||[]),
+  const blockers=[...new Set([...(econ.blockers||[]),...(x.final_gate_blockers||[]),
     ...(timing.eligible===false?[timing.reason]:[]),...(quote.eligible===false?[quote.reason]:[])].filter(Boolean))];
   const explanation=[...new Set(blockers.map(reasonRu)),localHistoryDetail(timing)].filter(Boolean).join('; ');
+  if(x.source_gate_pass===false)return blocked('данные',explanation||'Цена устарела или источник не прошёл проверку');
+  if((x.paper_eligible??x.execution_eligible)!==true)return blocked('данные',explanation||'Нет допуска данных для модельной сделки');
+  if(typeof x.trade_entry_eligible==='boolean'){
+    const codes=[...new Set([x.trade_entry_reason,...(x.trade_entry_blockers||[])].filter(Boolean))];
+    if(!x.trade_entry_eligible)return blocked(blockerShort(codes[0]),codes.map(reasonRu).join('; ')||explanation);
+    return{ready:true,short:'допущен',reason:'Торговый план проверен; размер и открытие определяет портфель',checked_at:x.trade_entry_checked_at};
+  }
   if(timing.eligible===false)return blocked(blockerShort(timing.reason),explanation);
-  if(blockers.some(v=>String(v).startsWith('QUOTE_')))return blocked('цена',blockers.map(v=>({QUOTE_TIME_MISSING:'Нет времени котировки',QUOTE_TIME_FUTURE:'Время котировки некорректно',QUOTE_TOO_OLD_FOR_HORIZON:'Котировка устарела для выбранного периода'}[v]||'')).filter(Boolean).join('; '));
+  if(blockers.some(v=>String(v).startsWith('QUOTE_')))return blocked('цена',explanation);
   if(econ.status==='BLOCK'||x.final_gate_status==='BLOCK')return blocked(blockerShort(blockers[0]),explanation||'Не пройдена проверка торгового плана');
   if(x.entry_quality==='INVALIDATED'||p.entry_quality==='INVALIDATED'||x.decision_stage==='INVALIDATED')return blocked('отмена','Условия входа утратили актуальность');
   if(x.plan_eligible===false||p.eligible===false||x.decision_stage==='WAIT_RISK_REWARD')return blocked('ожидание',reasonRu(x.plan_reason||p.reason));
   if((x.plan_eligible??p.eligible)!==true)return blocked('план','Допуск торгового плана ещё не подтверждён');
   return {ready:true,short:'допущен',reason:'Сигнал допущен для модельной сделки; размер и открытие определяет портфель'};
 };
-const portfolioDecisions=x=>((st.portfolios&&st.portfolios.portfolios)||[]).flatMap(p=>(p.admission_trace||[]).filter(t=>t.asset===x.asset&&t.direction===dir(x)).map(t=>({...t,portfolio:p.name})));
+const portfolioDecisions=x=>((st.portfolios&&st.portfolios.portfolios)||[]).flatMap(p=>(p.admission_trace||[]).filter(t=>t.asset===x.asset&&t.direction===dir(x)).map(t=>({...t,portfolio:portfolioName(p.name)})));
+const executedAction=t=>{
+  const e=t.execution||{},action=String(e.execution_action||e.action||'').toUpperCase();
+  return ['ADD','INCREASE','SCALE_IN'].includes(action)?'ADD':'OPEN';
+};
+const paperAction=s=>s.action==='ADD'?'Добор':s.ready?'Вход':s.short==='позиция'?'Удержание':'Ожидание';
 const traceCheckedAt=t=>t.checked_at||t.execution?.checked_at||t.admission?.checked_at;
 const signalEventId=x=>planOf(x).entry_event_snapshot?.event_id||planOf(x).timeframe_entry_context?.event?.event_id||x.timeframe_entry_context?.event?.event_id;
 const traceMatchesSignal=(t,x)=>{
-  const event=signalEventId(x),recorded=t.event_id||t.admission?.event_id||t.execution?.event_id;
+  const event=signalEventId(x),recorded=t.event_id||t.admission?.event_id||t.execution?.event_id||t.canonical_setup_id;
   if(event&&recorded)return event===recorded;
   return !t.signal_observed_at||!x.market_observed_at||t.signal_observed_at===x.market_observed_at;
 };
 const traceEconomics=t=>'R/R до расходов '+n(knownNumber(t.gross_rr),2)+' · после расходов '+n(knownNumber(t.net_rr??t.net_reward_risk),2);
 const traceReason=t=>{
   const e=t.execution||{};
-  if(e.status==='EXECUTED')return'Ордер исполнен';
+  if(e.status==='EXECUTED')return executedAction(t)==='ADD'?'Добор исполнен':'Ордер исполнен';
   if(e.status==='HELD')return reasonRu(e.reason);
   const reasons=e.status==='BLOCKED'?(e.blockers?.length?e.blockers:[e.reason]):(t.hard_veto?(t.admission?.blockers?.length?t.admission.blockers:t.profitability_blockers||t.economics_blockers||t.source_blockers||[t.reason]):[t.reason==='ADMISSION_NOT_RECORDED'?t.reason:e.reason||'EXECUTION_PENDING']);
   let text=[...new Set(reasons.filter(Boolean).map(reasonRu))].join('; ');
   if(['EXECUTION_QUOTE_UNAVAILABLE','R66_EXECUTION_QUOTE_STALE'].includes(e.reason)&&e.quote_gate?.age_seconds!=null)text+=': возраст '+Math.max(0,Number(e.quote_gate.age_seconds)).toFixed(0)+' с, допустимо '+Number(e.quote_gate.max_age_seconds||300).toFixed(0)+' с';
   if(e.timing?.consumed_move_pct!=null)text+=': движение '+(100*Number(e.timing.consumed_move_pct)).toFixed(2)+'%, предел '+(100*Number(e.timing.late_entry_limit_pct)).toFixed(2)+'%';
-  const event=e.trend_event||t.trend_event;if(event?.extension_atr!=null)text+=': исходный уровень '+Number(event.trigger_level).toLocaleString('ru-RU',{maximumFractionDigits:2})+', удаление '+Number(event.extension_atr).toFixed(2)+' ATR';
+  const event=e.trend_event||t.trend_event;if(event?.extension_atr!=null)text+=': исходный уровень '+Number(event.trigger_level).toLocaleString('ru-RU',{maximumFractionDigits:4})+', удаление '+Number(event.extension_atr).toFixed(2)+' ATR';
   const history=localHistoryDetail(event);if(history)text+=': '+history;
   return text||'Окончательное решение ещё не получено';
 };
@@ -382,7 +396,8 @@ const paperStatus=x=>{
   const plan=planStatus(x);
   const all=portfolioDecisions(x),exact=all.filter(t=>t.horizon===x.horizon);
   const checked=exact.filter(t=>{const at=Date.parse(traceCheckedAt(t)||'');return Number.isFinite(at)&&Date.now()-at<=180000&&Date.now()-at>=-60000&&traceMatchesSignal(t,x)});
-  if(checked.some(t=>t.execution?.status==='EXECUTED'))return{ready:true,short:'исполнен',checked_at:traceCheckedAt(checked.find(t=>t.execution?.status==='EXECUTED')),reason:checked.filter(t=>t.execution?.status==='EXECUTED').map(t=>t.portfolio).join(', ')+': ордер исполнен'};
+  const executed=checked.filter(t=>t.execution?.status==='EXECUTED');
+  if(executed.length)return{ready:true,short:'исполнен',action:executed.every(t=>executedAction(t)==='ADD')?'ADD':'OPEN',checked_at:traceCheckedAt(executed[0]),reason:checked.map(t=>t.portfolio+': '+traceReason(t)).join('; ')};
   if(['сессия','данные'].includes(plan.short))return plan;
   if(!checked.length){
     if(!plan.ready)return plan;
@@ -390,7 +405,7 @@ const paperStatus=x=>{
     return{ready:false,short:'проверка',reason:'Торговый план прошёл проверку; ожидается актуальное решение исполнителя',checked_at:plan.checked_at};
   }
   const held=checked.filter(t=>t.execution?.status==='HELD');
-  if(held.length)return{ready:false,short:'позиция',checked_at:traceCheckedAt(held[0]),reason:held.map(t=>t.portfolio).join(', ')+': '+traceReason(held[0])};
+  if(held.length)return{ready:false,short:'позиция',checked_at:traceCheckedAt(held[0]),reason:checked.map(t=>t.portfolio+': '+traceReason(t)).join('; ')};
   const pending=checked.filter(t=>t.admission?.open===true&&!['BLOCKED','EXECUTED','HELD'].includes(t.execution?.status));
   if(pending.length)return{ready:false,short:'проверка',reason:'Вход допущен: '+pending.map(t=>t.portfolio).join(', ')+'. Исполнение ордера ещё не подтверждено',checked_at:traceCheckedAt(pending[0])};
   const codes=checked.flatMap(t=>[t.execution?.status==='BLOCKED'?t.execution.reason:t.reason,
@@ -404,11 +419,13 @@ const blockerShort=code=>{
   if(c.includes('DIRECTION_CONFLICT'))return'конфликт';
   if(c.includes('EVENT_EXPIRED')||c.includes('EVENT_SPENT'))return'истёк';
   if(c.includes('STOP_ALREADY_REACHED')||c.includes('BOTH_BARRIERS')||c.includes('INVALIDATED'))return'отмена';
-  if(c.includes('TARGET_ALREADY_REACHED')&&c.startsWith('SAME_TF'))return'цель';
-  if(c.includes('ENTRY_EXTENDED'))return'поздно';
+  if(c.includes('TARGET_ALREADY_REACHED')&&(c.startsWith('SAME_TF')||c.startsWith('STRUCTURAL')))return'цель';
+  if(c.includes('ENTRY_EXTENDED')||c.includes('ENTRY_TOO_LATE_TO_TARGET'))return'поздно';
   if(c.includes('PLAN_NOT_CHECKED')||c.includes('ENTRY_TIME_MISSING')||c.includes('ADMISSION_NOT_RECORDED'))return'проверка';
   if(c.includes('QUOTE')||c.includes('MINUTE_DATA'))return'цена';
-  if(c.includes('CONTEXT'))return'свечи';
+  if(c.includes('SOURCE'))return'источник';
+  if(c.includes('CONTEXT')||c.includes('HISTORY_INSUFFICIENT'))return'свечи';
+  if(c==='STRUCTURAL_WAIT_VERIFIED_CROSS')return'пробой';
   if(c.includes('RETEST'))return'ретест';
   if(c.includes('LOCAL_BREAKOUT'))return'пробой';
   if(c.includes('ACTIVITY'))return'объём';
@@ -433,20 +450,108 @@ const stageRu=v=>{const k=String(v||'');const m={EARLY_PROBE:'Ранний вх�
 const reasonRu=v=>{
   const k=String(v||'').toUpperCase();
   const exact={
+    STRUCTURAL_EXECUTION_QUOTE_INVALID:'Нет корректной цены и времени текущей котировки для проверки пробоя',
+    STRUCTURAL_VERIFIED_QUOTE_REQUIRED:'Ожидается проверенная котировка того же инструмента в открытой торговой сессии',
+    STRUCTURAL_EXECUTION_BOOK_INVALID:'Цены покупки и продажи неполны или противоречат друг другу',
+    STRUCTURAL_VERIFIED_QUOTE_READY:'Текущая котировка и источник инструмента проверены',
+    STRUCTURAL_BAR_SOURCE_MISMATCH:'История уровней относится к другому источнику или контракту',
+    STRUCTURAL_BOTH_BARRIERS_OBSERVED:'Стоп и цель исходного события уже наблюдались; требуется новый пробой',
+    STRUCTURAL_STOP_ALREADY_REACHED:'Цена достигла защитного стопа исходного пробоя; сценарий завершён',
+    STRUCTURAL_TARGET_ALREADY_REACHED:'Ближайшая цель исходного пробоя уже достигнута; ожидается следующий подтверждённый уровень',
+    STRUCTURAL_CONTEXT_INVALID:'Не удалось подтвердить структуру, её источник или текущую котировку',
+    STRUCTURAL_CONTEXT_REQUIRED:'Нет подтверждённой структуры для проверки входа по текущей котировке',
+    STRUCTURAL_QUOTE_ENTRY_DISABLED:'Вход по пробою текущей котировкой выключен в правилах',
+    STRUCTURAL_STATE_SOURCE_MISMATCH:'Сохранённое наблюдение пробоя относится к другому источнику или контракту',
+    STRUCTURAL_STATE_INVALID:'Не подтверждена последовательность сохранённых наблюдений пробоя',
+    STRUCTURAL_STATE_EVENT_INVALID:'Сохранённое событие пробоя не прошло проверку исходных данных',
+    STRUCTURAL_STATE_LEG_INVALID:'Не подтверждено происхождение сохранённого защитного минимума или максимума',
+    STRUCTURAL_QUOTE_OUT_OF_ORDER:'Котировка старше предыдущего наблюдения или меняет цену при том же времени',
+    STRUCTURAL_HISTORY_INSUFFICIENT:'Недостаточно закрытых свечей для локальных уровней, защитной структуры и волатильности',
+    STRUCTURAL_WAIT_VERIFIED_CROSS:'Ожидается пересечение ранее известного локального уровня свежей котировкой',
+    STRUCTURAL_PROTECTED_SWING_UNAVAILABLE:'Нет подтверждённого локального минимума или максимума для защитного стопа',
+    STRUCTURAL_TARGET_ZONE_UNAVAILABLE:'За уровнем пробоя нет подтверждённой исторической зоны для цели',
+    STRUCTURAL_QUOTE_BREAKOUT_OBSERVED:'Свежая котировка пересекла ранее известный локальный уровень',
+    STRUCTURAL_EVENT_PROOF_INVALID:'Не подтверждено происхождение пробоя, стопа или исторических целей',
+    STRUCTURAL_EVENT_PROOF_VALID:'Исходные данные пробоя, защитного стопа и исторических целей проверены',
+    STRUCTURAL_CONTEXT_FROM_FUTURE:'Структура содержит свечи, ещё не завершённые ко времени текущей котировки',
+    STRUCTURAL_QUOTE_PREDATES_EVENT:'Котировка получена раньше события пробоя; требуется новая цена',
+    STRUCTURAL_CONTEXT_READY:'Структура и текущая котировка согласованы по источнику и времени',
+    STRUCTURAL_DIRECTION_OR_TIMEFRAME_MISMATCH:'Направление или период сигнала не совпадает с подтверждённым пробоем',
+    STRUCTURAL_EVENT_SPENT:'Исходный пробой уже завершён; требуется новое рыночное событие',
+    STRUCTURAL_POLICY_INVALID:'Параметры правила пробоя не прошли проверку',
+    STRUCTURAL_EVENT_EXPIRED:'Срок входа по этому пробою истёк; требуется новое подтверждение',
+    STRUCTURAL_BREAKOUT_LEVEL_NOT_HELD:'Цена вернулась за пробитый уровень; условие входа больше не выполняется',
+    STRUCTURAL_ENTRY_TOO_LATE_TO_TARGET:'Цена прошла слишком большую часть пути до ближайшей цели; вход запоздал',
+    STRUCTURAL_STOP_TOO_DISTANT:'Расстояние до защитного стопа превышает допустимую волатильность структурного периода',
+    STRUCTURAL_VERIFIED_QUOTE_ENTRY_READY:'Пробой свежей котировкой подтверждён; стоп и исторические цели готовы к проверке исполнения',
+    STRUCTURAL_VERIFIED_QUOTE_ENTRY:'Пробой, защитный стоп и исторические цели прошли проверку торгового плана',
+    STRUCTURAL_PARENT_MANAGEMENT_PROOF_REQUIRED:'Недостаточно подтверждённых данных старшего периода для переноса защитного стопа',
+    STRUCTURAL_PARENT_MANAGEMENT_READY:'Подтверждённые уровни старшего периода доступны для сопровождения позиции',
+    STRUCTURAL_PARENT_REVISION_INVALID:'Новый защитный уровень старшего периода не прошёл проверку происхождения и времени',
+    STRUCTURAL_PARENT_REVISION_VALID:'Новый защитный уровень старшего периода подтверждён; стоп можно подтянуть',
+    STRUCTURAL_ECONOMICS_DECISION_TIME_REQUIRED:'Нет достоверного времени решения для расчёта расходов и риска',
+    STRUCTURAL_ECONOMICS_PROOF_INVALID:'Не подтверждён расчёт доходности частичных выходов по исходным историческим целям',
+    STRUCTURAL_ECONOMICS_QUOTE_MISMATCH:'Цена или стакан расчёта доходности не совпадает с проверенной котировкой исполнения',
+    STRUCTURAL_TARGET_LADDER_PROVENANCE_MISMATCH:'Цены или доли частичных выходов не совпадают с подтверждёнными историческими целями',
+    STRUCTURAL_FILL_TIMING_INVALID:'После учёта цены исполнения вход не проходит проверку пробоя и расстояния до цели',
+    STRUCTURAL_ADD_PARENT_MISMATCH:'Добор не подтверждает направление и защищённую структуру открытой позиции',
+    STRUCTURAL_ADD_PROTECTED_PARENT_CONFIRMED:'Добор подтверждает защищённую структуру открытой позиции',
+    STRUCTURAL_NEW_LEVEL_ADD:'Новый локальный пробой подтверждён; объём добора проходит окончательную проверку риска',
+    STRUCTURAL_ALLOCATION_CAP:'Достигнут разрешённый объём позиции; дополнительный объём не выделен',
+    STRUCTURAL_PROTECTIVE_EXIT_PENDING:'Стоп или цель открытой позиции уже достигнуты; новый вход или добор ожидает исполнения выхода',
+    PROTECTIVE_EXIT_PENDING:'Стоп или цель открытой позиции уже достигнуты; новый вход или добор ожидает исполнения выхода',
+    STRUCTURAL_ACTIVE_TARGET_REQUIRED:'Не подтверждена активная историческая цель для частичного выхода',
+    STRUCTURAL_TARGET_NOT_REACHED:'Цена ещё не достигла следующей исторической цели',
+    STRUCTURAL_TARGET_EXECUTION_INPUT_INVALID:'Для частичного выхода нет корректной цены, объёма или капитала портфеля',
+    STRUCTURE_INTACT_WAIT_NEW_LEVEL:'Защитная структура сохраняется; позиция удерживается до следующего подтверждённого пробоя',
+    HELD_PROTECTED_STRUCTURE_REQUIRES_EXIT:'Открытая позиция удерживается; смена направления требует подтверждённого выхода',
+    ROLE_VERIFIED_STRUCTURAL_EVENT:'Подтверждённый пробой соответствует роли и периоду портфеля',
+    ROLE_STRUCTURAL_PROOF_OR_TIMEFRAME_REQUIRED:'Событие или его структурный период не подтверждены для роли этого портфеля',
+    TAKE_PROFIT_STRUCTURAL_PARTIAL:'Часть позиции исполнена по первой исторической цели',
+    TAKE_PROFIT_STRUCTURAL_FINAL:'Остаток позиции исполнен по последней исторической цели',
+    SAME_TF_SOURCE_MISMATCH:'Источник или контракт текущей котировки не совпадает с источником и контрактом сигнала',
+    SAME_TF_SOURCE_IDENTITY_MISMATCH:'Источник или контракт события пробоя не совпадает с историей свечей',
+    SAME_TF_SOURCE_IDENTITY_REQUIRED:'Не подтверждён источник и контракт истории свечей',
+    SAME_TF_CONTEXT_REQUIRED:'Нет структуры уровней для выбранного периода',
     SAME_TF_CONTEXT_STALE:'Закрытые свечи выбранного периода устарели; ждём обновление данных',
-    SAME_TF_CONTEXT_REQUIRED:'Нет подтверждённых свечей выбранного периода',
-    SAME_TF_DIRECTION_CONFLICT:'Прогноз и подтверждённое структурное событие направлены в разные стороны',
-    SAME_TF_EVENT_EXPIRED:'Срок входа по этому пробою истёк; нужен новый сигнал',
-    SAME_TF_EVENT_SPENT:'Сценарий уже исчерпан; нужен новый сигнал',
-    SAME_TF_TARGET_ALREADY_REACHED:'Цель исходного события уже достигнута; нужен новый вход',
-    SAME_TF_STOP_ALREADY_REACHED:'Структурный стоп исходного события уже достигнут; сценарий отменён',
-    SAME_TF_BOTH_BARRIERS_REACHED:'Исходные уровни стопа и цели уже пройдены; сценарий исчерпан',
+    SAME_TF_HISTORY_UNAVAILABLE:'История свечей выбранного периода недоступна',
+    SAME_TF_HISTORY_INSUFFICIENT:'Недостаточно свечей выбранного периода для уровней и волатильности',
+    SAME_TF_HORIZON_MISMATCH:'Период структуры не совпадает с периодом сигнала',
+    SAME_TF_PROVENANCE_MISMATCH:'Не подтверждено происхождение события, уровней или волатильности выбранного периода',
+    SAME_TF_NONCAUSAL_EVENT:'Событие использует уровни или данные, ещё не известные в момент пробоя',
+    SAME_TF_DECISION_TIME_REQUIRED:'Не определено достоверное время торгового решения',
+    SAME_TF_CONTEXT_OR_POLICY_INVALID:'Не удалось проверить структуру или параметры выбранного периода',
+    SAME_TF_QUOTE_PREDATES_BREAKOUT:'Котировка получена до события пробоя; нужна новая котировка',
     SAME_TF_ENTRY_EXTENDED:'Цена ушла слишком далеко от подтверждённого уровня; вход запоздал',
-    SAME_TF_STOP_TOO_DISTANT:'Расстояние до структурного стопа превышает допустимую волатильность',
-    SAME_TF_WAIT_STRUCTURAL_BREAKOUT:'Ждём подтверждённый пробой уровня на выбранном периоде',
-    SAME_TF_BREAKOUT_LEVEL_NOT_HELD:'Цена не удерживает пробитый уровень',
-    SAME_TF_INVALID_GEOMETRY:'Нет согласованного структурного стопа и цели для этого направления',
-    SAME_TF_SOURCE_MISMATCH:'Свечи и цена исполнения относятся к разным источникам',
+    SAME_TF_EVENT_EXPIRED:'Срок входа по этому пробою истёк; нужен новый сигнал',
+    SAME_TF_EVENT_SPENT:'Первоначальное событие пробоя уже завершено; нужен новый уровень',
+    SAME_TF_WAIT_STRUCTURAL_BREAKOUT:'Ожидается пробой предыдущего локального уровня',
+    SAME_TF_BREAKOUT_LEVEL_NOT_HELD:'Цена вернулась за пробитый уровень; вход ожидает восстановления структуры',
+    SAME_TF_DIRECTION_CONFLICT:'Направление события пробоя не совпадает с направлением сигнала',
+    SAME_TF_INVALID_GEOMETRY:'Нет согласованных уровней входа, защитного стопа и цели',
+    SAME_TF_GEOMETRY_INVALID:'Уровни входа, защитного стопа и цели расположены некорректно',
+    SAME_TF_STOP_ALREADY_REACHED:'Цена достигла защитного стопа исходного сценария',
+    SAME_TF_TARGET_ALREADY_REACHED:'Цель исходного события уже достигнута; нужен новый вход',
+    SAME_TF_STOP_TOO_DISTANT:'Расстояние до структурного стопа превышает допустимый предел для волатильности периода',
+    SAME_TF_BOTH_BARRIERS_REACHED:'В одной свече достигнуты стоп и цель; порядок событий не подтверждён',
+    SAME_TF_CONFIRMATION_BREAKS_STRUCTURE:'Свеча пробоя одновременно нарушила защитную структуру',
+    SAME_TF_ADD_HORIZON_MISMATCH:'Период добора не совпадает с периодом сопровождения открытой позиции',
+    SAME_TF_STRUCTURAL_ENTRY:'Пробой, структурный стоп и торговый план согласованы',
+    SAME_TF_MA_REBOUND_ENTRY:'Отскок от средней и торговый план согласованы',
+    SAME_TF_ENTRY_READY:'Структурный пробой подтверждён для проверки исполнения',
+    SAME_TF_GEOMETRY_OK:'Стоп и цель согласованы со структурой выбранного периода',
+    SAME_TF_CONTEXT_READY:'Структура выбранного периода актуальна',
+    SAME_TF_STRUCTURE_READY:'Локальные уровни выбранного периода определены',
+    CANONICAL_SIGNAL_ENTRY:'Торговый план допущен; окончательное исполнение определяет портфель',
+    CANONICAL_SIGNAL_PROBE:'Допущен начальный объём позиции с последующим подтверждением',
+    CANONICAL_NO_AVERAGING_LOSER:'Добор заблокирован: цена находится в убыточной стороне от средней цены входа',
+    CANONICAL_ADD_REQUIRES_NEW_CONFIRMATION:'Позиция уже открыта; для добора требуется пробой следующего подтверждённого уровня',
+    EVENT_REUSE_WITHOUT_NEW_CONFIRMATION:'Это событие уже использовано; повторный вход или добор ожидает новый пробой',
+    TARGET_ALREADY_REACHED:'Целевой объём позиции уже набран; позиция удерживается',
+    ORDER_ALREADY_RECORDED:'Ордер по этому событию уже учтён; повторное исполнение не требуется',
+    ORDER_RECORDED:'Ордер исполнен и учтён в портфеле',
+    STOP_RISK_CAP_EXCEEDED:'Объём ограничен денежным риском всей позиции до защитного стопа',
+    POSITION_SOURCE_MISMATCH:'Источник или контракт котировки не совпадает с источником открытой позиции',
     MA_LOCAL_SOURCE_MISMATCH:'Источник локальных свечей не подтверждён для сценария от средней',
     EXECUTION_QUOTE_STALE:'Котировка исполнения устарела; ждём свежую цену',
     EXECUTION_ORDERBOOK_STALE:'Стакан устарел; ждём свежие цены покупки и продажи',
@@ -465,8 +570,6 @@ const reasonRu=v=>{
     EXECUTION_PENDING:'Ожидается окончательная проверка исполнения',
     EXECUTION_CONTROL_BLOCKED:'Ордер не прошёл дополнительный контроль исполнения',
     NO_NEW_ALLOCATION:'Новый объём не выделен правилами портфеля',
-    TARGET_ALREADY_REACHED:'Позиция уже открыта; новый добор не требуется',
-    ORDER_ALREADY_RECORDED:'Этот ордер уже учтён; повторное открытие запрещено',
     WAIT_LEVEL_BREAK:'Ожидается пробой уровня',
     PORTFOLIO_RISK_LIMIT:'Достигнут лимит риска портфеля',
     DIRECTION_FLIP_NOT_CONFIRMED:'Разворот позиции ещё не подтверждён',
@@ -524,8 +627,9 @@ const reasonRu=v=>{
     PAPER_ONE_VALID_SOURCE:'Данные допущены: одного проверенного источника достаточно'
   };
   if(exact[k])return exact[k];
-  if(k.startsWith('FINAL_ECONOMICS_GATE:'))return [...new Set(k.split(':').slice(1).join(':').split(',').slice(0,24).map(reasonRu))].join('; ');
   if(!k)return'Причина уточняется';
+  const codes=k.replace(/^FINAL_ECONOMICS_GATE:/,'').split(',').slice(0,24).map(v=>v.trim());
+  if(codes.length>1||k.startsWith('FINAL_ECONOMICS_GATE:'))return[...new Set(codes.map(reasonRu))].join('; ');
   if(k.includes('NEGATIVE_VALIDATED_SETUP_EDGE')||k.includes('NEGATIVE_CONTEXT_EXPECTANCY'))return'Историческая проверка похожих сценариев показывает отрицательный результат';
   if(k.includes('LATE_ENTRY')||k.includes('NO_CHASE'))return'Движение уже прошло слишком далеко; ожидается откат или новый пробой';
   if(k.includes('QUOTE_')||k.includes('CONTEXT_STALE'))return'Котировка или локальный контекст устарели';
@@ -574,23 +678,30 @@ function renderSignals(){
   const seen=new Set(),best=ranked.filter(x=>{if(seen.has(x.asset))return false;seen.add(x.asset);return true}).slice(0,7);
   $('actions').innerHTML=best.length?best.map(x=>{
     const rr=Number(rrOf(x)),admission=paperStatus(x),sig=directionLabel(dir(x),tier(x));
-    const state=admission.ready?'ОРДЕР ИСПОЛНЕН':admission.short==='позиция'?'ПОЗИЦИЯ ОТКРЫТА':admission.short==='проверка'?'ПРОВЕРКА ВХОДА':'ВХОД ЗАБЛОКИРОВАН';
-    return '<div class="row action"><div class="action-head"><button class="action-link" data-signal="'+esc(x.asset+'|'+x.horizon)+'"><b>'+lab(x.asset)+'</b></button><b class="'+cls(dir(x))+'">Прогноз: '+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span></div>'+
+    const state=admission.ready?(admission.action==='ADD'?'ДОБОР ИСПОЛНЕН':'ОРДЕР ИСПОЛНЕН'):admission.short==='позиция'?'ПОЗИЦИЯ ОТКРЫТА':admission.short==='проверка'?'ПРОВЕРКА ВХОДА':'ВХОД ЗАБЛОКИРОВАН';
+    return '<div class="row action"><div class="action-head"><button class="action-link" data-signal="'+esc(x.asset+'|'+x.horizon)+'"><b>'+lab(x.asset)+'</b></button><b class="'+cls(dir(x))+'">Прогноз: '+ar(dir(x))+' '+sig+'</b><span class="admission-label">'+paperAction(admission)+'</span><span>'+tfRu(x.horizon)+'</span></div>'+
       '<span class="action-reason"><b>'+state+'</b> · '+esc(admission.reason)+'</span>'+
-      '<span class="action-meta">Потенциал / риск после расходов '+(Number.isFinite(rr)?rr.toFixed(2):'—')+' · Стоп '+p2(stopOf(x))+' · Цель '+p2(targetOf(x))+(admission.checked_at?' · проверено '+dateRu(admission.checked_at):'')+'</span></div>';
+      '<span class="action-meta">Потенциал / риск после расходов '+(Number.isFinite(rr)?rr.toFixed(2):'—')+' · Стоп '+assetPrice(x.asset,stopOf(x))+' · Цель '+assetPrice(x.asset,targetOf(x))+(admission.checked_at?' · проверено '+dateRu(admission.checked_at):'')+'</span></div>';
   }).join(''):'<div class="msg">Направленных сигналов сейчас нет — ожидается подтверждение структуры.</div>';
   document.querySelectorAll('.action-link[data-signal]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.signal,true));
 
-  $('assets').innerHTML=AS.map(a=>{const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'Long':D==='SHORT'?'Short':'ЖДАТЬ')+'</b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=tfShort(tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>'}).join('');
+  $('assets').innerHTML=AS.map(a=>{
+    const xs=TF.map(tf=>map[a+'|'+tf]).filter(Boolean),ds=xs.map(dir),ln=ds.filter(x=>x==='LONG').length,sn=ds.filter(x=>x==='SHORT').length,D=ln>sn?'LONG':sn>ln?'SHORT':'WAIT',p=(map[a+'|5m']||xs[0]||{}).price;
+    const states=xs.filter(x=>dir(x)===D).map(x=>({horizon:x.horizon,...paperStatus(x)}));
+    states.sort((a,b)=>(Number(b.ready)*2+Number(b.short==='позиция'))-(Number(a.ready)*2+Number(a.short==='позиция')));
+    const admission=states[0]||{ready:false,reason:'Направление не подтверждено'},description=(admission.horizon?tfRu(admission.horizon)+' · ':'')+admission.reason;
+    return'<div class="row asset"><div class="asset-main">'+assetLogo(a)+'<b>'+lab(a)+'</b></div><span class="asset-price">'+n(p,4)+'</span><b class="asset-bias '+cls(D)+'">'+ar(D)+' '+(D==='LONG'?'Long':D==='SHORT'?'Short':'ЖДАТЬ')+'<small class="asset-action" title="'+esc(description)+'">'+paperAction(admission)+'</small></b><span class="asset-tfline">'+TF.map(tf=>{const x=map[a+'|'+tf],shortTf=tfShort(tf);return'<span class="asset-tfitem">'+shortTf+' '+(x?ar(dir(x)):'—')+'</span>'}).join('')+'</span></div>';
+  }).join('');
 
   $('matrixBody').innerHTML=AS.map(a=>'<tr><th scope="row" class="asset-head"><div class="asset-label">'+assetLogo(a)+'<span>'+lab(a)+'</span></div></th>'+TF.map(tf=>{
     const x=map[a+'|'+tf],identity=lab(a)+' · '+tfRu(tf);
     if(!x)return'<td><button type="button" class="cell" disabled aria-label="'+esc(identity+' · нет данных')+'" title="Нет данных"><span class="sig-dot unavailable" aria-hidden="true">—</span></button></td>';
     const D=dir(x),T=tier(x),conf=x.confidence==null?null:100*Number(x.confidence),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait';
     const score=conf!==null&&Number.isFinite(conf)?conf.toFixed(1)+'/100':'нет данных';
-    const admission=paperStatus(x),description=identity+' · прогноз '+tierLabel(x)+' · оценка '+score+' · '+admission.reason;
-    const entryLabel=admission.ready?'Исполнен':admission.short==='позиция'?'Есть позиция':'Вход: '+(admission.short||'нет сигнала');
-    return'<td><button type="button" class="cell" data-k="'+a+'|'+tf+'" aria-label="'+esc(description)+'" title="'+esc(description)+'"><span class="sig-dot '+dc+(isSuper?' super':'')+'" aria-hidden="true"></span><small class="entry-state">'+esc(entryLabel)+'</small></button></td>';
+    const admission=paperStatus(x),action=paperAction(admission);
+    const entryLabel=admission.ready||admission.short==='позиция'?'':'Вход: '+(admission.short||'нет сигнала');
+    const description=identity+' · прогноз '+tierLabel(x)+' · '+action+' · оценка '+score+' · '+admission.reason;
+    return'<td><button type="button" class="cell" data-k="'+a+'|'+tf+'" aria-label="'+esc(description)+'" title="'+esc(description)+'"><span class="sig-dot '+dc+(isSuper?' super':'')+'" aria-hidden="true"></span><span class="cell-action">'+action+'</span>'+(entryLabel?'<small class="entry-state">'+esc(entryLabel)+'</small>':'')+'</button></td>';
   }).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
   if(!st.selected&&rows.length){const x=best[0]||rows[0];st.selected=x.asset+'|'+x.horizon}
@@ -613,7 +724,7 @@ function selectSignal(k,scroll=false){
   const openText=openPositions.length?openPositions.map(q=>esc(q.p)+' '+dirRu(q.z.direction)+' '+pct(100*Number(q.z.target_fraction||0))).join(' · '):'Открытой позиции по активу сейчас нет';
   const directionText=D==='LONG'?'Преимущество покупателей':D==='SHORT'?'Преимущество продавцов':'Направление не подтверждено';
   const structureText=structureRu(hstate)+(Number.isFinite(Number(hscore))?' · сила структуры '+(100*Number(hscore)).toFixed(0)+'%':'');
-  const signalText=ready?'Ордер исполнен в модельном портфеле.':admission.short==='позиция'?'Позиция сопровождается; новый вход не требуется.':admission.short==='проверка'?'Ожидается решение исполнителя.':'Новый модельный вход пока заблокирован.';
+  const signalText=ready?(admission.action==='ADD'?'Добор исполнен в модельном портфеле.':'Ордер исполнен в модельном портфеле.'):admission.short==='позиция'?'Позиция сопровождается; новый вход не требуется.':admission.short==='проверка'?'Ожидается решение исполнителя.':'Новый модельный вход пока заблокирован.';
   const actionText=ready
     ? signalText+' Стоп располагается за подтверждённой локальной структурой, прибыль сопровождается защитным трейлинг-стопом. При развитии движения возможен добор без увеличения исходного денежного риска.'
     : signalText+' '+esc(admission.reason)+'.';
@@ -629,9 +740,9 @@ function selectSignal(k,scroll=false){
         '<div class="signal-identity">'+assetLogo(x.asset)+'<div><div class="signal-name">'+lab(x.asset)+' · '+tfRu(x.horizon)+'</div><div class="signal-sub">'+regimeRu(x.regime)+'</div></div></div>'+
         '<div class="signal-chips">'+
           '<span class="signal-chip '+cls(D)+'">Прогноз: '+tierLabel(x)+'</span>'+
+          '<span class="signal-chip" title="'+esc(admission.reason)+'">'+paperAction(admission)+'</span>'+
           '<span class="signal-chip">Оценка сигнала '+(conf==null?'—':conf.toFixed(1)+'/100')+'</span>'+
           '<span class="signal-chip">Подтверждений '+confirms+'</span>'+
-          '<span class="signal-chip" title="'+esc(admission.reason)+'">'+(ready?'Ордер исполнен':'Вход: '+esc(admission.short))+'</span>'+
           '<span class="signal-chip">Проверка входа: '+dateRu(admission.checked_at||x.trade_entry_checked_at)+'</span>'+
         '</div>'+
       '</div>'+
@@ -747,7 +858,9 @@ function renderPortfolios(){
   $('positions').className='position-grid';
   $('positions').innerHTML=positions.length?positions.map(z=>{
     const pnl=tradeTotal(z),ret=tradeReturn(z),frac=100*Number(z.target_fraction||0),util=Number(z.position_utilization_pct),held=z.held_seconds??z.holding_duration_seconds;
-    const stop=z.trailing_stop??z.stop_price,tp1=z.take_price??z.initial_take_price,tp1Label=tpDone(z)?'TP1 ✓ исполнен':z.take_price!=null?'TP1 / цель':z.initial_take_price!=null?'Цель входа':'TP1 / цель',tp2=z.second_take_price,prob=probPct(z.signal_probability),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
+    const recorded=z.payload?.active_target_ladder,ladder=Array.isArray(recorded)&&recorded.length?recorded:null;
+    const stage=Number.isInteger(z.payload?.active_target_stage)?z.payload.active_target_stage:0;
+    const stop=z.trailing_stop??z.stop_price,tp1=ladder?ladder[0].price:z.take_price??z.initial_take_price,tp1Label=(ladder?stage>0:tpDone(z))?'TP1 ✓ исполнен':z.take_price!=null||ladder?'TP1 / цель':z.initial_take_price!=null?'Цель входа':'TP1 / цель',tp2=ladder?(ladder[1]?.price??null):z.second_take_price,prob=probPct(z.signal_probability),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
     const tf=z.execution_timeframe||z.horizon,grade=z.setup_grade||(z.legacy_entry_recovered?'архив':'—'),tier=z.signal_tier||'',protection=z.net_profit_protection||{},protect=protection.version==='NET_STOP_AFTER_COSTS_V1'&&protection.state==='PROTECTED'&&Number(protection.net_at_stop_rub)>=0.01;
     const probText=prob==null?'—':prob.toFixed(1)+'% '+probSourceRu(z.probability_source);
     const capText=Number.isFinite(cap)?(100*cap).toFixed(0)+'%':'—';
@@ -757,7 +870,7 @@ function renderPortfolios(){
     const sideText=directionLabel(z.direction,tier),sideClass=cls(String(z.direction||'')); 
     return'<div class="position-card">'+
       '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' <span class="trade-direction '+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Результат всей сделки после расходов / сумма фактических входов и доборов. Частичные закрытия не уменьшают базу процента.">'+signedPct(ret)+'<small>'+rub(pnl)+'</small></div></div>'+
-      '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+p2(z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+p2(z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+p2(stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+p2(tp1)+'</b></div><div class="position-level"><span>TP2</span><b>'+p2(tp2)+'</b></div></div>'+
+      '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+assetPrice(z.asset,z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+assetPrice(z.asset,z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+assetPrice(z.asset,stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+assetPrice(z.asset,tp1)+'</b></div>'+(!ladder||ladder.length>1?'<div class="position-level"><span>TP2</span><b>'+assetPrice(z.asset,tp2)+'</b></div>':'')+'</div>'+
       '<div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · в позиции '+holdRu(held)+' · объём '+rub(z.notional_rub)+'</div>'+
       '<div class="position-meta">Источник: '+esc(z.price_source_lock?.primary_source||z.payload?.price_source_lock?.primary_source||'не установлен')+' · '+(z.price_source_status==='OK'?'котировка '+dateRu(z.last_mark_at):'<span class="warn">ожидаем котировку источника входа · сохранена последняя подтверждённая цена</span>')+'</div>'+
       tpNotice(z,true)+
@@ -801,8 +914,8 @@ function renderTrades(){
     const sideText=directionLabel(D,p.entry_signal_tier||p.signal_tier||''),sideClass=cls(D),stopLoss=t.stop_price??p.stop_price??p.structural_stop??p.initial_stop_price;
     const key=String(t.trade_id||[t.portfolio_name,t.asset,t.opened_at,t.closed_at].join('|'));
     return'<article class="deal"><div class="deal-head"><div><div class="deal-name">'+esc(lab(t.asset))+' <span class="deal-side trade-direction '+sideClass+'">'+sideText+'</span>'+(shownPct==null?'':' · <span>'+n(shownPct,0)+'%</span>')+'</div><div class="deal-book">'+esc(portfolioName(t.portfolio_name))+' · '+tfRu(t.horizon)+'</div></div><div class="deal-result '+tone(net)+'" title="Результат после расходов / сумма фактических входов и доборов.">'+signedPct(retPct)+'<small>'+rub(net)+'</small></div></div>'+
-      '<div class="deal-path"><div class="deal-point">Вход <b>'+p2(entry)+'</b><time>'+dateRu(t.opened_at)+'</time></div><div class="deal-point">Выход <b>'+p2(exit)+'</b><time>'+dateRu(t.closed_at)+'</time></div></div><div class="deal-outcome"><b>'+esc(reason)+'</b><span>'+holdRu(held)+'</span></div>'+tpNotice(t)+
-      '<details data-trade="'+esc(key)+'"'+(st.expandedTrades.has(key)?' open':'')+'><summary>Расчёт и параметры</summary><div class="deal-breakdown"><span>Доход от цены<b>'+rub(t.gross_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(t.fees_rub)+'</b></span><span>Фондирование<b>'+rub(t.funding_rub)+'</b></span><span>Объём входов<b>'+rub(t.trade_return_basis_rub)+'</b></span><span>Stop Loss<b>'+p2(stopLoss)+'</b></span><span>'+sizeLabel+'<b>'+sizeText+'</b></span></div></details></article>';
+      '<div class="deal-path"><div class="deal-point">Вход <b>'+assetPrice(t.asset,entry)+'</b><time>'+dateRu(t.opened_at)+'</time></div><div class="deal-point">Выход <b>'+assetPrice(t.asset,exit)+'</b><time>'+dateRu(t.closed_at)+'</time></div></div><div class="deal-outcome"><b>'+esc(reason)+'</b><span>'+holdRu(held)+'</span></div>'+tpNotice(t)+
+      '<details data-trade="'+esc(key)+'"'+(st.expandedTrades.has(key)?' open':'')+'><summary>Расчёт и параметры</summary><div class="deal-breakdown"><span>Доход от цены<b>'+rub(t.gross_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(t.fees_rub)+'</b></span><span>Фондирование<b>'+rub(t.funding_rub)+'</b></span><span>Объём входов<b>'+rub(t.trade_return_basis_rub)+'</b></span><span>Stop Loss<b>'+assetPrice(t.asset,stopLoss)+'</b></span><span>'+sizeLabel+'<b>'+sizeText+'</b></span></div></details></article>';
   }).join(''):'<div class="msg">'+(all.length?'Нет сделок с выбранным фильтром.':'Закрытых сделок пока нет.')+'</div>';
   document.querySelectorAll('#trades details[data-trade]').forEach(el=>{el.ontoggle=()=>{if(el.open)st.expandedTrades.add(el.dataset.trade);else st.expandedTrades.delete(el.dataset.trade);};});
 }

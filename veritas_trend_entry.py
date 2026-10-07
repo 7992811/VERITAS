@@ -615,6 +615,13 @@ def event_gate(row, price, direction, now=None):
 
 
 def scale_decision(position,row,price,requested,nav,cost=.002,risk_cap=.01):
+    import veritas_structural_lifecycle as VSL
+    import veritas_timeframe_policy as TFP
+    if TFP.structural_quote_rule(row):
+        name=position.get('portfolio_name') or 'Champion'
+        import veritas_canonical_constitution as CTC
+        policy=CTC.runtime_portfolio_policy(name if name in CTC.PORTFOLIO_ORDER else 'Champion')
+        return VSL.scale_request(position,row,price,nav,policy,requested=requested)
     p=position.get('payload') or {}; d=1 if position.get('direction')=='LONG' else -1
     px=number(price,0); entry=number(position.get('avg_entry_price'),0); units=number(position.get('units'),0)
     cur=units*px/max(nav,1); ctx=context_of(row); ev=ctx.get('event') or {}

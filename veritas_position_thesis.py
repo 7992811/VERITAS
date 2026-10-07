@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import json
 
 import veritas_price_source as VPS
+import veritas_structural_breakout as SB
 import veritas_timeframe_structure as TFS
 from veritas_quote_time import quote_gate, utc_datetime
 
@@ -56,17 +57,97 @@ def position_scope(position):
         errors.append("HELD_EVENT_TIMEFRAME_CHANGED")
     if event.get("source_identity") and not VPS.same(identity, event["source_identity"]):
         errors.append("HELD_EVENT_SOURCE_CHANGED")
+    quote_structure = (event.get("version") == SB.VERSION or
+                       p.get("structural_policy_version") == SB.DEFAULT_POLICY["version"])
+    management = timeframe
+    anchor, revision_at = VPS.positive(event.get("stop_anchor")), None
+    if quote_structure:
+        management = event.get("structural_timeframe")
+        if not SB.validate_event(event, identity)["eligible"]:
+            errors.append("HELD_QUOTE_EVENT_PROOF_INVALID")
+        if (management not in TFS.TIMEFRAMES or any(event.get(k) != management
+                for k in ("stop_timeframe", "atr_timeframe"))
+                or any(p.get(k) and p[k] != management for k in ("management_horizon", "structural_timeframe"))):
+            errors.append("HELD_PARENT_TIMEFRAME_CHANGED")
+        signal = TFS.timestamp(event.get("signal_at"))
+        if signal is None or opened is None or signal > opened:
+            errors.append("HELD_QUOTE_EVENT_POSTDATES_ENTRY")
+        revision = p.get("same_tf_trailing") or {}
+        if revision.get("management_rule") == "PROTECTED_PARENT_SWING":
+            checked = SB.validate_management_revision(revision, event, opened)
+            if checked["eligible"]:
+                anchor, revision_at = checked["anchor"], checked["quote_observed_at"]
+            else:
+                errors.append("HELD_PARENT_REVISION_PROOF_INVALID")
     return {"position_id": (position or {}).get("active_trade_id"), "asset": asset,
             "held_direction": direction, "execution_timeframe": timeframe,
+            "management_timeframe": management, "quote_structural_binding": quote_structure,
             "entry_event_id": event.get("event_id") or p.get("entry_event_id") or p.get("r66_event_id") or p.get("signal_event_id"),
             "source_identity": deepcopy(identity), "opened_at": opened,
-            "invalidation_level": VPS.positive(event.get("stop_anchor")),
+            "invalidation_level": anchor, "protected_revision_at": revision_at,
             "legacy_binding": not bool(event), "binding_valid": not errors,
             "binding_errors": errors}
 
 
 def _same_source(expected, actual):
     return VPS.same(expected, actual) and VPS.same(actual, expected)
+
+
+def _evaluate_quote_structure(position, row, clock, scope, out):
+    """A fast trigger does not turn the parent risk thesis into a fast exit."""
+    asset, identity, parent = scope["asset"], scope["source_identity"], scope["management_timeframe"]
+    if not row or row.get("asset") != asset:
+        return dict(out, reason="HELD_PARENT_CONTEXT_MISSING")
+    if not _same_source(identity, VPS.identity(asset, row)):
+        return dict(out, reason="HELD_SOURCE_CONTEXT_MISMATCH")
+    q = VPS.quote_from_row(row)
+    observed, px = TFS.timestamp(q.get("observed_at")), VPS.positive(q.get("price"))
+    if (q.get("source_gate_pass") is not True or q.get("market_open") is not True
+            or not px or not VPS.matches(position, q)
+            or not quote_gate(q.get("observed_at"), now=clock, execution=True, asset=asset)["eligible"]
+            or observed is None or not scope["opened_at"] <= observed <= clock.timestamp()
+            or (scope.get("protected_revision_at") or 0) > observed):
+        return dict(out, reason="HELD_SOURCE_FRESH_QUOTE_REQUIRED")
+    ctx = row.get("timeframe_entry_context") or (row.get("trade_plan") or {}).get("timeframe_entry_context") or {}
+    if (ctx.get("version") != SB.VERSION or ctx.get("structural_timeframe") != parent
+            or ctx.get("timeframe") != row.get("horizon")
+            or not _same_source(identity, ctx.get("source_identity"))):
+        return dict(out, reason="HELD_PARENT_CONTEXT_MISSING")
+    ctx = SB.rebind_quote(ctx, q, clock)
+    check = SB.context_gate(ctx, clock)
+    if not check["eligible"]:
+        return dict(out, reason="HELD_PARENT_CONTEXT_INVALID", context_gate=check)
+    event = ctx.get("event") or {}
+    opposite = "SHORT" if scope["held_direction"] == "LONG" else "LONG"
+    if event.get("direction") != opposite:
+        return dict(out, reason="NO_OPPOSITE_HELD_PARENT_BREAK")
+    if (event.get("trigger_timeframe") != parent or event.get("structural_timeframe") != parent
+            or event.get("asset") != asset or event.get("event_id") == scope["entry_event_id"]
+            or not SB.validate_event(event, identity)["eligible"]):
+        return dict(out, reason="HELD_PARENT_BREAK_PROVENANCE_MISMATCH")
+    signal = TFS.timestamp(event.get("signal_at"))
+    if signal is None or not scope["opened_at"] < signal <= observed:
+        return dict(out, reason="HELD_PARENT_BREAK_NOT_AFTER_ENTRY")
+    if event.get("spent") and event.get("spent_reason") != "STRUCTURAL_TARGET_ALREADY_REACHED":
+        return dict(out, reason="HELD_OPPOSITE_BREAK_REVERSED")
+    sign = 1 if opposite == "LONG" else -1
+    trigger, anchor = VPS.positive(event.get("trigger_level")), scope["invalidation_level"]
+    if not trigger or sign * (px - trigger) <= 0:
+        return dict(out, reason="HELD_PARENT_BREAK_NOT_HELD")
+    if not anchor or sign * (px - anchor) <= 0:
+        return dict(out, reason="HELD_PROTECTED_PARENT_INTACT")
+    return dict(out, exit_authorized=True, reason="HELD_PROTECTED_PARENT_INVALIDATED",
+                structure_confirmed=True,
+                proof={"event_id": event["event_id"], "entry_event_id": scope["entry_event_id"],
+                       "direction": opposite, "timeframe": parent,
+                       "execution_timeframe": scope["execution_timeframe"],
+                       "confirmation": "VERIFIED_QUOTE_PARENT_BREAK",
+                       "source_identity": deepcopy(identity), "trigger_level": trigger,
+                       "invalidation_level": anchor, "signal_price": event["signal_price"],
+                       "quote_price": px, "signal_at": signal,
+                       "quote_observed_at": observed, "event_proof_hash": event["proof_hash"],
+                       "level_available_at": event["level_available_at"],
+                       "atr_observed_until": event["atr_observed_until"]})
 
 
 def _evaluate(position, row, now):
@@ -83,6 +164,8 @@ def _evaluate(position, row, now):
            "reason": "POSITION_BINDING_INCOMPLETE"}
     if not scope["binding_valid"] or clock is None:
         return out
+    if scope["quote_structural_binding"]:
+        return _evaluate_quote_structure(position, row, clock, scope, out)
     horizon, asset, identity = scope["execution_timeframe"], scope["asset"], scope["source_identity"]
     if not row or row.get("asset") != asset or row.get("horizon") != horizon:
         return dict(out, reason="HELD_TIMEFRAME_CONTEXT_MISSING")
@@ -167,13 +250,30 @@ def management_row(summary, position, now=None):
     """Select only the held source/timeframe; do not select by veto or confidence."""
     try:
         scope = position_scope(position)
+        def held_context(row):
+            if not scope["quote_structural_binding"]:
+                return row.get("horizon") == scope["execution_timeframe"]
+            ctx = row.get("timeframe_entry_context") or (row.get("trade_plan") or {}).get("timeframe_entry_context") or {}
+            return (ctx.get("version") == SB.VERSION and
+                    ctx.get("structural_timeframe") == scope["management_timeframe"] and
+                    ctx.get("timeframe") == row.get("horizon"))
         rows = [r for r in summary or [] if r.get("asset") == scope["asset"]
-                and r.get("horizon") == scope["execution_timeframe"]
+                and held_context(r)
                 and VPS.same(scope["source_identity"], VPS.identity(scope["asset"], r))]
         if not rows:
             return None
         def freshness(row):
             ctx = row.get("timeframe_entry_context") or (row.get("trade_plan") or {}).get("timeframe_entry_context") or {}
+            if scope["quote_structural_binding"]:
+                # The parent break observed in a fast lane remains parent
+                # evidence. An unrelated micro event cannot displace it.
+                event = ctx.get("event") or {}
+                opposite = "SHORT" if scope["held_direction"] == "LONG" else "LONG"
+                return (bool(event.get("trigger_timeframe") == scope["management_timeframe"]
+                             and event.get("direction") == opposite
+                             and SB.validate_event(event, scope["source_identity"])["eligible"]),
+                        TFS.timestamp(VPS.quote_from_row(row).get("observed_at")) or 0,
+                        TFS.timestamp(ctx.get("structure_closed_at")) or 0)
             return (TFS.timestamp(ctx.get("closed_at")) or 0,
                     TFS.timestamp(VPS.quote_from_row(row).get("observed_at")) or 0)
         result = deepcopy(max(rows, key=freshness))

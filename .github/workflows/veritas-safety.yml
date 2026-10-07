@@ -32,6 +32,8 @@ jobs:
         run: python -m py_compile veritas_daily_averages.py veritas_native_daily.py veritas_ma_rebound.py veritas_brent_market.py veritas_entry_scenarios.py veritas_feature_history.py veritas_direct_cny.py veritas_strategy_quality.py veritas_trade_audit.py veritas_trade_diagnostics.py veritas_observation_path.py veritas_launch_readiness.py veritas_entry_comparison.py veritas_learning_integrity.py veritas_learning_exports.py veritas_strategy_roles.py veritas_canonical_constitution.py veritas_canonical_runtime.py veritas_release.py veritas_quote_time.py veritas_profit_protection.py veritas_position_guard.py veritas_execution.py veritas_broker.py veritas_instruments.py veritas_promotion.py veritas_risk.py veritas_live.py veritas_storage_guard.py veritas_market_runtime.py veritas_signal_core.py veritas_decision_signature.py veritas_learning_memory.py veritas_asset_management_intelligence.py veritas_portfolio.py veritas_portfolio_runtime.py veritas_intelligence.py veritas_learning_index.py veritas_v90_ui.py
       - name: Compile immutable version provenance and execution boundaries
         run: python -m py_compile veritas_entry_version.py veritas_execution_snapshot.py veritas_execution_journal.py veritas_paper_entry.py veritas_position_thesis.py veritas_stop_risk.py veritas_timeframe_management.py
+      - name: Quote breakout lifecycle and actual CNY episode regressions
+        run: python -m unittest -v test_veritas_structural_breakout.py test_veritas_structural_cny_episodes.py test_veritas_breakout_runtime.py test_veritas_weighted_structural_economics.py test_veritas_structural_lifecycle.py test_veritas_structural_management.py test_veritas_source_identity_roundtrip.py test_veritas_monolith_structural_quote.py
       - name: Timeframe diagnosis, path evidence and signal latency
         run: python -m unittest -v test_veritas_trade_diagnostics.py test_veritas_observation_path.py test_veritas_observation_runtime.py test_veritas_launch_readiness.py test_veritas_signal_latency.py test_veritas_entry_comparison.py
       - name: Execution quality and direct CNY regressions
@@ -73,7 +75,9 @@ jobs:
       - name: Asset-management intelligence regressions
         run: python -m unittest -v test_veritas_management_intelligence.py
       - name: Paper signal UI regressions
-        run: node tools/test_paper_ui.cjs
+        run: |
+          node tools/test_paper_ui.cjs
+          node tools/test_paper_action_status.cjs
       - name: Forecast versus actual entry UI regressions
         run: node tools/test_signal_readiness_ui.cjs
       - name: Trade accounting view regressions

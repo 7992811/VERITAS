@@ -5051,6 +5051,13 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                       canonical_admission=admission,event_id=event_id)
                 return 0.0
     elif str(existing.get('direction') or '')==str(direction):
+        import veritas_structural_lifecycle as VSL
+        pending = (VPG.protective_reason(existing,quote,VPG.utc_datetime(ts))
+                   if VSL.owns_position(existing) else None)
+        if pending:
+            _record_entry_outcome(row,'HELD','STRUCTURAL_PROTECTIVE_EXIT_PENDING',
+                                  pending_protective_reason=pending)
+            return 0.0
         current=abs(float(existing.get('units') or 0.0)*float(price))/max(float(nav),1.0)
         if requested<=current+0.0025:
             _record_entry_outcome(row,'HELD','TARGET_ALREADY_REACHED',current_fraction=current)
@@ -5062,7 +5069,13 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                   current_fraction=current,favorable_progress=favorable)
             return 0.0
         payload=_canonical_payload(existing)
-        if str(payload.get('execution_horizon') or '')!=str(row.get('horizon') or ''):
+        import veritas_structural_lifecycle as VSL
+        structural_add=TFP.structural_quote_rule(row)
+        binding=VSL.add_binding(existing,row) if structural_add else None
+        if structural_add and not binding.get('eligible'):
+            _record_entry_outcome(row,'BLOCKED',binding['reason'])
+            return 0.0
+        if not structural_add and str(payload.get('execution_horizon') or '')!=str(row.get('horizon') or ''):
             _record_entry_outcome(row,'BLOCKED','SAME_TF_ADD_HORIZON_MISMATCH')
             return 0.0
         last_trace=(payload.get('last_add_teaching_trace') or {}).get('timeframe_entry_context') or {}
@@ -5178,6 +5191,21 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     # Evidence-only metadata does not alter stop, target, size or execution price.
     import veritas_observation_path as VOP
     z = VOP.record(c,z,q,ts,lane='CANONICAL_EXIT')
+    import veritas_structural_lifecycle as VSL
+    if full and reason.startswith('TAKE_PROFIT') and VSL.owns_position(z):
+        reduction=VSL.target_reduction(z,actual,nav,ts)
+        if not reduction.get('eligible'):
+            return 0.0
+        result=_vp_base.CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE(
+            c,p,name,dict(z,_execution_quote=q),actual,reduction['target_fraction'],nav,ts,reduction['reason'])
+        if result:
+            patch=dict(reduction['patch'],profit_exit_assessment=assessment)
+            encoded=json.dumps(patch,ensure_ascii=False,default=str)
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                      "WHERE active_trade_id=%s",(encoded,z.get('active_trade_id')))
+            c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                      "WHERE trade_id=%s",(encoded,z.get('active_trade_id')))
+        return result
     if full and reason.startswith('TAKE_PROFIT'):
         policy=dict(POLICIES.get(str(name)) or {})
         step=float(policy.get('position_step') or CTC.LIFECYCLE_POLICY['minimum_position_step'])

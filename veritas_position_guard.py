@@ -268,6 +268,8 @@ def quote_matches_position(z, quote):
     ProFinance's unqualified Gold label has no verified GC contract identity.
     Price proximity alone cannot make it interchangeable with Yahoo GC=F.
     """
+    if VPS.position_identity(z) and not VPS.matches(z,quote):
+        return False
     p=payload_of(z)
     identity=p.get('contract_identity') or {}
     expected=p.get('entry_contract_secid') or identity.get('contract_id')
@@ -583,8 +585,11 @@ def protective_reason(z, quote, now=None):
     if old > 0 and abs(px / old - 1) > jump:
         return None
 
-    target = p.get('take_price') or p.get('target_price') or p.get('last_target_price')
-    if not target:
+    import veritas_structural_lifecycle as VSL
+    structural=VSL.owns_position(z)
+    target = (VSL.active_target_price(z) if structural else
+              p.get('take_price') or p.get('target_price') or p.get('last_target_price'))
+    if not target and not structural:
         try:
             entry = float(z.get('avg_entry_price') or p.get('entry_price') or 0.0)
             expected = abs(float(p.get('expected_move_pct') or 0.0))
@@ -592,7 +597,7 @@ def protective_reason(z, quote, now=None):
                 target = entry * (1.0 + expected if long else 1.0 - expected)
         except (TypeError, ValueError):
             target = None
-    if target and not p.get('r17_tp1_done') and ((long and px >= float(target)) or (not long and px <= float(target))):
+    if target and (structural or not p.get('r17_tp1_done')) and ((long and px >= float(target)) or (not long and px <= float(target))):
         return 'TAKE_PROFIT'
     return None
 

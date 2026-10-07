@@ -69,15 +69,17 @@ def _assess(context, raw, horizon, clock):
             value = quote.get(key) if quote.get(key) is not None else raw.get(key)
             if value is not None:
                 plan[key] = value
-        economics = VX.economics_gate(raw.get("asset"), dict(plan, direction=direction))
+        economics = VX.economics_gate(raw.get("asset"), dict(plan, direction=direction),now=clock)
         fill = economics.get("modeled_entry_fill")
         if fill:
-            filled = TS.entry_gate(context, fill, direction, clock, CTC.STRUCTURAL_ENTRY_POLICY)
+            filled = TFP.event_gate(context, fill, direction, clock)
             if not filled.get("eligible"):
                 economics = dict(economics, eligible=False,
                     blockers=list(economics.get("blockers") or [])+[filled["reason"]])
     admitted = bool(timing.get("eligible") and economics.get("eligible"))
     rank = (int(admitted), int(bool(timing.get("eligible"))),
+            int(bool(TFP.context_gate(row,clock).get('eligible'))),
+            int(context.get('status') == 'OK'),
             TS.timestamp(event.get("signal_at")) or -1.)
     evidence = {"scenario": event.get("event_type") or context.get("scenario"),
                 "status": context.get("status"), "reason": context.get("reason"),
@@ -93,7 +95,7 @@ def _assess(context, raw, horizon, clock):
     return rank, evidence
 
 
-def select_context(raw, horizon, clock, structural):
+def select_context(raw, horizon, clock, structural, intrabar=None):
     """Timing/cost-qualified event first, then immutable confirmation time.
 
     Portfolio-specific trend, evidence, capital and reuse checks still run at
@@ -101,6 +103,8 @@ def select_context(raw, horizon, clock, structural):
     """
     import veritas_ma_rebound as MR
     candidates = [dict(structural, scenario="SAME_TIMEFRAME_STRUCTURAL_BREAKOUT")]
+    if intrabar is not None and CTC.BREAKOUT_LIFECYCLE_POLICY.get('enabled'):
+        candidates.insert(0, dict(intrabar,scenario='VERIFIED_QUOTE_STRUCTURAL_BREAKOUT'))
     if CTC.MA_REBOUND_POLICY.get("enabled"):
         candidates.append(MR.build_context(
             (raw.get("structure_bars_by_timeframe") or {}).get(horizon) or [], horizon, clock,

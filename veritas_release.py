@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 
-PRODUCT_VERSION="veritas-max-product-v91.6-signal-readiness"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.6-signal-readiness"
-UI_VERSION="veritas-ui-v9.1.6-signal-readiness"
+PRODUCT_VERSION="veritas-max-product-v91.7-structural-breakout"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.7-structural-breakout"
+UI_VERSION="veritas-ui-v9.1.7-structural-breakout"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -24,7 +24,7 @@ def snapshot():
         "ctc_version":CTC.VERSION,
         "strategy_epoch":CTC.STRATEGY_EPOCH,
         "execution_integrity_policy":{
-            "version":"CTC_VERIFIED_EXECUTION_SNAPSHOT_V1",
+            "version":"CTC_VERIFIED_EXECUTION_SNAPSHOT_V2",
             "one_quote_and_fill_for_admission_and_accounting":True,
             "position_bound_thesis_exit":True,
             "net_stop_risk_sizing":True,
@@ -40,9 +40,10 @@ def snapshot():
             "aggregation_preserves_proven_source":True,
         },
         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
+        "breakout_lifecycle_policy":dict(CTC.BREAKOUT_LIFECYCLE_POLICY),
         "daily_ma_rebound_policy":dict(CTC.MA_REBOUND_POLICY),
-        "active_user_teaching_id":CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"],
-        "active_user_teaching_ids":[CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"]],
+        "active_user_teaching_id":CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"],
+        "active_user_teaching_ids":[CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"], CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"]],
         "runtime_authority":CTC.BASIS_RUNTIME,
         "ui_version":UI_VERSION,
         "db_schema_version":DB_SCHEMA_VERSION,
