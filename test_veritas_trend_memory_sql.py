@@ -130,10 +130,12 @@ def load_trend(connect, *, legacy=False):
 
 def load_ami(*, legacy=False):
     # Constant assignments and function definitions have no service effects.
-    # Imports are replaced by the explicit standard-library namespace above.
+    # Standard-library imports use the frozen namespace above. Retain the
+    # actual pure measurement-helper import, including its production aliases.
     tree = ast.parse(AMI.read_text(encoding="utf-8"))
     nodes = [deepcopy(n) for n in tree.body
-             if isinstance(n, (ast.Assign, ast.AnnAssign, ast.FunctionDef))]
+             if isinstance(n, (ast.Assign, ast.AnnAssign, ast.FunctionDef))
+             or isinstance(n, ast.ImportFrom) and n.module == "veritas_learning_measurement"]
     ns = dict(clock_namespace(), ami_decision_rows=ami_decision_rows)
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), str(AMI), "exec"), ns)
     if legacy:
@@ -318,7 +320,8 @@ def fixed_score_inputs(ns):
         "recent_realization": .45}
     ns["_query_fresh_portfolio"] = lambda c, epoch: dict(portfolio)
     ns["_query_learning"] = lambda c: dict(learning)
-    ns["_baseline"] = lambda c, score, components: {"score": 32., "components": {}, "captured_at": "fixed-origin"}
+    ns["_baseline"] = lambda c, score, components, component_status: {
+        "score": 32., "components": {}, "captured_at": "fixed-origin"}
 
 
 @unittest.skipUnless(DSN, "isolated PostgreSQL test database not configured")
@@ -666,6 +669,17 @@ class TrendMemorySQLTests(unittest.TestCase):
 
 
 class AMISingleFlightTests(unittest.TestCase):
+    def test_ast_harness_uses_production_measurement_helpers(self):
+        import veritas_learning_measurement as measurement
+        ns = load_ami()
+        for alias, name in (("_number", "finite_number"),
+                            ("_self_learning_component", "self_learning_component"),
+                            ("component_measurement", "component_measurement"),
+                            ("baseline_is_comparable", "baseline_is_comparable"),
+                            ("_stage", "score_stage")):
+            with self.subTest(helper=alias):
+                self.assertIs(ns[alias], getattr(measurement, name))
+
     def test_ast_harness_executes_the_actual_projected_reader(self):
         from test_veritas_management_intelligence import _FakeConn
         old, actual = load_ami(legacy=True), load_ami()

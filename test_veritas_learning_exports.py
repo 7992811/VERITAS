@@ -73,11 +73,14 @@ def lesson(group, at=None):
 
 class LearningExportTests(unittest.TestCase):
     def setUp(self):
+        self.saved_integrity = (LI._GENERATION, LI._UNCONFIRMED)
+        LI._UNCONFIRMED = False
         self.saved_board = getattr(I.setup_memory_board, "_cache", None)
         self.saved_lookup = getattr(I._v842_memory_lookup, "_cache", None)
         E.invalidate_memory(vars(I))
 
     def tearDown(self):
+        LI._GENERATION, LI._UNCONFIRMED = self.saved_integrity
         I.setup_memory_board._cache = self.saved_board
         I._v842_memory_lookup._cache = self.saved_lookup
 

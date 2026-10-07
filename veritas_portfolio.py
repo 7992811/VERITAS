@@ -7423,16 +7423,16 @@ def _v90r60_sanitize_duplicate_learning(c,force=False):
         duplicates=max(0,int(getattr(cur,'rowcount',0) or 0))
     except Exception as ex:
         err=f'{type(ex).__name__}: {ex}'[:240]
+    if duplicates or err:
+        # The caller owns the commit boundary. A removed learning sample or an
+        # uncertain write must revoke verified autonomous profiles immediately;
+        # only a later committed integrity validation can restore readiness.
+        VLI.invalidate('independent_episode_excluded' if duplicates else 'independent_episode_sanitizer_failed')
     _v90r60_dedup_state.update({
       'at':now_ts,'changed':changed,'duplicates_excluded':duplicates,'last_error':err
     })
     if changed or duplicates:
-        # Dedup changes the statistical sample. Any learning/calibration cache
-        # built before this transaction is invalid immediately, not at its TTL.
-        _v90r29_cache['at']=0.0
-        r33=globals().get('_v90r33_cache')
-        if isinstance(r33,dict):
-            r33['at']=0.0
+        VLI.expire_legacy_views(globals())
         print(json.dumps({
           'event':'V90_R60_INDEPENDENT_EPISODE_SANITIZED',
           'keys_backfilled':changed,'duplicates_excluded':duplicates,

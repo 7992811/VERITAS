@@ -1,6 +1,6 @@
 # Persistent evidence learning
 
-`EVIDENCE_LEARNING_LOOP_V1` connects the evidence-learning protocol to the existing
+`EVIDENCE_LEARNING_LOOP_V2_MOSCOW_HOURS` connects the evidence-learning protocol to the existing
 VERITAS paper-learning callbacks, PostgreSQL ledger and background history permit.
 It replaces the in-memory heavy-learning timer, not the canonical trading engine.
 
@@ -10,9 +10,18 @@ historical quality diagnostics. A stage releases its proof objects and trims
 memory before the next stage. Admission uses the existing 260 MB learning limit
 and shared history permit. It never acquires a paper-book lock itself.
 
-The initial due time is recorded once (existing 300-second startup delay).
-Restarts keep that due time and resume after the last committed stage. A completed
-run schedules the next run using the existing interval (at least 3600 seconds).
+Full cycles start daily on whole Moscow hours: 07:00, 08:00, ..., 23:00
+(17 slots, including weekends; Europe/Moscow, UTC+03:00). The stage admission
+window closes at 23:50. There is no extra 23:50 cycle. A stage already executing
+may finish and checkpoint safely; subsequent stages and retries resume at 07:00.
+Late or missed slots coalesce into one run, never a burst of historical runs.
+Completing a run schedules the next whole-hour slot, not an hour after completion.
+
+The initial due time is the first slot after the configured startup delay
+(`VERITAS_HEAVY_LEARNING_START_DELAY_SECONDS`, existing minimum 300 seconds).
+Restarts keep that due time and resume after the last committed stage. The
+calendar supersedes the old interval-only heavy-learning setting. It applies to
+this full evidence cycle; continuous quote/outcome capture keeps its own timing.
 The worker checks every 15 seconds and requests from the market cycle only wake
 that worker. There is no additional paid service or keepalive. Free-host sleeping
 still suspends all work; `always_on_confirmed` reports the existing configuration.
@@ -23,6 +32,9 @@ at-least-once recovery, not a promise of exactly-once execution. Three reported
 failures exhaust a stage; later stages can run, but the whole run is `DEGRADED`.
 Resource deferrals do not consume attempts. A release/protocol change supersedes
 the old run with an audit record instead of mixing implementation versions.
+Migrating from V1 creates a V2 checkpoint on the Moscow calendar; old audit rows
+remain intact. The status API exposes `schedule`, including timezone, opening,
+last start, stage cutoff and current window availability, plus `next_due_at`.
 
 State lives at `ledger_events.event_key=evidence_learning_state:canonical`.
 Append-only `evidence_learning_audit` events record scheduling, stage attempts,

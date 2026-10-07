@@ -82,6 +82,7 @@ class BrentRuntimePinTests(unittest.TestCase):
     def summary(self, raw, features, plan):
         namespace = dict(self.ns, raw=raw, f=features, asset='BRENT', horizon='1h',
             dec='LONG', research_dec='LONG', conf=.8, score=.8, kmatches=[],
+            created_at=raw['observed_at'], knowledge_learning_matches=[],
             orth_evidence={}, execution_gate=self.ns['execution_eligibility']('BRENT', raw),
             calibration={}, shadow_risk={}, research_challenger={}, v70_pretrade={},
             institutional_signal={}, trade_plan=plan, impulse_overlay={}, tradeability={},
@@ -104,6 +105,9 @@ class BrentRuntimePinTests(unittest.TestCase):
                 self.assertEqual(row['price'], 101.)
                 self.assertEqual(row.get('market_observed_at', row.get('observed_at')), raw['observed_at'])
         self.assertEqual(compact['source_pin_status'], 'PINNED_PROVIDER_FEED')
+        self.assertEqual(compact['created_at'], raw['observed_at'])
+        self.assertEqual(compact['knowledge_context_at'], raw['observed_at'])
+        self.assertEqual(compact['knowledge_learning_matches'], [])
         self.assertFalse(compact['production_eligible'])
         self.assertFalse(compact['exact_contract_verified'])
         gate = VX.entry_gate(compact, compact['price'], 'LONG', .5,

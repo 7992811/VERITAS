@@ -28,6 +28,10 @@ class PersistedLearningSQLTests(unittest.TestCase):
         from psycopg.rows import dict_row
         self.driver, self.row_factory = psycopg, dict_row
         self.schema = "learning_integrity_test_"+uuid.uuid4().hex
+        # Direct/failed validation deliberately revokes process-local memory.
+        # Restore this test's starting token without certifying any DB commit.
+        for name in ("_GENERATION", "_REVOCATION_GENERATION", "_UNCONFIRMED"):
+            self.enterContext(patch.object(LI, name, getattr(LI, name)))
         self.saved29, self.saved33 = copy.deepcopy(R._v90r29_cache), copy.deepcopy(R._v90r33_cache)
         self.saved_state = copy.deepcopy(R._v90r44_sanitize_state)
         with psycopg.connect(DSN) as c:
@@ -112,7 +116,7 @@ class PersistedLearningSQLTests(unittest.TestCase):
 
     def sanitize(self):
         with patch.object(R, "_v90r29_ensure"):
-            return R._v90r44_sanitize_learning(self.connect, force=True)
+            return R._v90r44_sanitize_learning(self.autocommit_connect, force=True)
 
     def revalidation_queries(self, c, batch_size=2):
         class RecordingConnection:
@@ -123,11 +127,19 @@ class PersistedLearningSQLTests(unittest.TestCase):
         recording = RecordingConnection()
         c.execute("SAVEPOINT capture_revalidation")
         try:
-            LI.revalidate_eligible(recording, batch_size=batch_size)
+            # Capture the actual SQL body without falsely treating this rolled
+            # back savepoint as a committed public validation. The public
+            # transaction/readiness protocol is exercised by native tests below.
+            LI._revalidate_eligible(recording, batch_size=batch_size)
         finally:
             c.execute("ROLLBACK TO SAVEPOINT capture_revalidation")
             c.execute("RELEASE SAVEPOINT capture_revalidation")
-        return recording.calls[:2]
+        selected = []
+        for marker in ("WITH candidates AS MATERIALIZED", "WITH pending AS MATERIALIZED"):
+            matches = [call for call in recording.calls if marker in call[0]]
+            self.assertEqual(len(matches), 1, marker)
+            selected.append(matches[0])
+        return selected
 
     def plan_nodes(self, plan):
         yield plan
@@ -246,6 +258,154 @@ class PersistedLearningSQLTests(unittest.TestCase):
         self.assertNotIn("learning_integrity", row["payload"])
         self.assertEqual(result["verified"], 0)
 
+    def pending_marker(self, version):
+        return {"version": version, "status": "PENDING",
+                "requested_at": "2000-01-01T00:00:00+00:00",
+                "prior_primary_attribution": "GOOD_EXECUTION",
+                "prior_attributions": ["GOOD_EXECUTION"],
+                "prior_learning_action": "RETAIN_RULE"}
+
+    def exclude_fixture_episodes(self, c):
+        c.execute("""UPDATE v90_learning_episodes SET learning_eligible=FALSE,
+            primary_attribution='MANUAL_EXCLUDED',attributions='["MANUAL_EXCLUDED"]',
+            learning_action='EXCLUDE_FROM_LEARNING'""")
+
+    def test_old_and_current_pending_metadata_cannot_override_manual_classification(self):
+        before_financials = self.financials()
+        classifications = (("DATA_EVIDENCE_PENDING", "EXCLUDE_FROM_LEARNING"),
+                           ("MANUAL_EXCLUDED", "AWAIT_SOURCE_EVIDENCE_REVALIDATION"),
+                           ("MANUAL_EXCLUDED", "EXCLUDE_FROM_LEARNING"))
+        for version in ("LEARNING_TF_PATH_EVIDENCE_V2", LI.VERSION):
+            for attribution, action in classifications:
+                with self.subTest(version=version, attribution=attribution, action=action):
+                    with self.autocommit_connect() as c:
+                        self.exclude_fixture_episodes(c)
+                        c.execute("""UPDATE v90_learning_episodes SET
+                            primary_attribution=%s,learning_action=%s,
+                            payload=payload||%s::jsonb WHERE trade_id='a_clean'""",
+                            (attribution, action, json.dumps({
+                                "learning_integrity": self.pending_marker(version),
+                                "manual_note": "synthetic explicit exclusion"})))
+                        before = self.episodes()
+                        with LI.revalidation_transaction(c):
+                            result = LI.revalidate_eligible(c)
+                        self.assertEqual(result["retry_staged"], 0)
+                        self.assertEqual(result["staged"], 0)
+                        self.assertEqual(result["processed"], 0)
+                        self.assertEqual(result["pending"], 0)
+                        self.assertEqual(self.episodes(), before)
+                        self.assertFalse(c.execute("SELECT "+LI.readable_sql()+
+                            " AS ok FROM v90_learning_episodes WHERE trade_id='a_clean'").fetchone()["ok"])
+        self.assertEqual(self.financials(), before_financials)
+
+    def test_manual_classification_after_pending_selection_prevents_final_promotion(self):
+        before_financials = self.financials()
+        for attribution, action in (("MANUAL_EXCLUDED", "AWAIT_SOURCE_EVIDENCE_REVALIDATION"),
+                                    ("DATA_EVIDENCE_PENDING", "EXCLUDE_FROM_LEARNING")):
+            with self.subTest(attribution=attribution, action=action), self.autocommit_connect() as c:
+                self.exclude_fixture_episodes(c)
+                c.execute("""UPDATE v90_learning_episodes SET
+                    primary_attribution='DATA_EVIDENCE_PENDING',
+                    learning_action='AWAIT_SOURCE_EVIDENCE_REVALIDATION',
+                    payload=payload||%s::jsonb WHERE trade_id='a_clean'""",
+                    (json.dumps({"learning_integrity": self.pending_marker(LI.VERSION)}),))
+                changed = []
+                class InterposedConnection:
+                    def __getattr__(self, name): return getattr(c, name)
+                    def execute(self, sql, args=()):
+                        cursor = c.execute(sql, args)
+                        if "WITH pending AS MATERIALIZED" not in sql:
+                            return cursor
+                        class SelectedRows:
+                            def fetchall(self):
+                                rows = cursor.fetchall()
+                                # Row locks prevent another connection changing
+                                # this row now. Exercise a same-transaction
+                                # cancellation after selection, before relabel.
+                                c.execute("""UPDATE v90_learning_episodes SET
+                                    primary_attribution=%s,learning_action=%s
+                                    WHERE trade_id='a_clean'""", (attribution, action))
+                                LI.invalidate("synthetic explicit exclusion")
+                                changed.append(True)
+                                return rows
+                        return SelectedRows()
+                with LI.revalidation_transaction(c):
+                    result = LI.revalidate_eligible(InterposedConnection())
+                self.assertEqual(changed, [True])
+                self.assertEqual(result["processed"], 0)
+                self.assertEqual(result["verified"], 0)
+                self.assertEqual(result["excluded"], 0)
+                self.assertEqual(result["pending"], 0)
+                row = self.episodes()["a_clean"]
+                self.assertFalse(row["learning_eligible"])
+                self.assertEqual((row["primary_attribution"], row["learning_action"]),
+                                 (attribution, action))
+                self.assertEqual(row["payload"]["learning_integrity"]["status"], "PENDING")
+        self.assertEqual(self.financials(), before_financials)
+
+    def test_legacy_backlog_and_pending_native_quote_keep_progress_and_commit_readiness(self):
+        from test_veritas_quote_learning import quote_trade
+        raw = quote_trade(); raw["trade_id"] = "native_quote_pending"
+        self.assertIsNone(LI.trade_exclusion(raw))
+        self.add_raw_trade(raw, eligible=False, attribution="UNVERIFIED_TRADE_EVIDENCE")
+        before_financials = self.financials()
+        with self.autocommit_connect() as c:
+            self.exclude_fixture_episodes(c)
+            c.execute("""UPDATE v90_learning_episodes SET
+                primary_attribution='DATA_EVIDENCE_PENDING',
+                learning_action='AWAIT_SOURCE_EVIDENCE_REVALIDATION',
+                payload=payload||%s::jsonb WHERE trade_id='a_clean'""",
+                (json.dumps({"learning_integrity": self.pending_marker("LEARNING_TF_PATH_EVIDENCE_V2")}),))
+            quote_marker = self.pending_marker(LI.VERSION)
+            quote_marker["requested_at"] = "2099-01-01T00:00:00+00:00"
+            c.execute("""UPDATE v90_learning_episodes SET
+                primary_attribution='UNVERIFIED_TRADE_EVIDENCE',
+                learning_action='AWAIT_SOURCE_EVIDENCE_REVALIDATION',
+                payload=payload||%s::jsonb WHERE trade_id='native_quote_pending'""",
+                (json.dumps({"learning_integrity": quote_marker,
+                             "diagnostics_version": "SAME_TF_TRADE_DIAGNOSTICS_V1",
+                             "learning_exclusion_reason": "UNVERIFIED_EVENT_PROVENANCE"}),))
+            LI.invalidate("synthetic migration")
+            state = LI.memory_state()
+            with LI.revalidation_transaction(c):
+                first = LI.revalidate_eligible(c, batch_size=1)
+                self.assertFalse(LI.memory_state()["ready"])
+            self.assertTrue(LI.memory_state()["ready"])
+            self.assertEqual((first["retry_staged"], first["processed"], first["verified"], first["pending"]),
+                             (1, 1, 1, 1))
+            self.assertTrue(self.episodes()["a_clean"]["learning_eligible"])
+            with LI.revalidation_transaction(c):
+                second = LI.revalidate_eligible(c, batch_size=1)
+                self.assertFalse(LI.memory_state()["ready"])
+            self.assertTrue(LI.memory_state()["ready"])
+            self.assertEqual((second["staged"], second["processed"], second["verified"], second["pending"]),
+                             (0, 1, 1, 0))
+            self.assertTrue(self.episodes()["native_quote_pending"]["learning_eligible"])
+            self.assertEqual(LI.memory_state()["process_epoch"], state["process_epoch"])
+            self.assertEqual(LI.memory_state()["revocation_generation"], state["revocation_generation"])
+        self.assertEqual(self.financials(), before_financials)
+
+    def test_native_commit_failure_revokes_readiness_and_rolls_back_revalidation(self):
+        before_financials, before_episodes = self.financials(), self.episodes()
+        with self.autocommit_connect() as c:
+            c.execute("CREATE TABLE commit_probe (id int UNIQUE DEFERRABLE INITIALLY DEFERRED)")
+            with self.assertRaises(self.driver.errors.UniqueViolation):
+                with LI.revalidation_transaction(c):
+                    result = LI.revalidate_eligible(c)
+                    self.assertGreater(result["processed"], 0)
+                    c.execute("INSERT INTO commit_probe VALUES (1),(1)")
+                    self.assertFalse(LI.memory_state()["ready"])
+            self.assertFalse(LI.memory_state()["ready"])
+            self.assertEqual(self.episodes(), before_episodes)
+            self.assertEqual(self.financials(), before_financials)
+            with LI.revalidation_transaction(c):
+                result = LI.revalidate_eligible(c)
+                self.assertGreater(result["processed"], 0)
+                self.assertFalse(LI.memory_state()["ready"])
+            self.assertTrue(LI.memory_state()["ready"])
+        self.assertTrue(self.episodes()["a_clean"]["learning_eligible"])
+        self.assertEqual(self.financials(), before_financials)
+
     def test_saved_proxy_unknown_and_synthetic_labels_are_revalidated_without_financial_edits(self):
         before = self.financials()
         result = self.sanitize()
@@ -324,11 +484,13 @@ class PersistedLearningSQLTests(unittest.TestCase):
         with patch.object(R,'_v90r29_ensure'),patch.object(LI,'revalidate_eligible',side_effect=fail_after_updates):
             result=R._v90r44_sanitize_learning(self.autocommit_connect,force=True)
         self.assertIn('test failure after reclassification',result['last_error'])
+        self.assertFalse(LI.memory_state()['ready'])
         self.assertEqual(self.episodes(),episodes)
         self.assertEqual(self.financials(),before)
         with patch.object(R,'_v90r29_ensure'):
             result=R._v90r44_sanitize_learning(self.autocommit_connect,force=True)
         self.assertIsNone(result['last_error'],result)
+        self.assertTrue(LI.memory_state()['ready'])
         self.assertTrue(self.episodes()['a_clean']['learning_eligible'])
         self.assertEqual(self.financials(),before)
 

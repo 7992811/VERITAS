@@ -22,8 +22,8 @@ DSN=os.getenv('VERITAS_QUALITY_TEST_DSN','')
 
 # Frozen pre-record query. LI's default SQL is fingerprinted below so both
 # sides cannot silently adopt a changed proof/presence projection together.
-# The source-pin revision adds three optional identity fields; absent legacy
-# fields remain absent. Proof/presence rules and query-equivalence checks stay.
+# The native quote-event revision preserves its sealed proof up to 128 KiB and
+# adds structural/trigger timeframes. Legacy proof/presence parity remains below.
 LEGACY_SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t.status,t.horizon,
  t.opened_at,t.closed_at,t.avg_entry_price,t.avg_exit_price,t.max_fraction,
  t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.net_pnl_rub,
@@ -44,14 +44,23 @@ LEGACY_SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t
 class QualityProjectionContractTests(unittest.TestCase):
     def test_default_evidence_and_legacy_query_match_frozen_contract(self):
         self.assertEqual(hashlib.sha256(Q.LI.payload_sql().encode()).hexdigest(),
-                         'dc4e604647ba96ccd1b659a467781e8d5beb097bf651f3f8bfe39d17591579f2')
+                         '79b5f422521d923d0705c9089da4c8ee150252e64b5500c5f4561bc0d09797f3')
         self.assertEqual(hashlib.sha256(LEGACY_SELECT_TRADES.encode()).hexdigest(),
-                         '4f9792f9d363315dff04f66d521ddd2fc1ab3a76e227c6ceb70c17e4d6bfb503')
+                         '4d1932c3b38fab63b75c4645fe672b907f0bfe1edf329c86166551d3e2a87d0f')
         self.assertEqual(Q.SELECT_TRADES.count('t.payload'),2)
         self.assertEqual(Q.SELECT_TRADES.count('jsonb_to_record('),1)
         self.assertIn('CROSS JOIN LATERAL jsonb_to_record(',Q.SELECT_TRADES)
         self.assertNotIn("t.payload->",Q.SELECT_TRADES)
         self.assertNotIn("t.payload#>",Q.SELECT_TRADES)
+
+    def test_record_declares_every_generated_evidence_field_as_jsonb(self):
+        # LI adds fields independently of this one-decode SQL optimization.
+        # Catch an undefined record column without needing a running database.
+        referenced=set(re.findall(r'\bquality_payload\.([A-Za-z_]\w*)',Q.SELECT_TRADES))
+        record=Q.SELECT_TRADES.split('AS quality_payload(',1)[1].split(') LEFT JOIN',1)[0]
+        declared=set(re.findall(r'\b([A-Za-z_]\w*)\s+jsonb\b',record))
+        self.assertEqual(referenced,declared)
+        self.assertTrue({'structural_timeframe','trigger_timeframe','entry_event_snapshot'}<=declared)
 
 
 class EntryVersionTests(unittest.TestCase):
@@ -426,6 +435,43 @@ class QualitySQLTests(unittest.TestCase):
                 self.assertIsNone(Q.LI.trade_exclusion(projected))
                 hashes.append(Q.review(projected)['input_hash'])
             self.assertNotEqual(*hashes)
+
+    def test_record_projection_preserves_native_quote_seal_timeframes_and_size_bound(self):
+        from test_veritas_quote_learning import quote_trade
+        trade=quote_trade();original=copy.deepcopy(trade['payload'])
+        event=original['entry_event_snapshot']
+        original.update(structural_timeframe=event['structural_timeframe'],
+                        trigger_timeframe=event['trigger_timeframe'])
+        fields=('asset','direction','horizon','opened_at','closed_at',
+                'gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub')
+        variants=[('native',original)]
+        missing=copy.deepcopy(original)
+        for key in ('structural_timeframe','trigger_timeframe'):missing.pop(key)
+        variants.append(('missing',missing))
+        for name,value in (('null',None),('array',[]),('object',{}),('scalar',False)):
+            malformed=copy.deepcopy(original)
+            malformed.update(structural_timeframe=value,trigger_timeframe=value)
+            variants.append((name,malformed))
+        tampered=copy.deepcopy(original);tampered['entry_event_snapshot']['proof_hash']='invalid'
+        variants.append(('tampered',tampered))
+        oversized=copy.deepcopy(original);oversized['entry_event_snapshot']['unused']='x'*140000
+        variants.append(('oversized',oversized))
+        with self.connect() as c:
+            c.execute('UPDATE paper_trades SET '+','.join(k+'=%s' for k in fields)+
+                      " WHERE trade_id='current'",tuple(trade[k] for k in fields))
+            for name,p in variants:
+                with self.subTest(case=name):
+                    c.execute("UPDATE paper_trades SET payload=%s::jsonb WHERE trade_id='current'",(json.dumps(p),))
+                    projected=self.assert_projection_parity(c)
+                    if name=='native':
+                        self.assertEqual(projected['payload']['entry_event_snapshot'],event)
+                        self.assertEqual(projected['payload']['structural_timeframe'],event['structural_timeframe'])
+                        self.assertEqual(projected['payload']['trigger_timeframe'],event['trigger_timeframe'])
+                        self.assertIsNone(Q.LI.trade_exclusion(projected))
+                    elif name=='oversized':
+                        self.assertEqual(projected['payload']['entry_event_snapshot'],'OVERSIZED_QUOTE_EVENT_PROOF')
+                        self.assertLess(len(json.dumps(projected['payload'])),15000)
+                        self.assertIsNotNone(Q.LI.trade_exclusion(projected))
 
     def test_record_projection_exact_parity_for_native_ma50_ma200_long_and_short(self):
         from test_veritas_ma_learning_projection_sql import NativeMAProjectionSQLTests

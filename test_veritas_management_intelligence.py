@@ -107,7 +107,7 @@ class AssetManagementIntelligenceTests(unittest.TestCase):
         out = VAMI.build_scorecard(lambda: c, {"index_vs_start": 105.0},
                                    "2026-09-30T04:59:29+00:00", cache_seconds=0)
         self.assertEqual(out["status"], "OK")
-        self.assertEqual(out["components"]["portfolio_outcome_quality"], 0)
+        self.assertIsNone(out["components"]["portfolio_outcome_quality"])
         self.assertLessEqual(out["components"]["knowledge_application"], 2.01)
         self.assertEqual(out["benchmarks"]["stateless_ai"]["status"], "MEASURABLE")
         self.assertIn(out["stage"], {
@@ -119,8 +119,54 @@ class AssetManagementIntelligenceTests(unittest.TestCase):
         c = _FakeConn()
         out = VAMI.build_scorecard(lambda: c, {"index_vs_start": 110.0},
                                    "2026-09-30T04:59:29+00:00", cache_seconds=0)
-        self.assertAlmostEqual(out["score"], round(sum(out["components"].values()), 1))
+        self.assertAlmostEqual(out["score"], round(sum(v for v in out["components"].values() if v is not None), 1))
         self.assertEqual(sum(out["component_maximums"].values()), 100)
+
+    def test_missing_learning_is_null_and_cannot_earn_error_free_movement_credit(self):
+        c = _FakeConn()
+        c.learning = []
+        out = VAMI.build_scorecard(lambda: c, {"status": "BUILDING", "index_vs_start": None},
+                                   "fixture-epoch", cache_seconds=0)
+        self.assertIsNone(out["components"]["self_learning_effectiveness"])
+        self.assertIsNone(out["components"]["movement_risk_management"])
+        self.assertIsNone(out["evidence"]["learning_episodes"]["stop_error_rate"])
+        self.assertEqual(out["component_status"]["self_learning_effectiveness"]["status"], "BUILDING")
+        self.assertEqual(out["score_status"], "PARTIAL_EVIDENCE")
+        self.assertFalse(out["coverage"]["score_renormalized"])
+        self.assertLess(out["coverage"]["observed_max_points"], 100)
+        self.assertEqual(out["max_score"], 100)
+        self.assertEqual(out["score"], round(sum(v for v in out["components"].values() if v is not None), 1))
+
+    def test_failed_refresh_is_unavailable_not_a_zero_quality_measurement(self):
+        value, status = VAMI._self_learning_component({"n": 0}, {"status": "ERROR", "index_vs_start": None})
+        self.assertIsNone(value)
+        self.assertEqual(status["status"], "UNAVAILABLE")
+        self.assertEqual(status["observed_max_points"], 0)
+
+    def test_actual_measured_zero_is_preserved(self):
+        value, status = VAMI._self_learning_component({"n": 0}, {"status": "MEASURABLE", "index_vs_start": 75})
+        self.assertEqual(value, 0.)
+        self.assertEqual(status["status"], "PARTIAL")
+        self.assertEqual(status["observed_max_points"], 5)
+
+    def test_one_episode_cannot_be_compared_with_itself(self):
+        c = _FakeConn()
+        c.learning = c.learning[:1]
+        learning = VAMI._query_learning(c)
+        self.assertEqual(learning["early_n"], 0)
+        self.assertEqual(learning["recent_n"], 0)
+        self.assertIsNone(learning["early_bad_rate"])
+        value, status = VAMI._self_learning_component(learning, {"status": "BUILDING"})
+        self.assertIsNone(value)
+
+    def test_legacy_baseline_does_not_turn_measurement_change_into_a_gain_or_loss(self):
+        c = _FakeConn()
+        original = {"version": "ami-v1.0", "score": 50., "components": {"self_learning_effectiveness": 0}}
+        c.baseline = {"created_at": now_iso(), "payload": original.copy()}
+        out = VAMI.build_scorecard(lambda: c, {"index_vs_start": 110}, "fixture-epoch", cache_seconds=0)
+        self.assertIsNone(out["benchmarks"]["rollout_absolute_score"]["delta_points"])
+        self.assertEqual(out["benchmarks"]["rollout_absolute_score"]["comparison_status"], "NOT_COMPARABLE")
+        self.assertEqual(c.baseline["payload"], original)
 
 
 if __name__ == "__main__":
