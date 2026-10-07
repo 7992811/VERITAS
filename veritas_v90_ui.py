@@ -289,11 +289,12 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 (function(){
 'use strict';
 const AS=['BTC','ETH','NQ','BRENT','GOLD','MOEX','CNYRUBF'], TF=['1m','5m','1h','4h','1d','3d','7d'];
+const PORTFOLIO_NAMES=['Impulse','Aggressive','Champion','Challenger','Currency'];
 const POS_CACHE_KEY='veritas_v90_position_book_r35';
 const loadPositionCache=()=>{try{const x=JSON.parse(localStorage.getItem(POS_CACHE_KEY)||'null');if(x&&x.book&&Date.now()-Number(x.at||0)<86400000)return x.book}catch(e){}return {}};
 const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.stringify({at:Date.now(),book}))}catch(e){}};
 const initialPositionBook=loadPositionCache();
-const st={strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,positionBook:initialPositionBook,positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
+const st={strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,portfolioLoadStatus:'LOADING',positionBook:initialPositionBook,positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
@@ -780,7 +781,7 @@ function selectSignal(k,scroll=false){
 
 
 const portfolioName=name=>({Impulse:'Импульсный',Aggressive:'Агрессивный',Champion:'Чемпион',Challenger:'Челленджер',Currency:'Валютный портфель'}[name]||name||'—');
-const currencyFallback=()=>({name:'Currency',display_name:'Валютный портфель',configuration_status:'CONFIGURED',allowed_assets:['CNYRUBF'],paper_trading_enabled:true,live_trading_enabled:false,capital_configured:true,nav_rub:10000,initial_nav_rub:10000,total_return_pct:0,drawdown_pct:0,gross_leverage:0,net_exposure:0,cash_equivalent_fraction:1,max_gross_limit:10,leverage_limit:10,hard_drawdown_limit_pct:35,weekend_carry_allowed:true,positions:[],risk_governor:{state:'NORMAL',new_risk:true,max_gross:10,hard_drawdown_limit:.35,profile:'CURRENCY'}});
+const currencyFallback=()=>({name:'Currency',display_name:'Валютный портфель',configuration_status:'CONFIGURED',allowed_assets:['CNYRUBF'],paper_trading_enabled:true,live_trading_enabled:false,capital_configured:true,initial_nav_rub:10000,max_gross_limit:10,leverage_limit:10,hard_drawdown_limit_pct:35,weekend_carry_allowed:true,positions_status:'UNAVAILABLE',risk_governor:{max_gross:10,hard_drawdown_limit:.35,profile:'CURRENCY'}});
 const tone=value=>value==null?'':Number(value)>0?'ok':Number(value)<0?'bad':'';
 const signedPct=value=>value==null?'—':(Number(value)>0?'+':'')+pct(value);
 function portfolioView(p){
@@ -822,12 +823,14 @@ function renderPortfolioPanel(ps){
   const metric=(label,value,c='',sub='')=>'<div class="pf-value"><span>'+label+'</span><b class="'+c+'">'+value+'</b>'+(sub?'<small>'+sub+'</small>':'')+'</div>';
   const meter=(value,limit,risk=false)=>value==null||!(limit>0)?'':'<div class="pf-meter '+(risk?(value>=limit?'is-breach':'is-risk'):'')+'" aria-hidden="true"><i style="width:'+Math.min(100,Math.max(0,100*value/limit)).toFixed(2)+'%"></i></div>';
   const mult=x=>x==null?'—':n(x,2)+'×';
-  const status=p.configuration_status==='SETUP_PENDING'?'Настройка':v.risk.new_risk===false?'Новый риск запрещён':open>0?open+' поз. открыто':v.gross==null?'Данные обновляются':v.gross>.002?'Позиции синхронизируются':'Вне рынка';
+  const fresh=st.portfolioLoadStatus==='COMPLETE'&&p.positions_status!=='UNAVAILABLE';
+  const status=!fresh?(st.portfolioLoadStatus==='STALE'?'Обновление задержано':'Данные не получены'):p.configuration_status==='SETUP_PENDING'?'Настройка':v.risk.new_risk===false?'Новый риск запрещён':open>0?open+' поз. открыто':v.gross==null?'Данные обновляются':v.gross>.002?'Позиции синхронизируются':'Вне рынка';
   const pf=knownNumber(p.profit_factor),pfText=pf==null?(p.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(pf,2);
   const cny=p.name==='Currency'?(p.current_cny_admission||(p.admission_trace||[]).find(x=>x.asset==='CNYRUBF')):null;
-  const currencyNow=!cny?'Сейчас: вне рынка':('Сейчас: '+dirRu(cny.direction)+' · '+tfShort(cny.horizon)+' · '+(cny.target_fraction>0?('цель '+pct(100*Number(cny.target_fraction))):reasonRu(cny.reason)));
+  const currencyNow=!fresh?'Состояние портфеля не обновлено.':!cny?'Текущий допуск по CNYRUBf ещё не получен.':('Сейчас: '+dirRu(cny.direction)+' · '+tfShort(cny.horizon)+' · '+(cny.target_fraction>0?('цель '+pct(100*Number(cny.target_fraction))):reasonRu(cny.reason)));
   root.innerHTML='<div class="pf-caption">С начала учёта · выберите портфель для подробностей</div><div class="pf-compare"><div class="pf-row pf-colnames"><span>Портфель</span><span>Доходность</span><span>Просадка</span><span>Прибыльных</span></div>'+ps.map(q=>{const a=portfolioView(q);return'<button type="button" class="pf-row" data-portfolio="'+esc(q.name)+'" aria-pressed="'+(q.name===p.name)+'"><span><b>'+esc(portfolioName(q.name))+'</b><small>'+esc(q.name==='Currency'?'CNYRUBf':q.name)+'</small></span><b class="'+tone(a.ret)+'">'+signedPct(a.ret)+'</b><span>'+pct(a.dd)+'</span><span>'+(a.winRate==null?'—':n(a.winRate,1)+'%')+'</span></button>';}).join('')+'</div>'+
-    '<div class="pf-detail"><div class="pf-heading"><div><h3>'+esc(portfolioName(p.name))+'</h3><div class="pf-amount">'+rub(v.balance)+'</div><div class="pf-secondary">'+(v.usd==null?'—':n(v.usd,0)+' $')+'</div></div><div class="pf-status '+(v.risk.new_risk===false?'warn':'')+'">'+status+'</div></div>'+
+    '<div class="pf-detail"><div class="pf-heading"><div><h3>'+esc(portfolioName(p.name))+'</h3><div class="pf-amount">'+rub(v.balance)+'</div><div class="pf-secondary">'+(v.usd==null?'—':n(v.usd,0)+' $')+'</div></div><div class="pf-status '+(!fresh||v.risk.new_risk===false?'warn':'')+'">'+status+'</div></div>'+
+    (!fresh?'<div class="pf-foot warn">'+(st.portfolioLoadStatus==='STALE'?'Показаны последние полученные данные. Наличие текущих позиций проверяется.':'Данные ещё не получены. Отсутствие данных не означает отсутствие позиций.')+'</div>':'')+
     (p.name==='Currency'?'<div class="pf-foot"><b>'+esc(currencyNow)+'</b><br>Только CNYRUBf · стартовый капитал 10 000 ₽ · плечо до 1:10 · максимальная просадка 35% · лонг / шорт / вне рынка.</div>':'')+
     '<div class="pf-performance">'+metric('Доходность',signedPct(v.ret),tone(v.ret),'С начала учёта')+metric('К RUONIA',signedPct(v.excess),tone(v.excess),'Относительно эталона')+metric('Закрытые сделки',rub(v.pnl),tone(v.pnl),'После всех расходов')+'</div>'+
     '<div class="pf-sections"><section class="pf-section"><h4>Риск и ограничения</h4>'+pair('Текущая просадка',pct(v.dd),v.dd>0?'warn':'')+meter(v.dd,v.ddLimit,true)+pair('Лимит просадки',pct(v.ddLimit))+pair('Загрузка / лимит',mult(v.gross)+' / '+mult(v.limit))+meter(v.gross,v.limit)+pair('Новые позиции',v.risk.new_risk===true?'Разрешены':v.risk.new_risk===false?'Заблокированы':'—')+'</section>'+
@@ -850,7 +853,8 @@ function renderPortfolios(){
   });
   ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push(Object.assign({portfolio:p.name},z))));
   const exposureMismatch=positions.length===0&&portfolioExposureNonZero(ps);
-  $('pfCount').textContent=ps.length;$('openCount').textContent=exposureMismatch?'синхр.':positions.length;
+  const positionsUnknown=st.portfolioLoadStatus!=='COMPLETE'||ps.some(p=>p.positions_status==='UNAVAILABLE');
+  $('pfCount').textContent=ps.length;$('openCount').textContent=exposureMismatch?'синхр.':positionsUnknown&&!positions.length?'—':positions.length;
   const rets=ps.map(p=>knownNumber(p.total_return_pct??(p.latest||{}).total_return_pct)).filter(v=>v!=null);
   const dds=ps.map(p=>Number(p.drawdown_pct!=null?p.drawdown_pct:(((p.latest||{}).drawdown!=null)?100*Number((p.latest||{}).drawdown):NaN))).filter(Number.isFinite);
   $('bestRet').textContent=rets.length?Math.max(...rets).toFixed(2)+'%':'—';$('maxDD').textContent=dds.length?Math.max(...dds).toFixed(2)+'%':'—';
@@ -890,7 +894,7 @@ function renderPortfolios(){
         '<span class="position-chip">Фокус <b>'+focusRu(z.learning_focus)+'</b></span>'+
       '</div>'+
     '</div>';
-  }).join(''):(exposureMismatch?'<div class="msg warn">Экспозиция есть — позиции синхронизируются с PostgreSQL…</div>':'<div class="msg">Открытых позиций нет.</div>');
+  }).join(''):(exposureMismatch?'<div class="msg warn">Экспозиция есть — позиции синхронизируются с учётом…</div>':positionsUnknown?'<div class="msg warn">Данные о текущих позициях не получены. Повторяем запрос…</div>':'<div class="msg">Открытых позиций нет.</div>');
 }
 
 function renderTrades(){
@@ -1105,9 +1109,15 @@ function mergePortfolioSets(primary,secondary,preferPrimaryPositions=false){
 }
 function portfolioExposureNonZero(ps){
   return (ps||[]).some(p=>{
-    const g=Number(p&&((p.latest||{}).gross_leverage??p.gross_leverage)),n=Number(p&&((p.latest||{}).net_exposure??p.net_exposure));
+    const g=Number(p&&(p.gross_leverage??(p.latest||{}).gross_leverage)),n=Number(p&&(p.net_exposure??(p.latest||{}).net_exposure));
     return (Number.isFinite(g)&&Math.abs(g)>0.002)||(Number.isFinite(n)&&Math.abs(n)>0.002);
   });
+}
+function portfolioReadComplete(d){
+  return !!(d&&d.status==='OK'&&d.positions_complete!==false&&Array.isArray(d.portfolios)&&
+    PORTFOLIO_NAMES.every(name=>d.portfolios.some(p=>p&&p.name===name&&Array.isArray(p.positions)&&
+      (p.positions_status==null||p.positions_status==='COMPLETE')&&
+      (p.positions.length>0||!portfolioExposureNonZero([p])))));
 }
 function normalizePosition(z,portfolioHint,d){
   if(!z||typeof z!=='object')return null;
@@ -1168,9 +1178,9 @@ function ingestExtractedPositions(d,{allowClear=false}={}){
   const rows=extractPositionCandidates(d);
   const ps=Array.isArray(d&&d.portfolios)?d.portfolios:[];
   if(rows.length){
-    const next={};
-    rows.forEach(z=>{const name=String(z.portfolio_name||z.portfolio||'');if(!next[name])next[name]=[];next[name].push(z)});
-    ['Impulse','Aggressive','Champion','Challenger','Currency'].forEach(name=>{if(!next[name])next[name]=[]});
+    const next=allowClear?{}:Object.fromEntries(Object.entries(st.positionBook||{}).map(([name,items])=>[name,Array.isArray(items)?items.slice():[]]));
+    rows.forEach(z=>{const name=String(z.portfolio_name||z.portfolio||'');if(!next[name])next[name]=[];const previous=next[name].findIndex(x=>x.asset===z.asset);if(previous<0)next[name].push(z);else next[name][previous]=z});
+    if(allowClear)PORTFOLIO_NAMES.forEach(name=>{if(!next[name])next[name]=[]});
     st.positionBook=next;st.positionBookReady=true;savePositionCache(next);return true;
   }
   if(allowClear&&ps.length&&!portfolioExposureNonZero(ps)){
@@ -1205,15 +1215,13 @@ async function loadBootstrap(){
 async function loadPortfolios(){
   if(st.busy['paper-portfolios'])return;
   const d=await get('paper-portfolios','/api/v1/paper-portfolios',30000);
-  if(d&&d.status==='OK'&&Array.isArray(d.portfolios)){
-    d.portfolios=d.portfolios.map(p=>p.name==='Currency'&&!Array.isArray(p.positions)?Object.assign({},p,{positions:[]}):p);
-    if(!d.portfolios.some(p=>p.name==='Currency'))d.portfolios.push(currencyFallback());
-  }
-  const complete=d&&d.status==='OK'&&Array.isArray(d.portfolios)&&
-    ['Impulse','Aggressive','Champion','Challenger','Currency'].every(name=>d.portfolios.some(p=>p.name===name&&Array.isArray(p.positions)));
-  if(complete){
+  // Missing books and explicit unavailable markers cannot authorize clearing.
+  // Configuration placeholders are display-only and never complete an API read.
+  if(portfolioReadComplete(d)){
     const ingested=ingestExtractedPositions(d,{allowClear:true});
-    st.portfolios=mergePortfolioSets(d,st.portfolios,true);
+    st.portfolioLoadStatus='COMPLETE';
+    const confirmed=Object.assign({},d,{portfolios:d.portfolios.map(p=>Object.assign({},p,{positions_status:'COMPLETE'}))});
+    st.portfolios=mergePortfolioSets(confirmed,st.portfolios,true);
     $('positionSync').textContent=ingested?'':'Позиции синхронизируются. Сохранены последние полученные данные.';
     const closed=d.portfolios.reduce((n,p)=>n+Number(p.closed_trades||0),0),wins=d.portfolios.reduce((n,p)=>n+Number(p.wins||0),0);
     st.learning={closed_trades:closed,wins,win_rate:closed?wins/closed:null,experience_storage:'ACTIVE'};
@@ -1221,7 +1229,16 @@ async function loadPortfolios(){
     renderSignals();
     renderInsights();
   }else{
+    st.portfolioLoadStatus=st.portfolios?'STALE':'UNAVAILABLE';
+    if(!st.portfolios){
+      const received=d&&['OK','PARTIAL'].includes(d.status)&&Array.isArray(d.portfolios)?d.portfolios:[];
+      st.portfolios={portfolios:PORTFOLIO_NAMES.map(name=>Object.assign(
+        name==='Currency'?currencyFallback():{name,positions_status:'UNAVAILABLE'},
+        received.find(p=>p&&p.name===name)||{}))};
+      if(received.length)ingestExtractedPositions({portfolios:received},{allowClear:false});
+    }
     $('positionSync').textContent=st.positionBookReady?'Обновление задержано. Показаны последние полученные позиции.':'Загрузка позиций задержана. Повторяем запрос…';
+    renderPortfolios();
   }
 }
 async function loadTrades(){

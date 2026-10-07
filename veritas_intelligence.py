@@ -4969,28 +4969,21 @@ def pg_calibration_map():
     """Empirical calibration with Bayesian shrinkage and Wilson uncertainty bands."""
     if not pg_enabled():
         return []
-    with pg_connect() as c:
-        rows=c.execute("""WITH recent_decisions AS (
-                            SELECT entity_key,event_ts,asset,horizon,payload
-                            FROM ledger_events WHERE event_type='decision'
-                            ORDER BY event_ts DESC LIMIT %s
-                          )
-                          SELECT d.asset,d.horizon,d.payload AS decision_payload,o.payload AS outcome_payload
-                          FROM recent_decisions d
-                          JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'""",(LIVE_LEARNING_MAX_EPISODES,)).fetchall()
+    from veritas_learning_memory import calibration_rows
     b={}
-    for r in rows:
-        dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload'])
-        op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
-        dec=dp.get('decision'); fr=op.get('forward_return'); conf=dp.get('confidence')
-        if dec not in ('LONG','SHORT') or fr is None or conf is None:
-            continue
-        bucket=min(9,max(0,int(float(conf)*10)))
-        key=(r['asset'],r['horizon'],bucket)
-        x=b.setdefault(key,{'n':0,'hits':0,'brier':[],'rawp':[]})
-        hit=1 if (float(fr)>0 if dec=='LONG' else float(fr)<0) else 0
-        rawp=min(0.95,max(0.50,0.50+float(conf)))
-        x['n']+=1; x['hits']+=hit; x['brier'].append((rawp-hit)**2); x['rawp'].append(rawp)
+    with calibration_rows(pg_connect,LIVE_LEARNING_MAX_EPISODES) as rows:
+        for r in rows:
+            dp=r['decision_payload'] if isinstance(r['decision_payload'],dict) else json.loads(r['decision_payload'])
+            op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload'])
+            dec=dp.get('decision'); fr=op.get('forward_return'); conf=dp.get('confidence')
+            if dec not in ('LONG','SHORT') or fr is None or conf is None:
+                continue
+            bucket=min(9,max(0,int(float(conf)*10)))
+            key=(r['asset'],r['horizon'],bucket)
+            x=b.setdefault(key,{'n':0,'hits':0,'brier':[],'rawp':[]})
+            hit=1 if (float(fr)>0 if dec=='LONG' else float(fr)<0) else 0
+            rawp=min(0.95,max(0.50,0.50+float(conf)))
+            x['n']+=1; x['hits']+=hit; x['brier'].append((rawp-hit)**2); x['rawp'].append(rawp)
     out=[]
     z=1.96
     for (asset,h,bucket),x in sorted(b.items()):
@@ -16554,24 +16547,24 @@ _v90r25_pf_cache={'at':0.0,'value':None}
 _v90r25_pf_lock=threading.Lock()
 
 def _v90r25_portfolios_fast():
+    import veritas_portfolio_read_model as VPRM
     with _v90r25_pf_lock:
         cached=_v90r25_pf_cache.get('value'); at=float(_v90r25_pf_cache.get('at') or 0.0)
-    if cached is not None and time.time()-at<15:
+        cache_revision=_v90r25_pf_cache.get('revision',0)
+    if cached is not None and time.time()-at<15 and VPRM.snapshot_fresh(cached):
         out=dict(cached); out['api_source']='memory_cache'; return out
     with lock:
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
-    live_ports=list(live.get('portfolios') or [])
-    live_names={str(p.get('name') or '') for p in live_ports}
-    required_names=set(V90_CANONICAL_PORTFOLIOS)-{VP.VCP.PORTFOLIO_KEY}
-    live_complete=bool(required_names.issubset(live_names))
-    zero_exposure=not any(abs(float(p.get('gross_leverage') or ((p.get('latest') or {}).get('gross_leverage') or 0)))>0.002 for p in live_ports)
-    if live and live_complete and (any(p.get('positions') for p in live_ports) or zero_exposure):
-        out=VP.VCP.decorate_report(VTV.enrich_positions(live,pg_connect)); out['api_source']='live_memory'
-        with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+    if VPRM.memory_complete(live,V90_CANONICAL_PORTFOLIOS):
+        out=VP.VCP.decorate_report(VPRM.revalue_report(VTV.enrich_positions(live,pg_connect),required_names=V90_CANONICAL_PORTFOLIOS)); out['api_source']='live_memory'
+        with _v90r25_pf_lock:
+            if _v90r25_pf_cache.get('revision',0)==cache_revision: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
         return out
     if not pg_enabled(): return {'status':'UNAVAILABLE','portfolios':[]}
     names=list(V90_CANONICAL_PORTFOLIOS)
-    with pg_connect() as c:
+    with pg_connect() as c, c.transaction():
+        c.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+        snapshot_at=datetime.now(timezone.utc).isoformat()
         base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
         nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
         pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,ed.payload AS entry_decision_payload
@@ -16592,6 +16585,8 @@ def _v90r25_portfolios_fast():
                          WHERE pp.portfolio_name=ANY(%s)
                          ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
         stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl, """ + CLOSED_METRICS_SQL + """ FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
+        ids=list({z['active_trade_id'] for z in pos if z.get('active_trade_id')})
+        accounts=VTV.VPP.load_accounts(c,ids,include_entry_notional=True) if ids else {}
     bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
     def _n(v,d=None):
         try:
@@ -16623,19 +16618,18 @@ def _v90r25_portfolios_fast():
     outp=[]
     live_by_name={p.get('name'):p for p in live.get('portfolios') or []}
     for name in names:
-        b=bm.get(name,{}); latest=nm.get(name,{}); st=sm.get(name,{}); closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0); nav_rub=latest.get('nav_rub'); initial=float(b.get('initial_nav_rub') or 1000000)
-        outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),'nav_rub':nav_rub,'nav_usd':latest.get('nav_usd'),'total_return_pct':(100*(float(nav_rub)/initial-1)) if nav_rub is not None else None,'drawdown_pct':100*float(latest.get('drawdown') or 0),'gross_leverage':latest.get('gross_leverage'),'net_exposure':latest.get('net_exposure'),'cash_equivalent_fraction':max(0,1-float(latest.get('gross_leverage') or 0)),'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
+        latest=nm.get(name,{}); st=sm.get(name,{}); closed=int(st.get('closed_trades') or 0); wins=int(st.get('wins') or 0)
+        outp.append({'name':name,'latest':latest,'positions':pm.get(name,[]),'closed_trades':closed,'wins':wins,'win_rate':(wins/closed if closed else None),'closed_trade_pnl_rub':float(st.get('closed_pnl') or 0)})
         # SQL enriches positions; the current execution decisions come from
         # the same completed market cycle, without recomputing admission here.
         outp[-1]['admission_trace']=live_by_name.get(name,{}).get('admission_trace',[])
         outp[-1].update(closed_trade_metrics(st,closed))
         outp[-1]['avg_closed_trade_pnl_rub']=float(st.get('closed_pnl') or 0)/closed if closed else None
         outp[-1]['risk_governor']=live_by_name.get(name,{}).get('risk_governor') or (latest.get('payload') or {}).get('risk_governor') or {}
-        benchmark=latest.get('benchmark_nav_rub') or b.get('benchmark_nav_rub')
-        outp[-1]['excess_vs_ruonia_pct']=100*(float(nav_rub)/float(benchmark)-1) if nav_rub is not None and benchmark and float(benchmark)>0 else None
     out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':VX.VC.COMMISSION_RATE,'api_source':'fast_sql_enriched'}
-    out=VP.VCP.decorate_report(VTV.enrich_positions(out,pg_connect))
-    with _v90r25_pf_lock: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
+    out=VP.VCP.decorate_report(VPRM.revalue_report(VTV.enrich_positions(out,pg_connect,preloaded_accounts=accounts),bases=bm,checked_at=snapshot_at,required_names=names))
+    with _v90r25_pf_lock:
+        if _v90r25_pf_cache.get('revision',0)==cache_revision: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
     return out
 
 def _v90r25_trades_fast(limit=80):

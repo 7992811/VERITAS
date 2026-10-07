@@ -740,6 +740,57 @@ class StructuralLifecycleAccountingTests(unittest.TestCase):
         self.assertEqual(len(positions),len(CTC.PORTFOLIO_ORDER))
         self.assertEqual(len(portfolios),len(CTC.PORTFOLIO_ORDER))
 
+    def test_fast_fill_publishes_bounded_position_and_invalidates_api_cache(self):
+        self.ns['_v90r25_pf_cache']={'at':1.,'value':{'positions':[]},'revision':3}
+        self.ns['_v90r25_pf_lock']=threading.Lock()
+        opened=self.open()
+        current=self.ns['last_cycle']['portfolio_autopilot']['portfolios'][0]
+        self.assertEqual(current['positions_status'],'COMPLETE')
+        self.assertEqual(current['positions_checked_at'],self.clock.isoformat())
+        self.assertEqual(current['positions'][0]['active_trade_id'],opened['active_trade_id'])
+        self.assertEqual(current['positions'][0]['units'],opened['units'])
+        self.assertGreater(current['gross_leverage'],0.)
+        self.assertEqual(current['accounting_base']['fees_rub'],self.db.portfolios['Currency']['fees_rub'])
+        self.assertNotIn('entry_event_snapshot',current['positions'][0]['payload'])
+        self.assertLess(len(json.dumps(current['positions'][0],default=str)),12000)
+        self.assertIsNone(self.ns['_v90r25_pf_cache']['value'])
+        self.assertEqual(self.ns['_v90r25_pf_cache']['revision'],4)
+
+    def test_fast_protective_close_publishes_empty_book_and_current_balance(self):
+        opened=self.open()
+        row=deepcopy(self.expired)
+        quote=VPS.quote_from_row(row)
+        quote['price']=opened['stop_price']-.001
+        row=VPS.execution_row(dict(row,_execution_quote=quote))
+        result=self.run_fast(row)
+        self.assertIsNone(self.db.position())
+        self.assertEqual(result['portfolios'][0]['admission_trace'][0]['preceding_protection']['status'],'EXECUTED')
+        current=self.ns['last_cycle']['portfolio_autopilot']['portfolios'][0]
+        self.assertEqual(current['positions'],[])
+        self.assertEqual(current['positions_status'],'COMPLETE')
+        self.assertEqual(current['gross_leverage'],0.)
+        self.assertEqual(current['net_exposure'],0.)
+        self.assertAlmostEqual(current['nav_rub'],self.nav())
+
+    def test_merging_older_complete_snapshot_cannot_restore_closed_position(self):
+        old={'status':'OK','portfolios':[{'name':'Currency','positions':[{'asset':'CNYRUBF'}],
+             'positions_status':'COMPLETE','positions_checked_at':'2026-10-07T07:00:00Z',
+             'nav_rub':9998.,'gross_leverage':.5,'net_exposure':.5,'admission_trace':[]}]}
+        new={'status':'OK','portfolios':[{'name':'Currency','positions':[],
+             'positions_status':'COMPLETE','positions_checked_at':'2026-10-07T07:01:00Z',
+             'nav_rub':9980.,'gross_leverage':0.,'net_exposure':0.,'admission_trace':[]}]}
+        merged=VSL.merge_reports(old,new)['portfolios'][0]
+        self.assertEqual(merged['positions'],[])
+        self.assertEqual(merged['nav_rub'],9980.)
+        self.assertEqual(merged['gross_leverage'],0.)
+        later=VSL.merge_reports(new,old)['portfolios'][0]
+        self.assertEqual(later['positions'],[])
+        self.assertEqual(later['positions_checked_at'],'2026-10-07T07:01:00Z')
+        unobserved={'portfolios':[{'name':'Currency','nav_rub':9980.,'admission_trace':[]}]}
+        missing=VSL.merge_reports(unobserved,old)['portfolios'][0]
+        self.assertEqual(missing['positions_status'],'UNAVAILABLE')
+        self.assertNotIn('positions',missing)
+
     def test_invalid_target_stage_or_execution_numbers_cannot_produce_reduction(self):
         position = self.open()
         target = VSL.active_target_price(position)
@@ -806,9 +857,24 @@ class StructuralLifecycleAccountingTests(unittest.TestCase):
         self.assertTrue(trace["fill_admission"]["economics_checked"])
         rows = self.ns["last_cycle"]["summary"]
         self.assertTrue(rows)
+        selected_key = (trace["asset"], trace["horizon"], trace["event_id"])
+        selected, unselected = [], []
         for row in rows:
             callback = row["_execution_audit"]["result"]
-            self.assertEqual(callback["portfolios"][0]["admission_trace"][0]["execution"]["status"], "EXECUTED")
+            key = (row["asset"], row["horizon"],
+                   row["timeframe_entry_context"]["event"]["event_id"])
+            for outcome in callback["portfolios"]:
+                self.assertEqual((outcome["asset"], outcome["horizon"], outcome["event_id"]), key)
+            if row["_execution_audit"]["checked_at"] == self.clock.isoformat():
+                if key == selected_key:
+                    selected.extend(callback["portfolios"])
+                else:
+                    unselected.append(row)
+                    self.assertEqual(callback["portfolios"], [])
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["status"], "EXECUTED")
+        self.assertEqual(selected[0]["execution_action"], "ADD")
+        self.assertTrue(unselected, "the other trigger horizons must not inherit the selected fill")
 
 
 if __name__ == "__main__":

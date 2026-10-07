@@ -58,15 +58,20 @@ def trade_result(trade, position=None):
     }
 
 
-def enrich_positions(report, pg_connect):
-    """Join by exact trade identity so a reopened position cannot inherit old P&L."""
+def enrich_positions(report, pg_connect, *, preloaded_accounts=None):
+    """Join exact trades, optionally using the position read's accounting snapshot.
+
+    A supplied mapping, including an empty one, is authoritative for this read.
+    Querying newer costs or realized P&L after a concurrent fill would mix them
+    with the earlier quantities. ``None`` retains the legacy loading behavior.
+    """
     out = dict(report)
     out['portfolios'] = [dict(p, positions=[dict(z) for z in p.get('positions') or []])
                          for p in report.get('portfolios') or []]
     positions = [z for p in out['portfolios'] for z in p['positions']]
     ids = list({z['active_trade_id'] for z in positions if z.get('active_trade_id')})
-    trades = {}
-    if ids:
+    trades = {} if preloaded_accounts is None else dict(preloaded_accounts)
+    if ids and preloaded_accounts is None:
         try:
             with pg_connect() as conn:
                 trades = VPP.load_accounts(conn, ids, include_entry_notional=True)

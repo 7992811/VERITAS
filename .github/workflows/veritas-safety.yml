@@ -43,7 +43,7 @@ jobs:
       - name: Strategy evidence PostgreSQL integration
         env:
           VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
-        run: python -m unittest -v test_veritas_strategy_quality_sql.py test_veritas_learning_integrity_sql.py test_veritas_learning_exports.py test_veritas_ma_learning_projection_sql.py test_veritas_observation_sql.py test_veritas_memory_projection.py test_veritas_trend_memory_sql.py test_veritas_snapshot_memory_sql.py test_veritas_timeframe_management_sql.py
+        run: python -m unittest -v test_veritas_strategy_quality_sql.py test_veritas_learning_integrity_sql.py test_veritas_learning_exports.py test_veritas_ma_learning_projection_sql.py test_veritas_observation_sql.py test_veritas_memory_projection.py test_veritas_trend_memory_sql.py test_veritas_snapshot_memory_sql.py test_veritas_timeframe_management_sql.py test_veritas_calibration_memory_sql.py
       - name: Owner timeframe structure and provenance regressions
         run: python -m unittest -v test_veritas_timeframe_structure.py test_veritas_timeframe_policy.py test_veritas_timeframe_data.py test_veritas_timeframe_management.py test_veritas_profinance_history.py test_veritas_user_teaching.py test_veritas_repeat_add.py
       - name: Signal readiness, original admission evidence and candle refresh
@@ -57,7 +57,7 @@ jobs:
       - name: Canonical cost policy regressions
         run: python -m unittest -v test_veritas_r82_cost_policy.py test_veritas_cost_audit_repairs.py
       - name: Currency portfolio regressions
-        run: python -m unittest -v test_veritas_currency_portfolio.py
+        run: python -m unittest -v test_veritas_currency_portfolio.py test_veritas_currency_dashboard_loading.py test_veritas_portfolio_read_model.py
       - name: Currency routing and Telegram event delivery
         run: python -m unittest -v test_veritas_currency_rule_consistency.py test_veritas_currency_notifications.py test_veritas_currency_delivery.py test_veritas_currency_flip.py
       - name: T-Invest read-only connection tests

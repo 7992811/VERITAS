@@ -188,6 +188,65 @@ def _wall_clock():
     return datetime.now(timezone.utc)
 
 
+_POSITION_STATE_FIELDS = (
+    'positions', 'positions_status', 'positions_checked_at', 'positions_changed_at',
+    'positions_invalidated_at', 'positions_reason', 'accounting_base', 'nav_rub', 'nav_usd',
+    'initial_nav_rub', 'total_return_pct', 'drawdown_pct', 'gross_leverage',
+    'net_exposure', 'cash_equivalent_fraction', 'high_water_nav_rub', 'risk_governor',
+)
+
+
+def _position_view(position):
+    """Copy display fields, without retaining the large historical proof graph.
+
+    Exact trade identity lets the read-only API join accounting when requested.
+    This projection never becomes an input to admission or position management.
+    """
+    z = dict(position)
+    p = payload(position)
+    z.pop('payload', None)
+    keep = ('execution_timeframe', 'execution_horizon', 'last_signal_horizon',
+            'management_horizon', 'initial_stop_price', 'initial_take_price',
+            'take_price', 'target_price', 'last_target_price', 'runner_target_price',
+            'tp2', 'tp2_price', 'second_target_price', 'trailing_stop',
+            'pwin', 'pwin_source', 'entry_probability', 'probability_source',
+            'entry_signal_tier', 'signal_tier', 'setup_grade', 'setup_grade_score',
+            'entry_quality', 'decision_stage', 'expected_move_pct',
+            'expected_to_stop_ratio', 'mfe_pct', 'mae_pct',
+            'profit_protection_active', 'r17_tp1_done', 'r17_tp1_at', 'active_target_stage',
+            'entry_execution_observed_at', 'entry_market_observed_at', 'data_integrity_status')
+    projected = {key:p[key] for key in keep
+                 if key in p and (p[key] is None or isinstance(p[key], (str, int, float, bool)))}
+    source = VPS.position_identity(position)
+    if source:
+        projected['price_source_lock'] = deepcopy(source)
+    mark = p.get('source_locked_mark') or {}
+    projected['source_locked_mark'] = {key:deepcopy(mark[key])
+                                       for key in ('identity', 'price', 'observed_at') if key in mark}
+    ladder = p.get('active_target_ladder')
+    if isinstance(ladder, list):
+        projected['active_target_ladder'] = [{key:step[key]
+            for key in ('price', 'fraction', 'kind') if key in step}
+            for step in ladder[:2] if isinstance(step, dict)]
+    z['payload'] = projected
+    z['execution_timeframe'] = (p.get('execution_timeframe') or p.get('execution_horizon')
+                               or p.get('last_signal_horizon'))
+    z['horizon'] = z['execution_timeframe']
+    for target, keys in {
+        'take_price':('take_price', 'target_price', 'last_target_price'),
+        'second_take_price':('tp2', 'tp2_price', 'second_target_price', 'runner_target_price'),
+        'signal_probability':('pwin', 'entry_probability'),
+        'probability_source':('pwin_source', 'probability_source'),
+        'signal_tier':('entry_signal_tier', 'signal_tier'),
+    }.items():
+        z[target] = next((p[key] for key in keys if p.get(key) is not None), None)
+    for key in ('initial_stop_price', 'initial_take_price', 'trailing_stop', 'mfe_pct',
+                'mae_pct', 'expected_move_pct', 'expected_to_stop_ratio', 'setup_grade'):
+        if key in projected:
+            z[key] = projected[key]
+    return z
+
+
 def fast_entry_pass(ns,rows,now,*,runtime=False):
     """Atomic paper protection and entries, without the heavy portfolio cycle."""
     import veritas_canonical_runtime as VCR
@@ -203,6 +262,7 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
         if SB.applies(TFP.context_of(row)) and row.get('asset'):
             grouped.setdefault(row['asset'],[]).append(row)
     results=[]
+    position_snapshots={}
     with ExitStack() as stack:
         if runtime:
             # Avoid even opening a DB connection when another local book
@@ -222,10 +282,11 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
             portfolio,positions=VPR._portfolio_rows(c,name)
             if not portfolio:
                 continue
-            nav,_,gross,_=VPR._mark_nav(portfolio,positions,{})
+            nav,_,gross,net=VPR._mark_nav(portfolio,positions,{})
             portfolio,hwm=_save_high_water(c,name,portfolio,nav,clock.isoformat())
             dd=max(0.,1.-nav/max(hwm,1.))
             traces=[]
+            book_changed=False
             for asset,candidates in grouped.items():
                 if policy.get('allowed_assets') and asset not in policy['allowed_assets']:
                     continue
@@ -284,11 +345,12 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
                         existing=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',
                                            (name,asset)).fetchone()
                         after=abs(float(existing.get('units') or 0.)) if existing else 0.
+                        book_changed = book_changed or after < before
                         protection={'reason':due,'checked_at':clock.isoformat(),'trade_id':trade_id,
                                     'status':'EXECUTED' if after<before else 'BLOCKED',
                                     'reference_price':price,'closed_normalized_units':max(0.,before-after)}
                         portfolio,positions=VPR._portfolio_rows(c,name)
-                        nav,_,gross,_=VPR._mark_nav(portfolio,positions,{})
+                        nav,_,gross,net=VPR._mark_nav(portfolio,positions,{})
                         portfolio,hwm=_save_high_water(c,name,portfolio,nav,clock.isoformat())
                         dd=max(0.,1.-nav/max(hwm,1.))
                         # Re-evaluate because realized P&L/fees and the held
@@ -328,6 +390,7 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
                         VPR.canonical_open_or_add(c,portfolio,name,asset,direction,price,requested,nav,
                                                   clock.isoformat(),row,'VERIFIED_QUOTE_BREAKOUT')
                         entry_changed=audit.get('status')=='EXECUTED'
+                        book_changed = book_changed or entry_changed
                 # Render the saved allocation/fill decisions and the actual
                 # canonical outcome. Reporting must not run admission again.
                 selected_trace=VAT.build({asset:row},lambda selected:
@@ -340,9 +403,29 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
                 # this same transaction, including the fees of the prior fill.
                 if entry_changed:
                     portfolio,positions=VPR._portfolio_rows(c,name)
-                    nav,_,gross,_=VPR._mark_nav(portfolio,positions,{})
+                    nav,_,gross,net=VPR._mark_nav(portfolio,positions,{})
                 portfolio,hwm=_save_high_water(c,name,portfolio,nav,clock.isoformat())
                 dd=max(0.,1.-nav/max(hwm,1.))
+            if runtime:
+                clock=_wall_clock()
+            initial=float(portfolio['initial_nav_rub'])
+            base_keys=('initial_nav_rub','realized_pnl_rub','fees_rub','funding_rub',
+                       'high_water_nav_rub','benchmark_nav_rub','last_usdrub','last_ruonia')
+            # Reuse the current locked book. Mutation paths above already
+            # reload it; a rejected signal needs no extra SQL for the screen.
+            position_snapshots[name]={
+                'positions':[_position_view(z) for z in positions],
+                'positions_status':'COMPLETE','positions_checked_at':clock.isoformat(),
+                'positions_invalidated_at':None,'positions_reason':None,
+                'accounting_base':{key:portfolio.get(key) for key in base_keys},
+                'initial_nav_rub':initial,'total_return_pct':100.*(nav/initial-1.) if initial>0 else None,
+                'nav_usd':nav/float(portfolio['last_usdrub']) if portfolio.get('last_usdrub') else None,
+                'drawdown_pct':100.*dd,'net_exposure':net,
+                'cash_equivalent_fraction':max(0.,1.-gross),
+                'risk_governor':VCR.paper_risk_governor(policy,dd),
+            }
+            if book_changed:
+                position_snapshots[name]['positions_changed_at']=clock.isoformat()
             results.append({'name':name,'nav_rub':nav,'gross_leverage':gross,
                             'high_water_nav_rub':hwm,'admission_trace':traces,'checked_at':clock.isoformat()})
     output={'status':'OK','version':VERSION,'paper_only':True,'checked_at':clock.isoformat(),'portfolios':results}
@@ -356,19 +439,38 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
         merged=[]
         for result in results:
             prior=deepcopy(previous.pop(result['name'],{}))
+            snapshot=position_snapshots[result['name']]
+            saved={key:prior[key] for key in _POSITION_STATE_FIELDS if key in prior}
+            prior_clock=max(TS.timestamp(prior.get('positions_checked_at')) or 0,
+                            TS.timestamp(prior.get('positions_invalidated_at')) or 0)
+            snapshot_clock=TS.timestamp(snapshot['positions_checked_at']) or 0
             affected={t['asset'] for t in result['admission_trace']}
             old_traces=[t for t in prior.get('admission_trace') or [] if t.get('asset') not in affected]
             prior.update(result)
+            prior.update(snapshot)
+            if prior_clock>snapshot_clock:
+                # A publisher delayed after commit cannot restore an older
+                # quantity over a later complete read or invalidation.
+                for key in _POSITION_STATE_FIELDS:
+                    prior.pop(key,None)
+                prior.update(saved)
             prior['admission_trace']=old_traces+result['admission_trace']
             merged.append(prior)
         live.update(status='OK',portfolios=merged+list(previous.values()),
                     structural_checked_at=clock.isoformat(),live_capital=False)
+        by_name={p.get('name'):p for p in live['portfolios']}
+        live['positions_complete']=all(isinstance(by_name.get(name,{}).get('positions'),list)
+            and by_name[name].get('positions_status')=='COMPLETE' for name in CTC.PORTFOLIO_ORDER)
         last['portfolio_autopilot']=live
+        cache=ns.get('_v90r25_pf_cache')
+        if isinstance(cache,dict) and any('positions_changed_at' in value for value in position_snapshots.values()):
+            with ns.get('_v90r25_pf_lock',nullcontext()):
+                cache.update(at=0.,value=None,revision=int(cache.get('revision') or 0)+1)
     return output
 
 
 def merge_reports(completing,current):
-    """A slow scan cannot overwrite a newer committed execution decision."""
+    """Merge decisions separately from complete, time-labelled book snapshots."""
     result=deepcopy(completing or {})
     current=current or {}
     latest={p.get('name'):p for p in current.get('portfolios') or []}
@@ -376,6 +478,24 @@ def merge_reports(completing,current):
     for original in result.get('portfolios') or []:
         portfolio=dict(original)
         fresh=latest.pop(portfolio.get('name'),{})
+        old_at=TS.timestamp(portfolio.get('positions_checked_at'))
+        fresh_at=TS.timestamp(fresh.get('positions_checked_at'))
+        complete=(isinstance(portfolio.get('positions'),list)
+                  and portfolio.get('positions_status') in (None,'COMPLETE','OK'))
+        fresh_complete=(isinstance(fresh.get('positions'),list)
+                        and fresh.get('positions_status') in (None,'COMPLETE','OK'))
+        if complete and old_at is not None and fresh_complete and fresh_at is not None and fresh_at>old_at:
+            for key in _POSITION_STATE_FIELDS:
+                portfolio.pop(key,None)
+            portfolio.update({key:deepcopy(fresh[key]) for key in _POSITION_STATE_FIELDS if key in fresh})
+        elif not complete or old_at is None:
+            # The ordinary cycle returns metrics without a positions read.
+            # Its later completion time cannot prove that an earlier list is
+            # current: a protective close may already have changed the book.
+            portfolio.pop('positions',None)
+            portfolio.pop('accounting_base',None)
+            portfolio.update(positions_status='UNAVAILABLE',positions_checked_at=None,
+                             positions_invalidated_at=_wall_clock().isoformat())
         recent={t.get('asset'):t for t in fresh.get('admission_trace') or []}
         traces=[]
         for trace in portfolio.get('admission_trace') or []:

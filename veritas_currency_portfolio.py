@@ -27,20 +27,24 @@ def configured_state():
         'paper_trading_enabled': True,
         'live_trading_enabled': False,
         'capital_configured': True,
-        'nav_rub': INITIAL_NAV_RUB,
+        # Configuration is not evidence of a current, empty ledger.
+        'nav_rub': None,
         'nav_usd': None,
         'initial_nav_rub': INITIAL_NAV_RUB,
-        'total_return_pct': 0.0,
-        'drawdown_pct': 0.0,
-        'gross_leverage': 0.0,
-        'net_exposure': 0.0,
-        'cash_equivalent_fraction': 1.0,
+        'total_return_pct': None,
+        'drawdown_pct': None,
+        'gross_leverage': None,
+        'net_exposure': None,
+        'cash_equivalent_fraction': None,
         'excess_vs_ruonia_pct': None,
         'max_gross_limit': MAX_GROSS,
         'leverage_limit': LEVERAGE_LIMIT,
         'hard_drawdown_limit_pct': 100.0 * HARD_DRAWDOWN,
         'weekend_carry_allowed': True,
         'positions': [],
+        'positions_status': 'UNAVAILABLE',
+        'positions_checked_at': None,
+        'positions_reason': 'CANONICAL_BOOK_SNAPSHOT_REQUIRED',
         'risk_governor': {
             'state': 'NORMAL',
             'new_risk': True,
@@ -102,5 +106,6 @@ def decorate_report(report):
         items.append(q)
     if not seen:
         items.append(configured_state())
+        result['positions_complete'] = False
     result['portfolios'] = items
     return result
