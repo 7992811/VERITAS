@@ -11,9 +11,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import math
+import threading
 import time
+from veritas_learning_memory import ami_decision_rows
 VERSION = "ami-v1.0"
 _CACHE = {"at": 0.0, "epoch": None, "value": None}
+_BUILD_LOCK = threading.Lock()
 MOVE_THRESHOLDS = {
     "5m": 0.0015,
     "1h": 0.012,
@@ -158,14 +161,7 @@ def _decision_metrics(episodes, decision_key="decision"):
 
 
 def _query_decision_episodes(c):
-    rows = c.execute("""
-      SELECT d.event_ts,d.asset,d.horizon,d.payload AS dp,o.payload AS op
-      FROM ledger_events d
-      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-      WHERE d.event_type='decision' AND o.payload ? 'forward_return'
-      ORDER BY d.event_ts DESC
-      LIMIT 2200
-    """).fetchall()
+    rows = ami_decision_rows(c)
     return _independent_episodes([dict(r) for r in rows or []], 360)
 
 
@@ -335,7 +331,7 @@ def _baseline(c, score, components):
         return {"score": None, "components": {}, "captured_at": None}
 
 
-def build_scorecard(pg_connect, learning_progress, production_epoch, cache_seconds=55):
+def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, cache_seconds=55):
     now = time.time()
     if (_CACHE.get("value") is not None and _CACHE.get("epoch") == production_epoch
             and now - float(_CACHE.get("at") or 0.0) < cache_seconds):
@@ -503,6 +499,14 @@ def build_scorecard(pg_connect, learning_progress, production_epoch, cache_secon
     }
     _CACHE.update({"at": now, "epoch": production_epoch, "value": value})
     return dict(value)
+
+
+def build_scorecard(pg_connect, learning_progress, production_epoch, cache_seconds=55):
+    # Startup and concurrent dashboard readers share one computation. The cache
+    # check runs under the lock, so waiting readers reuse the completed result.
+    with _BUILD_LOCK:
+        return _build_scorecard_unlocked(
+            pg_connect, learning_progress, production_epoch, cache_seconds)
 
 
 def startup_snapshot(pg_connect, learning_progress, production_epoch, delay_seconds=12):

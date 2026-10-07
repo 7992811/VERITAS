@@ -489,6 +489,7 @@ experience_cache = {'at':0.0,'value':None}
 experience_cache_lock = threading.Lock()
 trend_case_cache = {'at':0.0,'value':None}
 trend_case_cache_lock = threading.Lock()
+trend_case_refresh_lock = threading.Lock()
 structure_analog_cache = {'at':0.0,'limit':0,'value':None}
 structure_analog_cache_lock = threading.Lock()
 cycle_telemetry_history = []
@@ -2201,56 +2202,80 @@ def trend_case_learning_board(limit=500):
         z=trend_case_cache.get('value')
         if z and time.time()-float(trend_case_cache.get('at') or 0)<ANALYTICS_CACHE_SECONDS:
             return z
-    with pg_connect() as c:
-        rows=c.execute("""
-          SELECT d.entity_key,d.asset,d.horizon,d.event_ts,d.payload AS dp,o.payload AS outcome_payload
-          FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-          WHERE d.event_type='decision'
-          ORDER BY d.asset,d.horizon,d.event_ts ASC
-        """).fetchall()
-    now_dt=datetime.now(timezone.utc); groups={}; episodes=[]; last_selected={}
-    gap_s={'5m':300,'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
-    for r in rows:
-        dp=r['dp'] if isinstance(r['dp'],dict) else json.loads(r['dp']); ti=dp.get('trend_impulse') or (dp.get('features') or {}).get('trend_impulse') or {}
-        phase=str(ti.get('phase') or 'NONE'); direction=str(ti.get('direction') or 'NO_TRADE')
-        if phase=='NONE' or direction not in ('LONG','SHORT'): continue
-        ts=r['event_ts']
-        if isinstance(ts,str): ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
-        if ts.tzinfo is None: ts=ts.replace(tzinfo=timezone.utc)
-        k=(r['asset'],r['horizon'],phase,direction)
-        prev=last_selected.get(k)
-        if prev is not None and (ts-prev).total_seconds()<=gap_s.get(r['horizon'],86400):
-            continue
-        last_selected[k]=ts
-        op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload']); fr=op.get('forward_return')
-        if fr is None: continue
-        fr=float(fr); sr=fr if direction=='LONG' else -fr
-        age=max(0.0,(now_dt-ts).total_seconds()/86400.0); w=math.exp(-math.log(2.0)*age/TREND_CASE_HALF_LIFE_DAYS)
-        b=groups.setdefault(k,{'n':0,'w':0.0,'wh':0.0,'wr':0.0,'missed':0,'mfe':[],'mae':[]})
-        b['n']+=1; b['w']+=w; b['wh']+=w*(1.0 if sr>0 else 0.0); b['wr']+=w*sr
-        research_dec=str(dp.get('research_decision') or dp.get('decision') or 'NO_TRADE')
-        if research_dec=='NO_TRADE' and sr>0: b['missed']+=1
-        if op.get('mfe') is not None: b['mfe'].append(float(op['mfe']))
-        if op.get('mae') is not None: b['mae'].append(float(op['mae']))
-        if len(episodes)<40:
-            episodes.append({'asset':r['asset'],'horizon':r['horizon'],'phase':phase,'direction':direction,'decision':research_dec,
-                             'signed_return':sr,'entry_quality':ti.get('entry_quality'),'onset_score':ti.get('onset_score'),'impulse_score':ti.get('impulse_score')})
-    items=[]
-    for (asset,h,phase,direction),b in groups.items():
-        eff=b['w']; post=(b['wh']+5.0)/(eff+10.0) if eff>=0 else 0.5; avg=b['wr']/eff if eff else None
-        state='BUILDING' if b['n']<TREND_CASE_MIN_N else 'SUPPORTED' if post>=0.54 and (avg or 0)>0 else 'WEAK' if post>=0.49 else 'DEGRADED'
-        items.append({'asset':asset,'horizon':h,'phase':phase,'direction':direction,'n':b['n'],'effective_n':eff,
-                      'posterior_continuation_rate':post,'decayed_avg_signed_return':avg,'missed_by_champion':b['missed'],
-                      'avg_mfe':sum(b['mfe'])/len(b['mfe']) if b['mfe'] else None,
-                      'avg_mae':sum(b['mae'])/len(b['mae']) if b['mae'] else None,
-                      'learning_state':state,'automatic_weight_change':False if b['n']<TREND_CASE_MIN_N else True})
-    items.sort(key=lambda x:(x['learning_state']!='SUPPORTED',-x['n']))
-    out={'status':'ok','items':items,'recent_episodes':episodes[-40:],'bootstrap_lessons':BOOTSTRAP_CASE_LESSONS,
-         'bootstrap_direct_weight':0.0,'min_n_for_statistical_learning':TREND_CASE_MIN_N,
-         'policy':'current case changes architecture immediately; statistical confidence changes only after independent repeated phase episodes'}
-    with trend_case_cache_lock:
-        trend_case_cache['at']=time.time(); trend_case_cache['value']=out
-    return out
+    # The cycle and API can request the same expired history simultaneously.
+    # Keep cache reads independent while allowing only one refresh to build.
+    with trend_case_refresh_lock:
+        with trend_case_cache_lock:
+            z=trend_case_cache.get('value')
+            if z and time.time()-float(trend_case_cache.get('at') or 0)<ANALYTICS_CACHE_SECONDS:
+                return z
+        def impulse(expr):
+            return _v90_jsonb_project_object(expr,{
+                key:f"({expr})->'{key}'" for key in
+                ('phase','direction','entry_quality','onset_score','impulse_score')})
+        dp_sql=_v90_jsonb_project_object('d.payload',{
+            'research_decision':"d.payload->'research_decision'",
+            'decision':"d.payload->'decision'",
+            'trend_impulse':impulse("d.payload->'trend_impulse'"),
+            'features':_v90_jsonb_project_object("d.payload->'features'",{
+                'trend_impulse':impulse("d.payload#>'{features,trend_impulse}'")})})
+        op_sql=_v90_jsonb_project_object('o.payload',{
+            key:f"o.payload->'{key}'" for key in ('forward_return','mfe','mae')})
+        # Preserve the complete ordered history. A server cursor bounds both
+        # decoded Python rows and libpq results; autocommit needs a transaction.
+        with pg_connect() as c:
+            with c.transaction():
+                with c.cursor(name='veritas_trend_cases') as rows:
+                    rows.itersize=64
+                    rows.execute(f"""
+                      SELECT d.entity_key,d.asset,d.horizon,d.event_ts,{dp_sql} AS dp,{op_sql} AS outcome_payload
+                      FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                      WHERE d.event_type='decision'
+                      ORDER BY d.asset,d.horizon,d.event_ts ASC
+                    """)
+                    now_dt=datetime.now(timezone.utc); groups={}; episodes=[]; last_selected={}
+                    gap_s={'5m':300,'1h':1800,'4h':7200,'1d':21600,'3d':43200,'7d':86400}
+                    for r in rows:
+                        dp=r['dp'] if isinstance(r['dp'],dict) else json.loads(r['dp']); ti=dp.get('trend_impulse') or (dp.get('features') or {}).get('trend_impulse') or {}
+                        phase=str(ti.get('phase') or 'NONE'); direction=str(ti.get('direction') or 'NO_TRADE')
+                        if phase=='NONE' or direction not in ('LONG','SHORT'): continue
+                        ts=r['event_ts']
+                        if isinstance(ts,str): ts=datetime.fromisoformat(ts.replace('Z','+00:00'))
+                        if ts.tzinfo is None: ts=ts.replace(tzinfo=timezone.utc)
+                        k=(r['asset'],r['horizon'],phase,direction)
+                        prev=last_selected.get(k)
+                        if prev is not None and (ts-prev).total_seconds()<=gap_s.get(r['horizon'],86400):
+                            continue
+                        last_selected[k]=ts
+                        op=r['outcome_payload'] if isinstance(r['outcome_payload'],dict) else json.loads(r['outcome_payload']); fr=op.get('forward_return')
+                        if fr is None: continue
+                        fr=float(fr); sr=fr if direction=='LONG' else -fr
+                        age=max(0.0,(now_dt-ts).total_seconds()/86400.0); w=math.exp(-math.log(2.0)*age/TREND_CASE_HALF_LIFE_DAYS)
+                        b=groups.setdefault(k,{'n':0,'w':0.0,'wh':0.0,'wr':0.0,'missed':0,'mfe':[],'mae':[]})
+                        b['n']+=1; b['w']+=w; b['wh']+=w*(1.0 if sr>0 else 0.0); b['wr']+=w*sr
+                        research_dec=str(dp.get('research_decision') or dp.get('decision') or 'NO_TRADE')
+                        if research_dec=='NO_TRADE' and sr>0: b['missed']+=1
+                        if op.get('mfe') is not None: b['mfe'].append(float(op['mfe']))
+                        if op.get('mae') is not None: b['mae'].append(float(op['mae']))
+                        if len(episodes)<40:
+                            episodes.append({'asset':r['asset'],'horizon':r['horizon'],'phase':phase,'direction':direction,'decision':research_dec,
+                                             'signed_return':sr,'entry_quality':ti.get('entry_quality'),'onset_score':ti.get('onset_score'),'impulse_score':ti.get('impulse_score')})
+        items=[]
+        for (asset,h,phase,direction),b in groups.items():
+            eff=b['w']; post=(b['wh']+5.0)/(eff+10.0) if eff>=0 else 0.5; avg=b['wr']/eff if eff else None
+            state='BUILDING' if b['n']<TREND_CASE_MIN_N else 'SUPPORTED' if post>=0.54 and (avg or 0)>0 else 'WEAK' if post>=0.49 else 'DEGRADED'
+            items.append({'asset':asset,'horizon':h,'phase':phase,'direction':direction,'n':b['n'],'effective_n':eff,
+                          'posterior_continuation_rate':post,'decayed_avg_signed_return':avg,'missed_by_champion':b['missed'],
+                          'avg_mfe':sum(b['mfe'])/len(b['mfe']) if b['mfe'] else None,
+                          'avg_mae':sum(b['mae'])/len(b['mae']) if b['mae'] else None,
+                          'learning_state':state,'automatic_weight_change':False if b['n']<TREND_CASE_MIN_N else True})
+        items.sort(key=lambda x:(x['learning_state']!='SUPPORTED',-x['n']))
+        out={'status':'ok','items':items,'recent_episodes':episodes[-40:],'bootstrap_lessons':BOOTSTRAP_CASE_LESSONS,
+             'bootstrap_direct_weight':0.0,'min_n_for_statistical_learning':TREND_CASE_MIN_N,
+             'policy':'current case changes architecture immediately; statistical confidence changes only after independent repeated phase episodes'}
+        with trend_case_cache_lock:
+            trend_case_cache['at']=time.time(); trend_case_cache['value']=out
+        return out
 
 def trend_case_multiplier(asset,horizon,phase,direction,board=None):
     if phase=='NONE' or direction not in ('LONG','SHORT'): return 1.0
@@ -6935,6 +6960,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 knowledge_adjustment['experience_prior']=experience_prior
                 knowledge_adjustment['score_with_experience']=combined_adjustment
                 agents = agent_views(f, horizon, deriv, asset)
+                if horizon==processing_horizons[0]:
+                    _v90_memory_checkpoint('agents_ready',asset,horizon)
                 research_dec, conf, size, score, used_weights, impulse_overlay = committee(
                     agents, asset, horizon, perf, f['regime'], combined_adjustment)
                 research_challenger=challenger_committee(
