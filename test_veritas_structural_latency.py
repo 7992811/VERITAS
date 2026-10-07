@@ -127,6 +127,7 @@ class BoundedRetryTests(unittest.TestCase):
         self.row,self.clock=context_row()
         self.previous_markets,self.previous_rows=BR._markets.copy(),BR._latest_rows.copy()
         BR._markets.clear();BR._latest_rows.clear()
+        self.assertTrue(BR.publish_market(self.row))
         self.ns={'lock':threading.RLock(),'last_cycle':{'summary':[]}}
         self.runtime=BR.BreakoutRuntime(self.ns,Mock(return_value={'status':'OK'}),
                                        context_builder=Mock(side_effect=AssertionError('history rebuilt during retry')))
@@ -151,7 +152,7 @@ class BoundedRetryTests(unittest.TestCase):
         self.runtime._pending_entry_rows=[self.row]
         for n in range(1,5):
             result=self.runtime.run_once(self.clock+timedelta(seconds=n),quotes={})
-            self.assertEqual(result['status'],'WAITING_FOR_BOOK')
+            self.assertEqual(result['status'],'WAITING_FOR_BOOK',result)
             self.assertEqual(result['pending_entry_rows'],1)
             self.assertEqual(result['execution_reason'],'LOCAL_PAPER_BOOK_BUSY')
         self.assertEqual(result['retry_passes'],4)

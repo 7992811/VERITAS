@@ -333,7 +333,7 @@ class BreakoutRuntime:
                     result[asset] = cached
         return result
 
-    def _fresh_quote(self, asset, identity, quote, clock):
+    def _fresh_quote(self, asset, identity, quote, clock, *, consume=True):
         if not quote:
             return None
         quote = _clean_quote(quote)
@@ -360,8 +360,14 @@ class BreakoutRuntime:
         if previous and (observed < previous[0] or observed == previous[0] and price != previous[1]):
             self.state["stale_quotes"] += 1
             return None
-        self._observations[key] = signature
-        self.state["fresh_quotes"] += 1
+        # A retry may publish a fresher price for execution but has not yet
+        # observed that quote against all native levels. Do not consume it as
+        # structurally processed or a new breakout could be lost afterwards.
+        if consume:
+            self._observations[key] = signature
+            self.state["fresh_quotes"] += 1
+        else:
+            self.state["retry_quote_refreshes"] = self.state.get("retry_quote_refreshes", 0)+1
         VPG.publish_quote(asset, quote)
         return quote
 
@@ -432,8 +438,8 @@ class BreakoutRuntime:
                 key = (old.get("asset"), old.get("horizon"))
                 new = updated.pop(key, None)
                 old_at = TS.timestamp(old.get("market_observed_at") or old.get("observed_at"))
-                new_at = TS.timestamp((new or {}).get("market_observed_at"))
-                merged.append(new if new and (old_at is None or new_at >= old_at) else old)
+                new_at = TS.timestamp((new or {}).get("market_observed_at") or (new or {}).get("observed_at"))
+                merged.append(new if new and (old_at is None or new_at is not None and new_at >= old_at) else old)
             merged.extend(updated.values())
             last["summary"] = merged
             last["breakout_runtime"] = self.snapshot()
@@ -448,9 +454,25 @@ class BreakoutRuntime:
         pending, self._pending_entry_rows = self._pending_entry_rows, []
         for asset, market in markets.items():
             self._fresh_quote(asset, market['structure_source_identity'],
-                              quotes.get(asset) or {}, clock)
+                              quotes.get(asset) or {}, clock, consume=False)
+        # A source/contract rollover since enqueue cannot execute an old event
+        # even if its former cached quote is still inside a freshness window.
+        current, rejected = [], []
+        with _cache_lock:
+            for row in pending:
+                market = _markets.get(row.get('asset')) or {}
+                expected = market.get('structure_source_identity')
+                actual = VPS.identity(row.get('asset'), VPS.quote_from_row(row))
+                (current if expected and _same_source(expected, actual) else rejected).append(row)
+        if rejected:
+            self._publish_rows(rejected, {'status':'BLOCKED',
+                'reason':'STRUCTURAL_RETRY_SOURCE_CHANGED','paper_only':True}, clock)
+        pending = current
         entry_started = time.monotonic()
-        execution = self.entry_pass(pending, clock)
+        execution = (self.entry_pass(pending, clock) if pending else
+                     {'status':'BLOCKED','reason':'STRUCTURAL_RETRY_SOURCE_CHANGED','paper_only':True})
+        if not pending:
+            VPG._mutex.cancel_entry_turn()
         entry_seconds = time.monotonic()-entry_started
         if execution.get('status') == 'BUSY' and execution.get('entry_turn_reserved') is not False:
             self._pending_entry_rows = pending
