@@ -17,6 +17,7 @@ import uuid
 
 import veritas_currency_trade_service as S
 import veritas_currency_trade_ledger as L
+import veritas_currency_broker_notifications as N
 from veritas_currency_trade_plan import prepare_exit, TradePlanBlocked
 from veritas_tbank_trading import ExecutionFill, OrderResult, TradingError
 
@@ -553,6 +554,66 @@ class BrokerFactsPostgresTests(unittest.TestCase):
         self.assertTrue(facts.account.reconciled)
         self.assertTrue(facts.account.costs_reconciled)
         self.assertIsNone(facts.held_terms)
+
+    def broker_outbox(self, enabled=True):
+        outbox = N.BrokerNotificationOutbox(
+            connect=self.connect, account_id=ACCOUNT, instrument_uid=UID,
+            owner_user_id=OWNER, execution_environment="production", enabled=enabled,
+            clock=lambda: self.now,
+        )
+        outbox.ensure_schema()
+        self.facts.notifications = outbox
+        return outbox
+
+    def test_broker_fill_and_notice_commit_once_but_ack_creates_neither(self):
+        self.broker_outbox()
+        self.facts.ingest(proposal(), receipt(lots=0, requested=2, fee="0"))
+        self.assertEqual(self.rows(N.TABLE), [])
+        self.facts.ingest(proposal(), receipt())
+        self.now += timedelta(seconds=1)
+        self.facts.ingest(proposal(), receipt(observed_at=self.now))
+        events = self.rows(N.TABLE)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["status"], "PENDING")
+        self.assertEqual(events[0]["kind"], "OPEN")
+        self.assertIsNone(events[0]["snapshot"]["fee_rub"])
+        self.assertEqual(len(self.rows(L.FILLS)), 1)
+        self.assertEqual(len(self.rows(L.FEES)), 1)
+
+    def test_notice_failure_rolls_back_execution_and_fee_as_one_transaction(self):
+        real = self.broker_outbox()
+        def fail_after_insert(c, **kwargs):
+            real.enqueue_on(c, **kwargs)
+            raise RuntimeError("synthetic failure before ledger commit")
+        self.facts.notifications = SimpleNamespace(enqueue_on=fail_after_insert)
+        with self.assertRaises(RuntimeError):
+            self.facts.ingest(proposal(), receipt())
+        for table in (N.TABLE, L.FILLS, L.FEES):
+            self.assertEqual(self.rows(table), [])
+        self.facts.notifications = real
+        self.facts.ingest(proposal(), receipt())
+        self.assertEqual(len(self.rows(N.TABLE)), 1)
+
+    def test_late_fill_notice_uses_broker_chronology_not_current_position(self):
+        self.broker_outbox()
+        self.now += timedelta(seconds=2)
+        older = ExecutionFill("older-stage", 1, D("12"), "RUB", NOW.isoformat(), "POINT")
+        newer = ExecutionFill("newer-stage", 1, D("12"), "RUB",
+                              (NOW + timedelta(seconds=1)).isoformat(), "POINT")
+        self.facts.ingest(proposal(), receipt(lots=1, requested=2, fee="2",
+                         executions=(newer,), observed_at=self.now))
+        self.facts.ingest(proposal(), receipt(lots=2, requested=2, fee="5",
+                         executions=(newer, older), observed_at=self.now))
+        events = {x["broker_trade_id"]: x for x in self.rows(N.TABLE)}
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events["older-stage"]["snapshot"]["before_signed_lots"], 0)
+        self.assertEqual(events["older-stage"]["snapshot"]["after_signed_lots"], 1)
+        self.assertEqual(len(self.rows(L.FILLS)), 2)
+
+    def test_disabled_broker_notice_records_skip_and_never_backlogs_for_later_send(self):
+        self.broker_outbox(enabled=False)
+        self.facts.ingest(proposal(), receipt())
+        self.assertEqual(self.rows(N.TABLE)[0]["status"], "SKIPPED_UNCONFIGURED")
 
     def test_replayed_fills_and_same_fee_with_new_observation_time_are_idempotent(self):
         self.facts.ingest(proposal(), receipt())

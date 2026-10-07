@@ -46,6 +46,9 @@ from veritas_currency_trade_funding import FundingReconciler, FundingError
 from veritas_currency_live_admission import (
     CurrencyLiveAdmission, LiveAdmissionEvidenceRepository, LiveAdmissionError,
 )
+from veritas_currency_broker_notifications import (
+    BrokerNotificationOutbox, PREFIX as BROKER_ALERT_PREFIX,
+)
 
 PREFIX = "/internal/currency-trading/"
 CNY_UID = "c300543d-aa18-4249-b110-615409dde036"
@@ -157,7 +160,7 @@ class _BrokerCycle:
 class BrokerFactsProvider:
     def __init__(self, adapter, ledger, account_id, instrument_uid=CNY_UID,
                  owner_user_id=None, connect=None, clock=None, *, read_connect=None,
-                 settlement=None, statement_provider=None, funding=None):
+                 settlement=None, statement_provider=None, funding=None, notifications=None):
         self.adapter, self.ledger = adapter, ledger
         self.account_id = _text(account_id, "EXPLICIT_ACCOUNT_REQUIRED")
         if instrument_uid != CNY_UID:
@@ -172,6 +175,7 @@ class BrokerFactsProvider:
             raise ServiceError("EXPLICIT_LEDGER_CONNECTION_REQUIRED")
         self.clock = clock or _now
         self.funding = funding
+        self.notifications = notifications
         self.environment = adapter.environment
         if self.environment not in _SCHEMAS:
             raise ServiceError("INVALID_EXECUTION_ENVIRONMENT")
@@ -550,13 +554,28 @@ class BrokerFactsProvider:
                     "WHERE account_id=%s FOR UPDATE", (self.account_id,)).fetchone()
                 self._assert_owner(owner)
                 for fill in sorted(unique.values(), key=lambda x: (utc(x.executed_at), x.trade_id)):
-                    self.ledger.record_fill_on(
+                    fill_state = self.ledger.record_fill_on(
                         c, self.account_id, self.instrument_uid, trade_id=fill.trade_id,
                         client_order_id=client, broker_order_id=broker, side=result.side,
                         lots_count=fill.lots, price=_number(fill.price, positive=True),
                         executed_at=utc(fill.executed_at), spec=spec, price_type="POINT",
                         currency="RUB", metadata=terms,
                     )
+                    if self.notifications is not None and fill_state.get("status") == "RECORDED":
+                        # Match ledger chronology; a late earlier stage must not
+                        # borrow the position after a later execution.
+                        before = c.execute(
+                            f"SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN lots ELSE -lots END),0) AS n "
+                            f"FROM {FILLS} WHERE account_id=%s AND instrument_uid=%s "
+                            "AND (executed_at<%s OR (executed_at=%s AND trade_id COLLATE \"C\"<%s))",
+                            (self.account_id, self.instrument_uid, utc(fill.executed_at),
+                             utc(fill.executed_at), fill.trade_id)).fetchone()["n"]
+                        before = _integer(before)
+                        self.notifications.enqueue_on(
+                            c, proposal=proposal, fill=fill, before_signed_lots=before,
+                            after_signed_lots=before + (fill.lots if result.side == "BUY" else -fill.lots),
+                            fee_rub=None,
+                        )
                 # Stable observation IDs reuse their first observed timestamp;
                 # repeated polls cannot conflict merely because time advanced.
                 previous = c.execute(
@@ -658,6 +677,9 @@ class TradeHttpApplication:
                 self.funding.ensure_schema()
             if self.evidence is not None:
                 self.evidence.initialize()
+            notifications = getattr(self.facts, "notifications", None)
+            if notifications is not None:
+                notifications.ensure_schema()
             self._ready = True
 
     def _body(self, body):
@@ -889,11 +911,11 @@ class TradeHttpApplication:
             operation = path[len(PREFIX):]
             if operation not in {"status", "bind", "decision", "claim-delivery",
                                  "delivered", "delivery-unknown", "updates", "poll",
-                                 "settlement-observe", "settlement-attest", "admission-evidence",
+                                 "settlement-status", "settlement-observe", "settlement-attest", "admission-evidence",
                                  "prepare-reviewed"}:
                 raise ServiceError("TRADE_ENDPOINT_NOT_FOUND", 404)
             self._body(body)
-            if operation in {"bind", "decision", "settlement-observe", "settlement-attest",
+            if operation in {"bind", "decision", "settlement-status", "settlement-observe", "settlement-attest",
                              "admission-evidence", "prepare-reviewed"}:
                 self._private_owner(body)
             if operation == "delivered":
@@ -921,10 +943,14 @@ class TradeHttpApplication:
                         raise ServiceError("ADMISSION_EVIDENCE_SCOPE_MISMATCH", 403)
                     result = self.evidence.publish(payload, body.get("signature"))
                     return {"ok": True, "evidence": json_safe(result)}, 200
-                if operation in {"settlement-observe", "settlement-attest"}:
+                if operation in {"settlement-status", "settlement-observe", "settlement-attest"}:
                     if self.funding is None:
                         raise ServiceError("FUNDING_RECONCILER_NOT_CONFIGURED", 503)
-                    if operation == "settlement-observe":
+                    if operation == "settlement-status":
+                        # Report the current review API without equating owner
+                        # review with durable settlement accounting finality.
+                        result = self.funding.status(self.account_id, self.instrument_uid)
+                    elif operation == "settlement-observe":
                         result = self.funding.observe(
                             self.account_id, self.instrument_uid,
                             window_start=body.get("window_start"), window_end=body.get("window_end"))
@@ -1075,8 +1101,14 @@ def create_application(connect, summary_provider, *, configuration=None):
         enabled=True,
     )
     evidence = LiveAdmissionEvidenceRepository(ledger_connect, evidence_key)
+    notifications = BrokerNotificationOutbox(
+        connect=ledger_connect, account_id=account, instrument_uid=CNY_UID,
+        owner_user_id=owner.user_id, execution_environment=environment,
+        enabled=_enabled("VERITAS_CURRENCY_BROKER_NOTIFICATIONS_ENABLED"),
+    )
     facts = BrokerFactsProvider(adapter, ledger, account, CNY_UID, owner.user_id, ledger_connect,
-        read_connect=_environment_connect(connect, environment, create_schema=False), funding=funding)
+        read_connect=_environment_connect(connect, environment, create_schema=False), funding=funding,
+        notifications=notifications)
     coordinator = CurrencyTradingCoordinator(
         repository=repository, adapter=adapter, account_id=account, owner=owner,
         facts=facts, summary=summary_provider, ingest_execution=facts.ingest,
@@ -1113,9 +1145,55 @@ _CONFIG_NAMES = (
     "VERITAS_CURRENCY_TRADE_MARGIN_ALLOWED",
     "VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED",
     "VERITAS_CURRENCY_TRADE_STATEMENT_KEY", "VERITAS_CURRENCY_LIVE_EVIDENCE_KEY",
+    "VERITAS_CURRENCY_BROKER_NOTIFICATIONS_ENABLED",
 )
 _CACHE = {}
 _CACHE_LOCK = threading.RLock()
+_BROKER_ALERT_CACHE = {}
+_BROKER_ALERT_LOCK = threading.RLock()
+
+
+def handle_broker_alerts_request(path, body, headers, connect):
+    """Drain committed facts independently of proposal/execution enablement."""
+    try:
+        if (not isinstance(path, str) or not path.startswith(BROKER_ALERT_PREFIX)
+                or path[len(BROKER_ALERT_PREFIX):] not in ("claim", "begin", "complete", "status")):
+            return {"ok": False, "code": "BROKER_ALERT_ENDPOINT_NOT_FOUND"}, 404
+        if not _enabled("VERITAS_CURRENCY_BROKER_NOTIFICATIONS_ENABLED"):
+            return {"ok": True, "configured": False, "accounting_mode": "BROKER_ACTUAL_FILLS", "event": None}, 200
+        _authenticate(headers, _key_bytes(os.environ.get("VERITAS_CURRENCY_TRADE_SERVICE_KEY", "")))
+        if not isinstance(body, dict):
+            raise ServiceError("JSON_OBJECT_REQUIRED", 400)
+        # Resolve persisted console identity, with the same env conflict checks
+        # as proposals, but never construct a broker or the trading service.
+        values, binding = _configuration(connect)
+        account = _text(values.get("TBANK_ACCOUNT_ID", ""), "EXPLICIT_ACCOUNT_REQUIRED")
+        raw_owner = values.get("VERITAS_CURRENCY_TRADE_OWNER_USER_ID", "")
+        raw_bot = values.get("VERITAS_CURRENCY_TRADE_BOT_ID", "")
+        if not re.fullmatch(r"[1-9][0-9]{0,18}", raw_owner) or not re.fullmatch(r"[1-9][0-9]{0,18}", raw_bot):
+            raise ServiceError("EXPLICIT_TRADE_OWNER_CONFIGURATION_REQUIRED", 503)
+        owner, bot = _positive_id(int(raw_owner)), _positive_id(int(raw_bot))
+        if _positive_id(body.get("bot_id")) != bot:
+            raise ServiceError("TRADE_BOT_BINDING_MISMATCH", 403)
+        environment = values.get("VERITAS_CURRENCY_TRADE_ENVIRONMENT") or "production"
+        if not callable(connect) or environment not in _SCHEMAS:
+            raise ServiceError("INVALID_BROKER_ALERT_CONFIGURATION", 503)
+        digest = hashlib.sha256(json.dumps([values, binding], sort_keys=True, default=str).encode()).digest()
+        cache_key = (id(connect), digest)
+        with _BROKER_ALERT_LOCK:
+            outbox = _BROKER_ALERT_CACHE.get(cache_key)
+            if outbox is None:
+                outbox = BrokerNotificationOutbox(
+                    connect=_environment_connect(connect, environment), account_id=account,
+                    instrument_uid=CNY_UID, owner_user_id=owner,
+                    execution_environment=environment, enabled=True,
+                )
+                outbox.ensure_schema()
+                _BROKER_ALERT_CACHE.clear()
+                _BROKER_ALERT_CACHE[cache_key] = outbox
+        return outbox.handle(path, body)
+    except Exception as exc:
+        return _error(exc)
 
 
 def make_summary_provider(read_summary, lock):
@@ -1129,7 +1207,8 @@ def make_summary_provider(read_summary, lock):
 def reply_http(handler, connect, summary_provider, *, alert_handler):
     """Bounded internal Currency HTTP parsing outside the legacy monolith."""
     path = urlparse(handler.path).path
-    limit = 65536 if path in (PREFIX + "admission-evidence", PREFIX + "prepare-reviewed") else 8192
+    limit = 65536 if path in (PREFIX + "admission-evidence", PREFIX + "prepare-reviewed",
+                             PREFIX + "settlement-attest") else 8192
     try:
         length = int(handler.headers.get("Content-Length", "0") or 0)
         if length < 0 or length > limit:
@@ -1144,6 +1223,8 @@ def reply_http(handler, connect, summary_provider, *, alert_handler):
             result, code = handle_request(path, payload, handler.headers, connect, summary_provider)
         elif path.startswith("/internal/currency-alerts/"):
             result, code = alert_handler(path, payload, handler.headers, connect)
+        elif path.startswith(BROKER_ALERT_PREFIX):
+            result, code = handle_broker_alerts_request(path, payload, handler.headers, connect)
         else:
             result, code = {"ok": False, "code": "TRADE_ENDPOINT_NOT_FOUND"}, 404
     except Exception:

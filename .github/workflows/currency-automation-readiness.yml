@@ -1,0 +1,31 @@
+name: Currency automation readiness
+on:
+  pull_request:
+  push:
+    branches: [main, feature/currency-sandbox-readiness-20261007]
+permissions:
+  contents: read
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.3'
+      - name: Install existing test dependencies
+        run: pip install -r requirements-intelligence.txt
+      - name: Check sandbox boundary and public diagnostic server
+        run: python -m unittest -v test_veritas_currency_sandbox_probe test_veritas_currency_automation_report test_veritas_currency_automation_server
+      - name: Generate evidence with networking disabled
+        run: python tools/run_currency_automation_report.py --output-dir currency_automation_output --run-offline
+      - name: Preserve reviewable diagnostic artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: currency-automation-evidence
+          path: currency_automation_output/
+          if-no-files-found: error

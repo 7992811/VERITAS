@@ -562,7 +562,7 @@ def _reply(handler, body, code, headers=None, html=False):
 
 def dispatch(handler, connect, summary):
     path = urlsplit(handler.path).path
-    if path != PAGE and not path.startswith((API, INTERNAL, "/internal/currency-trading/")):
+    if path != PAGE and not path.startswith((API, INTERNAL, "/internal/currency-trading/", "/internal/currency-broker-alerts/")):
         return False
     if isinstance(summary, tuple) and len(summary) == 2:
         summary = summary_provider(*summary)
@@ -573,15 +573,19 @@ def dispatch(handler, connect, summary):
             return True
         length = int(handler.headers.get("Content-Length", "0"))
         limit = 65536 if path in ("/internal/currency-trading/admission-evidence",
-                                 "/internal/currency-trading/prepare-reviewed") else 8192
+                                 "/internal/currency-trading/prepare-reviewed",
+                                 "/internal/currency-trading/settlement-attest") else 8192
         if length < 0 or length > limit:
             raise ConsoleError("INVALID_BODY_SIZE", 400)
         body = json.loads(handler.rfile.read(length).decode()) if length else {}
-        if path.startswith("/internal/currency-trading/"):
+        if path.startswith(("/internal/currency-trading/", "/internal/currency-broker-alerts/")):
             if handler.command != "POST":
                 raise ConsoleError("METHOD_NOT_ALLOWED", 405)
-            from veritas_currency_trade_service import handle_request
-            result, status = handle_request(path, body, handler.headers, connect, summary)
+            from veritas_currency_trade_service import handle_request, handle_broker_alerts_request
+            if path.startswith("/internal/currency-broker-alerts/"):
+                result, status = handle_broker_alerts_request(path, body, handler.headers, connect)
+            else:
+                result, status = handle_request(path, body, handler.headers, connect, summary)
             _reply(handler, result, status)
             return True
         result, status, headers = handle(handler.command, path, body, handler.headers, connect, summary)
