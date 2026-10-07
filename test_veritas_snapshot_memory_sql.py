@@ -17,12 +17,30 @@ from types import SimpleNamespace
 import unittest
 import uuid
 
+import veritas_learning_memory as LM
 from test_veritas_trend_memory_sql import (
-    FrozenDatetime, NOW, ReadTrace, TracedConnection, TracedCursor, tail,
+    FrozenDatetime, NOW, ReadTrace, TracedConnection, TracedCursor, tail as _legacy_tail,
 )
 
 DSN = os.getenv("VERITAS_QUALITY_TEST_DSN", "")
 RUNTIME = Path(__file__).with_name("veritas_intelligence.py")
+
+# Frozen v9 projected SQL: independent of JsonbProjection and current builders.
+_V9_AMI_PROJECTED_SQL = r'''
+      SELECT d.event_ts,d.asset,d.horizon,CASE WHEN jsonb_typeof(d.payload)='object' AND d.payload<>'{}'::jsonb THEN jsonb_build_object('research_decision',d.payload->'research_decision','decision',d.payload->'decision','regime',d.payload->'regime','agents',CASE WHEN jsonb_typeof(d.payload->'agents')='array' THEN
+      (SELECT COALESCE(jsonb_agg(
+         CASE WHEN jsonb_typeof(a.value)='object' THEN
+           jsonb_build_object('direction',a.value->'direction','confidence',a.value->'confidence')
+         ELSE a.value END ORDER BY a.ordinality),'[]'::jsonb)
+       FROM jsonb_array_elements(d.payload->'agents') WITH ORDINALITY AS a(value,ordinality))
+      ELSE d.payload->'agents' END,'knowledge_cio_adjustment',CASE WHEN jsonb_typeof(d.payload->'knowledge_cio_adjustment')='object' AND d.payload->'knowledge_cio_adjustment'<>'{}'::jsonb THEN jsonb_build_object('score_with_experience',d.payload->'knowledge_cio_adjustment'->'score_with_experience','score',d.payload->'knowledge_cio_adjustment'->'score') ELSE d.payload->'knowledge_cio_adjustment' END,'knowledge_shadow_matches',(d.payload->'knowledge_shadow_matches') NOT IN
+      ('null'::jsonb,'false'::jsonb,'0'::jsonb,'""'::jsonb,'[]'::jsonb,'{}'::jsonb)) ELSE d.payload END AS dp,CASE WHEN jsonb_typeof(o.payload)='object' AND o.payload<>'{}'::jsonb THEN jsonb_build_object('forward_return',o.payload->'forward_return') ELSE o.payload END AS op
+      FROM ledger_events d
+      JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+      WHERE d.event_type='decision' AND o.payload ? 'forward_return'
+      ORDER BY d.event_ts DESC
+      LIMIT 2200
+    '''
 
 _LEGACY_SOURCE = r'''def pg_live_performance():
     if not pg_enabled():
@@ -229,12 +247,50 @@ def load_agent_reader(connect, *, legacy=False, limit=5000):
     return namespace["pg_agent_performance"]
 
 
+_RECORD_JOIN = re.compile(
+    r'''(?m)^[ \t]*CROSS JOIN LATERAL jsonb_to_record\(CASE WHEN jsonb_typeof\((?P<expr>[^\r\n]+?)\)='object' '''
+    r'''THEN (?P=expr) ELSE '\{\}'::jsonb END\) AS "memory_json_\d+"\('''
+    r'''"(?:[^"]|"")+" jsonb(?:,"(?:[^"]|"")+" jsonb)*\)[ \t]*\n?''')
+
+
+def without_projection_joins(sql):
+    # Ignore only complete generated record scans. Original relations, JOIN
+    # predicates, sampling windows, WHERE, ORDER BY and LIMIT still compare.
+    return _RECORD_JOIN.sub('', sql)
+
+
+def tail(sql):
+    return _legacy_tail(without_projection_joins(sql))
+
+
 def agent_query_contract(sql):
+    sql = without_projection_joins(sql)
     cte = re.search(r"WITH\s+recent_decisions\s+AS\s*\((.*?)\)\s*SELECT", sql, re.I|re.S)
     joined = re.search(r"\bFROM\s+recent_decisions\b.*", sql, re.I|re.S)
     if cte is None or joined is None:
         raise AssertionError("Agent reader lost its pre-JOIN decision window")
     return " ".join(cte.group(1).split()), " ".join(joined.group(0).split())
+
+
+def assert_record_plan(test, connection, sql, parameters, count, maximum_loops):
+    plan = connection.execute('EXPLAIN (ANALYZE,VERBOSE,FORMAT JSON) '+sql, parameters).fetchone()['QUERY PLAN'][0]['Plan']
+    pending, scans, retained = [plan], [], []
+    while pending:
+        node = pending.pop()
+        pending.extend(node.get('Plans', []))
+        if node.get('Node Type') == 'Function Scan' and node.get('Function Name') == 'jsonb_to_record':
+            scans.append(node)
+        if node.get('Node Type') in ('Sort', 'Incremental Sort'):
+            for output in node.get('Output', []):
+                match = re.fullmatch(r'"?(memory_json_\d+)"?\."?(agents|knowledge_cio_adjustment|knowledge_shadow_matches|features|trend_impulse|intraday_structure)"?',output.strip())
+                if match:
+                    retained.append('.'.join(match.groups()))
+    test.assertFalse(retained, 'Sort retains expanded JSON record columns: '+', '.join(sorted(set(retained))))
+    test.assertEqual(len(scans), count)
+    for node in scans:
+        test.assertEqual(node['Actual Rows'], 1)
+        test.assertGreater(node['Actual Loops'], 0)
+        test.assertLessEqual(node['Actual Loops'], maximum_loops)
 
 
 class AgentTracedCursor(TracedCursor):
@@ -527,6 +583,83 @@ class DriftRuleMemorySQLTests(_LedgerSQLFixture):
         self.assert_closed(trace)
 
 
+class ProjectedHelperRecordSQLTests(_LedgerSQLFixture):
+    def test_ami_exact_v9_projection_preserves_null_presence_and_nested_shapes(self):
+        missing = object()
+        matches = [missing, None, False, 0, '', [], {}, True, 'rule', {'rule':1}]
+        adjustments = [None, {}, False, 0, '', [], {'unrelated':1},
+                       {'score':0}, {'score':None}, {'score_with_experience':.125}]
+        for i, match in enumerate(matches):
+            dp = {'decision':'LONG', 'research_decision':'', 'regime':None,
+                  'agents':[{'direction':'LONG','confidence':0.,'unrelated':[1,2]}, None],
+                  'knowledge_cio_adjustment':adjustments[i]}
+            if match is not missing:
+                dp['knowledge_shadow_matches'] = match
+            self.episode(i, dp, {'forward_return':None if i%2 else 0.},
+                         asset='CASE_'+str(i), decision_ts=NOW+timedelta(seconds=i))
+        for i, dp in enumerate((None, False, [], 'encoded legacy payload', {}), start=20):
+            self.episode(i, dp, {'forward_return':.125},
+                         asset='CASE_'+str(i), decision_ts=NOW+timedelta(seconds=i))
+        # An explicit null forward return participates, an absent key does not.
+        self.episode('absent-outcome', {'decision':'LONG'}, {},
+                     decision_ts=NOW+timedelta(seconds=30))
+        self.save()
+        with self.connect() as c:
+            old = c.execute(_V9_AMI_PROJECTED_SQL).fetchall()
+            actual = LM.ami_decision_rows(c)
+        self.assertEqual(actual, old)
+        self.assertEqual(len(actual), 15)
+        by_asset = {row['asset']:row['dp'] for row in actual}
+        self.assertIsNone(by_asset['CASE_0']['knowledge_shadow_matches'])
+        self.assertIs(by_asset['CASE_1']['knowledge_shadow_matches'], False)
+        for i in range(2,7):
+            self.assertIs(by_asset['CASE_'+str(i)]['knowledge_shadow_matches'], False)
+        for i in range(7,10):
+            self.assertIs(by_asset['CASE_'+str(i)]['knowledge_shadow_matches'], True)
+
+    def test_toasted_histories_use_bounded_record_scans_without_changing_metrics(self):
+        heavy = 'UNUSED_HEAVY_FIELD:'*60000
+        for i in range(3):
+            dp = {'decision':'LONG' if i%2 else 'SHORT', 'regime':'REGIME_'+str(i),
+                  'confidence':.625, 'knowledge_shadow_matches':None,
+                  'knowledge_cio_adjustment':{'score':i/16, 'history':heavy},
+                  'agents':[{'agent':'A', 'direction':'LONG', 'confidence':.75,
+                             'history':heavy}], 'history':heavy}
+            op = {'forward_return':(i-1)/16, 'mfe':i/8, 'mae':-i/16, 'history':heavy}
+            self.episode(i, dp, op, decision_ts=NOW+timedelta(seconds=i))
+        self.save()
+        with self.connect() as c:
+            sizes = c.execute("""SELECT pg_column_size(payload) AS stored,
+                octet_length(payload::text) AS expanded FROM ledger_events""").fetchall()
+        self.assertTrue(all(r['expanded']>1_000_000 for r in sizes))
+        self.assertTrue(all(r['stored']<r['expanded']/8 for r in sizes))
+        for name, reader in (('live',load_reader), ('agent',load_agent_reader)):
+            with self.subTest(reader=name):
+                old_trace, trace = ReadTrace(self.connect), ReadTrace(self.connect)
+                old = reader(old_trace.connect, legacy=True)()
+                actual = reader(trace.connect)()
+                self.assertEqual(actual, old)
+                query = trace.queries[0]
+                self.assertEqual(query['rows'], 3)
+                self.assertFalse(query['heavy'])
+                self.assertLessEqual(query['sql'].count('d.payload'), 5)
+                self.assertLessEqual(query['sql'].count('o.payload'), 5)
+                self.assert_closed(trace)
+                with self.connect() as c:
+                    assert_record_plan(self,c,query['sql'],query['parameters'],1,3)
+        trace = ReadTrace(self.connect)
+        with trace.connect() as c:
+            actual = LM.ami_decision_rows(c)
+        query = trace.queries[0]
+        with self.connect() as c:
+            self.assertEqual(actual, c.execute(_V9_AMI_PROJECTED_SQL).fetchall())
+            assert_record_plan(self,c,query['sql'],query['parameters'],2,3)
+        self.assertFalse(query['heavy'])
+        self.assertEqual(query['rows'], 3)
+        self.assertLessEqual(query['sql'].count('sample.decision_payload'), 6)
+        self.assertLessEqual(query['sql'].count('sample.outcome_payload'), 4)
+
+
 class SnapshotMemorySQLTests(_LedgerSQLFixture):
     def test_all_history_over_2200_rows_full_metric_parity_and_large_payload_reduction(self):
         heavy = "UNUSED_HEAVY_FIELD:"*150
@@ -796,6 +929,187 @@ class AgentSnapshotMemorySQLTests(_LedgerSQLFixture):
         self.assertTrue(all(row["n"]==130 for row in result))
         self.assertEqual(trace.queries[1]["rows"], 130)
         self.assert_closed(trace)
+
+
+
+class LossAuditTracedCursor(TracedCursor):
+    def __init__(self, cursor, trace):
+        super().__init__(cursor,trace)
+        trace.cursors.append(self)
+
+    def stream(self, sql, parameters=None, *, size=1):
+        from contextlib import closing
+        self.chunk_size = size
+        self.record = {'sql':sql,'parameters':parameters,'server':False,'stream':True,
+                       'rows':0,'bytes':0,'keys':[],'heavy':False}
+        self.trace.queries.append(self.record)
+        with closing(self.cursor.stream(sql,parameters,size=size)) as rows:
+            for row in rows:
+                if self.trace.fail_after is not None and self.record['rows'] == self.trace.fail_after:
+                    raise RuntimeError('injected interrupted memory stream')
+                yield self.observe(row)
+
+    def observe(self, row):
+        result = super().observe(row)
+        self.record['keys'][-1] = row['trade_id']
+        return result
+
+
+class LossAuditTracedConnection(TracedConnection):
+    def cursor(self, *args, **kwargs):
+        if args or kwargs:
+            raise AssertionError('loss audit must keep the ordinary unnamed SELECT cursor')
+        return LossAuditTracedCursor(self.connection.cursor(), self.trace)
+
+
+class LossAuditReadTrace(ReadTrace):
+    @contextmanager
+    def connect(self):
+        with self.raw_connect() as c:
+            self.connections.append(c)
+            yield LossAuditTracedConnection(c, self)
+
+
+class LossAuditMemorySQLTests(_LedgerSQLFixture):
+    def report_diagnostic(self, actual, expected, original, delivered):
+        from test_veritas_trade_audit import LEGACY_AUDIT_SQL, legacy_analyze
+        expected_ids = [row['trade_id'] for row in original]
+        same_population = sorted(delivered) == sorted(expected_ids)
+        same_stream_report = False
+        if same_population:
+            by_id = {row['trade_id']:row for row in original}
+            same_stream_report = actual == legacy_analyze([by_id[key] for key in delivered])
+        if actual == expected and delivered == expected_ids:
+            self.assertTrue(same_stream_report)
+            return
+        differences = []
+        def compare(a, b, path='$'):
+            if len(differences) >= 12:
+                return
+            if isinstance(a,dict) and isinstance(b,dict):
+                for key in sorted(set(a) | set(b)):
+                    if key not in a or key not in b:
+                        differences.append({'path':path+'.'+key,'missing':'actual' if key not in a else 'expected'})
+                    else:
+                        compare(a[key],b[key],path+'.'+key)
+            elif isinstance(a,list) and isinstance(b,list):
+                if len(a) != len(b):
+                    differences.append({'path':path+'.length','actual':len(a),'expected':len(b)})
+                for i,(left,right) in enumerate(zip(a,b)):
+                    compare(left,right,path+'['+str(i)+']')
+            elif a != b:
+                differences.append({'path':path,'actual':repr(a)[:100],'expected':repr(b)[:100]})
+        compare(actual,expected)
+        named_ids = []
+        with self.connect() as c:
+            with c.transaction():
+                with c.cursor(name='loss_order_diagnostic') as rows:
+                    rows.itersize = 8
+                    rows.execute(LEGACY_AUDIT_SQL)
+                    for row in rows:
+                        named_ids.append(row['trade_id'])
+                        if len(named_ids) == 8:
+                            break
+        print('LOSS_AUDIT_PARITY '+json.dumps({
+            'same_population':same_population,'same_delivery':delivered==expected_ids,
+            'matches_frozen_reducer_in_stream_order':same_stream_report,
+            'expected_first_ids':expected_ids[:8],'actual_first_ids':delivered[:8],
+            'named_cursor_first_ids':named_ids,'first_differences':differences[:12]},default=str),flush=True)
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        with cls.driver.connect(DSN) as c:
+            c.execute(f"SET search_path TO {cls.schema}")
+            c.execute("""CREATE TABLE paper_trades(
+                trade_id text PRIMARY KEY,portfolio_name text,asset text,direction text,
+                horizon text,setup text,opened_at timestamptz,closed_at timestamptz,
+                gross_pnl_rub double precision,fees_rub double precision,
+                funding_rub double precision,net_pnl_rub double precision,status text,payload jsonb);
+              CREATE TABLE paper_orders(trade_id text,created_at timestamptz,
+                side text,notional_rub double precision,reason text)""")
+
+    def setUp(self):
+        super().setUp()
+        with self.connect() as c:
+            c.execute("TRUNCATE paper_trades,paper_orders")
+        from test_veritas_trade_audit import loss_audit_fixture
+        fixtures = loss_audit_fixture()
+        trades, orders = [], []
+        for i in range(728):
+            row = deepcopy(fixtures[i % len(fixtures)])
+            key = 'LOSS_'+str(i)
+            status = {0:'OPEN',1:'CLOSE',2:'EXITED',3:'OPEN'}.get(i % 11,'CLOSED')
+            closed = None if i % 11 in (0,1,2) else row.get('closed_at')
+            p = row.get('payload')
+            if i < 9 and isinstance(p,dict):
+                p['unused_full_history'] = 'UNUSED_HEAVY_FIELD:'*60000
+            trades.append((key,row.get('portfolio_name'),row.get('asset'),row.get('direction'),
+                row.get('horizon'),row.get('setup'),row.get('opened_at'),closed,
+                *(None if row.get(k) is None else float(row[k]) for k in
+                  ('gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub')),
+                status,json.dumps(p,default=str)))
+            if i % 7:
+                at = row['opened_at']
+                orders.append((key,at,'BUY',1000.,'ENTRY'))
+                orders.append((key,at+timedelta(seconds=60),'SELL',500.,'STOP'))
+                if i % 3 == 0:
+                    orders.append((key,at+timedelta(seconds=30),'SELL_SHORT',2000.,'ADD'))
+                if i % 2 == 0:
+                    orders.append((key,at+timedelta(seconds=120),'BUY_TO_COVER',1000.,'SIGNAL_FLIP'))
+        with self.connect() as c:
+            with c.transaction():
+                with c.cursor() as cursor:
+                    cursor.executemany("INSERT INTO paper_trades VALUES("+','.join(['%s']*13)+",%s::jsonb)",trades)
+                    cursor.executemany("INSERT INTO paper_orders VALUES(%s,%s,%s,%s,%s)",orders)
+
+    def test_all_closed_rows_full_proof_join_delivery_and_report_equal_frozen_query(self):
+        import hashlib
+        import veritas_trade_audit as audit
+        from test_veritas_trade_audit import LEGACY_AUDIT_SQL, legacy_analyze
+        with self.connect() as c:
+            original = c.execute(LEGACY_AUDIT_SQL).fetchall()
+        expected = legacy_analyze(original)
+        trace = LossAuditReadTrace(self.connect)
+        with trace.connect() as c:
+            actual = audit.audit_closed_trades(c)
+        self.report_diagnostic(actual,expected,original,trace.queries[0]['keys'])
+        self.assertEqual(actual,expected)
+        digest = lambda result: hashlib.sha256(json.dumps(result,sort_keys=True,default=str).encode()).hexdigest()
+        self.assertEqual(digest(actual),digest(expected))
+        query = trace.queries[0]
+        self.assertEqual(query['sql'],LEGACY_AUDIT_SQL)
+        self.assertEqual(query['keys'],[row['trade_id'] for row in original])
+        self.assertGreater(len(original),659)
+        self.assertEqual(query['rows'],len(original))
+        self.assertEqual(trace.cursors[0].chunk_size,8)
+        self.assertTrue(query['stream'])
+        self.assertFalse(query['server'])
+        self.assertTrue(query['heavy'])  # full proof reaches classification
+        self.assertNotIn('UNUSED_HEAVY_FIELD',json.dumps(actual,default=str))
+        self.assert_closed(trace)
+
+    def test_real_cursor_interruption_rolls_back_closes_and_allows_complete_retry(self):
+        import veritas_trade_audit as audit
+        from test_veritas_trade_audit import LEGACY_AUDIT_SQL, legacy_analyze
+        trace = LossAuditReadTrace(self.connect)
+        trace.fail_after = 9
+        with self.assertRaisesRegex(RuntimeError,'interrupted memory stream'):
+            with trace.connect() as c:
+                audit.audit_closed_trades(c)
+        self.assertEqual(trace.queries[0]['rows'],9)
+        self.assert_closed(trace)
+        trace.fail_after = None
+        with trace.connect() as c:
+            actual = audit.audit_closed_trades(c)
+        with self.connect() as c:
+            original = c.execute(LEGACY_AUDIT_SQL).fetchall()
+        expected = legacy_analyze(original)
+        self.report_diagnostic(actual,expected,original,trace.queries[-1]['keys'])
+        self.assertEqual(actual,expected)
+        self.assertEqual(trace.queries[-1]['keys'],[row['trade_id'] for row in original])
+        self.assert_closed(trace)
+
 
 
 if __name__ == "__main__":

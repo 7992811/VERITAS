@@ -1,10 +1,12 @@
 """Closed-journal SQL/UI parity with large durable evidence, without startup."""
 import ast
+import base64
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -19,6 +21,96 @@ from veritas_trade_journal_read_model import JOURNAL_PAYLOAD_SQL
 
 ROOT = Path(__file__).resolve().parent
 DSN = os.getenv('VERITAS_QUALITY_TEST_DSN', '')
+
+# Frozen v9 generator: independent constants and builders preserve the exact SQL
+# baseline, including absent-vs-null and malformed target/source semantics.
+_V9_JOURNAL_SOURCE = r'''"""Bounded SQL view of closed trades; full execution evidence stays in storage.
+
+The journal displays accounting columns plus the fields below. Its take-profit
+notice only distinguishes zero/one target from two or more, so two small target
+steps preserve that display without fetching historical event/proof graphs.
+Source identities remain available to inspect the recorded price basis.
+"""
+
+SCALAR_FIELDS = (
+    'exit_reason', 'close_reason', 'stop_price', 'last_stop_price', 'take_price',
+    'target_price', 'learning_label', 'opening_fraction', 'entry_signal_tier',
+    'signal_tier', 'structural_stop', 'initial_stop_price', 'r17_tp1_done',
+    'r17_tp1_at', 'last_target_kind', 'mfe_pct', 'mae_pct', 'capture_ratio',
+    'entry_primary_source', 'entry_secondary_source', 'entry_contract_secid',
+    'entry_contract_unit', 'entry_verification_mode', 'entry_data_latency_class',
+    'entry_source_divergence', 'entry_execution_observed_at',
+    'entry_market_observed_at', 'last_exit_market_observed_at',
+    'price_source_status', 'data_integrity_status',
+)
+IDENTITY_FIELDS = ('version', 'asset', 'key', 'primary_source', 'contract_id',
+                   'legacy_fixed_adapter')
+CONTRACT_FIELDS = ('secid', 'symbol', 'instrument_uid', 'ticker', 'figi', 'lot',
+                   'price_tick', 'tick_value_rub', 'price_unit',
+                   'broker_price_unit', 'normalization_factor', 'continuous')
+VALUATION_FIELDS = (
+    'version', 'asset', 'primary_source', 'source_key', 'contract_id',
+    'contract_identity_status', 'provider_label', 'provider_ticker',
+    'provider_instrument_id', 'provider_ticker_verified', 'price_field',
+    'quote_observed_at', 'exact_contract_verified', 'price_series_type',
+    'valuation_mode',
+)
+
+
+def _scalar(expression):
+    # Unexpected containers must not smuggle evidence graphs into a UI field.
+    return ("CASE WHEN jsonb_typeof(" + expression + ") IN ('array','object') "
+            "THEN 'null'::jsonb ELSE " + expression + " END")
+
+
+def _object(expression, fields=(), extra=None):
+    values = [(key, _scalar(expression + "->'" + key + "'")) for key in fields]
+    values.extend((extra or {}).items())
+    selected = ','.join("('" + key + "'," + value + ")" for key, value in values)
+    # Keep absence distinct from a recorded JSON null, notably unpinned Brent.
+    return ("(CASE WHEN jsonb_typeof(" + expression + ")='object' THEN "
+            "(SELECT COALESCE(jsonb_object_agg(journal_key,journal_value),'{}'::jsonb) "
+            "FROM (VALUES " + selected + ") AS journal_fields(journal_key,journal_value) "
+            "WHERE " + expression + " ? journal_key) ELSE 'null'::jsonb END)")
+
+
+def _ladder(expression):
+    step = _object('journal_step.value', ('price', 'kind'))
+    # Index two elements directly: never expand a potentially large JSON array.
+    return ("(CASE WHEN jsonb_typeof(" + expression + ")='array' THEN "
+            "(SELECT COALESCE(jsonb_agg(" + step + " ORDER BY journal_step.ordinality),'[]'::jsonb) "
+            "FROM (VALUES (1," + expression + "->0),(2," + expression + "->1)) "
+            "AS journal_step(ordinality,value) WHERE journal_step.ordinality<="
+            "jsonb_array_length(" + expression + ")) ELSE 'null'::jsonb END)")
+
+
+def _payload_sql():
+    nested = {key: _object("(payload->'" + key + "')", IDENTITY_FIELDS)
+              for key in ('price_source_lock', 'entry_execution_source_identity',
+                          'last_exit_source_identity')}
+    nested['contract_identity'] = _object("(payload->'contract_identity')", (
+        'asset', 'contract_id', 'price_unit', 'primary_source',
+        'verification_mode', 'continuous_series'))
+    nested['entry_contract'] = _object("(payload->'entry_contract')", CONTRACT_FIELDS)
+    nested['entry_source_names'] = _object("(payload->'entry_source_names')", ('primary', 'secondary'))
+    nested['entry_valuation_basis'] = _object("(payload->'entry_valuation_basis')", VALUATION_FIELDS)
+    nested['source_locked_mark'] = _object("(payload->'source_locked_mark')", ('price', 'observed_at'), {
+        'identity': _object("(payload#>'{source_locked_mark,identity}')", IDENTITY_FIELDS)})
+    for key in ('active_target_ladder', 'initial_target_ladder'):
+        nested[key] = _ladder("(payload->'" + key + "')")
+    for key in ('active_target_event_snapshot', 'entry_event_snapshot'):
+        nested[key] = _object("(payload->'" + key + "')", extra={
+            'target_ladder': _ladder("(payload#>'{" + key + ",target_ladder}')")})
+    return _object('payload', SCALAR_FIELDS, nested)
+
+
+JOURNAL_PAYLOAD_SQL = _payload_sql()
+'''
+_V9_JOURNAL_NAMESPACE = {}
+exec(compile(_V9_JOURNAL_SOURCE, '<frozen-v9-journal>', 'exec'), _V9_JOURNAL_NAMESPACE)
+V9_JOURNAL_PAYLOAD_SQL = _V9_JOURNAL_NAMESPACE['JOURNAL_PAYLOAD_SQL']
+
+
 
 
 @lru_cache(maxsize=1)
@@ -121,6 +213,10 @@ def trade_fixture(index=0, *, heavy=False):
 
 
 class JournalReaderTests(unittest.TestCase):
+    def test_frozen_projection_matches_the_deployed_v9_sql(self):
+        self.assertEqual(hashlib.sha256(V9_JOURNAL_PAYLOAD_SQL.encode()).hexdigest(),
+                         '11262df029bda262e535f7b61d3d43a4fbec0d6a02dabf4620f06bd91f388971')
+
     def test_fast_reader_uses_projection_and_keeps_closed_trade_accounting(self):
         row = trade_fixture(1)
         row['entry_notional_rub'] = 1500.0
@@ -198,13 +294,14 @@ class JournalProjectionSQLTests(unittest.TestCase):
             c.execute(f'DROP SCHEMA IF EXISTS {cls.schema} CASCADE')
 
     @contextmanager
-    def connect(self, *, legacy=False):
+    def connect(self, *, legacy=False, projection=None):
         with self.driver.connect(DSN, row_factory=self.row_factory) as connection:
             connection.execute(f'SET search_path TO {self.schema}')
-            if legacy:
+            if legacy or projection is not None:
                 class OriginalPayload:
                     def execute(self, query, parameters):
-                        query = query.replace(JOURNAL_PAYLOAD_SQL + ' AS payload', 'payload')
+                        replacement = 'payload' if legacy else projection + ' AS payload'
+                        query = query.replace(JOURNAL_PAYLOAD_SQL + ' AS payload', replacement)
                         return connection.execute(query, parameters)
                 yield OriginalPayload()
             else:
@@ -218,8 +315,10 @@ class JournalProjectionSQLTests(unittest.TestCase):
         before = self.payload_hashes()
         original = read_journal(lambda: self.connect(legacy=True))
         projected = read_journal(self.connect)
+        previous = read_journal(lambda: self.connect(projection=V9_JOURNAL_PAYLOAD_SQL))
         self.assertEqual(original['status'], 'OK', original)
         self.assertEqual(projected['status'], 'OK', projected)
+        self.assertEqual(projected, previous)
         old, new = original['trades'], projected['trades']
         self.assertEqual(len(old), 80)
         self.assertEqual(len(new), 80)
@@ -284,6 +383,112 @@ class JournalProjectionSQLTests(unittest.TestCase):
         self.assertNotIn('unexpected_history', projected['price_source_lock'])
         self.assertNotIn('UNUSED_HEAVY_FIELD', json.dumps(projected))
         self.assertLess(len(json.dumps(projected)), 7000)
+
+    def test_frozen_projection_preserves_absent_null_and_malformed_fields(self):
+        values = (None, False, 0, '', [], {}, [None, {}, {'price':None, 'kind':False}],
+                  {'history': ['UNUSED_HEAVY_FIELD']})
+        shapes = [None, False, 0, '', [], {}, {'unrequested':True}]
+        names = (*_V9_JOURNAL_NAMESPACE['SCALAR_FIELDS'], 'price_source_lock',
+                 'entry_execution_source_identity', 'last_exit_source_identity',
+                 'contract_identity', 'entry_contract', 'entry_source_names',
+                 'entry_valuation_basis', 'source_locked_mark', 'active_target_ladder',
+                 'initial_target_ladder', 'active_target_event_snapshot', 'entry_event_snapshot')
+        for name in names:
+            shapes.extend({name:value} for value in values)
+        for value in values:
+            shapes.extend(({'source_locked_mark':{'identity':value}},
+                           {'price_source_lock':{'contract_id':value}},
+                           {'entry_event_snapshot':{'target_ladder':value}},
+                           {'active_target_event_snapshot':{'target_ladder':value}}))
+        with self.connect() as c:
+            rows = c.execute('SELECT sample.ordinality, '+V9_JOURNAL_PAYLOAD_SQL+' AS previous, '
+                             +JOURNAL_PAYLOAD_SQL+' AS current FROM '
+                             'jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS sample(payload,ordinality) '
+                             'ORDER BY sample.ordinality', (json.dumps(shapes),)).fetchall()
+            self.assertEqual(len(rows), len(shapes))
+            for row in rows:
+                self.assertEqual(row['current'], row['previous'], row['ordinality'])
+            for sql in (V9_JOURNAL_PAYLOAD_SQL, JOURNAL_PAYLOAD_SQL):
+                row = c.execute('SELECT '+sql+' AS projected FROM '
+                                '(VALUES (NULL::jsonb)) AS sample(payload)').fetchone()
+                self.assertIsNone(row['projected'])
+
+    def test_record_and_presence_execute_once_per_toasted_selected_trade(self):
+        count, selected = 104, 100
+        with self.connect() as c:
+            # A connection-local fixture shadows the shared table. Its genuine
+            # low-compression TOAST totals about 5 MiB, not a production scan.
+            c.execute('CREATE TEMP TABLE paper_trades (LIKE '+self.schema+'.paper_trades)')
+            rows = []
+            for index in range(count):
+                row = trade_fixture(index)
+                def heavy(kind):
+                    blob = hashlib.shake_256(f'{kind}:{index}'.encode()).digest(12288)
+                    return 'UNUSED_HEAVY_FIELD:'+base64.b64encode(blob).decode('ascii')
+                p = row['payload']
+                p['diagnostic_history'] = heavy('root')
+                p['entry_event_snapshot']['diagnostic_history'] = heavy('event')
+                p['source_locked_mark']['diagnostic_history'] = heavy('mark')
+                rows.append((*list(row.values())[:-1], json.dumps(p)))
+            with c.cursor() as cursor:
+                cursor.executemany('INSERT INTO paper_trades VALUES('
+                                   +','.join(['%s']*18)+',%s::jsonb)', rows)
+            storage = dict(c.execute('''SELECT COUNT(*) AS n,
+                MIN(pg_column_size(payload)) AS min_stored_bytes,
+                MIN(octet_length(payload::text)) AS min_text_bytes,
+                MIN(pg_column_size(payload)::float8 / octet_length(payload::text)) AS min_ratio
+                FROM paper_trades''').fetchone())
+            storage['toast_bytes'] = c.execute("SELECT pg_relation_size(reltoastrelid) AS n "
+                "FROM pg_class WHERE oid='pg_temp.paper_trades'::regclass").fetchone()['n']
+            captured = []
+            class Capture:
+                def execute(self, query, parameters):
+                    captured.append((query, parameters))
+                    return c.execute(query, parameters)
+            @contextmanager
+            def connect():
+                yield Capture()
+            current = read_journal(connect, selected)
+            self.assertEqual(current['status'], 'OK', current)
+            self.assertEqual(current['returned_count'], selected)
+            query, parameters = captured[0]
+            previous_rows = c.execute(query.replace(JOURNAL_PAYLOAD_SQL,
+                                      V9_JOURNAL_PAYLOAD_SQL), parameters).fetchall()
+            self.assertEqual([r['trade_id'] for r in previous_rows],
+                             [r['trade_id'] for r in current['trades']])
+            for previous, actual in zip(previous_rows, current['trades']):
+                self.assertEqual(actual['trade_id'], previous['trade_id'])
+                self.assertEqual(actual['payload'], previous['payload'])
+            plan = c.execute('EXPLAIN (ANALYZE,VERBOSE,FORMAT JSON) '+query,
+                             parameters).fetchone()['QUERY PLAN'][0]['Plan']
+        self.assertEqual(storage['n'], count)
+        self.assertGreater(storage['min_text_bytes'], 49000)
+        self.assertGreater(storage['min_stored_bytes'], 24000)
+        self.assertGreater(storage['min_ratio'], .5)
+        self.assertGreater(storage['toast_bytes'], 0)
+        nodes, pending = [], [plan]
+        while pending:
+            node = pending.pop(); nodes.append(node); pending.extend(node.get('Plans', []))
+        scans = [n for n in nodes if n.get('Node Type') == 'Function Scan'
+                 and n.get('Function Name') in ('jsonb_to_record','jsonb_object_keys')]
+        sorts = [n for n in nodes if n.get('Node Type') in ('Sort','Incremental Sort')]
+        print('journal_record_plan '+json.dumps({'fixture':storage,
+            'scans':[{k:n.get(k) for k in ('Function Name','Actual Loops','Actual Rows')} for n in scans],
+            'sorts':[{'rows':n.get('Actual Rows'), 'width':n.get('Plan Width'),
+                      'output':[v if len(v)<100 else '<projected expression>' for v in n.get('Output', [])]}
+                     for n in sorts]}, sort_keys=True), flush=True)
+        self.assertEqual(sorted(n['Function Name'] for n in scans),
+                         ['jsonb_object_keys','jsonb_to_record'])
+        for node in scans:
+            self.assertEqual(node['Actual Loops'], selected)
+        record = next(n for n in scans if n['Function Name']=='jsonb_to_record')
+        self.assertEqual(record['Actual Rows'], 1)
+        self.assertTrue(sorts)
+        for node in sorts:
+            for value in node.get('Output', []):
+                # Raw toasted table payload is allowed. Root record columns
+                # must remain inside their per-trade scalar subquery.
+                self.assertFalse(value.replace('"','').strip().startswith('journal_root.'), value)
 
 
 if __name__ == '__main__':

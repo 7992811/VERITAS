@@ -2212,18 +2212,20 @@ def trend_case_learning_board(limit=500):
             z=trend_case_cache.get('value')
             if z and time.time()-float(trend_case_cache.get('at') or 0)<ANALYTICS_CACHE_SECONDS:
                 return z
+        from veritas_learning_memory import JsonbProjection
+        projection=JsonbProjection()
+        d=projection.fields('d.payload',('research_decision','decision','trend_impulse','features'))
+        o=projection.fields('o.payload',('forward_return','mfe','mae'))
+        features=projection.fields(d['features'],('trend_impulse',))
         def impulse(expr):
-            return _v90_jsonb_project_object(expr,{
-                key:f"({expr})->'{key}'" for key in
-                ('phase','direction','entry_quality','onset_score','impulse_score')})
+            return _v90_jsonb_project_object(expr,projection.fields(expr,
+                ('phase','direction','entry_quality','onset_score','impulse_score')))
         dp_sql=_v90_jsonb_project_object('d.payload',{
-            'research_decision':"d.payload->'research_decision'",
-            'decision':"d.payload->'decision'",
-            'trend_impulse':impulse("d.payload->'trend_impulse'"),
-            'features':_v90_jsonb_project_object("d.payload->'features'",{
-                'trend_impulse':impulse("d.payload#>'{features,trend_impulse}'")})})
-        op_sql=_v90_jsonb_project_object('o.payload',{
-            key:f"o.payload->'{key}'" for key in ('forward_return','mfe','mae')})
+            'research_decision':d['research_decision'],'decision':d['decision'],
+            'trend_impulse':impulse(d['trend_impulse']),
+            'features':_v90_jsonb_project_object(d['features'],{
+                'trend_impulse':impulse(features['trend_impulse'])})})
+        op_sql=_v90_jsonb_project_object('o.payload',o)
         # Preserve the complete ordered history. A server cursor bounds both
         # decoded Python rows and libpq results; autocommit needs a transaction.
         with pg_connect() as c:
@@ -2233,6 +2235,7 @@ def trend_case_learning_board(limit=500):
                     rows.execute(f"""
                       SELECT d.entity_key,d.asset,d.horizon,d.event_ts,{dp_sql} AS dp,{op_sql} AS outcome_payload
                       FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                      {projection.joins_sql}
                       WHERE d.event_type='decision'
                       ORDER BY d.asset,d.horizon,d.event_ts ASC
                     """)
@@ -7496,6 +7499,9 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
         market_bundles.clear()
     except Exception:
         pass
+    fresh_summary=_carry=_merged=_prev_summary=_x=portfolio_autopilot=state=None
+    perf=calibration_rows=analog_board=_market_future=_warm_knowledge=_warm_memory=None
+    v70_pretrade=institutional_signal=experience_decision=setup_memory=tradeability=knowledge_arbitration=knowledge_adjustment=kmatches=orth_evidence=None
     _v90_trim_memory('cycle_end',force=True)
     emit('cycle_complete', decisions_written=made, outcomes_written=outcomes, status=status,
          durable_storage=storage.get('ok', False),**telemetry)
@@ -8063,26 +8069,31 @@ def structure_analog_board(limit=1200, force_refresh=False):
                 return cached
     # Keep the same observations and reduction, but do not transfer/decode
     # complete archived decisions and histories for a few structure labels.
+    from veritas_learning_memory import JsonbProjection
+    projection=JsonbProjection()
+    d=projection.fields('sample.decision_payload',('research_decision','trend_impulse','features'))
+    features=projection.fields(d['features'],('trend_impulse','intraday_structure'))
     def structure(expr):
-        return _v90_jsonb_project_object(expr,{
-            'lifecycle':f"({expr})->'lifecycle'",
-            'entry_quality':f"({expr})->'entry_quality'"})
+        return _v90_jsonb_project_object(expr,projection.fields(expr,('lifecycle','entry_quality')))
     def impulse(expr):
+        fields=projection.fields(expr,('direction','entry_quality','intraday_structure'))
         return _v90_jsonb_project_object(expr,{
-            'direction':f"({expr})->'direction'",
-            'entry_quality':f"({expr})->'entry_quality'",
-            'intraday_structure':structure(f"({expr})->'intraday_structure'")})
-    dp=_v90_jsonb_project_object('d.payload',{
-        'research_decision':"d.payload->'research_decision'",
-        'trend_impulse':impulse("d.payload->'trend_impulse'"),
-        'features':_v90_jsonb_project_object("d.payload->'features'",{
-            'trend_impulse':impulse("d.payload#>'{features,trend_impulse}'"),
-            'intraday_structure':structure("d.payload#>'{features,intraday_structure}'")})})
-    op=_v90_jsonb_project_object('o.payload',{'forward_return':"o.payload->'forward_return'"})
+            'direction':fields['direction'],'entry_quality':fields['entry_quality'],
+            'intraday_structure':structure(fields['intraday_structure'])})
+    dp=_v90_jsonb_project_object('sample.decision_payload',{
+        'research_decision':d['research_decision'],'trend_impulse':impulse(d['trend_impulse']),
+        'features':_v90_jsonb_project_object(d['features'],{
+            'trend_impulse':impulse(features['trend_impulse']),
+            'intraday_structure':structure(features['intraday_structure'])})})
+    op=_v90_jsonb_project_object('sample.outcome_payload',{'forward_return':"sample.outcome_payload->'forward_return'"})
     with pg_connect() as c:
-        rows=c.execute(f"""SELECT d.asset,d.horizon,{dp} dp,{op} op
-                          FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
-                          WHERE d.event_type='decision' ORDER BY d.event_ts DESC LIMIT %s""",(lim,)).fetchall()
+        rows=c.execute(f"""SELECT sample.asset,sample.horizon,{dp} dp,{op} op
+                          FROM (SELECT d.asset,d.horizon,d.event_ts,
+                                d.payload AS decision_payload,o.payload AS outcome_payload
+                                FROM ledger_events d JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+                                WHERE d.event_type='decision' ORDER BY d.event_ts DESC LIMIT %s) sample
+                          {projection.joins_sql}
+                          ORDER BY sample.event_ts DESC""",(lim,)).fetchall()
     b={}
     for r in rows:
         dp=r['dp'] if isinstance(r['dp'],dict) else json.loads(r['dp']); op=r['op'] if isinstance(r['op'],dict) else json.loads(r['op'])
@@ -8137,34 +8148,31 @@ def _decision_memory_rows(force=False):
     cache=getattr(_decision_memory_rows,'_cache',None)
     if cache and not force and time.time()-cache[0] < DECISION_MEMORY_CACHE_SECONDS:
         return cache[1]
-    sql="""WITH recent_decisions AS (
+    from veritas_learning_memory import JsonbProjection
+    projection=JsonbProjection()
+    d=projection.fields('d.payload',('research_decision','decision','confidence','features'))
+    feature_names=('ret_4h','ret_24h','trend','momentum','rv','relative_volume',
+        'session_efficiency','session_persistence','intraday_structure_score',
+        'trend_onset_score','impulse_score','near_ath','breakout_hold','expected_move_pct')
+    features=projection.fields(d['features'],(*feature_names,'regime'))
+    o=projection.fields('o.payload',('forward_return','mfe','mae'))
+    as_text=lambda expr:f"({expr})#>>'{{}}'"
+    as_number=lambda expr:f"NULLIF({as_text(expr)},'')::double precision"
+    aliases={'intraday_structure_score':'structure_score','trend_onset_score':'onset_score'}
+    columns=[f"COALESCE({as_text(d['research_decision'])},{as_text(d['decision'])},'NO_TRADE') research_decision",
+             f"{as_number(d['confidence'])} confidence"]
+    columns.extend(f"{as_number(features[key])} {aliases.get(key,key)}" for key in feature_names)
+    columns.append(f"{as_text(features['regime'])} regime")
+    columns.extend(f"{as_number(o[key])} {key}" for key in ('forward_return','mfe','mae'))
+    sql=f"""WITH recent_decisions AS (
       SELECT entity_key,event_ts,asset,horizon,payload
       FROM ledger_events WHERE event_type='decision'
       ORDER BY event_ts DESC LIMIT %s
     )
-    SELECT d.entity_key,d.event_ts,d.asset,d.horizon,
-      COALESCE(d.payload->>'research_decision',d.payload->>'decision','NO_TRADE') research_decision,
-      NULLIF(d.payload->>'confidence','')::double precision confidence,
-      NULLIF(d.payload#>>'{features,ret_4h}','')::double precision ret_4h,
-      NULLIF(d.payload#>>'{features,ret_24h}','')::double precision ret_24h,
-      NULLIF(d.payload#>>'{features,trend}','')::double precision trend,
-      NULLIF(d.payload#>>'{features,momentum}','')::double precision momentum,
-      NULLIF(d.payload#>>'{features,rv}','')::double precision rv,
-      NULLIF(d.payload#>>'{features,relative_volume}','')::double precision relative_volume,
-      NULLIF(d.payload#>>'{features,session_efficiency}','')::double precision session_efficiency,
-      NULLIF(d.payload#>>'{features,session_persistence}','')::double precision session_persistence,
-      NULLIF(d.payload#>>'{features,intraday_structure_score}','')::double precision structure_score,
-      NULLIF(d.payload#>>'{features,trend_onset_score}','')::double precision onset_score,
-      NULLIF(d.payload#>>'{features,impulse_score}','')::double precision impulse_score,
-      NULLIF(d.payload#>>'{features,near_ath}','')::double precision near_ath,
-      NULLIF(d.payload#>>'{features,breakout_hold}','')::double precision breakout_hold,
-      NULLIF(d.payload#>>'{features,expected_move_pct}','')::double precision expected_move_pct,
-      d.payload#>>'{features,regime}' regime,
-      NULLIF(o.payload->>'forward_return','')::double precision forward_return,
-      NULLIF(o.payload->>'mfe','')::double precision mfe,
-      NULLIF(o.payload->>'mae','')::double precision mae
+    SELECT d.entity_key,d.event_ts,d.asset,d.horizon,{','.join(columns)}
     FROM recent_decisions d
     JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+    {projection.joins_sql}
     WHERE o.payload ? 'forward_return'
     ORDER BY d.event_ts DESC"""
     try:

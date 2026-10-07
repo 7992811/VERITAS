@@ -1,10 +1,13 @@
 """An assessed exit books the selected source/quote and exactly its closed units."""
+import ast
 import copy
+import inspect
 import json
 import unittest
 import weakref
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import veritas_costs as VC
@@ -362,6 +365,178 @@ class ExitSnapshotTests(unittest.TestCase):
                     after['booked_cycle_net_pnl_rub']+after['remaining_net_before_paid_cycle_costs_rub'])
                 for cache in (G._quotes,G._source_quotes,G._market_state):
                     cache.clear()
+
+
+class ProtectiveLoopLifetimeTests(unittest.TestCase):
+    """Run the actual nested loop without starting a thread or a live reader."""
+
+    def run_loop(self, *, release=True, assets=('ETH',), changed=False,
+                 failure=None, iterations=1):
+        start=ast.parse(inspect.getsource(G.start)).body[0]
+        loop=next(node for node in start.body
+                  if isinstance(node,ast.FunctionDef) and node.name=='loop')
+        if not release:
+            # Negative control removes only the two lifetime releases. SQL,
+            # quote preparation, counts, status and invalidation stay identical.
+            class RetainOriginalSnapshots(ast.NodeTransformer):
+                removed=0
+                def visit_Assign(self,node):
+                    names={item.id for item in node.targets if isinstance(item,ast.Name)}
+                    if (isinstance(node.value,ast.Constant) and node.value.value is None
+                            and names in ({'positions','z'},{'positions','z','c','q'})):
+                        self.removed+=1
+                        return ast.copy_location(ast.Pass(),node)
+                    return node
+            rewrite=RetainOriginalSnapshots()
+            loop=rewrite.visit(loop)
+            self.assertEqual(rewrite.removed,2)
+
+        class WatchedPayload(dict):
+            __slots__=('__weakref__',)
+        class FinishedLoop(BaseException):
+            pass
+
+        refs=[]; connections=[]; reads=[]; passes=[]; sleeps=[]; events=[]; logs=[]
+        moment=datetime(2026,10,7,15,0,tzinfo=timezone.utc)
+        state={'status':'STARTING','interval_seconds':15,'last_changes':[{'previous':True}]}
+        def alive():
+            return sum(ref() is not None for ref in refs)
+        def fail(stage):
+            if failure==stage:
+                raise RuntimeError('fixture '+stage)
+
+        class Connection:
+            def __enter__(self):
+                events.append(('connection_enter',))
+                return self
+            def __exit__(self,*unused):
+                events.append(('connection_closed',))
+            def execute(self,sql):
+                events.append(('sql',sql))
+                return self
+            def fetchall(self):
+                rows=[]
+                for asset in assets:
+                    graph=WatchedPayload(history=[{'close':101.0}],source='original-proof')
+                    payload=WatchedPayload(entry_decision_snapshot=graph)
+                    refs.extend((weakref.ref(graph),weakref.ref(payload)))
+                    rows.append({'asset':asset,'units':10.0,'payload':payload,
+                                 'active_trade_id':None if asset=='NQ' else 'trade-'+asset})
+                fail('read')
+                return rows
+        def connect():
+            reads.append(alive())
+            connection=Connection()
+            connections.append(weakref.ref(connection))
+            return connection
+        def refresh(ns,positions):
+            events.append(('refresh',tuple((z['asset'],z['units']) for z in positions)))
+            self.assertGreaterEqual(alive(),2*len(assets))
+            for z in positions:
+                self.assertEqual(z['payload']['entry_decision_snapshot']['source'],'original-proof')
+            fail('refresh')
+        selected={'asset':'ETH','price':101.0,'observed_at':moment.isoformat(),
+                  'source_names':{'primary':'Binance spot'},'source_gate_pass':True}
+        def quote(position):
+            events.append(('quote',position['asset']))
+            fail('quote')
+            return copy.deepcopy(selected) if position['asset']=='ETH' else {}
+        book=object()
+        changes=[{'portfolio':'Champion','asset':'ETH','reason':'existing-protective-result'}]
+        def protective(vp,pg_connect,quotes):
+            self.assertIs(vp,book)
+            self.assertIs(pg_connect,connect)
+            passes.append(alive())
+            events.append(('protective',copy.deepcopy(quotes)))
+            fail('protective')
+            return copy.deepcopy(changes) if changed else []
+        def emit(event,**fields):
+            logs.append((event,copy.deepcopy(fields)))
+        def sleep(seconds):
+            sleeps.append((alive(),sum(ref() is not None for ref in connections),seconds))
+            if len(sleeps)>=iterations:
+                raise FinishedLoop()
+        class Clock:
+            @classmethod
+            def now(cls,tz):
+                return moment
+        ns={'VP':book,'pg_connect':connect,'emit':emit,
+            '_v90r25_pf_lock':nullcontext(),'lock':nullcontext(),
+            '_v90r23_trade_lock':nullcontext(),
+            '_v90r25_pf_cache':{'at':55.0,'value':{'preserve':'positions'},'revision':7},
+            '_v90r23_trade_cache':{'at':44.0,'value':{'preserve':'trades'}},
+            'last_cycle':{'portfolio_autopilot':{'preserve':'live'},'other':'keep'}}
+        environment={'ns':ns,'_state':state,'snapshot':lambda:dict(state),
+            'time':SimpleNamespace(monotonic=lambda:100.0,sleep=sleep),
+            'datetime':Clock,'timezone':timezone,'refresh_position_quotes':refresh,
+            'quote_for_position':quote,'run_protective_pass':protective,
+            'market_state':lambda asset:{'market_open':asset!='BTC'},
+            'expected_exchange_session_open':lambda asset,now:asset!='GOLD'}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[loop],type_ignores=[])),
+                     G.__file__,'exec'),environment)
+        with self.assertRaises(FinishedLoop):
+            environment['loop']()
+        return {'reads':reads,'passes':passes,'sleeps':sleeps,'events':events,'logs':logs,
+                'state':state,'portfolio_cache':ns['_v90r25_pf_cache'],
+                'trade_cache':ns['_v90r23_trade_cache'],'last_cycle':ns['last_cycle']}
+
+    def assert_behavior_unchanged(self,old,new):
+        for field in ('events','logs','state','portfolio_cache','trade_cache','last_cycle'):
+            self.assertEqual(new[field],old[field],field)
+        self.assertTrue(all(live==0 for live in new['passes']))
+        self.assertTrue(all(live==0 and connections==0 and seconds==15.0
+                            for live,connections,seconds in new['sleeps']))
+
+    def test_completed_quote_book_is_released_before_locked_pass_with_same_status_and_quotes(self):
+        for assets,changed,status in ((('ETH',),False,'OK'),(('ETH',),True,'OK'),
+                (('ETH','BTC','GOLD','NQ'),False,'DEGRADED'),
+                (('BTC','GOLD'),False,'PAUSED_MARKET_CLOSED'),((),False,'OK')):
+            with self.subTest(assets=assets,changed=changed):
+                old=self.run_loop(release=False,assets=assets,changed=changed)
+                new=self.run_loop(assets=assets,changed=changed)
+                self.assert_behavior_unchanged(old,new)
+                self.assertEqual(new['state']['status'],status)
+                self.assertEqual(new['state']['open_positions'],len(assets))
+                self.assertEqual(new['state']['quotes'],int('ETH' in assets))
+                if assets:
+                    self.assertEqual(old['passes'],[2*len(assets)])
+                    self.assertEqual(old['sleeps'][0][0],2*len(assets))
+                else:
+                    self.assertEqual(new['passes'],[])
+                if changed:
+                    self.assertEqual(new['portfolio_cache'],{'at':0.0,'value':None,'revision':7})
+                    self.assertEqual(new['trade_cache'],{'at':0.0,'value':None})
+                    self.assertEqual(new['last_cycle'],{'portfolio_autopilot':{},'other':'keep'})
+                    self.assertEqual(new['state']['last_changes'][0]['reason'],'existing-protective-result')
+                else:
+                    self.assertEqual(new['portfolio_cache']['at'],55.0)
+                    self.assertEqual(new['state']['last_changes'],[{'previous':True}])
+                if status=='DEGRADED':
+                    self.assertEqual(new['state']['errors'],{'NQ':'PINNED_SOURCE_QUOTE_UNAVAILABLE'})
+                    self.assertEqual(new['state']['paused'],
+                                     {'trade-BTC':'MARKET_CLOSED','trade-GOLD':'MARKET_CLOSED'})
+
+    def test_errors_release_full_book_and_closed_connection_before_sleep(self):
+        for failure in ('read','refresh','quote','protective'):
+            with self.subTest(failure=failure):
+                old=self.run_loop(release=False,failure=failure)
+                new=self.run_loop(failure=failure)
+                self.assert_behavior_unchanged(old,new)
+                self.assertEqual(new['state']['status'],'ERROR')
+                self.assertEqual(new['state']['error'],'RuntimeError: fixture '+failure)
+                self.assertEqual(new['logs'][0][0],'paper_protective_guard_error')
+                self.assertEqual(old['sleeps'][0][1],1)
+                if failure!='read':
+                    self.assertEqual(old['sleeps'][0][0],2)
+
+    def test_finished_iteration_cannot_retain_previous_book_during_next_read(self):
+        old=self.run_loop(release=False,iterations=2)
+        new=self.run_loop(iterations=2)
+        self.assert_behavior_unchanged(old,new)
+        self.assertEqual(old['reads'],[0,2])
+        self.assertEqual(new['reads'],[0,0])
+        self.assertEqual(old['passes'],[2,2])
+        self.assertEqual(new['passes'],[0,0])
 
 
 if __name__=='__main__':

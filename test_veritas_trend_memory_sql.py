@@ -5,11 +5,13 @@ loaded as AST; service imports, market providers and trading loops never run.
 The trend reducer below is frozen from 539ac490 before its streaming rewrite.
 """
 import ast
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -142,11 +144,80 @@ def load_ami(*, legacy=False):
     return ns
 
 
+_RECORD_JOIN = re.compile(
+    r'''(?m)^[ \t]*CROSS JOIN LATERAL jsonb_to_record\(CASE WHEN jsonb_typeof\((?P<expr>[^\r\n]+?)\)='object' '''
+    r'''THEN (?P=expr) ELSE '\{\}'::jsonb END\) AS "memory_json_\d+"\('''
+    r'''"(?:[^"]|"")+" jsonb(?:,"(?:[^"]|"")+" jsonb)*\)[ \t]*\n?''')
+
+
+def without_projection_joins(sql):
+    # Remove only the builder's complete, guarded, jsonb-typed record scans.
+    # The original relation, JOIN predicate, filters, order and limits remain.
+    return _RECORD_JOIN.sub('', sql)
+
+
 def tail(sql):
+    sql = without_projection_joins(sql)
     match = re.search(r"\bFROM\s+ledger_events\b", sql, re.I)
     if match is None:
         raise AssertionError("Unexpected memory reader relation")
     return " ".join(sql[match.start():].split())
+
+
+def sampled_ami_tail(sql):
+    # Only the original raw-row sample may move below the record scans. Keep
+    # every join/filter/window clause and require explicit final row ordering.
+    sampled = re.search(
+        r"\bFROM\s*\(\s*SELECT\s+d\.event_ts\s*,\s*d\.asset\s*,\s*d\.horizon\s*,"
+        r"\s*d\.payload\s+AS\s+decision_payload\s*,\s*o\.payload\s+AS\s+outcome_payload\s*"
+        r"(?P<inner>FROM\s+ledger_events\b.*?)\)\s+AS\s+sample\s+"
+        r"ORDER\s+BY\s+sample\.event_ts\s+DESC\s*$",
+        without_projection_joins(sql), re.I | re.S)
+    if sampled is None:
+        raise AssertionError("AMI lost its raw-row sample or final descending order")
+    return " ".join(sampled.group("inner").split())
+
+
+class ProjectionJoinContractTests(unittest.TestCase):
+    def test_ami_samples_original_joined_rows_before_record_projection(self):
+        class Capture:
+            def execute(self, sql):
+                self.sql = sql
+                return self
+
+            def fetchall(self):
+                return []
+
+        capture = Capture()
+        self.assertEqual(ami_decision_rows(capture), [])
+        query = capture.sql
+        self.assertEqual(sampled_ami_tail(query), tail(LEGACY_AMI_QUERY))
+        sample_end = query.index(") AS sample")
+        joins = list(_RECORD_JOIN.finditer(query))
+        self.assertEqual(len(joins), 2)
+        self.assertTrue(all(join.start() > sample_end for join in joins))
+        self.assertNotEqual(sampled_ami_tail(query.replace("LIMIT 2200", "LIMIT 2000")),
+                            tail(LEGACY_AMI_QUERY))
+        with self.assertRaisesRegex(AssertionError, "final descending order"):
+            sampled_ami_tail(query.replace("ORDER BY sample.event_ts DESC", "ORDER BY sample.event_ts ASC"))
+
+    def test_tail_removes_only_the_complete_guarded_record_joins(self):
+        from veritas_learning_memory import JsonbProjection
+        projection = JsonbProjection()
+        fields = projection.fields("d.payload", ("features", "trend_impulse"))
+        projection.fields(fields["features"], ("trend_impulse",))
+        original = """SELECT d.entity_key FROM ledger_events d
+          JOIN ledger_events o ON o.entity_key=d.entity_key AND o.event_type='outcome'
+          WHERE d.event_type='decision' ORDER BY d.event_ts ASC LIMIT 500"""
+        projected = original.replace("          WHERE", projection.joins_sql+"\n          WHERE")
+        self.assertEqual(tail(projected), tail(original))
+        mutations = (("LIMIT 500", "LIMIT 1"), ("d.event_ts ASC", "d.event_ts DESC"),
+                     ("o.entity_key=d.entity_key", "o.entity_key<>d.entity_key"),
+                     ("d.event_type='decision'", "d.event_type<>'decision'"),
+                     ("THEN d.payload", "THEN o.payload"), ("\"features\" jsonb", "\"features\" text"))
+        for before, after in mutations:
+            with self.subTest(change=after):
+                self.assertNotEqual(tail(projected.replace(before, after)), tail(original))
 
 
 class ReadTrace:
@@ -356,6 +427,8 @@ class TrendMemorySQLTests(unittest.TestCase):
             {"trend_impulse":{}, "features":{"trend_impulse":nested}},
             {"trend_impulse":None, "features":{"trend_impulse":nested}},
             {"trend_impulse":False, "features":{"trend_impulse":nested}},
+            {"trend_impulse":0, "features":{"trend_impulse":nested}},
+            {"trend_impulse":"", "features":{"trend_impulse":nested}},
             {"trend_impulse":[], "features":{"trend_impulse":nested}},
             {"trend_impulse":{"unrelated":1}, "features":{"trend_impulse":nested}},
             self.decision("TREND_DAY","SHORT"),
@@ -379,6 +452,112 @@ class TrendMemorySQLTests(unittest.TestCase):
         self.assertFalse(trace.queries[0]["heavy"])
         self.assertGreater(old_trace.queries[0]["bytes"], 1_000_000)
         self.assertLess(trace.queries[0]["bytes"], old_trace.queries[0]["bytes"]*.10)
+
+    def test_large_toasted_history_matches_legacy_and_does_not_sort_expanded_graphs(self):
+        count = 528  # More than the legacy public limit; every row is an episode.
+        def heavy(kind, index):
+            raw = hashlib.shake_256(f"{kind}:{index}".encode()).digest(12288)
+            return "UNUSED_HEAVY_FIELD:" + base64.b64encode(raw).decode("ascii")
+        expected_keys = []
+        for i in range(count):
+            dp = self.decision(quality="large-"+str(i))
+            dp["diagnostic_history"] = heavy("root", i)
+            dp["trend_impulse"]["diagnostic_history"] = heavy("top-trend", i)
+            nested = self.decision("TREND_DAY", "SHORT", "nested-"+str(i))["trend_impulse"]
+            nested["diagnostic_history"] = heavy("nested-trend", i)
+            dp["features"] = {"trend_impulse":nested, "diagnostic_history":heavy("features", i)}
+            op = {"forward_return":.01 if i % 4 else -.005,
+                  "mfe":.02, "mae":-.01, "diagnostic_history":heavy("outcome", i)}
+            key = "large"+str(i)
+            self.episode(key, i*3601, dp, op)
+            expected_keys.append((key, "ETH", "1h", self.start+timedelta(seconds=i*3601)))
+            if (i+1) % 64 == 0:
+                self.save()  # Bound the fixture writer's pending JSON strings.
+        self.save()
+        with self.connect() as c:
+            storage = dict(c.execute("""SELECT COUNT(*) AS n,
+              MIN(pg_column_size(payload)) AS min_stored_bytes,
+              MIN(octet_length(payload::text)) AS min_text_bytes,
+              MIN(pg_column_size(payload)::float8 / octet_length(payload::text)) AS min_storage_ratio,
+              MIN(octet_length((payload->'features')::text)) AS min_features_bytes,
+              MIN(octet_length((payload#>'{features,trend_impulse}')::text)) AS min_nested_bytes
+              FROM ledger_events WHERE event_type='decision'""").fetchone())
+            storage["toast_relation_bytes"] = c.execute("""SELECT pg_relation_size(reltoastrelid) AS n
+              FROM pg_class WHERE oid='ledger_events'::regclass""").fetchone()["n"]
+        self.assertEqual(storage["n"], count)
+        self.assertGreater(storage["min_text_bytes"], 64000)
+        self.assertGreater(storage["min_stored_bytes"], 32000)
+        self.assertGreater(storage["min_storage_ratio"], .5)
+        self.assertGreater(storage["min_features_bytes"], 32000)
+        self.assertGreater(storage["min_nested_bytes"], 16000)
+        self.assertGreater(storage["toast_relation_bytes"], 0)
+        old, old_trace = self.run_trend(legacy=True)
+        actual, trace = self.run_trend(limit=1)
+        self.assertEqual(actual, old)
+        self.assertEqual(trace.queries[0]["keys"], expected_keys)
+        self.assertEqual(trace.queries[0]["keys"], old_trace.queries[0]["keys"])
+        self.assertEqual(tail(trace.queries[0]["sql"]), tail(old_trace.queries[0]["sql"]))
+        self.assertEqual(trace.queries[0]["rows"], count)
+        self.assertEqual(actual["items"][0]["n"], count)
+        self.assertEqual([x["entry_quality"] for x in actual["recent_episodes"]],
+                         ["large-"+str(i) for i in range(40)])
+        self.assertGreater(old_trace.queries[0]["bytes"], 30*1024*1024)
+        self.assertFalse(trace.queries[0]["heavy"])
+        self.assertLess(trace.queries[0]["bytes"], old_trace.queries[0]["bytes"]*.02)
+        self.assertEqual(trace.cursors[0].itersize, 64)
+        self.assertTrue(all(cursor.cursor.closed for cursor in trace.cursors))
+        self.assertTrue(all(c.closed for c in trace.connections))
+        self.assertEqual(trace.transactions, 0)
+        with self.connect() as c:
+            plan = c.execute("EXPLAIN (ANALYZE,VERBOSE,FORMAT JSON) "+trace.queries[0]["sql"]).fetchone()["QUERY PLAN"][0]["Plan"]
+        nodes, pending = [], [plan]
+        while pending:
+            node = pending.pop(); nodes.append(node); pending.extend(node.get("Plans", []))
+        scans = [node for node in nodes if node.get("Node Type") == "Function Scan"
+                 and node.get("Function Name") == "jsonb_to_record"]
+        sorts = [node for node in nodes if node.get("Node Type") in ("Sort", "Incremental Sort")]
+        diagnostic = {"fixture":storage, "selected_rows":count,
+            "record_scans":[{k:n.get(k) for k in ("Alias", "Actual Loops", "Actual Rows")} for n in scans],
+            "sorts":[{**{k:n.get(k) for k in ("Node Type", "Plan Width", "Actual Rows", "Sort Method", "Sort Space Used", "Sort Space Type")},
+                "output":[v if len(v)<100 else "<projected expression>" for v in n.get("Output", [])]} for n in sorts]}
+        print("trend_record_plan "+json.dumps(diagnostic, sort_keys=True), flush=True)
+        self.assertEqual(len(scans), 5)
+        self.assertEqual(len({node["Alias"] for node in scans}), 5)
+        for node in scans:
+            self.assertEqual(node["Actual Loops"], count)
+            self.assertEqual(node["Actual Rows"], 1)
+        self.assertTrue(sorts, "The complete-history ORDER BY must be exercised")
+        # Original d.payload/o.payload can be cheap TOAST pointers. Extracted
+        # features/trend objects are expanded datums and must be compacted
+        # before a Sort retains them, even if the eventual wire JSON is small.
+        for node in sorts:
+            for value in node.get("Output", []):
+                bare = re.sub(r'["()\s]', '', value)
+                self.assertIsNone(re.fullmatch(r'memory_json_\d+\.(?:features|trend_impulse|intraday_structure)', bare),
+                                  "Sort retained expanded record graph: "+value)
+
+    def test_malformed_truthy_shapes_preserve_error_cache_and_close_the_stream(self):
+        cases = (({"trend_impulse":["invalid"]}, AttributeError),
+                 ({"features":"invalid"}, AttributeError), ([], TypeError))
+        for index, (dp, error_type) in enumerate(cases):
+            with self.subTest(shape=index):
+                with self.connect() as c:
+                    c.execute("TRUNCATE ledger_events")
+                self.episode(index, 0, dp, {"forward_return":.01})
+                self.save()
+                for legacy in (True, False):
+                    trace = ReadTrace(self.connect)
+                    ns = load_trend(trace.connect, legacy=legacy)
+                    previous = {"status":"previous_complete", "items":[{"n":99}]}
+                    cache_at = NOW.timestamp()-300
+                    ns["trend_case_cache"].update(at=cache_at, value=previous)
+                    with self.assertRaises(error_type):
+                        ns["trend_case_learning_board"]()
+                    self.assertIs(ns["trend_case_cache"]["value"], previous)
+                    self.assertEqual(ns["trend_case_cache"]["at"], cache_at)
+                    self.assertTrue(all(cursor.cursor.closed for cursor in trace.cursors))
+                    self.assertTrue(all(c.closed for c in trace.connections))
+                    self.assertEqual(trace.transactions, 0)
 
     def test_interrupted_server_cursor_closes_resources_preserves_cache_and_can_retry(self):
         for i in range(4):
@@ -466,7 +645,7 @@ class TrendMemorySQLTests(unittest.TestCase):
         self.assertEqual(len(projected), 360)
         self.assertEqual(new_trace.queries[0]["rows"], 2200)
         self.assertEqual(new_trace.queries[0]["keys"], old_trace.queries[0]["keys"])
-        self.assertEqual(tail(new_trace.queries[0]["sql"]), tail(LEGACY_AMI_QUERY))
+        self.assertEqual(sampled_ami_tail(new_trace.queries[0]["sql"]), tail(LEGACY_AMI_QUERY))
         self.assertFalse(new_trace.queries[0]["heavy"])
         self.assertLess(new_trace.queries[0]["bytes"], old_trace.queries[0]["bytes"]*.20)
         for old_episode, new_episode in zip(old, projected):
