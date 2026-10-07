@@ -1,0 +1,116 @@
+name: Public API Snapshot Diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/public-api-snapshot-20261007.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-api-snapshot-20261007
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Fetch public GET endpoints
+        env:
+          BASE_URL: https://veritas-intelligence-v1.onrender.com
+        run: |
+          mkdir -p public-api-snapshot
+          python - <<'PY'
+          import json, os, pathlib, time, urllib.error, urllib.request
+          base = os.environ["BASE_URL"].rstrip("/")
+          endpoints = [
+              "/healthz",
+              "/api/v1/dashboard-bootstrap",
+              "/api/v1/loss-audit",
+              "/api/v1/strategy-quality",
+              "/api/v1/cost-policy",
+              "/api/v1/heavy-learning",
+              "/api/v1/protective-guard",
+          ]
+          out = pathlib.Path("public-api-snapshot")
+          summary = {"base_url": base, "endpoints": []}
+          for path in endpoints:
+              started = time.monotonic()
+              record = {"path": path}
+              try:
+                  req = urllib.request.Request(base + path, headers={
+                      "Accept": "application/json",
+                      "User-Agent": "VERITAS-public-readonly-diagnostic/1",
+                  })
+                  with urllib.request.urlopen(req, timeout=90) as response:
+                      raw = response.read()
+                      record["http_status"] = response.status
+                  payload = json.loads(raw)
+                  filename = path.strip("/").replace("/", "__") + ".json"
+                  (out / filename).write_text(
+                      json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                      encoding="utf-8",
+                  )
+                  record.update({
+                      "file": filename,
+                      "bytes": len(raw),
+                      "status": payload.get("status"),
+                      "version": payload.get("version"),
+                      "at": payload.get("at"),
+                      "checked_at": payload.get("checked_at"),
+                  })
+                  if path == "/healthz":
+                      record["health"] = {
+                          key: payload.get(key)
+                          for key in ("ok", "phase", "bootstrap_ready", "rss_mb", "uptime_s")
+                      }
+                      record["release"] = payload.get("release")
+                  elif path == "/api/v1/loss-audit":
+                      record["loss_audit"] = {
+                          key: payload.get(key)
+                          for key in (
+                              "scope", "closed_trades", "accounting_complete",
+                              "wins", "losses", "win_rate", "gross_pnl_rub",
+                              "fees_rub", "funding_rub", "costs_rub",
+                              "net_pnl_rub", "profit_factor",
+                          )
+                      }
+                      record["loss_audit_keys"] = sorted(payload)
+                  elif path == "/api/v1/cost-policy":
+                      record["policy"] = payload
+                  elif path == "/api/v1/strategy-quality":
+                      record["quality_keys"] = sorted(payload)
+                  elif path == "/api/v1/heavy-learning":
+                      record["heavy_learning_keys"] = sorted(payload)
+                  elif path == "/api/v1/protective-guard":
+                      record["guard_keys"] = sorted(payload)
+                  elif path == "/api/v1/dashboard-bootstrap":
+                      record["bootstrap_summary"] = {
+                          key: payload.get(key)
+                          for key in (
+                              "status", "at", "signal_count", "portfolio_count",
+                              "open_position_count", "trade_count",
+                              "learning_summary", "data_quality_summary",
+                          )
+                      }
+              except Exception as exc:
+                  record["error"] = f"{type(exc).__name__}: {exc}"
+              record["elapsed_seconds"] = round(time.monotonic() - started, 3)
+              summary["endpoints"].append(record)
+              print(json.dumps(record, ensure_ascii=False, default=str))
+          (out / "summary.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2, default=str),
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-api-snapshot
+          path: public-api-snapshot
+          retention-days: 1
+          if-no-files-found: error
