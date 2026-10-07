@@ -5,7 +5,7 @@ import math
 
 import veritas_costs as VC
 import veritas_execution as VX
-import veritas_protection_read_model as PR
+import veritas_protective_io as PIO
 from veritas_quote_time import utc_datetime
 
 VERSION = 'NET_STOP_AFTER_COSTS_V1'
@@ -152,7 +152,7 @@ def refresh(c, name=None, now=None, commission=VC.COMMISSION_RATE):
         z = dict(item)
         patch = evaluate(z, accounts.get(z['active_trade_id']), now=now, commission=commission)
         patches.append((z['active_trade_id'], patch))
-    PR.write_patches(c, patches)
+    PIO.write_patches(c, patches)
 
 
 def is_protected(z):
