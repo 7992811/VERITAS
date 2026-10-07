@@ -1,8 +1,9 @@
-"""CNY quote snapshots exclude history while preserving execution validation."""
+"""CNY fast quotes stay cheap; diagnostic readiness validates current history."""
 from datetime import datetime, timedelta, timezone
 from threading import RLock
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 import veritas_direct_cny as D
 import veritas_tbank as TB
@@ -164,6 +165,185 @@ class DirectCnySnapshotTests(unittest.TestCase):
         c.trading_states[ASSET]['api_trade_available_flag'] = False
         with self.assertRaisesRegex(TB.TBankError, '^CNY_SESSION_NOT_TRADABLE$'):
             D.quote(c, now=later)
+
+
+class DirectCnyStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.old_at = (NOW - timedelta(minutes=10)).isoformat()
+        self.recorded = {
+            'status': 'DIRECT_READY', 'reason': None, 'checked_at': self.old_at,
+            'instrument_uid': 'previous-contract', 'quote_observed_at': self.old_at,
+            'source': 'TBANK_GRPC', 'history_source': 'TBANK_GRPC', 'orders_enabled': False,
+        }
+        self.enterContext(patch.dict(D._STATE, self.recorded, clear=True))
+        self.enterContext(patch.dict(D.os.environ, {'VERITAS_CNY_PRIMARY_SOURCE': 'TBANK'}))
+
+    def test_old_recorded_state_with_fresh_reader_reports_current_complete_validation(self):
+        c = connection()
+        quote_at = (NOW - timedelta(seconds=17)).isoformat()
+        book_at = (NOW - timedelta(seconds=6)).isoformat()
+        session_at = (NOW - timedelta(seconds=25)).isoformat()
+        c.quotes[ASSET]['observed_at'] = quote_at
+        c.books[ASSET]['orderbook_ts'] = book_at
+        c.trading_states[ASSET]['checked_at'] = session_at
+        before = D._snapshot(c)
+        with patch.object(TB, 'connection', c), patch.object(D, 'datetime', wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            result = D.status()
+        self.assertEqual(result['status'], 'DIRECT_READY')
+        self.assertIsNone(result['reason'])
+        self.assertEqual(result['instrument_uid'], UID)
+        self.assertEqual(result['quote_observed_at'], quote_at)
+        self.assertEqual(result['book_observed_at'], book_at)
+        self.assertEqual(result['session_checked_at'], session_at)
+        self.assertEqual(result['checked_at'], TB.iso(NOW))
+        self.assertEqual(result['last_market_check_at'], self.old_at)
+        self.assertEqual(result['validation_basis'], 'CURRENT_READER_MEMORY')
+        self.assertEqual(result['history_source'], 'TBANK_GRPC')
+        self.assertEqual(result['history_last_candle_at'], {
+            tf: c.candles[(ASSET, tf)]['candles'][-1]['time'] for tf in ('1m', '5m', '1h')})
+        self.assertTrue(result['requires_same_quote_and_history_source'])
+        self.assertFalse(result['orders_enabled'])
+        self.assertEqual(result['version'], D.VERSION)
+        self.assertIn('verifier', result)
+        self.assertEqual(D._STATE, self.recorded)
+        self.assertEqual(D._snapshot(c), before)
+
+    def test_fresh_recorded_state_cannot_admit_stale_foreign_or_empty_reader(self):
+        D._STATE.update(checked_at=NOW.isoformat(), quote_observed_at=NOW.isoformat(), instrument_uid=UID)
+        cases = (
+            ('quotes', 'observed_at', self.old_at, 'CNY_DIRECT_QUOTE_STALE'),
+            ('quotes', 'observed_at', (NOW + timedelta(seconds=6)).isoformat(), 'CNY_DIRECT_QUOTE_STALE'),
+            ('quotes', 'instrument_uid', 'foreign', 'CNY_QUOTE_IDENTITY_OR_PRICE_INVALID'),
+            ('books', 'instrument_uid', 'foreign', 'CNY_BOOK_IDENTITY_OR_CONSISTENCY'),
+            ('books', 'orderbook_ts', self.old_at, 'CNY_BOOK_STALE'),
+            ('trading_states', 'instrument_uid', 'foreign', 'CNY_SESSION_STATUS_UNAVAILABLE'),
+            ('trading_states', 'checked_at', self.old_at, 'CNY_SESSION_STATUS_UNAVAILABLE'),
+            ('trading_states', 'api_trade_available_flag', False, 'CNY_SESSION_NOT_TRADABLE'),
+            ('quotes', None, None, 'CNY_QUOTE_IDENTITY_OR_PRICE_INVALID'),
+            ('instruments', None, None, 'EXACT_CNYRUBF_REQUIRED'),
+        )
+        for section, field, value, reason in cases:
+            with self.subTest(section=section, field=field, reason=reason):
+                c = connection()
+                if field is None:
+                    getattr(c, section).clear()
+                else:
+                    getattr(c, section)[ASSET][field] = value
+                result = D.status(c, now=NOW)
+                self.assertNotEqual(result['status'], 'DIRECT_READY')
+                self.assertEqual(result['reason'], reason)
+                self.assertIsNone(result['history_source'])
+                self.assertFalse(result['orders_enabled'])
+                if section == 'quotes' and field == 'observed_at':
+                    self.assertEqual(result['quote_observed_at'], value)
+        self.assertEqual(D._STATE['status'], 'DIRECT_READY')
+        self.assertEqual(D._STATE['checked_at'], NOW.isoformat())
+
+    def test_current_quote_does_not_certify_missing_foreign_stale_or_invalid_history(self):
+        for tf in ('1m', '5m', '1h'):
+            for defect in ('missing', 'foreign', 'error', 'stale', 'insufficient', 'geometry'):
+                with self.subTest(timeframe=tf, defect=defect):
+                    c = connection()
+                    history = c.candles[(ASSET, tf)]
+                    if defect == 'missing':
+                        c.candles.pop((ASSET, tf))
+                    elif defect == 'foreign':
+                        history['instrument_uid'] = 'foreign'
+                    elif defect == 'error':
+                        history['status'] = 'ERROR'
+                    elif defect == 'stale':
+                        for bar in history['candles']:
+                            bar['time'] = (datetime.fromisoformat(bar['time']) - timedelta(days=1)).isoformat()
+                    elif defect == 'insufficient':
+                        history['candles'].pop(0)
+                    else:
+                        history['candles'][-1]['low'] = 13.
+                    result = D.status(c, now=NOW)
+                    expected = {'missing': f'CNY_{tf.upper()}_HISTORY_NOT_READY',
+                                'foreign': f'CNY_{tf.upper()}_HISTORY_NOT_READY',
+                                'error': f'CNY_{tf.upper()}_HISTORY_NOT_READY',
+                                'stale': f'CNY_{tf.upper()}_CANDLES_STALE',
+                                'insufficient': f'CNY_{tf.upper()}_HISTORY_INSUFFICIENT',
+                                'geometry': 'CNY_CANDLE_GEOMETRY'}[defect]
+                    self.assertEqual(result['reason'], expected)
+                    self.assertEqual(result['status'], 'RESEARCH_ONLY')
+                    self.assertIsNone(result['history_source'])
+                    self.assertNotIn('history_last_candle_at', result)
+
+    def test_stale_quote_rejects_before_any_history_copy(self):
+        c = connection()
+        c.quotes[ASSET]['observed_at'] = self.old_at
+        for history in c.candles.values():
+            history['candles'] = [HistoryCopyForbidden(row) for row in history['candles']]
+        result = D.status(c, now=NOW)
+        self.assertEqual(result['status'], 'STALE')
+        self.assertEqual(result['reason'], 'CNY_DIRECT_QUOTE_STALE')
+        self.assertEqual(result['quote_observed_at'], self.old_at)
+
+    def test_full_snapshot_rechecks_changed_quote_and_uses_the_same_clock(self):
+        c = connection()
+        early = D._snapshot(c, include_history=False)
+        c.quotes[ASSET]['observed_at'] = self.old_at
+        late = D._snapshot(c)
+        with patch.object(D, '_snapshot', side_effect=[early, late]), \
+                patch.object(D, 'validate_snapshot', wraps=D.validate_snapshot) as validate:
+            result = D.status(c, now=NOW)
+        self.assertEqual(result['reason'], 'CNY_DIRECT_QUOTE_STALE')
+        self.assertEqual(result['quote_observed_at'], self.old_at)
+        self.assertEqual([call.args[1] for call in validate.call_args_list], [NOW, NOW])
+        self.assertEqual(D._STATE, self.recorded)
+
+    def test_status_never_starts_refreshes_or_calls_broker_and_keeps_connection_error_visible(self):
+        factory = Mock(side_effect=AssertionError('network factory forbidden'))
+        c = TB.TBankConnection(environ={}, factory=factory)
+        fixture = connection()
+        for field in ('instruments', 'quotes', 'books', 'trading_states', 'candles'):
+            setattr(c, field, getattr(fixture, field))
+        c.state, c.error = 'ERROR', 'UNAVAILABLE'
+        c.reader = Mock()
+        c.reader.call.side_effect = AssertionError('RPC forbidden')
+        c.reader.stream_prices.side_effect = AssertionError('stream forbidden')
+        with patch.object(c, 'start', side_effect=AssertionError('start forbidden')) as start, \
+                patch.object(c, 'refresh', side_effect=AssertionError('refresh forbidden')) as refresh:
+            result = D.status(c, now=NOW)
+            self.assertEqual(result['status'], 'DIRECT_READY')
+            self.assertEqual(result['connection_status'], 'ERROR')
+            self.assertEqual(result['connection_error_code'], 'UNAVAILABLE')
+            c.quotes.clear()
+            self.assertEqual(D.status(c, now=NOW)['status'], 'RESEARCH_ONLY')
+        start.assert_not_called()
+        refresh.assert_not_called()
+        factory.assert_not_called()
+        self.assertEqual(c.reader.mock_calls, [])
+
+    def test_disabled_source_does_not_inspect_reader(self):
+        with patch.dict(D.os.environ, {'VERITAS_CNY_PRIMARY_SOURCE': 'MOEX'}), \
+                patch.object(D, '_snapshot', side_effect=AssertionError('disabled reader')) as snapshot:
+            result = D.status(connection(), now=NOW)
+        snapshot.assert_not_called()
+        self.assertEqual(result['status'], 'NOT_CHECKED')
+        self.assertEqual(result['reason'], 'CNY_DIRECT_SOURCE_DISABLED')
+        self.assertFalse(result['enabled'])
+        self.assertFalse(result['orders_enabled'])
+
+    def test_market_or_fallback_does_not_revalidate_via_diagnostic_status(self):
+        c = connection()
+        with patch.object(D, 'datetime', wraps=datetime) as clock, \
+                patch.object(D, '_snapshot', wraps=D._snapshot) as snapshot, \
+                patch.object(D, 'status', side_effect=AssertionError('diagnostic recursion')) as status:
+            clock.now.return_value = NOW
+            fallback = Mock(return_value={'price': 12.})
+            ready = D.market_or_fallback(fallback, connection=c)
+            self.assertEqual(ready['feed_status']['status'], 'DIRECT_READY')
+            self.assertEqual(snapshot.call_count, 1)
+            fallback.assert_not_called()
+            c.quotes.clear()
+            blocked = D.market_or_fallback(fallback, connection=c)
+            self.assertEqual(blocked['feed_status']['status'], 'RESEARCH_ONLY')
+            self.assertFalse(blocked['source_gate_pass'])
+            self.assertEqual(snapshot.call_count, 2)
+        status.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -263,6 +263,21 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
             grouped.setdefault(row['asset'],[]).append(row)
     results=[]
     position_snapshots={}
+    def busy_result(reason):
+        # Observe every queued quote before deciding on the lease. A ready
+        # first row must not hide a later row's reached stop or target.
+        observed_clock = _wall_clock()
+        readiness = [bool((TFP.prepare_row(
+            VPG.refresh_execution_row(row, now=observed_clock), now=observed_clock
+            )['trade_plan'].get('entry_timing_gate') or {}).get('eligible'))
+            for candidates in grouped.values() for row in candidates]
+        pending = any(readiness)
+        if pending:
+            VPG._mutex.reserve_entry_turn()
+        else:
+            VPG._mutex.cancel_entry_turn()
+        return {'status':'BUSY','reason':reason,'paper_only':True,
+                'entry_turn_reserved':pending}
     with ExitStack() as stack:
         if runtime:
             # Avoid even opening a DB connection when another local book
@@ -272,22 +287,16 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
                 # A polling caller otherwise loses every free turn to the
                 # already-waiting portfolio loop. Reserve only for a currently
                 # valid structural entry; never extend the event/quote lifetime.
-                clock = _wall_clock()  # Context preparation may have outlived the entry window.
-                # Preserve event age, but renew with the latest verified cached quote.
-                # prepare_row also records observed spent barriers in their state owner.
-                pending = any((TFP.prepare_row(VPG.refresh_execution_row(row, now=clock),
-                    now=clock)['trade_plan'].get('entry_timing_gate') or {}).get('eligible')
-                    for candidates in grouped.values() for row in candidates)
-                if pending:
-                    VPG._mutex.reserve_entry_turn()
-                else:
-                    VPG._mutex.cancel_entry_turn()
-                return {'status':'BUSY','reason':'LOCAL_PAPER_BOOK_BUSY','paper_only':True,
-                        'entry_turn_reserved':pending}
+                return busy_result('LOCAL_PAPER_BOOK_BUSY')
             stack.callback(VPG._mutex.release)
         c=stack.enter_context(ns['pg_connect']())
         acquired=stack.enter_context(VPG.book_transaction(c,blocking=not runtime))
         if acquired is False:
+            if runtime:
+                # No accounting authority was acquired. Finish the failed
+                # attempt and release both local depths before memory work.
+                stack.close()
+                return busy_result('DATABASE_PAPER_BOOK_BUSY')
             return {'status':'BUSY','reason':'DATABASE_PAPER_BOOK_BUSY','paper_only':True}
         if runtime:
             clock=_wall_clock()

@@ -140,6 +140,13 @@ def eligible_sql(alias=""):
 
 LEARNING_PREDICATE = eligible_sql()
 
+def _pending_action_sql(alias=""):
+    # A stale PENDING marker cannot override a later explicit exclusion. The
+    # second attribution is retained by the native quote-event retry lane.
+    p = _alias(alias)
+    return (p+"learning_action='AWAIT_SOURCE_EVIDENCE_REVALIDATION' AND "+
+            p+"primary_attribution IN ('DATA_EVIDENCE_PENDING','UNVERIFIED_TRADE_EVIDENCE')")
+
 def _number(value):
     if value is None or isinstance(value, bool):
         return None
@@ -315,8 +322,11 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
     if type(batch_size) is not int or not 1 <= batch_size <= MAX_BATCH_SIZE:
         raise ValueError("invalid revalidation batch size")
     evidence = _evidence_sql("t")
+    # Keep the proof/hash out of the outer UPDATE's repeated expressions. The
+    # materialized rows contain only IDs, hashes and the revocation flag;
+    # quarantine covers every eligible episode before bounded verification.
     staged = c.execute("""
-      WITH candidates AS (
+      WITH candidates AS MATERIALIZED (
         SELECT e.trade_id,md5(("""+evidence+""")::text) AS evidence_hash,
           (e.payload#>>'{learning_integrity,status}'='VERIFIED') AS prior_verified
         FROM v90_learning_episodes e LEFT JOIN paper_trades t ON t.trade_id=e.trade_id
@@ -331,7 +341,7 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
             'required_hash',q.evidence_hash,'prior_primary_attribution',e.primary_attribution,
             'prior_attributions',e.attributions,'prior_learning_action',e.learning_action,
             'requested_at',now()))
-      FROM candidates q WHERE e.trade_id=q.trade_id AND (
+      FROM candidates q WHERE e.trade_id=q.trade_id AND e.learning_eligible=TRUE AND (
         e.payload#>>'{learning_integrity,version}' IS DISTINCT FROM %s
         OR e.payload#>>'{learning_integrity,status}' IS DISTINCT FROM 'VERIFIED'
         OR e.payload#>>'{learning_integrity,evidence_hash}' IS DISTINCT FROM q.evidence_hash)
@@ -348,7 +358,8 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
         SELECT e.trade_id FROM v90_learning_episodes e
         JOIN paper_trades t ON t.trade_id=e.trade_id
         WHERE e.learning_eligible=FALSE AND (
-          (e.payload#>>'{learning_integrity,status}'='PENDING'
+          ("""+_pending_action_sql("e")+"""
+           AND e.payload#>>'{learning_integrity,status}'='PENDING'
            AND e.payload#>>'{learning_integrity,version}' IS DISTINCT FROM %s)
           OR (e.primary_attribution='UNVERIFIED_TRADE_EVIDENCE'
             AND e.learning_action='REVIEW_ORIGINAL_EVIDENCE'
@@ -371,15 +382,24 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
     """, (VERSION,batch_size,VERSION))
     retry_staged = max(0,int(retried.rowcount))
     staged_n += retry_staged
+    # Lock the original ordered batch first, then build each proof once. Its
+    # exact JSONB value feeds both the validator and the unchanged hash format.
     rows = c.execute("""
-      SELECT e.trade_id AS episode_trade_id,e.payload->'learning_integrity' AS prior,
-             """+evidence+""" AS trade,md5(("""+evidence+""")::text) AS evidence_hash
-      FROM v90_learning_episodes e LEFT JOIN paper_trades t ON t.trade_id=e.trade_id
-      WHERE e.learning_eligible=FALSE
-        AND e.payload#>>'{learning_integrity,version}'=%s
-        AND e.payload#>>'{learning_integrity,status}'='PENDING'
-      ORDER BY e.payload#>>'{learning_integrity,requested_at}',e.trade_id
-      LIMIT %s FOR UPDATE OF e SKIP LOCKED
+      WITH pending AS MATERIALIZED (
+        SELECT e.trade_id AS episode_trade_id,e.payload->'learning_integrity' AS prior
+        FROM v90_learning_episodes e
+        WHERE e.learning_eligible=FALSE
+          AND """+_pending_action_sql("e")+"""
+          AND e.payload#>>'{learning_integrity,version}'=%s
+          AND e.payload#>>'{learning_integrity,status}'='PENDING'
+        ORDER BY e.payload#>>'{learning_integrity,requested_at}',e.trade_id
+        LIMIT %s FOR UPDATE OF e SKIP LOCKED
+      ), evidence AS MATERIALIZED (
+        SELECT p.episode_trade_id,p.prior,"""+evidence+""" AS trade
+        FROM pending p LEFT JOIN paper_trades t ON t.trade_id=p.episode_trade_id
+      )
+      SELECT episode_trade_id,prior,trade,md5(trade::text) AS evidence_hash
+      FROM evidence ORDER BY prior->>'requested_at',episode_trade_id
     """, (VERSION, batch_size)).fetchall()
     verified = excluded = changed = 0
     for record in rows:
@@ -412,6 +432,7 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
             payload=COALESCE(e.payload,'{}'::jsonb)||%s::jsonb
           WHERE e.trade_id=%s AND e.learning_eligible=FALSE
             AND e.payload#>>'{learning_integrity,status}'='PENDING'
+            AND """+_pending_action_sql("e")+"""
             AND (NOT %s OR EXISTS (
               SELECT 1 FROM paper_trades t WHERE t.trade_id=e.trade_id
                 AND md5(("""+evidence+""")::text)=%s))
@@ -423,7 +444,8 @@ def _revalidate_eligible(c, batch_size=BATCH_SIZE):
         verified += n if ok else 0; excluded += 0 if ok else n
     pending = c.execute("""
       SELECT count(*) AS n FROM v90_learning_episodes
-      WHERE payload#>>'{learning_integrity,version}'=%s
+      WHERE learning_eligible=FALSE AND """+_pending_action_sql()+"""
+        AND payload#>>'{learning_integrity,version}'=%s
         AND payload#>>'{learning_integrity,status}'='PENDING'
     """, (VERSION,)).fetchone()
     return {"version": VERSION, "staged": staged_n, "retry_staged": retry_staged, "processed": changed,
