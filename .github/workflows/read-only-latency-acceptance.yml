@@ -1,0 +1,50 @@
+name: Read-only structural release acceptance
+on:
+  push:
+    branches: [audit/structural-latency-acceptance-20261007]
+    paths: [.github/workflows/read-only-latency-acceptance.yml]
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Three bounded public GET snapshots, no credentials or write endpoints
+        run: |
+          python - <<'PY'
+          from datetime import datetime,timezone
+          from urllib.request import Request,urlopen
+          import json,time
+          BASE='https://veritas-intelligence-v1.onrender.com'
+          paths=['/healthz','/api/v1/dashboard-bootstrap?view=signals','/api/v1/paper-portfolios']
+          def scalars(obj,keys):
+              return {key:obj[key] for key in keys if key in obj and (obj[key] is None or isinstance(obj[key],(str,int,float,bool)))} if isinstance(obj,dict) else {}
+          def project(path,data):
+              if path=='/healthz':
+                  return {**scalars(data,('ok','version','role','bootstrap_ready','phase','rss_mb','uptime_s')),'release':scalars(data.get('release') or {},('version','build_commit','commit_sha','git_sha'))}
+              if path.endswith('paper-portfolios'):
+                  return {**scalars(data,('status','api_source','positions_status','checked_at','snapshot_at')),'portfolios':[dict(name=p.get('name'),positions=len(p.get('positions') or []),**scalars(p,('positions_status','positions_checked_at','nav_rub','gross_leverage','drawdown_pct'))) for p in data.get('portfolios') or []]}
+              cycle=data.get('cycle') or {}
+              rows=cycle.get('summary') or data.get('signals') or data.get('summary') or []
+              if isinstance(rows,dict):rows=rows.get('items') or rows.get('signals') or []
+              result={**scalars(data,('version','status','at','generated_at','partial')),'keys':list(data)[:25],'cycle':scalars(cycle,('status','at','signal_cells','cycle_mode')),'rows':len(rows)}
+              result['currency']=[scalars(row,('asset','horizon','research_decision','decision','market_observed_at','trade_entry_eligible','trade_entry_reason','trade_entry_checked_at')) for row in rows if isinstance(row,dict) and row.get('asset')=='CNYRUBF'][:7]
+              runtime=cycle.get('breakout_runtime') or data.get('breakout_runtime')
+              if isinstance(runtime,dict):result['runtime']=scalars(runtime,('status','latency_policy_version','cycles','rows','assets','duration_seconds','context_seconds','entry_seconds','execution_status','execution_reason','retry_passes','pending_entry_rows'))
+              return result
+          for sample in range(3):
+              for path in paths:
+                  started=time.monotonic();record={'sample':sample,'path':path,'at':datetime.now(timezone.utc).isoformat()}
+                  try:
+                      req=Request(BASE+path,headers={'Accept':'application/json','User-Agent':'VERITAS-read-only-release-check/1.0'})
+                      with urlopen(req,timeout=25) as response:
+                          raw=response.read(4*1024*1024+1);record['http_status']=response.status
+                      if len(raw)>4*1024*1024:raise ValueError('response exceeds acceptance bound')
+                      record.update(bytes=len(raw),data=project(path,json.loads(raw)))
+                  except Exception as exc:
+                      record.update(error_type=type(exc).__name__)
+                  record['http_seconds']=round(time.monotonic()-started,4)
+                  print(json.dumps(record,ensure_ascii=False,allow_nan=False),flush=True)
+              if sample<2:time.sleep(30)
+          PY
