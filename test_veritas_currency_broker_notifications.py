@@ -195,7 +195,9 @@ class BrokerNoticeTests(unittest.TestCase):
         self.assertEqual(self.request("begin",self.identity(event))[1],200)
         self.assertEqual(self.request("complete",dict(self.identity(event),status="RETRY"))[0]["status"],"UNKNOWN")
 
-    def delivery(self, *, lose_send=False, lose_ack=False, wrong_bot=False, wrong_chat=False):
+    def delivery(self, *, lose_send=False, lose_ack=False, wrong_bot=False, wrong_chat=False,
+                 wrong_bot_name=False, wrong_channel_id=False, channel_type="channel",
+                 can_post=True, title="VERITAS max"):
         calls=[]
         state={"lose_ack":lose_ack}
         def respond(request):
@@ -209,9 +211,9 @@ class BrokerNoticeTests(unittest.TestCase):
                 return httpx.Response(code,json=result)
             self.assertEqual(request.url.host,"api.telegram.org")
             operation=request.url.path.rsplit("/",1)[-1]; calls.append((operation,body))
-            if operation=="getMe":result={"id":BOT+int(wrong_bot),"is_bot":True,"username":"AxednewsI_bot"}
-            elif operation=="getChat":result={"id":int(N.CHANNEL_ID),"type":"channel","title":"VERITAS max","username":"other" if wrong_chat else "axednewz"}
-            elif operation=="getChatMember":result={"status":"administrator","can_post_messages":True}
+            if operation=="getMe":result={"id":BOT+int(wrong_bot),"is_bot":True,"username":"other_bot" if wrong_bot_name else "AxednewsI_bot"}
+            elif operation=="getChat":result={"id":-100123 if wrong_channel_id else int(N.CHANNEL_ID),"type":channel_type,"title":title,"username":"other" if wrong_chat else "axednewz"}
+            elif operation=="getChatMember":result={"status":"administrator","can_post_messages":can_post}
             elif operation=="sendMessage":
                 self.assertEqual(self.rows()[0]["status"],"SENDING")
                 self.assertNotIn("reply_markup",body)
@@ -242,11 +244,20 @@ class BrokerNoticeTests(unittest.TestCase):
 
     def test_actual_bot_and_numeric_channel_username_are_checked_before_claim(self):
         self.enqueue()
-        for changes in ({"wrong_bot":True},{"wrong_chat":True}):
+        for changes in ({"wrong_bot":True},{"wrong_chat":True},{"wrong_bot_name":True},
+                        {"wrong_channel_id":True},{"channel_type":"supergroup"},{"can_post":False}):
             sender,calls=self.delivery(**changes)
             with self.assertRaises(DeliveryError):sender.once()
             self.assertNotIn("sendMessage",[op for op,_ in calls])
             self.assertEqual(self.rows()[0]["status"],"PENDING")
+
+    def test_authorized_channel_title_is_display_metadata_and_axed_news_delivers(self):
+        self.enqueue()
+        sender,calls=self.delivery(title="Axed News")
+        self.assertTrue(sender.once())
+        self.assertEqual(self.rows()[0]["status"],"SENT")
+        self.assertEqual(len([op for op,_ in calls if op=="sendMessage"]),1)
+        self.assertEqual(sender.chat_id,N.CHANNEL_ID)
 
     def test_disabled_worker_never_constructs_transport_or_thread(self):
         with patch.dict(os.environ,{},clear=True),patch("veritas_currency_broker_delivery.BrokerCurrencyDelivery") as factory:

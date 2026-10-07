@@ -244,6 +244,10 @@ broker token and does not depend on the proposal/execution switches. The sender
 checks the actual numeric bot ID and @AxednewsI_bot username, plus channel ID
 -1002967459105 and @axednewz username, before claiming delivery. It adds no
 getUpdates consumer and places no approval buttons in channel messages.
+The broker sender also requires a channel and current publication permissions.
+The public channel title is presentation metadata: changing Axed News to
+VERITAS max does not change the verified recipient identity. Paper delivery
+retains its existing independent recipient checks.
 
 A committed SENDING barrier precedes Telegram I/O. If sendMessage may have
 succeeded but the reply was lost, the event becomes UNKNOWN and is not blindly

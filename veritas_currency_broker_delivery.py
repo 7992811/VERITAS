@@ -4,6 +4,7 @@ No getUpdates consumer is added. The explicit feature flag defaults off.
 """
 import os
 import threading
+import time
 from urllib.parse import urlparse
 
 import httpx
@@ -57,6 +58,29 @@ class BrokerCurrencyDelivery(CurrencyDelivery):
                 or str(result.get("username", "")).casefold() != "axednewz"):
             raise DeliveryError("BROKER_NOTICE_CHANNEL_IDENTITY_MISMATCH", "FAILED", terminal=True)
         return result
+
+    def verify(self):
+        # This destination was explicitly identified by stable numeric ID and
+        # username. Its public title is presentation metadata, not authority.
+        me = self.telegram("getMe", {})
+        chat = self.telegram("getChat", {"chat_id": CHANNEL_ID})
+        if chat.get("type") != "channel":
+            raise DeliveryError("RECIPIENT_NOT_CHANNEL", "FAILED", terminal=True)
+        member = self.telegram("getChatMember", {"chat_id": CHANNEL_ID, "user_id": me["id"]})
+        if not isinstance(member, dict) or not (member.get("status") == "creator" or (
+                member.get("status") == "administrator" and member.get("can_post_messages") is True)):
+            raise DeliveryError("RECIPIENT_POST_PERMISSION_MISSING", "FAILED", terminal=True)
+        self.emit("currency_telegram_recipient", chat_id=chat["id"], username=chat.get("username"),
+                  title=chat.get("title"), type=chat.get("type"))
+        if self.chat_id and self.chat_id != CHANNEL_ID:
+            raise DeliveryError("RECIPIENT_ID_CHANGED", "FAILED", terminal=True)
+        self.chat_id = CHANNEL_ID
+        self.verified_at = time.monotonic()
+        status = self.api("status")
+        if status.get("configured") is not True:
+            raise DeliveryError("OUTBOX_NOT_CONFIGURED", "RETRY")
+        self.emit("currency_telegram_ready", channel="@axednewz", telegram_chat_id=CHANNEL_ID,
+                  portfolio="Currency", asset="CNYRUBF")
 
     def emit(self, event, **fields):
         if event == "currency_telegram_ready":
