@@ -43,7 +43,6 @@ def snapshot():
             "structural_execution_selects_current_same_source_cached_quote":True,
             "portfolio_positions_and_balances_share_current_book":True,
             "partial_portfolio_response_preserves_visible_positions":True,
-            "partial_portfolio_refresh_ingests_known_positions":True,
             "calibration_reads_projected_decision_fields":True,
             "structural_signal_execution_projection_is_bounded":True,
         },
