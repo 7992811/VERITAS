@@ -96,6 +96,14 @@ class AssetManagementIntelligenceTests(unittest.TestCase):
         }
         self.assertEqual(VAMI._static_ai_decision(payload), "LONG")
 
+    def test_stateless_ai_reads_historical_tuple_votes(self):
+        payload = {"agents": [
+            ["QUANT", "LONG", .7, {}],
+            ["TECH_FLOW", "LONG", .6, {}],
+            ["DERIV", "SHORT", .2, {}],
+        ]}
+        self.assertEqual(VAMI._static_ai_decision(payload), "LONG")
+
     def test_reference_metrics_penalize_missed_large_move(self):
         eps = [{"horizon": "1h", "forward_return": .03, "reference_decision": "NO_TRADE"}]
         m = VAMI._decision_metrics(eps, "reference_decision")
