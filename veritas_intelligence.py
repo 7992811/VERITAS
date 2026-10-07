@@ -18621,7 +18621,15 @@ def _v90_prune_low_priority_caches(level_mb=None,preserve_active_cycle=False):
                 fn._cache=None; cleared+=1
         except Exception:
             pass
-    if m >= V90_MEMORY_PROTECT_MB and not preserve_active_cycle:
+    # On the 512 MiB runtime a completed cycle at 300-325 MiB leaves too little
+    # headroom for the next BTC/ETH history build (observed transient: roughly
+    # 90-200 MiB).  Evict the generic provider cache at the caution watermark
+    # between cycles.  During an active cycle it remains protected so assets
+    # continue to share the same freshly observed source rows.
+    _market_cache_protect_mb=(V90_MEMORY_CAUTION_MB
+                              if MEMORY_SOFT_LIMIT_MB<=320
+                              else V90_MEMORY_PROTECT_MB)
+    if m >= _market_cache_protect_mb and not preserve_active_cycle:
         try:
             with market_cache_lock:
                 cleared+=len(market_cache); market_cache.clear()

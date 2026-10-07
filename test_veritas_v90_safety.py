@@ -730,3 +730,30 @@ class LowMemoryBundleCacheR914Tests(unittest.TestCase):
             VINT.MEMORY_SOFT_LIMIT_MB=old_limit
             VINT._v90r62_active_cycle_mode=old_mode
             VINT._v90r62_bundle_cache.clear()
+
+    def test_low_memory_cycle_boundary_evicts_provider_cache_at_caution_watermark(self):
+        import veritas_intelligence as VINT
+        old_limit=VINT.MEMORY_SOFT_LIMIT_MB
+        try:
+            VINT.MEMORY_SOFT_LIMIT_MB=320
+            with VINT.market_cache_lock:
+                VINT.market_cache.clear()
+                VINT.market_cache['large-provider-history']={'rows':[1]*1000}
+            cleared=VINT._v90_prune_low_priority_caches(
+                VINT.V90_MEMORY_CAUTION_MB+1,preserve_active_cycle=False)
+            self.assertGreaterEqual(cleared,1)
+            with VINT.market_cache_lock:
+                self.assertEqual(VINT.market_cache,{})
+
+            # Source rows remain reusable while the current multi-asset cycle
+            # is still active; only the safe cycle boundary may evict them.
+            with VINT.market_cache_lock:
+                VINT.market_cache['same-cycle-source']={'rows':[1]}
+            self.assertEqual(VINT._v90_prune_low_priority_caches(
+                VINT.V90_MEMORY_PROTECT_MB+100,preserve_active_cycle=True),0)
+            with VINT.market_cache_lock:
+                self.assertIn('same-cycle-source',VINT.market_cache)
+        finally:
+            VINT.MEMORY_SOFT_LIMIT_MB=old_limit
+            with VINT.market_cache_lock:
+                VINT.market_cache.clear()
