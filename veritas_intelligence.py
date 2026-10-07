@@ -7438,7 +7438,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
             portfolio_autopilot=VP.step_all(
                 summary=summary, pg_connect=pg_connect, model_version=VERSION,
                 observed_at=now(), commission_rate=VX.VC.COMMISSION_RATE,
-                emit=lambda event, **kw: emit(event, **kw))
+                emit=lambda event, **kw: emit(event, **dict(kw,rss_mb=rss_mb())))
         except Exception as ex:
             portfolio_autopilot={'status':'ERROR','error':f'{type(ex).__name__}: {ex}'}
             emit('portfolio_autopilot_error',error=portfolio_autopilot['error'],trace=traceback.format_exc(limit=12))
@@ -15178,10 +15178,10 @@ def _shadow_trade_learning_windows():
     if not pg_enabled(): return {'status':'postgres_required'}
     lim=LEARNING_PROGRESS_WINDOW
     with pg_connect() as c:
-        e=[dict(r) for r in c.execute("""SELECT asset,horizon,direction,status,total_pnl_fraction,payload,closed_at
+        e=[dict(r) for r in c.execute("""SELECT asset,horizon,direction,status,total_pnl_fraction,closed_at
                                         FROM shadow_trades WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
                                         ORDER BY closed_at ASC LIMIT %s""",(lim,)).fetchall()]
-        r=[dict(x) for x in c.execute("""SELECT asset,horizon,direction,status,total_pnl_fraction,payload,closed_at
+        r=[dict(x) for x in c.execute("""SELECT asset,horizon,direction,status,total_pnl_fraction,closed_at
                                         FROM shadow_trades WHERE status<>'ACTIVE' AND total_pnl_fraction IS NOT NULL
                                         ORDER BY closed_at DESC LIMIT %s""",(lim,)).fetchall()]
     def met(a):
@@ -19125,6 +19125,8 @@ def main():
     except Exception as _ui_test_ex:
         emit('v90_dashboard_bootstrap_selftest',status='ERROR',
              error=f'{type(_ui_test_ex).__name__}: {_ui_test_ex}')
+    finally:
+        _boot_ui=None
 
     # Knowledge/case corpora are already durable in PostgreSQL. Do not reseed on
     # every web-service restart: it competes with the live cycle for DB connections.
