@@ -703,3 +703,30 @@ class FinalRuntimeAuthorityR85Tests(unittest.TestCase):
         self.assertIs(VP._step_one,VPR.FINAL_STEP_ONE)
         self.assertIs(VP.step_all,VPR.FINAL_STEP_ALL)
 
+
+class LowMemoryBundleCacheR914Tests(unittest.TestCase):
+    def test_low_memory_runtime_does_not_retain_complete_market_bundles(self):
+        import veritas_intelligence as VINT
+        old_limit=VINT.MEMORY_SOFT_LIMIT_MB
+        old_mode=VINT._v90r62_active_cycle_mode
+        try:
+            VINT.MEMORY_SOFT_LIMIT_MB=320
+            VINT._v90r62_active_cycle_mode='FULL'
+            VINT._v90r62_bundle_cache.clear()
+            bundle={'raw':{'asset':'BTC','large_history':[1]*1000},
+                    'deriv':{'ok':True},'error':None}
+            VINT._v90r62_store_bundle('BTC',bundle)
+            self.assertEqual(VINT._v90r62_bundle_cache,{})
+
+            # Also purge an object retained before a configuration/reload
+            # boundary instead of allowing a FULL cycle to reuse it.
+            VINT._v90r62_bundle_cache['BTC']={
+                'at':datetime(2026,10,7,tzinfo=timezone.utc).timestamp(),
+                'bundle':bundle,
+            }
+            self.assertIsNone(VINT._v90r62_cached_bundle('BTC'))
+            self.assertEqual(VINT._v90r62_bundle_cache,{})
+        finally:
+            VINT.MEMORY_SOFT_LIMIT_MB=old_limit
+            VINT._v90r62_active_cycle_mode=old_mode
+            VINT._v90r62_bundle_cache.clear()
