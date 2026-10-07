@@ -159,4 +159,4 @@ jobs:
       - name: Native learning proof and startup history regressions
         env:
           VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
-        run: python -m unittest -v test_veritas_learning_integrity_sql.py test_veritas_learning_index_sql.py test_veritas_continuous_learning.py test_veritas_trade_learning.py test_veritas_scorecard_delivery.py test_veritas_scorecard_daily.py test_veritas_memory_projection.py test_veritas_forecast_cleanup.py test_veritas_ami_sample_sql.py test_veritas_scorecard_stages.py test_veritas_ami_staged_sql.py test_veritas_ami_staged_pipeline_sql.py
+        run: python -m unittest -v test_veritas_learning_state.py test_veritas_learning_integrity_sql.py test_veritas_learning_index_sql.py test_veritas_continuous_learning.py test_veritas_trade_learning.py test_veritas_scorecard_delivery.py test_veritas_scorecard_daily.py test_veritas_memory_projection.py test_veritas_forecast_cleanup.py test_veritas_ami_sample_sql.py test_veritas_scorecard_stages.py test_veritas_ami_staged_sql.py test_veritas_ami_staged_pipeline_sql.py
