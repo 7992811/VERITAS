@@ -32,19 +32,6 @@ def legacy_refresh(c, name=None, now=None, commission=PP.VC.COMMISSION_RATE):
                   (serialized, z['active_trade_id']))
 
 
-def update_deltas(updates):
-    """Compare exact per-trade payload deltas across sequential/batched SQL."""
-    deltas = []
-    for query, params in updates:
-        table = query.split()[1]
-        if table not in ('paper_positions', 'paper_trades'):
-            raise AssertionError('Unexpected metadata table: '+table)
-        rows = (json.loads(params[0]) if 'jsonb_to_recordset' in query else
-                [{'trade_id': params[1], 'patch': json.loads(params[0])}])
-        deltas.extend((table, row['trade_id'], row['patch']) for row in rows)
-    return sorted(deltas, key=lambda value: (value[0], value[1]))
-
-
 class ReadTrace:
     """Encoded result sizes and update parameters, not protocol/wire traffic."""
     def __init__(self, connection):
@@ -71,6 +58,18 @@ class ReadTrace:
         if query.startswith('UPDATE'):
             self.updates.append((query, params))
         return cursor
+
+    def logical_updates(self):
+        """Compare every saved delta independently of SQL batching/order."""
+        out = []
+        for query, params in self.updates:
+            table = query.split()[1]
+            if 'jsonb_to_recordset' in query:
+                out.extend((table, row['trade_id'], row['patch'])
+                           for row in json.loads(params[0]))
+            else:
+                out.append((table, params[1], json.loads(params[0])))
+        return sorted(out, key=lambda row: (row[0], row[1]))
 
 
 @unittest.skipUnless(DSN, 'isolated PostgreSQL test database not configured')
@@ -168,7 +167,7 @@ class ProfitProtectionProjectionSQLTests(unittest.TestCase):
         old = self.run_refresh(legacy_refresh, rows, name)
         new = self.run_refresh(PP.refresh, rows, name)
         self.assertEqual(new[:3], old[:3])
-        self.assertEqual(update_deltas(new[3].updates), update_deltas(old[3].updates))
+        self.assertEqual(new[3].logical_updates(), old[3].logical_updates())
         self.assertEqual(len(new[3].reads), len(old[3].reads))
         return old, new
 

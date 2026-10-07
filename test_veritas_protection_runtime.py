@@ -75,7 +75,9 @@ class ProjectionDatabase:
                         tuple(z.get(name) for name in PR.POSITION_COLUMNS)+(json.dumps(z.get('payload')),))
         # SQLite json_each exposes native scalar strings, so the arrow keeps
         # their JSON type intact for the PostgreSQL-style aggregate adapter.
-        sql = sql.replace('jsonb_each(', 'json_each(').replace('item.key,item.value', 'item.key,payload->item.key')
+        sql = (sql.replace('jsonb_each(', 'json_each(')
+               .replace('item.key,item.value', 'item.key,payload->item.key')
+               .replace("'{}'::jsonb", "'{}'"))
         result = dict(self.db.execute(sql).fetchone())
         for key in ('units', 'avg_entry_price', 'last_price', 'stop_price'):
             if result[key] is not None:
@@ -177,6 +179,13 @@ class MemoryConnection:
     def connect(self):
         yield self
 
+    @staticmethod
+    def merge_payload(left, right):
+        # PostgreSQL JSONB || merges objects; other shapes concatenate arrays.
+        if isinstance(left, dict) and isinstance(right, dict):
+            return dict(left, **right)
+        return (left if isinstance(left, list) else [left]) + (right if isinstance(right, list) else [right])
+
     def execute(self, sql, args=()):
         self.sql.append((sql, args))
         if sql.startswith('SET LOCAL') or 'pg_advisory_xact_lock' in sql:
@@ -192,18 +201,28 @@ class MemoryConnection:
             table = self.positions if 'paper_positions' in sql else self.trades
             for row in json.loads(args[0]):
                 if row['trade_id'] in table:
-                    table[row['trade_id']]['payload'].update(row['patch'])
+                    table[row['trade_id']]['payload'] = self.merge_payload(
+                        table[row['trade_id']]['payload'], row['patch'])
             return SimpleNamespace()
         if sql.startswith('SELECT fees_rub'):
+            return SimpleNamespace(fetchone=lambda: {'fees_rub': 3., 'funding_rub': 2., 'gross_pnl_rub': 0.})
+        if sql.startswith('SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades'):
             return SimpleNamespace(fetchone=lambda: {'fees_rub': 3., 'funding_rub': 2., 'gross_pnl_rub': 0.})
         if sql.startswith('SELECT * FROM paper_trades'):
             return SimpleNamespace(fetchone=lambda: self.trades.get(args[0]))
         if sql.startswith('UPDATE paper_portfolios') or sql.startswith('INSERT INTO paper_nav_history'):
             return SimpleNamespace()
-        if sql.startswith('UPDATE paper_positions SET payload=payload||') or sql.startswith('UPDATE paper_trades SET payload=payload||'):
+        if (sql.startswith('UPDATE paper_positions SET payload=payload||') or
+                sql.startswith('UPDATE paper_trades SET payload=payload||') or
+                sql.startswith('UPDATE paper_positions SET payload=COALESCE') or
+                sql.startswith('UPDATE paper_trades SET payload=COALESCE')):
+            if (sql.startswith('UPDATE paper_trades SET payload=COALESCE')
+                    and self.fail_trade_batch):
+                raise RuntimeError('synthetic telemetry write failure')
             table = self.positions if sql.startswith('UPDATE paper_positions') else self.trades
             if args[1] in table:
-                table[args[1]]['payload'].update(json.loads(args[0]))
+                table[args[1]]['payload'] = self.merge_payload(
+                    table[args[1]]['payload'], json.loads(args[0]))
             return SimpleNamespace()
         raise AssertionError('unexpected SQL: '+sql[:100])
 
@@ -252,17 +271,24 @@ class BoundedProtectiveTests(unittest.TestCase):
                 PR.write_patches(c, [(tid, {'synthetic_patch': 2})])
         self.assertEqual((c.positions, c.trades), before)
 
-    def test_repeated_trade_deltas_have_one_deterministic_source_row(self):
-        z, unused = position()
-        c = self.connection([z])
-        tid = z['active_trade_id']
-        with G.book_transaction(c):
-            PR.write_patches(c, [(tid, {'a': 1, 'b': 2}), (tid, {'a': 3})])
-        for sql, args in c.sql:
-            if 'jsonb_to_recordset' in sql:
-                self.assertEqual(json.loads(args[0]), [{'trade_id': tid, 'patch': {'a': 3, 'b': 2}}])
-        self.assertEqual(c.positions[tid]['payload']['a'], 3)
-        self.assertEqual(c.trades[tid]['payload']['b'], 2)
+    def test_repeated_trade_deltas_preserve_sequential_jsonb_merge(self):
+        for previous in ({'prior': True}, ['prior'], 'prior'):
+            with self.subTest(payload=previous):
+                z, unused = position()
+                z['payload'] = deepcopy(previous)
+                c = self.connection([z])
+                tid = z['active_trade_id']
+                first, second = {'a': 1, 'b': 2}, {'a': 3}
+                with G.book_transaction(c):
+                    PR.write_patches(c, [(tid, first), (tid, second)])
+                batches = [json.loads(args[0]) for sql, args in c.sql if 'jsonb_to_recordset' in sql]
+                self.assertEqual(batches, [
+                    [{'trade_id': tid, 'patch': first}], [{'trade_id': tid, 'patch': first}],
+                    [{'trade_id': tid, 'patch': second}], [{'trade_id': tid, 'patch': second}]])
+                expected = (dict(previous, a=3, b=2) if isinstance(previous, dict)
+                            else (previous if isinstance(previous, list) else [previous]) + [first, second])
+                self.assertEqual(c.positions[tid]['payload'], expected)
+                self.assertEqual(c.trades[tid]['payload'], expected)
 
     def test_one_nonfinite_optional_witness_does_not_discard_healthy_neighbours(self):
         rows = [position(i, structural=True)[0] for i in range(3)]
@@ -274,7 +300,9 @@ class BoundedProtectiveTests(unittest.TestCase):
         self.assertNotIn('observation_path', c.positions[rows[1]['active_trade_id']]['payload'])
         self.assertEqual(c.positions[rows[1]['active_trade_id']]['payload']['mfe_pct'], 'NaN')
         batches = [json.loads(args[0]) for sql, args in c.sql if 'jsonb_to_recordset' in sql]
-        self.assertEqual([len(rows) for rows in batches], [2, 2])
+        self.assertEqual([len(rows) for rows in batches], [1, 1, 1, 1])
+        self.assertEqual([batch[0]['trade_id'] for batch in batches],
+                         [rows[0]['active_trade_id']]*2 + [rows[2]['active_trade_id']]*2)
 
     def test_exit_rehydrates_full_row_and_optional_metadata_failure_cannot_block_stop(self):
         for fail_metadata in (False, True):

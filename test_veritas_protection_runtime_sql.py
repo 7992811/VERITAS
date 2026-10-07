@@ -143,7 +143,7 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
                     PR.write_patches(c, [(z['active_trade_id'], {'poison': True})])
             self.assertEqual(self.contents(c), before)
 
-    def test_native_bad_optional_chunk_rolls_back_both_tables_and_next_chunk_commits(self):
+    def test_native_bad_optional_chunk_recovers_every_healthy_row_and_next_chunk_commits(self):
         rows = self.seed(17)
         patches = [(z['active_trade_id'], {'synthetic_mark': index}) for index, z in enumerate(rows)]
         patches[0][1]['poison'] = True
@@ -154,11 +154,36 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
                 PR.write_patches(trace, patches, optional=True)
             for table, key in (('paper_positions', 'active_trade_id'), ('paper_trades', 'trade_id')):
                 saved = {row[key]: row['payload'] for row in c.execute('SELECT * FROM '+table).fetchall()}
-                for z in rows[:16]:
-                    self.assertEqual(saved[z['active_trade_id']], z['payload'])
-                self.assertEqual(saved[rows[16]['active_trade_id']]['synthetic_mark'], 16)
-            # No row-by-row retry can lengthen the protective critical section.
-            self.assertEqual(len([sql for sql, args in trace.statements if sql.startswith('UPDATE')]), 4)
+                self.assertEqual(saved[rows[0]['active_trade_id']], rows[0]['payload'])
+                for index, z in enumerate(rows[1:], 1):
+                    self.assertEqual(saved[z['active_trade_id']], dict(z['payload'], synthetic_mark=index))
+            # Roll back the failed pair, then recover each healthy member in a
+            # bounded independent savepoint before processing the final chunk.
+            updates = [(sql, args) for sql, args in trace.statements if sql.startswith('UPDATE')]
+            self.assertEqual(len(updates), 2+2*PR.BATCH_SIZE+2)
+            self.assertEqual([len(json.loads(args[0])) for sql, args in updates],
+                             [16, 16]+[1, 1]*17)
+
+    def test_native_repeated_ids_preserve_each_jsonb_merge_for_objects_arrays_and_scalars(self):
+        z = self.seed()[0]
+        tid = z['active_trade_id']
+        first, second = {'a': 1, 'b': 2}, {'a': 3}
+        with self.connect() as c:
+            for previous in ({'prior': True}, ['prior'], 'prior'):
+                with self.subTest(payload=previous):
+                    for table in ('paper_positions', 'paper_trades'):
+                        c.execute('UPDATE '+table+' SET payload=%s::jsonb', (json.dumps(previous),))
+                    trace = TracedConnection(c)
+                    with G.book_transaction(trace):
+                        PR.write_patches(trace, [(tid, first), (tid, second)])
+                    expected = (dict(previous, a=3, b=2) if isinstance(previous, dict)
+                                else (previous if isinstance(previous, list) else [previous])+[first, second])
+                    for table in ('paper_positions', 'paper_trades'):
+                        self.assertEqual(c.execute('SELECT payload FROM '+table).fetchone()['payload'], expected)
+                    batches = [json.loads(args[0]) for sql, args in trace.statements if sql.startswith('UPDATE')]
+                    self.assertEqual(batches, [
+                        [{'trade_id': tid, 'patch': first}], [{'trade_id': tid, 'patch': first}],
+                        [{'trade_id': tid, 'patch': second}], [{'trade_id': tid, 'patch': second}]])
 
     def test_native_profit_refresh_keeps_exact_accounting_and_uses_only_current_fields(self):
         self.seed(3)

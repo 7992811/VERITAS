@@ -260,7 +260,7 @@ class ProtectiveExitTests(unittest.TestCase):
         def execute(sql, args=None):
             self.assertGreater(active_depth, 0, 'guard SQL must be inside the book transaction')
             cur = MagicMock()
-            cur.fetchall.return_value = copy.deepcopy(positions) if sql.startswith(PG.PR.PROTECTION_SQL) else []
+            cur.fetchall.return_value = copy.deepcopy(positions) if sql.startswith(PG.PIO.PROTECTION_POSITIONS_SQL) else []
             return cur
         conn.execute.side_effect = execute
         book = dict(name='Aggressive', high_water_nav_rub=1e6, benchmark_nav_rub=1e6,
