@@ -4,7 +4,7 @@ Admission and accounting remain in the canonical engine. This adapter chooses
 one allocation per newly observed level and manages an explicitly recorded
 target ladder. It never calls a broker or changes the initial entry evidence.
 """
-from copy import deepcopy
+from veritas_data_copy import deepcopy
 from datetime import datetime, timezone
 import json
 import math

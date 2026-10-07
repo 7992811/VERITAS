@@ -1,6 +1,6 @@
 """Source-labelled native OHLC for the canonical timeframe entry rule."""
 from datetime import datetime, timezone
-from copy import deepcopy
+from veritas_data_copy import deepcopy
 from threading import RLock
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
@@ -42,7 +42,9 @@ def observe_execution_barrier(context):
             return out
         # Derive the new fact from the verified quote against the owner's
         # immutable geometry. The caller's mutable spent flag is not evidence.
-        witness = deepcopy(active)
+        # _spend writes only its top-level spent fields; historical proof
+        # fields are read-only. A full graph clone here is discarded at return.
+        witness = dict(active)
         witness.update(spent=False, spent_reason=None, spent_at=None)
         SB._spend(witness, quote, {})
         if witness.get('spent'):

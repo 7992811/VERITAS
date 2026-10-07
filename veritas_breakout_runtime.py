@@ -8,7 +8,7 @@ called here. Five seconds is a polling target, not a promise of market ticks.
 """
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from copy import deepcopy
+from veritas_data_copy import deepcopy
 from datetime import datetime, timezone
 import math
 import threading
@@ -211,6 +211,7 @@ class BreakoutRuntime:
         self._run_lock = threading.Lock()
         self._stop = threading.Event()
         self.state = {"status": "READY", "version": VERSION, "paper_only": True,
+                      "latency_policy_version": "NATIVE_COPY_AND_RESERVED_RETRY_V2",
                       "interval_seconds": INTERVAL_SECONDS, "cycles": 0,
                       "fresh_quotes": 0, "duplicate_quotes": 0,
                       "source_rejections": 0, "stale_quotes": 0}

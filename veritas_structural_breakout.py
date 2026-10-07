@@ -6,7 +6,7 @@ explicit, serializable state transition; callers carry it between observations.
 Targets are previously observed price zones, never a price invented to meet RR.
 Numerical defaults are engineering controls, not fitted profitability evidence.
 """
-from copy import deepcopy
+from veritas_data_copy import deepcopy
 from collections import OrderedDict
 from datetime import datetime, timezone
 import hashlib
@@ -484,6 +484,17 @@ def _spend(event, quote, rows_by_tf):
 
 
 def build_context(raw, horizon, now=None, base_context=None, *, state=None, config=None):
+    result = _build_context_impl(raw, horizon, now, base_context,
+                                 state=state, config=config)
+    # Invalid returns preserve the supplied diagnostic state. A successful
+    # observation already owns a new detached state, so do not first clone a
+    # complete old proof graph that would immediately be discarded.
+    if result.get('quote_state') is None and state is not None:
+        result['quote_state'] = deepcopy(state)
+    return result
+
+
+def _build_context_impl(raw, horizon, now=None, base_context=None, *, state=None, config=None):
     """Observe a quote against levels that were known at its exchange timestamp.
 
     Pass the returned ``quote_state`` into the next call for this exact source,
@@ -497,7 +508,7 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
     out = {"version": VERSION, "asset": asset, "timeframe": horizon,
            "source_identity": deepcopy(source), "status": "INVALID",
            "reason": "STRUCTURAL_CONTEXT_INVALID", "event": None, "levels": [],
-           "target_zones": [], "closed_at": None, "bars": 0, "quote_state": deepcopy(state)}
+           "target_zones": [], "closed_at": None, "bars": 0, "quote_state": None}
     try:
         policy = _policy(config)
         seconds = TS.timeframe_seconds(horizon)
@@ -675,7 +686,7 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
     if leg:
         retained.add(leg["protected_swing"]["level_id"])
     next_state.update(last_quote=deepcopy(quote), seen_level_ids=sorted(seen & retained),
-                      active_event=deepcopy(event), protected_leg=deepcopy(leg))
+                      active_event=event, protected_leg=leg)
     out.update(event=deepcopy(event), quote_state=next_state,
                protected_leg=deepcopy(leg), target_zones=deepcopy((event or {}).get("target_zones") or []))
     if event:
