@@ -7,6 +7,7 @@ import httpx
 import veritas_costs as VC
 import veritas_execution as VX
 import veritas_execution_journal as VEJ
+import veritas_admission_trace as VAT
 import veritas_paper_entry as VPE
 import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
@@ -588,30 +589,7 @@ def _portfolio_canonical_setup_id(row):
     return 'UTS_'+hashlib.sha256(raw.encode()).hexdigest()[:20]
 
 def _portfolio_admission_trace(candidates,policy,drawdown):
-    out=[]
-    for asset,row in sorted((candidates or {}).items()):
-        sf=_signal_first_admission(row,policy,drawdown)
-        plan=row.get('trade_plan') or {}
-        probability_source=sf.get('probability_source') or row.get('_pwin_source')
-        _ps=str(probability_source or '').upper()
-        calibrated=bool(
-            _ps=='EMPIRICAL_CALIBRATION'
-            or (_ps.startswith('CALIBRATED') and 'UNCALIBRATED' not in _ps)
-        )
-        out.append({'asset':asset,'direction':row.get('research_decision'),'horizon':row.get('horizon'),
-                    'canonical_setup_id':_portfolio_canonical_setup_id(row),
-                    'pwin':sf.get('probability') if calibrated else None,
-                    'model_quality_score':sf.get('model_quality_score') or (None if calibrated else row.get('_pwin')),
-                    'signal_prior':row.get('_pwin'),'probability_source':probability_source,
-                    'quality_floor':sf.get('floor') or sf.get('quality_floor'),'rank':row.get('_rank'),
-                    'rr':plan.get('expected_to_stop_ratio'),
-                    'hard_veto':not bool(sf.get('open')),
-                    'target_fraction':sf.get('fraction'),'reason':sf.get('reason'),
-                    'supporting_horizons':row.get('_supporting_horizons'),
-                    'direction_support':row.get('_direction_support'),
-                    'flip_confirmed':row.get('_flip_confirmed'),
-                    'experience_decision':sf.get('experience_decision') or plan.get('execution_policy')})
-    return out
+    return VAT.build(candidates, _portfolio_canonical_setup_id)
 
 
 def _candidate_book_v84(summary):
@@ -2213,6 +2191,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                     for item in book if item['asset']!=asset)/max(nav,1.0)
     prepared=VPE.prepare(row,quote,direction,target_fraction,z,nav,ts,POLICIES[name],
                          gross_excluding_position=other_gross)
+    VAT.record_fill(row,prepared,ts)
     if not prepared['eligible']:
         _record_entry_outcome(row,prepared['status'],prepared['reason'],
             blockers=prepared.get('blockers'),hard_blockers=prepared.get('hard_blockers'),
@@ -2322,7 +2301,7 @@ def _stats(c,name):
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     global COMMISSION; COMMISSION=float(commission_rate)
     for row in candidates.values():
-        row['_execution_audit']={'checked_at':str(ts),'status':'NOT_REQUESTED','reason':'NO_NEW_ALLOCATION'}
+        VAT.begin_cycle(row,ts)
     p,pos=_portfolio_rows(c,name)
     _apply_funding(c,p,pos,prices,ruonia,ts)
     p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices)

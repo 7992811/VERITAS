@@ -459,40 +459,7 @@ def _desired_fraction(row, policy, drawdown):
     return float(admission.get('fraction') or 0.0)
 
 def _portfolio_admission_trace(candidates, policy, drawdown):
-    out = []
-    for asset, row in sorted((candidates or {}).items()):
-        sf = _signal_first_admission(row, policy, drawdown)
-        plan = row.get('trade_plan') or {}
-        out.append({
-            'asset':asset,
-            'direction':row.get('research_decision'),
-            'horizon':row.get('horizon'),
-            'canonical_setup_id':_portfolio_canonical_setup_id(row),
-            'pwin':sf.get('probability'),
-            'model_quality_score':sf.get('model_quality_score'),
-            'signal_prior':row.get('_pwin'),
-            'probability_source':sf.get('probability_source') or row.get('_pwin_source'),
-            'rank':row.get('_rank'),
-            'rr':plan.get('expected_to_stop_ratio'),
-            'hard_veto':not bool(sf.get('open')),
-            'target_fraction':sf.get('fraction'),
-            'reason':sf.get('reason'),
-            'trend_event':sf.get('trend_event'),
-            'execution':dict(row.get('_execution_audit') or {}),
-            'signal_observed_at':row.get('market_observed_at') or row.get('observed_at'),
-            'economics_blockers':sf.get('economics_blockers'),
-            'profitability_blockers':sf.get('profitability_blockers'),
-            'profitability_gate':sf.get('profitability_gate'),
-            'source_blockers':sf.get('source_blockers'),
-            'quote_time_gate':sf.get('quote_time_gate'),
-            'modeled_round_trip_cost_pct':sf.get('modeled_round_trip_cost_pct'),
-            'net_reward_risk':sf.get('net_reward_risk'),
-            'supporting_horizons':row.get('_supporting_horizons'),
-            'direction_support':row.get('_direction_support'),
-            'flip_confirmed':row.get('_flip_confirmed'),
-            'experience_decision':sf.get('experience_decision') or plan.get('execution_policy'),
-        })
-    return out
+    return VAT.build(candidates, _portfolio_canonical_setup_id)
 
 _v90_candidate_base_step_one=_step_one
 
@@ -5018,6 +4985,7 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
 # routing, admission, sizing and mutation authority are replaced below.
 def _canonical_desired_fraction(row,policy,drawdown):
     out=VCR.evaluate(row,policy,drawdown)
+    if isinstance(row,dict): VAT.record(row,out,out.get('checked_at'),'ALLOCATION')
     return float(out.get('fraction') or 0.0) if out.get('open') else 0.0
 
 
@@ -5034,6 +5002,7 @@ def _canonical_payload(z):
 def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     row={} if row is None else row
     row.setdefault('_execution_audit',{})
+    row.setdefault('_admission_audit',{}).pop('FILL',None)
     row=dict(row or {})
     if row.get('_runtime_quote_refresh'):
         ts=datetime.now(timezone.utc).isoformat()
@@ -5049,6 +5018,8 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     dd=max(0.0,1.0-float(nav)/max(hwm,1.0))
     row=TFP.prepare_row(dict(row or {},research_decision=direction),price,ts)
     admission=VCR.evaluate(row,policy,dd,ts)
+    VAT.record(row,admission,ts,'EXECUTION')
+    row['_execution_audit']['checked_at']=str(ts)
     if not admission.get('open'):
         _record_entry_outcome(row,'BLOCKED',admission.get('reason') or 'CANONICAL_ADMISSION_BLOCK',
                               canonical_admission=admission)
@@ -5263,7 +5234,9 @@ CANONICAL_ADMISSION_ENGINE=CanonicalAdmissionEngine()
 
 
 def canonical_signal_first_admission(row,policy,drawdown):
-    return CANONICAL_ADMISSION_ENGINE.evaluate(row,policy,drawdown)
+    out=CANONICAL_ADMISSION_ENGINE.evaluate(row,policy,drawdown)
+    if isinstance(row,dict): VAT.record(row,out,out.get('checked_at'),'PROJECTION')
+    return out
 
 
 def canonical_report(pg_connect):

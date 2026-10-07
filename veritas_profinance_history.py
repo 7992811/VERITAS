@@ -323,7 +323,7 @@ class HistoryCache:
         requested = set(timeframes)
         ordered = [tf for tf in DEFAULT_TIMEFRAMES if tf in requested]
         deadline = self._monotonic() + max(0., min(15., float(budget_seconds)))
-        refreshed, skipped = set(), {}
+        refreshed, skipped, stale_session = set(), {}, False
         acquired = self._gates[asset].acquire(blocking=False)
         try:
             if acquired:
@@ -363,6 +363,13 @@ class HistoryCache:
                             parsed = _retain_daily_proofs(parsed, cached)
                         if not parsed["bars"]:
                             raise ValueError("PROFINANCE_HISTORY_NO_CLOSED_BARS")
+                        if (tf != "1d" and parsed["bars"][-1]["end_ts"] < _boundary(received_at, tf)):
+                            # A successful HTTP response may still contain an
+                            # old chart window. Retire its session for the next
+                            # bounded poll, without redating candles or retrying
+                            # around access-denial/rate-limit backoff.
+                            stale_session = True
+                            skipped[tf] = "STALE_HISTORY_SESSION_RETIRED"
                         parsed["fetched_at"] = self._clock()
                         with self._lock:
                             self._cache[key] = parsed
@@ -388,6 +395,9 @@ class HistoryCache:
                 skipped = {tf: "FETCH_IN_PROGRESS" for tf in ordered}
         finally:
             if acquired:
+                if stale_session:
+                    with self._lock:
+                        self._sessions.pop(asset, None)
                 self._gates[asset].release()
         asof = self._clock() if now is None else _epoch(now)
         identity = _identity(asset)

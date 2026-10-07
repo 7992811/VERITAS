@@ -13,6 +13,49 @@ def native_ohlc(rows):
             for x in rows or [] if len(x) >= 6]
 
 
+def _complete_profinance_five_minute_tail(labelled, identity, clock, statuses, minutes):
+    """Use complete same-source minutes only for absent closed native 5m bars."""
+    end = TS.timestamp(clock)
+    if end is None:
+        return
+    native = labelled.get('5m') or []
+    closed = TS.closed_bars(native, '5m', clock)
+    native_end = closed[-1]['available_at'] if closed else None
+    expected = int(end) // 300 * 300
+    if native_end is not None and native_end >= expected:
+        return
+    # Preserve missing/foreign duplicate provenance for the aggregation proof;
+    # legacy attachment defaults and filtering cannot certify these inputs.
+    minutes = list(minutes or [])[-500:]
+    closed_minutes = TS.closed_bars(minutes, '1m', clock)
+    if not closed_minutes or not 0 <= end - closed_minutes[-1]['available_at'] <= 60:
+        return
+    occupied = {TS.timestamp(bar.get('ts')) for bar in native}
+    derived = [dict(bar, volume=None, volume_available=False,
+                    derived_from_timeframe='1m', derived_from_complete_native_minutes=True)
+               for bar in TS.aggregate_closed_bars(minutes, '1m', '5m', clock, anchor=0)
+               if (native_end is None or bar['ts'] >= native_end)
+               and bar['ts'] not in occupied
+               and isinstance(bar.get('source_identity'), dict)
+               and bar['source_identity'].get('asset') == identity.get('asset')
+               and TS._source_token(bar['source_identity']) == TS._source_token(identity)]
+    if not derived:
+        return
+    labelled['5m'] = sorted(native + derived, key=lambda bar: TS.timestamp(bar.get('ts')) or 0)[-500:]
+    effective = TS.closed_bars(labelled['5m'], '5m', clock)
+    last_end = effective[-1]['available_at']
+    previous = dict(statuses.get('5m') or {})
+    fresh = 0 <= end - last_end <= 300
+    statuses['5m'] = dict(previous, native_history_status=dict(previous.get('native_history_status') or previous),
+        status='READY' if fresh else 'STALE', fresh=fresh, bars=len(effective),
+        last_closed_at=last_end, age_seconds=end-last_end,
+        expected_last_closed_at=expected, latest_completed_period_present=last_end >= expected,
+        reason='COMPLETE_SAME_SOURCE_1M_TAIL', derived_from_timeframe='1m',
+        derived_source_fetched_at=(statuses.get('1m') or {}).get('fetched_at'),
+        derived_closed_bars=sum(bool(bar.get('derived_from_complete_native_minutes')) for bar in labelled['5m']),
+        derived_added_this_attach=len(derived), volume_available=False)
+
+
 def attach(raw, now=None):
     r = dict(raw or {})
     asset = str(r.get('asset') or '')
@@ -37,7 +80,7 @@ def attach(raw, now=None):
                   else fetch_history_bundle(asset=asset, now=now))
         if now is None:
             clock = datetime.now(timezone.utc)
-        r['structure_history_status'] = bundle.get('status_by_timeframe') or {}
+        r['structure_history_status'] = dict(bundle.get('status_by_timeframe') or {})
         if not VPS.same(identity, bundle.get('source_identity')):
             r['structure_history_error'] = 'SAME_TF_SOURCE_MISMATCH'
             return r
@@ -59,10 +102,14 @@ def attach(raw, now=None):
         return r
     labelled = {}
     for tf, rows in mapping.items():
-        labelled[tf] = [dict(b, timeframe=tf, source_identity=identity)
+        labelled[tf] = [dict(b, timeframe=tf, source_identity=dict(b.get('source_identity') or identity))
                         for b in rows[-500:]
                         if (not b.get('source_identity') or VPS.same(identity,b['source_identity']))
                         and (not b.get('timeframe') or b['timeframe']==tf)]
+    if profinance:
+        _complete_profinance_five_minute_tail(labelled, identity, clock, r['structure_history_status'], mapping.get('1m'))
+        r['structure_minute_bars'] = labelled.get('1m', [])
+        r['structure_intraday_bars'] = labelled.get('5m', [])
     # Fetch once per source/contract, before any hourly aggregation. Only the
     # native adapter can certify D1 as daily MA input.
     r['structure_bars_by_timeframe'] = labelled
@@ -90,8 +137,7 @@ def attach(raw, now=None):
             if profinance:
                 for bar in labelled[tf]:
                     bar.update(interval_boundary_verified=True,
-                               native_time_basis='COMPLETE_OBSERVED_UTC_BUCKET',
-                               source_identity=identity)
+                               native_time_basis='COMPLETE_OBSERVED_UTC_BUCKET')
     if profinance:
         statuses = dict(r.get('structure_history_status') or {})
         for tf in ('1d', '3d', '7d'):

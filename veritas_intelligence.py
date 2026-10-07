@@ -29,6 +29,8 @@ except Exception:
 import veritas_release as VR
 import veritas_timeframe_data as TFD
 import veritas_timeframe_policy as TFP
+import veritas_cycle_schedule as VCS
+import veritas_history_diagnostics as VHD
 import veritas_user_teaching as VUT
 VERSION = VR.PRODUCT_VERSION
 try:
@@ -6810,7 +6812,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     processing_horizons=selected_horizons
     _reuse_fast5m_decisions=bool(cycle_mode=='FULL' and '5m' in selected_horizons
         and _v90_last_fast5m_monotonic>0
-        and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
+        and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS
+        and VCS.can_reuse_fast(last_cycle.get('summary'),[a for a,_ in ASSETS.values()],time.time()))
     if _reuse_fast5m_decisions:
         _slow=tuple(h for h in selected_horizons if h not in ('1m','5m'))
         if _slow:
@@ -7348,6 +7351,7 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                      'trend_onset_score':round(float((f.get('trend_impulse') or {}).get('onset_score') or 0),4),
                      'impulse_score':round(float((f.get('trend_impulse') or {}).get('impulse_score') or 0),4),
                      'entry_quality':trade_plan.get('entry_quality') or (f.get('trend_impulse') or {}).get('entry_quality'),'impulse_overlay':impulse_overlay,
+                     'structure_history_status':VHD.summary(raw,horizon,f.get('timeframe_entry_context')),
                      'intraday_structure':f.get('intraday_structure') or {},'trade_plan':trade_plan,'tradeability':tradeability,'decision_stage':decision_stage,
                      'positive_trade_probability':tradeability.get('positive_trade_probability'),'analog_effective_n':tradeability.get('effective_n'),
                      'expected_move_pct':round(float(trade_plan.get('expected_move_pct') or 0.0),6),
@@ -7404,8 +7408,8 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
     for _k,_x in list(_merged.items()):
         if _k not in _fresh_keys:
             _x=dict(_x)
-            _reuse_fast5m=bool(cycle_mode=='FULL' and _k[1] in ('1m','5m') and _v90_last_fast5m_monotonic>0
-                               and time.monotonic()-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
+            _reuse_fast5m=bool(_reuse_fast5m_decisions and _k[1] in ('1m','5m')
+                               and VCS.can_reuse_fast(_carry,[_k[0]],time.time()))
             _x['snapshot_stale']=not _reuse_fast5m
             if _reuse_fast5m:
                 _x['snapshot_reused_from_fast5m']=True
@@ -7519,44 +7523,8 @@ V90_FAST_5M_INTERVAL_SECONDS=max(20,int(os.getenv('VERITAS_FAST_1M_INTERVAL_SECO
 V90_FULL_CYCLE_INTERVAL_SECONDS=max(240,int(os.getenv('VERITAS_FULL_CYCLE_INTERVAL_SECONDS',str(INTERVAL))))
 
 def loop():
-    _start=time.monotonic()
-    next_fast=_start
-    next_full=_start+5.0
-    while True:
-        now_m=time.monotonic()
-        mode='IDLE'
-        try:
-            if now_m>=next_full:
-                mode='FULL'
-                _reuse=bool(_v90_last_fast5m_monotonic>0 and
-                            now_m-_v90_last_fast5m_monotonic<=V90_FAST_5M_REUSE_MAX_AGE_SECONDS)
-                _full_horizons=tuple(h for h in HORIZONS if h not in ('1m','5m')) if _reuse else None
-                cycle(_full_horizons,'FULL')
-                base=now_m
-                next_full=base+V90_FULL_CYCLE_INTERVAL_SECONDS
-                if next_fast<=base:
-                    next_fast=base+V90_FAST_5M_INTERVAL_SECONDS
-            elif now_m>=next_fast:
-                mode='FAST_5M'
-                cycle(('1m','5m'),'FAST_5M')
-                while next_fast<=now_m:
-                    next_fast+=V90_FAST_5M_INTERVAL_SECONDS
-            else:
-                time.sleep(max(0.5,min(5.0,min(next_fast,next_full)-now_m)))
-                continue
-        except Exception as e:
-            err={'status':'error','at':now(),'version':VERSION,'cycle_mode':mode,
-                 'error':f'{type(e).__name__}: {e}'}
-            with lock:
-                if last_cycle.get('summary'):
-                    last_cycle['last_cycle_error']=err
-                else:
-                    last_cycle.clear(); last_cycle.update(err)
-            emit('cycle_error',cycle_mode=mode,error=err['error'],trace=traceback.format_exc(limit=3))
-            if mode=='FULL':
-                next_full=time.monotonic()+30
-            elif mode=='FAST_5M':
-                next_fast=time.monotonic()+15
+    VCS.run(globals())
+
 def _historical_rules():
     _, rules = all_knowledge()
     out = []
@@ -18617,7 +18585,7 @@ def _v90_compact_live_row(z):
         'expected_move_pct','signal_tier','execution_signal_tier',
         'event_shadow_score','causal_score','causal_label','decision_stage',
         'sma18','sma50','sma200','support_level','resistance_level',
-        'minute_data_status','minute_closed_at','minute_entry_gate','research_history_status','research_feature_availability','research_hourly_bar_count')
+        'minute_data_status','minute_closed_at','minute_entry_gate','research_history_status','research_feature_availability','research_hourly_bar_count','structure_history_status')
     out=_v90_small_dict(z,keys)
     # R65.1: preserve executable crypto quote fields at row level for paper_source_gate.
     for _qk in ('best_bid','best_ask','spread_bps','market_observed_at'):
@@ -18636,6 +18604,8 @@ def _v90_compact_live_row(z):
     out['range_retest_breakout']=rs
     out['impulse_pivot_break']=pb
     out['impulse_overlay']=io
+    from veritas_signal_readiness import readiness_fields
+    out.update(readiness_fields(z))
     return out
 
 
@@ -18651,6 +18621,8 @@ def _v90_compact_decision_log(z):
         'signal_tier':r.get('signal_tier'),'execution_eligible':r.get('execution_eligible'),
         'paper_eligible':r.get('paper_eligible'),'production_eligible':r.get('production_eligible'),
         'execution_reason':r.get('execution_reason'),'paper_execution_reason':r.get('paper_execution_reason'),
+        'structure_history_status':r.get('structure_history_status'),
+        'trade_entry_eligible':r.get('trade_entry_eligible'),'trade_entry_reason':r.get('trade_entry_reason'),'trade_entry_checked_at':r.get('trade_entry_checked_at'),
         'spread_bps':r.get('spread_bps'),
         'final_gate_status':(p.get('final_economics_gate') or {}).get('status'),
         'final_gate_blockers':(p.get('final_economics_gate') or {}).get('blockers'),

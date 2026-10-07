@@ -77,6 +77,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .matrix .cell:hover{background:rgba(255,255,255,.045)}
 .matrix .cell.sel{outline:1px solid rgba(164,196,220,.62);outline-offset:-3px;background:rgba(102,159,203,.055)}
 .matrix .cell:focus-visible{outline:2px solid #87b9d9;outline-offset:-3px}
+.matrix .cell .entry-state{font-size:8px;line-height:1.15;max-width:100%;white-space:normal;overflow-wrap:anywhere;margin-top:9px;color:var(--muted)}
 /* R90: matte instrument markers with restrained edge definition. */
 .matrix-panel .sig-dot{--signal-color:#ffd037;--signal-edge:inset 0 1px 0 rgba(255,255,255,.12),inset 0 -1px 0 rgba(0,0,0,.16);width:24px;height:24px;flex:0 0 auto;background:var(--signal-color);border:0;color:var(--signal-color);box-shadow:var(--signal-edge)}
 .matrix-panel .sig-dot.long{--signal-color:#00ed95}
@@ -227,7 +228,7 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
     </div>
 
     <div class="card full section matrix-panel" data-matrix-design="matte-ring-r90">
-      <div class="title">Матрица сигналов</div>
+      <div class="title">Матрица прогнозов и готовность входа</div>
       <div class="matrix-wrap"><table class="matrix"><thead><tr id="matrixHead"><th scope="col">Актив</th></tr></thead><tbody id="matrixBody"></tbody></table></div>
       <div class="matrix-legend" aria-label="Обозначения сигналов">
         <span><i class="sig-dot long" aria-hidden="true"></i>Long</span>
@@ -236,6 +237,7 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
         <span><i class="sig-dot short super" aria-hidden="true"></i>Strong Short</span>
         <span><i class="sig-dot wait" aria-hidden="true"></i>Wait</span>
       </div>
+      <div class="msg">Цвет показывает направление прогноза. Подпись в ячейке — текущее решение по входу.</div>
     </div>
 
     <div class="card full section">
@@ -333,11 +335,16 @@ const localHistoryDetail=g=>{
   return [count,gap].filter(Boolean).join(', ');
 };
 const planStatus=x=>{
-  const p=planOf(x),econ=p.final_economics_gate||{},blocked=(short,reason)=>({ready:false,short,reason});
+  const p=planOf(x),econ=p.final_economics_gate||{},blocked=(short,reason)=>({ready:false,short,reason,checked_at:x.trade_entry_checked_at});
   if(!['LONG','SHORT'].includes(dir(x)))return blocked('','Направление не подтверждено');
   if(x.market_open===false)return blocked('сессия','Торговая сессия закрыта');
   if(x.source_gate_pass===false)return blocked('данные','Цена устарела или источник не прошёл проверку');
   if((x.paper_eligible??x.execution_eligible)!==true)return blocked('данные','Нет допуска данных для модельной сделки');
+  if(typeof x.trade_entry_eligible==='boolean'){
+    const codes=[...new Set([x.trade_entry_reason,...(x.trade_entry_blockers||[])].filter(Boolean))];
+    if(!x.trade_entry_eligible)return blocked(blockerShort(codes[0]),codes.map(reasonRu).join('; '));
+    return{ready:true,short:'допущен',reason:'Торговый план проверен; размер и открытие определяет портфель',checked_at:x.trade_entry_checked_at};
+  }
   const timing=p.entry_timing_gate||{},quote=p.execution_quote_gate||{};
   const blockers=[...new Set([...(econ.blockers||x.final_gate_blockers||[]),
     ...(timing.eligible===false?[timing.reason]:[]),...(quote.eligible===false?[quote.reason]:[])].filter(Boolean))];
@@ -351,11 +358,19 @@ const planStatus=x=>{
   return {ready:true,short:'допущен',reason:'Сигнал допущен для модельной сделки; размер и открытие определяет портфель'};
 };
 const portfolioDecisions=x=>((st.portfolios&&st.portfolios.portfolios)||[]).flatMap(p=>(p.admission_trace||[]).filter(t=>t.asset===x.asset&&t.direction===dir(x)).map(t=>({...t,portfolio:p.name})));
+const traceCheckedAt=t=>t.checked_at||t.execution?.checked_at||t.admission?.checked_at;
+const signalEventId=x=>planOf(x).entry_event_snapshot?.event_id||planOf(x).timeframe_entry_context?.event?.event_id||x.timeframe_entry_context?.event?.event_id;
+const traceMatchesSignal=(t,x)=>{
+  const event=signalEventId(x),recorded=t.event_id||t.admission?.event_id||t.execution?.event_id;
+  if(event&&recorded)return event===recorded;
+  return !t.signal_observed_at||!x.market_observed_at||t.signal_observed_at===x.market_observed_at;
+};
+const traceEconomics=t=>'R/R до расходов '+n(knownNumber(t.gross_rr),2)+' · после расходов '+n(knownNumber(t.net_rr??t.net_reward_risk),2);
 const traceReason=t=>{
   const e=t.execution||{};
   if(e.status==='EXECUTED')return'Ордер исполнен';
   if(e.status==='HELD')return reasonRu(e.reason);
-  const reasons=e.status==='BLOCKED'?(e.blockers?.length?e.blockers:[e.reason]):(t.hard_veto?(t.profitability_blockers||t.economics_blockers||t.source_blockers||[t.reason]):[e.reason||'EXECUTION_PENDING']);
+  const reasons=e.status==='BLOCKED'?(e.blockers?.length?e.blockers:[e.reason]):(t.hard_veto?(t.admission?.blockers?.length?t.admission.blockers:t.profitability_blockers||t.economics_blockers||t.source_blockers||[t.reason]):[t.reason==='ADMISSION_NOT_RECORDED'?t.reason:e.reason||'EXECUTION_PENDING']);
   let text=[...new Set(reasons.filter(Boolean).map(reasonRu))].join('; ');
   if(['EXECUTION_QUOTE_UNAVAILABLE','R66_EXECUTION_QUOTE_STALE'].includes(e.reason)&&e.quote_gate?.age_seconds!=null)text+=': возраст '+Math.max(0,Number(e.quote_gate.age_seconds)).toFixed(0)+' с, допустимо '+Number(e.quote_gate.max_age_seconds||300).toFixed(0)+' с';
   if(e.timing?.consumed_move_pct!=null)text+=': движение '+(100*Number(e.timing.consumed_move_pct)).toFixed(2)+'%, предел '+(100*Number(e.timing.late_entry_limit_pct)).toFixed(2)+'%';
@@ -365,25 +380,33 @@ const traceReason=t=>{
 };
 const paperStatus=x=>{
   const plan=planStatus(x);
-  if(['сессия','данные'].includes(plan.short))return plan;
   const all=portfolioDecisions(x),exact=all.filter(t=>t.horizon===x.horizon);
-  const checked=exact.filter(t=>{const at=Date.parse(t.execution?.checked_at||'');return Number.isFinite(at)&&Date.now()-at<=180000&&Date.now()-at>=-60000&&(!t.signal_observed_at||!x.market_observed_at||t.signal_observed_at===x.market_observed_at)});
+  const checked=exact.filter(t=>{const at=Date.parse(traceCheckedAt(t)||'');return Number.isFinite(at)&&Date.now()-at<=180000&&Date.now()-at>=-60000&&traceMatchesSignal(t,x)});
+  if(checked.some(t=>t.execution?.status==='EXECUTED'))return{ready:true,short:'исполнен',checked_at:traceCheckedAt(checked.find(t=>t.execution?.status==='EXECUTED')),reason:checked.filter(t=>t.execution?.status==='EXECUTED').map(t=>t.portfolio).join(', ')+': ордер исполнен'};
+  if(['сессия','данные'].includes(plan.short))return plan;
   if(!checked.length){
     if(!plan.ready)return plan;
     if(all.length&&!exact.length)return{ready:false,short:'другой ТФ',reason:'Для входа портфели выбрали другой период: '+[...new Set(all.map(t=>tfRu(t.horizon)))].join(', ')};
-    return{ready:false,short:'проверка',reason:'Торговый план прошёл проверку; ожидается актуальное решение исполнителя'};
+    return{ready:false,short:'проверка',reason:'Торговый план прошёл проверку; ожидается актуальное решение исполнителя',checked_at:plan.checked_at};
   }
-  if(checked.some(t=>t.execution?.status==='EXECUTED'))return{ready:true,short:'исполнен',reason:checked.filter(t=>t.execution?.status==='EXECUTED').map(t=>t.portfolio).join(', ')+': ордер исполнен'};
   const held=checked.filter(t=>t.execution?.status==='HELD');
-  if(held.length)return{ready:false,short:'позиция',reason:held.map(t=>t.portfolio).join(', ')+': '+traceReason(held[0])};
+  if(held.length)return{ready:false,short:'позиция',checked_at:traceCheckedAt(held[0]),reason:held.map(t=>t.portfolio).join(', ')+': '+traceReason(held[0])};
+  const pending=checked.filter(t=>t.admission?.open===true&&!['BLOCKED','EXECUTED','HELD'].includes(t.execution?.status));
+  if(pending.length)return{ready:false,short:'проверка',reason:'Вход допущен: '+pending.map(t=>t.portfolio).join(', ')+'. Исполнение ордера ещё не подтверждено',checked_at:traceCheckedAt(pending[0])};
   const codes=checked.flatMap(t=>[t.execution?.status==='BLOCKED'?t.execution.reason:t.reason,
     ...(t.economics_blockers||[]),...(t.source_blockers||[])]).filter(Boolean);
-  return{ready:false,short:blockerShort(codes[0]),reason:[...new Set([
+  return{ready:false,short:blockerShort(codes[0]),checked_at:traceCheckedAt(checked[0]),reason:[...new Set([
     ...checked.flatMap(t=>traceReason(t).split('; ')),...(!plan.ready?[plan.reason]:[])
   ].flatMap(v=>v.split('; ')).filter(Boolean))].join('; ')};
 };
 const blockerShort=code=>{
   const c=String(code||'');
+  if(c.includes('DIRECTION_CONFLICT'))return'конфликт';
+  if(c.includes('EVENT_EXPIRED')||c.includes('EVENT_SPENT'))return'истёк';
+  if(c.includes('STOP_ALREADY_REACHED')||c.includes('BOTH_BARRIERS')||c.includes('INVALIDATED'))return'отмена';
+  if(c.includes('TARGET_ALREADY_REACHED')&&c.startsWith('SAME_TF'))return'цель';
+  if(c.includes('ENTRY_EXTENDED'))return'поздно';
+  if(c.includes('PLAN_NOT_CHECKED')||c.includes('ENTRY_TIME_MISSING')||c.includes('ADMISSION_NOT_RECORDED'))return'проверка';
   if(c.includes('QUOTE')||c.includes('MINUTE_DATA'))return'цена';
   if(c.includes('CONTEXT'))return'свечи';
   if(c.includes('RETEST'))return'ретест';
@@ -394,7 +417,7 @@ const blockerShort=code=>{
   if(c.includes('RR_')||c.includes('REWARD_RISK'))return'R/R';
   return'ожидание';
 };
-const rrOf=x=>planOf(x).execution_levels_ready===false?undefined:planOf(x).final_economics_gate?.expected_to_stop_ratio??planOf(x).expected_to_stop_ratio??x?.expected_to_stop_ratio;
+const rrOf=x=>planOf(x).final_economics_gate?.net_reward_risk??x?.net_reward_risk;
 const stopOf=x=>planOf(x).execution_levels_ready===false?null:planOf(x).stop_price??x?.stop_price;
 const targetOf=x=>planOf(x).execution_levels_ready===false?null:planOf(x).target_price??x?.target_price??planOf(x).take_price;
 const dirRu=d=>directionLabel(d,null);
@@ -410,6 +433,33 @@ const stageRu=v=>{const k=String(v||'');const m={EARLY_PROBE:'Ранний вх�
 const reasonRu=v=>{
   const k=String(v||'').toUpperCase();
   const exact={
+    SAME_TF_CONTEXT_STALE:'Закрытые свечи выбранного периода устарели; ждём обновление данных',
+    SAME_TF_CONTEXT_REQUIRED:'Нет подтверждённых свечей выбранного периода',
+    SAME_TF_DIRECTION_CONFLICT:'Прогноз и подтверждённое структурное событие направлены в разные стороны',
+    SAME_TF_EVENT_EXPIRED:'Срок входа по этому пробою истёк; нужен новый сигнал',
+    SAME_TF_EVENT_SPENT:'Сценарий уже исчерпан; нужен новый сигнал',
+    SAME_TF_TARGET_ALREADY_REACHED:'Цель исходного события уже достигнута; нужен новый вход',
+    SAME_TF_STOP_ALREADY_REACHED:'Структурный стоп исходного события уже достигнут; сценарий отменён',
+    SAME_TF_BOTH_BARRIERS_REACHED:'Исходные уровни стопа и цели уже пройдены; сценарий исчерпан',
+    SAME_TF_ENTRY_EXTENDED:'Цена ушла слишком далеко от подтверждённого уровня; вход запоздал',
+    SAME_TF_STOP_TOO_DISTANT:'Расстояние до структурного стопа превышает допустимую волатильность',
+    SAME_TF_WAIT_STRUCTURAL_BREAKOUT:'Ждём подтверждённый пробой уровня на выбранном периоде',
+    SAME_TF_BREAKOUT_LEVEL_NOT_HELD:'Цена не удерживает пробитый уровень',
+    SAME_TF_INVALID_GEOMETRY:'Нет согласованного структурного стопа и цели для этого направления',
+    SAME_TF_SOURCE_MISMATCH:'Свечи и цена исполнения относятся к разным источникам',
+    MA_LOCAL_SOURCE_MISMATCH:'Источник локальных свечей не подтверждён для сценария от средней',
+    EXECUTION_QUOTE_STALE:'Котировка исполнения устарела; ждём свежую цену',
+    EXECUTION_ORDERBOOK_STALE:'Стакан устарел; ждём свежие цены покупки и продажи',
+    TRADE_PLAN_READY:'Торговый план прошёл проверку',
+    CANONICAL_ENTRY_ADMITTED:'Портфель допустил вход; исполнение проверяется отдельно',
+    TRADE_PLAN_NOT_CHECKED:'Завершённая проверка торгового плана ещё не получена',
+    TRADE_ENTRY_TIME_MISSING:'Нет времени проверки плана; требуется актуальное решение',
+    ADMISSION_NOT_RECORDED:'Решение портфеля по этому сигналу ещё не записано',
+    CANONICAL_ADMISSION_PENDING:'Ожидается решение портфеля',
+    MARKET_SESSION_CLOSED:'Торговая сессия закрыта',
+    PAPER_SOURCE_NOT_ELIGIBLE:'Источник данных не допущен для модельной сделки',
+    PRIMARY_SOURCE_GATE_FAILED:'Источник цены не прошёл проверку',
+    ENTRY_SCENARIO_INVALIDATED:'Условия входа утратили актуальность',
     CURRENCY_PORTFOLIO_SETUP_PENDING:'Валютный портфель ожидает настройки капитала и ограничений риска',
     EXECUTION_QUOTE_UNAVAILABLE:'Нет свежей котировки для исполнения',
     EXECUTION_PENDING:'Ожидается окончательная проверка исполнения',
@@ -474,6 +524,7 @@ const reasonRu=v=>{
     PAPER_ONE_VALID_SOURCE:'Данные допущены: одного проверенного источника достаточно'
   };
   if(exact[k])return exact[k];
+  if(k.startsWith('FINAL_ECONOMICS_GATE:'))return [...new Set(k.split(':').slice(1).join(':').split(',').slice(0,24).map(reasonRu))].join('; ');
   if(!k)return'Причина уточняется';
   if(k.includes('NEGATIVE_VALIDATED_SETUP_EDGE')||k.includes('NEGATIVE_CONTEXT_EXPECTANCY'))return'Историческая проверка похожих сценариев показывает отрицательный результат';
   if(k.includes('LATE_ENTRY')||k.includes('NO_CHASE'))return'Движение уже прошло слишком далеко; ожидается откат или новый пробой';
@@ -524,9 +575,9 @@ function renderSignals(){
   $('actions').innerHTML=best.length?best.map(x=>{
     const rr=Number(rrOf(x)),admission=paperStatus(x),sig=directionLabel(dir(x),tier(x));
     const state=admission.ready?'ОРДЕР ИСПОЛНЕН':admission.short==='позиция'?'ПОЗИЦИЯ ОТКРЫТА':admission.short==='проверка'?'ПРОВЕРКА ВХОДА':'ВХОД ЗАБЛОКИРОВАН';
-    return '<div class="row action"><div class="action-head"><button class="action-link" data-signal="'+esc(x.asset+'|'+x.horizon)+'"><b>'+lab(x.asset)+'</b></button><b class="'+cls(dir(x))+'">'+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span></div>'+
+    return '<div class="row action"><div class="action-head"><button class="action-link" data-signal="'+esc(x.asset+'|'+x.horizon)+'"><b>'+lab(x.asset)+'</b></button><b class="'+cls(dir(x))+'">Прогноз: '+ar(dir(x))+' '+sig+'</b><span>'+tfRu(x.horizon)+'</span></div>'+
       '<span class="action-reason"><b>'+state+'</b> · '+esc(admission.reason)+'</span>'+
-      '<span class="action-meta">Потенциал / риск после расходов '+(Number.isFinite(rr)?rr.toFixed(2):'—')+' · Стоп '+p2(stopOf(x))+' · Цель '+p2(targetOf(x))+'</span></div>';
+      '<span class="action-meta">Потенциал / риск после расходов '+(Number.isFinite(rr)?rr.toFixed(2):'—')+' · Стоп '+p2(stopOf(x))+' · Цель '+p2(targetOf(x))+(admission.checked_at?' · проверено '+dateRu(admission.checked_at):'')+'</span></div>';
   }).join(''):'<div class="msg">Направленных сигналов сейчас нет — ожидается подтверждение структуры.</div>';
   document.querySelectorAll('.action-link[data-signal]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.signal,true));
 
@@ -537,8 +588,9 @@ function renderSignals(){
     if(!x)return'<td><button type="button" class="cell" disabled aria-label="'+esc(identity+' · нет данных')+'" title="Нет данных"><span class="sig-dot unavailable" aria-hidden="true">—</span></button></td>';
     const D=dir(x),T=tier(x),conf=x.confidence==null?null:100*Number(x.confidence),isSuper=(T==='SUPER_LONG'||T==='SUPER_SHORT'),dc=D==='LONG'?'long':D==='SHORT'?'short':'wait';
     const score=conf!==null&&Number.isFinite(conf)?conf.toFixed(1)+'/100':'нет данных';
-    const description=identity+' · '+tierLabel(x)+' · оценка '+score+' · '+paperStatus(x).reason;
-    return'<td><button type="button" class="cell" data-k="'+a+'|'+tf+'" aria-label="'+esc(description)+'" title="'+esc(description)+'"><span class="sig-dot '+dc+(isSuper?' super':'')+'" aria-hidden="true"></span></button></td>';
+    const admission=paperStatus(x),description=identity+' · прогноз '+tierLabel(x)+' · оценка '+score+' · '+admission.reason;
+    const entryLabel=admission.ready?'Исполнен':admission.short==='позиция'?'Есть позиция':'Вход: '+(admission.short||'нет сигнала');
+    return'<td><button type="button" class="cell" data-k="'+a+'|'+tf+'" aria-label="'+esc(description)+'" title="'+esc(description)+'"><span class="sig-dot '+dc+(isSuper?' super':'')+'" aria-hidden="true"></span><small class="entry-state">'+esc(entryLabel)+'</small></button></td>';
   }).join('')+'</tr>').join('');
   document.querySelectorAll('.cell[data-k]').forEach(b=>b.onclick=()=>selectSignal(b.dataset.k));
   if(!st.selected&&rows.length){const x=best[0]||rows[0];st.selected=x.asset+'|'+x.horizon}
@@ -576,25 +628,27 @@ function selectSignal(k,scroll=false){
       '<div class="signal-summary">'+
         '<div class="signal-identity">'+assetLogo(x.asset)+'<div><div class="signal-name">'+lab(x.asset)+' · '+tfRu(x.horizon)+'</div><div class="signal-sub">'+regimeRu(x.regime)+'</div></div></div>'+
         '<div class="signal-chips">'+
-          '<span class="signal-chip '+cls(D)+'">'+tierLabel(x)+'</span>'+
+          '<span class="signal-chip '+cls(D)+'">Прогноз: '+tierLabel(x)+'</span>'+
           '<span class="signal-chip">Оценка сигнала '+(conf==null?'—':conf.toFixed(1)+'/100')+'</span>'+
           '<span class="signal-chip">Подтверждений '+confirms+'</span>'+
           '<span class="signal-chip" title="'+esc(admission.reason)+'">'+(ready?'Ордер исполнен':'Вход: '+esc(admission.short))+'</span>'+
+          '<span class="signal-chip">Проверка входа: '+dateRu(admission.checked_at||x.trade_entry_checked_at)+'</span>'+
         '</div>'+
       '</div>'+
       '<div class="detail-columns">'+
         '<div>'+
-          '<div class="detail-panel"><h4>Смысл сигнала</h4><div class="detail-text"><b>'+directionText+'.</b> '+structureText+'. '+qualityRu(x.entry_quality)+'. '+reasonRu(x.plan_reason||plan.reason||x.execution_reason)+'.</div></div>'+
+          '<div class="detail-panel"><h4>Прогноз рынка</h4><div class="detail-text"><b>'+directionText+'.</b> '+structureText+'. '+qualityRu(x.entry_quality)+'.</div></div>'+
           '<div class="detail-panel" style="margin-top:8px"><h4>Что учитывает система</h4><div class="detail-list">'+
             '<div class="detail-line"><span>Рыночный режим</span><b>'+regimeRu(x.regime)+'</b></div>'+
             '<div class="detail-line"><span>Состояние структуры</span><b>'+structureText+'</b></div>'+
             '<div class="detail-line"><span>Качество входа</span><b>'+qualityRu(x.entry_quality)+'</b></div>'+
+            '<div class="detail-line"><span>Готовность входа</span><b>'+esc(admission.reason)+'</b></div>'+
             '<div class="detail-line"><span>Стадия решения</span><b>'+stageRu(x.decision_stage)+'</b></div>'+
             '<div class="detail-line"><span>Тип сценария</span><b>'+setupRu(setup)+'</b></div>'+
             '<div class="detail-line"><span>Позиция в портфелях</span><b>'+openText+'</b></div>'+
           '</div></div>'+
           '<div class="action-box"><b>Действие VERITAS:</b> '+actionText+'<br><b>Когда сценарий отменяется:</b> '+invalidation+'</div>'+
-          '<div class="execution-list">'+portfolioDecisions(x).map(t=>'<div class="execution-item"><b>'+esc(t.portfolio)+' · '+tfRu(t.horizon)+'</b> · '+esc(traceReason(t))+(t.execution?.checked_at?' · проверено '+dateRu(t.execution.checked_at):' · ожидается обновление')+'</div>').join('')+'</div>'+
+          '<div class="execution-list">'+portfolioDecisions(x).map(t=>'<div class="execution-item"><b>'+esc(t.portfolio)+' · '+tfRu(t.horizon)+'</b> · '+esc(traceReason(t))+' · '+esc(traceEconomics(t))+(traceCheckedAt(t)?' · проверено '+dateRu(traceCheckedAt(t)):' · ожидается обновление')+'</div>').join('')+'</div>'+
         '</div>'+
         '<div class="detail-panel"><h4>Торговый план и уровни</h4><div class="plan-grid">'+
           '<div class="plan-metric"><span>Текущая цена</span><b>'+n(x.price,4)+'</b></div>'+
@@ -911,7 +965,7 @@ function renderInsights(){
   let topKey=null,topN=-1;Object.entries(ac).forEach(([k,v])=>{const n=Number(v||0);if(n>topN){topN=n;topKey=k}});
   const epText=ep.eligible_episodes==null?'—':esc(ep.eligible_episodes),topText=topKey?(labels[topKey]||topKey)+' · '+topN:'—';
   $('learning').innerHTML='<b>Закрытых сделок:</b> '+esc(l.closed_trades??'—')+'<br><b>Прибыльных:</b> '+esc(l.wins??'—')+'<br><b>Win-rate:</b> '+wr+'<br><b>Эпизодов R29:</b> '+epText+'<br><b>Главный урок:</b> '+esc(topText)+'<br><b>Память опыта:</b> '+esc(l.experience_storage||'—');
-  $('quality').innerHTML='<b>Матрица:</b> '+esc(q.cells??'—')+'/'+esc(q.expected_cells??42)+'<br><b>Источник подтверждён:</b> '+esc(q.source_verified_cells??'—')+' ячеек<br><b>Можно исполнять:</b> '+esc(q.execution_eligible_cells??'—')+' ячеек<br><b>Устаревших:</b> '+esc(q.stale_cells??'—');
+  $('quality').innerHTML='<b>Матрица:</b> '+esc(q.cells??'—')+'/'+esc(q.expected_cells??42)+'<br><b>Источник подтверждён:</b> '+esc(q.source_verified_cells??'—')+' ячеек<br><b>Допуск источника для модели:</b> '+esc(q.execution_eligible_cells??'—')+' ячеек<br><b>Устаревших:</b> '+esc(q.stale_cells??'—');
   $('horizon').innerHTML=TF.map(tf=>'<b>'+tf+':</b> '+esc(h[tf]??0)+'/7 активов').join('<br>');
   const macroObj=m.macro||m, regime=m.regime||{};
   const macroLines=[];
