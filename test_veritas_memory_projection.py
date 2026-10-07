@@ -108,7 +108,8 @@ class MemoryProjectionSQLTests(unittest.TestCase):
     def setUpClass(cls):
         import psycopg
         from psycopg.rows import dict_row
-        cls.driver, cls.row_factory = psycopg, dict_row
+        cls.driver = psycopg
+        cls.row_factory = staticmethod(dict_row)
         cls.schema = "memory_projection_test_" + uuid.uuid4().hex
         with psycopg.connect(DSN) as c:
             if c.execute("SELECT current_database()").fetchone()[0] != "veritas_quality_test":
