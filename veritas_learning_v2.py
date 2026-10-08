@@ -640,8 +640,12 @@ def _v2_promotion_gate(evidence):
         if type(evidence.get(name)) is not bool:
             blockers.append("V2_INVALID_" + name.upper())
     if evidence.get("calibration_applicable") is True:
+        raw_ece = evidence.get("ece")
         ece = finite("ece")
-        if ece is None or not 0 <= ece <= 1:
+        # Missing ECE means calibration is not yet proven; the threshold gate
+        # below blocks it explicitly. A present non-finite/out-of-range ECE is
+        # malformed evidence and remains fail-closed.
+        if raw_ece is not None and (ece is None or not 0 <= ece <= 1):
             blockers.append("V2_CALIBRATION_ECE_INVALID")
     elif evidence.get("ece") is not None and finite("ece") is None:
         blockers.append("V2_ECE_INVALID_WHEN_PRESENT")
