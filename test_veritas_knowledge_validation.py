@@ -23,6 +23,25 @@ RULE = dict(rule_id="AUTO_RULE", source_id="AUTO_TEST", agent="trend", asset_sco
             action="LONG", status="shadow", conditions=[dict(field="trend_score", op="gt", value=0)],
             prior_weight=.01, hypothesis="Positive trend predicts a rise", mechanism="Persistence", formalization_note="Abstract extracted")
 
+# The v91.8.10 rule-page reader, before bounding its source/audit joins.
+LEGACY_CATALOG_RULES_SQL = """WITH page AS MATERIALIZED (
+        SELECT rule_id,source_id,agent,asset_scope,horizons,action,status,
+          CASE WHEN octet_length(conditions::text)<=4096 THEN conditions ELSE NULL END conditions,
+          prior_weight,CASE WHEN octet_length(hypothesis)<=2048 THEN hypothesis ELSE NULL END hypothesis,
+          CASE WHEN octet_length(mechanism)<=2048 THEN mechanism ELSE NULL END mechanism,
+          CASE WHEN octet_length(formalization_note)<=2048 THEN formalization_note ELSE NULL END formalization_note
+        FROM knowledge_rules WHERE rule_id>%s AND (left(source_id,5)='AUTO_'
+          OR EXISTS (SELECT 1 FROM knowledge_validation_rules known
+            WHERE known.rule_id=knowledge_rules.rule_id AND known.active))
+        ORDER BY rule_id LIMIT %s)
+        SELECT p.*,jsonb_build_object('source_id',s.source_id,'title',left(s.title,512),
+          'authors',left(s.authors,512),'year',s.year,'source_type',s.source_type,'url',left(s.url,1024),
+          'claim',left(s.claim,1024),'evidence_grade',s.evidence_grade) AS source,
+          a.audit,a.checked_at audit_checked_at,a.revision audit_revision
+        FROM page p LEFT JOIN knowledge_sources s ON s.source_id=p.source_id
+        LEFT JOIN knowledge_validation_source_audits a ON a.source_id=p.source_id
+        ORDER BY p.rule_id"""
+
 
 def registration(at=T0):
     return K._registration(RULE, ACADEMIC, AUDIT, at)
@@ -538,6 +557,183 @@ class KnowledgeValidationSQLTests(unittest.TestCase):
         with K._transaction(self.connect, Budget()) as c:
             self.assertEqual(c.execute("SHOW statement_timeout").fetchone()["statement_timeout"], "2s")
             self.assertEqual(c.execute("SHOW lock_timeout").fetchone()["lock_timeout"], "250ms")
+
+    def _catalog_query(self, after="ZZ_CATALOG_RULE_"):
+        class Capture:
+            def execute(self, sql, args=None):
+                self.sql, self.args = sql, args
+                return self
+            def fetchall(self):
+                return []
+        capture = Capture()
+        K._catalog_rules(capture, {"rule_after": after}, T0, None)
+        return capture.sql, capture.args
+
+    def _seed_catalog_probe_rules(self):
+        noise = "SYNTHETIC_CATALOG_HISTORY:"+"".join(
+            hashlib.sha256(("catalog-"+str(i)).encode()).hexdigest() for i in range(128))
+        sources = ["AUTO_CAT_SHARED", "AUTO_CAT_SHARED", "AUTO_CAT_NO_SOURCE", "AUTO_CAT_NO_AUDIT",
+                   "AUTO_CAT_NULL_AUDIT", "KNOWN_CAT_SOURCE", None, "AUTO_CAT_NULL_FIELDS", "AUTO_CAT_OVERSIZED"]
+        ids = ["ZZ_CATALOG_RULE_"+str(i).zfill(2) for i in range(len(sources))]
+        with self.connect() as c:
+            for sid in sorted(set(sources)-{None, "AUTO_CAT_NO_SOURCE"}):
+                source = dict(ACADEMIC, source_id=sid, title=noise*2, authors=noise,
+                              url="https://example.org/"+noise, claim=noise*2)
+                if sid == "AUTO_CAT_NULL_FIELDS":
+                    source = dict.fromkeys(ACADEMIC)
+                    source.update(source_id=sid, title="Nullable source fields")
+                c.execute("""INSERT INTO knowledge_sources
+                    (source_id,title,authors,year,source_type,url,evidence_grade,claim)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    tuple(source[k] for k in ("source_id", "title", "authors", "year",
+                                              "source_type", "url", "evidence_grade", "claim")))
+            for i, (rid, sid) in enumerate(zip(ids, sources)):
+                rule = dict(RULE, rule_id=rid, source_id=sid)
+                if i == 8:
+                    rule.update(conditions=[dict(field="trend_score", padding=noise)],
+                                hypothesis=noise, mechanism=noise, formalization_note=noise)
+                c.execute("INSERT INTO knowledge_rules VALUES(%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s::jsonb,%s,%s,%s,%s)",
+                    tuple(json.dumps(rule[k]) if k in ("asset_scope", "horizons", "conditions") else rule[k]
+                          for k in ("rule_id", "source_id", "agent", "asset_scope", "horizons", "action",
+                                    "status", "conditions", "prior_weight", "hypothesis", "mechanism", "formalization_note")))
+            # These interspersed seed/inactive rules must not consume the page.
+            for suffix, sid in (("00_SEED", "SEED_NOT_REGISTERED"), ("04_INACTIVE", "SEED_INACTIVE")):
+                c.execute("""INSERT INTO knowledge_rules
+                    SELECT %s,%s,agent,asset_scope,horizons,action,status,conditions,
+                        prior_weight,hypothesis,mechanism,formalization_note
+                    FROM knowledge_rules WHERE rule_id=%s""", ("ZZ_CATALOG_RULE_"+suffix, sid, self.rule["rule_id"]))
+            for rid, sid, active in ((ids[5], sources[5], True), (ids[6], "KNOWN_NULL_SOURCE", True),
+                                     ("ZZ_CATALOG_RULE_04_INACTIVE", "SEED_INACTIVE", False)):
+                c.execute("""INSERT INTO knowledge_validation_rules
+                    (rule_key,rule_id,source_id,version,payload,active,checked_at)
+                    VALUES(%s,%s,%s,%s,'{}'::jsonb,%s,%s)""",
+                    ("known-"+rid, rid, sid, K.VERSION, active, T0))
+            for sid, audit, revision in (
+                    ("AUTO_CAT_SHARED", json.dumps(AUDIT), 3),
+                    ("AUTO_CAT_NO_SOURCE", json.dumps(AUDIT), 11),
+                    ("AUTO_CAT_NULL_AUDIT", None, 7),
+                    ("KNOWN_CAT_SOURCE", json.dumps(AUDIT), 13),
+                    ("AUTO_CAT_NULL_FIELDS", json.dumps(AUDIT), 17),
+                    ("AUTO_CAT_OVERSIZED", "null", 19)):
+                c.execute("""INSERT INTO knowledge_validation_source_audits
+                    (source_id,candidate_id,audit,audit_hash,revision,processed_at,checked_at)
+                    VALUES(%s,%s,%s::jsonb,'synthetic-audit-hash',%s,%s,%s)""",
+                    (sid, "candidate-"+sid, audit, revision, T0,
+                     T0-timedelta(seconds=K.CATALOG_TTL+1) if sid == "KNOWN_CAT_SOURCE" else T0))
+        return ids, noise
+
+    def test_sql_catalog_page_keeps_legacy_projection_eligibility_and_missing_rows(self):
+        ids, _ = self._seed_catalog_probe_rules()
+        all_rows = []
+        after = "ZZ_CATALOG_RULE_"
+        with K._transaction(self.connect) as c:
+            for size in (8, 1, 0):
+                sql, args = self._catalog_query(after)
+                expected = c.execute(LEGACY_CATALOG_RULES_SQL, args).fetchall()
+                actual = c.execute(sql, args).fetchall()
+                self.assertEqual(actual, expected)
+                self.assertEqual(len(actual), size)
+                all_rows.extend(actual)
+                if actual:
+                    after = actual[-1]["rule_id"]
+        self.assertEqual([r["rule_id"] for r in all_rows], ids)
+        rows = {r["rule_id"]: r for r in all_rows}
+        self.assertEqual(rows[ids[0]]["source"], rows[ids[1]]["source"])
+        self.assertEqual(rows[ids[0]]["audit"], rows[ids[1]]["audit"])
+        self.assertEqual(rows[ids[2]]["source"], dict.fromkeys(ACADEMIC))
+        self.assertEqual(rows[ids[2]]["audit"], AUDIT)
+        self.assertEqual(rows[ids[2]]["audit_revision"], 11)
+        self.assertIsNone(rows[ids[3]]["audit"])
+        self.assertIsNone(rows[ids[3]]["audit_checked_at"])
+        self.assertIsNone(rows[ids[3]]["audit_revision"])
+        self.assertIsNone(rows[ids[4]]["audit"])
+        self.assertEqual(rows[ids[4]]["audit_checked_at"], T0)
+        self.assertEqual(rows[ids[4]]["audit_revision"], 7)
+        self.assertEqual(rows[ids[5]]["audit_checked_at"], T0-timedelta(seconds=K.CATALOG_TTL+1))
+        self.assertEqual(rows[ids[6]]["source"], dict.fromkeys(ACADEMIC))
+        self.assertIsNone(rows[ids[6]]["audit"])
+        self.assertIsNone(rows[ids[7]]["source"]["authors"])
+        self.assertIsNone(rows[ids[7]]["source"]["url"])
+        for key in ("conditions", "hypothesis", "mechanism", "formalization_note"):
+            self.assertIsNone(rows[ids[8]][key])
+        self.assertIsNone(rows[ids[8]]["audit"])
+        self.assertEqual(rows[ids[8]]["audit_revision"], 19)
+        self.assertEqual({k: len(rows[ids[0]]["source"][k]) for k in ("title", "authors", "url", "claim")},
+                         {"title": 512, "authors": 512, "url": 1024, "claim": 1024})
+
+    def _catalog_read_plan(self, c, query, args, *, generic=False):
+        if not generic:
+            rows = c.execute(query, args).fetchall()
+            plan = c.execute("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+query, args).fetchone()["QUERY PLAN"][0]
+            return rows, plan
+        from psycopg.sql import SQL, Literal
+        prepared = query.replace("%s", "$1", 1).replace("%s", "$2", 1)
+        c.execute("PREPARE catalog_rule_probe(text,integer) AS "+prepared)
+        try:
+            with c.transaction():
+                c.execute("SET LOCAL plan_cache_mode='force_generic_plan'")
+                run = SQL("EXECUTE catalog_rule_probe({}, {})").format(Literal(args[0]), Literal(args[1]))
+                rows = c.execute(run).fetchall()
+                plan = c.execute(SQL("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ")+run).fetchone()["QUERY PLAN"][0]
+                return rows, plan
+        finally:
+            c.execute("DEALLOCATE catalog_rule_probe")
+
+    def test_sql_catalog_page_uses_bounded_pk_probes_amid_toasted_sources_and_audits(self):
+        ids, noise = self._seed_catalog_probe_rules()
+        query, args = self._catalog_query()
+        archive_audit = json.dumps(dict(AUDIT, synthetic_unused_history=noise[:4096]))
+        with self.connect() as c:
+            for start in range(0, 4000, 200):
+                c.execute("""INSERT INTO knowledge_sources
+                    (source_id,title,authors,year,source_type,url,evidence_grade,claim)
+                    SELECT 'ARCHIVE_SOURCE_'||n,%s::text,%s::text,2025,'synthetic_archive',%s::text,'UNVERIFIED',%s::text
+                    FROM generate_series(%s::integer,%s::integer) n""",
+                    (noise*2, noise, "https://example.org/"+noise, noise*2, start, start+199))
+                c.execute("""INSERT INTO knowledge_validation_source_audits
+                    (source_id,candidate_id,audit,audit_hash,revision,processed_at,checked_at)
+                    SELECT 'ARCHIVE_SOURCE_'||n,'ARCHIVE_CANDIDATE_'||n,%s::jsonb,
+                        'synthetic-archive-hash',1,%s::timestamptz,%s::timestamptz
+                    FROM generate_series(%s::integer,%s::integer) n""",
+                    (archive_audit, T0, T0, start, start+199))
+            for table in ("knowledge_rules", "knowledge_sources", "knowledge_validation_source_audits",
+                          "knowledge_validation_rules"):
+                c.execute("ANALYZE "+table)
+            expected = c.execute(LEGACY_CATALOG_RULES_SQL, args).fetchall()
+            self.assertEqual([r["rule_id"] for r in expected], ids[:K.CATALOG_RULE_BATCH])
+            physical = {r["relname"]: r["toast_bytes"] for r in c.execute("""SELECT relname,
+                pg_relation_size(reltoastrelid) AS toast_bytes FROM pg_class WHERE oid IN
+                ('knowledge_sources'::regclass,'knowledge_validation_source_audits'::regclass)""").fetchall()}
+            self.assertTrue(all(n > 1_000_000 for n in physical.values()))
+            self.assertEqual(len(physical), 2)
+            def nodes(plan):
+                yield plan
+                for child in plan.get("Plans", []):
+                    yield from nodes(child)
+            # The fixture is prepared outside the query transaction. Both
+            # measured plans use the unchanged 2s/250ms production settings.
+            with K._transaction(lambda: nullcontext(c)) as bounded:
+                self.assertEqual(bounded.execute("SHOW statement_timeout").fetchone()["statement_timeout"], "2s")
+                self.assertEqual(bounded.execute("SHOW lock_timeout").fetchone()["lock_timeout"], "250ms")
+                for generic in (False, True):
+                    with self.subTest(plan="generic" if generic else "default"):
+                        rows, plan = self._catalog_read_plan(bounded, query, args, generic=generic)
+                        self.assertEqual(rows, expected)
+                        probes = [n for n in nodes(plan["Plan"]) if n.get("Relation Name") in physical]
+                        self.assertCountEqual([n["Relation Name"] for n in probes], list(physical))
+                        for node in probes:
+                            self.assertEqual(node["Node Type"], "Index Scan")
+                            self.assertEqual(node["Index Name"], node["Relation Name"]+"_pkey")
+                            self.assertRegex(node["Index Cond"], r"\bsource_id\s*=\s*p\.source_id\b")
+                            self.assertGreater(node["Actual Loops"], 0)
+                            self.assertLessEqual(node["Actual Loops"], K.CATALOG_RULE_BATCH)
+                            self.assertLessEqual(node["Actual Rows"], 1)
+                        print("CATALOG_RULE_PAGE_SYNTHETIC_PLAN "+json.dumps(dict(
+                            plan_mode="generic" if generic else "default", archive_sources=4000,
+                            archive_audits=4000, page_rows=len(rows), toast_bytes=physical,
+                            execution_ms=plan["Execution Time"], statement_timeout="2s",
+                            probes=[dict(table=n["Relation Name"], index=n["Index Name"],
+                                         loops=n["Actual Loops"], rows=n["Actual Rows"]) for n in probes])), flush=True)
 
     def test_sql_catalog_advances_bounded_pages_and_preserves_registration(self):
         with self.connect() as c:
