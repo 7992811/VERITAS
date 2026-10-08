@@ -14679,45 +14679,8 @@ def scenario_board():
 
 
 def regime_transition_board():
-    if not pg_enabled():
-        return {'status':'unavailable','items':[]}
-    with pg_connect() as c:
-        rows=c.execute("""SELECT asset,horizon,event_ts,payload
-                          FROM ledger_events WHERE event_type='decision'
-                          ORDER BY asset,horizon,event_ts ASC""").fetchall()
-    grouped={}
-    for r in rows:
-        p=r['payload'] if isinstance(r['payload'],dict) else json.loads(r['payload'])
-        grouped.setdefault((r['asset'],r['horizon']),[]).append((r['event_ts'],str(p.get('regime') or 'UNKNOWN')))
-    items=[]
-    for (asset,h),seq in grouped.items():
-        counts={}; outgoing={}
-        for i in range(len(seq)-1):
-            a,b=seq[i][1],seq[i+1][1]
-            counts[(a,b)]=counts.get((a,b),0)+1; outgoing[a]=outgoing.get(a,0)+1
-        current=seq[-1][1] if seq else None; nout=outgoing.get(current,0)
-        dist=[]
-        if current and nout:
-            for (a,b),n in counts.items():
-                if a==current: dist.append({'next_regime':b,'n':n,'probability':n/nout})
-        dist.sort(key=lambda x:x['probability'],reverse=True)
-        persistence=next((x['probability'] for x in dist if x['next_regime']==current),None)
-        entropy=None
-        if dist:
-            entropy=-sum(x['probability']*math.log(max(x['probability'],1e-12)) for x in dist)
-            entropy=entropy/math.log(len(dist)) if len(dist)>1 else 0.0
-        recent=seq[-12:]; flips=sum(1 for i in range(1,len(recent)) if recent[i][1]!=recent[i-1][1])
-        flip_rate=flips/max(1,len(recent)-1); ntrans=sum(counts.values())
-        if ntrans<REGIME_TRANSITION_MIN_N: risk='BUILDING'
-        elif (persistence is not None and persistence<0.60) or flip_rate>0.35 or (entropy is not None and entropy>0.70): risk='HIGH'
-        elif (persistence is not None and persistence<0.78) or flip_rate>0.18: risk='MEDIUM'
-        else: risk='LOW'
-        items.append({'asset':asset,'horizon':h,'current_regime':current,
-                      'transition_observations':ntrans,'persistence_probability':persistence,
-                      'normalized_transition_entropy':entropy,'recent_flip_rate':flip_rate,
-                      'transition_risk':risk,'next_regime_distribution':dist[:6]})
-    return {'status':'ok','min_n':REGIME_TRANSITION_MIN_N,'items':items,
-            'note':'Empirical live-state transitions; not a structural Markov forecast.'}
+    from veritas_regime_delivery import snapshot
+    return snapshot(pg_connect,REGIME_TRANSITION_MIN_N)
 
 
 def asset_thesis_board():
@@ -14821,9 +14784,10 @@ def production_readiness():
     live_blockers=[]
     if not storage.get('ok'): live_blockers.append('durable_storage_required')
     if not candidate.get('ready'): live_blockers.append('paper_profitability_gate_not_passed')
-    live_blockers.extend(['broker_adapter_not_configured','broker_reconciliation_not_active',
-                          'production_contract_specs_not_configured','instrument_specs_not_validated',
-                          'model_promotion_gate_not_passed','live_execution_disabled'])
+    live_blockers.extend(['broker_execution_readiness_not_verified_by_this_public_endpoint',
+                          'broker_reconciliation_not_verified_by_this_public_endpoint',
+                          'production_contract_specs_not_verified','instrument_specs_not_validated',
+                          'model_promotion_gate_not_passed'])
     if measurable<3: live_blockers.append('calibrated_probability_sample_insufficient')
     if not LICENSED_MARKET_DATA: live_blockers.append('production_market_data_not_configured')
 
@@ -14834,6 +14798,7 @@ def production_readiness():
         'production_candidate':candidate,
         'external_investor_ready':research_ready and not blockers,
         'real_money_ready':False,
+        'broker_execution_status':'UNVERIFIED_USE_AUTHENTICATED_ACCOUNT_STATUS',
         'real_money_blockers':list(dict.fromkeys(live_blockers)),
         'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
         'blockers':blockers,'warnings':warnings,
@@ -16202,7 +16167,8 @@ def fast_product_overview():
         'production_readiness':{'research_product_ready':bool(storage.get('ok')),
                                 'external_investor_ready':False,
                                 'real_money_ready':False,
-                                'real_money_blockers':['durable_storage_required'] if not storage.get('ok') else ['broker_adapter_not_configured','broker_reconciliation_not_active','production_market_data_not_configured','instrument_specs_not_validated','model_promotion_gate_not_passed','live_execution_disabled'],
+        'broker_execution_status':'UNVERIFIED_USE_AUTHENTICATED_ACCOUNT_STATUS',
+                                'real_money_blockers':['durable_storage_required'] if not storage.get('ok') else ['broker_execution_readiness_not_verified_by_this_public_endpoint','broker_reconciliation_not_verified_by_this_public_endpoint','production_market_data_not_configured','instrument_specs_not_validated','model_promotion_gate_not_passed'],
                                 'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
                                 'blockers':['full readiness calculation pending'],
                                 'warnings':[]},
@@ -16698,7 +16664,8 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
     """One fast UI payload: signals, five portfolios, open positions and recent closed trades."""
     cyc=fresh_cycle_snapshot()
     publication={'signals_updated_at':cyc.get('signals_updated_at'),'cycle_in_progress':cyc.get('cycle_in_progress',False)}
-    signals=[dict(z) for z in (cyc.get('summary') or []) if str(z.get('asset') or '')!='NDX']
+    from veritas_dashboard_projection import signal_display
+    signals=[signal_display(z) for z in (cyc.get('summary') or []) if str(z.get('asset') or '')!='NDX']
     if signals_only:
         # The matrix must not wait for portfolio enrichment or trade history.
         # Omit those sections (never send empty authoritative books on this path).
@@ -16790,8 +16757,12 @@ class H(BaseHTTPRequestHandler):
                 else:
                     self.reply({'status':'OK','contract':'VERITAS_V90_DB_LEASE_V1',
                                 'storage_generation':'9.0','database_url':DATABASE_URL},200)
+            elif self.path.split('?',1)[0]=='/readyz':
+                from veritas_operational_status import readiness
+                state=readiness(_BOOTSTRAP_READY,bool(DATABASE_URL),_v90_pg_health_snapshot())
+                self.reply({'version':VERSION,**state,'release':VR.snapshot()},200 if state['ok'] else 503)
             elif self.path.startswith('/healthz'):
-                self.reply({'ok':True,'version':VERSION,'role':SERVICE_ROLE,
+                self.reply({'ok':True,'scope':'PROCESS_LIVENESS','version':VERSION,'role':SERVICE_ROLE,
                             'bootstrap_ready':bool(_BOOTSTRAP_READY),
                             'phase':'READY' if _BOOTSTRAP_READY else 'STARTING',
                             'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1),
@@ -17085,19 +17056,10 @@ class H(BaseHTTPRequestHandler):
             elif self.path.startswith('/api/v1/library-summary'):
                 self.reply({'version':VERSION,**multilingual_library_summary()})
             elif self.path.startswith('/api/v1/assets'):
-                self.reply({'version':VERSION,'horizons':list(HORIZONS.keys()),'assets':{
-                  'BTC':{'status':'research_live','primary':'Binance','secondary':'Coinbase','hours':'24/7'},
-                  'ETH':{'status':'research_live','primary':'Binance','secondary':'Coinbase','hours':'24/7'},
-                  'NQ':{'status':'research_live_futures','primary':'Yahoo CME NQ=F',
-                        'secondary':'cash Nasdaq-100 contextual only','volume_proxy':'NQ futures volume'},
-                  'BRENT':{'status':'research_shadow_delayed','primary':'Yahoo BZ=F',
-                           'secondary':'directional proxy only','execution_gate':'one valid primary source for paper; freshness required'},
-                  'GOLD':{'status':'research_shadow_delayed','primary':'Yahoo GC=F',
-                          'secondary':'directional proxy only','execution_gate':'one valid primary source for paper; freshness required'},
-                  'MOEX':{'status':'research_shadow_RTH_fail_closed','primary':'MOEX ISS IMOEX',
-                          'secondary':'Yahoo IMOEX.ME when fresh'},
-                  'CNYRUBF':{'status':'research_shadow_delayed_fail_closed','primary':'MOEX ISS CNYRUBF','secondary':'not configured'}
-                }})
+                from veritas_operational_status import asset_catalog
+                with lock:
+                    catalog=asset_catalog(DISPLAY_ASSETS,last_cycle.get('summary') or [])
+                self.reply({'version':VERSION,'horizons':list(HORIZONS.keys()),'assets':catalog})
             elif self.path.startswith('/api/v1/ping'):
                 self.reply({'status':'ok','version':VERSION,'ts':now(),'runtime_id':SERVICE_RUNTIME_ID})
             elif self.path.startswith('/api/v1/health'):
@@ -19132,7 +19094,9 @@ def main():
     # Its jobs perform no work until their durable state schema is available.
     _continuous_learning.start()
     if pg_boot.get('ok') and VP is not None:
-        VPG.start(globals()); VSQ.start(pg_connect,emit,resource_guard=_v90_background_maintenance.permit)
+        VPG.start(globals())
+        from veritas_quality_delivery import install as install_quality_delivery
+        install_quality_delivery(globals())
         import veritas_breakout_runtime as VBR
         import veritas_structural_lifecycle as VSL
         VBR.start(globals(),entry_pass=lambda rows,clock:VSL.fast_entry_pass(globals(),rows,clock,runtime=True))
