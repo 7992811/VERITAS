@@ -115,7 +115,7 @@ def _canonical_static_contract():
 
     if "import veritas_portfolio" in canonical:
         failures.append("canonical runtime must not import legacy portfolio engine")
-    for marker in ("def currency_candidate_book(summary):","def local_confirmation_gate(row,event=None):"):
+    for marker in ("def currency_candidate_book(summary, now=None):","def local_confirmation_gate(row,event=None):"):
         if marker not in canonical:
             failures.append(f"canonical execution guard missing: {marker}")
     return failures

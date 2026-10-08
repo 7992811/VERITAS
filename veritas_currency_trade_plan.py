@@ -14,6 +14,7 @@ import veritas_execution as VX
 import veritas_timeframe_structure as TS
 import veritas_timeframe_policy as TFP
 import veritas_structural_breakout as SB
+import veritas_price_source as VPS
 
 VERSION = "currency-broker-plan-v2-whole-contract"
 ASSET = "CNYRUBF"
@@ -254,8 +255,49 @@ def round_price(value, tick, side):
     return (price / tick).to_integral_value(rounding=ROUND_FLOOR if side == "BUY" else ROUND_CEILING) * tick
 
 
-def select_entry(summary, account, now):
-    row = VCR.currency_candidate_book(summary).get(ASSET)
+def _broker_quote(spec, quote, direction):
+    return {"asset": ASSET, "source": "TBANK_GRPC " + ASSET,
+            "contract": {"instrument_uid": spec.instrument_uid},
+            "price": float(quote.ask if direction == "LONG" else quote.bid),
+            "best_bid": float(quote.bid), "best_ask": float(quote.ask),
+            "observed_at": utc(quote.observed_at).isoformat(),
+            "source_gate_pass": spec.api_trade_available is True,
+            "market_open": quote.limit_orders_available is True,
+            "data_latency_class": "REALTIME", "direct_sources": 1}
+
+
+def _broker_execution_summary(summary, spec, quote, now):
+    """Bind the observed book before ranking; never refresh a foreign source.
+
+    Only execution fields change. Canonical preparation revalidates the original
+    native context/event against this quote and retains its original expiry.
+    """
+    spec.validate(now)
+    quote.validate(spec, now)
+    rows = []
+    for raw in summary or []:
+        row = dict(raw or {})
+        direction = row.get("research_decision") or row.get("decision")
+        if row.get("asset") == ASSET and direction in ("LONG", "SHORT"):
+            current = _broker_quote(spec, quote, direction)
+            source = VPS.identity(ASSET, current)
+            previous = VPS.quote_from_row(row)
+            if (VPS.same(source, VPS.identity(ASSET, previous))
+                    and VPS.same(source, TFP.context_of(row).get("source_identity"))):
+                # The independently observed book owns this decision. A cached
+                # market refresh must not replace it during canonical admission.
+                row.update(_execution_quote=current, _runtime_quote_refresh=False)
+                row = VPS.execution_row(row)
+        rows.append(row)
+    return rows
+
+
+def select_entry(summary, account, now, *, spec=None, quote=None):
+    if spec is not None or quote is not None:
+        if spec is None or quote is None:
+            raise TradePlanBlocked("BROKER_QUOTE_AND_SPEC_REQUIRED")
+        summary = _broker_execution_summary(summary, spec, quote, now)
+    row = VCR.currency_candidate_book(summary, now=now).get(ASSET)
     if not row:
         raise TradePlanBlocked("NO_CURRENCY_CANDIDATE")
     admission = VCR.evaluate(row, CTC.runtime_portfolio_policy("Currency"), float(account.drawdown), now)
@@ -277,15 +319,7 @@ def _broker_context(context, spec, quote, direction, now):
     # bars, source contract and proof are preserved by the canonical engine.
     # Source identity comes from the verified broker UID, never from a copied
     # label belonging to an unrelated signal feed.
-    current = SB.rebind_quote(context, {
-        "asset": ASSET, "source": "TBANK_GRPC " + ASSET,
-        "contract": {"instrument_uid": spec.instrument_uid},
-        "price": float(quote.ask if direction == "LONG" else quote.bid),
-        "best_bid": float(quote.bid), "best_ask": float(quote.ask),
-        "observed_at": utc(quote.observed_at).isoformat(),
-        "source_gate_pass": spec.api_trade_available is True,
-        "market_open": quote.limit_orders_available is True,
-    }, now)
+    current = SB.rebind_quote(context, _broker_quote(spec, quote, direction), now)
     if current.get("status") != "OK":
         raise TradePlanBlocked(str(current.get("reason") or "BROKER_SIGNAL_CONTEXT_INVALID"))
     return current
