@@ -311,7 +311,7 @@ class AMIStagedSQLTests(unittest.TestCase):
                         %s::timestamptz-n*interval '1 second','ARCHIVE','1h',
                         CASE WHEN mod(n,2)=0 THEN jsonb_build_object('decision','LONG','history',%s::text)
                              ELSE jsonb_build_object('forward_return',0.125,'history',%s::text) END
-                    FROM generate_series(%s,%s) n""", (NOW, noise, noise, start, start+399))
+                    FROM generate_series(%s::integer,%s::integer) n""", (NOW, noise, noise, start, start+399))
             c.execute("ANALYZE ledger_events")
             c.execute("SET statement_timeout='2s'")
             physical = c.execute("""SELECT count(*) AS n,
