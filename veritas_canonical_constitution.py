@@ -208,6 +208,9 @@ PORTFOLIO_POLICIES = {
         # one contract, subject to fresh margin, notional and net stop-risk caps.
         # This is not a multiplier for the target and never applies to ADD.
         "minimum_initial_contracts":1,
+        # Owner instruction, 2026-10-08: exact post-cost floor for Currency
+        # broker plans, both owner-directed and model-generated.
+        "live_minimum_net_reward_risk":1.0015,
         "max_single_asset_fraction":10.00,"max_gross":10.00,"leverage_limit":10.00,
         "hard_drawdown":0.35,"weekend_carry_allowed":True,"position_step":0.05,
         "paper_trading_enabled":True,"live_trading_enabled":False,

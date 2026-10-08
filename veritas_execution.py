@@ -171,6 +171,12 @@ def _structural_economics_terms(asset, plan, direction, entry, execution_mode, n
     configured = CTC.BREAKOUT_LIFECYCLE_POLICY
     legacy = dict(version='LEGACY_SINGLE_TARGET_ECONOMICS', execution_mode=execution_mode,
                   minimum_reward_risk=MIN_REWARD_RISK, net_rr_role='HARD_FLOOR')
+    # The dedicated broker-plan builder selects Currency's owner-configured
+    # policy. No caller-supplied numeric floor or generic environment override
+    # can replace that exact value; all independent admission gates still run.
+    if execution_mode == 'LIVE' and asset == 'CNYRUBF' and p.get('portfolio') == 'Currency':
+        legacy.update(version='CURRENCY_LIVE_SINGLE_TARGET_ECONOMICS_V1', portfolio='Currency',
+                      minimum_reward_risk=CTC.PORTFOLIO_POLICIES['Currency']['live_minimum_net_reward_risk'])
     if not isinstance(ctx, dict):
         return legacy, [], ['STRUCTURAL_ECONOMICS_PROOF_INVALID'], None
     claimed = SB.applies(ctx) or p.get('structural_policy_version') == configured['version']
@@ -215,7 +221,7 @@ def _structural_economics_terms(asset, plan, direction, entry, execution_mode, n
             or p.get('runner_target_price', event.get('runner_target_price')) != event.get('runner_target_price')
             or any(_num(step.get('fraction')) != weight for step, weight in zip(ladder, weights))):
         return failed('STRUCTURAL_TARGET_LADDER_PROVENANCE_MISMATCH')
-    # LIVE retains the existing single-target economics and hard RR floor.
+    # LIVE retains single-target economics and its applicable hard RR floor.
     if execution_mode != 'PAPER':
         return legacy, [], [], None
     policy = dict(version=STRUCTURAL_ECONOMICS_VERSION, execution_mode='PAPER',
