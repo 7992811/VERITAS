@@ -111,8 +111,8 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                     check()
                     return result
             milliseconds = max(1, min(2000, int(getattr(context, "sql_timeout_ms", 2000))))
-            connection.execute("SET LOCAL statement_timeout = '"+str(milliseconds)+"ms'")
-            connection.execute("SET LOCAL lock_timeout = '250ms'")
+            connection.execute("SET LOCAL statement_timeout = '"+str(milliseconds)+"ms'; "
+                               "SET LOCAL lock_timeout = '250ms'")
             yield BoundedConnection()
             if failed:
                 raise failed[0]

@@ -1,4 +1,5 @@
 """Actual PostgreSQL staged AMI publication, restart and legacy-score parity."""
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
@@ -106,6 +107,35 @@ class AMIStagedPipelineSQLTests(unittest.TestCase):
     def work(self):
         with self.connect() as c:
             return STORE.load_snapshot_in_transaction(c, DELIVERY.WORK_SLOT, DELIVERY.WORK_VERSION)
+
+    def test_real_sql_timeout_pair_preserves_dynamic_cap_and_transaction_locality(self):
+        original_load = STORE.load_snapshot_in_transaction
+        with self.connect() as raw:
+            raw.execute("SET statement_timeout='9s'")
+            raw.execute("SET lock_timeout='7s'")
+            raw.execute("CREATE TEMP TABLE scorecard_timeout_probe (id text PRIMARY KEY)")
+            committed = 0
+            for requested, shown in ((350, "350ms"), (2000, "2s"), (9999, "2s")):
+                for rollback in (False, True):
+                    with self.subTest(requested=requested, rollback=rollback):
+                        AMI._RESTORED_EPOCH = None
+                        context = SimpleNamespace(sql_timeout_ms=requested, check=lambda: None)
+                        def inspect_load(c, name, version, **kwargs):
+                            self.assertEqual(c.execute("SHOW statement_timeout").fetchone()["statement_timeout"], shown)
+                            self.assertEqual(c.execute("SHOW lock_timeout").fetchone()["lock_timeout"], "250ms")
+                            c.execute("INSERT INTO scorecard_timeout_probe VALUES (%s)", (str(requested)+"-"+str(rollback),))
+                            saved = original_load(c, name, version, **kwargs)
+                            if rollback:
+                                raise RuntimeError("synthetic scorecard settings rollback")
+                            return saved
+                        expected = self.assertRaisesRegex(RuntimeError, "synthetic scorecard settings rollback") if rollback else nullcontext()
+                        with expected, patch.object(STORE, "load_snapshot_in_transaction", side_effect=inspect_load):
+                            result = AMI.refresh_snapshot(lambda: nullcontext(raw), LEARNING, EPOCH, context=context)
+                            self.assertEqual(result["reason"], "SCORECARD_RESTORE_CHECKED")
+                        committed += not rollback
+                        self.assertEqual(raw.execute("SHOW statement_timeout").fetchone()["statement_timeout"], "9s")
+                        self.assertEqual(raw.execute("SHOW lock_timeout").fetchone()["lock_timeout"], "7s")
+                        self.assertEqual(raw.execute("SELECT count(*) AS n FROM scorecard_timeout_probe").fetchone()["n"], committed)
 
     def test_real_sql_pipeline_matches_legacy_and_resumes_committed_chunk_after_ram_restart(self):
         # Seed the same original rollout baseline before either comparison.

@@ -96,8 +96,7 @@ def _good(payload):
 @contextmanager
 def _transaction(pg_connect):
     with pg_connect() as c, c.transaction():
-        c.execute("SET LOCAL statement_timeout = '2000ms'")
-        c.execute("SET LOCAL lock_timeout = '250ms'")
+        c.execute("SET LOCAL statement_timeout = '2000ms'; SET LOCAL lock_timeout = '250ms'")
         yield c
 
 
