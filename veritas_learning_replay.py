@@ -228,7 +228,7 @@ def _decision_rows(pg_connect, candidate):
           JOIN v90_decision_episodes e ON e.entity_key=d.entity_key
           WHERE d.event_type='decision' AND d.asset=%s AND d.horizon=%s
             AND COALESCE(e.regime,'UNKNOWN')=%s
-          ORDER BY d.event_ts ASC LIMIT %s""",
+          ORDER BY d.event_ts DESC LIMIT %s""",
           (scope.get("asset"), scope.get("horizon"), scope.get("regime"),
            MAX_TRADES_PER_CANDIDATE)).fetchall()
     out = []
@@ -244,6 +244,8 @@ def _decision_rows(pg_connect, candidate):
         if wanted and wanted not in blockers:
             continue
         out.append(row)
+    out.sort(key=lambda r: (_dt(r.get("event_ts")) or datetime.min.replace(tzinfo=timezone.utc),
+                            str(r.get("entity_key") or "")))
     return out
 
 
@@ -335,7 +337,7 @@ def _trades(pg_connect, candidate):
           FROM paper_trades t JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
           WHERE e.learning_eligible=TRUE AND t.asset=%s AND COALESCE(t.horizon,'')=%s
             AND COALESCE(e.regime,'UNKNOWN')=%s
-          ORDER BY t.opened_at ASC LIMIT %s""",
+          ORDER BY t.opened_at DESC LIMIT %s""",
           (scope.get("asset"), scope.get("horizon"), scope.get("regime"),
            MAX_TRADES_PER_CANDIDATE)).fetchall()
     out = []
@@ -345,6 +347,8 @@ def _trades(pg_connect, candidate):
         if V2._source_key(p) != scope.get("source_key") or V2._policy_hash(p) != scope.get("policy_hash"):
             continue
         out.append(row)
+    out.sort(key=lambda r: (_dt(r.get("opened_at")) or datetime.min.replace(tzinfo=timezone.utc),
+                            str(r.get("trade_id") or "")))
     return out
 
 
