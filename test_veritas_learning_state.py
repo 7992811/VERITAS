@@ -145,7 +145,7 @@ def _load_raw_connect(driver, *, dsn="synthetic-dsn", row_factory=None, schema=N
     function = next(node for node in module.body
                     if isinstance(node, ast.FunctionDef) and node.name == "_v90_pg_raw_connect_impl")
     if schema is not None:
-        if not schema.startswith("pg_setup_test_") or not schema.removeprefix("pg_setup_test_").isalnum():
+        if not schema.startswith("connection_setup_test_") or not schema.removeprefix("connection_setup_test_").isalnum():
             raise AssertionError("unsafe test schema")
         replaced = 0
         for node in ast.walk(function):
@@ -204,7 +204,7 @@ class RawConnectionSetupSQLTests(unittest.TestCase):
         import psycopg
         from psycopg.rows import dict_row
         self.driver, self.row_factory = psycopg, dict_row
-        self.schema = "pg_setup_test_"+uuid.uuid4().hex
+        self.schema = "connection_setup_test_"+uuid.uuid4().hex
         with psycopg.connect(DSN, autocommit=True) as c:
             if c.execute("SELECT current_database()").fetchone()[0] != "veritas_quality_test":
                 raise RuntimeError("Refusing writes outside veritas_quality_test")
