@@ -7,6 +7,7 @@ import unittest
 import veritas_asset_management_intelligence as AMI
 import veritas_scorecard_delivery as DELIVERY
 import veritas_learning_state as STORE
+from veritas_maintenance import MaintenanceDeferred
 from test_veritas_management_intelligence import _FakeConn
 import test_veritas_scorecard_delivery as DELIVERY_TESTS
 from test_veritas_scorecard_delivery import QueryCanceled, EPOCH
@@ -184,6 +185,104 @@ class ScorecardStageTests(unittest.TestCase):
         self.assertEqual(current['refresh_stage'],'work_state')
         self.assertIsNone(current['refresh_last_sql_timeout_ms'])
         self.assertIsNone(current['refresh_last_sql_budget_seconds'])
+
+    def test_cooperative_chunk_deferral_rolls_back_and_does_not_trust_exception_class_name(self):
+        self.rows=self.history(130)
+        self.context.sql_timeout_ms=350
+        self.completed()
+        previous_cache=deepcopy(AMI._CACHE)
+        previous_snapshot=deepcopy(AMI._SNAPSHOT)
+        lookalike=type('MaintenanceDeferred',(Exception,),{})('private error details')
+        lookalike.status='DEFERRED_TIME_BUDGET'
+        for error,cooperative in ((MaintenanceDeferred('DEFERRED_TIME_BUDGET',reason='private budget details'),True),
+                                  (lookalike,False)):
+            with self.subTest(cooperative=cooperative):
+                self.durable.clear(); AMI._RESTORED_EPOCH=None
+                self.context.check.side_effect=None
+                self.chunk.side_effect=self.chunk_rows
+                events=[]
+                self.context.lane=SimpleNamespace(current_budget=lambda:{'remaining_seconds':6.},
+                    emit=lambda event,**fields:events.append((event,fields)))
+                self.step(); self.step()
+                before=deepcopy(self.durable)
+                consumed={'chunk':False}
+                def chunk(c,pairs):
+                    c.execute('SELECT d.event_ts FROM ledger_events d LIMIT 1')
+                    rows=self.chunk_rows(c,pairs)
+                    consumed['chunk']=True
+                    return rows
+                def check():
+                    if consumed['chunk']:
+                        raise error
+                self.chunk.side_effect=chunk
+                self.context.check.side_effect=check
+                with self.assertRaises(type(error)) as raised:
+                    self.step()
+                self.assertIs(raised.exception,error)
+                self.assertTrue(consumed['chunk'])
+                self.assertTrue(self.connections[-1].rolled_back)
+                self.assertFalse(self.connections[-1].committed)
+                self.assertEqual(self.durable,before)
+                self.assertEqual(AMI._CACHE,previous_cache)
+                self.assertEqual(AMI._SNAPSHOT,previous_snapshot)
+                current=AMI.cached_scorecard(EPOCH)
+                status='DEFERRED_TIME_BUDGET' if cooperative else 'ERROR'
+                error_type=None if cooperative else 'MaintenanceDeferred'
+                self.assertEqual(current['refresh_status'],status)
+                self.assertEqual(current['last_refresh_error'],error_type)
+                self.assertEqual(current['refresh_stage'],'decisions')
+                self.assertIsNone(current['refresh_processed'])
+                self.assertEqual(events,[('ami_refresh_deferred' if cooperative else 'ami_refresh_error',
+                    dict(status=status,error_type=error_type,stage='decisions',
+                         last_sql_timeout_ms=350,last_sql_budget_seconds=6.))])
+                self.assertNotIn('private',str((current,events)))
+        self.context.check.side_effect=None
+
+    def test_cooperative_deferral_after_commit_recovers_completed_score_without_recomputation(self):
+        self.completed()
+        previous_cache=deepcopy(AMI._CACHE)
+        previous_snapshot=deepcopy(AMI._SNAPSHOT)
+        events=[]
+        self.context.lane=SimpleNamespace(current_budget=lambda:{'remaining_seconds':6.},
+            emit=lambda event,**fields:events.append((event,fields)))
+        for _ in range(20):
+            result=self.step()
+            if result.get('stage')=='publish':
+                break
+        else:
+            self.fail('publish phase missing')
+        deferred=MaintenanceDeferred('DEFERRED_TIME_BUDGET',reason='private checkpoint details')
+        def after_commit():
+            if self.durable.get(DELIVERY.WORK_SLOT,{}).get('payload',{}).get('stage')=='complete':
+                raise deferred
+        self.context.check.side_effect=after_commit
+        with self.assertRaises(MaintenanceDeferred) as raised:
+            self.step(result['cursor'])
+        self.assertIs(raised.exception,deferred)
+        self.assertTrue(self.connections[-1].committed)
+        self.assertFalse(self.connections[-1].rolled_back)
+        complete=deepcopy(self.durable['intelligence_scorecard'])
+        self.assertEqual(self.durable[DELIVERY.WORK_SLOT]['payload']['stage'],'complete')
+        self.assertEqual(AMI._CACHE,previous_cache)
+        self.assertEqual(AMI._SNAPSHOT,previous_snapshot)
+        current=AMI.cached_scorecard(EPOCH)
+        self.assertEqual(current['refresh_status'],'DEFERRED_TIME_BUDGET')
+        self.assertIsNone(current['last_refresh_error'])
+        self.assertEqual(current['refresh_stage'],'commit')
+        self.assertIsNone(current['refresh_processed'])
+        self.assertEqual(events,[('ami_refresh_deferred',dict(status='DEFERRED_TIME_BUDGET',
+            error_type=None,stage='commit',last_sql_timeout_ms=current['refresh_last_sql_timeout_ms'],
+            last_sql_budget_seconds=current['refresh_last_sql_budget_seconds']))])
+        self.assertNotIn('private',str((current,events)))
+        queries=self.sample.call_count,self.chunk.call_count
+        self.context.check.side_effect=None
+        recovered=self.step(result['cursor'])
+        self.assertEqual(recovered['status'],'OK')
+        self.assertEqual((self.sample.call_count,self.chunk.call_count),queries)
+        self.assertEqual(AMI._SNAPSHOT[2],complete['payload']['scorecard'])
+        self.assertEqual(AMI._SNAPSHOT[1],complete['observed_at'].timestamp())
+        self.assertEqual(AMI.cached_scorecard(EPOCH)['refresh_status'],'OK')
+        self.assertEqual(len(events),1)
 
     def test_final_commit_before_budget_exception_is_recovered_without_recomputation(self):
         for _ in range(10):
