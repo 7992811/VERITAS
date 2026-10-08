@@ -246,9 +246,9 @@ def ami_decision_chunk(c, pairs):
     if not decision_ids:
         return []
     dp, op, joins = _ami_projection_sql()
-    # Keep both primary-key lookups dependent on each frozen pair. Plain joins
-    # let the planner combine the complete ledger before the bounded pair set;
-    # OFFSET 0 retains these parameterized probes without capping their rows.
+    # Fetch by each frozen primary key before testing type/entity compatibility.
+    # Combining those predicates inside the lookup lets the planner choose an
+    # entity index and scan its history. OFFSET 0 retains the ID-only boundary.
     rows = c.execute(f"""
       WITH pairs AS MATERIALIZED (
         SELECT decision_id,outcome_id,ordinality
@@ -261,16 +261,17 @@ def ami_decision_chunk(c, pairs):
                d.payload AS decision_payload,o.payload AS outcome_payload
         FROM pairs p
         CROSS JOIN LATERAL (
-          SELECT d.entity_key,d.event_ts,d.asset,d.horizon,d.payload
+          SELECT d.entity_key,d.event_type,d.event_ts,d.asset,d.horizon,d.payload
           FROM ledger_events d
-          WHERE d.id=p.decision_id AND d.event_type='decision'
+          WHERE d.id=p.decision_id
           OFFSET 0
         ) AS d
         CROSS JOIN LATERAL (
-          SELECT o.payload FROM ledger_events o
-          WHERE o.id=p.outcome_id AND o.entity_key=d.entity_key AND o.event_type='outcome'
+          SELECT o.entity_key,o.event_type,o.payload FROM ledger_events o
+          WHERE o.id=p.outcome_id
           OFFSET 0
         ) AS o
+        WHERE d.event_type='decision' AND o.entity_key=d.entity_key AND o.event_type='outcome'
       ) AS sample
       {joins}
       ORDER BY sample.ordinality

@@ -332,6 +332,10 @@ class AMIStagedSQLTests(unittest.TestCase):
                 with self.subTest(plan="generic" if generic else "default"):
                     new = self.chunk_plan(c, sql, params, generic=generic)
                     probes = [n for n in plan_nodes(new["Plan"]) if n.get("Relation Name") == "ledger_events"]
+                    print("AMI_CHUNK_SYNTHETIC_NEW_PLAN "+json.dumps(dict(
+                        plan_mode="generic" if generic else "default", new_execution_ms=new["Execution Time"],
+                        probes=[{key: n.get(key) for key in ("Node Type", "Alias", "Index Name", "Index Cond",
+                            "Filter", "Actual Loops", "Actual Rows", "Rows Removed by Filter")} for n in probes])), flush=True)
                     references = []
                     for node in probes:
                         self.assertEqual(node["Node Type"], "Index Scan")
