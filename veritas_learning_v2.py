@@ -45,6 +45,7 @@ def _context(row):
         "horizon": str(row.get("horizon") or ""),
         "regime": str(row.get("regime") or "UNKNOWN"),
         "policy_hash": str(row.get("policy_hash") or row.get("strategy_policy_hash") or ""),
+        "source_key": str(row.get("source_key") or ""),
     }
 
 
