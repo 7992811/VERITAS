@@ -230,7 +230,7 @@ class RawConnectionSetupSQLTests(unittest.TestCase):
                     case.assertEqual(second.strip(), "SET search_path TO "+case.schema)
                     # This is valid SQL syntax but an invalid GUC value. The
                     # first CREATE really executes before the second SET fails.
-                    sql = first+"; SET search_path = '\"synthetic-unclosed-identifier'"
+                    sql = first+"; SET lock_timeout = 'synthetic-invalid-duration'"
                 try:
                     result = self.raw.execute(sql)
                 except BaseException as error:
@@ -290,7 +290,7 @@ class RawConnectionSetupSQLTests(unittest.TestCase):
                     setup()
                 self.assertIs(caught.exception, connections[0].setup_error)
                 self.assertTrue(connections[0].closed)
-                self.assertIn("search_path", caught.exception.diag.message_primary)
+                self.assertIn("lock_timeout", caught.exception.diag.message_primary)
                 with self.driver.connect(DSN, autocommit=True) as observer:
                     present = observer.execute("SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=%s)",
                                                (self.schema,)).fetchone()[0]
