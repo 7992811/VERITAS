@@ -361,7 +361,7 @@ class StructuralLifecycleAccountingTests(unittest.TestCase):
         self.assertEqual(len(self.db.orders), 2)
         self.assertEqual(self.db.book_locks, 2)
 
-    def test_requested_large_add_sizes_total_held_and_incremental_stop_risk_below_two_percent(self):
+    def test_requested_large_add_reserves_held_risk_within_owner_fifteen_percent(self):
         self.open()
         self.clock = VPG.utc_datetime(self.add["observed_at"])
         VPG.publish_quote("CNYRUBF", VPS.quote_from_row(self.add))
@@ -372,10 +372,10 @@ class StructuralLifecycleAccountingTests(unittest.TestCase):
         self.assertEqual(row["_execution_audit"]["status"], "EXECUTED", row["_execution_audit"])
         budget = self.db.orders[-1]["payload"]["stop_risk_budget"]
         self.assertGreater(budget["existing_position_risk"]["net_stop_risk_nav"], 0.)
-        self.assertLessEqual(budget["total_stop_risk_nav_after"], .02+1e-12)
+        self.assertLessEqual(budget["total_stop_risk_nav_after"], .15+1e-12)
         self.assertGreater(budget["total_stop_risk_nav_after"], .019)
         self.assertLess(budget["fraction"], 10.)
-        self.assertAlmostEqual(budget["risk_cap_nav"], .02)
+        self.assertAlmostEqual(budget["risk_cap_nav"], .15)
         # The cap reduces the increment; it does not move the protected stop.
         self.assertAlmostEqual(self.db.position()["stop_price"], 12.68784)
 
