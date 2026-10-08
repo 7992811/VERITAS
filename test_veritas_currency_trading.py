@@ -77,14 +77,25 @@ class ContractSizingTests(Fixtures, unittest.TestCase):
     def setUp(self):
         self.setup_facts()
 
-    def test_minimum_contract_cannot_exceed_original_net_stop_risk_cap(self):
+    def test_automatic_minimum_contract_uses_owner_fifteen_percent_net_cap(self):
         native = valid_row("CNYRUBF", "5m", "LONG", price=12.345, now=self.now)
         row, admission = P.select_entry([native], self.account, self.now)
         self.assertTrue(admission["open"])
-        self.assertEqual(admission["fraction"], .8)
+        self.assertEqual(admission["fraction"], 1.0)
         self.assertGreater(self.quote.ask * self.spec.rub_per_price_unit_per_lot, D("10000"))
+        terms = self.entry(row=row, admission=admission)
+        self.assertEqual(terms['lots'], 1)
+        self.assertEqual(D(terms['stop_risk_cap_nav']), D('.15'))
+        self.assertEqual(D(terms['stop_risk_limit_rub']), D('1500'))
+        self.assertGreater(D(terms['total_stop_risk_rub']), D('200'))
+        self.assertLessEqual(D(terms['total_stop_risk_rub']), D('1500'))
+        P.revalidate(terms, self.spec, self.account, self.quote, now=self.now, canonical_event_valid=True)
         with self.assertRaisesRegex(P.TradePlanBlocked, "FINAL_CONTRACT_STOP_RISK_EXCEEDED"):
-            self.entry(row=row, admission=admission)
+            self.entry(row=row, admission={**admission, 'fraction':10.0})
+        for change in ({'plan_version':'currency-broker-plan-v2-whole-contract'}, {'stop_risk_cap_nav':'.02'}):
+            with self.assertRaisesRegex(P.TradePlanBlocked, "PLAN_VERSION_REQUIRES_NEW_APPROVAL"):
+                P.revalidate({**terms, **change}, self.spec, self.account, self.quote,
+                             now=self.now, canonical_event_valid=True)
 
     def test_nominal_zero_diagnostic_retained_when_minimum_policy_is_off(self):
         admission = deepcopy(self.admission)

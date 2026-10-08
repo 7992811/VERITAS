@@ -290,8 +290,8 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertIn("OOS_SAMPLE_TOO_SMALL",g["blockers"])
         self.assertIn("VAULT_SAMPLE_TOO_SMALL",g["blockers"])
 
-    def test_live_risk_profile_is_conservative(self):
-        self.assertLessEqual(VX.LIVE_RISK_PROFILE["max_stop_risk_nav"],0.005)
+    def test_live_risk_profile_uses_owner_cap_and_preserves_other_controls(self):
+        self.assertEqual(VX.LIVE_RISK_PROFILE["max_stop_risk_nav"],0.15)
         self.assertLessEqual(VX.LIVE_RISK_PROFILE["max_gross"],1.25)
         self.assertFalse(VX.LIVE_RISK_PROFILE["allow_new_risk_without_durable_storage"])
 

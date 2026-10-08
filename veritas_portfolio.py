@@ -5357,7 +5357,7 @@ def _signal_first_admission(row,policy,drawdown):
     try:
         rp=abs(float(plan.get('stop_distance_pct') or 0.0))
         if rp>0:
-            risk_cap=0.02
+            risk_cap=float(MAX_STOP_RISK_NAV)
             base['fraction']=min(float(base.get('fraction') or 0.0),risk_cap/rp)
     except Exception:
         pass

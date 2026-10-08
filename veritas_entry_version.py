@@ -10,7 +10,7 @@ import veritas_canonical_constitution as CTC
 import veritas_release as RELEASE
 from veritas_trade_audit import payload
 
-POLICY_HASH_VERSION='ENTRY_POLICIES_V3'
+POLICY_HASH_VERSION='ENTRY_POLICIES_V4'
 
 
 def digest(value):
@@ -20,6 +20,7 @@ def digest(value):
 def policy_hash():
     """Full entry/lifecycle policy identity for a newly created trade."""
     return digest({'schema':POLICY_HASH_VERSION,'costs':CTC.COST_POLICY,
+                   'portfolio_risk':CTC.PAPER_RISK_POLICY,'live_risk':CTC.LIVE_RISK_POLICY,
                    'roles':CTC.STRATEGY_ROLE_POLICY,'portfolios':CTC.PORTFOLIO_POLICIES,
                    'lifecycle':CTC.LIFECYCLE_POLICY,
                    'structural_entry':CTC.STRUCTURAL_ENTRY_POLICY,

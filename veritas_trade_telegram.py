@@ -24,11 +24,14 @@ PREFIX = "/internal/currency-trading/"
 MSK = ZoneInfo("Europe/Moscow")
 OPERATOR_COMMANDS = frozenset(("/currency_status", "/currency_bind")) | MANUAL_TG.COMMANDS
 REASONS = {
-    "MANUAL_PARAMETERS_REQUIRED": "Укажите направление, 1 контракт, лимитную цену, стоп, цель и ожидаемый срок: /currency_manual.",
+    "MANUAL_PARAMETERS_REQUIRED": "Укажите направление, количество контрактов, лимитную цену, стоп, цель и ожидаемый срок: /currency_manual.",
+    "MANUAL_POSITIVE_LOTS_REQUIRED": "Укажите целое положительное количество контрактов.",
+    "MANUAL_REVERSE_REQUIRES_CLOSE": "Сначала закройте противоположную позицию отдельным подтверждением: /currency_manual_close.",
+    "MANUAL_ADD_REQUIRES_HELD_LEVELS": "Для добора нужна учтённая ручная позиция с теми же стопом и целью.",
     "MANUAL_TRIAL_ONE_CONTRACT_ONLY": "Ручная пробная заявка поддерживает ровно 1 контракт.",
     "MANUAL_TRIAL_REQUIRES_FLAT_POSITION": "Ручное открытие доступно при нулевой позиции CNYRUBf; имеющуюся ручную позицию можно закрыть: /currency_manual_close.",
     "MANUAL_TRIAL_REQUIRES_FLAT_WHOLE_ACCOUNT": "Пробный ручной режим требует отсутствия других позиций и заявок на всём брокерском счёте.",
-    "MANUAL_POSITION_REQUIRED": "Нет учтённой ручной позиции из одного контракта для закрытия.",
+    "MANUAL_POSITION_REQUIRED": "Нет учтённой ручной позиции для закрытия.",
     "MANUAL_GEOMETRY_INVALID": "Для покупки: стоп ниже лимита, цель выше. Для продажи: цель ниже лимита, стоп выше.",
     "MANUAL_APPROVED_PRICE_OFF_TICK": "Одна из цен не соответствует шагу цены брокерского контракта.",
     "MANUAL_LEVEL_ALREADY_REACHED": "Текущая цена уже достигла указанного стопа или цели; требуется другое предложение.",
@@ -36,7 +39,7 @@ REASONS = {
     "MANUAL_CURRENT_ACCOUNT_NOT_CHECKED": "Текущее состояние счёта для ручной заявки ещё не проверено.",
     "MANUAL_CURRENT_ACCOUNT_POLICY_REQUIRED": "Настройки допуска ручной заявки не согласованы; требуется проверка конфигурации.",
     "MANUAL_PLAN_VERSION_REQUIRED": "Условия ручного режима обновлены. Создайте новое предложение и подтвердите его отдельно.",
-    "MANUAL_HOLD_MINUTES_REQUIRED": "Укажите ожидаемый срок для расчёта издержек от 1 до 60 минут.",
+    "MANUAL_HOLD_MINUTES_REQUIRED": "Укажите ожидаемый срок для расчёта издержек: целое положительное число минут.",
     "MANUAL_INTENT_EXPIRED": "Срок ручного предложения истёк. Новая команда потребует нового подтверждения.",
     "MANUAL_REQUEST_ID_REUSED": "Эта команда уже связана с другим предложением; повторная отправка запрещена.",
     "PRICE_OUTSIDE_APPROVED_LIMIT": "Текущая цена не укладывается в ваш лимит. Заявка FAK по этим условиям не подготовлена.",
@@ -329,13 +332,16 @@ def proposal_text(proposal, *, execution_enabled=False):
         f"Счёт: …{account[-4:]}",
         f"{side.capitalize()} · {t.get('lots')} контракт(ов)",
         f"Лимитная цена: {t.get('limit_price')} ₽",
-        "Исполнение FAK: доступный объём сразу, остаток отменяется.",
+        ("Лимитная заявка действует до конца торгового дня; допускается частичное исполнение."
+         if manual and t.get('time_in_force') == 'TIME_IN_FORCE_DAY'
+         else "Исполнение FAK: доступный объём сразу, остаток отменяется."),
         f"Номинал заявки: {t.get('order_notional_rub', '—')} ₽",
     ]
     if manual or manual_position:
         lines.append("Направление и уровни заданы владельцем. Рекомендация модели не использована.")
-        if manual and t.get("plan_version") == "currency-owner-manual-v2-current-account":
+        if manual and t.get("plan_version") == "currency-owner-manual-v4-limit-day-risk-only":
             lines.append("Проверяется текущее состояние счёта. Историческая просадка и дневной/недельный результат всего счёта не проверяются.")
+            lines.append("Ручной режим: лимит риска 15% капитала с издержками; фильтры доходности, доли актива и плеча отключены.")
         if t.get("expected_hold_seconds"):
             lines.append(f"Ожидаемый срок для расчёта издержек: {Decimal(t['expected_hold_seconds']) / 60:g} мин; автоматического закрытия по времени нет.")
     elif t.get("horizon"):
@@ -353,7 +359,8 @@ def proposal_text(proposal, *, execution_enabled=False):
             f"Требуемое ГО: {t.get('required_margin_rub', '—')} ₽",
             f"Оценка комиссии входа: {t.get('estimated_commission_rub', '—')} ₽",
             f"Риск всей позиции до стопа с издержками: {t.get('total_stop_risk_rub', '—')} ₽",
-            f"Порог потенциала CNYRUBf: {t.get('canonical_cost_multiple', '1.1')}× издержек; минимум 0,19%.",
+            f"Лимит риска до стопа с издержками: {t.get('stop_risk_limit_rub', '—')} ₽ (15% текущего капитала портфеля)",
+            "Фильтры потенциала и доход/риск не применяются." if manual else f"Порог потенциала CNYRUBf: {t.get('canonical_cost_multiple', '1.1')}× издержек; минимум 0,19%.",
         ])
     if t.get("exit_reason"):
         lines.append("Причина: " + reason.get(t["exit_reason"], "подтверждённое сокращение риска"))

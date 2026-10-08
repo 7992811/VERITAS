@@ -104,14 +104,11 @@ class ManualTests(unittest.TestCase):
 
     def test_approved_manual_entry_rechecks_changed_current_account_before_send(self):
         proposal = self.approved()
-        reads = len(self.h.broker.reads)
-        self.h.broker.equity = D('20000')
-        self.h.broker.cash = [money('20000', 'rub')]
+        self.h.facts = replace(self.h.facts, account=replace(self.h.facts.account, available_margin_rub=D('10')))
         with patch.object(self.authority.store, 'load', side_effect=AssertionError('No historical import')):
             result = self.coordinator.execute_approved(proposal['proposal_id'])
         self.assertFalse(result['ok'])
-        self.assertEqual(result['code'], 'SINGLE_ASSET_LIMIT')
-        self.assertGreater(len(self.h.broker.reads), reads)
+        self.assertEqual(result['code'], 'INSUFFICIENT_MARGIN_AFTER_APPROVAL')
         self.assertEqual(self.transport.calls, [])
 
     def test_screenshot_refusals_keep_exact_numeric_reason_through_http_and_telegram(self):
@@ -120,8 +117,8 @@ class ManualTests(unittest.TestCase):
             quote=replace(h.quote, bid=D('12.770'), ask=D('12.771')),
             account=replace(h.account, currency_nav_rub=D('10000'), high_water_rub=D('10000')))
         for index, (stop, target, code) in enumerate((
-                ('12.90', '12.60', 'MANUAL_ECONOMICS_BLOCKED'),
-                ('13.10', '12.30', 'STOP_RISK_CHANGED_AFTER_APPROVAL'))):
+                ('14.30', '12.768', 'STOP_RISK_CHANGED_AFTER_APPROVAL'),
+                ('14.30', '10.30', 'STOP_RISK_CHANGED_AFTER_APPROVAL'))):
             with self.subTest(stop=stop):
                 request = {**self.request, 'limit_price':'12.77', 'stop_price':stop,
                            'target_price':target, 'hold_minutes':60}
@@ -148,15 +145,10 @@ class ManualTests(unittest.TestCase):
                 text = tg.sent()[-1]['text']
                 self.assertNotIn('конфигурацию доступа', text)
                 metrics = refusal['manual_check']
-                if index == 0:
-                    self.assertLess(D(metrics['net_reward_risk']), D(metrics['minimum_reward_risk']))
-                    self.assertIn('минимум: 1,0015', text)
-                    self.assertIn('Доход / риск', text)
-                else:
-                    self.assertEqual(D(metrics['stop_risk_limit_rub']), D('200'))
-                    self.assertGreater(D(metrics['stop_risk_rub']), D('350'))
-                    self.assertIn('лимит: 200,00 ₽', text)
-                    self.assertIn('10000,00 ₽', text)
+                self.assertEqual(D(metrics['stop_risk_limit_rub']), D('1500'))
+                self.assertGreater(D(metrics['stop_risk_rub']), D('1500'))
+                self.assertIn('лимит: 1500,00 ₽', text)
+                self.assertIn('10000,00 ₽', text)
 
     def test_refusal_metrics_never_echo_arbitrary_details_or_nonfinite_numbers(self):
         for bad in ('NaN', 'Infinity', 'secret value', '1e999999', '<b>100</b>', {}, True, '9'*99):
@@ -172,7 +164,7 @@ class ManualTests(unittest.TestCase):
                 self.assertNotIn('secret', manual_refusal_text(result))
         self.assertNotIn('manual_check', _error(P.TradePlanBlocked('SECRET_ERROR'))[0])
 
-    def test_currency_rr_floor_is_exact_and_shared_by_prepare_and_revalidation(self):
+    def test_model_currency_rr_floor_is_preserved_but_owner_manual_is_risk_only(self):
         h = self.h
         facts = replace(h.facts,
             quote=replace(h.quote, bid=D('12.770'), ask=D('12.771')),
@@ -197,12 +189,40 @@ class ManualTests(unittest.TestCase):
                         ('CNYRUBF', 'LIVE', {**plan, 'portfolio':'Champion'})):
                     other = P.VX.economics_gate(asset, candidate, execution_mode=mode, now=h.now)
                     self.assertEqual(other['minimum_reward_risk'], 9.0)
-            with self.assertRaises(P.ManualCheckBlocked) as error:
-                M.prepare({**request, 'target_price':'12.599'}, facts, h.now)
-            metrics = error.exception.manual_check
-            self.assertGreater(D(metrics['net_reward_risk']), D('1.001'))
-            self.assertLess(D(metrics['net_reward_risk']), D('1.0015'))
-            self.assertEqual(metrics['minimum_reward_risk'], '1.0015')
+            for target in ('12.599', '12.60', '12.768'):
+                manual = M.prepare({**request, 'target_price':target}, facts, h.now)
+                P.revalidate(manual, facts.spec, facts.account, facts.quote, now=h.now)
+                self.assertLess(D(manual['total_stop_risk_rub']), D('1500'))
+            h.facts = facts
+            proposal = self.coordinator.prepare_manual({**request, 'target_price':'12.768'})
+            self.assertEqual(proposal['status'], 'PENDING_DELIVERY')
+            self.assertFalse(self.authority.status()['account_risk']['economics_filters_applied'])
+        self.assertEqual(self.transport.calls, [])
+
+    def test_owner_fifteen_percent_boundary_includes_costs_and_rechecks_capital(self):
+        h = self.h
+        h.facts = replace(h.facts,
+            quote=replace(h.quote, bid=D('12.770'), ask=D('12.771')),
+            account=replace(h.account, currency_nav_rub=D('10000'), high_water_rub=D('10000')))
+        self.request.update(limit_price='12.77', stop_price='14.249', target_price='10.30', hold_minutes=60)
+        # This account passes exposure controls but would fail all three old
+        # whole-account stop budgets (0.5%, 2.5%, 1.25%). No risk gate is mocked.
+        h.broker.equity = D('55000')
+        h.broker.cash = [money('55000', 'rub')]
+        terms = self.ready()
+        self.assertEqual(D(terms['stop_risk_cap_nav']), D('.15'))
+        self.assertEqual(D(terms['stop_risk_limit_rub']), D('1500'))
+        self.assertGreater(D(terms['total_stop_risk_rub']), D('1499'))
+        self.assertLess(D(terms['total_stop_risk_rub']), D('1500'))
+        P.revalidate(terms, h.facts.spec, h.facts.account, h.facts.quote, now=h.now)
+        with self.assertRaises(P.ManualCheckBlocked) as blocked:
+            M.prepare({**self.request, 'stop_price':'14.250'}, h.facts, h.now)
+        self.assertGreater(D(blocked.exception.manual_check['stop_risk_rub']), D('1500'))
+        proposal = self.approved()
+        self.assertTrue(self.authority.status()['eligible'])
+        h.facts = replace(h.facts, account=replace(h.facts.account, currency_nav_rub=D('9990')))
+        result = self.coordinator.execute_approved(proposal['proposal_id'])
+        self.assertEqual(result['code'], 'STOP_RISK_CHANGED_AFTER_APPROVAL')
         self.assertEqual(self.transport.calls, [])
 
     def test_buy_geometry_works_and_manual_label_cannot_convert_model_terms(self):
@@ -215,8 +235,7 @@ class ManualTests(unittest.TestCase):
             P.revalidate({**h.terms,'decision_authority':M.VERSION}, h.spec, h.account, h.quote,
                          now=h.now, canonical_event_valid=True)
         h.add_other_future()
-        with self.assertRaisesRegex(P.TradePlanBlocked, 'MANUAL_TRIAL_REQUIRES_FLAT_WHOLE_ACCOUNT'):
-            self.coordinator.prepare_manual(self.request)
+        self.assertEqual(self.coordinator.prepare_manual(self.request)['status'], 'PENDING_DELIVERY')
         self.assertEqual(self.transport.calls, [])
 
     def test_owner_approved_sell_one_is_sent_once_and_duplicate_command_cannot_renew(self):
@@ -250,17 +269,49 @@ class ManualTests(unittest.TestCase):
         self.assertEqual(sends[0]['body']['direction'], 'ORDER_DIRECTION_SELL')
         self.assertEqual(self.coordinator.prepare_manual(self.request)['proposal_id'], proposal['proposal_id'])
 
-    def test_current_whole_account_limits_and_working_orders_still_block(self):
-        self.h.broker.equity = D('20000')
-        self.h.broker.cash = [money('20000', 'rub')]
-        with self.assertRaisesRegex(P.TradePlanBlocked, 'SINGLE_ASSET_LIMIT'):
-            self.coordinator.prepare_manual(self.request)
-        self.h.broker.equity = D('1000000')
-        self.h.broker.cash = [money('1000000', 'rub')]
-        self.h.broker.orders = [{'orderId':'existing-offline-order'}]
-        with self.assertRaisesRegex(P.TradePlanBlocked, 'LIVE_WHOLE_ACCOUNT_WORKING_ORDERS_UNRECONCILED'):
+    def test_reconciled_execution_state_is_required_despite_removed_business_caps(self):
+        self.h.facts = replace(self.h.facts, account=replace(self.h.facts.account, active_order_count=1))
+        with self.assertRaisesRegex(P.TradePlanBlocked, 'WORKING_ORDER_RECONCILIATION_REQUIRED'):
             self.coordinator.prepare_manual(self.request)
         self.assertEqual(self.repo.list_pending(account_id=ACCOUNT), [])
+        self.assertEqual(self.transport.calls, [])
+
+    def test_multiple_contracts_ignore_internal_gross_margin_and_drawdown_caps(self):
+        h = self.h
+        h.facts = replace(h.facts, account=replace(h.account, high_water_rub=D('20000'),
+                                                  available_margin_rub=D('20000')))
+        request = {**self.request, 'lots':12, 'stop_price':'12.345', 'target_price':'12.343', 'hold_minutes':120}
+        terms = M.prepare(request, h.facts, h.now)
+        self.assertEqual(terms['lots'], 12)
+        self.assertGreater(D(terms['resulting_leverage']), D('10'))
+        self.assertGreater(D(terms['required_margin_rub']), h.facts.account.currency_nav_rub)
+        self.assertLess(D(terms['total_stop_risk_rub']), D('1500'))
+        proposal = self.coordinator.prepare_manual(request)
+        self.assertEqual(proposal['status'], 'PENDING_DELIVERY')
+        parsed = MT.parse('/currency_manual', ['SELL','12','12.344','12.345','12.343','120'],
+                          bot_id=BOT, owner_id=OWNER, message_id=901)
+        self.assertEqual((parsed['lots'], parsed['hold_minutes']), (12,120))
+        with self.assertRaisesRegex(P.TradePlanBlocked, 'BROKER_LOT_LIMIT_CHANGED'):
+            P.revalidate(terms, h.spec, replace(h.facts.account, broker_max_sell_lots=11), h.quote, now=h.now)
+        self.assertEqual(self.transport.calls, [])
+
+    def test_manual_add_and_full_close_preserve_held_levels_and_count_all_lots(self):
+        h = self.h
+        entry = M.prepare({**self.request, 'lots':2}, h.facts, h.now)
+        account = replace(h.account, signed_lots=-2, managed_signed_lots=-2, ledger_revision=2)
+        h.facts = C.TradeFacts(h.spec, account, h.quote, entry)
+        proposal = self.coordinator.prepare_manual(self.request)
+        self.assertEqual(proposal['terms']['action'], 'ADD')
+        self.assertEqual(proposal['terms']['resulting_position_lots'], 3)
+        self.assertEqual(self.coordinator.prepare_manual(self.request)['proposal_id'], proposal['proposal_id'])
+        close = M.prepare(dict(request_id=str(uuid.uuid4()), action='CLOSE', limit_price=str(h.quote.ask)), h.facts, h.now)
+        self.assertEqual(close['lots'], 2)
+        self.assertTrue(close['reduce_only'])
+        with self.assertRaisesRegex(P.TradePlanBlocked, 'MANUAL_ADD_REQUIRES_HELD_LEVELS'):
+            M.prepare({**self.request, 'stop_price':'12.5'}, h.facts, h.now)
+        with self.assertRaisesRegex(P.TradePlanBlocked, 'STOP_RISK_CHANGED_AFTER_APPROVAL'):
+            M.prepare({**self.request, 'lots':20}, replace(h.facts, account=replace(account,
+                available_margin_rub=D('50000'))), h.now)
         self.assertEqual(self.transport.calls, [])
 
     def test_disabled_execution_and_stale_current_facts_still_block(self):
@@ -278,7 +329,7 @@ class ManualTests(unittest.TestCase):
 
     def test_old_manual_approval_cannot_silently_switch_account_policy(self):
         terms = self.ready()
-        terms['plan_version'] = 'currency-owner-manual-v1'
+        terms['plan_version'] = 'currency-owner-manual-v2-current-account'
         with self.assertRaisesRegex(P.TradePlanBlocked, 'MANUAL_PLAN_VERSION_REQUIRED'):
             self.coordinator.prepare_manual(self.request, reviewed_terms=terms)
         self.assertEqual(self.repo.list_pending(account_id=ACCOUNT), [])
@@ -290,7 +341,6 @@ class ManualTests(unittest.TestCase):
         cases = [
             (replace(h.spec, margin_sell_rub=D('1001')), h.account, h.quote, h.now, 'MARGIN_INCREASE'),
             (h.spec, replace(h.account, available_margin_rub=D('10')), h.quote, h.now, 'INSUFFICIENT_MARGIN'),
-            (h.spec, h.account, replace(h.quote, bid=D('12.343')), h.now, 'PRICE_OUTSIDE'),
             (h.spec, replace(h.account, signed_lots=-1, managed_signed_lots=-1), h.quote, h.now, 'POSITION_CHANGED'),
             (h.spec, h.account, replace(h.quote, observed_at=h.now-timedelta(seconds=16)), h.now, 'BROKER_QUOTE_STALE')]
         for spec, account, quote, now, code in cases:
@@ -327,6 +377,28 @@ class ManualTests(unittest.TestCase):
         self.assertEqual(projected['held_terms']['decision_authority'], M.VERSION)
         self.assertEqual(projected['held_terms']['horizon'], 'MANUAL')
         self.assertTrue(projected['metadata_reconciled'])
+
+    def test_day_limit_keeps_owner_price_pending_and_does_not_resend(self):
+        self.request.update(limit_price='12.770', stop_price='12.900', target_price='12.600', lots=2)
+        proposal = self.approved()
+        self.assertEqual(proposal['terms']['time_in_force'], 'TIME_IN_FORCE_DAY')
+        self.assertEqual(D(proposal['terms']['limit_price']), D('12.770'))
+        text = proposal_text(proposal, execution_enabled=True)
+        self.assertIn('до конца торгового дня', text)
+        self.assertNotIn('Исполнение FAK', text)
+        self.transport.handlers['PostOrder'] = lambda body: Response(order(client=body['orderId'], lots=2,
+            direction='ORDER_DIRECTION_SELL', timeInForce='TIME_IN_FORCE_DAY',
+            initialOrderPricePt=body['price'], initialSecurityPrice=money('12.770')))
+        result = self.coordinator.execute_approved(proposal['proposal_id'])
+        self.assertTrue(result['ok'], result)
+        pending = self.repo.get(proposal['proposal_id'])
+        self.assertEqual(pending['status'], 'ACKNOWLEDGED')
+        self.coordinator.execute_approved(proposal['proposal_id'])
+        sends = [x for x in self.transport.calls if x['name']=='PostOrder']
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0]['body']['timeInForce'], 'TIME_IN_FORCE_DAY')
+        self.assertEqual(sends[0]['body']['price'], {'units':'12','nano':770000000})
+        self.assertEqual(sends[0]['body']['quantity'], '2')
 
     def test_telegram_requires_private_owner_and_exact_parameters_without_executing(self):
         calls = []

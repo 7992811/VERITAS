@@ -411,11 +411,14 @@ class AuthorityTests(Fixtures, unittest.TestCase):
         self.assertIn("RR_BELOW_FINAL_FLOOR", result["blockers"])
         self.assertIn("NET_REWARD_RISK_BELOW_FLOOR", result["blockers"])
 
-    def test_costs_also_consume_unchanged_live_stop_risk_caps(self):
-        self.broker.equity = D("10000")
+    def test_costs_also_consume_owner_fifteen_percent_live_stop_risk_cap(self):
+        gross_risk = abs(D(self.terms['limit_price'])-D(self.terms['stop_price'])) * self.spec.rub_per_price_unit_per_lot * self.terms['lots']
+        self.broker.equity = gross_risk / D('.149')
         self.ready()
         result = self.authorize()
         self.assertIn("STOP_RISK_LIMIT", result["blockers"])
+        self.assertLess(result["live_authorization"]["risk"]["proposed_stop_risk_nav"], .15)
+        self.assertGreater(result["account_risk"]["net_stop_risk_nav"], .15)
         self.assertGreater(result["account_risk"]["net_stop_risk_nav"], result["live_authorization"]["risk"]["proposed_stop_risk_nav"])
 
     def test_disabled_or_unarmed_runtime_cannot_be_overridden_by_audit(self):

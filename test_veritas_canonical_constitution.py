@@ -84,6 +84,30 @@ class CanonicalConstitutionCurrentRuntimeAlignmentTests(unittest.TestCase):
         self.assertEqual(VX.LIVE_RISK_PROFILE["max_gross"], C.LIVE_RISK_POLICY["max_gross"])
         self.assertLess(C.LIVE_RISK_POLICY["max_gross"], C.PORTFOLIO_POLICIES["Aggressive"]["max_gross"])
 
+    def test_owner_stop_cap_is_shared_by_manual_automatic_and_live_aggregates(self):
+        import veritas_execution as VX
+        import veritas_portfolio as VP
+        self.assertEqual(C.PAPER_RISK_POLICY['per_idea_structural_stop_risk_cap_nav'], .15)
+        self.assertEqual(VP.MAX_STOP_RISK_NAV, .15)
+        args = dict(stop_risk_nav=.15, total_open_stop_risk_nav_after=.15,
+                    correlated_stop_risk_nav_after=.15, single_asset_fraction=.2,
+                    gross_after=.2, instrument_spec_validated=True)
+        self.assertEqual(VX.production_current_account_risk_blockers(**args), [])
+        for field, code in (('stop_risk_nav','STOP_RISK_LIMIT'),
+                ('total_open_stop_risk_nav_after','TOTAL_OPEN_STOP_RISK_LIMIT'),
+                ('correlated_stop_risk_nav_after','CORRELATED_STOP_RISK_LIMIT')):
+            self.assertIn(code, VX.production_current_account_risk_blockers(**{**args,field:.150001}))
+
+    def test_stop_risk_changes_invalidate_strategy_policy_identity(self):
+        from unittest.mock import patch
+        import veritas_entry_version as EV
+        original = EV.policy_hash()
+        for policy, field in ((C.PAPER_RISK_POLICY, 'per_idea_structural_stop_risk_cap_nav'),
+                              (C.LIVE_RISK_POLICY, 'max_stop_risk_nav')):
+            with patch.dict(policy, {field:.02}):
+                self.assertNotEqual(EV.policy_hash(), original)
+        self.assertEqual(EV.policy_hash(), original)
+
 
 class CanonicalConstitutionDeclaredGapsTests(unittest.TestCase):
     def test_resolved_gap_registry_is_closed(self):
