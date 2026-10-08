@@ -6,6 +6,7 @@ consumer; durable decisions are recorded before its offset can advance.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 import json
 import os
@@ -55,6 +56,8 @@ REASONS = {
     "LIVE_ACCOUNT_ADMISSION_STALE": "Данные риск-допуска реального счёта устарели; требуется свежая проверка.",
     "LIVE_ACCOUNT_CONTROLS_EVIDENCE_REQUIRED": "Не подтверждены текущие ограничения и риск-показатели всего брокерского счёта.",
     "LIVE_MODEL_ADMISSION_EVIDENCE_REQUIRED": "Не подтверждён допуск модели к реальным сделкам.",
+    "LIVE_MODEL_EVIDENCE_NOT_CHECKED": "Допуск модели к реальным сделкам ещё не проверен.",
+    "LIVE_ACCOUNT_HISTORY_EVIDENCE_NOT_CHECKED": "История капитала и ограничения всего счёта ещё не проверены.",
     "FUNDING_HISTORY_REFRESH_REQUIRED": "Нужно обновить историю фактического фондирования перед новым входом.",
     "FUNDING_HISTORY_INCOMPLETE": "История фактического фондирования неполна; новые входы заблокированы до сверки.",
     "STATEMENT_ATTESTATION_NOT_CONFIGURED": "Не настроен источник подтверждения полноты брокерского отчёта.",
@@ -84,6 +87,47 @@ def _reason(code):
     return "Состояние ещё не подтверждено."
 
 
+def _sizing_lines(details):
+    """Render only typed numeric diagnostics from the last completed poll."""
+    if not isinstance(details, dict):
+        return []
+    try:
+        numbers = {}
+        for key in ("currency_nav_rub", "target_fraction", "target_notional_rub",
+                    "contract_notional_rub", "max_gross"):
+            value = details.get(key)
+            if not isinstance(value, str) or not re.fullmatch(r"\d{1,20}(?:\.\d{1,20})?", value):
+                return []
+            numbers[key] = Decimal(value)
+            if numbers[key] <= 0:
+                return []
+        target, held = details.get("target_lots"), details.get("held_lots")
+        if any(type(x) is not int or not 0 <= x <= 10**12 for x in (target, held)):
+            return []
+        n = numbers
+        if (n["target_notional_rub"] != n["currency_nav_rub"] * n["target_fraction"]
+                or target != int(n["target_notional_rub"] / n["contract_notional_rub"])
+                or target > held or n["target_fraction"] > n["max_gross"]):
+            return []
+        reason = details.get("reason")
+        if reason == "BELOW_ONE_CONTRACT" and target == 0:
+            first = "Расчётный объём меньше одного целого контракта."
+        elif reason == "TARGET_ALREADY_REACHED" and target >= 1:
+            first = "Целевое количество контрактов уже набрано; добор не требуется."
+        else:
+            return []
+        def rub(value):
+            return format(value, ",.2f").replace(",", " ").replace(".", ",") + " ₽"
+        return [first, "Расчёт последней проверки:",
+                f"Капитал Currency: {rub(n['currency_nav_rub'])}.",
+                f"Доля от капитала: {n['target_fraction'] * 100:f}% · номинал цели: {rub(n['target_notional_rub'])}.",
+                f"Номинал одного контракта: {rub(n['contract_notional_rub'])} — это не гарантийное обеспечение.",
+                f"Цель: {target} контракт(ов) · уже в позиции: {held}.",
+                f"Предел номинала: {n['max_gross']:f}× капитала; он не умножает начальную долю автоматически."]
+    except (InvalidOperation, ValueError, OverflowError):
+        return []
+
+
 def readiness_text(status):
     """Describe metadata only; a status request never polls or executes a trade."""
     lines = ["Валютный портфель · состояние"]
@@ -109,7 +153,9 @@ def readiness_text(status):
         if status.get("last_poll_succeeded") is False:
             lines.append("Последняя проверка завершилась ошибкой.")
         if status.get("last_poll_block_reason"):
-            lines.append(_reason(status["last_poll_block_reason"]))
+            sizing = (_sizing_lines(status.get("last_poll_sizing"))
+                      if status["last_poll_block_reason"] == "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT" else [])
+            lines.extend(sizing or [_reason(status["last_poll_block_reason"])])
         for key, label in (("pending_approval_count", "Ожидают решения/доставки"),
                            ("unsettled_count", "Ожидают сверки исполнения")):
             value = status.get(key)

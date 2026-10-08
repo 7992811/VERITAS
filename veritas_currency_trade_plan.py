@@ -24,6 +24,21 @@ class TradePlanBlocked(ValueError):
     """Stable diagnostic code only."""
 
 
+class ContractSizingBlocked(TradePlanBlocked):
+    """A failed size calculation, with no permission to round up or trade."""
+
+    def __init__(self, *, nav, fraction, contract_notional, target_lots, held_lots, max_gross):
+        super().__init__("TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT")
+        self.sizing = {
+            "reason": "BELOW_ONE_CONTRACT" if target_lots < 1 else "TARGET_ALREADY_REACHED",
+            "currency_nav_rub": str(nav), "target_fraction": str(fraction),
+            "target_notional_rub": str(nav * fraction),
+            "contract_notional_rub": str(contract_notional),
+            "target_lots": target_lots, "held_lots": held_lots,
+            "max_gross": str(max_gross),
+        }
+
+
 def decimal(value: Any, *, positive=False) -> Decimal:
     if isinstance(value, bool) or value is None:
         raise TradePlanBlocked("INVALID_DECIMAL")
@@ -353,7 +368,9 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
     target_lots = int((nav * fraction / contract_notional).to_integral_value(rounding=ROUND_FLOOR))
     lots = target_lots - abs(account.signed_lots)
     if lots < 1:
-        raise TradePlanBlocked("TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT")
+        raise ContractSizingBlocked(nav=nav, fraction=fraction, contract_notional=contract_notional,
+                                    target_lots=target_lots, held_lots=abs(account.signed_lots),
+                                    max_gross=limits["max_gross"])
     source = context.get("source_identity") or context.get("source") or row.get("price_source_identity")
     if not source:
         raise TradePlanBlocked("CANONICAL_SOURCE_IDENTITY_REQUIRED")

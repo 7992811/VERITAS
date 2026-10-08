@@ -324,6 +324,24 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.assertEqual(response["block_reason"], "CURRENCY_ACCOUNT_NOT_BOUND")
         self.assertEqual(self.coordinator.calls, [])
 
+    def test_size_failure_is_cached_read_only_then_cleared_on_next_poll(self):
+        from decimal import Decimal as D
+        failure = service.ContractSizingBlocked(nav=D('10000'), fraction=D('.5'),
+            contract_notional=D('12769'), target_lots=0, held_lots=0, max_gross=D('10'))
+        with patch.object(self.coordinator, 'prepare_next', side_effect=failure):
+            self.assertEqual(self.request('poll')[1], 200)
+        calls = list(self.coordinator.calls)
+        facts_calls = list(self.facts.calls)
+        observed = self.request('status')[0]
+        self.assertEqual(observed['last_poll_sizing'], failure.sizing)
+        observed['last_poll_sizing']['target_lots'] = 99
+        self.assertEqual(self.request('status')[0]['last_poll_sizing']['target_lots'], 0)
+        self.assertEqual(self.coordinator.calls, calls)
+        self.assertEqual(self.facts.calls, facts_calls)
+        self.facts.bound = False
+        self.request('poll')
+        self.assertIsNone(self.request('status')[0]['last_poll_sizing'])
+
     def test_poll_and_updates_use_exact_scope_with_mixed_records(self):
         valid = self.create(event="valid")
         foreign = [

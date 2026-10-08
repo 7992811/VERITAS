@@ -36,7 +36,7 @@ from veritas_currency_trade_ledger import (
     CurrencyTradeLedger, InstrumentValuation, LedgerError, ACCOUNTS, FILLS, FEES,
 )
 from veritas_currency_trade_plan import (
-    AccountSnapshot, BrokerQuote, ContractSpec, TradePlanBlocked, fresh,
+    AccountSnapshot, BrokerQuote, ContractSpec, TradePlanBlocked, ContractSizingBlocked, fresh,
     fingerprint, json_safe, utc,
 )
 from veritas_currency_trading import CurrencyTradingCoordinator, TradeFacts, TradeOwner
@@ -644,6 +644,7 @@ class TradeHttpApplication:
             "binding_state": "unchecked", "last_poll_at": None,
             "last_poll_block_reason": None, "pending_approval_count": None,
             "unsettled_count": None, "last_poll_succeeded": None,
+            "last_poll_sizing": None,
         }
 
     @property
@@ -725,18 +726,19 @@ class TradeHttpApplication:
             account_id=self.account_id, owner_user_id=self.owner.user_id, limit=1000))
 
     def _remember_poll(self, reason, *, binding_state=None, pending=None, unsettled=None,
-                       succeeded=True):
+                       succeeded=True, sizing=None):
         self._poll_state.update(
             last_poll_at=utc(self.clock()).isoformat(), last_poll_block_reason=reason,
             pending_approval_count=pending, unsettled_count=unsettled,
             last_poll_succeeded=succeeded,
+            last_poll_sizing=deepcopy(sizing),
         )
         if binding_state is not None:
             self._poll_state["binding_state"] = binding_state
 
     def _status(self):
         with self._lock:
-            cached = dict(self._poll_state)
+            cached = deepcopy(self._poll_state)
         checked = cached["last_poll_at"]
         age = (utc(self.clock()) - utc(checked)).total_seconds() if checked else None
         configured = callable(getattr(self.coordinator, "live_admission", None))
@@ -781,7 +783,7 @@ class TradeHttpApplication:
             self._remember_poll("PROPOSALS_PAUSED", binding_state="bound")
             return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
                     "block_reason": "PROPOSALS_PAUSED"}
-        reason = None
+        reason, sizing = None, None
         approved = self._scoped(self.repository.list_approved(
             account_id=self.account_id, owner_user_id=self.owner.user_id, limit=1000))
         if approved:
@@ -802,12 +804,14 @@ class TradeHttpApplication:
                 self.coordinator.prepare_next()
             except (TradePlanBlocked, ServiceError, LedgerError) as exc:
                 reason = _diagnostic(exc)
+                if isinstance(exc, ContractSizingBlocked):
+                    sizing = exc.sizing
                 if reason == "BROKER_COST_RECONCILIATION_REQUIRED":
                     reason = self.facts.block_reason or reason
             pending = self._pending()
         items = [self._public(p) for p in pending if p.get("status") == "PENDING_DELIVERY"][:1]
         self._remember_poll(reason, binding_state="bound", pending=len(pending),
-                            unsettled=len(unsettled))
+                            unsettled=len(unsettled), sizing=sizing)
         return {"ok": True, "enabled": True, "items": items,
                 "execution_enabled": self.execution_enabled, "block_reason": reason}
 

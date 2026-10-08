@@ -82,8 +82,14 @@ class ContractSizingTests(Fixtures, unittest.TestCase):
         self.assertTrue(admission["open"])
         self.assertEqual(admission["fraction"], .8)
         self.assertGreater(self.quote.ask * self.spec.rub_per_price_unit_per_lot, D("10000"))
-        with self.assertRaisesRegex(P.TradePlanBlocked, "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT"):
+        with self.assertRaisesRegex(P.ContractSizingBlocked, "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT") as blocked:
             self.entry(row=row, admission=admission)
+        detail = blocked.exception.sizing
+        self.assertEqual(detail["reason"], "BELOW_ONE_CONTRACT")
+        self.assertEqual((detail["target_lots"], detail["held_lots"]), (0, 0))
+        self.assertEqual(D(detail["target_notional_rub"]), D("8000"))
+        self.assertEqual(D(detail["contract_notional_rub"]), D("12345"))
+        self.assertEqual(D(detail["max_gross"]), D("10"))
 
     def test_whole_lot_notional_margin_and_cny_cost_multiplier(self):
         terms = self.entry()
@@ -139,8 +145,11 @@ class ContractSizingTests(Fixtures, unittest.TestCase):
                 self.entry(account=account, held_terms=held)
 
     def test_add_cannot_use_repeated_scan_to_exceed_final_target(self):
-        with self.assertRaisesRegex(P.TradePlanBlocked, "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT"):
+        with self.assertRaisesRegex(P.ContractSizingBlocked, "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT") as blocked:
             self.entry(account=replace(self.account, signed_lots=2, managed_signed_lots=2), held_terms=self.held)
+        self.assertEqual(blocked.exception.sizing["reason"], "TARGET_ALREADY_REACHED")
+        self.assertEqual(blocked.exception.sizing["target_lots"], 2)
+        self.assertEqual(blocked.exception.sizing["held_lots"], 2)
         with self.assertRaisesRegex(P.TradePlanBlocked, "CLOSE_OPPOSITE_POSITION_FIRST"):
             self.entry(account=replace(self.account, signed_lots=-1, managed_signed_lots=-1))
 
