@@ -1,9 +1,11 @@
 """Prospective producer contracts and isolated PostgreSQL pipeline recovery."""
 from contextlib import contextmanager, nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import timedelta
 import json
 import os
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -175,6 +177,7 @@ class ProducerContracts(unittest.TestCase):
             self.assertEqual(result['status'], 'RETRY')
             self.assertEqual(cursor, {})
             daily.assert_not_called()
+            self.assertIs(score.call_args.args[0], app.connect)
             self.assertIsNone(score.call_args.kwargs['cursor'])
             pending = {'cycle_id': 'frozen-sample', 'stage': 'decisions', 'offset': 64}
             score.return_value = {'status': 'PROGRESS', 'cursor': pending}
@@ -192,6 +195,7 @@ class ProducerContracts(unittest.TestCase):
             self.assertEqual(cursor['scorecard_work'], completed)
             self.assertEqual(daily.call_count, 1)
             self.assertIs(daily.call_args.args[0], app.ns)
+            self.assertIs(daily.call_args.args[1], app.connect)
             self.assertEqual(score.call_count, 3)
             score.return_value = {'status': 'NO_WORK', 'reason': 'SCORECARD_REFRESH_NOT_DUE', 'cursor': completed}
             _, cursor = app.intelligence(context, cursor)
@@ -214,6 +218,256 @@ class ProducerContracts(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'commit failed'):
                 app.intelligence(C.Budget(app.lane), cursor)
             self.assertEqual(cursor, original)
+
+
+class ScopedConnection:
+    """Connection ownership only; native tests exercise the real transactions."""
+    def __init__(self, *, autocommit=True, status="IDLE", close_error=None, suppress=False):
+        self.autocommit = autocommit
+        self.info = SimpleNamespace(transaction_status=SimpleNamespace(name=status))
+        self.close_error, self.closed, self.exit_error = close_error, False, None
+        self.suppress = suppress
+
+    def __enter__(self):
+        if self.closed:
+            raise AssertionError("closed connection borrowed")
+        return self
+
+    def __exit__(self, kind, error, traceback):
+        self.closed, self.exit_error = True, error
+        if self.close_error is not None:
+            raise self.close_error
+        return self.suppress
+
+
+class IntelligenceConnectionContracts(unittest.TestCase):
+    def test_one_owned_connection_serves_scorecard_daily_and_returned_deferral(self):
+        for phase, result in (("scorecard", {"status": "PROGRESS", "cursor": {"stage": "decisions", "offset": 64}}),
+                              ("daily", {"status": "OK"}),
+                              ("scorecard", {"status": "NO_WORK"}),
+                              ("scorecard", {"status": "DEFERRED_SCORECARD_BUDGET"})):
+            with self.subTest(phase=phase, status=result["status"]):
+                raw, seen = ScopedConnection(), []
+                original = Mock(return_value=raw)
+                app = C.ContinuousLearning(namespace(original)); app.ready = True
+                lease = {"cursor": {"phase": phase}}
+                def borrowed(factory):
+                    self.assertIs(app.connect, original)
+                    self.assertIsNot(factory, original)
+                    with factory() as c:
+                        self.assertIs(c, raw)
+                        self.assertFalse(c.closed)
+                    self.assertFalse(raw.closed)
+                    seen.append(factory)
+                def claim(factory, *args, **kwargs):
+                    borrowed(factory)
+                    self.assertEqual(kwargs["lease_seconds"], 30)
+                    return lease
+                def scorecard(factory, *args, **kwargs):
+                    borrowed(factory)
+                    self.assertIs(kwargs["context"].lane, app.lane)
+                    return result
+                def daily(ns, factory, *args, **kwargs):
+                    self.assertIs(ns, app.ns)
+                    return scorecard(factory, *args, **kwargs)
+                def checkpoint(factory, *args, **kwargs):
+                    borrowed(factory)
+                    self.assertEqual(kwargs["status"], "RETRY" if result["status"].startswith("DEFERRED") else "OK")
+                    if kwargs["status"] == "RETRY":
+                        self.assertNotIn("cursor", kwargs)
+                    return True
+                with patch.object(STORE, "claim_job", side_effect=claim), \
+                     patch.object(STORE, "checkpoint_job", side_effect=checkpoint), \
+                     patch.object(C.INTELLIGENCE, "refresh_snapshot", side_effect=scorecard) as score, \
+                     patch.object(C.SCORECARD, "refresh_daily", side_effect=daily) as audit:
+                    self.assertEqual(app.lane.callbacks["learning_intelligence"](), result)
+                original.assert_called_once_with()
+                self.assertEqual(len(seen), 3)
+                self.assertTrue(all(factory is seen[0] for factory in seen))
+                self.assertEqual(score.call_count, int(phase == "scorecard"))
+                self.assertEqual(audit.call_count, int(phase == "daily"))
+                self.assertTrue(raw.closed)
+                self.assertIs(app.connect, original)
+                self.assertIsNone(app._stats["last_error"])
+                self.assertEqual(app._stats["last_success_at"] is None, result["status"].startswith("DEFERRED"))
+
+    def test_not_ready_and_busy_paths_close_only_owned_connection_and_keep_state(self):
+        for state in ("not_ready", "readiness_lost_at_checkout", "busy"):
+            with self.subTest(state=state):
+                raw = ScopedConnection()
+                def connect():
+                    if state == "readiness_lost_at_checkout":
+                        app.ready = False
+                    return raw
+                original = Mock(side_effect=connect)
+                app = C.ContinuousLearning(namespace(original)); app.ready = state != "not_ready"
+                previous = deepcopy(app._stats)
+                with patch.object(STORE, "claim_job", return_value=None) as claim, \
+                     patch.object(STORE, "checkpoint_job") as checkpoint, \
+                     patch.object(C.INTELLIGENCE, "refresh_snapshot") as work:
+                    result = app.lane.callbacks["learning_intelligence"]()
+                self.assertEqual(result["reason"], "DURABLE_JOB_LEASE_BUSY" if state == "busy" else "LEARNING_BOOTSTRAP_PENDING")
+                self.assertEqual(original.call_count, int(state != "not_ready"))
+                self.assertEqual(claim.call_count, int(state == "busy"))
+                self.assertEqual(raw.closed, state != "not_ready")
+                checkpoint.assert_not_called(); work.assert_not_called()
+                self.assertEqual(app._stats, previous)
+
+    def test_checkout_never_resets_deadline_or_accepts_an_outer_transaction(self):
+        for mode in ("expired_checkout", "not_autocommit", "in_transaction"):
+            with self.subTest(mode=mode):
+                raw = ScopedConnection(autocommit=mode != "not_autocommit",
+                                       status="INTRANS" if mode == "in_transaction" else "IDLE")
+                now = [100.]
+                def connect():
+                    now[0] += 7. if mode == "expired_checkout" else 1.
+                    return raw
+                with patch.object(C.time, "monotonic", side_effect=lambda: now[0]):
+                    original = Mock(side_effect=connect)
+                    app = C.ContinuousLearning(namespace(original)); app.ready = True
+                    deadline, previous = app.lane.deadline, deepcopy(app._stats)
+                    with patch.object(STORE, "claim_job") as claim, \
+                         patch.object(C.INTELLIGENCE, "refresh_snapshot") as work, \
+                         self.assertRaises(TimeoutError if mode == "expired_checkout" else RuntimeError):
+                        app.lane.callbacks["learning_intelligence"]()
+                    self.assertEqual(app.lane.deadline, deadline)
+                self.assertTrue(raw.closed)
+                original.assert_called_once_with()
+                claim.assert_not_called(); work.assert_not_called()
+                self.assertEqual(app._stats, previous)
+
+    def test_errors_use_fresh_recovery_and_close_cannot_replace_original_exception(self):
+        for failure in ("work", "cooperative", "checkpoint_ack"):
+            with self.subTest(failure=failure):
+                error = (C.MaintenanceDeferred("DEFERRED_TIME_BUDGET", reason="synthetic_work")
+                         if failure == "cooperative" else RuntimeError("synthetic "+failure))
+                cleanup_error = type("CleanupFailure", (BaseException,), {})("synthetic close failure")
+                primary = ScopedConnection(close_error=None if failure == "cooperative" else cleanup_error,
+                                           suppress=failure == "cooperative")
+                recovery = ScopedConnection()
+                original = Mock(side_effect=[primary, recovery])
+                app = C.ContinuousLearning(namespace(original)); app.ready = True
+                lease = {"cursor": {"scorecard_work": {"stage": "decisions", "offset": 64}}}
+                def work(factory, *args, **kwargs):
+                    with factory() as c:
+                        self.assertIs(c, primary)
+                    if failure != "checkpoint_ack":
+                        raise error
+                    return {"status": "PROGRESS", "cursor": {"stage": "decisions", "offset": 128}}
+                def checkpoint(factory, *args, **kwargs):
+                    if kwargs["status"] == "OK":
+                        self.assertIsNot(factory, original)
+                        with factory() as c:
+                            self.assertIs(c, primary)
+                        raise error  # The work is never replayed after this ambiguity.
+                    self.assertIs(factory, original)
+                    self.assertNotIn("cursor", kwargs)
+                    self.assertEqual(kwargs["status"], "RETRY" if failure == "cooperative" else "ERROR")
+                    with factory() as c:
+                        self.assertIs(c, recovery)
+                        raise OSError("synthetic recovery failure")
+                with patch.object(STORE, "claim_job", return_value=lease), \
+                     patch.object(C.INTELLIGENCE, "refresh_snapshot", side_effect=work) as called, \
+                     patch.object(STORE, "checkpoint_job", side_effect=checkpoint) as saved, \
+                     self.assertRaises(type(error)) as caught:
+                    app.lane.callbacks["learning_intelligence"]()
+                self.assertIs(caught.exception, error)
+                self.assertIs(primary.exit_error, error)
+                self.assertTrue(primary.closed and recovery.closed)
+                self.assertEqual(original.call_count, 2)
+                called.assert_called_once()
+                self.assertEqual(saved.call_count, 2 if failure == "checkpoint_ack" else 1)
+                self.assertEqual(lease["cursor"]["scorecard_work"]["offset"], 64)
+                self.assertIsNone(app._stats["last_success_at"])
+                self.assertIs(app.connect, original)
+
+    def test_close_failure_reports_error_without_replaying_committed_work(self):
+        error = OSError("synthetic close after commit")
+        raw = ScopedConnection(close_error=error)
+        original = Mock(return_value=raw)
+        app = C.ContinuousLearning(namespace(original)); app.ready = True
+        def checkpoint(factory, *args, **kwargs):
+            with factory() as c:
+                self.assertIs(c, raw)
+            return True
+        with patch.object(STORE, "claim_job", return_value={"cursor": {}}), \
+             patch.object(C.INTELLIGENCE, "refresh_snapshot", return_value={"status": "PROGRESS"}) as work, \
+             patch.object(STORE, "checkpoint_job", side_effect=checkpoint) as saved, \
+             self.assertRaises(OSError) as caught:
+            app.lane.callbacks["learning_intelligence"]()
+        self.assertIs(caught.exception, error)
+        self.assertTrue(raw.closed)
+        original.assert_called_once_with(); work.assert_called_once(); saved.assert_called_once()
+        self.assertEqual(saved.call_args.kwargs["status"], "OK")
+        self.assertIsNotNone(app._stats["last_success_at"])
+        self.assertEqual(app._stats["last_error"], "OSError: synthetic close after commit")
+
+    def test_lost_lease_never_marks_the_step_successful(self):
+        primary, recovery = ScopedConnection(), ScopedConnection()
+        original = Mock(side_effect=[primary, recovery])
+        app = C.ContinuousLearning(namespace(original)); app.ready = True
+        def checkpoint(factory, *args, **kwargs):
+            with factory() as c:
+                self.assertIs(c, primary if kwargs["status"] == "OK" else recovery)
+            return False
+        with patch.object(STORE, "claim_job", return_value={"cursor": {}}), \
+             patch.object(C.INTELLIGENCE, "refresh_snapshot", return_value={"status": "PROGRESS"}) as work, \
+             patch.object(STORE, "checkpoint_job", side_effect=checkpoint) as saved, \
+             self.assertRaisesRegex(RuntimeError, "lease expired"):
+            app.lane.callbacks["learning_intelligence"]()
+        work.assert_called_once()
+        self.assertEqual([call.kwargs["status"] for call in saved.call_args_list], ["OK", "ERROR"])
+        self.assertIs(saved.call_args.args[0], original)
+        self.assertIsNone(app._stats["last_success_at"])
+        self.assertTrue(primary.closed and recovery.closed)
+
+    def test_concurrent_calls_keep_connections_and_budgets_local(self):
+        barrier, lock = threading.Barrier(2), threading.Lock()
+        local, connections, seen, contexts = threading.local(), [], [], []
+        def connect():
+            raw = ScopedConnection()
+            local.raw = raw
+            with lock:
+                connections.append(raw)
+            return raw
+        original = Mock(side_effect=connect)
+        app = C.ContinuousLearning(namespace(original)); app.ready = True
+        def borrowed(factory):
+            self.assertIs(app.connect, original)
+            with factory() as raw:
+                self.assertIs(raw, local.raw)
+                self.assertFalse(raw.closed)
+            with lock:
+                seen.append((raw, factory))
+        def claim(factory, *args, **kwargs):
+            borrowed(factory)
+            return {"cursor": {}}
+        def work(factory, *args, **kwargs):
+            borrowed(factory)
+            with lock:
+                contexts.append(kwargs["context"])
+            barrier.wait(timeout=3)
+            self.assertFalse(local.raw.closed)
+            return {"status": "PROGRESS"}
+        def checkpoint(factory, *args, **kwargs):
+            borrowed(factory)
+            return True
+        with patch.object(STORE, "claim_job", side_effect=claim), \
+             patch.object(C.INTELLIGENCE, "refresh_snapshot", side_effect=work), \
+             patch.object(STORE, "checkpoint_job", side_effect=checkpoint), \
+             ThreadPoolExecutor(max_workers=2) as workers:
+            futures = [workers.submit(app.lane.callbacks["learning_intelligence"]) for _ in range(2)]
+            self.assertEqual([future.result(timeout=5)["status"] for future in futures], ["PROGRESS", "PROGRESS"])
+        self.assertEqual(original.call_count, 2)
+        self.assertEqual(len(connections), 2)
+        self.assertIsNot(contexts[0], contexts[1])
+        self.assertIs(app.connect, original)
+        for raw in connections:
+            factories = [factory for connection, factory in seen if connection is raw]
+            self.assertEqual(len(factories), 3)
+            self.assertTrue(all(factory is factories[0] for factory in factories))
+            self.assertTrue(raw.closed)
+        self.assertIsNot(seen[0][1], next(factory for raw, factory in seen if raw is not seen[0][0]))
 
 
 class TradeCallbackContracts(unittest.TestCase):
@@ -344,6 +598,255 @@ class TradeCallbackContracts(unittest.TestCase):
              patch.object(STORE, "checkpoint_job", return_value=True) as checkpoint:
             self.assertEqual(self.run_job()["status"], "OK")
         checkpoint.assert_called_once()
+
+
+@unittest.skipUnless(os.getenv("VERITAS_QUALITY_TEST_DSN"), "isolated PostgreSQL test database not configured")
+class IntelligenceConnectionSQLTests(unittest.TestCase):
+    connect = state_tests.DurableStateSQLTests.connect
+    tearDown = state_tests.DurableStateSQLTests.tearDown
+    epoch = "2026-10-01T00:00:00+00:00"
+    job_name = "learning_intelligence"
+
+    def setUp(self):
+        state_tests.DurableStateSQLTests.setUp(self)
+        for key, value in (("_CACHE", {"at": 0., "epoch": None, "value": None}),
+                           ("_SNAPSHOT", None), ("_RESTORED_EPOCH", self.epoch),
+                           ("_BUILD_LOCK", threading.Lock()),
+                           ("_REFRESH_STATE", {"status": "NOT_STARTED", "last_error": None})):
+            item = patch.object(C.INTELLIGENCE, key, value)
+            item.start(); self.addCleanup(item.stop)
+        env = patch.dict(os.environ, {"VERITAS_PRODUCTION_CANDIDATE_EPOCH": self.epoch})
+        env.start(); self.addCleanup(env.stop)
+        with self.connect() as c:
+            c.execute("CREATE TABLE intelligence_connection_probe (name text PRIMARY KEY, value integer NOT NULL)")
+            c.execute("INSERT INTO intelligence_connection_probe VALUES ('work',1)")
+        self.opened = []
+        @contextmanager
+        def configured_connect():
+            with self.connect() as raw:
+                self.opened.append(raw)
+                raw.execute("SET statement_timeout='9s'; SET lock_timeout='7s'")
+                yield raw
+        self.original_connect = configured_connect
+        self.seed_step()
+
+    def seed_step(self):
+        self.opened.clear()
+        self.app = C.ContinuousLearning(namespace(self.original_connect)); self.app.ready = True
+        self.app.lane.current_budget = lambda: {"sql_timeout_ms": 2000,
+            "remaining_seconds": max(0., self.app.lane.deadline-time.monotonic())}
+        stamp = C.clock()
+        self.initial_work = {"status": "BUILDING", "epoch": self.epoch, "ami_version": C.INTELLIGENCE.VERSION,
+            "cycle_id": "synthetic-connection-cycle", "started_at": stamp.timestamp(), "stage": "portfolio",
+            "offset": 2200, "sample_n": 2200, "episodes": [], "learning_progress": {}}
+        self.initial_cursor = {"phase": "scorecard", "scorecard_work": {
+            "cycle_id": self.initial_work["cycle_id"], "stage": "portfolio", "offset": 2200}}
+        with self.connect() as c:
+            c.execute("DELETE FROM veritas_learning_jobs WHERE name=%s", (self.job_name,))
+            c.execute("UPDATE intelligence_connection_probe SET value=1")
+            self.assertTrue(STORE.publish_snapshot_in_transaction(c, C.SCORECARD.WORK_SLOT,
+                C.SCORECARD.WORK_VERSION, self.initial_work, observed_at=stamp))
+        lease = STORE.claim_job(self.connect, self.job_name, C.VERSION)
+        self.assertTrue(STORE.checkpoint_job(self.connect, lease, status="OK", cursor=self.initial_cursor,
+                                            result={"status": "OK", "marker": "previous"}))
+
+    def job(self, c):
+        return c.execute("SELECT status,cursor,last_good,owner,fence FROM veritas_learning_jobs WHERE name=%s",
+                         (self.job_name,)).fetchone()
+
+    def work(self, c):
+        return c.execute("SELECT payload FROM veritas_learning_snapshots WHERE name=%s",
+                         (C.SCORECARD.WORK_SLOT,)).fetchone()["payload"]
+
+    def value(self, c):
+        return c.execute("SELECT value FROM intelligence_connection_probe WHERE name='work'").fetchone()["value"]
+
+    def assert_idle_settings(self, raw):
+        from psycopg.pq import TransactionStatus
+        self.assertTrue(raw.autocommit)
+        self.assertEqual(raw.info.transaction_status, TransactionStatus.IDLE)
+        self.assertEqual(raw.execute("SHOW statement_timeout").fetchone()["statement_timeout"], "9s")
+        self.assertEqual(raw.execute("SHOW lock_timeout").fetchone()["lock_timeout"], "7s")
+
+    def assert_unlocked(self, observer):
+        # NOWAIT makes a leaked phase lock fail promptly, not wait for the lane.
+        observer.execute("SELECT name FROM veritas_learning_jobs WHERE name=%s FOR UPDATE NOWAIT", (self.job_name,))
+        observer.execute("SELECT name FROM veritas_learning_snapshots WHERE name=%s FOR UPDATE NOWAIT",
+                         (C.SCORECARD.WORK_SLOT,))
+        observer.execute("SELECT name FROM intelligence_connection_probe FOR UPDATE NOWAIT")
+        self.assertTrue(observer.execute("SELECT pg_try_advisory_xact_lock(%s) AS held", (STORE._LOCK,)).fetchone()["held"])
+
+    def test_real_ami_step_uses_one_connection_and_three_visible_commits_without_setting_or_lock_leaks(self):
+        original_claim, original_checkpoint = STORE.claim_job, STORE.checkpoint_job
+        original_transaction, original_refresh = STORE._transaction, C.INTELLIGENCE.refresh_snapshot
+        transactions, factories = [], []
+        def record(c, phase):
+            row = c.execute("SELECT pg_current_xact_id()::text AS xid,pg_backend_pid() AS pid").fetchone()
+            transactions.append((phase, row["xid"], row["pid"]))
+        @contextmanager
+        def recorded_transaction(factory):
+            with original_transaction(factory) as c:
+                record(c, "claim" if not transactions else "checkpoint")
+                yield c
+        with self.connect() as observer:
+            def claim(factory, *args, **kwargs):
+                factories.append(factory)
+                lease = original_claim(factory, *args, **kwargs)
+                self.assertEqual(self.job(observer)["status"], "RUNNING")
+                self.assertEqual(self.job(observer)["fence"], lease["fence"])
+                self.assertEqual(self.job(observer)["cursor"], self.initial_cursor)
+                self.assert_idle_settings(self.opened[0]); self.assert_unlocked(observer)
+                return lease
+            def phase(c, epoch):
+                self.assertEqual(epoch, self.epoch)
+                record(c, "work")
+                self.assertEqual(c.execute("SHOW statement_timeout").fetchone()["statement_timeout"], "2s")
+                self.assertEqual(c.execute("SHOW lock_timeout").fetchone()["lock_timeout"], "250ms")
+                c.execute("UPDATE intelligence_connection_probe SET value=2 WHERE name='work'")
+                self.assertEqual(self.value(observer), 1)
+                self.assertEqual(self.work(observer)["stage"], "portfolio")
+                with self.assertRaises(self.driver.errors.LockNotAvailable):
+                    observer.execute("SELECT name FROM intelligence_connection_probe FOR UPDATE NOWAIT")
+                self.assertFalse(observer.execute("SELECT pg_try_advisory_xact_lock(%s) AS held", (STORE._LOCK,)).fetchone()["held"])
+                return {"status": "OK", "n": 1}
+            def refresh(factory, *args, **kwargs):
+                factories.append(factory)
+                result = original_refresh(factory, *args, **kwargs)
+                self.assertEqual(result["status"], "PROGRESS")
+                self.assertEqual(result["stage"], "learning")
+                self.assertEqual(self.value(observer), 2)
+                self.assertEqual(self.work(observer)["stage"], "learning")
+                self.assert_idle_settings(self.opened[0]); self.assert_unlocked(observer)
+                return result
+            def checkpoint(factory, *args, **kwargs):
+                factories.append(factory)
+                accepted = original_checkpoint(factory, *args, **kwargs)
+                self.assertTrue(accepted)
+                self.assertEqual(self.job(observer)["status"], "OK")
+                self.assertEqual(self.job(observer)["cursor"]["scorecard_work"]["stage"], "learning")
+                self.assertIsNone(self.job(observer)["owner"])
+                self.assert_idle_settings(self.opened[0]); self.assert_unlocked(observer)
+                return accepted
+            self.app.lane.reset()
+            with patch.object(STORE, "_transaction", recorded_transaction), \
+                 patch.object(STORE, "claim_job", side_effect=claim), \
+                 patch.object(STORE, "checkpoint_job", side_effect=checkpoint), \
+                 patch.object(C.INTELLIGENCE, "refresh_snapshot", side_effect=refresh), \
+                 patch.object(C.INTELLIGENCE, "_query_fresh_portfolio", side_effect=phase):
+                self.assertEqual(self.app.lane.callbacks[self.job_name]()["status"], "PROGRESS")
+        self.assertEqual([phase for phase, _, _ in transactions], ["claim", "work", "checkpoint"])
+        self.assertEqual(len({xid for _, xid, _ in transactions}), 3)
+        self.assertEqual(len({pid for _, _, pid in transactions}), 1)
+        self.assertEqual(len(self.opened), 1)
+        self.assertTrue(self.opened[0].closed)
+        self.assertEqual(len(factories), 3)
+        self.assertTrue(all(factory is factories[0] for factory in factories))
+        self.assertIs(self.app.connect, self.original_connect)
+        self.assertIsNone(self.app._stats["last_error"])
+
+    def test_real_work_timeout_rolls_back_only_work_and_recovers_on_a_fresh_connection(self):
+        original_checkpoint = STORE.checkpoint_job
+        errors, work_calls, recovery_factories = [], [], []
+        with self.connect() as observer:
+            before = self.job(observer)
+            def phase(c, epoch):
+                work_calls.append(True)
+                self.assertEqual(self.job(observer)["status"], "RUNNING")
+                c.execute("UPDATE intelligence_connection_probe SET value=2 WHERE name='work'")
+                c.execute("SET LOCAL statement_timeout='30ms'")
+                try:
+                    c.execute("SELECT pg_sleep(.1)")
+                except self.driver.errors.QueryCanceled as error:
+                    errors.append(error)
+                    raise
+            def checkpoint(factory, *args, **kwargs):
+                recovery_factories.append(factory)
+                self.assertIs(factory, self.original_connect)
+                self.assertEqual(kwargs["status"], "ERROR")
+                self.assertNotIn("cursor", kwargs)
+                # Claim committed before the failed AMI transaction. Its lease
+                # is still visible, while every work write has rolled back.
+                self.assertEqual(self.job(observer)["status"], "RUNNING")
+                self.assertEqual(self.job(observer)["fence"], before["fence"]+1)
+                self.assertEqual(self.job(observer)["cursor"], self.initial_cursor)
+                self.assertEqual(self.value(observer), 1)
+                self.assertEqual(self.work(observer), self.initial_work)
+                self.assert_idle_settings(self.opened[0]); self.assert_unlocked(observer)
+                return original_checkpoint(factory, *args, **kwargs)
+            self.app.lane.reset()
+            with patch.object(C.INTELLIGENCE, "_query_fresh_portfolio", side_effect=phase), \
+                 patch.object(STORE, "checkpoint_job", side_effect=checkpoint), \
+                 self.assertRaises(self.driver.errors.QueryCanceled) as caught:
+                self.app.lane.callbacks[self.job_name]()
+            after = self.job(observer)
+            self.assertEqual(after["status"], "ERROR")
+            self.assertEqual(after["cursor"], before["cursor"])
+            self.assertEqual(after["last_good"], before["last_good"])
+            self.assertIsNone(after["owner"])
+        self.assertEqual(len(errors), 1)
+        self.assertIs(caught.exception, errors[0])
+        self.assertEqual(work_calls, [True])
+        self.assertEqual(recovery_factories, [self.original_connect])
+        self.assertEqual(len(self.opened), 2)
+        self.assertIsNot(self.opened[0], self.opened[1])
+        self.assertTrue(all(raw.closed for raw in self.opened))
+        self.assertIsNone(self.app._stats["last_success_at"])
+        self.assertEqual(C.INTELLIGENCE._REFRESH_STATE["last_error"], "QueryCanceled")
+
+    def test_real_lost_fence_and_lost_commit_ack_never_repeat_or_undo_committed_work(self):
+        original_checkpoint = STORE.checkpoint_job
+        for failure in ("lost_fence", "lost_commit_ack"):
+            with self.subTest(failure=failure):
+                self.seed_step()
+                acknowledgement_error = OSError("synthetic checkpoint acknowledgement lost")
+                work_calls, checkpoint_factories, replacement = [], [], []
+                with self.connect() as observer:
+                    def phase(c, epoch):
+                        work_calls.append(True)
+                        c.execute("UPDATE intelligence_connection_probe SET value=value+1 WHERE name='work'")
+                        return {"status": "OK", "n": 1}
+                    def checkpoint(factory, lease, **kwargs):
+                        checkpoint_factories.append((factory, kwargs["status"]))
+                        self.assertEqual(self.value(observer), 2)
+                        self.assertEqual(self.work(observer)["stage"], "learning")
+                        if kwargs["status"] == "OK":
+                            if failure == "lost_fence":
+                                observer.execute("UPDATE veritas_learning_jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE name=%s",
+                                                 (self.job_name,))
+                                replacement.append(STORE.claim_job(lambda: nullcontext(observer), self.job_name, C.VERSION))
+                                self.assertIsNotNone(replacement[0])
+                                self.assertFalse(original_checkpoint(factory, lease, **kwargs))
+                                return False
+                            self.assertTrue(original_checkpoint(factory, lease, **kwargs))
+                            raise acknowledgement_error
+                        self.assertIs(factory, self.original_connect)
+                        self.assertNotIn("cursor", kwargs)
+                        self.assertFalse(original_checkpoint(factory, lease, **kwargs))
+                        return False
+                    self.app.lane.reset()
+                    with patch.object(C.INTELLIGENCE, "_query_fresh_portfolio", side_effect=phase), \
+                         patch.object(STORE, "checkpoint_job", side_effect=checkpoint), \
+                         self.assertRaises(RuntimeError if failure == "lost_fence" else OSError) as caught:
+                        self.app.lane.callbacks[self.job_name]()
+                    after = self.job(observer)
+                    self.assertEqual(self.value(observer), 2)
+                    self.assertEqual(self.work(observer)["stage"], "learning")
+                    if failure == "lost_fence":
+                        self.assertEqual(after["fence"], replacement[0]["fence"])
+                        self.assertEqual(after["owner"], replacement[0]["owner"])
+                        self.assertEqual(after["status"], "RUNNING")
+                        self.assertEqual(after["cursor"], self.initial_cursor)
+                        self.assertIn("lease expired", str(caught.exception))
+                    else:
+                        self.assertIs(caught.exception, acknowledgement_error)
+                        self.assertEqual(after["status"], "OK")
+                        self.assertIsNone(after["owner"])
+                        self.assertEqual(after["cursor"]["scorecard_work"]["stage"], "learning")
+                self.assertEqual(work_calls, [True])
+                self.assertEqual([status for _, status in checkpoint_factories], ["OK", "ERROR"])
+                self.assertEqual(len(self.opened), 2)
+                self.assertTrue(all(raw.closed for raw in self.opened))
+                self.assertIsNone(self.app._stats["last_success_at"])
 
 
 @unittest.skipUnless(os.getenv("VERITAS_QUALITY_TEST_DSN"), "isolated PostgreSQL test database not configured")

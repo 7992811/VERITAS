@@ -150,6 +150,127 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual(c.market_data()['quotes'],{})
 
 
+class QuoteTimestampRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 10, 8, 12, tzinfo=timezone.utc)
+        self.clock = self.enterContext(patch.object(T, 'utcnow', return_value=self.now))
+        self.c = T.TBankConnection({})
+        self.uid = 'synthetic-cny-contract'
+        self.mapping = {self.uid: 'CNYRUBF'}
+
+    def packet(self, at, *, uid=None, units=1):
+        return {'instrument_uid': self.uid if uid is None else uid,
+                'price': {'units': str(units)}, 'time': at}
+
+    def test_exact_future_boundary_and_invalid_packets_preserve_last_good(self):
+        boundary = T.iso(self.now + timedelta(seconds=5))
+        self.c._put_quote(self.packet(boundary), self.mapping)
+        good = self.c.quotes['CNYRUBF']
+        before = dict(good)
+        self.assertEqual(good['observed_at'], boundary)
+        self.assertEqual(good['received_at'], T.iso(self.now))
+        invalid = (None, '', 'not-a-time', self.now.replace(tzinfo=None).isoformat(),
+                   T.iso(self.now + timedelta(seconds=5, microseconds=1)),
+                   T.iso(self.now + timedelta(hours=1)))
+        for at in invalid:
+            with self.subTest(at=at):
+                self.c._put_quote(self.packet(at, units=2), self.mapping)
+                self.assertIs(self.c.quotes['CNYRUBF'], good)
+                self.assertEqual(good, before)
+                empty = T.TBankConnection({})
+                empty._put_quote(self.packet(at), self.mapping)
+                self.assertEqual(empty.quotes, {})
+        missing = self.packet(boundary, units=2)
+        missing.pop('time')
+        self.c._put_quote(missing, self.mapping)
+        self.assertIs(self.c.quotes['CNYRUBF'], good)
+        self.assertEqual(good, before)
+        empty = T.TBankConnection({})
+        empty._put_quote(missing, self.mapping)
+        self.assertEqual(empty.quotes, {})
+        # Ingestion still retains old exchange observations without making
+        # them fresh; the execution age limit belongs to the existing gate.
+        old = T.TBankConnection({})
+        at = T.iso(self.now - timedelta(minutes=10))
+        old._put_quote(self.packet(at), self.mapping)
+        view = old.market_data()['quotes']['CNYRUBF']
+        self.assertEqual(view['observed_at'], at)
+        self.assertTrue(view['stale'])
+
+    def test_valid_packet_recovers_poisoned_cache_without_redating_for_direct_gate(self):
+        import veritas_direct_cny as D
+        from test_veritas_direct_cny_snapshot import connection, NOW, UID
+        fixture = connection()
+        self.clock.return_value = NOW
+        c = T.TBankConnection({})
+        for field in ('instruments', 'quotes', 'books', 'trading_states', 'candles'):
+            setattr(c, field, getattr(fixture, field))
+        original = dict(c.quotes['CNYRUBF'])
+        at = T.iso(NOW - timedelta(seconds=2))
+        incoming = self.packet(at, uid=UID, units=12)
+        bad_times = (T.iso(NOW + timedelta(hours=1)), None, '', 'invalid',
+                     NOW.replace(tzinfo=None).isoformat())
+        for bad in bad_times:
+            with self.subTest(cached_time=bad):
+                c.quotes['CNYRUBF'] = {**original, 'observed_at': bad}
+                with self.assertRaisesRegex(T.TBankError, '^CNY_DIRECT_QUOTE_STALE$'):
+                    D.quote(c, now=NOW)
+                c._put_quote(incoming, {UID: 'CNYRUBF'})
+                restored = D.quote(c, now=NOW)
+                self.assertEqual(restored['observed_at'], at)
+                self.assertEqual(restored['broker_instrument_uid'], UID)
+                self.assertEqual(restored['source_names']['primary'], 'TBANK_GRPC CNYRUBF')
+                self.assertTrue(restored['paper_eligible'])
+                self.assertFalse(restored['orders_enabled'])
+                self.assertEqual(c.quotes['CNYRUBF']['received_at'], T.iso(NOW))
+                self.assertNotEqual(c.quotes['CNYRUBF']['observed_at'], c.quotes['CNYRUBF']['received_at'])
+
+    def test_valid_quote_order_equal_time_and_exact_instrument_rules_are_unchanged(self):
+        at = T.iso(self.now + timedelta(seconds=5))
+        self.c._put_quote(self.packet(at), self.mapping)
+        original = self.c.quotes['CNYRUBF']
+        earlier = T.iso(self.now + timedelta(seconds=5) - timedelta(microseconds=1))
+        self.c._put_quote(self.packet(earlier, units=2), self.mapping)
+        self.c._put_quote(self.packet(at, uid='foreign-contract', units=2), self.mapping)
+        self.assertIs(self.c.quotes['CNYRUBF'], original)
+        self.c._put_quote(self.packet(at, units=2), self.mapping)
+        self.assertEqual(self.c.quotes['CNYRUBF']['price'], 2.)
+        self.assertEqual(self.c.quotes['CNYRUBF']['observed_at'], at)
+        offset = (self.now + timedelta(seconds=5)).astimezone(timezone(timedelta(hours=3))).isoformat()
+        self.c._put_quote(self.packet(offset, units=4), self.mapping)
+        self.assertEqual(self.c.quotes['CNYRUBF']['price'], 4.)
+        self.assertEqual(self.c.quotes['CNYRUBF']['observed_at'], offset)
+        self.clock.return_value = self.now + timedelta(seconds=10)
+        newer = T.iso(self.now + timedelta(seconds=6))
+        self.c._put_quote(self.packet(newer, units=3), self.mapping)
+        self.assertEqual(self.c.quotes['CNYRUBF']['observed_at'], newer)
+        self.assertEqual(self.c.quotes['CNYRUBF']['instrument_uid'], self.uid)
+        self.assertEqual(self.c.quotes['CNYRUBF']['source'], 'TBANK_GRPC')
+        self.assertEqual(self.c.quotes['CNYRUBF']['received_at'], T.iso(self.clock.return_value))
+
+    def test_rejected_future_does_not_block_subsequent_poll_or_stream_packet(self):
+        self.c.instruments = {'CNYRUBF': {'uid': self.uid}}
+        self.c.reader = FakeReader()
+        future = self.packet(T.iso(self.now + timedelta(hours=1)))
+        self.c._put_quote(future, self.mapping)
+        self.assertEqual(self.c.quotes, {})
+        self.c._read_market(include_history=False)
+        polled = self.c.quotes['CNYRUBF']
+        self.assertEqual(polled['observed_at'], T.iso(self.now))
+        self.assertEqual(polled['instrument_uid'], self.uid)
+        self.assertEqual({name for name, _ in self.c.reader.calls},
+                         {'prices', 'book', 'trading_status'})
+        self.c._put_quote(future, self.mapping)
+        self.assertIs(self.c.quotes['CNYRUBF'], polled)
+        incoming = self.packet(T.iso(self.now + timedelta(seconds=1)), units=2)
+        self.c._put_quote(incoming, self.mapping)
+        streamed = self.c.quotes['CNYRUBF']
+        self.assertEqual(streamed['observed_at'], incoming['time'])
+        self.assertEqual(streamed['instrument_uid'], self.uid)
+        self.assertEqual(streamed['source'], 'TBANK_GRPC')
+        self.assertEqual(streamed['received_at'], T.iso(self.now))
+
+
 class WireTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

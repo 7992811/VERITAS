@@ -452,8 +452,14 @@ class TBankConnection:
             return
         asset = by_uid[uid]
         with self.lock:
+            now = utcnow()
+            # Use the existing five-second clock-skew policy before replacing
+            # last-good data. A future/invalid cached time must not pin recovery.
+            if age_seconds(q["observed_at"], now) is None:
+                return
             old = self.quotes.get(asset)
-            if old and datetime.fromisoformat(q["observed_at"].replace("Z", "+00:00")) < datetime.fromisoformat(old["observed_at"].replace("Z", "+00:00")):
+            if (old and age_seconds(old.get("observed_at"), now) is not None
+                    and datetime.fromisoformat(q["observed_at"].replace("Z", "+00:00")) < datetime.fromisoformat(old["observed_at"].replace("Z", "+00:00"))):
                 return
             self.quotes[asset] = q
 
