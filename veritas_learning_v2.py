@@ -41,6 +41,20 @@ KINDS = (
     "STRATEGY_WEIGHT",
 )
 
+V2_PROMOTION_FIELDS = (
+    "model_version",
+    "oos_n", "oos_expectancy", "oos_profit_factor",
+    "vault_n", "vault_expectancy", "vault_profit_factor",
+    "high_cost_expectancy",
+    "calibration_n", "ece", "calibration_applicable",
+    "shadow_trades", "shadow_expectancy", "shadow_max_drawdown",
+    "code_ci_pass", "data_parity_pass",
+    "requires_baseline_outperformance",
+    "baseline_oos_expectancy", "baseline_oos_profit_factor",
+    "baseline_vault_expectancy", "baseline_vault_profit_factor",
+    "baseline_shadow_expectancy",
+)
+
 # Directional opportunity thresholds are diagnostics, not execution floors.
 MOVE = {"1m": .0019, "5m": .0019, "1h": .0040, "4h": .0060,
         "1d": .0100, "3d": .0150, "7d": .0200}
@@ -372,10 +386,8 @@ def record_replay_evidence(pg_connect, candidate_id, evidence, *, now=None):
             metrics = json.loads(metrics)
         if not isinstance(evidence, dict):
             raise ValueError("promotion evidence must be a mapping")
-        import veritas_promotion as PROMO
-        required = set(PROMO.PromotionEvidence.__annotations__)
-        if set(evidence) != required:
-            raise ValueError("promotion evidence fields do not match canonical gate")
+        if set(evidence) != set(V2_PROMOTION_FIELDS):
+            raise ValueError("learning v2 promotion evidence fields do not match v2 gate")
         if evidence.get("requires_baseline_outperformance") is not True:
             raise ValueError("learning v2 replay promotion requires explicit baseline outperformance")
         metrics["promotion_evidence"] = deepcopy(evidence)
@@ -591,21 +603,134 @@ def _trade_candidates(trades, now):
     return out
 
 
+def _v2_promotion_gate(evidence):
+    """Learning-only gate; never changes the signed live PromotionEvidence schema."""
+    if not isinstance(evidence, dict):
+        return {"eligible_for_production": False, "status": "BLOCK",
+                "blockers": ["V2_PROMOTION_EVIDENCE_MISSING"]}
+    missing = [name for name in V2_PROMOTION_FIELDS if name not in evidence]
+    extra = [name for name in evidence if name not in V2_PROMOTION_FIELDS]
+    blockers = []
+    if missing:
+        blockers.extend("V2_EVIDENCE_MISSING_" + name.upper() for name in missing)
+    if extra:
+        blockers.extend("V2_EVIDENCE_EXTRA_" + name.upper() for name in extra)
+    if blockers:
+        return {"eligible_for_production": False, "status": "BLOCK", "blockers": blockers,
+                "automatic_shadow_promotion": False, "automatic_promotion": False,
+                "version": VERSION}
+
+    def finite(name):
+        return _num(evidence.get(name))
+
+    for name in ("oos_n", "vault_n", "calibration_n", "shadow_trades"):
+        value = evidence.get(name)
+        if type(value) is not int or value < 0:
+            blockers.append("V2_INVALID_" + name.upper())
+    for name in ("oos_expectancy", "oos_profit_factor", "vault_expectancy",
+                 "vault_profit_factor", "high_cost_expectancy",
+                 "shadow_expectancy", "shadow_max_drawdown"):
+        value = finite(name)
+        if value is None:
+            blockers.append("V2_INVALID_" + name.upper())
+        elif name.endswith("profit_factor") and value < 0:
+            blockers.append("V2_INVALID_" + name.upper())
+    for name in ("code_ci_pass", "data_parity_pass", "calibration_applicable",
+                 "requires_baseline_outperformance"):
+        if type(evidence.get(name)) is not bool:
+            blockers.append("V2_INVALID_" + name.upper())
+    if evidence.get("calibration_applicable") is True:
+        ece = finite("ece")
+        if ece is None or not 0 <= ece <= 1:
+            blockers.append("V2_CALIBRATION_ECE_INVALID")
+    elif evidence.get("ece") is not None and finite("ece") is None:
+        blockers.append("V2_ECE_INVALID_WHEN_PRESENT")
+
+    try:
+        min_oos = max(1, int(os.getenv("VERITAS_PROMOTION_MIN_OOS_N", "100")))
+        min_vault = max(1, int(os.getenv("VERITAS_PROMOTION_MIN_VAULT_N", "50")))
+        min_cal = max(1, int(os.getenv("VERITAS_PROMOTION_MIN_CALIBRATION_N", "100")))
+        min_shadow = max(1, int(os.getenv("VERITAS_PROMOTION_MIN_SHADOW_TRADES", "50")))
+        max_ece = float(os.getenv("VERITAS_PROMOTION_MAX_ECE", "0.10"))
+        max_dd = float(os.getenv("VERITAS_PROMOTION_MAX_SHADOW_DRAWDOWN", "0.10"))
+        if not (math.isfinite(max_ece) and 0 <= max_ece <= 1
+                and math.isfinite(max_dd) and 0 <= max_dd <= 1):
+            raise ValueError
+    except Exception:
+        blockers.append("V2_PROMOTION_CONFIGURATION_INVALID")
+        min_oos = min_vault = min_cal = min_shadow = 10**9
+        max_ece = max_dd = 0.0
+
+    if blockers:
+        return {"eligible_for_production": False, "status": "BLOCK", "blockers": blockers,
+                "automatic_shadow_promotion": False, "automatic_promotion": False,
+                "version": VERSION}
+
+    if evidence["code_ci_pass"] is not True:
+        blockers.append("CI_NOT_PASSING")
+    if evidence["data_parity_pass"] is not True:
+        blockers.append("DATA_PARITY_NOT_PASSING")
+    if evidence["oos_n"] < min_oos:
+        blockers.append("OOS_SAMPLE_TOO_SMALL")
+    if evidence["oos_expectancy"] <= 0:
+        blockers.append("OOS_EXPECTANCY_NOT_POSITIVE")
+    if evidence["oos_profit_factor"] < 1.10:
+        blockers.append("OOS_PROFIT_FACTOR_TOO_LOW")
+    if evidence["vault_n"] < min_vault:
+        blockers.append("VAULT_SAMPLE_TOO_SMALL")
+    if evidence["vault_expectancy"] <= 0:
+        blockers.append("VAULT_EXPECTANCY_NOT_POSITIVE")
+    if evidence["vault_profit_factor"] < 1.05:
+        blockers.append("VAULT_PROFIT_FACTOR_TOO_LOW")
+    if evidence["high_cost_expectancy"] <= 0:
+        blockers.append("HIGH_COST_STRESS_NOT_POSITIVE")
+    if evidence["calibration_applicable"]:
+        if evidence["calibration_n"] < min_cal:
+            blockers.append("CALIBRATION_SAMPLE_TOO_SMALL")
+        if finite("ece") is None or finite("ece") > max_ece:
+            blockers.append("CALIBRATION_ECE_TOO_HIGH_OR_MISSING")
+    if evidence["shadow_trades"] < min_shadow:
+        blockers.append("SHADOW_SAMPLE_TOO_SMALL")
+    if evidence["shadow_expectancy"] <= 0:
+        blockers.append("SHADOW_EXPECTANCY_NOT_POSITIVE")
+    if evidence["shadow_max_drawdown"] > max_dd:
+        blockers.append("SHADOW_DRAWDOWN_TOO_HIGH")
+
+    if evidence["requires_baseline_outperformance"]:
+        baseline_fields = (
+            "baseline_oos_expectancy", "baseline_oos_profit_factor",
+            "baseline_vault_expectancy", "baseline_vault_profit_factor",
+            "baseline_shadow_expectancy",
+        )
+        base = {name: finite(name) for name in baseline_fields}
+        for name, value in base.items():
+            if value is None or (name.endswith("profit_factor") and value < 0):
+                blockers.append("V2_INVALID_" + name.upper())
+        if not any(x.startswith("V2_INVALID_BASELINE_") for x in blockers):
+            if evidence["oos_expectancy"] <= base["baseline_oos_expectancy"]:
+                blockers.append("OOS_NOT_BETTER_THAN_BASELINE")
+            if evidence["oos_profit_factor"] < base["baseline_oos_profit_factor"]:
+                blockers.append("OOS_PROFIT_FACTOR_WORSE_THAN_BASELINE")
+            if evidence["vault_expectancy"] <= base["baseline_vault_expectancy"]:
+                blockers.append("VAULT_NOT_BETTER_THAN_BASELINE")
+            if evidence["vault_profit_factor"] < base["baseline_vault_profit_factor"]:
+                blockers.append("VAULT_PROFIT_FACTOR_WORSE_THAN_BASELINE")
+            if evidence["shadow_expectancy"] <= base["baseline_shadow_expectancy"]:
+                blockers.append("SHADOW_NOT_BETTER_THAN_BASELINE")
+
+    passed = not blockers
+    return {"eligible_for_production": passed, "status": "PASS" if passed else "BLOCK",
+            "blockers": blockers, "automatic_shadow_promotion": passed,
+            "automatic_promotion": False, "paper_only": True,
+            "live_promotion_contract_untouched": True, "version": VERSION}
+
+
 def _promotion(candidate):
     metrics = candidate.get("metrics") or {}
     evidence = metrics.get("promotion_evidence")
     if not isinstance(evidence, dict):
         return None
-    try:
-        import veritas_promotion as PROMO
-        fields = PROMO.PromotionEvidence.__annotations__
-        if any(name not in evidence for name in fields):
-            return None
-        obj = PROMO.PromotionEvidence(**{name: evidence[name] for name in fields})
-        return PROMO.promotion_gate(obj)
-    except Exception as exc:
-        return {"eligible": False, "blockers": ["PROMOTION_EVIDENCE_INVALID"],
-                "error": type(exc).__name__}
+    return _v2_promotion_gate(evidence)
 
 
 def _merge_candidate(existing, fresh, now):
