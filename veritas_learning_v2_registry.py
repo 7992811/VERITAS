@@ -60,7 +60,7 @@ def _wilson_low(w,n,z=1.959963984540054):
 
 
 def _scope_match(scope,row):
-    for key in ("asset","horizon","regime"):
+    for key in ("asset","horizon","regime","source_key"):
         want=str(scope.get(key) or "")
         if want and want!="*" and str(row.get(key) or "")!=want:
             return False
