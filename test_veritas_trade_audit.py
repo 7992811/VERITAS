@@ -57,6 +57,25 @@ class TradeAuditTests(unittest.TestCase):
         trade['asset']='NQ'
         self.assertEqual(evidence_exclusion(trade),'PROXY_PRICE')
 
+    def test_explicit_unresolved_contract_is_accounted_but_never_learning_evidence(self):
+        trade=self.row(-100)
+        trade['payload']=observed_evidence(
+            'BTC','LONG','R69_EXACT',datetime(2026,10,3,tzinfo=timezone.utc))
+        trade['payload']['entry_valuation_basis']={
+            'source_key':'BINANCE:BTCUSDT',
+            'contract_identity_status':'UNRESOLVED',
+            'exact_contract_verified':False,
+        }
+        self.assertEqual(evidence_exclusion(trade),'SOURCE_UNVERIFIED')
+        result=analyze([trade])
+        self.assertEqual(result['all_trades']['trades'],1)
+        self.assertEqual(result['all_trades']['net_pnl_rub'],-100)
+        self.assertEqual(result['independent_unflagged_episodes'],0)
+
+        trade['payload']['entry_valuation_basis'].update(
+            contract_identity_status='VERIFIED',exact_contract_verified=True)
+        self.assertIsNone(evidence_exclusion(trade))
+
     def test_unknown_missing_metrics_are_not_claimed_as_flat_trades(self):
         result=analyze([self.row(None)])
         self.assertEqual(result['all_trades']['accounting_complete'],0)
