@@ -33,6 +33,9 @@ REASONS = {
     "MANUAL_APPROVED_PRICE_OFF_TICK": "Одна из цен не соответствует шагу цены брокерского контракта.",
     "MANUAL_LEVEL_ALREADY_REACHED": "Текущая цена уже достигла указанного стопа или цели; требуется другое предложение.",
     "MANUAL_ECONOMICS_BLOCKED": "Указанные уровни не проходят действующие проверки издержек и соотношения дохода к риску.",
+    "MANUAL_CURRENT_ACCOUNT_NOT_CHECKED": "Текущее состояние счёта для ручной заявки ещё не проверено.",
+    "MANUAL_CURRENT_ACCOUNT_POLICY_REQUIRED": "Настройки допуска ручной заявки не согласованы; требуется проверка конфигурации.",
+    "MANUAL_PLAN_VERSION_REQUIRED": "Условия ручного режима обновлены. Создайте новое предложение и подтвердите его отдельно.",
     "MANUAL_HOLD_MINUTES_REQUIRED": "Укажите ожидаемый срок для расчёта издержек от 1 до 60 минут.",
     "MANUAL_INTENT_EXPIRED": "Срок ручного предложения истёк. Новая команда потребует нового подтверждения.",
     "MANUAL_REQUEST_ID_REUSED": "Эта команда уже связана с другим предложением; повторная отправка запрещена.",
@@ -247,10 +250,12 @@ def readiness_text(status):
     lines.append("Привязка учёта: " + {"bound": "подтверждена", "unbound": "не выполнена",
                  "unchecked": "ещё не проверена"}.get(binding, "ещё не проверена"))
     if status.get("new_risk_block_reason"):
-        lines.append("Новые входы: " + _reason(status["new_risk_block_reason"]))
+        lines.append("Входы по сигналам модели: " + _reason(status["new_risk_block_reason"]))
     manual = status.get("manual_account_admission")
     if isinstance(manual, dict):
         lines.append("Ручные заявки: /currency_manual · закрытие: /currency_manual_close")
+        if manual.get("account_history_required") is False:
+            lines.append("История капитала всего счёта для ручного режима не требуется.")
         blockers = manual.get("blockers") or []
         if blockers:
             lines.append("Проверка ручного режима: " + _reason(blockers[0]))
@@ -329,6 +334,8 @@ def proposal_text(proposal, *, execution_enabled=False):
     ]
     if manual or manual_position:
         lines.append("Направление и уровни заданы владельцем. Рекомендация модели не использована.")
+        if manual and t.get("plan_version") == "currency-owner-manual-v2-current-account":
+            lines.append("Проверяется текущее состояние счёта. Историческая просадка и дневной/недельный результат всего счёта не проверяются.")
         if t.get("expected_hold_seconds"):
             lines.append(f"Ожидаемый срок для расчёта издержек: {Decimal(t['expected_hold_seconds']) / 60:g} мин; автоматического закрытия по времени нет.")
     elif t.get("horizon"):

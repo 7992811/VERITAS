@@ -1,4 +1,9 @@
-"""Whole-account controls for owner-directed trials; no model promotion claim."""
+"""Owner-directed one-contract trials using current whole-account broker facts.
+
+Owner instruction 2026-10-08 removes historical account evidence only for this
+manual mode. Historical drawdown/day/week metrics stay unknown, never zero.
+Model-generated orders retain their independent evidence requirements.
+"""
 from copy import deepcopy
 from datetime import timedelta
 
@@ -10,7 +15,7 @@ import veritas_live as LIVE
 
 
 def binding(terms):
-    """Explicit manual identity inside the existing signed evidence envelope."""
+    """Bind immutable manual intent to the current policy and deployment."""
     L._require(M.applies(terms) and terms.get("action") == "OPEN"
         and terms.get("plan_version") == M.PLAN_VERSION and terms.get("model_version") == M.VERSION,
         "MANUAL_PLAN_VERSION_REQUIRED")
@@ -29,31 +34,52 @@ def binding(terms):
 
 
 class ManualAccountAdmission(L.WholeAccountLiveAdmission):
-    """Initial scope: one contract from a flat whole account, same live risk caps."""
+    """One contract from a flat account, retaining all current risk caps."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._last.update(decision_authority=M.VERSION,
-            blockers=["LIVE_ACCOUNT_HISTORY_EVIDENCE_NOT_CHECKED"],
+            account_history_required=False, historical_risk_controls="NOT_CHECKED_OWNER_MANUAL",
+            evidence_loader_configured=False, blockers=["MANUAL_CURRENT_ACCOUNT_NOT_CHECKED"],
             required_checks=["OWNER_IMMUTABLE_MANUAL_INTENT", "EXACT_BROKER_CONTRACT_AND_FRESH_QUOTE",
-                "FLAT_WHOLE_ACCOUNT", "INDEPENDENT_SIGNED_ACCOUNT_HISTORY",
+                "FLAT_WHOLE_ACCOUNT", "DURABLE_CURRENT_ACCOUNT_OBSERVATION",
                 "LIVE_ECONOMICS_AND_ACCOUNT_RISK", "LIVE_ENABLED_AND_ARMED"])
+
+    def status(self):
+        """Cached manual status never imports history or turns a read into a check."""
+        with self._status_lock:
+            result = deepcopy(self._last)
+        result["admission_cached_only"] = True
+        arm = result["live_switch"] = LIVE._armed()
+        for field, code in (("enabled", "LIVE_EXECUTION_DISABLED"), ("armed", "LIVE_EXECUTION_NOT_ARMED")):
+            if not arm[field]:
+                result["blockers"].append(code)
+        if result.get("eligible") and L._date(self.clock()) >= L._date(result["valid_until"]):
+            result.update(eligible=False, status="STALE")
+            result["blockers"].append("LIVE_ADMISSION_RECHECK_REQUIRED")
+        result["blockers"] = list(dict.fromkeys(result["blockers"]))
+        if result["blockers"]:
+            result["eligible"] = False
+            if result["status"] == "PASS":
+                result["status"] = "BLOCK"
+        return result
 
     def __call__(self, *, terms, facts, now):
         result = {"eligible": False, "status": "BLOCK", "blockers": [], "version": M.VERSION,
             "decision_authority": M.VERSION, "scope": "WHOLE_BROKER_ACCOUNT",
-            "model_admission": "NOT_APPLICABLE_OWNER_DECISION", "evidence_loader_configured": True}
+            "model_admission": "NOT_APPLICABLE_OWNER_DECISION", "evidence_loader_configured": False,
+            "account_history_required": False, "historical_risk_controls": "NOT_CHECKED_OWNER_MANUAL",
+            "manual_account_risk_policy": "OWNER_CURRENT_ACCOUNT_V1"}
         try:
             started = max(L._date(now), L._date(self.clock()))
+            policy = P.CTC.PORTFOLIO_POLICIES["Currency"]
+            L._require(policy.get("manual_account_history_required") is False
+                and policy.get("manual_account_risk_policy") == result["manual_account_risk_policy"],
+                "MANUAL_CURRENT_ACCOUNT_POLICY_REQUIRED")
             L._require(terms.get("account_id") == self.account_id == facts.account.account_id,
                        "LIVE_CANDIDATE_ACCOUNT_OR_INSTRUMENT_MISMATCH")
             binding(terms)
             P.revalidate(terms, facts.spec, facts.account, facts.quote, now=started)
-            scope = L.evidence_scope(terms)
-            result["evidence_request"] = {"schema": L.SIGNED_EVIDENCE_SCHEMA, "terms": deepcopy(terms),
-                "scope": scope, "scope_hash": L._hash(scope), "evaluated_at": started.isoformat(),
-                "required_kinds": ["ACCOUNT_CONTROLS"], "trade_permission": False}
-            L._require(self.store.status()["configured"], "LIVE_EVIDENCE_ISSUER_NOT_CONFIGURED")
             snapshot, current, _, other_gross, _ = self._snapshot(terms, facts, started)
             L._require(not current and not other_gross and not snapshot["positions"],
                        "MANUAL_TRIAL_REQUIRES_FLAT_WHOLE_ACCOUNT")
@@ -62,12 +88,7 @@ class ManualAccountAdmission(L.WholeAccountLiveAdmission):
             L._require(completed-started <= L.MAX_ACCOUNT_AGE, "LIVE_ACCOUNT_SNAPSHOT_STALE")
             result.update(observed_at=started.isoformat(), account_equity_rub=snapshot["equity_rub"],
                 account_snapshot_sha256=L._hash(snapshot), broker_positions=0, broker_working_orders=0)
-            result["evidence_request"]["account_snapshot_sha256"] = result["account_snapshot_sha256"]
             self.store.record_snapshot(snapshot, started)
-            # Authentic account history remains mandatory. No probability,
-            # promotion, OOS report or native signal is manufactured for the owner.
-            document = self.store.load("ACCOUNT_HISTORY", snapshot["binding"], completed, terms=terms)
-            history = L._account_history(document, snapshot, completed)
             equity = P.decimal(snapshot["equity_rub"], positive=True)
             price, stop, target = (P.decimal(terms[k], positive=True)
                                    for k in ("limit_price", "stop_price", "target_price"))
@@ -86,24 +107,23 @@ class ManualAccountAdmission(L.WholeAccountLiveAdmission):
                 result["blockers"].append("PRODUCTION_SOURCE_GATE_FAILED")
             stop_risk = float(fraction) * (float(abs(price-stop)/price)
                 + float(economics["modeled_round_trip_cost_pct"]))
-            result["blockers"].extend(VX.production_account_risk_blockers(
+            result["blockers"].extend(VX.production_current_account_risk_blockers(
                 stop_risk_nav=stop_risk, single_asset_fraction=float(fraction), gross_after=float(fraction),
-                drawdown=history["drawdown"], total_open_stop_risk_nav_after=stop_risk,
-                correlated_stop_risk_nav_after=stop_risk, instrument_spec_validated=True,
-                daily_pnl_pct=history["daily_pnl_pct"], weekly_pnl_pct=history["weekly_pnl_pct"],
-                broker_reconciled=facts.account.reconciled and facts.account.costs_reconciled,
-                kill_switch=history["kill_switch"]))
+                total_open_stop_risk_nav_after=stop_risk,
+                correlated_stop_risk_nav_after=stop_risk, instrument_spec_validated=True))
+            if not facts.account.reconciled or not facts.account.costs_reconciled:
+                result["blockers"].append("BROKER_RECONCILIATION_REQUIRED")
             arm = LIVE._armed()
             if not arm["enabled"]:
                 result["blockers"].append("LIVE_EXECUTION_DISABLED")
             if not arm["armed"]:
                 result["blockers"].append("LIVE_EXECUTION_NOT_ARMED")
-            result["account_risk"] = dict(history, fraction_nav_after=float(fraction),
+            result["account_risk"] = dict(drawdown=None, daily_pnl_pct=None, weekly_pnl_pct=None,
+                history_status="NOT_CHECKED_OWNER_MANUAL", fraction_nav_after=float(fraction),
                 net_stop_risk_nav=stop_risk, net_total_open_stop_risk_nav=stop_risk)
             result["live_authorization"] = {"eligible": not result["blockers"],
                 "decision_authority": M.VERSION, "economics": economics, "live_switch": arm}
-            result["valid_until"] = min(L._date(document["valid_until"]),
-                L._date(document["issuer_valid_until"]), L._date(terms["manual_intent_expires_at"]),
+            result["valid_until"] = min(L._date(terms["manual_intent_expires_at"]),
                 L._date(facts.quote.observed_at)+timedelta(seconds=15), started+L.MAX_ACCOUNT_AGE).isoformat()
         except (L.AdmissionBlocked, P.TradePlanBlocked) as error:
             result["blockers"].append(getattr(error, "code", str(error)))

@@ -4,6 +4,35 @@ This document describes `veritas_currency_live_admission.py`. The module is an
 admission dependency, with no broker order, cancellation, Telegram or deployment
 operation. An audited evidence receipt is never a trade permission.
 
+The signed model and account-history requirements below apply to model-generated
+entries. Owner-directed manual one-contract entries use the separate policy
+described next.
+
+## Owner-directed manual current-account policy
+
+Owner instruction of 2026-10-08 removes the whole-account capital-history
+requirement for manual CNYRUBf entries of exactly one contract from a flat account.
+`veritas_currency_manual_admission.py` implements
+`PORTFOLIO_POLICIES["Currency"].manual_account_risk_policy = OWNER_CURRENT_ACCOUNT_V1`
+and `manual_account_history_required = false`. It neither imports an
+ACCOUNT_HISTORY certificate nor requires an independent history issuer key.
+
+Preparation and execution still reread the actual broker account, equity,
+positions, working orders and exact contract; store the current observation;
+and enforce fresh quotes, available funds/margin, current exposure and stop-risk
+limits, reconciliation, net reward/risk of at least 1.0015, execution switches
+and the owner's separate approval. Existing Currency-ledger risk checks remain.
+No historical whole-account drawdown, daily or weekly result is inferred from
+the current balance: these metrics are null and explicitly labelled
+`NOT_CHECKED_OWNER_MANUAL`, and are not admission conditions for this mode.
+
+Manual plan version `currency-owner-manual-v2-current-account` binds the changed
+terms to a new proposal and owner approval. Previously approved manual entry
+terms cannot execute under the new policy. Existing held manual positions keep
+their attribution and reducing-only close path. Model-generated entries retain
+all signed model/account-history requirements, and cached manual status cannot
+grant execution permission or refresh an expired check.
+
 ## Runtime wiring
 
 The operational application constructs the authority with the same authenticated
@@ -330,7 +359,7 @@ must be independently reconciled first. Missing baselines are never zero.
 There is currently no whole-account unit-NAV/cash-flow history producer in the
 repository. The recorded actual snapshots are a concrete input to such a
 reconciler, together with broker operation exports and independently verified
-opening/period baselines. Until that history exists and is current, the
+opening/period baselines. For model-generated entries, until that history exists and is current, the
 `LIVE_ACCOUNT_HISTORY_EVIDENCE_REQUIRED` or more specific coverage/staleness
 blocker is real. A new first observation cannot manufacture a prior week or
 erase historical drawdown. An audited historical import is the supported

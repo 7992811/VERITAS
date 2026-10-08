@@ -703,11 +703,10 @@ def build_order_intent(portfolio: str, asset: str, direction: str, target_fracti
     )
 
 
-def production_account_risk_blockers(*, stop_risk_nav, single_asset_fraction, gross_after, drawdown,
-                                    total_open_stop_risk_nav_after, correlated_stop_risk_nav_after,
-                                    instrument_spec_validated, daily_pnl_pct, weekly_pnl_pct,
-                                    broker_reconciled, kill_switch):
-    """Shared account controls for model and explicitly owner-directed orders."""
+def production_current_account_risk_blockers(*, stop_risk_nav, single_asset_fraction, gross_after,
+                                            total_open_stop_risk_nav_after, correlated_stop_risk_nav_after,
+                                            instrument_spec_validated):
+    """Exposure and stop-risk controls derivable from current broker facts."""
     blockers = []
     sr = _num(stop_risk_nav)
     if sr is None or sr > LIVE_RISK_PROFILE["max_stop_risk_nav"]:
@@ -730,6 +729,19 @@ def production_account_risk_blockers(*, stop_risk_nav, single_asset_fraction, gr
     ga = _num(gross_after)
     if ga is None or ga > LIVE_RISK_PROFILE["max_gross"]:
         blockers.append("GROSS_LIMIT")
+    return blockers
+
+
+def production_account_risk_blockers(*, stop_risk_nav, single_asset_fraction, gross_after, drawdown,
+                                    total_open_stop_risk_nav_after, correlated_stop_risk_nav_after,
+                                    instrument_spec_validated, daily_pnl_pct, weekly_pnl_pct,
+                                    broker_reconciled, kill_switch):
+    """Model admission retains both current and historical account controls."""
+    blockers = production_current_account_risk_blockers(stop_risk_nav=stop_risk_nav,
+        single_asset_fraction=single_asset_fraction, gross_after=gross_after,
+        total_open_stop_risk_nav_after=total_open_stop_risk_nav_after,
+        correlated_stop_risk_nav_after=correlated_stop_risk_nav_after,
+        instrument_spec_validated=instrument_spec_validated)
     dd = _num(drawdown)
     if dd is None or dd >= LIVE_RISK_PROFILE["hard_drawdown_stop"]:
         blockers.append("DRAWDOWN_LIMIT")
