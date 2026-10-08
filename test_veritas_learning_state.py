@@ -1,5 +1,5 @@
 """Cache commit semantics and durable job fencing; no production connection."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import os
@@ -154,6 +154,85 @@ class DurableStateSQLTests(unittest.TestCase):
     def tearDown(self):
         with self.driver.connect(DSN,autocommit=True) as c:
             c.execute(f"DROP SCHEMA {self.schema} CASCADE")
+
+    def _assert_timeouts(self, c, statement, lock):
+        self.assertEqual(c.execute("SHOW statement_timeout").fetchone()["statement_timeout"], statement)
+        self.assertEqual(c.execute("SHOW lock_timeout").fetchone()["lock_timeout"], lock)
+
+    def test_transaction_timeouts_are_exact_and_local_after_commit_and_rollback(self):
+        from psycopg.pq import ExecStatus
+        # Reuse the physical connection so closing it cannot hide a leaked GUC.
+        with self.connect() as raw:
+            raw.execute("SET statement_timeout='9s'")
+            raw.execute("SET lock_timeout='7s'")
+            raw.execute("CREATE TEMP TABLE timeout_commit_probe (id text PRIMARY KEY)")
+            for rollback in (False, True):
+                with self.subTest(rollback=rollback):
+                    results = []
+                    class ObservedConnection:
+                        def transaction(self):
+                            return raw.transaction()
+                        def execute(self, sql, args=None):
+                            result = raw.execute(sql, args) if args is not None else raw.execute(sql)
+                            if not results:
+                                while True:
+                                    results.append((result.pgresult.status, result.statusmessage))
+                                    if not result.nextset():
+                                        break
+                            return result
+                    expected = self.assertRaisesRegex(RuntimeError, "synthetic settings rollback") if rollback else nullcontext()
+                    with expected, S._transaction(lambda: nullcontext(ObservedConnection())) as c:
+                        self.assertEqual(results, [(ExecStatus.COMMAND_OK, "SET"), (ExecStatus.COMMAND_OK, "SET")])
+                        self._assert_timeouts(c, "2s", "250ms")
+                        c.execute("INSERT INTO timeout_commit_probe VALUES (%s)", ("rollback" if rollback else "commit",))
+                        if rollback:
+                            raise RuntimeError("synthetic settings rollback")
+                    self._assert_timeouts(raw, "9s", "7s")
+                    self.assertEqual(raw.execute("SELECT id FROM timeout_commit_probe").fetchall(), [{"id": "commit"}])
+
+    def test_second_timeout_setup_error_rolls_back_first_setting_without_entering_body(self):
+        with self.connect() as raw:
+            raw.execute("SET statement_timeout='9s'")
+            raw.execute("SET lock_timeout='7s'")
+            class InvalidSecondSetting:
+                def transaction(self):
+                    return raw.transaction()
+                def execute(self, sql, args=None):
+                    # Leave the first actual utility command intact and make
+                    # only the second fail on PostgreSQL, not in a SQL mock.
+                    first, separator, _ = sql.partition(";")
+                    if not separator or args is not None:
+                        raise AssertionError("expected an unparameterized settings pair")
+                    return raw.execute(first+"; SET LOCAL lock_timeout='synthetic-invalid-timeout'")
+            entered = False
+            with self.assertRaises(self.driver.errors.InvalidParameterValue):
+                with S._transaction(lambda: nullcontext(InvalidSecondSetting())):
+                    entered = True
+            self.assertFalse(entered)
+            self._assert_timeouts(raw, "9s", "7s")
+            self.assertEqual(raw.execute("SELECT 7 AS healthy").fetchone()["healthy"], 7)
+
+    def test_transaction_timeouts_cancel_sql_and_lock_wait_without_leaking_settings(self):
+        with self.connect() as raw:
+            raw.execute("SET statement_timeout='9s'")
+            raw.execute("SET lock_timeout='7s'")
+            raw.execute("CREATE TEMP TABLE timeout_rollback_probe (id integer PRIMARY KEY)")
+            with self.assertRaises(self.driver.errors.QueryCanceled):
+                with S._transaction(lambda: nullcontext(raw)) as c:
+                    c.execute("INSERT INTO timeout_rollback_probe VALUES (1)")
+                    c.execute("SELECT pg_sleep(3)")
+            self._assert_timeouts(raw, "9s", "7s")
+            self.assertEqual(raw.execute("SELECT count(*) AS n FROM timeout_rollback_probe").fetchone()["n"], 0)
+            # The unchanged snapshot lock must still time out at 250ms instead
+            # of waiting for the longer statement cap or altering lock order.
+            with self.connect() as holder, holder.transaction():
+                holder.execute("SELECT pg_advisory_xact_lock(%s)", (S._LOCK,))
+                with self.assertRaises(self.driver.errors.LockNotAvailable):
+                    with S._transaction(lambda: nullcontext(raw)) as c:
+                        c.execute("INSERT INTO timeout_rollback_probe VALUES (2)")
+                        S.load_snapshot_in_transaction(c, "timeout-probe", "V1", for_update=True)
+            self._assert_timeouts(raw, "9s", "7s")
+            self.assertEqual(raw.execute("SELECT count(*) AS n FROM timeout_rollback_probe").fetchone()["n"], 0)
 
     def test_good_only_monotonic_idempotent_snapshots_survive_reconnect(self):
         at=datetime.now(timezone.utc); value={"status":"BUILDING","n":0}

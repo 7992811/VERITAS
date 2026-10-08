@@ -152,8 +152,7 @@ class ScorecardDeliveryTests(unittest.TestCase):
         self.assertEqual(len(self.connections), 7)
         self.assertTrue(all(c.closed and c.committed and not c.depth for c in self.connections))
         for conn in self.connections:
-            self.assertIn(("SET LOCAL statement_timeout = '350ms'", None), conn.calls)
-            self.assertIn(("SET LOCAL lock_timeout = '250ms'", None), conn.calls)
+            self.assertIn(("SET LOCAL statement_timeout = '350ms'; SET LOCAL lock_timeout = '250ms'", None), conn.calls)
             self.assertEqual(sum('statement_timeout' in sql for sql, args in conn.calls), 1)
         stored = self.durable['intelligence_scorecard']['payload']
         actual = AMI.cached_scorecard(EPOCH)
