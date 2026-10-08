@@ -13,6 +13,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import veritas_canonical_constitution as CTC
 import veritas_currency_trade_plan as P
@@ -90,6 +91,91 @@ class CurrentStructuralBrokerTests(unittest.TestCase):
     def prepare(self, fixture):
         row, admission, spec, account, quote, now = fixture
         return P.prepare_entry(row, admission, spec, account, quote, now=now)
+
+    def test_fresh_broker_book_precedes_canonical_ranking_of_old_research_quote(self):
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                row, _, spec, account, quote, now = native_fixture(direction=direction)
+                later = now + timedelta(seconds=180)
+                with self.assertRaisesRegex(P.TradePlanBlocked, "EXECUTION_QUOTE_STALE"):
+                    P.select_entry([row], account, later)
+                row["_runtime_quote_refresh"] = True
+                frozen = deepcopy(row)
+                spec, account, quote = (replace(x, observed_at=later) for x in (spec, account, quote))
+                # This broker decision uses its own already observed book, not
+                # a looser market cache or a second source/network request.
+                with patch.object(P.VCR.VPG, "refresh_execution_row", side_effect=AssertionError("unexpected cache refresh")):
+                    selected, admission = P.select_entry([row], account, later, spec=spec, quote=quote)
+                self.assertTrue(admission["open"])
+                price = quote.ask if direction == "LONG" else quote.bid
+                self.assertEqual(selected["price"], float(price))
+                self.assertEqual(selected["market_observed_at"], later.isoformat())
+                self.assertEqual(selected["_execution_quote"]["best_bid"], float(quote.bid))
+                self.assertEqual(selected["_execution_quote"]["best_ask"], float(quote.ask))
+                terms = P.prepare_entry(selected, admission, spec, account, quote, now=later)
+                self.assertEqual(P.approved_entry_context(terms)["event"], frozen["timeframe_entry_context"]["event"])
+                self.assertEqual(row, frozen)
+                self.assertTrue(all(item["checked_at"] == later.isoformat()
+                                    for item in selected["_currency_route_trace"]))
+
+    def test_refresh_does_not_extend_signal_expiry_or_restore_broken_level(self):
+        row, _, spec, account, quote, now = native_fixture()
+        event = row["timeframe_entry_context"]["event"]
+        window = max(CTC.BREAKOUT_LIFECYCLE_POLICY["minimum_entry_window_seconds"],
+                     CTC.BREAKOUT_LIFECYCLE_POLICY["max_signal_age_bars"] * P.TS.timeframe_seconds("1h"))
+        expired = datetime.fromtimestamp(event["signal_at"] + window + 1, timezone.utc)
+        with self.assertRaisesRegex(P.TradePlanBlocked, "STRUCTURAL_EVENT_EXPIRED"):
+            P.select_entry([row], replace(account, observed_at=expired), expired,
+                           spec=replace(spec, observed_at=expired), quote=replace(quote, observed_at=expired))
+        later = now + timedelta(seconds=180)
+        trigger = D(str(event["trigger_level"]))
+        with self.assertRaisesRegex(P.TradePlanBlocked, "STRUCTURAL_BREAKOUT_LEVEL_NOT_HELD"):
+            P.select_entry([row], replace(account, observed_at=later), later,
+                spec=replace(spec, observed_at=later),
+                quote=replace(quote, observed_at=later, bid=trigger-D(".001"), ask=trigger))
+
+    def test_stale_future_or_wrong_contract_broker_book_cannot_refresh_a_candidate(self):
+        row, _, spec, account, quote, now = native_fixture()
+        for changed, code in ((replace(quote, observed_at=now-timedelta(seconds=16)), "BROKER_QUOTE_STALE"),
+                              (replace(quote, observed_at=now+timedelta(seconds=3)), "BROKER_QUOTE_STALE"),
+                              (replace(quote, instrument_uid="different-contract"), "QUOTE_INSTRUMENT_MISMATCH"),
+                              (replace(quote, limit_orders_available=False), "LIMIT_ORDER_UNAVAILABLE")):
+            with self.subTest(code=code), self.assertRaisesRegex(P.TradePlanBlocked, code):
+                P.select_entry([row], account, now, spec=spec, quote=changed)
+        with self.assertRaisesRegex(P.TradePlanBlocked, "STRUCTURAL_QUOTE_OUT_OF_ORDER"):
+            P.select_entry([row], account, now, spec=spec, quote=replace(quote, observed_at=CLOCK))
+
+    def test_foreign_source_stays_unmodified_and_cannot_hide_current_same_contract(self):
+        foreign, _, _, _, _, _ = native_fixture(source_uid="another-contract")
+        row, _, spec, account, quote, now = native_fixture()
+        later = now + timedelta(seconds=180)
+        spec, account, quote = (replace(x, observed_at=later) for x in (spec, account, quote))
+        frozen = deepcopy(foreign)
+        with self.assertRaisesRegex(P.TradePlanBlocked, "EXECUTION_QUOTE_STALE"):
+            P.select_entry([foreign], account, later, spec=spec, quote=quote)
+        selected, admitted = P.select_entry([foreign, row], account, later, spec=spec, quote=quote)
+        self.assertTrue(admitted["open"])
+        self.assertEqual(selected["_execution_quote"]["contract"]["instrument_uid"], UID)
+        self.assertEqual(foreign, frozen)
+
+    def test_coordinator_old_summary_reaches_model_preflight_without_creating_order(self):
+        row, _, spec, account, quote, now = native_fixture()
+        later = now + timedelta(seconds=180)
+        spec, account, quote = (replace(x, observed_at=later) for x in (spec, account, quote))
+        calls = []
+        def deny_model(**kwargs):
+            calls.append(kwargs["terms"])
+            return {"eligible": False, "blockers": ["LIVE_MODEL_ADMISSION_EVIDENCE_REQUIRED"]}
+        coordinator = C.CurrencyTradingCoordinator(repository=self.repo,
+            adapter=SimpleNamespace(environment="production"), account_id=account.account_id,
+            owner=C.TradeOwner(OWNER, OWNER, BOT), facts=lambda:C.TradeFacts(spec, account, quote),
+            summary=lambda:[row], ingest_execution=lambda *_:self.fail("unexpected execution"),
+            clock=lambda:later, execution_enabled=False, preflight_live=True, live_admission=deny_model)
+        with self.assertRaisesRegex(P.TradePlanBlocked, "LIVE_ACCOUNT_ADMISSION_REQUIRED"):
+            coordinator.prepare()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["quote_observed_at"], later.isoformat())
+        self.assertEqual(self.repo.list_pending(account_id=account.account_id, owner_user_id=OWNER), [])
 
     def test_current_native_proof_both_directions_survives_signed_roundtrip_and_fresh_broker_quote(self):
         for direction in ("LONG", "SHORT"):

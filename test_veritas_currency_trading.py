@@ -338,7 +338,7 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         # Isolate the approval lifecycle from candidate ranking and fraction
         # policy. The selected row contains a real native event; broker-price
         # structural/cost/risk gates, repository and adapter all remain active.
-        self.selection = patch.object(C, "select_entry", side_effect=lambda *args: (self.row, self.admission))
+        self.selection = patch.object(C, "select_entry", side_effect=lambda *args, **kwargs: (self.row, self.admission))
         self.selection.start()
 
     def tearDown(self):

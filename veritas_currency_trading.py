@@ -90,7 +90,7 @@ class CurrencyTradingCoordinator:
 
     def _create(self, facts, now, requested_exit=None):
         if requested_exit is None:
-            row, admission = select_entry(self.summary(), facts.account, now)
+            row, admission = select_entry(self.summary(), facts.account, now, spec=facts.spec, quote=facts.quote)
             terms = prepare_entry(row, admission, facts.spec, facts.account,
                                   facts.quote, now=now, held_terms=facts.held_terms)
         else:
@@ -136,7 +136,7 @@ class CurrencyTradingCoordinator:
                 or terms.get("execution_environment") != "production"
                 or terms.get("action") not in ("OPEN", "ADD")):
             raise TradePlanBlocked("REVIEWED_PRODUCTION_ENTRY_REQUIRED")
-        row, admission = select_entry(self.summary(), facts.account, now)
+        row, admission = select_entry(self.summary(), facts.account, now, spec=facts.spec, quote=facts.quote)
         current = prepare_entry(row, admission, facts.spec, facts.account, facts.quote,
                                 now=now, held_terms=facts.held_terms)
         current.update(protective_order_mode="EXIT_REQUIRES_SEPARATE_CONFIRMATION",
@@ -240,7 +240,7 @@ class CurrencyTradingCoordinator:
         if terms.get("policy_version") != CTC.VERSION:
             return False
         try:
-            row, admission = select_entry(self.summary(), facts.account, now)
+            row, admission = select_entry(self.summary(), facts.account, now, spec=facts.spec, quote=facts.quote)
             current = canonical_terms(prepare_entry(row, admission, facts.spec, facts.account,
                                     facts.quote, now=now, held_terms=facts.held_terms))
             fixed = ("canonical_event_id", "direction", "horizon", "source_identity",

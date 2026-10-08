@@ -313,7 +313,7 @@ def candidate_book(summary):
     return grouped
 
 
-def currency_candidate_book(summary):
+def currency_candidate_book(summary, now=None):
     rows=[dict(r) for r in (summary or [])
           if str((r or {}).get("asset") or "")=="CNYRUBF"
           and _direction(r) in ("LONG","SHORT")]
@@ -352,7 +352,7 @@ def currency_candidate_book(summary):
     chosen=prepared[0]
     trace=[]
     policy=CTC.runtime_portfolio_policy("Currency")
-    clock=datetime.now(timezone.utc)
+    clock=TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
     for candidate in prepared:
         admission=evaluate(candidate,policy,0.0,clock)
         trace.append(VAT.route_item(candidate,admission,clock))

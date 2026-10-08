@@ -93,6 +93,18 @@ is rejected; the clock is never advanced to make the event appear fresh.
 The daily-average policy and strategy epoch from the current canonical runtime
 are preserved.
 
+Before Currency candidate ranking and canonical admission, the coordinator now
+binds its already observed broker book to matching T-Invest signal rows. The
+previous research snapshot may be older than its quote deadline even while the
+broker book is current. The replacement is atomic: side-specific price, bid,
+ask, exchange observation time, provider and exact instrument UID come from one
+validated snapshot (maximum age 15 seconds). It does not change any event time,
+proof, structural stop/target, expiry or explicit paper denial. Foreign sources
+and contracts are not relabelled. The broker decision clock also controls
+candidate ranking; a slower market-cache refresh cannot replace this book.
+Normal preparation, reviewed proposals and post-confirmation validation use
+the same binding. Stale broker data still blocks rather than extending a limit.
+
 Currency starts with a separate 10,000 RUB allocation. The existing canonical
 maximum gross exposure is 10 times that allocation; its hard drawdown threshold
 is 35%. The full broker account equity is not treated as Currency capital.
