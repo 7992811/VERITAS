@@ -23,6 +23,7 @@ import veritas_price_source as SOURCE
 import veritas_knowledge_validation as KNOWLEDGE
 import veritas_asset_management_intelligence as INTELLIGENCE
 import veritas_scorecard_delivery as SCORECARD
+import veritas_learning_v2 as LEARNING_V2
 from veritas_maintenance import MaintenanceDeferred
 
 VERSION = "CONTINUOUS_LEARNING_V1"
@@ -37,6 +38,8 @@ MAX_PENDING = 4096
 MAX_PROVENANCE_BYTES = 16384
 CANDIDATE_WORK_VERSION = "FORECAST_CONSUMPTION_V1"
 CANDIDATE_MAINTENANCE_SECONDS = 120
+LEARNING_V2_SNAPSHOT_NAME = "learning_v2_shadow"
+LEARNING_V2_INPUT_LIMIT = 512
 
 
 def _json(value):
@@ -212,6 +215,8 @@ class ContinuousLearning:
         self.ready, self.boot_phase = False, 0
         self._lock = threading.RLock()
         self._snapshot = AUTO.snapshot()
+        self._learning_v2 = {"version": LEARNING_V2.VERSION, "status": "WARMING_UP",
+                             "automatic_production_promotion": False, "hypotheses": [], "counts": {}}
         self._stats = {"status": "collecting", "processed_decisions": 0, "resolved_forecasts": 0,
                        "abstention_observations": 0, "excluded_forecasts": 0,
                        "last_success_at": None, "last_error": None}
@@ -224,7 +229,8 @@ class ContinuousLearning:
                 ("learning_trade_evidence", self.trades, 30, 6),
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
-                ("learning_memory", self.memory, 300, 6))
+                ("learning_memory", self.memory, 300, 6),
+                ("learning_v2_shadow", self.learning_v2_shadow, 300, 5))
         for name, fn, interval, seconds in jobs:
             if name == "learning_bootstrap":
                 callback = fn
@@ -381,8 +387,11 @@ class ContinuousLearning:
             return {"status": "PROGRESS", "stage": "KNOWLEDGE_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
         progress = STORE.load_snapshot(self.connect, "learning_progress", PROGRESS_VERSION)
+        learning_v2 = STORE.load_snapshot(self.connect, LEARNING_V2_SNAPSHOT_NAME, LEARNING_V2.VERSION)
         with self._lock:
             self._snapshot = saved
+            if learning_v2 and isinstance(learning_v2.get("payload"), dict):
+                self._learning_v2 = deepcopy(learning_v2["payload"])
         BRIDGE.update(saved)
         if progress:
             self.ns["learning_progress"]._cache = (0., progress["payload"])
@@ -658,6 +667,72 @@ class ContinuousLearning:
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
 
+    def learning_v2_shadow(self, context, cursor):
+        """Build bounded Entry/Stop/Exit/router research from verified outcomes.
+
+        This job is deliberately observational.  It can publish hypotheses but
+        cannot alter entry rules, stops, exits, risk limits or broker state.
+        """
+        limit = LEARNING_V2_INPUT_LIMIT
+        with transaction(self.connect, context) as c:
+            decisions = c.execute("""
+              WITH recent AS MATERIALIZED (
+                SELECT id,entity_key,event_ts,asset,horizon,payload
+                FROM ledger_events
+                WHERE event_type='decision'
+                ORDER BY id DESC
+                LIMIT %s
+              )
+              SELECT d.event_ts,d.asset,d.horizon,
+                     COALESCE(d.payload->>'regime','UNKNOWN') AS regime,
+                     COALESCE(d.payload->>'research_decision',d.payload->>'decision','') AS decision,
+                     COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
+                              d.payload#>>'{trade_plan,setup_family}','') AS setup_family,
+                     COALESCE(d.payload#>>'{learning_provenance,policy_hash}',
+                              d.payload->>'strategy_policy_hash','') AS policy_hash,
+                     COALESCE(d.payload->>'horizon_structure_direction',
+                              d.payload#>>'{timeframe_entry_context,event,direction}',
+                              d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}','') AS candidate_direction,
+                     COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers,
+                     (o.payload->>'forward_return')::double precision AS forward_return
+              FROM recent d
+              CROSS JOIN LATERAL (
+                SELECT payload FROM ledger_events o
+                WHERE o.entity_key=d.entity_key AND o.event_type='outcome'
+                  AND jsonb_typeof(o.payload->'forward_return')='number'
+                ORDER BY o.id DESC LIMIT 1
+              ) o
+              ORDER BY d.id DESC
+            """, (limit,)).fetchall()
+            context.check()
+            trades = c.execute("""
+              SELECT closed_at,asset,horizon,regime,setup_family,
+                     COALESCE(payload->>'strategy_policy_hash','') AS policy_hash,
+                     mae_pct AS mae,mfe_pct AS mfe,capture_ratio,
+                     net_pnl_rub,primary_attribution
+              FROM v90_learning_episodes
+              WHERE learning_eligible=TRUE
+                AND primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
+              ORDER BY closed_at DESC
+              LIMIT %s
+            """, (limit,)).fetchall()
+        decision_rows=[dict(row) for row in decisions or []]
+        trade_rows=[dict(row) for row in trades or []]
+        value=LEARNING_V2.research_snapshot(decision_rows,trade_rows)
+        value.update(input_counts={"decisions":len(decision_rows),"trades":len(trade_rows)},
+                     generated_at=clock().isoformat(),
+                     source="VERIFIED_LEDGER_OUTCOMES_AND_LEARNING_EPISODES",
+                     automatic_production_promotion=False)
+        context.check()
+        if not STORE.publish_snapshot(self.connect, LEARNING_V2_SNAPSHOT_NAME, LEARNING_V2.VERSION,
+                                      value, observed_at=clock()):
+            raise RuntimeError("learning v2 snapshot rejected")
+        with self._lock:
+            self._learning_v2=deepcopy(value)
+        return {"status":"OK","hypotheses":len(value.get("hypotheses") or []),
+                "counts":value.get("counts") or {},
+                "missed_directional_episodes":(value.get("entry_false_block") or {}).get("missed_directional_episodes",0)}, cursor
+
     def intelligence(self, context, cursor, *, pg_connect=None):
         pg_connect = self.connect if pg_connect is None else pg_connect
         if cursor.get("phase") == "daily":
@@ -739,6 +814,7 @@ class ContinuousLearning:
         with self._lock:
             result = deepcopy(self._snapshot)
             result["continuous"] = dict(self._stats, ready=self.ready, version=VERSION)
+            result["learning_v2"] = deepcopy(self._learning_v2)
         current = clock()
         result["application_status"] = BRIDGE.runtime_status()
         result["profiles"] = [p for p in result.get("profiles", []) if p.get("evidence_valid") is True
