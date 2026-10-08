@@ -150,13 +150,15 @@ class ScorecardStageTests(unittest.TestCase):
         self.rows=self.history()
         self.step(); self.step()
         budget={'remaining_seconds':5.2}
+        self.context.sql_timeout_ms=2000
         self.context.lane=SimpleNamespace(current_budget=lambda:dict(budget))
         def timed(connection,pairs):
             budget['remaining_seconds']-=.7
             return self.chunk_rows(connection,pairs)
         self.chunk.side_effect=timed
         result=self.step()
-        self.assertEqual(result['processed'],256)
+        self.assertEqual([len(call.args[1]) for call in self.chunk.call_args_list],[64,64,51,28])
+        self.assertEqual(result['processed'],207)
         self.assertGreater(budget['remaining_seconds'],2)
 
     def test_short_budget_can_decode_with_reduced_timeout_instead_of_starving(self):
@@ -166,12 +168,13 @@ class ScorecardStageTests(unittest.TestCase):
         self.context.sql_timeout_ms=2000
         self.context.lane=SimpleNamespace(current_budget=lambda:dict(budget))
         def timed(connection,pairs):
-            budget['remaining_seconds']=2.1
+            budget['remaining_seconds']=3.2 if self.chunk.call_count==1 else 2.1
             return self.chunk_rows(connection,pairs)
         self.chunk.side_effect=timed
         result=self.step()
         self.assertEqual(result['status'],'PROGRESS')
         self.assertEqual(result['processed'],64)
+        self.assertEqual([len(call.args[1]) for call in self.chunk.call_args_list],[32,32])
         self.assertIn(("SET LOCAL statement_timeout = '1000ms'",None),self.connections[-1].calls)
         before=deepcopy(self.durable[DELIVERY.WORK_SLOT])
         calls=self.chunk.call_count
@@ -180,6 +183,86 @@ class ScorecardStageTests(unittest.TestCase):
         self.assertEqual(deferred['processed'],64)
         self.assertEqual(self.chunk.call_count,calls)
         self.assertEqual(self.durable[DELIVERY.WORK_SLOT],before)
+
+    def test_chunk_size_uses_the_configured_cap_without_exceeding_64(self):
+        self.rows=self.history(130)
+        cases=((0,1,None),(200,6,None),(350,11,None),(1000,32,None),
+               (2000,64,None),(9999,64,None),(350,11,2000))
+        for requested,expected,later_estimate in cases:
+            with self.subTest(requested=requested,later_estimate=later_estimate):
+                self.durable.clear(); AMI._RESTORED_EPOCH=None
+                self.load.side_effect=self.load_saved
+                self.context.sql_timeout_ms=requested
+                budget={'remaining_seconds':6.}
+                self.context.lane=SimpleNamespace(current_budget=lambda:dict(budget))
+                self.step(); self.step()
+                frozen=deepcopy(self.durable[DELIVERY.WORK_SLOT]['payload']['pairs'])
+                if later_estimate is not None:
+                    def after_configuration(c,name,version,**kwargs):
+                        self.context.sql_timeout_ms=later_estimate
+                        return self.load_saved(c,name,version,**kwargs)
+                    self.load.side_effect=after_configuration
+                self.chunk.reset_mock()
+                def one_chunk(c,pairs):
+                    budget['remaining_seconds']=2.1
+                    return self.chunk_rows(c,pairs)
+                self.chunk.side_effect=one_chunk
+                result=self.step()
+                self.assertEqual(result['status'],'PROGRESS')
+                self.assertEqual(result['processed'],expected)
+                self.assertEqual(self.chunk.call_count,1)
+                self.assertEqual(self.chunk.call_args.args[1],frozen[:expected])
+
+    def test_repeated_short_slices_resume_all_2200_pairs_and_match_legacy_score(self):
+        self.rows=self.history()
+        def sample_with_boundary_duplicates(c):
+            selected=sorted(self.sample_rows(c),key=lambda row:str(row['event_ts']))
+            selected[32]=deepcopy(selected[31])
+            selected[64]=deepcopy(selected[63])
+            return selected
+        self.sample.side_effect=sample_with_boundary_duplicates
+        self.context.sql_timeout_ms=2000
+        self.step(); self.step()
+        frozen=deepcopy(self.durable[DELIVERY.WORK_SLOT]['payload']['pairs'])
+        self.assertEqual(len(frozen),2200)
+        self.assertEqual(frozen[31],frozen[32])
+        self.assertEqual(frozen[63],frozen[64])
+        legacy=_FakeConn()
+        legacy.decisions=[deepcopy(self.rows[pair[0]-1]) for pair in frozen]
+        expected=AMI._build_scorecard_unlocked(lambda:legacy,
+            {'status':'MEASURABLE','index_vs_start':110},EPOCH,cache_seconds=0,publish=False)
+        budget={'remaining_seconds':3.2}
+        self.context.lane=SimpleNamespace(current_budget=lambda:dict(budget))
+        def one_short_chunk(c,pairs):
+            budget['remaining_seconds']=2.1
+            return self.chunk_rows(c,pairs)
+        self.chunk.side_effect=one_short_chunk
+        cursor=None; restarted=False
+        for _ in range(100):
+            budget['remaining_seconds']=3.2
+            result=self.step(cursor)
+            cursor=result['cursor']
+            if result['status']=='OK':
+                break
+            self.assertEqual(result['status'],'PROGRESS')
+            self.assertIsNone(AMI._SNAPSHOT)
+            if not restarted and result.get('processed',0)>=160:
+                # Lose only process-local state and the caller cursor. The
+                # committed frozen sample and reducer remain the source.
+                AMI._SNAPSHOT=None; AMI._RESTORED_EPOCH=None
+                cursor={}; restarted=True
+        else:
+            self.fail('short-slice scorecard did not finish')
+        self.assertTrue(restarted)
+        self.assertEqual(self.sample.call_count,1)
+        batches=[call.args[1] for call in self.chunk.call_args_list]
+        self.assertTrue(all(0<len(pairs)<=32 for pairs in batches))
+        self.assertEqual([pair for pairs in batches for pair in pairs],frozen)
+        self.assertEqual(result['processed'],2200)
+        actual=AMI.cached_scorecard(EPOCH)
+        actual['benchmarks']['rollout_absolute_score']['captured_at']=expected['benchmarks']['rollout_absolute_score']['captured_at']
+        for key,value in expected.items():
+            self.assertEqual(actual[key],value,key)
 
     def test_oversized_work_is_rejected_without_truncation_or_partial_publication(self):
         original=self.completed()

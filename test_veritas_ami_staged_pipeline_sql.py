@@ -11,6 +11,7 @@ from unittest.mock import patch
 import veritas_asset_management_intelligence as AMI
 import veritas_scorecard_delivery as DELIVERY
 import veritas_learning_state as STORE
+import veritas_learning_memory as MEMORY
 
 
 DSN = os.getenv("VERITAS_QUALITY_TEST_DSN", "")
@@ -200,6 +201,50 @@ class AMIStagedPipelineSQLTests(unittest.TestCase):
             self.assertEqual(c.execute("SELECT count(*) n FROM veritas_learning_snapshots WHERE name=%s",
                                       (DELIVERY.WORK_SLOT,)).fetchone()["n"], 1)
             self.assertEqual(c.execute("SELECT payload FROM learning_baselines").fetchone()["payload"], baseline)
+
+    def test_real_sql_short_slices_preserve_frozen_order_and_complete_legacy_score_after_restart(self):
+        expected=AMI._build_scorecard_unlocked(self.connect,LEARNING,EPOCH,cache_seconds=0,publish=False)
+        original_chunk=MEMORY.ami_decision_chunk
+        budget={'remaining_seconds':3.2}
+        context=SimpleNamespace(sql_timeout_ms=2000,check=lambda:None,
+                                lane=SimpleNamespace(current_budget=lambda:dict(budget)))
+        batches=[]; timeouts=[]
+        def one_short_chunk(c,pairs):
+            timeouts.append(c.execute("SHOW statement_timeout").fetchone()['statement_timeout'])
+            batches.append(deepcopy(pairs))
+            rows=original_chunk(c,pairs)
+            budget['remaining_seconds']=2.1
+            return rows
+        def step(cursor=None):
+            budget['remaining_seconds']=3.2
+            return AMI.refresh_snapshot(self.connect,LEARNING,EPOCH,context=context,cursor=cursor)
+        with patch.object(MEMORY,'ami_decision_chunk',side_effect=one_short_chunk):
+            restored=step()
+            sampled=step(restored['cursor'])
+            frozen=deepcopy(self.work()['payload']['pairs'])
+            self.assertEqual(len(frozen),130)
+            cursor=sampled['cursor']; restarted=False
+            for _ in range(20):
+                result=step(cursor)
+                cursor=result['cursor']
+                if result['status']=='OK':
+                    break
+                self.assertEqual(result['status'],'PROGRESS')
+                self.assertIsNone(AMI._SNAPSHOT)
+                if not restarted and result.get('processed')==64:
+                    AMI._SNAPSHOT=None; AMI._RESTORED_EPOCH=None
+                    cursor={}; restarted=True
+            else:
+                self.fail('real short-slice scorecard did not finish')
+        self.assertTrue(restarted)
+        self.assertEqual([len(pairs) for pairs in batches],[32,32,32,32,2])
+        self.assertEqual(timeouts,['1s']*5)
+        self.assertEqual([pair for pairs in batches for pair in pairs],frozen)
+        self.assertEqual(result['processed'],130)
+        self.assertEqual(AMI._SNAPSHOT[2],expected)
+        complete=self.work()['payload']
+        self.assertEqual(complete['stage'],'complete')
+        self.assertEqual(complete['offset'],130)
 
 
 if __name__ == "__main__":

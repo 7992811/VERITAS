@@ -609,6 +609,9 @@ def _index_audits(c, cursor, clock, context):
 
 
 def _catalog_rules(c, cursor, clock, context):
+    # Each source/audit has a unique source_id. Keep both lookups dependent on
+    # the bounded rule page before projecting their potentially large values.
+    # LEFT joins preserve orphan rules and independently available audits.
     rows = c.execute("""WITH page AS MATERIALIZED (
         SELECT rule_id,source_id,agent,asset_scope,horizons,action,status,
           CASE WHEN octet_length(conditions::text)<=4096 THEN conditions ELSE NULL END conditions,
@@ -623,8 +626,15 @@ def _catalog_rules(c, cursor, clock, context):
           'authors',left(s.authors,512),'year',s.year,'source_type',s.source_type,'url',left(s.url,1024),
           'claim',left(s.claim,1024),'evidence_grade',s.evidence_grade) AS source,
           a.audit,a.checked_at audit_checked_at,a.revision audit_revision
-        FROM page p LEFT JOIN knowledge_sources s ON s.source_id=p.source_id
-        LEFT JOIN knowledge_validation_source_audits a ON a.source_id=p.source_id
+        FROM page p
+        LEFT JOIN LATERAL (
+          SELECT s.source_id,s.title,s.authors,s.year,s.source_type,s.url,s.evidence_grade,s.claim
+          FROM knowledge_sources s WHERE s.source_id=p.source_id OFFSET 0
+        ) s ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT a.audit,a.checked_at,a.revision
+          FROM knowledge_validation_source_audits a WHERE a.source_id=p.source_id OFFSET 0
+        ) a ON TRUE
         ORDER BY p.rule_id""", (cursor["rule_after"], CATALOG_RULE_BATCH)).fetchall()
     active, rejected = [], []
     for raw in rows:

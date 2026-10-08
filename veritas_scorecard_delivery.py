@@ -99,6 +99,8 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
         with pg_connect() as connection, connection.transaction():
             failed = []
             class BoundedConnection:
+                def __init__(self, initial_sql_timeout_ms):
+                    self.initial_sql_timeout_ms = initial_sql_timeout_ms
                 def execute(self, sql, args=None):
                     check()
                     if failed:
@@ -113,7 +115,7 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
             milliseconds = max(1, min(2000, int(getattr(context, "sql_timeout_ms", 2000))))
             connection.execute("SET LOCAL statement_timeout = '"+str(milliseconds)+"ms'; "
                                "SET LOCAL lock_timeout = '250ms'")
-            yield BoundedConnection()
+            yield BoundedConnection(milliseconds)
             if failed:
                 raise failed[0]
             check()
@@ -168,7 +170,7 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                     observed = datetime.fromisoformat(observed.replace("Z", "+00:00"))
             elif work["stage"] == "decisions":
                 phase_started, chunks = time.monotonic(), 0
-                query_timeout = max(1, min(2000, int(getattr(context, "sql_timeout_ms", 2000))))
+                query_timeout = c.initial_sql_timeout_ms
                 while work["offset"] < len(work["pairs"]) and chunks < 8:
                     # Leave time for this durable write and the caller's fenced
                     # job checkpoint. Short remaining slices can still make
@@ -182,7 +184,10 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                         query_timeout = timeout
                         if remaining() <= 2.2:
                             break
-                    pairs = work["pairs"][work["offset"]:work["offset"]+DECISION_CHUNK]
+                    # Scale the requested work with the timeout already in
+                    # force; every frozen pair still advances the same reducer.
+                    pair_count = max(1, min(DECISION_CHUNK, DECISION_CHUNK*query_timeout//2000))
+                    pairs = work["pairs"][work["offset"]:work["offset"]+pair_count]
                     rows = ami_decision_chunk(c, pairs)
                     if len(rows) != len(pairs):
                         raise RuntimeError("SCORECARD_FROZEN_SAMPLE_CHANGED")
