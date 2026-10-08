@@ -12,7 +12,7 @@ import veritas_execution as VX
 import veritas_price_source as VPS
 
 VERSION = "OWNER_MANUAL_TRIAL_V1"
-PLAN_VERSION = "currency-owner-manual-v1"
+PLAN_VERSION = "currency-owner-manual-v2-current-account"
 
 
 def applies(terms):

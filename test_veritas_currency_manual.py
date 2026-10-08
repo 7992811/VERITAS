@@ -53,18 +53,13 @@ class ManualTests(unittest.TestCase):
         self.request = dict(request_id=str(uuid.uuid4()), action='OPEN', side='SELL', lots=1,
             limit_price=str(h.quote.bid), stop_price='12.400', target_price='12.100', hold_minutes=5)
 
-    def ready(self, change=None):
-        # No MODEL document is ever issued. The synthetic account evidence is
-        # independently signed with the offline key through the real importer.
-        with self.assertRaisesRegex(P.TradePlanBlocked, 'LIVE_ACCOUNT_HISTORY_EVIDENCE_REQUIRED'):
-            self.coordinator.prepare_manual(self.request)
-        terms = self.authority.status()['evidence_request']['terms']
-        self.h.terms = terms
-        doc, artifacts = self.h.account_document()
-        if change:
-            change(doc)
-        self.h.publish(doc, artifacts)
-        return terms
+    def ready(self):
+        # Explicit owner terms only; no synthetic historical certificate is
+        # issued for the current-account manual policy.
+        terms = M.prepare(self.request, self.h.facts, self.h.now)
+        terms.update(execution_environment='production', manual_owner_user_id=OWNER,
+                     manual_private_chat_id=OWNER, manual_bot_id=BOT)
+        return A.canonical_terms(terms)
 
     def approved(self):
         terms = self.ready()
@@ -75,13 +70,48 @@ class ManualTests(unittest.TestCase):
         return self.repo.decide(delivered['callbacks']['approve'], sender_user_id=OWNER,
             private_chat_id=OWNER, message_id=50, bot_id=BOT, callback_query_id='offline-manual-confirm')
 
-    def test_missing_account_controls_blocks_preparation_without_model_request_or_order(self):
-        with self.assertRaisesRegex(P.TradePlanBlocked, 'LIVE_ACCOUNT_HISTORY_EVIDENCE_REQUIRED'):
-            self.coordinator.prepare_manual(self.request)
+    def test_manual_current_account_prepares_without_history_issuer_or_fabricated_metrics(self):
+        self.authority.store = LA_FIXTURE.A.LiveAdmissionEvidenceRepository(
+            self.h.connect, None, clock=lambda: self.h.now)
+        with patch.object(self.authority.store, 'load', side_effect=AssertionError('No historical import')):
+            proposal = self.coordinator.prepare_manual(self.request)
+        self.assertEqual(proposal['status'], 'PENDING_DELIVERY')
         status = self.authority.status()
-        self.assertEqual(status['evidence_request']['required_kinds'], ['ACCOUNT_CONTROLS'])
+        self.assertFalse(status['account_history_required'])
+        self.assertTrue(status['eligible'], status['blockers'])
+        self.assertNotIn('evidence_request', status)
+        self.assertEqual(status['account_risk']['history_status'], 'NOT_CHECKED_OWNER_MANUAL')
+        for metric in ('drawdown', 'daily_pnl_pct', 'weekly_pnl_pct'):
+            self.assertIsNone(status['account_risk'][metric])
         self.assertEqual(status['model_admission'], 'NOT_APPLICABLE_OWNER_DECISION')
-        self.assertEqual(self.repo.list_pending(account_id=ACCOUNT), [])
+        reads = list(self.h.broker.reads)
+        self.authority.status()
+        self.assertEqual(self.h.broker.reads, reads)
+        self.assertEqual(self.transport.calls, [])
+
+    def test_cached_manual_pass_expires_without_broker_or_history_reads(self):
+        self.coordinator.prepare_manual(self.request)
+        self.assertTrue(self.authority.status()['eligible'])
+        reads = list(self.h.broker.reads)
+        self.h.now += timedelta(seconds=16)
+        with patch.object(self.authority.store, 'load', side_effect=AssertionError('No historical import')):
+            status = self.authority.status()
+        self.assertFalse(status['eligible'])
+        self.assertEqual(status['status'], 'STALE')
+        self.assertIn('LIVE_ADMISSION_RECHECK_REQUIRED', status['blockers'])
+        self.assertEqual(self.h.broker.reads, reads)
+        self.assertEqual(self.transport.calls, [])
+
+    def test_approved_manual_entry_rechecks_changed_current_account_before_send(self):
+        proposal = self.approved()
+        reads = len(self.h.broker.reads)
+        self.h.broker.equity = D('20000')
+        self.h.broker.cash = [money('20000', 'rub')]
+        with patch.object(self.authority.store, 'load', side_effect=AssertionError('No historical import')):
+            result = self.coordinator.execute_approved(proposal['proposal_id'])
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['code'], 'SINGLE_ASSET_LIMIT')
+        self.assertGreater(len(self.h.broker.reads), reads)
         self.assertEqual(self.transport.calls, [])
 
     def test_screenshot_refusals_keep_exact_numeric_reason_through_http_and_telegram(self):
@@ -196,6 +226,7 @@ class ManualTests(unittest.TestCase):
         self.assertEqual(proposal['terms']['lots'], 1)
         self.assertNotIn('entry_context', proposal['terms'])
         self.assertIn('ручная заявка владельца', proposal_text(proposal, execution_enabled=True))
+        self.assertIn('результат всего счёта не проверяются', proposal_text(proposal, execution_enabled=True))
         self.assertEqual(self.coordinator.execute_approved(proposal['proposal_id'])['code'], 'PROPOSAL_NOT_APPROVED')
         self.assertEqual(self.transport.calls, [])
         retry = self.coordinator.prepare_manual(self.request)
@@ -219,32 +250,38 @@ class ManualTests(unittest.TestCase):
         self.assertEqual(sends[0]['body']['direction'], 'ORDER_DIRECTION_SELL')
         self.assertEqual(self.coordinator.prepare_manual(self.request)['proposal_id'], proposal['proposal_id'])
 
-    def test_account_risk_and_switches_are_not_replaced_by_owner_intent(self):
-        for change, code in (
-            (lambda d: d['payload'].update(kill_switch=True), 'KILL_SWITCH_ACTIVE'),
-            (lambda d: d['payload'].update(day_start_unit_nav='1.10', high_water_unit_nav='1.10'), 'DAILY_LOSS_STOP'),
-            (lambda d: d['payload'].update(week_start_unit_nav='1.10', high_water_unit_nav='1.10'), 'WEEKLY_LOSS_STOP')):
-            with self.subTest(code=code):
-                # Independent request/evidence scope for each synthetic case.
-                self.h.now += timedelta(seconds=1)
-                self.request['request_id'] = str(uuid.uuid4())
-                terms = self.ready(change)
-                with self.assertRaises(P.TradePlanBlocked):
-                    self.coordinator.prepare_manual(self.request, reviewed_terms=terms)
-                self.assertIn(code, self.authority.status()['blockers'])
+    def test_current_whole_account_limits_and_working_orders_still_block(self):
+        self.h.broker.equity = D('20000')
+        self.h.broker.cash = [money('20000', 'rub')]
+        with self.assertRaisesRegex(P.TradePlanBlocked, 'SINGLE_ASSET_LIMIT'):
+            self.coordinator.prepare_manual(self.request)
+        self.h.broker.equity = D('1000000')
+        self.h.broker.cash = [money('1000000', 'rub')]
+        self.h.broker.orders = [{'orderId':'existing-offline-order'}]
+        with self.assertRaisesRegex(P.TradePlanBlocked, 'LIVE_WHOLE_ACCOUNT_WORKING_ORDERS_UNRECONCILED'):
+            self.coordinator.prepare_manual(self.request)
+        self.assertEqual(self.repo.list_pending(account_id=ACCOUNT), [])
         self.assertEqual(self.transport.calls, [])
 
-    def test_disabled_execution_and_expired_account_evidence_block(self):
+    def test_disabled_execution_and_stale_current_facts_still_block(self):
         terms = self.ready()
-        with patch.dict('os.environ', VERITAS_LIVE_EXECUTION_ARMED='0'):
-            with self.assertRaisesRegex(P.TradePlanBlocked, 'LIVE_EXECUTION_NOT_ARMED'):
-                self.coordinator.prepare_manual(self.request, reviewed_terms=terms)
+        for name, code in (('VERITAS_LIVE_EXECUTION_ARMED', 'LIVE_EXECUTION_NOT_ARMED'),
+                           ('VERITAS_LIVE_EXECUTION_ENABLED', 'LIVE_EXECUTION_DISABLED')):
+            with patch.dict('os.environ', {name:'0'}):
+                with self.assertRaisesRegex(P.TradePlanBlocked, code):
+                    self.coordinator.prepare_manual(self.request, reviewed_terms=terms)
         self.h.now += timedelta(seconds=31)
-        self.h.facts = C.TradeFacts(replace(self.h.spec, observed_at=self.h.now),
-            replace(self.h.account, observed_at=self.h.now), replace(self.h.quote, observed_at=self.h.now))
         with self.assertRaises(P.TradePlanBlocked):
             self.coordinator.prepare_manual(self.request, reviewed_terms=terms)
         self.assertFalse(self.authority.status()['eligible'])
+        self.assertEqual(self.transport.calls, [])
+
+    def test_old_manual_approval_cannot_silently_switch_account_policy(self):
+        terms = self.ready()
+        terms['plan_version'] = 'currency-owner-manual-v1'
+        with self.assertRaisesRegex(P.TradePlanBlocked, 'MANUAL_PLAN_VERSION_REQUIRED'):
+            self.coordinator.prepare_manual(self.request, reviewed_terms=terms)
+        self.assertEqual(self.repo.list_pending(account_id=ACCOUNT), [])
         self.assertEqual(self.transport.calls, [])
 
     def test_margin_price_position_expiry_and_quantity_changes_never_send(self):
@@ -300,7 +337,7 @@ class ManualTests(unittest.TestCase):
                 return dict(ok=True, enabled=True, account_id=ACCOUNT, instrument_uid=UID,
                             execution_environment='production')
             if op == 'prepare-manual':
-                return {'ok':False,'code':'LIVE_ACCOUNT_HISTORY_EVIDENCE_REQUIRED'}
+                return {'ok':False,'code':'MANUAL_TRIAL_REQUIRES_FLAT_WHOLE_ACCOUNT'}
             self.fail('Manual command must not poll or execute: '+op)
         bridge = TradeTelegramBridge(service, tg, OWNER)
         message = dict(message_id=90, text='/currency_manual SELL 1 12,344 12,4 12,1 5',

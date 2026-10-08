@@ -211,6 +211,8 @@ PORTFOLIO_POLICIES = {
         # Owner instruction, 2026-10-08: exact post-cost floor for Currency
         # broker plans, both owner-directed and model-generated.
         "live_minimum_net_reward_risk":1.0015,
+        "manual_account_risk_policy":"OWNER_CURRENT_ACCOUNT_V1",
+        "manual_account_history_required":False,
         "max_single_asset_fraction":10.00,"max_gross":10.00,"leverage_limit":10.00,
         "hard_drawdown":0.35,"weekend_carry_allowed":True,"position_step":0.05,
         "paper_trading_enabled":True,"live_trading_enabled":False,
