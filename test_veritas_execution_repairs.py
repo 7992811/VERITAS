@@ -856,10 +856,11 @@ class AggressiveLegacyInitialRebaseR541Tests(unittest.TestCase):
         nav=1_000_000.0; price=100.0
         z={
             'asset':'BTC','direction':'LONG','units':1500.0,
-            'avg_entry_price':100.0,'stop_price':90.0,
+            'avg_entry_price':100.0,'stop_price':80.0,
             'active_trade_id':'t1',
-            'payload':{'opening_fraction':.15,'initial_risk_budget_rub':15000.0},
+            'payload':{'opening_fraction':.15,'initial_risk_budget_rub':30000.0},
         }
+        self.assertGreater((price-z['stop_price'])/price, VP.MAX_STOP_RISK_NAV)
         c=MagicMock()
         meta=VPR._v90r54_rebase_legacy_initial_risk(
             c,'Aggressive',z,price,nav,1.0,
@@ -867,6 +868,7 @@ class AggressiveLegacyInitialRebaseR541Tests(unittest.TestCase):
         self.assertFalse(meta['eligible'])
         self.assertEqual(meta['reason'],
                          'R54_INITIAL_COMPLETION_EXCEEDS_HARD_STOP_RISK')
+        c.execute.assert_not_called()
 
 
 

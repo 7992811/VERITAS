@@ -191,7 +191,7 @@ class CurrentStructuralBrokerTests(unittest.TestCase):
                 self.assertEqual(terms["economics_mode"], "LIVE")
                 self.assertEqual(terms["target_execution_policy"], "SINGLE_TARGET_SEPARATE_CONFIRMATION")
                 self.assertEqual(terms["source_identity"]["contract_id"], UID)
-                self.assertLessEqual(D(terms["total_stop_risk_rub"]), D("200"))
+                self.assertLessEqual(D(terms["total_stop_risk_rub"]), D("1500"))
                 self.assertEqual(terms["economics"]["economics_policy"]["execution_mode"], "LIVE")
                 self.assertGreater(D(terms["economics"]["minimum_reward_risk"]), 0)
                 self.assertEqual(terms["economics"]["target_ladder"], [])

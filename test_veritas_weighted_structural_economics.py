@@ -107,7 +107,8 @@ class WeightedStructuralEconomicsTests(unittest.TestCase):
             self.assertEqual(gate['runner_target_price'], plan['runner_target_price'])
             budget = VSR.cap_fraction_from_economics(gate, 10., CTC.runtime_portfolio_policy('Currency'))
             self.assertTrue(budget['eligible'], budget)
-            self.assertLessEqual(budget['total_stop_risk_nav_after'], .02)
+            self.assertLessEqual(budget['total_stop_risk_nav_after'], .15)
+            self.assertEqual(budget['risk_cap_nav'], .15)
             self.assertLess(budget['fraction'], 10.)
 
     def test_each_planned_exit_has_fill_fee_and_fraction_of_funding(self):
@@ -261,7 +262,7 @@ class WeightedStructuralEconomicsTests(unittest.TestCase):
         sized=VSR.cap_fraction_from_economics(gate,1.,CTC.runtime_portfolio_policy('Currency'),
                     current_fraction=current,existing_stop_risk_nav=reserve['net_stop_risk_nav'])
         self.assertTrue(sized['eligible'],sized)
-        self.assertLessEqual(sized['total_stop_risk_nav_after'],.02)
+        self.assertLessEqual(sized['total_stop_risk_nav_after'],.15)
         self.assertEqual(reserve['stop_price'],99.)
         self.assertAlmostEqual(sized['total_stop_risk_nav_after'],
                                reserve['net_stop_risk_nav']+sized['add_fraction']*gate['net_risk_pct'])

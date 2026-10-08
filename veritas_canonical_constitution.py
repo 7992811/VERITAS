@@ -211,7 +211,7 @@ PORTFOLIO_POLICIES = {
         # Owner instruction, 2026-10-08: exact post-cost floor for Currency
         # broker plans, both owner-directed and model-generated.
         "live_minimum_net_reward_risk":1.0015,
-        "manual_account_risk_policy":"OWNER_CURRENT_ACCOUNT_V1",
+        "manual_account_risk_policy":"OWNER_STOP_RISK_ONLY_V1",
         "manual_account_history_required":False,
         "max_single_asset_fraction":10.00,"max_gross":10.00,"leverage_limit":10.00,
         "hard_drawdown":0.35,"weekend_carry_allowed":True,"position_step":0.05,
@@ -263,7 +263,7 @@ def drawdown_profile(portfolio=None, mode=None):
     }
 
 PAPER_RISK_POLICY = {
-    "per_idea_structural_stop_risk_cap_nav": 0.02,
+    "per_idea_structural_stop_risk_cap_nav": 0.15,  # Owner, 2026-10-08: all orders, including automatic.
     "standard_drawdown_profile": {
         "normal_until": 0.08,
         "caution_until": 0.11,
@@ -279,9 +279,9 @@ PAPER_RISK_POLICY = {
 }
 
 LIVE_RISK_POLICY = {
-    "max_stop_risk_nav": 0.005,
-    "max_total_open_stop_risk_nav": 0.025,
-    "max_correlated_stop_risk_nav": 0.0125,
+    "max_stop_risk_nav": PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"],
+    "max_total_open_stop_risk_nav": PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"],
+    "max_correlated_stop_risk_nav": PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"],
     "max_single_asset_fraction": 0.25,
     "max_gross": 1.25,
     "daily_loss_stop": 0.02,
@@ -399,16 +399,16 @@ CANONICAL_RULES = [
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
     _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
-    _rule("CTC34","economics","Base modeled round trip is 0.16%; minimum move is max(0.19%, 1.1 x modeled round-trip cost)."),
+    _rule("CTC34","economics","Base modeled round trip is 0.16%; model minimum move is max(0.19%, 1.1 x costs). Owner manual orders retain costs without profitability filters."),
     _rule("CTC35","economics","Funding is 16% ACT/365.25 on current notional after a free first 24 hours."),
     _rule("CTC36","economics","Target, stop and adverse modeled fills are recomputed at final entry after all setup/sizing mutations."),
-    _rule("CTC37","economics","Adds must have their own remaining room and economics; the original target cannot justify a fresh add."),
+    _rule("CTC37","economics","Model adds need their own remaining room and economics; manual adds retain held levels and the whole-position stop-risk budget."),
 
     _rule("CTC38","risk","Structural invalidation is chosen first; position size is then fitted to stop-risk, never the reverse."),
-    _rule("CTC39","risk","Model paper per-idea structural stop risk is capped at 2% NAV."),
+    _rule("CTC39","risk","All manual and automatic per-idea stop risk, including costs, is capped at 15% NAV."),
     _rule("CTC40","risk","Drawdown changes size/gross limits; it does not rewrite signal quality."),
     _rule("CTC41","risk","Standard books hard-stop new risk at 15% drawdown; Aggressive at 20%; Currency owner limit is 35%."),
-    _rule("CTC42","risk","Live capital is independently fail-closed with stricter 0.5% per-idea and portfolio risk limits."),
+    _rule("CTC42","risk","Model LIVE per-idea, total and correlated stop risk are each capped at 15% NAV. Manual orders use only the 15% allocation stop-risk budget plus broker execution requirements."),
     _rule("CTC43","sizing","New allocations use 5% increments. Historical-target partial exits reduce actual units by the recorded target fractions."),
     _rule("CTC44","sizing","Aggressive starts about 50% on normal signal and 100% on SUPER, then earns leverage only through stronger structure/evidence and protected risk."),
     _rule("CTC45","sizing","Champion/Challenger have no implicit leverage: canonical single-asset fraction is capped at 100% unless separately authorized."),
@@ -475,8 +475,10 @@ def validate_constitution():
         raise ValueError("portfolio order/policy registry mismatch")
     if PORTFOLIO_POLICIES["Impulse"]["max_gross"] != 0.50:
         raise ValueError("Impulse max gross drift")
-    if PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"] != 0.02:
-        raise ValueError("paper stop-risk cap drift")
+    if any(cap != 0.15 for cap in (PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"],
+            LIVE_RISK_POLICY["max_stop_risk_nav"], LIVE_RISK_POLICY["max_total_open_stop_risk_nav"],
+            LIVE_RISK_POLICY["max_correlated_stop_risk_nav"])):
+        raise ValueError("owner stop-risk cap drift")
     return True
 
 

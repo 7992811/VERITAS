@@ -74,11 +74,20 @@ class NetBudgetSizingTests(unittest.TestCase):
     def setUp(self):
         self.policy = CTC.runtime_portfolio_policy("Aggressive")
 
+    def test_default_automatic_budget_sizes_to_fifteen_percent_with_costs(self):
+        gate = economics('LONG', stop=95, target=115)
+        result = R.cap_fraction_from_economics(gate, 5.0, self.policy)
+        self.assertTrue(result['eligible'])
+        self.assertEqual(result['risk_cap_nav'], .15)
+        self.assertGreater(result['total_stop_risk_nav_after'], .14)
+        self.assertLessEqual(result['total_stop_risk_nav_after'], .15)
+        self.assertGreater((result['fraction']+.05)*gate['net_risk_pct'], .15)
+
     def test_price_only_one_x_would_breach_budget_but_net_cap_reduces_to_point_nine(self):
         for direction, stop, target in (("LONG",98,110),("SHORT",102,90)):
             gate=economics(direction, stop=stop, target=target)
             before=copy.deepcopy(gate)
-            result=R.cap_fraction_from_economics(gate,1.0,self.policy)
+            result=R.cap_fraction_from_economics(gate,1.0,self.policy,risk_cap_nav=.02)
             self.assertTrue(result["eligible"])
             self.assertAlmostEqual(result["fraction"],.9)
             self.assertLessEqual(result["total_stop_risk_nav_after"],.02)
@@ -122,7 +131,7 @@ class NetBudgetSizingTests(unittest.TestCase):
                                               "2026-10-07T10:00:00Z",mark_price=105)
                 current=10*105/10000
                 result=R.cap_fraction_from_economics(gate,.9,self.policy,current_fraction=current,
-                                                    existing_stop_risk_nav=held["net_stop_risk_nav"])
+                                                    existing_stop_risk_nav=held["net_stop_risk_nav"],risk_cap_nav=.02)
                 self.assertTrue(result["eligible"])
                 self.assertAlmostEqual(result["add_fraction"],.40)
                 self.assertAlmostEqual(result["fraction"],.505)
@@ -139,7 +148,7 @@ class NetBudgetSizingTests(unittest.TestCase):
 
     def test_exhausted_add_budget_holds_instead_of_reducing_existing_position(self):
         result=R.cap_fraction_from_economics(economics(),.9,self.policy,
-            current_fraction=.413,existing_stop_risk_nav=.025)
+            current_fraction=.413,existing_stop_risk_nav=.15)
         self.assertFalse(result["eligible"])
         self.assertEqual(result["status"],"HOLD")
         self.assertEqual(result["action"],"HOLD")
@@ -151,7 +160,7 @@ class NetBudgetSizingTests(unittest.TestCase):
         for name in CTC.PORTFOLIO_ORDER:
             policy=CTC.runtime_portfolio_policy(name)
             result=R.cap_fraction_from_economics(gate,20,policy,risk_cap_nav=.50)
-            self.assertLessEqual(result["risk_cap_nav"],.02)
+            self.assertEqual(result["risk_cap_nav"],.15)
             self.assertLessEqual(result["fraction"],policy["max_fraction"])
             self.assertLessEqual(result["fraction"],policy["max_gross"])
         policy=CTC.runtime_portfolio_policy("Champion")

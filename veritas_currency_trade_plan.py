@@ -16,7 +16,7 @@ import veritas_timeframe_policy as TFP
 import veritas_structural_breakout as SB
 import veritas_price_source as VPS
 
-VERSION = "currency-broker-plan-v2-whole-contract"
+VERSION = "currency-broker-plan-v3-stop-risk-15pct"
 ASSET = "CNYRUBF"
 ZERO, ONE = Decimal("0"), Decimal("1")
 
@@ -382,7 +382,7 @@ def _broker_context(context, spec, quote, direction, now):
 
 
 def live_economics_plan(direction, price, stop, target, quote, horizon, *, fraction=0.1,
-                        expected_hold_seconds=None):
+                        expected_hold_seconds=None, owner_limit=False):
     """Explicit single-target LIVE economics, after separate native proof checks.
 
     A paper target ladder is not a broker execution schedule. No PAPER policy
@@ -401,10 +401,16 @@ def live_economics_plan(direction, price, stop, target, quote, horizon, *, fract
     }
     if expected_hold_seconds is not None:
         plan["expected_hold_seconds"] = float(decimal(expected_hold_seconds, positive=True))
+    if owner_limit and (price < decimal(quote.ask) if direction == 'LONG' else price > decimal(quote.bid)):
+        # A resting order has no current executable fill at its approved limit.
+        # Cost modeling uses that limit plus adverse slippage, not a fictitious
+        # trade at today's BBO outside the owner's price constraint.
+        plan.update(entry_price_basis='OWNER_LIMIT_PENDING', observed_best_bid=plan['best_bid'],
+                    observed_best_ask=plan['best_ask'], best_bid=None, best_ask=None)
     return plan
 
 
-def _base(spec, account, quote, now, action, direction, event_id, limit_price):
+def _base(spec, account, quote, now, action, direction, event_id, limit_price, *, time_in_force="TIME_IN_FORCE_FILL_AND_KILL"):
     reducing = action in ("REDUCE", "CLOSE")
     spec.validate(now)
     account.validate(now, reducing=reducing)
@@ -417,15 +423,17 @@ def _base(spec, account, quote, now, action, direction, event_id, limit_price):
     limit = round_price(limit_price, decimal(spec.tick_size), side)
     if limit <= 0:
         raise TradePlanBlocked("INVALID_LIMIT_PRICE")
-    if (side == "BUY" and decimal(quote.ask) > limit) or (side == "SELL" and decimal(quote.bid) < limit):
+    if time_in_force != "TIME_IN_FORCE_DAY" and ((side == "BUY" and decimal(quote.ask) > limit) or (side == "SELL" and decimal(quote.bid) < limit)):
         raise TradePlanBlocked("PRICE_OUTSIDE_APPROVED_LIMIT")
     return {"portfolio": "Currency", "asset": ASSET, "account_id": account.account_id,
             "instrument_uid": spec.instrument_uid, "action": action, "direction": direction,
             "side": side, "order_type": "LIMIT", "price_type": "POINT",
-            "time_in_force": "TIME_IN_FORCE_FILL_AND_KILL", "limit_price": limit,
+            "time_in_force": time_in_force, "limit_price": limit,
             "canonical_event_id": event_id, "position_before_lots": account.signed_lots,
             "managed_before_lots": account.managed_signed_lots, "ledger_revision": account.ledger_revision,
             "contract_spec": spec.identity(), "spec_hash": fingerprint(spec.identity()),
+            "stop_risk_cap_nav": decimal(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"]),
+            "stop_risk_limit_rub": decimal(account.currency_nav_rub) * decimal(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"]),
             "quote_observed_at": utc(quote.observed_at), "account_observed_at": utc(account.observed_at),
             "prepared_at": utc(now), "plan_version": VERSION, "policy_version": CTC.VERSION}
 
@@ -555,6 +563,8 @@ def prepare_exit(spec, account, quote, *, now, event_id, reason, lots=None, hori
 
 
 def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False):
+    import veritas_currency_manual as MANUAL
+    manual = MANUAL.applies(terms)
     reducing = terms.get("action") in ("CLOSE", "REDUCE")
     spec.validate(now)
     account.validate(now, reducing=reducing)
@@ -581,14 +591,14 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
             raise TradePlanBlocked("EXIT_WOULD_INCREASE_OR_REVERSE_POSITION")
     if (side == "BUY" and not spec.buy_available) or (side == "SELL" and not spec.sell_available):
         raise TradePlanBlocked("TRADE_DIRECTION_UNAVAILABLE")
-    if (side == "BUY" and decimal(quote.ask) > limit) or (side == "SELL" and decimal(quote.bid) < limit):
+    if not manual and ((side == "BUY" and decimal(quote.ask) > limit) or (side == "SELL" and decimal(quote.bid) < limit)):
         raise TradePlanBlocked("PRICE_OUTSIDE_APPROVED_LIMIT")
-    import veritas_currency_manual as MANUAL
-    manual = MANUAL.applies(terms)
     if manual:
         MANUAL.validate_intent(terms, spec, account, quote, now)
     if reducing:
         return
+    if decimal(terms.get("stop_risk_cap_nav")) != decimal(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"]):
+        raise TradePlanBlocked("PLAN_VERSION_REQUIRES_NEW_APPROVAL")
     if not manual:
         if terms.get("plan_version") != VERSION:
             raise TradePlanBlocked("PLAN_VERSION_REQUIRES_NEW_APPROVAL")
@@ -600,7 +610,7 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
         # Both actual execution and the owner's cap retain native eligibility.
         _structural(context, decimal(quote.ask if side == "BUY" else quote.bid), terms["direction"], now)
         _structural(context, limit, terms["direction"], now)
-    if account.drawdown >= currency_limits()["hard_drawdown"]:
+    if not manual and account.drawdown >= currency_limits()["hard_drawdown"]:
         raise TradePlanBlocked("CURRENCY_DRAWDOWN_STOP")
     margin = decimal(spec.margin_buy_rub if side == "BUY" else spec.margin_sell_rub, positive=True) * spec.lot_size * lots
     if margin > decimal(terms.get("required_margin_rub")):
@@ -608,13 +618,13 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
     if margin + decimal(terms.get("estimated_commission_rub")) > decimal(account.available_margin_rub):
         raise TradePlanBlocked("INSUFFICIENT_MARGIN_AFTER_APPROVAL")
     total_margin = margin / lots * (abs(account.signed_lots) + lots)
-    if total_margin + decimal(terms.get("estimated_commission_rub")) > decimal(account.currency_nav_rub):
+    if not manual and total_margin + decimal(terms.get("estimated_commission_rub")) > decimal(account.currency_nav_rub):
         raise TradePlanBlocked("CURRENCY_MARGIN_BUDGET_EXCEEDED")
     maximum = account.broker_max_buy_lots if side == "BUY" else account.broker_max_sell_lots
     if lots > maximum:
         raise TradePlanBlocked("BROKER_LOT_LIMIT_CHANGED")
     exposure = (abs(account.signed_lots)+lots) * limit * spec.rub_per_price_unit_per_lot
-    if exposure > decimal(account.currency_nav_rub) * currency_limits()["max_gross"]:
+    if not manual and exposure > decimal(account.currency_nav_rub) * currency_limits()["max_gross"]:
         raise TradePlanBlocked("ALLOCATION_EXPOSURE_LIMIT_CHANGED")
     stop, target = decimal(terms.get("stop_price"), positive=True), decimal(terms.get("target_price"), positive=True)
     sign = 1 if side == "BUY" else -1
@@ -624,11 +634,11 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
         raise TradePlanBlocked("EXPLICIT_LIVE_ECONOMICS_APPROVAL_REQUIRED")
     exact_plan = live_economics_plan(terms["direction"], limit, stop, target, quote, terms.get("horizon"),
                                     fraction=exposure / decimal(account.currency_nav_rub, positive=True),
-                                    expected_hold_seconds=terms.get("expected_hold_seconds"))
+                                    expected_hold_seconds=terms.get("expected_hold_seconds"), owner_limit=manual)
     economics = VX.economics_gate(ASSET, exact_plan, execution_mode="LIVE", now=now)
-    if not economics.get("eligible"):
+    if not manual and not economics.get("eligible"):
         raise TradePlanBlocked("ECONOMICS_CHANGED_AFTER_APPROVAL")
-    stop_risk = (abs(limit-stop)/limit + decimal(economics["modeled_round_trip_cost_pct"])) * exposure
+    stop_risk = (abs(limit-stop)/limit + decimal(economics["modeled_round_trip_cost_pct"], positive=True)) * exposure
     risk_limit = decimal(account.currency_nav_rub)*decimal(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"])
     if stop_risk > risk_limit:
         if manual:

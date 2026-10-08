@@ -136,6 +136,8 @@ class CurrencyTradingCoordinator:
         with self._lock:
             intent = M.request(request)
             existing = self.repository.get_by_event(self.account_id, M.event_id(intent), intent["action"])
+            if existing is None and intent['action'] == 'OPEN':
+                existing = self.repository.get_by_event(self.account_id, M.event_id(intent), 'ADD')
             if existing:
                 if (not self._owner_matches(existing)
                         or existing["terms"].get("manual_request_hash") != fingerprint(intent)

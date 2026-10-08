@@ -5,33 +5,72 @@ admission dependency, with no broker order, cancellation, Telegram or deployment
 operation. An audited evidence receipt is never a trade permission.
 
 The signed model and account-history requirements below apply to model-generated
-entries. Owner-directed manual one-contract entries use the separate policy
+entries. Owner-directed manual entries use the separate policy
 described next.
 
-## Owner-directed manual current-account policy
+## Owner-directed manual risk-only policy
 
-Owner instruction of 2026-10-08 removes the whole-account capital-history
-requirement for manual CNYRUBf entries of exactly one contract from a flat account.
+Owner instructions of 2026-10-08 remove internal trading filters for manual
+CNYRUBf orders while retaining the explicitly requested 15% post-cost stop-risk
+budget (1,500 RUB at 10,000 RUB current Currency capital).
 `veritas_currency_manual_admission.py` implements
-`PORTFOLIO_POLICIES["Currency"].manual_account_risk_policy = OWNER_CURRENT_ACCOUNT_V1`
+`PORTFOLIO_POLICIES["Currency"].manual_account_risk_policy = OWNER_STOP_RISK_ONLY_V1`
 and `manual_account_history_required = false`. It neither imports an
 ACCOUNT_HISTORY certificate nor requires an independent history issuer key.
 
-Preparation and execution still reread the actual broker account, equity,
-positions, working orders and exact contract; store the current observation;
-and enforce fresh quotes, available funds/margin, current exposure and stop-risk
-limits, reconciliation, net reward/risk of at least 1.0015, execution switches
-and the owner's separate approval. Existing Currency-ledger risk checks remain.
+The coordinator obtains fresh broker facts at preparation and again before
+submission. Manual admission stores that exact reconciled Currency observation;
+it no longer runs the model whole-account snapshot/risk/evidence path. Account
+access, exact contract/ticks, broker funds/margin and lot capacity, reconciliation,
+immutable terms, expiry, execution switches and separate owner approval remain.
+Internal concentration, gross leverage, allocation margin budget, drawdown,
+reward/risk, potential and cost-buffer eligibility filters do not apply. Costs
+are still calculated and included in the stop-risk budget, never treated as zero.
 No historical whole-account drawdown, daily or weekly result is inferred from
 the current balance: these metrics are null and explicitly labelled
 `NOT_CHECKED_OWNER_MANUAL`, and are not admission conditions for this mode.
 
-Manual plan version `currency-owner-manual-v2-current-account` binds the changed
+Manual plan version `currency-owner-manual-v4-limit-day-risk-only` binds the changed
 terms to a new proposal and owner approval. Previously approved manual entry
 terms cannot execute under the new policy. Existing held manual positions keep
 their attribution and reducing-only close path. Model-generated entries retain
 all signed model/account-history requirements, and cached manual status cannot
 grant execution permission or refresh an expired check.
+
+The owner supplies a positive integer contract quantity; the one-contract trial
+cap is removed. Same-direction additions to a tracked manual position retain its
+existing stop and target and check the resulting whole position against the risk
+budget. Full manual close reduces all tracked lots. Reversals require closing
+the opposite position first; pending/unreconciled instrument orders cannot be
+silently duplicated. Positions in other instruments do not impose model admission.
+
+Manual open/add/close orders use TIME_IN_FORCE_DAY at the owner's exact limit,
+allowing a non-marketable limit to wait until the end of the trading day. No
+market-price substitution is performed. A new or partially filled order retains
+its durable pending state and idempotency identity; approval expiry does not
+pretend that an already submitted DAY order was cancelled. Automatic model
+orders retain their FAK policy. Pending-entry cost modeling uses the approved
+limit, with adverse modeled costs, rather than a fictional current fill outside
+that limit. Broker reference: https://developer.tbank.ru/invest/services/orders/methods
+
+## Stop-risk policy for all orders
+
+Owner instruction of 2026-10-08 sets the post-cost stop-risk cap to 15% of
+current capital for all manual and automatic orders. The canonical paper/portfolio
+cap and LIVE per-idea cap share that value. LIVE aggregate and correlated caps
+are also 15%, so they do not silently impose the previous 2.5%/1.25% single-order
+ceiling, while automatic/model positions must still fit within one 15% account budget.
+Currency preparation and final revalidation additionally check 15% of its
+current allocated capital (1,500 RUB when that capital is 10,000 RUB).
+For automatic orders the whole-account check separately uses actual broker equity. Adding to a
+position consumes the remaining budget after existing stop risk and costs.
+
+Broker model plan version `currency-broker-plan-v3-stop-risk-15pct` and the
+manual plan version above require newly prepared terms and owner consent.
+Proposals show the portfolio budget in RUB. Automatic exposure limits, broker
+margin, quote/evidence freshness, model/history evidence for automatic entries, and separate
+owner approval remain enforced. The setting neither arms execution nor submits
+an order. A maximum risk budget does not require sizing each order to that limit.
 
 ## Runtime wiring
 

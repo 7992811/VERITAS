@@ -1,10 +1,11 @@
-"""Owner-directed one-contract trials using current whole-account broker facts.
+"""Owner-directed orders: allocation stop-risk budget and verified broker facts.
 
 Owner instruction 2026-10-08 removes historical account evidence only for this
 manual mode. Historical drawdown/day/week metrics stay unknown, never zero.
 Model-generated orders retain their independent evidence requirements.
 """
 from copy import deepcopy
+from dataclasses import asdict
 from datetime import timedelta
 
 import veritas_currency_live_admission as L
@@ -16,7 +17,7 @@ import veritas_live as LIVE
 
 def binding(terms):
     """Bind immutable manual intent to the current policy and deployment."""
-    L._require(M.applies(terms) and terms.get("action") == "OPEN"
+    L._require(M.applies(terms) and terms.get("action") in ("OPEN", "ADD")
         and terms.get("plan_version") == M.PLAN_VERSION and terms.get("model_version") == M.VERSION,
         "MANUAL_PLAN_VERSION_REQUIRED")
     L._require(terms.get("policy_version") == P.CTC.VERSION,
@@ -34,16 +35,17 @@ def binding(terms):
 
 
 class ManualAccountAdmission(L.WholeAccountLiveAdmission):
-    """One contract from a flat account, retaining all current risk caps."""
+    """Owner risk-only policy; model and whole-account limits are separate."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._last.update(decision_authority=M.VERSION,
+            scope='CURRENCY_ALLOCATION', manual_account_risk_policy='OWNER_STOP_RISK_ONLY_V1',
             account_history_required=False, historical_risk_controls="NOT_CHECKED_OWNER_MANUAL",
             evidence_loader_configured=False, blockers=["MANUAL_CURRENT_ACCOUNT_NOT_CHECKED"],
             required_checks=["OWNER_IMMUTABLE_MANUAL_INTENT", "EXACT_BROKER_CONTRACT_AND_FRESH_QUOTE",
-                "FLAT_WHOLE_ACCOUNT", "DURABLE_CURRENT_ACCOUNT_OBSERVATION",
-                "LIVE_ECONOMICS_AND_ACCOUNT_RISK", "LIVE_ENABLED_AND_ARMED"])
+                "DURABLE_CURRENT_ACCOUNT_OBSERVATION", "POST_COST_STOP_RISK_15_PERCENT",
+                "BROKER_FUNDS_AND_CAPACITY", "LIVE_ENABLED_AND_ARMED"])
 
     def status(self):
         """Cached manual status never imports history or turns a read into a check."""
@@ -66,10 +68,10 @@ class ManualAccountAdmission(L.WholeAccountLiveAdmission):
 
     def __call__(self, *, terms, facts, now):
         result = {"eligible": False, "status": "BLOCK", "blockers": [], "version": M.VERSION,
-            "decision_authority": M.VERSION, "scope": "WHOLE_BROKER_ACCOUNT",
+            "decision_authority": M.VERSION, "scope": "CURRENCY_ALLOCATION",
             "model_admission": "NOT_APPLICABLE_OWNER_DECISION", "evidence_loader_configured": False,
             "account_history_required": False, "historical_risk_controls": "NOT_CHECKED_OWNER_MANUAL",
-            "manual_account_risk_policy": "OWNER_CURRENT_ACCOUNT_V1"}
+            "manual_account_risk_policy": "OWNER_STOP_RISK_ONLY_V1"}
         try:
             started = max(L._date(now), L._date(self.clock()))
             policy = P.CTC.PORTFOLIO_POLICIES["Currency"]
@@ -80,39 +82,34 @@ class ManualAccountAdmission(L.WholeAccountLiveAdmission):
                        "LIVE_CANDIDATE_ACCOUNT_OR_INSTRUMENT_MISMATCH")
             binding(terms)
             P.revalidate(terms, facts.spec, facts.account, facts.quote, now=started)
-            snapshot, current, _, other_gross, _ = self._snapshot(terms, facts, started)
-            L._require(not current and not other_gross and not snapshot["positions"],
-                       "MANUAL_TRIAL_REQUIRES_FLAT_WHOLE_ACCOUNT")
+            # The coordinator obtains this fresh, reconciled broker cycle at
+            # preparation and again after owner approval. Do not import the
+            # model's portfolio-wide exposure/history/economics gates here.
+            L._require(getattr(self.adapter, 'environment', None) == 'production',
+                       'LIVE_PRODUCTION_BROKER_REQUIRED')
+            snapshot = {'binding': {'account_id':self.account_id, 'environment':'production'},
+                'scope':'CURRENCY_ALLOCATION', 'account':P.json_safe(asdict(facts.account)),
+                'contract':facts.spec.identity(), 'quote':P.json_safe(asdict(facts.quote))}
             completed = max(started, L._date(self.clock()))
             P.revalidate(terms, facts.spec, facts.account, facts.quote, now=completed)
             L._require(completed-started <= L.MAX_ACCOUNT_AGE, "LIVE_ACCOUNT_SNAPSHOT_STALE")
-            result.update(observed_at=started.isoformat(), account_equity_rub=snapshot["equity_rub"],
-                account_snapshot_sha256=L._hash(snapshot), broker_positions=0, broker_working_orders=0)
+            result.update(observed_at=P.utc(facts.account.observed_at).isoformat(),
+                account_snapshot_sha256=L._hash(snapshot),
+                broker_signed_lots=facts.account.signed_lots,
+                broker_working_orders=facts.account.active_order_count)
             self.store.record_snapshot(snapshot, started)
-            equity = P.decimal(snapshot["equity_rub"], positive=True)
+            capital = P.decimal(facts.account.currency_nav_rub, positive=True)
             price, stop, target = (P.decimal(terms[k], positive=True)
                                    for k in ("limit_price", "stop_price", "target_price"))
-            exposure = price * facts.spec.rub_per_price_unit_per_lot
-            fraction = exposure / equity
+            exposure = price * facts.spec.rub_per_price_unit_per_lot * (abs(facts.account.signed_lots)+terms['lots'])
+            fraction = exposure / capital
             plan = P.live_economics_plan(terms["direction"], price, stop, target, facts.quote, "MANUAL",
-                fraction=fraction, expected_hold_seconds=terms["expected_hold_seconds"])
+                fraction=fraction, expected_hold_seconds=terms["expected_hold_seconds"], owner_limit=True)
             economics = VX.economics_gate("CNYRUBF", plan, execution_mode="LIVE", now=completed)
-            if not economics.get("eligible"):
-                result["blockers"].extend(economics.get("blockers") or ["MANUAL_ECONOMICS_BLOCKED"])
-            source = VX.production_source_gate("CNYRUBF", {"source_gate_pass": True,
-                "market_open": facts.quote.limit_orders_available, "production_direct_feed": True,
-                "instrument_uid": facts.spec.instrument_uid,
-                "quote_observed_at": facts.quote.observed_at.isoformat()})
-            if not source.get("eligible"):
-                result["blockers"].append("PRODUCTION_SOURCE_GATE_FAILED")
-            stop_risk = float(fraction) * (float(abs(price-stop)/price)
-                + float(economics["modeled_round_trip_cost_pct"]))
-            result["blockers"].extend(VX.production_current_account_risk_blockers(
-                stop_risk_nav=stop_risk, single_asset_fraction=float(fraction), gross_after=float(fraction),
-                total_open_stop_risk_nav_after=stop_risk,
-                correlated_stop_risk_nav_after=stop_risk, instrument_spec_validated=True))
-            if not facts.account.reconciled or not facts.account.costs_reconciled:
-                result["blockers"].append("BROKER_RECONCILIATION_REQUIRED")
+            stop_risk = exposure * (abs(price-stop)/price
+                + P.decimal(economics["modeled_round_trip_cost_pct"], positive=True))
+            # Revalidate after durable I/O too: it cannot renew fact/intent TTL.
+            P.revalidate(terms, facts.spec, facts.account, facts.quote, now=max(completed, L._date(self.clock())))
             arm = LIVE._armed()
             if not arm["enabled"]:
                 result["blockers"].append("LIVE_EXECUTION_DISABLED")
@@ -120,7 +117,9 @@ class ManualAccountAdmission(L.WholeAccountLiveAdmission):
                 result["blockers"].append("LIVE_EXECUTION_NOT_ARMED")
             result["account_risk"] = dict(drawdown=None, daily_pnl_pct=None, weekly_pnl_pct=None,
                 history_status="NOT_CHECKED_OWNER_MANUAL", fraction_nav_after=float(fraction),
-                net_stop_risk_nav=stop_risk, net_total_open_stop_risk_nav=stop_risk)
+                currency_nav_rub=str(capital), stop_risk_rub=str(stop_risk),
+                stop_risk_limit_rub=str(capital*P.decimal(P.CTC.PAPER_RISK_POLICY['per_idea_structural_stop_risk_cap_nav'])),
+                net_stop_risk_nav=float(stop_risk/capital), economics_filters_applied=False)
             result["live_authorization"] = {"eligible": not result["blockers"],
                 "decision_authority": M.VERSION, "economics": economics, "live_switch": arm}
             result["valid_until"] = min(L._date(terms["manual_intent_expires_at"]),
