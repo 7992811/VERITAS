@@ -1,6 +1,7 @@
 """Real contract sizing and approval-to-broker coordination, entirely offline.
 
-The canonical zero-lot test uses real VCR admission. Positive sizing tests use
+Minimum-contract tests use real VCR admission and immutable synthetic OHLC.
+Other positive sizing tests use
 causal synthetic OHLC with real native structural/VCR/economics gates and an
 explicit synthetic admission fraction of 3 to isolate whole-lot arithmetic.
 They do not increase any production signal or replace economic/risk gates.
@@ -76,14 +77,84 @@ class ContractSizingTests(Fixtures, unittest.TestCase):
     def setUp(self):
         self.setup_facts()
 
-    def test_real_canonical_admission_cannot_round_ten_thousand_up_to_one_contract(self):
+    def test_minimum_contract_cannot_exceed_original_net_stop_risk_cap(self):
         native = valid_row("CNYRUBF", "5m", "LONG", price=12.345, now=self.now)
         row, admission = P.select_entry([native], self.account, self.now)
         self.assertTrue(admission["open"])
         self.assertEqual(admission["fraction"], .8)
         self.assertGreater(self.quote.ask * self.spec.rub_per_price_unit_per_lot, D("10000"))
-        with self.assertRaisesRegex(P.TradePlanBlocked, "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT"):
+        with self.assertRaisesRegex(P.TradePlanBlocked, "FINAL_CONTRACT_STOP_RISK_EXCEEDED"):
             self.entry(row=row, admission=admission)
+
+    def test_nominal_zero_diagnostic_retained_when_minimum_policy_is_off(self):
+        admission = deepcopy(self.admission)
+        admission["fraction"] = .8
+        with patch.dict(CTC.PORTFOLIO_POLICIES["Currency"], minimum_initial_contracts=0):
+            with self.assertRaises(P.ContractSizingBlocked) as blocked:
+                self.entry(admission=admission)
+        detail = blocked.exception.sizing
+        self.assertEqual(detail["reason"], "BELOW_ONE_CONTRACT")
+        self.assertEqual((detail["target_lots"], detail["held_lots"]), (0, 0))
+        self.assertEqual(D(detail["target_notional_rub"]), D("8000"))
+        self.assertEqual(D(detail["contract_notional_rub"]), D("12345"))
+        self.assertEqual(D(detail["max_gross"]), D("10"))
+
+    def test_canonical_initial_entry_sizes_one_contract_with_dynamic_side_margin(self):
+        for direction, margin in (("LONG", D("746")), ("SHORT", D("893"))):
+            with self.subTest(direction=direction):
+                quote = self.quote if direction == "LONG" else replace(self.quote, bid=D("12.345"), ask=D("12.346"))
+                row = structural_row(self.now, asset="CNYRUBF", price=12.345, width=.26, direction=direction)
+                row, admission = P.select_entry([row], self.account, self.now)
+                spec = replace(self.spec, margin_buy_rub=D("746"), margin_sell_rub=D("893"))
+                result = self.entry(row=row, admission=admission, spec=spec, quote=quote)
+                self.assertEqual(result["lots"], 1)
+                self.assertEqual(result["nominal_target_lots"], 0)
+                self.assertEqual(result["sizing_mode"], "INITIAL_MINIMUM_CONTRACT")
+                self.assertEqual(D(result["required_margin_rub"]), margin)
+                self.assertEqual(D(result["resulting_leverage"]), D("1.2345"))
+                self.assertLessEqual(D(result["total_stop_risk_rub"]), D("200"))
+                P.revalidate(result, spec, self.account, quote, now=self.now, canonical_event_valid=True)
+
+    def test_minimum_contract_requires_margin_plus_fee_and_respects_allocation(self):
+        admission = deepcopy(self.admission)
+        admission["fraction"] = .05
+        spec = replace(self.spec, margin_buy_rub=D("746"))
+        reserve = D("746") + D("12345") * D(str(P.VX.VC.COMMISSION_RATE))
+        self.assertEqual(self.entry(admission=admission, spec=spec,
+                                   account=replace(self.account, available_margin_rub=reserve))["lots"], 1)
+        with self.assertRaisesRegex(P.TradePlanBlocked, "INSUFFICIENT_MARGIN_FOR_ONE_CONTRACT"):
+            self.entry(admission=admission, spec=spec,
+                       account=replace(self.account, available_margin_rub=reserve-D(".001")))
+        with self.assertRaisesRegex(P.TradePlanBlocked, "CURRENCY_MARGIN_BUDGET_EXCEEDED"):
+            self.entry(admission=admission, spec=replace(spec, margin_buy_rub=D("10000")),
+                       account=replace(self.account, available_margin_rub=D("100000")))
+        with patch.dict(CTC.PORTFOLIO_POLICIES["Currency"], max_gross=1):
+            with self.assertRaisesRegex(P.TradePlanBlocked, "ALLOCATION_EXPOSURE_LIMIT_EXCEEDED"):
+                self.entry(admission=admission, spec=spec)
+
+    def test_minimum_contract_does_not_repeat_for_add(self):
+        admission = deepcopy(self.admission)
+        admission["fraction"] = .5
+        with self.assertRaises(P.ContractSizingBlocked) as blocked:
+            self.entry(admission=admission,
+                       account=replace(self.account, signed_lots=1, managed_signed_lots=1), held_terms=self.held)
+        self.assertEqual(blocked.exception.sizing["reason"], "TARGET_ALREADY_REACHED")
+        self.assertEqual(blocked.exception.sizing["target_lots"], 0)
+
+    def test_add_reserves_held_margin_within_independent_allocation(self):
+        account = replace(self.account, signed_lots=1, managed_signed_lots=1, available_margin_rub=D("100000"))
+        with self.assertRaisesRegex(P.TradePlanBlocked, "CURRENCY_MARGIN_BUDGET_EXCEEDED"):
+            self.entry(spec=replace(self.spec, margin_buy_rub=D("6000")), account=account, held_terms=self.held)
+
+    def test_plan_version_and_allocation_cash_are_checked_again(self):
+        result = self.entry(spec=replace(self.spec, margin_buy_rub=D("4000")))
+        with self.assertRaisesRegex(P.TradePlanBlocked, "PLAN_VERSION_REQUIRES_NEW_APPROVAL"):
+            P.revalidate({**result, "plan_version": "currency-broker-plan-v1"},
+                         self.spec, self.account, self.quote, now=self.now, canonical_event_valid=True)
+        with self.assertRaisesRegex(P.TradePlanBlocked, "CURRENCY_MARGIN_BUDGET_EXCEEDED"):
+            P.revalidate(result, replace(self.spec, margin_buy_rub=D("4000")),
+                         replace(self.account, currency_nav_rub=D("8000")), self.quote,
+                         now=self.now, canonical_event_valid=True)
 
     def test_whole_lot_notional_margin_and_cny_cost_multiplier(self):
         terms = self.entry()
@@ -107,7 +178,7 @@ class ContractSizingTests(Fixtures, unittest.TestCase):
         self.assertEqual(terms["lots"], 1)
         with self.assertRaisesRegex(P.TradePlanBlocked, "INSUFFICIENT_MARGIN_FOR_ONE_CONTRACT"):
             self.entry(account=replace(self.account, available_margin_rub=reserve-D("0.001")))
-        with self.assertRaisesRegex(P.TradePlanBlocked, "INSUFFICIENT_MARGIN_FOR_ONE_CONTRACT"):
+        with self.assertRaisesRegex(P.TradePlanBlocked, "BROKER_LOT_LIMIT_BELOW_ONE_CONTRACT"):
             self.entry(account=replace(self.account, broker_max_buy_lots=0))
 
     def test_new_risk_requires_reconciled_positions_costs_and_empty_working_orders(self):
@@ -139,8 +210,11 @@ class ContractSizingTests(Fixtures, unittest.TestCase):
                 self.entry(account=account, held_terms=held)
 
     def test_add_cannot_use_repeated_scan_to_exceed_final_target(self):
-        with self.assertRaisesRegex(P.TradePlanBlocked, "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT"):
+        with self.assertRaisesRegex(P.ContractSizingBlocked, "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT") as blocked:
             self.entry(account=replace(self.account, signed_lots=2, managed_signed_lots=2), held_terms=self.held)
+        self.assertEqual(blocked.exception.sizing["reason"], "TARGET_ALREADY_REACHED")
+        self.assertEqual(blocked.exception.sizing["target_lots"], 2)
+        self.assertEqual(blocked.exception.sizing["held_lots"], 2)
         with self.assertRaisesRegex(P.TradePlanBlocked, "CLOSE_OPPOSITE_POSITION_FIRST"):
             self.entry(account=replace(self.account, signed_lots=-1, managed_signed_lots=-1))
 
@@ -304,6 +378,44 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertEqual(proposal["terms"]["execution_environment"], "production")
         self.assertEqual(self.transport.calls, [])
         self.assertEqual(self.coordinator.execute_approved(proposal["proposal_id"])["code"], "PROPOSAL_NOT_APPROVED")
+
+    def test_native_minimum_contract_needs_model_preflight_then_exact_owner_confirmation(self):
+        from veritas_trade_telegram import proposal_text
+        self.admission = P.VCR.evaluate(self.row, CTC.runtime_portfolio_policy("Currency"), 0., self.now)
+        self.spec = replace(self.spec, margin_buy_rub=D("746"))
+        self.facts = C.TradeFacts(self.spec, self.account, self.quote)
+        blocked = self.make_coordinator(preflight_live=True,
+                    live_admission=lambda **kw: {"eligible": False, "blockers": ["LIVE_MODEL_ADMISSION_EVIDENCE_REQUIRED"]})
+        with self.assertRaisesRegex(P.TradePlanBlocked, "LIVE_ACCOUNT_ADMISSION_REQUIRED"):
+            blocked.prepare()
+        self.assertEqual(self.repo.list_pending(account_id=ACCOUNT, owner_user_id=OWNER), [])
+        self.assertEqual(self.transport.calls, [])
+
+        # An explicitly simulated authority isolates the lifecycle. This is
+        # neither real model evidence nor an external broker/Telegram request.
+        coordinator = self.make_coordinator(preflight_live=True)
+        proposal = coordinator.prepare()
+        self.assertEqual(proposal["terms"]["lots"], 1)
+        text = proposal_text(proposal, execution_enabled=True)
+        self.assertIn("Начальный объём: 1 целый контракт", text)
+        self.assertIn("Требуемое ГО: 746 ₽", text)
+        self.assertIn("Плечо всей позиции после заявки: 1.2345×", text)
+        self.assertEqual(coordinator.execute_approved(proposal["proposal_id"])["code"], "PROPOSAL_NOT_APPROVED")
+        approved = self.approve(proposal)
+        self.assertEqual(self.transport.calls, [])
+        self.transport.handlers["PostOrder"] = lambda body: Response(order(client=body["orderId"], lots=1))
+        self.assertTrue(coordinator.execute_approved(approved["proposal_id"])["ok"])
+        coordinator.execute_approved(approved["proposal_id"])
+        sent = [c for c in self.transport.calls if c["name"] == "PostOrder"]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["body"]["quantity"], "1")
+
+    def test_old_plan_approval_needs_new_proposal_after_sizing_upgrade(self):
+        with patch.object(P, "VERSION", "currency-broker-plan-v1"):
+            approved = self.approve()
+        result = self.coordinator.execute_approved(approved["proposal_id"])
+        self.assertEqual(result["code"], "PLAN_VERSION_REQUIRES_NEW_APPROVAL")
+        self.assertEqual(self.transport.calls, [])
 
     def test_owner_chat_bot_and_exact_message_callback_binding_prevents_submission(self):
         proposal = self.coordinator.prepare()

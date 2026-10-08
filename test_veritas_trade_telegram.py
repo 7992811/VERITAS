@@ -450,6 +450,43 @@ class OperatorCommandTests(unittest.TestCase):
         self.assertIn("риск-допуск", text)
         self.assertIn("отключена", text)
 
+    def test_size_status_explains_zero_lots_and_never_polls_or_executes(self):
+        details = {'reason': 'BELOW_ONE_CONTRACT', 'currency_nav_rub': '10000',
+                   'target_fraction': '0.5', 'target_notional_rub': '5000',
+                   'contract_notional_rub': '12769', 'target_lots': 0,
+                   'held_lots': 0, 'max_gross': '10'}
+        self.status.update(last_poll_at=NOW.isoformat(), last_poll_sizing=details,
+            new_risk_block_reason='LIVE_MODEL_EVIDENCE_NOT_CHECKED',
+            last_poll_block_reason='TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT')
+        self.bridge.handle_message(self.message('/currency_status'))
+        text = self.telegram.sent()[-1]['text']
+        self.assertEqual([op for op, _ in self.calls], ['status'])
+        for expected in ('меньше одного', '5 000,00 ₽', '12 769,00 ₽',
+                         'не гарантийное обеспечение', 'не умножает', 'ещё не проверен'):
+            self.assertIn(expected, text)
+        self.assertNotIn('LIVE_MODEL_EVIDENCE_NOT_CHECKED', text)
+        self.assertNotIn('уже набрано', text)
+        details.update(reason='TARGET_ALREADY_REACHED', target_fraction='3',
+                       target_notional_rub='30000', target_lots=2, held_lots=2)
+        self.assertIn('уже набрано', readiness_text(self.status))
+
+    def test_malformed_or_unrelated_size_details_are_not_shown(self):
+        details = {'reason': 'BELOW_ONE_CONTRACT', 'currency_nav_rub': '10000',
+                   'target_fraction': '0.5', 'target_notional_rub': '5000',
+                   'contract_notional_rub': '12769', 'target_lots': 0,
+                   'held_lots': 0, 'max_gross': '10'}
+        self.status.update(last_poll_at=NOW.isoformat(), last_poll_sizing=details,
+            last_poll_block_reason='TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT')
+        for mutation in ({'contract_notional_rub':'secret-raw-error'}, {'held_lots':True},
+                         {'target_notional_rub':'30000'}, {'target_fraction':'NaN'},
+                         {'target_lots':2}, {'reason':'SECRET_RAW_ERROR'}):
+            with self.subTest(mutation=mutation):
+                text = readiness_text({**self.status, 'last_poll_sizing':{**details, **mutation}})
+                self.assertNotIn('Расчёт последней проверки', text)
+                self.assertNotIn('secret', text.lower())
+        self.status['last_poll_block_reason']='NO_CANONICAL_EVENT'
+        self.assertNotIn('Расчёт последней проверки', readiness_text(self.status))
+
     def test_wrong_owner_chat_or_bot_never_reaches_service_or_sends_reply(self):
         for mutation in (
             lambda m: m["from"].update(id=OWNER + 1),

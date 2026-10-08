@@ -244,7 +244,7 @@ class CurrencyTradingCoordinator:
             current = canonical_terms(prepare_entry(row, admission, facts.spec, facts.account,
                                     facts.quote, now=now, held_terms=facts.held_terms))
             fixed = ("canonical_event_id", "direction", "horizon", "source_identity",
-                     "stop_price", "target_price", "action")
+                     "stop_price", "target_price", "action", "plan_version")
             if any(current.get(k) != terms.get(k) for k in fixed):
                 return False
             old_event = (terms.get("entry_context") or {}).get("event")
