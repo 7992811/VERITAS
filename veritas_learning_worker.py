@@ -13,6 +13,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 import veritas_learning_v2 as L
+import veritas_learning_v2_registry as REGISTRY
 
 INTERVAL=max(60,int(os.getenv("VERITAS_LEARNING_V2_INTERVAL_SECONDS","120")))
 LIMIT=max(100,min(5000,int(os.getenv("VERITAS_LEARNING_V2_LIMIT","2000"))))
@@ -39,24 +40,58 @@ def _flatten(row):
 
 
 def load_inputs(conn,limit=LIMIT):
-    """Bounded reads. Missing views are reported rather than synthesized."""
+    """Read the same bounded evidence contract as the in-process shadow job."""
     decisions=[]; trades=[]; errors=[]
-    with conn.cursor(row_factory=dict_row) as c:
-        try:
-            decisions=[_flatten(dict(x)) for x in c.execute(
-                "SELECT to_jsonb(d) AS payload FROM v90_decision_episodes d "
-                "ORDER BY decision_ts DESC LIMIT %s",(limit,)).fetchall()]
-        except Exception as exc:
-            conn.rollback(); errors.append("DECISIONS:"+type(exc).__name__)
-        try:
-            trades=[_flatten(dict(x)) for x in c.execute(
-                "SELECT to_jsonb(e) AS payload FROM v90_learning_episodes e "
-                "WHERE learning_eligible=TRUE ORDER BY closed_at DESC NULLS LAST LIMIT %s",
-                (limit,)).fetchall()]
-        except Exception as exc:
-            conn.rollback(); errors.append("TRADES:"+type(exc).__name__)
+    try:
+        decisions=[dict(x) for x in conn.execute("""
+          WITH recent AS MATERIALIZED (
+            SELECT id,entity_key,event_ts,asset,horizon,payload
+            FROM ledger_events
+            WHERE event_type='decision'
+            ORDER BY id DESC LIMIT %s
+          )
+          SELECT d.id AS decision_id,d.entity_key,d.event_ts,d.asset,d.horizon,
+                 COALESCE(d.payload->>'regime','UNKNOWN') AS regime,
+                 COALESCE(d.payload->>'research_decision',d.payload->>'decision','') AS decision,
+                 COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
+                          d.payload#>>'{trade_plan,setup_family}','') AS setup_family,
+                 COALESCE(d.payload#>>'{learning_provenance,policy_hash}',
+                          d.payload->>'strategy_policy_hash','') AS policy_hash,
+                 COALESCE(d.payload#>>'{learning_provenance,source_identity,key}',
+                          d.payload#>>'{timeframe_entry_context,source_identity,key}',
+                          d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,key}','') AS source_key,
+                 COALESCE(d.payload->>'horizon_structure_direction',
+                          d.payload#>>'{timeframe_entry_context,event,direction}',
+                          d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}','') AS candidate_direction,
+                 COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers,
+                 (o.payload->>'forward_return')::double precision AS forward_return
+          FROM recent d
+          CROSS JOIN LATERAL (
+            SELECT payload FROM ledger_events o
+            WHERE o.entity_key=d.entity_key AND o.event_type='outcome'
+              AND jsonb_typeof(o.payload->'forward_return')='number'
+            ORDER BY o.id DESC LIMIT 1
+          ) o
+          ORDER BY d.id DESC
+        """,(limit,)).fetchall()]
+    except Exception as exc:
+        conn.rollback(); errors.append("DECISIONS:"+type(exc).__name__)
+    try:
+        trades=[dict(x) for x in conn.execute("""
+          SELECT closed_at,asset,horizon,regime,setup_family,
+                 COALESCE(payload->>'strategy_policy_hash','') AS policy_hash,
+                 COALESCE(payload#>>'{price_source_lock,key}',
+                          payload#>>'{entry_execution_source_identity,key}','') AS source_key,
+                 mae_pct AS mae,mfe_pct AS mfe,capture_ratio,
+                 net_pnl_rub,primary_attribution
+          FROM v90_learning_episodes
+          WHERE learning_eligible=TRUE
+            AND primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
+          ORDER BY closed_at DESC NULLS LAST LIMIT %s
+        """,(limit,)).fetchall()]
+    except Exception as exc:
+        conn.rollback(); errors.append("TRADES:"+type(exc).__name__)
     return decisions,trades,errors
-
 
 def ensure_schema(conn):
     with conn.cursor() as c:
@@ -66,6 +101,7 @@ def ensure_schema(conn):
             generated_at timestamptz NOT NULL,
             payload jsonb NOT NULL
         )""")
+        REGISTRY.ensure_schema(c)
     conn.commit()
 
 
@@ -94,6 +130,9 @@ def run_once(dsn):
         snapshot["input_counts"]={"decisions":len(decisions),"trades":len(trades)}
         snapshot["source_errors"]=errors
         snapshot["status"]="DEGRADED" if errors else snapshot["status"]
+        snapshot["registry"]=REGISTRY.sync(conn,snapshot,decisions,trades,
+                                            now=datetime.now(timezone.utc))
+        conn.commit()
         return publish(conn,snapshot)
 
 
