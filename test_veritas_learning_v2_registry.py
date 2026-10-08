@@ -29,6 +29,22 @@ class LearningV2RegistryTests(unittest.TestCase):
         self.assertEqual(result["status"],"SHADOW_ELIGIBLE")
         self.assertFalse(result["prospective"]["execution_pnl_proven"])
 
+    def test_incremental_checkpoint_does_not_double_count_same_decisions(self):
+        first=[]
+        second=[]
+        for i in range(64):
+            row=self.decision(T0+timedelta(days=1+(i%16),minutes=i),.01)
+            row["decision_id"]=101+i
+            (first if i<32 else second).append(row)
+        r1=R.evaluate_candidate(self.entry_candidate(),first,[],T0+timedelta(days=20),cutoff_id=100)
+        self.assertEqual(r1["prospective"]["n"],32)
+        r2=R.evaluate_candidate(self.entry_candidate(),first+second,[],T0+timedelta(days=20),
+                                prior=r1["prospective"],cutoff_id=100)
+        self.assertEqual(r2["prospective"]["n"],64)
+        self.assertEqual(r2["prospective"]["new_observations"],32)
+        self.assertEqual(r2["prospective"]["last_decision_id"],164)
+        self.assertEqual(r2["status"],"SHADOW_ELIGIBLE")
+
     def test_no_direction_or_move_against_candidate_cannot_validate_entry(self):
         rows=[]
         for i in range(80):
