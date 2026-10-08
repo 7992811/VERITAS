@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.22-structural-breakout-autonomous-learning"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.22-structural-breakout-autonomous-learning"
-UI_VERSION="veritas-ui-v9.1.8.22-structural-breakout-autonomous-learning"
+PRODUCT_VERSION="veritas-max-product-v91.8.23-structural-breakout-autonomous-learning"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.23-structural-breakout-autonomous-learning"
+UI_VERSION="veritas-ui-v9.1.8.23-structural-breakout-autonomous-learning"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -65,6 +65,11 @@ def snapshot():
             "archival_drift_statistics_stream_all_rows":True,"archival_performance_uses_packed_float_buffers":True,"loss_audit_streams_full_evidence_before_compaction":True,"independent_portfolio_commits":True,"waiting_protection_has_next_turn":True,"aged_ordinary_book_precedes_entry_reservations":True,"protection_precedes_aged_ordinary_book":True,"quality_history_selected_before_projection":True,"quality_review_uses_shared_history_permit":True,
         },
         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
+        "currency_live_economics_policy":{
+            "portfolio":"Currency", "asset":"CNYRUBF", "execution_mode":"LIVE",
+            "minimum_net_reward_risk":CTC.PORTFOLIO_POLICIES["Currency"]["live_minimum_net_reward_risk"],
+            "basis":"AFTER_MODELED_EXECUTION_COMMISSION_AND_FUNDING",
+        },
         "breakout_lifecycle_policy":dict(CTC.BREAKOUT_LIFECYCLE_POLICY),
         "daily_ma_rebound_policy":dict(CTC.MA_REBOUND_POLICY),
         "active_user_teaching_id":CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"],

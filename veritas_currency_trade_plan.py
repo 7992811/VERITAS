@@ -391,6 +391,7 @@ def live_economics_plan(direction, price, stop, target, quote, horizon, *, fract
     """
     spread_bps = (decimal(quote.ask) - decimal(quote.bid)) / price * Decimal("10000")
     plan = {
+        "portfolio": "Currency",
         "direction": direction, "entry_price": float(price), "stop_price": float(stop),
         "target_price": float(target), "horizon": horizon,
         "expected_move_pct": float(abs(target - price) / price),

@@ -120,7 +120,7 @@ class ManualTests(unittest.TestCase):
                 metrics = refusal['manual_check']
                 if index == 0:
                     self.assertLess(D(metrics['net_reward_risk']), D(metrics['minimum_reward_risk']))
-                    self.assertIn('минимум: 1,15', text)
+                    self.assertIn('минимум: 1,0015', text)
                     self.assertIn('Доход / риск', text)
                 else:
                     self.assertEqual(D(metrics['stop_risk_limit_rub']), D('200'))
@@ -141,6 +141,39 @@ class ManualTests(unittest.TestCase):
                 self.assertNotIn('token', result['manual_check'])
                 self.assertNotIn('secret', manual_refusal_text(result))
         self.assertNotIn('manual_check', _error(P.TradePlanBlocked('SECRET_ERROR'))[0])
+
+    def test_currency_rr_floor_is_exact_and_shared_by_prepare_and_revalidation(self):
+        h = self.h
+        facts = replace(h.facts,
+            quote=replace(h.quote, bid=D('12.770'), ask=D('12.771')),
+            account=replace(h.account, currency_nav_rub=D('10000'), high_water_rub=D('10000')))
+        # Adjacent valid price ticks straddle 1.0015 after costs. This checks
+        # exact admission rather than a displayed/rounded 1.00 or gross RR.
+        request = {**self.request, 'limit_price':'12.77', 'stop_price':'12.90',
+                   'target_price':'12.598', 'hold_minutes':60}
+        with patch.object(P.VX, 'MIN_REWARD_RISK', 9.0):
+            terms = M.prepare(request, facts, h.now)
+            P.revalidate(terms, facts.spec, facts.account, facts.quote, now=h.now)
+            for horizon in ('MANUAL', '5m', '1h', '1d'):
+                plan = P.live_economics_plan('SHORT', D('12.77'), D('12.90'), D('12.598'),
+                    facts.quote, horizon, fraction=D('1.277'), expected_hold_seconds=3600)
+                gate = P.VX.economics_gate('CNYRUBF', plan, execution_mode='LIVE', now=h.now)
+                self.assertEqual(gate['minimum_reward_risk'], 1.0015)
+                self.assertTrue(gate['eligible'], gate['blockers'])
+                self.assertLess(gate['net_reward_risk'], 1.15)
+                self.assertGreater(gate['net_reward_risk'], 1.0015)
+                for asset, mode, candidate in (
+                        ('GOLD', 'LIVE', plan), ('CNYRUBF', 'PAPER', plan),
+                        ('CNYRUBF', 'LIVE', {**plan, 'portfolio':'Champion'})):
+                    other = P.VX.economics_gate(asset, candidate, execution_mode=mode, now=h.now)
+                    self.assertEqual(other['minimum_reward_risk'], 9.0)
+            with self.assertRaises(P.ManualCheckBlocked) as error:
+                M.prepare({**request, 'target_price':'12.599'}, facts, h.now)
+            metrics = error.exception.manual_check
+            self.assertGreater(D(metrics['net_reward_risk']), D('1.001'))
+            self.assertLess(D(metrics['net_reward_risk']), D('1.0015'))
+            self.assertEqual(metrics['minimum_reward_risk'], '1.0015')
+        self.assertEqual(self.transport.calls, [])
 
     def test_buy_geometry_works_and_manual_label_cannot_convert_model_terms(self):
         h = self.h

@@ -145,12 +145,12 @@ def manual_refusal_text(result):
     code = result.get("code") or result.get("error")
     lines = [_reason(code)]
     metrics = {k: Decimal(v) for k, v in _manual_check(code, result.get("manual_check")).items()}
-    def shown(value):
-        return f"{value:.2f}".replace(".", ",")
+    def shown(value, places=2):
+        return f"{value:.{places}f}".replace(".", ",")
     if code == "MANUAL_ECONOMICS_BLOCKED":
         if all(k in metrics for k in ("net_reward_risk", "minimum_reward_risk")):
-            lines.append("Доход / риск после расчётных издержек: " + shown(metrics["net_reward_risk"])
-                         + "; минимум: " + shown(metrics["minimum_reward_risk"]) + ".")
+            lines.append("Доход / риск после расчётных издержек: " + shown(metrics["net_reward_risk"], 4)
+                         + "; минимум: " + shown(metrics["minimum_reward_risk"], 4) + ".")
         if all(k in metrics for k in ("expected_move_pct", "minimum_expected_move_pct")):
             lines.append("Потенциал до цели: " + shown(100 * metrics["expected_move_pct"])
                          + "%; минимум по издержкам: " + shown(100 * metrics["minimum_expected_move_pct"]) + "%.")
