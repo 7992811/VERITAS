@@ -122,13 +122,13 @@ def false_block_summary(rows):
 
 
 def _hypothesis(kind,scope,proposal,evidence):
+    identity={"version":VERSION,"kind":kind,"scope":scope,"proposal":proposal}
     contract={
-        "version":VERSION,"kind":kind,"scope":scope,"proposal":proposal,
-        "evidence":evidence,
+        **identity,"evidence":evidence,
         "mode":"SHADOW_ONLY","production_mutation":False,
         "requires_existing_promotion_gate":True,
     }
-    return {**contract,"hypothesis_id":_digest(contract)}
+    return {**contract,"hypothesis_id":_digest(identity),"identity_hash":_digest(identity)}
 
 
 def generate_hypotheses(decision_rows, trade_rows):
