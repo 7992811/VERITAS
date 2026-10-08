@@ -154,7 +154,7 @@ def _lease_valid(c, lease):
 
 
 def publish_snapshot_in_transaction(c, name, version, payload, *, watermark=None, observed_at=None, lease=None,
-                                    locked_snapshot=None, before_write=None):
+                                    locked_snapshot=None, before_write=None, max_payload_bytes=MAX_SNAPSHOT_BYTES):
     """Publish without committing or changing the caller's timeout settings.
 
     Internal callers may pass the row returned by load_snapshot_in_transaction
@@ -162,10 +162,13 @@ def publish_snapshot_in_transaction(c, name, version, payload, *, watermark=None
     Its global and row locks must remain held. That existing slot can be updated
     without repeating the lock/capacity reads; this path never inserts a slot.
     before_write runs after preparation, immediately before the write statement.
+    max_payload_bytes may only tighten the existing serialized UTF-8 byte limit.
     """
     name, version = _name(name), _name(version)
+    if type(max_payload_bytes) is not int or not 1 <= max_payload_bytes <= MAX_SNAPSHOT_BYTES:
+        raise ValueError("invalid learning snapshot byte limit")
     _good(payload)
-    encoded = _json(payload, MAX_SNAPSHOT_BYTES)
+    encoded = _json(payload, max_payload_bytes)
     stamp = _time(observed_at)
     if watermark is not None and (not isinstance(watermark, str) or len(watermark.encode("utf-8"))>512):
         raise ValueError("invalid learning snapshot watermark")

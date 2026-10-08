@@ -5,6 +5,7 @@ selection remain in veritas_asset_management_intelligence.
 """
 from datetime import datetime, timezone
 import json
+import math
 import time
 from veritas_maintenance import MaintenanceDeferred
 
@@ -90,6 +91,7 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
     started = time.monotonic()
     active_stage = "restore"
     last_sql = {"timeout_ms": None, "budget_seconds": None}
+    checkpoint_prepare_seconds = None
     def check():
         if context is not None:
             context.check()
@@ -259,9 +261,20 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                 raise RuntimeError("UNKNOWN_SCORECARD_WORK_STAGE")
             active_stage = "checkpoint"
             check()
-            store._json(work, WORK_BYTES)
-            if not deferred:
+            if deferred:
+                store._json(work, WORK_BYTES)
+            else:
+                checkpoint_prepare_started = None
                 def before_checkpoint_write():
+                    nonlocal checkpoint_prepare_seconds
+                    # Preparation ends before timeout restoration or the write.
+                    # A missing slot also includes the generic guard reads.
+                    try:
+                        elapsed = time.monotonic()-checkpoint_prepare_started
+                        if math.isfinite(elapsed) and elapsed >= 0:
+                            checkpoint_prepare_seconds = round(float(elapsed), 4)
+                    except Exception:
+                        pass
                     # A short decision slice must not permanently shrink this
                     # transaction's checkpoint cap. Re-arm only after payload
                     # serialization, with room for the original cap and tail.
@@ -273,9 +286,13 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                         if remaining() < headroom:
                             raise MaintenanceDeferred("DEFERRED_SCORECARD_BUDGET",
                                                       reason="CHECKPOINT_SQL_HEADROOM")
+                try:
+                    checkpoint_prepare_started = time.monotonic()
+                except Exception:
+                    pass
                 if not store.publish_snapshot_in_transaction(c, WORK_SLOT, WORK_VERSION, work,
                         observed_at=datetime.now(timezone.utc), locked_snapshot=saved,
-                        before_write=before_checkpoint_write):
+                        before_write=before_checkpoint_write, max_payload_bytes=WORK_BYTES):
                     raise RuntimeError("SCORECARD_WORK_PUBLICATION_REJECTED")
             active_stage = "commit"
         check()
@@ -283,7 +300,8 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
             publish_cache(ns, value, production_epoch, observed.timestamp())
         ns["_REFRESH_STATE"] = {"status": "DEFERRED" if deferred else "OK" if value is not None else "COLLECTING", "last_error": None,
                                 "stage": work["stage"], "processed": work["offset"],
-                                "sample_n": work.get("sample_n", len(work.get("pairs", [])))}
+                                "sample_n": work.get("sample_n", len(work.get("pairs", []))),
+                                "checkpoint_prepare_seconds": checkpoint_prepare_seconds}
         return {"status": "DEFERRED_SCORECARD_BUDGET" if deferred else "OK" if value is not None else "PROGRESS", "stage": work["stage"],
                 "reason": "CHECKPOINT_TIME_RESERVED" if deferred else None,
                 "processed": work["offset"], "sample_n": ns["_REFRESH_STATE"]["sample_n"],
@@ -295,14 +313,16 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
         ns["_REFRESH_STATE"] = {"status": status, "last_error": error_type,
                                 "stage": active_stage,
                                 "last_sql_timeout_ms": last_sql["timeout_ms"],
-                                "last_sql_budget_seconds": last_sql["budget_seconds"]}
+                                "last_sql_budget_seconds": last_sql["budget_seconds"],
+                                "checkpoint_prepare_seconds": checkpoint_prepare_seconds}
         try:
             emit = getattr(getattr(context, "lane", None), "emit", None)
             if callable(emit):
                 emit("ami_refresh_deferred" if cooperative else "ami_refresh_error",
                      status=status, error_type=error_type,
                      stage=active_stage, last_sql_timeout_ms=last_sql["timeout_ms"],
-                     last_sql_budget_seconds=last_sql["budget_seconds"])
+                     last_sql_budget_seconds=last_sql["budget_seconds"],
+                     checkpoint_prepare_seconds=checkpoint_prepare_seconds)
         except Exception:
             # Diagnostic delivery cannot replace the original error or deferral.
             pass

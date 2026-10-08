@@ -4,6 +4,7 @@ from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import os
 from pathlib import Path
 import threading
@@ -30,6 +31,13 @@ class FakeConnection:
 
 
 NO_CHANGE = dict(staged=0, processed=0, pending=0, revoked=0)
+
+
+def _utf8_snapshot_payload(byte_count):
+    # Eight ASCII JSON syntax bytes plus a mixture of 2-byte and 1-byte text.
+    # The boundary must be measured in UTF-8 bytes, not Python characters.
+    pairs, odd = divmod(byte_count-8, 2)
+    return {"x": "я"*pairs + "a"*odd}
 
 
 class CacheCommitTests(unittest.TestCase):
@@ -168,6 +176,52 @@ class StateBoundsTests(unittest.TestCase):
                 self.assertIs(caught.exception, deferred)
                 self.assertEqual(calls, [True])
                 self.assertEqual(len(reads), 0 if locked is not None else 2)
+
+    def test_snapshot_byte_limit_validation_precedes_sql_and_write_hook(self):
+        def forbidden(*args, **kwargs):
+            raise AssertionError("SQL or hook reached before byte-limit validation")
+        c = SimpleNamespace(execute=forbidden)
+        for maximum in (None, False, True, 0, -1, 1.0, "196608", S.MAX_SNAPSHOT_BYTES+1):
+            with self.subTest(maximum=maximum), self.assertRaisesRegex(ValueError, "invalid learning snapshot byte limit"):
+                S.publish_snapshot_in_transaction(c, "model", "V1", {},
+                    max_payload_bytes=maximum, before_write=forbidden)
+        # One is a valid configured limit, but even {} occupies two bytes.
+        with self.assertRaisesRegex(ValueError, "payload exceeds byte limit"):
+            S.publish_snapshot_in_transaction(c, "model", "V1", {}, max_payload_bytes=1, before_write=forbidden)
+        for value in ({"status": "ERROR"}, {"status": "DEFERRED_TIME_BUDGET"}, {"x": float("nan")}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                S.publish_snapshot_in_transaction(c, "model", "V1", value,
+                    max_payload_bytes=196608, before_write=forbidden)
+
+    def test_snapshot_byte_limits_encode_once_at_exact_utf8_boundaries(self):
+        at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for maximum in (196608, S.MAX_SNAPSHOT_BYTES):
+            kwargs = {} if maximum == S.MAX_SNAPSHOT_BYTES else {"max_payload_bytes": maximum}
+            for locked in (None, {"name": "model", "version": "V1"}):
+                with self.subTest(maximum=maximum, locked=locked is not None):
+                    value = _utf8_snapshot_payload(maximum)
+                    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                    self.assertEqual(len(encoded.encode("utf-8")), maximum)
+                    self.assertLess(len(encoded), maximum)
+                    writes, hooks = [], []
+                    def execute(sql, args=None):
+                        if sql.lstrip().startswith(("INSERT", "UPDATE")):
+                            writes.append(args)
+                        return SimpleNamespace(fetchone=lambda: {"name": "model"})
+                    with patch.object(S, "_json", wraps=S._json) as encode:
+                        self.assertTrue(S.publish_snapshot_in_transaction(SimpleNamespace(execute=execute),
+                            "model", "V1", value, observed_at=at, locked_snapshot=locked,
+                            before_write=lambda: hooks.append(True), **kwargs))
+                    encode.assert_called_once_with(value, maximum)
+                    self.assertEqual(hooks, [True])
+                    self.assertEqual(writes, [("model", "V1", encoded,
+                        hashlib.sha256(encoded.encode("utf-8")).hexdigest(), None, at)])
+                    def forbidden(*args, **kwargs):
+                        raise AssertionError("oversized UTF-8 payload reached SQL or hook")
+                    with self.assertRaisesRegex(ValueError, "payload exceeds byte limit"):
+                        S.publish_snapshot_in_transaction(SimpleNamespace(execute=forbidden),
+                            "model", "V1", _utf8_snapshot_payload(maximum+1), locked_snapshot=locked,
+                            before_write=forbidden, **kwargs)
 
 
 def _load_raw_connect(driver, *, dsn="synthetic-dsn", row_factory=None, schema=None):
@@ -445,6 +499,62 @@ class DurableStateSQLTests(unittest.TestCase):
         self.assertEqual(S.load_snapshot(self.connect,"progress","V1"),first)
         self.assertIsNone(S.load_snapshot(self.connect,"progress","V2"))
         self.assertIsNone(S.load_snapshot(self.connect,"progress","V1",max_age_seconds=0))
+
+    def test_snapshot_byte_limits_preserve_native_utf8_payload_hash_and_rollback(self):
+        from psycopg.pq import TransactionStatus
+        at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        strict = 196608
+        with self.connect() as raw:
+            raw.execute("CREATE TABLE byte_limit_seen (id integer PRIMARY KEY)")
+            with S._transaction(lambda: nullcontext(raw)) as c:
+                self.assertTrue(S.publish_snapshot_in_transaction(c, "strict", "V1", {}, observed_at=at))
+                for name, size, kwargs in (("default", strict, {}),
+                        ("strict", strict, {"max_payload_bytes": strict}),
+                        ("default-max", S.MAX_SNAPSHOT_BYTES, {})):
+                    with self.subTest(name=name):
+                        saved = S.load_snapshot_in_transaction(c, name, "V1", for_update=True) if name == "strict" else None
+                        value = _utf8_snapshot_payload(size)
+                        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+                        self.assertEqual(len(encoded.encode("utf-8")), size)
+                        writes, hooks = [], []
+                        def execute(sql, args=None):
+                            if sql.lstrip().startswith(("INSERT", "UPDATE")):
+                                writes.append(args)
+                            return c.execute(sql, args) if args is not None else c.execute(sql)
+                        with patch.object(S, "_json", wraps=S._json) as encode:
+                            self.assertTrue(S.publish_snapshot_in_transaction(SimpleNamespace(execute=execute),
+                                name, "V1", value, observed_at=at, locked_snapshot=saved,
+                                before_write=lambda: hooks.append(True), **kwargs))
+                        encode.assert_called_once_with(value, kwargs.get("max_payload_bytes", S.MAX_SNAPSHOT_BYTES))
+                        self.assertEqual(hooks, [True])
+                        self.assertEqual(writes, [(name, "V1", encoded, digest, None, at)])
+                        stored = c.execute("SELECT * FROM veritas_learning_snapshots WHERE name=%s", (name,)).fetchone()
+                        self.assertEqual(stored["payload"], value)
+                        self.assertEqual(stored["payload_hash"], digest)
+                values = c.execute("SELECT payload,payload_hash FROM veritas_learning_snapshots WHERE name IN ('default','strict') ORDER BY name").fetchall()
+                self.assertEqual(values[0], values[1])
+            self.assertEqual(raw.info.transaction_status, TransactionStatus.IDLE)
+            original = raw.execute("SELECT * FROM veritas_learning_snapshots ORDER BY name").fetchall()
+            for name, maximum, kwargs in (("strict", strict, {"max_payload_bytes": strict}),
+                                         ("default-max", S.MAX_SNAPSHOT_BYTES, {})):
+                with self.subTest(rejected=name):
+                    statements, hooks = [], []
+                    def execute(sql, args=None):
+                        statements.append(sql)
+                        return raw.execute(sql, args) if args is not None else raw.execute(sql)
+                    with self.assertRaisesRegex(ValueError, "payload exceeds byte limit"):
+                        with S._transaction(lambda: nullcontext(raw)) as c:
+                            saved = S.load_snapshot_in_transaction(c, name, "V1", for_update=True)
+                            c.execute("INSERT INTO byte_limit_seen VALUES (1)")
+                            S.publish_snapshot_in_transaction(SimpleNamespace(execute=execute), name, "V1",
+                                _utf8_snapshot_payload(maximum+1), locked_snapshot=saved,
+                                before_write=lambda: hooks.append(True), **kwargs)
+                    self.assertEqual(statements, [])
+                    self.assertEqual(hooks, [])
+                    self.assertEqual(raw.info.transaction_status, TransactionStatus.IDLE)
+                    self.assertEqual(raw.execute("SELECT count(*) AS n FROM byte_limit_seen").fetchone()["n"], 0)
+                    self.assertEqual(raw.execute("SELECT * FROM veritas_learning_snapshots ORDER BY name").fetchall(), original)
 
     def test_lease_fences_old_worker_and_preserves_last_good_after_error(self):
         lease=S.claim_job(self.connect,"job","V1")
