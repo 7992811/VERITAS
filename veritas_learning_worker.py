@@ -38,10 +38,16 @@ _STATE = {
 
 
 def _database_lease():
+    # Prefer a direct Render secret when one is already configured by Blueprint.
+    # Otherwise obtain a short in-process lease from the authenticated web role;
+    # credentials are never printed or committed in either mode.
+    if os.getenv("DATABASE_URL", "").strip():
+        _STATE["database_lease"] = True
+        return "DIRECT_RENDER_SECRET"
     source = os.getenv("VERITAS_SOURCE_URL", "").strip().rstrip("/")
     token = os.getenv("VERITAS_V90_BRIDGE_TOKEN", "").strip()
     if not source or not token:
-        raise RuntimeError("VERITAS_SOURCE_URL and VERITAS_V90_BRIDGE_TOKEN are required")
+        raise RuntimeError("DATABASE_URL or VERITAS_SOURCE_URL + VERITAS_V90_BRIDGE_TOKEN is required")
     with httpx.Client(timeout=15.0) as client:
         response = client.get(source + "/internal/v90/database-lease",
                               headers={"X-Veritas-V90-Token": token})
@@ -52,6 +58,7 @@ def _database_lease():
         raise RuntimeError("database lease unavailable: " + str(data.get("reason") or data.get("status")))
     os.environ["DATABASE_URL"] = value
     _STATE["database_lease"] = True
+    return "AUTHENTICATED_WEB_LEASE"
 
 
 class H(BaseHTTPRequestHandler):
