@@ -260,9 +260,23 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
             active_stage = "checkpoint"
             check()
             store._json(work, WORK_BYTES)
-            if not deferred and not store.publish_snapshot_in_transaction(c, WORK_SLOT, WORK_VERSION, work,
-                                                                           observed_at=datetime.now(timezone.utc)):
-                raise RuntimeError("SCORECARD_WORK_PUBLICATION_REJECTED")
+            if not deferred:
+                def before_checkpoint_write():
+                    # A short decision slice must not permanently shrink this
+                    # transaction's checkpoint cap. Re-arm only after payload
+                    # serialization, with room for the original cap and tail.
+                    target = min(c.initial_sql_timeout_ms, 2000)
+                    headroom = target/1000+.2
+                    if c.sql_timeout_ms < target and remaining() >= headroom:
+                        c.execute("SET LOCAL statement_timeout = '"+str(target)+"ms'")
+                        c.sql_timeout_ms = target
+                        if remaining() < headroom:
+                            raise MaintenanceDeferred("DEFERRED_SCORECARD_BUDGET",
+                                                      reason="CHECKPOINT_SQL_HEADROOM")
+                if not store.publish_snapshot_in_transaction(c, WORK_SLOT, WORK_VERSION, work,
+                        observed_at=datetime.now(timezone.utc), locked_snapshot=saved,
+                        before_write=before_checkpoint_write):
+                    raise RuntimeError("SCORECARD_WORK_PUBLICATION_REJECTED")
             active_stage = "commit"
         check()
         if value is not None:

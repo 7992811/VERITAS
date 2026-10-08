@@ -3,6 +3,7 @@ import ast
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import hashlib
 import os
 from pathlib import Path
 import threading
@@ -15,6 +16,7 @@ from unittest.mock import patch
 import veritas_learning_integrity as LI
 import veritas_learning_exports as E
 import veritas_learning_state as S
+from veritas_maintenance import MaintenanceDeferred
 
 
 class FakeConnection:
@@ -134,6 +136,38 @@ class StateBoundsTests(unittest.TestCase):
             with self.subTest(value=str(value)[:50]), self.assertRaises(ValueError):
                 S.publish_snapshot(forbidden,"learning","V1",value)
         S._good({"status":"BUILDING"}); S._good({"status":"INSUFFICIENT_DATA"})
+
+    def test_locked_snapshot_identity_and_write_hook_validate_before_sql(self):
+        def forbidden(*args, **kwargs):
+            raise AssertionError("database touched before validation")
+        c = SimpleNamespace(execute=forbidden)
+        for saved in ({}, {"name": "other", "version": "V1"},
+                      {"name": "model", "version": "V2"}, object()):
+            with self.subTest(saved=saved), self.assertRaisesRegex(ValueError, "name/version mismatch"):
+                S.publish_snapshot_in_transaction(c, "model", "V1", {"n": 1}, locked_snapshot=saved)
+        for callback in (False, "invalid", object()):
+            with self.subTest(callback=callback), self.assertRaisesRegex(ValueError, "must be callable"):
+                S.publish_snapshot_in_transaction(c, "model", "V1", {"n": 1}, before_write=callback)
+
+    def test_write_hook_deferral_preserves_original_object_without_a_write(self):
+        saved = {"name": "model", "version": "V1"}
+        for locked in (None, saved):
+            with self.subTest(locked=locked is not None):
+                reads, calls = [], []
+                def execute(sql, args=None):
+                    self.assertTrue(sql.lstrip().startswith("SELECT"), "write followed a deferred hook")
+                    reads.append(sql)
+                    return SimpleNamespace(fetchone=lambda: {"name": "model"})
+                deferred = MaintenanceDeferred("DEFERRED_TIME_BUDGET", reason="synthetic_before_write")
+                def before_write():
+                    calls.append(True)
+                    raise deferred
+                with self.assertRaises(MaintenanceDeferred) as caught:
+                    S.publish_snapshot_in_transaction(SimpleNamespace(execute=execute), "model", "V1", {"n": 1},
+                        locked_snapshot=locked, before_write=before_write)
+                self.assertIs(caught.exception, deferred)
+                self.assertEqual(calls, [True])
+                self.assertEqual(len(reads), 0 if locked is not None else 2)
 
 
 def _load_raw_connect(driver, *, dsn="synthetic-dsn", row_factory=None, schema=None):
@@ -455,6 +489,198 @@ class DurableStateSQLTests(unittest.TestCase):
                 S.publish_snapshot(self.connect,"second","V1",{"n":2})
             self.assertTrue(S.publish_snapshot(self.connect,"first","V1",{"n":3}))
         self.assertEqual(S.load_snapshot(self.connect,"first","V1")["payload"],{"n":3})
+
+    def test_locked_snapshot_updates_full_slot_at_capacity_with_monotonic_idempotent_state(self):
+        at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        old_clock = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        initial = {"status": "BUILDING", "offset": 0}
+        encoded = S._json(initial, S.MAX_SNAPSHOT_BYTES)
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        with self.connect() as raw:
+            raw.execute("""INSERT INTO veritas_learning_snapshots
+                (name,version,payload,payload_hash,observed_at,updated_at)
+                SELECT 'slot-'||n::text,'V1',%s::jsonb,%s,%s,%s
+                FROM generate_series(0,31) AS fixture(n)""", (encoded,digest,at,old_clock))
+            self.assertEqual(raw.execute("SELECT count(*) AS n FROM veritas_learning_snapshots").fetchone()["n"], 32)
+        value = {"status": "BUILDING", "offset": 2,
+                 "pairs": [[n, n+1] for n in range(1, 2201)],
+                 "episodes": [{"n": 1, "details": {"kept": True}}], "previous": [0.25, -0.5]}
+        value["pairs"][1] = value["pairs"][0][:]
+        with S._transaction(self.connect) as c:
+            saved = S.load_snapshot_in_transaction(c, "slot-0", "V1", for_update=True)
+            operations = []
+            def execute(sql, args=None):
+                operations.append(sql.lstrip().split(None, 1)[0])
+                return c.execute(sql, args) if args is not None else c.execute(sql)
+            self.assertTrue(S.publish_snapshot_in_transaction(SimpleNamespace(execute=execute), "slot-0", "V1", value,
+                observed_at=at, locked_snapshot=saved, before_write=lambda: operations.append("HOOK")))
+            self.assertEqual(operations, ["HOOK", "UPDATE"])
+            changed = c.execute("SELECT * FROM veritas_learning_snapshots WHERE name='slot-0'").fetchone()
+            self.assertEqual(changed["payload"], value)
+            self.assertEqual(changed["payload_hash"], hashlib.sha256(S._json(value, S.MAX_SNAPSHOT_BYTES).encode("utf-8")).hexdigest())
+            self.assertGreater(changed["updated_at"], old_clock)
+            # Compare the actual stored values with the unchanged generic path.
+            self.assertTrue(S.publish_snapshot_in_transaction(c, "slot-1", "V1", value, observed_at=at))
+            generic = c.execute("SELECT * FROM veritas_learning_snapshots WHERE name='slot-1'").fetchone()
+            self.assertEqual({k:v for k,v in changed.items() if k not in ("name", "updated_at")},
+                             {k:v for k,v in generic.items() if k not in ("name", "updated_at")})
+            self.assertTrue(S.publish_snapshot_in_transaction(c, "slot-0", "V1", value,
+                observed_at=at, locked_snapshot=saved))
+            self.assertEqual(c.execute("SELECT * FROM veritas_learning_snapshots WHERE name='slot-0'").fetchone(), changed)
+            self.assertFalse(S.publish_snapshot_in_transaction(c, "slot-0", "V1", {"offset": 999},
+                observed_at=at-timedelta(seconds=1), locked_snapshot=saved))
+            self.assertEqual(c.execute("SELECT * FROM veritas_learning_snapshots WHERE name='slot-0'").fetchone(), changed)
+            for watermark, observed in (("slice-a", at), (None, at), (None, at+timedelta(seconds=1))):
+                c.execute("UPDATE veritas_learning_snapshots SET updated_at=%s WHERE name='slot-0'", (old_clock,))
+                self.assertTrue(S.publish_snapshot_in_transaction(c, "slot-0", "V1", value,
+                    watermark=watermark, observed_at=observed, locked_snapshot=saved))
+                row = c.execute("SELECT * FROM veritas_learning_snapshots WHERE name='slot-0'").fetchone()
+                self.assertEqual(row["payload"], value)
+                self.assertEqual(row["payload_hash"], changed["payload_hash"])
+                self.assertEqual(row["watermark"], watermark)
+                self.assertEqual(row["observed_at"], observed)
+                self.assertGreater(row["updated_at"], old_clock)
+            self.assertEqual(c.execute("SELECT count(*) AS n FROM veritas_learning_snapshots").fetchone()["n"], 32)
+        calls = []
+        with self.assertRaisesRegex(ValueError, "capacity reached"), S._transaction(self.connect) as c:
+            S.publish_snapshot_in_transaction(c, "overflow", "V1", {"n": 1}, before_write=lambda: calls.append(True))
+        self.assertEqual(calls, [])
+        self.assertEqual(S.load_snapshot(self.connect, "slot-0", "V1")["payload"], value)
+
+    def test_locked_snapshot_rejects_wrong_identity_missing_row_and_changed_version_without_insert(self):
+        self.assertTrue(S.publish_snapshot(self.connect, "model", "V1", {"n": 1}))
+        self.assertTrue(S.publish_snapshot(self.connect, "other", "V1", {"n": 2}))
+        with self.connect() as raw:
+            original = raw.execute("SELECT * FROM veritas_learning_snapshots ORDER BY name").fetchall()
+            for wrong in ({"name": "other", "version": "V1"}, {"name": "model", "version": "V2"}):
+                with self.subTest(wrong=wrong), raw.transaction():
+                    S.load_snapshot_in_transaction(raw, "model", "V1", for_update=True)
+                    with self.assertRaisesRegex(ValueError, "name/version mismatch"):
+                        S.publish_snapshot_in_transaction(raw, "model", "V1", {"n": 999}, locked_snapshot=wrong)
+                    self.assertEqual(raw.execute("SELECT * FROM veritas_learning_snapshots ORDER BY name").fetchall(), original)
+            for mutation in ("DELETE FROM veritas_learning_snapshots WHERE name='model'",
+                             "UPDATE veritas_learning_snapshots SET version='V2' WHERE name='model'"):
+                with self.subTest(mutation=mutation):
+                    with self.assertRaisesRegex(RuntimeError, "restore synthetic mutation"), raw.transaction():
+                        saved = S.load_snapshot_in_transaction(raw, "model", "V1", for_update=True)
+                        raw.execute(mutation)
+                        mutated = raw.execute("SELECT * FROM veritas_learning_snapshots ORDER BY name").fetchall()
+                        self.assertFalse(S.publish_snapshot_in_transaction(raw, "model", "V1", {"n": 999}, locked_snapshot=saved))
+                        self.assertEqual(raw.execute("SELECT * FROM veritas_learning_snapshots ORDER BY name").fetchall(), mutated)
+                        raise RuntimeError("restore synthetic mutation")
+                    self.assertEqual(raw.execute("SELECT * FROM veritas_learning_snapshots ORDER BY name").fetchall(), original)
+            # A version-filtered miss still uses normal publication semantics:
+            # the existing named slot can change version without new capacity.
+            with raw.transaction():
+                self.assertIsNone(S.load_snapshot_in_transaction(raw, "model", "V2", for_update=True))
+                self.assertTrue(S.publish_snapshot_in_transaction(raw, "model", "V2", {"n": 3}, locked_snapshot=None))
+            self.assertEqual(raw.execute("SELECT count(*) AS n FROM veritas_learning_snapshots").fetchone()["n"], 2)
+        self.assertEqual(S.load_snapshot(self.connect, "model", "V2")["payload"], {"n": 3})
+
+    def test_locked_snapshot_retains_global_row_and_table_locks_until_commit_or_rollback(self):
+        from psycopg.pq import TransactionStatus
+        self.assertTrue(S.publish_snapshot(self.connect, "model", "V1", {"n": 1}))
+        with self.connect() as raw, self.connect() as competitor:
+            for rollback in (False, True):
+                with self.subTest(rollback=rollback):
+                    original = raw.execute("SELECT * FROM veritas_learning_snapshots WHERE name='model'").fetchone()
+                    expected = self.assertRaisesRegex(RuntimeError, "synthetic locked rollback") if rollback else nullcontext()
+                    with expected, S._transaction(lambda: nullcontext(raw)) as c:
+                        saved = S.load_snapshot_in_transaction(c, "model", "V1", for_update=True)
+                        for phase in ("before", "after"):
+                            with competitor.transaction():
+                                self.assertFalse(competitor.execute("SELECT pg_try_advisory_xact_lock(%s) AS ok", (S._LOCK,)).fetchone()["ok"])
+                                with self.assertRaises(self.driver.errors.LockNotAvailable), competitor.transaction():
+                                    competitor.execute("SELECT name FROM veritas_learning_snapshots WHERE name='model' FOR UPDATE NOWAIT")
+                                with self.assertRaises(self.driver.errors.LockNotAvailable), competitor.transaction():
+                                    competitor.execute("LOCK TABLE veritas_learning_snapshots IN ACCESS EXCLUSIVE MODE NOWAIT")
+                            self.assertEqual(c.info.transaction_status, TransactionStatus.INTRANS)
+                            if phase == "before":
+                                self.assertTrue(S.publish_snapshot_in_transaction(c, "model", "V1", {"n": 3 if rollback else 2},
+                                    locked_snapshot=saved))
+                        if rollback:
+                            raise RuntimeError("synthetic locked rollback")
+                    self.assertEqual(raw.info.transaction_status, TransactionStatus.IDLE)
+                    with competitor.transaction():
+                        self.assertTrue(competitor.execute("SELECT pg_try_advisory_xact_lock(%s) AS ok", (S._LOCK,)).fetchone()["ok"])
+                        self.assertIsNotNone(competitor.execute("SELECT name FROM veritas_learning_snapshots WHERE name='model' FOR UPDATE NOWAIT").fetchone())
+                        competitor.execute("LOCK TABLE veritas_learning_snapshots IN ACCESS EXCLUSIVE MODE NOWAIT")
+                    row = raw.execute("SELECT * FROM veritas_learning_snapshots WHERE name='model'").fetchone()
+                    if rollback:
+                        self.assertEqual(row, original)
+                    else:
+                        self.assertEqual(row["payload"], {"n": 2})
+
+    def test_locked_snapshot_lease_and_write_hook_preserve_fences_rollback_and_sql_errors(self):
+        from psycopg.pq import TransactionStatus
+        at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        value = {"n": 1}
+        self.assertTrue(S.publish_snapshot(self.connect, "model", "V1", value, observed_at=at))
+        old = S.claim_job(self.connect, "publisher", "V1", owner="old-worker")
+        self.assertTrue(S.checkpoint_job(self.connect, old, status="OK", cursor={"offset": 7}, result={"n": 7}))
+        lease = S.claim_job(self.connect, "publisher", "V1", owner="current-worker")
+        self.assertGreater(lease["fence"], old["fence"])
+        before_job = S.job_state(self.connect, "publisher", "V1")
+        with S._transaction(self.connect) as c:
+            saved = S.load_snapshot_in_transaction(c, "model", "V1", for_update=True)
+            calls = []
+            self.assertFalse(S.publish_snapshot_in_transaction(c, "model", "V1", {"n": 999}, lease=old,
+                locked_snapshot=saved, before_write=lambda: calls.append(True)))
+            self.assertEqual(calls, [])
+            self.assertTrue(S.publish_snapshot_in_transaction(c, "model", "V1", value, observed_at=at, lease=lease,
+                locked_snapshot=saved, before_write=lambda: calls.append(True)))
+            self.assertEqual(calls, [True])
+        self.assertEqual(S.job_state(self.connect, "publisher", "V1"), before_job)
+        with self.connect() as raw:
+            raw.execute("UPDATE veritas_learning_jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE name='publisher'")
+            original = raw.execute("SELECT * FROM veritas_learning_snapshots WHERE name='model'").fetchone()
+            with S._transaction(lambda: nullcontext(raw)) as c:
+                saved = S.load_snapshot_in_transaction(c, "model", "V1", for_update=True)
+                calls = []
+                self.assertFalse(S.publish_snapshot_in_transaction(c, "model", "V1", {"n": 999}, lease=lease,
+                    locked_snapshot=saved, before_write=lambda: calls.append(True)))
+                self.assertEqual(calls, [])
+            self.assertEqual(raw.execute("SELECT * FROM veritas_learning_snapshots WHERE name='model'").fetchone(), original)
+            raw.execute("CREATE TABLE checkpoint_seen (id integer PRIMARY KEY)")
+            for locked in (False, True):
+                with self.subTest(locked=locked):
+                    deferred = MaintenanceDeferred("DEFERRED_TIME_BUDGET", reason="synthetic_before_snapshot_write")
+                    calls = []
+                    def before_write():
+                        calls.append(True)
+                        raise deferred
+                    with self.assertRaises(MaintenanceDeferred) as caught:
+                        with S._transaction(lambda: nullcontext(raw)) as c:
+                            saved = S.load_snapshot_in_transaction(c, "model", "V1", for_update=True) if locked else None
+                            c.execute("INSERT INTO checkpoint_seen VALUES (1)")
+                            S.publish_snapshot_in_transaction(c, "model", "V1", {"n": 999},
+                                locked_snapshot=saved, before_write=before_write)
+                    self.assertIs(caught.exception, deferred)
+                    self.assertEqual(calls, [True])
+                    self.assertEqual(raw.info.transaction_status, TransactionStatus.IDLE)
+                    self.assertEqual(raw.execute("SELECT * FROM veritas_learning_snapshots WHERE name='model'").fetchone(), original)
+                    self.assertEqual(raw.execute("SELECT count(*) AS n FROM checkpoint_seen").fetchone()["n"], 0)
+            raw.execute("""ALTER TABLE veritas_learning_snapshots ADD CONSTRAINT synthetic_write_rejection
+                CHECK (NOT (payload ? 'reject_write'))""")
+            calls, sql_errors = [], []
+            def execute(sql, args=None):
+                try:
+                    return raw.execute(sql, args) if args is not None else raw.execute(sql)
+                except Exception as error:
+                    sql_errors.append(error)
+                    raise
+            with self.assertRaises(self.driver.errors.CheckViolation) as caught:
+                with S._transaction(lambda: nullcontext(raw)) as c:
+                    saved = S.load_snapshot_in_transaction(c, "model", "V1", for_update=True)
+                    c.execute("INSERT INTO checkpoint_seen VALUES (2)")
+                    S.publish_snapshot_in_transaction(SimpleNamespace(execute=execute), "model", "V1", {"reject_write": True},
+                        locked_snapshot=saved, before_write=lambda: calls.append(True))
+            self.assertEqual(calls, [True])
+            self.assertEqual(sql_errors, [caught.exception])
+            self.assertEqual(caught.exception.diag.constraint_name, "synthetic_write_rejection")
+            self.assertEqual(raw.info.transaction_status, TransactionStatus.IDLE)
+            self.assertEqual(raw.execute("SELECT * FROM veritas_learning_snapshots WHERE name='model'").fetchone(), original)
+            self.assertEqual(raw.execute("SELECT count(*) AS n FROM checkpoint_seen").fetchone()["n"], 0)
 
 
     def _thread_call(self, operation):
