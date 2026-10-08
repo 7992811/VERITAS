@@ -70,6 +70,46 @@ class LearningReplayTests(unittest.TestCase):
         self.assertFalse(out["eligible"])
         self.assertEqual(out["reason"], "PARTIAL_TRIGGER_NOT_BEFORE_TARGET")
 
+    def test_false_block_evidence_compares_trade_against_neutral_abstention(self):
+        candidate = {"candidate_id": "entry", "created_at": "2026-01-03T00:00:00+00:00"}
+        rows = []
+        for i in range(10):
+            rows.append({
+                "at": __import__("datetime").datetime(2026, 1, 1+i, tzinfo=__import__("datetime").timezone.utc),
+                "baseline_net": 0.0, "candidate_net": .01,
+                "candidate_high_cost": .007, "delta": .01, "parity": True,
+            })
+        evidence = R._evidence(candidate, rows, abstention_baseline=True)
+        self.assertTrue(evidence["requires_baseline_outperformance"])
+        self.assertEqual(evidence["baseline_oos_expectancy"], 0.0)
+        self.assertEqual(evidence["baseline_oos_profit_factor"], 1.0)
+        self.assertEqual(evidence["baseline_vault_expectancy"], 0.0)
+        self.assertEqual(evidence["baseline_vault_profit_factor"], 1.0)
+
+    def test_decision_geometry_uses_frozen_quote_not_later_market_price(self):
+        row = {
+            "event_ts": "2026-01-01T10:00:00+00:00",
+            "payload": {
+                "learning_provenance": {
+                    "decision_at": "2026-01-01T10:00:00+00:00",
+                    "quote": {
+                        "price": 100.0,
+                        "source_identity": {"key": "PROFINANCE:NQ", "contract_id": "NQ"},
+                    },
+                },
+                "timeframe_entry_context": {
+                    "event": {"direction": "LONG", "stop_price": 98.0, "target_price": 104.0}
+                },
+                "price": 120.0,
+            },
+        }
+        candidate = {"scope": {"direction": "LONG"}}
+        g = R._decision_geometry(row, candidate)
+        self.assertIsNotNone(g)
+        self.assertEqual(g["entry"], 100.0)
+        self.assertEqual(g["stop"], 98.0)
+        self.assertEqual(g["target"], 104.0)
+
     def evidence(self, **overrides):
         base = dict(
             model_version="candidate",
