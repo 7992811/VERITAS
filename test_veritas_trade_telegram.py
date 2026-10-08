@@ -155,8 +155,60 @@ class TelegramRepositoryIntegrationTests(unittest.TestCase):
         self.assertEqual(self.repo.get(row["proposal_id"])["status"], "APPROVED")
         self.assertEqual(self.callback_count(), 1)
         self.assertIsNone(self.repo.get(row["proposal_id"])["claim_token"])
+        self.assertTrue(self.bridge.wakeup.is_set())
         self.assertTrue(self.bridge.handle_callback(self.query(row)))
         self.assertEqual(self.callback_count(), 1)
+
+    def test_preparation_failure_still_delivers_durable_proposal_once_without_approval(self):
+        row = self.create()
+        original = self.service
+        def failing(operation, payload):
+            if operation == "poll":
+                raise TradeTelegramError("TRADE_SERVICE_UNAVAILABLE")
+            result = original(operation, payload)
+            if operation == "updates":
+                result["items"] += self.repo.list_pending(account_id="test-account", owner_user_id=OWNER)
+            return result
+        self.bridge.service = failing
+        for _ in range(2):
+            with self.assertRaisesRegex(TradeTelegramError, "TRADE_SERVICE_UNAVAILABLE"):
+                self.bridge.poll()
+        self.assertEqual(len(self.telegram.sent()), 1)
+        current = self.repo.get(row["proposal_id"])
+        self.assertEqual(current["status"], "AWAITING_OWNER")
+        self.assertIsNone(current["claim_token"])
+        self.assertEqual(self.callback_count(), 0)
+        self.assertFalse(self.bridge.wakeup.is_set())
+
+    def test_preparation_failure_does_not_hide_expiry_or_leave_stale_buttons(self):
+        row = self.create()
+        self.bridge.poll()
+        self.now += timedelta(minutes=3)
+        self.repo.expire()
+        original = self.service
+        def failing(operation, payload):
+            if operation == "poll":
+                raise TradeTelegramError("TRADE_SERVICE_UNAVAILABLE")
+            return original(operation, payload)
+        self.bridge.service = failing
+        with self.assertRaises(TradeTelegramError):
+            self.bridge.poll()
+        edits = [payload for operation, payload in self.telegram.calls if operation == "editMessageText"]
+        self.assertEqual(len(edits), 1)
+        self.assertIn("Срок подтверждения истёк", edits[0]["text"])
+        self.assertEqual(json.loads(edits[0]["reply_markup"]), {"inline_keyboard": []})
+        self.assertEqual(self.repo.get(row["proposal_id"])["status"], "EXPIRED")
+
+    def test_rejection_and_foreign_callback_never_wake_execution_worker(self):
+        row = self.create()
+        self.bridge.poll()
+        query = self.query(row)
+        query["from"]["id"] = OWNER + 1
+        self.bridge.handle_callback(query)
+        self.assertFalse(self.bridge.wakeup.is_set())
+        self.bridge.handle_callback(self.query(row, action="reject"))
+        self.assertFalse(self.bridge.wakeup.is_set())
+        self.assertEqual(self.repo.get(row["proposal_id"])["status"], "REJECTED")
 
     def test_lost_telegram_send_response_never_resends_after_restart(self):
         row = self.create()
@@ -816,6 +868,53 @@ class BotUpdateOrderingTests(unittest.TestCase):
                      "scan_market": lambda: self.fail("paused scan touched model")}
         scan, _ = self.function("run_scan_once", namespace)
         scan(force=False)
+
+
+class AutonomousWorkerTests(unittest.TestCase):
+    def test_wakeup_during_poll_is_not_lost_and_worker_never_needs_a_second_consumer(self):
+        from types import SimpleNamespace
+        stop = threading.Event()
+        bridge = SimpleNamespace(wakeup=threading.Event())
+        calls, logs = [], []
+        def poll():
+            calls.append(True)
+            if len(calls) == 2:
+                stop.set()
+            bridge.wakeup.set()
+            return {"ok":True, "execution_enabled":True, "pending_approval_count":1,
+                    "unsettled_count":0, "block_reason":None}
+        bridge.poll = poll
+        worker = start_worker(bridge, stop, logs.append)
+        worker.join(timeout=2)
+        if worker.is_alive():
+            stop.set(); bridge.wakeup.set(); worker.join(timeout=2)
+            self.fail("Approval wakeup was lost")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(logs), 1)
+        state = json.loads(logs[0])
+        self.assertEqual(state['mode'], 'AUTO_PREPARE_OWNER_CONFIRM')
+        self.assertTrue(state['confirmation_required'])
+        self.assertEqual(state['pending_approval_count'], 1)
+
+    def test_worker_recovers_after_error_and_never_logs_exception_secrets(self):
+        from types import SimpleNamespace
+        stop = threading.Event()
+        bridge = SimpleNamespace(wakeup=threading.Event())
+        calls, logs = [], []
+        def poll():
+            calls.append(True)
+            bridge.wakeup.set()
+            if len(calls) == 1:
+                raise RuntimeError("private-secret-token")
+            stop.set()
+            return {"ok":True, "block_reason":"private-secret-token"}
+        bridge.poll = poll
+        worker = start_worker(bridge, stop, logs.append)
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn('private-secret-token', ''.join(logs))
+        self.assertEqual(json.loads(logs[0])['block_reason'], 'TRADE_SERVICE_UNAVAILABLE')
 
 
 if __name__ == "__main__":

@@ -39,6 +39,37 @@ instead of displaying empty positions or zero costs as confirmed facts.
 
 ## Requested workflow
 
+### Automatic preparation with individual owner review (v91.8.26)
+
+The existing dedicated Currency worker runs independently of the news scanner
+and requires no `/currency_manual` command for model proposals. Each cycle
+reconciles observed execution, handles already approved work, then prepares an
+eligible canonical entry/add or protective exit for private Telegram delivery.
+The target idle interval is five seconds; broker/database latency adds to it.
+Every real OPEN/ADD/REDUCE/CLOSE still needs its own signed, unexpired owner
+confirmation. The user-selected post-cost risk budget remains 15% of current
+Currency allocation NAV (1,500 RUB at 10,000 RUB); model live-admission evidence
+and broker requirements remain independently enforced.
+
+A persisted APPROVED callback now wakes the same worker immediately, including
+when the owner is bound through the console. It does not create another worker,
+consume updates twice, approve a different proposal or bypass final validation.
+Failed new preparation no longer blocks delivery of already durable proposals
+or edits reporting their expiry/execution state. Recovery reads the scoped
+updates endpoint; immutable delivery claims still prevent duplicate messages.
+An uncertain broker result is never retried by repeating the poll in that cycle.
+
+The worker writes bounded `currency_trade_cycle` diagnostics on state changes
+(no more than once per 15 seconds) and at least once per completed minute of
+cycles. They include the blocker, exact admission blocker when known, pending
+and unsettled counts, cycle duration and the required-confirmation mode. They
+exclude account identifiers, credentials and order terms. These are application
+logs, not repetitive Telegram startup notices. `/currency_status` describes the
+mode and the last completed observation; requesting status never executes work.
+
+Rollback is v91.8.25. This release adds no database schema, broker orders, trading
+permission or environment changes; existing proposal and ledger records remain.
+
 The Currency research policy prepares an immutable proposal for the exact
 CNYRUBF instrument. A private message from @AxednewsI_bot carries signed approve
 and reject buttons. A persisted, authorized approval can be claimed once. Before

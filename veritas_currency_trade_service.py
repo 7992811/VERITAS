@@ -767,6 +767,7 @@ class TradeHttpApplication:
                         utc(self.clock()) - utc(admission_status["last_checked_at"])).total_seconds() > 15:
                     new_risk_reason = "LIVE_ACCOUNT_ADMISSION_STALE"
         return {"ok": True, "enabled": True, "version": VERSION,
+                "automation_mode": "AUTO_PREPARE_OWNER_CONFIRM", "confirmation_required": True,
                 "execution_enabled": self.execution_enabled,
                 "account_id": self.account_id, "instrument_uid": self.instrument_uid,
                 "execution_environment": self.environment,
@@ -821,8 +822,21 @@ class TradeHttpApplication:
         items = [self._public(p) for p in pending if p.get("status") == "PENDING_DELIVERY"][:1]
         self._remember_poll(reason, binding_state="bound", pending=len(pending),
                             unsettled=len(unsettled), sizing=sizing, entry_diagnostics=entry_diagnostics)
+        admission_reason = None
+        if reason == "LIVE_ACCOUNT_ADMISSION_REQUIRED":
+            authority = getattr(self.coordinator, "live_admission", None)
+            if callable(getattr(authority, "status", None)):
+                try:
+                    cached = authority.status()
+                    blockers = cached.get("blockers") if isinstance(cached, Mapping) else None
+                    if isinstance(blockers, (list, tuple)) and blockers and isinstance(blockers[0], str) and _SAFE_CODE.fullmatch(blockers[0]):
+                        admission_reason = blockers[0]
+                except Exception:
+                    pass  # Optional diagnostics cannot interrupt the cycle.
         return {"ok": True, "enabled": True, "items": items,
-                "execution_enabled": self.execution_enabled, "block_reason": reason}
+                "execution_enabled": self.execution_enabled, "block_reason": reason,
+                "admission_block_reason": admission_reason,
+                "pending_approval_count": len(pending), "unsettled_count": len(unsettled)}
 
     def console_snapshot(self):
         """Bounded private read model; never approves, polls or submits an order."""

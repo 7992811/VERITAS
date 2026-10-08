@@ -249,6 +249,8 @@ def readiness_text(status):
     lines.append("Счёт: …" + account[-4:] if account else "Счёт: не определён")
     lines.append("Отправка брокеру: " + ("разрешена конфигурацией; только после отдельного подтверждения"
                  if status.get("execution_enabled") is True else "отключена"))
+    if status.get("automation_mode") == "AUTO_PREPARE_OWNER_CONFIRM":
+        lines.append("Режим: автоматическая подготовка предложений; каждую сделку подтверждает владелец.")
     binding = status.get("binding_state", "unchecked")
     lines.append("Привязка учёта: " + {"bound": "подтверждена", "unbound": "не выполнена",
                  "unchecked": "ещё не проверена"}.get(binding, "ещё не проверена"))
@@ -467,6 +469,7 @@ class TradeTelegramBridge:
         self._updated = {}
         self._clock = clock or time.monotonic
         self._bind_challenge = None
+        self.wakeup = threading.Event()
 
     def _private_owner(self, message):
         sender, chat = message.get("from") or {}, message.get("chat") or {}
@@ -585,10 +588,24 @@ class TradeTelegramBridge:
 
     def poll(self):
         if not self._poll_lock.acquire(blocking=False):
-            return
+            return {"ok": True, "block_reason": "POLL_ALREADY_RUNNING"}
         try:
-            response = self._request("poll")
-            for proposal in response.get("items") or []:
+            self._identity()
+            poll_error = None
+            try:
+                response = self._request("poll")
+            except TradeTelegramError as exc:
+                # Preparation/reconciliation failure must not hide already
+                # durable proposals and execution updates. Never repeat poll
+                # in this cycle: its broker result may still be uncertain.
+                poll_error = exc
+                response = {"ok": False, "items": []}
+            if poll_error is not None or response.get("ok") is not True:
+                updates = self._request("updates")
+                delivery = updates if updates.get("ok") is True else {"items": []}
+            else:
+                delivery = response
+            for proposal in delivery.get("items") or []:
                 if proposal.get("status") != "PENDING_DELIVERY" or not self._scope(proposal):
                     continue
                 claimed_response = self._request("claim-delivery",
@@ -606,7 +623,7 @@ class TradeTelegramBridge:
                         raise TradeTelegramError("MISSING_SIGNED_BUTTONS")
                     sent = self.telegram("sendMessage", {
                         "chat_id": str(self.owner_user_id),
-                        "text": proposal_text(claimed, execution_enabled=response.get("execution_enabled") is True),
+                        "text": proposal_text(claimed, execution_enabled=delivery.get("execution_enabled") is True),
                         "disable_web_page_preview": "true",
                         "reply_markup": json.dumps({"inline_keyboard": [[
                             {"text": "Подтверждаю", "callback_data": approve},
@@ -652,6 +669,11 @@ class TradeTelegramBridge:
                         self._updated.pop(next(iter(self._updated)))
                 except Exception:
                     pass
+            if poll_error is not None:
+                raise poll_error
+            return {key: response.get(key) for key in (
+                "ok", "enabled", "execution_enabled", "block_reason", "admission_block_reason",
+                "pending_approval_count", "unsettled_count")}
         finally:
             self._poll_lock.release()
 
@@ -673,6 +695,8 @@ class TradeTelegramBridge:
             "message_id": message.get("message_id"), "callback_query_id": query.get("id")})
         result = response.get("proposal") or response
         status = result.get("status")
+        if response.get("ok") is True and status == "APPROVED":
+            self.wakeup.set()
         text = {"APPROVED": "Подтверждение сохранено.", "REJECTED": "Предложение отклонено.",
                 "EXPIRED": "Срок подтверждения истёк."}.get(status, "Предложение уже обработано или недоступно.")
         self._answer(query.get("id"), text)
@@ -710,12 +734,33 @@ def start_worker(bridge, stop_event, logger=None):
         return None
     log = logger or (lambda message: None)
     def run():
+        last_logged, last_state = None, None
         while not stop_event.is_set():
+            bridge.wakeup.clear()
+            started = time.monotonic()
             try:
-                bridge.poll()
+                result = bridge.poll() or {}
+                state = {"ok": result.get("ok") is True,
+                         "execution_enabled": result.get("execution_enabled") is True}
+                for key in ("block_reason", "admission_block_reason"):
+                    value = result.get(key)
+                    state[key] = value if isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", value) else None
+                for key in ("pending_approval_count", "unsettled_count"):
+                    value = result.get(key)
+                    state[key] = value if type(value) is int and 0 <= value <= 1000 else None
             except Exception as exc:
-                log("Currency trade worker: " + type(exc).__name__)
-            stop_event.wait(5)
+                code = str(exc) if isinstance(exc, TradeTelegramError) else None
+                state = {"ok": False, "block_reason": code if code in REASONS else "TRADE_SERVICE_UNAVAILABLE"}
+            completed = time.monotonic()
+            if last_logged is None or completed-last_logged >= 60 or (
+                    state != last_state and completed-last_logged >= 15):
+                log(json.dumps({"event": "currency_trade_cycle", "mode": "AUTO_PREPARE_OWNER_CONFIRM",
+                    "confirmation_required": True, "target_interval_seconds": 5,
+                    "duration_seconds": round(completed-started, 3), **state}, separators=(",", ":")))
+                last_logged, last_state = completed, state
+            # A durable APPROVED callback wakes this worker without another
+            # Telegram update consumer or another concurrent execution worker.
+            bridge.wakeup.wait(5)
     worker = threading.Thread(target=run, name="currency-trade-proposals", daemon=True)
     worker.start()
     return worker

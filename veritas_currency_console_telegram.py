@@ -30,6 +30,7 @@ class ConsoleTradeBridge:
         self._bridge = None
         self._identity = None
         self._lock = threading.RLock()
+        self.wakeup = threading.Event()
 
     def _me(self):
         if self._bot is None:
@@ -69,6 +70,7 @@ class ConsoleTradeBridge:
                 raise TradeTelegramError("WRONG_TRADE_BOT")
             if identity != self._identity:
                 self._bridge = TradeTelegramBridge(self.service, self.telegram, uid, self.logger)
+                self._bridge.wakeup = self.wakeup
                 self._identity = identity
             return self._bridge
 
@@ -133,7 +135,8 @@ class ConsoleTradeBridge:
     def poll(self):
         bridge = self._bound()
         if bridge:
-            bridge.poll()
+            return bridge.poll()
+        return {"ok": True, "enabled": False, "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
 
     def handle_callback(self, query):
         bridge = self._bound()
