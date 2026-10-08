@@ -52,6 +52,11 @@ REASONS = {
     "BROKER_FACTS_UNAVAILABLE": "Свежие брокерские данные недоступны; готовность не подтверждена.",
     "EXECUTION_QUOTE_STALE": "Котировка исполнения устарела; требуется свежая цена того же источника и контракта.",
     "BROKER_QUOTE_STALE": "Биржевой снимок стакана у брокера старше допустимого срока; ожидается свежий снимок.",
+    "SAME_TF_CONTEXT_STALE": "Свечи выбранного таймфрейма устарели; для проверки входа нужен обновлённый контекст.",
+    "SAME_TF_DIRECTION_CONFLICT": "Направление аналитического сигнала не совпадает с подтверждённым пробоем.",
+    "R59_EXECUTION_TF_DIRECTION_CONFLICT": "Направление сигнала противоречит структуре выбранного таймфрейма.",
+    "SAME_TF_CONFIRMATION_BREAKS_STRUCTURE": "Последующие свечи нарушили структуру исходного сигнала; вход не разрешён.",
+    "NO_CURRENCY_CANDIDATE": "Сейчас нет направленного сигнала CNYRUBf для проверки входа.",
     "STRUCTURAL_BREAKOUT_LEVEL_NOT_HELD": "Цена больше не удерживает уровень пробоя; текущий сигнал не разрешает вход.",
     "STRUCTURAL_TARGET_ALREADY_REACHED": "Исходная цель движения уже достигнута; для входа нужен новый сигнал.",
     "STRUCTURAL_EVENT_EXPIRED": "Срок действия сигнала истёк; свежая котировка не продлевает старый сигнал.",
@@ -139,6 +144,34 @@ def _sizing_lines(details):
         return []
 
 
+def _entry_lines(details):
+    """Show saved clocks and checked alternatives, without refreshing a signal."""
+    horizons = {"1m", "5m", "1h", "4h", "1d", "3d", "7d"}
+    if (not isinstance(details, dict) or not isinstance(details.get("horizon"), str)
+            or details["horizon"] not in horizons or not isinstance(details.get("direction"), str)):
+        return []
+    direction = {"LONG": "покупка", "SHORT": "продажа"}.get(details.get("direction"))
+    if direction is None:
+        return []
+    lines = [f"Проверенный сигнал: CNYRUBf · {details['horizon']} · {direction}."]
+    if details.get("checked_at"):
+        lines.append("Проверка сигнала: " + _stamp(details["checked_at"]))
+    if details.get("context_closed_at"):
+        lines.append("Последняя закрытая свеча: " + _stamp(details["context_closed_at"]))
+    age, limit = details.get("context_age_seconds"), details.get("context_max_age_seconds")
+    if (type(age) in (int, float) and 0 <= age <= 10**9
+            and type(limit) is int and 0 < limit <= 604800):
+        lines.append(f"Возраст свечи при проверке: {age:.0f} с; допустимо: {limit} с.")
+    if details.get("quote_observed_at"):
+        lines.append("Котировка при проверке: " + _stamp(details["quote_observed_at"]))
+    routes = details.get("routes")
+    for item in routes[:7] if isinstance(routes, list) else []:
+        if (isinstance(item, dict) and item.get("selected") is False
+                and isinstance(item.get("horizon"), str) and item["horizon"] in horizons):
+            lines.append(f"Другой вариант, {item['horizon']}: " + _reason(item.get("reason")))
+    return lines
+
+
 def readiness_text(status):
     """Describe metadata only; a status request never polls or executes a trade."""
     lines = ["Валютный портфель · состояние"]
@@ -167,6 +200,7 @@ def readiness_text(status):
             sizing = (_sizing_lines(status.get("last_poll_sizing"))
                       if status["last_poll_block_reason"] == "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT" else [])
             lines.extend(sizing or [_reason(status["last_poll_block_reason"])])
+            lines.extend(_entry_lines(status.get("last_poll_entry_diagnostics")))
         for key, label in (("pending_approval_count", "Ожидают решения/доставки"),
                            ("unsettled_count", "Ожидают сверки исполнения")):
             value = status.get(key)
