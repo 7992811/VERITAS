@@ -8,14 +8,14 @@ T0=datetime(2026,10,1,tzinfo=timezone.utc)
 
 class LearningV2RegistryTests(unittest.TestCase):
     def entry_candidate(self):
-        scope={"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"}
+        scope={"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p","source_key":"S"}
         return {"kind":"ENTRY_BLOCKER_RELAXATION","scope":scope,
                 "proposal":{"blocker":"IMPULSE_ALREADY_PASSED"},
                 "registered_at":T0.isoformat()}
 
     def decision(self, at, fr=.01, family="BREAKOUT", direction="LONG"):
         return {"event_ts":at.isoformat(),"asset":"NQ","horizon":"5m","regime":"TREND",
-                "policy_hash":"p","decision":"NO_TRADE","candidate_direction":direction,
+                "policy_hash":"p","source_key":"S","decision":"NO_TRADE","candidate_direction":direction,
                 "final_gate_blockers":["IMPULSE_ALREADY_PASSED"],"forward_return":fr,
                 "setup_family":family}
 
@@ -56,14 +56,14 @@ class LearningV2RegistryTests(unittest.TestCase):
 
     def test_router_requires_future_preferred_outperformance(self):
         candidate={"kind":"STRATEGY_ROUTER",
-                   "scope":{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"*"},
+                   "scope":{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"*","source_key":"S"},
                    "proposal":{"preferred_family":"BREAKOUT"},
                    "registered_at":T0.isoformat()}
         rows=[]
         for i in range(60):
             at=T0+timedelta(days=1+(i%16),minutes=i)
             rows.append({"event_ts":at.isoformat(),"asset":"NQ","horizon":"5m","regime":"TREND",
-                         "policy_hash":"p","decision":"LONG","forward_return":.01 if i<48 else -.01,
+                         "policy_hash":"p","source_key":"S","decision":"LONG","forward_return":.01 if i<48 else -.01,
                          "setup_family":"BREAKOUT"})
             rows.append({"event_ts":at.isoformat(),"asset":"NQ","horizon":"5m","regime":"TREND",
                          "policy_hash":"p","decision":"LONG","forward_return":.01 if i<30 else -.01,
