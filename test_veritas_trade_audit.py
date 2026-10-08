@@ -176,9 +176,12 @@ LEGACY_AUDIT_SQL = r'''SELECT t.*,
             COUNT(*) FILTER(WHERE side IN ('BUY','SELL_SHORT')) AS entry_fill_count,
             COUNT(*) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')) AS exit_fill_count,
             (ARRAY_AGG(reason ORDER BY created_at DESC) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_reason,
-            (ARRAY_AGG(NULLIF(payload->>'stop_price','')::double precision ORDER BY created_at DESC)
+            (ARRAY_AGG(CASE
+                WHEN jsonb_typeof(to_jsonb(po)->'payload'->'stop_price')='number'
+                THEN (to_jsonb(po)->'payload'->>'stop_price')::double precision
+              END ORDER BY created_at DESC)
                 FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_stop_price
-          FROM paper_orders GROUP BY trade_id
+          FROM paper_orders po GROUP BY trade_id
         ) o ON o.trade_id=t.trade_id
         WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')'''
 import veritas_trade_audit as AUDIT
