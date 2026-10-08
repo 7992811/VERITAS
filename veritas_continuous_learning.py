@@ -24,6 +24,7 @@ import veritas_knowledge_validation as KNOWLEDGE
 import veritas_asset_management_intelligence as INTELLIGENCE
 import veritas_scorecard_delivery as SCORECARD
 import veritas_learning_v2 as LEARNING_V2
+import veritas_learning_v2_registry as LEARNING_V2_REGISTRY
 from veritas_maintenance import MaintenanceDeferred
 
 VERSION = "CONTINUOUS_LEARNING_V1"
@@ -723,6 +724,10 @@ class ContinuousLearning:
                      generated_at=clock().isoformat(),
                      source="VERIFIED_LEDGER_OUTCOMES_AND_LEARNING_EPISODES",
                      automatic_production_promotion=False)
+        context.check()
+        with transaction(self.connect, context) as c:
+            value["registry"]=LEARNING_V2_REGISTRY.sync(
+                c,value,decision_rows,trade_rows,now=clock())
         context.check()
         if not STORE.publish_snapshot(self.connect, LEARNING_V2_SNAPSHOT_NAME, LEARNING_V2.VERSION,
                                       value, observed_at=clock()):
