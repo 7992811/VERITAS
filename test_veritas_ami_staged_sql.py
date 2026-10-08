@@ -307,9 +307,9 @@ class AMIStagedSQLTests(unittest.TestCase):
             for start in range(0, 12000, 400):
                 c.execute("""INSERT INTO ledger_events(event_key,entity_key,event_type,event_ts,asset,horizon,payload)
                     SELECT 'unrelated-'||n,'archive-'||(n/2),
-                        CASE WHEN n%2=0 THEN 'decision' ELSE 'outcome' END,
+                        CASE WHEN mod(n,2)=0 THEN 'decision' ELSE 'outcome' END,
                         %s::timestamptz-n*interval '1 second','ARCHIVE','1h',
-                        CASE WHEN n%2=0 THEN jsonb_build_object('decision','LONG','history',%s::text)
+                        CASE WHEN mod(n,2)=0 THEN jsonb_build_object('decision','LONG','history',%s::text)
                              ELSE jsonb_build_object('forward_return',0.125,'history',%s::text) END
                     FROM generate_series(%s,%s) n""", (NOW, noise, noise, start, start+399))
             c.execute("ANALYZE ledger_events")
