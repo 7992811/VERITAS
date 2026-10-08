@@ -158,7 +158,8 @@ class ScorecardStageTests(unittest.TestCase):
                 self.assertEqual(current['refresh_last_sql_timeout_ms'],350)
                 self.assertEqual(current['refresh_last_sql_budget_seconds'],3.2)
                 self.assertEqual(events,[('ami_refresh_error',dict(status='ERROR',error_type='QueryCanceled',
-                    stage='sample',last_sql_timeout_ms=350,last_sql_budget_seconds=3.2))])
+                    stage='sample',last_sql_timeout_ms=350,last_sql_budget_seconds=3.2,
+                    checkpoint_prepare_seconds=None))])
                 self.assertNotIn('private',str((current,events)))
                 self.query_failure=None
 
@@ -235,7 +236,8 @@ class ScorecardStageTests(unittest.TestCase):
                 self.assertIsNone(current['refresh_processed'])
                 self.assertEqual(events,[('ami_refresh_deferred' if cooperative else 'ami_refresh_error',
                     dict(status=status,error_type=error_type,stage='decisions',
-                         last_sql_timeout_ms=350,last_sql_budget_seconds=6.))])
+                         last_sql_timeout_ms=350,last_sql_budget_seconds=6.,
+                         checkpoint_prepare_seconds=None))])
                 self.assertNotIn('private',str((current,events)))
         self.context.check.side_effect=None
 
@@ -273,7 +275,8 @@ class ScorecardStageTests(unittest.TestCase):
         self.assertIsNone(current['refresh_processed'])
         self.assertEqual(events,[('ami_refresh_deferred',dict(status='DEFERRED_TIME_BUDGET',
             error_type=None,stage='commit',last_sql_timeout_ms=current['refresh_last_sql_timeout_ms'],
-            last_sql_budget_seconds=current['refresh_last_sql_budget_seconds']))])
+            last_sql_budget_seconds=current['refresh_last_sql_budget_seconds'],
+            checkpoint_prepare_seconds=AMI._REFRESH_STATE['checkpoint_prepare_seconds']))])
         self.assertNotIn('private',str((current,events)))
         queries=self.sample.call_count,self.chunk.call_count
         self.context.check.side_effect=None
@@ -353,7 +356,7 @@ class ScorecardStageTests(unittest.TestCase):
                 encode=STORE._json
                 def serialize(payload,limit):
                     encoded=encode(payload,limit)
-                    if limit==STORE.MAX_SNAPSHOT_BYTES:
+                    if limit==DELIVERY.WORK_BYTES:
                         self.assertEqual(seen['connection'].sql_timeout_ms,chunk_cap)
                         budget['remaining_seconds']=serialized_budget
                         trace.append('serialized')
@@ -454,7 +457,8 @@ class ScorecardStageTests(unittest.TestCase):
         self.assertIsNone(current['last_refresh_error'])
         self.assertIsNone(current['refresh_processed'])
         self.assertEqual(events,[('ami_refresh_deferred',dict(status='DEFERRED_SCORECARD_BUDGET',
-            error_type=None,stage='checkpoint',last_sql_timeout_ms=1000,last_sql_budget_seconds=2.3))])
+            error_type=None,stage='checkpoint',last_sql_timeout_ms=1000,last_sql_budget_seconds=2.3,
+            checkpoint_prepare_seconds=AMI._REFRESH_STATE['checkpoint_prepare_seconds']))])
         consume['enabled']=False; budget['remaining_seconds']=3.2
         retried=self.step({'stage':'decisions','offset':999})
         self.assertEqual(retried['status'],'PROGRESS')
@@ -526,8 +530,147 @@ class ScorecardStageTests(unittest.TestCase):
                 self.assertEqual(current['last_refresh_error'],'QueryCanceled')
                 self.assertIsNone(current['refresh_processed'])
                 self.assertEqual(events,[('ami_refresh_error',dict(status='ERROR',error_type='QueryCanceled',
-                    stage='checkpoint',last_sql_timeout_ms=1000,last_sql_budget_seconds=checkpoint_budget))])
+                    stage='checkpoint',last_sql_timeout_ms=1000,last_sql_budget_seconds=checkpoint_budget,
+                    checkpoint_prepare_seconds=AMI._REFRESH_STATE['checkpoint_prepare_seconds']))])
                 self.assertNotIn('private',str((current,events)))
+
+    def test_checkpoint_uses_one_strict_encode_and_deferred_work_still_validates_without_write(self):
+        self.rows=self.history(130)
+        self.completed()
+        self.step(); self.step()
+        budget={'remaining_seconds':6.}
+        self.context.lane=SimpleNamespace(current_budget=lambda:dict(budget))
+        encode=STORE._json
+        self.publish.reset_mock()
+        with patch.object(STORE,'_json',wraps=encode) as encoding:
+            result=self.step()
+        self.assertEqual(result['status'],'PROGRESS')
+        self.assertEqual(result['processed'],88)
+        encoding.assert_called_once()
+        self.assertEqual(encoding.call_args.args[1],DELIVERY.WORK_BYTES)
+        self.publish.assert_called_once()
+        self.assertEqual(self.publish.call_args.kwargs['max_payload_bytes'],DELIVERY.WORK_BYTES)
+        self.assertIsInstance(AMI._REFRESH_STATE['checkpoint_prepare_seconds'],float)
+        before=deepcopy(self.durable)
+        self.publish.reset_mock()
+        budget['remaining_seconds']=2.1
+        with patch.object(STORE,'_json',wraps=encode) as encoding:
+            deferred=self.step()
+        self.assertEqual(deferred['status'],'DEFERRED_SCORECARD_BUDGET')
+        encoding.assert_called_once()
+        self.assertEqual(encoding.call_args.args[1],DELIVERY.WORK_BYTES)
+        self.publish.assert_not_called()
+        self.assertEqual(self.durable,before)
+        self.assertIsNone(AMI._REFRESH_STATE['checkpoint_prepare_seconds'])
+        # This work fits the general snapshot limit, but must fail the tighter
+        # AMI limit both with a write and with a zero-chunk deferral.
+        self.durable[DELIVERY.WORK_SLOT]['payload']['padding']='p'*DELIVERY.WORK_BYTES
+        oversized=deepcopy(self.durable)
+        self.assertGreater(len(encode(oversized[DELIVERY.WORK_SLOT]['payload'],
+                                      STORE.MAX_SNAPSHOT_BYTES).encode()),DELIVERY.WORK_BYTES)
+        for remaining in (6.,2.1):
+            with self.subTest(remaining=remaining):
+                budget['remaining_seconds']=remaining
+                self.publish.reset_mock()
+                with patch.object(STORE,'_json',wraps=encode) as encoding:
+                    with self.assertRaisesRegex(ValueError,'payload exceeds byte limit'):
+                        self.step()
+                encoding.assert_called_once()
+                self.assertEqual(encoding.call_args.args[1],DELIVERY.WORK_BYTES)
+                self.assertEqual(self.publish.call_count,1 if remaining==6. else 0)
+                self.assertEqual(self.durable,oversized)
+                self.assertTrue(self.connections[-1].rolled_back)
+                self.assertEqual(self.connections[-1].pending,{})
+                self.assertIsNone(AMI._REFRESH_STATE['checkpoint_prepare_seconds'])
+
+    def test_checkpoint_prepare_timing_excludes_set_and_write_and_cannot_mask_sql_errors(self):
+        self.rows=self.history(130)
+        self.context.sql_timeout_ms=2000
+        self.completed()
+        previous_cache=deepcopy(AMI._CACHE)
+        previous_snapshot=deepcopy(AMI._SNAPSHOT)
+        connect=self.connect
+        encode=STORE._json
+        cases=(('success',.125,.125),('set',.375,.375),('write',7.25,7.25),
+               ('write',float('nan'),None),('write',float('inf'),None),
+               ('write',-.25,None),('clock_error',.5,None))
+        for failed_at,preparation,expected in cases:
+            with self.subTest(failed_at=failed_at,preparation=preparation):
+                self.connect=connect
+                self.durable.clear(); AMI._RESTORED_EPOCH=None
+                self.publish.side_effect=self.save
+                self.chunk.side_effect=self.chunk_rows
+                budget={'remaining_seconds':6.}; clock={'now':100.,'broken':False}; events=[]
+                self.context.lane=SimpleNamespace(current_budget=lambda:dict(budget),
+                    emit=lambda event,**fields:events.append((event,fields)))
+                self.step(); self.step()
+                before=deepcopy(self.durable)
+                error=QueryCanceled('private snapshot SQL details')
+                write_sql='SELECT d.event_ts FROM ledger_events d LIMIT 1'
+                failed_sql="SET LOCAL statement_timeout = '2000ms'" if failed_at=='set' else write_sql
+                def monotonic():
+                    if clock['broken']:
+                        raise OSError('private diagnostic clock failure')
+                    return clock['now']
+                def timed_encode(payload,limit):
+                    value=encode(payload,limit)
+                    clock['now']+=preparation
+                    clock['broken']=failed_at=='clock_error'
+                    return value
+                def timed_connect():
+                    connection=connect()
+                    execute=connection.execute
+                    def timed_execute(sql,args=None):
+                        if sql=="SET LOCAL statement_timeout = '2000ms'":
+                            clock['now']+=.5
+                        if sql==write_sql:
+                            clock['now']+=.75
+                        if failed_at!='success' and sql==failed_sql:
+                            raise error
+                        return execute(sql,args)
+                    connection.execute=timed_execute
+                    return connection
+                def one_chunk(c,pairs):
+                    budget['remaining_seconds']=2.3
+                    return self.chunk_rows(c,pairs)
+                def persist(c,name,version,payload,**kwargs):
+                    before_write=kwargs['before_write']
+                    def write_boundary():
+                        before_write()
+                        c.execute(write_sql)
+                    kwargs['before_write']=write_boundary
+                    return self.save(c,name,version,payload,**kwargs)
+                self.connect=timed_connect
+                self.chunk.side_effect=one_chunk
+                self.publish.side_effect=persist
+                budget['remaining_seconds']=3.2
+                with patch.object(DELIVERY,'time',SimpleNamespace(time=DELIVERY.time.time,monotonic=monotonic)), \
+                     patch.object(STORE,'_json',side_effect=timed_encode):
+                    if failed_at=='success':
+                        self.assertEqual(self.step()['status'],'PROGRESS')
+                    else:
+                        with self.assertRaises(QueryCanceled) as raised:
+                            self.step()
+                        self.assertIs(raised.exception,error)
+                self.assertEqual(AMI._REFRESH_STATE['checkpoint_prepare_seconds'],expected)
+                if expected is not None:
+                    self.assertIsInstance(AMI._REFRESH_STATE['checkpoint_prepare_seconds'],float)
+                if failed_at=='success':
+                    self.assertEqual(events,[])
+                    self.assertEqual(clock['now'],101.375)
+                    self.assertTrue(self.connections[-1].committed)
+                else:
+                    self.assertEqual(self.durable,before)
+                    self.assertTrue(self.connections[-1].rolled_back)
+                    self.assertEqual(events,[('ami_refresh_error',dict(status='ERROR',error_type='QueryCanceled',
+                        stage='checkpoint',last_sql_timeout_ms=1000 if failed_at=='set' else 2000,
+                        last_sql_budget_seconds=2.3,checkpoint_prepare_seconds=expected))])
+                self.assertEqual(AMI._CACHE,previous_cache)
+                self.assertEqual(AMI._SNAPSHOT,previous_snapshot)
+                current=AMI.cached_scorecard(EPOCH)
+                self.assertNotIn('checkpoint_prepare_seconds',current)
+                self.assertNotIn('refresh_checkpoint_prepare_seconds',current)
+                self.assertNotIn('private',str((current,AMI._REFRESH_STATE,events)))
 
     def test_short_budget_can_decode_with_reduced_timeout_instead_of_starving(self):
         self.rows=self.history()
