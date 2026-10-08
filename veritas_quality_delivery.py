@@ -80,6 +80,7 @@ class QualityDelivery:
         self.work_bytes, self.byte_limit_hit, self.pending_report = 0, False, None
         self.recent, self.row_limit_hit = {}, False
         self.restore_pending, self.next_cycle = True, 0.
+        self.batch_size, self.phase = BATCH, 'BOOTSTRAP'
         self.lane.register_periodic('strategy_quality', self.tick,
             interval_seconds=5, retry_seconds=5, lightweight=True,
             estimated_peak_mb=16, max_seconds=6)
@@ -93,6 +94,7 @@ class QualityDelivery:
             return {'status': 'RETRY', 'reason': 'LEARNING_BOOTSTRAP_PENDING'}
         context = Budget(self.lane)
         if self.restore_pending:
+            self.phase = 'RESTORE'
             with transaction(self.ns['pg_connect'], context) as c:
                 saved = STORE.load_snapshot_in_transaction(c, 'strategy_quality', VERSION)
             if saved and saved['payload'].get('current_entry_version') == Q.version_identity():
@@ -105,6 +107,7 @@ class QualityDelivery:
         if time.monotonic() < self.next_cycle:
             return {'status': 'NO_WORK'}
         if self.pending_report is not None:
+            self.phase = 'PUBLISH'
             with transaction(self.ns['pg_connect'], context) as c:
                 if not STORE.publish_snapshot_in_transaction(c, 'strategy_quality', VERSION, self.pending_report):
                     raise RuntimeError('STRATEGY_QUALITY_SNAPSHOT_NOT_SAVED')
@@ -118,9 +121,11 @@ class QualityDelivery:
         if self.cutoff is None:
             self.cutoff = datetime.now(timezone.utc).isoformat()
         cursor_at, cursor_id = self.cursor or (None, None)
+        self.phase = 'READ_TRADES'
         with transaction(self.ns['pg_connect'], context) as c:
             batch = c.execute(batch_query(),
-                (self.cutoff, cursor_id, cursor_at, cursor_id, min(BATCH, LIMIT+1-len(self.rows)))).fetchall()
+                (self.cutoff, cursor_id, cursor_at, cursor_id, min(self.batch_size, LIMIT+1-len(self.rows)))).fetchall()
+        self.phase = 'REVIEW'
         for row in batch:
             if len(self.rows) == LIMIT:
                 self.row_limit_hit = True
@@ -138,11 +143,13 @@ class QualityDelivery:
             self.cursor = (row['closed_at'], row['trade_id'])
         if batch and not self.row_limit_hit and not self.byte_limit_hit:
             return {'status': 'PROGRESS', 'stage': 'REVIEW', 'processed': len(self.rows)}
+        self.phase = 'READ_POSITIONS'
         with transaction(self.ns['pg_connect'], context) as c:
             positions = c.execute("""SELECT portfolio_name,jsonb_build_object(
               'strategy_epoch',payload->'strategy_epoch','strategy_entry_sha',payload->'strategy_entry_sha',
               'strategy_policy_hash',payload->'strategy_policy_hash') AS payload FROM paper_positions""").fetchall()
         context.check()
+        self.phase = 'BUILD_REPORT'
         result = completed_report(self.rows[:LIMIT], positions,
                                   truncated=self.row_limit_hit or self.byte_limit_hit, cutoff=self.cutoff)
         result['history_limit_reason'] = 'COMPACT_MEMORY_LIMIT' if self.byte_limit_hit else 'ROW_LIMIT' if self.row_limit_hit else None
@@ -163,9 +170,16 @@ class QualityDelivery:
                 Q._CACHE['refresh_state'].update(result, processed=len(self.rows))
             raise
         except Exception as exc:
+            if getattr(exc, 'sqlstate', None) == '57014' and self.phase == 'READ_TRADES' and self.batch_size > 1:
+                self.batch_size = max(1, self.batch_size // 2)
+                deferred = MaintenanceDeferred('DEFERRED_SQL_TIMEOUT', batch_size=self.batch_size,
+                                              phase=self.phase, processed=len(self.rows))
+                with Q._LOCK:
+                    Q._CACHE['refresh_state'].update(deferred.result())
+                raise deferred from exc
             with Q._LOCK:
                 Q._CACHE.update(last_error=type(exc).__name__)
-                Q._CACHE['refresh_state'].update(status='ERROR', error_code=type(exc).__name__)
+                Q._CACHE['refresh_state'].update(status='ERROR', error_code=type(exc).__name__, phase=self.phase)
             raise
         with Q._LOCK:
             Q._CACHE['refresh_state'].update(result)

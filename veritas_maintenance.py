@@ -322,6 +322,9 @@ class MaintenanceLane:
     @contextmanager
     def _resource(self, owner, limit=None, trim=False):
         depth = getattr(self._local, "depth", 0)
+        learning = self.ns.get('_continuous_learning')
+        if depth == 0 and not owner.startswith('periodic:') and learning is not None and not learning.ready:
+            raise MaintenanceDeferred('DEFERRED_LEARNING_BOOTSTRAP', owner=owner)
         # A ready scheduler callback gets the next free history slot. The clock
         # bypass and position-protection paths never use this history resource.
         with self._condition:

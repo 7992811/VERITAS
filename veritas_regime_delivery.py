@@ -4,9 +4,9 @@ import math
 import threading
 import time
 
-LIMIT = 10000
+LIMIT = 256
 _LOCK = threading.Lock()
-_CACHE = {'value': None, 'at': 0., 'retry_at': 0., 'error': None}
+_CACHE = {'value': None, 'at': 0., 'retry_at': 0., 'error': None, 'limit': LIMIT}
 QUERY = """WITH recent AS MATERIALIZED (
  SELECT id,asset,horizon,event_ts FROM ledger_events WHERE event_type='decision'
  ORDER BY event_ts DESC,id DESC LIMIT %s
@@ -14,7 +14,7 @@ QUERY = """WITH recent AS MATERIALIZED (
 JOIN ledger_events e ON e.id=r.id ORDER BY r.event_ts DESC,r.id DESC"""
 
 
-def reduce_rows(rows, min_n, truncated=False):
+def reduce_rows(rows, min_n, truncated=False, limit=LIMIT):
     rows = sorted(rows, key=lambda r:(r['event_ts'],r['id']))
     grouped={}
     for r in rows:
@@ -47,15 +47,18 @@ def reduce_rows(rows, min_n, truncated=False):
                       'transition_observations':ntrans,'persistence_probability':persistence,
                       'normalized_transition_entropy':entropy,'recent_flip_rate':flip_rate,
                       'transition_risk':risk,'next_regime_distribution':dist[:6]})
-    return {'status':'ok','min_n':min_n,'items':items,'history_limit':LIMIT,
+    return {'status':'ok','min_n':min_n,'items':items,'history_limit':limit,
             'history_truncated':truncated,'coverage':'LATEST_DECISIONS_BOUNDED',
+            'history_start_at':str(rows[0]['event_ts']) if rows else None,
+            'history_end_at':str(rows[-1]['event_ts']) if rows else None,
             'note':'Empirical live-state transitions; not a structural Markov forecast.'}
 
 
 
 def snapshot(connect, min_n):
     def cached(status=None, error=None):
-        out = deepcopy(_CACHE['value']) if _CACHE['value'] else {'status':'WARMING_UP','items':[]}
+        out = deepcopy(_CACHE['value']) if _CACHE['value'] else {'status':'WARMING_UP','items':[],
+            'history_limit':_CACHE.get('limit',LIMIT),'coverage':'LATEST_DECISIONS_BOUNDED'}
         if status: out['status'] = status
         if error: out['error_code'] = error
         out['snapshot_age_seconds'] = round(time.monotonic()-_CACHE['at'], 1) if _CACHE['value'] else None
@@ -72,11 +75,14 @@ def snapshot(connect, min_n):
         with connect() as c, c.transaction():
             c.execute("SET LOCAL statement_timeout = '2000ms'")
             c.execute("SET LOCAL lock_timeout = '250ms'")
-            rows = c.execute(QUERY, (LIMIT+1,)).fetchall()
-        result = reduce_rows(rows[:LIMIT], min_n, len(rows)>LIMIT)
+            limit = _CACHE.get('limit',LIMIT)
+            rows = c.execute(QUERY, (limit+1,)).fetchall()
+        result = reduce_rows(rows[:limit], min_n, len(rows)>limit, limit)
         _CACHE.update(value=result, at=time.monotonic(), retry_at=0., error=None)
         return cached()
     except Exception as exc:
+        if getattr(exc,'sqlstate',None)=='57014':
+            _CACHE['limit'] = max(16, _CACHE.get('limit',LIMIT)//4)
         _CACHE.update(retry_at=time.monotonic()+10, error=type(exc).__name__)
         return cached('STALE' if _CACHE['value'] else 'UNAVAILABLE', type(exc).__name__)
     finally:

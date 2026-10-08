@@ -830,7 +830,7 @@ function portfolioView(p){
 function strategyQualityPanel(p){
   const d=st.strategyQuality||{},q=(d.portfolios||[]).find(x=>x.name===p.name);
   const options=(items,selected)=>items.map(([key,label])=>'<option value="'+key+'"'+(key===selected?' selected':'')+'>'+label+'</option>').join('');
-  const selectors='<div class="pf-heading"><h4>Качество правил</h4><div><select id="qualityScope" aria-label="Период статистики">'+options([['current','Текущие правила'],['since_73266d9','С версии 73266d9'],['all','Вся история']],st.qualityScope)+'</select> <select id="qualityWindow" aria-label="Размер выборки">'+options([['all','Все идеи'],['last20','Последние 20 идей'],['last50','Последние 50 идей']],st.qualityWindow)+'</select></div></div>';
+  const selectors='<div class="pf-heading"><h4>Качество правил</h4><div><select id="qualityScope" aria-label="Период статистики">'+options([['current','Текущая версия'],['since_73266d9','С версии 73266d9'],['all','Вся история']],st.qualityScope)+'</select> <select id="qualityWindow" aria-label="Размер выборки">'+options([['all','Все идеи'],['last20','Последние 20 идей'],['last50','Последние 50 идей']],st.qualityWindow)+'</select></div></div>';
   const m=q&&q.cohorts&&q.cohorts[st.qualityScope]&&q.cohorts[st.qualityScope][st.qualityWindow];
   const metric=(label,value)=>'<div class="pf-value"><span>'+label+'</span><b>'+value+'</b></div>';
   let body=!m?'<p class="pf-foot">Статистика ещё не получена. Нулевые результаты не подставляются.</p>':'<div class="pf-quality">'+metric('Закрытых сделок / идей',n(m.closed_trades,0)+' / '+n(m.idea_count,0))+metric('Прибыльных',m.win_rate==null?'—':pct(100*m.win_rate))+metric('Коэффициент прибыли',m.profit_factor==null?(m.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(m.profit_factor,2))+metric('Средняя прибыль / убыток',rub(m.avg_win_rub)+' / '+rub(m.avg_loss_rub))+metric('Средняя сделка',rub(m.expectancy_rub))+metric('Чистый результат',rub(m.net_pnl_rub))+metric('Захвачено движения',m.capture_ratio_mean==null?'—':pct(100*m.capture_ratio_mean))+metric('Плюс съеден расходами',n(m.cost_erased_winners,0))+'</div><p class="pf-foot">Событий с проверенной группировкой: '+n(m.verified_event_count,0)+'. Замер захвата движения: '+n(m.capture_sample,0)+' сделок. Старых открытых позиций: '+n(q.inherited_open_positions,0)+'. '+(m.idea_count<50?'Выборка недостаточна для вывода об устойчивости.':'Результат требует отдельной проверки вне обучающей выборки.')+'</p>';
@@ -1431,12 +1431,8 @@ async function loadAutonomousLearning(){
   renderIntelligence();
 }
 async function loadIntelligence(){
-  const [scorecard,progress,library]=await Promise.all([
-    get('intelligence-scorecard','/api/v1/intelligence-scorecard',9000),
-    get('learning-progress','/api/v1/learning-progress',9000),
-    get('library-summary','/api/v1/library-summary',9000)
-  ]);
-  st.intelligence=!scorecard&&st.intelligence?{...st.intelligence,refresh_delayed:true}:normalizeIntelligence(scorecard,progress,library);
+  const scorecard=await get('intelligence-scorecard','/api/v1/intelligence-scorecard',9000);
+  st.intelligence=!scorecard&&st.intelligence?{...st.intelligence,refresh_delayed:true}:normalizeIntelligence(scorecard,null,null);
   renderIntelligence();
 }
 function refreshLiveState(){
