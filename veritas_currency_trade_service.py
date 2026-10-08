@@ -37,7 +37,7 @@ from veritas_currency_trade_ledger import (
 )
 from veritas_currency_trade_plan import (
     AccountSnapshot, BrokerQuote, ContractSpec, TradePlanBlocked, ContractSizingBlocked, EntryAdmissionBlocked, fresh,
-    fingerprint, json_safe, utc,
+    fingerprint, json_safe, utc, ManualCheckBlocked,
 )
 from veritas_currency_trading import CurrencyTradingCoordinator, TradeFacts, TradeOwner
 from veritas_tbank_trading import TBankTradingAdapter, ExecutionConfig, TradingError, quotation_to_decimal
@@ -615,7 +615,10 @@ def _error(exc):
         status = getattr(exc, "status_code", 409)
         return {"ok": False, "code": code}, status if status in (400, 401, 403, 404, 409, 410, 429, 503) else 409
     if isinstance(exc, (TradePlanBlocked, LedgerError, FundingError)):
-        return {"ok": False, "code": _diagnostic(exc)}, 409
+        result = {"ok": False, "code": _diagnostic(exc)}
+        if isinstance(exc, ManualCheckBlocked):
+            result["manual_check"] = exc.manual_check
+        return result, 409
     if isinstance(exc, TradingError):
         return {"ok": False, "code": "BROKER_FACTS_UNAVAILABLE"}, 503
     return {"ok": False, "code": "TRADE_SERVICE_TEMPORARILY_UNAVAILABLE"}, 503

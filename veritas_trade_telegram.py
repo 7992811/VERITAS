@@ -40,6 +40,13 @@ REASONS = {
     "LIVE_ACCOUNT_HISTORY_EVIDENCE_REQUIRED": "Для реальной заявки не подтверждены история капитала и риск-лимиты всего брокерского счёта.",
     "SINGLE_ASSET_LIMIT": "Один контракт превышает действующий лимит доли актива от капитала всего счёта.",
     "STOP_RISK_LIMIT": "Риск до стопа с издержками превышает лимит всего счёта.",
+    "STOP_RISK_CHANGED_AFTER_APPROVAL": "Расчётный риск до стопа с издержками превышает лимит валютного портфеля.",
+    "ECONOMICS_CHANGED_AFTER_APPROVAL": "Условия после учёта издержек больше не проходят проверку дохода к риску.",
+    "PROPOSALS_PAUSED": "Подготовка предложений приостановлена в настройках валютного портфеля.",
+    "INSUFFICIENT_MARGIN_AFTER_APPROVAL": "Свободных средств недостаточно для ГО и комиссии заявки.",
+    "MARGIN_INCREASE_REQUIRES_NEW_APPROVAL": "ГО контракта увеличилось; требуется новое предложение.",
+    "BROKER_LOT_LIMIT_CHANGED": "Текущий лимит брокера не позволяет указанный объём.",
+    "ALLOCATION_EXPOSURE_LIMIT_CHANGED": "Номинал позиции превышает разрешённое плечо валютного портфеля.",
     "DISABLED": "Предложения сделок отключены в конфигурации.",
     "CURRENCY_ACCOUNT_NOT_BOUND": "Счёт ещё не привязан к учёту валютного портфеля.",
     "EXECUTION_DISABLED": "Отправка заявок брокеру отключена; подтверждения только сохраняются.",
@@ -53,7 +60,7 @@ REASONS = {
     "TRADE_BOT_BINDING_MISMATCH": "Идентификатор бота не совпадает с настройкой торгового сервиса.",
     "TRADE_REQUEST_SCOPE_MISMATCH": "Настройка счёта или окружения изменилась; запросите состояние заново.",
     "PRIVATE_TRADE_OWNER_REQUIRED": "Владелец личного чата не совпадает с настройкой торгового сервиса.",
-    "TRADE_REQUEST_REJECTED": "Сервис отклонил запрос; проверьте конфигурацию доступа.",
+    "TRADE_REQUEST_REJECTED": "Сервис отклонил запрос без распознанной причины. Причина требует диагностики.",
     "TRADE_SERVICE_UNAVAILABLE": "Торговый сервис временно недоступен; состояние не подтверждено.",
     "TRADE_SERVICE_AUTH_REQUIRED": "Ключ доступа бота не совпадает с ключом торгового сервиса.",
     "TRADE_SERVICE_KEY_NOT_CONFIGURED": "В торговом сервисе не настроен отдельный ключ доступа.",
@@ -118,6 +125,40 @@ def _reason(code):
     if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", code):
         return "Ограничение: " + code + "."
     return "Состояние ещё не подтверждено."
+
+
+def _manual_check(code, details):
+    if not isinstance(code, str):
+        return {}
+    fields = {
+        "MANUAL_ECONOMICS_BLOCKED": ("net_reward_risk", "minimum_reward_risk",
+            "expected_move_pct", "minimum_expected_move_pct", "modeled_round_trip_cost_pct"),
+        "STOP_RISK_CHANGED_AFTER_APPROVAL": ("stop_risk_rub", "stop_risk_limit_rub", "currency_nav_rub"),
+    }.get(code, ())
+    if not isinstance(details, dict):
+        return {}
+    return {key: details[key] for key in fields if isinstance(details.get(key), str)
+            and re.fullmatch(r"-?\d{1,21}(?:\.\d{1,12})?", details[key])}
+
+
+def manual_refusal_text(result):
+    code = result.get("code") or result.get("error")
+    lines = [_reason(code)]
+    metrics = {k: Decimal(v) for k, v in _manual_check(code, result.get("manual_check")).items()}
+    def shown(value):
+        return f"{value:.2f}".replace(".", ",")
+    if code == "MANUAL_ECONOMICS_BLOCKED":
+        if all(k in metrics for k in ("net_reward_risk", "minimum_reward_risk")):
+            lines.append("Доход / риск после расчётных издержек: " + shown(metrics["net_reward_risk"])
+                         + "; минимум: " + shown(metrics["minimum_reward_risk"]) + ".")
+        if all(k in metrics for k in ("expected_move_pct", "minimum_expected_move_pct")):
+            lines.append("Потенциал до цели: " + shown(100 * metrics["expected_move_pct"])
+                         + "%; минимум по издержкам: " + shown(100 * metrics["minimum_expected_move_pct"]) + "%.")
+    elif all(k in metrics for k in ("stop_risk_rub", "stop_risk_limit_rub", "currency_nav_rub")):
+        lines.append("Риск с расчётными издержками: " + shown(metrics["stop_risk_rub"])
+                     + " ₽; лимит: " + shown(metrics["stop_risk_limit_rub"]) + " ₽.")
+        lines.append("Капитал валютного портфеля: " + shown(metrics["currency_nav_rub"]) + " ₽.")
+    return "\n".join(lines)
 
 
 def _sizing_lines(details):
@@ -385,8 +426,13 @@ class InternalTradeClient:
             safe_code = code if isinstance(code, str) and code in REASONS else None
             if response.status_code >= 500:
                 raise TradeTelegramError(safe_code or "TRADE_SERVICE_UNAVAILABLE")
-            return {"ok": False, "error": "TRADE_REQUEST_REJECTED",
-                    "code": safe_code or "TRADE_REQUEST_REJECTED"}
+            result = {"ok": False, "error": "TRADE_REQUEST_REJECTED",
+                      "code": safe_code or "TRADE_REQUEST_REJECTED"}
+            if safe_code and response.status_code == 409:
+                metrics = _manual_check(safe_code, refusal.get("manual_check"))
+                if metrics:
+                    result["manual_check"] = metrics
+            return result
         try:
             data = response.json()
         except Exception:
@@ -458,7 +504,7 @@ class TradeTelegramBridge:
                     self._operator_reply("Ручная заявка подготовлена. Предложение с условиями и кнопками придёт отдельным сообщением."
                         if proposal.get("status") == "PENDING_DELIVERY" else execution_text(proposal))
                 else:
-                    self._operator_reply(_reason(result.get("code") or result.get("error")))
+                    self._operator_reply(manual_refusal_text(result))
             except TradeTelegramError:
                 self._operator_reply("Ответ на подготовку не получен. Не повторяйте команду с новыми параметрами, "
                     "пока не проверите /currency_status и сообщения с предложениями.")

@@ -126,7 +126,7 @@ def prepare(value, facts, now, *, ttl_seconds=120):
             fraction=fraction, expected_hold_seconds=intent["hold_minutes"] * 60)
         economics = VX.economics_gate("CNYRUBF", plan, execution_mode="LIVE", now=now)
         if not economics.get("eligible"):
-            raise P.TradePlanBlocked("MANUAL_ECONOMICS_BLOCKED")
+            raise P.ManualCheckBlocked("MANUAL_ECONOMICS_BLOCKED", **economics)
         margin = P.decimal(spec.margin_buy_rub if intent["side"] == "BUY" else spec.margin_sell_rub) * spec.lot_size
         risk = abs(price-stop) * spec.rub_per_price_unit_per_lot + notional * P.decimal(economics["modeled_round_trip_cost_pct"])
         terms.update(lots=1, stop_price=stop, target_price=target, horizon="MANUAL", model_version=VERSION,

@@ -25,6 +25,26 @@ class TradePlanBlocked(ValueError):
     """Stable diagnostic code only."""
 
 
+class ManualCheckBlocked(TradePlanBlocked):
+    """Numeric evidence from the check that refused an owner's request."""
+
+    def __init__(self, code, **metrics):
+        super().__init__(code)
+        fields = {
+            "MANUAL_ECONOMICS_BLOCKED": ("net_reward_risk", "minimum_reward_risk",
+                "expected_move_pct", "minimum_expected_move_pct", "modeled_round_trip_cost_pct"),
+            "STOP_RISK_CHANGED_AFTER_APPROVAL": ("stop_risk_rub", "stop_risk_limit_rub", "currency_nav_rub"),
+        }.get(code, ())
+        self.manual_check = {}
+        for key in fields:
+            try:
+                value = decimal(metrics.get(key))
+                if abs(value) <= Decimal("1e20"):
+                    self.manual_check[key] = format(value, ".12f").rstrip("0").rstrip(".") or "0"
+            except TradePlanBlocked:
+                pass
+
+
 class EntryAdmissionBlocked(TradePlanBlocked):
     """Carry bounded facts from the failed check, never re-evaluate admission."""
 
@@ -608,5 +628,9 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
     if not economics.get("eligible"):
         raise TradePlanBlocked("ECONOMICS_CHANGED_AFTER_APPROVAL")
     stop_risk = (abs(limit-stop)/limit + decimal(economics["modeled_round_trip_cost_pct"])) * exposure
-    if stop_risk > decimal(account.currency_nav_rub)*decimal(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"]):
+    risk_limit = decimal(account.currency_nav_rub)*decimal(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"])
+    if stop_risk > risk_limit:
+        if manual:
+            raise ManualCheckBlocked("STOP_RISK_CHANGED_AFTER_APPROVAL", stop_risk_rub=stop_risk,
+                stop_risk_limit_rub=risk_limit, currency_nav_rub=account.currency_nav_rub)
         raise TradePlanBlocked("STOP_RISK_CHANGED_AFTER_APPROVAL")
