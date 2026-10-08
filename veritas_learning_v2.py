@@ -63,10 +63,22 @@ def classify_decision_episode(row):
     mfe=_num(row.get("mfe"))
     mae=_num(row.get("mae"))
     blockers=tuple(sorted(str(x) for x in (row.get("final_gate_blockers") or row.get("blockers") or []) if x))
-    if decision=="NO_TRADE" and fr is not None and abs(fr)>=ENTRY_FALSE_BLOCK_MOVE:
+    candidate_direction=str(row.get("candidate_direction") or "")
+    candidate_move=(fr if candidate_direction=="LONG" else -fr if candidate_direction=="SHORT" else None)
+    if (decision=="NO_TRADE" and candidate_move is not None
+            and candidate_move>=ENTRY_FALSE_BLOCK_MOVE and blockers):
         return {
             "kind":"MISSED_DIRECTIONAL_MOVE",
-            "move":fr,
+            "move":candidate_move,
+            "candidate_direction":candidate_direction,
+            "blockers":blockers,
+            "counterfactual_fill_proven":False,
+        }
+    if decision=="NO_TRADE" and fr is not None and abs(fr)>=ENTRY_FALSE_BLOCK_MOVE:
+        return {
+            "kind":"ABSTENTION_LARGE_MOVE",
+            "move":abs(fr),
+            "candidate_direction":candidate_direction or None,
             "blockers":blockers,
             "counterfactual_fill_proven":False,
         }
@@ -91,7 +103,7 @@ def false_block_summary(rows):
         if c["kind"]!="MISSED_DIRECTIONAL_MOVE":
             continue
         total+=1
-        move=abs(c["move"])
+        move=max(0.0,c["move"])
         blockers=c["blockers"] or ("UNSPECIFIED_BLOCKER",)
         for blocker in blockers:
             z=by[blocker]; z["n"]+=1; z["abs_move_sum"]+=move; z["favourable_move_sum"]+=move
