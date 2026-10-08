@@ -218,6 +218,115 @@ def _provider_rows(ns, asset, horizon, identity):
     return [], "UNSUPPORTED_EXACT_SOURCE_REPLAY"
 
 
+def _decision_rows(pg_connect, candidate):
+    """Read only frozen decision evidence belonging to the candidate cohort."""
+    scope = candidate.get("scope") or {}
+    with pg_connect() as c:
+        rows = c.execute("""SELECT d.entity_key,d.event_ts,d.asset,d.horizon,d.payload,
+          e.regime,e.decision,e.forward_return
+          FROM ledger_events d
+          JOIN v90_decision_episodes e ON e.entity_key=d.entity_key
+          WHERE d.event_type='decision' AND d.asset=%s AND d.horizon=%s
+            AND COALESCE(e.regime,'UNKNOWN')=%s
+          ORDER BY d.event_ts ASC LIMIT %s""",
+          (scope.get("asset"), scope.get("horizon"), scope.get("regime"),
+           MAX_TRADES_PER_CANDIDATE)).fetchall()
+    out = []
+    for raw in rows:
+        row = dict(raw)
+        p = _payload(row.get("payload"))
+        if V2._source_key(p) != scope.get("source_key") or V2._policy_hash(p) != scope.get("policy_hash"):
+            continue
+        if str(row.get("decision") or "") != "NO_TRADE":
+            continue
+        blockers = set(V2._blockers(p))
+        wanted = str((candidate.get("proposal") or {}).get("soft_blocker") or "")
+        if wanted and wanted not in blockers:
+            continue
+        out.append(row)
+    return out
+
+
+def _decision_geometry(row, candidate):
+    p = _payload(row.get("payload"))
+    provenance = _payload(p.get("learning_provenance"))
+    quote = _payload(provenance.get("quote"))
+    context = _payload(p.get("timeframe_entry_context"))
+    event = _payload(context.get("event"))
+    if not event:
+        event = _payload((_payload(p.get("trade_plan"))).get("entry_event_snapshot"))
+    entry = _num(quote.get("price"))
+    stop = _num(event.get("stop_price") or p.get("stop_price"))
+    target = _num(event.get("target_price") or p.get("target_price"))
+    direction = str((candidate.get("scope") or {}).get("direction") or event.get("direction") or "")
+    decided = _dt(provenance.get("decision_at") or row.get("event_ts"))
+    identity = quote.get("source_identity")
+    if not isinstance(identity, dict):
+        identity = _identity(p)
+    if not all((entry, stop, target, decided)) or direction not in ("LONG", "SHORT"):
+        return None
+    if not isinstance(identity, dict) or not identity.get("key"):
+        return None
+    # Geometry must point in the declared direction at decision time.
+    if direction == "LONG" and not (stop < entry < target):
+        return None
+    if direction == "SHORT" and not (target < entry < stop):
+        return None
+    return {"entry": entry, "stop": stop, "target": target,
+            "direction": direction, "opened": decided, "identity": identity}
+
+
+def replay_entry_candidate(ns, pg_connect, candidate):
+    """Counterfactual for a verified false block: NO_TRADE versus frozen plan."""
+    rows = _decision_rows(pg_connect, candidate)
+    if not rows:
+        return {"status": "NO_MATCHING_DECISIONS",
+                "candidate_id": candidate.get("candidate_id"), "rows": 0}
+    by_identity = defaultdict(list)
+    exclusions = defaultdict(int)
+    for row in rows:
+        g = _decision_geometry(row, candidate)
+        if not g:
+            exclusions["INCOMPLETE_FROZEN_ENTRY_GEOMETRY"] += 1
+            continue
+        token = (g["identity"].get("key"), g["identity"].get("contract_id"))
+        by_identity[token].append((row, g))
+    replay = []
+    for _, group in by_identity.items():
+        identity = group[0][1]["identity"]
+        bars, source_status = _provider_rows(
+            ns, (candidate.get("scope") or {}).get("asset"),
+            (candidate.get("scope") or {}).get("horizon"), identity)
+        if not bars:
+            exclusions[source_status] += len(group)
+            continue
+        for row, g in group:
+            window = _slice(bars, g["opened"], (candidate.get("scope") or {}).get("horizon"))
+            if len(window) < 2:
+                exclusions["HISTORY_WINDOW_UNAVAILABLE"] += 1
+                continue
+            alt = replay_full(g["entry"], g["stop"], g["target"], g["direction"], window)
+            if not alt.get("eligible"):
+                exclusions["ALT_" + str(alt.get("reason"))] += 1
+                continue
+            replay.append({
+                "trade_id": row["entity_key"], "at": g["opened"],
+                "baseline_net": 0.0, "candidate_net": alt["net"],
+                "candidate_high_cost": alt["gross"] - HIGH_COST,
+                "delta": alt["net"], "parity": True,
+                "source_status": source_status,
+            })
+    if not replay:
+        return {"status": "INSUFFICIENT_REPLAY_EVIDENCE",
+                "candidate_id": candidate.get("candidate_id"), "rows": 0,
+                "exclusions": dict(exclusions)}
+    evidence = _evidence(candidate, replay, abstention_baseline=True)
+    result = V2.record_replay_evidence(pg_connect, candidate["candidate_id"], evidence)
+    return {"status": result.get("status"), "candidate_id": candidate.get("candidate_id"),
+            "rows": len(replay), "delta_metrics": _metrics(replay, "delta"),
+            "exclusions": dict(exclusions), "gate": result.get("gate")}
+
+
 def _trades(pg_connect, candidate):
     scope = candidate.get("scope") or {}
     with pg_connect() as c:
@@ -260,7 +369,7 @@ def _metrics(rows, key):
     return V2._metrics([r[key] for r in rows if _num(r.get(key)) is not None])
 
 
-def _evidence(candidate, rows):
+def _evidence(candidate, rows, *, abstention_baseline=False):
     created = V2._now(candidate.get("created_at"))
     historical = [r for r in rows if created is None or r["at"] <= created]
     shadow = [r for r in rows if created is not None and r["at"] > created]
@@ -277,11 +386,11 @@ def _evidence(candidate, rows):
       "high_cost_expectancy": float(high["expectancy"] or 0.0),
       "calibration_n": 0, "ece": None, "calibration_applicable": False,
       "requires_baseline_outperformance": True,
-      "baseline_oos_expectancy": bo["expectancy"],
-      "baseline_oos_profit_factor": bo["profit_factor"],
-      "baseline_vault_expectancy": bv["expectancy"],
-      "baseline_vault_profit_factor": bv["profit_factor"],
-      "baseline_shadow_expectancy": bs["expectancy"],
+      "baseline_oos_expectancy": 0.0 if abstention_baseline else bo["expectancy"],
+      "baseline_oos_profit_factor": 1.0 if abstention_baseline else bo["profit_factor"],
+      "baseline_vault_expectancy": 0.0 if abstention_baseline else bv["expectancy"],
+      "baseline_vault_profit_factor": 1.0 if abstention_baseline else bv["profit_factor"],
+      "baseline_shadow_expectancy": 0.0 if abstention_baseline else bs["expectancy"],
       "shadow_trades": ms["n"], "shadow_expectancy": float(ms["expectancy"] or 0.0),
       "shadow_max_drawdown": float(ms["max_drawdown"] or 0.0),
       "code_ci_pass": os.getenv("VERITAS_CODE_CI_PASS", "0").lower() in ("1", "true", "yes", "on"),
@@ -290,6 +399,8 @@ def _evidence(candidate, rows):
 
 
 def replay_candidate(ns, pg_connect, candidate):
+    if candidate.get("kind") == "ENTRY_FALSE_BLOCK":
+        return replay_entry_candidate(ns, pg_connect, candidate)
     scope = candidate.get("scope") or {}
     proposal = candidate.get("proposal") or {}
     trades = _trades(pg_connect, candidate)
@@ -354,7 +465,8 @@ def run(ns, pg_connect, *, max_candidates=MAX_CANDIDATES_PER_RUN):
     V2.ensure_schema(pg_connect)
     with pg_connect() as c:
         rows = c.execute("""SELECT * FROM learning_v2_candidates
-          WHERE kind IN ('STOP_STRUCTURE','EXIT_CAPTURE') AND state IN ('REPLAY_REQUIRED','SHADOW')
+          WHERE kind IN ('ENTRY_FALSE_BLOCK','STOP_STRUCTURE','EXIT_CAPTURE')
+            AND state IN ('REPLAY_REQUIRED','SHADOW')
           ORDER BY updated_at ASC LIMIT %s""",
           (max(1, min(8, int(max_candidates))),)).fetchall()
     results = []
