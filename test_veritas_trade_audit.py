@@ -63,6 +63,19 @@ class TradeAuditTests(unittest.TestCase):
         self.assertEqual(result['all_trades']['flat'],0)
         self.assertIsNone(result['all_trades']['win_rate'])
 
+    def test_closed_trade_reports_original_and_effective_stop_separately(self):
+        trade=self.row(-25)
+        trade['payload']={
+            'stop_price': 4098.25,
+            'last_stop_price': 4098.25,
+            'trailing_stop': 4105.00,
+        }
+        trade['last_exit_stop_price']=4112.50
+        closed=analyze([trade])['recent_trades'][0]
+        self.assertEqual(closed['initial_stop_price'],4098.25)
+        self.assertEqual(closed['last_stop_price'],4112.50)
+        self.assertEqual(closed['active_stop_at_exit'],4112.50)
+
 
 
 # Frozen before the streaming rewrite. The baseline owns its reducer and SQL;
@@ -155,13 +168,16 @@ def analyze(rows):
         note='Accounting includes every closed trade. Administrative, proxy, source-unverified and event-unverified cases are excluded only from strategy evidence. MFE is not a guaranteed realizable profit.')'''
 LEGACY_AUDIT_SQL = r'''SELECT t.*,
         EXTRACT(EPOCH FROM (t.closed_at-t.opened_at)) AS held_seconds,
-        o.entry_notional_rub,o.entry_fill_count,o.exit_fill_count,o.last_exit_reason
+        o.entry_notional_rub,o.entry_fill_count,o.exit_fill_count,o.last_exit_reason,
+        o.last_exit_stop_price
         FROM paper_trades t LEFT JOIN (
           SELECT trade_id,
             SUM(notional_rub) FILTER(WHERE side IN ('BUY','SELL_SHORT')) AS entry_notional_rub,
             COUNT(*) FILTER(WHERE side IN ('BUY','SELL_SHORT')) AS entry_fill_count,
             COUNT(*) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')) AS exit_fill_count,
-            (ARRAY_AGG(reason ORDER BY created_at DESC) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_reason
+            (ARRAY_AGG(reason ORDER BY created_at DESC) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_reason,
+            (ARRAY_AGG(NULLIF(payload->>'stop_price','')::double precision ORDER BY created_at DESC)
+                FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_stop_price
           FROM paper_orders GROUP BY trade_id
         ) o ON o.trade_id=t.trade_id
         WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')'''
