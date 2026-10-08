@@ -745,6 +745,8 @@ class TradeHttpApplication:
         configured = callable(getattr(self.coordinator, "live_admission", None))
         admission = getattr(self.coordinator, "live_admission", None)
         admission_status = admission.status() if callable(getattr(admission, "status", None)) else None
+        manual = getattr(self.coordinator, "manual_admission", None)
+        manual_status = manual.status() if callable(getattr(manual, "status", None)) else None
         new_risk_reason = None
         if self.environment == "production":
             if not configured:
@@ -767,6 +769,7 @@ class TradeHttpApplication:
                 "execution_environment": self.environment,
                 "live_account_admission_configured": configured,
                 "live_account_admission": json_safe(admission_status),
+                "manual_account_admission": json_safe(manual_status),
                 "settlement_reconciler_configured": getattr(self.facts, "settlement", None) is not None,
                 "settlement_receipt_provider_configured": self.funding is not None,
                 "new_risk_block_reason": new_risk_reason,
@@ -897,11 +900,11 @@ class TradeHttpApplication:
             if operation not in {"status", "bind", "decision", "claim-delivery",
                                  "delivered", "delivery-unknown", "updates", "poll",
                                  "settlement-observe", "settlement-attest", "admission-evidence",
-                                 "prepare-reviewed"}:
+                                 "prepare-reviewed", "prepare-manual", "prepare-manual-reviewed"}:
                 raise ServiceError("TRADE_ENDPOINT_NOT_FOUND", 404)
             self._body(body)
             if operation in {"bind", "decision", "settlement-observe", "settlement-attest",
-                             "admission-evidence", "prepare-reviewed"}:
+                             "admission-evidence", "prepare-reviewed", "prepare-manual", "prepare-manual-reviewed"}:
                 self._private_owner(body)
             if operation == "delivered":
                 if _positive_id(body.get("private_chat_id")) != self.owner.private_chat_id:
@@ -910,6 +913,18 @@ class TradeHttpApplication:
                 return self._status(), 200
             with self._lock:
                 self._initialize()
+                if operation in {"prepare-manual", "prepare-manual-reviewed"}:
+                    if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
+                        raise ServiceError("PROPOSALS_PAUSED")
+                    if not self.facts.is_bound():
+                        raise ServiceError("CURRENCY_ACCOUNT_NOT_BOUND")
+                    if self._unsettled():
+                        raise ServiceError("EXECUTION_RECONCILIATION_PENDING")
+                    reviewed = body.get("terms") if operation == "prepare-manual-reviewed" else None
+                    if operation == "prepare-manual-reviewed" and not isinstance(reviewed, dict):
+                        raise ServiceError("MANUAL_PARAMETERS_REQUIRED", 400)
+                    proposal = self.coordinator.prepare_manual(body.get("request"), reviewed_terms=reviewed)
+                    return {"ok": True, "proposal": self._public(proposal)}, 200
                 if operation == "prepare-reviewed":
                     if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
                         raise ServiceError("PROPOSALS_PAUSED")
@@ -1092,6 +1107,8 @@ def create_application(connect, summary_provider, *, configuration=None):
             instrument_uid=CNY_UID, environment=environment),
         preflight_live=environment == "production",
     )
+    from veritas_currency_manual_admission import ManualAccountAdmission
+    coordinator.manual_admission = ManualAccountAdmission(ledger_connect, adapter, account, evidence=evidence)
     application = TradeHttpApplication(
         repository=repository, coordinator=coordinator, facts=facts,
         owner=owner, service_key=service_key, ledger=ledger, funding=funding, evidence=evidence,

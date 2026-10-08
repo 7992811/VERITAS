@@ -562,19 +562,23 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
         raise TradePlanBlocked("TRADE_DIRECTION_UNAVAILABLE")
     if (side == "BUY" and decimal(quote.ask) > limit) or (side == "SELL" and decimal(quote.bid) < limit):
         raise TradePlanBlocked("PRICE_OUTSIDE_APPROVED_LIMIT")
+    import veritas_currency_manual as MANUAL
+    manual = MANUAL.applies(terms)
+    if manual:
+        MANUAL.validate_intent(terms, spec, account, quote, now)
     if reducing:
         return
-    if terms.get("plan_version") != VERSION:
-        raise TradePlanBlocked("PLAN_VERSION_REQUIRES_NEW_APPROVAL")
-    if canonical_event_valid is not True:
-        raise TradePlanBlocked("CANONICAL_EVENT_NO_LONGER_VALID")
-    context = _broker_context(approved_entry_context(terms), spec, quote, terms["direction"], now)
-    if context.get("timeframe") != terms.get("horizon"):
-        raise TradePlanBlocked("BROKER_SIGNAL_TIMEFRAME_MISMATCH")
-    # A favorable price is still invalid if the breakout no longer holds.
-    # The approved cap and the current executable quote must both be eligible.
-    _structural(context, decimal(quote.ask if side == "BUY" else quote.bid), terms["direction"], now)
-    _structural(context, limit, terms["direction"], now)
+    if not manual:
+        if terms.get("plan_version") != VERSION:
+            raise TradePlanBlocked("PLAN_VERSION_REQUIRES_NEW_APPROVAL")
+        if canonical_event_valid is not True:
+            raise TradePlanBlocked("CANONICAL_EVENT_NO_LONGER_VALID")
+        context = _broker_context(approved_entry_context(terms), spec, quote, terms["direction"], now)
+        if context.get("timeframe") != terms.get("horizon"):
+            raise TradePlanBlocked("BROKER_SIGNAL_TIMEFRAME_MISMATCH")
+        # Both actual execution and the owner's cap retain native eligibility.
+        _structural(context, decimal(quote.ask if side == "BUY" else quote.bid), terms["direction"], now)
+        _structural(context, limit, terms["direction"], now)
     if account.drawdown >= currency_limits()["hard_drawdown"]:
         raise TradePlanBlocked("CURRENCY_DRAWDOWN_STOP")
     margin = decimal(spec.margin_buy_rub if side == "BUY" else spec.margin_sell_rub, positive=True) * spec.lot_size * lots

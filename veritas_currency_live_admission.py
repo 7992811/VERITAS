@@ -205,7 +205,12 @@ def canonical_json(value):
 
 def evidence_scope(terms):
     """Bind an independent issuer's attestation to exact immutable order terms."""
-    binding = model_binding(terms)
+    import veritas_currency_manual as M
+    if M.applies(terms):
+        from veritas_currency_manual_admission import binding as manual_binding
+        binding = manual_binding(terms)
+    else:
+        binding = model_binding(terms)
     environment = terms.get("execution_environment", "production")
     _require(environment == "production", "LIVE_PRODUCTION_BROKER_REQUIRED")
     return {"account_id": binding["account_id"], "instrument_uid": binding["instrument_uid"],

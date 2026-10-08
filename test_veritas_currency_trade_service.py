@@ -324,6 +324,26 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.assertEqual(response["block_reason"], "CURRENCY_ACCOUNT_NOT_BOUND")
         self.assertEqual(self.coordinator.calls, [])
 
+    def test_manual_prepare_requires_private_owner_bound_scope_and_unpaused_service(self):
+        proposal = self.create(event='manual-http-fixture')
+        requested = {'request_id':'offline-http-fixture'}
+        owner = dict(sender_user_id=OWNER, private_chat_id=OWNER, chat_type='private', request=requested)
+        with patch.object(self.coordinator, 'prepare_manual', create=True, return_value=proposal) as prepare:
+            for change in ({'sender_user_id':OWNER+1}, {'chat_type':'group'}, {'account_id':'foreign'}):
+                self.assertEqual(self.request('prepare-manual', {**owner, **change})[1], 403)
+            prepare.assert_not_called()
+            self.facts.bound = False
+            self.assertEqual(self.request('prepare-manual', owner)[0]['code'], 'CURRENCY_ACCOUNT_NOT_BOUND')
+            self.facts.bound = True
+            self.app.console_binding = lambda: {'paused':True}
+            self.assertEqual(self.request('prepare-manual', owner)[0]['code'], 'PROPOSALS_PAUSED')
+            self.app.console_binding = lambda: {'paused':False}
+            response, status = self.request('prepare-manual', owner)
+            self.assertEqual(status, 200)
+            self.assertEqual(response['proposal']['proposal_id'], proposal['proposal_id'])
+            prepare.assert_called_once_with(requested, reviewed_terms=None)
+        self.assertEqual(self.coordinator.calls, [])
+
     def test_size_failure_is_cached_read_only_then_cleared_on_next_poll(self):
         from decimal import Decimal as D
         failure = service.ContractSizingBlocked(nav=D('10000'), fraction=D('.5'),
