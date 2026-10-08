@@ -27,7 +27,7 @@ REASONS = {
     "CURRENCY_ACCOUNT_NOT_BOUND": "Счёт ещё не привязан к учёту валютного портфеля.",
     "EXECUTION_DISABLED": "Отправка заявок брокеру отключена; подтверждения только сохраняются.",
     "CURRENCY_TRADE_EXECUTION_DISABLED": "Отправка заявок брокеру отключена; подтверждения только сохраняются.",
-    "LIVE_ACCOUNT_ADMISSION_REQUIRED": "Не настроен независимый риск-допуск реального счёта.",
+    "LIVE_ACCOUNT_ADMISSION_REQUIRED": "Не подтверждён риск-допуск модели и всего реального счёта.",
     "RECONCILIATION_PENDING": "Ожидается сверка заявки, исполнений и комиссий с брокером.",
     "EXECUTION_RECONCILIATION_PENDING": "Ожидается сверка заявки, исполнений и комиссий с брокером.",
     "NO_CANONICAL_EVENT": "Сейчас нет нового подтверждённого сигнала.",
@@ -65,6 +65,12 @@ REASONS = {
     "SETTLEMENT_HISTORY_CORRECTED": "Брокер исправил историю расчётов; перед новым входом требуется повторная сверка учёта.",
     "SETTLEMENT_CHECKPOINT_DUE": "Наступил срок очередной сверки брокерских расчётов.",
     "TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT": "Плановый объём уже набран либо допустимого размера недостаточно для одного целого контракта.",
+    "INSUFFICIENT_MARGIN_FOR_ONE_CONTRACT": "Свободных средств у брокера недостаточно для ГО одного контракта и комиссии входа.",
+    "CURRENCY_MARGIN_BUDGET_EXCEEDED": "ГО позиции и комиссия входа превышают доступный капитал валютного портфеля.",
+    "BROKER_LOT_LIMIT_BELOW_ONE_CONTRACT": "Брокер не разрешает ни одного контракта в выбранном направлении.",
+    "ALLOCATION_EXPOSURE_LIMIT_EXCEEDED": "Номинал позиции превышает разрешённое плечо валютного портфеля.",
+    "FINAL_CONTRACT_STOP_RISK_EXCEEDED": "Риск целого количества контрактов до стопа с издержками превышает лимит портфеля.",
+    "PLAN_VERSION_REQUIRES_NEW_APPROVAL": "Расчёт условий обновлён; требуется новое предложение и подтверждение.",
 }
 
 
@@ -112,7 +118,7 @@ def _sizing_lines(details):
         reason = details.get("reason")
         if reason == "BELOW_ONE_CONTRACT" and target == 0:
             first = "Расчётный объём меньше одного целого контракта."
-        elif reason == "TARGET_ALREADY_REACHED" and target >= 1:
+        elif reason == "TARGET_ALREADY_REACHED" and held >= 1:
             first = "Целевое количество контрактов уже набрано; добор не требуется."
         else:
             return []
@@ -220,6 +226,10 @@ def proposal_text(proposal, *, execution_enabled=False):
     if t.get("target_price") is not None:
         lines.append(f"Цель стратегии: {t['target_price']} ₽")
     if t.get("action") in ("OPEN", "ADD"):
+        if t.get("sizing_mode") == "INITIAL_MINIMUM_CONTRACT":
+            lines.append("Начальный объём: 1 целый контракт; расчётная доля стратегии меньше контракта.")
+        if t.get("resulting_leverage") is not None:
+            lines.append(f"Плечо всей позиции после заявки: {t['resulting_leverage']}× капитала портфеля.")
         lines.extend([
             f"Требуемое ГО: {t.get('required_margin_rub', '—')} ₽",
             f"Оценка комиссии входа: {t.get('estimated_commission_rub', '—')} ₽",

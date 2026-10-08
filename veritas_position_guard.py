@@ -1174,7 +1174,12 @@ def expected_exchange_session_open(asset, now=None):
 
 
 def snapshot():
-    return dict(_state)
+    from veritas_operational_status import protection_operation
+    result=dict(_state)
+    result['operational']=protection_operation(result)
+    if result.get('status')=='OK' and not result['operational']['deadline_met']:
+        result['status']='DEGRADED_LATENCY'
+    return result
 
 
 def start(ns):

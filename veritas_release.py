@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.15-structural-breakout-autonomous-learning"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.15-structural-breakout-autonomous-learning"
-UI_VERSION="veritas-ui-v9.1.8.15-structural-breakout-autonomous-learning"
+PRODUCT_VERSION="veritas-max-product-v91.8.18-structural-breakout-autonomous-learning"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.18-structural-breakout-autonomous-learning"
+UI_VERSION="veritas-ui-v9.1.8.18-structural-breakout-autonomous-learning"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -22,6 +22,11 @@ def snapshot():
         "product_version":PRODUCT_VERSION,
         "portfolio_version":PORTFOLIO_VERSION,
         "ctc_version":CTC.VERSION,
+        "currency_contract_sizing_policy": {
+            "minimum_initial_contracts": CTC.PORTFOLIO_POLICIES["Currency"]["minimum_initial_contracts"],
+            "whole_position_margin_within_allocation": True,
+            "minimum_does_not_apply_to_add": True,
+        },
         "strategy_epoch":CTC.STRATEGY_EPOCH,
         "execution_integrity_policy":{
             "version":"CTC_VERIFIED_EXECUTION_SNAPSHOT_V2",

@@ -15,7 +15,7 @@ import veritas_timeframe_structure as TS
 import veritas_timeframe_policy as TFP
 import veritas_structural_breakout as SB
 
-VERSION = "currency-broker-plan-v1"
+VERSION = "currency-broker-plan-v2-whole-contract"
 ASSET = "CNYRUBF"
 ZERO, ONE = Decimal("0"), Decimal("1")
 
@@ -30,7 +30,7 @@ class ContractSizingBlocked(TradePlanBlocked):
     def __init__(self, *, nav, fraction, contract_notional, target_lots, held_lots, max_gross):
         super().__init__("TARGET_ALREADY_REACHED_OR_BELOW_ONE_CONTRACT")
         self.sizing = {
-            "reason": "BELOW_ONE_CONTRACT" if target_lots < 1 else "TARGET_ALREADY_REACHED",
+            "reason": "TARGET_ALREADY_REACHED" if held_lots else "BELOW_ONE_CONTRACT",
             "currency_nav_rub": str(nav), "target_fraction": str(fraction),
             "target_notional_rub": str(nav * fraction),
             "contract_notional_rub": str(contract_notional),
@@ -240,8 +240,12 @@ class BrokerQuote:
 
 def currency_limits():
     policy = CTC.runtime_portfolio_policy("Currency")
+    minimum = integer(policy.get("minimum_initial_contracts", 0), nonnegative=True)
+    if minimum not in (0, 1):
+        raise TradePlanBlocked("INVALID_MINIMUM_CONTRACT_POLICY")
     return {"allocation_rub": decimal(policy["initial_nav_rub"]),
             "max_gross": decimal(policy["max_gross"]),
+            "minimum_initial_contracts": minimum,
             "hard_drawdown": decimal(policy["hard_drawdown"])}
 
 
@@ -366,7 +370,8 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
     fraction = min(decimal(admission.get("fraction"), positive=True), limits["max_gross"])
     contract_notional = terms["limit_price"] * spec.rub_per_price_unit_per_lot
     target_lots = int((nav * fraction / contract_notional).to_integral_value(rounding=ROUND_FLOOR))
-    lots = target_lots - abs(account.signed_lots)
+    minimum_entry = required_action == "OPEN" and target_lots == 0 and limits["minimum_initial_contracts"] == 1
+    lots = (1 if minimum_entry else target_lots) - abs(account.signed_lots)
     if lots < 1:
         raise ContractSizingBlocked(nav=nav, fraction=fraction, contract_notional=contract_notional,
                                     target_lots=target_lots, held_lots=abs(account.signed_lots),
@@ -387,20 +392,31 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
     price = terms["limit_price"]
     if sign * (price - stop) <= 0 or sign * (target - price) <= 0:
         raise TradePlanBlocked("STRUCTURAL_GEOMETRY_INVALID_AT_BROKER_PRICE")
+    margin_per_lot = decimal(spec.margin_buy_rub if sign > 0 else spec.margin_sell_rub, positive=True) * spec.lot_size
+    broker_max = account.broker_max_buy_lots if sign > 0 else account.broker_max_sell_lots
+    if broker_max < 1:
+        raise TradePlanBlocked("BROKER_LOT_LIMIT_BELOW_ONE_CONTRACT")
+    commission_rate = decimal(VX.VC.COMMISSION_RATE)
+    reserve = margin_per_lot + contract_notional * commission_rate
+    # Currency may not spend other allocations' cash even if the broker account
+    # has more money. Reserve current margin for all held contracts on an ADD.
+    allocation_margin = max(ZERO, nav - abs(account.signed_lots) * margin_per_lot)
+    margin_budget = min(max(ZERO, decimal(account.available_margin_rub)), allocation_margin)
+    margin_lots = int((margin_budget / reserve).to_integral_value(rounding=ROUND_FLOOR))
+    lots = min(lots, broker_max, margin_lots)
+    if lots < 1:
+        if allocation_margin < reserve:
+            raise TradePlanBlocked("CURRENCY_MARGIN_BUDGET_EXCEEDED")
+        raise TradePlanBlocked("INSUFFICIENT_MARGIN_FOR_ONE_CONTRACT")
+    exposure_lots = abs(account.signed_lots) + lots
+    exposure = contract_notional * exposure_lots
+    if exposure > nav * limits["max_gross"]:
+        raise TradePlanBlocked("ALLOCATION_EXPOSURE_LIMIT_EXCEEDED")
     exact_plan = live_economics_plan(direction, price, stop, target, quote, row.get("horizon"),
-                                    fraction=fraction, expected_hold_seconds=plan.get("expected_hold_seconds"))
+                                    fraction=exposure / nav, expected_hold_seconds=plan.get("expected_hold_seconds"))
     economics = VX.economics_gate(ASSET, exact_plan, execution_mode="LIVE", now=now)
     if not economics.get("eligible"):
         raise TradePlanBlocked("BROKER_PRICE_ECONOMICS:" + ",".join(economics.get("blockers") or []))
-    margin_per_lot = decimal(spec.margin_buy_rub if sign > 0 else spec.margin_sell_rub, positive=True) * spec.lot_size
-    broker_max = account.broker_max_buy_lots if sign > 0 else account.broker_max_sell_lots
-    commission_rate = decimal(VX.VC.COMMISSION_RATE)
-    reserve = margin_per_lot + contract_notional * commission_rate
-    margin_lots = int((max(ZERO, decimal(account.available_margin_rub)) / reserve).to_integral_value(rounding=ROUND_FLOOR))
-    lots = min(lots, broker_max, margin_lots)
-    if lots < 1:
-        raise TradePlanBlocked("INSUFFICIENT_MARGIN_FOR_ONE_CONTRACT")
-    exposure_lots = abs(account.signed_lots) + lots
     stop_risk = abs(price - stop) * spec.rub_per_price_unit_per_lot * exposure_lots
     stop_risk += contract_notional * exposure_lots * decimal(economics["modeled_round_trip_cost_pct"])
     cap = decimal(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"])
@@ -408,6 +424,9 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
         raise TradePlanBlocked("FINAL_CONTRACT_STOP_RISK_EXCEEDED")
     terms.update(lots=lots, stop_price=stop, target_price=target, horizon=str(row.get("horizon")),
                  target_fraction=fraction, currency_nav_rub=nav, high_water_rub=decimal(account.high_water_rub),
+                 sizing_mode="INITIAL_MINIMUM_CONTRACT" if minimum_entry else "CANONICAL_TARGET_FLOOR",
+                 nominal_target_lots=target_lots, resulting_position_lots=exposure_lots,
+                 resulting_notional_rub=exposure, resulting_leverage=exposure / nav,
                  required_margin_rub=margin_per_lot * lots, order_notional_rub=contract_notional * lots,
                  estimated_commission_rub=contract_notional * lots * commission_rate,
                  total_stop_risk_rub=stop_risk, cost_multiple=decimal(economics["minimum_expected_move_pct"]) /
@@ -475,6 +494,8 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
         raise TradePlanBlocked("PRICE_OUTSIDE_APPROVED_LIMIT")
     if reducing:
         return
+    if terms.get("plan_version") != VERSION:
+        raise TradePlanBlocked("PLAN_VERSION_REQUIRES_NEW_APPROVAL")
     if canonical_event_valid is not True:
         raise TradePlanBlocked("CANONICAL_EVENT_NO_LONGER_VALID")
     context = _broker_context(approved_entry_context(terms), spec, quote, terms["direction"], now)
@@ -491,6 +512,9 @@ def revalidate(terms, spec, account, quote, *, now, canonical_event_valid=False)
         raise TradePlanBlocked("MARGIN_INCREASE_REQUIRES_NEW_APPROVAL")
     if margin + decimal(terms.get("estimated_commission_rub")) > decimal(account.available_margin_rub):
         raise TradePlanBlocked("INSUFFICIENT_MARGIN_AFTER_APPROVAL")
+    total_margin = margin / lots * (abs(account.signed_lots) + lots)
+    if total_margin + decimal(terms.get("estimated_commission_rub")) > decimal(account.currency_nav_rub):
+        raise TradePlanBlocked("CURRENCY_MARGIN_BUDGET_EXCEEDED")
     maximum = account.broker_max_buy_lots if side == "BUY" else account.broker_max_sell_lots
     if lots > maximum:
         raise TradePlanBlocked("BROKER_LOT_LIMIT_CHANGED")

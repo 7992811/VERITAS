@@ -204,6 +204,10 @@ PORTFOLIO_POLICIES = {
         "strong_threshold":0.74,"min_independent":2,"allowed_assets":("CNYRUBF",),
         "initial_nav_rub":10_000.0,"directions":("LONG","SHORT","CASH"),
         "initial_normal":0.50,"initial_super":1.00,"probe_normal":0.05,"probe_super":0.10,
+        # Broker futures are indivisible. An admitted initial entry may request
+        # one contract, subject to fresh margin, notional and net stop-risk caps.
+        # This is not a multiplier for the target and never applies to ADD.
+        "minimum_initial_contracts":1,
         "max_single_asset_fraction":10.00,"max_gross":10.00,"leverage_limit":10.00,
         "hard_drawdown":0.35,"weekend_carry_allowed":True,"position_step":0.05,
         "paper_trading_enabled":True,"live_trading_enabled":False,

@@ -102,18 +102,32 @@ One lot's point-price notional is:
     limit_price * tick_value_rub / tick_size * lot_size
 
 Desired whole lots are rounded down from the canonical admitted notional.
-Existing lots are subtracted for ADD. The result is limited by actual available
+Currency's explicit `minimum_initial_contracts=1` policy permits a single
+indivisible contract for an admitted OPEN whose positive target rounds to zero.
+This includes an admitted small probe; its actual exposure may exceed the
+fractional target, so the immutable Telegram proposal identifies the minimum
+contract rule and shows the resulting leverage, current margin and net stop risk.
+It is not a margin-spending target or a multiplication of the target by 10.
+Existing lots are subtracted for ADD; the minimum never increases an ADD.
+The result is limited by actual available
 margin, the broker's current maximum lots, commission reserve and the whole
-position's structural stop risk cap. Available margin is bounded by both
+position's structural stop risk cap. Margin plus the new entry commission must
+also fit Currency NAV after reserving current margin for held contracts; cash
+elsewhere in the broker account cannot enlarge this allocation budget.
+Available margin is bounded by both
 GetPositions money minus blocked cash and GetWithdrawLimits money minus blocked
 cash and blockedGuarantee. Missing withdrawal-limit evidence gives zero capacity
 for a new entry or initial allocation binding; it does not veto a valid close.
 
-A maximum leverage of 10 does not turn a canonical admitted fraction of 0.8
-into 8.0. A 10,000 RUB allocation at a fraction below 1 may admit less than one
-CNYRUBF contract. In that case the proposal is blocked. The module does not
-silently round the position up, reinterpret the risk policy, or convert paper
-units directly into contracts.
+A single contract still fails if fresh margin plus fees, broker lot capacity,
+the 10x gross notional cap, exact LIVE economics or the unchanged 2% allocation
+net stop-risk cap does not allow it. A wide structural stop cannot be shortened
+to force a contract through. The separate whole-account LIVE authority remains
+required before delivery and again after owner approval. Missing model evidence
+is never replaced by the minimum-contract rule. Margin is read from current
+broker metadata for the actual side, never hardcoded to a reported 746 RUB.
+The versioned order plan requires new approval after this sizing update; old
+OPEN/ADD terms cannot inherit the new rule. Reducing exits retain their path.
 
 The exact broker instrument UID is c300543d-aa18-4249-b110-615409dde036.
 Broker metadata supplies tick size, tick amount, lot and initial margin.
