@@ -8840,6 +8840,18 @@ def apply_v84_execution_to_trade_plan(row,plan,memory,regime_policy,execution_po
     plan['adaptive_regime_policy']=regime_policy
     plan['execution_policy']=execution_policy
 
+    # Learning 2.0 owns parameter evolution. The legacy v84 memory remains
+    # visible for research/diagnostics but cannot rewrite size or stop geometry.
+    # This removes a second autonomous adaptation path with weaker evidence
+    # thresholds while preserving all canonical source/risk/economics gates.
+    if os.getenv('VERITAS_LEARNING_V2_STRICT','0').lower() in ('1','true','yes','on'):
+        plan['legacy_v84_shadow_only']=True
+        plan['legacy_v84_proposed_execution_policy']=dict(execution_policy or {})
+        plan['execution_policy']=dict(execution_policy or {},decision_influence=False,
+                                      learning_v2_superseded=True)
+        plan['structural_stop_enforced']=True
+        return plan
+
     f0=float(plan.get('initial_position_fraction') or 0.0)
     if f0>0:
         mult=float(execution_policy.get('size_multiplier') or 1.0)
@@ -19110,7 +19122,18 @@ def main():
     threading.Thread(target=_v90r38_storage_rescue_loop, daemon=True,
                      name='veritas-storage-rescue').start()
     if pg_boot.get('ok'):
-        threading.Thread(target=heavy_learning_maintenance_loop, daemon=True).start(); threading.Thread(target=VAMI.startup_snapshot,args=(pg_connect,learning_progress,os.getenv('VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-30T04:59:29.357862+00:00')),daemon=True,name='veritas-ami-snapshot').start()
+        _external_learning = os.getenv('VERITAS_EXTERNAL_LEARNING','0').lower() in ('1','true','yes','on')
+        _external_consumer = _external_learning and SERVICE_ROLE not in ('learning','all')
+        if not _external_consumer:
+            threading.Thread(target=heavy_learning_maintenance_loop, daemon=True,
+                             name='veritas-heavy-learning').start()
+            threading.Thread(target=VAMI.startup_snapshot,
+                             args=(pg_connect,learning_progress,os.getenv('VERITAS_PRODUCTION_CANDIDATE_EPOCH','2026-09-30T04:59:29.357862+00:00')),
+                             daemon=True,name='veritas-ami-snapshot').start()
+        else:
+            emit('external_learning_consumer_active',
+                 heavy_learning_local=False, intelligence_recompute_local=False,
+                 source='POSTGRES_DURABLE_LEARNING_PROFILES')
     heavy_role = SERVICE_ROLE in ('learning','all')
     # Knowledge discovery is lightweight, rate-limited and shadow-only; run it
     # on the web role too. Heavy backtests/research remain isolated to heavy roles.

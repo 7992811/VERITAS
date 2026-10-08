@@ -16,6 +16,7 @@ import threading
 import time
 
 import veritas_autonomous_learning as AUTO
+import veritas_learning_v2 as V2
 import veritas_learning_bridge as BRIDGE
 import veritas_learning_index as INDEX
 import veritas_learning_state as STORE
@@ -216,27 +217,60 @@ class ContinuousLearning:
                        "abstention_observations": 0, "excluded_forecasts": 0,
                        "last_success_at": None, "last_error": None}
         self.trade = None
-        jobs = (("learning_bootstrap", self.bootstrap, 10, 6),
-                ("learning_ingest", self.ingest, 15, 6),
-                ("learning_outcomes", self.outcomes, 15, 6),
-                ("learning_candidates", self.candidates, 30, 6),
-                ("learning_knowledge_catalog", self.knowledge_catalog, 60, 6),
-                ("learning_trade_evidence", self.trades, 30, 6),
-                ("learning_progress", self.progress, 120, 6),
-                ("learning_intelligence", self.intelligence, 15, 6),
-                ("learning_memory", self.memory, 300, 6))
-        for name, fn, interval, seconds in jobs:
-            if name == "learning_bootstrap":
-                callback = fn
-            elif name == "learning_trade_evidence":
-                callback = self._trade_callback
-            else:
-                callback = self._callback(name, fn)
-            self.lane.register_periodic(name, callback, interval_seconds=interval,
-                                        lightweight=True, estimated_peak_mb=16, max_seconds=seconds)
+        role = str(ns.get("SERVICE_ROLE") or os.getenv("VERITAS_ROLE", "web")).strip().lower()
+        external = os.getenv("VERITAS_EXTERNAL_LEARNING", "0").lower() in ("1", "true", "yes", "on")
+        self.external_consumer = bool(external and role not in ("learning", "all"))
+        if self.external_consumer:
+            # The production web/trading process only consumes compact durable
+            # profiles. Historical scans, hypothesis generation and trade review
+            # run in the dedicated learning service.
+            self.lane.register_periodic("learning_profile_sync", self.profile_sync,
+                                        interval_seconds=30, lightweight=True,
+                                        estimated_peak_mb=8, max_seconds=3)
+        else:
+            jobs = (("learning_bootstrap", self.bootstrap, 10, 6),
+                    ("learning_ingest", self.ingest, 15, 6),
+                    ("learning_outcomes", self.outcomes, 15, 6),
+                    ("learning_candidates", self.candidates, 30, 6),
+                    ("learning_knowledge_catalog", self.knowledge_catalog, 60, 6),
+                    ("learning_trade_evidence", self.trades, 30, 6),
+                    ("learning_v2_research", self.learning_v2, 60, 6),
+                    ("learning_progress", self.progress, 120, 6),
+                    ("learning_intelligence", self.intelligence, 15, 6),
+                    ("learning_memory", self.memory, 300, 6))
+            for name, fn, interval, seconds in jobs:
+                if name == "learning_bootstrap":
+                    callback = fn
+                elif name == "learning_trade_evidence":
+                    callback = self._trade_callback
+                else:
+                    callback = self._callback(name, fn)
+                self.lane.register_periodic(name, callback, interval_seconds=interval,
+                                            lightweight=True, estimated_peak_mb=16, max_seconds=seconds)
 
     def start(self):
         return self.lane.start_periodic()
+
+    def profile_sync(self):
+        """Web-role consumer: load only compact durable learning profiles."""
+        context = Budget(self.lane)
+        context.check()
+        saved = AUTO.snapshot(self.connect)
+        context.check()
+        BRIDGE.update(saved)
+        v2 = V2.sync_runtime(self.connect)
+        context.check()
+        progress = STORE.load_snapshot(self.connect, "learning_progress", PROGRESS_VERSION)
+        if progress:
+            self.ns["learning_progress"]._cache = (time.time(), progress["payload"])
+        with self._lock:
+            self._snapshot = saved
+            self.ready = True
+            self._stats.update(status="external_consumer", last_success_at=clock().isoformat(),
+                               last_error=None)
+        return {"status": "OK", "mode": "EXTERNAL_LEARNING_CONSUMER",
+                "profiles": len(saved.get("profiles") or []),
+                "learning_v2_profiles": v2.get("profiles", 0)}
 
     def _callback(self, name, operation):
         def run(context=None, job_connect=None):
@@ -377,13 +411,15 @@ class ContinuousLearning:
         if self.boot_phase == 3:
             KNOWLEDGE.ensure_schema(self.connect, context=context)
             KNOWLEDGE.restore(self.connect, context=context)
+            V2.ensure_schema(self.connect, context=context)
             self.boot_phase = 4
-            return {"status": "PROGRESS", "stage": "KNOWLEDGE_SCHEMA"}
+            return {"status": "PROGRESS", "stage": "KNOWLEDGE_AND_LEARNING_V2_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
         progress = STORE.load_snapshot(self.connect, "learning_progress", PROGRESS_VERSION)
         with self._lock:
             self._snapshot = saved
         BRIDGE.update(saved)
+        V2.sync_runtime(self.connect)
         if progress:
             self.ns["learning_progress"]._cache = (0., progress["payload"])
         self.ready = True
@@ -655,6 +691,10 @@ class ContinuousLearning:
         result = KNOWLEDGE.refresh_catalog(self.connect, context=context, cursor=cursor)
         return result, result.get("cursor", cursor)
 
+    def learning_v2(self, context, cursor):
+        result = V2.analyze(self.connect, context=context)
+        return result, cursor
+
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
 
@@ -752,6 +792,8 @@ class ContinuousLearning:
         result["knowledge"].update(automation_enabled=bool(self.ns.get("KNOWLEDGE_AUTOMATION")),
                                     compiler_configured=bool(self.ns.get("KNOWLEDGE_LLM_ENABLED") and self.ns.get("OPENAI_API_KEY")))
         result["knowledge_validation"] = KNOWLEDGE.snapshot()
+        result["learning_v2"] = V2.snapshot()
+        result["external_learning_consumer"] = self.external_consumer
         result["outcome_protocol"] = OUTCOME_VERSION
         result["last_error"] = result["continuous"]["last_error"]
         from veritas_operational_status import learning_operation
