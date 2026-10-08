@@ -1,8 +1,10 @@
 """Frozen AMI sample/chunk contracts and isolated PostgreSQL parity tests."""
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
+import re
 import unittest
 import uuid
 
@@ -73,6 +75,32 @@ DSN = os.getenv("VERITAS_QUALITY_TEST_DSN", "")
 NOW = datetime(2026, 10, 7, tzinfo=timezone.utc)
 
 
+def legacy_chunk_sql():
+    """The v91.8.8 flat joins, retaining the exact shared projection."""
+    dp, op, joins = M._ami_projection_sql()
+    return f"""WITH pairs AS MATERIALIZED (
+        SELECT decision_id,outcome_id,ordinality
+        FROM unnest(%s::bigint[],%s::bigint[]) WITH ORDINALITY
+          AS p(decision_id,outcome_id,ordinality)
+      )
+      SELECT sample.event_ts,sample.asset,sample.horizon,{dp} AS dp,{op} AS op
+      FROM (
+        SELECT p.ordinality,d.event_ts,d.asset,d.horizon,
+               d.payload AS decision_payload,o.payload AS outcome_payload
+        FROM pairs p
+        JOIN ledger_events d ON d.id=p.decision_id AND d.event_type='decision'
+        JOIN ledger_events o ON o.id=p.outcome_id AND o.entity_key=d.entity_key AND o.event_type='outcome'
+      ) AS sample
+      {joins}
+      ORDER BY sample.ordinality"""
+
+
+def plan_nodes(plan):
+    yield plan
+    for child in plan.get("Plans", []):
+        yield from plan_nodes(child)
+
+
 @unittest.skipUnless(DSN, "isolated PostgreSQL test database not configured")
 class AMIStagedSQLTests(unittest.TestCase):
     @classmethod
@@ -90,8 +118,10 @@ class AMIStagedSQLTests(unittest.TestCase):
                 id BIGSERIAL PRIMARY KEY,event_key TEXT UNIQUE NOT NULL,
                 entity_key TEXT NOT NULL,event_type TEXT NOT NULL,event_ts TIMESTAMPTZ NOT NULL,
                 asset TEXT,horizon TEXT,payload JSONB NOT NULL)""")
-            c.execute("CREATE INDEX ledger_type_ts ON ledger_events(event_type,event_ts DESC)")
-            c.execute("CREATE INDEX ledger_entity ON ledger_events(entity_key,event_type)")
+            c.execute("CREATE INDEX idx_ledger_type_ts ON ledger_events(event_type,event_ts DESC)")
+            c.execute("CREATE INDEX idx_ledger_entity ON ledger_events(entity_key,event_type)")
+            c.execute("CREATE INDEX idx_ledger_entity_type_ts ON ledger_events(entity_key,event_type,event_ts DESC)")
+            c.execute("CREATE INDEX idx_ledger_asset_horizon ON ledger_events(asset,horizon,event_ts DESC)")
         cls.addClassCleanup(cls.drop_schema)
 
     @classmethod
@@ -122,6 +152,22 @@ class AMIStagedSQLTests(unittest.TestCase):
     def chunks(self, c, sample):
         return [row for offset in range(0, len(sample), 64)
                 for row in M.ami_decision_chunk(c, sample[offset:offset+64])]
+
+    def chunk_plan(self, c, sql, params, *, generic=False):
+        if not generic:
+            return c.execute("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+sql, params).fetchone()["QUERY PLAN"][0]
+        prepared = sql.replace("%s", "$1", 1).replace("%s", "$2", 1)
+        c.execute("PREPARE ami_chunk_test(bigint[],bigint[]) AS "+prepared)
+        try:
+            with c.transaction():
+                # Test a long-lived prepared statement separately, without
+                # changing any planner costs, scan/JIT flags or timeout.
+                c.execute("SET LOCAL plan_cache_mode='force_generic_plan'")
+                arrays = ["ARRAY["+",".join(str(i) for i in values)+"]" for values in params]
+                return c.execute("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) EXECUTE ami_chunk_test("+
+                                 ",".join(arrays)+")").fetchone()["QUERY PLAN"][0]
+        finally:
+            c.execute("DEALLOCATE ami_chunk_test")
 
     def test_real_sql_projected_shape_truthiness_and_agent_order_match_legacy(self):
         missing = object()
@@ -208,6 +254,115 @@ class AMIStagedSQLTests(unittest.TestCase):
             c.execute("DELETE FROM ledger_events WHERE id=%s", (two[1],))
             with self.assertRaisesRegex(RuntimeError, "frozen sample row missing"):
                 M.ami_decision_chunk(c, [one, two])
+
+    def test_real_sql_frozen_pair_type_and_payload_semantics_are_not_reinterpreted(self):
+        with self.connect() as c:
+            good = self.episode(c, "good", {"decision": "LONG"}, {"forward_return": None})
+            missing_key = self.episode(c, "missing-key", None, {})
+            scalar = self.episode(c, "scalar", ["legacy"], False)
+            # Eligibility belongs to the original frozen sample. The chunk
+            # preserves null/scalar/absent payload values instead of filtering
+            # or silently shrinking a later immutable input list.
+            pairs = [scalar, good, missing_key, scalar]
+            params = ([p[0] for p in pairs], [p[1] for p in pairs])
+            expected = c.execute(legacy_chunk_sql(), params).fetchall()
+            self.assertEqual(M.ami_decision_chunk(c, pairs), expected)
+            self.assertEqual(len(expected), 4)
+            self.assertIsNone(expected[1]["op"]["forward_return"])
+            for column, bad_type in ((0, "outcome"), (1, "decision")):
+                wrong = self.episode(c, "wrong-"+str(column), {}, {"forward_return": 0.})
+                c.execute("UPDATE ledger_events SET event_type=%s WHERE id=%s", (bad_type, wrong[column]))
+                with self.subTest(column=column), self.assertRaisesRegex(RuntimeError, "frozen sample row missing"):
+                    M.ami_decision_chunk(c, [good, wrong])
+
+    def test_real_sql_64_frozen_pairs_use_bounded_pk_probes_amid_toasted_history(self):
+        # Deterministic high-entropy text stays out of line after compression;
+        # repeated plain characters alone would fit inline and miss TOAST cost.
+        noise = "SYNTHETIC_CHUNK_HISTORY:"+"".join(
+            hashlib.sha256(str(i).encode()).hexdigest() for i in range(256))
+        with self.connect() as c:
+            episodes = []
+            for i in range(48):
+                dp = dict(decision="LONG" if i % 2 else "SHORT", research_decision="", regime=None,
+                          history=noise*8,
+                          agents=[dict(direction="LONG", confidence=1e16, history=noise), None,
+                                  dict(direction="SHORT", confidence=1.),
+                                  dict(direction="LONG", confidence=-1e16)],
+                          knowledge_cio_adjustment=dict(score=0 if i % 2 else None, history=noise),
+                          knowledge_shadow_matches=[] if i % 3 else [dict(rule="synthetic", history=noise)])
+                episodes.append(self.episode(c, "selected-"+str(i), dp,
+                    dict(forward_return=None if i % 7 == 0 else (i % 3-1)/8, history=noise*8),
+                    at=NOW+timedelta(seconds=i), asset="SELECTED_"+str(i)))
+            # This permutation is neither timestamp nor ID order and contains
+            # exactly sixteen repeated pairs. Duplicate inputs remain outputs.
+            pairs = [episodes[(17*i+5) % 48] for i in range(64)]
+            params = ([p[0] for p in pairs], [p[1] for p in pairs])
+            expected = c.execute(legacy_chunk_sql(), params).fetchall()
+            self.assertEqual(len(expected), 64)
+            self.assertEqual([r["asset"] for r in expected], ["SELECTED_"+str((17*i+5) % 48) for i in range(64)])
+            self.assertTrue(any(r["op"]["forward_return"] is None for r in expected))
+            # Fixture construction and ANALYZE touch the synthetic archive.
+            # Restore the real two-second contract before measuring any chunk.
+            c.execute("SET statement_timeout='20s'")
+            for start in range(0, 12000, 400):
+                c.execute("""INSERT INTO ledger_events(event_key,entity_key,event_type,event_ts,asset,horizon,payload)
+                    SELECT 'unrelated-'||n,'archive-'||(n/2),
+                        CASE WHEN n%2=0 THEN 'decision' ELSE 'outcome' END,
+                        %s::timestamptz-n*interval '1 second','ARCHIVE','1h',
+                        CASE WHEN n%2=0 THEN jsonb_build_object('decision','LONG','history',%s::text)
+                             ELSE jsonb_build_object('forward_return',0.125,'history',%s::text) END
+                    FROM generate_series(%s,%s) n""", (NOW, noise, noise, start, start+399))
+            c.execute("ANALYZE ledger_events")
+            c.execute("SET statement_timeout='2s'")
+            physical = c.execute("""SELECT count(*) AS n,
+                (SELECT pg_relation_size(reltoastrelid) FROM pg_class
+                 WHERE oid='ledger_events'::regclass) AS toast_bytes FROM ledger_events""").fetchone()
+            self.assertEqual(physical["n"], 12096)
+            self.assertGreater(physical["toast_bytes"], 1_000_000)
+            self.assertEqual(c.execute("SHOW statement_timeout").fetchone()["statement_timeout"], "2s")
+            capture = Capture([{}]*64)
+            M.ami_decision_chunk(capture, pairs)
+            sql, captured_params = capture.calls[0]
+            self.assertEqual(captured_params, params)
+            actual = M.ami_decision_chunk(c, pairs)
+            self.assertEqual(actual, expected)
+            self.assertNotIn("SYNTHETIC_CHUNK_HISTORY", json.dumps(actual, default=str))
+            self.assertLess(len(json.dumps(actual, default=str)), 40000)
+            for generic in (False, True):
+                with self.subTest(plan="generic" if generic else "default"):
+                    new = self.chunk_plan(c, sql, params, generic=generic)
+                    probes = [n for n in plan_nodes(new["Plan"]) if n.get("Relation Name") == "ledger_events"]
+                    references = []
+                    for node in probes:
+                        self.assertEqual(node["Node Type"], "Index Scan")
+                        self.assertEqual(node.get("Index Name"), "ledger_events_pkey")
+                        # PostgreSQL may rename a shadowed inner alias d_1/o_1.
+                        # The required property is which frozen ID drives it.
+                        matched = re.findall(r"\bid\s*=\s*p\.(decision_id|outcome_id)\b",
+                                             node.get("Index Cond", ""))
+                        self.assertEqual(len(matched), 1)
+                        references.extend(matched)
+                        self.assertGreater(node["Actual Loops"], 0)
+                        self.assertLessEqual(node["Actual Loops"], 64)
+                        self.assertLessEqual(node["Actual Rows"], 1)
+                    self.assertCountEqual(references, ["decision_id", "outcome_id"])
+                    diagnostic = dict(plan_mode="generic" if generic else "default",
+                        rows=physical["n"], frozen_pairs=64, distinct_pairs=48,
+                        toast_bytes=physical["toast_bytes"], new_execution_ms=new["Execution Time"],
+                        statement_timeout="2s", old_timeout=False)
+                    try:
+                        old = self.chunk_plan(c, legacy_chunk_sql(), params, generic=generic)
+                    except self.driver.errors.QueryCanceled:
+                        diagnostic["old_timeout"] = True
+                    else:
+                        old_probes = [n for n in plan_nodes(old["Plan"]) if n.get("Relation Name") == "ledger_events"]
+                        diagnostic.update(old_execution_ms=old["Execution Time"], old_ledger_nodes=[
+                            dict(alias=n.get("Alias"), node=n["Node Type"], index=n.get("Index Name"),
+                                 loops=n["Actual Loops"], rows=n["Actual Rows"]) for n in old_probes],
+                            old_wide_scan_verified=any(n["Node Type"] in ("Seq Scan", "Bitmap Heap Scan") for n in old_probes))
+                    # The mechanism and exact population are assertions; old timing is
+                    # evidence, not a required slowdown or a universal latency promise.
+                    print("AMI_CHUNK_SYNTHETIC_PLAN "+json.dumps(diagnostic), flush=True)
 
     def test_real_sql_toasted_histories_stay_out_of_metadata_and_chunk_results(self):
         heavy = "UNUSED_AMI_STAGED_HISTORY:"*50000
