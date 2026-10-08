@@ -673,6 +673,13 @@ class TradeApprovals:
         with self.connect() as c:
             return self._view(self._row(c, proposal_id))
 
+    def get_by_event(self, account_id, event_id, action):
+        """Retry a specific immutable intent without renewing its terms or expiry."""
+        with self.connect() as c:
+            row = c.execute(f"SELECT * FROM {TABLE} WHERE account_id=%s AND canonical_event_id=%s AND action=%s",
+                            (account_id, event_id, action)).fetchone()
+            return self._view(row) if row is not None else None
+
     def claim_delivery(self, proposal_id, worker_id):
         """Commit the send barrier before Telegram. Never reclaim this send."""
         worker_id = _text(worker_id, "WORKER_ID", 128)

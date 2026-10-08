@@ -17,12 +17,29 @@ import uuid
 from urllib.parse import urlparse
 
 import httpx
+import veritas_currency_manual_telegram as MANUAL_TG
 
 EXPECTED_BOT_USERNAME = "axednewsi_bot"
 PREFIX = "/internal/currency-trading/"
 MSK = ZoneInfo("Europe/Moscow")
-OPERATOR_COMMANDS = frozenset(("/currency_status", "/currency_bind"))
+OPERATOR_COMMANDS = frozenset(("/currency_status", "/currency_bind")) | MANUAL_TG.COMMANDS
 REASONS = {
+    "MANUAL_PARAMETERS_REQUIRED": "Укажите направление, 1 контракт, лимитную цену, стоп, цель и ожидаемый срок: /currency_manual.",
+    "MANUAL_TRIAL_ONE_CONTRACT_ONLY": "Ручная пробная заявка поддерживает ровно 1 контракт.",
+    "MANUAL_TRIAL_REQUIRES_FLAT_POSITION": "Ручное открытие доступно при нулевой позиции CNYRUBf; имеющуюся ручную позицию можно закрыть: /currency_manual_close.",
+    "MANUAL_TRIAL_REQUIRES_FLAT_WHOLE_ACCOUNT": "Пробный ручной режим требует отсутствия других позиций и заявок на всём брокерском счёте.",
+    "MANUAL_POSITION_REQUIRED": "Нет учтённой ручной позиции из одного контракта для закрытия.",
+    "MANUAL_GEOMETRY_INVALID": "Для покупки: стоп ниже лимита, цель выше. Для продажи: цель ниже лимита, стоп выше.",
+    "MANUAL_APPROVED_PRICE_OFF_TICK": "Одна из цен не соответствует шагу цены брокерского контракта.",
+    "MANUAL_LEVEL_ALREADY_REACHED": "Текущая цена уже достигла указанного стопа или цели; требуется другое предложение.",
+    "MANUAL_ECONOMICS_BLOCKED": "Указанные уровни не проходят действующие проверки издержек и соотношения дохода к риску.",
+    "MANUAL_HOLD_MINUTES_REQUIRED": "Укажите ожидаемый срок для расчёта издержек от 1 до 60 минут.",
+    "MANUAL_INTENT_EXPIRED": "Срок ручного предложения истёк. Новая команда потребует нового подтверждения.",
+    "MANUAL_REQUEST_ID_REUSED": "Эта команда уже связана с другим предложением; повторная отправка запрещена.",
+    "PRICE_OUTSIDE_APPROVED_LIMIT": "Текущая цена не укладывается в ваш лимит. Заявка FAK по этим условиям не подготовлена.",
+    "LIVE_ACCOUNT_HISTORY_EVIDENCE_REQUIRED": "Для реальной заявки не подтверждены история капитала и риск-лимиты всего брокерского счёта.",
+    "SINGLE_ASSET_LIMIT": "Один контракт превышает действующий лимит доли актива от капитала всего счёта.",
+    "STOP_RISK_LIMIT": "Риск до стопа с издержками превышает лимит всего счёта.",
     "DISABLED": "Предложения сделок отключены в конфигурации.",
     "CURRENCY_ACCOUNT_NOT_BOUND": "Счёт ещё не привязан к учёту валютного портфеля.",
     "EXECUTION_DISABLED": "Отправка заявок брокеру отключена; подтверждения только сохраняются.",
@@ -190,6 +207,12 @@ def readiness_text(status):
                  "unchecked": "ещё не проверена"}.get(binding, "ещё не проверена"))
     if status.get("new_risk_block_reason"):
         lines.append("Новые входы: " + _reason(status["new_risk_block_reason"]))
+    manual = status.get("manual_account_admission")
+    if isinstance(manual, dict):
+        lines.append("Ручные заявки: /currency_manual · закрытие: /currency_manual_close")
+        blockers = manual.get("blockers") or []
+        if blockers:
+            lines.append("Проверка ручного режима: " + _reason(blockers[0]))
     if status.get("last_poll_at"):
         lines.append("Последняя проверка: " + _stamp(status["last_poll_at"]))
         if status.get("status_stale") is True:
@@ -241,16 +264,21 @@ def _stamp(value):
 
 def proposal_text(proposal, *, execution_enabled=False):
     t = proposal["terms"]
+    manual = t.get("decision_authority") == "OWNER_MANUAL_TRIAL_V1"
+    manual_position = t.get("position_decision_authority") == "OWNER_MANUAL_TRIAL_V1"
     action = {"OPEN": "Открытие", "ADD": "Увеличение", "REDUCE": "Сокращение",
               "CLOSE": "Закрытие"}.get(t.get("action"), "Изменение")
     side = {"BUY": "покупка", "SELL": "продажа"}.get(t.get("side"), "?")
     reason = {"STRUCTURAL_STOP_REACHED": "цена достигла структурного стопа",
+              "OWNER_MANUAL_CLOSE": "ручное закрытие по запросу владельца",
               "STRATEGY_TARGET_REACHED": "цена достигла цели",
               "CONFIRMED_OPPOSITE_CANONICAL_EVENT": "подтверждён противоположный сигнал",
               "CURRENCY_DRAWDOWN_LIMIT": "достигнут лимит просадки валютного портфеля"}
     account = str(t.get("account_id") or "")
     lines = [
-        "Валютный портфель · предложение сделки",
+        ("Валютный портфель · ручная заявка владельца" if manual else
+         "Валютный портфель · выход из ручной позиции" if manual_position else
+         "Валютный портфель · предложение сделки"),
         f"{action} CNYRUBf · {t.get('direction')}",
         f"Счёт: …{account[-4:]}",
         f"{side.capitalize()} · {t.get('lots')} контракт(ов)",
@@ -258,12 +286,16 @@ def proposal_text(proposal, *, execution_enabled=False):
         "Исполнение FAK: доступный объём сразу, остаток отменяется.",
         f"Номинал заявки: {t.get('order_notional_rub', '—')} ₽",
     ]
-    if t.get("horizon"):
+    if manual or manual_position:
+        lines.append("Направление и уровни заданы владельцем. Рекомендация модели не использована.")
+        if t.get("expected_hold_seconds"):
+            lines.append(f"Ожидаемый срок для расчёта издержек: {Decimal(t['expected_hold_seconds']) / 60:g} мин; автоматического закрытия по времени нет.")
+    elif t.get("horizon"):
         lines.append(f"Таймфрейм: {t['horizon']}")
     if t.get("stop_price") is not None:
-        lines.append(f"Уровень стопа стратегии: {t['stop_price']} ₽")
+        lines.append(f"{'Стоп владельца' if manual or manual_position else 'Уровень стопа стратегии'}: {t['stop_price']} ₽")
     if t.get("target_price") is not None:
-        lines.append(f"Цель стратегии: {t['target_price']} ₽")
+        lines.append(f"{'Цель владельца' if manual or manual_position else 'Цель стратегии'}: {t['target_price']} ₽")
     if t.get("action") in ("OPEN", "ADD"):
         if t.get("sizing_mode") == "INITIAL_MINIMUM_CONTRACT":
             lines.append("Начальный объём: 1 целый контракт; расчётная доля стратегии меньше контракта.")
@@ -318,7 +350,7 @@ def execution_text(proposal):
 
 class InternalTradeClient:
     OPERATIONS = frozenset(("status", "bind", "poll", "decision", "claim-delivery",
-                            "delivered", "delivery-unknown", "updates"))
+                            "delivered", "delivery-unknown", "updates", "prepare-manual"))
 
     def __init__(self, url, key, client=None):
         parsed = urlparse(str(url))
@@ -411,6 +443,26 @@ class TradeTelegramBridge:
             self._operator_reply("Сервис не подтвердил точный счёт и окружение. Привязка недоступна.")
             return True
         arguments = str(message.get("text") or "").strip().split()[1:]
+        if command in MANUAL_TG.COMMANDS:
+            try:
+                request = MANUAL_TG.parse(command, arguments, bot_id=self.bot_id,
+                    owner_id=self.owner_user_id, message_id=message.get("message_id"))
+            except ValueError:
+                self._operator_reply(MANUAL_TG.HELP)
+                return True
+            try:
+                result = self._request("prepare-manual", dict(scope, request=request,
+                    sender_user_id=self.owner_user_id, private_chat_id=self.owner_user_id, chat_type="private"))
+                proposal = result.get("proposal") or {}
+                if result.get("ok") is True and proposal:
+                    self._operator_reply("Ручная заявка подготовлена. Предложение с условиями и кнопками придёт отдельным сообщением."
+                        if proposal.get("status") == "PENDING_DELIVERY" else execution_text(proposal))
+                else:
+                    self._operator_reply(_reason(result.get("code") or result.get("error")))
+            except TradeTelegramError:
+                self._operator_reply("Ответ на подготовку не получен. Не повторяйте команду с новыми параметрами, "
+                    "пока не проверите /currency_status и сообщения с предложениями.")
+            return True
         if not arguments:
             nonce = uuid.uuid4().hex[:20]
             self._bind_challenge = {"nonce": nonce, "scope": scope, "expires": self._clock() + 120}

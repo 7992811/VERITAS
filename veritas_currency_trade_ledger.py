@@ -127,7 +127,9 @@ def _entry_terms(fill, direction):
                 "source_identity":_canonical(metadata["source_identity"]),
                 "entry_context":_canonical(metadata.get("entry_context") or {}),
                 "direction":direction, "entry_client_order_id":fill["client_order_id"],
-                "opened_at":utc(fill["executed_at"]), "policy_version":metadata.get("policy_version")}
+                "opened_at":utc(fill["executed_at"]), "policy_version":metadata.get("policy_version"),
+                **({"decision_authority":metadata["decision_authority"]}
+                   if metadata.get("decision_authority") else {})}
     except (KeyError, TypeError, LedgerError):
         return None
 

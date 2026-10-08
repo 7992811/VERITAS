@@ -51,7 +51,7 @@ class TradeFacts:
 class CurrencyTradingCoordinator:
     def __init__(self, *, repository, adapter, account_id, owner, facts, summary,
                  ingest_execution, execution_enabled=False, approval_ttl_seconds=120,
-                 clock=None, live_admission=None, preflight_live=False):
+                 clock=None, live_admission=None, preflight_live=False, manual_admission=None):
         if type(execution_enabled) is not bool:
             raise TradePlanBlocked("BOOLEAN_EXECUTION_GATE_REQUIRED")
         if not isinstance(account_id, str) or not account_id.strip():
@@ -65,6 +65,9 @@ class CurrencyTradingCoordinator:
         if type(preflight_live) is not bool:
             raise TradePlanBlocked("BOOLEAN_PREFLIGHT_GATE_REQUIRED")
         self.live_admission = live_admission
+        if manual_admission is not None and not callable(manual_admission):
+            raise TradePlanBlocked("INVALID_MANUAL_ADMISSION_CHECKER")
+        self.manual_admission = manual_admission
         self.preflight_live = preflight_live
         self.repository, self.adapter = repository, adapter
         self.account_id, self.owner = account_id, owner
@@ -105,6 +108,8 @@ class CurrencyTradingCoordinator:
             terms["exit_trigger_event_id"] = requested_exit.get("trigger_event_id")
             terms["exit_trigger_context"] = requested_exit.get("trigger_context")
             terms["held_entry_event_id"] = (facts.held_terms or {}).get("canonical_event_id")
+            if (facts.held_terms or {}).get("decision_authority"):
+                terms["position_decision_authority"] = facts.held_terms["decision_authority"]
         terms["protective_order_mode"] = "EXIT_REQUIRES_SEPARATE_CONFIRMATION"
         terms["execution_environment"] = self.adapter.environment
         # The authority and durable proposal must bind the same immutable bytes,
@@ -124,6 +129,44 @@ class CurrencyTradingCoordinator:
         with self._lock:
             facts = self._checked_facts()
             return self._create(facts, utc(self.clock()), requested_exit)
+
+    def prepare_manual(self, request, *, reviewed_terms=None):
+        """Prepare only an explicit owner's intent; no summary/signal is read."""
+        import veritas_currency_manual as M
+        with self._lock:
+            intent = M.request(request)
+            existing = self.repository.get_by_event(self.account_id, M.event_id(intent), intent["action"])
+            if existing:
+                if (not self._owner_matches(existing)
+                        or existing["terms"].get("manual_request_hash") != fingerprint(intent)
+                        or existing["terms"].get("execution_environment") != self.adapter.environment):
+                    raise TradePlanBlocked("MANUAL_REQUEST_ID_REUSED")
+                return existing
+            facts, now = self._checked_facts(), utc(self.clock())
+            if reviewed_terms is None:
+                terms = M.prepare(intent, facts, now, ttl_seconds=self.approval_ttl_seconds)
+                terms.update(execution_environment=self.adapter.environment,
+                    manual_owner_user_id=self.owner.user_id, manual_private_chat_id=self.owner.private_chat_id,
+                    manual_bot_id=self.owner.bot_id)
+                terms = canonical_terms(terms)
+            else:
+                terms = canonical_terms(reviewed_terms)
+                if (terms.get("manual_request") != intent
+                        or terms.get("manual_owner_user_id") != self.owner.user_id
+                        or terms.get("manual_private_chat_id") != self.owner.private_chat_id
+                        or terms.get("manual_bot_id") != self.owner.bot_id
+                        or terms.get("execution_environment") != self.adapter.environment):
+                    raise TradePlanBlocked("MANUAL_APPROVED_TERMS_CHANGED")
+                M.validate_intent(terms, facts.spec, facts.account, facts.quote, now)
+                revalidate(terms, facts.spec, facts.account, facts.quote, now=now)
+            verdict = self._require_live_admission(terms, facts, now)
+            now = utc(self.clock())
+            revalidate(terms, facts.spec, facts.account, facts.quote, now=now)
+            if verdict and verdict.get("valid_until") and utc(verdict["valid_until"]) <= now:
+                raise TradePlanBlocked("LIVE_ADMISSION_EXPIRED")
+            return self.repository.create(terms, owner_user_id=self.owner.user_id,
+                private_chat_id=self.owner.private_chat_id, bot_id=self.owner.bot_id,
+                expires_at=utc(terms["manual_intent_expires_at"]), economics_revision=1)
 
     def _validate_reviewed_entry(self, terms, facts, now):
         """Admit only an unchanged canonical order, using new observed facts.
@@ -237,6 +280,13 @@ class CurrencyTradingCoordinator:
     def _event_still_valid(self, terms, facts, now):
         if terms.get("action") in ("REDUCE", "CLOSE"):
             return True
+        import veritas_currency_manual as M
+        if M.applies(terms):
+            try:
+                M.validate_intent(terms, facts.spec, facts.account, facts.quote, now)
+                return True
+            except (TradePlanBlocked, TypeError, ValueError):
+                return False
         if terms.get("policy_version") != CTC.VERSION:
             return False
         try:
@@ -256,16 +306,23 @@ class CurrencyTradingCoordinator:
     def _require_live_admission(self, terms, facts, now):
         if self.adapter.environment != "production" or terms.get("action") not in ("OPEN", "ADD"):
             return False
-        if self.live_admission is None:
+        import veritas_currency_manual as M
+        manual = M.applies(terms)
+        authority = self.manual_admission if manual else self.live_admission
+        if authority is None:
             raise TradePlanBlocked("LIVE_ACCOUNT_ADMISSION_REQUIRED")
         try:
-            verdict = self.live_admission(terms=deepcopy(terms), facts=facts, now=now)
+            verdict = authority(terms=deepcopy(terms), facts=facts, now=now)
             admitted = (isinstance(verdict, Mapping) and verdict.get("eligible") is True
                         and type(verdict.get("blockers")) in (list, tuple)
                         and len(verdict["blockers"]) == 0)
         except Exception:
             raise TradePlanBlocked("LIVE_ACCOUNT_ADMISSION_REQUIRED") from None
         if not admitted:
+            if manual and isinstance(verdict, Mapping):
+                codes = verdict.get("blockers") or []
+                if codes and isinstance(codes[0], str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", codes[0]):
+                    raise TradePlanBlocked(codes[0])
             raise TradePlanBlocked("LIVE_ACCOUNT_ADMISSION_REQUIRED")
         if verdict.get("valid_until") is not None:
             try:

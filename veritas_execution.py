@@ -697,6 +697,49 @@ def build_order_intent(portfolio: str, asset: str, direction: str, target_fracti
     )
 
 
+def production_account_risk_blockers(*, stop_risk_nav, single_asset_fraction, gross_after, drawdown,
+                                    total_open_stop_risk_nav_after, correlated_stop_risk_nav_after,
+                                    instrument_spec_validated, daily_pnl_pct, weekly_pnl_pct,
+                                    broker_reconciled, kill_switch):
+    """Shared account controls for model and explicitly owner-directed orders."""
+    blockers = []
+    sr = _num(stop_risk_nav)
+    if sr is None or sr > LIVE_RISK_PROFILE["max_stop_risk_nav"]:
+        blockers.append("STOP_RISK_LIMIT")
+    total_sr = _num(total_open_stop_risk_nav_after)
+    if total_sr is None:
+        blockers.append("TOTAL_OPEN_STOP_RISK_REQUIRED")
+    elif total_sr > LIVE_RISK_PROFILE["max_total_open_stop_risk_nav"]:
+        blockers.append("TOTAL_OPEN_STOP_RISK_LIMIT")
+    corr_sr = _num(correlated_stop_risk_nav_after)
+    if corr_sr is None:
+        blockers.append("CORRELATED_STOP_RISK_REQUIRED")
+    elif corr_sr > LIVE_RISK_PROFILE["max_correlated_stop_risk_nav"]:
+        blockers.append("CORRELATED_STOP_RISK_LIMIT")
+    sf = _num(single_asset_fraction)
+    if sf is None or sf > LIVE_RISK_PROFILE["max_single_asset_fraction"]:
+        blockers.append("SINGLE_ASSET_LIMIT")
+    if not instrument_spec_validated:
+        blockers.append("INSTRUMENT_SPEC_REQUIRED")
+    ga = _num(gross_after)
+    if ga is None or ga > LIVE_RISK_PROFILE["max_gross"]:
+        blockers.append("GROSS_LIMIT")
+    dd = _num(drawdown)
+    if dd is None or dd >= LIVE_RISK_PROFILE["hard_drawdown_stop"]:
+        blockers.append("DRAWDOWN_LIMIT")
+    dp = _num(daily_pnl_pct, 0.0)
+    if dp is not None and dp <= -LIVE_RISK_PROFILE["daily_loss_stop"]:
+        blockers.append("DAILY_LOSS_STOP")
+    wp = _num(weekly_pnl_pct, 0.0)
+    if wp is not None and wp <= -LIVE_RISK_PROFILE["weekly_loss_stop"]:
+        blockers.append("WEEKLY_LOSS_STOP")
+    if not broker_reconciled:
+        blockers.append("BROKER_RECONCILIATION_REQUIRED")
+    if kill_switch:
+        blockers.append("KILL_SWITCH_ACTIVE")
+    return blockers
+
+
 def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gate: Dict[str, Any],
                           durable_storage: bool, calibrated_probability: Optional[float],
                           stop_risk_nav: Optional[float], single_asset_fraction: Optional[float],
@@ -734,42 +777,14 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
     elif expectancy_r <= min_expectancy_r:
         blockers.append("POST_COST_EXPECTANCY_TOO_LOW")
 
-    sr = _num(stop_risk_nav)
-    if sr is None or sr > LIVE_RISK_PROFILE["max_stop_risk_nav"]:
-        blockers.append("STOP_RISK_LIMIT")
-    total_sr = _num(total_open_stop_risk_nav_after)
-    if total_sr is None:
-        blockers.append("TOTAL_OPEN_STOP_RISK_REQUIRED")
-    elif total_sr > LIVE_RISK_PROFILE["max_total_open_stop_risk_nav"]:
-        blockers.append("TOTAL_OPEN_STOP_RISK_LIMIT")
-    corr_sr = _num(correlated_stop_risk_nav_after)
-    if corr_sr is None:
-        blockers.append("CORRELATED_STOP_RISK_REQUIRED")
-    elif corr_sr > LIVE_RISK_PROFILE["max_correlated_stop_risk_nav"]:
-        blockers.append("CORRELATED_STOP_RISK_LIMIT")
-    sf = _num(single_asset_fraction)
-    if sf is None or sf > LIVE_RISK_PROFILE["max_single_asset_fraction"]:
-        blockers.append("SINGLE_ASSET_LIMIT")
-    if not instrument_spec_validated:
-        blockers.append("INSTRUMENT_SPEC_REQUIRED")
+    blockers.extend(production_account_risk_blockers(stop_risk_nav=stop_risk_nav,
+        single_asset_fraction=single_asset_fraction, gross_after=gross_after, drawdown=drawdown,
+        total_open_stop_risk_nav_after=total_open_stop_risk_nav_after,
+        correlated_stop_risk_nav_after=correlated_stop_risk_nav_after,
+        instrument_spec_validated=instrument_spec_validated, daily_pnl_pct=daily_pnl_pct,
+        weekly_pnl_pct=weekly_pnl_pct, broker_reconciled=broker_reconciled, kill_switch=kill_switch))
     if not model_promoted:
         blockers.append("MODEL_PROMOTION_REQUIRED")
-    ga = _num(gross_after)
-    if ga is None or ga > LIVE_RISK_PROFILE["max_gross"]:
-        blockers.append("GROSS_LIMIT")
-    dd = _num(drawdown)
-    if dd is None or dd >= LIVE_RISK_PROFILE["hard_drawdown_stop"]:
-        blockers.append("DRAWDOWN_LIMIT")
-    dp = _num(daily_pnl_pct, 0.0)
-    if dp is not None and dp <= -LIVE_RISK_PROFILE["daily_loss_stop"]:
-        blockers.append("DAILY_LOSS_STOP")
-    wp = _num(weekly_pnl_pct, 0.0)
-    if wp is not None and wp <= -LIVE_RISK_PROFILE["weekly_loss_stop"]:
-        blockers.append("WEEKLY_LOSS_STOP")
-    if not broker_reconciled:
-        blockers.append("BROKER_RECONCILIATION_REQUIRED")
-    if kill_switch:
-        blockers.append("KILL_SWITCH_ACTIVE")
     ok = len(blockers) == 0
     return {
         "eligible": ok,

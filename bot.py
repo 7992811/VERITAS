@@ -366,6 +366,7 @@ def handle_message(message):
         if trade_bridge is not None and trade_bridge._private_owner(message):
             send_message(chat_id, "Валютный портфель: /currency_status.\n"
                          "Первоначальная привязка учёта: /currency_bind.\n"
+                         "Ручная заявка: /currency_manual. Закрытие ручной позиции: /currency_manual_close.\n"
                          "Каждая сделка требует отдельного подтверждения условий.")
             if not is_admin(user_id):
                 return
