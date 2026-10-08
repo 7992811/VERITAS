@@ -684,7 +684,7 @@ class ContinuousLearning:
                 ORDER BY id DESC
                 LIMIT %s
               )
-              SELECT d.event_ts,d.asset,d.horizon,
+              SELECT d.id AS decision_id,d.entity_key,d.event_ts,d.asset,d.horizon,
                      COALESCE(d.payload->>'regime','UNKNOWN') AS regime,
                      COALESCE(d.payload->>'research_decision',d.payload->>'decision','') AS decision,
                      COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
