@@ -7,6 +7,7 @@ from pathlib import Path
 import uuid
 import unittest
 from unittest.mock import patch
+import httpx
 
 import veritas_currency_manual as M
 import veritas_currency_manual_admission as MA
@@ -16,6 +17,8 @@ import veritas_currency_trading as C
 import veritas_trade_approvals as A
 import veritas_tbank_trading as T
 from veritas_trade_telegram import proposal_text, TradeTelegramBridge
+from veritas_trade_telegram import InternalTradeClient, manual_refusal_text
+from veritas_currency_trade_service import _error
 import test_veritas_currency_live_admission as LA_FIXTURE
 from test_veritas_currency_notifications import Connection
 from test_veritas_currency_trading import ACCOUNT, UID, OWNER, BOT
@@ -80,6 +83,64 @@ class ManualTests(unittest.TestCase):
         self.assertEqual(status['model_admission'], 'NOT_APPLICABLE_OWNER_DECISION')
         self.assertEqual(self.repo.list_pending(account_id=ACCOUNT), [])
         self.assertEqual(self.transport.calls, [])
+
+    def test_screenshot_refusals_keep_exact_numeric_reason_through_http_and_telegram(self):
+        h = self.h
+        h.facts = replace(h.facts,
+            quote=replace(h.quote, bid=D('12.770'), ask=D('12.771')),
+            account=replace(h.account, currency_nav_rub=D('10000'), high_water_rub=D('10000')))
+        for index, (stop, target, code) in enumerate((
+                ('12.90', '12.60', 'MANUAL_ECONOMICS_BLOCKED'),
+                ('13.10', '12.30', 'STOP_RISK_CHANGED_AFTER_APPROVAL'))):
+            with self.subTest(stop=stop):
+                request = {**self.request, 'limit_price':'12.77', 'stop_price':stop,
+                           'target_price':target, 'hold_minutes':60}
+                with self.assertRaises(P.ManualCheckBlocked) as error:
+                    self.coordinator.prepare_manual(request)
+                refusal, status = _error(error.exception)
+                self.assertEqual((refusal['code'], status), (code, 409))
+                self.assertEqual(self.repo.list_pending(account_id=ACCOUNT), [])
+                self.assertEqual(self.transport.calls, [])
+                def respond(req):
+                    if req.url.path.endswith('/status'):
+                        return httpx.Response(200, json=dict(ok=True, enabled=True, account_id=ACCOUNT,
+                            instrument_uid=UID, execution_environment='production'))
+                    self.assertTrue(req.url.path.endswith('/prepare-manual'))
+                    return httpx.Response(status, json=refusal)
+                tg = FakeTelegram()
+                with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+                    service = InternalTradeClient('https://veritas-intelligence-v1.onrender.com',
+                        'offline-service-key-at-least-32-bytes', client=http)
+                    bridge = TradeTelegramBridge(service, tg, OWNER)
+                    bridge.handle_message(dict(message_id=91+index,
+                        text=f'/currency_manual SELL 1 12.77 {stop} {target} 60',
+                        **{'from':{'id':OWNER,'is_bot':False}, 'chat':{'id':OWNER,'type':'private'}}))
+                text = tg.sent()[-1]['text']
+                self.assertNotIn('конфигурацию доступа', text)
+                metrics = refusal['manual_check']
+                if index == 0:
+                    self.assertLess(D(metrics['net_reward_risk']), D(metrics['minimum_reward_risk']))
+                    self.assertIn('минимум: 1,15', text)
+                    self.assertIn('Доход / риск', text)
+                else:
+                    self.assertEqual(D(metrics['stop_risk_limit_rub']), D('200'))
+                    self.assertGreater(D(metrics['stop_risk_rub']), D('350'))
+                    self.assertIn('лимит: 200,00 ₽', text)
+                    self.assertIn('10000,00 ₽', text)
+
+    def test_refusal_metrics_never_echo_arbitrary_details_or_nonfinite_numbers(self):
+        for bad in ('NaN', 'Infinity', 'secret value', '1e999999', '<b>100</b>', {}, True, '9'*99):
+            with self.subTest(bad=bad):
+                refusal = dict(ok=False, code='STOP_RISK_CHANGED_AFTER_APPROVAL',
+                    manual_check=dict(stop_risk_rub=bad, stop_risk_limit_rub='200',
+                                      currency_nav_rub='10000', token='secret value'))
+                with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(409, json=refusal))) as http:
+                    result = InternalTradeClient('https://veritas-intelligence-v1.onrender.com',
+                        'offline-service-key-at-least-32-bytes', client=http)('prepare-manual', {})
+                self.assertNotIn('stop_risk_rub', result['manual_check'])
+                self.assertNotIn('token', result['manual_check'])
+                self.assertNotIn('secret', manual_refusal_text(result))
+        self.assertNotIn('manual_check', _error(P.TradePlanBlocked('SECRET_ERROR'))[0])
 
     def test_buy_geometry_works_and_manual_label_cannot_convert_model_terms(self):
         h = self.h
