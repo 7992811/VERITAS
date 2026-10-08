@@ -42,3 +42,21 @@ Candidate states:
 A shadow eligibility expires after seven days unless genuinely new evidence is
 observed. A scheduler heartbeat cannot refresh validity. Production influence
 remains false.
+
+
+## Ordered Stop/Exit replay
+
+Stop research now uses the same structural formulation as the canonical policy:
+the stop remains beyond the same-timeframe swing anchor and only the ATR buffer
+is varied in bounded shadow candidates: 0.10, 0.15 (current baseline), 0.20 and
+0.30 ATR.
+
+`veritas_learning_v2_replay.py` evaluates candidates only on time-ordered OHLC
+bars from the declared source. A bar that touches both competing barriers is
+`AMBIGUOUS_INTRABAR` and is excluded; OHLC data cannot reveal which level was
+hit first. The same rule applies to the runner after a partial take-profit.
+
+The replay module is a pure research utility. It has no broker or portfolio
+imports, does not alter historical accounting, and has no production influence.
+The registry keeps Stop/Exit candidates at `AWAIT_REPLAY` until a separate
+history worker supplies an adequate ordered path.
