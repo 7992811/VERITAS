@@ -207,16 +207,18 @@ def generate_hypotheses(decision_rows, trade_rows):
         dr=_directional_return(r)
         if dr is None:
             continue
-        key=(str(r.get("asset") or ""),str(r.get("horizon") or ""),str(r.get("regime") or "UNKNOWN"))
+        key=(str(r.get("asset") or ""),str(r.get("horizon") or ""),str(r.get("regime") or "UNKNOWN"),
+             str(r.get("source_key") or ""),str(r.get("policy_hash") or r.get("strategy_policy_hash") or ""))
         z=router[key][fam]; z[1]+=1; z[0]+=int(dr>0)
-    for (asset,horizon,regime),families in router.items():
+    for (asset,horizon,regime,source_key,policy_hash),families in router.items():
         eligible={f:w/n for f,(w,n) in families.items() if n>=MIN_TRADE_N}
         if len(eligible)<2:
             continue
         best=max(eligible,key=eligible.get)
         out.append(_hypothesis(
             "STRATEGY_ROUTER",
-            {"asset":asset,"horizon":horizon,"regime":regime,"policy_hash":"*"},
+            {"asset":asset,"horizon":horizon,"regime":regime,
+             "source_key":source_key,"policy_hash":policy_hash},
             {"preferred_family":best,"action":"SHADOW_WEIGHT_ONLY","max_weight_shift":0.15},
             {"hit_rates":eligible,"causal_superiority_proven":False}
         ))
