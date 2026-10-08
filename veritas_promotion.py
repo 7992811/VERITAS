@@ -123,6 +123,7 @@ def promotion_gate(e: PromotionEvidence) -> Dict[str, Any]:
         "invalid_evidence_fields": invalid,
         "invalid_configuration_fields": invalid_config,
         "automatic_promotion": False,
+        "automatic_shadow_promotion": False,
         "principle": "Training may propose a candidate; only independent evidence can promote it.",
         "version": VERSION,
     }
@@ -145,4 +146,8 @@ def promotion_gate(e: PromotionEvidence) -> Dict[str, Any]:
     if e.shadow_max_drawdown > thresholds["max_shadow_drawdown"]: blockers.append("SHADOW_DRAWDOWN_TOO_HIGH")
     result["eligible_for_production"] = not blockers
     result["status"] = "BLOCK" if blockers else "PASS"
+    # Safe automation boundary: a fully passing candidate may become the
+    # active SHADOW champion automatically. Production application remains
+    # explicitly false and must be handled by a separate release authority.
+    result["automatic_shadow_promotion"] = not blockers
     return result
