@@ -60,6 +60,13 @@ class EntryDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("must-not-be-copied", json.dumps(detail))
         self.assertEqual(row, original)
 
+    def test_invalid_decision_clock_retains_the_actual_refusal(self):
+        row, _, _, account, _, _ = native_fixture()
+        with self.assertRaisesRegex(P.EntryAdmissionBlocked, "SAME_TF_DECISION_TIME_REQUIRED") as raised:
+            P.select_entry([row], account, "invalid-clock")
+        self.assertIsNone(raised.exception.entry_diagnostics["checked_at"])
+        self.assertIsNone(raised.exception.entry_diagnostics["context_age_seconds"])
+
     def test_telegram_distinguishes_old_candle_from_current_book_and_model_not_checked(self):
         failure, _, _, now = stale_failure()
         status = {"ok": True, "enabled": True, "execution_enabled": True,

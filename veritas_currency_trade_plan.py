@@ -41,6 +41,7 @@ class EntryAdmissionBlocked(TradePlanBlocked):
             except (ValueError, OverflowError, OSError):
                 return None
         closed_at = stamp(context.get("closed_at"))
+        checked_at = stamp(now)
         routes = []
         for item in (row.get("_currency_route_trace") or [])[:7]:
             if not isinstance(item, dict) or item.get("horizon") not in TFP.SECONDS:
@@ -51,8 +52,9 @@ class EntryAdmissionBlocked(TradePlanBlocked):
         self.entry_diagnostics = {
             "horizon": horizon if horizon in TFP.SECONDS else None,
             "direction": direction if direction in ("LONG", "SHORT") else None,
-            "checked_at": utc(now).isoformat(), "context_closed_at": closed_at,
-            "context_age_seconds": (utc(now)-utc(closed_at)).total_seconds() if closed_at else None,
+            "checked_at": checked_at, "context_closed_at": closed_at,
+            "context_age_seconds": (utc(checked_at)-utc(closed_at)).total_seconds()
+                                   if closed_at and checked_at else None,
             "context_max_age_seconds": None if SB.applies(context) else TFP.SECONDS.get(horizon),
             "quote_observed_at": stamp(VPS.quote_from_row(row).get("observed_at")),
             "routes": routes,
