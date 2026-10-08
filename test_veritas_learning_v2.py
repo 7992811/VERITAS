@@ -4,7 +4,8 @@ import veritas_learning_v2 as L
 class LearningV2Tests(unittest.TestCase):
     def row(self, decision="NO_TRADE", fr=.01, blockers=None, **kw):
         x={"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
-           "decision":decision,"forward_return":fr,"final_gate_blockers":blockers or ["IMPULSE_ALREADY_PASSED"]}
+           "decision":decision,"forward_return":fr,"candidate_direction":"LONG",
+           "final_gate_blockers":blockers or ["IMPULSE_ALREADY_PASSED"]}
         x.update(kw); return x
 
     def test_false_block_is_observed_movement_not_counterfactual_profit(self):
@@ -12,6 +13,16 @@ class LearningV2Tests(unittest.TestCase):
         self.assertEqual(s["missed_directional_episodes"],10)
         self.assertEqual(s["blockers"][0]["blocker"],"IMPULSE_ALREADY_PASSED")
         self.assertFalse(s["blockers"][0]["causal_false_block_proven"])
+
+    def test_no_trade_without_frozen_direction_is_not_false_block(self):
+        rows=[self.row(candidate_direction="") for _ in range(10)]
+        s=L.false_block_summary(rows)
+        self.assertEqual(s["missed_directional_episodes"],0)
+
+    def test_move_against_candidate_direction_is_not_false_block(self):
+        rows=[self.row(candidate_direction="LONG",fr=-.01) for _ in range(10)]
+        s=L.false_block_summary(rows)
+        self.assertEqual(s["missed_directional_episodes"],0)
 
     def test_entry_hypothesis_requires_recurrence_and_is_shadow_only(self):
         rows=[self.row() for _ in range(24)]
