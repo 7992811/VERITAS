@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.25-structural-breakout-autonomous-learning"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.25-structural-breakout-autonomous-learning"
+PRODUCT_VERSION="veritas-max-product-v91.8.26-learning-v2-shadow"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.26-learning-v2-shadow"
 UI_VERSION="veritas-ui-v9.1.8.25-structural-breakout-autonomous-learning"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
@@ -41,6 +41,9 @@ def snapshot():
             "structural_book_contention_nonblocking":True,
             "structural_execution_revalidated_at_wall_clock":True,
             "structural_execution_selects_current_same_source_cached_quote":True,
+            "learning_v2_shadow_hypotheses":True,
+            "learning_v2_requires_frozen_candidate_direction":True,
+            "learning_v2_production_mutation":False,
             "portfolio_positions_and_balances_share_current_book":True,
             "partial_portfolio_response_preserves_visible_positions":True,
             "calibration_reads_projected_decision_fields":True,
