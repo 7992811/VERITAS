@@ -25,6 +25,40 @@ class TradePlanBlocked(ValueError):
     """Stable diagnostic code only."""
 
 
+class EntryAdmissionBlocked(TradePlanBlocked):
+    """Carry bounded facts from the failed check, never re-evaluate admission."""
+
+    def __init__(self, row, admission, now):
+        reason = str(admission.get("reason") or "CANONICAL_ENTRY_BLOCKED")
+        super().__init__(reason)
+        context = TFP.context_of(row)
+        horizon = row.get("horizon")
+        direction = row.get("research_decision") or row.get("decision")
+        def stamp(value):
+            value = TS.timestamp(value)
+            try:
+                return datetime.fromtimestamp(value, timezone.utc).isoformat() if value is not None else None
+            except (ValueError, OverflowError, OSError):
+                return None
+        closed_at = stamp(context.get("closed_at"))
+        routes = []
+        for item in (row.get("_currency_route_trace") or [])[:7]:
+            if not isinstance(item, dict) or item.get("horizon") not in TFP.SECONDS:
+                continue
+            selected = (item.get("horizon"), item.get("direction")) == (horizon, direction)
+            routes.append({"horizon": item["horizon"], "selected": selected,
+                           "reason": reason if selected else str(item.get("reason") or "")[:160]})
+        self.entry_diagnostics = {
+            "horizon": horizon if horizon in TFP.SECONDS else None,
+            "direction": direction if direction in ("LONG", "SHORT") else None,
+            "checked_at": utc(now).isoformat(), "context_closed_at": closed_at,
+            "context_age_seconds": (utc(now)-utc(closed_at)).total_seconds() if closed_at else None,
+            "context_max_age_seconds": None if SB.applies(context) else TFP.SECONDS.get(horizon),
+            "quote_observed_at": stamp(VPS.quote_from_row(row).get("observed_at")),
+            "routes": routes,
+        }
+
+
 class ContractSizingBlocked(TradePlanBlocked):
     """A failed size calculation, with no permission to round up or trade."""
 
@@ -302,7 +336,7 @@ def select_entry(summary, account, now, *, spec=None, quote=None):
         raise TradePlanBlocked("NO_CURRENCY_CANDIDATE")
     admission = VCR.evaluate(row, CTC.runtime_portfolio_policy("Currency"), float(account.drawdown), now)
     if not admission.get("open"):
-        raise TradePlanBlocked(str(admission.get("reason") or "CANONICAL_ENTRY_BLOCKED"))
+        raise EntryAdmissionBlocked(row, admission, now)
     return row, admission
 
 

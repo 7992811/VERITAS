@@ -18,7 +18,7 @@ import veritas_trend_entry as VTE
 
 
 def structural_row(clock, *, timeframe="5m", asset="NQ", direction="LONG",
-                   signal_age=10, width=1., source=None, contract_id=None, price=None):
+                   signal_age=10, width=1., source=None, contract_id=None, price=None, contract=None):
     """Two known prior pivots, then one confirming close; no later new breakout."""
     step = TS.timeframe_seconds(timeframe)
     signal_at = clock.timestamp() - signal_age
@@ -47,7 +47,7 @@ def structural_row(clock, *, timeframe="5m", asset="NQ", direction="LONG",
             for key in ("open", "high", "low", "close"):
                 bar[key] *= factor
     provider = source or ("MOEX ISS CNYRUBF" if asset == "CNYRUBF" else "ProFinance NASD100_FUT")
-    identity = VPS.identity(asset, {"source":provider, "contract_id":contract_id})
+    identity = VPS.identity(asset, {"source":provider, "contract_id":contract_id, "contract":contract})
     ctx = TS.build_context(rows, timeframe, clock, asset=asset,
                            source_identity=identity, config=CTC.STRUCTURAL_ENTRY_POLICY)
     event = ctx["event"]
@@ -56,7 +56,7 @@ def structural_row(clock, *, timeframe="5m", asset="NQ", direction="LONG",
     row = {"asset":asset, "horizon":timeframe, "research_decision":direction,
            "decision":direction, "price":price, "confidence":.90,
            "signal_tier":"SUPER_"+direction, "source":provider,
-           "contract_id":contract_id, "source_names":{"primary":provider},
+           "contract_id":contract_id, "contract":contract, "source_names":{"primary":provider},
            "source_gate_pass":True, "market_open":True, "direct_sources":1,
            "market_observed_at":quote_at, "paper_eligible":True,
            "horizon_structure":{"direction":direction,"state":"CONFIRMED_TREND","score":.90},

@@ -342,6 +342,22 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.request('poll')
         self.assertIsNone(self.request('status')[0]['last_poll_sizing'])
 
+    def test_entry_failure_retains_observed_clocks_without_status_triggering_work(self):
+        from test_veritas_currency_entry_diagnostics import stale_failure
+        failure, _, _, _ = stale_failure()
+        with patch.object(self.coordinator, 'prepare_next', side_effect=failure):
+            self.assertEqual(self.request('poll')[1], 200)
+        calls, facts_calls = list(self.coordinator.calls), list(self.facts.calls)
+        observed = self.request('status')[0]
+        self.assertEqual(observed['last_poll_entry_diagnostics'], failure.entry_diagnostics)
+        observed['last_poll_entry_diagnostics']['routes'][0]['reason'] = 'altered'
+        self.assertEqual(self.request('status')[0]['last_poll_entry_diagnostics'], failure.entry_diagnostics)
+        self.assertEqual(self.coordinator.calls, calls)
+        self.assertEqual(self.facts.calls, facts_calls)
+        # A different result must not retain an earlier candle/route explanation.
+        self.request('poll')
+        self.assertIsNone(self.request('status')[0]['last_poll_entry_diagnostics'])
+
     def test_poll_and_updates_use_exact_scope_with_mixed_records(self):
         valid = self.create(event="valid")
         foreign = [

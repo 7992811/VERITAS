@@ -105,6 +105,16 @@ candidate ranking; a slower market-cache refresh cannot replace this book.
 Normal preparation, reviewed proposals and post-confirmation validation use
 the same binding. Stale broker data still blocks rather than extending a limit.
 
+When candidate admission fails, the private cached status keeps the selected
+timeframe, direction, original context close time and quote observation time,
+plus reasons for the other routes actually checked. The selected reason is the
+final check at the Currency account's drawdown, not its preliminary routing
+result. Legacy close-confirmed context also reports its age at that check and
+the existing timeframe deadline. Quote-driven context has no legacy candle-age
+deadline added. These bounded diagnostics contain no account IDs or native
+proof graphs and clear on the next poll. `/currency_status` only renders the
+stored facts: it does not fetch candles, rebuild an event, poll or submit orders.
+
 Currency starts with a separate 10,000 RUB allocation. The existing canonical
 maximum gross exposure is 10 times that allocation; its hard drawdown threshold
 is 35%. The full broker account equity is not treated as Currency capital.

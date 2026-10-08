@@ -36,7 +36,7 @@ from veritas_currency_trade_ledger import (
     CurrencyTradeLedger, InstrumentValuation, LedgerError, ACCOUNTS, FILLS, FEES,
 )
 from veritas_currency_trade_plan import (
-    AccountSnapshot, BrokerQuote, ContractSpec, TradePlanBlocked, ContractSizingBlocked, fresh,
+    AccountSnapshot, BrokerQuote, ContractSpec, TradePlanBlocked, ContractSizingBlocked, EntryAdmissionBlocked, fresh,
     fingerprint, json_safe, utc,
 )
 from veritas_currency_trading import CurrencyTradingCoordinator, TradeFacts, TradeOwner
@@ -644,7 +644,7 @@ class TradeHttpApplication:
             "binding_state": "unchecked", "last_poll_at": None,
             "last_poll_block_reason": None, "pending_approval_count": None,
             "unsettled_count": None, "last_poll_succeeded": None,
-            "last_poll_sizing": None,
+            "last_poll_sizing": None, "last_poll_entry_diagnostics": None,
         }
 
     @property
@@ -726,12 +726,13 @@ class TradeHttpApplication:
             account_id=self.account_id, owner_user_id=self.owner.user_id, limit=1000))
 
     def _remember_poll(self, reason, *, binding_state=None, pending=None, unsettled=None,
-                       succeeded=True, sizing=None):
+                       succeeded=True, sizing=None, entry_diagnostics=None):
         self._poll_state.update(
             last_poll_at=utc(self.clock()).isoformat(), last_poll_block_reason=reason,
             pending_approval_count=pending, unsettled_count=unsettled,
             last_poll_succeeded=succeeded,
             last_poll_sizing=deepcopy(sizing),
+            last_poll_entry_diagnostics=deepcopy(entry_diagnostics),
         )
         if binding_state is not None:
             self._poll_state["binding_state"] = binding_state
@@ -783,7 +784,7 @@ class TradeHttpApplication:
             self._remember_poll("PROPOSALS_PAUSED", binding_state="bound")
             return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
                     "block_reason": "PROPOSALS_PAUSED"}
-        reason, sizing = None, None
+        reason, sizing, entry_diagnostics = None, None, None
         approved = self._scoped(self.repository.list_approved(
             account_id=self.account_id, owner_user_id=self.owner.user_id, limit=1000))
         if approved:
@@ -806,12 +807,14 @@ class TradeHttpApplication:
                 reason = _diagnostic(exc)
                 if isinstance(exc, ContractSizingBlocked):
                     sizing = exc.sizing
+                if isinstance(exc, EntryAdmissionBlocked):
+                    entry_diagnostics = exc.entry_diagnostics
                 if reason == "BROKER_COST_RECONCILIATION_REQUIRED":
                     reason = self.facts.block_reason or reason
             pending = self._pending()
         items = [self._public(p) for p in pending if p.get("status") == "PENDING_DELIVERY"][:1]
         self._remember_poll(reason, binding_state="bound", pending=len(pending),
-                            unsettled=len(unsettled), sizing=sizing)
+                            unsettled=len(unsettled), sizing=sizing, entry_diagnostics=entry_diagnostics)
         return {"ok": True, "enabled": True, "items": items,
                 "execution_enabled": self.execution_enabled, "block_reason": reason}
 
