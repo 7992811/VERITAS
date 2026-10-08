@@ -268,7 +268,9 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
         eligible=[x for x in public if x["kind"]==kind and x["status"]=="SHADOW_ELIGIBLE"]
         by={}
         for x in eligible:
-            scope=x.get("scope") or {}; key=(scope.get("asset"),scope.get("horizon"),scope.get("regime"))
+            scope=x.get("scope") or {}
+            key=(scope.get("asset"),scope.get("horizon"),scope.get("regime"),
+                 scope.get("source_key"),scope.get("policy_hash"))
             score=(x["prospective"].get("wilson_low") if kind=="ENTRY_BLOCKER_RELAXATION"
                    else x["prospective"].get("hit_rate_delta"))
             if score is None: continue
