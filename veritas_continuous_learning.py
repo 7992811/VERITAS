@@ -693,6 +693,9 @@ class ContinuousLearning:
                               d.payload#>>'{trade_plan,setup_family}','') AS setup_family,
                      COALESCE(d.payload#>>'{learning_provenance,policy_hash}',
                               d.payload->>'strategy_policy_hash','') AS policy_hash,
+                     COALESCE(d.payload#>>'{learning_provenance,source_identity,key}',
+                              d.payload#>>'{timeframe_entry_context,source_identity,key}',
+                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,key}','') AS source_key,
                      COALESCE(d.payload->>'horizon_structure_direction',
                               d.payload#>>'{timeframe_entry_context,event,direction}',
                               d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}','') AS candidate_direction,
@@ -711,6 +714,8 @@ class ContinuousLearning:
             trades = c.execute("""
               SELECT closed_at,asset,horizon,regime,setup_family,
                      COALESCE(payload->>'strategy_policy_hash','') AS policy_hash,
+                     COALESCE(payload#>>'{price_source_lock,key}',
+                              payload#>>'{entry_execution_source_identity,key}','') AS source_key,
                      mae_pct AS mae,mfe_pct AS mfe,capture_ratio,
                      net_pnl_rub,primary_attribution
               FROM v90_learning_episodes
