@@ -15,9 +15,10 @@ import json
 import math
 
 VERSION = "LEARNING_V2_SHADOW_1"
-MIN_CONTEXT_N = 24
-MIN_FALSE_BLOCK_N = 8
+MIN_CONTEXT_N = 8
+MIN_FALSE_BLOCK_N = 3
 MIN_TRADE_N = 12
+MIN_ROUTER_TRAIN_N = 6
 MAX_HYPOTHESES = 64
 ENTRY_FALSE_BLOCK_MOVE = 0.004
 STOP_BUFFER_ATR_CANDIDATES = (0.10, 0.15, 0.20, 0.30)
@@ -211,7 +212,7 @@ def generate_hypotheses(decision_rows, trade_rows):
              str(r.get("source_key") or ""),str(r.get("policy_hash") or r.get("strategy_policy_hash") or ""))
         z=router[key][fam]; z[1]+=1; z[0]+=int(dr>0)
     for (asset,horizon,regime,source_key,policy_hash),families in router.items():
-        eligible={f:w/n for f,(w,n) in families.items() if n>=MIN_TRADE_N}
+        eligible={f:w/n for f,(w,n) in families.items() if n>=MIN_ROUTER_TRAIN_N}
         if len(eligible)<2:
             continue
         best=max(eligible,key=eligible.get)
