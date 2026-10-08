@@ -137,7 +137,7 @@ class CanonicalObservationRuntimeTests(unittest.TestCase):
         return R.canonical_close_or_reduce(self.tables,{},'Aggressive',deepcopy(self.tables.position),
             quote['price'],.05 if partial else 0.,10000.,clock,'RISK_REDUCTION' if partial else 'STOP')
 
-    def test_successful_none_return_records_actual_immutable_entry_and_valid_stop_loss(self):
+    def test_successful_none_return_keeps_loss_but_unresolved_contract_cannot_train(self):
         self.assertIsNone(self.open())  # The real writer does not return a fee.
         entry = deepcopy(self.tables.trade['payload'])
         event = entry['entry_event_snapshot']
@@ -157,8 +157,9 @@ class CanonicalObservationRuntimeTests(unittest.TestCase):
         self.assertEqual(trade['payload']['close_reason'],'STOP')
         self.assertEqual(trade['payload']['entry_execution_model'],entry['entry_execution_model'])
         diagnosed = DIAG.diagnose(trade)
-        self.assertTrue(diagnosed['learning_eligible'],diagnosed)
-        self.assertEqual(diagnosed['primary_attribution'],'VALID_STRUCTURAL_STOP_LOSS')
+        self.assertFalse(diagnosed['learning_eligible'],diagnosed)
+        self.assertEqual(diagnosed['primary_attribution'],'UNVERIFIED_TRADE_EVIDENCE')
+        self.assertEqual(diagnosed['exclusion_reason'],'SOURCE_UNVERIFIED')
         self.assertAlmostEqual(trade['net_pnl_rub'],self.tables.gross-self.tables.fees)
 
     def test_failed_last_metadata_write_does_not_cancel_exit_or_leave_clean_evidence(self):
