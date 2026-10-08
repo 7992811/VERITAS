@@ -411,12 +411,9 @@ class ContinuousLearning:
         if self.boot_phase == 3:
             KNOWLEDGE.ensure_schema(self.connect, context=context)
             KNOWLEDGE.restore(self.connect, context=context)
-            self.boot_phase = 4
-            return {"status": "PROGRESS", "stage": "KNOWLEDGE_SCHEMA"}
-        if self.boot_phase == 4:
             V2.ensure_schema(self.connect, context=context)
-            self.boot_phase = 5
-            return {"status": "PROGRESS", "stage": "LEARNING_V2_SCHEMA"}
+            self.boot_phase = 4
+            return {"status": "PROGRESS", "stage": "KNOWLEDGE_AND_LEARNING_V2_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
         progress = STORE.load_snapshot(self.connect, "learning_progress", PROGRESS_VERSION)
         with self._lock:
