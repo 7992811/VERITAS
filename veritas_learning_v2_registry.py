@@ -216,7 +216,6 @@ def ensure_schema(c):
 def sync(c,snapshot,decision_rows,trade_rows,now=None):
     clock=now or datetime.now(timezone.utc)
     if clock.tzinfo is None: raise ValueError("timezone-aware clock required")
-    ensure_schema(c)
     hypotheses=list(snapshot.get("hypotheses") or [])[:L2.MAX_HYPOTHESES]
     cutoff=max((r.get("decision_id") for r in decision_rows if type(r.get("decision_id")) is int),default=0)
     for h in hypotheses:
