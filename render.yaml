@@ -26,3 +26,21 @@ services:
         value: "6"
       - key: PUBLISH_MODE
         value: "approval"
+
+  - type: worker
+    name: veritas-learning-v2
+    runtime: python
+    region: frankfurt
+    plan: starter
+    buildCommand: pip install -r requirements-intelligence.txt
+    startCommand: python veritas_learning_worker.py
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: VERITAS_PROCESS_ROLE
+        value: "learning"
+      - key: VERITAS_LEARNING_V2_INTERVAL_SECONDS
+        value: "120"
+      - key: VERITAS_LEARNING_V2_LIMIT
+        value: "2000"
