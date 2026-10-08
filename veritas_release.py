@@ -22,11 +22,6 @@ def snapshot():
         "product_version":PRODUCT_VERSION,
         "portfolio_version":PORTFOLIO_VERSION,
         "ctc_version":CTC.VERSION,
-        "currency_contract_sizing_policy": {
-            "minimum_initial_contracts": CTC.PORTFOLIO_POLICIES["Currency"]["minimum_initial_contracts"],
-            "whole_position_margin_within_allocation": True,
-            "minimum_does_not_apply_to_add": True,
-        },
         "strategy_epoch":CTC.STRATEGY_EPOCH,
         "execution_integrity_policy":{
             "version":"CTC_VERIFIED_EXECUTION_SNAPSHOT_V2",
