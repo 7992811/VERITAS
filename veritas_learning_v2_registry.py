@@ -1,8 +1,9 @@
 """Durable prospective registry for VERITAS Learning 2.0 hypotheses.
 
-Training evidence is frozen at registration. Only later observations may move a
-candidate from COLLECTING to SHADOW_ELIGIBLE.  Eligibility starts a virtual
-experiment; it never changes production trading or broker state.
+Training evidence and a decision-ledger cutoff are frozen at registration.
+Only later observations accumulate into sufficient statistics.  A candidate may
+become SHADOW_ELIGIBLE, but this module never changes production trading,
+broker state, risk limits, stops or exits.
 """
 from __future__ import annotations
 
@@ -13,15 +14,16 @@ import math
 
 import veritas_learning_v2 as L2
 
-VERSION="LEARNING_V2_REGISTRY_V1"
+VERSION="LEARNING_V2_REGISTRY_V2"
 MIN_ENTRY_N=64
 MIN_ENTRY_DAYS=14
 REJECT_ENTRY_N=128
 MIN_ROUTER_N=50
 MIN_ROUTER_DAYS=14
+REJECT_ROUTER_N=100
 SHADOW_VALID_DAYS=7
 MAX_ACTIVE=128
-TERMINAL={"REJECTED","EXPIRED"}
+MAX_DAY_KEYS=64
 
 
 def _time(v):
@@ -68,33 +70,54 @@ def _scope_match(scope,row):
     return True
 
 
-def _prospective_entry(candidate,rows,registered_at):
-    proposal=candidate["proposal"]; blocker=str(proposal.get("blocker") or "")
-    selected=[]
+def _new_rows(rows,registered_at,cutoff_id,prior):
+    last_id=max(int(cutoff_id or 0),int((prior or {}).get("last_decision_id") or 0))
+    usable=[]
     for r in rows:
+        rid=r.get("decision_id")
         ts=_time(r.get("event_ts") or r.get("decision_ts"))
-        if ts is None or ts<=registered_at or not _scope_match(candidate["scope"],r):
+        if ts is None or ts<=registered_at:
             continue
-        if str(r.get("decision") or "")!="NO_TRADE":
+        if type(rid) is int:
+            if rid<=last_id: continue
+        elif prior:
+            # Durable incremental mode requires ledger identity; rows without it
+            # cannot be safely added after the first checkpoint.
             continue
+        usable.append((rid,ts,r))
+    usable.sort(key=lambda x:((x[0] if type(x[0]) is int else 0),x[1]))
+    return usable,last_id
+
+
+def _entry_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
+    p=dict(prior or {})
+    n=int(p.get("n") or 0); wins=int(p.get("wins") or 0); adverse=int(p.get("adverse") or 0)
+    sum_signed=float(p.get("sum_signed_return") or 0.0)
+    days=set(str(x) for x in (p.get("utc_days") or [])[-MAX_DAY_KEYS:])
+    last_id=int(p.get("last_decision_id") or cutoff_id or 0); added=0
+    blocker=str(candidate["proposal"].get("blocker") or "")
+    usable,_=_new_rows(rows,registered_at,cutoff_id,p if prior is not None else None)
+    for rid,ts,r in usable:
+        if not _scope_match(candidate["scope"],r): continue
+        if str(r.get("decision") or "")!="NO_TRADE": continue
         blockers={str(x) for x in (r.get("final_gate_blockers") or r.get("blockers") or [])}
-        if blocker not in blockers:
-            continue
+        if blocker not in blockers: continue
         direction=str(r.get("candidate_direction") or "")
         fr=_num(r.get("forward_return"))
-        if direction not in ("LONG","SHORT") or fr is None:
-            continue
+        if direction not in ("LONG","SHORT") or fr is None: continue
         signed=fr if direction=="LONG" else -fr
-        selected.append((ts,signed))
-    n=len(selected); days=len({ts.date().isoformat() for ts,_ in selected})
-    wins=sum(move>=L2.ENTRY_FALSE_BLOCK_MOVE for _,move in selected)
-    adverse=sum(move<=-L2.ENTRY_FALSE_BLOCK_MOVE for _,move in selected)
-    mean=sum(move for _,move in selected)/n if n else None
-    hit=wins/n if n else None; low=_wilson_low(wins,n)
-    evidence={"n":n,"days":days,"favourable_rate":hit,"wilson_low":low,
-              "adverse_rate":adverse/n if n else None,"mean_candidate_signed_return":mean,
-              "execution_pnl_proven":False}
-    if n>=MIN_ENTRY_N and days>=MIN_ENTRY_DAYS and hit is not None and hit>=.55 and low is not None and low>.50 and mean is not None and mean>0:
+        n+=1; added+=1; sum_signed+=signed; days.add(ts.date().isoformat())
+        wins+=int(signed>=L2.ENTRY_FALSE_BLOCK_MOVE)
+        adverse+=int(signed<=-L2.ENTRY_FALSE_BLOCK_MOVE)
+        if type(rid) is int: last_id=max(last_id,rid)
+    day_list=sorted(days)[-MAX_DAY_KEYS:]
+    mean=sum_signed/n if n else None; hit=wins/n if n else None; low=_wilson_low(wins,n)
+    evidence={"n":n,"wins":wins,"adverse":adverse,"days":len(day_list),"utc_days":day_list,
+              "favourable_rate":hit,"wilson_low":low,
+              "adverse_rate":adverse/n if n else None,"sum_signed_return":sum_signed,
+              "mean_candidate_signed_return":mean,"last_decision_id":last_id,
+              "new_observations":added,"execution_pnl_proven":False}
+    if n>=MIN_ENTRY_N and len(day_list)>=MIN_ENTRY_DAYS and hit is not None and hit>=.55 and low is not None and low>.50 and mean is not None and mean>0:
         status="SHADOW_ELIGIBLE"
     elif n>=REJECT_ENTRY_N and (mean is None or mean<=0 or (hit is not None and hit<.50)):
         status="REJECTED"
@@ -109,55 +132,63 @@ def _directional(r):
     return fr if d=="LONG" else -fr
 
 
-def _prospective_router(candidate,rows,registered_at):
+def _router_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
+    p=dict(prior or {})
+    pn=int(p.get("preferred_n") or 0); pw=int(p.get("preferred_wins") or 0)
+    ps=float(p.get("preferred_sum_signed_return") or 0.0)
+    on=int(p.get("other_n") or 0); ow=int(p.get("other_wins") or 0)
+    osum=float(p.get("other_sum_signed_return") or 0.0)
+    days=set(str(x) for x in (p.get("utc_days") or [])[-MAX_DAY_KEYS:])
+    last_id=int(p.get("last_decision_id") or cutoff_id or 0); added=0
     preferred=str(candidate["proposal"].get("preferred_family") or "")
-    pref=[]; other=[]
-    dates=set()
-    for r in rows:
-        ts=_time(r.get("event_ts") or r.get("decision_ts"))
-        if ts is None or ts<=registered_at or not _scope_match(candidate["scope"],r):
-            continue
-        dr=_directional(r)
-        fam=str(r.get("setup_family") or r.get("strategy_family") or "").upper()
-        if dr is None or not fam:
-            continue
-        dates.add(ts.date().isoformat())
-        (pref if fam==preferred else other).append(dr)
-    pn,on=len(pref),len(other)
-    phr=sum(x>0 for x in pref)/pn if pn else None
-    ohr=sum(x>0 for x in other)/on if on else None
-    pmean=sum(pref)/pn if pn else None
+    usable,_=_new_rows(rows,registered_at,cutoff_id,p if prior is not None else None)
+    for rid,ts,r in usable:
+        if not _scope_match(candidate["scope"],r): continue
+        dr=_directional(r); fam=str(r.get("setup_family") or r.get("strategy_family") or "").upper()
+        if dr is None or not fam: continue
+        days.add(ts.date().isoformat()); added+=1
+        if fam==preferred:
+            pn+=1; pw+=int(dr>0); ps+=dr
+        else:
+            on+=1; ow+=int(dr>0); osum+=dr
+        if type(rid) is int: last_id=max(last_id,rid)
+    day_list=sorted(days)[-MAX_DAY_KEYS:]
+    phr=pw/pn if pn else None; ohr=ow/on if on else None
+    pmean=ps/pn if pn else None
     delta=(phr-ohr) if phr is not None and ohr is not None else None
-    evidence={"preferred_n":pn,"other_n":on,"days":len(dates),
-              "preferred_hit_rate":phr,"other_hit_rate":ohr,
-              "hit_rate_delta":delta,"preferred_mean_signed_return":pmean,
-              "causal_superiority_proven":False}
-    if pn>=MIN_ROUTER_N and on>=MIN_ROUTER_N and len(dates)>=MIN_ROUTER_DAYS and delta is not None and delta>=.05 and pmean is not None and pmean>0:
+    evidence={"preferred_n":pn,"preferred_wins":pw,"preferred_sum_signed_return":ps,
+              "other_n":on,"other_wins":ow,"other_sum_signed_return":osum,
+              "days":len(day_list),"utc_days":day_list,
+              "preferred_hit_rate":phr,"other_hit_rate":ohr,"hit_rate_delta":delta,
+              "preferred_mean_signed_return":pmean,"last_decision_id":last_id,
+              "new_observations":added,"causal_superiority_proven":False}
+    if pn>=MIN_ROUTER_N and on>=MIN_ROUTER_N and len(day_list)>=MIN_ROUTER_DAYS and delta is not None and delta>=.05 and pmean is not None and pmean>0:
         status="SHADOW_ELIGIBLE"
-    elif pn>=2*MIN_ROUTER_N and on>=2*MIN_ROUTER_N and (delta is None or delta<=0 or pmean is None or pmean<=0):
+    elif pn>=REJECT_ROUTER_N and on>=REJECT_ROUTER_N and (delta is None or delta<=0 or pmean is None or pmean<=0):
         status="REJECTED"
     else:
         status="EVALUATING" if pn+on else "COLLECTING"
     return status,evidence
 
 
-def evaluate_candidate(candidate,decision_rows,trade_rows,now=None):
+def evaluate_candidate(candidate,decision_rows,trade_rows,now=None,prior=None,cutoff_id=0):
     clock=now or datetime.now(timezone.utc)
     if clock.tzinfo is None: raise ValueError("timezone-aware clock required")
     registered=_time(candidate.get("registered_at"))
     if registered is None: raise ValueError("registered_at required")
     kind=candidate["kind"]
     if kind=="ENTRY_BLOCKER_RELAXATION":
-        status,evidence=_prospective_entry(candidate,decision_rows,registered)
+        status,evidence=_entry_evidence(candidate,decision_rows,registered,cutoff_id,prior)
     elif kind=="STRATEGY_ROUTER":
-        status,evidence=_prospective_router(candidate,decision_rows,registered)
+        status,evidence=_router_evidence(candidate,decision_rows,registered,cutoff_id,prior)
     elif kind in ("STOP_GEOMETRY","EXIT_CAPTURE"):
         status,evidence="AWAIT_REPLAY",{"reason":"ORDERED_PATH_REPLAY_REQUIRED","n":0,
-            "counterfactual_execution_proven":False}
+            "new_observations":0,"counterfactual_execution_proven":False}
     else:
-        status,evidence="REJECTED",{"reason":"UNKNOWN_KIND","n":0}
-    valid_until=(clock+timedelta(days=SHADOW_VALID_DAYS)).isoformat() if status=="SHADOW_ELIGIBLE" else None
-    return {"status":status,"prospective":evidence,"valid_until":valid_until}
+        status,evidence="REJECTED",{"reason":"UNKNOWN_KIND","n":0,"new_observations":0}
+    fresh=bool(evidence.get("new_observations"))
+    valid_until=(clock+timedelta(days=SHADOW_VALID_DAYS)).isoformat() if status=="SHADOW_ELIGIBLE" and fresh else None
+    return {"status":status,"prospective":evidence,"valid_until":valid_until,"fresh_evidence":fresh}
 
 
 def ensure_schema(c):
@@ -169,6 +200,7 @@ def ensure_schema(c):
         horizon TEXT,
         regime TEXT,
         registered_at TIMESTAMPTZ NOT NULL,
+        decision_cutoff_id BIGINT NOT NULL DEFAULT 0,
         status TEXT NOT NULL,
         contract JSONB NOT NULL,
         training_evidence JSONB NOT NULL,
@@ -176,6 +208,7 @@ def ensure_schema(c):
         valid_until TIMESTAMPTZ,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )""")
+    c.execute("ALTER TABLE learning_v2_registry ADD COLUMN IF NOT EXISTS decision_cutoff_id BIGINT NOT NULL DEFAULT 0")
     c.execute("""CREATE INDEX IF NOT EXISTS learning_v2_registry_status
                  ON learning_v2_registry(status,updated_at DESC)""")
 
@@ -185,20 +218,21 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
     if clock.tzinfo is None: raise ValueError("timezone-aware clock required")
     ensure_schema(c)
     hypotheses=list(snapshot.get("hypotheses") or [])[:L2.MAX_HYPOTHESES]
+    cutoff=max((r.get("decision_id") for r in decision_rows if type(r.get("decision_id")) is int),default=0)
     for h in hypotheses:
         identity={k:h.get(k) for k in ("version","kind","scope","proposal")}
         if h.get("hypothesis_id")!=L2._digest(identity):
             raise ValueError("learning v2 hypothesis identity mismatch")
         scope=h.get("scope") or {}
         c.execute("""INSERT INTO learning_v2_registry(
-            candidate_id,version,kind,asset,horizon,regime,registered_at,status,
+            candidate_id,version,kind,asset,horizon,regime,registered_at,decision_cutoff_id,status,
             contract,training_evidence,prospective,updated_at)
-            VALUES(%s,%s,%s,%s,%s,%s,%s,'COLLECTING',%s::jsonb,%s::jsonb,'{}'::jsonb,%s)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'COLLECTING',%s::jsonb,%s::jsonb,'{}'::jsonb,%s)
             ON CONFLICT(candidate_id) DO NOTHING""",
             (h["hypothesis_id"],VERSION,h["kind"],scope.get("asset"),scope.get("horizon"),
-             scope.get("regime"),clock,_json(identity),_json(h.get("evidence") or {}),clock))
-    rows=c.execute("""SELECT candidate_id,kind,registered_at,status,contract,training_evidence,
-                             prospective,valid_until
+             scope.get("regime"),clock,cutoff,_json(identity),_json(h.get("evidence") or {}),clock))
+    rows=c.execute("""SELECT candidate_id,kind,registered_at,decision_cutoff_id,status,contract,
+                             training_evidence,prospective,valid_until
                       FROM learning_v2_registry
                       WHERE version=%s AND status NOT IN ('REJECTED','EXPIRED')
                       ORDER BY registered_at ASC LIMIT %s""",(VERSION,MAX_ACTIVE)).fetchall()
@@ -206,41 +240,38 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
     for raw in rows or []:
         row=dict(raw)
         contract=row["contract"] if isinstance(row.get("contract"),dict) else json.loads(row["contract"])
+        prior=row["prospective"] if isinstance(row.get("prospective"),dict) else json.loads(row.get("prospective") or "{}")
         candidate={**contract,"registered_at":row["registered_at"].isoformat() if isinstance(row["registered_at"],datetime) else str(row["registered_at"])}
-        result=evaluate_candidate(candidate,decision_rows,trade_rows,clock)
-        status=result["status"]
-        if row.get("status")=="SHADOW_ELIGIBLE" and status in ("COLLECTING","EVALUATING"):
-            # Do not remove a valid shadow eligibility merely because the bounded
-            # recent input window no longer contains its full prospective sample.
-            valid=_time(row.get("valid_until"))
-            status="SHADOW_ELIGIBLE" if valid and valid>clock else "EXPIRED"
-            if status=="SHADOW_ELIGIBLE":
-                result["valid_until"]=valid.isoformat()
-                result["prospective"]=row.get("prospective") or result["prospective"]
+        result=evaluate_candidate(candidate,decision_rows,trade_rows,clock,prior=prior,
+                                  cutoff_id=int(row.get("decision_cutoff_id") or 0))
+        status=result["status"]; valid_until=result.get("valid_until")
+        previous_valid=_time(row.get("valid_until"))
+        if row.get("status")=="SHADOW_ELIGIBLE" and status=="SHADOW_ELIGIBLE" and not result["fresh_evidence"]:
+            if previous_valid and previous_valid>clock:
+                valid_until=previous_valid.isoformat()
+            else:
+                status="EXPIRED"; valid_until=None
         c.execute("""UPDATE learning_v2_registry SET status=%s,prospective=%s::jsonb,
                          valid_until=%s,updated_at=%s WHERE candidate_id=%s""",
-                  (status,_json(result["prospective"]),result.get("valid_until"),clock,row["candidate_id"]))
+                  (status,_json(result["prospective"]),valid_until,clock,row["candidate_id"]))
         changed+=1; counts[status]+=1
         public.append({"candidate_id":row["candidate_id"],"kind":row["kind"],"status":status,
                        "registered_at":candidate["registered_at"],"scope":candidate.get("scope"),
                        "proposal":candidate.get("proposal"),"prospective":result["prospective"],
-                       "valid_until":result.get("valid_until"),
-                       "production_influence":False})
+                       "valid_until":valid_until,"production_influence":False})
     champions=[]
     for kind in ("ENTRY_BLOCKER_RELAXATION","STRATEGY_ROUTER"):
         eligible=[x for x in public if x["kind"]==kind and x["status"]=="SHADOW_ELIGIBLE"]
         by={}
         for x in eligible:
-            scope=x.get("scope") or {}
-            key=(scope.get("asset"),scope.get("horizon"),scope.get("regime"))
+            scope=x.get("scope") or {}; key=(scope.get("asset"),scope.get("horizon"),scope.get("regime"))
             score=(x["prospective"].get("wilson_low") if kind=="ENTRY_BLOCKER_RELAXATION"
                    else x["prospective"].get("hit_rate_delta"))
             if score is None: continue
-            if key not in by or score>by[key][0]:
-                by[key]=(score,x)
-        for _,x in by.values():
-            champions.append({**x,"shadow_champion":True})
+            if key not in by or score>by[key][0]: by[key]=(score,x)
+        for _,x in by.values(): champions.append({**x,"shadow_champion":True})
     return {"version":VERSION,"registered":len(hypotheses),"evaluated":changed,
             "counts":dict(counts),"candidates":public[:64],"shadow_champions":champions[:32],
             "automatic_shadow_selection":True,"automatic_production_promotion":False,
-            "principle":"Only observations after immutable registration may validate a shadow candidate."}
+            "decision_cutoff_id":cutoff,
+            "principle":"Training cutoff is immutable; only later ledger IDs accumulate into prospective validation."}
