@@ -981,8 +981,14 @@ def _v90_pg_raw_connect_impl():
     if psycopg is None:
         raise RuntimeError('PSYCOPG_NOT_INSTALLED')
     c = psycopg.connect(DATABASE_URL, autocommit=True, row_factory=dict_row, connect_timeout=6)
-    c.execute('CREATE SCHEMA IF NOT EXISTS veritas_v90')
-    c.execute('SET search_path TO veritas_v90')
+    try:
+        c.execute('CREATE SCHEMA IF NOT EXISTS veritas_v90; SET search_path TO veritas_v90')
+    except BaseException:
+        try:
+            c.close()
+        except BaseException:
+            pass  # Preserve the setup failure even if connection cleanup fails.
+        raise
     return c
 
 

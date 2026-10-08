@@ -124,6 +124,67 @@ class ScorecardStageTests(unittest.TestCase):
         self.assertGreater(result['processed'],0)
         self.assertNotIn('intelligence_scorecard',self.durable)
 
+    def test_sample_failure_reports_actual_phase_and_keeps_durable_state_and_last_good(self):
+        original=self.completed()
+        for expired,broken_emit in ((False,False),(True,False),(True,True)):
+            with self.subTest(expired=expired,broken_emit=broken_emit):
+                self.durable.clear(); AMI._RESTORED_EPOCH=None
+                self.sample.side_effect=self.sample_rows; self.query_failure=None
+                self.step()
+                if expired:
+                    self.step()
+                    self.durable[DELIVERY.WORK_SLOT]['payload']['started_at']=DELIVERY.time.time()-1801
+                    self.assertEqual(self.durable[DELIVERY.WORK_SLOT]['payload']['stage'],'decisions')
+                before=deepcopy(self.durable)
+                events=[]
+                def emit(event,**fields):
+                    events.append((event,fields))
+                    if broken_emit:
+                        raise OSError('private logging failure')
+                self.context.sql_timeout_ms=350
+                self.context.lane=SimpleNamespace(current_budget=lambda:{'remaining_seconds':3.2},emit=emit)
+                self.query_failure='synthetic_sample_failure'
+                self.sample.side_effect=lambda c:c.execute('SELECT synthetic_sample_failure')
+                with self.assertRaises(QueryCanceled):
+                    self.step()
+                self.assertEqual(self.durable,before)
+                self.assertTrue(self.connections[-1].rolled_back)
+                current=AMI.cached_scorecard(EPOCH)
+                self.assertEqual(current['score'],original['score'])
+                self.assertEqual(current['refresh_stage'],'sample')
+                self.assertEqual(current['last_refresh_error'],'QueryCanceled')
+                self.assertEqual(current['refresh_last_sql_timeout_ms'],350)
+                self.assertEqual(current['refresh_last_sql_budget_seconds'],3.2)
+                self.assertEqual(events,[('ami_refresh_error',dict(status='ERROR',error_type='QueryCanceled',
+                    stage='sample',last_sql_timeout_ms=350,last_sql_budget_seconds=3.2))])
+                self.assertNotIn('private',str((current,events)))
+                self.query_failure=None
+
+    def test_error_diagnostic_keeps_actual_reduced_cap_and_unknown_failed_setup_cap(self):
+        self.rows=self.history(130)
+        self.context.sql_timeout_ms=2000
+        self.step(); self.step()
+        budget={'remaining_seconds':3.2}
+        self.context.lane=SimpleNamespace(current_budget=lambda:dict(budget))
+        self.query_failure='synthetic_chunk_failure'
+        def fail_chunk(c,pairs):
+            self.context.sql_timeout_ms=2000
+            c.execute('SELECT synthetic_chunk_failure')
+        self.chunk.side_effect=fail_chunk
+        with self.assertRaises(QueryCanceled):
+            self.step()
+        current=AMI.cached_scorecard(EPOCH)
+        self.assertEqual(current['refresh_stage'],'decisions')
+        self.assertEqual(current['refresh_last_sql_timeout_ms'],1000)
+        self.assertEqual(current['refresh_last_sql_budget_seconds'],3.2)
+        self.query_failure='SET LOCAL statement_timeout'
+        with self.assertRaises(QueryCanceled):
+            self.step()
+        current=AMI.cached_scorecard(EPOCH)
+        self.assertEqual(current['refresh_stage'],'work_state')
+        self.assertIsNone(current['refresh_last_sql_timeout_ms'])
+        self.assertIsNone(current['refresh_last_sql_budget_seconds'])
+
     def test_final_commit_before_budget_exception_is_recovered_without_recomputation(self):
         for _ in range(10):
             result=self.step()

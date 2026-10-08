@@ -1,10 +1,13 @@
 """Cache commit semantics and durable job fencing; no production connection."""
+import ast
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import os
+from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 import uuid
 from unittest.mock import patch
@@ -133,7 +136,169 @@ class StateBoundsTests(unittest.TestCase):
         S._good({"status":"BUILDING"}); S._good({"status":"INSUFFICIENT_DATA"})
 
 
+def _load_raw_connect(driver, *, dsn="synthetic-dsn", row_factory=None, schema=None):
+    # Compile the production function alone; importing the monolith would start
+    # unrelated runtime/bootstrap code. Native tests replace only its two
+    # schema-name literals with an isolated, generated test namespace.
+    source = Path(__file__).with_name("veritas_intelligence.py")
+    module = ast.parse(source.read_text(encoding="utf-8"))
+    function = next(node for node in module.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "_v90_pg_raw_connect_impl")
+    if schema is not None:
+        if not schema.startswith("pg_setup_test_") or not schema.removeprefix("pg_setup_test_").isalnum():
+            raise AssertionError("unsafe test schema")
+        replaced = 0
+        for node in ast.walk(function):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                replaced += node.value.count("veritas_v90")
+                node.value = node.value.replace("veritas_v90", schema)
+        if replaced != 2:
+            raise AssertionError("unexpected production schema references")
+    namespace = {"DATABASE_URL": dsn, "psycopg": driver, "dict_row": row_factory}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), namespace)
+    return namespace["_v90_pg_raw_connect_impl"]
+
+
+class RawConnectionSetupTests(unittest.TestCase):
+    def test_setup_keeps_connection_options_and_returns_the_open_connection(self):
+        calls, statements, closed = [], [], []
+        connection = SimpleNamespace(execute=lambda sql: statements.append(sql),
+                                     close=lambda: closed.append(True))
+        def connect(*args, **kwargs):
+            calls.append((args, kwargs))
+            return connection
+        row_factory = object()
+        setup = _load_raw_connect(SimpleNamespace(connect=connect), row_factory=row_factory)
+        self.assertIs(setup(), connection)
+        self.assertEqual(calls, [(("synthetic-dsn",),
+                                 {"autocommit": True, "row_factory": row_factory, "connect_timeout": 6})])
+        self.assertEqual(statements,
+                         ["CREATE SCHEMA IF NOT EXISTS veritas_v90; SET search_path TO veritas_v90"])
+        self.assertEqual(closed, [])
+
+    def test_failed_setup_closes_connection_without_masking_the_original_error(self):
+        for close_fails in (False, True):
+            for error in (RuntimeError("synthetic setup failure"), KeyboardInterrupt("synthetic interruption")):
+                with self.subTest(close_fails=close_fails, error=type(error).__name__):
+                    closed = []
+                    def execute(sql):
+                        raise error
+                    def close():
+                        closed.append(True)
+                        if close_fails:
+                            raise RuntimeError("synthetic cleanup failure")
+                    connection = SimpleNamespace(execute=execute, close=close)
+                    setup = _load_raw_connect(SimpleNamespace(connect=lambda *args, **kwargs: connection))
+                    with self.assertRaises(type(error)) as caught:
+                        setup()
+                    self.assertIs(caught.exception, error)
+                    self.assertEqual(closed, [True])
+
+
 DSN=os.getenv("VERITAS_QUALITY_TEST_DSN","")
+
+
+@unittest.skipUnless(DSN, "isolated PostgreSQL test database not configured")
+class RawConnectionSetupSQLTests(unittest.TestCase):
+    def setUp(self):
+        import psycopg
+        from psycopg.rows import dict_row
+        self.driver, self.row_factory = psycopg, dict_row
+        self.schema = "pg_setup_test_"+uuid.uuid4().hex
+        with psycopg.connect(DSN, autocommit=True) as c:
+            if c.execute("SELECT current_database()").fetchone()[0] != "veritas_quality_test":
+                raise RuntimeError("Refusing writes outside veritas_quality_test")
+        self.addCleanup(self._drop_schema)
+
+    def _drop_schema(self):
+        with self.driver.connect(DSN, autocommit=True) as c:
+            c.execute(f"DROP SCHEMA IF EXISTS {self.schema} CASCADE")
+
+    def _setup(self, *, fail_second=False):
+        connections = []
+        case = self
+        class ObservedConnection:
+            def __init__(self, raw):
+                self.raw, self.setup_result, self.setup_error = raw, None, None
+            def __getattr__(self, name):
+                return getattr(self.raw, name)
+            def execute(self, sql):
+                if fail_second:
+                    first, separator, second = sql.partition(";")
+                    case.assertEqual(first, "CREATE SCHEMA IF NOT EXISTS "+case.schema)
+                    case.assertEqual(separator, ";")
+                    case.assertEqual(second.strip(), "SET search_path TO "+case.schema)
+                    # This is valid SQL syntax but an invalid GUC value. The
+                    # first CREATE really executes before the second SET fails.
+                    sql = first+"; SET search_path = '\"synthetic-unclosed-identifier'"
+                try:
+                    result = self.raw.execute(sql)
+                except BaseException as error:
+                    self.setup_error = error
+                    raise
+                if self.setup_result is None:
+                    self.setup_result = result
+                return result
+        def connect(*args, **kwargs):
+            connection = ObservedConnection(case.driver.connect(*args, **kwargs))
+            connections.append(connection)
+            case.addCleanup(connection.close)
+            return connection
+        setup = _load_raw_connect(SimpleNamespace(connect=connect), dsn=DSN,
+                                  row_factory=self.row_factory, schema=self.schema)
+        return setup, connections
+
+    def test_native_setup_commits_schema_and_session_path_before_next_sql(self):
+        from psycopg.pq import ExecStatus, TransactionStatus
+        setup, connections = self._setup()
+        c = setup()
+        self.assertIs(c, connections[0])
+        self.assertTrue(c.autocommit)
+        self.assertFalse(c.closed)
+        self.assertEqual(c.info.transaction_status, TransactionStatus.IDLE)
+        # Issue real subsequent queries before inspecting either setup result:
+        # production must not require a caller to drain results with nextset().
+        self.assertEqual(c.execute("SHOW search_path").fetchone()["search_path"], self.schema)
+        self.assertEqual(c.execute("SELECT current_schema() AS schema").fetchone()["schema"], self.schema)
+        c.execute("CREATE TABLE setup_probe (value integer)")
+        c.execute("INSERT INTO setup_probe VALUES (7)")
+        with self.assertRaisesRegex(RuntimeError, "synthetic caller rollback"):
+            with c.transaction():
+                c.execute("INSERT INTO setup_probe VALUES (9)")
+                raise RuntimeError("synthetic caller rollback")
+        self.assertEqual(c.info.transaction_status, TransactionStatus.IDLE)
+        self.assertEqual(c.execute("SHOW search_path").fetchone()["search_path"], self.schema)
+        with self.driver.connect(DSN, autocommit=True) as observer:
+            self.assertEqual(observer.execute(f"SELECT value FROM {self.schema}.setup_probe").fetchall(), [(7,)])
+        results = []
+        while True:
+            results.append((c.setup_result.pgresult.status, c.setup_result.statusmessage))
+            if not c.setup_result.nextset():
+                break
+        self.assertEqual(results, [(ExecStatus.COMMAND_OK, "CREATE SCHEMA"), (ExecStatus.COMMAND_OK, "SET")])
+
+    def test_native_second_setup_failure_rolls_back_new_schema_and_closes_connection(self):
+        for existed in (False, True):
+            with self.subTest(existing_schema=existed):
+                if existed:
+                    with self.driver.connect(DSN, autocommit=True) as observer:
+                        observer.execute(f"CREATE SCHEMA {self.schema}")
+                        observer.execute(f"CREATE TABLE {self.schema}.preserved (value integer)")
+                        observer.execute(f"INSERT INTO {self.schema}.preserved VALUES (11)")
+                setup, connections = self._setup(fail_second=True)
+                with self.assertRaises(self.driver.errors.InvalidParameterValue) as caught:
+                    setup()
+                self.assertIs(caught.exception, connections[0].setup_error)
+                self.assertTrue(connections[0].closed)
+                self.assertIn("search_path", caught.exception.diag.message_primary)
+                with self.driver.connect(DSN, autocommit=True) as observer:
+                    present = observer.execute("SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=%s)",
+                                               (self.schema,)).fetchone()[0]
+                    self.assertEqual(present, existed)
+                    if existed:
+                        self.assertEqual(observer.execute(f"SELECT value FROM {self.schema}.preserved").fetchall(), [(11,)])
+
+
 @unittest.skipUnless(DSN,"isolated PostgreSQL test database not configured")
 class DurableStateSQLTests(unittest.TestCase):
     def setUp(self):

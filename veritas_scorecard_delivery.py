@@ -31,7 +31,9 @@ def cached_scorecard(ns, production_epoch, max_age_seconds=120):
                  background_refresh=age is None or age > max_age_seconds or refresh["status"] == "RUNNING",
                  refresh_status=refresh["status"], last_refresh_error=refresh.get("last_error"),
                  refresh_stage=refresh.get("stage"), refresh_processed=refresh.get("processed"),
-                 refresh_sample_n=refresh.get("sample_n"))
+                 refresh_sample_n=refresh.get("sample_n"),
+                 refresh_last_sql_timeout_ms=refresh.get("last_sql_timeout_ms"),
+                 refresh_last_sql_budget_seconds=refresh.get("last_sql_budget_seconds"))
     return value
 
 
@@ -85,6 +87,8 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
     if not ns["_BUILD_LOCK"].acquire(blocking=False):
         return {"status": "NO_WORK", "reason": "SCORECARD_REFRESH_IN_PROGRESS", "cursor": cursor or {}}
     started = time.monotonic()
+    active_stage = "restore"
+    last_sql = {"timeout_ms": None, "budget_seconds": None}
     def check():
         if context is not None:
             context.check()
@@ -101,10 +105,18 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
             class BoundedConnection:
                 def __init__(self, initial_sql_timeout_ms):
                     self.initial_sql_timeout_ms = initial_sql_timeout_ms
+                    self.sql_timeout_ms = initial_sql_timeout_ms
                 def execute(self, sql, args=None):
                     check()
                     if failed:
                         raise failed[0]
+                    # Diagnostic scalars describe the last client SQL call;
+                    # no SQL text, parameters or source timestamps are copied.
+                    last_sql.update(timeout_ms=self.sql_timeout_ms, budget_seconds=None)
+                    try:
+                        last_sql["budget_seconds"] = round(max(0., remaining()), 4)
+                    except Exception:
+                        pass
                     try:
                         result = connection.execute(sql, args) if args is not None else connection.execute(sql)
                     except Exception as exc:
@@ -142,12 +154,14 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
             return {"status": "OK" if restored else "PROGRESS",
                     "reason": "RESTORED_COMPLETED_SCORECARD" if restored else "SCORECARD_RESTORE_CHECKED",
                     "cursor": {"next_refresh_at": observed.timestamp()+120} if restored else {"stage": "sample"}}
+        active_stage = "work_state"
         with bounded_connect() as c:
             saved = store.load_snapshot_in_transaction(c, WORK_SLOT, WORK_VERSION, for_update=True)
             work = saved["payload"] if saved else None
             if (not work or work.get("epoch") != production_epoch or work.get("ami_version") != ns["VERSION"]
                     or (work.get("stage") == "complete" and work.get("next_refresh_at", 0) <= now)
                     or now-float(work.get("started_at", 0)) > 1800):
+                active_stage = "sample"
                 sample = ami_decision_sample(c)
                 # The original reducer does this stable sort; ties retain their
                 # original selected order, even when they span chunk boundaries.
@@ -159,6 +173,7 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                             key: (learning_progress or {}).get(key) for key in
                             ("status", "index_vs_start", "calculated_at", "index_version", "mode")}}
             elif work["stage"] == "complete":
+                active_stage = "restore_complete"
                 # Recover the publication/outer-checkpoint gap without
                 # repeating the sample or losing the completed RAM value.
                 completed = store.load_snapshot_in_transaction(c, "intelligence_scorecard", ns["VERSION"])
@@ -169,6 +184,7 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                 if isinstance(observed, str):
                     observed = datetime.fromisoformat(observed.replace("Z", "+00:00"))
             elif work["stage"] == "decisions":
+                active_stage = "decisions"
                 phase_started, chunks = time.monotonic(), 0
                 query_timeout = c.initial_sql_timeout_ms
                 while work["offset"] < len(work["pairs"]) and chunks < 8:
@@ -182,6 +198,7 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                     if timeout < query_timeout:
                         c.execute("SET LOCAL statement_timeout = '"+str(timeout)+"ms'")
                         query_timeout = timeout
+                        c.sql_timeout_ms = timeout
                         if remaining() <= 2.2:
                             break
                     # Scale the requested work with the timeout already in
@@ -202,12 +219,15 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                     work.pop("previous", None)
                     work["stage"] = "portfolio"
             elif work["stage"] == "portfolio":
+                active_stage = "portfolio"
                 work["portfolio"] = ns["_query_fresh_portfolio"](c, production_epoch)
                 work["stage"] = "learning"
             elif work["stage"] == "learning":
+                active_stage = "learning"
                 work["learning"] = ns["_query_learning"](c)
                 work["stage"] = "knowledge"
             elif work["stage"] == "knowledge":
+                active_stage = "knowledge"
                 knowledge = ns["_query_knowledge"](c, [])
                 applied = [e for e in work["episodes"] if e["knowledge_applied"]]
                 metrics = ns["_decision_metrics"](applied) if applied else {}
@@ -217,6 +237,7 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                 work["knowledge"] = knowledge
                 work["stage"] = "publish"
             elif work["stage"] == "publish":
+                active_stage = "publish"
                 @contextmanager
                 def ready_connection():
                     yield c
@@ -233,12 +254,15 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                         "sample_n": work["sample_n"], "started_at": work["started_at"],
                         "next_refresh_at": observed.timestamp()+120}
             else:
+                active_stage = "unknown"
                 raise RuntimeError("UNKNOWN_SCORECARD_WORK_STAGE")
+            active_stage = "checkpoint"
             check()
             store._json(work, WORK_BYTES)
             if not deferred and not store.publish_snapshot_in_transaction(c, WORK_SLOT, WORK_VERSION, work,
                                                                            observed_at=datetime.now(timezone.utc)):
                 raise RuntimeError("SCORECARD_WORK_PUBLICATION_REJECTED")
+            active_stage = "commit"
         check()
         if value is not None:
             publish_cache(ns, value, production_epoch, observed.timestamp())
@@ -251,7 +275,18 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                 "cursor": {key: work[key] for key in ("cycle_id", "stage", "offset", "next_refresh_at") if key in work}}
     except Exception as exc:
         ns["_REFRESH_STATE"] = {"status": "ERROR", "last_error": type(exc).__name__,
-                                "stage": work.get("stage") if work else "restore"}
+                                "stage": active_stage,
+                                "last_sql_timeout_ms": last_sql["timeout_ms"],
+                                "last_sql_budget_seconds": last_sql["budget_seconds"]}
+        try:
+            emit = getattr(getattr(context, "lane", None), "emit", None)
+            if callable(emit):
+                emit("ami_refresh_error", status="ERROR", error_type=type(exc).__name__,
+                     stage=active_stage, last_sql_timeout_ms=last_sql["timeout_ms"],
+                     last_sql_budget_seconds=last_sql["budget_seconds"])
+        except Exception:
+            # Diagnostic delivery cannot replace the original failure.
+            pass
         raise
     finally:
         ns["_BUILD_LOCK"].release()
