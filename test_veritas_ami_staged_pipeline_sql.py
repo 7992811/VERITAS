@@ -24,11 +24,10 @@ LEARNING = {"status": "MEASURABLE", "index_vs_start": 110., "index_version": "2.
 class OneChunkBudget:
     """Expose a deterministic remaining budget; all SQL and storage stay real."""
     def __init__(self):
-        self.calls = 0
+        self.remaining_seconds = 6.
 
     def current_budget(self):
-        self.calls += 1
-        return {"remaining_seconds": 6. if self.calls == 1 else 2.1}
+        return {"remaining_seconds": self.remaining_seconds}
 
 
 @unittest.skipUnless(DSN, "isolated PostgreSQL test database not configured")
@@ -102,8 +101,17 @@ class AMIStagedPipelineSQLTests(unittest.TestCase):
                 [("R1", .6, .002), ("R2", .58, .001), ("R3", .4, -.002)])
 
     def step(self, cursor=None):
-        context = SimpleNamespace(sql_timeout_ms=2000, check=lambda: None, lane=OneChunkBudget())
-        return AMI.refresh_snapshot(self.connect, LEARNING, EPOCH, context=context, cursor=cursor)
+        budget = OneChunkBudget()
+        context = SimpleNamespace(sql_timeout_ms=2000, check=lambda: None, lane=budget)
+        original_chunk = MEMORY.ami_decision_chunk
+        def one_chunk(c, pairs):
+            rows = original_chunk(c, pairs)
+            # Observing the budget is pure, as in the production lane. Only
+            # completed SQL work consumes this fixture's one-chunk allowance.
+            budget.remaining_seconds = 2.1
+            return rows
+        with patch.object(MEMORY, 'ami_decision_chunk', side_effect=one_chunk):
+            return AMI.refresh_snapshot(self.connect, LEARNING, EPOCH, context=context, cursor=cursor)
 
     def work(self):
         with self.connect() as c:
