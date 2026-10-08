@@ -153,20 +153,53 @@ def _lease_valid(c, lease):
         (_name(lease["name"]), _name(lease["version"]), lease["owner"], int(lease["fence"]))).fetchone() is not None
 
 
-def publish_snapshot_in_transaction(c, name, version, payload, *, watermark=None, observed_at=None, lease=None):
+def publish_snapshot_in_transaction(c, name, version, payload, *, watermark=None, observed_at=None, lease=None,
+                                    locked_snapshot=None, before_write=None):
+    """Publish without committing or changing the caller's timeout settings.
+
+    Internal callers may pass the row returned by load_snapshot_in_transaction
+    with for_update=True on this same connection and still-open transaction.
+    Its global and row locks must remain held. That existing slot can be updated
+    without repeating the lock/capacity reads; this path never inserts a slot.
+    before_write runs after preparation, immediately before the write statement.
+    """
     name, version = _name(name), _name(version)
     _good(payload)
     encoded = _json(payload, MAX_SNAPSHOT_BYTES)
     stamp = _time(observed_at)
     if watermark is not None and (not isinstance(watermark, str) or len(watermark.encode("utf-8"))>512):
         raise ValueError("invalid learning snapshot watermark")
-    c.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK,))
+    if locked_snapshot is not None and (not isinstance(locked_snapshot, dict)
+            or locked_snapshot.get("name") != name or locked_snapshot.get("version") != version):
+        raise ValueError("locked learning snapshot name/version mismatch")
+    if before_write is not None and not callable(before_write):
+        raise ValueError("learning snapshot before_write must be callable")
+    if locked_snapshot is None:
+        c.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK,))
     if lease is not None and not _lease_valid(c, lease):
         return False
-    old = c.execute("SELECT name FROM veritas_learning_snapshots WHERE name=%s", (name,)).fetchone()
-    if not old and c.execute("SELECT count(*) AS n FROM veritas_learning_snapshots").fetchone()["n"] >= MAX_SNAPSHOTS:
-        raise ValueError("learning snapshot capacity reached; no slots evicted")
+    if locked_snapshot is None:
+        old = c.execute("SELECT name FROM veritas_learning_snapshots WHERE name=%s", (name,)).fetchone()
+        if not old and c.execute("SELECT count(*) AS n FROM veritas_learning_snapshots").fetchone()["n"] >= MAX_SNAPSHOTS:
+            raise ValueError("learning snapshot capacity reached; no slots evicted")
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    if before_write is not None:
+        before_write()
+    if locked_snapshot is not None:
+        row = c.execute("""UPDATE veritas_learning_snapshots AS stored SET
+            version=incoming.version,payload=incoming.payload,payload_hash=incoming.payload_hash,
+            watermark=incoming.watermark,observed_at=incoming.observed_at,
+            updated_at=CASE WHEN stored.payload_hash=incoming.payload_hash
+                 AND stored.version=incoming.version
+                 AND stored.watermark IS NOT DISTINCT FROM incoming.watermark
+                 AND stored.observed_at=incoming.observed_at
+               THEN stored.updated_at ELSE clock_timestamp() END
+            FROM (VALUES (%s,%s,%s::jsonb,%s,%s,%s::timestamptz))
+                AS incoming(name,version,payload,payload_hash,watermark,observed_at)
+            WHERE stored.name=incoming.name AND stored.version=incoming.version
+              AND incoming.observed_at>=stored.observed_at RETURNING stored.name""",
+            (name,version,encoded,digest,watermark,stamp)).fetchone()
+        return bool(row)
     row = c.execute("""INSERT INTO veritas_learning_snapshots
         (name,version,payload,payload_hash,watermark,observed_at) VALUES (%s,%s,%s::jsonb,%s,%s,%s)
         ON CONFLICT(name) DO UPDATE SET version=EXCLUDED.version,payload=EXCLUDED.payload,

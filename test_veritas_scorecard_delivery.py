@@ -88,9 +88,11 @@ class ScorecardDeliveryTests(unittest.TestCase):
     def load_saved(self, connection, name, version, **kwargs):
         return deepcopy(self.durable.get(name))
 
-    def save(self, connection, name, version, payload, *, observed_at=None, **kwargs):
+    def save(self, connection, name, version, payload, *, observed_at=None, before_write=None, **kwargs):
         STORE._json(payload, STORE.MAX_SNAPSHOT_BYTES)
-        self.connections[-1].pending[name] = deepcopy(dict(payload=payload,observed_at=observed_at,version=version))
+        if before_write is not None:
+            before_write()
+        self.connections[-1].pending[name] = deepcopy(dict(name=name,payload=payload,observed_at=observed_at,version=version))
         return True
 
     def sample_rows(self, connection):
