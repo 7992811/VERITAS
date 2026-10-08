@@ -236,7 +236,9 @@ def statistics(trades,window=None,*,analysis=None):
             'window_requested':window,'results_are_paper_only':True}
 
 
-def build_report(trades,positions=(),*,review_sink=None):
+def build_report(trades,positions=(),*,review_sink=None,review_trade=None,resolve_idea=None,max_version_groups=None):
+    review_trade,resolve_idea=review_trade or review,resolve_idea or idea_key
+    max_version_groups=MAX_VERSION_GROUPS if max_version_groups is None else max_version_groups
     baseline=at(BASELINE_AT); now=datetime.now(timezone.utc).isoformat()
     current=version_identity()
     result={'status':'OK','version':VERSION,'at':now,'strategy_epoch':CTC.STRATEGY_EPOCH,
@@ -245,23 +247,23 @@ def build_report(trades,positions=(),*,review_sink=None):
             'current_cohort_assignment':'EXACT_IMMUTABLE_ENTRY_SHA_POLICY_AND_EPOCH',
             'baseline_assignment':'OPENED_AT_AFTER_VERIFIED_DEPLOY_WITHOUT_RELABELING_OLD_TRADES',
             'automatic_parameter_promotion':False,'portfolios':[],
-            'all_portfolio_independent_ideas':len({idea_key(t)[0] for t in trades}),
+            'all_portfolio_independent_ideas':len({resolve_idea(t)[0] for t in trades}),
             'readiness':'NOT_PROVEN','real_orders_enabled':False}
     paired_evidence={}
     def inspect(trade):
-        record=review(trade)
+        record=review_trade(trade)
         if trade.get('portfolio_name') in ('Champion','Challenger'):
             paired_evidence[id(trade)]=(record['evidence_status'],record['net_return_on_entry_notional_pct'])
         if review_sink is not None: review_sink(trade,record)
         return record
     for name in CTC.PORTFOLIO_ORDER:
-        analysis=AnalysisContext(inspect,idea_key)
+        analysis=AnalysisContext(inspect,resolve_idea)
         rows=[t for t in trades if t.get('portfolio_name')==name and t.get('status')=='CLOSED']
         cohorts={'all':rows,
                  'since_73266d9':[t for t in rows if at(t.get('opened_at')) and at(t['opened_at'])>=baseline],
                  'current':[t for t in rows if matches_current_version(t,current)],
                  'current_epoch':[t for t in rows if payload(t.get('payload')).get('strategy_epoch')==CTC.STRATEGY_EPOCH]}
-        version_groups,version_count,omitted=partition_versions(rows,current,MAX_VERSION_GROUPS)
+        version_groups,version_count,omitted=partition_versions(rows,current,max_version_groups)
         for group in version_groups:
             group['metrics']=statistics(group.pop('trades'),analysis=analysis)
         opened=[z for z in positions if z.get('portfolio_name')==name]
@@ -272,7 +274,7 @@ def build_report(trades,positions=(),*,review_sink=None):
                                   'current_epoch':'EPOCH_ONLY_INCLUDES_OTHER_CODE_AND_POLICY_VERSIONS',
                                   'since_73266d9':'ENTRY_TIME_ONLY_NOT_A_VERSION_PROOF','all':'LEDGER_HISTORY'},
             'version_groups':version_groups,'version_group_count':version_count,
-            'version_groups_truncated':version_count>MAX_VERSION_GROUPS,
+            'version_groups_truncated':version_count>max_version_groups,
             'version_groups_omitted_trades':omitted,
             'missing_version_closed_trades':sum(not version_identity(t)['complete'] for t in rows),
             'prior_version_closed_trades':sum(version_identity(t)['complete'] and
@@ -285,7 +287,7 @@ def build_report(trades,positions=(),*,review_sink=None):
     # market windows form a randomized A/B experiment.
     pairs=defaultdict(dict)
     for t in trades:
-        p=payload(t.get('payload')); key,verified=idea_key(t)
+        p=payload(t.get('payload')); key,verified=resolve_idea(t)
         if (t.get('portfolio_name') in ('Champion','Challenger') and verified
                 and matches_current_version(t,current) and t.get('status')=='CLOSED'):
             pairs[key][t['portfolio_name']]=t

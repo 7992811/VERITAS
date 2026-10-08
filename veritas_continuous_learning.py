@@ -754,6 +754,8 @@ class ContinuousLearning:
         result["knowledge_validation"] = KNOWLEDGE.snapshot()
         result["outcome_protocol"] = OUTCOME_VERSION
         result["last_error"] = result["continuous"]["last_error"]
+        from veritas_operational_status import learning_operation
+        result["operational"] = learning_operation(result["jobs"], self.ready)
         result["active_profile_count"] = len(result.get("profiles") or [])
         return result
 

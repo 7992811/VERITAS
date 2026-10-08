@@ -297,7 +297,7 @@ const POS_CACHE_KEY='veritas_v90_position_book_r35';
 const loadPositionCache=()=>{try{const x=JSON.parse(localStorage.getItem(POS_CACHE_KEY)||'null');if(x&&x.book&&Date.now()-Number(x.at||0)<86400000)return x}catch(e){}return {book:{}}};
 const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.stringify({at:Date.now(),book,checkedAt:st.positionBookCheckedAt}))}catch(e){}};
 const initialPositionCache=loadPositionCache(),initialPositionBook=initialPositionCache.book;
-const st={strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,portfolioLoadStatus:'LOADING',positionBook:initialPositionBook,positionBookCheckedAt:initialPositionCache.checkedAt||{},positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
+const st={autonomous:null,strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,portfolioLoadStatus:'LOADING',positionBook:initialPositionBook,positionBookCheckedAt:initialPositionCache.checkedAt||{},positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
@@ -322,8 +322,13 @@ const directionLabel=(d,t)=>String(t||'')==='SUPER_LONG'?'Strong Long':String(t|
 const n=(v,d=2)=>{if(v==null||v==='')return'—';v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{maximumFractionDigits:d}):'—'};
 const p2=v=>{if(v==null||v==='')return'—';v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2}):'—'};
 const assetPrice=(asset,value)=>asset==='CNYRUBF'?n(value,4):p2(value);
-const probPct=v=>{v=Number(v);if(!Number.isFinite(v))return null;return v<=1.5?100*v:v};
-const probSourceRu=v=>String(v||'').includes('EMPIRICAL')?'эмпир.':String(v||'').includes('CURRENT')?'тек.':'модельн.';
+function signalEstimate(value,source){
+  const missing=value==null||value===''||typeof value==='boolean',v=Number(value);
+  const valid=!missing&&Number.isFinite(v)&&v>=0&&v<=1;
+  const empirical=['EMPIRICAL_CALIBRATION','CALIBRATED_PROBABILITY','PROSPECTIVELY_VALIDATED_CALIBRATION'].includes(String(source||''));
+  const model=['MODEL_QUALITY_SCORE_UNCALIBRATED','MODEL_PRIOR_UNCALIBRATED'].includes(String(source||''));
+  return {label:model?'Оценка сигнала':'Вероятность',text:valid&&(model||empirical)?(100*v).toFixed(1)+(model?' / 100':'% · эмпир.'):'—'};
+}
 const focusRu=v=>({ЗАЩИТА_ПРИБЫЛИ:'защита прибыли',УДЕРЖАНИЕ_ДВИЖЕНИЯ:'удержание движения',КАЧЕСТВО_ВХОДА:'качество входа'}[String(v||'')]||'наблюдение');
 const rub=v=>{if(v==null||v==='')return'—';v=Number(v);return Number.isFinite(v)?v.toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽':'—'};
 const pct=v=>{if(v==null||v==='')return'—';v=Number(v);return Number.isFinite(v)?v.toFixed(2)+'%':'—'};
@@ -668,7 +673,7 @@ const setupRu=v=>{const k=String(v||'').toUpperCase();if(k.includes('CLIMAX_REVE
 
 
 async function get(key,url,ms){
-  if(st.busy[key])return null;st.busy[key]=true;
+  if(document.visibilityState==='hidden'||st.busy[key])return null;st.busy[key]=true;
   const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),ms);
   try{const r=await fetch(url,{cache:'no-store',signal:ctl.signal});if(!r.ok)throw new Error('HTTP '+r.status);return await r.json()}
   catch(e){return null}finally{clearTimeout(tm);st.busy[key]=false}
@@ -677,7 +682,8 @@ async function get(key,url,ms){
 function renderHealth(){
   const h=st.health||{};
   $('sys').textContent=h.ok?'СИСТЕМА · ОНЛАЙН':'СИСТЕМА · ЗАПУСК';$('sys').className='pill '+(h.ok?'ok':'warn');
-  $('db').textContent=h.bootstrap_ready?'БАЗА · ГОТОВА':'БАЗА · ЗАПУСК';$('db').className='pill '+(h.bootstrap_ready?'ok':'warn');
+  const storageReady=h.bootstrap_ready&&h.storage!==false;
+  $('db').textContent=storageReady?'БАЗА · ГОТОВА':'БАЗА · ОЖИДАНИЕ';$('db').className='pill '+(storageReady?'ok':'warn');
 }
 
 function signalMap(){const m={};((st.signals&&st.signals.signals)||[]).forEach(x=>{if(x&&x.asset&&x.horizon)m[x.asset+'|'+x.horizon]=x});return m}
@@ -695,7 +701,8 @@ function renderSignals(){
   scheduleSignalExpiry(rows);
   const expectedCells=AS.length*TF.length;
   $('matrixHead').innerHTML='<th scope="col">Актив</th>'+TF.map(tf=>'<th scope="col" data-timeframe="'+tf+'" title="'+tfRu(tf)+'">'+tfShort(tf)+'</th>').join('');
-  $('cells').textContent='ДАННЫЕ · '+rows.length+'/'+expectedCells;$('cells').className='pill '+(rows.length>=expectedCells?'ok':rows.length?'warn':'bad');
+  const verified=rows.filter(x=>x.source_gate_pass===true&&x.snapshot_stale!==true).length,stale=rows.filter(x=>x.snapshot_stale===true).length;
+  $('cells').textContent='ДАННЫЕ · '+rows.length+'/'+expectedCells+' · проверено '+verified+' · устарело '+stale;$('cells').className='pill '+(rows.length>=expectedCells&&verified===rows.length?'ok':rows.length?'warn':'bad');
   const updatedAt=d.signals_updated_at||d.at;$('stamp').textContent='ОБНОВЛЕНО · '+(updatedAt?new Date(updatedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—');
 
   const rank=x=>{const D=dir(x),T=tier(x);if(!['LONG','SHORT'].includes(D))return-999;const superBoost=(T==='SUPER_LONG'||T==='SUPER_SHORT')?5:0;return superBoost+(x.plan_eligible===false?0:2)+4*Number(x.horizon_structure_score||0)+2*Number(x.confidence||0)+Math.min(Number(x.expected_to_stop_ratio||0),3)+.2*Number(x.independent_evidence_families||0)};
@@ -827,18 +834,23 @@ function strategyQualityPanel(p){
   const m=q&&q.cohorts&&q.cohorts[st.qualityScope]&&q.cohorts[st.qualityScope][st.qualityWindow];
   const metric=(label,value)=>'<div class="pf-value"><span>'+label+'</span><b>'+value+'</b></div>';
   let body=!m?'<p class="pf-foot">Статистика ещё не получена. Нулевые результаты не подставляются.</p>':'<div class="pf-quality">'+metric('Закрытых сделок / идей',n(m.closed_trades,0)+' / '+n(m.idea_count,0))+metric('Прибыльных',m.win_rate==null?'—':pct(100*m.win_rate))+metric('Коэффициент прибыли',m.profit_factor==null?(m.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(m.profit_factor,2))+metric('Средняя прибыль / убыток',rub(m.avg_win_rub)+' / '+rub(m.avg_loss_rub))+metric('Средняя сделка',rub(m.expectancy_rub))+metric('Чистый результат',rub(m.net_pnl_rub))+metric('Захвачено движения',m.capture_ratio_mean==null?'—':pct(100*m.capture_ratio_mean))+metric('Плюс съеден расходами',n(m.cost_erased_winners,0))+'</div><p class="pf-foot">Событий с проверенной группировкой: '+n(m.verified_event_count,0)+'. Замер захвата движения: '+n(m.capture_sample,0)+' сделок. Старых открытых позиций: '+n(q.inherited_open_positions,0)+'. '+(m.idea_count<50?'Выборка недостаточна для вывода об устойчивости.':'Результат требует отдельной проверки вне обучающей выборки.')+'</p>';
+  if(d.history_closed_before)body='<p class="pf-foot">Закрытые сделки по '+dateRu(d.history_closed_before)+'.</p>'+body;
+  if(d.refresh?.processed!=null)body='<p class="pf-foot">Обработано в текущем обзоре: '+n(d.refresh.processed,0)+' сделок.</p>'+body;
   if(d.status==='STALE'||d.status==='PARTIAL_HISTORY')body='<p class="warn">'+(d.status==='STALE'?'Снимок статистики устарел.':'Показана неполная история.')+'</p>'+body;
   let feed='';
   if(p.name==='Currency'){
     const f=d.cny_feed||{}, labels={DIRECT_READY:'Прямые данные готовы',RESEARCH_ONLY:'Исследовательские данные — вход запрещён',STALE:'Котировка устарела',NOT_CHECKED:'Проверяется источник'};
-    feed='<p class="pf-foot">CNYRUBf: '+esc(labels[f.status]||'Источник проверяется')+'. '+esc(f.reason||'Т-Инвестиции: цена, стакан и свечи одного контракта')+(f.quote_observed_at?' · '+dateRu(f.quote_observed_at):'')+'. Реальные поручения выключены.</p>';
+    feed='<p class="pf-foot">CNYRUBf: '+esc(labels[f.status]||'Источник проверяется')+'. '+esc(f.reason||'Т-Инвестиции: цена, стакан и свечи одного контракта')+(f.quote_observed_at?' · '+dateRu(f.quote_observed_at):'')+'. Брокерский режим проверяется в кабинете счёта.</p>';
     if(p.portfolio_integrity_warning)feed+='<p class="warn">Обнаружены посторонние позиции в учёте: '+n(p.quarantined_position_count,0)+'. Они показаны и не исключены из баланса.</p>';
   }
   return '<section class="pf-section" style="margin-top:14px">'+selectors+body+feed+'<p class="pf-foot">Баланс и доходность выше включают всю историю. Этот блок оценивает только выбранные закрытые сделки. Разбор сделок не меняет торговые параметры автоматически.</p></section>';
 }
 async function loadStrategyQuality(){
   const d=await get('strategy-quality','/api/v1/strategy-quality',8000);
-  if(d&&Array.isArray(d.portfolios)){st.strategyQuality=d;if(st.portfolios)renderPortfolios();}
+  if(d&&Array.isArray(d.portfolios)){
+    st.strategyQuality=!d.portfolios.length&&st.strategyQuality?.portfolios?.length?{...st.strategyQuality,status:'STALE',refresh:d.refresh,refresh_status:d.refresh_status}:d;
+    if(st.portfolios)renderPortfolios();
+  }
 }
 function renderPortfolioPanel(ps){
   const root=$('portfolios');root.className='pf-panel';
@@ -901,9 +913,9 @@ function renderPortfolios(){
     const pnl=tradeTotal(z),ret=tradeReturn(z),frac=100*Number(z.target_fraction||0),util=Number(z.position_utilization_pct),held=z.held_seconds??z.holding_duration_seconds;
     const recorded=z.payload?.active_target_ladder,ladder=Array.isArray(recorded)&&recorded.length?recorded:null;
     const stage=Number.isInteger(z.payload?.active_target_stage)?z.payload.active_target_stage:0;
-    const stop=z.trailing_stop??z.stop_price,tp1=ladder?ladder[0].price:z.take_price??z.initial_take_price,tp1Label=(ladder?stage>0:tpDone(z))?'TP1 ✓ исполнен':z.take_price!=null||ladder?'TP1 / цель':z.initial_take_price!=null?'Цель входа':'TP1 / цель',tp2=ladder?(ladder[1]?.price??null):z.second_take_price,prob=probPct(z.signal_probability),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
+    const stop=z.trailing_stop??z.stop_price,tp1=ladder?ladder[0].price:z.take_price??z.initial_take_price,tp1Label=(ladder?stage>0:tpDone(z))?'TP1 ✓ исполнен':z.take_price!=null||ladder?'TP1 / цель':z.initial_take_price!=null?'Цель входа':'TP1 / цель',tp2=ladder?(ladder[1]?.price??null):z.second_take_price,prob=signalEstimate(z.signal_probability,z.probability_source),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
     const tf=z.execution_timeframe||z.horizon,grade=z.setup_grade||(z.legacy_entry_recovered?'архив':'—'),tier=z.signal_tier||'',protection=z.net_profit_protection||{},protect=protection.version==='NET_STOP_AFTER_COSTS_V1'&&protection.state==='PROTECTED'&&Number(protection.net_at_stop_rub)>=0.01;
-    const probText=prob==null?'—':prob.toFixed(1)+'% '+probSourceRu(z.probability_source);
+    const probText=prob.text;
     const capText=Number.isFinite(cap)?(100*cap).toFixed(0)+'%':'—';
     const mfeText=Number.isFinite(mfe)?(mfe>=0?'+':'')+mfe.toFixed(2)+'%':'—';
     const maeText=Number.isFinite(mae)?mae.toFixed(2)+'%':'—';
@@ -917,7 +929,7 @@ function renderPortfolios(){
       tpNotice(z,true)+
       '<div class="position-accounting"><span>Зафиксировано<b>'+rub(z.realized_gross_pnl_rub)+'</b></span><span>Переоценка<b>'+rub(z.unrealized_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(z.trade_fees_rub)+'</b></span><span>Фондирование<b>'+rub(z.trade_funding_rub)+'</b></span><span>От максимума<b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span></div>'+
       '<div class="position-learning">'+
-        '<span class="position-chip">Вероятность <b>'+probText+'</b></span>'+
+        '<span class="position-chip">'+prob.label+' <b>'+probText+'</b></span>'+
         '<span class="position-chip">MFE <b>'+mfeText+'</b></span>'+
         '<span class="position-chip">MAE <b>'+maeText+'</b></span>'+
         '<span class="position-chip">Захват <b>'+capText+'</b></span>'+
@@ -990,7 +1002,8 @@ function learningWaitText(a){
   if(code.includes('BUSY')||code.includes('LEASE'))return'Завершается другая фоновая задача; очередь сохранена.';
   if(code.includes('QUERYCANCELED')||code.includes('TIMEOUT')||code.includes('TIME_BUDGET'))return'Обновление базы заняло больше отведённого времени; повтор запланирован.';
   if(code.includes('BOOTSTRAP')||a.continuous?.ready===false)return'Восстанавливаются сохранённые опыт и очередь учебных задач.';
-  if(code.includes('STORAGE')||code.includes('POSTGRES')||code.includes('UNAVAILABLE')||code.includes('ERROR'))return'Хранилище опыта временно недоступно; показан последний сохранённый результат.';
+  if(code.includes('STORAGE')||code.includes('POSTGRES'))return'Хранилище опыта временно недоступно; показан последний сохранённый результат.';
+  if(code.includes('UNAVAILABLE')||code.includes('ERROR'))return'Одна из учебных задач завершилась ошибкой; повтор запланирован.';
   const candidates=Array.isArray(a.candidates)?a.candidates:[];
   const active=candidates.find(x=>x&&['candidate','collecting','evaluating'].includes(String(x.state||'').toLowerCase()));
   const reason=String(active?.reasons?.[0]||'');
@@ -1010,7 +1023,8 @@ function autonomousLearningHtml(a){
   const direction=count(counts.direction),trade=count(counts.trade);
   const processed=count(counts.processed)??((direction!=null||trade!=null)?(direction??0)+(trade??0):null);
   const confirmed=profiles?profiles.filter(x=>x&&String(x.state||'').toLowerCase()==='promoted'&&x.evidence_valid===true&&stampValue(x.valid_until)>Date.now()).length:null;
-  const status=String(a.status||'collecting').toLowerCase(),labels={collecting:'Накапливает опыт',evaluating:'Проверяет поправки',running:'Учебный цикл',ok:'Работает',ready:'Работает',unavailable:'Обновление задержано',error:'Обновление задержано'};
+  const operation=a.operational?.status;
+  const status=String(a.refresh_delayed?'unavailable':operation&&operation!=='RUNNING'?operation:a.status||'collecting').toLowerCase(),labels={starting:'Запускается',warming_up:'Начальный расчёт',degraded:'Частичный сбой',waiting_resources:'Ожидает ресурсы',...{collecting:'Накапливает опыт',evaluating:'Проверяет поправки',running:'Учебный цикл',ok:'Работает',ready:'Работает',unavailable:'Обновление задержано',error:'Обновление задержано'}};
   const jobs=Object.values(a.jobs||{}).filter(x=>x&&typeof x==='object');
   const completed=jobs.map(x=>stampValue(x.last_success_at)).filter(x=>x!=null);
   const stamp=stampValue(a.last_cycle_at||a.continuous?.last_success_at)||completed.sort((x,y)=>y-x)[0]||stampValue(a.updated_at);
@@ -1018,7 +1032,7 @@ function autonomousLearningHtml(a){
   const knowledge=a.knowledge||{},knowledgeText=knowledge.automation_enabled===false?' · поиск знаний выключен':knowledge.status?' · поиск знаний: '+({'OK':'работает','ok':'работает','EMPTY':'поиск продолжается','DEFERRED_PROVIDER':'ожидает внешний источник','DEFERRED_COMPILER':'ожидает очередную обработку','DEFERRED_MEMORY':'ожидает ресурсы','unavailable':'ожидает обновление','ERROR':'повтор запланирован'}[knowledge.status]||'состояние обновляется'):'';
   const kv=a.knowledge_validation||{},kvCounts=kv.counts||{};
   const knowledgeProof=kv.version?'<div class="auto-learning-note"><b>Проверка знаний:</b> правил с аудитом '+esc(count(kv.catalog_audited_rules)??'—')+' · проверенных исходов '+esc(count(kvCounts.direction)??0)+' · результатов после расходов '+esc(count(kvCounts.net)??0)+' · действующих поправок '+esc(Array.isArray(kv.profiles)?kv.profiles.length:0)+'.</div>':'';
-  return '<section class="auto-learning" aria-label="Автономное обучение"><div class="auto-learning-head"><b>Автономное обучение</b><span class="'+(a.last_error||/error|unavailable/.test(status)?'warn':'ok')+'">'+esc(labels[status]||'Обновляется')+'</span></div><div class="auto-learning-grid">'+
+  return '<section class="auto-learning" aria-label="Автономное обучение"><div class="auto-learning-head"><b>Автономное обучение</b><span class="'+(a.last_error||/error|unavailable|degraded|waiting_resources|warming_up|starting/.test(status)?'warn':'ok')+'">'+esc(labels[status]||'Обновляется')+'</span></div><div class="auto-learning-grid">'+
     '<div class="auto-learning-stat"><span>Обработанный опыт</span><b>'+esc(processed??'—')+' наблюдений</b></div>'+
     '<div class="auto-learning-stat"><span>Кандидаты поправок</span><b>'+esc(candidates?candidates.length:'—')+'</b></div>'+
     '<div class="auto-learning-stat"><span>Подтверждённые поправки</span><b>'+esc(confirmed??'—')+'</b></div>'+
@@ -1101,7 +1115,7 @@ function normalizeIntelligence(raw,progress,library){
 }
 function renderIntelligence(){
   const i=st.intelligence||{},c=i.components||{};
-  if(i.score==null){$('intelligence').innerHTML='<div class="msg warn">Оценка интеллекта пока недоступна. Обновление выполняется автоматически.</div>'+autonomousLearningHtml(i.autonomous_learning);return}
+  if(i.score==null){$('intelligence').innerHTML='<div class="msg warn">Оценка интеллекта пока недоступна. Обновление выполняется автоматически.</div>'+autonomousLearningHtml(st.autonomous||i.autonomous_learning);return}
   const score=Number(i.score||0),conf={LOW:'низкая',MEDIUM:'средняя',HIGH:'высокая'}[String(i.confidence||'').toUpperCase()]||'формируется';
   const numOrNull=v=>v==null||v===''||typeof v==='boolean'?null:(Number.isFinite(Number(v))?Number(v):null);
   const real=!!i.real_asset_management_index;
@@ -1173,7 +1187,7 @@ function renderIntelligence(){
     return '<div class="intel-metric"'+(x[3]?' data-component="'+x[3]+'"':'')+'><span>'+x[0]+'</span><b>'+label+'</b>'+(note?'<small>'+note+'</small>':'')+'<div class="intel-bar'+(missing?' unmeasured':'')+'"><div class="intel-fill" style="width:'+(missing?0:Math.max(0,Math.min(100,100*x[1]/x[2])))+'%"></div></div></div>'}).join('');
   const stamp=readTime(i.calculated_at),stampText=stamp==null?'':' Расчёт: '+new Date(stamp).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+' МСК.';
   const delayed=i.refresh_delayed?'<div class="msg warn">Обновление оценки задержано. Показан последний полученный результат.'+esc(stampText)+'</div>':'';
-  $('intelligence').innerHTML=delayed+'<div class="intel-wrap"><div class="intel-score"><div><div class="label">'+title+'</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · уровень: '+esc(i.stage||'—')+' · доказательность: '+conf+'</div></div><div class="sub">'+explanation+'</div>'+coverageText+'</div><div><div class="intel-main">'+metrics+'</div>'+compare+daily+foot+autonomousLearningHtml(i.autonomous_learning)+'</div></div>';
+  $('intelligence').innerHTML=delayed+'<div class="intel-wrap"><div class="intel-score"><div><div class="label">'+title+'</div><div class="value">'+score.toFixed(1)+'</div><div class="sub">из 100 · уровень: '+esc(i.stage||'—')+' · доказательность: '+conf+'</div></div><div class="sub">'+explanation+'</div>'+coverageText+'</div><div><div class="intel-main">'+metrics+'</div>'+compare+daily+foot+autonomousLearningHtml(st.autonomous||i.autonomous_learning)+'</div></div>';
 }
 function renderInsights(){
   const l=st.learning||{}, q=st.quality||{}, h=st.horizon||{}, m=st.macro||{}, ep=(st.portfolios||{}).episode_learning_r29||{};
@@ -1335,8 +1349,8 @@ function updatePositionBookFromBootstrap(d){
 }
 function applyBootstrap(d){
   if(!d)return;
-  st.health={ok:true,bootstrap_ready:!!(d.health&&d.health.bootstrap_ready)};
-  st.signals={signals:d.signals||[],at:d.at,status:d.status};
+  st.health={ok:true,bootstrap_ready:!!(d.health&&d.health.bootstrap_ready),storage:d.health?.storage};
+  st.signals={signals:d.signals||[],at:d.at,signals_updated_at:d.signals_updated_at,status:d.status};
   // Portfolio and trade reads own their state. A slow or partial matrix refresh
   // must never replace either ledger with an empty or older snapshot.
   if(d.learning_summary)st.learning=d.learning_summary;
@@ -1411,6 +1425,11 @@ async function loadMacro(){
   const d=await get('macro','/api/v1/macro',7000);
   if(d){st.macro=d;renderInsights()}
 }
+async function loadAutonomousLearning(){
+  const d=await get('autonomous-learning','/api/v1/autonomous-learning',8000);
+  if(d)st.autonomous=d;else if(st.autonomous&&document.visibilityState!=='hidden')st.autonomous={...st.autonomous,refresh_delayed:true};
+  renderIntelligence();
+}
 async function loadIntelligence(){
   const [scorecard,progress,library]=await Promise.all([
     get('intelligence-scorecard','/api/v1/intelligence-scorecard',9000),
@@ -1424,6 +1443,7 @@ function refreshLiveState(){
   loadPortfolios();
   loadTrades();
   loadBootstrap();
+  loadAutonomousLearning();
 }
 function start(){
   if(st.positionBookReady){
@@ -1440,6 +1460,7 @@ function start(){
   setInterval(loadTrades,15000);
   setInterval(loadBootstrap,30000);
   setInterval(loadIntelligence,60000);
+  setInterval(loadAutonomousLearning,30000);
   setInterval(loadMacro,120000);
   window.addEventListener('pageshow',()=>setTimeout(refreshLiveState,50));
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')setTimeout(refreshLiveState,50)});
