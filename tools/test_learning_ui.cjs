@@ -108,13 +108,13 @@ assert.match(ui.autonomousLearningHtml({status:'collecting',jobs:{learning:{last
     '/api/v1/learning-progress':{status:'BUILDING',index_vs_start:null},
     '/api/v1/library-summary':{status:'OK'}};
   await ui.loadIntelligence();
-  assert.deepEqual(requests,['/api/v1/intelligence-scorecard','/api/v1/learning-progress','/api/v1/library-summary']);
+  assert.deepEqual(requests,['/api/v1/intelligence-scorecard']);
   assert.equal(ui.st.intelligence.autonomous_learning.counts.direction,37);
   assert.equal(intervals,0);assert.equal(timers.size,0);
   responses={};await ui.loadIntelligence();
   assert.equal(ui.st.intelligence.score,42.5);
   assert.match(elements.intelligence.innerHTML,/Показан последний полученный результат/);
   assert.match(elements.intelligence.innerHTML,/42 наблюдений/);
-  assert.equal(requests.length,6);assert.equal(intervals,0);assert.equal(timers.size,0);
+  assert.equal(requests.length,2);assert.equal(intervals,0);assert.equal(timers.size,0);
   console.log('Learning UI: missing versus measured zero, fixed score/coverage, autonomous proof/expiry, errors and existing polling passed');
 })().catch(error=>{console.error(error);process.exitCode=1});

@@ -14937,7 +14937,7 @@ _champion_challenger_board_impl=champion_challenger_board; champion_challenger_b
 _agent_consensus_board_impl=agent_consensus_board; agent_consensus_board=_memoize_board('agent_consensus',_agent_consensus_board_impl)
 _meta_performance_board_impl=meta_performance_board; meta_performance_board=_memoize_board('meta_performance',_meta_performance_board_impl)
 _policy_counterfactual_board_impl=policy_counterfactual_board; policy_counterfactual_board=_memoize_board('policy_lab',_policy_counterfactual_board_impl)
-_regime_transition_board_impl=regime_transition_board; regime_transition_board=_memoize_board('regime_transition',_regime_transition_board_impl)
+# Regime delivery owns its bounded cache and retry clock.
 
 def release_candidate_dashboard():
     opp=opportunity_board(); corr=correlation_matrix(); alloc=portfolio_allocator(opp.get('opportunities',[]),corr)
@@ -15782,6 +15782,10 @@ def latest_signal_summary_pg():
                 'minimum_sources':(p.get('execution_eligibility') or {}).get('minimum_sources'),
                 'price':(p.get('features') or {}).get('price'),
                 'market_observed_at':(p.get('features') or {}).get('market_observed_at'),
+                **{key:p['features'][key] for key in _V90_QUOTE_IDENTITY_FIELDS
+                   if isinstance(p.get('features'),dict) and key in p['features']},
+                'source_names':(p.get('features') or {}).get('market_source_names'),
+                'contract':(p.get('features') or {}).get('market_contract'),
                 'trade_plan':p.get('trade_plan') or {},
                 'confidence':float(p.get('confidence') or 0.0),
                 'score':float(p.get('committee_score') or p.get('confidence') or 0.0),

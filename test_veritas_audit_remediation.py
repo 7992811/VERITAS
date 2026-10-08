@@ -15,12 +15,37 @@ import veritas_quality_delivery as D
 import veritas_regime_delivery as R
 import veritas_strategy_quality as Q
 import veritas_learning_state as STORE
-from veritas_maintenance import MaintenanceDeferred
+from veritas_maintenance import MaintenanceDeferred, MaintenanceLane
+from test_veritas_maintenance import namespace
 from test_veritas_quality_runtime import rows_fixture, FixedDatetime
 import test_veritas_strategy_quality_sql as SQL
 
 
 class DisplayTests(unittest.TestCase):
+    def test_durable_signal_restore_retains_original_provider_and_does_not_forge_a_pin(self):
+        tree=ast.parse(Path('veritas_intelligence.py').read_text())
+        nodes=[node for node in tree.body if
+               isinstance(node,ast.FunctionDef) and node.name=='latest_signal_summary_pg' or
+               isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='_V90_QUOTE_IDENTITY_FIELDS' for t in node.targets)]
+        source={'primary_source':'ProFinance','raw_label':'NASD100_FUT','market_contract':{'symbol':'NQ CONTINUOUS'},
+                'market_source_names':{'primary':'ProFinance'},'provider_ticker_verified':False,'price':24000}
+        rows=[dict(asset='NQ',horizon='5m',event_ts='2026-10-08',payload={'features':source}),
+              dict(asset='BRENT',horizon='5m',event_ts='2026-10-08',payload={})]
+        before=deepcopy(rows);c=Mock();c.execute.return_value.fetchall.return_value=rows
+        @contextmanager
+        def connect():yield c
+        ns=dict(pg_enabled=lambda:True,pg_connect=connect,json=json,emit=Mock())
+        exec(compile(ast.Module(body=nodes,type_ignores=[]),'<actual-summary>','exec'),ns)
+        result=ns['latest_signal_summary_pg']()
+        self.assertEqual(len(result),2);self.assertEqual(rows,before)
+        self.assertEqual(result[0]['primary_source'],'ProFinance')
+        self.assertEqual(result[0]['contract'],{'symbol':'NQ CONTINUOUS'})
+        self.assertEqual(result[0]['source_names'],{'primary':'ProFinance'})
+        self.assertFalse(result[0]['provider_ticker_verified'])
+        self.assertNotIn('exact_contract_verified',result[0])
+        self.assertNotIn('primary_source',result[1])
+        self.assertEqual(O.asset_catalog(['NQ','BRENT'],result)['NQ']['primary'],'ProFinance')
+
     def test_signal_projection_preserves_actions_levels_and_event_identity_without_mutating_evidence(self):
         event={'event_id':'QSB_verified','event_type':'CROSS','stop_price':90,'target_price':115,
                'source_bars':[{'close':100}]*2000,'sealed_proof':{'hash':'immutable'}}
@@ -147,6 +172,42 @@ class QualityDeliveryTests(unittest.TestCase):
         with patch.object(D,'transaction',transaction),patch.object(STORE,'load_snapshot_in_transaction',return_value=saved),patch.object(delivery,'_publish') as publish:
             self.assertEqual(delivery.step()['status'],'PROGRESS');publish.assert_not_called()
 
+    def test_timeout_shrinks_batch_without_skipping_evidence_or_replacing_last_good(self):
+        class QueryCanceled(Exception):sqlstate='57014'
+        lane=Mock();lane.current_budget.return_value={}
+        delivery=D.QualityDelivery({'_v90_background_maintenance':lane,
+            '_continuous_learning':SimpleNamespace(ready=True),'pg_connect':Mock()})
+        delivery.restore_pending=False;delivery.cursor=('2026-10-07','kept')
+        delivery.rows=[{'prior':'review'}];old={'status':'OK','portfolios':[{}]}
+        self.enterContext(patch.dict(Q._CACHE,{'value':old,'last_error':None}))
+        c=Mock();c.execute.side_effect=QueryCanceled()
+        @contextmanager
+        def transaction(*args):yield c
+        with patch.object(D,'transaction',transaction):
+            with self.assertRaises(MaintenanceDeferred) as caught:delivery.tick()
+            self.assertEqual(caught.exception.status,'DEFERRED_SQL_TIMEOUT')
+            self.assertEqual(delivery.batch_size,D.BATCH//2)
+            self.assertEqual(delivery.cursor,('2026-10-07','kept'))
+            self.assertEqual(delivery.rows,[{'prior':'review'}]);self.assertIs(Q._CACHE['value'],old)
+            c.execute.side_effect=None;c.execute.return_value.fetchall.return_value=rows_fixture()[:1]
+            result=delivery.tick()
+        self.assertEqual(c.execute.call_args.args[1][1],'kept')
+        self.assertEqual(c.execute.call_args.args[1][-1],D.BATCH//2)
+        self.assertEqual(result['processed'],2)
+
+
+class BootstrapPriorityTests(unittest.TestCase):
+    def test_legacy_history_waits_for_durable_learning_bootstrap_then_resumes(self):
+        ns=namespace();ns['_continuous_learning']=SimpleNamespace(ready=False)
+        lane=MaintenanceLane(ns);self.addCleanup(lane.close)
+        with self.assertRaises(MaintenanceDeferred) as caught:
+            with lane.permit('legacy_history'):self.fail('history ran before bootstrap')
+        self.assertEqual(caught.exception.status,'DEFERRED_LEARNING_BOOTSTRAP')
+        with lane.permit('periodic:learning_bootstrap'):
+            with lane.permit('nested_bootstrap_read'):pass
+        ns['_continuous_learning'].ready=True
+        with lane.permit('legacy_history'):pass
+
 
 class RegimeTests(unittest.TestCase):
     def setUp(self):
@@ -168,6 +229,30 @@ class RegimeTests(unittest.TestCase):
         self.assertEqual(connect.call_count,1)
         self.assertEqual(first,second);self.assertEqual(second['status'],'STALE')
         self.assertEqual(second['snapshot_age_seconds'],999.)
+
+    def test_timeout_retries_a_smaller_window_and_reports_actual_coverage(self):
+        class QueryCanceled(Exception):sqlstate='57014'
+        c=Mock();c.transaction.return_value.__enter__=Mock(return_value=c)
+        c.transaction.return_value.__exit__=Mock(return_value=False)
+        windows=[]
+        def execute(query,params=None):
+            if query==R.QUERY:
+                windows.append(params[0])
+                if len(windows)==1:raise QueryCanceled()
+                return SimpleNamespace(fetchall=lambda:[dict(id=i,event_ts=i,asset='BTC',horizon='5m',regime='UP') for i in range(params[0])])
+        c.execute.side_effect=execute
+        @contextmanager
+        def connect():yield c
+        with patch.object(R.time,'monotonic',return_value=1000):
+            self.assertEqual(R.snapshot(connect,25)['status'],'UNAVAILABLE')
+            R.snapshot(connect,25)
+        self.assertEqual(windows,[R.LIMIT+1])
+        with patch.object(R.time,'monotonic',return_value=1011):value=R.snapshot(connect,25)
+        self.assertEqual(windows,[R.LIMIT+1,R.LIMIT//4+1])
+        self.assertEqual(value['history_limit'],R.LIMIT//4)
+        self.assertTrue(value['history_truncated'])
+        self.assertEqual(value['history_start_at'],'0')
+        self.assertEqual(value['history_end_at'],str(R.LIMIT//4-1))
 
 
 @unittest.skipUnless(SQL.DSN,'isolated PostgreSQL test database not configured')
