@@ -111,6 +111,11 @@ def promotion_gate(e: PromotionEvidence) -> Dict[str, Any]:
             ((field.endswith("profit_factor") and value < 0) or
              (field in ("ece", "shadow_max_drawdown") and not 0 <= value <= 1))
         )
+        # A missing ECE for a probability model is incomplete validation,
+        # not malformed evidence. The calibration gate below blocks promotion
+        # explicitly; non-numeric/out-of-range ECE is still invalid evidence.
+        if field == "ece" and e.calibration_applicable and getattr(e, field) is None:
+            continue
         if value is None or bad_domain:
             invalid.append(field)
     if not isinstance(e.model_version, str) or not e.model_version.strip():
