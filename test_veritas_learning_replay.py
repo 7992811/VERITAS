@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import veritas_learning_replay as R
 import veritas_promotion as P
+import veritas_learning_v2 as V2
 
 
 class LearningReplayTests(unittest.TestCase):
@@ -126,7 +127,16 @@ class LearningReplayTests(unittest.TestCase):
             baseline_shadow_expectancy=.006,
         )
         base.update(overrides)
-        return P.PromotionEvidence(**base)
+        return base
+
+    def test_live_promotion_evidence_schema_remains_immutable(self):
+        self.assertEqual(set(P.PromotionEvidence.__annotations__), {
+            "model_version", "oos_n", "oos_expectancy", "oos_profit_factor",
+            "vault_n", "vault_expectancy", "vault_profit_factor",
+            "high_cost_expectancy", "calibration_n", "ece",
+            "shadow_trades", "shadow_expectancy", "shadow_max_drawdown",
+            "code_ci_pass", "data_parity_pass",
+        })
 
     def test_execution_policy_does_not_require_fake_calibration(self):
         env = {
@@ -136,7 +146,7 @@ class LearningReplayTests(unittest.TestCase):
             "VERITAS_PROMOTION_MIN_SHADOW_TRADES": "50",
         }
         with patch.dict(os.environ, env, clear=False):
-            gate = P.promotion_gate(self.evidence())
+            gate = V2._v2_promotion_gate(self.evidence())
         self.assertTrue(gate["eligible_for_production"])
         self.assertNotIn("CALIBRATION_SAMPLE_TOO_SMALL", gate["blockers"])
         self.assertNotIn("CALIBRATION_ECE_TOO_HIGH_OR_MISSING", gate["blockers"])
@@ -148,7 +158,7 @@ class LearningReplayTests(unittest.TestCase):
             "VERITAS_PROMOTION_MIN_CALIBRATION_N": "1",
             "VERITAS_PROMOTION_MIN_SHADOW_TRADES": "1",
         }, clear=False):
-            gate = P.promotion_gate(self.evidence(
+            gate = V2._v2_promotion_gate(self.evidence(
                 oos_expectancy=.005,
                 vault_expectancy=.004,
                 shadow_expectancy=.003,
@@ -165,7 +175,7 @@ class LearningReplayTests(unittest.TestCase):
             "VERITAS_PROMOTION_MIN_CALIBRATION_N": "1",
             "VERITAS_PROMOTION_MIN_SHADOW_TRADES": "1",
         }, clear=False):
-            gate = P.promotion_gate(self.evidence(
+            gate = V2._v2_promotion_gate(self.evidence(
                 oos_profit_factor=1.11, baseline_oos_profit_factor=1.30,
                 vault_profit_factor=1.06, baseline_vault_profit_factor=1.20,
             ))
@@ -191,7 +201,7 @@ class LearningReplayTests(unittest.TestCase):
                 baseline_vault_profit_factor=None,
                 baseline_shadow_expectancy=None,
             )
-            gate = P.promotion_gate(e)
+            gate = V2._v2_promotion_gate(e)
         self.assertFalse(gate["eligible_for_production"])
         self.assertIn("CALIBRATION_SAMPLE_TOO_SMALL", gate["blockers"])
         self.assertIn("CALIBRATION_ECE_TOO_HIGH_OR_MISSING", gate["blockers"])
