@@ -23,3 +23,22 @@ Next integration step after independent validation:
 move DB-facing read adapters from veritas_intelligence.py into a side-effect-free
 package, then run veritas_learning_worker.py as its own Render service and remove
 the corresponding heavy jobs from the trading process.
+
+
+## Prospective registry (v91.8.27)
+
+Learning 2.0 candidates now receive an immutable decision-ledger cutoff at
+registration. Training evidence is frozen. Later scheduler runs only accumulate
+decision IDs greater than that cutoff, so re-reading a recent window cannot
+double-count evidence or turn training rows into validation rows.
+
+Candidate states:
+- COLLECTING / EVALUATING — prospective sample still building.
+- SHADOW_ELIGIBLE — sufficient future evidence for a virtual experiment only.
+- AWAIT_REPLAY — Stop/Exit hypotheses require ordered market-path replay and
+  cannot be promoted from MAE/MFE summaries alone.
+- REJECTED / EXPIRED — failed or stale evidence.
+
+A shadow eligibility expires after seven days unless genuinely new evidence is
+observed. A scheduler heartbeat cannot refresh validity. Production influence
+remains false.
