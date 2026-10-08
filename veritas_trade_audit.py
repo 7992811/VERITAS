@@ -219,7 +219,8 @@ _REPORT_FIELDS = ('trade_id','portfolio_name','asset','direction','horizon','set
     'gross_pnl_rub','fees_rub','funding_rub','net_pnl_rub','entry_notional_rub','entry_fill_count',
     'exit_fill_count','held_seconds','exit_reason','cohort','evidence_exclusion')
 _EXAMPLE_PAYLOAD_FIELDS = ('r55_lifetime_mfe_pct','mfe_pct','entry_quality',
-    'entry_primary_source','expected_move_pct','last_management_reason')
+    'entry_primary_source','expected_move_pct','last_management_reason','initial_stop_price',
+    'stop_price','last_stop_price','active_stop_at_exit','trailing_stop')
 
 
 def analyze(rows):
@@ -265,6 +266,8 @@ def analyze(rows):
         # Buckets share this private dict; retain only their report inputs.
         compact = {k:r[k] for k in _REPORT_FIELDS if k in r}
         compact['payload'] = {k:p[k] for k in _EXAMPLE_PAYLOAD_FIELDS if k in p}
+        if r.get('last_exit_stop_price') is not None:
+            compact['payload']['last_exit_stop_price']=r.get('last_exit_stop_price')
         r.clear(); r.update(compact); rows.append(r)
         del raw, p, compact
     total = summarize(rows)
@@ -281,11 +284,18 @@ def analyze(rows):
     loss_patterns.sort(key=lambda r:r['net_pnl_rub'])
     def example(r):
         p = payload(r.get('payload'))
+        initial_stop = p.get('initial_stop_price') or p.get('stop_price')
+        last_stop = (p.get('active_stop_at_exit') or p.get('last_exit_stop_price')
+                     or p.get('last_stop_price')
+                     or p.get('trailing_stop') or initial_stop)
         fields = _REPORT_FIELDS
         result = {k: (r[k].isoformat() if isinstance(r.get(k),datetime) else r.get(k)) for k in fields}
         result.update(mfe_pct=p.get('r55_lifetime_mfe_pct',p.get('mfe_pct')),
             entry_quality=p.get('entry_quality'),entry_source=p.get('entry_primary_source'),
             expected_move_pct=p.get('expected_move_pct'),last_management_reason=p.get('last_management_reason'))
+        if initial_stop is not None or last_stop is not None:
+            result.update(initial_stop_price=initial_stop,last_stop_price=last_stop,
+                          active_stop_at_exit=p.get('active_stop_at_exit') or p.get('last_exit_stop_price'))
         return result
     latest = sorted(rows,key=lambda r:str(r.get('closed_at') or ''),reverse=True)
     losses = sorted((r for r in rows if (number(r.get('net_pnl_rub')) or 0)<0),key=lambda r:float(r['net_pnl_rub']))
@@ -305,13 +315,16 @@ def audit_closed_trades(conn):
         # cursor costing even when the SQL has no explicit ORDER BY.
         with closing(cursor.stream('''SELECT t.*,
         EXTRACT(EPOCH FROM (t.closed_at-t.opened_at)) AS held_seconds,
-        o.entry_notional_rub,o.entry_fill_count,o.exit_fill_count,o.last_exit_reason
+        o.entry_notional_rub,o.entry_fill_count,o.exit_fill_count,o.last_exit_reason,
+        o.last_exit_stop_price
         FROM paper_trades t LEFT JOIN (
           SELECT trade_id,
             SUM(notional_rub) FILTER(WHERE side IN ('BUY','SELL_SHORT')) AS entry_notional_rub,
             COUNT(*) FILTER(WHERE side IN ('BUY','SELL_SHORT')) AS entry_fill_count,
             COUNT(*) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')) AS exit_fill_count,
-            (ARRAY_AGG(reason ORDER BY created_at DESC) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_reason
+            (ARRAY_AGG(reason ORDER BY created_at DESC) FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_reason,
+            (ARRAY_AGG(NULLIF(payload->>'stop_price','')::double precision ORDER BY created_at DESC)
+                FILTER(WHERE side IN ('SELL','BUY_TO_COVER')))[1] AS last_exit_stop_price
           FROM paper_orders GROUP BY trade_id
         ) o ON o.trade_id=t.trade_id
         WHERE t.closed_at IS NOT NULL OR t.status IN ('CLOSED','CLOSE','EXITED')''',size=8)) as rows:
