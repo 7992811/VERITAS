@@ -386,6 +386,11 @@ class ContinuousLearning:
             KNOWLEDGE.restore(self.connect, context=context)
             self.boot_phase = 4
             return {"status": "PROGRESS", "stage": "KNOWLEDGE_SCHEMA"}
+        if self.boot_phase == 4:
+            with transaction(self.connect, context) as c:
+                LEARNING_V2_REGISTRY.ensure_schema(c)
+            self.boot_phase = 5
+            return {"status": "PROGRESS", "stage": "LEARNING_V2_REGISTRY_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
         progress = STORE.load_snapshot(self.connect, "learning_progress", PROGRESS_VERSION)
         learning_v2 = STORE.load_snapshot(self.connect, LEARNING_V2_SNAPSHOT_NAME, LEARNING_V2.VERSION)
