@@ -6,6 +6,7 @@ selection remain in veritas_asset_management_intelligence.
 from datetime import datetime, timezone
 import json
 import time
+from veritas_maintenance import MaintenanceDeferred
 
 
 def publish_cache(ns, value, epoch, observed_at):
@@ -274,18 +275,22 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                 "processed": work["offset"], "sample_n": ns["_REFRESH_STATE"]["sample_n"],
                 "cursor": {key: work[key] for key in ("cycle_id", "stage", "offset", "next_refresh_at") if key in work}}
     except Exception as exc:
-        ns["_REFRESH_STATE"] = {"status": "ERROR", "last_error": type(exc).__name__,
+        cooperative = isinstance(exc, MaintenanceDeferred)
+        status = exc.status if cooperative else "ERROR"
+        error_type = None if cooperative else type(exc).__name__
+        ns["_REFRESH_STATE"] = {"status": status, "last_error": error_type,
                                 "stage": active_stage,
                                 "last_sql_timeout_ms": last_sql["timeout_ms"],
                                 "last_sql_budget_seconds": last_sql["budget_seconds"]}
         try:
             emit = getattr(getattr(context, "lane", None), "emit", None)
             if callable(emit):
-                emit("ami_refresh_error", status="ERROR", error_type=type(exc).__name__,
+                emit("ami_refresh_deferred" if cooperative else "ami_refresh_error",
+                     status=status, error_type=error_type,
                      stage=active_stage, last_sql_timeout_ms=last_sql["timeout_ms"],
                      last_sql_budget_seconds=last_sql["budget_seconds"])
         except Exception:
-            # Diagnostic delivery cannot replace the original failure.
+            # Diagnostic delivery cannot replace the original error or deferral.
             pass
         raise
     finally:

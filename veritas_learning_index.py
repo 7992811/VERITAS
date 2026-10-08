@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import json
 import math
+from veritas_maintenance import MaintenanceDeferred
 
 INDEX_VERSION = "2.1"
 LABELS = {
@@ -160,6 +161,10 @@ def daily_audit(connection, lp, day, maturity, sources, rules, eligible):
                 (bucket, lp.get("index_version"), lp.get("mode"), json.dumps(snapshot(lp), ensure_ascii=False))).fetchone()
             if saved:
                 connection.execute("DELETE FROM intelligence_score_history WHERE bucket_at<NOW()-INTERVAL '30 days'")
+    except MaintenanceDeferred:
+        # Cooperative work limits belong to the scheduler retry path. Preserve
+        # the original exception so the enclosing daily transaction rolls back.
+        raise
     except Exception as error:
         audit["history_status"] = "ERROR"
         audit["history_error"] = type(error).__name__

@@ -5,13 +5,46 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import os
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 import veritas_learning_index as INDEX
+import veritas_continuous_learning as CONTINUOUS
+import veritas_learning_state as STORE
 import veritas_scorecard_delivery as DELIVERY
 from test_veritas_learning_index import AuditDB, sample
+from test_veritas_continuous_learning import namespace as learning_namespace
 import test_veritas_learning_state as STATE_TESTS
+
+
+def daily_cursor():
+    return {'phase': 'daily', 'scorecard_work': {'stage': 'complete', 'offset': 2200,
+            'next_refresh_at': datetime.now(timezone.utc).timestamp()+120}}
+
+
+def daily_app(ns, connect, lp, budget_hook=lambda: None):
+    values = learning_namespace(connect)
+    values.update(ns, learning_progress=lambda: lp)
+    app = CONTINUOUS.ContinuousLearning(values)
+    app.ready = True
+    original_check = app.lane.check_budget
+    def check():
+        original_check()
+        budget_hook()
+    app.lane.check_budget = check
+    app._stats.update(last_error='previous diagnostic', last_success_at='previous success')
+    return app
+
+
+def audit_rows(c):
+    return {'baselines': c.execute('SELECT * FROM learning_baselines ORDER BY baseline_key').fetchall(),
+            'history': c.execute('SELECT * FROM intelligence_score_history ORDER BY bucket_at,index_version,mode').fetchall()}
+
+
+def seed_expired_history(c):
+    c.execute('''INSERT INTO intelligence_score_history(bucket_at,index_version,mode,payload)
+                 VALUES(%s,%s,%s,%s::jsonb)''',
+              (datetime.now(timezone.utc)-timedelta(days=31), INDEX.INDEX_VERSION, 'synthetic-expired-mode', '{}'))
 
 
 class DailyDB(AuditDB):
@@ -163,6 +196,90 @@ class DailyDeliveryTests(unittest.TestCase):
             self.refresh()
         self.assertEqual(self.ns['_v90_daily_intelligence_cache'],previous)
 
+    def test_history_deferral_reaches_outer_retry_with_original_exception_and_state(self):
+        self.refresh()
+        previous = deepcopy(self.ns['_v90_daily_intelligence_cache'])
+        with self.db.transaction():
+            seed_expired_history(self.db)
+            stored = audit_rows(self.db)
+        changed = INDEX.calculate(*sample(measurable=False))
+        changed['calculated_at'] = self.lp['calculated_at']
+        for prefix, status in (('INSERT INTO intelligence_score_history', 'DEFERRED_TIME_BUDGET'),
+                               ('DELETE FROM intelligence_score_history', 'DEFERRED_MEMORY_BUDGET')):
+            with self.subTest(after_sql=prefix, status=status):
+                deferred = CONTINUOUS.MaintenanceDeferred(status, reason='synthetic_after_history_sql')
+                armed, writes = [], []
+                def check():
+                    if armed:
+                        raise deferred
+                execute = self.db.execute
+                def after_write(sql, args=None):
+                    result = execute(sql, args)
+                    if sql.lstrip().startswith(prefix):
+                        self.assertEqual(self.db.depth, 2)
+                        # psycopg execute has already buffered RETURNING rows.
+                        # Finish SQLite's lazy statement before its savepoint
+                        # rolls back, otherwise SQLite masks the injected error.
+                        result.fetchall()
+                        result.close()
+                        writes.append(sql)
+                        armed.append(True)
+                    return result
+                app = daily_app(self.ns, lambda: self.db, changed, check)
+                diagnostics = deepcopy(app._stats)
+                lease = {'cursor': daily_cursor(), 'last_good': {'status': 'OK', 'marker': 'previous'}}
+                original_lease = deepcopy(lease)
+                with patch.object(self.db, 'execute', side_effect=after_write), \
+                     patch.object(STORE, 'claim_job', return_value=lease), \
+                     patch.object(STORE, 'checkpoint_job', return_value=True) as checkpoint:
+                    with self.assertRaises(CONTINUOUS.MaintenanceDeferred) as caught:
+                        app.lane.callbacks['learning_intelligence']()
+                self.assertIs(caught.exception, deferred)
+                self.assertEqual(len(writes), 1)
+                checkpoint.assert_called_once()
+                self.assertEqual(checkpoint.call_args.kwargs,
+                                 {'status': 'RETRY', 'result': deferred.result(), 'retry_after_seconds': 10})
+                self.assertEqual(lease, original_lease)
+                self.assertEqual(app._stats, diagnostics)
+                self.assertEqual(self.ns['_v90_daily_intelligence_cache'], previous)
+                with self.db.transaction():
+                    self.assertEqual(audit_rows(self.db), stored)
+
+    def test_unrelated_error_named_maintenance_deferred_still_reaches_outer_error(self):
+        self.refresh()
+        previous = deepcopy(self.ns['_v90_daily_intelligence_cache'])
+        with self.db.transaction():
+            stored = audit_rows(self.db)
+        changed = INDEX.calculate(*sample(measurable=False))
+        changed['calculated_at'] = self.lp['calculated_at']
+        impostor = type('MaintenanceDeferred', (Exception,), {})('synthetic ordinary failure')
+        self.assertNotIsInstance(impostor, CONTINUOUS.MaintenanceDeferred)
+        execute = self.db.execute
+        def after_write(sql, args=None):
+            result = execute(sql, args)
+            if sql.lstrip().startswith('INSERT INTO intelligence_score_history'):
+                result.fetchall()
+                result.close()
+                raise impostor
+            return result
+        app = daily_app(self.ns, lambda: self.db, changed)
+        lease = {'cursor': daily_cursor(), 'last_good': {'status': 'OK', 'marker': 'previous'}}
+        original_lease = deepcopy(lease)
+        with patch.object(self.db, 'execute', side_effect=after_write), \
+             patch.object(STORE, 'claim_job', return_value=lease), \
+             patch.object(STORE, 'checkpoint_job', return_value=True) as checkpoint:
+            with self.assertRaisesRegex(RuntimeError, '^DAILY_HISTORY_MaintenanceDeferred$'):
+                app.lane.callbacks['learning_intelligence']()
+        checkpoint.assert_called_once()
+        self.assertEqual(checkpoint.call_args.kwargs['status'], 'ERROR')
+        self.assertNotIn('cursor', checkpoint.call_args.kwargs)
+        self.assertEqual(lease, original_lease)
+        self.assertEqual(app._stats['last_success_at'], 'previous success')
+        self.assertIn('DAILY_HISTORY_MaintenanceDeferred', app._stats['last_error'])
+        self.assertEqual(self.ns['_v90_daily_intelligence_cache'], previous)
+        with self.db.transaction():
+            self.assertEqual(audit_rows(self.db), stored)
+
     def test_incompatible_or_missing_learning_input_defers_without_database_work(self):
         forbidden = Mock(side_effect=AssertionError('unavailable LP reached SQL'))
         cases = [{'status':'BUILDING'}, dict(self.lp,index_version='incompatible'),
@@ -218,6 +335,13 @@ class DailyDeliverySQLTests(unittest.TestCase):
     def refresh(self, lp=None, connect=None):
         return DELIVERY.refresh_daily(self.ns,connect or self.connect,lp or self.lp,context=self.context)
 
+    def seed_job(self):
+        lease = STORE.claim_job(self.connect, 'learning_intelligence', CONTINUOUS.VERSION)
+        self.assertIsNotNone(lease)
+        self.assertTrue(STORE.checkpoint_job(self.connect, lease, status='OK', cursor=daily_cursor(),
+                                            result={'status': 'OK', 'marker': 'previous daily result'}))
+        return STORE.job_state(self.connect, 'learning_intelligence', CONTINUOUS.VERSION)
+
     def test_real_sql_restores_baseline_and_deduplicates_history_after_restart(self):
         self.refresh()
         first = deepcopy(self.ns['_v90_daily_intelligence_cache']['value'])
@@ -244,13 +368,84 @@ class DailyDeliverySQLTests(unittest.TestCase):
     def test_real_sql_failure_after_audit_rolls_back_and_keeps_last_good(self):
         self.refresh()
         previous = deepcopy(self.ns['_v90_daily_intelligence_cache'])
+        before = self.seed_job()
         with self.connect() as c:
             c.execute('DROP TABLE intelligence_score_history')
-        with self.assertRaisesRegex(RuntimeError,'DAILY_HISTORY_'):
-            self.refresh(INDEX.calculate(*sample(measurable=False)))
+        app = daily_app(self.ns, self.connect, INDEX.calculate(*sample(measurable=False)))
+        with self.assertRaisesRegex(RuntimeError,'DAILY_HISTORY_UndefinedTable'):
+            app.lane.callbacks['learning_intelligence']()
         self.assertEqual(self.ns['_v90_daily_intelligence_cache'],previous)
         with self.connect() as c:
             self.assertEqual(c.execute('SELECT count(*) n FROM learning_baselines').fetchone()['n'],1)
+        after = STORE.job_state(self.connect, 'learning_intelligence', CONTINUOUS.VERSION)
+        self.assertEqual(after['status'], 'ERROR')
+        self.assertEqual(after['cursor'], before['cursor'])
+        self.assertEqual(after['last_good'], before['last_good'])
+        self.assertIn('DAILY_HISTORY_UndefinedTable', after['result']['error'])
+        self.assertIn('DAILY_HISTORY_UndefinedTable', app._stats['last_error'])
+        self.assertEqual(app._stats['last_success_at'], 'previous success')
+
+    def test_real_sql_history_deferral_rolls_back_savepoint_and_baseline_before_durable_retry(self):
+        from psycopg.pq import TransactionStatus
+        self.refresh()
+        previous = deepcopy(self.ns['_v90_daily_intelligence_cache'])
+        with self.connect() as c:
+            seed_expired_history(c)
+            stored = audit_rows(c)
+        before = self.seed_job()
+        changed = INDEX.calculate(*sample(measurable=False))
+        changed['calculated_at'] = self.lp['calculated_at']
+        deferred = CONTINUOUS.MaintenanceDeferred('DEFERRED_TIME_BUDGET', reason='synthetic_after_history_retention')
+        armed, writes, rollbacks = [], [], []
+        case = self
+        @contextmanager
+        def observed_connect():
+            with case.connect() as raw:
+                class Observed:
+                    depth = 0
+                    @contextmanager
+                    def transaction(self):
+                        self.depth += 1
+                        try:
+                            with raw.transaction():
+                                yield
+                        except BaseException as error:
+                            rollbacks.append((self.depth, raw.info.transaction_status, error))
+                            raise
+                        finally:
+                            self.depth -= 1
+                    def execute(self, sql, args=None):
+                        result = raw.execute(sql, args) if args is not None else raw.execute(sql)
+                        if sql.lstrip().startswith('DELETE FROM intelligence_score_history'):
+                            case.assertEqual(self.depth, 2)
+                            case.assertEqual(result.rowcount, 1)
+                            writes.append(result.rowcount)
+                            armed.append(True)
+                        return result
+                yield Observed()
+        def check():
+            if armed:
+                raise deferred
+        app = daily_app(self.ns, observed_connect, changed, check)
+        diagnostics = deepcopy(app._stats)
+        with self.assertRaises(CONTINUOUS.MaintenanceDeferred) as caught:
+            app.lane.callbacks['learning_intelligence']()
+        self.assertIs(caught.exception, deferred)
+        self.assertEqual(writes, [1])
+        self.assertEqual([(depth, status) for depth, status, _ in rollbacks],
+                         [(2, TransactionStatus.INTRANS), (1, TransactionStatus.IDLE)])
+        self.assertTrue(all(error is deferred for _, _, error in rollbacks))
+        self.assertEqual(self.ns['_v90_daily_intelligence_cache'], previous)
+        self.assertEqual(app._stats, diagnostics)
+        with self.connect() as c:
+            self.assertEqual(audit_rows(c), stored)
+        after = STORE.job_state(self.connect, 'learning_intelligence', CONTINUOUS.VERSION)
+        self.assertEqual(after['status'], 'RETRY')
+        self.assertEqual(after['result'], deferred.result())
+        self.assertEqual(after['cursor'], before['cursor'])
+        self.assertEqual(after['last_good'], before['last_good'])
+        self.assertIsNone(after['owner'])
+        self.assertIsNone(after['lease_until'])
 
 
 if __name__ == '__main__':
