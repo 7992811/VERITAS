@@ -6,11 +6,12 @@ versioned directional experiment; it does not manufacture executable P&L.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import sys
 import threading
 import time
 
@@ -76,6 +77,30 @@ def transaction(connect, context):
             context.check()
             yield c
             context.check()
+
+
+@contextmanager
+def _job_connection(connect, context):
+    """Borrow one idle connection without merging the job's transactions."""
+    context.check()
+    manager = connect()
+    connection = manager.__enter__()
+    try:
+        # Connection setup consumes the original job deadline too. An outer
+        # transaction would turn the independently durable phases into savepoints.
+        context.check()
+        if (connection.autocommit is not True
+                or connection.info.transaction_status.name != "IDLE"):
+            raise RuntimeError("learning intelligence requires an idle autocommit connection")
+        yield lambda: nullcontext(connection)
+    except BaseException:
+        try:
+            manager.__exit__(*sys.exc_info())
+        except BaseException:
+            pass  # Cleanup must not replace the original work/commit failure.
+        raise
+    else:
+        manager.__exit__(None, None, None)
 
 
 def forecast_from_ledger(row):
@@ -214,29 +239,33 @@ class ContinuousLearning:
         return self.lane.start_periodic()
 
     def _callback(self, name, operation):
-        def run():
+        def run(context=None, job_connect=None):
             if not self.ready:
                 return {"status": "RETRY", "reason": "LEARNING_BOOTSTRAP_PENDING"}
-            context = Budget(self.lane)
-            lease = STORE.claim_job(self.connect, name, VERSION, lease_seconds=30)
+            context = Budget(self.lane) if context is None else context
+            job_connect = self.connect if job_connect is None else job_connect
+            lease = STORE.claim_job(job_connect, name, VERSION, lease_seconds=30)
             if not lease:
                 return {"status": "RETRY", "reason": "DURABLE_JOB_LEASE_BUSY"}
             cursor = lease.get("cursor") or {}
             try:
-                result, cursor = operation(context, cursor)
+                if name == "learning_intelligence":
+                    result, cursor = operation(context, cursor, pg_connect=job_connect)
+                else:
+                    result, cursor = operation(context, cursor)
                 context.check()
                 status = str(result.get("status", "")).upper()
                 if status == "RETRY" or status.startswith("DEFERRED"):
                     # Waiting for a shared lease is not a failed experiment.
                     # It must neither advance the source cursor nor replace the
                     # last successful result with a misleading completion.
-                    if not STORE.checkpoint_job(self.connect, lease, status="RETRY", result=result,
+                    if not STORE.checkpoint_job(job_connect, lease, status="RETRY", result=result,
                                                 retry_after_seconds=10):
                         raise RuntimeError("learning lease expired before retry checkpoint")
                     return result
                 if status not in ("OK", "NO_WORK", "PROGRESS"):
                     raise RuntimeError("incomplete learning job: "+str(result.get("status")))
-                if not STORE.checkpoint_job(self.connect, lease, status="OK", cursor=cursor, result=result):
+                if not STORE.checkpoint_job(job_connect, lease, status="OK", cursor=cursor, result=result):
                     raise RuntimeError("learning lease expired before checkpoint")
                 if status == "PROGRESS" and name in ("learning_candidates", "learning_outcomes"):
                     # Existing fair scheduler demand is coalesced and still
@@ -265,7 +294,26 @@ class ContinuousLearning:
                 except Exception:
                     pass  # Fenced lease expiry permits recovery after a DB outage.
                 raise
-        return run
+        if name != "learning_intelligence":
+            return run
+
+        def scoped_run():
+            if not self.ready:
+                return {"status": "RETRY", "reason": "LEARNING_BOOTSTRAP_PENDING"}
+            context = Budget(self.lane)
+            result = None
+            try:
+                with _job_connection(self.connect, context) as job_connect:
+                    result = run(context, job_connect)
+                return result
+            except Exception as error:
+                if result is not None and not isinstance(error, MaintenanceDeferred):
+                    # The checkpoint already committed. Report a later close
+                    # failure without replaying work or undoing its success time.
+                    with self._lock:
+                        self._stats["last_error"] = (type(error).__name__+": "+str(error))[:300]
+                raise
+        return scoped_run
 
     def _trade_callback(self):
         # TradeLearning owns the durable closed_trade_learning lease, phase
@@ -610,14 +658,15 @@ class ContinuousLearning:
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
 
-    def intelligence(self, context, cursor):
+    def intelligence(self, context, cursor, *, pg_connect=None):
+        pg_connect = self.connect if pg_connect is None else pg_connect
         if cursor.get("phase") == "daily":
-            result = SCORECARD.refresh_daily(self.ns, self.connect, self.ns["learning_progress"](), context=context)
+            result = SCORECARD.refresh_daily(self.ns, pg_connect, self.ns["learning_progress"](), context=context)
             if result.get("status") in ("OK", "NO_WORK"):
                 cursor = dict(cursor, phase="scorecard")
             return result, cursor
         epoch = os.getenv("VERITAS_PRODUCTION_CANDIDATE_EPOCH", "2026-09-30T04:59:29.357862+00:00")
-        result = INTELLIGENCE.refresh_snapshot(self.connect, self.ns["learning_progress"](), epoch,
+        result = INTELLIGENCE.refresh_snapshot(pg_connect, self.ns["learning_progress"](), epoch,
                                                context=context, cursor=cursor.get("scorecard_work"))
         if result.get("status") in ("OK", "PROGRESS", "NO_WORK") and "cursor" in result:
             cursor = dict(cursor, scorecard_work=result["cursor"])

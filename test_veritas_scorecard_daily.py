@@ -92,6 +92,14 @@ class DailyDB(AuditDB):
         self.closed = True
         return False
 
+    @property
+    def autocommit(self):
+        return True
+
+    @property
+    def info(self):
+        return SimpleNamespace(transaction_status=SimpleNamespace(name='INTRANS' if self.depth else 'IDLE'))
+
 
 class DailyDeliveryTests(unittest.TestCase):
     def setUp(self):
@@ -403,6 +411,12 @@ class DailyDeliverySQLTests(unittest.TestCase):
             with case.connect() as raw:
                 class Observed:
                     depth = 0
+                    @property
+                    def autocommit(self):
+                        return raw.autocommit
+                    @property
+                    def info(self):
+                        return raw.info
                     @contextmanager
                     def transaction(self):
                         self.depth += 1
