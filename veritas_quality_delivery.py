@@ -5,6 +5,7 @@ the existing evidence reviewer is reused before each row is compacted.
 """
 from datetime import datetime, timezone
 import json
+import os
 import time
 
 import veritas_learning_state as STORE
@@ -81,13 +82,35 @@ class QualityDelivery:
         self.recent, self.row_limit_hit = {}, False
         self.restore_pending, self.next_cycle = True, 0.
         self.batch_size, self.phase = BATCH, 'BOOTSTRAP'
-        self.lane.register_periodic('strategy_quality', self.tick,
-            interval_seconds=5, retry_seconds=5, lightweight=True,
-            estimated_peak_mb=16, max_seconds=6)
+        role = str(ns.get('SERVICE_ROLE') or os.getenv('VERITAS_ROLE','web')).strip().lower()
+        external = os.getenv('VERITAS_EXTERNAL_LEARNING','0').lower() in ('1','true','yes','on')
+        self.external_consumer = bool(external and role not in ('learning','all'))
+        self.lane.register_periodic('strategy_quality',
+            self.sync if self.external_consumer else self.tick,
+            interval_seconds=30 if self.external_consumer else 5,
+            retry_seconds=10 if self.external_consumer else 5,
+            lightweight=True,
+            estimated_peak_mb=8 if self.external_consumer else 16,
+            max_seconds=3 if self.external_consumer else 6)
 
     def _publish(self, value, age=0.):
         with Q._LOCK:
             Q._CACHE.update(value=value, at=time.monotonic()-max(0., age), last_error=None)
+
+    def sync(self):
+        """Web role only: consume the durable report produced elsewhere."""
+        context = Budget(self.lane)
+        context.check()
+        with transaction(self.ns['pg_connect'], context) as c:
+            saved = STORE.load_snapshot_in_transaction(c, 'strategy_quality', VERSION)
+        if not saved:
+            return {'status':'NO_WORK','mode':'EXTERNAL_QUALITY_CONSUMER'}
+        value = saved['payload']
+        observed = Q.at(value.get('at'))
+        age = (datetime.now(timezone.utc)-observed).total_seconds() if observed else 181.
+        self._publish(value, age)
+        return {'status':'OK','mode':'EXTERNAL_QUALITY_CONSUMER',
+                'processed': int(value.get('closed_trades') or 0)}
 
     def step(self):
         if not self.ns['_continuous_learning'].ready:

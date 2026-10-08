@@ -25,6 +25,13 @@ class PromotionEvidence:
     shadow_max_drawdown: float
     code_ci_pass: bool
     data_parity_pass: bool
+    calibration_applicable: bool = True
+    requires_baseline_outperformance: bool = False
+    baseline_oos_expectancy: Optional[float] = None
+    baseline_oos_profit_factor: Optional[float] = None
+    baseline_vault_expectancy: Optional[float] = None
+    baseline_vault_profit_factor: Optional[float] = None
+    baseline_shadow_expectancy: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -96,6 +103,8 @@ def promotion_gate(e: PromotionEvidence) -> Dict[str, Any]:
     for field in ("oos_expectancy", "oos_profit_factor", "vault_expectancy",
                   "vault_profit_factor", "high_cost_expectancy", "ece",
                   "shadow_expectancy", "shadow_max_drawdown"):
+        if field == "ece" and e.calibration_applicable is False:
+            continue
         value = _finite_number(getattr(e, field))
         bad_domain = (
             value is not None and
@@ -106,9 +115,17 @@ def promotion_gate(e: PromotionEvidence) -> Dict[str, Any]:
             invalid.append(field)
     if not isinstance(e.model_version, str) or not e.model_version.strip():
         invalid.append("model_version")
-    for field in ("code_ci_pass", "data_parity_pass"):
+    for field in ("code_ci_pass", "data_parity_pass", "calibration_applicable",
+                  "requires_baseline_outperformance"):
         if type(getattr(e, field)) is not bool:
             invalid.append(field)
+    if e.requires_baseline_outperformance:
+        for field in ("baseline_oos_expectancy", "baseline_oos_profit_factor",
+                      "baseline_vault_expectancy", "baseline_vault_profit_factor",
+                      "baseline_shadow_expectancy"):
+            value = _finite_number(getattr(e, field))
+            if value is None or (field.endswith("profit_factor") and value < 0):
+                invalid.append(field)
 
     thresholds, invalid_config = _configuration()
     blockers = ["INVALID_EVIDENCE_" + field.upper() for field in invalid]
@@ -139,15 +156,25 @@ def promotion_gate(e: PromotionEvidence) -> Dict[str, Any]:
     if e.vault_expectancy <= 0: blockers.append("VAULT_EXPECTANCY_NOT_POSITIVE")
     if e.vault_profit_factor < 1.05: blockers.append("VAULT_PROFIT_FACTOR_TOO_LOW")
     if e.high_cost_expectancy <= 0: blockers.append("HIGH_COST_STRESS_NOT_POSITIVE")
-    if e.calibration_n < thresholds["min_calibration_n"]: blockers.append("CALIBRATION_SAMPLE_TOO_SMALL")
-    if e.ece > thresholds["max_ece"]: blockers.append("CALIBRATION_ECE_TOO_HIGH_OR_MISSING")
+    if e.calibration_applicable:
+        if e.calibration_n < thresholds["min_calibration_n"]: blockers.append("CALIBRATION_SAMPLE_TOO_SMALL")
+        if e.ece is None or e.ece > thresholds["max_ece"]:
+            blockers.append("CALIBRATION_ECE_TOO_HIGH_OR_MISSING")
     if e.shadow_trades < thresholds["min_shadow_trades"]: blockers.append("SHADOW_SAMPLE_TOO_SMALL")
     if e.shadow_expectancy <= 0: blockers.append("SHADOW_EXPECTANCY_NOT_POSITIVE")
     if e.shadow_max_drawdown > thresholds["max_shadow_drawdown"]: blockers.append("SHADOW_DRAWDOWN_TOO_HIGH")
+    if e.requires_baseline_outperformance:
+        if e.oos_expectancy <= e.baseline_oos_expectancy:
+            blockers.append("OOS_NOT_BETTER_THAN_BASELINE")
+        if e.oos_profit_factor < e.baseline_oos_profit_factor:
+            blockers.append("OOS_PROFIT_FACTOR_WORSE_THAN_BASELINE")
+        if e.vault_expectancy <= e.baseline_vault_expectancy:
+            blockers.append("VAULT_NOT_BETTER_THAN_BASELINE")
+        if e.vault_profit_factor < e.baseline_vault_profit_factor:
+            blockers.append("VAULT_PROFIT_FACTOR_WORSE_THAN_BASELINE")
+        if e.shadow_expectancy <= e.baseline_shadow_expectancy:
+            blockers.append("SHADOW_NOT_BETTER_THAN_BASELINE")
     result["eligible_for_production"] = not blockers
     result["status"] = "BLOCK" if blockers else "PASS"
-    # Safe automation boundary: a fully passing candidate may become the
-    # active SHADOW champion automatically. Production application remains
-    # explicitly false and must be handled by a separate release authority.
     result["automatic_shadow_promotion"] = not blockers
     return result

@@ -96,12 +96,15 @@ def _assess(context, raw, horizon, clock):
 
 
 def select_context(raw, horizon, clock, structural, intrabar=None):
-    """Timing/cost-qualified event first, then immutable confirmation time.
+    """Timing/cost-qualified event first, then a learned safe tiebreak.
 
-    Portfolio-specific trend, evidence, capital and reuse checks still run at
-    admission. A missing MA history never invalidates a structural candidate.
+    Canonical timing, context and economics admission remain the first four
+    lexicographic dimensions. Learning may only break ties between candidates
+    that already have the same safety/admission status; it cannot make an
+    ineligible source/risk/economics scenario eligible.
     """
     import veritas_ma_rebound as MR
+    import veritas_strategy_ensemble as ENSEMBLE
     candidates = [dict(structural, scenario="SAME_TIMEFRAME_STRUCTURAL_BREAKOUT")]
     if intrabar is not None and CTC.BREAKOUT_LIFECYCLE_POLICY.get('enabled'):
         candidates.insert(0, dict(intrabar,scenario='VERIFIED_QUOTE_STRUCTURAL_BREAKOUT'))
@@ -112,11 +115,18 @@ def select_context(raw, horizon, clock, structural, intrabar=None):
             source_identity=raw.get("structure_source_identity"),
             config=CTC.STRUCTURAL_ENTRY_POLICY, ma_config=CTC.MA_REBOUND_POLICY))
     assessed = [_assess(c, raw, horizon, clock) for c in candidates]
-    winner = max(range(len(candidates)), key=lambda index: assessed[index][0])
+    ranked = [ENSEMBLE.rank(item[0], item[1], raw, horizon) for item in assessed]
+    winner = max(range(len(candidates)), key=lambda index: ranked[index][0])
     result = deepcopy(candidates[winner])
-    result["entry_scenarios"] = [item[1] for item in assessed]
+    evidence = []
+    for index, item in enumerate(assessed):
+        row = dict(item[1])
+        row["learning_v2_ensemble"] = ranked[index][1]
+        evidence.append(row)
+    result["entry_scenarios"] = evidence
     result["selected_scenario"] = (result.get("event") or {}).get("event_type")
-    result["selection_basis"] = "CURRENT_TIMING_AND_COST_ADMISSION_THEN_ORIGINAL_EVENT_TIME"
+    result["learning_v2_ensemble"] = ranked[winner][1]
+    result["selection_basis"] = "CANONICAL_ADMISSION_THEN_LEARNING_V2_SAFE_TIEBREAK_THEN_EVENT_TIME"
     return result
 
 

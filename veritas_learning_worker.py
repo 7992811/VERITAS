@@ -1,119 +1,162 @@
-"""Dedicated, broker-free VERITAS Learning 2.0 worker.
+"""Dedicated VERITAS Learning 2.0 service.
 
-Reads bounded verified learning views from PostgreSQL and publishes a compact
-shadow-research snapshot.  It imports no trading/broker runtime.
+This process owns continuous learning, strategy-quality review and heavy history
+maintenance. It deliberately does not start the market loop, broker connection,
+paper portfolio execution or real-order services.
+
+The production web service remains the source of the database lease. The lease
+endpoint is authenticated by a shared random bridge token, so the database URL
+does not need to be copied through ChatGPT or committed to the repository.
 """
 from __future__ import annotations
-from datetime import datetime, timezone
+
 import json
 import os
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import psycopg
-from psycopg.rows import dict_row
+import httpx
 
-import veritas_learning_v2 as L
+os.environ.setdefault("VERITAS_ROLE", "learning")
+os.environ.setdefault("VERITAS_EXTERNAL_LEARNING", "1")
+os.environ.setdefault("VERITAS_FULL_OVERVIEW_ENABLED", "0")
+os.environ.setdefault("VERITAS_KNOWLEDGE_AUTOMATION", "0")
+os.environ.setdefault("VERITAS_BACKTEST_ENABLED", "0")
+os.environ.setdefault("VERITAS_EVENT_WEB_SCAN_ENABLED", "0")
 
-INTERVAL=max(60,int(os.getenv("VERITAS_LEARNING_V2_INTERVAL_SECONDS","120")))
-LIMIT=max(100,min(5000,int(os.getenv("VERITAS_LEARNING_V2_LIMIT","2000"))))
-
-
-def _payload(row):
-    if not isinstance(row,dict):
-        return {}
-    p=row.get("payload")
-    if isinstance(p,dict):
-        return p
-    if isinstance(p,str):
-        try:return json.loads(p)
-        except Exception:return {}
-    return {}
-
-
-def _flatten(row):
-    out=dict(row or {})
-    p=_payload(out)
-    for key,value in p.items():
-        out.setdefault(key,value)
-    return out
+_STATE = {
+    "ready": False,
+    "started_at": time.time(),
+    "database_lease": False,
+    "continuous_learning": False,
+    "quality_delivery": False,
+    "heavy_learning": False,
+    "replay": "STARTING",
+    "error": None,
+}
 
 
-def load_inputs(conn,limit=LIMIT):
-    """Bounded reads. Missing views are reported rather than synthesized."""
-    decisions=[]; trades=[]; errors=[]
-    with conn.cursor(row_factory=dict_row) as c:
+def _database_lease():
+    source = os.getenv("VERITAS_SOURCE_URL", "").strip().rstrip("/")
+    token = os.getenv("VERITAS_V90_BRIDGE_TOKEN", "").strip()
+    if not source or not token:
+        raise RuntimeError("VERITAS_SOURCE_URL and VERITAS_V90_BRIDGE_TOKEN are required")
+    with httpx.Client(timeout=15.0) as client:
+        response = client.get(source + "/internal/v90/database-lease",
+                              headers={"X-Veritas-V90-Token": token})
+        response.raise_for_status()
+        data = response.json()
+    value = str(data.get("database_url") or "").strip()
+    if data.get("status") != "OK" or not value:
+        raise RuntimeError("database lease unavailable: " + str(data.get("reason") or data.get("status")))
+    os.environ["DATABASE_URL"] = value
+    _STATE["database_lease"] = True
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        return
+
+    def _reply(self, code=200):
+        body = json.dumps({
+            "ok": bool(_STATE["ready"]),
+            "role": "learning",
+            "uptime_s": round(time.time() - _STATE["started_at"], 1),
+            **_STATE,
+        }, ensure_ascii=False, default=str).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        self._reply(200 if _STATE["ready"] or self.path.startswith("/healthz") else 503)
+
+
+def _serve():
+    server = ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "10000"))), H)
+    server.serve_forever()
+
+
+def _heavy(v):
+    try:
+        _STATE["heavy_learning"] = True
+        v.heavy_learning_maintenance_loop()
+    except BaseException as exc:
+        _STATE["heavy_learning"] = False
+        _STATE["error"] = "heavy_learning: " + type(exc).__name__ + ": " + str(exc)
+
+
+def _replay_loop(v):
+    import veritas_learning_replay as REPLAY
+    time.sleep(120)
+    while True:
         try:
-            decisions=[_flatten(dict(x)) for x in c.execute(
-                "SELECT to_jsonb(d) AS payload FROM v90_decision_episodes d "
-                "ORDER BY decision_ts DESC LIMIT %s",(limit,)).fetchall()]
-        except Exception as exc:
-            conn.rollback(); errors.append("DECISIONS:"+type(exc).__name__)
-        try:
-            trades=[_flatten(dict(x)) for x in c.execute(
-                "SELECT to_jsonb(e) AS payload FROM v90_learning_episodes e "
-                "WHERE learning_eligible=TRUE ORDER BY closed_at DESC NULLS LAST LIMIT %s",
-                (limit,)).fetchall()]
-        except Exception as exc:
-            conn.rollback(); errors.append("TRADES:"+type(exc).__name__)
-    return decisions,trades,errors
-
-
-def ensure_schema(conn):
-    with conn.cursor() as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS learning_v2_snapshots(
-            snapshot_key text PRIMARY KEY,
-            version text NOT NULL,
-            generated_at timestamptz NOT NULL,
-            payload jsonb NOT NULL
-        )""")
-    conn.commit()
-
-
-def publish(conn,snapshot):
-    value=dict(snapshot,generated_at=datetime.now(timezone.utc).isoformat())
-    blob=json.dumps(value,ensure_ascii=False,allow_nan=False,separators=(",",":"))
-    if len(blob.encode())>512*1024:
-        value["hypotheses"]=value.get("hypotheses",[])[:24]
-        value["entry_false_block"]["blockers"]=value.get("entry_false_block",{}).get("blockers",[])[:16]
-        blob=json.dumps(value,ensure_ascii=False,allow_nan=False,separators=(",",":"))
-    with conn.cursor() as c:
-        c.execute("""INSERT INTO learning_v2_snapshots(snapshot_key,version,generated_at,payload)
-            VALUES('current',%s,now(),%s::jsonb)
-            ON CONFLICT(snapshot_key) DO UPDATE SET
-              version=EXCLUDED.version,generated_at=EXCLUDED.generated_at,payload=EXCLUDED.payload""",
-            (L.VERSION,blob))
-    conn.commit()
-    return value
-
-
-def run_once(dsn):
-    with psycopg.connect(dsn,row_factory=dict_row,autocommit=False) as conn:
-        ensure_schema(conn)
-        decisions,trades,errors=load_inputs(conn)
-        snapshot=L.research_snapshot(decisions,trades)
-        snapshot["input_counts"]={"decisions":len(decisions),"trades":len(trades)}
-        snapshot["source_errors"]=errors
-        snapshot["status"]="DEGRADED" if errors else snapshot["status"]
-        return publish(conn,snapshot)
+            if getattr(v._continuous_learning, "ready", False):
+                result = REPLAY.run(v.__dict__, v.pg_connect, max_candidates=2)
+                _STATE["replay"] = result.get("status") or "OK"
+                print(json.dumps({"event": "VERITAS_LEARNING_V2_REPLAY",
+                                  "result": result}, ensure_ascii=False, default=str), flush=True)
+            else:
+                _STATE["replay"] = "BOOTSTRAP_PENDING"
+        except BaseException as exc:
+            _STATE["replay"] = "ERROR"
+            _STATE["error"] = "replay: " + type(exc).__name__ + ": " + str(exc)
+            print(json.dumps({"event": "VERITAS_LEARNING_V2_REPLAY_ERROR",
+                              "error": _STATE["error"]}, ensure_ascii=False), flush=True)
+        time.sleep(max(300, int(os.getenv("VERITAS_LEARNING_REPLAY_INTERVAL_SECONDS", "900"))))
 
 
 def main():
-    if os.getenv("VERITAS_PROCESS_ROLE","").strip().lower()!="learning":
-        raise SystemExit("VERITAS_PROCESS_ROLE=learning is required")
-    dsn=os.getenv("DATABASE_URL","").strip()
-    if not dsn:
-        raise SystemExit("DATABASE_URL is required")
-    print("VERITAS_LEARNING_V2_WORKER_START version="+L.VERSION,flush=True)
-    while True:
-        try:
-            result=run_once(dsn)
-            print(json.dumps({"event":"learning_v2_snapshot","version":L.VERSION,
-                              "status":result.get("status"),"counts":result.get("counts"),
-                              "input_counts":result.get("input_counts")},allow_nan=False),flush=True)
-        except Exception as exc:
-            print(json.dumps({"event":"learning_v2_error","error":type(exc).__name__}),flush=True)
-        time.sleep(INTERVAL)
+    threading.Thread(target=_serve, daemon=True, name="veritas-learning-health").start()
+    try:
+        _database_lease()
+
+        # DATABASE_URL must exist before this import because veritas_intelligence
+        # resolves its database configuration at module import time.
+        import veritas_intelligence as v
+        import veritas_quality_delivery as QUALITY
+
+        boot = v.pg_init()
+        if not boot.get("ok"):
+            raise RuntimeError("PostgreSQL bootstrap failed: " + str(boot))
+        migration = v.v90_migrate_core_data()
+        if str(migration.get("status") or "").upper() in ("ERROR", "POSTGRES_REQUIRED"):
+            raise RuntimeError("v90 migration failed: " + str(migration))
+
+        v._continuous_learning.start()
+        _STATE["continuous_learning"] = True
+
+        QUALITY.install(v.__dict__)
+        _STATE["quality_delivery"] = True
+
+        threading.Thread(target=_heavy, args=(v,), daemon=True,
+                         name="veritas-heavy-learning-v2").start()
+        threading.Thread(target=_replay_loop, args=(v,), daemon=True,
+                         name="veritas-learning-replay-v2").start()
+
+        _STATE["ready"] = True
+        print(json.dumps({"event": "VERITAS_LEARNING_V2_READY",
+                          "version": getattr(v, "VERSION", None),
+                          "migration": migration.get("status"),
+                          "real_order_authority": False},
+                         ensure_ascii=False, default=str), flush=True)
+
+        # All actual work is scheduled by the durable bounded maintenance lane.
+        while True:
+            time.sleep(30)
+    except BaseException as exc:
+        _STATE["ready"] = False
+        _STATE["error"] = type(exc).__name__ + ": " + str(exc)
+        print(json.dumps({"event": "VERITAS_LEARNING_V2_FAILED",
+                          "error": _STATE["error"]},
+                         ensure_ascii=False), flush=True)
+        while True:
+            time.sleep(30)
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
