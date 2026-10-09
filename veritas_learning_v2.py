@@ -239,12 +239,20 @@ def research_diagnostics(decision_rows, trade_rows):
     trade_contexts=defaultdict(int)
     valid_trade_rows=0
     outcome_trade_rows=path_trade_rows=stop_ready_rows=exit_ready_rows=0
+    outcome_net=[]; path_mfe=[]; path_mae=[]; path_capture=[]
     for row in trade_rows:
         trade_contexts[_digest(_context(row))]+=1
         if row.get("outcome_evidence_eligible") is True:
             outcome_trade_rows+=1
+            net=_num(row.get("net_pnl_rub"))
+            if net is not None:
+                outcome_net.append(net)
         if row.get("path_evidence_eligible") is True:
             path_trade_rows+=1
+            mfe=_num(row.get("mfe")); mae=_num(row.get("mae")); cap=_num(row.get("capture_ratio"))
+            if mfe is not None: path_mfe.append(mfe)
+            if mae is not None: path_mae.append(mae)
+            if cap is not None: path_capture.append(cap)
         if row.get("stop_replay_ready") is True:
             stop_ready_rows+=1
         if row.get("exit_replay_ready") is True:
@@ -287,6 +295,15 @@ def research_diagnostics(decision_rows, trade_rows):
         "path_evidence_trade_rows":path_trade_rows,
         "stop_replay_ready_rows":stop_ready_rows,
         "exit_replay_ready_rows":exit_ready_rows,
+        "outcome_profitable_trade_rows":sum(x>0 for x in outcome_net),
+        "outcome_losing_trade_rows":sum(x<0 for x in outcome_net),
+        "outcome_flat_trade_rows":sum(x==0 for x in outcome_net),
+        "outcome_win_rate":sum(x>0 for x in outcome_net)/len(outcome_net) if outcome_net else None,
+        "outcome_net_pnl_rub":sum(outcome_net) if outcome_net else None,
+        "outcome_avg_net_pnl_rub":sum(outcome_net)/len(outcome_net) if outcome_net else None,
+        "path_avg_mfe_pct":sum(path_mfe)/len(path_mfe) if path_mfe else None,
+        "path_avg_mae_pct":sum(path_mae)/len(path_mae) if path_mae else None,
+        "path_avg_capture_ratio":sum(path_capture)/len(path_capture) if path_capture else None,
         "valid_mfe_mae_trade_rows":valid_trade_rows,
         "trade_contexts":len(trade_contexts),
         "largest_trade_context_n":trade_largest,
