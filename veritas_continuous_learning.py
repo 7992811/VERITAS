@@ -42,7 +42,7 @@ CANDIDATE_WORK_VERSION = "FORECAST_CONSUMPTION_V1"
 CANDIDATE_MAINTENANCE_SECONDS = 120
 LEARNING_V2_SNAPSHOT_NAME = "learning_v2_shadow"
 LEARNING_V2_ASSETS = ("BTC","ETH","NQ","BRENT","GOLD","MOEX","CNYRUBF")
-LEARNING_V2_INPUT_LIMIT = 128
+LEARNING_V2_INPUT_LIMIT = 64
 
 
 def _json(value):
@@ -229,11 +229,11 @@ class ContinuousLearning:
                 ("learning_outcomes", self.outcomes, 15, 6),
                 ("learning_candidates", self.candidates, 30, 6),
                 ("learning_knowledge_catalog", self.knowledge_catalog, 60, 6),
-                ("learning_trade_evidence", self.trades, 30, 6),
+                ("learning_trade_evidence", self.trades, 45, 6),
                 ("learning_progress", self.progress, 120, 6),
-                ("learning_intelligence", self.intelligence, 15, 6),
+                ("learning_intelligence", self.intelligence, 90, 6),
                 ("learning_memory", self.memory, 300, 6),
-                ("learning_v2_shadow", self.learning_v2_shadow, 60, 5),
+                ("learning_v2_shadow", self.learning_v2_shadow, 60, 7),
                 ("learning_v2_replay", self.learning_v2_replay, 180, 5))
         for name, fn, interval, seconds in jobs:
             if name == "learning_bootstrap":
