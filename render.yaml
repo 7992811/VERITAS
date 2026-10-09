@@ -46,3 +46,5 @@ services:
         value: "120"
       - key: VERITAS_LEARNING_V2_PER_ASSET_LIMIT
         value: "96"
+      - key: VERITAS_LEARNING_EXPECTED_DATABASE
+        value: "veritas_knowledge"
