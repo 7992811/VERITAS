@@ -864,6 +864,36 @@ class TradeApprovals:
             }, "SANDBOX_AUTO_APPROVED", {"owner_confirmation": False})
             return self._view(row, accepted=True, auto_approved=True)
 
+    def auto_approve_robot(self, proposal_id):
+        """Approve an immutable production proposal for an explicitly armed robot.
+
+        This transition does not itself arm trading. The caller must separately
+        hold the production autotrade mandate and live execution gates. The row
+        remains immutable and is still revalidated immediately before PostOrder.
+        """
+        with self._transaction() as c:
+            row = self._locked(c, proposal_id)
+            row = self._expire_row(c, row)
+            terms = row.get("terms_json") or {}
+            if terms.get("execution_environment") != "production":
+                raise ApprovalError("PRODUCTION_AUTOTRADE_ONLY", 403)
+            if row["status"] == "APPROVED" and row.get("reason_code") == "ROBOT_AUTO_APPROVED":
+                return self._view(row, idempotent=True, auto_approved=True)
+            if row["status"] not in {"PENDING_DELIVERY", "AWAITING_OWNER"}:
+                return self._view(row, accepted=False, auto_approved=False)
+            if self._has_active(c, row):
+                return self._view(row, accepted=False,
+                                  reason_code="INSTRUMENT_HAS_UNSETTLED_EXECUTION")
+            now = self._now()
+            row = self._change(c, row, {
+                "status": "APPROVED", "approved_at": now, "approved_by": None,
+                "reason_code": "ROBOT_AUTO_APPROVED",
+            }, "ROBOT_AUTO_APPROVED", {
+                "owner_confirmation": False,
+                "authority": "EXPLICIT_ONE_TIME_ROBOT_MANDATE",
+            })
+            return self._view(row, accepted=True, auto_approved=True)
+
     def block(self, proposal_id, reason_code):
         reason_code = _reason(reason_code)
         with self._transaction() as c:
@@ -877,9 +907,12 @@ class TradeApprovals:
                                "BLOCKED")
             return self._view(row)
 
-    def _require_owner_approval(self, c, row, *, allow_sandbox_auto=False):
+    def _require_owner_approval(self, c, row, *, allow_sandbox_auto=False,
+                                allow_robot_auto=False):
         if type(allow_sandbox_auto) is not bool:
             raise ApprovalError("BOOLEAN_SANDBOX_AUTO_GATE_REQUIRED", 400)
+        if type(allow_robot_auto) is not bool:
+            raise ApprovalError("BOOLEAN_ROBOT_AUTO_GATE_REQUIRED", 400)
         terms = row.get("terms_json") or {}
         if allow_sandbox_auto:
             if (terms.get("execution_environment") == "sandbox"
@@ -890,6 +923,15 @@ class TradeApprovals:
                 return
             if terms.get("execution_environment") != "sandbox":
                 raise ApprovalError("SANDBOX_AUTOTRADE_ONLY", 403)
+        if allow_robot_auto:
+            if (terms.get("execution_environment") == "production"
+                    and row.get("reason_code") == "ROBOT_AUTO_APPROVED"
+                    and row.get("approved_at") is not None
+                    and row.get("approved_by") is None
+                    and _date(row["approved_at"]) < _date(row["expires_at"])):
+                return
+            if terms.get("execution_environment") != "production":
+                raise ApprovalError("PRODUCTION_AUTOTRADE_ONLY", 403)
         proof = c.execute(f"SELECT * FROM {CALLBACKS} WHERE proposal_id=%s",
                           (row["proposal_id"],)).fetchone()
         if proof is None:
@@ -910,10 +952,12 @@ class TradeApprovals:
             raise ApprovalError("SIGNED_OWNER_APPROVAL_REQUIRED", 403)
 
     def claim_approved(self, proposal_id, *, terms_hash, worker_id, economics_revision=1,
-                       allow_sandbox_auto=False):
+                       allow_sandbox_auto=False, allow_robot_auto=False):
         """Commit SENDING before returning; a lost claim response is not retried."""
         if type(allow_sandbox_auto) is not bool:
             raise ApprovalError("BOOLEAN_SANDBOX_AUTO_GATE_REQUIRED", 400)
+        if type(allow_robot_auto) is not bool:
+            raise ApprovalError("BOOLEAN_ROBOT_AUTO_GATE_REQUIRED", 400)
         worker_id = _text(worker_id, "WORKER_ID", 128)
         with self._transaction() as c:
             row = self._locked(c, proposal_id, skip_locked=True)
@@ -927,7 +971,9 @@ class TradeApprovals:
             row = self._expire_row(c, row)
             if row["status"] != "APPROVED":
                 return None
-            self._require_owner_approval(c, row, allow_sandbox_auto=allow_sandbox_auto)
+            self._require_owner_approval(
+                c, row, allow_sandbox_auto=allow_sandbox_auto,
+                allow_robot_auto=allow_robot_auto)
             if self._has_active(c, row):
                 raise ApprovalError("INSTRUMENT_HAS_UNSETTLED_EXECUTION")
             now = self._now()
