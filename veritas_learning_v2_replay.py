@@ -36,25 +36,31 @@ def _time(v):
         return None
 
 
-def validate_bars(bars,*,entry_at,source_key=None):
+def validate_bars(bars,*,entry_at,source_key=None,contract_id=None):
     entry=_time(entry_at)
     if entry is None: return None,"ENTRY_TIME_INVALID"
     out=[]; last=None
     for raw in bars or []:
         if not isinstance(raw,dict): return None,"BAR_NOT_OBJECT"
-        ts=_time(raw.get("closed_at") or raw.get("ts"))
+        ts=_time(raw.get("closed_at") or raw.get("available_at") or raw.get("ts"))
+        opened=_time(raw.get("opened_at") or raw.get("ts") or raw.get("closed_at"))
         o,h,l,c=(_num(raw.get(k)) for k in ("open","high","low","close"))
-        if ts is None or any(x is None or x<=0 for x in (o,h,l,c)):
+        if ts is None or opened is None or opened>ts or any(x is None or x<=0 for x in (o,h,l,c)):
             return None,"BAR_FIELDS_INVALID"
         if l>min(o,c) or h<max(o,c) or l>h:
             return None,"OHLC_INCONSISTENT"
         if ts<=entry: continue
+        if opened<entry<ts:
+            # OHLC extremes before the fill are unknowable; discard the entry bar.
+            continue
         if last is not None and ts<=last:
             return None,"BAR_ORDER_INVALID"
         if source_key:
             key=str(raw.get("source_key") or "")
             if key!=str(source_key): return None,"SOURCE_IDENTITY_MISMATCH"
-        out.append({"closed_at":ts,"open":o,"high":h,"low":l,"close":c})
+        if contract_id is not None and str(raw.get("contract_id") or "")!=str(contract_id or ""):
+            return None,"CONTRACT_ID_MISMATCH"
+        out.append({"opened_at":opened,"closed_at":ts,"open":o,"high":h,"low":l,"close":c})
         last=ts
     if not out: return None,"NO_POST_ENTRY_BARS"
     return out,None
@@ -80,7 +86,7 @@ def _signed_return(direction,entry,exit_price):
 
 
 def replay_stop_target(bars,*,entry_at,entry_price,direction,stop_price,target_price,
-                       source_key=None,cost_per_side=0.0):
+                       source_key=None,contract_id=None,cost_per_side=0.0):
     """Replay one stop/target pair; same-bar dual hit is unknowable from OHLC."""
     entry=_num(entry_price); stop=_num(stop_price); target=_num(target_price)
     cost=_num(cost_per_side)
@@ -91,7 +97,7 @@ def replay_stop_target(bars,*,entry_at,entry_price,direction,stop_price,target_p
         return {"status":INVALID,"reason":"LONG_GEOMETRY_INVALID","version":VERSION}
     if direction=="SHORT" and not (target<entry<stop):
         return {"status":INVALID,"reason":"SHORT_GEOMETRY_INVALID","version":VERSION}
-    seq,reason=validate_bars(bars,entry_at=entry_at,source_key=source_key)
+    seq,reason=validate_bars(bars,entry_at=entry_at,source_key=source_key,contract_id=contract_id)
     if reason:return {"status":INVALID,"reason":reason,"version":VERSION}
     for i,bar in enumerate(seq):
         sh,th=_hits(bar,direction,stop,target)
@@ -112,14 +118,14 @@ def replay_stop_target(bars,*,entry_at,entry_price,direction,stop_price,target_p
 
 
 def compare_stop_buffers(bars,*,entry_at,entry_price,direction,stop_anchor,atr,target_price,
-                         buffers=(0.10,0.15,0.20,0.30),source_key=None,cost_per_side=0.0):
+                         buffers=(0.10,0.15,0.20,0.30),source_key=None,contract_id=None,cost_per_side=0.0):
     """Compare declared structural buffers on the exact same ordered bar path."""
     out=[]
     for buffer_atr in buffers:
         stop=structural_stop(stop_anchor,atr,direction,buffer_atr)
         result=replay_stop_target(
             bars,entry_at=entry_at,entry_price=entry_price,direction=direction,
-            stop_price=stop,target_price=target_price,source_key=source_key,
+            stop_price=stop,target_price=target_price,source_key=source_key,contract_id=contract_id,
             cost_per_side=cost_per_side)
         out.append({"stop_buffer_atr":buffer_atr,"stop_price":stop,**result})
     resolved=[x for x in out if x["status"]=="RESOLVED"]
@@ -130,7 +136,7 @@ def compare_stop_buffers(bars,*,entry_at,entry_price,direction,stop_anchor,atr,t
 
 def replay_partial_runner(bars,*,entry_at,entry_price,direction,stop_price,
                           first_target,runner_target,first_fraction=0.5,
-                          source_key=None,cost_per_side=0.0):
+                          source_key=None,contract_id=None,cost_per_side=0.0):
     """Explicit partial-target + runner policy.
 
     Before first target: stop vs first target must be ordered across bars.
