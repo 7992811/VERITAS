@@ -12,19 +12,15 @@ import json
 import math
 
 import veritas_price_source as VPS
-from veritas_quote_time import utc_datetime
+from veritas_quote_time import utc_datetime, execution_max_age_seconds
 
 VERSION = "OBSERVED_EXECUTION_PATH_V2_SOURCE_CADENCE"
 EXPECTED_INTERVAL_SECONDS = 15.0
 # Protective checks must remain continuous even if the provider itself publishes
 # a new timestamp less frequently. This remains strict across process restarts.
 ALLOWED_GAP_SECONDS = 3 * EXPECTED_INTERVAL_SECONDS
-EXECUTION_MAX_AGE_SECONDS = {"BTC": 30.0, "ETH": 30.0}
-DEFAULT_EXECUTION_MAX_AGE_SECONDS = 120.0
-
 def _source_max_age(asset):
-    return float(EXECUTION_MAX_AGE_SECONDS.get(str(asset or "").upper(),
-                                               DEFAULT_EXECUTION_MAX_AGE_SECONDS))
+    return float(execution_max_age_seconds(asset))
 
 def _source_gap_allowance(asset):
     # A provider may legally publish one cycle after its previous quote reaches
@@ -330,6 +326,8 @@ def assessment(row):
         return reject("INVALID_OBSERVATION_PATH")
     if nums["observation_count"] < 2:
         return reject("INSUFFICIENT_PATH_OBSERVATIONS")
+    if nums["check_count"] < nums["observation_count"] or nums["check_count"] < 2:
+        return reject("INCONSISTENT_CHECK_COVERAGE")
     if any(_count(w.get(key)) is None for key in
            ('observation_count','gap_count','check_count','check_gap_count',
             'invalid_observation_count')):
@@ -350,6 +348,10 @@ def assessment(row):
     span=(last-first).total_seconds()
     if span<=0 or nums['max_gap_seconds']<=0 or span>(nums['observation_count']-1)*nums['max_gap_seconds']+1e-6:
         return reject('INCONSISTENT_OBSERVATION_COVERAGE')
+    check_span=max(0.0,(checked-opened).total_seconds())
+    if (check_span>0 and nums["max_check_gap_seconds"]<=0) or (
+            check_span>(nums["check_count"]-1)*max(nums["max_check_gap_seconds"],1e-12)+1e-6):
+        return reject("INCONSISTENT_CHECK_COVERAGE")
     if first > opened or (opened-first).total_seconds() > expected_source_age:
         return reject("UNOBSERVED_ENTRY_PREFIX")
     if last > end or checked > end:
