@@ -1479,6 +1479,9 @@ function renderSelfLearning(){
       '<div class="selflearn-cols"><div class="selflearn-box"><h4>Уровни и риск</h4>'+
       '<div>Вход '+esc(lv.entry)+' · выход '+esc(lv.exit)+'</div><div>Стоп '+esc(lv.stop)+' · цель '+esc(lv.target)+'</div>'+
       '<div>ATR '+esc(lv.atr)+' · риск '+esc(lv.initial_risk_atr==null?'—':Number(lv.initial_risk_atr).toFixed(2))+' ATR</div>'+
+      '<div>Защищённый high/low '+esc(lv.stop_anchor)+' · буфер '+esc(lv.stop_anchor_buffer_atr==null?'—':Number(lv.stop_anchor_buffer_atr).toFixed(2))+' ATR</div>'+
+      '<div>Цель из предыдущей зоны: '+esc(lv.target_matches_first_previous_zone===true?'да':lv.target_matches_first_previous_zone===false?'нет':'—')+
+      ' · дистанция '+esc(lv.target_zone_distance_atr==null?'—':Number(lv.target_zone_distance_atr).toFixed(2))+' ATR</div>'+
       '<div>MFE '+esc(path.mfe_pct)+'% · MAE '+esc(path.mae_pct)+'%</div></div>'+
       '<div class="selflearn-box"><h4>Контекст</h4><div>'+esc(mc.regime)+'</div><div>Триггер '+esc(mc.trigger_timeframe)+' · структура '+esc(mc.structural_timeframe)+' · стоп/ATR '+esc(mc.stop_timeframe)+'/'+esc(mc.atr_timeframe)+'</div>'+
       '<div>MA: '+ma+'</div><div>Индикаторы: '+ind+'</div></div>'+
