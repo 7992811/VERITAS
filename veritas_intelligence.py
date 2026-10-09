@@ -19065,7 +19065,6 @@ def main():
     VSG.start_watchdog(lambda: _BOOTSTRAP_READY, emit, delay_seconds=60)
     # R83: optional read-only broker connection; no token means no thread or RPC.
     VTB.connection.start()
-    VCTC.start_broker_event_stream(pg_connect, (lock, last_cycle))
 
     _v90_emergency_storage_reclaim()
     _v90_ensure_legacy_compat_views()
@@ -19073,6 +19072,7 @@ def main():
     pg_boot = pg_init()
     v90_migration = v90_migrate_core_data() if pg_boot.get('ok') else {'status':'POSTGRES_REQUIRED','schema':V90_DB_SCHEMA}
     emit('v90_database_ready', **v90_migration)
+    VCTC.start_broker_event_stream(pg_connect, (lock, last_cycle))
     if pg_boot.get('ok'):
         for receipt in VUT.seed_all_user_teachings(pg_event,_read_user_teaching):
             emit('user_teaching_applied',**receipt)
