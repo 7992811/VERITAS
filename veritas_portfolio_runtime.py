@@ -10,6 +10,8 @@ import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
 import veritas_release as VR
+import veritas_profit_maturity as VPM
+import veritas_peer_invalidation as VPI
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -4967,6 +4969,27 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         if candidate and not usable(candidate):
             safe_candidates.pop(asset,None)
         safe_summary=[r for r in safe_summary if r.get('asset')!=asset or usable(r)]
+        peer=VPI.find(c,z)
+        if peer.get('active') and q:
+            peer_patch={'shared_canonical_setup_invalidation':peer}
+            encoded=json.dumps(peer_patch,ensure_ascii=False,default=str)
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                      "WHERE portfolio_name=%s AND asset=%s AND active_trade_id=%s",
+                      (encoded,name,asset,z.get('active_trade_id')))
+            if z.get('active_trade_id'):
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                          (encoded,z.get('active_trade_id')))
+            p_now,pos_now=_portfolio_rows(c,name)
+            nav_now,_,_,_=_mark_nav(p_now,pos_now,safe_prices)
+            closed=canonical_close_or_reduce(
+                c,p_now,name,z,safe_prices[asset],0.0,nav_now,ts,
+                'HARD_THESIS_INVALIDATION_SHARED_CANONICAL_SETUP'
+            )
+            if closed:
+                continue
+        maturity=VPM.observe(c,name,z,q,ts,commission=VC.COMMISSION_RATE) if q else {}
+        if maturity.get('position'):
+            z=maturity['position']
         if VTM.owns_position(z):
             VTM.apply_trailing(c,name,z,safe_summary,q,ts)
             safe_candidates,safe_summary=VTM.filter_lower_context(z,safe_candidates,safe_summary)
