@@ -72,6 +72,7 @@ HEAVY_LEARNING_INTERVAL_SECONDS = max(600, int(os.getenv('VERITAS_HEAVY_LEARNING
 HEAVY_LEARNING_START_DELAY_SECONDS = max(15, int(os.getenv('VERITAS_HEAVY_LEARNING_START_DELAY_SECONDS','45')))
 FAST_LOOP_TARGET_SECONDS = max(10.0, float(os.getenv('VERITAS_FAST_LOOP_TARGET_SECONDS','30')))
 _BOOTSTRAP_READY = False
+_PORTFOLIO_RUNTIME_READY = False
 DB_PATH = os.getenv('VERITAS_LEDGER_PATH', '/tmp/veritas_decisions.sqlite3')
 _V90_DB_ENV_KEYS=('DATABASE_URL','VERITAS_DATABASE_URL','POSTGRES_URL','POSTGRESQL_URL','POSTGRES_INTERNAL_URL','RENDER_DATABASE_URL')
 DATABASE_URL = next((os.getenv(k,'').strip() for k in _V90_DB_ENV_KEYS if os.getenv(k,'').strip()), '')
@@ -16784,10 +16785,18 @@ class H(BaseHTTPRequestHandler):
             elif self.path.split('?',1)[0]=='/readyz':
                 from veritas_operational_status import readiness
                 state=readiness(_BOOTSTRAP_READY,bool(DATABASE_URL),_v90_pg_health_snapshot())
+                state['portfolio_runtime_ready']=bool(_PORTFOLIO_RUNTIME_READY)
+                if not _PORTFOLIO_RUNTIME_READY:
+                    state['ok']=False
+                    blockers=list(state.get('blockers') or [])
+                    if 'CANONICAL_PORTFOLIOS_NOT_READY' not in blockers:
+                        blockers.append('CANONICAL_PORTFOLIOS_NOT_READY')
+                    state['blockers']=blockers
                 self.reply({'version':VERSION,**state,'release':VR.snapshot()},200 if state['ok'] else 503)
             elif self.path.startswith('/healthz'):
                 self.reply({'ok':True,'scope':'PROCESS_LIVENESS','version':VERSION,'role':SERVICE_ROLE,
                             'bootstrap_ready':bool(_BOOTSTRAP_READY),
+                            'portfolio_runtime_ready':bool(_PORTFOLIO_RUNTIME_READY),
                             'phase':'READY' if _BOOTSTRAP_READY else 'STARTING',
                             'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1),
                             'release':VR.snapshot()})
@@ -19052,7 +19061,7 @@ def _read_user_teaching(event_type, entity_key):
 
 
 def main():
-    global _BOOTSTRAP_READY
+    global _BOOTSTRAP_READY,_PORTFOLIO_RUNTIME_READY
 
     # Bind and serve HTTP first so Render health checks do not wait for
     # PostgreSQL migration/seeding or any other startup work.
@@ -19081,17 +19090,24 @@ def main():
         except Exception as _sa_ex:
             emit('v90_storage_audit_error',phase='startup',error=f'{type(_sa_ex).__name__}: {_sa_ex}')
     # R16 startup discipline: never block the live market loop on full historical
-    # portfolio reports or loss audits. They remain durable in PostgreSQL and are
-    # generated on demand / in background maintenance.
+    # portfolio reports or loss audits. Portfolio readiness is tracked separately:
+    # liveness/signals can start, but /readyz must not claim a complete product
+    # when any of the five canonical books is unavailable.
+    canonical_state={'status':'UNAVAILABLE','count':0}
+    _PORTFOLIO_RUNTIME_READY=False
     if pg_boot.get('ok') and VP is not None:
         try:
             canonical_state=_v90r24_ensure_canonical_portfolios()
+            _PORTFOLIO_RUNTIME_READY=bool(
+                canonical_state.get('status')=='OK'
+                and int(canonical_state.get('count') or 0)==len(V90_CANONICAL_PORTFOLIOS))
             emit('v90_live_state_ready',status=canonical_state.get('status','DEGRADED'),
                  historical_reports='DEFERRED',
                  historical_audits='BACKGROUND',
                  portfolio_snapshot='FAST_API_ON_DEMAND',
                  principle='market loop first; history on demand')
         except Exception as _pr_ex:
+            _PORTFOLIO_RUNTIME_READY=False
             emit('v90_live_state_ready',status='DEGRADED',
                  error=f'{type(_pr_ex).__name__}: {_pr_ex}')
         emit('v90_startup_memory_policy',
