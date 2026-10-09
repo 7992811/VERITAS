@@ -25,3 +25,22 @@ limits, stops, targets or sizing.
 The design intentionally separates evidence continuity from protective strategy
 latency: a delayed stop-management pass must not destroy future learning evidence
 when a lightweight cached quote sample could have been recorded independently.
+
+
+## Health and bounded storage (v91.8.35)
+
+Sidecar telemetry distinguishes pre-deploy/carried positions from genuinely
+entry-seeded positions without exposing trade IDs:
+
+- seeded_positions;
+- observed_positions;
+- unseeded_positions;
+- seeded_events and sealed_events.
+
+Expected old unseeded positions no longer force a log every 10 seconds. A
+snapshot is emitted on material health-shape changes, missing quotes, or at
+least once per minute.
+
+Closed-trade sidecar rows are removed in bounded batches of at most 32 once the
+corresponding active paper position is durably absent. Cleanup does not hold the
+paper-book lock and cannot delete evidence for an active position.
