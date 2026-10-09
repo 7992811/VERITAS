@@ -16,11 +16,11 @@ FEED={'primary_source':'TEST_NATIVE','contract_id':'ETH-EXACT','source_gate_pass
 def stamp(seconds):return (OPEN+timedelta(seconds=seconds)).isoformat()
 
 
-def trade(short=False):
-    return {'trade_id':'test-trade','active_trade_id':'test-trade','asset':'ETH',
+def trade(short=False,asset='ETH'):
+    return {'trade_id':'test-trade','active_trade_id':'test-trade','asset':asset,
         'direction':'SHORT' if short else 'LONG','horizon':'5m','opened_at':stamp(0),
         'status':'OPEN','avg_entry_price':100.,'units':-1. if short else 1.,
-        'payload':{'price_source_lock':SOURCE.identity('ETH',FEED),
+        'payload':{'price_source_lock':SOURCE.identity(asset,FEED),
                    'initial_stop_price':102. if short else 98.,'entry_atr':1.,
                    'entry_execution_model':{'asset':'ETH','side':'SELL_SHORT' if short else 'BUY',
                                             'fill_price':100.}}}
@@ -125,19 +125,44 @@ class ObservationPathTests(unittest.TestCase):
         row=complete();row['payload']['price_source_lock']['asset']='BTC'
         self.assertEqual(PATH.assessment(row)['reason'],'OBSERVATION_PATH_CONTEXT_MISMATCH')
 
-    def test_internal_gap_remains_excluded_after_later_regular_quotes(self):
+    def test_internal_source_gap_remains_excluded_after_later_regular_quotes(self):
         row=trade();add(row,0,at_entry=True);add(row,15,101.);add(row,90,100.);add(row,105,102.)
         row.update(status='CLOSED',closed_at=stamp(105))
         result=PATH.assessment(row)
-        self.assertEqual(result['reason'],'OBSERVATION_PATH_GAP')
+        self.assertEqual(result['reason'],'OBSERVATION_SOURCE_GAP')
         self.assertEqual(result['max_gap_seconds'],75)
 
     def test_slow_processing_is_separate_from_provider_cadence(self):
-        row=trade();add(row,0,at_entry=True);add(row,90,101.,observed=15)
+        row=trade();add(row,0,at_entry=True);add(row,15,101.)
+        for checked in (30,45,60,75,90):
+            add(row,checked,101.,observed=15)
         row.update(status='CLOSED',closed_at=stamp(90))
         result=PATH.assessment(row)
         self.assertEqual(result['max_gap_seconds'],15)
+        self.assertEqual(result['max_check_gap_seconds'],15)
         self.assertEqual(result['reason'],'OBSERVATION_PROCESSING_DELAY')
+
+    def test_minute_provider_cadence_is_valid_when_protective_checks_are_continuous(self):
+        row=trade(asset='NQ')
+        add(row,0,at_entry=True)
+        for checked in (15,30,45):
+            add(row,checked,100.,observed=0)
+        add(row,60,101.,observed=60)
+        add(row,75,101.,observed=60)
+        row.update(status='CLOSED',closed_at=stamp(75))
+        result=PATH.assessment(row)
+        self.assertTrue(result['eligible'],result)
+        self.assertEqual(result['max_gap_seconds'],60)
+        self.assertEqual(result['max_check_gap_seconds'],15)
+        self.assertEqual(result['source_max_age_seconds'],120)
+        self.assertEqual(result['source_gap_allowance_seconds'],135)
+
+    def test_missing_protective_checks_still_invalidate_slow_source_path(self):
+        row=trade(asset='NQ');add(row,0,at_entry=True);add(row,60,101.,observed=60)
+        row.update(status='CLOSED',closed_at=stamp(60))
+        result=PATH.assessment(row)
+        self.assertEqual(result['reason'],'OBSERVATION_CHECK_GAP')
+        self.assertEqual(result['max_check_gap_seconds'],60)
 
     def test_repeated_provider_timestamp_is_not_a_new_observation(self):
         row=trade();add(row,0,at_entry=True);add(row,15,101.)
@@ -167,7 +192,7 @@ class ObservationPathTests(unittest.TestCase):
 
     def test_unobserved_exit_tail_and_post_exit_quote_cannot_certify_close(self):
         row=complete();row['closed_at']=stamp(90)
-        self.assertEqual(PATH.assessment(row)['reason'],'UNOBSERVED_EXIT_TAIL')
+        self.assertEqual(PATH.assessment(row)['reason'],'UNOBSERVED_EXIT_CHECK_TAIL')
         row=complete();add(row,45,103.)
         self.assertEqual(PATH.assessment(row)['reason'],'POST_EXIT_PATH_OBSERVATION')
 
@@ -185,6 +210,11 @@ class ObservationPathTests(unittest.TestCase):
             row['payload']['observation_path']=w
             self.assertEqual(w['observation_count'],0)
             self.assertFalse(PATH.assessment(row)['eligible'])
+
+    def test_cadence_metadata_tampering_is_rejected(self):
+        row=complete()
+        row['payload']['observation_path']['source_max_age_seconds']=999
+        self.assertEqual(PATH.assessment(row)['reason'],'OBSERVATION_PATH_CADENCE_MISMATCH')
 
     def test_impossible_coverage_counts_and_ranges_are_rejected(self):
         for changes in ({'observation_count':2,'max_gap_seconds':1},
