@@ -155,3 +155,22 @@ of the separate ordered-path replay layer.
 Additional timing codes such as R66_WAIT_RETEST and
 STRUCTURAL_ENTRY_TOO_LATE_TO_TARGET are observable for diagnosis only. They are
 not added to the learnable relaxation whitelist.
+
+
+## Outcome I/O boundary (v91.8.31)
+
+Maturing forecast outcomes no longer hold a PostgreSQL row lock while a market
+quote is acquired. The job now:
+
+1. reads at most eight due immutable forecasts in a short transaction;
+2. closes that transaction before quote/provider work;
+3. resolves the frozen evidence in memory;
+4. performs a short compare-and-update with
+   `WHERE id = ? AND status = 'PENDING'`.
+
+The durable `learning_outcomes` lease serializes the normal consumer, while
+the conditional update keeps retry/recovery idempotent. A lost race can waste a
+quote read but cannot overwrite an already-resolved forecast.
+
+This removes network/quote latency from the DB lock lifetime and reduces the
+statement-timeout/lock pressure seen on the CPU-limited production service.
