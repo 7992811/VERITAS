@@ -465,7 +465,7 @@ def _position_view(position):
             z[key] = projected[key]
     return z
 
-def fast_entry_pass(ns,rows,now,*,runtime=False):
+def fast_entry_pass(ns,rows,now,*,runtime=False,portfolio_names=None):
     """Atomic paper protection and entries, without the heavy portfolio cycle."""
     import veritas_canonical_runtime as VCR
     import veritas_portfolio_runtime as VPR
@@ -481,6 +481,27 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
             grouped.setdefault(row['asset'],[]).append(row)
     results=[]
     position_snapshots={}
+    # Runtime execution is independent by portfolio. Do not monopolize the
+    # shared local/advisory book lock across all five books: each portfolio
+    # commits atomically, then releases both locks so queued protection gets
+    # priority before the next portfolio starts.
+    if runtime and portfolio_names is None:
+        combined=[]
+        completed=[]
+        for portfolio_name in CTC.PORTFOLIO_ORDER:
+            part=fast_entry_pass(ns,rows,now,runtime=True,portfolio_names=(portfolio_name,))
+            combined.extend(part.get('portfolios') or [])
+            if part.get('status')=='BUSY':
+                return {'status':'BUSY','reason':part.get('reason') or 'PAPER_BOOK_BUSY',
+                        'paper_only':True,'entry_turn_reserved':part.get('entry_turn_reserved',False),
+                        'completed_portfolios':completed,'portfolios':combined,
+                        'checked_at':part.get('checked_at'),'version':VERSION}
+            if part.get('status') not in ('OK','NO_ACTION'):
+                return dict(part,portfolios=combined,completed_portfolios=completed)
+            completed.append(portfolio_name)
+        return {'status':'OK','version':VERSION,'paper_only':True,
+                'checked_at':_wall_clock().isoformat(),
+                'completed_portfolios':completed,'portfolios':combined}
     def busy_result(reason):
         # Observe every queued quote before deciding on the lease. A ready
         # first row must not hide a later row's reached stop or target.
@@ -518,7 +539,7 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
             return {'status':'BUSY','reason':'DATABASE_PAPER_BOOK_BUSY','paper_only':True}
         if runtime:
             clock=_wall_clock()
-        for name in CTC.PORTFOLIO_ORDER:
+        for name in (portfolio_names or CTC.PORTFOLIO_ORDER):
             policy=CTC.runtime_portfolio_policy(name)
             portfolio,positions=VPR._portfolio_rows(c,name)
             if not portfolio:
