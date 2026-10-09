@@ -57,6 +57,19 @@ class LearningV2RegistryTests(unittest.TestCase):
         self.assertEqual(result["status"],"SHADOW_ELIGIBLE")
         self.assertEqual(result["prospective"]["n"],64)
 
+    def test_path_excursion_counts_as_win_but_negative_terminal_mean_blocks_promotion(self):
+        rows=[]
+        for i in range(64):
+            row=self.decision(T0+timedelta(days=1+(i%16),minutes=i),-.001)
+            row["mfe"]=.009
+            row["mae"]=-.003
+            rows.append(row)
+        result=R.evaluate_candidate(self.entry_candidate(),rows,[],T0+timedelta(days=20))
+        self.assertEqual(result["prospective"]["wins"],64)
+        self.assertEqual(result["prospective"]["path_wins"],64)
+        self.assertLess(result["prospective"]["mean_candidate_signed_return"],0)
+        self.assertNotEqual(result["status"],"SHADOW_ELIGIBLE")
+
     def test_no_direction_or_move_against_candidate_cannot_validate_entry(self):
         rows=[]
         for i in range(80):
