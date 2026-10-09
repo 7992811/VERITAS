@@ -6994,10 +6994,18 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 if kill:
                     research_dec='NO_TRADE'
                 v70_pretrade=v70_pretrade_shadow(asset,horizon,research_dec,conf,calibration,agents,orth_evidence,source_gate,time_gate,f,event_shadow)
-                if V70_GATE_MODE=='enforce' and research_dec in ('LONG','SHORT') and (not v70_pretrade.get('allow',True) or v70_pretrade.get('action')=='WAIT'):
+                # CRITICAL INVARIANT: execution/data/timing vetoes cannot erase
+                # the market thesis. Only an actual THESIS_VETO (or kill switch
+                # above) may neutralize research_decision. Final execution remains
+                # fail-closed below through execution_gate/canonical admission.
+                v70_market_veto=(v70_pretrade.get('gate_class')=='THESIS_VETO')
+                if V70_GATE_MODE=='enforce' and research_dec in ('LONG','SHORT') and v70_market_veto:
                     research_dec='NO_TRADE'; size=0.0
                 elif V70_GATE_MODE=='enforce' and research_dec in ('LONG','SHORT'):
-                    size=float(size)*float(v70_pretrade.get('size_multiplier',1.0) or 0.0)
+                    if v70_pretrade.get('execution_allowed',v70_pretrade.get('allow',True)):
+                        size=float(size)*float(v70_pretrade.get('size_multiplier',1.0) or 0.0)
+                    else:
+                        size=0.0
                 research_signal_tier=classify_signal_tier(
                     asset,research_dec,conf,research_challenger,
                     orth_evidence.get('effective_evidence_count',0),source_gate,time_gate,calibration,f.get('trend_impulse'))
