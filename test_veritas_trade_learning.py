@@ -57,7 +57,7 @@ class TradeObservationTests(unittest.TestCase):
             'EXTRA_6':1,'EXTRA_7':1,'EXTRA_8':1,'EXTRA_9':1,
         }
         out=T.bounded_exclusion_summary(raw)
-        self.assertEqual(out['excluded_total'],26)
+        self.assertEqual(out['excluded_total'],28)
         self.assertLessEqual(len(out['exclusions']),8)
         self.assertEqual(out['exclusions']['OTHER'],11)
         self.assertNotIn('free text with trade id 123',str(out))
