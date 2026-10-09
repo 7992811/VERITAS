@@ -1,0 +1,39 @@
+name: Sidecar No Action Targeted CI
+on:
+  push:
+    branches: [ "ci/sidecar-noaction-0b838d7" ]
+permissions:
+  contents: read
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_ephemeral_test_only
+          POSTGRES_DB: veritas_quality_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veritas_quality_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - name: Compile changed runtime
+        run: python -m py_compile veritas_position_guard.py veritas_observation_sidecar.py veritas_observation_path.py veritas_release.py
+      - name: Sidecar and path unit regressions
+        run: python -m unittest -v test_veritas_observation_sidecar.py test_veritas_observation_path.py
+      - name: Protective PostgreSQL regressions
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: python -m unittest -v test_veritas_guard_observation_batch_sql.py test_veritas_protection_runtime_sql.py
+      - name: Protective runtime unit regressions
+        run: python -m unittest -v test_veritas_protection_runtime.py
+      - name: Release and architecture regressions
+        run: python -m unittest -v test_veritas_architecture_v2.py test_veritas_trade_view.py
