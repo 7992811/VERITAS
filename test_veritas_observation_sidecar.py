@@ -100,7 +100,15 @@ class SidecarTests(unittest.TestCase):
         assessment=PATH.assessment(closed)
         self.assertTrue(assessment["eligible"],assessment)
         self.assertEqual(sealed["last_lane"],"OBSERVATION_SIDECAR_EXIT")
-        self.assertGreaterEqual(c.writes,4)
+        self.assertEqual(c.writes,3)
+
+    def test_exit_seal_does_not_write_sidecar_row(self):
+        row=position();c=Cursor(row)
+        SIDECAR.seed(c,row,quote(0),stamp(0))
+        before=c.writes
+        sealed=SIDECAR.seal(c,row,quote(10,101.),stamp(10))
+        self.assertIsInstance(sealed,dict)
+        self.assertEqual(c.writes,before)
 
     def test_sample_without_entry_seed_cannot_invent_prefix(self):
         row=position();c=Cursor(row)
