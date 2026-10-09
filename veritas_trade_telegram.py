@@ -705,17 +705,28 @@ def handle_operator_message(message, bridge, telegram):
     return bridge.handle_message(message)
 
 
+def _worker_poll_seconds():
+    """Bounded low-latency cadence without turning the retail API into HFT."""
+    raw = os.getenv("VERITAS_CURRENCY_TRADE_POLL_SECONDS", "2").strip()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 2.0
+    return min(5.0, max(1.0, value))
+
+
 def start_worker(bridge, stop_event, logger=None):
     if bridge is None:
         return None
     log = logger or (lambda message: None)
+    cadence = _worker_poll_seconds()
     def run():
         while not stop_event.is_set():
             try:
                 bridge.poll()
             except Exception as exc:
                 log("Currency trade worker: " + type(exc).__name__)
-            stop_event.wait(5)
+            stop_event.wait(cadence)
     worker = threading.Thread(target=run, name="currency-trade-proposals", daemon=True)
     worker.start()
     return worker
