@@ -4,6 +4,7 @@ from datetime import datetime,timedelta,timezone
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import veritas_observation_path as PATH
 import veritas_observation_sidecar as SIDECAR
@@ -137,6 +138,30 @@ class SidecarTests(unittest.TestCase):
         self.assertEqual(result["unseeded_positions"],1)
         self.assertEqual(result["sampled_positions"],0)
         self.assertIsNone(c.witness)
+
+    def test_live_cache_quote_published_during_pass_uses_post_selection_clock(self):
+        row=position();c=Cursor(row)
+        SIDECAR.seed(c,row,quote(0),stamp(0))
+        calls={"n":0}
+        original_clock=SIDECAR._clock
+        def advancing_clock(value=None):
+            if value is not None:
+                return original_clock(value)
+            value=OPEN+timedelta(seconds=10+calls["n"])
+            calls["n"]+=1
+            return value
+        def selector(work,now=None):
+            # Simulate the protective cache publishing after this sidecar pass
+            # began, but before the observation is actually processed.
+            observed=now+timedelta(milliseconds=500)
+            return dict(FEED,price=101.,observed_at=observed.isoformat())
+        with patch.object(SIDECAR,"_clock",side_effect=advancing_clock):
+            result=SIDECAR.sample_once(Connect(c),selector,now=None)
+        self.assertEqual(result["written"],1)
+        self.assertEqual(result["invalid"],0)
+        self.assertEqual(c.witness["invalid_observation_count"],0)
+        self.assertEqual(c.witness["coverage_status"],"OBSERVED")
+        self.assertEqual(c.witness["observation_count"],2)
 
     def test_missing_quote_does_not_poison_seeded_witness(self):
         row=position();c=Cursor(row)
