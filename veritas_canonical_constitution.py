@@ -9,7 +9,7 @@ Principle: one trading decision -> one canonical policy path.
 """
 from __future__ import annotations
 
-VERSION = "CTC_V2_2026_10_09_OWNER_REVIEW"
+VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
 STRATEGY_EPOCH = "EQ8_2026_10_09_OWNER_TRADE_REVIEW"
@@ -322,16 +322,11 @@ LIFECYCLE_POLICY = {
     "aggressive_tp_runner_ratio": 0.60,
     "minimum_position_step": 0.05,
     "profit_lock_activation_floor_pct": 0.21,
-    "profit_lock_requires_consecutive_positive_windows": 3,
-    "profit_lock_window_seconds_floor": 300,
-    "profit_lock_minimum_dwell_seconds": 600,
-    "profit_lock_first_two_positive_windows_observe_only": True,
-    "profit_lock_floor": "TRUE_ECONOMIC_BREAK_EVEN_AFTER_COSTS",
-    "structural_trailing_before_profit_maturity": False,
-    "structural_trailing_after_profit_maturity": True,
-    "canonical_setup_hard_invalidation_shared_across_portfolios": True,
-    "shared_entry_event_portfolios": ("Impulse","Champion","Challenger"),
-    "verified_structural_event_entry_permission_is_shared": True,
+    "profit_lock_requires_consecutive_positive_windows": 3, "profit_lock_window_seconds_floor": 300,
+    "profit_lock_minimum_dwell_seconds": 600, "profit_lock_first_two_positive_windows_observe_only": True,
+    "profit_lock_floor": "TRUE_ECONOMIC_BREAK_EVEN_AFTER_COSTS", "structural_trailing_before_profit_maturity": False,
+    "structural_trailing_after_profit_maturity": True, "canonical_setup_hard_invalidation_shared_across_portfolios": True,
+    "shared_entry_event_portfolios": ("Impulse","Champion","Challenger"), "verified_structural_event_entry_permission_is_shared": True,
     "portfolio_role_changes_size_not_event_existence": True,
     "principle": (
         "The original stop architecture stays intact through the first two transient "
@@ -353,12 +348,9 @@ SETUP_GRADES = {
 LEARNING_POLICY = {
     "independent_market_episode_not_portfolio_copy": True,
     "owner_teaching_id": "USER_TRADE_REVIEW_2026_10_09",
-    "closed_trade_postmortem_required": True,
-    "postmortem_dimensions": ("levels","volatility","indicators","moving_averages","multi_timeframe",
-                              "entry_timing","stop","targets","profit_protection","exit","costs","data_integrity"),
-    "canonical_conflict_scan_required": True,
-    "parameter_search_default": "SHADOW_ONLY",
-    "owner_verification_required_for_rule_promotion": True,
+    "closed_trade_postmortem_required": True, "canonical_conflict_scan_required": True,
+    "postmortem_dimensions": ("levels","volatility","indicators","moving_averages","multi_timeframe","entry_timing","stop","targets","profit_protection","exit","costs","data_integrity"),
+    "parameter_search_default": "SHADOW_ONLY", "owner_verification_required_for_rule_promotion": True,
     "owner_comments_are_durable_training_evidence": True,
     "exclude_mixed_price_sources": True,
     "exclude_contract_mismatch": True,
