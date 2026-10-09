@@ -45,6 +45,20 @@ class LearningV2Tests(unittest.TestCase):
         d=L.research_diagnostics([row],[])
         self.assertEqual(d["unparsed_blocked_directional"],1)
 
+    def test_observable_timing_blocker_is_diagnostic_only(self):
+        blocker="R66_WAIT_RETEST"
+        self.assertIn(blocker,L.OBSERVABLE_TIMING_BLOCKERS)
+        self.assertNotIn(blocker,L.LEARNABLE_ENTRY_BLOCKERS)
+        rows=[]
+        for _ in range(max(L.MIN_CONTEXT_N,L.MIN_FALSE_BLOCK_N)):
+            x=self.row(blockers=[],trade_entry_reason=blocker)
+            x["final_gate_blockers"]=[]
+            x["admission_eligible"]=False
+            rows.append(x)
+        self.assertIn(blocker,L.row_blockers(rows[0]))
+        h=L.generate_hypotheses(rows,[])
+        self.assertFalse(any(x["kind"]=="ENTRY_BLOCKER_RELAXATION" and x["proposal"]["blocker"]==blocker for x in h))
+
     def test_hard_veto_reason_is_recognized_but_never_relaxed(self):
         veto=next(iter(L.FORBIDDEN_ENTRY_BLOCKERS))
         rows=[]
@@ -55,6 +69,30 @@ class LearningV2Tests(unittest.TestCase):
         self.assertIn(veto,L.row_blockers(rows[0]))
         h=L.generate_hypotheses(rows,[])
         self.assertFalse(any(x["kind"]=="ENTRY_BLOCKER_RELAXATION" and x["proposal"]["blocker"]==veto for x in h))
+
+    def test_long_path_excursion_can_flag_missed_move_without_positive_terminal(self):
+        x=self.row(decision="LONG",candidate_direction="LONG",admission_eligible=False,
+                   fr=-.001,mfe=.008,mae=-.003)
+        c=L.classify_decision_episode(x)
+        self.assertEqual(c["kind"],"MISSED_DIRECTIONAL_MOVE")
+        self.assertAlmostEqual(c["move"],.008)
+        self.assertEqual(c["movement_basis"],"MFE_PATH")
+        self.assertFalse(c["counterfactual_fill_proven"])
+
+    def test_short_path_excursion_uses_negative_mae(self):
+        x=self.row(decision="SHORT",candidate_direction="SHORT",admission_eligible=False,
+                   fr=.001,mfe=.004,mae=-.009)
+        c=L.classify_decision_episode(x)
+        self.assertEqual(c["kind"],"MISSED_DIRECTIONAL_MOVE")
+        self.assertAlmostEqual(c["move"],.009)
+        self.assertEqual(c["movement_basis"],"MFE_PATH")
+
+    def test_admitted_signal_with_large_path_excursion_is_not_false_block(self):
+        x=self.row(decision="LONG",candidate_direction="LONG",admission_eligible=True,
+                   final_gate_blockers=[],blockers=[],fr=-.001,mfe=.012,mae=-.003)
+        x["final_gate_blockers"]=[]
+        c=L.classify_decision_episode(x)
+        self.assertEqual(c["kind"],"DIRECTIONAL_DECISION")
 
     def test_false_block_is_observed_movement_not_counterfactual_profit(self):
         s=L.false_block_summary([self.row() for _ in range(10)])
