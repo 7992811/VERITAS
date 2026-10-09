@@ -5108,15 +5108,17 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
             _record_entry_outcome(row,'BLOCKED','ADD_FAST_OPPOSITE_STRUCTURE_CONFIRMED',
                                   current_fraction=current,fast_opposite=fast_opposite)
             return 0.0
-        trade_before=(c.execute(
-            "SELECT gross_pnl_rub,fees_rub,funding_rub,payload FROM paper_trades WHERE trade_id=%s",
-            (existing.get('active_trade_id'),)).fetchone() or {})
-        gross_realized=max(0.0,float(trade_before.get('gross_pnl_rub') or 0.0))
+        existing_payload=_canonical_payload(existing)
         units_before=abs(float(existing.get('units') or 0.0))
+        avg_before=float(existing.get('avg_entry_price') or price)
         unrealized=max(0.0,(1.0 if direction=='LONG' else -1.0)*units_before*
-                       (float(price)-float(existing.get('avg_entry_price') or price)))
-        positive_edge=gross_realized+unrealized
-        fees_before=max(0.0,float(trade_before.get('fees_rub') or 0.0))
+                       (float(price)-avg_before))
+        positive_edge=unrealized
+        modeled_entry_fee=units_before*avg_before*float(getattr(_vp_base,'COMMISSION',VC.COMMISSION_RATE))
+        fees_before=max(
+            modeled_entry_fee,
+            max(0.0,float(existing_payload.get('initial_entry_fee_rub') or 0.0))
+            +max(0.0,float(existing_payload.get('add_fee_rub') or 0.0)))
         fee_limit=float(efficiency.get('max_fee_to_positive_gross_edge') or .25)
         fee_ratio=(fees_before/positive_edge) if positive_edge>1e-9 else (float('inf') if fees_before>0 else 0.0)
         if fee_ratio>=fee_limit:
@@ -5138,11 +5140,11 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                       canonical_add_gate=actual,current_fraction=current)
                 return 0.0
         row['_canonical_add_before']={
-            'units':units_before,'avg_entry_price':float(existing.get('avg_entry_price') or price),
+            'units':units_before,'avg_entry_price':avg_before,
             'fees_rub':fees_before,'mfe_pct':max(
-                float((_canonical_payload(existing).get('r55_lifetime_mfe_pct') or 0.0)),
-                float((_canonical_payload(existing).get('mfe_pct') or 0.0)),
-                float((_canonical_payload(existing).get('r_accel_mfe_pct') or 0.0))),
+                float((existing_payload.get('r55_lifetime_mfe_pct') or 0.0)),
+                float((existing_payload.get('mfe_pct') or 0.0)),
+                float((existing_payload.get('r_accel_mfe_pct') or 0.0))),
         }
         hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
         if hard:
@@ -5192,28 +5194,29 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                 if (opened and opened.get('asset')==asset and opened.get('direction')==direction
                         and opened.get('active_trade_id')):
                     is_new = not existing or opened.get('active_trade_id') != existing.get('active_trade_id')
-                    trade_after=(c.execute(
-                        "SELECT fees_rub,payload FROM paper_trades WHERE trade_id=%s",
-                        (opened.get('active_trade_id'),)).fetchone() or {})
-                    after_payload=_canonical_payload(trade_after)
+                    after_payload=_canonical_payload(opened)
                     analysis_patch={}
+                    commission=float(getattr(_vp_base,'COMMISSION',VC.COMMISSION_RATE))
                     if is_new:
+                        initial_price=float(opened.get('avg_entry_price') or price)
+                        initial_units=abs(float(opened.get('units') or 0.0))
                         analysis_patch={
-                            'initial_entry_price':float(opened.get('avg_entry_price') or price),
-                            'initial_entry_units':abs(float(opened.get('units') or 0.0)),
-                            'initial_entry_fee_rub':max(0.0,float(trade_after.get('fees_rub') or 0.0)),
+                            'initial_entry_price':initial_price,
+                            'initial_entry_units':initial_units,
+                            'initial_entry_fee_rub':initial_units*initial_price*commission,
                             'add_count':0,'add_fee_rub':0.0,
                             'mfe_since_last_add_pct':0.0,'mae_since_last_add_pct':0.0,
                         }
                     else:
                         before=row.get('_canonical_add_before') or {}
                         before_units=float(before.get('units') or 0.0)
+                        before_avg=float(before.get('avg_entry_price') or price)
                         after_units=abs(float(opened.get('units') or 0.0))
-                        if after_units>before_units+1e-12:
-                            fee_delta=max(0.0,float(trade_after.get('fees_rub') or 0.0)
-                                          -float(before.get('fees_rub') or 0.0))
-                            last_fill=((after_payload.get('last_entry_execution_model') or {}).get('fill_price')
-                                       or price)
+                        after_avg=float(opened.get('avg_entry_price') or price)
+                        added_units=max(0.0,after_units-before_units)
+                        if added_units>1e-12:
+                            last_fill=((after_units*after_avg-before_units*before_avg)/added_units)
+                            fee_delta=added_units*last_fill*commission
                             analysis_patch={
                                 'add_count':int(after_payload.get('add_count') or 0)+1,
                                 'add_fee_rub':float(after_payload.get('add_fee_rub') or 0.0)+fee_delta,
