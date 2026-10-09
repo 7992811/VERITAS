@@ -27,6 +27,15 @@ class LearningV2Tests(unittest.TestCase):
         self.assertEqual(c["kind"],"MISSED_DIRECTIONAL_MOVE")
         self.assertIn("IMPULSE_ALREADY_PASSED",c["blockers"])
 
+    def test_reason_token_alone_cannot_manufacture_a_block(self):
+        row=self.row(blockers=[],trade_entry_reason="IMPULSE_ALREADY_PASSED")
+        row["final_gate_blockers"]=[]
+        row["admission_eligible"]=True
+        row["final_gate_status"]="PASS"
+        self.assertIn("IMPULSE_ALREADY_PASSED",L.row_blockers(row))
+        self.assertFalse(L.has_block_evidence(row))
+        self.assertNotEqual(L.classify_decision_episode(row)["kind"],"MISSED_DIRECTIONAL_MOVE")
+
     def test_arbitrary_reason_text_never_becomes_a_blocker(self):
         row=self.row(blockers=[],trade_entry_reason="analyst thinks this looks late")
         row["final_gate_blockers"]=[]
@@ -134,7 +143,7 @@ class LearningV2Tests(unittest.TestCase):
         d=L.research_diagnostics(rows,[])
         self.assertEqual(d["blocked_directional"],L.MIN_CONTEXT_N)
         self.assertEqual(d["unparsed_blocked_directional"],L.MIN_CONTEXT_N)
-        self.assertEqual(d["zero_entry_candidate_reason"],"NO_FAVOURABLE_BLOCKED_MOVE_AT_THRESHOLD")
+        self.assertEqual(d["zero_entry_candidate_reason"],"NO_LEARNABLE_BLOCKER_MATCH")
 
     def test_short_direction_is_signed_correctly(self):
         c=L.classify_decision_episode(self.row(decision="SHORT",fr=-.01,final_gate_blockers=[]))
