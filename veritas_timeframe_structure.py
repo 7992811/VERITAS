@@ -276,6 +276,75 @@ def _invalidate_from_observed_partials(event, bars, timeframe, end, source_ident
             break
 
 
+def _continuation_after_target(parent, previous, bar, timeframe, asset, source_identity,
+                               policy, atr, atr_observed_until, identity):
+    """Create one causal continuation leg after a completed target.
+
+    A finished target never becomes executable again. The next leg exists only
+    after a later CLOSED candle continues through the immediately preceding
+    candle's extreme in the same direction. Its stop is anchored beyond that
+    preceding candle, matching the user rule "below previous low / above
+    previous high". This makes the event deterministic per closed bar and avoids
+    creating a fresh setup on every quote.
+    """
+    if not parent or parent.get("spent_reason") != "SAME_TF_TARGET_ALREADY_REACHED":
+        return None
+    if not previous or not bar or not atr or not math.isfinite(atr) or atr <= 0:
+        return None
+    spent_at = timestamp(parent.get("spent_at"))
+    if spent_at is None or bar["ts"] < spent_at:
+        return None
+    direction = parent.get("direction")
+    if direction not in ("LONG", "SHORT"):
+        return None
+    sign = 1 if direction == "LONG" else -1
+    trigger = previous["high"] if sign == 1 else previous["low"]
+    anchor = previous["low"] if sign == 1 else previous["high"]
+    directional_close = sign * (bar["close"] - trigger) > 0
+    directional_body = sign * (bar["close"] - bar["open"]) > 0
+    if not (directional_close and directional_body):
+        return None
+    stop = anchor - sign * policy["stop_buffer_atr"] * atr
+    risk = sign * (bar["close"] - stop)
+    extension = sign * (bar["close"] - trigger) / atr
+    if (risk <= 0 or stop <= 0 or extension <= 0
+            or extension > policy["max_extension_atr"]
+            or atr_observed_until is None or atr_observed_until > bar["ts"]):
+        return None
+    distance = max(policy["target_r_multiple"] * risk, policy["min_target_atr"] * atr)
+    target = bar["close"] + sign * distance
+    if target <= 0:
+        return None
+    signal_at = bar["available_at"]
+    key = "|".join(map(str, (VERSION, asset, timeframe, identity, direction,
+                             "CONTINUATION", parent.get("event_id"),
+                             previous["ts"], bar["ts"], signal_at)))
+    prior_event = parent.get("event_id")
+    return {
+        "version": VERSION,
+        "event_id": "STF_" + hashlib.sha256(key.encode()).hexdigest()[:24],
+        "asset": str(asset), "direction": direction, "timeframe": timeframe,
+        "event_type": "SAME_TIMEFRAME_TREND_CONTINUATION",
+        "confirmation": "CLOSED_" + timeframe + "_BAR",
+        "trigger_level": trigger, "signal_price": bar["close"],
+        "signal_at": signal_at, "confirmed_at": bar["available_at"],
+        "breakout_bar_at": bar["ts"], "trigger_pivot_at": previous["ts"],
+        "level_available_at": previous["available_at"],
+        "stop_pivot_at": previous["ts"], "stop_level_available_at": previous["available_at"],
+        "stop_anchor": anchor, "stop_price": stop, "target_price": target,
+        "atr": atr, "atr_timeframe": timeframe, "stop_timeframe": timeframe,
+        "target_timeframe": timeframe, "atr_observed_until": atr_observed_until,
+        "original_stop_distance_atr": risk / atr,
+        "confirmation_extension_atr": extension,
+        "source_identity": deepcopy(source_identity), "policy": dict(policy),
+        "activity_basis": "SAME_TIMEFRAME_CLOSED_CONTINUATION",
+        "activity_confirmed": True, "relative_volume": None,
+        "volume_observed": False, "spent": False, "spent_reason": None,
+        "spent_at": None, "parent_event_id": prior_event,
+        "continuation_from_spent_reason": parent.get("spent_reason"),
+    }
+
+
 def build_context(bars, timeframe, now, asset="", source_identity=None, config=None):
     """Build a causal same-timeframe event from historical prefixes only.
 
@@ -323,6 +392,17 @@ def build_context(bars, timeframe, now, asset="", source_identity=None, config=N
             continue
         atr = sum(ranges[i-period:i]) / period if i >= period+1 else None
         atr_observed_until = max(b["available_at"] for b in rows[i-period-1:i]) if atr else None
+        continuation = _continuation_after_target(
+            active, rows[i-1], bar, timeframe, asset, source_identity,
+            policy, atr, atr_observed_until, identity)
+        if continuation:
+            active = continuation
+            prior_volumes = [b["volume"] for b in rows[i-period:i]]
+            baseline = median(prior_volumes)
+            active["relative_volume"] = bar["volume"] / baseline if baseline > 0 else None
+            active["volume_observed"] = baseline > 0
+            _spend_event(active, bar, confirmation=True)
+            continue
         for direction, sign, trigger_kind, stop_kind in (
                 ("LONG", 1, "resistance", "support"), ("SHORT", -1, "support", "resistance")):
             trigger, opposite = latest.get(trigger_kind), latest.get(stop_kind)
@@ -397,7 +477,8 @@ def entry_gate(context, price, direction, now, config=None):
         return dict(out, reason="SAME_TF_WAIT_STRUCTURAL_BREAKOUT")
     timeframe = str(context.get("timeframe") or "")
     if (event.get("version") != VERSION or event.get("event_type") not in (
-            "SAME_TIMEFRAME_STRUCTURAL_BREAKOUT", "DAILY_MA_REBOUND")
+            "SAME_TIMEFRAME_STRUCTURAL_BREAKOUT", "SAME_TIMEFRAME_TREND_CONTINUATION",
+            "DAILY_MA_REBOUND")
             or any(event.get(k) != timeframe for k in ("timeframe", "atr_timeframe", "stop_timeframe", "target_timeframe"))
             or event.get("confirmation") != "CLOSED_" + timeframe + "_BAR"):
         return dict(out, reason="SAME_TF_PROVENANCE_MISMATCH")
