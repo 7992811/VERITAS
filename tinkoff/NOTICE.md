@@ -1,0 +1,1 @@
+Generated protobuf modules vendored from RussianInvestments/invest-python (T-Invest API contracts). Upstream project is Apache-2.0 licensed. Generated files are retained verbatim for wire compatibility.

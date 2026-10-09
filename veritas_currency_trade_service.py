@@ -626,13 +626,16 @@ def _error(exc):
 
 class TradeHttpApplication:
     def __init__(self, *, repository, coordinator, facts, owner, service_key, ledger=None,
-                 clock=None, funding=None, evidence=None):
+                 clock=None, funding=None, evidence=None, order_stream=None,
+                 order_stream_error=None):
         if not isinstance(owner, TradeOwner):
             raise ServiceError("EXPLICIT_TRADE_OWNER_REQUIRED")
         self.repository, self.coordinator, self.facts = repository, coordinator, facts
         self.owner, self.ledger = owner, ledger if ledger is not None else facts.ledger
         self.funding = funding if funding is not None else getattr(facts, "funding", None)
         self.evidence = evidence
+        self.order_stream = order_stream
+        self.order_stream_error = order_stream_error
         self.account_id = _text(coordinator.account_id, "EXPLICIT_ACCOUNT_REQUIRED")
         self.instrument_uid = CNY_UID
         self.environment = coordinator.adapter.environment
@@ -653,6 +656,15 @@ class TradeHttpApplication:
     @property
     def execution_enabled(self):
         return self.coordinator.execution_enabled is True
+
+    def close(self):
+        stream = self.order_stream
+        if stream is not None and callable(getattr(stream, "stop", None)):
+            try:
+                stream.stop()
+            except Exception:
+                pass
+
 
     @property
     def sandbox_autotrade_enabled(self):
@@ -771,8 +783,19 @@ class TradeHttpApplication:
                 elif not admission_status.get("last_checked_at") or (
                         utc(self.clock()) - utc(admission_status["last_checked_at"])).total_seconds() > 15:
                     new_risk_reason = "LIVE_ACCOUNT_ADMISSION_STALE"
+        stream_status = None
+        if self.order_stream is not None and callable(getattr(self.order_stream, "status", None)):
+            try:
+                stream_status = self.order_stream.status()
+            except Exception:
+                stream_status = {"started": False, "last_error": "ORDER_STREAM_STATUS_FAILED"}
+        elif self.order_stream_error:
+            stream_status = {"started": False, "last_error": self.order_stream_error}
+        else:
+            stream_status = {"started": False, "last_error": None, "mode": "DISABLED"}
         return {"ok": True, "enabled": True, "version": VERSION,
                 "execution_enabled": self.execution_enabled,
+                "broker_event_stream": stream_status,
                 "account_id": self.account_id, "instrument_uid": self.instrument_uid,
                 "execution_environment": self.environment,
                 "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
@@ -1171,10 +1194,26 @@ def create_application(connect, summary_provider, *, configuration=None):
     )
     from veritas_currency_manual_admission import ManualAccountAdmission
     coordinator.manual_admission = ManualAccountAdmission(ledger_connect, adapter, account, evidence=evidence)
+    order_stream, order_stream_error = None, None
+    if _enabled("VERITAS_TBANK_ORDER_STREAM_ENABLED"):
+        try:
+            from veritas_tbank_order_stream import TBankOrderEventStream
+            order_stream = TBankOrderEventStream(
+                token, account, instrument_uid=CNY_UID, environment=environment,
+                on_event=lambda _event: coordinator.reconcile())
+        except Exception:
+            order_stream, order_stream_error = None, "ORDER_STREAM_INIT_FAILED"
     application = TradeHttpApplication(
         repository=repository, coordinator=coordinator, facts=facts,
         owner=owner, service_key=service_key, ledger=ledger, funding=funding, evidence=evidence,
+        order_stream=order_stream, order_stream_error=order_stream_error,
     )
+    if order_stream is not None:
+        try:
+            order_stream.start()
+        except Exception:
+            application.order_stream = None
+            application.order_stream_error = "ORDER_STREAM_START_FAILED"
     if _enabled("VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED"):
         from veritas_currency_trade_console import load_binding, store_for
         application.console_binding = lambda: load_binding(connect)
@@ -1198,6 +1237,7 @@ _CONFIG_NAMES = (
     "VERITAS_LIVE_EXECUTION_ENABLED", "VERITAS_LIVE_EXECUTION_ARMED",
     "VERITAS_CURRENCY_TRADE_MARGIN_ALLOWED",
     "VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED",
+    "VERITAS_TBANK_ORDER_STREAM_ENABLED",
     "VERITAS_CURRENCY_TRADE_STATEMENT_KEY", "VERITAS_CURRENCY_LIVE_EVIDENCE_KEY",
 )
 _CACHE = {}
@@ -1244,12 +1284,21 @@ def get_application(connect, summary_provider):
     values, binding = configuration
     config_hash = hashlib.sha256(json.dumps([values, binding], sort_keys=True, default=str).encode()).digest()
     cache_key = (id(connect), id(summary_provider), config_hash)
+    stale = []
     with _CACHE_LOCK:
         application = _CACHE.get(cache_key)
         if application is None:
             application = create_application(connect, summary_provider, configuration=configuration)
+            stale = [item for item in _CACHE.values() if item is not application]
             _CACHE.clear()
             _CACHE[cache_key] = application
+    for item in stale:
+        close = getattr(item, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
     return application
 
 
