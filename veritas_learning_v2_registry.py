@@ -60,7 +60,7 @@ def _wilson_low(w,n,z=1.959963984540054):
 
 
 def _scope_match(scope,row):
-    for key in ("asset","horizon","regime","source_key"):
+    for key in ("asset","horizon","regime","source_key","contract_id"):
         want=str(scope.get(key) or "")
         if want and want!="*" and str(row.get(key) or "")!=want:
             return False
@@ -200,6 +200,7 @@ def ensure_schema(c):
         horizon TEXT,
         regime TEXT,
         source_key TEXT,
+        contract_id TEXT,
         policy_hash TEXT,
         registered_at TIMESTAMPTZ NOT NULL,
         decision_cutoff_id BIGINT NOT NULL DEFAULT 0,
@@ -212,6 +213,7 @@ def ensure_schema(c):
     )""")
     c.execute("ALTER TABLE learning_v2_registry ADD COLUMN IF NOT EXISTS decision_cutoff_id BIGINT NOT NULL DEFAULT 0")
     c.execute("ALTER TABLE learning_v2_registry ADD COLUMN IF NOT EXISTS source_key TEXT")
+    c.execute("ALTER TABLE learning_v2_registry ADD COLUMN IF NOT EXISTS contract_id TEXT")
     c.execute("ALTER TABLE learning_v2_registry ADD COLUMN IF NOT EXISTS policy_hash TEXT")
     c.execute("""CREATE INDEX IF NOT EXISTS learning_v2_registry_status
                  ON learning_v2_registry(status,updated_at DESC)""")
@@ -228,12 +230,12 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
             raise ValueError("learning v2 hypothesis identity mismatch")
         scope=h.get("scope") or {}
         c.execute("""INSERT INTO learning_v2_registry(
-            candidate_id,version,kind,asset,horizon,regime,source_key,policy_hash,
+            candidate_id,version,kind,asset,horizon,regime,source_key,contract_id,policy_hash,
             registered_at,decision_cutoff_id,status,contract,training_evidence,prospective,updated_at)
-            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'COLLECTING',%s::jsonb,%s::jsonb,'{}'::jsonb,%s)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'COLLECTING',%s::jsonb,%s::jsonb,'{}'::jsonb,%s)
             ON CONFLICT(candidate_id) DO NOTHING""",
             (h["hypothesis_id"],VERSION,h["kind"],scope.get("asset"),scope.get("horizon"),
-             scope.get("regime"),scope.get("source_key"),scope.get("policy_hash"),
+             scope.get("regime"),scope.get("source_key"),scope.get("contract_id"),scope.get("policy_hash"),
              clock,cutoff,_json(identity),_json(h.get("evidence") or {}),clock))
     rows=c.execute("""SELECT candidate_id,kind,registered_at,decision_cutoff_id,status,contract,
                              training_evidence,prospective,valid_until
@@ -270,7 +272,7 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
         for x in eligible:
             scope=x.get("scope") or {}
             key=(scope.get("asset"),scope.get("horizon"),scope.get("regime"),
-                 scope.get("source_key"),scope.get("policy_hash"))
+                 scope.get("source_key"),scope.get("contract_id"),scope.get("policy_hash"))
             score=(x["prospective"].get("wilson_low") if kind=="ENTRY_BLOCKER_RELAXATION"
                    else x["prospective"].get("hit_rate_delta"))
             if score is None: continue
