@@ -23,6 +23,7 @@ import veritas_strategy_quality as VSQ
 import veritas_learning_exports as VLE
 import veritas_learning_integrity as VLI
 import veritas_trade_diagnostics as VTD
+import veritas_trade_postmortem as VPOST
 import veritas_timeframe_management as VTM
 import veritas_startup_guard as VSG
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
@@ -3111,6 +3112,9 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['trade_diagnostics']=diagnosis
         z['learning_eligible']=bool(diagnosis.get('learning_eligible'))
         z['episode_key']=_v90j_episode_key(z,payload)
+        entry_snapshot=VPOST.entry_snapshot(z,dp,sp,diagnosis,raw_payload=payload)
+        z['entry_analysis_snapshot']=entry_snapshot
+        z['self_learning_review']=VPOST.review(z,diagnosis,entry_snapshot,raw_payload=payload)
         VLE.mark_trade(z,dict(r0))
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
         # The UI/learning layer uses flattened fields above. Do not retain duplicate
@@ -3200,6 +3204,9 @@ def trade_report(pg_connect,limit=2500):
     older=[x for x in rows if not x.get('today_msk')]
     unique_all=_v90j_unique_learning(rows)
     unique_old=[x for x in unique_all if not x.get('today_msk')]
+    self_learning_reviews=[x for x in rows if x.get('self_learning_review')][:100]
+    owner_review_queue=VPOST.owner_review_queue(self_learning_reviews,100)
+    self_learning_summary=VPOST.summary(self_learning_reviews)
     with pg_connect() as c:
         hist=c.execute("""SELECT portfolio_name,COUNT(*) AS closed_trades,
                           COUNT(*) FILTER(WHERE net_pnl_rub>0) AS wins,
@@ -3232,6 +3239,9 @@ def trade_report(pg_connect,limit=2500):
         'older_closed_count':max(0,int((total or {}).get('n') or 0)-len(today)),
         'total_closed_count':int((total or {}).get('n') or 0),
         'history_summary':history,
+        'self_learning_reviews':self_learning_reviews,
+        'self_learning_summary':self_learning_summary,
+        'owner_review_queue':owner_review_queue,
         'older_unique_learning':unique_old[:50],
         'unique_learning_count':len(unique_all),
         'learning_eligible_count':sum(1 for x in unique_all if x.get('learning_eligible')),
