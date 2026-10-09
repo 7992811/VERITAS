@@ -16495,6 +16495,7 @@ def _v90r25_portfolios_fast():
 
 def _v90r25_portfolios_refresh():
     import veritas_portfolio_read_model as VPRM
+    import veritas_currency_dashboard as VCD
     from veritas_portfolio_api_projection import ENTRY_DECISION_PAYLOAD_SQL, load_position_accounts
     with _v90r25_pf_lock:
         cached=_v90r25_pf_cache.get('value'); at=float(_v90r25_pf_cache.get('at') or 0.0)
@@ -16505,6 +16506,12 @@ def _v90r25_portfolios_refresh():
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
     if VPRM.memory_complete(live,V90_CANONICAL_PORTFOLIOS):
         out=VP.VCP.decorate_report(VPRM.revalue_report(VTV.enrich_positions(live,pg_connect),required_names=V90_CANONICAL_PORTFOLIOS)); out['api_source']='live_memory'
+        if pg_enabled():
+            with pg_connect() as c, c.transaction():
+                VPRM.begin_read_snapshot(c)
+                currency_checked_at=datetime.now(timezone.utc).isoformat()
+                currency_live=VCD.read_live_currency_on(c,checked_at=currency_checked_at)
+            out=VCD.overlay_portfolio(out,currency_live)
         out=VPRM.display_report(out)
         with _v90r25_pf_lock:
             if _v90r25_pf_cache.get('revision',0)==cache_revision: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
@@ -16535,6 +16542,7 @@ def _v90r25_portfolios_refresh():
                          ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
         stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl, """ + CLOSED_METRICS_SQL + """ FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
         accounts=load_position_accounts(c,pos,VTV.VPP.load_accounts)
+        currency_live=VCD.read_live_currency_on(c,checked_at=snapshot_at)
     bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
     def _n(v,d=None):
         try:
@@ -16576,6 +16584,7 @@ def _v90r25_portfolios_refresh():
         outp[-1]['risk_governor']=live_by_name.get(name,{}).get('risk_governor') or (latest.get('payload') or {}).get('risk_governor') or {}
     out={'status':'OK','portfolios':outp,'portfolio_count':len(outp),'initial_nav_rub':1000000.0,'commission_rate':VX.VC.COMMISSION_RATE,'api_source':'fast_sql_enriched'}
     out=VP.VCP.decorate_report(VPRM.revalue_report(VTV.enrich_positions(out,pg_connect,preloaded_accounts=accounts),bases=bm,checked_at=snapshot_at,required_names=names))
+    out=VCD.overlay_portfolio(out,currency_live)
     out=VPRM.display_report(out)
     with _v90r25_pf_lock:
         if _v90r25_pf_cache.get('revision',0)==cache_revision: _v90r25_pf_cache.update({'at':time.time(),'value':dict(out)})
@@ -16583,11 +16592,16 @@ def _v90r25_portfolios_refresh():
 
 def _v90r25_trades_fast(limit=80):
     from veritas_trade_journal_read_model import JOURNAL_PAYLOAD_SQL
+    import veritas_portfolio_read_model as VPRM
+    import veritas_currency_dashboard as VCD
     limit=max(20,min(200,int(limit or 80)))
     if not pg_enabled():
         return {'status':'UNAVAILABLE','trades':[]}
     try:
-        with pg_connect() as c:
+        with pg_connect() as c, c.transaction():
+            VPRM.begin_read_snapshot(c)
+            currency_live=VCD.read_live_currency_on(c,checked_at=datetime.now(timezone.utc))
+            paper_limit=min(600,limit*3) if currency_live.get('bound') is True else limit
             rows=c.execute(f"""WITH recent AS (SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
                                      avg_entry_price,avg_exit_price,gross_pnl_rub,fees_rub,
                                      funding_rub,net_pnl_rub,return_on_entry_nav,profitable,
@@ -16598,7 +16612,7 @@ def _v90r25_trades_fast(limit=80):
                               LIMIT %s)
                               SELECT t.*,(SELECT SUM(o.notional_rub) FROM paper_orders o
                                 WHERE o.trade_id=t.trade_id AND o.side IN ('BUY','SELL_SHORT')) AS entry_notional_rub
-                              FROM recent t ORDER BY COALESCE(t.closed_at,t.opened_at) DESC""",(limit,)).fetchall()
+                              FROM recent t ORDER BY COALESCE(t.closed_at,t.opened_at) DESC""",(paper_limit,)).fetchall()
         trades=[]
         for r0 in rows:
             z=dict(r0)
@@ -16612,7 +16626,8 @@ def _v90r25_trades_fast(limit=80):
             z['learning_label']=p.get('learning_label')
             z.update(VTV.trade_result(z))
             trades.append(z)
-        return {'status':'OK','trades':trades,'returned_count':len(trades),'api_source':'fast_sql'}
+        trades=VCD.merge_trade_history(trades,currency_live,limit=limit)
+        return {'status':'OK','trades':trades,'returned_count':len(trades),'api_source':'fast_sql_live_currency' if currency_live.get('bound') is True else 'fast_sql'}
     except Exception as ex:
         # Fall back to the last detailed cache if the compact query is momentarily unavailable.
         with _v90r23_trade_lock:
