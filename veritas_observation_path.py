@@ -199,13 +199,11 @@ def observe(row, quote, checked_at, *, at_entry=False, lane="PROTECTIVE_GUARD"):
         return witness
     if checked:
         if previous_check and checked>previous_check and (checked-previous_check).total_seconds()>ALLOWED_GAP_SECONDS:
-            # A process restart or missed protective lane is permanent evidence
-            # loss. Reuse the existing invalid counter so the shared SQL proof
-            # shape remains frozen.
+            # A missed cadence remains permanent evidence loss, but the fresh
+            # quote that follows must still update extrema/MFE/MAE. This preserves
+            # current execution state without fabricating the missing interval.
             witness["invalid_observation_count"]=int(witness.get("invalid_observation_count") or 0)+1
             witness["coverage_status"]="INCOMPLETE"
-            witness["last_checked_at"]=checked.isoformat()
-            return witness
         witness["last_checked_at"] = checked.isoformat()
     observed = _time(quote.get("observed_at") or quote.get("market_observed_at"))
     px = _positive(quote.get("price"))
@@ -342,7 +340,7 @@ def assessment(row):
     return out
 
 
-def record(c, row, quote, checked_at, *, at_entry=False, lane="CANONICAL_EXECUTION"):
+def record(c, row, quote, checked_at, *, at_entry=False, lane="CANONICAL_EXECUTION", extra_patch=None):
     """Metadata writes cannot abort the caller's protective accounting.
 
     A real psycopg connection nests transaction() as a savepoint. Failed metadata
@@ -351,7 +349,8 @@ def record(c, row, quote, checked_at, *, at_entry=False, lane="CANONICAL_EXECUTI
     """
     row = dict(row) if isinstance(row,dict) else {}
     witness = observe(row, quote, checked_at, at_entry=at_entry, lane=lane)
-    patch = {"observation_path": witness}
+    patch = dict(extra_patch) if isinstance(extra_patch,dict) else {}
+    patch.pop("observation_path",None); patch["observation_path"] = witness
     trade_id = row.get("active_trade_id") or row.get("trade_id")
     if trade_id:
         try:

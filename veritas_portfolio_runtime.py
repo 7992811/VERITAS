@@ -9,7 +9,7 @@ import veritas_launch_readiness as VLR
 import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
-import veritas_release as VR
+import veritas_release as VR, veritas_execution_efficiency as VEE
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -5105,6 +5105,13 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
         if hard:
             _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
             return 0.0
+        eff=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('execution_efficiency') or {}
+        add_check=VEE.add_precheck(existing,row,price,direction,getattr(_vp_base,'COMMISSION',VC.COMMISSION_RATE),eff)
+        incremental=VEE.incremental_gate(actual,eff)
+        if not add_check.get('eligible') or not incremental.get('eligible'):
+            _record_entry_outcome(row,'BLOCKED',(add_check if not add_check.get('eligible') else incremental).get('reason'))
+            return 0.0
+        row['_canonical_add_before']=add_check.get('before') or {}
     else:
         if not bool((row or {}).get('_flip_confirmed')):
             _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED')
@@ -5150,8 +5157,9 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                         and opened.get('active_trade_id')):
                     is_new = not existing or opened.get('active_trade_id') != existing.get('active_trade_id')
                     entry_quote=VPS.quote_from_row(work)
-                    VOP.record(c,dict(opened),entry_quote,ts,
-                               at_entry=is_new,lane='CANONICAL_ENTRY' if is_new else 'CANONICAL_ADD')
+                    analysis=VEE.entry_analysis_patch(opened,is_new,row.get('_canonical_add_before') or {},price,ts,getattr(_vp_base,'COMMISSION',VC.COMMISSION_RATE))
+                    VOP.record(c,dict(opened),entry_quote,ts,at_entry=is_new,
+                               lane='CANONICAL_ENTRY' if is_new else 'CANONICAL_ADD',extra_patch=analysis)
                     if is_new:
                         try:
                             import veritas_observation_sidecar as VOS

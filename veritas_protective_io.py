@@ -19,6 +19,12 @@ PROTECTION_FIELDS = (
     'active_target_stage', 'observation_path', 'entry_execution_model',
     'execution_horizon', 'execution_timeframe', 'initial_stop_price', 'entry_atr',
     'mfe_pct', 'mae_pct', 'r55_lifetime_mfe_pct', 'r55_lifetime_mae_pct',
+    'r_accel_mfe_pct', 'r_accel_mfe_current_pct', 'r_accel_mfe_candidate_at',
+    'r_accel_mfe_candidate_pct', 'r_accel_mfe_candidate_timeframe',
+    'r_accel_mfe_candidate_elapsed_seconds', 'r_accel_mfe_profit_lock_active',
+    'r_accel_mfe_protection_waiting_cost_cover',
+    'last_add_price', 'last_add_at', 'mfe_before_last_add_pct',
+    'mfe_since_last_add_pct', 'mae_since_last_add_pct', 'add_count', 'add_fee_rub',
     'r63_profit_lock_rearm_after_pct', 'entry_nav_rub', 'r55_net_profit_lock_active',
 )
 BATCH_SIZE = 32
