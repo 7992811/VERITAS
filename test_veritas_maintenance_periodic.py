@@ -122,6 +122,9 @@ class PeriodicMaintenanceTests(unittest.TestCase):
         self.assertTrue(all(s["status"] == "DEFERRED_MEMORY" for s in state["stages"].values()))
         # Repeated identical OK results are intentionally not re-emitted; state
         # counters, not log transitions, are the scheduler's synchronization API.
+        self.wait_for(lambda: any(
+            e == ("maintenance_periodic_complete", "learning", "OK") for e in emitted
+        ))
         transitions = [e for e in emitted if e == ("maintenance_periodic_complete", "learning", "OK")]
         self.assertEqual(len(transitions), 1)
 
