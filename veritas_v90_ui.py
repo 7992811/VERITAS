@@ -122,6 +122,14 @@ _CANONICAL_HTML = r'''<!doctype html>
 .position-chip{border:1px solid rgba(255,255,255,.055);border-radius:999px;padding:1px 3px;font-size:6.2px;line-height:1.2;color:#aebac3;background:rgba(255,255,255,.01);white-space:nowrap}
 .position-chip b{font-size:6.5px;color:#e4ebf0;font-weight:650}
 .position-size-top,.trade-size-top{color:#dce5ec;font-weight:700}
+.protection-badge{border:1px solid var(--line);border-radius:999px;padding:1px 4px;font-size:6.3px;line-height:1.2;white-space:nowrap;background:rgba(255,255,255,.015)}
+.protection-badge.ok{border-color:rgba(84,230,161,.28);background:rgba(84,230,161,.055)}
+.protection-badge.warn{border-color:rgba(232,197,92,.28);background:rgba(232,197,92,.055)}
+.protection-badge.bad{border-color:rgba(255,108,117,.30);background:rgba(255,108,117,.055)}
+.position-audit-summary{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin:0 0 5px;font-size:7.5px;color:var(--muted)}
+.position-audit-summary .position-chip{font-size:7px;padding:2px 5px}
+.position-audit-row{display:flex;flex-wrap:wrap;gap:2px;margin-top:2px;padding-top:2px;border-top:1px solid rgba(255,255,255,.035)}
+.position-audit-row .position-chip{font-size:6.1px}
 .trade-card{border-top:1px solid rgba(255,255,255,.05);padding:5px 0}.trade-card:first-child{border-top:0}.trade-head{display:flex;align-items:center;justify-content:space-between;gap:7px}.trade-head b{font-size:9.8px;line-height:1.15}.trade-result{font-size:9.8px;font-weight:700;white-space:nowrap}.trade-meta{font-size:7.7px;line-height:1.25;color:var(--muted);margin-top:1px;white-space:normal;overflow-wrap:anywhere}.trade-money{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 6px;margin-top:4px}.trade-money span{font-size:7px;line-height:1.15;color:var(--muted);min-width:0}.trade-money b{display:block;font-size:8.2px;line-height:1.15;color:var(--text);margin-top:1px;white-space:normal;overflow-wrap:anywhere}
 
 .intel-wrap{display:grid;grid-template-columns:165px minmax(0,1fr);gap:10px;align-items:stretch}
@@ -280,6 +288,7 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 
     <div class="card full section">
       <div class="title">Открытые позиции</div>
+      <div id="positionAudit" class="position-audit-summary" role="status"></div>
       <div id="positionSync" class="msg" role="status"></div>
       <div id="positions"><div class="msg">Загрузка позиций…</div></div>
     </div>
@@ -916,6 +925,24 @@ function positionSourceText(z){
   return esc(source)+(pf?' · Brent oil':'')+' · <span class="warn">ожидается проверка ленты</span>';
 }
 
+const protectionAuditTone=status=>status==='OK'?'ok':status==='ERROR'?'bad':'warn';
+const protectionAuditLabel=status=>status==='OK'?'OK':status==='ERROR'?'ОШИБКА':'ЧАСТИЧНАЯ';
+const signedDistance=v=>{v=Number(v);return Number.isFinite(v)?(v>=0?'+':'')+v.toFixed(2)+'%':'—'};
+function renderPositionAuditSummary(positions,positionsUnknown){
+  const rows=(positions||[]).map(z=>z&&z.protection_audit).filter(Boolean);
+  if(!positions.length){$('positionAudit').innerHTML='';return}
+  if(!rows.length){$('positionAudit').innerHTML='<span class="position-chip warn">Аудит защиты · обновляется</span>';return}
+  const counts={OK:0,PARTIAL:0,ERROR:0};rows.forEach(a=>counts[a.status in counts?a.status:'PARTIAL']++);
+  const overall=counts.ERROR?'ERROR':counts.PARTIAL?'PARTIAL':'OK';
+  $('positionAudit').innerHTML=
+    '<span class="position-chip '+protectionAuditTone(overall)+'">Защита · <b>'+protectionAuditLabel(overall)+'</b></span>'+
+    '<span class="position-chip">Проверено <b>'+rows.length+'/'+positions.length+'</b></span>'+
+    '<span class="position-chip ok">OK <b>'+counts.OK+'</b></span>'+
+    '<span class="position-chip warn">Частично <b>'+counts.PARTIAL+'</b></span>'+
+    '<span class="position-chip bad">Ошибки <b>'+counts.ERROR+'</b></span>'+
+    (positionsUnknown?'<span class="position-chip warn">снимок обновляется</span>':'');
+}
+
 function renderPortfolios(){
   const d=st.portfolios||{},raw=Array.isArray(d.portfolios)?d.portfolios:[],positions=[];
   const ps=raw.map(p=>{
@@ -927,6 +954,7 @@ function renderPortfolios(){
   ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push(Object.assign({portfolio:p.name},z))));
   const exposureMismatch=positions.length===0&&portfolioExposureNonZero(ps);
   const positionsUnknown=st.portfolioLoadStatus!=='COMPLETE'||ps.some(p=>p.positions_status==='UNAVAILABLE');
+  renderPositionAuditSummary(positions,positionsUnknown);
   $('pfCount').textContent=ps.length;$('openCount').textContent=exposureMismatch?'синхр.':positionsUnknown&&!positions.length?'—':positions.length;
   const rets=ps.map(p=>knownNumber(p.total_return_pct??(p.latest||{}).total_return_pct)).filter(v=>v!=null);
   const dds=ps.map(p=>Number(p.drawdown_pct!=null?p.drawdown_pct:(((p.latest||{}).drawdown!=null)?100*Number((p.latest||{}).drawdown):NaN))).filter(Number.isFinite);
@@ -944,6 +972,11 @@ function renderPortfolios(){
     const tp2Label=tp2Kind==='RUNNER'?'Runner':tp2Kind==='TRAILING_RUNNER'?'Runner / trailing':'TP2';
     const tp2Text=tp2!=null?assetPrice(z.asset,tp2):tp2Kind==='TRAILING_RUNNER'?'по trailing':'не предусмотрен';
     const managementStatus=z.position_management_status||(stop==null?'PROTECTION_ERROR':'OK'),managementMissing=Array.isArray(z.position_management_missing)?z.position_management_missing:[];
+    const audit=z.protection_audit||{},auditStatus=audit.status||(managementStatus==='OK'?'PARTIAL':'ERROR'),auditChecks=audit.checks||{};
+    const slAudit=auditChecks.sl||{},sourceAudit=auditChecks.source||{},tfAudit=auditChecks.timeframe||{},profitAudit=auditChecks.profit_protection||{},targetAudit=auditChecks.tp2_or_runner||{};
+    const sourceAuditText=sourceAudit.status==='OK'?'OK':sourceAudit.locked?'котировка ожидается':'нет фиксации';
+    const targetAuditText=targetAudit.status==='NOT_REQUIRED'?'не нужен':targetAudit.kind==='TRAILING_RUNNER'?'Trailing':targetAudit.kind==='RUNNER'?'Runner':targetAudit.kind==='TP2'?'TP2':'не задан';
+    const profitAuditText=profitAudit.state==='PROTECTED'?'защищено':profitAudit.state==='COSTS_NOT_COVERED'?'ждём расходы':profitAudit.state==='STOP_REACHED'?'стоп достигнут':'нет расчёта';
     const prob=signalEstimate(z.signal_probability,z.probability_source),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
     const tf=z.execution_timeframe||z.horizon,grade=z.setup_grade||(z.legacy_entry_recovered?'архив':'—'),tier=z.signal_tier||'',protection=z.net_profit_protection||{},protect=protection.version==='NET_STOP_AFTER_COSTS_V1'&&protection.state==='PROTECTED'&&Number(protection.net_at_stop_rub)>=0.01;
     const probText=prob.text;
@@ -953,12 +986,20 @@ function renderPortfolios(){
     const giveText=Number.isFinite(give)?give.toFixed(2)+'%':'—';
     const sideText=directionLabel(z.direction,tier),sideClass=cls(String(z.direction||'')); 
     return'<div class="position-card">'+
-      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' <span class="trade-direction '+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Результат всей сделки после расходов / сумма фактических входов и доборов. Частичные закрытия не уменьшают базу процента.">'+signedPct(ret)+'<small>'+rub(pnl)+'</small></div></div>'+
+      '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' <span class="trade-direction '+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b><span class="protection-badge '+protectionAuditTone(auditStatus)+'">Защита '+protectionAuditLabel(auditStatus)+'</span></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Результат всей сделки после расходов / сумма фактических входов и доборов. Частичные закрытия не уменьшают базу процента.">'+signedPct(ret)+'<small>'+rub(pnl)+'</small></div></div>'+
       '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+assetPrice(z.asset,z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+assetPrice(z.asset,z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b class="'+(stop==null?'bad':'')+'">'+assetPrice(z.asset,stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+assetPrice(z.asset,tp1)+'</b></div><div class="position-level"><span>'+tp2Label+'</span><b>'+tp2Text+'</b></div></div>'+
       '<div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · в позиции '+holdRu(held)+' · объём '+rub(z.notional_rub)+'</div>'+
       '<div class="position-meta">Источник: '+positionSourceText(z)+' · '+(z.price_source_status==='OK'?'котировка '+dateRu(z.last_mark_at):z.price_source_status==='STALE_REPORTED_MARK'?'<span class="warn">котировка '+dateRu(z.last_mark_at)+' · оценка требует обновления</span>':'<span class="warn">ожидаем котировку источника входа · сохранена последняя подтверждённая цена</span>')+'</div>'+
       (managementStatus!=='OK'?'<div class="tp-status warn">Контур сопровождения: '+esc(managementStatus)+(managementMissing.length?' · нет '+esc(managementMissing.join(', ')):'')+'</div>':'')+
       tpNotice(z,true)+
+      '<div class="position-audit-row">'+
+        '<span class="position-chip '+(slAudit.status==='ERROR'?'bad':'ok')+'">До SL <b>'+signedDistance(audit.distance_to_stop_pct)+'</b></span>'+
+        '<span class="position-chip '+(audit.target_reached?'warn':'')+'">До цели <b>'+signedDistance(audit.distance_to_next_target_pct)+'</b></span>'+
+        '<span class="position-chip">TP2/Runner <b>'+esc(targetAuditText)+'</b></span>'+
+        '<span class="position-chip '+(sourceAudit.status==='OK'?'ok':'warn')+'">Источник <b>'+esc(sourceAuditText)+'</b></span>'+
+        '<span class="position-chip '+(tfAudit.status==='OK'?'ok':'warn')+'">TF <b>'+esc(tfAudit.value||tf||'—')+'</b></span>'+
+        '<span class="position-chip '+(profitAudit.status==='ACTION'?'bad':profitAudit.status==='PARTIAL'?'warn':profitAudit.status==='OK'?'ok':'')+'">Прибыль <b>'+esc(profitAuditText)+'</b></span>'+
+      '</div>'+
       '<div class="position-accounting"><span>Зафиксировано<b>'+rub(z.realized_gross_pnl_rub)+'</b></span><span>Переоценка<b>'+rub(z.unrealized_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(z.trade_fees_rub)+'</b></span><span>Фондирование<b>'+rub(z.trade_funding_rub)+'</b></span><span>От максимума<b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span></div>'+
       '<div class="position-learning">'+
         '<span class="position-chip">'+prob.label+' <b>'+probText+'</b></span>'+
