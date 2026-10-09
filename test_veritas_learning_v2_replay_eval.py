@@ -58,6 +58,13 @@ class ReplayEvaluatorTests(unittest.TestCase):
                          "source_key":IDENTITY["key"],"contract_id":"C1","policy_hash":"p"},
                 "proposal":{"first_target_fraction":fraction,"baseline_first_target_fraction":.5}}
 
+    def test_trade_query_uses_outcome_evidence_tier(self):
+        source=inspect.getsource(E._trade_rows)
+        self.assertIn("outcome_learning_eligible",source)
+        self.assertIn("outcome_diagnostics_version",source)
+        self.assertIn("outcome_evidence_hash",source)
+        self.assertNotIn("WHERE e.learning_eligible=TRUE",source)
+
     def test_trade_query_requires_entry_after_registration(self):
         source=inspect.getsource(E._trade_rows)
         self.assertIn("t.opened_at>%s",source)
@@ -137,7 +144,7 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
             REG.ensure_schema(conn); E.ensure_schema(conn)
             conn.execute("""CREATE TABLE v90_learning_episodes(
                 trade_id text PRIMARY KEY,closed_at timestamptz,asset text,direction text,horizon text,
-                regime text,setup_family text,learning_eligible boolean,primary_attribution text)""")
+                regime text,setup_family text,learning_eligible boolean,primary_attribution text,payload jsonb)""")
             conn.execute("""CREATE TABLE paper_trades(
                 trade_id text PRIMARY KEY,opened_at timestamptz,avg_entry_price float8,status text,payload jsonb)""")
             conn.execute("""CREATE TABLE paper_orders(trade_id text,side text)""")
@@ -160,9 +167,12 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
                      "strategy_policy_hash":"p","initial_stop_price":97.7,"entry_atr":2.0}
             conn.execute("""INSERT INTO paper_trades VALUES(
                 'TSQL',%s,100,'CLOSED',%s::jsonb)""",(T,json.dumps(payload)))
+            episode_payload={"outcome_learning_eligible":True,
+                             "outcome_diagnostics_version":E.DIAGNOSTICS.VERSION,
+                             "outcome_evidence_hash":"verified-hash"}
             conn.execute("""INSERT INTO v90_learning_episodes VALUES(
-                'TSQL',%s,'NQ','LONG','5m','TREND','BREAKOUT',TRUE,'OK')""",
-                (T+timedelta(hours=1),))
+                'TSQL',%s,'NQ','LONG','5m','TREND','BREAKOUT',FALSE,'OK',%s::jsonb)""",
+                (T+timedelta(hours=1),json.dumps(episode_payload)))
             conn.execute("INSERT INTO paper_orders VALUES('TSQL','BUY')")
 
     @contextmanager
