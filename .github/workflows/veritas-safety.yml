@@ -129,6 +129,7 @@ jobs:
           node tools/test_paper_ui.cjs
           node tools/test_paper_action_status.cjs
           node tools/test_learning_ui.cjs
+          node tools/test_trade_review_learning_ui.cjs
       - name: Forecast versus actual entry UI regressions
         run: node tools/test_signal_readiness_ui.cjs
       - name: Trade accounting view regressions
