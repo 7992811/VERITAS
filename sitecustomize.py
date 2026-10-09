@@ -64,9 +64,11 @@ def _bootstrap() -> None:
             close()
         if thread.is_alive():
             thread.join(timeout=2.0)
-    except Exception:
-        _emit("embedded_signal_robot", status="FAILED",
-              code="EMBEDDED_SIGNAL_ROBOT_BOOTSTRAP_FAILED")
+    except Exception as exc:
+        code = str(exc)
+        if not code or len(code) > 80 or any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in code):
+            code = "EMBEDDED_SIGNAL_ROBOT_BOOTSTRAP_FAILED"
+        _emit("embedded_signal_robot", status="FAILED", code=code)
 
 
 def start() -> bool:
