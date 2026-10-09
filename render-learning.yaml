@@ -1,0 +1,24 @@
+services:
+  - type: worker
+    name: veritas-learning-v2
+    runtime: python
+    region: frankfurt
+    plan: starter
+    repo: https://github.com/7992811/VERITAS
+    branch: main
+    buildCommand: pip install -r requirements-intelligence.txt
+    startCommand: python veritas_learning_worker.py
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: veritas-knowledge
+          property: connectionString
+      - key: VERITAS_PROCESS_ROLE
+        value: "learning"
+      - key: VERITAS_LEARNING_V2_INTERVAL_SECONDS
+        value: "120"
+      - key: VERITAS_LEARNING_V2_PER_ASSET_LIMIT
+        value: "96"
+      - key: VERITAS_LEARNING_EXPECTED_DATABASE
+        value: "veritas_knowledge"
