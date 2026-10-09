@@ -148,6 +148,8 @@ def _annotate(row,meta):
     x=dict(row or {}); plan=dict(x.get("trade_plan") or {})
     plan["ctc_open_position_thesis_guard"]=meta
     x["trade_plan"]=plan
+    if ((meta.get("fast_reversal") or {}).get("eligible")):
+        x["_ctc_fast_opposite_confirmed"]=True
     return x
 
 
