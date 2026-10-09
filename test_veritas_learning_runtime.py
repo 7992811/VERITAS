@@ -1,6 +1,10 @@
 """Learning integration contracts without starting a production service."""
 import ast
+import os
+import json
+import uuid
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import threading
@@ -178,3 +182,79 @@ class LearningRuntimeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(os.getenv("VERITAS_QUALITY_TEST_DSN"), "isolated PostgreSQL test database not configured")
+class DecisionEpisodeMaterializationSQLTests(unittest.TestCase):
+    def setUp(self):
+        import psycopg
+        from psycopg.rows import dict_row
+        self.psycopg,self.dict_row=psycopg,dict_row
+        self.dsn=os.environ["VERITAS_QUALITY_TEST_DSN"]
+        self.schema="episode_materialize_"+uuid.uuid4().hex
+        with psycopg.connect(self.dsn,row_factory=dict_row) as conn:
+            if conn.execute("select current_database() AS n").fetchone()["n"]!="veritas_quality_test":
+                raise RuntimeError("Refusing decision episode test outside veritas_quality_test")
+            conn.execute(f'CREATE SCHEMA "{self.schema}"')
+            conn.execute(f'SET search_path TO "{self.schema}"')
+            conn.execute("""CREATE TABLE ledger_events(
+                id bigserial primary key,event_key text unique not null,entity_key text not null,
+                event_type text not null,event_ts timestamptz not null,asset text,horizon text,
+                payload jsonb not null,model_version text not null)""")
+            conn.execute("""CREATE TABLE v90_decision_episodes(
+                entity_key text primary key,decision_id bigint,decision_ts timestamptz not null,
+                outcome_ts timestamptz not null,asset text not null,horizon text not null,
+                regime text not null,decision text not null,forward_return float8 not null,
+                mfe float8,mae float8,model_version text,knowledge_shadow_matches jsonb not null default '[]',
+                setup_family text,policy_hash text,source_key text,contract_id text,candidate_direction text,
+                admission_eligible boolean,final_gate_status text,final_gate_blockers jsonb not null default '[]',
+                plan_reason text,trade_entry_reason text,execution_reason text,paper_execution_reason text,
+                updated_at timestamptz not null default now())""")
+        @contextmanager
+        def connect():
+            with psycopg.connect(self.dsn,row_factory=dict_row) as conn:
+                conn.execute(f'SET search_path TO "{self.schema}"')
+                yield conn
+        self.connect=connect
+
+    def tearDown(self):
+        with self.psycopg.connect(self.dsn) as conn:
+            conn.execute(f'DROP SCHEMA "{self.schema}" CASCADE')
+
+    def test_outcome_materializes_compact_admission_provenance(self):
+        payload={
+          "regime":"TREND","research_decision":"LONG","setup_family":"BREAKOUT",
+          "learning_provenance":{
+            "policy_hash":"POLICY1",
+            "quote":{"source_identity":{"key":"TEST:NQ","contract_id":"NQZ6"}}},
+          "plan_eligible":False,"plan_reason":"TIMING_NOT_READY",
+          "trade_entry_eligible":False,"trade_entry_reason":"TIMING_NOT_READY",
+          "paper_execution_reason":"WAIT_RETEST","final_gate_status":"BLOCK",
+          "final_gate_blockers":["TIMING_NOT_READY"],
+          "knowledge_shadow_matches":[]}
+        with self.connect() as conn:
+            row=conn.execute("""INSERT INTO ledger_events(
+                event_key,entity_key,event_type,event_ts,asset,horizon,payload,model_version)
+                VALUES('decision:E1','E1','decision','2026-10-09T08:00:00Z','NQ','5m',%s::jsonb,'M1')
+                RETURNING id""",(json.dumps(payload),)).fetchone()
+            decision_id=row["id"]
+        ns=functions('_v90_materialize_decision_episode',scope={
+            'pg_enabled':lambda:True,'pg_connect':self.connect,
+            'now':lambda:'2026-10-09T08:05:00+00:00','emit':Mock()})
+        self.assertTrue(ns['_v90_materialize_decision_episode'](
+            'E1',{"forward_return":.01,"mfe":.015,"mae":-.003},
+            '2026-10-09T08:05:00+00:00'))
+        with self.connect() as conn:
+            row=conn.execute("SELECT * FROM v90_decision_episodes WHERE entity_key='E1'").fetchone()
+        self.assertEqual(row["decision_id"],decision_id)
+        self.assertEqual(row["decision"],"LONG")
+        self.assertEqual(row["candidate_direction"],"LONG")
+        self.assertEqual(row["setup_family"],"BREAKOUT")
+        self.assertEqual(row["policy_hash"],"POLICY1")
+        self.assertEqual(row["source_key"],"TEST:NQ")
+        self.assertEqual(row["contract_id"],"NQZ6")
+        self.assertIs(row["admission_eligible"],False)
+        self.assertEqual(row["final_gate_status"],"BLOCK")
+        self.assertEqual(row["final_gate_blockers"],["TIMING_NOT_READY"])
+        self.assertEqual(row["plan_reason"],"TIMING_NOT_READY")
+        self.assertEqual(row["paper_execution_reason"],"WAIT_RETEST")
