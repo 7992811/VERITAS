@@ -93,9 +93,14 @@ def observation(trade, *, now=None):
         net_reward_risk=_number(stamp.get('net_reward_risk')),
         knowledge_trials=stamp.get('knowledge_trials') or [])
     problem=LI.outcome_trade_exclusion(t)
-    verified=bool(t.get('episode_outcome_eligible') is True
+    outcome_verified=bool(t.get('episode_outcome_eligible') is True
                   and t.get('episode_outcome_evidence_hash')
                   and t.get('episode_outcome_evidence_hash')==t.get('learning_evidence_hash'))
+    path_verified=bool(t.get('episode_eligible') is True and integrity.get('version')==LI.VERSION
+                  and integrity.get('status')=='VERIFIED'
+                  and integrity.get('evidence_hash')==t.get('learning_evidence_hash')
+                  and integrity.get('event_id')==event['event_id'])
+    verified=outcome_verified or path_verified
     if problem or not verified or not source_ok:
         # This is an explicit revocation record, not positive training evidence.
         return dict(common,evidence_valid=False),problem or 'UNVERIFIED_CURRENT_EPISODE'
