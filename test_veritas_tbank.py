@@ -107,6 +107,47 @@ class ConnectionTests(unittest.TestCase):
         self.assertIsNone(T.age_seconds('not-a-time'))
         self.assertIsNone(T.age_seconds(T.iso(T.utcnow()+timedelta(hours=1))))
 
+    def test_stream_book_and_watchdog_recovery_policy(self):
+        c=T.TBankConnection({})
+        now=T.utcnow()
+        uid='right'
+        c.instruments={'CNYRUBF':{'uid':uid}}
+        c.stream_worker=unittest.mock.Mock()
+        c.stream_worker.is_alive.return_value=True
+        c.stream_state='SUBSCRIBED'
+        c.stream_last_message_at=T.iso(now)
+        c.quotes['CNYRUBF']={'instrument_uid':uid,'observed_at':T.iso(now),
+                             'price':12.7,'source':'TBANK_GRPC'}
+        c.trading_states['CNYRUBF']={'instrument_uid':uid,
+            'trading_status':'SECURITY_TRADING_STATUS_NORMAL_TRADING','checked_at':T.iso(now)}
+        c._put_book({'instrument_uid':uid,'time':T.iso(now),'is_consistent':True,
+                     'bids':[{'price':{'units':'12','nano':699000000},'quantity':'4'}],
+                     'asks':[{'price':{'units':'12','nano':701000000},'quantity':'5'}]},
+                    {uid:'CNYRUBF'})
+        self.assertFalse(c._market_recovery_needed(now))
+        book=c.market_data()['order_books']['CNYRUBF']
+        self.assertEqual(book['orderbook_ts'],T.iso(now))
+        self.assertEqual(book['source'],'TBANK_GRPC')
+        c.stream_last_message_at=T.iso(now-timedelta(seconds=T.STREAM_HEARTBEAT_MAX_AGE_SECONDS+1))
+        self.assertTrue(c._market_recovery_needed(now))
+
+    def test_stream_alive_but_stale_open_market_quote_requests_unary_recovery(self):
+        c=T.TBankConnection({})
+        now=T.utcnow()
+        c.instruments={'CNYRUBF':{'uid':'right'}}
+        c.stream_worker=unittest.mock.Mock()
+        c.stream_worker.is_alive.return_value=True
+        c.stream_state='SUBSCRIBED'
+        c.stream_last_message_at=T.iso(now)
+        c.trading_states['CNYRUBF']={
+            'trading_status':'SECURITY_TRADING_STATUS_NORMAL_TRADING'}
+        old=T.iso(now-timedelta(seconds=T.STREAM_MARKET_RECOVERY_AGE_SECONDS+1))
+        c.quotes['CNYRUBF']={'observed_at':old,'price':12.7}
+        c.books['CNYRUBF']={'orderbook_ts':old}
+        self.assertTrue(c._market_recovery_needed(now))
+        c.trading_states['CNYRUBF']['trading_status']='SECURITY_TRADING_STATUS_SESSION_CLOSE'
+        self.assertFalse(c._market_recovery_needed(now))
+
     def test_stream_ignores_unknown_contract_and_older_messages(self):
         c=T.TBankConnection({})
         def quote(uid,at,n):
@@ -283,7 +324,29 @@ class WireTests(unittest.TestCase):
             return P.GetAccountsResponse(accounts=[P.Account(id='test-account',access_level=P.ACCOUNT_ACCESS_LEVEL_READ_ONLY)])
         def stream(request,context):
             assert request.subscribe_last_price_request.instruments[0].instrument_id=='contract'
-            yield P.MarketDataResponse(last_price=P.LastPrice(instrument_uid='contract',price=P.Quotation(units=12)))
+            if request.HasField('subscribe_order_book_request'):
+                book_req=request.subscribe_order_book_request.instruments[0]
+                assert book_req.instrument_id=='contract' and book_req.depth==10
+                assert request.subscribe_info_request.instruments[0].instrument_id=='contract'
+                assert request.ping_settings.ping_delay_ms==T.STREAM_PING_MS
+                yield P.MarketDataResponse(subscribe_last_price_response=P.SubscribeLastPriceResponse(
+                    last_price_subscriptions=[P.LastPriceSubscription(
+                        instrument_uid='contract',subscription_status=P.SUBSCRIPTION_STATUS_SUCCESS)]))
+                yield P.MarketDataResponse(subscribe_order_book_response=P.SubscribeOrderBookResponse(
+                    order_book_subscriptions=[P.OrderBookSubscription(
+                        instrument_uid='contract',depth=10,
+                        subscription_status=P.SUBSCRIPTION_STATUS_SUCCESS)]))
+                yield P.MarketDataResponse(subscribe_info_response=P.SubscribeInfoResponse(
+                    info_subscriptions=[P.InfoSubscription(
+                        instrument_uid='contract',subscription_status=P.SUBSCRIPTION_STATUS_SUCCESS)]))
+                book=P.OrderBook(instrument_uid='contract',depth=10,is_consistent=True)
+                book.bids.add(price=P.Quotation(units=12,nano=700000000),quantity=3)
+                book.asks.add(price=P.Quotation(units=12,nano=710000000),quantity=4)
+                yield P.MarketDataResponse(orderbook=book)
+                yield P.MarketDataResponse(trading_status=P.TradingStatus(
+                    instrument_uid='contract',trading_status=P.SECURITY_TRADING_STATUS_NORMAL_TRADING))
+            yield P.MarketDataResponse(last_price=P.LastPrice(
+                instrument_uid='contract',price=P.Quotation(units=12)))
         def future(request,context):
             assert request.id=='nasd-contract' and request.id_type==P.INSTRUMENT_ID_TYPE_UID
             return P.FutureResponse(instrument=P.Future(uid=request.id,ticker='NAZ6',lot=1,
@@ -316,6 +379,18 @@ class WireTests(unittest.TestCase):
     def test_real_grpc_stream_request_and_decoding(self):
         values=list(self.reader.stream_prices(['contract']))
         self.assertEqual(values[0]['last_price']['instrument_uid'],'contract')
+
+    def test_real_grpc_stream_subscribes_price_book_status_and_ping(self):
+        values=list(self.reader.stream_market(['contract'],depth=10,include_info=True))
+        keys=[next(iter(v)) for v in values if v]
+        self.assertIn('subscribe_last_price_response',keys)
+        self.assertIn('subscribe_order_book_response',keys)
+        self.assertIn('subscribe_info_response',keys)
+        self.assertIn('orderbook',keys)
+        self.assertIn('trading_status',keys)
+        book=next(v['orderbook'] for v in values if v.get('orderbook'))
+        self.assertEqual(book['instrument_uid'],'contract')
+        self.assertEqual(book['bids'][0]['quantity'],'3')
 
     def test_future_specification_on_actual_grpc_wire(self):
         result=T.future_metadata(self.reader,{'uid':'nasd-contract','ticker':'NAZ6'})

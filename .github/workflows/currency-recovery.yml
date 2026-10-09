@@ -15,4 +15,4 @@ jobs:
         with:
           python-version: '3.14.3'
       - run: pip install -r requirements-intelligence.txt
-      - run: python -m unittest -v test_veritas_currency_feed_recovery.py
+      - run: python -m unittest -v test_veritas_currency_feed_recovery.py test_veritas_tbank.py test_veritas_tbank_order_stream.py
