@@ -144,6 +144,44 @@ class TransactionTimingTests(unittest.TestCase):
                 pass
         return events, timing
 
+    def test_storage_preflight_runs_before_local_lock_and_apply_after_advisory(self):
+        events=[]
+        class Mutex:
+            def acquire(self, *, blocking, priority):
+                events.append('acquire')
+                return True
+            def release(self):
+                events.append('release')
+        class Connection:
+            @contextmanager
+            def transaction(self):
+                events.append('begin')
+                try:
+                    yield self
+                finally:
+                    events.append('commit')
+            def execute(self, sql, args=()):
+                events.append('advisory' if 'advisory' in sql else 'sql')
+                return SimpleNamespace(fetchone=lambda:{'acquired':True})
+        prepared={'requested':'lz4','metadata':{'current_method':'pglz'}}
+        def prepare(raw):
+            events.append('prepare')
+            return prepared
+        def configure(raw, *, prepared=None):
+            events.append(('configure',prepared))
+            return {'status':'APPLIED','elapsed_seconds':0.0}
+        timing={}
+        with patch.object(G,'_mutex',Mutex()), patch.object(G.BS,'prepare',side_effect=prepare), \
+             patch.object(G.BS,'configure',side_effect=configure):
+            with G.book_transaction(Connection(),lane='PROTECTIVE',timing=timing):
+                events.append('body')
+        self.assertLess(events.index('prepare'),events.index('acquire'))
+        self.assertLess(events.index('advisory'),events.index(('configure',prepared)))
+        self.assertLess(events.index(('configure',prepared)),events.index('body'))
+        self.assertEqual(timing['payload_compression']['status'],'APPLIED')
+        self.assertIn('storage_preflight_seconds',timing)
+        self.assertEqual(events[-2:],['commit','release'])
+
     def test_hold_includes_commit_and_waits_are_separate(self):
         events, measured = self.run_transaction()
         self.assertEqual(measured, dict(python_lock_wait_seconds=2.0,
