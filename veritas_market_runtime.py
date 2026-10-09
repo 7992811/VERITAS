@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import math
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -59,13 +60,14 @@ def normalize_moex_index_session(bundle, now=None):
     source_count = raw.get("direct_sources")
     if source_count is not None:
         try:
-            if float(source_count) < 1:
+            count = float(source_count)
+            if not math.isfinite(count) or count < 1:
                 return result
         except (TypeError, ValueError):
             return result
     if raw.get("snapshot_stale") is True:
         return result
-    if not (price > 0 and in_extended_session and fresh):
+    if not (math.isfinite(price) and price > 0 and in_extended_session and fresh):
         return result
     raw.update(
         market_open=True,
