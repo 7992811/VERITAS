@@ -378,8 +378,11 @@ class PortfolioDiagnosticsIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[0]["learning_label"], "VALID_STRUCTURAL_STOP_LOSS")
         self.assertNotIn("OLD_STOP_VERDICT", rows[0]["learning_conclusion"])
         self.assertTrue(rows[0]["learning_eligible"])
-        self.assertEqual(rows[1]["learning_label"], "UNVERIFIED_TRADE_EVIDENCE")
+        self.assertEqual(rows[1]["learning_label"], "VALID_STRUCTURAL_STOP_LOSS")
         self.assertFalse(rows[1]["learning_eligible"])
+        self.assertTrue(rows[1]["trade_diagnostics"]["outcome_evidence_eligible"])
+        self.assertFalse(rows[1]["trade_diagnostics"]["path_evidence_eligible"])
+        self.assertEqual(rows[1]["trade_diagnostics"]["status"], "VERIFIED_OUTCOME_ONLY")
         self.assertEqual(rows[0]["net_pnl_rub"], valid["net_pnl_rub"])
         self.assertEqual(valid["payload"]["learning_label"], "RIGHT_DIRECTION_STOP_ERROR")
 
