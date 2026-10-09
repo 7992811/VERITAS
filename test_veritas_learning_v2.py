@@ -93,11 +93,51 @@ class LearningV2Tests(unittest.TestCase):
             decisions.append(self.row(decision="LONG",fr=.01 if i<15 else -.01,
                 setup_family="TREND",final_gate_blockers=[]))
         trades=[{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
-                 "mae":-.004,"mfe":.014,"capture_ratio":.2} for _ in range(20)]
+                 "mae":-.004,"mfe":.014,"capture_ratio":.2,
+                 "path_learning_eligible":True,"outcome_learning_eligible":True} for _ in range(20)]
         h=L.generate_hypotheses(decisions,trades)
         kinds={x["kind"] for x in h}
         self.assertTrue({"STOP_GEOMETRY","EXIT_CAPTURE","STRATEGY_ROUTER"}<=kinds)
         self.assertLessEqual(len(h),L.MAX_HYPOTHESES)
+
+    def test_outcome_only_cohort_can_register_declared_replay_grid(self):
+        trades=[{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
+                 "source_key":"S","contract_id":"C1",
+                 "mae":None,"mfe":None,"capture_ratio":None,
+                 "path_learning_eligible":False,"outcome_learning_eligible":True}
+                for _ in range(L.MIN_REPLAY_DISCOVERY_N)]
+        hypotheses=L.generate_hypotheses([],trades)
+        stops=[x for x in hypotheses if x["kind"]=="STOP_GEOMETRY"]
+        exits=[x for x in hypotheses if x["kind"]=="EXIT_CAPTURE"]
+        self.assertEqual({x["proposal"]["stop_buffer_atr"] for x in stops},{.10,.20,.30})
+        self.assertEqual({x["proposal"]["first_target_fraction"] for x in exits},{.25,.75})
+        self.assertTrue(all(x["evidence"]["candidate_basis"]=="DECLARED_CANONICAL_REPLAY_GRID"
+                            and x["evidence"]["path_metrics_used_for_candidate_selection"] is False
+                            and x["evidence"]["path_n"]==0 for x in stops+exits))
+        self.assertTrue(all(x["mode"]=="SHADOW_ONLY" and not x["production_mutation"]
+                            for x in stops+exits))
+
+    def test_replay_grid_requires_minimum_independent_outcome_cohort(self):
+        trades=[{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
+                 "source_key":"S","contract_id":"C1",
+                 "path_learning_eligible":False,"outcome_learning_eligible":True}
+                for _ in range(L.MIN_REPLAY_DISCOVERY_N-1)]
+        self.assertFalse(any(x["kind"] in ("STOP_GEOMETRY","EXIT_CAPTURE")
+                             for x in L.generate_hypotheses([],trades)))
+
+    def test_path_metrics_do_not_select_or_reidentify_replay_grid(self):
+        base=[{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
+               "source_key":"S","contract_id":"C1",
+               "path_learning_eligible":False,"outcome_learning_eligible":True,
+               "mae":None,"mfe":None,"capture_ratio":None}
+              for _ in range(L.MIN_REPLAY_DISCOVERY_N)]
+        changed=[dict(x,path_learning_eligible=True,mae=-.99,mfe=9.99,capture_ratio=.01)
+                 for x in base]
+        a={x["hypothesis_id"]:x["proposal"] for x in L.generate_hypotheses([],base)
+           if x["kind"] in ("STOP_GEOMETRY","EXIT_CAPTURE")}
+        b={x["hypothesis_id"]:x["proposal"] for x in L.generate_hypotheses([],changed)
+           if x["kind"] in ("STOP_GEOMETRY","EXIT_CAPTURE")}
+        self.assertEqual(a,b)
 
     def test_hypotheses_do_not_mix_price_sources(self):
         rows=[]
