@@ -203,7 +203,7 @@ class ProtectedParentManagementTests(unittest.TestCase):
         # Owner rule 2026-10-09: structural trailing is permitted only after
         # sustained-profit maturity. This test targets atomic stop revision, not
         # the maturity gate, so supply the proved lifecycle precondition.
-        position["payload"]["profit_maturity_armed"] = True
+        position["payload"].update(profit_maturity_armed=True, profit_maturity_floor_satisfied=True)
         saved = deepcopy(position)
         db = FakeDB(position, now, accounting=False)
         result = TM.apply_trailing(db, "Currency", position, [row], quote, now)
