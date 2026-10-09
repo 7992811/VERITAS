@@ -67,7 +67,7 @@ history worker supplies an adequate ordered path.
 ## Runtime resource policy
 
 The production shadow lane rotates one asset per run every 60 seconds. Each run
-reads at most 192 materialized decision outcomes and 192 eligible trade episodes
+reads at most 128 materialized decision outcomes and 128 eligible trade episodes
 for that asset. The outcome itself comes from `v90_decision_episodes`; the
 ledger JSON is opened only to recover the frozen pre-outcome setup, source and
 policy context. This replaces the previous all-market decision+outcome JSON join
