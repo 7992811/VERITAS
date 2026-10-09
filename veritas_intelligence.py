@@ -18820,97 +18820,16 @@ def _v90r24_prime_portfolio_snapshot():
         return {'status':'ERROR','count':0}
 
 # VERITAS V90 STARTUP READINESS R41
-def _v90r41_age_seconds(value):
-    if value in (None,''):
-        return None
-    try:
-        if isinstance(value,datetime):
-            stamp=value
-        elif isinstance(value,(int,float)):
-            return max(0.0,time.time()-float(value))
-        else:
-            text=str(value).strip()
-            try:
-                return max(0.0,time.time()-float(text))
-            except ValueError:
-                stamp=datetime.fromisoformat(text.replace('Z','+00:00'))
-        if stamp.tzinfo is None:
-            return None
-        return max(0.0,(datetime.now(timezone.utc)-stamp.astimezone(timezone.utc)).total_seconds())
-    except (TypeError,ValueError,OverflowError):
-        return None
-
-
-def _v90r41_market_snapshot_state():
-    cyc=fresh_cycle_snapshot()
-    rows=list(cyc.get('summary') or [])
-    expected=len(DISPLAY_ASSETS)*len(HORIZONS)
-    keys={(str(z.get('asset')),str(z.get('horizon'))) for z in rows
-          if str(z.get('asset')) in DISPLAY_ASSETS and str(z.get('horizon')) in HORIZONS}
-    count=len(keys)
-    age=_v90r41_age_seconds(cyc.get('signals_updated_at') or cyc.get('at'))
-    max_age=max(120.0,float(INTERVAL)*2.0)
-    ok=count>=expected and age is not None and age<=max_age
-    return {'ok':ok,'status':'READY' if ok else ('STALE' if count>=expected else 'INCOMPLETE'),
-            'signal_count':count,'expected':expected,'age_seconds':round(age,1) if age is not None else None,
-            'max_age_seconds':max_age,'source':cyc.get('summary_source') or 'cycle_snapshot'}
-
-
 def _v90r41_prime_startup_state(canonical_state=None):
-    """Prime every UI-critical read before declaring the deployment ready."""
     global _BOOTSTRAP_READY
-    checks=_STARTUP_GATE.snapshot().get('checks') or {}
-    expected_names=list(V90_CANONICAL_PORTFOLIOS)
-
-    if canonical_state is not None or not checks.get('canonical_portfolios'):
-        state=canonical_state if canonical_state is not None else _v90r24_ensure_canonical_portfolios()
-        names=list(state.get('names') or [])
-        ok=state.get('status')=='OK' and names==expected_names
-        _STARTUP_GATE.mark('canonical_portfolios',ok,status=state.get('status'),
-                           count=len(names),expected=len(expected_names),
-                           reason=None if ok else 'CANONICAL_PORTFOLIOS_NOT_READY')
-
-    checks=_STARTUP_GATE.snapshot().get('checks') or {}
-    if not checks.get('portfolio_snapshot'):
-        try:
-            pf=_v90r25_portfolios_refresh()
-            ps=list(pf.get('portfolios') or [])
-            names=[str(p.get('name')) for p in ps]
-            open_count=sum(len(p.get('positions') or []) for p in ps)
-            ok=(pf.get('status')=='OK' and pf.get('positions_complete') is True
-                and pf.get('accounting_complete') is True and names==expected_names)
-            _STARTUP_GATE.mark('portfolio_snapshot',ok,status=pf.get('status'),
-                               portfolio_count=len(ps),open_position_count=open_count,
-                               expected=len(expected_names),
-                               reason=None if ok else 'PORTFOLIO_SNAPSHOT_INCOMPLETE')
-        except Exception as ex:
-            _STARTUP_GATE.mark('portfolio_snapshot',False,status='ERROR',
-                               reason=type(ex).__name__)
-
-    checks=_STARTUP_GATE.snapshot().get('checks') or {}
-    if not checks.get('trade_snapshot'):
-        try:
-            tr=_v90r25_trades_fast(100)
-            ok=tr.get('status')=='OK' and isinstance(tr.get('trades'),list)
-            _STARTUP_GATE.mark('trade_snapshot',ok,status=tr.get('status'),
-                               trade_count=len(tr.get('trades') or []),
-                               reason=None if ok else 'TRADE_SNAPSHOT_INCOMPLETE')
-        except Exception as ex:
-            _STARTUP_GATE.mark('trade_snapshot',False,status='ERROR',
-                               reason=type(ex).__name__)
-
-    market=_v90r41_market_snapshot_state()
-    market_ok=market.pop('ok')
-    _STARTUP_GATE.mark('market_snapshot',market_ok,**market)
-    state=_STARTUP_GATE.snapshot()
+    state=VSG.prime_live_state_with_assets(
+        _STARTUP_GATE,canonical_portfolios=V90_CANONICAL_PORTFOLIOS,
+        display_assets=DISPLAY_ASSETS,horizons=HORIZONS,canonical_state=canonical_state,
+        ensure_canonical=_v90r24_ensure_canonical_portfolios,
+        portfolio_refresh=_v90r25_portfolios_refresh,
+        trade_refresh=lambda:_v90r25_trades_fast(100),
+        market_cycle=fresh_cycle_snapshot,interval=INTERVAL,emit=emit)
     _BOOTSTRAP_READY=bool(state.get('ok'))
-    details=state.get('details') or {}
-    emit('v90_startup_readiness',status=state.get('status'),phase=state.get('phase'),
-         pending_checks=state.get('pending_checks'),
-         portfolio_count=(details.get('portfolio_snapshot') or {}).get('portfolio_count'),
-         open_position_count=(details.get('portfolio_snapshot') or {}).get('open_position_count'),
-         trade_count=(details.get('trade_snapshot') or {}).get('trade_count'),
-         signal_count=(details.get('market_snapshot') or {}).get('signal_count'))
     return state
 
 
@@ -18918,20 +18837,14 @@ def _v90r41_readiness_retry_loop():
     deadline=time.time()+120.0
     while not _STARTUP_GATE.snapshot().get('ok') and time.time()<deadline:
         time.sleep(2.0)
-        try:
-            _v90r41_prime_startup_state()
-        except Exception as ex:
-            emit('v90_startup_readiness_retry_error',error_type=type(ex).__name__)
+        _v90r41_prime_startup_state()
     state=_STARTUP_GATE.snapshot()
-    if not state.get('ok'):
-        emit('v90_startup_readiness_deferred',pending_checks=state.get('pending_checks'))
+    if not state.get('ok'): emit('v90_startup_readiness_deferred',pending_checks=state.get('pending_checks'))
 
 
 def _v90r41_background_storage_audit():
-    try:
-        _v90_storage_audit()
-    except Exception as ex:
-        emit('v90_storage_audit_error',phase='background_startup',error=f'{type(ex).__name__}: {ex}')
+    try: _v90_storage_audit()
+    except Exception as ex: emit('v90_storage_audit_error',phase='background_startup',error_type=type(ex).__name__)
 
 
 # VERITAS V90 EXECUTION SAFETY R40
