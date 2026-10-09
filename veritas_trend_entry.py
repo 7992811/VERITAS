@@ -309,18 +309,11 @@ def _signal_continuation_event(row,price=None,now=None):
     if current.get('catalyst_continuation'):
         return None
     integrity=plan.get('trade_integrity') or {}
-    parent_reason=str(current.get('spent_reason') or plan.get('reason') or '')
-    parent_consumed=bool(current.get('spent') or parent_reason in (
-        'SAME_TF_TARGET_ALREADY_REACHED','R74_EVENT_TARGET_REACHED'))
-    # A hard invalidation tied to the consumed parent setup must not veto a new
-    # continuation identity. Unspent/current invalidation and fast-TF conflict
-    # remain hard. Direction alignment is re-checked below on the current row.
-    if integrity.get('fast_tf_conflict'):
+    # Hard thesis/consistency invalidation remains authoritative. Source/session
+    # failures no longer create hard_invalidation upstream, so there is no need
+    # to weaken this safety boundary for consumed parent events.
+    if integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict'):
         return None
-    if integrity.get('hard_invalidation') and not parent_consumed:
-        return None
-    # Once the decision layer publishes LONG/SHORT, stale parent arbitration
-    # metadata cannot contradict that same current published decision.
 
     hs=row.get('horizon_structure') or {}
     hdir=str(hs.get('direction') or row.get('horizon_structure_direction') or '')
