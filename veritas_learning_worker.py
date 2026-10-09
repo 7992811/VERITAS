@@ -15,6 +15,7 @@ from psycopg.rows import dict_row
 import veritas_learning_v2 as L
 import veritas_learning_v2_registry as REGISTRY
 
+WORKER_PROTOCOL="EXTERNAL_LEARNING_WORKER_V1"
 INTERVAL=max(60,int(os.getenv("VERITAS_LEARNING_V2_INTERVAL_SECONDS","120")))
 ASSETS=("BTC","ETH","NQ","BRENT","GOLD","MOEX","CNYRUBF")
 PER_ASSET_LIMIT=max(32,min(256,int(os.getenv("VERITAS_LEARNING_V2_PER_ASSET_LIMIT","96"))))
@@ -189,7 +190,22 @@ def run_once(dsn):
         ensure_schema(conn)
         decisions,trades,errors=load_inputs(conn)
         snapshot=L.research_snapshot(decisions,trades)
+        generated=datetime.now(timezone.utc)
+        asset_snapshots={}
+        for asset in ASSETS:
+            asset_decisions=[x for x in decisions if str(x.get("asset") or "")==asset]
+            asset_trades=[x for x in trades if str(x.get("asset") or "")==asset]
+            item=L.research_snapshot(asset_decisions,asset_trades)
+            item["input_counts"]={"decisions":len(asset_decisions),"trades":len(asset_trades)}
+            asset_snapshots[asset]={k:item.get(k) for k in (
+                "status","counts","entry_false_block","diagnostics","hypotheses","input_counts")}
+        snapshot["assets"]=asset_snapshots
         snapshot["input_counts"]={"decisions":len(decisions),"trades":len(trades)}
+        snapshot["producer"]="EXTERNAL_LEARNING_WORKER"
+        snapshot["worker_protocol"]=WORKER_PROTOCOL
+        snapshot["process_role"]="learning"
+        snapshot["heartbeat_at"]=generated.isoformat()
+        snapshot["worker_service_id"]=os.getenv("RENDER_SERVICE_ID","")[:128]
         snapshot["source_errors"]=errors
         snapshot["status"]="DEGRADED" if errors else snapshot["status"]
         snapshot["registry"]=REGISTRY.sync(conn,snapshot,decisions,trades,
