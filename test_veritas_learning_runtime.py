@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import veritas_learning_bridge as BRIDGE
 import veritas_learning_index as INDEX
+import veritas_decision_signature as DS
 
 
 def functions(*names, scope=None):
@@ -120,6 +121,29 @@ class LearningRuntimeTests(unittest.TestCase):
         self.assertEqual(result['final_gate_blockers'],['PRIMARY_SOURCE_GATE_FAILED'])
         self.assertEqual(result['trade_plan']['eligible'],False)
         self.assertEqual(result['execution_eligibility']['eligible'],False)
+
+    def test_decision_signature_changes_on_execution_admission_state(self):
+        base={
+            'research_decision':'LONG','decision':'LONG','regime':'TREND',
+            'trade_plan':{'eligible':True,'reason':'ok','entry_event_id':'E1'},
+            'execution_eligibility':{
+                'eligible':True,'reason':'OK','paper_eligible':True,
+                'paper_execution_reason':'OK','paper_source_blockers':[]},
+            'gates':{'source':True,'time':True}}
+        a=DS.decision_signature('decision',base)
+        variants=[]
+        for patch in (
+            {'eligible':False},
+            {'reason':'TIMING_NOT_READY'},
+            {'paper_eligible':False},
+            {'paper_execution_reason':'WAIT_RETEST'},
+            {'paper_source_blockers':['PRIMARY_SOURCE_GATE_FAILED']},
+        ):
+            row=deepcopy(base)
+            row['execution_eligibility'].update(patch)
+            variants.append(DS.decision_signature('decision',row))
+        self.assertTrue(all(x!=a for x in variants))
+        self.assertEqual(len(set(variants)),len(variants))
 
     def test_memory_trim_preserves_small_last_good_progress(self):
         tree = ast.parse(Path('veritas_intelligence.py').read_text())
