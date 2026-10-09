@@ -803,7 +803,7 @@ function renderSignals(){
   const updatedAt=d.signals_updated_at||d.at;$('stamp').textContent='ОБНОВЛЕНО · '+(updatedAt?new Date(updatedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—');
 
   const tfWeight={ '1m':.30,'5m':.70,'1h':1.35,'4h':1.80,'1d':2.30,'3d':1.35,'7d':1.10 };
-  const finite=v=>Number.isFinite(Number(v))?Number(v):null;
+  const finite=v=>v==null||v===''||typeof v==='boolean'?null:(Number.isFinite(Number(v))?Number(v):null);
   const validSignal=x=>x&&x.source_gate_pass===true&&x.snapshot_stale!==true;
   const directionWeight=(asset,D,tfs=null)=>{
     const xs=rows.filter(x=>x.asset===asset&&validSignal(x)&&(!tfs||tfs.includes(x.horizon)));
