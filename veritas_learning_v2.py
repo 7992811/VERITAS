@@ -79,6 +79,20 @@ def row_blockers(row):
     return tuple(sorted(set(values)))
 
 
+def has_block_evidence(row):
+    """A reason token explains a block but never creates one by itself."""
+    raw=row.get("final_gate_blockers")
+    if raw is None:
+        raw=row.get("blockers")
+    if isinstance(raw,(list,tuple,set,dict)) and bool(raw):
+        return True
+    if isinstance(raw,str) and raw.strip() not in ("","[]","{}"):
+        return True
+    if row.get("admission_eligible") is False:
+        return True
+    return str(row.get("final_gate_status") or "").upper()=="BLOCK"
+
+
 def _num(v):
     if v is None or isinstance(v, bool):
         return None
@@ -121,8 +135,7 @@ def classify_decision_episode(row):
     blockers=row_blockers(row)
     candidate_direction=str(row.get("candidate_direction") or "")
     candidate_move=(fr if candidate_direction=="LONG" else -fr if candidate_direction=="SHORT" else None)
-    admission=row.get("admission_eligible")
-    blocked=bool(blockers or admission is False or str(row.get("final_gate_status") or "").upper()=="BLOCK")
+    blocked=has_block_evidence(row)
     if (blocked and candidate_move is not None
             and candidate_move>=ENTRY_FALSE_BLOCK_MOVE):
         return {
@@ -196,8 +209,7 @@ def research_diagnostics(decision_rows, trade_rows):
             directional_candidates+=1
         blockers=row_blockers(row)
         admission=row.get("admission_eligible")
-        blocked=bool(blockers or admission is False
-                     or str(row.get("final_gate_status") or "").upper()=="BLOCK")
+        blocked=has_block_evidence(row)
         if admission is False:
             admission_false+=1
         if blocked and direction in ("LONG","SHORT"):
