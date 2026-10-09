@@ -23,6 +23,7 @@ import veritas_strategy_quality as VSQ
 import veritas_learning_exports as VLE
 import veritas_learning_integrity as VLI
 import veritas_trade_diagnostics as VTD
+import veritas_trade_review as VTR
 import veritas_timeframe_management as VTM
 import veritas_startup_guard as VSG
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
@@ -2165,15 +2166,10 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
                   'same_tf_trailing':_position_payload(z).get('same_tf_trailing')}
     c.execute('INSERT INTO paper_orders(portfolio_name,trade_id,created_at,asset,side,price,notional_rub,fee_rub,fraction_nav,reason,payload,client_order_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)',(name,z['active_trade_id'],ts,z['asset'],side,fill_price,executed_notional,fee,frac,reason,json.dumps(source_audit,ensure_ascii=False,default=str),cid))
     completed=remain<=1e-10 or target_fraction<=0
-    _exit_payload=_position_payload(z)
     exit_patch={'last_exit_source_identity':source_audit['price_source_identity'],
                 'last_exit_market_observed_at':quote['observed_at'],
-                'last_exit_thesis_decision':source_audit.get('last_exit_thesis_decision'),
-                'initial_stop_price':_exit_payload.get('initial_stop_price'),
-                'exit_position_stop_price':z.get('stop_price'),
-                'exit_trailing_stop_price':_exit_payload.get('trailing_stop'),
-                'exit_effective_stop_price':VPP.effective_stop(z),
-                'exit_effective_stop_reason':str(reason)}
+                'last_exit_thesis_decision':source_audit.get('last_exit_thesis_decision')}
+    exit_patch.update(VTR.exit_stop_patch(z,_position_payload(z),reason,VPP.effective_stop(z)))
     if completed:
         exit_patch.update(exit_reason=str(reason),close_reason=str(reason))
     else:
@@ -2198,20 +2194,8 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         net=gross-fees-fund; entry_nav=float((tr['payload'] or {}).get('entry_nav_rub',INITIAL_NAV_RUB)) if tr and isinstance(tr['payload'],dict) else INITIAL_NAV_RUB
         ret=net/max(entry_nav,1.0); prof=net>0; mw=ret>MEANINGFUL_WIN_NAV
         _final_patch={'last_exit_execution_model':fill}
-        _tpayload=_v90j_json((tr or {}).get('payload'))
-        try:
-            _initial_price=float(_tpayload.get('initial_entry_price') or 0.0)
-            _initial_units=abs(float(_tpayload.get('initial_entry_units') or 0.0))
-            _initial_fee=max(0.0,float(_tpayload.get('initial_entry_fee_rub') or 0.0))
-            if _initial_price>0 and _initial_units>0:
-                _gross_cf=sign*_initial_units*(fill_price-_initial_price)
-                _exit_fee_cf=_initial_units*fill_price*COMMISSION
-                _final_patch.update(
-                    initial_tranche_final_exit_gross_rub=_gross_cf,
-                    initial_tranche_final_exit_net_proxy_rub=_gross_cf-_initial_fee-_exit_fee_cf,
-                    initial_tranche_counterfactual_basis='INITIAL_TRANCHE_HELD_TO_FINAL_EXIT_NO_ADDS_PROXY')
-        except (TypeError,ValueError,OverflowError):
-            pass
+        _final_patch.update(VTR.initial_tranche_counterfactual(
+            _v90j_json((tr or {}).get('payload')),fill_price,sign,COMMISSION))
         c.execute('UPDATE paper_trades SET closed_at=%s,avg_exit_price=%s,net_pnl_rub=%s,return_on_entry_nav=%s,profitable=%s,meaningful_win=%s,status=%s,payload=payload || %s::jsonb WHERE trade_id=%s',(ts,fill_price,net,ret,prof,mw,'CLOSED',json.dumps(_final_patch,ensure_ascii=False,default=str),z['active_trade_id']))
         c.execute('DELETE FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,z['asset']))
     else:
@@ -3078,18 +3062,9 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['opening_fraction']=payload.get('opening_fraction')
         z['opening_fraction_pct']=(100.0*float(payload.get('opening_fraction'))) if payload.get('opening_fraction') is not None else None
         z['max_fraction_pct']=(100.0*float(z.get('max_fraction'))) if z.get('max_fraction') is not None else None
-        z['mfe_pct']=payload.get('r55_lifetime_mfe_pct') if payload.get('r55_lifetime_mfe_pct') is not None else (
-            payload.get('r_accel_mfe_pct') if payload.get('r_accel_mfe_pct') is not None else payload.get('mfe_pct'))
+        z['mfe_pct']=VTR.lifetime_mfe(payload)
         z['mae_pct']=payload.get('r55_lifetime_mae_pct') if payload.get('r55_lifetime_mae_pct') is not None else payload.get('mae_pct')
-        for _field in ('initial_stop_price','exit_position_stop_price','exit_trailing_stop_price',
-                       'exit_effective_stop_price','exit_effective_stop_reason','add_count','add_fee_rub',
-                       'last_add_fee_rub','last_add_at','last_add_price','mfe_before_last_add_pct',
-                       'mfe_since_last_add_pct','mae_since_last_add_pct','initial_entry_price',
-                       'initial_entry_units','initial_entry_fee_rub',
-                       'initial_tranche_final_exit_gross_rub',
-                       'initial_tranche_final_exit_net_proxy_rub',
-                       'initial_tranche_counterfactual_basis'):
-            z[_field]=payload.get(_field)
+        z.update(VTR.closed_trade_fields(payload))
         entry=_v90j_float(z.get('avg_entry_price')); exitp=_v90j_float(z.get('avg_exit_price'))
         # Historical records created before V2 can be repaired only from exact stored telemetry.
         # Never synthesize MFE/MAE from unrelated horizon outcomes.
