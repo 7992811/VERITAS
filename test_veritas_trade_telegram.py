@@ -15,7 +15,7 @@ from veritas_trade_approvals import ApprovalError, TradeApprovals, CALLBACKS
 from veritas_trade_telegram import (
     InternalTradeClient, TradeTelegramBridge, TradeTelegramError,
     build_from_env, execution_text, proposal_text, start_worker, handle_operator_message,
-    readiness_text,
+    readiness_text, _worker_poll_seconds,
 )
 from test_veritas_trade_approvals import BOT, KEY, NOW, OWNER, SQLiteConnection, terms
 
@@ -295,6 +295,15 @@ class TelegramRepositoryIntegrationTests(unittest.TestCase):
 
 
 class InternalTradeTransportTests(unittest.TestCase):
+    def test_currency_worker_cadence_is_fast_but_bounded(self):
+        cases = (({}, 2.0), ({"VERITAS_CURRENCY_TRADE_POLL_SECONDS":"1"}, 1.0),
+                 ({"VERITAS_CURRENCY_TRADE_POLL_SECONDS":"0.01"}, 1.0),
+                 ({"VERITAS_CURRENCY_TRADE_POLL_SECONDS":"20"}, 5.0),
+                 ({"VERITAS_CURRENCY_TRADE_POLL_SECONDS":"bad"}, 2.0))
+        for env, expected in cases:
+            with self.subTest(env=env), patch.dict(os.environ, env, clear=True):
+                self.assertEqual(_worker_poll_seconds(), expected)
+
     def test_disabled_defaults_touch_no_client_identity_or_worker(self):
         def forbidden(*args, **kwargs):
             raise AssertionError("disabled mode touched a runtime dependency")
