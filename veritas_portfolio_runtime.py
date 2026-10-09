@@ -5099,6 +5099,13 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
             _record_entry_outcome(row,'BLOCKED','CANONICAL_ADD_REQUIRES_NEW_CONFIRMATION',
                                   event_id=new_event)
             return 0.0
+        actual=VX.entry_gate(row,float(price),direction,requested,existing,
+                            existing_target_price=VX.stored_position_target_price(existing),now=VPG.utc_datetime(ts),
+                            execution_fraction=max(0.0,requested-current))
+        hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
+        if hard:
+            _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
+            return 0.0
         efficiency=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('execution_efficiency') or {}
         add_check=VEE.add_precheck(existing,row,price,direction,
                                    getattr(_vp_base,'COMMISSION',VC.COMMISSION_RATE),efficiency)
@@ -5106,19 +5113,12 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
             _record_entry_outcome(row,'BLOCKED',add_check.get('reason'),
                                   current_fraction=current,**(add_check.get('details') or {}))
             return 0.0
-        actual=VX.entry_gate(row,float(price),direction,requested,existing,
-                            existing_target_price=VX.stored_position_target_price(existing),now=VPG.utc_datetime(ts),
-                            execution_fraction=max(0.0,requested-current))
         incremental=VEE.incremental_gate(actual,efficiency)
         if not incremental.get('eligible'):
             _record_entry_outcome(row,'BLOCKED',incremental.get('reason'),
                                   canonical_add_gate=actual,current_fraction=current)
             return 0.0
         row['_canonical_add_before']=add_check.get('before') or {}
-        hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
-        if hard:
-            _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
-            return 0.0
     else:
         if not bool((row or {}).get('_flip_confirmed')):
             _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED')
