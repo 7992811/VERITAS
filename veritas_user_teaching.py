@@ -229,7 +229,9 @@ def acceleration_policy_snapshot():
             "profit_protection": (
                 "MFE >=0.15 percentage points starts persistence testing; after "
                 "sustained favorable movement, move protection to cost-covered "
-                "breakeven and then trail confirmed structure."
+                "breakeven and then trail confirmed structure. Once armed, the "
+                "structural MFE stop is execution authority; a persistence-write "
+                "failure exits to cash instead of silently dropping protection."
             ),
             "intermediate_timeframes": (
                 "Build 15m and 30m confirmation only from completed native 5m bars; "
@@ -323,6 +325,14 @@ def runtime_consistency():
     holds=protection.get("hold_seconds_by_timeframe") or {}
     if any(float(holds.get(k) or -1)!=float(v) for k,v in expected.items()):
         errors.append("MFE_PERSISTENCE_TIMERS_CONTRADICT_OWNER_POLICY")
+    if protection.get("structural_stop_is_exit_authority") is not True:
+        errors.append("MFE_STRUCTURAL_STOP_MUST_BE_EXIT_AUTHORITY")
+    if protection.get("persistence_failure_action")!="EXIT_TO_CASH":
+        errors.append("MFE_PERSISTENCE_FAILURE_MUST_EXIT_TO_CASH")
+    if protection.get("execution_receipt_required") is not True:
+        errors.append("MFE_EXECUTION_RECEIPT_MUST_BE_REQUIRED")
+    if protection.get("allow_soft_rearm_after_structural_lock") is not False:
+        errors.append("MFE_STRUCTURAL_LOCK_CANNOT_SOFT_REARM")
     if efficiency.get("critical_excursion_durable") is not True:
         errors.append("CRITICAL_EXCURSION_MUST_BE_DURABLE")
     if efficiency.get("persistence_timer_durable") is not True:
@@ -350,6 +360,7 @@ def observation_integrity_policy_snapshot():
         "requirements":{
             "observation":"A cadence gap invalidates continuity evidence but cannot discard a later fresh quote or its extrema.",
             "mfe":"MFE/MAE and the 0.15% persistence timer are durable execution state.",
+            "execution_receipt":"A matured MFE protection must carry the owner teaching ID, ACTIVE/EXITED state and structural exit authority; persistence failure exits to cash.",
             "precedence":"Owner-authored invariants outrank adaptive and learned suggestions.",
             "conflicts":"Runtime policy is regression-checked against active owner teaching.",
             "learning":"Incomplete path evidence cannot be promoted into a contradictory learned rule.",
