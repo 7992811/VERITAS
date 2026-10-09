@@ -175,7 +175,7 @@ class BookStorageSQLTests(unittest.TestCase):
         original, outcomes = BS.configure, []
         def observe(raw, **kwargs):
             self.assertIs(raw, c)
-            outcome = original(raw, requested=requested)
+            outcome = original(raw, requested=requested, prepared=kwargs.get('prepared'))
             outcomes.append(outcome)
             return outcome
         with patch.object(BS, 'configure', side_effect=observe) as probe:
@@ -198,7 +198,7 @@ class BookStorageSQLTests(unittest.TestCase):
                         self.assertEqual(self.setting(c), 'lz4' if requested == 'lz4' else 'pglz')
                         self.assertEqual(PIO.write_patches(c, self.patches(), optional=True), {'trade-00', 'trade-01'})
                         self.assertEqual(self.contents(c), expected)
-                    probe.assert_called_once_with(c)
+                    probe.assert_called_once()
                     self.assertEqual(configured[0]['status'] if configured[0] else None,
                                      'APPLIED' if requested == 'lz4' else None)
                     if requested == 'lz4':
