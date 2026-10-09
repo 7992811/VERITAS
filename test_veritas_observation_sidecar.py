@@ -76,6 +76,20 @@ class Connect:
 
 
 class SidecarTests(unittest.TestCase):
+    def setUp(self):
+        self.previous_status=SIDECAR._state.get("status")
+        SIDECAR._state["status"]="READY"
+
+    def tearDown(self):
+        SIDECAR._state["status"]=self.previous_status
+
+    def test_not_ready_seed_and_seal_are_sql_free_noops(self):
+        row=position();c=Cursor(row)
+        SIDECAR._state["status"]="NOT_STARTED"
+        self.assertIsNone(SIDECAR.seed(c,row,quote(0),stamp(0)))
+        self.assertIsNone(SIDECAR.seal(c,row,quote(10),stamp(10)))
+        self.assertEqual(c.writes,0)
+
     def test_seed_sample_and_seal_produce_causal_eligible_path(self):
         row=position();c=Cursor(row)
         seeded=SIDECAR.seed(c,row,quote(0),stamp(0))
