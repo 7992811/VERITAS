@@ -238,8 +238,17 @@ def research_diagnostics(decision_rows, trade_rows):
     top_contexts.sort(key=lambda x:(x["n"],x["missed_directional_episodes"]),reverse=True)
     trade_contexts=defaultdict(int)
     valid_trade_rows=0
+    outcome_trade_rows=path_trade_rows=stop_ready_rows=exit_ready_rows=0
     for row in trade_rows:
         trade_contexts[_digest(_context(row))]+=1
+        if row.get("outcome_evidence_eligible") is True:
+            outcome_trade_rows+=1
+        if row.get("path_evidence_eligible") is True:
+            path_trade_rows+=1
+        if row.get("stop_replay_ready") is True:
+            stop_ready_rows+=1
+        if row.get("exit_replay_ready") is True:
+            exit_ready_rows+=1
         if _num(row.get("mae")) is not None and _num(row.get("mfe")) is not None:
             valid_trade_rows+=1
     largest=max((len(rows) for rows in contexts.values()),default=0)
@@ -274,6 +283,10 @@ def research_diagnostics(decision_rows, trade_rows):
         "known_blockers":dict(known_blockers.most_common(16)),
         "top_contexts":top_contexts[:8],
         "trade_rows":len(trade_rows),
+        "outcome_evidence_trade_rows":outcome_trade_rows,
+        "path_evidence_trade_rows":path_trade_rows,
+        "stop_replay_ready_rows":stop_ready_rows,
+        "exit_replay_ready_rows":exit_ready_rows,
         "valid_mfe_mae_trade_rows":valid_trade_rows,
         "trade_contexts":len(trade_contexts),
         "largest_trade_context_n":trade_largest,
