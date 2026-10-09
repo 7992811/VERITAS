@@ -217,8 +217,6 @@ def _create_portfolio_schema(c):
         CREATE INDEX IF NOT EXISTS idx_paper_trades_portfolio_closed ON paper_trades(portfolio_name,closed_at DESC);
         CREATE INDEX IF NOT EXISTS idx_paper_trades_event_reuse
           ON paper_trades(portfolio_name,asset,direction,(payload->>'r66_event_id'));
-        CREATE INDEX IF NOT EXISTS idx_paper_orders_trade_side
-          ON paper_orders(trade_id,side);
         CREATE TABLE IF NOT EXISTS paper_orders(
           order_id BIGSERIAL PRIMARY KEY, portfolio_name TEXT NOT NULL, trade_id TEXT,
           created_at TIMESTAMPTZ NOT NULL, asset TEXT NOT NULL, side TEXT NOT NULL,
@@ -229,6 +227,7 @@ def _create_portfolio_schema(c):
         ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS client_order_id TEXT;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_orders_client_order_id ON paper_orders(client_order_id) WHERE client_order_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_paper_orders_portfolio_ts ON paper_orders(portfolio_name,created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_paper_orders_trade_side ON paper_orders(trade_id,side);
         CREATE TABLE IF NOT EXISTS paper_nav_history(
           portfolio_name TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL,
           nav_rub DOUBLE PRECISION NOT NULL, nav_usd DOUBLE PRECISION,
