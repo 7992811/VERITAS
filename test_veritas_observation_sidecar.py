@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from datetime import datetime,timedelta,timezone
 import json
+from pathlib import Path
 import unittest
 
 import veritas_observation_path as PATH
@@ -112,6 +113,14 @@ class SidecarTests(unittest.TestCase):
         closed=dict(row,status="CLOSED",closed_at=stamp(30))
         closed["payload"]=dict(row["payload"],observation_path=sealed)
         self.assertEqual(PATH.assessment(closed)["reason"],"UNOBSERVED_ENTRY_PREFIX")
+
+    def test_canonical_lifecycle_seeds_and_seals_sidecar(self):
+        runtime=Path("veritas_portfolio_runtime.py").read_text()
+        guard=Path("veritas_position_guard.py").read_text()
+        self.assertIn("VOS.seed(c,dict(opened),entry_quote,ts)",runtime)
+        self.assertIn("sidecar_witness=VOS.seal(c,z,q,ts)",runtime)
+        self.assertIn("allow_direct=False",guard)
+        self.assertIn("veritas-observation-sidecar",Path("veritas_observation_sidecar.py").read_text())
 
     def test_witness_size_is_bounded_and_sidecar_has_no_production_authority(self):
         row=position();c=Cursor(row)
