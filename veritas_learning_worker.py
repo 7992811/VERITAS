@@ -61,6 +61,9 @@ def load_inputs(conn,limit=PER_ASSET_LIMIT):
                      COALESCE(d.payload#>>'{learning_provenance,source_identity,key}',
                               d.payload#>>'{timeframe_entry_context,source_identity,key}',
                               d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,key}','') AS source_key,
+                     COALESCE(d.payload#>>'{learning_provenance,source_identity,contract_id}',
+                              d.payload#>>'{timeframe_entry_context,source_identity,contract_id}',
+                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}','') AS contract_id,
                      COALESCE(d.payload->>'horizon_structure_direction',
                               d.payload#>>'{timeframe_entry_context,event,direction}',
                               d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}','') AS candidate_direction,
@@ -81,6 +84,8 @@ def load_inputs(conn,limit=PER_ASSET_LIMIT):
                      COALESCE(payload->>'strategy_policy_hash','') AS policy_hash,
                      COALESCE(payload#>>'{price_source_lock,key}',
                               payload#>>'{entry_execution_source_identity,key}','') AS source_key,
+                     COALESCE(payload#>>'{price_source_lock,contract_id}',
+                              payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
                      mae_pct AS mae,mfe_pct AS mfe,capture_ratio,
                      net_pnl_rub,primary_attribution
               FROM v90_learning_episodes
