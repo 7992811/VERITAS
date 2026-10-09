@@ -49,7 +49,7 @@ class QuoteRefreshLaneTests(unittest.TestCase):
 
     def test_protective_pass_is_cache_only(self):
         source=inspect.getsource(GUARD.run_protective_pass)
-        self.assertIn("cache_only=True",source)
+        self.assertIn("_cache_only_quote=True",source)
         self.assertNotIn("fetch_guard_quote(",source)
         self.assertNotIn("refresh_position_quotes(",source)
 
