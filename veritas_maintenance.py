@@ -484,6 +484,9 @@ class MaintenanceLane:
             if status == "ERROR":
                 self._periodic_pressure_until = max(
                     self._periodic_pressure_until, time.monotonic() + self.error_retry_seconds)
+            elif status in ("RETRY", "UNAVAILABLE"):
+                self._periodic_pressure_until = max(
+                    self._periodic_pressure_until, time.monotonic() + max(15., job.retry_seconds))
             elif status.startswith(("DEFERRED_TIME", "DEFERRED_MEMORY")):
                 self._periodic_pressure_until = max(
                     self._periodic_pressure_until, time.monotonic() + max(30., job.retry_seconds))
