@@ -116,6 +116,17 @@ class PaperBook:
                          t["payload"].get("r66_event_id")) == args and t["status"] == "CLOSED"
                         for t in self.trades.values())
             return Result([{"ok": 1}] if found else [])
+        if (q.startswith("SELECT COALESCE(SUM(notional_rub),0) AS exit_notional_rub")
+                and " FROM paper_orders " in q):
+            exits=[order for order in self.orders
+                   if order.get("trade_id")==args[0]
+                   and order.get("side") in ("SELL","BUY_TO_COVER")]
+            notional=sum(float(order.get("notional_rub") or 0.0) for order in exits)
+            units=sum(float(order.get("notional_rub") or 0.0)/float(order.get("price") or 1.0)
+                      for order in exits if float(order.get("price") or 0.0)>0)
+            return Result([{"exit_notional_rub":notional,
+                            "exit_units":units,
+                            "exit_fill_count":len(exits)}])
         if q.startswith("SELECT") and " FROM paper_positions" in q:
             rows = list(self.positions.values())
             if "portfolio_name=%s AND asset=%s" in q:
