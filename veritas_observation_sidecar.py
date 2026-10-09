@@ -104,8 +104,15 @@ def _upsert(c,rows):
     return int((result or {}).get("n") or 0)
 
 
+def is_ready():
+    with _state_lock:
+        return _state.get("status") in ("READY","OK")
+
+
 def seed(c,row,quote,checked_at):
     """Seed the exact post-fill witness; failure can never roll back accounting."""
+    if not is_ready():
+        return None
     row=dict(row or {})
     trade_id=row.get("active_trade_id") or row.get("trade_id")
     witness=PATH.observe(row,quote,checked_at,at_entry=True,lane="OBSERVATION_SIDECAR_ENTRY")
@@ -127,6 +134,8 @@ def seed(c,row,quote,checked_at):
 
 def seal(c,row,quote,checked_at):
     """Append the exact exit observation and return a witness for close accounting."""
+    if not is_ready():
+        return None
     row=dict(row or {})
     trade_id=row.get("active_trade_id") or row.get("trade_id")
     if not trade_id:
@@ -196,6 +205,8 @@ def start(ns,quote_selector):
     try:
         ensure_schema(ns["pg_connect"])
         schema_ready=True
+        with _state_lock:
+            _state.update(status="READY",error=None)
     except Exception as exc:
         with _state_lock:
             _state.update(status="SCHEMA_RETRY",error=f"{type(exc).__name__}: {exc}")
@@ -213,6 +224,8 @@ def start(ns,quote_selector):
                 if not schema_ready:
                     ensure_schema(ns["pg_connect"])
                     schema_ready=True
+                    with _state_lock:
+                        _state.update(status="READY",error=None)
                 result=sample_once(ns["pg_connect"],quote_selector)
                 with _state_lock:
                     _state.update(result,error=None)
