@@ -2398,8 +2398,14 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     for row in candidates.values():
         VAT.begin_cycle(row,ts)
     p,pos=_portfolio_rows(c,name)
-    _apply_funding(c,p,pos,prices,ruonia,ts)
-    p,pos=_portfolio_rows(c,name); nav,unreal,gross,net=_mark_nav(p,pos,prices)
+    # Funding changes only the portfolio/trade accounting totals; positions are
+    # untouched. Keep the already locked transaction snapshot and advance the
+    # portfolio funding total locally instead of paying for a second full read.
+    funding_delta=_apply_funding(c,p,pos,prices,ruonia,ts)
+    if funding_delta:
+        p=dict(p)
+        p['funding_rub']=float(p.get('funding_rub') or 0.0)+float(funding_delta)
+    nav,unreal,gross,net=_mark_nav(p,pos,prices)
     hwm=max(float(p['high_water_nav_rub']),nav); dd=max(0.0,1-nav/max(hwm,1.0)); rg=_risk_governor(dd)
     # Determine targets, first by per-asset merit.
     targets={}
@@ -2443,6 +2449,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         while sum(targets.values())>cap+1e-9:
             a=max(targets,key=targets.get); targets[a]=max(0.0,targets[a]-POSITION_STEP)
     # Process direction flips/closures before additions.
+    book_mutated=False
     for z in list(pos):
         row=candidates.get(z['asset']); target=float(targets.get(z['asset'],0.0)); px=float(prices.get(z['asset'],z['last_price']))
         original_target=target
@@ -2519,8 +2526,15 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                 targets[z['asset']]=0.0
         if target<current_frac-0.025:
             reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STOP' if stop_hit else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STRUCTURE_BREAK_EXIT_TO_CASH' if confirmed_flip and row and row.get('_v90_exit_only_flip') else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'
-            _close_or_reduce(c,p,name,VPT.journal_position(z,mgmt,reason,ts),px,target,nav,ts,reason)
-    p,pos=_portfolio_rows(c,name,mark_only=True); nav,unreal,gross,net=_mark_nav(p,pos,prices)
+            changed=_close_or_reduce(c,p,name,VPT.journal_position(z,mgmt,reason,ts),px,target,nav,ts,reason)
+            book_mutated=bool(changed) or book_mutated
+    if book_mutated:
+        p,pos=_portfolio_rows(c,name,mark_only=True)
+        nav,unreal,gross,net=_mark_nav(p,pos,prices)
+    else:
+        # No financial mutation occurred; the transaction-local rows above are
+        # still authoritative. Avoid two unnecessary DB round trips.
+        nav,unreal,gross,net=_mark_nav(p,pos,prices)
     # Fresh post-close snapshot: each asset appears at most once in candidates.
     # Pass it through the same transaction so lower layers do not re-read the
     # identical row before any mutation of that asset occurs.
@@ -2552,12 +2566,17 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             if target>cur+0.025:
                 _record_entry_outcome(row,'BLOCKED','EXECUTION_CONTROL_BLOCKED',requested_fraction=target)
                 _open_or_add(c,p,name,asset,row['research_decision'],px,target,nav,ts,row,'ADMISSION_OR_ADD')
+                if (row.get('_execution_audit') or {}).get('status')=='EXECUTED':
+                    book_mutated=True
             else:
                 _record_entry_outcome(row,'HELD','TARGET_ALREADY_REACHED',current_fraction=cur)
     else:
         for row in candidates.values():
             _record_entry_outcome(row,'BLOCKED','PORTFOLIO_RISK_LIMIT')
-    p,pos=_portfolio_rows(c,name,mark_only=True); nav,unreal,gross,net=_mark_nav(p,pos,prices); hwm=max(float(p['high_water_nav_rub']),nav); dd=max(0.0,1-nav/max(hwm,1.0))
+    if book_mutated:
+        p,pos=_portfolio_rows(c,name,mark_only=True)
+    nav,unreal,gross,net=_mark_nav(p,pos,prices)
+    hwm=max(float(p['high_water_nav_rub']),nav); dd=max(0.0,1-nav/max(hwm,1.0))
     # benchmark accrual since last mark
     bench=float(p['benchmark_nav_rub']); last=p['last_mark_at']
     if last is not None and ruonia is not None:
