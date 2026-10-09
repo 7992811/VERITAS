@@ -4728,13 +4728,14 @@ def _v90r65_crypto_trailing_activation(asset,signed_profit):
     return {'active':bool(float(signed_profit)>=threshold),
             'threshold_pct':100.0*threshold,'signed_profit_pct':100.0*float(signed_profit)}
 
-def _v90tr_apply(c,name,candidates,prices,ts):
+def _v90tr_apply(c,name,candidates,prices,ts,positions=None):
     # R17 used to ratchet crypto stops after ANY positive tick. That turned
     # +0.26%-0.28% MFE into fee-negative STOPs. Before the net-profit lock has
     # room to arm, do not create a structural trailing stop for BTC/ETH.
     work=dict(candidates or {})
     try:
-        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        positions=(positions if positions is not None else
+                   c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall())
         for z0 in positions or []:
             z=dict(z0); asset=str(z.get('asset') or '')
             if VTM.owns_position(z):
@@ -4757,7 +4758,8 @@ def _v90tr_apply(c,name,candidates,prices,ts):
                 work.pop(asset,None)
     except Exception:
         pass
-    return _v90r65_base_trailing_apply(c,name,work,prices,ts)
+    return _v90r65_base_trailing_apply(
+        c,name,work,prices,ts,positions=positions)
 
 def report(pg_connect):
     d=dict(_v90r65_base_report(pg_connect) or {})
