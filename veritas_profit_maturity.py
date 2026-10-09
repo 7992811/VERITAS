@@ -79,9 +79,11 @@ def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
     last=p.get("profit_maturity_last_window")
     streak=int(p.get("profit_maturity_positive_streak") or 0)
     first_at=_num(p.get("profit_maturity_first_positive_at"))
+    window_clean=bool(p.get("profit_maturity_current_window_positive", True))
     changed=False
     if last is None or int(last)!=bucket:
         changed=True
+        window_clean=positive
         if positive:
             streak=streak+1
             if streak==1 or first_at is None:
@@ -89,6 +91,10 @@ def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
         else:
             streak=0; first_at=None
         last=bucket
+    elif not positive and window_clean:
+        # Any observed loss inside the active management window invalidates the
+        # whole window. A later rebound in that same bucket cannot restore it.
+        changed=True; window_clean=False; streak=0; first_at=None
     dwell=max(0.0,observed-first_at) if first_at is not None else 0.0
     armed=bool(p.get("profit_maturity_armed"))
     if not armed and streak>=required and dwell>=minimum_dwell:
@@ -100,6 +106,7 @@ def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
         "profit_maturity_required_windows":required,
         "profit_maturity_positive_streak":streak,
         "profit_maturity_last_window":last,
+        "profit_maturity_current_window_positive":window_clean,
         "profit_maturity_first_positive_at":first_at,
         "profit_maturity_last_observed_at":observed,
         "profit_maturity_last_favorable_pct":100.0*favorable,
