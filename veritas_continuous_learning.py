@@ -679,8 +679,8 @@ class ContinuousLearning:
 
         Rotating assets prevents the research lane from competing with trading
         for the full 512 MiB process budget.  Outcomes come from the compact
-        materialized episode table; only the matching decision payload is read
-        for frozen pre-outcome context.  No entry/stop/exit/risk mutation occurs.
+        materialized episode table, which already contains the frozen pre-outcome
+        decision context needed by Learning 2.0.  No entry/stop/exit/risk mutation occurs.
         """
         cursor=deepcopy(cursor)
         index=int(cursor.get("asset_index") or 0)%len(LEARNING_V2_ASSETS)
@@ -690,43 +690,17 @@ class ContinuousLearning:
         read_started=time.monotonic()
         with transaction(self.connect, context) as c:
             decisions=c.execute("""
-              WITH recent AS MATERIALIZED (
-                SELECT entity_key,decision_ts,asset,horizon,regime,decision,forward_return
-                FROM v90_decision_episodes
-                WHERE asset=%s
-                ORDER BY decision_ts DESC
-                LIMIT %s
-              )
-              SELECT d.id AS decision_id,e.entity_key,e.decision_ts AS event_ts,
-                     e.asset,e.horizon,e.regime,e.decision,e.forward_return,
-                     COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
-                              d.payload#>>'{trade_plan,setup_family}','') AS setup_family,
-                     COALESCE(d.payload#>>'{learning_provenance,policy_hash}',
-                              d.payload->>'strategy_policy_hash','') AS policy_hash,
-                     COALESCE(d.payload#>>'{learning_provenance,source_identity,key}',
-                              d.payload#>>'{timeframe_entry_context,source_identity,key}',
-                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,key}','') AS source_key,
-                     COALESCE(d.payload#>>'{learning_provenance,source_identity,contract_id}',
-                              d.payload#>>'{timeframe_entry_context,source_identity,contract_id}',
-                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}','') AS contract_id,
-                     CASE WHEN e.decision IN ('LONG','SHORT') THEN e.decision
-                          ELSE COALESCE(d.payload#>>'{timeframe_entry_context,event,direction}',
-                                        d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}',
-                                        NULLIF(d.payload->>'horizon_structure_direction','NO_TRADE'),'') END AS candidate_direction,
-                     CASE WHEN d.payload->>'plan_eligible' IN ('true','false')
-                          THEN (d.payload->>'plan_eligible')::boolean
-                          WHEN d.payload->>'trade_entry_eligible' IN ('true','false')
-                          THEN (d.payload->>'trade_entry_eligible')::boolean
-                          ELSE NULL END AS admission_eligible,
-                     COALESCE(d.payload->>'final_gate_status','') AS final_gate_status,
-                     COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers
-              FROM recent e
-              CROSS JOIN LATERAL (
-                SELECT id,payload FROM ledger_events d
-                WHERE d.entity_key=e.entity_key AND d.event_type='decision'
-                ORDER BY d.id DESC LIMIT 1
-              ) d
-              ORDER BY e.decision_ts DESC
+              SELECT decision_id,entity_key,decision_ts AS event_ts,
+                     asset,horizon,regime,decision,forward_return,
+                     setup_family,policy_hash,source_key,contract_id,
+                     candidate_direction,admission_eligible,final_gate_status,
+                     final_gate_blockers
+              FROM v90_decision_episodes
+              WHERE asset=%s
+                AND learning_v2_projection_version='LEARNING_V2_EPISODE_V1'
+                AND decision_id IS NOT NULL
+              ORDER BY decision_ts DESC
+              LIMIT %s
             """,(asset,limit)).fetchall()
             decision_read_seconds=time.monotonic()-read_started
             context.check()
@@ -757,7 +731,7 @@ class ContinuousLearning:
         current.update(asset=asset,
                        input_counts={"decisions":len(decision_rows),"trades":len(trade_rows)},
                        generated_at=clock().isoformat(),
-                       source="MATERIALIZED_OUTCOMES_PLUS_FROZEN_DECISION_CONTEXT",
+                       source="MATERIALIZED_LEARNING_V2_EPISODES",
                        automatic_production_promotion=False)
         context.check()
         registry_started=time.monotonic()
