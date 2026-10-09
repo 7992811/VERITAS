@@ -179,6 +179,97 @@ def false_block_summary(rows):
     return {"version":VERSION,"missed_directional_episodes":total,"blockers":ranked[:32]}
 
 
+def research_diagnostics(decision_rows, trade_rows):
+    """Explain why research did or did not create candidates without exposing raw prose."""
+    contexts=defaultdict(list)
+    blocked_directional=0
+    directional_candidates=0
+    admission_false=0
+    unparsed_blocked=0
+    known_blockers=Counter()
+    missed=learnable_missed=hard_veto_missed=0
+    max_learnable_false_block_n=0
+    for row in decision_rows:
+        contexts[_digest(_context(row))].append(row)
+        direction=str(row.get("candidate_direction") or "")
+        if direction in ("LONG","SHORT"):
+            directional_candidates+=1
+        blockers=row_blockers(row)
+        admission=row.get("admission_eligible")
+        blocked=bool(blockers or admission is False
+                     or str(row.get("final_gate_status") or "").upper()=="BLOCK")
+        if admission is False:
+            admission_false+=1
+        if blocked and direction in ("LONG","SHORT"):
+            blocked_directional+=1
+            if not blockers:
+                unparsed_blocked+=1
+            for blocker in blockers:
+                known_blockers[blocker]+=1
+        classified=classify_decision_episode(row)
+        if classified.get("kind")=="MISSED_DIRECTIONAL_MOVE":
+            missed+=1
+            bs=set(classified.get("blockers") or ())
+            if bs & LEARNABLE_ENTRY_BLOCKERS:
+                learnable_missed+=1
+            if bs & FORBIDDEN_ENTRY_BLOCKERS:
+                hard_veto_missed+=1
+    top_contexts=[]
+    for rows in contexts.values():
+        scope=_context(rows[0]) if rows else {}
+        summary=false_block_summary(rows)
+        for b in summary.get("blockers") or []:
+            if b.get("blocker") in LEARNABLE_ENTRY_BLOCKERS:
+                max_learnable_false_block_n=max(max_learnable_false_block_n,int(b.get("n") or 0))
+        top_contexts.append({"n":len(rows),"scope":scope,
+                             "missed_directional_episodes":summary.get("missed_directional_episodes",0)})
+    top_contexts.sort(key=lambda x:(x["n"],x["missed_directional_episodes"]),reverse=True)
+    trade_contexts=defaultdict(int)
+    valid_trade_rows=0
+    for row in trade_rows:
+        trade_contexts[_digest(_context(row))]+=1
+        if _num(row.get("mae")) is not None and _num(row.get("mfe")) is not None:
+            valid_trade_rows+=1
+    largest=max((len(rows) for rows in contexts.values()),default=0)
+    contexts_ge_min=sum(len(rows)>=MIN_CONTEXT_N for rows in contexts.values())
+    trade_largest=max(trade_contexts.values(),default=0)
+    trade_contexts_ge_min=sum(n>=MIN_TRADE_N for n in trade_contexts.values())
+    if blocked_directional==0:
+        zero_reason="NO_BLOCKED_DIRECTIONAL_EPISODES"
+    elif missed==0:
+        zero_reason="NO_FAVOURABLE_BLOCKED_MOVE_AT_THRESHOLD"
+    elif learnable_missed==0:
+        zero_reason="NO_LEARNABLE_BLOCKER_MATCH"
+    elif contexts_ge_min==0:
+        zero_reason="DECISION_COHORTS_TOO_SMALL"
+    elif max_learnable_false_block_n<MIN_FALSE_BLOCK_N:
+        zero_reason="LEARNABLE_BLOCKER_NOT_RECURRING_ENOUGH"
+    else:
+        zero_reason="ENTRY_CANDIDATE_CONDITIONS_PRESENT"
+    return {
+        "decision_rows":len(decision_rows),
+        "decision_contexts":len(contexts),
+        "largest_decision_context_n":largest,
+        "decision_contexts_ge_min":contexts_ge_min,
+        "directional_candidates":directional_candidates,
+        "blocked_directional":blocked_directional,
+        "admission_false":admission_false,
+        "unparsed_blocked_directional":unparsed_blocked,
+        "missed_directional_episodes":missed,
+        "learnable_missed_directional":learnable_missed,
+        "hard_veto_missed_directional":hard_veto_missed,
+        "max_learnable_false_block_n_in_context":max_learnable_false_block_n,
+        "known_blockers":dict(known_blockers.most_common(16)),
+        "top_contexts":top_contexts[:8],
+        "trade_rows":len(trade_rows),
+        "valid_mfe_mae_trade_rows":valid_trade_rows,
+        "trade_contexts":len(trade_contexts),
+        "largest_trade_context_n":trade_largest,
+        "trade_contexts_ge_min":trade_contexts_ge_min,
+        "zero_entry_candidate_reason":zero_reason,
+    }
+
+
 def _hypothesis(kind,scope,proposal,evidence):
     identity={"version":VERSION,"kind":kind,"scope":scope,"proposal":proposal}
     contract={
@@ -291,11 +382,13 @@ def generate_hypotheses(decision_rows, trade_rows):
 
 def research_snapshot(decision_rows, trade_rows):
     hypotheses=generate_hypotheses(decision_rows,trade_rows)
+    diagnostics=research_diagnostics(decision_rows,trade_rows)
     return {
         "version":VERSION,
         "status":"BUILDING" if not hypotheses else "SHADOW_READY",
         "automatic_production_promotion":False,
         "entry_false_block":false_block_summary(decision_rows),
+        "diagnostics":diagnostics,
         "hypotheses":hypotheses,
         "counts":dict(Counter(x["kind"] for x in hypotheses)),
         "principle":"Observed evidence may generate a shadow hypothesis; only independent evidence may promote it.",
