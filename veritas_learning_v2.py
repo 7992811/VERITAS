@@ -45,6 +45,7 @@ def _context(row):
         "horizon": str(row.get("horizon") or ""),
         "regime": str(row.get("regime") or "UNKNOWN"),
         "policy_hash": str(row.get("policy_hash") or row.get("strategy_policy_hash") or ""),
+        "source_key": str(row.get("source_key") or ""),
     }
 
 
@@ -63,10 +64,22 @@ def classify_decision_episode(row):
     mfe=_num(row.get("mfe"))
     mae=_num(row.get("mae"))
     blockers=tuple(sorted(str(x) for x in (row.get("final_gate_blockers") or row.get("blockers") or []) if x))
-    if decision=="NO_TRADE" and fr is not None and abs(fr)>=ENTRY_FALSE_BLOCK_MOVE:
+    candidate_direction=str(row.get("candidate_direction") or "")
+    candidate_move=(fr if candidate_direction=="LONG" else -fr if candidate_direction=="SHORT" else None)
+    if (decision=="NO_TRADE" and candidate_move is not None
+            and candidate_move>=ENTRY_FALSE_BLOCK_MOVE and blockers):
         return {
             "kind":"MISSED_DIRECTIONAL_MOVE",
-            "move":fr,
+            "move":candidate_move,
+            "candidate_direction":candidate_direction,
+            "blockers":blockers,
+            "counterfactual_fill_proven":False,
+        }
+    if decision=="NO_TRADE" and fr is not None and abs(fr)>=ENTRY_FALSE_BLOCK_MOVE:
+        return {
+            "kind":"ABSTENTION_LARGE_MOVE",
+            "move":abs(fr),
+            "candidate_direction":candidate_direction or None,
             "blockers":blockers,
             "counterfactual_fill_proven":False,
         }
@@ -91,7 +104,7 @@ def false_block_summary(rows):
         if c["kind"]!="MISSED_DIRECTIONAL_MOVE":
             continue
         total+=1
-        move=abs(c["move"])
+        move=max(0.0,c["move"])
         blockers=c["blockers"] or ("UNSPECIFIED_BLOCKER",)
         for blocker in blockers:
             z=by[blocker]; z["n"]+=1; z["abs_move_sum"]+=move; z["favourable_move_sum"]+=move
@@ -194,16 +207,18 @@ def generate_hypotheses(decision_rows, trade_rows):
         dr=_directional_return(r)
         if dr is None:
             continue
-        key=(str(r.get("asset") or ""),str(r.get("horizon") or ""),str(r.get("regime") or "UNKNOWN"))
+        key=(str(r.get("asset") or ""),str(r.get("horizon") or ""),str(r.get("regime") or "UNKNOWN"),
+             str(r.get("source_key") or ""),str(r.get("policy_hash") or r.get("strategy_policy_hash") or ""))
         z=router[key][fam]; z[1]+=1; z[0]+=int(dr>0)
-    for (asset,horizon,regime),families in router.items():
+    for (asset,horizon,regime,source_key,policy_hash),families in router.items():
         eligible={f:w/n for f,(w,n) in families.items() if n>=MIN_TRADE_N}
         if len(eligible)<2:
             continue
         best=max(eligible,key=eligible.get)
         out.append(_hypothesis(
             "STRATEGY_ROUTER",
-            {"asset":asset,"horizon":horizon,"regime":regime,"policy_hash":"*"},
+            {"asset":asset,"horizon":horizon,"regime":regime,
+             "source_key":source_key,"policy_hash":policy_hash},
             {"preferred_family":best,"action":"SHADOW_WEIGHT_ONLY","max_weight_shift":0.15},
             {"hit_rates":eligible,"causal_superiority_proven":False}
         ))
