@@ -19,14 +19,15 @@ import veritas_observation_path as PATH
 import veritas_price_source as VPS
 import veritas_protective_io as PIO
 
-VERSION="OBSERVATION_SIDECAR_V1"
+VERSION="OBSERVATION_SIDECAR_V2_SEEDED_ONLY"
 INTERVAL_SECONDS=10.0
 MAX_WITNESS_BYTES=32768
 
 _state={
     "status":"NOT_STARTED","version":VERSION,"interval_seconds":INTERVAL_SECONDS,
     "checked_at":None,"positions":0,"quotes":0,"written":0,"invalid":0,
-    "missing_quotes":0,"duration_seconds":0.0,"error":None,
+    "seeded_positions":0,"handoff_positions":0,"unseeded_carried":0,
+    "sampled_positions":0,"missing_quotes":0,"duration_seconds":0.0,"error":None,
 }
 _state_lock=threading.Lock()
 
@@ -163,27 +164,54 @@ def sample_once(pg_connect,quote_selector,*,now=None):
          PIO.PROTECTION_POSITIONS_SQL+
          ") p LEFT JOIN paper_observation_sidecar s ON s.trade_id=p.active_trade_id "
          "ORDER BY p.portfolio_name,p.asset")
-    updates=[];quotes=invalid=missing=0
+    updates=[];quotes=invalid=missing=seeded=handoff=unseeded=sampled=0
     with pg_connect() as c:
         rows=[dict(x) for x in c.execute(sql).fetchall()]
         for row in rows:
             old=row.pop("sidecar_witness",None)
+            if isinstance(old,dict) and old.get("started_at_entry") is True:
+                seeded+=1
+            elif not isinstance(old,dict):
+                # Reuse only an already-recorded causal prefix from the canonical
+                # path. This copies observed evidence; it never reconstructs history.
+                canonical=PATH.bounded_witness(row)
+                if (isinstance(canonical,dict)
+                        and canonical.get("started_at_entry") is True
+                        and not canonical.get("invalid_observation_count")
+                        and not canonical.get("gap_count")):
+                    old=canonical
+                    handoff+=1
+                else:
+                    unseeded+=1
+                    continue
+            else:
+                # A carried position that started without an exact entry seed can
+                # never become path-eligible. Rewriting it every ten seconds only
+                # consumes DB bandwidth and cannot repair the missing prefix.
+                unseeded+=1
+                continue
             work=_with_witness(row,old)
             try:
                 quote=quote_selector(work,now=clock) or {}
             except Exception:
                 quote={}
-            if quote:
-                quotes+=1
-            else:
+            if not quote:
+                # Missing observation is not an observation. Do not poison the
+                # witness with a fabricated invalid sample. A later real sample
+                # proves a cadence/provider gap if the outage exceeded allowance.
                 missing+=1
+                continue
+            quotes+=1
             witness=PATH.observe(work,quote,clock,lane="OBSERVATION_SIDECAR")
+            sampled+=1
             invalid+=int(bool(witness.get("invalid_observation_count")))
             updates.append((row.get("active_trade_id"),row.get("asset"),witness))
         written=_upsert(c,updates)
     return {
         "status":"OK","version":VERSION,"checked_at":clock.isoformat(),
         "positions":len(rows),"quotes":quotes,"written":written,
+        "seeded_positions":seeded,"handoff_positions":handoff,
+        "unseeded_carried":unseeded,"sampled_positions":sampled,
         "invalid":invalid,"missing_quotes":missing,
         "duration_seconds":round(time.monotonic()-started,4),
         "book_lock_acquired":False,"network_fetches":0,"production_influence":False,
