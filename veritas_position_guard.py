@@ -916,6 +916,17 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                       'r55_last_path_mark_at':ts,
                       'r55_last_path_mark_price':_px,
                     }
+                    try:
+                        _last_add=float(zp.get('last_add_price') or 0.0)
+                        if _last_add>0:
+                            _since=100.0*((_px/_last_add-1.0) if z.get('direction')=='LONG'
+                                         else (_last_add/_px-1.0))
+                            _path['mfe_since_last_add_pct']=max(
+                                float(zp.get('mfe_since_last_add_pct') or 0.0),_since,0.0)
+                            _path['mae_since_last_add_pct']=min(
+                                float(zp.get('mae_since_last_add_pct') or 0.0),_since,0.0)
+                    except (TypeError,ValueError,ZeroDivisionError,OverflowError):
+                        pass
                     # Defer only when both a successful metadata write and a
                     # failed one are proved to need no lock/stop/target action.
                     preflight_started=time.monotonic()
@@ -955,9 +966,10 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             structural_lock=_structural_mfe_profit_lock(vp,c,z,q,ts,now)
             structural_patch=structural_lock.get('patch') or {}
             if structural_patch:
-                # Protection metadata is optional evidence. Its persistence may
-                # fail, but that can never block an already-due stop/target.
-                PIO.write_patches(c,[(z.get('active_trade_id'),structural_patch)],optional=True)
+                # The adaptive MFE timer and profit lock are owner-approved
+                # execution state, not optional diagnostics. A persistence failure
+                # must fail this pass rather than silently reset timer/protection.
+                PIO.write_patches(c,[(z.get('active_trade_id'),structural_patch)],optional=False)
                 zp=payload_of(z); zp.update(structural_patch); z['payload']=zp
                 if structural_lock.get('lock'):
                     _sl=structural_lock['lock']
