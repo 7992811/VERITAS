@@ -764,10 +764,22 @@ class ContinuousLearning:
                      COALESCE(t.payload#>>'{price_source_lock,contract_id}',
                               t.payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
                      e.mae_pct AS mae,e.mfe_pct AS mfe,e.capture_ratio,
-                     e.net_pnl_rub,e.primary_attribution
+                     e.net_pnl_rub,e.primary_attribution,
+                     COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE) AS outcome_evidence_eligible,
+                     e.learning_eligible AS path_evidence_eligible,
+                     (
+                       NULLIF(t.payload#>>'{entry_event_snapshot,stop_anchor}','') IS NOT NULL
+                       AND NULLIF(t.payload#>>'{entry_event_snapshot,atr}','') IS NOT NULL
+                       AND NULLIF(t.payload#>>'{entry_event_snapshot,target_price}','') IS NOT NULL
+                     ) AS stop_replay_ready,
+                     (
+                       NULLIF(t.payload#>>'{entry_event_snapshot,target_price}','') IS NOT NULL
+                       AND NULLIF(t.payload#>>'{entry_event_snapshot,runner_target_price}','') IS NOT NULL
+                       AND NULLIF(t.payload->>'initial_stop_price','') IS NOT NULL
+                     ) AS exit_replay_ready
               FROM v90_learning_episodes e
               JOIN paper_trades t ON t.trade_id=e.trade_id
-              WHERE e.learning_eligible=TRUE
+              WHERE COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE)=TRUE
                 AND e.primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
                 AND e.asset=%s
               ORDER BY e.closed_at DESC
