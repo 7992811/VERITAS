@@ -137,7 +137,7 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
             REG.ensure_schema(conn); E.ensure_schema(conn)
             conn.execute("""CREATE TABLE v90_learning_episodes(
                 trade_id text PRIMARY KEY,closed_at timestamptz,asset text,direction text,horizon text,
-                regime text,setup_family text,learning_eligible boolean,primary_attribution text)""")
+                regime text,setup_family text,learning_eligible boolean,primary_attribution text,payload jsonb)""")
             conn.execute("""CREATE TABLE paper_trades(
                 trade_id text PRIMARY KEY,opened_at timestamptz,avg_entry_price float8,status text,payload jsonb)""")
             conn.execute("""CREATE TABLE paper_orders(trade_id text,side text)""")
@@ -152,7 +152,7 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
                 VALUES('CSTOP',%s,'STOP_GEOMETRY','NQ','5m','TREND',%s,'C1','p',
                        %s,0,'AWAIT_REPLAY',%s::jsonb,'{}'::jsonb,'{}'::jsonb)""",
                 (REG.VERSION,IDENTITY["key"],registered,json.dumps(contract)))
-            event={"direction":"LONG","source_identity":IDENTITY,"stop_anchor":98.0,"atr":2.0,
+            event={"event_id":"EV1","direction":"LONG","source_identity":IDENTITY,"stop_anchor":98.0,"atr":2.0,
                    "stop_price":97.7,"target_price":102.0,
                    "policy":{"stop_buffer_atr":.15,"target_one_fraction":.50}}
             payload={"entry_event_snapshot":event,"entry_execution_model":{"fill_price":100.0},
@@ -161,9 +161,16 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
             conn.execute("""INSERT INTO paper_trades VALUES(
                 'TSQL',%s,100,'CLOSED',%s::jsonb)""",(T,json.dumps(payload)))
             conn.execute("""INSERT INTO v90_learning_episodes VALUES(
-                'TSQL',%s,'NQ','LONG','5m','TREND','BREAKOUT',TRUE,'OK')""",
-                (T+timedelta(hours=1),))
+                'TSQL',%s,'NQ','LONG','5m','TREND','BREAKOUT',TRUE,'OK',%s::jsonb)""",
+                (T+timedelta(hours=1),json.dumps({"outcome_learning_eligible":True})))
             conn.execute("INSERT INTO paper_orders VALUES('TSQL','BUY')")
+            duplicate=dict(payload)
+            conn.execute("""INSERT INTO paper_trades VALUES(
+                'TSQL2',%s,100,'CLOSED',%s::jsonb)""",(T+timedelta(seconds=1),json.dumps(duplicate)))
+            conn.execute("""INSERT INTO v90_learning_episodes VALUES(
+                'TSQL2',%s,'NQ','LONG','5m','TREND','BREAKOUT',FALSE,'OK',%s::jsonb)""",
+                (T+timedelta(hours=1,seconds=1),json.dumps({"outcome_learning_eligible":True})))
+            conn.execute("INSERT INTO paper_orders VALUES('TSQL2','BUY')")
 
     @contextmanager
     def connect(self):
@@ -175,6 +182,13 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
         with self.psycopg.connect(DSN) as conn:
             conn.execute(f'DROP SCHEMA "{self.schema}" CASCADE')
 
+    def test_trade_query_deduplicates_by_event_id(self):
+        source=inspect.getsource(E._trade_rows)
+        self.assertIn("ROW_NUMBER() OVER",source)
+        self.assertIn("PARTITION BY t.payload#>>'{entry_event_snapshot,event_id}'",source)
+        self.assertIn("r.event_id=q.event_id",source)
+        self.assertIn("outcome_learning_eligible",source)
+
     def test_receipt_and_registry_update_are_idempotent(self):
         result=E.process(self.connect,cached,now=T+timedelta(hours=2),
                          context=SimpleNamespace(check=lambda:None))
@@ -182,9 +196,10 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
         self.assertEqual(result["receipts_written"],1)
         self.assertEqual(result["registry_status"],"REPLAY_BUILDING")
         with self.connect() as conn:
-            receipt=conn.execute("SELECT status,baseline_net,candidate_net FROM learning_v2_replay_receipts").fetchone()
+            receipt=conn.execute("SELECT status,baseline_net,candidate_net,event_id FROM learning_v2_replay_receipts").fetchone()
             registry=conn.execute("SELECT status,prospective FROM learning_v2_registry WHERE candidate_id='CSTOP'").fetchone()
         self.assertEqual(receipt["status"],"COMPARABLE")
+        self.assertEqual(receipt["event_id"],"EV1")
         self.assertEqual(registry["prospective"]["replay"]["n"],1)
         again=E.process(self.connect,cached,now=T+timedelta(hours=3),
                         context=SimpleNamespace(check=lambda:None))
