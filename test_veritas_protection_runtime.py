@@ -267,12 +267,15 @@ class BoundedProtectiveTests(unittest.TestCase):
         self.assertEqual(len(writes), 2)
         self.assertEqual([len(json.loads(args[0])) for args in writes], [32, 1])
         self.assertEqual(c.commits, 1)
-        for tid, saved in c.positions.items():
+        for index, (tid, saved) in enumerate(c.positions.items()):
             self.assertEqual(saved['payload']['immutable_history'], rows[0]['payload']['immutable_history'])
             self.assertEqual(saved['payload']['observation_path']['observation_count'], 1)
             self.assertEqual(saved['payload']['mfe_pct'], 1.5)
             self.assertEqual(saved['payload']['source_locked_mark']['price'], 101.)
-            self.assertEqual(saved['payload'], c.trades[tid]['payload'])
+            # No-action telemetry is live-position evidence. The open trade row
+            # intentionally remains at its previous snapshot until an action
+            # revalidates and mirrors the current witness at the accounting boundary.
+            self.assertEqual(c.trades[tid]['payload'], rows[index]['payload'])
         self.assertEqual(c.orders, [])
 
     def test_required_batch_failure_propagates_and_optional_savepoint_rolls_back_both_tables(self):
@@ -338,6 +341,8 @@ class BoundedProtectiveTests(unittest.TestCase):
                     self.assertEqual(reason, 'STOP')
                     if not fail_metadata:
                         self.assertEqual(full['payload']['observation_path']['observation_count'], 1)
+                        self.assertEqual(connection.trades[full['active_trade_id']]['payload']['observation_path'],
+                                         full['payload']['observation_path'])
                     seen.append(full['active_trade_id'])
                     connection.orders.append('synthetic-stop')
                     connection.positions.pop(full['active_trade_id'])
