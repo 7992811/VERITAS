@@ -39,8 +39,6 @@ POSITION_STEP=0.05
 
 POLICIES={name:CTC.runtime_portfolio_policy(name) for name in CTC.PORTFOLIO_ORDER}
 
-
-
 def _now(): return datetime.now(timezone.utc).isoformat()
 
 def _jsonable(x):
@@ -54,15 +52,12 @@ def _jsonable(x):
 
 def _clip(x,a,b): return max(a,min(b,float(x)))
 def _round_step(x, step=POSITION_STEP): return round(max(0.0,float(x))/step)*step
-
 def _execution_price_or_none(prices, asset):
     try:
         px=float((prices or {}).get(asset))
         return px if math.isfinite(px) and px>0 else None
     except (TypeError, ValueError):
         return None
-
-
 # VERITAS v90 portfolio migration
 V90_PORTFOLIOS = tuple(CTC.PORTFOLIO_ORDER)
 PORTFOLIO_MIGRATION_MARKER = 'v90_four_portfolios_20260925'
