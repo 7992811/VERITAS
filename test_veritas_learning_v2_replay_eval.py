@@ -18,8 +18,8 @@ def cached(asset,timeframe,identity,now=None,limit=500):
     for i in range(12):
         opened=start+timedelta(minutes=5*i)
         rows.append({"opened_at":opened.isoformat(),"closed_at":(opened+timedelta(minutes=5)).isoformat(),
-                     "open":100.0,"high":101.0 if i<2 else 104.5,
-                     "low":99.0,"close":100.5 if i<2 else 104.0,
+                     "open":100.0,"high":101.0 if i<2 else 102.5 if i==2 else 104.5,
+                     "low":99.0,"close":100.5 if i<2 else 102.2 if i==2 else 104.0,
                      "source_key":IDENTITY["key"],"contract_id":"C1"})
     return rows
 
