@@ -7,6 +7,7 @@ import json
 from copy import deepcopy
 
 import veritas_canonical_constitution as CTC
+import veritas_owner_policy as VOP
 import veritas_price_source as VPS
 import veritas_profit_protection as VPP
 import veritas_position_thesis as PT
@@ -236,12 +237,12 @@ def trailing_candidate(position, summary, quote, now):
 
 def apply_trailing(c, name, position, summary, quote, now):
     maturity=payload(position)
-    if (CTC.LIFECYCLE_POLICY.get("structural_trailing_before_profit_maturity") is False
+    if (VOP.PROFIT_MATURITY.get("structural_trailing_before_maturity") is False
             and not maturity.get("profit_maturity_armed")):
         return {"version":VERSION,"eligible":False,
                 "reason":"PROFIT_MATURITY_NOT_CONFIRMED",
                 "positive_streak":int(maturity.get("profit_maturity_positive_streak") or 0),
-                "required_windows":int(CTC.LIFECYCLE_POLICY.get("profit_lock_requires_consecutive_positive_windows") or 3)}
+                "required_windows":int(VOP.PROFIT_MATURITY.get("required_positive_windows") or 3)}
     candidate = trailing_candidate(position, summary, quote, now)
     if not candidate.get("eligible"):
         return candidate
