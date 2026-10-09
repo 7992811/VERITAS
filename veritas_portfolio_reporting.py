@@ -59,3 +59,25 @@ def paper_execution_quality_report(data, json_parser, jsonable):
         ),
     }
     return jsonable(d)
+
+
+def runtime_authority_snapshot(
+    final_version, constitution, canonical_runtime, release,
+    admission, open_or_add, close_or_reduce, step_one, step_all, report,
+):
+    return {
+        "version": final_version,
+        "policy_version": constitution.VERSION,
+        "canonical_runtime": canonical_runtime.VERSION,
+        "release": release.snapshot(),
+        "candidate_book": "veritas_canonical_runtime.candidate_book",
+        "signal_first_admission": admission.__name__,
+        "open_or_add": open_or_add.__name__,
+        "close_or_reduce": close_or_reduce.__name__,
+        "step_one": step_one.__name__,
+        "step_all": step_all.__name__,
+        "report": report.__name__,
+        "legacy_admission_authoritative": False,
+        "legacy_candidate_routing_authoritative": False,
+        "lifecycle_compatibility": "RXX_MANAGEMENT_ONLY",
+    }
