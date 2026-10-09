@@ -200,7 +200,7 @@ PORTFOLIO_POLICIES = {
         "position_step":0.05,
     },
     "Currency": {
-        "display_name":"Валютный портфель","mode":"CURRENCY","threshold":0.62,
+        "display_name":"Currency","mode":"CURRENCY","threshold":0.62,
         "strong_threshold":0.74,"min_independent":2,"allowed_assets":("CNYRUBF",),
         "initial_nav_rub":10_000.0,"directions":("LONG","SHORT","CASH"),
         "initial_normal":0.50,"initial_super":1.00,"probe_normal":0.05,"probe_super":0.10,
