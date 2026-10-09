@@ -225,7 +225,7 @@ def publish_quote(asset, raw):
             _quotes[asset] = {key:raw[key] for key in (*VPS.QUOTE_FIELDS,'asset','observed_at') if key in raw}
 
 
-def quote_for_position(position, candidate=None, now=None):
+def quote_for_position(position, candidate=None, now=None, *, cache_only=False):
     """Resolve a fresh quote without crossing the entry provider or contract."""
     now=utc_datetime(now) or datetime.now(timezone.utc)
     frozen=position.get('_execution_quote_frozen') is True
@@ -246,7 +246,8 @@ def quote_for_position(position, candidate=None, now=None):
         # A venue without a saved expiry cannot identify the held oil future.
         # Never let the asset-wide cache fill in a missing position contract.
         return {}
-    if not frozen and position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
+    if (not frozen and not cache_only and position.get('asset')=='CNYRUBF'
+            and str(identity.get('key','')).startswith('TBANK_GRPC:')):
         try:
             from veritas_direct_cny import quote as direct_quote
             quotes.append(direct_quote(now=now))
