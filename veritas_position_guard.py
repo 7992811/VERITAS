@@ -291,14 +291,37 @@ def position_mark_price(position, now=None):
 
 
 def refresh_position_quotes(ns, positions):
+    """Refresh only identities without a still-valid pinned quote.
+
+    The structural/market lanes already publish verified quotes into the shared
+    cache. Protection consumes those first and pays network latency only when a
+    position's own source-pinned quote is missing or outside the protective
+    freshness window.
+    """
     groups={}
     for z in positions:
         identity=VPS.position_identity(z)
         if identity:
             groups.setdefault((z['asset'],identity['key'],identity.get('contract_id')),[]).append(z)
     results={}
-    with ThreadPoolExecutor(max_workers=4,thread_name_prefix='veritas-source-quote') as pool:
-        jobs={key:pool.submit(fetch_guard_quote,ns,key[0],rows) for key,rows in groups.items()}
+    refresh={}
+    now=datetime.now(timezone.utc)
+    for key,rows in groups.items():
+        try:
+            q=quote_for_position(rows[0],now=now,allow_direct=False)
+        except Exception:
+            q={}
+        if (q and q.get('source_gate_pass') and VPS.matches(rows[0],q)
+                and quote_matches_position(rows[0],q)
+                and quote_gate(q.get('observed_at'),now=now,protective=True).get('eligible')
+                and VX.paper_quote_time_gate(dict(q,asset=key[0]),now=now,protective=True).get('eligible')):
+            results[key]=q
+        else:
+            refresh[key]=rows
+    if not refresh:
+        return results
+    with ThreadPoolExecutor(max_workers=min(4,len(refresh)),thread_name_prefix='veritas-source-quote') as pool:
+        jobs={key:pool.submit(fetch_guard_quote,ns,key[0],rows) for key,rows in refresh.items()}
         for key,job in jobs.items():
             try:
                 q=job.result()
