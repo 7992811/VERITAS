@@ -192,11 +192,15 @@ def run_once(dsn):
         db=conn.execute("SELECT current_database() AS db").fetchone()["db"]
         if db!=EXPECTED_DATABASE:
             raise RuntimeError("LEARNING_DATABASE_REJECTED")
+        schema=conn.execute("SELECT to_regnamespace('veritas_v90')::text AS schema").fetchone()["schema"]
+        if schema!="veritas_v90":
+            raise RuntimeError("LEARNING_SCHEMA_REJECTED")
+        conn.execute("SET search_path TO veritas_v90")
         conn.execute("SET statement_timeout='5000ms'")
         conn.execute("SET lock_timeout='500ms'")
         conn.execute("SET idle_in_transaction_session_timeout='5000ms'")
         required=conn.execute("""SELECT count(*) AS n FROM information_schema.tables
-            WHERE table_schema=current_schema()
+            WHERE table_schema='veritas_v90'
               AND table_name=ANY(%s)""",(["ledger_events","v90_decision_episodes","v90_learning_episodes","paper_trades"],)).fetchone()["n"]
         if int(required)!=4:
             raise RuntimeError("LEARNING_SOURCE_SCHEMA_INCOMPLETE")
