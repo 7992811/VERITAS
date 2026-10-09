@@ -397,9 +397,9 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         "gate_class":gate_class,"allow":allow,
         # CRITICAL INVARIANT: DATA/ENTRY execution vetoes must never erase the
         # market thesis. Consumers that need order permission must use
-        # allow / execution_decision; the published decision remains the
-        # research direction so the signal matrix cannot turn a valid
-        # LONG/SHORT into NO_TRADE because a feed/session/order gate failed.
+        # allow / execution_decision. The published decision remains the
+        # research direction unless the thesis itself is falsified, so a
+        # feed/session/order gate cannot turn valid LONG/SHORT into NO_TRADE.
         "decision":"NO_TRADE" if thesis_hard else dec,
         "market_decision":"NO_TRADE" if thesis_hard else dec,
         "execution_decision":dec if allow else "NO_TRADE",
