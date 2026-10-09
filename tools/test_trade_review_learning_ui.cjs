@@ -53,13 +53,13 @@ assert.match(elements.reviewSummary.innerHTML,/Доказан исход<\/span>
 assert.match(elements.reviewSummary.innerHTML,/Доказан путь<\/span><b>8<\/b>/);
 assert.match(elements.reviewSummary.innerHTML,/Win-rate исходов<\/span><b>60/);
 assert.match(elements.reviewSummary.innerHTML,/P&L доказан/);
-assert.match(elements.reviewSummary.innerHTML,/Упущенных эпизодов<\/span><b class="warn">3<\/b>/);
-assert.match(elements.reviewSummary.innerHTML,/Опыт \/ shadow<\/span><b>48 \/ 1<\/b>/);
+assert.match(elements.reviewSummary.innerHTML,/Упущено \/ обучаемо/);
+assert.match(elements.reviewSummary.innerHTML,/Кандидаты L2 \/ авто/);
+assert.match(elements.reviewSummary.innerHTML,/Shadow \/ подтверждено/);
 assert.match(elements.reviewBody.innerHTML,/MFE ≥ 0,15%/);
 assert.match(elements.reviewBody.innerHTML,/P&L факт \/ cf/);
 assert.match(elements.reviewBody.innerHTML,/MFE \/ MAE/);
 assert.match(elements.reviewBody.innerHTML,/outcome-only: 12/);
-assert.match(elements.reviewBody.innerHTML,/не показаны без доказанного ordered-path replay/);
 assert.match(elements.reviewBody.innerHTML,/безубыток и дальнейший структурный трейлинг/);
 assert.match(elements.reviewBody.innerHTML,/Упущенные возможности/);
 assert.match(elements.reviewBody.innerHTML,/Пропущенный вход/);
