@@ -14,6 +14,7 @@ import math
 import veritas_canonical_constitution as CTC
 import veritas_learning_v2_registry as REG
 import veritas_learning_v2_replay as REPLAY
+import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
 
 VERSION="LEARNING_V2_REPLAY_EVAL_V1"
@@ -153,9 +154,8 @@ def _trade_rows(c,candidate):
 def _identity(row):
     lock=_object(row.get("price_source_lock"))
     entry=_object(row.get("entry_execution_source_identity"))
-    key=str(lock.get("key") or entry.get("key") or "")
-    contract=str(lock.get("contract_id") or entry.get("contract_id") or "")
-    return {"key":key,"contract_id":contract}
+    identity=lock if lock.get("key") else entry
+    return dict(identity)
 
 
 def _event(row):
@@ -211,8 +211,7 @@ def evaluate_trade(candidate,row,cached_bars):
             or str(identity.get("contract_id") or "")!=str(scope.get("contract_id") or "")):
         return {"status":"INVALID","reason":"SOURCE_OR_CONTRACT_SCOPE_MISMATCH"}
     event_source=_object(event.get("source_identity"))
-    if (str(event_source.get("key") or "")!=identity["key"]
-            or str(event_source.get("contract_id") or "")!=identity["contract_id"]):
+    if not (VPS.same(identity,event_source) and VPS.same(event_source,identity)):
         return {"status":"INVALID","reason":"EVENT_SOURCE_OR_CONTRACT_MISMATCH"}
     bars,path_tf,reason=_path(cached_bars,row,identity)
     if reason:return {"status":"DEFERRED","reason":reason}
