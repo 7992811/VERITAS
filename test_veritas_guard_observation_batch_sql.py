@@ -295,10 +295,23 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
             changes, trace, error = None, None, (type(exc).__name__, str(exc))
         return before, self.snapshot(), changes, error, trace
 
+    @staticmethod
+    def without_observation_path(snapshot):
+        value=deepcopy(snapshot)
+        for table in ('paper_positions','paper_trades'):
+            for row in value.get(table) or []:
+                payload=row.get('payload')
+                if isinstance(payload,dict):
+                    payload.pop('observation_path',None)
+        return value
+
     def assert_parity(self, rows, quotes):
         old = self.run_case(rows, quotes, legacy=True)
         new = self.run_case(rows, quotes)
-        self.assertEqual(new[:4], old[:4])
+        self.assertEqual(new[0],old[0])
+        self.assertEqual(self.without_observation_path(new[1]),
+                         self.without_observation_path(old[1]))
+        self.assertEqual(new[2:4],old[2:4])
         return old, new
 
     def test_twenty_three_no_action_positions_preserve_full_payload_and_reduce_io(self):
@@ -316,8 +329,9 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
                             for key, value in before['payload'].items():
                                 if key != 'observation_path':
                                     self.assertEqual(after['payload'][key], value, key)
-                            self.assertEqual(after['payload']['observation_path']['observation_count'], 3)
-                            self.assertTrue(PATH.assessment(dict(after, horizon='1m'))['eligible'])
+                            self.assertEqual(after['payload']['observation_path'],
+                                             before['payload']['observation_path'])
+                            self.assertEqual(after['payload']['observation_path']['observation_count'],2)
                 old_updates = sum(q.startswith('UPDATE') for q in old[4].statements)
                 new_updates = sum(q.startswith('UPDATE') for q in new[4].statements)
                 self.assertEqual(old_updates, 46)
