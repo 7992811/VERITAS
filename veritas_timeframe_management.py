@@ -237,12 +237,14 @@ def trailing_candidate(position, summary, quote, now):
 
 def apply_trailing(c, name, position, summary, quote, now):
     maturity=payload(position)
-    if (VOP.PROFIT_MATURITY.get("structural_trailing_before_maturity") is False
-            and not maturity.get("profit_maturity_armed")):
-        return {"version":VERSION,"eligible":False,
-                "reason":"PROFIT_MATURITY_NOT_CONFIRMED",
-                "positive_streak":int(maturity.get("profit_maturity_positive_streak") or 0),
-                "required_windows":int(VOP.PROFIT_MATURITY.get("required_positive_windows") or 3)}
+    if VOP.PROFIT_MATURITY.get("structural_trailing_before_maturity") is False:
+        if not maturity.get("profit_maturity_armed"):
+            return {"version":VERSION,"eligible":False,"reason":"PROFIT_MATURITY_NOT_CONFIRMED",
+                    "positive_streak":int(maturity.get("profit_maturity_positive_streak") or 0),
+                    "required_windows":int(VOP.PROFIT_MATURITY.get("required_positive_windows") or 3)}
+        if not maturity.get("profit_maturity_floor_satisfied"):
+            return {"version":VERSION,"eligible":False,
+                    "reason":"PROFIT_MATURITY_ECONOMIC_FLOOR_NOT_SECURED"}
     candidate = trailing_candidate(position, summary, quote, now)
     if not candidate.get("eligible"):
         return candidate
