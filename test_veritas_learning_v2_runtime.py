@@ -102,6 +102,13 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertIn("t.payload#>>'{price_source_lock,contract_id}'",source)
         self.assertIn("t.payload->>'strategy_policy_hash'",source)
 
+    def test_decision_reader_materializes_one_latest_decision_set(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("decision_keys AS MATERIALIZED",source)
+        self.assertIn("latest_decisions AS MATERIALIZED",source)
+        self.assertIn("JOIN latest_decisions d ON d.entity_key=e.entity_key",source)
+        self.assertNotIn("CROSS JOIN LATERAL",source)
+
     def test_periodic_job_is_registered_with_bounded_budget(self):
         app=C.ContinuousLearning(namespace(lambda: None))
         lane=app.lane
