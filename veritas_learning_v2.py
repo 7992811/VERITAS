@@ -17,7 +17,7 @@ import re
 
 import veritas_canonical_constitution as CTC
 
-VERSION = "LEARNING_V2_SHADOW_2_BLOCKER_EVIDENCE"
+VERSION = "LEARNING_V2_SHADOW_3_OUTCOME_TIERS"
 MIN_CONTEXT_N = 8
 MIN_FALSE_BLOCK_N = 3
 MIN_TRADE_N = 12
@@ -192,8 +192,13 @@ def false_block_summary(rows):
     return {"version":VERSION,"missed_directional_episodes":total,"blockers":ranked[:32]}
 
 
-def research_diagnostics(decision_rows, trade_rows):
-    """Explain why research did or did not create candidates without exposing raw prose."""
+def research_diagnostics(decision_rows, trade_rows, outcome_rows=None):
+    """Explain candidate formation while keeping outcome and path authority separate.
+
+    trade_rows are path-eligible rows only. outcome_rows may additionally
+    include VERIFIED_OUTCOME_ONLY trades; they can inform closed-trade outcome
+    coverage but never manufacture MFE/MAE/capture or Stop/Exit hypotheses.
+    """
     contexts=defaultdict(list)
     blocked_directional=0
     directional_candidates=0
@@ -274,11 +279,48 @@ def research_diagnostics(decision_rows, trade_rows):
         "known_blockers":dict(known_blockers.most_common(16)),
         "top_contexts":top_contexts[:8],
         "trade_rows":len(trade_rows),
+        "outcome_trade_rows":len(outcome_rows if outcome_rows is not None else trade_rows),
+        "outcome_only_trade_rows":max(0,len(outcome_rows if outcome_rows is not None else trade_rows)-len(trade_rows)),
         "valid_mfe_mae_trade_rows":valid_trade_rows,
         "trade_contexts":len(trade_contexts),
         "largest_trade_context_n":trade_largest,
         "trade_contexts_ge_min":trade_contexts_ge_min,
         "zero_entry_candidate_reason":zero_reason,
+    }
+
+
+def closed_trade_summary(outcome_rows, path_rows=None):
+    """Compact factual closed-trade scorecard with explicit evidence authority."""
+    outcomes=list(outcome_rows or [])
+    paths=list(path_rows if path_rows is not None else [
+        r for r in outcomes if r.get("path_evidence_eligible") is True
+    ])
+    net=[_num(r.get("net_pnl_rub")) for r in outcomes]
+    net=[x for x in net if x is not None]
+    wins=sum(x>0 for x in net); losses=sum(x<0 for x in net); flats=sum(x==0 for x in net)
+    opening=[_num(r.get("opening_fraction")) for r in outcomes]
+    opening=[x for x in opening if x is not None and x>=0]
+    def mean(rows,key):
+        values=[_num(r.get(key)) for r in rows]
+        values=[x for x in values if x is not None]
+        return sum(values)/len(values) if values else None
+    return {
+        "outcome_evidence_trades":len(outcomes),
+        "path_evidence_trades":len(paths),
+        "outcome_only_trades":max(0,len(outcomes)-len(paths)),
+        "profitable_trades":wins,
+        "losing_trades":losses,
+        "flat_trades":flats,
+        "win_rate":wins/len(net) if net else None,
+        "net_pnl_rub":sum(net) if net else None,
+        "avg_net_pnl_rub":sum(net)/len(net) if net else None,
+        "avg_opening_fraction":sum(opening)/len(opening) if opening else None,
+        "avg_mfe_pct":mean(paths,"mfe"),
+        "avg_mae_pct":mean(paths,"mae"),
+        "avg_capture_ratio":mean(paths,"capture_ratio"),
+        "outcome_authority":"NET_OUTCOME_SIZE_CALIBRATION_ONLY",
+        "path_authority":"MFE_MAE_CAPTURE_STOP_EXIT_ONLY",
+        "production_mutation":False,
     }
 
 
@@ -392,16 +434,18 @@ def generate_hypotheses(decision_rows, trade_rows):
     return sorted(unique.values(),key=lambda x:(x["kind"],x["hypothesis_id"]))[:MAX_HYPOTHESES]
 
 
-def research_snapshot(decision_rows, trade_rows):
+def research_snapshot(decision_rows, trade_rows, outcome_rows=None):
+    outcomes=list(outcome_rows if outcome_rows is not None else trade_rows)
     hypotheses=generate_hypotheses(decision_rows,trade_rows)
-    diagnostics=research_diagnostics(decision_rows,trade_rows)
+    diagnostics=research_diagnostics(decision_rows,trade_rows,outcomes)
     return {
         "version":VERSION,
         "status":"BUILDING" if not hypotheses else "SHADOW_READY",
         "automatic_production_promotion":False,
         "entry_false_block":false_block_summary(decision_rows),
         "diagnostics":diagnostics,
+        "closed_trade_summary":closed_trade_summary(outcomes,trade_rows),
         "hypotheses":hypotheses,
         "counts":dict(Counter(x["kind"] for x in hypotheses)),
-        "principle":"Observed evidence may generate a shadow hypothesis; only independent evidence may promote it.",
+        "principle":"Verified net outcomes train only outcome-safe learning; Stop/Exit hypotheses require path evidence and independent prospective validation.",
     }
