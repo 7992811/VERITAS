@@ -39,12 +39,16 @@ class LearningV2RuntimeTests(unittest.TestCase):
         def tx(connect, context):
             yield Cursor(decisions,trades)
         context=SimpleNamespace(check=lambda:None)
-        with patch.object(C,"transaction",tx), patch.object(C.STORE,"publish_snapshot",return_value=True) as publish:
+        registry={"version":"test","counts":{},"candidates":[],"shadow_champions":[]}
+        with patch.object(C,"transaction",tx), \
+             patch.object(C.LEARNING_V2_REGISTRY,"sync",return_value=registry), \
+             patch.object(C.STORE,"publish_snapshot",return_value=True) as publish:
             result,_=app.learning_v2_shadow(context,{})
         self.assertEqual(result["status"],"OK")
         self.assertGreater(result["hypotheses"],0)
         snap=app.snapshot()["learning_v2"]
         self.assertFalse(snap["automatic_production_promotion"])
+        self.assertEqual(snap["registry"],registry)
         self.assertTrue(any(h["kind"]=="ENTRY_BLOCKER_RELAXATION" for h in snap["hypotheses"]))
         self.assertTrue(all(h["mode"]=="SHADOW_ONLY" for h in snap["hypotheses"]))
         publish.assert_called_once()
