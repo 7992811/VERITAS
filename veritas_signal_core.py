@@ -400,7 +400,8 @@ def pretrade_gate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         # allow / execution_decision; the published decision remains the
         # research direction so the signal matrix cannot turn a valid
         # LONG/SHORT into NO_TRADE because a feed/session/order gate failed.
-        "decision":dec,
+        "decision":"NO_TRADE" if thesis_hard else dec,
+        "market_decision":"NO_TRADE" if thesis_hard else dec,
         "execution_decision":dec if allow else "NO_TRADE",
         "execution_allowed":allow,
         "thesis_status":thesis_status,"entry_status":entry_status,"action":action,
