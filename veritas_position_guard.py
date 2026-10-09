@@ -759,6 +759,102 @@ def _legacy_profit_lock(vp, c, z, q, ts, *, accounting=None):
     )
 
 
+
+def _adaptive_structural_profit_lock(z, quote, base_lock, mfe, cfg, commission, slippage):
+    """Ratchet a meaningful share of MFE without choking confirmed trend days."""
+    if not base_lock or not (cfg or {}).get('enabled'):
+        return base_lock
+    p=payload_of(z)
+    active=bool(p.get('r_accel_mfe_profit_lock_active'))
+    trend=p.get('last_trend_day_efficiency') or {}
+    trend_mode=bool(isinstance(trend,dict) and trend.get('eligible')
+                    and str(trend.get('phase') or '') in set(cfg.get('trend_phases') or ()))
+    tiers=(cfg.get('trend_capture_tiers') if trend_mode else
+           cfg.get('normal_capture_tiers')) or ()
+    selected=None
+    for item in tiers:
+        try:
+            floor,ratio=float(item[0]),float(item[1])
+        except (TypeError,ValueError,IndexError,OverflowError):
+            continue
+        if math.isfinite(floor) and math.isfinite(ratio) and mfe+1e-12>=floor:
+            selected=(floor,max(0.0,min(0.95,ratio)))
+    if selected is None:
+        return None if active else base_lock
+
+    try:
+        entry=float(z.get('avg_entry_price') or p.get('entry_price') or 0.0)
+        px=float((quote or {}).get('price') or 0.0)
+        units=abs(float(z.get('units') or 1.0))
+        current=float(base_lock.get('current_profit_pct') or 0.0)
+        base_locked=float(base_lock.get('locked_profit_pct') or 0.0)
+        room=max(0.0,float(cfg.get('minimum_room_pct_points') or .05))
+        min_step=max(0.0,float(cfg.get('minimum_lock_improvement_pct_points') or .05))
+    except (TypeError,ValueError,OverflowError):
+        return None if active else base_lock
+    if min(entry,px,units)<=0 or not all(math.isfinite(v) for v in (entry,px,units,current,base_locked)):
+        return None if active else base_lock
+
+    long=z.get('direction')=='LONG'
+    stops=[]
+    for raw in (z.get('stop_price'),p.get('trailing_stop')):
+        try:
+            value=float(raw)
+            if math.isfinite(value) and value>0:
+                stops.append(value)
+        except (TypeError,ValueError,OverflowError):
+            pass
+    existing=(max(stops) if long else min(stops)) if stops else None
+    existing_locked=None
+    if existing:
+        existing_locked=100.0*((existing/entry-1.0) if long else (entry/existing-1.0))
+    reference=max(base_locked,float(existing_locked or -1e9))
+    floor,ratio=selected
+    desired=max(reference,min(mfe*ratio,max(reference,current-room)))
+
+    # Once protection is active, suppress microscopic rewrites. The next tier,
+    # or enough additional MFE, must earn a material stop improvement.
+    if active and desired-reference < min_step-1e-12:
+        return None
+    if desired<=base_locked+1e-12 and active:
+        return None
+
+    candidate=entry*(1.0+desired/100.0) if long else entry/(1.0+desired/100.0)
+    if candidate<=0 or not math.isfinite(candidate):
+        return None if active else base_lock
+    if (long and candidate>=px) or ((not long) and candidate<=px):
+        return None if active else base_lock
+    if existing is not None and ((long and candidate<=existing) or ((not long) and candidate>=existing)):
+        return None if active else base_lock
+
+    try:
+        fees=max(0.0,float(base_lock.get('fees_paid_rub') or 0.0))
+        funding=max(0.0,float(base_lock.get('funding_rub') or 0.0))
+        realized=float(base_lock.get('realized_gross_rub') or 0.0)
+        min_net=max(0.0,float(base_lock.get('minimum_net_profit_rub') or 0.0))
+        rate=max(0.0,float(commission))
+        slip=max(0.0,float(slippage))
+    except (TypeError,ValueError,OverflowError):
+        return None if active else base_lock
+    paid_cost=fees+funding-realized
+    exit_fee=units*candidate*rate
+    exit_slippage=units*candidate*slip
+    gross=units*(candidate-entry) if long else units*(entry-candidate)
+    projected=gross-paid_cost-exit_fee-exit_slippage
+    if not math.isfinite(projected) or projected<=0:
+        return None if active else base_lock
+
+    out=dict(base_lock)
+    out.update(stop_price=candidate,locked_profit_pct=desired,
+               projected_net_profit_at_stop_rub=projected,
+               estimated_exit_commission_rub=exit_fee,
+               estimated_slippage_rub=exit_slippage,
+               policy='CTC_ADAPTIVE_MFE_CAPTURE_V1',
+               mfe_capture_ratio=ratio,mfe_pct=mfe,
+               mfe_lock_tier_pct_points=floor,
+               capture_mode='TREND_ROOM' if trend_mode else 'NORMAL_CAPTURE')
+    return out
+
 def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
     """Arm net-positive protection only after favorable movement proves persistence.
 
@@ -796,6 +892,10 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
 
     patch={'r_accel_mfe_pct':mfe,'r_accel_mfe_current_pct':current}
     if current < threshold:
+        if p.get('r_accel_mfe_profit_lock_active'):
+            # Lifetime MFE continues through the observation path. Avoid a
+            # second metadata write when an already-protected position retraces.
+            return {'patch':{},'lock':None,'state':'PROTECTED_RETRACE'}
         if p.get('r_accel_mfe_candidate_at') is not None:
             patch.update(r_accel_mfe_candidate_at=None,r_accel_mfe_candidate_pct=None,
                          r_accel_mfe_candidate_reset_at=ts)
@@ -827,13 +927,27 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
         modeled_entry_fee=units*entry*float(getattr(vp,'COMMISSION',VC.COMMISSION_RATE))
     except (TypeError,ValueError,OverflowError):
         modeled_entry_fee=0.0
+    commission=getattr(vp,'COMMISSION',VC.COMMISSION_RATE)
+    lock_position=z
+    if p.get('r_accel_mfe_profit_lock_active'):
+        # Recalculate the cost-covered floor without allowing the existing
+        # trailing stop to suppress a later, stronger adaptive ratchet.
+        probe_payload=dict(p)
+        probe_payload.pop('trailing_stop',None)
+        lock_position=dict(z,payload=probe_payload)
     lock=profit_lock_stop(
-        z,q,getattr(vp,'COMMISSION',VC.COMMISSION_RATE),fees_paid_rub=modeled_entry_fee,
+        lock_position,q,commission,fees_paid_rub=modeled_entry_fee,
         slippage_pct=VC.SLIPPAGE_RATE,
         min_net_pct=float(cfg.get('minimum_positive_net_pct') or .0002),
         funding_rub=0.0,realized_gross_rub=0.0,allow_structural=True,
         activation_floor_pct_points=threshold)
+    adaptive_cfg=(getattr(CTC,'EXECUTION_EFFICIENCY_REFINEMENT_POLICY',{}) or {}).get('profit_protection') or {}
+    lock=_adaptive_structural_profit_lock(
+        z,q,lock,mfe,adaptive_cfg,commission,VC.SLIPPAGE_RATE)
     if not lock:
+        if p.get('r_accel_mfe_profit_lock_active'):
+            return {'patch':{},'lock':None,'state':'PROTECTED_UNCHANGED',
+                    'hold_seconds':hold,'elapsed_seconds':elapsed}
         patch.update(r_accel_mfe_protection_waiting_cost_cover=True,
                      r_accel_mfe_protection_checked_at=ts)
         return {'patch':patch,'lock':None,'state':'WAIT_NET_COST_COVER',
@@ -848,6 +962,10 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
         r_accel_mfe_profit_lock_locked_pct=lock['locked_profit_pct'],
         r_accel_mfe_profit_lock_seen_profit_pct=lock['current_profit_pct'],
         r_accel_mfe_profit_lock_projected_net_rub=lock.get('projected_net_profit_at_stop_rub'),
+        r_accel_mfe_capture_ratio=lock.get('mfe_capture_ratio'),
+        r_accel_mfe_capture_mode=lock.get('capture_mode'),
+        r_accel_mfe_lock_tier=lock.get('mfe_lock_tier_pct_points'),
+        r_accel_mfe_adaptive_lock_pct=lock.get('locked_profit_pct'),
         r55_net_profit_lock_active=True,
     )
     return {'patch':patch,'lock':lock,'state':'PROTECTED',
@@ -999,16 +1117,9 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                     # and suppress a protective exit if metadata cannot be saved.
                     write_started=time.monotonic()
                     try:
-                        with c.transaction():
-                            c.execute(
-                                "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                                "WHERE active_trade_id=%s",(json.dumps(_path,allow_nan=False),z.get('active_trade_id'))
-                            )
-                            if z.get('active_trade_id'):
-                                c.execute(
-                                    "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                                    "WHERE trade_id=%s",(json.dumps(_path,allow_nan=False),z.get('active_trade_id'))
-                                )
+                        tid=z.get('active_trade_id')
+                        if tid:
+                            PIO.write_patches_one_roundtrip(c,[(tid,_path)],optional=True)
                     finally:
                         measured['observation_write_seconds']+=time.monotonic()-write_started
                     zp.update(_path); z['payload']=zp
@@ -1022,7 +1133,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                 # MFE protection state is execution-critical, but a failed
                 # metadata write must never suppress an already-due stop/target.
                 _tid=z.get('active_trade_id')
-                _applied=PIO.write_patches(c,[(_tid,structural_patch)],optional=True)
+                _applied=PIO.write_patches_one_roundtrip(c,[(_tid,structural_patch)],optional=True)
                 zp=payload_of(z); zp.update(structural_patch); z['payload']=zp
                 if _tid and _tid not in _applied:
                     changes.append({'portfolio':z.get('portfolio_name'),'asset':z.get('asset'),
