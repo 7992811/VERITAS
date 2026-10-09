@@ -26,7 +26,12 @@ def _payload(z):
         return {}
 
 def _management_tf(z,p):
+    entry_event=p.get("entry_event_snapshot") or {}
+    entry_ctx=p.get("timeframe_entry_context") or entry_event.get("timeframe_entry_context") or {}
+    event=entry_ctx.get("event") or entry_event
     return str(p.get("management_horizon") or p.get("r56_management_horizon")
+               or event.get("structural_timeframe") or event.get("stop_timeframe")
+               or p.get("structural_timeframe") or p.get("stop_timeframe")
                or p.get("execution_horizon") or p.get("entry_horizon")
                or (z or {}).get("horizon") or "")
 
