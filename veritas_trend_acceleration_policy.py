@@ -123,3 +123,59 @@ TREND_DAY_EFFICIENCY_POLICY = {
         "capture the tail."
     ),
 }
+
+
+# Owner-authorized efficiency refinement, 2026-10-09. This is intentionally
+# separate from TREND_ACCELERATION_POLICY so the earlier owner teaching remains
+# immutable in the durable ledger.
+EXECUTION_EFFICIENCY_REFINEMENT_POLICY = {
+    "version": "CTC_EXECUTION_EFFICIENCY_REFINEMENT_V1",
+    "teaching_id": "USER_EXECUTION_EFFICIENCY_2026_10_09",
+    "enabled": True,
+    "scope": "PAPER_NON_CURRENCY_PORTFOLIOS",
+    "profit_protection": {
+        "enabled": True,
+        "minimum_room_pct_points": 0.05,
+        "minimum_lock_improvement_pct_points": 0.05,
+        "normal_capture_tiers": (
+            (0.30, 0.35), (0.60, 0.45), (1.00, 0.55),
+            (2.00, 0.62), (3.00, 0.68),
+        ),
+        "trend_capture_tiers": (
+            (0.30, 0.25), (0.60, 0.30), (1.00, 0.35),
+            (2.00, 0.42), (3.00, 0.48),
+        ),
+        "trend_phases": ("TREND_DAY", "IMPULSE_TREND"),
+        "principle": (
+            "0.15% sustained MFE starts cost-covered protection. Thereafter the "
+            "stop ratchets by captured MFE in meaningful steps; confirmed trend "
+            "days retain more room than ordinary or range-like movement."
+        ),
+    },
+    "scaling": {
+        "require_profit_protection_before_large_add": True,
+        "unprotected_max_fraction_by_mode": {
+            "IMPULSE_ONLY": 0.25,
+            "CORE": 0.25,
+            "CHALLENGER": 0.25,
+            "AGGRESSIVE": 0.75,
+        },
+        "principle": (
+            "Enter early at bounded size, but do not scale beyond the first "
+            "confirmation tranche until earlier tranches have positive-net "
+            "protection. Total canonical stop-risk limits remain unchanged."
+        ),
+    },
+    "protective_io": {
+        "mirrored_action_write": "ONE_ROUNDTRIP_CTE",
+        "no_action_position_only_write": True,
+        "minimum_stop_ratchet_pct_points": 0.05,
+    },
+    "counterfactual_review": {
+        "mfe_capture_levels": (0.50, 0.70),
+        "diagnostic_only": True,
+        "path_trigger_must_be_verified_separately": True,
+    },
+    "parameter_validation_status": "OWNER_RULE_SHADOW_OOS_REQUIRED",
+}
+
