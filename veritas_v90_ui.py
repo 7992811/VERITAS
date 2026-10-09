@@ -159,18 +159,20 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 .pf-sections{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:18px}.pf-section{min-width:0;border-top:1px solid var(--line);padding-top:11px}.pf-section h4{margin:0 0 11px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#b6c6d2}.pf-pair{display:flex;justify-content:space-between;gap:9px;font-size:11px;line-height:1.4;margin:8px 0}.pf-pair span{color:var(--muted)}.pf-pair b{text-align:right;font-weight:600;white-space:nowrap}.pf-meter{height:5px;background:#25313c;border-radius:3px;overflow:hidden;margin:6px 0 12px}.pf-meter i{display:block;height:100%;background:#87b9d9;border-radius:3px}.pf-meter.is-risk i{background:var(--warn)}.pf-meter.is-breach i{background:var(--bad)}.pf-quality{display:grid;grid-template-columns:1fr 1fr;gap:12px}.pf-quality .pf-value b{font-size:19px}.pf-foot{font-size:9px;color:var(--muted);line-height:1.5;margin-top:10px}
 .deal-filters{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:9px}.deal-filters select{background:var(--card2);border:1px solid var(--line);border-radius:7px;color:var(--text);font:inherit;font-size:11px;min-height:36px;padding:5px 8px;max-width:100%}.deal-filters small{font-size:10px;color:var(--muted);margin-left:auto}
 #trades{max-height:620px}.deal{border:1px solid var(--line);border-radius:9px;background:var(--card2);padding:11px 12px;margin-bottom:7px;font-variant-numeric:tabular-nums}.deal-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.deal-name{font-size:13px;font-weight:650;line-height:1.4}.deal-name .deal-side{font-size:11px}.deal-book{font-size:10px;color:var(--muted);margin-top:2px}.deal-result{text-align:right;flex-shrink:0;font-size:16px;font-weight:720;line-height:1.25}.deal-result small{display:block;font-size:10px;font-weight:500;margin-top:3px}.deal-path{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}.deal-point{border-top:1px solid var(--line);padding-top:7px;font-size:10px;color:var(--muted)}.deal-point b{display:inline-block;font-size:12px;color:var(--text);margin-left:5px}.deal-point time{display:block;font-size:9px;margin-top:3px}.deal-outcome{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-top:9px;font-size:10px;line-height:1.4}.deal-outcome span{color:var(--muted);text-align:right;flex-shrink:0}.deal details{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}.deal summary{cursor:pointer;font-size:10px;color:#9ebad0;min-height:24px;line-height:24px}.deal-breakdown{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:5px}.deal-breakdown span{font-size:9px;color:var(--muted)}.deal-breakdown b{display:block;font-size:11px;color:var(--text);margin-top:3px}.deal .tp-status{font-size:10px;margin-top:7px}
-.review-tabs{display:flex;gap:5px;align-items:center;margin:0 0 10px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--card2);width:max-content;max-width:100%}
-.review-tab{appearance:none;border:0;border-radius:6px;background:transparent;color:var(--muted);font:inherit;font-size:10px;font-weight:650;padding:7px 10px;cursor:pointer;white-space:nowrap}
+.review-tabs{display:flex;gap:3px;align-items:center;margin:0 0 6px;padding:2px;border:1px solid var(--line);border-radius:8px;background:var(--card2);width:max-content;max-width:100%}
+.review-tab{appearance:none;border:0;border-radius:5px;background:transparent;color:var(--muted);font:inherit;font-size:9px;font-weight:650;padding:5px 8px;cursor:pointer;white-space:nowrap}
 .review-tab[aria-selected="true"]{background:#1a2a37;color:#eef5fa;box-shadow:inset 0 0 0 1px rgba(135,185,217,.28)}
-.review-tab:focus-visible{outline:2px solid #87b9d9;outline-offset:1px}.review-tab-badge{display:inline-block;min-width:17px;margin-left:4px;padding:1px 4px;border-radius:999px;background:rgba(214,183,94,.12);color:#e8c55c;font-size:8px;text-align:center}
-.review-panel[hidden]{display:none!important}.review-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin:2px 0 10px}.review-kpi{border:1px solid var(--line);border-radius:9px;padding:8px;background:var(--card2);min-width:0}.review-kpi span{display:block;font-size:8px;color:var(--muted);line-height:1.25}.review-kpi b{display:block;font-size:13px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.review-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.9fr);gap:9px;align-items:start}.review-section{border:1px solid var(--line);border-radius:10px;background:var(--card2);padding:10px;min-width:0}.review-section h3{margin:0 0 3px;font-size:11px;text-transform:uppercase;letter-spacing:.055em;color:#bccbd6}.review-section-note{font-size:8.5px;color:var(--muted);line-height:1.45;margin-bottom:8px}
-.review-list{display:grid;gap:6px}.review-item{border-top:1px solid rgba(255,255,255,.055);padding-top:7px}.review-item:first-child{border-top:0;padding-top:0}.review-item-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.review-item-title{font-size:11px;font-weight:680;line-height:1.35}.review-item-sub{font-size:8.5px;color:var(--muted);margin-top:2px;line-height:1.35}.review-status{border:1px solid var(--line);border-radius:999px;padding:3px 6px;font-size:7.5px;white-space:nowrap;color:#c9d5de}.review-status.ok{border-color:rgba(89,214,148,.26)}.review-status.warn{border-color:rgba(214,183,94,.26)}
-.review-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin-top:6px}.review-metric{border:1px solid rgba(255,255,255,.045);border-radius:6px;padding:5px;min-width:0}.review-metric span{display:block;font-size:7px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-metric b{display:block;font-size:9.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.review-lesson{margin-top:6px;border-left:2px solid #6ea7d0;padding:5px 7px;background:rgba(110,167,208,.05);font-size:8.5px;line-height:1.45}.review-lesson b{color:#dfe9f0}.review-blockers{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}.review-chip{border:1px solid rgba(255,255,255,.065);border-radius:999px;padding:3px 6px;font-size:7.5px;color:#b9c5ce;background:rgba(255,255,255,.012)}
-.review-hypothesis{border:1px solid rgba(255,255,255,.055);border-radius:8px;padding:8px;margin-top:6px;background:rgba(255,255,255,.012)}.review-hypothesis:first-of-type{margin-top:0}.review-hypothesis-head{display:flex;justify-content:space-between;gap:7px;align-items:flex-start}.review-hypothesis b{font-size:9.5px}.review-hypothesis small{display:block;color:var(--muted);font-size:7.7px;line-height:1.4;margin-top:4px}.review-rule{font-size:8.3px;line-height:1.45;margin-top:5px;color:#d9e2e8}.review-foot{font-size:8px;color:var(--muted);line-height:1.45;margin-top:9px;border-top:1px solid rgba(255,255,255,.045);padding-top:7px}
-@media(max-width:950px){.review-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.review-grid{grid-template-columns:1fr}.review-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:520px){.review-tabs{width:100%}.review-tab{flex:1;padding:8px 6px}.review-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.review-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.review-item-head,.review-hypothesis-head{gap:5px}.review-status{font-size:7px}}
+.review-tab:focus-visible{outline:2px solid #87b9d9;outline-offset:1px}.review-tab-badge{display:inline-block;min-width:15px;margin-left:3px;padding:0 3px;border-radius:999px;background:rgba(214,183,94,.12);color:#e8c55c;font-size:7px;text-align:center}
+.review-panel[hidden]{display:none!important}.review-kpis{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:3px;margin:1px 0 6px}.review-kpi{border:1px solid var(--line);border-radius:7px;padding:5px 6px;background:var(--card2);min-width:0}.review-kpi span{display:block;font-size:6.7px;color:var(--muted);line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-kpi b{display:block;font-size:10.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.review-grid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(270px,.85fr);gap:6px;align-items:start}.review-section{border:1px solid var(--line);border-radius:8px;background:var(--card2);padding:7px;min-width:0;margin-bottom:6px}.review-section h3{margin:0 0 2px;font-size:9px;text-transform:uppercase;letter-spacing:.045em;color:#bccbd6}.review-section-note{font-size:7.1px;color:var(--muted);line-height:1.28;margin-bottom:5px}
+.review-list{display:grid;gap:2px}.review-item{border-top:1px solid rgba(255,255,255,.05);padding:4px 0}.review-item:first-child{border-top:0;padding-top:0}.review-item-head{display:flex;justify-content:space-between;align-items:center;gap:5px}.review-item-title{font-size:9.2px;font-weight:680;line-height:1.18}.review-item-sub{font-size:6.9px;color:var(--muted);margin-top:1px;line-height:1.18}.review-status{border:1px solid var(--line);border-radius:999px;padding:2px 4px;font-size:6.5px;line-height:1.1;white-space:nowrap;color:#c9d5de}.review-status.ok{border-color:rgba(89,214,148,.26)}.review-status.warn{border-color:rgba(214,183,94,.26)}.review-status.bad{border-color:rgba(225,103,103,.26)}
+.review-metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:2px;margin-top:3px}.review-metrics.dense{grid-template-columns:repeat(8,minmax(0,1fr))}.review-metric{border:1px solid rgba(255,255,255,.04);border-radius:5px;padding:3px 4px;min-width:0;background:rgba(255,255,255,.008)}.review-metric span{display:block;font-size:6px;line-height:1.05;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-metric b{display:block;font-size:8px;line-height:1.08;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.review-lesson{margin-top:3px;border-left:2px solid #6ea7d0;padding:3px 5px;background:rgba(110,167,208,.04);font-size:7.2px;line-height:1.25;white-space:normal}.review-lesson b{color:#dfe9f0}.review-blockers{display:flex;flex-wrap:wrap;gap:2px;margin-top:3px}.review-chip{border:1px solid rgba(255,255,255,.055);border-radius:999px;padding:2px 4px;font-size:6.5px;color:#b9c5ce;background:rgba(255,255,255,.01)}
+.review-hypothesis{border-top:1px solid rgba(255,255,255,.05);padding:5px 0;margin-top:0}.review-hypothesis:first-of-type{border-top:0;padding-top:0}.review-hypothesis-head{display:flex;justify-content:space-between;gap:5px;align-items:center}.review-hypothesis b{font-size:8.4px}.review-hypothesis small{display:block;color:var(--muted);font-size:6.6px;line-height:1.25;margin-top:2px}.review-rule{font-size:7.1px;line-height:1.25;margin-top:2px;color:#d9e2e8}.review-foot{font-size:6.6px;color:var(--muted);line-height:1.25;margin-top:3px;border-top:1px solid rgba(255,255,255,.04);padding-top:3px}
+.review-flow{display:flex;flex-wrap:wrap;align-items:center;gap:2px;font-size:6.8px;line-height:1.2}.review-flow i{font-style:normal;color:#607483}.review-flow .review-chip{font-size:6.6px}
+@media(max-width:1050px){.review-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}.review-grid{grid-template-columns:1fr}.review-metrics.dense{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:620px){.review-tabs{width:100%}.review-tab{flex:1;padding:6px 4px}.review-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}.review-metrics,.review-metrics.dense{grid-template-columns:repeat(4,minmax(0,1fr))}.review-section{padding:6px}.review-kpi{padding:4px}.review-item-title{font-size:8.7px}}
+@media(max-width:390px){.review-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.review-metrics,.review-metrics.dense{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .pf-ledger{grid-template-columns:repeat(4,minmax(0,1fr))}
 @media(max-width:780px){.pf-sections{grid-template-columns:1fr 1fr}.pf-section:last-child{grid-column:1/-1}.pf-quality{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-width:500px){.pf-row{grid-template-columns:minmax(88px,1.25fr) repeat(3,minmax(0,1fr));gap:4px;padding:9px 7px}button.pf-row{font-size:11px}.pf-row.pf-colnames{font-size:9px}.pf-row small{font-size:8px}.pf-detail{padding:11px}.pf-heading h3{font-size:13px}.pf-amount{font-size:23px}.pf-status{font-size:9px;max-width:104px}.pf-performance{gap:7px}.pf-value b{font-size:14px}.pf-value span{font-size:9px}.pf-sections{grid-template-columns:1fr;gap:10px}.pf-section:last-child{grid-column:auto}.pf-quality,.pf-ledger{grid-template-columns:1fr 1fr}.pf-quality .pf-value b{font-size:18px}.deal{padding:10px}.deal-result{font-size:15px}.deal-name{font-size:12px}.deal-breakdown{grid-template-columns:repeat(2,minmax(0,1fr))}.deal-filters small{flex-basis:100%;margin:0}.deal-outcome{gap:7px}}
@@ -1110,10 +1112,66 @@ function renderTradeReviewItem(x){
   const capture=x.capture==null?'—':n(100*x.capture,0)+'%';
   const attr=x.attr?reviewAttrLabel(x.attr):(x.protectionTrigger?'триггер защиты прибыли':'исход сделки');
   const cfPnl=x.counterfactualPnl==null?'—':rub(x.counterfactualPnl),missed=x.missedProfit==null?'—':rub(x.missedProfit);
-  const cfNote=x.replayProven?'Контрфакт подтверждён упорядоченным replay и показывается отдельно от фактического результата.':'Контрфактный P&L и «упущенная прибыль» не показаны без доказанного ordered-path replay.';
-  return '<div class="review-item"><div class="review-item-head"><div><div class="review-item-title">'+esc(lab(t.asset))+' · '+esc(directionLabel(t.direction,p.entry_signal_tier||p.signal_tier||''))+'</div><div class="review-item-sub">'+esc(scope)+'</div></div><span class="review-status '+x.statusClass+'">'+esc(x.status)+'</span></div>'+
-    '<div class="review-metrics"><div class="review-metric"><span>P&L факт</span><b class="'+tone(x.net)+'">'+rub(x.net)+'</b></div><div class="review-metric"><span>P&L контрфакт</span><b>'+(x.counterfactualPnl==null?'—':'<span class="'+tone(x.counterfactualPnl)+'">'+cfPnl+'</span>')+'</b></div><div class="review-metric"><span>Упущено доказано</span><b>'+missed+'</b></div><div class="review-metric"><span>MFE</span><b>'+pct(x.mfe)+'</b></div><div class="review-metric"><span>MAE</span><b>'+pct(x.mae)+'</b></div><div class="review-metric"><span>Удержано движения</span><b>'+capture+'</b></div><div class="review-metric"><span>Вход факт</span><b>'+assetPrice(t.asset,entry)+'</b></div><div class="review-metric"><span>Уровень сигнала</span><b>'+assetPrice(t.asset,x.signalEntry)+'</b></div><div class="review-metric"><span>Добор факт</span><b>'+assetPrice(t.asset,x.addPrice)+'</b></div><div class="review-metric"><span>Исходный стоп</span><b>'+assetPrice(t.asset,stop)+'</b></div><div class="review-metric"><span>Выход факт</span><b>'+assetPrice(t.asset,exit)+'</b></div><div class="review-metric"><span>Выход контрфакт</span><b>'+assetPrice(t.asset,x.counterfactualExit)+'</b></div></div>'+
-    '<div class="review-lesson"><b>'+esc(attr)+':</b> '+esc(x.lesson)+'</div><div class="review-foot">'+esc(cfNote)+'</div></div>';
+  const pair=(a,b)=>assetPrice(t.asset,a)+' → '+assetPrice(t.asset,b);
+  const evidence=x.replayProven?'replay доказан':'контрфакт закрыт';
+  return '<div class="review-item"><div class="review-item-head"><div><div class="review-item-title">'+esc(lab(t.asset))+' · '+esc(directionLabel(t.direction,p.entry_signal_tier||p.signal_tier||''))+' · <span class="'+tone(x.net)+'">'+rub(x.net)+'</span></div><div class="review-item-sub">'+esc(scope)+'</div></div><span class="review-status '+x.statusClass+'">'+esc(x.status)+'</span></div>'+
+    '<div class="review-metrics dense">'+
+      '<div class="review-metric"><span>P&L факт / cf</span><b>'+rub(x.net)+' / '+cfPnl+'</b></div>'+
+      '<div class="review-metric"><span>MFE / MAE</span><b>'+pct(x.mfe)+' / '+pct(x.mae)+'</b></div>'+
+      '<div class="review-metric"><span>Захват</span><b>'+capture+'</b></div>'+
+      '<div class="review-metric"><span>Вход → выход</span><b>'+pair(entry,exit)+'</b></div>'+
+      '<div class="review-metric"><span>Сигнал / добор</span><b>'+assetPrice(t.asset,x.signalEntry)+' / '+assetPrice(t.asset,x.addPrice)+'</b></div>'+
+      '<div class="review-metric"><span>Stop</span><b>'+assetPrice(t.asset,stop)+'</b></div>'+
+      '<div class="review-metric"><span>Упущено доказано</span><b>'+missed+'</b></div>'+
+      '<div class="review-metric"><span>Контрфакт</span><b>'+esc(evidence)+'</b></div>'+
+    '</div><div class="review-lesson"><b>'+esc(attr)+':</b> '+esc(x.lesson)+'</div></div>';
+}
+function aggregateClosedTradeEvidence(learning2){
+  const assets=learning2&&learning2.assets&&typeof learning2.assets==='object'?learning2.assets:{};
+  const out={outcome:0,path:0,stopReady:0,exitReady:0,wins:0,losses:0,flat:0,pnl:0,pathWeight:0,mfeSum:0,maeSum:0,captureSum:0};
+  Object.values(assets).forEach(data=>{
+    const d=(data&&data.diagnostics)||{};
+    const outcome=Number(d.outcome_evidence_trade_rows||0),path=Number(d.path_evidence_trade_rows||0);
+    out.outcome+=outcome;out.path+=path;out.stopReady+=Number(d.stop_replay_ready_rows||0);out.exitReady+=Number(d.exit_replay_ready_rows||0);
+    out.wins+=Number(d.outcome_profitable_trade_rows||0);out.losses+=Number(d.outcome_losing_trade_rows||0);out.flat+=Number(d.outcome_flat_trade_rows||0);
+    if(d.outcome_net_pnl_rub!=null&&Number.isFinite(Number(d.outcome_net_pnl_rub)))out.pnl+=Number(d.outcome_net_pnl_rub);
+    if(path>0){
+      const mfe=knownNumber(d.path_avg_mfe_pct),mae=knownNumber(d.path_avg_mae_pct),cap=knownNumber(d.path_avg_capture_ratio);
+      if(mfe!=null)out.mfeSum+=mfe*path;if(mae!=null)out.maeSum+=mae*path;if(cap!=null)out.captureSum+=cap*path;
+      out.pathWeight+=path;
+    }
+  });
+  const denom=out.wins+out.losses+out.flat;
+  return {...out,
+    outcomeOnly:Math.max(0,out.outcome-out.path),
+    winRate:denom?out.wins/denom:null,
+    avgMfe:out.pathWeight?out.mfeSum/out.pathWeight:null,
+    avgMae:out.pathWeight?out.maeSum/out.pathWeight:null,
+    avgCapture:out.pathWeight?out.captureSum/out.pathWeight:null};
+}
+const autoCandidateLabel=v=>({
+  CALIBRATION:'Калибровка вероятности',
+  SIZE_DOWN_WEAK_SIGNAL:'Размер · слабый сигнал',
+  SIZE_DOWN_UNCALIBRATED:'Размер · без калибровки'
+}[String(v||'')]||String(v||'').replaceAll('_',' '));
+const autoStateLabel=v=>({
+  collecting:'Накопление',evaluating:'Проверка',promoted:'Подтверждено',
+  degraded:'Доказательство отозвано',rejected:'Отклонено'
+}[String(v||'').toLowerCase()]||String(v||'')||'—');
+function renderAutonomousTradeLearning(a){
+  const candidates=(Array.isArray(a&&a.candidates)?a.candidates:[])
+    .filter(x=>['CALIBRATION','SIZE_DOWN_WEAK_SIGNAL','SIZE_DOWN_UNCALIBRATED'].includes(String(x&&x.kind||'')));
+  return '<section class="review-section"><h3>Автообучение результата и размера</h3><div class="review-section-note">Доказанный денежный исход обучает размер и калибровку; Stop/Exit получают право только через bounded replay / path evidence.</div>'+
+    (candidates.length?candidates.slice(0,8).map(x=>{
+      const scope=x.scope||{},m=x.monitor_evidence||{},e=x.evidence||{};
+      const nObs=knownNumber(m.n)??knownNumber(e.n),days=knownNumber(m.days)??knownNumber(e.days);
+      const wr=knownNumber(m.win_rate)??knownNumber(e.win_rate),delta=knownNumber(m.mean_delta)??knownNumber(e.mean_delta);
+      const baseDd=knownNumber(m.base_drawdown_r)??knownNumber(e.base_drawdown_r),candDd=knownNumber(m.candidate_drawdown_r)??knownNumber(e.candidate_drawdown_r);
+      const reason=(x.reasons||[])[0],state=String(x.state||'collecting').toLowerCase(),good=state==='promoted'&&x.evidence_valid===true;
+      return '<div class="review-hypothesis"><div class="review-hypothesis-head"><div><b>'+esc(autoCandidateLabel(x.kind))+'</b><small>'+esc([lab(scope.asset),tfRu(scope.horizon),scope.regime].filter(Boolean).join(' · ')||'общий контекст')+'</small></div><span class="review-status '+(good?'ok':state==='degraded'||state==='rejected'?'bad':'warn')+'">'+esc(autoStateLabel(state))+'</span></div>'+
+        '<div class="review-metrics"><div class="review-metric"><span>Train N</span><b>'+esc(x.training_n??'—')+'</b></div><div class="review-metric"><span>Future N</span><b>'+esc(nObs??'—')+'</b></div><div class="review-metric"><span>Дней</span><b>'+esc(days??'—')+'</b></div><div class="review-metric"><span>Win-rate</span><b>'+(wr==null?'—':n(100*wr,1)+'%')+'</b></div><div class="review-metric"><span>Δ результата</span><b>'+(delta==null?'—':n(delta,3)+' R')+'</b></div><div class="review-metric"><span>DD база → кандидат</span><b>'+(baseDd==null&&candDd==null?'—':n(baseDd,2)+' → '+n(candDd,2)+' R')+'</b></div></div>'+
+        '<small>'+(x.profitability_proven===true?'Доходность после расходов подтверждена.':'Доходность ещё не подтверждена.')+(reason?' · '+esc(reasonRu(reason)):'')+'</small></div>';
+    }).join(''):'<div class="msg">Кандидатов по денежным исходам пока нет — накапливается независимая выборка.</div>')+'</section>';
 }
 function aggregateMissed(learning2){
   const assets=learning2&&learning2.assets&&typeof learning2.assets==='object'?learning2.assets:{};
@@ -1177,25 +1235,34 @@ function renderHypothesesSection(learning2){
 }
 function renderReview(){
   bindReviewTabs();
-  const all=Array.isArray(st.trades&&st.trades.trades)?st.trades.trades.slice(0,40):[];
+  const all=Array.isArray(st.trades&&st.trades.trades)?st.trades.trades.slice(0,60):[];
   const reviews=all.map(reviewTradeModel);
-  const l2=st.autonomous&&st.autonomous.learning_v2||{},missed=aggregateMissed(l2);
+  const a=st.autonomous||{},l2=a.learning_v2||{},missed=aggregateMissed(l2),closed=aggregateClosedTradeEvidence(l2);
   const hypotheses=Array.isArray(l2.hypotheses)?l2.hypotheses:[];
   const registry=l2.registry||{},shadow=Array.isArray(registry.shadow_champions)?registry.shadow_champions.length:0;
+  const autoCandidates=(Array.isArray(a.candidates)?a.candidates:[]).filter(x=>['CALIBRATION','SIZE_DOWN_WEAK_SIGNAL','SIZE_DOWN_UNCALIBRATED'].includes(String(x&&x.kind||'')));
+  const promoted=autoCandidates.filter(x=>String(x.state||'').toLowerCase()==='promoted'&&x.evidence_valid===true).length;
   const protection=reviews.filter(x=>x.protectionTrigger).length;
-  const counts=st.autonomous&&st.autonomous.counts||{},processed=Number(counts.processed??((counts.direction||0)+(counts.trade||0)))||0;
+  const fallbackWinRate=closed.winRate??(reviews.length?reviews.filter(x=>x.net!=null&&x.net>0).length/reviews.length:null);
   if($('reviewBadge'))$('reviewBadge').textContent=String(missed.missed+protection);
   if($('reviewSummary'))$('reviewSummary').innerHTML='<div class="review-kpis">'+
-    '<div class="review-kpi"><span>Закрытых в разборе</span><b>'+reviews.length+'</b></div>'+
-    '<div class="review-kpi"><span>MFE ≥ 0,15%, итог ≤ 0</span><b class="'+(protection?'warn':'')+'">'+protection+'</b></div>'+
-    '<div class="review-kpi"><span>Упущенных эпизодов</span><b class="'+(missed.missed?'warn':'')+'">'+missed.missed+'</b></div>'+
-    '<div class="review-kpi"><span>Обучаемых пропусков</span><b>'+missed.learnable+'</b></div>'+
-    '<div class="review-kpi"><span>Кандидатов правил</span><b>'+hypotheses.length+'</b></div>'+
-    '<div class="review-kpi"><span>Опыт / shadow</span><b>'+processed+' / '+shadow+'</b></div></div>';
+    '<div class="review-kpi"><span>Доказан исход</span><b>'+closed.outcome+'</b></div>'+
+    '<div class="review-kpi"><span>Доказан путь</span><b>'+closed.path+'</b></div>'+
+    '<div class="review-kpi"><span>Win-rate исходов</span><b>'+(fallbackWinRate==null?'—':n(100*fallbackWinRate,1)+'%')+'</b></div>'+
+    '<div class="review-kpi"><span>P&L исходов</span><b class="'+tone(closed.pnl)+'">'+(closed.outcome?rub(closed.pnl):'—')+'</b></div>'+
+    '<div class="review-kpi"><span>MFE ≥0,15% → ≤0</span><b class="'+(protection?'warn':'')+'">'+protection+'</b></div>'+
+    '<div class="review-kpi"><span>Replay Stop / Exit</span><b>'+closed.stopReady+' / '+closed.exitReady+'</b></div>'+
+    '<div class="review-kpi"><span>Упущено / обучаемо</span><b class="'+(missed.missed?'warn':'')+'">'+missed.missed+' / '+missed.learnable+'</b></div>'+
+    '<div class="review-kpi"><span>L2 / авто / подтвержд.</span><b>'+hypotheses.length+' / '+autoCandidates.length+' / '+promoted+'</b></div></div>';
   if(!$('reviewBody'))return;
-  const closed='<section class="review-section"><h3>Разбор закрытых позиций</h3><div class="review-section-note">Фактический результат, MFE/MAE, защита прибыли и накопленный урок. Порог разбора защиты прибыли: MFE 0,15%.</div>'+(reviews.length?'<div class="review-list">'+reviews.slice(0,16).map(renderTradeReviewItem).join('')+'</div>':'<div class="msg">Закрытых сделок для разбора пока нет.</div>')+'</section>';
-  const loop='<section class="review-section"><h3>Контур самообучения</h3><div class="review-section-note">Опыт не превращается в правило по одному примеру.</div><div class="review-list"><div class="review-item"><div class="review-item-title">1. Фиксация</div><div class="review-item-sub">Закрытая сделка или заблокированный directional episode сохраняется с источником, временем и контекстом.</div></div><div class="review-item"><div class="review-item-title">2. Диагностика</div><div class="review-item-sub">Считаются MFE/MAE, результат после расходов, повторяемость блокировки и достаточность доказательств.</div></div><div class="review-item"><div class="review-item-title">3. Проверка будущими исходами</div><div class="review-item-sub">Кандидат оценивается только на данных после его регистрации; Stop/Exit требуют ordered-path replay.</div></div><div class="review-item"><div class="review-item-title">4. Shadow</div><div class="review-item-sub">Только прошедший порог кандидат может стать shadow-eligible. Production-параметры автоматически не меняются.</div></div></div><div class="review-foot">'+esc(learningWaitText(st.autonomous||{}))+'</div></section>';
-  $('reviewBody').innerHTML='<div class="review-grid"><div>'+closed+renderMissedSection(l2,missed)+'</div><div>'+renderHypothesesSection(l2)+loop+'</div></div>';
+  const authority=closed.outcome?
+    ('Исход '+closed.outcome+' · path '+closed.path+' · outcome-only '+closed.outcomeOnly+
+     ' · replay Stop/Exit '+closed.stopReady+'/'+closed.exitReady+
+     (closed.avgCapture!=null?' · ср. захват '+n(100*closed.avgCapture,0)+'%':''))
+    :'Evidence-tier по закрытым сделкам обновляется.';
+  const trades='<section class="review-section"><h3>Закрытые сделки · плотный разбор</h3><div class="review-section-note">'+esc(authority)+' · MFE/MAE не восстанавливаются из неполного пути.</div>'+(reviews.length?'<div class="review-list">'+reviews.slice(0,24).map(renderTradeReviewItem).join('')+'</div>':'<div class="msg">Закрытых сделок для разбора пока нет.</div>')+'</section>';
+  const loop='<section class="review-section"><h3>Контур самообучения</h3><div class="review-flow"><span class="review-chip">Фиксация</span><i>→</i><span class="review-chip">Диагностика</span><i>→</i><span class="review-chip">Future validation</span><i>→</i><span class="review-chip">Replay / Shadow</span><i>→</i><span class="review-chip">Production candidate</span></div><div class="review-foot">Одно наблюдение правило не меняет. Outcome-only может обучать денежный результат/размер и запускать bounded replay; прямые MFE/MAE требуют path evidence. '+esc(learningWaitText(a))+'</div></section>';
+  $('reviewBody').innerHTML='<div class="review-grid"><div>'+trades+renderMissedSection(l2,missed)+'</div><div>'+renderAutonomousTradeLearning(a)+renderHypothesesSection(l2)+loop+'</div></div>';
 }
 
 function learningWaitText(a){
