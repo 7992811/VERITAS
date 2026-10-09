@@ -22,11 +22,20 @@ vm.runInContext(script.replace(/\}\)\(\);\s*$/,
   'globalThis.ui={st,renderReview,reviewSetTab,reviewTradeModel,aggregateMissed,aggregateClosedTradeEvidence,renderAutonomousTradeLearning,hypothesisRuleText};})();'),
   context,{timeout:2000});
 const ui=context.ui;
-ui.st.trades={trades:[{
+ui.st.trades={self_learning_summary:{reviewed_count:1,evidence_repair_required_count:0},owner_review_queue:[{
+  candidate_id:'POST-1',asset:'BTC',direction:'LONG',horizon:'5m',portfolios:['Champion'],
+  proposal:{kind:'SUSTAINED_PROFIT_PROTECTION_REPLAY',title:'Проверить защиту прибыли',rationale:'Replay 0,15%',status:'OWNER_REVIEW_REQUIRED',canonical_conflicts:['Не ломать структурный стоп'],promotion_blockers:['OOS_REQUIRED']}
+}],self_learning_reviews:[{
   trade_id:'t1',portfolio_name:'Champion',asset:'BTC',horizon:'5m',direction:'LONG',status:'CLOSED',
   opened_at:'2026-10-09T09:00:00Z',closed_at:'2026-10-09T09:30:00Z',
   avg_entry_price:100,avg_exit_price:99.9,net_pnl_rub:-120,gross_pnl_rub:-100,
-  payload:{mfe_pct:0.22,mae_pct:-0.08,initial_stop_price:99.5}
+  mfe_pct:0.22,mae_pct:-0.08,stop_price:99.5,
+  self_learning_review:{version:'TRADE_POSTMORTEM_V3',classification:'PROFIT_GIVEBACK_REVIEW',evidence_status:'VERIFIED_RULE_OUTCOME',
+    path:{mfe_pct:0.22,mae_pct:-0.08,material_profit_giveback:true},
+    levels_volatility:{atr:0.5,initial_risk_atr:1.0,stop_anchor:99.55,stop_anchor_buffer_atr:0.1,initial_target:101.5,target_distance_atr:3.0,gross_target_to_risk:3.0},
+    market_context:{trigger_timeframe:'5m',structural_timeframe:'1h',moving_averages:{sma18:100.2,sma50:98.5},moving_averages_in_trade_path:[{name:'SMA18',price:100.2}],indicators:{rsi:58,adx:27}},
+    entry_logic:{trade_entry_reason:'TRADE_PLAN_READY'},exit_logic:{exit_reason:'STOP'},issues:['Прибыль отдана'],strengths:['Стоп за low']},
+  entry_analysis_snapshot:{}
 }]};
 ui.st.autonomous={counts:{direction:40,trade:8},
   candidates:[{candidate_id:'a1',kind:'SIZE_DOWN_UNCALIBRATED',state:'evaluating',training_n:32,
@@ -49,7 +58,7 @@ ui.st.autonomous={counts:{direction:40,trade:8},
     shadow_champions:[{candidate_id:'h1'}]}
 }};
 ui.renderReview();
-assert.equal(elements.reviewBadge.textContent,'4');
+assert.equal(elements.reviewBadge.textContent,'3');
 assert.match(elements.reviewSummary.innerHTML,/Доказан исход<\/span><b>20<\/b>/);
 assert.match(elements.reviewSummary.innerHTML,/Доказан путь<\/span><b>8<\/b>/);
 assert.match(elements.reviewSummary.innerHTML,/Win-rate исходов<\/span><b>60/);
@@ -57,7 +66,12 @@ assert.match(elements.reviewSummary.innerHTML,/P&L исходов/);
 assert.match(elements.reviewSummary.innerHTML,/Replay Stop \/ Exit<\/span><b>10 \/ 7<\/b>/);
 assert.match(elements.reviewSummary.innerHTML,/Упущено \/ обучаемо/);
 assert.match(elements.reviewSummary.innerHTML,/L2 \/ авто \/ подтвержд\./);
-assert.match(elements.reviewBody.innerHTML,/Закрытые сделки · плотный разбор/);
+assert.match(elements.reviewBody.innerHTML,/Закрытые сделки · подробный postmortem/);
+assert.match(elements.reviewBody.innerHTML,/ATR \/ риск/);
+assert.match(elements.reviewBody.innerHTML,/Защищаемый high\/low/);
+assert.match(elements.reviewBody.innerHTML,/MA в траектории/);
+assert.match(elements.reviewBody.innerHTML,/На утверждение владельца/);
+assert.match(elements.reviewBody.innerHTML,/OWNER_REVIEW_REQUIRED/);
 assert.match(elements.reviewBody.innerHTML,/outcome-only 12/);
 assert.match(elements.reviewBody.innerHTML,/P&L факт \/ cf/);
 assert.match(elements.reviewBody.innerHTML,/MFE \/ MAE/);
