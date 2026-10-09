@@ -32,8 +32,6 @@ SCALAR_FIELDS = (
     "last_observed_at", "last_checked_at", "observation_count", "min_price",
     "max_price", "last_price", "mfe_pct", "mae_pct", "max_gap_seconds",
     "gap_count", "allowed_gap_seconds", "expected_interval_seconds",
-    "source_max_age_seconds", "source_gap_allowance_seconds",
-    "check_count", "max_check_gap_seconds", "check_gap_count",
     "started_at_entry", "late_start_seconds", "max_processing_lag_seconds",
     "invalid_observation_count", "duplicate_observation_count",
     "coverage_status", "not_continuous_market_path", "last_lane",
@@ -123,15 +121,12 @@ def _bounded_witness(old):
     identity=_clean_identity(old.get('source_identity'))
     witness['source_identity']=identity
     invalid|=identity is None
-    for key in ('observation_count','gap_count','check_count','check_gap_count',
-                'invalid_observation_count','duplicate_observation_count'):
+    for key in ('observation_count','gap_count','invalid_observation_count','duplicate_observation_count'):
         count=_count(old.get(key))
         if count is None:
             invalid=True;count=0
         witness[key]=count
-    for key in ('max_gap_seconds','max_check_gap_seconds','max_processing_lag_seconds',
-                'source_max_age_seconds','source_gap_allowance_seconds',
-                'allowed_gap_seconds','expected_interval_seconds'):
+    for key in ('max_gap_seconds','max_processing_lag_seconds'):
         value=_number(old.get(key))
         if value is None or value<0:
             invalid=True;value=0.
@@ -189,9 +184,6 @@ def observe(row, quote, checked_at, *, at_entry=False, lane="PROTECTIVE_GUARD"):
             "mfe_pct": 0.0, "mae_pct": 0.0, "max_gap_seconds": 0.0,
             "gap_count": 0, "allowed_gap_seconds": ALLOWED_GAP_SECONDS,
             "expected_interval_seconds": EXPECTED_INTERVAL_SECONDS,
-            "source_max_age_seconds": _source_max_age(row.get("asset")),
-            "source_gap_allowance_seconds": _source_gap_allowance(row.get("asset")),
-            "check_count": 0, "max_check_gap_seconds": 0.0, "check_gap_count": 0,
             "started_at_entry": bool(at_entry is True and late is not None and 0.0 <= late <= 1.0),
             "late_start_seconds": late, "max_processing_lag_seconds": 0.0,
             "invalid_observation_count": 0, "duplicate_observation_count": 0,
@@ -200,26 +192,20 @@ def observe(row, quote, checked_at, *, at_entry=False, lane="PROTECTIVE_GUARD"):
     witness["last_lane"] = str(lane)[:128]
     expected_source_age=_source_max_age(row.get("asset"))
     expected_source_gap=_source_gap_allowance(row.get("asset"))
-    if (_number(witness.get("allowed_gap_seconds")) != ALLOWED_GAP_SECONDS
-            or _number(witness.get("expected_interval_seconds")) != EXPECTED_INTERVAL_SECONDS
-            or _number(witness.get("source_max_age_seconds")) != expected_source_age
-            or _number(witness.get("source_gap_allowance_seconds")) != expected_source_gap):
-        witness['invalid_observation_count']=int(witness.get('invalid_observation_count') or 0)+1
-        witness['coverage_status']='INCOMPLETE'
-        return witness
     previous_check=_time(witness.get('last_checked_at'))
     if checked and previous_check and checked<previous_check:
         witness['invalid_observation_count']+=1
         witness['coverage_status']='INCOMPLETE'
         return witness
     if checked:
-        if previous_check and checked>previous_check:
-            check_gap=(checked-previous_check).total_seconds()
-            witness["max_check_gap_seconds"]=max(float(witness.get("max_check_gap_seconds") or 0),check_gap)
-            if check_gap>ALLOWED_GAP_SECONDS:
-                witness["check_gap_count"]=int(witness.get("check_gap_count") or 0)+1
-        if previous_check is None or checked>previous_check:
-            witness["check_count"]=int(witness.get("check_count") or 0)+1
+        if previous_check and checked>previous_check and (checked-previous_check).total_seconds()>ALLOWED_GAP_SECONDS:
+            # A process restart or missed protective lane is permanent evidence
+            # loss. Reuse the existing invalid counter so the shared SQL proof
+            # shape remains frozen.
+            witness["invalid_observation_count"]=int(witness.get("invalid_observation_count") or 0)+1
+            witness["coverage_status"]="INCOMPLETE"
+            witness["last_checked_at"]=checked.isoformat()
+            return witness
         witness["last_checked_at"] = checked.isoformat()
     observed = _time(quote.get("observed_at") or quote.get("market_observed_at"))
     px = _positive(quote.get("price"))
@@ -268,10 +254,8 @@ def observe(row, quote, checked_at, *, at_entry=False, lane="PROTECTIVE_GUARD"):
                 witness['mfe_pct'],witness['mae_pct']=None,None
                 witness['invalid_observation_count']+=1
     witness["coverage_status"] = ("OBSERVED" if witness.get("started_at_entry")
-        and not witness.get("gap_count") and not witness.get("check_gap_count")
-        and not witness.get("invalid_observation_count")
-        and witness["max_processing_lag_seconds"] <= expected_source_age
-        and witness["max_check_gap_seconds"] <= ALLOWED_GAP_SECONDS else "INCOMPLETE")
+        and not witness.get("gap_count") and not witness.get("invalid_observation_count")
+        and witness["max_processing_lag_seconds"] <= expected_source_age else "INCOMPLETE")
     return witness
 
 
@@ -287,12 +271,10 @@ def assessment(row):
            "version": VERSION, "scope": "SAMPLED_SOURCE_QUOTES_WITH_CONTINUOUS_CHECKS",
            "not_continuous_market_path": True,
            "max_gap_seconds": _number(w.get("max_gap_seconds")),
-           "max_check_gap_seconds": _number(w.get("max_check_gap_seconds")),
            "allowed_gap_seconds": ALLOWED_GAP_SECONDS,
            "source_max_age_seconds": expected_source_age,
            "source_gap_allowance_seconds": expected_source_gap,
            "observation_count": _number(w.get("observation_count")),
-           "check_count": _number(w.get("check_count")),
            "coverage_started_at_entry": w.get("started_at_entry") is True,
            "tail_gap_seconds": None}
     def reject(reason):
@@ -314,28 +296,20 @@ def assessment(row):
     if w.get("started_at_entry") is not True:
         return reject("UNOBSERVED_ENTRY_PREFIX")
     if (_number(w.get("allowed_gap_seconds")) != ALLOWED_GAP_SECONDS
-            or _number(w.get("expected_interval_seconds")) != EXPECTED_INTERVAL_SECONDS
-            or _number(w.get("source_max_age_seconds")) != expected_source_age
-            or _number(w.get("source_gap_allowance_seconds")) != expected_source_gap):
+            or _number(w.get("expected_interval_seconds")) != EXPECTED_INTERVAL_SECONDS):
         return reject("OBSERVATION_PATH_CADENCE_MISMATCH")
     required = ("observation_count", "max_gap_seconds", "gap_count",
-                "check_count", "max_check_gap_seconds", "check_gap_count",
                 "invalid_observation_count", "max_processing_lag_seconds")
     nums = {key: _number(w.get(key)) for key in required}
     if any(value is None or value < 0 for value in nums.values()):
         return reject("INVALID_OBSERVATION_PATH")
     if nums["observation_count"] < 2:
         return reject("INSUFFICIENT_PATH_OBSERVATIONS")
-    if nums["check_count"] < nums["observation_count"] or nums["check_count"] < 2:
-        return reject("INCONSISTENT_CHECK_COVERAGE")
     if any(_count(w.get(key)) is None for key in
-           ('observation_count','gap_count','check_count','check_gap_count',
-            'invalid_observation_count')):
+           ('observation_count','gap_count','invalid_observation_count')):
         return reject('INVALID_OBSERVATION_PATH')
     if nums["invalid_observation_count"]:
         return reject("INVALID_PATH_OBSERVATION")
-    if nums["check_gap_count"] or nums["max_check_gap_seconds"] > ALLOWED_GAP_SECONDS:
-        return reject("OBSERVATION_CHECK_GAP")
     if nums["gap_count"] or nums["max_gap_seconds"] > expected_source_gap:
         return reject("OBSERVATION_SOURCE_GAP")
     if nums["max_processing_lag_seconds"] > expected_source_age:
@@ -348,10 +322,6 @@ def assessment(row):
     span=(last-first).total_seconds()
     if span<=0 or nums['max_gap_seconds']<=0 or span>(nums['observation_count']-1)*nums['max_gap_seconds']+1e-6:
         return reject('INCONSISTENT_OBSERVATION_COVERAGE')
-    check_span=max(0.0,(checked-opened).total_seconds())
-    if (check_span>0 and nums["max_check_gap_seconds"]<=0) or (
-            check_span>(nums["check_count"]-1)*max(nums["max_check_gap_seconds"],1e-12)+1e-6):
-        return reject("INCONSISTENT_CHECK_COVERAGE")
     if first > opened or (opened-first).total_seconds() > expected_source_age:
         return reject("UNOBSERVED_ENTRY_PREFIX")
     if last > end or checked > end:
