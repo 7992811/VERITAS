@@ -41,6 +41,13 @@ TREND_ACCELERATION_POLICY = {
             "1m": 45, "5m": 90, "15m": 120, "30m": 150,
             "1h": 180, "4h": 600, "1d": 1800,
         },
+        # Once persistence has proved the move, protection is an execution
+        # authority rather than advisory telemetry. A write failure exits to
+        # cash instead of leaving an apparently protected winner unprotected.
+        "structural_stop_is_exit_authority": True,
+        "persistence_failure_action": "EXIT_TO_CASH",
+        "execution_receipt_required": True,
+        "allow_soft_rearm_after_structural_lock": False,
     },
     "execution_efficiency": {
         "max_repeated_add_fee_to_positive_edge": 0.25,

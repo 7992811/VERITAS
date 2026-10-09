@@ -1,6 +1,7 @@
 from datetime import datetime,timedelta,timezone
 import unittest
 
+import veritas_canonical_constitution as CTC
 import veritas_execution_efficiency as EFF
 import veritas_observation_path as PATH
 import veritas_price_source as SOURCE
@@ -42,8 +43,16 @@ class BrentLossRepairTests(unittest.TestCase):
         for field in ('r_accel_mfe_pct','r_accel_mfe_candidate_at',
                       'r_accel_mfe_candidate_pct','r_accel_mfe_candidate_timeframe',
                       'r_accel_mfe_candidate_elapsed_seconds',
-                      'r_accel_mfe_profit_lock_active'):
+                      'r_accel_mfe_profit_lock_active',
+                      'r_accel_mfe_learning_teaching_id',
+                      'r_accel_mfe_execution_required',
+                      'r_accel_mfe_protection_state',
+                      'r_accel_mfe_exit_authority'):
             self.assertIn(field,PIO.PROTECTION_FIELDS)
+        policy=CTC.TREND_ACCELERATION_POLICY['profit_protection']
+        self.assertTrue(policy['structural_stop_is_exit_authority'])
+        self.assertEqual(policy['persistence_failure_action'],'EXIT_TO_CASH')
+        self.assertTrue(policy['execution_receipt_required'])
 
     def test_owner_policy_consistency_is_explicit(self):
         self.assertEqual(UT.runtime_consistency()['status'],'OK')
@@ -53,6 +62,7 @@ class BrentLossRepairTests(unittest.TestCase):
         self.assertIn('Owner-authored',snap['requirements']['precedence'])
 
     def test_fast_reversal_requires_same_source_confirmed_fast_evidence(self):
+        self.assertIn('5m',TG.PROTECTED)
         exact={'asset':'NQ','horizon':'1h','research_decision':'LONG',
                'primary_source':'TEST_NATIVE','contract_id':'NQ-TEST'}
         fast={'asset':'NQ','horizon':'5m','research_decision':'LONG',
@@ -88,7 +98,12 @@ class BrentLossRepairTests(unittest.TestCase):
     def test_closed_journal_exposes_stop_and_add_review_fields(self):
         for field in ('exit_effective_stop_price','exit_trailing_stop_price','add_count',
                       'add_fee_rub','mfe_before_last_add_pct','mfe_since_last_add_pct',
-                      'initial_tranche_final_exit_net_proxy_rub'):
+                      'initial_tranche_final_exit_net_proxy_rub',
+                      'r_accel_mfe_learning_teaching_id',
+                      'r_accel_mfe_execution_required',
+                      'r_accel_mfe_protection_state',
+                      'r_accel_mfe_exit_authority',
+                      'r_accel_mfe_exit_authority_reason'):
             self.assertIn(field,JOURNAL.SCALAR_FIELDS)
 
 if __name__=='__main__':

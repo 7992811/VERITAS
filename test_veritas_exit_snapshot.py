@@ -36,6 +36,13 @@ class ExitAccountingDB:
         query=" ".join(sql.split())
         if query.startswith("SELECT 1 AS ok FROM paper_orders"):
             return Result()
+        if (query.startswith("SELECT COALESCE(SUM(notional_rub),0) AS exit_notional_rub")
+                and " FROM paper_orders " in query):
+            exits=[o for o in self.orders if o[1]==args[0] and o[4] in ("SELL","BUY_TO_COVER")]
+            notional=sum(float(o[6] or 0.) for o in exits)
+            units=sum(float(o[6] or 0.)/float(o[5] or 1.) for o in exits if float(o[5] or 0.)>0)
+            return Result({"exit_notional_rub":notional,"exit_units":units,
+                           "exit_fill_count":len(exits)})
         if query.startswith("SELECT * FROM paper_trades"):
             return Result(self.trade)
         self.writes.append((query,args))
