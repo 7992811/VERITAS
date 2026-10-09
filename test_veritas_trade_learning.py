@@ -3,6 +3,7 @@ from copy import deepcopy
 from contextlib import contextmanager
 from datetime import timedelta
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -109,6 +110,32 @@ class TradeObservationTests(unittest.TestCase):
         self.assertEqual(A.observation_key(good),A.observation_key(bad))
         t['learning_integrity']['exclusion_reason']='DUPLICATE_OBSERVED_EVENT'
         self.assertEqual(T.observation(t)[1],'DUPLICATE_MARKET_IDEA')
+
+    def test_outcome_only_receipt_trains_size_without_path_authority(self):
+        t,_=stamped_trade()
+        t["payload"].pop("observation_path",None)
+        t["episode_eligible"]=False
+        t["learning_integrity"]["status"]="EXCLUDED"
+        t["episode_outcome_eligible"]=True
+        t["episode_outcome_evidence_hash"]=t["learning_evidence_hash"]
+        row,reason=T.observation(t,now=t["closed_at"]+timedelta(seconds=1))
+        self.assertIsNone(reason)
+        self.assertTrue(row["evidence_valid"])
+        self.assertEqual(row["proof_kind"],"SIMULATED_SIZE_ON_VERIFIED_NET_OUTCOME")
+        self.assertNotIn("mfe_pct",row)
+        self.assertNotIn("mae_pct",row)
+
+    def test_changed_outcome_hash_revokes_outcome_only_receipt(self):
+        t,_=stamped_trade()
+        t["payload"].pop("observation_path",None)
+        t["episode_eligible"]=False
+        t["learning_integrity"]["status"]="EXCLUDED"
+        t["episode_outcome_eligible"]=True
+        t["episode_outcome_evidence_hash"]="frozen-hash"
+        t["learning_evidence_hash"]="changed-hash"
+        row,reason=T.observation(t,now=t["closed_at"]+timedelta(seconds=1))
+        self.assertIsNotNone(reason)
+        self.assertFalse(row["evidence_valid"])
 
     def test_execution_receipt_is_frozen_but_observation_poll_time_is_not_hashed(self):
         import veritas_learning_bridge as bridge
@@ -488,6 +515,11 @@ class TradeLearningSQLTests(unittest.TestCase):
             with self.connect() as c:
                 self.assertFalse(c.execute('SELECT valid FROM autonomous_learning_seen').fetchone()['valid'])
                 self.assertFalse(c.execute('SELECT valid FROM learning_trade_receipts').fetchone()['valid'])
+
+    def test_materialize_repairs_missing_outcome_hash(self):
+        source=inspect.getsource(T.TradeLearning.process)
+        self.assertIn("NULLIF(e.payload->>'outcome_evidence_hash','') IS NULL",source)
+        self.assertIn("LI.DIAGNOSTICS.VERSION",source)
 
     def test_materialization_failure_rolls_back_without_advancing_cursor(self):
         self.create_trade_tables();t,_=stamped_trade();self.insert(t)
