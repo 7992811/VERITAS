@@ -13,6 +13,12 @@ class EmbeddedSignalRobotBootstrapTests(unittest.TestCase):
                 sys, "argv", ["veritas_intelligence.py"]):
             self.assertFalse(embed.should_start())
 
+    def test_production_http_handler_wires_currency_trade_service(self):
+        source = Path("veritas_intelligence.py").read_text(encoding="utf-8")
+        self.assertIn("import veritas_currency_trade_service as VCTS", source)
+        self.assertIn("VCTS.reply_http(", source)
+        self.assertIn("startswith(VCTS.PREFIX)", source)
+
     def test_requires_exact_web_entrypoint_and_both_flags(self):
         env = {
             "VERITAS_SIGNAL_ROBOT_EMBEDDED": "true",
