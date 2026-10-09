@@ -3364,10 +3364,10 @@ def _moex_parse_dt(v):
 
 
 def _moex_index_open_now():
-    m=datetime.now(timezone.utc).astimezone(ZoneInfo('Europe/Moscow'))
-    if m.weekday()>=5: return False
-    mins=m.hour*60+m.minute
-    return 590<=mins<1140  # official IMOEX calculation window: 09:50–19:00 MSK
+    # One versioned authority owns the session calendar. Do not duplicate old
+    # 09:50–19:00 assumptions in the production monolith.
+    from veritas_market_runtime import moex_index_session_open
+    return moex_index_session_open()
 
 
 def _moex_current_quote():
