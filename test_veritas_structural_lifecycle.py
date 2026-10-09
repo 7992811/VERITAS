@@ -885,5 +885,22 @@ class StructuralLifecycleAccountingTests(unittest.TestCase):
         self.assertTrue(unselected, "the other trigger horizons must not inherit the selected fill")
 
 
+
+    def test_position_projection_exposes_effective_stop_tp2_and_integrity(self):
+        opened = self.open()
+        view = VSL._position_view(opened)
+        ladder = opened['payload']['active_target_ladder']
+        self.assertEqual(view['effective_stop_price'], opened['stop_price'])
+        self.assertEqual(view['tp1_price'], ladder[0]['price'])
+        self.assertEqual(view['second_take_price'], ladder[1]['price'])
+        self.assertEqual(view['second_take_kind'], 'TP2')
+        self.assertEqual(view['position_management_status'], 'OK')
+
+        protected = deepcopy(opened)
+        protected['payload']['trailing_stop'] = opened['stop_price'] + .001
+        view = VSL._position_view(protected)
+        self.assertEqual(view['effective_stop_price'], protected['payload']['trailing_stop'])
+
+
 if __name__ == "__main__":
     unittest.main()
