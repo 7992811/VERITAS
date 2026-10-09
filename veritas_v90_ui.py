@@ -841,11 +841,12 @@ function renderSignals(){
   // A position, admission trace or current portfolio exposure cannot improve the market score.
   const ranked=rows.filter(x=>['LONG','SHORT'].includes(dir(x))&&validSignal(x)).sort((a,b)=>marketRank(b)-marketRank(a));
   const seen=new Set(),best=ranked.filter(x=>{if(seen.has(x.asset))return false;seen.add(x.asset);return true}).slice(0,7);
-  const actionBest=[...best].sort((a,b)=>{
+  const actionBoost=s=>s.ready?12:s.short==='позиция'?7:s.short==='проверка'?3:0;
+  const actionRanked=[...ranked].sort((a,b)=>{
     const aa=paperStatus(a),bb=paperStatus(b);
-    const actionBoost=s=>s.ready?12:s.short==='позиция'?7:s.short==='проверка'?3:0;
     return (marketRank(b)+actionBoost(bb))-(marketRank(a)+actionBoost(aa));
   });
+  const actionSeen=new Set(),actionBest=actionRanked.filter(x=>{if(actionSeen.has(x.asset))return false;actionSeen.add(x.asset);return true}).slice(0,7);
 
   const core=rows.filter(x=>validSignal(x)&&['LONG','SHORT'].includes(dir(x)));
   const weighted=core.reduce((s,x)=>{const w=tfWeight[x.horizon]||.5;return {long:s.long+(dir(x)==='LONG'?w:0),short:s.short+(dir(x)==='SHORT'?w:0),total:s.total+w}}, {long:0,short:0,total:0});
