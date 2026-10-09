@@ -1,0 +1,17 @@
+name: Sidecar Unit Fast CI
+on:
+  push:
+    branches: [ "ci/sidecar-unit-9d47adc" ]
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - run: python -m unittest -v test_veritas_protection_runtime.py test_veritas_architecture_v2.py test_veritas_trade_view.py
