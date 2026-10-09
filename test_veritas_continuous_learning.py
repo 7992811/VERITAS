@@ -869,7 +869,11 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
                 event_ts timestamptz NOT NULL DEFAULT now())""")
             c.execute("""CREATE TABLE v90_decision_episodes(entity_key text PRIMARY KEY,decision_ts timestamptz,
                 outcome_ts timestamptz,asset text,horizon text,regime text,decision text,
-                forward_return float8,mfe float8,mae float8)""")
+                forward_return float8,mfe float8,mae float8,decision_id bigint,setup_family text,
+                policy_hash text,source_key text,contract_id text,candidate_direction text,
+                admission_eligible boolean,final_gate_status text,
+                final_gate_blockers jsonb NOT NULL DEFAULT '[]'::jsonb,
+                learning_v2_projection_version text)""")
             c.execute("""CREATE TABLE shadow_trades(trade_id text PRIMARY KEY,closed_at timestamptz,
                 status text,total_pnl_fraction float8)""")
             c.execute("CREATE TABLE knowledge_sources(id serial PRIMARY KEY)")
