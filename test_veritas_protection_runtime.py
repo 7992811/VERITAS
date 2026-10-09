@@ -364,14 +364,22 @@ class BoundedProtectiveTests(unittest.TestCase):
         rows = [position(i, structural=True)[0] for i in range(2)]
         q = position()[1]
         c = self.connection(rows)
+        before=deepcopy(c.positions)
         readings = iter((NOW, NOW, NOW+timedelta(hours=1)))
         class Clock:
             @classmethod
             def now(cls, zone): return next(readings)
-        with patch.object(G, 'datetime', Clock):
+        reached=[]
+        def no_action(vp,connection,z,quote,ts,path,now):
+            reached.append(z['active_trade_id'])
+            return True
+        with patch.object(G, 'datetime', Clock), \
+                patch.object(G, '_observation_has_no_action', side_effect=no_action):
             self.assertEqual(G.run_protective_pass(None, c.connect, {'ETH': q}), [])
-        self.assertIn('observation_path', c.positions[rows[0]['active_trade_id']]['payload'])
-        self.assertNotIn('observation_path', c.positions[rows[1]['active_trade_id']]['payload'])
+        # The first quote is still fresh and reaches preflight; after the live
+        # clock advances one hour, the second is rejected before preflight.
+        self.assertEqual(reached,[rows[0]['active_trade_id']])
+        self.assertEqual(c.positions,before)
 
 
 if __name__ == '__main__':
