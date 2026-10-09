@@ -254,3 +254,26 @@ witness still fails closed.
 
 The change only affects evidence quality for future trades. Existing V1 paths are
 not upgraded or backfilled.
+
+
+## Seeded-only observation sampling (v91.8.36)
+
+The observation sidecar keeps the health/cleanup model introduced in v91.8.35
+but no longer spends evidence writes on positions that can never become
+path-eligible.
+
+Rules:
+
+- a sidecar witness seeded at the exact entry is sampled normally;
+- an already-observed canonical prefix may be handed off only when it started at
+  the real entry and has no prior invalid observation or path gap;
+- a carried position with no entry seed is counted but not rewritten;
+- a seeded witness that already proved an invalid observation or path gap is
+  counted as irrecoverable and is not resampled;
+- a transient missing cached quote produces **no evidence write**. If the outage
+  exceeds the allowed cadence, the next real observation proves the gap through
+  the existing observation-path rules.
+
+Telemetry now separates seeded, handed-off, unseeded, irrecoverable and actually
+sampled positions. The sidecar remains cached-only, uses no network fetches,
+takes no paper-book lock and has no trading authority.
