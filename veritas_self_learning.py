@@ -5,6 +5,7 @@ The module is diagnostic and proposal-only. It never mutates canonical policy.
 from __future__ import annotations
 import hashlib, json, math
 import veritas_canonical_constitution as CTC
+import veritas_owner_policy as VOP
 
 VERSION="CLOSED_TRADE_POSTMORTEM_V1"
 
@@ -145,7 +146,7 @@ def review(trade, snapshot=None):
         "path":{"mfe_pct":mfe,"mae_pct":mae,"giveback_pct":t.get("giveback_pct")},
         "diagnostic_attribution":diag.get("primary_attribution"),
         "strengths":strengths,"issues":issues,"proposals":proposals,
-        "governance":{"canonical_conflict_scan_required":True,
-            "parameter_changes":"SHADOW_ONLY","owner_approval_required":True,
+        "governance":{"canonical_conflict_scan_required":bool(VOP.SELF_LEARNING.get("canonical_conflict_scan_required")),
+            "parameter_changes":VOP.SELF_LEARNING.get("parameter_search_default"),"owner_approval_required":bool(VOP.SELF_LEARNING.get("owner_verification_required_for_rule_promotion")),
             "promotion_requirements":list(CTC.LEARNING_POLICY.get("promotion_requires") or ())}
     })
