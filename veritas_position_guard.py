@@ -514,7 +514,8 @@ def take_profit_action(z, current_fraction, peak, round5):
 
 def profit_lock_stop(z, quote, commission=VC.COMMISSION_RATE, fees_paid_rub=0.0,
                      slippage_pct=VC.SLIPPAGE_RATE, min_net_pct=.0005,
-                     funding_rub=0.0,realized_gross_rub=0.0,allow_structural=False):
+                     funding_rub=0.0,realized_gross_rub=0.0,allow_structural=False,
+                     activation_floor_pct_points=None):
     """Return a stop that protects positive NET P&L, not merely price P&L.
 
     The locked stop explicitly covers:
@@ -557,7 +558,9 @@ def profit_lock_stop(z, quote, commission=VC.COMMISSION_RATE, fees_paid_rub=0.0,
     paid_cost=fees_paid+funding-realized
     current_required=paid_cost+exit_fee_now+slippage_now+min_net_rub
     required_activation_pct=100.0*current_required/max(entry_notional,1e-9)
-    activation_pct=max(float(CTC.LIFECYCLE_POLICY['profit_lock_activation_floor_pct']),required_activation_pct)
+    policy_floor=(float(CTC.LIFECYCLE_POLICY['profit_lock_activation_floor_pct'])
+                  if activation_floor_pct_points is None else float(activation_floor_pct_points))
+    activation_pct=max(policy_floor,required_activation_pct)
     if current_pct<activation_pct or gross_current<current_required:
         return None
 
@@ -787,7 +790,8 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
         z,q,getattr(vp,'COMMISSION',VC.COMMISSION_RATE),fees_paid_rub=modeled_entry_fee,
         slippage_pct=VC.SLIPPAGE_RATE,
         min_net_pct=float(cfg.get('minimum_positive_net_pct') or .0002),
-        funding_rub=0.0,realized_gross_rub=0.0,allow_structural=True)
+        funding_rub=0.0,realized_gross_rub=0.0,allow_structural=True,
+        activation_floor_pct_points=threshold)
     if not lock:
         patch.update(r_accel_mfe_protection_waiting_cost_cover=True,
                      r_accel_mfe_protection_checked_at=ts)
