@@ -67,6 +67,39 @@ class StartupGuardTests(unittest.TestCase):
             timer.call_args.args[1]()
         emit.assert_called_once_with('v90_bootstrap_watchdog_error', error_type='RuntimeError')
 
+    def test_readiness_gate_is_fail_closed_until_every_live_state_check_passes(self):
+        gate = G.ReadinessGate(('database','portfolio_snapshot','market_snapshot'))
+        initial = gate.snapshot()
+        self.assertFalse(initial['ok'])
+        self.assertEqual(initial['pending_checks'],
+                         ['database','portfolio_snapshot','market_snapshot'])
+        gate.mark('database', True, status='READY')
+        gate.mark('portfolio_snapshot', True, portfolio_count=5, open_position_count=23)
+        halfway = gate.snapshot()
+        self.assertFalse(halfway['ok'])
+        self.assertEqual(halfway['phase'], 'MARKET_SNAPSHOT')
+        ready = gate.mark('market_snapshot', True, signal_count=49, expected=49)
+        self.assertTrue(ready['ok'])
+        self.assertEqual(ready['status'], 'READY')
+        self.assertEqual(ready['pending_checks'], [])
+
+    def test_readiness_gate_reverts_to_not_ready_and_filters_sensitive_details(self):
+        gate = G.ReadinessGate(('database',))
+        self.assertTrue(gate.mark('database', True, status='READY',
+                                  database_url='TEST_SECRET_DB_URL')['ok'])
+        degraded = gate.mark('database', False, reason='POSTGRES_NOT_READY',
+                             password='TEST_SECRET_PASSWORD')
+        self.assertFalse(degraded['ok'])
+        self.assertEqual(degraded['failed_checks'], ['database'])
+        rendered = json.dumps(degraded)
+        self.assertNotIn('TEST_SECRET_DB_URL', rendered)
+        self.assertNotIn('TEST_SECRET_PASSWORD', rendered)
+
+    def test_readiness_gate_rejects_unknown_checks(self):
+        gate = G.ReadinessGate(('database',))
+        with self.assertRaises(KeyError):
+            gate.mark('portfolio_snapshot', True)
+
 
 if __name__ == '__main__':
     unittest.main()
