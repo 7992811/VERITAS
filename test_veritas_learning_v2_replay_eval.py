@@ -65,6 +65,12 @@ class ReplayEvaluatorTests(unittest.TestCase):
         self.assertIn("outcome_evidence_hash",source)
         self.assertNotIn("WHERE e.learning_eligible=TRUE",source)
 
+    def test_replay_query_deduplicates_market_ideas(self):
+        source=inspect.getsource(E._trade_rows)
+        self.assertIn("independent_episode_key",source)
+        self.assertIn("ROW_NUMBER() OVER",source)
+        self.assertIn("idea_rank=1",source)
+
     def test_trade_query_requires_entry_after_registration(self):
         source=inspect.getsource(E._trade_rows)
         self.assertIn("t.opened_at>%s",source)
@@ -80,6 +86,27 @@ class ReplayEvaluatorTests(unittest.TestCase):
         result=E.evaluate_trade(self.stop_candidate(),row(),late_path)
         self.assertEqual(result["status"],"DEFERRED")
         self.assertEqual(result["reason"],"CACHED_PATH_COVERAGE_INCOMPLETE")
+
+    def test_partial_entry_bar_touching_barrier_is_ambiguous(self):
+        def path(asset,timeframe,identity,now=None,limit=500):
+            if timeframe!="5m": return []
+            return [
+                {"opened_at":(T-timedelta(minutes=2)).isoformat(),
+                 "closed_at":(T+timedelta(minutes=3)).isoformat(),
+                 "open":100.0,"high":103.0,"low":97.0,"close":100.5,
+                 "source_key":"TEST:PX","contract_id":"C1"},
+                {"opened_at":(T+timedelta(minutes=3)).isoformat(),
+                 "closed_at":(T+timedelta(minutes=8)).isoformat(),
+                 "open":100.5,"high":101.0,"low":99.5,"close":100.7,
+                 "source_key":"TEST:PX","contract_id":"C1"},
+                {"opened_at":(T+timedelta(minutes=8)).isoformat(),
+                 "closed_at":(T+timedelta(minutes=13)).isoformat(),
+                 "open":100.7,"high":101.1,"low":99.8,"close":100.8,
+                 "source_key":"TEST:PX","contract_id":"C1"},
+            ]
+        result=E.evaluate_trade(self.stop_candidate(),row(),path)
+        self.assertEqual(result["status"],"AMBIGUOUS")
+        self.assertEqual(result["reason"],"ENTRY_BAR_BARRIER_ORDER_UNKNOWN")
 
     def test_stop_candidate_replays_same_path_and_cost_model(self):
         result=E.evaluate_trade(self.stop_candidate(),row(),cached)
@@ -169,7 +196,8 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
                 'TSQL',%s,100,'CLOSED',%s::jsonb)""",(T,json.dumps(payload)))
             episode_payload={"outcome_learning_eligible":True,
                              "outcome_diagnostics_version":E.DIAGNOSTICS.VERSION,
-                             "outcome_evidence_hash":"verified-hash"}
+                             "outcome_evidence_hash":"verified-hash",
+                             "independent_episode_key":"IDEA-1"}
             conn.execute("""INSERT INTO v90_learning_episodes VALUES(
                 'TSQL',%s,'NQ','LONG','5m','TREND','BREAKOUT',FALSE,'OK',%s::jsonb)""",
                 (T+timedelta(hours=1),json.dumps(episode_payload)))
