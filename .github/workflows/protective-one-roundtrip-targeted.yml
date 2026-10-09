@@ -1,0 +1,35 @@
+name: Protective One Roundtrip Targeted CI
+on:
+  push:
+    branches: [ "ci/protective-one-roundtrip-51f1e2a" ]
+permissions:
+  contents: read
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_ephemeral_test_only
+          POSTGRES_DB: veritas_quality_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veritas_quality_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - name: Compile protective I/O
+        run: python -m py_compile veritas_protective_io.py veritas_position_guard.py
+      - name: Protective observation PostgreSQL parity
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: python -m unittest -v test_veritas_guard_observation_batch_sql.py test_veritas_protection_runtime_sql.py
+      - name: Protective runtime unit regressions
+        run: python -m unittest -v test_veritas_protection_runtime.py
