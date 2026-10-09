@@ -1,10 +1,12 @@
 """CTC senior-thesis protection for open paper positions.
 
 Entry/admission vetoes are not automatically exit authorities. A 1m/5m/1h
-conflict may block adds or flag tactical risk, but an open 1h+ thesis is only
+conflict may block adds or flag tactical risk, but an open 5m+ thesis is only
 hard-invalidated when its own horizon is broken and same/senior horizons
-decisively confirm the opposite direction. Protective stops and portfolio
-hard-risk remain independent and immediate.
+decisively confirm the opposite direction. This lets a tactical 5m position
+exit when its own structure breaks and 1h confirms the reversal, without
+letting isolated 1m noise liquidate it. Protective stops and portfolio hard-risk
+remain independent and immediate.
 """
 import json
 import math
@@ -14,7 +16,7 @@ import veritas_price_source as VPS
 
 ORDER={"1m":0,"5m":1,"1h":2,"4h":3,"1d":4,"3d":5,"7d":6}
 WEIGHT={"1h":1.0,"4h":1.25,"1d":1.5,"3d":1.75,"7d":2.0}
-PROTECTED={"1h","4h","1d","3d","7d"}
+PROTECTED={"5m","1h","4h","1d","3d","7d"}
 
 
 def _payload(z):
