@@ -47,7 +47,7 @@ def stamped_trade(*,after=.10,step=.01,net=30.):
 
 class TradeObservationTests(unittest.TestCase):
     def test_materialize_reprocesses_stale_outcome_diagnostics_version(self):
-        source=inspect.getsource(TradeLearning.process)
+        source=inspect.getsource(T.TradeLearning.process)
         self.assertIn("outcome_diagnostics_version",source)
         self.assertIn("IS DISTINCT FROM %s",source)
         self.assertIn("LI.DIAGNOSTICS.VERSION",source)
