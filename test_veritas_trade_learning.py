@@ -46,6 +46,24 @@ def stamped_trade(*,after=.10,step=.01,net=30.):
 
 
 class TradeObservationTests(unittest.TestCase):
+    def test_bounded_exclusion_summary_never_leaks_raw_text(self):
+        raw={
+            'MISSING_PROSPECTIVE_POLICY_STAMP':4,
+            'NORMALIZED_PAPER_QUANTITY_REQUIRED':3,
+            'free text with trade id 123':9,
+            'X'*80:2,
+            'INCOMPLETE_ACCOUNTING':1,
+            'EXTRA_1':1,'EXTRA_2':1,'EXTRA_3':1,'EXTRA_4':1,'EXTRA_5':1,
+            'EXTRA_6':1,'EXTRA_7':1,'EXTRA_8':1,'EXTRA_9':1,
+        }
+        out=T.bounded_exclusion_summary(raw)
+        self.assertEqual(out['excluded_total'],26)
+        self.assertLessEqual(len(out['exclusions']),8)
+        self.assertEqual(out['exclusions']['OTHER'],11)
+        self.assertNotIn('free text with trade id 123',str(out))
+        self.assertTrue(all(len(code)<=64 and code==code.upper() for code in out['exclusions']))
+
+
     def test_native_trade_without_probability_trains_and_preserves_its_rr_trial(self):
         t,_=stamped_trade();stamp=t['payload']['entry_canonical_admission']['autonomous_learning']
         stamp.update(base_probability=None,net_reward_risk=1.2,max_fraction=.5,prospective_candidates=[])
