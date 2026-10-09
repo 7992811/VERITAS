@@ -109,13 +109,13 @@ def review(trade, snapshot=None):
             "нужен replay устойчивости прибыльных экскурсий и сопровождения."
         )
         proposals.append(_proposal(t.get("trade_id"),"PROFIT_MATURITY",
-            "Проверить защиту прибыли после третьей устойчивой прибыльной экскурсии",
-            "Первые две отдельные прибыльные экскурсии не меняют исходный стоп. "
-            "На третьей или последующей защита истинным безубытком после расходов "
-            "допускается только после устойчивой проторговки в нескольких независимых окнах.",
-            tests=[{"parameter":"required_profit_excursions","values":[3,4]},
-                   {"parameter":"qualifying_excursion_positive_windows","values":[2,3,4]},
-                   {"parameter":"minimum_dwell_minutes","values":[10,15,20]}]))
+            "Проверить адаптивную защиту прибыли после устойчивой проторговки",
+            "Защита не зависит от номера прибыльного захода. После материального MFE "
+            "она допускается только если результат после расходов остаётся положительным "
+            "достаточно долго и подтверждён несколькими независимыми окнами риск-таймфрейма.",
+            tests=[{"parameter":"material_mfe_threshold_pct","values":[0.15]},
+                   {"parameter":"minimum_positive_windows","values":[3,4]},
+                   {"parameter":"maximum_required_dwell_minutes","values":[120,180,240]}]))
     if risk_atr is not None and risk_atr>4.0:
         issues.append("Начальный риск превышает 4 ATR выбранного риск-таймфрейма.")
         proposals.append(_proposal(t.get("trade_id"),"STOP_VOLATILITY",

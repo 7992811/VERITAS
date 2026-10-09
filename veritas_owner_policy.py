@@ -11,14 +11,18 @@ SOURCE_TIMESTAMP="2026-10-09T06:03:00Z"
 VERSION="OWNER_REVIEW_POLICY_V1"
 
 PROFIT_MATURITY={
-    "required_profit_excursions":3,
-    "qualifying_excursion_positive_windows":3,
+    "activation_mode":"ADAPTIVE_SUSTAINED_PROFIT",
+    "material_mfe_threshold_pct":0.15,
+    "minimum_positive_windows":3,
     "window_seconds_floor":300,
-    "minimum_dwell_seconds":600,
-    "first_two_profit_excursions_observe_only":True,
+    "window_seconds_ceiling":3600,
+    "minimum_dwell_seconds_floor":600,
+    "maximum_required_dwell_seconds":10800,
+    "stable_profit_requires_positive_after_costs":True,
+    "reset_when_projected_net_nonpositive":True,
     "floor":"TRUE_ECONOMIC_BREAK_EVEN_AFTER_COSTS",
-    "structural_trailing_before_maturity":False,
-    "structural_trailing_after_maturity":True,
+    "synthetic_breakeven_requires_stability":True,
+    "structural_swing_trailing_independent":True,
 }
 PORTFOLIO_PARITY={
     "shared_entry_event_portfolios":("Impulse","Champion","Challenger"),

@@ -28,11 +28,12 @@ REVIEW_USER_CORRECTION_RU = (
     "структурный вход должен быть доступен также Champion и Challenger; различие "
     "портфелей определяет размер и дальнейшее наращивание, а не существование "
     "самого подтверждённого события. Hard thesis invalidation одной копии "
-    "канонического setup должен применяться к остальным копиям. После выхода сделки "
-    "в плюс исходная архитектура стопа сохраняется во время первых двух кратких "
-    "прибыльных импульсов; только во время третьей отдельной прибыльной экскурсии, если "
-    "она устойчива и выдержана во времени, разрешается защита истинным безубытком после расходов, затем структурный "
-    "трейлинг. Для каждой сделки проверять стопы/тейки относительно предыдущих high/low "
+    "канонического setup должен применяться к остальным копиям. Порог материального "
+    "MFE для анализа защиты прибыли — 0,15%. Номер прибыльного захода не важен: "
+    "краткий импульс не меняет исходную архитектуру, а длительный устойчивый плюс "
+    "после расходов переводит сделку в истинный экономический безубыток. Подтверждённый "
+    "структурный swing исходного риск-таймфрейма остаётся отдельным механизмом уменьшения "
+    "риска. Для каждой сделки проверять стопы/тейки относительно предыдущих high/low "
     "и ATR того таймфрейма, на котором живёт риск-идея. Быстрый вход разрешён без "
     "общего veto старшего направления, но если он заимствует старший swing/ATR для "
     "риска, явная структурная недействительность этого старшего risk-context блокирует "
@@ -213,21 +214,22 @@ def trade_review_policy_snapshot():
                 VOP.PORTFOLIO_PARITY["portfolio_role_changes_size_not_event_existence"],
             "canonical_setup_hard_invalidation_shared":
                 VOP.PORTFOLIO_PARITY["canonical_setup_hard_invalidation_shared_across_portfolios"],
-            "profit_lock_required_profit_excursions":
-                VOP.PROFIT_MATURITY["required_profit_excursions"],
-            "profit_lock_qualifying_excursion_positive_windows":
-                VOP.PROFIT_MATURITY["qualifying_excursion_positive_windows"],
-            "profit_lock_minimum_dwell_seconds":VOP.PROFIT_MATURITY["minimum_dwell_seconds"],
+            "material_mfe_threshold_pct":VOP.PROFIT_MATURITY["material_mfe_threshold_pct"],
+            "profit_lock_minimum_positive_windows":VOP.PROFIT_MATURITY["minimum_positive_windows"],
+            "profit_lock_window_seconds_floor":VOP.PROFIT_MATURITY["window_seconds_floor"],
+            "profit_lock_window_seconds_ceiling":VOP.PROFIT_MATURITY["window_seconds_ceiling"],
+            "profit_lock_minimum_dwell_seconds_floor":VOP.PROFIT_MATURITY["minimum_dwell_seconds_floor"],
+            "profit_lock_maximum_required_dwell_seconds":VOP.PROFIT_MATURITY["maximum_required_dwell_seconds"],
             "profit_lock_floor":VOP.PROFIT_MATURITY["floor"],
-            "structural_trailing_before_profit_maturity":
-                VOP.PROFIT_MATURITY["structural_trailing_before_maturity"],
+            "structural_swing_trailing_independent":
+                VOP.PROFIT_MATURITY["structural_swing_trailing_independent"],
         },
         "learning_policy": {**_copy(CTC.LEARNING_POLICY), **_copy(VOP.SELF_LEARNING)},
         "requirements": {
             "entry_parity": "One verified structural event may be opened by Impulse, Champion and Challenger in the same decision cycle; portfolio role controls size/scale.",
             "shared_invalidation": "A proved hard thesis invalidation of one canonical setup invalidates every open portfolio copy of that exact setup.",
-            "profit_maturity": "The first two separate profitable excursions are observation-only. Only the third or later excursion may arm true after-cost breakeven, and only after that excursion itself persists across independent management windows and the minimum dwell.",
-            "gold_guardrail": "Temporary early favorable excursions must not destroy the original stop architecture; after maturity, confirmed structural swings may tighten but never widen the stop.",
+            "profit_maturity": "Profit protection is adaptive, not excursion-count based. After MFE >= 0.15%, true after-cost breakeven may arm only while whole-trade economics remain positive long enough across multiple independent risk-timeframe windows.",
+            "gold_guardrail": "Brief favorable spikes must not create a synthetic breakeven. Confirmed structural swings of the original risk timeframe remain valid independent risk reduction; synthetic after-cost breakeven needs sustained profit.",
             "risk_timeframe": "If a fast trigger borrows a parent swing/ATR, explicit invalidity of that parent risk context blocks the borrowed-risk entry; an independently valid fast-TF risk plan remains possible.",
             "postmortem": "Every closed trade receives level/volatility/indicator/MA/MTF/entry/stop/target/protection/exit/cost/data-integrity review.",
             "governance": "Parameter candidates remain SHADOW and require canonical conflict scan, OOS/Vault/cost/time/regime validation and owner approval.",

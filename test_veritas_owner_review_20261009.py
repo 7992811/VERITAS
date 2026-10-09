@@ -18,10 +18,9 @@ class OwnerReviewPolicyTests(unittest.TestCase):
     def test_constitution_and_owner_policy(self):
         self.assertTrue(CTC.validate_constitution())
         p=VOP.PROFIT_MATURITY
-        self.assertEqual(p["required_profit_excursions"],3)
-        self.assertEqual(p["qualifying_excursion_positive_windows"],3)
-        self.assertTrue(p["first_two_profit_excursions_observe_only"])
-        self.assertFalse(p["structural_trailing_before_maturity"])
+        self.assertEqual(p["material_mfe_threshold_pct"],0.15)
+        self.assertEqual(p["minimum_positive_windows"],3)
+        self.assertTrue(p["structural_swing_trailing_independent"])
         self.assertTrue(VOP.PORTFOLIO_PARITY["canonical_setup_hard_invalidation_shared_across_portfolios"])
         self.assertTrue(VOP.PORTFOLIO_PARITY["verified_structural_event_entry_permission_is_shared"])
         self.assertTrue(VOP.SELF_LEARNING["owner_verification_required_for_rule_promotion"])
@@ -93,56 +92,56 @@ class OwnerReviewPolicyTests(unittest.TestCase):
                                                "stop_timeframe":"1h"}}}
         self.assertEqual(VPM._management_tf({},p),"1h")
 
-    def test_trailing_waits_for_profit_maturity(self):
-        position={"direction":"LONG","payload":{"structural_policy_version":"X",
-                                                "profit_maturity_excursion_count":2}}
-        x=VTM.apply_trailing(None,"Champion",position,[],{},None)
-        self.assertFalse(x["eligible"])
-        self.assertEqual(x["reason"],"PROFIT_MATURITY_NOT_CONFIRMED")
-
-    def test_first_two_profit_excursions_are_observation_only(self):
-        p=VOP.PROFIT_MATURITY
-        self.assertEqual(p["required_profit_excursions"],3)
-        self.assertTrue(p["first_two_profit_excursions_observe_only"])
-
-    def test_loss_inside_profit_window_resets_streak_and_same_window_rebound_cannot_restore_it(self):
+    def test_adaptive_profit_maturity_requires_material_and_sustained_profit(self):
         class DB:
             def execute(self,*args,**kwargs):
                 return self
-        opened="2026-10-09T00:00:00+00:00"
-        observed="2026-10-09T02:20:00+00:00"
-        bucket=int(datetime.fromisoformat(observed).timestamp()//3600)
-        position={"direction":"LONG","avg_entry_price":100.0,"opened_at":opened,
-                  "asset":"GOLD","active_trade_id":"T1",
-                  "payload":{"timeframe_entry_context":{"event":{"structural_timeframe":"1h"}},
-                             "profit_maturity_last_window":bucket,
-                             "profit_maturity_excursion_count":2,
-                             "profit_maturity_excursion_positive_windows":2,
-                             "profit_maturity_in_profit":True,
-                             "profit_maturity_current_window_positive":True,
-                             "profit_maturity_excursion_started_at":datetime.fromisoformat("2026-10-09T01:05:00+00:00").timestamp()}}
+        position={"direction":"LONG","avg_entry_price":100.0,"stop_price":99.0,
+                  "opened_at":"2026-10-09T00:00:00+00:00","asset":"GOLD",
+                  "active_trade_id":"T1",
+                  "payload":{"timeframe_entry_context":{"event":{"structural_timeframe":"5m"}}}}
         def assess(_c,_z,**kw):
             px=float(kw.get("price") or 0)
-            return {"net_profit_protection":{"net_at_stop_rub":1.0 if px>100 else -1.0,
-                                             "break_even_stop_price":100.2}}
-        now=datetime.fromisoformat("2026-10-09T02:25:00+00:00")
+            return {"net_profit_protection":{"net_at_stop_rub":10.0 if px>100 else -10.0,
+                                             "break_even_stop_price":100.05}}
         with patch("veritas_profit_maturity.VPP.assess",side_effect=assess):
-            down=VPM.observe(DB(),"Champion",position,{"price":99.9,"observed_at":observed},now)
-            self.assertEqual(down["positive_windows_in_excursion"],0)
-            self.assertFalse(down["patch"]["profit_maturity_in_profit"])
-            rebound=VPM.observe(DB(),"Champion",down["position"],
-                                {"price":101.0,"observed_at":"2026-10-09T02:40:00+00:00"},
-                                datetime.fromisoformat("2026-10-09T02:45:00+00:00"))
-            self.assertEqual(rebound["excursion_count"],3)
-            self.assertEqual(rebound["positive_windows_in_excursion"],1)
-            self.assertFalse(rebound["mature"])
+            a=VPM.observe(DB(),"Champion",position,{"price":100.20,"observed_at":"2026-10-09T00:01:00+00:00"},
+                          datetime.fromisoformat("2026-10-09T00:01:30+00:00"))
+            self.assertFalse(a["mature"])
+            self.assertEqual(a["material_mfe_threshold_pct"],0.15)
+            b=VPM.observe(DB(),"Champion",a["position"],{"price":100.18,"observed_at":"2026-10-09T00:06:00+00:00"},
+                          datetime.fromisoformat("2026-10-09T00:06:30+00:00"))
+            self.assertFalse(b["mature"])
+            c=VPM.observe(DB(),"Champion",b["position"],{"price":100.16,"observed_at":"2026-10-09T00:11:00+00:00"},
+                          datetime.fromisoformat("2026-10-09T00:11:30+00:00"))
+            self.assertFalse(c["mature"])  # three windows but only ten minutes
+            d=VPM.observe(DB(),"Champion",c["position"],{"price":100.17,"observed_at":"2026-10-09T00:16:00+00:00"},
+                          datetime.fromisoformat("2026-10-09T00:16:30+00:00"))
+            self.assertTrue(d["mature"])
+            self.assertGreaterEqual(d["dwell_seconds"],d["required_dwell_seconds"])
 
-    def test_mature_flag_without_economic_floor_still_blocks_trailing(self):
-        position={"direction":"LONG","payload":{"structural_policy_version":"X",
-                                                "profit_maturity_armed":True}}
-        x=VTM.apply_trailing(None,"Champion",position,[],{},None)
-        self.assertFalse(x["eligible"])
-        self.assertEqual(x["reason"],"PROFIT_MATURITY_ECONOMIC_FLOOR_NOT_SECURED")
+    def test_adaptive_profit_maturity_resets_when_after_cost_profit_disappears(self):
+        class DB:
+            def execute(self,*args,**kwargs):
+                return self
+        position={"direction":"LONG","avg_entry_price":100.0,"stop_price":99.0,
+                  "opened_at":"2026-10-09T00:00:00+00:00","asset":"BRENT",
+                  "active_trade_id":"T2",
+                  "payload":{"timeframe_entry_context":{"event":{"structural_timeframe":"5m"}}}}
+        def assess(_c,_z,**kw):
+            px=float(kw.get("price") or 0)
+            return {"net_profit_protection":{"net_at_stop_rub":10.0 if px>100 else -10.0,
+                                             "break_even_stop_price":100.05}}
+        with patch("veritas_profit_maturity.VPP.assess",side_effect=assess):
+            a=VPM.observe(DB(),"Champion",position,{"price":100.20,"observed_at":"2026-10-09T00:01:00+00:00"},
+                          datetime.fromisoformat("2026-10-09T00:01:30+00:00"))
+            b=VPM.observe(DB(),"Champion",a["position"],{"price":99.99,"observed_at":"2026-10-09T00:06:00+00:00"},
+                          datetime.fromisoformat("2026-10-09T00:06:30+00:00"))
+            self.assertFalse(b["stable_episode_active"])
+            self.assertEqual(b["positive_windows"],0)
+
+    def test_structural_swing_trailing_is_separate_from_synthetic_breakeven(self):
+        self.assertTrue(VOP.PROFIT_MATURITY["structural_swing_trailing_independent"])
 
     def test_closed_trade_postmortem_is_approval_gated(self):
         snap={"atr":10.0,"stop_anchor":90.0,"regime":"UPTREND",
@@ -171,6 +170,7 @@ class OwnerReviewPolicyTests(unittest.TestCase):
                "net_pnl_rub":-100.0,"learning_eligible":True,
                "trade_diagnostics":{"primary_attribution":"ENTRY_OR_DIRECTION"}}
         r=VSELF.review(trade,snap)
+        self.assertEqual(r["path"]["material_profit_threshold_pct"],0.15)
         self.assertFalse(r["path"]["profit_protection_candidate"])
         self.assertFalse(any(p["kind"]=="PROFIT_MATURITY" for p in r["proposals"]))
 
@@ -183,7 +183,7 @@ class OwnerReviewPolicyTests(unittest.TestCase):
     def test_release_identifies_new_policy(self):
         self.assertIn("v91.8.29",VR.PRODUCT_VERSION)
         s=VR.snapshot()
-        self.assertEqual(s["owner_review_policy"]["profit_maturity"]["required_profit_excursions"],3)
+        self.assertEqual(s["owner_review_policy"]["profit_maturity"]["material_mfe_threshold_pct"],0.15)
         self.assertTrue(s["owner_review_policy"]["self_learning"]["closed_trade_postmortem_required"])
 
 
