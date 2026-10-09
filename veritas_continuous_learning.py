@@ -233,6 +233,7 @@ class ContinuousLearning:
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6),
+                ("learning_episode_enrichment", self.episode_enrichment, 120, 4),
                 ("learning_v2_shadow", self.learning_v2_shadow, 60, 5),
                 ("learning_v2_replay", self.learning_v2_replay, 180, 5))
         for name, fn, interval, seconds in jobs:
@@ -673,6 +674,22 @@ class ContinuousLearning:
 
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
+
+    def episode_enrichment(self, context, cursor):
+        """Bounded migration of legacy decision episodes into compact V2 columns."""
+        fn=self.ns.get("_v90_backfill_decision_episodes")
+        if not callable(fn):
+            return {"status":"UNAVAILABLE","reason":"DECISION_EPISODE_BACKFILL_MISSING"},cursor
+        context.check()
+        result=fn(batch_size=64,max_batches=1,max_seconds=3.0)
+        context.check()
+        status=str((result or {}).get("status") or "")
+        if status not in ("OK","POSTGRES_REQUIRED"):
+            raise RuntimeError("decision episode enrichment failed: "+str((result or {}).get("error") or status))
+        return {"status":status,
+                "inserted":int((result or {}).get("inserted") or 0),
+                "enriched":int((result or {}).get("enriched") or 0),
+                "batches":int((result or {}).get("batches") or 0)},cursor
 
     def learning_v2_shadow(self, context, cursor):
         """Build one asset's bounded shadow research from verified outcomes.
