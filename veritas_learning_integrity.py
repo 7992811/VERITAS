@@ -156,6 +156,28 @@ def _number(value):
     except (TypeError, ValueError, OverflowError):
         return None
 
+def outcome_trade_exclusion(trade):
+    """Require immutable source/event/fill/risk/accounting, but not MFE/MAE path.
+
+    This tier is only for net-outcome, sizing and probability/calibration work.
+    Stop/exit/capture consumers must continue to use trade_exclusion().
+    """
+    excluded = AUDIT.evidence_exclusion(trade)
+    if excluded:
+        return excluded
+    opened, closed = AUDIT._timestamp(trade.get("opened_at")), AUDIT._timestamp(trade.get("closed_at"))
+    if (str(trade.get("status") or "").upper() not in ("CLOSED", "CLOSE", "EXITED")
+            or opened is None or closed is None or closed < opened):
+        return "INCOMPLETE_CLOSED_TRADE"
+    if any(_number(trade.get(k)) is None for k in
+           ("gross_pnl_rub", "fees_rub", "funding_rub", "net_pnl_rub")):
+        return "INCOMPLETE_ACCOUNTING"
+    diagnosis = DIAGNOSTICS.diagnose(trade)
+    if diagnosis.get("outcome_evidence_eligible") is not True:
+        return diagnosis.get("exclusion_reason") or "UNVERIFIED_OUTCOME_EVIDENCE"
+    return None
+
+
 def trade_exclusion(trade):
     """Require original observed source/event/path evidence; never recover a label."""
     excluded = AUDIT.evidence_exclusion(trade)
