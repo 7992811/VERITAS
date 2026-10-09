@@ -497,12 +497,40 @@ class TradeCallbackContracts(unittest.TestCase):
         self.assertEqual(lease["cursor"]["phase"], "materialize")
         self.assertEqual(result["stage"], "materialize")
         self.assertEqual(result["materialized"], 0)
-        self.assertEqual(result["batch_limit"], 4)
+        self.assertEqual(result["batch_limit"], 2)
         self.assertIsNotNone(self.app._stats["last_success_at"])
         self.assertEqual(self.app.lane.options["learning_trade_evidence"],
-                         {"interval_seconds": 30, "lightweight": True, "estimated_peak_mb": 16, "max_seconds": 6})
+                         {"interval_seconds": 30, "lightweight": True, "estimated_peak_mb": 16,
+                          "max_seconds": 6, "retry_seconds": 5})
         self.assertEqual(self.ns["emit"].call_args.kwargs,
                          {"stage": "materialize", "status": "OK", "next_stage": "revalidate", "materialized": 0})
+
+    def test_trade_backlog_self_requests_only_when_work_advances(self):
+        self.app.lane.requests.clear()
+        with patch.object(self.app, "trades",
+                          return_value=({"status":"OK","stage":"materialize",
+                                         "materialized":2}, {})):
+            result=self.run_job()
+        self.assertEqual(result["materialized"],2)
+        self.assertEqual(self.app.lane.requests,
+                         ["learning_trade_evidence","learning_v2_shadow"])
+
+        self.app.lane.requests.clear()
+        with patch.object(self.app, "trades",
+                          return_value=({"status":"OK","stage":"materialize",
+                                         "materialized":0}, {})):
+            self.run_job()
+        self.assertEqual(self.app.lane.requests,[])
+
+    def test_trade_nonmaterialize_phases_advance_backlog_without_widening_budget(self):
+        for stage in ("revalidate","export","recheck"):
+            self.app.lane.requests.clear()
+            with patch.object(self.app, "trades",
+                              return_value=({"status":"OK","stage":stage}, {})):
+                self.run_job()
+            self.assertEqual(self.app.lane.requests,["learning_trade_evidence"])
+        self.assertEqual(self.app.lane.options["learning_trade_evidence"]["max_seconds"],6)
+        self.assertEqual(self.app.lane.options["learning_trade_evidence"]["retry_seconds"],5)
 
     def test_bootstrap_and_busy_lease_never_record_completion(self):
         with patch.object(STORE, "claim_job", return_value=None) as claim, \
