@@ -57,6 +57,8 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertEqual(events[-1][0],"learning_v2_shadow_snapshot")
         self.assertEqual(events[-1][1]["asset"],"BTC")
         self.assertFalse(events[-1][1]["production_influence"])
+        self.assertIn("zero_candidate_reason",events[-1][1])
+        self.assertIn("known_blockers",events[-1][1])
         snap=app.snapshot()["learning_v2"]
         self.assertFalse(snap["automatic_production_promotion"])
         self.assertEqual(snap["registry"],registry)
