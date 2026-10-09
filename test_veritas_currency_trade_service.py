@@ -111,6 +111,7 @@ class FakeCoordinator:
     def __init__(self):
         self.adapter = SimpleNamespace(environment="sandbox")
         self.calls = []
+        self.sandbox_autotrade_enabled = False
 
     def reconcile(self):
         self.calls.append(("reconcile", None))
@@ -497,6 +498,20 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.assertNotIn("execute_approved", [name for name, _ in self.coordinator.calls])
         self.assertEqual(self.repo.get(row["proposal_id"])["status"], "APPROVED")
 
+    def test_sandbox_robot_auto_approves_pending_proposal_without_telegram(self):
+        row = self.create(event="sandbox-robot-auto")
+        self.coordinator.sandbox_autotrade_enabled = True
+        self.coordinator.execution_enabled = True
+        response, status = self.request("poll")
+        self.assertEqual(status, 200)
+        self.assertTrue(response["sandbox_autotrade_enabled"])
+        self.assertEqual(response["items"], [])
+        stored = self.repo.get(row["proposal_id"])
+        self.assertEqual(stored["status"], "APPROVED")
+        self.assertEqual(stored["reason_code"], "SANDBOX_AUTO_APPROVED")
+        self.assertIn(("execute_approved", row["proposal_id"]), self.coordinator.calls)
+        self.assertEqual(self.callback_count(), 0)
+
     def test_callback_stale_message_tampered_hash_and_expiry_are_rejected(self):
         row = self.delivered(self.create())
         wrong_message = dict(self.decision_body(row), message_id=999)
@@ -677,6 +692,21 @@ class TradeHttpEnvironmentTests(unittest.TestCase):
                     self.assertIs(application.funding, application.facts.funding)
                     self.assertTrue(response["settlement_reconciler_configured"])
                     self.assertEqual(response["live_account_admission"]["evidence"]["state"], "NOT_CONFIGURED")
+
+    def test_sandbox_autotrade_flag_is_rejected_in_production_before_adapter(self):
+        env = self.configured()
+        env["VERITAS_CURRENCY_TRADE_ENVIRONMENT"] = "production"
+        env["TBANK_API_TOKEN"] = "isolated-production-token-never-sent"
+        env["VERITAS_CURRENCY_SANDBOX_AUTOTRADE_ENABLED"] = "true"
+        env.pop("TBANK_SANDBOX_TOKEN", None)
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(service, "TBankTradingAdapter", side_effect=self.forbidden) as adapter:
+                response, status = service.handle_request(
+                    service.PREFIX + "status", {"bot_id": BOT}, HEADERS,
+                    self.forbidden, self.forbidden)
+        self.assertEqual(status, 503)
+        self.assertEqual(response["code"], "SANDBOX_AUTOTRADE_PRODUCTION_FORBIDDEN")
+        adapter.assert_not_called()
 
     def test_independent_evidence_keys_cannot_reuse_trade_keys_or_each_other(self):
         statement = "VERITAS_CURRENCY_TRADE_STATEMENT_KEY"
