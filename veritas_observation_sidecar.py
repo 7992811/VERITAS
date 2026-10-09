@@ -27,7 +27,7 @@ _state={
     "status":"NOT_STARTED","version":VERSION,"interval_seconds":INTERVAL_SECONDS,
     "checked_at":None,"positions":0,"quotes":0,"written":0,"invalid":0,
     "seeded_positions":0,"observed_positions":0,"unseeded_positions":0,
-    "seeded_events":0,"sealed_events":0,
+    "seeded_events":0,"sealed_events":0,"stale_deleted_total":0,
     "missing_quotes":0,"duration_seconds":0.0,"error":None,
 }
 _state_lock=threading.Lock()
@@ -163,6 +163,21 @@ def seal(c,row,quote,checked_at):
     return sealed
 
 
+def cleanup_once(pg_connect,limit=32):
+    """Delete only sidecar rows whose paper position is already durably absent."""
+    limit=max(1,min(128,int(limit)))
+    with pg_connect() as c:
+        rows=c.execute("""WITH doomed AS (
+              SELECT s.trade_id FROM paper_observation_sidecar s
+              LEFT JOIN paper_positions p ON p.active_trade_id=s.trade_id
+              WHERE p.active_trade_id IS NULL
+              ORDER BY s.updated_at,s.trade_id LIMIT %s
+            )
+            DELETE FROM paper_observation_sidecar s USING doomed d
+            WHERE s.trade_id=d.trade_id RETURNING s.trade_id""",(limit,)).fetchall()
+    return len(rows or [])
+
+
 def sample_once(pg_connect,quote_selector,*,now=None):
     """Sample all active positions without acquiring the canonical book lock."""
     clock=_clock(now)
@@ -236,6 +251,7 @@ def start(ns,quote_selector):
     def loop():
         nonlocal schema_ready
         last_log=0.0
+        last_cleanup=0.0
         last_shape=None
         while True:
             started=time.monotonic()
@@ -246,6 +262,11 @@ def start(ns,quote_selector):
                     with _state_lock:
                         _state.update(status="READY",error=None)
                 result=sample_once(ns["pg_connect"],quote_selector)
+                if time.monotonic()-last_cleanup>=60:
+                    deleted=cleanup_once(ns["pg_connect"])
+                    last_cleanup=time.monotonic()
+                    with _state_lock:
+                        _state["stale_deleted_total"]=int(_state.get("stale_deleted_total") or 0)+deleted
                 with _state_lock:
                     _state.update(result,error=None)
                 shape=(result.get("positions"),result.get("seeded_positions"),
