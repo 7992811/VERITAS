@@ -233,6 +233,7 @@ class ContinuousLearning:
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6),
+                ("learning_episode_enrichment", self.episode_enrichment, 120, 4),
                 ("learning_v2_shadow", self.learning_v2_shadow, 60, 5),
                 ("learning_v2_replay", self.learning_v2_replay, 180, 5))
         for name, fn, interval, seconds in jobs:
@@ -674,6 +675,22 @@ class ContinuousLearning:
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
 
+    def episode_enrichment(self, context, cursor):
+        """Bounded migration of legacy decision episodes into compact V2 columns."""
+        fn=self.ns.get("_v90_backfill_decision_episodes")
+        if not callable(fn):
+            return {"status":"UNAVAILABLE","reason":"DECISION_EPISODE_BACKFILL_MISSING"},cursor
+        context.check()
+        result=fn(batch_size=64,max_batches=1,max_seconds=3.0)
+        context.check()
+        status=str((result or {}).get("status") or "")
+        if status not in ("OK","POSTGRES_REQUIRED"):
+            raise RuntimeError("decision episode enrichment failed: "+str((result or {}).get("error") or status))
+        return {"status":status,
+                "inserted":int((result or {}).get("inserted") or 0),
+                "enriched":int((result or {}).get("enriched") or 0),
+                "batches":int((result or {}).get("batches") or 0)},cursor
+
     def learning_v2_shadow(self, context, cursor):
         """Build one asset's bounded shadow research from verified outcomes.
 
@@ -690,68 +707,15 @@ class ContinuousLearning:
         read_started=time.monotonic()
         with transaction(self.connect, context) as c:
             decisions=c.execute("""
-              WITH recent AS MATERIALIZED (
-                SELECT entity_key,decision_ts,asset,horizon,regime,decision,forward_return
-                FROM v90_decision_episodes
-                WHERE asset=%s
-                ORDER BY decision_ts DESC
-                LIMIT %s
-              )
-              SELECT d.id AS decision_id,e.entity_key,e.decision_ts AS event_ts,
-                     e.asset,e.horizon,e.regime,e.decision,e.forward_return,
-                     COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
-                              d.payload#>>'{trade_plan,setup_family}','') AS setup_family,
-                     COALESCE(d.payload#>>'{learning_provenance,policy_hash}',
-                              d.payload->>'strategy_policy_hash','') AS policy_hash,
-                     COALESCE(d.payload#>>'{learning_provenance,source_identity,key}',
-                              d.payload#>>'{timeframe_entry_context,source_identity,key}',
-                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,key}','') AS source_key,
-                     COALESCE(d.payload#>>'{learning_provenance,source_identity,contract_id}',
-                              d.payload#>>'{timeframe_entry_context,source_identity,contract_id}',
-                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}','') AS contract_id,
-                     CASE WHEN e.decision IN ('LONG','SHORT') THEN e.decision
-                          ELSE COALESCE(d.payload#>>'{timeframe_entry_context,event,direction}',
-                                        d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}',
-                                        NULLIF(d.payload->>'horizon_structure_direction','NO_TRADE'),'') END AS candidate_direction,
-                     CASE
-                          WHEN COALESCE(d.payload->>'plan_eligible',
-                                        d.payload#>>'{trade_plan,eligible}')='false'
-                            OR COALESCE(d.payload->>'trade_entry_eligible',
-                                        d.payload#>>'{execution_eligibility,eligible}',
-                                        d.payload#>>'{execution_eligibility,paper_eligible}')='false'
-                          THEN false
-                          WHEN COALESCE(d.payload->>'plan_eligible',
-                                        d.payload#>>'{trade_plan,eligible}')='true'
-                            AND COALESCE(d.payload->>'trade_entry_eligible',
-                                         d.payload#>>'{execution_eligibility,eligible}',
-                                         d.payload#>>'{execution_eligibility,paper_eligible}')='true'
-                          THEN true
-                          ELSE NULL END AS admission_eligible,
-                     COALESCE(NULLIF(d.payload->>'final_gate_status',''),
-                              CASE WHEN COALESCE(d.payload->>'plan_eligible',
-                                                 d.payload#>>'{trade_plan,eligible}')='false'
-                                      OR COALESCE(d.payload->>'trade_entry_eligible',
-                                                  d.payload#>>'{execution_eligibility,eligible}',
-                                                  d.payload#>>'{execution_eligibility,paper_eligible}')='false'
-                                   THEN 'BLOCK' ELSE '' END) AS final_gate_status,
-                     COALESCE(d.payload->'final_gate_blockers',
-                              d.payload#>'{execution_eligibility,paper_source_blockers}',
-                              '[]'::jsonb) AS final_gate_blockers,
-                     COALESCE(NULLIF(d.payload->>'plan_reason',''),
-                              d.payload#>>'{trade_plan,reason}','') AS plan_reason,
-                     COALESCE(NULLIF(d.payload->>'trade_entry_reason',''),
-                              d.payload#>>'{execution_eligibility,reason}','') AS trade_entry_reason,
-                     COALESCE(NULLIF(d.payload->>'execution_reason',''),
-                              d.payload#>>'{execution_eligibility,reason}','') AS execution_reason,
-                     COALESCE(NULLIF(d.payload->>'paper_execution_reason',''),
-                              d.payload#>>'{execution_eligibility,paper_execution_reason}','') AS paper_execution_reason
-              FROM recent e
-              CROSS JOIN LATERAL (
-                SELECT id,payload FROM ledger_events d
-                WHERE d.entity_key=e.entity_key AND d.event_type='decision'
-                ORDER BY d.id DESC LIMIT 1
-              ) d
-              ORDER BY e.decision_ts DESC
+              SELECT decision_id,entity_key,decision_ts AS event_ts,
+                     asset,horizon,regime,decision,forward_return,
+                     setup_family,policy_hash,source_key,contract_id,candidate_direction,
+                     admission_eligible,final_gate_status,final_gate_blockers,
+                     plan_reason,trade_entry_reason,execution_reason,paper_execution_reason
+              FROM v90_decision_episodes
+              WHERE asset=%s
+              ORDER BY decision_ts DESC
+              LIMIT %s
             """,(asset,limit)).fetchall()
             decision_read_seconds=time.monotonic()-read_started
             context.check()
