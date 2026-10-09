@@ -230,6 +230,7 @@ def publish_quote(asset, raw):
 
 def quote_for_position(position, candidate=None, now=None, *, cache_only=False):
     """Resolve a fresh quote without crossing the entry provider or contract."""
+    cache_only=bool(cache_only or position.get('_cache_only_quote') is True)
     now=utc_datetime(now) or datetime.now(timezone.utc)
     frozen=position.get('_execution_quote_frozen') is True
     if frozen:
@@ -894,7 +895,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             now = explicit_clock or datetime.now(timezone.utc)
             ts = now.isoformat()
             z = dict(item)
-            selected = quote_for_position(z,quotes.get(z['asset']),now,cache_only=True)
+            selected = quote_for_position(dict(z,_cache_only_quote=True),quotes.get(z['asset']),now)
             # Validate the same strict exit tuple before path/protection writes;
             # a delayed research allowance cannot authorize protective mutation.
             q = exit_execution_quote(dict(z,_execution_quote=selected),now=now)
