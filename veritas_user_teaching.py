@@ -27,6 +27,14 @@ TREND_DAY_SOURCE_TIMESTAMP = "2026-10-09T11:31:00Z"
 TREND_DAY_USER_AUTHORIZATION_RU = "Продолжай"
 OBSERVATION_INTEGRITY_TEACHING_ID = "USER_OBSERVATION_INTEGRITY_2026_10_09"
 OBSERVATION_INTEGRITY_SOURCE_TIMESTAMP = "2026-10-09T00:00:00Z"
+EFFICIENCY_REFINEMENT_TEACHING_ID = "USER_EXECUTION_EFFICIENCY_2026_10_09"
+EFFICIENCY_REFINEMENT_SOURCE_TIMESTAMP = "2026-10-09T00:00:00Z"
+EFFICIENCY_REFINEMENT_USER_AUTHORIZATION_RU = (
+    "После разбора сделок внедрить предложенные улучшения эффективности: "
+    "адаптивно защищать накопленный MFE после устойчивого порога 0,15%, "
+    "не увеличивать крупно неприкрытую позицию до защиты предыдущих траншей, "
+    "сократить задержки защитного контура и вести контрфактический разбор выхода."
+)
 OBSERVATION_INTEGRITY_USER_CORRECTION_RU = (
     "Вноси все изменения; в защите прибыли проверяй, чтобы контур наблюдений "
     "не терял данные, использовал данные и правила, которые я давал для обучения, "
@@ -333,6 +341,15 @@ def runtime_consistency():
         errors.append("REPEATED_ADD_CHURN_LIMIT_MUST_EQUAL_25_PERCENT")
     if "1h" not in set(reversal.get("fast_exit_held_horizons") or ()):
         errors.append("FAST_REVERSAL_1H_SCOPE_REQUIRED")
+    refinement=_copy(CTC.EXECUTION_EFFICIENCY_REFINEMENT_POLICY)
+    adaptive=refinement.get("profit_protection") or {}
+    scaling=refinement.get("scaling") or {}
+    if adaptive.get("enabled") is not True:
+        errors.append("ADAPTIVE_MFE_REFINEMENT_REQUIRED")
+    if float(adaptive.get("minimum_lock_improvement_pct_points") or -1)!=0.05:
+        errors.append("MFE_RATCHET_MINIMUM_STEP_MUST_EQUAL_0_05_PERCENT")
+    if scaling.get("require_profit_protection_before_large_add") is not True:
+        errors.append("LARGE_ADD_REQUIRES_PROFIT_PROTECTION")
     return {"status":"OK" if not errors else "CONFLICT","errors":errors}
 
 
@@ -363,11 +380,59 @@ def observation_integrity_policy_snapshot():
     }
 
 
+
+def execution_efficiency_refinement_snapshot():
+    """Later owner authorization; preserves every earlier teaching unchanged."""
+    policy=_copy(CTC.EXECUTION_EFFICIENCY_REFINEMENT_POLICY)
+    return {
+        "teaching_id":EFFICIENCY_REFINEMENT_TEACHING_ID,
+        "source_type":"USER_AUTHORIZED_REFINEMENT",
+        "source_timestamp":EFFICIENCY_REFINEMENT_SOURCE_TIMESTAMP,
+        "source_timestamp_precision":"DAY",
+        "source_text_ru":EFFICIENCY_REFINEMENT_USER_AUTHORIZATION_RU,
+        "status":"ACTIVE_OPERATIONAL_POLICY",
+        "parent_teaching_id":ACCELERATION_TEACHING_ID,
+        "ctc_version":CTC.VERSION,"runtime_authority":CTC.BASIS_RUNTIME,
+        "scope":policy.get("scope"),
+        "portfolios":["Impulse","Aggressive","Champion","Challenger"],
+        "execution_policy":policy,
+        "requirements":{
+            "adaptive_mfe":(
+                "After sustained 0.15% MFE, cost-covered protection is only the "
+                "first floor. Ratchet a meaningful share of accumulated MFE; "
+                "confirmed trend days retain more room than ordinary movement."
+            ),
+            "scaling":(
+                "Early entries remain allowed, but exposure above the first "
+                "confirmation tranche requires positive-net protection of the "
+                "existing position. Never average a loser."
+            ),
+            "latency":(
+                "Protective action metadata uses the bounded one-roundtrip mirrored "
+                "writer and avoids microscopic stop rewrites."
+            ),
+            "learning":(
+                "Closed trades expose bounded MFE-capture counterfactual fields. "
+                "They are diagnostic only unless the observation path proves a trigger."
+            ),
+            "risk":"Canonical total stop-risk, drawdown, source and execution gates remain authoritative.",
+            "currency_scope":"Currency/live-account behavior remains excluded.",
+        },
+        "parameter_validation":{
+            "status":policy.get("parameter_validation_status","SHADOW_OOS_REQUIRED"),
+            "ml_training_performed":False,"validated_profitability":False,
+        },
+        "storage":{"table":"ledger_events","event_type":EVENT_TYPE,
+                   "entity_key":EFFICIENCY_REFINEMENT_TEACHING_ID,
+                   "event_key":EVENT_TYPE+":"+EFFICIENCY_REFINEMENT_TEACHING_ID},
+    }
+
 def seed_all_user_teachings(pg_event, read_event=None):
     return [seed_user_teaching(pg_event, read_event, snapshot=payload)
             for payload in (policy_snapshot(), ma_policy_snapshot(),
                             breakout_policy_snapshot(), acceleration_policy_snapshot(),
-                            trend_day_efficiency_snapshot(), observation_integrity_policy_snapshot())]
+                            trend_day_efficiency_snapshot(), observation_integrity_policy_snapshot(),
+                            execution_efficiency_refinement_snapshot())]
 
 
 def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):

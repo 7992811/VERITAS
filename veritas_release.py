@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.41-structural-breakout-outcome-tier-rematerialize"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.41-structural-breakout-outcome-tier-rematerialize"
-UI_VERSION="veritas-ui-v9.1.8.41-structural-breakout-outcome-tier-rematerialize"
+PRODUCT_VERSION="veritas-max-product-v91.8.42-execution-efficiency-refinement"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.42-execution-efficiency-refinement"
+UI_VERSION="veritas-ui-v9.1.8.42-execution-efficiency-refinement"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -59,7 +59,7 @@ def snapshot():
             "current_portfolio_schema_avoids_ddl":True,"unchanged_portfolio_metadata_avoids_row_locks":True,
             "closed_journal_payload_projected":True,"quality_evidence_root_extracted_once":True,"journal_evidence_root_extracted_once":True,
             "structural_runtime_copies_one_asset":True,"quality_read_timeout_is_transactional":True,
-            "completed_prepasses_release_snapshots":True,"quote_caches_project_before_copying":True,"completed_guard_reads_release_positions":True,"quote_prepasses_project_positions":True,"guard_quote_root_extracted_once":True,"guard_no_action_observations_batched":True,"guard_action_reloads_full_locked_position":True,"profit_refresh_writes_batched":True,
+            "completed_prepasses_release_snapshots":True,"quote_caches_project_before_copying":True,"completed_guard_reads_release_positions":True,"quote_prepasses_project_positions":True,"guard_quote_root_extracted_once":True,"guard_no_action_observations_batched":True,"guard_action_reloads_full_locked_position":True,"guard_action_metadata_one_roundtrip":True,"adaptive_mfe_ratchet_avoids_micro_writes":True,"profit_refresh_writes_batched":True,
             "cost_checks_omit_unused_trade_payload":True,"portfolio_display_payloads_projected_after_accounting":True,"excursion_marks_use_projected_read_and_delta_write":True,"r46_harvest_borrows_current_locked_positions":True,
             "active_cycle_allocator_trims_preserve_caches":True,"archival_snapshot_stages_release_memory":True,"completed_cycle_releases_previous_snapshots":True,"book_cleanup_outside_transaction":True,
             "archival_drift_statistics_stream_all_rows":True,"archival_performance_uses_packed_float_buffers":True,"loss_audit_streams_full_evidence_before_compaction":True,"independent_portfolio_commits":True,"waiting_protection_has_next_turn":True,"aged_ordinary_book_precedes_entry_reservations":True,"protection_precedes_aged_ordinary_book":True,"quality_history_selected_before_projection":True,"quality_review_uses_shared_history_permit":True,

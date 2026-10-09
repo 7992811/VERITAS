@@ -9,6 +9,10 @@ CLOSED_EXTRA_FIELDS=(
     "mfe_since_last_add_pct","mae_since_last_add_pct","initial_entry_price",
     "initial_entry_units","initial_entry_fee_rub","initial_tranche_final_exit_gross_rub",
     "initial_tranche_final_exit_net_proxy_rub","initial_tranche_counterfactual_basis",
+    "final_exit_favorable_pct_points","final_exit_mfe_capture_ratio",
+    "counterfactual_mfe_50_lock_pct_points","counterfactual_mfe_50_lock_price",
+    "counterfactual_mfe_70_lock_pct_points","counterfactual_mfe_70_lock_price",
+    "counterfactual_mfe_status",
 )
 
 def _num(value,default=0.0):
@@ -36,6 +40,30 @@ def initial_tranche_counterfactual(payload,fill_price,sign,commission):
     return {"initial_tranche_final_exit_gross_rub":gross,
             "initial_tranche_final_exit_net_proxy_rub":gross-fee-units*fill*rate,
             "initial_tranche_counterfactual_basis":"INITIAL_TRANCHE_HELD_TO_FINAL_EXIT_NO_ADDS_PROXY"}
+
+
+def mfe_capture_counterfactual(payload,fill_price,direction,avg_entry_price):
+    """Bounded exit diagnostics; never claim an unobserved trigger occurred."""
+    p=payload if isinstance(payload,dict) else {}
+    mfe=_num(lifetime_mfe(p)); fill=_num(fill_price); entry=_num(avg_entry_price)
+    if mfe<=0 or fill<=0 or entry<=0 or direction not in ("LONG","SHORT"):
+        return {}
+    favorable=100.0*((fill/entry-1.0) if direction=="LONG" else (entry/fill-1.0))
+    ratio=favorable/mfe if mfe>1e-12 else None
+    def lock(level):
+        pct=mfe*level
+        price=entry*(1.0+pct/100.0) if direction=="LONG" else entry/(1.0+pct/100.0)
+        return pct,price
+    p50,px50=lock(.50); p70,px70=lock(.70)
+    return {
+        "final_exit_favorable_pct_points":favorable,
+        "final_exit_mfe_capture_ratio":ratio,
+        "counterfactual_mfe_50_lock_pct_points":p50,
+        "counterfactual_mfe_50_lock_price":px50,
+        "counterfactual_mfe_70_lock_pct_points":p70,
+        "counterfactual_mfe_70_lock_price":px70,
+        "counterfactual_mfe_status":"DIAGNOSTIC_ONLY_TRIGGER_NOT_PROVEN",
+    }
 
 def lifetime_mfe(payload):
     p=payload if isinstance(payload,dict) else {}

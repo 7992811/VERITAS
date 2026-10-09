@@ -215,10 +215,27 @@ def fast_reversal_exit_eligible(position,row,policy):
             'structure_state':state,'evidence':evidence,'expected_move_pct':expected}
 
 
+
+def _unprotected_scale_cap(position,policy):
+    """Cap early exposure until prior tranches have positive-net protection."""
+    cfg=(getattr(CTC,'EXECUTION_EFFICIENCY_REFINEMENT_POLICY',{}) or {}).get('scaling') or {}
+    if not cfg.get('require_profit_protection_before_large_add'):
+        return None
+    p=payload(position)
+    if p.get('r_accel_mfe_profit_lock_active') or p.get('r55_net_profit_lock_active'):
+        return None
+    mode=str((policy or {}).get('mode') or '')
+    try:
+        cap=float((cfg.get('unprotected_max_fraction_by_mode') or {}).get(mode))
+    except (TypeError,ValueError,OverflowError):
+        return None
+    return cap if math.isfinite(cap) and cap>0 else None
+
 def scale_request(position,row,price,nav,policy,now=None,requested=None):
     """Request the next step; the final engine sizes the entire position risk."""
     current=abs(float(position.get('units') or 0))*float(price)/max(float(nav),1.)
     out={'eligible':False,'reason':'STRUCTURE_INTACT_WAIT_NEW_LEVEL','fraction':current}
+    protection_cap=_unprotected_scale_cap(position,policy)
     if not add_binding(position,row).get('eligible'):
         return dict(out,reason='STRUCTURAL_ADD_PARENT_MISMATCH')
     event=TFP.context_of(row).get('event') or {}
@@ -243,18 +260,30 @@ def scale_request(position,row,price,nav,policy,now=None,requested=None):
         if acceleration.get('trend_day_efficiency'):
             row['_trend_day_efficiency']=deepcopy(acceleration.get('trend_day_efficiency'))
         cap=max(base_cap,float(acceleration.get('temporary_max_fraction') or base_cap))
-        target=max(current+step,float(acceleration['target_fraction']))
+        if protection_cap is not None:
+            cap=min(cap,protection_cap)
+        target=min(cap,max(current+step,float(acceleration['target_fraction'])))
         increase=max(0.,math.floor(min(max(0.,target-current),max(0.,cap-current))/step+1e-9)*step)
-        reason='STRUCTURAL_NEW_LEVEL_ADD' if increase>0 else 'STRUCTURAL_ALLOCATION_CAP'
+        reason=('STRUCTURAL_NEW_LEVEL_ADD' if increase>0 else
+                'STRUCTURAL_WAIT_PROFIT_PROTECTION_BEFORE_SCALE'
+                if protection_cap is not None and current>=cap-1e-9 else
+                'STRUCTURAL_ALLOCATION_CAP')
     else:
         cap=base_cap
+        if protection_cap is not None:
+            cap=min(cap,protection_cap)
         if requested is not None:
             cap=min(cap,float(requested))
         increase=max(0.,math.floor(min(increment,max(0.,cap-current))/step+1e-9)*step)
-        reason='STRUCTURAL_NEW_LEVEL_ADD' if increase>0 else 'STRUCTURAL_ALLOCATION_CAP'
+        reason=('STRUCTURAL_NEW_LEVEL_ADD' if increase>0 else
+                'STRUCTURAL_WAIT_PROFIT_PROTECTION_BEFORE_SCALE'
+                if protection_cap is not None and current>=cap-1e-9 else
+                'STRUCTURAL_ALLOCATION_CAP')
     return dict(out,eligible=increase>0,reason=reason,
                 fraction=current+increase,event_id=event['event_id'],
                 acceleration=acceleration,
+                profit_protection_scale_cap=protection_cap,
+                prior_tranches_profit_protected=protection_cap is None,
                 final_total_stop_risk_check_required=True)
 
 
