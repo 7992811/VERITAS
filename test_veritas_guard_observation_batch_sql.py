@@ -312,40 +312,29 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
             self.assertEqual(after, before)
         return old, new
 
-    def test_twenty_three_no_action_positions_preserve_full_payload_and_reduce_io(self):
+    def test_twenty_three_no_action_positions_leave_book_immutable_for_sidecar(self):
         for direction in ('LONG', 'SHORT'):
             with self.subTest(direction=direction):
                 rows, quote = self.fixture(direction)
-                old, new = self.assert_parity(rows, {'ETH': quote}, allow_open_trade_lag=True)
-                self.assertIsNone(new[3])
-                self.assertEqual(new[2], [])
-                for table, _ in TABLE_KEYS:
-                    for before, after in zip(new[0][table], new[1][table]):
-                        self.assertEqual({k: v for k, v in before.items() if k != 'payload'},
-                                         {k: v for k, v in after.items() if k != 'payload'}, table)
-                        if table == 'paper_positions':
-                            for key, value in before['payload'].items():
-                                if key != 'observation_path':
-                                    self.assertEqual(after['payload'][key], value, key)
-                            self.assertEqual(after['payload']['observation_path']['observation_count'], 3)
-                            self.assertTrue(PATH.assessment(dict(after, horizon='1m'))['eligible'])
-                        elif table == 'paper_trades':
-                            self.assertEqual(after['payload'], before['payload'])
-                old_updates = sum(q.startswith('UPDATE') for q in old[4].statements)
-                new_updates = sum(q.startswith('UPDATE') for q in new[4].statements)
-                self.assertEqual(old_updates, 46)
-                self.assertLessEqual(new_updates, 2)
-                # Keep the original outer+observation transaction budget and
-                # account separately for exactly one checked compression probe.
-                compression_probes = new[4].statements.count(' '.join(G.BS.METADATA_SQL.split()))
+                self.seed(rows)
+                before = self.snapshot()
+                changes, trace = self.pass_once({'ETH': quote})
+                after = self.snapshot()
+                self.assertEqual(changes, [])
+                # Pure no-action protection has no reason to rewrite the large
+                # book payload. Independent sidecar tests own path continuity.
+                self.assertEqual(after, before)
+                writes = [q for q in trace.statements if q.startswith('UPDATE')
+                          or q.startswith('WITH incoming AS MATERIALIZED')]
+                self.assertEqual(writes, [])
+                compression_probes = trace.statements.count(' '.join(G.BS.METADATA_SQL.split()))
                 self.assertEqual(compression_probes, 1)
-                self.assertEqual(new[4].statements.count(G.BS.SET_LZ4_SQL), 1)
-                self.assertLessEqual(new[4].nested_transactions - compression_probes, 3)
-                self.assertLess(new[4].position_reads[0], old[4].position_reads[0]/4)
-                print('protective I/O fixture '+json.dumps({'direction': direction,
-                    'legacy_updates': old_updates, 'batch_updates': new_updates,
-                    'legacy_encoded_read_bytes': old[4].position_reads[0],
-                    'projected_encoded_read_bytes': new[4].position_reads[0]}))
+                self.assertEqual(trace.statements.count(G.BS.SET_LZ4_SQL), 1)
+                self.assertLessEqual(trace.nested_transactions-compression_probes, 1)
+                print('protective no-action sidecar fixture '+json.dumps({
+                    'direction':direction,'book_writes':len(writes),
+                    'projected_encoded_read_bytes':trace.position_reads[0]}))
+
 
     def test_stale_future_and_foreign_contract_quotes_cannot_write_metadata(self):
         rows, quote = self.fixture(count=3)
@@ -358,7 +347,7 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
                 self.assertEqual(new[1], new[0])
                 self.assertEqual(new[2], [])
 
-    def test_absent_explicit_null_and_malformed_payloads_retain_legacy_semantics(self):
+    def test_absent_explicit_null_and_malformed_payloads_are_not_rewritten_without_action(self):
         rows, quote = self.fixture(count=1)
         source = deepcopy(rows[0]['payload'])
         shapes = [source, dict(source, trailing_stop=None, data_integrity_status=None),
@@ -370,7 +359,12 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
             with self.subTest(shape=index):
                 changed = deepcopy(rows)
                 changed[0]['payload'] = payload
-                self.assert_parity(changed, {'ETH': quote}, allow_open_trade_lag=True)
+                self.seed(changed)
+                before = self.snapshot()
+                changes, _ = self.pass_once({'ETH': quote})
+                self.assertEqual(changes, [])
+                self.assertEqual(self.snapshot(), before)
+
 
     def test_quote_prepass_preserves_always_present_null_keys_and_unusual_json_shapes(self):
         rows, _ = self.fixture(count=1)
@@ -411,43 +405,27 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
                         self.sql.Identifier(name),
                         self.sql.Identifier(key), self.sql.Literal(trade_id)))
 
-    def test_one_optional_failure_preserves_other_twenty_two_and_outer_accounting(self):
+    def test_no_action_guard_does_not_interfere_with_outer_accounting(self):
         rows, quote = self.fixture()
         failed_id = rows[7]['active_trade_id']
-        outcomes = []
-        for legacy in (True, False):
-            self.seed(rows)
-            before = self.snapshot()
-            with self.connect() as c, c.transaction():
-                self.reject_metadata(c, failed_id)
-                c.execute('UPDATE paper_trades SET fees_rub=0.04 WHERE trade_id=%s', (failed_id,))
-                changes, _ = self.pass_once({'ETH': quote}, legacy=legacy, connection=c)
-                self.assertEqual(changes, [])
-                self.assertEqual(c.info.transaction_status, self.driver.pq.TransactionStatus.INTRANS)
-                c.execute('UPDATE paper_trades SET net_pnl_rub=-10 WHERE trade_id=%s', (failed_id,))
-            after = self.snapshot()
-            for old, new in zip(before['paper_positions'], after['paper_positions']):
-                tid = new['active_trade_id']
-                self.assertEqual(new['payload']['observation_path']['observation_count'],
-                                 2 if tid == failed_id else 3)
-                if tid == failed_id:
-                    self.assertEqual(new['payload'], old['payload'])
-            for old, new in zip(before['paper_trades'], after['paper_trades']):
-                tid = new['trade_id']
-                if legacy:
-                    self.assertEqual(new['payload']['observation_path']['observation_count'],
-                                     2 if tid == failed_id else 3)
-                else:
-                    self.assertEqual(new['payload'], old['payload'])
-            rejected = next(r for r in after['paper_trades'] if r['trade_id'] == failed_id)
-            self.assertEqual((rejected['fees_rub'], rejected['net_pnl_rub']), (.04, -10.))
-            outcomes.append(after)
-        # Financial state is identical; only no-action open-trade telemetry is
-        # intentionally deferred in the optimized path.
-        for old_trade, new_trade in zip(outcomes[0]['paper_trades'], outcomes[1]['paper_trades']):
-            self.assertEqual({k:v for k,v in old_trade.items() if k!='payload'},
-                             {k:v for k,v in new_trade.items() if k!='payload'})
-        self.assertEqual(outcomes[0]['paper_positions'], outcomes[1]['paper_positions'])
+        self.seed(rows)
+        before = self.snapshot()
+        with self.connect() as c, c.transaction():
+            # A constraint rejecting old guard metadata is irrelevant because
+            # the no-action lane writes none of it.
+            self.reject_metadata(c, failed_id)
+            c.execute('UPDATE paper_trades SET fees_rub=0.04 WHERE trade_id=%s', (failed_id,))
+            changes, _ = self.pass_once({'ETH': quote}, connection=c)
+            self.assertEqual(changes, [])
+            self.assertEqual(c.info.transaction_status, self.driver.pq.TransactionStatus.INTRANS)
+            c.execute('UPDATE paper_trades SET net_pnl_rub=-10 WHERE trade_id=%s', (failed_id,))
+        after = self.snapshot()
+        self.assertEqual(after['paper_positions'], before['paper_positions'])
+        for old, new in zip(before['paper_trades'], after['paper_trades']):
+            self.assertEqual(new['payload'], old['payload'])
+        rejected = next(r for r in after['paper_trades'] if r['trade_id'] == failed_id)
+        self.assertEqual((rejected['fees_rub'], rejected['net_pnl_rub']), (.04, -10.))
+
 
     def test_outer_rollback_removes_successful_metadata_batch_and_accounting(self):
         rows, quote = self.fixture()
@@ -457,8 +435,9 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'outer accounting failure'):
                 with c.transaction():
                     self.pass_once({'ETH': quote}, connection=c)
-                    self.assertNotEqual(self.snapshot(c), before)
+                    self.assertEqual(self.snapshot(c), before)
                     c.execute('UPDATE paper_trades SET net_pnl_rub=-10')
+                    self.assertNotEqual(self.snapshot(c), before)
                     raise RuntimeError('outer accounting failure')
         self.assertEqual(self.snapshot(), before)
 
