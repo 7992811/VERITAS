@@ -1,12 +1,28 @@
 """Missing currency reads must never be displayed as a confirmed empty account."""
 import ast
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import unittest
+from unittest.mock import patch
+
+import veritas_currency_dashboard as CurrencyDashboard
 
 
 class CurrencyDashboardLoadingTests(unittest.TestCase):
+    def test_live_display_switch_is_independent_from_order_proposals(self):
+        with patch.dict(os.environ, {"TBANK_ACCOUNT_ID":"12345"}, clear=True):
+            self.assertTrue(CurrencyDashboard.enabled())
+        with patch.dict(os.environ, {"VERITAS_CURRENCY_DASHBOARD_LIVE_ENABLED":"true"}, clear=True):
+            self.assertTrue(CurrencyDashboard.enabled())
+        with patch.dict(os.environ, {"VERITAS_CURRENCY_DASHBOARD_LIVE_ENABLED":"false",
+                                     "TBANK_ACCOUNT_ID":"12345",
+                                     "VERITAS_CURRENCY_TRADE_PROPOSALS_ENABLED":"true"}, clear=True):
+            self.assertFalse(CurrencyDashboard.enabled())
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(CurrencyDashboard.enabled())
+
     @unittest.skipUnless(shutil.which('node'), 'Node required for dashboard regression')
     def test_currency_positions_survive_partial_reads_and_recover(self):
         tree = ast.parse(Path('veritas_v90_ui.py').read_text())
