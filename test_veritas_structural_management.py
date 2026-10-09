@@ -200,6 +200,10 @@ class ProtectedParentManagementTests(unittest.TestCase):
 
     def test_atomic_revision_preserves_entry_and_rebinds_only_protected_parent(self):
         position, row, quote, now = parent_pullback()
+        # Owner rule 2026-10-09: structural trailing is permitted only after
+        # sustained-profit maturity. This test targets atomic stop revision, not
+        # the maturity gate, so supply the proved lifecycle precondition.
+        position["payload"]["profit_maturity_armed"] = True
         saved = deepcopy(position)
         db = FakeDB(position, now, accounting=False)
         result = TM.apply_trailing(db, "Currency", position, [row], quote, now)
