@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.39-trade-learning-exclusion-telemetry"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.39-trade-learning-exclusion-telemetry"
-UI_VERSION="veritas-ui-v9.1.8.39-trade-learning-exclusion-telemetry"
+PRODUCT_VERSION="veritas-max-product-v91.8.39-structural-breakout-trade-learning-exclusion-telemetry"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.39-structural-breakout-trade-learning-exclusion-telemetry"
+UI_VERSION="veritas-ui-v9.1.8.39-structural-breakout-trade-learning-exclusion-telemetry"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
