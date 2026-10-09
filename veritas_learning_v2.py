@@ -238,15 +238,22 @@ def research_diagnostics(decision_rows, trade_rows):
                              "missed_directional_episodes":summary.get("missed_directional_episodes",0)})
     top_contexts.sort(key=lambda x:(x["n"],x["missed_directional_episodes"]),reverse=True)
     trade_contexts=defaultdict(int)
+    outcome_trade_contexts=defaultdict(int)
     valid_trade_rows=0
+    outcome_trade_rows=0
     for row in trade_rows:
-        trade_contexts[_digest(_context(row))]+=1
-        if _num(row.get("mae")) is not None and _num(row.get("mfe")) is not None:
+        key=_digest(_context(row))
+        trade_contexts[key]+=1
+        if row.get("outcome_learning_eligible") is True or row.get("path_learning_eligible") is True:
+            outcome_trade_rows+=1
+            outcome_trade_contexts[key]+=1
+        if row.get("path_learning_eligible") is True and _num(row.get("mae")) is not None and _num(row.get("mfe")) is not None:
             valid_trade_rows+=1
     largest=max((len(rows) for rows in contexts.values()),default=0)
     contexts_ge_min=sum(len(rows)>=MIN_CONTEXT_N for rows in contexts.values())
     trade_largest=max(trade_contexts.values(),default=0)
     trade_contexts_ge_min=sum(n>=MIN_TRADE_N for n in trade_contexts.values())
+    replay_contexts_ge_min=sum(n>=MIN_REPLAY_DISCOVERY_N for n in outcome_trade_contexts.values())
     if blocked_directional==0:
         zero_reason="NO_BLOCKED_DIRECTIONAL_EPISODES"
     elif missed==0:
@@ -275,10 +282,12 @@ def research_diagnostics(decision_rows, trade_rows):
         "known_blockers":dict(known_blockers.most_common(16)),
         "top_contexts":top_contexts[:8],
         "trade_rows":len(trade_rows),
+        "outcome_trade_rows":outcome_trade_rows,
         "valid_mfe_mae_trade_rows":valid_trade_rows,
         "trade_contexts":len(trade_contexts),
         "largest_trade_context_n":trade_largest,
         "trade_contexts_ge_min":trade_contexts_ge_min,
+        "replay_contexts_ge_min":replay_contexts_ge_min,
         "zero_entry_candidate_reason":zero_reason,
     }
 
