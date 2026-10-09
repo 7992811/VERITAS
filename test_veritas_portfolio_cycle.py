@@ -207,8 +207,8 @@ class PortfolioCycleTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(result['portfolios'][1]['nav_rub'], 1097)
-        self.assertEqual(self.clocks[:2], ['live-1', 'live-21'])
-        self.assertEqual(self.protection_times[:2], ['live-2', 'live-22'])
+        self.assertEqual(self.clocks[:3], ['live-1', 'live-3', 'live-21'])
+        self.assertEqual(self.protection_times[:3], ['live-2', 'live-4', 'live-22'])
 
     def test_replay_preserves_explicit_time_for_funding_and_protection(self):
         self.run_books()
