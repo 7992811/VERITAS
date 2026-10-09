@@ -17,8 +17,8 @@ class Cursor:
         self.decisions=decisions; self.trades=trades; self.calls=[]
     def execute(self, sql, args=()):
         self.calls.append((sql,args))
-        if "WITH recent AS MATERIALIZED" in sql:
-            self.assert_materialized = "FROM v90_decision_episodes" in sql
+        if "FROM v90_decision_episodes" in sql:
+            self.assert_materialized = "learning_v2_projection_version='LEARNING_V2_EPISODE_V1'" in sql
             return Rows(self.decisions)
         if "FROM v90_learning_episodes" in sql:
             return Rows(self.trades)
@@ -72,6 +72,14 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertIn("d.payload->>'plan_eligible'",source)
         self.assertIn("AS admission_eligible",source)
         self.assertIn("AS final_gate_status",source)
+
+    def test_shadow_reader_never_joins_decision_ledger(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("FROM v90_decision_episodes",source)
+        self.assertIn("learning_v2_projection_version='LEARNING_V2_EPISODE_V1'",source)
+        self.assertNotIn("JOIN ledger_events",source)
+        self.assertNotIn("CROSS JOIN LATERAL",source)
+        self.assertIn('source="MATERIALIZED_LEARNING_V2_EPISODES"',source)
 
     def test_trade_cohort_provenance_comes_from_original_trade(self):
         source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
