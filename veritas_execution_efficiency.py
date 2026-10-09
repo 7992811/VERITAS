@@ -23,21 +23,17 @@ def _payload(row):
 
 def add_precheck(existing,row,price,direction,commission,policy):
     p=_payload(existing)
-    local=(row or {}).get("_local_execution_context") or {}
-    opposite="SHORT" if direction=="LONG" else "LONG"
-    fast=[x for x in (local.get("rows") or [])
-          if str(x.get("direction") or "")==opposite
-          and str(x.get("structure_state") or "") in ("BUILDING_TREND","CONFIRMED_TREND")]
-    if policy.get("block_add_on_fast_opposite_confirmation") and fast:
+    if (policy.get("block_add_on_fast_opposite_confirmation")
+            and bool((row or {}).get("_ctc_fast_opposite_confirmed"))):
         return {"eligible":False,"reason":"ADD_FAST_OPPOSITE_STRUCTURE_CONFIRMED",
-                "details":{"fast_opposite":fast[:4]}}
+                "details":{"fast_opposite_confirmed":True}}
     units=abs(_num((existing or {}).get("units")))
     avg=_num((existing or {}).get("avg_entry_price"),_num(price))
     px=_num(price)
     unrealized=max(0.0,(1.0 if direction=="LONG" else -1.0)*units*(px-avg))
-    modeled_entry_fee=units*avg*max(0.0,_num(commission))
-    tracked=max(0.0,_num(p.get("initial_entry_fee_rub")))+max(0.0,_num(p.get("add_fee_rub")))
-    fees=max(modeled_entry_fee,tracked)
+    # Churn means repeated adjustments. The first entry fee is already included
+    # in the incremental post-cost economics gate and must not veto the first add.
+    fees=max(0.0,_num(p.get("add_fee_rub")))
     limit=max(0.0,_num(policy.get("max_fee_to_positive_gross_edge"),.25))
     ratio=fees/unrealized if unrealized>1e-9 else (float("inf") if fees>0 else 0.0)
     before={"units":units,"avg_entry_price":avg,"fees_rub":fees,
