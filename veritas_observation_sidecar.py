@@ -180,7 +180,14 @@ def cleanup_once(pg_connect,limit=32):
 
 
 def sample_once(pg_connect,quote_selector,*,now=None):
-    """Sample all active positions without acquiring the canonical book lock."""
+    """Sample active positions using a post-selection processing clock.
+
+    In live mode the cache may publish a newer quote while this lightweight
+    sampler is reading the book.  The evidence check therefore timestamps the
+    observation after quote selection; an explicit test/replay clock remains
+    deterministic and unchanged.
+    """
+    explicit_clock=now is not None
     clock=_clock(now)
     started=time.monotonic()
     sql=("SELECT p.*,s.witness AS sidecar_witness FROM ("+
@@ -217,8 +224,9 @@ def sample_once(pg_connect,quote_selector,*,now=None):
                 unseeded+=1
                 continue
             work=_with_witness(row,old)
+            sample_now=clock if explicit_clock else _clock()
             try:
-                quote=quote_selector(work,now=clock) or {}
+                quote=quote_selector(work,now=sample_now) or {}
             except Exception:
                 quote={}
             if not quote:
@@ -227,7 +235,8 @@ def sample_once(pg_connect,quote_selector,*,now=None):
                 missing+=1
                 continue
             quotes+=1
-            witness=PATH.observe(work,quote,clock,lane="OBSERVATION_SIDECAR")
+            checked=clock if explicit_clock else _clock()
+            witness=PATH.observe(work,quote,checked,lane="OBSERVATION_SIDECAR")
             sampled+=1
             invalid+=int(bool(witness.get("invalid_observation_count")))
             if (witness.get("coverage_status")=="OBSERVED"
