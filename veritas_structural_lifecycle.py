@@ -240,6 +240,8 @@ def scale_request(position,row,price,nav,policy,now=None,requested=None):
     acceleration=_trend_acceleration_state(row,position.get('direction'),policy)
     if acceleration.get('active'):
         row['_trend_acceleration']=dict(acceleration)
+        if acceleration.get('trend_day_efficiency'):
+            row['_trend_day_efficiency']=deepcopy(acceleration.get('trend_day_efficiency'))
         cap=max(base_cap,float(acceleration.get('temporary_max_fraction') or base_cap))
         target=max(current+step,float(acceleration['target_fraction']))
         increase=max(0.,math.floor(min(max(0.,target-current),max(0.,cap-current))/step+1e-9)*step)
