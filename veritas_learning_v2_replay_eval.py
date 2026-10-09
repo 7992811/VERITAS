@@ -177,6 +177,8 @@ def _path(cached_bars,row,identity):
         if tf in TS.TIMEFRAMES and tf not in choices: choices.append(tf)
     for tf in choices:
         bars=cached_bars(row.get("asset"),tf,identity,now=closed,limit=500) or []
+        bars=[b for b in bars if (_time(b.get("closed_at")) is not None
+                                  and _time(b.get("closed_at"))<=closed)]
         if not bars: continue
         first=_time(bars[0].get("opened_at")); last=_time(bars[-1].get("closed_at"))
         seconds=TS.TIMEFRAMES[tf]
