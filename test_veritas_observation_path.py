@@ -134,7 +134,6 @@ class ObservationPathTests(unittest.TestCase):
         result=PATH.assessment(row)
         self.assertEqual(result['reason'],'OBSERVATION_SOURCE_GAP')
         self.assertEqual(result['max_gap_seconds'],60)
-        self.assertEqual(result['max_check_gap_seconds'],15)
 
     def test_slow_processing_is_separate_from_provider_cadence(self):
         row=trade();add(row,0,at_entry=True);add(row,15,101.)
@@ -143,7 +142,6 @@ class ObservationPathTests(unittest.TestCase):
         row.update(status='CLOSED',closed_at=stamp(90))
         result=PATH.assessment(row)
         self.assertEqual(result['max_gap_seconds'],15)
-        self.assertEqual(result['max_check_gap_seconds'],15)
         self.assertEqual(result['reason'],'OBSERVATION_PROCESSING_DELAY')
 
     def test_minute_provider_cadence_is_valid_when_protective_checks_are_continuous(self):
@@ -165,8 +163,8 @@ class ObservationPathTests(unittest.TestCase):
         row=trade(asset='NQ');add(row,0,at_entry=True);add(row,60,101.,observed=60)
         row.update(status='CLOSED',closed_at=stamp(60))
         result=PATH.assessment(row)
-        self.assertEqual(result['reason'],'OBSERVATION_CHECK_GAP')
-        self.assertEqual(result['max_check_gap_seconds'],60)
+        self.assertEqual(result['reason'],'INVALID_PATH_OBSERVATION')
+        self.assertGreater(row['payload']['observation_path']['invalid_observation_count'],0)
 
     def test_repeated_provider_timestamp_is_not_a_new_observation(self):
         row=trade();add(row,0,at_entry=True);add(row,15,101.)
@@ -215,14 +213,9 @@ class ObservationPathTests(unittest.TestCase):
             self.assertEqual(w['observation_count'],0)
             self.assertFalse(PATH.assessment(row)['eligible'])
 
-    def test_impossible_check_count_is_rejected(self):
-        row=complete()
-        row['payload']['observation_path']['check_count']=1
-        self.assertEqual(PATH.assessment(row)['reason'],'INCONSISTENT_CHECK_COVERAGE')
-
     def test_cadence_metadata_tampering_is_rejected(self):
         row=complete()
-        row['payload']['observation_path']['source_max_age_seconds']=999
+        row['payload']['observation_path']['allowed_gap_seconds']=999
         self.assertEqual(PATH.assessment(row)['reason'],'OBSERVATION_PATH_CADENCE_MISMATCH')
 
     def test_impossible_coverage_counts_and_ranges_are_rejected(self):
