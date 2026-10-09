@@ -20,6 +20,24 @@ MA_TEACHING_ID = "USER_DAILY_MA_REBOUND_2026_10_07"
 MA_SOURCE_TIMESTAMP = "2026-10-06T21:26:00Z"
 BREAKOUT_TEACHING_ID = "USER_INTRABAR_STRUCTURE_2026_10_07"
 BREAKOUT_SOURCE_TIMESTAMP = "2026-10-07T08:23:55Z"
+REVIEW_TEACHING_ID = "USER_TRADE_REVIEW_2026_10_09"
+REVIEW_SOURCE_TIMESTAMP = "2026-10-09T06:03:00Z"
+REVIEW_USER_CORRECTION_RU = (
+    "Импульсный портфель в разобранном кейсе сработал правильно: валидный ранний "
+    "структурный вход должен быть доступен также Champion и Challenger; различие "
+    "портфелей определяет размер и дальнейшее наращивание, а не существование "
+    "самого подтверждённого события. Hard thesis invalidation одной копии "
+    "канонического setup должен применяться к остальным копиям. После выхода сделки "
+    "в плюс исходная архитектура стопа сохраняется во время первых двух кратких "
+    "прибыльных импульсов; только после третьего устойчивого прибыльного окна и "
+    "выдержки разрешается защита истинным безубытком после расходов, затем структурный "
+    "трейлинг. Для каждой сделки проверять стопы/тейки относительно предыдущих high/low "
+    "и ATR того таймфрейма, на котором живёт риск-идея. Быстрый вход разрешён без "
+    "общего veto старшего направления, но если он заимствует старший swing/ATR для "
+    "риска, явная структурная недействительность этого старшего risk-context блокирует "
+    "вход. Каждую закрытую сделку автоматически разбирать; новые настройки и конфликты "
+    "канона предлагать владельцу на верификацию до применения."
+)
 BREAKOUT_USER_CORRECTION_RU = (
     "Сигнал в лонг должен появляться или подтверждать удержание при пробое "
     "предыдущей локальной вершины, включая открытие рынка. Пример CNYRUBf: "
@@ -174,9 +192,53 @@ def breakout_policy_snapshot():
     }
 
 
+def trade_review_policy_snapshot():
+    """Owner-verified postmortem/lifecycle refinement; proposals remain approval-gated."""
+    return {
+        "teaching_id": REVIEW_TEACHING_ID,
+        "source_type": "USER_AUTHORED_OPERATIONAL_POLICY",
+        "source_timestamp": REVIEW_SOURCE_TIMESTAMP,
+        "source_text_ru": REVIEW_USER_CORRECTION_RU,
+        "status": "ACTIVE_OPERATIONAL_POLICY",
+        "parent_teaching_id": BREAKOUT_TEACHING_ID,
+        "ctc_version": CTC.VERSION,
+        "runtime_authority": CTC.BASIS_RUNTIME,
+        "scope": "ALL_CONFIGURED_PAPER_PORTFOLIOS_AND_CLOSED_TRADE_SELF_LEARNING",
+        "portfolios": list(CTC.PORTFOLIO_ORDER),
+        "execution_policy": {
+            "verified_structural_event_entry_permission_is_shared":
+                CTC.LIFECYCLE_POLICY["verified_structural_event_entry_permission_is_shared"],
+            "portfolio_role_changes_size_not_event_existence":
+                CTC.LIFECYCLE_POLICY["portfolio_role_changes_size_not_event_existence"],
+            "canonical_setup_hard_invalidation_shared":
+                CTC.LIFECYCLE_POLICY["canonical_setup_hard_invalidation_shared_across_portfolios"],
+            "profit_lock_requires_consecutive_positive_windows":
+                CTC.LIFECYCLE_POLICY["profit_lock_requires_consecutive_positive_windows"],
+            "profit_lock_minimum_dwell_seconds":
+                CTC.LIFECYCLE_POLICY["profit_lock_minimum_dwell_seconds"],
+            "profit_lock_floor": CTC.LIFECYCLE_POLICY["profit_lock_floor"],
+            "structural_trailing_before_profit_maturity":
+                CTC.LIFECYCLE_POLICY["structural_trailing_before_profit_maturity"],
+        },
+        "learning_policy": _copy(CTC.LEARNING_POLICY),
+        "requirements": {
+            "entry_parity": "One verified structural event may be opened by Impulse, Champion and Challenger in the same decision cycle; portfolio role controls size/scale.",
+            "shared_invalidation": "A proved hard thesis invalidation of one canonical setup invalidates every open portfolio copy of that exact setup.",
+            "profit_maturity": "First two distinct profitable management windows are observation-only; third consecutive profitable window plus minimum dwell arms true after-cost breakeven.",
+            "gold_guardrail": "Temporary early favorable excursions must not destroy the original stop architecture; after maturity, confirmed structural swings may tighten but never widen the stop.",
+            "risk_timeframe": "If a fast trigger borrows a parent swing/ATR, explicit invalidity of that parent risk context blocks the borrowed-risk entry; an independently valid fast-TF risk plan remains possible.",
+            "postmortem": "Every closed trade receives level/volatility/indicator/MA/MTF/entry/stop/target/protection/exit/cost/data-integrity review.",
+            "governance": "Parameter candidates remain SHADOW and require canonical conflict scan, OOS/Vault/cost/time/regime validation and owner approval.",
+        },
+        "storage": {"table": "ledger_events", "event_type": EVENT_TYPE,
+                    "entity_key": REVIEW_TEACHING_ID, "event_key": EVENT_TYPE + ":" + REVIEW_TEACHING_ID},
+    }
+
+
 def seed_all_user_teachings(pg_event, read_event=None):
     return [seed_user_teaching(pg_event, read_event, snapshot=payload)
-            for payload in (policy_snapshot(), ma_policy_snapshot(), breakout_policy_snapshot())]
+            for payload in (policy_snapshot(), ma_policy_snapshot(), breakout_policy_snapshot(),
+                            trade_review_policy_snapshot())]
 
 
 def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):
