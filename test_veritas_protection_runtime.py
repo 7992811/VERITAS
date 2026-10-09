@@ -195,6 +195,24 @@ class MemoryConnection:
         if sql.startswith(PR.PROTECTION_SQL):
             return SimpleNamespace(fetchall=lambda: [self.projection.project(z)
                 for z in self.positions.values()])
+        if sql.startswith('WITH incoming AS MATERIALIZED') and 'jsonb_to_recordset' in sql:
+            # Production applies both mirrored updates as one PostgreSQL statement.
+            # A failure in either target rolls back the entire statement.
+            if self.fail_trade_batch:
+                raise RuntimeError('synthetic telemetry write failure')
+            position_updates = trade_updates = 0
+            for row in json.loads(args[0]):
+                tid = row['trade_id']
+                if tid in self.positions:
+                    self.positions[tid]['payload'] = self.merge_payload(
+                        self.positions[tid]['payload'], row['patch'])
+                    position_updates += 1
+                if tid in self.trades:
+                    self.trades[tid]['payload'] = self.merge_payload(
+                        self.trades[tid]['payload'], row['patch'])
+                    trade_updates += 1
+            return SimpleNamespace(fetchone=lambda: {
+                'position_updates': position_updates, 'trade_updates': trade_updates})
         if 'jsonb_to_recordset' in sql:
             if 'paper_trades' in sql and self.fail_trade_batch:
                 raise RuntimeError('synthetic telemetry write failure')
@@ -246,8 +264,8 @@ class BoundedProtectiveTests(unittest.TestCase):
         selects = [sql for sql, args in c.sql if sql.startswith('SELECT') and 'advisory' not in sql]
         writes = [args for sql, args in c.sql if 'jsonb_to_recordset' in sql]
         self.assertEqual(selects, [PR.PROTECTION_SQL+' ORDER BY portfolio_name,asset FOR UPDATE'])
-        self.assertEqual(len(writes), 4)
-        self.assertTrue(all(len(json.loads(args[0])) <= 32 for args in writes))
+        self.assertEqual(len(writes), 2)
+        self.assertEqual([len(json.loads(args[0])) for args in writes], [32, 1])
         self.assertEqual(c.commits, 1)
         for tid, saved in c.positions.items():
             self.assertEqual(saved['payload']['immutable_history'], rows[0]['payload']['immutable_history'])
@@ -300,9 +318,9 @@ class BoundedProtectiveTests(unittest.TestCase):
         self.assertNotIn('observation_path', c.positions[rows[1]['active_trade_id']]['payload'])
         self.assertEqual(c.positions[rows[1]['active_trade_id']]['payload']['mfe_pct'], 'NaN')
         batches = [json.loads(args[0]) for sql, args in c.sql if 'jsonb_to_recordset' in sql]
-        self.assertEqual([len(rows) for rows in batches], [1, 1, 1, 1])
+        self.assertEqual([len(items) for items in batches], [1, 1])
         self.assertEqual([batch[0]['trade_id'] for batch in batches],
-                         [rows[0]['active_trade_id']]*2 + [rows[2]['active_trade_id']]*2)
+                         [rows[0]['active_trade_id'], rows[2]['active_trade_id']])
 
     def test_exit_rehydrates_full_row_and_optional_metadata_failure_cannot_block_stop(self):
         for fail_metadata in (False, True):
