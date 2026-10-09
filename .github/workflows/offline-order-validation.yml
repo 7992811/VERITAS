@@ -31,6 +31,7 @@ jobs:
           suite=unittest.TestSuite([
               loader.loadTestsFromName('test_veritas_offline_order_cycle'),
               loader.loadTestsFromName('test_veritas_signal_robot'),
+              loader.loadTestsFromName('test_veritas_robot_embed'),
               loader.loadTestsFromName('test_veritas_tbank_order_stream'),
               loader.loadTestsFromName('test_veritas_trade_approvals.TradeApprovalTests'),
               loader.loadTestsFromName('test_veritas_currency_trade_service.CurrencyHttpBoundaryTests'),
