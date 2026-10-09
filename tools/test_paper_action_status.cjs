@@ -58,7 +58,7 @@ expectVisibleAction('Ожидание');
 trace.execution = {checked_at: now, status: 'EXECUTED', reason: 'ORDER_RECORDED', execution_action: 'OPEN'};
 assert.equal(render(signal, [{name: 'Currency', admission_trace: [trace]}]).ready, true);
 expectVisibleAction('Вход');
-assert.match(elements.actions.innerHTML, /Валютный портфель: Ордер исполнен/);
+assert.match(elements.actions.innerHTML, /Currency: Ордер исполнен/);
 assert.match(elements.actions.innerHTML, /Стоп 12,692 · Цель 12,805/);
 trace.execution.execution_action = 'ADD';
 assert.equal(render(signal, [{name: 'Currency', admission_trace: [trace]}]).action, 'ADD');
