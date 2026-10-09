@@ -1889,11 +1889,18 @@ def _v90r51_recent_cny_stop(c,name,direction,ts,seconds=900):
         return None
     return None
 
-def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
-    existing=c.execute(
+def _cycle_existing_position(c,name,asset,row):
+    """Use the outer transaction's canonical position snapshot when explicit."""
+    if isinstance(row,dict) and row.get('_cycle_position_snapshot_valid') is True:
+        value=row.get('_cycle_position_snapshot')
+        return dict(value) if value is not None else None
+    return c.execute(
         "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
-        (name,asset)
-    ).fetchone()
+        (name,asset)).fetchone()
+
+
+def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
+    existing=_cycle_existing_position(c,name,asset,row)
     if not existing and str(asset)=='CNYRUBF':
         cd=_v90r51_recent_cny_stop(c,name,direction,ts,900)
         if cd:
@@ -2409,10 +2416,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         return _v90r54_base_open_or_add(
             c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason
         )
-    existing=c.execute(
-        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
-        (name,asset)
-    ).fetchone()
+    existing=_cycle_existing_position(c,name,asset,row)
     requested=float(target_fraction or 0.0)
     gate_meta=None
     migration_meta=None
@@ -2758,10 +2762,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         },ensure_ascii=False,separators=(',',':')),flush=True)
         return 0.0
 
-    existing=c.execute(
-        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
-        (name,asset)
-    ).fetchone()
+    existing=_cycle_existing_position(c,name,asset,row)
 
     if not existing:
         rg=_v90r55_reentry_gate(c,name,asset,direction,row,price,ts)
@@ -3456,9 +3457,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     row=VTE.prepare_row(row,price)
     if str(name)=='Aggressive':
         row=_v90r56_prepare_entry_row(row)
-    before=c.execute(
-        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",(name,asset)
-    ).fetchone()
+    before=_cycle_existing_position(c,name,asset,row)
     result=_v90r56_base_open_or_add(
         c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason
     )
@@ -3892,9 +3891,7 @@ def _v90r59_recent_opposite_exit(c,name,asset,direction,row,ts):
             'age_seconds':age,'fresh_after_exit':fresh,'strong_reversal':strong}
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
-    existing=c.execute(
-      "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
-      (name,asset)).fetchone()
+    existing=_cycle_existing_position(c,name,asset,row)
     if not existing:
         policy=POLICIES.get(str(name),{})
         actual=VX.entry_gate(row,price,direction,target_fraction)
@@ -4629,9 +4626,7 @@ def _r72_event_reentry_gate(c,name,asset,direction,event):
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     row=dict(row or {})
-    existing=c.execute(
-      "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
-      (name,asset)).fetchone()
+    existing=_cycle_existing_position(c,name,asset,row)
     row=VTE.prepare_row(row,price)
     quote=row.get('_execution_quote') or {}
     if quote:

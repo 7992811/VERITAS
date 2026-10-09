@@ -2264,7 +2264,11 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     VPG.publish_quote(asset,quote)
     import veritas_trend_entry as VTE
     row=VTE.prepare_row(VPS.execution_row(dict(row,_execution_quote=quote)),price,ts)
-    z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
+    if isinstance(row,dict) and row.get('_cycle_position_snapshot_valid') is True:
+        snap=row.get('_cycle_position_snapshot')
+        z=dict(snap) if snap is not None else None
+    else:
+        z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
     if z and not VPS.matches(dict(z),quote):
         _record_entry_outcome(row,'BLOCKED','POSITION_SOURCE_MISMATCH')
         return 0.0
