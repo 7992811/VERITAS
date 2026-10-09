@@ -128,10 +128,11 @@ def _event_evidence(trade, p):
 def diagnose(trade, *, additional_exclusion=None):
     """Return evidence-backed diagnosis without mutating the trade or its P/L.
 
-    ``learning_eligible`` means strategy-outcome evidence, including valid losses.
-    Proven implementation violations have separate ``rule_evidence_eligible``.
-    Missing path coverage never becomes evidence of a correct exit or profit left
-    on the table. It does not erase independently provable entry-rule violations.
+    ``outcome_evidence_eligible`` means the net closed-trade outcome is proved
+    by the immutable event/source/fill/initial-risk/accounting evidence.
+    ``learning_eligible`` remains the stricter path-aware strategy-quality tier.
+    Missing path coverage never becomes evidence of MFE/MAE, a correct exit or
+    profit left on the table. Proven implementation violations remain separate.
     """
     t = dict(trade or {})
     p = AUDIT.payload(t.get("payload"))
@@ -140,6 +141,7 @@ def diagnose(trade, *, additional_exclusion=None):
     result = dict(version=VERSION, status="UNVERIFIED", outcome=outcome,
         primary_attribution="UNVERIFIED_TRADE_EVIDENCE", attributions=["UNVERIFIED_TRADE_EVIDENCE"],
         learning_action="REVIEW_ORIGINAL_EVIDENCE", learning_eligible=False,
+        outcome_evidence_eligible=False, path_evidence_eligible=False,
         strategy_quality_eligible=False, rule_evidence_eligible=False,
         directional_error=False, violations=[], hypotheses=[], normalization={},
         rule_scope="RECORDED_STRUCTURAL_ENTRY_AND_INITIAL_STOP_POLICY_ONLY",
@@ -290,10 +292,9 @@ def diagnose(trade, *, additional_exclusion=None):
     result["path_assessment"] = path_check
     path_problem = None if path_check.get("eligible") else (
         path_check.get("reason") or path_check.get("exclusion_reason") or "INCOMPLETE_OBSERVED_PATH")
+    path_limitations = [path_problem] if path_problem else []
     if additional_exclusion:
         missing.append(additional_exclusion)
-    if path_problem:
-        missing.append(path_problem)
     if any(_number(t.get(k)) is None for k in ("gross_pnl_rub", "fees_rub", "funding_rub", "net_pnl_rub")):
         missing.append("INCOMPLETE_ACCOUNTING")
     opened, closed = entered, AUDIT._timestamp(t.get("closed_at"))
@@ -306,11 +307,11 @@ def diagnose(trade, *, additional_exclusion=None):
     if path_consistent and not all(_same_number(_positive(path.get(k)), value) for k, value in (
             ("original_entry_price", entry), ("initial_stop_price", initial_stop), ("entry_atr", values["atr"]))):
         path_consistent = False
-        missing.append("PATH_INITIAL_GEOMETRY_MISMATCH")
+        path_limitations.append("PATH_INITIAL_GEOMETRY_MISMATCH")
     if path_consistent:
         low, high = _positive(path.get("min_price")), _positive(path.get("max_price"))
         if low is None or high is None or low > high:
-            missing.append("INVALID_OBSERVED_PATH_EXTREMES")
+            path_limitations.append("INVALID_OBSERVED_PATH_EXTREMES")
         else:
             favorable = max(0., (high - entry) if actual_sign > 0 else (entry - low))
             adverse = min(0., (low - entry) if actual_sign > 0 else (entry - high))
@@ -342,14 +343,36 @@ def diagnose(trade, *, additional_exclusion=None):
     if missing:
         result.update(exclusion_reason=missing[0], evidence_limitations=sorted(set(missing)))
         return result
-    result.update(status="VERIFIED_RULE_OUTCOME", learning_eligible=True, strategy_quality_eligible=True,
-                  exclusion_reason=None, learning_action="COUNT_STRATEGY_OUTCOME")
+
     reason = str(p.get("exit_reason") or p.get("close_reason") or t.get("exit_reason") or "").upper()
     primary = ("VALID_STRUCTURAL_STOP_LOSS" if net < 0 and "STOP" in reason else
                "VALID_LOSING_TRADE" if net < 0 else "VALID_PROFITABLE_TRADE" if net > 0 else "VALID_FLAT_TRADE")
     attrs = [primary]
     if gross > 0 and net <= 0:
         attrs.append("COST_DRAG")
+
+    # The net outcome is independently proved even when the sampled quote path
+    # is incomplete.  Keep path/capture learning fail-closed while allowing
+    # size/calibration learning to consume the actual cash outcome.
+    result["outcome_evidence_eligible"] = True
+    if path_limitations:
+        result.update(
+            status="VERIFIED_OUTCOME_ONLY",
+            learning_eligible=False,
+            path_evidence_eligible=False,
+            strategy_quality_eligible=False,
+            exclusion_reason=path_limitations[0],
+            evidence_limitations=sorted(set(path_limitations)),
+            learning_action="COUNT_NET_OUTCOME_ONLY",
+            primary_attribution=primary,
+            attributions=attrs,
+        )
+        return result
+
+    result.update(status="VERIFIED_RULE_OUTCOME", learning_eligible=True,
+                  outcome_evidence_eligible=True, path_evidence_eligible=True,
+                  strategy_quality_eligible=True,
+                  exclusion_reason=None, learning_action="COUNT_STRATEGY_OUTCOME")
     # At least one original risk unit was observed, then the final fill gave back
     # half a risk unit. This is a preregistered review trigger, not a stop verdict
     # or proof that the peak could have been captured with executable orders.
