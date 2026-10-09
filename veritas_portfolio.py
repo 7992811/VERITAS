@@ -4277,11 +4277,16 @@ _v90ci_same_contract=VCI.same_contract
 _v90ci_cross_source_disagreement=VCI.cross_source_disagreement
 
 def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
-    _baton=_v90_book_baton_take(c,name,ts)
-    positions=(_baton[1] if _baton is not None else
-               c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall())
-    safe_candidates,safe_prices,ci_mutated=VCI.guard_book(
-        c,name,candidates,prices,ts,positions,decode_payload=_v90j_json,iso=_v90j_iso)
+    safe_candidates,safe_prices=dict(candidates or {}),dict(prices or {})
+    ci_mutated=False
+    try:
+        _baton=_v90_book_baton_take(c,name,ts)
+        positions=(_baton[1] if _baton is not None else
+                   c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall())
+        safe_candidates,safe_prices,ci_mutated=VCI.guard_book(
+            c,name,safe_candidates,safe_prices,ts,positions,decode_payload=_v90j_json,iso=_v90j_iso)
+    except Exception:
+        pass
     if ci_mutated:
         _v90_book_baton_clear()
     positions=None
