@@ -29,7 +29,7 @@ _state={
     "seeded_positions":0,"observed_positions":0,"unseeded_positions":0,
     "handoff_positions":0,"irrecoverable_seeded":0,"sampled_positions":0,
     "seeded_events":0,"sealed_events":0,"stale_deleted_total":0,
-    "missing_quotes":0,"duration_seconds":0.0,"error":None,
+    "missing_quotes":0,"rejection_reasons":{},"duration_seconds":0.0,"error":None,
 }
 _state_lock=threading.Lock()
 
@@ -75,6 +75,36 @@ def _with_witness(row,witness):
         p["observation_path"]=dict(witness)
     out["payload"]=p
     return out
+
+
+def _observation_rejection_reason(row,witness,quote,checked):
+    """Explain a failed sample without changing PATH.observe admission rules."""
+    previous=PATH._time((witness or {}).get("last_checked_at"))
+    if previous and checked < previous:
+        return "REVERSED_PROCESSING_CLOCK"
+    if previous and checked > previous and (checked-previous).total_seconds()>PATH.ALLOWED_GAP_SECONDS:
+        return "CHECK_CADENCE_GAP"
+    observed=PATH._time((quote or {}).get("observed_at") or (quote or {}).get("market_observed_at"))
+    px=PATH._positive((quote or {}).get("price"))
+    identity=PATH._identity(row)
+    actual=PATH._quote_identity((row or {}).get("asset"),quote or {})
+    p=_payload(row)
+    same_context=((witness or {}).get("asset")==row.get("asset")
+                  and (witness or {}).get("direction")==row.get("direction")
+                  and (witness or {}).get("timeframe")==PATH._timeframe(row,p)
+                  and VPS.same((witness or {}).get("source_identity"),identity))
+    if observed and observed>checked:
+        return "QUOTE_CLOCK_AHEAD"
+    if not (observed and px and (quote or {}).get("source_gate_pass") is True
+            and same_context and VPS.same(identity,actual)
+            and row.get("direction") in ("LONG","SHORT")):
+        return "QUOTE_FIELDS_OR_SOURCE_INVALID"
+    last=PATH._time((witness or {}).get("last_observed_at"))
+    if last and observed<last:
+        return "OUT_OF_ORDER_PROVIDER_TIMESTAMP"
+    if last and observed==last and px!=PATH._number((witness or {}).get("last_price")):
+        return "REVISED_SAME_TIMESTAMP_PRICE"
+    return None
 
 
 def _encoded(rows):
@@ -195,6 +225,7 @@ def sample_once(pg_connect,quote_selector,*,now=None):
          ") p LEFT JOIN paper_observation_sidecar s ON s.trade_id=p.active_trade_id "
          "ORDER BY p.portfolio_name,p.asset")
     updates=[];quotes=invalid=missing=seeded=observed=unseeded=handoff=irrecoverable=sampled=0
+    rejection_reasons={}
     with pg_connect() as c:
         rows=[dict(x) for x in c.execute(sql).fetchall()]
         for row in rows:
@@ -236,9 +267,17 @@ def sample_once(pg_connect,quote_selector,*,now=None):
                 continue
             quotes+=1
             checked=clock if explicit_clock else _clock()
+            reason=_observation_rejection_reason(work,old,quote,checked)
+            before_invalid=int(old.get("invalid_observation_count") or 0)
+            before_gaps=int(old.get("gap_count") or 0)
             witness=PATH.observe(work,quote,checked,lane="OBSERVATION_SIDECAR")
             sampled+=1
             invalid+=int(bool(witness.get("invalid_observation_count")))
+            if (int(witness.get("invalid_observation_count") or 0)>before_invalid
+                    or int(witness.get("gap_count") or 0)>before_gaps):
+                code=reason or ("SOURCE_CADENCE_GAP" if int(witness.get("gap_count") or 0)>before_gaps
+                                else "DERIVED_PATH_INVALID")
+                rejection_reasons[code]=int(rejection_reasons.get(code) or 0)+1
             if (witness.get("coverage_status")=="OBSERVED"
                     and not witness.get("invalid_observation_count")
                     and not witness.get("gap_count")):
@@ -252,6 +291,7 @@ def sample_once(pg_connect,quote_selector,*,now=None):
         "observed_positions":observed,"unseeded_positions":unseeded,
         "handoff_positions":handoff,"irrecoverable_seeded":irrecoverable,
         "sampled_positions":sampled,"missing_quotes":missing,
+        "rejection_reasons":dict(sorted(rejection_reasons.items())[:8]),
         "duration_seconds":round(time.monotonic()-started,4),
         "book_lock_acquired":False,"network_fetches":0,"production_influence":False,
     }
