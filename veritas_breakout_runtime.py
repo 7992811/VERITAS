@@ -134,6 +134,41 @@ def publish_market(raw):
     return True
 
 
+def cached_closed_bars(asset, timeframe, source_identity=None, *, now=None, limit=500):
+    """Return a detached exact-source closed-bar path from the existing cache.
+
+    This function never fetches history. The opening timestamp is preserved so
+    counterfactual replay can exclude the partly pre-entry candle.
+    """
+    timeframe=str(timeframe or "").lower()
+    if timeframe not in TS.TIMEFRAMES:
+        return []
+    limit=max(1,min(MAX_BARS_PER_TIMEFRAME,int(limit)))
+    clock=_clock(now)
+    if clock is None:
+        return []
+    with _cache_lock:
+        market=_markets.get(str(asset))
+        if not market:
+            return []
+        identity=deepcopy(market.get("structure_source_identity") or {})
+        if source_identity and not _same_source(source_identity,identity):
+            return []
+        raw=deepcopy((market.get("structure_bars_by_timeframe") or {}).get(timeframe) or [])
+    rows=TS.closed_bars(raw,timeframe,clock)
+    out=[]
+    for row in rows[-limit:]:
+        out.append({
+            "opened_at":row.get("ts"),
+            "closed_at":row.get("available_at"),
+            "open":row.get("open"),"high":row.get("high"),
+            "low":row.get("low"),"close":row.get("close"),
+            "source_key":identity.get("key"),
+            "contract_id":str(identity.get("contract_id") or ""),
+        })
+    return out
+
+
 def _merge_cached_rows(summary, cached, *, current_cny=None, **options):
     """Keep source pins, including recovery of the selected CNY broker feed."""
     current = {(row.get("asset"), row.get("horizon")): row
