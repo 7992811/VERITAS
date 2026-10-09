@@ -757,17 +757,24 @@ class ContinuousLearning:
             context.check()
             trade_read_started=time.monotonic()
             trades=c.execute("""
-              SELECT e.closed_at,e.asset,e.horizon,e.regime,e.setup_family,
+              SELECT e.trade_id,e.closed_at,e.portfolio_name,e.asset,e.horizon,e.regime,e.setup_family,
                      COALESCE(t.payload->>'strategy_policy_hash','') AS policy_hash,
                      COALESCE(t.payload#>>'{price_source_lock,key}',
                               t.payload#>>'{entry_execution_source_identity,key}','') AS source_key,
                      COALESCE(t.payload#>>'{price_source_lock,contract_id}',
                               t.payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
-                     e.mae_pct AS mae,e.mfe_pct AS mfe,e.capture_ratio,
-                     e.net_pnl_rub,e.primary_attribution
+                     COALESCE((NULLIF(e.payload->>'path_learning_eligible',''))::boolean,e.learning_eligible,FALSE)
+                       AS path_evidence_eligible,
+                     CASE WHEN COALESCE((NULLIF(e.payload->>'path_learning_eligible',''))::boolean,e.learning_eligible,FALSE)
+                          THEN e.mae_pct ELSE NULL END AS mae,
+                     CASE WHEN COALESCE((NULLIF(e.payload->>'path_learning_eligible',''))::boolean,e.learning_eligible,FALSE)
+                          THEN e.mfe_pct ELSE NULL END AS mfe,
+                     CASE WHEN COALESCE((NULLIF(e.payload->>'path_learning_eligible',''))::boolean,e.learning_eligible,FALSE)
+                          THEN e.capture_ratio ELSE NULL END AS capture_ratio,
+                     e.opening_fraction,e.max_fraction,e.net_pnl_rub,e.primary_attribution
               FROM v90_learning_episodes e
               JOIN paper_trades t ON t.trade_id=e.trade_id
-              WHERE e.learning_eligible=TRUE
+              WHERE COALESCE((NULLIF(e.payload->>'outcome_learning_eligible',''))::boolean,FALSE)=TRUE
                 AND e.primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
                 AND e.asset=%s
               ORDER BY e.closed_at DESC
@@ -775,14 +782,18 @@ class ContinuousLearning:
             """,(asset,limit)).fetchall()
             trade_read_seconds=time.monotonic()-trade_read_started
         decision_rows=[dict(row) for row in decisions or []]
-        trade_rows=[dict(row) for row in trades or []]
+        outcome_rows=[dict(row) for row in trades or []]
+        trade_rows=[row for row in outcome_rows if row.get("path_evidence_eligible") is True]
         research_started=time.monotonic()
-        current=LEARNING_V2.research_snapshot(decision_rows,trade_rows)
+        current=LEARNING_V2.research_snapshot(decision_rows,trade_rows,outcome_rows)
         research_seconds=time.monotonic()-research_started
         current.update(asset=asset,
-                       input_counts={"decisions":len(decision_rows),"trades":len(trade_rows)},
+                       input_counts={"decisions":len(decision_rows),
+                                     "trades":len(outcome_rows),
+                                     "path_trades":len(trade_rows),
+                                     "outcome_only_trades":max(0,len(outcome_rows)-len(trade_rows))},
                        generated_at=clock().isoformat(),
-                       source="MATERIALIZED_OUTCOMES_PLUS_FROZEN_DECISION_CONTEXT",
+                       source="VERIFIED_NET_OUTCOMES_PLUS_PATH_EVIDENCE_PLUS_FROZEN_DECISION_CONTEXT",
                        automatic_production_promotion=False)
         context.check()
         registry_started=time.monotonic()
@@ -795,7 +806,8 @@ class ContinuousLearning:
             prior=deepcopy(self._learning_v2)
         assets=dict(prior.get("assets") or {})
         assets[asset]={k:deepcopy(current.get(k)) for k in (
-            "status","counts","entry_false_block","diagnostics","hypotheses","input_counts","generated_at")}
+            "status","counts","entry_false_block","diagnostics","closed_trade_summary",
+            "hypotheses","input_counts","generated_at")}
         combined={}
         for name in LEARNING_V2_ASSETS:
             for h in (assets.get(name) or {}).get("hypotheses") or []:
@@ -832,7 +844,9 @@ class ContinuousLearning:
                  "duration_seconds":round(time.monotonic()-job_started,4)}
         diag=current.get("diagnostics") or {}
         self.ns["emit"]("learning_v2_shadow_snapshot",version=LEARNING_V2.VERSION,
-                        asset=asset,decisions=len(decision_rows),trades=len(trade_rows),
+                        asset=asset,decisions=len(decision_rows),trades=len(outcome_rows),
+                        path_trades=len(trade_rows),
+                        outcome_only_trades=max(0,len(outcome_rows)-len(trade_rows)),
                         hypotheses=len(current.get("hypotheses") or []),
                         total_hypotheses=len(hypotheses),
                         registry_counts=registry.get("counts") or {},
