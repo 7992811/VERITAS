@@ -251,7 +251,7 @@ class BoundedProtectiveTests(unittest.TestCase):
         self.assertEqual(c.commits, 1)
         for tid, saved in c.positions.items():
             self.assertEqual(saved['payload']['immutable_history'], rows[0]['payload']['immutable_history'])
-            self.assertEqual(saved['payload']['observation_path']['observation_count'], 1)
+            self.assertNotIn('observation_path', saved['payload'])
             self.assertEqual(saved['payload']['mfe_pct'], 1.5)
             self.assertEqual(saved['payload']['source_locked_mark']['price'], 101.)
             self.assertEqual(saved['payload'], c.trades[tid]['payload'])
@@ -296,9 +296,13 @@ class BoundedProtectiveTests(unittest.TestCase):
         c = self.connection(rows)
         self.assertEqual(G.run_protective_pass(None, c.connect, {'ETH': position()[1]}, NOW), [])
         for index in (0, 2):
-            self.assertIn('observation_path', c.positions[rows[index]['active_trade_id']]['payload'])
-        self.assertNotIn('observation_path', c.positions[rows[1]['active_trade_id']]['payload'])
-        self.assertEqual(c.positions[rows[1]['active_trade_id']]['payload']['mfe_pct'], 'NaN')
+            payload=c.positions[rows[index]['active_trade_id']]['payload']
+            self.assertIn('source_locked_mark', payload)
+            self.assertNotIn('observation_path', payload)
+        bad=c.positions[rows[1]['active_trade_id']]['payload']
+        self.assertNotIn('source_locked_mark', bad)
+        self.assertNotIn('observation_path', bad)
+        self.assertEqual(bad['mfe_pct'], 'NaN')
         batches = [json.loads(args[0]) for sql, args in c.sql if 'jsonb_to_recordset' in sql]
         self.assertEqual([len(rows) for rows in batches], [1, 1, 1, 1])
         self.assertEqual([batch[0]['trade_id'] for batch in batches],
@@ -319,7 +323,8 @@ class BoundedProtectiveTests(unittest.TestCase):
                     self.assertEqual(full['_execution_quote']['price'], 89.)
                     self.assertEqual(reason, 'STOP')
                     if not fail_metadata:
-                        self.assertEqual(full['payload']['observation_path']['observation_count'], 1)
+                        self.assertEqual(full['payload']['source_locked_mark']['price'],89.)
+                        self.assertNotIn('observation_path',full['payload'])
                     seen.append(full['active_trade_id'])
                     connection.orders.append('synthetic-stop')
                     connection.positions.pop(full['active_trade_id'])
@@ -356,8 +361,12 @@ class BoundedProtectiveTests(unittest.TestCase):
             def now(cls, zone): return next(readings)
         with patch.object(G, 'datetime', Clock):
             self.assertEqual(G.run_protective_pass(None, c.connect, {'ETH': q}), [])
-        self.assertIn('observation_path', c.positions[rows[0]['active_trade_id']]['payload'])
-        self.assertNotIn('observation_path', c.positions[rows[1]['active_trade_id']]['payload'])
+        first=c.positions[rows[0]['active_trade_id']]['payload']
+        second=c.positions[rows[1]['active_trade_id']]['payload']
+        self.assertIn('source_locked_mark', first)
+        self.assertNotIn('observation_path', first)
+        self.assertNotIn('source_locked_mark', second)
+        self.assertNotIn('observation_path', second)
 
 
 if __name__ == '__main__':
