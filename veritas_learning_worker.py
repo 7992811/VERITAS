@@ -68,17 +68,38 @@ def load_inputs(conn,limit=PER_ASSET_LIMIT):
                           ELSE COALESCE(d.payload#>>'{timeframe_entry_context,event,direction}',
                                         d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}',
                                         NULLIF(d.payload->>'horizon_structure_direction','NO_TRADE'),'') END AS candidate_direction,
-                     CASE WHEN d.payload->>'plan_eligible' IN ('true','false')
-                          THEN (d.payload->>'plan_eligible')::boolean
-                          WHEN d.payload->>'trade_entry_eligible' IN ('true','false')
-                          THEN (d.payload->>'trade_entry_eligible')::boolean
+                     CASE
+                          WHEN COALESCE(d.payload->>'plan_eligible',
+                                        d.payload#>>'{trade_plan,eligible}')='false'
+                            OR COALESCE(d.payload->>'trade_entry_eligible',
+                                        d.payload#>>'{execution_eligibility,eligible}',
+                                        d.payload#>>'{execution_eligibility,paper_eligible}')='false'
+                          THEN false
+                          WHEN COALESCE(d.payload->>'plan_eligible',
+                                        d.payload#>>'{trade_plan,eligible}')='true'
+                            AND COALESCE(d.payload->>'trade_entry_eligible',
+                                         d.payload#>>'{execution_eligibility,eligible}',
+                                         d.payload#>>'{execution_eligibility,paper_eligible}')='true'
+                          THEN true
                           ELSE NULL END AS admission_eligible,
-                     COALESCE(d.payload->>'final_gate_status','') AS final_gate_status,
-                     COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers,
-                     COALESCE(d.payload->>'plan_reason','') AS plan_reason,
-                     COALESCE(d.payload->>'trade_entry_reason','') AS trade_entry_reason,
-                     COALESCE(d.payload->>'execution_reason','') AS execution_reason,
-                     COALESCE(d.payload->>'paper_execution_reason','') AS paper_execution_reason
+                     COALESCE(NULLIF(d.payload->>'final_gate_status',''),
+                              CASE WHEN COALESCE(d.payload->>'plan_eligible',
+                                                 d.payload#>>'{trade_plan,eligible}')='false'
+                                      OR COALESCE(d.payload->>'trade_entry_eligible',
+                                                  d.payload#>>'{execution_eligibility,eligible}',
+                                                  d.payload#>>'{execution_eligibility,paper_eligible}')='false'
+                                   THEN 'BLOCK' ELSE '' END) AS final_gate_status,
+                     COALESCE(d.payload->'final_gate_blockers',
+                              d.payload#>'{execution_eligibility,paper_source_blockers}',
+                              '[]'::jsonb) AS final_gate_blockers,
+                     COALESCE(NULLIF(d.payload->>'plan_reason',''),
+                              d.payload#>>'{trade_plan,reason}','') AS plan_reason,
+                     COALESCE(NULLIF(d.payload->>'trade_entry_reason',''),
+                              d.payload#>>'{execution_eligibility,reason}','') AS trade_entry_reason,
+                     COALESCE(NULLIF(d.payload->>'execution_reason',''),
+                              d.payload#>>'{execution_eligibility,reason}','') AS execution_reason,
+                     COALESCE(NULLIF(d.payload->>'paper_execution_reason',''),
+                              d.payload#>>'{execution_eligibility,paper_execution_reason}','') AS paper_execution_reason
               FROM recent e
               CROSS JOIN LATERAL (
                 SELECT id,payload FROM ledger_events d

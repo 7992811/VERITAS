@@ -130,3 +130,30 @@ bounded diagnostics explaining a zero-candidate result: cohort size, blocked
 directional count, favorable missed moves, learnable/hard-veto counts,
 unparsed blocked episodes and the maximum recurring learnable blocker count.
 Raw reason prose is not emitted.
+
+
+## Admission evidence protocol (v91.8.30)
+
+Learning 2.0 no longer assumes that entry blockers live at one JSON level.
+
+The canonical decision compactor now persists a small, immutable admission
+snapshot alongside the existing nested trade-plan and execution-eligibility
+objects:
+
+- `plan_eligible` and `plan_reason`;
+- `trade_entry_eligible` and `trade_entry_reason`;
+- `paper_execution_reason`;
+- `final_gate_status`;
+- bounded structured `final_gate_blockers`.
+
+This is a duplicate of facts already present in the decision graph and changes
+no signal, order, risk limit or execution behavior.
+
+For backward compatibility, the Learning 2.0 reader also accepts legacy compact
+decisions where the same evidence exists only under
+`trade_plan.*` or `execution_eligibility.*`. Existing historical ledger rows
+therefore remain usable without rewriting history.
+
+A free-text reason can explain a proven block only if it contains a blocker
+already present in the canonical blocker catalog. Reason text by itself never
+creates a block or a new policy.

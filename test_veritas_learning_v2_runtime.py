@@ -75,6 +75,14 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertIn("AS admission_eligible",source)
         self.assertIn("AS final_gate_status",source)
 
+    def test_decision_reader_accepts_legacy_nested_admission_fields(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("d.payload#>>'{trade_plan,eligible}'",source)
+        self.assertIn("d.payload#>>'{execution_eligibility,eligible}'",source)
+        self.assertIn("d.payload#>>'{trade_plan,reason}'",source)
+        self.assertIn("d.payload#>>'{execution_eligibility,paper_execution_reason}'",source)
+        self.assertIn("d.payload#>'{execution_eligibility,paper_source_blockers}'",source)
+
     def test_trade_cohort_provenance_comes_from_original_trade(self):
         source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
         self.assertIn("JOIN paper_trades t ON t.trade_id=e.trade_id",source)
