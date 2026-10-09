@@ -112,6 +112,7 @@ class FakeCoordinator:
         self.adapter = SimpleNamespace(environment="sandbox")
         self.calls = []
         self.sandbox_autotrade_enabled = False
+        self.robot_autotrade_enabled = False
 
     def reconcile(self):
         self.calls.append(("reconcile", None))
@@ -512,6 +513,24 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.assertIn(("execute_approved", row["proposal_id"]), self.coordinator.calls)
         self.assertEqual(self.callback_count(), 0)
 
+    def test_production_robot_auto_approves_pending_proposal_without_per_order_confirmation(self):
+        row = self.create(event="production-robot-auto",
+                          execution_environment="production")
+        self.coordinator.adapter = SimpleNamespace(environment="production")
+        self.coordinator.robot_autotrade_enabled = True
+        self.coordinator.execution_enabled = True
+        self.app = self.application()
+        response, status = self.request("poll")
+        self.assertEqual(status, 200)
+        self.assertTrue(response["robot_autotrade_enabled"])
+        self.assertTrue(response["autotrade_enabled"])
+        self.assertEqual(response["items"], [])
+        stored = self.repo.get(row["proposal_id"])
+        self.assertEqual(stored["status"], "APPROVED")
+        self.assertEqual(stored["reason_code"], "ROBOT_AUTO_APPROVED")
+        self.assertIn(("execute_approved", row["proposal_id"]), self.coordinator.calls)
+        self.assertEqual(self.callback_count(), 0)
+
     def test_read_only_intent_feed_is_independent_from_telegram_delivery_state(self):
         first = self.create(event="intent-pending")
         second = self.delivered(self.create(event="intent-awaiting"), message_id=701)
@@ -706,6 +725,38 @@ class TradeHttpEnvironmentTests(unittest.TestCase):
                     self.assertIs(application.funding, application.facts.funding)
                     self.assertTrue(response["settlement_reconciler_configured"])
                     self.assertEqual(response["live_account_admission"]["evidence"]["state"], "NOT_CONFIGURED")
+
+    def test_production_autotrade_flag_requires_all_live_execution_gates(self):
+        gates = ("VERITAS_CURRENCY_TRADE_EXECUTION_ENABLED",
+                 "VERITAS_LIVE_EXECUTION_ENABLED", "VERITAS_LIVE_EXECUTION_ARMED")
+        for enabled_gates in ((), gates[:1], gates[:2], gates):
+            env = self.configured()
+            env["VERITAS_CURRENCY_TRADE_ENVIRONMENT"] = "production"
+            env["TBANK_API_TOKEN"] = "isolated-production-token-never-sent"
+            env["VERITAS_CURRENCY_AUTOTRADE_ENABLED"] = "true"
+            env.pop("TBANK_SANDBOX_TOKEN", None)
+            for gate in enabled_gates:
+                env[gate] = "true"
+            def adapter(token, *, config):
+                return SimpleNamespace(config=config, environment=config.environment)
+            with self.subTest(gates=enabled_gates), patch.dict(os.environ, env, clear=True):
+                with patch.object(service, "TBankTradingAdapter", side_effect=adapter):
+                    application = service.create_application(self.forbidden, self.forbidden)
+                    active = len(enabled_gates) == 3
+                    self.assertEqual(application.execution_enabled, active)
+                    self.assertEqual(application.robot_autotrade_enabled, active)
+
+    def test_production_autotrade_flag_is_rejected_in_sandbox(self):
+        env = self.configured()
+        env["VERITAS_CURRENCY_AUTOTRADE_ENABLED"] = "true"
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(service, "TBankTradingAdapter", side_effect=self.forbidden) as adapter:
+                response, status = service.handle_request(
+                    service.PREFIX + "status", {"bot_id": BOT}, HEADERS,
+                    self.forbidden, self.forbidden)
+        self.assertEqual(status, 503)
+        self.assertEqual(response["code"], "PRODUCTION_AUTOTRADE_ENVIRONMENT_REQUIRED")
+        adapter.assert_not_called()
 
     def test_sandbox_autotrade_flag_is_rejected_in_production_before_adapter(self):
         env = self.configured()
