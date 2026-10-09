@@ -124,17 +124,58 @@ class SidecarTests(unittest.TestCase):
         self.assertIsInstance(sealed,dict)
         self.assertEqual(c.writes,before)
 
-    def test_sample_without_entry_seed_cannot_invent_prefix(self):
+    def test_sample_without_entry_seed_is_skipped_not_rewritten(self):
         row=position();c=Cursor(row)
         result=SIDECAR.sample_once(
             Connect(c),lambda work,now=None:quote(20,101.),
             now=OPEN+timedelta(seconds=20))
+        self.assertEqual(result["written"],0)
+        self.assertEqual(result["unseeded_carried"],1)
+        self.assertEqual(result["sampled_positions"],0)
+        self.assertIsNone(c.witness)
+
+    def test_missing_quote_does_not_poison_seeded_witness(self):
+        row=position();c=Cursor(row)
+        SIDECAR.seed(c,row,quote(0),stamp(0))
+        before=dict(c.witness)
+        result=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None:{},
+            now=OPEN+timedelta(seconds=10))
+        self.assertEqual(result["missing_quotes"],1)
+        self.assertEqual(result["written"],0)
+        self.assertEqual(c.witness,before)
+        result=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None:quote(20,101.),
+            now=OPEN+timedelta(seconds=20))
+        self.assertEqual(result["invalid"],0)
         self.assertEqual(result["written"],1)
-        self.assertFalse(c.witness["started_at_entry"])
-        sealed=SIDECAR.seal(c,row,quote(30,102.),stamp(30))
-        closed=dict(row,status="CLOSED",closed_at=stamp(30))
-        closed["payload"]=dict(row["payload"],observation_path=sealed)
-        self.assertEqual(PATH.assessment(closed)["reason"],"UNOBSERVED_ENTRY_PREFIX")
+        self.assertEqual(c.witness["observation_count"],2)
+
+    def test_valid_canonical_prefix_can_handoff_without_history_synthesis(self):
+        row=position()
+        canonical=PATH.observe(row,quote(0),stamp(0),at_entry=True,lane="CANONICAL_ENTRY")
+        row["payload"]=dict(row["payload"],observation_path=canonical)
+        c=Cursor(row)
+        result=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None:quote(10,101.),
+            now=OPEN+timedelta(seconds=10))
+        self.assertEqual(result["handoff_positions"],1)
+        self.assertEqual(result["written"],1)
+        self.assertTrue(c.witness["started_at_entry"])
+        self.assertEqual(c.witness["observation_count"],2)
+
+    def test_irrecoverable_seeded_witness_is_not_resampled(self):
+        row=position();c=Cursor(row)
+        witness=SIDECAR.seed(c,row,quote(0),stamp(0))
+        witness=dict(witness,invalid_observation_count=1,coverage_status="INCOMPLETE")
+        c.witness=witness
+        calls=[]
+        result=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None:calls.append(now) or quote(10,101.),
+            now=OPEN+timedelta(seconds=10))
+        self.assertEqual(result["irrecoverable_seeded"],1)
+        self.assertEqual(result["written"],0)
+        self.assertEqual(calls,[])
 
     def test_canonical_lifecycle_seeds_and_seals_sidecar(self):
         runtime=Path("veritas_portfolio_runtime.py").read_text()
