@@ -57,36 +57,22 @@ def _codes(out, raw, names):
 
 
 def context_summary(context):
-    """Describe stored signal facts for stdout, without reevaluating the signal.
-
-    The complete contexts in live rows and durable decision/accounting records
-    remain authoritative. This projection is only for the ordinary decision log.
-    """
+    """Compact operational projection; full causal context stays durable."""
     out = _fields(context, ('version', 'status', 'reason', 'asset', 'timeframe',
         'structural_timeframe', 'atr_timeframe', 'closed_at', 'structure_closed_at',
         'quote_observed_at', 'as_of', 'bars', 'atr', 'minute_status',
         'minute_closed_at', 'local_breakout_required'))
     out['log_projection_version'] = VERSION
     out['source_identity'] = _fields(_get(context, 'source_identity'),
-                                    ('key', 'contract_id', 'source', 'asset'))
-    out['quote'] = _fields(_get(context, 'quote'),
-                          ('price', 'observed_at', 'best_bid', 'best_ask', 'spread_bps'))
+                                    ('key', 'contract_id', 'asset'))
     event = _get(context, 'event')
-    original = _fields(event, ('version', 'event_type', 'event_id', 'proof_hash',
-        'asset', 'direction', 'timeframe', 'trigger_timeframe', 'structural_timeframe',
-        'stop_timeframe', 'atr_timeframe', 'target_timeframe', 'confirmation',
-        'signal_at', 'confirmed_at', 'signal_price', 'trigger_level', 'stop_anchor',
-        'stop_price', 'target_price', 'runner_target_price', 'atr', 'atr_observed_until',
-        'leg_id', 'parent_event_id', 'phase', 'spent', 'spent_reason', 'spent_at',
-        'original_stop_distance_atr', 'confirmation_extension_atr', 'ma_rebound_version'))
-    original['source_identity'] = _fields(_get(event, 'source_identity'),
-                                         ('key', 'contract_id', 'source', 'asset'))
-    out['event'] = original
-    out['entry_gate'] = _fields(_get(context, 'entry_gate'), (
-        'eligible', 'reason', 'event_id', 'timeframe', 'age_seconds', 'max_age_seconds',
-        'trigger_level', 'stop_price', 'target_price', 'runner_target_price', 'atr',
-        'extension_atr', 'target_progress', 'max_target_progress', 'stop_distance_atr',
-        'structural_timeframe', 'stop_timeframe', 'atr_timeframe', 'phase', 'spent_at'))
+    out['event'] = _fields(event, ('version', 'event_type', 'event_id', 'asset',
+        'direction', 'timeframe', 'structural_timeframe', 'signal_at',
+        'confirmed_at', 'signal_price', 'trigger_level', 'stop_price',
+        'target_price', 'phase', 'spent', 'spent_reason'))
+    gate = _get(context, 'entry_gate')
+    out['entry_gate'] = _fields(gate, ('eligible', 'reason', 'event_id',
+        'timeframe', 'age_seconds', 'max_age_seconds'))
     quote_gate = _get(context, 'quote_gate')
     out['quote_gate'] = _fields(quote_gate, ('eligible', 'reason'))
     out['quote_gate']['quote_time_gate'] = _fields(_get(quote_gate, 'quote_time_gate'),

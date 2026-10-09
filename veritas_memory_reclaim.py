@@ -9,7 +9,7 @@ import math
 import threading
 import time
 
-FULL_INTERVAL_SECONDS = 5.0
+FULL_INTERVAL_SECONDS = 15.0
 PRESSURE_GROWTH_MB = 8.0
 _creation_lock = threading.Lock()
 
