@@ -20,6 +20,32 @@ class LearningV2Tests(unittest.TestCase):
         c=L.classify_decision_episode(x)
         self.assertEqual(c["kind"],"DIRECTIONAL_DECISION")
 
+    def test_declared_reason_field_contributes_known_blocker_only(self):
+        row=self.row(blockers=[],trade_entry_reason="ENTRY_BLOCKED: IMPULSE_ALREADY_PASSED; wait for retest")
+        row["final_gate_blockers"]=[]
+        c=L.classify_decision_episode(row)
+        self.assertEqual(c["kind"],"MISSED_DIRECTIONAL_MOVE")
+        self.assertIn("IMPULSE_ALREADY_PASSED",c["blockers"])
+
+    def test_arbitrary_reason_text_never_becomes_a_blocker(self):
+        row=self.row(blockers=[],trade_entry_reason="analyst thinks this looks late")
+        row["final_gate_blockers"]=[]
+        row["admission_eligible"]=False
+        self.assertEqual(L.row_blockers(row),())
+        d=L.research_diagnostics([row],[])
+        self.assertEqual(d["unparsed_blocked_directional"],1)
+
+    def test_hard_veto_reason_is_recognized_but_never_relaxed(self):
+        veto=next(iter(L.FORBIDDEN_ENTRY_BLOCKERS))
+        rows=[]
+        for _ in range(max(L.MIN_CONTEXT_N,L.MIN_FALSE_BLOCK_N)):
+            x=self.row(blockers=[],trade_entry_reason=veto)
+            x["final_gate_blockers"]=[]
+            rows.append(x)
+        self.assertIn(veto,L.row_blockers(rows[0]))
+        h=L.generate_hypotheses(rows,[])
+        self.assertFalse(any(x["kind"]=="ENTRY_BLOCKER_RELAXATION" and x["proposal"]["blocker"]==veto for x in h))
+
     def test_false_block_is_observed_movement_not_counterfactual_profit(self):
         s=L.false_block_summary([self.row() for _ in range(10)])
         self.assertEqual(s["missed_directional_episodes"],10)
@@ -97,6 +123,18 @@ class LearningV2Tests(unittest.TestCase):
         self.assertEqual(entry[0]["proposal"]["blocker"],"IMPULSE_ALREADY_PASSED")
         self.assertEqual(entry[0]["mode"],"SHADOW_ONLY")
         self.assertFalse(entry[0]["production_mutation"])
+
+    def test_diagnostics_explain_zero_candidate_reason(self):
+        rows=[]
+        for _ in range(L.MIN_CONTEXT_N):
+            x=self.row(blockers=[],trade_entry_reason="UNDECLARED_TEXT")
+            x["final_gate_blockers"]=[]
+            x["admission_eligible"]=False
+            rows.append(x)
+        d=L.research_diagnostics(rows,[])
+        self.assertEqual(d["blocked_directional"],L.MIN_CONTEXT_N)
+        self.assertEqual(d["unparsed_blocked_directional"],L.MIN_CONTEXT_N)
+        self.assertEqual(d["zero_entry_candidate_reason"],"NO_FAVOURABLE_BLOCKED_MOVE_AT_THRESHOLD")
 
     def test_short_direction_is_signed_correctly(self):
         c=L.classify_decision_episode(self.row(decision="SHORT",fr=-.01,final_gate_blockers=[]))
