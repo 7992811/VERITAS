@@ -790,11 +790,14 @@ class TradeHttpApplication:
         if not self.facts.is_bound():
             self._remember_poll("CURRENCY_ACCOUNT_NOT_BOUND", binding_state="unbound")
             return {"ok": True, "enabled": True, "items": [],
-                    "execution_enabled": self.execution_enabled, "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
+                    "execution_enabled": self.execution_enabled,
+                    "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
+                    "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
         self.coordinator.reconcile()
         if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
             self._remember_poll("PROPOSALS_PAUSED", binding_state="bound")
             return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
+                    "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
                     "block_reason": "PROPOSALS_PAUSED"}
         reason, sizing, entry_diagnostics = None, None, None
         approved = self._scoped(self.repository.list_approved(
@@ -858,7 +861,9 @@ class TradeHttpApplication:
         self._remember_poll(reason, binding_state="bound", pending=len(pending),
                             unsettled=len(unsettled), sizing=sizing, entry_diagnostics=entry_diagnostics)
         return {"ok": True, "enabled": True, "items": items,
-                "execution_enabled": self.execution_enabled, "block_reason": reason}
+                "execution_enabled": self.execution_enabled,
+                "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
+                "block_reason": reason}
 
     def console_snapshot(self):
         """Bounded private read model; never approves, polls or submits an order."""
