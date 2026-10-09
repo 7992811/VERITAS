@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from veritas_trade_view import _position_management_projection, enrich_positions, trade_result
+from veritas_trade_view import (_position_management_projection, _position_protection_audit,
+                                _position_protection_summary, enrich_positions, trade_result)
 
 
 class TradeResultTests(unittest.TestCase):
@@ -183,3 +184,74 @@ class TradeResultTests(unittest.TestCase):
         self.assertIsNone(result['effective_stop_price'])
         self.assertEqual(result['position_management_status'], 'PROTECTION_ERROR')
         self.assertIn('SL', result['position_management_missing'])
+
+
+    def test_protection_audit_ok_with_complete_management_contract(self):
+        position = {
+            'portfolio_name':'Aggressive', 'asset':'BRENT', 'active_trade_id':'t1',
+            'direction':'LONG', 'last_price':105, 'effective_stop_price':103,
+            'effective_stop_source':'TRAILING_STOP', 'tp1_price':104,
+            'tp1_done':True, 'second_take_price':107, 'second_take_kind':'TP2',
+            'next_target_price':107, 'target_plan_mode':'LADDER',
+            'price_source_lock':{'key':'TEST:BRENT'}, 'price_source_status':'OK',
+            'profit_protection_active':True,
+            'net_profit_protection':{'state':'PROTECTED','net_at_stop_rub':125},
+            'payload':{'management_horizon':'5m','trailing_stop':103,'data_integrity_status':'OK'},
+        }
+        audit = _position_protection_audit(position)
+        self.assertEqual(audit['status'], 'OK')
+        self.assertAlmostEqual(audit['distance_to_stop_pct'], 100*(105-103)/105)
+        self.assertAlmostEqual(audit['distance_to_next_target_pct'], 100*(107-105)/105)
+        self.assertEqual(audit['checks']['tp1']['status'], 'DONE')
+        self.assertEqual(audit['checks']['tp2_or_runner']['status'], 'OK')
+        self.assertEqual(audit['checks']['source']['status'], 'OK')
+        self.assertEqual(audit['checks']['timeframe']['value'], '5m')
+        self.assertEqual(audit['checks']['profit_protection']['status'], 'OK')
+
+    def test_protection_audit_partial_for_stale_source_and_missing_timeframe(self):
+        position = {
+            'direction':'SHORT', 'last_price':99, 'effective_stop_price':101,
+            'tp1_price':97, 'target_plan_mode':'SINGLE_TARGET',
+            'price_source_lock':{'key':'TEST'}, 'price_source_status':'PINNED_SOURCE_QUOTE_UNAVAILABLE',
+            'net_profit_protection':{'state':'COSTS_NOT_COVERED','net_at_stop_rub':-10},
+            'payload':{},
+        }
+        audit = _position_protection_audit(position)
+        self.assertEqual(audit['status'], 'PARTIAL')
+        self.assertIn('SOURCE_QUOTE_PINNED_SOURCE_QUOTE_UNAVAILABLE', audit['warnings'])
+        self.assertIn('MANAGEMENT_TIMEFRAME_MISSING', audit['warnings'])
+        self.assertEqual(audit['checks']['tp2_or_runner']['status'], 'NOT_REQUIRED')
+        self.assertEqual(audit['checks']['profit_protection']['status'], 'WAITING')
+
+    def test_protection_audit_error_when_fresh_open_position_has_breached_stop(self):
+        position = {
+            'direction':'LONG', 'last_price':98, 'effective_stop_price':99,
+            'tp1_price':102, 'target_plan_mode':'SINGLE_TARGET',
+            'price_source_lock':{'key':'TEST'}, 'price_source_status':'OK',
+            'net_profit_protection':{'state':'STOP_REACHED','net_at_stop_rub':5},
+            'payload':{'management_horizon':'1h'},
+        }
+        audit = _position_protection_audit(position)
+        self.assertEqual(audit['status'], 'ERROR')
+        self.assertTrue(audit['stop_reached'])
+        self.assertIn('STOP_REACHED_OPEN_POSITION', audit['errors'])
+        self.assertLess(audit['distance_to_stop_pct'], 0)
+
+    def test_protection_summary_counts_every_open_position_and_exceptions(self):
+        report = {'positions_checked_at':'2026-10-09T16:00:00Z','portfolios':[
+            {'name':'Impulse','positions':[{'portfolio_name':'Impulse','asset':'NQ','active_trade_id':'a',
+                'protection_audit':{'status':'OK','checks':{'profit_protection':{'status':'OK'}}}}]},
+            {'name':'Champion','positions':[{'portfolio_name':'Champion','asset':'BRENT','active_trade_id':'b',
+                'protection_audit':{'status':'PARTIAL','warnings':['SOURCE_STALE'],
+                                    'checks':{'profit_protection':{'status':'WAITING'}},
+                                    'distance_to_stop_pct':1.2,'distance_to_next_target_pct':.8}}]},
+            {'name':'Challenger','positions':[{'portfolio_name':'Challenger','asset':'BTC','active_trade_id':'c',
+                'protection_audit':{'status':'ERROR','errors':['SL_MISSING'],
+                                    'checks':{'profit_protection':{'status':'PARTIAL'}}}}]},
+        ]}
+        summary = _position_protection_summary(report)
+        self.assertEqual(summary['open_positions'], 3)
+        self.assertEqual((summary['ok'], summary['partial'], summary['error']), (1,1,1))
+        self.assertEqual(summary['status'], 'ERROR')
+        self.assertEqual(summary['protected_after_costs'], 1)
+        self.assertEqual(len(summary['exceptions']), 2)

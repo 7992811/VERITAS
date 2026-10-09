@@ -194,3 +194,48 @@ assert.match(ui.paperStatus(economicsOnly).reason,/Потенциал относ
 ui.st.portfolios=null;
 assert.equal(ui.paperStatus({...signal,trade_plan:{eligible:true,execution_quote_gate:{eligible:false,reason:'QUOTE_TOO_OLD_FOR_HORIZON'}}}).short,'цена');
 console.log('R74 entry diagnosis and signal-score UI regressions passed');
+
+
+const auditedPosition={...sourcePosition,
+  effective_stop_price:98, effective_stop_source:'HARD_STOP',
+  tp1_price:105, second_take_price:108, second_take_kind:'TP2',
+  next_target_price:105, target_plan_mode:'LADDER',
+  execution_timeframe:'1h',
+  protection_audit:{
+    version:'POSITION_PROTECTION_AUDIT_V1',status:'OK',errors:[],warnings:[],
+    distance_to_stop_pct:1.01,distance_to_next_target_pct:6.06,target_reached:false,
+    checks:{
+      sl:{status:'OK',price:98,distance_pct:1.01,reached:false},
+      tp1:{status:'OK',price:105,done:false},
+      tp2_or_runner:{status:'OK',kind:'TP2',price:108,mode:'LADDER'},
+      source:{status:'OK',quote_status:'OK',locked:true},
+      timeframe:{status:'OK',value:'1h'},
+      profit_protection:{status:'OK',state:'PROTECTED',active:true,net_at_stop_rub:12},
+    },
+  },
+  net_profit_protection:{version:'NET_STOP_AFTER_COSTS_V1',state:'PROTECTED',
+    net_at_stop_rub:12,break_even_stop_price:97.5},
+};
+ui.st.portfolioLoadStatus='COMPLETE';
+ui.st.positionBook={Impulse:[JSON.parse(JSON.stringify(ui.normalizePosition(auditedPosition,'Impulse',{})))]};
+ui.st.portfolios={portfolios:[{name:'Impulse',positions:[auditedPosition],positions_status:'COMPLETE'}]};
+ui.renderPortfolios();
+assert.match(elements.positionAudit.innerHTML,/Защита · <b>OK<\/b>/);
+assert.match(elements.positionAudit.innerHTML,/Проверено <b>1\/1<\/b>/);
+assert.match(elements.positions.innerHTML,/Защита OK/);
+assert.match(elements.positions.innerHTML,/До SL <b>\+1\.01%<\/b>/);
+assert.match(elements.positions.innerHTML,/До цели <b>\+6\.06%<\/b>/);
+assert.match(elements.positions.innerHTML,/TP2\/Runner <b>TP2<\/b>/);
+assert.match(elements.positions.innerHTML,/Источник <b>OK<\/b>/);
+assert.match(elements.positions.innerHTML,/TF <b>1h<\/b>/);
+assert.match(elements.positions.innerHTML,/Прибыль <b>защищено<\/b>/);
+
+const auditError={...auditedPosition,protection_audit:{...auditedPosition.protection_audit,status:'ERROR',
+  errors:['SL_MISSING'],distance_to_stop_pct:null,
+  checks:{...auditedPosition.protection_audit.checks,sl:{status:'ERROR',price:null,reached:false}}}};
+ui.st.positionBook={Impulse:[JSON.parse(JSON.stringify(ui.normalizePosition(auditError,'Impulse',{})))]};
+ui.st.portfolios={portfolios:[{name:'Impulse',positions:[auditError],positions_status:'COMPLETE'}]};
+ui.renderPortfolios();
+assert.match(elements.positionAudit.innerHTML,/Ошибки <b>1<\/b>/);
+assert.match(elements.positions.innerHTML,/Защита ОШИБКА/);
+console.log('Open-position protection audit UI regressions passed');
