@@ -2149,8 +2149,29 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     pnl=sign*close_units*(fill_price-float(z['avg_entry_price']))
     fee=executed_notional*COMMISSION
     frac=executed_notional/max(nav,1)
+
+    # Institutional exit accounting: avg_exit_price is the VWAP of every
+    # realized exit fill, not merely the final fill. Reconstruct prior exits
+    # from durable orders so positions that already had legacy partial takes
+    # are repaired automatically on their next reduction/close.
+    prior_exit=c.execute(
+        """SELECT COALESCE(SUM(notional_rub),0) AS exit_notional_rub,
+                  COALESCE(SUM(CASE WHEN price>0 THEN notional_rub/price ELSE 0 END),0) AS exit_units,
+                  COUNT(*) AS exit_fill_count
+             FROM paper_orders
+            WHERE trade_id=%s AND side IN ('SELL','BUY_TO_COVER')""",
+        (z['active_trade_id'],)).fetchone()
+    prior_exit_notional=float((prior_exit or {}).get('exit_notional_rub') or 0.0)
+    prior_exit_units=float((prior_exit or {}).get('exit_units') or 0.0)
+    prior_exit_count=int((prior_exit or {}).get('exit_fill_count') or 0)
+    realized_exit_notional=prior_exit_notional+executed_notional
+    realized_exit_units=prior_exit_units+close_units
+    realized_exit_vwap=(realized_exit_notional/max(realized_exit_units,1e-12))
+    realized_exit_count=prior_exit_count+1
+
     c.execute('UPDATE paper_portfolios SET realized_pnl_rub=realized_pnl_rub+%s,fees_rub=fees_rub+%s,updated_at=%s WHERE name=%s',(pnl,fee,ts,name))
-    c.execute('UPDATE paper_trades SET gross_pnl_rub=gross_pnl_rub+%s,fees_rub=fees_rub+%s WHERE trade_id=%s',(pnl,fee,z['active_trade_id']))
+    c.execute('UPDATE paper_trades SET gross_pnl_rub=gross_pnl_rub+%s,fees_rub=fees_rub+%s,avg_exit_price=%s WHERE trade_id=%s',
+              (pnl,fee,realized_exit_vwap,z['active_trade_id']))
     remain=abs(float(z['units']))-close_units
     source_audit={'execution_model':fill,'price_source_identity':VPS.identity(z['asset'],quote),
                   'market_observed_at':quote['observed_at'],'reference_price':price,
@@ -2160,6 +2181,10 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
                   'execution_horizon':_position_payload(z).get('execution_horizon'),
                   'setup_event_id':_position_payload(z).get('r66_event_id'),
                   'realized_gross_pnl_rub':pnl,'closed_normalized_units':close_units,
+                  'realized_exit_units':realized_exit_units,
+                  'realized_exit_notional_rub':realized_exit_notional,
+                  'realized_exit_vwap':realized_exit_vwap,
+                  'realized_exit_fill_count':realized_exit_count,
                   'basis_avg_entry_price':float(z['avg_entry_price']),
                   'last_exit_thesis_decision':_position_payload(z).get('last_exit_thesis_decision'),
                   'stop_timeframe':_position_payload(z).get('stop_timeframe'),
@@ -2168,7 +2193,11 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     completed=remain<=1e-10 or target_fraction<=0
     exit_patch={'last_exit_source_identity':source_audit['price_source_identity'],
                 'last_exit_market_observed_at':quote['observed_at'],
-                'last_exit_thesis_decision':source_audit.get('last_exit_thesis_decision')}
+                'last_exit_thesis_decision':source_audit.get('last_exit_thesis_decision'),
+                'realized_exit_units':realized_exit_units,
+                'realized_exit_notional_rub':realized_exit_notional,
+                'realized_exit_vwap':realized_exit_vwap,
+                'realized_exit_fill_count':realized_exit_count}
     exit_patch.update(VTR.exit_stop_patch(z,_position_payload(z),reason,VPP.effective_stop(z)))
     if completed:
         exit_patch.update(exit_reason=str(reason),close_reason=str(reason))
@@ -2196,7 +2225,7 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         final_patch={'last_exit_execution_model':fill}
         final_patch.update(VTR.initial_tranche_counterfactual(
             _v90j_json((tr or {}).get('payload')),fill_price,sign,COMMISSION))
-        c.execute('UPDATE paper_trades SET closed_at=%s,avg_exit_price=%s,net_pnl_rub=%s,return_on_entry_nav=%s,profitable=%s,meaningful_win=%s,status=%s,payload=payload || %s::jsonb WHERE trade_id=%s',(ts,fill_price,net,ret,prof,mw,'CLOSED',json.dumps(final_patch,ensure_ascii=False,default=str),z['active_trade_id']))
+        c.execute('UPDATE paper_trades SET closed_at=%s,avg_exit_price=%s,net_pnl_rub=%s,return_on_entry_nav=%s,profitable=%s,meaningful_win=%s,status=%s,payload=payload || %s::jsonb WHERE trade_id=%s',(ts,realized_exit_vwap,net,ret,prof,mw,'CLOSED',json.dumps(final_patch,ensure_ascii=False,default=str),z['active_trade_id']))
         c.execute('DELETE FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,z['asset']))
     else:
         c.execute("UPDATE paper_positions SET units=%s,last_price=%s,target_fraction=%s,updated_at=%s,"

@@ -156,6 +156,11 @@ _CANONICAL_HTML = r'''<!doctype html>
 @media(max-width:650px){.wrap{padding:9px}.asset{grid-template-columns:100px 70px 58px minmax(0,1fr);gap:3px}.asset-logo{width:22px;height:22px;flex-basis:22px}.asset-main{gap:5px}.asset-main b{font-size:9px}.asset-price{font-size:8.5px!important;padding-right:2px}.asset-bias{font-size:9px}.asset-tfline{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}.asset-tfitem{font-size:7px!important;padding:2px 1px}.intel-main{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-compare{grid-template-columns:1fr}.intel-foot{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-logo{max-height:82px}.matrix{border-spacing:5px 8px}.matrix th:first-child{width:92px}.matrix th.asset-head{width:92px}.asset-label{gap:5px;font-size:10px}.asset-logo{width:22px;height:22px;flex-basis:22px;font-size:9px}.cell{min-height:52px}.cell small{font-size:8px}.signal-summary{align-items:flex-start;flex-direction:column}.signal-chips{justify-content:flex-start}.detail-line{grid-template-columns:104px minmax(0,1fr)}.plan-grid{grid-template-columns:1fr 1fr}.portfolio-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(3,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .position-accounting{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin:2px 0 0;font-size:6.4px;line-height:1.08;color:var(--muted)}.position-accounting span{min-width:0}.position-accounting b{display:block;color:var(--text);font-size:7.8px;line-height:1.08;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tp-status{font-size:6.8px;line-height:1.2;margin:2px 0}.position-result{max-width:42%;text-align:right}@media(max-width:650px){.position-accounting{grid-template-columns:repeat(3,minmax(0,1fr))}.tp-status{font-size:7.2px}}
 
+.position-risk-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin-top:3px;padding:4px;border:1px solid rgba(255,255,255,.055);border-radius:6px;background:rgba(255,255,255,.012)}
+.position-risk-cell{min-width:0}.position-risk-cell span{display:block;font-size:6.1px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.position-risk-cell b{display:block;font-size:8.1px;line-height:1.1;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pf-risk-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}.pf-risk-box{border:1px solid rgba(255,255,255,.06);border-radius:9px;padding:8px;background:rgba(255,255,255,.012);min-width:0}.pf-risk-box span{display:block;font-size:8px;color:var(--muted)}.pf-risk-box b{display:block;font-size:13px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pf-risk-box small{display:block;font-size:7px;color:var(--muted);margin-top:2px;line-height:1.25}
+@media(max-width:650px){.position-risk-strip{grid-template-columns:repeat(3,minmax(0,1fr))}.pf-risk-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
 /* Performance, exposure and complete-ledger quality, with readable mobile rows. */
 .pf-panel{font-variant-numeric:tabular-nums}.pf-caption{font-size:10px;color:var(--muted);margin:10px 0 6px;line-height:1.45}
 .pf-compare{border:1px solid var(--line);border-radius:10px;overflow:hidden}.pf-row{display:grid;grid-template-columns:minmax(110px,1.4fr) repeat(3,minmax(0,1fr));gap:8px;align-items:center;padding:10px 12px;width:100%;text-align:right;box-sizing:border-box}
@@ -858,7 +863,10 @@ function portfolioView(p){
     gross,net,risk,limit:knownNumber(risk.max_gross),ddLimit:risk.hard_drawdown_limit==null?null:100*Number(risk.hard_drawdown_limit),
     long:gross==null||net==null?null:Math.max(0,(gross+net)/2),short:gross==null||net==null?null:Math.max(0,(gross-net)/2),
     cash:value('cash_equivalent_fraction'),closed,wins:knownNumber(p.wins),winRate:p.win_rate==null?null:100*Number(p.win_rate),pnl,
-    avg:knownNumber(p.avg_closed_trade_pnl_rub)??(closed>0&&pnl!=null?pnl/closed:null),excess:value('excess_vs_ruonia_pct')};
+    avg:knownNumber(p.avg_closed_trade_pnl_rub)??(closed>0&&pnl!=null?pnl/closed:null),excess:value('excess_vs_ruonia_pct'),
+    protectedNav:value('nav_if_all_stops_rub'),stopDelta:value('stop_scenario_pnl_delta_rub'),
+    stopLoss:value('stop_scenario_loss_rub'),stopLossPct:value('stop_scenario_loss_pct_nav'),
+    stopStatus:p.stop_scenario_status||l.stop_scenario_status||null};
 }
 function strategyQualityPanel(p){
   const d=st.strategyQuality||{},q=(d.portfolios||[]).find(x=>x.name===p.name);
@@ -904,6 +912,12 @@ function renderPortfolioPanel(ps){
     (!fresh?'<div class="pf-foot warn">'+(st.portfolioLoadStatus==='STALE'?'Показаны последние полученные данные. Наличие текущих позиций проверяется.':'Данные ещё не получены. Отсутствие данных не означает отсутствие позиций.')+'</div>':'')+
     (p.name==='Currency'?'<div class="pf-foot"><b>'+esc(currencyNow)+'</b><br>Только CNYRUBf · стартовый капитал 10 000 ₽ · плечо до 1:10 · максимальная просадка 35% · лонг / шорт / вне рынка.</div>':'')+
     '<div class="pf-performance">'+metric('Доходность',signedPct(v.ret),tone(v.ret),'С начала учёта')+metric('К RUONIA',signedPct(v.excess),tone(v.excess),'Относительно эталона')+metric('Закрытые сделки',rub(v.pnl),tone(v.pnl),'После всех расходов')+'</div>'+
+    '<div class="pf-risk-summary">'+
+      '<div class="pf-risk-box"><span>Текущий NAV</span><b>'+rub(v.balance)+'</b><small>Оценка по текущему рынку</small></div>'+
+      '<div class="pf-risk-box"><span>Защищённый NAV</span><b class="'+(v.protectedNav==null?'warn':tone(v.protectedNav-v.balance))+'">'+rub(v.protectedNav)+'</b><small>Если исполнятся все действующие стопы</small></div>'+
+      '<div class="pf-risk-box"><span>Риск до стопов</span><b class="'+(v.stopLoss>0?'warn':'')+'">'+rub(v.stopLoss)+'</b><small>'+(v.stopLossPct==null?'—':n(v.stopLossPct,2)+'% NAV')+'</small></div>'+
+      '<div class="pf-risk-box"><span>Стоп-сценарий</span><b class="'+(v.stopStatus==='COMPLETE'?'ok':'warn')+'">'+esc(v.stopStatus==='COMPLETE'?'Рассчитан':'Нет полного расчёта')+'</b><small>С учётом тейков, расходов и проскальзывания</small></div>'+
+    '</div>'+
     '<div class="pf-sections"><section class="pf-section"><h4>Риск и ограничения</h4>'+pair('Текущая просадка',pct(v.dd),v.dd>0?'warn':'')+meter(v.dd,v.ddLimit,true)+pair('Лимит просадки',pct(v.ddLimit))+pair('Загрузка / лимит',mult(v.gross)+' / '+mult(v.limit))+meter(v.gross,v.limit)+pair('Новые позиции',v.risk.new_risk===true?'Разрешены':v.risk.new_risk===false?'Заблокированы':'—')+'</section>'+
     '<section class="pf-section"><h4>Экспозиция</h4>'+pair('Длинные позиции',mult(v.long))+pair('Короткие позиции',mult(v.short))+pair('Чистая экспозиция',mult(v.net))+pair('Вне позиций',v.cash==null?'—':pct(100*v.cash))+'<div class="pf-foot">Объём позиций относительно размера портфеля. 1× = 100%. Показатель «Вне позиций» не учитывает требования к марже.</div></section>'+
     '<section class="pf-section"><h4>Качество сделок</h4><div class="pf-quality">'+metric('Прибыльных',v.winRate==null?'—':n(v.winRate,1)+'%','',v.closed==null?'Нет статистики':(v.wins??'—')+' из '+v.closed)+metric('Коэф. прибыли',pfText,pf==null?'':pf>=1?'ok':'bad','Прибыли / убытки')+metric('Средняя сделка',rub(v.avg),tone(v.avg))+metric('Прибыль / убыток',p.payoff_ratio==null?'—':n(p.payoff_ratio,2),'','Средние значения')+'</div></section></div>'+
@@ -935,9 +949,15 @@ function renderPositionAuditSummary(positions,positionsUnknown){
   if(!rows.length){$('positionAudit').innerHTML='<span class="position-chip warn">Аудит защиты · обновляется</span>';return}
   const counts={OK:0,PARTIAL:0,ERROR:0};rows.forEach(a=>counts[a.status in counts?a.status:'PARTIAL']++);
   const overall=counts.ERROR?'ERROR':counts.PARTIAL?'PARTIAL':'OK';
+  const stopReached=positions.filter(z=>z?.protection_audit?.stop_reached).length;
+  const stale=positions.filter(z=>z?.price_source_status&&z.price_source_status!=='OK').length;
+  const unprotected=positions.filter(z=>((z?.protection_audit?.checks||{}).profit_protection||{}).status!=='OK').length;
   $('positionAudit').innerHTML=
     '<span class="position-chip '+protectionAuditTone(overall)+'">Защита · <b>'+protectionAuditLabel(overall)+'</b></span>'+
     '<span class="position-chip">Проверено <b>'+rows.length+'/'+positions.length+'</b></span>'+
+    (stopReached?'<span class="position-chip bad">Стоп достигнут <b>'+stopReached+'</b></span>':'')+
+    (stale?'<span class="position-chip warn">Источник требует внимания <b>'+stale+'</b></span>':'')+
+    (unprotected?'<span class="position-chip warn">Не защищено net <b>'+unprotected+'</b></span>':'')+
     '<span class="position-chip ok">OK <b>'+counts.OK+'</b></span>'+
     '<span class="position-chip warn">Частично <b>'+counts.PARTIAL+'</b></span>'+
     '<span class="position-chip bad">Ошибки <b>'+counts.ERROR+'</b></span>'+
@@ -953,6 +973,25 @@ function renderPortfolios(){
     return Object.assign({},p,{positions:pos});
   });
   ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push(Object.assign({portfolio:p.name},z))));
+  // Institutional exception-first ordering: operational/risk exceptions are
+  // always surfaced before healthy positions. Within the same state, rank by
+  // capital that can be given back before the effective stop.
+  const positionUrgency=z=>{
+    const a=z?.protection_audit||{}, checks=a.checks||{};
+    let score=0;
+    if(a.status==='ERROR')score+=1000;
+    else if(a.status==='PARTIAL')score+=400;
+    if(a.stop_reached||checks.sl?.reached)score+=900;
+    if(z?.price_source_status && z.price_source_status!=='OK')score+=500;
+    if(checks.profit_protection?.status==='ACTION')score+=450;
+    if(z?.position_management_status==='PROTECTION_ERROR')score+=700;
+    const give=knownNumber(z?.stop_scenario_delta_rub);
+    if(give!=null&&give<0)score+=Math.min(300,Math.abs(give)/1000);
+    const dd=knownNumber(a.distance_to_stop_pct);
+    if(dd!=null&&dd>=0)score+=Math.max(0,100-Math.min(100,20*dd));
+    return score;
+  };
+  positions.sort((a,b)=>positionUrgency(b)-positionUrgency(a));
   const exposureMismatch=positions.length===0&&portfolioExposureNonZero(ps);
   const positionsUnknown=st.portfolioLoadStatus!=='COMPLETE'||ps.some(p=>p.positions_status==='UNAVAILABLE');
   renderPositionAuditSummary(positions,positionsUnknown);
@@ -1001,7 +1040,14 @@ function renderPortfolios(){
         '<span class="position-chip '+(tfAudit.status==='OK'?'ok':'warn')+'">TF <b>'+esc(tfAudit.value||tf||'—')+'</b></span>'+
         '<span class="position-chip '+(profitAudit.status==='ACTION'?'bad':profitAudit.status==='PARTIAL'?'warn':profitAudit.status==='OK'?'ok':'')+'">Прибыль <b>'+esc(profitAuditText)+'</b></span>'+
       '</div>'+
-      '<div class="position-accounting"><span>Зафиксировано<b>'+rub(z.realized_gross_pnl_rub)+'</b></span><span>Переоценка<b>'+rub(z.unrealized_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(z.trade_fees_rub)+'</b></span><span>Фондирование<b>'+rub(z.trade_funding_rub)+'</b></span><span>От максимума<b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span></div>'+
+      '<div class="position-risk-strip">'+
+        '<div class="position-risk-cell"><span>P&L сейчас</span><b class="'+tone(z.mark_to_market_net_pnl_rub??pnl)+'">'+rub(z.mark_to_market_net_pnl_rub??pnl)+'</b></div>'+
+        '<div class="position-risk-cell"><span>Реализовано net</span><b class="'+tone(z.realized_net_after_booked_costs_rub)+'">'+rub(z.realized_net_after_booked_costs_rub)+'</b></div>'+
+        '<div class="position-risk-cell"><span>Нереализовано</span><b class="'+tone(z.unrealized_pnl_rub)+'">'+rub(z.unrealized_pnl_rub)+'</b></div>'+
+        '<div class="position-risk-cell"><span>P&L по стопу</span><b class="'+tone(z.pnl_if_effective_stop_rub)+'">'+rub(z.pnl_if_effective_stop_rub)+'</b></div>'+
+        '<div class="position-risk-cell"><span>Можно отдать до SL</span><b class="'+(Number(z.stop_scenario_delta_rub)<0?'warn':'')+'">'+(z.stop_scenario_delta_rub==null?'—':rub(Math.max(0,-Number(z.stop_scenario_delta_rub))))+'</b></div>'+
+      '</div>'+
+      '<div class="position-accounting"><span>Доход от фиксаций<b>'+rub(z.realized_gross_pnl_rub)+'</b></span><span>Переоценка остатка<b>'+rub(z.unrealized_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(z.trade_fees_rub)+'</b></span><span>Фондирование<b>'+rub(z.trade_funding_rub)+'</b></span><span>От максимума<b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span></div>'+
       '<div class="position-learning">'+
         '<span class="position-chip">'+prob.label+' <b>'+probText+'</b></span>'+
         '<span class="position-chip">MFE <b>'+mfeText+'</b></span>'+

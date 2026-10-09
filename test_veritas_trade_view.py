@@ -122,6 +122,49 @@ class TradeResultTests(unittest.TestCase):
         self.assertEqual(connection.__enter__.return_value.execute.call_count, 1)
 
 
+    def test_stop_scenario_is_separate_from_mark_to_market_nav(self):
+        report = {'portfolios': [{'name':'Aggressive','nav_rub':1_050_000,'positions':[
+            {'active_trade_id':'t1','asset':'BRENT','direction':'LONG','units':100,
+             'avg_entry_price':100,'last_price':105,'stop_price':102,
+             'opened_at':'2026-10-09T10:00:00+00:00','payload':{}}]}]}
+        account = {'t1': dict(trade_id='t1',status='OPEN',gross_pnl_rub=300,
+            fees_rub=20,funding_rub=5,entry_notional_rub=10_000,
+            last_mark_at='2026-10-09T11:00:00+00:00',portfolio_nav_rub=1_050_000,payload={})}
+        with patch('veritas_trade_view.VPG.quote_for_position', return_value={
+                'price':105,'observed_at':'2026-10-09T11:00:00+00:00'}), \
+             patch('veritas_trade_view.VPP.evaluate', return_value={
+                'profit_protection_active':True,
+                'net_profit_protection':{'state':'PROTECTED','net_at_stop_rub':450}}):
+            out=enrich_positions(report, MagicMock(), preloaded_accounts=account)
+        p=out['portfolios'][0]
+        z=p['positions'][0]
+        self.assertEqual(z['mark_to_market_net_pnl_rub'],775)
+        self.assertEqual(z['pnl_if_effective_stop_rub'],450)
+        self.assertEqual(z['stop_scenario_delta_rub'],-325)
+        self.assertEqual(z['realized_net_after_booked_costs_rub'],275)
+        self.assertEqual(p['nav_rub'],1_050_000)
+        self.assertEqual(p['nav_if_all_stops_rub'],1_049_675)
+        self.assertEqual(p['stop_scenario_loss_rub'],325)
+        self.assertEqual(p['stop_scenario_status'],'COMPLETE')
+
+    def test_stop_scenario_fails_closed_when_any_stop_valuation_is_missing(self):
+        report={'portfolios':[{'name':'Champion','nav_rub':1_000_000,'positions':[
+            {'active_trade_id':'t1','asset':'BRENT','direction':'LONG','units':1,
+             'avg_entry_price':100,'last_price':101,'stop_price':99,'payload':{}}]}]}
+        account={'t1':dict(trade_id='t1',status='OPEN',gross_pnl_rub=0,fees_rub=1,
+                           funding_rub=0,entry_notional_rub=100,payload={})}
+        with patch('veritas_trade_view.VPG.quote_for_position', return_value={
+                'price':101,'observed_at':'2026-10-09T11:00:00+00:00'}), \
+             patch('veritas_trade_view.VPP.evaluate', return_value={
+                'profit_protection_active':False,
+                'net_profit_protection':{'state':'UNAVAILABLE','net_at_stop_rub':None}}):
+            out=enrich_positions(report, MagicMock(), preloaded_accounts=account)
+        p=out['portfolios'][0]
+        self.assertEqual(p['stop_scenario_status'],'UNAVAILABLE')
+        self.assertIsNone(p['nav_if_all_stops_rub'])
+        self.assertIsNone(p['stop_scenario_loss_rub'])
+
+
     def test_management_projection_prefers_effective_trailing_stop_and_fixed_tp2(self):
         position = {
             'direction': 'LONG', 'stop_price': 99,
