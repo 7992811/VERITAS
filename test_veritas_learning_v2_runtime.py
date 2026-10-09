@@ -34,8 +34,9 @@ class LearningV2RuntimeTests(unittest.TestCase):
         } for _ in range(24)]
         trades=[{
             "closed_at":"2026-10-08T10:10:00Z","asset":"BTC","horizon":"5m","regime":"TREND",
-            "setup_family":"BREAKOUT","policy_hash":"p","source_key":"S","mae":-.004,"mfe":.014,
-            "capture_ratio":.2,"net_pnl_rub":10.0,"primary_attribution":"OK",
+            "setup_family":"BREAKOUT","policy_hash":"p","source_key":"S","path_evidence_eligible":True,
+            "mae":-.004,"mfe":.014,"capture_ratio":.2,"opening_fraction":.25,
+            "net_pnl_rub":10.0,"primary_attribution":"OK",
         } for _ in range(20)]
         events=[]
         ns=namespace(lambda: None)
@@ -56,12 +57,17 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertGreater(result["hypotheses"],0)
         self.assertEqual(events[-1][0],"learning_v2_shadow_snapshot")
         self.assertEqual(events[-1][1]["asset"],"BTC")
+        self.assertEqual(events[-1][1]["trades"],20)
+        self.assertEqual(events[-1][1]["path_trades"],20)
+        self.assertEqual(events[-1][1]["outcome_only_trades"],0)
         self.assertFalse(events[-1][1]["production_influence"])
         self.assertIn("zero_candidate_reason",events[-1][1])
         self.assertIn("known_blockers",events[-1][1])
         snap=app.snapshot()["learning_v2"]
         self.assertFalse(snap["automatic_production_promotion"])
         self.assertEqual(snap["registry"],registry)
+        self.assertEqual(snap["assets"]["BTC"]["closed_trade_summary"]["outcome_evidence_trades"],20)
+        self.assertEqual(snap["assets"]["BTC"]["closed_trade_summary"]["path_evidence_trades"],20)
         self.assertTrue(any(h["kind"]=="ENTRY_BLOCKER_RELAXATION" for h in snap["hypotheses"]))
         self.assertTrue(all(h["mode"]=="SHADOW_ONLY" for h in snap["hypotheses"]))
         publish.assert_called_once()
@@ -89,6 +95,20 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertIn("t.payload#>>'{price_source_lock,key}'",source)
         self.assertIn("t.payload#>>'{price_source_lock,contract_id}'",source)
         self.assertIn("t.payload->>'strategy_policy_hash'",source)
+
+    def test_trade_reader_accepts_outcome_only_evidence_without_path_escalation(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("outcome_learning_eligible",source)
+        self.assertIn("path_learning_eligible",source)
+        self.assertIn("CASE WHEN COALESCE",source)
+        self.assertIn('outcome_rows=[dict(row) for row in trades or []]',source)
+        self.assertIn('trade_rows=[row for row in outcome_rows if row.get("path_evidence_eligible") is True]',source)
+
+    def test_decision_reader_uses_one_materialized_latest_decision_set(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("decision_keys AS MATERIALIZED",source)
+        self.assertIn("latest_decisions AS MATERIALIZED",source)
+        self.assertNotIn("CROSS JOIN LATERAL",source)
 
     def test_periodic_job_is_registered_with_bounded_budget(self):
         app=C.ContinuousLearning(namespace(lambda: None))
