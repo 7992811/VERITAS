@@ -17,6 +17,11 @@ TARGET = "invest-public-api.tbank.ru:443"
 PACKAGE = "tinkoff.public.invest.api.contract.v1"
 TOKEN_ENV = "TBANK_API_TOKEN"
 RPC_TIMEOUT = 8
+STREAM_PING_MS = 5000
+STREAM_HEARTBEAT_MAX_AGE_SECONDS = 20
+STREAM_MARKET_RECOVERY_AGE_SECONDS = 30
+STREAM_RECOVERY_COOLDOWN_SECONDS = 10
+STREAM_RECONNECT_MAX_SECONDS = 5
 DEFAULT_TICKERS = {"CNYRUBF": "CNYRUBF", "NQF": "NAZ6", "MOEXF": "IMOEXF"}
 LABELS = {"CNYRUBF": "CNYRUBf", "NQF": "NQf", "MOEXF": "MOEXf"}
 TIMEFRAMES = ("1m", "5m", "1h", "4h", "1d", "3d", "7d")
@@ -116,11 +121,36 @@ class GrpcReader:
         except self.grpc.RpcError as exc:
             raise TBankError(exc.code().name) from None
 
-    def stream_prices(self, ids):
-        req = self.parse({"subscribe_last_price_request": {
-            "subscription_action": "SUBSCRIPTION_ACTION_SUBSCRIBE",
-            "instruments": [{"instrument_id": uid} for uid in ids],
-        }}, self.proto.MarketDataServerSideStreamRequest())
+    def stream_market(self, ids, *, depth=10, include_info=True,
+                      ping_ms=STREAM_PING_MS):
+        if (not isinstance(ids, (list, tuple)) or not ids
+                or any(not isinstance(uid, str) or not uid for uid in ids)):
+            raise TBankError("INVALID_STREAM_INSTRUMENTS")
+        if depth is not None and depth not in (1, 10, 20, 30, 40, 50):
+            raise TBankError("INVALID_STREAM_BOOK_DEPTH")
+        if type(ping_ms) is not int or not 5000 <= ping_ms <= 180000:
+            raise TBankError("INVALID_STREAM_PING")
+        fields = {
+            "subscribe_last_price_request": {
+                "subscription_action": "SUBSCRIPTION_ACTION_SUBSCRIBE",
+                "instruments": [{"instrument_id": uid} for uid in ids],
+            },
+            "ping_settings": {"ping_delay_ms": ping_ms},
+        }
+        if depth is not None:
+            fields["subscribe_order_book_request"] = {
+                "subscription_action": "SUBSCRIPTION_ACTION_SUBSCRIBE",
+                "instruments": [{
+                    "instrument_id": uid, "depth": depth,
+                    "order_book_type": "ORDERBOOK_TYPE_EXCHANGE",
+                } for uid in ids],
+            }
+        if include_info:
+            fields["subscribe_info_request"] = {
+                "subscription_action": "SUBSCRIPTION_ACTION_SUBSCRIBE",
+                "instruments": [{"instrument_id": uid} for uid in ids],
+            }
+        req = self.parse(fields, self.proto.MarketDataServerSideStreamRequest())
         rpc = self._channel.unary_stream(
             "/" + PACKAGE + ".MarketDataStreamService/MarketDataServerSideStream",
             request_serializer=lambda message: message.SerializeToString(),
@@ -131,6 +161,10 @@ class GrpcReader:
                 yield self.to_dict(item, preserving_proto_field_name=True)
         except self.grpc.RpcError as exc:
             raise TBankError(exc.code().name) from None
+
+    def stream_prices(self, ids):
+        # Compatibility wrapper for callers/tests that only need last prices.
+        yield from self.stream_market(ids, depth=None, include_info=False)
 
     def close(self):
         self._channel.close()
@@ -244,6 +278,14 @@ class TBankConnection:
         self.error = None
         self.checked_at = self.connected_at = None
         self.stream_state = "IDLE"
+        self.stream_last_message_at = None
+        self.stream_last_quote_at = None
+        self.stream_last_book_at = None
+        self.stream_last_status_at = None
+        self.stream_reconnects = 0
+        self.stream_error = None
+        self.last_unary_recovery_at = None
+        self.unary_recovery_count = 0
         self.instruments, self.instrument_errors, self.quotes, self.candles, self.books = {}, {}, {}, {}, {}
         self.accounts, self.portfolio = [], {}
         self.history_attempts = {}
@@ -276,6 +318,17 @@ class TBankConnection:
                     "token_configured": bool(self._token()), "token_variable": TOKEN_ENV,
                     "checked_at": self.checked_at, "connected_at": self.connected_at,
                     "error_code": self.error, "stream_status": self.stream_state,
+                    "stream_health": {
+                        "last_message_at": self.stream_last_message_at,
+                        "last_message_age_seconds": age_seconds(self.stream_last_message_at),
+                        "last_quote_at": self.stream_last_quote_at,
+                        "last_book_at": self.stream_last_book_at,
+                        "last_status_at": self.stream_last_status_at,
+                        "reconnects": self.stream_reconnects,
+                        "error_code": self.stream_error,
+                        "unary_recovery_count": self.unary_recovery_count,
+                        "last_unary_recovery_at": self.last_unary_recovery_at,
+                    },
                     "orders_enabled": False, "paper_source_switch_enabled": self.env.get("VERITAS_CNY_PRIMARY_SOURCE","TBANK").upper()=="TBANK",
                     "instruments": {a: {"label": LABELS.get(a, a), "ticker": d.get("ticker"), "uid": d.get("uid"),
                         "name": d.get("name"), "exchange": d.get("exchange"), "real_exchange": d.get("real_exchange"),
@@ -463,36 +516,159 @@ class TBankConnection:
                 return
             self.quotes[asset] = q
 
+    def _put_book(self, item, by_uid):
+        uid = item.get("instrument_uid")
+        if uid not in by_uid or item.get("is_consistent") is False:
+            return
+        observed = item.get("time") or item.get("orderbook_ts")
+        if age_seconds(observed) is None:
+            return
+        bids, asks = item.get("bids", []), item.get("asks", [])
+        if not isinstance(bids, list) or not isinstance(asks, list):
+            return
+        asset = by_uid[uid]
+        with self.lock:
+            now = utcnow()
+            old = self.books.get(asset) or {}
+            old_at = old.get("orderbook_ts") or old.get("time")
+            try:
+                older = (old_at is not None and age_seconds(old_at, now) is not None
+                         and datetime.fromisoformat(observed.replace("Z", "+00:00"))
+                         < datetime.fromisoformat(old_at.replace("Z", "+00:00")))
+            except (AttributeError, TypeError, ValueError):
+                older = False
+            if older:
+                return
+            self.books[asset] = {
+                **copy.deepcopy(item), "orderbook_ts": observed,
+                "source": "TBANK_GRPC", "received_at": iso(now),
+            }
+
+    def _put_trading_status(self, item, by_uid):
+        uid = item.get("instrument_uid")
+        if uid not in by_uid:
+            return
+        asset = by_uid[uid]
+        with self.lock:
+            self.trading_states[asset] = {
+                **copy.deepcopy(item), "instrument_uid": uid,
+                "checked_at": iso(),
+            }
+
+    def _stream_healthy(self, now=None):
+        now = now or utcnow()
+        with self.lock:
+            worker_alive = bool(self.stream_worker and self.stream_worker.is_alive())
+            state = self.stream_state
+            last = self.stream_last_message_at
+        age = age_seconds(last, now)
+        return bool(worker_alive and state == "SUBSCRIBED"
+                    and age is not None and age <= STREAM_HEARTBEAT_MAX_AGE_SECONDS)
+
+    def _market_recovery_needed(self, now=None):
+        now = now or utcnow()
+        if not self._stream_healthy(now):
+            return True
+        active = {
+            "SECURITY_TRADING_STATUS_NORMAL_TRADING",
+            "SECURITY_TRADING_STATUS_SESSION_OPEN",
+            "SECURITY_TRADING_STATUS_OPENING_PERIOD",
+        }
+        with self.lock:
+            instruments = tuple(self.instruments)
+            quotes = copy.deepcopy(self.quotes)
+            books = copy.deepcopy(self.books)
+            states = copy.deepcopy(self.trading_states)
+        for asset in instruments:
+            if (states.get(asset) or {}).get("trading_status") not in active:
+                continue
+            quote_age = age_seconds((quotes.get(asset) or {}).get("observed_at"), now)
+            book = books.get(asset) or {}
+            book_age = age_seconds(book.get("orderbook_ts") or book.get("time"), now)
+            if (quote_age is None or quote_age > STREAM_MARKET_RECOVERY_AGE_SECONDS
+                    or book_age is None or book_age > STREAM_MARKET_RECOVERY_AGE_SECONDS):
+                return True
+        return False
+
+    def _recover_market_unary(self, *, include_history=False):
+        now = utcnow()
+        with self.lock:
+            previous = self.last_unary_recovery_at
+        age = age_seconds(previous, now)
+        if age is not None and age < STREAM_RECOVERY_COOLDOWN_SECONDS:
+            return False
+        self._read_market(include_history=include_history)
+        with self.lock:
+            self.last_unary_recovery_at = iso(now)
+            self.unary_recovery_count += 1
+        return True
+
     def _stream_loop(self):
+        attempt = 0
         while not self.stop_event.is_set():
-            by_uid = {d["uid"]: a for a, d in self.instruments.items()}
+            with self.lock:
+                by_uid = {d["uid"]: a for a, d in self.instruments.items()}
             if not by_uid or self.reader is None:
-                self.stop_event.wait(15)
+                self.stop_event.wait(1)
                 continue
             with self.lock:
                 self.stream_state = "CONNECTING"
                 self.stream_ids = tuple(sorted(by_uid))
+                self.stream_error = None
+            subscribed = set()
             try:
-                for item in self.reader.stream_prices(list(by_uid)):
+                for item in self.reader.stream_market(
+                        list(by_uid), depth=10, include_info=True,
+                        ping_ms=STREAM_PING_MS):
                     if self.stop_event.is_set():
                         return
+                    with self.lock:
+                        self.stream_last_message_at = iso()
                     if tuple(sorted(d["uid"] for d in self.instruments.values())) != self.stream_ids:
-                        break  # Re-subscribe when a previously unresolved contract becomes available.
-                    response = item.get("subscribe_last_price_response")
-                    if response is not None:
-                        subscriptions = response.get("last_price_subscriptions", [])
-                        if not subscriptions or any(s.get("subscription_status") != "SUBSCRIPTION_STATUS_SUCCESS" for s in subscriptions):
+                        break  # Re-subscribe when contract set changes.
+                    checks = (
+                        ("subscribe_last_price_response", "last_price_subscriptions", "last_price"),
+                        ("subscribe_order_book_response", "order_book_subscriptions", "order_book"),
+                        ("subscribe_info_response", "info_subscriptions", "info"),
+                    )
+                    for response_key, rows_key, label in checks:
+                        response = item.get(response_key)
+                        if response is None:
+                            continue
+                        rows = response.get(rows_key, [])
+                        if (not rows or any(
+                                row.get("subscription_status") != "SUBSCRIPTION_STATUS_SUCCESS"
+                                for row in rows)):
                             raise TBankError("SUBSCRIPTION_REJECTED")
+                        subscribed.add(label)
+                    if {"last_price", "order_book", "info"} <= subscribed:
                         with self.lock:
                             self.stream_state = "SUBSCRIBED"
+                            self.stream_error = None
+                        attempt = 0
                     if item.get("last_price"):
                         self._put_quote(item["last_price"], by_uid)
+                        with self.lock:
+                            self.stream_last_quote_at = iso()
+                    if item.get("orderbook"):
+                        self._put_book(item["orderbook"], by_uid)
+                        with self.lock:
+                            self.stream_last_book_at = iso()
+                    if item.get("trading_status"):
+                        self._put_trading_status(item["trading_status"], by_uid)
+                        with self.lock:
+                            self.stream_last_status_at = iso()
+                if not self.stop_event.is_set():
+                    raise TBankError("MARKET_DATA_STREAM_ENDED")
+            except Exception as exc:
+                code = str(exc) if isinstance(exc, TBankError) else "MARKET_DATA_STREAM_ERROR"
                 with self.lock:
                     self.stream_state = "RECONNECTING"
-            except Exception:
-                with self.lock:
-                    self.stream_state = "RECONNECTING"
-            self.stop_event.wait(5)
+                    self.stream_error = code
+                    self.stream_reconnects += 1
+                attempt += 1
+                delay = min(STREAM_RECONNECT_MAX_SECONDS, .25 * (2 ** min(attempt, 5)))
+                self.stop_event.wait(delay)
 
     def refresh(self, *, include_history=True):
         if self.accounts_checked is None or (age_seconds(self.accounts_checked) or 0) >= 60:
@@ -541,10 +717,25 @@ class TBankConnection:
             try:
                 if self.reader is None:
                     self.reader = self.factory(self._token())
-                self.refresh(include_history=False)
+                if self.checked_at is None:
+                    # One unary bootstrap establishes exact instruments, account,
+                    # first quote/book and session before the stream takes over.
+                    self.refresh(include_history=False)
+                else:
+                    if self.accounts_checked is None or (age_seconds(self.accounts_checked) or 0) >= 60:
+                        self._read_accounts()
+                    if (self.resolve_checked is None
+                            or (self.instrument_errors and (age_seconds(self.resolve_checked) or 0) >= 300)):
+                        self._resolve()
                 self._ensure_market_workers()
+                if self.checked_at is not None and self._market_recovery_needed():
+                    self._recover_market_unary(include_history=False)
+                with self.lock:
+                    self.checked_at = iso()
+                    self.connected_at = self.connected_at or self.checked_at
+                    self.state, self.error = "CONNECTED", None
                 delay = 15
-                self.stop_event.wait(20)
+                self.stop_event.wait(5)
             except Exception as exc:
                 code = str(exc) if isinstance(exc, TBankError) else "CONNECTION_ERROR"
                 with self.lock:
