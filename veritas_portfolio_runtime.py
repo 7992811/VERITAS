@@ -5143,9 +5143,10 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     # Once an episode has earned/realized profit, an ADD may use only the
     # remaining whole-cycle profit buffer at the active stop. Keep trend
     # pyramiding, but never let it turn the already-earned episode negative.
-    if existing and str(existing.get('direction') or '')==str(direction):
+    if (existing and str(existing.get('direction') or '')==str(direction)
+            and VEF.protection_active(existing,{})):
         tid=existing.get('active_trade_id')
-        trade=(c.execute("SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades WHERE trade_id=%s",
+        trade=(c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
                          (tid,)).fetchone() if tid else None)
         floor=VEF.assess_add(existing,dict(trade or {}),price,requested,nav)
         if floor.get('active'):
