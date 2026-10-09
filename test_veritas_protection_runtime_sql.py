@@ -128,7 +128,7 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
                 self.assertEqual(result['stop_price'], original['stop_price'])
                 self.assertEqual(result['payload']['immutable_history'], original['payload']['immutable_history'])
                 self.assertEqual(result['payload']['observation_path'], OP.observe(original, q, NOW))
-                self.assertEqual(result['payload'], trades[tid]['payload'])
+                self.assertEqual(trades[tid]['payload'], original['payload'])
                 self.assertEqual((trades[tid]['gross_pnl_rub'], trades[tid]['fees_rub'], trades[tid]['funding_rub']), (11, 3, 2))
             self.assertEqual(c.execute('SELECT * FROM paper_portfolios ORDER BY name').fetchall(), before_accounts)
 

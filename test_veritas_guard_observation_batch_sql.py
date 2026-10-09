@@ -295,33 +295,46 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
             changes, trace, error = None, None, (type(exc).__name__, str(exc))
         return before, self.snapshot(), changes, error, trace
 
-    def assert_parity(self, rows, quotes):
+    def assert_parity(self, rows, quotes, *, allow_open_trade_lag=False):
         old = self.run_case(rows, quotes, legacy=True)
         new = self.run_case(rows, quotes)
-        self.assertEqual(new[:4], old[:4])
+        if not allow_open_trade_lag:
+            self.assertEqual(new[:4], old[:4])
+            return old, new
+
+        self.assertEqual(new[2:4], old[2:4])
+        for table in ('paper_portfolios','paper_positions','paper_orders','paper_nav_history'):
+            self.assertEqual(new[1][table], old[1][table], table)
+        # Live positions own no-action path telemetry. The open trade retains
+        # its prior payload until an action revalidates and mirrors the latest
+        # witness immediately before accounting.
+        for before, after in zip(new[0]['paper_trades'], new[1]['paper_trades']):
+            self.assertEqual(after, before)
         return old, new
 
     def test_twenty_three_no_action_positions_preserve_full_payload_and_reduce_io(self):
         for direction in ('LONG', 'SHORT'):
             with self.subTest(direction=direction):
                 rows, quote = self.fixture(direction)
-                old, new = self.assert_parity(rows, {'ETH': quote})
+                old, new = self.assert_parity(rows, {'ETH': quote}, allow_open_trade_lag=True)
                 self.assertIsNone(new[3])
                 self.assertEqual(new[2], [])
                 for table, _ in TABLE_KEYS:
                     for before, after in zip(new[0][table], new[1][table]):
                         self.assertEqual({k: v for k, v in before.items() if k != 'payload'},
                                          {k: v for k, v in after.items() if k != 'payload'}, table)
-                        if table in ('paper_positions', 'paper_trades'):
+                        if table == 'paper_positions':
                             for key, value in before['payload'].items():
                                 if key != 'observation_path':
                                     self.assertEqual(after['payload'][key], value, key)
                             self.assertEqual(after['payload']['observation_path']['observation_count'], 3)
                             self.assertTrue(PATH.assessment(dict(after, horizon='1m'))['eligible'])
+                        elif table == 'paper_trades':
+                            self.assertEqual(after['payload'], before['payload'])
                 old_updates = sum(q.startswith('UPDATE') for q in old[4].statements)
                 new_updates = sum(q.startswith('UPDATE') for q in new[4].statements)
                 self.assertEqual(old_updates, 46)
-                self.assertLessEqual(new_updates, 4)
+                self.assertLessEqual(new_updates, 2)
                 # Keep the original outer+observation transaction budget and
                 # account separately for exactly one checked compression probe.
                 compression_probes = new[4].statements.count(' '.join(G.BS.METADATA_SQL.split()))
@@ -357,7 +370,7 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
             with self.subTest(shape=index):
                 changed = deepcopy(rows)
                 changed[0]['payload'] = payload
-                self.assert_parity(changed, {'ETH': quote})
+                self.assert_parity(changed, {'ETH': quote}, allow_open_trade_lag=True)
 
     def test_quote_prepass_preserves_always_present_null_keys_and_unusual_json_shapes(self):
         rows, _ = self.fixture(count=1)
@@ -384,11 +397,19 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
                         'entry_execution_observed_at', 'entry_market_observed_at'})
 
     def reject_metadata(self, c, trade_id):
-        c.execute(self.sql.SQL('''ALTER TABLE paper_trades ADD CONSTRAINT reject_guard_metadata
-            CHECK (trade_id <> {} OR
-                   (payload #>> '{{observation_path,last_lane}}') IS DISTINCT FROM 'PROTECTIVE_GUARD' OR
-                   COALESCE((payload #>> '{{observation_path,observation_count}}')::int, 0) < 3)''')
-            .format(self.sql.Literal(trade_id)))
+        for table, key, suffix in (
+                ('paper_positions','active_trade_id','position'),
+                ('paper_trades','trade_id','trade')):
+            name='reject_guard_metadata_'+suffix
+            c.execute(self.sql.SQL('ALTER TABLE {} DROP CONSTRAINT IF EXISTS {}')
+                      .format(self.sql.Identifier(table), self.sql.Identifier(name)))
+            c.execute(self.sql.SQL('''ALTER TABLE {} ADD CONSTRAINT {}
+                CHECK ({} <> {} OR
+                       (payload #>> '{{observation_path,last_lane}}') IS DISTINCT FROM 'PROTECTIVE_GUARD' OR
+                       COALESCE((payload #>> '{{observation_path,observation_count}}')::int, 0) < 3)''')
+                .format(self.sql.Identifier(table),
+                        self.sql.Identifier(name),
+                        self.sql.Identifier(key), self.sql.Literal(trade_id)))
 
     def test_one_optional_failure_preserves_other_twenty_two_and_outer_accounting(self):
         rows, quote = self.fixture()
@@ -405,17 +426,28 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
                 self.assertEqual(c.info.transaction_status, self.driver.pq.TransactionStatus.INTRANS)
                 c.execute('UPDATE paper_trades SET net_pnl_rub=-10 WHERE trade_id=%s', (failed_id,))
             after = self.snapshot()
-            for table in ('paper_positions', 'paper_trades'):
-                for old, new in zip(before[table], after[table]):
-                    tid = new.get('active_trade_id') or new.get('trade_id')
+            for old, new in zip(before['paper_positions'], after['paper_positions']):
+                tid = new['active_trade_id']
+                self.assertEqual(new['payload']['observation_path']['observation_count'],
+                                 2 if tid == failed_id else 3)
+                if tid == failed_id:
+                    self.assertEqual(new['payload'], old['payload'])
+            for old, new in zip(before['paper_trades'], after['paper_trades']):
+                tid = new['trade_id']
+                if legacy:
                     self.assertEqual(new['payload']['observation_path']['observation_count'],
                                      2 if tid == failed_id else 3)
-                    if tid == failed_id:
-                        self.assertEqual(new['payload'], old['payload'])
+                else:
+                    self.assertEqual(new['payload'], old['payload'])
             rejected = next(r for r in after['paper_trades'] if r['trade_id'] == failed_id)
             self.assertEqual((rejected['fees_rub'], rejected['net_pnl_rub']), (.04, -10.))
             outcomes.append(after)
-        self.assertEqual(outcomes[0], outcomes[1])
+        # Financial state is identical; only no-action open-trade telemetry is
+        # intentionally deferred in the optimized path.
+        for old_trade, new_trade in zip(outcomes[0]['paper_trades'], outcomes[1]['paper_trades']):
+            self.assertEqual({k:v for k,v in old_trade.items() if k!='payload'},
+                             {k:v for k,v in new_trade.items() if k!='payload'})
+        self.assertEqual(outcomes[0]['paper_positions'], outcomes[1]['paper_positions'])
 
     def test_outer_rollback_removes_successful_metadata_batch_and_accounting(self):
         rows, quote = self.fixture()
