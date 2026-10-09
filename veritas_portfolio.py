@@ -5541,7 +5541,7 @@ def _v90r17_exact_structural_stop(row,direction,current):
     return float(stop),tf,float(lvl)
 
 
-def _v90tr_apply(c,name,candidates,prices,ts):
+def _v90tr_apply(c,name,candidates,prices,ts,positions=None):
     """R17 structural trailing.
 
     No synthetic breakeven stop. A stop ratchets only behind a confirmed local
@@ -5550,7 +5550,8 @@ def _v90tr_apply(c,name,candidates,prices,ts):
     """
     changes=[]
     try:
-        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s AND "+VTM.LEGACY_POSITION_SQL_PREDICATE,(name,)).fetchall()
+        positions=(positions if positions is not None else
+                   c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s AND "+VTM.LEGACY_POSITION_SQL_PREDICATE,(name,)).fetchall())
     except Exception:
         return changes
     for z0 in positions or []:
