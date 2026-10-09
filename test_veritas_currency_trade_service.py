@@ -362,6 +362,30 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.request('poll')
         self.assertIsNone(self.request('status')[0]['last_poll_sizing'])
 
+    def test_autoprepare_status_and_poll_report_real_admission_block_without_bypassing_it(self):
+        from types import SimpleNamespace
+        self.coordinator.live_admission = SimpleNamespace(status=lambda: {
+            'eligible':False, 'blockers':['LIVE_MODEL_EVIDENCE_MISSING']})
+        with patch.object(self.coordinator, 'prepare_next', side_effect=service.TradePlanBlocked(
+                'LIVE_ACCOUNT_ADMISSION_REQUIRED')):
+            response, status = self.request('poll')
+        self.assertEqual(status, 200)
+        self.assertEqual(response['items'], [])
+        self.assertEqual(response['admission_block_reason'], 'LIVE_MODEL_EVIDENCE_MISSING')
+        self.assertEqual(response['pending_approval_count'], 0)
+        self.assertEqual(response['unsettled_count'], 0)
+        observed = self.request('status')[0]
+        self.assertEqual(observed['automation_mode'], 'AUTO_PREPARE_OWNER_CONFIRM')
+        self.assertTrue(observed['confirmation_required'])
+        self.assertNotIn('execute_approved', [name for name, _ in self.coordinator.calls])
+        with patch.object(self.coordinator.live_admission, 'status', side_effect=RuntimeError('private detail')):
+            with patch.object(self.coordinator, 'prepare_next', side_effect=service.TradePlanBlocked(
+                    'LIVE_ACCOUNT_ADMISSION_REQUIRED')):
+                result, code = self.request('poll')
+        self.assertEqual(code, 200)
+        self.assertEqual(result['block_reason'], 'LIVE_ACCOUNT_ADMISSION_REQUIRED')
+        self.assertIsNone(result['admission_block_reason'])
+
     def test_entry_failure_retains_observed_clocks_without_status_triggering_work(self):
         from test_veritas_currency_entry_diagnostics import stale_failure
         failure, _, _, _ = stale_failure()

@@ -134,6 +134,7 @@ class ConsoleTelegramTests(unittest.TestCase):
         constructor.assert_called_once()
         self.assertEqual(constructor.call_args.args[2], OWNER)
         self.assertEqual(delegated.poll.call_count, 2)
+        self.assertIs(delegated.wakeup, bridge.wakeup)
         wrong, _, _ = self.harness({"ok": True, "owner_user_id": OWNER, "bot_id": BOT + 1})
         with self.assertRaisesRegex(TradeTelegramError, "WRONG_TRADE_BOT"):
             wrong.poll()
