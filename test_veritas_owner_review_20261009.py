@@ -1,10 +1,13 @@
 import unittest
+from unittest.mock import patch
 
 import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_owner_policy as VOP
 import veritas_self_learning as VSELF
 import veritas_profit_maturity as VPM
+import veritas_peer_invalidation as VPI
+import veritas_strategy_roles as VROLE
 import veritas_timeframe_management as VTM
 import veritas_user_teaching as VUT
 import veritas_release as VR
@@ -52,6 +55,35 @@ class OwnerReviewPolicyTests(unittest.TestCase):
                       "trade_entry_reason":"NO_DIRECTION","final_gate_blockers":[]}]
         x=VCR._borrowed_parent_risk_context(row,summary)
         self.assertTrue(x["eligible"])
+
+    def test_verified_1m_trigger_with_1h_structure_is_shared_across_three_books(self):
+        row={"asset":"BRENT","horizon":"1m","research_decision":"LONG",
+             "timeframe_entry_context":{"source_identity":{"key":"PROFINANCE:Brent oil"},
+                "event":{"event_id":"E1","trigger_timeframe":"1m","structural_timeframe":"1h",
+                         "stop_timeframe":"1h","atr_timeframe":"1h"}}}
+        with patch("veritas_structural_breakout.applies",return_value=True), \
+             patch("veritas_structural_breakout.validate_event",return_value={"eligible":True}):
+            for mode in ("IMPULSE_ONLY","CORE","CHALLENGER"):
+                result=VROLE.gate(row,mode)
+                self.assertTrue(result["eligible"],(mode,result))
+                self.assertTrue(result["shared_event_entry_permission"],(mode,result))
+
+    def test_hard_thesis_invalidation_is_shared_by_setup_key(self):
+        class Result:
+            def fetchall(self):
+                return [{"trade_id":"Impulse:BRENT:1","portfolio_name":"Impulse",
+                         "closed_at":"2026-10-09T03:50:41Z",
+                         "exit_reason":"HARD_THESIS_INVALIDATION"}]
+        class DB:
+            def execute(self,*args,**kwargs):
+                return Result()
+        position={"active_trade_id":"Champion:BRENT:2","asset":"BRENT","direction":"LONG",
+                  "opened_at":"2026-10-08T20:31:00Z",
+                  "payload":{"canonical_setup_id":"SETUP_BRENT_X"}}
+        result=VPI.find(DB(),position)
+        self.assertTrue(result["active"],result)
+        self.assertEqual(result["reason"],"HARD_THESIS_INVALIDATION_SHARED_CANONICAL_SETUP")
+        self.assertEqual(result["source_portfolio"],"Impulse")
 
     def test_profit_maturity_uses_structural_risk_timeframe(self):
         p={"timeframe_entry_context":{"event":{"trigger_timeframe":"1m",
