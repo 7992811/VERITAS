@@ -1451,16 +1451,19 @@ async function loadPortfolios(){
   }
 }
 function renderSelfLearning(){
-  const rows=((st.trades&&st.trades.trades)||[]).filter(x=>x&&x.self_learning_review);
-  const proposals=rows.flatMap(x=>(x.self_learning_review.proposals||[]));
-  const conflicts=proposals.reduce((n,p)=>n+((p.canonical_conflicts||[]).length),0);
+  const source=((st.trades&&st.trades.self_learning_trades)||((st.trades&&st.trades.trades)||[]));
+  const rows=source.filter(x=>x&&x.self_learning_review);
+  const proposals=((st.trades&&st.trades.self_learning_owner_review_queue)||[]).map(x=>x.proposal).filter(Boolean);
+  const fallbackProposals=rows.flatMap(x=>(x.self_learning_review.proposals||[]));
+  const allProposals=proposals.length?proposals:fallbackProposals;
+  const conflicts=allProposals.reduce((n,p)=>n+((p.canonical_conflicts||[]).length),0);
   const verified=rows.filter(x=>x.self_learning_review.evidence_status==='VERIFIED').length;
   const pnl=rows.reduce((s,x)=>s+Number(x.net_pnl_rub||0),0);
   const summary=$('selfLearningSummary'),list=$('selfLearningList');
   if(!summary||!list)return;
   summary.innerHTML=[
     ['Разобрано',rows.length],['Проверенные доказательства',verified],
-    ['Предложений на утверждение',proposals.length],['Конфликтов канона',conflicts]
+    ['Предложений на утверждение',allProposals.length],['Конфликтов канона',conflicts]
   ].map(x=>'<div class="selflearn-kpi"><span>'+esc(x[0])+'</span><b>'+esc(x[1])+'</b></div>').join('');
   if(!rows.length){list.innerHTML='<div class="msg">Закрытых сделок с новым postmortem ещё нет.</div>';return}
   list.innerHTML=rows.map(t=>{
