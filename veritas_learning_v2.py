@@ -68,16 +68,18 @@ def classify_decision_episode(row):
     blockers=tuple(sorted(str(x) for x in (row.get("final_gate_blockers") or row.get("blockers") or []) if x))
     candidate_direction=str(row.get("candidate_direction") or "")
     candidate_move=(fr if candidate_direction=="LONG" else -fr if candidate_direction=="SHORT" else None)
-    if (decision=="NO_TRADE" and candidate_move is not None
-            and candidate_move>=ENTRY_FALSE_BLOCK_MOVE and blockers):
+    admission=row.get("admission_eligible")
+    blocked=bool(blockers or admission is False or str(row.get("final_gate_status") or "").upper()=="BLOCK")
+    if (blocked and candidate_move is not None
+            and candidate_move>=ENTRY_FALSE_BLOCK_MOVE):
         return {
             "kind":"MISSED_DIRECTIONAL_MOVE",
             "move":candidate_move,
             "candidate_direction":candidate_direction,
-            "blockers":blockers,
+            "blockers":blockers or ("UNSPECIFIED_BLOCKER",),
             "counterfactual_fill_proven":False,
         }
-    if decision=="NO_TRADE" and fr is not None and abs(fr)>=ENTRY_FALSE_BLOCK_MOVE:
+    if blocked and fr is not None and abs(fr)>=ENTRY_FALSE_BLOCK_MOVE:
         return {
             "kind":"ABSTENTION_LARGE_MOVE",
             "move":abs(fr),
