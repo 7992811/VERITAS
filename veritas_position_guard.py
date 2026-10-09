@@ -966,11 +966,15 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             structural_lock=_structural_mfe_profit_lock(vp,c,z,q,ts,now)
             structural_patch=structural_lock.get('patch') or {}
             if structural_patch:
-                # The adaptive MFE timer and profit lock are owner-approved
-                # execution state, not optional diagnostics. A persistence failure
-                # must fail this pass rather than silently reset timer/protection.
-                PIO.write_patches(c,[(z.get('active_trade_id'),structural_patch)],optional=False)
+                # The adaptive MFE timer is critical execution state, but a
+                # metadata-store failure must never suppress an already-due exit.
+                _tid=z.get('active_trade_id')
+                _applied=PIO.write_patches(c,[(_tid,structural_patch)],optional=True)
                 zp=payload_of(z); zp.update(structural_patch); z['payload']=zp
+                if _tid and _tid not in _applied:
+                    changes.append({'portfolio':z.get('portfolio_name'),'asset':z.get('asset'),
+                                    'trade_id':_tid,'reason':'MFE_STATE_PERSISTENCE_FAILED',
+                                    'price':float((q or {}).get('price') or 0.0)})
                 if structural_lock.get('lock'):
                     _sl=structural_lock['lock']
                     changes.append({
