@@ -512,7 +512,7 @@ def fast_entry_pass(ns,rows,now,*,runtime=False,portfolio_names=None):
             for candidates in grouped.values() for row in candidates]
         pending = any(readiness)
         if pending:
-            VPG._mutex.reserve_entry_turn()
+            VPG._mutex.reserve_entry_turn(seconds=2.0)
         else:
             VPG._mutex.cancel_entry_turn()
         return {'status':'BUSY','reason':reason,'paper_only':True,

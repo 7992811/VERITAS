@@ -16509,7 +16509,7 @@ def _v90r25_portfolios_fast():
 def _v90r25_portfolios_refresh():
     import veritas_portfolio_read_model as VPRM
     import veritas_currency_dashboard as VCD
-    from veritas_portfolio_api_projection import ENTRY_DECISION_PAYLOAD_SQL, load_position_accounts
+    from veritas_portfolio_api_projection import load_position_accounts
     with _v90r25_pf_lock:
         cached=_v90r25_pf_cache.get('value'); at=float(_v90r25_pf_cache.get('at') or 0.0)
         cache_revision=_v90r25_pf_cache.get('revision',0)
@@ -16536,21 +16536,13 @@ def _v90r25_portfolios_refresh():
         snapshot_at=datetime.now(timezone.utc).isoformat()
         base=c.execute("""SELECT name,initial_nav_rub,realized_pnl_rub,fees_rub,funding_rub,benchmark_nav_rub,high_water_nav_rub,last_ruonia,last_usdrub,last_mark_at FROM paper_portfolios WHERE name=ANY(%s)""",(names,)).fetchall()
         nav=c.execute("""SELECT DISTINCT ON (portfolio_name) portfolio_name,observed_at,nav_rub,nav_usd,benchmark_nav_rub,gross_leverage,net_exposure,drawdown,ruonia,usdrub,payload FROM paper_nav_history WHERE portfolio_name=ANY(%s) ORDER BY portfolio_name,observed_at DESC""",(names,)).fetchall()
-        pos=c.execute(f"""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,pt.horizon AS trade_horizon,pt.setup AS trade_setup,pt.payload AS trade_payload,pt.max_fraction,{ENTRY_DECISION_PAYLOAD_SQL} AS entry_decision_payload
+        pos=c.execute("""SELECT pp.portfolio_name,pp.asset,pp.direction,pp.units,pp.avg_entry_price,pp.opened_at,pp.updated_at,pp.stop_price,pp.target_fraction,pp.last_price,pp.payload,pp.active_trade_id,
+                                pt.horizon AS trade_horizon,pt.setup AS trade_setup,
+                                pt.payload AS trade_payload,pt.max_fraction,
+                                COALESCE(pp.payload->'entry_decision_snapshot',
+                                         pt.payload->'entry_decision_snapshot') AS entry_decision_payload
                          FROM paper_positions pp
                          LEFT JOIN paper_trades pt ON pt.trade_id=pp.active_trade_id
-                         LEFT JOIN LATERAL (
-                           SELECT le.payload
-                           FROM ledger_events le
-                           WHERE le.event_type='decision'
-                             AND le.asset=pp.asset
-                             AND le.event_ts<=pp.opened_at AND le.event_ts>=pp.opened_at-INTERVAL '10 minutes'
-                             AND le.horizon=pt.horizon
-                             AND COALESCE(le.payload->'trade_plan'->>'entry_event_id','')=COALESCE(pt.payload->>'r66_event_id','')
-                             AND COALESCE(le.payload->>'research_decision',le.payload->>'decision','')=pp.direction
-                           ORDER BY ABS(EXTRACT(EPOCH FROM (le.event_ts-pp.opened_at))) ASC
-                           LIMIT 1
-                         ) ed ON TRUE
                          WHERE pp.portfolio_name=ANY(%s)
                          ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
         stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl, """ + CLOSED_METRICS_SQL + """ FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
