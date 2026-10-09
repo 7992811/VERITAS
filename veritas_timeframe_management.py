@@ -235,6 +235,13 @@ def trailing_candidate(position, summary, quote, now):
 
 
 def apply_trailing(c, name, position, summary, quote, now):
+    maturity=payload(position)
+    if (CTC.LIFECYCLE_POLICY.get("structural_trailing_before_profit_maturity") is False
+            and not maturity.get("profit_maturity_armed")):
+        return {"version":VERSION,"eligible":False,
+                "reason":"PROFIT_MATURITY_NOT_CONFIRMED",
+                "positive_streak":int(maturity.get("profit_maturity_positive_streak") or 0),
+                "required_windows":int(CTC.LIFECYCLE_POLICY.get("profit_lock_requires_consecutive_positive_windows") or 3)}
     candidate = trailing_candidate(position, summary, quote, now)
     if not candidate.get("eligible"):
         return candidate
