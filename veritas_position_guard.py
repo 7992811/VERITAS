@@ -725,7 +725,8 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
     """
     p=payload_of(z)
     cfg=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('profit_protection') or {}
-    if (not p.get('structural_policy_version') or z.get('portfolio_name')=='Currency'
+    if (not p.get('structural_policy_version')
+            or z.get('portfolio_name') not in ('Impulse','Aggressive','Champion','Challenger')
             or not cfg or not q or not q.get('source_gate_pass')
             or not quote_matches_position(z,q)):
         return {'patch':{},'lock':None,'state':'NOT_APPLICABLE'}
@@ -734,8 +735,16 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
         px=float(q.get('price') or 0.0)
         if entry<=0 or px<=0:
             return {'patch':{},'lock':None,'state':'INVALID_PRICE'}
+        if not all(math.isfinite(v) for v in (entry,px)):
+            return {'patch':{},'lock':None,'state':'INVALID_INPUT'}
         current=100.0*((px/entry-1.0) if z.get('direction')=='LONG' else (entry/px-1.0))
-        mfe=max(float(p.get('mfe_pct') or 0.0),float(p.get('r55_lifetime_mfe_pct') or 0.0),current,0.0)
+        def _finite_pct(value):
+            try:
+                parsed=float(value or 0.0)
+                return parsed if math.isfinite(parsed) else 0.0
+            except (TypeError,ValueError,OverflowError):
+                return 0.0
+        mfe=max(_finite_pct(p.get('mfe_pct')),_finite_pct(p.get('r55_lifetime_mfe_pct')),current,0.0)
         threshold=float(cfg.get('mfe_activation_pct_points') or .15)
         immediate=float(cfg.get('immediate_activation_pct_points') or .30)
     except (TypeError,ValueError,OverflowError):
@@ -765,14 +774,20 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
         return {'patch':patch,'lock':None,'state':'PERSISTENCE_PENDING',
                 'hold_seconds':hold,'elapsed_seconds':elapsed}
 
-    accounting,fees_paid=_profit_lock_accounting(c,z)
+    # Keep this fast protective lane read-bounded: model the entry commission
+    # from current units and weighted entry instead of issuing a trade-row SELECT.
+    # This covers one entry commission plus the modeled exit friction before a
+    # positive-net stop is allowed.
+    try:
+        units=abs(float(z.get('units') or 0.0))
+        modeled_entry_fee=units*entry*float(getattr(vp,'COMMISSION',VC.COMMISSION_RATE))
+    except (TypeError,ValueError,OverflowError):
+        modeled_entry_fee=0.0
     lock=profit_lock_stop(
-        z,q,getattr(vp,'COMMISSION',VC.COMMISSION_RATE),fees_paid_rub=fees_paid,
+        z,q,getattr(vp,'COMMISSION',VC.COMMISSION_RATE),fees_paid_rub=modeled_entry_fee,
         slippage_pct=VC.SLIPPAGE_RATE,
         min_net_pct=float(cfg.get('minimum_positive_net_pct') or .0002),
-        funding_rub=accounting.get('funding_rub',0.0),
-        realized_gross_rub=accounting.get('gross_pnl_rub',0.0),
-        allow_structural=True)
+        funding_rub=0.0,realized_gross_rub=0.0,allow_structural=True)
     if not lock:
         patch.update(r_accel_mfe_protection_waiting_cost_cover=True,
                      r_accel_mfe_protection_checked_at=ts)
@@ -801,8 +816,17 @@ def _observation_has_no_action(vp, c, z, q, ts, path, now):
     if protective_reason(z,q,now) is not None or protective_reason(candidate,q,now) is not None:
         return False
     if zp.get('structural_policy_version'):
-        # Structural positions have an independent sustained-MFE protection lane.
-        return False
+        if z.get('portfolio_name') not in ('Impulse','Aggressive','Champion','Challenger'):
+            return True
+        cfg=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('profit_protection') or {}
+        try:
+            entry=float(z.get('avg_entry_price') or zp.get('entry_price') or 0.0)
+            px=float((q or {}).get('price') or 0.0)
+            current=100.0*((px/entry-1.0) if z.get('direction')=='LONG' else (entry/px-1.0))
+            threshold=float(cfg.get('mfe_activation_pct_points') or .15)
+        except (TypeError,ValueError,ZeroDivisionError,OverflowError):
+            return True
+        return not (math.isfinite(current) and current>=threshold) and not bool(zp.get('r_accel_mfe_candidate_at'))
     # These scalar accounts cannot depend on pending observation metadata.
     # This tuple is used only by the two pure preflight calculations; an action
     # later performs its own normal read, and never reuses it after funding.
@@ -913,17 +937,9 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             structural_lock=_structural_mfe_profit_lock(vp,c,z,q,ts,now)
             structural_patch=structural_lock.get('patch') or {}
             if structural_patch:
-                c.execute(
-                    "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                    "WHERE active_trade_id=%s",
-                    (json.dumps(structural_patch,allow_nan=False),z.get('active_trade_id'))
-                )
-                if z.get('active_trade_id'):
-                    c.execute(
-                        "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                        "WHERE trade_id=%s",
-                        (json.dumps(structural_patch,allow_nan=False),z.get('active_trade_id'))
-                    )
+                # Protection metadata is optional evidence. Its persistence may
+                # fail, but that can never block an already-due stop/target.
+                PIO.write_patches(c,[(z.get('active_trade_id'),structural_patch)],optional=True)
                 zp=payload_of(z); zp.update(structural_patch); z['payload']=zp
                 if structural_lock.get('lock'):
                     _sl=structural_lock['lock']
