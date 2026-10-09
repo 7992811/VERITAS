@@ -277,3 +277,15 @@ Rules:
 Telemetry now separates seeded, handed-off, unseeded, irrecoverable and actually
 sampled positions. The sidecar remains cached-only, uses no network fetches,
 takes no paper-book lock and has no trading authority.
+
+
+## Trade-learning exclusion telemetry (v91.8.39)
+
+The closed-trade export phase emits only bounded aggregate exclusion codes when
+prospective observations are rejected. The event contains the total excluded
+count plus at most eight canonical reason codes. Trade IDs, raw reason prose,
+payloads, prices and account data are never emitted.
+
+This changes no eligibility, candidate generation, risk, order, portfolio or
+promotion behavior. It exists only to make a zero-submission batch actionable
+without weakening fail-closed evidence rules.
