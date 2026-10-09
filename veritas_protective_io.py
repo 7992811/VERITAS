@@ -149,9 +149,12 @@ def write_position_patches(c, patches, *, optional=False):
 def write_patches_one_roundtrip(c, patches, *, optional=False):
     """Write mirrored metadata with one SQL call per batch of up to 32 rows.
 
-    This preserves the same atomic two-table payload state as the existing
-    writer while avoiding duplicate JSON transmission and a second round-trip.
+    Use the writable-CTE optimization only on a real psycopg/PostgreSQL
+    connection. Lightweight deterministic adapters intentionally implement the
+    established two-statement contract and must not receive unsupported SQL.
     """
+    if not (hasattr(c,'pgconn') or type(c).__module__.startswith('psycopg')):
+        return write_patches(c, patches, optional=optional)
     applied = set()
     for chunk in _chunks(patches):
         if not optional:
