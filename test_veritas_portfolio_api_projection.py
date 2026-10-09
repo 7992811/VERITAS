@@ -270,8 +270,10 @@ class PortfolioAPIProjectionTests(unittest.TestCase):
                 plan = decision.get('trade_plan') if isinstance(decision, dict) else None
                 if plan and not isinstance(plan, dict):
                     for projector in (deepcopy, project_reference):
-                        with self.assertRaises(AttributeError):
-                            read_api(SnapshotDB(position, account, project=projector))
+                        output, _ = read_api(SnapshotDB(position, account, project=projector))
+                        self.assertTrue(output['positions_complete'])
+                        self.assertTrue(output['accounting_complete'])
+                        self.assertEqual(sum(len(p['positions']) for p in output['portfolios']), 1)
                 else:
                     self.assert_api_parity(position, account)
 
