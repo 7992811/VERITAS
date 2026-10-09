@@ -768,7 +768,8 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
     is paper-only and excludes the Currency portfolio.
     """
     p=payload_of(z)
-    cfg=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('profit_protection') or {}
+    policy=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {})
+    cfg=policy.get('profit_protection') or {}
     if (not p.get('structural_policy_version')
             or z.get('portfolio_name') not in ('Impulse','Aggressive','Champion','Challenger')
             or not cfg or not q or not q.get('source_gate_pass')
@@ -794,7 +795,22 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
     except (TypeError,ValueError,OverflowError):
         return {'patch':{},'lock':None,'state':'INVALID_INPUT'}
 
-    patch={'r_accel_mfe_pct':mfe,'r_accel_mfe_current_pct':current}
+    patch={
+        'r_accel_mfe_pct':mfe,
+        'r_accel_mfe_current_pct':current,
+        'r_accel_mfe_learning_teaching_id':policy.get('teaching_id'),
+        'r_accel_mfe_execution_required':bool(cfg.get('execution_receipt_required',True)),
+    }
+    try:
+        existing_trailing=float(p.get('trailing_stop')) if p.get('trailing_stop') is not None else None
+    except (TypeError,ValueError,OverflowError):
+        existing_trailing=None
+    if (p.get('r_accel_mfe_profit_lock_active') and existing_trailing is not None
+            and math.isfinite(existing_trailing) and existing_trailing>0):
+        patch.update(r_accel_mfe_protection_state='ACTIVE',
+                     r_accel_mfe_exit_authority='STRUCTURAL_MFE_PROTECTION')
+        return {'patch':patch,'lock':None,'state':'ALREADY_PROTECTED'}
+
     if current < threshold:
         if p.get('r_accel_mfe_candidate_at') is not None:
             patch.update(r_accel_mfe_candidate_at=None,r_accel_mfe_candidate_pct=None,
@@ -843,11 +859,15 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
         trailing_stop=lock['stop_price'],
         r_accel_mfe_profit_lock_active=True,
         r_accel_mfe_profit_lock_at=ts,
-        r_accel_mfe_profit_lock_policy=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('version'),
+        r_accel_mfe_profit_lock_policy=policy.get('version'),
         r_accel_mfe_profit_lock_activation_pct=lock['activation_profit_pct'],
         r_accel_mfe_profit_lock_locked_pct=lock['locked_profit_pct'],
         r_accel_mfe_profit_lock_seen_profit_pct=lock['current_profit_pct'],
         r_accel_mfe_profit_lock_projected_net_rub=lock.get('projected_net_profit_at_stop_rub'),
+        r_accel_mfe_learning_teaching_id=policy.get('teaching_id'),
+        r_accel_mfe_execution_required=bool(cfg.get('execution_receipt_required',True)),
+        r_accel_mfe_protection_state='ACTIVE',
+        r_accel_mfe_exit_authority='STRUCTURAL_MFE_PROTECTION',
         r55_net_profit_lock_active=True,
     )
     return {'patch':patch,'lock':lock,'state':'PROTECTED',
@@ -1016,6 +1036,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                 pass
 
             flush_paths(c)
+            structural_persistence_failsafe=False
             structural_lock=_structural_mfe_profit_lock(vp,c,z,q,ts,now)
             structural_patch=structural_lock.get('patch') or {}
             if structural_patch:
@@ -1028,6 +1049,11 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                     changes.append({'portfolio':z.get('portfolio_name'),'asset':z.get('asset'),
                                     'trade_id':_tid,'reason':'MFE_STATE_PERSISTENCE_FAILED',
                                     'price':float((q or {}).get('price') or 0.0)})
+                    pp_cfg=((getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {})
+                            .get('profit_protection') or {})
+                    structural_persistence_failsafe=bool(
+                        structural_lock.get('lock')
+                        and pp_cfg.get('persistence_failure_action')=='EXIT_TO_CASH')
                 if structural_lock.get('lock'):
                     _sl=structural_lock['lock']
                     changes.append({
@@ -1090,7 +1116,8 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                     'projected_net_profit_at_stop_rub': lock.get('projected_net_profit_at_stop_rub'),
                 })
 
-            reason = protective_reason(z, q, now)
+            reason = ('STOP_MFE_PROTECTION_PERSISTENCE_FAILSAFE'
+                      if structural_persistence_failsafe else protective_reason(z, q, now))
             if not reason:
                 continue
             # Persist earlier observations before accounting reads another
@@ -1105,7 +1132,8 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             if full is None:
                 continue
             z=dict(full,_execution_quote=q,_execution_quote_frozen=True)
-            reason=protective_reason(z,q,now)
+            reason=('STOP_MFE_PROTECTION_PERSISTENCE_FAILSAFE'
+                    if structural_persistence_failsafe else protective_reason(z,q,now))
             if not reason:
                 continue
             # Accrue funding up to this exit exactly once under the same book lock.
@@ -1124,33 +1152,54 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                     z,q,_tr_full,nav,getattr(vp,'COMMISSION',VC.COMMISSION_RATE))
                 if _soft.get('suppress'):
                     _p=payload_of(z)
-                    try:
-                        _entry=float(z.get('avg_entry_price') or _p.get('entry_price') or 0.0)
-                        _px=float(q.get('price') or 0.0)
-                        _pct=100.0*((_px/_entry-1.0) if z.get('direction')=='LONG'
-                                    else (_entry/_px-1.0)) if _entry>0 and _px>0 else 0.0
-                    except Exception:
-                        _pct=0.0
-                    _rearm=max(_pct+0.10,float(_p.get('r63_profit_lock_rearm_after_pct') or 0.0))
-                    _patch={'trailing_stop':None,'r48_profit_lock_active':False,
-                            'r55_net_profit_lock_active':False,
-                            'r63_profit_lock_rearm_after_pct':_rearm,
-                            'r63_last_soft_stop_suppressed_at':ts,
-                            'r63_last_soft_stop_projected_net_rub':_soft.get('net_pnl_rub'),
-                            'r63_last_soft_stop_fill_price':_soft.get('fill_price')}
-                    c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE active_trade_id=%s",
-                              (json.dumps(_patch),z.get('active_trade_id')))
-                    c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
-                              (json.dumps(_patch),z.get('active_trade_id')))
-                    changes.append({'portfolio':name,'asset':z.get('asset'),'trade_id':z.get('active_trade_id'),
-                                    'reason':'PROFIT_LOCK_SOFT_STOP_NET_NEGATIVE_REARMED',
-                                    'price':px,'projected_net_pnl_rub':_soft.get('net_pnl_rub'),
-                                    'modeled_fill_price':_soft.get('fill_price'),
-                                    'rearm_after_profit_pct':_rearm})
-                    continue
+                    # Owner-trained structural MFE protection is an exit
+                    # authority. Once armed, do not remove it merely because
+                    # realized fees/funding make the modeled stop slightly
+                    # negative; otherwise a protected winner can become a large
+                    # loser before the lock rearms.
+                    if _p.get('r_accel_mfe_profit_lock_active'):
+                        reason='STOP_STRUCTURAL_MFE_PROTECTION'
+                        changes.append({
+                            'portfolio':name,'asset':z.get('asset'),
+                            'trade_id':z.get('active_trade_id'),
+                            'reason':'STRUCTURAL_MFE_PROTECTION_EXIT_AUTHORITY_USED',
+                            'price':px,
+                            'projected_net_pnl_rub':_soft.get('net_pnl_rub'),
+                            'modeled_fill_price':_soft.get('fill_price'),
+                        })
+                    else:
+                        try:
+                            _entry=float(z.get('avg_entry_price') or _p.get('entry_price') or 0.0)
+                            _px=float(q.get('price') or 0.0)
+                            _pct=100.0*((_px/_entry-1.0) if z.get('direction')=='LONG'
+                                        else (_entry/_px-1.0)) if _entry>0 and _px>0 else 0.0
+                        except Exception:
+                            _pct=0.0
+                        _rearm=max(_pct+0.10,float(_p.get('r63_profit_lock_rearm_after_pct') or 0.0))
+                        _patch={'trailing_stop':None,'r48_profit_lock_active':False,
+                                'r55_net_profit_lock_active':False,
+                                'r63_profit_lock_rearm_after_pct':_rearm,
+                                'r63_last_soft_stop_suppressed_at':ts,
+                                'r63_last_soft_stop_projected_net_rub':_soft.get('net_pnl_rub'),
+                                'r63_last_soft_stop_fill_price':_soft.get('fill_price')}
+                        c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE active_trade_id=%s",
+                                  (json.dumps(_patch),z.get('active_trade_id')))
+                        c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                                  (json.dumps(_patch),z.get('active_trade_id')))
+                        changes.append({'portfolio':name,'asset':z.get('asset'),'trade_id':z.get('active_trade_id'),
+                                        'reason':'PROFIT_LOCK_SOFT_STOP_NET_NEGATIVE_REARMED',
+                                        'price':px,'projected_net_pnl_rub':_soft.get('net_pnl_rub'),
+                                        'modeled_fill_price':_soft.get('fill_price'),
+                                        'rearm_after_profit_pct':_rearm})
+                        continue
             vp._v90j_update_excursions(c, name, prices, ts)
             patch = {'last_guard_market_observed_at': q['observed_at'],
                      'last_guard_checked_at': ts, 'protective_exit_lane': 'INDEPENDENT_PAPER_GUARD'}
+            if reason.startswith(('STOP_STRUCTURAL_MFE_PROTECTION',
+                                  'STOP_MFE_PROTECTION_PERSISTENCE_FAILSAFE')):
+                patch.update(r_accel_mfe_protection_state='EXITED',
+                             r_accel_mfe_exit_authority_used=True,
+                             r_accel_mfe_exit_authority_reason=reason)
             c.execute("UPDATE paper_positions SET payload=payload||%s::jsonb WHERE active_trade_id=%s",
                       (json.dumps(patch), tid))
             c.execute("UPDATE paper_trades SET payload=payload||%s::jsonb WHERE trade_id=%s", (json.dumps(patch), tid))
