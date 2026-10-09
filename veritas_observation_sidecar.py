@@ -26,6 +26,8 @@ MAX_WITNESS_BYTES=32768
 _state={
     "status":"NOT_STARTED","version":VERSION,"interval_seconds":INTERVAL_SECONDS,
     "checked_at":None,"positions":0,"quotes":0,"written":0,"invalid":0,
+    "seeded_positions":0,"observed_positions":0,"unseeded_positions":0,
+    "seeded_events":0,"sealed_events":0,
     "missing_quotes":0,"duration_seconds":0.0,"error":None,
 }
 _state_lock=threading.Lock()
@@ -122,9 +124,12 @@ def seed(c,row,quote,checked_at):
         tx=getattr(c,"transaction",None)
         if callable(tx):
             with tx():
-                _upsert(c,[(trade_id,row.get("asset"),witness)])
+                wrote=_upsert(c,[(trade_id,row.get("asset"),witness)])
         else:
-            _upsert(c,[(trade_id,row.get("asset"),witness)])
+            wrote=_upsert(c,[(trade_id,row.get("asset"),witness)])
+        if wrote:
+            with _state_lock:
+                _state["seeded_events"]=int(_state.get("seeded_events") or 0)+1
     except Exception:
         witness=dict(witness)
         witness["invalid_observation_count"]=int(witness.get("invalid_observation_count") or 0)+1
@@ -152,7 +157,10 @@ def seal(c,row,quote,checked_at):
     # Do not UPDATE the sidecar from the close transaction. A concurrent sampler
     # must never make a protective/accounting exit wait on an evidence row lock.
     # The returned witness is sealed into paper_trades by canonical accounting.
-    return PATH.observe(work,quote,checked_at,at_entry=False,lane="OBSERVATION_SIDECAR_EXIT")
+    sealed=PATH.observe(work,quote,checked_at,at_entry=False,lane="OBSERVATION_SIDECAR_EXIT")
+    with _state_lock:
+        _state["sealed_events"]=int(_state.get("sealed_events") or 0)+1
+    return sealed
 
 
 def sample_once(pg_connect,quote_selector,*,now=None):
@@ -163,7 +171,7 @@ def sample_once(pg_connect,quote_selector,*,now=None):
          PIO.PROTECTION_POSITIONS_SQL+
          ") p LEFT JOIN paper_observation_sidecar s ON s.trade_id=p.active_trade_id "
          "ORDER BY p.portfolio_name,p.asset")
-    updates=[];quotes=invalid=missing=0
+    updates=[];quotes=invalid=missing=seeded=observed=unseeded=0
     with pg_connect() as c:
         rows=[dict(x) for x in c.execute(sql).fetchall()]
         for row in rows:
@@ -179,12 +187,22 @@ def sample_once(pg_connect,quote_selector,*,now=None):
                 missing+=1
             witness=PATH.observe(work,quote,clock,lane="OBSERVATION_SIDECAR")
             invalid+=int(bool(witness.get("invalid_observation_count")))
+            if witness.get("started_at_entry") is True:
+                seeded+=1
+            else:
+                unseeded+=1
+            if (witness.get("coverage_status")=="OBSERVED"
+                    and not witness.get("invalid_observation_count")
+                    and not witness.get("gap_count")):
+                observed+=1
             updates.append((row.get("active_trade_id"),row.get("asset"),witness))
         written=_upsert(c,updates)
     return {
         "status":"OK","version":VERSION,"checked_at":clock.isoformat(),
         "positions":len(rows),"quotes":quotes,"written":written,
-        "invalid":invalid,"missing_quotes":missing,
+        "invalid":invalid,"seeded_positions":seeded,
+        "observed_positions":observed,"unseeded_positions":unseeded,
+        "missing_quotes":missing,
         "duration_seconds":round(time.monotonic()-started,4),
         "book_lock_acquired":False,"network_fetches":0,"production_influence":False,
     }
@@ -218,6 +236,7 @@ def start(ns,quote_selector):
     def loop():
         nonlocal schema_ready
         last_log=0.0
+        last_shape=None
         while True:
             started=time.monotonic()
             try:
@@ -229,10 +248,14 @@ def start(ns,quote_selector):
                 result=sample_once(ns["pg_connect"],quote_selector)
                 with _state_lock:
                     _state.update(result,error=None)
-                if (result.get("invalid") or result.get("missing_quotes")
+                shape=(result.get("positions"),result.get("seeded_positions"),
+                       result.get("observed_positions"),result.get("unseeded_positions"),
+                       result.get("missing_quotes"))
+                if (shape!=last_shape or result.get("missing_quotes")
                         or time.monotonic()-last_log>=60):
                     ns["emit"]("observation_sidecar",**snapshot())
                     last_log=time.monotonic()
+                    last_shape=shape
             except Exception as exc:
                 with _state_lock:
                     _state.update(status="ERROR",checked_at=datetime.now(timezone.utc).isoformat(),
