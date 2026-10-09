@@ -199,13 +199,10 @@ def observe(row, quote, checked_at, *, at_entry=False, lane="PROTECTIVE_GUARD"):
         return witness
     if checked:
         if previous_check and checked>previous_check and (checked-previous_check).total_seconds()>ALLOWED_GAP_SECONDS:
-            # A process restart or missed protective lane is permanent evidence
-            # loss. Reuse the existing invalid counter so the shared SQL proof
-            # shape remains frozen.
+            # A missed protective check downgrades path continuity, but the
+            # fresh quote that follows must still update extrema and MFE/MAE.
             witness["invalid_observation_count"]=int(witness.get("invalid_observation_count") or 0)+1
             witness["coverage_status"]="INCOMPLETE"
-            witness["last_checked_at"]=checked.isoformat()
-            return witness
         witness["last_checked_at"] = checked.isoformat()
     observed = _time(quote.get("observed_at") or quote.get("market_observed_at"))
     px = _positive(quote.get("price"))
