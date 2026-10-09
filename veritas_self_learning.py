@@ -82,9 +82,18 @@ def review(trade, snapshot=None):
     target_atr=(abs(target-entry)/atr) if entry and target and atr else None
     rr=(abs(target-entry)/abs(entry-stop)) if entry and stop and target and abs(entry-stop)>0 else None
     anchor=_num(s.get("stop_anchor"))
+    protected=s.get("protected_swing") or {}
+    target_ladder=list(s.get("target_ladder") or [])
+    structural_levels=s.get("structural_levels")
     stop_anchor_ok=None
+    stop_anchor_buffer_atr=None
     if stop and anchor and atr:
         stop_anchor_ok=(stop<anchor if direction=="LONG" else stop>anchor)
+        stop_anchor_buffer_atr=abs(stop-anchor)/atr
+    first_zone=_num((target_ladder[0] or {}).get("price")) if target_ladder else None
+    target_zone_match=(first_zone is not None and target is not None
+                       and abs(first_zone-target)<=max(1e-9,abs(target)*1e-8))
+    target_zone_distance_atr=(abs(target-entry)/atr if target and entry and atr else None)
     if net>0: strengths.append("Сделка закрыта с положительным результатом после расходов.")
     else: issues.append("Отрицательный финансовый результат после расходов.")
     if mfe is not None and mfe>0 and net<=0:
@@ -103,8 +112,14 @@ def review(trade, snapshot=None):
             tests=[{"parameter":"max_initial_risk_atr","values":[3.0,4.0,5.0]}]))
     if rr is not None and rr<1.0:
         issues.append("Исходная цель меньше исходного ценового риска.")
-    if stop_anchor_ok is True: strengths.append("Стоп расположен за сохранённым структурным high/low.")
-    if stop_anchor_ok is False: issues.append("Стоп не подтверждён сохранённым структурным high/low.")
+    if stop_anchor_ok is True:
+        strengths.append("Стоп расположен за сохранённым предыдущим структурным high/low.")
+    if stop_anchor_ok is False:
+        issues.append("Стоп не подтверждён сохранённым предыдущим структурным high/low.")
+    if target_ladder and target_zone_match:
+        strengths.append("Первая цель совпадает с сохранённой ранее наблюдавшейся структурной зоной.")
+    elif target and not target_ladder:
+        issues.append("Для цели нет сохранённого доказательства предыдущей структурной зоны; проверить происхождение тейка.")
     diag=t.get("trade_diagnostics") or {}
     eligible=bool(t.get("learning_eligible"))
     evidence="VERIFIED" if eligible else "UNVERIFIED"
@@ -116,7 +131,12 @@ def review(trade, snapshot=None):
         "financial_result_rub":net,"exit_reason":t.get("exit_reason"),
         "levels_volatility":{"entry":entry,"exit":exitp,"stop":stop,"target":target,
             "atr":atr,"initial_risk_atr":risk_atr,"target_distance_atr":target_atr,
-            "gross_target_to_risk":rr,"stop_anchor":anchor,"stop_beyond_anchor":stop_anchor_ok},
+            "gross_target_to_risk":rr,"stop_anchor":anchor,"stop_beyond_anchor":stop_anchor_ok,
+            "stop_anchor_buffer_atr":stop_anchor_buffer_atr,
+            "protected_swing":protected,"target_ladder":target_ladder,
+            "target_matches_first_previous_zone":target_zone_match,
+            "target_zone_distance_atr":target_zone_distance_atr,
+            "structural_levels":structural_levels},
         "market_context":{"regime":s.get("regime"),"trigger_timeframe":s.get("trigger_timeframe"),
             "structural_timeframe":s.get("structural_timeframe"),
             "stop_timeframe":s.get("stop_timeframe"),"atr_timeframe":s.get("atr_timeframe"),
