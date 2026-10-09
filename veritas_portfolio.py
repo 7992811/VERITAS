@@ -2521,6 +2521,10 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             reason='INSTRUMENT_REPLACED_BY_NQ' if z['asset']=='NDX' else 'STOP' if stop_hit else 'STRUCTURE_EXHAUSTION_EXIT' if structure_exit else 'TAKE_PROFIT' if tp_hit else 'STRUCTURE_BREAK_EXIT_TO_CASH' if confirmed_flip and row and row.get('_v90_exit_only_flip') else 'V842_CONFIRMED_DIRECTION_FLIP' if confirmed_flip else 'HARD_THESIS_INVALIDATION' if hard_exit else 'RISK_HARD_STOP' if rg.get('new_risk') is False else 'SOFT_SIZE_REDUCTION'
             _close_or_reduce(c,p,name,VPT.journal_position(z,mgmt,reason,ts),px,target,nav,ts,reason)
     p,pos=_portfolio_rows(c,name,mark_only=True); nav,unreal,gross,net=_mark_nav(p,pos,prices)
+    # Fresh post-close snapshot: each asset appears at most once in candidates.
+    # Pass it through the same transaction so lower layers do not re-read the
+    # identical row before any mutation of that asset occurs.
+    pos_by_asset={str(z['asset']):z for z in pos}
     # Add/increase only when risk governor allows new risk.
     if rg['new_risk']:
         for asset,row in sorted(candidates.items(),key=lambda kv:float(kv[1].get('_rank') or 0.0),reverse=True):
@@ -2535,7 +2539,9 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                 _record_entry_outcome(row,'BLOCKED','EXECUTION_QUOTE_UNAVAILABLE',
                     quote_gate=VPG.quote_gate(observed,now=VPG.utc_datetime(ts),protective=True))
                 continue
-            z=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,asset)).fetchone()
+            z=pos_by_asset.get(str(asset))
+            row['_cycle_position_snapshot']=dict(z) if z is not None else None
+            row['_cycle_position_snapshot_valid']=True
             # CTC v2 already classified timing/level state before sizing.
             # No post-admission legacy timing veto is allowed here.
             if z and z['direction']!=row.get('research_decision'):

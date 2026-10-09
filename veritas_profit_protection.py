@@ -152,7 +152,7 @@ def refresh(c, name=None, now=None, commission=VC.COMMISSION_RATE):
         z = dict(item)
         patch = evaluate(z, accounts.get(z['active_trade_id']), now=now, commission=commission)
         patches.append((z['active_trade_id'], patch))
-    PIO.write_patches(c, patches)
+    PIO.write_patches_one_roundtrip(c, patches)
 
 
 def is_protected(z):

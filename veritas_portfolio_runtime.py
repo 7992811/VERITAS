@@ -4947,18 +4947,23 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         asset=z['asset']; identity=VPS.position_identity(z); q=VPG.quote_for_position(z,now=ts)
         safe_prices[asset]=float(q['price']) if q else VPS.frozen_price(z)
         status='OK' if q else 'PINNED_SOURCE_QUOTE_UNAVAILABLE'
-        audit={'price_source_status':status}
-        if identity:
+        payload=_v90j_json(z.get('payload'))
+        audit={}
+        if payload.get('price_source_status')!=status:
+            audit['price_source_status']=status
+        if identity and payload.get('price_source_lock')!=identity:
             audit['price_source_lock']=identity
-        if q:
-            audit['source_locked_mark']={'identity':VPS.identity(asset,q),'price':float(q['price']),
-                                         'observed_at':q['observed_at']}
-        c.execute("UPDATE paper_positions SET last_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                  "WHERE portfolio_name=%s AND asset=%s",
-                  (safe_prices[asset],json.dumps(audit),name,asset))
-        if z.get('active_trade_id'):
-            c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
-                      (json.dumps(audit),z['active_trade_id']))
+        # The live mark belongs on paper_positions. Per-tick source evidence is
+        # already held by the quote/observation paths; rewriting paper_trades on
+        # every mark added lock time without changing accounting.
+        if audit:
+            c.execute("UPDATE paper_positions SET last_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                      "WHERE portfolio_name=%s AND asset=%s",
+                      (safe_prices[asset],json.dumps(audit),name,asset))
+        else:
+            c.execute("UPDATE paper_positions SET last_price=%s "
+                      "WHERE portfolio_name=%s AND asset=%s AND last_price IS DISTINCT FROM %s",
+                      (safe_prices[asset],name,asset,safe_prices[asset]))
         candidate=safe_candidates.get(asset)
         # Foreign-source indicator changes cannot invalidate a held position.
         def usable(row):
@@ -5036,9 +5041,12 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
         _record_entry_outcome(row,'BLOCKED',admission.get('reason') or 'CANONICAL_ADMISSION_BLOCK',
                               canonical_admission=admission)
         return 0.0
-    existing=c.execute(
-        "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
-        (name,asset)).fetchone()
+    if row.get('_cycle_position_snapshot_valid') is True:
+        existing=row.get('_cycle_position_snapshot')
+    else:
+        existing=c.execute(
+            "SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s",
+            (name,asset)).fetchone()
     requested=max(0.0,float(target_fraction or 0.0))
     event=(admission.get('trend_event') or VTE.context_of(row or {}).get('event') or {})
     event_id=event.get('event_id')
