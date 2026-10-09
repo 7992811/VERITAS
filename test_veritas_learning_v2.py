@@ -24,6 +24,12 @@ class LearningV2Tests(unittest.TestCase):
         s=L.false_block_summary(rows)
         self.assertEqual(s["missed_directional_episodes"],0)
 
+    def test_discovery_threshold_is_lower_than_prospective_validation(self):
+        rows=[self.row() for _ in range(L.MIN_CONTEXT_N)]
+        h=L.generate_hypotheses(rows,[])
+        self.assertTrue(any(x["kind"]=="ENTRY_BLOCKER_RELAXATION" for x in h))
+        self.assertLess(L.MIN_CONTEXT_N,64)
+
     def test_entry_hypothesis_requires_recurrence_and_is_shadow_only(self):
         rows=[self.row() for _ in range(24)]
         h=L.generate_hypotheses(rows,[])
