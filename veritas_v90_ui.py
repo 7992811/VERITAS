@@ -1173,7 +1173,7 @@ function renderAutonomousTradeLearning(a){
         '<small>'+(x.profitability_proven===true?'Доходность после расходов подтверждена.':'Доходность ещё не подтверждена.')+(reason?' · '+esc(reasonRu(reason)):'')+'</small></div>';
     }).join(''):'<div class="msg">Кандидатов по денежным исходам пока нет — накапливается независимая выборка.</div>')+'</section>';
 }
-function aggregateMissed(learning2){function aggregateMissed(learning2){
+function aggregateMissed(learning2){
   const assets=learning2&&learning2.assets&&typeof learning2.assets==='object'?learning2.assets:{};
   const blockerMap=new Map(),rows=[];let missed=0,learnable=0,hard=0,blocked=0;
   Object.entries(assets).forEach(([asset,data])=>{
@@ -1265,7 +1265,7 @@ function renderReview(){
   $('reviewBody').innerHTML='<div class="review-grid"><div>'+trades+renderMissedSection(l2,missed)+'</div><div>'+renderAutonomousTradeLearning(a)+renderHypothesesSection(l2)+loop+'</div></div>';
 }
 
-function learningWaitText(a){function learningWaitText(a){
+function learningWaitText(a){
   const jobs=Object.values(a.jobs||{}).filter(x=>x&&typeof x==='object');
   const blocked=jobs.find(x=>/^(DEFERRED|ERROR|UNAVAILABLE|RETRY|FAILED)/.test(String(x.status||x.last_result?.status||'').toUpperCase()))||{};
   const error=a.last_error||blocked.error_code||blocked.last_error||blocked.error;
