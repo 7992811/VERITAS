@@ -10,6 +10,8 @@ import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
 import veritas_release as VR
+import veritas_peer_invalidation as VPI
+import veritas_episode_profit_floor as VEF
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -4967,6 +4969,24 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         if candidate and not usable(candidate):
             safe_candidates.pop(asset,None)
         safe_summary=[r for r in safe_summary if r.get('asset')!=asset or usable(r)]
+        peer=VPI.find(c,z)
+        if peer.get('active') and q:
+            peer_patch={'shared_canonical_setup_invalidation':peer}
+            encoded=json.dumps(peer_patch,ensure_ascii=False,default=str)
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                      "WHERE portfolio_name=%s AND asset=%s AND active_trade_id=%s",
+                      (encoded,name,asset,z.get('active_trade_id')))
+            if z.get('active_trade_id'):
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                          (encoded,z.get('active_trade_id')))
+            p_now,pos_now=_portfolio_rows(c,name)
+            nav_now,_,_,_=_mark_nav(p_now,pos_now,safe_prices)
+            closed=canonical_close_or_reduce(
+                c,p_now,name,z,safe_prices[asset],0.0,nav_now,ts,
+                'HARD_THESIS_INVALIDATION_SHARED_CANONICAL_SETUP'
+            )
+            if closed:
+                continue
         if VTM.owns_position(z):
             VTM.apply_trailing(c,name,z,safe_summary,q,ts)
             safe_candidates,safe_summary=VTM.filter_lower_context(z,safe_candidates,safe_summary)
@@ -5115,6 +5135,34 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     if cap>0:
         requested=min(requested,cap)
     step=float(policy.get('position_step') or .05)
+
+    # Trend acceleration may keep pyramiding a confirmed winner, but after a
+    # partial TP or an armed native profit lock, new risk may consume only the
+    # whole-episode profit buffer that remains at the active stop after costs.
+    if (existing and str(existing.get('direction') or '')==str(direction)
+            and VEF.protection_active(existing,{})):
+        tid=existing.get('active_trade_id')
+        trade=(c.execute("SELECT * FROM paper_trades WHERE trade_id=%s",
+                         (tid,)).fetchone() if tid else None)
+        floor=VEF.assess_add(existing,dict(trade or {}),price,requested,nav)
+        if floor.get('active'):
+            encoded=json.dumps({'episode_profit_floor_last_check':floor},ensure_ascii=False,default=str)
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                      "WHERE portfolio_name=%s AND asset=%s",(encoded,name,asset))
+            if tid:
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                          "WHERE trade_id=%s",(encoded,tid))
+            current=float(floor.get('current_fraction') or 0.0)
+            allowed=max(0.0,float(floor.get('cap_fraction') or current)-current)
+            stepped=current+math.floor(allowed/step+1e-9)*step
+            if stepped<requested-1e-9:
+                requested=max(current,stepped)
+                row['_episode_profit_floor_cap']=floor
+            if requested<=current+0.0025:
+                _record_entry_outcome(row,'BLOCKED','EPISODE_PROFIT_FLOOR_ADD_BLOCKED',
+                                      episode_profit_floor=floor,current_fraction=current)
+                return 0.0
+
     if not existing or str(existing.get('direction'))!=str(direction):
         requested=max(0.0,math.floor(requested/step+1e-9)*step)
     if requested<=0:

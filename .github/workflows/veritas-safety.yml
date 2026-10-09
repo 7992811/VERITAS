@@ -92,6 +92,10 @@ jobs:
         run: python -m unittest -v test_veritas_canonical_constitution.py
       - name: CTC v2 architecture regressions
         run: python -m unittest -v test_veritas_architecture_v2.py
+      - name: Owner trade-review and self-learning regressions
+        run: python -m unittest -v test_veritas_owner_review_20261009.py
+      - name: Episode profit floor regressions
+        run: python -m unittest -v test_veritas_episode_profit_floor.py
       - name: Canonical cost policy regressions
         run: python -m unittest -v test_veritas_r82_cost_policy.py test_veritas_cost_audit_repairs.py
       - name: Currency portfolio regressions
