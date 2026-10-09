@@ -8,7 +8,6 @@ PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.29-owner-review-self-learning"
 UI_VERSION="veritas-ui-v9.1.8.29-owner-review-self-learning"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
-
 def deployment_sha():
     for key in ("RENDER_GIT_COMMIT","RENDER_GIT_COMMIT_SHA","GIT_COMMIT","SOURCE_COMMIT"):
         value=os.getenv(key,"").strip()
