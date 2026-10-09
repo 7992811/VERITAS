@@ -5149,8 +5149,15 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                 if (opened and opened.get('asset')==asset and opened.get('direction')==direction
                         and opened.get('active_trade_id')):
                     is_new = not existing or opened.get('active_trade_id') != existing.get('active_trade_id')
-                    VOP.record(c,dict(opened),VPS.quote_from_row(work),ts,
+                    entry_quote=VPS.quote_from_row(work)
+                    VOP.record(c,dict(opened),entry_quote,ts,
                                at_entry=is_new,lane='CANONICAL_ENTRY' if is_new else 'CANONICAL_ADD')
+                    if is_new:
+                        try:
+                            import veritas_observation_sidecar as VOS
+                            VOS.seed(c,dict(opened),entry_quote,ts)
+                        except Exception:
+                            pass
         except Exception:
             # A missing entry witness stays unverified; an optional evidence
             # read/write must not roll back the already accounted paper fill.
@@ -5205,7 +5212,21 @@ def canonical_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     # Every actual close/reduction records the same quote used by accounting.
     # Evidence-only metadata does not alter stop, target, size or execution price.
     import veritas_observation_path as VOP
-    z = VOP.record(c,z,q,ts,lane='CANONICAL_EXIT')
+    # Prefer the independent sidecar witness because it is not coupled to the
+    # heavy protective book lock. If it is unavailable, preserve the existing
+    # fail-closed V2 path writer as the execution-safe fallback.
+    sidecar_witness=None
+    try:
+        import veritas_observation_sidecar as VOS
+        sidecar_witness=VOS.seal(c,z,q,ts)
+    except Exception:
+        sidecar_witness=None
+    if isinstance(sidecar_witness,dict):
+        zp=dict(VPS.payload(z) or {})
+        zp['observation_path']=sidecar_witness
+        z=dict(z,payload=zp)
+    else:
+        z = VOP.record(c,z,q,ts,lane='CANONICAL_EXIT')
     import veritas_structural_lifecycle as VSL
     if full and reason.startswith('TAKE_PROFIT') and VSL.owns_position(z):
         reduction=VSL.target_reduction(z,actual,nav,ts)
