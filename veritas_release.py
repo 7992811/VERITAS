@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.29-structural-breakout-learning-v2-blocker-evidence"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.29-structural-breakout-learning-v2-blocker-evidence"
-UI_VERSION="veritas-ui-v9.1.8.29-structural-breakout-learning-v2-blocker-evidence"
+PRODUCT_VERSION="veritas-max-product-v91.8.30-structural-breakout-learning-v2-event-cadence"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.30-structural-breakout-learning-v2-event-cadence"
+UI_VERSION="veritas-ui-v9.1.8.30-structural-breakout-learning-v2-event-cadence"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
