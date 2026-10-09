@@ -170,7 +170,7 @@ class EntryScenarioIntegrationTests(unittest.TestCase):
             return {"payload":ledger.get(key)}
         first=UT.seed_all_user_teachings(write,read)
         second=UT.seed_all_user_teachings(write,read)
-        self.assertEqual(set(ledger),{UT.TEACHING_ID,UT.MA_TEACHING_ID,UT.BREAKOUT_TEACHING_ID,UT.ACCELERATION_TEACHING_ID,UT.TREND_DAY_TEACHING_ID,UT.OBSERVATION_INTEGRITY_TEACHING_ID})
+        self.assertEqual(set(ledger),{UT.TEACHING_ID,UT.MA_TEACHING_ID,UT.BREAKOUT_TEACHING_ID,UT.ACCELERATION_TEACHING_ID,UT.TREND_DAY_TEACHING_ID,UT.OBSERVATION_INTEGRITY_TEACHING_ID,UT.EFFICIENCY_REFINEMENT_TEACHING_ID})
         self.assertTrue(all(r["durable"] for r in first+second))
         self.assertEqual({r["status"] for r in second},{"ALREADY_PRESENT"})
         self.assertEqual(UT._digest(UT.policy_snapshot()),"613b4f153f7878891c9fcab5014b01be1b10148391978f13ea397d53ec72b29b")
