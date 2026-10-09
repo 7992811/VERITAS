@@ -161,6 +161,15 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         return (application or self.app).handle(
             service.PREFIX + operation, payload, HEADERS if headers is None else headers)
 
+    def wait_reconcile_idle(self, application=None):
+        app = application or self.app
+        for _ in range(1000):
+            with app._reconcile_state_lock:
+                if not app._reconcile_inflight:
+                    return
+            threading.Event().wait(.001)
+        self.fail("background reconciliation did not become idle")
+
     def create(self, *, event="http-event", owner_id=OWNER, bot_id=BOT, **changes):
         value = terms(event=event, instrument_uid=service.CNY_UID,
                       execution_environment="sandbox", portfolio="Currency")
@@ -352,6 +361,7 @@ class TradeHttpRepositoryTests(unittest.TestCase):
             contract_notional=D('12769'), target_lots=0, held_lots=0, max_gross=D('10'))
         with patch.object(self.coordinator, 'prepare_next', side_effect=failure):
             self.assertEqual(self.request('poll')[1], 200)
+        self.wait_reconcile_idle()
         calls = list(self.coordinator.calls)
         facts_calls = list(self.facts.calls)
         observed = self.request('status')[0]
@@ -369,6 +379,7 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         failure, _, _, _ = stale_failure()
         with patch.object(self.coordinator, 'prepare_next', side_effect=failure):
             self.assertEqual(self.request('poll')[1], 200)
+        self.wait_reconcile_idle()
         calls, facts_calls = list(self.coordinator.calls), list(self.facts.calls)
         observed = self.request('status')[0]
         self.assertEqual(observed['last_poll_entry_diagnostics'], failure.entry_diagnostics)
