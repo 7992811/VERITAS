@@ -51,7 +51,8 @@ class TradeFacts:
 class CurrencyTradingCoordinator:
     def __init__(self, *, repository, adapter, account_id, owner, facts, summary,
                  ingest_execution, execution_enabled=False, approval_ttl_seconds=120,
-                 clock=None, live_admission=None, preflight_live=False, manual_admission=None):
+                 clock=None, live_admission=None, preflight_live=False, manual_admission=None,
+                 sandbox_autotrade_enabled=False):
         if type(execution_enabled) is not bool:
             raise TradePlanBlocked("BOOLEAN_EXECUTION_GATE_REQUIRED")
         if not isinstance(account_id, str) or not account_id.strip():
@@ -64,6 +65,10 @@ class CurrencyTradingCoordinator:
             raise TradePlanBlocked("INVALID_LIVE_ADMISSION_CHECKER")
         if type(preflight_live) is not bool:
             raise TradePlanBlocked("BOOLEAN_PREFLIGHT_GATE_REQUIRED")
+        if type(sandbox_autotrade_enabled) is not bool:
+            raise TradePlanBlocked("BOOLEAN_SANDBOX_AUTOTRADE_GATE_REQUIRED")
+        if sandbox_autotrade_enabled and getattr(adapter, "environment", None) != "sandbox":
+            raise TradePlanBlocked("SANDBOX_AUTOTRADE_PRODUCTION_FORBIDDEN")
         self.live_admission = live_admission
         if manual_admission is not None and not callable(manual_admission):
             raise TradePlanBlocked("INVALID_MANUAL_ADMISSION_CHECKER")
@@ -73,6 +78,7 @@ class CurrencyTradingCoordinator:
         self.account_id, self.owner = account_id, owner
         self.facts, self.summary, self.ingest_execution = facts, summary, ingest_execution
         self.execution_enabled = execution_enabled
+        self.sandbox_autotrade_enabled = sandbox_autotrade_enabled
         self.approval_ttl_seconds = approval_ttl_seconds
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = threading.RLock()
@@ -396,8 +402,10 @@ class CurrencyTradingCoordinator:
                     if permitted is not True:
                         raise TradePlanBlocked("EXECUTION_PAUSED")
                     check_before_send()
-                    claimed = self.repository.claim_approved(proposal_id, terms_hash=proposal["terms_hash"],
-                        worker_id=self.worker_id, economics_revision=proposal.get("economics_revision", 1))
+                    claimed = self.repository.claim_approved(
+                        proposal_id, terms_hash=proposal["terms_hash"],
+                        worker_id=self.worker_id, economics_revision=proposal.get("economics_revision", 1),
+                        allow_sandbox_auto=self.sandbox_autotrade_enabled)
                     if not claimed:
                         return {"ok": False, "code": "APPROVAL_ALREADY_CLAIMED_OR_EXPIRED"}
                     # A database wait cannot refresh the quote, native event or
