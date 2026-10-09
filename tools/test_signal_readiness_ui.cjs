@@ -45,6 +45,20 @@ assert.match(elements.detail.innerHTML,/Готовность входа/);
 assert.match(elements.detail.innerHTML,/Доход до цели не покрывает расходы/);
 assert.match(elements.detail.innerHTML,/Проверка входа:/);
 
+// Critical invariant: execution/source/session failure must not hide a fresh,
+// structurally verified market thesis from market ranking and overview surfaces.
+const blockedLong={...base,asset:'MOEX',research_decision:'LONG',decision:'NO_TRADE',
+  signal_tier:'SUPER_LONG',price:2370.6,source_gate_pass:false,market_open:false,
+  structure_history_status:{status:'READY'},horizon_structure_score:.985,
+  horizon_structure_state:'CONFIRMED_TREND',trade_entry_eligible:false,
+  trade_entry_reason:'MARKET_SESSION_CLOSED',trade_entry_blockers:['MARKET_SESSION_CLOSED']};
+ui.st.signals={signals:[blockedLong]};ui.renderSignals();
+assert.match(elements.matrixBody.innerHTML,/sig-dot long super/);
+assert.match(elements.actions.innerHTML,/Прогноз: ↑ Strong Long/);
+assert.match(elements.assets.innerHTML,/Long/);
+assert.match(elements.actions.innerHTML,/ВХОД ЗАБЛОКИРОВАН/);
+ui.st.signals={signals:[base]};ui.renderSignals();
+
 for(const [code,short,message] of [
   ['SAME_TF_CONTEXT_STALE','свечи',/Закрытые свечи выбранного периода устарели/],
   ['SAME_TF_TARGET_ALREADY_REACHED','цель',/Цель исходного события уже достигнута/],
