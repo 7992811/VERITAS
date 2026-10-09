@@ -34,7 +34,7 @@ def entry_snapshot(decision_payload, trade_payload=None, setup_payload=None):
     aliases=("rsi","macd","adx","atr","volume_ratio","relative_volume","volatility",
              "realized_volatility","sma18","sma50","sma200","ema18","ema50","ema200")
     for source in (features,d,plan):
-        for k,v in source.items() if isinstance(source,dict) else ():
+        for k,v in (source.items() if isinstance(source,dict) else ()):
             lk=str(k).lower()
             if any(a==lk or a in lk for a in aliases):
                 if isinstance(v,(str,int,float,bool)) or v is None:
