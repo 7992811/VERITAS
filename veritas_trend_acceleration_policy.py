@@ -42,6 +42,14 @@ TREND_ACCELERATION_POLICY = {
             "1h": 180, "4h": 600, "1d": 1800,
         },
     },
+    "execution_efficiency": {
+        "max_fee_to_positive_gross_edge": 0.25,
+        "require_positive_incremental_net_reward": True,
+        "block_add_on_fast_opposite_confirmation": True,
+        "critical_excursion_durable": True,
+        "persistence_timer_durable": True,
+        "diagnostic_path_failure_cannot_disable_owner_rule": True,
+    },
     "reversal_exit": {
         "enabled": True,
         "horizons": ("1m", "5m"),
@@ -49,6 +57,8 @@ TREND_ACCELERATION_POLICY = {
         "minimum_expected_move_pct": 0.0040,
         "accepted_structure_states": ("BUILDING_TREND", "CONFIRMED_TREND"),
         "entry_permission_required_for_exit": False,
+        "fast_exit_held_horizons": ("1h",),
+        "minimum_confirming_senior_rows": 1,
         "principle": (
             "Fast confirmed opposite structure may close stale exposure; "
             "opening the opposite side still requires canonical admission."
