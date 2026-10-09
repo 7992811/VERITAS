@@ -8,6 +8,7 @@ import veritas_position_guard as VPG
 import veritas_price_source as VPS
 import veritas_paper_entry as VPE
 import veritas_trend_entry as VTE
+import veritas_trend_day_efficiency as VTDE
 import veritas_user_teaching as VUT
 
 
@@ -49,6 +50,29 @@ def trend_row(*, state="CONFIRMED_TREND", horizon="5m", tier="SUPER_LONG",
             "evidence_independence": {"independent_count": evidence}
         },
     }
+
+
+def extreme_trend_row(*, cross_regime=None):
+    row=trend_row(state="CONFIRMED_TREND",horizon="5m",tier="SUPER_LONG",
+                  evidence=5,expected=0.012,supporting=["1h","4h"],mid=True)
+    row["trend_entry_context"]["confirmation_30m_trend"]={
+        "confirmed":True,"direction":"LONG","timeframe":"30m"
+    }
+    row["trade_plan"]["trend_entry_context"]=row["trend_entry_context"]
+    row["trend_impulse"]={
+        "phase":"IMPULSE_TREND","direction":"LONG","impulse_score":0.90,
+        "session_efficiency":0.80,"session_persistence":0.82,
+        "horizon_consensus_count":4,"horizon_consensus_score":0.88,
+        "structure_score":0.86,"entry_quality":"FRESH_BREAKOUT",
+    }
+    row["intraday_structure"]={
+        "direction":"LONG","score":0.88,"session_efficiency":0.80,
+        "session_persistence":0.82,"relative_volume":1.45,
+    }
+    row["horizon_structure"]["score"]=0.90
+    if cross_regime:
+        row["cross_asset_shadow"]={"regime":cross_regime}
+    return row
 
 
 class StopRiskDiagnosticsTests(unittest.TestCase):
@@ -199,6 +223,26 @@ class MFEProtectionTests(unittest.TestCase):
         self.assertEqual(result["patch"], {})
 
 
+class TrendDayRunnerTests(unittest.TestCase):
+    def test_protected_impulse_trend_keeps_85pct_runner(self):
+        position={"portfolio_name":"Aggressive"}
+        payload={
+            "r_accel_mfe_profit_lock_active":True,
+            "last_trend_day_efficiency":{
+                "eligible":True,"phase":"IMPULSE_TREND","runner_ratio":0.85
+            },
+        }
+        self.assertAlmostEqual(VTDE.protected_runner_ratio(position,payload),0.85)
+
+    def test_unprotected_or_currency_keeps_default_half_runner(self):
+        td={"eligible":True,"phase":"IMPULSE_TREND","runner_ratio":0.85}
+        self.assertAlmostEqual(VTDE.protected_runner_ratio(
+            {"portfolio_name":"Aggressive"},{"last_trend_day_efficiency":td}),0.50)
+        self.assertAlmostEqual(VTDE.protected_runner_ratio(
+            {"portfolio_name":"Currency"},
+            {"r_accel_mfe_profit_lock_active":True,"last_trend_day_efficiency":td}),0.50)
+
+
 class TrendAccelerationTests(unittest.TestCase):
     def test_fast_confirmation_earns_first_standard_scale(self):
         result = VSL._trend_acceleration_state(
@@ -228,6 +272,32 @@ class TrendAccelerationTests(unittest.TestCase):
         )
         self.assertEqual(result["stage"], "SENIOR_CONFIRMED")
         self.assertAlmostEqual(result["target_fraction"], 2.50)
+
+    def test_extreme_trend_day_earns_full_standard_allocation(self):
+        row=extreme_trend_row()
+        result=VSL._trend_acceleration_state(row,"LONG",{"mode":"CORE"})
+        self.assertTrue(result["active"])
+        self.assertEqual(result["stage"],"EXTREME_CONFIRMED")
+        self.assertAlmostEqual(result["target_fraction"],1.00)
+        self.assertTrue(result["trend_day_efficiency"]["eligible"])
+
+    def test_extreme_trend_day_earns_350pct_aggressive_allocation(self):
+        row=extreme_trend_row()
+        result=VSL._trend_acceleration_state(row,"LONG",{"mode":"AGGRESSIVE"})
+        self.assertEqual(result["stage"],"EXTREME_CONFIRMED")
+        self.assertAlmostEqual(result["target_fraction"],3.50)
+        self.assertAlmostEqual(result["temporary_max_gross"],5.00)
+
+    def test_cross_asset_context_is_telemetry_only(self):
+        aligned=VTDE.assess(extreme_trend_row(cross_regime="RISK_ON"),"LONG",{"mode":"CORE"},
+                            mid=True,senior=True,evidence=5,expected=.012,progress=.20)
+        conflict=VTDE.assess(extreme_trend_row(cross_regime="RISK_OFF"),"LONG",{"mode":"CORE"},
+                             mid=True,senior=True,evidence=5,expected=.012,progress=.20)
+        self.assertTrue(aligned["eligible"])
+        self.assertTrue(conflict["eligible"])
+        self.assertAlmostEqual(aligned["score"],conflict["score"])
+        self.assertFalse(aligned["cross_asset_size_influence"])
+        self.assertEqual(conflict["cross_asset_alignment"],"CONFLICT")
 
     def test_currency_is_explicitly_excluded(self):
         result = VSL._trend_acceleration_state(
