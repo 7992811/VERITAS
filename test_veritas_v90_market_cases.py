@@ -269,6 +269,8 @@ class SignalExecutionSeparationRegressionTests(unittest.TestCase):
             "(not v70_pretrade.get('allow',True) or v70_pretrade.get('action')=='WAIT')",
             source)
         self.assertIn("if v70_pretrade.get('execution_allowed',v70_pretrade.get('allow',True)):",source)
+        self.assertIn("from veritas_market_runtime import moex_index_session_open",source)
+        self.assertNotIn("return 590<=mins<1140",source)
 
     def test_execution_data_veto_never_erases_directional_market_signal(self):
         gate = SC.pretrade_gate({
