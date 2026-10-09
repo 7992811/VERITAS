@@ -495,7 +495,7 @@ const tfShort=tf=>({'1m':'1м','5m':'5м','1h':'1ч','4h':'4ч','1d':'1д','3d':
 const tfRu=tf=>({'1m':'1 мин','5m':'5 мин','1h':'1 ч','4h':'4 ч','1d':'1 день','3d':'3 дня','7d':'7 дней'}[tf]||tf||'—');
 const holdRu=s=>{if(s==null||s==='')return'—';s=Number(s);if(!Number.isFinite(s)||s<0)return'—';const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.max(0,Math.floor((s%3600)/60));return(d?d+' д ':'')+(h?h+' ч ':'')+(m+' мин')};
 const dateRu=x=>x?new Date(x).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
-const exitRu=r=>{r=String(r||'').toUpperCase();if(r.startsWith('TAKE_PROFIT'))return'Фиксация по тейку';const m={TAKE_PROFIT:'Цель достигнута',TP:'Цель достигнута',STOP:'Стоп',STOP_LOSS:'Стоп',SIGNAL_FLIP:'Смена сигнала',TIMEOUT:'Выход по времени',PROFIT_HARVEST:'Фиксация прибыли',MANUAL:'Ручное закрытие',HARD_THESIS_INVALIDATION:'Сценарий отменён',PRODUCTION_CANDIDATE_REBASE:'Перезапуск портфеля',LEGACY_KERNEL_REBASE:'Переход на новые правила',V84_CONFIRMED_DIRECTION_FLIP:'Подтверждена смена направления',STRUCTURE_BREAK_EXIT_TO_CASH:'Нарушена структура тренда',CLOSED:'Закрыта'};return m[r]||'Закрытие системой'};
+const exitRu=r=>{r=String(r||'').toUpperCase();if(r.startsWith('TAKE_PROFIT'))return'Фиксация по тейку';const m={TAKE_PROFIT:'Цель достигнута',TP:'Цель достигнута',STOP:'Стоп',STOP_LOSS:'Стоп',SIGNAL_FLIP:'Смена сигнала',TIMEOUT:'Выход по времени',PROFIT_HARVEST:'Фиксация прибыли',MANUAL:'Ручное закрытие',MANUAL_CLOSE:'Ручное закрытие',LIVE_CLOSE:'Закрытие Currency',HARD_THESIS_INVALIDATION:'Сценарий отменён',PRODUCTION_CANDIDATE_REBASE:'Перезапуск портфеля',LEGACY_KERNEL_REBASE:'Переход на новые правила',V84_CONFIRMED_DIRECTION_FLIP:'Подтверждена смена направления',STRUCTURE_BREAK_EXIT_TO_CASH:'Нарушена структура тренда',CLOSED:'Закрыта'};return m[r]||'Закрытие системой'};
 const regimeRu=v=>{const k=String(v||'');const m={UPTREND_HIGH_VOL:'Восходящий тренд, высокая волатильность',UPTREND_MID_VOL:'Восходящий тренд, средняя волатильность',UPTREND_LOW_VOL:'Восходящий тренд, низкая волатильность',DOWNTREND_HIGH_VOL:'Нисходящий тренд, высокая волатильность',DOWNTREND_MID_VOL:'Нисходящий тренд, средняя волатильность',DOWNTREND_LOW_VOL:'Нисходящий тренд, низкая волатильность',RANGE_HIGH_VOL:'Боковой рынок, высокая волатильность',RANGE_MID_VOL:'Боковой рынок, средняя волатильность',RANGE_LOW_VOL:'Боковой рынок, низкая волатильность'};return m[k]||'Режим уточняется'};
 const structureRu=v=>{const k=String(v||'');const m={CONFIRMED_TREND:'Тренд подтверждён',BUILDING_TREND:'Тренд формируется',NEUTRAL:'Нейтральная структура',EXIT_REVERSAL:'Структура развернулась'};return m[k]||'Структура уточняется'};
 const qualityRu=v=>{const k=String(v||'');const m={FRESH_BREAKOUT:'Свежий пробой',CONFIRMED_TREND:'Подтверждённый тренд',WAIT_CONFIRMATION:'Ожидание подтверждения',NEUTRAL:'Нейтрально',INVALIDATED:'Сценарий отменён'};return m[k]||'Оценка формируется'};
@@ -621,7 +621,7 @@ const reasonRu=v=>{
     PAPER_SOURCE_NOT_ELIGIBLE:'Источник данных не допущен для модельной сделки',
     PRIMARY_SOURCE_GATE_FAILED:'Источник цены не прошёл проверку',
     ENTRY_SCENARIO_INVALIDATED:'Условия входа утратили актуальность',
-    CURRENCY_PORTFOLIO_SETUP_PENDING:'Валютный портфель ожидает настройки капитала и ограничений риска',
+    CURRENCY_PORTFOLIO_SETUP_PENDING:'Currency ожидает настройки капитала и ограничений риска',
     EXECUTION_QUOTE_UNAVAILABLE:'Нет свежей котировки для исполнения',
     EXECUTION_PENDING:'Ожидается окончательная проверка исполнения',
     EXECUTION_CONTROL_BLOCKED:'Ордер не прошёл дополнительный контроль исполнения',
@@ -846,8 +846,8 @@ function selectSignal(k,scroll=false){
 }
 
 
-const portfolioName=name=>({Impulse:'Импульсный',Aggressive:'Агрессивный',Champion:'Чемпион',Challenger:'Челленджер',Currency:'Валютный портфель'}[name]||name||'—');
-const currencyFallback=()=>({name:'Currency',display_name:'Валютный портфель',configuration_status:'CONFIGURED',allowed_assets:['CNYRUBF'],paper_trading_enabled:true,live_trading_enabled:false,capital_configured:true,initial_nav_rub:10000,max_gross_limit:10,leverage_limit:10,hard_drawdown_limit_pct:35,weekend_carry_allowed:true,positions_status:'UNAVAILABLE',risk_governor:{max_gross:10,hard_drawdown_limit:.35,profile:'CURRENCY'}});
+const portfolioName=name=>({Impulse:'Импульсный',Aggressive:'Агрессивный',Champion:'Чемпион',Challenger:'Челленджер',Currency:'Currency'}[name]||name||'—');
+const currencyFallback=()=>({name:'Currency',display_name:'Currency',configuration_status:'CONFIGURED',allowed_assets:['CNYRUBF'],paper_trading_enabled:true,live_trading_enabled:false,capital_configured:true,initial_nav_rub:10000,max_gross_limit:10,leverage_limit:10,hard_drawdown_limit_pct:35,weekend_carry_allowed:true,positions_status:'UNAVAILABLE',risk_governor:{max_gross:10,hard_drawdown_limit:.35,profile:'CURRENCY'}});
 const tone=value=>value==null?'':Number(value)>0?'ok':Number(value)<0?'bad':'';
 const signedPct=value=>value==null?'—':(Number(value)>0?'+':'')+pct(value);
 function portfolioView(p){
@@ -915,6 +915,7 @@ function renderPortfolioPanel(ps){
 }
 
 function positionSourceText(z){
+  if(z.position_source==='LIVE_BROKER_LEDGER'||z.execution_source==='LIVE_BROKER_LEDGER'||z.payload?.execution_source==='LIVE_BROKER_LEDGER')return 'Т-Инвестиции · LIVE';
   const identity=z.price_source_lock||z.payload?.price_source_lock||{},source=identity.primary_source||'не установлен';
   if(z.asset!=='BRENT')return esc(source);
   if(identity.contract_id)return esc(source)+' · контракт '+esc(identity.contract_id);
