@@ -169,6 +169,32 @@ class LearningV2Tests(unittest.TestCase):
         self.assertEqual(d["unparsed_blocked_directional"],L.MIN_CONTEXT_N)
         self.assertEqual(d["zero_entry_candidate_reason"],"NO_LEARNABLE_BLOCKER_MATCH")
 
+    def test_closed_trade_diagnostics_publish_dense_outcome_and_path_scorecard(self):
+        trades=[
+            {"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
+             "outcome_evidence_eligible":True,"path_evidence_eligible":False,
+             "stop_replay_ready":True,"exit_replay_ready":False,
+             "net_pnl_rub":100.0,"mae":None,"mfe":None,"capture_ratio":None},
+            {"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
+             "outcome_evidence_eligible":True,"path_evidence_eligible":True,
+             "stop_replay_ready":True,"exit_replay_ready":True,
+             "net_pnl_rub":-40.0,"mae":-.30,"mfe":.60,"capture_ratio":.25},
+        ]
+        d=L.research_diagnostics([],trades)
+        self.assertEqual(d["outcome_evidence_trade_rows"],2)
+        self.assertEqual(d["path_evidence_trade_rows"],1)
+        self.assertEqual(d["stop_replay_ready_rows"],2)
+        self.assertEqual(d["exit_replay_ready_rows"],1)
+        self.assertEqual(d["outcome_profitable_trade_rows"],1)
+        self.assertEqual(d["outcome_losing_trade_rows"],1)
+        self.assertEqual(d["outcome_flat_trade_rows"],0)
+        self.assertAlmostEqual(d["outcome_win_rate"],.5)
+        self.assertAlmostEqual(d["outcome_net_pnl_rub"],60.)
+        self.assertAlmostEqual(d["outcome_avg_net_pnl_rub"],30.)
+        self.assertAlmostEqual(d["path_avg_mfe_pct"],.60)
+        self.assertAlmostEqual(d["path_avg_mae_pct"],-.30)
+        self.assertAlmostEqual(d["path_avg_capture_ratio"],.25)
+
     def test_short_direction_is_signed_correctly(self):
         c=L.classify_decision_episode(self.row(decision="SHORT",fr=-.01,final_gate_blockers=[]))
         self.assertGreater(c["signed_forward_return"],0)
