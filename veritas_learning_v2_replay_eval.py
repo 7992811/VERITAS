@@ -113,43 +113,56 @@ def _trade_rows(c,candidate):
     contract=str(scope.get("contract_id") or "")
     regime=str(scope.get("regime") or "")
     return [dict(x) for x in c.execute("""
-      SELECT e.trade_id,e.closed_at,e.asset,e.direction,e.horizon,e.regime,e.setup_family,
-             t.opened_at,t.avg_entry_price,t.status AS trade_status,
-             t.payload->'entry_event_snapshot' AS entry_event_snapshot,
-             t.payload->'entry_execution_model' AS entry_execution_model,
-             t.payload->'price_source_lock' AS price_source_lock,
-             t.payload->'entry_execution_source_identity' AS entry_execution_source_identity,
-             t.payload->>'strategy_policy_hash' AS strategy_policy_hash,
-             t.payload->>'initial_stop_price' AS initial_stop_price,
-             t.payload->>'entry_atr' AS entry_atr,
-             COALESCE(o.entry_order_count,0) AS entry_order_count
-      FROM v90_learning_episodes e
-      JOIN paper_trades t ON t.trade_id=e.trade_id
-      LEFT JOIN (
-        SELECT trade_id,COUNT(*) AS entry_order_count
-        FROM paper_orders WHERE side IN ('BUY','SELL_SHORT')
-        GROUP BY trade_id
-      ) o ON o.trade_id=t.trade_id
-      WHERE COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE)=TRUE
-        AND e.payload->>'outcome_diagnostics_version'=%s
-        AND NULLIF(e.payload->>'outcome_evidence_hash','') IS NOT NULL
-        AND e.asset=%s AND e.horizon=%s
-        AND e.closed_at>%s
-        AND t.opened_at>%s
-        AND t.opened_at IS NOT NULL AND e.closed_at IS NOT NULL
-        AND e.closed_at-t.opened_at<=interval '24 hours'
-        AND COALESCE(e.regime,'')=%s
-        AND COALESCE(t.payload->>'strategy_policy_hash','')=%s
-        AND COALESCE(t.payload#>>'{price_source_lock,key}',
-                     t.payload#>>'{entry_execution_source_identity,key}','')=%s
-        AND COALESCE(t.payload#>>'{price_source_lock,contract_id}',
-                     t.payload#>>'{entry_execution_source_identity,contract_id}','')=%s
-        AND COALESCE(o.entry_order_count,0)=1
+      WITH candidate_pool AS MATERIALIZED (
+        SELECT e.trade_id,e.closed_at,e.asset,e.direction,e.horizon,e.regime,e.setup_family,
+               COALESCE(NULLIF(e.payload->>'independent_episode_key',''),e.trade_id) AS idea_key,
+               t.opened_at,t.avg_entry_price,t.status AS trade_status,
+               t.payload->'entry_event_snapshot' AS entry_event_snapshot,
+               t.payload->'entry_execution_model' AS entry_execution_model,
+               t.payload->'price_source_lock' AS price_source_lock,
+               t.payload->'entry_execution_source_identity' AS entry_execution_source_identity,
+               t.payload->>'strategy_policy_hash' AS strategy_policy_hash,
+               t.payload->>'initial_stop_price' AS initial_stop_price,
+               t.payload->>'entry_atr' AS entry_atr,
+               COALESCE(o.entry_order_count,0) AS entry_order_count,
+               ROW_NUMBER() OVER (
+                 PARTITION BY COALESCE(NULLIF(e.payload->>'independent_episode_key',''),e.trade_id)
+                 ORDER BY e.closed_at ASC,e.trade_id ASC
+               ) AS idea_rank
+        FROM v90_learning_episodes e
+        JOIN paper_trades t ON t.trade_id=e.trade_id
+        LEFT JOIN (
+          SELECT trade_id,COUNT(*) AS entry_order_count
+          FROM paper_orders WHERE side IN ('BUY','SELL_SHORT')
+          GROUP BY trade_id
+        ) o ON o.trade_id=t.trade_id
+        WHERE COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE)=TRUE
+          AND e.payload->>'outcome_diagnostics_version'=%s
+          AND NULLIF(e.payload->>'outcome_evidence_hash','') IS NOT NULL
+          AND e.asset=%s AND e.horizon=%s
+          AND e.closed_at>%s
+          AND t.opened_at>%s
+          AND t.opened_at IS NOT NULL AND e.closed_at IS NOT NULL
+          AND e.closed_at-t.opened_at<=interval '24 hours'
+          AND COALESCE(e.regime,'')=%s
+          AND COALESCE(t.payload->>'strategy_policy_hash','')=%s
+          AND COALESCE(t.payload#>>'{price_source_lock,key}',
+                       t.payload#>>'{entry_execution_source_identity,key}','')=%s
+          AND COALESCE(t.payload#>>'{price_source_lock,contract_id}',
+                       t.payload#>>'{entry_execution_source_identity,contract_id}','')=%s
+          AND COALESCE(o.entry_order_count,0)=1
+      )
+      SELECT trade_id,closed_at,asset,direction,horizon,regime,setup_family,
+             opened_at,avg_entry_price,trade_status,entry_event_snapshot,
+             entry_execution_model,price_source_lock,entry_execution_source_identity,
+             strategy_policy_hash,initial_stop_price,entry_atr,entry_order_count
+      FROM candidate_pool p
+      WHERE idea_rank=1
         AND NOT EXISTS (
           SELECT 1 FROM learning_v2_replay_receipts r
-          WHERE r.candidate_id=%s AND r.trade_id=e.trade_id
+          WHERE r.candidate_id=%s AND r.trade_id=p.trade_id
         )
-      ORDER BY e.closed_at ASC
+      ORDER BY closed_at ASC
       LIMIT %s
     """,(DIAGNOSTICS.VERSION,scope.get("asset"),scope.get("horizon"),
           candidate["registered_at"],candidate["registered_at"],
