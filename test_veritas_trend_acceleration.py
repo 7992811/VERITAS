@@ -1,8 +1,11 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 import veritas_canonical_constitution as CTC
 import veritas_stop_risk as VSR
 import veritas_structural_lifecycle as VSL
+import veritas_position_guard as VPG
+import veritas_price_source as VPS
 import veritas_trend_entry as VTE
 import veritas_user_teaching as VUT
 
@@ -100,6 +103,59 @@ class IntermediateTimeframeTests(unittest.TestCase):
         result = VTE.trend_confirmation(bars, "30m")
         self.assertFalse(result["confirmed"])
         self.assertEqual(result["direction"], "NO_TRADE")
+
+
+class MFEProtectionTests(unittest.TestCase):
+    def structural_position_and_quote(self, price=100.16):
+        now = datetime(2026, 10, 9, 9, 0, tzinfo=timezone.utc)
+        quote = {
+            "price": price, "best_bid": price, "best_ask": price + 0.01,
+            "observed_at": now.isoformat(), "source_gate_pass": True,
+            "source_names": {"primary": "ProFinance NASD100_FUT"},
+            "market_open": True,
+        }
+        identity = VPS.identity("NQ", quote)
+        position = {
+            "portfolio_name": "Impulse", "asset": "NQ", "direction": "LONG",
+            "units": 1.0, "avg_entry_price": 100.0, "stop_price": 98.0,
+            "active_trade_id": "mfe-test",
+            "payload": {
+                "structural_policy_version": "TEST",
+                "price_source_lock": identity,
+                "execution_timeframe": "5m",
+                "mfe_pct": max(0.0, price - 100.0),
+            },
+        }
+        return position, quote, now
+
+    def test_015pct_starts_persistence_instead_of_immediate_lock(self):
+        position, quote, now = self.structural_position_and_quote(100.16)
+        result = VPG._structural_mfe_profit_lock(None, object(), position, quote,
+                                                 now.isoformat(), now)
+        self.assertEqual(result["state"], "PERSISTENCE_PENDING")
+        self.assertIn("r_accel_mfe_candidate_at", result["patch"])
+        self.assertIsNone(result["lock"])
+
+    def test_lost_015pct_persistence_resets_candidate(self):
+        position, quote, now = self.structural_position_and_quote(100.16)
+        first = VPG._structural_mfe_profit_lock(None, object(), position, quote,
+                                                now.isoformat(), now)
+        position["payload"].update(first["patch"])
+        lower = dict(quote, price=100.10, best_bid=100.10, best_ask=100.11,
+                     observed_at=(now + timedelta(seconds=30)).isoformat())
+        result = VPG._structural_mfe_profit_lock(
+            None, object(), position, lower, lower["observed_at"],
+            now + timedelta(seconds=30))
+        self.assertEqual(result["state"], "BELOW_THRESHOLD")
+        self.assertIsNone(result["patch"]["r_accel_mfe_candidate_at"])
+
+    def test_currency_portfolio_is_not_modified_by_mfe_lane(self):
+        position, quote, now = self.structural_position_and_quote(100.50)
+        position["portfolio_name"] = "Currency"
+        result = VPG._structural_mfe_profit_lock(None, object(), position, quote,
+                                                 now.isoformat(), now)
+        self.assertEqual(result["state"], "NOT_APPLICABLE")
+        self.assertEqual(result["patch"], {})
 
 
 class TrendAccelerationTests(unittest.TestCase):
