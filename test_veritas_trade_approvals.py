@@ -399,6 +399,26 @@ class TradeApprovalTests(Helpers, unittest.TestCase):
                   row["proposal_id"])
         self.assertEqual(self.repo.get(row["proposal_id"])["status"], "PENDING_DELIVERY")
 
+    def test_production_robot_approval_requires_explicit_claim_gate(self):
+        row = self.create(terms(event="production-robot",
+                                execution_environment="production"))
+        approved = self.repo.auto_approve_robot(row["proposal_id"])
+        self.assertEqual(approved["status"], "APPROVED")
+        self.assertTrue(approved["auto_approved"])
+        self.assertEqual(approved["reason_code"], "ROBOT_AUTO_APPROVED")
+        self.assertIsNone(approved["approved_by"])
+        self.assertEqual(self.count(CALLBACKS), 0)
+        self.code("SIGNED_OWNER_APPROVAL_REQUIRED", self.claim, approved)
+        claimed = self.claim(approved, allow_robot_auto=True)
+        self.assertEqual(claimed["status"], "SENDING")
+
+    def test_production_robot_approval_cannot_touch_sandbox(self):
+        row = self.create(terms(event="sandbox-robot-denied",
+                                execution_environment="sandbox"))
+        self.code("PRODUCTION_AUTOTRADE_ONLY", self.repo.auto_approve_robot,
+                  row["proposal_id"])
+        self.assertEqual(self.repo.get(row["proposal_id"])["status"], "PENDING_DELIVERY")
+
     def test_owner_decision_is_durable_and_exact_query_replay_is_idempotent(self):
         row = self.deliver(self.create())
         first = self.decide(row, callback_id="query-1")
