@@ -349,7 +349,7 @@ _POSITION_STATE_FIELDS = (
 
 
 def _position_view(position):
-    """Copy display fields, without retaining the large historical proof graph.
+    """Copy bounded display fields and expose one canonical management contract.
 
     Exact trade identity lets the read-only API join accounting when requested.
     This projection never becomes an input to admission or position management.
@@ -357,6 +357,14 @@ def _position_view(position):
     z = dict(position)
     p = payload(position)
     z.pop('payload', None)
+
+    def positive(value):
+        try:
+            value = float(value)
+            return value if math.isfinite(value) and value > 0 else None
+        except (TypeError, ValueError):
+            return None
+
     keep = ('execution_timeframe', 'execution_horizon', 'last_signal_horizon',
             'management_horizon', 'initial_stop_price', 'initial_take_price',
             'take_price', 'target_price', 'last_target_price', 'runner_target_price',
@@ -375,29 +383,87 @@ def _position_view(position):
     mark = p.get('source_locked_mark') or {}
     projected['source_locked_mark'] = {key:deepcopy(mark[key])
                                        for key in ('identity', 'price', 'observed_at') if key in mark}
-    ladder = p.get('active_target_ladder')
-    if isinstance(ladder, list):
-        projected['active_target_ladder'] = [{key:step[key]
-            for key in ('price', 'fraction', 'kind') if key in step}
-            for step in ladder[:2] if isinstance(step, dict)]
+
+    event = p.get('active_target_event_snapshot') or p.get('entry_event_snapshot') or {}
+    raw_ladder = p.get('active_target_ladder')
+    if not isinstance(raw_ladder, list) and isinstance(event, dict):
+        raw_ladder = event.get('target_ladder')
+    ladder = []
+    if isinstance(raw_ladder, list):
+        for step in raw_ladder[:2]:
+            if not isinstance(step, dict):
+                continue
+            price = positive(step.get('price'))
+            if price is None:
+                continue
+            item = {'price':price}
+            if positive(step.get('fraction')) is not None:
+                item['fraction'] = float(step['fraction'])
+            if step.get('kind') is not None:
+                item['kind'] = step.get('kind')
+            ladder.append(item)
+    if ladder:
+        projected['active_target_ladder'] = deepcopy(ladder)
+
     z['payload'] = projected
     z['execution_timeframe'] = (p.get('execution_timeframe') or p.get('execution_horizon')
                                or p.get('last_signal_horizon'))
     z['horizon'] = z['execution_timeframe']
+
     for target, keys in {
         'take_price':('take_price', 'target_price', 'last_target_price'),
-        'second_take_price':('tp2', 'tp2_price', 'second_target_price', 'runner_target_price'),
         'signal_probability':('pwin', 'entry_probability'),
         'probability_source':('pwin_source', 'probability_source'),
         'signal_tier':('entry_signal_tier', 'signal_tier'),
     }.items():
         z[target] = next((p[key] for key in keys if p.get(key) is not None), None)
+
+    stage = p.get('active_target_stage', 0)
+    if not isinstance(stage, int) or isinstance(stage, bool) or stage < 0:
+        stage = 0
+    tp1 = ladder[0]['price'] if ladder else positive(
+        p.get('initial_take_price') or p.get('take_price') or p.get('target_price') or p.get('last_target_price'))
+    fixed_tp2 = ladder[1]['price'] if len(ladder) > 1 else positive(
+        p.get('tp2') or p.get('tp2_price') or p.get('second_target_price'))
+    runner = positive(p.get('runner_target_price'))
+    second = fixed_tp2 if fixed_tp2 is not None else runner
+    second_kind = ('TP2' if fixed_tp2 is not None else
+                   'RUNNER' if runner is not None else
+                   'TRAILING_RUNNER' if p.get('r17_tp1_done') and positive(p.get('trailing_stop')) is not None
+                   else None)
+
+    stops = [x for x in (positive(z.get('stop_price')), positive(p.get('trailing_stop'))) if x is not None]
+    effective_stop = None
+    if stops:
+        effective_stop = max(stops) if z.get('direction') == 'LONG' else min(stops)
+
+    next_target = ladder[stage]['price'] if stage < len(ladder) else positive(
+        p.get('take_price') or p.get('target_price') or p.get('last_target_price'))
+    missing = []
+    if effective_stop is None:
+        missing.append('SL')
+    if p.get('structural_policy_version') and not ladder and tp1 is None:
+        missing.append('TARGET_LADDER')
+
+    z.update(
+        effective_stop_price=effective_stop,
+        tp1_price=tp1,
+        second_take_price=second,
+        second_take_kind=second_kind,
+        next_target_price=next_target,
+        target_stage=stage,
+        target_plan_mode=('LADDER' if len(ladder) > 1 else
+                          'RUNNER' if second_kind in ('RUNNER', 'TRAILING_RUNNER') else
+                          'SINGLE_TARGET' if tp1 is not None else 'UNAVAILABLE'),
+        position_management_status=('PROTECTION_ERROR' if 'SL' in missing else
+                                    'TARGET_PLAN_INCOMPLETE' if missing else 'OK'),
+        position_management_missing=missing,
+    )
     for key in ('initial_stop_price', 'initial_take_price', 'trailing_stop', 'mfe_pct',
                 'mae_pct', 'expected_move_pct', 'expected_to_stop_ratio', 'setup_grade'):
         if key in projected:
             z[key] = projected[key]
     return z
-
 
 def fast_entry_pass(ns,rows,now,*,runtime=False):
     """Atomic paper protection and entries, without the heavy portfolio cycle."""
