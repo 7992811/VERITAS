@@ -491,7 +491,7 @@ def poll_updates():
 
 def startup_check():
     me = tg_call("getMe")
-    log(f"Telegram bot: @{me.get('username')}")
+    log(f"Telegram bot: @{me.get('username')} id={me.get('id')}")
 
     try:
         member = tg_call("getChatMember", {
