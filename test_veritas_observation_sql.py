@@ -7,6 +7,7 @@ import unittest
 import uuid
 
 import veritas_observation_path as PATH
+import veritas_observation_sampler as SAMPLER
 from test_veritas_observation_path import add, quote, stamp, trade
 
 
@@ -41,6 +42,7 @@ class ObservationSQLTests(unittest.TestCase):
                       (self.row['trade_id'], encoded))
             c.execute('INSERT INTO paper_trades VALUES (%s, 0, 0, %s::jsonb)',
                       (self.row['trade_id'], encoded))
+            SAMPLER.ensure_schema(c)
         self.addCleanup(self.drop_schema)
 
     @staticmethod
@@ -99,6 +101,24 @@ class ObservationSQLTests(unittest.TestCase):
         self.assertEqual(stored['position']['units'], 1.)
         self.assertEqual(stored['trade']['net_pnl_rub'], 0.)
         self.assertEqual(stored['trade']['fees_rub'], 0.)
+
+    def test_sampler_table_upsert_is_idempotent_and_financially_isolated(self):
+        before_payload=deepcopy(self.row['payload'])
+        first=deepcopy(before_payload['observation_path'])
+        second=deepcopy(first)
+        second['last_checked_at']=stamp(30)
+        second['duplicate_observation_count']=int(second.get('duplicate_observation_count') or 0)+1
+        with self.connect() as c:
+            before=self.stored(c)
+            self.assertEqual(SAMPLER.write(c,[{'trade_id':self.row['trade_id'],'asset':'ETH','witness':first}],stamp(20)),1)
+            self.assertEqual(SAMPLER.write(c,[{'trade_id':self.row['trade_id'],'asset':'ETH','witness':second}],stamp(30)),1)
+            evidence=dict(c.execute('SELECT * FROM paper_trade_observation_paths WHERE trade_id=%s',
+                                    (self.row['trade_id'],)).fetchone())
+            after=self.stored(c)
+        self.assertEqual(before,after)
+        self.assertEqual(evidence['witness'],second)
+        self.assertEqual(after['trade']['payload'],before_payload)
+        self.assertEqual(after['position']['payload'],before_payload)
 
     def test_second_update_failure_rolls_back_first_without_aborting_outer_accounting(self):
         with self.connect() as c:
