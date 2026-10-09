@@ -67,7 +67,7 @@ history worker supplies an adequate ordered path.
 ## Runtime resource policy
 
 The production shadow lane rotates one asset per run every 60 seconds. Each run
-reads at most 128 materialized decision outcomes and 128 eligible trade episodes
+reads at most 64 materialized decision outcomes and 64 eligible trade episodes
 for that asset. The outcome itself comes from `v90_decision_episodes`; the
 ledger JSON is opened only to recover the frozen pre-outcome setup, source and
 policy context. This replaces the previous all-market decision+outcome JSON join
@@ -277,3 +277,21 @@ Rules:
 Telemetry now separates seeded, handed-off, unseeded, irrecoverable and actually
 sampled positions. The sidecar remains cached-only, uses no network fetches,
 takes no paper-book lock and has no trading authority.
+
+
+## Closed-trade backlog scheduling (v91.8.42)
+
+Historical outcome-tier rematerialization uses the existing durable four-phase
+closed-trade learner. The cooperative trade batch is reduced from four to two
+trades so one SQL/diagnostic phase remains inside the existing six-second
+background budget.
+
+When a bounded phase actually advances backlog state, it coalesces another
+`learning_trade_evidence` request with a five-second retry interval. The
+budget is not widened and no parallel worker is created. A materialize pass with
+zero rows stops the self-request chain and returns to the normal 30-second
+periodic cadence.
+
+A successful materialize pass also coalesces `learning_v2_shadow` so newly
+proved outcome-tier rows can become research evidence without waiting for the
+next scheduled Learning 2.0 rotation.
