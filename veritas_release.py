@@ -1,12 +1,11 @@
 """Single release identity for VERITAS production, API and audit."""
 from __future__ import annotations
 import os
-import veritas_canonical_constitution as CTC
-import veritas_owner_policy as VOP
+import veritas_canonical_constitution as CTC, veritas_owner_policy as VOP
 import veritas_price_source as VPS
 PRODUCT_VERSION="veritas-max-product-v91.8.32-structural-breakout-learning-v2-owner-review"
 PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.32-structural-breakout-learning-v2-owner-review"
-UI_VERSION="veritas-ui-v9.1.8.31-structural-breakout-learning-v2-admission-signature"
+UI_VERSION="veritas-ui-v9.1.8.32-structural-breakout-learning-v2-owner-review"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -69,15 +68,7 @@ def snapshot():
         "breakout_lifecycle_policy":dict(CTC.BREAKOUT_LIFECYCLE_POLICY),
         "daily_ma_rebound_policy":dict(CTC.MA_REBOUND_POLICY),
         "active_user_teaching_id":CTC.TREND_ACCELERATION_POLICY["teaching_id"],
-        "active_user_teaching_ids":[
-            CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"],
-            CTC.MA_REBOUND_POLICY["teaching_id"],
-            CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"],
-            CTC.TREND_ACCELERATION_POLICY["teaching_id"],
-            VOP.TEACHING_ID,
-        ],
-        "trend_acceleration_policy":dict(CTC.TREND_ACCELERATION_POLICY),
-        "owner_review_policy":VOP.snapshot(),
+        "active_user_teaching_ids":[CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"],CTC.MA_REBOUND_POLICY["teaching_id"],CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"],CTC.TREND_ACCELERATION_POLICY["teaching_id"],VOP.TEACHING_ID],"trend_acceleration_policy":dict(CTC.TREND_ACCELERATION_POLICY),"owner_review_policy":VOP.snapshot(),
         "runtime_authority":CTC.BASIS_RUNTIME,
         "ui_version":UI_VERSION,
         "db_schema_version":DB_SCHEMA_VERSION,
