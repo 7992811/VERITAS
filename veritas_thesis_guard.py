@@ -7,7 +7,9 @@ decisively confirm the opposite direction. Protective stops and portfolio
 hard-risk remain independent and immediate.
 """
 import json
+import math
 import veritas_position_thesis as VPT
+import veritas_canonical_constitution as CTC
 
 ORDER={"1m":0,"5m":1,"1h":2,"4h":3,"1d":4,"3d":5,"7d":6}
 WEIGHT={"1h":1.0,"4h":1.25,"1d":1.5,"3d":1.75,"7d":2.0}
@@ -91,6 +93,51 @@ def _support(rows,asset,held_direction,held_horizon):
             "exact_row":exact,"evidence":evidence}
 
 
+def _num(value,default=0.0):
+    try:
+        value=float(value)
+        return value if math.isfinite(value) else default
+    except Exception:
+        return default
+
+
+def _fast_reversal(rows,asset,held_direction,held_horizon):
+    """Owner-authorized fast exit for stale 1h exposure; never entry permission."""
+    cfg=(getattr(CTC,"TREND_ACCELERATION_POLICY",{}) or {}).get("reversal_exit") or {}
+    allowed=set(cfg.get("fast_exit_held_horizons") or ("1h",))
+    if not cfg.get("enabled") or held_horizon not in allowed:
+        return {"eligible":False,"reason":"FAST_REVERSAL_SCOPE"}
+    opposite="SHORT" if held_direction=="LONG" else "LONG"
+    fast_h=set(cfg.get("horizons") or ("1m","5m"))
+    accepted=set(cfg.get("accepted_structure_states") or ("BUILDING_TREND","CONFIRMED_TREND"))
+    min_indep=int(cfg.get("minimum_independent_evidence") or 3)
+    min_move=float(cfg.get("minimum_expected_move_pct") or .004)
+    fast=[];senior=[]
+    for row in rows or []:
+        if str((row or {}).get("asset") or "")!=str(asset) or _row_direction(row)!=opposite:
+            continue
+        h=str((row or {}).get("horizon") or "")
+        hs=(row or {}).get("horizon_structure") or {}
+        state=str(hs.get("state") or (row or {}).get("horizon_structure_state") or "")
+        conf=_num((row or {}).get("confidence"),0.0)
+        if h in fast_h:
+            inst=(row or {}).get("institutional_signal") or {}
+            indep=int(((inst.get("evidence_independence") or {}).get("independent_count")
+                       or (row or {}).get("independent_evidence_families") or 0))
+            plan=(row or {}).get("trade_plan") or {}
+            move=abs(_num(plan.get("expected_move_pct") or (row or {}).get("expected_move_pct"),0.0))
+            if state in accepted and indep>=min_indep and move>=min_move:
+                fast.append({"horizon":h,"state":state,"independent":indep,
+                             "expected_move_pct":move,"confidence":conf})
+        if h in (held_horizon,"4h") and conf>=0.15:
+            senior.append({"horizon":h,"state":state,"confidence":conf})
+    need=int(cfg.get("minimum_confirming_senior_rows") or 1)
+    eligible=bool(fast and len(senior)>=need)
+    return {"eligible":eligible,
+            "reason":"FAST_OPPOSITE_CONFIRMED" if eligible else "FAST_REVERSAL_NOT_CONFIRMED",
+            "fast":fast[:4],"senior":senior[:4],"opposite_direction":opposite}
+
+
 def _explicit_thesis_break(row):
     ti=((row or {}).get("trade_plan") or {}).get("trade_integrity") or {}
     reasons={str(x) for x in (ti.get("hard_reasons") or [])}
@@ -140,12 +187,14 @@ def guard_open_position(c,z,candidates,summary,now=None):
     info=_support(summary,asset,direction,h)
     exact=info.get("exact_row")
     exact_break=bool(VPT.evaluate_exit(z,exact,now).get("structure_confirmed") or _explicit_thesis_break(exact))
-    allow_hard=bool(exact_break and info.get("decisive_opposite"))
+    fast_reversal=_fast_reversal(summary,asset,direction,h)
+    allow_hard=bool((exact_break and info.get("decisive_opposite")) or fast_reversal.get("eligible"))
     meta={k:v for k,v in info.items() if k!="exact_row"}
     meta.update({"active":not allow_hard,"held_horizon":h,"held_direction":direction,
                  "exact_thesis_break":exact_break,
+                 "fast_reversal":fast_reversal,
                  "hard_exit_allowed":allow_hard,
-                 "policy":"OWN_HORIZON_BREAK_PLUS_DECISIVE_SENIOR_CONFIRMATION"})
+                 "policy":"FAST_REVERSAL_OR_OWN_HORIZON_BREAK_PLUS_SENIOR_CONFIRMATION"})
 
     if allow_hard:
         book={a:_annotate(r,meta) if a==asset else r for a,r in (candidates or {}).items()}
