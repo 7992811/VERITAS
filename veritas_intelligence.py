@@ -1088,12 +1088,36 @@ def pg_init():
           mae DOUBLE PRECISION,
           model_version TEXT,
           knowledge_shadow_matches JSONB NOT NULL DEFAULT '[]'::jsonb,
+          decision_id BIGINT,
+          setup_family TEXT,
+          policy_hash TEXT,
+          source_key TEXT,
+          contract_id TEXT,
+          candidate_direction TEXT,
+          admission_eligible BOOLEAN,
+          final_gate_status TEXT,
+          final_gate_blockers JSONB NOT NULL DEFAULT '[]'::jsonb,
+          learning_v2_projection_version TEXT,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS decision_id BIGINT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS setup_family TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS policy_hash TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS source_key TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS contract_id TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS candidate_direction TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS admission_eligible BOOLEAN;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS final_gate_status TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS final_gate_blockers JSONB NOT NULL DEFAULT '[]'::jsonb;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS learning_v2_projection_version TEXT;
         CREATE INDEX IF NOT EXISTS idx_v90_decision_episodes_ts
           ON v90_decision_episodes(decision_ts DESC);
         CREATE INDEX IF NOT EXISTS idx_v90_decision_episodes_strata
           ON v90_decision_episodes(asset,horizon,regime,decision_ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_v90_decision_episodes_asset_ts
+          ON v90_decision_episodes(asset,decision_ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_v90_decision_episodes_decision_id
+          ON v90_decision_episodes(decision_id) WHERE decision_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS knowledge_sources(
           source_id TEXT PRIMARY KEY, title TEXT NOT NULL, authors TEXT, year INTEGER,
           source_type TEXT, url TEXT, evidence_grade TEXT, claim TEXT,
@@ -1562,7 +1586,7 @@ def _v90_materialize_decision_episode(entity_key,outcome_payload,outcome_ts=None
     try:
         with pg_connect() as c:
             c.execute("""WITH d AS (
-                SELECT entity_key,event_ts,asset,horizon,payload,model_version
+                SELECT id,entity_key,event_ts,asset,horizon,payload,model_version
                 FROM ledger_events
                 WHERE entity_key=%s AND event_type='decision'
                 ORDER BY event_ts DESC
@@ -1570,26 +1594,63 @@ def _v90_materialize_decision_episode(entity_key,outcome_payload,outcome_ts=None
               )
               INSERT INTO v90_decision_episodes(
                 entity_key,decision_ts,outcome_ts,asset,horizon,regime,decision,
-                forward_return,mfe,mae,model_version,knowledge_shadow_matches,updated_at
+                forward_return,mfe,mae,model_version,knowledge_shadow_matches,
+                decision_id,setup_family,policy_hash,source_key,contract_id,
+                candidate_direction,admission_eligible,final_gate_status,final_gate_blockers,
+                learning_v2_projection_version,updated_at
               )
               SELECT d.entity_key,d.event_ts,%s,d.asset,d.horizon,
                      COALESCE(d.payload->>'regime','UNKNOWN'),
                      COALESCE(d.payload->>'research_decision',d.payload->>'decision','NO_TRADE'),
                      %s,%s,%s,d.model_version,
-                     COALESCE(d.payload->'knowledge_shadow_matches','[]'::jsonb),now()
+                     COALESCE(d.payload->'knowledge_shadow_matches','[]'::jsonb),
+                     d.id,
+                     COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
+                              d.payload#>>'{trade_plan,setup_family}',''),
+                     COALESCE(d.payload#>>'{learning_provenance,policy_hash}',
+                              d.payload->>'strategy_policy_hash',''),
+                     COALESCE(d.payload#>>'{learning_provenance,source_identity,key}',
+                              d.payload#>>'{timeframe_entry_context,source_identity,key}',
+                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,key}',''),
+                     COALESCE(d.payload#>>'{learning_provenance,source_identity,contract_id}',
+                              d.payload#>>'{timeframe_entry_context,source_identity,contract_id}',
+                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}',''),
+                     CASE
+                       WHEN COALESCE(d.payload->>'research_decision',d.payload->>'decision','NO_TRADE') IN ('LONG','SHORT')
+                         THEN COALESCE(d.payload->>'research_decision',d.payload->>'decision')
+                       ELSE COALESCE(d.payload#>>'{timeframe_entry_context,event,direction}',
+                                     d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}',
+                                     NULLIF(d.payload->>'horizon_structure_direction','NO_TRADE'),'')
+                     END,
+                     CASE
+                       WHEN d.payload->>'plan_eligible' IN ('true','false') THEN (d.payload->>'plan_eligible')::boolean
+                       WHEN d.payload->>'trade_entry_eligible' IN ('true','false') THEN (d.payload->>'trade_entry_eligible')::boolean
+                       ELSE NULL
+                     END,
+                     COALESCE(d.payload->>'final_gate_status',''),
+                     COALESCE(d.payload->'final_gate_blockers','[]'::jsonb),
+                     'LEARNING_V2_EPISODE_V1',now()
               FROM d
               ON CONFLICT(entity_key) DO UPDATE SET
                 decision_ts=EXCLUDED.decision_ts,outcome_ts=EXCLUDED.outcome_ts,
                 asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,regime=EXCLUDED.regime,
                 decision=EXCLUDED.decision,forward_return=EXCLUDED.forward_return,
                 mfe=EXCLUDED.mfe,mae=EXCLUDED.mae,model_version=EXCLUDED.model_version,
-                knowledge_shadow_matches=EXCLUDED.knowledge_shadow_matches,updated_at=now()
+                knowledge_shadow_matches=EXCLUDED.knowledge_shadow_matches,
+                decision_id=EXCLUDED.decision_id,setup_family=EXCLUDED.setup_family,
+                policy_hash=EXCLUDED.policy_hash,source_key=EXCLUDED.source_key,
+                contract_id=EXCLUDED.contract_id,candidate_direction=EXCLUDED.candidate_direction,
+                admission_eligible=EXCLUDED.admission_eligible,final_gate_status=EXCLUDED.final_gate_status,
+                final_gate_blockers=EXCLUDED.final_gate_blockers,
+                learning_v2_projection_version=EXCLUDED.learning_v2_projection_version,
+                updated_at=now()
             """,(str(entity_key),ots,fr,mfe,mae))
         return True
     except Exception as ex:
         emit('decision_episode_materialize_error',entity_key=str(entity_key),
              error=f'{type(ex).__name__}: {ex}')
         return False
+
 
 def _v90_backfill_decision_episodes(batch_size=500,max_batches=20,max_seconds=18.0):
     if not pg_enabled():
@@ -1601,20 +1662,25 @@ def _v90_backfill_decision_episodes(batch_size=500,max_batches=20,max_seconds=18
                 c.execute("SET statement_timeout TO '4s'")
                 rows=c.execute("""WITH picked AS (
                     SELECT o.entity_key,o.event_ts AS outcome_ts,o.payload AS op,
-                           d.event_ts AS decision_ts,d.asset,d.horizon,d.payload AS dp,d.model_version
+                           d.id AS decision_id,d.event_ts AS decision_ts,d.asset,d.horizon,
+                           d.payload AS dp,d.model_version
                     FROM ledger_events o
                     JOIN ledger_events d
                       ON d.entity_key=o.entity_key AND d.event_type='decision'
                     LEFT JOIN v90_decision_episodes e ON e.entity_key=o.entity_key
                     WHERE o.event_type='outcome'
                       AND o.payload ? 'forward_return'
-                      AND e.entity_key IS NULL
+                      AND (e.entity_key IS NULL OR
+                           e.learning_v2_projection_version IS DISTINCT FROM 'LEARNING_V2_EPISODE_V1')
                     ORDER BY o.event_ts ASC
                     LIMIT %s
                   )
                   INSERT INTO v90_decision_episodes(
                     entity_key,decision_ts,outcome_ts,asset,horizon,regime,decision,
-                    forward_return,mfe,mae,model_version,knowledge_shadow_matches,updated_at
+                    forward_return,mfe,mae,model_version,knowledge_shadow_matches,
+                    decision_id,setup_family,policy_hash,source_key,contract_id,
+                    candidate_direction,admission_eligible,final_gate_status,final_gate_blockers,
+                    learning_v2_projection_version,updated_at
                   )
                   SELECT entity_key,decision_ts,outcome_ts,asset,horizon,
                          COALESCE(dp->>'regime','UNKNOWN'),
@@ -1622,9 +1688,47 @@ def _v90_backfill_decision_episodes(batch_size=500,max_batches=20,max_seconds=18
                          (op->>'forward_return')::double precision,
                          CASE WHEN op ? 'mfe' THEN NULLIF(op->>'mfe','')::double precision END,
                          CASE WHEN op ? 'mae' THEN NULLIF(op->>'mae','')::double precision END,
-                         model_version,COALESCE(dp->'knowledge_shadow_matches','[]'::jsonb),now()
+                         model_version,COALESCE(dp->'knowledge_shadow_matches','[]'::jsonb),
+                         decision_id,
+                         COALESCE(dp->>'setup_family',dp->>'strategy_family',
+                                  dp#>>'{trade_plan,setup_family}',''),
+                         COALESCE(dp#>>'{learning_provenance,policy_hash}',
+                                  dp->>'strategy_policy_hash',''),
+                         COALESCE(dp#>>'{learning_provenance,source_identity,key}',
+                                  dp#>>'{timeframe_entry_context,source_identity,key}',
+                                  dp#>>'{trade_plan,timeframe_entry_context,source_identity,key}',''),
+                         COALESCE(dp#>>'{learning_provenance,source_identity,contract_id}',
+                                  dp#>>'{timeframe_entry_context,source_identity,contract_id}',
+                                  dp#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}',''),
+                         CASE
+                           WHEN COALESCE(dp->>'research_decision',dp->>'decision','NO_TRADE') IN ('LONG','SHORT')
+                             THEN COALESCE(dp->>'research_decision',dp->>'decision')
+                           ELSE COALESCE(dp#>>'{timeframe_entry_context,event,direction}',
+                                         dp#>>'{trade_plan,timeframe_entry_context,event,direction}',
+                                         NULLIF(dp->>'horizon_structure_direction','NO_TRADE'),'')
+                         END,
+                         CASE
+                           WHEN dp->>'plan_eligible' IN ('true','false') THEN (dp->>'plan_eligible')::boolean
+                           WHEN dp->>'trade_entry_eligible' IN ('true','false') THEN (dp->>'trade_entry_eligible')::boolean
+                           ELSE NULL
+                         END,
+                         COALESCE(dp->>'final_gate_status',''),
+                         COALESCE(dp->'final_gate_blockers','[]'::jsonb),
+                         'LEARNING_V2_EPISODE_V1',now()
                   FROM picked
-                  ON CONFLICT(entity_key) DO NOTHING
+                  ON CONFLICT(entity_key) DO UPDATE SET
+                    decision_ts=EXCLUDED.decision_ts,outcome_ts=EXCLUDED.outcome_ts,
+                    asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,regime=EXCLUDED.regime,
+                    decision=EXCLUDED.decision,forward_return=EXCLUDED.forward_return,
+                    mfe=EXCLUDED.mfe,mae=EXCLUDED.mae,model_version=EXCLUDED.model_version,
+                    knowledge_shadow_matches=EXCLUDED.knowledge_shadow_matches,
+                    decision_id=EXCLUDED.decision_id,setup_family=EXCLUDED.setup_family,
+                    policy_hash=EXCLUDED.policy_hash,source_key=EXCLUDED.source_key,
+                    contract_id=EXCLUDED.contract_id,candidate_direction=EXCLUDED.candidate_direction,
+                    admission_eligible=EXCLUDED.admission_eligible,final_gate_status=EXCLUDED.final_gate_status,
+                    final_gate_blockers=EXCLUDED.final_gate_blockers,
+                    learning_v2_projection_version=EXCLUDED.learning_v2_projection_version,
+                    updated_at=now()
                   RETURNING entity_key""",(max(50,min(1000,int(batch_size))),)).fetchall()
             n=len(rows or []); total+=n; batches+=1
             if n < max(50,min(1000,int(batch_size))):
@@ -1643,6 +1747,7 @@ def _v90_backfill_decision_episodes(batch_size=500,max_batches=20,max_seconds=18
         emit('decision_episode_backfill_complete',inserted=total,batches=batches,
              duration_seconds=round(time.time()-started,3))
     return dict(_v90_decision_episode_backfill_state)
+
 
 def pg_event(event_type,entity_key,payload,asset=None,horizon=None,event_ts=None):
     q=getattr(_v90_pg_batch_local,'queue',None)
