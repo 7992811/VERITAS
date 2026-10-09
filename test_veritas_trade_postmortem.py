@@ -1,3 +1,4 @@
+# CI sync: detailed postmortem regression suite.
 import unittest
 
 import veritas_trade_postmortem as POST
