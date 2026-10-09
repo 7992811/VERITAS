@@ -386,7 +386,7 @@ def _position_view(position):
 
     event = p.get('active_target_event_snapshot') or p.get('entry_event_snapshot') or {}
     raw_ladder = p.get('active_target_ladder')
-    if not isinstance(raw_ladder, list) and isinstance(event, dict):
+    if (not isinstance(raw_ladder, list) or not raw_ladder) and isinstance(event, dict):
         raw_ladder = event.get('target_ladder')
     ladder = []
     if isinstance(raw_ladder, list):
