@@ -9,6 +9,7 @@ import veritas_execution as VX
 import veritas_portfolio as VP
 import veritas_portfolio_runtime as VPR
 import veritas_release as VR
+import veritas_owner_policy as VOP
 import veritas_price_source as VPS
 
 
@@ -47,9 +48,17 @@ class CanonicalArchitectureV2Tests(unittest.TestCase):
         self.assertTrue(s['signal_delivery_policy']['admission_trace_preserves_original_decision'])
         self.assertTrue(s['execution_integrity_policy']['one_quote_and_fill_for_admission_and_accounting'])
         self.assertEqual(s["daily_ma_rebound_policy"], CTC.MA_REBOUND_POLICY)
-        self.assertEqual(s["active_user_teaching_ids"], [CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"], CTC.BREAKOUT_LIFECYCLE_POLICY['teaching_id']])
+        self.assertEqual(s["active_user_teaching_ids"], [
+            CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"],
+            CTC.MA_REBOUND_POLICY["teaching_id"],
+            CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"],
+            CTC.TREND_ACCELERATION_POLICY["teaching_id"],
+            VOP.TEACHING_ID,
+        ])
         self.assertEqual(s['breakout_lifecycle_policy'],CTC.BREAKOUT_LIFECYCLE_POLICY)
-        self.assertEqual(s['active_user_teaching_id'],CTC.BREAKOUT_LIFECYCLE_POLICY['teaching_id'])
+        self.assertEqual(s['trend_acceleration_policy'],CTC.TREND_ACCELERATION_POLICY)
+        self.assertEqual(s['active_user_teaching_id'],CTC.TREND_ACCELERATION_POLICY['teaching_id'])
+        self.assertEqual(s['owner_review_policy']['teaching_id'],VOP.TEACHING_ID)
 
     def test_final_runtime_binds_canonical_routing_and_admission(self):
         snap=VPR.runtime_authority_snapshot()

@@ -450,29 +450,34 @@ class StructuralLifecycleAccountingTests(unittest.TestCase):
         self.assertIsNone(self.db.position())
         self.assertEqual(self.db.orders[-1]["reason"], "STOP")
 
-    def test_fast_new_break_at_old_tp1_takes_half_before_adding_and_replanning(self):
+    def test_fast_new_break_at_old_tp1_preserves_runner_when_episode_floor_cannot_fund_add(self):
         opened=self.open()
         old_payload=deepcopy(opened['payload'])
         row=synthetic_higher_break(12.803)
         self.assertTrue(VCR.evaluate(row,CTC.runtime_portfolio_policy('Currency'),0.,row['observed_at'])['open'])
         result=self.run_fast(row)
-        self.assertEqual([order['side'] for order in self.db.orders],['BUY','SELL','BUY'])
+        # TP1 remains authoritative. The new break may request an ADD, but it
+        # cannot spend more risk than the already-earned whole-episode buffer
+        # can support at the active stop after known costs.
+        self.assertEqual([order['side'] for order in self.db.orders],['BUY','SELL'])
         self.assertEqual(self.db.orders[1]['reason'],'TAKE_PROFIT_STRUCTURAL_PARTIAL')
         closed=self.db.orders[1]['payload']['closed_normalized_units']
-        added=self.db.orders[2]['notional_rub']/self.db.orders[2]['price']
         self.assertAlmostEqual(closed,opened['units']*.5)
         position=self.db.position()
         self.assertEqual(position['active_trade_id'],opened['active_trade_id'])
-        self.assertAlmostEqual(position['units'],opened['units']-closed+added)
+        self.assertAlmostEqual(position['units'],opened['units']-closed)
         self.assertEqual(position['payload']['entry_event_snapshot'],old_payload['entry_event_snapshot'])
         self.assertEqual(position['payload']['initial_target_ladder'],old_payload['initial_target_ladder'])
-        history=position['payload']['target_lifecycle_history']
-        self.assertEqual([entry['action'] for entry in history],['TARGET_PARTIAL','CONFIRMED_ADD_REPLANS_REMAINING_TARGETS'])
-        self.assertGreater(VSL.active_target_price(position),12.845)
+        self.assertEqual(position['payload']['active_target_stage'],1)
+        self.assertAlmostEqual(VSL.active_target_price(position),old_payload['active_target_ladder'][1]['price'])
+        floor=position['payload'].get('episode_profit_floor_last_check') or {}
+        self.assertTrue(floor.get('active'),floor)
+        self.assertFalse(floor.get('eligible'),floor)
         trace=result['portfolios'][0]['admission_trace'][0]
-        self.assertEqual(trace['execution']['execution_action'],'ADD')
         self.assertEqual(trace['preceding_protection']['status'],'EXECUTED')
         self.assertAlmostEqual(trace['preceding_protection']['closed_normalized_units'],closed)
+        self.assertIn(trace['execution']['reason'],
+                      ('EPISODE_PROFIT_FLOOR_ADD_BLOCKED','STRUCTURE_INTACT_WAIT_NEW_LEVEL'))
 
     def test_direct_canonical_add_cannot_bypass_an_already_reached_old_target(self):
         opened=self.open()

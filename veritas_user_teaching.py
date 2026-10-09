@@ -11,6 +11,7 @@ import json
 from collections.abc import Mapping
 
 import veritas_canonical_constitution as CTC
+import veritas_owner_policy as VOP
 
 TEACHING_ID = "USER_TF_STRUCTURE_2026_10_06"
 SOURCE_TIMESTAMP = "2026-10-06T19:56:32Z"
@@ -22,6 +23,8 @@ BREAKOUT_TEACHING_ID = "USER_INTRABAR_STRUCTURE_2026_10_07"
 BREAKOUT_SOURCE_TIMESTAMP = "2026-10-07T08:23:55Z"
 ACCELERATION_TEACHING_ID = "USER_TREND_ACCELERATION_2026_10_09"
 ACCELERATION_SOURCE_TIMESTAMP = "2026-10-09T08:41:00Z"
+REVIEW_TEACHING_ID = VOP.TEACHING_ID
+REVIEW_SOURCE_TIMESTAMP = VOP.SOURCE_TIMESTAMP
 ACCELERATION_USER_CORRECTION_RU = (
     "Стремиться к верхней границе эффективности: при резком подтверждённом движении "
     "увеличивать прибыльную позицию ступенчато по мере подтверждения тренда. "
@@ -31,6 +34,19 @@ ACCELERATION_USER_CORRECTION_RU = (
     "После устойчивого MFE от 0,15% защищать сделку безубытком с издержками и далее "
     "структурным трейлингом. Использовать промежуточные подтверждения 15m/30m и "
     "увеличивать позицию сильнее в режиме ускорения тренда."
+)
+REVIEW_USER_CORRECTION_RU = (
+    "Импульсный портфель в разобранном кейсе сработал правильно: валидный ранний "
+    "структурный вход должен быть доступен также Champion и Challenger; различие "
+    "портфелей определяет размер и дальнейшее наращивание, а не существование "
+    "самого подтверждённого события. Hard thesis invalidation одной копии "
+    "канонического setup должен применяться к остальным копиям. Порог материального "
+    "MFE для анализа защиты прибыли — 0,15%. Номер прибыльного захода не важен: "
+    "краткий импульс не меняет исходную архитектуру, а длительный устойчивый плюс "
+    "после расходов переводит сделку в истинный экономический безубыток. "
+    "Каждую закрытую сделку автоматически разбирать по уровням, ATR, MA, индикаторам, "
+    "таймфреймам, входу, стопу, целям, сопровождению, расходам и целостности данных; "
+    "кандидаты изменений правил предлагать владельцу до продвижения."
 )
 BREAKOUT_USER_CORRECTION_RU = (
     "Сигнал в лонг должен появляться или подтверждать удержание при пробое "
@@ -246,10 +262,52 @@ def acceleration_policy_snapshot():
     }
 
 
+def trade_review_policy_snapshot():
+    """Owner-verified trade-review and self-learning governance."""
+    pp=(CTC.TREND_ACCELERATION_POLICY.get("profit_protection") or {})
+    return {
+        "teaching_id": REVIEW_TEACHING_ID,
+        "source_type": "USER_AUTHORED_OPERATIONAL_POLICY",
+        "source_timestamp": REVIEW_SOURCE_TIMESTAMP,
+        "source_text_ru": REVIEW_USER_CORRECTION_RU,
+        "status": "ACTIVE_OPERATIONAL_POLICY",
+        "parent_teaching_id": ACCELERATION_TEACHING_ID,
+        "ctc_version": CTC.VERSION,
+        "runtime_authority": CTC.BASIS_RUNTIME,
+        "scope": "ALL_CONFIGURED_PAPER_PORTFOLIOS_AND_CLOSED_TRADE_SELF_LEARNING",
+        "portfolios": list(CTC.PORTFOLIO_ORDER),
+        "execution_policy": {
+            "verified_structural_event_entry_permission_is_shared":
+                VOP.PORTFOLIO_PARITY["verified_structural_event_entry_permission_is_shared"],
+            "portfolio_role_changes_size_not_event_existence":
+                VOP.PORTFOLIO_PARITY["portfolio_role_changes_size_not_event_existence"],
+            "canonical_setup_hard_invalidation_shared":
+                VOP.PORTFOLIO_PARITY["canonical_setup_hard_invalidation_shared_across_portfolios"],
+            "material_mfe_threshold_pct": pp.get("mfe_activation_pct_points"),
+            "immediate_profit_protection_pct": pp.get("immediate_activation_pct_points"),
+            "hold_seconds_by_timeframe": _copy(pp.get("hold_seconds_by_timeframe") or {}),
+            "profit_protection_authority": VOP.PROFIT_PROTECTION_AUTHORITY,
+        },
+        "learning_policy": {**_copy(CTC.LEARNING_POLICY), **_copy(VOP.SELF_LEARNING)},
+        "requirements": {
+            "entry_parity": "One verified structural event may be available to Impulse, Champion and Challenger in the same decision cycle; portfolio role controls size.",
+            "shared_invalidation": "A proved hard thesis invalidation of one canonical setup invalidates every open portfolio copy of that exact setup.",
+            "profit_maturity": "MFE >=0.15 percentage points starts native persistence testing; synthetic after-cost protection requires sustained favorable movement.",
+            "episode_floor": "After realized or protected profit, later adds may not make projected whole-episode net P&L negative at the active stop.",
+            "postmortem": "Every closed trade receives level/volatility/indicator/MA/MTF/entry/stop/target/protection/exit/cost/data-integrity review.",
+            "governance": "Parameter candidates remain SHADOW and require canonical conflict scan, OOS/Vault/cost/time/regime validation and owner approval.",
+        },
+        "storage": {"table":"ledger_events","event_type":EVENT_TYPE,
+                    "entity_key":REVIEW_TEACHING_ID,
+                    "event_key":EVENT_TYPE+":"+REVIEW_TEACHING_ID},
+    }
+
+
 def seed_all_user_teachings(pg_event, read_event=None):
     return [seed_user_teaching(pg_event, read_event, snapshot=payload)
             for payload in (policy_snapshot(), ma_policy_snapshot(),
-                            breakout_policy_snapshot(), acceleration_policy_snapshot())]
+                            breakout_policy_snapshot(), acceleration_policy_snapshot(),
+                            trade_review_policy_snapshot())]
 
 
 def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):

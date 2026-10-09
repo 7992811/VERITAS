@@ -1080,6 +1080,10 @@ function deepBool(obj,names){
 }
 function reviewTradeModel(t){
   const p=t.payload||{},root={trade:t,payload:p},net=tradeTotal(t);
+  const selfReview=(t.self_learning_review&&typeof t.self_learning_review==='object')?t.self_learning_review:{};
+  const selfPath=selfReview.path||{},selfLevels=selfReview.levels_volatility||{},selfContext=selfReview.market_context||{};
+  const selfIssues=Array.isArray(selfReview.issues)?selfReview.issues:[],selfProposals=Array.isArray(selfReview.proposals)?selfReview.proposals:[];
+  const selfFindings=Array.isArray(selfReview.secondary_findings)?selfReview.secondary_findings:[];
   const mfe=deepNum(root,['mfe_pct']),mae=deepNum(root,['mae_pct']),captureRaw=deepNum(root,['capture_ratio']);
   const capture=captureRaw==null?null:(captureRaw>1?captureRaw/100:captureRaw);
   const attr=deepText(root,['primary_attribution']),action=deepText(root,['learning_action']);
@@ -1092,7 +1096,7 @@ function reviewTradeModel(t){
   const missedProfit=replayProven?(explicitMissed!=null?Math.max(0,explicitMissed):(counterfactualPnl!=null&&net!=null?Math.max(0,counterfactualPnl-net):null)):null;
   const signalEntry=deepNum(root,['entry_reference_price','trigger_level','breakout_level','entry_level']);
   const addPrice=deepNum(root,['last_add_price','add_fill_price','scale_in_price']);
-  const protectionTrigger=mfe!=null&&mfe>=0.15&&net!=null&&net<=0;
+  const protectionTrigger=selfPath.profit_protection_candidate===true||(mfe!=null&&mfe>=0.15&&net!=null&&net<=0);
   let status='В опыте',statusClass='',lesson='';
   if(String(attr||'').startsWith('PROVEN_')){status='Подтверждено';statusClass='bad';lesson=reviewAttrLabel(attr)+'. Исправление должно проходить через проверку правила и повторную валидацию.'}
   else if(protectionTrigger){status='Наблюдение';statusClass='warn';lesson='После MFE ≥ 0,15% сделка закончилась без прибыли. Проверяется защита результата: безубыток и дальнейший структурный трейлинг.'}
@@ -1101,10 +1105,12 @@ function reviewTradeModel(t){
   else if(net!=null&&net<0){lesson='Убыточный исход добавлен в опыт. Причина не повышается до ошибки без достаточной доказательной базы.'}
   else if(net!=null&&net>0){lesson='Прибыльный исход добавлен в опыт как подтверждённый результат фактического исполнения.'}
   else lesson='Сделка сохранена, но итоговые доказательства ещё неполны.';
-  return {t,p,net,mfe,mae,capture,attr,action,replayProven,counterfactualPnl,counterfactualReturn,counterfactualExit,missedProfit,signalEntry,addPrice,protectionTrigger,status,statusClass,lesson};
+  if(selfIssues.length){status='На разборе';statusClass=statusClass||'warn'}
+  return {t,p,net,mfe,mae,capture,attr,action,replayProven,counterfactualPnl,counterfactualReturn,counterfactualExit,missedProfit,signalEntry,addPrice,protectionTrigger,status,statusClass,lesson,
+    selfReview,selfPath,selfLevels,selfContext,selfIssues,selfProposals,selfFindings,reviewClass:selfReview.primary_review_class||null};
 }
 function renderTradeReviewItem(x){
-  const t=x.t,p=x.p,stop=t.stop_price??p.stop_price??p.initial_stop_price??p.structural_stop;
+  const t=x.t,p=x.p,lv=x.selfLevels||{},mc=x.selfContext||{},stop=lv.initial_stop??lv.stop??t.stop_price??p.stop_price??p.initial_stop_price??p.structural_stop;
   const entry=knownNumber(t.avg_entry_price),exit=knownNumber(t.avg_exit_price);
   const scope=[portfolioName(t.portfolio_name),tfRu(t.horizon),dateRu(t.closed_at)].filter(Boolean).join(' · ');
   const capture=x.capture==null?'—':n(100*x.capture,0)+'%';
@@ -1113,7 +1119,16 @@ function renderTradeReviewItem(x){
   const cfNote=x.replayProven?'Контрфакт подтверждён упорядоченным replay и показывается отдельно от фактического результата.':'Контрфактный P&L и «упущенная прибыль» не показаны без доказанного ordered-path replay.';
   return '<div class="review-item"><div class="review-item-head"><div><div class="review-item-title">'+esc(lab(t.asset))+' · '+esc(directionLabel(t.direction,p.entry_signal_tier||p.signal_tier||''))+'</div><div class="review-item-sub">'+esc(scope)+'</div></div><span class="review-status '+x.statusClass+'">'+esc(x.status)+'</span></div>'+
     '<div class="review-metrics"><div class="review-metric"><span>P&L факт</span><b class="'+tone(x.net)+'">'+rub(x.net)+'</b></div><div class="review-metric"><span>P&L контрфакт</span><b>'+(x.counterfactualPnl==null?'—':'<span class="'+tone(x.counterfactualPnl)+'">'+cfPnl+'</span>')+'</b></div><div class="review-metric"><span>Упущено доказано</span><b>'+missed+'</b></div><div class="review-metric"><span>MFE</span><b>'+pct(x.mfe)+'</b></div><div class="review-metric"><span>MAE</span><b>'+pct(x.mae)+'</b></div><div class="review-metric"><span>Удержано движения</span><b>'+capture+'</b></div><div class="review-metric"><span>Вход факт</span><b>'+assetPrice(t.asset,entry)+'</b></div><div class="review-metric"><span>Уровень сигнала</span><b>'+assetPrice(t.asset,x.signalEntry)+'</b></div><div class="review-metric"><span>Добор факт</span><b>'+assetPrice(t.asset,x.addPrice)+'</b></div><div class="review-metric"><span>Исходный стоп</span><b>'+assetPrice(t.asset,stop)+'</b></div><div class="review-metric"><span>Выход факт</span><b>'+assetPrice(t.asset,exit)+'</b></div><div class="review-metric"><span>Выход контрфакт</span><b>'+assetPrice(t.asset,x.counterfactualExit)+'</b></div></div>'+
-    '<div class="review-lesson"><b>'+esc(attr)+':</b> '+esc(x.lesson)+'</div><div class="review-foot">'+esc(cfNote)+'</div></div>';
+    '<div class="review-lesson"><b>'+esc(attr)+':</b> '+esc(x.lesson)+'</div>'+
+    ((x.reviewClass||x.selfFindings.length||x.selfIssues.length)?'<div class="review-foot"><b>Postmortem:</b> '+esc([
+      x.reviewClass?String(x.reviewClass).replaceAll('_',' ').toLowerCase():null,
+      x.selfFindings.length?x.selfFindings.join(' · '):null,
+      x.selfIssues.length?x.selfIssues.slice(0,2).join(' · '):null,
+      lv.initial_risk_atr!=null?'риск '+n(lv.initial_risk_atr,2)+' ATR':null,
+      lv.stop_anchor!=null?'high/low '+assetPrice(t.asset,lv.stop_anchor):null,
+      mc.structural_timeframe?'структура '+tfRu(mc.structural_timeframe):null
+    ].filter(Boolean).join(' · '))+'</div>':'')+
+    '<div class="review-foot">'+esc(cfNote)+'</div></div>';
 }
 function aggregateMissed(learning2){
   const assets=learning2&&learning2.assets&&typeof learning2.assets==='object'?learning2.assets:{};
@@ -1175,6 +1190,12 @@ function renderHypothesesSection(learning2){
     (sorted.length?sorted.slice(0,12).map(h=>{const s=h.scope||{},e=h.evidence||{},r=byId.get(h.hypothesis_id)||{},status=reviewCandidateStatus(r.status);const scope=[lab(s.asset),tfRu(s.horizon),s.regime].filter(Boolean).join(' · ');const nObs=e.n??r.prospective?.n??'—';const evidence=[e.mean_abs_move!=null?'среднее движение '+reviewMove(e.mean_abs_move):null,e.median_mfe!=null?'median MFE '+reviewMove(e.median_mfe):null,e.median_mae!=null?'median MAE '+reviewMove(e.median_mae):null].filter(Boolean).join(' · ');return '<div class="review-hypothesis"><div class="review-hypothesis-head"><div><b>'+esc(reviewKindLabel(h.kind))+'</b><small>'+esc(scope||'общий контекст')+'</small></div><span class="review-status '+(r.status==='SHADOW_ELIGIBLE'?'ok':'')+'">'+esc(status)+'</span></div><div class="review-rule">'+esc(hypothesisRuleText(h))+'</div><small>Обучающая выборка: '+esc(nObs)+(evidence?' · '+esc(evidence):'')+'. Влияние на production: нет.</small>'+hypothesisEffectHtml(h,r)+'</div>'}).join(''):'<div class="msg">Кандидатов новых правил пока нет: система продолжает накапливать повторяющиеся доказательства.</div>')+
     '</section>';
 }
+function renderOwnerReviewSection(){
+  const q=Array.isArray(st.trades&&st.trades.self_learning_owner_review_queue)?st.trades.self_learning_owner_review_queue:[];
+  return '<section class="review-section"><h3>На утверждение владельца</h3><div class="review-section-note">Postmortem не меняет production автоматически: здесь только кандидаты на вашу верификацию.</div>'+
+    (q.length?q.slice(0,12).map(x=>{const p=x.proposal||{},conf=Array.isArray(p.canonical_conflicts)?p.canonical_conflicts:[];return '<div class="review-hypothesis"><div class="review-hypothesis-head"><div><b>'+esc(p.title||p.kind||'Кандидат правила')+'</b><small>'+esc([lab(x.asset),x.portfolio,dateRu(x.closed_at)].filter(Boolean).join(' · '))+'</small></div><span class="review-status warn">'+esc(p.status||'OWNER_REVIEW_REQUIRED')+'</span></div><div class="review-rule">'+esc(p.rationale||'Требуется проверка.')+'</div>'+(conf.length?'<small class="bad">Конфликт канона: '+esc(conf.join(' · '))+'</small>':'')+'</div>'}).join(''):'<div class="msg">Новых предложений, ожидающих вашего утверждения, нет.</div>')+
+    '</section>';
+}
 function renderReview(){
   bindReviewTabs();
   const all=Array.isArray(st.trades&&st.trades.trades)?st.trades.trades.slice(0,40):[];
@@ -1184,18 +1205,20 @@ function renderReview(){
   const registry=l2.registry||{},shadow=Array.isArray(registry.shadow_champions)?registry.shadow_champions.length:0;
   const protection=reviews.filter(x=>x.protectionTrigger).length;
   const counts=st.autonomous&&st.autonomous.counts||{},processed=Number(counts.processed??((counts.direction||0)+(counts.trade||0)))||0;
-  if($('reviewBadge'))$('reviewBadge').textContent=String(missed.missed+protection);
+  const ownerQueue=Array.isArray(st.trades&&st.trades.self_learning_owner_review_queue)?st.trades.self_learning_owner_review_queue:[];
+  if($('reviewBadge'))$('reviewBadge').textContent=String(missed.missed+protection+ownerQueue.length);
   if($('reviewSummary'))$('reviewSummary').innerHTML='<div class="review-kpis">'+
     '<div class="review-kpi"><span>Закрытых в разборе</span><b>'+reviews.length+'</b></div>'+
     '<div class="review-kpi"><span>MFE ≥ 0,15%, итог ≤ 0</span><b class="'+(protection?'warn':'')+'">'+protection+'</b></div>'+
     '<div class="review-kpi"><span>Упущенных эпизодов</span><b class="'+(missed.missed?'warn':'')+'">'+missed.missed+'</b></div>'+
     '<div class="review-kpi"><span>Обучаемых пропусков</span><b>'+missed.learnable+'</b></div>'+
     '<div class="review-kpi"><span>Кандидатов правил</span><b>'+hypotheses.length+'</b></div>'+
+    '<div class="review-kpi"><span>На ваше утверждение</span><b class="'+(ownerQueue.length?'warn':'')+'">'+ownerQueue.length+'</b></div>'+
     '<div class="review-kpi"><span>Опыт / shadow</span><b>'+processed+' / '+shadow+'</b></div></div>';
   if(!$('reviewBody'))return;
   const closed='<section class="review-section"><h3>Разбор закрытых позиций</h3><div class="review-section-note">Фактический результат, MFE/MAE, защита прибыли и накопленный урок. Порог разбора защиты прибыли: MFE 0,15%.</div>'+(reviews.length?'<div class="review-list">'+reviews.slice(0,16).map(renderTradeReviewItem).join('')+'</div>':'<div class="msg">Закрытых сделок для разбора пока нет.</div>')+'</section>';
   const loop='<section class="review-section"><h3>Контур самообучения</h3><div class="review-section-note">Опыт не превращается в правило по одному примеру.</div><div class="review-list"><div class="review-item"><div class="review-item-title">1. Фиксация</div><div class="review-item-sub">Закрытая сделка или заблокированный directional episode сохраняется с источником, временем и контекстом.</div></div><div class="review-item"><div class="review-item-title">2. Диагностика</div><div class="review-item-sub">Считаются MFE/MAE, результат после расходов, повторяемость блокировки и достаточность доказательств.</div></div><div class="review-item"><div class="review-item-title">3. Проверка будущими исходами</div><div class="review-item-sub">Кандидат оценивается только на данных после его регистрации; Stop/Exit требуют ordered-path replay.</div></div><div class="review-item"><div class="review-item-title">4. Shadow</div><div class="review-item-sub">Только прошедший порог кандидат может стать shadow-eligible. Production-параметры автоматически не меняются.</div></div></div><div class="review-foot">'+esc(learningWaitText(st.autonomous||{}))+'</div></section>';
-  $('reviewBody').innerHTML='<div class="review-grid"><div>'+closed+renderMissedSection(l2,missed)+'</div><div>'+renderHypothesesSection(l2)+loop+'</div></div>';
+  $('reviewBody').innerHTML='<div class="review-grid"><div>'+closed+renderMissedSection(l2,missed)+'</div><div>'+renderOwnerReviewSection()+renderHypothesesSection(l2)+loop+'</div></div>';
 }
 
 function learningWaitText(a){

@@ -10,6 +10,7 @@ import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
 import veritas_release as VR
+import veritas_owner_runtime as VOR
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -4967,6 +4968,9 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         if candidate and not usable(candidate):
             safe_candidates.pop(asset,None)
         safe_summary=[r for r in safe_summary if r.get('asset')!=asset or usable(r)]
+        if VOR.close_shared_invalidation(c,name,z,asset,q,safe_prices,ts,
+                _portfolio_rows,_mark_nav,canonical_close_or_reduce):
+            continue
         if VTM.owns_position(z):
             VTM.apply_trailing(c,name,z,safe_summary,q,ts)
             safe_candidates,safe_summary=VTM.filter_lower_context(z,safe_candidates,safe_summary)
@@ -5115,6 +5119,12 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     if cap>0:
         requested=min(requested,cap)
     step=float(policy.get('position_step') or .05)
+
+    requested,episode_blocked=VOR.cap_episode_add(
+        c,existing,row,name,asset,direction,price,requested,nav,step,_record_entry_outcome)
+    if episode_blocked:
+        return 0.0
+
     if not existing or str(existing.get('direction'))!=str(direction):
         requested=max(0.0,math.floor(requested/step+1e-9)*step)
     if requested<=0:

@@ -1,6 +1,7 @@
 """Role-specific paper selection; no calls to legacy routers or live execution."""
 import math
 import veritas_canonical_constitution as CTC
+import veritas_owner_policy as VOP
 
 def number(value, default=0.0):
     try:
@@ -31,12 +32,23 @@ def gate(row, mode):
         # Admission separately checks current quote, costs and portfolio risk.
         # Roles retain their timeframe scope and allocation caps; confirmed
         # native structure supplies the requested setup without invented scores.
-        horizon=(row.get('horizon') if mode=='IMPULSE_ONLY' else event.get('structural_timeframe'))
+        trigger_horizon=str(row.get('horizon') or event.get('trigger_timeframe') or '')
+        structural_horizon=str(event.get('structural_timeframe') or trigger_horizon)
+        shared=bool(VOP.PORTFOLIO_PARITY.get('verified_structural_event_entry_permission_is_shared')
+                    and mode in ('IMPULSE_ONLY','CORE','CHALLENGER'))
+        # Owner rule 2026-10-09: a proved structural event exists for all three
+        # portfolios. Portfolio role changes allocation/scale, not event existence.
+        horizon=(trigger_horizon if mode=='IMPULSE_ONLY' else structural_horizon)
         allowed=bool(proof.get('eligible') and horizon in rule['horizons'])
+        if shared and proof.get('eligible') and structural_horizon in rule['horizons']:
+            allowed=True
         return {'eligible':allowed,'role':rule['name'],
-                'reason':'ROLE_VERIFIED_STRUCTURAL_EVENT' if allowed else 'ROLE_STRUCTURAL_PROOF_OR_TIMEFRAME_REQUIRED',
+                'reason':'ROLE_SHARED_VERIFIED_STRUCTURAL_EVENT' if allowed and shared else
+                         'ROLE_VERIFIED_STRUCTURAL_EVENT' if allowed else 'ROLE_STRUCTURAL_PROOF_OR_TIMEFRAME_REQUIRED',
                 'candidate_variant':rule.get('variant','CONTROL'),
                 'structure_basis':'VERIFIED_QUOTE_BREAK_WITH_PROTECTED_PARENT',
+                'shared_event_entry_permission':shared,
+                'portfolio_role_changes_size_not_event_existence':shared,
                 'allocation_policy_unchanged':True}
     direction, structure, state, score, independent=_features(row)
     local=row.get('_local_execution_context') or {}

@@ -15,6 +15,7 @@ import veritas_strategy_roles as VROLE
 import veritas_timeframe_policy as TFP
 import veritas_stop_risk as VSR
 import veritas_admission_trace as VAT
+import veritas_parent_risk as VPR
 
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
@@ -190,6 +191,9 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
         hard.append("FAST_TF_CONFLICT")
     if (plan.get("profitability_gate") or {}).get("status")=="NEGATIVE_EDGE":
         hard.append("NEGATIVE_VALIDATED_SETUP_EDGE")
+    parent_risk=work.get("_borrowed_parent_risk_context") or {}
+    if parent_risk.get("borrowed") and not parent_risk.get("eligible",True):
+        hard.append("BORROWED_PARENT_RISK_CONTEXT_INVALID")
     # This independently proved quote event owns its structural thesis. The
     # previous forecast direction is still displayed, but cannot postpone its
     # trigger until the slower feature cycle catches up.
@@ -199,7 +203,8 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
         hard.append(conflict)
     if hard:
         return {"open":False,"fraction":0.0,"reason":hard[0],"hard_veto":True,
-                "hard_blockers":hard,"canonical_stage":"THESIS"}
+                "hard_blockers":hard,"parent_risk_context":parent_risk,
+                "canonical_stage":"THESIS"}
 
     soft=[]
     event=TFP.entry_gate(work,price,d,clock)
@@ -285,6 +290,8 @@ def _local_execution_context(summary,asset,direction):
     }
 
 
+_borrowed_parent_risk_context=VPR.validate
+
 def _prepare_candidate(row,summary):
     r=dict(row or {})
     r["_admission_audit"]={}
@@ -296,6 +303,7 @@ def _prepare_candidate(row,summary):
     r["_alignment_count"]=len(r["_supporting_horizons"])
     r["_rank"]=_rank(r)+10.0*TFP.candidate_priority(r)
     r["_local_execution_context"]=_local_execution_context(summary,asset,direction)
+    r["_borrowed_parent_risk_context"]=_borrowed_parent_risk_context(r,summary)
     cp=_num(r.get("calibrated_probability"))
     r["_pwin"]=cp if cp is not None else max(0.0,min(1.0,_num(r.get("confidence"),0.5)))
     r["_pwin_source"]="EMPIRICAL_CALIBRATION" if cp is not None else "MODEL_QUALITY_SCORE_UNCALIBRATED"

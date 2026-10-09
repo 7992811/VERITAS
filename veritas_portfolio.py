@@ -23,6 +23,7 @@ import veritas_strategy_quality as VSQ
 import veritas_learning_exports as VLE
 import veritas_learning_integrity as VLI
 import veritas_trade_diagnostics as VTD
+import veritas_self_learning as VSELF
 import veritas_timeframe_management as VTM
 import veritas_startup_guard as VSG
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
@@ -3030,6 +3031,7 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z=dict(r0); payload=_v90j_json(z.get('payload')); dp=_v90j_json(z.get('decision_payload'))
         sp=_v90j_json(z.get('setup_payload')); shp=_v90j_json(z.get('shadow_payload'))
         plan=dp.get('trade_plan') or {}; features=dp.get('features') or {}
+        entry_snapshot=VSELF.entry_snapshot(dp,payload,sp)
         cl=z.get('closed_at') or payload.get('closed_at') or payload.get('close_time') or z.get('last_order_at')
         z['closed_at']=cl; z['close_time']=cl
         op=z.get('opened_at')
@@ -3111,6 +3113,8 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['trade_diagnostics']=diagnosis
         z['learning_eligible']=bool(diagnosis.get('learning_eligible'))
         z['episode_key']=_v90j_episode_key(z,payload)
+        z['entry_analysis_snapshot']=entry_snapshot
+        z['self_learning_review']=VSELF.review(z,entry_snapshot)
         VLE.mark_trade(z,dict(r0))
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
         # The UI/learning layer uses flattened fields above. Do not retain duplicate
@@ -3238,6 +3242,14 @@ def trade_report(pg_connect,limit=2500):
         'deduplicated_portfolio_records':max(0,len(rows)-len(unique_all)),
         'today_missing_fields':missing,
         'today_recovery':recovery,
+        'self_learning_trades':[x for x in rows[:100] if x.get('self_learning_review')],
+        'self_learning_review_count':sum(1 for x in rows if x.get('self_learning_review')),
+        'self_learning_owner_review_queue':[
+            {'trade_id':x.get('trade_id'),'asset':x.get('asset'),'portfolio':x.get('portfolio_name'),
+             'closed_at':x.get('closed_at'),'proposal':proposal}
+            for x in rows for proposal in ((x.get('self_learning_review') or {}).get('proposals') or [])
+            if proposal.get('status')=='OWNER_REVIEW_REQUIRED'
+        ][:100],
         'archive_window':min(5000,max(50,int(limit or 2500))),
         'display_policy':'today full detail; older portfolio results + unique learning episodes only',
         'learning_policy':'one canonical market episode once; portfolio duplicates aggregated before self-learning',
