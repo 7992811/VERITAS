@@ -949,9 +949,15 @@ function renderPositionAuditSummary(positions,positionsUnknown){
   if(!rows.length){$('positionAudit').innerHTML='<span class="position-chip warn">Аудит защиты · обновляется</span>';return}
   const counts={OK:0,PARTIAL:0,ERROR:0};rows.forEach(a=>counts[a.status in counts?a.status:'PARTIAL']++);
   const overall=counts.ERROR?'ERROR':counts.PARTIAL?'PARTIAL':'OK';
+  const stopReached=positions.filter(z=>z?.protection_audit?.stop_reached).length;
+  const stale=positions.filter(z=>z?.price_source_status&&z.price_source_status!=='OK').length;
+  const unprotected=positions.filter(z=>((z?.protection_audit?.checks||{}).profit_protection||{}).status!=='OK').length;
   $('positionAudit').innerHTML=
     '<span class="position-chip '+protectionAuditTone(overall)+'">Защита · <b>'+protectionAuditLabel(overall)+'</b></span>'+
     '<span class="position-chip">Проверено <b>'+rows.length+'/'+positions.length+'</b></span>'+
+    (stopReached?'<span class="position-chip bad">Стоп достигнут <b>'+stopReached+'</b></span>':'')+
+    (stale?'<span class="position-chip warn">Источник требует внимания <b>'+stale+'</b></span>':'')+
+    (unprotected?'<span class="position-chip warn">Не защищено net <b>'+unprotected+'</b></span>':'')+
     '<span class="position-chip ok">OK <b>'+counts.OK+'</b></span>'+
     '<span class="position-chip warn">Частично <b>'+counts.PARTIAL+'</b></span>'+
     '<span class="position-chip bad">Ошибки <b>'+counts.ERROR+'</b></span>'+
@@ -967,6 +973,25 @@ function renderPortfolios(){
     return Object.assign({},p,{positions:pos});
   });
   ps.forEach(p=>(p.positions||[]).forEach(z=>positions.push(Object.assign({portfolio:p.name},z))));
+  // Institutional exception-first ordering: operational/risk exceptions are
+  // always surfaced before healthy positions. Within the same state, rank by
+  // capital that can be given back before the effective stop.
+  const positionUrgency=z=>{
+    const a=z?.protection_audit||{}, checks=a.checks||{};
+    let score=0;
+    if(a.status==='ERROR')score+=1000;
+    else if(a.status==='PARTIAL')score+=400;
+    if(a.stop_reached||checks.sl?.reached)score+=900;
+    if(z?.price_source_status && z.price_source_status!=='OK')score+=500;
+    if(checks.profit_protection?.status==='ACTION')score+=450;
+    if(z?.position_management_status==='PROTECTION_ERROR')score+=700;
+    const give=knownNumber(z?.stop_scenario_delta_rub);
+    if(give!=null&&give<0)score+=Math.min(300,Math.abs(give)/1000);
+    const dd=knownNumber(a.distance_to_stop_pct);
+    if(dd!=null&&dd>=0)score+=Math.max(0,100-Math.min(100,20*dd));
+    return score;
+  };
+  positions.sort((a,b)=>positionUrgency(b)-positionUrgency(a));
   const exposureMismatch=positions.length===0&&portfolioExposureNonZero(ps);
   const positionsUnknown=st.portfolioLoadStatus!=='COMPLETE'||ps.some(p=>p.positions_status==='UNAVAILABLE');
   renderPositionAuditSummary(positions,positionsUnknown);
