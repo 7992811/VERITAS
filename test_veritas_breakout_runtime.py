@@ -84,6 +84,22 @@ class FastQuoteRuntimeTests(unittest.TestCase):
             BR._latest_rows.clear()
             BR._latest_rows.update(self.previous_rows)
 
+    def test_cached_closed_bars_are_exact_source_and_detached(self):
+        source=VPS.identity("CNYRUBF",quote())
+        rows=BR.cached_closed_bars("CNYRUBF","1h",source,now=NOW)
+        self.assertEqual(len(rows),24)
+        self.assertTrue(all(x["closed_at"]>x["opened_at"] for x in rows))
+        self.assertTrue(all(x["source_key"]==source["key"] for x in rows))
+        self.assertTrue(all(x["contract_id"]==str(source.get("contract_id") or "") for x in rows))
+        original=BR._markets["CNYRUBF"]["structure_bars_by_timeframe"]["1h"][-1]["close"]
+        rows[-1]["close"]=999
+        self.assertEqual(BR._markets["CNYRUBF"]["structure_bars_by_timeframe"]["1h"][-1]["close"],original)
+
+    def test_cached_closed_bars_reject_foreign_contract(self):
+        source=VPS.identity("CNYRUBF",quote())
+        foreign=dict(source,contract_id="foreign-contract")
+        self.assertEqual(BR.cached_closed_bars("CNYRUBF","1h",foreign,now=NOW),[])
+
     def test_runtime_never_deepcopies_the_complete_market_cache(self):
         real_deepcopy = deepcopy
 
