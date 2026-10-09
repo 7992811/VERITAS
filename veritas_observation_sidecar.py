@@ -19,7 +19,7 @@ import veritas_observation_path as PATH
 import veritas_price_source as VPS
 import veritas_protective_io as PIO
 
-VERSION="OBSERVATION_SIDECAR_V1"
+VERSION="OBSERVATION_SIDECAR_V2_SEEDED_ONLY"
 INTERVAL_SECONDS=10.0
 MAX_WITNESS_BYTES=32768
 
@@ -27,6 +27,7 @@ _state={
     "status":"NOT_STARTED","version":VERSION,"interval_seconds":INTERVAL_SECONDS,
     "checked_at":None,"positions":0,"quotes":0,"written":0,"invalid":0,
     "seeded_positions":0,"observed_positions":0,"unseeded_positions":0,
+    "handoff_positions":0,"irrecoverable_seeded":0,"sampled_positions":0,
     "seeded_events":0,"sealed_events":0,"stale_deleted_total":0,
     "missing_quotes":0,"duration_seconds":0.0,"error":None,
 }
@@ -186,26 +187,49 @@ def sample_once(pg_connect,quote_selector,*,now=None):
          PIO.PROTECTION_POSITIONS_SQL+
          ") p LEFT JOIN paper_observation_sidecar s ON s.trade_id=p.active_trade_id "
          "ORDER BY p.portfolio_name,p.asset")
-    updates=[];quotes=invalid=missing=seeded=observed=unseeded=0
+    updates=[];quotes=invalid=missing=seeded=observed=unseeded=handoff=irrecoverable=sampled=0
     with pg_connect() as c:
         rows=[dict(x) for x in c.execute(sql).fetchall()]
         for row in rows:
             old=row.pop("sidecar_witness",None)
+            if isinstance(old,dict) and old.get("started_at_entry") is True:
+                seeded+=1
+                if old.get("invalid_observation_count") or old.get("gap_count"):
+                    irrecoverable+=1
+                    invalid+=1
+                    continue
+            elif not isinstance(old,dict):
+                # Copy only a causal prefix already observed by the canonical
+                # entry/protective path. No historical price is reconstructed.
+                canonical=PATH.bounded_witness(row)
+                if (isinstance(canonical,dict)
+                        and canonical.get("started_at_entry") is True
+                        and not canonical.get("invalid_observation_count")
+                        and not canonical.get("gap_count")):
+                    old=canonical
+                    handoff+=1
+                else:
+                    unseeded+=1
+                    continue
+            else:
+                # Missing entry seed is permanent evidence loss. Later marks can
+                # never prove the unobserved prefix, so do not rewrite it.
+                unseeded+=1
+                continue
             work=_with_witness(row,old)
             try:
                 quote=quote_selector(work,now=clock) or {}
             except Exception:
                 quote={}
-            if quote:
-                quotes+=1
-            else:
+            if not quote:
+                # No observation means no evidence. A later real sample proves
+                # a cadence/source gap if the outage exceeded its allowance.
                 missing+=1
+                continue
+            quotes+=1
             witness=PATH.observe(work,quote,clock,lane="OBSERVATION_SIDECAR")
+            sampled+=1
             invalid+=int(bool(witness.get("invalid_observation_count")))
-            if witness.get("started_at_entry") is True:
-                seeded+=1
-            else:
-                unseeded+=1
             if (witness.get("coverage_status")=="OBSERVED"
                     and not witness.get("invalid_observation_count")
                     and not witness.get("gap_count")):
@@ -217,7 +241,8 @@ def sample_once(pg_connect,quote_selector,*,now=None):
         "positions":len(rows),"quotes":quotes,"written":written,
         "invalid":invalid,"seeded_positions":seeded,
         "observed_positions":observed,"unseeded_positions":unseeded,
-        "missing_quotes":missing,
+        "handoff_positions":handoff,"irrecoverable_seeded":irrecoverable,
+        "sampled_positions":sampled,"missing_quotes":missing,
         "duration_seconds":round(time.monotonic()-started,4),
         "book_lock_acquired":False,"network_fetches":0,"production_influence":False,
     }
@@ -271,7 +296,8 @@ def start(ns,quote_selector):
                     _state.update(result,error=None)
                 shape=(result.get("positions"),result.get("seeded_positions"),
                        result.get("observed_positions"),result.get("unseeded_positions"),
-                       result.get("missing_quotes"))
+                       result.get("handoff_positions"),result.get("irrecoverable_seeded"),
+                       result.get("sampled_positions"),result.get("missing_quotes"))
                 if (shape!=last_shape or result.get("missing_quotes")
                         or time.monotonic()-last_log>=60):
                     ns["emit"]("observation_sidecar",**snapshot())
