@@ -10,6 +10,12 @@ import time
 import traceback
 from veritas_maintenance import MaintenanceDeferred
 
+_QUALITY_RECORD_EXTRA_FIELDS=(
+    'strategy_epoch','strategy_entry_sha','strategy_policy_hash','strategy_policy_hash_version',
+    'strategy_role','idea_id','idea_id_verified','posttrade_review')
+_QUALITY_RECORD_SQL=LI.payload_record_sql(
+    't',record_alias='quality_payload',extra_fields=_QUALITY_RECORD_EXTRA_FIELDS)
+
 SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t.status,t.horizon,
  t.opened_at,t.closed_at,t.avg_entry_price,t.avg_exit_price,t.max_fraction,
  t.gross_pnl_rub,t.fees_rub,t.funding_rub,t.net_pnl_rub,
@@ -21,17 +27,7 @@ SELECT_TRADES='''SELECT t.trade_id,t.portfolio_name,t.asset,t.direction,t.status
  'idea_id_verified',quality_payload.idea_id_verified,
  'posttrade_review',jsonb_build_object('input_hash',quality_payload.posttrade_review->'input_hash'))) AS payload,
  o.entry_notional_rub,o.entry_order_count
- FROM paper_trades t CROSS JOIN LATERAL jsonb_to_record(
- CASE WHEN jsonb_typeof(t.payload)='object' THEN t.payload ELSE '{}'::jsonb END) AS quality_payload(
- data_integrity_status jsonb,entry_primary_source jsonb,entry_data_latency_class jsonb,recovered jsonb,learning_eligible jsonb,
- exit_reason jsonb,close_reason jsonb,idea_event_id jsonb,r66_event_id jsonb,mfe_pct jsonb,mae_pct jsonb,
- r55_lifetime_mfe_pct jsonb,r55_lifetime_mae_pct jsonb,initial_stop_price jsonb,entry_atr jsonb,execution_timeframe jsonb,
- execution_horizon jsonb,atr_timeframe jsonb,stop_timeframe jsonb,target_timeframe jsonb,
- structural_timeframe jsonb,trigger_timeframe jsonb,price_source_lock jsonb,
- entry_execution_source_identity jsonb,last_exit_source_identity jsonb,contract_identity jsonb,entry_source_names jsonb,
- source_locked_mark jsonb,entry_event_snapshot jsonb,entry_execution_model jsonb,last_exit_execution_model jsonb,
- observation_path jsonb,strategy_epoch jsonb,strategy_entry_sha jsonb,strategy_policy_hash jsonb,
- strategy_policy_hash_version jsonb,strategy_role jsonb,idea_id jsonb,idea_id_verified jsonb,posttrade_review jsonb) LEFT JOIN (
+ FROM paper_trades t '''+_QUALITY_RECORD_SQL+''' LEFT JOIN (
  SELECT trade_id,SUM(notional_rub) AS entry_notional_rub,COUNT(*) AS entry_order_count
  FROM paper_orders WHERE side IN ('BUY','SELL_SHORT') GROUP BY trade_id
  ) o ON o.trade_id=t.trade_id'''
