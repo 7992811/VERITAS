@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
@@ -65,11 +66,29 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertEqual(publish.call_args.args[1],C.LEARNING_V2_SNAPSHOT_NAME)
         self.assertEqual(publish.call_args.args[2],V2.VERSION)
 
+    def test_decision_projection_preserves_admission_block(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("CASE WHEN e.decision IN ('LONG','SHORT')",source)
+        self.assertIn("d.payload->>'plan_eligible'",source)
+        self.assertIn("AS admission_eligible",source)
+        self.assertIn("AS final_gate_status",source)
+
+    def test_trade_cohort_provenance_comes_from_original_trade(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("JOIN paper_trades t ON t.trade_id=e.trade_id",source)
+        self.assertIn("t.payload#>>'{price_source_lock,key}'",source)
+        self.assertIn("t.payload#>>'{price_source_lock,contract_id}'",source)
+        self.assertIn("t.payload->>'strategy_policy_hash'",source)
+
     def test_periodic_job_is_registered_with_bounded_budget(self):
         app=C.ContinuousLearning(namespace(lambda: None))
         lane=app.lane
+        self.assertEqual(C.LEARNING_V2_INPUT_LIMIT,128)
         self.assertIn("learning_v2_shadow",lane.callbacks)
+        self.assertIn("learning_v2_replay",lane.callbacks)
         self.assertEqual(lane.options["learning_v2_shadow"]["max_seconds"],5)
+        self.assertEqual(lane.options["learning_v2_replay"]["max_seconds"],5)
+        self.assertEqual(lane.options["learning_v2_replay"]["interval_seconds"],180)
         self.assertEqual(lane.options["learning_v2_shadow"]["interval_seconds"],60)
         self.assertTrue(lane.options["learning_v2_shadow"]["lightweight"])
 

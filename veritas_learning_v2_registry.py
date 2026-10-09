@@ -24,6 +24,11 @@ REJECT_ROUTER_N=100
 SHADOW_VALID_DAYS=7
 MAX_ACTIVE=128
 MAX_DAY_KEYS=64
+MIN_REPLAY_N=32
+MIN_REPLAY_DAYS=7
+REJECT_REPLAY_N=64
+REJECT_REPLAY_DAYS=14
+MAX_REPLAY_AMBIGUITY_RATE=0.15
 
 
 def _time(v):
@@ -99,9 +104,11 @@ def _entry_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
     usable,_=_new_rows(rows,registered_at,cutoff_id,p if prior is not None else None)
     for rid,ts,r in usable:
         if not _scope_match(candidate["scope"],r): continue
-        if str(r.get("decision") or "")!="NO_TRADE": continue
         blockers={str(x) for x in (r.get("final_gate_blockers") or r.get("blockers") or [])}
-        if blocker not in blockers: continue
+        admission=r.get("admission_eligible")
+        blocked=bool(blockers or admission is False
+                     or str(r.get("final_gate_status") or "").upper()=="BLOCK")
+        if not blocked or blocker not in blockers: continue
         direction=str(r.get("candidate_direction") or "")
         fr=_num(r.get("forward_return"))
         if direction not in ("LONG","SHORT") or fr is None: continue
@@ -171,6 +178,46 @@ def _router_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
     return status,evidence
 
 
+
+def _replay_evidence(prior):
+    p=dict((prior or {}).get("replay") or {})
+    n=int(p.get("n") or 0); ambiguous=int(p.get("ambiguous") or 0); invalid=int(p.get("invalid") or 0)
+    days=int(p.get("days") or len(p.get("utc_days") or []))
+    sum_base=_num(p.get("sum_baseline")) or 0.0
+    sum_candidate=_num(p.get("sum_candidate")) or 0.0
+    sum_delta=(sum_candidate-sum_base)
+    sum_delta_sq=_num(p.get("sum_delta_sq"))
+    mean_base=sum_base/n if n else None
+    mean_candidate=sum_candidate/n if n else None
+    mean_delta=sum_delta/n if n else None
+    delta_se=delta_ci_low=None
+    if n>=2 and sum_delta_sq is not None and mean_delta is not None:
+        variance=max(0.0,(sum_delta_sq-(sum_delta*sum_delta/n))/(n-1))
+        delta_se=math.sqrt(variance/n)
+        delta_ci_low=mean_delta-1.959963984540054*delta_se
+    denominator=n+ambiguous
+    ambiguity_rate=ambiguous/denominator if denominator else None
+    evidence={**p,"n":n,"days":days,"ambiguous":ambiguous,"invalid":invalid,
+              "mean_baseline_net_return":mean_base,
+              "mean_candidate_net_return":mean_candidate,
+              "mean_delta_net_return":mean_delta,
+              "delta_standard_error":delta_se,
+              "delta_ci95_low":delta_ci_low,
+              "ambiguity_rate":ambiguity_rate,
+              "counterfactual_live_execution_proven":False}
+    if (n>=MIN_REPLAY_N and days>=MIN_REPLAY_DAYS
+            and mean_candidate is not None and mean_candidate>0
+            and mean_delta is not None and mean_delta>0
+            and delta_ci_low is not None and delta_ci_low>0
+            and ambiguity_rate is not None and ambiguity_rate<=MAX_REPLAY_AMBIGUITY_RATE):
+        status="REPLAY_SUPPORTED"
+    elif (n>=REJECT_REPLAY_N and days>=REJECT_REPLAY_DAYS
+          and (mean_delta is None or mean_delta<=0)):
+        status="REJECTED"
+    else:
+        status="REPLAY_BUILDING" if (n or ambiguous or invalid) else "AWAIT_REPLAY"
+    return status,evidence
+
 def evaluate_candidate(candidate,decision_rows,trade_rows,now=None,prior=None,cutoff_id=0):
     clock=now or datetime.now(timezone.utc)
     if clock.tzinfo is None: raise ValueError("timezone-aware clock required")
@@ -182,8 +229,10 @@ def evaluate_candidate(candidate,decision_rows,trade_rows,now=None,prior=None,cu
     elif kind=="STRATEGY_ROUTER":
         status,evidence=_router_evidence(candidate,decision_rows,registered,cutoff_id,prior)
     elif kind in ("STOP_GEOMETRY","EXIT_CAPTURE"):
-        status,evidence="AWAIT_REPLAY",{"reason":"ORDERED_PATH_REPLAY_REQUIRED","n":0,
-            "new_observations":0,"counterfactual_execution_proven":False}
+        status,replay=_replay_evidence(prior)
+        evidence={**dict(prior or {}),"reason":"ORDERED_PATH_REPLAY_REQUIRED",
+                  "new_observations":0,"counterfactual_execution_proven":False,
+                  "replay":replay}
     else:
         status,evidence="REJECTED",{"reason":"UNKNOWN_KIND","n":0,"new_observations":0}
     fresh=bool(evidence.get("new_observations"))
@@ -217,6 +266,8 @@ def ensure_schema(c):
     c.execute("ALTER TABLE learning_v2_registry ADD COLUMN IF NOT EXISTS policy_hash TEXT")
     c.execute("""CREATE INDEX IF NOT EXISTS learning_v2_registry_status
                  ON learning_v2_registry(status,updated_at DESC)""")
+    c.execute("""CREATE INDEX IF NOT EXISTS learning_v2_registry_asset_status
+                 ON learning_v2_registry(version,asset,status,updated_at DESC)""")
 
 
 def sync(c,snapshot,decision_rows,trade_rows,now=None):
@@ -237,11 +288,22 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
             (h["hypothesis_id"],VERSION,h["kind"],scope.get("asset"),scope.get("horizon"),
              scope.get("regime"),scope.get("source_key"),scope.get("contract_id"),scope.get("policy_hash"),
              clock,cutoff,_json(identity),_json(h.get("evidence") or {}),clock))
-    rows=c.execute("""SELECT candidate_id,kind,registered_at,decision_cutoff_id,status,contract,
-                             training_evidence,prospective,valid_until
-                      FROM learning_v2_registry
-                      WHERE version=%s AND status NOT IN ('REJECTED','EXPIRED')
-                      ORDER BY registered_at ASC LIMIT %s""",(VERSION,MAX_ACTIVE)).fetchall()
+    active_asset=str(snapshot.get("asset") or "")
+    if active_asset:
+        rows=c.execute("""SELECT candidate_id,kind,registered_at,decision_cutoff_id,status,contract,
+                                 training_evidence,prospective,valid_until
+                          FROM learning_v2_registry
+                          WHERE version=%s AND asset=%s
+                            AND status NOT IN ('REJECTED','EXPIRED')
+                          ORDER BY registered_at ASC LIMIT %s""",
+                       (VERSION,active_asset,MAX_ACTIVE)).fetchall()
+    else:
+        rows=c.execute("""SELECT candidate_id,kind,registered_at,decision_cutoff_id,status,contract,
+                                 training_evidence,prospective,valid_until
+                          FROM learning_v2_registry
+                          WHERE version=%s AND status NOT IN ('REJECTED','EXPIRED')
+                          ORDER BY registered_at ASC LIMIT %s""",
+                       (VERSION,MAX_ACTIVE)).fetchall()
     counts=Counter(); changed=0; public=[]
     for raw in rows or []:
         row=dict(raw)

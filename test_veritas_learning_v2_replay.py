@@ -22,6 +22,28 @@ class LearningV2ReplayTests(unittest.TestCase):
         self.assertEqual(z["exit_reason"],"TARGET")
         self.assertAlmostEqual(z["net_return"],.02-.0008,places=10)
 
+    def test_partial_entry_bar_is_excluded(self):
+        rows=[
+            {"opened_at":T.isoformat(),"closed_at":(T+timedelta(minutes=5)).isoformat(),
+             "open":100,"high":110,"low":90,"close":100,"source_key":"S","contract_id":"C"},
+            {"opened_at":(T+timedelta(minutes=5)).isoformat(),"closed_at":(T+timedelta(minutes=10)).isoformat(),
+             "open":100,"high":101,"low":99,"close":100.5,"source_key":"S","contract_id":"C"},
+        ]
+        z=R.replay_stop_target(rows,entry_at=T+timedelta(minutes=2),entry_price=100,direction="LONG",
+                               stop_price=98,target_price=102,source_key="S",contract_id="C")
+        self.assertEqual(z["status"],"OPEN_AT_END")
+        self.assertEqual(z["bars_used"],1)
+
+    def test_contract_mismatch_invalidates_replay(self):
+        rows=[{"opened_at":(T+timedelta(minutes=5)).isoformat(),
+               "closed_at":(T+timedelta(minutes=10)).isoformat(),
+               "open":100,"high":101,"low":99,"close":100.5,
+               "source_key":"S","contract_id":"OTHER"}]
+        z=R.replay_stop_target(rows,entry_at=T,entry_price=100,direction="LONG",
+                               stop_price=98,target_price=102,source_key="S",contract_id="C")
+        self.assertEqual(z["status"],R.INVALID)
+        self.assertEqual(z["reason"],"CONTRACT_ID_MISMATCH")
+
     def test_source_mismatch_invalidates_replay(self):
         z=R.replay_stop_target([bar(1,100,101,99,100.5,"OTHER")],
                                entry_at=T,entry_price=100,direction="LONG",
@@ -39,6 +61,13 @@ class LearningV2ReplayTests(unittest.TestCase):
             stop_price=98,first_target=102,runner_target=104,first_fraction=.5,source_key="S")
         self.assertEqual(z["status"],R.AMBIGUOUS)
         self.assertEqual(z["reason"],"STOP_AND_RUNNER_TARGET_SAME_BAR")
+
+    def test_first_and_runner_target_same_bar_is_ambiguous(self):
+        rows=[bar(1,100,104.2,99.5,103)]
+        z=R.replay_partial_runner(rows,entry_at=T,entry_price=100,direction="LONG",
+            stop_price=98,first_target=102,runner_target=104,first_fraction=.5,source_key="S")
+        self.assertEqual(z["status"],R.AMBIGUOUS)
+        self.assertEqual(z["reason"],"FIRST_AND_RUNNER_TARGET_SAME_BAR")
 
     def test_partial_runner_resolves_when_bar_order_is_known(self):
         rows=[bar(1,100,102.2,99.5,102),bar(2,102,103,100,102.5),bar(3,102.5,104.2,102,104)]

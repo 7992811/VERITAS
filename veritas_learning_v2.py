@@ -14,6 +14,8 @@ from hashlib import sha256
 import json
 import math
 
+import veritas_canonical_constitution as CTC
+
 VERSION = "LEARNING_V2_SHADOW_1"
 MIN_CONTEXT_N = 8
 MIN_FALSE_BLOCK_N = 3
@@ -22,8 +24,17 @@ MIN_ROUTER_TRAIN_N = 6
 MAX_HYPOTHESES = 64
 ENTRY_FALSE_BLOCK_MOVE = 0.004
 STOP_BUFFER_ATR_CANDIDATES = (0.10, 0.15, 0.20, 0.30)
-EXIT_CAPTURE_TARGETS = (0.35, 0.50, 0.65)
+EXIT_FIRST_TARGET_FRACTIONS = (0.25, 0.75)
 STRATEGY_FAMILIES = ("TREND", "BREAKOUT", "PULLBACK", "MOMENTUM", "REVERSAL", "RANGE")
+LEARNABLE_ENTRY_BLOCKERS = frozenset({
+    "IMPULSE_ALREADY_PASSED",
+    "R83_WAIT_RETEST_LATE_EXECUTION",
+    "WAIT_RETEST",
+    "TIMING_NOT_READY",
+    "STRUCTURAL_EVENT_EXPIRED",
+    "SAME_TF_EVENT_EXPIRED",
+})
+FORBIDDEN_ENTRY_BLOCKERS = frozenset(CTC.HARD_VETOES)
 
 
 def _num(v):
@@ -68,16 +79,18 @@ def classify_decision_episode(row):
     blockers=tuple(sorted(str(x) for x in (row.get("final_gate_blockers") or row.get("blockers") or []) if x))
     candidate_direction=str(row.get("candidate_direction") or "")
     candidate_move=(fr if candidate_direction=="LONG" else -fr if candidate_direction=="SHORT" else None)
-    if (decision=="NO_TRADE" and candidate_move is not None
-            and candidate_move>=ENTRY_FALSE_BLOCK_MOVE and blockers):
+    admission=row.get("admission_eligible")
+    blocked=bool(blockers or admission is False or str(row.get("final_gate_status") or "").upper()=="BLOCK")
+    if (blocked and candidate_move is not None
+            and candidate_move>=ENTRY_FALSE_BLOCK_MOVE):
         return {
             "kind":"MISSED_DIRECTIONAL_MOVE",
             "move":candidate_move,
             "candidate_direction":candidate_direction,
-            "blockers":blockers,
+            "blockers":blockers or ("UNSPECIFIED_BLOCKER",),
             "counterfactual_fill_proven":False,
         }
-    if decision=="NO_TRADE" and fr is not None and abs(fr)>=ENTRY_FALSE_BLOCK_MOVE:
+    if blocked and fr is not None and abs(fr)>=ENTRY_FALSE_BLOCK_MOVE:
         return {
             "kind":"ABSTENTION_LARGE_MOVE",
             "move":abs(fr),
@@ -150,6 +163,8 @@ def generate_hypotheses(decision_rows, trade_rows):
         for b in blocker_stats:
             if b["n"]<MIN_FALSE_BLOCK_N:
                 continue
+            if b["blocker"] in FORBIDDEN_ENTRY_BLOCKERS or b["blocker"] not in LEARNABLE_ENTRY_BLOCKERS:
+                continue
             out.append(_hypothesis(
                 "ENTRY_BLOCKER_RELAXATION",
                 scope,
@@ -184,18 +199,19 @@ def generate_hypotheses(decision_rows, trade_rows):
                  "counterfactual_execution_proven":False}
             ))
 
-        # 3) Exit capture targets from actual capture telemetry.
+        # 3) Concrete partial-take variants; replay still requires an observed runner target.
         captures=[_num(r.get("capture_ratio")) for r in valid]
         captures=[x for x in captures if x is not None and 0<=x<=1]
         if captures:
             mean_capture=sum(captures)/len(captures)
-            for target in EXIT_CAPTURE_TARGETS:
-                if mean_capture+0.05<target:
+            if mean_capture<0.35:
+                for fraction in EXIT_FIRST_TARGET_FRACTIONS:
                     out.append(_hypothesis(
                         "EXIT_CAPTURE",
                         scope,
-                        {"target_capture_ratio":target,
-                         "action":"SHADOW_COMPARE_PARTIAL_TP_AND_STRUCTURAL_RUNNER"},
+                        {"first_target_fraction":fraction,"baseline_first_target_fraction":0.50,
+                         "requires_runner_target":True,
+                         "action":"SHADOW_REPLAY_PARTIAL_TP_AND_STRUCTURAL_RUNNER"},
                         {"n":len(captures),"mean_capture_ratio":mean_capture,
                          "counterfactual_execution_proven":False}
                     ))

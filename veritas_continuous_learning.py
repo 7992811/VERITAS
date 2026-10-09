@@ -25,6 +25,7 @@ import veritas_asset_management_intelligence as INTELLIGENCE
 import veritas_scorecard_delivery as SCORECARD
 import veritas_learning_v2 as LEARNING_V2
 import veritas_learning_v2_registry as LEARNING_V2_REGISTRY
+import veritas_learning_v2_replay_eval as LEARNING_V2_REPLAY_EVAL
 from veritas_maintenance import MaintenanceDeferred
 
 VERSION = "CONTINUOUS_LEARNING_V1"
@@ -41,7 +42,7 @@ CANDIDATE_WORK_VERSION = "FORECAST_CONSUMPTION_V1"
 CANDIDATE_MAINTENANCE_SECONDS = 120
 LEARNING_V2_SNAPSHOT_NAME = "learning_v2_shadow"
 LEARNING_V2_ASSETS = ("BTC","ETH","NQ","BRENT","GOLD","MOEX","CNYRUBF")
-LEARNING_V2_INPUT_LIMIT = 192
+LEARNING_V2_INPUT_LIMIT = 128
 
 
 def _json(value):
@@ -232,7 +233,8 @@ class ContinuousLearning:
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6),
-                ("learning_v2_shadow", self.learning_v2_shadow, 60, 5))
+                ("learning_v2_shadow", self.learning_v2_shadow, 60, 5),
+                ("learning_v2_replay", self.learning_v2_replay, 180, 5))
         for name, fn, interval, seconds in jobs:
             if name == "learning_bootstrap":
                 callback = fn
@@ -387,6 +389,7 @@ class ContinuousLearning:
             KNOWLEDGE.restore(self.connect, context=context)
             with transaction(self.connect, context) as c:
                 LEARNING_V2_REGISTRY.ensure_schema(c)
+                LEARNING_V2_REPLAY_EVAL.ensure_schema(c)
             self.boot_phase = 4
             return {"status": "PROGRESS", "stage": "KNOWLEDGE_AND_LEARNING_V2_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
@@ -706,9 +709,16 @@ class ContinuousLearning:
                      COALESCE(d.payload#>>'{learning_provenance,source_identity,contract_id}',
                               d.payload#>>'{timeframe_entry_context,source_identity,contract_id}',
                               d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}','') AS contract_id,
-                     COALESCE(d.payload->>'horizon_structure_direction',
-                              d.payload#>>'{timeframe_entry_context,event,direction}',
-                              d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}','') AS candidate_direction,
+                     CASE WHEN e.decision IN ('LONG','SHORT') THEN e.decision
+                          ELSE COALESCE(d.payload#>>'{timeframe_entry_context,event,direction}',
+                                        d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}',
+                                        NULLIF(d.payload->>'horizon_structure_direction','NO_TRADE'),'') END AS candidate_direction,
+                     CASE WHEN d.payload->>'plan_eligible' IN ('true','false')
+                          THEN (d.payload->>'plan_eligible')::boolean
+                          WHEN d.payload->>'trade_entry_eligible' IN ('true','false')
+                          THEN (d.payload->>'trade_entry_eligible')::boolean
+                          ELSE NULL END AS admission_eligible,
+                     COALESCE(d.payload->>'final_gate_status','') AS final_gate_status,
                      COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers
               FROM recent e
               CROSS JOIN LATERAL (
@@ -722,19 +732,20 @@ class ContinuousLearning:
             context.check()
             trade_read_started=time.monotonic()
             trades=c.execute("""
-              SELECT closed_at,asset,horizon,regime,setup_family,
-                     COALESCE(payload->>'strategy_policy_hash','') AS policy_hash,
-                     COALESCE(payload#>>'{price_source_lock,key}',
-                              payload#>>'{entry_execution_source_identity,key}','') AS source_key,
-                     COALESCE(payload#>>'{price_source_lock,contract_id}',
-                              payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
-                     mae_pct AS mae,mfe_pct AS mfe,capture_ratio,
-                     net_pnl_rub,primary_attribution
-              FROM v90_learning_episodes
-              WHERE learning_eligible=TRUE
-                AND primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
-                AND asset=%s
-              ORDER BY closed_at DESC
+              SELECT e.closed_at,e.asset,e.horizon,e.regime,e.setup_family,
+                     COALESCE(t.payload->>'strategy_policy_hash','') AS policy_hash,
+                     COALESCE(t.payload#>>'{price_source_lock,key}',
+                              t.payload#>>'{entry_execution_source_identity,key}','') AS source_key,
+                     COALESCE(t.payload#>>'{price_source_lock,contract_id}',
+                              t.payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
+                     e.mae_pct AS mae,e.mfe_pct AS mfe,e.capture_ratio,
+                     e.net_pnl_rub,e.primary_attribution
+              FROM v90_learning_episodes e
+              JOIN paper_trades t ON t.trade_id=e.trade_id
+              WHERE e.learning_eligible=TRUE
+                AND e.primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
+                AND e.asset=%s
+              ORDER BY e.closed_at DESC
               LIMIT %s
             """,(asset,limit)).fetchall()
             trade_read_seconds=time.monotonic()-trade_read_started
@@ -806,6 +817,22 @@ class ContinuousLearning:
                 "registry_counts":registry.get("counts") or {},
                 "metrics":metrics,
                 "missed_directional_episodes":(current.get("entry_false_block") or {}).get("missed_directional_episodes",0)},cursor
+
+    def learning_v2_replay(self, context, cursor):
+        """Evaluate one bounded Stop/Exit candidate on cached exact-source paths."""
+        import veritas_breakout_runtime as BREAKOUT_RUNTIME
+        started=time.monotonic()
+        result=LEARNING_V2_REPLAY_EVAL.process(
+            self.connect,BREAKOUT_RUNTIME.cached_closed_bars,now=clock(),context=context)
+        self.ns["emit"]("learning_v2_replay_snapshot",
+                        version=LEARNING_V2_REPLAY_EVAL.VERSION,
+                        status=result.get("status"),candidate_id=result.get("candidate_id"),
+                        kind=result.get("kind"),trades_considered=result.get("trades_considered",0),
+                        receipts_written=result.get("receipts_written",0),
+                        registry_status=result.get("registry_status"),
+                        production_influence=False,
+                        duration_seconds=round(time.monotonic()-started,4))
+        return result,cursor
 
     def intelligence(self, context, cursor, *, pg_connect=None):
         pg_connect = self.connect if pg_connect is None else pg_connect

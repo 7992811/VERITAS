@@ -67,7 +67,7 @@ history worker supplies an adequate ordered path.
 ## Runtime resource policy
 
 The production shadow lane rotates one asset per run every 60 seconds. Each run
-reads at most 192 materialized decision outcomes and 192 eligible trade episodes
+reads at most 128 materialized decision outcomes and 128 eligible trade episodes
 for that asset. The outcome itself comes from `v90_decision_episodes`; the
 ledger JSON is opened only to recover the frozen pre-outcome setup, source and
 policy context. This replaces the previous all-market decision+outcome JSON join
@@ -76,3 +76,31 @@ that exceeded the five-second cooperative budget on the 512 MiB service.
 The dedicated worker uses the same materialized evidence contract with a bounded
 per-asset limit. Moving Learning 2.0 to that worker later therefore changes
 where the research executes, not what evidence it is allowed to use.
+
+
+## Prospective Stop/Exit evaluation (v91.8.28)
+
+Stop and Exit candidates are evaluated only on eligible paper trades closed
+after the candidate was registered. The evaluator reads already cached canonical
+bars; it never downloads history from the learning lane.
+
+Replay constraints:
+
+- price source and exact contract must match the frozen candidate cohort;
+- policy hash, asset, regime and horizon must match;
+- only one-entry trades are admitted to this first replay protocol;
+- holding time is capped at 24 hours so the replay does not omit funding;
+- entry-bar high/low is discarded when the fill occurred inside that bar;
+- bars after the actual trade close are discarded even if present in cache;
+- a same-bar stop/target conflict is `AMBIGUOUS_INTRABAR`, never resolved in
+  the candidate's favor;
+- commission plus modeled slippage use the canonical cost policy;
+- the replay baseline parameter must match the frozen entry event policy
+  (stop buffer or first-target fraction); policy drift invalidates the episode.
+
+A Stop/Exit candidate becomes `REPLAY_SUPPORTED` only after at least 32
+comparable future trades across seven UTC days, positive candidate net return,
+positive improvement over the baseline with a positive paired 95% lower confidence bound, and ambiguity no greater than 15%.
+Persistent non-positive improvement at 64 observations across 14 days rejects
+the candidate. `REPLAY_SUPPORTED` is research evidence only: it is not a
+shadow champion and has no production authority.
