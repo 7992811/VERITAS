@@ -19,6 +19,7 @@ import veritas_position_guard as VPG
 import veritas_position_thesis as VPT
 import veritas_currency_notifications as VCN
 import veritas_currency_trade_console as VCTC
+import veritas_currency_trade_service as VCTS
 from veritas_quote_time import moex_observed_at, quote_gate
 import veritas_learning_index as VLI
 import veritas_asset_management_intelligence as VAMI
@@ -16746,6 +16747,8 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
       },
       'horizon_summary':horizon_counts
     }
+_CURRENCY_TRADE_SUMMARY_PROVIDER = VCTS.make_summary_provider(fresh_cycle_snapshot, lock)
+
 class H(BaseHTTPRequestHandler):
     def reply(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode()
@@ -17123,7 +17126,12 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if VCTC.dispatch(self, pg_connect, (lock, last_cycle)): return
         try:
-            if urlparse(self.path).path.startswith('/internal/currency-alerts/'):
+            if urlparse(self.path).path.startswith(VCTS.PREFIX):
+                VCTS.reply_http(
+                    self, pg_connect, _CURRENCY_TRADE_SUMMARY_PROVIDER,
+                    alert_handler=VCN.handle_request,
+                )
+            elif urlparse(self.path).path.startswith('/internal/currency-alerts/'):
                 n=int(self.headers.get('Content-Length','0') or 0)
                 if n<0 or n>8192:
                     self.reply({'ok':False,'error':'INVALID_BODY_SIZE'},400); return
