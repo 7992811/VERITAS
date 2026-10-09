@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
@@ -64,6 +65,13 @@ class LearningV2RuntimeTests(unittest.TestCase):
         publish.assert_called_once()
         self.assertEqual(publish.call_args.args[1],C.LEARNING_V2_SNAPSHOT_NAME)
         self.assertEqual(publish.call_args.args[2],V2.VERSION)
+
+    def test_trade_cohort_provenance_comes_from_original_trade(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("JOIN paper_trades t ON t.trade_id=e.trade_id",source)
+        self.assertIn("t.payload#>>'{price_source_lock,key}'",source)
+        self.assertIn("t.payload#>>'{price_source_lock,contract_id}'",source)
+        self.assertIn("t.payload->>'strategy_policy_hash'",source)
 
     def test_periodic_job_is_registered_with_bounded_budget(self):
         app=C.ContinuousLearning(namespace(lambda: None))
