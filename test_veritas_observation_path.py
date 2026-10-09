@@ -126,11 +126,15 @@ class ObservationPathTests(unittest.TestCase):
         self.assertEqual(PATH.assessment(row)['reason'],'OBSERVATION_PATH_CONTEXT_MISMATCH')
 
     def test_internal_source_gap_remains_excluded_after_later_regular_quotes(self):
-        row=trade();add(row,0,at_entry=True);add(row,15,101.);add(row,90,100.);add(row,105,102.)
-        row.update(status='CLOSED',closed_at=stamp(105))
+        row=trade();add(row,0,at_entry=True)
+        for checked in (15,30,45):
+            add(row,checked,100.,observed=0)
+        add(row,60,101.,observed=60)
+        row.update(status='CLOSED',closed_at=stamp(60))
         result=PATH.assessment(row)
         self.assertEqual(result['reason'],'OBSERVATION_SOURCE_GAP')
-        self.assertEqual(result['max_gap_seconds'],75)
+        self.assertEqual(result['max_gap_seconds'],60)
+        self.assertEqual(result['max_check_gap_seconds'],15)
 
     def test_slow_processing_is_separate_from_provider_cadence(self):
         row=trade();add(row,0,at_entry=True);add(row,15,101.)
@@ -210,6 +214,11 @@ class ObservationPathTests(unittest.TestCase):
             row['payload']['observation_path']=w
             self.assertEqual(w['observation_count'],0)
             self.assertFalse(PATH.assessment(row)['eligible'])
+
+    def test_impossible_check_count_is_rejected(self):
+        row=complete()
+        row['payload']['observation_path']['check_count']=1
+        self.assertEqual(PATH.assessment(row)['reason'],'INCONSISTENT_CHECK_COVERAGE')
 
     def test_cadence_metadata_tampering_is_rejected(self):
         row=complete()
