@@ -1,6 +1,13 @@
 from datetime import datetime, timedelta, timezone
 import inspect
+import json
+import os
+import uuid
+from contextlib import contextmanager
+from types import SimpleNamespace
 import unittest
+
+import veritas_learning_v2_registry as REG
 
 import veritas_learning_v2_replay_eval as E
 
@@ -98,3 +105,77 @@ class ReplayEvaluatorTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+
+
+DSN=os.getenv("VERITAS_QUALITY_TEST_DSN","")
+
+@unittest.skipUnless(DSN,"isolated PostgreSQL test database not configured")
+class ReplayEvaluatorSQLTests(unittest.TestCase):
+    def setUp(self):
+        import psycopg
+        from psycopg.rows import dict_row
+        self.psycopg=psycopg; self.dict_row=dict_row
+        self.schema="replay_v2_"+uuid.uuid4().hex
+        with psycopg.connect(DSN,row_factory=dict_row) as conn:
+            if conn.execute("select current_database() AS n").fetchone()["n"]!="veritas_quality_test":
+                raise RuntimeError("Refusing replay test outside veritas_quality_test")
+            conn.execute(f'CREATE SCHEMA "{self.schema}"')
+            conn.execute(f'SET search_path TO "{self.schema}"')
+            REG.ensure_schema(conn); E.ensure_schema(conn)
+            conn.execute("""CREATE TABLE v90_learning_episodes(
+                trade_id text PRIMARY KEY,closed_at timestamptz,asset text,direction text,horizon text,
+                regime text,setup_family text,learning_eligible boolean,primary_attribution text)""")
+            conn.execute("""CREATE TABLE paper_trades(
+                trade_id text PRIMARY KEY,opened_at timestamptz,avg_entry_price float8,status text,payload jsonb)""")
+            conn.execute("""CREATE TABLE paper_orders(trade_id text,side text)""")
+            registered=T-timedelta(days=1)
+            scope={"asset":"NQ","horizon":"5m","regime":"TREND","source_key":IDENTITY["key"],
+                   "contract_id":"C1","policy_hash":"p"}
+            contract={"version":"LEARNING_V2_SHADOW_1","kind":"STOP_GEOMETRY","scope":scope,
+                      "proposal":{"stop_buffer_atr":.20,"baseline_stop_buffer_atr":.15}}
+            conn.execute("""INSERT INTO learning_v2_registry(
+                candidate_id,version,kind,asset,horizon,regime,source_key,contract_id,policy_hash,
+                registered_at,decision_cutoff_id,status,contract,training_evidence,prospective)
+                VALUES('CSTOP',%s,'STOP_GEOMETRY','NQ','5m','TREND',%s,'C1','p',
+                       %s,0,'AWAIT_REPLAY',%s::jsonb,'{}'::jsonb,'{}'::jsonb)""",
+                (REG.VERSION,IDENTITY["key"],registered,json.dumps(contract)))
+            event={"direction":"LONG","source_identity":IDENTITY,"stop_anchor":98.0,"atr":2.0,
+                   "stop_price":97.7,"target_price":102.0}
+            payload={"entry_event_snapshot":event,"entry_execution_model":{"fill_price":100.0},
+                     "price_source_lock":IDENTITY,"entry_execution_source_identity":IDENTITY,
+                     "strategy_policy_hash":"p","initial_stop_price":97.7,"entry_atr":2.0}
+            conn.execute("""INSERT INTO paper_trades VALUES(
+                'TSQL',%s,100,'CLOSED',%s::jsonb)""",(T,json.dumps(payload)))
+            conn.execute("""INSERT INTO v90_learning_episodes VALUES(
+                'TSQL',%s,'NQ','LONG','5m','TREND','BREAKOUT',TRUE,'OK')""",
+                (T+timedelta(hours=1),))
+            conn.execute("INSERT INTO paper_orders VALUES('TSQL','BUY')")
+
+    @contextmanager
+    def connect(self):
+        with self.psycopg.connect(DSN,row_factory=self.dict_row) as conn:
+            conn.execute(f'SET search_path TO "{self.schema}"')
+            yield conn
+
+    def tearDown(self):
+        with self.psycopg.connect(DSN) as conn:
+            conn.execute(f'DROP SCHEMA "{self.schema}" CASCADE')
+
+    def test_receipt_and_registry_update_are_idempotent(self):
+        result=E.process(self.connect,cached,now=T+timedelta(hours=2),
+                         context=SimpleNamespace(check=lambda:None))
+        self.assertEqual(result["status"],"OK")
+        self.assertEqual(result["receipts_written"],1)
+        self.assertEqual(result["registry_status"],"REPLAY_BUILDING")
+        with self.connect() as conn:
+            receipt=conn.execute("SELECT status,baseline_net,candidate_net FROM learning_v2_replay_receipts").fetchone()
+            registry=conn.execute("SELECT status,prospective FROM learning_v2_registry WHERE candidate_id='CSTOP'").fetchone()
+        self.assertEqual(receipt["status"],"COMPARABLE")
+        self.assertEqual(registry["prospective"]["replay"]["n"],1)
+        again=E.process(self.connect,cached,now=T+timedelta(hours=3),
+                        context=SimpleNamespace(check=lambda:None))
+        self.assertEqual(again["status"],"OK")
+        self.assertEqual(again["receipts_written"],0)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) AS n FROM learning_v2_replay_receipts").fetchone()["n"],1)
+            self.assertEqual(conn.execute("SELECT prospective#>>'{replay,n}' AS n FROM learning_v2_registry WHERE candidate_id='CSTOP'").fetchone()["n"],"1")
