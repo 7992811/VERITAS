@@ -112,19 +112,23 @@ def load_inputs(conn,limit=PER_ASSET_LIMIT):
             conn.rollback(); errors.append("DECISIONS:"+asset+":"+type(exc).__name__)
         try:
             trades.extend(dict(x) for x in conn.execute("""
-              SELECT closed_at,asset,horizon,regime,setup_family,
-                     COALESCE(payload->>'strategy_policy_hash','') AS policy_hash,
-                     COALESCE(payload#>>'{price_source_lock,key}',
-                              payload#>>'{entry_execution_source_identity,key}','') AS source_key,
-                     COALESCE(payload#>>'{price_source_lock,contract_id}',
-                              payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
-                     mae_pct AS mae,mfe_pct AS mfe,capture_ratio,
-                     net_pnl_rub,primary_attribution
-              FROM v90_learning_episodes
-              WHERE learning_eligible=TRUE
-                AND primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
-                AND asset=%s
-              ORDER BY closed_at DESC LIMIT %s
+              SELECT e.closed_at,e.asset,e.horizon,e.regime,e.setup_family,
+                     COALESCE(t.payload->>'strategy_policy_hash','') AS policy_hash,
+                     COALESCE(t.payload#>>'{price_source_lock,key}',
+                              t.payload#>>'{entry_execution_source_identity,key}','') AS source_key,
+                     COALESCE(t.payload#>>'{price_source_lock,contract_id}',
+                              t.payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
+                     e.mae_pct AS mae,e.mfe_pct AS mfe,e.capture_ratio,
+                     e.net_pnl_rub,e.primary_attribution,
+                     e.learning_eligible AS path_learning_eligible,
+                     COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE) AS outcome_learning_eligible
+              FROM v90_learning_episodes e
+              JOIN paper_trades t ON t.trade_id=e.trade_id
+              WHERE (e.learning_eligible=TRUE
+                     OR COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE)=TRUE)
+                AND e.primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
+                AND e.asset=%s
+              ORDER BY e.closed_at DESC LIMIT %s
             """,(asset,limit)).fetchall())
         except Exception as exc:
             conn.rollback(); errors.append("TRADES:"+asset+":"+type(exc).__name__)
