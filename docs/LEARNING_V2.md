@@ -176,3 +176,31 @@ state inside the same signal bar.
 
 The signature change affects only durable event persistence. It does not alter
 the signal, order, risk, execution or broker decision itself.
+
+
+## Materialized decision evidence (v91.8.32)
+
+The background Learning 2.0 scan no longer joins recent outcome episodes back
+to raw JSON ledger decisions.
+
+`v90_decision_episodes` now materializes the compact immutable fields required
+by prospective learning when an outcome is sealed:
+
+- decision ledger id and timestamp;
+- setup family and policy hash;
+- source key and exact contract id;
+- frozen candidate direction;
+- admission eligibility and final gate status;
+- bounded structured blockers and admission reasons.
+
+The canonical source identity comes from
+`learning_provenance.quote.source_identity`; this corrects the older reader
+path that skipped the intermediate `quote` object.
+
+New outcomes write these columns immediately. Legacy episodes are enriched in a
+separate background job limited to 64 rows, one batch and three seconds per
+attempt. The production Learning 2.0 asset scan reads only
+`v90_decision_episodes`, with no `ledger_events` or `LATERAL` join.
+
+An asset/time index supports the rotating 128-row scan. This is a storage and
+latency change only: it does not alter signals, admission, orders or risk.
