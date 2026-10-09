@@ -671,6 +671,11 @@ class TradeHttpApplication:
         return (getattr(self.coordinator, "sandbox_autotrade_enabled", False) is True
                 and self.environment == "sandbox")
 
+    @property
+    def robot_autotrade_enabled(self):
+        return (getattr(self.coordinator, "robot_autotrade_enabled", False) is True
+                and self.environment == "production")
+
     def _initialize(self):
         if not self._ready:
             self.repository.ensure_schema()
@@ -799,6 +804,8 @@ class TradeHttpApplication:
                 "account_id": self.account_id, "instrument_uid": self.instrument_uid,
                 "execution_environment": self.environment,
                 "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
+                "robot_autotrade_enabled": self.robot_autotrade_enabled,
+                "autotrade_enabled": self.sandbox_autotrade_enabled or self.robot_autotrade_enabled,
                 "live_account_admission_configured": configured,
                 "live_account_admission": json_safe(admission_status),
                 "manual_account_admission": json_safe(manual_status),
@@ -815,12 +822,14 @@ class TradeHttpApplication:
             return {"ok": True, "enabled": True, "items": [],
                     "execution_enabled": self.execution_enabled,
                     "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
+                    "robot_autotrade_enabled": self.robot_autotrade_enabled,
                     "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
         self.coordinator.reconcile()
         if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
             self._remember_poll("PROPOSALS_PAUSED", binding_state="bound")
             return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
                     "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
+                    "robot_autotrade_enabled": self.robot_autotrade_enabled,
                     "block_reason": "PROPOSALS_PAUSED"}
         reason, sizing, entry_diagnostics = None, None, None
         approved = self._scoped(self.repository.list_approved(
@@ -867,6 +876,34 @@ class TradeHttpApplication:
                     else:
                         reason = "CURRENCY_TRADE_EXECUTION_DISABLED"
             unsettled, pending = self._unsettled(), self._pending()
+        elif self.robot_autotrade_enabled:
+            # Production robot: the one-time operator mandate is held outside
+            # the per-order proposal. Each order still passes fresh market,
+            # account, live-admission, idempotency and pre-send revalidation.
+            candidate = next((p for p in pending
+                              if p.get("status") in ("PENDING_DELIVERY", "AWAITING_OWNER")), None)
+            if candidate is None and not pending:
+                try:
+                    candidate = self.coordinator.prepare_next()
+                except (TradePlanBlocked, ServiceError, LedgerError) as exc:
+                    reason = _diagnostic(exc)
+                    if isinstance(exc, ContractSizingBlocked):
+                        sizing = exc.sizing
+                    if isinstance(exc, EntryAdmissionBlocked):
+                        entry_diagnostics = exc.entry_diagnostics
+                    if reason == "BROKER_COST_RECONCILIATION_REQUIRED":
+                        reason = self.facts.block_reason or reason
+            if candidate is not None and candidate.get("status") in ("PENDING_DELIVERY", "AWAITING_OWNER"):
+                approved_row = self.repository.auto_approve_robot(candidate["proposal_id"])
+                if approved_row.get("status") == "APPROVED":
+                    if self.execution_enabled:
+                        result = self.coordinator.execute_approved(approved_row["proposal_id"])
+                        if isinstance(result, Mapping) and result.get("ok") is not True:
+                            code = result.get("code")
+                            reason = code if isinstance(code, str) and _SAFE_CODE.fullmatch(code) else "ROBOT_AUTO_EXECUTION_BLOCKED"
+                    else:
+                        reason = "CURRENCY_TRADE_EXECUTION_DISABLED"
+            unsettled, pending = self._unsettled(), self._pending()
         elif not pending:
             try:
                 self.coordinator.prepare_next()
@@ -879,13 +916,15 @@ class TradeHttpApplication:
                 if reason == "BROKER_COST_RECONCILIATION_REQUIRED":
                     reason = self.facts.block_reason or reason
             pending = self._pending()
-        items = ([] if self.sandbox_autotrade_enabled else
+        items = ([] if (self.sandbox_autotrade_enabled or self.robot_autotrade_enabled) else
                  [self._public(p) for p in pending if p.get("status") == "PENDING_DELIVERY"][:1])
         self._remember_poll(reason, binding_state="bound", pending=len(pending),
                             unsettled=len(unsettled), sizing=sizing, entry_diagnostics=entry_diagnostics)
         return {"ok": True, "enabled": True, "items": items,
                 "execution_enabled": self.execution_enabled,
                 "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
+                "robot_autotrade_enabled": self.robot_autotrade_enabled,
+                "autotrade_enabled": self.sandbox_autotrade_enabled or self.robot_autotrade_enabled,
                 "block_reason": reason}
 
     def console_snapshot(self):
@@ -1159,8 +1198,13 @@ def create_application(connect, summary_provider, *, configuration=None):
                and _enabled("VERITAS_LIVE_EXECUTION_ENABLED"))
     armed = _enabled("VERITAS_LIVE_EXECUTION_ARMED")
     sandbox_autotrade = _enabled("VERITAS_CURRENCY_SANDBOX_AUTOTRADE_ENABLED")
+    robot_autotrade = _enabled("VERITAS_CURRENCY_AUTOTRADE_ENABLED")
     if sandbox_autotrade and environment != "sandbox":
         raise ServiceError("SANDBOX_AUTOTRADE_PRODUCTION_FORBIDDEN", 503)
+    if robot_autotrade and environment != "production":
+        raise ServiceError("PRODUCTION_AUTOTRADE_ENVIRONMENT_REQUIRED", 503)
+    if sandbox_autotrade and robot_autotrade:
+        raise ServiceError("MULTIPLE_AUTOTRADE_MODES_FORBIDDEN", 503)
     if _enabled("VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED"):
         armed = armed and binding.get("execution_requested") is True and binding.get("paused") is False
     if not callable(connect) or not callable(summary_provider):
@@ -1191,6 +1235,7 @@ def create_application(connect, summary_provider, *, configuration=None):
             instrument_uid=CNY_UID, environment=environment),
         preflight_live=environment == "production",
         sandbox_autotrade_enabled=sandbox_autotrade,
+        robot_autotrade_enabled=robot_autotrade and enabled and armed,
     )
     from veritas_currency_manual_admission import ManualAccountAdmission
     coordinator.manual_admission = ManualAccountAdmission(ledger_connect, adapter, account, evidence=evidence)
@@ -1238,6 +1283,7 @@ _CONFIG_NAMES = (
     "VERITAS_CURRENCY_TRADE_APPROVAL_KEY", "VERITAS_CURRENCY_TRADE_ENVIRONMENT",
     "TBANK_API_TOKEN", "TBANK_SANDBOX_TOKEN", "VERITAS_CURRENCY_TRADE_EXECUTION_ENABLED",
     "VERITAS_LIVE_EXECUTION_ENABLED", "VERITAS_LIVE_EXECUTION_ARMED",
+    "VERITAS_CURRENCY_AUTOTRADE_ENABLED",
     "VERITAS_CURRENCY_TRADE_MARGIN_ALLOWED",
     "VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED",
     "VERITAS_TBANK_ORDER_STREAM_ENABLED",
