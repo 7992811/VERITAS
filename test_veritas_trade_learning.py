@@ -260,14 +260,16 @@ class ReceiptSweepTests(unittest.TestCase):
                 patch.object(S,'checkpoint_job',side_effect=checkpoint), \
                 patch.object(T,'observation',side_effect=lambda row,**kw:(dict(evidence_valid=True,evidence_hash=row['original_evidence_hash']),None)), \
                 patch.object(A,'snapshot',return_value={'status':'OK','profiles':[]}):
-            for index in range(5):
+            pages=(len(rows)+T.BATCH_SIZE-1)//T.BATCH_SIZE
+            for index in range(pages):
                 validate_addition()
                 result=worker.process()
-                self.assertEqual(result['checked'],4)
+                self.assertEqual(result['checked'],min(T.BATCH_SIZE,len(rows)-index*T.BATCH_SIZE))
                 self.assertEqual(state['phase'],'recheck')
             validate_addition()
             result=worker.process()
-            self.assertEqual(page_starts,['','trade-03','trade-07','trade-11','trade-15','trade-19'])
+            expected_starts=['']+[f'trade-{i*T.BATCH_SIZE-1:02}' for i in range(1,pages+1)]
+            self.assertEqual(page_starts,expected_starts)
             self.assertFalse(result['snapshot']['evidence_revalidation_pending'])
             self.assertEqual(result['snapshot']['verified_revocation_generation'],LI.memory_state()['revocation_generation'])
             validate_addition()
