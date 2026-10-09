@@ -266,12 +266,15 @@ def add_metadata(position,row,units,ts):
                     'event_id':event['event_id'],'previous_stage':p.get('active_target_stage',0),
                     'previous_ladder':deepcopy(p.get('active_target_ladder') or []),
                     'new_ladder':deepcopy(event['target_ladder'])})
+    trend_day=deepcopy(row.get('_trend_day_efficiency') or
+                         ((row.get('_trend_acceleration') or {}).get('trend_day_efficiency')) or {})
     return {'active_target_event_snapshot':deepcopy(event),
             'active_target_ladder':deepcopy(event['target_ladder']),
             'active_target_stage':0,'active_ladder_units':units,
             'take_price':event['target_price'],'target_price':event['target_price'],
             'runner_target_price':event['runner_target_price'],
             'last_structural_confirmation':deepcopy(event),
+            'last_trend_day_efficiency':trend_day or None,
             'target_lifecycle_history':history[-32:],
             'r17_tp1_done':False}
 
