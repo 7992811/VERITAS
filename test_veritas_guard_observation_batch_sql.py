@@ -400,12 +400,15 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
         for table, key, suffix in (
                 ('paper_positions','active_trade_id','position'),
                 ('paper_trades','trade_id','trade')):
+            name='reject_guard_metadata_'+suffix
+            c.execute(self.sql.SQL('ALTER TABLE {} DROP CONSTRAINT IF EXISTS {}')
+                      .format(self.sql.Identifier(table), self.sql.Identifier(name)))
             c.execute(self.sql.SQL('''ALTER TABLE {} ADD CONSTRAINT {}
                 CHECK ({} <> {} OR
                        (payload #>> '{{observation_path,last_lane}}') IS DISTINCT FROM 'PROTECTIVE_GUARD' OR
                        COALESCE((payload #>> '{{observation_path,observation_count}}')::int, 0) < 3)''')
                 .format(self.sql.Identifier(table),
-                        self.sql.Identifier('reject_guard_metadata_'+suffix),
+                        self.sql.Identifier(name),
                         self.sql.Identifier(key), self.sql.Literal(trade_id)))
 
     def test_one_optional_failure_preserves_other_twenty_two_and_outer_accounting(self):
