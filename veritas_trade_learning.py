@@ -22,9 +22,10 @@ import veritas_price_source as SOURCE
 import veritas_knowledge_validation as KNOWLEDGE
 from veritas_maintenance import MaintenanceDeferred
 
-VERSION = "CLOSED_TRADE_MICROBATCH_V1"
+VERSION = "CLOSED_TRADE_MICROBATCH_V2_OUTCOME_EVIDENCE"
 JOB_NAME = "closed_trade_learning"
 BATCH_SIZE = 4
+MATERIALIZE_BATCH_SIZE = 1
 MAX_BATCH_SIZE = 8
 EPOCH = "2026-09-26T07:13:08+00:00"
 
@@ -275,7 +276,8 @@ class TradeLearning:
         lease=STORE.claim_job(pg,JOB_NAME,VERSION,lease_seconds=60)
         if not lease:return {'status':'DEFERRED_BUSY','job':JOB_NAME}
         cursor=dict(lease.get('cursor') or {});phase=cursor.get('phase','materialize')
-        result={'status':'OK','phase':phase,'stage':phase,'batch_limit':BATCH_SIZE}
+        phase_limit=MATERIALIZE_BATCH_SIZE if phase=='materialize' else BATCH_SIZE
+        result={'status':'OK','phase':phase,'stage':phase,'batch_limit':phase_limit}
         published_snapshot=None
         self._emit_phase(phase,'RUNNING')
         try:
@@ -292,7 +294,7 @@ class TradeLearning:
                     rows=c.execute(self._rows_sql(
                         selected,'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id',
                         evidence_hash=True),
-                        (LI.DIAGNOSTICS.VERSION,EPOCH,BATCH_SIZE)).fetchall()
+                        (LI.DIAGNOSTICS.VERSION,EPOCH,MATERIALIZE_BATCH_SIZE)).fetchall()
                     upsert=getattr(self.ns['VP'],'_v90r29_upsert_episode')
                     for row in rows:
                         self._check(context)
