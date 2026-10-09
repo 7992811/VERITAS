@@ -33,7 +33,8 @@ def cached(asset,timeframe,identity,now=None,limit=500):
 
 def row(runner=True):
     event={"direction":"LONG","source_identity":IDENTITY,"stop_anchor":98.0,"atr":2.0,
-           "stop_price":97.7,"target_price":102.0}
+           "stop_price":97.7,"target_price":102.0,
+           "policy":{"stop_buffer_atr":.15,"target_one_fraction":.50}}
     if runner:event["runner_target_price"]=104.0
     return {"trade_id":"T1","opened_at":T.isoformat(),"closed_at":(T+timedelta(hours=1)).isoformat(),
             "asset":"NQ","direction":"LONG","horizon":"5m","regime":"TREND",
@@ -86,6 +87,18 @@ class ReplayEvaluatorTests(unittest.TestCase):
         self.assertEqual(result["status"],"COMPARABLE")
         self.assertEqual(result["payload"]["geometry"]["baseline_first_target_fraction"],.5)
         self.assertEqual(result["payload"]["geometry"]["candidate_first_target_fraction"],.25)
+
+    def test_stop_baseline_policy_mismatch_is_invalid(self):
+        x=row();x["entry_event_snapshot"]["policy"]["stop_buffer_atr"]=.25
+        result=E.evaluate_trade(self.stop_candidate(),x,cached)
+        self.assertEqual(result["status"],"INVALID")
+        self.assertEqual(result["reason"],"BASELINE_STOP_POLICY_MISMATCH")
+
+    def test_exit_baseline_policy_mismatch_is_invalid(self):
+        x=row();x["entry_event_snapshot"]["policy"]["target_one_fraction"]=.25
+        result=E.evaluate_trade(self.exit_candidate(),x,cached)
+        self.assertEqual(result["status"],"INVALID")
+        self.assertEqual(result["reason"],"BASELINE_EXIT_POLICY_MISMATCH")
 
     def test_exit_without_observed_runner_target_is_invalid(self):
         result=E.evaluate_trade(self.exit_candidate(),row(runner=False),cached)
@@ -140,7 +153,8 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
                        %s,0,'AWAIT_REPLAY',%s::jsonb,'{}'::jsonb,'{}'::jsonb)""",
                 (REG.VERSION,IDENTITY["key"],registered,json.dumps(contract)))
             event={"direction":"LONG","source_identity":IDENTITY,"stop_anchor":98.0,"atr":2.0,
-                   "stop_price":97.7,"target_price":102.0}
+                   "stop_price":97.7,"target_price":102.0,
+                   "policy":{"stop_buffer_atr":.15,"target_one_fraction":.50}}
             payload={"entry_event_snapshot":event,"entry_execution_model":{"fill_price":100.0},
                      "price_source_lock":IDENTITY,"entry_execution_source_identity":IDENTITY,
                      "strategy_policy_hash":"p","initial_stop_price":97.7,"entry_atr":2.0}
