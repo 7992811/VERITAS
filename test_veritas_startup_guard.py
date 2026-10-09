@@ -1,5 +1,6 @@
 """The bootstrap watchdog logs code locations, never live frame contents."""
 import json
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -99,6 +100,66 @@ class StartupGuardTests(unittest.TestCase):
         gate = G.ReadinessGate(('database',))
         with self.assertRaises(KeyError):
             gate.mark('portfolio_snapshot', True)
+
+    def test_market_snapshot_requires_complete_and_fresh_matrix(self):
+        rows=[{'asset':a,'horizon':h} for a in ('BTC','NQ') for h in ('5m','1h')]
+        ready=G.market_snapshot_state(
+            {'summary':rows,'signals_updated_at':990,'summary_source':'durable'},
+            ('BTC','NQ'),('5m','1h'),60,now=1000)
+        self.assertTrue(ready['ok'])
+        self.assertEqual(ready['signal_count'],4)
+        stale=G.market_snapshot_state(
+            {'summary':rows,'signals_updated_at':700},
+            ('BTC','NQ'),('5m','1h'),60,now=1000)
+        self.assertFalse(stale['ok'])
+        self.assertEqual(stale['status'],'STALE')
+        incomplete=G.market_snapshot_state(
+            {'summary':rows[:-1],'signals_updated_at':990},
+            ('BTC','NQ'),('5m','1h'),60,now=1000)
+        self.assertFalse(incomplete['ok'])
+        self.assertEqual(incomplete['status'],'INCOMPLETE')
+
+    def test_prime_live_state_requires_database_books_trades_and_market(self):
+        gate=G.ReadinessGate()
+        gate.mark('database',True,status='READY')
+        names=('Impulse','Currency')
+        portfolio=lambda:{
+            'status':'OK','positions_complete':True,'accounting_complete':True,
+            'portfolios':[
+                {'name':'Impulse','positions':[{'asset':'BTC'}]},
+                {'name':'Currency','positions':[]},
+            ]}
+        trades=lambda:{'status':'OK','trades':[]}
+        market=lambda:{
+            'summary':[{'asset':a,'horizon':h} for a in ('BTC','NQ') for h in ('5m','1h')],
+            'signals_updated_at':time.time(),
+        }
+        emit=Mock()
+        state=G.prime_live_state_with_assets(
+            gate,canonical_portfolios=names,display_assets=('BTC','NQ'),horizons=('5m','1h'),
+            canonical_state={'status':'OK','names':list(names),'count':2},
+            ensure_canonical=Mock(side_effect=AssertionError('not needed')),
+            portfolio_refresh=portfolio,trade_refresh=trades,market_cycle=market,
+            interval=60,emit=emit)
+        self.assertTrue(state['ok'],state)
+        self.assertEqual(state['details']['portfolio_snapshot']['open_position_count'],1)
+        emit.assert_called_once()
+
+    def test_prime_live_state_does_not_publish_partial_portfolio_book(self):
+        gate=G.ReadinessGate();gate.mark('database',True,status='READY')
+        names=('Impulse','Currency')
+        state=G.prime_live_state_with_assets(
+            gate,canonical_portfolios=names,display_assets=('BTC',),horizons=('5m',),
+            canonical_state={'status':'OK','names':list(names)},
+            ensure_canonical=Mock(),
+            portfolio_refresh=lambda:{'status':'PARTIAL','positions_complete':False,
+                                      'accounting_complete':False,'portfolios':[]},
+            trade_refresh=lambda:{'status':'OK','trades':[]},
+            market_cycle=lambda:{'summary':[{'asset':'BTC','horizon':'5m'}],
+                                 'signals_updated_at':time.time()},
+            interval=60)
+        self.assertFalse(state['ok'])
+        self.assertIn('portfolio_snapshot',state['pending_checks'])
 
 
 if __name__ == '__main__':
