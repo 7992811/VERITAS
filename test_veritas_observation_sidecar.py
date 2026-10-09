@@ -163,6 +163,21 @@ class SidecarTests(unittest.TestCase):
         self.assertEqual(c.witness["coverage_status"],"OBSERVED")
         self.assertEqual(c.witness["observation_count"],2)
 
+    def test_rejection_reasons_are_bounded_codes(self):
+        row=position();c=Cursor(row);SIDECAR.seed(c,row,quote(0),stamp(0))
+        result=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None: quote(30,101.),now=OPEN+timedelta(seconds=10))
+        self.assertEqual(result["rejection_reasons"],{"QUOTE_CLOCK_AHEAD":1})
+        self.assertEqual(result["invalid"],1)
+        self.assertNotIn("trade_id",str(result["rejection_reasons"]).lower())
+
+        row=position();c=Cursor(row);SIDECAR.seed(c,row,quote(0),stamp(0))
+        SIDECAR.sample_once(Connect(c),lambda work,now=None: quote(10,101.),
+                            now=OPEN+timedelta(seconds=10))
+        revised=SIDECAR.sample_once(Connect(c),lambda work,now=None: quote(10,102.),
+                                    now=OPEN+timedelta(seconds=20))
+        self.assertEqual(revised["rejection_reasons"],{"REVISED_SAME_TIMESTAMP_PRICE":1})
+
     def test_missing_quote_does_not_poison_seeded_witness(self):
         row=position();c=Cursor(row)
         SIDECAR.seed(c,row,quote(0),stamp(0))
