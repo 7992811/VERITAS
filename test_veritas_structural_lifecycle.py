@@ -116,6 +116,18 @@ class PaperBook:
                          t["payload"].get("r66_event_id")) == args and t["status"] == "CLOSED"
                         for t in self.trades.values())
             return Result([{"ok": 1}] if found else [])
+        if (q.startswith("SELECT COALESCE(SUM(notional_rub),0) AS exit_notional_rub")
+                and "FROM paper_orders" in q
+                and "side IN ('SELL','BUY_TO_COVER')" in q):
+            trade_id=args[0]
+            exits=[o for o in self.orders
+                   if o.get("trade_id")==trade_id and o.get("side") in ("SELL","BUY_TO_COVER")]
+            notional=sum(float(o.get("notional_rub") or 0.0) for o in exits)
+            units=sum(float(o.get("notional_rub") or 0.0)/float(o.get("price") or 1.0)
+                      for o in exits if float(o.get("price") or 0.0)>0)
+            return Result([{"exit_notional_rub":notional,
+                            "exit_units":units,
+                            "exit_fill_count":len(exits)}])
         if q.startswith("SELECT") and " FROM paper_positions" in q:
             rows = list(self.positions.values())
             if "portfolio_name=%s AND asset=%s" in q:
@@ -209,6 +221,8 @@ class PaperBook:
             elif "SET gross_pnl_rub=" in q:
                 row["gross_pnl_rub"] += args[0]
                 row["fees_rub"] += args[1]
+                if "avg_exit_price=%s" in q:
+                    row["avg_exit_price"] = args[2]
             elif "SET funding_rub=" in q:
                 row['funding_rub'] += args[0]
             elif "SET closed_at=" in q:

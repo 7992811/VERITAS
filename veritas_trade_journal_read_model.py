@@ -23,6 +23,10 @@ SCALAR_FIELDS = (
     'initial_entry_units', 'initial_entry_fee_rub',
     'initial_tranche_final_exit_gross_rub', 'initial_tranche_final_exit_net_proxy_rub',
     'initial_tranche_counterfactual_basis',
+    'final_exit_favorable_pct_points', 'final_exit_mfe_capture_ratio',
+    'counterfactual_mfe_50_lock_pct_points', 'counterfactual_mfe_50_lock_price',
+    'counterfactual_mfe_70_lock_pct_points', 'counterfactual_mfe_70_lock_price',
+    'counterfactual_mfe_status',
 )
 IDENTITY_FIELDS = ('version', 'asset', 'key', 'primary_source', 'contract_id',
                    'legacy_fixed_adapter', 'source_pin_version',
