@@ -27,10 +27,20 @@ jobs:
           socket.create_connection=deny
           socket.socket.connect=deny
           socket.socket.connect_ex=deny
-          suite=unittest.defaultTestLoader.loadTestsFromName('test_veritas_offline_order_cycle')
+          loader=unittest.defaultTestLoader
+          suite=unittest.TestSuite([
+              loader.loadTestsFromName('test_veritas_offline_order_cycle'),
+              loader.loadTestsFromName('test_veritas_signal_robot'),
+              loader.loadTestsFromName('test_veritas_trade_approvals.TradeApprovalTests'),
+              loader.loadTestsFromName('test_veritas_currency_trade_service.CurrencyHttpBoundaryTests'),
+              loader.loadTestsFromName('test_veritas_currency_trade_service.TradeHttpRepositoryTests'),
+              loader.loadTestsFromName('test_veritas_currency_trade_service.TradeHttpEnvironmentTests'),
+              loader.loadTestsFromName('test_veritas_currency_trading.ContractSizingTests'),
+              loader.loadTestsFromName('test_veritas_currency_trading.CoordinatorTests'),
+          ])
           count=suite.countTestCases()
-          if count<18:
-              raise RuntimeError('Offline scenario coverage unexpectedly reduced')
+          if count<80:
+              raise RuntimeError('Offline trading/robot coverage unexpectedly reduced')
           result=unittest.TextTestRunner(verbosity=2).run(suite)
           print(json.dumps({'mode':'OFFLINE_FIXTURES','tests':result.testsRun,
               'failures':len(result.failures),'errors':len(result.errors),
