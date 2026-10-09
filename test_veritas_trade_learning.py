@@ -273,7 +273,7 @@ class ReceiptSweepTests(unittest.TestCase):
             for index in range(5):
                 validate_addition()
                 result=worker.process()
-                self.assertEqual(result['checked'],4)
+                self.assertEqual(result['checked'],T.BATCH_SIZE)
                 self.assertEqual(state['phase'],'recheck')
             validate_addition()
             result=worker.process()
@@ -461,7 +461,7 @@ class TradeLearningSQLTests(unittest.TestCase):
         self.assertEqual(result['submitted'],0)  # Missing verified episodes stay rejected.
         self.assertEqual(len(calls),1)
         query,args=calls[0]
-        self.assertEqual(args[-1],4)
+        self.assertEqual(args[-1],T.BATCH_SIZE)
         reports={}
         with self.connect() as c:
             original_jit=c.execute('SHOW jit').fetchone()['jit']
