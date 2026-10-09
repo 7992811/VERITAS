@@ -22,6 +22,9 @@ BREAKOUT_TEACHING_ID = "USER_INTRABAR_STRUCTURE_2026_10_07"
 BREAKOUT_SOURCE_TIMESTAMP = "2026-10-07T08:23:55Z"
 ACCELERATION_TEACHING_ID = "USER_TREND_ACCELERATION_2026_10_09"
 ACCELERATION_SOURCE_TIMESTAMP = "2026-10-09T08:41:00Z"
+TREND_DAY_TEACHING_ID = "USER_TREND_DAY_EFFICIENCY_2026_10_09"
+TREND_DAY_SOURCE_TIMESTAMP = "2026-10-09T11:31:00Z"
+TREND_DAY_USER_AUTHORIZATION_RU = "Продолжай"
 ACCELERATION_USER_CORRECTION_RU = (
     "Стремиться к верхней границе эффективности: при резком подтверждённом движении "
     "увеличивать прибыльную позицию ступенчато по мере подтверждения тренда. "
@@ -246,10 +249,63 @@ def acceleration_policy_snapshot():
     }
 
 
+def trend_day_efficiency_snapshot():
+    """User-authorized refinement of the active acceleration/runner policy."""
+    policy=_copy(CTC.TREND_DAY_EFFICIENCY_POLICY)
+    return {
+        "teaching_id": TREND_DAY_TEACHING_ID,
+        "source_type": "USER_AUTHORIZED_REFINEMENT",
+        "source_timestamp": TREND_DAY_SOURCE_TIMESTAMP,
+        "source_timestamp_precision": "MINUTE",
+        "source_text_ru": TREND_DAY_USER_AUTHORIZATION_RU,
+        "status": "ACTIVE_OPERATIONAL_POLICY",
+        "parent_teaching_id": ACCELERATION_TEACHING_ID,
+        "ctc_version": CTC.VERSION,
+        "runtime_authority": CTC.BASIS_RUNTIME,
+        "scope": policy.get("scope"),
+        "portfolios": ["Impulse","Aggressive","Champion","Challenger"],
+        "execution_policy": policy,
+        "requirements": {
+            "trend_day": (
+                "Reserve the largest scale for existing TREND_DAY/IMPULSE_TREND "
+                "classification confirmed by intermediate and senior timeframes, "
+                "independent evidence and sufficient remaining move."
+            ),
+            "extreme_scale": (
+                "Standard portfolios may earn up to 100% NAV; Aggressive may earn "
+                "up to 350% NAV, always subject to unchanged net stop-risk, drawdown "
+                "and final execution economics."
+            ),
+            "runner": (
+                "At TP1 keep a 75-85% runner only after positive-net protection is "
+                "already active; otherwise retain the ordinary target fractions."
+            ),
+            "cross_asset": (
+                "Record cross-asset context for learning but give it zero sizing "
+                "influence until separate OOS validation supports a transfer weight."
+            ),
+            "learning": (
+                "Persist trend-day score, coverage, confirmations and runner choice "
+                "so counterfactual/OOS learning can compare the policy later."
+            ),
+            "currency_scope": "Currency and live-account behavior remain excluded.",
+        },
+        "parameter_validation": {
+            "status": policy.get("parameter_validation_status","SHADOW_OOS_REQUIRED"),
+            "ml_training_performed": False,
+            "validated_profitability": False,
+        },
+        "storage": {"table":"ledger_events","event_type":EVENT_TYPE,
+                    "entity_key":TREND_DAY_TEACHING_ID,
+                    "event_key":EVENT_TYPE+":"+TREND_DAY_TEACHING_ID},
+    }
+
+
 def seed_all_user_teachings(pg_event, read_event=None):
     return [seed_user_teaching(pg_event, read_event, snapshot=payload)
             for payload in (policy_snapshot(), ma_policy_snapshot(),
-                            breakout_policy_snapshot(), acceleration_policy_snapshot())]
+                            breakout_policy_snapshot(), acceleration_policy_snapshot(),
+                            trend_day_efficiency_snapshot())]
 
 
 def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):
