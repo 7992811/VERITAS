@@ -4368,7 +4368,7 @@ def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
                         payload['data_integrity_status']='OK'
                         payload['data_integrity_restored_at']=_v90j_iso(ts)
                         ci_mutated=True
-                    c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                        c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
                                   (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
                 continue
 
@@ -4384,7 +4384,7 @@ def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
             })
             tid=z.get('active_trade_id')
             ci_mutated=True
-                    c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+            c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
                       (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
             if tid:
                 c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
