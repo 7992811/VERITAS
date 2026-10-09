@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.33-structural-breakout-observation-path-v2"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.33-structural-breakout-observation-path-v2"
-UI_VERSION="veritas-ui-v9.1.8.33-structural-breakout-observation-path-v2"
+PRODUCT_VERSION="veritas-max-product-v91.8.34-currency-live-dashboard-observation-path-v2"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.34-currency-live-dashboard-observation-path-v2"
+UI_VERSION="veritas-ui-v9.1.8.34-currency-live-dashboard-observation-path-v2"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -56,7 +56,7 @@ def snapshot():
             "version":"BOUNDED_RUNTIME_READS_V14","historical_fields_use_record_projection":True,"legacy_noop_reads_omit_structural_string_owners":True,"book_accounting_io_measured":True,"empty_flip_books_avoid_redundant_reads":True,"owned_legacy_migrations_avoid_rereads":True,"book_payload_compression_checks_server_and_column_policy":True,
             "startup_api_waits_for_bootstrap":True,"single_portfolio_snapshot_refresh":True,
             "snapshot_and_schema_sql_waits_bounded":True,"profit_refresh_positions_projected":True,"post_funding_stop_cost_read_projected":True,"portfolio_http_wait_seconds":1.0,"completed_portfolio_reads_keep_observation_time":True,"protective_fills_advance_snapshot_revision":True,"position_account_payload_reused":True,"entry_decision_display_projected":True,
-            "current_portfolio_schema_avoids_ddl":True,"unchanged_portfolio_metadata_avoids_row_locks":True,
+            "current_portfolio_schema_avoids_ddl":True,"currency_dashboard_prefers_live_ledger_when_bound":True,"currency_paper_history_not_mixed_with_live":True,"unchanged_portfolio_metadata_avoids_row_locks":True,
             "closed_journal_payload_projected":True,"quality_evidence_root_extracted_once":True,"journal_evidence_root_extracted_once":True,
             "structural_runtime_copies_one_asset":True,"quality_read_timeout_is_transactional":True,
             "completed_prepasses_release_snapshots":True,"quote_caches_project_before_copying":True,"completed_guard_reads_release_positions":True,"quote_prepasses_project_positions":True,"guard_quote_root_extracted_once":True,"guard_no_action_observations_batched":True,"guard_action_reloads_full_locked_position":True,"profit_refresh_writes_batched":True,
