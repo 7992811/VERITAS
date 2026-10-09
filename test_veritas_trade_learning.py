@@ -46,6 +46,10 @@ def stamped_trade(*,after=.10,step=.01,net=30.):
 
 
 class TradeObservationTests(unittest.TestCase):
+    def test_closed_trade_microbatch_is_two(self):
+        self.assertEqual(T.BATCH_SIZE,2)
+        self.assertLessEqual(T.BATCH_SIZE,T.MAX_BATCH_SIZE)
+
     def test_materialize_reprocesses_stale_outcome_diagnostics_version(self):
         source=inspect.getsource(T.TradeLearning.process)
         self.assertIn("outcome_diagnostics_version",source)
