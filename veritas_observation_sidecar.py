@@ -140,19 +140,10 @@ def seal(c,row,quote,checked_at):
     if not isinstance(witness,dict):
         return None
     work=_with_witness(row,witness)
-    sealed=PATH.observe(work,quote,checked_at,at_entry=False,lane="OBSERVATION_SIDECAR_EXIT")
-    try:
-        tx=getattr(c,"transaction",None)
-        if callable(tx):
-            with tx():
-                _upsert(c,[(trade_id,row.get("asset"),sealed)])
-        else:
-            _upsert(c,[(trade_id,row.get("asset"),sealed)])
-    except Exception:
-        sealed=dict(sealed)
-        sealed["invalid_observation_count"]=int(sealed.get("invalid_observation_count") or 0)+1
-        sealed["coverage_status"]="INCOMPLETE"
-    return sealed
+    # Do not UPDATE the sidecar from the close transaction. A concurrent sampler
+    # must never make a protective/accounting exit wait on an evidence row lock.
+    # The returned witness is sealed into paper_trades by canonical accounting.
+    return PATH.observe(work,quote,checked_at,at_entry=False,lane="OBSERVATION_SIDECAR_EXIT")
 
 
 def sample_once(pg_connect,quote_selector,*,now=None):
@@ -201,22 +192,27 @@ def start(ns,quote_selector):
         if _state["status"]!="NOT_STARTED":
             return snapshot()
         _state.update(status="STARTING",error=None)
+    schema_ready=False
     try:
         ensure_schema(ns["pg_connect"])
+        schema_ready=True
     except Exception as exc:
         with _state_lock:
-            _state.update(status="SCHEMA_ERROR",error=f"{type(exc).__name__}: {exc}")
+            _state.update(status="SCHEMA_RETRY",error=f"{type(exc).__name__}: {exc}")
         try:
             ns["emit"]("observation_sidecar_error",**snapshot())
         except Exception:
             pass
-        return snapshot()
 
     def loop():
+        nonlocal schema_ready
         last_log=0.0
         while True:
             started=time.monotonic()
             try:
+                if not schema_ready:
+                    ensure_schema(ns["pg_connect"])
+                    schema_ready=True
                 result=sample_once(ns["pg_connect"],quote_selector)
                 with _state_lock:
                     _state.update(result,error=None)
