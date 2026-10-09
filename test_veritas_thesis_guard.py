@@ -74,6 +74,30 @@ class SeniorThesisGuardTests(unittest.TestCase):
         self.assertTrue(next(x for x in guarded if x["horizon"]=="4h")["trade_plan"]["trade_integrity"]["hard_invalidation"])
         self.assertTrue(book["NQ"]["_flip_confirmed"])
 
+    def test_5m_break_plus_1h_opposite_is_hard_exit_but_1m_noise_is_irrelevant(self):
+        z={"asset":"NQ","direction":"LONG","active_trade_id":"t5m","payload":{}}
+        rows=[
+            self._row("5m","SHORT",True,.92),
+            self._row("1h","SHORT",False,.90),
+            self._row("4h","LONG",False,.10),
+        ]
+        candidate=dict(rows[0],_flip_confirmed=True)
+        book,guarded,meta=TG.guard_open_position(self._db("5m"),z,{"NQ":candidate},rows)
+        self.assertFalse(meta["active"],meta)
+        self.assertTrue(meta["hard_exit_allowed"],meta)
+        self.assertTrue(book["NQ"]["_flip_confirmed"])
+
+        noise=self._row("1m","SHORT",True,.99)
+        held=[
+            self._row("5m","LONG",False,.80),
+            self._row("1h","LONG",False,.80),
+            noise,
+        ]
+        book,guarded,meta=TG.guard_open_position(
+            self._db("5m"),z,{"NQ":dict(held[0],_flip_confirmed=False)},held)
+        self.assertTrue(meta["active"],meta)
+        self.assertFalse(meta["hard_exit_allowed"])
+
     def test_stop_is_not_modified(self):
         z={"asset":"NQ","direction":"LONG","active_trade_id":"t3d","stop_price":31336.38,"payload":{}}
         rows=[self._row("3d","LONG",False,.8),self._row("7d","LONG",False,.6)]
