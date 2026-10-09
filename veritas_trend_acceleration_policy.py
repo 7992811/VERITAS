@@ -62,3 +62,53 @@ TREND_ACCELERATION_POLICY = {
     ),
     "parameter_validation_status": "OWNER_RULE_SHADOW_OOS_REQUIRED",
 }
+
+
+# Second owner refinement, 2026-10-09: reserve the largest paper exposure for
+# trend days that are already confirmed by multiple independent structural
+# dimensions. Cross-asset context is recorded but remains shadow-only until OOS.
+TREND_DAY_EFFICIENCY_POLICY = {
+    "version": "CTC_TREND_DAY_EFFICIENCY_V1",
+    "teaching_id": "USER_TREND_DAY_EFFICIENCY_2026_10_09",
+    "enabled": True,
+    "scope": "PAPER_NON_CURRENCY_PORTFOLIOS",
+    "accepted_phases": ("TREND_DAY", "IMPULSE_TREND"),
+    "minimum_score": 0.78,
+    "minimum_coverage": 0.75,
+    "minimum_independent_evidence": 4,
+    "minimum_expected_move_pct": 0.0060,
+    "maximum_target_progress": 0.50,
+    "require_mid_confirmation": True,
+    "require_senior_confirmation": True,
+    "extreme_target_standard": 1.00,
+    "extreme_target_aggressive": 3.50,
+    "temporary_caps": {
+        "IMPULSE_ONLY": {"max_fraction": 1.00, "max_gross": 1.00},
+        "CORE": {"max_fraction": 1.00, "max_gross": 2.00},
+        "CHALLENGER": {"max_fraction": 1.00, "max_gross": 2.00},
+        "AGGRESSIVE": {"max_fraction": 3.50, "max_gross": 5.00},
+    },
+    "runner": {
+        "requires_profit_protection": True,
+        "trend_day_ratio": 0.75,
+        "impulse_trend_ratio": 0.85,
+        "maximum_ratio": 0.85,
+    },
+    "cross_asset": {
+        "context_only": True,
+        "size_influence_enabled": False,
+        "maximum_shadow_bonus": 0.03,
+        "principle": (
+            "Cross-asset and breadth context may be recorded for later OOS "
+            "validation but cannot block or enlarge a paper trade in this version."
+        ),
+    },
+    "parameter_validation_status": "OWNER_RULE_SHADOW_OOS_REQUIRED",
+    "principle": (
+        "The largest allocation is earned only when the existing trend-day "
+        "classifier, intraday structure, intermediate timeframes and senior "
+        "timeframes agree while meaningful target distance remains. TP1 should "
+        "harvest less of a protected trend-day winner so a larger runner can "
+        "capture the tail."
+    ),
+}
