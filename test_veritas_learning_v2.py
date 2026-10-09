@@ -146,6 +146,31 @@ class LearningV2Tests(unittest.TestCase):
         self.assertEqual(d["unparsed_blocked_directional"],L.MIN_CONTEXT_N)
         self.assertEqual(d["zero_entry_candidate_reason"],"NO_LEARNABLE_BLOCKER_MATCH")
 
+    def test_closed_trade_outcome_tier_is_visible_without_granting_path_authority(self):
+        outcome=[
+            {"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
+             "net_pnl_rub":100.0,"opening_fraction":.25,"path_evidence_eligible":False,
+             "mfe":9.0,"mae":-9.0,"capture_ratio":1.0},
+            {"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
+             "net_pnl_rub":-40.0,"opening_fraction":.50,"path_evidence_eligible":True,
+             "mfe":.6,"mae":-.3,"capture_ratio":.25},
+        ]
+        paths=[outcome[1]]
+        s=L.closed_trade_summary(outcome,paths)
+        self.assertEqual(s["outcome_evidence_trades"],2)
+        self.assertEqual(s["path_evidence_trades"],1)
+        self.assertEqual(s["outcome_only_trades"],1)
+        self.assertAlmostEqual(s["win_rate"],.5)
+        self.assertAlmostEqual(s["net_pnl_rub"],60.)
+        self.assertAlmostEqual(s["avg_mfe_pct"],.6)
+        self.assertAlmostEqual(s["avg_capture_ratio"],.25)
+        snap=L.research_snapshot([],paths,outcome)
+        self.assertEqual(snap["diagnostics"]["outcome_trade_rows"],2)
+        self.assertEqual(snap["diagnostics"]["trade_rows"],1)
+        self.assertEqual(snap["diagnostics"]["outcome_only_trade_rows"],1)
+        self.assertFalse(any(h["kind"] in ("STOP_GEOMETRY","EXIT_CAPTURE") for h in snap["hypotheses"]))
+        self.assertFalse(snap["closed_trade_summary"]["production_mutation"])
+
     def test_short_direction_is_signed_correctly(self):
         c=L.classify_decision_episode(self.row(decision="SHORT",fr=-.01,final_gate_blockers=[]))
         self.assertGreater(c["signed_forward_return"],0)
