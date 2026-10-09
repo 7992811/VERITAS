@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.37-position-protection-audit"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.37-position-protection-audit"
-UI_VERSION="veritas-ui-v9.1.8.37-position-protection-audit"
+PRODUCT_VERSION="veritas-max-product-v91.8.37-structural-breakout-position-protection-audit"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.37-structural-breakout-position-protection-audit"
+UI_VERSION="veritas-ui-v9.1.8.37-structural-breakout-position-protection-audit"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
