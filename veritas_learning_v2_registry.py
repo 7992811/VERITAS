@@ -256,6 +256,8 @@ def ensure_schema(c):
     c.execute("ALTER TABLE learning_v2_registry ADD COLUMN IF NOT EXISTS policy_hash TEXT")
     c.execute("""CREATE INDEX IF NOT EXISTS learning_v2_registry_status
                  ON learning_v2_registry(status,updated_at DESC)""")
+    c.execute("""CREATE INDEX IF NOT EXISTS learning_v2_registry_asset_status
+                 ON learning_v2_registry(version,asset,status,updated_at DESC)""")
 
 
 def sync(c,snapshot,decision_rows,trade_rows,now=None):
@@ -276,11 +278,22 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
             (h["hypothesis_id"],VERSION,h["kind"],scope.get("asset"),scope.get("horizon"),
              scope.get("regime"),scope.get("source_key"),scope.get("contract_id"),scope.get("policy_hash"),
              clock,cutoff,_json(identity),_json(h.get("evidence") or {}),clock))
-    rows=c.execute("""SELECT candidate_id,kind,registered_at,decision_cutoff_id,status,contract,
-                             training_evidence,prospective,valid_until
-                      FROM learning_v2_registry
-                      WHERE version=%s AND status NOT IN ('REJECTED','EXPIRED')
-                      ORDER BY registered_at ASC LIMIT %s""",(VERSION,MAX_ACTIVE)).fetchall()
+    active_asset=str(snapshot.get("asset") or "")
+    if active_asset:
+        rows=c.execute("""SELECT candidate_id,kind,registered_at,decision_cutoff_id,status,contract,
+                                 training_evidence,prospective,valid_until
+                          FROM learning_v2_registry
+                          WHERE version=%s AND asset=%s
+                            AND status NOT IN ('REJECTED','EXPIRED')
+                          ORDER BY registered_at ASC LIMIT %s""",
+                       (VERSION,active_asset,MAX_ACTIVE)).fetchall()
+    else:
+        rows=c.execute("""SELECT candidate_id,kind,registered_at,decision_cutoff_id,status,contract,
+                                 training_evidence,prospective,valid_until
+                          FROM learning_v2_registry
+                          WHERE version=%s AND status NOT IN ('REJECTED','EXPIRED')
+                          ORDER BY registered_at ASC LIMIT %s""",
+                       (VERSION,MAX_ACTIVE)).fetchall()
     counts=Counter(); changed=0; public=[]
     for raw in rows or []:
         row=dict(raw)
