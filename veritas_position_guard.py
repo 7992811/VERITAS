@@ -16,6 +16,7 @@ import veritas_execution as VX
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
 import veritas_observation_path as VOP
+import veritas_observation_sampler as VOS
 import veritas_protective_io as PIO
 import veritas_book_storage as BS
 from veritas_quote_time import quote_gate, utc_datetime
@@ -225,7 +226,7 @@ def publish_quote(asset, raw):
             _quotes[asset] = {key:raw[key] for key in (*VPS.QUOTE_FIELDS,'asset','observed_at') if key in raw}
 
 
-def quote_for_position(position, candidate=None, now=None):
+def quote_for_position(position, candidate=None, now=None, *, cache_only=False):
     """Resolve a fresh quote without crossing the entry provider or contract."""
     now=utc_datetime(now) or datetime.now(timezone.utc)
     frozen=position.get('_execution_quote_frozen') is True
@@ -246,7 +247,8 @@ def quote_for_position(position, candidate=None, now=None):
         # A venue without a saved expiry cannot identify the held oil future.
         # Never let the asset-wide cache fill in a missing position contract.
         return {}
-    if not frozen and position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
+    if (not frozen and not cache_only and position.get('asset')=='CNYRUBF'
+            and str(identity.get('key','')).startswith('TBANK_GRPC:')):
         try:
             from veritas_direct_cny import quote as direct_quote
             quotes.append(direct_quote(now=now))
@@ -902,7 +904,6 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                     _signed=100.0*((_px/_entry-1.0) if z.get('direction')=='LONG'
                                     else (_entry/_px-1.0))
                     _path={
-                      'observation_path':VOP.observe(z,q,ts,lane='PROTECTIVE_GUARD'),
                       'price_source_lock':VPS.position_identity(z),
                       'price_source_status':'OK',
                       'source_locked_mark':{'identity':VPS.identity(z['asset'],q),
@@ -1329,6 +1330,11 @@ def start(ns):
     if _state['status'] != 'NOT_STARTED':
         return
     _state.update(status='STARTING', interval_seconds=15)
+    try:
+        VOS.start(ns,quote_for_position)
+    except Exception as exc:
+        ns['emit']('observation_path_sampler_start_error',
+                   error=f'{type(exc).__name__}: {exc}',production_influence=False)
 
     def loop():
         last_log = 0
