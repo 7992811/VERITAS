@@ -60,3 +60,17 @@ The replay module is a pure research utility. It has no broker or portfolio
 imports, does not alter historical accounting, and has no production influence.
 The registry keeps Stop/Exit candidates at `AWAIT_REPLAY` until a separate
 history worker supplies an adequate ordered path.
+
+
+## Runtime resource policy
+
+The production shadow lane rotates one asset per run every 60 seconds. Each run
+reads at most 192 materialized decision outcomes and 192 eligible trade episodes
+for that asset. The outcome itself comes from `v90_decision_episodes`; the
+ledger JSON is opened only to recover the frozen pre-outcome setup, source and
+policy context. This replaces the previous all-market decision+outcome JSON join
+that exceeded the five-second cooperative budget on the 512 MiB service.
+
+The dedicated worker uses the same materialized evidence contract with a bounded
+per-asset limit. Moving Learning 2.0 to that worker later therefore changes
+where the research executes, not what evidence it is allowed to use.
