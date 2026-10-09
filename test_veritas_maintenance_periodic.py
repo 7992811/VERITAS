@@ -80,9 +80,8 @@ class PeriodicMaintenanceTests(unittest.TestCase):
         ns, lane, rss = self.lane(418.9)
         ticks = []
         entered, release = threading.Event(), threading.Event()
-        completed, resume = threading.Event(), threading.Event()
+        emitted = []
         self.addCleanup(release.set)
-        self.addCleanup(resume.set)
         def learning():
             if not ticks:
                 # The worker has dequeued A before its first periodic turn.
@@ -92,15 +91,10 @@ class PeriodicMaintenanceTests(unittest.TestCase):
             ticks.append(1)
             return {"status": "OK"}
         emit = ns["emit"]
-        def after_completion(event, **values):
+        def record_transition(event, **values):
+            emitted.append((event, values.get("job"), values.get("status")))
             emit(event, **values)
-            if (event == "maintenance_periodic_complete" and len(ticks) >= 3
-                    and len(lane.snapshot()["stages"]) == 4 and not completed.is_set()):
-                # Completion counters are committed before this notification;
-                # hold the worker so another callback cannot race assertions.
-                completed.set()
-                resume.wait(2.)
-        ns["emit"] = after_completion
+        ns["emit"] = record_transition
         lane.register_periodic("learning", learning,
                                interval_seconds=.01, lightweight=True)
         self.assertTrue(lane.submit(full("A")))
@@ -108,7 +102,10 @@ class PeriodicMaintenanceTests(unittest.TestCase):
         for index in range(20):
             self.assertTrue(lane.submit(full("B" + str(index))))
         release.set()
-        self.assertTrue(completed.wait(2.))
+        self.wait_for(lambda: (
+            lane.snapshot()["periodic"]["learning"]["completions"] >= 3
+            and len(lane.snapshot()["stages"]) == 4
+        ))
         state = lane.snapshot()
         self.assertEqual(state["active_cycle_at"], "A")
         self.assertEqual(state["pending_cycle_at"], "B19")
@@ -116,10 +113,17 @@ class PeriodicMaintenanceTests(unittest.TestCase):
         self.assertEqual(state["pending_limit"], 1)
         self.assertEqual(state["coalesced"], 19)
         self.assertEqual(state["runs"], 0)
-        self.assertGreaterEqual(len(ticks), 3)
-        self.assertEqual(state["periodic"]["learning"]["completions"], len(ticks))
+        completions = state["periodic"]["learning"]["completions"]
+        self.assertGreaterEqual(completions, 3)
+        # Callback append precedes the committed completion counter, so at most
+        # one in-flight callback may be visible after the snapshot.
+        self.assertGreaterEqual(len(ticks), completions)
+        self.assertLessEqual(len(ticks) - completions, 1)
         self.assertTrue(all(s["status"] == "DEFERRED_MEMORY" for s in state["stages"].values()))
-        resume.set()
+        # Repeated identical OK results are intentionally not re-emitted; state
+        # counters, not log transitions, are the scheduler's synchronization API.
+        transitions = [e for e in emitted if e == ("maintenance_periodic_complete", "learning", "OK")]
+        self.assertEqual(len(transitions), 1)
 
     def test_always_requested_microjob_cannot_starve_full_stages(self):
         ns, lane, rss = self.lane()
