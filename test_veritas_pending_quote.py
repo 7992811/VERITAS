@@ -98,7 +98,7 @@ class PendingQuoteTests(unittest.TestCase):
                     before, called, database = deepcopy(rows), [], BusyDatabase()
                     mutex = (PriorityRLock() if lane == 'DATABASE' else SimpleNamespace(
                         acquire=Mock(return_value=False), reserve_entry_turn=Mock(),
-                        cancel_entry_turn=Mock()))
+                        cancel_entry_turn=Mock(), snapshot=Mock(return_value={'ordinary_waiters':0})))
 
                     def current(row, now=None):
                         self.assertEqual(now, clock)
@@ -120,9 +120,9 @@ class PendingQuoteTests(unittest.TestCase):
                         return dict(row, _execution_quote=quote)
 
                     reserve = mutex.reserve_entry_turn
-                    def reserve_after_observations():
+                    def reserve_after_observations(*args, **kwargs):
                         self.assertEqual(called, ['CNYRUBF', 'GOLD'])
-                        return reserve()
+                        return reserve(*args, **kwargs)
 
                     connect = (Mock(return_value=database) if lane == 'DATABASE' else
                                Mock(side_effect=AssertionError('Local busy must not open a database')))
