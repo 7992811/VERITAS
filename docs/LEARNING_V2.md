@@ -67,7 +67,7 @@ history worker supplies an adequate ordered path.
 ## Runtime resource policy
 
 The production shadow lane rotates one asset per run every 60 seconds. Each run
-reads at most 128 materialized decision outcomes and 128 eligible trade episodes
+reads at most 96 materialized decision outcomes and 96 eligible trade episodes
 for that asset. The outcome itself comes from `v90_decision_episodes`; the
 ledger JSON is opened only to recover the frozen pre-outcome setup, source and
 policy context. This replaces the previous all-market decision+outcome JSON join
@@ -144,5 +144,10 @@ ordered replay uses a 600-second idle interval, but any newly generated
 job through the existing maintenance coalescing mechanism. The request creates
 no extra thread and respects failed-job backoff.
 
-This changes research latency, not sample selection or evidence thresholds.
-Market decisions and outcomes continue to be recorded continuously.
+The shadow pass uses a six-second atomic budget with a 96-row asset cohort. On
+the 0.15-CPU production instance this is cheaper than allowing a 128-row pass to
+cross a five-second deadline and then repeat the same asset because its durable
+cursor was not checkpointed.
+
+This changes research latency, not evidence thresholds. Market decisions and
+outcomes continue to be recorded continuously.
