@@ -3242,6 +3242,14 @@ def trade_report(pg_connect,limit=2500):
         'deduplicated_portfolio_records':max(0,len(rows)-len(unique_all)),
         'today_missing_fields':missing,
         'today_recovery':recovery,
+        'self_learning_trades':[x for x in rows[:100] if x.get('self_learning_review')],
+        'self_learning_review_count':sum(1 for x in rows if x.get('self_learning_review')),
+        'self_learning_owner_review_queue':[
+            {'trade_id':x.get('trade_id'),'asset':x.get('asset'),'portfolio':x.get('portfolio_name'),
+             'closed_at':x.get('closed_at'),'proposal':proposal}
+            for x in rows for proposal in ((x.get('self_learning_review') or {}).get('proposals') or [])
+            if proposal.get('status')=='OWNER_REVIEW_REQUIRED'
+        ][:100],
         'archive_window':min(5000,max(50,int(limit or 2500))),
         'display_policy':'today full detail; older portfolio results + unique learning episodes only',
         'learning_policy':'one canonical market episode once; portfolio duplicates aggregated before self-learning',
