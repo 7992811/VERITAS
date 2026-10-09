@@ -8,6 +8,59 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
+
+
+DEFAULT_STARTUP_CHECKS = (
+    'database',
+    'canonical_portfolios',
+    'portfolio_snapshot',
+    'trade_snapshot',
+    'market_snapshot',
+)
+_SAFE_DETAIL_KEYS = {
+    'status','reason','source','count','expected','signal_count','portfolio_count',
+    'trade_count','open_position_count','age_seconds','max_age_seconds',
+}
+
+
+class ReadinessGate:
+    """Thread-safe fail-closed startup gate with bounded, non-sensitive evidence."""
+
+    def __init__(self, required_checks=DEFAULT_STARTUP_CHECKS):
+        required = tuple(str(x) for x in required_checks)
+        if not required or len(set(required)) != len(required):
+            raise ValueError('required_checks must be a non-empty unique sequence')
+        self.required_checks = required
+        self._lock = threading.Lock()
+        self._checks = {name: {'ok': False, 'updated_at': None} for name in required}
+
+    def mark(self, name, ok, **details):
+        if name not in self._checks:
+            raise KeyError(name)
+        record = {'ok': bool(ok), 'updated_at': time.time()}
+        for key, value in details.items():
+            if key in _SAFE_DETAIL_KEYS and value is not None:
+                record[key] = value
+        with self._lock:
+            self._checks[name] = record
+        return self.snapshot()
+
+    def snapshot(self):
+        with self._lock:
+            rows = {name: dict(value) for name, value in self._checks.items()}
+        checks = {name: row.get('ok') is True for name, row in rows.items()}
+        pending = [name for name in self.required_checks if not checks[name]]
+        failed = [name for name in pending if rows[name].get('updated_at') is not None]
+        return {
+            'ok': not pending,
+            'status': 'READY' if not pending else 'STARTING',
+            'phase': 'READY' if not pending else pending[0].upper(),
+            'checks': checks,
+            'pending_checks': pending,
+            'failed_checks': failed,
+            'details': rows,
+        }
 
 
 def schema_matches(connection, required_columns, required_indexes):
