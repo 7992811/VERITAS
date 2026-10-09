@@ -325,6 +325,87 @@ class BoundedProtectiveTests(unittest.TestCase):
         self.assertEqual([batch[0]['trade_id'] for batch in batches],
                          [rows[0]['active_trade_id'], rows[2]['active_trade_id']])
 
+    def test_structural_mfe_lock_carries_learning_execution_receipt(self):
+        z, q = position(structural=True)
+        z['portfolio_name'] = 'Champion'
+        q.update(price=100.31, best_bid=100.30, best_ask=100.32)
+        result = G._structural_mfe_profit_lock(
+            SimpleNamespace(COMMISSION=.0004), None, z, q, NOW.isoformat(), NOW)
+        self.assertEqual(result['state'], 'PROTECTED', result)
+        saved = result['patch']
+        self.assertEqual(saved['r_accel_mfe_learning_teaching_id'],
+                         CTC.TREND_ACCELERATION_POLICY['teaching_id'])
+        self.assertTrue(saved['r_accel_mfe_execution_required'])
+        self.assertEqual(saved['r_accel_mfe_protection_state'], 'ACTIVE')
+        self.assertEqual(saved['r_accel_mfe_exit_authority'],
+                         'STRUCTURAL_MFE_PROTECTION')
+        self.assertGreater(saved['trailing_stop'], z['avg_entry_price'])
+        self.assertGreater(saved['r_accel_mfe_profit_lock_projected_net_rub'], 0)
+
+    def test_mfe_lock_persistence_failure_exits_to_cash_instead_of_losing_protection(self):
+        z, q = position(structural=True)
+        z['portfolio_name'] = 'Champion'
+        q.update(price=100.31, best_bid=100.30, best_ask=100.32)
+        c = self.connection([z])
+        c.fail_trade_batch = True
+        seen = []
+        account = dict(initial_nav_rub=500., high_water_nav_rub=500.,
+                       benchmark_nav_rub=500., last_ruonia=16.)
+        def close(connection, book, name, full, price, fraction, nav, ts, reason):
+            seen.append(reason)
+            connection.positions.pop(full['active_trade_id'])
+            connection.orders.append('mfe-failsafe-exit')
+            return 1.
+        vp = SimpleNamespace(
+            COMMISSION=.0004,
+            _portfolio_rows=lambda connection, name:
+                (account, list(connection.positions.values())),
+            _mark_nav=lambda *args: (500., 0., 0., 0.),
+            _apply_funding=lambda *args: None,
+            _v90j_update_excursions=lambda *args: None,
+            _close_or_reduce=close)
+        with patch.object(PP, 'refresh'):
+            changes = G.run_protective_pass(vp, c.connect, {'ETH': q}, NOW)
+        self.assertEqual(seen, ['STOP_MFE_PROTECTION_PERSISTENCE_FAILSAFE'])
+        self.assertEqual(c.orders, ['mfe-failsafe-exit'])
+        self.assertIn('MFE_STATE_PERSISTENCE_FAILED',
+                      [row['reason'] for row in changes])
+
+    def test_structural_mfe_stop_cannot_be_soft_rearmed_into_a_large_loss(self):
+        z, q = position(structural=True)
+        z['portfolio_name'] = 'Champion'
+        z['payload'].update(
+            trailing_stop=100.20,
+            r55_net_profit_lock_active=True,
+            r_accel_mfe_profit_lock_active=True,
+            r_accel_mfe_protection_state='ACTIVE',
+            r_accel_mfe_exit_authority='STRUCTURAL_MFE_PROTECTION')
+        q.update(price=100.10, best_bid=100.09, best_ask=100.11)
+        c = self.connection([z])
+        seen = []
+        account = dict(initial_nav_rub=500., high_water_nav_rub=500.,
+                       benchmark_nav_rub=500., last_ruonia=16.)
+        def close(connection, book, name, full, price, fraction, nav, ts, reason):
+            seen.append(reason)
+            connection.positions.pop(full['active_trade_id'])
+            connection.orders.append('structural-mfe-stop')
+            return 1.
+        vp = SimpleNamespace(
+            COMMISSION=.0004,
+            _portfolio_rows=lambda connection, name:
+                (account, list(connection.positions.values())),
+            _mark_nav=lambda *args: (500., 0., 0., 0.),
+            _apply_funding=lambda *args: None,
+            _v90j_update_excursions=lambda *args: None,
+            _close_or_reduce=close)
+        with patch.object(PP, 'refresh'):
+            changes = G.run_protective_pass(vp, c.connect, {'ETH': q}, NOW)
+        self.assertEqual(seen, ['STOP_STRUCTURAL_MFE_PROTECTION'])
+        self.assertEqual(c.orders, ['structural-mfe-stop'])
+        reasons = [row['reason'] for row in changes]
+        self.assertIn('STRUCTURAL_MFE_PROTECTION_EXIT_AUTHORITY_USED', reasons)
+        self.assertNotIn('PROFIT_LOCK_SOFT_STOP_NET_NEGATIVE_REARMED', reasons)
+
     def test_exit_rehydrates_full_row_and_optional_metadata_failure_cannot_block_stop(self):
         for fail_metadata in (False, True):
             with self.subTest(fail_metadata=fail_metadata):
