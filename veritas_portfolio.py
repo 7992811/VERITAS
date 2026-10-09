@@ -2406,7 +2406,12 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     global COMMISSION; COMMISSION=VC.COMMISSION_RATE
     for row in candidates.values():
         VAT.begin_cycle(row,ts)
-    p,pos=_portfolio_rows(c,name)
+    _baton=_v90_book_baton_take(c,name,ts)
+    if _baton is not None:
+        p,pos=_baton
+        _v90_book_baton_clear()
+    else:
+        p,pos=_portfolio_rows(c,name)
     # Funding changes only the portfolio/trade accounting totals; positions are
     # untouched. Keep the already locked transaction snapshot and advance the
     # portfolio funding total locally instead of paying for a second full read.
@@ -2983,13 +2988,18 @@ def _v90j_update_excursions(c,name,prices,ts,positions=None):
     except Exception:
         return positions if positions is not None else []
 
-def _v90j_mark_open_positions(c,name,prices,ts):
-    return VBM.mark_open_positions(c,name,prices,ts,quote_for_position=VPG.quote_for_position,
+def _v90j_mark_open_positions(c,name,prices,ts,positions=None):
+    return VBM.mark_open_positions(c,name,prices,ts,positions=positions,
+                                  quote_for_position=VPG.quote_for_position,
                                   decode_payload=_v90j_json,iso=_v90j_iso)
 
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
-    _v90j_mark_open_positions(c,name,prices,ts)
+    _baton=_v90_book_baton_take(c,name,ts)
+    marked=_v90j_mark_open_positions(
+        c,name,prices,ts,positions=_baton[1] if _baton is not None else None)
+    if marked:
+        _v90_book_baton_clear()
     _v90j_update_excursions(c,name,prices,ts)
     return _v90j_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
 

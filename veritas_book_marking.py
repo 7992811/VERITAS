@@ -19,14 +19,15 @@ MARK_FIELDS = (
 MARK_SQL = position_sql(MARK_FIELDS)
 
 
-def mark_open_positions(c, name, prices, ts, *, quote_for_position, decode_payload, iso):
+def mark_open_positions(c, name, prices, ts, *, positions=None, quote_for_position, decode_payload, iso):
     """Apply the existing source-locked mark without round-tripping its history.
 
     The caller still owns the book transaction. Only ordinary JSON objects use
     a delta; legacy scalar/array/null values retain their decode-and-replace
     behavior. Mark fields are not accounting or permission to execute a trade.
     """
-    rows = c.execute(MARK_SQL+' WHERE portfolio_name=%s', (name,)).fetchall()
+    rows = positions if positions is not None else c.execute(
+        MARK_SQL+' WHERE portfolio_name=%s', (name,)).fetchall()
     marked = 0
     for original in rows:
         row = dict(original)
