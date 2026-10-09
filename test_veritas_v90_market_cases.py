@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import veritas_intelligence as VI
@@ -261,6 +262,14 @@ class MarketCaseRegressionTests(unittest.TestCase):
 
 
 class SignalExecutionSeparationRegressionTests(unittest.TestCase):
+    def test_production_cycle_only_thesis_veto_can_neutralize_research_direction(self):
+        source=Path(__file__).with_name('veritas_intelligence.py').read_text(encoding='utf-8')
+        self.assertIn("v70_market_veto=(v70_pretrade.get('gate_class')=='THESIS_VETO')",source)
+        self.assertNotIn(
+            "(not v70_pretrade.get('allow',True) or v70_pretrade.get('action')=='WAIT')",
+            source)
+        self.assertIn("if v70_pretrade.get('execution_allowed',v70_pretrade.get('allow',True)):",source)
+
     def test_execution_data_veto_never_erases_directional_market_signal(self):
         gate = SC.pretrade_gate({
             'research_decision':'LONG',
