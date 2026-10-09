@@ -16,6 +16,7 @@ import veritas_execution as VX
 import veritas_profit_protection as VPP
 import veritas_price_source as VPS
 import veritas_observation_path as VOP
+import veritas_observation_sidecar as VOS
 import veritas_protective_io as PIO
 import veritas_book_storage as BS
 from veritas_quote_time import quote_gate, utc_datetime
@@ -225,7 +226,7 @@ def publish_quote(asset, raw):
             _quotes[asset] = {key:raw[key] for key in (*VPS.QUOTE_FIELDS,'asset','observed_at') if key in raw}
 
 
-def quote_for_position(position, candidate=None, now=None):
+def quote_for_position(position, candidate=None, now=None, *, allow_direct=True):
     """Resolve a fresh quote without crossing the entry provider or contract."""
     now=utc_datetime(now) or datetime.now(timezone.utc)
     frozen=position.get('_execution_quote_frozen') is True
@@ -246,7 +247,8 @@ def quote_for_position(position, candidate=None, now=None):
         # A venue without a saved expiry cannot identify the held oil future.
         # Never let the asset-wide cache fill in a missing position contract.
         return {}
-    if not frozen and position.get('asset')=='CNYRUBF' and str(identity.get('key','')).startswith('TBANK_GRPC:'):
+    if (allow_direct and not frozen and position.get('asset')=='CNYRUBF'
+            and str(identity.get('key','')).startswith('TBANK_GRPC:')):
         try:
             from veritas_direct_cny import quote as direct_quote
             quotes.append(direct_quote(now=now))
@@ -1407,3 +1409,7 @@ def start(ns):
                 positions = z = c = q = None
             time.sleep(max(1.0, 15-(time.monotonic()-started)))
     threading.Thread(target=loop, daemon=True, name='veritas-paper-protection').start()
+    # Evidence sampling is intentionally independent of protective management.
+    # Cached-only selection prevents this sidecar from creating market I/O.
+    VOS.start(ns,lambda row,now=None: quote_for_position(
+        row,now=now,allow_direct=False))
