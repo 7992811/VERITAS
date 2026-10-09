@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import veritas_canonical_constitution as CTC
 import veritas_stop_risk as VSR
@@ -263,6 +264,28 @@ class TrendDayRunnerTests(unittest.TestCase):
         }
         self.assertAlmostEqual(VTDE.protected_runner_ratio(position,payload),0.85)
 
+    def test_structural_tp1_uses_protected_85pct_runner(self):
+        position={
+            "portfolio_name":"Aggressive","direction":"LONG","units":0.5,
+            "payload":{
+                "active_target_stage":0,
+                "r_accel_mfe_profit_lock_active":True,
+                "last_trend_day_efficiency":{
+                    "eligible":True,"phase":"IMPULSE_TREND","runner_ratio":0.85,
+                },
+            },
+        }
+        ladder=[
+            {"price":110.0,"fraction":0.5,"kind":"TP1"},
+            {"price":120.0,"fraction":0.5,"kind":"TP2"},
+        ]
+        with patch.object(VSL,"active_ladder",return_value=ladder):
+            result=VSL.target_reduction(position,110.0,100.0,"2026-10-09T11:31:00Z")
+        self.assertTrue(result["eligible"])
+        self.assertAlmostEqual(result["target_fraction"],0.5*110.0/100.0*0.85)
+        self.assertEqual(result["patch"]["profit_exit_policy"],"ADAPTIVE_PROTECTED_TREND_RUNNER")
+        self.assertAlmostEqual(result["patch"]["adaptive_runner_ratio"],0.85)
+
     def test_unprotected_or_currency_keeps_default_half_runner(self):
         td={"eligible":True,"phase":"IMPULSE_TREND","runner_ratio":0.85}
         self.assertAlmostEqual(VTDE.protected_runner_ratio(
@@ -342,6 +365,13 @@ class TrendAccelerationTests(unittest.TestCase):
         )
         self.assertTrue(result["eligible"])
         self.assertEqual(result["reason"], "FAST_REVERSAL_CONFIRMED_EXIT")
+
+    def test_trend_day_refinement_has_separate_immutable_teaching(self):
+        snapshot=VUT.trend_day_efficiency_snapshot()
+        self.assertEqual(snapshot["teaching_id"],CTC.TREND_DAY_EFFICIENCY_POLICY["teaching_id"])
+        self.assertEqual(snapshot["parent_teaching_id"],VUT.ACCELERATION_TEACHING_ID)
+        self.assertIn("Aggressive",snapshot["portfolios"])
+        self.assertNotIn("Currency",snapshot["portfolios"])
 
     def test_teaching_snapshot_matches_ctc_policy(self):
         snapshot = VUT.acceleration_policy_snapshot()
