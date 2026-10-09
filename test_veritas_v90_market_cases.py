@@ -302,7 +302,8 @@ class SignalExecutionSeparationRegressionTests(unittest.TestCase):
         })
         self.assertFalse(gate['allow'])
         self.assertEqual(gate['gate_class'],'DATA_VETO')
-        self.assertEqual(gate['decision'],'LONG')
+        self.assertEqual(gate['decision'],'NO_TRADE')  # legacy execution field
+        self.assertEqual(gate['market_decision'],'LONG')
         self.assertEqual(gate['execution_decision'],'NO_TRADE')
         self.assertFalse(gate['execution_allowed'])
         self.assertIn('source_gate_failed',gate['hard_reasons'])
