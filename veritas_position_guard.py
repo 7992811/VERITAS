@@ -977,9 +977,10 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                     finally:
                         measured['no_action_preflight_seconds']+=time.monotonic()-preflight_started
                     if no_action:
-                        pending_paths.append((z.get('active_trade_id'),_path))
-                        if len(pending_paths)>=PIO.BATCH_SIZE:
-                            flush_paths(c)
+                        # The independent observation sidecar owns causal
+                        # no-action sampling outside the book lock. Rewriting
+                        # the large immutable position payload here adds no
+                        # trading authority and can delay SL/TP processing.
                         continue
                     # Earlier marks must be visible before any action, legacy
                     # financial check, or accounting read can consume them.
@@ -1459,8 +1460,9 @@ def start(ns):
             finally:
                 positions = z = c = q = None
             time.sleep(max(1.0, 15-(time.monotonic()-started)))
-    threading.Thread(target=loop, daemon=True, name='veritas-paper-protection').start()
-    # Evidence sampling is intentionally independent of protective management.
-    # Cached-only selection prevents this sidecar from creating market I/O.
+    # Establish the independent evidence lane before the protective
+    # thread starts. Cached-only selection prevents sidecar market I/O, and
+    # its schema/witness writes never hold the paper-book lock.
     VOS.start(ns,lambda row,now=None: quote_for_position(
         row,now=now,allow_direct=False))
+    threading.Thread(target=loop, daemon=True, name='veritas-paper-protection').start()
