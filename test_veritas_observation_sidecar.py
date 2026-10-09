@@ -144,6 +144,33 @@ class SidecarTests(unittest.TestCase):
         self.assertIn("allow_direct=False",guard)
         self.assertIn("veritas-observation-sidecar",Path("veritas_observation_sidecar.py").read_text())
 
+    def test_health_counts_distinguish_seeded_from_carried_positions(self):
+        row=position();c=Cursor(row)
+        SIDECAR.seed(c,row,quote(0),stamp(0))
+        result=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None:quote(10,101.),
+            now=OPEN+timedelta(seconds=10))
+        self.assertEqual(result["seeded_positions"],1)
+        self.assertEqual(result["unseeded_positions"],0)
+        self.assertEqual(result["observed_positions"],1)
+
+        carried=position();carried["active_trade_id"]="carried"
+        c2=Cursor(carried)
+        result2=SIDECAR.sample_once(
+            Connect(c2),lambda work,now=None:quote(20,101.),
+            now=OPEN+timedelta(seconds=20))
+        self.assertEqual(result2["seeded_positions"],0)
+        self.assertEqual(result2["unseeded_positions"],1)
+
+    def test_seed_and_seal_counters_are_aggregate_only(self):
+        row=position();c=Cursor(row)
+        before_seed=int(SIDECAR._state.get("seeded_events") or 0)
+        before_seal=int(SIDECAR._state.get("sealed_events") or 0)
+        SIDECAR.seed(c,row,quote(0),stamp(0))
+        SIDECAR.seal(c,row,quote(10,101.),stamp(10))
+        self.assertEqual(SIDECAR._state["seeded_events"],before_seed+1)
+        self.assertEqual(SIDECAR._state["sealed_events"],before_seal+1)
+
     def test_witness_size_is_bounded_and_sidecar_has_no_production_authority(self):
         row=position();c=Cursor(row)
         witness=SIDECAR.seed(c,row,quote(0),stamp(0))
