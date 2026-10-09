@@ -12,6 +12,7 @@ import veritas_timeframe_policy as TFP
 import veritas_release as VR
 import veritas_profit_maturity as VPM
 import veritas_peer_invalidation as VPI
+import veritas_episode_profit_floor as VEF
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -5138,6 +5139,33 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
     if cap>0:
         requested=min(requested,cap)
     step=float(policy.get('position_step') or .05)
+
+    # Once an episode has earned/realized profit, an ADD may use only the
+    # remaining whole-cycle profit buffer at the active stop. Keep trend
+    # pyramiding, but never let it turn the already-earned episode negative.
+    if existing and str(existing.get('direction') or '')==str(direction):
+        tid=existing.get('active_trade_id')
+        trade=(c.execute("SELECT gross_pnl_rub,fees_rub,funding_rub FROM paper_trades WHERE trade_id=%s",
+                         (tid,)).fetchone() if tid else None)
+        floor=VEF.assess_add(existing,dict(trade or {}),price,requested,nav)
+        if floor.get('active'):
+            encoded=json.dumps({'episode_profit_floor_last_check':floor},ensure_ascii=False,default=str)
+            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                      "WHERE portfolio_name=%s AND asset=%s",(encoded,name,asset))
+            if tid:
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                          "WHERE trade_id=%s",(encoded,tid))
+            current=float(floor.get('current_fraction') or 0.0)
+            allowed=max(0.0,float(floor.get('cap_fraction') or current)-current)
+            stepped=current+math.floor(allowed/step+1e-9)*step
+            if stepped<requested-1e-9:
+                requested=max(current,stepped)
+                row['_episode_profit_floor_cap']=floor
+            if requested<=current+0.0025:
+                _record_entry_outcome(row,'BLOCKED','EPISODE_PROFIT_FLOOR_ADD_BLOCKED',
+                                      episode_profit_floor=floor,current_fraction=current)
+                return 0.0
+
     if not existing or str(existing.get('direction'))!=str(direction):
         requested=max(0.0,math.floor(requested/step+1e-9)*step)
     if requested<=0:
