@@ -279,6 +279,12 @@ def add_metadata(position,row,units,ts):
             'r17_tp1_done':False}
 
 
+def _protected_structural_runner_ratio(position):
+    """Keep more of TP1 only when a structural winner is already protected."""
+    p=payload(position)
+    return VTDE.protected_runner_ratio(position,p)
+
+
 def target_reduction(position,price,nav,ts):
     ladder=active_ladder(position)
     p=payload(position)
@@ -299,6 +305,9 @@ def target_reduction(position,price,nav,ts):
     next_stage=len(ladder) if final else stage+1
     remaining=sum(float(x['fraction']) for x in ladder[stage:])
     residual=0. if final else current*(1.-float(ladder[stage]['fraction'])/remaining)
+    runner_ratio=_protected_structural_runner_ratio(position)
+    if not final and stage==0 and runner_ratio>.50:
+        residual=max(residual,current*runner_ratio)
     event=p.get('active_target_event_snapshot') or p.get('entry_event_snapshot') or {}
     history=list(p.get('target_lifecycle_history') or [])
     history.append({'action':'TARGET_FINAL' if final else 'TARGET_PARTIAL','at':str(ts),
