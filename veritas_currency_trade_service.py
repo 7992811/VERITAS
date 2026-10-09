@@ -1200,7 +1200,7 @@ def create_application(connect, summary_provider, *, configuration=None):
             from veritas_tbank_order_stream import TBankOrderEventStream
             order_stream = TBankOrderEventStream(
                 token, account, instrument_uid=CNY_UID, environment=environment,
-                on_event=lambda _event: coordinator.reconcile())
+                on_event=lambda _event: coordinator.reconcile(), log=print)
         except Exception:
             order_stream, order_stream_error = None, "ORDER_STREAM_INIT_FAILED"
     application = TradeHttpApplication(
