@@ -4236,7 +4236,11 @@ def _v90tr_apply(c,name,candidates,prices,ts,positions=None):
     return changes
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
-    _v90tr_apply(c,name,candidates,prices,ts)
+    _baton=_v90_book_baton_take(c,name,ts)
+    changes=_v90tr_apply(c,name,candidates,prices,ts,
+                         positions=_baton[1] if _baton is not None else None)
+    if changes:
+        _v90_book_baton_clear()
     return _v90tr_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
 
 
@@ -4295,8 +4299,11 @@ def _v90ci_cross_source_disagreement(row):
 def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     safe_prices=dict(prices or {})
     safe_candidates=dict(candidates or {})
+    ci_mutated=False
     try:
-        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        _baton=_v90_book_baton_take(c,name,ts)
+        positions=(_baton[1] if _baton is not None else
+                   c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall())
         for z0 in positions or []:
             z=dict(z0); asset=str(z.get('asset') or '')
             payload=_v90j_json(z.get('payload'))
@@ -4321,6 +4328,7 @@ def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
                       'source_conflict_divergence':disagreement['divergence'],
                     })
                     tid=z.get('active_trade_id')
+                    ci_mutated=True
                     c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
                               (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
                     if tid:
@@ -4339,7 +4347,8 @@ def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
                     if str(payload.get('data_integrity_status') or '') in ('DATA_DISCONTINUITY','SAME_CONTRACT_SOURCE_CONFLICT'):
                         payload['data_integrity_status']='OK'
                         payload['data_integrity_restored_at']=_v90j_iso(ts)
-                        c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                        ci_mutated=True
+                    c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
                                   (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
                 continue
 
@@ -4354,7 +4363,8 @@ def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
               'candidate_verification_mode':row.get('verification_mode'),
             })
             tid=z.get('active_trade_id')
-            c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+            ci_mutated=True
+                    c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
                       (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
             if tid:
                 c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
@@ -4368,6 +4378,8 @@ def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
     except Exception:
         pass
 
+    if ci_mutated:
+        _v90_book_baton_clear()
     positions = z0 = z = payload = None
     return _v90ci_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,summary)
 
