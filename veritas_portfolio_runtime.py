@@ -5098,9 +5098,52 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
             _record_entry_outcome(row,'BLOCKED','CANONICAL_ADD_REQUIRES_NEW_CONFIRMATION',
                                   event_id=new_event)
             return 0.0
+        efficiency=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('execution_efficiency') or {}
+        local=row.get('_local_execution_context') or {}
+        opposite='SHORT' if direction=='LONG' else 'LONG'
+        fast_opposite=[x for x in (local.get('rows') or [])
+                       if str(x.get('direction') or '')==opposite
+                       and str(x.get('structure_state') or '') in ('BUILDING_TREND','CONFIRMED_TREND')]
+        if efficiency.get('block_add_on_fast_opposite_confirmation') and fast_opposite:
+            _record_entry_outcome(row,'BLOCKED','ADD_FAST_OPPOSITE_STRUCTURE_CONFIRMED',
+                                  current_fraction=current,fast_opposite=fast_opposite)
+            return 0.0
+        trade_before=(c.execute(
+            "SELECT gross_pnl_rub,fees_rub,funding_rub,payload FROM paper_trades WHERE trade_id=%s",
+            (existing.get('active_trade_id'),)).fetchone() or {})
+        gross_realized=max(0.0,float(trade_before.get('gross_pnl_rub') or 0.0))
+        units_before=abs(float(existing.get('units') or 0.0))
+        unrealized=max(0.0,(1.0 if direction=='LONG' else -1.0)*units_before*
+                       (float(price)-float(existing.get('avg_entry_price') or price)))
+        positive_edge=gross_realized+unrealized
+        fees_before=max(0.0,float(trade_before.get('fees_rub') or 0.0))
+        fee_limit=float(efficiency.get('max_fee_to_positive_gross_edge') or .25)
+        fee_ratio=(fees_before/positive_edge) if positive_edge>1e-9 else (float('inf') if fees_before>0 else 0.0)
+        if fee_ratio>=fee_limit:
+            _record_entry_outcome(row,'BLOCKED','ADD_CHURN_COST_LIMIT',
+                                  current_fraction=current,fees_rub=fees_before,
+                                  positive_gross_edge_rub=positive_edge,
+                                  fee_to_positive_gross_edge=fee_ratio,fee_limit=fee_limit)
+            return 0.0
         actual=VX.entry_gate(row,float(price),direction,requested,existing,
                             existing_target_price=VX.stored_position_target_price(existing),now=VPG.utc_datetime(ts),
                             execution_fraction=max(0.0,requested-current))
+        if efficiency.get('require_positive_incremental_net_reward'):
+            try:
+                _net_reward=float(actual.get('net_reward_pct'))
+            except (TypeError,ValueError):
+                _net_reward=float('nan')
+            if not math.isfinite(_net_reward) or _net_reward<=0:
+                _record_entry_outcome(row,'BLOCKED','ADD_INCREMENTAL_NET_EDGE_NOT_POSITIVE',
+                                      canonical_add_gate=actual,current_fraction=current)
+                return 0.0
+        row['_canonical_add_before']={
+            'units':units_before,'avg_entry_price':float(existing.get('avg_entry_price') or price),
+            'fees_rub':fees_before,'mfe_pct':max(
+                float((_canonical_payload(existing).get('r55_lifetime_mfe_pct') or 0.0)),
+                float((_canonical_payload(existing).get('mfe_pct') or 0.0)),
+                float((_canonical_payload(existing).get('r_accel_mfe_pct') or 0.0))),
+        }
         hard=[x for x in (actual.get('blockers') or []) if CTC.veto_severity(x)=='HARD']
         if hard:
             _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
@@ -5149,6 +5192,46 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                 if (opened and opened.get('asset')==asset and opened.get('direction')==direction
                         and opened.get('active_trade_id')):
                     is_new = not existing or opened.get('active_trade_id') != existing.get('active_trade_id')
+                    trade_after=(c.execute(
+                        "SELECT fees_rub,payload FROM paper_trades WHERE trade_id=%s",
+                        (opened.get('active_trade_id'),)).fetchone() or {})
+                    after_payload=_canonical_payload(trade_after)
+                    analysis_patch={}
+                    if is_new:
+                        analysis_patch={
+                            'initial_entry_price':float(opened.get('avg_entry_price') or price),
+                            'initial_entry_units':abs(float(opened.get('units') or 0.0)),
+                            'initial_entry_fee_rub':max(0.0,float(trade_after.get('fees_rub') or 0.0)),
+                            'add_count':0,'add_fee_rub':0.0,
+                            'mfe_since_last_add_pct':0.0,'mae_since_last_add_pct':0.0,
+                        }
+                    else:
+                        before=row.get('_canonical_add_before') or {}
+                        before_units=float(before.get('units') or 0.0)
+                        after_units=abs(float(opened.get('units') or 0.0))
+                        if after_units>before_units+1e-12:
+                            fee_delta=max(0.0,float(trade_after.get('fees_rub') or 0.0)
+                                          -float(before.get('fees_rub') or 0.0))
+                            last_fill=((after_payload.get('last_entry_execution_model') or {}).get('fill_price')
+                                       or price)
+                            analysis_patch={
+                                'add_count':int(after_payload.get('add_count') or 0)+1,
+                                'add_fee_rub':float(after_payload.get('add_fee_rub') or 0.0)+fee_delta,
+                                'last_add_fee_rub':fee_delta,'last_add_at':str(ts),
+                                'last_add_price':float(last_fill),
+                                'pre_add_units':before_units,'post_add_units':after_units,
+                                'pre_add_avg_entry_price':float(before.get('avg_entry_price') or price),
+                                'post_add_avg_entry_price':float(opened.get('avg_entry_price') or price),
+                                'mfe_before_last_add_pct':float(before.get('mfe_pct') or 0.0),
+                                'mfe_since_last_add_pct':0.0,'mae_since_last_add_pct':0.0,
+                            }
+                    if analysis_patch:
+                        encoded=json.dumps(analysis_patch,ensure_ascii=False,allow_nan=False)
+                        c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE active_trade_id=%s",
+                                  (encoded,opened.get('active_trade_id')))
+                        c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                                  (encoded,opened.get('active_trade_id')))
+                        opened=dict(opened,payload={**_canonical_payload(opened),**analysis_patch})
                     VOP.record(c,dict(opened),VPS.quote_from_row(work),ts,
                                at_entry=is_new,lane='CANONICAL_ENTRY' if is_new else 'CANONICAL_ADD')
         except Exception:
