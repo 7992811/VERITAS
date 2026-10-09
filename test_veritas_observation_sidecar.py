@@ -44,7 +44,7 @@ class Result:
 
 class Cursor:
     def __init__(self,row):
-        self.row=dict(row);self.witness=None;self.writes=0
+        self.row=dict(row);self.witness=None;self.writes=0;self.stale=0
 
     @contextmanager
     def transaction(self):
@@ -61,6 +61,10 @@ class Cursor:
             if rows:
                 self.witness=rows[-1]["witness"];self.writes+=len(rows)
             return Result(one={"n":len(rows)})
+        if "DELETE FROM paper_observation_sidecar" in sql:
+            n=min(self.stale,int(params[0]) if params else self.stale)
+            self.stale-=n
+            return Result(rows=[{"trade_id":f"stale-{i}"} for i in range(n)])
         if "CREATE TABLE IF NOT EXISTS paper_observation_sidecar" in sql:
             return Result()
         if "CREATE INDEX IF NOT EXISTS paper_observation_sidecar_updated" in sql:
@@ -170,6 +174,12 @@ class SidecarTests(unittest.TestCase):
         SIDECAR.seal(c,row,quote(10,101.),stamp(10))
         self.assertEqual(SIDECAR._state["seeded_events"],before_seed+1)
         self.assertEqual(SIDECAR._state["sealed_events"],before_seal+1)
+
+    def test_cleanup_is_bounded_to_closed_sidecar_rows(self):
+        c=Cursor(position());c.stale=50
+        deleted=SIDECAR.cleanup_once(Connect(c),limit=32)
+        self.assertEqual(deleted,32)
+        self.assertEqual(c.stale,18)
 
     def test_witness_size_is_bounded_and_sidecar_has_no_production_authority(self):
         row=position();c=Cursor(row)
