@@ -13,6 +13,7 @@ from dataclasses import dataclass, asdict
 from hashlib import sha256
 import json
 import math
+import re
 
 import veritas_canonical_constitution as CTC
 
@@ -35,6 +36,47 @@ LEARNABLE_ENTRY_BLOCKERS = frozenset({
     "SAME_TF_EVENT_EXPIRED",
 })
 FORBIDDEN_ENTRY_BLOCKERS = frozenset(CTC.HARD_VETOES)
+KNOWN_BLOCKERS = frozenset(LEARNABLE_ENTRY_BLOCKERS | FORBIDDEN_ENTRY_BLOCKERS)
+_BLOCKER_TOKEN = re.compile(r"[A-Z][A-Z0-9_]{2,}")
+
+
+def _reason_tokens(value):
+    """Extract only declared blocker tokens; arbitrary prose never becomes policy."""
+    if value is None:
+        return ()
+    if isinstance(value,(list,tuple,set)):
+        out=[]
+        for item in value:
+            out.extend(_reason_tokens(item))
+        return tuple(out)
+    if isinstance(value,dict):
+        out=[]
+        for key in ("reason","code","blocker","blockers"):
+            if key in value:
+                out.extend(_reason_tokens(value.get(key)))
+        return tuple(out)
+    text=str(value).strip()
+    if not text:
+        return ()
+    upper=text.upper()
+    normalized=re.sub(r"[^A-Z0-9]+","_",upper).strip("_")
+    found=set()
+    for token in _BLOCKER_TOKEN.findall(upper.replace("-","_").replace(" ","_")):
+        if token in KNOWN_BLOCKERS:
+            found.add(token)
+    for token in KNOWN_BLOCKERS:
+        if token in normalized:
+            found.add(token)
+    return tuple(sorted(found))
+
+
+def row_blockers(row):
+    """Merge structured gate blockers with known blocker tokens from reason fields."""
+    values=[]
+    for key in ("final_gate_blockers","blockers","plan_reason","trade_entry_reason",
+                "execution_reason","paper_execution_reason"):
+        values.extend(_reason_tokens(row.get(key)))
+    return tuple(sorted(set(values)))
 
 
 def _num(v):
@@ -76,7 +118,7 @@ def classify_decision_episode(row):
     fr=_num(row.get("forward_return"))
     mfe=_num(row.get("mfe"))
     mae=_num(row.get("mae"))
-    blockers=tuple(sorted(str(x) for x in (row.get("final_gate_blockers") or row.get("blockers") or []) if x))
+    blockers=row_blockers(row)
     candidate_direction=str(row.get("candidate_direction") or "")
     candidate_move=(fr if candidate_direction=="LONG" else -fr if candidate_direction=="SHORT" else None)
     admission=row.get("admission_eligible")
