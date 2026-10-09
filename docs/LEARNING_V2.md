@@ -284,3 +284,28 @@ tracks MFE/MAE and executes all protective actions exactly as before.
 
 This change is prospective. A carried trade whose prefix was already missing or
 invalid before v91.8.34 remains excluded; historical gaps are never backfilled.
+
+
+## Independent exact-source quote refresh (v91.8.35)
+
+The observation sampler is only useful when the local exact-source quote cache is
+fresh enough for the asset's execution-time policy. BTC and ETH have a much
+tighter source-age limit than the protective book loop can reliably maintain
+under Python/book contention.
+
+A separate `veritas_quote_refresh_lane.py` therefore refreshes held
+source/contract groups every 15 seconds outside the canonical paper-book lock.
+
+Authority boundaries:
+
+- it reads only projected open-position source identities;
+- it calls the existing exact-source provider refresh logic;
+- it writes only the in-memory guarded quote cache;
+- it never mutates paper positions, trades, orders, cash, NAV, stops or targets;
+- provider I/O is serialized by a refresh mutex, but the mutex is outside book ownership.
+
+The protective loop now checks the fresh cache first. If a source/contract group
+is missing, it performs a fail-safe exact-source refresh before acquiring the
+book lock. Inside `run_protective_pass`, quote resolution is cache-only. If no
+valid exact-source quote exists, protection remains fail-closed for that pass;
+the system never falls back to another provider or contract.
