@@ -260,14 +260,16 @@ class ReceiptSweepTests(unittest.TestCase):
                 patch.object(S,'checkpoint_job',side_effect=checkpoint), \
                 patch.object(T,'observation',side_effect=lambda row,**kw:(dict(evidence_valid=True,evidence_hash=row['original_evidence_hash']),None)), \
                 patch.object(A,'snapshot',return_value={'status':'OK','profiles':[]}):
-            for index in range(5):
+            pages=(len(rows)+T.BATCH_SIZE-1)//T.BATCH_SIZE
+            for index in range(pages):
                 validate_addition()
                 result=worker.process()
-                self.assertEqual(result['checked'],4)
+                self.assertEqual(result['checked'],min(T.BATCH_SIZE,len(rows)-index*T.BATCH_SIZE))
                 self.assertEqual(state['phase'],'recheck')
             validate_addition()
             result=worker.process()
-            self.assertEqual(page_starts,['','trade-03','trade-07','trade-11','trade-15','trade-19'])
+            expected_starts=['']+[f'trade-{i*T.BATCH_SIZE-1:02}' for i in range(1,pages+1)]
+            self.assertEqual(page_starts,expected_starts)
             self.assertFalse(result['snapshot']['evidence_revalidation_pending'])
             self.assertEqual(result['snapshot']['verified_revocation_generation'],LI.memory_state()['revocation_generation'])
             validate_addition()
@@ -451,7 +453,7 @@ class TradeLearningSQLTests(unittest.TestCase):
         self.assertEqual(result['submitted'],0)  # Missing verified episodes stay rejected.
         self.assertEqual(len(calls),1)
         query,args=calls[0]
-        self.assertEqual(args[-1],4)
+        self.assertEqual(args[-1],T.BATCH_SIZE)
         reports={}
         with self.connect() as c:
             original_jit=c.execute('SHOW jit').fetchone()['jit']
@@ -459,9 +461,9 @@ class TradeLearningSQLTests(unittest.TestCase):
                 c.execute("SET LOCAL statement_timeout = '2000ms'")
                 expected=c.execute(query,args).fetchall()
                 default=c.execute('EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON) '+query,args).fetchone()['QUERY PLAN'][0]
-                self.assertEqual(default['Plan']['Actual Rows'],4)
+                self.assertEqual(default['Plan']['Actual Rows'],T.BATCH_SIZE)
                 selected=[p for p in self._plan_nodes(default['Plan']) if p.get('Subplan Name')=='CTE selected']
-                self.assertEqual(len(selected),1);self.assertEqual(selected[0]['Actual Rows'],4)
+                self.assertEqual(len(selected),1);self.assertEqual(selected[0]['Actual Rows'],T.BATCH_SIZE)
                 for item in expected:
                     self.assertEqual(item['payload']['entry_event_snapshot'],trade['payload']['entry_event_snapshot'])
                     self.assertEqual(item['payload']['entry_canonical_admission'],trade['payload']['entry_canonical_admission'])
@@ -476,7 +478,7 @@ class TradeLearningSQLTests(unittest.TestCase):
                 try:
                     with c.transaction():
                         forced=c.execute('EXPLAIN (ANALYZE, FORMAT JSON) '+query,args).fetchone()['QUERY PLAN'][0]
-                        self.assertEqual(forced['Plan']['Actual Rows'],4)
+                        self.assertEqual(forced['Plan']['Actual Rows'],T.BATCH_SIZE)
                         self.assertIn('JIT',forced)
                         reports['forced_jit']={'execution_ms':forced['Execution Time'],'jit':forced['JIT']}
                 except self.driver.errors.QueryCanceled:
