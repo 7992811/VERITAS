@@ -100,6 +100,35 @@ class LearningV2RegistryTests(unittest.TestCase):
             self.assertEqual(result["status"],"AWAIT_REPLAY")
             self.assertEqual(result["prospective"]["reason"],"ORDERED_PATH_REPLAY_REQUIRED")
 
+    def test_replay_support_requires_positive_candidate_and_delta(self):
+        candidate={"kind":"STOP_GEOMETRY","scope":{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"},
+                   "proposal":{"stop_buffer_atr":.2},"registered_at":T0.isoformat()}
+        prior={"replay":{"n":32,"utc_days":[f"2026-10-{i:02d}" for i in range(1,9)],
+                         "days":8,"sum_baseline":.16,"sum_candidate":.32,
+                         "ambiguous":2,"invalid":1}}
+        result=R.evaluate_candidate(candidate,[],[],T0+timedelta(days=20),prior=prior)
+        self.assertEqual(result["status"],"REPLAY_SUPPORTED")
+        self.assertGreater(result["prospective"]["replay"]["mean_delta_net_return"],0)
+        self.assertFalse(result["prospective"]["replay"]["counterfactual_live_execution_proven"])
+
+    def test_replay_rejects_persistent_nonpositive_delta(self):
+        candidate={"kind":"EXIT_CAPTURE","scope":{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"},
+                   "proposal":{"first_target_fraction":.25},"registered_at":T0.isoformat()}
+        prior={"replay":{"n":64,"utc_days":[f"2026-10-{i:02d}" for i in range(1,15)],
+                         "days":14,"sum_baseline":.64,"sum_candidate":.32,
+                         "ambiguous":2,"invalid":0}}
+        result=R.evaluate_candidate(candidate,[],[],T0+timedelta(days=20),prior=prior)
+        self.assertEqual(result["status"],"REJECTED")
+
+    def test_high_replay_ambiguity_cannot_be_supported(self):
+        candidate={"kind":"STOP_GEOMETRY","scope":{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"},
+                   "proposal":{"stop_buffer_atr":.2},"registered_at":T0.isoformat()}
+        prior={"replay":{"n":32,"utc_days":[f"2026-10-{i:02d}" for i in range(1,9)],
+                         "days":8,"sum_baseline":.16,"sum_candidate":.32,
+                         "ambiguous":8,"invalid":0}}
+        result=R.evaluate_candidate(candidate,[],[],T0+timedelta(days=20),prior=prior)
+        self.assertEqual(result["status"],"REPLAY_BUILDING")
+
     def test_hypothesis_id_is_stable_when_training_evidence_grows(self):
         scope={"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"}
         a=L2._hypothesis("ENTRY_BLOCKER_RELAXATION",scope,{"blocker":"X"},{"n":24})
