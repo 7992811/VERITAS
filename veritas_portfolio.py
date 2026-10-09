@@ -3858,8 +3858,12 @@ def _v90pi_jump_limit(asset):
 def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     safe_prices=dict(prices or {})
     safe_candidates=dict(candidates or {})
+    pi_mutated=False
     try:
-        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        _baton=_v90_book_baton_take(c,name,ts)
+        positions=(_baton[1] if _baton is not None else
+                   c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall())
+        positions=[dict(z) for z in (positions or [])]
         for z0 in positions:
             z=dict(z0); asset=str(z.get('asset') or '')
             old=float(z.get('last_price') or 0.0)
@@ -3879,6 +3883,8 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
                   'data_discontinuity_return':jump,
                 })
                 tid=z.get('active_trade_id')
+                pi_mutated=True
+                z0['payload']=dict(payload)
                 c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
                           (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
                 if tid:
@@ -3897,8 +3903,9 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
         pass
 
     # Legacy MFE locks; tagged positions use confirmed same-timeframe swings.
+    # Reuse the same locked book; VTM.owns_position remains the authoritative
+    # legacy filter and avoids a second JSON-predicate database scan.
     try:
-        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s AND "+VTM.LEGACY_POSITION_SQL_PREDICATE,(name,)).fetchall()
         for z0 in positions:
             z=dict(z0); payload=_v90j_json(z.get('payload'))
             if VTM.owns_position(z): continue
@@ -3928,6 +3935,7 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
                      (direction=='LONG' and proposed>float(old_stop)) or
                      (direction=='SHORT' and proposed<float(old_stop)))
             if improve:
+                pi_mutated=True
                 c.execute("""UPDATE paper_positions
                              SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb
                              WHERE portfolio_name=%s AND asset=%s""",
@@ -3942,6 +3950,8 @@ def _v90pi_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
     except Exception:
         pass
 
+    if pi_mutated:
+        _v90_book_baton_clear()
     # The completed prepass must not retain another full book during execution.
     positions = z0 = z = payload = None
     return _v90pi_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,summary)
