@@ -81,6 +81,23 @@ class LearningV2Tests(unittest.TestCase):
         self.assertEqual({x["scope"]["contract_id"] for x in entries},{"C1","C2"})
         self.assertTrue(all(x["evidence"]["n"]==L.MIN_CONTEXT_N for x in entries))
 
+    def test_hard_veto_can_be_diagnosed_but_never_relaxed(self):
+        rows=[self.row(blockers=["EXECUTION_QUOTE_STALE"]) for _ in range(L.MIN_CONTEXT_N)]
+        summary=L.false_block_summary(rows)
+        self.assertEqual(summary["blockers"][0]["blocker"],"EXECUTION_QUOTE_STALE")
+        hypotheses=L.generate_hypotheses(rows,[])
+        self.assertFalse(any(x["kind"]=="ENTRY_BLOCKER_RELAXATION" for x in hypotheses))
+        self.assertIn("EXECUTION_QUOTE_STALE",L.FORBIDDEN_ENTRY_BLOCKERS)
+
+    def test_timing_blocker_can_generate_shadow_entry_candidate(self):
+        rows=[self.row(blockers=["IMPULSE_ALREADY_PASSED"]) for _ in range(L.MIN_CONTEXT_N)]
+        hypotheses=L.generate_hypotheses(rows,[])
+        entry=[x for x in hypotheses if x["kind"]=="ENTRY_BLOCKER_RELAXATION"]
+        self.assertTrue(entry)
+        self.assertEqual(entry[0]["proposal"]["blocker"],"IMPULSE_ALREADY_PASSED")
+        self.assertEqual(entry[0]["mode"],"SHADOW_ONLY")
+        self.assertFalse(entry[0]["production_mutation"])
+
     def test_short_direction_is_signed_correctly(self):
         c=L.classify_decision_episode(self.row(decision="SHORT",fr=-.01,final_gate_blockers=[]))
         self.assertGreater(c["signed_forward_return"],0)
