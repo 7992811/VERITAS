@@ -24,6 +24,12 @@ class LearningV2Tests(unittest.TestCase):
         s=L.false_block_summary(rows)
         self.assertEqual(s["missed_directional_episodes"],0)
 
+    def test_discovery_threshold_is_lower_than_prospective_validation(self):
+        rows=[self.row() for _ in range(L.MIN_CONTEXT_N)]
+        h=L.generate_hypotheses(rows,[])
+        self.assertTrue(any(x["kind"]=="ENTRY_BLOCKER_RELAXATION" for x in h))
+        self.assertLess(L.MIN_CONTEXT_N,64)
+
     def test_entry_hypothesis_requires_recurrence_and_is_shadow_only(self):
         rows=[self.row() for _ in range(24)]
         h=L.generate_hypotheses(rows,[])
@@ -53,6 +59,15 @@ class LearningV2Tests(unittest.TestCase):
         entries=[x for x in h if x["kind"]=="ENTRY_BLOCKER_RELAXATION"]
         self.assertEqual({x["scope"]["source_key"] for x in entries},{"A","B"})
         self.assertTrue(all(x["evidence"]["n"]==24 for x in entries))
+
+    def test_hypotheses_do_not_mix_contracts(self):
+        rows=[]
+        for contract in ("C1","C2"):
+            rows.extend([self.row(source_key="S",contract_id=contract) for _ in range(L.MIN_CONTEXT_N)])
+        h=L.generate_hypotheses(rows,[])
+        entries=[x for x in h if x["kind"]=="ENTRY_BLOCKER_RELAXATION"]
+        self.assertEqual({x["scope"]["contract_id"] for x in entries},{"C1","C2"})
+        self.assertTrue(all(x["evidence"]["n"]==L.MIN_CONTEXT_N for x in entries))
 
     def test_short_direction_is_signed_correctly(self):
         c=L.classify_decision_episode(self.row(decision="SHORT",fr=-.01,final_gate_blockers=[]))

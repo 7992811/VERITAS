@@ -24,6 +24,7 @@ import veritas_knowledge_validation as KNOWLEDGE
 import veritas_asset_management_intelligence as INTELLIGENCE
 import veritas_scorecard_delivery as SCORECARD
 import veritas_learning_v2 as LEARNING_V2
+import veritas_learning_v2_registry as LEARNING_V2_REGISTRY
 from veritas_maintenance import MaintenanceDeferred
 
 VERSION = "CONTINUOUS_LEARNING_V1"
@@ -39,7 +40,8 @@ MAX_PROVENANCE_BYTES = 16384
 CANDIDATE_WORK_VERSION = "FORECAST_CONSUMPTION_V1"
 CANDIDATE_MAINTENANCE_SECONDS = 120
 LEARNING_V2_SNAPSHOT_NAME = "learning_v2_shadow"
-LEARNING_V2_INPUT_LIMIT = 512
+LEARNING_V2_ASSETS = ("BTC","ETH","NQ","BRENT","GOLD","MOEX","CNYRUBF")
+LEARNING_V2_INPUT_LIMIT = 192
 
 
 def _json(value):
@@ -230,7 +232,7 @@ class ContinuousLearning:
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6),
-                ("learning_v2_shadow", self.learning_v2_shadow, 300, 5))
+                ("learning_v2_shadow", self.learning_v2_shadow, 60, 5))
         for name, fn, interval, seconds in jobs:
             if name == "learning_bootstrap":
                 callback = fn
@@ -383,8 +385,10 @@ class ContinuousLearning:
         if self.boot_phase == 3:
             KNOWLEDGE.ensure_schema(self.connect, context=context)
             KNOWLEDGE.restore(self.connect, context=context)
+            with transaction(self.connect, context) as c:
+                LEARNING_V2_REGISTRY.ensure_schema(c)
             self.boot_phase = 4
-            return {"status": "PROGRESS", "stage": "KNOWLEDGE_SCHEMA"}
+            return {"status": "PROGRESS", "stage": "KNOWLEDGE_AND_LEARNING_V2_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
         progress = STORE.load_snapshot(self.connect, "learning_progress", PROGRESS_VERSION)
         learning_v2 = STORE.load_snapshot(self.connect, LEARNING_V2_SNAPSHOT_NAME, LEARNING_V2.VERSION)
@@ -668,24 +672,30 @@ class ContinuousLearning:
         return self.trade.refresh_memory(context), cursor
 
     def learning_v2_shadow(self, context, cursor):
-        """Build bounded Entry/Stop/Exit/router research from verified outcomes.
+        """Build one asset's bounded shadow research from verified outcomes.
 
-        This job is deliberately observational.  It can publish hypotheses but
-        cannot alter entry rules, stops, exits, risk limits or broker state.
+        Rotating assets prevents the research lane from competing with trading
+        for the full 512 MiB process budget.  Outcomes come from the compact
+        materialized episode table; only the matching decision payload is read
+        for frozen pre-outcome context.  No entry/stop/exit/risk mutation occurs.
         """
-        limit = LEARNING_V2_INPUT_LIMIT
+        cursor=deepcopy(cursor)
+        index=int(cursor.get("asset_index") or 0)%len(LEARNING_V2_ASSETS)
+        asset=LEARNING_V2_ASSETS[index]
+        limit=LEARNING_V2_INPUT_LIMIT
+        job_started=time.monotonic()
+        read_started=time.monotonic()
         with transaction(self.connect, context) as c:
-            decisions = c.execute("""
+            decisions=c.execute("""
               WITH recent AS MATERIALIZED (
-                SELECT id,entity_key,event_ts,asset,horizon,payload
-                FROM ledger_events
-                WHERE event_type='decision'
-                ORDER BY id DESC
+                SELECT entity_key,decision_ts,asset,horizon,regime,decision,forward_return
+                FROM v90_decision_episodes
+                WHERE asset=%s
+                ORDER BY decision_ts DESC
                 LIMIT %s
               )
-              SELECT d.event_ts,d.asset,d.horizon,
-                     COALESCE(d.payload->>'regime','UNKNOWN') AS regime,
-                     COALESCE(d.payload->>'research_decision',d.payload->>'decision','') AS decision,
+              SELECT d.id AS decision_id,e.entity_key,e.decision_ts AS event_ts,
+                     e.asset,e.horizon,e.regime,e.decision,e.forward_return,
                      COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
                               d.payload#>>'{trade_plan,setup_family}','') AS setup_family,
                      COALESCE(d.payload#>>'{learning_provenance,policy_hash}',
@@ -693,50 +703,109 @@ class ContinuousLearning:
                      COALESCE(d.payload#>>'{learning_provenance,source_identity,key}',
                               d.payload#>>'{timeframe_entry_context,source_identity,key}',
                               d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,key}','') AS source_key,
+                     COALESCE(d.payload#>>'{learning_provenance,source_identity,contract_id}',
+                              d.payload#>>'{timeframe_entry_context,source_identity,contract_id}',
+                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}','') AS contract_id,
                      COALESCE(d.payload->>'horizon_structure_direction',
                               d.payload#>>'{timeframe_entry_context,event,direction}',
                               d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}','') AS candidate_direction,
-                     COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers,
-                     (o.payload->>'forward_return')::double precision AS forward_return
-              FROM recent d
+                     COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers
+              FROM recent e
               CROSS JOIN LATERAL (
-                SELECT payload FROM ledger_events o
-                WHERE o.entity_key=d.entity_key AND o.event_type='outcome'
-                  AND jsonb_typeof(o.payload->'forward_return')='number'
-                ORDER BY o.id DESC LIMIT 1
-              ) o
-              ORDER BY d.id DESC
-            """, (limit,)).fetchall()
+                SELECT id,payload FROM ledger_events d
+                WHERE d.entity_key=e.entity_key AND d.event_type='decision'
+                ORDER BY d.id DESC LIMIT 1
+              ) d
+              ORDER BY e.decision_ts DESC
+            """,(asset,limit)).fetchall()
+            decision_read_seconds=time.monotonic()-read_started
             context.check()
-            trades = c.execute("""
+            trade_read_started=time.monotonic()
+            trades=c.execute("""
               SELECT closed_at,asset,horizon,regime,setup_family,
                      COALESCE(payload->>'strategy_policy_hash','') AS policy_hash,
                      COALESCE(payload#>>'{price_source_lock,key}',
                               payload#>>'{entry_execution_source_identity,key}','') AS source_key,
+                     COALESCE(payload#>>'{price_source_lock,contract_id}',
+                              payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
                      mae_pct AS mae,mfe_pct AS mfe,capture_ratio,
                      net_pnl_rub,primary_attribution
               FROM v90_learning_episodes
               WHERE learning_eligible=TRUE
                 AND primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
+                AND asset=%s
               ORDER BY closed_at DESC
               LIMIT %s
-            """, (limit,)).fetchall()
+            """,(asset,limit)).fetchall()
+            trade_read_seconds=time.monotonic()-trade_read_started
         decision_rows=[dict(row) for row in decisions or []]
         trade_rows=[dict(row) for row in trades or []]
-        value=LEARNING_V2.research_snapshot(decision_rows,trade_rows)
-        value.update(input_counts={"decisions":len(decision_rows),"trades":len(trade_rows)},
-                     generated_at=clock().isoformat(),
-                     source="VERIFIED_LEDGER_OUTCOMES_AND_LEARNING_EPISODES",
-                     automatic_production_promotion=False)
+        research_started=time.monotonic()
+        current=LEARNING_V2.research_snapshot(decision_rows,trade_rows)
+        research_seconds=time.monotonic()-research_started
+        current.update(asset=asset,
+                       input_counts={"decisions":len(decision_rows),"trades":len(trade_rows)},
+                       generated_at=clock().isoformat(),
+                       source="MATERIALIZED_OUTCOMES_PLUS_FROZEN_DECISION_CONTEXT",
+                       automatic_production_promotion=False)
         context.check()
-        if not STORE.publish_snapshot(self.connect, LEARNING_V2_SNAPSHOT_NAME, LEARNING_V2.VERSION,
-                                      value, observed_at=clock()):
+        registry_started=time.monotonic()
+        with transaction(self.connect, context) as c:
+            registry=LEARNING_V2_REGISTRY.sync(
+                c,current,decision_rows,trade_rows,now=clock())
+        registry_seconds=time.monotonic()-registry_started
+        context.check()
+        with self._lock:
+            prior=deepcopy(self._learning_v2)
+        assets=dict(prior.get("assets") or {})
+        assets[asset]={k:deepcopy(current.get(k)) for k in (
+            "status","counts","entry_false_block","hypotheses","input_counts","generated_at")}
+        combined={}
+        for name in LEARNING_V2_ASSETS:
+            for h in (assets.get(name) or {}).get("hypotheses") or []:
+                if isinstance(h,dict) and h.get("hypothesis_id"):
+                    combined[h["hypothesis_id"]]=h
+        hypotheses=sorted(combined.values(),key=lambda h:(str(h.get("kind")),str(h.get("hypothesis_id"))))[:LEARNING_V2.MAX_HYPOTHESES]
+        counts={}
+        for h in hypotheses:
+            kind=str(h.get("kind") or "UNKNOWN")
+            counts[kind]=counts.get(kind,0)+1
+        value={
+            "version":LEARNING_V2.VERSION,
+            "status":"SHADOW_READY" if hypotheses else "BUILDING",
+            "automatic_production_promotion":False,
+            "assets":assets,
+            "last_asset":asset,
+            "hypotheses":hypotheses,
+            "counts":counts,
+            "registry":registry,
+            "generated_at":current["generated_at"],
+            "source":current["source"],
+            "principle":"Rotating bounded cohorts; observed evidence may create shadow hypotheses, never live mutations.",
+        }
+        if not STORE.publish_snapshot(self.connect,LEARNING_V2_SNAPSHOT_NAME,LEARNING_V2.VERSION,
+                                      value,observed_at=clock()):
             raise RuntimeError("learning v2 snapshot rejected")
         with self._lock:
             self._learning_v2=deepcopy(value)
-        return {"status":"OK","hypotheses":len(value.get("hypotheses") or []),
-                "counts":value.get("counts") or {},
-                "missed_directional_episodes":(value.get("entry_false_block") or {}).get("missed_directional_episodes",0)}, cursor
+        cursor["asset_index"]=(index+1)%len(LEARNING_V2_ASSETS)
+        metrics={"decision_read_seconds":round(decision_read_seconds,4),
+                 "trade_read_seconds":round(trade_read_seconds,4),
+                 "research_seconds":round(research_seconds,4),
+                 "registry_seconds":round(registry_seconds,4),
+                 "duration_seconds":round(time.monotonic()-job_started,4)}
+        self.ns["emit"]("learning_v2_shadow_snapshot",version=LEARNING_V2.VERSION,
+                        asset=asset,decisions=len(decision_rows),trades=len(trade_rows),
+                        hypotheses=len(current.get("hypotheses") or []),
+                        total_hypotheses=len(hypotheses),
+                        registry_counts=registry.get("counts") or {},
+                        shadow_champions=len(registry.get("shadow_champions") or []),
+                        production_influence=False,**metrics)
+        return {"status":"OK","asset":asset,"hypotheses":len(current.get("hypotheses") or []),
+                "total_hypotheses":len(hypotheses),"counts":counts,
+                "registry_counts":registry.get("counts") or {},
+                "metrics":metrics,
+                "missed_directional_episodes":(current.get("entry_false_block") or {}).get("missed_directional_episodes",0)},cursor
 
     def intelligence(self, context, cursor, *, pg_connect=None):
         pg_connect = self.connect if pg_connect is None else pg_connect

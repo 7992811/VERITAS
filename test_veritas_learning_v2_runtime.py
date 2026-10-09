@@ -13,9 +13,11 @@ class Rows:
 
 class Cursor:
     def __init__(self, decisions, trades):
-        self.decisions=decisions; self.trades=trades
+        self.decisions=decisions; self.trades=trades; self.calls=[]
     def execute(self, sql, args=()):
+        self.calls.append((sql,args))
         if "WITH recent AS MATERIALIZED" in sql:
+            self.assert_materialized = "FROM v90_decision_episodes" in sql
             return Rows(self.decisions)
         if "FROM v90_learning_episodes" in sql:
             return Rows(self.trades)
@@ -24,27 +26,39 @@ class Cursor:
 class LearningV2RuntimeTests(unittest.TestCase):
     def test_job_publishes_shadow_snapshot_without_mutating_trading(self):
         decisions=[{
-            "event_ts":"2026-10-08T10:00:00Z","asset":"NQ","horizon":"5m","regime":"TREND",
-            "decision":"NO_TRADE","setup_family":"BREAKOUT","policy_hash":"p",
+            "decision_id":100,"event_ts":"2026-10-08T10:00:00Z","asset":"BTC","horizon":"5m","regime":"TREND",
+            "decision":"NO_TRADE","setup_family":"BREAKOUT","policy_hash":"p","source_key":"S",
             "candidate_direction":"LONG","final_gate_blockers":["IMPULSE_ALREADY_PASSED"],
             "forward_return":.01,
         } for _ in range(24)]
         trades=[{
-            "closed_at":"2026-10-08T10:10:00Z","asset":"NQ","horizon":"5m","regime":"TREND",
-            "setup_family":"BREAKOUT","policy_hash":"p","mae":-.004,"mfe":.014,
+            "closed_at":"2026-10-08T10:10:00Z","asset":"BTC","horizon":"5m","regime":"TREND",
+            "setup_family":"BREAKOUT","policy_hash":"p","source_key":"S","mae":-.004,"mfe":.014,
             "capture_ratio":.2,"net_pnl_rub":10.0,"primary_attribution":"OK",
         } for _ in range(20)]
-        app=C.ContinuousLearning(namespace(lambda: None)); app.ready=True
+        events=[]
+        ns=namespace(lambda: None)
+        ns["emit"]=lambda event,**values: events.append((event,values))
+        app=C.ContinuousLearning(ns); app.ready=True
         @contextmanager
         def tx(connect, context):
             yield Cursor(decisions,trades)
         context=SimpleNamespace(check=lambda:None)
-        with patch.object(C,"transaction",tx), patch.object(C.STORE,"publish_snapshot",return_value=True) as publish:
-            result,_=app.learning_v2_shadow(context,{})
+        registry={"version":"test","counts":{},"candidates":[],"shadow_champions":[]}
+        with patch.object(C,"transaction",tx), \
+             patch.object(C.LEARNING_V2_REGISTRY,"sync",return_value=registry), \
+             patch.object(C.STORE,"publish_snapshot",return_value=True) as publish:
+            result,cursor=app.learning_v2_shadow(context,{})
         self.assertEqual(result["status"],"OK")
+        self.assertEqual(result["asset"],"BTC")
+        self.assertEqual(cursor["asset_index"],1)
         self.assertGreater(result["hypotheses"],0)
+        self.assertEqual(events[-1][0],"learning_v2_shadow_snapshot")
+        self.assertEqual(events[-1][1]["asset"],"BTC")
+        self.assertFalse(events[-1][1]["production_influence"])
         snap=app.snapshot()["learning_v2"]
         self.assertFalse(snap["automatic_production_promotion"])
+        self.assertEqual(snap["registry"],registry)
         self.assertTrue(any(h["kind"]=="ENTRY_BLOCKER_RELAXATION" for h in snap["hypotheses"]))
         self.assertTrue(all(h["mode"]=="SHADOW_ONLY" for h in snap["hypotheses"]))
         publish.assert_called_once()
@@ -56,6 +70,7 @@ class LearningV2RuntimeTests(unittest.TestCase):
         lane=app.lane
         self.assertIn("learning_v2_shadow",lane.callbacks)
         self.assertEqual(lane.options["learning_v2_shadow"]["max_seconds"],5)
+        self.assertEqual(lane.options["learning_v2_shadow"]["interval_seconds"],60)
         self.assertTrue(lane.options["learning_v2_shadow"]["lightweight"])
 
 if __name__=="__main__":
