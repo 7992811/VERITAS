@@ -1269,6 +1269,12 @@ def start_eager_order_stream(connect, summary_provider, *, log=print):
     """
     global _EAGER_ORDER_STREAM
     if not _enabled("VERITAS_TBANK_ORDER_STREAM_ENABLED"):
+        try:
+            log(json.dumps({"event":"tbank_order_event_stream","environment":None,
+                            "stream":"bootstrap","status":"DISABLED",
+                            "code":"FLAG_DISABLED"},separators=(",",":")))
+        except Exception:
+            pass
         return None
     if not callable(connect) or not callable(summary_provider):
         raise ServiceError("EXPLICIT_SERVICE_DEPENDENCIES_REQUIRED", 503)
