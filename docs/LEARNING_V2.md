@@ -23,3 +23,40 @@ Next integration step after independent validation:
 move DB-facing read adapters from veritas_intelligence.py into a side-effect-free
 package, then run veritas_learning_worker.py as its own Render service and remove
 the corresponding heavy jobs from the trading process.
+
+
+## Prospective registry (v91.8.27)
+
+Learning 2.0 candidates now receive an immutable decision-ledger cutoff at
+registration. Training evidence is frozen. Later scheduler runs only accumulate
+decision IDs greater than that cutoff, so re-reading a recent window cannot
+double-count evidence or turn training rows into validation rows.
+
+Candidate states:
+- COLLECTING / EVALUATING — prospective sample still building.
+- SHADOW_ELIGIBLE — sufficient future evidence for a virtual experiment only.
+- AWAIT_REPLAY — Stop/Exit hypotheses require ordered market-path replay and
+  cannot be promoted from MAE/MFE summaries alone.
+- REJECTED / EXPIRED — failed or stale evidence.
+
+A shadow eligibility expires after seven days unless genuinely new evidence is
+observed. A scheduler heartbeat cannot refresh validity. Production influence
+remains false.
+
+
+## Ordered Stop/Exit replay
+
+Stop research now uses the same structural formulation as the canonical policy:
+the stop remains beyond the same-timeframe swing anchor and only the ATR buffer
+is varied in bounded shadow candidates: 0.10, 0.15 (current baseline), 0.20 and
+0.30 ATR.
+
+`veritas_learning_v2_replay.py` evaluates candidates only on time-ordered OHLC
+bars from the declared source. A bar that touches both competing barriers is
+`AMBIGUOUS_INTRABAR` and is excluded; OHLC data cannot reveal which level was
+hit first. The same rule applies to the runner after a partial take-profit.
+
+The replay module is a pure research utility. It has no broker or portfolio
+imports, does not alter historical accounting, and has no production influence.
+The registry keeps Stop/Exit candidates at `AWAIT_REPLAY` until a separate
+history worker supplies an adequate ordered path.
