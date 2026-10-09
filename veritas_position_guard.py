@@ -320,6 +320,15 @@ def refresh_position_quotes(ns, positions):
             refresh[key]=rows
     if not refresh:
         return results
+    # ProFinance publishes NQ/GOLD/BRENT in one response. If any pinned
+    # ProFinance quote is stale, force exactly one provider refresh first;
+    # subsequent per-position fetches reuse that fresh multi-asset snapshot.
+    pf_key=next((key for key in refresh if str(key[1]).startswith('PROFINANCE:')),None)
+    if pf_key and ns.get('_v90r61_profinance_quote'):
+        try:
+            ns['_v90r61_profinance_quote'](pf_key[0],force=True)
+        except Exception:
+            pass
     with ThreadPoolExecutor(max_workers=min(4,len(refresh)),thread_name_prefix='veritas-source-quote') as pool:
         jobs={key:pool.submit(fetch_guard_quote,ns,key[0],rows) for key,rows in refresh.items()}
         for key,job in jobs.items():
