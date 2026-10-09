@@ -73,7 +73,10 @@ def _proposal(trade_id, kind, title, rationale, conflicts=None, tests=None):
 def review(trade, snapshot=None):
     t=dict(trade or {}); s=snapshot or {}
     entry=_num(t.get("avg_entry_price")); exitp=_num(t.get("avg_exit_price"))
-    stop=_num(t.get("stop_price")); target=_num(t.get("take_price"))
+    final_stop=_num(t.get("stop_price")); final_target=_num(t.get("take_price"))
+    initial_stop=_num(s.get("initial_stop")) or final_stop
+    initial_target=_num(s.get("initial_target")) or final_target
+    stop=initial_stop; target=initial_target
     atr=_num(s.get("atr")); mfe=_num(t.get("mfe_pct")); mae=_num(t.get("mae_pct"))
     net=_num(t.get("net_pnl_rub")) or 0.0
     direction=str(t.get("direction") or "")
@@ -142,7 +145,10 @@ def review(trade, snapshot=None):
         "version":VERSION,"trade_id":t.get("trade_id"),"episode_key":t.get("episode_key"),
         "status":"REVIEWED","evidence_status":evidence,
         "financial_result_rub":net,"exit_reason":t.get("exit_reason"),
-        "levels_volatility":{"entry":entry,"exit":exitp,"stop":stop,"target":target,
+        "levels_volatility":{"entry":entry,"exit":exitp,
+            "stop":initial_stop,"target":initial_target,
+            "initial_stop":initial_stop,"initial_target":initial_target,
+            "final_stop":final_stop,"final_target":final_target,
             "atr":atr,"initial_risk_atr":risk_atr,"target_distance_atr":target_atr,
             "gross_target_to_risk":rr,"stop_anchor":anchor,"stop_beyond_anchor":stop_anchor_ok,
             "stop_anchor_buffer_atr":stop_anchor_buffer_atr,

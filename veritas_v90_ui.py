@@ -1480,7 +1480,8 @@ function renderSelfLearning(){
       esc(t.opened_at)+' → '+esc(t.closed_at)+' · '+esc(t.exit_reason)+'</div></div><div class="'+(Number(t.net_pnl_rub||0)>=0?'ok':'bad')+'">'+
       esc(Number(t.net_pnl_rub||0).toFixed(0))+' ₽</div></div>'+
       '<div class="selflearn-cols"><div class="selflearn-box"><h4>Уровни и риск</h4>'+
-      '<div>Вход '+esc(lv.entry)+' · выход '+esc(lv.exit)+'</div><div>Стоп '+esc(lv.stop)+' · цель '+esc(lv.target)+'</div>'+
+      '<div>Вход '+esc(lv.entry)+' · выход '+esc(lv.exit)+'</div><div>Исходный стоп '+esc(lv.initial_stop||lv.stop)+' · исходная цель '+esc(lv.initial_target||lv.target)+'</div>'+
+      '<div>Финальный стоп '+esc(lv.final_stop)+' · финальная активная цель '+esc(lv.final_target)+'</div>'+
       '<div>ATR '+esc(lv.atr)+' · риск '+esc(lv.initial_risk_atr==null?'—':Number(lv.initial_risk_atr).toFixed(2))+' ATR</div>'+
       '<div>Защищённый high/low '+esc(lv.stop_anchor)+' · буфер '+esc(lv.stop_anchor_buffer_atr==null?'—':Number(lv.stop_anchor_buffer_atr).toFixed(2))+' ATR</div>'+
       '<div>Цель из предыдущей зоны: '+esc(lv.target_matches_first_previous_zone===true?'да':lv.target_matches_first_previous_zone===false?'нет':'—')+

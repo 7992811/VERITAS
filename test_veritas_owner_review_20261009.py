@@ -159,6 +159,29 @@ class OwnerReviewPolicyTests(unittest.TestCase):
         self.assertTrue(all(p["status"]=="OWNER_REVIEW_REQUIRED" for p in r["proposals"]))
         self.assertTrue(all(not p["automatic_promotion_allowed"] for p in r["proposals"]))
 
+    def test_postmortem_uses_immutable_entry_geometry_not_final_lifecycle_levels(self):
+        snap={"atr":10.0,"stop_anchor":90.0,"initial_stop":89.0,"initial_target":120.0,
+              "target_ladder":[{"price":120.0,"fraction":1.0}],
+              "regime":"UPTREND","trigger_timeframe":"5m","structural_timeframe":"1h",
+              "stop_timeframe":"1h","atr_timeframe":"1h"}
+        trade={"trade_id":"T_ENTRY_GEOMETRY","asset":"BRENT","direction":"LONG",
+               "avg_entry_price":100.0,"avg_exit_price":105.0,
+               # Final lifecycle levels intentionally differ from entry evidence.
+               "stop_price":103.0,"take_price":140.0,
+               "mfe_pct":1.0,"mae_pct":-0.2,"giveback_pct":0.1,
+               "gross_pnl_rub":100.0,"fees_rub":10.0,"funding_rub":0.0,
+               "net_pnl_rub":90.0,"learning_eligible":True,
+               "trade_diagnostics":{"primary_attribution":"GOOD_EXECUTION"}}
+        r=VSELF.review(trade,snap)
+        lv=r["levels_volatility"]
+        self.assertEqual(lv["initial_stop"],89.0)
+        self.assertEqual(lv["initial_target"],120.0)
+        self.assertEqual(lv["final_stop"],103.0)
+        self.assertEqual(lv["final_target"],140.0)
+        self.assertAlmostEqual(lv["initial_risk_atr"],1.1)
+        self.assertAlmostEqual(lv["target_distance_atr"],2.0)
+        self.assertTrue(lv["target_matches_first_previous_zone"])
+
     def test_tiny_favorable_noise_is_not_profit_protection_error(self):
         snap={"atr":10.0,"stop_anchor":95.0,"regime":"RANGE_HIGH_VOL",
               "trigger_timeframe":"5m","structural_timeframe":"1h",
