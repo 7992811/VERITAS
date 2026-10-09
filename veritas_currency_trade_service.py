@@ -1278,17 +1278,20 @@ def start_eager_order_stream(connect, summary_provider, *, log=print):
         return None
     if not callable(connect) or not callable(summary_provider):
         raise ServiceError("EXPLICIT_SERVICE_DEPENDENCIES_REQUIRED", 503)
-    environment = os.environ.get("VERITAS_CURRENCY_TRADE_ENVIRONMENT", "production")
+    values, _binding = _configuration(connect)
+    environment = values.get("VERITAS_CURRENCY_TRADE_ENVIRONMENT") or "production"
     if environment not in _SCHEMAS:
         raise ServiceError("INVALID_EXECUTION_ENVIRONMENT", 503)
-    account = os.environ.get("TBANK_ACCOUNT_ID", "").strip()
+    account = str(values.get("TBANK_ACCOUNT_ID") or "").strip()
     token_name = "TBANK_API_TOKEN" if environment == "production" else "TBANK_SANDBOX_TOKEN"
-    token = os.environ.get(token_name, "").strip()
+    token = str(values.get(token_name) or "").strip()
     if not account or not token:
         try:
             log(json.dumps({"event":"tbank_order_event_stream","environment":environment,
                             "stream":"bootstrap","status":"DISABLED",
-                            "code":"BROKER_BINDING_NOT_CONFIGURED"},separators=(",",":")))
+                            "code":"BROKER_BINDING_NOT_CONFIGURED",
+                            "account_configured":bool(account),
+                            "token_configured":bool(token)},separators=(",",":")))
         except Exception:
             pass
         return None
