@@ -93,11 +93,34 @@ class LearningV2Tests(unittest.TestCase):
             decisions.append(self.row(decision="LONG",fr=.01 if i<15 else -.01,
                 setup_family="TREND",final_gate_blockers=[]))
         trades=[{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
-                 "mae":-.004,"mfe":.014,"capture_ratio":.2} for _ in range(20)]
+                 "mae":-.004,"mfe":.014,"capture_ratio":.2,
+                 "outcome_evidence_eligible":True,"path_evidence_eligible":True,
+                 "stop_replay_ready":True,"exit_replay_ready":True} for _ in range(20)]
         h=L.generate_hypotheses(decisions,trades)
         kinds={x["kind"] for x in h}
         self.assertTrue({"STOP_GEOMETRY","EXIT_CAPTURE","STRATEGY_ROUTER"}<=kinds)
         self.assertLessEqual(len(h),L.MAX_HYPOTHESES)
+
+    def test_outcome_only_trades_seed_replay_without_claiming_path_evidence(self):
+        trades=[{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
+                 "source_key":"S","contract_id":"C1","mae":None,"mfe":None,"capture_ratio":None,
+                 "outcome_evidence_eligible":True,"path_evidence_eligible":False,
+                 "stop_replay_ready":True,"exit_replay_ready":True} for _ in range(L.MIN_TRADE_N)]
+        h=L.generate_hypotheses([],trades)
+        stops=[x for x in h if x["kind"]=="STOP_GEOMETRY"]
+        exits=[x for x in h if x["kind"]=="EXIT_CAPTURE"]
+        self.assertEqual({x["proposal"]["stop_buffer_atr"] for x in stops},{.10,.20,.30})
+        self.assertEqual({x["proposal"]["first_target_fraction"] for x in exits},{.25,.75})
+        self.assertTrue(all(x["evidence"]["outcome_n"]==L.MIN_TRADE_N for x in stops+exits))
+        self.assertTrue(all(x["evidence"]["path_evidence_n"]==0 for x in stops+exits))
+        self.assertTrue(all(x["evidence"]["counterfactual_execution_proven"] is False for x in stops+exits))
+
+    def test_outcome_without_replay_geometry_does_not_seed_stop_exit(self):
+        trades=[{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p",
+                 "outcome_evidence_eligible":True,"path_evidence_eligible":False,
+                 "stop_replay_ready":False,"exit_replay_ready":False} for _ in range(L.MIN_TRADE_N)]
+        h=L.generate_hypotheses([],trades)
+        self.assertFalse(any(x["kind"] in ("STOP_GEOMETRY","EXIT_CAPTURE") for x in h))
 
     def test_hypotheses_do_not_mix_price_sources(self):
         rows=[]
