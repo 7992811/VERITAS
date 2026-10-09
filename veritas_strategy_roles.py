@@ -1,6 +1,7 @@
 """Role-specific paper selection; no calls to legacy routers or live execution."""
 import math
 import veritas_canonical_constitution as CTC
+import veritas_owner_policy as VOP
 
 def number(value, default=0.0):
     try:
@@ -33,7 +34,7 @@ def gate(row, mode):
         # native structure supplies the requested setup without invented scores.
         trigger_horizon=str(row.get('horizon') or event.get('trigger_timeframe') or '')
         structural_horizon=str(event.get('structural_timeframe') or trigger_horizon)
-        shared=bool(CTC.LIFECYCLE_POLICY.get('verified_structural_event_entry_permission_is_shared')
+        shared=bool(VOP.PORTFOLIO_PARITY.get('verified_structural_event_entry_permission_is_shared')
                     and mode in ('IMPULSE_ONLY','CORE','CHALLENGER'))
         # Owner rule 2026-10-09: a proved structural event exists for all three
         # portfolios. Portfolio role changes allocation/scale, not event existence.
