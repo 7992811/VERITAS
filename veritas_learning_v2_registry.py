@@ -185,20 +185,30 @@ def _replay_evidence(prior):
     days=int(p.get("days") or len(p.get("utc_days") or []))
     sum_base=_num(p.get("sum_baseline")) or 0.0
     sum_candidate=_num(p.get("sum_candidate")) or 0.0
+    sum_delta=(sum_candidate-sum_base)
+    sum_delta_sq=_num(p.get("sum_delta_sq"))
     mean_base=sum_base/n if n else None
     mean_candidate=sum_candidate/n if n else None
-    mean_delta=(sum_candidate-sum_base)/n if n else None
+    mean_delta=sum_delta/n if n else None
+    delta_se=delta_ci_low=None
+    if n>=2 and sum_delta_sq is not None and mean_delta is not None:
+        variance=max(0.0,(sum_delta_sq-(sum_delta*sum_delta/n))/(n-1))
+        delta_se=math.sqrt(variance/n)
+        delta_ci_low=mean_delta-1.959963984540054*delta_se
     denominator=n+ambiguous
     ambiguity_rate=ambiguous/denominator if denominator else None
     evidence={**p,"n":n,"days":days,"ambiguous":ambiguous,"invalid":invalid,
               "mean_baseline_net_return":mean_base,
               "mean_candidate_net_return":mean_candidate,
               "mean_delta_net_return":mean_delta,
+              "delta_standard_error":delta_se,
+              "delta_ci95_low":delta_ci_low,
               "ambiguity_rate":ambiguity_rate,
               "counterfactual_live_execution_proven":False}
     if (n>=MIN_REPLAY_N and days>=MIN_REPLAY_DAYS
             and mean_candidate is not None and mean_candidate>0
             and mean_delta is not None and mean_delta>0
+            and delta_ci_low is not None and delta_ci_low>0
             and ambiguity_rate is not None and ambiguity_rate<=MAX_REPLAY_AMBIGUITY_RATE):
         status="REPLAY_SUPPORTED"
     elif (n>=REJECT_REPLAY_N and days>=REJECT_REPLAY_DAYS
