@@ -26,6 +26,8 @@ def _source_gap_allowance(asset):
     # A provider may legally publish one cycle after its previous quote reaches
     # the execution-age ceiling; continuous 15s checks are verified separately.
     return _source_max_age(asset) + EXPECTED_INTERVAL_SECONDS
+EXTERNAL_TABLE = "paper_trade_observation_paths"
+
 SCALAR_FIELDS = (
     "version", "asset", "direction", "timeframe", "original_entry_price",
     "initial_stop_price", "entry_atr", "entry_at", "first_observed_at",
@@ -342,6 +344,44 @@ def assessment(row):
     return out
 
 
+def _external_capable(c):
+    # psycopg Connection exposes row_factory and nested transaction savepoints.
+    # Minimal unit-test cursors deliberately do not and keep the legacy surface.
+    return bool(c is not None and hasattr(c,"row_factory") and callable(getattr(c,"transaction",None)))
+
+
+def _external_witness(c, trade_id):
+    if not trade_id or not _external_capable(c):
+        return None
+    try:
+        with c.transaction():
+            row=c.execute("SELECT witness FROM "+EXTERNAL_TABLE+" WHERE trade_id=%s",(str(trade_id),)).fetchone()
+    except Exception:
+        return None
+    value=(row or {}).get("witness") if isinstance(row,dict) else None
+    if not isinstance(value,dict) or value.get("version")!=VERSION:
+        return None
+    return _bounded_witness(value)
+
+
+def _external_upsert(c, trade_id, asset, witness):
+    if not trade_id or not _external_capable(c):
+        return False
+    try:
+        encoded=json.dumps(witness,ensure_ascii=False,allow_nan=False,separators=(",",":"))
+        if len(encoded.encode())>4096:
+            return False
+        with c.transaction():
+            c.execute("INSERT INTO "+EXTERNAL_TABLE+
+                      "(trade_id,asset,witness,updated_at) VALUES(%s,%s,%s::jsonb,now()) "
+                      "ON CONFLICT(trade_id) DO UPDATE SET asset=EXCLUDED.asset,"
+                      "witness=EXCLUDED.witness,updated_at=EXCLUDED.updated_at",
+                      (str(trade_id),str(asset or ""),encoded))
+        return True
+    except Exception:
+        return False
+
+
 def record(c, row, quote, checked_at, *, at_entry=False, lane="CANONICAL_EXECUTION"):
     """Metadata writes cannot abort the caller's protective accounting.
 
@@ -350,9 +390,12 @@ def record(c, row, quote, checked_at, *, at_entry=False, lane="CANONICAL_EXECUTI
     Minimal test cursors without transaction() retain their existing interface.
     """
     row = dict(row) if isinstance(row,dict) else {}
+    trade_id = row.get("active_trade_id") or row.get("trade_id")
+    external = _external_witness(c, trade_id)
+    if external is not None:
+        row["payload"] = dict(_payload(row), observation_path=external)
     witness = observe(row, quote, checked_at, at_entry=at_entry, lane=lane)
     patch = {"observation_path": witness}
-    trade_id = row.get("active_trade_id") or row.get("trade_id")
     if trade_id:
         try:
             transaction=getattr(c,'transaction',None)
@@ -366,5 +409,7 @@ def record(c, row, quote, checked_at, *, at_entry=False, lane="CANONICAL_EXECUTI
             # Never relabel an unsuccessful persistence pass as usable evidence.
             witness['invalid_observation_count']=int(witness.get('invalid_observation_count') or 0)+1
             witness['coverage_status']='INCOMPLETE'
+    # Evidence-table failure is non-financial and never changes accounting.
+    _external_upsert(c, trade_id, row.get("asset"), witness)
     row["payload"] = dict(_payload(row), **patch)
     return row
