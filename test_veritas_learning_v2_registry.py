@@ -66,12 +66,31 @@ class LearningV2RegistryTests(unittest.TestCase):
                          "policy_hash":"p","source_key":"S","decision":"LONG","forward_return":.01 if i<48 else -.01,
                          "setup_family":"BREAKOUT"})
             rows.append({"event_ts":at.isoformat(),"asset":"NQ","horizon":"5m","regime":"TREND",
-                         "policy_hash":"p","decision":"LONG","forward_return":.01 if i<30 else -.01,
+                         "policy_hash":"p","source_key":"S","decision":"LONG","forward_return":.01 if i<30 else -.01,
                          "setup_family":"TREND"})
         result=R.evaluate_candidate(candidate,rows,[],T0+timedelta(days=20))
         self.assertEqual(result["status"],"SHADOW_ELIGIBLE")
         self.assertGreaterEqual(result["prospective"]["hit_rate_delta"],.05)
         self.assertFalse(result["prospective"]["causal_superiority_proven"])
+
+    def test_router_excludes_other_source(self):
+        candidate={"kind":"STRATEGY_ROUTER",
+                   "scope":{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"*","source_key":"S"},
+                   "proposal":{"preferred_family":"BREAKOUT"},
+                   "registered_at":T0.isoformat()}
+        rows=[]
+        for i in range(60):
+            at=T0+timedelta(days=1+(i%16),minutes=i)
+            rows.append({"event_ts":at.isoformat(),"asset":"NQ","horizon":"5m","regime":"TREND",
+                         "policy_hash":"p","source_key":"S","decision":"LONG","forward_return":.01,
+                         "setup_family":"BREAKOUT"})
+            rows.append({"event_ts":at.isoformat(),"asset":"NQ","horizon":"5m","regime":"TREND",
+                         "policy_hash":"p","source_key":"OTHER","decision":"LONG","forward_return":-.01,
+                         "setup_family":"TREND"})
+        result=R.evaluate_candidate(candidate,rows,[],T0+timedelta(days=20))
+        self.assertEqual(result["prospective"]["preferred_n"],60)
+        self.assertEqual(result["prospective"]["other_n"],0)
+        self.assertNotEqual(result["status"],"SHADOW_ELIGIBLE")
 
     def test_stop_and_exit_wait_for_ordered_path_replay(self):
         for kind in ("STOP_GEOMETRY","EXIT_CAPTURE"):
