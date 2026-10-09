@@ -1205,9 +1205,14 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                      'last_guard_checked_at': ts, 'protective_exit_lane': 'INDEPENDENT_PAPER_GUARD'}
             if reason.startswith(('STOP_STRUCTURAL_MFE_PROTECTION',
                                   'STOP_MFE_PROTECTION_PERSISTENCE_FAILSAFE')):
-                patch.update(r_accel_mfe_protection_state='EXITED',
-                             r_accel_mfe_exit_authority_used=True,
-                             r_accel_mfe_exit_authority_reason=reason)
+                _mfe_policy=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {})
+                patch.update(
+                    r_accel_mfe_learning_teaching_id=_mfe_policy.get('teaching_id'),
+                    r_accel_mfe_execution_required=True,
+                    r_accel_mfe_protection_state='EXITED',
+                    r_accel_mfe_exit_authority='STRUCTURAL_MFE_PROTECTION',
+                    r_accel_mfe_exit_authority_used=True,
+                    r_accel_mfe_exit_authority_reason=reason)
             c.execute("UPDATE paper_positions SET payload=payload||%s::jsonb WHERE active_trade_id=%s",
                       (json.dumps(patch), tid))
             c.execute("UPDATE paper_trades SET payload=payload||%s::jsonb WHERE trade_id=%s", (json.dumps(patch), tid))
