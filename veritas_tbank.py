@@ -296,14 +296,28 @@ class TBankConnection:
     def _token(self):
         return self.env.get(TOKEN_ENV, "").strip()
 
+    def _safe_connection_log(self, status, code=None, **fields):
+        try:
+            print(json.dumps({
+                "event": "tbank_market_data_connection",
+                "status": status,
+                "code": code,
+                **fields,
+            }, separators=(",", ":")), flush=True)
+        except Exception:
+            pass
+
     def start(self):
         with self.lock:
             if self.worker and self.worker.is_alive():
                 return
             if not self._token():
                 self.state = "WAITING_TOKEN"
+                self._safe_connection_log("DISABLED", "TOKEN_MISSING",
+                                          token_configured=False)
                 return
             self.state = "CONNECTING"
+            self._safe_connection_log("STARTING", None, token_configured=True)
             self.worker = threading.Thread(target=self._loop, name="veritas-tbank-readonly", daemon=True)
             self.worker.start()
 
@@ -405,6 +419,12 @@ class TBankConnection:
                 with self.lock:
                     self.instrument_errors[asset] = str(exc)
         self.resolve_checked = iso()
+        self._safe_connection_log(
+            "INSTRUMENTS_RESOLVED", None,
+            instruments_count=len(self.instruments),
+            instrument_errors_count=len(self.instrument_errors),
+            cny_resolved="CNYRUBF" in self.instruments,
+        )
 
     def _read_accounts(self):
         accounts = self.reader.call("accounts", status="ACCOUNT_STATUS_OPEN").get("accounts", [])
@@ -711,6 +731,12 @@ class TBankConnection:
                     worker = threading.Thread(target=target, name=name, daemon=True)
                     setattr(self, field, worker)
                     worker.start()
+                    if field == 'stream_worker':
+                        self._safe_connection_log(
+                            "STREAM_WORKER_STARTED", None,
+                            instruments_count=len(self.instruments),
+                            cny_resolved="CNYRUBF" in self.instruments,
+                        )
 
     def _history_loop(self):
         while not self.stop_event.is_set():
@@ -756,6 +782,11 @@ class TBankConnection:
                 code = str(exc) if isinstance(exc, TBankError) else "CONNECTION_ERROR"
                 with self.lock:
                     self.state, self.error = "ERROR", code
+                self._safe_connection_log(
+                    "ERROR", code,
+                    instruments_count=len(self.instruments),
+                    cny_resolved="CNYRUBF" in self.instruments,
+                )
                 self.stop_event.wait(delay)
                 delay = min(300, delay * 2)
 
