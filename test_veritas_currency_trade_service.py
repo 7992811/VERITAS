@@ -512,6 +512,20 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         self.assertIn(("execute_approved", row["proposal_id"]), self.coordinator.calls)
         self.assertEqual(self.callback_count(), 0)
 
+    def test_read_only_intent_feed_is_independent_from_telegram_delivery_state(self):
+        first = self.create(event="intent-pending")
+        second = self.delivered(self.create(event="intent-awaiting"), message_id=701)
+        response, status = self.request("intents", {"limit": 10})
+        self.assertEqual(status, 200)
+        self.assertEqual(response["source"], "VERITAS_CANONICAL_ORDER_INTENTS")
+        ids = {item["proposal_id"] for item in response["items"]}
+        self.assertIn(first["proposal_id"], ids)
+        self.assertIn(second["proposal_id"], ids)
+        by_id = {item["proposal_id"]: item for item in response["items"]}
+        self.assertEqual(by_id[first["proposal_id"]]["terms"]["asset"], "CNYRUBF")
+        self.assertIn("client_order_id", by_id[first["proposal_id"]])
+        self.assertIn("limit_price", by_id[first["proposal_id"]]["terms"])
+
     def test_callback_stale_message_tampered_hash_and_expiry_are_rejected(self):
         row = self.delivered(self.create())
         wrong_message = dict(self.decision_body(row), message_id=999)
