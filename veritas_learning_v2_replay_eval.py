@@ -315,6 +315,7 @@ def _aggregate(c,candidate_id):
             "sum_baseline":sum(x[0] for x in comparable),
             "sum_candidate":sum(x[1] for x in comparable),
             "sum_delta":sum(x[1]-x[0] for x in comparable),
+            "sum_delta_sq":sum((x[1]-x[0])**2 for x in comparable),
             "positive_delta":sum(x[1]>x[0] for x in comparable),
             "ambiguous":ambiguous,"invalid":invalid,
             "last_trade_closed_at":last.isoformat() if last else None}
