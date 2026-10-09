@@ -8530,9 +8530,7 @@ def _report_r39(pg_connect):
             _v90r35_context_portfolio=old_portfolio
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),24)
-
 
 # VERITAS V90 EXECUTION SAFETY R40
 # Final portfolio invariant: no setup-specific sizing path may bypass the
@@ -8542,14 +8540,10 @@ _v90r40_base_report = _report_r39
 
 def _desired_fraction(row,policy,drawdown):
     gate=((row or {}).get('trade_plan') or {}).get('final_economics_gate') or {}
-    if gate and gate.get('status')=='BLOCK':
-        return 0.0
-    return _v90r40_base_desired_fraction(row,policy,drawdown)
+    return 0.0 if gate and gate.get('status')=='BLOCK' else _v90r40_base_desired_fraction(row,policy,drawdown)
 
 def _report_r40(pg_connect):
-    return VPRPT.execution_safety_report(
-        _v90r40_base_report(pg_connect), VX, CTC, _jsonable)
-
+    return VPRPT.execution_safety_report(_v90r40_base_report(pg_connect), VX, CTC, _jsonable)
 
 # VERITAS V90 EXECUTION-QUALITY PAPER R41
 paper_quantity_metadata=VPRPT.paper_quantity_metadata
@@ -8624,9 +8618,7 @@ def _signal_first_admission(row,policy,drawdown):
     return out
 
 def report(pg_connect):
-    return VPRPT.paper_execution_quality_report(
-        _v90r41_base_report(pg_connect), _v90j_json, _jsonable)
-
+    return VPRPT.paper_execution_quality_report(_v90r41_base_report(pg_connect), _v90j_json, _jsonable)
 # Canonical runtime binding is import-order safe. When portfolio is imported
 # from inside veritas_portfolio_runtime, the runtime is only partially initialized;
 # it patches these bindings after its final authority objects are constructed.
