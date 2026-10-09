@@ -45,6 +45,20 @@ class LearningV2Tests(unittest.TestCase):
         d=L.research_diagnostics([row],[])
         self.assertEqual(d["unparsed_blocked_directional"],1)
 
+    def test_observable_timing_blocker_is_diagnostic_only(self):
+        blocker="R66_WAIT_RETEST"
+        self.assertIn(blocker,L.OBSERVABLE_TIMING_BLOCKERS)
+        self.assertNotIn(blocker,L.LEARNABLE_ENTRY_BLOCKERS)
+        rows=[]
+        for _ in range(max(L.MIN_CONTEXT_N,L.MIN_FALSE_BLOCK_N)):
+            x=self.row(blockers=[],trade_entry_reason=blocker)
+            x["final_gate_blockers"]=[]
+            x["admission_eligible"]=False
+            rows.append(x)
+        self.assertIn(blocker,L.row_blockers(rows[0]))
+        h=L.generate_hypotheses(rows,[])
+        self.assertFalse(any(x["kind"]=="ENTRY_BLOCKER_RELAXATION" and x["proposal"]["blocker"]==blocker for x in h))
+
     def test_hard_veto_reason_is_recognized_but_never_relaxed(self):
         veto=next(iter(L.FORBIDDEN_ENTRY_BLOCKERS))
         rows=[]
