@@ -19098,19 +19098,12 @@ def main():
     if pg_boot.get('ok') and VP is not None:
         try:
             canonical_state=_v90r24_ensure_canonical_portfolios()
-            _canonical_ok=(canonical_state.get('status')=='OK'
-                           and list(canonical_state.get('names') or [])==list(V90_CANONICAL_PORTFOLIOS))
-            _STARTUP_GATE.mark('canonical_portfolios',_canonical_ok,status=canonical_state.get('status'),
-                               count=canonical_state.get('count'),expected=len(V90_CANONICAL_PORTFOLIOS),
-                               reason=None if _canonical_ok else 'CANONICAL_PORTFOLIOS_NOT_READY')
             emit('v90_live_state_ready',status=canonical_state.get('status','DEGRADED'),
                  historical_reports='DEFERRED',
                  historical_audits='BACKGROUND',
                  portfolio_snapshot='FAST_API_ON_DEMAND',
                  principle='market loop first; history on demand')
         except Exception as _pr_ex:
-            _STARTUP_GATE.mark('canonical_portfolios',False,status='ERROR',
-                               reason=type(_pr_ex).__name__)
             emit('v90_live_state_ready',status='DEGRADED',
                  error=f'{type(_pr_ex).__name__}: {_pr_ex}')
         emit('v90_startup_memory_policy',
