@@ -5107,18 +5107,14 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
             _record_entry_outcome(row,'BLOCKED',hard[0],blockers=hard,canonical_add_gate=actual)
             return 0.0
         efficiency=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('execution_efficiency') or {}
-        add_check=VEE.add_precheck(existing,row,price,direction,
-                                   getattr(_vp_base,'COMMISSION',VC.COMMISSION_RATE),efficiency)
-        if not add_check.get('eligible'):
-            _record_entry_outcome(row,'BLOCKED',add_check.get('reason'),
-                                  current_fraction=current,**(add_check.get('details') or {}))
+        add_guard=VEE.add_guard(existing,row,price,direction,
+                                getattr(_vp_base,'COMMISSION',VC.COMMISSION_RATE),efficiency,actual)
+        if not add_guard.get('eligible'):
+            _record_entry_outcome(row,'BLOCKED',add_guard.get('reason'),
+                                  canonical_add_gate=actual,current_fraction=current,
+                                  **(add_guard.get('details') or {}))
             return 0.0
-        incremental=VEE.incremental_gate(actual,efficiency)
-        if not incremental.get('eligible'):
-            _record_entry_outcome(row,'BLOCKED',incremental.get('reason'),
-                                  canonical_add_gate=actual,current_fraction=current)
-            return 0.0
-        row['_canonical_add_before']=add_check.get('before') or {}
+        row['_canonical_add_before']=add_guard.get('before') or {}
     else:
         if not bool((row or {}).get('_flip_confirmed')):
             _record_entry_outcome(row,'BLOCKED','DIRECTION_FLIP_NOT_CONFIRMED')
@@ -5164,8 +5160,8 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                         and opened.get('active_trade_id')):
                     is_new = not existing or opened.get('active_trade_id') != existing.get('active_trade_id')
                     entry_quote=VPS.quote_from_row(work)
-                    analysis_patch=VEE.entry_analysis_patch(
-                        opened,is_new,row.get('_canonical_add_before') or {},price,ts,
+                    analysis_patch=VEE.entry_analysis_patch(opened,is_new,
+                        row.get('_canonical_add_before') or {},price,ts,
                         getattr(_vp_base,'COMMISSION',VC.COMMISSION_RATE))
                     VOP.record(c,dict(opened),entry_quote,ts,
                                at_entry=is_new,lane='CANONICAL_ENTRY' if is_new else 'CANONICAL_ADD',
