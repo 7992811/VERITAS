@@ -350,6 +350,50 @@ def enrich_positions(report, pg_connect, *, preloaded_accounts=None):
         position.update(trade_result(trades.get(position.get('active_trade_id')), position))
         position.update(_position_management_projection(position))
         position.update(VPP.evaluate(position, trades.get(position.get('active_trade_id'))))
+        protection = position.get('net_profit_protection') or {}
+        stop_net = _number(protection.get('net_at_stop_rub'))
+        mark_net = _number(position.get('total_trade_pnl_rub'))
+        position['mark_to_market_net_pnl_rub'] = mark_net
+        position['pnl_if_effective_stop_rub'] = stop_net
+        position['stop_scenario_delta_rub'] = (
+            stop_net-mark_net if stop_net is not None and mark_net is not None else None)
+        position['realized_net_after_booked_costs_rub'] = (
+            (_number(position.get('realized_gross_pnl_rub'))
+             - _number(position.get('trade_fees_rub'))
+             - _number(position.get('trade_funding_rub')))
+            if all(_number(position.get(k)) is not None for k in
+                   ('realized_gross_pnl_rub','trade_fees_rub','trade_funding_rub'))
+            else None)
         position['protection_audit'] = _position_protection_audit(position)
+
+    # NAV remains fair-value / mark-to-market. Stops are a separate liquidation
+    # scenario, never a replacement valuation basis. For a complete book,
+    # show the capital that would remain if every current effective stop were
+    # executed through the same adverse-fill/cost model used by the engine.
+    for portfolio in out['portfolios']:
+        nav = _number(portfolio.get('nav_rub'))
+        rows = portfolio.get('positions') or []
+        deltas = [_number(z.get('stop_scenario_delta_rub')) for z in rows]
+        complete = nav is not None and all(x is not None for x in deltas)
+        if complete:
+            nav_at_stops = nav + sum(deltas)
+            downside = nav_at_stops-nav
+            portfolio.update(
+                stop_scenario_status='COMPLETE',
+                nav_if_all_stops_rub=nav_at_stops,
+                stop_scenario_pnl_delta_rub=downside,
+                stop_scenario_loss_rub=max(0.0,-downside),
+                stop_scenario_loss_pct_nav=(100.0*max(0.0,-downside)/nav if nav>0 else None),
+                valuation_policy='MARK_TO_MARKET_NAV_WITH_SEPARATE_STOP_LIQUIDATION_SCENARIO',
+            )
+        else:
+            portfolio.update(
+                stop_scenario_status='UNAVAILABLE',
+                nav_if_all_stops_rub=None,
+                stop_scenario_pnl_delta_rub=None,
+                stop_scenario_loss_rub=None,
+                stop_scenario_loss_pct_nav=None,
+                valuation_policy='MARK_TO_MARKET_NAV_WITH_SEPARATE_STOP_LIQUIDATION_SCENARIO',
+            )
     out['position_protection_audit'] = _position_protection_summary(out)
     return out
