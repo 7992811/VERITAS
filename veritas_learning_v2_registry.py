@@ -14,7 +14,7 @@ import math
 
 import veritas_learning_v2 as L2
 
-VERSION="LEARNING_V2_REGISTRY_V2"
+VERSION="LEARNING_V2_REGISTRY_V3_BLOCKER_EVIDENCE"
 MIN_ENTRY_N=64
 MIN_ENTRY_DAYS=14
 REJECT_ENTRY_N=128
@@ -104,10 +104,8 @@ def _entry_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
     usable,_=_new_rows(rows,registered_at,cutoff_id,p if prior is not None else None)
     for rid,ts,r in usable:
         if not _scope_match(candidate["scope"],r): continue
-        blockers={str(x) for x in (r.get("final_gate_blockers") or r.get("blockers") or [])}
-        admission=r.get("admission_eligible")
-        blocked=bool(blockers or admission is False
-                     or str(r.get("final_gate_status") or "").upper()=="BLOCK")
+        blockers=set(L2.row_blockers(r))
+        blocked=L2.has_block_evidence(r)
         if not blocked or blocker not in blockers: continue
         direction=str(r.get("candidate_direction") or "")
         fr=_num(r.get("forward_return"))
