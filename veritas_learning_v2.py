@@ -14,6 +14,8 @@ from hashlib import sha256
 import json
 import math
 
+import veritas_canonical_constitution as CTC
+
 VERSION = "LEARNING_V2_SHADOW_1"
 MIN_CONTEXT_N = 8
 MIN_FALSE_BLOCK_N = 3
@@ -24,6 +26,15 @@ ENTRY_FALSE_BLOCK_MOVE = 0.004
 STOP_BUFFER_ATR_CANDIDATES = (0.10, 0.15, 0.20, 0.30)
 EXIT_FIRST_TARGET_FRACTIONS = (0.25, 0.75)
 STRATEGY_FAMILIES = ("TREND", "BREAKOUT", "PULLBACK", "MOMENTUM", "REVERSAL", "RANGE")
+LEARNABLE_ENTRY_BLOCKERS = frozenset({
+    "IMPULSE_ALREADY_PASSED",
+    "R83_WAIT_RETEST_LATE_EXECUTION",
+    "WAIT_RETEST",
+    "TIMING_NOT_READY",
+    "STRUCTURAL_EVENT_EXPIRED",
+    "SAME_TF_EVENT_EXPIRED",
+})
+FORBIDDEN_ENTRY_BLOCKERS = frozenset(CTC.HARD_VETOES)
 
 
 def _num(v):
@@ -151,6 +162,8 @@ def generate_hypotheses(decision_rows, trade_rows):
         blocker_stats=false_block_summary(rows)["blockers"]
         for b in blocker_stats:
             if b["n"]<MIN_FALSE_BLOCK_N:
+                continue
+            if b["blocker"] in FORBIDDEN_ENTRY_BLOCKERS or b["blocker"] not in LEARNABLE_ENTRY_BLOCKERS:
                 continue
             out.append(_hypothesis(
                 "ENTRY_BLOCKER_RELAXATION",
