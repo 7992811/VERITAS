@@ -36,7 +36,20 @@ LEARNABLE_ENTRY_BLOCKERS = frozenset({
     "SAME_TF_EVENT_EXPIRED",
 })
 FORBIDDEN_ENTRY_BLOCKERS = frozenset(CTC.HARD_VETOES)
-KNOWN_BLOCKERS = frozenset(LEARNABLE_ENTRY_BLOCKERS | FORBIDDEN_ENTRY_BLOCKERS)
+OBSERVABLE_TIMING_BLOCKERS = frozenset({
+    "ACTUAL_PRICE_LATE_ENTRY_CHASE",
+    "OLD_PARENT_WAIT_RETEST",
+    "R66_WAIT_RETEST",
+    "R69_WAIT_LOCAL_BREAKOUT",
+    "R19_WAIT_SECOND_CONFIRMATION",
+    "SAME_TF_ENTRY_EXTENDED",
+    "SAME_TF_WAIT_STRUCTURAL_BREAKOUT",
+    "STRUCTURAL_ENTRY_TOO_LATE_TO_TARGET",
+    "STRUCTURAL_WAIT_VERIFIED_CROSS",
+})
+KNOWN_BLOCKERS = frozenset(
+    LEARNABLE_ENTRY_BLOCKERS | FORBIDDEN_ENTRY_BLOCKERS | OBSERVABLE_TIMING_BLOCKERS
+)
 _BLOCKER_TOKEN = re.compile(r"[A-Z][A-Z0-9_]{2,}")
 
 
@@ -118,6 +131,22 @@ def _context(row):
     }
 
 
+def candidate_favourable_move(row, direction=None):
+    """Largest observed move in the frozen direction, never reconstructed P&L."""
+    direction=str(direction or row.get("candidate_direction") or "")
+    fr=_num(row.get("forward_return"))
+    mfe=_num(row.get("mfe"))
+    mae=_num(row.get("mae"))
+    terminal=(fr if direction=="LONG" else -fr if direction=="SHORT" else None)
+    path=(mfe if direction=="LONG" else (-mae if direction=="SHORT" and mae is not None else None))
+    values=[x for x in (terminal,path) if x is not None]
+    if not values:
+        return None,None
+    best=max(values)
+    basis=("MFE_PATH" if path is not None and (terminal is None or path>terminal) else "TERMINAL")
+    return best,basis
+
+
 def _directional_return(row):
     fr=_num(row.get("forward_return"))
     direction=str(row.get("decision") or row.get("direction") or "")
@@ -134,13 +163,14 @@ def classify_decision_episode(row):
     mae=_num(row.get("mae"))
     blockers=row_blockers(row)
     candidate_direction=str(row.get("candidate_direction") or "")
-    candidate_move=(fr if candidate_direction=="LONG" else -fr if candidate_direction=="SHORT" else None)
+    candidate_move,movement_basis=candidate_favourable_move(row,candidate_direction)
     blocked=has_block_evidence(row)
     if (blocked and candidate_move is not None
             and candidate_move>=ENTRY_FALSE_BLOCK_MOVE):
         return {
             "kind":"MISSED_DIRECTIONAL_MOVE",
             "move":candidate_move,
+            "movement_basis":movement_basis,
             "candidate_direction":candidate_direction,
             "blockers":blockers or ("UNSPECIFIED_BLOCKER",),
             "counterfactual_fill_proven":False,
