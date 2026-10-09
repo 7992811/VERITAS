@@ -67,6 +67,13 @@ class OwnerReviewPolicyTests(unittest.TestCase):
         self.assertEqual(x["reason"],"PROFIT_MATURITY_NOT_CONFIRMED")
         self.assertEqual(x["positive_streak"],2)
 
+    def test_mature_flag_without_economic_floor_still_blocks_trailing(self):
+        position={"direction":"LONG","payload":{"structural_policy_version":"X",
+                                                "profit_maturity_armed":True}}
+        x=VTM.apply_trailing(None,"Champion",position,[],{},None)
+        self.assertFalse(x["eligible"])
+        self.assertEqual(x["reason"],"PROFIT_MATURITY_ECONOMIC_FLOOR_NOT_SECURED")
+
     def test_closed_trade_postmortem_is_approval_gated(self):
         snap={"atr":10.0,"stop_anchor":90.0,"regime":"UPTREND",
               "trigger_timeframe":"5m","structural_timeframe":"1h",
