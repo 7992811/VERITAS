@@ -61,6 +61,10 @@ def _iso(value):
     return parsed.isoformat() if parsed else None
 
 
+def enabled():
+    return os.getenv("VERITAS_CURRENCY_TRADE_PROPOSALS_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _environment(value=None):
     env = str(value or os.getenv("VERITAS_CURRENCY_TRADE_ENVIRONMENT", "production")).strip().lower()
     return env if env in SCHEMAS else None
