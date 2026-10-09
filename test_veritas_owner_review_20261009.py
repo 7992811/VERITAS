@@ -160,6 +160,20 @@ class OwnerReviewPolicyTests(unittest.TestCase):
         self.assertTrue(all(p["status"]=="OWNER_REVIEW_REQUIRED" for p in r["proposals"]))
         self.assertTrue(all(not p["automatic_promotion_allowed"] for p in r["proposals"]))
 
+    def test_tiny_favorable_noise_is_not_profit_protection_error(self):
+        snap={"atr":10.0,"stop_anchor":95.0,"regime":"RANGE_HIGH_VOL",
+              "trigger_timeframe":"5m","structural_timeframe":"1h",
+              "stop_timeframe":"1h","atr_timeframe":"1h"}
+        trade={"trade_id":"NQ_TINY_MFE","asset":"NQ","direction":"SHORT",
+               "avg_entry_price":100.0,"avg_exit_price":100.2,
+               "stop_price":105.0,"take_price":95.0,
+               "mfe_pct":0.01,"mae_pct":-0.30,"giveback_pct":0.01,
+               "net_pnl_rub":-100.0,"learning_eligible":True,
+               "trade_diagnostics":{"primary_attribution":"ENTRY_OR_DIRECTION"}}
+        r=VSELF.review(trade,snap)
+        self.assertFalse(r["path"]["profit_protection_candidate"])
+        self.assertFalse(any(p["kind"]=="PROFIT_MATURITY" for p in r["proposals"]))
+
     def test_owner_teaching_is_durable_snapshot_candidate(self):
         x=VUT.trade_review_policy_snapshot()
         self.assertEqual(x["teaching_id"],"USER_TRADE_REVIEW_2026_10_09")

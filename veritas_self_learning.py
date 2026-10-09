@@ -97,12 +97,24 @@ def review(trade, snapshot=None):
     target_zone_distance_atr=(abs(target-entry)/atr if target and entry and atr else None)
     if net>0: strengths.append("Сделка закрыта с положительным результатом после расходов.")
     else: issues.append("Отрицательный финансовый результат после расходов.")
-    if mfe is not None and mfe>0 and net<=0:
-        issues.append("Сделка была в плюсе, но прибыль не была сохранена.")
+    material_profit_threshold_pct=max(
+        0.25,100.0*float(CTC.COST_POLICY["round_trip_base_cost_pct"])
+        *float(CTC.COST_POLICY["cost_buffer_multiple"]))
+    profit_protection_candidate=bool(
+        net<=0 and mfe is not None and mfe>=material_profit_threshold_pct
+    )
+    if profit_protection_candidate:
+        issues.append(
+            "Сделка имела материальный ход в плюс, но закрылась в минус; "
+            "нужен replay устойчивости прибыльных экскурсий и сопровождения."
+        )
         proposals.append(_proposal(t.get("trade_id"),"PROFIT_MATURITY",
-            "Проверить защиту прибыли после устойчивой проторговки",
-            "Первые два прибыльных окна не меняют исходный стоп; после третьего подряд и минимальной выдержки тестировать истинный безубыток после расходов.",
-            tests=[{"parameter":"positive_windows","values":[3,4]},
+            "Проверить защиту прибыли после третьей устойчивой прибыльной экскурсии",
+            "Первые две отдельные прибыльные экскурсии не меняют исходный стоп. "
+            "На третьей или последующей защита истинным безубытком после расходов "
+            "допускается только после устойчивой проторговки в нескольких независимых окнах.",
+            tests=[{"parameter":"required_profit_excursions","values":[3,4]},
+                   {"parameter":"qualifying_excursion_positive_windows","values":[2,3,4]},
                    {"parameter":"minimum_dwell_minutes","values":[10,15,20]}]))
     if risk_atr is not None and risk_atr>4.0:
         issues.append("Начальный риск превышает 4 ATR выбранного риск-таймфрейма.")
@@ -143,7 +155,9 @@ def review(trade, snapshot=None):
             "stop_timeframe":s.get("stop_timeframe"),"atr_timeframe":s.get("atr_timeframe"),
             "daily_ma":s.get("daily_ma"),"daily_ma_periods":s.get("daily_ma_periods"),
             "indicators":s.get("indicators"),"horizon_structure":s.get("horizon_structure")},
-        "path":{"mfe_pct":mfe,"mae_pct":mae,"giveback_pct":t.get("giveback_pct")},
+        "path":{"mfe_pct":mfe,"mae_pct":mae,"giveback_pct":t.get("giveback_pct"),
+            "material_profit_threshold_pct":material_profit_threshold_pct,
+            "profit_protection_candidate":profit_protection_candidate},
         "diagnostic_attribution":diag.get("primary_attribution"),
         "strengths":strengths,"issues":issues,"proposals":proposals,
         "governance":{"canonical_conflict_scan_required":bool(VOP.SELF_LEARNING.get("canonical_conflict_scan_required")),

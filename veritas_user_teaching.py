@@ -30,8 +30,8 @@ REVIEW_USER_CORRECTION_RU = (
     "самого подтверждённого события. Hard thesis invalidation одной копии "
     "канонического setup должен применяться к остальным копиям. После выхода сделки "
     "в плюс исходная архитектура стопа сохраняется во время первых двух кратких "
-    "прибыльных импульсов; только после третьего устойчивого прибыльного окна и "
-    "выдержки разрешается защита истинным безубытком после расходов, затем структурный "
+    "прибыльных импульсов; только во время третьей отдельной прибыльной экскурсии, если "
+    "она устойчива и выдержана во времени, разрешается защита истинным безубытком после расходов, затем структурный "
     "трейлинг. Для каждой сделки проверять стопы/тейки относительно предыдущих high/low "
     "и ATR того таймфрейма, на котором живёт риск-идея. Быстрый вход разрешён без "
     "общего veto старшего направления, но если он заимствует старший swing/ATR для "
@@ -213,8 +213,10 @@ def trade_review_policy_snapshot():
                 VOP.PORTFOLIO_PARITY["portfolio_role_changes_size_not_event_existence"],
             "canonical_setup_hard_invalidation_shared":
                 VOP.PORTFOLIO_PARITY["canonical_setup_hard_invalidation_shared_across_portfolios"],
-            "profit_lock_requires_consecutive_positive_windows":
-                VOP.PROFIT_MATURITY["required_positive_windows"],
+            "profit_lock_required_profit_excursions":
+                VOP.PROFIT_MATURITY["required_profit_excursions"],
+            "profit_lock_qualifying_excursion_positive_windows":
+                VOP.PROFIT_MATURITY["qualifying_excursion_positive_windows"],
             "profit_lock_minimum_dwell_seconds":VOP.PROFIT_MATURITY["minimum_dwell_seconds"],
             "profit_lock_floor":VOP.PROFIT_MATURITY["floor"],
             "structural_trailing_before_profit_maturity":
@@ -224,7 +226,7 @@ def trade_review_policy_snapshot():
         "requirements": {
             "entry_parity": "One verified structural event may be opened by Impulse, Champion and Challenger in the same decision cycle; portfolio role controls size/scale.",
             "shared_invalidation": "A proved hard thesis invalidation of one canonical setup invalidates every open portfolio copy of that exact setup.",
-            "profit_maturity": "First two distinct profitable management windows are observation-only; third consecutive profitable window plus minimum dwell arms true after-cost breakeven.",
+            "profit_maturity": "The first two separate profitable excursions are observation-only. Only the third or later excursion may arm true after-cost breakeven, and only after that excursion itself persists across independent management windows and the minimum dwell.",
             "gold_guardrail": "Temporary early favorable excursions must not destroy the original stop architecture; after maturity, confirmed structural swings may tighten but never widen the stop.",
             "risk_timeframe": "If a fast trigger borrows a parent swing/ATR, explicit invalidity of that parent risk context blocks the borrowed-risk entry; an independently valid fast-TF risk plan remains possible.",
             "postmortem": "Every closed trade receives level/volatility/indicator/MA/MTF/entry/stop/target/protection/exit/cost/data-integrity review.",

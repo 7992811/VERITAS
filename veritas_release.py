@@ -67,7 +67,7 @@ def snapshot():
         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
         "breakout_lifecycle_policy":dict(CTC.BREAKOUT_LIFECYCLE_POLICY),
         "daily_ma_rebound_policy":dict(CTC.MA_REBOUND_POLICY),
-        "active_user_teaching_id":VOP.TEACHING_ID, "active_user_teaching_ids":[CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"], CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"], CTC.LEARNING_POLICY.get("owner_teaching_id")],
+        "active_user_teaching_id":VOP.TEACHING_ID, "active_user_teaching_ids":[CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"], CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"], VOP.TEACHING_ID],
         "owner_review_policy":VOP.snapshot(),
         "runtime_authority":CTC.BASIS_RUNTIME,
         "ui_version":UI_VERSION,

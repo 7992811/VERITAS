@@ -240,8 +240,10 @@ def apply_trailing(c, name, position, summary, quote, now):
     if VOP.PROFIT_MATURITY.get("structural_trailing_before_maturity") is False:
         if not maturity.get("profit_maturity_armed"):
             return {"version":VERSION,"eligible":False,"reason":"PROFIT_MATURITY_NOT_CONFIRMED",
-                    "positive_streak":int(maturity.get("profit_maturity_positive_streak") or 0),
-                    "required_windows":int(VOP.PROFIT_MATURITY.get("required_positive_windows") or 3)}
+                    "excursion_count":int(maturity.get("profit_maturity_excursion_count") or 0),
+                    "required_excursions":int(VOP.PROFIT_MATURITY.get("required_profit_excursions") or 3),
+                    "positive_windows_in_excursion":int(maturity.get("profit_maturity_excursion_positive_windows") or 0),
+                    "required_windows_in_excursion":int(VOP.PROFIT_MATURITY.get("qualifying_excursion_positive_windows") or 3)}
         if not maturity.get("profit_maturity_floor_satisfied"):
             return {"version":VERSION,"eligible":False,
                     "reason":"PROFIT_MATURITY_ECONOMIC_FLOOR_NOT_SECURED"}
