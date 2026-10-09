@@ -45,9 +45,10 @@ def _merge_position(z, patch, new_stop=None):
 def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
     """Observe one source-locked management quote and arm BE only after mature profit.
 
-    Three distinct consecutive profitable management windows are required.
-    Repeated polling inside one window never increments the streak. A non-positive
-    observed window resets the streak. This is lifecycle evidence, not a signal.
+    Owner rule: the first two separate profitable excursions are observation-only.
+    Protection may arm only during the third or later profitable excursion, and only
+    after that excursion itself remains positive across several independent management
+    windows and the minimum dwell. Repeated polling never creates a new excursion.
     """
     z=dict(position or {}); p=_payload(z); q=dict(quote or {})
     out={"version":VERSION,"eligible":False,"mature":bool(p.get("profit_maturity_armed")),
@@ -73,41 +74,59 @@ def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
     tf_seconds=int(TFS.TIMEFRAMES.get(tf) or 60)
     policy=VOP.PROFIT_MATURITY
     window_seconds=max(int(policy.get("window_seconds_floor") or 300),tf_seconds)
-    required=int(policy.get("required_positive_windows") or 3)
+    required_excursions=int(policy.get("required_profit_excursions") or 3)
+    required_windows=int(policy.get("qualifying_excursion_positive_windows") or 3)
     minimum_dwell=int(policy.get("minimum_dwell_seconds") or 600)
     bucket=int(observed//window_seconds)
     last=p.get("profit_maturity_last_window")
-    streak=int(p.get("profit_maturity_positive_streak") or 0)
-    first_at=_num(p.get("profit_maturity_first_positive_at"))
+    excursions=int(p.get("profit_maturity_excursion_count") or 0)
+    windows=int(p.get("profit_maturity_excursion_positive_windows") or 0)
+    excursion_started=_num(p.get("profit_maturity_excursion_started_at"))
+    was_positive=bool(p.get("profit_maturity_in_profit"))
     window_clean=bool(p.get("profit_maturity_current_window_positive", True))
     changed=False
-    if last is None or int(last)!=bucket:
+
+    # Count a new excursion only on an observed transition from non-profitable
+    # whole-trade economics to profitable whole-trade economics.
+    if positive and not was_positive:
+        excursions+=1
+        windows=0
+        excursion_started=observed
+        last=None
+        window_clean=True
         changed=True
-        window_clean=positive
-        if positive:
-            streak=streak+1
-            if streak==1 or first_at is None:
-                first_at=observed
-        else:
-            streak=0; first_at=None
+
+    if positive:
+        if last is None or int(last)!=bucket:
+            last=bucket
+            windows+=1
+            window_clean=True
+            changed=True
+    else:
+        if was_positive or windows or excursion_started is not None or window_clean:
+            changed=True
+        windows=0
+        excursion_started=None
+        window_clean=False
         last=bucket
-    elif not positive and window_clean:
-        # Any observed loss inside the active management window invalidates the
-        # whole window. A later rebound in that same bucket cannot restore it.
-        changed=True; window_clean=False; streak=0; first_at=None
-    dwell=max(0.0,observed-first_at) if first_at is not None else 0.0
+
+    dwell=max(0.0,observed-excursion_started) if excursion_started is not None and positive else 0.0
     armed=bool(p.get("profit_maturity_armed"))
-    if not armed and streak>=required and dwell>=minimum_dwell:
+    if (not armed and positive and excursions>=required_excursions
+            and windows>=required_windows and dwell>=minimum_dwell):
         armed=True; changed=True
     patch={
         "profit_maturity_version":VERSION,
         "profit_maturity_management_timeframe":tf or None,
         "profit_maturity_window_seconds":window_seconds,
-        "profit_maturity_required_windows":required,
-        "profit_maturity_positive_streak":streak,
+        "profit_maturity_required_excursions":required_excursions,
+        "profit_maturity_required_windows_in_excursion":required_windows,
+        "profit_maturity_excursion_count":excursions,
+        "profit_maturity_excursion_positive_windows":windows,
+        "profit_maturity_excursion_started_at":excursion_started,
+        "profit_maturity_in_profit":positive,
         "profit_maturity_last_window":last,
         "profit_maturity_current_window_positive":window_clean,
-        "profit_maturity_first_positive_at":first_at,
         "profit_maturity_last_observed_at":observed,
         "profit_maturity_last_favorable_pct":100.0*favorable,
         "profit_maturity_last_projected_net_rub":net_now,
@@ -161,7 +180,9 @@ def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
                       (encoded,z.get("active_trade_id")))
     return {"version":VERSION,"eligible":True,"mature":armed,
             "reason":"PROFIT_MATURITY_ARMED" if armed else "PROFIT_MATURITY_OBSERVING",
-            "positive":positive,"positive_streak":streak,"required_windows":required,
+            "positive":positive,"excursion_count":excursions,
+            "positive_windows_in_excursion":windows,
+            "required_excursions":required_excursions,"required_windows":required_windows,
             "dwell_seconds":dwell,"minimum_dwell_seconds":minimum_dwell,
             "projected_net_rub":net_now,"patch":patch,"new_stop":new_stop,
             "position":_merge_position(z,patch,new_stop)}

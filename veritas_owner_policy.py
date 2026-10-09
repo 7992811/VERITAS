@@ -11,10 +11,11 @@ SOURCE_TIMESTAMP="2026-10-09T06:03:00Z"
 VERSION="OWNER_REVIEW_POLICY_V1"
 
 PROFIT_MATURITY={
-    "required_positive_windows":3,
+    "required_profit_excursions":3,
+    "qualifying_excursion_positive_windows":3,
     "window_seconds_floor":300,
     "minimum_dwell_seconds":600,
-    "first_two_positive_windows_observe_only":True,
+    "first_two_profit_excursions_observe_only":True,
     "floor":"TRUE_ECONOMIC_BREAK_EVEN_AFTER_COSTS",
     "structural_trailing_before_maturity":False,
     "structural_trailing_after_maturity":True,
