@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import math
 
+import veritas_canonical_constitution as CTC
 import veritas_price_source as SOURCE
 import veritas_timeframe_structure as STRUCTURE
 import veritas_trade_audit as AUDIT
 
 
-VERSION = "STRUCTURAL_TRADE_DIAGNOSTICS_V3_OUTCOME_TIER"
+VERSION = "STRUCTURAL_TRADE_DIAGNOSTICS_V4_MANAGEMENT_RECEIPT"
 _NUMERIC_POLICY = tuple(STRUCTURE.DEFAULT_POLICY)
 
 
@@ -30,6 +31,30 @@ def _number(value):
 
 def _object(value):
     return value if isinstance(value, dict) else {}
+
+
+def _mfe_management_receipt(payload):
+    """Verify the durable bridge from owner teaching to position execution."""
+    p=_object(payload)
+    required=p.get("r_accel_mfe_execution_required") is True
+    teaching=p.get("r_accel_mfe_learning_teaching_id")
+    state=str(p.get("r_accel_mfe_protection_state") or "")
+    authority=str(p.get("r_accel_mfe_exit_authority") or "")
+    expected=(getattr(CTC,"TREND_ACCELERATION_POLICY",{}) or {}).get("teaching_id")
+    verified=bool(required and teaching==expected
+                  and state in ("ACTIVE","EXITED")
+                  and authority=="STRUCTURAL_MFE_PROTECTION")
+    return {
+        "scope":"STRUCTURAL_MFE_PROTECTION",
+        "required":required,
+        "verified":verified,
+        "teaching_id":teaching,
+        "expected_teaching_id":expected,
+        "state":state or None,
+        "exit_authority":authority or None,
+        "exit_authority_used":p.get("r_accel_mfe_exit_authority_used") is True,
+        "exit_authority_reason":p.get("r_accel_mfe_exit_authority_reason"),
+    }
 
 
 def _positive(value):
@@ -146,6 +171,7 @@ def diagnose(trade, *, additional_exclusion=None):
         directional_error=False, violations=[], hypotheses=[], normalization={},
         rule_scope="RECORDED_STRUCTURAL_ENTRY_AND_INITIAL_STOP_POLICY_ONLY",
         subsequent_management_rules_verified=False,
+        management_execution_verified=False, management_execution_receipt=None,
         parameter_changes_applied=False, financial_columns_changed=False)
     audit_problem = AUDIT.evidence_exclusion(t)
     # Event-rule discrepancies are meaningful only on trusted original data.
@@ -184,6 +210,19 @@ def diagnose(trade, *, additional_exclusion=None):
 
     def violation(code, observed, required):
         violations.append(dict(code=code, observed=observed, required=required))
+
+    management=_mfe_management_receipt(p)
+    result["management_execution_receipt"]=management
+    if management["required"]:
+        if management["verified"]:
+            result["management_execution_verified"]=True
+            result["subsequent_management_rules_verified"]=True
+        else:
+            violation("MFE_PROTECTION_EXECUTION_GAP",
+                      {k:management.get(k) for k in ("teaching_id","state","exit_authority")},
+                      {"teaching_id":management.get("expected_teaching_id"),
+                       "state":["ACTIVE","EXITED"],
+                       "exit_authority":"STRUCTURAL_MFE_PROTECTION"})
 
     if t.get("direction") not in ("LONG", "SHORT"):
         missing.append("MISSING_TRADE_DIRECTION")
@@ -330,11 +369,18 @@ def diagnose(trade, *, additional_exclusion=None):
         result["violations"] = []
         missing.append("MISSING_ORIGINAL_EXECUTION_PROOF")
     elif violations:
-        result.update(status="RULE_VIOLATION", primary_attribution="PROVEN_ENTRY_RULE_VIOLATION",
-                      attributions=["PROVEN_ENTRY_RULE_VIOLATION"] + [v["code"] for v in violations],
-                      learning_action="REPAIR_PROVEN_RULE_VIOLATION", rule_evidence_eligible=True,
-                      exclusion_reason="PROVEN_RULE_VIOLATION", evidence_limitations=sorted(set(missing)))
-        if all("STOP" in v["code"] or "ATR" in v["code"] for v in violations):
+        management_only=all(v["code"]=="MFE_PROTECTION_EXECUTION_GAP" for v in violations)
+        primary=("PROVEN_MANAGEMENT_EXECUTION_VIOLATION" if management_only
+                 else "PROVEN_ENTRY_RULE_VIOLATION")
+        result.update(status="RULE_VIOLATION", primary_attribution=primary,
+                      attributions=[primary] + [v["code"] for v in violations],
+                      learning_action=("REPAIR_MANAGEMENT_EXECUTION_GAP" if management_only
+                                       else "REPAIR_PROVEN_RULE_VIOLATION"),
+                      rule_evidence_eligible=True,
+                      exclusion_reason=("PROVEN_MANAGEMENT_EXECUTION_VIOLATION" if management_only
+                                        else "PROVEN_RULE_VIOLATION"),
+                      evidence_limitations=sorted(set(missing)))
+        if not management_only and all("STOP" in v["code"] or "ATR" in v["code"] for v in violations):
             result["primary_attribution"] = "PROVEN_STOP_OR_ATR_RULE_VIOLATION"
             result["attributions"][0] = result["primary_attribution"]
         return result
@@ -391,6 +437,8 @@ def conclusion(record):
     """Concise Russian diagnostic copy; never elevate a hypothesis to an error."""
     status = record.get("status")
     if status == "RULE_VIOLATION":
+        if record.get("primary_attribution")=="PROVEN_MANAGEMENT_EXECUTION_VIOLATION":
+            return "Подтверждён разрыв между активным правилом обучения и его исполнением при сопровождении позиции; проверяемый execution receipt отсутствует или противоречив."
         return "Подтверждено нарушение сохранённого структурного правила входа или исходного стопа; проверяемое противоречие указано в доказательствах сделки."
     if status == "VERIFIED_OUTCOME_ONLY":
         return "Финансовый исход сделки подтверждён для обучения net outcome/размеру позиции, но непрерывный путь цены недостаточен для выводов о MFE/MAE, стопе или качестве выхода."
