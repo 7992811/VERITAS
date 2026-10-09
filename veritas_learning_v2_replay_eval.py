@@ -16,6 +16,7 @@ import veritas_learning_v2_registry as REG
 import veritas_learning_v2_replay as REPLAY
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
+import veritas_trade_diagnostics as DIAGNOSTICS
 
 VERSION="LEARNING_V2_REPLAY_EVAL_V1"
 MAX_TRADES_PER_RUN=4
@@ -129,7 +130,9 @@ def _trade_rows(c,candidate):
         FROM paper_orders WHERE side IN ('BUY','SELL_SHORT')
         GROUP BY trade_id
       ) o ON o.trade_id=t.trade_id
-      WHERE e.learning_eligible=TRUE
+      WHERE COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE)=TRUE
+        AND e.payload->>'outcome_diagnostics_version'=%s
+        AND NULLIF(e.payload->>'outcome_evidence_hash','') IS NOT NULL
         AND e.asset=%s AND e.horizon=%s
         AND e.closed_at>%s
         AND t.opened_at>%s
@@ -148,7 +151,8 @@ def _trade_rows(c,candidate):
         )
       ORDER BY e.closed_at ASC
       LIMIT %s
-    """,(scope.get("asset"),scope.get("horizon"),candidate["registered_at"],candidate["registered_at"],
+    """,(DIAGNOSTICS.VERSION,scope.get("asset"),scope.get("horizon"),
+          candidate["registered_at"],candidate["registered_at"],
           regime,policy,source,contract,candidate["candidate_id"],MAX_TRADES_PER_RUN)).fetchall()]
 
 
