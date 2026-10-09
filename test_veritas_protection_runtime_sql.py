@@ -113,7 +113,7 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
                 self.assertEqual(G.run_protective_pass(None, connect, {'ETH': q}, NOW), [])
             reads = [sql for sql, args in trace.statements if sql.startswith('SELECT') and 'advisory' not in sql]
             writes = [(sql, args) for sql, args in trace.statements
-                      if sql.startswith('UPDATE') or sql.startswith('WITH incoming AS MATERIALIZED')]
+                      if sql.startswith('UPDATE paper_positions AS target')]
             self.assertEqual(reads, [PR.PROTECTION_SQL+' ORDER BY portfolio_name,asset FOR UPDATE'])
             self.assertEqual(len(writes), 2)
             self.assertEqual([len(json.loads(args[0])) for sql, args in writes],
@@ -128,7 +128,9 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
                 self.assertEqual(result['stop_price'], original['stop_price'])
                 self.assertEqual(result['payload']['immutable_history'], original['payload']['immutable_history'])
                 self.assertEqual(result['payload']['observation_path'], OP.observe(original, q, NOW))
-                self.assertEqual(result['payload'], trades[tid]['payload'])
+                # Open trade telemetry remains at its entry state until an
+                # actual reduction/close seals the latest position evidence.
+                self.assertEqual(trades[tid]['payload'], original['payload'])
                 self.assertEqual((trades[tid]['gross_pnl_rub'], trades[tid]['fees_rub'], trades[tid]['funding_rub']), (11, 3, 2))
             self.assertEqual(c.execute('SELECT * FROM paper_portfolios ORDER BY name').fetchall(), before_accounts)
 
