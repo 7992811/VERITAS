@@ -356,6 +356,14 @@ def summary_provider(state_lock, state):
         return _SUMMARY_PROVIDERS[key]
 
 
+def start_broker_event_stream(connect, summary):
+    """Bootstrap the read-only T-Bank execution stream independently of HTTP."""
+    if isinstance(summary, tuple) and len(summary) == 2:
+        summary = summary_provider(*summary)
+    from veritas_currency_trade_service import start_eager_order_stream
+    return start_eager_order_stream(connect, summary, log=print)
+
+
 def store_for(connect):
     with _LOCK:
         if connect not in _STORES:
