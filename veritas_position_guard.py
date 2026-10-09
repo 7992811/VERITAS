@@ -799,7 +799,7 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
         'r_accel_mfe_pct':mfe,
         'r_accel_mfe_current_pct':current,
         'r_accel_mfe_learning_teaching_id':policy.get('teaching_id'),
-        'r_accel_mfe_execution_required':bool(cfg.get('execution_receipt_required',True)),
+        'r_accel_mfe_execution_required':False,
     }
     try:
         existing_trailing=float(p.get('trailing_stop')) if p.get('trailing_stop') is not None else None
@@ -831,6 +831,7 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
     patch['r_accel_mfe_candidate_elapsed_seconds']=elapsed
     mature=bool(current>=immediate or elapsed>=hold)
     if not mature:
+        patch['r_accel_mfe_protection_state']='PERSISTENCE_PENDING'
         return {'patch':patch,'lock':None,'state':'PERSISTENCE_PENDING',
                 'hold_seconds':hold,'elapsed_seconds':elapsed}
 
@@ -851,7 +852,8 @@ def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
         activation_floor_pct_points=threshold)
     if not lock:
         patch.update(r_accel_mfe_protection_waiting_cost_cover=True,
-                     r_accel_mfe_protection_checked_at=ts)
+                     r_accel_mfe_protection_checked_at=ts,
+                     r_accel_mfe_protection_state='WAIT_NET_COST_COVER')
         return {'patch':patch,'lock':None,'state':'WAIT_NET_COST_COVER',
                 'hold_seconds':hold,'elapsed_seconds':elapsed}
 
@@ -1157,7 +1159,13 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                     # realized fees/funding make the modeled stop slightly
                     # negative; otherwise a protected winner can become a large
                     # loser before the lock rearms.
-                    if _p.get('r_accel_mfe_profit_lock_active'):
+                    _pp_cfg=((getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {})
+                             .get('profit_protection') or {})
+                    _structural_authority=bool(
+                        _p.get('r_accel_mfe_profit_lock_active')
+                        and _pp_cfg.get('structural_stop_is_exit_authority',True)
+                        and not _pp_cfg.get('allow_soft_rearm_after_structural_lock',False))
+                    if _structural_authority:
                         reason='STOP_STRUCTURAL_MFE_PROTECTION'
                         changes.append({
                             'portfolio':name,'asset':z.get('asset'),
