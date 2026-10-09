@@ -25,6 +25,7 @@ import veritas_asset_management_intelligence as INTELLIGENCE
 import veritas_scorecard_delivery as SCORECARD
 import veritas_learning_v2 as LEARNING_V2
 import veritas_learning_v2_registry as LEARNING_V2_REGISTRY
+import veritas_learning_v2_replay_eval as LEARNING_V2_REPLAY_EVAL
 from veritas_maintenance import MaintenanceDeferred
 
 VERSION = "CONTINUOUS_LEARNING_V1"
@@ -232,7 +233,8 @@ class ContinuousLearning:
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6),
-                ("learning_v2_shadow", self.learning_v2_shadow, 60, 5))
+                ("learning_v2_shadow", self.learning_v2_shadow, 60, 5),
+                ("learning_v2_replay", self.learning_v2_replay, 180, 5))
         for name, fn, interval, seconds in jobs:
             if name == "learning_bootstrap":
                 callback = fn
@@ -387,6 +389,7 @@ class ContinuousLearning:
             KNOWLEDGE.restore(self.connect, context=context)
             with transaction(self.connect, context) as c:
                 LEARNING_V2_REGISTRY.ensure_schema(c)
+                LEARNING_V2_REPLAY_EVAL.ensure_schema(c)
             self.boot_phase = 4
             return {"status": "PROGRESS", "stage": "KNOWLEDGE_AND_LEARNING_V2_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
@@ -806,6 +809,22 @@ class ContinuousLearning:
                 "registry_counts":registry.get("counts") or {},
                 "metrics":metrics,
                 "missed_directional_episodes":(current.get("entry_false_block") or {}).get("missed_directional_episodes",0)},cursor
+
+    def learning_v2_replay(self, context, cursor):
+        """Evaluate one bounded Stop/Exit candidate on cached exact-source paths."""
+        import veritas_breakout_runtime as BREAKOUT_RUNTIME
+        started=time.monotonic()
+        result=LEARNING_V2_REPLAY_EVAL.process(
+            self.connect,BREAKOUT_RUNTIME.cached_closed_bars,now=clock(),context=context)
+        self.ns["emit"]("learning_v2_replay_snapshot",
+                        version=LEARNING_V2_REPLAY_EVAL.VERSION,
+                        status=result.get("status"),candidate_id=result.get("candidate_id"),
+                        kind=result.get("kind"),trades_considered=result.get("trades_considered",0),
+                        receipts_written=result.get("receipts_written",0),
+                        registry_status=result.get("registry_status"),
+                        production_influence=False,
+                        duration_seconds=round(time.monotonic()-started,4))
+        return result,cursor
 
     def intelligence(self, context, cursor, *, pg_connect=None):
         pg_connect = self.connect if pg_connect is None else pg_connect
