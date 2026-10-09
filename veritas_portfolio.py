@@ -25,6 +25,7 @@ import veritas_learning_integrity as VLI
 import veritas_trade_diagnostics as VTD
 import veritas_trade_review as VTR
 import veritas_timeframe_management as VTM
+import veritas_portfolio_reporting as VPRPT
 import veritas_startup_guard as VSG
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
@@ -8546,34 +8547,12 @@ def _desired_fraction(row,policy,drawdown):
     return _v90r40_base_desired_fraction(row,policy,drawdown)
 
 def _report_r40(pg_connect):
-    d=dict(_v90r40_base_report(pg_connect) or {})
-    d['execution_safety_r40']={
-      'version':VX.VERSION,
-      'paper_fill_model':'CONSERVATIVE_NORMALIZED_PAPER_FILL_V1',
-      'idempotent_client_order_ids':True,
-      'final_economics_gate':True,
-      'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
-      'live_broker_execution_enabled':False,
-      'objective_hard_constraint':CTC.OBJECTIVE_POLICY['hard_constraint'],
-      'objective_priority':list(CTC.OBJECTIVE_POLICY['priority_order']),
-      'principle':CTC.OBJECTIVE_POLICY['principle'],
-    }
-    return _jsonable(d)
+    return VPRPT.execution_safety_report(
+        _v90r40_base_report(pg_connect), VX, CTC, _jsonable)
 
 
 # VERITAS V90 EXECUTION-QUALITY PAPER R41
-def paper_quantity_metadata(units):
-    try:
-        normalized=abs(float(units or 0.0))
-    except Exception:
-        normalized=0.0
-    return {
-      'normalized_units':normalized,
-      'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
-      'broker_quantity':None,
-      'broker_quantity_source':None,
-      'broker_ready_quantity':False,
-    }
+paper_quantity_metadata=VPRPT.paper_quantity_metadata
 
 # Final paper admission authority; source approval and trade economics are independent.
 _v90r41_base_admission = _signal_first_admission_r40
@@ -8645,25 +8624,8 @@ def _signal_first_admission(row,policy,drawdown):
     return out
 
 def report(pg_connect):
-    d=dict(_v90r41_base_report(pg_connect) or {})
-    for _p in d.get('portfolios') or []:
-        for _z in _p.get('positions') or []:
-            _payload=_v90j_json(_z.get('payload'))
-            _z.update(paper_quantity_metadata(_z.get('units')))
-            _payload.setdefault('quantity_semantics','NORMALIZED_PAPER_RETURN_UNITS')
-    d['paper_execution_quality_r41']={
-      'enabled':True,
-      'research_only_signals_can_open_positions':True,
-      'requires_paper_eligible':True,
-      'requires_production_eligible':False,
-      'requires_final_economics_gate':True,
-      'pnl_interpretation':'research-grade or execution-grade normalized paper P&L; never broker-fill proof',
-      'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
-      'normalized_units_are_broker_quantity':False,
-      'broker_quantity_requires_instrument_registry':True,
-      'blocked_assets_without_sufficient_feed':'paper may use current research-grade feeds; live capital remains production-gated',
-    }
-    return _jsonable(d)
+    return VPRPT.paper_execution_quality_report(
+        _v90r41_base_report(pg_connect), _v90j_json, _jsonable)
 
 # Canonical runtime binding is import-order safe. When portfolio is imported
 # from inside veritas_portfolio_runtime, the runtime is only partially initialized;
