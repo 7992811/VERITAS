@@ -12,7 +12,7 @@ import veritas_position_guard as VPG
 import veritas_profit_protection as VPP
 
 
-VERSION = 'PER_PORTFOLIO_ACCOUNTING_CYCLE_V1'
+VERSION = 'PER_PORTFOLIO_ACCOUNTING_CYCLE_V2_CURRENCY_FIRST'
 
 
 def emit_diagnostic(emit, event, **fields):
@@ -30,7 +30,13 @@ def run_books(*, pg_connect, policies, make_book, step_one, prices, ruonia,
               execution_clock=None):
     started = time.monotonic()
     results, committed, uncertain, failures, timings = [], [], [], {}, []
-    for name, policy in policies.items():
+    # Currency is the latency-sensitive 1m/5m book.  Each portfolio still owns
+    # an independent transaction, but running Currency first prevents it from
+    # aging behind four unrelated paper books on every cycle.  Python's sort is
+    # stable, so the relative order of all other portfolios is unchanged.
+    policy_items = list(policies.items())
+    policy_items.sort(key=lambda item: 0 if str(item[0]) == 'Currency' else 1)
+    for name, policy in policy_items:
         book = result = None
         timing = {'portfolio': name, 'status': 'NOT_STARTED'}
         stage, did_commit, outcome = 'candidate_routing', False, False
