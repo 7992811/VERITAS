@@ -26,12 +26,15 @@ def _policy_with_acceleration_caps(policy, row):
     if acceleration.get('active') and str(out.get('mode') or '')!='CURRENCY':
         cfg=getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}
         caps=(cfg.get('temporary_caps') or {}).get(str(out.get('mode') or '')) or {}
-        if caps:
-            base_fraction=float(out.get('max_fraction',out.get('max_single_asset_fraction',0.0)) or 0.0)
-            base_gross=float(out.get('max_gross') or 0.0)
-            out['max_fraction']=max(base_fraction,float(caps.get('max_fraction') or base_fraction))
-            out['max_single_asset_fraction']=out['max_fraction']
-            out['max_gross']=max(base_gross,float(caps.get('max_gross') or base_gross))
+        base_fraction=float(out.get('max_fraction',out.get('max_single_asset_fraction',0.0)) or 0.0)
+        base_gross=float(out.get('max_gross') or 0.0)
+        cap_fraction=float(acceleration.get('temporary_max_fraction')
+                           or caps.get('max_fraction') or base_fraction)
+        cap_gross=float(acceleration.get('temporary_max_gross')
+                        or caps.get('max_gross') or base_gross)
+        out['max_fraction']=max(base_fraction,cap_fraction)
+        out['max_single_asset_fraction']=out['max_fraction']
+        out['max_gross']=max(base_gross,cap_gross)
     governor=((row or {}).get('_canonical_admission') or {}).get('risk_governor') or {}
     if governor.get('max_gross') is not None:
         # NORMAL acceleration may earn the policy's temporary gross headroom.

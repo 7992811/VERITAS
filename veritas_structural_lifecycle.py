@@ -14,6 +14,7 @@ import veritas_price_source as VPS
 import veritas_structural_breakout as SB
 import veritas_timeframe_policy as TFP
 import veritas_timeframe_structure as TS
+import veritas_trend_day_efficiency as VTDE
 
 VERSION = 'PAPER_STRUCTURAL_LIFECYCLE_V1'
 
@@ -144,23 +145,38 @@ def _trend_acceleration_state(row,direction,policy):
     senior=senior or (horizon in ('1h','4h') and state=='CONFIRMED_TREND')
     fast=(horizon in set(cfg.get('fast_horizons') or ('1m','5m'))
           and (state=='CONFIRMED_TREND' or tier in ('SUPER_LONG','SUPER_SHORT')))
-    stage='SENIOR_CONFIRMED' if senior else 'MID_CONFIRMED' if mid else 'FAST_CONFIRMED' if fast else None
+    trend_day=VTDE.assess(row,direction,policy,mid=mid,senior=senior,
+                          evidence=evidence,expected=expected,progress=progress)
+    stage=('EXTREME_CONFIRMED' if trend_day.get('eligible') else
+           'SENIOR_CONFIRMED' if senior else
+           'MID_CONFIRMED' if mid else
+           'FAST_CONFIRMED' if fast else None)
     if stage is None:
         return dict(out,reason='ACCELERATION_WAIT_NEXT_CONFIRMATION',evidence=evidence,
-                    expected_move_pct=expected,structure_state=state)
-    targets=(cfg.get('stage_targets_aggressive') if mode=='AGGRESSIVE'
-             else cfg.get('stage_targets_standard')) or {}
-    target=float(targets.get(stage) or 0.0)
-    caps=(cfg.get('temporary_caps') or {}).get(mode) or {}
+                    expected_move_pct=expected,structure_state=state,
+                    trend_day_efficiency=trend_day)
+    if stage=='EXTREME_CONFIRMED':
+        td_cfg=getattr(CTC,'TREND_DAY_EFFICIENCY_POLICY',{}) or {}
+        target=float(td_cfg.get('extreme_target_aggressive') if mode=='AGGRESSIVE'
+                     else td_cfg.get('extreme_target_standard') or 0.0)
+        caps=(td_cfg.get('temporary_caps') or {}).get(mode) or {}
+        policy_version=td_cfg.get('version')
+    else:
+        targets=(cfg.get('stage_targets_aggressive') if mode=='AGGRESSIVE'
+                 else cfg.get('stage_targets_standard')) or {}
+        target=float(targets.get(stage) or 0.0)
+        caps=(cfg.get('temporary_caps') or {}).get(mode) or {}
+        policy_version=cfg.get('version')
     target=min(target,float(caps.get('max_fraction') or target))
     return {'active':target>0,'stage':stage,'target_fraction':target,
             'reason':'TREND_ACCELERATION_CONFIRMED','evidence':evidence,
             'expected_move_pct':expected,'target_progress':progress,
             'structure_state':state,'signal_tier':tier,
             'mid_confirmation':mid,'senior_confirmation':senior,
+            'trend_day_efficiency':trend_day,
             'temporary_max_fraction':caps.get('max_fraction'),
             'temporary_max_gross':caps.get('max_gross'),
-            'policy_version':cfg.get('version')}
+            'policy_version':policy_version}
 
 
 def fast_reversal_exit_eligible(position,row,policy):
@@ -224,6 +240,8 @@ def scale_request(position,row,price,nav,policy,now=None,requested=None):
     acceleration=_trend_acceleration_state(row,position.get('direction'),policy)
     if acceleration.get('active'):
         row['_trend_acceleration']=dict(acceleration)
+        if acceleration.get('trend_day_efficiency'):
+            row['_trend_day_efficiency']=deepcopy(acceleration.get('trend_day_efficiency'))
         cap=max(base_cap,float(acceleration.get('temporary_max_fraction') or base_cap))
         target=max(current+step,float(acceleration['target_fraction']))
         increase=max(0.,math.floor(min(max(0.,target-current),max(0.,cap-current))/step+1e-9)*step)
@@ -248,14 +266,23 @@ def add_metadata(position,row,units,ts):
                     'event_id':event['event_id'],'previous_stage':p.get('active_target_stage',0),
                     'previous_ladder':deepcopy(p.get('active_target_ladder') or []),
                     'new_ladder':deepcopy(event['target_ladder'])})
+    trend_day=deepcopy(row.get('_trend_day_efficiency') or
+                         ((row.get('_trend_acceleration') or {}).get('trend_day_efficiency')) or {})
     return {'active_target_event_snapshot':deepcopy(event),
             'active_target_ladder':deepcopy(event['target_ladder']),
             'active_target_stage':0,'active_ladder_units':units,
             'take_price':event['target_price'],'target_price':event['target_price'],
             'runner_target_price':event['runner_target_price'],
             'last_structural_confirmation':deepcopy(event),
+            'last_trend_day_efficiency':trend_day or None,
             'target_lifecycle_history':history[-32:],
             'r17_tp1_done':False}
+
+
+def _protected_structural_runner_ratio(position):
+    """Keep more of TP1 only when a structural winner is already protected."""
+    p=payload(position)
+    return VTDE.protected_runner_ratio(position,p)
 
 
 def target_reduction(position,price,nav,ts):
@@ -278,14 +305,20 @@ def target_reduction(position,price,nav,ts):
     next_stage=len(ladder) if final else stage+1
     remaining=sum(float(x['fraction']) for x in ladder[stage:])
     residual=0. if final else current*(1.-float(ladder[stage]['fraction'])/remaining)
+    runner_ratio=_protected_structural_runner_ratio(position)
+    if not final and stage==0 and runner_ratio>.50:
+        residual=max(residual,current*runner_ratio)
     event=p.get('active_target_event_snapshot') or p.get('entry_event_snapshot') or {}
     history=list(p.get('target_lifecycle_history') or [])
     history.append({'action':'TARGET_FINAL' if final else 'TARGET_PARTIAL','at':str(ts),
                     'event_id':event.get('event_id'),'stage':stage,'next_stage':next_stage,
-                    'reference_price':float(price),'target_fraction':residual})
+                    'reference_price':float(price),'target_fraction':residual,
+                    'runner_ratio':runner_ratio if not final else 0.0})
+    adaptive_runner=bool(not final and stage==0 and runner_ratio>.50)
     patch={'active_target_stage':next_stage,'target_lifecycle_history':history[-32:],
            'r17_tp1_done':True,'r17_tp1_at':str(ts),'r17_tp1_price':float(price),
-           'profit_exit_policy':'RECORDED_HISTORICAL_TARGET_FRACTIONS',
+           'profit_exit_policy':'ADAPTIVE_PROTECTED_TREND_RUNNER' if adaptive_runner else 'RECORDED_HISTORICAL_TARGET_FRACTIONS',
+           'adaptive_runner_ratio':runner_ratio if adaptive_runner else None,
            'last_target_kind':'FINAL' if final else ladder[stage]['kind']}
     if next_stage < len(ladder):
         patch.update(take_price=ladder[next_stage]['price'],target_price=ladder[next_stage]['price'])

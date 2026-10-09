@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import veritas_canonical_constitution as CTC
 import veritas_stop_risk as VSR
@@ -8,6 +9,7 @@ import veritas_position_guard as VPG
 import veritas_price_source as VPS
 import veritas_paper_entry as VPE
 import veritas_trend_entry as VTE
+import veritas_trend_day_efficiency as VTDE
 import veritas_user_teaching as VUT
 
 
@@ -49,6 +51,29 @@ def trend_row(*, state="CONFIRMED_TREND", horizon="5m", tier="SUPER_LONG",
             "evidence_independence": {"independent_count": evidence}
         },
     }
+
+
+def extreme_trend_row(*, cross_regime=None):
+    row=trend_row(state="CONFIRMED_TREND",horizon="5m",tier="SUPER_LONG",
+                  evidence=5,expected=0.012,supporting=["1h","4h"],mid=True)
+    row["trend_entry_context"]["confirmation_30m_trend"]={
+        "confirmed":True,"direction":"LONG","timeframe":"30m"
+    }
+    row["trade_plan"]["trend_entry_context"]=row["trend_entry_context"]
+    row["trend_impulse"]={
+        "phase":"IMPULSE_TREND","direction":"LONG","impulse_score":0.90,
+        "session_efficiency":0.80,"session_persistence":0.82,
+        "horizon_consensus_count":4,"horizon_consensus_score":0.88,
+        "structure_score":0.86,"entry_quality":"FRESH_BREAKOUT",
+    }
+    row["intraday_structure"]={
+        "direction":"LONG","score":0.88,"session_efficiency":0.80,
+        "session_persistence":0.82,"relative_volume":1.45,
+    }
+    row["horizon_structure"]["score"]=0.90
+    if cross_regime:
+        row["cross_asset_shadow"]={"regime":cross_regime}
+    return row
 
 
 class StopRiskDiagnosticsTests(unittest.TestCase):
@@ -95,6 +120,21 @@ class AccelerationGrossHeadroomTests(unittest.TestCase):
         self.assertEqual(governor["state"], "NORMAL")
         self.assertAlmostEqual(adjusted["max_fraction"], 0.75)
         self.assertAlmostEqual(adjusted["max_gross"], 1.00)
+
+    def test_extreme_impulse_can_earn_full_nav_in_normal_state(self):
+        policy=dict(CTC.runtime_portfolio_policy("Impulse"))
+        row={
+            "_trend_acceleration":{
+                "active":True,"stage":"EXTREME_CONFIRMED",
+                "temporary_max_fraction":1.00,"temporary_max_gross":1.00,
+            },
+            "_canonical_admission":{"risk_governor":{
+                "state":"NORMAL","new_risk":True,"max_gross":0.50,
+            }},
+        }
+        adjusted,_,_=VPE._policy_with_acceleration_caps(policy,row)
+        self.assertAlmostEqual(adjusted["max_fraction"],1.00)
+        self.assertAlmostEqual(adjusted["max_gross"],1.00)
 
     def test_impulse_caution_state_keeps_drawdown_governor_authority(self):
         policy = dict(CTC.runtime_portfolio_policy("Impulse"))
@@ -177,6 +217,20 @@ class MFEProtectionTests(unittest.TestCase):
         self.assertIn("r_accel_mfe_candidate_at", result["patch"])
         self.assertIsNone(result["lock"])
 
+    def test_sustained_015pct_lane_can_lock_before_legacy_021_floor(self):
+        position,quote,now=self.structural_position_and_quote(100.16)
+        first=VPG._structural_mfe_profit_lock(None,object(),position,quote,
+                                              now.isoformat(),now)
+        position["payload"].update(first["patch"])
+        later=now+timedelta(seconds=100)
+        confirmed=dict(quote,observed_at=later.isoformat())
+        result=VPG._structural_mfe_profit_lock(None,object(),position,confirmed,
+                                               later.isoformat(),later)
+        self.assertEqual(result["state"],"PROTECTED")
+        self.assertIsNotNone(result["lock"])
+        self.assertLess(result["lock"]["activation_profit_pct"],0.21)
+        self.assertGreater(result["lock"]["projected_net_profit_at_stop_rub"],0)
+
     def test_lost_015pct_persistence_resets_candidate(self):
         position, quote, now = self.structural_position_and_quote(100.16)
         first = VPG._structural_mfe_profit_lock(None, object(), position, quote,
@@ -197,6 +251,48 @@ class MFEProtectionTests(unittest.TestCase):
                                                  now.isoformat(), now)
         self.assertEqual(result["state"], "NOT_APPLICABLE")
         self.assertEqual(result["patch"], {})
+
+
+class TrendDayRunnerTests(unittest.TestCase):
+    def test_protected_impulse_trend_keeps_85pct_runner(self):
+        position={"portfolio_name":"Aggressive"}
+        payload={
+            "r_accel_mfe_profit_lock_active":True,
+            "last_trend_day_efficiency":{
+                "eligible":True,"phase":"IMPULSE_TREND","runner_ratio":0.85
+            },
+        }
+        self.assertAlmostEqual(VTDE.protected_runner_ratio(position,payload),0.85)
+
+    def test_structural_tp1_uses_protected_85pct_runner(self):
+        position={
+            "portfolio_name":"Aggressive","direction":"LONG","units":0.5,
+            "payload":{
+                "active_target_stage":0,
+                "r_accel_mfe_profit_lock_active":True,
+                "last_trend_day_efficiency":{
+                    "eligible":True,"phase":"IMPULSE_TREND","runner_ratio":0.85,
+                },
+            },
+        }
+        ladder=[
+            {"price":110.0,"fraction":0.5,"kind":"TP1"},
+            {"price":120.0,"fraction":0.5,"kind":"TP2"},
+        ]
+        with patch.object(VSL,"active_ladder",return_value=ladder):
+            result=VSL.target_reduction(position,110.0,100.0,"2026-10-09T11:31:00Z")
+        self.assertTrue(result["eligible"])
+        self.assertAlmostEqual(result["target_fraction"],0.5*110.0/100.0*0.85)
+        self.assertEqual(result["patch"]["profit_exit_policy"],"ADAPTIVE_PROTECTED_TREND_RUNNER")
+        self.assertAlmostEqual(result["patch"]["adaptive_runner_ratio"],0.85)
+
+    def test_unprotected_or_currency_keeps_default_half_runner(self):
+        td={"eligible":True,"phase":"IMPULSE_TREND","runner_ratio":0.85}
+        self.assertAlmostEqual(VTDE.protected_runner_ratio(
+            {"portfolio_name":"Aggressive"},{"last_trend_day_efficiency":td}),0.50)
+        self.assertAlmostEqual(VTDE.protected_runner_ratio(
+            {"portfolio_name":"Currency"},
+            {"r_accel_mfe_profit_lock_active":True,"last_trend_day_efficiency":td}),0.50)
 
 
 class TrendAccelerationTests(unittest.TestCase):
@@ -229,6 +325,32 @@ class TrendAccelerationTests(unittest.TestCase):
         self.assertEqual(result["stage"], "SENIOR_CONFIRMED")
         self.assertAlmostEqual(result["target_fraction"], 2.50)
 
+    def test_extreme_trend_day_earns_full_standard_allocation(self):
+        row=extreme_trend_row()
+        result=VSL._trend_acceleration_state(row,"LONG",{"mode":"CORE"})
+        self.assertTrue(result["active"])
+        self.assertEqual(result["stage"],"EXTREME_CONFIRMED")
+        self.assertAlmostEqual(result["target_fraction"],1.00)
+        self.assertTrue(result["trend_day_efficiency"]["eligible"])
+
+    def test_extreme_trend_day_earns_350pct_aggressive_allocation(self):
+        row=extreme_trend_row()
+        result=VSL._trend_acceleration_state(row,"LONG",{"mode":"AGGRESSIVE"})
+        self.assertEqual(result["stage"],"EXTREME_CONFIRMED")
+        self.assertAlmostEqual(result["target_fraction"],3.50)
+        self.assertAlmostEqual(result["temporary_max_gross"],5.00)
+
+    def test_cross_asset_context_is_telemetry_only(self):
+        aligned=VTDE.assess(extreme_trend_row(cross_regime="RISK_ON"),"LONG",{"mode":"CORE"},
+                            mid=True,senior=True,evidence=5,expected=.012,progress=.20)
+        conflict=VTDE.assess(extreme_trend_row(cross_regime="RISK_OFF"),"LONG",{"mode":"CORE"},
+                             mid=True,senior=True,evidence=5,expected=.012,progress=.20)
+        self.assertTrue(aligned["eligible"])
+        self.assertTrue(conflict["eligible"])
+        self.assertAlmostEqual(aligned["score"],conflict["score"])
+        self.assertFalse(aligned["cross_asset_size_influence"])
+        self.assertEqual(conflict["cross_asset_alignment"],"CONFLICT")
+
     def test_currency_is_explicitly_excluded(self):
         result = VSL._trend_acceleration_state(
             trend_row(), "LONG", {"mode": "CURRENCY"}
@@ -243,6 +365,13 @@ class TrendAccelerationTests(unittest.TestCase):
         )
         self.assertTrue(result["eligible"])
         self.assertEqual(result["reason"], "FAST_REVERSAL_CONFIRMED_EXIT")
+
+    def test_trend_day_refinement_has_separate_immutable_teaching(self):
+        snapshot=VUT.trend_day_efficiency_snapshot()
+        self.assertEqual(snapshot["teaching_id"],CTC.TREND_DAY_EFFICIENCY_POLICY["teaching_id"])
+        self.assertEqual(snapshot["parent_teaching_id"],VUT.ACCELERATION_TEACHING_ID)
+        self.assertIn("Aggressive",snapshot["portfolios"])
+        self.assertNotIn("Currency",snapshot["portfolios"])
 
     def test_teaching_snapshot_matches_ctc_policy(self):
         snapshot = VUT.acceleration_policy_snapshot()
