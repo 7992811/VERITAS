@@ -696,6 +696,16 @@ class ContinuousLearning:
                 WHERE asset=%s
                 ORDER BY decision_ts DESC
                 LIMIT %s
+              ),
+              decision_keys AS MATERIALIZED (
+                SELECT DISTINCT entity_key FROM recent
+              ),
+              latest_decisions AS MATERIALIZED (
+                SELECT DISTINCT ON (d.entity_key) d.entity_key,d.id,d.payload
+                FROM ledger_events d
+                JOIN decision_keys k ON k.entity_key=d.entity_key
+                WHERE d.event_type='decision'
+                ORDER BY d.entity_key,d.id DESC
               )
               SELECT d.id AS decision_id,e.entity_key,e.decision_ts AS event_ts,
                      e.asset,e.horizon,e.regime,e.decision,e.forward_return,
@@ -746,11 +756,7 @@ class ContinuousLearning:
                      COALESCE(NULLIF(d.payload->>'paper_execution_reason',''),
                               d.payload#>>'{execution_eligibility,paper_execution_reason}','') AS paper_execution_reason
               FROM recent e
-              CROSS JOIN LATERAL (
-                SELECT id,payload FROM ledger_events d
-                WHERE d.entity_key=e.entity_key AND d.event_type='decision'
-                ORDER BY d.id DESC LIMIT 1
-              ) d
+              JOIN latest_decisions d ON d.entity_key=e.entity_key
               ORDER BY e.decision_ts DESC
             """,(asset,limit)).fetchall()
             decision_read_seconds=time.monotonic()-read_started
