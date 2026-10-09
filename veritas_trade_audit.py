@@ -124,6 +124,15 @@ def observed_event(trade):
 
 def _source_exclusion(trade,p):
     """Use immutable entry identities; never infer a clean historical provider."""
+    valuation=p.get('entry_valuation_basis')
+    valuation=valuation if isinstance(valuation,dict) else {}
+    contract_status=str(valuation.get('contract_identity_status') or '').strip().upper()
+    # An explicit negative registry result is stronger evidence than a
+    # provider-looking source key.  Keep the trade in financial accounting,
+    # but do not let an unresolved exact instrument train entry rules.
+    if (valuation.get('exact_contract_verified') is False
+            or contract_status in ('UNRESOLVED','UNVERIFIED','MISSING','UNKNOWN')):
+        return 'SOURCE_UNVERIFIED'
     mark=p.get('source_locked_mark') or {}
     mark=mark if isinstance(mark,dict) else {}
     locks=[p.get(key) for key in ('price_source_lock','entry_execution_source_identity',
