@@ -6,6 +6,7 @@ import veritas_stop_risk as VSR
 import veritas_structural_lifecycle as VSL
 import veritas_position_guard as VPG
 import veritas_price_source as VPS
+import veritas_paper_entry as VPE
 import veritas_trend_entry as VTE
 import veritas_user_teaching as VUT
 
@@ -78,6 +79,46 @@ class StopRiskDiagnosticsTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertEqual(result["reason"], "STOP_RISK_CAP_EXCEEDED")
         self.assertEqual(result["binding_constraint"], "STOP_RISK")
+
+
+class AccelerationGrossHeadroomTests(unittest.TestCase):
+    def test_impulse_normal_state_earns_temporary_gross_headroom(self):
+        policy = dict(CTC.runtime_portfolio_policy("Impulse"))
+        row = {
+            "_trend_acceleration": {"active": True, "stage": "SENIOR_CONFIRMED"},
+            "_canonical_admission": {"risk_governor": {
+                "state": "NORMAL", "new_risk": True, "max_gross": 0.50
+            }},
+        }
+        adjusted, acceleration, governor = VPE._policy_with_acceleration_caps(policy, row)
+        self.assertTrue(acceleration["active"])
+        self.assertEqual(governor["state"], "NORMAL")
+        self.assertAlmostEqual(adjusted["max_fraction"], 0.75)
+        self.assertAlmostEqual(adjusted["max_gross"], 1.00)
+
+    def test_impulse_caution_state_keeps_drawdown_governor_authority(self):
+        policy = dict(CTC.runtime_portfolio_policy("Impulse"))
+        row = {
+            "_trend_acceleration": {"active": True, "stage": "SENIOR_CONFIRMED"},
+            "_canonical_admission": {"risk_governor": {
+                "state": "CAUTION", "new_risk": True, "max_gross": 0.45
+            }},
+        }
+        adjusted, _, _ = VPE._policy_with_acceleration_caps(policy, row)
+        self.assertAlmostEqual(adjusted["max_fraction"], 0.75)
+        self.assertAlmostEqual(adjusted["max_gross"], 0.45)
+
+    def test_currency_never_receives_acceleration_caps(self):
+        policy = dict(CTC.runtime_portfolio_policy("Currency"))
+        row = {
+            "_trend_acceleration": {"active": True, "stage": "SENIOR_CONFIRMED"},
+            "_canonical_admission": {"risk_governor": {
+                "state": "NORMAL", "new_risk": True, "max_gross": 10.0
+            }},
+        }
+        adjusted, _, _ = VPE._policy_with_acceleration_caps(policy, row)
+        self.assertAlmostEqual(adjusted["max_fraction"], policy["max_fraction"])
+        self.assertAlmostEqual(adjusted["max_gross"], policy["max_gross"])
 
 
 class IntermediateTimeframeTests(unittest.TestCase):
