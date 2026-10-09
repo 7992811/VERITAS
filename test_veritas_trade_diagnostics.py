@@ -333,6 +333,8 @@ class PortfolioDiagnosticsIntegrationTests(unittest.TestCase):
         before = deepcopy(trade)
         result = PORTFOLIO._v90r29_episode_from_trade(trade)
         self.assertTrue(result["learning_eligible"])
+        self.assertTrue(result["payload"]["outcome_learning_eligible"])
+        self.assertTrue(result["payload"]["path_learning_eligible"])
         self.assertEqual(result["primary_attribution"], "VALID_STRUCTURAL_STOP_LOSS")
         self.assertEqual(result["net_pnl_rub"], -105.)
         self.assertEqual(result["payload"]["diagnostics_version"], DIAG.VERSION)
@@ -347,6 +349,17 @@ class PortfolioDiagnosticsIntegrationTests(unittest.TestCase):
         self.assertEqual(profile["valid_structural_stop_loss_rate"], 1.)
         self.assertEqual(profile["entry_size_multiplier"], 1.)
         self.assertEqual(trade, before)
+
+    def test_episode_keeps_outcome_eligible_when_path_is_incomplete(self):
+        import veritas_portfolio as PORTFOLIO
+        trade=closed_trade()
+        trade["payload"]["observation_path"].update(gap_count=1,max_gap_seconds=100.)
+        result=PORTFOLIO._v90r29_episode_from_trade(trade)
+        self.assertFalse(result["learning_eligible"])
+        self.assertTrue(result["payload"]["outcome_learning_eligible"])
+        self.assertFalse(result["payload"]["path_learning_eligible"])
+        self.assertEqual(result["payload"]["trade_diagnostics"]["status"],"VERIFIED_OUTCOME_ONLY")
+        self.assertEqual(result["learning_action"],"COUNT_NET_OUTCOME_ONLY")
 
     def test_closed_trade_view_replaces_old_outcome_based_labels_using_original_proof(self):
         import veritas_portfolio as PORTFOLIO
