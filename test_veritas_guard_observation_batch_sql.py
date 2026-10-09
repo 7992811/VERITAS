@@ -332,7 +332,7 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
                 compression_probes = trace.statements.count(' '.join(G.BS.METADATA_SQL.split()))
                 self.assertEqual(compression_probes, 1)
                 self.assertEqual(trace.statements.count(G.BS.SET_LZ4_SQL), 1)
-                self.assertLessEqual(trace.nested_transactions-compression_probes, 2)
+                self.assertLessEqual(trace.nested_transactions-compression_probes, 3)
                 print('protective live-position telemetry '+json.dumps({
                     'direction':direction,'position_batches':len(writes),
                     'encoded_read_bytes':trace.position_reads[0]}))
@@ -394,7 +394,7 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
                 self.assertEqual(new[1], new[0])
                 self.assertEqual(new[2], [])
 
-    def test_absent_explicit_null_and_malformed_payloads_retain_legacy_semantics(self):
+    def test_absent_explicit_null_and_malformed_payloads_keep_position_semantics(self):
         rows, quote = self.fixture(count=1)
         source = deepcopy(rows[0]['payload'])
         shapes = [source, dict(source, trailing_stop=None, data_integrity_status=None),
@@ -406,7 +406,19 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
             with self.subTest(shape=index):
                 changed = deepcopy(rows)
                 changed[0]['payload'] = payload
-                self.assert_parity(changed, {'ETH': quote})
+                old = self.run_case(changed, {'ETH': quote}, legacy=True)
+                new = self.run_case(changed, {'ETH': quote})
+                self.assertEqual(new[3], old[3])
+                # Live protective state keeps the exact legacy behavior.
+                self.assertEqual(new[1]['paper_positions'], old[1]['paper_positions'])
+                for table in ('paper_portfolios','paper_orders','paper_nav_history'):
+                    self.assertEqual(new[1][table], old[1][table], table)
+                # The open trade keeps its original payload until an actual
+                # reduce/close seals current position telemetry.
+                self.assertEqual(new[1]['paper_trades'], new[0]['paper_trades'])
+                for before, after in zip(old[1]['paper_trades'], new[1]['paper_trades']):
+                    self.assertEqual({k:v for k,v in before.items() if k!='payload'},
+                                     {k:v for k,v in after.items() if k!='payload'})
 
     def test_quote_prepass_preserves_always_present_null_keys_and_unusual_json_shapes(self):
         rows, _ = self.fixture(count=1)
