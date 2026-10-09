@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
+import veritas_owner_policy as VOP
 import veritas_price_source as VPS
 PRODUCT_VERSION="veritas-max-product-v91.8.29-owner-review-self-learning"
 PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.29-owner-review-self-learning"
@@ -66,8 +67,8 @@ def snapshot():
         "structural_entry_policy":dict(CTC.STRUCTURAL_ENTRY_POLICY),
         "breakout_lifecycle_policy":dict(CTC.BREAKOUT_LIFECYCLE_POLICY),
         "daily_ma_rebound_policy":dict(CTC.MA_REBOUND_POLICY),
-        "active_user_teaching_id":CTC.LEARNING_POLICY.get("owner_teaching_id"), "active_user_teaching_ids":[CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"], CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"], CTC.LEARNING_POLICY.get("owner_teaching_id")],
-        "owner_review_policy":{"shared_verified_structural_event_entry":CTC.LIFECYCLE_POLICY.get("verified_structural_event_entry_permission_is_shared"),"shared_hard_thesis_invalidation":CTC.LIFECYCLE_POLICY.get("canonical_setup_hard_invalidation_shared_across_portfolios"),"profit_maturity_windows":CTC.LIFECYCLE_POLICY.get("profit_lock_requires_consecutive_positive_windows"),"profit_maturity_minimum_dwell_seconds":CTC.LIFECYCLE_POLICY.get("profit_lock_minimum_dwell_seconds"),"closed_trade_postmortem":CTC.LEARNING_POLICY.get("closed_trade_postmortem_required"),"owner_verification_required":CTC.LEARNING_POLICY.get("owner_verification_required_for_rule_promotion")},
+        "active_user_teaching_id":VOP.TEACHING_ID, "active_user_teaching_ids":[CTC.STRUCTURAL_ENTRY_POLICY["teaching_id"], CTC.MA_REBOUND_POLICY["teaching_id"], CTC.BREAKOUT_LIFECYCLE_POLICY["teaching_id"], CTC.LEARNING_POLICY.get("owner_teaching_id")],
+        "owner_review_policy":VOP.snapshot(),
         "runtime_authority":CTC.BASIS_RUNTIME,
         "ui_version":UI_VERSION,
         "db_schema_version":DB_SCHEMA_VERSION,
