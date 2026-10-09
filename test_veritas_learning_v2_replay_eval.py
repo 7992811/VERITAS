@@ -11,13 +11,12 @@ def cached(asset,timeframe,identity,now=None,limit=500):
     self_source=identity or {}
     if self_source.get("key")!=IDENTITY["key"] or str(self_source.get("contract_id") or "")!="C1":
         return []
-    seconds={"1m":60,"5m":300,"1h":3600}.get(timeframe)
-    if not seconds:return []
+    if timeframe!="5m": return []
     rows=[]
-    start=T+timedelta(minutes=5)
-    for i in range(6):
-        opened=start+timedelta(seconds=i*seconds)
-        rows.append({"opened_at":opened.isoformat(),"closed_at":(opened+timedelta(seconds=seconds)).isoformat(),
+    start=T
+    for i in range(12):
+        opened=start+timedelta(minutes=5*i)
+        rows.append({"opened_at":opened.isoformat(),"closed_at":(opened+timedelta(minutes=5)).isoformat(),
                      "open":100.0,"high":101.0 if i<2 else 104.5,
                      "low":99.0,"close":100.5 if i<2 else 104.0,
                      "source_key":IDENTITY["key"],"contract_id":"C1"})
