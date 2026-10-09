@@ -204,6 +204,24 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 .matrix-panel .matrix-legend,
 .matrix-panel b,
 .matrix-panel strong{font-weight:400}
+
+.main-tabs{display:flex;gap:8px;margin:8px 0 10px}
+.main-tab{border:1px solid var(--border);background:rgba(255,255,255,.025);color:var(--muted);padding:9px 14px;border-radius:8px;font:inherit;cursor:pointer}
+.main-tab.active{color:var(--text);background:rgba(255,255,255,.075);border-color:rgba(184,215,238,.35)}
+.view-panel{display:none}.view-panel.active{display:block}
+.selflearn-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.selflearn-kpi{border:1px solid var(--border);border-radius:9px;padding:10px;background:rgba(255,255,255,.018)}
+.selflearn-kpi span{display:block;color:var(--muted);font-size:11px}.selflearn-kpi b{font-size:17px;font-weight:500}
+.selflearn-list{display:grid;gap:10px}
+.selflearn-trade{border:1px solid var(--border);border-radius:10px;padding:12px;background:rgba(255,255,255,.018)}
+.selflearn-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px}
+.selflearn-title{font-size:14px}.selflearn-meta{color:var(--muted);font-size:11px}
+.selflearn-cols{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:10px}
+.selflearn-box{border-top:1px solid rgba(255,255,255,.06);padding-top:8px;font-size:12px;line-height:1.5}
+.selflearn-box h4{margin:0 0 5px;font-size:11px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.04em}
+.selflearn-item{margin:3px 0}.selflearn-proposal{margin:6px 0;padding:7px;border-left:2px solid rgba(184,215,238,.45);background:rgba(184,215,238,.035)}
+.selflearn-badge{display:inline-block;border:1px solid var(--border);border-radius:999px;padding:2px 6px;font-size:10px;color:var(--muted)}
+@media(max-width:760px){.selflearn-summary{grid-template-columns:1fr 1fr}.selflearn-cols{grid-template-columns:1fr}.main-tabs{position:sticky;top:0;z-index:8;background:var(--bg);padding:6px 0}}
 </style>
 </head>
 <body>
@@ -219,6 +237,11 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
     <span class="pill" id="stamp">ОБНОВЛЕНО · —</span>
   </div>
 
+  <div class="main-tabs" role="tablist" aria-label="Разделы VERITAS">
+    <button class="main-tab active" type="button" data-main-tab="market">Рынок</button>
+    <button class="main-tab" type="button" data-main-tab="selflearning">Самообучение</button>
+  </div>
+  <div id="marketView" class="view-panel active">
   <div class="card full" style="margin-bottom:8px">
     <div class="title">Интеллект VERITAS</div>
     <div id="intelligence"><div class="msg">Загрузка уровня знаний и опыта…</div></div>
@@ -286,6 +309,15 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
       </div>
     </div>
   </div>
+  </div>
+  <div id="selfLearningView" class="view-panel">
+    <div class="card full">
+      <div class="title">Самообучение · разбор закрытых сделок</div>
+      <div class="msg" style="margin-bottom:10px">Каждая закрытая сделка разбирается по структуре, уровням, волатильности, индикаторам, скользящим, таймфреймам, входу, стопу, целям, защите прибыли, выходу, расходам и качеству доказательств. Предложения не меняют канон без верификации владельца.</div>
+      <div id="selfLearningSummary" class="selflearn-summary"></div>
+      <div id="selfLearningList" class="selflearn-list"><div class="msg">Загрузка разборов…</div></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -299,6 +331,14 @@ const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.strin
 const initialPositionCache=loadPositionCache(),initialPositionBook=initialPositionCache.book;
 const st={autonomous:null,strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,portfolioLoadStatus:'LOADING',positionBook:initialPositionBook,positionBookCheckedAt:initialPositionCache.checkedAt||{},positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
 const $=id=>document.getElementById(id);
+function setMainView(name){
+  const self=name==='selflearning';
+  $('marketView').classList.toggle('active',!self);
+  $('selfLearningView').classList.toggle('active',self);
+  document.querySelectorAll('[data-main-tab]').forEach(b=>b.classList.toggle('active',b.dataset.mainTab===name));
+  if(self)renderSelfLearning();
+}
+document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('[data-main-tab]');if(b)setMainView(b.dataset.mainTab)});
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
 const assetIconClass=a=>({BTC:'btc',ETH:'eth',NQ:'ndxf',BRENT:'brent',GOLD:'gold',MOEX:'moex',CNYRUBF:'cny'}[a]||'');
@@ -1410,6 +1450,43 @@ async function loadPortfolios(){
     renderPortfolios();
   }
 }
+function renderSelfLearning(){
+  const rows=((st.trades&&st.trades.trades)||[]).filter(x=>x&&x.self_learning_review);
+  const proposals=rows.flatMap(x=>(x.self_learning_review.proposals||[]));
+  const conflicts=proposals.reduce((n,p)=>n+((p.canonical_conflicts||[]).length),0);
+  const verified=rows.filter(x=>x.self_learning_review.evidence_status==='VERIFIED').length;
+  const pnl=rows.reduce((s,x)=>s+Number(x.net_pnl_rub||0),0);
+  const summary=$('selfLearningSummary'),list=$('selfLearningList');
+  if(!summary||!list)return;
+  summary.innerHTML=[
+    ['Разобрано',rows.length],['Проверенные доказательства',verified],
+    ['Предложений на утверждение',proposals.length],['Конфликтов канона',conflicts]
+  ].map(x=>'<div class="selflearn-kpi"><span>'+esc(x[0])+'</span><b>'+esc(x[1])+'</b></div>').join('');
+  if(!rows.length){list.innerHTML='<div class="msg">Закрытых сделок с новым postmortem ещё нет.</div>';return}
+  list.innerHTML=rows.map(t=>{
+    const r=t.self_learning_review||{},lv=r.levels_volatility||{},mc=r.market_context||{},path=r.path||{};
+    const issues=(r.issues||[]).map(x=>'<div class="selflearn-item">• '+esc(x)+'</div>').join('')||'<div class="selflearn-item">Существенных ошибок не выявлено.</div>';
+    const strengths=(r.strengths||[]).map(x=>'<div class="selflearn-item">• '+esc(x)+'</div>').join('');
+    const props=(r.proposals||[]).map(p=>'<div class="selflearn-proposal"><b>'+esc(p.title)+'</b><div>'+esc(p.rationale)+'</div>'+
+      ((p.canonical_conflicts||[]).length?'<div class="bad">Конфликт: '+esc((p.canonical_conflicts||[]).join(' · '))+'</div>':'')+
+      '<span class="selflearn-badge">'+esc(p.status||'OWNER_REVIEW_REQUIRED')+'</span></div>').join('')||'<div class="selflearn-item">Новых изменений правил не предлагается.</div>';
+    const ma=mc.daily_ma_periods?esc(JSON.stringify(mc.daily_ma_periods)):'—';
+    const ind=mc.indicators&&Object.keys(mc.indicators).length?esc(JSON.stringify(mc.indicators)):'—';
+    return '<div class="selflearn-trade"><div class="selflearn-head"><div><div class="selflearn-title">'+
+      esc(lab(t.asset))+' · '+esc(t.direction)+' · '+esc(t.horizon)+' · '+esc(t.portfolio_name)+'</div><div class="selflearn-meta">'+
+      esc(t.opened_at)+' → '+esc(t.closed_at)+' · '+esc(t.exit_reason)+'</div></div><div class="'+(Number(t.net_pnl_rub||0)>=0?'ok':'bad')+'">'+
+      esc(Number(t.net_pnl_rub||0).toFixed(0))+' ₽</div></div>'+
+      '<div class="selflearn-cols"><div class="selflearn-box"><h4>Уровни и риск</h4>'+
+      '<div>Вход '+esc(lv.entry)+' · выход '+esc(lv.exit)+'</div><div>Стоп '+esc(lv.stop)+' · цель '+esc(lv.target)+'</div>'+
+      '<div>ATR '+esc(lv.atr)+' · риск '+esc(lv.initial_risk_atr==null?'—':Number(lv.initial_risk_atr).toFixed(2))+' ATR</div>'+
+      '<div>MFE '+esc(path.mfe_pct)+'% · MAE '+esc(path.mae_pct)+'%</div></div>'+
+      '<div class="selflearn-box"><h4>Контекст</h4><div>'+esc(mc.regime)+'</div><div>Триггер '+esc(mc.trigger_timeframe)+' · структура '+esc(mc.structural_timeframe)+' · стоп/ATR '+esc(mc.stop_timeframe)+'/'+esc(mc.atr_timeframe)+'</div>'+
+      '<div>MA: '+ma+'</div><div>Индикаторы: '+ind+'</div></div>'+
+      '<div class="selflearn-box"><h4>Вывод</h4>'+strengths+issues+'</div></div>'+
+      '<div class="selflearn-box"><h4>Предложения для верификации</h4>'+props+'</div></div>'
+  }).join('');
+}
+
 async function loadTrades(){
   if(st.busy['portfolio-trades'])return;
   const d=await get('portfolio-trades','/api/v1/portfolio-trades',30000);
@@ -1417,6 +1494,7 @@ async function loadTrades(){
     st.trades=d;
     $('tradeSync').textContent='';
     renderTrades();
+    renderSelfLearning();
   }else{
     $('tradeSync').textContent=st.trades?'Обновление задержано. Показаны последние полученные сделки.':'Загрузка сделок задержана. Повторяем запрос…';
   }
