@@ -400,9 +400,8 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
     def reject_metadata(self, c, trade_id):
         c.execute(self.sql.SQL('''ALTER TABLE paper_trades ADD CONSTRAINT reject_guard_metadata
             CHECK (trade_id <> {} OR
-                   (payload #>> '{{observation_path,last_lane}}') IS DISTINCT FROM 'PROTECTIVE_GUARD' OR
-                   COALESCE((payload #>> '{{observation_path,observation_count}}')::int, 0) < 3)''')
-            .format(self.sql.Literal(trade_id)))
+                   (payload #>> '{{source_locked_mark,observed_at}}') IS DISTINCT FROM {})''')
+            .format(self.sql.Literal(trade_id),self.sql.Literal(self.clock.isoformat())))
 
     def test_one_optional_failure_preserves_other_twenty_two_and_outer_accounting(self):
         rows, quote = self.fixture()
