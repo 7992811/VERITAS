@@ -21,7 +21,7 @@ PROTECTION_FIELDS = (
     'mfe_pct', 'mae_pct', 'r55_lifetime_mfe_pct', 'r55_lifetime_mae_pct',
     'r63_profit_lock_rearm_after_pct', 'entry_nav_rub', 'r55_net_profit_lock_active',
 )
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 
 # Quote preparation has always emitted these keys, including explicit nulls.
 # Extract the root once instead of repeatedly expanding a large retained row.
@@ -67,7 +67,7 @@ def _write_chunk(c, rows):
 
 
 def write_patches(c, patches, *, optional=False):
-    """Write at most 16 trade deltas together; return successfully applied IDs.
+    """Write at most 32 trade deltas together; return successfully applied IDs.
 
     The caller owns the outer transaction and book locks. A required failure
     propagates so accounting rolls back. Optional observations have a savepoint

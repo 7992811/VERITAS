@@ -246,8 +246,8 @@ class BoundedProtectiveTests(unittest.TestCase):
         selects = [sql for sql, args in c.sql if sql.startswith('SELECT') and 'advisory' not in sql]
         writes = [args for sql, args in c.sql if 'jsonb_to_recordset' in sql]
         self.assertEqual(selects, [PR.PROTECTION_SQL+' ORDER BY portfolio_name,asset FOR UPDATE'])
-        self.assertEqual(len(writes), 6)
-        self.assertTrue(all(len(json.loads(args[0])) <= 16 for args in writes))
+        self.assertEqual(len(writes), 4)
+        self.assertTrue(all(len(json.loads(args[0])) <= 32 for args in writes))
         self.assertEqual(c.commits, 1)
         for tid, saved in c.positions.items():
             self.assertEqual(saved['payload']['immutable_history'], rows[0]['payload']['immutable_history'])
