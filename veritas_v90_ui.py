@@ -150,6 +150,32 @@ _CANONICAL_HTML = r'''<!doctype html>
 .intel-foot{grid-column:1/-1;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:5px}.intel-stat{font-size:8.5px;color:var(--muted);border-top:1px solid rgba(255,255,255,.045);padding-top:5px}.intel-stat b{display:block;color:#dce5ec;font-size:10px;margin-top:1px}
 .intel-metric small{display:block;font-size:7.5px;color:var(--muted);margin-top:3px}.intel-bar.unmeasured{background:repeating-linear-gradient(90deg,#26323c 0 5px,transparent 5px 9px)}
 .auto-learning{margin-top:8px;padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--card2)}.auto-learning-head{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px}.auto-learning-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:7px;margin-top:7px}.auto-learning-stat span{display:block;font-size:9px;color:var(--muted)}.auto-learning-stat b{display:block;font-size:12px;margin-top:2px}.auto-learning-note{font-size:9px;line-height:1.4;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}
+
+.market-now-card{margin-bottom:8px;background:linear-gradient(135deg,rgba(73,121,158,.10),rgba(17,24,32,.98) 48%,rgba(17,24,32,.98));border-color:rgba(125,164,194,.28)}
+.market-now-wrap{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(320px,.65fr);gap:10px;align-items:stretch}
+.market-state{border:1px solid rgba(255,255,255,.055);border-radius:11px;padding:12px;background:rgba(255,255,255,.012);min-width:0}
+.market-state-label{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.09em}
+.market-state-main{font-size:20px;font-weight:780;line-height:1.1;margin-top:4px;letter-spacing:-.015em}
+.market-state-summary{font-size:10px;line-height:1.5;color:#cdd7df;margin-top:7px;max-width:920px}
+.market-now-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.market-now-metric{border:1px solid rgba(255,255,255,.055);border-radius:9px;padding:8px;background:rgba(255,255,255,.012);min-width:0}
+.market-now-metric span{display:block;font-size:7.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.market-now-metric b{display:block;font-size:13px;line-height:1.15;margin-top:3px}
+.market-change-strip{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.05)}
+.market-change{border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:3px 7px;font-size:8px;color:#c6d1d9;background:rgba(255,255,255,.012);white-space:nowrap}
+.market-change b{color:#eef3f7}
+.opportunity-list{display:grid;gap:4px}
+.opportunity{display:grid;grid-template-columns:24px minmax(75px,.8fr) minmax(0,1.25fr) auto;gap:6px;align-items:center;border-top:1px solid rgba(255,255,255,.045);padding:6px 0;min-width:0}
+.opportunity:first-child{border-top:0}
+.opportunity-rank{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+.opportunity-main{min-width:0}.opportunity-main b{font-size:10px}.opportunity-main span{display:block;font-size:7.5px;color:var(--muted);margin-top:1px}
+.opportunity-thesis{font-size:8.2px;line-height:1.3;color:#cbd5dd;min-width:0;overflow-wrap:anywhere}
+.opportunity-score{text-align:right;white-space:nowrap}.opportunity-score b{font-size:10px}.opportunity-score span{display:block;font-size:7px;color:var(--muted);margin-top:1px}
+.action-center-card .action:first-child{border:1px solid rgba(117,176,216,.22);border-radius:9px;padding:8px;background:rgba(77,129,169,.06)}
+.section-kicker{font-size:8px;color:var(--muted);margin:-2px 0 7px}
+@media(max-width:900px){.market-now-wrap{grid-template-columns:1fr}.market-now-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.opportunity{grid-template-columns:22px minmax(70px,.75fr) minmax(0,1fr) auto}}
+@media(max-width:620px){.market-now-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.market-state-main{font-size:17px}.opportunity{grid-template-columns:20px minmax(68px,.7fr) minmax(0,1fr)}.opportunity-score{grid-column:3;text-align:left}}
+
 .insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.insight{border:1px solid var(--line);border-radius:8px;padding:7px;min-width:0}.insight h4{margin:0 0 5px;font-size:9px;color:var(--muted);font-weight:500;text-transform:uppercase}.insight div{font-size:9px;line-height:1.6}
 .scroll{max-height:450px;overflow:auto;padding-right:2px}
 @media(max-width:1050px){.asset{grid-template-columns:124px 78px 66px minmax(0,1fr);gap:4px}.intel-wrap{grid-template-columns:1fr}.intel-main{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-daily{grid-template-columns:repeat(3,minmax(0,1fr))}.intel-compare{grid-template-columns:repeat(2,minmax(0,1fr))}.intel-foot{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr}.two,.full{grid-column:1}.action{grid-template-columns:70px 86px 40px 1fr}.action .sl,.action .tp{display:none}.portfolio-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.status{grid-template-columns:repeat(2,minmax(0,1fr))}.detail-columns{grid-template-columns:1fr}.position-grid{grid-template-columns:1fr}.position-levels{grid-template-columns:repeat(5,minmax(0,1fr))}.trade-money{grid-template-columns:repeat(3,minmax(0,1fr))}}
@@ -253,19 +279,28 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
     <span class="pill" id="stamp">ОБНОВЛЕНО · —</span>
   </div>
 
-  <div class="card full" style="margin-bottom:8px">
-    <div class="title">Интеллект VERITAS</div>
-    <div id="intelligence"><div class="msg">Загрузка уровня знаний и опыта…</div></div>
+  <div class="card full market-now-card">
+    <div class="title">VERITAS · ЧТО ПРОИСХОДИТ НА РЫНКЕ СЕЙЧАС</div>
+    <div id="marketNow"><div class="msg">Формируем текущую картину рынка…</div></div>
+    <div id="marketChanges" class="market-change-strip"><span class="market-change">История изменений формируется…</span></div>
   </div>
 
   <div class="grid">
-    <div class="card">
+    <div class="card two action-center-card">
       <div class="title">Что делать сейчас</div>
+      <div class="section-kicker">Только решения, которые требуют внимания сейчас. Первый пункт — текущий приоритет VERITAS.</div>
       <div id="actions"><div class="msg">Загрузка сигналов…</div></div>
     </div>
 
-    <div class="card two">
-      <div class="title">Общий взгляд по активам</div>
+    <div class="card">
+      <div class="title">Лучшие возможности</div>
+      <div class="section-kicker">Рейтинг активов по качеству текущего направленного сценария.</div>
+      <div id="opportunities"><div class="msg">Оцениваем возможности…</div></div>
+    </div>
+
+    <div class="card full section">
+      <div class="title">Карта рынка</div>
+      <div class="section-kicker">Краткий взгляд по активам перед детальной матрицей сигналов.</div>
       <div id="assets"><div class="msg">Загрузка рынка…</div></div>
     </div>
 
@@ -283,7 +318,7 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
     </div>
 
     <div class="card full section">
-      <div class="title">Разбор выбранного сигнала</div>
+      <div class="title">Глубокий разбор выбранного сигнала</div>
       <div id="detail"><div class="msg">Нажми любую ячейку матрицы.</div></div>
     </div>
 
@@ -319,6 +354,12 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
         <div id="reviewSummary"><div class="msg">Загрузка накопленного опыта…</div></div>
         <div id="reviewBody"></div>
       </div>
+    </div>
+
+    <div class="card full section">
+      <div class="title">Интеллект VERITAS · контроль развития системы</div>
+      <div class="section-kicker">Вторичный слой: насколько система учится и применяет накопленный опыт. Он не конкурирует с рыночным решением на первом экране.</div>
+      <div id="intelligence"><div class="msg">Загрузка уровня знаний и опыта…</div></div>
     </div>
 
     <div class="card full section">
@@ -755,6 +796,56 @@ function renderSignals(){
   const ranked=rows.filter(x=>['LONG','SHORT'].includes(dir(x))).sort((a,b)=>
     (Number(selectedKeys.has(b.asset+'|'+b.horizon))-Number(selectedKeys.has(a.asset+'|'+a.horizon)))||rank(b)-rank(a));
   const seen=new Set(),best=ranked.filter(x=>{if(seen.has(x.asset))return false;seen.add(x.asset);return true}).slice(0,7);
+
+  const coreTfWeight={ '5m':.7,'1h':1.25,'4h':1.75,'1d':2.25,'3d':1.2,'7d':1.0,'1m':.35 };
+  const core=rows.filter(x=>x.source_gate_pass===true&&x.snapshot_stale!==true&&['LONG','SHORT'].includes(dir(x)));
+  const weighted=core.reduce((s,x)=>{const w=coreTfWeight[x.horizon]||.5;return {long:s.long+(dir(x)==='LONG'?w:0),short:s.short+(dir(x)==='SHORT'?w:0),total:s.total+w}}, {long:0,short:0,total:0});
+  const balance=weighted.total?(weighted.long-weighted.short)/weighted.total:0;
+  const derivedState=balance>.28?'Широкое преимущество покупателей':balance<-.28?'Широкое преимущество продавцов':balance>.10?'Умеренное преимущество покупателей':balance<-.10?'Умеренное преимущество продавцов':'Смешанный рынок · переходный режим';
+  const macroObj=(st.macro&&st.macro.macro)||st.macro||{},macroRegime=(st.macro&&st.macro.regime)||{};
+  const marketState=(macroRegime&&macroRegime.regime)?String(macroRegime.regime):derivedState;
+  const readyCount=core.filter(x=>paperStatus(x).ready).length;
+  const strongCount=core.filter(x=>['SUPER_LONG','SUPER_SHORT'].includes(tier(x))).length;
+  const bestNow=best[0]||null;
+  const fallbackSummary=bestNow
+    ? 'Главный направленный сценарий сейчас — '+lab(bestNow.asset)+' '+tierLabel(bestNow)+' на '+tfRu(bestNow.horizon)+'. Карта рынка показывает '+(balance>0?'преимущество Long-сценариев':balance<0?'преимущество Short-сценариев':'баланс направлений')+'.'
+    : 'Направленного преимущества недостаточно. VERITAS ожидает подтверждения структуры и не форсирует входы.';
+  const marketSummary=(macroRegime&&macroRegime.summary)?String(macroRegime.summary):fallbackSummary;
+  const driverBits=[];
+  if(macroObj&&macroObj.vix!=null)driverBits.push('VIX '+esc(macroObj.vix));
+  if(macroObj&&macroObj.dxy!=null)driverBits.push('DXY '+esc(macroObj.dxy));
+  if(macroObj&&macroObj.us10y!=null)driverBits.push('US10Y '+esc(macroObj.us10y));
+  const directionalShare=weighted.total?Math.max(weighted.long,weighted.short)/weighted.total:0;
+  $('marketNow').innerHTML='<div class="market-now-wrap"><div class="market-state"><div class="market-state-label">Текущий режим</div><div class="market-state-main">'+esc(marketState)+'</div><div class="market-state-summary">'+esc(marketSummary)+(driverBits.length?'<br><span style="color:var(--muted)">Контекст: '+driverBits.join(' · ')+'</span>':'')+'</div></div><div class="market-now-metrics">'+
+    '<div class="market-now-metric"><span>Направленность</span><b>'+(weighted.total?(100*directionalShare).toFixed(0)+'%':'—')+'</b></div>'+
+    '<div class="market-now-metric"><span>Strong-сигналы</span><b>'+strongCount+'</b></div>'+
+    '<div class="market-now-metric"><span>Готово к действию</span><b>'+readyCount+'</b></div>'+
+    '<div class="market-now-metric"><span>Главный приоритет</span><b>'+(bestNow?lab(bestNow.asset)+' · '+tierLabel(bestNow):'Ждать')+'</b></div>'+
+    '</div></div>';
+
+  const snapKey='veritas_v90_market_snapshot_r1',currentSnap={};
+  rows.forEach(x=>{currentSnap[x.asset+'|'+x.horizon]=tier(x)});
+  let previous=null;try{previous=JSON.parse(localStorage.getItem(snapKey)||'null')}catch(e){}
+  if(!previous||previous.at!==updatedAt){
+    const changeSet=[];
+    if(previous&&previous.map){
+      Object.entries(currentSnap).forEach(([k,v])=>{const old=previous.map[k];if(old&&old!==v){const parts=k.split('|');changeSet.push({asset:parts[0],horizon:parts[1],from:old,to:v})}});
+    }
+    st.marketChanges=changeSet.slice(0,8);
+    try{localStorage.setItem(snapKey,JSON.stringify({at:updatedAt,map:currentSnap}))}catch(e){}
+  }
+  const changes=Array.isArray(st.marketChanges)?st.marketChanges:[];
+  const tierRu=v=>String(v||'').replace('SUPER_LONG','Strong Long').replace('SUPER_SHORT','Strong Short').replace('LONG','Long').replace('SHORT','Short').replace('NO_TRADE','Wait');
+  $('marketChanges').innerHTML=changes.length
+    ? changes.map(ch=>'<span class="market-change"><b>'+lab(ch.asset)+' · '+tfShort(ch.horizon)+'</b> '+esc(tierRu(ch.from))+' → '+esc(tierRu(ch.to))+'</span>').join('')
+    : '<span class="market-change">'+(previous?'С прошлого обновления направленные сигналы не изменились':'База сравнения формируется')+'</span>';
+
+  $('opportunities').innerHTML=best.length?'<div class="opportunity-list">'+best.slice(0,5).map((x,i)=>{
+    const admission=paperStatus(x),conf=x.confidence==null?null:100*Number(x.confidence),rr=Number(rrOf(x));
+    const thesis=admission.ready?'Действие подтверждено':admission.short==='позиция'?'Сценарий уже реализуется':'Следим за условием входа';
+    return '<div class="opportunity"><span class="opportunity-rank">#'+(i+1)+'</span><div class="opportunity-main"><b>'+lab(x.asset)+'</b><span>'+tfRu(x.horizon)+'</span></div><div class="opportunity-thesis"><b class="'+cls(dir(x))+'">'+tierLabel(x)+'</b> · '+thesis+'</div><div class="opportunity-score"><b>'+(conf!=null&&Number.isFinite(conf)?conf.toFixed(0)+'/100':'—')+'</b><span>R/R '+(Number.isFinite(rr)?rr.toFixed(2):'—')+'</span></div></div>';
+  }).join('')+'</div>':'<div class="msg">Сильных направленных возможностей сейчас нет.</div>';
+
   $('actions').innerHTML=best.length?best.map(x=>{
     const rr=Number(rrOf(x)),admission=paperStatus(x),sig=directionLabel(dir(x),tier(x));
     const state=admission.ready?(admission.action==='ADD'?'ДОБОР ИСПОЛНЕН':'ОРДЕР ИСПОЛНЕН'):admission.short==='позиция'?'ПОЗИЦИЯ ОТКРЫТА':admission.short==='проверка'?'ПРОВЕРКА ВХОДА':'ВХОД ЗАБЛОКИРОВАН';
@@ -1835,7 +1926,7 @@ async function loadTrades(){
 }
 async function loadMacro(){
   const d=await get('macro','/api/v1/macro',7000);
-  if(d){st.macro=d;renderInsights()}
+  if(d){st.macro=d;renderInsights();renderSignals()}
 }
 async function loadAutonomousLearning(){
   const d=await get('autonomous-learning','/api/v1/autonomous-learning',8000);
