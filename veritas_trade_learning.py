@@ -24,7 +24,7 @@ from veritas_maintenance import MaintenanceDeferred
 
 VERSION = "CLOSED_TRADE_MICROBATCH_V1"
 JOB_NAME = "closed_trade_learning"
-BATCH_SIZE = 4
+BATCH_SIZE = 2
 MAX_BATCH_SIZE = 8
 EPOCH = "2026-09-26T07:13:08+00:00"
 
