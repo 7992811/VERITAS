@@ -16765,8 +16765,8 @@ class H(BaseHTTPRequestHandler):
         try:
             if not _BOOTSTRAP_READY and self.path.startswith('/api/v1/'):
                 from veritas_portfolio_read_model import starting_response
-                _starting=starting_response(VERSION)
-                _starting['readiness']=_STARTUP_GATE.snapshot()
+                _starting=starting_response(VERSION); _gate=globals().get('_STARTUP_GATE')
+                if _gate is not None: _starting['readiness']=_gate.snapshot()
                 self.reply(_starting,503); return
             if self.path.startswith('/internal/v90/database-lease'):
                 import hmac
@@ -16781,11 +16781,11 @@ class H(BaseHTTPRequestHandler):
                                 'storage_generation':'9.0','database_url':DATABASE_URL},200)
             elif self.path.split('?',1)[0]=='/readyz':
                 from veritas_operational_status import readiness
-                startup=_STARTUP_GATE.snapshot()
-                state=readiness(bool(_BOOTSTRAP_READY and startup.get('ok')),bool(DATABASE_URL),_v90_pg_health_snapshot())
+                _gate=globals().get('_STARTUP_GATE'); startup=_gate.snapshot() if _gate is not None else {'ok':bool(_BOOTSTRAP_READY),'phase':'READY' if _BOOTSTRAP_READY else 'STARTING'}
+                state=readiness(bool(_BOOTSTRAP_READY and startup.get('ok')),bool(globals().get('DATABASE_URL')),_v90_pg_health_snapshot())
                 self.reply({'version':VERSION,**state,'startup':startup,'release':VR.snapshot()},200 if state['ok'] else 503)
             elif self.path.startswith('/healthz'):
-                startup=_STARTUP_GATE.snapshot()
+                _gate=globals().get('_STARTUP_GATE'); startup=_gate.snapshot() if _gate is not None else {'ok':bool(_BOOTSTRAP_READY),'phase':'READY' if _BOOTSTRAP_READY else 'STARTING'}
                 self.reply({'ok':True,'scope':'PROCESS_LIVENESS','version':VERSION,'role':SERVICE_ROLE,
                             'bootstrap_ready':bool(_BOOTSTRAP_READY and startup.get('ok')),
                             'phase':'READY' if _BOOTSTRAP_READY and startup.get('ok') else startup.get('phase','STARTING'),
