@@ -708,14 +708,21 @@ const setupRu=v=>{const k=String(v||'').toUpperCase();if(k.includes('CLIMAX_REVE
 async function get(key,url,ms){
   if(document.visibilityState==='hidden'||st.busy[key])return null;st.busy[key]=true;
   const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),ms);
-  try{const r=await fetch(url,{cache:'no-store',signal:ctl.signal});if(!r.ok)throw new Error('HTTP '+r.status);return await r.json()}
-  catch(e){return null}finally{clearTimeout(tm);st.busy[key]=false}
+  try{
+    const r=await fetch(url,{cache:'no-store',signal:ctl.signal});
+    const body=await r.json();
+    if(!r.ok){
+      if(r.status===503&&body&&body.status==='STARTING')return body;
+      throw new Error('HTTP '+r.status);
+    }
+    return body;
+  }catch(e){return null}finally{clearTimeout(tm);st.busy[key]=false}
 }
 
 function renderHealth(){
-  const h=st.health||{};
+  const h=st.health||{}, startup=h.startup||{};
   $('sys').textContent=h.ok?'СИСТЕМА · ОНЛАЙН':'СИСТЕМА · ЗАПУСК';$('sys').className='pill '+(h.ok?'ok':'warn');
-  const storageReady=h.bootstrap_ready&&h.storage!==false;
+  const storageReady=(h.bootstrap_ready||startup.checks?.database)&&h.storage!==false;
   $('db').textContent=storageReady?'БАЗА · ГОТОВА':'БАЗА · ОЖИДАНИЕ';$('db').className='pill '+(storageReady?'ok':'warn');
 }
 
@@ -1672,7 +1679,8 @@ function updatePositionBookFromBootstrap(d){
 }
 function applyBootstrap(d){
   if(!d)return;
-  st.health={ok:true,bootstrap_ready:!!(d.health&&d.health.bootstrap_ready),storage:d.health?.storage};
+  st.health={ok:!!(d.health&&d.health.ok),bootstrap_ready:!!(d.health&&d.health.bootstrap_ready),
+    storage:d.health?.storage,startup:d.health?.startup||{}};
   st.signals={signals:d.signals||[],at:d.at,signals_updated_at:d.signals_updated_at,status:d.status};
   // Portfolio and trade reads own their state. A slow or partial matrix refresh
   // must never replace either ledger with an empty or older snapshot.
@@ -1683,9 +1691,29 @@ function applyBootstrap(d){
   renderHealth();renderSignals();renderIntelligence();renderInsights();
 }
 
+let startupRetryTimer=null;
+function scheduleStartupRetry(seconds=2){
+  if(startupRetryTimer!==null||document.visibilityState==='hidden')return;
+  const delay=Math.max(750,Math.min(2500,1000*Number(seconds||2)));
+  startupRetryTimer=setTimeout(()=>{startupRetryTimer=null;refreshLiveState();},delay);
+}
+function clearStartupRetry(){
+  if(startupRetryTimer!==null){clearTimeout(startupRetryTimer);startupRetryTimer=null;}
+}
 async function loadBootstrap(){
   const d=await get('bootstrap','/api/v1/dashboard-bootstrap?view=signals',30000);
-  if(d&&d.status==='OK')applyBootstrap(d);
+  if(d&&d.status==='OK'){
+    clearStartupRetry();
+    applyBootstrap(d);
+    return;
+  }
+  if(d&&d.status==='STARTING'){
+    const startup=d.readiness||{};
+    st.health={ok:false,bootstrap_ready:false,
+      storage:!!(startup.checks&&startup.checks.database),startup};
+    renderHealth();
+    scheduleStartupRetry(Math.min(2,Number(d.retry_after_seconds||2)));
+  }
 }
 async function loadPortfolios(){
   if(st.busy['paper-portfolios'])return;
