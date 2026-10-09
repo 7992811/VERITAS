@@ -277,3 +277,21 @@ Rules:
 Telemetry now separates seeded, handed-off, unseeded, irrecoverable and actually
 sampled positions. The sidecar remains cached-only, uses no network fetches,
 takes no paper-book lock and has no trading authority.
+
+
+## Closed-trade backlog scheduling (v91.8.42)
+
+Historical outcome-tier rematerialization uses the existing durable four-phase
+closed-trade learner. The cooperative trade batch is reduced from four to two
+trades so one SQL/diagnostic phase remains inside the existing six-second
+background budget.
+
+When a bounded phase actually advances backlog state, it coalesces another
+`learning_trade_evidence` request with a five-second retry interval. The
+budget is not widened and no parallel worker is created. A materialize pass with
+zero rows stops the self-request chain and returns to the normal 30-second
+periodic cadence.
+
+A successful materialize pass also coalesces `learning_v2_shadow` so newly
+proved outcome-tier rows can become research evidence without waiting for the
+next scheduled Learning 2.0 rotation.
