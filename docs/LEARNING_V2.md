@@ -233,3 +233,26 @@ is marked ambiguous rather than favorable.
 
 No replay candidate has production authority. Existing prospective replay sample
 and confidence-interval gates remain unchanged.
+
+
+## Bounded bootstrap phases (v91.8.34)
+
+Learning startup remains fail-closed, but the previous phase combined knowledge
+schema creation, knowledge restore, Learning 2.0 registry DDL and replay-receipt
+DDL inside one six-second cooperative maintenance budget. On a busy production
+database that could hit PostgreSQL statement timeout even though every
+individual operation was valid.
+
+Bootstrap is now split into idempotent retryable phases:
+
+1. autonomous-learning state schema;
+2. forecast schema;
+3. trade-learning schema;
+4. knowledge schema;
+5. knowledge restore;
+6. Learning 2.0 registry + replay schema;
+7. durable snapshot restore and readiness.
+
+A failed phase does not advance `boot_phase`. Market and execution loops remain
+available while history/learning readers stay blocked behind
+`LEARNING_BOOTSTRAP_PENDING`. The six-second budget is not enlarged.
