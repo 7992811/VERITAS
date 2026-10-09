@@ -1196,13 +1196,16 @@ def create_application(connect, summary_provider, *, configuration=None):
     coordinator.manual_admission = ManualAccountAdmission(ledger_connect, adapter, account, evidence=evidence)
     order_stream, order_stream_error = None, None
     if _enabled("VERITAS_TBANK_ORDER_STREAM_ENABLED"):
-        try:
-            from veritas_tbank_order_stream import TBankOrderEventStream
-            order_stream = TBankOrderEventStream(
-                token, account, instrument_uid=CNY_UID, environment=environment,
-                on_event=lambda _event: coordinator.reconcile(), log=print)
-        except Exception:
-            order_stream, order_stream_error = None, "ORDER_STREAM_INIT_FAILED"
+        with _EAGER_ORDER_STREAM_LOCK:
+            order_stream = _EAGER_ORDER_STREAM
+        if order_stream is None:
+            try:
+                from veritas_tbank_order_stream import TBankOrderEventStream
+                order_stream = TBankOrderEventStream(
+                    token, account, instrument_uid=CNY_UID, environment=environment,
+                    on_event=lambda _event: coordinator.reconcile(), log=print)
+            except Exception:
+                order_stream, order_stream_error = None, "ORDER_STREAM_INIT_FAILED"
     application = TradeHttpApplication(
         repository=repository, coordinator=coordinator, facts=facts,
         owner=owner, service_key=service_key, ledger=ledger, funding=funding, evidence=evidence,
@@ -1242,6 +1245,70 @@ _CONFIG_NAMES = (
 )
 _CACHE = {}
 _CACHE_LOCK = threading.RLock()
+_EAGER_ORDER_STREAM = None
+_EAGER_ORDER_STREAM_LOCK = threading.RLock()
+
+
+def eager_order_stream_status():
+    with _EAGER_ORDER_STREAM_LOCK:
+        stream = _EAGER_ORDER_STREAM
+    if stream is None:
+        return {"started": False, "mode": "DISABLED"}
+    try:
+        return stream.status()
+    except Exception:
+        return {"started": False, "last_error": "ORDER_STREAM_STATUS_FAILED"}
+
+
+def start_eager_order_stream(connect, summary_provider, *, log=print):
+    """Start the read-only T-Bank broker-event stream at service bootstrap.
+
+    This does not enable order submission. It may run even when proposal
+    generation is disabled; broker events then remain telemetry-only until a
+    Currency application exists.
+    """
+    global _EAGER_ORDER_STREAM
+    if not _enabled("VERITAS_TBANK_ORDER_STREAM_ENABLED"):
+        return None
+    if not callable(connect) or not callable(summary_provider):
+        raise ServiceError("EXPLICIT_SERVICE_DEPENDENCIES_REQUIRED", 503)
+    environment = os.environ.get("VERITAS_CURRENCY_TRADE_ENVIRONMENT", "production")
+    if environment not in _SCHEMAS:
+        raise ServiceError("INVALID_EXECUTION_ENVIRONMENT", 503)
+    account = os.environ.get("TBANK_ACCOUNT_ID", "").strip()
+    token_name = "TBANK_API_TOKEN" if environment == "production" else "TBANK_SANDBOX_TOKEN"
+    token = os.environ.get(token_name, "").strip()
+    if not account or not token:
+        try:
+            log(json.dumps({"event":"tbank_order_event_stream","environment":environment,
+                            "stream":"bootstrap","status":"DISABLED",
+                            "code":"BROKER_BINDING_NOT_CONFIGURED"},separators=(",",":")))
+        except Exception:
+            pass
+        return None
+    with _EAGER_ORDER_STREAM_LOCK:
+        if _EAGER_ORDER_STREAM is not None:
+            return _EAGER_ORDER_STREAM
+        from veritas_tbank_order_stream import TBankOrderEventStream
+        def reconcile_on_event(_event):
+            try:
+                app = get_application(connect, summary_provider)
+                if app is not None:
+                    app.coordinator.reconcile()
+            except Exception:
+                return
+        stream = TBankOrderEventStream(
+            token, account, instrument_uid=CNY_UID, environment=environment,
+            on_event=reconcile_on_event, log=log)
+        stream.start()
+        _EAGER_ORDER_STREAM = stream
+        try:
+            log(json.dumps({"event":"tbank_order_event_stream","environment":environment,
+                            "stream":"bootstrap","status":"STARTED","code":None},
+                           separators=(",",":")))
+        except Exception:
+            pass
+        return stream
 
 
 def make_summary_provider(read_summary, lock):
