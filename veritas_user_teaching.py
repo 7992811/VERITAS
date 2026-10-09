@@ -197,8 +197,18 @@ def breakout_policy_snapshot():
 
 
 def acceleration_policy_snapshot():
-    """Owner-approved trend-acceleration, reversal-exit and winner-protection policy."""
+    """Immutable snapshot of the original acceleration teaching.
+
+    Later owner-authorized refinements have separate teaching IDs. Do not let
+    current runtime additions rewrite the payload/hash of this older record.
+    """
     policy=_copy(CTC.TREND_ACCELERATION_POLICY)
+    policy.pop("execution_efficiency",None)
+    reversal=dict(policy.get("reversal_exit") or {})
+    for key in ("fast_exit_held_horizons","require_exact_held_horizon_opposite",
+                "require_fast_confirmed_opposite"):
+        reversal.pop(key,None)
+    policy["reversal_exit"]=reversal
     return {
         "teaching_id": ACCELERATION_TEACHING_ID,
         "source_type": "USER_AUTHORED_OPERATIONAL_POLICY",
