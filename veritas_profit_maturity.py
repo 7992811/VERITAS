@@ -3,7 +3,7 @@ from __future__ import annotations
 import json, math
 from datetime import datetime, timezone
 
-import veritas_canonical_constitution as CTC
+import veritas_owner_policy as VOP
 import veritas_costs as VC
 import veritas_profit_protection as VPP
 import veritas_timeframe_structure as TFS
@@ -66,10 +66,10 @@ def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
         net_now=None
     positive=bool(favorable>0 and net_now is not None and net_now>0)
     tf_seconds=int(TFS.TIMEFRAMES.get(tf) or 60)
-    policy=CTC.LIFECYCLE_POLICY
-    window_seconds=max(int(policy.get("profit_lock_window_seconds_floor") or 300),tf_seconds)
-    required=int(policy.get("profit_lock_requires_consecutive_positive_windows") or 3)
-    minimum_dwell=int(policy.get("profit_lock_minimum_dwell_seconds") or 600)
+    policy=VOP.PROFIT_MATURITY
+    window_seconds=max(int(policy.get("window_seconds_floor") or 300),tf_seconds)
+    required=int(policy.get("required_positive_windows") or 3)
+    minimum_dwell=int(policy.get("minimum_dwell_seconds") or 600)
     bucket=int(observed//window_seconds)
     last=p.get("profit_maturity_last_window")
     streak=int(p.get("profit_maturity_positive_streak") or 0)
@@ -102,7 +102,7 @@ def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
         "profit_maturity_armed":armed,
         "profit_maturity_armed_at":(p.get("profit_maturity_armed_at") or
                                     (clock.isoformat() if armed else None)),
-        "profit_maturity_owner_teaching_id":CTC.LEARNING_POLICY.get("owner_teaching_id"),
+        "profit_maturity_owner_teaching_id":VOP.TEACHING_ID,
     }
     new_stop=None
     if armed:
