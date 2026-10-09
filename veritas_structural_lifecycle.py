@@ -511,12 +511,17 @@ def fast_entry_pass(ns,rows,now,*,runtime=False,portfolio_names=None):
             )['trade_plan'].get('entry_timing_gate') or {}).get('eligible'))
             for candidates in grouped.values() for row in candidates]
         pending = any(readiness)
-        if pending:
+        lock_state=VPG._mutex.snapshot()
+        waiting_ordinary=int(lock_state.get('ordinary_waiters') or 0)>0
+        reserved=False
+        if pending and not waiting_ordinary:
             VPG._mutex.reserve_entry_turn(seconds=2.0)
+            reserved=True
         else:
             VPG._mutex.cancel_entry_turn()
         return {'status':'BUSY','reason':reason,'paper_only':True,
-                'entry_turn_reserved':pending}
+                'entry_turn_reserved':reserved,'entry_retry_pending':pending,
+                'yielded_to_waiting_portfolio':bool(pending and waiting_ordinary)}
     with ExitStack() as stack:
         if runtime:
             # Avoid even opening a DB connection when another local book

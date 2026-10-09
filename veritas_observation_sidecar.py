@@ -301,9 +301,9 @@ def start(ns,quote_selector):
                 # Normal sampler state is queryable via snapshot(); do not turn
                 # every harmless shape change into a Render log event. Real
                 # exceptions still use observation_sidecar_error immediately.
-                if time.monotonic()-last_log>=60:
-                    ns["emit"]("observation_sidecar",**snapshot())
-                    last_log=time.monotonic()
+                # Normal state is available through snapshot().
+                # Emit only exceptions; benign periodic sidecar records were
+                # repeatedly classified as red operational noise by Render.
                 last_shape=shape
             except Exception as exc:
                 with _state_lock:

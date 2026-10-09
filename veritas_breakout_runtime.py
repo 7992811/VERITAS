@@ -593,7 +593,8 @@ class BreakoutRuntime:
         if not pending:
             VPG._mutex.cancel_entry_turn()
         entry_seconds = time.monotonic()-entry_started
-        if execution.get('status') == 'BUSY' and execution.get('entry_turn_reserved') is not False:
+        if execution.get('status') == 'BUSY' and execution.get(
+                'entry_retry_pending', execution.get('entry_turn_reserved') is not False):
             self._pending_entry_rows = pending
         self._publish_rows(pending, execution, clock)
         self.state.update(status='WAITING_FOR_BOOK' if execution.get('status') == 'BUSY' else 'OK',
@@ -705,9 +706,10 @@ class BreakoutRuntime:
                 entry_started = time.monotonic()
                 execution = self.entry_pass(rows, clock)
                 entry_seconds = time.monotonic()-entry_started
-                if execution.get("status") == "BUSY" and execution.get("entry_turn_reserved") is not False:
-                    # Reuse this bounded batch, rather than rebuilding all
-                    # seven assets before trying the reserved book turn.
+                if execution.get("status") == "BUSY" and execution.get(
+                        "entry_retry_pending", execution.get("entry_turn_reserved") is not False):
+                    # Reuse this bounded batch even when we deliberately yield
+                    # the next lock turn to an already-waiting portfolio.
                     self._pending_entry_rows = rows
                 publish_started = time.monotonic()
                 self._publish_rows(rows, execution, clock)
