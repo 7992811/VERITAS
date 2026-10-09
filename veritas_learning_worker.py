@@ -19,6 +19,7 @@ WORKER_PROTOCOL="EXTERNAL_LEARNING_WORKER_V1"
 INTERVAL=max(60,int(os.getenv("VERITAS_LEARNING_V2_INTERVAL_SECONDS","120")))
 ASSETS=("BTC","ETH","NQ","BRENT","GOLD","MOEX","CNYRUBF")
 PER_ASSET_LIMIT=max(32,min(256,int(os.getenv("VERITAS_LEARNING_V2_PER_ASSET_LIMIT","96"))))
+EXPECTED_DATABASE=os.getenv("VERITAS_LEARNING_EXPECTED_DATABASE","veritas_knowledge").strip()
 
 
 def _payload(row):
@@ -186,7 +187,19 @@ def publish(conn,snapshot):
 
 
 def run_once(dsn):
-    with psycopg.connect(dsn,row_factory=dict_row,autocommit=False) as conn:
+    with psycopg.connect(dsn,row_factory=dict_row,autocommit=False,
+                         application_name="veritas-learning-v2") as conn:
+        db=conn.execute("SELECT current_database() AS db").fetchone()["db"]
+        if db!=EXPECTED_DATABASE:
+            raise RuntimeError("LEARNING_DATABASE_REJECTED")
+        conn.execute("SET statement_timeout='5000ms'")
+        conn.execute("SET lock_timeout='500ms'")
+        conn.execute("SET idle_in_transaction_session_timeout='5000ms'")
+        required=conn.execute("""SELECT count(*) AS n FROM information_schema.tables
+            WHERE table_schema=current_schema()
+              AND table_name=ANY(%s)""",(["ledger_events","v90_decision_episodes","v90_learning_episodes","paper_trades"],)).fetchone()["n"]
+        if int(required)!=4:
+            raise RuntimeError("LEARNING_SOURCE_SCHEMA_INCOMPLETE")
         ensure_schema(conn)
         decisions,trades,errors=load_inputs(conn)
         snapshot=L.research_snapshot(decisions,trades)
