@@ -159,6 +159,13 @@ _CANONICAL_HTML = r'''<!doctype html>
 .position-risk-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin-top:3px;padding:4px;border:1px solid rgba(255,255,255,.055);border-radius:6px;background:rgba(255,255,255,.012)}
 .position-risk-cell{min-width:0}.position-risk-cell span{display:block;font-size:6.1px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.position-risk-cell b{display:block;font-size:8.1px;line-height:1.1;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pf-risk-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}.pf-risk-box{border:1px solid rgba(255,255,255,.06);border-radius:9px;padding:8px;background:rgba(255,255,255,.012);min-width:0}.pf-risk-box span{display:block;font-size:8px;color:var(--muted)}.pf-risk-box b{display:block;font-size:13px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pf-risk-box small{display:block;font-size:7px;color:var(--muted);margin-top:2px;line-height:1.25}
+
+.pf-cockpit{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-top:9px}.pf-cockpit-cell{border-top:1px solid rgba(255,255,255,.055);padding-top:6px;min-width:0}.pf-cockpit-cell span{display:block;font-size:7px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pf-cockpit-cell b{display:block;font-size:10px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pf-attribution{display:grid;gap:5px;margin-top:7px}.pf-attribution-row{display:grid;grid-template-columns:minmax(90px,1.3fr) repeat(4,minmax(0,1fr));gap:7px;align-items:center;font-size:8px;padding-top:5px;border-top:1px solid rgba(255,255,255,.04)}.pf-attribution-row span:first-child{font-weight:650;color:#dce5ec}.pf-attribution-row span:not(:first-child){text-align:right;color:var(--muted)}.pf-attribution-row b{color:var(--text);font-weight:620}
+.risk-budget{height:4px;border-radius:999px;background:#202b34;margin-top:3px;overflow:hidden}.risk-budget i{display:block;height:100%;border-radius:999px;background:#89afca}
+.profit-lock{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;margin-top:3px;padding-top:3px;border-top:1px solid rgba(255,255,255,.035)}.profit-lock span{display:block;font-size:5.9px;color:var(--muted)}.profit-lock b{display:block;font-size:7.4px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:1050px){.pf-cockpit{grid-template-columns:repeat(3,minmax(0,1fr))}.pf-attribution-row{grid-template-columns:minmax(90px,1.2fr) repeat(2,minmax(0,1fr))}.pf-attribution-row .attr-hide{display:none}}
+@media(max-width:650px){.pf-cockpit{grid-template-columns:repeat(2,minmax(0,1fr))}.profit-lock{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.position-risk-strip{grid-template-columns:repeat(3,minmax(0,1fr))}.pf-risk-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 /* Performance, exposure and complete-ledger quality, with readable mobile rows. */
@@ -907,6 +914,21 @@ function renderPortfolioPanel(ps){
   const pf=knownNumber(p.profit_factor),pfText=pf==null?(p.profit_factor_state==='NO_LOSSES'?'Без убытков':'—'):n(pf,2);
   const cny=p.name==='Currency'?(p.current_cny_admission||(p.admission_trace||[]).find(x=>x.asset==='CNYRUBF')):null;
   const currencyNow=!fresh?'Состояние портфеля не обновлено.':!cny?'Текущий допуск по CNYRUBf ещё не получен.':('Сейчас: '+dirRu(cny.direction)+' · '+tfShort(cny.horizon)+' · '+(cny.target_fraction>0?('цель '+pct(100*Number(cny.target_fraction))):reasonRu(cny.reason)));
+  const openRows=(p.positions||[]).map(z=>{
+    const total=knownNumber(z.mark_to_market_net_pnl_rub??tradeTotal(z));
+    const realized=knownNumber(z.realized_net_after_booked_costs_rub);
+    const unreal=knownNumber(z.unrealized_pnl_rub);
+    const stopPnl=knownNumber(z.pnl_if_effective_stop_rub??z.net_profit_protection?.net_at_stop_rub);
+    const risk=total!=null&&stopPnl!=null?Math.max(0,total-stopPnl):null;
+    const frac=100*Number(z.target_fraction||0);
+    return {z,total,realized,unreal,stopPnl,risk,frac};
+  });
+  const openMtm=openRows.every(x=>x.total!=null)?openRows.reduce((s,x)=>s+x.total,0):null;
+  const openRealized=openRows.every(x=>x.realized!=null)?openRows.reduce((s,x)=>s+x.realized,0):null;
+  const openUnreal=openRows.every(x=>x.unreal!=null)?openRows.reduce((s,x)=>s+x.unreal,0):null;
+  const openRisk=openRows.every(x=>x.risk!=null)?openRows.reduce((s,x)=>s+x.risk,0):null;
+  const topRisk=[...openRows].sort((a,b)=>(b.risk||0)-(a.risk||0)).slice(0,5);
+  const attr=[...openRows].sort((a,b)=>Math.abs(b.total||0)-Math.abs(a.total||0)).slice(0,6);
   root.innerHTML='<div class="pf-caption">С начала учёта · выберите портфель для подробностей</div><div class="pf-compare"><div class="pf-row pf-colnames"><span>Портфель</span><span>Доходность</span><span>Просадка</span><span>Прибыльных</span></div>'+ps.map(q=>{const a=portfolioView(q);return'<button type="button" class="pf-row" data-portfolio="'+esc(q.name)+'" aria-pressed="'+(q.name===p.name)+'"><span><b>'+esc(portfolioName(q.name))+'</b><small>'+esc(q.name==='Currency'?'CNYRUBf':q.name)+'</small></span><b class="'+tone(a.ret)+'">'+signedPct(a.ret)+'</b><span>'+pct(a.dd)+'</span><span>'+(a.winRate==null?'—':n(a.winRate,1)+'%')+'</span></button>';}).join('')+'</div>'+
     '<div class="pf-detail"><div class="pf-heading"><div><h3>'+esc(portfolioName(p.name))+'</h3><div class="pf-amount">'+rub(v.balance)+'</div><div class="pf-secondary">'+(v.usd==null?'—':n(v.usd,0)+' $')+'</div></div><div class="pf-status '+(!fresh||v.risk.new_risk===false?'warn':'')+'">'+status+'</div></div>'+
     (!fresh?'<div class="pf-foot warn">'+(st.portfolioLoadStatus==='STALE'?'Показаны последние полученные данные. Наличие текущих позиций проверяется.':'Данные ещё не получены. Отсутствие данных не означает отсутствие позиций.')+'</div>':'')+
@@ -918,9 +940,23 @@ function renderPortfolioPanel(ps){
       '<div class="pf-risk-box"><span>Риск до стопов</span><b class="'+(v.stopLoss>0?'warn':'')+'">'+rub(v.stopLoss)+'</b><small>'+(v.stopLossPct==null?'—':n(v.stopLossPct,2)+'% NAV')+'</small></div>'+
       '<div class="pf-risk-box"><span>Стоп-сценарий</span><b class="'+(v.stopStatus==='COMPLETE'?'ok':'warn')+'">'+esc(v.stopStatus==='COMPLETE'?'Рассчитан':'Нет полного расчёта')+'</b><small>С учётом тейков, расходов и проскальзывания</small></div>'+
     '</div>'+
+    '<div class="pf-cockpit">'+
+      '<div class="pf-cockpit-cell"><span>P&L открытых</span><b class="'+tone(openMtm)+'">'+rub(openMtm)+'</b></div>'+
+      '<div class="pf-cockpit-cell"><span>Реализовано в открытых</span><b class="'+tone(openRealized)+'">'+rub(openRealized)+'</b></div>'+
+      '<div class="pf-cockpit-cell"><span>Переоценка остатка</span><b class="'+tone(openUnreal)+'">'+rub(openUnreal)+'</b></div>'+
+      '<div class="pf-cockpit-cell"><span>Capital at risk</span><b class="'+(openRisk>0?'warn':'')+'">'+rub(openRisk)+'</b></div>'+
+      '<div class="pf-cockpit-cell"><span>Gross / Net</span><b>'+mult(v.gross)+' / '+mult(v.net)+'</b></div>'+
+      '<div class="pf-cockpit-cell"><span>Cash / вне позиций</span><b>'+(v.cash==null?'—':pct(100*v.cash))+'</b></div>'+
+    '</div>'+
     '<div class="pf-sections"><section class="pf-section"><h4>Риск и ограничения</h4>'+pair('Текущая просадка',pct(v.dd),v.dd>0?'warn':'')+meter(v.dd,v.ddLimit,true)+pair('Лимит просадки',pct(v.ddLimit))+pair('Загрузка / лимит',mult(v.gross)+' / '+mult(v.limit))+meter(v.gross,v.limit)+pair('Новые позиции',v.risk.new_risk===true?'Разрешены':v.risk.new_risk===false?'Заблокированы':'—')+'</section>'+
     '<section class="pf-section"><h4>Экспозиция</h4>'+pair('Длинные позиции',mult(v.long))+pair('Короткие позиции',mult(v.short))+pair('Чистая экспозиция',mult(v.net))+pair('Вне позиций',v.cash==null?'—':pct(100*v.cash))+'<div class="pf-foot">Объём позиций относительно размера портфеля. 1× = 100%. Показатель «Вне позиций» не учитывает требования к марже.</div></section>'+
     '<section class="pf-section"><h4>Качество сделок</h4><div class="pf-quality">'+metric('Прибыльных',v.winRate==null?'—':n(v.winRate,1)+'%','',v.closed==null?'Нет статистики':(v.wins??'—')+' из '+v.closed)+metric('Коэф. прибыли',pfText,pf==null?'':pf>=1?'ok':'bad','Прибыли / убытки')+metric('Средняя сделка',rub(v.avg),tone(v.avg))+metric('Прибыль / убыток',p.payoff_ratio==null?'—':n(p.payoff_ratio,2),'','Средние значения')+'</div></section></div>'+
+    '<div class="pf-sections" style="margin-top:14px"><section class="pf-section"><h4>Risk budget · открытые позиции</h4>'+
+      (topRisk.length?topRisk.map(x=>'<div class="pf-pair"><span>'+esc(lab(x.z.asset))+' · '+dirRu(x.z.direction)+'</span><b>'+rub(x.risk)+'</b></div><div class="risk-budget"><i style="width:'+(openRisk>0?Math.min(100,100*(x.risk||0)/openRisk):0).toFixed(1)+'%"></i></div>').join(''):'<div class="pf-foot">Нет открытых позиций.</div>')+
+      '<div class="pf-foot">Денежный giveback от текущего P&L до исполнения эффективного стопа. Это не VaR и не заменяет стресс-тест.</div></section>'+
+    '<section class="pf-section" style="grid-column:span 2"><h4>Contribution / attribution · открытые позиции</h4><div class="pf-attribution">'+
+      (attr.length?attr.map(x=>'<div class="pf-attribution-row"><span>'+esc(lab(x.z.asset))+' · '+esc(portfolioName(p.name))+'</span><span>P&L <b class="'+tone(x.total)+'">'+rub(x.total)+'</b></span><span>Realized <b>'+rub(x.realized)+'</b></span><span class="attr-hide">Unrealized <b>'+rub(x.unreal)+'</b></span><span class="attr-hide">Risk <b>'+rub(x.risk)+'</b></span></div>').join(''):'<div class="pf-foot">Нет открытых позиций.</div>')+
+      '</div></section></div>'+
     '<div class="pf-section" style="margin-top:14px"><h4>Результат всех закрытых сделок</h4><div class="pf-quality pf-ledger">'+metric('Доход от цены',rub(p.closed_gross_pnl_rub),tone(p.closed_gross_pnl_rub))+metric('Комиссии',rub(p.closed_fees_rub))+metric('Фондирование',rub(p.closed_funding_rub))+metric('Итог',rub(v.pnl),tone(v.pnl))+'</div><div class="pf-foot">Коэффициент прибыли и средняя сделка рассчитаны после комиссий и фондирования по всей истории закрытых сделок. Просадка показана от достигнутого пика до текущего значения.</div></div></div>';
   root.innerHTML+=strategyQualityPanel(p);
   if($('qualityScope'))$('qualityScope').onchange=e=>{st.qualityScope=e.target.value;renderPortfolioPanel(ps);};
@@ -1048,6 +1084,12 @@ function renderPortfolios(){
         '<div class="position-risk-cell"><span>Можно отдать до SL</span><b class="'+(Number(z.stop_scenario_delta_rub)<0?'warn':'')+'">'+(z.stop_scenario_delta_rub==null?'—':rub(Math.max(0,-Number(z.stop_scenario_delta_rub))))+'</b></div>'+
       '</div>'+
       '<div class="position-accounting"><span>Доход от фиксаций<b>'+rub(z.realized_gross_pnl_rub)+'</b></span><span>Переоценка остатка<b>'+rub(z.unrealized_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(z.trade_fees_rub)+'</b></span><span>Фондирование<b>'+rub(z.trade_funding_rub)+'</b></span><span>От максимума<b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span></div>'+
+      '<div class="profit-lock">'+
+        '<div><span>Макс. движение MFE</span><b>'+mfeText+'</b></div>'+
+        '<div><span>P&L сейчас</span><b class="'+tone(z.mark_to_market_net_pnl_rub??pnl)+'">'+rub(z.mark_to_market_net_pnl_rub??pnl)+'</b></div>'+
+        '<div><span>Защищено по SL</span><b class="'+tone(z.pnl_if_effective_stop_rub??protection.net_at_stop_rub)+'">'+rub(z.pnl_if_effective_stop_rub??protection.net_at_stop_rub)+'</b></div>'+
+        '<div><span>Giveback</span><b class="'+(Number(z.stop_scenario_delta_rub)<0?'warn':'')+'">'+(z.stop_scenario_delta_rub==null?'—':rub(Math.max(0,-Number(z.stop_scenario_delta_rub))))+'</b></div>'+
+      '</div>'+
       '<div class="position-learning">'+
         '<span class="position-chip">'+prob.label+' <b>'+probText+'</b></span>'+
         '<span class="position-chip">MFE <b>'+mfeText+'</b></span>'+
