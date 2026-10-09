@@ -30,7 +30,9 @@ the corresponding heavy jobs from the trading process.
 Learning 2.0 candidates now receive an immutable decision-ledger cutoff at
 registration. Training evidence is frozen. Later scheduler runs only accumulate
 decision IDs greater than that cutoff, so re-reading a recent window cannot
-double-count evidence or turn training rows into validation rows.
+double-count evidence or turn training rows into validation rows. Cohorts also
+freeze source key, exact contract identity and policy hash; evidence from another
+expiry, provider or rule version cannot validate the candidate.
 
 Candidate states:
 - COLLECTING / EVALUATING — prospective sample still building.
