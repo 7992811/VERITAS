@@ -2168,6 +2168,17 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     exit_patch={'last_exit_source_identity':source_audit['price_source_identity'],
                 'last_exit_market_observed_at':quote['observed_at'],
                 'last_exit_thesis_decision':source_audit.get('last_exit_thesis_decision')}
+    # No-action protective telemetry is authoritative on the live position to
+    # keep the 15s guard lightweight. Before any reduction/close, copy the
+    # latest observed path/excursions into the durable trade record so closed
+    # learning never loses MFE/MAE or source-path evidence.
+    live_payload=_position_payload(z)
+    for key in ('observation_path','price_source_lock','price_source_status',
+                'source_locked_mark','mfe_pct','mae_pct','r55_lifetime_mfe_pct',
+                'r55_lifetime_mae_pct','r55_last_path_mark_at',
+                'r55_last_path_mark_price'):
+        if key in live_payload:
+            exit_patch[key]=live_payload[key]
     if completed:
         exit_patch.update(exit_reason=str(reason),close_reason=str(reason))
     else:
