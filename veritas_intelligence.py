@@ -17786,6 +17786,21 @@ def _v90r37_compact_decision_payload(p):
       'execution_eligibility':_v90_small_dict(p.get('execution_eligibility'),(
           'eligible','reason','paper_eligible','paper_execution_reason','production_eligible','direct_sources',
           'source_policy','minimum_sources','paper_source_blockers')),
+      # Learning admission evidence is a compact duplicate of facts already
+      # frozen below. It changes no trading decision; it only makes blocked
+      # directional outcomes queryable without rehydrating the full graph.
+      'plan_eligible':plan.get('eligible'),
+      'plan_reason':plan.get('reason'),
+      'trade_entry_eligible':(p.get('execution_eligibility') or {}).get('eligible'),
+      'trade_entry_reason':(p.get('execution_eligibility') or {}).get('reason'),
+      'paper_execution_reason':(p.get('execution_eligibility') or {}).get('paper_execution_reason'),
+      'final_gate_status':(
+          'BLOCK' if (plan.get('eligible') is False
+                      or (p.get('execution_eligibility') or {}).get('eligible') is False)
+          else 'PASS' if (plan.get('eligible') is True
+                          and (p.get('execution_eligibility') or {}).get('eligible') is True)
+          else None),
+      'final_gate_blockers':list((p.get('execution_eligibility') or {}).get('paper_source_blockers') or [])[:16],
       'decision_stage':p.get('decision_stage'),
       'calibrated_probability':(p.get('calibration') or {}).get('probability_correct'),
       'trade_plan':{
