@@ -862,6 +862,8 @@ class ContinuousLearning:
                         max_learnable_blocker_n=diag.get("max_learnable_false_block_n_in_context",0),
                         zero_candidate_reason=diag.get("zero_entry_candidate_reason"),
                         known_blockers=diag.get("known_blockers") or {},
+                        outcome_trade_rows=diag.get("outcome_trade_rows",0),
+                        replay_contexts_ge_min=diag.get("replay_contexts_ge_min",0),
                         production_influence=False,**metrics)
         return {"status":"OK","asset":asset,"hypotheses":len(current.get("hypotheses") or []),
                 "total_hypotheses":len(hypotheses),"counts":counts,
