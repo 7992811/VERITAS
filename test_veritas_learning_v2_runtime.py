@@ -36,7 +36,10 @@ class LearningV2RuntimeTests(unittest.TestCase):
             "setup_family":"BREAKOUT","policy_hash":"p","source_key":"S","mae":-.004,"mfe":.014,
             "capture_ratio":.2,"net_pnl_rub":10.0,"primary_attribution":"OK",
         } for _ in range(20)]
-        app=C.ContinuousLearning(namespace(lambda: None)); app.ready=True
+        events=[]
+        ns=namespace(lambda: None)
+        ns["emit"]=lambda event,**values: events.append((event,values))
+        app=C.ContinuousLearning(ns); app.ready=True
         @contextmanager
         def tx(connect, context):
             yield Cursor(decisions,trades)
@@ -50,6 +53,9 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertEqual(result["asset"],"BTC")
         self.assertEqual(cursor["asset_index"],1)
         self.assertGreater(result["hypotheses"],0)
+        self.assertEqual(events[-1][0],"learning_v2_shadow_snapshot")
+        self.assertEqual(events[-1][1]["asset"],"BTC")
+        self.assertFalse(events[-1][1]["production_influence"])
         snap=app.snapshot()["learning_v2"]
         self.assertFalse(snap["automatic_production_promotion"])
         self.assertEqual(snap["registry"],registry)
