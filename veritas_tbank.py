@@ -603,6 +603,17 @@ class TBankConnection:
             self.unary_recovery_count += 1
         return True
 
+    def _safe_stream_log(self, status, code=None):
+        try:
+            print(json.dumps({
+                "event": "tbank_market_data_stream",
+                "stream": "market_data_stream",
+                "status": status,
+                "code": code,
+            }, separators=(",", ":")), flush=True)
+        except Exception:
+            pass
+
     def _stream_loop(self):
         attempt = 0
         while not self.stop_event.is_set():
@@ -617,6 +628,7 @@ class TBankConnection:
                 self.stream_error = None
             subscribed = set()
             try:
+                self._safe_stream_log("CALL_OPEN")
                 for item in self.reader.stream_market(
                         list(by_uid), depth=10, include_info=True,
                         ping_ms=STREAM_PING_MS):
@@ -643,8 +655,11 @@ class TBankConnection:
                         subscribed.add(label)
                     if {"last_price", "order_book", "info"} <= subscribed:
                         with self.lock:
+                            was_subscribed = self.stream_state == "SUBSCRIBED"
                             self.stream_state = "SUBSCRIBED"
                             self.stream_error = None
+                        if not was_subscribed:
+                            self._safe_stream_log("SUBSCRIBED")
                         attempt = 0
                     if item.get("last_price"):
                         self._put_quote(item["last_price"], by_uid)
@@ -666,6 +681,7 @@ class TBankConnection:
                     self.stream_state = "RECONNECTING"
                     self.stream_error = code
                     self.stream_reconnects += 1
+                self._safe_stream_log("RECONNECTING", code)
                 attempt += 1
                 delay = min(STREAM_RECONNECT_MAX_SECONDS, .25 * (2 ** min(attempt, 5)))
                 self.stop_event.wait(delay)
