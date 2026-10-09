@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import veritas_execution as VX
 import veritas_portfolio as VP
+import veritas_position_guard as VPG
 import veritas_profit_protection as PP
 from veritas_trade_view import enrich_positions
 
@@ -163,6 +164,24 @@ class NetProtectionTests(unittest.TestCase):
         p = json.loads(update.args[1][1])
         self.assertFalse(p['profit_protection_active'])
         self.assertLess(p['net_profit_protection']['net_at_stop_rub'], 0)
+
+
+
+    def test_missing_stop_repair_uses_only_immutable_initial_stop(self):
+        z = dict(self.z)
+        z['stop_price'] = None
+        z['payload'] = {'initial_stop_price': 99}
+        self.assertEqual(VPG.recover_missing_hard_stop(z), 99)
+
+        z['payload']['trailing_stop'] = 100.5
+        self.assertIsNone(VPG.recover_missing_hard_stop(z))
+
+        z['payload'] = {'initial_stop_price': 101}
+        self.assertIsNone(VPG.recover_missing_hard_stop(z))
+
+        z.update(direction='SHORT', avg_entry_price=100)
+        z['payload'] = {'initial_stop_price': 103}
+        self.assertEqual(VPG.recover_missing_hard_stop(z), 103)
 
 
 if __name__ == '__main__':
