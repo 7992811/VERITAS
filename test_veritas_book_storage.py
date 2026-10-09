@@ -88,6 +88,15 @@ class BookStorageTests(unittest.TestCase):
         self.assertEqual(len(result['columns']), 2)
         self.assertLess(len(json.dumps(result)), 500)
 
+    def test_prepared_metadata_skips_catalog_query_but_keeps_local_set(self):
+        prepared={'requested':'lz4','metadata':metadata()}
+        result=BS.configure(self.c,requested='lz4',prepared=prepared)
+        self.assertNotIn(BS.METADATA_SQL,self.c.events)
+        self.assertEqual(self.c.events,['SAVEPOINT',BS.SET_LZ4_SQL,'RELEASE SAVEPOINT'])
+        self.assertEqual(result['status'],'APPLIED')
+        self.assertEqual(result['method'],'lz4')
+        self.assertEqual(result['prior_method'],'pglz')
+
     def test_build_without_lz4_skips_set(self):
         self.c.data['lz4_supported'] = False
         result = BS.configure(self.c, requested='lz4')
