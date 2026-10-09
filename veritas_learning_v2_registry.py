@@ -109,10 +109,11 @@ def _entry_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
         if not blocked or blocker not in blockers: continue
         direction=str(r.get("candidate_direction") or "")
         fr=_num(r.get("forward_return"))
-        if direction not in ("LONG","SHORT") or fr is None: continue
+        move,_=L2.candidate_favourable_move(r,direction)
+        if direction not in ("LONG","SHORT") or fr is None or move is None: continue
         signed=fr if direction=="LONG" else -fr
         n+=1; added+=1; sum_signed+=signed; days.add(ts.date().isoformat())
-        wins+=int(signed>=L2.ENTRY_FALSE_BLOCK_MOVE)
+        wins+=int(move>=L2.ENTRY_FALSE_BLOCK_MOVE)
         adverse+=int(signed<=-L2.ENTRY_FALSE_BLOCK_MOVE)
         if type(rid) is int: last_id=max(last_id,rid)
     day_list=sorted(days)[-MAX_DAY_KEYS:]
