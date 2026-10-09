@@ -77,8 +77,15 @@ def _position_management_projection(position):
                    'RUNNER' if runner is not None else
                    'TRAILING_RUNNER' if bool(p.get('r17_tp1_done')) and
                    _first_number(p.get('trailing_stop')) is not None else None)
-    next_target = ladder[stage]['price'] if 0 <= stage < len(ladder) else _first_number(
-        p.get('take_price'), p.get('target_price'), p.get('last_target_price'))
+    if 0 <= stage < len(ladder):
+        next_target = ladder[stage]['price']
+    elif second_kind in ('TP2', 'RUNNER') and second is not None:
+        next_target = second
+    elif second_kind == 'TRAILING_RUNNER':
+        next_target = None
+    else:
+        next_target = _first_number(p.get('take_price'), p.get('target_price'),
+                                    p.get('last_target_price'))
 
     structural = bool(p.get('structural_policy_version'))
     missing = []

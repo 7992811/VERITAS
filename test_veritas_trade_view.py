@@ -170,6 +170,29 @@ class TradeResultTests(unittest.TestCase):
         self.assertEqual(result['second_take_kind'], 'RUNNER')
         self.assertEqual(result['target_plan_mode'], 'RUNNER')
 
+    def test_management_projection_trailing_runner_has_no_stale_next_target(self):
+        position = {
+            'direction':'LONG', 'stop_price':99,
+            'payload': {
+                'initial_take_price':102, 'take_price':102,
+                'trailing_stop':101, 'r17_tp1_done':True,
+                'active_target_stage':1,
+            },
+        }
+        result = _position_management_projection(position)
+        self.assertEqual(result['second_take_kind'], 'TRAILING_RUNNER')
+        self.assertIsNone(result['second_take_price'])
+        self.assertIsNone(result['next_target_price'])
+        audited = dict(position, last_price=104, price_source_lock={'key':'TEST'},
+                       price_source_status='OK', execution_timeframe='4h',
+                       tp1_done=True, net_profit_protection={'state':'PROTECTED','net_at_stop_rub':1},
+                       **result)
+        audit = _position_protection_audit(audited)
+        self.assertEqual(audit['status'], 'OK')
+        self.assertIsNone(audit['distance_to_next_target_pct'])
+        self.assertFalse(audit['target_reached'])
+        self.assertNotIn('TARGET_REACHED_PENDING_LIFECYCLE', audit['warnings'])
+
     def test_management_projection_flags_open_position_without_any_stop(self):
         position = {
             'direction': 'LONG', 'stop_price': None,
