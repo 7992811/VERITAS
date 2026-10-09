@@ -38,20 +38,54 @@ LEFT JOIN pg_catalog.pg_attribute t
 """
 
 
-def _active(c):
-    """Do not execute PostgreSQL statements on fakes or inactive connections."""
+def _usable(c):
+    """Only real, open PostgreSQL connections may run storage probes."""
     if TransactionStatus is None:
         return False
     if getattr(c, 'closed', None) is not False or getattr(c, 'broken', None) is not False:
         return False
-    return getattr(getattr(c, 'info', None), 'transaction_status', None) is TransactionStatus.INTRANS
+    return getattr(getattr(c, 'info', None), 'transaction_status', None) in (
+        TransactionStatus.IDLE, TransactionStatus.INTRANS)
+
+
+def _active(c):
+    """Book configuration itself still requires the caller-owned transaction."""
+    return bool(_usable(c) and
+                getattr(getattr(c, 'info', None), 'transaction_status', None)
+                is TransactionStatus.INTRANS)
 
 
 def _policy(value, allowed):
     return value if isinstance(value, str) and value in allowed else None
 
 
-def configure(c, *, requested=None):
+def prepare(c, *, requested=None):
+    """Read static codec/table policy before the local book lock when possible.
+
+    This performs no financial-table mutation and never changes the session GUC.
+    The returned metadata is deliberately small and is consumed only by the
+    immediately following configure call on the same connection. If the
+    connection is already inside a transaction, callers fall back to the original
+    in-lock probe so nested/reentrant semantics remain unchanged.
+    """
+    if not _usable(c):
+        return None
+    if getattr(getattr(c, 'info', None), 'transaction_status', None) is not TransactionStatus.IDLE:
+        return None
+    if requested is None:
+        requested = os.getenv('VERITAS_BOOK_TOAST_COMPRESSION', 'lz4')
+    requested = requested.strip().lower() if isinstance(requested, str) else None
+    if requested != 'lz4':
+        return None
+    with c.transaction():
+        metadata = c.execute(METADATA_SQL).fetchone()
+    if not isinstance(metadata, Mapping):
+        return None
+    keys = ('current_method','lz4_supported','positions_compression','positions_storage',
+            'trades_compression','trades_storage')
+    return {'requested':'lz4','metadata':{key:metadata.get(key) for key in keys}}
+
+def configure(c, *, requested=None, prepared=None):
     """Return small diagnostics; the outer book transaction owns commit/rollback.
 
     Only columns using the default compression policy are eligible. An explicit
@@ -75,8 +109,12 @@ def configure(c, *, requested=None):
     set_error = None
     try:
         with c.transaction():
-            metadata = c.execute(METADATA_SQL).fetchone()
-            metadata = metadata if isinstance(metadata, Mapping) else {}
+            if (isinstance(prepared, Mapping) and prepared.get('requested') == 'lz4'
+                    and isinstance(prepared.get('metadata'), Mapping)):
+                metadata = prepared['metadata']
+            else:
+                metadata = c.execute(METADATA_SQL).fetchone()
+                metadata = metadata if isinstance(metadata, Mapping) else {}
             prior = _policy(metadata.get('current_method'), ('pglz', 'lz4'))
             diagnostic.update(method=prior, prior_method=prior)
             columns = {
