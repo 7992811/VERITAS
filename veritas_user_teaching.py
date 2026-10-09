@@ -11,6 +11,7 @@ import json
 from collections.abc import Mapping
 
 import veritas_canonical_constitution as CTC
+import veritas_owner_policy as VOP
 
 TEACHING_ID = "USER_TF_STRUCTURE_2026_10_06"
 SOURCE_TIMESTAMP = "2026-10-06T19:56:32Z"
@@ -20,8 +21,8 @@ MA_TEACHING_ID = "USER_DAILY_MA_REBOUND_2026_10_07"
 MA_SOURCE_TIMESTAMP = "2026-10-06T21:26:00Z"
 BREAKOUT_TEACHING_ID = "USER_INTRABAR_STRUCTURE_2026_10_07"
 BREAKOUT_SOURCE_TIMESTAMP = "2026-10-07T08:23:55Z"
-REVIEW_TEACHING_ID = "USER_TRADE_REVIEW_2026_10_09"
-REVIEW_SOURCE_TIMESTAMP = "2026-10-09T06:03:00Z"
+REVIEW_TEACHING_ID = VOP.TEACHING_ID
+REVIEW_SOURCE_TIMESTAMP = VOP.SOURCE_TIMESTAMP
 REVIEW_USER_CORRECTION_RU = (
     "Импульсный портфель в разобранном кейсе сработал правильно: валидный ранний "
     "структурный вход должен быть доступен также Champion и Challenger; различие "
@@ -207,20 +208,19 @@ def trade_review_policy_snapshot():
         "portfolios": list(CTC.PORTFOLIO_ORDER),
         "execution_policy": {
             "verified_structural_event_entry_permission_is_shared":
-                CTC.LIFECYCLE_POLICY["verified_structural_event_entry_permission_is_shared"],
+                VOP.PORTFOLIO_PARITY["verified_structural_event_entry_permission_is_shared"],
             "portfolio_role_changes_size_not_event_existence":
-                CTC.LIFECYCLE_POLICY["portfolio_role_changes_size_not_event_existence"],
+                VOP.PORTFOLIO_PARITY["portfolio_role_changes_size_not_event_existence"],
             "canonical_setup_hard_invalidation_shared":
-                CTC.LIFECYCLE_POLICY["canonical_setup_hard_invalidation_shared_across_portfolios"],
+                VOP.PORTFOLIO_PARITY["canonical_setup_hard_invalidation_shared_across_portfolios"],
             "profit_lock_requires_consecutive_positive_windows":
-                CTC.LIFECYCLE_POLICY["profit_lock_requires_consecutive_positive_windows"],
-            "profit_lock_minimum_dwell_seconds":
-                CTC.LIFECYCLE_POLICY["profit_lock_minimum_dwell_seconds"],
-            "profit_lock_floor": CTC.LIFECYCLE_POLICY["profit_lock_floor"],
+                VOP.PROFIT_MATURITY["required_positive_windows"],
+            "profit_lock_minimum_dwell_seconds":VOP.PROFIT_MATURITY["minimum_dwell_seconds"],
+            "profit_lock_floor":VOP.PROFIT_MATURITY["floor"],
             "structural_trailing_before_profit_maturity":
-                CTC.LIFECYCLE_POLICY["structural_trailing_before_profit_maturity"],
+                VOP.PROFIT_MATURITY["structural_trailing_before_maturity"],
         },
-        "learning_policy": _copy(CTC.LEARNING_POLICY),
+        "learning_policy": {**_copy(CTC.LEARNING_POLICY), **_copy(VOP.SELF_LEARNING)},
         "requirements": {
             "entry_parity": "One verified structural event may be opened by Impulse, Champion and Challenger in the same decision cycle; portfolio role controls size/scale.",
             "shared_invalidation": "A proved hard thesis invalidation of one canonical setup invalidates every open portfolio copy of that exact setup.",
