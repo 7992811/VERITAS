@@ -157,3 +157,22 @@ therefore remain usable without rewriting history.
 A free-text reason can explain a proven block only if it contains a blocker
 already present in the canonical blocker catalog. Reason text by itself never
 creates a block or a new policy.
+
+
+## Admission-state persistence (v91.8.31)
+
+Decision deduplication treats execution admission as material state.
+
+The durable decision signature now includes:
+
+- execution eligibility and reason;
+- paper eligibility and paper execution reason;
+- the sorted structured paper-source blocker set.
+
+Therefore a signal can remain LONG/SHORT with the same structural event while a
+new execution/admission state still produces a new compact decision event. This
+prevents an earlier admitted or unblocked snapshot from hiding a later blocked
+state inside the same signal bar.
+
+The signature change affects only durable event persistence. It does not alter
+the signal, order, risk, execution or broker decision itself.
