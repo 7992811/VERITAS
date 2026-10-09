@@ -66,8 +66,8 @@ history worker supplies an adequate ordered path.
 
 ## Runtime resource policy
 
-The production shadow lane rotates one asset per run every 60 seconds. Each run
-reads at most 128 materialized decision outcomes and 128 eligible trade episodes
+The production shadow lane rotates one asset per run on a 120-second base cadence. Each run
+reads at most 96 materialized decision outcomes and 96 eligible trade episodes
 for that asset. The outcome itself comes from `v90_decision_episodes`; the
 ledger JSON is opened only to recover the frozen pre-outcome setup, source and
 policy context. This replaces the previous all-market decision+outcome JSON join
@@ -130,3 +130,28 @@ bounded diagnostics explaining a zero-candidate result: cohort size, blocked
 directional count, favorable missed moves, learnable/hard-veto counts,
 unparsed blocked episodes and the maximum recurring learnable blocker count.
 Raw reason prose is not emitted.
+
+
+## Event-driven cadence and path evidence (v91.8.30)
+
+The production web process is CPU-limited. Learning 2.0 therefore uses a
+96-row asset cohort with a six-second atomic budget and a 120-second base
+interval. Stop/Exit replay uses a 600-second idle interval, but generation of a
+new Stop/Exit hypothesis immediately requests the existing coalesced replay job.
+This avoids repeated NO_WORK polling and avoids duplicate asset work after a
+missed checkpoint.
+
+Missed-entry discovery now uses the largest observed move in the frozen signal
+direction: terminal return or the decision episode's MFE/MAE path excursion.
+For LONG, favorable path evidence is MFE; for SHORT, it is -MAE. This is evidence
+that a directional move was observed, not proof that a hypothetical order would
+have survived its stop or captured that return.
+
+Prospective promotion remains stricter: path excursion can count as a favorable
+observation, but the candidate still requires positive average terminal signed
+return. Stop ordering and executable counterfactual P&L remain the responsibility
+of the separate ordered-path replay layer.
+
+Additional timing codes such as R66_WAIT_RETEST and
+STRUCTURAL_ENTRY_TOO_LATE_TO_TARGET are observable for diagnosis only. They are
+not added to the learnable relaxation whitelist.

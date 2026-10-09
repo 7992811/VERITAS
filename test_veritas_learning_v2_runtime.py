@@ -74,6 +74,8 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertIn("d.payload->>'plan_eligible'",source)
         self.assertIn("AS admission_eligible",source)
         self.assertIn("AS final_gate_status",source)
+        self.assertIn("forward_return,mfe,mae",source)
+        self.assertIn("e.forward_return,e.mfe,e.mae",source)
 
     def test_trade_cohort_provenance_comes_from_original_trade(self):
         source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
@@ -82,16 +84,39 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertIn("t.payload#>>'{price_source_lock,contract_id}'",source)
         self.assertIn("t.payload->>'strategy_policy_hash'",source)
 
+    def test_stop_or_exit_candidate_requests_replay_immediately(self):
+        decisions=[]
+        trades=[{"closed_at":"2026-10-08T10:10:00Z","asset":"BTC","horizon":"5m","regime":"TREND",
+                 "setup_family":"BREAKOUT","policy_hash":"p","source_key":"S","contract_id":"C",
+                 "mae":-.004,"mfe":.014,"capture_ratio":.2,"net_pnl_rub":10.0,
+                 "primary_attribution":"OK"} for _ in range(20)]
+        events=[]
+        ns=namespace(lambda:None)
+        ns["emit"]=lambda *a,**k:events.append((a,k))
+        app=C.ContinuousLearning(ns); app.ready=True
+        @contextmanager
+        def tx(connect,context):
+            yield Cursor(decisions,trades)
+        context=SimpleNamespace(check=lambda:None)
+        registry={"version":"test","counts":{},"candidates":[],"shadow_champions":[]}
+        with patch.object(C,"transaction",tx), \
+             patch.object(C.LEARNING_V2_REGISTRY,"sync",return_value=registry), \
+             patch.object(C.STORE,"publish_snapshot",return_value=True), \
+             patch.object(app.lane,"request",return_value=True) as request:
+            result,_=app.learning_v2_shadow(context,{})
+        self.assertEqual(result["status"],"OK")
+        request.assert_called_with("learning_v2_replay")
+
     def test_periodic_job_is_registered_with_bounded_budget(self):
         app=C.ContinuousLearning(namespace(lambda: None))
         lane=app.lane
-        self.assertEqual(C.LEARNING_V2_INPUT_LIMIT,128)
+        self.assertEqual(C.LEARNING_V2_INPUT_LIMIT,96)
         self.assertIn("learning_v2_shadow",lane.callbacks)
         self.assertIn("learning_v2_replay",lane.callbacks)
-        self.assertEqual(lane.options["learning_v2_shadow"]["max_seconds"],5)
+        self.assertEqual(lane.options["learning_v2_shadow"]["max_seconds"],6)
         self.assertEqual(lane.options["learning_v2_replay"]["max_seconds"],5)
-        self.assertEqual(lane.options["learning_v2_replay"]["interval_seconds"],180)
-        self.assertEqual(lane.options["learning_v2_shadow"]["interval_seconds"],60)
+        self.assertEqual(lane.options["learning_v2_replay"]["interval_seconds"],600)
+        self.assertEqual(lane.options["learning_v2_shadow"]["interval_seconds"],120)
         self.assertTrue(lane.options["learning_v2_shadow"]["lightweight"])
 
 if __name__=="__main__":

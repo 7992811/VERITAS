@@ -42,7 +42,7 @@ CANDIDATE_WORK_VERSION = "FORECAST_CONSUMPTION_V1"
 CANDIDATE_MAINTENANCE_SECONDS = 120
 LEARNING_V2_SNAPSHOT_NAME = "learning_v2_shadow"
 LEARNING_V2_ASSETS = ("BTC","ETH","NQ","BRENT","GOLD","MOEX","CNYRUBF")
-LEARNING_V2_INPUT_LIMIT = 128
+LEARNING_V2_INPUT_LIMIT = 96
 
 
 def _json(value):
@@ -233,8 +233,8 @@ class ContinuousLearning:
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6),
-                ("learning_v2_shadow", self.learning_v2_shadow, 60, 5),
-                ("learning_v2_replay", self.learning_v2_replay, 180, 5))
+                ("learning_v2_shadow", self.learning_v2_shadow, 120, 6),
+                ("learning_v2_replay", self.learning_v2_replay, 600, 5))
         for name, fn, interval, seconds in jobs:
             if name == "learning_bootstrap":
                 callback = fn
@@ -691,14 +691,14 @@ class ContinuousLearning:
         with transaction(self.connect, context) as c:
             decisions=c.execute("""
               WITH recent AS MATERIALIZED (
-                SELECT entity_key,decision_ts,asset,horizon,regime,decision,forward_return
+                SELECT entity_key,decision_ts,asset,horizon,regime,decision,forward_return,mfe,mae
                 FROM v90_decision_episodes
                 WHERE asset=%s
                 ORDER BY decision_ts DESC
                 LIMIT %s
               )
               SELECT d.id AS decision_id,e.entity_key,e.decision_ts AS event_ts,
-                     e.asset,e.horizon,e.regime,e.decision,e.forward_return,
+                     e.asset,e.horizon,e.regime,e.decision,e.forward_return,e.mfe,e.mae,
                      COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
                               d.payload#>>'{trade_plan,setup_family}','') AS setup_family,
                      COALESCE(d.payload#>>'{learning_provenance,policy_hash}',
@@ -801,6 +801,9 @@ class ContinuousLearning:
         if not STORE.publish_snapshot(self.connect,LEARNING_V2_SNAPSHOT_NAME,LEARNING_V2.VERSION,
                                       value,observed_at=clock()):
             raise RuntimeError("learning v2 snapshot rejected")
+        if any(isinstance(h,dict) and h.get("kind") in ("STOP_GEOMETRY","EXIT_CAPTURE")
+               for h in (current.get("hypotheses") or [])):
+            self.lane.request("learning_v2_replay")
         with self._lock:
             self._learning_v2=deepcopy(value)
         cursor["asset_index"]=(index+1)%len(LEARNING_V2_ASSETS)
