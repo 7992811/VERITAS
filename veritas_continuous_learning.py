@@ -856,6 +856,10 @@ class ContinuousLearning:
                         largest_context_n=diag.get("largest_decision_context_n",0),
                         contexts_ge_min=diag.get("decision_contexts_ge_min",0),
                         max_learnable_blocker_n=diag.get("max_learnable_false_block_n_in_context",0),
+                        outcome_evidence_trades=diag.get("outcome_evidence_trade_rows",0),
+                        path_evidence_trades=diag.get("path_evidence_trade_rows",0),
+                        stop_replay_ready=diag.get("stop_replay_ready_rows",0),
+                        exit_replay_ready=diag.get("exit_replay_ready_rows",0),
                         zero_candidate_reason=diag.get("zero_entry_candidate_reason"),
                         known_blockers=diag.get("known_blockers") or {},
                         production_influence=False,**metrics)
