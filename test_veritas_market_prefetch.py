@@ -2,10 +2,12 @@
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
-from veritas_market_runtime import install_market_runtime_guard
+from veritas_market_runtime import (install_market_runtime_guard, normalize_moex_index_session,
+                                   moex_index_session_open)
 
 
 def runtime(fetch, assets=None, cache=None):
@@ -74,6 +76,69 @@ class MarketPrefetchTests(unittest.TestCase):
         self.assertIsNone(bundles['ETH']['raw'])
         self.assertEqual(bundles['ETH']['error'], 'MARKET_PREFETCH_TIMEOUT_25S')
         self.assertEqual(stats['timed_out_assets'], ['ETH'])
+
+
+class MoexExtendedSessionTests(unittest.TestCase):
+    def test_versioned_index_session_window(self):
+        self.assertTrue(moex_index_session_open(
+            datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)))  # 22:22 MSK
+        self.assertFalse(moex_index_session_open(
+            datetime(2026,10,9,20,50,0,tzinfo=timezone.utc)))   # 23:50 MSK
+        self.assertFalse(moex_index_session_open(
+            datetime(2026,10,10,12,0,tzinfo=timezone.utc)))     # Saturday
+        self.assertTrue(moex_index_session_open(
+            datetime(2026,9,25,10,0,tzinfo=timezone.utc)))      # legacy 13:00 MSK
+        self.assertFalse(moex_index_session_open(
+            datetime(2026,9,25,18,30,tzinfo=timezone.utc)))     # legacy 21:30 MSK
+
+    def bundle(self, observed='2026-10-09T19:22:35+00:00', source='MOEX ISS IMOEX'):
+        return {'asset':'MOEX','raw':{
+            'asset':'MOEX','price':2370.6,'source_names':{'primary':source},
+            'market_observed_at':observed,'market_open':False,
+            'source_gate_pass':False,'data_latency_class':'DELAYED_RESEARCH',
+            'direct_sources':1,
+        },'error':None}
+
+    def test_fresh_official_imoex_quote_repairs_old_evening_session_flag(self):
+        now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)  # 22:22:44 Moscow
+        out=normalize_moex_index_session(self.bundle(),now)
+        raw=out['raw']
+        self.assertTrue(raw['market_open'])
+        self.assertTrue(raw['source_gate_pass'])
+        self.assertEqual(raw['data_latency_class'],'LIVE_EXCHANGE')
+        self.assertTrue(raw['moex_session_repaired'])
+        self.assertEqual(raw['moex_session_policy'],'IMOEX_EXTENDED_2026_09_26')
+
+    def test_epoch_exchange_time_is_accepted_but_not_retrieval_time(self):
+        now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)
+        b=self.bundle(observed=now.timestamp()-9)
+        self.assertTrue(normalize_moex_index_session(b,now)['raw']['market_open'])
+        stale=self.bundle(observed=now.timestamp()-121)
+        self.assertFalse(normalize_moex_index_session(stale,now)['raw']['market_open'])
+
+    def test_repair_is_fail_closed_outside_verified_scope(self):
+        cases=[
+            (datetime(2026,10,9,3,59,tzinfo=timezone.utc), self.bundle()),  # before 07:00 MSK
+            (datetime(2026,10,9,20,50,tzinfo=timezone.utc), self.bundle(observed='2026-10-09T20:49:55+00:00')),
+            (datetime(2026,10,10,12,0,tzinfo=timezone.utc), self.bundle(observed='2026-10-10T11:59:55+00:00')),
+            (datetime(2026,9,25,19,0,tzinfo=timezone.utc), self.bundle(observed='2026-09-25T18:59:55+00:00')),
+            (datetime(2026,10,9,19,22,44,tzinfo=timezone.utc), self.bundle(source='Yahoo Finance')),
+        ]
+        for now,bundle in cases:
+            with self.subTest(now=now,source=bundle['raw']['source_names']['primary']):
+                raw=normalize_moex_index_session(bundle,now)['raw']
+                self.assertFalse(raw['market_open'])
+                self.assertFalse(raw['source_gate_pass'])
+                self.assertNotIn('moex_session_repaired',raw)
+
+    def test_missing_direct_source_or_stale_snapshot_is_never_promoted(self):
+        now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)
+        for change in ({'direct_sources':0},{'snapshot_stale':True}):
+            b=self.bundle();b['raw'].update(change)
+            raw=normalize_moex_index_session(b,now)['raw']
+            self.assertFalse(raw['market_open'])
+            self.assertFalse(raw['source_gate_pass'])
+
 
 
 if __name__ == '__main__':

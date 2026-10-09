@@ -68,6 +68,16 @@ class AccountingTables:
                 (o['portfolio_name'],o['asset'],o['side'],o['payload'].get('entry_event_id')) == args
                 for o in self.orders)
             return Result({'ok':1} if found else None)
+        if (q.startswith('SELECT COALESCE(SUM(notional_rub),0) AS exit_notional_rub')
+                and ' FROM paper_orders ' in q):
+            trade_id=args[0]
+            exits=[o for o in self.orders
+                   if o.get('trade_id')==trade_id and o.get('side') in ('SELL','BUY_TO_COVER')]
+            notional=sum(float(o.get('notional_rub') or 0.0) for o in exits)
+            units=sum(float(o.get('notional_rub') or 0.0)/float(o.get('price') or 1.0)
+                      for o in exits if float(o.get('price') or 0.0)>0)
+            return Result({'exit_notional_rub':notional,
+                           'exit_units':units,'exit_fill_count':len(exits)})
         if q.startswith('INSERT INTO '):
             table = q.split('INSERT INTO ',1)[1].split('(',1)[0]
             fields = q.split('(',1)[1].split(')',1)[0].split(',')

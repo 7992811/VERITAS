@@ -106,8 +106,8 @@ jobs:
         run: python -m unittest -v test_veritas_tbank.py
       - name: Execution safety tests
         run: python -m unittest -v test_veritas_v90_safety.py test_veritas_memory_runtime.py test_veritas_memory_reclaim.py test_veritas_r80_snapshot_lifetimes.py test_veritas_portfolio_prepass_lifetimes.py test_veritas_dashboard_snapshot_lifetimes.py
-      - name: Market case regressions
-        run: python -m unittest -v test_veritas_v90_market_cases.py
+      - name: Market case and exchange-session regressions
+        run: python -m unittest -v test_veritas_v90_market_cases.py test_veritas_market_prefetch.py
       - name: GOLD source and senior-thesis regressions
         run: python -m unittest -v test_veritas_gold_profinance.py test_veritas_thesis_guard.py
       - name: Single-source policy regressions

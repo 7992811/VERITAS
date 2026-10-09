@@ -3364,10 +3364,10 @@ def _moex_parse_dt(v):
 
 
 def _moex_index_open_now():
-    m=datetime.now(timezone.utc).astimezone(ZoneInfo('Europe/Moscow'))
-    if m.weekday()>=5: return False
-    mins=m.hour*60+m.minute
-    return 590<=mins<1140  # official IMOEX calculation window: 09:50–19:00 MSK
+    # One versioned authority owns the session calendar. Do not duplicate old
+    # 09:50–19:00 assumptions in the production monolith.
+    from veritas_market_runtime import moex_index_session_open
+    return moex_index_session_open()
 
 
 def _moex_current_quote():
@@ -6994,10 +6994,18 @@ def cycle(selected_horizons=None, cycle_mode='FULL'):
                 if kill:
                     research_dec='NO_TRADE'
                 v70_pretrade=v70_pretrade_shadow(asset,horizon,research_dec,conf,calibration,agents,orth_evidence,source_gate,time_gate,f,event_shadow)
-                if V70_GATE_MODE=='enforce' and research_dec in ('LONG','SHORT') and (not v70_pretrade.get('allow',True) or v70_pretrade.get('action')=='WAIT'):
+                # CRITICAL INVARIANT: execution/data/timing vetoes cannot erase
+                # the market thesis. Only an actual THESIS_VETO (or kill switch
+                # above) may neutralize research_decision. Final execution remains
+                # fail-closed below through execution_gate/canonical admission.
+                v70_market_veto=(v70_pretrade.get('gate_class')=='THESIS_VETO')
+                if V70_GATE_MODE=='enforce' and research_dec in ('LONG','SHORT') and v70_market_veto:
                     research_dec='NO_TRADE'; size=0.0
                 elif V70_GATE_MODE=='enforce' and research_dec in ('LONG','SHORT'):
-                    size=float(size)*float(v70_pretrade.get('size_multiplier',1.0) or 0.0)
+                    if v70_pretrade.get('execution_allowed',v70_pretrade.get('allow',True)):
+                        size=float(size)*float(v70_pretrade.get('size_multiplier',1.0) or 0.0)
+                    else:
+                        size=0.0
                 research_signal_tier=classify_signal_tier(
                     asset,research_dec,conf,research_challenger,
                     orth_evidence.get('effective_evidence_count',0),source_gate,time_gate,calibration,f.get('trend_impulse'))
@@ -11519,11 +11527,15 @@ def system_rule_arbitration(asset,horizon,f,plan,research_dec):
         str(f.get('v70_thesis_status') or '') in ('BROKEN','INVALIDATED') or str(f.get('v70_gate_class') or '')=='THESIS_VETO',
         'VETO','Full thesis invalidation dominates all entry rules.')
 
-    add('SOURCE_TIME_KILL_GATE',RULE_HIERARCHY['HARD_SAFETY_GATE'],
-        (not bool(f.get('source_gate_pass',True))) or
-        (not bool(f.get('market_open',True)) and asset not in CRYPTO_ASSETS) or
+    add('GLOBAL_KILL_GATE',RULE_HIERARCHY['HARD_SAFETY_GATE'],
         runtime_bool('kill_switch',KILL_SWITCH),
-        'VETO','Data/source/time/kill gates are absolute.')
+        'VETO','Global kill switch is an absolute system veto.')
+
+    add('SOURCE_TIME_EXECUTION_GATE',RULE_HIERARCHY['HARD_SAFETY_GATE'],
+        (not bool(f.get('source_gate_pass',True))) or
+        (not bool(f.get('market_open',True)) and asset not in CRYPTO_ASSETS),
+        'BLOCK_EXECUTION',
+        'Source/time gates block execution but do not invalidate the market thesis.')
 
     add('STRUCTURAL_STOP_RULE',RULE_HIERARCHY['STRUCTURAL_RISK'],
         bool(plan.get('structural_stop_enforced')),

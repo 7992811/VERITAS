@@ -1,0 +1,25 @@
+name: VERITAS Critical Signal Invariants
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  signal-invariants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - name: Install runtime dependencies
+        run: pip install -r requirements-intelligence.txt
+      - name: Compile signal and market boundary
+        run: python -m py_compile veritas_intelligence.py veritas_market_runtime.py veritas_signal_core.py veritas_trend_entry.py veritas_v90_ui.py
+      - name: Critical market-signal regressions
+        run: python -m unittest -v test_veritas_v90_market_cases.py test_veritas_market_prefetch.py test_veritas_trend_entry.py test_veritas_signal_readiness.py
+      - name: Critical market-signal UI regressions
+        run: node tools/test_signal_readiness_ui.cjs

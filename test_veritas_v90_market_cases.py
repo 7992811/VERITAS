@@ -1,9 +1,12 @@
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import veritas_intelligence as VI
 import veritas_portfolio as VP
+import veritas_signal_core as SC
+import veritas_trend_entry as VTE
 from tools.timeframe_test_fixtures import with_structural_breakout
 
 
@@ -256,6 +259,92 @@ class MarketCaseRegressionTests(unittest.TestCase):
             VI._v90r16_moex_index_5m=old
         self.assertEqual(len(out),2)
         self.assertEqual(float(out[-1][4]),2250.0)
+
+
+class SignalExecutionSeparationRegressionTests(unittest.TestCase):
+    def test_production_cycle_only_thesis_veto_can_neutralize_research_direction(self):
+        source=Path(__file__).with_name('veritas_intelligence.py').read_text(encoding='utf-8')
+        self.assertIn("v70_market_veto=(v70_pretrade.get('gate_class')=='THESIS_VETO')",source)
+        self.assertNotIn(
+            "(not v70_pretrade.get('allow',True) or v70_pretrade.get('action')=='WAIT')",
+            source)
+        self.assertIn("if v70_pretrade.get('execution_allowed',v70_pretrade.get('allow',True)):",source)
+        self.assertIn("from veritas_market_runtime import moex_index_session_open",source)
+        self.assertNotIn("return 590<=mins<1140",source)
+
+    def test_source_time_arbitration_blocks_execution_not_thesis(self):
+        f={'source_gate_pass':False,'market_open':False,
+           'v70_thesis_status':'VALID','v70_gate_class':'DATA_VETO',
+           'intraday_structure':{}}
+        plan=VI.system_rule_arbitration('MOEX','5m',f,{'eligible':True},'LONG')
+        arb=plan['rule_arbitration']
+        source_rule=next(x for x in arb['active_rules']
+                         if x['rule_id']=='SOURCE_TIME_EXECUTION_GATE')
+        self.assertEqual(source_rule['decision'],'BLOCK_EXECUTION')
+        self.assertIsNone(arb['hard_veto'])
+        integrity=VI.trade_integrity_layer('MOEX','5m',f,plan,'LONG')['trade_integrity']
+        self.assertFalse(integrity['hard_invalidation'])
+        self.assertNotIn('RULE_ARBITRATION_VETO',integrity['hard_reasons'])
+
+    def test_execution_data_veto_never_erases_directional_market_signal(self):
+        gate = SC.pretrade_gate({
+            'research_decision':'LONG',
+            'source_gate':False,
+            'market_open':False,
+            'time_gate':True,
+            'horizon':'5m',
+            'confidence':0.82,
+            'effective_evidence':6,
+            'horizon_structure':{
+                'direction':'LONG','score':0.985,'state':'CONFIRMED_TREND'
+            },
+            'trend_impulse':{'direction':'LONG','entry_quality':'CONFIRMED_TREND'},
+        })
+        self.assertFalse(gate['allow'])
+        self.assertEqual(gate['gate_class'],'DATA_VETO')
+        self.assertEqual(gate['decision'],'NO_TRADE')  # legacy execution field
+        self.assertEqual(gate['market_decision'],'LONG')
+        self.assertEqual(gate['execution_decision'],'NO_TRADE')
+        self.assertFalse(gate['execution_allowed'])
+        self.assertIn('source_gate_failed',gate['hard_reasons'])
+        self.assertIn('time_gate_failed',gate['hard_reasons'])
+
+    def test_closed_or_failed_execution_gate_does_not_destroy_continuation_thesis(self):
+        row = {
+            'asset':'MOEX','horizon':'5m','price':2370.6,
+            'research_decision':'LONG','decision':'NO_TRADE',
+            'signal_tier':'SUPER_LONG','source_gate_pass':False,'market_open':False,
+            'horizon_structure':{
+                'direction':'LONG','score':0.985,'state':'CONFIRMED_TREND'
+            },
+            'trend_entry_context':{
+                'status':'OK','local_support':2360.0,'atr':3.0,
+                'event':{'event_id':'OLD_MOEX_BREAKOUT','direction':'LONG',
+                         'stop_price':2350.0,'spent':True,
+                         'spent_reason':'SAME_TF_TARGET_ALREADY_REACHED'}
+            },
+            'trade_plan':{'stop_price':2360.0,
+                          'trade_integrity':{'hard_invalidation':False}},
+        }
+        event = VTE._signal_continuation_event(
+            row, price=2370.6,
+            now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc))
+        self.assertIsNotNone(event)
+        self.assertEqual(event['direction'],'LONG')
+        self.assertEqual(event['event_type'],'SIGNAL_CONTINUATION')
+        self.assertTrue(event['signal_authoritative'])
+        self.assertEqual(event['parent_event_id'],'OLD_MOEX_BREAKOUT')
+        # A genuine hard thesis/consistency invalidation remains authoritative
+        # even after the parent target was consumed.
+        hard=dict(row)
+        hard['trade_plan']={**row['trade_plan'],
+                            'trade_integrity':{'hard_invalidation':True}}
+        self.assertIsNone(VTE._signal_continuation_event(
+            hard, price=2370.6,
+            now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)))
+        # Execution stays fail-closed elsewhere; this regression only protects
+        # the market thesis from being rewritten by a transport/session veto.
+        self.assertFalse(VI.execution_eligibility('MOEX', row)['paper_eligible'])
 
 
 if __name__=="__main__":

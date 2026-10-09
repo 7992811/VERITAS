@@ -165,8 +165,9 @@ def _catalyst_continuation_event(row,price=None,now=None):
         catalyst=None
     if not catalyst:
         return None
-    if row.get('source_gate_pass') is False or row.get('market_open') is False:
-        return None
+    # Source/session state is EXECUTION state, not market-thesis state. A
+    # continuation may still be formed and published for analysis; canonical
+    # admission and final entry_gate remain fail-closed before any order.
 
     plan=dict(row.get('trade_plan') or {})
     integrity=plan.get('trade_integrity') or {}
@@ -291,25 +292,27 @@ def _signal_continuation_event(row,price=None,now=None):
     """Rebase a CURRENT displayed signal into a fresh executable setup identity.
 
     A displayed signal is treated as the current market thesis. Old breakout
-    age/extension may not veto it. This does NOT bypass source freshness, market
-    session, hard invalidation, direction conflict, stop validity, or risk caps.
+    age/extension may not veto it. This does NOT bypass hard invalidation,
+    direction conflict, stop validity, or risk caps. Source
+    freshness/session are intentionally evaluated later by execution admission,
+    so they cannot erase the market signal itself.
     """
     row=row or {}
     direction=displayed_signal_direction(row)
     if direction not in ('LONG','SHORT'):
         return None
-    if row.get('source_gate_pass') is False or row.get('market_open') is False:
-        return None
+    # Do not let a feed/session execution veto erase a current continuation.
+    # The order path independently re-checks source, quote time and session.
     plan=dict(row.get('trade_plan') or {})
-    integrity=plan.get('trade_integrity') or {}
-    if integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict'):
-        return None
-    # Once the decision layer publishes LONG/SHORT, stale/legacy arbitration
-    # metadata cannot contradict that same published decision. Current hard
-    # trade-integrity conflicts above remain authoritative.
     ctx=dict(context_of(row) or {})
     current=dict(ctx.get('event') or {})
     if current.get('catalyst_continuation'):
+        return None
+    integrity=plan.get('trade_integrity') or {}
+    # Hard thesis/consistency invalidation remains authoritative. Source/session
+    # failures no longer create hard_invalidation upstream, so there is no need
+    # to weaken this safety boundary for consumed parent events.
+    if integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict'):
         return None
 
     hs=row.get('horizon_structure') or {}

@@ -1,14 +1,93 @@
 from __future__ import annotations
 
 import time
+import math
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
-from veritas_quote_time import moex_observed_at
+from veritas_quote_time import moex_observed_at, utc_datetime, execution_max_age_seconds
+import veritas_price_source as VPS
 
 VERSION = "veritas-market-runtime-guard-v2"
+
+
+_MOEX_EXTENDED_INDEX_EFFECTIVE = datetime(2026, 9, 26, tzinfo=ZoneInfo("Europe/Moscow")).date()
+
+
+def moex_index_session_open(now=None):
+    """Versioned IMOEX calculation window; weekends remain calendar-gated."""
+    now = now or datetime.now(timezone.utc)
+    msk = now.astimezone(ZoneInfo("Europe/Moscow"))
+    if msk.weekday() >= 5:
+        return False
+    minute = msk.hour * 60 + msk.minute + msk.second / 60.0
+    if msk.date() >= _MOEX_EXTENDED_INDEX_EFFECTIVE:
+        return 7 * 60 <= minute < 23 * 60 + 50
+    return 9 * 60 + 50 <= minute < 19 * 60
+
+
+def normalize_moex_index_session(bundle, now=None):
+    """Repair stale pre-2026 session flags only from a fresh official IMOEX quote.
+
+    The exchange quote itself is the holiday/session proof. We never promote a
+    cached, proxy, Yahoo or identity-less price, and weekends remain fail-closed
+    unless a dedicated official trading-calendar adapter is added.
+    """
+    result = dict(bundle or {})
+    raw0 = result.get("raw")
+    if not isinstance(raw0, dict):
+        return result
+    raw = dict(raw0)
+    if str(result.get("asset") or raw.get("asset") or "") != "MOEX":
+        return result
+    identity = VPS.identity("MOEX", raw)
+    if not identity or identity.get("key") != "MOEX:MOEX":
+        return result
+    now = now or datetime.now(timezone.utc)
+    observed_value = (raw.get("market_observed_at") or raw.get("observed_at")
+                      or raw.get("quote_observed_at"))
+    if isinstance(observed_value, (int, float)) and not isinstance(observed_value, bool):
+        try:
+            observed = datetime.fromtimestamp(float(observed_value), timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            observed = None
+    else:
+        observed = utc_datetime(observed_value)
+    price = raw.get("price")
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return result
+    age = (now - observed).total_seconds() if observed else None
+    in_extended_session = bool(
+        now.astimezone(ZoneInfo("Europe/Moscow")).date() >= _MOEX_EXTENDED_INDEX_EFFECTIVE
+        and moex_index_session_open(now)
+    )
+    fresh = bool(age is not None and -5 <= age <= execution_max_age_seconds("MOEX"))
+    source_count = raw.get("direct_sources")
+    if source_count is not None:
+        try:
+            count = float(source_count)
+            if not math.isfinite(count) or count < 1:
+                return result
+        except (TypeError, ValueError):
+            return result
+    if raw.get("snapshot_stale") is True:
+        return result
+    if not (math.isfinite(price) and price > 0 and in_extended_session and fresh):
+        return result
+    raw.update(
+        market_open=True,
+        source_gate_pass=True,
+        data_latency_class="LIVE_EXCHANGE",
+        moex_session_policy="IMOEX_EXTENDED_2026_09_26",
+        moex_session_repaired=True,
+    )
+    result["raw"] = raw
+    return result
+
 
 
 def install_market_runtime_guard(ns):
@@ -365,7 +444,8 @@ def install_market_runtime_guard(ns):
         for fut in done:
             symbol, asset, cb_product = futures[fut]
             try:
-                out[asset] = fut.result()
+                value = fut.result()
+                out[asset] = normalize_moex_index_session(value) if asset == "MOEX" else value
             except Exception as ex:
                 out[asset] = {"symbol":symbol,"asset":asset,"cb_product":cb_product,"raw":None,"deriv":None,
                               "elapsed_seconds":time.time()-t0,"error":f"{type(ex).__name__}: {ex}"}
@@ -376,7 +456,7 @@ def install_market_runtime_guard(ns):
             fut.cancel()
             fallback = _r63_timeout_bundle(asset)
             if fallback is not None:
-                out[asset] = fallback
+                out[asset] = normalize_moex_index_session(fallback) if asset == "MOEX" else fallback
                 cache_fallback.append(asset)
                 _emit("market_prefetch_timeout_cache_fallback", asset=asset,
                       age_seconds=fallback.get("reused_market_bundle_age_seconds"))

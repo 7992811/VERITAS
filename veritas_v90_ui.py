@@ -804,7 +804,10 @@ function renderSignals(){
 
   const tfWeight={ '1m':.30,'5m':.70,'1h':1.35,'4h':1.80,'1d':2.30,'3d':1.35,'7d':1.10 };
   const finite=v=>v==null||v===''||typeof v==='boolean'?null:(Number.isFinite(Number(v))?Number(v):null);
-  const validSignal=x=>x&&x.source_gate_pass===true&&x.snapshot_stale!==true;
+  // Market thesis validity is not execution eligibility. A source/session gate
+  // may block an order without hiding a fresh structurally verified signal from
+  // market ranking, breadth or the asset overview.
+  const validSignal=x=>{const p=finite(x&&x.price),sh=(x&&x.structure_history_status)||{};return Boolean(x&&x.snapshot_stale!==true&&p!=null&&p>0&&(x.source_gate_pass===true||String(sh.status||'')==='READY'));};
   const directionWeight=(asset,D,tfs=null)=>{
     const xs=rows.filter(x=>x.asset===asset&&validSignal(x)&&(!tfs||tfs.includes(x.horizon)));
     let same=0,opp=0,total=0,sameCount=0,oppCount=0;
