@@ -350,7 +350,7 @@ class QualitySQLTests(unittest.TestCase):
         projected=rows[0]['payload']
         self.assertNotIn('debug_history',projected['entry_event_snapshot'])
         self.assertEqual(projected['strategy_policy_hash'],Q.policy_hash())
-        self.assertEqual(projected['observation_path']['version'],'OBSERVED_EXECUTION_PATH_V1')
+        self.assertEqual(projected['observation_path']['version'],'OBSERVED_EXECUTION_PATH_V2_SOURCE_CADENCE')
         self.assertEqual(Q.review(dict(rows[0]))['evidence_status'],'OBSERVED_PAPER_PATH')
         self.assertLess(len(json.dumps(projected)),15000)
 

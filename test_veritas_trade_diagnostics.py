@@ -160,7 +160,7 @@ class TradeDiagnosticsTests(unittest.TestCase):
         changes = (
             lambda p:p.pop("observation_path"),
             lambda p:p["observation_path"].update(started_at_entry=False),
-            lambda p:p["observation_path"].update(gap_count=1, max_gap_seconds=100),
+            lambda p:p["observation_path"].update(gap_count=1, max_gap_seconds=200),
         )
         for index, change in enumerate(changes):
             with self.subTest(index=index):

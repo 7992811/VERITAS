@@ -5,6 +5,10 @@ import math
 
 PROTECTIVE_MAX_AGE_SECONDS = 300
 
+def execution_max_age_seconds(asset):
+    """Canonical freshness ceiling for any simulated execution quote."""
+    return 30 if str(asset or "").upper() in ("BTC","ETH") else 120
+
 
 def utc_datetime(value):
     if not value:
@@ -51,7 +55,7 @@ def quote_gate(observed_at, horizon=None, now=None, *, protective=False, executi
     # materially stale quote: if no <=5 minute observation exists, the protective
     # lane degrades fail-closed until a fresh observation arrives.
     if execution:
-        limit = 30 if asset in ('BTC','ETH') else 120
+        limit = execution_max_age_seconds(asset)
     elif protective:
         limit = PROTECTIVE_MAX_AGE_SECONDS
     else:
