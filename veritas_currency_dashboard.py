@@ -62,7 +62,24 @@ def _iso(value):
 
 
 def enabled():
-    return os.getenv("VERITAS_CURRENCY_TRADE_PROPOSALS_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+    """Read-only live dashboard overlay; independent from order/proposal switches.
+
+    The projection only reads the durable broker ledger.  Keeping display
+    visibility coupled to proposal generation made a valid live Currency book
+    disappear whenever the proposal worker was disabled or restarting.
+    """
+    explicit = os.getenv("VERITAS_CURRENCY_DASHBOARD_LIVE_ENABLED", "").strip().lower()
+    if explicit in ("0", "false", "no", "off"):
+        return False
+    if explicit in ("1", "true", "yes", "on"):
+        return True
+    return (
+        bool(os.getenv("TBANK_ACCOUNT_ID", "").strip())
+        or os.getenv("VERITAS_CURRENCY_TRADE_PROPOSALS_ENABLED", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        or os.getenv("VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED", "").strip().lower()
+            in ("1", "true", "yes", "on")
+    )
 
 
 def _environment(value=None):
