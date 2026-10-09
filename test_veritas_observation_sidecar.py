@@ -44,7 +44,7 @@ class Result:
 
 class Cursor:
     def __init__(self,row):
-        self.row=dict(row);self.witness=None;self.writes=0
+        self.row=dict(row);self.witness=None;self.writes=0;self.stale=0
 
     @contextmanager
     def transaction(self):
@@ -61,6 +61,10 @@ class Cursor:
             if rows:
                 self.witness=rows[-1]["witness"];self.writes+=len(rows)
             return Result(one={"n":len(rows)})
+        if "DELETE FROM paper_observation_sidecar" in sql:
+            n=min(self.stale,int(params[0]) if params else self.stale)
+            self.stale-=n
+            return Result(rows=[{"trade_id":f"stale-{i}"} for i in range(n)])
         if "CREATE TABLE IF NOT EXISTS paper_observation_sidecar" in sql:
             return Result()
         if "CREATE INDEX IF NOT EXISTS paper_observation_sidecar_updated" in sql:
@@ -143,6 +147,39 @@ class SidecarTests(unittest.TestCase):
         self.assertIn("sidecar_witness=VOS.seal(c,z,q,ts)",runtime)
         self.assertIn("allow_direct=False",guard)
         self.assertIn("veritas-observation-sidecar",Path("veritas_observation_sidecar.py").read_text())
+
+    def test_health_counts_distinguish_seeded_from_carried_positions(self):
+        row=position();c=Cursor(row)
+        SIDECAR.seed(c,row,quote(0),stamp(0))
+        result=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None:quote(10,101.),
+            now=OPEN+timedelta(seconds=10))
+        self.assertEqual(result["seeded_positions"],1)
+        self.assertEqual(result["unseeded_positions"],0)
+        self.assertEqual(result["observed_positions"],1)
+
+        carried=position();carried["active_trade_id"]="carried"
+        c2=Cursor(carried)
+        result2=SIDECAR.sample_once(
+            Connect(c2),lambda work,now=None:quote(20,101.),
+            now=OPEN+timedelta(seconds=20))
+        self.assertEqual(result2["seeded_positions"],0)
+        self.assertEqual(result2["unseeded_positions"],1)
+
+    def test_seed_and_seal_counters_are_aggregate_only(self):
+        row=position();c=Cursor(row)
+        before_seed=int(SIDECAR._state.get("seeded_events") or 0)
+        before_seal=int(SIDECAR._state.get("sealed_events") or 0)
+        SIDECAR.seed(c,row,quote(0),stamp(0))
+        SIDECAR.seal(c,row,quote(10,101.),stamp(10))
+        self.assertEqual(SIDECAR._state["seeded_events"],before_seed+1)
+        self.assertEqual(SIDECAR._state["sealed_events"],before_seal+1)
+
+    def test_cleanup_is_bounded_to_closed_sidecar_rows(self):
+        c=Cursor(position());c.stale=50
+        deleted=SIDECAR.cleanup_once(Connect(c),limit=32)
+        self.assertEqual(deleted,32)
+        self.assertEqual(c.stale,18)
 
     def test_witness_size_is_bounded_and_sidecar_has_no_production_authority(self):
         row=position();c=Cursor(row)
