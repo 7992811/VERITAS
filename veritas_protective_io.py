@@ -93,6 +93,50 @@ def _write_chunk_one_roundtrip(c, rows):
     ).fetchone()
 
 
+def _write_position_chunk(c, rows):
+    """Persist no-action observation evidence only on the live position row."""
+    encoded = json.dumps(rows, allow_nan=False)
+    return c.execute(
+        """UPDATE paper_positions AS target
+           SET payload=COALESCE(target.payload,'{}'::jsonb)||delta.patch
+           FROM jsonb_to_recordset(%s::jsonb) AS delta(trade_id text,patch jsonb)
+           WHERE target.active_trade_id=delta.trade_id""",
+        (encoded,)
+    )
+
+
+def write_position_patches(c, patches, *, optional=False):
+    """Write live-position observation deltas without rewriting open trade JSON.
+
+    This is only for evidence proven not to affect an action in the current
+    protective pass. Any later action revalidates the row and mirrors the latest
+    action observation to the trade before accounting/exit, so closed-trade
+    evidence remains synchronized at the financial boundary.
+    """
+    applied = set()
+    for chunk in _chunks(patches):
+        if not optional:
+            _write_position_chunk(c, chunk)
+            applied.update(row['trade_id'] for row in chunk)
+            continue
+        try:
+            with c.transaction():
+                _write_position_chunk(c, chunk)
+        except Exception:
+            if len(chunk) == 1:
+                continue
+            for row in chunk:
+                try:
+                    with c.transaction():
+                        _write_position_chunk(c, [row])
+                except Exception:
+                    continue
+                applied.add(row['trade_id'])
+        else:
+            applied.update(row['trade_id'] for row in chunk)
+    return applied
+
+
 def write_patches_one_roundtrip(c, patches, *, optional=False):
     """Write mirrored metadata with one SQL call per batch of up to 32 rows.
 
