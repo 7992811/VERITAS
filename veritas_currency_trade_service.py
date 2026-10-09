@@ -942,7 +942,7 @@ class TradeHttpApplication:
                 raise ServiceError("TRADE_ENDPOINT_NOT_FOUND", 404)
             operation = path[len(PREFIX):]
             if operation not in {"status", "bind", "decision", "claim-delivery",
-                                 "delivered", "delivery-unknown", "updates", "poll",
+                                 "delivered", "delivery-unknown", "updates", "intents", "poll",
                                  "settlement-observe", "settlement-attest", "admission-evidence",
                                  "prepare-reviewed", "prepare-manual", "prepare-manual-reviewed"}:
                 raise ServiceError("TRADE_ENDPOINT_NOT_FOUND", 404)
@@ -1017,6 +1017,20 @@ class TradeHttpApplication:
                         limit=limit, updated_after=since)
                     return {"ok": True, "items": [self._public(p) for p in self._scoped(rows)],
                             "execution_enabled": self.execution_enabled}, 200
+                if operation == "intents":
+                    limit = _integer(body.get("limit", 10), positive=True)
+                    if limit > 100:
+                        raise ServiceError("INVALID_LIST_LIMIT", 400)
+                    rows = self.repository.list_recent(
+                        account_id=self.account_id, owner_user_id=self.owner.user_id,
+                        instrument_uid=self.instrument_uid, execution_environment=self.environment,
+                        limit=limit)
+                    active = [self._public(p) for p in self._scoped(rows)
+                              if p.get("status") in PRE_SUBMISSION]
+                    return {"ok": True, "items": active,
+                            "execution_enabled": self.execution_enabled,
+                            "execution_environment": self.environment,
+                            "source": "VERITAS_CANONICAL_ORDER_INTENTS"}, 200
                 if operation == "decision":
                     callback = body.get("callback_data")
                     match = _CALLBACK.fullmatch(callback) if isinstance(callback, str) else None
