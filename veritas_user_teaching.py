@@ -25,6 +25,13 @@ ACCELERATION_SOURCE_TIMESTAMP = "2026-10-09T08:41:00Z"
 TREND_DAY_TEACHING_ID = "USER_TREND_DAY_EFFICIENCY_2026_10_09"
 TREND_DAY_SOURCE_TIMESTAMP = "2026-10-09T11:31:00Z"
 TREND_DAY_USER_AUTHORIZATION_RU = "Продолжай"
+OBSERVATION_INTEGRITY_TEACHING_ID = "USER_OBSERVATION_INTEGRITY_2026_10_09"
+OBSERVATION_INTEGRITY_SOURCE_TIMESTAMP = "2026-10-09T00:00:00Z"
+OBSERVATION_INTEGRITY_USER_CORRECTION_RU = (
+    "Вноси все изменения; в защите прибыли проверяй, чтобы контур наблюдений "
+    "не терял данные, использовал данные и правила, которые я давал для обучения, "
+    "и не создавал им противоречий."
+)
 ACCELERATION_USER_CORRECTION_RU = (
     "Стремиться к верхней границе эффективности: при резком подтверждённом движении "
     "увеличивать прибыльную позицию ступенчато по мере подтверждения тренда. "
@@ -301,11 +308,66 @@ def trend_day_efficiency_snapshot():
     }
 
 
+def runtime_consistency():
+    """Owner invariants must not be weakened by later adaptive configuration."""
+    errors=[]
+    policy=_copy(CTC.TREND_ACCELERATION_POLICY)
+    protection=policy.get("profit_protection") or {}
+    efficiency=policy.get("execution_efficiency") or {}
+    reversal=policy.get("reversal_exit") or {}
+    if float(protection.get("mfe_activation_pct_points") or -1)!=0.15:
+        errors.append("MFE_ACTIVATION_MUST_EQUAL_0_15_PERCENT")
+    if float(protection.get("immediate_activation_pct_points") or -1)!=0.30:
+        errors.append("IMMEDIATE_PROTECTION_MUST_EQUAL_0_30_PERCENT")
+    expected={"1m":45,"5m":90,"15m":120,"30m":150,"1h":180,"4h":600,"1d":1800}
+    holds=protection.get("hold_seconds_by_timeframe") or {}
+    if any(float(holds.get(k) or -1)!=float(v) for k,v in expected.items()):
+        errors.append("MFE_PERSISTENCE_TIMERS_CONTRADICT_OWNER_POLICY")
+    if efficiency.get("critical_excursion_durable") is not True:
+        errors.append("CRITICAL_EXCURSION_MUST_BE_DURABLE")
+    if efficiency.get("persistence_timer_durable") is not True:
+        errors.append("MFE_TIMER_MUST_BE_DURABLE")
+    if efficiency.get("diagnostic_gap_must_not_drop_fresh_quote") is not True:
+        errors.append("FRESH_QUOTE_MUST_SURVIVE_DIAGNOSTIC_GAP")
+    if float(efficiency.get("max_repeated_add_fee_to_positive_edge") or -1)!=0.25:
+        errors.append("REPEATED_ADD_CHURN_LIMIT_MUST_EQUAL_25_PERCENT")
+    if "1h" not in set(reversal.get("fast_exit_held_horizons") or ()):
+        errors.append("FAST_REVERSAL_1H_SCOPE_REQUIRED")
+    return {"status":"OK" if not errors else "CONFLICT","errors":errors}
+
+
+def observation_integrity_policy_snapshot():
+    return {
+        "teaching_id":OBSERVATION_INTEGRITY_TEACHING_ID,
+        "source_type":"USER_AUTHORED_OPERATIONAL_POLICY",
+        "source_timestamp":OBSERVATION_INTEGRITY_SOURCE_TIMESTAMP,
+        "source_timestamp_precision":"DAY",
+        "source_text_ru":OBSERVATION_INTEGRITY_USER_CORRECTION_RU,
+        "status":"ACTIVE_OPERATIONAL_POLICY",
+        "parent_teaching_id":ACCELERATION_TEACHING_ID,
+        "ctc_version":CTC.VERSION,"runtime_authority":CTC.BASIS_RUNTIME,
+        "scope":"PAPER_NON_CURRENCY_PORTFOLIOS",
+        "requirements":{
+            "observation":"A cadence gap invalidates continuity evidence but cannot discard a later fresh quote or its extrema.",
+            "mfe":"MFE/MAE and the 0.15% persistence timer are durable execution state.",
+            "precedence":"Owner-authored invariants outrank adaptive and learned suggestions.",
+            "conflicts":"Runtime policy is regression-checked against active owner teaching.",
+            "learning":"Incomplete path evidence cannot be promoted into a contradictory learned rule.",
+            "fast_reversal":"A fast opposite confirmation can waive extra senior confirmation only after the held 1H thesis itself has causally broken.",
+            "adds":"Repeated adds are blocked when their accumulated fees consume 25% of current positive edge; every add still passes canonical post-cost economics.",
+        },
+        "runtime_consistency":runtime_consistency(),
+        "storage":{"table":"ledger_events","event_type":EVENT_TYPE,
+                   "entity_key":OBSERVATION_INTEGRITY_TEACHING_ID,
+                   "event_key":EVENT_TYPE+":"+OBSERVATION_INTEGRITY_TEACHING_ID},
+    }
+
+
 def seed_all_user_teachings(pg_event, read_event=None):
     return [seed_user_teaching(pg_event, read_event, snapshot=payload)
             for payload in (policy_snapshot(), ma_policy_snapshot(),
                             breakout_policy_snapshot(), acceleration_policy_snapshot(),
-                            trend_day_efficiency_snapshot())]
+                            trend_day_efficiency_snapshot(), observation_integrity_policy_snapshot())]
 
 
 def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):
