@@ -11527,11 +11527,15 @@ def system_rule_arbitration(asset,horizon,f,plan,research_dec):
         str(f.get('v70_thesis_status') or '') in ('BROKEN','INVALIDATED') or str(f.get('v70_gate_class') or '')=='THESIS_VETO',
         'VETO','Full thesis invalidation dominates all entry rules.')
 
-    add('SOURCE_TIME_KILL_GATE',RULE_HIERARCHY['HARD_SAFETY_GATE'],
-        (not bool(f.get('source_gate_pass',True))) or
-        (not bool(f.get('market_open',True)) and asset not in CRYPTO_ASSETS) or
+    add('GLOBAL_KILL_GATE',RULE_HIERARCHY['HARD_SAFETY_GATE'],
         runtime_bool('kill_switch',KILL_SWITCH),
-        'VETO','Data/source/time/kill gates are absolute.')
+        'VETO','Global kill switch is an absolute system veto.')
+
+    add('SOURCE_TIME_EXECUTION_GATE',RULE_HIERARCHY['HARD_SAFETY_GATE'],
+        (not bool(f.get('source_gate_pass',True))) or
+        (not bool(f.get('market_open',True)) and asset not in CRYPTO_ASSETS),
+        'BLOCK_EXECUTION',
+        'Source/time gates block execution but do not invalidate the market thesis.')
 
     add('STRUCTURAL_STOP_RULE',RULE_HIERARCHY['STRUCTURAL_RISK'],
         bool(plan.get('structural_stop_enforced')),
