@@ -562,16 +562,20 @@ def handle(method, path, payload, headers, connect, summary):
 
 def _reply(handler, body, code, headers=None, html=False):
     data = body.encode() if html else json.dumps(body, ensure_ascii=False, default=str).encode()
-    handler.send_response(code)
-    fixed = {"Content-Type": "text/html; charset=utf-8" if html else "application/json; charset=utf-8",
-             "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
-             "X-Frame-Options": "DENY", "Content-Length": str(len(data))}
-    if html:
-        fixed["Content-Security-Policy"] = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
-    for key, value in {**fixed, **(headers or {})}.items():
-        handler.send_header(key, value)
-    handler.end_headers()
-    handler.wfile.write(data)
+    try:
+        handler.send_response(code)
+        fixed = {"Content-Type": "text/html; charset=utf-8" if html else "application/json; charset=utf-8",
+                 "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
+                 "X-Frame-Options": "DENY", "Content-Length": str(len(data))}
+        if html:
+            fixed["Content-Security-Policy"] = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        for key, value in {**fixed, **(headers or {})}.items():
+            handler.send_header(key, value)
+        handler.end_headers()
+        handler.wfile.write(data)
+        return True
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        return False
 
 
 def dispatch(handler, connect, summary):

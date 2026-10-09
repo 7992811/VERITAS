@@ -645,6 +645,9 @@ class TradeHttpApplication:
         self.clock = clock or _now
         self._ready = False
         self._lock = threading.RLock()
+        self._reconcile_state_lock = threading.Lock()
+        self._reconcile_inflight = False
+        self._reconcile_last_error = None
         # Status is a cached observation, never an implicit poll/execute call.
         self._poll_state = {
             "binding_state": "unchecked", "last_poll_at": None,
@@ -685,6 +688,27 @@ class TradeHttpApplication:
             if self.evidence is not None:
                 self.evidence.initialize()
             self._ready = True
+
+    def _schedule_reconcile(self):
+        """Run broker reconciliation once in background; poll stays fail-closed."""
+        with self._reconcile_state_lock:
+            if self._reconcile_inflight:
+                return False
+            self._reconcile_inflight = True
+        def run():
+            error = None
+            try:
+                with self._lock:
+                    self.coordinator.reconcile()
+            except Exception as exc:
+                error = _diagnostic(exc, "BROKER_RECONCILIATION_FAILED")
+            finally:
+                with self._reconcile_state_lock:
+                    self._reconcile_last_error = error
+                    self._reconcile_inflight = False
+        threading.Thread(target=run, daemon=True,
+                         name="veritas-currency-reconcile").start()
+        return True
 
     def _body(self, body):
         if not isinstance(body, Mapping):
@@ -824,7 +848,7 @@ class TradeHttpApplication:
                     "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
                     "robot_autotrade_enabled": self.robot_autotrade_enabled,
                     "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
-        self.coordinator.reconcile()
+        self._schedule_reconcile()
         if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
             self._remember_poll("PROPOSALS_PAUSED", binding_state="bound")
             return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
@@ -920,7 +944,12 @@ class TradeHttpApplication:
                  [self._public(p) for p in pending if p.get("status") == "PENDING_DELIVERY"][:1])
         self._remember_poll(reason, binding_state="bound", pending=len(pending),
                             unsettled=len(unsettled), sizing=sizing, entry_diagnostics=entry_diagnostics)
+        with self._reconcile_state_lock:
+            reconcile_inflight = self._reconcile_inflight
+            reconcile_error = self._reconcile_last_error
         return {"ok": True, "enabled": True, "items": items,
+                "reconciliation_inflight": reconcile_inflight,
+                "reconciliation_error": reconcile_error,
                 "execution_enabled": self.execution_enabled,
                 "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
                 "robot_autotrade_enabled": self.robot_autotrade_enabled,
