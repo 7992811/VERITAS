@@ -100,7 +100,7 @@ Replay constraints:
 
 A Stop/Exit candidate becomes `REPLAY_SUPPORTED` only after at least 32
 comparable future trades across seven UTC days, positive candidate net return,
-positive improvement over the baseline, and ambiguity no greater than 15%.
+positive improvement over the baseline with a positive paired 95% lower confidence bound, and ambiguity no greater than 15%.
 Persistent non-positive improvement at 64 observations across 14 days rejects
 the candidate. `REPLAY_SUPPORTED` is research evidence only: it is not a
 shadow champion and has no production authority.
