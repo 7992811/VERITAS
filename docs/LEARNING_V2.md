@@ -104,3 +104,29 @@ positive improvement over the baseline with a positive paired 95% lower confiden
 Persistent non-positive improvement at 64 observations across 14 days rejects
 the candidate. `REPLAY_SUPPORTED` is research evidence only: it is not a
 shadow champion and has no production authority.
+
+
+## Blocked-decision evidence (v91.8.29)
+
+A directional market view and an executable entry are separate facts. Learning
+2.0 now treats a directional LONG/SHORT decision as a missed-entry candidate
+when admission was actually blocked and the later verified move was favorable.
+
+Block proof is fail-closed. A block exists only when at least one of these is
+recorded at decision time:
+
+- structured final-gate blockers are non-empty;
+- plan/trade admission is explicitly false;
+- final gate status is BLOCK.
+
+Reason strings never manufacture a block. Once a block is proven, declared
+reason fields (`plan_reason`, `trade_entry_reason`, execution reasons) are
+parsed only for tokens already present in the canonical blocker catalog.
+Arbitrary prose cannot become a new policy.
+
+Hard-veto blockers remain non-learnable. Only the declared timing/retest/expiry
+blockers can create an Entry relaxation hypothesis. The runtime also publishes
+bounded diagnostics explaining a zero-candidate result: cohort size, blocked
+directional count, favorable missed moves, learnable/hard-veto counts,
+unparsed blocked episodes and the maximum recurring learnable blocker count.
+Raw reason prose is not emitted.
