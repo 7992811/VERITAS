@@ -724,6 +724,14 @@ def start_worker(bridge, stop_event, logger=None):
         while not stop_event.is_set():
             try:
                 bridge.poll()
+            except TradeTelegramError as exc:
+                # TradeTelegramError carries only local fixed diagnostic codes.
+                # Log the safe code so production failures are actionable without
+                # exposing broker responses, credentials or account data.
+                code = str(exc)
+                if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", code):
+                    code = "TRADE_TELEGRAM_ERROR"
+                log("Currency trade worker: " + code)
             except Exception as exc:
                 log("Currency trade worker: " + type(exc).__name__)
             stop_event.wait(cadence)
