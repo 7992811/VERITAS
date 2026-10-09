@@ -230,6 +230,7 @@ class ContinuousLearning:
                 ("learning_candidates", self.candidates, 30, 6),
                 ("learning_knowledge_catalog", self.knowledge_catalog, 60, 6),
                 ("learning_trade_evidence", self.trades, 30, 6),
+                ("learning_outcome_backfill", self.outcome_backfill, 20, 5),
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6),
@@ -673,6 +674,12 @@ class ContinuousLearning:
 
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
+
+    def outcome_backfill(self, context, cursor):
+        """Advance immutable net-outcome migration without path-policy work."""
+        if self.trade is None:
+            return {"status":"RETRY","reason":"TRADE_LEARNING_NOT_READY"},cursor
+        return self.trade.backfill_outcomes(context),cursor
 
     def learning_v2_shadow(self, context, cursor):
         """Build one asset's bounded shadow research from verified outcomes.
