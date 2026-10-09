@@ -19065,6 +19065,7 @@ def main():
     VSG.start_watchdog(lambda: _BOOTSTRAP_READY, emit, delay_seconds=60)
     # R83: optional read-only broker connection; no token means no thread or RPC.
     VTB.connection.start()
+    VCTC.start_broker_event_stream(pg_connect, (lock, last_cycle))
 
     _v90_emergency_storage_reclaim()
     _v90_ensure_legacy_compat_views()
