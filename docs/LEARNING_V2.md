@@ -94,7 +94,9 @@ Replay constraints:
 - bars after the actual trade close are discarded even if present in cache;
 - a same-bar stop/target conflict is `AMBIGUOUS_INTRABAR`, never resolved in
   the candidate's favor;
-- commission plus modeled slippage use the canonical cost policy.
+- commission plus modeled slippage use the canonical cost policy;
+- the replay baseline parameter must match the frozen entry event policy
+  (stop buffer or first-target fraction); policy drift invalidates the episode.
 
 A Stop/Exit candidate becomes `REPLAY_SUPPORTED` only after at least 32
 comparable future trades across seven UTC days, positive candidate net return,
