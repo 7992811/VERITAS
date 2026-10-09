@@ -145,9 +145,14 @@ class PeriodicMaintenanceTests(unittest.TestCase):
             for name, status in (("a", "DEFERRED_STORAGE"), ("b", "OK"), ("c", "RETRY")):
                 lane.register_periodic(name, lambda n=name, s=status: calls.append(n) or {"status": s},
                                        interval_seconds=.02, retry_seconds=.02, lightweight=True)
-            for _ in range(9):
-                lane._run_periodic_once()
-                clock[0] += .03
+            for _round in range(3):
+                for _ in range(3):
+                    lane._run_periodic_once()
+                    clock[0] += .03
+                # RETRY is deliberately a service-wide pressure signal. Advance
+                # the deterministic test clock past that backoff before checking
+                # the next fair round; never bypass or weaken production backoff.
+                clock[0] += 15.1
             self.assertEqual(calls, ["a", "b", "c"] * 3)
             state = lane.snapshot()["periodic"]
             self.assertEqual(state["a"]["completions"], 0)
