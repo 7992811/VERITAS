@@ -145,23 +145,38 @@ def _trend_acceleration_state(row,direction,policy):
     senior=senior or (horizon in ('1h','4h') and state=='CONFIRMED_TREND')
     fast=(horizon in set(cfg.get('fast_horizons') or ('1m','5m'))
           and (state=='CONFIRMED_TREND' or tier in ('SUPER_LONG','SUPER_SHORT')))
-    stage='SENIOR_CONFIRMED' if senior else 'MID_CONFIRMED' if mid else 'FAST_CONFIRMED' if fast else None
+    trend_day=VTDE.assess(row,direction,policy,mid=mid,senior=senior,
+                          evidence=evidence,expected=expected,progress=progress)
+    stage=('EXTREME_CONFIRMED' if trend_day.get('eligible') else
+           'SENIOR_CONFIRMED' if senior else
+           'MID_CONFIRMED' if mid else
+           'FAST_CONFIRMED' if fast else None)
     if stage is None:
         return dict(out,reason='ACCELERATION_WAIT_NEXT_CONFIRMATION',evidence=evidence,
-                    expected_move_pct=expected,structure_state=state)
-    targets=(cfg.get('stage_targets_aggressive') if mode=='AGGRESSIVE'
-             else cfg.get('stage_targets_standard')) or {}
-    target=float(targets.get(stage) or 0.0)
-    caps=(cfg.get('temporary_caps') or {}).get(mode) or {}
+                    expected_move_pct=expected,structure_state=state,
+                    trend_day_efficiency=trend_day)
+    if stage=='EXTREME_CONFIRMED':
+        td_cfg=getattr(CTC,'TREND_DAY_EFFICIENCY_POLICY',{}) or {}
+        target=float(td_cfg.get('extreme_target_aggressive') if mode=='AGGRESSIVE'
+                     else td_cfg.get('extreme_target_standard') or 0.0)
+        caps=(td_cfg.get('temporary_caps') or {}).get(mode) or {}
+        policy_version=td_cfg.get('version')
+    else:
+        targets=(cfg.get('stage_targets_aggressive') if mode=='AGGRESSIVE'
+                 else cfg.get('stage_targets_standard')) or {}
+        target=float(targets.get(stage) or 0.0)
+        caps=(cfg.get('temporary_caps') or {}).get(mode) or {}
+        policy_version=cfg.get('version')
     target=min(target,float(caps.get('max_fraction') or target))
     return {'active':target>0,'stage':stage,'target_fraction':target,
             'reason':'TREND_ACCELERATION_CONFIRMED','evidence':evidence,
             'expected_move_pct':expected,'target_progress':progress,
             'structure_state':state,'signal_tier':tier,
             'mid_confirmation':mid,'senior_confirmation':senior,
+            'trend_day_efficiency':trend_day,
             'temporary_max_fraction':caps.get('max_fraction'),
             'temporary_max_gross':caps.get('max_gross'),
-            'policy_version':cfg.get('version')}
+            'policy_version':policy_version}
 
 
 def fast_reversal_exit_eligible(position,row,policy):
