@@ -270,6 +270,61 @@ class TradeLearning:
                 updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(asset,event_id),
                 CHECK(octet_length(observation::text)<=32768))''')
         return {'status':'OK'}
+    def backfill_outcomes(self,context=None,batch_size=BATCH_SIZE):
+        """Refresh only the immutable net-outcome evidence tier, newest first.
+
+        This is an idempotent migration lane. It uses the same canonical trade
+        projection and episode upsert as the full learner, but does not run
+        path revalidation, candidate export or policy mutation.
+        """
+        if type(batch_size) is not int or not 1 <= batch_size <= MAX_BATCH_SIZE:
+            raise ValueError("invalid outcome backfill batch size")
+        self._check(context)
+        with self._transaction(context) as c:
+            selected='''SELECT t.trade_id FROM paper_trades t
+                LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
+                WHERE (e.trade_id IS NULL
+                       OR e.payload->>'outcome_diagnostics_version' IS DISTINCT FROM %s
+                       OR NULLIF(e.payload->>'outcome_evidence_hash','') IS NULL)
+                  AND t.closed_at IS NOT NULL
+                  AND t.status IN ('CLOSED','CLOSE','EXITED')
+                  AND t.opened_at>=%s::timestamptz
+                ORDER BY t.closed_at DESC,t.trade_id DESC
+                LIMIT %s FOR UPDATE OF t SKIP LOCKED'''
+            rows=c.execute(self._rows_sql(
+                selected,'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id',
+                evidence_hash=True),
+                (LI.DIAGNOSTICS.VERSION,EPOCH,batch_size)).fetchall()
+            upsert=getattr(self.ns['VP'],'_v90r29_upsert_episode')
+            for row in rows:
+                self._check(context)
+                if not upsert(c,dict(row)):
+                    raise RuntimeError('closed trade outcome backfill rejected')
+            ids=[str(row['trade_id']) for row in rows]
+            eligible=0
+            sealed=0
+            if ids:
+                state=c.execute("""SELECT
+                    count(*) FILTER (WHERE COALESCE((payload->>'outcome_learning_eligible')::boolean,FALSE)) AS eligible,
+                    count(*) FILTER (WHERE payload->>'outcome_diagnostics_version'=%s
+                                      AND NULLIF(payload->>'outcome_evidence_hash','') IS NOT NULL) AS sealed
+                    FROM v90_learning_episodes WHERE trade_id=ANY(%s)""",
+                    (LI.DIAGNOSTICS.VERSION,ids)).fetchone()
+                eligible=int(state['eligible'] or 0);sealed=int(state['sealed'] or 0)
+                LI.invalidate('closed_trade_outcome_backfilled',new_evidence_only=True)
+            pending=bool(c.execute("""SELECT 1 AS pending FROM paper_trades t
+                LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
+                WHERE (e.trade_id IS NULL
+                       OR e.payload->>'outcome_diagnostics_version' IS DISTINCT FROM %s
+                       OR NULLIF(e.payload->>'outcome_evidence_hash','') IS NULL)
+                  AND t.closed_at IS NOT NULL
+                  AND t.status IN ('CLOSED','CLOSE','EXITED')
+                  AND t.opened_at>=%s::timestamptz
+                LIMIT 1""",(LI.DIAGNOSTICS.VERSION,EPOCH)).fetchone())
+        return {'status':'OK','scanned':len(rows),'updated':sealed,
+                'outcome_eligible':eligible,'backfill_pending':pending,
+                'batch_limit':batch_size,'newest_first':True}
+
     def process(self,context=None):
         pg=self.ns['pg_connect'];self._check(context)
         lease=STORE.claim_job(pg,JOB_NAME,VERSION,lease_seconds=60)
