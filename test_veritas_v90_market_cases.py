@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import veritas_intelligence as VI
 import veritas_portfolio as VP
+import veritas_signal_core as SC
+import veritas_trend_entry as VTE
 from tools.timeframe_test_fixtures import with_structural_breakout
 
 
@@ -256,6 +258,56 @@ class MarketCaseRegressionTests(unittest.TestCase):
             VI._v90r16_moex_index_5m=old
         self.assertEqual(len(out),2)
         self.assertEqual(float(out[-1][4]),2250.0)
+
+
+class SignalExecutionSeparationRegressionTests(unittest.TestCase):
+    def test_execution_data_veto_never_erases_directional_market_signal(self):
+        gate = SC.pretrade_gate({
+            'research_decision':'LONG',
+            'source_gate':False,
+            'market_open':False,
+            'time_gate':True,
+            'horizon':'5m',
+            'confidence':0.82,
+            'effective_evidence':6,
+            'horizon_structure':{
+                'direction':'LONG','score':0.985,'state':'CONFIRMED_TREND'
+            },
+            'trend_impulse':{'direction':'LONG','entry_quality':'CONFIRMED_TREND'},
+        })
+        self.assertFalse(gate['allow'])
+        self.assertEqual(gate['gate_class'],'DATA_VETO')
+        self.assertEqual(gate['decision'],'LONG')
+        self.assertEqual(gate['execution_decision'],'NO_TRADE')
+        self.assertFalse(gate['execution_allowed'])
+        self.assertIn('source_gate_failed',gate['hard_reasons'])
+        self.assertIn('time_gate_failed',gate['hard_reasons'])
+
+    def test_closed_or_failed_execution_gate_does_not_destroy_continuation_thesis(self):
+        row = {
+            'asset':'MOEX','horizon':'5m','price':2370.6,
+            'research_decision':'LONG','decision':'NO_TRADE',
+            'signal_tier':'SUPER_LONG','source_gate_pass':False,'market_open':False,
+            'horizon_structure':{
+                'direction':'LONG','score':0.985,'state':'CONFIRMED_TREND'
+            },
+            'trend_entry_context':{
+                'status':'OK','local_support':2360.0,'atr':3.0,
+                'event':{'event_id':'OLD_MOEX_BREAKOUT','direction':'LONG',
+                         'stop_price':2350.0}
+            },
+            'trade_plan':{'stop_price':2360.0},
+        }
+        event = VTE._signal_continuation_event(
+            row, price=2370.6,
+            now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc))
+        self.assertIsNotNone(event)
+        self.assertEqual(event['direction'],'LONG')
+        self.assertEqual(event['event_type'],'SIGNAL_CONTINUATION')
+        self.assertTrue(event['signal_authoritative'])
+        # Execution stays fail-closed elsewhere; this regression only protects
+        # the market thesis from being rewritten by a transport/session veto.
+        self.assertFalse(VI.execution_eligibility('MOEX', row)['paper_eligible'])
 
 
 if __name__=="__main__":
