@@ -162,9 +162,14 @@ def main():
     while True:
         try:
             result=run_once(dsn)
+            diag=result.get("diagnostics") or {}
             print(json.dumps({"event":"learning_v2_snapshot","version":L.VERSION,
                               "status":result.get("status"),"counts":result.get("counts"),
-                              "input_counts":result.get("input_counts")},allow_nan=False),flush=True)
+                              "input_counts":result.get("input_counts"),
+                              "blocked_directional":diag.get("blocked_directional",0),
+                              "learnable_missed":diag.get("learnable_missed_directional",0),
+                              "zero_candidate_reason":diag.get("zero_entry_candidate_reason")},
+                             allow_nan=False),flush=True)
         except Exception as exc:
             print(json.dumps({"event":"learning_v2_error","error":type(exc).__name__}),flush=True)
         time.sleep(INTERVAL)
