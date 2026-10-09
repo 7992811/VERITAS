@@ -4103,10 +4103,11 @@ def _v90tr_extract_levels(row,horizon,direction,current):
                 out.append((tf,lvl))
     return out
 
-def _v90tr_apply(c,name,candidates,prices,ts):
+def _v90tr_apply(c,name,candidates,prices,ts,positions=None):
     changes=[]
     try:
-        positions=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        positions=(positions if positions is not None else
+                   c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall())
     except Exception:
         return changes
     for z0 in positions or []:
@@ -6173,17 +6174,20 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     mode=str((policy or {}).get('mode') or 'CORE')
 
     # 1) Give trailing a management row for every live position even if the
-    # setup is no longer in the candidate book.
+    # setup is no longer in the candidate book. Reuse this same book for flip
+    # checks: trailing mutates stop/payload only, never direction or units.
+    positions=[]
     try:
         _,positions=_portfolio_rows(c,name)
+        positions=[dict(z) for z in (positions or [])]
         management_book={}
-        for z0 in positions or []:
+        for z0 in positions:
             z=dict(z0)
             mgmt=_v842_management_row(summary,z)
             if mgmt:
                 management_book[str(z.get('asset') or '')]=dict(mgmt)
         if management_book:
-            _v90tr_apply(c,name,management_book,prices,ts)
+            _v90tr_apply(c,name,management_book,prices,ts,positions=positions)
     except Exception as e:
         print(json.dumps({'event':'V90_R19_TRAILING_MANAGEMENT_ERROR',
                           'portfolio':name,'error':str(e)[:180]},
@@ -6198,7 +6202,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     # Mark an opposite candidate as executable only when the old structure has
     # broken and the new side is independently confirmed.
     try:
-        _,positions=_portfolio_rows(c,name) if book else (None,[])
+        positions=positions if book else []
         for z0 in positions or []:
             z=dict(z0)
             asset=str(z.get('asset') or '')
@@ -8214,11 +8218,13 @@ def _v90r19_flip_confirmed(summary,z,row,now=None):
     return True
 
 
-def _v90r33_harvest(c,p,name,prices,nav,ts):
+def _v90r33_harvest(c,p,name,prices,nav,ts,positions=None):
     changes=[]
     try:
-        _v90j_update_excursions(c,name,prices,ts)
-        rows=c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()
+        rows=[dict(z) for z in positions] if positions is not None else [
+            dict(z) for z in c.execute(
+                "SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()]
+        _v90j_update_excursions(c,name,prices,ts,positions=rows)
     except Exception:
         return changes
 
@@ -8350,7 +8356,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                 for asset,row in (candidates or {}).items()}
     p,pos=_portfolio_rows(c,name)
     nav,_,_,_=_mark_nav(p,pos,prices)
-    _v90r33_harvest(c,p,name,prices,nav,ts)
+    _v90r33_harvest(c,p,name,prices,nav,ts,positions=pos)
     p = pos = None
     return _v90r33_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
