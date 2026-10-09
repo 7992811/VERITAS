@@ -210,6 +210,32 @@ class AMIStagedPipelineSQLTests(unittest.TestCase):
                                       (DELIVERY.WORK_SLOT,)).fetchone()["n"], 1)
             self.assertEqual(c.execute("SELECT payload FROM learning_baselines").fetchone()["payload"], baseline)
 
+    def test_checkpoint_rearms_from_remaining_budget_after_short_query_cap(self):
+        # Production witness: the decision slice can shrink SQL timeout to a
+        # few hundred ms while ~1.7s still remains for the durable checkpoint.
+        # The checkpoint must get its own bounded cap instead of inheriting the
+        # decision query cap and failing as QueryCanceled.
+        budget={"remaining_seconds":6.0}
+        context=SimpleNamespace(sql_timeout_ms=2000,check=lambda:None,
+                                lane=SimpleNamespace(current_budget=lambda:dict(budget)))
+        restored=AMI.refresh_snapshot(self.connect,LEARNING,EPOCH,context=context)
+        sampled=AMI.refresh_snapshot(self.connect,LEARNING,EPOCH,context=context,cursor=restored["cursor"])
+        original_chunk=MEMORY.ami_decision_chunk
+        seen=[]
+        def short_chunk(c,pairs):
+            seen.append(c.execute("SHOW statement_timeout").fetchone()["statement_timeout"])
+            rows=original_chunk(c,pairs)
+            budget["remaining_seconds"]=1.7
+            return rows
+        budget["remaining_seconds"]=2.55
+        with patch.object(MEMORY,"ami_decision_chunk",side_effect=short_chunk):
+            result=AMI.refresh_snapshot(self.connect,LEARNING,EPOCH,context=context,cursor=sampled["cursor"])
+        self.assertEqual(result["status"],"PROGRESS")
+        self.assertGreater(result["processed"],0)
+        self.assertTrue(seen)
+        saved=self.work()
+        self.assertEqual(saved["payload"]["offset"],result["processed"])
+
     def test_real_sql_short_slices_preserve_frozen_order_and_complete_legacy_score_after_restart(self):
         expected=AMI._build_scorecard_unlocked(self.connect,LEARNING,EPOCH,cache_seconds=0,publish=False)
         original_chunk=MEMORY.ami_decision_chunk

@@ -275,24 +275,40 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                             checkpoint_prepare_seconds = round(float(elapsed), 4)
                     except Exception:
                         pass
-                    # A short decision slice must not permanently shrink this
-                    # transaction's checkpoint cap. Re-arm only after payload
-                    # serialization, with room for the original cap and tail.
-                    target = min(c.initial_sql_timeout_ms, 2000)
-                    headroom = target/1000+.2
-                    if c.sql_timeout_ms < target and remaining() >= headroom:
+                    # A decision query may have reduced statement_timeout to
+                    # fit its own slice. The checkpoint is a separate operation:
+                    # re-arm it from the *remaining* lane budget, never from the
+                    # shrunken query cap and never beyond the original cap.
+                    tail_seconds = .25
+                    available = max(0., remaining()-tail_seconds)
+                    target = min(c.initial_sql_timeout_ms, 2000, int(available*1000))
+                    if target < 250:
+                        raise MaintenanceDeferred("DEFERRED_SCORECARD_BUDGET",
+                                                  reason="CHECKPOINT_SQL_HEADROOM")
+                    if c.sql_timeout_ms != target:
                         c.execute("SET LOCAL statement_timeout = '"+str(target)+"ms'")
                         c.sql_timeout_ms = target
-                        if remaining() < headroom:
-                            raise MaintenanceDeferred("DEFERRED_SCORECARD_BUDGET",
-                                                      reason="CHECKPOINT_SQL_HEADROOM")
+                    if remaining() <= tail_seconds:
+                        raise MaintenanceDeferred("DEFERRED_SCORECARD_BUDGET",
+                                                  reason="CHECKPOINT_SQL_HEADROOM")
                 try:
                     checkpoint_prepare_started = time.monotonic()
                 except Exception:
                     pass
-                if not store.publish_snapshot_in_transaction(c, WORK_SLOT, WORK_VERSION, work,
+                try:
+                    published = store.publish_snapshot_in_transaction(
+                        c, WORK_SLOT, WORK_VERSION, work,
                         observed_at=datetime.now(timezone.utc), locked_snapshot=saved,
-                        before_write=before_checkpoint_write, max_payload_bytes=WORK_BYTES):
+                        before_write=before_checkpoint_write, max_payload_bytes=WORK_BYTES)
+                except Exception as exc:
+                    # A checkpoint timeout is cooperative budget/contention
+                    # exhaustion. The transaction rolls back and the prior
+                    # durable cursor remains authoritative; retry next turn.
+                    if type(exc).__name__ in ("QueryCanceled", "QueryCanceledError"):
+                        raise MaintenanceDeferred("DEFERRED_SCORECARD_BUDGET",
+                                                  reason="CHECKPOINT_SQL_TIMEOUT") from None
+                    raise
+                if not published:
                     raise RuntimeError("SCORECARD_WORK_PUBLICATION_REJECTED")
             active_stage = "commit"
         check()
