@@ -298,11 +298,13 @@ def start(ns,quote_selector):
                        result.get("observed_positions"),result.get("unseeded_positions"),
                        result.get("handoff_positions"),result.get("irrecoverable_seeded"),
                        result.get("sampled_positions"),result.get("missing_quotes"))
-                if (shape!=last_shape or result.get("missing_quotes")
-                        or time.monotonic()-last_log>=60):
+                # Normal sampler state is queryable via snapshot(); do not turn
+                # every harmless shape change into a Render log event. Real
+                # exceptions still use observation_sidecar_error immediately.
+                if time.monotonic()-last_log>=60:
                     ns["emit"]("observation_sidecar",**snapshot())
                     last_log=time.monotonic()
-                    last_shape=shape
+                last_shape=shape
             except Exception as exc:
                 with _state_lock:
                     _state.update(status="ERROR",checked_at=datetime.now(timezone.utc).isoformat(),

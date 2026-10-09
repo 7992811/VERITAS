@@ -162,6 +162,10 @@ class MaintenanceLane:
         self._periodic = {}
         self._periodic_turn = 0
         self._scheduled_waiter = None
+        # Global pressure backoff prevents a round-robin storm where one
+        # constrained learning job is immediately replaced by the next one.
+        # Foreground market/protection paths never wait on this timestamp.
+        self._periodic_pressure_until = 0.0
         self._last_light_trim = -math.inf
 
     def _start_locked(self):
@@ -383,13 +387,18 @@ class MaintenanceLane:
                 self._local.budget = previous
 
     def _periodic_delay_locked(self):
-        due = [job.next_run - time.monotonic() for job in self._periodic.values() if not job.running]
-        return max(.01, min(due, default=30.))
+        now = time.monotonic()
+        pressure = max(0., self._periodic_pressure_until - now)
+        due = [job.next_run - now for job in self._periodic.values() if not job.running]
+        return max(.01, pressure, min(due, default=30.))
 
     def _run_periodic_once(self):
         with self._condition:
             jobs = list(self._periodic.values())
             if self._closed or not jobs:
+                return False
+            now = time.monotonic()
+            if now < self._periodic_pressure_until:
                 return False
             job = None
             for offset in range(len(jobs)):
@@ -468,9 +477,21 @@ class MaintenanceLane:
             job.max_observed_peak_mb = max(job.max_observed_peak_mb,
                                           result.get("observed_peak_mb", 0.))
             job.next_run = time.monotonic() + delay
+            # A resource timeout is a service-wide pressure signal, not merely
+            # a failure of one job. Pause the whole background lane instead of
+            # immediately handing the same saturated DB/memory to another job.
+            status = result["status"]
+            if status == "ERROR":
+                self._periodic_pressure_until = max(
+                    self._periodic_pressure_until, time.monotonic() + self.error_retry_seconds)
+            elif status.startswith(("DEFERRED_TIME", "DEFERRED_MEMORY")):
+                self._periodic_pressure_until = max(
+                    self._periodic_pressure_until, time.monotonic() + max(30., job.retry_seconds))
             result["next_attempt_at"] = time.time() + delay
             self._condition.notify_all()
-        if succeeded or old.get("status") != result["status"]:
+        # State is already available in snapshot(). Emit only transitions;
+        # repeating OK/NO_WORK/PROGRESS records created misleading Render errors.
+        if old.get("status") != result["status"]:
             self.emit("maintenance_periodic_complete" if succeeded else "maintenance_periodic_deferred",
                       job=job.name, **result)
         return True
@@ -651,6 +672,8 @@ class MaintenanceLane:
                         "last_result": dict(job.last_result),
                     } for name, job in self._periodic.items()},
                     "periodic_limit": MAX_PERIODIC_JOBS,
+                    "periodic_pressure_backoff_seconds": round(max(
+                        0., self._periodic_pressure_until - time.monotonic()), 3),
                     "scheduled_resource_waiter": self._scheduled_waiter,
                     "worker_alive": bool(self._thread and self._thread.is_alive()),
                     "memory_start_limit_mb": self.memory_limit()}
