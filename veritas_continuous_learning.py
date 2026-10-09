@@ -774,7 +774,7 @@ class ContinuousLearning:
             prior=deepcopy(self._learning_v2)
         assets=dict(prior.get("assets") or {})
         assets[asset]={k:deepcopy(current.get(k)) for k in (
-            "status","counts","entry_false_block","hypotheses","input_counts","generated_at")}
+            "status","counts","entry_false_block","diagnostics","hypotheses","input_counts","generated_at")}
         combined={}
         for name in LEARNING_V2_ASSETS:
             for h in (assets.get(name) or {}).get("hypotheses") or []:
@@ -809,12 +809,22 @@ class ContinuousLearning:
                  "research_seconds":round(research_seconds,4),
                  "registry_seconds":round(registry_seconds,4),
                  "duration_seconds":round(time.monotonic()-job_started,4)}
+        diag=current.get("diagnostics") or {}
         self.ns["emit"]("learning_v2_shadow_snapshot",version=LEARNING_V2.VERSION,
                         asset=asset,decisions=len(decision_rows),trades=len(trade_rows),
                         hypotheses=len(current.get("hypotheses") or []),
                         total_hypotheses=len(hypotheses),
                         registry_counts=registry.get("counts") or {},
                         shadow_champions=len(registry.get("shadow_champions") or []),
+                        blocked_directional=diag.get("blocked_directional",0),
+                        missed_directional=diag.get("missed_directional_episodes",0),
+                        learnable_missed=diag.get("learnable_missed_directional",0),
+                        unparsed_blocked=diag.get("unparsed_blocked_directional",0),
+                        largest_context_n=diag.get("largest_decision_context_n",0),
+                        contexts_ge_min=diag.get("decision_contexts_ge_min",0),
+                        max_learnable_blocker_n=diag.get("max_learnable_false_block_n_in_context",0),
+                        zero_candidate_reason=diag.get("zero_entry_candidate_reason"),
+                        known_blockers=diag.get("known_blockers") or {},
                         production_influence=False,**metrics)
         return {"status":"OK","asset":asset,"hypotheses":len(current.get("hypotheses") or []),
                 "total_hypotheses":len(hypotheses),"counts":counts,
