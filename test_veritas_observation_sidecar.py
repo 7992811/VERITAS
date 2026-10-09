@@ -128,6 +128,39 @@ class SidecarTests(unittest.TestCase):
         self.assertIsInstance(sealed,dict)
         self.assertEqual(c.writes,before)
 
+    def test_missing_cache_quote_preserves_seeded_witness(self):
+        row=position();c=Cursor(row)
+        SIDECAR.seed(c,row,quote(0),stamp(0))
+        before=json.loads(json.dumps(c.witness))
+        writes_before=c.writes
+        result=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None:{},
+            now=OPEN+timedelta(seconds=20))
+        self.assertEqual(result["missing_quotes"],1)
+        self.assertEqual(result["written"],0)
+        self.assertEqual(result["seeded_positions"],1)
+        self.assertEqual(c.writes,writes_before)
+        self.assertEqual(c.witness,before)
+        self.assertEqual(c.witness["invalid_observation_count"],0)
+
+        # A later valid sample inside the 45s check budget remains usable.
+        result2=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None:quote(30,101.),
+            now=OPEN+timedelta(seconds=30))
+        self.assertEqual(result2["invalid"],0)
+        self.assertEqual(result2["observed_positions"],1)
+
+    def test_missing_cache_long_enough_is_detected_on_next_valid_sample(self):
+        row=position();c=Cursor(row)
+        SIDECAR.seed(c,row,quote(0),stamp(0))
+        SIDECAR.sample_once(Connect(c),lambda work,now=None:{},
+                            now=OPEN+timedelta(seconds=30))
+        result=SIDECAR.sample_once(
+            Connect(c),lambda work,now=None:quote(60,101.),
+            now=OPEN+timedelta(seconds=60))
+        self.assertEqual(result["invalid"],1)
+        self.assertGreater(c.witness["invalid_observation_count"],0)
+
     def test_sample_without_entry_seed_cannot_invent_prefix(self):
         row=position();c=Cursor(row)
         result=SIDECAR.sample_once(
