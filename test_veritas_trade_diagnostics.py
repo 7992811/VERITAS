@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import unittest
 from unittest.mock import MagicMock, patch
 
+import veritas_canonical_constitution as CTC
 import veritas_observation_path as PATH
 import veritas_price_source as SOURCE
 import veritas_timeframe_structure as STRUCTURE
@@ -85,6 +86,30 @@ class TradeDiagnosticsTests(unittest.TestCase):
                         self.assertAlmostEqual(timing["delay_bars"], 10./STRUCTURE.TIMEFRAMES[timeframe])
                         self.assertFalse(result["subsequent_management_rules_verified"])
                         self.assertEqual(trade, before)
+
+    def test_mfe_management_receipt_proves_learning_execution_or_hard_fails(self):
+        trade=closed_trade(favorable_r=1.2)
+        trade["payload"].update(
+            r_accel_mfe_execution_required=True,
+            r_accel_mfe_learning_teaching_id=CTC.TREND_ACCELERATION_POLICY["teaching_id"],
+            r_accel_mfe_protection_state="ACTIVE",
+            r_accel_mfe_exit_authority="STRUCTURAL_MFE_PROTECTION")
+        result=DIAG.diagnose(trade)
+        self.assertEqual(result["status"],"VERIFIED_RULE_OUTCOME",result)
+        self.assertTrue(result["management_execution_verified"])
+        self.assertTrue(result["subsequent_management_rules_verified"])
+        self.assertTrue(result["management_execution_receipt"]["verified"])
+        self.assertNotIn("MFE_PROTECTION_EXECUTION_GAP",result["attributions"])
+
+        broken=deepcopy(trade)
+        broken["payload"].pop("r_accel_mfe_exit_authority")
+        result=DIAG.diagnose(broken)
+        self.assertEqual(result["status"],"RULE_VIOLATION",result)
+        self.assertEqual(result["primary_attribution"],"PROVEN_MANAGEMENT_EXECUTION_VIOLATION")
+        self.assertEqual(result["learning_action"],"REPAIR_MANAGEMENT_EXECUTION_GAP")
+        self.assertIn("MFE_PROTECTION_EXECUTION_GAP",result["attributions"])
+        self.assertFalse(result["management_execution_verified"])
+        self.assertIn("разрыв",DIAG.conclusion(result))
 
     def test_valid_stop_after_one_r_profit_is_only_a_management_hypothesis(self):
         result = DIAG.diagnose(closed_trade(favorable_r=1.2))
