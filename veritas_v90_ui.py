@@ -1130,8 +1130,8 @@ function deepBool(obj,names){
   return walk(obj,0);
 }
 function reviewTradeModel(t){
-  const p=t.payload||{},root={trade:t,payload:p},net=tradeTotal(t);
-  const mfe=deepNum(root,['mfe_pct']),mae=deepNum(root,['mae_pct']),captureRaw=deepNum(root,['capture_ratio']);
+  const p=t.payload||{},post=t.self_learning_review||{},snap=t.entry_analysis_snapshot||{},root={trade:t,payload:p,postmortem:post},net=tradeTotal(t);
+  const mfe=knownNumber(post.path?.mfe_pct)??deepNum(root,['mfe_pct']),mae=knownNumber(post.path?.mae_pct)??deepNum(root,['mae_pct']),captureRaw=deepNum(root,['capture_ratio']);
   const capture=captureRaw==null?null:(captureRaw>1?captureRaw/100:captureRaw);
   const attr=deepText(root,['primary_attribution']),action=deepText(root,['learning_action']);
   const replayProven=deepBool(root,['ordered_path_replay_verified','counterfactual_execution_proven','counterfactual_live_execution_proven','replay_verified'])===true;
@@ -1152,7 +1152,12 @@ function reviewTradeModel(t){
   else if(net!=null&&net<0){lesson='Убыточный исход добавлен в опыт. Причина не повышается до ошибки без достаточной доказательной базы.'}
   else if(net!=null&&net>0){lesson='Прибыльный исход добавлен в опыт как подтверждённый результат фактического исполнения.'}
   else lesson='Сделка сохранена, но итоговые доказательства ещё неполны.';
-  return {t,p,net,mfe,mae,capture,attr,action,replayProven,counterfactualPnl,counterfactualReturn,counterfactualExit,missedProfit,signalEntry,addPrice,protectionTrigger,status,statusClass,lesson};
+  const classification=String(post.classification||'');
+  if(classification==='PROVEN_RULE_VIOLATION'){status='Подтверждено';statusClass='bad'}
+  else if(classification==='PROFIT_GIVEBACK_REVIEW'){status='Разбор сопровождения';statusClass='warn'}
+  else if(classification==='ENTRY_OR_THESIS_REVIEW'){status='Разбор входа';statusClass='warn'}
+  else if(classification==='PROFITABLE_REFERENCE'){status='Эталон';statusClass='ok'}
+  return {t,p,post,snap,net,mfe,mae,capture,attr,action,replayProven,counterfactualPnl,counterfactualReturn,counterfactualExit,missedProfit,signalEntry,addPrice,protectionTrigger,status,statusClass,lesson};
 }
 function renderTradeReviewItem(x){
   const t=x.t,p=x.p,stop=t.stop_price??p.stop_price??p.initial_stop_price??p.structural_stop;
@@ -1173,7 +1178,26 @@ function renderTradeReviewItem(x){
       '<div class="review-metric"><span>Stop</span><b>'+assetPrice(t.asset,stop)+'</b></div>'+
       '<div class="review-metric"><span>Упущено доказано</span><b>'+missed+'</b></div>'+
       '<div class="review-metric"><span>Контрфакт</span><b>'+esc(evidence)+'</b></div>'+
-    '</div><div class="review-lesson"><b>'+esc(attr)+':</b> '+esc(x.lesson)+'</div></div>';
+    '</div><div class="review-lesson"><b>'+esc(attr)+':</b> '+esc(x.lesson)+'</div>'+
+    (x.post&&x.post.version?(()=>{
+      const lv=x.post.levels_volatility||{},mc=x.post.market_context||{},logic=x.post.entry_logic||{},exitLogic=x.post.exit_logic||{};
+      const ma=Object.entries(mc.moving_averages||{}).slice(0,4).map(([k,v])=>k.toUpperCase()+' '+assetPrice(t.asset,v)).join(' · ')||'—';
+      const maPath=(mc.moving_averages_in_trade_path||[]).map(v=>v.name+' '+assetPrice(t.asset,v.price)).join(' · ')||'нет';
+      const ind=Object.entries(mc.indicators||{}).slice(0,5).map(([k,v])=>k+' '+String(v)).join(' · ')||'—';
+      const issues=(x.post.issues||[]).slice(0,4).map(v=>'<span class="review-chip">'+esc(v)+'</span>').join('');
+      const strengths=(x.post.strengths||[]).slice(0,3).map(v=>'<span class="review-chip">'+esc(v)+'</span>').join('');
+      return '<div class="review-metrics dense">'+
+        '<div class="review-metric"><span>ATR / риск</span><b>'+n(lv.atr,4)+' / '+(lv.initial_risk_atr==null?'—':n(lv.initial_risk_atr,2)+' ATR')+'</b></div>'+
+        '<div class="review-metric"><span>Защищаемый high/low</span><b>'+assetPrice(t.asset,lv.stop_anchor)+' · '+(lv.stop_anchor_buffer_atr==null?'—':n(lv.stop_anchor_buffer_atr,2)+' ATR')+'</b></div>'+
+        '<div class="review-metric"><span>Цель / дистанция</span><b>'+assetPrice(t.asset,lv.initial_target)+' · '+(lv.target_distance_atr==null?'—':n(lv.target_distance_atr,2)+' ATR')+'</b></div>'+
+        '<div class="review-metric"><span>R/R исходный</span><b>'+(lv.gross_target_to_risk==null?'—':n(lv.gross_target_to_risk,2))+'</b></div>'+
+        '<div class="review-metric"><span>TF триггер → риск</span><b>'+esc((mc.trigger_timeframe||'—')+' → '+(mc.structural_timeframe||mc.stop_timeframe||'—'))+'</b></div>'+
+        '<div class="review-metric"><span>Вход / выход</span><b>'+esc((logic.trade_entry_reason||logic.research_decision||'—')+' / '+(exitLogic.exit_reason||'—'))+'</b></div>'+
+        '<div class="review-metric"><span>MA</span><b>'+esc(ma)+'</b></div>'+
+        '<div class="review-metric"><span>MA в траектории</span><b>'+esc(maPath)+'</b></div>'+
+      '</div><div class="review-foot"><b>Индикаторы:</b> '+esc(ind)+(issues||strengths?'<div class="review-blockers">'+strengths+issues+'</div>':'')+'</div>';
+    })():'')+
+    '</div>';
 }
 function aggregateClosedTradeEvidence(learning2){
   const assets=learning2&&learning2.assets&&typeof learning2.assets==='object'?learning2.assets:{};
@@ -1273,6 +1297,11 @@ function hypothesisEffectHtml(h,r){
   }
   return '';
 }
+function renderOwnerReviewQueue(){
+  const rows=Array.isArray(st.trades&&st.trades.owner_review_queue)?st.trades.owner_review_queue:[];
+  return '<section class="review-section"><h3>На утверждение владельца</h3><div class="review-section-note">Кандидаты сформированы из закрытых сделок. Они не меняют production автоматически; сначала conflict-check, replay/OOS и ваше решение.</div>'+
+    (rows.length?rows.slice(0,12).map(x=>{const p=x.proposal||{},conf=p.canonical_conflicts||[],block=p.promotion_blockers||[];return '<div class="review-hypothesis"><div class="review-hypothesis-head"><div><b>'+esc(p.title||p.kind||'Кандидат')+'</b><small>'+esc([lab(x.asset),tfRu(x.horizon),(x.portfolios||[]).map(portfolioName).join('/')].filter(Boolean).join(' · '))+'</small></div><span class="review-status warn">'+esc(p.status||'OWNER_REVIEW_REQUIRED')+'</span></div><div class="review-rule">'+esc(p.rationale||'')+'</div>'+(conf.length?'<div class="review-blockers">'+conf.map(v=>'<span class="review-chip">Конфликт: '+esc(v)+'</span>').join('')+'</div>':'')+(block.length?'<div class="review-foot">До применения: '+esc(block.join(' · '))+'</div>':'')+'</div>'}).join(''):'<div class="msg">Новых предложений, требующих вашего решения, сейчас нет.</div>')+'</section>';
+}
 function renderHypothesesSection(learning2){
   const hs=Array.isArray(learning2&&learning2.hypotheses)?learning2.hypotheses:[];
   const registry=learning2&&learning2.registry||{},cands=Array.isArray(registry.candidates)?registry.candidates:[];
@@ -1284,8 +1313,11 @@ function renderHypothesesSection(learning2){
 }
 function renderReview(){
   bindReviewTabs();
-  const all=Array.isArray(st.trades&&st.trades.trades)?st.trades.trades.slice(0,60):[];
+  const historical=Array.isArray(st.trades&&st.trades.self_learning_reviews)?st.trades.self_learning_reviews:[];
+  const all=(historical.length?historical:(Array.isArray(st.trades&&st.trades.trades)?st.trades.trades:[])).slice(0,100);
   const reviews=all.map(reviewTradeModel);
+  const ownerQueue=Array.isArray(st.trades&&st.trades.owner_review_queue)?st.trades.owner_review_queue:[];
+  const selfSummary=st.trades&&st.trades.self_learning_summary||{};
   const a=st.autonomous||{},l2=a.learning_v2||{},missed=aggregateMissed(l2),closed=aggregateClosedTradeEvidence(l2);
   const hypotheses=Array.isArray(l2.hypotheses)?l2.hypotheses:[];
   const registry=l2.registry||{},shadow=Array.isArray(registry.shadow_champions)?registry.shadow_champions.length:0;
@@ -1293,25 +1325,25 @@ function renderReview(){
   const promoted=autoCandidates.filter(x=>String(x.state||'').toLowerCase()==='promoted'&&x.evidence_valid===true).length;
   const protection=reviews.filter(x=>x.protectionTrigger).length;
   const fallbackWinRate=closed.winRate??(reviews.length?reviews.filter(x=>x.net!=null&&x.net>0).length/reviews.length:null);
-  if($('reviewBadge'))$('reviewBadge').textContent=String(missed.missed+protection);
+  if($('reviewBadge'))$('reviewBadge').textContent=String(ownerQueue.length+missed.learnable);
   if($('reviewSummary'))$('reviewSummary').innerHTML='<div class="review-kpis">'+
     '<div class="review-kpi"><span>Доказан исход</span><b>'+closed.outcome+'</b></div>'+
     '<div class="review-kpi"><span>Доказан путь</span><b>'+closed.path+'</b></div>'+
     '<div class="review-kpi"><span>Win-rate исходов</span><b>'+(fallbackWinRate==null?'—':n(100*fallbackWinRate,1)+'%')+'</b></div>'+
     '<div class="review-kpi"><span>P&L исходов</span><b class="'+tone(closed.pnl)+'">'+(closed.outcome?rub(closed.pnl):'—')+'</b></div>'+
     '<div class="review-kpi"><span>MFE ≥0,15% → ≤0</span><b class="'+(protection?'warn':'')+'">'+protection+'</b></div>'+
-    '<div class="review-kpi"><span>Replay Stop / Exit</span><b>'+closed.stopReady+' / '+closed.exitReady+'</b></div>'+
+    '<div class="review-kpi"><span>На ваше утверждение</span><b class="'+(ownerQueue.length?'warn':'')+'">'+ownerQueue.length+'</b></div>'+
     '<div class="review-kpi"><span>Упущено / обучаемо</span><b class="'+(missed.missed?'warn':'')+'">'+missed.missed+' / '+missed.learnable+'</b></div>'+
-    '<div class="review-kpi"><span>L2 / авто / подтвержд.</span><b>'+hypotheses.length+' / '+autoCandidates.length+' / '+promoted+'</b></div></div>';
+    '<div class="review-kpi"><span>Replay Stop / Exit</span><b>'+closed.stopReady+' / '+closed.exitReady+'</b></div></div>';
   if(!$('reviewBody'))return;
   const authority=closed.outcome?
     ('Исход '+closed.outcome+' · path '+closed.path+' · outcome-only '+closed.outcomeOnly+
      ' · replay Stop/Exit '+closed.stopReady+'/'+closed.exitReady+
      (closed.avgCapture!=null?' · ср. захват '+n(100*closed.avgCapture,0)+'%':''))
     :'Evidence-tier по закрытым сделкам обновляется.';
-  const trades='<section class="review-section"><h3>Закрытые сделки · плотный разбор</h3><div class="review-section-note">'+esc(authority)+' · MFE/MAE не восстанавливаются из неполного пути.</div>'+(reviews.length?'<div class="review-list">'+reviews.slice(0,24).map(renderTradeReviewItem).join('')+'</div>':'<div class="msg">Закрытых сделок для разбора пока нет.</div>')+'</section>';
+  const trades='<section class="review-section"><h3>Закрытые сделки · подробный postmortem</h3><div class="review-section-note">'+esc(authority)+' · последние '+reviews.length+' сделок: уровни, ATR, high/low, MA, multi-TF, вход/выход и конфликт правил. MFE/MAE не восстанавливаются из неполного пути.</div>'+(reviews.length?'<div class="review-list">'+reviews.slice(0,30).map(renderTradeReviewItem).join('')+'</div>':'<div class="msg">Закрытых сделок для разбора пока нет.</div>')+'</section>';
   const loop='<section class="review-section"><h3>Контур самообучения</h3><div class="review-flow"><span class="review-chip">Фиксация</span><i>→</i><span class="review-chip">Диагностика</span><i>→</i><span class="review-chip">Future validation</span><i>→</i><span class="review-chip">Replay / Shadow</span><i>→</i><span class="review-chip">Production candidate</span></div><div class="review-foot">Одно наблюдение правило не меняет. Outcome-only может обучать денежный результат/размер и запускать bounded replay; прямые MFE/MAE требуют path evidence. '+esc(learningWaitText(a))+'</div></section>';
-  $('reviewBody').innerHTML='<div class="review-grid"><div>'+trades+renderMissedSection(l2,missed)+'</div><div>'+renderAutonomousTradeLearning(a)+renderHypothesesSection(l2)+loop+'</div></div>';
+  $('reviewBody').innerHTML='<div class="review-grid"><div>'+trades+renderMissedSection(l2,missed)+'</div><div>'+renderOwnerReviewQueue()+renderAutonomousTradeLearning(a)+renderHypothesesSection(l2)+loop+'</div></div>';
 }
 
 function learningWaitText(a){
