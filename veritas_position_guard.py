@@ -892,7 +892,11 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
         if pending_paths:
             started=time.monotonic()
             try:
-                PIO.write_patches_one_roundtrip(c,pending_paths,optional=True)
+                # These rows were proven to have no stop/target/lock action
+                # in this pass. Keep the current witness on the live position
+                # only; any later action mirrors its revalidated observation to
+                # paper_trades at the accounting boundary.
+                PIO.write_position_patches(c,pending_paths,optional=True)
                 pending_paths.clear()
             finally:
                 measured['observation_write_seconds']+=time.monotonic()-started
