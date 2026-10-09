@@ -24,6 +24,11 @@ REJECT_ROUTER_N=100
 SHADOW_VALID_DAYS=7
 MAX_ACTIVE=128
 MAX_DAY_KEYS=64
+MIN_REPLAY_N=32
+MIN_REPLAY_DAYS=7
+REJECT_REPLAY_N=64
+REJECT_REPLAY_DAYS=14
+MAX_REPLAY_AMBIGUITY_RATE=0.15
 
 
 def _time(v):
@@ -171,6 +176,36 @@ def _router_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
     return status,evidence
 
 
+
+def _replay_evidence(prior):
+    p=dict((prior or {}).get("replay") or {})
+    n=int(p.get("n") or 0); ambiguous=int(p.get("ambiguous") or 0); invalid=int(p.get("invalid") or 0)
+    days=int(p.get("days") or len(p.get("utc_days") or []))
+    sum_base=_num(p.get("sum_baseline")) or 0.0
+    sum_candidate=_num(p.get("sum_candidate")) or 0.0
+    mean_base=sum_base/n if n else None
+    mean_candidate=sum_candidate/n if n else None
+    mean_delta=(sum_candidate-sum_base)/n if n else None
+    denominator=n+ambiguous
+    ambiguity_rate=ambiguous/denominator if denominator else None
+    evidence={**p,"n":n,"days":days,"ambiguous":ambiguous,"invalid":invalid,
+              "mean_baseline_net_return":mean_base,
+              "mean_candidate_net_return":mean_candidate,
+              "mean_delta_net_return":mean_delta,
+              "ambiguity_rate":ambiguity_rate,
+              "counterfactual_live_execution_proven":False}
+    if (n>=MIN_REPLAY_N and days>=MIN_REPLAY_DAYS
+            and mean_candidate is not None and mean_candidate>0
+            and mean_delta is not None and mean_delta>0
+            and ambiguity_rate is not None and ambiguity_rate<=MAX_REPLAY_AMBIGUITY_RATE):
+        status="REPLAY_SUPPORTED"
+    elif (n>=REJECT_REPLAY_N and days>=REJECT_REPLAY_DAYS
+          and (mean_delta is None or mean_delta<=0)):
+        status="REJECTED"
+    else:
+        status="REPLAY_BUILDING" if (n or ambiguous or invalid) else "AWAIT_REPLAY"
+    return status,evidence
+
 def evaluate_candidate(candidate,decision_rows,trade_rows,now=None,prior=None,cutoff_id=0):
     clock=now or datetime.now(timezone.utc)
     if clock.tzinfo is None: raise ValueError("timezone-aware clock required")
@@ -182,8 +217,10 @@ def evaluate_candidate(candidate,decision_rows,trade_rows,now=None,prior=None,cu
     elif kind=="STRATEGY_ROUTER":
         status,evidence=_router_evidence(candidate,decision_rows,registered,cutoff_id,prior)
     elif kind in ("STOP_GEOMETRY","EXIT_CAPTURE"):
-        status,evidence="AWAIT_REPLAY",{"reason":"ORDERED_PATH_REPLAY_REQUIRED","n":0,
-            "new_observations":0,"counterfactual_execution_proven":False}
+        status,replay=_replay_evidence(prior)
+        evidence={**dict(prior or {}),"reason":"ORDERED_PATH_REPLAY_REQUIRED",
+                  "new_observations":0,"counterfactual_execution_proven":False,
+                  "replay":replay}
     else:
         status,evidence="REJECTED",{"reason":"UNKNOWN_KIND","n":0,"new_observations":0}
     fresh=bool(evidence.get("new_observations"))
