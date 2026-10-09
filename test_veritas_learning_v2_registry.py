@@ -45,6 +45,17 @@ class LearningV2RegistryTests(unittest.TestCase):
         self.assertEqual(r2["prospective"]["last_decision_id"],164)
         self.assertEqual(r2["status"],"SHADOW_ELIGIBLE")
 
+    def test_directional_label_with_blocker_can_validate_entry(self):
+        rows=[]
+        for i in range(64):
+            row=self.decision(T0+timedelta(days=1+(i%16),minutes=i),.01)
+            row["decision"]="LONG"
+            row["admission_eligible"]=False
+            rows.append(row)
+        result=R.evaluate_candidate(self.entry_candidate(),rows,[],T0+timedelta(days=20))
+        self.assertEqual(result["status"],"SHADOW_ELIGIBLE")
+        self.assertEqual(result["prospective"]["n"],64)
+
     def test_no_direction_or_move_against_candidate_cannot_validate_entry(self):
         rows=[]
         for i in range(80):
