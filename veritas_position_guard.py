@@ -912,10 +912,25 @@ def _observation_has_no_action(vp, c, z, q, ts, path, now):
             _legacy_profit_lock(vp,c,candidate,q,ts,accounting=accounting) is None)
 
 
-def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
+def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None, eligible_trade_ids=None):
     measured=timing if timing is not None else {}
     changes, pending_paths = [], []
     explicit_clock = now
+    quote_assets=tuple(sorted(str(asset) for asset,value in (quotes or {}).items() if value))
+    trade_ids=tuple(dict.fromkeys(str(value) for value in (eligible_trade_ids or ()) if value))
+    # The outer guard already resolves a fresh source-pinned quote per open position.
+    # Never take the global paper-book lock for positions that cannot act in this pass.
+    # Direct/test callers without trade ids fall back to the fresh quoted asset scope.
+    if eligible_trade_ids is not None and not trade_ids:
+        measured.update(status='NO_FRESH_QUOTES',positions_query_seconds=0.0,
+                        protection_seconds=0.0,lock_scope_positions=0,
+                        lock_scope_assets=len(quote_assets))
+        return []
+    if eligible_trade_ids is None and not quote_assets:
+        measured.update(status='NO_FRESH_QUOTES',positions_query_seconds=0.0,
+                        protection_seconds=0.0,lock_scope_positions=0,
+                        lock_scope_assets=0)
+        return []
     measured['observation_write_seconds']=0.0
     measured['no_action_preflight_seconds']=0.0
     measured['legacy_profit_lock_seconds']=0.0
@@ -939,9 +954,20 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
         ts = now.isoformat()
         query_started=time.monotonic()
         try:
-            positions = c.execute(PIO.PROTECTION_POSITIONS_SQL+' ORDER BY portfolio_name,asset FOR UPDATE').fetchall()
+            if trade_ids:
+                positions = c.execute(
+                    PIO.PROTECTION_POSITIONS_SQL+
+                    ' WHERE active_trade_id=ANY(%s) ORDER BY portfolio_name,asset FOR UPDATE',
+                    (list(trade_ids),)).fetchall()
+            else:
+                positions = c.execute(
+                    PIO.PROTECTION_POSITIONS_SQL+
+                    ' WHERE asset=ANY(%s) ORDER BY portfolio_name,asset FOR UPDATE',
+                    (list(quote_assets),)).fetchall()
         finally:
             measured['positions_query_seconds']=time.monotonic()-query_started
+        measured['lock_scope_positions']=len(positions)
+        measured['lock_scope_assets']=len(quote_assets)
         protection_started=time.monotonic()
         for item in positions:
             now = explicit_clock or datetime.now(timezone.utc)
@@ -1446,11 +1472,13 @@ def start(ns):
                 refresh_position_quotes(ns,positions)
                 phases['quote_refresh_seconds']=time.monotonic()-phase_started
                 phase, phase_started = 'quote_select', time.monotonic()
-                quotes, errors, paused = {}, {}, {}
+                quotes, errors, paused, eligible_trade_ids = {}, {}, {}, []
                 for z in positions:
                     q=quote_for_position(z)
                     if q:
                         quotes[z['asset']]=q
+                        if z.get('active_trade_id'):
+                            eligible_trade_ids.append(z['active_trade_id'])
                     else:
                         state=market_state(z.get('asset'))
                         key=z.get('active_trade_id') or z['asset']
@@ -1464,7 +1492,7 @@ def start(ns):
                 positions = z = None
                 phase, phase_started = 'protective_pass', time.monotonic()
                 changes = run_protective_pass(ns['VP'], ns['pg_connect'], quotes,
-                    timing=transaction_timing) if position_count else []
+                    timing=transaction_timing, eligible_trade_ids=eligible_trade_ids) if position_count else []
                 phases['protective_pass_seconds']=time.monotonic()-phase_started
                 phases.update({k:v for k,v in transaction_timing.items() if k.endswith('_seconds')})
                 phase, phase_started = 'cache_invalidation', time.monotonic()
@@ -1492,6 +1520,8 @@ def start(ns):
                               last_changes=changes or _state.get('last_changes', []),
                               phase_seconds={k:round(v,3) for k,v in phases.items()},
                               book_transaction_status=transaction_timing.get('status','NOT_NEEDED'),
+                              lock_scope_positions=transaction_timing.get('lock_scope_positions',0),
+                              lock_scope_assets=transaction_timing.get('lock_scope_assets',len(quotes)),
                               payload_compression=transaction_timing.get('payload_compression'),
                               duration_seconds=round(time.monotonic()-started, 3))
                 if changes or errors or time.monotonic()-last_log >= 60:
