@@ -21,6 +21,7 @@ VERSION = "LEARNING_V2_SHADOW_2_BLOCKER_EVIDENCE"
 MIN_CONTEXT_N = 8
 MIN_FALSE_BLOCK_N = 3
 MIN_TRADE_N = 12
+MIN_REPLAY_DISCOVERY_N = 4
 MIN_ROUTER_TRAIN_N = 6
 MAX_HYPOTHESES = 64
 ENTRY_FALSE_BLOCK_MOVE = 0.004
@@ -329,7 +330,7 @@ def generate_hypotheses(decision_rows, trade_rows):
     for rows in trade_ctx.values():
         outcome_rows=[r for r in rows if (r.get("outcome_learning_eligible") is True
                                            or r.get("path_learning_eligible") is True)]
-        if len(outcome_rows)<MIN_TRADE_N:
+        if len(outcome_rows)<MIN_REPLAY_DISCOVERY_N:
             continue
         scope=_context(outcome_rows[0])
         path_rows=[r for r in outcome_rows if r.get("path_learning_eligible") is True
