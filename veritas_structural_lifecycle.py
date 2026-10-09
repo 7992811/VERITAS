@@ -312,10 +312,13 @@ def target_reduction(position,price,nav,ts):
     history=list(p.get('target_lifecycle_history') or [])
     history.append({'action':'TARGET_FINAL' if final else 'TARGET_PARTIAL','at':str(ts),
                     'event_id':event.get('event_id'),'stage':stage,'next_stage':next_stage,
-                    'reference_price':float(price),'target_fraction':residual})
+                    'reference_price':float(price),'target_fraction':residual,
+                    'runner_ratio':runner_ratio if not final else 0.0})
+    adaptive_runner=bool(not final and stage==0 and runner_ratio>.50)
     patch={'active_target_stage':next_stage,'target_lifecycle_history':history[-32:],
            'r17_tp1_done':True,'r17_tp1_at':str(ts),'r17_tp1_price':float(price),
-           'profit_exit_policy':'RECORDED_HISTORICAL_TARGET_FRACTIONS',
+           'profit_exit_policy':'ADAPTIVE_PROTECTED_TREND_RUNNER' if adaptive_runner else 'RECORDED_HISTORICAL_TARGET_FRACTIONS',
+           'adaptive_runner_ratio':runner_ratio if adaptive_runner else None,
            'last_target_kind':'FINAL' if final else ladder[stage]['kind']}
     if next_stage < len(ladder):
         patch.update(take_price=ladder[next_stage]['price'],target_price=ladder[next_stage]['price'])
