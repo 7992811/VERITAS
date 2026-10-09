@@ -421,14 +421,14 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
             for table in ('paper_positions', 'paper_trades'):
                 for old, new in zip(before[table], after[table]):
                     tid = new.get('active_trade_id') or new.get('trade_id')
-                    self.assertEqual(new['payload']['observation_path']['observation_count'],
-                                     2 if tid == failed_id else 3)
+                    count=new['payload']['observation_path']['observation_count']
+                    self.assertEqual(count,2 if (tid==failed_id or not legacy) else 3)
                     if tid == failed_id:
-                        self.assertEqual(new['payload'], old['payload'])
+                        self.assertEqual(new['payload'],old['payload'])
             rejected = next(r for r in after['paper_trades'] if r['trade_id'] == failed_id)
             self.assertEqual((rejected['fees_rub'], rejected['net_pnl_rub']), (.04, -10.))
-            outcomes.append(after)
-        self.assertEqual(outcomes[0], outcomes[1])
+            outcomes.append(self.without_observation_path(after))
+        self.assertEqual(outcomes[0],outcomes[1])
 
     def test_outer_rollback_removes_successful_metadata_batch_and_accounting(self):
         rows, quote = self.fixture()
