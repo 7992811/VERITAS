@@ -24,6 +24,96 @@ def _payload(value):
         return {}
 
 
+def _first_number(*values):
+    for value in values:
+        number = _number(value)
+        if number is not None and number > 0:
+            return number
+    return None
+
+
+def _position_management_projection(position):
+    """Normalize stop/target presentation without changing execution authority."""
+    p = _payload((position or {}).get('payload'))
+    event = p.get('active_target_event_snapshot') or p.get('entry_event_snapshot') or {}
+    candidates = (
+        p.get('active_target_ladder'),
+        event.get('target_ladder') if isinstance(event, dict) else None,
+        p.get('initial_target_ladder'),
+    )
+    ladder = []
+    for candidate in candidates:
+        if not isinstance(candidate, list):
+            continue
+        cleaned = []
+        for step in candidate:
+            if not isinstance(step, dict):
+                continue
+            price = _number(step.get('price'))
+            if price is None or price <= 0:
+                continue
+            cleaned.append({
+                'price': price,
+                'fraction': _number(step.get('fraction')),
+                'kind': step.get('kind'),
+            })
+        if cleaned:
+            ladder = cleaned
+            break
+
+    stage = p.get('active_target_stage', 0)
+    if not isinstance(stage, int) or isinstance(stage, bool) or stage < 0:
+        stage = 0
+
+    stop = VPP.effective_stop(position or {})
+    tp1 = ladder[0]['price'] if ladder else _first_number(
+        p.get('initial_take_price'), p.get('take_price'),
+        p.get('target_price'), p.get('last_target_price'))
+    fixed_tp2 = ladder[1]['price'] if len(ladder) > 1 else _first_number(
+        p.get('tp2'), p.get('tp2_price'), p.get('second_target_price'))
+    runner = _first_number(p.get('runner_target_price'))
+    second = fixed_tp2 if fixed_tp2 is not None else runner
+    second_kind = ('TP2' if fixed_tp2 is not None else
+                   'RUNNER' if runner is not None else
+                   'TRAILING_RUNNER' if bool(p.get('r17_tp1_done')) and
+                   _first_number(p.get('trailing_stop')) is not None else None)
+    next_target = ladder[stage]['price'] if 0 <= stage < len(ladder) else _first_number(
+        p.get('take_price'), p.get('target_price'), p.get('last_target_price'))
+
+    structural = bool(p.get('structural_policy_version'))
+    missing = []
+    if stop is None:
+        missing.append('SL')
+    if structural and not ladder and tp1 is None:
+        missing.append('TARGET_LADDER')
+    status = ('PROTECTION_ERROR' if 'SL' in missing else
+              'TARGET_PLAN_INCOMPLETE' if missing else 'OK')
+
+    trailing = _first_number(p.get('trailing_stop'))
+    hard_stop = _first_number((position or {}).get('stop_price'))
+    stop_source = None
+    if stop is not None:
+        if trailing is not None and abs(stop-trailing) <= max(1e-12, abs(stop)*1e-12):
+            stop_source = 'TRAILING_STOP'
+        elif hard_stop is not None:
+            stop_source = 'HARD_STOP'
+
+    return {
+        'effective_stop_price': stop,
+        'effective_stop_source': stop_source,
+        'tp1_price': tp1,
+        'second_take_price': second,
+        'second_take_kind': second_kind,
+        'next_target_price': next_target,
+        'target_stage': stage,
+        'target_plan_mode': ('LADDER' if len(ladder) > 1 else
+                             'RUNNER' if second_kind in ('RUNNER', 'TRAILING_RUNNER') else
+                             'SINGLE_TARGET' if tp1 is not None else 'UNAVAILABLE'),
+        'position_management_status': status,
+        'position_management_missing': missing,
+    }
+
+
 def trade_result(trade, position=None):
     trade = trade or {}
     payload = dict(_payload(trade.get('payload')))
@@ -97,5 +187,6 @@ def enrich_positions(report, pg_connect, *, preloaded_accounts=None):
                             unrealized_pnl_rub=sign*units*(current-entry),
                             unrealized_return_pct=100*sign*(current/entry-1))
         position.update(trade_result(trades.get(position.get('active_trade_id')), position))
+        position.update(_position_management_projection(position))
         position.update(VPP.evaluate(position, trades.get(position.get('active_trade_id'))))
     return out
