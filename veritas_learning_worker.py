@@ -15,9 +15,11 @@ from psycopg.rows import dict_row
 import veritas_learning_v2 as L
 import veritas_learning_v2_registry as REGISTRY
 
+WORKER_PROTOCOL="EXTERNAL_LEARNING_WORKER_V1"
 INTERVAL=max(60,int(os.getenv("VERITAS_LEARNING_V2_INTERVAL_SECONDS","120")))
 ASSETS=("BTC","ETH","NQ","BRENT","GOLD","MOEX","CNYRUBF")
 PER_ASSET_LIMIT=max(32,min(256,int(os.getenv("VERITAS_LEARNING_V2_PER_ASSET_LIMIT","96"))))
+EXPECTED_DATABASE=os.getenv("VERITAS_LEARNING_EXPECTED_DATABASE","veritas_knowledge").strip()
 
 
 def _payload(row):
@@ -185,11 +187,42 @@ def publish(conn,snapshot):
 
 
 def run_once(dsn):
-    with psycopg.connect(dsn,row_factory=dict_row,autocommit=False) as conn:
+    with psycopg.connect(dsn,row_factory=dict_row,autocommit=False,
+                         application_name="veritas-learning-v2") as conn:
+        db=conn.execute("SELECT current_database() AS db").fetchone()["db"]
+        if db!=EXPECTED_DATABASE:
+            raise RuntimeError("LEARNING_DATABASE_REJECTED")
+        schema=conn.execute("SELECT to_regnamespace('veritas_v90')::text AS schema").fetchone()["schema"]
+        if schema!="veritas_v90":
+            raise RuntimeError("LEARNING_SCHEMA_REJECTED")
+        conn.execute("SET search_path TO veritas_v90")
+        conn.execute("SET statement_timeout='5000ms'")
+        conn.execute("SET lock_timeout='500ms'")
+        conn.execute("SET idle_in_transaction_session_timeout='5000ms'")
+        required=conn.execute("""SELECT count(*) AS n FROM information_schema.tables
+            WHERE table_schema='veritas_v90'
+              AND table_name=ANY(%s)""",(["ledger_events","v90_decision_episodes","v90_learning_episodes","paper_trades"],)).fetchone()["n"]
+        if int(required)!=4:
+            raise RuntimeError("LEARNING_SOURCE_SCHEMA_INCOMPLETE")
         ensure_schema(conn)
         decisions,trades,errors=load_inputs(conn)
         snapshot=L.research_snapshot(decisions,trades)
+        generated=datetime.now(timezone.utc)
+        asset_snapshots={}
+        for asset in ASSETS:
+            asset_decisions=[x for x in decisions if str(x.get("asset") or "")==asset]
+            asset_trades=[x for x in trades if str(x.get("asset") or "")==asset]
+            item=L.research_snapshot(asset_decisions,asset_trades)
+            item["input_counts"]={"decisions":len(asset_decisions),"trades":len(asset_trades)}
+            asset_snapshots[asset]={k:item.get(k) for k in (
+                "status","counts","entry_false_block","diagnostics","hypotheses","input_counts")}
+        snapshot["assets"]=asset_snapshots
         snapshot["input_counts"]={"decisions":len(decisions),"trades":len(trades)}
+        snapshot["producer"]="EXTERNAL_LEARNING_WORKER"
+        snapshot["worker_protocol"]=WORKER_PROTOCOL
+        snapshot["process_role"]="learning"
+        snapshot["heartbeat_at"]=generated.isoformat()
+        snapshot["worker_service_id"]=os.getenv("RENDER_SERVICE_ID","")[:128]
         snapshot["source_errors"]=errors
         snapshot["status"]="DEGRADED" if errors else snapshot["status"]
         snapshot["registry"]=REGISTRY.sync(conn,snapshot,decisions,trades,

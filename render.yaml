@@ -37,10 +37,14 @@ services:
     autoDeploy: true
     envVars:
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: veritas-knowledge
+          property: connectionString
       - key: VERITAS_PROCESS_ROLE
         value: "learning"
       - key: VERITAS_LEARNING_V2_INTERVAL_SECONDS
         value: "120"
-      - key: VERITAS_LEARNING_V2_LIMIT
-        value: "2000"
+      - key: VERITAS_LEARNING_V2_PER_ASSET_LIMIT
+        value: "96"
+      - key: VERITAS_LEARNING_EXPECTED_DATABASE
+        value: "veritas_knowledge"

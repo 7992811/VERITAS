@@ -43,6 +43,11 @@ CANDIDATE_MAINTENANCE_SECONDS = 120
 LEARNING_V2_SNAPSHOT_NAME = "learning_v2_shadow"
 LEARNING_V2_ASSETS = ("BTC","ETH","NQ","BRENT","GOLD","MOEX","CNYRUBF")
 LEARNING_V2_INPUT_LIMIT = 128
+EXTERNAL_LEARNING_WORKER_PROTOCOL = "EXTERNAL_LEARNING_WORKER_V1"
+EXTERNAL_LEARNING_MAX_AGE_SECONDS = max(180,min(1800,int(
+    os.getenv("VERITAS_EXTERNAL_LEARNING_MAX_AGE_SECONDS","420"))))
+EXTERNAL_LEARNING_HANDOFF_ENABLED = os.getenv(
+    "VERITAS_EXTERNAL_LEARNING_HANDOFF","1").strip().lower() not in ("0","false","no","off")
 
 
 def _json(value):
@@ -51,6 +56,43 @@ def _json(value):
 
 def clock():
     return datetime.now(timezone.utc)
+
+
+def external_worker_state(c, *, now=None):
+    """Validate an external worker heartbeat without trusting stale research."""
+    if not EXTERNAL_LEARNING_HANDOFF_ENABLED:
+        return {"active":False,"reason":"HANDOFF_DISABLED"}
+    now=now or clock()
+    row=c.execute("""SELECT version,generated_at,payload
+                     FROM learning_v2_snapshots
+                     WHERE snapshot_key='current'""").fetchone()
+    if not row:
+        return {"active":False,"reason":"NO_EXTERNAL_SNAPSHOT"}
+    payload=row.get("payload") if isinstance(row,dict) else row["payload"]
+    if not isinstance(payload,dict):
+        return {"active":False,"reason":"INVALID_EXTERNAL_PAYLOAD"}
+    generated=BRIDGE.timestamp(row.get("generated_at") if isinstance(row,dict) else row["generated_at"])
+    if generated is None:
+        return {"active":False,"reason":"INVALID_EXTERNAL_CLOCK"}
+    age=(now-generated).total_seconds()
+    if age < -30:
+        return {"active":False,"reason":"EXTERNAL_CLOCK_IN_FUTURE"}
+    if age > EXTERNAL_LEARNING_MAX_AGE_SECONDS:
+        return {"active":False,"reason":"EXTERNAL_SNAPSHOT_STALE","age_seconds":round(age,3)}
+    if (str(row.get("version") if isinstance(row,dict) else row["version"])!=LEARNING_V2.VERSION
+            or payload.get("version")!=LEARNING_V2.VERSION):
+        return {"active":False,"reason":"EXTERNAL_VERSION_MISMATCH"}
+    if (payload.get("producer")!="EXTERNAL_LEARNING_WORKER"
+            or payload.get("worker_protocol")!=EXTERNAL_LEARNING_WORKER_PROTOCOL
+            or payload.get("process_role")!="learning"):
+        return {"active":False,"reason":"EXTERNAL_PRODUCER_UNVERIFIED"}
+    if payload.get("status")=="DEGRADED" or list(payload.get("source_errors") or []):
+        return {"active":False,"reason":"EXTERNAL_SOURCE_DEGRADED"}
+    if payload.get("automatic_production_promotion") is not False:
+        return {"active":False,"reason":"EXTERNAL_AUTHORITY_INVALID"}
+    return {"active":True,"reason":"FRESH_VERIFIED_EXTERNAL_WORKER",
+            "age_seconds":round(max(0.0,age),3),"generated_at":generated.isoformat(),
+            "payload":deepcopy(payload)}
 
 
 class Budget:
@@ -224,6 +266,7 @@ class ContinuousLearning:
                        "abstention_observations": 0, "excluded_forecasts": 0,
                        "last_success_at": None, "last_error": None}
         self.trade = None
+        self._external_worker_active = False
         jobs = (("learning_bootstrap", self.bootstrap, 10, 6),
                 ("learning_ingest", self.ingest, 15, 6),
                 ("learning_outcomes", self.outcomes, 15, 6),
@@ -390,6 +433,12 @@ class ContinuousLearning:
             with transaction(self.connect, context) as c:
                 LEARNING_V2_REGISTRY.ensure_schema(c)
                 LEARNING_V2_REPLAY_EVAL.ensure_schema(c)
+                c.execute("""CREATE TABLE IF NOT EXISTS learning_v2_snapshots(
+                    snapshot_key TEXT PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    generated_at TIMESTAMPTZ NOT NULL,
+                    payload JSONB NOT NULL
+                )""")
             self.boot_phase = 4
             return {"status": "PROGRESS", "stage": "KNOWLEDGE_AND_LEARNING_V2_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
@@ -674,6 +723,19 @@ class ContinuousLearning:
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
 
+    def _external_learning_state(self, context):
+        with transaction(self.connect, context) as c:
+            state=external_worker_state(c,now=clock())
+        active=bool(state.get("active"))
+        if active!=self._external_worker_active:
+            self._external_worker_active=active
+            self.ns["emit"]("learning_v2_handoff",
+                            mode="EXTERNAL_WORKER" if active else "LOCAL_FALLBACK",
+                            reason=state.get("reason"),
+                            age_seconds=state.get("age_seconds"),
+                            production_influence=False)
+        return state
+
     def learning_v2_shadow(self, context, cursor):
         """Build one asset's bounded shadow research from verified outcomes.
 
@@ -682,6 +744,27 @@ class ContinuousLearning:
         materialized episode table; only the matching decision payload is read
         for frozen pre-outcome context.  No entry/stop/exit/risk mutation occurs.
         """
+        external=self._external_learning_state(context)
+        if external.get("active"):
+            payload=deepcopy(external["payload"])
+            payload["handoff"]={
+                "mode":"EXTERNAL_WORKER",
+                "verified_at":clock().isoformat(),
+                "external_generated_at":external.get("generated_at"),
+                "age_seconds":external.get("age_seconds"),
+                "production_influence":False,
+            }
+            with self._lock:
+                self._learning_v2=payload
+            return {
+                "status":"OK","mode":"EXTERNAL_WORKER_ACTIVE",
+                "external_generated_at":external.get("generated_at"),
+                "external_age_seconds":external.get("age_seconds"),
+                "hypotheses":len(payload.get("hypotheses") or []),
+                "counts":payload.get("counts") or {},
+                "production_influence":False,
+            },cursor
+
         cursor=deepcopy(cursor)
         index=int(cursor.get("asset_index") or 0)%len(LEARNING_V2_ASSETS)
         asset=LEARNING_V2_ASSETS[index]
