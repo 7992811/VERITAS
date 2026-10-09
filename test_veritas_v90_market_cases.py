@@ -272,6 +272,20 @@ class SignalExecutionSeparationRegressionTests(unittest.TestCase):
         self.assertIn("from veritas_market_runtime import moex_index_session_open",source)
         self.assertNotIn("return 590<=mins<1140",source)
 
+    def test_source_time_arbitration_blocks_execution_not_thesis(self):
+        f={'source_gate_pass':False,'market_open':False,
+           'v70_thesis_status':'VALID','v70_gate_class':'DATA_VETO',
+           'intraday_structure':{}}
+        plan=VI.system_rule_arbitration('MOEX','5m',f,{'eligible':True},'LONG')
+        arb=plan['rule_arbitration']
+        source_rule=next(x for x in arb['active_rules']
+                         if x['rule_id']=='SOURCE_TIME_EXECUTION_GATE')
+        self.assertEqual(source_rule['decision'],'BLOCK_EXECUTION')
+        self.assertIsNone(arb['hard_veto'])
+        integrity=VI.trade_integrity_layer('MOEX','5m',f,plan,'LONG')['trade_integrity']
+        self.assertFalse(integrity['hard_invalidation'])
+        self.assertNotIn('RULE_ARBITRATION_VETO',integrity['hard_reasons'])
+
     def test_execution_data_veto_never_erases_directional_market_signal(self):
         gate = SC.pretrade_gate({
             'research_decision':'LONG',
@@ -309,7 +323,7 @@ class SignalExecutionSeparationRegressionTests(unittest.TestCase):
                          'spent_reason':'SAME_TF_TARGET_ALREADY_REACHED'}
             },
             'trade_plan':{'stop_price':2360.0,
-                          'trade_integrity':{'hard_invalidation':True}},
+                          'trade_integrity':{'hard_invalidation':False}},
         }
         event = VTE._signal_continuation_event(
             row, price=2370.6,
@@ -319,14 +333,13 @@ class SignalExecutionSeparationRegressionTests(unittest.TestCase):
         self.assertEqual(event['event_type'],'SIGNAL_CONTINUATION')
         self.assertTrue(event['signal_authoritative'])
         self.assertEqual(event['parent_event_id'],'OLD_MOEX_BREAKOUT')
-        # The same hard invalidation is authoritative while the parent is still
-        # live; only a consumed target may be replaced by a new setup identity.
-        live_parent=dict(row)
-        live_parent['trend_entry_context']={
-            **row['trend_entry_context'],
-            'event':{**row['trend_entry_context']['event'],'spent':False,'spent_reason':None}}
+        # A genuine hard thesis/consistency invalidation remains authoritative
+        # even after the parent target was consumed.
+        hard=dict(row)
+        hard['trade_plan']={**row['trade_plan'],
+                            'trade_integrity':{'hard_invalidation':True}}
         self.assertIsNone(VTE._signal_continuation_event(
-            live_parent, price=2370.6,
+            hard, price=2370.6,
             now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)))
         # Execution stays fail-closed elsewhere; this regression only protects
         # the market thesis from being rewritten by a transport/session veto.
