@@ -62,6 +62,13 @@ class LearningV2ReplayTests(unittest.TestCase):
         self.assertEqual(z["status"],R.AMBIGUOUS)
         self.assertEqual(z["reason"],"STOP_AND_RUNNER_TARGET_SAME_BAR")
 
+    def test_first_and_runner_target_same_bar_is_ambiguous(self):
+        rows=[bar(1,100,104.2,99.5,103)]
+        z=R.replay_partial_runner(rows,entry_at=T,entry_price=100,direction="LONG",
+            stop_price=98,first_target=102,runner_target=104,first_fraction=.5,source_key="S")
+        self.assertEqual(z["status"],R.AMBIGUOUS)
+        self.assertEqual(z["reason"],"FIRST_AND_RUNNER_TARGET_SAME_BAR")
+
     def test_partial_runner_resolves_when_bar_order_is_known(self):
         rows=[bar(1,100,102.2,99.5,102),bar(2,102,103,100,102.5),bar(3,102.5,104.2,102,104)]
         z=R.replay_partial_runner(rows,entry_at=T,entry_price=100,direction="LONG",
