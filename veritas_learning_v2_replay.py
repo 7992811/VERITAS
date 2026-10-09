@@ -169,6 +169,10 @@ def replay_partial_runner(bars,*,entry_at,entry_price,direction,stop_price,
                         "gross_return":gross,"net_return":gross-2*cost,
                         "bars_used":i+1,"version":VERSION}
             if th:
+                runner_hit=(bar["high"]>=t2 if direction=="LONG" else bar["low"]<=t2)
+                if runner_hit:
+                    return {"status":AMBIGUOUS,"reason":"FIRST_AND_RUNNER_TARGET_SAME_BAR",
+                            "bar_index":i,"closed_at":bar["closed_at"].isoformat(),"version":VERSION}
                 realized=frac*_signed_return(direction,entry,t1)
                 stage="RUNNER"
                 continue
