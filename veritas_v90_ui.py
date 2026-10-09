@@ -610,7 +610,7 @@ const reasonRu=v=>{
     PAPER_SOURCE_NOT_ELIGIBLE:'Источник данных не допущен для модельной сделки',
     PRIMARY_SOURCE_GATE_FAILED:'Источник цены не прошёл проверку',
     ENTRY_SCENARIO_INVALIDATED:'Условия входа утратили актуальность',
-    CURRENCY_PORTFOLIO_SETUP_PENDING:'Валютный портфель ожидает настройки капитала и ограничений риска',
+    CURRENCY_PORTFOLIO_SETUP_PENDING:'Currency ожидает настройки капитала и ограничений риска',
     EXECUTION_QUOTE_UNAVAILABLE:'Нет свежей котировки для исполнения',
     EXECUTION_PENDING:'Ожидается окончательная проверка исполнения',
     EXECUTION_CONTROL_BLOCKED:'Ордер не прошёл дополнительный контроль исполнения',
