@@ -2,6 +2,7 @@ import unittest
 
 import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
+import veritas_owner_policy as VOP
 import veritas_self_learning as VSELF
 import veritas_profit_maturity as VPM
 import veritas_timeframe_management as VTM
@@ -12,14 +13,14 @@ import veritas_release as VR
 class OwnerReviewPolicyTests(unittest.TestCase):
     def test_constitution_and_owner_policy(self):
         self.assertTrue(CTC.validate_constitution())
-        p=CTC.LIFECYCLE_POLICY
-        self.assertEqual(p["profit_lock_requires_consecutive_positive_windows"],3)
-        self.assertFalse(p["profit_lock_first_two_positive_windows_observe_only"] is False)
-        self.assertFalse(p["structural_trailing_before_profit_maturity"])
-        self.assertTrue(p["canonical_setup_hard_invalidation_shared_across_portfolios"])
-        self.assertTrue(p["verified_structural_event_entry_permission_is_shared"])
-        self.assertTrue(CTC.LEARNING_POLICY["owner_verification_required_for_rule_promotion"])
-        self.assertTrue(CTC.LEARNING_POLICY["closed_trade_postmortem_required"])
+        p=VOP.PROFIT_MATURITY
+        self.assertEqual(p["required_positive_windows"],3)
+        self.assertTrue(p["first_two_positive_windows_observe_only"])
+        self.assertFalse(p["structural_trailing_before_maturity"])
+        self.assertTrue(VOP.PORTFOLIO_PARITY["canonical_setup_hard_invalidation_shared_across_portfolios"])
+        self.assertTrue(VOP.PORTFOLIO_PARITY["verified_structural_event_entry_permission_is_shared"])
+        self.assertTrue(VOP.SELF_LEARNING["owner_verification_required_for_rule_promotion"])
+        self.assertTrue(VOP.SELF_LEARNING["closed_trade_postmortem_required"])
 
     def test_borrowed_parent_risk_failure_blocks_fast_trade(self):
         row={
@@ -91,8 +92,8 @@ class OwnerReviewPolicyTests(unittest.TestCase):
     def test_release_identifies_new_policy(self):
         self.assertIn("v91.8.29",VR.PRODUCT_VERSION)
         s=VR.snapshot()
-        self.assertEqual(s["owner_review_policy"]["profit_maturity_windows"],3)
-        self.assertTrue(s["owner_review_policy"]["closed_trade_postmortem"])
+        self.assertEqual(s["owner_review_policy"]["profit_maturity"]["required_positive_windows"],3)
+        self.assertTrue(s["owner_review_policy"]["self_learning"]["closed_trade_postmortem_required"])
 
 
 if __name__=="__main__":
