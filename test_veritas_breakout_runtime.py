@@ -431,6 +431,35 @@ class FastQuoteRuntimeTests(unittest.TestCase):
         self.assertEqual(result["execution"]["status"], "BLOCKED")
         self.assertEqual(result["context_builds"], 1)
 
+    def test_verified_signal_is_published_before_paper_accounting_callback(self):
+        row = dict(quote(), horizon="1h", research_decision="LONG",
+                   market_observed_at=NOW.isoformat(), trade_plan={"eligible": True},
+                   timeframe_entry_context={"event": {"event_id": "signal-first-event"}})
+        observed = {}
+
+        def execute(rows, clock):
+            published = next(x for x in self.ns["last_cycle"]["summary"]
+                             if x.get("asset") == "CNYRUBF" and x.get("horizon") == "1h")
+            audit = published["_execution_audit"]["result"]
+            observed.update(status=audit.get("status"), reason=audit.get("reason"),
+                            checked_at=published["_execution_audit"]["checked_at"])
+            # Signal-first publication must not mutate the row later consumed by
+            # canonical paper accounting.
+            self.assertNotIn("_execution_audit", rows[0])
+            return {"status": "BUSY", "reason": "LOCAL_PAPER_BOOK_BUSY", "paper_only": True}
+
+        self.runtime.entry_pass = execute
+        with patch.object(self.runtime, "_row", return_value=row):
+            result = self.runtime.run_once(NOW, quotes={"CNYRUBF": quote()})
+        self.assertEqual(observed["status"], "PENDING_PAPER_ACCOUNTING")
+        self.assertEqual(observed["reason"], "SIGNAL_FIRST_PUBLICATION")
+        self.assertEqual(observed["checked_at"], NOW.isoformat())
+        self.assertGreaterEqual(result["signal_first_publish_seconds"], 0.0)
+        final = next(x for x in self.ns["last_cycle"]["summary"]
+                     if x.get("asset") == "CNYRUBF" and x.get("horizon") == "1h")
+        self.assertEqual(final["_execution_audit"]["result"]["status"], "BUSY")
+        self.assertEqual(final["_execution_audit"]["result"]["reason"], "LOCAL_PAPER_BOOK_BUSY")
+
     def test_actual_callback_result_is_published_without_removing_other_assets(self):
         self.ns["last_cycle"]["summary"] = [{"asset": "BTC", "horizon": "1h", "price": 80000}]
         row = dict(quote(), horizon="1h", research_decision="LONG",
