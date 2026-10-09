@@ -197,6 +197,25 @@ def _path(cached_bars,row,identity):
     return [],None,"CACHED_PATH_COVERAGE_INCOMPLETE"
 
 
+def _entry_bar_barrier_check(bars,entry_at,levels):
+    """Fail closed if the partial entry bar could have hit any replay barrier."""
+    entry=_time(entry_at)
+    if entry is None:
+        return "INVALID_ENTRY_TIME"
+    for bar in bars or []:
+        opened=_time(bar.get("opened_at")); closed=_time(bar.get("closed_at"))
+        low=_num(bar.get("low")); high=_num(bar.get("high"))
+        if opened is None or closed is None or low is None or high is None:
+            continue
+        if opened <= entry < closed:
+            if opened == entry:
+                return None
+            if any((_num(level) is not None and low <= _num(level) <= high) for level in levels):
+                return "ENTRY_BAR_BARRIER_ORDER_UNKNOWN"
+            return None
+    return "ENTRY_BAR_COVERAGE_MISSING"
+
+
 def _result_value(result):
     if result.get("status")=="RESOLVED":
         return _num(result.get("net_return"))
@@ -241,6 +260,10 @@ def evaluate_trade(candidate,row,cached_bars):
             return {"status":"INVALID","reason":"BASELINE_STOP_POLICY_MISMATCH"}
         baseline_stop=REPLAY.structural_stop(stop_anchor,atr,direction,baseline_buffer)
         candidate_stop=REPLAY.structural_stop(stop_anchor,atr,direction,candidate_buffer)
+        entry_bar_problem=_entry_bar_barrier_check(bars,opened,(baseline_stop,candidate_stop,target))
+        if entry_bar_problem:
+            return {"status":"AMBIGUOUS" if entry_bar_problem=="ENTRY_BAR_BARRIER_ORDER_UNKNOWN" else "DEFERRED",
+                    "reason":entry_bar_problem}
         baseline=REPLAY.replay_stop_target(
             bars,entry_at=opened,entry_price=entry,direction=direction,
             stop_price=baseline_stop,target_price=target,source_key=identity["key"],
@@ -263,6 +286,10 @@ def evaluate_trade(candidate,row,cached_bars):
             return {"status":"INVALID","reason":"EXIT_REPLAY_FIELDS_MISSING"}
         if not math.isclose(recorded_fraction,baseline_fraction,rel_tol=1e-12,abs_tol=1e-12):
             return {"status":"INVALID","reason":"BASELINE_EXIT_POLICY_MISMATCH"}
+        entry_bar_problem=_entry_bar_barrier_check(bars,opened,(base_stop,first_target,runner))
+        if entry_bar_problem:
+            return {"status":"AMBIGUOUS" if entry_bar_problem=="ENTRY_BAR_BARRIER_ORDER_UNKNOWN" else "DEFERRED",
+                    "reason":entry_bar_problem}
         baseline=REPLAY.replay_partial_runner(
             bars,entry_at=opened,entry_price=entry,direction=direction,
             stop_price=base_stop,first_target=first_target,runner_target=runner,
