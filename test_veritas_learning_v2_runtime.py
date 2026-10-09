@@ -69,7 +69,10 @@ class LearningV2RuntimeTests(unittest.TestCase):
         app=C.ContinuousLearning(namespace(lambda: None))
         lane=app.lane
         self.assertIn("learning_v2_shadow",lane.callbacks)
+        self.assertIn("learning_v2_replay",lane.callbacks)
         self.assertEqual(lane.options["learning_v2_shadow"]["max_seconds"],5)
+        self.assertEqual(lane.options["learning_v2_replay"]["max_seconds"],5)
+        self.assertEqual(lane.options["learning_v2_replay"]["interval_seconds"],180)
         self.assertEqual(lane.options["learning_v2_shadow"]["interval_seconds"],60)
         self.assertTrue(lane.options["learning_v2_shadow"]["lightweight"])
 
