@@ -2223,8 +2223,11 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         net=gross-fees-fund; entry_nav=float((tr['payload'] or {}).get('entry_nav_rub',INITIAL_NAV_RUB)) if tr and isinstance(tr['payload'],dict) else INITIAL_NAV_RUB
         ret=net/max(entry_nav,1.0); prof=net>0; mw=ret>MEANINGFUL_WIN_NAV
         final_patch={'last_exit_execution_model':fill}
+        final_payload=_v90j_json((tr or {}).get('payload'))
         final_patch.update(VTR.initial_tranche_counterfactual(
-            _v90j_json((tr or {}).get('payload')),fill_price,sign,COMMISSION))
+            final_payload,fill_price,sign,COMMISSION))
+        final_patch.update(VTR.mfe_capture_counterfactual(
+            final_payload,fill_price,z.get('direction'),z.get('avg_entry_price')))
         c.execute('UPDATE paper_trades SET closed_at=%s,avg_exit_price=%s,net_pnl_rub=%s,return_on_entry_nav=%s,profitable=%s,meaningful_win=%s,status=%s,payload=payload || %s::jsonb WHERE trade_id=%s',(ts,realized_exit_vwap,net,ret,prof,mw,'CLOSED',json.dumps(final_patch,ensure_ascii=False,default=str),z['active_trade_id']))
         c.execute('DELETE FROM paper_positions WHERE portfolio_name=%s AND asset=%s',(name,z['asset']))
     else:
