@@ -202,7 +202,7 @@ class ProducerContracts(unittest.TestCase):
             self.assertEqual(cursor['phase'], 'scorecard')
             self.assertEqual(daily.call_count, 1)
             self.assertEqual(app.lane.options['learning_intelligence'],
-                             {'interval_seconds': 15, 'lightweight': True, 'estimated_peak_mb': 16, 'max_seconds': 6})
+                             {'interval_seconds': 90, 'lightweight': True, 'estimated_peak_mb': 16, 'max_seconds': 6})
 
     def test_failed_daily_audit_keeps_completed_scorecard_cursor_for_retry(self):
         app = C.ContinuousLearning(namespace(lambda: None))
@@ -497,10 +497,10 @@ class TradeCallbackContracts(unittest.TestCase):
         self.assertEqual(lease["cursor"]["phase"], "materialize")
         self.assertEqual(result["stage"], "materialize")
         self.assertEqual(result["materialized"], 0)
-        self.assertEqual(result["batch_limit"], 4)
+        self.assertEqual(result["batch_limit"], TRADE.BATCH_SIZE)
         self.assertIsNotNone(self.app._stats["last_success_at"])
         self.assertEqual(self.app.lane.options["learning_trade_evidence"],
-                         {"interval_seconds": 30, "lightweight": True, "estimated_peak_mb": 16, "max_seconds": 6})
+                         {"interval_seconds": 45, "lightweight": True, "estimated_peak_mb": 16, "max_seconds": 6})
         self.assertEqual(self.ns["emit"].call_args.kwargs,
                          {"stage": "materialize", "status": "OK", "next_stage": "revalidate", "materialized": 0})
 
