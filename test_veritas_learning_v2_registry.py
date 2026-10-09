@@ -117,12 +117,23 @@ class LearningV2RegistryTests(unittest.TestCase):
                    "scope":{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"},
                    "proposal":{"stop_buffer_atr":.2},"registered_at":T0.isoformat()}
         prior={"replay":{"n":32,"utc_days":[f"2026-10-{i:02d}" for i in range(1,9)],
-                         "days":8,"sum_baseline":.16,"sum_candidate":.32,
+                         "days":8,"sum_baseline":.16,"sum_candidate":.32,"sum_delta_sq":.0008,
                          "ambiguous":2,"invalid":1}}
         result=R.evaluate_candidate(candidate,[],[],T0+timedelta(days=20),prior=prior)
         self.assertEqual(result["status"],"REPLAY_SUPPORTED")
         self.assertGreater(result["prospective"]["replay"]["mean_delta_net_return"],0)
         self.assertFalse(result["prospective"]["replay"]["counterfactual_live_execution_proven"])
+
+    def test_positive_mean_with_wide_delta_interval_is_not_supported(self):
+        candidate={"kind":"STOP_GEOMETRY",
+                   "scope":{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"},
+                   "proposal":{"stop_buffer_atr":.2},"registered_at":T0.isoformat()}
+        prior={"replay":{"n":32,"utc_days":[f"2026-10-{i:02d}" for i in range(1,9)],
+                         "days":8,"sum_baseline":0.0,"sum_candidate":.032,
+                         "sum_delta_sq":.032,"ambiguous":0,"invalid":0}}
+        result=R.evaluate_candidate(candidate,[],[],T0+timedelta(days=20),prior=prior)
+        self.assertEqual(result["status"],"REPLAY_BUILDING")
+        self.assertLessEqual(result["prospective"]["replay"]["delta_ci95_low"],0)
 
     def test_replay_rejects_persistent_nonpositive_delta(self):
         candidate={"kind":"EXIT_CAPTURE",
@@ -139,7 +150,7 @@ class LearningV2RegistryTests(unittest.TestCase):
                    "scope":{"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"},
                    "proposal":{"stop_buffer_atr":.2},"registered_at":T0.isoformat()}
         prior={"replay":{"n":32,"utc_days":[f"2026-10-{i:02d}" for i in range(1,9)],
-                         "days":8,"sum_baseline":.16,"sum_candidate":.32,
+                         "days":8,"sum_baseline":.16,"sum_candidate":.32,"sum_delta_sq":.0008,
                          "ambiguous":8,"invalid":0}}
         result=R.evaluate_candidate(candidate,[],[],T0+timedelta(days=20),prior=prior)
         self.assertEqual(result["status"],"REPLAY_BUILDING")
