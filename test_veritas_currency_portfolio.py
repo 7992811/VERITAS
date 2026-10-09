@@ -1,8 +1,10 @@
 """Regressions for the configured independent CNYRUBf currency book."""
 from unittest import TestCase
 from unittest.mock import patch
+from datetime import datetime, timezone, timedelta
 
 import veritas_currency_portfolio as C
+import veritas_currency_dashboard as CD
 import veritas_portfolio as P
 import veritas_portfolio_runtime as R
 
@@ -102,6 +104,85 @@ class CurrencyPortfolioTests(TestCase):
         cur=C.decorate_report(original)['portfolios'][0]
         self.assertEqual(cur['initial_nav_rub'],10_000.0)
         self.assertEqual(cur['total_return_pct'],0.0)
+
+    def test_currency_canonical_display_name_is_currency(self):
+        self.assertEqual(C.DISPLAY_NAME,'Currency')
+
+    def _live_account(self, **changes):
+        t=datetime(2026,10,9,12,0,tzinfo=timezone.utc)
+        row={
+            'allocation_rub':'10000','tick_size':'0.001','tick_value_rub':'1','lot_size':1,
+            'signed_lots':0,'average_entry_price':None,'realized_pnl_rub':'100',
+            'fees_rub':'4','funding_rub':'0','high_water_rub':'10096',
+            'costs_reconciled':True,'ledger_revision':2,'reconciled_revision':2,
+            'broker_signed_lots':0,'broker_observed_at':t,'last_execution_at':t,
+            'last_mark_price':'12.8','last_mark_observed_at':t,
+            'held_stop_price':None,'held_target_price':None,'held_horizon':None,
+            'held_opened_at':None,
+        }
+        row.update(changes)
+        return row
+
+    def test_live_currency_round_trip_replaces_paper_currency_history(self):
+        t=datetime(2026,10,9,11,0,tzinfo=timezone.utc)
+        fills=[
+            {'trade_id':'fill-open','client_order_id':'order-open','side':'BUY','lots':1,
+             'price':'12.700','fee_rub':None,'executed_at':t,'action':'OPEN',
+             'meta_direction':'LONG','horizon':'5m','stop_price':'12.650',
+             'target_price':'12.800','exit_reason':None,'manual':False,'signal_tier':'LONG'},
+            {'trade_id':'fill-close','client_order_id':'order-close','side':'SELL','lots':1,
+             'price':'12.800','fee_rub':None,'executed_at':t+timedelta(hours=1),'action':'CLOSE',
+             'meta_direction':'LONG','horizon':'5m','stop_price':None,
+             'target_price':None,'exit_reason':'TAKE_PROFIT','manual':False,'signal_tier':None},
+        ]
+        fees=[
+            {'client_order_id':'order-open','cumulative_fee_rub':'2','filled_lots':1},
+            {'client_order_id':'order-close','cumulative_fee_rub':'2','filled_lots':1},
+        ]
+        live=CD.project_live_currency(self._live_account(),fills,fees,[],checked_at=t+timedelta(hours=1))
+        self.assertEqual(live['portfolio']['display_name'],'Currency')
+        self.assertEqual(len(live['trades']),1)
+        trade=live['trades'][0]
+        self.assertEqual(trade['portfolio_name'],'Currency')
+        self.assertEqual(trade['execution_source'],'LIVE_BROKER_LEDGER')
+        self.assertAlmostEqual(trade['gross_pnl_rub'],100.0)
+        self.assertAlmostEqual(trade['net_pnl_rub'],96.0)
+        merged=CD.merge_trade_history(
+            [{'trade_id':'paper-cur','portfolio_name':'Currency','closed_at':t.isoformat()},
+             {'trade_id':'paper-champ','portfolio_name':'Champion','closed_at':t.isoformat()}],
+            live,limit=80)
+        self.assertNotIn('paper-cur',[x['trade_id'] for x in merged])
+        self.assertIn('paper-champ',[x['trade_id'] for x in merged])
+        self.assertIn(trade['trade_id'],[x['trade_id'] for x in merged])
+
+    def test_live_currency_open_position_is_visible_from_live_ledger(self):
+        t=datetime(2026,10,9,11,0,tzinfo=timezone.utc)
+        account=self._live_account(
+            signed_lots=1,average_entry_price='12.700',realized_pnl_rub='0',
+            fees_rub='2',high_water_rub='10048',broker_signed_lots=1,
+            last_mark_price='12.750',last_mark_observed_at=t+timedelta(minutes=5),
+            held_stop_price='12.650',held_target_price='12.800',
+            held_horizon='5m',held_opened_at=t.isoformat())
+        fills=[{'trade_id':'fill-open','client_order_id':'order-open','side':'BUY','lots':1,
+                'price':'12.700','fee_rub':None,'executed_at':t,'action':'OPEN',
+                'meta_direction':'LONG','horizon':'5m','stop_price':'12.650',
+                'target_price':'12.800','exit_reason':None,'manual':True,'signal_tier':'LONG'}]
+        fees=[{'client_order_id':'order-open','cumulative_fee_rub':'2','filled_lots':1}]
+        live=CD.project_live_currency(account,fills,fees,[],checked_at=t+timedelta(minutes=5))
+        cur=CD.overlay_portfolio(
+            {'status':'OK','positions_complete':True,'accounting_complete':True,
+             'portfolios':[{'name':'Currency','positions':[],
+                            'admission_trace':[{'asset':'CNYRUBF','reason':'KEEP'}],
+                            'risk_governor':{'state':'NORMAL'}}]},
+            live)['portfolios'][0]
+        self.assertEqual(len(cur['positions']),1)
+        pos=cur['positions'][0]
+        self.assertEqual(pos['position_source'],'LIVE_BROKER_LEDGER')
+        self.assertEqual(pos['direction'],'LONG')
+        self.assertAlmostEqual(pos['unrealized_pnl_rub'],50.0)
+        self.assertAlmostEqual(pos['total_trade_pnl_rub'],48.0)
+        self.assertEqual(cur['admission_trace'][0]['reason'],'KEEP')
+        self.assertTrue(cur['live_trading_enabled'])
 
 
 if __name__ == '__main__':
