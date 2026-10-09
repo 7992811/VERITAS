@@ -27,7 +27,8 @@ _state={
     "status":"NOT_STARTED","version":VERSION,"interval_seconds":INTERVAL_SECONDS,
     "checked_at":None,"positions":0,"quotes":0,"written":0,"invalid":0,
     "seeded_positions":0,"handoff_positions":0,"unseeded_carried":0,
-    "sampled_positions":0,"missing_quotes":0,"duration_seconds":0.0,"error":None,
+    "irrecoverable_seeded":0,"sampled_positions":0,"missing_quotes":0,
+    "duration_seconds":0.0,"error":None,
 }
 _state_lock=threading.Lock()
 
@@ -164,13 +165,17 @@ def sample_once(pg_connect,quote_selector,*,now=None):
          PIO.PROTECTION_POSITIONS_SQL+
          ") p LEFT JOIN paper_observation_sidecar s ON s.trade_id=p.active_trade_id "
          "ORDER BY p.portfolio_name,p.asset")
-    updates=[];quotes=invalid=missing=seeded=handoff=unseeded=sampled=0
+    updates=[];quotes=invalid=missing=seeded=handoff=unseeded=irrecoverable=sampled=0
     with pg_connect() as c:
         rows=[dict(x) for x in c.execute(sql).fetchall()]
         for row in rows:
             old=row.pop("sidecar_witness",None)
             if isinstance(old,dict) and old.get("started_at_entry") is True:
                 seeded+=1
+                if old.get("invalid_observation_count") or old.get("gap_count"):
+                    irrecoverable+=1
+                    invalid+=1
+                    continue
             elif not isinstance(old,dict):
                 # Reuse only an already-recorded causal prefix from the canonical
                 # path. This copies observed evidence; it never reconstructs history.
@@ -211,7 +216,8 @@ def sample_once(pg_connect,quote_selector,*,now=None):
         "status":"OK","version":VERSION,"checked_at":clock.isoformat(),
         "positions":len(rows),"quotes":quotes,"written":written,
         "seeded_positions":seeded,"handoff_positions":handoff,
-        "unseeded_carried":unseeded,"sampled_positions":sampled,
+        "unseeded_carried":unseeded,"irrecoverable_seeded":irrecoverable,
+        "sampled_positions":sampled,
         "invalid":invalid,"missing_quotes":missing,
         "duration_seconds":round(time.monotonic()-started,4),
         "book_lock_acquired":False,"network_fetches":0,"production_influence":False,
