@@ -17,7 +17,7 @@ import re
 
 import veritas_canonical_constitution as CTC
 
-VERSION = "LEARNING_V2_SHADOW_1"
+VERSION = "LEARNING_V2_SHADOW_2_BLOCKER_EVIDENCE"
 MIN_CONTEXT_N = 8
 MIN_FALSE_BLOCK_N = 3
 MIN_TRADE_N = 12
