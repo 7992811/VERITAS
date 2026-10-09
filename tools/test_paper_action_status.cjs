@@ -58,7 +58,7 @@ expectVisibleAction('Ожидание');
 trace.execution = {checked_at: now, status: 'EXECUTED', reason: 'ORDER_RECORDED', execution_action: 'OPEN'};
 assert.equal(render(signal, [{name: 'Currency', admission_trace: [trace]}]).ready, true);
 expectVisibleAction('Вход');
-assert.match(elements.actions.innerHTML, /Валютный портфель: Ордер исполнен/);
+assert.match(elements.actions.innerHTML, /Currency: Ордер исполнен/);
 assert.match(elements.actions.innerHTML, /Стоп 12,692 · Цель 12,805/);
 trace.execution.execution_action = 'ADD';
 assert.equal(render(signal, [{name: 'Currency', admission_trace: [trace]}]).action, 'ADD');
@@ -68,7 +68,7 @@ assert.match(elements.actions.innerHTML, /ДОБОР ИСПОЛНЕН/);
 // A fill in another portfolio must not hide the currency portfolio's refusal.
 const refused = {...trace, execution: {checked_at: now, status: 'BLOCKED', reason: 'STOP_RISK_CAP_EXCEEDED'}};
 render(signal, [{name: 'Impulse', admission_trace: [trace]}, {name: 'Currency', admission_trace: [refused]}]);
-assert.match(elements.actions.innerHTML, /Валютный портфель: Объём ограничен денежным риском всей позиции/);
+assert.match(elements.actions.innerHTML, /Currency: Объём ограничен денежным риском всей позиции/);
 
 trace.execution = {checked_at: now, status: 'HELD', reason: 'TARGET_ALREADY_REACHED'};
 assert.equal(render(signal, [{name: 'Currency', admission_trace: [trace]}]).ready, false);
