@@ -14,6 +14,7 @@ import veritas_price_source as VPS
 import veritas_structural_breakout as SB
 import veritas_timeframe_policy as TFP
 import veritas_timeframe_structure as TS
+import veritas_trend_day_efficiency as VTDE
 
 VERSION = 'PAPER_STRUCTURAL_LIFECYCLE_V1'
 
