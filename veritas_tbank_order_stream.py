@@ -176,14 +176,28 @@ class TBankOrderEventStream:
         except queue.Full:
             pass
 
+    def _safe_log(self, stream_name, status, code=None):
+        try:
+            self.log(json.dumps({
+                "event": "tbank_order_event_stream",
+                "environment": self.environment,
+                "stream": stream_name,
+                "status": status,
+                "code": code,
+            }, separators=(",", ":")))
+        except Exception:
+            pass
+
     def _subscription(self, stream_name, sub):
         now = datetime.now(timezone.utc).isoformat()
         ok = sub.status == common_pb2.RESULT_SUBSCRIPTION_STATUS_OK
+        status = "SUBSCRIBED" if ok else "SUBSCRIPTION_ERROR"
         self._set(**{
-            stream_name: "SUBSCRIBED" if ok else "SUBSCRIPTION_ERROR",
+            stream_name: status,
             "last_subscription_at": now,
             "last_error": None if ok else "SUBSCRIPTION_REJECTED",
         })
+        self._safe_log(stream_name, status, None if ok else "SUBSCRIPTION_REJECTED")
 
     def _order_event(self, state):
         if state.account_id != self.account_id or state.instrument_uid != self.instrument_uid:
@@ -276,6 +290,7 @@ class TBankOrderEventStream:
                 self._set(order_state_stream="RECONNECTING",
                           last_error="ORDER_STATE_" + code,
                           reconnects=self.status()["reconnects"] + 1)
+                self._safe_log("order_state_stream", "RECONNECTING", "ORDER_STATE_" + code)
             except Exception as exc:
                 if self._stop.is_set():
                     break
@@ -284,6 +299,7 @@ class TBankOrderEventStream:
                     code = "ORDER_STATE_STREAM_ERROR"
                 self._set(order_state_stream="RECONNECTING", last_error=code,
                           reconnects=self.status()["reconnects"] + 1)
+                self._safe_log("order_state_stream", "RECONNECTING", code)
             finally:
                 if call is not None:
                     self._unregister_call(call)
@@ -325,6 +341,7 @@ class TBankOrderEventStream:
                 self._set(trades_stream="RECONNECTING",
                           last_error="TRADES_" + code,
                           reconnects=self.status()["reconnects"] + 1)
+                self._safe_log("trades_stream", "RECONNECTING", "TRADES_" + code)
             except Exception as exc:
                 if self._stop.is_set():
                     break
@@ -333,6 +350,7 @@ class TBankOrderEventStream:
                     code = "TRADES_STREAM_ERROR"
                 self._set(trades_stream="RECONNECTING", last_error=code,
                           reconnects=self.status()["reconnects"] + 1)
+                self._safe_log("trades_stream", "RECONNECTING", code)
             finally:
                 if call is not None:
                     self._unregister_call(call)
