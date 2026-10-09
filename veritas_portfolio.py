@@ -2179,7 +2179,7 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
         import veritas_observation_path as VOP
         witness=VOP.bounded_witness(z)
     except Exception:
-        witness={'version':'OBSERVED_EXECUTION_PATH_V1','coverage_status':'INCOMPLETE',
+        witness={'version':'OBSERVED_EXECUTION_PATH_V2_SOURCE_CADENCE','coverage_status':'INCOMPLETE',
                  'invalid_observation_count':1}
     if witness is not None:
         exit_patch['observation_path']=witness
