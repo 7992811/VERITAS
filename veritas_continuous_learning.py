@@ -683,6 +683,8 @@ class ContinuousLearning:
         index=int(cursor.get("asset_index") or 0)%len(LEARNING_V2_ASSETS)
         asset=LEARNING_V2_ASSETS[index]
         limit=LEARNING_V2_INPUT_LIMIT
+        job_started=time.monotonic()
+        read_started=time.monotonic()
         with transaction(self.connect, context) as c:
             decisions=c.execute("""
               WITH recent AS MATERIALIZED (
@@ -713,7 +715,9 @@ class ContinuousLearning:
               ) d
               ORDER BY e.decision_ts DESC
             """,(asset,limit)).fetchall()
+            decision_read_seconds=time.monotonic()-read_started
             context.check()
+            trade_read_started=time.monotonic()
             trades=c.execute("""
               SELECT closed_at,asset,horizon,regime,setup_family,
                      COALESCE(payload->>'strategy_policy_hash','') AS policy_hash,
@@ -728,18 +732,23 @@ class ContinuousLearning:
               ORDER BY closed_at DESC
               LIMIT %s
             """,(asset,limit)).fetchall()
+            trade_read_seconds=time.monotonic()-trade_read_started
         decision_rows=[dict(row) for row in decisions or []]
         trade_rows=[dict(row) for row in trades or []]
+        research_started=time.monotonic()
         current=LEARNING_V2.research_snapshot(decision_rows,trade_rows)
+        research_seconds=time.monotonic()-research_started
         current.update(asset=asset,
                        input_counts={"decisions":len(decision_rows),"trades":len(trade_rows)},
                        generated_at=clock().isoformat(),
                        source="MATERIALIZED_OUTCOMES_PLUS_FROZEN_DECISION_CONTEXT",
                        automatic_production_promotion=False)
         context.check()
+        registry_started=time.monotonic()
         with transaction(self.connect, context) as c:
             registry=LEARNING_V2_REGISTRY.sync(
                 c,current,decision_rows,trade_rows,now=clock())
+        registry_seconds=time.monotonic()-registry_started
         context.check()
         with self._lock:
             prior=deepcopy(self._learning_v2)
@@ -775,9 +784,22 @@ class ContinuousLearning:
         with self._lock:
             self._learning_v2=deepcopy(value)
         cursor["asset_index"]=(index+1)%len(LEARNING_V2_ASSETS)
+        metrics={"decision_read_seconds":round(decision_read_seconds,4),
+                 "trade_read_seconds":round(trade_read_seconds,4),
+                 "research_seconds":round(research_seconds,4),
+                 "registry_seconds":round(registry_seconds,4),
+                 "duration_seconds":round(time.monotonic()-job_started,4)}
+        self.ns["emit"]("learning_v2_shadow_snapshot",version=LEARNING_V2.VERSION,
+                        asset=asset,decisions=len(decision_rows),trades=len(trade_rows),
+                        hypotheses=len(current.get("hypotheses") or []),
+                        total_hypotheses=len(hypotheses),
+                        registry_counts=registry.get("counts") or {},
+                        shadow_champions=len(registry.get("shadow_champions") or []),
+                        production_influence=False,**metrics)
         return {"status":"OK","asset":asset,"hypotheses":len(current.get("hypotheses") or []),
                 "total_hypotheses":len(hypotheses),"counts":counts,
                 "registry_counts":registry.get("counts") or {},
+                "metrics":metrics,
                 "missed_directional_episodes":(current.get("entry_false_block") or {}).get("missed_directional_episodes",0)},cursor
 
     def intelligence(self, context, cursor, *, pg_connect=None):
