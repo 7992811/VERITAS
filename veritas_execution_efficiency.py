@@ -56,6 +56,18 @@ def incremental_gate(economics,policy):
             "net_reward_pct":value}
 
 
+def add_guard(existing,row,price,direction,commission,policy,economics):
+    pre=add_precheck(existing,row,price,direction,commission,policy)
+    if not pre.get("eligible"):
+        return pre
+    inc=incremental_gate(economics,policy)
+    if not inc.get("eligible"):
+        return {"eligible":False,"reason":inc.get("reason"),
+                "before":pre.get("before") or {},"incremental":inc}
+    return {"eligible":True,"reason":"ADD_EFFICIENCY_OK",
+            "before":pre.get("before") or {},"incremental":inc}
+
+
 def entry_analysis_patch(opened,is_new,before,price,ts,commission):
     opened=opened or {}; before=before or {}; p=_payload(opened)
     after_units=abs(_num(opened.get("units")))
