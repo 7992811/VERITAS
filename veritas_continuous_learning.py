@@ -24,6 +24,7 @@ import veritas_knowledge_validation as KNOWLEDGE
 import veritas_asset_management_intelligence as INTELLIGENCE
 import veritas_scorecard_delivery as SCORECARD
 import veritas_learning_v2 as LEARNING_V2
+import veritas_learning_v2_registry as LEARNING_V2_REGISTRY
 from veritas_maintenance import MaintenanceDeferred
 
 VERSION = "CONTINUOUS_LEARNING_V1"
@@ -383,8 +384,10 @@ class ContinuousLearning:
         if self.boot_phase == 3:
             KNOWLEDGE.ensure_schema(self.connect, context=context)
             KNOWLEDGE.restore(self.connect, context=context)
+            with transaction(self.connect, context) as c:
+                LEARNING_V2_REGISTRY.ensure_schema(c)
             self.boot_phase = 4
-            return {"status": "PROGRESS", "stage": "KNOWLEDGE_SCHEMA"}
+            return {"status": "PROGRESS", "stage": "KNOWLEDGE_AND_LEARNING_V2_SCHEMA"}
         saved = AUTO.snapshot(self.connect)
         progress = STORE.load_snapshot(self.connect, "learning_progress", PROGRESS_VERSION)
         learning_v2 = STORE.load_snapshot(self.connect, LEARNING_V2_SNAPSHOT_NAME, LEARNING_V2.VERSION)
@@ -683,7 +686,7 @@ class ContinuousLearning:
                 ORDER BY id DESC
                 LIMIT %s
               )
-              SELECT d.event_ts,d.asset,d.horizon,
+              SELECT d.id AS decision_id,d.entity_key,d.event_ts,d.asset,d.horizon,
                      COALESCE(d.payload->>'regime','UNKNOWN') AS regime,
                      COALESCE(d.payload->>'research_decision',d.payload->>'decision','') AS decision,
                      COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
@@ -728,6 +731,10 @@ class ContinuousLearning:
                      generated_at=clock().isoformat(),
                      source="VERIFIED_LEDGER_OUTCOMES_AND_LEARNING_EPISODES",
                      automatic_production_promotion=False)
+        context.check()
+        with transaction(self.connect, context) as c:
+            value["registry"]=LEARNING_V2_REGISTRY.sync(
+                c,value,decision_rows,trade_rows,now=clock())
         context.check()
         if not STORE.publish_snapshot(self.connect, LEARNING_V2_SNAPSHOT_NAME, LEARNING_V2.VERSION,
                                       value, observed_at=clock()):
