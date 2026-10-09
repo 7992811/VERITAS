@@ -338,6 +338,51 @@ class GuardObservationBatchSQLTests(unittest.TestCase):
                     'encoded_read_bytes':trace.position_reads[0]}))
 
 
+
+    def test_canonical_exit_seals_latest_live_position_telemetry_into_trade(self):
+        rows, quote = self.fixture(count=1)
+        row = rows[0]
+        self.seed(rows)
+
+        # A no-action guard pass advances only paper_positions.
+        changes, _ = self.pass_once({'ETH': quote})
+        self.assertEqual(changes, [])
+        with self.connect() as c:
+            live = c.execute('SELECT * FROM paper_positions WHERE active_trade_id=%s',
+                             (row['active_trade_id'],)).fetchone()
+            trade_before = c.execute('SELECT * FROM paper_trades WHERE trade_id=%s',
+                                     (row['active_trade_id'],)).fetchone()
+            self.assertEqual(live['payload']['observation_path']['observation_count'], 3)
+            self.assertEqual(trade_before['payload']['observation_path']['observation_count'], 2)
+
+        # A close from another canonical lane must seal the live witness and
+        # excursions before the trade becomes learning evidence.
+        close_clock = self.clock + timedelta(seconds=15)
+        close_price = float(quote['price']) + (0.05 if row['direction']=='LONG' else -0.05)
+        close_quote = dict(quote, price=close_price, best_bid=close_price-.005,
+                           best_ask=close_price+.005, observed_at=close_clock.isoformat())
+        with self.connect() as c, c.transaction():
+            p, pos = P._portfolio_rows(c, row['portfolio_name'])
+            live = dict(pos[0], _execution_quote=close_quote, _execution_quote_frozen=True)
+            nav, _, _, _ = P._mark_nav(p, pos, {row['asset']:close_price})
+            fee = P.CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE(
+                c, p, row['portfolio_name'], live, close_price, 0.0, nav,
+                close_clock.isoformat(), 'SYNTHETIC_CANONICAL_EXIT')
+            self.assertGreater(fee, 0)
+
+        with self.connect() as c:
+            self.assertIsNone(c.execute('SELECT 1 AS ok FROM paper_positions WHERE active_trade_id=%s',
+                                        (row['active_trade_id'],)).fetchone())
+            trade = c.execute('SELECT * FROM paper_trades WHERE trade_id=%s',
+                              (row['active_trade_id'],)).fetchone()
+            self.assertEqual(trade['status'], 'CLOSED')
+            self.assertEqual(trade['payload']['observation_path'],
+                             live['payload']['observation_path'])
+            for key in ('mfe_pct','mae_pct','r55_lifetime_mfe_pct',
+                        'r55_lifetime_mae_pct','r55_last_path_mark_at',
+                        'r55_last_path_mark_price'):
+                self.assertEqual(trade['payload'].get(key), live['payload'].get(key), key)
+
     def test_stale_future_and_foreign_contract_quotes_cannot_write_metadata(self):
         rows, quote = self.fixture(count=3)
         variants = [dict(quote, observed_at=(self.clock-timedelta(seconds=121)).isoformat()),
