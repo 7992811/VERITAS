@@ -15,7 +15,9 @@ import veritas_strategy_roles as VROLE
 import veritas_timeframe_policy as TFP
 import veritas_stop_risk as VSR
 import veritas_admission_trace as VAT
+import veritas_user_teaching as VUT
 
+VUT.assert_runtime_consistency()
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
 
