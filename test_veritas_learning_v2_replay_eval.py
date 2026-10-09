@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import inspect
 import unittest
 
 import veritas_learning_v2_replay_eval as E
@@ -48,6 +49,22 @@ class ReplayEvaluatorTests(unittest.TestCase):
                 "scope":{"asset":"NQ","horizon":"5m","regime":"TREND",
                          "source_key":IDENTITY["key"],"contract_id":"C1","policy_hash":"p"},
                 "proposal":{"first_target_fraction":fraction,"baseline_first_target_fraction":.5}}
+
+    def test_trade_query_requires_entry_after_registration(self):
+        source=inspect.getsource(E._trade_rows)
+        self.assertIn("t.opened_at>%s",source)
+        self.assertIn("e.closed_at>%s",source)
+
+    def test_gap_after_entry_defers_replay(self):
+        def late_path(asset,timeframe,identity,now=None,limit=500):
+            if timeframe!="5m": return []
+            opened=T+timedelta(minutes=30)
+            return [{"opened_at":opened.isoformat(),"closed_at":(opened+timedelta(minutes=5)).isoformat(),
+                     "open":100,"high":101,"low":99,"close":100.5,
+                     "source_key":"TEST:PX","contract_id":"C1"}]
+        result=E.evaluate_trade(self.stop_candidate(),row(),late_path)
+        self.assertEqual(result["status"],"DEFERRED")
+        self.assertEqual(result["reason"],"CACHED_PATH_COVERAGE_INCOMPLETE")
 
     def test_stop_candidate_replays_same_path_and_cost_model(self):
         result=E.evaluate_trade(self.stop_candidate(),row(),cached)
