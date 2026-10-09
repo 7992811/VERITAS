@@ -1,0 +1,18 @@
+name: Trailing Runner Audit Fix CI
+on:
+  push:
+    branches: [ "ci/trailing-runner-audit-fix-5173e3d" ]
+permissions:
+  contents: read
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - name: Trailing runner audit regression
+        run: python -m unittest -v test_veritas_trade_view.py
