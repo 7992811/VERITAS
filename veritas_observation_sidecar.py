@@ -255,9 +255,9 @@ def sample_once(pg_connect,quote_selector,*,now=None):
                 unseeded+=1
                 continue
             work=_with_witness(row,old)
-            sample_now=clock if explicit_clock else _clock()
+            selector_now=clock if explicit_clock else None
             try:
-                quote=quote_selector(work,now=sample_now) or {}
+                quote=quote_selector(work,now=selector_now) or {}
             except Exception:
                 quote={}
             if not quote:
