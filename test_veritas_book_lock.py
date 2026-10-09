@@ -249,9 +249,12 @@ class ProtectiveClockTests(unittest.TestCase):
                 class Connection:
                     def __enter__(self): return self
                     def __exit__(self, *unused): pass
-                    def execute(self, sql):
+                    def execute(self, sql, args=()):
+                        case.assertIn('WHERE active_trade_id=ANY(%s)', sql)
                         case.assertIn('FOR UPDATE', sql)
-                        return SimpleNamespace(fetchall=lambda: [{'asset': 'ETH'}])
+                        case.assertEqual(args, (['T-ETH'],))
+                        return SimpleNamespace(fetchall=lambda: [
+                            {'asset': 'ETH', 'active_trade_id': 'T-ETH'}])
                 @contextmanager
                 def transaction(c, **kwargs):
                     self.assertEqual(kwargs['lane'], 'PROTECTIVE')
@@ -263,10 +266,25 @@ class ProtectiveClockTests(unittest.TestCase):
                 with patch.object(G, 'datetime', Clock), patch.object(G, 'book_transaction', transaction), \
                      patch.object(G, 'quote_for_position', select), patch.object(G, 'exit_execution_quote', return_value={}):
                     timing = {}
-                    self.assertEqual(G.run_protective_pass(None, Connection, {}, explicit, timing=timing), [])
+                    self.assertEqual(G.run_protective_pass(
+                        None, Connection, {'ETH': {'price': 1.0}}, explicit,
+                        timing=timing, eligible_trade_ids=['T-ETH']), [])
                 self.assertEqual(seen, [explicit or after])
                 self.assertIn('positions_query_seconds', timing)
                 self.assertIn('protection_seconds', timing)
+                self.assertEqual(timing['lock_scope_positions'], 1)
+                self.assertEqual(timing['lock_scope_assets'], 1)
+
+    def test_no_fresh_position_quote_skips_global_book_lock(self):
+        timing = {}
+        class NeverConnect:
+            def __enter__(self):
+                raise AssertionError('no DB connection should be opened without a fresh protective quote')
+        self.assertEqual(G.run_protective_pass(
+            None, NeverConnect, {}, timing=timing, eligible_trade_ids=[]), [])
+        self.assertEqual(timing['status'], 'NO_FRESH_QUOTES')
+        self.assertEqual(timing['lock_scope_positions'], 0)
+        self.assertEqual(timing['positions_query_seconds'], 0.0)
 
 
 if __name__ == '__main__':
