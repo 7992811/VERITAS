@@ -1334,7 +1334,7 @@ function renderReview(){
     '<div class="review-kpi"><span>MFE ≥0,15% → ≤0</span><b class="'+(protection?'warn':'')+'">'+protection+'</b></div>'+
     '<div class="review-kpi"><span>На ваше утверждение</span><b class="'+(ownerQueue.length?'warn':'')+'">'+ownerQueue.length+'</b></div>'+
     '<div class="review-kpi"><span>Упущено / обучаемо</span><b class="'+(missed.missed?'warn':'')+'">'+missed.missed+' / '+missed.learnable+'</b></div>'+
-    '<div class="review-kpi"><span>Разобрано / доказательств мало</span><b>'+esc(selfSummary.reviewed_count??reviews.length)+' / '+esc(selfSummary.evidence_repair_required_count??'—')+'</b></div></div>';
+    '<div class="review-kpi"><span>Replay Stop / Exit</span><b>'+closed.stopReady+' / '+closed.exitReady+'</b></div></div>';
   if(!$('reviewBody'))return;
   const authority=closed.outcome?
     ('Исход '+closed.outcome+' · path '+closed.path+' · outcome-only '+closed.outcomeOnly+
