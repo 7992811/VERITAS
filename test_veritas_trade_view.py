@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from veritas_trade_view import enrich_positions, trade_result
+from veritas_trade_view import _position_management_projection, enrich_positions, trade_result
 
 
 class TradeResultTests(unittest.TestCase):
@@ -119,3 +119,67 @@ class TradeResultTests(unittest.TestCase):
         self.assertEqual(result['portfolios'][0]['positions'][0]['total_trade_pnl_rub'], 10.5)
         pg_connect.assert_called_once_with()
         self.assertEqual(connection.__enter__.return_value.execute.call_count, 1)
+
+
+    def test_management_projection_prefers_effective_trailing_stop_and_fixed_tp2(self):
+        position = {
+            'direction': 'LONG', 'stop_price': 99,
+            'payload': {
+                'trailing_stop': 101,
+                'structural_policy_version': 'x',
+                'active_target_stage': 0,
+                'active_target_ladder': [
+                    {'price': 102, 'fraction': .5, 'kind': 'PARTIAL'},
+                    {'price': 104, 'fraction': .5, 'kind': 'FINAL'},
+                ],
+                'runner_target_price': 106,
+            },
+        }
+        result = _position_management_projection(position)
+        self.assertEqual(result['effective_stop_price'], 101)
+        self.assertEqual(result['effective_stop_source'], 'TRAILING_STOP')
+        self.assertEqual(result['tp1_price'], 102)
+        self.assertEqual(result['second_take_price'], 104)
+        self.assertEqual(result['second_take_kind'], 'TP2')
+        self.assertEqual(result['next_target_price'], 102)
+        self.assertEqual(result['position_management_status'], 'OK')
+
+    def test_management_projection_short_uses_tighter_lower_stop(self):
+        position = {
+            'direction': 'SHORT', 'stop_price': 105,
+            'payload': {'trailing_stop': 103, 'take_price': 98},
+        }
+        result = _position_management_projection(position)
+        self.assertEqual(result['effective_stop_price'], 103)
+        self.assertEqual(result['effective_stop_source'], 'TRAILING_STOP')
+        self.assertEqual(result['tp1_price'], 98)
+        self.assertEqual(result['position_management_status'], 'OK')
+
+    def test_management_projection_explains_runner_instead_of_blank_tp2(self):
+        position = {
+            'direction': 'LONG', 'stop_price': 99,
+            'payload': {
+                'initial_take_price': 102,
+                'runner_target_price': 106,
+                'r17_tp1_done': True,
+            },
+        }
+        result = _position_management_projection(position)
+        self.assertEqual(result['second_take_price'], 106)
+        self.assertEqual(result['second_take_kind'], 'RUNNER')
+        self.assertEqual(result['target_plan_mode'], 'RUNNER')
+
+    def test_management_projection_flags_open_position_without_any_stop(self):
+        position = {
+            'direction': 'LONG', 'stop_price': None,
+            'payload': {
+                'structural_policy_version': 'x',
+                'active_target_ladder': [
+                    {'price': 102, 'fraction': 1.0, 'kind': 'FINAL'},
+                ],
+            },
+        }
+        result = _position_management_projection(position)
+        self.assertIsNone(result['effective_stop_price'])
+        self.assertEqual(result['position_management_status'], 'PROTECTION_ERROR')
+        self.assertIn('SL', result['position_management_missing'])

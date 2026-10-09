@@ -937,7 +937,14 @@ function renderPortfolios(){
     const pnl=tradeTotal(z),ret=tradeReturn(z),frac=100*Number(z.target_fraction||0),util=Number(z.position_utilization_pct),held=z.held_seconds??z.holding_duration_seconds;
     const recorded=z.payload?.active_target_ladder,ladder=Array.isArray(recorded)&&recorded.length?recorded:null;
     const stage=Number.isInteger(z.payload?.active_target_stage)?z.payload.active_target_stage:0;
-    const stop=z.trailing_stop??z.stop_price,tp1=ladder?ladder[0].price:z.take_price??z.initial_take_price,tp1Label=(ladder?stage>0:tpDone(z))?'TP1 ✓ исполнен':z.take_price!=null||ladder?'TP1 / цель':z.initial_take_price!=null?'Цель входа':'TP1 / цель',tp2=ladder?(ladder[1]?.price??null):z.second_take_price,prob=signalEstimate(z.signal_probability,z.probability_source),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
+    const stop=z.effective_stop_price??z.trailing_stop??z.stop_price;
+    const tp1=z.tp1_price??(ladder?ladder[0]?.price:null)??z.take_price??z.initial_take_price;
+    const tp1Label=(ladder?stage>0:tpDone(z))?'TP1 ✓ исполнен':z.take_price!=null||ladder?'TP1 / цель':z.initial_take_price!=null?'Цель входа':'TP1 / цель';
+    const tp2=z.second_take_price??(ladder?ladder[1]?.price:null),tp2Kind=z.second_take_kind||(tp2!=null?'TP2':(tpDone(z)&&z.trailing_stop!=null?'TRAILING_RUNNER':null));
+    const tp2Label=tp2Kind==='RUNNER'?'Runner':tp2Kind==='TRAILING_RUNNER'?'Runner / trailing':'TP2';
+    const tp2Text=tp2!=null?assetPrice(z.asset,tp2):tp2Kind==='TRAILING_RUNNER'?'по trailing':'не предусмотрен';
+    const managementStatus=z.position_management_status||(stop==null?'PROTECTION_ERROR':'OK'),managementMissing=Array.isArray(z.position_management_missing)?z.position_management_missing:[];
+    const prob=signalEstimate(z.signal_probability,z.probability_source),mfe=Number(z.mfe_pct),mae=Number(z.mae_pct),cap=Number(z.live_capture_ratio),give=Number(z.live_giveback_pct),rr=Number(z.expected_to_stop_ratio),exp=Number(z.expected_move_pct);
     const tf=z.execution_timeframe||z.horizon,grade=z.setup_grade||(z.legacy_entry_recovered?'архив':'—'),tier=z.signal_tier||'',protection=z.net_profit_protection||{},protect=protection.version==='NET_STOP_AFTER_COSTS_V1'&&protection.state==='PROTECTED'&&Number(protection.net_at_stop_rub)>=0.01;
     const probText=prob.text;
     const capText=Number.isFinite(cap)?(100*cap).toFixed(0)+'%':'—';
@@ -947,9 +954,10 @@ function renderPortfolios(){
     const sideText=directionLabel(z.direction,tier),sideClass=cls(String(z.direction||'')); 
     return'<div class="position-card">'+
       '<div class="position-head"><div class="position-head-main">'+assetLogo(z.asset)+'<b>'+esc(z.portfolio)+' · '+lab(z.asset)+' <span class="trade-direction '+sideClass+'">'+sideText+'</span> · <span class="position-size-top">'+frac.toFixed(0)+'%</span></b></div><div class="position-result '+(pnl==null?'warn':pnl>=0?'ok':'bad')+'" title="Результат всей сделки после расходов / сумма фактических входов и доборов. Частичные закрытия не уменьшают базу процента.">'+signedPct(ret)+'<small>'+rub(pnl)+'</small></div></div>'+
-      '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+assetPrice(z.asset,z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+assetPrice(z.asset,z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b>'+assetPrice(z.asset,stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+assetPrice(z.asset,tp1)+'</b></div>'+(!ladder||ladder.length>1?'<div class="position-level"><span>TP2</span><b>'+assetPrice(z.asset,tp2)+'</b></div>':'')+'</div>'+
+      '<div class="position-levels"><div class="position-level"><span>Вход</span><b>'+assetPrice(z.asset,z.avg_entry_price)+'</b></div><div class="position-level"><span>Сейчас</span><b>'+assetPrice(z.asset,z.last_price)+'</b></div><div class="position-level"><span>Stop Loss</span><b class="'+(stop==null?'bad':'')+'">'+assetPrice(z.asset,stop)+'</b></div><div class="position-level"><span>'+tp1Label+'</span><b>'+assetPrice(z.asset,tp1)+'</b></div><div class="position-level"><span>'+tp2Label+'</span><b>'+tp2Text+'</b></div></div>'+
       '<div class="position-meta">'+tfRu(tf)+' · открыта '+dateRu(z.opened_at)+' · в позиции '+holdRu(held)+' · объём '+rub(z.notional_rub)+'</div>'+
       '<div class="position-meta">Источник: '+positionSourceText(z)+' · '+(z.price_source_status==='OK'?'котировка '+dateRu(z.last_mark_at):z.price_source_status==='STALE_REPORTED_MARK'?'<span class="warn">котировка '+dateRu(z.last_mark_at)+' · оценка требует обновления</span>':'<span class="warn">ожидаем котировку источника входа · сохранена последняя подтверждённая цена</span>')+'</div>'+
+      (managementStatus!=='OK'?'<div class="tp-status warn">Контур сопровождения: '+esc(managementStatus)+(managementMissing.length?' · нет '+esc(managementMissing.join(', ')):'')+'</div>':'')+
       tpNotice(z,true)+
       '<div class="position-accounting"><span>Зафиксировано<b>'+rub(z.realized_gross_pnl_rub)+'</b></span><span>Переоценка<b>'+rub(z.unrealized_pnl_rub)+'</b></span><span>Комиссии<b>'+rub(z.trade_fees_rub)+'</b></span><span>Фондирование<b>'+rub(z.trade_funding_rub)+'</b></span><span>От максимума<b>'+(Number.isFinite(util)?util.toFixed(0)+'%':'—')+'</b></span></div>'+
       '<div class="position-learning">'+
