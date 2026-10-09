@@ -33,8 +33,15 @@ def normalize_moex_index_session(bundle, now=None):
     if not identity or identity.get("key") != "MOEX:MOEX":
         return result
     now = now or datetime.now(timezone.utc)
-    observed = utc_datetime(raw.get("market_observed_at") or raw.get("observed_at")
-                            or raw.get("quote_observed_at"))
+    observed_value = (raw.get("market_observed_at") or raw.get("observed_at")
+                      or raw.get("quote_observed_at"))
+    if isinstance(observed_value, (int, float)) and not isinstance(observed_value, bool):
+        try:
+            observed = datetime.fromtimestamp(float(observed_value), timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            observed = None
+    else:
+        observed = utc_datetime(observed_value)
     price = raw.get("price")
     try:
         price = float(price)
@@ -49,6 +56,15 @@ def normalize_moex_index_session(bundle, now=None):
         and 7 * 60 <= minute < 23 * 60 + 50
     )
     fresh = bool(age is not None and -5 <= age <= execution_max_age_seconds("MOEX"))
+    source_count = raw.get("direct_sources")
+    if source_count is not None:
+        try:
+            if float(source_count) < 1:
+                return result
+        except (TypeError, ValueError):
+            return result
+    if raw.get("snapshot_stale") is True:
+        return result
     if not (price > 0 and in_extended_session and fresh):
         return result
     raw.update(
