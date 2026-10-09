@@ -46,6 +46,12 @@ def stamped_trade(*,after=.10,step=.01,net=30.):
 
 
 class TradeObservationTests(unittest.TestCase):
+    def test_materialize_reprocesses_stale_outcome_diagnostics_version(self):
+        source=inspect.getsource(T.TradeLearning.process)
+        self.assertIn("outcome_diagnostics_version",source)
+        self.assertIn("IS DISTINCT FROM %s",source)
+        self.assertIn("LI.DIAGNOSTICS.VERSION",source)
+
     def test_native_trade_without_probability_trains_and_preserves_its_rr_trial(self):
         t,_=stamped_trade();stamp=t['payload']['entry_canonical_admission']['autonomous_learning']
         stamp.update(base_probability=None,net_reward_risk=1.2,max_fraction=.5,prospective_candidates=[])
