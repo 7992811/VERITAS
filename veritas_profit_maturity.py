@@ -110,6 +110,7 @@ def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
         "profit_maturity_owner_teaching_id":VOP.TEACHING_ID,
     }
     new_stop=None
+    floor_satisfied=bool(p.get("profit_maturity_floor_satisfied"))
     if armed:
         # Solve the true after-cost breakeven reference with the same fill model.
         try:
@@ -120,21 +121,24 @@ def observe(c, name, position, quote, now=None, commission=VC.COMMISSION_RATE):
         old=VPP.effective_stop(z)
         if be and old:
             candidate=max(old,be) if direction=="LONG" else min(old,be)
+            already_protected=sign*(old-be)>=-1e-12
             improves=sign*(candidate-old)>1e-12
             remains_live=sign*(price-candidate)>0
+            floor_satisfied=bool(already_protected or (improves and remains_live))
+            patch.update({"profit_maturity_break_even_reference":be,
+                          "profit_maturity_floor_satisfied":floor_satisfied})
             if improves and remains_live:
                 try:
                     protection=VPP.assess(c,z,stop=candidate,price=price,now=clock,commission=commission)
                 except Exception:
                     protection={}
                 patch.update(protection)
-                patch.update({
-                    "trailing_stop":candidate,
-                    "trailing_rule":VERSION,
-                    "trailing_stage":"ECONOMIC_BREAKEVEN_MATURE",
-                    "profit_maturity_break_even_stop":candidate,
-                })
+                patch.update({"trailing_stop":candidate,"trailing_rule":VERSION,
+                              "trailing_stage":"ECONOMIC_BREAKEVEN_MATURE",
+                              "profit_maturity_break_even_stop":candidate})
                 new_stop=candidate; changed=True
+        elif armed:
+            patch["profit_maturity_floor_satisfied"]=False
     if changed:
         encoded=json.dumps(patch,ensure_ascii=False,allow_nan=False,default=str)
         if new_stop is None:
