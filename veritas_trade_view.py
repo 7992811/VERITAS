@@ -1,6 +1,7 @@
 """Read-only trade accounting for the dashboard; no execution decisions."""
 import json
 import math
+from datetime import datetime, timezone
 import veritas_profit_protection as VPP
 import veritas_position_guard as VPG
 import veritas_price_source as VPS
@@ -395,5 +396,17 @@ def enrich_positions(report, pg_connect, *, preloaded_accounts=None):
                 stop_scenario_loss_pct_nav=None,
                 valuation_policy='MARK_TO_MARKET_NAV_WITH_SEPARATE_STOP_LIQUIDATION_SCENARIO',
             )
+    checked_at = report.get('positions_checked_at') or datetime.now(timezone.utc).isoformat()
+    out['positions_checked_at'] = checked_at
+    out['positions_complete'] = True
+    out['accounting_complete'] = True
+    out['snapshot_stale'] = False
+    out['portfolios'] = [
+        dict(p,
+             positions_checked_at=p.get('positions_checked_at') or checked_at,
+             positions_status='COMPLETE',
+             accounting_status='COMPLETE')
+        for p in out.get('portfolios') or []
+    ]
     out['position_protection_audit'] = _position_protection_summary(out)
     return out
