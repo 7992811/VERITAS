@@ -380,6 +380,25 @@ class TradeApprovalTests(Helpers, unittest.TestCase):
                   bot_id=BOT, callback_query_id="wrong-namespace")
         self.assertEqual(self.repo.get(row["proposal_id"])["status"], "AWAITING_OWNER")
 
+    def test_sandbox_auto_approval_is_isolated_from_owner_approval(self):
+        row = self.create(terms(event="sandbox-auto", execution_environment="sandbox"))
+        approved = self.repo.auto_approve_sandbox(row["proposal_id"])
+        self.assertEqual(approved["status"], "APPROVED")
+        self.assertTrue(approved["auto_approved"])
+        self.assertEqual(approved["reason_code"], "SANDBOX_AUTO_APPROVED")
+        self.assertIsNone(approved["approved_by"])
+        self.assertEqual(self.count(CALLBACKS), 0)
+        self.code("SIGNED_OWNER_APPROVAL_REQUIRED", self.claim, approved)
+        claimed = self.claim(approved, allow_sandbox_auto=True)
+        self.assertEqual(claimed["status"], "SENDING")
+
+    def test_sandbox_auto_approval_cannot_touch_production(self):
+        row = self.create(terms(event="production-auto-denied",
+                                execution_environment="production"))
+        self.code("SANDBOX_AUTOTRADE_ONLY", self.repo.auto_approve_sandbox,
+                  row["proposal_id"])
+        self.assertEqual(self.repo.get(row["proposal_id"])["status"], "PENDING_DELIVERY")
+
     def test_owner_decision_is_durable_and_exact_query_replay_is_idempotent(self):
         row = self.deliver(self.create())
         first = self.decide(row, callback_id="query-1")
