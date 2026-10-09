@@ -233,3 +233,24 @@ is marked ambiguous rather than favorable.
 
 No replay candidate has production authority. Existing prospective replay sample
 and confidence-interval gates remain unchanged.
+
+
+## Observation path V2 (v91.8.33)
+
+The paper-path witness now separates two clocks that were previously conflated:
+
+- **protective check continuity** remains strict: checks are expected every 15
+  seconds and any gap above 45 seconds invalidates path evidence;
+- **provider timestamp cadence** is source-execution bounded: BTC/ETH quotes may
+  be at most 30 seconds old, other execution quotes at most 120 seconds old.
+  A new provider timestamp may arrive one protective cycle after that ceiling,
+  so provider gaps are bounded at 45 seconds for BTC/ETH and 135 seconds for
+  other assets.
+
+This does not convert sampled quotes into tick-complete history. MFE/MAE remain
+explicitly sampled-source evidence. A service restart, missing protective checks,
+source/contract mismatch, stale processing, post-exit observation or malformed
+witness still fails closed.
+
+The change only affects evidence quality for future trades. Existing V1 paths are
+not upgraded or backfilled.
