@@ -1,0 +1,22 @@
+name: Position Protection Targeted CI
+on:
+  push:
+    branches: [ "ci/position-protection-0943e09" ]
+permissions:
+  contents: read
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - name: Compile changed modules
+        run: python -m py_compile veritas_trade_view.py veritas_profit_protection.py veritas_position_guard.py veritas_structural_lifecycle.py veritas_v90_ui.py
+      - name: Position management regressions
+        run: python -m unittest -v test_veritas_trade_view.py test_veritas_profit_protection.py test_veritas_structural_lifecycle.py
+      - name: Position UI regressions
+        run: node tools/test_paper_ui.cjs
