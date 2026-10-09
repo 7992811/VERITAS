@@ -17,6 +17,7 @@ import veritas_profit_protection as VPP
 import veritas_price_source as VPS
 import veritas_observation_path as VOP
 import veritas_observation_sampler as VOS
+import veritas_quote_refresh_lane as VQR
 import veritas_protective_io as PIO
 import veritas_book_storage as BS
 from veritas_quote_time import quote_gate, utc_datetime
@@ -25,6 +26,7 @@ from veritas_book_lock import PriorityRLock
 BOOK_LOCK_ID = 90390929
 _mutex = PriorityRLock()
 _quotes_lock = threading.Lock()
+_refresh_mutex = threading.Lock()
 _quotes = {}
 _source_quotes = {}
 _market_state = {}
@@ -291,22 +293,28 @@ def position_mark_price(position, now=None):
 
 
 def refresh_position_quotes(ns, positions):
+    """Refresh exact held-source groups outside the paper-book transaction."""
     groups={}
     for z in positions:
         identity=VPS.position_identity(z)
         if identity:
             groups.setdefault((z['asset'],identity['key'],identity.get('contract_id')),[]).append(z)
     results={}
-    with ThreadPoolExecutor(max_workers=4,thread_name_prefix='veritas-source-quote') as pool:
-        jobs={key:pool.submit(fetch_guard_quote,ns,key[0],rows) for key,rows in groups.items()}
-        for key,job in jobs.items():
-            try:
-                q=job.result()
-                if q:
-                    publish_quote(key[0],q)
-                    results[key]=q
-            except Exception:
-                pass
+    if not groups:
+        return results
+    # The independent lane and the protective fallback may arrive together.
+    # Serialize provider I/O without holding the canonical paper-book lock.
+    with _refresh_mutex:
+        with ThreadPoolExecutor(max_workers=4,thread_name_prefix='veritas-source-quote') as pool:
+            jobs={key:pool.submit(fetch_guard_quote,ns,key[0],rows) for key,rows in groups.items()}
+            for key,job in jobs.items():
+                try:
+                    q=job.result()
+                    if q:
+                        publish_quote(key[0],q)
+                        results[key]=q
+                except Exception:
+                    pass
     return results
 
 
@@ -886,7 +894,7 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             now = explicit_clock or datetime.now(timezone.utc)
             ts = now.isoformat()
             z = dict(item)
-            selected = quote_for_position(z,quotes.get(z['asset']),now)
+            selected = quote_for_position(z,quotes.get(z['asset']),now,cache_only=True)
             # Validate the same strict exit tuple before path/protection writes;
             # a delayed research allowance cannot authorize protective mutation.
             q = exit_execution_quote(dict(z,_execution_quote=selected),now=now)
@@ -1331,6 +1339,11 @@ def start(ns):
         return
     _state.update(status='STARTING', interval_seconds=15)
     try:
+        VQR.start(ns,QUOTE_POSITION_SQL,lambda rows: refresh_position_quotes(ns,rows))
+    except Exception as exc:
+        ns['emit']('position_quote_refresh_lane_start_error',
+                   error=f'{type(exc).__name__}: {exc}',production_influence=False)
+    try:
         VOS.start(ns,quote_for_position)
     except Exception as exc:
         ns['emit']('observation_path_sampler_start_error',
@@ -1347,23 +1360,36 @@ def start(ns):
                     positions = [dict(z) for z in c.execute(QUOTE_POSITION_SQL).fetchall()]
                 phases['position_read_seconds']=time.monotonic()-phase_started
                 position_count = len(positions)
-                phase, phase_started = 'quote_refresh', time.monotonic()
-                refresh_position_quotes(ns,positions)
-                phases['quote_refresh_seconds']=time.monotonic()-phase_started
-                phase, phase_started = 'quote_select', time.monotonic()
-                quotes, errors, paused = {}, {}, {}
+                # Fast path: the independent quote lane should already have a
+                # fresh exact-source cache. No provider I/O is needed here.
+                phase, phase_started = 'quote_cache_select', time.monotonic()
+                quotes, errors, paused, missing = {}, {}, {}, []
                 for z in positions:
-                    q=quote_for_position(z)
+                    q=quote_for_position(z,now=datetime.now(timezone.utc),cache_only=True)
                     if q:
                         quotes[z['asset']]=q
                     else:
-                        state=market_state(z.get('asset'))
-                        key=z.get('active_trade_id') or z['asset']
-                        scheduled=expected_exchange_session_open(z.get('asset'),datetime.now(timezone.utc))
-                        if state.get('market_open') is False or scheduled is False:
-                            paused[key]='MARKET_CLOSED'
-                        else:
-                            errors[key]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
+                        missing.append(z)
+                phases['quote_cache_select_seconds']=time.monotonic()-phase_started
+                # Fail-safe fallback occurs before the book lock. It refreshes
+                # only missing source/contract groups and never broadens source identity.
+                phase, phase_started = 'quote_refresh_fallback', time.monotonic()
+                if missing:
+                    refresh_position_quotes(ns,missing)
+                phases['quote_refresh_fallback_seconds']=time.monotonic()-phase_started
+                phase, phase_started = 'quote_select', time.monotonic()
+                for z in missing:
+                    q=quote_for_position(z,now=datetime.now(timezone.utc),cache_only=True)
+                    if q:
+                        quotes[z['asset']]=q
+                        continue
+                    state=market_state(z.get('asset'))
+                    key=z.get('active_trade_id') or z['asset']
+                    scheduled=expected_exchange_session_open(z.get('asset'),datetime.now(timezone.utc))
+                    if state.get('market_open') is False or scheduled is False:
+                        paused[key]='MARKET_CLOSED'
+                    else:
+                        errors[key]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
                 phases['quote_select_seconds']=time.monotonic()-phase_started
                 # Quote preparation is complete; the locked pass reads its own book.
                 positions = z = None
