@@ -277,3 +277,16 @@ Rules:
 Telemetry now separates seeded, handed-off, unseeded, irrecoverable and actually
 sampled positions. The sidecar remains cached-only, uses no network fetches,
 takes no paper-book lock and has no trading authority.
+
+
+## External worker handoff (v91.8.37)
+
+The dedicated veritas-learning-v2 worker can receive the Render Postgres internal connection string through a Blueprint fromDatabase reference. No database password is committed or copied into source control.
+
+The worker is broker-free and fail-closed: VERITAS_PROCESS_ROLE=learning is mandatory; the connected database must be exactly veritas_knowledge; required source tables must exist; SQL and lock waits have bounded timeouts; and each successful pass publishes a producer/protocol heartbeat plus source-error status.
+
+The main process hands off only learning_v2_shadow when a fresh heartbeat matches the current Learning 2.0 version, producer, protocol and process role, has no source errors, is not degraded, and carries no production-promotion authority. A stale, malformed or degraded worker causes automatic local fallback.
+
+Ordered Stop/Exit replay remains in the main process because it consumes the process-local canonical-bar cache. Forecast outcomes, TradeLearning, Knowledge, Intelligence and the other learning jobs also remain active. This prevents a worker outage from silently disabling learning.
+
+render-learning.yaml is a dedicated Blueprint containing only the external learning worker and its internal Postgres reference, avoiding coupling worker provisioning to the Telegram service.
