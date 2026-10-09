@@ -15,12 +15,13 @@ import json
 import math
 
 VERSION = "LEARNING_V2_SHADOW_1"
-MIN_CONTEXT_N = 24
-MIN_FALSE_BLOCK_N = 8
+MIN_CONTEXT_N = 8
+MIN_FALSE_BLOCK_N = 3
 MIN_TRADE_N = 12
+MIN_ROUTER_TRAIN_N = 6
 MAX_HYPOTHESES = 64
 ENTRY_FALSE_BLOCK_MOVE = 0.004
-STOP_MULTIPLIERS = (0.75, 1.0, 1.25, 1.5)
+STOP_BUFFER_ATR_CANDIDATES = (0.10, 0.15, 0.20, 0.30)
 EXIT_CAPTURE_TARGETS = (0.35, 0.50, 0.65)
 STRATEGY_FAMILIES = ("TREND", "BREAKOUT", "PULLBACK", "MOMENTUM", "REVERSAL", "RANGE")
 
@@ -123,13 +124,13 @@ def false_block_summary(rows):
 
 
 def _hypothesis(kind,scope,proposal,evidence):
+    identity={"version":VERSION,"kind":kind,"scope":scope,"proposal":proposal}
     contract={
-        "version":VERSION,"kind":kind,"scope":scope,"proposal":proposal,
-        "evidence":evidence,
+        **identity,"evidence":evidence,
         "mode":"SHADOW_ONLY","production_mutation":False,
         "requires_existing_promotion_gate":True,
     }
-    return {**contract,"hypothesis_id":_digest(contract)}
+    return {**contract,"hypothesis_id":_digest(identity),"identity_hash":_digest(identity)}
 
 
 def generate_hypotheses(decision_rows, trade_rows):
@@ -172,12 +173,12 @@ def generate_hypotheses(decision_rows, trade_rows):
         fav=[max(0.0,_num(r.get("mfe")) or 0.0) for r in valid]
         med_adverse=sorted(adverse)[len(adverse)//2]
         med_fav=sorted(fav)[len(fav)//2]
-        for mult in STOP_MULTIPLIERS:
+        for buffer_atr in STOP_BUFFER_ATR_CANDIDATES:
             out.append(_hypothesis(
                 "STOP_GEOMETRY",
                 scope,
-                {"atr_multiplier":mult,"action":"SHADOW_REPLAY_ONLY",
-                 "anchor":"SAME_TIMEFRAME_STRUCTURE"},
+                {"stop_buffer_atr":buffer_atr,"baseline_stop_buffer_atr":0.15,
+                 "action":"SHADOW_REPLAY_ONLY","anchor":"SAME_TIMEFRAME_STRUCTURE"},
                 {"n":len(valid),"median_mae":med_adverse,"median_mfe":med_fav,
                  "counterfactual_execution_proven":False}
             ))
@@ -211,7 +212,7 @@ def generate_hypotheses(decision_rows, trade_rows):
              str(r.get("source_key") or ""),str(r.get("policy_hash") or r.get("strategy_policy_hash") or ""))
         z=router[key][fam]; z[1]+=1; z[0]+=int(dr>0)
     for (asset,horizon,regime,source_key,policy_hash),families in router.items():
-        eligible={f:w/n for f,(w,n) in families.items() if n>=MIN_TRADE_N}
+        eligible={f:w/n for f,(w,n) in families.items() if n>=MIN_ROUTER_TRAIN_N}
         if len(eligible)<2:
             continue
         best=max(eligible,key=eligible.get)
