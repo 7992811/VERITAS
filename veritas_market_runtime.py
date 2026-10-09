@@ -16,6 +16,18 @@ VERSION = "veritas-market-runtime-guard-v2"
 _MOEX_EXTENDED_INDEX_EFFECTIVE = datetime(2026, 9, 26, tzinfo=ZoneInfo("Europe/Moscow")).date()
 
 
+def moex_index_session_open(now=None):
+    """Versioned IMOEX calculation window; weekends remain calendar-gated."""
+    now = now or datetime.now(timezone.utc)
+    msk = now.astimezone(ZoneInfo("Europe/Moscow"))
+    if msk.weekday() >= 5:
+        return False
+    minute = msk.hour * 60 + msk.minute + msk.second / 60.0
+    if msk.date() >= _MOEX_EXTENDED_INDEX_EFFECTIVE:
+        return 7 * 60 <= minute < 23 * 60 + 50
+    return 9 * 60 + 50 <= minute < 19 * 60
+
+
 def normalize_moex_index_session(bundle, now=None):
     """Repair stale pre-2026 session flags only from a fresh official IMOEX quote.
 
@@ -49,12 +61,9 @@ def normalize_moex_index_session(bundle, now=None):
     except (TypeError, ValueError):
         return result
     age = (now - observed).total_seconds() if observed else None
-    msk = now.astimezone(ZoneInfo("Europe/Moscow"))
-    minute = msk.hour * 60 + msk.minute + msk.second / 60.0
     in_extended_session = bool(
-        msk.date() >= _MOEX_EXTENDED_INDEX_EFFECTIVE
-        and msk.weekday() < 5
-        and 7 * 60 <= minute < 23 * 60 + 50
+        now.astimezone(ZoneInfo("Europe/Moscow")).date() >= _MOEX_EXTENDED_INDEX_EFFECTIVE
+        and moex_index_session_open(now)
     )
     fresh = bool(age is not None and -5 <= age <= execution_max_age_seconds("MOEX"))
     source_count = raw.get("direct_sources")
