@@ -1,4 +1,6 @@
 from contextlib import contextmanager
+from datetime import datetime,timedelta,timezone
+from pathlib import Path
 import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,12 +13,15 @@ from test_veritas_continuous_learning import namespace
 class Rows:
     def __init__(self, rows): self.rows=rows
     def fetchall(self): return self.rows
+    def fetchone(self): return self.rows[0] if self.rows else None
 
 class Cursor:
-    def __init__(self, decisions, trades):
-        self.decisions=decisions; self.trades=trades; self.calls=[]
+    def __init__(self, decisions, trades, external=None):
+        self.decisions=decisions; self.trades=trades; self.external=external; self.calls=[]
     def execute(self, sql, args=()):
         self.calls.append((sql,args))
+        if "FROM learning_v2_snapshots" in sql:
+            return Rows([self.external] if self.external else [])
         if "WITH recent AS MATERIALIZED" in sql:
             self.assert_materialized = "FROM v90_decision_episodes" in sql
             return Rows(self.decisions)
@@ -25,6 +30,68 @@ class Cursor:
         raise AssertionError(sql)
 
 class LearningV2RuntimeTests(unittest.TestCase):
+    def external_row(self,now,**overrides):
+        payload={
+            "version":V2.VERSION,"status":"SHADOW_READY",
+            "producer":"EXTERNAL_LEARNING_WORKER",
+            "worker_protocol":C.EXTERNAL_LEARNING_WORKER_PROTOCOL,
+            "process_role":"learning","source_errors":[],
+            "automatic_production_promotion":False,
+            "hypotheses":[{"hypothesis_id":"h"}],"counts":{"ENTRY_BLOCKER_RELAXATION":1},
+        }
+        payload.update(overrides.pop("payload",{}))
+        row={"version":V2.VERSION,"generated_at":now-timedelta(seconds=30),"payload":payload}
+        row.update(overrides)
+        return row
+
+    def test_external_worker_state_accepts_only_fresh_verified_producer(self):
+        now=datetime(2026,10,9,16,0,tzinfo=timezone.utc)
+        state=C.external_worker_state(Cursor([],[],self.external_row(now)),now=now)
+        self.assertTrue(state["active"])
+        self.assertEqual(state["reason"],"FRESH_VERIFIED_EXTERNAL_WORKER")
+        self.assertEqual(state["age_seconds"],30)
+
+    def test_external_worker_state_rejects_stale_degraded_and_wrong_version(self):
+        now=datetime(2026,10,9,16,0,tzinfo=timezone.utc)
+        stale=self.external_row(now,generated_at=now-timedelta(seconds=C.EXTERNAL_LEARNING_MAX_AGE_SECONDS+1))
+        self.assertEqual(C.external_worker_state(Cursor([],[],stale),now=now)["reason"],"EXTERNAL_SNAPSHOT_STALE")
+        degraded=self.external_row(now,payload={"status":"DEGRADED","source_errors":["DECISIONS:NQ:Timeout"]})
+        self.assertEqual(C.external_worker_state(Cursor([],[],degraded),now=now)["reason"],"EXTERNAL_SOURCE_DEGRADED")
+        wrong=self.external_row(now,version="WRONG")
+        self.assertEqual(C.external_worker_state(Cursor([],[],wrong),now=now)["reason"],"EXTERNAL_VERSION_MISMATCH")
+
+    def test_job_uses_external_worker_without_running_local_research(self):
+        now=datetime.now(timezone.utc)
+        external=self.external_row(now)
+        events=[]
+        ns=namespace(lambda:None)
+        ns["emit"]=lambda event,**values:events.append((event,values))
+        app=C.ContinuousLearning(ns);app.ready=True
+        @contextmanager
+        def tx(connect,context):
+            yield Cursor([],[],external)
+        context=SimpleNamespace(check=lambda:None,sql_timeout_ms=2000)
+        with patch.object(C,"transaction",tx), patch.object(C.LEARNING_V2,"research_snapshot",
+             side_effect=AssertionError("local research ran during external handoff")):
+            result,cursor=app.learning_v2_shadow(context,{"asset_index":3})
+        self.assertEqual(result["mode"],"EXTERNAL_WORKER_ACTIVE")
+        self.assertEqual(cursor["asset_index"],3)
+        self.assertTrue(app._external_worker_active)
+        self.assertEqual(app.snapshot()["learning_v2"]["handoff"]["mode"],"EXTERNAL_WORKER")
+        self.assertEqual(events[-1][0],"learning_v2_handoff")
+        self.assertFalse(events[-1][1]["production_influence"])
+
+    def test_blueprint_uses_internal_database_reference_and_current_worker_limit(self):
+        text=Path("render.yaml").read_text()
+        self.assertIn("name: veritas-knowledge",text)
+        self.assertIn("property: connectionString",text)
+        self.assertIn("VERITAS_LEARNING_V2_PER_ASSET_LIMIT",text)
+        self.assertNotIn("VERITAS_LEARNING_V2_LIMIT",text)
+        worker=Path("veritas_learning_worker.py").read_text()
+        self.assertIn('producer"]="EXTERNAL_LEARNING_WORKER"',worker)
+        self.assertNotIn("veritas_broker",worker)
+        self.assertNotIn("veritas_live",worker)
+
     def test_job_publishes_shadow_snapshot_without_mutating_trading(self):
         decisions=[{
             "decision_id":100,"event_ts":"2026-10-08T10:00:00Z","asset":"BTC","horizon":"5m","regime":"TREND",
