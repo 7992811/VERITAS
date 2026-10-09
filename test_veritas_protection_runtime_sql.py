@@ -100,7 +100,7 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
         return [c.execute('SELECT * FROM '+table+' ORDER BY 1').fetchall()
                 for table in ('paper_positions', 'paper_trades', 'paper_portfolios')]
 
-    def test_native_no_exit_pass_is_bounded_and_preserves_ledger_and_witness(self):
+    def test_native_no_exit_pass_is_read_only_and_sidecar_owned(self):
         rows = self.seed(PR.BATCH_SIZE+1)
         q = position()[1]
         with self.connect() as c:
@@ -108,29 +108,23 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
             @contextmanager
             def connect():
                 yield trace
+            before_positions = c.execute('SELECT * FROM paper_positions ORDER BY active_trade_id').fetchall()
+            before_trades = c.execute('SELECT * FROM paper_trades ORDER BY trade_id').fetchall()
             before_accounts = c.execute('SELECT * FROM paper_portfolios ORDER BY name').fetchall()
             with patch.object(G, 'exit_fill', side_effect=AssertionError('irrelevant structural legacy fill')):
                 self.assertEqual(G.run_protective_pass(None, connect, {'ETH': q}, NOW), [])
             reads = [sql for sql, args in trace.statements if sql.startswith('SELECT') and 'advisory' not in sql]
-            writes = [(sql, args) for sql, args in trace.statements
-                      if sql.startswith('UPDATE') or sql.startswith('WITH incoming AS MATERIALIZED')]
+            writes = [(sql,args) for sql,args in trace.statements if sql.startswith('UPDATE')
+                      or sql.startswith('WITH incoming AS MATERIALIZED')]
             self.assertEqual(reads, [PR.PROTECTION_SQL+' ORDER BY portfolio_name,asset FOR UPDATE'])
-            self.assertEqual(len(writes), 2)
-            self.assertEqual([len(json.loads(args[0])) for sql, args in writes],
-                             [PR.BATCH_SIZE, 1])
-            self.assertTrue(all(len(args[0]) < 60000 for sql, args in writes))
-            saved = {z['active_trade_id']: z for z in c.execute('SELECT * FROM paper_positions').fetchall()}
-            trades = {z['trade_id']: z for z in c.execute('SELECT * FROM paper_trades').fetchall()}
-            for original in rows:
-                tid = original['active_trade_id']
-                result = saved[tid]
-                self.assertEqual(result['units'], original['units'])
-                self.assertEqual(result['stop_price'], original['stop_price'])
-                self.assertEqual(result['payload']['immutable_history'], original['payload']['immutable_history'])
-                self.assertEqual(result['payload']['observation_path'], OP.observe(original, q, NOW))
-                self.assertEqual(trades[tid]['payload'], original['payload'])
-                self.assertEqual((trades[tid]['gross_pnl_rub'], trades[tid]['fees_rub'], trades[tid]['funding_rub']), (11, 3, 2))
-            self.assertEqual(c.execute('SELECT * FROM paper_portfolios ORDER BY name').fetchall(), before_accounts)
+            self.assertEqual(writes, [])
+            self.assertEqual(c.execute('SELECT * FROM paper_positions ORDER BY active_trade_id').fetchall(),
+                             before_positions)
+            self.assertEqual(c.execute('SELECT * FROM paper_trades ORDER BY trade_id').fetchall(),
+                             before_trades)
+            self.assertEqual(c.execute('SELECT * FROM paper_portfolios ORDER BY name').fetchall(),
+                             before_accounts)
+
 
     def test_native_optional_pair_failure_rolls_back_savepoint_required_pair_rolls_back_book(self):
         z = self.seed()[0]
