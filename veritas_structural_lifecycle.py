@@ -227,7 +227,7 @@ def scale_request(position,row,price,nav,policy,now=None,requested=None):
         cap=max(base_cap,float(acceleration.get('temporary_max_fraction') or base_cap))
         target=max(current+step,float(acceleration['target_fraction']))
         increase=max(0.,math.floor(min(max(0.,target-current),max(0.,cap-current))/step+1e-9)*step)
-        reason='STRUCTURAL_TREND_ACCELERATION_ADD' if increase>0 else 'STRUCTURAL_ACCELERATION_CAP'
+        reason='STRUCTURAL_NEW_LEVEL_ADD' if increase>0 else 'STRUCTURAL_ALLOCATION_CAP'
     else:
         cap=base_cap
         if requested is not None:
