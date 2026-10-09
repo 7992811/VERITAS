@@ -17,7 +17,13 @@ def decision_signature(event_type, payload):
           'entry_event_id':plan.get('entry_event_id'),
           'structural_policy_version':plan.get('structural_policy_version'),
           'breakout_state':bq.get('state'),
+          'execution_eligible':(p.get('execution_eligibility') or {}).get('eligible'),
+          'execution_reason':(p.get('execution_eligibility') or {}).get('reason'),
           'paper_eligible':(p.get('execution_eligibility') or {}).get('paper_eligible'),
+          'paper_execution_reason':(p.get('execution_eligibility') or {}).get('paper_execution_reason'),
+          'paper_source_blockers':sorted(
+              str(x) for x in ((p.get('execution_eligibility') or {}).get('paper_source_blockers') or [])
+              if x),
           'source_gate':(p.get('gates') or {}).get('source'),
           'market_open':(p.get('gates') or {}).get('time'),
         }
