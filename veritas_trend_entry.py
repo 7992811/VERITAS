@@ -292,8 +292,8 @@ def _signal_continuation_event(row,price=None,now=None):
     """Rebase a CURRENT displayed signal into a fresh executable setup identity.
 
     A displayed signal is treated as the current market thesis. Old breakout
-    age/extension may not veto it. This does NOT bypass source freshness, market
-    hard invalidation, direction conflict, stop validity, or risk caps. Source
+    age/extension may not veto it. This does NOT bypass hard invalidation,
+    direction conflict, stop validity, or risk caps. Source
     freshness/session are intentionally evaluated later by execution admission,
     so they cannot erase the market signal itself.
     """
