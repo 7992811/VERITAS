@@ -346,7 +346,8 @@ def start(ns,quote_selector):
                 shape=(result.get("positions"),result.get("seeded_positions"),
                        result.get("observed_positions"),result.get("unseeded_positions"),
                        result.get("handoff_positions"),result.get("irrecoverable_seeded"),
-                       result.get("sampled_positions"),result.get("missing_quotes"))
+                       result.get("sampled_positions"),result.get("missing_quotes"),
+                       tuple(sorted((result.get("rejection_reasons") or {}).items())))
                 if (shape!=last_shape or result.get("missing_quotes")
                         or time.monotonic()-last_log>=60):
                     ns["emit"]("observation_sidecar",**snapshot())
