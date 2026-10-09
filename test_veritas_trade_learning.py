@@ -125,6 +125,24 @@ class TradeObservationTests(unittest.TestCase):
         self.assertNotIn("mfe_pct",row)
         self.assertNotIn("mae_pct",row)
 
+    def test_outcome_only_proof_is_accepted_by_size_candidate(self):
+        t,candidate=stamped_trade()
+        t["payload"].pop("observation_path",None)
+        t["episode_eligible"]=False
+        t["learning_integrity"]["status"]="EXCLUDED"
+        t["episode_outcome_eligible"]=True
+        t["episode_outcome_evidence_hash"]=t["learning_evidence_hash"]
+        row,reason=T.observation(t,now=t["closed_at"]+timedelta(seconds=1))
+        self.assertIsNone(reason)
+        normalized,reason=A.normalize_observation(row,t["closed_at"]+timedelta(seconds=1))
+        self.assertIsNone(reason)
+        values,reason=A._candidate_values(candidate,normalized)
+        self.assertIsNone(reason)
+        self.assertIsNotNone(values)
+        self.assertEqual(normalized["proof_kind"],"SIMULATED_SIZE_ON_VERIFIED_NET_OUTCOME")
+        self.assertNotIn("mfe_pct",normalized)
+        self.assertNotIn("mae_pct",normalized)
+
     def test_changed_outcome_hash_revokes_outcome_only_receipt(self):
         t,_=stamped_trade()
         t["payload"].pop("observation_path",None)
