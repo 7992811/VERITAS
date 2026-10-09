@@ -303,13 +303,13 @@ def assessment(row):
     nums = {key: _number(w.get(key)) for key in required}
     if any(value is None or value < 0 for value in nums.values()):
         return reject("INVALID_OBSERVATION_PATH")
-    if nums["observation_count"] < 2:
-        return reject("INSUFFICIENT_PATH_OBSERVATIONS")
     if any(_count(w.get(key)) is None for key in
            ('observation_count','gap_count','invalid_observation_count')):
         return reject('INVALID_OBSERVATION_PATH')
     if nums["invalid_observation_count"]:
         return reject("INVALID_PATH_OBSERVATION")
+    if nums["observation_count"] < 2:
+        return reject("INSUFFICIENT_PATH_OBSERVATIONS")
     if nums["gap_count"] or nums["max_gap_seconds"] > expected_source_gap:
         return reject("OBSERVATION_SOURCE_GAP")
     if nums["max_processing_lag_seconds"] > expected_source_age:
