@@ -3,6 +3,7 @@ import unittest
 import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_self_learning as VSELF
+import veritas_profit_maturity as VPM
 import veritas_timeframe_management as VTM
 import veritas_user_teaching as VUT
 import veritas_release as VR
@@ -50,6 +51,12 @@ class OwnerReviewPolicyTests(unittest.TestCase):
                       "trade_entry_reason":"NO_DIRECTION","final_gate_blockers":[]}]
         x=VCR._borrowed_parent_risk_context(row,summary)
         self.assertTrue(x["eligible"])
+
+    def test_profit_maturity_uses_structural_risk_timeframe(self):
+        p={"timeframe_entry_context":{"event":{"trigger_timeframe":"1m",
+                                               "structural_timeframe":"1h",
+                                               "stop_timeframe":"1h"}}}
+        self.assertEqual(VPM._management_tf({},p),"1h")
 
     def test_trailing_waits_for_profit_maturity(self):
         position={"direction":"LONG","payload":{"structural_policy_version":"X",
