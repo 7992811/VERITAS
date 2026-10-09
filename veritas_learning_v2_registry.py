@@ -104,9 +104,11 @@ def _entry_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
     usable,_=_new_rows(rows,registered_at,cutoff_id,p if prior is not None else None)
     for rid,ts,r in usable:
         if not _scope_match(candidate["scope"],r): continue
-        if str(r.get("decision") or "")!="NO_TRADE": continue
         blockers={str(x) for x in (r.get("final_gate_blockers") or r.get("blockers") or [])}
-        if blocker not in blockers: continue
+        admission=r.get("admission_eligible")
+        blocked=bool(blockers or admission is False
+                     or str(r.get("final_gate_status") or "").upper()=="BLOCK")
+        if not blocked or blocker not in blockers: continue
         direction=str(r.get("candidate_direction") or "")
         fr=_num(r.get("forward_return"))
         if direction not in ("LONG","SHORT") or fr is None: continue
