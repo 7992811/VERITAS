@@ -75,6 +75,24 @@ def confirmed_levels(bars, timeframe):
     return out[-24:]
 
 
+def trend_confirmation(bars, timeframe):
+    """Causal intermediate-TF confirmation from completed aggregate bars only."""
+    if len(bars or []) < 2:
+        return {'timeframe':timeframe, 'direction':'NO_TRADE', 'confirmed':False}
+    previous, latest = bars[-2], bars[-1]
+    direction='NO_TRADE'
+    if latest['close'] > previous['high'] and latest['close'] > latest['open']:
+        direction='LONG'
+    elif latest['close'] < previous['low'] and latest['close'] < latest['open']:
+        direction='SHORT'
+    return {
+        'timeframe':timeframe, 'direction':direction, 'confirmed':direction!='NO_TRADE',
+        'closed_at':latest.get('available_at'), 'close':latest.get('close'),
+        'previous_high':previous.get('high'), 'previous_low':previous.get('low'),
+        'volume':latest.get('volume',0.0),
+    }
+
+
 def build_context(bars, now, asset='', minute_bars=None, quote=None):
     if minute_bars:
         from veritas_local_breakout import backfill_five_minutes
@@ -99,15 +117,20 @@ def build_context(bars, now, asset='', minute_bars=None, quote=None):
     if atr <= 0:
         result.update(history_reason='ZERO_RANGE',history_ready=False)
         return result
-    h1, h4, m15 = aggregate(bars,3600), aggregate(bars,14400), aggregate(bars,900)
-    levels = confirmed_levels(m15,'15m') + confirmed_levels(h1,'1h') + confirmed_levels(h4,'4h')
+    h1, h4 = aggregate(bars,3600), aggregate(bars,14400)
+    m15, m30 = aggregate(bars,900), aggregate(bars,1800)
+    levels = (confirmed_levels(m15,'15m') + confirmed_levels(m30,'30m')
+              + confirmed_levels(h1,'1h') + confirmed_levels(h4,'4h'))
     local = [dict(b,available_at=b['ts']+300) for b in bars]
     pivots = confirmed_levels(local,'5m')
     result.update(status='OK', atr=atr, last_close=bars[-1]['close'],
                   last_two_closes=[b['close'] for b in bars[-2:]], levels=levels,
                   local_support=next((x['price'] for x in reversed(pivots) if x['kind']=='support'),None),
                   local_resistance=next((x['price'] for x in reversed(pivots) if x['kind']=='resistance'),None),
-                  confirmation_15m=m15[-1] if m15 else None)
+                  confirmation_15m=m15[-1] if m15 else None,
+                  confirmation_30m=m30[-1] if m30 else None,
+                  confirmation_15m_trend=trend_confirmation(m15,'15m'),
+                  confirmation_30m_trend=trend_confirmation(m30,'30m'))
     from veritas_minute_entry import enrich
     return enrich(result,bars,now,minute_bars,quote)
 

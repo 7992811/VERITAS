@@ -90,6 +90,115 @@ def add_binding(position,row):
                 stop_anchor=new_anchor,initial_stop_anchor=anchor)
 
 
+def _trend_acceleration_state(row,direction,policy):
+    """Return staged, causal paper scaling earned by confirmed trend structure."""
+    cfg=getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}
+    out={'active':False,'stage':None,'target_fraction':None,'reason':'ACCELERATION_NOT_CONFIRMED'}
+    mode=str((policy or {}).get('mode') or '')
+    if not cfg.get('enabled') or mode=='CURRENCY' or direction not in ('LONG','SHORT'):
+        return out
+    if str((row or {}).get('research_decision') or '')!=direction:
+        return dict(out,reason='ACCELERATION_DIRECTION_MISMATCH')
+    plan=(row or {}).get('trade_plan') or {}
+    integrity=plan.get('trade_integrity') or {}
+    if integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict'):
+        return dict(out,reason='ACCELERATION_INTEGRITY_BLOCK')
+    hs=(row or {}).get('horizon_structure') or {}
+    state=str(hs.get('state') or '')
+    tier=str((row or {}).get('signal_tier') or (row or {}).get('execution_signal_tier') or '')
+    try:
+        expected=abs(float(plan.get('expected_move_pct') or (row or {}).get('expected_move_pct') or 0.0))
+    except Exception:
+        expected=0.0
+    inst=(row or {}).get('institutional_signal') or {}
+    try:
+        evidence=int((row or {}).get('independent_evidence_families')
+                     or ((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+    except Exception:
+        evidence=0
+    event=TFP.context_of(row).get('event') or {}
+    try:
+        progress=float(event.get('target_progress') or 0.0)
+    except Exception:
+        progress=0.0
+    if evidence<int(cfg.get('minimum_independent_evidence') or 3):
+        return dict(out,reason='ACCELERATION_EVIDENCE_INSUFFICIENT',evidence=evidence)
+    if expected<float(cfg.get('minimum_expected_move_pct') or .004):
+        return dict(out,reason='ACCELERATION_REMAINING_MOVE_TOO_SMALL',expected_move_pct=expected)
+    if progress>float(cfg.get('maximum_target_progress') or .65):
+        return dict(out,reason='ACCELERATION_TARGET_MOSTLY_SPENT',target_progress=progress)
+    accepted=set(cfg.get('accepted_structure_states') or ('BUILDING_TREND','CONFIRMED_TREND'))
+    if state not in accepted and tier not in ('SUPER_LONG','SUPER_SHORT'):
+        return dict(out,reason='ACCELERATION_STRUCTURE_NOT_CONFIRMED',structure_state=state)
+
+    horizon=str((row or {}).get('horizon') or '')
+    supporting=set(str(x) for x in ((row or {}).get('_supporting_horizons')
+                                   or (row or {}).get('supporting_horizons') or []))
+    trend_ctx=(row or {}).get('trend_entry_context') or plan.get('trend_entry_context') or {}
+    mid=False
+    for key in ('confirmation_15m_trend','confirmation_30m_trend'):
+        confirmation=trend_ctx.get(key) or {}
+        if confirmation.get('confirmed') and confirmation.get('direction')==direction:
+            mid=True
+    senior=bool(supporting.intersection(set(cfg.get('senior_confirmation_timeframes') or ('1h','4h'))))
+    senior=senior or (horizon in ('1h','4h') and state=='CONFIRMED_TREND')
+    fast=(horizon in set(cfg.get('fast_horizons') or ('1m','5m'))
+          and (state=='CONFIRMED_TREND' or tier in ('SUPER_LONG','SUPER_SHORT')))
+    stage='SENIOR_CONFIRMED' if senior else 'MID_CONFIRMED' if mid else 'FAST_CONFIRMED' if fast else None
+    if stage is None:
+        return dict(out,reason='ACCELERATION_WAIT_NEXT_CONFIRMATION',evidence=evidence,
+                    expected_move_pct=expected,structure_state=state)
+    targets=(cfg.get('stage_targets_aggressive') if mode=='AGGRESSIVE'
+             else cfg.get('stage_targets_standard')) or {}
+    target=float(targets.get(stage) or 0.0)
+    caps=(cfg.get('temporary_caps') or {}).get(mode) or {}
+    target=min(target,float(caps.get('max_fraction') or target))
+    return {'active':target>0,'stage':stage,'target_fraction':target,
+            'reason':'TREND_ACCELERATION_CONFIRMED','evidence':evidence,
+            'expected_move_pct':expected,'target_progress':progress,
+            'structure_state':state,'signal_tier':tier,
+            'mid_confirmation':mid,'senior_confirmation':senior,
+            'temporary_max_fraction':caps.get('max_fraction'),
+            'temporary_max_gross':caps.get('max_gross'),
+            'policy_version':cfg.get('version')}
+
+
+def fast_reversal_exit_eligible(position,row,policy):
+    """Fast-TF opposite structure may close stale exposure without authorizing a new entry."""
+    cfg=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('reversal_exit') or {}
+    out={'eligible':False,'reason':'FAST_REVERSAL_NOT_CONFIRMED'}
+    mode=str((policy or {}).get('mode') or '')
+    direction=str((row or {}).get('research_decision') or '')
+    held=str((position or {}).get('direction') or '')
+    if not cfg.get('enabled') or mode=='CURRENCY' or direction not in ('LONG','SHORT') or held==direction:
+        return out
+    horizon=str((row or {}).get('horizon') or '')
+    if horizon not in set(cfg.get('horizons') or ('1m','5m')):
+        return dict(out,reason='FAST_REVERSAL_TIMEFRAME_NOT_ALLOWED')
+    plan=(row or {}).get('trade_plan') or {}
+    integrity=plan.get('trade_integrity') or {}
+    if integrity.get('hard_invalidation'):
+        return dict(out,reason='FAST_REVERSAL_SIGNAL_INVALID')
+    hs=(row or {}).get('horizon_structure') or {}
+    state=str(hs.get('state') or '')
+    if state not in set(cfg.get('accepted_structure_states') or ('BUILDING_TREND','CONFIRMED_TREND')):
+        return dict(out,reason='FAST_REVERSAL_STRUCTURE_NOT_CONFIRMED',structure_state=state)
+    inst=(row or {}).get('institutional_signal') or {}
+    try:
+        evidence=int((row or {}).get('independent_evidence_families')
+                     or ((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
+        expected=abs(float(plan.get('expected_move_pct') or (row or {}).get('expected_move_pct') or 0.0))
+    except Exception:
+        return dict(out,reason='FAST_REVERSAL_EVIDENCE_INVALID')
+    if evidence<int(cfg.get('minimum_independent_evidence') or 3):
+        return dict(out,reason='FAST_REVERSAL_EVIDENCE_INSUFFICIENT',evidence=evidence)
+    if expected<float(cfg.get('minimum_expected_move_pct') or .004):
+        return dict(out,reason='FAST_REVERSAL_MOVE_TOO_SMALL',expected_move_pct=expected)
+    return {'eligible':True,'reason':'FAST_REVERSAL_CONFIRMED_EXIT',
+            'held_direction':held,'new_direction':direction,'horizon':horizon,
+            'structure_state':state,'evidence':evidence,'expected_move_pct':expected}
+
+
 def scale_request(position,row,price,nav,policy,now=None,requested=None):
     """Request the next step; the final engine sizes the entire position risk."""
     current=abs(float(position.get('units') or 0))*float(price)/max(float(nav),1.)
@@ -111,13 +220,23 @@ def scale_request(position,row,price,nav,policy,now=None,requested=None):
     step=float(policy.get('position_step') or .05)
     initial=float(policy.get('initial_normal') or .10)
     increment=max(step,math.floor(initial*.5/step+1e-9)*step)
-    cap=float(policy.get('max_fraction') or policy.get('max_single_asset_fraction') or 1.)
-    if requested is not None:
-        cap=min(cap,float(requested))
-    # Quantize the additional risk, not a price-drifted existing notional.
-    increase=max(0.,math.floor(min(increment,max(0.,cap-current))/step+1e-9)*step)
-    return dict(out,eligible=increase>0,reason='STRUCTURAL_NEW_LEVEL_ADD' if increase>0 else 'STRUCTURAL_ALLOCATION_CAP',
+    base_cap=float(policy.get('max_fraction') or policy.get('max_single_asset_fraction') or 1.)
+    acceleration=_trend_acceleration_state(row,position.get('direction'),policy)
+    if acceleration.get('active'):
+        row['_trend_acceleration']=dict(acceleration)
+        cap=max(base_cap,float(acceleration.get('temporary_max_fraction') or base_cap))
+        target=max(current+step,float(acceleration['target_fraction']))
+        increase=max(0.,math.floor(min(max(0.,target-current),max(0.,cap-current))/step+1e-9)*step)
+        reason='STRUCTURAL_NEW_LEVEL_ADD' if increase>0 else 'STRUCTURAL_ALLOCATION_CAP'
+    else:
+        cap=base_cap
+        if requested is not None:
+            cap=min(cap,float(requested))
+        increase=max(0.,math.floor(min(increment,max(0.,cap-current))/step+1e-9)*step)
+        reason='STRUCTURAL_NEW_LEVEL_ADD' if increase>0 else 'STRUCTURAL_ALLOCATION_CAP'
+    return dict(out,eligible=increase>0,reason=reason,
                 fraction=current+increase,event_id=event['event_id'],
+                acceleration=acceleration,
                 final_total_stop_risk_check_required=True)
 
 
@@ -386,6 +505,49 @@ def fast_entry_pass(ns,rows,now,*,runtime=False):
                         if still_due in ('STOP','TAKE_PROFIT'):
                             audit.update(status='HELD',reason='PROTECTIVE_EXIT_PENDING',execution_action='HOLD',
                                          current_fraction=after*price/max(nav,1.))
+                if (audit.get('status')!='HELD' and existing and owns_position(existing)
+                        and existing.get('direction')!=direction):
+                    reversal=fast_reversal_exit_eligible(existing,row,policy)
+                    audit['fast_reversal_exit']=reversal
+                    if reversal.get('eligible'):
+                        if runtime:
+                            clock=_wall_clock()
+                        frozen=dict(existing,_execution_quote=deepcopy(quote),_execution_quote_frozen=True)
+                        checked_quote=VPG.exit_execution_quote(frozen,now=clock)
+                        if checked_quote:
+                            before=abs(float(existing.get('units') or 0.))
+                            trade_id=existing.get('active_trade_id')
+                            last_mark=VPG.utc_datetime(portfolio.get('last_mark_at'))
+                            if last_mark is None or clock>last_mark:
+                                marks={item['asset']:VPG.position_mark_price(dict(item),now=clock)
+                                       for item in positions}
+                                marks[asset]=price
+                                VPR._apply_funding(c,portfolio,positions,marks,portfolio.get('last_ruonia'),clock.isoformat())
+                                c.execute('UPDATE paper_portfolios SET last_mark_at=%s WHERE name=%s',
+                                          (clock.isoformat(),name))
+                            VPR.canonical_close_or_reduce(c,portfolio,name,frozen,price,0.,nav,
+                                                          clock.isoformat(),'FAST_REVERSAL_CONFIRMED_EXIT')
+                            existing=c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s AND asset=%s',
+                                               (name,asset)).fetchone()
+                            after=abs(float(existing.get('units') or 0.)) if existing else 0.
+                            book_changed = book_changed or after < before
+                            protection={'reason':'FAST_REVERSAL_CONFIRMED_EXIT',
+                                        'checked_at':clock.isoformat(),'trade_id':trade_id,
+                                        'status':'EXECUTED' if after<before else 'BLOCKED',
+                                        'reference_price':price,'closed_normalized_units':max(0.,before-after),
+                                        'reversal_evidence':reversal}
+                            portfolio,positions=VPR._portfolio_rows(c,name)
+                            nav,_,gross,net=VPR._mark_nav(portfolio,positions,{})
+                            portfolio,hwm=_save_high_water(c,name,portfolio,nav,clock.isoformat())
+                            dd=max(0.,1.-nav/max(hwm,1.))
+                            admission=VCR.evaluate(row,policy,dd,clock)
+                            VAT.record(row,admission,clock.isoformat(),'ALLOCATION')
+                            if existing:
+                                audit.update(status='HELD',reason='FAST_REVERSAL_EXIT_PENDING',
+                                             execution_action='HOLD',current_fraction=after*price/max(nav,1.))
+                        else:
+                            audit.update(status='HELD',reason='FAST_REVERSAL_EXIT_QUOTE_UNAVAILABLE',
+                                         execution_action='HOLD')
                 requested=float(admission.get('fraction') or 0.)
                 if (audit.get('status')!='HELD' and existing
                         and existing.get('direction')==direction and owns_position(existing)):

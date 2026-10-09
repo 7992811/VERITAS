@@ -329,6 +329,10 @@ LIFECYCLE_POLICY = {
     ),
 }
 
+# Owner-directed paper trend acceleration; detailed data lives in a dedicated
+# policy module to keep this frozen constitution within its architecture ceiling.
+from veritas_trend_acceleration_policy import TREND_ACCELERATION_POLICY
+
 SETUP_GRADES = {
     "A+": "Institutional quality; eligible for strongest scaling subject to risk.",
     "A": "High quality; normal/full staged execution.",

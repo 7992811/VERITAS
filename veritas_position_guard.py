@@ -514,7 +514,7 @@ def take_profit_action(z, current_fraction, peak, round5):
 
 def profit_lock_stop(z, quote, commission=VC.COMMISSION_RATE, fees_paid_rub=0.0,
                      slippage_pct=VC.SLIPPAGE_RATE, min_net_pct=.0005,
-                     funding_rub=0.0,realized_gross_rub=0.0):
+                     funding_rub=0.0,realized_gross_rub=0.0,allow_structural=False):
     """Return a stop that protects positive NET P&L, not merely price P&L.
 
     The locked stop explicitly covers:
@@ -523,8 +523,8 @@ def profit_lock_stop(z, quote, commission=VC.COMMISSION_RATE, fees_paid_rub=0.0,
     - adverse execution / slippage allowance;
     - a small positive net-profit cushion.
     """
-    if payload_of(z).get('structural_policy_version'):
-        return None  # Same-TF confirmed swings own protection for these positions.
+    if payload_of(z).get('structural_policy_version') and not allow_structural:
+        return None  # Structural positions opt in only through the checked MFE lane.
     if not quote or not quote.get('source_gate_pass') or not quote_matches_position(z,quote):
         return None
     p=payload_of(z)
@@ -715,6 +715,100 @@ def _legacy_profit_lock(vp, c, z, q, ts, *, accounting=None):
     )
 
 
+def _structural_mfe_profit_lock(vp, c, z, q, ts, now):
+    """Arm net-positive protection only after favorable movement proves persistence.
+
+    MFE is stored in percentage points (0.15 == 0.15%). A first threshold touch
+    starts a causal timer. The timer resets if the current mark drops back below
+    the threshold before maturity. A larger move can arm immediately. This lane
+    is paper-only and excludes the Currency portfolio.
+    """
+    p=payload_of(z)
+    cfg=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('profit_protection') or {}
+    if (not p.get('structural_policy_version')
+            or z.get('portfolio_name') not in ('Impulse','Aggressive','Champion','Challenger')
+            or not cfg or not q or not q.get('source_gate_pass')
+            or not quote_matches_position(z,q)):
+        return {'patch':{},'lock':None,'state':'NOT_APPLICABLE'}
+    try:
+        entry=float(z.get('avg_entry_price') or p.get('entry_price') or 0.0)
+        px=float(q.get('price') or 0.0)
+        if entry<=0 or px<=0:
+            return {'patch':{},'lock':None,'state':'INVALID_PRICE'}
+        if not all(math.isfinite(v) for v in (entry,px)):
+            return {'patch':{},'lock':None,'state':'INVALID_INPUT'}
+        current=100.0*((px/entry-1.0) if z.get('direction')=='LONG' else (entry/px-1.0))
+        def _finite_pct(value):
+            try:
+                parsed=float(value or 0.0)
+                return parsed if math.isfinite(parsed) else 0.0
+            except (TypeError,ValueError,OverflowError):
+                return 0.0
+        mfe=max(_finite_pct(p.get('mfe_pct')),_finite_pct(p.get('r55_lifetime_mfe_pct')),current,0.0)
+        threshold=float(cfg.get('mfe_activation_pct_points') or .15)
+        immediate=float(cfg.get('immediate_activation_pct_points') or .30)
+    except (TypeError,ValueError,OverflowError):
+        return {'patch':{},'lock':None,'state':'INVALID_INPUT'}
+
+    patch={'r_accel_mfe_pct':mfe,'r_accel_mfe_current_pct':current}
+    if current < threshold:
+        if p.get('r_accel_mfe_candidate_at') is not None:
+            patch.update(r_accel_mfe_candidate_at=None,r_accel_mfe_candidate_pct=None,
+                         r_accel_mfe_candidate_reset_at=ts)
+        return {'patch':patch,'lock':None,'state':'BELOW_THRESHOLD'}
+
+    timeframe=str(p.get('execution_timeframe') or p.get('trigger_timeframe')
+                  or p.get('horizon') or '5m')
+    hold_map=cfg.get('hold_seconds_by_timeframe') or {}
+    hold=float(hold_map.get(timeframe,hold_map.get('5m',90)) or 90)
+    candidate_at=utc_datetime(p.get('r_accel_mfe_candidate_at'))
+    clock=utc_datetime(now) or datetime.now(timezone.utc)
+    if candidate_at is None:
+        candidate_at=clock
+        patch.update(r_accel_mfe_candidate_at=ts,r_accel_mfe_candidate_pct=current,
+                     r_accel_mfe_candidate_timeframe=timeframe)
+    elapsed=max(0.0,(clock-candidate_at).total_seconds())
+    patch['r_accel_mfe_candidate_elapsed_seconds']=elapsed
+    mature=bool(current>=immediate or elapsed>=hold)
+    if not mature:
+        return {'patch':patch,'lock':None,'state':'PERSISTENCE_PENDING',
+                'hold_seconds':hold,'elapsed_seconds':elapsed}
+
+    # Keep this fast protective lane read-bounded: model the entry commission
+    # from current units and weighted entry instead of issuing a trade-row SELECT.
+    # This covers one entry commission plus the modeled exit friction before a
+    # positive-net stop is allowed.
+    try:
+        units=abs(float(z.get('units') or 0.0))
+        modeled_entry_fee=units*entry*float(getattr(vp,'COMMISSION',VC.COMMISSION_RATE))
+    except (TypeError,ValueError,OverflowError):
+        modeled_entry_fee=0.0
+    lock=profit_lock_stop(
+        z,q,getattr(vp,'COMMISSION',VC.COMMISSION_RATE),fees_paid_rub=modeled_entry_fee,
+        slippage_pct=VC.SLIPPAGE_RATE,
+        min_net_pct=float(cfg.get('minimum_positive_net_pct') or .0002),
+        funding_rub=0.0,realized_gross_rub=0.0,allow_structural=True)
+    if not lock:
+        patch.update(r_accel_mfe_protection_waiting_cost_cover=True,
+                     r_accel_mfe_protection_checked_at=ts)
+        return {'patch':patch,'lock':None,'state':'WAIT_NET_COST_COVER',
+                'hold_seconds':hold,'elapsed_seconds':elapsed}
+
+    patch.update(
+        trailing_stop=lock['stop_price'],
+        r_accel_mfe_profit_lock_active=True,
+        r_accel_mfe_profit_lock_at=ts,
+        r_accel_mfe_profit_lock_policy=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('version'),
+        r_accel_mfe_profit_lock_activation_pct=lock['activation_profit_pct'],
+        r_accel_mfe_profit_lock_locked_pct=lock['locked_profit_pct'],
+        r_accel_mfe_profit_lock_seen_profit_pct=lock['current_profit_pct'],
+        r_accel_mfe_profit_lock_projected_net_rub=lock.get('projected_net_profit_at_stop_rub'),
+        r55_net_profit_lock_active=True,
+    )
+    return {'patch':patch,'lock':lock,'state':'PROTECTED',
+            'hold_seconds':hold,'elapsed_seconds':elapsed}
+
+
 def _observation_has_no_action(vp, c, z, q, ts, path, now):
     """Prove a telemetry save or failure both leave this position unchanged."""
     zp=payload_of(z)
@@ -722,7 +816,17 @@ def _observation_has_no_action(vp, c, z, q, ts, path, now):
     if protective_reason(z,q,now) is not None or protective_reason(candidate,q,now) is not None:
         return False
     if zp.get('structural_policy_version'):
-        return True
+        if z.get('portfolio_name') not in ('Impulse','Aggressive','Champion','Challenger'):
+            return True
+        cfg=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('profit_protection') or {}
+        try:
+            entry=float(z.get('avg_entry_price') or zp.get('entry_price') or 0.0)
+            px=float((q or {}).get('price') or 0.0)
+            current=100.0*((px/entry-1.0) if z.get('direction')=='LONG' else (entry/px-1.0))
+            threshold=float(cfg.get('mfe_activation_pct_points') or .15)
+        except (TypeError,ValueError,ZeroDivisionError,OverflowError):
+            return True
+        return not (math.isfinite(current) and current>=threshold) and not bool(zp.get('r_accel_mfe_candidate_at'))
     # These scalar accounts cannot depend on pending observation metadata.
     # This tuple is used only by the two pure preflight calculations; an action
     # later performs its own normal read, and never reuses it after funding.
@@ -830,6 +934,25 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
                 pass
 
             flush_paths(c)
+            structural_lock=_structural_mfe_profit_lock(vp,c,z,q,ts,now)
+            structural_patch=structural_lock.get('patch') or {}
+            if structural_patch:
+                # Protection metadata is optional evidence. Its persistence may
+                # fail, but that can never block an already-due stop/target.
+                PIO.write_patches(c,[(z.get('active_trade_id'),structural_patch)],optional=True)
+                zp=payload_of(z); zp.update(structural_patch); z['payload']=zp
+                if structural_lock.get('lock'):
+                    _sl=structural_lock['lock']
+                    changes.append({
+                        'portfolio':z.get('portfolio_name'),'asset':z.get('asset'),
+                        'trade_id':z.get('active_trade_id'),'reason':'STRUCTURAL_MFE_PROFIT_LOCK_UPDATED',
+                        'price':float((q or {}).get('price') or 0.0),
+                        'new_stop_price':_sl.get('stop_price'),
+                        'activation_profit_pct':_sl.get('activation_profit_pct'),
+                        'locked_profit_pct':_sl.get('locked_profit_pct'),
+                        'seen_profit_pct':_sl.get('current_profit_pct'),
+                        'policy':structural_patch.get('r_accel_mfe_profit_lock_policy'),
+                    })
             legacy_started=time.monotonic()
             lock = _legacy_profit_lock(vp,c,z,q,ts)
             measured['legacy_profit_lock_seconds']+=time.monotonic()-legacy_started
