@@ -30,6 +30,8 @@ def run_books(*, pg_connect, policies, make_book, step_one, prices, ruonia,
               execution_clock=None):
     started = time.monotonic()
     results, committed, uncertain, failures, timings = [], [], [], {}, []
+    original_names = list(policies)
+    execution_sequence = []
     # Currency is the latency-sensitive 1m/5m book.  Each portfolio still owns
     # an independent transaction, but running Currency first prevents it from
     # aging behind four unrelated paper books on every cycle.  Python's sort is
@@ -37,6 +39,7 @@ def run_books(*, pg_connect, policies, make_book, step_one, prices, ruonia,
     policy_items = list(policies.items())
     policy_items.sort(key=lambda item: 0 if str(item[0]) == 'Currency' else 1)
     for name, policy in policy_items:
+        execution_sequence.append(name)
         book = result = None
         timing = {'portfolio': name, 'status': 'NOT_STARTED'}
         stage, did_commit, outcome = 'candidate_routing', False, False
@@ -110,9 +113,16 @@ def run_books(*, pg_connect, policies, make_book, step_one, prices, ruonia,
             timing['boundary_seconds'] = time.monotonic() - cleanup_started
             timing['total_seconds'] = time.monotonic() - book_started
             timings.append(timing)
+    # Preserve the public portfolio ordering even though Currency executed first.
+    order = {name: index for index, name in enumerate(original_names)}
+    results.sort(key=lambda row: order.get(row.get('name'), len(order)))
+    timings.sort(key=lambda row: order.get(row.get('portfolio'), len(order)))
+    committed = [name for name in original_names if name in committed]
+    uncertain = [name for name in original_names if name in uncertain]
     return {'status': 'PARTIAL' if failures else 'OK', 'portfolios': results,
             'committed_portfolios': committed, 'errors': failures,
             'uncertain_portfolios': uncertain,
             'accounting_snapshot_basis': 'SEQUENTIAL_INDEPENDENT_PORTFOLIO_COMMITS',
             'timing': {'version': VERSION, 'total_seconds': time.monotonic() - started,
+                       'execution_sequence': execution_sequence,
                        'portfolios': timings}}
