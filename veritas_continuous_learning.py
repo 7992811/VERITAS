@@ -233,6 +233,7 @@ class ContinuousLearning:
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6),
+                ("learning_v2_projection", self.learning_v2_projection, 30, 5),
                 ("learning_v2_shadow", self.learning_v2_shadow, 60, 5),
                 ("learning_v2_replay", self.learning_v2_replay, 180, 5))
         for name, fn, interval, seconds in jobs:
@@ -673,6 +674,25 @@ class ContinuousLearning:
 
     def memory(self, context, cursor):
         return self.trade.refresh_memory(context), cursor
+
+    def learning_v2_projection(self, context, cursor):
+        """Incrementally upgrade old decision episodes to the compact V2 projection.
+
+        New outcomes are materialized synchronously by pg_event. This microjob is
+        only for legacy rows and is kept separate from the shadow reader so a
+        slow ledger decode can never block the evidence scan itself.
+        """
+        fn=self.ns.get("_v90_backfill_decision_episodes")
+        if not callable(fn):
+            return {"status":"NO_WORK","reason":"PROJECTION_BACKFILL_UNAVAILABLE"},cursor
+        context.check()
+        started=time.monotonic()
+        result=fn(batch_size=64,max_batches=1,max_seconds=3.0)
+        context.check()
+        out=dict(result or {})
+        out["projection_version"]="LEARNING_V2_EPISODE_V1"
+        out["duration_seconds"]=round(time.monotonic()-started,4)
+        return out,cursor
 
     def learning_v2_shadow(self, context, cursor):
         """Build one asset's bounded shadow research from verified outcomes.
