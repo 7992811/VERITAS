@@ -10,6 +10,7 @@ import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
 import veritas_release as VR, veritas_execution_efficiency as VEE
+import veritas_portfolio_reporting as VPRPT
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -5375,19 +5376,9 @@ for _compat_name,_compat_value in list(globals().items()):
         setattr(_vp_base,_compat_name,_compat_value)
 
 def runtime_authority_snapshot():
-    return {
-      'version':FINAL_RUNTIME_AUTHORITY_VERSION,'policy_version':CTC.VERSION,
-      'canonical_runtime':VCR.VERSION,'release':VR.snapshot(),
-      'candidate_book':'veritas_canonical_runtime.candidate_book',
-      'signal_first_admission':FINAL_SIGNAL_FIRST_ADMISSION.__name__,
-      'open_or_add':FINAL_OPEN_OR_ADD.__name__,
-      'close_or_reduce':FINAL_CLOSE_OR_REDUCE.__name__,
-      'step_one':FINAL_STEP_ONE.__name__,'step_all':FINAL_STEP_ALL.__name__,
-      'report':FINAL_REPORT.__name__,
-      'legacy_admission_authoritative':False,
-      'legacy_candidate_routing_authoritative':False,
-      'lifecycle_compatibility':'RXX_MANAGEMENT_ONLY',
-    }
+    return VPRPT.runtime_authority_snapshot(
+        FINAL_RUNTIME_AUTHORITY_VERSION, CTC, VCR, VR, FINAL_SIGNAL_FIRST_ADMISSION,
+        FINAL_OPEN_OR_ADD, FINAL_CLOSE_OR_REDUCE, FINAL_STEP_ONE, FINAL_STEP_ALL, FINAL_REPORT)
 
 
 # Export only names added or replaced by canonical runtime layers.
