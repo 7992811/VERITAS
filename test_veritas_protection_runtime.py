@@ -272,7 +272,11 @@ class BoundedProtectiveTests(unittest.TestCase):
             self.assertEqual(saved['payload']['observation_path']['observation_count'], 1)
             self.assertEqual(saved['payload']['mfe_pct'], 1.5)
             self.assertEqual(saved['payload']['source_locked_mark']['price'], 101.)
-            self.assertEqual(saved['payload'], c.trades[tid]['payload'])
+            # No-action telemetry stays on the live position. Rewriting the
+            # open trade row every 15 seconds is intentionally avoided.
+            self.assertNotIn('observation_path', c.trades[tid]['payload'])
+            self.assertEqual(c.trades[tid]['payload']['immutable_history'],
+                             rows[0]['payload']['immutable_history'])
         self.assertEqual(c.orders, [])
 
     def test_required_batch_failure_propagates_and_optional_savepoint_rolls_back_both_tables(self):
