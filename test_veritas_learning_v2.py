@@ -8,6 +8,18 @@ class LearningV2Tests(unittest.TestCase):
            "final_gate_blockers":blockers or ["IMPULSE_ALREADY_PASSED"]}
         x.update(kw); return x
 
+    def test_blocked_long_signal_is_a_missed_directional_episode(self):
+        x=self.row(decision="LONG",candidate_direction="LONG",admission_eligible=False,fr=.01)
+        c=L.classify_decision_episode(x)
+        self.assertEqual(c["kind"],"MISSED_DIRECTIONAL_MOVE")
+        self.assertFalse(c["counterfactual_fill_proven"])
+
+    def test_admitted_long_signal_is_not_a_false_block(self):
+        x=self.row(decision="LONG",candidate_direction="LONG",admission_eligible=True,
+                   final_gate_blockers=[],blockers=[],fr=.01)
+        c=L.classify_decision_episode(x)
+        self.assertEqual(c["kind"],"DIRECTIONAL_DECISION")
+
     def test_false_block_is_observed_movement_not_counterfactual_profit(self):
         s=L.false_block_summary([self.row() for _ in range(10)])
         self.assertEqual(s["missed_directional_episodes"],10)
