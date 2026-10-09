@@ -242,10 +242,11 @@ class ContinuousLearning:
                 callback = self._trade_callback
             else:
                 callback = self._callback(name, fn)
-            self.lane.register_periodic(
-                name, callback, interval_seconds=interval,
-                lightweight=True, estimated_peak_mb=16, max_seconds=seconds,
-                retry_seconds=5 if name=="learning_trade_evidence" else None)
+            options=dict(interval_seconds=interval,lightweight=True,
+                         estimated_peak_mb=16,max_seconds=seconds)
+            if name=="learning_trade_evidence":
+                options["retry_seconds"]=5
+            self.lane.register_periodic(name,callback,**options)
 
     def start(self):
         return self.lane.start_periodic()
