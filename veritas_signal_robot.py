@@ -3,9 +3,10 @@
 The robot is deliberately thin: VERITAS remains the signal authority and the
 existing Currency trade service remains the execution/risk authority.
 
-Sandbox may be configured for autonomous proposal approval/execution. Production
-never auto-approves here: the internal trade service keeps signed owner approval
-as the final mutation gate.
+Sandbox and production can both run autonomously when separately armed. The
+robot itself never bypasses execution controls: the internal Currency service
+remains the order/risk authority and production requires its explicit one-time
+autotrade mandate plus the existing live execution gates.
 """
 from __future__ import annotations
 
@@ -161,10 +162,12 @@ class VeritasSignalRobot:
             raise SignalRobotError(str(payload.get("code") or "TRADE_SERVICE_UNAVAILABLE"))
         if response.status_code >= 400:
             raise SignalRobotError(str(payload.get("code") or "TRADE_REQUEST_REJECTED"))
-        # A production worker may never accept a server claiming autonomous
-        # sandbox execution. Fail closed rather than guessing configuration.
+        # Environment mismatch is always fatal. Production autonomy is only
+        # accepted when the service explicitly reports its robot mandate.
         if self.environment == "production" and payload.get("sandbox_autotrade_enabled") is True:
             raise SignalRobotError("SANDBOX_AUTOTRADE_PRODUCTION_FORBIDDEN")
+        if self.environment == "sandbox" and payload.get("robot_autotrade_enabled") is True:
+            raise SignalRobotError("PRODUCTION_AUTOTRADE_SANDBOX_FORBIDDEN")
         return payload
 
     def tick(self):
@@ -188,6 +191,8 @@ class VeritasSignalRobot:
             trade_block_reason=result.get("block_reason"),
             execution_enabled=result.get("execution_enabled") is True,
             sandbox_autotrade_enabled=result.get("sandbox_autotrade_enabled") is True,
+            robot_autotrade_enabled=result.get("robot_autotrade_enabled") is True,
+            autotrade_enabled=result.get("autotrade_enabled") is True,
             pending_items=len(result.get("items") or []),
             checked_at=datetime.now(timezone.utc).isoformat(),
         )
