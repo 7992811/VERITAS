@@ -22,7 +22,7 @@ MIN_ROUTER_TRAIN_N = 6
 MAX_HYPOTHESES = 64
 ENTRY_FALSE_BLOCK_MOVE = 0.004
 STOP_BUFFER_ATR_CANDIDATES = (0.10, 0.15, 0.20, 0.30)
-EXIT_CAPTURE_TARGETS = (0.35, 0.50, 0.65)
+EXIT_FIRST_TARGET_FRACTIONS = (0.25, 0.75)
 STRATEGY_FAMILIES = ("TREND", "BREAKOUT", "PULLBACK", "MOMENTUM", "REVERSAL", "RANGE")
 
 
@@ -184,18 +184,19 @@ def generate_hypotheses(decision_rows, trade_rows):
                  "counterfactual_execution_proven":False}
             ))
 
-        # 3) Exit capture targets from actual capture telemetry.
+        # 3) Concrete partial-take variants; replay still requires an observed runner target.
         captures=[_num(r.get("capture_ratio")) for r in valid]
         captures=[x for x in captures if x is not None and 0<=x<=1]
         if captures:
             mean_capture=sum(captures)/len(captures)
-            for target in EXIT_CAPTURE_TARGETS:
-                if mean_capture+0.05<target:
+            if mean_capture<0.35:
+                for fraction in EXIT_FIRST_TARGET_FRACTIONS:
                     out.append(_hypothesis(
                         "EXIT_CAPTURE",
                         scope,
-                        {"target_capture_ratio":target,
-                         "action":"SHADOW_COMPARE_PARTIAL_TP_AND_STRUCTURAL_RUNNER"},
+                        {"first_target_fraction":fraction,"baseline_first_target_fraction":0.50,
+                         "requires_runner_target":True,
+                         "action":"SHADOW_REPLAY_PARTIAL_TP_AND_STRUCTURAL_RUNNER"},
                         {"n":len(captures),"mean_capture_ratio":mean_capture,
                          "counterfactual_execution_proven":False}
                     ))
