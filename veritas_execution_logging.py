@@ -65,11 +65,15 @@ def context_summary(context):
     out['log_projection_version'] = VERSION
     out['source_identity'] = _fields(_get(context, 'source_identity'),
                                     ('key', 'contract_id', 'asset'))
+    out['quote'] = _fields(_get(context, 'quote'), (
+        'price', 'observed_at', 'market_observed_at', 'book_observed_at',
+        'best_bid', 'best_ask', 'spread_bps', 'source_gate_pass', 'market_open'))
     event = _get(context, 'event')
-    out['event'] = _fields(event, ('version', 'event_type', 'event_id', 'asset',
-        'direction', 'timeframe', 'structural_timeframe', 'signal_at',
-        'confirmed_at', 'signal_price', 'trigger_level', 'stop_price',
-        'target_price', 'phase', 'spent', 'spent_reason'))
+    out['event'] = _fields(event, ('version', 'event_type', 'event_id', 'proof_hash', 'asset',
+        'direction', 'timeframe', 'structural_timeframe', 'stop_timeframe',
+        'atr_timeframe', 'signal_at', 'confirmed_at', 'signal_price',
+        'trigger_level', 'stop_price', 'target_price', 'runner_target_price',
+        'atr', 'phase', 'spent', 'spent_reason'))
     gate = _get(context, 'entry_gate')
     out['entry_gate'] = _fields(gate, ('eligible', 'reason', 'event_id',
         'timeframe', 'age_seconds', 'max_age_seconds'))

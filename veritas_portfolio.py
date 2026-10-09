@@ -27,6 +27,7 @@ import veritas_trade_review as VTR
 import veritas_timeframe_management as VTM
 import veritas_portfolio_reporting as VPRPT
 import veritas_portfolio_admission as VPADM
+import veritas_contract_integrity as VCI
 import veritas_startup_guard as VSG
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
@@ -4269,139 +4270,28 @@ _v90ci_base_step_one=_step_one
 _v90ci_base_entry_patch=_v90j_entry_patch
 
 def _v90ci_entry_patch(row,z,ts):
-    d=dict(_v90ci_base_entry_patch(row,z,ts) or {})
-    row=row or {}
-    contract=row.get('contract') or {}
-    src=row.get('source_names') or {}
-    d['contract_identity']={
-      'asset':row.get('asset'),
-      'contract_id':contract.get('secid') or contract.get('symbol') or row.get('contract_id'),
-      'price_unit':contract.get('price_unit'),
-      'primary_source':src.get('primary'),
-      'verification_mode':row.get('verification_mode'),
-      'continuous_series':bool(contract.get('continuous') or row.get('continuous_series')),
-    }
-    return d
+    return VCI.entry_patch(_v90ci_base_entry_patch(row,z,ts),row)
 
 _v90j_entry_patch=_v90ci_entry_patch
-
-def _v90ci_same_contract(payload,row):
-    if (payload or {}).get('price_source_lock'):
-        lock=payload['price_source_lock']
-        return VPS.same(lock,VPS.identity(lock.get('asset'),row))
-    p=(payload or {}).get('contract_identity') or {}
-    r=(row or {}).get('contract') or {}
-    rid=r.get('secid') or r.get('symbol') or (row or {}).get('contract_id')
-    pid=p.get('contract_id')
-    # If both ids exist, they must match exactly.
-    if pid and rid:
-        return str(pid)==str(rid)
-    # If one side has no id, require same verification mode and primary source.
-    psrc=p.get('primary_source')
-    rsrc=((row or {}).get('source_names') or {}).get('primary')
-    pmode=p.get('verification_mode')
-    rmode=(row or {}).get('verification_mode')
-    return bool((not psrc or not rsrc or str(psrc)==str(rsrc))
-                and (not pmode or not rmode or str(pmode)==str(rmode)))
-
-def _v90ci_cross_source_disagreement(row):
-    row=row or {}
-    try:
-        p=float(row.get('price') or 0.0)
-        s=float(row.get('secondary_price') or row.get('coinbase_price') or 0.0)
-    except Exception:
-        return None
-    if p<=0 or s<=0:
-        return None
-    div=abs(p-s)/max(1e-9,(p+s)/2.0)
-    return {'primary':p,'secondary':s,'divergence':div}
+_v90ci_same_contract=VCI.same_contract
+_v90ci_cross_source_disagreement=VCI.cross_source_disagreement
 
 def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
-    safe_prices=dict(prices or {})
-    safe_candidates=dict(candidates or {})
+    safe_candidates,safe_prices=dict(candidates or {}),dict(prices or {})
     ci_mutated=False
     try:
         _baton=_v90_book_baton_take(c,name,ts)
         positions=(_baton[1] if _baton is not None else
                    c.execute("SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall())
-        for z0 in positions or []:
-            z=dict(z0); asset=str(z.get('asset') or '')
-            payload=_v90j_json(z.get('payload'))
-            row=safe_candidates.get(asset) or {}
-            if not row:
-                continue
-
-            same=_v90ci_same_contract(payload,row)
-            disagreement=_v90ci_cross_source_disagreement(row)
-
-            # Rule 1: a sharp move in the SAME contract is valid market data.
-            # Do not classify it as discontinuity just because return is large.
-            if same:
-                if disagreement and disagreement['divergence']>0.025:
-                    # Same named contract/series but two sources disagree materially:
-                    # freeze execution/marking until resolved, but keep the position.
-                    payload.update({
-                      'data_integrity_status':'SAME_CONTRACT_SOURCE_CONFLICT',
-                      'source_conflict_at':_v90j_iso(ts),
-                      'source_conflict_primary':disagreement['primary'],
-                      'source_conflict_secondary':disagreement['secondary'],
-                      'source_conflict_divergence':disagreement['divergence'],
-                    })
-                    tid=z.get('active_trade_id')
-                    ci_mutated=True
-                    c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
-                              (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
-                    if tid:
-                        c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
-                                  (json.dumps({
-                                    'data_integrity_status':'SAME_CONTRACT_SOURCE_CONFLICT',
-                                    'source_conflict_at':_v90j_iso(ts),
-                                    'source_conflict_primary':disagreement['primary'],
-                                    'source_conflict_secondary':disagreement['secondary'],
-                                    'source_conflict_divergence':disagreement['divergence'],
-                                  },ensure_ascii=False,default=str),tid))
-                    safe_prices[asset]=float(z.get('last_price') or safe_prices.get(asset) or 0.0)
-                    safe_candidates.pop(asset,None)
-                else:
-                    # Clear old discontinuity/source-conflict flag once the same contract is clean.
-                    if str(payload.get('data_integrity_status') or '') in ('DATA_DISCONTINUITY','SAME_CONTRACT_SOURCE_CONFLICT'):
-                        payload['data_integrity_status']='OK'
-                        payload['data_integrity_restored_at']=_v90j_iso(ts)
-                        ci_mutated=True
-                        c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
-                                  (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
-                continue
-
-            # Rule 2: contract identity changed. This is not a price move;
-            # it is a contract/series switch and must not affect P&L.
-            payload.update({
-              'data_integrity_status':'CONTRACT_IDENTITY_CHANGED',
-              'contract_change_at':_v90j_iso(ts),
-              'entry_contract_identity':payload.get('contract_identity'),
-              'candidate_contract':(row.get('contract') or {}),
-              'candidate_source_names':(row.get('source_names') or {}),
-              'candidate_verification_mode':row.get('verification_mode'),
-            })
-            tid=z.get('active_trade_id')
-            ci_mutated=True
-            c.execute("UPDATE paper_positions SET payload=%s::jsonb WHERE portfolio_name=%s AND asset=%s",
-                      (json.dumps(payload,ensure_ascii=False,default=str),name,asset))
-            if tid:
-                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
-                          (json.dumps({
-                            'data_integrity_status':'CONTRACT_IDENTITY_CHANGED',
-                            'contract_change_at':_v90j_iso(ts),
-                            'learning_eligible':False,
-                          },ensure_ascii=False,default=str),tid))
-            safe_prices[asset]=float(z.get('last_price') or safe_prices.get(asset) or 0.0)
-            safe_candidates.pop(asset,None)
+        safe_candidates,safe_prices,ci_mutated=VCI.guard_book(
+            c,name,safe_candidates,safe_prices,ts,positions,decode_payload=_v90j_json,iso=_v90j_iso)
     except Exception:
         pass
-
     if ci_mutated:
         _v90_book_baton_clear()
-    positions = z0 = z = payload = None
-    return _v90ci_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,summary)
+    positions=None
+    return _v90ci_base_step_one(
+        c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,commission_rate,summary)
 
 _step_one=_v90ci_step_one
 
