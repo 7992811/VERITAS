@@ -123,6 +123,49 @@ def write_patches_one_roundtrip(c, patches, *, optional=False):
     return applied
 
 
+def _write_position_chunk(c, rows):
+    """Apply one observation batch only to live positions."""
+    encoded = json.dumps(rows, allow_nan=False)
+    return c.execute(
+        "UPDATE paper_positions AS target SET payload="
+        "COALESCE(target.payload,'{}'::jsonb)||delta.patch "
+        "FROM jsonb_to_recordset(%s::jsonb) AS delta(trade_id text,patch jsonb) "
+        "WHERE target.active_trade_id=delta.trade_id",
+        (encoded,)
+    )
+
+
+def write_position_patches(c, patches, *, optional=False):
+    """Persist live observation state without rewriting the open trade row.
+
+    Open-position management reads paper_positions. The canonical close
+    boundary copies the latest telemetry into paper_trades before learning
+    consumes the closed trade.
+    """
+    applied = set()
+    for chunk in _chunks(patches):
+        if not optional:
+            _write_position_chunk(c, chunk)
+            applied.update(row['trade_id'] for row in chunk)
+            continue
+        try:
+            with c.transaction():
+                _write_position_chunk(c, chunk)
+        except Exception:
+            if len(chunk) == 1:
+                continue
+            for row in chunk:
+                try:
+                    with c.transaction():
+                        _write_position_chunk(c, [row])
+                except Exception:
+                    continue
+                applied.add(row['trade_id'])
+        else:
+            applied.update(row['trade_id'] for row in chunk)
+    return applied
+
+
 def write_patches(c, patches, *, optional=False):
     """Write at most 32 trade deltas together; return successfully applied IDs.
 
