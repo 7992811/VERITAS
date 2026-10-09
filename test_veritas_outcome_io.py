@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 import inspect
@@ -30,7 +31,7 @@ class OutcomeIoTests(unittest.TestCase):
     def row(self):
         now=C.clock()
         return {"id":1,"entity_key":"episode-1","decision_at":now,
-                "due_at":now,"expires_at":now,
+                "due_at":now-timedelta(seconds=1),"expires_at":now+timedelta(hours=1),
                 "asset":"BTC","horizon":"5m",
                 "evidence":{"quote":{"source_identity":{"key":"TEST"}}}}
 
