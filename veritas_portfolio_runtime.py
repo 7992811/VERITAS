@@ -5228,15 +5228,9 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
                                 'mfe_before_last_add_pct':float(before.get('mfe_pct') or 0.0),
                                 'mfe_since_last_add_pct':0.0,'mae_since_last_add_pct':0.0,
                             }
-                    if analysis_patch:
-                        encoded=json.dumps(analysis_patch,ensure_ascii=False,allow_nan=False)
-                        c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE active_trade_id=%s",
-                                  (encoded,opened.get('active_trade_id')))
-                        c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
-                                  (encoded,opened.get('active_trade_id')))
-                        opened=dict(opened,payload={**_canonical_payload(opened),**analysis_patch})
                     VOP.record(c,dict(opened),VPS.quote_from_row(work),ts,
-                               at_entry=is_new,lane='CANONICAL_ENTRY' if is_new else 'CANONICAL_ADD')
+                               at_entry=is_new,lane='CANONICAL_ENTRY' if is_new else 'CANONICAL_ADD',
+                               extra_patch=analysis_patch)
         except Exception:
             # A missing entry witness stays unverified; an optional evidence
             # read/write must not roll back the already accounted paper fill.
