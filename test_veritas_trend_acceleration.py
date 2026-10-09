@@ -120,6 +120,21 @@ class AccelerationGrossHeadroomTests(unittest.TestCase):
         self.assertAlmostEqual(adjusted["max_fraction"], 0.75)
         self.assertAlmostEqual(adjusted["max_gross"], 1.00)
 
+    def test_extreme_impulse_can_earn_full_nav_in_normal_state(self):
+        policy=dict(CTC.runtime_portfolio_policy("Impulse"))
+        row={
+            "_trend_acceleration":{
+                "active":True,"stage":"EXTREME_CONFIRMED",
+                "temporary_max_fraction":1.00,"temporary_max_gross":1.00,
+            },
+            "_canonical_admission":{"risk_governor":{
+                "state":"NORMAL","new_risk":True,"max_gross":0.50,
+            }},
+        }
+        adjusted,_,_=VPE._policy_with_acceleration_caps(policy,row)
+        self.assertAlmostEqual(adjusted["max_fraction"],1.00)
+        self.assertAlmostEqual(adjusted["max_gross"],1.00)
+
     def test_impulse_caution_state_keeps_drawdown_governor_authority(self):
         policy = dict(CTC.runtime_portfolio_policy("Impulse"))
         row = {
@@ -200,6 +215,20 @@ class MFEProtectionTests(unittest.TestCase):
         self.assertEqual(result["state"], "PERSISTENCE_PENDING")
         self.assertIn("r_accel_mfe_candidate_at", result["patch"])
         self.assertIsNone(result["lock"])
+
+    def test_sustained_015pct_lane_can_lock_before_legacy_021_floor(self):
+        position,quote,now=self.structural_position_and_quote(100.16)
+        first=VPG._structural_mfe_profit_lock(None,object(),position,quote,
+                                              now.isoformat(),now)
+        position["payload"].update(first["patch"])
+        later=now+timedelta(seconds=100)
+        confirmed=dict(quote,observed_at=later.isoformat())
+        result=VPG._structural_mfe_profit_lock(None,object(),position,confirmed,
+                                               later.isoformat(),later)
+        self.assertEqual(result["state"],"PROTECTED")
+        self.assertIsNotNone(result["lock"])
+        self.assertLess(result["lock"]["activation_profit_pct"],0.21)
+        self.assertGreater(result["lock"]["projected_net_profit_at_stop_rub"],0)
 
     def test_lost_015pct_persistence_resets_candidate(self):
         position, quote, now = self.structural_position_and_quote(100.16)
