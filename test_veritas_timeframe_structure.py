@@ -146,6 +146,54 @@ class SameTimeframeEntryTests(unittest.TestCase):
         self.assertTrue(later["event"]["spent"])
         self.assertEqual(S.entry_gate(later, 101.2, "LONG", now+600)["reason"], "SAME_TF_STOP_ALREADY_REACHED")
 
+    def test_target_then_closed_same_direction_break_starts_one_new_continuation_leg(self):
+        for short in (False, True):
+            with self.subTest(short=short):
+                rows, now = example(short=short)
+                first = context(rows, now)["event"]
+                sign = -1 if short else 1
+                target = first["target_price"]
+                # First later candle reaches the old target. It cannot itself
+                # establish the next entry because intrabar ordering is unknown.
+                hit = dict(
+                    ts=now,
+                    open=target-sign*.20,
+                    high=target+.05 if not short else target+.30,
+                    low=target-.30 if not short else target-.05,
+                    close=target-sign*.10,
+                    volume=120., timeframe="5m")
+                if short:
+                    hit.update(open=target+.20, high=target+.30,
+                               low=target-.05, close=target+.10)
+                # Only the following CLOSED candle confirms continuation beyond
+                # the preceding candle's extreme.
+                cont = dict(
+                    ts=now+300,
+                    open=hit["close"],
+                    high=(hit["high"]+.30 if not short else hit["high"]-.01),
+                    low=(hit["low"]+.05 if not short else hit["low"]-.30),
+                    close=(hit["high"]+.15 if not short else hit["low"]-.15),
+                    volume=150., timeframe="5m")
+                if short:
+                    cont["high"] = hit["high"]-.01
+                    cont["low"] = hit["low"]-.30
+                    cont["close"] = hit["low"]-.15
+                later = context(rows+[hit, cont], now+600)
+                event = later["event"]
+                self.assertNotEqual(event["event_id"], first["event_id"])
+                self.assertEqual(event["event_type"], "SAME_TIMEFRAME_TREND_CONTINUATION")
+                self.assertEqual(event["parent_event_id"], first["event_id"])
+                self.assertEqual(event["direction"], first["direction"])
+                self.assertEqual(event["signal_at"], now+600)
+                self.assertFalse(event["spent"])
+                gate = S.entry_gate(later, event["signal_price"], event["direction"], now+610)
+                self.assertTrue(gate["eligible"], gate)
+                # Rebuilding the identical closed-bar prefix is deterministic.
+                again = context(rows+[hit, cont], now+600)["event"]
+                self.assertEqual(again["event_id"], event["event_id"])
+                self.assertEqual(again["stop_price"], event["stop_price"])
+                self.assertEqual(again["target_price"], event["target_price"])
+
     def test_target_then_return_to_trigger_remains_spent(self):
         rows, now = example()
         original = context(rows, now)["event"]
