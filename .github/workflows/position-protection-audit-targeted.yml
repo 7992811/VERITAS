@@ -1,0 +1,22 @@
+name: Position Protection Audit Targeted CI
+on:
+  push:
+    branches: [ "ci/position-protection-audit-b1928a0" ]
+permissions:
+  contents: read
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - name: Compile position audit modules
+        run: python -m py_compile veritas_trade_view.py veritas_v90_ui.py veritas_release.py
+      - name: Position audit regressions
+        run: python -m unittest -v test_veritas_trade_view.py test_veritas_portfolio_api_projection.py
+      - name: Position audit UI
+        run: node tools/test_paper_ui.cjs
