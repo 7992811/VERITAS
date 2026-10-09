@@ -19,6 +19,28 @@ def _failure(reason, gate=None, budget=None, status='BLOCKED'):
             'hard_blockers':[code for code in blockers if CTC.veto_severity(code)=='HARD']}
 
 
+def _policy_with_acceleration_caps(policy, row):
+    """Apply temporary nominal caps without weakening drawdown or stop-risk guards."""
+    out=dict(policy or {})
+    acceleration=(row or {}).get('_trend_acceleration') or {}
+    if acceleration.get('active') and str(out.get('mode') or '')!='CURRENCY':
+        cfg=getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}
+        caps=(cfg.get('temporary_caps') or {}).get(str(out.get('mode') or '')) or {}
+        if caps:
+            base_fraction=float(out.get('max_fraction',out.get('max_single_asset_fraction',0.0)) or 0.0)
+            base_gross=float(out.get('max_gross') or 0.0)
+            out['max_fraction']=max(base_fraction,float(caps.get('max_fraction') or base_fraction))
+            out['max_single_asset_fraction']=out['max_fraction']
+            out['max_gross']=max(base_gross,float(caps.get('max_gross') or base_gross))
+    governor=((row or {}).get('_canonical_admission') or {}).get('risk_governor') or {}
+    if governor.get('max_gross') is not None:
+        # NORMAL acceleration may earn the policy's temporary gross headroom.
+        # CAUTION/DEFENSE/HARD_STOP remains authoritative and can only reduce it.
+        if not (acceleration.get('active') and governor.get('state')=='NORMAL'):
+            out['max_gross']=min(float(out['max_gross']),float(governor['max_gross']))
+    return out,acceleration,governor
+
+
 def prepare(row, quote, direction, requested, position, nav, ts, policy, *, gross_excluding_position=0.0):
     """Any size change gets a new check on the same detached quote before recording."""
     row=VPS.execution_row(dict(row,_execution_quote=quote))
@@ -31,24 +53,9 @@ def prepare(row, quote, direction, requested, position, nav, ts, policy, *, gros
     if requested<=current+0.0025:
         return _failure('TARGET_ALREADY_REACHED',status='HELD')
     canonical=bool((row.get('_canonical_admission') or {}).get('open'))
-    policy=dict(policy)
-    # A confirmed trend-acceleration state may temporarily earn more nominal
-    # exposure, but never more stop-risk. Currency/live semantics are excluded.
-    acceleration=row.get('_trend_acceleration') or {}
-    if acceleration.get('active') and str(policy.get('mode') or '')!='CURRENCY':
-        cfg=getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}
-        caps=(cfg.get('temporary_caps') or {}).get(str(policy.get('mode') or '')) or {}
-        if caps:
-            base_fraction=float(policy.get('max_fraction',policy.get('max_single_asset_fraction',0.0)) or 0.0)
-            base_gross=float(policy.get('max_gross') or 0.0)
-            policy['max_fraction']=max(base_fraction,float(caps.get('max_fraction') or base_fraction))
-            policy['max_single_asset_fraction']=policy['max_fraction']
-            policy['max_gross']=max(base_gross,float(caps.get('max_gross') or base_gross))
-    governor=(row.get('_canonical_admission') or {}).get('risk_governor') or {}
+    policy,acceleration,governor=_policy_with_acceleration_caps(policy,row)
     if governor.get('new_risk') is False:
         return _failure('RISK_GOVERNOR_HARD_STOP')
-    if governor.get('max_gross') is not None:
-        policy['max_gross']=min(float(policy['max_gross']),float(governor['max_gross']))
     def evaluate(total):
         gate=VX.entry_gate(row,price,direction,total,position,
             existing_target_price=VX.stored_position_target_price(position),now=clock,
