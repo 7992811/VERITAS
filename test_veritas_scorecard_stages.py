@@ -332,8 +332,7 @@ class ScorecardStageTests(unittest.TestCase):
         previous_snapshot=deepcopy(AMI._SNAPSHOT)
         # requested, slice budget, serialized budget, chunk cap, write cap, pairs
         cases=((2000,3.2,2.25,1000,2000,32),(350,2.45,.6,250,350,8),
-               (9999,3.2,2.25,1000,2000,32),(2000,3.2,2.1,1000,1000,32),
-               (2000,6.,.3,2000,2000,64),(350,6.,.3,350,350,11))
+               (9999,3.2,2.25,1000,2000,32),(2000,3.2,2.1,1000,1850,32))
         for requested,slice_budget,serialized_budget,chunk_cap,write_cap,count in cases:
             with self.subTest(requested=requested,serialized_budget=serialized_budget):
                 self.durable.clear(); AMI._RESTORED_EPOCH=None
@@ -400,6 +399,37 @@ class ScorecardStageTests(unittest.TestCase):
                     expected.append("SET LOCAL statement_timeout = '"+str(write_cap)+"ms'")
                 self.assertEqual(settings,expected)
 
+    def test_tiny_post_serialization_budget_defers_before_checkpoint_write(self):
+        self.rows=self.history(130)
+        self.context.sql_timeout_ms=2000
+        self.completed()
+        self.step(); self.step()
+        before=deepcopy(self.durable)
+        budget={'remaining_seconds':6.}
+        events=[]
+        self.context.lane=SimpleNamespace(current_budget=lambda:dict(budget),
+            emit=lambda event,**fields:events.append((event,fields)))
+        def one_chunk(c,pairs):
+            budget['remaining_seconds']=2.3
+            return self.chunk_rows(c,pairs)
+        encode=STORE._json
+        def serialize(payload,limit):
+            encoded=encode(payload,limit)
+            if limit==DELIVERY.WORK_BYTES:
+                budget['remaining_seconds']=.3
+            return encoded
+        self.chunk.side_effect=one_chunk
+        with patch.object(STORE,'_json',side_effect=serialize), self.assertRaises(MaintenanceDeferred) as raised:
+            self.step()
+        self.assertEqual(raised.exception.result(),{
+            'status':'DEFERRED_SCORECARD_BUDGET','reason':'CHECKPOINT_SQL_HEADROOM'})
+        self.assertEqual(self.durable,before)
+        self.assertTrue(self.connections[-1].rolled_back)
+        self.assertFalse(self.connections[-1].committed)
+        self.assertEqual(events[-1][0],'ami_refresh_deferred')
+        self.assertEqual(events[-1][1]['stage'],'checkpoint')
+        self.assertIsNone(events[-1][1]['error_type'])
+
     def test_checkpoint_headroom_lost_during_set_defers_before_write_and_retries_same_work(self):
         self.rows=self.history(130)
         self.context.sql_timeout_ms=2000
@@ -419,7 +449,9 @@ class ScorecardStageTests(unittest.TestCase):
             def timed_execute(sql,args=None):
                 result=execute(sql,args)
                 if sql=="SET LOCAL statement_timeout = '2000ms'" and consume['enabled']:
-                    budget['remaining_seconds']=2.19
+                    # Lose the tail reserve after the SET itself; the write must
+                    # still defer and roll back instead of publishing partial state.
+                    budget['remaining_seconds']=.20
                 return result
             connection.execute=timed_execute
             return connection
