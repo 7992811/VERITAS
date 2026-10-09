@@ -79,6 +79,9 @@ class SameTimeframeManagementSQLTests(unittest.TestCase):
                 "source_identity": copy.deepcopy(self.identity), "stop_price": stop},
             "initial_stop_price": stop, "initial_take_price": 130. if direction == "LONG" else 70.,
             "same_tf_trailing": prior, "same_tf_trailing_history": [prior],
+            # These SQL tests target atomic CAS/journaling after the lifecycle
+            # gate has already passed; they are not tests of profit maturity.
+            "profit_maturity_armed": True, "profit_maturity_floor_satisfied": True,
             "original_note": "keep immutable entry and prior journal"}
         if trailing == "null":
             payload["trailing_stop"] = None
