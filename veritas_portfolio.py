@@ -4491,10 +4491,14 @@ def _v90ph_take_fraction(strength,profit,level_distance):
     elif level_distance is not None and level_distance<=0.004: take=max(take,0.30)
     return min(0.50,max(0.20,take))
 
-def _v90ph_apply(c,name,candidates,prices,ts):
+def _v90ph_apply(c,name,candidates,prices,ts,book_snapshot=None):
     events=[]
     try:
-        p,pos=_portfolio_rows(c,name)
+        if book_snapshot is not None:
+            p,pos=book_snapshot
+        else:
+            p,pos=_portfolio_rows(c,name)
+        pos=[dict(z) for z in (pos or [])]
         nav,_,_,_=_mark_nav(p,pos,prices)
     except Exception:
         return events
@@ -4553,7 +4557,10 @@ def _v90ph_apply(c,name,candidates,prices,ts):
     return events
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
-    _v90ph_apply(c,name,candidates,prices,ts)
+    _baton=_v90_book_baton_take(c,name,ts)
+    events=_v90ph_apply(c,name,candidates,prices,ts,book_snapshot=_baton)
+    if events:
+        _v90_book_baton_clear()
     return _v90ph_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
 
 
@@ -6176,14 +6183,13 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     # 1) Give trailing a management row for every live position even if the
     # setup is no longer in the candidate book. Reuse this same book for flip
     # checks: trailing mutates stop/payload only, never direction or units.
-    positions=[]
+    positions=[]; p19={}
     try:
         _baton=_v90_book_baton_take(c,name,ts)
         if _baton is not None:
-            _,positions=_baton
+            p19,positions=_baton
         else:
-            _,positions=_portfolio_rows(c,name)
-        _v90_book_baton_clear()
+            p19,positions=_portfolio_rows(c,name)
         positions=[dict(z) for z in (positions or [])]
         management_book={}
         for z0 in positions:
@@ -6191,9 +6197,14 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             mgmt=_v842_management_row(summary,z)
             if mgmt:
                 management_book[str(z.get('asset') or '')]=dict(mgmt)
-        if management_book:
-            _v90tr_apply(c,name,management_book,prices,ts,positions=positions)
+        r19_changes=(_v90tr_apply(c,name,management_book,prices,ts,positions=positions)
+                     if management_book else [])
+        if r19_changes:
+            _v90_book_baton_clear()
+        else:
+            _v90_book_baton_set(c,name,ts,p19,positions)
     except Exception as e:
+        _v90_book_baton_clear()
         print(json.dumps({'event':'V90_R19_TRAILING_MANAGEMENT_ERROR',
                           'portfolio':name,'error':str(e)[:180]},
                          ensure_ascii=False,separators=(',',':')),flush=True)
