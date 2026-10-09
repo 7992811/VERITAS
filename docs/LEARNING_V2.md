@@ -254,3 +254,33 @@ witness still fails closed.
 
 The change only affects evidence quality for future trades. Existing V1 paths are
 not upgraded or backfilled.
+
+
+## Independent observation sampler (v91.8.34)
+
+Observation-path continuity is no longer coupled to the protective book loop.
+Production telemetry showed the protective loop frequently exceeded its 15-second
+target because it legitimately waited for Python/book ownership and executed
+financial protection work. Treating those delays as missing market evidence made
+otherwise auditable trades permanently ineligible for learning.
+
+The new `veritas_observation_sampler.py` is evidence-only:
+
+- runs independently every 15 seconds;
+- reads only open paper-position identity/entry fields;
+- uses only the existing local exact-source quote cache (`cache_only=True`);
+- never refreshes a provider or performs network I/O;
+- writes only `paper_trade_observation_paths`, a dedicated evidence table;
+- never changes price, stop, target, size, cash, NAV, order state or portfolio state;
+- repeated provider timestamps update check continuity without inventing a new market observation.
+
+Canonical entry and exit remain the only places allowed to stamp the entry/exit
+boundary. At exit, `veritas_observation_path.record()` merges the newest sampler
+witness before writing the final trade payload, so diagnostics see the complete
+prospective path.
+
+The protective loop no longer persists observation-path samples itself. It still
+tracks MFE/MAE and executes all protective actions exactly as before.
+
+This change is prospective. A carried trade whose prefix was already missing or
+invalid before v91.8.34 remains excluded; historical gaps are never backfilled.
