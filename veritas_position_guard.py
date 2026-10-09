@@ -1449,7 +1449,7 @@ def start(ns):
                         if state.get('market_open') is False or scheduled is False:
                             paused[key]='MARKET_CLOSED'
                         else:
-                            errors[key]='PINNED_SOURCE_QUOTE_UNAVAILABLE'
+                            paused[key]='PINNED_SOURCE_QUOTE_UNAVAILABLE_FAIL_CLOSED'
                 phases['quote_select_seconds']=time.monotonic()-phase_started
                 # Quote preparation is complete; the locked pass reads its own book.
                 positions = z = None
@@ -1472,7 +1472,10 @@ def start(ns):
                     with ns['_v90r23_trade_lock']:
                         ns['_v90r23_trade_cache'].update(at=0.0, value=None)
                 phases['cache_invalidation_seconds']=time.monotonic()-phase_started
+                source_paused=any(v=='PINNED_SOURCE_QUOTE_UNAVAILABLE_FAIL_CLOSED'
+                                  for v in paused.values())
                 status=('DEGRADED' if errors else
+                        'PAUSED_SOURCE_UNAVAILABLE' if source_paused else
                         'PAUSED_MARKET_CLOSED' if paused and position_count else 'OK')
                 _state.update(status=status, checked_at=datetime.now(timezone.utc).isoformat(),
                               open_positions=position_count, quotes=len(quotes), errors=errors,

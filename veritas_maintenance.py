@@ -495,8 +495,11 @@ class MaintenanceLane:
         # State is already available in snapshot(). Emit only transitions;
         # repeating OK/NO_WORK/PROGRESS records created misleading Render errors.
         if old.get("status") != result["status"]:
-            self.emit("maintenance_periodic_complete" if succeeded else "maintenance_periodic_deferred",
-                      job=job.name, **result)
+            status=str(result.get("status") or "")
+            actionable=(status=="ERROR" or status=="DEGRADED"
+                        or status.startswith(("DEFERRED_TIME","DEFERRED_MEMORY")))
+            if actionable:
+                self.emit("maintenance_periodic_deferred", job=job.name, **result)
         return True
 
     def _completed_learning(self):
