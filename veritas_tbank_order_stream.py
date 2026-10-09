@@ -269,6 +269,7 @@ class TBankOrderEventStream:
                     request, metadata=self._metadata, timeout=300, wait_for_ready=True)
                 self._register_call(call)
                 self._set(order_state_stream="CONNECTED", last_error=None)
+                self._safe_log("order_state_stream", "CALL_OPEN", None)
                 attempt = 0
                 for response in call:
                     if self._stop.is_set():
@@ -320,6 +321,7 @@ class TBankOrderEventStream:
                     request, metadata=self._metadata, timeout=300, wait_for_ready=True)
                 self._register_call(call)
                 self._set(trades_stream="CONNECTED", last_error=None)
+                self._safe_log("trades_stream", "CALL_OPEN", None)
                 attempt = 0
                 for response in call:
                     if self._stop.is_set():
