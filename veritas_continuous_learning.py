@@ -233,8 +233,8 @@ class ContinuousLearning:
                 ("learning_progress", self.progress, 120, 6),
                 ("learning_intelligence", self.intelligence, 15, 6),
                 ("learning_memory", self.memory, 300, 6),
-                ("learning_v2_shadow", self.learning_v2_shadow, 60, 5),
-                ("learning_v2_replay", self.learning_v2_replay, 180, 5))
+                ("learning_v2_shadow", self.learning_v2_shadow, 120, 5),
+                ("learning_v2_replay", self.learning_v2_replay, 600, 5))
         for name, fn, interval, seconds in jobs:
             if name == "learning_bootstrap":
                 callback = fn
@@ -801,6 +801,11 @@ class ContinuousLearning:
         if not STORE.publish_snapshot(self.connect,LEARNING_V2_SNAPSHOT_NAME,LEARNING_V2.VERSION,
                                       value,observed_at=clock()):
             raise RuntimeError("learning v2 snapshot rejected")
+        replay_candidate_ready=any(
+            h.get("kind") in ("STOP_GEOMETRY","EXIT_CAPTURE")
+            for h in (current.get("hypotheses") or []) if isinstance(h,dict))
+        if replay_candidate_ready:
+            self.lane.request("learning_v2_replay")
         with self._lock:
             self._learning_v2=deepcopy(value)
         cursor["asset_index"]=(index+1)%len(LEARNING_V2_ASSETS)
