@@ -132,6 +132,7 @@ def _trade_rows(c,candidate):
       WHERE e.learning_eligible=TRUE
         AND e.asset=%s AND e.horizon=%s
         AND e.closed_at>%s
+        AND t.opened_at>%s
         AND t.opened_at IS NOT NULL AND e.closed_at IS NOT NULL
         AND e.closed_at-t.opened_at<=interval '24 hours'
         AND COALESCE(e.regime,'')=%s
@@ -147,7 +148,7 @@ def _trade_rows(c,candidate):
         )
       ORDER BY e.closed_at ASC
       LIMIT %s
-    """,(scope.get("asset"),scope.get("horizon"),candidate["registered_at"],
+    """,(scope.get("asset"),scope.get("horizon"),candidate["registered_at"],candidate["registered_at"],
           regime,policy,source,contract,candidate["candidate_id"],MAX_TRADES_PER_RUN)).fetchall()]
 
 
@@ -180,11 +181,14 @@ def _path(cached_bars,row,identity):
         bars=[b for b in bars if (_time(b.get("closed_at")) is not None
                                   and _time(b.get("closed_at"))<=closed)]
         if not bars: continue
-        first=_time(bars[0].get("opened_at")); last=_time(bars[-1].get("closed_at"))
         seconds=TS.TIMEFRAMES[tf]
-        if (first is not None and last is not None
-                and first<=entry+__import__("datetime").timedelta(seconds=2*seconds)
-                and last>=closed-__import__("datetime").timedelta(seconds=2*seconds)):
+        post=[b for b in bars if (_time(b.get("opened_at")) is not None
+                                  and _time(b.get("opened_at"))>=entry)]
+        first_post=_time(post[0].get("opened_at")) if post else None
+        last=_time(bars[-1].get("closed_at"))
+        if (first_post is not None and last is not None
+                and 0 <= (first_post-entry).total_seconds() <= 2*seconds
+                and 0 <= (closed-last).total_seconds() <= 2*seconds):
             return bars,tf,None
     return [],None,"CACHED_PATH_COVERAGE_INCOMPLETE"
 
