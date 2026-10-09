@@ -151,7 +151,7 @@ def replay_partial_runner(bars,*,entry_at,entry_price,direction,stop_price,
         return {"status":INVALID,"reason":"LONG_GEOMETRY_INVALID","version":VERSION}
     if direction=="SHORT" and not (t2<t1<entry<stop):
         return {"status":INVALID,"reason":"SHORT_GEOMETRY_INVALID","version":VERSION}
-    seq,reason=validate_bars(bars,entry_at=entry_at,source_key=source_key)
+    seq,reason=validate_bars(bars,entry_at=entry_at,source_key=source_key,contract_id=contract_id)
     if reason:return {"status":INVALID,"reason":reason,"version":VERSION}
     realized=0.0; stage="BEFORE_FIRST_TARGET"
     for i,bar in enumerate(seq):
