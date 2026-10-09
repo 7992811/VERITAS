@@ -20,6 +20,18 @@ MA_TEACHING_ID = "USER_DAILY_MA_REBOUND_2026_10_07"
 MA_SOURCE_TIMESTAMP = "2026-10-06T21:26:00Z"
 BREAKOUT_TEACHING_ID = "USER_INTRABAR_STRUCTURE_2026_10_07"
 BREAKOUT_SOURCE_TIMESTAMP = "2026-10-07T08:23:55Z"
+ACCELERATION_TEACHING_ID = "USER_TREND_ACCELERATION_2026_10_09"
+ACCELERATION_SOURCE_TIMESTAMP = "2026-10-09T08:41:00Z"
+ACCELERATION_USER_CORRECTION_RU = (
+    "Стремиться к верхней границе эффективности: при резком подтверждённом движении "
+    "увеличивать прибыльную позицию ступенчато по мере подтверждения тренда. "
+    "Размер добора определять реальным риском до стопа, а не номинальной долей NAV. "
+    "Разрешить младшим таймфреймам закрывать устаревшую противоположную позицию, "
+    "не требуя от них полномочия немедленно открыть крупную новую. "
+    "После устойчивого MFE от 0,15% защищать сделку безубытком с издержками и далее "
+    "структурным трейлингом. Использовать промежуточные подтверждения 15m/30m и "
+    "увеличивать позицию сильнее в режиме ускорения тренда."
+)
 BREAKOUT_USER_CORRECTION_RU = (
     "Сигнал в лонг должен появляться или подтверждать удержание при пробое "
     "предыдущей локальной вершины, включая открытие рынка. Пример CNYRUBf: "
@@ -174,9 +186,70 @@ def breakout_policy_snapshot():
     }
 
 
+def acceleration_policy_snapshot():
+    """Owner-approved trend-acceleration, reversal-exit and winner-protection policy."""
+    policy=_copy(CTC.TREND_ACCELERATION_POLICY)
+    return {
+        "teaching_id": ACCELERATION_TEACHING_ID,
+        "source_type": "USER_AUTHORED_OPERATIONAL_POLICY",
+        "source_timestamp": ACCELERATION_SOURCE_TIMESTAMP,
+        "source_timestamp_precision": "MINUTE",
+        "source_text_ru": ACCELERATION_USER_CORRECTION_RU,
+        "status": "ACTIVE_OPERATIONAL_POLICY",
+        "parent_teaching_id": BREAKOUT_TEACHING_ID,
+        "ctc_version": CTC.VERSION,
+        "runtime_authority": CTC.BASIS_RUNTIME,
+        "scope": policy.get("scope"),
+        "portfolios": ["Impulse","Aggressive","Champion","Challenger"],
+        "execution_policy": policy,
+        "requirements": {
+            "exit_vs_entry": (
+                "Confirmed 1m/5m opposite structure may close stale exposure; "
+                "the opposite entry must still pass canonical economics, source, "
+                "risk, drawdown and execution gates."
+            ),
+            "pyramiding": (
+                "A fresh causal confirmation may earn one larger add only while "
+                "the position is a winner and remaining target progress is not spent."
+            ),
+            "risk": (
+                "Size by forward net stop-risk after costs. Nominal allocation is "
+                "not stop-risk; position and gross caps remain separate constraints."
+            ),
+            "profit_protection": (
+                "MFE >=0.15 percentage points starts persistence testing; after "
+                "sustained favorable movement, move protection to cost-covered "
+                "breakeven and then trail confirmed structure."
+            ),
+            "intermediate_timeframes": (
+                "Build 15m and 30m confirmation only from completed native 5m bars; "
+                "never use future or incomplete buckets."
+            ),
+            "runner": (
+                "Harvest partial targets while retaining a protected runner when "
+                "trend structure remains confirmed."
+            ),
+            "currency_scope": "Currency/live-account behavior is explicitly excluded from this policy.",
+        },
+        "parameter_validation": {
+            "status": policy.get("parameter_validation_status","SHADOW_OOS_REQUIRED"),
+            "ml_training_performed": False,
+            "validated_profitability": False,
+            "note": (
+                "Owner policy is active for paper execution. Numerical stage sizes "
+                "remain subject to replay, walk-forward, OOS and post-cost validation."
+            ),
+        },
+        "storage": {"table":"ledger_events","event_type":EVENT_TYPE,
+                    "entity_key":ACCELERATION_TEACHING_ID,
+                    "event_key":EVENT_TYPE+":"+ACCELERATION_TEACHING_ID},
+    }
+
+
 def seed_all_user_teachings(pg_event, read_event=None):
     return [seed_user_teaching(pg_event, read_event, snapshot=payload)
-            for payload in (policy_snapshot(), ma_policy_snapshot(), breakout_policy_snapshot())]
+            for payload in (policy_snapshot(), ma_policy_snapshot(),
+                            breakout_policy_snapshot(), acceleration_policy_snapshot())]
 
 
 def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):
