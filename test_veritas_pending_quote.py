@@ -56,7 +56,8 @@ class PendingQuoteTests(unittest.TestCase):
         if foreign:fresh['contract']['instrument_uid']='OTHER'
         if target:fresh['price']=self.row['timeframe_entry_context']['event']['target_price']
         supplied=dict(self.row,_execution_quote=fresh)
-        mutex=SimpleNamespace(acquire=Mock(return_value=False),reserve_entry_turn=Mock(),cancel_entry_turn=Mock())
+        mutex=SimpleNamespace(acquire=Mock(return_value=False),reserve_entry_turn=Mock(),
+                              cancel_entry_turn=Mock(),snapshot=Mock(return_value={'ordinary_waiters':0}))
         connect=Mock(side_effect=AssertionError('no database during busy renewal'))
         original=deepcopy(self.row)
         with patch.dict(sys.modules,{'veritas_portfolio_runtime':SimpleNamespace()}),patch.object(G,'_mutex',mutex),patch.object(G,'refresh_execution_row',return_value=supplied) as refresh,patch.object(SL,'_wall_clock',return_value=clock):
