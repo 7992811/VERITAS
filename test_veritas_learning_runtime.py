@@ -95,6 +95,32 @@ class LearningRuntimeTests(unittest.TestCase):
         digest = sealed.pop('evidence_hash')
         self.assertEqual(BRIDGE.digest(sealed), digest)
 
+    def test_ledger_compaction_persists_admission_evidence(self):
+        namespace = functions('_v90r37_features_compact', '_v90r37_compact_decision_payload', scope={
+            'VLB': BRIDGE, '_v90_small_dict': lambda d, keys: {k: (d or {})[k] for k in keys if k in (d or {})}})
+        payload = {
+            'asset':'NQ','horizon':'5m','created_at':'2026-10-09T07:00:01+00:00',
+            'decision':'LONG','research_decision':'LONG','regime':'TREND',
+            'gates':{'source':True},
+            '_execution_quote': BRIDGE.compact_quote({
+                'asset':'NQ','price':25000.,'observed_at':'2026-10-09T07:00:00+00:00',
+                'source_names':{'primary':'ProFinance'},'source_gate_pass':True,'market_open':True}),
+            'trade_plan':{'eligible':False,'reason':'IMPULSE_ALREADY_PASSED'},
+            'execution_eligibility':{
+                'eligible':False,'reason':'TIMING_NOT_READY',
+                'paper_eligible':False,'paper_execution_reason':'WAIT_RETEST',
+                'paper_source_blockers':['PRIMARY_SOURCE_GATE_FAILED']}}
+        result=namespace['_v90r37_compact_decision_payload'](payload)
+        self.assertIs(result['plan_eligible'],False)
+        self.assertEqual(result['plan_reason'],'IMPULSE_ALREADY_PASSED')
+        self.assertIs(result['trade_entry_eligible'],False)
+        self.assertEqual(result['trade_entry_reason'],'TIMING_NOT_READY')
+        self.assertEqual(result['paper_execution_reason'],'WAIT_RETEST')
+        self.assertEqual(result['final_gate_status'],'BLOCK')
+        self.assertEqual(result['final_gate_blockers'],['PRIMARY_SOURCE_GATE_FAILED'])
+        self.assertEqual(result['trade_plan']['eligible'],False)
+        self.assertEqual(result['execution_eligibility']['eligible'],False)
+
     def test_memory_trim_preserves_small_last_good_progress(self):
         tree = ast.parse(Path('veritas_intelligence.py').read_text())
         node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_v90_prune_low_priority_caches')
