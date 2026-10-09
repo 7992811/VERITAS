@@ -14,7 +14,7 @@ import math
 
 import veritas_learning_v2 as L2
 
-VERSION="LEARNING_V2_REGISTRY_V3_BLOCKER_EVIDENCE"
+VERSION="LEARNING_V2_REGISTRY_V4_PATH_EVIDENCE"
 MIN_ENTRY_N=64
 MIN_ENTRY_DAYS=14
 REJECT_ENTRY_N=128
@@ -97,6 +97,7 @@ def _new_rows(rows,registered_at,cutoff_id,prior):
 def _entry_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
     p=dict(prior or {})
     n=int(p.get("n") or 0); wins=int(p.get("wins") or 0); adverse=int(p.get("adverse") or 0)
+    path_wins=int(p.get("path_wins") or 0)
     sum_signed=float(p.get("sum_signed_return") or 0.0)
     days=set(str(x) for x in (p.get("utc_days") or [])[-MAX_DAY_KEYS:])
     last_id=int(p.get("last_decision_id") or cutoff_id or 0); added=0
@@ -109,15 +110,18 @@ def _entry_evidence(candidate,rows,registered_at,cutoff_id=0,prior=None):
         if not blocked or blocker not in blockers: continue
         direction=str(r.get("candidate_direction") or "")
         fr=_num(r.get("forward_return"))
-        if direction not in ("LONG","SHORT") or fr is None: continue
+        move,basis=L2.candidate_favourable_move(r,direction)
+        if direction not in ("LONG","SHORT") or fr is None or move is None: continue
         signed=fr if direction=="LONG" else -fr
         n+=1; added+=1; sum_signed+=signed; days.add(ts.date().isoformat())
-        wins+=int(signed>=L2.ENTRY_FALSE_BLOCK_MOVE)
+        win=move>=L2.ENTRY_FALSE_BLOCK_MOVE
+        wins+=int(win)
+        path_wins+=int(win and basis=="MFE_PATH")
         adverse+=int(signed<=-L2.ENTRY_FALSE_BLOCK_MOVE)
         if type(rid) is int: last_id=max(last_id,rid)
     day_list=sorted(days)[-MAX_DAY_KEYS:]
     mean=sum_signed/n if n else None; hit=wins/n if n else None; low=_wilson_low(wins,n)
-    evidence={"n":n,"wins":wins,"adverse":adverse,"days":len(day_list),"utc_days":day_list,
+    evidence={"n":n,"wins":wins,"path_wins":path_wins,"adverse":adverse,"days":len(day_list),"utc_days":day_list,
               "favourable_rate":hit,"wilson_low":low,
               "adverse_rate":adverse/n if n else None,"sum_signed_return":sum_signed,
               "mean_candidate_signed_return":mean,"last_decision_id":last_id,
