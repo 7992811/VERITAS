@@ -58,6 +58,19 @@ class ReplayEvaluatorTests(unittest.TestCase):
                          "source_key":IDENTITY["key"],"contract_id":"C1","policy_hash":"p"},
                 "proposal":{"first_target_fraction":fraction,"baseline_first_target_fraction":.5}}
 
+    def test_trade_query_uses_outcome_evidence_tier(self):
+        source=inspect.getsource(E._trade_rows)
+        self.assertIn("outcome_learning_eligible",source)
+        self.assertIn("outcome_diagnostics_version",source)
+        self.assertIn("outcome_evidence_hash",source)
+        self.assertNotIn("WHERE e.learning_eligible=TRUE",source)
+
+    def test_replay_query_deduplicates_market_ideas(self):
+        source=inspect.getsource(E._trade_rows)
+        self.assertIn("independent_episode_key",source)
+        self.assertIn("ROW_NUMBER() OVER",source)
+        self.assertIn("idea_rank=1",source)
+
     def test_trade_query_requires_entry_after_registration(self):
         source=inspect.getsource(E._trade_rows)
         self.assertIn("t.opened_at>%s",source)
@@ -73,6 +86,24 @@ class ReplayEvaluatorTests(unittest.TestCase):
         result=E.evaluate_trade(self.stop_candidate(),row(),late_path)
         self.assertEqual(result["status"],"DEFERRED")
         self.assertEqual(result["reason"],"CACHED_PATH_COVERAGE_INCOMPLETE")
+
+    def test_partial_entry_bar_touching_barrier_is_ambiguous(self):
+        def path(asset,timeframe,identity,now=None,limit=500):
+            if timeframe!="5m": return []
+            rows=[{"opened_at":(T-timedelta(minutes=2)).isoformat(),
+                   "closed_at":(T+timedelta(minutes=3)).isoformat(),
+                   "open":100.0,"high":103.0,"low":97.0,"close":100.5,
+                   "source_key":"TEST:PX","contract_id":"C1"}]
+            for i in range(11):
+                opened=T+timedelta(minutes=3+5*i)
+                rows.append({"opened_at":opened.isoformat(),
+                             "closed_at":(opened+timedelta(minutes=5)).isoformat(),
+                             "open":100.5,"high":101.0,"low":99.5,"close":100.7,
+                             "source_key":"TEST:PX","contract_id":"C1"})
+            return rows
+        result=E.evaluate_trade(self.stop_candidate(),row(),path)
+        self.assertEqual(result["status"],"AMBIGUOUS")
+        self.assertEqual(result["reason"],"ENTRY_BAR_BARRIER_ORDER_UNKNOWN")
 
     def test_stop_candidate_replays_same_path_and_cost_model(self):
         result=E.evaluate_trade(self.stop_candidate(),row(),cached)
@@ -137,7 +168,7 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
             REG.ensure_schema(conn); E.ensure_schema(conn)
             conn.execute("""CREATE TABLE v90_learning_episodes(
                 trade_id text PRIMARY KEY,closed_at timestamptz,asset text,direction text,horizon text,
-                regime text,setup_family text,learning_eligible boolean,primary_attribution text)""")
+                regime text,setup_family text,learning_eligible boolean,primary_attribution text,payload jsonb)""")
             conn.execute("""CREATE TABLE paper_trades(
                 trade_id text PRIMARY KEY,opened_at timestamptz,avg_entry_price float8,status text,payload jsonb)""")
             conn.execute("""CREATE TABLE paper_orders(trade_id text,side text)""")
@@ -160,9 +191,13 @@ class ReplayEvaluatorSQLTests(unittest.TestCase):
                      "strategy_policy_hash":"p","initial_stop_price":97.7,"entry_atr":2.0}
             conn.execute("""INSERT INTO paper_trades VALUES(
                 'TSQL',%s,100,'CLOSED',%s::jsonb)""",(T,json.dumps(payload)))
+            episode_payload={"outcome_learning_eligible":True,
+                             "outcome_diagnostics_version":E.DIAGNOSTICS.VERSION,
+                             "outcome_evidence_hash":"verified-hash",
+                             "independent_episode_key":"IDEA-1"}
             conn.execute("""INSERT INTO v90_learning_episodes VALUES(
-                'TSQL',%s,'NQ','LONG','5m','TREND','BREAKOUT',TRUE,'OK')""",
-                (T+timedelta(hours=1),))
+                'TSQL',%s,'NQ','LONG','5m','TREND','BREAKOUT',FALSE,'OK',%s::jsonb)""",
+                (T+timedelta(hours=1),json.dumps(episode_payload)))
             conn.execute("INSERT INTO paper_orders VALUES('TSQL','BUY')")
 
     @contextmanager

@@ -59,6 +59,10 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertFalse(events[-1][1]["production_influence"])
         self.assertIn("zero_candidate_reason",events[-1][1])
         self.assertIn("known_blockers",events[-1][1])
+        self.assertIn("outcome_evidence_trades",events[-1][1])
+        self.assertIn("path_evidence_trades",events[-1][1])
+        self.assertIn("stop_replay_ready",events[-1][1])
+        self.assertIn("exit_replay_ready",events[-1][1])
         snap=app.snapshot()["learning_v2"]
         self.assertFalse(snap["automatic_production_promotion"])
         self.assertEqual(snap["registry"],registry)
@@ -82,6 +86,14 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertIn("d.payload#>>'{trade_plan,reason}'",source)
         self.assertIn("d.payload#>>'{execution_eligibility,paper_execution_reason}'",source)
         self.assertIn("d.payload#>'{execution_eligibility,paper_source_blockers}'",source)
+
+    def test_trade_research_uses_outcome_tier_without_relaxing_path_flag(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("outcome_learning_eligible",source)
+        self.assertIn("AS outcome_evidence_eligible",source)
+        self.assertIn("e.learning_eligible AS path_evidence_eligible",source)
+        self.assertIn("AS stop_replay_ready",source)
+        self.assertIn("AS exit_replay_ready",source)
 
     def test_trade_cohort_provenance_comes_from_original_trade(self):
         source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)

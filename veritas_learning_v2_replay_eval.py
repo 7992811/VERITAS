@@ -16,6 +16,7 @@ import veritas_learning_v2_registry as REG
 import veritas_learning_v2_replay as REPLAY
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
+import veritas_trade_diagnostics as DIAGNOSTICS
 
 VERSION="LEARNING_V2_REPLAY_EVAL_V1"
 MAX_TRADES_PER_RUN=4
@@ -112,43 +113,59 @@ def _trade_rows(c,candidate):
     contract=str(scope.get("contract_id") or "")
     regime=str(scope.get("regime") or "")
     return [dict(x) for x in c.execute("""
-      SELECT e.trade_id,e.closed_at,e.asset,e.direction,e.horizon,e.regime,e.setup_family,
-             t.opened_at,t.avg_entry_price,t.status AS trade_status,
-             t.payload->'entry_event_snapshot' AS entry_event_snapshot,
-             t.payload->'entry_execution_model' AS entry_execution_model,
-             t.payload->'price_source_lock' AS price_source_lock,
-             t.payload->'entry_execution_source_identity' AS entry_execution_source_identity,
-             t.payload->>'strategy_policy_hash' AS strategy_policy_hash,
-             t.payload->>'initial_stop_price' AS initial_stop_price,
-             t.payload->>'entry_atr' AS entry_atr,
-             COALESCE(o.entry_order_count,0) AS entry_order_count
-      FROM v90_learning_episodes e
-      JOIN paper_trades t ON t.trade_id=e.trade_id
-      LEFT JOIN (
-        SELECT trade_id,COUNT(*) AS entry_order_count
-        FROM paper_orders WHERE side IN ('BUY','SELL_SHORT')
-        GROUP BY trade_id
-      ) o ON o.trade_id=t.trade_id
-      WHERE e.learning_eligible=TRUE
-        AND e.asset=%s AND e.horizon=%s
-        AND e.closed_at>%s
-        AND t.opened_at>%s
-        AND t.opened_at IS NOT NULL AND e.closed_at IS NOT NULL
-        AND e.closed_at-t.opened_at<=interval '24 hours'
-        AND COALESCE(e.regime,'')=%s
-        AND COALESCE(t.payload->>'strategy_policy_hash','')=%s
-        AND COALESCE(t.payload#>>'{price_source_lock,key}',
-                     t.payload#>>'{entry_execution_source_identity,key}','')=%s
-        AND COALESCE(t.payload#>>'{price_source_lock,contract_id}',
-                     t.payload#>>'{entry_execution_source_identity,contract_id}','')=%s
-        AND COALESCE(o.entry_order_count,0)=1
+      WITH candidate_pool AS MATERIALIZED (
+        SELECT e.trade_id,e.closed_at,e.asset,e.direction,e.horizon,e.regime,e.setup_family,
+               COALESCE(NULLIF(e.payload->>'independent_episode_key',''),e.trade_id) AS idea_key,
+               t.opened_at,t.avg_entry_price,t.status AS trade_status,
+               t.payload->'entry_event_snapshot' AS entry_event_snapshot,
+               t.payload->'entry_execution_model' AS entry_execution_model,
+               t.payload->'price_source_lock' AS price_source_lock,
+               t.payload->'entry_execution_source_identity' AS entry_execution_source_identity,
+               t.payload->>'strategy_policy_hash' AS strategy_policy_hash,
+               t.payload->>'initial_stop_price' AS initial_stop_price,
+               t.payload->>'entry_atr' AS entry_atr,
+               COALESCE(o.entry_order_count,0) AS entry_order_count,
+               ROW_NUMBER() OVER (
+                 PARTITION BY COALESCE(NULLIF(e.payload->>'independent_episode_key',''),e.trade_id)
+                 ORDER BY e.closed_at ASC,e.trade_id ASC
+               ) AS idea_rank
+        FROM v90_learning_episodes e
+        JOIN paper_trades t ON t.trade_id=e.trade_id
+        LEFT JOIN (
+          SELECT trade_id,COUNT(*) AS entry_order_count
+          FROM paper_orders WHERE side IN ('BUY','SELL_SHORT')
+          GROUP BY trade_id
+        ) o ON o.trade_id=t.trade_id
+        WHERE COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE)=TRUE
+          AND e.payload->>'outcome_diagnostics_version'=%s
+          AND NULLIF(e.payload->>'outcome_evidence_hash','') IS NOT NULL
+          AND e.asset=%s AND e.horizon=%s
+          AND e.closed_at>%s
+          AND t.opened_at>%s
+          AND t.opened_at IS NOT NULL AND e.closed_at IS NOT NULL
+          AND e.closed_at-t.opened_at<=interval '24 hours'
+          AND COALESCE(e.regime,'')=%s
+          AND COALESCE(t.payload->>'strategy_policy_hash','')=%s
+          AND COALESCE(t.payload#>>'{price_source_lock,key}',
+                       t.payload#>>'{entry_execution_source_identity,key}','')=%s
+          AND COALESCE(t.payload#>>'{price_source_lock,contract_id}',
+                       t.payload#>>'{entry_execution_source_identity,contract_id}','')=%s
+          AND COALESCE(o.entry_order_count,0)=1
+      )
+      SELECT trade_id,closed_at,asset,direction,horizon,regime,setup_family,
+             opened_at,avg_entry_price,trade_status,entry_event_snapshot,
+             entry_execution_model,price_source_lock,entry_execution_source_identity,
+             strategy_policy_hash,initial_stop_price,entry_atr,entry_order_count
+      FROM candidate_pool p
+      WHERE idea_rank=1
         AND NOT EXISTS (
           SELECT 1 FROM learning_v2_replay_receipts r
-          WHERE r.candidate_id=%s AND r.trade_id=e.trade_id
+          WHERE r.candidate_id=%s AND r.trade_id=p.trade_id
         )
-      ORDER BY e.closed_at ASC
+      ORDER BY closed_at ASC
       LIMIT %s
-    """,(scope.get("asset"),scope.get("horizon"),candidate["registered_at"],candidate["registered_at"],
+    """,(DIAGNOSTICS.VERSION,scope.get("asset"),scope.get("horizon"),
+          candidate["registered_at"],candidate["registered_at"],
           regime,policy,source,contract,candidate["candidate_id"],MAX_TRADES_PER_RUN)).fetchall()]
 
 
@@ -191,6 +208,25 @@ def _path(cached_bars,row,identity):
                 and 0 <= (closed-last).total_seconds() <= 2*seconds):
             return bars,tf,None
     return [],None,"CACHED_PATH_COVERAGE_INCOMPLETE"
+
+
+def _entry_bar_barrier_check(bars,entry_at,levels):
+    """Fail closed if the partial entry bar could have hit any replay barrier."""
+    entry=_time(entry_at)
+    if entry is None:
+        return "INVALID_ENTRY_TIME"
+    for bar in bars or []:
+        opened=_time(bar.get("opened_at")); closed=_time(bar.get("closed_at"))
+        low=_num(bar.get("low")); high=_num(bar.get("high"))
+        if opened is None or closed is None or low is None or high is None:
+            continue
+        if opened <= entry < closed:
+            if opened == entry:
+                return None
+            if any((_num(level) is not None and low <= _num(level) <= high) for level in levels):
+                return "ENTRY_BAR_BARRIER_ORDER_UNKNOWN"
+            return None
+    return "ENTRY_BAR_COVERAGE_MISSING"
 
 
 def _result_value(result):
@@ -237,6 +273,10 @@ def evaluate_trade(candidate,row,cached_bars):
             return {"status":"INVALID","reason":"BASELINE_STOP_POLICY_MISMATCH"}
         baseline_stop=REPLAY.structural_stop(stop_anchor,atr,direction,baseline_buffer)
         candidate_stop=REPLAY.structural_stop(stop_anchor,atr,direction,candidate_buffer)
+        entry_bar_problem=_entry_bar_barrier_check(bars,opened,(baseline_stop,candidate_stop,target))
+        if entry_bar_problem:
+            return {"status":"AMBIGUOUS" if entry_bar_problem=="ENTRY_BAR_BARRIER_ORDER_UNKNOWN" else "DEFERRED",
+                    "reason":entry_bar_problem}
         baseline=REPLAY.replay_stop_target(
             bars,entry_at=opened,entry_price=entry,direction=direction,
             stop_price=baseline_stop,target_price=target,source_key=identity["key"],
@@ -259,6 +299,10 @@ def evaluate_trade(candidate,row,cached_bars):
             return {"status":"INVALID","reason":"EXIT_REPLAY_FIELDS_MISSING"}
         if not math.isclose(recorded_fraction,baseline_fraction,rel_tol=1e-12,abs_tol=1e-12):
             return {"status":"INVALID","reason":"BASELINE_EXIT_POLICY_MISMATCH"}
+        entry_bar_problem=_entry_bar_barrier_check(bars,opened,(base_stop,first_target,runner))
+        if entry_bar_problem:
+            return {"status":"AMBIGUOUS" if entry_bar_problem=="ENTRY_BAR_BARRIER_ORDER_UNKNOWN" else "DEFERRED",
+                    "reason":entry_bar_problem}
         baseline=REPLAY.replay_partial_runner(
             bars,entry_at=opened,entry_price=entry,direction=direction,
             stop_price=base_stop,first_target=first_target,runner_target=runner,

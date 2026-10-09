@@ -112,18 +112,43 @@ def load_inputs(conn,limit=PER_ASSET_LIMIT):
             conn.rollback(); errors.append("DECISIONS:"+asset+":"+type(exc).__name__)
         try:
             trades.extend(dict(x) for x in conn.execute("""
-              SELECT closed_at,asset,horizon,regime,setup_family,
-                     COALESCE(payload->>'strategy_policy_hash','') AS policy_hash,
-                     COALESCE(payload#>>'{price_source_lock,key}',
-                              payload#>>'{entry_execution_source_identity,key}','') AS source_key,
-                     COALESCE(payload#>>'{price_source_lock,contract_id}',
-                              payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
-                     mae_pct AS mae,mfe_pct AS mfe,capture_ratio,
-                     net_pnl_rub,primary_attribution
-              FROM v90_learning_episodes
-              WHERE learning_eligible=TRUE
-                AND primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
-                AND asset=%s
+              WITH outcome_pool AS MATERIALIZED (
+                SELECT e.closed_at,e.asset,e.horizon,e.regime,e.setup_family,e.trade_id,
+                       COALESCE(NULLIF(e.payload->>'independent_episode_key',''),e.trade_id) AS idea_key,
+                       COALESCE(t.payload->>'strategy_policy_hash','') AS policy_hash,
+                       COALESCE(t.payload#>>'{price_source_lock,key}',
+                                t.payload#>>'{entry_execution_source_identity,key}','') AS source_key,
+                       COALESCE(t.payload#>>'{price_source_lock,contract_id}',
+                                t.payload#>>'{entry_execution_source_identity,contract_id}','') AS contract_id,
+                       e.mae_pct AS mae,e.mfe_pct AS mfe,e.capture_ratio,
+                       e.net_pnl_rub,e.primary_attribution,
+                       TRUE AS outcome_evidence_eligible,
+                       e.learning_eligible AS path_evidence_eligible,
+                       (
+                         NULLIF(t.payload#>>'{entry_event_snapshot,stop_anchor}','') IS NOT NULL
+                         AND NULLIF(t.payload#>>'{entry_event_snapshot,atr}','') IS NOT NULL
+                         AND NULLIF(t.payload#>>'{entry_event_snapshot,target_price}','') IS NOT NULL
+                       ) AS stop_replay_ready,
+                       (
+                         NULLIF(t.payload#>>'{entry_event_snapshot,target_price}','') IS NOT NULL
+                         AND NULLIF(t.payload#>>'{entry_event_snapshot,runner_target_price}','') IS NOT NULL
+                         AND NULLIF(t.payload->>'initial_stop_price','') IS NOT NULL
+                       ) AS exit_replay_ready,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY COALESCE(NULLIF(e.payload->>'independent_episode_key',''),e.trade_id)
+                         ORDER BY e.closed_at ASC,e.trade_id ASC
+                       ) AS idea_rank
+                FROM v90_learning_episodes e
+                JOIN paper_trades t ON t.trade_id=e.trade_id
+                WHERE COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE)=TRUE
+                  AND e.primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
+                  AND e.asset=%s
+              )
+              SELECT closed_at,asset,horizon,regime,setup_family,policy_hash,source_key,contract_id,
+                     mae,mfe,capture_ratio,net_pnl_rub,primary_attribution,
+                     outcome_evidence_eligible,path_evidence_eligible,stop_replay_ready,exit_replay_ready
+              FROM outcome_pool
+              WHERE idea_rank=1
               ORDER BY closed_at DESC LIMIT %s
             """,(asset,limit)).fetchall())
         except Exception as exc:

@@ -200,3 +200,36 @@ Materialization is backward-compatible: existing episodes missing the outcome
 evidence version/hash are reprocessed from their stored immutable evidence.
 No historical price path is reconstructed and no missing prospective admission
 stamp is invented.
+
+
+## Outcome-tier Stop/Exit research (v91.8.33)
+
+The evidence tiers are now explicit:
+
+1. **Verified net outcome** may seed a bounded Stop or Exit replay experiment.
+2. **Continuous path evidence** remains required for direct MFE/MAE/capture
+   statistics.
+3. **Ordered exact-source replay** is the only mechanism that can support a
+   Stop/Exit counterfactual candidate.
+
+This prevents an observation-path gap from silencing Stop/Exit research while
+still refusing to infer MFE/MAE from incomplete quote sampling.
+
+Research trade cohorts use
+`outcome_learning_eligible=true`, current diagnostics provenance, immutable
+source/contract/policy identity and a replay-geometry check. They are deduplicated
+by `independent_episode_key`, so the same market idea represented in several
+portfolios counts once.
+
+Stop challengers are 0.10, 0.20 and 0.30 ATR around the recorded structural
+anchor; 0.15 ATR is the baseline and is no longer emitted as its own Challenger.
+
+Exit challengers remain explicit 25% and 75% first-target fractions versus the
+50% baseline and require a frozen runner target.
+
+Replay is also fail-closed on the partial entry candle: if that candle touches
+any competing stop/target barrier, intrabar order is unknowable and the episode
+is marked ambiguous rather than favorable.
+
+No replay candidate has production authority. Existing prospective replay sample
+and confidence-interval gates remain unchanged.
