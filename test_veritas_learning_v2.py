@@ -23,6 +23,7 @@ class LearningV2Tests(unittest.TestCase):
     def test_declared_reason_field_contributes_known_blocker_only(self):
         row=self.row(blockers=[],trade_entry_reason="ENTRY_BLOCKED: IMPULSE_ALREADY_PASSED; wait for retest")
         row["final_gate_blockers"]=[]
+        row["admission_eligible"]=False
         c=L.classify_decision_episode(row)
         self.assertEqual(c["kind"],"MISSED_DIRECTIONAL_MOVE")
         self.assertIn("IMPULSE_ALREADY_PASSED",c["blockers"])
