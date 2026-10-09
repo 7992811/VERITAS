@@ -8,6 +8,7 @@ import veritas_costs as VC
 import veritas_execution as VX
 import veritas_execution_logging as VEL
 import veritas_execution_journal as VEJ
+import veritas_exit_accounting as VEA
 import veritas_admission_trace as VAT
 import veritas_paper_entry as VPE
 import veritas_position_guard as VPG
@@ -2150,24 +2151,9 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     fee=executed_notional*COMMISSION
     frac=executed_notional/max(nav,1)
 
-    # Institutional exit accounting: avg_exit_price is the VWAP of every
-    # realized exit fill, not merely the final fill. Reconstruct prior exits
-    # from durable orders so positions that already had legacy partial takes
-    # are repaired automatically on their next reduction/close.
-    prior_exit=c.execute(
-        """SELECT COALESCE(SUM(notional_rub),0) AS exit_notional_rub,
-                  COALESCE(SUM(CASE WHEN price>0 THEN notional_rub/price ELSE 0 END),0) AS exit_units,
-                  COUNT(*) AS exit_fill_count
-             FROM paper_orders
-            WHERE trade_id=%s AND side IN ('SELL','BUY_TO_COVER')""",
-        (z['active_trade_id'],)).fetchone()
-    prior_exit_notional=float((prior_exit or {}).get('exit_notional_rub') or 0.0)
-    prior_exit_units=float((prior_exit or {}).get('exit_units') or 0.0)
-    prior_exit_count=int((prior_exit or {}).get('exit_fill_count') or 0)
-    realized_exit_notional=prior_exit_notional+executed_notional
-    realized_exit_units=prior_exit_units+close_units
-    realized_exit_vwap=(realized_exit_notional/max(realized_exit_units,1e-12))
-    realized_exit_count=prior_exit_count+1
+    # Durable VWAP across partial/final exits; kept outside the frozen monolith.
+    realized_exit_notional,realized_exit_units,realized_exit_vwap,realized_exit_count=(
+        VEA.realized_exit_metrics(c,z['active_trade_id'],executed_notional,close_units))
 
     c.execute('UPDATE paper_portfolios SET realized_pnl_rub=realized_pnl_rub+%s,fees_rub=fees_rub+%s,updated_at=%s WHERE name=%s',(pnl,fee,ts,name))
     c.execute('UPDATE paper_trades SET gross_pnl_rub=gross_pnl_rub+%s,fees_rub=fees_rub+%s,avg_exit_price=%s WHERE trade_id=%s',
