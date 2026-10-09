@@ -162,15 +162,25 @@ def write_patches_one_roundtrip(c, patches, *, optional=False):
             with c.transaction():
                 _write_chunk_one_roundtrip(c, chunk)
         except Exception:
-            if len(chunk) == 1:
-                continue
-            for row in chunk:
-                try:
-                    with c.transaction():
-                        _write_chunk_one_roundtrip(c, [row])
-                except Exception:
+            # Compatibility/failure-safe fallback: some lightweight test or
+            # alternate DB adapters do not support writable CTEs. Preserve the
+            # exact two-table semantics through the established writer rather
+            # than dropping optional protective evidence.
+            try:
+                with c.transaction():
+                    _write_chunk(c, chunk)
+            except Exception:
+                if len(chunk) == 1:
                     continue
-                applied.add(row['trade_id'])
+                for row in chunk:
+                    try:
+                        with c.transaction():
+                            _write_chunk(c, [row])
+                    except Exception:
+                        continue
+                    applied.add(row['trade_id'])
+            else:
+                applied.update(row['trade_id'] for row in chunk)
         else:
             applied.update(row['trade_id'] for row in chunk)
     return applied
