@@ -190,6 +190,9 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
         hard.append("FAST_TF_CONFLICT")
     if (plan.get("profitability_gate") or {}).get("status")=="NEGATIVE_EDGE":
         hard.append("NEGATIVE_VALIDATED_SETUP_EDGE")
+    parent_risk=work.get("_borrowed_parent_risk_context") or {}
+    if parent_risk.get("borrowed") and not parent_risk.get("eligible",True):
+        hard.append("BORROWED_PARENT_RISK_CONTEXT_INVALID")
     # This independently proved quote event owns its structural thesis. The
     # previous forecast direction is still displayed, but cannot postpone its
     # trigger until the slower feature cycle catches up.
@@ -199,7 +202,8 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
         hard.append(conflict)
     if hard:
         return {"open":False,"fraction":0.0,"reason":hard[0],"hard_veto":True,
-                "hard_blockers":hard,"canonical_stage":"THESIS"}
+                "hard_blockers":hard,"parent_risk_context":parent_risk,
+                "canonical_stage":"THESIS"}
 
     soft=[]
     event=TFP.entry_gate(work,price,d,clock)
@@ -285,6 +289,47 @@ def _local_execution_context(summary,asset,direction):
     }
 
 
+_PARENT_RISK_HARD_FAILURES={
+    "STRUCTURAL_BREAKOUT_LEVEL_NOT_HELD",
+    "STRUCTURAL_CONTEXT_INVALID",
+    "STRUCTURAL_STOP_ALREADY_REACHED",
+    "STRUCTURAL_DIRECTION_OR_TIMEFRAME_MISMATCH",
+    "STRUCTURAL_EVENT_PROOF_INVALID",
+    "STRUCTURAL_PARENT_POSITION_BINDING_INVALID",
+    "HARD_INVALIDATION",
+    "FAST_TF_CONFLICT",
+}
+
+def _borrowed_parent_risk_context(row, summary):
+    """A fast trigger may borrow parent risk only if that parent risk context is not explicitly broken."""
+    r=row or {}
+    ctx=r.get("timeframe_entry_context") or (r.get("trade_plan") or {}).get("timeframe_entry_context") or {}
+    event=ctx.get("event") or {}
+    trigger=str(event.get("trigger_timeframe") or r.get("horizon") or "")
+    parent=str(event.get("structural_timeframe") or event.get("stop_timeframe") or "")
+    out={"eligible":True,"borrowed":False,"trigger_timeframe":trigger,
+         "structural_timeframe":parent,"reason":"INDEPENDENT_OR_NATIVE_RISK_CONTEXT"}
+    if not parent or not trigger or parent==trigger:
+        return out
+    out.update(borrowed=True,reason="BORROWED_PARENT_RISK_CONTEXT_OK")
+    parents=[x for x in (summary or [])
+             if str((x or {}).get("asset") or "")==str(r.get("asset") or "")
+             and str((x or {}).get("horizon") or "")==parent]
+    for pr in parents:
+        pp=(pr or {}).get("trade_plan") or {}
+        reasons=[]
+        for x in ((pr or {}).get("trade_entry_reason"),pp.get("reason")):
+            if x: reasons.append(str(x))
+        reasons.extend(str(x) for x in ((pr or {}).get("final_gate_blockers") or []))
+        bad=next((x for x in reasons if x in _PARENT_RISK_HARD_FAILURES),None)
+        if bad:
+            return {**out,"eligible":False,
+                    "reason":"BORROWED_PARENT_RISK_CONTEXT_INVALID",
+                    "parent_failure":bad,
+                    "parent_decision":str((pr or {}).get("research_decision") or (pr or {}).get("decision") or "NO_TRADE")}
+    return out
+
+
 def _prepare_candidate(row,summary):
     r=dict(row or {})
     r["_admission_audit"]={}
@@ -296,6 +341,7 @@ def _prepare_candidate(row,summary):
     r["_alignment_count"]=len(r["_supporting_horizons"])
     r["_rank"]=_rank(r)+10.0*TFP.candidate_priority(r)
     r["_local_execution_context"]=_local_execution_context(summary,asset,direction)
+    r["_borrowed_parent_risk_context"]=_borrowed_parent_risk_context(r,summary)
     cp=_num(r.get("calibrated_probability"))
     r["_pwin"]=cp if cp is not None else max(0.0,min(1.0,_num(r.get("confidence"),0.5)))
     r["_pwin_source"]="EMPIRICAL_CALIBRATION" if cp is not None else "MODEL_QUALITY_SCORE_UNCALIBRATED"
