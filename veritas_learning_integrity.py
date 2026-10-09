@@ -274,7 +274,10 @@ def payload_sql(alias="t", *, root_field=None):
               "idea_event_id", "r66_event_id", "mfe_pct", "mae_pct",
               "r55_lifetime_mfe_pct", "r55_lifetime_mae_pct", "initial_stop_price", "entry_atr",
               "execution_timeframe", "execution_horizon", "atr_timeframe", "stop_timeframe",
-              "target_timeframe", "structural_timeframe", "trigger_timeframe")
+              "target_timeframe", "structural_timeframe", "trigger_timeframe",
+              "r_accel_mfe_execution_required", "r_accel_mfe_learning_teaching_id",
+              "r_accel_mfe_protection_state", "r_accel_mfe_exit_authority",
+              "r_accel_mfe_exit_authority_used", "r_accel_mfe_exit_authority_reason")
     for key in simple:
         pairs.extend(("'"+key+"'", _proof_scalar(field(key))))
     for key in ("price_source_lock", "entry_execution_source_identity", "last_exit_source_identity", "contract_identity"):
