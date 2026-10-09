@@ -338,6 +338,31 @@ def payload_of(z):
     p = z.get('payload') or {}
     return json.loads(p) if isinstance(p, str) else dict(p)
 
+def recover_missing_hard_stop(z):
+    """Return the immutable entry stop only when an open position lost all stop state.
+
+    A trailing stop remains authoritative when present. Structural anchors are
+    deliberately not converted into executable prices here because they may
+    require the original ATR buffer.
+    """
+    if VPP.effective_stop(z) is not None:
+        return None
+    p = payload_of(z)
+    try:
+        candidate = float(p.get('initial_stop_price'))
+        entry = float(z.get('avg_entry_price') or p.get('entry_price'))
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(x) and x > 0 for x in (candidate, entry)):
+        return None
+    direction = z.get('direction')
+    if direction == 'LONG' and candidate < entry:
+        return candidate
+    if direction == 'SHORT' and candidate > entry:
+        return candidate
+    return None
+
+
 def quote_matches_position(z, quote):
     """Keep a GOLD entry and its protective marks on the same price basis.
 
@@ -893,6 +918,28 @@ def run_protective_pass(vp, pg_connect, quotes, now=None, *, timing=None):
             if not q:
                 continue
             z.update(_execution_quote=q,_execution_quote_frozen=True)
+
+            # Fail closed on a position that lost its mutable stop field. The
+            # only automatic repair allowed here is the immutable entry stop
+            # recorded at admission; structural anchors are not guessed.
+            recovered_stop = recover_missing_hard_stop(z)
+            if recovered_stop is not None:
+                repair = {
+                    'position_integrity_status':'RECOVERED',
+                    'position_integrity_reason':'INITIAL_STOP_RESTORED',
+                    'position_integrity_repaired_at':ts,
+                    'position_integrity_recovered_stop_price':recovered_stop,
+                }
+                tid = z.get('active_trade_id')
+                c.execute("UPDATE paper_positions SET stop_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE active_trade_id=%s",
+                          (recovered_stop,json.dumps(repair),tid))
+                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
+                          (json.dumps(repair),tid))
+                z['stop_price'] = recovered_stop
+                z['payload'] = dict(payload_of(z), **repair)
+                changes.append({'portfolio':z.get('portfolio_name'),'asset':z.get('asset'),
+                                'trade_id':tid,'reason':'MISSING_STOP_RESTORED',
+                                'new_stop_price':recovered_stop,'repair_source':'initial_stop_price'})
 
             # R55: persist lifetime excursion from the independent fresh
             # quote before any partial reduction / exit mutates the position.
