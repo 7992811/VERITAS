@@ -6178,7 +6178,12 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     # checks: trailing mutates stop/payload only, never direction or units.
     positions=[]
     try:
-        _,positions=_portfolio_rows(c,name)
+        _baton=_v90_book_baton_take(c,name,ts)
+        if _baton is not None:
+            _,positions=_baton
+        else:
+            _,positions=_portfolio_rows(c,name)
+        _v90_book_baton_clear()
         positions=[dict(z) for z in (positions or [])]
         management_book={}
         for z0 in positions:
@@ -6976,7 +6981,11 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     global _v90r22_active_policy,_v90r22_active_drawdown,_v90r22_active_portfolio
     book={a:dict(r) for a,r in (candidates or {}).items()}
 
-    p,pos=_portfolio_rows(c,name)
+    _baton=_v90_book_baton_take(c,name,ts)
+    if _baton is not None:
+        p,pos=_baton
+    else:
+        p,pos=_portfolio_rows(c,name)
     nav,unreal,gross,net=_mark_nav(p,pos,prices)
     hwm=max(float(p['high_water_nav_rub']),nav)
     dd=max(0.0,1-nav/max(hwm,1.0))
@@ -6988,6 +6997,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     # Apply edge decay before the ordinary target engine, then cap the same
     # cycle so it cannot immediately reload what was just reduced.
     mode=str((policy or {}).get('mode') or 'CORE')
+    _r22_book_mutated=False
     for z0 in list(pos or []):
         z=dict(z0)
         asset=str(z.get('asset') or '')
@@ -7000,8 +7010,13 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             c,p,name,z,mgmt,float(prices[asset]),nav,ts,mode
         )
         if target is not None:
+            _r22_book_mutated=True
             _v90r22_edge_caps[(name,asset)]=float(target)
 
+    if _r22_book_mutated:
+        _v90_book_baton_clear()
+    else:
+        _v90_book_baton_set(c,name,ts,p,pos)
     p = pos = z0 = z = mgmt = None
     try:
         return _v90r22_base_step_one(
@@ -8218,6 +8233,25 @@ def _v90r19_flip_confirmed(summary,z,row,now=None):
     return True
 
 
+_v90_book_baton = threading.local()
+
+def _v90_book_baton_set(c,name,ts,p,positions):
+    _v90_book_baton.value={
+        'key':(id(c),str(name),str(ts)),
+        'portfolio':dict(p or {}),
+        'positions':[dict(z) for z in (positions or [])],
+    }
+
+def _v90_book_baton_take(c,name,ts):
+    value=getattr(_v90_book_baton,'value',None)
+    if not isinstance(value,dict) or value.get('key')!=(id(c),str(name),str(ts)):
+        return None
+    return dict(value.get('portfolio') or {}),[dict(z) for z in (value.get('positions') or [])]
+
+def _v90_book_baton_clear():
+    _v90_book_baton.value=None
+
+
 def _v90r33_harvest(c,p,name,prices,nav,ts,positions=None):
     changes=[]
     try:
@@ -8225,6 +8259,8 @@ def _v90r33_harvest(c,p,name,prices,nav,ts,positions=None):
             dict(z) for z in c.execute(
                 "SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()]
         _v90j_update_excursions(c,name,prices,ts,positions=rows)
+        if positions is not None:
+            positions[:] = [dict(z) for z in rows]
     except Exception:
         return changes
 
@@ -8355,8 +8391,13 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     candidates={str(asset):_v90_execution_candidate_rank(row)
                 for asset,row in (candidates or {}).items()}
     p,pos=_portfolio_rows(c,name)
+    pos=[dict(z) for z in pos]
     nav,_,_,_=_mark_nav(p,pos,prices)
-    _v90r33_harvest(c,p,name,prices,nav,ts,positions=pos)
+    r33_changes=_v90r33_harvest(c,p,name,prices,nav,ts,positions=pos)
+    if r33_changes:
+        _v90_book_baton_clear()
+    else:
+        _v90_book_baton_set(c,name,ts,p,pos)
     p = pos = None
     return _v90r33_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
