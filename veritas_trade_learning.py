@@ -284,7 +284,8 @@ class TradeLearning:
                     selected='''SELECT t.trade_id FROM paper_trades t
                         LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
                         WHERE (e.trade_id IS NULL
-                               OR e.payload->>'outcome_diagnostics_version' IS DISTINCT FROM %s)
+                               OR e.payload->>'outcome_diagnostics_version' IS DISTINCT FROM %s
+                               OR NULLIF(e.payload->>'outcome_evidence_hash','') IS NULL)
                           AND t.closed_at IS NOT NULL
                           AND t.status IN ('CLOSED','CLOSE','EXITED') AND t.opened_at>=%s::timestamptz
                         ORDER BY t.closed_at,t.trade_id LIMIT %s FOR UPDATE OF t SKIP LOCKED'''
