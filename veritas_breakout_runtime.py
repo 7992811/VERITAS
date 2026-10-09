@@ -683,12 +683,25 @@ class BreakoutRuntime:
                 context_asset_seconds[asset] = time.monotonic()-asset_started
             context_seconds = time.monotonic()-context_started
             execution = {"status": "NO_STRUCTURAL_EVENTS", "paper_only": True}
-            entry_seconds, publish_seconds = 0.0, 0.0
+            entry_seconds, publish_seconds, signal_first_publish_seconds = 0.0, 0.0, 0.0
             if rows:
-                # The callback owns the shared RLock + PostgreSQL advisory
-                # transaction and every existing canonical admission/risk gate.
+                # Publish the verified structural signal before paper accounting.
+                # The live Currency proposal engine independently re-runs canonical
+                # admission against fresh broker facts, so a busy paper book must
+                # never delay visibility of a newly observed CNY event.
                 if now is None:
                     clock = _clock()
+                signal_publish_started = time.monotonic()
+                self._publish_rows(
+                    [deepcopy(row) for row in rows],
+                    {"status": "PENDING_PAPER_ACCOUNTING",
+                     "reason": "SIGNAL_FIRST_PUBLICATION",
+                     "checked_at": clock.isoformat(), "paper_only": True},
+                    clock)
+                signal_first_publish_seconds = time.monotonic()-signal_publish_started
+
+                # The callback still owns the shared RLock + PostgreSQL advisory
+                # transaction and every existing paper admission/risk gate.
                 entry_started = time.monotonic()
                 execution = self.entry_pass(rows, clock)
                 entry_seconds = time.monotonic()-entry_started
@@ -705,6 +718,7 @@ class BreakoutRuntime:
                               rows=len(rows), assets=len(markets), pending_quote_fetches=len(self._pending),
                               context_seconds=context_seconds, entry_seconds=entry_seconds,
                               context_builds=context_builds, context_asset_seconds=context_asset_seconds,
+                              signal_first_publish_seconds=signal_first_publish_seconds,
                               publish_seconds=publish_seconds, execution_status=execution.get("status"),
                               execution_reason=execution.get("reason"),
                               duration_seconds=time.monotonic()-started)
