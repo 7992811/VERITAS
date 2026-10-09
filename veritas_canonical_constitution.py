@@ -9,10 +9,10 @@ Principle: one trading decision -> one canonical policy path.
 """
 from __future__ import annotations
 
-VERSION = "CTC_V2_2026_10_06"
+VERSION = "CTC_V2_2026_10_09_OWNER_REVIEW"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
-STRATEGY_EPOCH = "EQ7_2026_10_07_INTRABAR_STRUCTURE"
+STRATEGY_EPOCH = "EQ8_2026_10_09_OWNER_TRADE_REVIEW"
 STRATEGY_ROLE_POLICY = {
     "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
     "AGGRESSIVE": {"name":"CONFIRMED_TREND","horizons":("5m","1h","4h","1d"),
@@ -322,10 +322,24 @@ LIFECYCLE_POLICY = {
     "aggressive_tp_runner_ratio": 0.60,
     "minimum_position_step": 0.05,
     "profit_lock_activation_floor_pct": 0.21,
+    "profit_lock_requires_consecutive_positive_windows": 3,
+    "profit_lock_window_seconds_floor": 300,
+    "profit_lock_minimum_dwell_seconds": 600,
+    "profit_lock_first_two_positive_windows_observe_only": True,
+    "profit_lock_floor": "TRUE_ECONOMIC_BREAK_EVEN_AFTER_COSTS",
+    "structural_trailing_before_profit_maturity": False,
+    "structural_trailing_after_profit_maturity": True,
+    "canonical_setup_hard_invalidation_shared_across_portfolios": True,
+    "shared_entry_event_portfolios": ("Impulse","Champion","Challenger"),
+    "verified_structural_event_entry_permission_is_shared": True,
+    "portfolio_role_changes_size_not_event_existence": True,
     "principle": (
-        "The first take-profit harvests part of a qualifying position and keeps a "
-        "structural runner. A full close is reserved for a minimum-size position "
-        "or an actual thesis/risk exit."
+        "The original stop architecture stays intact through the first two transient "
+        "profitable windows. After three distinct consecutive profitable management "
+        "windows and the minimum dwell, move the floor to true economic breakeven "
+        "after costs; only then may confirmed structural swings tighten it further. "
+        "A hard thesis invalidation of one canonical setup applies to every portfolio "
+        "copy of that same setup."
     ),
 }
 
@@ -338,6 +352,14 @@ SETUP_GRADES = {
 
 LEARNING_POLICY = {
     "independent_market_episode_not_portfolio_copy": True,
+    "owner_teaching_id": "USER_TRADE_REVIEW_2026_10_09",
+    "closed_trade_postmortem_required": True,
+    "postmortem_dimensions": ("levels","volatility","indicators","moving_averages","multi_timeframe",
+                              "entry_timing","stop","targets","profit_protection","exit","costs","data_integrity"),
+    "canonical_conflict_scan_required": True,
+    "parameter_search_default": "SHADOW_ONLY",
+    "owner_verification_required_for_rule_promotion": True,
+    "owner_comments_are_durable_training_evidence": True,
     "exclude_mixed_price_sources": True,
     "exclude_contract_mismatch": True,
     "exclude_administrative_rebase": True,
@@ -394,8 +416,8 @@ CANONICAL_RULES = [
     _rule("CTC27","structure","Breakout quality uses level break, acceptance, volume/activity, volatility expansion and subsequent structure."),
     _rule("CTC28","structure","RANGE_LOW_VOL requires stronger evidence because false-breakout risk is elevated."),
     _rule("CTC29","structure","Retest/hold after a break is an independent entry family and may define a fresh continuation event."),
-    _rule("CTC30","multitimeframe","Quote breakouts explicitly record trigger, structural-stop, ATR and historical-target timeframes. Fast entries protect the certified parent swing; legacy close-confirmed entries retain their same-timeframe anchors."),
-    _rule("CTC31","multitimeframe","Senior context can reduce tactical size but does not automatically veto a qualified fast breakout/reversal."),
+    _rule("CTC30","multitimeframe","Quote breakouts explicitly record trigger, structural-stop, ATR and historical-target timeframes. A fast entry may borrow a certified parent swing only while that parent risk context remains structurally valid; otherwise it must use independently valid fast-TF risk geometry or be blocked."),
+    _rule("CTC31","multitimeframe","Senior directional context can reduce tactical size but does not automatically veto a qualified fast breakout/reversal. An explicit structural failure of a senior timeframe whose swing/ATR is borrowed for risk is a hard risk-context veto."),
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
     _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
@@ -418,16 +440,16 @@ CANONICAL_RULES = [
     _rule("CTC48","add","Never automatically average a losing position; pyramiding is earned by favorable movement and new evidence."),
     _rule("CTC49","stop","LONG stop sits below the previous confirmed swing low of the entry timeframe, SHORT above its swing high, with that same timeframe's ATR buffer."),
     _rule("CTC50","stop","Stops never widen after protection or reload; LONG protection ratchets upward, SHORT downward."),
-    _rule("CTC51","profit","Breakeven is economic breakeven after paid/projected costs, not simply the entry price."),
+    _rule("CTC51","profit","Breakeven is true economic breakeven after paid/projected costs. It is armed only after three distinct consecutive profitable management windows and the minimum dwell; the first two transient positive impulses do not alter the original stop architecture."),
     _rule("CTC52","profit","Partial profit is dynamic: stronger trend -> smaller harvest and larger runner; weakening/near obstacle -> larger harvest."),
     _rule("CTC53","profit","After harvest, reload is a new add decision requiring fresh breakout/structure/volume and positive post-cost economics."),
     _rule("CTC54","exit","Soft INVALIDATED, generic WAIT or a tiny opposite fast signal cannot force a fee-negative discretionary exit while thesis and hard risk remain intact."),
 
-    _rule("CTC55","exit","Immediate full exit authority is reserved for true stop/risk breach, explicit hard thesis invalidation, confirmed direction flip/structural failure or portfolio hard stop."),
+    _rule("CTC55","exit","Immediate full exit authority is reserved for true stop/risk breach, explicit hard thesis invalidation, confirmed direction flip/structural failure or portfolio hard stop. A hard invalidation of a canonical setup is shared by every open portfolio copy of that same setup."),
     _rule("CTC56","learning","One market episode is one independent learning observation even if multiple portfolios traded it."),
     _rule("CTC57","learning","Classify direction error separately from late entry, stop error, exit error, sizing error and source/data error."),
     _rule("CTC58","learning","Management-dominated losses must not be interpreted automatically as evidence that trade direction was wrong."),
-    _rule("CTC59","learning","New knowledge/rules begin in SHADOW and require OOS, Vault, cost and regime/time robustness before promotion."),
+    _rule("CTC59","learning","Every closed trade receives a structured postmortem. New knowledge/rules and parameter changes begin in SHADOW, must pass canonical-conflict checks plus OOS, Vault, cost and regime/time robustness, and require owner verification before promotion."),
     _rule("CTC60","learning","Intelligence rises from validated decision/outcome quality and clean learning, not from the raw count of stored rules."),
 ]
 
