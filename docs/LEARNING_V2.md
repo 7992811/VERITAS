@@ -130,3 +130,19 @@ bounded diagnostics explaining a zero-candidate result: cohort size, blocked
 directional count, favorable missed moves, learnable/hard-veto counts,
 unparsed blocked episodes and the maximum recurring learnable blocker count.
 Raw reason prose is not emitted.
+
+
+## Event-driven cadence (v91.8.30)
+
+Production CPU is capped at 0.15 CPU, so a missed five-second checkpoint can be
+more expensive than a slightly less frequent successful pass: the same asset is
+otherwise re-read and recomputed.
+
+The shadow discovery lane therefore uses a 120-second base interval. Stop/Exit
+ordered replay uses a 600-second idle interval, but any newly generated
+`STOP_GEOMETRY` or `EXIT_CAPTURE` hypothesis immediately requests the replay
+job through the existing maintenance coalescing mechanism. The request creates
+no extra thread and respects failed-job backoff.
+
+This changes research latency, not sample selection or evidence thresholds.
+Market decisions and outcomes continue to be recorded continuously.
