@@ -159,6 +159,18 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
 .pf-sections{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:18px}.pf-section{min-width:0;border-top:1px solid var(--line);padding-top:11px}.pf-section h4{margin:0 0 11px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#b6c6d2}.pf-pair{display:flex;justify-content:space-between;gap:9px;font-size:11px;line-height:1.4;margin:8px 0}.pf-pair span{color:var(--muted)}.pf-pair b{text-align:right;font-weight:600;white-space:nowrap}.pf-meter{height:5px;background:#25313c;border-radius:3px;overflow:hidden;margin:6px 0 12px}.pf-meter i{display:block;height:100%;background:#87b9d9;border-radius:3px}.pf-meter.is-risk i{background:var(--warn)}.pf-meter.is-breach i{background:var(--bad)}.pf-quality{display:grid;grid-template-columns:1fr 1fr;gap:12px}.pf-quality .pf-value b{font-size:19px}.pf-foot{font-size:9px;color:var(--muted);line-height:1.5;margin-top:10px}
 .deal-filters{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:9px}.deal-filters select{background:var(--card2);border:1px solid var(--line);border-radius:7px;color:var(--text);font:inherit;font-size:11px;min-height:36px;padding:5px 8px;max-width:100%}.deal-filters small{font-size:10px;color:var(--muted);margin-left:auto}
 #trades{max-height:620px}.deal{border:1px solid var(--line);border-radius:9px;background:var(--card2);padding:11px 12px;margin-bottom:7px;font-variant-numeric:tabular-nums}.deal-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.deal-name{font-size:13px;font-weight:650;line-height:1.4}.deal-name .deal-side{font-size:11px}.deal-book{font-size:10px;color:var(--muted);margin-top:2px}.deal-result{text-align:right;flex-shrink:0;font-size:16px;font-weight:720;line-height:1.25}.deal-result small{display:block;font-size:10px;font-weight:500;margin-top:3px}.deal-path{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}.deal-point{border-top:1px solid var(--line);padding-top:7px;font-size:10px;color:var(--muted)}.deal-point b{display:inline-block;font-size:12px;color:var(--text);margin-left:5px}.deal-point time{display:block;font-size:9px;margin-top:3px}.deal-outcome{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-top:9px;font-size:10px;line-height:1.4}.deal-outcome span{color:var(--muted);text-align:right;flex-shrink:0}.deal details{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}.deal summary{cursor:pointer;font-size:10px;color:#9ebad0;min-height:24px;line-height:24px}.deal-breakdown{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:5px}.deal-breakdown span{font-size:9px;color:var(--muted)}.deal-breakdown b{display:block;font-size:11px;color:var(--text);margin-top:3px}.deal .tp-status{font-size:10px;margin-top:7px}
+.review-tabs{display:flex;gap:5px;align-items:center;margin:0 0 10px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--card2);width:max-content;max-width:100%}
+.review-tab{appearance:none;border:0;border-radius:6px;background:transparent;color:var(--muted);font:inherit;font-size:10px;font-weight:650;padding:7px 10px;cursor:pointer;white-space:nowrap}
+.review-tab[aria-selected="true"]{background:#1a2a37;color:#eef5fa;box-shadow:inset 0 0 0 1px rgba(135,185,217,.28)}
+.review-tab:focus-visible{outline:2px solid #87b9d9;outline-offset:1px}.review-tab-badge{display:inline-block;min-width:17px;margin-left:4px;padding:1px 4px;border-radius:999px;background:rgba(214,183,94,.12);color:#e8c55c;font-size:8px;text-align:center}
+.review-panel[hidden]{display:none!important}.review-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin:2px 0 10px}.review-kpi{border:1px solid var(--line);border-radius:9px;padding:8px;background:var(--card2);min-width:0}.review-kpi span{display:block;font-size:8px;color:var(--muted);line-height:1.25}.review-kpi b{display:block;font-size:13px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.review-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.9fr);gap:9px;align-items:start}.review-section{border:1px solid var(--line);border-radius:10px;background:var(--card2);padding:10px;min-width:0}.review-section h3{margin:0 0 3px;font-size:11px;text-transform:uppercase;letter-spacing:.055em;color:#bccbd6}.review-section-note{font-size:8.5px;color:var(--muted);line-height:1.45;margin-bottom:8px}
+.review-list{display:grid;gap:6px}.review-item{border-top:1px solid rgba(255,255,255,.055);padding-top:7px}.review-item:first-child{border-top:0;padding-top:0}.review-item-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.review-item-title{font-size:11px;font-weight:680;line-height:1.35}.review-item-sub{font-size:8.5px;color:var(--muted);margin-top:2px;line-height:1.35}.review-status{border:1px solid var(--line);border-radius:999px;padding:3px 6px;font-size:7.5px;white-space:nowrap;color:#c9d5de}.review-status.ok{border-color:rgba(89,214,148,.26)}.review-status.warn{border-color:rgba(214,183,94,.26)}
+.review-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin-top:6px}.review-metric{border:1px solid rgba(255,255,255,.045);border-radius:6px;padding:5px;min-width:0}.review-metric span{display:block;font-size:7px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-metric b{display:block;font-size:9.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.review-lesson{margin-top:6px;border-left:2px solid #6ea7d0;padding:5px 7px;background:rgba(110,167,208,.05);font-size:8.5px;line-height:1.45}.review-lesson b{color:#dfe9f0}.review-blockers{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}.review-chip{border:1px solid rgba(255,255,255,.065);border-radius:999px;padding:3px 6px;font-size:7.5px;color:#b9c5ce;background:rgba(255,255,255,.012)}
+.review-hypothesis{border:1px solid rgba(255,255,255,.055);border-radius:8px;padding:8px;margin-top:6px;background:rgba(255,255,255,.012)}.review-hypothesis:first-of-type{margin-top:0}.review-hypothesis-head{display:flex;justify-content:space-between;gap:7px;align-items:flex-start}.review-hypothesis b{font-size:9.5px}.review-hypothesis small{display:block;color:var(--muted);font-size:7.7px;line-height:1.4;margin-top:4px}.review-rule{font-size:8.3px;line-height:1.45;margin-top:5px;color:#d9e2e8}.review-foot{font-size:8px;color:var(--muted);line-height:1.45;margin-top:9px;border-top:1px solid rgba(255,255,255,.045);padding-top:7px}
+@media(max-width:950px){.review-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.review-grid{grid-template-columns:1fr}.review-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:520px){.review-tabs{width:100%}.review-tab{flex:1;padding:8px 6px}.review-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.review-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.review-item-head,.review-hypothesis-head{gap:5px}.review-status{font-size:7px}}
 .pf-ledger{grid-template-columns:repeat(4,minmax(0,1fr))}
 @media(max-width:780px){.pf-sections{grid-template-columns:1fr 1fr}.pf-section:last-child{grid-column:1/-1}.pf-quality{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-width:500px){.pf-row{grid-template-columns:minmax(88px,1.25fr) repeat(3,minmax(0,1fr));gap:4px;padding:9px 7px}button.pf-row{font-size:11px}.pf-row.pf-colnames{font-size:9px}.pf-row small{font-size:8px}.pf-detail{padding:11px}.pf-heading h3{font-size:13px}.pf-amount{font-size:23px}.pf-status{font-size:9px;max-width:104px}.pf-performance{gap:7px}.pf-value b{font-size:14px}.pf-value span{font-size:9px}.pf-sections{grid-template-columns:1fr;gap:10px}.pf-section:last-child{grid-column:auto}.pf-quality,.pf-ledger{grid-template-columns:1fr 1fr}.pf-quality .pf-value b{font-size:18px}.deal{padding:10px}.deal-result{font-size:15px}.deal-name{font-size:12px}.deal-breakdown{grid-template-columns:repeat(2,minmax(0,1fr))}.deal-filters small{flex-basis:100%;margin:0}.deal-outcome{gap:7px}}
@@ -271,9 +283,19 @@ button.pf-row{border:0;border-top:1px solid var(--line);border-radius:0;backgrou
     </div>
 
     <div class="card full section">
-      <div class="title">Закрытые сделки</div>
-      <div id="tradeSync" class="msg" role="status"></div>
-      <div id="tradeFilters"></div><div id="trades" class="scroll"><div class="msg">Загрузка журнала…</div></div>
+      <div class="title">Сделки · разбор · обучение</div>
+      <div class="review-tabs" role="tablist" aria-label="Журнал сделок и разбор">
+        <button id="tradeTab" class="review-tab" type="button" role="tab" aria-selected="true" aria-controls="tradePanel">Закрытые сделки</button>
+        <button id="reviewTab" class="review-tab" type="button" role="tab" aria-selected="false" aria-controls="reviewPanel">Разбор и обучение <span id="reviewBadge" class="review-tab-badge">—</span></button>
+      </div>
+      <div id="tradePanel" class="review-panel" role="tabpanel" aria-labelledby="tradeTab">
+        <div id="tradeSync" class="msg" role="status"></div>
+        <div id="tradeFilters"></div><div id="trades" class="scroll"><div class="msg">Загрузка журнала…</div></div>
+      </div>
+      <div id="reviewPanel" class="review-panel" role="tabpanel" aria-labelledby="reviewTab" hidden>
+        <div id="reviewSummary"><div class="msg">Загрузка накопленного опыта…</div></div>
+        <div id="reviewBody"></div>
+      </div>
     </div>
 
     <div class="card full section">
@@ -297,7 +319,7 @@ const POS_CACHE_KEY='veritas_v90_position_book_r35';
 const loadPositionCache=()=>{try{const x=JSON.parse(localStorage.getItem(POS_CACHE_KEY)||'null');if(x&&x.book&&Date.now()-Number(x.at||0)<86400000)return x}catch(e){}return {book:{}}};
 const savePositionCache=book=>{try{localStorage.setItem(POS_CACHE_KEY,JSON.stringify({at:Date.now(),book,checkedAt:st.positionBookCheckedAt}))}catch(e){}};
 const initialPositionCache=loadPositionCache(),initialPositionBook=initialPositionCache.book;
-const st={autonomous:null,strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,portfolioLoadStatus:'LOADING',positionBook:initialPositionBook,positionBookCheckedAt:initialPositionCache.checkedAt||{},positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null};
+const st={autonomous:null,strategyQuality:null,qualityScope:'current',qualityWindow:'all',signals:null,portfolios:null,portfolioLoadStatus:'LOADING',positionBook:initialPositionBook,positionBookCheckedAt:initialPositionCache.checkedAt||{},positionBookReady:Object.values(initialPositionBook).some(v=>Array.isArray(v)&&v.length>0),trades:null,health:null,learning:null,quality:null,horizon:null,macro:null,intelligence:null,busy:{},selected:null,reviewTab:'trades'};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?'—':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const lab=a=>a==='NQ'?'NDXf':a==='CNYRUBF'?'CNYRUBf':a;
@@ -992,6 +1014,190 @@ function deepNum(obj,names){
   }
   return walk(obj,0);
 }
+
+function deepText(obj,names){
+  const wanted=new Set(names.map(x=>String(x).toLowerCase())),seen=new Set();
+  function walk(v,depth){
+    if(v==null||depth>6||typeof v!=='object'||seen.has(v))return null;
+    seen.add(v);
+    for(const [k,val] of Object.entries(v)){
+      if(wanted.has(String(k).toLowerCase())&&typeof val==='string'&&val.trim())return val.trim();
+    }
+    for(const val of Object.values(v)){const x=walk(val,depth+1);if(x)return x}
+    return null;
+  }
+  return walk(obj,0);
+}
+const reviewAttrLabel=v=>({
+  PROVEN_ENTRY_RULE_VIOLATION:'доказана ошибка правила входа',
+  PROVEN_STOP_OR_ATR_RULE_VIOLATION:'доказана ошибка стопа / ATR',
+  VALID_STRUCTURAL_STOP_LOSS:'корректный структурный стоп',
+  VALID_LOSING_TRADE:'корректный убыточный исход',
+  VALID_PROFITABLE_TRADE:'корректная прибыльная сделка',
+  VALID_FLAT_TRADE:'сделка без результата',
+  UNVERIFIED_TRADE_EVIDENCE:'доказательств недостаточно',
+  COST_DRAG:'издержки ухудшили результат',
+  PROFIT_CAPTURE_HYPOTHESIS:'гипотеза по защите прибыли'
+}[String(v||'').toUpperCase()]||String(v||'').replaceAll('_',' ').toLowerCase());
+const reviewKindLabel=v=>({
+  ENTRY_BLOCKER_RELAXATION:'Пропущенный вход',
+  STOP_GEOMETRY:'Геометрия стопа',
+  EXIT_CAPTURE:'Удержание движения',
+  STRATEGY_ROUTER:'Выбор стратегии'
+}[String(v||'')]||String(v||'').replaceAll('_',' '));
+const reviewCandidateStatus=v=>({
+  COLLECTING:'Накопление',
+  SHADOW_ELIGIBLE:'Подтверждено в shadow',
+  REJECTED:'Отклонено',
+  EXPIRED:'Срок проверки истёк'
+}[String(v||'').toUpperCase()]||'Гипотеза');
+const reviewMove=v=>{const x=knownNumber(v);if(x==null)return'—';const p=Math.abs(x)<=1?100*x:x;return n(p,2)+'%'};
+function reviewSetTab(name){
+  st.reviewTab=name==='review'?'review':'trades';
+  const review=st.reviewTab==='review',a=$('tradeTab'),b=$('reviewTab'),p=$('tradePanel'),q=$('reviewPanel');
+  if(!a||!b||!p||!q)return;
+  const selected=(el,value)=>typeof el.setAttribute==='function'?el.setAttribute('aria-selected',value):(el['aria-selected']=value);
+  selected(a,review?'false':'true');selected(b,review?'true':'false');
+  p.hidden=review;q.hidden=!review;
+}
+function bindReviewTabs(){
+  const a=$('tradeTab'),b=$('reviewTab');if(!a||!b)return;
+  a.onclick=()=>reviewSetTab('trades');b.onclick=()=>reviewSetTab('review');
+  reviewSetTab(st.reviewTab);
+}
+function deepBool(obj,names){
+  const wanted=new Set(names.map(x=>String(x).toLowerCase())),seen=new Set();
+  function walk(v,depth){
+    if(v==null||depth>6||typeof v!=='object'||seen.has(v))return null;
+    seen.add(v);
+    for(const [k,val] of Object.entries(v)){
+      if(wanted.has(String(k).toLowerCase())&&typeof val==='boolean')return val;
+    }
+    for(const val of Object.values(v)){const x=walk(val,depth+1);if(x!==null)return x}
+    return null;
+  }
+  return walk(obj,0);
+}
+function reviewTradeModel(t){
+  const p=t.payload||{},root={trade:t,payload:p},net=tradeTotal(t);
+  const mfe=deepNum(root,['mfe_pct']),mae=deepNum(root,['mae_pct']),captureRaw=deepNum(root,['capture_ratio']);
+  const capture=captureRaw==null?null:(captureRaw>1?captureRaw/100:captureRaw);
+  const attr=deepText(root,['primary_attribution']),action=deepText(root,['learning_action']);
+  const replayProven=deepBool(root,['ordered_path_replay_verified','counterfactual_execution_proven','counterfactual_live_execution_proven','replay_verified'])===true;
+  const rawCfPnl=deepNum(root,['counterfactual_pnl_rub','replay_pnl_rub','optimal_pnl_rub']);
+  const rawCfReturn=deepNum(root,['counterfactual_return_pct','replay_return_pct','optimal_return_pct']);
+  const rawCfExit=deepNum(root,['counterfactual_exit_price','replay_exit_price','optimal_exit_price']);
+  const counterfactualPnl=replayProven?rawCfPnl:null,counterfactualReturn=replayProven?rawCfReturn:null,counterfactualExit=replayProven?rawCfExit:null;
+  const explicitMissed=deepNum(root,['missed_profit_rub','profit_left_on_table_rub']);
+  const missedProfit=replayProven?(explicitMissed!=null?Math.max(0,explicitMissed):(counterfactualPnl!=null&&net!=null?Math.max(0,counterfactualPnl-net):null)):null;
+  const signalEntry=deepNum(root,['entry_reference_price','trigger_level','breakout_level','entry_level']);
+  const addPrice=deepNum(root,['last_add_price','add_fill_price','scale_in_price']);
+  const protectionTrigger=mfe!=null&&mfe>=0.15&&net!=null&&net<=0;
+  let status='В опыте',statusClass='',lesson='';
+  if(String(attr||'').startsWith('PROVEN_')){status='Подтверждено';statusClass='bad';lesson=reviewAttrLabel(attr)+'. Исправление должно проходить через проверку правила и повторную валидацию.'}
+  else if(protectionTrigger){status='Наблюдение';statusClass='warn';lesson='После MFE ≥ 0,15% сделка закончилась без прибыли. Проверяется защита результата: безубыток и дальнейший структурный трейлинг.'}
+  else if(capture!=null&&capture<0.5&&net!=null&&net>0){status='Наблюдение';statusClass='warn';lesson='Зафиксирована низкая доля удержанного благоприятного движения. Проверяется частичный выход и структурный runner.'}
+  else if(attr){lesson=reviewAttrLabel(attr)+(action?' · '+String(action).replaceAll('_',' ').toLowerCase():'')+'.'}
+  else if(net!=null&&net<0){lesson='Убыточный исход добавлен в опыт. Причина не повышается до ошибки без достаточной доказательной базы.'}
+  else if(net!=null&&net>0){lesson='Прибыльный исход добавлен в опыт как подтверждённый результат фактического исполнения.'}
+  else lesson='Сделка сохранена, но итоговые доказательства ещё неполны.';
+  return {t,p,net,mfe,mae,capture,attr,action,replayProven,counterfactualPnl,counterfactualReturn,counterfactualExit,missedProfit,signalEntry,addPrice,protectionTrigger,status,statusClass,lesson};
+}
+function renderTradeReviewItem(x){
+  const t=x.t,p=x.p,stop=t.stop_price??p.stop_price??p.initial_stop_price??p.structural_stop;
+  const entry=knownNumber(t.avg_entry_price),exit=knownNumber(t.avg_exit_price);
+  const scope=[portfolioName(t.portfolio_name),tfRu(t.horizon),dateRu(t.closed_at)].filter(Boolean).join(' · ');
+  const capture=x.capture==null?'—':n(100*x.capture,0)+'%';
+  const attr=x.attr?reviewAttrLabel(x.attr):(x.protectionTrigger?'триггер защиты прибыли':'исход сделки');
+  const cfPnl=x.counterfactualPnl==null?'—':rub(x.counterfactualPnl),missed=x.missedProfit==null?'—':rub(x.missedProfit);
+  const cfNote=x.replayProven?'Контрфакт подтверждён упорядоченным replay и показывается отдельно от фактического результата.':'Контрфактный P&L и «упущенная прибыль» не показаны без доказанного ordered-path replay.';
+  return '<div class="review-item"><div class="review-item-head"><div><div class="review-item-title">'+esc(lab(t.asset))+' · '+esc(directionLabel(t.direction,p.entry_signal_tier||p.signal_tier||''))+'</div><div class="review-item-sub">'+esc(scope)+'</div></div><span class="review-status '+x.statusClass+'">'+esc(x.status)+'</span></div>'+
+    '<div class="review-metrics"><div class="review-metric"><span>P&L факт</span><b class="'+tone(x.net)+'">'+rub(x.net)+'</b></div><div class="review-metric"><span>P&L контрфакт</span><b>'+(x.counterfactualPnl==null?'—':'<span class="'+tone(x.counterfactualPnl)+'">'+cfPnl+'</span>')+'</b></div><div class="review-metric"><span>Упущено доказано</span><b>'+missed+'</b></div><div class="review-metric"><span>MFE</span><b>'+pct(x.mfe)+'</b></div><div class="review-metric"><span>MAE</span><b>'+pct(x.mae)+'</b></div><div class="review-metric"><span>Удержано движения</span><b>'+capture+'</b></div><div class="review-metric"><span>Вход факт</span><b>'+assetPrice(t.asset,entry)+'</b></div><div class="review-metric"><span>Уровень сигнала</span><b>'+assetPrice(t.asset,x.signalEntry)+'</b></div><div class="review-metric"><span>Добор факт</span><b>'+assetPrice(t.asset,x.addPrice)+'</b></div><div class="review-metric"><span>Исходный стоп</span><b>'+assetPrice(t.asset,stop)+'</b></div><div class="review-metric"><span>Выход факт</span><b>'+assetPrice(t.asset,exit)+'</b></div><div class="review-metric"><span>Выход контрфакт</span><b>'+assetPrice(t.asset,x.counterfactualExit)+'</b></div></div>'+
+    '<div class="review-lesson"><b>'+esc(attr)+':</b> '+esc(x.lesson)+'</div><div class="review-foot">'+esc(cfNote)+'</div></div>';
+}
+function aggregateMissed(learning2){
+  const assets=learning2&&learning2.assets&&typeof learning2.assets==='object'?learning2.assets:{};
+  const blockerMap=new Map(),rows=[];let missed=0,learnable=0,hard=0,blocked=0;
+  Object.entries(assets).forEach(([asset,data])=>{
+    const d=(data&&data.diagnostics)||{},m=Number(d.missed_directional_episodes||0),l=Number(d.learnable_missed_directional||0),h=Number(d.hard_veto_missed_directional||0),b=Number(d.blocked_directional||0);
+    missed+=m;learnable+=l;hard+=h;blocked+=b;
+    if(m||b)rows.push({asset,missed:m,learnable:l,hard:h,blocked:b,reason:d.zero_entry_candidate_reason,contexts:d.top_contexts||[]});
+    Object.entries(d.known_blockers||{}).forEach(([k,v])=>blockerMap.set(k,(blockerMap.get(k)||0)+Number(v||0)));
+  });
+  const blockers=[...blockerMap.entries()].sort((a,b)=>b[1]-a[1]).slice(0,8);
+  return {rows,missed,learnable,hard,blocked,blockers};
+}
+function renderMissedSection(learning2,missed){
+  const rows=missed.rows.slice().sort((a,b)=>b.missed-a.missed||b.blocked-a.blocked);
+  const reasonRu2=v=>({
+    NO_BLOCKED_DIRECTIONAL_EPISODES:'нет подтверждённых заблокированных направленных эпизодов',
+    NO_FAVOURABLE_BLOCKED_MOVE_AT_THRESHOLD:'после блокировки не было движения достаточного размера',
+    NO_LEARNABLE_BLOCKER_MATCH:'пропуски связаны только с жёсткими запретами',
+    DECISION_COHORTS_TOO_SMALL:'нужно больше наблюдений одного контекста',
+    LEARNABLE_BLOCKER_NOT_RECURRING_ENOUGH:'ошибка блокировки пока не повторяется достаточно часто',
+    ENTRY_CANDIDATE_CONDITIONS_PRESENT:'есть условия для кандидата изменения входа'
+  }[String(v||'')]||'наблюдения продолжаются');
+  return '<section class="review-section"><h3>Упущенные возможности</h3><div class="review-section-note">Только зафиксированные decision episodes после блокировки. Это наблюдаемое последующее движение, а не выдуманный альтернативный P&L.</div>'+
+    (rows.length?'<div class="review-list">'+rows.map(r=>'<div class="review-item"><div class="review-item-head"><div><div class="review-item-title">'+esc(lab(r.asset))+'</div><div class="review-item-sub">'+esc(reasonRu2(r.reason))+'</div></div><span class="review-status '+(r.learnable?'warn':'')+'">'+r.missed+' пропусков</span></div><div class="review-metrics"><div class="review-metric"><span>Блокировано</span><b>'+r.blocked+'</b></div><div class="review-metric"><span>Упущено</span><b>'+r.missed+'</b></div><div class="review-metric"><span>Обучаемых</span><b>'+r.learnable+'</b></div><div class="review-metric"><span>Жёсткий veto</span><b>'+r.hard+'</b></div><div class="review-metric"><span>Контексты</span><b>'+r.contexts.length+'</b></div></div></div>').join('')+'</div>':'<div class="msg">Подтверждённых упущенных направленных возможностей в текущем окне нет.</div>')+
+    (missed.blockers.length?'<div class="review-foot"><b>Чаще всего блокировали:</b><div class="review-blockers">'+missed.blockers.map(x=>'<span class="review-chip">'+esc(reasonRu(x[0]))+' · '+x[1]+'</span>').join('')+'</div></div>':'')+'</section>';
+}
+function hypothesisRuleText(h){
+  const p=h.proposal||{};
+  if(h.kind==='ENTRY_BLOCKER_RELAXATION')return 'Повторно оценивать вход после блокировки '+reasonRu(p.blocker)+' только при сохранённой структуре того же таймфрейма; не снимать остальные запреты.';
+  if(h.kind==='STOP_GEOMETRY')return 'Проверить стоп по структуре того же таймфрейма с буфером '+n(p.stop_buffer_atr,2)+' ATR вместо базового '+n(p.baseline_stop_buffer_atr,2)+' ATR.';
+  if(h.kind==='EXIT_CAPTURE')return 'Проверить альтернативное сопровождение/частичный выход на упорядоченном ценовом пути; без доказанного пути правило не меняется.';
+  if(h.kind==='STRATEGY_ROUTER')return 'Проверить, какой тип стратегии лучше работает в этом режиме, только на последующих независимых исходах.';
+  return 'Кандидат остаётся в shadow до накопления достаточной последующей выборки.';
+}
+function hypothesisEffectHtml(h,r){
+  const p=r&&r.prospective||{};
+  const cell=(label,value)=>'<div class="review-metric"><span>'+esc(label)+'</span><b>'+esc(value)+'</b></div>';
+  if(h.kind==='ENTRY_BLOCKER_RELAXATION'){
+    const rate=knownNumber(p.favourable_rate),mean=knownNumber(p.mean_candidate_signed_return);
+    return '<div class="review-metrics">'+cell('Будущая выборка',p.n??'—')+cell('Благоприятно',rate==null?'—':n(100*rate,1)+'%')+cell('Среднее движение',mean==null?'—':reviewMove(mean))+cell('Дней',p.days??'—')+'</div><small>Это последующее движение после блокировки, не доказанный исполнимый P&L.</small>';
+  }
+  if(h.kind==='STRATEGY_ROUTER'){
+    const a=knownNumber(p.preferred_hit_rate),b=knownNumber(p.other_hit_rate),d=knownNumber(p.hit_rate_delta),m=knownNumber(p.preferred_mean_signed_return);
+    return '<div class="review-metrics">'+cell('Hit-rate выбранной',a==null?'—':n(100*a,1)+'%')+cell('Hit-rate остальных',b==null?'—':n(100*b,1)+'%')+cell('Δ hit-rate',d==null?'—':signedPct(100*d))+cell('Средний результат',m==null?'—':reviewMove(m))+'</div>';
+  }
+  if(h.kind==='STOP_GEOMETRY'||h.kind==='EXIT_CAPTURE'){
+    const q=p.replay||{},base=knownNumber(q.mean_baseline_net_return),cand=knownNumber(q.mean_candidate_net_return),delta=knownNumber(q.mean_delta_net_return),ci=knownNumber(q.delta_ci95_low);
+    return '<div class="review-metrics">'+cell('Replay N',q.n??'—')+cell('База после расходов',base==null?'—':reviewMove(base))+cell('Кандидат после расходов',cand==null?'—':reviewMove(cand))+cell('Δ результата',delta==null?'—':reviewMove(delta))+cell('95% нижняя Δ',ci==null?'—':reviewMove(ci))+'</div><small>Изменение доходности считается только по упорядоченному replay. Реальное исполнение альтернативы не предполагается.</small>';
+  }
+  return '';
+}
+function renderHypothesesSection(learning2){
+  const hs=Array.isArray(learning2&&learning2.hypotheses)?learning2.hypotheses:[];
+  const registry=learning2&&learning2.registry||{},cands=Array.isArray(registry.candidates)?registry.candidates:[];
+  const byId=new Map(cands.map(x=>[x.candidate_id,x]));
+  const sorted=hs.slice().sort((a,b)=>{const A=byId.get(a.hypothesis_id)?.status==='SHADOW_ELIGIBLE'?1:0,B=byId.get(b.hypothesis_id)?.status==='SHADOW_ELIGIBLE'?1:0;return B-A});
+  return '<section class="review-section"><h3>Уроки и кандидаты правил</h3><div class="review-section-note">Наблюдение → кандидат → последующая проверка → shadow. Эффект показывается только на последующих данных или ordered-path replay; автоматического изменения боевых правил здесь нет.</div>'+
+    (sorted.length?sorted.slice(0,12).map(h=>{const s=h.scope||{},e=h.evidence||{},r=byId.get(h.hypothesis_id)||{},status=reviewCandidateStatus(r.status);const scope=[lab(s.asset),tfRu(s.horizon),s.regime].filter(Boolean).join(' · ');const nObs=e.n??r.prospective?.n??'—';const evidence=[e.mean_abs_move!=null?'среднее движение '+reviewMove(e.mean_abs_move):null,e.median_mfe!=null?'median MFE '+reviewMove(e.median_mfe):null,e.median_mae!=null?'median MAE '+reviewMove(e.median_mae):null].filter(Boolean).join(' · ');return '<div class="review-hypothesis"><div class="review-hypothesis-head"><div><b>'+esc(reviewKindLabel(h.kind))+'</b><small>'+esc(scope||'общий контекст')+'</small></div><span class="review-status '+(r.status==='SHADOW_ELIGIBLE'?'ok':'')+'">'+esc(status)+'</span></div><div class="review-rule">'+esc(hypothesisRuleText(h))+'</div><small>Обучающая выборка: '+esc(nObs)+(evidence?' · '+esc(evidence):'')+'. Влияние на production: нет.</small>'+hypothesisEffectHtml(h,r)+'</div>'}).join(''):'<div class="msg">Кандидатов новых правил пока нет: система продолжает накапливать повторяющиеся доказательства.</div>')+
+    '</section>';
+}
+function renderReview(){
+  bindReviewTabs();
+  const all=Array.isArray(st.trades&&st.trades.trades)?st.trades.trades.slice(0,40):[];
+  const reviews=all.map(reviewTradeModel);
+  const l2=st.autonomous&&st.autonomous.learning_v2||{},missed=aggregateMissed(l2);
+  const hypotheses=Array.isArray(l2.hypotheses)?l2.hypotheses:[];
+  const registry=l2.registry||{},shadow=Array.isArray(registry.shadow_champions)?registry.shadow_champions.length:0;
+  const protection=reviews.filter(x=>x.protectionTrigger).length;
+  const counts=st.autonomous&&st.autonomous.counts||{},processed=Number(counts.processed??((counts.direction||0)+(counts.trade||0)))||0;
+  if($('reviewBadge'))$('reviewBadge').textContent=String(missed.missed+protection);
+  if($('reviewSummary'))$('reviewSummary').innerHTML='<div class="review-kpis">'+
+    '<div class="review-kpi"><span>Закрытых в разборе</span><b>'+reviews.length+'</b></div>'+
+    '<div class="review-kpi"><span>MFE ≥ 0,15%, итог ≤ 0</span><b class="'+(protection?'warn':'')+'">'+protection+'</b></div>'+
+    '<div class="review-kpi"><span>Упущенных эпизодов</span><b class="'+(missed.missed?'warn':'')+'">'+missed.missed+'</b></div>'+
+    '<div class="review-kpi"><span>Обучаемых пропусков</span><b>'+missed.learnable+'</b></div>'+
+    '<div class="review-kpi"><span>Кандидатов правил</span><b>'+hypotheses.length+'</b></div>'+
+    '<div class="review-kpi"><span>Опыт / shadow</span><b>'+processed+' / '+shadow+'</b></div></div>';
+  if(!$('reviewBody'))return;
+  const closed='<section class="review-section"><h3>Разбор закрытых позиций</h3><div class="review-section-note">Фактический результат, MFE/MAE, защита прибыли и накопленный урок. Порог разбора защиты прибыли: MFE 0,15%.</div>'+(reviews.length?'<div class="review-list">'+reviews.slice(0,16).map(renderTradeReviewItem).join('')+'</div>':'<div class="msg">Закрытых сделок для разбора пока нет.</div>')+'</section>';
+  const loop='<section class="review-section"><h3>Контур самообучения</h3><div class="review-section-note">Опыт не превращается в правило по одному примеру.</div><div class="review-list"><div class="review-item"><div class="review-item-title">1. Фиксация</div><div class="review-item-sub">Закрытая сделка или заблокированный directional episode сохраняется с источником, временем и контекстом.</div></div><div class="review-item"><div class="review-item-title">2. Диагностика</div><div class="review-item-sub">Считаются MFE/MAE, результат после расходов, повторяемость блокировки и достаточность доказательств.</div></div><div class="review-item"><div class="review-item-title">3. Проверка будущими исходами</div><div class="review-item-sub">Кандидат оценивается только на данных после его регистрации; Stop/Exit требуют ordered-path replay.</div></div><div class="review-item"><div class="review-item-title">4. Shadow</div><div class="review-item-sub">Только прошедший порог кандидат может стать shadow-eligible. Production-параметры автоматически не меняются.</div></div></div><div class="review-foot">'+esc(learningWaitText(st.autonomous||{}))+'</div></section>';
+  $('reviewBody').innerHTML='<div class="review-grid"><div>'+closed+renderMissedSection(l2,missed)+'</div><div>'+renderHypothesesSection(l2)+loop+'</div></div>';
+}
+
 function learningWaitText(a){
   const jobs=Object.values(a.jobs||{}).filter(x=>x&&typeof x==='object');
   const blocked=jobs.find(x=>/^(DEFERRED|ERROR|UNAVAILABLE|RETRY|FAILED)/.test(String(x.status||x.last_result?.status||'').toUpperCase()))||{};
@@ -1417,6 +1623,7 @@ async function loadTrades(){
     st.trades=d;
     $('tradeSync').textContent='';
     renderTrades();
+    renderReview();
   }else{
     $('tradeSync').textContent=st.trades?'Обновление задержано. Показаны последние полученные сделки.':'Загрузка сделок задержана. Повторяем запрос…';
   }
@@ -1429,6 +1636,7 @@ async function loadAutonomousLearning(){
   const d=await get('autonomous-learning','/api/v1/autonomous-learning',8000);
   if(d)st.autonomous=d;else if(st.autonomous&&document.visibilityState!=='hidden')st.autonomous={...st.autonomous,refresh_delayed:true};
   renderIntelligence();
+  renderReview();
 }
 async function loadIntelligence(){
   const scorecard=await get('intelligence-scorecard','/api/v1/intelligence-scorecard',9000);
@@ -1447,6 +1655,7 @@ function start(){
     renderPortfolios();
     $('positionSync').textContent='Сохранённые позиции. Получаем актуальное состояние…';
   }
+  renderReview();
   refreshLiveState();
   setTimeout(loadIntelligence,500);
   setTimeout(loadMacro,1000);
