@@ -74,6 +74,8 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertIn("d.payload->>'plan_eligible'",source)
         self.assertIn("AS admission_eligible",source)
         self.assertIn("AS final_gate_status",source)
+        self.assertIn("forward_return,mfe,mae",source)
+        self.assertIn("e.forward_return,e.mfe,e.mae",source)
 
     def test_trade_cohort_provenance_comes_from_original_trade(self):
         source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
